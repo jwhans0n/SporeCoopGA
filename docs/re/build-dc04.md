@@ -791,3 +791,57 @@ that missing capabilities execute zero game/native calls. Its complete fake ABI
 path also passes. Legacy diagnostics must be checked against the active restricted
 map before invoking them. The ignored camera projection helper remains unvalidated
 for click targeting; a behind-camera result does not establish avatar location.
+
+## Large adventure frame cost on native Windows (2026-10-23)
+
+Two visible preview-1 sessions in a 438-actor adventure measured 5.7-5.9 FPS on
+the host and 5.1-5.3 FPS on the guest. Both used the RTX 5070 Ti Laptop GPU;
+GPU load was about 1%, while each main thread saturated a CPU core. Sampling
+100 main-thread instruction pointers per process found 97 host and 99 guest
+samples inside `NtQueryVirtualMemory`. COFF/DWARF resolution attributed the
+callers to `skg::readable`, notably marker lookup, play/scenario accessors and
+authored-hostility validation. Neither process recorded native faults.
+
+`ReadOnlyMemoryScope` now shares bounded memory-region checks inside synchronous
+read-only enumeration, snapshot collection and mirror-eligibility operations.
+No scope spans mirror application, actor spawn/destruction, act changes, a queued
+task or a frame boundary. Unscoped checks still query Windows on every call.
+Native `active()` eligibility no longer commits the result lifecycle or validates
+the play-mode pointer on each call; that bookkeeping runs in tick and SetState.
+Guests enumerate in their outside-frame reconciliation task, rather than also
+enumerating in Present immediately before that task.
+
+The Win32 memory fixture covers 438 repeated/nested actor checks, protection
+changes between traversals, cross-region reads, guard pages, freed allocations
+and overflowing ranges. The integration regression measures actual frame-count
+deltas in a recorded isolated pair, requires at least 400 actors and a native
+playing state with advancing game time, and rejects run/act changes or faults.
+
+The controlled comparison used the same two hidden native lab processes and
+Adventure Town's 405-actor opening act. Preview 1 failed the 20-FPS regression at
+3.87 FPS host / 4.75 FPS guest. Preview 2 passed at 21.61 / 21.49 FPS with advancing
+native time and zero faults. These hidden-window figures are not a claim of the
+visible player's final frame rate. Evidence is in
+`out/windows-lab/frame-cost/performance-before.json` and `performance-after.json`.
+Run the check after dismissing the opening dialog; the fixture deliberately
+rejects a cinematic/non-playing state. The live large-world check also retained
+429-436 matching actors with zero native faults.
+
+The final stripped DLL also passed native combat/proximity revival, shared Move
+progress through an act change, and controlled results/Done with zero faults.
+The reused captains already had XP 100. The first results assertion expecting
+another +100 failed; a separate repeat-result check expecting unchanged XP
+passed at 100 -> 100 for each captain. This pass establishes result lifecycle
+and preservation of saved progression, not another first-completion XP award.
+The result fixture now waits for the ending dialog to appear before clicking
+Finished, rather than checking for it once immediately after SetState.
+
+From the repository root, after the lab pair is playing Adventure Town:
+
+```powershell
+py -3 tools/tests/coop_adventure_performance.py --metadata out/windows-lab/frame-cost/processes.json --output out/windows-lab/frame-cost/performance-after.json
+```
+
+`make test-memory-windows` builds the standalone Win32 memory regression; run
+`build/host/readable_memory_tests.exe` on Windows. Its bounded-cache overflow
+case also checks more than 64 distinct readable/inaccessible memory regions.

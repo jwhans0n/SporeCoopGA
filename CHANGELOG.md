@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Galactic Adventures performance fix: 0.7.0-ga-preview.2
+
+- Batch memory-region validation during read-only actor traversals instead of
+  querying Windows for every field of every actor. Mapping checks remain fresh
+  between traversals, native mutations and frames.
+- Remove the guest's duplicate per-frame actor enumeration and keep native
+  result bookkeeping out of frequently called eligibility queries.
+- Add a two-session, 400-plus-actor FPS regression and native tests for guarded,
+  inaccessible and released memory. Network format and friendly-fire rules are
+  unchanged from preview 1.
+
 ### Galactic Adventures preview: 0.7.0-ga-preview.1
 
 - Start a party adventure through the host's normal Sporepedia Play button, choose

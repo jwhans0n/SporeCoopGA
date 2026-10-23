@@ -32,9 +32,14 @@ def run(host, guest, expected, resume=False):
     if not resume:
         host.call('coop.adventure.world finish success')
     for game in games:
-        if game.control(0x0445C99D):
-            game.click_control(0x0445C99D)
-        game.wait_caption('Mission Complete!')
+        def results_ready():
+            if game.caption('Mission Complete!'):
+                return True
+            # The ending dialog can appear a few frames after SetState returns.
+            if game.control(0x0445C99D):
+                game.click_control(0x0445C99D)
+            return False
+        game.wait('native mission results after the ending dialog', results_ready)
         if not game.caption('Done') and game.caption('Choose a Reward'):
             # Initial test captains unlock their first reward here. The native
             # results dialog hides Done until a reward is selected. This point

@@ -8,6 +8,10 @@ verified only for the March 2017 GOG executable, SHA-256
 See [build identification](re/build-dc04.md). Every player needs Galactic Adventures
 and the same experimental SporeCoop build.
 
+Preview `0.7.0-ga-preview.2` fixes excessive Windows memory validation in large
+adventures. Install it for every player and restart the game to load the update.
+This update keeps the existing adventure rules and network format.
+
 ## Start an adventure
 
 1. Open **Co-op** from the galaxy menu. One player hosts; the others join the lobby

@@ -117,9 +117,7 @@ static void observe_native_attempt(uint64_t);
 static bool host() { return C.sess && C.sess->role() == net::Role::Host; }
 static bool active()
 {
-    bool running = g_ok && C.sess && C.sess->connected() && C.active && C.active() && C.run && C.run();
-    if (running) observe_native_attempt(C.run());
-    return running;
+    return g_ok && C.sess && C.sess->connected() && C.active && C.active() && C.run && C.run();
 }
 static bool guest() { return active() && !host(); }
 static uint64_t run() { return C.run ? C.run() : 0; }
@@ -217,6 +215,8 @@ static void refresh_markers()
 
 static void enumerate()
 {
+    // The registry, casts and marker getters below do not mutate native memory.
+    skg::ReadOnlyMemoryScope memory;
     g_native.clear();
     g_native_overflow = false;
     refresh_markers();
@@ -449,6 +449,7 @@ static void native_state(void* self, int state)
 static void SK_THISCALL set_state(void* self, int state)
 {
     bool running = active();
+    if (running) observe_native_attempt(run());
     bool terminal = state == 5 || state == 6;
     bool scoped = g_native_result.play == self && g_native_result.run;
     if (terminal && scoped && g_native_result.applied) return;
@@ -547,6 +548,8 @@ static void scale_health(NativeActor& actor, int act)
 
 static void send_actors()
 {
+    // Health field writes do not change mappings. All native calls are getters.
+    skg::ReadOnlyMemoryScope memory;
     int act = play() ? skg::field<int>(play(), 0xB8) : 0;
     ++g_sequence;
     net::Writer w;
@@ -1098,6 +1101,7 @@ bool damage_filter(void* victim, float& damage, int type, void* attacker)
 bool update_filter(void* creature)
 {
     if (!guest() || g_applying || owner(creature) != ga::kNoPlayer) return true;
+    skg::ReadOnlyMemoryScope memory;
     uint32_t marker;
     if (!marker_of(creature, marker)) return true;
     // Native death cleanup still advances after a host kill; live guest actors do not run AI.
@@ -1107,8 +1111,9 @@ bool update_filter(void* creature)
 
 bool is_live_mirror(void* object)
 {
-    // Avoid active(): a read-only eligibility query must not observe/commit a
-    // native result lifecycle. Bindings carry the act in which they were made.
+    skg::ReadOnlyMemoryScope memory;
+    // Eligibility must not commit the native result lifecycle. Bindings carry
+    // the act in which they were made.
     if (!g_ok || g_applying || !C.sess || !C.sess->connected() || C.sess->role() != net::Role::Client ||
         !C.active || !C.active() || !C.run || !g_run || C.run() != g_run ||
         game::mode_id() != 0x01654C10 || !object || !skg::readable(object, 0x28) ||
@@ -1179,10 +1184,11 @@ void reset()
 void tick(double now)
 {
     if (!active()) { if (g_run) reset_replication(); return; }
+    observe_native_attempt(run());
     if (run() != g_run) { reset_replication(); g_run = run(); }
     if (!play()) return;
-    enumerate();
     if (host()) {
+        enumerate();
         if (now - g_last_send >= 0.1) { g_last_send = now; send_actors(); }
         if (now - g_last_goals >= 0.5) { g_last_goals = now; send_goals(); send_roster(); }
     } else if (!g_mirror_queued) {

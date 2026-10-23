@@ -94,6 +94,13 @@ $(B)/host/adventure_lifecycle_tests.exe: mods/coop/adventure_world_lifecycle.cpp
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $^ -o $@
 
 ADVENTURE_ABI_HEADERS := sdk/include/sporekit.h sdk/include/sporekit_game.hpp mods/coop/game.h mods/coop/net/protocol.h
+
+.PHONY: test-memory-windows
+test-memory-windows: $(B)/host/readable_memory_tests.exe
+$(B)/host/readable_memory_tests.exe: tests/readable_memory_tests.cpp sdk/include/sporekit_game.hpp
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Isdk/include tests/readable_memory_tests.cpp -o $@
+
 ACTIONS_TEST_SRC := mods/coop/adventure_world_actions.cpp tests/adventure_actions_tests.cpp
 VEHICLES_TEST_SRC := mods/coop/adventure_world_vehicles.cpp tests/adventure_vehicle_tests.cpp
 RELATIONSHIPS_TEST_SRC := mods/coop/adventure_relationships.cpp tests/adventure_relationship_tests.cpp

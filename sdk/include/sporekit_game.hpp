@@ -15,6 +15,8 @@
 
 #include <cstdint>
 #include <cstring>
+#include <array>
+#include <limits>
 
 #define SK_THISCALL __attribute__((thiscall))
 #define SK_STDCALL __attribute__((stdcall))
@@ -75,19 +77,62 @@ struct ResourceKey {
     uint32_t instance, type, group;
 };
 
+// Reuse VirtualQuery results only during a synchronous, read-only traversal.
+// Never keep this scope alive across native calls that allocate/free memory,
+// queued tasks, frames or act changes. Outside a scope every check stays fresh.
+class ReadOnlyMemoryScope {
+    struct Region { uintptr_t begin, end; DWORD state, protect; };
+    std::array<Region, 64> regions_;
+    size_t count_ = 0;
+    ReadOnlyMemoryScope* previous_;
+    inline static thread_local ReadOnlyMemoryScope* current_ = nullptr;
+
+    bool query(uintptr_t address, Region& result)
+    {
+        for (size_t i = 0; i < count_; ++i) {
+            if (address >= regions_[i].begin && address < regions_[i].end) {
+                result = regions_[i]; return true;
+            }
+        }
+        MEMORY_BASIC_INFORMATION mbi;
+        if (!VirtualQuery(reinterpret_cast<const void*>(address), &mbi, sizeof mbi)) return false;
+        uintptr_t begin = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+        if (mbi.RegionSize > std::numeric_limits<uintptr_t>::max() - begin) return false;
+        result = {begin, begin + mbi.RegionSize, mbi.State, mbi.Protect};
+        if (count_ < regions_.size()) regions_[count_++] = result;
+        return true;
+    }
+    friend bool readable(const void*, size_t);
+
+public:
+    ReadOnlyMemoryScope() : previous_(current_) { if (!current_) current_ = this; }
+    ~ReadOnlyMemoryScope() { current_ = previous_; }
+    ReadOnlyMemoryScope(const ReadOnlyMemoryScope&) = delete;
+    ReadOnlyMemoryScope& operator=(const ReadOnlyMemoryScope&) = delete;
+};
+
 // Basic memory sanity check before dereferencing game pointers from tools.
 inline bool readable(const void* p, size_t n)
 {
-    MEMORY_BASIC_INFORMATION mbi;
-    const uint8_t* a = static_cast<const uint8_t*>(p);
-    const uint8_t* end = a + n;
+    uintptr_t a = reinterpret_cast<uintptr_t>(p);
+    if (n > std::numeric_limits<uintptr_t>::max() - a) return false;
+    uintptr_t end = a + n;
     while (a < end) {
-        if (!VirtualQuery(a, &mbi, sizeof mbi) || mbi.State != MEM_COMMIT)
+        ReadOnlyMemoryScope::Region region;
+        if (ReadOnlyMemoryScope::current_) {
+            if (!ReadOnlyMemoryScope::current_->query(a, region)) return false;
+        } else {
+            MEMORY_BASIC_INFORMATION mbi;
+            if (!VirtualQuery(reinterpret_cast<const void*>(a), &mbi, sizeof mbi)) return false;
+            uintptr_t begin = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+            if (mbi.RegionSize > std::numeric_limits<uintptr_t>::max() - begin) return false;
+            region = {begin, begin + mbi.RegionSize, mbi.State, mbi.Protect};
+        }
+        DWORD pr = region.protect & 0xFF;
+        if (region.state != MEM_COMMIT || pr == PAGE_NOACCESS || pr == PAGE_EXECUTE ||
+            (region.protect & PAGE_GUARD) || region.end <= a)
             return false;
-        DWORD pr = mbi.Protect & 0xFF;
-        if (pr == PAGE_NOACCESS || pr == PAGE_EXECUTE || (mbi.Protect & PAGE_GUARD))
-            return false;
-        a = static_cast<const uint8_t*>(mbi.BaseAddress) + mbi.RegionSize;
+        a = region.end;
     }
     return true;
 }
