@@ -1,7 +1,7 @@
 // SporeCoop mod: creature-stage co-op ("pack" mode). See docs/03-gameplay.md.
 // the release version (tools/package.sh names the zip after it)
 #ifndef COOP_VERSION
-#define COOP_VERSION "0.6.0"
+#define COOP_VERSION "0.7.0-ga-preview.1"
 #endif
 
 #include <winsock2.h>
@@ -30,6 +30,10 @@
 #include "cellsync.h"
 #include "civ.h"
 #include "autoupdate.h"
+#include "adventure.h"
+#include "adventure_captains.h"
+#include "adventure_native.h"
+#include "adventure_progress.h"
 #include "gamefixes.h"
 #include "spacecoop.h"
 #include "squadron.h"
@@ -257,6 +261,8 @@ void drive_puppet(Remote& r, double now)
     // dead players are hidden until they respawn
     bool visible = g_adapter && g_local && (s.flags & net::PF_IN_WORLD) && !(s.flags & net::PF_DEAD) &&
                    r.buf.age(now) < 5.0 && (r.echo || same_place(s));
+    if (g_mode == modes::kScenario && g_sess.connected() && !r.echo)
+        visible = visible && adventure::running() && adventure::participating(r.id);
     if (r.puppet && !visible) // why a partner disappears (docs/stability/cell.md)
         LOG("%s hidden: flags=0x%X age=%.1f same_place=%d", r.name.c_str(), (unsigned)s.flags, r.buf.age(now),
             (int)same_place(s));
@@ -711,6 +717,10 @@ void vote_tick(double now)
 
 void on_mode_change(uint32_t from, uint32_t to)
 {
+    if (from == modes::kScenario && to != modes::kScenario) {
+        adventure::cancel("A player left the adventure. Return to the lobby for the next attempt.");
+        adventure_native::reset();
+    }
     if (to == modes::kMenu && stage_mode(from) && g_sess.role() == net::Role::Host && !g_remotes.empty())
         feed("the others play on alone until you load a game again (they get its world)");
     bool editor = to == modes::kEdit || to == modes::kEditor;
@@ -847,6 +857,7 @@ void keepalive_task(void*)
     if (H->time_seconds() - g_last_frame < 0.5 || g_sess.role() == net::Role::None)
         return;
     g_sess.update();
+    adventure::tick(H->time_seconds());
     if (g_sess.role() == net::Role::Host)
         world::tick(g_sess);
 }
@@ -881,6 +892,8 @@ void on_frame(void*, int, void*)
     notify::tick(now);
     creations::tick(now);
     g_sess.update();
+    adventure::tick(now);
+    adventure_native::tick(now);
     lobby_tick(now);
     vote_tick(now);
     submit_tick(now);
@@ -1224,8 +1237,26 @@ void on_overlay(void*, int, void*)
             const auto& ls = it->second.buf.latest();
             line += std::string("  [") + modes::mode_name(ls.mode) + (same_place(ls) || ls.mode != g_mode ? "" : ", other world") + "]";
         }
-        H->overlay_text(x, y, 0xFFFFFFFF, line.c_str());
+        adventure::CaptainState captain;
+        bool downed = adventure::captain_state(p.id, captain) && captain.captain.life == ga::Life::Downed;
+        if (downed) {
+            line += "  DOWNED";
+            if (captain.captain.reviver != ga::kNoPlayer)
+                line += "  reviving " + std::to_string(int(captain.revive_progress * 100)) + "%";
+            else if (captain.automatic_remaining >= 0)
+                line += "  recovery " + std::to_string(int(std::ceil(captain.automatic_remaining))) + "s";
+        }
+        H->overlay_text(x, y, downed ? 0xFFFFB060 : 0xFFFFFFFF, line.c_str());
         y += 20;
+    }
+    if (adventure::running() && adventure::settings().death_mode != ga::DeathMode::AnyDeathFails) {
+        adventure::CaptainState local;
+        if (adventure::captain_state(g_sess.my_id(), local)) {
+            const char* prompt = local.captain.life == ga::Life::Downed
+                ? "Downed: a teammate must stay within 2 m for 3 s."
+                : "Revive a downed teammate: stay within 2 m for 3 s.";
+            H->overlay_text(x, y + 4, 0xFFFFD040, prompt);
+        }
     }
     // notices are notification panels now (notify.cpp); the history is in the co-op window
 }
@@ -1278,6 +1309,8 @@ void setup_callbacks()
         chat_log("* disconnected: " + why);
         g_ready.clear();
         g_lobby_rtt.clear();
+        adventure::reset();
+        adventure_native::reset();
         npc::on_session_end();
         social::on_session_end();
         tribe::on_session_end();
@@ -1291,6 +1324,7 @@ void setup_callbacks()
         g_remotes.clear();
     };
     g_sess.cb.player_join = [](const net::PlayerInfo& p) {
+        adventure::on_join(p.id);
         shared::on_session_change();
         creations::on_player_join(p.id);
         g_dna_sent = -1; // resend the DNA total to the newcomer
@@ -1319,6 +1353,13 @@ void setup_callbacks()
         }
     };
     g_sess.cb.custom = [](uint8_t type, uint8_t from, net::Reader& r) {
+        if (type == net::MSG_ADVENTURE) {
+            if (r.left() && *r.cur() >= 128)
+                adventure_native::on_message(from, r);
+            else
+                adventure::on_message(from, r);
+            return;
+        }
         if (type == net::MSG_ANIM) {
             net::AnimEvent ev;
             if (ev.read(r))
@@ -1505,6 +1546,7 @@ void setup_callbacks()
             world::on_message(type, r, g_sess.name_of(0));
     };
     g_sess.cb.player_leave = [](uint8_t id, uint8_t) {
+        adventure::on_leave(id);
         auto it = g_remotes.find(id);
         if (it == g_remotes.end())
             return;
@@ -1560,6 +1602,8 @@ bool do_join(const std::string& addr, std::string& err)
 
 void do_leave()
 {
+    adventure::reset();
+    adventure_native::reset();
     g_sess.leave("user");
     npc::on_session_end();
     social::on_session_end();
@@ -1589,6 +1633,9 @@ void set_role(uint8_t role)
 
 void set_ready(bool on)
 {
+    if (adventure::active()) {
+        if (!adventure::set_ready(on)) return;
+    }
     g_ready[g_sess.my_id()] = on;
     if (g_sess.role() == net::Role::Client) {
         net::Writer w;
@@ -1908,6 +1955,7 @@ std::vector<coop_ui::PlayerRow> ui_players()
         r.host = p.id == 0;
         r.me = p.id == g_sess.my_id();
         r.ready = g_ready.count(p.id) && g_ready[p.id];
+        if (r.me && adventure::active()) r.ready = adventure::ready();
         if (r.me)
             r.stage = modes::mode_name(g_mode);
         else {
@@ -2175,6 +2223,7 @@ void init_ui()
     a.connected = [] { return g_sess.connected(); };
     a.session_line = ui_session_line;
     a.give = [](std::string& what, std::string& to) {
+        if (g_mode != modes::kTribe && g_mode != modes::kCiv && g_mode != modes::kSpace) return 0;
         uint8_t t = give_target();
         if (!g_sess.connected() || t == 0xFF)
             return 0;
@@ -2231,8 +2280,11 @@ void init_ui()
         creations::cycle(k, dir);
     };
     a.players = ui_players;
-    a.world_line = ui_world_line;
-    a.ready = [] { return g_ready.count(g_sess.my_id()) && g_ready[g_sess.my_id()]; };
+    a.world_line = [] {
+        return !g_vote.active && (g_mode == modes::kMenu || g_mode == modes::kScenario)
+            ? adventure::status() : ui_world_line();
+    };
+    a.ready = [] { return adventure::active() ? adventure::ready() : g_ready.count(g_sess.my_id()) && g_ready[g_sess.my_id()]; };
     a.set_ready = set_ready;
     a.share_world = [] {
         if (g_vote.active)
@@ -2241,6 +2293,16 @@ void init_ui()
             share_all();
     };
     a.vote_active = [] { return g_vote.active; };
+    a.adventure_difficulty = [](ga::Difficulty& difficulty, int& party, bool& editable, std::string& status) {
+        if (!g_sess.connected() || (game::mode_id() != modes::kMenu && game::mode_id() != modes::kScenario)) return false;
+        const auto* run = adventure::current();
+        difficulty = run && adventure::active() ? run->difficulty : adventure::settings();
+        party = static_cast<int>(run && adventure::active() ? run->roster.size() : g_sess.players().size());
+        editable = g_sess.role() == net::Role::Host && !adventure::active();
+        status = adventure::status();
+        return true;
+    };
+    a.set_adventure_difficulty = [](const ga::Difficulty& difficulty) { adventure::set_settings(difficulty); };
     a.say = [](const std::string& t) {
         if (g_sess.connected())
             g_sess.send_chat(t);
@@ -2277,8 +2339,75 @@ int c_uistate(void*, int argc, const char* const* argv, SkOut* out)
     return 0;
 }
 
+int c_adventure(void*, int argc, const char* const* argv, SkOut* out)
+{
+    if (!strcmp(argc > 1 ? argv[1] : "", "xp")) {
+        dbpf::Key captain;
+        if (argc == 5) {
+            captain = {(uint32_t)strtoul(argv[2], nullptr, 0), (uint32_t)strtoul(argv[3], nullptr, 0),
+                       (uint32_t)strtoul(argv[4], nullptr, 0)};
+        } else if (argc == 2 && game::mode_id() == modes::kScenario && game::avatar()) {
+            captain = skg::field<dbpf::Key>(game::avatar(), 0xB28);
+        } else { SAY("coop.adventure xp [originalCaptainInstance type group]"); return 1; }
+        adventure_progress::Snapshot progress;
+        std::string error;
+        if (!adventure_progress::read(captain, progress, error)) { SAY("%s", error.c_str()); return 1; }
+        SAY("captain=%08X:%08X:%08X xp=%d level=%d xp_present=%d level_present=%d\n",
+            captain.instance, captain.type, captain.group, progress.xp, progress.level,
+            progress.xp_present, progress.level_present);
+        return 0;
+    }
+    if (argc == 1 || !strcmp(argv[1], "status")) {
+        auto settings = adventure::settings();
+        size_t party = g_sess.players().size();
+        const auto* run = adventure::current();
+        SAY("%s\n", adventure_native::status().c_str());
+        SAY("run=%llu active=%d ready=%d players=%u death=%u health=%.2f damage=%.2f friendly_fire=%u\n",
+            (unsigned long long)(run ? run->run_id : 0), adventure::active(), adventure::ready(),
+            (unsigned)party, (unsigned)settings.death_mode, settings.health_multiplier(std::max(size_t(1), party)),
+            settings.damage_multiplier(), (unsigned)settings.friendly_fire_percent);
+        return 0;
+    }
+    if (!strcmp(argv[1], "cancel")) return adventure::cancel("The party cancelled adventure preparation.") ? 0 : 1;
+    if (!strcmp(argv[1], "ready") && argc == 3) return adventure::set_ready(atoi(argv[2]) != 0) ? 0 : 1;
+    if (!strcmp(argv[1], "start") && argc == 5) {
+        dbpf::Key key{(uint32_t)strtoul(argv[2], nullptr, 0), (uint32_t)strtoul(argv[3], nullptr, 0),
+                      (uint32_t)strtoul(argv[4], nullptr, 0)};
+        return adventure::request_play(key) ? 0 : 1;
+    }
+    if (argc == 3) {
+        ga::Difficulty settings = adventure::settings();
+        if (!strcmp(argv[1], "death")) {
+            if (!strcmp(argv[2], "revive")) settings.death_mode = ga::DeathMode::ManualRevive;
+            else if (!strcmp(argv[2], "fail")) settings.death_mode = ga::DeathMode::AnyDeathFails;
+            else if (!strcmp(argv[2], "auto")) settings.death_mode = ga::DeathMode::AutomaticRevive;
+            else return 1;
+        } else if (!strcmp(argv[1], "health") || !strcmp(argv[1], "damage")) {
+            char* end = nullptr;
+            float value = !strcmp(argv[2], "auto") ? 0 : strtof(argv[2], &end);
+            if (strcmp(argv[2], "auto") && (!end || *end || end == argv[2])) return 1;
+            if (!strcmp(argv[1], "health")) settings.enemy_health_override = value;
+            else settings.enemy_damage_override = value;
+        } else if (!strcmp(argv[1], "friendlyfire")) {
+            char* end = nullptr;
+            unsigned long value = strtoul(argv[2], &end, 10);
+            if (!end || end == argv[2] || *end || value > 100) return 1;
+            settings.friendly_fire_percent = (uint8_t)value;
+        } else return 1;
+        if (adventure::set_settings(settings)) return 0;
+        SAY("Only the host can set valid difficulty settings before an adventure attempt.");
+        return 1;
+    }
+    SAY("coop.adventure [status|death revive/auto/fail|health auto/number|damage auto/number|friendlyfire 0/25/50/100|ready 0/1|cancel]");
+    return 1;
+}
+
 void on_unload()
 {
+    adventure::reset();
+    adventure_native::shutdown();
+    game::set_extra_update_filter(nullptr);
+    game::set_blocked_update_handler(nullptr);
     gamefixes::shutdown();
     keepalive_stop();
     notify::shutdown();
@@ -2349,7 +2478,30 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
     };
     sc.blocked = [] { return g_menu_up.load() || coop_ui::is_open(); };
     social::init(H, M, sc);
-    game::set_damage_filter(npc::damage_filter);
+    adventure_native::Ctx native;
+    native.sess = &g_sess;
+    native.feed = feed;
+    native.captain_of = [](uint8_t id) -> void* {
+        if (id == g_sess.my_id()) return game::avatar();
+        auto it = g_remotes.find(id);
+        return it != g_remotes.end() && adventure::participating(id) ? it->second.puppet : nullptr;
+    };
+    native.remote_state = [](uint8_t id, net::PlayerState& state) {
+        auto it = g_remotes.find(id);
+        if (it == g_remotes.end() || it->second.buf.empty() || it->second.buf.age(H->time_seconds()) > 3) return false;
+        state = it->second.buf.latest();
+        return true;
+    };
+    native.invalidate_ready = [] { g_ready.clear(); g_lobby_dirty = true; };
+    adventure_native::init(H, M, std::move(native));
+    adventure::init(H, M, adventure_native::coordinator_context());
+    game::set_extra_update_filter(adventure_native::update_filter);
+    game::set_damage_filter([](void* victim, float& damage, int type, void* attacker) {
+        if (game::mode_id() == modes::kScenario && adventure::active())
+            return adventure_native::damage_filter(victim, damage, type, attacker);
+        return npc::damage_filter(victim, damage, type, attacker);
+    });
+    game::set_blocked_update_handler(adventure_native::blocked_update);
     setup_callbacks();
     H->subscribe(M, SK_EV_FRAME, on_frame, nullptr);
     keepalive_start();
@@ -2367,6 +2519,8 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
                    },
                    nullptr, MT);
     H->command_add(M, "coop.status", "session, players and puppets", c_status, nullptr, MT);
+    adventure_progress::init(H, M);
+    H->command_add(M, "coop.adventure", "adventure status, difficulty, readiness and cancellation", c_adventure, nullptr, SK_CMD_OUTSIDE_FRAME);
     H->command_add(M, "coop.name", "coop.name <nick>", c_name, nullptr, MT);
     H->command_add(M, "coop.say", "coop.say <text> - chat", c_say, nullptr, MT);
     H->command_add(M, "coop.avatar", "print local avatar state", c_avatar, nullptr, MT);
@@ -2443,7 +2597,13 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
             despawn(it->second);
     };
     creations::init(H, M, std::move(crc));
-    modes::g_species_for_player = [](uint8_t id) { return creations::player_species(id); };
+    modes::g_species_for_player = [](uint8_t id) -> void* {
+        if (game::mode_id() == modes::kScenario && adventure::active()) {
+            auto key = adventure_captains::key_for(id);
+            if (key.instance) return game::species_by_key({key.instance, key.type, key.group});
+        }
+        return creations::player_species(id);
+    };
     modes::g_model_for_player = [](uint8_t id, int kind, uint32_t key[3]) {
         creations::Key k = creations::player_key(id, (creations::Kind)kind);
         key[0] = k.instance; key[1] = k.type; key[2] = k.group;

@@ -40,6 +40,10 @@ a pack, besiege a city from two sides, repair your partner's ship before it expl
   simulates creatures, tribes, cities and ships; guests see the same world and act through the host.
 - **Your own creations.** Everybody plays their own creature, cell and spaceship from
   *My Creations*, and the others see it.
+- **Experimental Galactic Adventures.** The `feat/galactic-adventures-coop` branch adds
+  Sporepedia adventure parties, personal captains and host difficulty settings. Its native
+  adapter is currently verified only for the `dc04aee5` game build. See the
+  [experimental GA guide](docs/GALACTIC-ADVENTURES.md) for the tested scope and limitations.
 - **Evolve together.** Entering an editor or the next stage starts a vote; it begins when everybody
   is ready, and the evolved world goes to everybody.
 - **Native look.** Windows, fonts and slide-in notifications use Spore's own interface.
@@ -107,6 +111,11 @@ The full guide (checking your game build, Linux, installing by hand, the interne
 uninstalling, troubleshooting) is in **[docs/INSTALL.md](docs/INSTALL.md)**.
 
 ## How to play
+
+For **Galactic Adventures on the experimental feature branch**, follow the
+[GA guide](docs/GALACTIC-ADVENTURES.md): form the lobby, choose Adventure settings,
+then use Sporepedia's normal Play button. This native adapter currently requires
+the verified `dc04aee5` executable.
 
 **Host**
 

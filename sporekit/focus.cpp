@@ -8,8 +8,11 @@
 
 namespace sk {
 
+const std::wstring& profile_name();
+
 static bool g_background = true;
 static bool g_test_run; // started with a test profile or as instance 2+
+static bool g_invisible; // explicit test profile plus -sporekit-invisible
 static WNDPROC o_WndProc;
 static HWND g_sub_hwnd;
 
@@ -20,6 +23,101 @@ typedef HWND(WINAPI* GetHwnd_t)(void);
 typedef BOOL(WINAPI* GetCursorPos_t)(LPPOINT);
 static GetHwnd_t o_GetForegroundWindow, o_GetActiveWindow, o_GetFocus;
 static GetCursorPos_t o_GetCursorPos;
+
+using CreateWindowW_t = HWND(WINAPI*)(DWORD, LPCWSTR, LPCWSTR, DWORD, int, int, int, int, HWND, HMENU, HINSTANCE, LPVOID);
+using CreateWindowA_t = HWND(WINAPI*)(DWORD, LPCSTR, LPCSTR, DWORD, int, int, int, int, HWND, HMENU, HINSTANCE, LPVOID);
+using ShowWindow_t = BOOL(WINAPI*)(HWND, int);
+using SetWindowPos_t = BOOL(WINAPI*)(HWND, HWND, int, int, int, int, UINT);
+using SetPlacement_t = BOOL(WINAPI*)(HWND, const WINDOWPLACEMENT*);
+using Foreground_t = BOOL(WINAPI*)(HWND);
+using Visible_t = BOOL(WINAPI*)(HWND);
+using MessageBoxW_t = int(WINAPI*)(HWND, LPCWSTR, LPCWSTR, UINT);
+using MessageBoxA_t = int(WINAPI*)(HWND, LPCSTR, LPCSTR, UINT);
+static CreateWindowW_t o_CreateWindowW;
+static CreateWindowA_t o_CreateWindowA;
+static ShowWindow_t o_ShowWindow, o_ShowWindowAsync;
+static SetWindowPos_t o_SetWindowPos;
+static SetPlacement_t o_SetWindowPlacement;
+static Foreground_t o_SetForegroundWindow;
+static Visible_t o_IsWindowVisible;
+static MessageBoxW_t o_MessageBoxW;
+static MessageBoxA_t o_MessageBoxA;
+
+static bool own_top_window(HWND w)
+{
+    DWORD pid = 0;
+    GetWindowThreadProcessId(w, &pid);
+    return pid == GetCurrentProcessId() && !(GetWindowLongPtrW(w, GWL_STYLE) & WS_CHILD);
+}
+
+static HWND WINAPI h_CreateWindowW(DWORD ex, LPCWSTR cls, LPCWSTR title, DWORD style, int x, int y, int width,
+                                   int height, HWND parent, HMENU menu, HINSTANCE instance, LPVOID data)
+{
+    if (g_invisible && !(style & WS_CHILD)) {
+        style &= ~WS_VISIBLE;
+        ex = (ex & ~WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+    }
+    return o_CreateWindowW(ex, cls, title, style, x, y, width, height, parent, menu, instance, data);
+}
+
+static HWND WINAPI h_CreateWindowA(DWORD ex, LPCSTR cls, LPCSTR title, DWORD style, int x, int y, int width,
+                                   int height, HWND parent, HMENU menu, HINSTANCE instance, LPVOID data)
+{
+    if (g_invisible && !(style & WS_CHILD)) {
+        style &= ~WS_VISIBLE;
+        ex = (ex & ~WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+    }
+    return o_CreateWindowA(ex, cls, title, style, x, y, width, height, parent, menu, instance, data);
+}
+
+static BOOL WINAPI h_ShowWindow(HWND w, int command)
+{
+    return o_ShowWindow(w, g_invisible && own_top_window(w) ? SW_HIDE : command);
+}
+static BOOL WINAPI h_ShowWindowAsync(HWND w, int command)
+{
+    return o_ShowWindowAsync(w, g_invisible && own_top_window(w) ? SW_HIDE : command);
+}
+static BOOL WINAPI h_SetWindowPos(HWND w, HWND after, int x, int y, int width, int height, UINT flags)
+{
+    if (g_invisible && own_top_window(w))
+        flags = (flags & ~SWP_SHOWWINDOW) | SWP_HIDEWINDOW | SWP_NOACTIVATE;
+    return o_SetWindowPos(w, after, x, y, width, height, flags);
+}
+static BOOL WINAPI h_SetWindowPlacement(HWND w, const WINDOWPLACEMENT* placement)
+{
+    if (g_invisible && placement && own_top_window(w)) {
+        WINDOWPLACEMENT hidden = *placement;
+        hidden.showCmd = SW_HIDE;
+        return o_SetWindowPlacement(w, &hidden);
+    }
+    return o_SetWindowPlacement(w, placement);
+}
+static BOOL WINAPI h_SetForegroundWindow(HWND w)
+{
+    return g_invisible && own_top_window(w) ? TRUE : o_SetForegroundWindow(w);
+}
+static BOOL WINAPI h_IsWindowVisible(HWND w)
+{
+    // Keep the game's own frame loop active; external processes still see a hidden HWND.
+    return g_invisible && own_top_window(w) ? TRUE : o_IsWindowVisible(w);
+}
+static int WINAPI h_MessageBoxW(HWND w, LPCWSTR text, LPCWSTR title, UINT type)
+{
+    if (g_invisible) {
+        SKLOG(SK_ERROR, "test MessageBox suppressed: %s", text ? narrow(text).c_str() : "");
+        return IDCANCEL;
+    }
+    return o_MessageBoxW(w, text, title, type);
+}
+static int WINAPI h_MessageBoxA(HWND w, LPCSTR text, LPCSTR title, UINT type)
+{
+    if (g_invisible) {
+        SKLOG(SK_ERROR, "test MessageBox suppressed: %s", text ? text : "");
+        return IDCANCEL;
+    }
+    return o_MessageBoxA(w, text, title, type);
+}
 
 static HWND WINAPI h_GetForegroundWindow()
 {
@@ -97,6 +195,7 @@ void focus_install_hooks()
     // default: on for automated test runs (profile/instance switches), off for normal play
     bool test_run = wcsstr(GetCommandLineW(), L"-sporekit-profile:") || instance_id() > 1;
     g_test_run = test_run;
+    g_invisible = !profile_name().empty() && wcsstr(GetCommandLineW(), L"-sporekit-invisible");
     g_background = ini_int(mods_dirw() + L"\\sporekit.ini", "sporekit", "background_mode", test_run ? 1 : 0) != 0;
     HMODULE u = GetModuleHandleW(L"user32.dll");
     hook_create(&g_kit_mod, (void*)GetProcAddress(u, "GetForegroundWindow"), (void*)h_GetForegroundWindow,
@@ -106,6 +205,29 @@ void focus_install_hooks()
     hook_create(&g_kit_mod, (void*)GetProcAddress(u, "GetFocus"), (void*)h_GetFocus, (void**)&o_GetFocus);
     hook_create(&g_kit_mod, (void*)GetProcAddress(u, "GetCursorPos"), (void*)h_GetCursorPos,
                 (void**)&o_GetCursorPos);
+    if (g_invisible) {
+        bool ok = true;
+        auto install = [&](const char* name, void* detour, void** original) {
+            void* target = (void*)GetProcAddress(u, name);
+            ok &= target && hook_create(&g_kit_mod, target, detour, original) == 0;
+        };
+        install("CreateWindowExW", (void*)h_CreateWindowW, (void**)&o_CreateWindowW);
+        install("CreateWindowExA", (void*)h_CreateWindowA, (void**)&o_CreateWindowA);
+        install("ShowWindow", (void*)h_ShowWindow, (void**)&o_ShowWindow);
+        install("ShowWindowAsync", (void*)h_ShowWindowAsync, (void**)&o_ShowWindowAsync);
+        install("SetWindowPos", (void*)h_SetWindowPos, (void**)&o_SetWindowPos);
+        install("SetWindowPlacement", (void*)h_SetWindowPlacement, (void**)&o_SetWindowPlacement);
+        install("SetForegroundWindow", (void*)h_SetForegroundWindow, (void**)&o_SetForegroundWindow);
+        install("IsWindowVisible", (void*)h_IsWindowVisible, (void**)&o_IsWindowVisible);
+        install("MessageBoxW", (void*)h_MessageBoxW, (void**)&o_MessageBoxW);
+        install("MessageBoxA", (void*)h_MessageBoxA, (void**)&o_MessageBoxA);
+        if (!ok) {
+            SKLOG(SK_ERROR, "invisible test hooks could not be installed; stopping before creating game windows");
+            ExitProcess(74);
+        }
+        g_background = true;
+        SKLOG(SK_INFO, "invisible test window hooks installed before game initialization");
+    }
 }
 
 // The game caps itself at 30 fps (33 ms per frame, slept away in the main loop). Test runs use

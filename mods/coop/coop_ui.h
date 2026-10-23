@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "sporekit.h"
+#include "net/adventure.h"
 
 namespace coop_ui {
 
@@ -41,6 +42,10 @@ struct Api {
     std::function<void(bool)> set_ready;
     std::function<void()> share_world; // host (during a vote: start the evolution now)
     std::function<bool()> vote_active;
+    // Adventure difficulty is visible in the menu and during adventures. Only the host
+    // may edit it, before an attempt. Guests see the same immutable launch settings.
+    std::function<bool(ga::Difficulty&, int& party_size, bool& editable, std::string& status)> adventure_difficulty;
+    std::function<void(const ga::Difficulty&)> set_adventure_difficulty;
     // own creation of the current stage: kind 0 creature / 1 cell / 2 ship, its name ("" = the
     // world's own), how many own creations of that kind exist; false = not shown. cycle: -1 / +1
     std::function<bool(int& kind, std::string& name, int& own)> creation;

@@ -23,12 +23,22 @@ if not exist SporeApp.exe (
   pause
   exit /b 1
 )
-rem the mod is tested with the GOG 2016 build (INSTALL.txt, section 2)
+rem Exact hashes have different verified scopes; see GALACTIC-ADVENTURES.md.
 set WANT=922af7c7908af2614b9caca2ffb1ec2353442022fd124866105724acaa24c26e
+set GA=dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37
 for /f "usebackq delims=" %%h in (`powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 SporeApp.exe).Hash.ToLower()" 2^>nul`) do set HAVE=%%h
-if defined HAVE if /i not "%HAVE%"=="%WANT%" (
-  echo Note: this SporeApp.exe is not the GOG build SporeCoop was tested with.
-  echo It has not been tested yet - see INSTALL.txt, section 2.
+set KNOWN=
+if /i "%HAVE%"=="%GA%" (
+  set KNOWN=1
+  echo GOG March 2017: Galactic Adventures preview. Other stages are unvalidated.
+)
+if /i "%HAVE%"=="%WANT%" (
+  set KNOWN=1
+  echo Previously tested GOG build. The native GA preview adapter needs March 2017.
+)
+if defined HAVE if not defined KNOWN (
+  echo This executable is unvalidated and its native GA preview adapter is unavailable.
+  echo See GALACTIC-ADVENTURES.md and INSTALL.txt, section 2.
   echo.
 )
 if not exist steam_api_orig.dll (
@@ -58,20 +68,33 @@ pause
 EOF
 
 cat > "$STAGE/README-SporeCoop.txt" <<EOF
-SporeCoop $VER - co-op for every stage of SPORE (GOG "SPORE Collection" build)
+SporeCoop $VER - Galactic Adventures preview
 https://github.com/WoodyWizard/SporeCoop
 
 Install: extract this zip into SPORE\\SporebinEP1 and run install.bat (step by step: INSTALL.txt).
-Tested build: GOG SporebinEP1\\SporeApp.exe, sha256 922af7c7... All players need the same SporeCoop version.
-SporeCoop is tested with the GOG build; other builds have not been tested yet.
+Read GALACTIC-ADVENTURES.md for the preview's setup, verified cases and limits.
+All players need Galactic Adventures and this exact SporeCoop preview version.
 
-Host: main menu -> Co-op -> name -> Host, then load or start a game. The window shows the
+Native GA adapter: GOG March 2017 SporebinEP1\\SporeApp.exe, SHA-256
+dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37.
+This preview is for adventures started from Sporepedia. Entry from the Space stage
+is outside its scope. Other stages on this executable have not been validated.
+The native GA adapter is unavailable on other executable hashes.
+
+Earlier SporeCoop stage testing used the older GOG executable, SHA-256
+922af7c7908af2614b9caca2ffb1ec2353442022fd124866105724acaa24c26e.
+Those historical stage results do not establish GA preview support on that build.
+
+Host: main menu -> Co-op -> name -> Host. The window shows the
 addresses for friends (over the internet forward UDP port 47810 or use a VPN such as
 ZeroTier / Radmin VPN / Tailscale).
 Guest: main menu -> Co-op -> name -> click the host under "Games on your network" or type
-its address -> Join. The host's world arrives and loads by itself.
-In game F9 opens the lobby: players, stage, ping, ready, chat, "Send my world", "Leave".
-Evolution (editor, next stage) is decided by a vote: everybody presses "I'm ready".
+its address -> Join. Join before the adventure begins.
+Host: choose Adventure settings, then open an adventure in Sporepedia and press Play.
+Each player chooses a saved captain and confirms readiness after content transfer.
+The party starts after everyone has the matching content and loaded adventure.
+In game F9 opens the co-op window. Late joins and reconnects wait for the next attempt.
+Install future preview builds manually; the updater does not order preview suffixes.
 Cheat console (Ctrl+Shift+C) works too: coop host | coop join <ip> | coop leave.
 EOF
 # the toolchain the Makefile uses (LLVM_MINGW ?= ... there), unless set in the environment
@@ -81,6 +104,9 @@ cp "$ROOT/LICENSE" "$STAGE/LICENSE.txt"
 cp "$ROOT/THIRD_PARTY_NOTICES.md" "$STAGE/THIRD_PARTY_NOTICES.txt"
 cp "$ROOT/third_party/minhook/LICENSE.txt" "$STAGE/SporeCoop/MinHook-LICENSE.txt"
 cp "$ROOT/docs/INSTALL.md" "$STAGE/INSTALL.txt"
+cp "$ROOT/docs/GALACTIC-ADVENTURES.md" "$STAGE/GALACTIC-ADVENTURES.md"
+mkdir -p "$STAGE/re"
+cp "$ROOT"/docs/re/{adventure,adventure-world,build-dc04}.md "$STAGE/re/"
 "$STRIP" "$STAGE/SporeCoop/sporekit.dll" "$STAGE/SporeCoop/mods/coop.dll" "$STAGE/SporeCoop/steam_api.sporekit.dll"
 # the update pack (in-game updates and the setup) and the setup itself, also next to the zip
 python3 "$ROOT/tools/mkpack.py" "$STAGE" "$VER" "$STAGE/SporeCoop-$VER.pack" >/dev/null

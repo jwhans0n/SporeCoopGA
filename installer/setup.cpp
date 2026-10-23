@@ -24,6 +24,7 @@
 namespace {
 
 constexpr const char* kTestedSha = "922af7c7908af2614b9caca2ffb1ec2353442022fd124866105724acaa24c26e";
+constexpr const char* kGaPreviewSha = "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37";
 constexpr UINT WM_DONE = WM_APP + 1, WM_INFO = WM_APP + 2;
 
 struct Options {
@@ -231,10 +232,15 @@ void refresh()
     std::wstring game;
     if (!is_game(root))
         game = L"Game: SporeApp.exe is not in this folder's SporebinEP1. Choose the SPORE folder.";
-    else if (file_sha(root + L"\\SporebinEP1\\SporeApp.exe") == kTestedSha)
-        game = L"Game: Spore Galactic Adventures, GOG build (the one SporeCoop is tested with)";
-    else
-        game = L"Game: Spore Galactic Adventures, a build SporeCoop has not been tested with yet";
+    else {
+        std::string sha = file_sha(root + L"\\SporebinEP1\\SporeApp.exe");
+        if (sha == kGaPreviewSha)
+            game = L"Game: GOG March 2017 - GA preview; other stages unvalidated";
+        else if (sha == kTestedSha)
+            game = L"Game: previously tested GOG build; GA preview needs March 2017";
+        else
+            game = L"Game: unvalidated executable; native GA preview adapter unavailable";
+    }
     SetWindowTextW(g_game, game.c_str());
     std::string v = is_game(root) ? upd::installed_version(root) : "";
     SetWindowTextW(g_inst, upd::widen("Installed: " + (v.empty() ? std::string("not installed") : "SporeCoop " + v)).c_str());
@@ -321,7 +327,7 @@ LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         lf.lfHeight = lf.lfHeight * 3 / 2;
         g_bold = CreateFontIndirectW(&lf);
         add(L"STATIC", L"SporeCoop " SETUP_VERSION, 0, 20, 14, 520, 28, 0, true);
-        add(L"STATIC", L"Play every stage of Spore together. This installs the mod into your game folder.", 0, 20,
+        add(L"STATIC", L"Galactic Adventures preview. Read GALACTIC-ADVENTURES.md before playing.", 0, 20,
             44, 520, 20);
         add(L"STATIC", L"Game folder (the one with SporebinEP1):", 0, 20, 78, 520, 18);
         g_dir = add(L"EDIT", upd::widen(upd::narrow(find_game())).c_str(), ES_AUTOHSCROLL, 20, 98, 420, 24, ID_DIR);

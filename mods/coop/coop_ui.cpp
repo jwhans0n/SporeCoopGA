@@ -28,6 +28,7 @@ static std::string g_status;
 static uint32_t g_status_color = 0xFFFFD866;
 static bool g_f9_down;
 static bool g_raise = true; // move the window above all UI layers when it opens
+static bool g_adventure_page;
 bool g_log_msgs; // debug: log UI messages that reach our handlers
 
 constexpr uint32_t kIdMenuButton = 0xC00F0001, kIdDialog = 0xC00F0100;
@@ -181,6 +182,10 @@ struct Dialog {
     Win row_name[4] = {}, row_stage[4] = {}, row_ping[4] = {}, row_ready[4] = {};
     Win chat_lines[5] = {};
     Win creation = nullptr, creation_prev = nullptr, creation_next = nullptr, give_btn = nullptr, jump_btn = nullptr;
+    std::vector<Win> page_adventure;
+    Win adventure_death = nullptr, adventure_health = nullptr, adventure_damage = nullptr;
+    Win adventure_fire = nullptr, adventure_status = nullptr;
+    std::vector<Win> adventure_controls;
 };
 static Dialog D;
 static std::map<std::string, Win> g_named; // for tests (coop.uistate)
@@ -301,6 +306,39 @@ static void do_send_chat()
         return;
     A.say(t);
     sui::set_edit_text(D.chat_edit, "");
+    g_dirty = true;
+}
+
+static bool adventure_view(ga::Difficulty& difficulty, int& party, bool& editable, std::string& status)
+{
+    return A.adventure_difficulty && A.adventure_difficulty(difficulty, party, editable, status);
+}
+
+static void change_adventure(int field, int direction)
+{
+    ga::Difficulty difficulty;
+    int party = 1;
+    bool editable = false;
+    std::string status;
+    if (!adventure_view(difficulty, party, editable, status) || !editable || !A.set_adventure_difficulty)
+        return;
+    if (field == 0)
+        difficulty.death_mode = static_cast<ga::DeathMode>((static_cast<int>(difficulty.death_mode) + 1) % 3);
+    else if (field == 1)
+        difficulty.enemy_health_override = std::clamp(difficulty.health_multiplier(party) + direction * 0.25f, 0.25f, 10.f);
+    else if (field == 2)
+        difficulty.enemy_damage_override = std::clamp(difficulty.damage_multiplier() + direction * 0.25f, 0.25f, 10.f);
+    else if (field == 3) {
+        const uint8_t values[] = {0, 25, 50, 100};
+        int next = 0;
+        while (next < 4 && values[next] != difficulty.friendly_fire_percent)
+            ++next;
+        difficulty.friendly_fire_percent = values[(next + 1) % 4];
+    } else {
+        difficulty.enemy_health_override = 0;
+        difficulty.enemy_damage_override = 0;
+    }
+    A.set_adventure_difficulty(difficulty);
     g_dirty = true;
 }
 
@@ -433,6 +471,15 @@ static void build_dialog()
         g_dirty = true;
     });
     D.share_btn = add_button(L, "share", {260, 488, 480, 528}, T("Send my world", "Отправить мир"), [] {
+        ga::Difficulty difficulty;
+        int party = 1;
+        bool editable = false;
+        std::string status;
+        if (adventure_view(difficulty, party, editable, status)) {
+            g_adventure_page = true;
+            g_dirty = true;
+            return;
+        }
         A.share_world();
         set_status(T("Sending the world to everyone...", "Мир отправляется всем..."), kYellow);
     });
@@ -440,6 +487,30 @@ static void build_dialog()
         A.leave();
         set_status(T("Left the session", "Вы вышли из игры"), kYellow);
     });
+    auto& G = D.page_adventure;
+    add_label(G, {40, 108, 720, 136}, "Death rules", kGold);
+    D.adventure_death = add_button(G, "adventure_death", {40, 142, 720, 180}, "", [] { change_adventure(0, 1); });
+    D.adventure_controls.push_back(D.adventure_death);
+    add_label(G, {40, 186, 720, 212}, "Revive: within 2 m for 3 s. Automatic recovery: 30 s in place.", kDim);
+    add_label(G, {40, 214, 720, 240}, "The attempt always fails when the entire party is downed.", kDim);
+    add_label(G, {40, 248, 720, 274}, "Enemy stats", kGold);
+    D.adventure_health = add_label(G, {40, 284, 540, 312}, "", kWhite);
+    D.adventure_damage = add_label(G, {40, 326, 540, 354}, "", kWhite);
+    for (int field = 1; field <= 2; ++field) {
+        float y = field == 1 ? 280.f : 322.f;
+        for (int direction : {-1, 1}) {
+            std::string name = std::string("adventure_") + (field == 1 ? "health" : "damage") + (direction < 0 ? "_less" : "_more");
+            float x = direction < 0 ? 570.f : 650.f;
+            D.adventure_controls.push_back(add_button(G, name.c_str(), {x, y, x + 70, y + 34}, direction < 0 ? "-" : "+",
+                                                      [field, direction] { change_adventure(field, direction); }));
+        }
+    }
+    D.adventure_fire = add_button(G, "adventure_fire", {40, 366, 440, 404}, "", [] { change_adventure(3, 1); });
+    D.adventure_controls.push_back(D.adventure_fire);
+    D.adventure_controls.push_back(add_button(G, "adventure_reset", {460, 366, 720, 404}, "Use party scaling", [] { change_adventure(4, 1); }));
+    add_label(G, {40, 410, 720, 436}, "Settings are fixed during play. Friendly fire affects party captains.", kDim);
+    D.adventure_status = add_label(G, {40, 444, 720, 478}, "", kYellow);
+    add_button(G, "adventure_back", {40, 488, 240, 528}, "Back to lobby", [] { g_adventure_page = false; g_dirty = true; });
     // Enter in the chat field sends the message
     if (D.chat_edit)
         sui::add_handler(D.chat_edit, [](Win, const sui::Msg& m) {
@@ -573,9 +644,42 @@ static void refresh_lobby()
     show(D.creation_next, can);
     bool host = A.role() == 1;
     text(D.ready_btn, A.ready() ? T("Not ready", "Не готов") : T("I'm ready", "Я готов"));
-    show(D.share_btn, host);
-    text(D.share_btn, A.vote_active && A.vote_active() ? T("Start now", "Начать сейчас") : T("Send my world", "Отправить мир"));
+    ga::Difficulty difficulty;
+    int party = 1;
+    bool editable = false;
+    std::string adventure_status;
+    bool adventure = adventure_view(difficulty, party, editable, adventure_status);
+    show(D.share_btn, host || adventure);
+    text(D.share_btn, adventure ? "Adventure settings" : A.vote_active && A.vote_active() ? T("Start now", "Начать сейчас") : T("Send my world", "Отправить мир"));
     text(D.leave_btn, host ? T("Stop hosting", "Закрыть игру") : T("Leave", "Выйти"));
+}
+
+static void refresh_adventure()
+{
+    ga::Difficulty difficulty;
+    int party = 1;
+    bool editable = false;
+    std::string status;
+    if (!adventure_view(difficulty, party, editable, status)) {
+        g_adventure_page = false;
+        g_dirty = true;
+        return;
+    }
+    const char* deaths[] = {"Teammate revival", "Any death fails", "Teammate revival + automatic recovery"};
+    unsigned mode = static_cast<unsigned>(difficulty.death_mode);
+    text(D.adventure_death, std::string("Death rule: ") + (mode < 3 ? deaths[mode] : "Invalid"));
+    char line[192];
+    snprintf(line, sizeof line, "Enemy health: %.2fx%s", difficulty.health_multiplier(party),
+             difficulty.enemy_health_override == 0 ? " (party scaling)" : " (host override)");
+    text(D.adventure_health, line);
+    snprintf(line, sizeof line, "Enemy damage: %.2fx", difficulty.damage_multiplier());
+    text(D.adventure_damage, line);
+    text(D.adventure_fire, "Friendly fire: " + std::to_string(difficulty.friendly_fire_percent) + "%");
+    text(D.adventure_status, status.empty() ? editable ? "Host: choose settings, then select an adventure in the Sporepedia."
+                                                                        : "Only the host can change settings before an attempt."
+                                                  : status);
+    for (Win w : D.adventure_controls)
+        sui::set_enabled(w, editable);
 }
 
 static void refresh()
@@ -608,14 +712,20 @@ static void refresh()
         return;
     }
     bool lobby = A.role() != 0;
+    if (!lobby)
+        g_adventure_page = false;
     for (Win w : D.page_connect)
         show(w, !lobby);
     for (Win w : D.page_lobby)
-        show(w, lobby);
-    text(D.subtitle, lobby ? T("CO-OP LOBBY", "ЛОББИ КООПЕРАТИВА") : T("CO-OP", "КООПЕРАТИВ"));
+        show(w, lobby && !g_adventure_page);
+    for (Win w : D.page_adventure)
+        show(w, lobby && g_adventure_page);
+    text(D.subtitle, lobby && g_adventure_page ? "ADVENTURE DIFFICULTY" : lobby ? T("CO-OP LOBBY", "ЛОББИ КООПЕРАТИВА") : T("CO-OP", "КООПЕРАТИВ"));
     if (A.lan_scan)
         A.lan_scan(!lobby);
-    if (lobby)
+    if (lobby && g_adventure_page)
+        refresh_adventure();
+    else if (lobby)
         refresh_lobby();
     else
         refresh_connect();

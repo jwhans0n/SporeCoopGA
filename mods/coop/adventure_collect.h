@@ -1,0 +1,18 @@
+// Build-specific native adventure dependency collection, called outside the frame.
+#pragma once
+
+#include <string>
+#include <vector>
+
+#include "net/dbpf.h"
+#include "sporekit.h"
+
+namespace adventure_collect {
+
+bool init(const SkHost* host, SkMod* mod);
+bool available();
+bool inspect(const dbpf::Key& scenario, dbpf::Key& locked_captain, std::string& error);
+bool collect_creation(const dbpf::Key& creation, std::vector<dbpf::Record>& records, std::string& error);
+bool collect(const dbpf::Key& scenario, std::vector<dbpf::Record>& records, std::string& error);
+
+} // namespace adventure_collect

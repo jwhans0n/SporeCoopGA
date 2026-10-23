@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <set>
 
 #include "sporekit_game.hpp"
 
@@ -502,6 +503,44 @@ namespace {
 int c_ui(void*, int argc, const char* const* argv, SkOut* out)
 {
     std::string sub = argc > 1 ? argv[1] : "tree";
+    if (sub == "findall" && argc > 2) {
+        std::string text = argv[2];
+        for (int i = 3; i < argc; i++) text += std::string(" ") + argv[i];
+        std::vector<Win> stack{main_window()}, matches, hidden_matches;
+        std::set<Win> visited;
+        while (!stack.empty() && matches.size() < 32 && visited.size() < 65536) {
+            Win window = stack.back(); stack.pop_back();
+            if (!window || !visited.insert(window).second) continue;
+            if (caption(window).find(text) != std::string::npos) {
+                bool shown = true;
+                unsigned depth = 0;
+                Win ancestor = window;
+                for (; ancestor && depth < 64; ancestor = parent(ancestor), ++depth)
+                    if (!visible(ancestor)) { shown = false; break; }
+                if (ancestor) shown = false;
+                if (shown) matches.push_back(window);
+                else if (hidden_matches.size() < 32) hidden_matches.push_back(window);
+            }
+            auto descendants = children(window);
+            for (auto it = descendants.rbegin(); it != descendants.rend(); ++it) stack.push_back(*it);
+        }
+        // Old hidden dialogs must not consume the result limit before a live card.
+        for (Win window : hidden_matches)
+            if (matches.size() < 32) matches.push_back(window);
+        if (matches.empty()) {
+            H->out_printf(out, "no window with caption '%s'", text.c_str());
+            return 1;
+        }
+        for (size_t i = 0; i < matches.size(); ++i) {
+            H->out_printf(out, "match %u\n", (unsigned)i + 1);
+            unsigned depth = 0;
+            for (Win p = matches[i]; p && depth < 64; p = parent(p), ++depth)
+                H->out_printf(out, "%s", dump(p, 0, false).c_str());
+            H->out_printf(out, "\n");
+        }
+        if (!stack.empty()) H->out_printf(out, "search limited to 32 matches and 65536 windows\n");
+        return 0;
+    }
     if (sub == "find" && argc > 2) {
         std::string t = argv[2];
         for (int i = 3; i < argc; i++)
@@ -608,7 +647,7 @@ int c_ui(void*, int argc, const char* const* argv, SkOut* out)
 void register_commands()
 {
     H->command_add(M, "coop.ui",
-                   "coop.ui tree [depth] [all] [root] | find <caption> | where <hex id>... | at <x> <y> | layouts | load <inst> [group] | "
+                   "coop.ui tree [depth] [all] [root] | find/findall <caption> | where <hex id>... | at <x> <y> | layouts | load <inst> [group] | "
                    "show <win> [0|1] - Spore UI windows",
                    c_ui, nullptr, SK_CMD_OUTSIDE_FRAME);
 }

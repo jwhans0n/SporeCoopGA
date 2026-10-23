@@ -11,8 +11,8 @@
 namespace net {
 
 constexpr uint32_t kMagic = 0x4F435053; // 'SPCO'
-constexpr uint16_t kProtoVersion = 6; // 3: shared resources, ping marks; 4: lobby, LAN discovery; 5: 128-packet acks;
-                                      // 6: connection id in the header, unreliable BYE
+constexpr uint16_t kProtoVersion = 7; // 3: shared resources, ping marks; 4: lobby, LAN discovery; 5: 128-packet acks;
+                                      // 6: connection id in the header, unreliable BYE; 7: adventure runs/content/rules
 constexpr uint16_t kDefaultPort = 47810;
 constexpr int kMaxPlayers = 4; // host + 3 guests (Spore pack size)
 constexpr size_t kMaxPacket = 1200;
@@ -72,6 +72,7 @@ enum MsgType : uint8_t {
                           // {u16 npc, u8 done, u8 needed}; 2 host -> all result {u16 npc, u8 player, u8 ok,
                           // u32 reaction anim, f32 dna}; 3 guest -> host goal reward {u16 0, key[3],
                           // u8 outcome (6 ally, 5 extinct), f32 dna}, paid once per species and outcome
+    MSG_ADVENTURE = 52,  // u8 subkind, run-scoped adventure coordination; 64..71 resource transfer
     MSG_CELL_KO = 44,     // any -> host -> all: u8 player, u8 state (0 up,1 out,2 revived,3 respawned),
                           // u8 tenths of a second left, u8 revive progress 0..255
 };

@@ -14,6 +14,27 @@ static std::string g_hash;
 static std::string g_files;
 static uintptr_t g_pref_base = 0x400000, g_base = 0x400000;
 
+// On native Windows the loaded optional header can contain the relocated base.
+// Symbol files use preferred VAs, so obtain their reference base from the file.
+static bool disk_preferred_base(const wchar_t* path, uintptr_t& base)
+{
+    FILE* file = _wfopen(path, L"rb");
+    if (!file)
+        return false;
+    IMAGE_DOS_HEADER dos{};
+    IMAGE_NT_HEADERS32 nt{};
+    bool ok = fread(&dos, sizeof dos, 1, file) == 1 && dos.e_magic == IMAGE_DOS_SIGNATURE &&
+              dos.e_lfanew >= (LONG)sizeof dos && fseek(file, dos.e_lfanew, SEEK_SET) == 0 &&
+              fread(&nt, sizeof nt, 1, file) == 1 && nt.Signature == IMAGE_NT_SIGNATURE &&
+              nt.FileHeader.Machine == IMAGE_FILE_MACHINE_I386 &&
+              nt.FileHeader.SizeOfOptionalHeader >= sizeof(IMAGE_OPTIONAL_HEADER32) &&
+              nt.OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC && nt.OptionalHeader.ImageBase != 0;
+    fclose(file);
+    if (ok)
+        base = nt.OptionalHeader.ImageBase;
+    return ok;
+}
+
 uintptr_t image_base() { return g_base; }
 uintptr_t rebase(uintptr_t va) { return va - g_pref_base + g_base; }
 std::string exe_sha256() { return g_hash; }
@@ -77,12 +98,12 @@ bool symbols_load()
     g_files.clear();
     HMODULE exe = GetModuleHandleW(nullptr);
     g_base = (uintptr_t)exe;
-    auto* dos = (IMAGE_DOS_HEADER*)exe;
-    auto* nt = (IMAGE_NT_HEADERS*)((uint8_t*)exe + dos->e_lfanew);
-    g_pref_base = nt->OptionalHeader.ImageBase;
-
     wchar_t exe_path[MAX_PATH];
-    GetModuleFileNameW(exe, exe_path, MAX_PATH);
+    DWORD length = GetModuleFileNameW(exe, exe_path, MAX_PATH);
+    if (!length || length >= MAX_PATH || !disk_preferred_base(exe_path, g_pref_base)) {
+        SKLOG(SK_ERROR, "could not read the executable's preferred image base; game-specific symbols are disabled");
+        return false;
+    }
     double t0 = now_seconds();
     g_hash = sha256_file_hex(exe_path);
     SKLOG(SK_INFO, "exe %s sha256=%s base=0x%08X (preferred 0x%08X) hashed in %.2fs",

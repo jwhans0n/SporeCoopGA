@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Galactic Adventures preview: 0.7.0-ga-preview.1
+
+- Start a party adventure through the host's normal Sporepedia Play button, choose
+  personal captains, transfer supported missing adventure/captain assets, and wait
+  for every participant to finish loading before play begins.
+- Share host-authoritative actors, combat, objectives and act changes. Configure
+  enemy health/damage, friendly fire, teammate revival, automatic recovery or
+  failure on any death in Adventure settings.
+- Retain each player's local captain for native XP, progression and saving while
+  suppressing co-op submissions to the single-player adventure leaderboard.
+- Two isolated native Windows instances verified launch, guest objectives, actor
+  cleanup, friendly-fire settings, death/revival rules, native success/failure UI,
+  and captain progression persisting across restart. This is not a complete
+  adventure playthrough or four-player validation.
+- The native GA adapter is verified only for GOG March 2017 executable SHA-256
+  `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
+  Other stages on that executable remain unvalidated. See
+  [the preview guide](docs/GALACTIC-ADVENTURES.md) for setup and remaining limits.
+
 ## [0.6.0] - 2026-10-23
 
 Installer, updates from GitHub, and a full stability campaign: bots played every stage for hours,

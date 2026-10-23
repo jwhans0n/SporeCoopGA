@@ -1,5 +1,10 @@
 # Installing SporeCoop
 
+For `0.7.0-ga-preview.1`, read [the Galactic Adventures preview guide](GALACTIC-ADVENTURES.md)
+first. Its native adventure adapter is verified only on the GOG March 2017
+executable (`dc04aee5...`); other stages on that executable remain unvalidated.
+The earlier stage compatibility results below apply to the older GOG executable.
+
 Every player installs the same SporeCoop version into their own copy of the game. The install
 replaces one file of the game (`steam_api.dll`, kept as `steam_api_orig.dll`) and adds a few
 others; your saves and creations are not touched.
@@ -29,13 +34,22 @@ and `mods\logs\sporekit.log` helps.
 
 ## 2. Check your game build
 
-The tested build is this file:
+The older build used for previous stage testing is this file:
 
 | | |
 |---|---|
 | File | `SPORE\SporebinEP1\SporeApp.exe` |
 | Size | 24 888 320 bytes |
 | SHA-256 | `922af7c7908af2614b9caca2ffb1ec2353442022fd124866105724acaa24c26e` |
+
+The Galactic Adventures preview uses a separate native adapter for GOG March 2017:
+
+| | |
+|---|---|
+| File | `SPORE\SporebinEP1\SporeApp.exe` |
+| Size | 24 895 536 bytes |
+| SHA-256 | `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37` |
+| Verified scope | Two-player adventures started from Sporepedia; see the preview guide. Other stages on this executable are unvalidated. |
 
 Where the game usually is:
 
@@ -148,7 +162,8 @@ SPORE\
 ## 6. Check that it works
 
 * The main menu (galaxy screen) has a new **Co-op** item on the left.
-* `SporebinEP1\mods\logs\sporekit.log` exists and has a line `loaded coop v0.6.0`.
+* `SporebinEP1\mods\logs\sporekit.log` exists and reports the installed version
+  (for this preview, `loaded coop v0.7.0-ga-preview.1`).
 * Start a game, press **F9**: the co-op window opens.
 
 If there is no Co-op item, see [Troubleshooting](#9-troubleshooting).

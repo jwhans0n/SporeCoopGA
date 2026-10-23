@@ -49,7 +49,7 @@ static void* creature_spawn(const net::PlayerState& s, void* av)
         return nullptr;
     game::puppet_register(p);
     game::teleport(p, s.pos, s.rot);
-    game::set_scale(p, game::scale(p) * 1.15f);
+    if (game::mode_id() != kScenario) game::set_scale(p, game::scale(p) * 1.15f);
     return p;
 }
 
@@ -62,7 +62,7 @@ static void creature_drive(void* p, const net::PlayerState& s, drive::State& ds,
     if (game::herd_of(p) != game::avatar_herd())
         game::herd_quiet(game::herd_of(p)); // (the game may enable a herd again)
     float mh = game::max_health(p); // puppets mirror the remote health, never die locally
-    if (mh > 0)
+    if (mh > 0 && game::mode_id() != kScenario)
         game::set_health(p, mh);
 }
 

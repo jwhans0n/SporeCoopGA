@@ -348,3 +348,24 @@ Learned while writing the tribe game bot (2026-10-23, docs/stability/tribe.md):
   (replies get mixed: a `coop.uistate` answer parsed as `coop.civ`).
 * `update_check.py` restores lane 6 to the original game (no loader); `spore.sh deploy` installs
   the loader again in such a lane.
+
+## 6.15 Native Win32 adapter fixtures
+
+Optional Makefile targets cross-compile fake native adapter fixtures and do not
+start the game. Run their EXEs on Windows. The relationship, social, mirror and
+blocked-update targets are `test-relationships-windows`, `test-social-windows`,
+`test-mirror-windows` and `test-blocked-update-windows`.
+
+The last target produces `build/host/adventure_tick_dispatch_tests.exe`. The
+unmanifested version was refused at process creation with Windows error 740
+(elevation required), including after renaming it. The explicit
+`tests/native_fixture.manifest` sets `requestedExecutionLevel=asInvoker`; the
+rebuilt fixture runs without elevation and reports its actual test result. A
+missing console line or unchanged PowerShell `$LASTEXITCODE` after launch failure
+is not a passing fixture. Python `subprocess.run` reports process-creation errors
+directly when diagnosing this Windows behavior.
+
+`test-debug-capabilities-windows` includes the actual legacy `debug.cpp` command
+implementation, then discards unrelated commands at link time. Its `coop.w2s`
+cases cover missing native capabilities before any native call, null managers and
+viewers, failed ray conversion and the valid fake ABI. It does not launch a game.

@@ -2,7 +2,8 @@
 //
 //  -sporekit-profile:<name>   user data (saves, preferences, caches) goes to
 //                             AppData\Roaming\SporeKit-<name>\Spore instead of the real
-//                             profile, so automated tests never touch the player's data.
+//                             profile. Documents uses the same test root, so creation PNGs
+//                             cannot be written into the player's My Spore Creations folder.
 //  -sporekit-instance:N (N>=2) unique single-instance mutex + console/coop ports +N-1;
 //                             implies profile "inst<N>" unless a profile is given.
 #include "core.h"
@@ -22,9 +23,17 @@ const std::wstring& profile_name() { return g_profile; }
 static HRESULT WINAPI h_SHGetFolderPathW(HWND h, int csidl, HANDLE tok, DWORD flags, LPWSTR out)
 {
     HRESULT r = o_SHGetFolderPathW(h, csidl, tok, flags, out);
-    if (SUCCEEDED(r) && out && (csidl & 0xFF) == CSIDL_APPDATA && !g_profile.empty()) {
-        std::wstring p = std::wstring(out) + L"\\SporeKit-" + g_profile;
+    int folder = csidl & 0xFF;
+    if (SUCCEEDED(r) && out && !g_profile.empty() && (folder == CSIDL_APPDATA || folder == CSIDL_PERSONAL)) {
+        wchar_t roaming[MAX_PATH];
+        if (folder == CSIDL_PERSONAL && FAILED(o_SHGetFolderPathW(h, CSIDL_APPDATA, tok, flags, roaming)))
+            return E_FAIL; // a test profile must not fall back to the player's Documents
+        std::wstring p = std::wstring(folder == CSIDL_PERSONAL ? roaming : out) + L"\\SporeKit-" + g_profile;
         CreateDirectoryW(p.c_str(), nullptr);
+        if (folder == CSIDL_PERSONAL) {
+            p += L"\\Documents";
+            CreateDirectoryW(p.c_str(), nullptr);
+        }
         wcsncpy(out, p.c_str(), MAX_PATH - 1);
         out[MAX_PATH - 1] = 0;
     }

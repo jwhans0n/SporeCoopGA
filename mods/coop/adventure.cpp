@@ -1,0 +1,855 @@
+#include "adventure.h"
+
+#include <algorithm>
+#include <cmath>
+#include <map>
+#include <memory>
+#include <utility>
+
+#include "adventure_assets.h"
+
+namespace adventure {
+namespace {
+enum Kind : uint8_t {
+    K_SETTINGS, K_PREPARE, K_CONTENT, K_CAPTAIN, K_READY, K_LAUNCH, K_LOADED,
+    K_COMMIT, K_ABORT, K_SNAPSHOT, K_REVIVE, K_RESULT, K_WAIT, K_INVALIDATE
+};
+enum class Phase { Idle, Collecting, Preparing, Loading, Running, Ended };
+
+const SkHost* H;
+Ctx C;
+ga::Difficulty g_settings;
+ga::Descriptor g_descriptor;
+ga::LaunchBarrier g_barrier;
+ga::Authority g_authority;
+Phase g_phase = Phase::Idle;
+Key g_captain;
+bool g_ready, g_content, g_chosen, g_launch_started, g_loaded_sent, g_waiting;
+bool g_assets_available, g_have_wall;
+uint64_t g_generation, g_next_run, g_newest_run, g_settings_revision = 1, g_received_settings;
+uint64_t g_snapshot_revision, g_health_event, g_result_run;
+double g_last_wall, g_simulation, g_last_snapshot, g_last_revive;
+uint8_t g_revive_target = ga::kNoPlayer;
+bool g_revive_held;
+std::map<uint8_t, ga::CaptainSeed> g_seeds;
+std::set<uint8_t> g_excluded;
+std::vector<ga::Captain> g_client_captains;
+uint64_t g_client_snapshot_run;
+double g_client_snapshot_time;
+std::string g_error;
+
+void write_run(net::Writer& w, uint64_t run)
+{
+    w.u32(static_cast<uint32_t>(run)); w.u32(static_cast<uint32_t>(run >> 32));
+}
+uint64_t read_run(net::Reader& r)
+{
+    uint64_t run = r.u32();
+    return run | (uint64_t(r.u32()) << 32);
+}
+void write_key(net::Writer& w, const Key& key) { w.u32(key.instance); w.u32(key.type); w.u32(key.group); }
+Key read_key(net::Reader& r) { return {r.u32(), r.u32(), r.u32()}; }
+bool valid_key(const Key& key) { return key.instance && key.type; }
+bool host() { return C.sess && C.sess->connected() && C.sess->role() == net::Role::Host; }
+bool client() { return C.sess && C.sess->connected() && C.sess->role() == net::Role::Client; }
+uint8_t local_id() { return C.sess ? C.sess->my_id() : 0; }
+bool member(uint8_t player)
+{
+    return std::find(g_descriptor.roster.begin(), g_descriptor.roster.end(), player) != g_descriptor.roster.end();
+}
+void feed(const std::string& text) { if (C.feed) C.feed(text); }
+bool finished(net::Reader& r) { return r.ok() && r.left() == 0; }
+
+void outside(std::function<void()> fn)
+{
+    if (!H || !H->run_outside_frame)
+        return;
+    struct Task { uint64_t generation; std::function<void()> fn; };
+    auto* task = new Task{g_generation, std::move(fn)};
+    H->run_outside_frame([](void* opaque) {
+        std::unique_ptr<Task> task(static_cast<Task*>(opaque));
+        if (task->generation == g_generation)
+            task->fn();
+    }, task);
+}
+
+void send(uint8_t kind, const net::Writer& body, int to = -1)
+{
+    if (!C.sess || !C.sess->connected())
+        return;
+    net::Writer w;
+    w.u8(kind); w.raw(body.data.data(), body.size());
+    if (to >= 0)
+        C.sess->send_reliable_to(static_cast<uint8_t>(to), net::MSG_ADVENTURE, w);
+    else if (host())
+        C.sess->broadcast_reliable(net::MSG_ADVENTURE, w);
+    else
+        C.sess->send_reliable_to(0, net::MSG_ADVENTURE, w);
+}
+
+void send_settings(int to = -1)
+{
+    net::Writer w;
+    write_run(w, g_settings_revision);
+    g_settings.write(w);
+    send(K_SETTINGS, w, to);
+}
+
+bool parse_hash(const std::string& text, ga::Hash& hash)
+{
+    if (text.size() != hash.size() * 2)
+        return false;
+    auto nibble = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    for (size_t i = 0; i < hash.size(); i++) {
+        int hi = nibble(text[i * 2]), lo = nibble(text[i * 2 + 1]);
+        if (hi < 0 || lo < 0) return false;
+        hash[i] = static_cast<uint8_t>((hi << 4) | lo);
+    }
+    return true;
+}
+
+std::string unavailable()
+{
+    if (!C.native_available || !C.native_available()) {
+        std::string why = C.native_reason ? C.native_reason() : std::string();
+        return why.empty() ? "The game adapter for shared adventures is unavailable." : why;
+    }
+    if (!g_assets_available)
+        return "Adventure resource registration is unavailable for this game build.";
+    if (!C.choose_captain || !C.launch || !C.abort_native || !C.freeze || !C.loaded || !C.sample || !C.apply || !C.source ||
+        !C.collect || !C.captain_of || !C.native_result)
+        return "The game adapter has incomplete launch, content, or combat support.";
+    return {};
+}
+
+void invalidate_ready()
+{
+    g_ready = false;
+    if (C.invalidate_ready) C.invalidate_ready();
+}
+
+void abort_run(const std::string& reason, bool announce)
+{
+    const uint64_t run = g_descriptor.run_id;
+    const bool leave_native = g_launch_started || g_phase == Phase::Loading || g_phase == Phase::Running;
+    if (announce && g_descriptor.run_id) {
+        net::Writer w;
+        write_run(w, g_descriptor.run_id); w.str16(reason);
+        send(K_ABORT, w);
+    }
+    g_barrier.abort(g_descriptor.run_id);
+    g_authority.abort(g_descriptor.run_id);
+    g_phase = Phase::Ended;
+    g_launch_started = false;
+    g_error = reason;
+    g_revive_held = false;
+    invalidate_ready();
+    adventure_assets::reset();
+    outside([run, leave_native] {
+        if (run != g_descriptor.run_id || g_phase != Phase::Ended) return;
+        if (C.freeze) C.freeze(false);
+        if (leave_native && C.abort_native) C.abort_native();
+    });
+    feed("Adventure: " + reason);
+}
+
+void choose_captain()
+{
+    const uint64_t run = g_descriptor.run_id;
+    outside([run] {
+        if (run != g_descriptor.run_id || g_phase != Phase::Preparing || !C.choose_captain)
+            return;
+        const uint64_t generation = g_generation;
+        C.choose_captain(g_descriptor.locked_captain, [run, generation](const Key& captain) {
+            if (generation == g_generation && run == g_descriptor.run_id && g_phase == Phase::Preparing)
+                captain_selected(captain);
+        });
+    });
+}
+
+void send_ready()
+{
+    if (g_phase != Phase::Preparing || !g_content || !g_chosen)
+        return;
+    if (host())
+        g_barrier.set_ready(g_descriptor.run_id, 0, g_ready);
+    else {
+        net::Writer w;
+        write_run(w, g_descriptor.run_id); w.u8(g_ready ? 1 : 0);
+        send(K_READY, w);
+    }
+}
+
+void invalidate_party()
+{
+    invalidate_ready();
+    for (uint8_t player : g_descriptor.roster)
+        g_barrier.set_ready(g_descriptor.run_id, player, false);
+    net::Writer w; write_run(w, g_descriptor.run_id); send(K_INVALIDATE, w);
+}
+
+void prepared(uint64_t run, const Key& key, const std::string& hash_text)
+{
+    if (run != g_descriptor.run_id || !(key == g_descriptor.adventure) ||
+        (g_phase != Phase::Collecting && g_phase != Phase::Preparing))
+        return;
+    ga::Hash hash;
+    if (!parse_hash(hash_text, hash)) {
+        abort_run("Invalid adventure manifest digest.", true);
+        return;
+    }
+    if (host()) {
+        g_descriptor.manifest_hash = hash;
+        if (!g_barrier.begin(g_descriptor)) {
+            abort_run("The adventure launch descriptor is invalid.", true);
+            return;
+        }
+        g_phase = Phase::Preparing;
+        g_barrier.ack_content(run, 0, key, hash);
+        net::Writer w;
+        g_descriptor.write(w);
+        send(K_PREPARE, w);
+        for (uint8_t player : g_descriptor.roster)
+            if (player && !adventure_assets::share_with(player)) {
+                abort_run("Could not queue adventure content for every party member.", true);
+                return;
+            }
+    } else {
+        if (hash != g_descriptor.manifest_hash) {
+            abort_run("Adventure content does not match the host manifest.", true);
+            return;
+        }
+        net::Writer w;
+        write_run(w, run); write_key(w, key); w.raw(hash.data(), hash.size());
+        send(K_CONTENT, w);
+    }
+    g_content = true;
+    choose_captain();
+}
+
+void peer_prepared(uint8_t peer, uint64_t run, const Key& key, const std::string& hash_text)
+{
+    ga::Hash hash;
+    if (host() && run == g_descriptor.run_id && parse_hash(hash_text, hash))
+        g_barrier.ack_content(run, peer, key, hash);
+}
+
+void queue_launch()
+{
+    const uint64_t run = g_descriptor.run_id;
+    outside([run] {
+        if (run != g_descriptor.run_id || g_phase != Phase::Loading)
+            return;
+        C.freeze(true);
+        std::string error;
+        if (!C.launch(g_descriptor.adventure, g_captain, error)) {
+            abort_run(error.empty() ? "The adventure could not be launched." : error, true);
+            return;
+        }
+        g_launch_started = true;
+    });
+}
+
+void apply_snapshot(const std::vector<ga::Captain>& captains)
+{
+    const uint64_t run = g_descriptor.run_id;
+    outside([run, captains] {
+        if (run == g_descriptor.run_id && C.apply &&
+            (g_phase == Phase::Running || (g_phase == Phase::Ended && g_result_run == run)))
+            C.apply(captains);
+    });
+}
+
+void snapshot()
+{
+    net::Writer w;
+    write_run(w, g_descriptor.run_id);
+    write_run(w, g_authority.revision());
+    w.u8(static_cast<uint8_t>(g_authority.phase()));
+    w.u8(g_authority.act()); w.f64(g_authority.now());
+    w.u8(static_cast<uint8_t>(g_authority.captains().size()));
+    for (const auto& c : g_authority.captains()) {
+        w.u8(c.player); w.u8(static_cast<uint8_t>(c.life));
+        w.f32(c.health); w.f32(c.max_health);
+        w.f32(c.position.x); w.f32(c.position.y); w.f32(c.position.z);
+        w.f64(c.downed_at); w.f64(c.protected_until);
+        w.u8(c.reviver); w.f64(c.revive_started);
+    }
+    send(K_SNAPSHOT, w);
+    apply_snapshot(g_authority.captains());
+    g_last_snapshot = g_last_wall;
+}
+
+void native_result(bool success)
+{
+    if (g_result_run == g_descriptor.run_id)
+        return;
+    g_result_run = g_descriptor.run_id;
+    const uint64_t run = g_descriptor.run_id;
+    outside([run, success] {
+        if (run == g_descriptor.run_id) {
+            if (C.freeze) C.freeze(false);
+            if (C.native_result) C.native_result(success);
+        }
+    });
+}
+
+void result(bool success)
+{
+    if (g_phase != Phase::Running)
+        return;
+    snapshot();
+    net::Writer w;
+    write_run(w, g_descriptor.run_id); w.u8(success ? 1 : 0);
+    send(K_RESULT, w);
+    g_phase = Phase::Ended;
+    g_barrier.abort(g_descriptor.run_id);
+    g_revive_held = false;
+    if (g_authority.claim_reward(g_descriptor.run_id, local_id()))
+        native_result(success);
+    feed(success ? "Adventure completed together." : "The party failed the adventure.");
+}
+
+bool valid_seed(const ga::CaptainSeed& seed)
+{
+    return member(seed.player) && std::isfinite(seed.max_health) && seed.max_health > 0 &&
+           std::isfinite(seed.position.x) && std::isfinite(seed.position.y) && std::isfinite(seed.position.z);
+}
+
+void loaded()
+{
+    ga::CaptainSeed seed;
+    seed.player = local_id();
+    if (!C.sample || !C.sample(local_id(), seed) || seed.player != local_id() || !valid_seed(seed)) {
+        abort_run("The native captain state could not be read safely.", true);
+        return;
+    }
+    g_loaded_sent = true;
+    if (host()) {
+        g_seeds[0] = seed;
+        g_barrier.ack_loaded(g_descriptor.run_id, 0);
+    } else {
+        net::Writer w;
+        write_run(w, g_descriptor.run_id);
+        w.f32(seed.max_health); w.f32(seed.position.x); w.f32(seed.position.y); w.f32(seed.position.z);
+        send(K_LOADED, w);
+    }
+}
+
+bool read_snapshot(net::Reader& r)
+{
+    uint64_t run = read_run(r), revision = read_run(r);
+    uint8_t phase = r.u8(), act = r.u8();
+    double now = r.f64();
+    uint8_t count = r.u8();
+    if (!client() || run != g_descriptor.run_id || g_phase != Phase::Running || revision <= g_snapshot_revision ||
+        count != g_descriptor.roster.size() || phase < static_cast<uint8_t>(ga::RunPhase::Playing) ||
+        phase > static_cast<uint8_t>(ga::RunPhase::Failed) || act > 7 || !std::isfinite(now) || now < 0)
+        return false;
+    std::vector<ga::Captain> captains;
+    std::set<uint8_t> ids;
+    for (uint8_t i = 0; i < count; i++) {
+        ga::Captain c;
+        c.player = r.u8(); c.life = static_cast<ga::Life>(r.u8());
+        c.health = r.f32(); c.max_health = r.f32();
+        c.position = {r.f32(), r.f32(), r.f32()};
+        c.downed_at = r.f64(); c.protected_until = r.f64();
+        c.reviver = r.u8(); c.revive_started = r.f64();
+        if (!member(c.player) || !ids.insert(c.player).second || c.life > ga::Life::Disconnected ||
+            !std::isfinite(c.health) || !std::isfinite(c.max_health) || c.max_health <= 0 || c.health < 0 || c.health > c.max_health ||
+            !std::isfinite(c.position.x) || !std::isfinite(c.position.y) || !std::isfinite(c.position.z) ||
+            !std::isfinite(c.downed_at) || !std::isfinite(c.protected_until) || !std::isfinite(c.revive_started) ||
+            (c.reviver != ga::kNoPlayer && !member(c.reviver)))
+            return false;
+        captains.push_back(c);
+    }
+    if (!finished(r))
+        return false;
+    g_snapshot_revision = revision;
+    g_client_captains = captains;
+    g_client_snapshot_run = run;
+    g_client_snapshot_time = now;
+    apply_snapshot(captains);
+    return true;
+}
+} // namespace
+
+bool init(const SkHost* host_api, SkMod* mod, Ctx ctx)
+{
+    H = host_api;
+    C = std::move(ctx);
+    if (!H || !H->run_outside_frame)
+        return false;
+    adventure_assets::Ctx assets;
+    assets.sess = C.sess;
+    assets.feed = C.feed;
+    assets.collect = C.collect;
+    assets.prepared = prepared;
+    assets.peer_prepared = peer_prepared;
+    assets.failed = [](uint64_t run, const std::string& error) {
+        if (run == g_descriptor.run_id && active()) abort_run(error, true);
+    };
+    g_assets_available = adventure_assets::init(H, mod, std::move(assets));
+    // Lobby configuration remains usable when this build lacks verified game integration.
+    return C.sess != nullptr;
+}
+
+const ga::Difficulty& settings() { return g_settings; }
+bool ready() { return g_ready; }
+bool active() { return g_phase != Phase::Idle && g_phase != Phase::Ended; }
+bool running() { return g_phase == Phase::Running; }
+bool captain_state(uint8_t player, CaptainState& state)
+{
+    state = {};
+    if (!running() || !member(player)) return false;
+    const ga::Captain* captain = nullptr;
+    double now = 0;
+    if (host()) {
+        captain = g_authority.captain(player);
+        now = g_authority.now();
+    } else if (client() && g_client_snapshot_run == g_descriptor.run_id) {
+        auto it = std::find_if(g_client_captains.begin(), g_client_captains.end(),
+                               [player](const ga::Captain& c) { return c.player == player; });
+        if (it != g_client_captains.end()) captain = &*it;
+        now = g_client_snapshot_time;
+    }
+    if (!captain) return false;
+    state.run_id = g_descriptor.run_id;
+    state.captain = *captain;
+    state.simulation_time = now;
+    if (captain->life == ga::Life::Downed) {
+        if (captain->reviver != ga::kNoPlayer)
+            state.revive_progress = float(std::clamp((now - captain->revive_started) / ga::kReviveSeconds, 0.0, 1.0));
+        if (g_descriptor.difficulty.death_mode == ga::DeathMode::AutomaticRevive)
+            state.automatic_remaining = std::clamp(ga::kAutomaticSeconds - (now - captain->downed_at), 0.0, ga::kAutomaticSeconds);
+    } else if (captain->life == ga::Life::Alive)
+        state.grace_remaining = std::max(0.0, captain->protected_until - now);
+    return true;
+}
+bool participating(uint8_t player) { return active() && member(player) && g_excluded.count(player) == 0; }
+const ga::Descriptor* current() { return active() ? &g_descriptor : nullptr; }
+
+bool set_settings(const ga::Difficulty& difficulty)
+{
+    if (!difficulty.valid() || client() || g_phase == Phase::Loading || g_phase == Phase::Running)
+        return false;
+    if (active())
+        abort_run("Difficulty changed. Select Play again to prepare the party.", true);
+    g_settings = difficulty;
+    g_settings_revision++;
+    invalidate_ready();
+    if (host()) send_settings();
+    return true;
+}
+
+bool set_ready(bool value)
+{
+    if (g_waiting || g_phase == Phase::Loading || g_phase == Phase::Running)
+        return false;
+    g_ready = value;
+    send_ready();
+    return true;
+}
+
+bool request_play(const Key& key, const Key& locked)
+{
+    if (!host() || active() || !valid_key(key))
+        return false;
+    std::string why = unavailable();
+    if (!why.empty()) {
+        g_error = why;
+        feed("Adventure: " + why);
+        return false;
+    }
+    ga::Descriptor descriptor;
+    descriptor.run_id = ++g_next_run;
+    descriptor.adventure = key;
+    descriptor.locked_captain = locked;
+    descriptor.difficulty = g_settings;
+    for (const auto& player : C.sess->players())
+        descriptor.roster.push_back(player.id);
+    if (descriptor.roster.empty() || descriptor.roster.size() > ga::kPartyLimit)
+        return false;
+    g_descriptor = descriptor;
+    g_newest_run = descriptor.run_id;
+    g_phase = Phase::Collecting;
+    g_content = g_chosen = g_launch_started = g_loaded_sent = g_waiting = false;
+    g_captain = {};
+    g_seeds.clear();
+    g_excluded.clear();
+    g_client_captains.clear();
+    g_client_snapshot_run = 0;
+    g_client_snapshot_time = 0;
+    g_snapshot_revision = g_health_event = 0;
+    g_error.clear();
+    // Selecting Play is the host's launch intent. Guests confirm after choosing captains.
+    g_ready = true;
+    if (!adventure_assets::prepare(descriptor.run_id, key)) {
+        abort_run("Adventure content preparation could not be started.", true);
+        return false;
+    }
+    return true;
+}
+
+void captain_selected(const Key& captain)
+{
+    if (g_phase != Phase::Preparing || !g_content)
+        return;
+    if (!valid_key(captain)) {
+        abort_run("Captain selection was cancelled.", true);
+        return;
+    }
+    if (g_descriptor.locked_captain.instance && !(captain == g_descriptor.locked_captain)) {
+        abort_run("This adventure requires its authored captain.", true);
+        return;
+    }
+    bool changed = g_chosen && !(g_captain == captain);
+    g_captain = captain;
+    g_chosen = true;
+    if (host()) {
+        if (!g_barrier.ack_captain(g_descriptor.run_id, 0, captain))
+            return;
+        if (changed) invalidate_party();
+    } else {
+        net::Writer w;
+        write_run(w, g_descriptor.run_id); write_key(w, captain);
+        send(K_CAPTAIN, w);
+    }
+    send_ready();
+}
+
+void on_join(uint8_t player)
+{
+    if (!host() || player == 0)
+        return;
+    send_settings(player);
+    if (active()) {
+        g_excluded.insert(player);
+        net::Writer w;
+        write_run(w, g_descriptor.run_id);
+        send(K_WAIT, w, player);
+        feed(C.sess->name_of(player) + " will join the next adventure run.");
+    }
+}
+
+void on_leave(uint8_t player)
+{
+    if (!active() || !member(player))
+        return;
+    if (!host()) {
+        if (player == 0) abort_run("The adventure host disconnected.", false);
+        return;
+    }
+    g_excluded.insert(player);
+    if (g_phase == Phase::Running) {
+        g_authority.disconnect(g_descriptor.run_id, player);
+        if (g_authority.phase() == ga::RunPhase::Failed) result(false);
+        else snapshot();
+    } else
+        abort_run("A party member disconnected before launch. Select Play again.", true);
+}
+
+void on_message(uint8_t from, net::Reader& r)
+{
+    if (!r.left()) return;
+    uint8_t kind = *r.cur();
+    if (kind >= 64 && kind <= 71) {
+        if (host() && g_excluded.count(from)) return;
+        adventure_assets::on_message(from, r);
+        return;
+    }
+    r.u8();
+    if (kind == K_SETTINGS) {
+        uint64_t revision = read_run(r);
+        ga::Difficulty difficulty;
+        if (from != 0 || !client() || !difficulty.read(r) || !finished(r) || !revision || revision <= g_received_settings ||
+            g_phase == Phase::Running || g_phase == Phase::Loading)
+            return;
+        g_received_settings = revision;
+        g_settings = difficulty;
+        invalidate_ready();
+        return;
+    }
+    if (kind == K_PREPARE) {
+        ga::Descriptor descriptor;
+        if (from != 0 || !client() || !descriptor.read(r) || !finished(r) || descriptor.run_id <= g_newest_run ||
+            g_phase == Phase::Running || g_phase == Phase::Loading)
+            return;
+        g_descriptor = descriptor;
+        g_newest_run = descriptor.run_id;
+        g_settings = descriptor.difficulty;
+        g_phase = Phase::Preparing;
+        g_content = g_chosen = g_launch_started = g_loaded_sent = false;
+        g_captain = {};
+        g_snapshot_revision = 0;
+        g_excluded.clear();
+        g_error.clear();
+        g_waiting = !member(local_id());
+        invalidate_ready();
+        if (g_waiting) { g_phase = Phase::Ended; return; }
+        std::string why = unavailable();
+        if (!why.empty()) { abort_run(why, true); return; }
+        if (!adventure_assets::prepare(descriptor.run_id, descriptor.adventure))
+            abort_run("Adventure content receiver could not be prepared.", true);
+        return;
+    }
+    if (kind == K_SNAPSHOT) {
+        if (from == 0) read_snapshot(r);
+        return;
+    }
+    uint64_t run = read_run(r);
+    if (!r.ok() || !run)
+        return;
+    if (kind == K_WAIT) {
+        if (from == 0 && client() && finished(r) && !active()) {
+            g_waiting = true;
+            g_newest_run = std::max(g_newest_run, run);
+            feed("This adventure is underway. You will join the next run.");
+        }
+        return;
+    }
+    if (run != g_descriptor.run_id || (host() && g_excluded.count(from))) return;
+    if (kind == K_ABORT) {
+        std::string reason = r.str16();
+        if (!finished(r) || (host() ? !member(from) : from != 0) || !active()) return;
+        abort_run(reason.empty() ? "Adventure preparation was cancelled." : reason, host());
+        return;
+    }
+    if (kind == K_INVALIDATE) {
+        if (from == 0 && client() && finished(r) && g_phase == Phase::Preparing)
+            invalidate_ready();
+        return;
+    }
+    if (host()) {
+        if (!member(from) || from == 0) return;
+        switch (kind) {
+        case K_CONTENT: {
+            Key key = read_key(r); ga::Hash hash;
+            if (r.raw(hash.data(), hash.size()) && finished(r))
+                g_barrier.ack_content(run, from, key, hash);
+            break;
+        }
+        case K_CAPTAIN: {
+            Key key = read_key(r);
+            bool changed = false;
+            for (const auto& m : g_barrier.members())
+                if (m.player == from) changed = m.captain && !(m.captain_key == key);
+            if (finished(r) && g_barrier.ack_captain(run, from, key) && changed)
+                invalidate_party();
+            break;
+        }
+        case K_READY: {
+            uint8_t value = r.u8();
+            if (finished(r) && value <= 1) g_barrier.set_ready(run, from, value != 0);
+            break;
+        }
+        case K_LOADED: {
+            ga::CaptainSeed seed;
+            seed.player = from; seed.max_health = r.f32(); seed.position = {r.f32(), r.f32(), r.f32()};
+            if (finished(r) && valid_seed(seed) && g_barrier.ack_loaded(run, from))
+                g_seeds.emplace(from, seed);
+            break;
+        }
+        case K_REVIVE: {
+            uint8_t target = r.u8(), held = r.u8();
+            if (finished(r) && held <= 1 && g_phase == Phase::Running)
+                g_authority.revive(run, from, target, held != 0);
+            break;
+        }
+        default: break;
+        }
+        return;
+    }
+    if (!client() || from != 0) return;
+    if (kind == K_LAUNCH && finished(r) && g_phase == Phase::Preparing) {
+        if (!g_content || !g_chosen || !g_ready) {
+            // A local unready click can cross the host's commit in the opposite direction.
+            // Cancel explicitly rather than leave the host waiting for an impossible load.
+            abort_run("Party readiness changed while the adventure was launching. Select Play again.", true);
+            return;
+        }
+        g_phase = Phase::Loading;
+        queue_launch();
+    } else if (kind == K_COMMIT && finished(r) && g_phase == Phase::Loading && g_loaded_sent) {
+        g_phase = Phase::Running;
+        outside([] { if (C.freeze) C.freeze(false); });
+    } else if (kind == K_RESULT) {
+        uint8_t success = r.u8();
+        if (!finished(r) || success > 1 || g_phase != Phase::Running) return;
+        g_phase = Phase::Ended;
+        g_revive_held = false;
+        native_result(success != 0);
+        feed(success ? "Adventure completed together." : "The party failed the adventure.");
+    }
+}
+
+void tick(double now)
+{
+    if (!std::isfinite(now)) return;
+    double elapsed = g_have_wall && now >= g_last_wall ? now - g_last_wall : 0;
+    g_last_wall = now;
+    g_have_wall = true;
+    adventure_assets::tick(now);
+    if (!active()) return;
+    if (!C.sess || !C.sess->connected()) {
+        abort_run("The co-op session ended.", false);
+        return;
+    }
+    if (host() && g_phase == Phase::Preparing && g_barrier.all_ready()) {
+        if (!g_barrier.begin_loading(g_descriptor.run_id)) return;
+        g_phase = Phase::Loading;
+        net::Writer w; write_run(w, g_descriptor.run_id); send(K_LAUNCH, w);
+        queue_launch();
+    }
+    if (g_phase == Phase::Loading && g_launch_started && !g_loaded_sent && C.loaded && C.loaded(g_descriptor.adventure))
+        loaded();
+    if (host() && g_phase == Phase::Loading && g_barrier.all_loaded()) {
+        std::vector<ga::CaptainSeed> seeds;
+        for (uint8_t player : g_descriptor.roster) {
+            auto it = g_seeds.find(player);
+            if (it == g_seeds.end()) return;
+            ga::CaptainSeed seed = it->second;
+            if (!C.sample || !C.sample(player, seed) || seed.player != player || !valid_seed(seed)) {
+                abort_run("The host could not verify every captain before launch.", true);
+                return;
+            }
+            seeds.push_back(seed);
+        }
+        if (!g_authority.start(g_descriptor, seeds, 0) || !g_barrier.commit(g_descriptor.run_id)) {
+            abort_run("The all-player launch barrier could not be committed.", true);
+            return;
+        }
+        g_simulation = 0;
+        g_phase = Phase::Running;
+        net::Writer w; write_run(w, g_descriptor.run_id); send(K_COMMIT, w);
+        outside([] { if (C.freeze) C.freeze(false); });
+        snapshot();
+        return;
+    }
+    if (g_phase != Phase::Running) return;
+    if (g_revive_held && now - g_last_revive >= 0.1) {
+        if (host()) g_authority.revive(g_descriptor.run_id, local_id(), g_revive_target, true);
+        else {
+            net::Writer w; write_run(w, g_descriptor.run_id); w.u8(g_revive_target); w.u8(1); send(K_REVIVE, w);
+        }
+        g_last_revive = now;
+    }
+    if (!host()) return;
+    if (!C.paused || !C.paused()) g_simulation += elapsed;
+    for (uint8_t player : g_descriptor.roster) {
+        ga::CaptainSeed seed;
+        seed.player = player;
+        if (C.sample && C.sample(player, seed) && seed.player == player && valid_seed(seed))
+            g_authority.position(g_descriptor.run_id, player, seed.position);
+    }
+    g_authority.tick(g_descriptor.run_id, g_simulation);
+    if (g_authority.phase() == ga::RunPhase::Failed) result(false);
+    else if (now - g_last_snapshot >= 0.1) snapshot();
+}
+
+bool captain_damage(uint8_t victim, const ga::Source& source, float amount)
+{
+    if (!host() || g_phase != Phase::Running || !member(victim))
+        return false;
+    g_authority.damage(g_descriptor.run_id, ++g_health_event, victim, source, amount);
+    if (g_authority.phase() == ga::RunPhase::Failed) result(false);
+    else snapshot();
+    return true;
+}
+
+bool captain_heal(uint8_t victim, float amount)
+{
+    if (!host() || g_phase != Phase::Running || !member(victim)) return false;
+    g_authority.heal(g_descriptor.run_id, ++g_health_event, victim, amount);
+    snapshot();
+    return true;
+}
+
+bool damage_filter(void* victim, float& amount, int type, void* attacker)
+{
+    if (g_phase != Phase::Running || !C.captain_of || !victim) return true;
+    for (uint8_t player : g_descriptor.roster) {
+        if (C.captain_of(player) != victim) continue;
+        if (host()) {
+            if (type == 10) captain_heal(player, std::abs(amount));
+            else {
+                ga::Source source;
+                if (C.source && C.source(victim, attacker, type, source)) captain_damage(player, source, amount);
+            }
+        }
+        return false; // guest native simulation never applies an independent captain hit
+    }
+    return true;
+}
+
+bool revive(uint8_t target, bool held)
+{
+    if (g_phase != Phase::Running || !member(target)) return false;
+    g_revive_target = target;
+    g_revive_held = held;
+    if (host()) return g_authority.revive(g_descriptor.run_id, local_id(), target, held);
+    net::Writer w; write_run(w, g_descriptor.run_id); w.u8(target); w.u8(held ? 1 : 0); send(K_REVIVE, w);
+    return true;
+}
+
+bool complete(bool success)
+{
+    if (!host() || g_phase != Phase::Running || !g_authority.finish(g_descriptor.run_id, success)) return false;
+    result(success);
+    return true;
+}
+
+bool cancel(const std::string& reason)
+{
+    if (!active()) return false;
+    abort_run(reason.empty() ? "Adventure cancelled." : reason, true);
+    return true;
+}
+
+void reset()
+{
+    g_generation++;
+    adventure_assets::reset();
+    g_barrier = {};
+    g_authority = {};
+    g_descriptor = {};
+    g_phase = Phase::Idle;
+    g_ready = g_content = g_chosen = g_launch_started = g_loaded_sent = g_waiting = false;
+    g_revive_held = false;
+    g_revive_target = ga::kNoPlayer;
+    g_captain = {};
+    g_seeds.clear();
+    g_excluded.clear();
+    g_client_captains.clear();
+    g_client_snapshot_run = 0;
+    g_client_snapshot_time = 0;
+    g_next_run = g_newest_run = g_snapshot_revision = g_health_event = g_result_run = g_received_settings = 0;
+    g_last_wall = g_simulation = g_last_snapshot = g_last_revive = 0;
+    g_have_wall = false;
+    g_error.clear();
+    if (C.freeze) C.freeze(false);
+}
+
+std::string status()
+{
+    if (!g_error.empty()) return g_error;
+    if (g_waiting) return "Waiting for the next adventure run";
+    switch (g_phase) {
+    case Phase::Collecting: return "Preparing adventure content";
+    case Phase::Preparing: return g_chosen ? "Waiting for party readiness" : "Choose your captain";
+    case Phase::Loading: return "Loading adventure: waiting for every captain";
+    case Phase::Running: return "Adventure in progress";
+    case Phase::Ended: return "Adventure finished";
+    default: {
+        std::string why = unavailable();
+        return why.empty() ? "Select an adventure in Sporepedia and press Play" : why;
+    }
+    }
+}
+
+} // namespace adventure

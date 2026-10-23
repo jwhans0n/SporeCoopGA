@@ -68,7 +68,9 @@ static std::vector<void*> all_cities() { return vec_of(thiscall<void*>(a_GetAllC
 static std::vector<void*> all_vehicles()
 {
     std::vector<void*> r;
-    for (void* v : vec_of(thiscall<void*>(a_GetAllVehicles, nm())))
+    void* manager = nm();
+    if (!g_ok || !a_GetAllVehicles || !manager) return r;
+    for (void* v : vec_of(thiscall<void*>(a_GetAllVehicles, manager)))
         if (game::object_alive(v) && !F<uint8_t>(v, kVDead))
             r.push_back(v);
     return r;

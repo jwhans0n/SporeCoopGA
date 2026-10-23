@@ -120,6 +120,7 @@ int c_cam(void*, int argc, const char* const* argv, SkOut* out)
     if (argc >= 3) {
         Vector3 pos{}, dir{};
         uintptr_t f = H->sym("App::cViewer::GetCameraToPoint");
+        if (!f) { SAY("camera ray diagnostic is unavailable on this executable"); return 1; }
         bool ok = thiscall<bool>(f, viewer, (float)atof(argv[1]), (float)atof(argv[2]), &pos, &dir);
         SAY("ray(%s,%s) ok=%d pos=(%.2f %.2f %.2f) dir=(%.3f %.3f %.3f)\n", argv[1], argv[2], ok, pos.x, pos.y,
             pos.z, dir.x, dir.y, dir.z);
@@ -152,6 +153,14 @@ void coop_register_debug_commands(const SkHost* host, SkMod* self)
 namespace {
 int c_w2s(void*, int, const char* const*, SkOut* out)
 {
+    // Restricted executable maps may support projection without the inverse
+    // camera helper. Never enter a native diagnostic with a missing function.
+    uintptr_t manager_get = H && H->sym ? H->sym("App::IGameModeManager::Get") : 0;
+    uintptr_t camera_ray = H && H->sym ? H->sym("App::cViewer::GetCameraToPoint") : 0;
+    if (!manager_get || !camera_ray || !H->world_to_screen) {
+        SAY("camera projection/inverse diagnostic is unavailable on this build");
+        return 1;
+    }
     void* av = game::avatar();
     if (!av) {
         SAY("no avatar");
@@ -163,10 +172,17 @@ int c_w2s(void*, int, const char* const*, SkOut* out)
     SAY("avatar (%.2f %.2f %.2f) -> ok=%d screen=(%.1f %.1f)\n", p.x, p.y, p.z, ok, sc[0], sc[1]);
     // check with the game's own inverse: ray through that pixel should pass near the avatar
     using namespace skg;
-    void* mm = cdecl_call<void*>(H->sym("App::IGameModeManager::Get"));
-    void* viewer = vcall<void*>(mm, 0x58 / 4);
+    void* mm = cdecl_call<void*>(manager_get);
+    void* viewer = mm ? vcall<void*>(mm, 0x58 / 4) : nullptr;
+    if (!viewer) {
+        SAY("native camera viewer is unavailable");
+        return 1;
+    }
     Vector3 o{}, d{};
-    thiscall<bool>(H->sym("App::cViewer::GetCameraToPoint"), viewer, sc[0], sc[1], &o, &d);
+    if (!thiscall<bool>(camera_ray, viewer, sc[0], sc[1], &o, &d)) {
+        SAY("native camera ray is unavailable");
+        return 1;
+    }
     float vx = p.x - o.x, vy = p.y - o.y, vz = p.z - o.z;
     float t = vx * d.x + vy * d.y + vz * d.z;
     float cx = o.x + d.x * t - p.x, cy = o.y + d.y * t - p.y, cz = o.z + d.z * t - p.z;
