@@ -8,8 +8,9 @@ Addresses below are preferred PE addresses. Runtime code resolves named symbols.
 
 ## Party protocol
 
-Protocol version 7 reserves message 52 for adventures. Coordinator messages use
-subkinds 0..63, content 64..71, world 128..191, and captain models 192..223.
+Protocol version 9 reserves message 52 for adventures. Coordinator messages use
+subkinds 0..63, content 64..71, world 128..159, party scenes 160..163, and captain
+models 192..223.
 The host freezes the roster and difficulty when Play is selected. Every roster member
 must verify the content manifest, select the required/personal captain, confirm
 readiness, load the same adventure and acknowledge the loaded captain before commit.
@@ -212,7 +213,7 @@ Native Windows validation on the isolated instances 21 and 22 has passed:
   This test used controlled completion and does not establish a full playthrough.
 * Cancelling a prepared or loaded attempt returned to the galaxy menu.
 
-Native Replay navigation, every authored objective type,
+At the initial preview's validation point, native Replay navigation, every authored objective type,
 simultaneous conversations, a complete adventure playthrough, four-player
 sessions and broader adventure compatibility remain validation work. The observed
 Done/restart persistence pass does not make the coordinator's in-memory claim a
@@ -345,3 +346,56 @@ Preparation UI reads are outside-frame, cached by actual local resource key. The
 host snapshot carries original keys; remote presentation resolves the already
 owner-scoped key, including property/PNG companions. Authored locks use the installed
 story creature directly and never require it to have personal-captain model type.
+
+## Preview 5: shared scenes and replay (dc04)
+
+This implements the earlier preview 4 party-flow findings. The new scene layer
+uses `MSG_ADVENTURE` subkinds160 Snapshot,161 Confirm,162 Release and163 RequestTalk.
+Every scene is scoped by run and monotonically increasing scene serial. The host
+counts current connected run participants, validates requests, ignores duplicate
+or replaced confirmations and releases exactly once. Cleanup invalidates queued
+native work by generation. Late joins and reconnected IDs remain excluded from
+the current run. Dialog/UI operations run outside Present.
+
+- `HandlePlayMessage` F1C570 is thiscall(play,messageID,payload), bool, ret8.
+  Message044F1189 while play+90=1 directly enters playing state without calling
+  SetState. Intercept the message, record local confirmation and replay the
+  original handler only on party release. This preserves native intro cleanup;
+  writing state3 directly skips it. Early confirmation during the loaded barrier
+  is retained for the matching run. Native intro animation still ticks, while
+  state3 Update, actor AI, vehicle timers/weapons, damage, goals and co-op clocks
+  are held until everyone confirms.
+- TalkBegin F1A000 is thiscall(play,goal,target), ret8. TalkFinish F1C1D0 is
+  thiscall(play), ret. Native play+C8/CC/D4/D8 hold dialog data/page/target state.
+  The host checks active act, unfinished Talk goal, target class/incarnation,
+  alive initiating captain and range25. Native presentation starts locally on
+  all participants. Native Finish cleans up each camera/dialog independently,
+  with CountGoal suppressed. Only party release commits the host's Talk goal.
+  Old GoalEvent133 Talk completion is rejected. Additional valid requests queue
+  and are revalidated against current act/goals before presentation.
+- Results message070B18C7 payload+8 is1 Done,2 Replay. Native results save the
+  local captain before sending it. Intercept Replay before EF1320's in-place
+  single-player teardown. Coordinator17 ResultsAccepted and18 ReplayPrepare wait
+  for every remaining participant to accept saved results. Any participant can
+  request replay. Cleanup restores galaxy application state and game mode before
+  a fresh preparation/run. Saved original captains are republished, all readiness
+  starts false, and old callbacks cannot launch a later attempt. A Scenario exit
+  belonging to cleanup must not cancel the new preparation.
+- PlayerState now carries actual spatial scale, run and captain selection serial.
+  Scenario replicas require the current validated mapped model, matching owner
+  original species, run and serial. Do not fall back to the previous creation
+  cache or the local avatar's profile while transfer is incomplete. Rebuild the
+  puppet if its mapped key or run changes, and set the exact owner scale.
+
+The final hidden, muted four-client fixture passed intro confirmation with both
+native clocks unchanged while waiting, independent native conversation pages and
+group objective release. Two-client tests passed Replay twice, including guest
+Replay with host Done, and new guest captain replacement followed by selecting
+the previous saved captain in the next run. The actual puppet species matched
+the current mapped resource and scale. Portable flow tests cover queued scenes,
+wrong/stale confirmations, disconnects and invalidated native callbacks.
+Native cancellation and disconnects during intro and partly confirmed Talk also
+passed, with native menus restored and immediate retry in the same processes.
+Evidence: `out/windows-lab/preview5-release-{intro,talk,replay,models,flow-recovery}`
+and `out/preview5-tests-final.log`. These are partial native gameplay checks, not
+a complete adventure playthrough.

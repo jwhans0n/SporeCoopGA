@@ -438,3 +438,49 @@ process, then transferred normally. Both clients displayed No preview, enabled
 Ready and entered the native run without faults. Dropping this fixture into the
 lab's Data/DataEP1 directories did not make it visible to the resource manager;
 do not assume copying a package registers it in this runner.
+
+### Preview 5 shared scenes, replay, models and gates (Windows)
+
+Use a recorded hidden, muted WindowsLab installation and profiles. These scripts
+validate their process metadata and reject player profiles. In sequence:
+
+```
+py -3 tools/tests/coop_adventure_flow.py --metadata out/windows-lab/preview5-release/processes.json --output out/windows-lab/preview5-release-intro --instances 21,22,23,24
+py -3 tools/tests/coop_adventure_talk.py --metadata out/windows-lab/preview5-release/processes.json --out out/windows-lab/preview5-release-talk --x 557 --y 340 --observers 23,24
+py -3 tools/tests/coop_adventure_gates.py --metadata out/windows-lab/preview5-release/processes.json --output out/windows-lab/preview5-release-gates --instances 21,22,23,24
+```
+
+Before Talk, move guest22 near marker158 with its actual network player ID and
+allow snapshots to settle. Instance numbers and network player IDs differ:
+simultaneous joins can give instance22 playerID2. `Game.player_id()` reads the
+active network ID. The scripts verify native intro clock holds, every participant's
+confirmation, independent dialog pages, exact owner/puppet scales, native keys,
+wrong colors, key ownership/consumption and open-gate snapshot reconstruction.
+`forgetgate MARKER` is a guest diagnostic that deliberately removes an open gate
+for that last fixture; it requires the valid native lifecycle/sibling checks.
+
+After the four-player checks, disconnect and quit observers23/24 normally and
+keep21/22 in the party. Run `coop_adventure_replay.py --rounds 2`,
+`coop_adventure_models.py`, `coop_adventure_performance.py --seconds 8`, then
+`coop_adventure_flow_recovery.py`, passing the same metadata and distinct output
+directories. Replay includes guest Replay with host Done. Models creates a new
+guest captain, then selects an older saved captain next run; actual puppet
+species must match the current mapped resource. Recovery cancels partly confirmed
+intro/Talk and disconnects in each, checks both native menu states and retries.
+The existing lobby `playing()` helper now confirms every intro before waiting
+for native state3. Waiting for one player to enter state3 before confirming the
+others deadlocks the new intentional group barrier.
+
+Native Talk starts at dialog index-1 before automatically reaching page0. Wait
+for the host's first text page before asserting that guest page clicks leave its
+page unchanged. Otherwise the native greeting transition causes a false failure.
+The `call` diagnostic target parser expects hexadecimal; use named symbols or an
+explicit0x prefix, never a decimal rendering of an address. Verify the native
+signature before calling. `actorsat MARKER LIMIT` avoids ad hoc native probes
+when inspecting all respawner/physical incarnations at a placement.
+
+Portable `make test` includes `adventure_flow_tests` with fake native callbacks
+and real local sessions. Win32 lifecycle tests additionally prove that a physical
+gate uses CreateObjectInstance rather than its same-marker respawner factory.
+Final evidence is in `out/windows-lab/preview5-release-*`,
+`out/preview5-tests-final.log` and `out/preview5-abi-results.json`.

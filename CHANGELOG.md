@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Adventure party flow: 0.7.0-ga-preview.5
+
+- Require every participant to confirm beam-down Continue before gameplay and
+  adventure clocks advance. Show who is still confirming.
+- Present objective conversations to the whole party, retain independent dialog
+  pages and complete the objective only after everyone presses Finished.
+- Route native Replay back through the shared lobby with saved captains and
+  everyone unready. Any participant may request it after accepting results.
+- Render remote captains from the current validated selection and copy their
+  owner's actual scale. Reject old run/selection packets and rebuild stale models.
+- Validate shared colored keys and gates on the host, synchronize native opening
+  and key consumption, and reconstruct the correct open gate after replica loss.
+- Retain preparation recovery and the large-adventure FPS fix. Protocol 9 requires
+  this preview on every participant; resource bundle formats remain unchanged.
+
 ### Shared adventure lobby: 0.7.0-ga-preview.4
 
 - Accept native music event 1 used by Mr Puzzle's Magical Gates, preserving the

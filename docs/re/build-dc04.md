@@ -845,3 +845,27 @@ py -3 tools/tests/coop_adventure_performance.py --metadata out/windows-lab/frame
 `make test-memory-windows` builds the standalone Win32 memory regression; run
 `build/host/readable_memory_tests.exe` on Windows. Its bounded-cache overflow
 case also checks more than 64 distinct readable/inaccessible memory regions.
+
+## Preview 5 party-flow symbols and native validation (2026-10-24)
+
+The restricted map now includes verified HandlePlayMessage F1C570 (thiscall,
+ret8), TalkBegin F1A000 (thiscall, ret8), TalkFinish F1C1D0 (thiscall, ret),
+ActivateGate F23AB0 (cdecl, tailcalls F1C390), GateKey F21670 (cdecl, uint32)
+and OpenGate F238C0 (cdecl, return F23AA2). The verifier checks121 functions
+and4 globals against the installed dc04 executable before map generation.
+See `out/party-flow-re/symbols.json`, [adventure.md](adventure.md#preview-5-shared-scenes-and-replay-dc04)
+and [adventure-world.md](adventure-world.md#preview-5-colored-gates-and-physical-powerups-dc04).
+
+The final preview5 DLL passed hidden, muted four-client intro, objective Talk
+and native colored key/gate checks, including forced reconstruction of an open
+gate. Two-client results Replay, captain replacement/previous-selection and
+scene cancellation/disconnect/retry checks also passed. The405-actor regression
+measured21.49 FPS host and21.62 FPS guest with native clocks advancing and zero
+faults. These numbers describe isolated hidden windows, not visible play speed.
+
+One exploratory test process was stopped by a diagnostic call whose target was
+mistakenly supplied as decimal text. The console `call` target parser expects
+hexadecimal, so that text resolved to the wrong native address. Both isolated
+test processes were replaced and affected checks rerun. This was a probe error,
+not a game-flow failure, and no player profiles were involved. Use named symbols
+or explicit0x addresses with verified signatures in native diagnostics.

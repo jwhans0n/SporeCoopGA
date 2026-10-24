@@ -47,6 +47,13 @@ class Game:
             raise FixtureError(f'instance {self.instance}: {command}: {response.get("out", "")}')
         return response.get('out', '')
 
+    def player_id(self):
+        line=self.call('coop.status').splitlines()[0]
+        if line.startswith('host '): return 0
+        match=re.search(r'client id=(\d+) connected',line)
+        if not match: raise FixtureError('connected party player ID unavailable: '+line)
+        return int(match[1])
+
     def wait(self, description, predicate, timeout=None):
         deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
         while time.monotonic() < deadline:

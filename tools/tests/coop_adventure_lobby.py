@@ -50,14 +50,18 @@ def lobby(game, count, title=None):
 def playing(games, records):
     games[0].wait('committed shared adventure', lambda: all(
         'Adventure in progress' in g.adventure()['text'] for g in games))
-    for game in games:
-        memory = AdventureMemory(game, records[game.instance])
-        def active():
-            if game.control(0x0445C99D):
-                game.click_control(0x0445C99D)
-            return memory.goals()['state'] == 3
-        game.wait('native adventure intro finishes', active)
-        memory.close()
+    memories=[AdventureMemory(game,records[game.instance])for game in games]
+    try:
+        for game,memory in zip(games,memories):
+            game.wait('native intro Continue',lambda game=game,memory=memory:
+                memory.goals()['state']==3 or game.control(0x0445C99D))
+            if memory.goals()['state']!=3: game.click_control(0x0445C99D)
+        for _ in range(3):
+            for game,memory in zip(games,memories):
+                if memory.goals()['state']!=3 and game.control(0x0445C99D): game.click_control(0x0445C99D)
+        games[0].wait('all native intro confirmations',lambda:all(m.goals()['state']==3 for m in memories))
+    finally:
+        for memory in memories:memory.close()
 
 
 def main():

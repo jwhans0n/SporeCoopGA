@@ -8,10 +8,11 @@ verified only for the March 2017 GOG executable, SHA-256
 See [build identification](re/build-dc04.md). Every player needs Galactic Adventures
 and the same experimental SporeCoop build.
 
-Preview `0.7.0-ga-preview.4` adds the shared adventure/captain lobby and fixes the
-native music setting used by Mr Puzzle's Magical Gates. It retains native captain
-creation, cancelled adventure recovery and the large-adventure performance fix.
-Install the same preview for every player; this version uses network protocol 8.
+Preview `0.7.0-ga-preview.5` adds party confirmation for beam-down and objective
+conversations, shared Replay, current captain identity/scale, and synchronized
+colored keys and gates. It retains the shared lobby, Mr Puzzle music support,
+native captain creation, cancellation recovery and the performance fix.
+Install the same preview for every player; this version uses network protocol 9.
 
 ## Start an adventure
 
@@ -26,7 +27,9 @@ Install the same preview for every player; this version uses network protocol 8.
 5. Review the adventure card and everyone's saved captain portraits in the shared
    lobby. Wait for content and captain outfits to transfer. Every player, including
    the host, presses **Ready** explicitly.
-   Play begins after every participant has the content, captain and loaded adventure.
+6. After loading and beam-down, everyone presses **Continue**. Gameplay and
+   adventure clocks wait for every connected participant to confirm. Players who
+   confirm early see the party's confirmation status.
 
 The host controls shared objective and act progress. A qualifying action by any
 teammate can advance the party's goals. Late joins and reconnects wait for the next
@@ -37,8 +40,22 @@ saved captains remain available when retrying the same adventure.
 readiness; cancelling a replacement keeps the previous saved captain. Locked
 adventures show the authored captain and disable replacement. **Cancel adventure**
 returns the party to the native galaxy menu while keeping the party connected.
-Use **Done** to return to the menu between completed attempts; native Replay navigation
-still needs validation.
+After results are saved, **Done** returns to the menu. Any player can choose
+**Replay** to request another shared attempt. After everyone accepts their
+results, Replay opens the shared lobby with the saved captains and everyone
+unready. Review the lobby and press **Ready** again to launch.
+
+An objective conversation opens its native camera and dialog on every player.
+Each player advances pages independently. **Finished** confirms that player's
+exit; the objective and clocks wait for the whole group. If another objective
+conversation is requested during one already in progress, it is queued and
+revalidated before presentation. A disconnected participant leaves the check.
+Cancelling an adventure from the waiting dialog restores the native menus.
+
+Any captain can pick up a colored key and open its matching gate. The host checks
+ownership, range and color, then shares native gate opening and key consumption.
+A key held by another captain cannot be taken. Remote captains use the current
+saved selection and their owner's actual spatial scale.
 
 ## Difficulty
 
@@ -80,7 +97,7 @@ won Lotta's recruitment minigame, recruited the NPC and advanced both players fr
 act 1 to 2 without native faults. Friendship and recruitment state matched on
 both players after the win. Ordinary neutral NPC Befriend also passed for Kid,
 with matching impressed state and no changes to unrelated Talk objectives.
-Simultaneous social interactions remain unvalidated.
+Simultaneous recruitment/Befriend minigames remain unvalidated.
 
 A party wipe reached Mission Failed on both players. With **Any death fails**,
 one captain's death failed both players at 100% friendly fire; self damage remained
@@ -95,8 +112,16 @@ four distinct named captain cards, simultaneous replacement cancellation and
 disconnect recovery. A missing-thumbnail fixture entered a shared native run.
 These checks do not establish a complete adventure playthrough.
 
+Preview 5 passed four-player beam-down confirmation with frozen clocks, shared
+native objective conversations with independent pages, and host/guest colored
+key and gate interactions in Mr Puzzle. A lost open-gate replica reconstructed
+its authored open appearance and native state. Two-player checks covered repeated
+Replay, guest-requested Replay, new/previous guest captain selection and matching
+owner/remote scales. The final 405-actor test measured about 21.5 FPS per hidden
+session, with advancing native time and no faults.
+
 The success test used controlled completion. A complete adventure playthrough,
-all authored objective types, simultaneous conversations, extended four-player
+all authored objective types, simultaneous recruitment minigames, extended four-player
 play and broader adventure compatibility still need validation. Automatic
 transfers cover supported adventure and creation assets installed on the host;
 server-only references cannot be downloaded automatically. Unsupported custom

@@ -620,6 +620,54 @@ and 622 allowed input queries. The artifact is
 objective existed in this case, so it validates social completion independently
 of goals without claiming every authored Befriend objective.
 
+## Preview 5 colored gates and physical powerups (dc04)
+
+Verified native paths: ActivateGate F23AB0 cdecl(captain,keyPowerup,gatePowerup),
+tailcalls UpdateGoals F1C390; GateKey F21670 cdecl(powerup)->uint32; OpenGate
+F238C0 cdecl(gatePowerup), returns at F23AA2. GateKey reads the native palette
+property399C4F6C (`powerupDoorColor`) from powerup+18. `powerupType`1EA08337 is
+serialized UInt32 type000A, not Int32. All referenced stock palette records use
+groupD87454E6. cInteractiveOrnament::Cast C402B0 returns object+130 for common
+powerup type08367427. Its combatant offset is170 in this executable, unlike the
+older upstream header. Always use Cast rather than copying that header offset.
+
+A gate placement can contain a respawner powerup9 and a separate closed gate11
+with the same marker and noun. Keys are physical powerup12. Opening destroys
+the closed object, creates native open ornament14 with the authored replacement
+appearance/collision, drops the held key and destroys the consumed key. Marker
+identity alone cannot distinguish these objects; use marker+incarnation and the
+powerup kind. Debug `actorsat MARKER LIMIT` enumerates every object at one marker.
+The old `actors FIRST LIMIT` can show parents while missing physical instances
+appended later in the object list.
+
+Interaction132 action3 requests Unlock. The host checks current run/act, owned
+live captain, actual held key slot, key12/gate11, matching GateKey, range25 and
+one accepted claim per gate incarnation. Broadcast acceptance before mutating
+native objects. Both host and guest use the original native gate API outside
+Present. Host pickup also rejects a key held by another party captain. Retired
+key/gate identities ignore delayed actor snapshots, while a true respawn with a
+new incarnation remains eligible. Actor flags high nibble carries powerup kind;
+low bits keep combat/death/impressed meanings, and bit3 remains reserved.
+
+Guest mirror bindings require a compatible powerup kind. A host open14 may bind
+a closed11 only to run native OpenGate and rebind its resulting14. It must never
+bind the same-marker respawner9. Reconstruct physical11/12/14 using verified
+CreateObjectInstance, then open11 when host expects14. The marker respawn factory
+creates9, so it is suitable for the respawner itself, not the missing physical
+gate. The first forced-reconstruction test caught exactly this distinction;
+the lifecycle ABI fixture now asserts the physical factory choice.
+
+Final four-client Mr Puzzle checks passed guest pickup, held-key ownership,
+wrong-color rejection, guest opening marker108 with key125, host opening110 with
+key136, consumed keys absent everywhere, and forced open-gate reconstruction.
+Gate108 and key125 share colorA55A8819; gate19 uses a different color. The later
+Mystery Key at162 is ordinary powerup0, not a colored keycard12. Do not use its
+Hold objective as proof of colored-gate behavior. Evidence:
+`out/windows-lab/preview5-release-gates/result.json`,
+`out/party-flow-re/powerup-properties.json` and `stock-gate-references.json`.
+These passes cover the tested stock colored gates; arbitrary custom gate variants
+and a full adventure playthrough remain unvalidated.
+
 The later Music audit exposed another legacy diagnostic capability gap:
 `coop.w2s` called the unavailable `App::cViewer::GetCameraToPoint` symbol and
 crashed the isolated guest at EIP zero. The preserved log is
