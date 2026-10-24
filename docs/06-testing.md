@@ -429,7 +429,7 @@ clients, including four distinct saved captains and simultaneous replacement
 cancellation. Mr Puzzle's native act music remained [1,0,0,0] on all four clients.
 The final DLL passed ordinary Sporepedia Play, return from settings to the shared
 cards, native entry/cancellation and a405-actor regression at21.49/21.61 FPS.
-Portable tests, twelve existing Win32 fixtures and the115-function/four-global
+Portable tests, eleven current Win32 fixtures and the115-function/four-global
 symbol manifest passed. Evidence is in out/windows-lab/preview4-*.
 
 For the missing-art case a stock scenario was cloned under7F00F004 with metadata
