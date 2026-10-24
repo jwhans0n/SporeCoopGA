@@ -15,6 +15,7 @@
 #include "net/connection.h"
 #include "net/discovery.h"
 #include "net/interp.h"
+#include "net/adventure_motion.h"
 #include "net/session.h"
 
 using namespace net;
@@ -36,6 +37,7 @@ static void test_buffer()
     s.vel = {4, 5, 6}; s.flags = PF_IN_WORLD | PF_RUNNING; s.anim = 7; s.health = 50; s.max_health = 100;
     s.species = 0xDEADBEEF;
     s.scale=1.73f; s.adventure_run=0x1122334455667788ULL; s.captain_selection=0x8877665544332211ULL;
+    s.movement_generation=0xFEDCBA9876543210ULL;
     Writer w;
     s.write(w);
     Reader r(w.data.data(), w.size());
@@ -44,6 +46,7 @@ static void test_buffer()
     CHECK(t.id == 3 && t.time_ms == 123456 && t.pos.z == 3 && t.rot.w > 0.7f && t.flags == s.flags);
     CHECK(t.species == 0xDEADBEEF && t.max_health == 100);
     CHECK(t.scale==s.scale && t.adventure_run==s.adventure_run && t.captain_selection==s.captain_selection);
+    CHECK(t.movement_generation==s.movement_generation);
     Reader bad(w.data.data(), 5);
     PlayerState u;
     CHECK(!u.read(bad));
@@ -60,6 +63,36 @@ static void test_buffer()
     w3.f64(123456.75);
     Reader r3(w3.data.data(), w3.size());
     CHECK(r3.u8() == 3 && r3.f64() == 123456.75 && r3.ok() && r3.left() == 0);
+}
+
+static void test_adventure_motion()
+{
+    printf("adventure teleport ordering and movement history\n");
+    AdventureMotion fence;
+    fence.begin(12);
+    PlayerState player;
+    player.id=2; player.mode=0x01654C10; player.adventure_run=12;
+    CHECK(fence.accepts(player));
+    const Vec3 exit{200,300,400}; const Quat rotation{0,0,0,1};
+    CHECK(fence.correct(12,2,8,exit,rotation));
+    CHECK(!fence.accepts(player)); // old UDP position after the reliable teleport
+    player.movement_generation=8;
+    CHECK(fence.accepts(player));
+    CHECK(!fence.correct(12,2,8,exit,rotation)); // duplicate must not reset movement again
+    CHECK(!fence.correct(12,2,7,exit,rotation));
+    CHECK(!fence.correct(11,2,20,exit,rotation)); // cancelled run callback
+    CHECK(!fence.correct(12,2,9,exit,{0,0,0,0}));
+    CHECK(!fence.correct(12,255,9,exit,rotation));
+    player.movement_generation=9;
+    CHECK(!fence.accepts(player)); // future pose waits for its host correction
+    player.id=1; player.movement_generation=0;
+    CHECK(fence.accepts(player)); // independent captain teleports
+    fence.begin(13); player.adventure_run=12;
+    CHECK(!fence.accepts(player));
+    player.adventure_run=13;
+    CHECK(fence.accepts(player));
+    fence.reset();
+    CHECK(fence.generation(2)==0);
 }
 
 // a snapshot in several big unreliable chunks: every chunk goes out (one per packet), none is lost
@@ -610,6 +643,7 @@ static void test_updater()
 int main()
 {
     test_buffer();
+    test_adventure_motion();
     test_unreliable_chunks();
     test_dbpf();
     test_refpack_untrusted();

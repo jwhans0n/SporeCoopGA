@@ -88,7 +88,7 @@ void Session::leave(const char* why)
         for (int i = 0; i < 3; i++) {
             p->conn.send_unreliable(MSG_BYE, w, true);
             if (p->conn.build_packet(now + 1000, pkt))
-                sock_.send_to(p->conn.remote, pkt.data(), pkt.size());
+                if (sock_.send_to(p->conn.remote, pkt.data(), pkt.size())) p->conn.stats.bytes_sent += pkt.size();
         }
     }
     peers_.clear();
@@ -177,7 +177,7 @@ std::string Session::host_address() const
 
 std::string Session::status() const
 {
-    char b[256];
+    char b[384];
     std::string s;
     if (role_ == Role::None)
         return "offline\n";
@@ -189,10 +189,11 @@ std::string Session::status() const
     s += b;
     uint32_t now = now_ms();
     for (auto& p : peers_) {
-        snprintf(b, sizeof b, "  [%u] %-16s %s rtt=%.0fms last=%ums sent=%u recv=%u acked=%u resend=%u pending=%u\n",
+        snprintf(b, sizeof b, "  [%u] %-16s %s rtt=%.0fms last=%ums sent=%u recv=%u acked=%u resend=%u pending=%u bytes_sent=%llu bytes_recv=%llu\n",
                  p->id, p->name.c_str(), p->conn.remote.str().c_str(), p->conn.rtt_ms,
                  now - p->conn.last_recv_ms, p->conn.stats.packets_sent, p->conn.stats.packets_recv,
-                 p->conn.stats.acked, p->conn.stats.resends, (unsigned)p->conn.pending_reliable());
+                 p->conn.stats.acked, p->conn.stats.resends, (unsigned)p->conn.pending_reliable(),
+                 (unsigned long long)p->conn.stats.bytes_sent, (unsigned long long)p->conn.stats.bytes_recv);
         s += b;
     }
     return s;
@@ -472,6 +473,7 @@ void Session::handle_msg(Peer& p, uint8_t type, Reader& r)
 
 void Session::handle_packet(Peer& p, const uint8_t* data, size_t n, uint32_t now)
 {
+    p.conn.stats.bytes_recv += n;
     p.conn.on_packet(data, n, now, [&](uint8_t type, Reader& r) {
         if (role_ != Role::None)
             handle_msg(p, type, r);
@@ -488,7 +490,7 @@ void Session::flush(uint32_t now)
         // 14 cells and used to push the player state queued after it past the limit
         int burst = p->conn.rtt_ms < 40.f ? (int)kAckWindow : (int)kAckWindow / 3;
         for (int i = 0; (i < burst || (i < burst + 64 && p->conn.unreliable_queued() > 0)) && p->conn.build_packet(now, pkt); i++)
-            sock_.send_to(p->conn.remote, pkt.data(), pkt.size());
+            if (sock_.send_to(p->conn.remote, pkt.data(), pkt.size())) p->conn.stats.bytes_sent += pkt.size();
         p->conn.drop_unreliable();
     }
 }

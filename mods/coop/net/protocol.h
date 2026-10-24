@@ -12,8 +12,8 @@
 namespace net {
 
 constexpr uint32_t kMagic = 0x4F435053; // 'SPCO'
-constexpr uint16_t kProtoVersion = 9; // 3: shared resources, ping marks; 4: lobby, LAN discovery; 5: 128-packet acks;
-                                      // 6: connection id; 7: adventure runs; 8: shared preparation; 9: party flow and captain scale/identity
+constexpr uint16_t kProtoVersion = 10; // 3: shared resources, ping marks; 4: lobby, LAN discovery; 5: 128-packet acks;
+                                      // 6: connection id; 7: adventure runs; 8: shared preparation; 9: party flow and captain scale/identity; 10: static state, interactions and teleport generations
 constexpr uint16_t kDefaultPort = 47810;
 constexpr int kMaxPlayers = 4; // host + 3 guests (Spore pack size)
 constexpr size_t kMaxPacket = 1200;
@@ -195,7 +195,7 @@ struct PlayerState {
     uint32_t mode = 0;    // game mode id (Creature 0x1654C01, Space 0x1654C05, ...)
     uint32_t world = 0;   // crc32 of the current save name (same world <=> same value)
     float scale = 1;
-    uint64_t adventure_run = 0, captain_selection = 0;
+    uint64_t adventure_run = 0, captain_selection = 0, movement_generation = 0;
 
     void write(Writer& w) const
     {
@@ -210,6 +210,7 @@ struct PlayerState {
         w.f32(scale);
         w.u32(uint32_t(adventure_run)); w.u32(uint32_t(adventure_run >> 32));
         w.u32(uint32_t(captain_selection)); w.u32(uint32_t(captain_selection >> 32));
+        w.u32(uint32_t(movement_generation)); w.u32(uint32_t(movement_generation >> 32));
     }
     bool read(Reader& r)
     {
@@ -224,6 +225,7 @@ struct PlayerState {
         scale = r.f32();
         adventure_run = r.u32(); adventure_run |= uint64_t(r.u32()) << 32;
         captain_selection = r.u32(); captain_selection |= uint64_t(r.u32()) << 32;
+        movement_generation = r.u32(); movement_generation |= uint64_t(r.u32()) << 32;
         return r.ok() && std::isfinite(scale) && scale > 0 && scale <= 10000;
     }
 };
