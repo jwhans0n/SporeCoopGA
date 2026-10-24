@@ -778,10 +778,35 @@ dynamic spatial movement, original-pose restoration and complete actor rosters
 after forward native act switches 1 and 2. Both games logged zero native faults.
 Evidence is
 `out/windows-lab/preview6-bandwidth-after-puzzle-provisional2/static/result.json`.
-The adjacent bandwidth window ran with six lab games active and is provisional;
-the final two-game bandwidth/FPS comparison remains pending. An earlier harness
+The adjacent bandwidth window ran with six lab games active and is provisional.
+It does not establish that the process count caused its observed 7.18 Hz
+sampling cadence; the final two-game runs also observed that cadence.
+An earlier harness
 attempt rejected the console's inline PID format before gameplay; matching the
 bounded `pid=` token fixed that test setup issue.
+
+The final candidate-8 two-game Mr Puzzle run subsequently passed the same native
+cache, promotion and forward-act 1/2 checks at
+`out/windows-lab/preview6-bandwidth-final-puzzle/static/result.json`. Both
+before/after bandwidth runs have 351 host actors and 351 mirrored guest actors.
+Observed host-to-guest UDP payload fell from 155208.0065 to 25331.6398 B/s,
+83.678909% less, with no stationary messages or payload during the steady window.
+Its 40 dynamic actors each received 72 updates over 10.015301 seconds (7.1890 Hz).
+The baseline actor payload equals 72 complete 351-actor cycles, giving an
+inferred 7.1830 Hz. Each complete cycle has 54-byte records and 15-byte packet
+headers, matching the unchanged full-snapshot layout.
+
+The matched Town run retained 405 host/405 mirrored guest actors. Payload fell
+from 178400.9174 to 56790.4674 B/s, 68.166942% less; its 113 dynamic actors each
+received 72 updates over 10.019604 seconds (7.1859 Hz), with no steady stationary
+payload. The baseline actor payload likewise gives 72 cycles, inferred 7.1842 Hz.
+Configured dynamic sampling remains 10 Hz and observed cadence remains about
+7.18 Hz at the measured frame rate. The 405-actor FPS regression passed at host
+21.490948 and guest 21.612986 FPS, with advancing native clocks and zero faults.
+These measurements count observed UDP payload, including protocol headers,
+acknowledgements and retransmitted datagrams, while excluding UDP/IP headers.
+The raw artifacts are `out/windows-lab/preview6-bandwidth-final-puzzle/result.json`
+and `out/windows-lab/preview6-bandwidth-final-town2/{result.json,performance.json}`.
 
 ## Preview 6 explosive native paths (dc04)
 
@@ -871,8 +896,23 @@ Timed-bomb kind 10 repick has a separate native lifecycle rule. A genuine native
 OnPicked notification clears only the module's thrown guard, permitting a later
 throw of the same incarnation. It retains the running fuse and armed state.
 An already-held duplicate PickUp request does not invoke native OnPicked and
-cannot reset this guard. ABI coverage passes; the rebuilt final candidate's
-guest-drop/host-repick/drop test with the original 15-second fuse remains pending.
+cannot reset this guard. ABI coverage passes. Candidate 8 also passed genuine
+four-player guest-drop/host-repick/drop cases at friendly fire 0 and 100: the same
+incarnation was thrown twice, retained the original 15-second fuse and detonated
+once. Its native armed-recovery cases held a running fuse through 16 wall-clock
+seconds of Talk, cancelled without disconnecting, retried immediately and
+launched again through guest Replay/host Done with explicit readiness. The whole
+four-case result is
+`out/windows-lab/preview6-explosives-final8-safe/result.json`, against DLL SHA256
+`075ee6000269235d8a3c41572e01296b60a71e953dc70806a4d3c1ad3cc06f75`.
+
+The completed interaction index is
+`out/windows-lab/preview6-explosives-acceptance/result.json`. It lists 18 base
+kind/friendly-fire rows and two impaired crate rows with exact DLL hashes per
+case. Its two repick checks reuse the long-bomb base artifacts, giving 20
+distinct case files. Earlier partly failed exploratory matrices remain failures;
+the index accepts their completed individual cases rather than relabelling the
+aggregate attempts.
 
 The installed death-message branch
 at `F1C7C9` handles message `01622184`: it reads victim GameData class `+1C`,
@@ -905,9 +945,9 @@ The manifest/package are in `out/preview6-fixtures/crate-goal`. Menu registratio
 and private inspection reuse the existing reviewed packed-database/resource APIs.
 `inspect_crate_goal_fixture` requires native authored goal `(3,0,-1,3)` and the
 crate class before any gameplay test. Offline decoding/package/schema checks
-pass; the host/guest count-1/count-2 gameplay test remains pending. Native Kill
-goals for consumable props must be established by that
-test; the stock crate's destructibility alone does not prove objective support.
+pass and the native loaded goal schema matches. The later native acceptance
+established that a stock powerup crate is excluded from authored Kill objectives,
+so no host/guest count-1/count-2 result is claimed.
 
 The first authored-fixture attempt on build 7 failed before any crate shot or
 detonation, while waiting for beam-down confirmations. The guests retained
@@ -915,15 +955,16 @@ native state 6, elapsed 0 and Kill/class0/required3 with count 0 and completed
 false. This was early native validation/failure, not successful completion or
 objective autocomplete. The observations are in
 `out/windows-lab/preview6-explosives-final7-objective-recovery/native-objective-observations.json`.
-Offline inspection found a product initialization
-dependency in the held powerup update path. Scenario tick calls play-mode
+Offline inspection found a product initialization dependency in the held powerup
+update path. Scenario tick calls play-mode
 Update/CheckGoalProgress at `EF308C`, before delayed timers at `EF312C` and
 TickPowerups at `EF3138`. Native `GetObjectsForClass` at `F40BA0` detects parent
 powerup kind 9 at `F40C8A`, substitutes the physical child through `F20BF0`, then
 skips a null child at `F40CA0`. A respawner alone therefore cannot satisfy target
-validation. Native Kill schema explicitly accepts stock crate `93512140` and
-barrel `A0EBD95A` through `F251F0`; the class-zero private native parses already
-show invulnerability false in all four acts.
+validation. The native attackability filter `F251F0` includes stock crate
+`93512140` and barrel `A0EBD95A`; Kill validation has a separate powerup exclusion
+described below. Class-zero private native parses already show invulnerability
+false in all four acts.
 
 Native powerup construction `F212C0` initializes both timer floats `+24` and
 `+28` to zero at `F21589/F2158E`. The authored class spawn delay is added to `+24`
@@ -935,9 +976,34 @@ path subtracts zero; its grenade path adds zero to age. The mine helper
 Link cleanup `F24080` still runs. Contact, damage and delayed fuse callbacks
 retain their separate shared-hold guards. Dropping the entire TickPowerups call
 during Intro can prevent native initial goal targets from existing before
-Continue. The rebuilt delta-zero adapter and actual host/guest crate counts
-remain pending native acceptance. Offline disassembly and its evidence boundary
+Continue. Build 8 subsequently showed parent 9 incarnation 653 and physical
+crate 15 incarnation 902 before Continue on all four clients, with matching host
+identity. Build 7 had only the parent. The delta-zero setup path therefore runs
+and establishes the initial child. The authored fixture still failed with zero
+counts/detonations because of a separate native validation rule.
+Offline disassembly and its evidence boundary
 are in `out/preview6-crate-goal-analysis/{native-paths.asm,findings.json}`.
+
+A read-only host trace then captured goal failure 10 (`0A`) and play-mode `+B0`
+equal to 3 at the transition from Intro state 1 to failed state 6, before cleanup.
+Its artifact is
+`out/windows-lab/preview6-crate-goal-pair-diagnostic/crate-native-validation-run1.json`;
+the adjacent `crate-initial-actors-run1.json` confirms all six physical crate
+children existed. The reason is the native Kill powerup exclusion: after the
+attackability test, `F40515` calls `F255B0` and rejects its true result. `F255B0`
+tests normalized category `CF56099A`. The palette-key resolver `EEC980` returns
+pseudo resource type `F0000001` when a typed `powerupType` property exists
+(literal name at `148AD24`); `EECD40` maps that type to `CF56099A`, and `F255D0`
+returns reason `0A` for it at `F255FD`. Stock crate kind 15 follows that route.
+
+This is an expected vanilla authored-goal restriction, independent of damage and
+destruction support. Co-op preserves it: there is no invented goal override,
+counter injection or loot. The four-player native crate destruction, shared
+removal/effects and packet-loss cases remain valid separate evidence. The
+authored Kill fixture and failed attempts are retained as proof of the boundary,
+not as objective count passes. An offline scan of all four authored acts also
+confirmed that later goals target classes 1033/1037, never class zero; unrelated
+later-act goals did not cause this rejection.
 
 ## Preview 6 native interaction fixtures (dc04)
 

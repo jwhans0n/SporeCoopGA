@@ -515,3 +515,28 @@ captain activations, native velocity cleanup and a captured distant pre-teleport
 UDP position resent with a current timestamp and old movement generation.
 Both games ended with zero native faults and returned to native galaxy menus.
 This is two-player fixture evidence, not a complete adventure playthrough.
+
+Final candidate 8, DLL SHA256
+`075ee6000269235d8a3c41572e01296b60a71e953dc70806a4d3c1ad3cc06f75`,
+then passed the native health/speed/teleporter routing smoke in
+`out/windows-lab/preview6-pickups-routing8/result.json`. It covers subkinds
+152..155 after the Replay and held powerup setup changes. During its native
+Talk hold, elapsed time 4052 and boost remaining 14.6732 stayed unchanged for
+three wall-clock seconds, followed by normal refresh and expiry. The same hidden
+pair passed two complete open-captain Town Replay rounds in
+`out/windows-lab/preview6-replay8/result.json`, retaining saved captains, explicit
+readiness, shared Continue/clocks, model scales and complete rosters without
+native faults. These final routing checks retain the separate build-5b full
+pickup/damage/armor acceptance rather than claiming those two cases were rerun.
+
+Candidate 8 repeated native health, speed and teleporter routing after coordinator
+cleanup routing and held PowerupUpdate initialization changed. Both loaded shadow
+DLLs had SHA256 `075ee6000269235d8a3c41572e01296b60a71e953dc70806a4d3c1ad3cc06f75`.
+`out/windows-lab/preview6-pickups-routing8/result.json` passed all three cases,
+covering Claim, Grant, Expire and Teleport. Native Talk held elapsed time at 4052
+and boost remaining time at 14.6732 seconds across three wall-clock seconds;
+native Next/Finished then released the group, and the boost expired normally.
+`out/windows-lab/preview6-replay8/result.json` also passed two native open-Town
+Replay rounds with saved captain reuse, fresh explicit readiness, shared Continue
+barriers, paused clocks, reciprocal models/scales and complete actor rosters.
+Both clients had zero native faults and returned to connected native menus.

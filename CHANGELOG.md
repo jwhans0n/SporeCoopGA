@@ -10,6 +10,8 @@
 - Let the host own native mine, barrel, bomb and grenade activation, delayed
   chains, damage and removal. Treat their explosions as environmental hazards
   regardless of friendly fire. Preserve harmless crate behavior and native fuses.
+- Keep initial powerup spawning during group holds. Allow a timed bomb to be
+  picked up and thrown again while its original fuse continues.
 - Share pickup consumption and authored respawns. Apply health, speed, damage and
   shield upgrades only to the collecting captain, with shared simulation expiry.
 - Validate authored teleport exits per captain, synchronize native cleanup and

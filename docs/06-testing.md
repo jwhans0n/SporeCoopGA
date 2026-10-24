@@ -471,6 +471,12 @@ The existing lobby `playing()` helper now confirms every intro before waiting
 for native state3. Waiting for one player to enter state3 before confirming the
 others deadlocks the new intentional group barrier.
 
+Saved-captain selection first clicks the visible native My Creations tab.
+All Assets may expose a matching caption far outside the viewport, so finding
+the name alone does not prove that its card can receive a click.
+The browser also retains its window tree after closing: acknowledge opening
+with the native AssetBrowser +1C active flag, never its cached control presence.
+
 Native Talk starts at dialog index-1 before automatically reaching page0. Wait
 for the host's first text page before asserting that guest page clicks leave its
 page unchanged. Otherwise the native greeting transition causes a false failure.
@@ -512,6 +518,18 @@ with zero faults on both clients. Its per-case checkpoint is separate from faile
 setup/debugging attempts. The handoff report in
 `out/windows-lab/preview6-pickup5-handoff/handoff.json` verifies normal cancellation
 to native menus and a direct connected party after the capture proxies closed.
+The later candidate-8 health/speed/teleporter routing suite also passed at
+`out/windows-lab/preview6-pickups-routing8/result.json`; the loaded shadow DLLs
+matched SHA256 `075ee6000269235d8a3c41572e01296b60a71e953dc70806a4d3c1ad3cc06f75`.
+Its clean pair handoff is `out/windows-lab/preview6-pair8-handoff/handoff.json`.
+
+After cleanup message routing and held initialization changed, candidate 8 passed
+`out/windows-lab/preview6-pickups-routing8/result.json` for health, speed and
+teleporters, covering all four pickup wire kinds. Speed also exercises the native
+Talk hold and timed expiry. The same DLL passed two open-Town native Replay rounds
+in `out/windows-lab/preview6-replay8/result.json`. Both loaded shadow DLL hashes
+and the clean connected-menu state are recorded in
+`out/windows-lab/preview6-pair8-handoff/handoff.json`.
 
 The scenarios clone Mr Puzzle class0 and preserve its native marker layout and
 authored five-unit respawn setting. Stable target markers are 108, 110, 112, 116,

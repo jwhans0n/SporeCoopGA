@@ -138,6 +138,16 @@ Replay, guest-requested Replay, new/previous guest captain selection and matchin
 owner/remote scales. The final 405-actor test measured about 21.5 FPS per hidden
 session, with advancing native time and no faults.
 
+Preview 6 passed the stationary-baseline/cache-repair/movement tests, native
+collector-only upgrades and teleporter cases, and four-player explosive cases at
+friendly fire 0 and 100. Crate destruction and shared removal/effects also passed
+with 5% packet loss and up to 80 ms jitter. The final candidate passed two shared
+Replay rounds and genuine timed-bomb repick while preserving its original fuse.
+Native authored Kill validation excludes typed powerups, including the stock
+crate. Co-op preserves that rule; the crate tests establish damage, destruction
+and shared state rather than a new objective eligibility rule. These fixture
+results do not validate every custom objective or palette.
+
 The success test used controlled completion. A complete adventure playthrough,
 all authored objective types, simultaneous recruitment minigames, extended four-player
 play and broader adventure compatibility still need validation. Automatic
