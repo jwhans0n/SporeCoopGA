@@ -27,16 +27,34 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--metadata',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
-    args=parser.parse_args();records=verify_lab(args.metadata,(21,22))
-    games=[Game(i,args.output,timeout=180)for i in(21,22)];host,guest=games
+    parser.add_argument('--instances',default='21,22',help='host,guest lab instance numbers')
+    parser.add_argument('--captains',default='LobbyNew21,LobbyNew22',help='saved host,guest captain names')
+    parser.add_argument('--port',type=int,help='recreate a direct party on this port; otherwise reuse the current party')
+    args=parser.parse_args()
+    try:instances=tuple(map(int,args.instances.split(',')))
+    except ValueError:parser.error('--instances must be two comma-separated integers')
+    captains=tuple(name.strip()for name in args.captains.split(','))
+    if len(instances)!=2 or len(set(instances))!=2:parser.error('--instances requires two distinct host,guest instances')
+    if len(captains)!=2 or not all(captains):parser.error('--captains requires two nonempty host,guest names')
+    if args.port is not None and not 1<=args.port<=65535:parser.error('--port must be between 1 and 65535')
+    records=verify_lab(args.metadata,instances)
+    games=[Game(i,args.output,timeout=180)for i in instances];host,guest=games
     results=[]
     try:
+        if args.port is not None:
+            if host.adventure()['active']:host.call('coop.adventure cancel')
+            for game in games:
+                menu(game,records[game.instance])
+                game.call('coop.leave')
+            host.call(f'coop.host {args.port} ModelsHost')
+            guest.call(f'coop.join 127.0.0.1:{args.port} ModelsGuest')
+            host.wait('two-member direct model test party',lambda:host.adventure()['players']==2)
         for index in range(2):
-            host.call('coop.adventure cancel')
+            if host.adventure()['active']:host.call('coop.adventure cancel')
             for game in games:menu(game,records[game.instance])
             host.call('coop.adventure start '+TOWN)
-            host.prepare_captain('LobbyNew21',create=False)
-            guest.prepare_captain('LobbyNew22',create=False)
+            host.prepare_captain(captains[0],create=False)
+            guest.prepare_captain(captains[1],create=False)
             for game in games:lobby(game,2)
             if index==0:
                 click_named(guest,'prep_change')

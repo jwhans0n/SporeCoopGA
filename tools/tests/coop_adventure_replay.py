@@ -28,8 +28,17 @@ def run(games, memories, rounds=2):
         for game in (guest,host):
             choice='Done' if game==host and iteration==rounds-1 else 'Replay'
             def accept(game=game,choice=choice):
+                # Native result widgets can remain discoverable behind the
+                # newly opened lobby. A newer run confirms that the real result
+                # button was accepted without depending on retained captions.
+                if game.adventure()['run']>previous: return True
                 if not game.caption('Replay'): return True
-                game.press(choice); return False
+                # Do not enter a nested caption wait: native cleanup can replace
+                # the results panel between two UI reads. Recheck the new run on
+                # the next poll if the requested button is no longer present.
+                point=game.caption(choice)
+                if point: game.click(*point)
+                return False
             game.wait('Replay accepted by native results',accept,timeout=20)
         for game in games:
             state=lobby(game,2)
@@ -54,9 +63,14 @@ def main():
     parser.add_argument('--metadata',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--rounds',type=int,default=2)
+    parser.add_argument('--host',type=int,default=21)
+    parser.add_argument('--guest',type=int,default=22)
+    parser.add_argument('--timeout',type=float,default=90,help='native transition timeout in seconds')
     args=parser.parse_args()
-    records=verify_lab(args.metadata,(21,22))
-    games=[Game(i,args.output,timeout=90) for i in (21,22)]
+    if args.host==args.guest:parser.error('--host and --guest must be distinct lab instances')
+    instances=(args.host,args.guest)
+    records=verify_lab(args.metadata,instances)
+    games=[Game(i,args.output,timeout=args.timeout) for i in instances]
     memories=[AdventureMemory(g,records[g.instance])for g in games]
     try:
         rounds=run(games,memories,args.rounds)

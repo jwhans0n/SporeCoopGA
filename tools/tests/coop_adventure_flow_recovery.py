@@ -28,9 +28,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--metadata', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--instances', default='21,22', help='host,guest lab instance numbers')
+    parser.add_argument('--port', type=int, default=47830, help='existing host party port used for reconnects')
     args = parser.parse_args()
-    records = verify_lab(args.metadata, (21, 22))
-    games = [Game(i, args.output, timeout=120) for i in (21, 22)]
+    try:
+        instances = tuple(map(int, args.instances.split(',')))
+    except ValueError:
+        parser.error('--instances must be two comma-separated integers')
+    if len(instances) != 2 or len(set(instances)) != 2:
+        parser.error('--instances requires two distinct host,guest instances')
+    if not 1 <= args.port <= 65535:
+        parser.error('--port must be between 1 and 65535')
+    records = verify_lab(args.metadata, instances)
+    games = [Game(i, args.output, timeout=120) for i in instances]
     host, guest = games
     memories = [AdventureMemory(g, records[g.instance]) for g in games]
     checks = []
@@ -82,7 +92,7 @@ def main():
         host.call('coop.adventure cancel')
         menu(host, records[host.instance])
         passed('intro disconnect recovers guest menu and releases remaining host')
-        guest.call('coop.join 127.0.0.1:47830 RecoveryGuest')
+        guest.call(f'coop.join 127.0.0.1:{args.port} RecoveryGuest')
         host.wait('party reconnected', lambda: host.adventure()['players'] == 2)
         start()
         playing(games, records)
@@ -99,7 +109,7 @@ def main():
         host.call('coop.adventure cancel')
         menu(host, records[host.instance])
         passed('conversation disconnect releases the remaining participant exactly once')
-        guest.call('coop.join 127.0.0.1:47830 RecoveryGuest')
+        guest.call(f'coop.join 127.0.0.1:{args.port} RecoveryGuest')
         host.wait('party reconnects again', lambda: host.adventure()['players'] == 2)
         start()
         playing(games, records)

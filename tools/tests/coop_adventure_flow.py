@@ -40,7 +40,16 @@ def check_intro(games, memories, guest_first=True):
         if len(matches)!=len(games)-1 or any(abs(float(match[3])-float(match[4]))>.0002 for match in matches):
             raise FixtureError('remote captain scale differs from its owning captain: ' + text)
         sizes.append(matches)
-    return dict(before=before, held=held, after=[m.goals() for m in memories], scales=sizes)
+    def complete_rosters():
+        counts=[]
+        for game in games:
+            match=re.search(r'actors=(\d+) mirrored=(\d+).*?remote=(\d+).*?roster=(\d+)',game.adventure()['text'])
+            if not match: return None
+            counts.append(dict(zip(('actors','mirrored','remote','roster'),map(int,match.groups()))))
+        expected=counts[0]['actors']
+        return counts if expected and all(row['remote']==row['mirrored']==row['roster']==expected for row in counts[1:]) else None
+    rosters=host.wait('complete reliable actor baselines on every guest',complete_rosters)
+    return dict(before=before, held=held, after=[m.goals() for m in memories], scales=sizes,rosters=rosters)
 
 
 def main():

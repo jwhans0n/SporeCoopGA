@@ -176,6 +176,39 @@ class Game:
         self.shot('shopper-selection')
         self.click_control(0x00AD0E52)  # native Sporepedia green check
 
+    def browser_active(self):
+        # The native browser retains its window tree after closing. Its verified
+        # +1C active flag distinguishes that cached tree from an open picker.
+        result = self.call('call Sporepedia::AssetBrowser::Get cdecl')
+        match = re.search(r'eax=0x([0-9a-fA-F]+)', result)
+        if not match:
+            raise FixtureError('cannot read native Sporepedia browser: ' + result)
+        browser = int(match.group(1), 16)
+        if not browser:
+            return False
+        result = self.call(f'mem.read 0x{browser + 0x1C:X} 1')
+        match = re.search(r'^[0-9A-Fa-f]+\s+([0-9A-Fa-f]{2})\b', result)
+        if not match:
+            raise FixtureError('cannot read native Sporepedia active flag: ' + result)
+        return int(match.group(1), 16) != 0
+
+    def open_captain_shopper(self):
+        # The picker can expose its card before an opening transition accepts
+        # input. Confirm the native browser actually opened and retry ordinary
+        # clicks while the captain card remains visible. Preserve the caller's
+        # full transition timeout for slow hidden lab sessions.
+        next_click = 0.
+        def opened():
+            nonlocal next_click
+            if self.browser_active():
+                return True
+            rect = self.control(0x07CA4119)
+            if rect and rect[4] and time.monotonic() >= next_click:
+                self.click((rect[0]+rect[2])//2, (rect[1]+rect[3])//2)
+                next_click = time.monotonic()+1
+            return False
+        self.wait('native saved-captain Sporepedia opens', opened)
+
     def choose_card(self, name):
         def card_point():
             # Names also appear in hover previews. Select the actual thumbnail
@@ -232,7 +265,7 @@ class Game:
         self.wait('captain choice', lambda: self.adventure()['active'] or self.caption('Choose or Create Your Captain'))
         if self.adventure()['active']:
             return
-        self.click_control(0x07CA4119)  # choose an existing native captain
+        self.open_captain_shopper()
         self.select_saved_captain(captain_name)
         self.wait_caption('Choose or Create Your Captain')
         self.click_control(0x05384D06)
@@ -247,7 +280,7 @@ class Game:
         if create:
             self.onboard(name, stop_after='named')
         else:
-            self.click_control(0x07CA4119)
+            self.open_captain_shopper()
             self.select_saved_captain(name)
             self.wait_caption('Choose or Create Your Captain')
             self.click_control(0x05384D06)
@@ -343,10 +376,13 @@ class Game:
 
     def select_saved_captain(self, name):
         for _ in range(4):
-            if self.caption(name):
+            # All Assets can contain a matching offscreen card. Filter personal
+            # captains first instead of treating that caption as a visible card.
+            point = self.caption('My Creations')
+            if point and 0 <= point[0] < 1024 and 0 <= point[1] < 768:
+                self.click(*point)
+                time.sleep(.5)
                 break
-            if self.caption('My Creations'):
-                self.press('My Creations')
             time.sleep(.5)  # the native category rows settle after the picker opens
         self.choose_card(name)
 

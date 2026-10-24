@@ -2,6 +2,7 @@
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / 'tools'), str(ROOT / 'tools/tests')]
@@ -61,6 +62,41 @@ class CaptionTests(unittest.TestCase):
         game = Game.__new__(Game)
         game.console = Console(findall(HIDDEN_LOADING, card(overflow=True, visible=False), card(overflow=True)))
         self.assertEqual(game.caption('Adventure Town'), (437, 234))
+
+    def test_saved_captain_filters_before_offscreen_name_match(self):
+        game = Game.__new__(Game)
+        events = []
+        name = 'LobbyNew21'
+        game.caption = lambda text: (439, 41814) if text == name else (90, 210)
+        game.click = lambda x, y: events.append(('click', x, y))
+        game.choose_card = lambda text: events.append(('choose', text))
+        with patch('coop_adventure.time.sleep'):
+            game.select_saved_captain(name)
+        self.assertEqual(events, [('click', 90, 210), ('choose', name)])
+
+    def test_saved_picker_ignores_retained_hidden_browser_control(self):
+        game = Game.__new__(Game)
+        game.instance, game.timeout = 31, 1
+        active = False
+        clicks, commands = [], []
+        def call(command):
+            commands.append(command)
+            if command == 'call Sporepedia::AssetBrowser::Get cdecl':
+                return 'eax=0x12345678'
+            self.assertEqual(command, 'mem.read 0x12345694 1')
+            return f'12345694  {int(active):02X}\n'
+        def click(x, y):
+            nonlocal active
+            clicks.append((x, y))
+            active = True
+        game.call, game.click = call, click
+        # The old browser root still exists even while the native chooser owns
+        # the screen. It must not acknowledge opening before the actual click.
+        game.control = lambda ident: (0, 0, 1024, 768, 1) if ident == 0x53C6DC80 else (400, 300, 600, 500, 1)
+        with patch('coop_adventure.time.sleep'):
+            game.open_captain_shopper()
+        self.assertEqual(clicks, [(500, 400)])
+        self.assertEqual(commands.count('mem.read 0x12345694 1'), 2)
 
 
 if __name__ == '__main__':
