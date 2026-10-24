@@ -807,6 +807,12 @@ These measurements count observed UDP payload, including protocol headers,
 acknowledgements and retransmitted datagrams, while excluding UDP/IP headers.
 The raw artifacts are `out/windows-lab/preview6-bandwidth-final-puzzle/result.json`
 and `out/windows-lab/preview6-bandwidth-final-town2/{result.json,performance.json}`.
+The final two-game Puzzle impairment run also passed with 5% packet loss and up
+to 80 ms random jitter. It measured 25577.3279 B/s host-to-guest and 1696.0913 B/s
+guest-to-host, observed 16 down/9 up dropped datagrams, and passed the linked
+cached repair, movement promotion, forward acts 1/2 and complete rosters with
+zero faults. Evidence is
+`out/windows-lab/preview6-bandwidth-final-puzzle-loss/{result.json,static/result.json}`.
 
 ## Preview 6 explosive native paths (dc04)
 
