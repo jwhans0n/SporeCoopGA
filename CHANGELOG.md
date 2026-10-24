@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Galactic Adventures captain recovery: 0.7.0-ga-preview.3
+
+- Guests use native captain creation, naming, review and saving before sharing
+  their captain. Existing saved captains and authored captain restrictions remain.
+- Gate early loading animations until the native captain save completes. Readiness
+  reflects validated captain preparation and required transfer acknowledgements.
+- Cancelled preparation closes owned native pickers and restores both galaxy
+  application state and game mode. Clear pending callbacks and readiness on
+  cancellation/disconnect so the same adventure can be retried without restarting.
+- Retain preview 2's large-adventure performance fix and the existing wire format.
+
 ### Galactic Adventures performance fix: 0.7.0-ga-preview.2
 
 - Batch memory-region validation during read-only actor traversals instead of

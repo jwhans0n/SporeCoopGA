@@ -91,7 +91,7 @@ ZeroTier / Radmin VPN / Tailscale).
 Guest: main menu -> Co-op -> name -> click the host under "Games on your network" or type
 its address -> Join. Join before the adventure begins.
 Host: choose Adventure settings, then open an adventure in Sporepedia and press Play.
-Each player chooses a saved captain and confirms readiness after content transfer.
+Each player chooses or creates, names and saves a captain, then confirms readiness after transfer.
 The party starts after everyone has the matching content and loaded adventure.
 In game F9 opens the co-op window. Late joins and reconnects wait for the next attempt.
 Install future preview builds manually; the updater does not order preview suffixes.

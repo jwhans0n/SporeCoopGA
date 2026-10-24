@@ -8,9 +8,9 @@ verified only for the March 2017 GOG executable, SHA-256
 See [build identification](re/build-dc04.md). Every player needs Galactic Adventures
 and the same experimental SporeCoop build.
 
-Preview `0.7.0-ga-preview.2` fixes excessive Windows memory validation in large
-adventures. Install it for every player and restart the game to load the update.
-This update keeps the existing adventure rules and network format.
+Preview `0.7.0-ga-preview.3` adds native guest captain naming/saving and cancelled
+adventure recovery. It retains preview 2's large-adventure performance fix.
+Install the same preview for every player. Adventure rules and network format remain unchanged.
 
 ## Start an adventure
 
@@ -19,15 +19,18 @@ This update keeps the existing adventure rules and network format.
 2. The host opens **Adventure settings** and chooses the difficulty.
 3. The host selects an adventure in **Sporepedia** and presses its normal **Play**
    button.
-4. Each player selects their own saved captain in the native captain picker.
-   Adventures that require an authored captain keep that restriction.
+4. Each player uses the native captain setup screens. Choose an existing captain
+   or create a new one, enter its name, review it and finish saving. Adventures
+   that require an authored captain keep that restriction.
 5. Wait for missing content and captain outfits to transfer, then confirm readiness.
    Play begins after every participant has the content, captain and loaded adventure.
 
 The host controls shared objective and act progress. A qualifying action by any
 teammate can advance the party's goals. Late joins and reconnects wait for the next
 attempt. Entry from the Space stage is outside this version's scope.
-Use **Done** to return to the menu between attempts; native Replay navigation
+Cancelling preparation returns both players to the native galaxy menu. Successfully
+saved captains remain available when retrying the same adventure.
+Use **Done** to return to the menu between completed attempts; native Replay navigation
 still needs validation.
 
 ## Difficulty

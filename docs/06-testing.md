@@ -369,3 +369,41 @@ directly when diagnosing this Windows behavior.
 implementation, then discards unrelated commands at link time. Its `coop.w2s`
 cases cover missing native capabilities before any native call, null managers and
 viewers, failed ray conversion and the valid fake ABI. It does not launch a game.
+
+
+### Preview 3 native preparation recovery (Windows)
+
+Run the hidden, muted Windows lab with two isolated profiles, then:
+
+```
+py -3 tools/tests/coop_adventure_preparation.py --metadata out/windows-lab/captain-recovery-fixture/processes.json --output out/windows-lab/captain-recovery-cancellation --key 29058784:366A930D:408A0000
+```
+
+The key above is the local `<Live or Die>` reproduction fixture, not a shipped
+stock key. Supply a resource already present in the isolated profile (or omit
+`--key` for Adventure Town). `--play` additionally creates two distinct named
+captains and verifies the committed run. Never point this test at player profiles.
+Checks cover selection/naming/browser/save-animation cancellation, immediate
+retry, disconnect, both native menu states, browser visibility and native faults.
+The old cached Sporepedia wrapper can remain after close; browser+1C is the active
+flag. Empty UI captions omit quotes entirely, so parse a single tree line before
+looking for quoted caption text; a multiline regex can consume the next control.
+
+
+Preview 3 delivery validation on 2026-10-23: `<Live or Die>` (local adventure key
+29058784:366A930D:408A0000) entered a committed two-player run with new captains
+2905A7A4 and2905A7A7, both model type4178B8E8 and XP0. Normal native Sporepedia
+Play also passed with an existing host captain and a new guest captain. The final
+matrix passed new/existing and existing/existing combinations, an authored
+captain adventure (6FCBCE96), loaded cancellation and menu recovery. The final
+405-actor Adventure Town regression measured21.61 FPS on each hidden session,
+with native game time advancing and no recorded native faults. Cancellation,
+name/review, open shopper, save-animation and disconnect recovery passed without
+restarting either game between attempts. Portable `make test` and11 Win32 ABI
+fixtures passed. Artifacts and detailed logs are in out/captain-recovery-re and
+out/windows-lab/captain-recovery-* (ignored local test output).
+
+Use a unique output directory for each WindowsLab runner: an older runner can
+write its final process metadata after a new runner starts if both share a path.
+An automated native Review click can arrive before Finish accepts input; require
+the panel to close and retry the mouse tap instead of assuming one tap saved it.

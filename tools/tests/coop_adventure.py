@@ -12,7 +12,7 @@ Examples (run the Windows lab first):
 ``pair`` connects two menu instances, starts Welcome through the host's normal
 Play button, and checks the same committed run, world, and reciprocal puppets.
 Both profiles must already have a personal captain for the pair case. The guest
-captain picker is selected by its saved captain name, supplied with --guest-name.
+captain setup wizard reuses its saved captain name, supplied with --guest-name.
 """
 import argparse
 import json
@@ -100,8 +100,11 @@ class Game:
 
     def control_caption(self, ident):
         tree = self.call('coop.ui tree 7')
-        match = re.search(rf"id=0x{ident:08X} .*'([^']*)'", tree)
-        return match.group(1) if match else None
+        line = next((line for line in tree.splitlines() if f'id=0x{ident:08X} ' in line), None)
+        if line is None:
+            return None
+        match = re.search(r"'([^']*)'", line)
+        return match.group(1) if match else ''
 
     def press(self, caption):
         x, y = self.wait_caption(caption)
@@ -207,7 +210,7 @@ class Game:
         if self.adventure()['active']:
             return
         self.modal_click(620, 392)  # choose an adventure card, opening Sporepedia
-        self.choose_card(adventure_name)
+        self.choose_card(adventure_name.strip('<>'))
         self.wait('adventure selection', lambda: self.adventure()['active'] or self.caption('Choose an Adventure'))
         if self.adventure()['active']:
             return
@@ -224,6 +227,27 @@ class Game:
             self.modal_click(860, 470)
         else:
             self.click_control(0x05951103)
+
+    def prepare_captain(self, name, create=True, save=True):
+        self.wait_caption('Choose or Create Your Captain')
+        if create:
+            self.onboard(name, stop_after='named')
+        else:
+            self.click_control(0x07CA4119)
+            self.select_saved_captain(name)
+            self.wait_caption('Choose or Create Your Captain')
+            self.click_control(0x05384D06)
+            self.wait('captain review', lambda: self.caption('Review Your Captain') or self.caption('Name Your Captain'))
+        if save:
+            # Native preview layout can expose Finish before it accepts input.
+            # Require the panel to close rather than treating one mouse tap as a save.
+            for _ in range(4):
+                self.click_control(0x05951103)
+                time.sleep(.5)
+                if not self.caption('Review Your Captain') and not self.caption('Name Your Captain'):
+                    break
+            else:
+                raise FixtureError('native captain save confirmation did not leave review')
 
     def onboard(self, name, stop_after='play'):
         if not self.caption('Choose or Create Your Captain') and not self.caption('Name Your Captain'):
@@ -360,9 +384,10 @@ def pair(host, guest, port, host_name, guest_name, adventure_name, resume=False,
         else:
             host.start_saved_adventure(adventure_name, host_name)
     host.call('coop.adventure ready 1')
-    if 'Choose your Galactic Adventures captain' in host.adventure()['text']:
-        host.select_saved_captain(host_name)
-    guest.select_saved_captain(guest_name)
+    if not host.adventure()['text'].startswith('Waiting for party readiness'):
+        if host.caption('Choose or Create Your Captain'):
+            host.prepare_captain(host_name, create=False)
+    guest.prepare_captain(guest_name, create=False)
     guest.call('coop.adventure ready 1')
 
     def committed():
