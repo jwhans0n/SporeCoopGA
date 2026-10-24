@@ -181,6 +181,20 @@ int main()
     toss=ex::message(ex::Throw,thrown->id,1,13); toss.impulse={5,3,2}; in_range=false; incoming(1,toss); drain(); CHECK(!impulses);
     in_range=true; toss=ex::message(ex::Throw,thrown->id,1,13); toss.impulse={5,3,2}; incoming(1,toss); drain(); CHECK(impulses==1);
     incoming(1,toss); drain(); CHECK(impulses==1);
+    // A duplicate throw stays rejected. Only a new trusted native pickup of
+    // the same timed bomb clears its throw guard, never its existing fuse.
+    auto* repicked=make(10); ex::bomb(repicked->powerup.data());
+    unsigned old_bombs=bombs,old_impulses=impulses;
+    ex::impulse(physics(),repicked,&toss.impulse,true);
+    CHECK(impulses==old_impulses+1 && ex::g_states[repicked->id].thrown);
+    ex::impulse(physics(),repicked,&toss.impulse,true); CHECK(impulses==old_impulses+1);
+    ex::picked(repicked->id,1); CHECK(!ex::g_states[repicked->id].thrown && ex::g_states[repicked->id].armed);
+    ex::bomb(repicked->powerup.data()); CHECK(bombs==old_bombs);
+    ex::impulse(physics(),repicked,&toss.impulse,true); CHECK(impulses==old_impulses+2);
+    ex::impulse(physics(),repicked,&toss.impulse,true); CHECK(impulses==old_impulses+2);
+    ex::g_states[repicked->id].phase=ex::Phase::Retired;
+    ex::picked(repicked->id,1); CHECK(ex::g_states[repicked->id].thrown);
+    ex::picked(thrown->id,1); CHECK(ex::g_states[thrown->id].thrown); // grenade13 retains its guard
     // Guest-approved effects retain native removal without any local radius damage.
     ctx.sess=&guest; CHECK(ex::init(&api,nullptr,ctx)); ex::tick();
     auto* foreign_grenade=make(13); unsigned old_arms=arms;
@@ -191,6 +205,13 @@ int main()
     paused=true; incoming(0,armed_event); incoming(0,thrown_event); drain();
     CHECK(ex::g_waiting.size()==1); paused=false; ex::tick(); drain();
     CHECK(field<bool>(foreign_grenade->powerup.data(),0x30) && field<void*>(foreign_grenade->powerup.data(),0x38)==captains[0].data());
+    auto* guest_repick=make(10); auto old_throw=ex::message(ex::Thrown,guest_repick->id,guest.my_id(),10);
+    old_throw.impulse={1,0,0}; incoming(0,old_throw); drain();
+    CHECK(ex::g_states[guest_repick->id].thrown);
+    ex::picked(guest_repick->id,guest.my_id()); CHECK(!ex::g_states[guest_repick->id].thrown);
+    old_impulses=impulses; ex::impulse(physics(),guest_repick,&old_throw.impulse,true);
+    // The fake inventory selects player0; it cannot predict a foreign throw.
+    CHECK(impulses==old_impulses);
     auto* barrel=make(15); before=blasts; unsigned before_explosions=explosions;
     ex::explode(barrel->powerup.data(),nullptr); CHECK(explosions==before_explosions);
     auto event=ex::message(ex::Detonated,barrel->id,0xFF,15);

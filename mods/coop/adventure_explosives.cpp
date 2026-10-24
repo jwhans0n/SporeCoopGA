@@ -465,6 +465,17 @@ bool init(const SkHost* host_api,SkMod* mod,Ctx context)
     g_ok=true; return true;
 }
 bool available() { return g_ok; }
+void picked(Identity id,uint8_t player)
+{
+    if(!active() || !connected(player)) return;
+    sync_scope();
+    void* native=C.object(id),*powerup=C.powerup(native);
+    if(type(powerup)!=10) return;
+    auto state=g_states.find(id);
+    if(state==g_states.end() || state->second.phase==Phase::Retired) return;
+    state->second.thrown=false;
+    state->second.owner=player;
+}
 void reset()
 {
     ++g_generation; g_run=0; g_serial=0; g_act=0;

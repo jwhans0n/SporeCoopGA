@@ -9,6 +9,10 @@
 
 #include "../mods/coop/adventure_world.cpp"
 
+// Explosive ownership is exercised by its own native ABI fixture. This mirror
+// fixture leaves that adapter uninitialized while covering world callbacks.
+namespace adventure_explosives { void picked(Identity, uint8_t) {} }
+
 namespace {
 using skg::field;
 struct Object {

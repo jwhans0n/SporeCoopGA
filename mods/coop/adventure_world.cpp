@@ -400,6 +400,11 @@ static void SK_THISCALL picked_item(void* self, void* holder, void* item)
         }
     }
     o_Picked(self, holder, item);
+    if(active()) {
+        uint8_t player=owner(holder); Identity id;
+        if(player!=ga::kNoPlayer && identity(item,id))
+            adventure_explosives::picked({id.marker,id.incarnation},player);
+    }
 }
 static void SK_THISCALL dropped_item(void* self, void* holder, void* item)
 {

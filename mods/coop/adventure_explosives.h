@@ -41,6 +41,9 @@ bool available();
 void tick();
 void reset();
 void on_message(uint8_t from,net::Reader&); // consumes subkind144..151
+// Called only after trusted native OnPicked bookkeeping for a captain. A new
+// timed-bomb pickup permits another throw without restarting its running fuse.
+void picked(Identity,uint8_t player);
 // During native host blast/activation, damage attribution is environmental and
 // must bypass the usual victim-client origin filter. Guest blast damage is suppressed.
 bool environmental_damage();
