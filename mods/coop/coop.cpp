@@ -1,7 +1,7 @@
 // SporeCoop mod: creature-stage co-op ("pack" mode). See docs/03-gameplay.md.
 // the release version (tools/package.sh names the zip after it)
 #ifndef COOP_VERSION
-#define COOP_VERSION "0.7.0-ga-preview.2"
+#define COOP_VERSION "0.7.0-ga-preview.3"
 #endif
 
 #include <winsock2.h>
@@ -32,6 +32,7 @@
 #include "autoupdate.h"
 #include "adventure.h"
 #include "adventure_captains.h"
+#include "adventure_collect.h"
 #include "adventure_native.h"
 #include "adventure_progress.h"
 #include "gamefixes.h"
@@ -1955,7 +1956,7 @@ std::vector<coop_ui::PlayerRow> ui_players()
         r.host = p.id == 0;
         r.me = p.id == g_sess.my_id();
         r.ready = g_ready.count(p.id) && g_ready[p.id];
-        if (r.me && adventure::active()) r.ready = adventure::ready();
+        if (adventure::active()) r.ready = adventure::launch_ready(p.id);
         if (r.me)
             r.stage = modes::mode_name(g_mode);
         else {
@@ -2284,7 +2285,7 @@ void init_ui()
         return !g_vote.active && (g_mode == modes::kMenu || g_mode == modes::kScenario)
             ? adventure::status() : ui_world_line();
     };
-    a.ready = [] { return adventure::active() ? adventure::ready() : g_ready.count(g_sess.my_id()) && g_ready[g_sess.my_id()]; };
+    a.ready = [] { return adventure::active() ? adventure::launch_ready(g_sess.my_id()) : g_ready.count(g_sess.my_id()) && g_ready[g_sess.my_id()]; };
     a.set_ready = set_ready;
     a.share_world = [] {
         if (g_vote.active)
@@ -2300,6 +2301,7 @@ void init_ui()
         party = static_cast<int>(run && adventure::active() ? run->roster.size() : g_sess.players().size());
         editable = g_sess.role() == net::Role::Host && !adventure::active();
         status = adventure::status();
+        if (adventure::active() && !adventure::running()) status += "\n" + adventure_captains::status();
         return true;
     };
     a.set_adventure_difficulty = [](const ga::Difficulty& difficulty) { adventure::set_settings(difficulty); };
@@ -2368,12 +2370,22 @@ int c_adventure(void*, int argc, const char* const* argv, SkOut* out)
             settings.damage_multiplier(), (unsigned)settings.friendly_fire_percent);
         return 0;
     }
+    if (!strcmp(argv[1], "recover")) {
+        if (adventure::active() || game::mode_id() != modes::kMenu) return 1;
+        auto native = adventure_native::coordinator_context();
+        if (!native.abort_preparation) return 1;
+        native.abort_preparation();
+        return 0;
+    }
     if (!strcmp(argv[1], "cancel")) return adventure::cancel("The party cancelled adventure preparation.") ? 0 : 1;
     if (!strcmp(argv[1], "ready") && argc == 3) return adventure::set_ready(atoi(argv[2]) != 0) ? 0 : 1;
     if (!strcmp(argv[1], "start") && argc == 5) {
         dbpf::Key key{(uint32_t)strtoul(argv[2], nullptr, 0), (uint32_t)strtoul(argv[3], nullptr, 0),
                       (uint32_t)strtoul(argv[4], nullptr, 0)};
-        return adventure::request_play(key) ? 0 : 1;
+        dbpf::Key locked;
+        std::string error;
+        if (!adventure_collect::inspect(key, locked, error)) { SAY("%s", error.c_str()); return 1; }
+        return adventure::request_play(key, locked) ? 0 : 1;
     }
     if (argc == 3) {
         ga::Difficulty settings = adventure::settings();

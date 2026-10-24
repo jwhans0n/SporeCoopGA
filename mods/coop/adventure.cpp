@@ -25,7 +25,7 @@ ga::Authority g_authority;
 Phase g_phase = Phase::Idle;
 Key g_captain;
 bool g_ready, g_content, g_chosen, g_launch_started, g_loaded_sent, g_waiting;
-bool g_assets_available, g_have_wall;
+bool g_assets_available, g_have_wall, g_cleaning;
 uint64_t g_generation, g_next_run, g_newest_run, g_settings_revision = 1, g_received_settings;
 uint64_t g_snapshot_revision, g_health_event, g_result_run;
 double g_last_wall, g_simulation, g_last_snapshot, g_last_revive;
@@ -121,7 +121,7 @@ std::string unavailable()
     }
     if (!g_assets_available)
         return "Adventure resource registration is unavailable for this game build.";
-    if (!C.choose_captain || !C.launch || !C.abort_native || !C.freeze || !C.loaded || !C.sample || !C.apply || !C.source ||
+    if (!C.choose_captain || !C.launch || !C.abort_preparation || !C.abort_native || !C.freeze || !C.loaded || !C.sample || !C.apply || !C.source ||
         !C.collect || !C.captain_of || !C.native_result)
         return "The game adapter has incomplete launch, content, or combat support.";
     return {};
@@ -135,8 +135,7 @@ void invalidate_ready()
 
 void abort_run(const std::string& reason, bool announce)
 {
-    const uint64_t run = g_descriptor.run_id;
-    const bool leave_native = g_launch_started || g_phase == Phase::Loading || g_phase == Phase::Running;
+    const bool leave_native = g_launch_started || g_phase == Phase::Running;
     if (announce && g_descriptor.run_id) {
         net::Writer w;
         write_run(w, g_descriptor.run_id); w.str16(reason);
@@ -145,16 +144,21 @@ void abort_run(const std::string& reason, bool announce)
     g_barrier.abort(g_descriptor.run_id);
     g_authority.abort(g_descriptor.run_id);
     g_phase = Phase::Ended;
+    ++g_generation; // Discard selection, transfer and launch work from this attempt.
     g_launch_started = false;
     g_error = reason;
     g_revive_held = false;
     invalidate_ready();
     adventure_assets::reset();
-    outside([run, leave_native] {
-        if (run != g_descriptor.run_id || g_phase != Phase::Ended) return;
+    g_cleaning = true;
+    // Cleanup must survive reset/disconnect invalidating ordinary attempt callbacks.
+    H->run_outside_frame([](void* opaque) {
+        std::unique_ptr<bool> leave(static_cast<bool*>(opaque));
         if (C.freeze) C.freeze(false);
-        if (leave_native && C.abort_native) C.abort_native();
-    });
+        if (*leave && C.abort_native) C.abort_native();
+        else if (C.abort_preparation) C.abort_preparation();
+        g_cleaning = false;
+    }, new bool(leave_native));
     feed("Adventure: " + reason);
 }
 
@@ -247,11 +251,11 @@ void queue_launch()
             return;
         C.freeze(true);
         std::string error;
+        g_launch_started = true; // Even a failed native entry may have changed application state.
         if (!C.launch(g_descriptor.adventure, g_captain, error)) {
             abort_run(error.empty() ? "The adventure could not be launched." : error, true);
             return;
         }
-        g_launch_started = true;
     });
 }
 
@@ -401,6 +405,15 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx ctx)
 
 const ga::Difficulty& settings() { return g_settings; }
 bool ready() { return g_ready; }
+bool launch_ready(uint8_t player)
+{
+    if (!active() || !member(player)) return false;
+    if (player == local_id()) return g_content && g_chosen && g_ready;
+    if (!host()) return g_phase == Phase::Loading || g_phase == Phase::Running;
+    for (const auto& m : g_barrier.members())
+        if (m.player == player) return m.connected && m.content && m.captain && m.ready;
+    return false;
+}
 bool active() { return g_phase != Phase::Idle && g_phase != Phase::Ended; }
 bool running() { return g_phase == Phase::Running; }
 bool captain_state(uint8_t player, CaptainState& state)
@@ -458,7 +471,7 @@ bool set_ready(bool value)
 
 bool request_play(const Key& key, const Key& locked)
 {
-    if (!host() || active() || !valid_key(key))
+    if (!host() || active() || g_cleaning || !valid_key(key))
         return false;
     std::string why = unavailable();
     if (!why.empty()) {
@@ -576,6 +589,13 @@ void on_message(uint8_t from, net::Reader& r)
         return;
     }
     if (kind == K_PREPARE) {
+        if (g_cleaning) {
+            net::Writer deferred; deferred.u8(kind); deferred.raw(r.cur(), r.left());
+            outside([from, bytes = std::move(deferred.data)] {
+                net::Reader message(bytes.data(), bytes.size()); on_message(from, message);
+            });
+            return;
+        }
         ga::Descriptor descriptor;
         if (from != 0 || !client() || !descriptor.read(r) || !finished(r) || descriptor.run_id <= g_newest_run ||
             g_phase == Phase::Running || g_phase == Phase::Loading)
@@ -813,6 +833,7 @@ bool cancel(const std::string& reason)
 
 void reset()
 {
+    if (active()) abort_run("The party disconnected during the adventure.", false);
     g_generation++;
     adventure_assets::reset();
     g_barrier = {};

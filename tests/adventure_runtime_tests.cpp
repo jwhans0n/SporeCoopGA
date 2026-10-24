@@ -122,6 +122,8 @@ int main()
         if (!launch_ok) error = "fake native load failure";
         return launch_ok;
     };
+    unsigned preparation_aborts = 0;
+    ctx.abort_preparation = [&] { CHECK(!adventure::active()); preparation_aborts++; };
     ctx.abort_native = [&] { CHECK(!adventure::active()); native_aborts++; };
     ctx.freeze = [&](bool value) { frozen = value; };
     ctx.loaded = [&](const dbpf::Key&) { return loaded; };
@@ -259,8 +261,10 @@ int main()
     launch_ok = true;
     // Cancelling captain selection must leave the surrounding native menu intact.
     CHECK(adventure::request_play(key));
+    unsigned before_preparation_abort = preparation_aborts;
     CHECK(adventure::cancel("captain selection cancelled")); drain();
     CHECK(native_aborts == 1 && results == 2);
+    CHECK(preparation_aborts == before_preparation_abort + 1);
     // Reset invalidates a queued native abort before it can affect a later attempt.
     CHECK(adventure::request_play(key)); drain();
     const auto reset_abort = *adventure::current();
@@ -362,6 +366,28 @@ int main()
     incoming(0, reset_result);
     adventure::reset(); drain();
     CHECK(results == 3); // the old result cannot mutate the reset native session
+    // Delayed native selection from a cancelled attempt cannot ready its retry.
+    ctx.sess = &host;
+    std::function<void(const dbpf::Key&)> pending_selection;
+    ctx.choose_captain = [&](const dbpf::Key&, auto selected) { pending_selection = std::move(selected); };
+    CHECK(adventure::init(&api, nullptr, ctx));
+    CHECK(adventure::request_play(key)); drain();
+    auto stale_selection = pending_selection;
+    CHECK(stale_selection && !adventure::launch_ready(0));
+    CHECK(adventure::cancel("cancel during naming"));
+    CHECK(!adventure::request_play(key)); // native cleanup is still queued
+    auto before_cleanup = preparation_aborts;
+    adventure::reset(); drain(); // disconnect must not discard mandatory cleanup
+    CHECK(preparation_aborts == before_cleanup + 1);
+    CHECK(adventure::request_play(key)); drain();
+    CHECK(!adventure::launch_ready(0));
+    stale_selection({321, 10, 20}); drain();
+    CHECK(!adventure::launch_ready(0));
+    pending_selection({322, 10, 20}); drain();
+    CHECK(adventure::launch_ready(0));
+    CHECK(adventure::cancel("retry finished")); drain();
+    CHECK(!adventure::cancel("repeat cleanup")); drain();
+
     guest.leave(); guest2.leave(); host.leave();
     std::printf("adventure coordinator: %s (%d failures)\n", failures ? "FAILED" : "passed", failures);
     return failures ? 1 : 0;

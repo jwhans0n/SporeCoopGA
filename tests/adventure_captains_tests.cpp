@@ -21,7 +21,15 @@ static constexpr uint32_t crt = 0x2B978C46, bem = 0x1A99B06B, gear = 0x0F43029A,
 static ga::Descriptor descriptor;
 static bool g_active = true;
 static std::string cancelled;
-static unsigned imports, choices, constructors, destructors;
+static unsigned imports, choices, effect_stops, effect_releases;
+static void SK_THISCALL stop_effect(void*, bool immediate) { CHECK(immediate); effect_stops++; }
+static int SK_THISCALL release_effect(void*) { effect_releases++; return 0; }
+static void* effect_vtable[4];
+static void** preview_effect = effect_vtable;
+static void** launch_effect = effect_vtable;
+static uint8_t frontend[0x140], wizard_data[0x178], node[0x18];
+static void* frontend_pointer = frontend;
+static uintptr_t wizard_vtable = 0x12345678;
 static std::map<std::tuple<uint32_t, uint32_t, uint32_t>, std::vector<uint8_t>> records;
 static auto id(const Key& key) { return std::tuple{key.instance, key.type, key.group}; }
 static std::vector<std::pair<SkTaskFn, void*>> tasks;
@@ -74,18 +82,29 @@ static void* SK_THISCALL find_record(void*, const Key* key, Key* real, void*)
 static void* manager_vtable[32];
 static void** manager = manager_vtable;
 static void* manager_pointer = &manager;
-static void SK_THISCALL construct(void* request)
+static void SK_THISCALL start_wizard(void* wizard)
 {
-    constructors++;
-    std::memset(request, 0, 0x48);
+    CHECK(wizard == wizard_data); choices++;
+    skg::field<int>(wizard, 0x20) = 1;
 }
-static void show(void* request)
+static void SK_THISCALL select_adventure(void* wizard, const Key* key)
 {
-    choices++;
-    CHECK(skg::field<uint32_t>(request, 0) == 0x5D4875D0);
-    skg::field<void*>(browser, 0x1A0) = skg::field<void*>(request, 0x38);
+    skg::field<Key>(wizard, 0x8C) = *key;
 }
-static void SK_THISCALL destroy(void*) { destructors++; }
+static void SK_THISCALL next_step(void* wizard) { skg::field<int>(wizard, 0x20) = 2; }
+static void SK_THISCALL visible(void*, bool) {}
+static void SK_THISCALL reset_wizard(void*) {}
+static void galaxy_reset() {}
+static bool SK_THISCALL layout_visible(void*, bool show) { CHECK(show); return true; }
+static void SK_THISCALL galaxy_effect(void*, bool) {}
+static void SK_THISCALL browser_show(void*, bool show, bool, bool notify) { CHECK(!show && !notify); }
+static void SK_THISCALL frontend_mode(void*, int, bool) {}
+static void choose_wizard()
+{
+    drain();
+    adventure_captains::tick(0); drain();
+    adventure_captains::tick(0); drain();
+}
 static uint32_t model(const Key* key)
 {
     return key->type == crt && (key->instance == 100 || key->instance == 200 || records.count(id(*key)))
@@ -94,11 +113,20 @@ static uint32_t model(const Key* key)
 static void* get_browser() { return browser; }
 static uintptr_t symbol(const char* name)
 {
-    if (!std::strcmp(name, "Sporepedia::ShopperRequest::ctor")) return (uintptr_t)construct;
-    if (!std::strcmp(name, "Sporepedia::ShopperRequest::Show")) return (uintptr_t)show;
-    if (!std::strcmp(name, "Sporepedia::ShopperRequest::dtor")) return (uintptr_t)destroy;
+    if (!std::strcmp(name, "SporeCoop::Adventure::FrontEnd_ptr")) return (uintptr_t)&frontend_pointer;
+    if (!std::strcmp(name, "SporeCoop::Adventure::CaptainWizard_vtable")) return wizard_vtable;
+    if (!std::strcmp(name, "SporeCoop::Adventure::CaptainWizardStart")) return (uintptr_t)start_wizard;
+    if (!std::strcmp(name, "SporeCoop::Adventure::CaptainWizardSelectAdventure")) return (uintptr_t)select_adventure;
+    if (!std::strcmp(name, "SporeCoop::Adventure::CaptainWizardNext")) return (uintptr_t)next_step;
+    if (!std::strcmp(name, "SporeCoop::Adventure::CaptainWizardShow")) return (uintptr_t)visible;
+    if (!std::strcmp(name, "SporeCoop::Adventure::CaptainWizardReset")) return (uintptr_t)reset_wizard;
+    if (!std::strcmp(name, "SporeCoop::Adventure::FrontEndRequestMode")) return (uintptr_t)frontend_mode;
     if (!std::strcmp(name, "Sporepedia::GetAssetModelType")) return (uintptr_t)model;
     if (!std::strcmp(name, "Sporepedia::AssetBrowser::Get")) return (uintptr_t)get_browser;
+    if (!std::strcmp(name, "UTFWin::UILayout::SetVisible")) return (uintptr_t)layout_visible;
+    if (!std::strcmp(name, "SporeCoop::Adventure::GalaxyViewReset")) return (uintptr_t)galaxy_reset;
+    if (!std::strcmp(name, "SporeCoop::Adventure::GalaxyIdleEffect")) return (uintptr_t)galaxy_effect;
+    if (!std::strcmp(name, "SporeCoop::Adventure::AssetBrowserShow")) return (uintptr_t)browser_show;
     if (!std::strcmp(name, "Resource::ResourceManager_ptr")) return (uintptr_t)&manager_pointer;
     return 0;
 }
@@ -142,6 +170,11 @@ int main()
 {
     SkHost api{};
     api.sym = symbol; api.run_outside_frame = queue; api.exe_sha256 = hash; api.log = log;
+    skg::field<void*>(frontend, 0x130) = node;
+    skg::field<int>(node, 0x10) = 13;
+    skg::field<void*>(node, 0x14) = wizard_data;
+    skg::field<uintptr_t>(wizard_data, 0) = wizard_vtable;
+    descriptor.adventure = {123, 0x366A930D, 0x408A0000};
     manager_vtable[0x30 / 4] = (void*)find_record;
     net::Session session;
     std::string error;
@@ -161,14 +194,14 @@ int main()
     adventure_captains::reset();
     descriptor.run_id = 2;
     CHECK(adventure_captains::choose({}, [&](const Key& key) { chosen = key; callbacks++; }));
-    CHECK(choices == 0); drain();
-    CHECK(choices == 1 && constructors == 1 && destructors == 1);
-    void* listener = skg::field<void*>(browser, 0x1A0);
-    CHECK(listener != nullptr);
-    skg::vcall<void>(listener, 0, &original); drain();
+    CHECK(choices == 0); choose_wizard();
+    CHECK(choices == 1 && callbacks == 1); // selecting a body has not saved a captain
+    CHECK(!adventure_captains::complete_native({999, crt, group}, original));
+    CHECK(!adventure_captains::complete_native(descriptor.adventure, original));
+    skg::field<int>(wizard_data, 0x20) = 0; // native conversion and save completed
+    CHECK(adventure_captains::complete_native(descriptor.adventure, original)); drain();
     CHECK(callbacks == 2 && chosen == original);
-    adventure_captains::reset();
-    CHECK(skg::field<void*>(browser, 0x1A0) == nullptr);
+    adventure_captains::close_picker(); adventure_captains::reset();
 
     // Remote captains retain all collected gear records without shadowing our local key.
     descriptor.run_id = 3; descriptor.roster = {0, 1};
@@ -225,17 +258,24 @@ int main()
     adventure_captains::reset();
     descriptor.run_id = 6;
     CHECK(adventure_captains::choose({}, [&](const Key&) { callbacks++; })); drain();
-    listener = skg::field<void*>(browser, 0x1A0);
-    CHECK(listener);
-    Key cancelled_key;
-    skg::vcall<void>(listener, 0, &cancelled_key); drain();
+    choose_wizard();
+    skg::field<int>(wizard_data, 0x20) = 0;
+    adventure_captains::tick(0); drain();
     CHECK(callbacks == 5 && !g_active && cancelled.find("cancelled") != std::string::npos);
-    adventure_captains::reset();
+    adventure_captains::close_picker(); adventure_captains::reset();
     descriptor.run_id = 7; g_active = true;
-    CHECK(adventure_captains::choose({}, [&](const Key&) { callbacks++; })); drain();
-    adventure_captains::reset();
+    CHECK(adventure_captains::choose({}, [&](const Key&) { callbacks++; })); choose_wizard();
+    effect_vtable[1] = (void*)release_effect; effect_vtable[3] = (void*)stop_effect;
+    skg::field<void*>(wizard_data, 0x84) = &preview_effect;
+    skg::field<void*>(wizard_data, 0x88) = &launch_effect;
+    skg::field<void*>(browser, 0x1A0) = wizard_data + 8;
+    adventure_captains::reset(); adventure_captains::close_picker();
     CHECK(skg::field<void*>(browser, 0x1A0) == nullptr);
-    CHECK(callbacks == 5); // reset cancels the unmanaged native listener safely
+    CHECK(effect_stops == 2 && effect_releases == 2);
+    adventure_captains::close_picker();
+    CHECK(effect_stops == 2 && effect_releases == 2);
+    CHECK(!adventure_captains::complete_native(descriptor.adventure, original));
+    CHECK(callbacks == 5); // cancelled attempt cannot publish a delayed save callback
     session.leave();
     std::printf("adventure captains: %s (%d failures)\n", failures ? "FAILED" : "passed", failures);
     return failures ? 1 : 0;

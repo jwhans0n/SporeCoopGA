@@ -21,14 +21,19 @@ namespace adventure_captains {
 namespace {
 namespace content = net::adventure_content;
 enum Kind : uint8_t { Offer = 192, Entry, ManifestDone, Chunk, Done, Ack, Ready, Error };
-constexpr uint32_t kCaptainModel = 0x4178B8E8, kCaptainShopper = 0x5D4875D0;
+constexpr uint32_t kCaptainModel = 0x4178B8E8;
 constexpr uint32_t kCaptainBytes = 16u << 20;
 constexpr uint16_t kCaptainRecords = 128;
 
 const SkHost* H;
 SkMod* M;
 net::Session* S;
-uintptr_t a_Ctor, a_Show, a_Dtor, a_ModelType, a_Browser, a_Rm;
+uintptr_t a_ModelType, a_Browser, a_BrowserShow, a_Rm;
+uintptr_t a_FrontEnd, a_WizardVtable, a_Start, a_SelectAdventure, a_Next, a_Visibility, a_Reset, a_FrontMode, a_GalaxyView, a_GalaxyEffect, a_LayoutVisible;
+void* g_wizard;
+bool g_wizard_queued;
+unsigned g_wizard_step;
+Key g_wizard_adventure;
 bool g_available, g_picking;
 uint64_t g_run, g_generation, g_next;
 Selected g_selected;
@@ -260,24 +265,68 @@ void received(uint8_t owner, uint64_t run, uint64_t serial, const Key& original,
     });
 }
 
-struct Listener {
-    void** vtable;
-    uint64_t generation, run;
-};
-std::vector<std::unique_ptr<Listener>> g_listeners;
-void SK_THISCALL selected(Listener* listener, const Key* key)
+// Component registry is a native RB tree. Lookup never invokes its inserting accessor.
+void* frontend()
 {
-    if (listener->generation != g_generation || !current(listener->run) || !g_picking) return;
-    g_picking = false;
-    if (!key || !skg::readable(key, sizeof(Key)) || !key->instance) {
-        fail(mine(), g_run, 0, "captain selection was cancelled");
+    return a_FrontEnd ? *reinterpret_cast<void**>(a_FrontEnd) : nullptr;
+}
+void* wizard()
+{
+    void* owner = frontend();
+    if (!owner || !skg::readable(owner, 0x138)) return nullptr;
+    auto* map = static_cast<uint8_t*>(owner) + 0x124;
+    void* node = skg::field<void*>(map, 0xC);
+    for (unsigned i = 0; node && node != map + 4 && i < 64; ++i) {
+        if (!skg::readable(node, 0x18)) return nullptr;
+        int id = skg::field<int>(node, 0x10);
+        if (id == 13) {
+            void* value = skg::field<void*>(node, 0x14);
+            return value && skg::readable(value, 0x178) &&
+                skg::field<uintptr_t>(value, 0) == a_WizardVtable ? value : nullptr;
+        }
+        node = skg::field<void*>(node, id < 13 ? 0 : 4);
+    }
+    return nullptr;
+}
+void stop_effects(void* native)
+{
+    // Match DFBD40's native finalization: both preview handles can outlive a
+    // cancelled launch animation and later hide the restored galaxy controls.
+    for (size_t offset : {size_t(0x84), size_t(0x88)}) {
+        void* effect = skg::field<void*>(native, offset);
+        if (!effect) continue;
+        skg::vcall<void>(effect, 0x0C / 4, true);
+        effect = skg::field<void*>(native, offset);
+        skg::field<void*>(native, offset) = nullptr;
+        if (effect) skg::vcall<int>(effect, 0x04 / 4);
+    }
+}
+void pump_wizard()
+{
+    if (!g_picking || !g_wizard || !current(g_run)) return;
+    int stage = skg::field<int>(g_wizard, 0x20);
+    if (g_wizard_step == 1) {
+        // Let the native start flow finish any automatic offline Welcome lookup.
+        if (stage == 8) return;
+        skg::field<int>(g_wizard, 0x20) = 1;
+        skg::field<unsigned>(g_wizard, 0x2C) = 0;
+        skg::thiscall<void>(a_SelectAdventure, g_wizard, &g_wizard_adventure);
+        g_wizard_step = 2;
         return;
     }
-    Key choice = *key;
-    Selected callback = std::exchange(g_selected, {});
-    publish(choice, std::move(callback));
+    if (g_wizard_step == 2) {
+        if (stage == 8) return;
+        if (stage != 1 || !(skg::field<Key>(g_wizard, 0x8C) == g_wizard_adventure)) {
+            fail(mine(), g_run, 0, "native captain setup could not open the party adventure");
+            return;
+        }
+        skg::thiscall<void>(a_Next, g_wizard);
+        skg::thiscall<void>(a_Visibility, g_wizard, true);
+        g_wizard_step = 3;
+    } else if (g_wizard_step == 3 && stage == 0) {
+        fail(mine(), g_run, 0, "captain selection was cancelled");
+    }
 }
-void* listener_vtable[] = {(void*)selected};
 
 void pump(Outgoing& out)
 {
@@ -318,13 +367,22 @@ bool init(const SkHost* api, SkMod* mod, net::Session* session)
 {
     H = api; M = mod; S = session;
     g_installed.clear(); // native records are revalidated when a fresh module initializes
-    a_Ctor = H->sym("Sporepedia::ShopperRequest::ctor");
-    a_Show = H->sym("Sporepedia::ShopperRequest::Show");
-    a_Dtor = H->sym("Sporepedia::ShopperRequest::dtor");
+    a_FrontEnd = H->sym("SporeCoop::Adventure::FrontEnd_ptr");
+    a_WizardVtable = H->sym("SporeCoop::Adventure::CaptainWizard_vtable");
+    a_Start = H->sym("SporeCoop::Adventure::CaptainWizardStart");
+    a_SelectAdventure = H->sym("SporeCoop::Adventure::CaptainWizardSelectAdventure");
+    a_Next = H->sym("SporeCoop::Adventure::CaptainWizardNext");
+    a_Visibility = H->sym("SporeCoop::Adventure::CaptainWizardShow");
+    a_Reset = H->sym("SporeCoop::Adventure::CaptainWizardReset");
+    a_FrontMode = H->sym("SporeCoop::Adventure::FrontEndRequestMode");
+    a_GalaxyView = H->sym("SporeCoop::Adventure::GalaxyViewReset");
+    a_GalaxyEffect = H->sym("SporeCoop::Adventure::GalaxyIdleEffect");
+    a_LayoutVisible = H->sym("UTFWin::UILayout::SetVisible");
     a_ModelType = H->sym("Sporepedia::GetAssetModelType");
     a_Browser = H->sym("Sporepedia::AssetBrowser::Get");
+    a_BrowserShow = H->sym("SporeCoop::Adventure::AssetBrowserShow");
     a_Rm = H->sym("Resource::ResourceManager_ptr");
-    g_available = S && H->run_outside_frame && a_Ctor && a_Show && a_Dtor && a_ModelType && a_Browser && a_Rm &&
+    g_available = S && H->run_outside_frame && a_FrontEnd && a_WizardVtable && a_Start && a_SelectAdventure && a_Next && a_Visibility && a_Reset && a_FrontMode && a_GalaxyView && a_GalaxyEffect && a_LayoutVisible && a_ModelType && a_Browser && a_BrowserShow && a_Rm &&
         adventure_collect::available() && std::string(H->exe_sha256()) == "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37";
     return g_available;
 }
@@ -388,17 +446,14 @@ bool choose(const Key& locked, Selected callback)
     g_picking = true;
     outside([] {
         if (!current(g_run) || !g_picking) return;
-        auto listener = std::make_unique<Listener>();
-        listener->vtable = listener_vtable; listener->generation = g_generation; listener->run = g_run;
-        Listener* pointer = listener.get();
-        g_listeners.push_back(std::move(listener));
-        // Native ctor/dtor and a one-method MSVC listener avoid copying EASTL or C++ class ABIs.
-        alignas(4) std::array<uint8_t, 0x48> request{};
-        skg::thiscall<void>(a_Ctor, request.data());
-        skg::field<uint32_t>(request.data(), 0) = kCaptainShopper;
-        skg::field<void*>(request.data(), 0x38) = pointer;
-        skg::cdecl_call<void>(a_Show, request.data());
-        skg::thiscall<void>(a_Dtor, request.data());
+        g_wizard = wizard();
+        if (!g_wizard) { fail(mine(), g_run, 0, "native captain setup is unavailable"); return; }
+        g_wizard_adventure = adventure::current()->adventure;
+        // Enter the ordinary native component before starting its choose/name/save flow.
+        skg::field<int>(g_wizard, 0x20) = 1;
+        skg::thiscall<void>(a_FrontMode, frontend(), 13, false);
+        skg::thiscall<void>(a_Start, g_wizard);
+        g_wizard_step = 1;
     });
     return true;
 }
@@ -477,11 +532,66 @@ void on_message(uint8_t from, net::Reader& r)
     }
 }
 
+bool native_pending()
+{
+    void* native = wizard();
+    return native && skg::field<int>(native, 0x20) != 0;
+}
+bool complete_native(const Key& adventure, const Key& key)
+{
+    if (!g_picking || !g_wizard || skg::field<int>(g_wizard, 0x20) != 0 || g_wizard_step != 3 || !current(g_run) ||
+        !(adventure == g_wizard_adventure)) return false;
+    g_picking = false;
+    Selected callback = std::exchange(g_selected, {});
+    outside([] { close_picker(); });
+    return publish(key, std::move(callback));
+}
+
+void restore_galaxy()
+{
+    // Native Back-to-galaxy also resets the front-end view. The application state
+    // may already be Menu when cancellation interrupts the captain launch animation.
+    if (void* owner = frontend()) {
+        if (void* native = wizard()) stop_effects(native);
+        skg::cdecl_call<void>(a_GalaxyView);
+        skg::thiscall<void>(a_FrontMode, owner, 2, false);
+        skg::thiscall<void>(a_GalaxyEffect, owner, true);
+        skg::thiscall<bool>(a_LayoutVisible, static_cast<uint8_t*>(owner) + 0x144, true);
+    }
+}
+
+void close_picker()
+{
+    if (!g_wizard) return;
+    // Detach only the listener belonging to the component this attempt opened.
+    void* browser = a_Browser ? skg::cdecl_call<void*>(a_Browser) : nullptr;
+    if (browser && skg::readable(browser, 0x1A8) &&
+        skg::field<void*>(browser, 0x1A0) == static_cast<uint8_t*>(g_wizard) + 8)
+    {
+        skg::field<void*>(browser, 0x1A0) = nullptr;
+        skg::thiscall<void>(a_BrowserShow, browser, false, false, false);
+    }
+    stop_effects(g_wizard);
+    skg::field<int>(g_wizard, 0x20) = 0;
+    skg::field<int>(g_wizard, 0x24) = 0;
+    skg::field<int>(g_wizard, 0x28) = 0;
+    skg::field<bool>(g_wizard, 0x80) = false;
+    skg::field<Key>(g_wizard, 0x98) = {};
+    skg::thiscall<void>(a_Reset, g_wizard);
+    skg::thiscall<void>(a_Visibility, g_wizard, false);
+    if (void* owner = frontend()) skg::thiscall<void>(a_FrontMode, owner, 2, false);
+    g_wizard = nullptr; g_wizard_step = 0;
+}
+
 void tick(double)
 {
     const auto* d = adventure::current();
     if (!d || !S || !S->connected()) return;
     begin_run(d->run_id);
+    if (g_picking && g_wizard && !g_wizard_queued) {
+        g_wizard_queued = true;
+        outside([] { g_wizard_queued = false; pump_wizard(); });
+    }
     for (auto& out : g_outgoing)
         for (unsigned i = 0; i < 4 && out.stage < 5; i++) pump(out);
     g_outgoing.erase(std::remove_if(g_outgoing.begin(), g_outgoing.end(), [](const auto& out) { return out.stage == 5; }), g_outgoing.end());
@@ -490,19 +600,12 @@ void tick(double)
 void reset()
 {
     ++g_generation;
-    // The browser keeps an unmanaged listener pointer after Show. Detach ours before unload.
-    void* browser = a_Browser ? skg::cdecl_call<void*>(a_Browser) : nullptr;
-    if (browser && skg::readable(browser, 0x1A8)) {
-        void*& listener = skg::field<void*>(browser, 0x1A0);
-        for (const auto& owned : g_listeners)
-            if (listener == owned.get()) listener = nullptr;
-    }
     g_selected = {};
     g_picking = false;
     g_run = g_next = 0;
     g_transfers.clear(); g_receivers.clear(); g_outgoing.clear();
     g_error.clear();
-    g_listeners.clear();
+    g_wizard_queued = false;
 }
 
 Key key_for(uint8_t player)
@@ -515,7 +618,11 @@ std::string status()
 {
     if (!g_available) return "Native captain selection is unavailable for this game build";
     if (!g_error.empty()) return g_error;
-    if (g_picking) return "Choose your Galactic Adventures captain";
+    if (g_picking) {
+        int stage = g_wizard && skg::readable(g_wizard, 0x24) ? skg::field<int>(g_wizard, 0x20) : 0;
+        return stage == 3 ? "Name or review your captain, then save to join the party" :
+            (stage >= 9 ? "Saving your Galactic Adventures captain" : "Choose or create your Galactic Adventures captain");
+    }
     if (g_selected) return "Sharing captain model and equipment with the party";
     return "Captain models ready";
 }

@@ -218,3 +218,74 @@ sessions and broader adventure compatibility remain validation work. The observe
 Done/restart persistence pass does not make the coordinator's in-memory claim a
 durable transaction across interruption. These passes do not establish that the
 full feature is complete.
+
+
+## Preview 3: native captain preparation and cancelled quickplay recovery (dc04)
+
+Verified against SHA256 dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37.
+The evidence manifest in `tools/addrport/verify_dc04.py` checks each new native
+entry point, its return sites, and the globals/vtable references before map generation.
+
+- Native front-end singleton is `016A1344`. Its component registry at +124 is an
+  RB tree (root +0C, sentinel +4; node right +0, left +4, integer ID +10,
+  component pointer +14). Component13 is the native 178-byte quickplay controller,
+  primary vtable147EDA0, secondary unmanaged browser listener at controller+8.
+  Use bounded lookup, never the inserting native map accessor DE75E0.
+- Controller +20 is stage, +24 resume stage, +28 frame countdown, +2C native
+  step index. +8C adventure key, +98 pending adventure key, +A4 captain key,
+  +7C personal-captain flag, +7F needs naming, +80 launch-animation flag.
+  Native stage2 selects/creates, stage3 names/reviews, stage8 awaits metadata.
+- DFE1F0 starts the native choose/create/name/review flow (thiscall, no arguments,
+  C3 at DFE421). Offline first use may select Welcome automatically; finish that
+  lookup before replacing the adventure with the party descriptor.
+- E00070 selects adventure metadata (thiscall key*, ret4 E00166). With stage1,
+  asynchronous completion parses native captain restrictions before resuming.
+  DF9EC0 advances the native step vector (no arguments, C3 DF9F7E/DF9F84).
+  DFAAF0 controls wizard visibility (thiscall bool, ret4 DFAC66).
+- **The first loading-screen call is too early to publish a captain.** DFAE20
+  starts a launch animation; DFC210 emits a loading signal before its countdown
+  reaches DFBD40. DFBD40 converts a raw creature to model type4178B8E8, writes
+  the entered name, saves it, fills the launch request and changes application
+  state. It is thiscall/no arguments, C3 DFBFC7. Intercept after that save, with
+  stage0 and the matching active attempt, while still gating Scenario entry.
+- Reset DF9AA0 (no args, C3 DF9AF3) hides native step panels. Front-end DE8680
+  requests component13 or component2 (thiscall int,bool, ret8 at DE86DE/DE86F3/
+  DE8701). Browser64A370 takes three bools (show, auxiliary, notify-cancel),
+  ret0C64A8FB. Close only a browser whose listener belongs to our controller;
+  detach it first, then call with false,false,false. Hiding the wizard alone
+  leaves the shopper visible, as reproduced in the hidden Windows lab.
+- Quickplay application state21851EBE is separate from GalaxyGameEntry game mode
+  02CCD1D2. Cancellation must switch application state to02CCDA9C even if game
+  mode already reports the galaxy menu. Previously both live player sessions
+  had quickplay application state while in GalaxyGameEntry, hiding GA controls.
+- Cancel/reset invalidates ordinary attempt callbacks. Mandatory native cleanup
+  survives that invalidation; new host requests wait until it finishes, and an
+  incoming client preparation is deferred behind it. A queued launch that never
+  called the adapter uses preparation cleanup; even a failed adapter call uses
+  loaded cleanup because it may have partially changed native state.
+
+No network kinds, resource transfer format, friendly-fire rules or read-only actor
+memory-validation performance optimizations are changed by this fix.
+
+Saving-animation cancellation additionally needs the native front-end Back path:
+DE0840 has no stack arguments and never reads ECX (C3 DE08AA). It resets galaxy
+view globals and sends07BE7DF5. DE52E0 takes frontend,bool (ret4 DE536A/DE536F,
+or tailcalls effect+8). Native Back calls both at DFE699 and DFE6B5. Without the
+view reset, cancellation immediately after Finish can leave application state
+and game mode correct but hide the menu controls. `coop.adventure recover` uses
+the same cleanup only while inactive in the galaxy, allowing a preview 2 menu to
+be repaired after upgrading without discarding a live game process.
+
+Browser wrapper53C6DC80 can remain as a cached empty window after normal native
+close. Assert browser+1C is false rather than asserting the wrapper was destroyed.
+
+The decisive launch-animation menu visibility flag is the native front-end
+UILayout at singleton+144. DFAE20 hides it via UILayout::SetVisible(false) at
+DFAE51, before entering Adventure application state. Restore that layout with
+SetVisible(true) after restoring galaxy application state/mode. Switching an
+already-current Menu application state is intentionally a no-op and cannot undo
+this independent layout visibility flag. The GA button's own visible flag stays
+set, but its FFFFFFFF layout root is hidden (12 rather than13), which reproduces
+missing controls despite correct application state02CCDA9C and game mode02CCD1D2.
+Both wizard preview/effect handles +84/+88 must be stopped/released using the
+native DFBD40 finalization convention, without deleting saved creation records.

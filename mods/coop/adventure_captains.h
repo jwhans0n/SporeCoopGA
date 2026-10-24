@@ -15,10 +15,15 @@ using Selected = std::function<void(const Key&)>;
 bool init(const SkHost* host, SkMod* mod, net::Session* session);
 bool available();
 // Locked adventures use the authored captain immediately. Personal selection uses the
-// native GA shopper and calls back only after the launch roster has the captain model.
+// native captain wizard and calls back only after saving and all model acknowledgements.
 bool choose(const Key& locked, Selected selected);
 // Publish a captain already selected by the host's normal Sporepedia Play workflow.
 bool publish(const Key& captain, Selected selected);
+// Called only at the gated native loading request, after the wizard saved its captain.
+bool native_pending();
+bool complete_native(const Key& adventure, const Key& captain);
+void restore_galaxy(); // native view reset, outside-frame only
+void close_picker(); // outside-frame cleanup; preserves saved creations
 void tick(double now);
 void on_message(uint8_t from, net::Reader& payload); // owns subkind 192..223
 void reset();

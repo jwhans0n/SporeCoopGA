@@ -21,7 +21,7 @@ namespace {
 const SkHost* H;
 SkMod* M;
 Ctx C;
-bool g_symbols, g_frozen, g_replay, g_coop_attempt;
+bool g_symbols, g_frozen, g_replay, g_coop_attempt, g_recovering;
 uint32_t g_suppressed_scores;
 unsigned g_initializing;
 dbpf::Key g_host_captain, g_score_adventure;
@@ -41,6 +41,7 @@ Switch original_switch;
 Statistic original_statistic;
 CreatureAct original_creature_act;
 Initialize original_initialize;
+Initialize original_save_captain;
 
 void feed(const std::string& message) { if (C.feed) C.feed(message); }
 bool connected() { return C.sess && C.sess->connected(); }
@@ -81,6 +82,14 @@ bool sporepedia_request()
 
 void capture_request()
 {
+    if (g_recovering || adventure_captains::native_pending()) return;
+    uintptr_t request_address = H->sym("SporeCoop::Adventure::Request");
+    if (request_address && readable(reinterpret_cast<void*>(request_address), 0x40)) {
+        void* request = reinterpret_cast<void*>(request_address);
+        if (adventure_captains::complete_native(field<dbpf::Key>(request, 0), field<dbpf::Key>(request, 0x18))) return;
+    }
+    // Guests may emit more than one native launch request while leaving the wizard.
+    if (C.sess->role() != net::Role::Host && adventure::active()) return;
     if (C.sess->role() != net::Role::Host) {
         feed("The party host selects the adventure. Join the next attempt from the lobby.");
         return;
@@ -104,8 +113,17 @@ void capture_request()
     else coop_ui::open(true);
 }
 
+void SK_THISCALL save_captain(void* self)
+{
+    original_save_captain(self);
+    // The earlier loading request starts an animation before conversion and saving.
+    // This boundary is after the native save and before our shared launch barrier.
+    if (connected() && !g_replay && sporepedia_request()) capture_request();
+}
+
 void SK_THISCALL show(void* self, bool on, uint32_t mode, bool transition)
 {
+    if (g_recovering && on && mode == modes::kScenario) return;
     // Results can outlive Scenario. Only a fresh solo/native entry retires the
     // previous co-op score guard; ordinary runtime cleanup must retain it.
     if (on && mode == modes::kScenario && !g_replay && (!connected() || !sporepedia_request())) {
@@ -123,7 +141,7 @@ void SK_THISCALL switch_mode(void* manager, int index)
 {
     // The loading-screen method is only visual. Gate the actual transition before
     // the previous mode's OnExit, since quick-play can queue this before showing it.
-    if (connected() && !g_replay && sporepedia_request() && index >= 0 && readable(manager, 0x2C)) {
+    if ((g_recovering || (connected() && !g_replay && sporepedia_request())) && index >= 0 && readable(manager, 0x2C)) {
         auto* begin = field<uint8_t*>(manager, 0x14);
         auto* end = field<uint8_t*>(manager, 0x18);
         uintptr_t size = reinterpret_cast<uintptr_t>(end) - reinterpret_cast<uintptr_t>(begin);
@@ -286,8 +304,8 @@ bool init(const SkHost* host, SkMod* mod, Ctx context)
         "App::cGameModeManager::SwitchToIndex", "App::cGameModeManager::SetActiveMode",
         "App::IGameModeManager::Get", "SporeCoop::Adventure::RecordAssetStatistic",
         "SporeCoop::Adventure::ApplyCreatureAct", "Simulator::cScenarioPlayMode::Initialize",
-        "App::IStateManager::Get", "App::cStateManager::SwitchToState"};
-    g_symbols = H->sym_require(M, required, 14) == 0;
+        "App::IStateManager::Get", "App::cStateManager::SwitchToState", "SporeCoop::Adventure::CaptainWizardSave"};
+    g_symbols = H->sym_require(M, required, 15) == 0;
     adventure_collect::init(H, M);
     adventure_catalog::init(H, M);
     adventure_captains::init(H, M, C.sess);
@@ -358,6 +376,9 @@ bool init(const SkHost* host, SkMod* mod, Ctx context)
             g_symbols = H->hook_create(M, reinterpret_cast<void*>(H->sym(required[11])), reinterpret_cast<void*>(initialize),
                                       reinterpret_cast<void**>(&original_initialize)) == 0;
     }
+    if (g_symbols)
+        g_symbols = H->hook_create(M, reinterpret_cast<void*>(H->sym(required[14])), reinterpret_cast<void*>(save_captain),
+                                  reinterpret_cast<void**>(&original_save_captain)) == 0;
     return available();
 }
 
@@ -386,19 +407,28 @@ adventure::Ctx coordinator_context()
         g_frozen = frozen;
         if (!frozen && adventure::running()) coop_ui::open(false);
     };
-    context.abort_native = [] {
+    auto restore_menu = [] {
         g_frozen = false;
+        adventure_captains::close_picker();
+        adventure_captains::reset();
+        g_host_captain = {};
         void* loading = cdecl_call<void*>(H->sym("SporeCoop::Adventure::LoadingScreenGet"));
         if (loading && original_show) original_show(loading, false, modes::kScenario, true);
-        if (game::mode_id() == modes::kScenario) {
-            void* state_manager = cdecl_call<void*>(H->sym("App::IStateManager::Get"));
-            if (state_manager) thiscall<bool>(H->sym("App::cStateManager::SwitchToState"), state_manager, uint32_t(0x02CCDA9C));
-            void* manager = cdecl_call<void*>(H->sym("App::IGameModeManager::Get"));
-            if (manager && game::mode_id() == modes::kScenario)
-                thiscall<bool>(H->sym("App::cGameModeManager::SetActiveMode"), manager, modes::kMenu);
+        // Quickplay owns application state even when Scenario never became active.
+        void* state_manager = cdecl_call<void*>(H->sym("App::IStateManager::Get"));
+        g_recovering = true;
+        if (state_manager) {
+            thiscall<bool>(H->sym("App::cStateManager::SwitchToState"), state_manager, uint32_t(0x02CCDA9C));
         }
+        void* manager = cdecl_call<void*>(H->sym("App::IGameModeManager::Get"));
+        if (manager && game::mode_id() != modes::kMenu)
+            thiscall<bool>(H->sym("App::cGameModeManager::SetActiveMode"), manager, modes::kMenu);
+        adventure_captains::restore_galaxy();
+        g_recovering = false;
         if (connected()) coop_ui::open(true);
     };
+    context.abort_preparation = restore_menu;
+    context.abort_native = restore_menu;
     context.loaded = loaded; context.paused = paused; context.captain_of = C.captain_of;
     context.sample = sample; context.apply = apply; context.source = adventure_world::source;
     context.native_result = adventure_world::apply_result;

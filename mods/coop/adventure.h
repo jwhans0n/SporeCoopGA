@@ -22,6 +22,8 @@ struct Ctx {
     // A zero locked key requests a personal captain. Return a zero key to cancel.
     std::function<void(const Key& locked, std::function<void(const Key&)> selected)> choose_captain;
     std::function<bool(const Key& adventure, const Key& captain, std::string& error)> launch;
+    // Close owned setup UI and restore the native menu before Scenario was entered.
+    std::function<void()> abort_preparation;
     // Leave a partially loaded/running native adventure after a cancelled attempt.
     // Called once outside the frame, after the coordinator enters its ended state.
     std::function<void()> abort_native;
@@ -48,6 +50,7 @@ void reset();
 const ga::Difficulty& settings();
 bool set_settings(const ga::Difficulty& difficulty);
 bool ready();
+bool launch_ready(uint8_t player);
 bool set_ready(bool value);
 bool active();
 bool running(); // all frozen-roster captains loaded and the host committed the attempt

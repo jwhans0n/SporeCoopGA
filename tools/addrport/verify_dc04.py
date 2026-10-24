@@ -279,6 +279,28 @@ FUNCTIONS = [
        'thiscall(data,key*), ret4; validates key type then resource-manager load'),
     fn('Simulator::cScenarioData::Load', 0xF464D0, '83ec145355568b74242457568be9', [(0xF4672C, 4)],
        'thiscall(data,key*), ret4; loads scenario then creates native actor/act state', [(0xF464E0, 0xF44A90)]),
+    fn('SporeCoop::Adventure::CaptainWizardStart', 0xdfe1f0, '83ec2c535556578bf1e8b2b5', [(14672929, 0)],
+       'thiscall(wizard), ret; native choose-create-name-review flow; offline fallback may preload Welcome'),
+    fn('SporeCoop::Adventure::CaptainWizardSelectAdventure', 0xe00070, '515356578bf9c744240c0000', [(14680422, 4)],
+       'thiscall(wizard,key*), ret4; loads adventure metadata; native async stage8 resumes stage1'),
+    fn('SporeCoop::Adventure::CaptainWizardNext', 0xdf9ec0, '568bf18b4e102b4e0cb8398e', [(14655358, 0), (14655364, 0)],
+       'thiscall(wizard), ret; advances native step vector and shows naming/review panel'),
+    fn('SporeCoop::Adventure::CaptainWizardShow', 0xdfaaf0, 'a1a47a6c0183ec18558be98b', [(14658662, 4)],
+       'thiscall(wizard,bool), ret4; native quickplay controls visibility'),
+    fn('SporeCoop::Adventure::CaptainWizardReset', 0xdf9aa0, '56578bf1e807fdffff6a018d', [(14654195, 0)],
+       'thiscall(wizard), ret; hides step panels and returns stage0'),
+    fn('SporeCoop::Adventure::FrontEndRequestMode', 0xde8680, '807c240800568bf1746c8b86', [(14583518, 8), (14583539, 8), (14583553, 8)],
+       'thiscall(frontend,int,bool), ret8; queues component13 captain wizard or component2 menu'),
+    fn('SporeCoop::Adventure::CaptainWizardSave', 0xDFBD40, '51535556578bf1', [(0xDFBFC7, 0)],
+       'thiscall(wizard), ret; converts raw creature to captain4178B8E8, saves name, fills request then switches application state'),
+    fn('SporeCoop::Adventure::AssetBrowserShow', 0x64A370, 'a118d95f0183ec1853568bf1', [(0x64A8FB, 12)],
+       'thiscall(browser,bool show,bool,bool notifyCancel), ret12; sets browser+0x1C visibility and closes native layout; Show caller64A934 passes1,0,0'),
+    fn('SporeCoop::Adventure::GalaxyViewReset', 0xDE0840, '83ec40c744243000000000', [(0xDE08AA, 0)],
+       'no stack arguments, ECX unused, ret; sets view globals and sends07BE7DF5; native quickplay Back callDFE699'),
+    fn('SporeCoop::Adventure::GalaxyIdleEffect', 0xDE52E0, '807c240400578bf9', [(0xDE536A, 4), (0xDE536F, 4)],
+       'thiscall(frontend,bool), ret4 or tailcall effect+8; native quickplay BackDFE6B5 passes true'),
+    fn('UTFWin::UILayout::SetVisible', 0x810630, '8b491485c97405e974fdffff', [(0x81063E, 4), (0x810423, 4)],
+       'thiscall(layout,bool), ret4 or tailcall8103B0; quickplay FinishDFAE51 hides frontend layout+144 with false'),
 ]
 
 GLOBALS = [
@@ -288,6 +310,8 @@ GLOBALS = [
     dict(name='Resource::ResourceManager_ptr', address=0x15FD894,
          references=[(0x67DC90, 'a194d85f01c3')],
          note='App resource manager singleton, getter67DC90; RegisterDatabase uses vtable+0x50'),
+    dict(name='SporeCoop::Adventure::FrontEnd_ptr', address=0x16a1344, references=[(0xdfae84, 'a144136a01')], note='global native front-end manager pointer; component registry at +0x124, quickplay component ID13'),
+    dict(name='SporeCoop::Adventure::CaptainWizard_vtable', address=0x147eda0, references=[(0xdfb9a4, 'c706a0ed4701')], note='native quickplay controller primary vtable; object size0x178, secondary browser listener at +8'),
 ]
 
 
