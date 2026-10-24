@@ -586,6 +586,66 @@ int main()
     adventure_assets::complete_on_offer=false;
     adventure::reset();drain();
 
+    // Replay's native cleanup is mandatory even if reset/disconnect invalidates
+    // the queued attempt before the outside-frame task runs. Its old transfer
+    // queue must disappear, and reset must not leave future preparations blocked.
+    prepare_client(1100);
+    adventure_assets::context.prepared(1100,key,std::string(64,'a'));drain();
+    CHECK(adventure::set_ready(true));
+    incoming(0,transfer_packet(5,1100));drain();
+    loaded=true;adventure::tick(500);drain();
+    incoming(0,transfer_packet(7,1100));drain();
+    CHECK(adventure::running());
+    net::Writer ended_client;ended_client.u8(11);put_run(ended_client,1100);ended_client.u8(1);
+    incoming(0,ended_client);drain();
+    CHECK(adventure::results_accepted(true));
+    auto cleanup_aborts=native_aborts,cleanup_launches=launches;
+    incoming(0,transfer_packet(18,1100)); // Native Replay cleanup is now queued.
+    CHECK(!tasks.empty() && !adventure::active());
+    clear_delivery();
+    prepare_client(1101);incoming(0,transfer_packet(64,1101));incoming(0,transfer_packet(192,1101));
+    CHECK(adventure_assets::delivered.empty() && native_delivered.empty());
+    adventure::reset();drain();adventure::tick(501);drain();
+    CHECK(native_aborts==cleanup_aborts+1);
+    CHECK(launches==cleanup_launches && !adventure::active() && !adventure::ready());
+    CHECK(adventure_assets::delivered.empty() && native_delivered.empty());
+    CHECK(adventure_assets::preparation_history.back()==1100); // Queued run1101 was discarded.
+    CHECK(guest.connected());
+    prepare_client(1102);
+    bool replay_cleanup_recovered=adventure::active() && adventure::current()->run_id==1102;
+    CHECK(replay_cleanup_recovered); // g_cleaning cannot remain stuck after reset.
+    if(replay_cleanup_recovered) {
+        CHECK(adventure::cancel("post-reset client retry"));drain();
+
+        // The host must also perform mandatory cleanup once, while suppressing
+        // Replay's automatic request_play after the reset changed generation.
+        adventure::reset();drain();ctx.sess=&host;
+        CHECK(adventure::init(&api,nullptr,ctx));
+        CHECK(adventure::request_play(key));drain();
+        const auto reset_replay=*adventure::current();
+        for(uint8_t id:reset_replay.roster) if(id) acknowledge(reset_replay,id);
+        CHECK(adventure::set_ready(true));
+        loaded=true;adventure::tick(510);drain();adventure::tick(511);drain();
+        for(uint8_t id:reset_replay.roster) if(id) acknowledge_loaded(reset_replay,id);
+        adventure::tick(512);drain();CHECK(adventure::running());
+        CHECK(adventure::complete(true));drain();
+        CHECK(adventure::results_accepted(true));
+        for(uint8_t id:reset_replay.roster) if(id) {
+            net::Writer accepted;accepted.u8(17);put_run(accepted,reset_replay.run_id);accepted.u8(0);incoming(id,accepted);
+        }
+        auto host_cleanup_aborts=native_aborts,host_cleanup_launches=launches;
+        auto host_preparations=adventure_assets::preparations;
+        adventure::tick(513); // Replay cleanup queued; no native task has run yet.
+        CHECK(!tasks.empty() && !adventure::active());
+        adventure::reset();drain();adventure::tick(514);drain();
+        CHECK(native_aborts==host_cleanup_aborts+1);
+        CHECK(adventure_assets::preparations==host_preparations && launches==host_cleanup_launches);
+        CHECK(!adventure::active() && !adventure::ready() && host.connected());
+        CHECK(adventure::request_play(key));
+        CHECK(adventure::cancel("post-reset host retry"));drain();
+        adventure::reset();drain();
+    }
+
     guest.leave(); guest2.leave(); host.leave();
     std::printf("adventure coordinator: %s (%d failures)\n", failures ? "FAILED" : "passed", failures);
     return failures ? 1 : 0;

@@ -278,11 +278,18 @@ void prepare_replay()
     g_replay_started=true; g_cleaning=true; ++g_generation;
     const auto descriptor=g_descriptor;
     g_replay_captain=g_captain;
-    outside([descriptor] {
+    // Leaving the old native run is mandatory even if disconnect/reset cancels
+    // the proposed retry before this task runs. Only starting that retry is
+    // generation guarded, just as cancellation preserves mandatory cleanup.
+    using ReplayTask=std::pair<uint64_t,ga::Descriptor>;
+    H->run_outside_frame([](void* opaque) {
+        std::unique_ptr<ReplayTask> task(static_cast<ReplayTask*>(opaque));
         if(C.abort_native) C.abort_native();
         g_cleaning=false;
-        if(host()) request_play(descriptor.adventure,descriptor.locked_captain);
-    });
+        if(task->first==g_generation && g_phase==Phase::Ended &&
+            g_descriptor.run_id==task->second.run_id && host())
+            request_play(task->second.adventure,task->second.locked_captain);
+    },new ReplayTask(g_generation,descriptor));
 }
 
 void send_ready()
