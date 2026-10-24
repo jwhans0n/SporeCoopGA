@@ -14,6 +14,7 @@ struct Ctx {
     // True only for live bound NPC mirrors. Exclude captains and dead actors so
     // native death cleanup continues. Receives cGameData*, never cCombatant*.
     std::function<bool(void*)> is_mirrored;
+    std::function<bool()> paused = {};
 };
 
 struct Counters {

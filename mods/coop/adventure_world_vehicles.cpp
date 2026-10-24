@@ -41,7 +41,8 @@ bool guest()
 {
     return g_ok && C.active && C.active() && C.host && !C.host() && C.run && C.run() != 0;
 }
-bool mirrored(void* object) { return object && guest() && C.is_mirrored && C.is_mirrored(object); }
+bool paused() { return g_ok && C.active && C.active() && C.paused && C.paused(); }
+bool mirrored(void* object) { return object && (paused() || (guest() && C.is_mirrored && C.is_mirrored(object))); }
 
 bool SK_CDECL tree(uint32_t delta, uint32_t time_low, uint32_t time_high,
                    uint32_t definition, uint32_t actor, uint32_t context,
@@ -68,6 +69,7 @@ void SK_THISCALL timers(void* vehicle)
 
 void SK_THISCALL actor(void* mode, void* combatant, float delta)
 {
+    if(paused()) { ++g_counters.actors; return; }
     if (!guest()) { o_actor(mode, combatant, delta); return; }
     // The common native combatant interface returns its owning cGameData at
     // vtable +0C. The predicate must never see an interior combatant pointer.

@@ -13,7 +13,7 @@ namespace {
 enum Kind : uint8_t {
     K_SETTINGS, K_PREPARE, K_CONTENT, K_CAPTAIN, K_READY, K_LAUNCH, K_LOADED,
     K_COMMIT, K_ABORT, K_SNAPSHOT, K_REVIVE, K_RESULT, K_WAIT, K_INVALIDATE,
-    K_PREPARATION, K_CHANGE_CAPTAIN, K_PREPARATION_STAGE
+    K_PREPARATION, K_CHANGE_CAPTAIN, K_PREPARATION_STAGE, K_RESULTS_ACCEPTED, K_REPLAY_PREPARE
 };
 enum class Phase { Idle, Collecting, Preparing, Loading, Running, Ended };
 
@@ -41,6 +41,9 @@ std::string g_error;
 ga::PreparationView g_preparation;
 bool g_preparation_dirty, g_change_pending;
 double g_last_preparation;
+std::set<uint8_t> g_results_accepted;
+bool g_replay_requested, g_replay_started;
+Key g_replay_captain;
 
 ga::PreparationMember* preparation_member(uint8_t player)
 {
@@ -185,6 +188,7 @@ void abort_run(const std::string& reason, bool announce)
     g_launch_started = false;
     g_error = reason;
     g_preparation = {}; g_change_pending = false;
+    g_replay_captain = {}; g_results_accepted.clear(); g_replay_requested = g_replay_started = false;
     g_revive_held = false;
     invalidate_ready();
     adventure_assets::reset();
@@ -208,10 +212,26 @@ void choose_captain()
             return;
         const uint64_t generation = g_generation, serial = selection_serial(local_id());
         captain_progress(ga::PreparationStage::Choosing);
-        C.choose_captain(g_descriptor.locked_captain, [run, generation, serial](const Key& captain) {
+        auto selected = [run, generation, serial](const Key& captain) {
             if (generation == g_generation && run == g_descriptor.run_id && g_phase == Phase::Preparing && serial == selection_serial(local_id()))
                 captain_selected(captain);
-        });
+        };
+        Key previous=std::exchange(g_replay_captain,{});
+        if(previous.instance && C.reuse_captain) C.reuse_captain(previous,std::move(selected));
+        else C.choose_captain(g_descriptor.locked_captain,std::move(selected));
+    });
+}
+
+void prepare_replay()
+{
+    if(g_replay_started) return;
+    g_replay_started=true; g_cleaning=true; ++g_generation;
+    const auto descriptor=g_descriptor;
+    g_replay_captain=g_captain;
+    outside([descriptor] {
+        if(C.abort_native) C.abort_native();
+        g_cleaning=false;
+        if(host()) request_play(descriptor.adventure,descriptor.locked_captain);
     });
 }
 
@@ -491,6 +511,10 @@ uint64_t selection_serial(uint8_t player)
 {
     auto* m = preparation_member(player); return m ? m->serial : 0;
 }
+Key selected_captain(uint8_t player)
+{
+    auto* m = preparation_member(player); return active() && m && m->validated ? m->captain : Key{};
+}
 bool can_ready() { return g_phase == Phase::Preparing && g_content && g_chosen && !g_change_pending; }
 bool change_captain()
 {
@@ -513,6 +537,7 @@ void captain_progress(ga::PreparationStage stage, uint8_t progress)
 }
 bool active() { return g_phase != Phase::Idle && g_phase != Phase::Ended; }
 bool running() { return g_phase == Phase::Running; }
+bool native_attempt() { return active() && (g_launch_started || g_phase==Phase::Running); }
 bool captain_state(uint8_t player, CaptainState& state)
 {
     state = {};
@@ -600,6 +625,7 @@ bool request_play(const Key& key, const Key& locked)
     g_client_snapshot_time = 0;
     g_snapshot_revision = g_health_event = 0;
     g_error.clear();
+    g_results_accepted.clear(); g_replay_requested=g_replay_started=false;
     // Every participant explicitly confirms after reviewing the shared lobby.
     g_ready = false;
     if (!adventure_assets::prepare(descriptor.run_id, key)) {
@@ -645,6 +671,7 @@ void on_join(uint8_t player)
     if (!host() || player == 0)
         return;
     send_settings(player);
+    if(g_phase==Phase::Ended && g_result_run==g_descriptor.run_id) g_excluded.insert(player);
     if (active()) {
         g_excluded.insert(player);
         net::Writer w;
@@ -660,6 +687,7 @@ void on_leave(uint8_t player)
         return;
     if (!host()) {
         if (player == 0) abort_run("The adventure host disconnected.", false);
+        else g_excluded.insert(player);
         return;
     }
     g_excluded.insert(player);
@@ -714,6 +742,7 @@ void on_message(uint8_t from, net::Reader& r)
         g_snapshot_revision = 0;
         g_excluded.clear();
         g_error.clear();
+        g_results_accepted.clear(); g_replay_requested=g_replay_started=false;
         g_waiting = !member(local_id());
         invalidate_ready();
         if (g_waiting) { g_phase = Phase::Ended; return; }
@@ -754,6 +783,20 @@ void on_message(uint8_t from, net::Reader& r)
         return;
     }
     if (run != g_descriptor.run_id || (host() && g_excluded.count(from))) return;
+    if(kind==K_RESULTS_ACCEPTED) {
+        uint8_t replay=r.u8();
+        if(!host() || !from || !member(from) || g_phase!=Phase::Ended || g_result_run!=run || replay>1 || !finished(r)) return;
+        g_results_accepted.insert(from);
+        if(replay) {
+            g_replay_requested=true;
+            feed(C.sess->name_of(from)+" requested a co-op replay. Waiting for everyone to accept results.");
+        }
+        return;
+    }
+    if(kind==K_REPLAY_PREPARE) {
+        if(client() && !from && finished(r) && g_phase==Phase::Ended && g_result_run==run) prepare_replay();
+        return;
+    }
     if (kind == K_ABORT) {
         std::string reason = r.str16();
         if (!finished(r) || (host() ? !member(from) : from != 0) || !active()) return;
@@ -857,6 +900,16 @@ void tick(double now)
     g_last_wall = now;
     g_have_wall = true;
     adventure_assets::tick(now);
+    if(host() && g_phase==Phase::Ended && g_replay_requested && !g_replay_started && !g_cleaning) {
+        auto players=C.sess->players();
+        bool accepted=std::all_of(players.begin(),players.end(),[](const auto& p) {
+            return !member(p.id) || g_excluded.count(p.id) || g_results_accepted.count(p.id);
+        });
+        if(accepted) {
+            net::Writer w; write_run(w,g_descriptor.run_id); send(K_REPLAY_PREPARE,w);
+            prepare_replay();
+        }
+    }
     if (g_phase == Phase::Preparing && !g_content) captain_progress(ga::PreparationStage::Content,adventure_assets::progress());
     if (!active()) return;
     if (!C.sess || !C.sess->connected()) {
@@ -978,6 +1031,20 @@ bool cancel(const std::string& reason)
     return true;
 }
 
+bool results_accepted(bool replay)
+{
+    if(!C.sess || !C.sess->connected() || g_phase!=Phase::Ended || !g_descriptor.run_id ||
+        g_result_run!=g_descriptor.run_id || !member(local_id())) return false;
+    if(host()) {
+        g_results_accepted.insert(local_id());
+        if(replay) g_replay_requested=true;
+    } else {
+        net::Writer w; write_run(w,g_descriptor.run_id); w.u8(replay?1:0); send(K_RESULTS_ACCEPTED,w);
+    }
+    if(replay) feed("Co-op replay requested. Waiting for the party to accept their results.");
+    return true;
+}
+
 void reset()
 {
     if (active()) abort_run("The party disconnected during the adventure.", false);
@@ -1001,6 +1068,7 @@ void reset()
     g_have_wall = false;
     g_error.clear();
     g_preparation = {}; g_change_pending = false; g_preparation_dirty = false; g_last_preparation = 0;
+    g_results_accepted.clear(); g_replay_requested=g_replay_started=false; g_replay_captain={};
     if (C.freeze) C.freeze(false);
 }
 
@@ -1013,7 +1081,7 @@ std::string status()
     case Phase::Preparing: return g_chosen ? "Waiting for party readiness" : "Choose your captain";
     case Phase::Loading: return "Loading adventure: waiting for every captain";
     case Phase::Running: return "Adventure in progress";
-    case Phase::Ended: return "Adventure finished";
+    case Phase::Ended: return g_replay_requested ? "Replay: waiting for the party to accept results" : "Adventure finished";
     default: {
         std::string why = unavailable();
         return why.empty() ? "Select an adventure in Sporepedia and press Play" : why;

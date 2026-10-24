@@ -31,6 +31,7 @@ Node* forward_buckets[2] = {nullptr, reinterpret_cast<Node*>(-1)};
 std::vector<std::unique_ptr<std::array<uint8_t, 0x100>>> objects;
 std::map<void*, int> references;
 unsigned destroyed, double_destroyed, created, powerups, states, visibility;
+uint32_t factory_noun=0x018EB45E;
 void* state_target;
 bool consumible;
 int failures;
@@ -92,7 +93,7 @@ void SK_THISCALL assign(void** slot, void* value)
 }
 uint8_t* SK_THISCALL get_class(void*, int index) { return index == 0 ? cls.data() : nullptr; }
 void* SK_CDECL create(const void*, const void*, const void*, float, bool, int, void*, void*, int)
-{ ++created; return object(); }
+{ ++created; void* value=object(); field<uint32_t>(value,0x28)=factory_noun; return value; }
 void* SK_CDECL powerup(void*) { ++powerups; void* value = object(); field<uint32_t>(value, 0x28) = 0x018C88E4; return value; }
 bool SK_THISCALL is_consumible(void*) { return consumible; }
 void SK_THISCALL marker_state(void*, void*, bool)
@@ -256,6 +257,14 @@ int main()
           get_object(nullptr, nullptr) == survivor && references[victim] == 0 && references[survivor] == 1,
           "retired primary promotes the survivor without a second native destroy");
     check(adventure_world_lifecycle::remove(data.data(), marker, survivor, error), "clean final promoted fixture");
+    consumible=true; factory_noun=0x018C88E4;
+    unsigned before_physical=created,before_spawners=powerups;
+    check(adventure_world_lifecycle::recreate(data.data(),marker,0,position,orientation,error,&survivor,0x018C88E4,14),
+          "request a physical gate incarnation beside a respawner class");
+    check(created==before_physical+1 && powerups==before_spawners,
+          "open-gate reconstruction uses the physical factory rather than another spawner");
+    check(adventure_world_lifecycle::remove(data.data(),marker,survivor,error),"remove physical gate fixture");
+    consumible=false; factory_noun=0x018EB45E;
     field<int>(play.data(), 0xB8) = 1;
     check(!recreate(), "reject a queued update from an old act");
     field<int>(play.data(), 0xB8) = 0;

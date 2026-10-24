@@ -37,11 +37,13 @@ static void creature_fill(void* av, net::PlayerState& st)
     st.health = game::health(av);
     st.max_health = game::max_health(av);
     st.species = game::species_instance(av);
+    st.scale = game::scale(av);
 }
 
 static void* creature_spawn(const net::PlayerState& s, void* av)
 {
     void* own = g_species_for_player ? g_species_for_player(s.id) : nullptr;
+    if (game::mode_id() == kScenario && !own) return nullptr;
     void* herd = own ? game::create_herd(s.pos, own) : nullptr;
     void* p = own && herd ? game::spawn_creature(s.pos, own, herd)
                           : game::spawn_creature(s.pos, game::species_profile(av), game::avatar_herd());
@@ -49,12 +51,15 @@ static void* creature_spawn(const net::PlayerState& s, void* av)
         return nullptr;
     game::puppet_register(p);
     game::teleport(p, s.pos, s.rot);
-    if (game::mode_id() != kScenario) game::set_scale(p, game::scale(p) * 1.15f);
+    if (game::mode_id() == kScenario) game::set_scale(p, s.scale);
+    else game::set_scale(p, game::scale(p) * 1.15f);
     return p;
 }
 
 static void creature_drive(void* p, const net::PlayerState& s, drive::State& ds, double now)
 {
+    if (game::mode_id() == kScenario && std::isfinite(s.scale) && s.scale > 0 && s.scale <= 10000 &&
+        std::fabs(game::scale(p) - s.scale) > .0001f) game::set_scale(p, s.scale);
     // a partner's creature: lunges and charges move it faster than a puppet can walk, and attack
     // animations undo the nudges (~10-20 % of them in fights): it trailed by 5-8 m after a fight
     // move (play_creature.py 2026-10-23); snap at 4 m instead of 8

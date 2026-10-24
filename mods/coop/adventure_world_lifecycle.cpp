@@ -179,7 +179,7 @@ bool remove(uint8_t* data, uint8_t* marker, void* object, std::string& error, vo
 }
 
 bool recreate(uint8_t* data, uint8_t* marker, int act, const net::Vec3& position,
-              const net::Quat& orientation, std::string& error, void** recreated, uint32_t expected_noun)
+              const net::Quat& orientation, std::string& error, void** recreated, uint32_t expected_noun, uint8_t expected_powerup)
 {
     error.clear();
     if (recreated) *recreated = nullptr;
@@ -230,7 +230,8 @@ bool recreate(uint8_t* data, uint8_t* marker, int act, const net::Vec3& position
     // Authored creatures can also have powerup settings. The host's concrete noun
     // distinguishes that creature from a separate powerup at the same placement.
     bool powerup_noun = expected_noun == 0 || expected_noun == 0x018C88E4 || expected_noun == 0x03A2511E;
-    void* object = powerup_noun && thiscall<bool>(a_consumible, cls) ? cdecl_call<void*>(a_powerup, marker) :
+    bool marker_powerup=powerup_noun && (!expected_powerup || expected_powerup==9) && thiscall<bool>(a_consumible, cls);
+    void* object = marker_powerup ? cdecl_call<void*>(a_powerup, marker) :
         cdecl_call<void*>(a_create, &key, &position, &orientation, scale, false,
                          field<int>(marker, 0), marker, acts, act);
     if (!object || !readable(object, 0x28)) { error = "The native adventure actor could not be created."; return false; }

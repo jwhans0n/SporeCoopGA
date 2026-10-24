@@ -430,6 +430,31 @@ int main()
     CHECK(adventure::cancel("retry finished")); drain();
     CHECK(!adventure::cancel("repeat cleanup")); drain();
 
+    // Native results saving must finish on every connected participant before
+    // Replay returns the party to preparation, with saved captains and no readiness.
+    ctx.choose_captain=[](const dbpf::Key&,auto selected) { selected({330,10,20}); };
+    unsigned reuses=0;
+    ctx.reuse_captain=[&](const dbpf::Key& key,auto selected) { CHECK(key==dbpf::Key(330,10,20)); ++reuses; selected(key); };
+    CHECK(adventure::init(&api,nullptr,ctx));
+    CHECK(adventure::request_play(key)); drain();
+    auto replay_descriptor=*adventure::current();
+    for(uint8_t id:replay_descriptor.roster) if(id) acknowledge(replay_descriptor,id);
+    CHECK(adventure::set_ready(true));
+    loaded=true; adventure::tick(300); drain(); adventure::tick(301); drain();
+    for(uint8_t id:replay_descriptor.roster) if(id) acknowledge_loaded(replay_descriptor,id);
+    adventure::tick(302); drain(); CHECK(adventure::running());
+    CHECK(adventure::complete(true)); drain();
+    CHECK(adventure::results_accepted(false)); adventure::tick(303); drain();
+    CHECK(!adventure::active());
+    for(uint8_t id:replay_descriptor.roster) if(id) {
+        net::Writer accepted; accepted.u8(17); put_run(accepted,replay_descriptor.run_id); accepted.u8(1); incoming(id,accepted);
+    }
+    adventure::tick(304); drain();
+    CHECK(adventure::active() && adventure::current()->run_id>replay_descriptor.run_id);
+    CHECK(reuses==1 && adventure::selected_captain(0)==dbpf::Key(330,10,20) && !adventure::ready());
+    CHECK(!adventure::results_accepted(true));
+    CHECK(adventure::cancel("replay test complete")); drain();
+
     guest.leave(); guest2.leave(); host.leave();
     std::printf("adventure coordinator: %s (%d failures)\n", failures ? "FAILED" : "passed", failures);
     return failures ? 1 : 0;

@@ -27,6 +27,19 @@ static Ctx C;
 static uintptr_t a_Mode, a_SetAct, a_GetMarker, a_Hostile, a_Befriend, a_Ally, a_Relationships, a_SocialEvent, a_AnimalDamage, a_SocialMode;
 static uintptr_t a_GoalHUD;
 static bool g_ok, g_applying;
+static bool g_talk_cleanup, g_talk_presenting, g_talk_committing;
+static uintptr_t a_GateKey, a_OpenGate;
+using TalkStart = void(SK_THISCALL*)(void*,void*,void*);
+using TalkEnd = void(SK_THISCALL*)(void*);
+using Gate = void(SK_CDECL*)(void*,void*,void*);
+static TalkStart o_TalkStart;
+static TalkEnd o_TalkEnd;
+static Gate o_Gate;
+static void* powerup_for(void* object)
+{
+    void* powerup=game::cast(object,0x08367427);
+    return powerup && skg::readable(powerup,0x3C) ? powerup : nullptr;
+}
 static uint64_t g_run;
 struct NativeResult {
     void* play = nullptr;
@@ -45,7 +58,7 @@ static bool g_goal_hud_dirty;
 constexpr uint32_t kSpatial = 0x01186577, kCombatant = 0x013F94D4, kCreature = 0xCE9F6639;
 constexpr size_t kMaxActors = 2048, kMaxGoals = 3;
 enum Kind : uint8_t { Actors = 128, Goals = 129, Hit = 130, CaptainHit = 131, Interaction = 132, GoalEvent = 133, Roster = 134, SocialComplete = 135 };
-enum Action : uint8_t { PickUp, Drop, Give };
+enum Action : uint8_t { PickUp, Drop, Give, Unlock };
 
 struct Identity {
     uint32_t marker, incarnation;
@@ -56,6 +69,7 @@ struct NativeActor {
     void* spatial = nullptr;
     void* combatant = nullptr;
     uint32_t marker = 0, incarnation = 0, noun = 0;
+    uint8_t powerup_kind = 0;
 };
 struct ActorState {
     Identity id{};
@@ -82,6 +96,8 @@ static std::map<uint8_t, uint64_t> g_last_interaction;
 static std::map<Identity, std::pair<uint8_t, double>> g_dropped;
 static std::set<std::tuple<uint8_t, uint8_t, uint32_t, uint32_t>> g_social_events;
 static std::set<std::tuple<uint8_t, uint8_t, uint32_t, uint32_t>> g_social_completions;
+static std::set<Identity> g_opened_gates;
+static std::set<Identity> g_retired_items;
 static uint64_t g_hit_sequence;
 static uint64_t g_interaction_sequence;
 struct DamageSource { uint32_t victim_incarnation; ga::Source source; double time; };
@@ -229,7 +245,10 @@ static void enumerate()
         if (!spatial || !skg::readable(spatial, 0x20)) return true;
         void* combatant = game::cast(object, kCombatant);
         if (combatant && !skg::readable(combatant, 0x3C)) combatant = nullptr;
-        g_native.push_back({object, spatial, combatant, marker, skg::field<uint32_t>(object, 0x24), noun});
+        void* powerup=powerup_for(object);
+        int kind=powerup ? skg::field<int>(powerup,4) : 0;
+        g_native.push_back({object, spatial, combatant, marker, skg::field<uint32_t>(object, 0x24), noun,
+            uint8_t(kind>=1 && kind<=15 ? kind : 0)});
         return true;
     }, nullptr);
 }
@@ -324,6 +343,7 @@ static bool interaction(uint8_t action, uint8_t player, Identity item, Identity 
 
 static bool SK_THISCALL pick_item(void* self, void* spatial, int slot, bool replace)
 {
+    if(active() && C.held && C.held()) return false;
     if (!active() || g_applying || owner(self) == ga::kNoPlayer) return o_Pick(self, spatial, slot, replace);
     Identity id;
     if (!identity(object_from_spatial(spatial), id)) return host() ? o_Pick(self, spatial, slot, replace) : false;
@@ -333,6 +353,8 @@ static bool SK_THISCALL pick_item(void* self, void* spatial, int slot, bool repl
         interaction(PickUp, player, id);
         return true; // the host's accepted native pickup supplies the inventory/attachment
     }
+    for(const auto& other:C.sess->players())
+        if(other.id!=player && item_slot(C.captain_of(other.id),spatial,false)>=0) return false;
     bool ok = o_Pick(self, spatial, slot, replace);
     if (ok) interaction(PickUp, player, id);
     return ok;
@@ -389,12 +411,14 @@ static void SK_THISCALL befriended(void* self, void* target) { completed_social(
 static void SK_THISCALL allied(void* self, void* target) { completed_social(self, target, 5, o_Ally); }
 static void SK_THISCALL count_goal(void* self, void* goal, void* first, void* second)
 {
+    if (g_talk_cleanup) return;
     if (!active()) { o_Count(self, goal, first, second); return; }
     uint8_t* begin; size_t count;
     if (!goals_vector((uint8_t*)self, begin, count)) return;
     uintptr_t delta = (uintptr_t)goal - (uintptr_t)begin;
     if (delta % 0x1AC || delta / 0x1AC >= count) return;
     int type = skg::field<int>(goal, 0x24);
+    if(type==2 && !g_talk_committing) return;
     if (host()) {
         Identity target;
         if ((type == 2 || type == 4 || type == 5) && identity(object_from_spatial(first), target) &&
@@ -414,8 +438,63 @@ static void SK_THISCALL count_goal(void* self, void* goal, void* first, void* se
     C.sess->send_reliable_to(0, net::MSG_ADVENTURE, w);
 }
 
+static void SK_THISCALL talk_start(void* self, void* goal, void* target)
+{
+    if(!active() || g_talk_presenting) { o_TalkStart(self,goal,target); return; }
+    uint8_t* begin; size_t count; Identity id;
+    if(self!=play() || !goals_vector(static_cast<uint8_t*>(self),begin,count) || !identity(target,id)) return;
+    uintptr_t offset=reinterpret_cast<uintptr_t>(goal)-reinterpret_cast<uintptr_t>(begin);
+    if(offset%0x1AC || offset/0x1AC>=count || skg::field<int>(goal,0x24)!=2) return;
+    adventure_flow::Scene s; s.kind=adventure_flow::Kind::Talk;
+    s.act=uint8_t(skg::field<int>(self,0xB8)); s.goal=uint8_t(offset/0x1AC);
+    s.marker=id.marker; s.incarnation=id.incarnation;
+    adventure_flow::request_talk(s);
+}
+static void SK_THISCALL talk_end(void* self)
+{
+    if(!active() || adventure_flow::scene().kind!=adventure_flow::Kind::Talk) { o_TalkEnd(self); return; }
+    if(adventure_flow::local_waiting()) return;
+    g_talk_cleanup=true; o_TalkEnd(self); g_talk_cleanup=false;
+    adventure_flow::finish_talk();
+}
+
+bool validate_talk(uint8_t player, const adventure_flow::Scene& s)
+{
+    auto* p=play(); uint8_t* goals; size_t count;
+    if(!active() || !host() || !p || s.run!=run() || s.act!=skg::field<int>(p,0xB8) ||
+        skg::field<int>(p,0x90)!=3 || !C.captain_can_act(player) ||
+        !goals_vector(p,goals,count) || s.goal>=count) return false;
+    enumerate();
+    void* target=object_for({s.marker,s.incarnation}); auto* goal=goals+s.goal*0x1AC;
+    return target && !goal[0] && skg::field<int>(goal,0x24)==2 &&
+        skg::field<int>(target,0x1C)==skg::field<int>(goal,0x28) && nearby(C.captain_of(player),target,25.f);
+}
+bool present_talk(const adventure_flow::Scene& s)
+{
+    auto* p=play(); uint8_t* goals; size_t count;
+    if(!active() || !p || s.run!=run() || s.act!=skg::field<int>(p,0xB8) ||
+        !game::avatar() || !goals_vector(p,goals,count) || s.goal>=count) return false;
+    enumerate(); void* target=object_for({s.marker,s.incarnation});
+    if(!target) return false;
+    g_talk_presenting=true; o_TalkStart(p,goals+s.goal*0x1AC,target); g_talk_presenting=false;
+    return true;
+}
+void release_talk(const adventure_flow::Scene& s)
+{
+    auto* p=play(); uint8_t* goals; size_t count;
+    if(!active() || !host() || !p || s.run!=run() || s.act!=skg::field<int>(p,0xB8) ||
+        !goals_vector(p,goals,count) || s.goal>=count) return;
+    enumerate(); void* target=object_for({s.marker,s.incarnation});
+    if(target) {
+        g_talk_committing=true;
+        count_goal(p,goals+s.goal*0x1AC,game::cast(target,kSpatial),nullptr);
+        g_talk_committing=false;
+    }
+}
+
 static void SK_THISCALL check_goals(void* self)
 {
+    if(active() && C.held && C.held()) return;
     if (guest() && !g_applying) return;
     o_Check(self);
     if (!active() || !host() || !C.captain_of || !skg::readable(self, 0xBC)) return;
@@ -434,6 +513,7 @@ static void SK_THISCALL complete_act(void* self)
 }
 static bool SK_THISCALL update_goals(void* self)
 {
+    if(active() && C.held && C.held()) return true;
     return guest() && !g_applying ? true : o_Goals(self);
 }
 static void native_state(void* self, int state)
@@ -488,12 +568,19 @@ static void apply_actor(NativeActor& actor, const ActorState& state)
 
 static void mirror(double now)
 {
+    auto compatible=[](const NativeActor& actor,const ActorState& state) {
+        uint8_t expected=state.flags>>4;
+        if(!expected) return true;
+        int actual=actor.powerup_kind;
+        return actual==expected || (expected==14 && actual==11);
+    };
     unsigned recreated_count = 0;
     bool failed = false;
     std::set<void*> bound;
     for (auto it = g_bindings.begin(); it != g_bindings.end();) {
         auto* native = actor_for(it->second.object);
-        if (!native || native->incarnation != it->second.incarnation || !g_remote.count(it->first)) it = g_bindings.erase(it);
+        if (!native || native->incarnation != it->second.incarnation || !g_remote.count(it->first) ||
+            !compatible(*native,g_remote.at(it->first))) it = g_bindings.erase(it);
         else { bound.insert(native->object); ++it; }
     }
     for (const auto& [id, state] : g_remote) {
@@ -503,7 +590,8 @@ static void mirror(double now)
         if (!actor) {
             float best = 1e30f;
             for (auto& candidate : g_native) {
-                if (candidate.marker != id.marker || candidate.noun != state.noun || bound.count(candidate.object)) continue;
+                if (candidate.marker != id.marker || candidate.noun != state.noun || bound.count(candidate.object) ||
+                    !compatible(candidate,state)) continue;
                 const auto& p = skg::field<net::Vec3>(candidate.spatial, 4);
                 float dx = p.x - state.position.x, dy = p.y - state.position.y, dz = p.z - state.position.z;
                 float distance = dx * dx + dy * dy + dz * dz;
@@ -515,19 +603,34 @@ static void mirror(double now)
                 void* created = nullptr; std::string error;
                 auto* p = play();
                 if (p && adventure_world_lifecycle::recreate(scenario_data(), g_markers[id.marker], skg::field<int>(p, 0xB8),
-                                                             state.position, state.orientation, error, &created, state.noun)) {
+                                                             state.position, state.orientation, error, &created, state.noun,state.flags>>4)) {
                     ++recreated_count;
                     enumerate(); actor = actor_for(created);
-                    if (actor && actor->noun != state.noun) {
+                    if (actor && (actor->noun != state.noun || !compatible(*actor,state))) {
                         adventure_world_lifecycle::remove(scenario_data(), g_markers[id.marker], created, error);
                         actor = nullptr; failed = true;
-                        g_world_error = "Native respawn factory produced a different actor noun for marker " + std::to_string(id.marker) + ".";
+                        g_world_error = "Native respawn factory produced a different actor noun or powerup kind for marker " + std::to_string(id.marker) + ".";
                     }
                     if (actor) { g_bindings[id] = {actor->object, actor->incarnation, skg::field<int>(p, 0xB8)}; bound.insert(actor->object); }
                 } else if (!error.empty()) {
                     failed = true;
                     g_world_error = "marker=" + std::to_string(id.marker) + " incarnation=" + std::to_string(id.incarnation) + ": " + error;
                 }
+            }
+        }
+        // Native gates replace the closed object with a type-14 open ornament.
+        // Repair late bindings reconstructed from the original closed class.
+        if(actor && (state.flags>>4)==14) {
+            void* powerup=powerup_for(actor->object);
+            if(powerup && skg::readable(powerup,0x3C) && skg::field<int>(powerup,4)==11) {
+                void* old=actor->object;
+                g_applying=true; skg::cdecl_call<void>(a_OpenGate,powerup); g_applying=false;
+                g_bindings.erase(id); bound.erase(old); enumerate(); actor=nullptr;
+                for(auto& candidate:g_native) {
+                    if(candidate.marker==id.marker && candidate.noun==state.noun && !bound.count(candidate.object) &&
+                        candidate.powerup_kind==14) { actor=&candidate; break; }
+                }
+                if(actor) { g_bindings[id]={actor->object,actor->incarnation,skg::field<int>(play(),0xB8)}; bound.insert(actor->object); }
             }
         }
         if (actor) apply_actor(*actor, state);
@@ -583,6 +686,7 @@ static void send_actors()
         uint8_t flags = actor.combatant ? (uint8_t)(1 | (hp <= 0 ? 2 : 0)) : 0;
         void* creature = game::cast(actor.object, kCreature);
         if (creature && (skg::field<uint32_t>(creature, 0xB58) & 0x80)) flags |= 4;
+        flags|=uint8_t(actor.powerup_kind<<4);
         w.f32(hp); w.f32(maximum); w.f32(tuning); w.u8(flags);
         int relationship = -1;
         void* relationships = creature ? skg::cdecl_call<void*>(a_Relationships) : nullptr;
@@ -609,11 +713,27 @@ struct InteractionTask {
     uint8_t from, act, action, player;
     Identity item, recipient;
 };
+static void apply_interaction(void* argument);
+static void SK_CDECL activate_gate(void* captain, void* key, void* gate)
+{
+    if(!active() || g_applying) { o_Gate(captain,key,gate); return; }
+    if(C.held && C.held()) return;
+    uint8_t player=owner(captain);
+    if(player==ga::kNoPlayer) { if(host()) o_Gate(captain,key,gate); return; }
+    if(!host() && player!=C.sess->my_id()) return;
+    Identity item_id,gate_id;
+    if(!key || !gate || !identity(skg::vcall<void*>(key,1),item_id) ||
+        !identity(skg::vcall<void*>(gate,1),gate_id)) return;
+    if(!host()) interaction(Unlock,player,item_id,gate_id);
+    if(host()) H->run_outside_frame(apply_interaction,new InteractionTask{run(),player,
+        uint8_t(skg::field<int>(play(),0xB8)),Unlock,player,item_id,gate_id});
+}
 static void apply_interaction(void* argument)
 {
     std::unique_ptr<InteractionTask> task((InteractionTask*)argument);
     uint8_t* p = play();
-    if (!active() || task->run != run() || !p || task->act != skg::field<int>(p, 0xB8) || !C.captain_of) return;
+    if (!active() || task->run != run() || !p || task->act != skg::field<int>(p, 0xB8) || !C.captain_of ||
+        (C.held && C.held())) return;
     enumerate();
     void* captain = C.captain_of(task->player);
     void* item = object_for(task->item);
@@ -636,6 +756,28 @@ static void apply_interaction(void* argument)
             if (item_slot(captain, spatial, false) >= 0) accepted = o_Drop(captain, spatial, 0, false);
             else accepted = !host(); // the originating native drop may already have completed
             if (accepted) g_dropped[task->item] = {task->player, H->time_seconds()};
+        } else if(task->action==Unlock) {
+            void* gate=object_for(task->recipient);
+            void* key_powerup=powerup_for(item);
+            void* gate_powerup=powerup_for(gate);
+            if(key_powerup && gate_powerup && !g_opened_gates.count(task->recipient) &&
+                skg::readable(key_powerup,0x3C) && skg::readable(gate_powerup,0x3C) &&
+                skg::field<int>(key_powerup,4)==12 && skg::field<int>(gate_powerup,4)==11 &&
+                item_slot(captain,spatial,false)>=0 &&
+                skg::cdecl_call<uint32_t>(a_GateKey,key_powerup)==skg::cdecl_call<uint32_t>(a_GateKey,gate_powerup) &&
+                (!host() || (C.captain_can_act(task->player) && nearby(captain,gate,25.f)))) {
+                g_opened_gates.insert(task->recipient);
+                if(host()) interaction(Unlock,task->player,task->item,task->recipient);
+                else {
+                    // Do not reconstruct the just-consumed key/closed gate from
+                    // an older actor datagram while the new roster is in flight.
+                    g_retired_items.insert(task->item); g_retired_items.insert(task->recipient);
+                    g_remote.erase(task->item); g_remote.erase(task->recipient);
+                    g_bindings.erase(task->item); g_bindings.erase(task->recipient);
+                }
+                o_Gate(captain,key_powerup,gate_powerup);
+                accepted=true;
+            }
         } else if (task->action == Give) {
             void* recipient = object_for(task->recipient);
             auto dropped = g_dropped.find(task->item);
@@ -661,7 +803,7 @@ static void apply_interaction(void* argument)
         }
     }
     g_applying = false;
-    if (accepted && host()) interaction(task->action, task->player, task->item, task->recipient);
+    if (accepted && host() && task->action!=Unlock) interaction(task->action, task->player, task->item, task->recipient);
 }
 
 static bool request_container_give(void* captain, void* item, void* recipient)
@@ -674,26 +816,6 @@ static bool request_container_give(void* captain, void* item, void* recipient)
     H->run_outside_frame(apply_interaction, new InteractionTask{run(), player,
         static_cast<uint8_t>(skg::field<int>(play(), 0xB8)), Give, player, item_id, recipient_id});
     return true;
-}
-
-struct SocialTask { uint64_t run; uint8_t from, act, goal, type; Identity target; };
-static void apply_social(void* argument)
-{
-    std::unique_ptr<SocialTask> task((SocialTask*)argument);
-    uint8_t* p = play(); uint8_t* goals; size_t count;
-    if (!active() || !host() || task->run != run() || !p || task->act != skg::field<int>(p, 0xB8) ||
-        !goals_vector(p, goals, count) || task->goal >= count || !C.captain_of) return;
-    enumerate();
-    void* target = object_for(task->target);
-    void* captain = C.captain_of(task->from);
-    if (!target || !captain || !C.captain_can_act || !C.captain_can_act(task->from) ||
-        !nearby(captain, target, 25.f)) return;
-    uint8_t* goal = goals + task->goal * 0x1AC;
-    if (goal[0] || task->type != skg::field<int>(goal, 0x24) ||
-        skg::field<int>(target, 0x1C) != skg::field<int>(goal, 0x28) ||
-        g_social_events.count({task->act, task->goal, task->target.marker, task->target.incarnation})) return;
-    AvatarScope avatar(captain);
-    if (task->type == 2) count_goal(p, goal, game::cast(target, kSpatial), nullptr);
 }
 
 struct SocialCompletionTask { uint64_t run; uint8_t from, act, type; Identity target; };
@@ -911,7 +1033,8 @@ static void apply_goals(void* arg)
         skg::field<int>(p, 0xC0) = (int)task->time;
         skg::field<int>(p, 0xBC) = task->remaining;
         refresh_goal_hud();
-        if (task->state >= 3 && task->state <= 6 && skg::field<int>(p, 0x90) != task->state) native_state(p, task->state);
+        if (task->state >= 3 && task->state <= 6 && skg::field<int>(p, 0x90) != task->state &&
+            !(task->state==3 && C.held && C.held())) native_state(p, task->state);
         ++g_goal_updates;
     }
     g_applying = false;
@@ -946,18 +1069,12 @@ void on_message(uint8_t from, net::Reader& r)
         auto task = std::make_unique<InteractionTask>(); task->run = id; task->from = from;
         task->act = r.u8(); task->action = r.u8(); task->player = r.u8();
         task->item = read_identity(r); task->recipient = read_identity(r);
-        if (!r.ok() || r.left() || !event || event <= g_last_interaction[from] || task->act >= 8 || task->action > Give ||
+        if (!r.ok() || r.left() || !event || event <= g_last_interaction[from] || task->act >= 8 || task->action > Unlock ||
             (host() && task->player != from)) return;
         g_last_interaction[from] = event;
         H->run_outside_frame(apply_interaction, task.release());
     } else if (kind == GoalEvent && host() && from) {
-        uint64_t event = get_run(r);
-        auto task = std::make_unique<SocialTask>(); task->run = id; task->from = from;
-        task->act = r.u8(); task->goal = r.u8(); task->type = r.u8(); task->target = read_identity(r);
-        if (!r.ok() || r.left() || !event || event <= g_last_interaction[from] || task->act >= 8 || task->goal >= 3 ||
-            task->type != 2) return;
-        g_last_interaction[from] = event;
-        H->run_outside_frame(apply_social, task.release());
+        return; // Talk completion requires the shared scene barrier.
     } else if (kind == SocialComplete && host() && from) {
         uint64_t event = get_run(r);
         auto task = std::make_unique<SocialCompletionTask>(); task->run = id; task->from = from;
@@ -981,11 +1098,12 @@ void on_message(uint8_t from, net::Reader& r)
             if (!r.ok() || !finite(state.position) || !std::isfinite(state.orientation.x) || !std::isfinite(state.orientation.y) ||
                 !std::isfinite(state.orientation.z) || !std::isfinite(state.orientation.w) || !std::isfinite(state.health) ||
                 !std::isfinite(state.maximum) || !std::isfinite(state.max_tuning) || state.health < 0 || state.maximum < 0 || state.health > state.maximum ||
-                state.max_tuning < 0 || state.max_tuning > 1e9f || state.maximum > 1e9f || state.flags > 7) return;
+                state.max_tuning < 0 || state.max_tuning > 1e9f || state.maximum > 1e9f || (state.flags & 8)) return;
             states.push_back(state);
         }
         if (r.left()) return;
         for (const auto& state : states) {
+            if(g_retired_items.count(state.id)) continue;
             if (sequence < g_roster_sequence && !g_roster_live.count(state.id)) continue;
             auto it = g_remote.find(state.id);
             if (it != g_remote.end() && (int32_t)(sequence - it->second.sequence) <= 0) continue;
@@ -1061,6 +1179,7 @@ bool source(void* victim, void* attacker, int type, ga::Source& out)
 
 bool damage_filter(void* victim, float& damage, int type, void* attacker)
 {
+    if(active() && C.held && C.held()) return false;
     if (!active() || g_applying) return true;
     uint8_t victim_owner = owner(victim);
     ga::Source attribution; source(victim, attacker, type, attribution);
@@ -1167,6 +1286,7 @@ static void reset_replication()
     g_run = 0; g_sequence = g_goal_sequence = g_received_goals = 0;
     g_native.clear(); g_remote.clear(); g_bindings.clear(); g_health_baselines.clear(); g_last_hit.clear(); g_last_captain_hit.clear();
     g_last_interaction.clear(); g_dropped.clear(); g_social_events.clear(); g_social_completions.clear(); g_interaction_sequence = 0;
+    g_opened_gates.clear(); g_retired_items.clear(); g_talk_cleanup=g_talk_presenting=g_talk_committing=false;
     g_last_source.clear();
     g_markers.clear(); g_roster_sequence = 0; g_roster_parts.clear(); g_roster_received.clear(); g_roster_live.clear();
     g_spawn_attempt.clear(); g_world_error.clear();
@@ -1227,11 +1347,15 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
     uintptr_t count = H->sym("SporeCoop::Adventure::CountGoal");
     uintptr_t avatar = H->sym("SporeCoop::Adventure::GetNativeAvatar");
     uintptr_t generic = H->sym("Simulator::cCombatant::TakeDamage");
+    uintptr_t talk=H->sym("SporeCoop::Adventure::TalkBegin"), talk_end_address=H->sym("SporeCoop::Adventure::TalkFinish");
+    uintptr_t gate=H->sym("SporeCoop::Adventure::ActivateGate");
+    a_GateKey=H->sym("SporeCoop::Adventure::GateKey");
+    a_OpenGate=H->sym("SporeCoop::Adventure::OpenGate");
     o_Drop = (Drop_t)H->sym("SporeCoop::Adventure::DropItem");
     if (std::string(H->exe_sha256()) != "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37" ||
         !a_Mode || !a_SetAct || !a_GetMarker || !a_Hostile || !a_Befriend || !a_Ally || !a_Relationships || !a_SocialEvent || !a_SocialMode || !a_AnimalDamage || !a_GoalHUD ||
         !check || !complete || !goals || !state || !pick || !picked || !dropped || !count || !avatar || !generic || !o_Drop || !C.sess || !C.captain_can_act ||
-        !adventure_world_lifecycle::init(H, M)) return false;
+        !talk || !talk_end_address || !gate || !a_GateKey || !a_OpenGate || !adventure_world_lifecycle::init(H, M)) return false;
     g_ok = H->hook_create(M, (void*)check, (void*)check_goals, (void**)&o_Check) == 0 &&
            H->hook_create(M, (void*)complete, (void*)complete_act, (void**)&o_Complete) == 0 &&
            H->hook_create(M, (void*)goals, (void*)update_goals, (void**)&o_Goals) == 0 &&
@@ -1243,7 +1367,10 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
            H->hook_create(M, (void*)a_Befriend, (void*)befriended, (void**)&o_Befriend) == 0 &&
            H->hook_create(M, (void*)a_Ally, (void*)allied, (void**)&o_Ally) == 0 &&
            H->hook_create(M, (void*)avatar, (void*)native_avatar, (void**)&o_Avatar) == 0 &&
-           H->hook_create(M, (void*)generic, (void*)generic_damage, (void**)&o_GenericDamage) == 0;
+           H->hook_create(M, (void*)generic, (void*)generic_damage, (void**)&o_GenericDamage) == 0 &&
+           H->hook_create(M,(void*)talk,(void*)talk_start,(void**)&o_TalkStart)==0 &&
+           H->hook_create(M,(void*)talk_end_address,(void*)talk_end,(void**)&o_TalkEnd)==0 &&
+           H->hook_create(M,(void*)gate,(void*)activate_gate,(void**)&o_Gate)==0;
     if (g_ok) {
         adventure_world_actions::Ctx actions;
         actions.active = [] { return active() && game::mode_id() == 0x01654C10; };
@@ -1252,6 +1379,7 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
         actions.request_give = request_container_give;
         adventure_world_vehicles::Ctx vehicles;
         vehicles.active = actions.active; vehicles.host = host; vehicles.run = run;
+        vehicles.paused=C.held;
         vehicles.is_mirrored = [](void* object) {
             if (update_filter(object)) return false;
             for (const auto& [id, binding] : g_bindings) if (binding.object == object) return true;
@@ -1346,7 +1474,7 @@ int debug(int argc, const char* const* argv, SkOut* output)
         set_state(play(), result == "success" ? 5 : 6);
         say("Controlled native adventure result requested.\n"); return 0;
     }
-    if (action == "actors" || action == "pending") {
+    if (action == "actors" || action == "actorsat" || action == "pending") {
         uint32_t first = (uint32_t)number(1);
         size_t limit = argc > 2 ? std::clamp<size_t>(number(2), 1, 48) : 32, shown = 0;
         std::ostringstream out;
@@ -1355,9 +1483,12 @@ int debug(int argc, const char* const* argv, SkOut* output)
                 out << "marker=" << id.marker << " incarnation=" << id.incarnation << " noun=" << state.noun
                     << " placement=" << (g_markers.count(id.marker) ? 1 : 0) << " sequence=" << state.sequence << "\n";
         } else {
-            for (const auto& actor : g_native) if (actor.marker >= first && shown++ < limit) {
+            for (const auto& actor : g_native) if ((action=="actorsat" ? actor.marker==first : actor.marker>=first) && shown++ < limit) {
                 out << "marker=" << actor.marker << " incarnation=" << actor.incarnation << " noun=" << actor.noun
                     << " object=" << actor.object << " class=" << skg::field<int>(actor.object, 0x1C);
+                void* powerup=powerup_for(actor.object);
+                if(powerup && skg::readable(powerup,0x3C)) out << " powerup=" << skg::field<int>(powerup,4)
+                    << " key_category=" << (skg::field<void*>(powerup,0x18) ? skg::cdecl_call<uint32_t>(a_GateKey,powerup) : 0);
                 for (const auto& [id, binding] : g_bindings) if (binding.object == actor.object)
                     out << " host_incarnation=" << id.incarnation;
                 out << "\n";
@@ -1366,9 +1497,26 @@ int debug(int argc, const char* const* argv, SkOut* output)
         say(out.str()); return 0;
     }
     auto marker_actor = [&](uint32_t marker) -> NativeActor* {
-        for (auto& actor : g_native) if (actor.marker == marker) return &actor;
-        return nullptr;
+        NativeActor* spawner=nullptr;
+        for(auto& actor:g_native) if(actor.marker==marker) {
+            if(actor.powerup_kind!=9) return &actor;
+            spawner=&actor;
+        }
+        return spawner;
     };
+    if(action=="forgetgate" && argc==2 && !host()) {
+        auto* actor=marker_actor(uint32_t(number(1)));
+        void* powerup=actor ? powerup_for(actor->object) : nullptr;
+        if(!actor || !powerup || skg::field<int>(powerup,4)!=14) { say("An open guest gate is required.\n"); return 1; }
+        void* object=actor->object; void* sibling=nullptr;
+        for(const auto& candidate:g_native) if(candidate.marker==actor->marker && candidate.object!=object) { sibling=candidate.object; break; }
+        auto* marker=skg::field<uint8_t*>(object,0x18); std::string error;
+        if(!adventure_world_lifecycle::remove(scenario_data(),marker,object,error,sibling)) { say(error+"\n"); return 1; }
+        for(auto it=g_bindings.begin();it!=g_bindings.end();) {
+            if(it->second.object==object) it=g_bindings.erase(it); else ++it;
+        }
+        say("Guest open gate removed for snapshot reconstruction fixture.\n"); return 0;
+    }
     if (action == "nearplayer" && argc >= 2 && C.captain_of) {
         unsigned long target_id = number(1), moving_id = argc > 2 ? number(2) : C.sess->my_id();
         if (target_id >= ga::kNoPlayer || moving_id >= ga::kNoPlayer) { say("Invalid party player.\n"); return 1; }

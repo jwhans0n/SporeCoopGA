@@ -35,6 +35,7 @@ static void test_buffer()
     s.id = 3; s.time_ms = 123456; s.pos = {1, 2, 3}; s.rot = {0, 0, 0.7071f, 0.7071f};
     s.vel = {4, 5, 6}; s.flags = PF_IN_WORLD | PF_RUNNING; s.anim = 7; s.health = 50; s.max_health = 100;
     s.species = 0xDEADBEEF;
+    s.scale=1.73f; s.adventure_run=0x1122334455667788ULL; s.captain_selection=0x8877665544332211ULL;
     Writer w;
     s.write(w);
     Reader r(w.data.data(), w.size());
@@ -42,6 +43,7 @@ static void test_buffer()
     CHECK(t.read(r));
     CHECK(t.id == 3 && t.time_ms == 123456 && t.pos.z == 3 && t.rot.w > 0.7f && t.flags == s.flags);
     CHECK(t.species == 0xDEADBEEF && t.max_health == 100);
+    CHECK(t.scale==s.scale && t.adventure_run==s.adventure_run && t.captain_selection==s.captain_selection);
     Reader bad(w.data.data(), 5);
     PlayerState u;
     CHECK(!u.read(bad));

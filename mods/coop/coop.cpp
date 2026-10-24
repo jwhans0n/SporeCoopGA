@@ -1,7 +1,7 @@
 // SporeCoop mod: creature-stage co-op ("pack" mode). See docs/03-gameplay.md.
 // the release version (tools/package.sh names the zip after it)
 #ifndef COOP_VERSION
-#define COOP_VERSION "0.7.0-ga-preview.4"
+#define COOP_VERSION "0.7.0-ga-preview.5"
 #endif
 
 #include <winsock2.h>
@@ -34,6 +34,7 @@
 #include "adventure_captains.h"
 #include "adventure_collect.h"
 #include "adventure_native.h"
+#include "adventure_flow.h"
 #include "adventure_progress.h"
 #include "gamefixes.h"
 #include "spacecoop.h"
@@ -70,6 +71,8 @@ struct Remote {
     drive::State drv;
     const modes::Adapter* puppet_adapter = nullptr; // adapter that created `puppet`
     bool echo = false; // local loopback test remote
+    dbpf::Key captain_model;
+    uint64_t captain_run = 0;
     uint64_t world_sent = 0; // host: (mode << 32 | save crc) last sent to this guest
     double other_mode_since = -1; // host: since when the guest plays another mode
     bool joined_phase = false; // host: the guest played the host's mode after the last world send
@@ -248,6 +251,12 @@ net::PlayerState local_state()
     st.world = g_world;
     if (g_adapter && g_local)
         g_adapter->fill(g_local, st);
+    if (g_mode == modes::kScenario) {
+        if (const auto* d = adventure::current()) {
+            st.adventure_run = d->run_id;
+            st.captain_selection = adventure::selection_serial(g_sess.my_id());
+        }
+    }
     return st;
 }
 
@@ -262,8 +271,16 @@ void drive_puppet(Remote& r, double now)
     // dead players are hidden until they respawn
     bool visible = g_adapter && g_local && (s.flags & net::PF_IN_WORLD) && !(s.flags & net::PF_DEAD) &&
                    r.buf.age(now) < 5.0 && (r.echo || same_place(s));
-    if (g_mode == modes::kScenario && g_sess.connected() && !r.echo)
-        visible = visible && adventure::running() && adventure::participating(r.id);
+    dbpf::Key captain_model;
+    if (g_mode == modes::kScenario && g_sess.connected() && !r.echo) {
+        const auto* d = adventure::current();
+        captain_model = adventure_captains::key_for(r.id);
+        auto selected = adventure::selected_captain(r.id);
+        visible = visible && adventure::running() && adventure::participating(r.id) && d &&
+            s.adventure_run == d->run_id && s.captain_selection == adventure::selection_serial(r.id) &&
+            captain_model.instance && selected.instance && s.species == selected.instance;
+        if (r.puppet && (!(r.captain_model == captain_model) || r.captain_run != s.adventure_run)) despawn(r);
+    }
     if (r.puppet && !visible) // why a partner disappears (docs/stability/cell.md)
         LOG("%s hidden: flags=0x%X age=%.1f same_place=%d", r.name.c_str(), (unsigned)s.flags, r.buf.age(now),
             (int)same_place(s));
@@ -285,6 +302,7 @@ void drive_puppet(Remote& r, double now)
             return;
         }
         r.puppet_adapter = g_adapter;
+        r.captain_model = captain_model; r.captain_run = s.adventure_run;
         r.drv = drive::State{};
         feed(r.name + " appeared in the world");
     }
@@ -719,8 +737,10 @@ void vote_tick(double now)
 void on_mode_change(uint32_t from, uint32_t to)
 {
     if (from == modes::kScenario && to != modes::kScenario) {
-        adventure::cancel("A player left the adventure. Return to the lobby for the next attempt.");
-        adventure_native::reset();
+        if(adventure::native_attempt()) {
+            adventure::cancel("A player left the adventure. Return to the lobby for the next attempt.");
+            adventure_native::reset();
+        } else if(!adventure::active()) adventure_native::reset();
     }
     if (to == modes::kMenu && stage_mode(from) && g_sess.role() == net::Role::Host && !g_remotes.empty())
         feed("the others play on alone until you load a game again (they get its world)");
@@ -1744,9 +1764,13 @@ int c_status(void*, int, const char* const*, SkOut* out)
             }
             SAY("   puppet pos=(%.1f %.1f %.1f) err=%.2f rot_err=%.1f species=%08X\n", p.x, p.y, p.z,
                 net::dist(p, s.pos), rot_err,
-                g_mode == modes::kCreature ? game::species_key(r.puppet).instance
+                (g_mode == modes::kCreature || g_mode == modes::kScenario) ? game::species_key(r.puppet).instance
                 : g_mode == modes::kCell   ? *(uint32_t*)((uint8_t*)r.puppet + 0xFC) // cell model
                                            : 0u);
+            if (g_mode == modes::kScenario)
+                SAY("   captain run=%llu selection=%llu expected=%08X scale=%.5f owner_scale=%.5f\n",
+                    (unsigned long long)r.captain_run, (unsigned long long)s.captain_selection,
+                    r.captain_model.instance, game::scale(r.puppet), s.scale);
             if (g_mode == modes::kCreature)
                 SAY("   drive err=%.2f speed=%.2f nudges=%u kept=%u teleports=%u\n", r.drv.last_err,
                     r.drv.last_speed, r.drv.nudges, r.drv.nudges_kept, r.drv.teleports);
@@ -1957,6 +1981,7 @@ std::vector<coop_ui::PlayerRow> ui_players()
         r.me = p.id == g_sess.my_id();
         r.ready = g_ready.count(p.id) && g_ready[p.id];
         if (adventure::active()) r.ready = adventure::launch_ready(p.id);
+        if(adventure_flow::held()) r.ready=adventure_flow::ready(p.id);
         if (r.me)
             r.stage = modes::mode_name(g_mode);
         else {
@@ -2282,10 +2307,13 @@ void init_ui()
     };
     a.players = ui_players;
     a.world_line = [] {
+        auto flow=adventure_flow::status();
+        if(!flow.empty()) return flow.substr(0,flow.find('\n'));
         return !g_vote.active && (g_mode == modes::kMenu || g_mode == modes::kScenario)
             ? adventure::status() : ui_world_line();
     };
-    a.ready = [] { return adventure::active() ? adventure::launch_ready(g_sess.my_id()) : g_ready.count(g_sess.my_id()) && g_ready[g_sess.my_id()]; };
+    a.ready = [] { return adventure_flow::held() ? adventure_flow::local_waiting() : adventure::active() ? adventure::launch_ready(g_sess.my_id()) : g_ready.count(g_sess.my_id()) && g_ready[g_sess.my_id()]; };
+    a.party_waiting=adventure_flow::held;
     a.set_ready = set_ready;
     a.share_world = [] {
         if (g_vote.active)
@@ -2626,7 +2654,7 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
     modes::g_species_for_player = [](uint8_t id) -> void* {
         if (game::mode_id() == modes::kScenario && adventure::active()) {
             auto key = adventure_captains::key_for(id);
-            if (key.instance) return game::species_by_key({key.instance, key.type, key.group});
+            return key.instance ? game::species_by_key({key.instance, key.type, key.group}) : nullptr;
         }
         return creations::player_species(id);
     };

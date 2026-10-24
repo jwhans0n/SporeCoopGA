@@ -79,6 +79,8 @@ test:
 	$(B)/host/adventure_world_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Imods/coop -Isdk/include -o $(B)/host/adventure_runtime_tests mods/coop/adventure.cpp mods/coop/net/adventure.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp tests/adventure_runtime_tests.cpp
 	$(B)/host/adventure_runtime_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include -o $(B)/host/adventure_flow_tests mods/coop/adventure_flow.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp tests/adventure_flow_tests.cpp
+	$(B)/host/adventure_flow_tests
 	python3 tests/test_uifind.py
 	python3 tools/re_lint.py
 
@@ -105,7 +107,7 @@ ACTIONS_TEST_SRC := mods/coop/adventure_world_actions.cpp tests/adventure_action
 VEHICLES_TEST_SRC := mods/coop/adventure_world_vehicles.cpp tests/adventure_vehicle_tests.cpp
 RELATIONSHIPS_TEST_SRC := mods/coop/adventure_relationships.cpp tests/adventure_relationship_tests.cpp
 SOCIAL_TEST_SRC := mods/coop/adventure_social.cpp tests/adventure_social_tests.cpp
-MIRROR_TEST_SRC := tests/adventure_mirror_tests.cpp mods/coop/net/adventure.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp
+MIRROR_TEST_SRC := tests/adventure_mirror_tests.cpp mods/coop/adventure_flow.cpp mods/coop/net/adventure.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp
 
 test-actions-windows: $(B)/host/adventure_actions_tests.exe
 $(B)/host/adventure_actions_tests.exe: $(ACTIONS_TEST_SRC) mods/coop/adventure_world_actions.h $(ADVENTURE_ABI_HEADERS)

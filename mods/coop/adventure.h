@@ -21,6 +21,7 @@ struct Ctx {
     std::function<bool(const Key&, std::vector<dbpf::Record>&, std::string&)> collect;
     // A zero locked key requests a personal captain. Return a zero key to cancel.
     std::function<void(const Key& locked, std::function<void(const Key&)> selected)> choose_captain;
+    std::function<void(const Key&, std::function<void(const Key&)>)> reuse_captain;
     std::function<bool(uint8_t, uint64_t, const Key&)> captain_validated;
     std::function<bool(const Key& adventure, const Key& captain, std::string& error)> launch;
     // Close owned setup UI and restore the native menu before Scenario was entered.
@@ -56,10 +57,12 @@ bool preparation(ga::PreparationView& view);
 bool can_ready();
 bool change_captain();
 uint64_t selection_serial(uint8_t player);
+Key selected_captain(uint8_t player);
 void captain_progress(ga::PreparationStage stage, uint8_t progress = 0);
 bool set_ready(bool value);
 bool active();
 bool running(); // all frozen-roster captains loaded and the host committed the attempt
+bool native_attempt(); // a current attempt has entered native loading/gameplay
 bool participating(uint8_t player); // excludes joins/reconnects after roster freeze
 struct CaptainState {
     uint64_t run_id = 0;
@@ -82,6 +85,8 @@ bool captain_damage(uint8_t victim, const ga::Source& source, float amount);
 bool captain_heal(uint8_t victim, float amount);
 bool revive(uint8_t target, bool held);
 bool complete(bool success);
+// Called after the native results panel has saved local progression.
+bool results_accepted(bool replay);
 bool cancel(const std::string& reason);
 const ga::Descriptor* current();
 

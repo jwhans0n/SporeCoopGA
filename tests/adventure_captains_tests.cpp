@@ -44,7 +44,8 @@ static void drain()
 
 namespace adventure {
 static uint64_t local_serial = 1;
-uint64_t selection_serial(uint8_t player) { return player ? 10 : local_serial; }
+static uint64_t remote_serial = 10;
+uint64_t selection_serial(uint8_t player) { return player ? remote_serial : local_serial; }
 void captain_progress(ga::PreparationStage, uint8_t) {}
 const ga::Descriptor* current() { return g_active ? &descriptor : nullptr; }
 bool participating(uint8_t player) { return g_active && std::find(descriptor.roster.begin(), descriptor.roster.end(), player) != descriptor.roster.end(); }
@@ -233,6 +234,11 @@ int main()
     CHECK(records[id(remote)] == std::vector<uint8_t>{0xEE});
     CHECK(records[id({mapped.instance, gear, group})] == std::vector<uint8_t>{0x56});
     CHECK(imports == 1);
+    adventure::remote_serial=11;
+    CHECK(!adventure_captains::key_for(1).instance);
+    receive(1,1,10,remote,bundle);
+    CHECK(!adventure_captains::key_for(1).instance && imports==1);
+    adventure::remote_serial=10; // restore this fixture's transfer generation
     receive(1, 1, 10, remote, bundle);
     receive(1, 1, 9, remote, bundle);
     receive(0, 1, 11, remote, bundle); // guest owner must match actual sender

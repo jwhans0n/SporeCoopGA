@@ -1,6 +1,7 @@
 #include "adventure_native.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <map>
 
@@ -10,6 +11,7 @@
 #include "adventure_world.h"
 #include "adventure_relationships.h"
 #include "adventure_social.h"
+#include "adventure_flow.h"
 #include "game.h"
 #include "modes.h"
 #include "coop_ui.h"
@@ -24,6 +26,8 @@ Ctx C;
 bool g_symbols, g_frozen, g_replay, g_coop_attempt, g_recovering;
 uint32_t g_suppressed_scores;
 unsigned g_initializing;
+uint64_t g_intro_run;
+bool g_intro_pending;
 dbpf::Key g_host_captain, g_score_adventure;
 std::vector<ga::Captain> g_captains;
 struct Immunity { void* object; bool authored; };
@@ -35,6 +39,7 @@ using Switch = void(SK_THISCALL*)(void*, int);
 using Statistic = void(SK_THISCALL*)(void*, uint32_t, const dbpf::Key*, const int64_t*, uint32_t);
 using CreatureAct = void(SK_THISCALL*)(void*);
 using Initialize = void(SK_THISCALL*)(void*);
+using Message = bool(SK_THISCALL*)(void*,uint32_t,void*);
 Show original_show;
 Update original_update;
 Switch original_switch;
@@ -42,6 +47,7 @@ Statistic original_statistic;
 CreatureAct original_creature_act;
 Initialize original_initialize;
 Initialize original_save_captain;
+Message original_message;
 
 void feed(const std::string& message) { if (C.feed) C.feed(message); }
 bool connected() { return C.sess && C.sess->connected(); }
@@ -157,7 +163,31 @@ void SK_THISCALL switch_mode(void* manager, int index)
 void SK_THISCALL update(void* self, int milliseconds)
 {
     if (connected() && g_frozen && game::mode_id() == modes::kScenario) return;
+    if(adventure_flow::held() && field<int>(self,0x90)==3) return;
     original_update(self, milliseconds);
+}
+
+bool SK_THISCALL message(void* self, uint32_t type, void* data)
+{
+    if(connected() && g_coop_attempt) {
+        if(type==0x044F1189 && adventure::active() && field<int>(self,0x90)==1) {
+            if(const auto* d=adventure::current()) {
+                g_intro_run=d->run_id; g_intro_pending=true;
+                adventure_flow::confirm_intro();
+            }
+            return false;
+        }
+        if(type==0x070B18C7 && data && readable(data,12)) {
+            int choice=field<int>(data,8);
+            if(choice==1 || choice==2) {
+                bool accepted=adventure::results_accepted(choice==2);
+                if(choice==2 && accepted) coop_ui::open(true);
+                // A delayed results callback must not restart/exit a later run.
+                if(choice==2 || !accepted) return false;
+            }
+        }
+    }
+    return original_message(self,type,data);
 }
 
 void SK_THISCALL apply_creature_act(void* creature)
@@ -174,6 +204,7 @@ void SK_THISCALL initialize(void* self)
         Initializing() { ++g_initializing; }
         ~Initializing() { --g_initializing; }
     } initializing;
+    g_intro_pending=false; g_intro_run=0;
     adventure_world::begin_native_attempt(self);
     original_initialize(self);
 }
@@ -252,6 +283,8 @@ bool loaded(const dbpf::Key& key)
 
 bool paused()
 {
+    auto* p=play_mode();
+    if(adventure_flow::held() || (p && field<int>(p,0x90)!=3)) return true;
     uintptr_t get = H->sym("Simulator::cGameTimeManager::Get");
     void* manager = get ? cdecl_call<void*>(get) : nullptr;
     return manager && (field<uint32_t>(manager, 0x48) & 1);
@@ -304,8 +337,9 @@ bool init(const SkHost* host, SkMod* mod, Ctx context)
         "App::cGameModeManager::SwitchToIndex", "App::cGameModeManager::SetActiveMode",
         "App::IGameModeManager::Get", "SporeCoop::Adventure::RecordAssetStatistic",
         "SporeCoop::Adventure::ApplyCreatureAct", "Simulator::cScenarioPlayMode::Initialize",
-        "App::IStateManager::Get", "App::cStateManager::SwitchToState", "SporeCoop::Adventure::CaptainWizardSave"};
-    g_symbols = H->sym_require(M, required, 15) == 0;
+        "App::IStateManager::Get", "App::cStateManager::SwitchToState", "SporeCoop::Adventure::CaptainWizardSave",
+        "SporeCoop::Adventure::HandlePlayMessage"};
+    g_symbols = H->sym_require(M, required, 16) == 0;
     adventure_collect::init(H, M);
     adventure_catalog::init(H, M);
     adventure_captains::init(H, M, C.sess);
@@ -317,6 +351,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context)
     };
     world.run = [] { const auto* run = adventure::current(); return run ? run->run_id : 0; };
     world.active = [] { return adventure::running(); };
+    world.held=adventure_flow::held;
     world.difficulty = [] { const auto* run = adventure::current(); return run ? run->difficulty : adventure::settings(); };
     world.party_size = [] { const auto* run = adventure::current(); return run ? run->roster.size() : size_t(1); };
     world.captain_damage = adventure::captain_damage;
@@ -339,7 +374,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context)
     social.active = [] {
         adventure::CaptainState state;
         return C.sess && C.sess->role() == net::Role::Client && adventure::running() &&
-            !g_frozen && game::mode_id() == modes::kScenario &&
+            !g_frozen && !adventure_flow::held() && game::mode_id() == modes::kScenario &&
             adventure::captain_state(C.sess->my_id(), state) && state.captain.life == ga::Life::Alive;
     };
     social.run = [] { const auto* run = adventure::current(); return run ? run->run_id : 0; };
@@ -357,6 +392,28 @@ bool init(const SkHost* host, SkMod* mod, Ctx context)
         return query.second;
     };
     adventure_social::init(H, M, std::move(social));
+    adventure_flow::Ctx flow;
+    flow.sess=C.sess;
+    flow.run=[] { const auto* d=adventure::current(); return d?d->run_id:0; };
+    flow.running=adventure::running;
+    flow.members=[] {
+        std::vector<uint8_t> members;
+        if(const auto* d=adventure::current()) for(uint8_t id:d->roster)
+            if(adventure::participating(id)) members.push_back(id);
+        return members;
+    };
+    flow.validate_talk=adventure_world::validate_talk;
+    flow.present=adventure_world::present_talk;
+    flow.release=[](const adventure_flow::Scene& s) {
+        if(s.kind==adventure_flow::Kind::Talk) adventure_world::release_talk(s);
+        else if(s.kind==adventure_flow::Kind::Intro && g_intro_pending && s.run==g_intro_run) {
+            g_intro_pending=false;
+            std::array<uint8_t,16> data{};
+            if(auto* p=play_mode()) original_message(p,0x044F1189,data.data());
+        }
+    };
+    flow.waiting=[](bool waiting) { coop_ui::open(waiting); };
+    g_symbols=adventure_flow::init(H,std::move(flow)) && g_symbols;
     if (g_symbols) {
         g_symbols = H->hook_create(M, reinterpret_cast<void*>(H->sym(required[3])), reinterpret_cast<void*>(show),
                                   reinterpret_cast<void**>(&original_show)) == 0;
@@ -379,6 +436,9 @@ bool init(const SkHost* host, SkMod* mod, Ctx context)
     if (g_symbols)
         g_symbols = H->hook_create(M, reinterpret_cast<void*>(H->sym(required[14])), reinterpret_cast<void*>(save_captain),
                                   reinterpret_cast<void**>(&original_save_captain)) == 0;
+    if(g_symbols)
+        g_symbols=H->hook_create(M,reinterpret_cast<void*>(H->sym(required[15])),reinterpret_cast<void*>(message),
+                                 reinterpret_cast<void**>(&original_message))==0;
     return available();
 }
 
@@ -405,6 +465,13 @@ adventure::Ctx coordinator_context()
         }
     };
     context.launch = launch;
+    context.reuse_captain=[](const dbpf::Key& previous, auto selected) {
+        const auto* d=adventure::current();
+        bool ok=d && (d->locked_captain.instance
+            ? adventure_captains::choose(d->locked_captain,std::move(selected))
+            : adventure_captains::publish(previous,std::move(selected)));
+        if(!ok) adventure::cancel("The saved replay captain could not be prepared.");
+    };
     context.freeze = [](bool frozen) {
         g_frozen = frozen;
         if (!frozen && adventure::running()) coop_ui::open(false);
@@ -412,7 +479,7 @@ adventure::Ctx coordinator_context()
     auto restore_menu = [] {
         g_frozen = false;
         adventure_captains::close_picker();
-        adventure_captains::reset();
+        adventure_native::reset();
         g_host_captain = {};
         void* loading = cdecl_call<void*>(H->sym("SporeCoop::Adventure::LoadingScreenGet"));
         if (loading && original_show) original_show(loading, false, modes::kScenario, true);
@@ -437,18 +504,19 @@ adventure::Ctx coordinator_context()
     return context;
 }
 
-void tick(double now) { adventure_captains::tick(now); adventure_world::tick(now); }
+void tick(double now) { adventure_captains::tick(now); adventure_flow::tick(); adventure_world::tick(now); }
 void blocked_update(void* creature, int milliseconds) { adventure_social::blocked_update(creature, milliseconds); }
 void on_message(uint8_t from, net::Reader& message)
 {
     if (!message.left()) return;
     if (*message.cur() >= 192) adventure_captains::on_message(from, message);
+    else if(*message.cur()>=160 && *message.cur()<=163) adventure_flow::on_message(from,message);
     else adventure_world::on_message(from, message);
 }
 bool update_filter(void* creature)
 {
     if (connected() && game::mode_id() == modes::kScenario) {
-        if (g_frozen) return false;
+        if (g_frozen || adventure_flow::held()) return false;
         for (const auto& state : g_captains)
             if (state.life == ga::Life::Downed && C.captain_of && C.captain_of(state.player) == creature) return false;
     }
@@ -468,6 +536,7 @@ bool damage_filter(void* victim, float& amount, int type, void* attacker)
 }
 void reset()
 {
+    adventure_flow::reset(); g_intro_run=0; g_intro_pending=false;
     adventure_social::reset();
     g_frozen = false; g_host_captain = {}; g_captains.clear();
     for (const auto& [player, immunity] : g_invulnerability)
@@ -482,7 +551,7 @@ void shutdown() { reset(); }
 std::string status()
 {
     auto social = adventure_social::counters();
-    return available() ? adventure::status() + "\n" + adventure_captains::status() + "\n" + adventure_world::status() +
+    return available() ? adventure::status() + "\n" + adventure_flow::status()+"\n" + adventure_captains::status() + "\n" + adventure_world::status() +
         "native party relationship aliases=" + std::to_string(adventure_relationships::aliased_calls()) +
         " authoritative=" + std::to_string(adventure_relationships::authoritative_calls()) + "\n" +
         "native social presentation: starts=" + std::to_string(social.starts) + " ticks=" + std::to_string(social.ticks) +

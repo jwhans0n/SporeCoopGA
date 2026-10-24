@@ -7,6 +7,7 @@
 #include "net/adventure.h"
 #include "net/session.h"
 #include "sporekit.h"
+#include "adventure_flow.h"
 
 namespace adventure_world {
 
@@ -25,6 +26,7 @@ struct Ctx {
     std::function<bool(uint8_t, const ga::Source&, float)> captain_damage;
     std::function<bool(uint8_t, float)> captain_heal;
     std::function<void(bool success)> result;
+    std::function<bool()> held;
 };
 
 bool init(const SkHost* host, SkMod* mod, Ctx ctx);
@@ -39,6 +41,9 @@ bool damage_filter(void* victim, float& damage, int type, void* attacker);
 bool source(void* victim, void* attacker, int type, ga::Source& out);
 void begin_native_attempt(void* play); // call before native Initialize, including solo/retry
 void apply_result(bool success); // authoritative native result, outside the frame
+bool validate_talk(uint8_t player, const adventure_flow::Scene&);
+bool present_talk(const adventure_flow::Scene&);
+void release_talk(const adventure_flow::Scene&);
 std::string status(bool verbose = false);
 int debug(int argc, const char* const* argv, SkOut* output); // outside frame; argv[0] is the subcommand
 

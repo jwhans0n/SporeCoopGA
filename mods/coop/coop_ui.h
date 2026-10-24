@@ -43,6 +43,7 @@ struct Api {
     std::function<std::vector<PlayerRow>()> players;
     std::function<std::string()> world_line; // transfer progress / hints, "" if nothing
     std::function<bool()> ready;
+    std::function<bool()> party_waiting;
     std::function<void(bool)> set_ready;
     std::function<void()> share_world; // host (during a vote: start the evolution now)
     std::function<bool()> vote_active;

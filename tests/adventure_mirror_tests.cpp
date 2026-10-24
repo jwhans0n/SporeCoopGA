@@ -135,7 +135,7 @@ namespace adventure_world_lifecycle {
 bool init(const SkHost*, SkMod*) { return true; }
 bool available() { return true; }
 bool remove(uint8_t*, uint8_t*, void* object, std::string&, void*) { field<bool>(object, 0x20) = true; return true; }
-bool recreate(uint8_t*, uint8_t* marker, int, const net::Vec3&, const net::Quat&, std::string&, void** output, uint32_t expected_noun)
+bool recreate(uint8_t*, uint8_t* marker, int, const net::Vec3&, const net::Quat&, std::string&, void** output, uint32_t expected_noun, uint8_t)
 {
     ++creates;
     uint32_t id = field<uint32_t>(marker, 0x228);

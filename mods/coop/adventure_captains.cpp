@@ -639,8 +639,12 @@ void reset()
 
 Key key_for(uint8_t player)
 {
+    const auto* d = adventure::current();
+    if (!d || !current(d->run_id) || !adventure::participating(player)) return {};
+    if (d->locked_captain.instance) return d->locked_captain;
     auto it = g_transfers.find(player);
-    return it != g_transfers.end() && it->second.applied ? it->second.mapped : Key{};
+    return it != g_transfers.end() && it->second.applied && it->second.run == d->run_id &&
+        it->second.serial == adventure::selection_serial(player) ? it->second.mapped : Key{};
 }
 
 bool validated(uint8_t player, uint64_t serial, const Key& key)

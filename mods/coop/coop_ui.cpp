@@ -510,6 +510,7 @@ static void build_dialog()
         g_dirty = true;
     });
     D.share_btn = add_button(L, "share", {260, 488, 480, 528}, T("Send my world", "Отправить мир"), [] {
+        if(A.party_waiting && A.party_waiting()) { if(A.cancel_adventure) A.cancel_adventure(); return; }
         ga::Difficulty difficulty;
         int party = 1;
         bool editable = false;
@@ -719,8 +720,12 @@ static void refresh_lobby()
     bool editable = false;
     std::string adventure_status;
     bool adventure = adventure_view(difficulty, party, editable, adventure_status);
+    bool waiting=A.party_waiting && A.party_waiting();
+    if(waiting) text(D.ready_btn,"Waiting for party");
+    sui::set_enabled(D.ready_btn,!waiting);
     show(D.share_btn, host || adventure);
     text(D.share_btn, adventure ? "Adventure settings" : A.vote_active && A.vote_active() ? T("Start now", "Начать сейчас") : T("Send my world", "Отправить мир"));
+    if(waiting) text(D.share_btn,"Cancel adventure");
     text(D.leave_btn, host ? T("Stop hosting", "Закрыть игру") : T("Leave", "Выйти"));
 }
 
