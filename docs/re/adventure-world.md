@@ -678,3 +678,344 @@ guards null manager/viewer and failed ray results. The optional ray branch of
 tests missing capabilities with zero native calls and null/failed/successful fake
 camera paths; it passed with zero failures. This diagnostic failure was separate
 from the successful ordinary recruitment game flow.
+
+## Preview 6 stationary actor replication (dc04)
+
+Verified implementation: `mods/coop/adventure_world.cpp`, exercised directly by
+`tests/adventure_mirror_tests.cpp`. The classification uses native `Cast`, not the
+adventure author's appearance or a copied object layout:
+
+| Native interface | Type id | Replication decision |
+|---|---|---|
+| Creature | CE9F6639 | Existing dynamic snapshots, including disguised creatures |
+| Vehicle | 0137E8E0 | Existing dynamic snapshots |
+| Building | 0E9CB8BA | Stationary candidate |
+| Ornament | 0175CDC9 | Stationary candidate |
+| Interactive ornament | 03A25119 | Stationary candidate |
+| Unknown class | no matching verified cast | Existing dynamic snapshots |
+
+Timed bomb kind 10 and grenade kind 13 always remain dynamic. A common powerup
+with thrown byte `+30` set, or any item in a party captain's native held-item
+slot, also remains dynamic before any observed movement. This avoids freezing a
+freshly thrown or carried object merely because its first sampled pose matches.
+Common powerup and combatant pointers still come from `Cast`; the installed
+interactive ornament's offsets differ from the older upstream SDK.
+
+The host samples both classes at the existing 10 Hz. Stationary candidates keep
+their first published pose and receive a reliable full baseline per peer,
+followed by reliable changed health, effective maximum health, raw maximum
+tuning, flags and relationship. Wire details and queue bounds are in
+`docs/04-netcode.md`, section 4.8. Actor identity remains marker plus incarnation.
+Gate opening, pickups and explosive retirement retain their tombstones and
+native event paths; the stationary packet alone does not describe all powerup
+state.
+
+Pose comparison permits translation squared distance up to `1e-8` and normalized
+quaternion dot-product squared within `2e-7` of one. Quaternion `q` and `-q` are
+equivalent. Comparison is against the initial published pose, so small movements
+accumulate rather than disappearing between samples. Any larger observed change,
+or a later classification as held/thrown/dynamic, promotes that identity for the
+whole current act. Promotion sends a reliable full correction and continues
+unreliable full snapshots even after motion stops. Act changes, a fresh run and
+new incarnations get fresh classification/baselines.
+
+The guest stores a complete merged state for reconstruction. A partial update
+cannot create an unknown identity or replace the retained transform. Native
+transform setters are skipped when an existing stationary binding already has
+the cached pose; a new binding or local pose drift still applies the baseline.
+Future-act reliable baselines are retained until the native act switch rather
+than discarded. The receiver assumes forward authored act progression and drops
+past-act packets; diagnostic backward jumps within one run need a new baseline
+generation before they can be treated as a supported flow.
+
+Three edge cases have explicit regression coverage:
+
+* Initial native testing found host count 351 and guest count 303 despite a
+  complete 351-entry roster. The missing 48 were exactly four initial reliable
+  batches delivered after commit but before the first world tick. That tick
+  reset already acknowledged baselines while the host correctly retained its
+  sent shadow. `on_message` now initializes the current run before merging a
+  valid current-run packet. The ABI regression delivers all four one-shot
+  batches before `tick` and verifies all 48 survive subsequent ticks.
+* A bounded sender starting at map begin could repeatedly spend its 48-record
+  budget on early dirty identities. Per-peer rotating cursors now resume after
+  the last examined identity. The ABI regression dirties the earliest 48 of 80
+  actors continuously, verifies all later baselines finish, then verifies a later
+  health update still receives service.
+* Pickup or explosive retirement can be the first routed event of a newly
+  committed run. The shared `retire_identity` bridge now initializes the world
+  run before adding its exact tombstone, so the first tick cannot erase it.
+  The mirror regression exercises both module bridges, first-tick preservation,
+  delayed full dynamic/current-act/future-act stationary records and an eligible
+  newer same-marker incarnation. Its build log is
+  `out/preview6-static-early-retirement-build.log`, with zero failures.
+
+The Win32 mirror ABI suite builds with `-Wextra -Werror` and reports zero
+failures after these fixes. It also covers verified classification, unchanged
+stationary silence, unchanged dynamic cadence, quaternion equivalence, compact
+health changes, cached-pose retention, native drift repair, reliable
+backpressure/latest-value coalescing, rejoin baselines, cumulative slow motion,
+promotion after stopping, future-act staging, malformed-packet atomic rejection,
+2048-identity bounds, stale cross-channel state, tombstones and reincarnation.
+Build logs include `out/preview6-static-first-baseline-build.log` and
+`out/preview6-static-fairness-build.log`. Bandwidth comparisons and
+large-adventure FPS results remain separate acceptance evidence; the ABI pass
+does not establish those results.
+
+The native harness `tools/tests/coop_adventure_static.py` resumes an already
+committed recorded host/guest pair. It selects `replication=static` and verifies
+one ordinary non-powerup object at that marker, including the guest's bound host
+incarnation. It checks a two-second unchanged stationary-byte/baseline window,
+guest-only drift repair without a new baseline, host movement promotion and a
+second movement carried by dynamic updates. It restores the actor's original
+pose, retains the same run/party and requires zero native faults. Forward act
+changes are explicit with `--act-transitions`; its default targets 1,2 require
+starting in act 0. Offline `--self-test` covers diagnostic parsing and identity
+selection. The two-player native test subsequently passed on build 5b SHA-256
+`6d97642842f1992e06cf406d1cac18294fe4e1b9d0756f73b1017fd773dbee8f`, including
+cache repair without new baseline bytes, exactly one host promotion, continued
+dynamic spatial movement, original-pose restoration and complete actor rosters
+after forward native act switches 1 and 2. Both games logged zero native faults.
+Evidence is
+`out/windows-lab/preview6-bandwidth-after-puzzle-provisional2/static/result.json`.
+The adjacent bandwidth window ran with six lab games active and is provisional;
+the final two-game bandwidth/FPS comparison remains pending. An earlier harness
+attempt rejected the console's inline PID format before gameplay; matching the
+bounded `pid=` token fixed that test setup issue.
+
+## Preview 6 explosive native paths (dc04)
+
+The reviewed actual explosion entry is `F24730`, cdecl(powerup, combatant
+attacker). It reads current class-act radius `+498` and amount `+49C`, plays
+effects through `F21C00`, drops a held item, applies the native radius routes
+`F24580` and `F230F0`, and destroys the source object. No contents-creation
+factory occurs in this function. Stock crate `93512140` is powerup kind 15 with
+amount 0; barrel `A0EBD95A` is the same kind with amount 10. Preserve the authored
+native behavior rather than inventing loot or giving a harmless crate barrel
+damage.
+
+Mine `F207D0` and grenade contact `F20860` initiate their own death with damage
+type 19. The later blast uses type 0 through `F204F0`. Trigger/death time is not
+necessarily explosion time: chained callbacks can be delayed through `F20220`
+and `F24910`, so replication observes the actual `F24730` event. Grenade throw
+`F208F0` sets thrown byte `+30`, resets age float `+34`, and retains the acting
+captain at `+38`. The installed throw path at `D7F9C0` passes the captain through
+`F20A70`; the old upstream name describing `+38` as a target is misleading for
+this executable. Self-contact is ignored for the first second.
+
+Timer execution `F20390` and powerup tick `F24C40` both pause during the shared
+hold. Cleanup at `EF0BC6` calls `F20310`, which executes all delayed callbacks
+before releasing them; it does not silently discard pending explosions. Cleanup
+guards therefore validate native object, incarnation and run before accepting
+`F20810` or `F24910` callbacks from a cancelled attempt.
+
+World bounds `C8A630` is thiscall(spatial, Box24* out) returning Box24*, with
+`ret 4`, at spatial virtual slot `6C`. The result is six floats for world minimum
+and maximum. Native explosion code uses this slot and averages the bounds into
+centres. `tools/addrport/verify_dc04.py` verifies the function and the reviewed
+captain/ornament vtable entries. New symbols are named in
+`data/symbols/march2017_dc04aee5.sym`; the verification report is
+`out/preview6-explosives/verification.json`. The explosive Win32 ABI fixture
+`tests/adventure_explosives_tests.cpp` reports zero failures. Four-player natural
+mine acceptance with friendly fire 0 subsequently passed: every captain lost
+exactly 10 HP, every guest received one effect event, a distant guest claim was
+rejected, a new authored respawn was usable by the host and observers outside
+that second blast radius were undamaged. Evidence is
+`out/windows-lab/preview6-explosives-smoke3/result.json`. This result covers that
+mine case; other explosive kinds and friendly-fire settings need their own
+acceptance evidence.
+
+Native barrel testing found another ordering case: host detonation count became
+1 while guests remained 0 because the short-lived physical object had not yet
+acquired a host-identity binding. A missing-binding tombstone was sufficient to
+prevent stale state but could not present its effect. `ExplosionEffect` at
+`F21C00` is now verified as cdecl(Vec3* position, Quat* orientation, float scale,
+uint32 effect), returning at `F21D2F`; native `F24730` calls it at `F2486C` before
+radius damage and destruction. The host captures those actual arguments rather
+than manufacturing an alive baseline or guessing artwork from a sibling.
+Subkind 146 carries the 36-byte descriptor described in `docs/04-netcode.md`,
+section 4.9. With no exact binding, a guest displays that helper once, tombstones
+the host identity and leaves native object removal to safe reliable roster
+reconciliation. With an exact binding, it retains native explosion cleanup and
+uses the captured host presentation. It never destroys an unbound same-marker
+object by guess.
+
+World tombstones and event deduplication are distinct fences. Module phase and
+serial checks prevent duplicate effects, including a later event serial after a
+new local binding appears. World tombstones reject delayed full Actors128,
+Static136 and staged future-act state, so the spent host identity cannot bind
+again. An older complete roster cannot create a binding; without the retired
+identity's state it cannot declare that marker complete for sibling removal.
+The Win32 fixtures cover missing binding, repeated/delayed events, a newer
+same-marker local object and invalid descriptors. Build 5b subsequently passed
+the four-player barrel cases at friendly fire 0 and 100, including one native
+effect event on each guest. Their exact DLL is SHA256
+`6d97642842f1992e06cf406d1cac18294fe4e1b9d0756f73b1017fd773dbee8f`;
+the backing case files are
+`out/windows-lab/preview6-explosives-build5-matrix/barrel-ff0.json` and
+`barrel-ff100.json`. These completed cases do not turn that partly failed parent
+matrix into a whole-suite pass.
+
+`tools/tests/coop_adventure_explosives.py` accepts optional `--loss` as a packet
+loss fraction and `--jitter` as a maximum random delay in seconds, using one
+loopback `NetworkProxy` per guest on host port +1..+3. Default traffic remains
+direct. `--seed` makes impairment deterministic per guest; reports include
+per-case byte/packet/drop deltas and total proxy counters. Four-player harmless
+crate cases at friendly fire 0 and 100 passed on build 5b with 5% packet loss and
+up to 80 ms jitter; the completed result is
+`out/windows-lab/preview6-explosives-build5-crate-loss-plain2/result.json`.
+That run establishes shared crate consumption and presentation under impairment,
+not a crate destruction objective.
+
+Timed-bomb kind 10 repick has a separate native lifecycle rule. A genuine native
+OnPicked notification clears only the module's thrown guard, permitting a later
+throw of the same incarnation. It retains the running fuse and armed state.
+An already-held duplicate PickUp request does not invoke native OnPicked and
+cannot reset this guard. ABI coverage passes; the rebuilt final candidate's
+guest-drop/host-repick/drop test with the original 15-second fuse remains pending.
+
+The installed death-message branch
+at `F1C7C9` handles message `01622184`: it reads victim GameData class `+1C`,
+matches unfinished current goal type `+24` equal to 3 and target class `+28`,
+then calls native CountGoal at `F1C82B`. CountGoal increments `goal+4` at
+`F1ADC4`. The guest adapter suppresses physical CountGoal callbacks and accepts
+host goal snapshots. These fields alone are insufficient to retarget a live
+Talk goal: the first such crate test immediately failed the host adventure
+before a detonation or meaningful objective count. Evidence is
+`out/windows-lab/preview6-explosives-build5-crate-loss/21-commands.json`.
+`configure_crate_kill_goal` now refuses that invalid setup before native access.
+The unmodified fixture's original first goal is Talk to class 1037, marker 158,
+and cannot prove crate destruction objectives.
+
+`build_crate_goal_fixture` instead builds a separate immutable authored goal
+under root `7F00600E`, leaving the original 13 fixtures unchanged. The source
+scenario embeds a DBPF at byte 7830; its single RefPack record decodes to 614546
+bytes of ClassSerializer data. Native attribute constructors at `138B190` map
+`07114B5F` to type, `07114B60` to targetClassIndex, `071D3B1D` to requiredCount and
+`0733DF78` to targetClass2Index. Their native field offsets and names agree with
+the decoded attribute tables. The builder changes the first authored goal's
+type/class/required values at decoded offsets 436/440/444 from 2/1037/1 to
+3/0/3, and the class-zero palette at 205374 to stock crate `93512140`. It preserves
+all other decoded fields, including flags, dialogs and class tuning, rebuilds
+the inner DBPF uncompressed and updates the outer length word. No counter or
+completion result is injected. Ordinary native loading must initialize the new
+goal before the test starts.
+
+The manifest/package are in `out/preview6-fixtures/crate-goal`. Menu registration
+and private inspection reuse the existing reviewed packed-database/resource APIs.
+`inspect_crate_goal_fixture` requires native authored goal `(3,0,-1,3)` and the
+crate class before any gameplay test. Offline decoding/package/schema checks
+pass; the host/guest count-1/count-2 gameplay test remains pending. Native Kill
+goals for consumable props must be established by that
+test; the stock crate's destructibility alone does not prove objective support.
+
+The first authored-fixture attempt on build 7 failed before any crate shot or
+detonation, while waiting for beam-down confirmations. The guests retained
+native state 6, elapsed 0 and Kill/class0/required3 with count 0 and completed
+false. This was early native validation/failure, not successful completion or
+objective autocomplete. The observations are in
+`out/windows-lab/preview6-explosives-final7-objective-recovery/native-objective-observations.json`.
+Offline inspection found a product initialization
+dependency in the held powerup update path. Scenario tick calls play-mode
+Update/CheckGoalProgress at `EF308C`, before delayed timers at `EF312C` and
+TickPowerups at `EF3138`. Native `GetObjectsForClass` at `F40BA0` detects parent
+powerup kind 9 at `F40C8A`, substitutes the physical child through `F20BF0`, then
+skips a null child at `F40CA0`. A respawner alone therefore cannot satisfy target
+validation. Native Kill schema explicitly accepts stock crate `93512140` and
+barrel `A0EBD95A` through `F251F0`; the class-zero private native parses already
+show invulnerability false in all four acts.
+
+Native powerup construction `F212C0` initializes both timer floats `+24` and
+`+28` to zero at `F21589/F2158E`. The authored class spawn delay is added to `+24`
+at `F243EE/F243F2`, immediately before child construction, rather than delaying
+the first child. Calling the existing TickPowerups original with delta zero can
+therefore service initial creation while preserving elapsed time. Its respawner
+path subtracts zero; its grenade path adds zero to age. The mine helper
+`F20DC0` maintains the glow/sphere effect rather than activating the mine.
+Link cleanup `F24080` still runs. Contact, damage and delayed fuse callbacks
+retain their separate shared-hold guards. Dropping the entire TickPowerups call
+during Intro can prevent native initial goal targets from existing before
+Continue. The rebuilt delta-zero adapter and actual host/guest crate counts
+remain pending native acceptance. Offline disassembly and its evidence boundary
+are in `out/preview6-crate-goal-analysis/{native-paths.asm,findings.json}`.
+
+## Preview 6 native interaction fixtures (dc04)
+
+`tools/tests/adventure_interaction_fixture.py` builds an immutable DBPF of 13
+copies of installed Mr Puzzle scenario `C2C7B154`. In each scenario it changes
+only the four-byte class-zero palette asset at offset 27341. The source scenario
+and its saved captain restrictions remain intact; test root ids are
+`7F006001..7F00600D`, type `366A930D`, group `408A0000`. Actual native class parsing
+confirmed the following resources and powerup kinds:
+
+| Fixture | Palette asset, group D87454E6/type 00B1B104 | Kind |
+|---|---|---|
+| mine | F70AB170 | 6 |
+| barrel / crate | A0EBD95A / 93512140 | 15 |
+| long / ordinary / short timed bomb | D41F216B / C7C9CC8D / 48B8E425 | 10 |
+| grenade | 812057C5 | 13 |
+| health / energy | 71B5854F / 56CCE16B | 1 / 2 |
+| speed / damage / armor | B50BD5CF / A340633B / A880F62B | 3 / 4 / 5 |
+| teleporter | 90C48D09 | 8 |
+
+Class zero has physical markers 108, 110, 112, 116, 117 and 118. The copied gate
+class acts contain radius 10, amount 10, health/speed/damage multipliers 1 and
+spawn delay 5. The fixture manifest records the inherited tuning; it is not a
+claim that every stock palette uses those values. In particular, `tune_fixture`
+restores crate amount 0 before the harmless-crate test. Native palette durations
+are 15/7.5/4 seconds for the three bombs and 15 seconds for speed/damage/armor;
+damage and armor palette amounts are 2. Amount or duration cached in a spawned
+powerup's property list is not rewritten merely by changing a class-act field.
+Source appearance overrides remain, so these fixtures validate native semantics
+without promising default stock artwork.
+
+The scenario resource's runtime class map is at `+2BF4`: vector entries have
+stride `27E8`, class index at `+0` and class data at `+8`. Its marker map is at
+`+2C10`, entry stride `238`, marker data at `+4`. Class-act vectors are `+70/+74`
+with stride `4E0`; radius, amount and spawn delay are `+498`, `+49C` and `+4A4`
+within the act. Private resource parses have unassigned marker ids `FFFFFFFF` at
+marker `+228`; their array ordinal is only a diagnostic until actual native
+adventure loading assigns runtime ids.
+
+For a deterministic teleporter fixture, owned marker 108's destination position
+is `+1E8`, orientation `+1F4`, scale `+204`. Setting class secondary-graphics
+override `+48` to 1 selects the authored marker exit rather than model bone
+lookup. Native `F211E0` requires destination distance greater than
+`3 * (entryScale + 1)`. The helper chooses an exit 30 units away unless explicitly
+given one. This establishes fixture setup, not a multiplayer teleport pass.
+
+The helper verifies the recorded lab profile, process id and dc04 executable
+hash before native access. Registration/release require the native menu and no
+active attempt. Packed database registration holds one caller reference until
+`release_fixtures`; resource inspections release their normal native resource
+holds. Native scratch allocations are read/write, non-executable and freed by
+the context manager. `call` and `mem.write` run on SporeKit's main-thread command
+path, not its outside-frame render-safe path. Use native interaction commands
+that schedule rendering/effects outside Present for gameplay actions; this
+helper confines tuning to owned lab class/marker/plain gameplay fields.
+
+Verified helper evidence: all 13 private resources parsed, idempotent package
+registration reused its held database, normal unregister/release made subsequent
+private resource lookup fail, and the isolated menu process logged zero native
+faults. It did not launch an adventure or start a party. Artifacts:
+`out/preview6-fixtures/manifest.json`, `private-inspections.json`,
+`stock-runtime-classes.json` and per-process `registration-*.json`. The energy
+fixture is diagnostic coverage only; it does not expand the requested product
+pickup scope.
+
+A later four-client mine smoke exposed a fixture staging pitfall: placing every
+captain directly on respawner marker 108 during Intro prevented its physical
+mine from spawning. Native `F24240` calls obstruction test `F21F40` before
+creation and retries when the placement is blocked. Moving the captains away
+allowed physical mine 108 to appear on the host and all three guests. This was
+not a stationary replication or tombstone deletion. Host static sampling never
+deletes native objects, retirement callbacks only discard cached identities, and
+roster-driven native removals are guest-only. The harness must stage captains
+away from a parent respawner and wait for its physical kind before testing
+contact. A separate direct native activation of already spawned mine 110
+incremented host activation/detonation and all three guest detonation counters;
+that narrow callback result does not establish ordinary collision or the full
+explosive acceptance suite.
+The direct probe and explicitly transcribed manual observations are in
+`out/windows-lab/preview6-mine-probe/notes.json`; the raw per-game command logs
+record the physical respawn after moving captains away.

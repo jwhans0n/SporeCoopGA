@@ -29,7 +29,7 @@ it builds both as a Windows DLL and **natively on Linux** (unit tests, `fakepeer
 
 ```
 u32  magic   'SPCO'
-u16  proto   protocol version (6)
+u16  proto   protocol version (10)
 u32  conn    connection id: the guest picks a new random one for every join (protocol 6)
 u16  seq     packet number (for ack)
 u16  ack     last received seq
@@ -134,3 +134,140 @@ then the rest of the unreliable queue is dropped (stale by the next frame). Big 
 
 M1–M3: direct IP (UDP port forwarding on the host or a VPN network). Later: a rendezvous server
 for UDP hole punching (a small service you can host yourself).
+
+## 4.8 Adventure stationary actors (protocol 10, preview 6)
+
+Adventure resource bundle formats are unchanged. Protocol 10 adds stationary
+actor updates and native interaction messages under `MSG_ADVENTURE`; older
+previews fail version negotiation. This section specifies the stationary actor
+subkind. Other adventure messages retain their own preparation, event and
+movement-generation fields.
+
+The host still samples world actors at 10 Hz. Creatures, vehicles, unknown native
+classes, timed bombs, grenades, thrown objects and held items continue on the
+existing unreliable `Actors=128` full-snapshot path. A verified building,
+ornament or interactive ornament can use reliable `StaticActors=136`: send its
+complete baseline once per peer, then send only changed gameplay fields. A
+moving candidate is promoted for the rest of its act/incarnation, receives one
+reliable full correction and resumes 10 Hz full snapshots. A stopped promoted
+object remains dynamic so later packets can repair a lost movement update.
+
+All fields below are little endian. `run` is encoded as low then high `u32`.
+
+```text
+u8   subkind = 136
+u64  run
+u32  world sequence
+u8   act
+u8   count (0..12)
+repeat count times:
+    u32 marker
+    u32 incarnation
+    u8  fields (0 = gameplay only, 1 = stationary baseline, 2 = promotion)
+    u32 noun
+    if fields != 0:
+        f32 position[3]
+        f32 orientation[4]
+    f32 health
+    f32 effective maximum health
+    f32 authored/native maximum tuning
+    u8  flags
+    u8  party relationship (0..7, FF = unavailable)
+```
+
+The header is 15 bytes, a gameplay record 27 bytes and a full record 55 bytes.
+A single gameplay update therefore uses 42 application bytes, a single baseline
+70 bytes and a full 12-record packet 675 bytes. Flags retain combatant bit 0,
+dead bit 1, impressed bit 2 and powerup kind in bits 4..7; bit 3 remains reserved
+and is rejected. These fields do not encode a mine fuse, boost duration or
+teleport outcome. Those interactions require their validated native event paths.
+
+The sender retains the latest sampled state and the last successfully queued
+state for each peer/identity. It queues at most four packets per peer per tick,
+stopping when that peer already has 64 pending reliable messages. Unqueued
+changes coalesce to the latest value. A per-peer rotating identity cursor gives
+later baselines and changes a turn even when earlier identities change every
+tick. A failed queue operation does not advance that peer's sent-state shadow.
+The transport's reliable ordered delivery supplies the baseline-before-change
+guarantee; there is no second application acknowledgement protocol. Peer join or
+leave clears that peer's shadow and cursor, including when a player id is reused.
+
+Receivers accept only the host and the active run. They validate a complete
+packet before merging any records, reject nonfinite or invalid health/state
+values, and ignore unknown gameplay-only identities. Per-actor sequence checks
+merge both subkinds into one full cached state, retaining the baseline transform
+when a gameplay-only record arrives. Older reliable state cannot rewind a newer
+dynamic snapshot. The cached full state also reconstructs a missing native
+object. Complete reliable rosters and retired-identity tombstones still govern
+removal; a new incarnation gets a new baseline.
+
+Future-act reliable baselines are staged separately, up to 2048 identities in
+each of eight act slots, then merged after native `SetCurrentAct`. Past-act
+packets are dropped. This assumes normal forward act progression; a diagnostic
+backward act jump within the same run does not establish a fresh baseline
+generation. Replay starts a new run. Run initialization happens before the first
+valid current-run world packet is cached, so a baseline received immediately
+after commit survives the first world tick.
+
+`coop.adventure status` reports stationary/dynamic actor counts, bytes, full
+baselines, gameplay updates, promotions and deferred sends. These byte counters
+count outgoing application payloads per recipient, excluding transport headers,
+UDP/IP overhead and retransmissions. Use transport byte counters to compare
+actual network traffic over equal time windows.
+
+## 4.9 Adventure explosion presentation (protocol 10, preview 6)
+
+Reliable `MSG_ADVENTURE` subkind 146 (`Detonated`) includes the host's actual
+native effect descriptor. This permits exactly-once presentation even when a
+short-lived explosive dies before its guest-side actor binding exists. The
+little-endian payload is:
+
+```text
+u8   subkind = 146
+u64  run
+u8   act
+u64  event serial
+u32  marker
+u32  incarnation
+u8   player (FF for the host detonation event)
+u8   powerup kind (6, 10, 13 or 15)
+f32  effect position[3]
+f32  effect orientation[4]
+f32  effect scale
+u32  effect id
+```
+
+The common event header is 28 bytes; the captured presentation trailer adds 36
+bytes, for 64 application bytes. Host native `ExplodePowerup` invokes its
+verified effect helper before radius damage/destruction. The mod captures those
+exact arguments and publishes them, retaining authored effect selection, pose
+and scale. The event supplies no guest-authored damage, radius or fuse values.
+
+A guest with the exact host-identity binding runs native visual cleanup with
+damage paths gated and substitutes the captured presentation. A guest without
+that binding invokes only the verified effect helper once and tombstones the
+host identity. It does not destroy an arbitrary same-marker object, which could
+be a respawner or a later incarnation. Complete reliable rosters perform normal
+safe local sibling cleanup after their required host identities bind. Repeated
+events cannot replay the effect or consume a later binding. Nonfinite/out-of-
+bounds presentation values, stale runs and past acts are rejected.
+
+Retirement initializes the world run before recording the exact tombstone, even
+if this routed event precedes every actor packet and the first world tick. Both
+full snapshot formats and future-act merges reject that identity afterwards;
+newer incarnations at the same marker remain eligible.
+
+## 4.10 Preparation messages during native cleanup
+
+Every incoming `MSG_ADVENTURE` enters the coordinator before asset/native
+dispatch. When a client receives a valid newer Prepare while native cleanup is
+pending, it retains that packet and subsequent host adventure packets in order.
+The next coordinator tick after cleanup initializes the new descriptor and asset
+receiver before forwarding its content manifest and captain transfer messages.
+This includes native subkinds 192+, which previously bypassed the coordinator.
+
+The queue is bounded at 512 packets and 2 MiB. Overflow retains the validated first
+Prepare, initializes that new run and cancels it explicitly, preserving the
+party connection. Abort/reset discard pending transfers. Native cleanup remains
+mandatory even if a later reset invalidates ordinary attempt callbacks. No
+resource bundle or wire format changes are needed for this ordering barrier.

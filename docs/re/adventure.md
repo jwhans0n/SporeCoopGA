@@ -399,3 +399,119 @@ passed, with native menus restored and immediate retry in the same processes.
 Evidence: `out/windows-lab/preview5-release-{intro,talk,replay,models,flow-recovery}`
 and `out/preview5-tests-final.log`. These are partial native gameplay checks, not
 a complete adventure playthrough.
+
+## Preview 6: collector upgrades and independent teleporters (dc04)
+
+These entries were verified against the installed executable hash recorded above.
+`tools/addrport/verify_dc04.py` checks their prologues, returns and call sites.
+The adapter is `adventure_pickups`; it deliberately splits recipient effects from
+the native helpers' party/follower behavior. Native gameplay validation is
+reported separately from the ABI tests below.
+
+| Native entry | ABI and verified behavior |
+| --- | --- |
+| App::Property::GetFloat 4E1CE0 | cdecl(PropertyList*,propertyID,float default), float, ret at4E1D1A. Native scalar boost-property reader. |
+| ActivateMedKit F225E0 | cdecl(powerup,captain), ret F227F0. Restores maximum native HP, then also heals the local posse. |
+| ActivateSpeedBoost F22ED0 | cdecl(powerup,captain), tailcalls UpdateGoals at F230E8. Modifier7 and authored duration, including posse iteration. |
+| ActivateDamageBoost F22C20 | cdecl(powerup,captain), tailcalls UpdateGoals at F22EC2. B10 enabled/B14 amount, including posse iteration. |
+| ActivateArmorBoost F22970 | cdecl(powerup,captain), tailcalls UpdateGoals at F22C12. B18 enabled/B1C divisor, including posse iteration. |
+| SetSpeedModifier C0D220 | thiscall(captain,int,bool), ret8. Modifier7 changes FA4 bit128 and recalculates native movement speed. |
+| PickupEffect F22500 | cdecl(captain,effectID), ret F225D2. Creates/refreshes this creature's scaled native effect. |
+| OnCollect F1BCF0 | thiscall(play,object,captain), ret8 F1BEF1. Native collect/use objective bookkeeping. |
+| ActivateTeleporter F23280 | cdecl(powerup,captain), ret F234A9. Owner teleport, E60 two-second cooldown, then a separate posse teleport loop. |
+| TeleportDestination F211E0 | cdecl(powerup,Vec3*,Quat*), bool AL, ret F21279/F212BA. Native authored exit validation. |
+| TeleportCaptain F231D0 | cdecl(powerup,captain,Vec3*,Quat*,bool playerEffect), ret F23271. One captain's clamp, teleport, locomotion cleanup and authored effect. |
+| ApplyCreatureAbility C20390 | thiscall(captain,targetCombatant,abilityIndex,Vec3* hit), ret0C C21180/C2118E. Native damage calculation; forwarded by C02B59/C24024. |
+
+`ReactToPowerup` F23BF0 rejects a dead creature at B5E. For medkit1, speed3,
+damage4 and armor5 it also requires B58 avatar flag512. The co-op hook accepts
+an owned, living party captain instead, validates the current host object
+identity/type and native spatial range, then claims that incarnation once.
+Only the collecting captain gains an effect. Do not replay the complete native
+activation on each client: each helper iterates the local posse too.
+
+`powerupDuration` is AAC3B137 and `powerupAmount` is6219412B, verified from their
+native initialization strings. The installed stock speed/damage/armor palettes
+have duration15 seconds; damage and armor amount2. Speed uses the fixed native
+modifier7, not the amount property. A medkit restores native maximum HP rather
+than treating amount as a partial heal. The class-act explosion amount/radius
+are different tuning inputs and must not replace these palette boost values.
+
+Native ApplyBoost F20290 refreshes the same creature/callback entry by resetting
+elapsed time to zero and replacing duration. The pool expires when elapsed is
+greater than duration. Co-op mirrors that refresh behavior using the host's
+shared simulation clock; group holds pause it. Only the host publishes expiry.
+An expiry stores the grant revision even if it arrives before the grant, so an
+older grant cannot re-enable a spent effect. Boosts persist across act changes;
+delayed older-act grants still retire their original pickup and apply the effect.
+
+The important damage boundary is before TakeDamage: native C2064F multiplies by
+attacker B14 when B10 is enabled, then C206AE divides by victim B1C when B18 is
+enabled. Keep the outgoing damage fields native and do not multiply forwarded
+hits again. For party captains, keep B18 false and apply the saved armor divisor
+once at the central host captain-health authority. This avoids double reduction
+and covers environmental explosions which bypass the creature ability calculator.
+The native player effect still renders through PickupEffect. Player effect
+property72AEEDA0 and NPC effect property6C3BB950 select different artwork.
+
+OnCollect's ordinary collect-goal path tests B58 flag 512 directly. Scope that
+flag around a host callback for a remote captain, restoring the previous flags
+afterwards. The host then destroys the consumed object and calls UpdateGoals,
+matching the native completion order. Guests retire the host marker/incarnation
+without firing independent objective callbacks. Authored respawns are new
+incarnations, even if they reuse the same placement or allocation address.
+
+Teleporter destinations are not class links. The powerup's marker provides
+position+1E8, orientation+1F4 and scale+204. With default secondary graphics,
+F20CB0 also applies the exit ornament's model-bone offset; a secondary graphics
+override uses the raw authored position. F211E0 rejects a destination at most
+`3*(entry spatial scale+1)` from the entry. The owner helper F231D0 applies the
+native planet clamp through F20930, uses spatial Teleport, clears ground support
+at captain+137 and zeros locomotion velocity through C41EC0 before StopMovement.
+Captain+137 is spatial+77 `mbSupported`; normal physics can set it true again
+after checking the new terrain. It is not a persistent flight flag. The helper
+has no posse loop. Co-op calls this helper and
+retains E60's two shared-simulation seconds per captain, with no group check.
+
+Teleport acceptance must publish the movement-generation fence before requiring
+an observer's puppet/source binding. Otherwise new-generation UDP state cannot
+create the puppet which native cleanup is waiting for. Accepted and completed
+cleanup revisions are separate. Delayed cleanup waits for native objects, runs
+once, and cannot rewind a newer accepted teleport. Timed upgrades likewise retain
+the last applied pointer/incarnation/revision/state and their artwork. A late or
+recreated puppet receives the current active fields/effect once, rather than
+replaying the effect or rewriting fields every frame. Expiry deferred by a
+missing captain clears it once when that binding returns.
+
+Wire subkinds 152 Claim, 153 Grant, 154 Expire and 155 Teleport are scoped by run,
+revision, act, recipient and object marker/incarnation. Host requests are bounded
+at 128 before acceptance. Per-peer accepted event queues are paced four per drain
+while transport pending is below 64; claims stop before mutation at 496 queued
+events, reserving space for expiry. Guest accepted events have a 1024-entry bound.
+Overflow cancels the attempt once through an outside-frame callback, including
+during a group hold, instead of silently acknowledging and discarding a valid
+grant or teleport. Distinct consumed identities are retained rather than merged
+away. The 1024-entry contact throttle prunes expired 0.3-second entries so many
+authored respawns cannot permanently disable later pickups.
+
+`tests/adventure_pickups_tests.cpp` runs the actual Win32 adapter against fake
+verified-signature native functions and real host/guest Sessions. It passes
+collector-only health/speed/damage/armor, claim races, refresh, host-only expiry,
+stale/ordered act and revision handling, native field restoration, teleport
+cooldown and missing-observer fences, late model bindings, reliable queue bounds,
+overflow cancellation/reset and more than 1024 distinct contact identities. It
+reported `adventure pickups: 0 failures`. This is ABI/unit evidence; the native
+integration harness and its result JSON establish separate gameplay evidence.
+
+The two-player native suite passed all five cases against preview 6 build 5b,
+DLL SHA256 `6d97642842f1992e06cf406d1cac18294fe4e1b9d0756f73b1017fd773dbee8f`.
+Its evidence is `out/windows-lab/preview6-pickup5-final2/result.json` with recorded
+isolated profiles 31/32. Both captains used native Bite index 5, type 30: base
+damage 1.5, boosted damage 3 and expired damage 1.5. Armor reduced an environmental
+12-point hit to 6 once, then restored 12 after expiry. Native Talk held shared
+clocks and the active boost for three wall-clock seconds. Teleport tests used
+actual contact, an authored native exit, invalid-exit rejection, simultaneous
+captain activations, native velocity cleanup and a captured distant pre-teleport
+UDP position resent with a current timestamp and old movement generation.
+Both games ended with zero native faults and returned to native galaxy menus.
+This is two-player fixture evidence, not a complete adventure playthrough.

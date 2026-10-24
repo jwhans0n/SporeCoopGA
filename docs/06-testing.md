@@ -475,7 +475,7 @@ Native Talk starts at dialog index-1 before automatically reaching page0. Wait
 for the host's first text page before asserting that guest page clicks leave its
 page unchanged. Otherwise the native greeting transition causes a false failure.
 The `call` diagnostic target parser expects hexadecimal; use named symbols or an
-explicit0x prefix, never a decimal rendering of an address. Verify the native
+explicit 0x prefix, never a decimal rendering of an address. Verify the native
 signature before calling. `actorsat MARKER LIMIT` avoids ad hoc native probes
 when inspecting all respawner/physical incarnations at a placement.
 
@@ -484,3 +484,86 @@ and real local sessions. Win32 lifecycle tests additionally prove that a physica
 gate uses CreateObjectInstance rather than its same-marker respawner factory.
 Final evidence is in `out/windows-lab/preview5-release-*`,
 `out/preview5-tests-final.log` and `out/preview5-abi-results.json`.
+
+### Preview 6 collector upgrades and teleporters (Windows)
+
+Use preview6/protocol10 in recorded hidden, muted Windows lab processes. Wait for
+the agent owning that lab to hand it over before running another native script.
+The pickup harness registers immutable interaction scenarios on the host only;
+guests receive their custom root through the real co-op asset transfer. It never
+edits a save or registers fixtures in a personal profile.
+
+```
+py -3 tools/tests/coop_adventure_pickups.py --metadata out/windows-lab/preview6/processes.json --output out/windows-lab/preview6-pickups
+py -3 tools/tests/coop_adventure_pickups.py --metadata out/windows-lab/preview6-four/processes.json --output out/windows-lab/preview6-four-pickups --instances 21,22,23,24
+```
+
+`--cases health,speed,damage,armor,teleporter` is the default; use a subset while
+debugging, and keep separate output folders for every attempt. The host port is
+47830 by default. Each guest joins through its own loopback capture proxy at the
+next consecutive port. Startup cancels an existing isolated attempt before
+waiting for every process to return to its native galaxy menu. The
+helper `adventure_interaction_fixture.py` builds/validates the fixture package and
+performs scoped read-only inspection or runtime field tuning.
+
+The accepted two-player build 5b run is
+`out/windows-lab/preview6-pickup5-final2/result.json`; all five native cases passed
+with zero faults on both clients. Its per-case checkpoint is separate from failed
+setup/debugging attempts. The handoff report in
+`out/windows-lab/preview6-pickup5-handoff/handoff.json` verifies normal cancellation
+to native menus and a direct connected party after the capture proxies closed.
+
+The scenarios clone Mr Puzzle class0 and preserve its native marker layout and
+authored five-unit respawn setting. Stable target markers are 108, 110, 112, 116,
+117 and 118. A physical consumable may not exist during Intro: the same-marker
+respawner9 is a distinct object, and its initial delay is correctly held until
+everyone presses Continue. Wait for the expected physical powerup after release.
+Do not bind a parent9 to a medkit/boost/teleporter merely because markers match.
+
+The harness uses real native proximity reactions for all accepted collections.
+It checks host and guest collector-only grants, shared consumption, simultaneous
+health claims, authored respawn/new identity, actual native magnitude, refresh
+and expiry. A genuine Talk entry followed by native Next/Finished controls holds
+the shared clocks while a boost remains active. Health reads come from both
+clients' actual native captains and their replicas.
+
+For outgoing damage, `abilityhit VICTIM_PLAYER ATTACKER_PLAYER ABILITY_INDEX` is
+the reviewed outside-frame diagnostic. It invokes ApplyCreatureAbility before
+the native boost calculation, with a real native ability and target position.
+Compare the unboosted, boosted and expired HP deltas. The older `world hit`
+diagnostic starts at TakeDamage after ability multipliers and cannot establish
+that a damage upgrade was applied once. It remains appropriate for environmental
+hits checking the central host armor divisor. Test friendly fire100 and preserve
+authored NPC/faction rules when choosing an actual ability target.
+
+The capture proxy records real protocol 10 PlayerState packets. The stale-movement
+case stages on a native surface far from the exit and retains its real UDP state.
+After teleport, it preserves that pre-teleport position/generation while using a
+current timestamp, preventing an ordinary timestamp check from masking a missing
+generation fence. Wait for the legitimate cooldown-probe movement to reach the
+exit on observers before injecting; otherwise native interpolation can look like
+a stale-packet rewind. A separate real guest transport packet attempts a
+claim for host0 and must be rejected. These are tightly scoped loopback faults,
+not accepted happy-path claims. Teleport checks also cover the authored exit,
+non-entering captains staying put, native cleanup, cooldown, invalid exits,
+simultaneous independent captain activations and retained source.
+
+Do not call FX-producing native helpers through generic `call`, which is a
+main-thread command rather than an outside-frame command. Read-only reviewed
+Cast/GetAbility/property calls are safe there. The pickup rejection probe calls
+only the installed preview6 hook, which queues its mutation outside the frame;
+refuse to run it against an older DLL. Use named symbols or explicit 0x native
+addresses and verified calling conventions. Fixture marker/class addresses from
+a private inspection are diagnostic after its resource is released; reacquire
+them in the actual loaded attempt before tuning.
+
+```
+make test-pickups-windows
+```
+
+Run its generated Win32 executable on Windows. This ABI suite includes missing
+observer puppets, replacement captain incarnations, expiry-before-grant ordering,
+more than 1024 respawn identities, stalled reliable peers and fail-closed accepted
+event overflow. `adventure pickups: 0 failures` does not substitute for a native
+integration `result.json`. Neither suite establishes a complete adventure
+playthrough or every custom palette/ability combination.

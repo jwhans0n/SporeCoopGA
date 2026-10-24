@@ -1,6 +1,6 @@
 # Galactic Adventures co-op: experimental guide
 
-This experimental feature is developed on `feat/galactic-adventures-coop`.
+This experimental feature is developed on `feat/adventure-static-interactions`.
 The preview covers the verified cases below; broader compatibility is still being
 tested. The native adventure adapter is currently
 verified only for the March 2017 GOG executable, SHA-256
@@ -8,11 +8,11 @@ verified only for the March 2017 GOG executable, SHA-256
 See [build identification](re/build-dc04.md). Every player needs Galactic Adventures
 and the same experimental SporeCoop build.
 
-Preview `0.7.0-ga-preview.5` adds party confirmation for beam-down and objective
-conversations, shared Replay, current captain identity/scale, and synchronized
-colored keys and gates. It retains the shared lobby, Mr Puzzle music support,
-native captain creation, cancellation recovery and the performance fix.
-Install the same preview for every player; this version uses network protocol 9.
+Preview `0.7.0-ga-preview.6` reduces traffic for stationary buildings and props and
+shares explosives, crates, power upgrades and teleporters. It retains group scenes,
+Replay, current captain identity/scale, keys/gates, the shared lobby, Mr Puzzle
+music, native captain creation, cancellation recovery and the performance fix.
+Install the same preview for every player; this version uses network protocol 10.
 
 ## Start an adventure
 
@@ -56,6 +56,24 @@ Any captain can pick up a colored key and open its matching gate. The host check
 ownership, range and color, then shares native gate opening and key consumption.
 A key held by another captain cannot be taken. Remote captains use the current
 saved selection and their owner's actual spatial scale.
+
+Mines, exploding barrels, hand bombs and grenades use the host's native activation,
+timing, damage and chain reactions. Their explosions are environmental hazards:
+friendly-fire settings do not reduce them. Crates retain their authored behavior;
+a harmless crate does not acquire barrel damage. Carried and thrown objects keep
+spatial updates. Guests display approved effects while the host applies damage.
+
+Health, speed, damage and shield pickups benefit only the collecting captain.
+Collection removes the shared pickup until its authored respawn. The host resolves
+simultaneous claims. Boost magnitude, refresh and expiry follow native properties;
+group confirmation holds pause their simulation time. Each captain uses teleporters
+independently, with the authored exit and a separate cooldown, without a party check.
+
+The host transfers supported missing adventure and captain resources during lobby
+preparation. Guests reuse installed stock resources and cached transferred assets.
+This transfer is separate from gameplay traffic: unchanged static transforms stop
+recurring after a reliable baseline, while health/state changes remain reliable.
+Movement promotes a static object to regular spatial updates for that incarnation.
 
 ## Difficulty
 

@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Shared static objects and interactions: 0.7.0-ga-preview.6
+
+- Send verified stationary buildings and props once, then send reliable changed
+  health/state. Continue observing movement and promote moved, carried and thrown
+  objects to spatial replication. Creature and vehicle update rates stay unchanged.
+- Let the host own native mine, barrel, bomb and grenade activation, delayed
+  chains, damage and removal. Treat their explosions as environmental hazards
+  regardless of friendly fire. Preserve harmless crate behavior and native fuses.
+- Share pickup consumption and authored respawns. Apply health, speed, damage and
+  shield upgrades only to the collecting captain, with shared simulation expiry.
+- Validate authored teleport exits per captain, synchronize native cleanup and
+  cooldowns, and reject movement from before the teleport correction.
+- Preserve preparation message order during Replay cleanup so new content and
+  captain transfers reach the new run, including open-captain adventures.
+- Preserve shared keys/gates, saved captain creation, group scenes, Replay and the
+  existing performance fix. Protocol 10 requires the same preview on every player;
+  adventure/captain bundle formats and asset caching remain unchanged.
+
 ### Adventure party flow: 0.7.0-ga-preview.5
 
 - Require every participant to confirm beam-down Continue before gameplay and
