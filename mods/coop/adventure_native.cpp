@@ -518,6 +518,7 @@ adventure::Ctx coordinator_context()
     context.sample = sample; context.apply = apply; context.source = adventure_world::source;
     context.native_result = adventure_world::apply_result;
     context.incoming_damage=adventure_pickups::adjust_damage;
+    context.native_message=adventure_native::on_message;
     return context;
 }
 

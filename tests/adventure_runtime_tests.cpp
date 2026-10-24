@@ -13,19 +13,34 @@ static int failures;
 namespace adventure_assets {
 static Ctx context;
 static unsigned preparations;
+static uint64_t prepared_run;
+static Key prepared_key;
+static bool complete_on_offer;
+static unsigned wrong_run_messages;
+static std::vector<uint64_t> preparation_history;
+static std::vector<std::pair<uint8_t,uint64_t>> delivered;
 bool init(const SkHost*, SkMod*, Ctx ctx) { context = std::move(ctx); return true; }
 bool prepare(uint64_t run, const Key& key)
 {
     preparations++;
+    preparation_history.push_back(run);
+    prepared_run=run; prepared_key=key;
     if (context.sess->role() == net::Role::Host)
         context.prepared(run, key, std::string(64, 'a'));
     return true;
 }
 bool share_with(uint8_t) { return true; }
-void on_message(uint8_t, net::Reader&) {}
+void on_message(uint8_t, net::Reader& r)
+{
+    uint8_t kind=r.u8();
+    uint64_t run=r.u32(); run|=uint64_t(r.u32())<<32;
+    if(!r.ok() || run!=prepared_run) {++wrong_run_messages;return;}
+    delivered.push_back({kind,run});
+    if(complete_on_offer && kind==64) context.prepared(run,prepared_key,std::string(64,'a'));
+}
 void tick(double) {}
 uint8_t progress() { return 0; }
-void reset() {}
+void reset() { prepared_run=0;prepared_key={}; }
 void release() {}
 std::string status() { return "fake assets"; }
 } // namespace adventure_assets
@@ -469,6 +484,107 @@ int main()
     CHECK(reuses==1 && adventure::selected_captain(0)==dbpf::Key(330,10,20) && !adventure::ready());
     CHECK(!adventure::results_accepted(true));
     CHECK(adventure::cancel("replay test complete")); drain();
+
+    // A Replay descriptor and its reliable transfer packets can share a receive
+    // batch while the previous native mode is still cleaning up. Preserve their
+    // order across that cleanup, including native captain messages routed by the
+    // coordinator, rather than acknowledging manifests which were never applied.
+    adventure::reset(); drain();
+    ctx.sess=&guest;
+    ctx.choose_captain=[](const dbpf::Key&,auto selected) {selected({440,10,20});};
+    std::vector<std::pair<uint8_t,uint64_t>> native_delivered;
+    ctx.native_message=[&](uint8_t from,net::Reader& r) {
+        uint8_t kind=r.u8();
+        uint64_t run=r.u32();run|=uint64_t(r.u32())<<32;
+        CHECK(r.ok() && from==0 && kind==192);
+        CHECK(adventure::current() && adventure::current()->run_id==run);
+        CHECK(adventure_assets::prepared_run==run);
+        CHECK(!adventure_assets::delivered.empty() && adventure_assets::delivered.back().second==run);
+        native_delivered.push_back({kind,run});
+    };
+    CHECK(adventure::init(&api,nullptr,ctx));
+    auto prepare_client=[&](uint64_t run) {
+        auto descriptor=client_descriptor;descriptor.run_id=run;
+        net::Writer w;w.u8(1);descriptor.write(w);incoming(0,w);
+    };
+    auto transfer_packet=[](uint8_t kind,uint64_t run,size_t bytes=0) {
+        net::Writer w;w.u8(kind);put_run(w,run);
+        if(bytes>w.size()) w.data.resize(bytes);
+        return w;
+    };
+    auto begin_cleanup=[&](uint64_t run) {
+        prepare_client(run);
+        CHECK(adventure::active() && adventure::current()->run_id==run);
+        adventure_assets::context.prepared(run,key,std::string(64,'a'));drain();
+        CHECK(adventure::can_ready() && !adventure::ready());
+        CHECK(adventure::cancel("previous run cleanup pending"));
+    };
+    auto clear_delivery=[&] {
+        adventure_assets::delivered.clear();adventure_assets::wrong_run_messages=0;native_delivered.clear();
+    };
+    adventure_assets::complete_on_offer=true;
+    begin_cleanup(1000);
+    clear_delivery();
+    prepare_client(1001);
+    incoming(0,transfer_packet(64,1001));
+    incoming(0,transfer_packet(192,1001));
+    CHECK(adventure_assets::delivered.empty() && native_delivered.empty());
+    CHECK(adventure_assets::wrong_run_messages==0 && !adventure::ready());
+    drain(); // Mandatory native cleanup must finish before the FIFO is applied.
+    CHECK(adventure_assets::delivered.empty() && native_delivered.empty());
+    adventure::tick(400);drain();
+    CHECK(adventure::current() && adventure::current()->run_id==1001);
+    CHECK(adventure_assets::delivered.size()==1 && adventure_assets::delivered.front().first==64 && adventure_assets::delivered.front().second==1001);
+    CHECK(native_delivered.size()==1 && native_delivered.front().first==192 && native_delivered.front().second==1001);
+    CHECK(adventure_assets::wrong_run_messages==0);
+    CHECK(adventure::selected_captain(guest.my_id())==dbpf::Key(440,10,20));
+    CHECK(adventure::can_ready() && !adventure::ready());
+    CHECK(adventure::set_ready(true) && adventure::ready());
+    CHECK(adventure::cancel("ordered replay complete"));drain();
+
+    // Reset cancels deferred transfer work, while retaining the mandatory old
+    // native cleanup. A host abort in the FIFO also discards all packets after it.
+    begin_cleanup(1010);
+    clear_delivery();
+    prepare_client(1011);incoming(0,transfer_packet(64,1011));incoming(0,transfer_packet(192,1011));
+    auto aborts_before_reset=preparation_aborts;
+    adventure::reset();drain();adventure::tick(401);drain();
+    CHECK(!adventure::active() && !adventure::ready());
+    CHECK(preparation_aborts==aborts_before_reset+1);
+    CHECK(adventure_assets::delivered.empty() && native_delivered.empty() && adventure_assets::wrong_run_messages==0);
+    begin_cleanup(1020);
+    clear_delivery();
+    prepare_client(1021);
+    net::Writer cancel_queued;cancel_queued.u8(8);put_run(cancel_queued,1021);cancel_queued.str16("cancel deferred Replay");
+    incoming(0,cancel_queued);
+    incoming(0,transfer_packet(64,1021));incoming(0,transfer_packet(192,1021));
+    auto aborts_before_cancel=preparation_aborts;
+    drain();adventure::tick(402);drain();
+    CHECK(!adventure::active() && !adventure::ready() && !adventure::can_ready());
+    CHECK(preparation_aborts==aborts_before_cancel+2);
+    CHECK(adventure_assets::delivered.empty() && native_delivered.empty() && adventure_assets::wrong_run_messages==0);
+
+    // Overflow must identify and abort the new run instead of losing its first
+    // accepted packets silently. Exercise both the packet-count and byte bound.
+    for(bool byte_bound:{false,true}) {
+        uint64_t old_run=byte_bound?1040:1030,new_run=old_run+1;
+        begin_cleanup(old_run);clear_delivery();
+        auto aborts_before_overflow=preparation_aborts,launches_before_overflow=launches;
+        prepare_client(new_run);
+        unsigned count=byte_bound?40:520;
+        for(unsigned i=0;i<count;++i) incoming(0,transfer_packet(192,new_run,byte_bound?65535:9));
+        CHECK(adventure_assets::delivered.empty() && native_delivered.empty() && !adventure::ready());
+        drain();adventure::tick(byte_bound?404:403);drain();
+        CHECK(!adventure_assets::preparation_history.empty() && adventure_assets::preparation_history.back()==new_run);
+        CHECK(!adventure::active() && !adventure::ready() && !adventure::can_ready());
+        CHECK(preparation_aborts==aborts_before_overflow+2 && launches==launches_before_overflow);
+        CHECK(adventure_assets::delivered.empty() && native_delivered.empty() && adventure_assets::wrong_run_messages==0);
+        CHECK(guest.connected() && host.connected());
+        adventure::tick(byte_bound?406:405);drain();
+        CHECK(preparation_aborts==aborts_before_overflow+2);
+    }
+    adventure_assets::complete_on_offer=false;
+    adventure::reset();drain();
 
     guest.leave(); guest2.leave(); host.leave();
     std::printf("adventure coordinator: %s (%d failures)\n", failures ? "FAILED" : "passed", failures);

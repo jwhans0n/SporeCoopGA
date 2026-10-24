@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <deque>
 #include <map>
 #include <memory>
 #include <utility>
@@ -44,6 +45,14 @@ double g_last_preparation;
 std::set<uint8_t> g_results_accepted;
 bool g_replay_requested, g_replay_started;
 Key g_replay_captain;
+std::deque<std::vector<uint8_t>> g_cleanup_messages;
+size_t g_cleanup_bytes;
+bool g_cleanup_overflow;
+
+void clear_cleanup_messages()
+{
+    g_cleanup_messages.clear(); g_cleanup_bytes=0; g_cleanup_overflow=false;
+}
 
 ga::PreparationMember* preparation_member(uint8_t player)
 {
@@ -175,6 +184,7 @@ void invalidate_ready()
 
 void abort_run(const std::string& reason, bool announce)
 {
+    clear_cleanup_messages();
     const bool leave_native = g_launch_started || g_phase == Phase::Running;
     if (announce && g_descriptor.run_id) {
         net::Writer w;
@@ -202,6 +212,46 @@ void abort_run(const std::string& reason, bool announce)
         g_cleaning = false;
     }, new bool(leave_native));
     feed("Adventure: " + reason);
+}
+
+bool defer_cleanup_message(uint8_t from, const net::Reader& message)
+{
+    if(!client() || from || !message.left()) return false;
+    if(g_cleanup_overflow) return true;
+    if(g_cleanup_messages.empty()) {
+        if(!g_cleaning || *message.cur()!=K_PREPARE) return false;
+        auto check=message; check.u8(); ga::Descriptor descriptor;
+        if(!descriptor.read(check) || !finished(check) || descriptor.run_id<=g_newest_run ||
+            g_phase==Phase::Running || g_phase==Phase::Loading) return false;
+    }
+    constexpr size_t limit=512, byte_limit=2*1024*1024;
+    if(g_cleanup_messages.size()>=limit || message.left()>byte_limit-g_cleanup_bytes) {
+        g_cleanup_overflow=true;
+        return true;
+    }
+    g_cleanup_messages.emplace_back(message.cur(),message.cur()+message.left());
+    g_cleanup_bytes+=message.left();
+    return true;
+}
+
+void drain_cleanup_messages()
+{
+    if(g_cleaning || g_cleanup_messages.empty()) return;
+    auto messages=std::move(g_cleanup_messages);
+    bool overflow=g_cleanup_overflow;
+    clear_cleanup_messages();
+    if(!client()) return;
+    for(const auto& bytes:messages) {
+        net::Reader message(bytes.data(),bytes.size()); on_message(0,message);
+        if(overflow) {
+            // The first retained message is a validated new preparation. Abort
+            // that run, rather than silently losing acknowledged content or
+            // cancelling the previous run while the host waits on the new one.
+            abort_run("Adventure preparation exceeded its bounded cleanup message queue. Select Play again.",true);
+            break;
+        }
+        if(g_cleaning || !client()) break;
+    }
 }
 
 void choose_captain()
@@ -702,7 +752,12 @@ void on_leave(uint8_t player)
 void on_message(uint8_t from, net::Reader& r)
 {
     if (!r.left()) return;
+    if(defer_cleanup_message(from,r)) return;
     uint8_t kind = *r.cur();
+    if(kind>=128) {
+        if(C.native_message) C.native_message(from,r);
+        return;
+    }
     if (kind >= 64 && kind <= 71) {
         if (host() && g_excluded.count(from)) return;
         adventure_assets::on_message(from, r);
@@ -721,13 +776,6 @@ void on_message(uint8_t from, net::Reader& r)
         return;
     }
     if (kind == K_PREPARE) {
-        if (g_cleaning) {
-            net::Writer deferred; deferred.u8(kind); deferred.raw(r.cur(), r.left());
-            outside([from, bytes = std::move(deferred.data)] {
-                net::Reader message(bytes.data(), bytes.size()); on_message(from, message);
-            });
-            return;
-        }
         ga::Descriptor descriptor;
         if (from != 0 || !client() || !descriptor.read(r) || !finished(r) || descriptor.run_id <= g_newest_run ||
             g_phase == Phase::Running || g_phase == Phase::Loading)
@@ -895,6 +943,7 @@ void on_message(uint8_t from, net::Reader& r)
 
 void tick(double now)
 {
+    drain_cleanup_messages();
     if (!std::isfinite(now)) return;
     double elapsed = g_have_wall && now >= g_last_wall ? now - g_last_wall : 0;
     g_last_wall = now;
@@ -1048,6 +1097,7 @@ bool results_accepted(bool replay)
 
 void reset()
 {
+    clear_cleanup_messages();
     if (active()) abort_run("The party disconnected during the adventure.", false);
     g_generation++;
     adventure_assets::reset();

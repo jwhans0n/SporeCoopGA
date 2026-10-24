@@ -1382,10 +1382,7 @@ void setup_callbacks()
     };
     g_sess.cb.custom = [](uint8_t type, uint8_t from, net::Reader& r) {
         if (type == net::MSG_ADVENTURE) {
-            if (r.left() && *r.cur() >= 128)
-                adventure_native::on_message(from, r);
-            else
-                adventure::on_message(from, r);
+            adventure::on_message(from, r);
             return;
         }
         if (type == net::MSG_ANIM) {
