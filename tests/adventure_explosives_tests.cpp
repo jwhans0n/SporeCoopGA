@@ -31,6 +31,7 @@ float last_effect_scale;
 uint32_t last_effect_id;
 bool paused=false,enabled=true,in_range=true,owns=true,bound=true;
 bool giant=false;
+float last_powerup_dt=-1;
 uint64_t run=7;
 uint8_t act=0;
 double now=1;
@@ -70,7 +71,7 @@ void SK_CDECL native_bomb(void*) { ++bombs; }
 void SK_CDECL native_expiry(void*) { ++expiry_calls; }
 void SK_CDECL native_schedule(void*,void*,float) {}
 void SK_CDECL native_timers(float) { ++timer_ticks; }
-void SK_CDECL native_powerups(float) { ++powerup_ticks; }
+void SK_CDECL native_powerups(float dt) { ++powerup_ticks; last_powerup_dt=dt; }
 void SK_THISCALL native_impulse(void* p,void*,const net::Vec3*,bool)
 { CHECK(p==physics()); ++impulses; }
 uintptr_t symbol(const char* n) { return symbols[n]; }
@@ -157,8 +158,8 @@ int main()
     incoming(1,contact_request); drain(); CHECK(giant_mine->removed); giant=false;
     auto* timed=make(10); paused=true; bound=false; ex::bomb(timed->powerup.data()); CHECK(bombs==1);
     bound=true; ex::bomb(timed->powerup.data()); ex::bomb(timed->powerup.data()); CHECK(bombs==1);
-    ex::timers(1); ex::powerups(1); CHECK(!timer_ticks && !powerup_ticks);
-    paused=false; ex::timers(1); ex::powerups(1); CHECK(timer_ticks==1 && powerup_ticks==1);
+    ex::timers(1); ex::powerups(1); CHECK(!timer_ticks && powerup_ticks==1 && last_powerup_dt==0);
+    paused=false; ex::timers(1); ex::powerups(1); CHECK(timer_ticks==1 && powerup_ticks==2 && last_powerup_dt==1);
     // Cleanup flushes callbacks synchronously. A cancelled run's fuse/chain
     // must be discarded before its native callback can kill another object.
     std::array<uint8_t,8> old_task{}; field<void*>(old_task.data(),4)=timed;

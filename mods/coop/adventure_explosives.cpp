@@ -276,10 +276,11 @@ static void SK_CDECL timers(float dt)
 }
 static void SK_CDECL powerups(float dt)
 {
-    // This separate native update advances grenade contact grace and authored
-    // respawners. Pausing the timer pool alone would still age grenades.
-    if(active() && held()) return;
-    o_Powerups(dt);
+    // Service initial respawner children even during loading/beam-down: native
+    // Kill target setup resolves parent9 to its physical child and skips null.
+    // Zero simulation time preserves grenade grace and authored respawn clocks;
+    // interaction and explosion authority remain held-gated independently.
+    o_Powerups(active() && held() ? 0.f : dt);
 }
 static void SK_CDECL bomb(void* powerup)
 {
