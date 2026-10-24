@@ -111,6 +111,51 @@ bool Descriptor::read(net::Reader& reader)
     return true;
 }
 
+void PreparationView::write(net::Writer& w) const
+{
+    auto number = [&](uint64_t n) { w.u32(uint32_t(n)); w.u32(uint32_t(n >> 32)); };
+    auto key = [&](const dbpf::Key& k) { w.u32(k.instance); w.u32(k.type); w.u32(k.group); };
+    number(run); number(revision); number(epoch); key(adventure); key(locked_captain);
+    w.u8(loading); w.u8(uint8_t(members.size()));
+    for (const auto& m : members) {
+        w.u8(m.player); number(m.serial); w.u8(uint8_t(m.stage)); w.u8(m.progress);
+        key(m.captain); w.u8(m.content); w.u8(m.validated); w.u8(m.ready);
+    }
+}
+
+bool PreparationView::read(net::Reader& r)
+{
+    auto number = [&] { uint64_t lo = r.u32(); return lo | (uint64_t(r.u32()) << 32); };
+    auto key = [&] { return dbpf::Key{r.u32(), r.u32(), r.u32()}; };
+    PreparationView fresh;
+    fresh.run = number(); fresh.revision = number(); fresh.epoch = number(); fresh.adventure = key(); fresh.locked_captain = key();
+    uint8_t loading = r.u8(), count = r.u8();
+    if (!fresh.run || !fresh.revision || !fresh.epoch || !key_valid(fresh.adventure) || loading > 1 || !count || count > kPartyLimit) return false;
+    fresh.loading = loading;
+    std::set<uint8_t> ids;
+    for (uint8_t i = 0; i < count; ++i) {
+        PreparationMember m;
+        m.player = r.u8(); m.serial = number(); m.stage = PreparationStage(r.u8()); m.progress = r.u8();
+        m.captain = key(); uint8_t content = r.u8(), validated = r.u8(), ready = r.u8();
+        if (m.player == kNoPlayer || !ids.insert(m.player).second || !m.serial || m.stage > PreparationStage::Prepared ||
+            m.progress > 100 || content > 1 || validated > 1 || ready > 1 ||
+            (validated && !key_valid(m.captain)) || (ready && (!content || !validated)) ||
+            (!key_zero(fresh.locked_captain) && validated && !(m.captain == fresh.locked_captain))) return false;
+        m.content = content; m.validated = validated; m.ready = ready;
+        fresh.members.push_back(m);
+    }
+    if (!r.ok() || !ids.count(0)) return false;
+    *this = std::move(fresh); return true;
+}
+
+bool LaunchBarrier::clear_captain(uint64_t run, uint8_t player)
+{
+    Member* m = member(player);
+    if (phase_ != LaunchPhase::Preparing || run != descriptor_.run_id || !m) return false;
+    m->captain = m->ready = false; m->captain_key = {};
+    return true;
+}
+
 Member* LaunchBarrier::member(uint8_t player)
 {
     for (auto& member : members_)

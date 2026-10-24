@@ -20,6 +20,7 @@ namespace content = net::adventure_content;
 static const SkHost* H;
 static SkMod* M;
 static uintptr_t a_Rm, a_Resolve, a_Write;
+static uintptr_t a_Name, a_Author, a_Properties, a_String16;
 static bool g_supported;
 constexpr uint32_t kAdventure = 0x366A930D, kBem = 0x1A99B06B, kPng = 0x2F7D0004;
 constexpr uint32_t kMeta = 0x030BDEE3, kSummary = 0x02D5C9AF, kProp = 0x00B1B104;
@@ -251,12 +252,64 @@ bool init(const SkHost* h, SkMod* m)
     a_Rm = H->sym("Resource::ResourceManager_ptr");
     a_Resolve = H->sym("Simulator::Scenario::ResolveLocalServerAsset");
     a_Write = H->sym("Simulator::cScenarioResource::Write");
+    a_Name = H->sym("Pollinator::cAssetMetadata::NameText");
+    a_Author = H->sym("Pollinator::cAssetMetadata::AuthorText");
+    a_Properties = H->sym("SporeCoop::Adventure::LoadAssetProperties");
+    a_String16 = H->sym("App::Property::GetValueString16");
     // Field offsets and native vtable slots below have been inspected in this exact image.
     g_supported = std::string(H->exe_sha256()) == "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37" && a_Rm;
     return g_supported;
 }
 
 bool available() { return g_supported; }
+
+Presentation presentation(const Key& key)
+{
+    Presentation result;
+    if (!g_supported || !manager() || !key.instance) return result;
+    Key real;
+    for (uint32_t group : {key.group, key.group + 1}) {
+        Key png{key.instance, kPng, group};
+        if (find_record(png, real)) { result.image = real; break; }
+    }
+    if (!a_Name || !a_Author) return result;
+    Key meta{key.instance, kMeta, key.group};
+    void* object = nullptr;
+    if (!skg::vcall<bool>(manager(), 0x1C / 4, &meta, &object, (void*)nullptr, (void*)nullptr, (void*)nullptr, (void*)nullptr) || !object) return result;
+    void* metadata = skg::vcall<void*>(object, 0x0C / 4, kMeta);
+    auto text = [](const wchar_t* value) {
+        size_t length = 0;
+        while (value && length < 256 && skg::readable(value + length, 2) && value[length]) ++length;
+        if (!length || !skg::readable(value, length * 2)) return std::string();
+        std::string s(length * 4, '\0');
+        int bytes = WideCharToMultiByte(CP_UTF8, 0, value, int(length), s.data(), int(s.size()), nullptr, nullptr);
+        s.resize(bytes > 0 ? size_t(bytes) : 0);
+        for (char& c : s) if (c == '\r' || c == '\n') c = ' ';
+        return s;
+    };
+    if (metadata && skg::readable(metadata, 0x88)) {
+        result.name = text(skg::thiscall<const wchar_t*>(a_Name, metadata));
+        result.author = text(skg::thiscall<const wchar_t*>(a_Author, metadata));
+    }
+    skg::vcall<int>(object, 0x04 / 4);
+    // GA names live in captain properties, independently of the source body's
+    // pollen metadata. Native quickplay writes String16 property75ED3A1C.
+    if (key.type == 0x2B978C46 && a_Properties && a_String16) {
+        void* properties = nullptr;
+        bool loaded = skg::cdecl_call<bool>(a_Properties,&key,&properties);
+        if (properties) {
+            void* property = nullptr;
+            if (loaded && skg::vcall<bool>(properties,0x24/4,uint32_t(0x75ED3A1C),&property) && property &&
+                skg::readable(property,0x14) && skg::field<uint16_t>(property,0x12)==0x13) {
+                void* string = skg::thiscall<void*>(a_String16,property);
+                std::string name = string && skg::readable(string,4) ? text(*static_cast<const wchar_t**>(string)) : std::string();
+                if (!name.empty()) result.name = name;
+            }
+            skg::vcall<int>(properties,0x04/4);
+        }
+    }
+    return result;
+}
 
 bool collect_creation(const Key& key, std::vector<dbpf::Record>& records, std::string& error)
 {
@@ -317,16 +370,23 @@ bool collect(const Key& key, std::vector<dbpf::Record>& records, std::string& er
              collector.vector(scenario, 0x2BF4, 0x27E8, 1024, [&](uint8_t* p) {
                  return collector.asset(p + 8) && collector.asset(p + 8 + 0x28) && collector.asset(p + 8 + 0x50);
              }) &&
-             collector.vector(scenario, 0x23C, 0x534, 8, [&](uint8_t* p) {
+             collector.vector(scenario, 0x23C, 0x534, 8, [&, act = size_t(0)](uint8_t* p) mutable {
+                 const size_t index = act++;
                  uint32_t music = skg::field<uint32_t>(p, 0x80);
                  if (!music || music == UINT32_MAX) return true;
+                 // SetCurrentAct F1EF2B..F1EFB4 passes this value to the native
+                 // audio event system, not FindRecord. Native event 1 has no
+                 // PaletteItems/audio DBPF record (Mr Puzzle's Magical Gates).
                  Key music_key{music, kProp, 0xD87454E6};
                  Key real; void* db = find_record(music_key, real);
                  // Stock act music stores an audio ID directly, not necessarily a
                  // PaletteItems prop. Welcome's 2D67FCE4 is native audio in EP1_Data.
                  if (!db) db = find_record({music, 0x01A527DB, 0x021407EE}, real);
-                 if (!db) { error = "missing act music dependency " + key_text(music_key); return false; }
-                 if (!vanilla(db)) { error = "custom act music dependencies are not supported yet"; return false; }
+                 if (!db && music == 1) return true;
+                 char context[100];
+                 snprintf(context, sizeof context, "Adventure %08X act %u music %08X: ", key.instance, unsigned(index + 1), music);
+                 if (!db) { error = std::string(context) + "missing act music dependency " + key_text(music_key); return false; }
+                 if (!vanilla(db)) { error = std::string(context) + "custom act music dependencies are not supported yet"; return false; }
                  return true;
              });
         if (ok) {

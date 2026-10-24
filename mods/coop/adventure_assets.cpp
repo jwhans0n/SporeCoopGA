@@ -417,6 +417,11 @@ bool register_records(const std::vector<dbpf::Record>& records, std::string& err
     return apply_bundle(bundle, error);
 }
 
+uint8_t progress()
+{
+    return g_prepared ? 100 : g_rx.bytes() ? uint8_t(std::min<uint64_t>(99, uint64_t(g_rx.received()) * 100 / g_rx.bytes())) : 0;
+}
+
 std::string status()
 {
     char b[256];

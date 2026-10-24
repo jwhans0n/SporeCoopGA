@@ -205,7 +205,14 @@ class Game:
         raise FixtureError(f'instance {self.instance}: native card did not select: {name}')
 
     def start_saved_adventure(self, adventure_name, captain_name):
-        self.start_welcome()
+        self.call('coop.uistate 0') # close the foreground lobby before native menu input
+        for _ in range(4):
+            if self.caption('Welcome to Spore Galactic Adventures') or self.caption('Choose an Adventure'):
+                break
+            self.press('Galactic Adventures')
+            self.call('wait.frames 10 15000')
+        if self.caption('Welcome to Spore Galactic Adventures'):
+            self.click_control(0x074D0932, enabled=False)
         self.wait('adventure choice', lambda: self.adventure()['active'] or self.caption('Choose an Adventure'))
         if self.adventure()['active']:
             return
@@ -383,11 +390,11 @@ def pair(host, guest, port, host_name, guest_name, adventure_name, resume=False,
             host.call('coop.adventure start ' + ' '.join(f'0x{part:08X}' for part in debug_start))
         else:
             host.start_saved_adventure(adventure_name, host_name)
-    host.call('coop.adventure ready 1')
     if not host.adventure()['text'].startswith('Waiting for party readiness'):
         if host.caption('Choose or Create Your Captain'):
             host.prepare_captain(host_name, create=False)
     guest.prepare_captain(guest_name, create=False)
+    host.call('coop.adventure ready 1')
     guest.call('coop.adventure ready 1')
 
     def committed():

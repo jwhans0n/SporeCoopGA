@@ -31,5 +31,6 @@ std::string status();
 // Original native key for the local captain (keeps local progression/rewards intact),
 // owner-scoped resource key for another player's model on this machine.
 Key key_for(uint8_t player);
+bool validated(uint8_t player, uint64_t serial, const Key& key);
 
 } // namespace adventure_captains

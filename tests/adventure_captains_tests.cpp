@@ -27,7 +27,7 @@ static int SK_THISCALL release_effect(void*) { effect_releases++; return 0; }
 static void* effect_vtable[4];
 static void** preview_effect = effect_vtable;
 static void** launch_effect = effect_vtable;
-static uint8_t frontend[0x140], wizard_data[0x178], node[0x18];
+static uint8_t frontend[0x160], wizard_data[0x178], node[0x18];
 static void* frontend_pointer = frontend;
 static uintptr_t wizard_vtable = 0x12345678;
 static std::map<std::tuple<uint32_t, uint32_t, uint32_t>, std::vector<uint8_t>> records;
@@ -43,6 +43,9 @@ static void drain()
 }
 
 namespace adventure {
+static uint64_t local_serial = 1;
+uint64_t selection_serial(uint8_t player) { return player ? 10 : local_serial; }
+void captain_progress(ga::PreparationStage, uint8_t) {}
 const ga::Descriptor* current() { return g_active ? &descriptor : nullptr; }
 bool participating(uint8_t player) { return g_active && std::find(descriptor.roster.begin(), descriptor.roster.end(), player) != descriptor.roster.end(); }
 bool cancel(const std::string& why) { cancelled = why; g_active = false; return true; }
@@ -190,6 +193,19 @@ int main()
     drain();
     CHECK(callbacks == 1 && chosen == original && adventure_captains::key_for(0) == original);
     CHECK(imports == 0); // local native captain and progression key stay untouched
+
+    // Cancelling a replacement retains the already saved captain, under a new
+    // serial. Its old acknowledgements cannot complete the replacement.
+    adventure::local_serial = 2;
+    unsigned restored = 0;
+    CHECK(adventure_captains::choose({},[&](const Key& key) { CHECK(key==original); ++restored; }));
+    choose_wizard(); skg::field<int>(wizard_data,0x20)=0;
+    adventure_captains::tick(0); drain();
+    CHECK(g_active && restored==1 && adventure_captains::key_for(0)==original);
+    CHECK(adventure_captains::validated(0,2,original));
+    CHECK(!adventure_captains::validated(0,1,original));
+    adventure::local_serial = 1;
+    choices = 0;
 
     adventure_captains::reset();
     descriptor.run_id = 2;

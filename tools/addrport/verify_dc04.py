@@ -25,6 +25,15 @@ def fn(name, address, prefix, returns, note, calls=()):
 # Return pairs are absolute return-instruction VA and stack bytes popped (0 = C3).
 # Source identity comes from upstream ModAPI plus the behavioral checks in the notes.
 FUNCTIONS = [
+    fn('App::Property::GetValueString16', 0x68A4E0, '0fb741126683f813', [(0x68A4FD, 0), (0x68A507, 0)],
+       'thiscall(property)->eastl string16*; validates type13 and pointer/inline flags'),
+    fn('Pollinator::cAssetMetadata::NameText', 0x414E00, '558bec83ec08894df88b45f8', [(0x414E18, 0)],
+       'thiscall(metadata)->UTF16 pointer; reads name+78; Sporepedia GetName641800 tailcalls here'),
+    fn('Pollinator::cAssetMetadata::AuthorText', 0x550880, '558bec83ec08894df88b45f8', [(0x550898, 0)],
+       'thiscall(metadata)->UTF16 pointer; reads author+58; Sporepedia GetAuthorName641810 tailcalls here'),
+    fn('UTFWin::IImageDrawable::AddImageWindow', 0x807970, '83ec148b4424188b088b5008', [(0x807B33, 0)],
+       'cdecl(key*,float x,float y,parent)->IWindow*; native image lookup, drawable/window creation and parent AddWindow',
+       [(0x8079A2, 0x806320)]),
     fn('App::cAppSystem::PreInit', 0x7E8C40, '6aff64a10000000068ce6d2101', [(0x7E93C3, 8)],
        'thiscall(self,int,int), ret8; SEH prologue and command-line initialization'),
     fn('App::cAppSystem::Init', 0x7E6850, '6aff68b26a210164a100000000', [(0x7E7017, 4), (0x7E714F, 4)],

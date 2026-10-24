@@ -55,11 +55,32 @@ struct Member {
     dbpf::Key captain_key;
 };
 
+// Preparation status is cosmetic; only validated content/captain acknowledgements
+// release the launch barrier. Serial identifies a player's current selection.
+enum class PreparationStage : uint8_t { Content, Choosing, Naming, Saving, Sharing, Prepared };
+struct PreparationMember {
+    uint8_t player = kNoPlayer;
+    uint64_t serial = 1;
+    PreparationStage stage = PreparationStage::Content;
+    uint8_t progress = 0;
+    dbpf::Key captain;
+    bool content = false, validated = false, ready = false;
+};
+struct PreparationView {
+    uint64_t run = 0, revision = 0, epoch = 1;
+    dbpf::Key adventure, locked_captain;
+    bool loading = false;
+    std::vector<PreparationMember> members;
+    void write(net::Writer& writer) const;
+    bool read(net::Reader& reader);
+};
+
 class LaunchBarrier {
 public:
     bool begin(const Descriptor& descriptor);
     bool ack_content(uint64_t run, uint8_t player, const dbpf::Key& adventure, const Hash& hash);
     bool ack_captain(uint64_t run, uint8_t player, const dbpf::Key& captain);
+    bool clear_captain(uint64_t run, uint8_t player);
     bool set_ready(uint64_t run, uint8_t player, bool ready);
     bool begin_loading(uint64_t run);
     bool ack_loaded(uint64_t run, uint8_t player);

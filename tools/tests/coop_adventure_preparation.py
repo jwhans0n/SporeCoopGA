@@ -111,6 +111,7 @@ def main():
             names = [f'PreparationNew{i}' for i in (args.host, args.guest)]
             for game, name in zip(games, names):
                 game.prepare_captain(name)
+            host.call('coop.adventure ready 1')
             guest.call('coop.adventure ready 1')
             host.wait('same committed adventure', lambda: all(
                 'Adventure in progress' in game.adventure()['text'] for game in games))

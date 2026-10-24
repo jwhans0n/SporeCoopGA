@@ -12,7 +12,8 @@ namespace adventure {
 namespace {
 enum Kind : uint8_t {
     K_SETTINGS, K_PREPARE, K_CONTENT, K_CAPTAIN, K_READY, K_LAUNCH, K_LOADED,
-    K_COMMIT, K_ABORT, K_SNAPSHOT, K_REVIVE, K_RESULT, K_WAIT, K_INVALIDATE
+    K_COMMIT, K_ABORT, K_SNAPSHOT, K_REVIVE, K_RESULT, K_WAIT, K_INVALIDATE,
+    K_PREPARATION, K_CHANGE_CAPTAIN, K_PREPARATION_STAGE
 };
 enum class Phase { Idle, Collecting, Preparing, Loading, Running, Ended };
 
@@ -37,6 +38,26 @@ std::vector<ga::Captain> g_client_captains;
 uint64_t g_client_snapshot_run;
 double g_client_snapshot_time;
 std::string g_error;
+ga::PreparationView g_preparation;
+bool g_preparation_dirty, g_change_pending;
+double g_last_preparation;
+
+ga::PreparationMember* preparation_member(uint8_t player)
+{
+    for (auto& m : g_preparation.members) if (m.player == player) return &m;
+    return nullptr;
+}
+void initialize_preparation()
+{
+    g_preparation = {};
+    g_preparation.run = g_descriptor.run_id;
+    g_preparation.adventure = g_descriptor.adventure;
+    g_preparation.locked_captain = g_descriptor.locked_captain;
+    for (uint8_t id : g_descriptor.roster) {
+        ga::PreparationMember m; m.player = id; g_preparation.members.push_back(m);
+    }
+    g_preparation_dirty = true; g_change_pending = false;
+}
 
 void write_run(net::Writer& w, uint64_t run)
 {
@@ -95,6 +116,22 @@ void send_settings(int to = -1)
     send(K_SETTINGS, w, to);
 }
 
+void send_preparation()
+{
+    if (!host() || (g_phase != Phase::Preparing && g_phase != Phase::Loading)) return;
+    g_preparation.loading = g_phase == Phase::Loading;
+    for (auto& m : g_preparation.members) {
+        for (const auto& b : g_barrier.members()) if (b.player == m.player) {
+            m.content = b.content; m.validated = b.captain;
+            m.ready = b.content && b.captain && b.ready;
+            if (b.captain) { m.captain = b.captain_key; m.stage = ga::PreparationStage::Prepared; m.progress = 100; }
+        }
+    }
+    ++g_preparation.revision;
+    net::Writer w; g_preparation.write(w); send(K_PREPARATION, w);
+    g_preparation_dirty = false;
+}
+
 bool parse_hash(const std::string& text, ga::Hash& hash)
 {
     if (text.size() != hash.size() * 2)
@@ -147,6 +184,7 @@ void abort_run(const std::string& reason, bool announce)
     ++g_generation; // Discard selection, transfer and launch work from this attempt.
     g_launch_started = false;
     g_error = reason;
+    g_preparation = {}; g_change_pending = false;
     g_revive_held = false;
     invalidate_ready();
     adventure_assets::reset();
@@ -168,9 +206,10 @@ void choose_captain()
     outside([run] {
         if (run != g_descriptor.run_id || g_phase != Phase::Preparing || !C.choose_captain)
             return;
-        const uint64_t generation = g_generation;
-        C.choose_captain(g_descriptor.locked_captain, [run, generation](const Key& captain) {
-            if (generation == g_generation && run == g_descriptor.run_id && g_phase == Phase::Preparing)
+        const uint64_t generation = g_generation, serial = selection_serial(local_id());
+        captain_progress(ga::PreparationStage::Choosing);
+        C.choose_captain(g_descriptor.locked_captain, [run, generation, serial](const Key& captain) {
+            if (generation == g_generation && run == g_descriptor.run_id && g_phase == Phase::Preparing && serial == selection_serial(local_id()))
                 captain_selected(captain);
         });
     });
@@ -184,7 +223,8 @@ void send_ready()
         g_barrier.set_ready(g_descriptor.run_id, 0, g_ready);
     else {
         net::Writer w;
-        write_run(w, g_descriptor.run_id); w.u8(g_ready ? 1 : 0);
+        write_run(w, g_descriptor.run_id); write_run(w, g_preparation.epoch);
+        write_run(w, selection_serial(local_id())); w.u8(g_ready ? 1 : 0);
         send(K_READY, w);
     }
 }
@@ -195,6 +235,21 @@ void invalidate_party()
     for (uint8_t player : g_descriptor.roster)
         g_barrier.set_ready(g_descriptor.run_id, player, false);
     net::Writer w; write_run(w, g_descriptor.run_id); send(K_INVALIDATE, w);
+    g_preparation_dirty = true;
+}
+
+bool grant_change(uint8_t player, uint64_t serial)
+{
+    auto* m = preparation_member(player);
+    if (!host() || g_phase != Phase::Preparing || g_descriptor.locked_captain.instance || !m ||
+        !m->validated || m->serial != serial) return false;
+    ++m->serial; ++g_preparation.epoch;
+    m->validated = m->ready = false; m->stage = ga::PreparationStage::Choosing; m->progress = 0;
+    g_barrier.clear_captain(g_descriptor.run_id, player);
+    invalidate_party();
+    send_preparation();
+    if (player == local_id()) { g_chosen = false; g_change_pending = false; choose_captain(); }
+    return true;
 }
 
 void prepared(uint64_t run, const Key& key, const std::string& hash_text)
@@ -233,6 +288,8 @@ void prepared(uint64_t run, const Key& key, const std::string& hash_text)
         send(K_CONTENT, w);
     }
     g_content = true;
+    if (auto* m = preparation_member(local_id())) m->content = true;
+    g_preparation_dirty = true;
     choose_captain();
 }
 
@@ -241,6 +298,7 @@ void peer_prepared(uint8_t peer, uint64_t run, const Key& key, const std::string
     ga::Hash hash;
     if (host() && run == g_descriptor.run_id && parse_hash(hash_text, hash))
         g_barrier.ack_content(run, peer, key, hash);
+    g_preparation_dirty = true;
 }
 
 void queue_launch()
@@ -409,10 +467,49 @@ bool launch_ready(uint8_t player)
 {
     if (!active() || !member(player)) return false;
     if (player == local_id()) return g_content && g_chosen && g_ready;
-    if (!host()) return g_phase == Phase::Loading || g_phase == Phase::Running;
+    if (!host()) {
+        auto* m = preparation_member(player);
+        return m && m->ready;
+    }
     for (const auto& m : g_barrier.members())
         if (m.player == player) return m.connected && m.content && m.captain && m.ready;
     return false;
+}
+bool preparation(ga::PreparationView& view)
+{
+    if (!active() || running()) return false;
+    view = g_preparation;
+    if (preparation_member(local_id())) {
+        for (auto& row : view.members) if (row.player == local_id()) {
+            row.ready = g_content && g_chosen && g_ready && !g_change_pending;
+            row.content = g_content; row.validated = g_chosen;
+        }
+    }
+    return view.run != 0;
+}
+uint64_t selection_serial(uint8_t player)
+{
+    auto* m = preparation_member(player); return m ? m->serial : 0;
+}
+bool can_ready() { return g_phase == Phase::Preparing && g_content && g_chosen && !g_change_pending; }
+bool change_captain()
+{
+    if (!can_ready() || g_descriptor.locked_captain.instance) return false;
+    if (host()) return grant_change(local_id(), selection_serial(local_id()));
+    net::Writer w; write_run(w, g_descriptor.run_id); write_run(w, selection_serial(local_id()));
+    g_change_pending = true; g_ready = false;
+    send_ready(); send(K_CHANGE_CAPTAIN, w); return true;
+}
+void captain_progress(ga::PreparationStage stage, uint8_t progress)
+{
+    auto* m = preparation_member(local_id());
+    if (!m || g_phase != Phase::Preparing || stage >= ga::PreparationStage::Prepared || progress > 100) return;
+    if (m->stage == stage && m->progress == progress) return;
+    m->stage = stage; m->progress = progress; g_preparation_dirty = true;
+    if (client()) {
+        net::Writer w; write_run(w, g_descriptor.run_id); write_run(w, m->serial);
+        w.u8(uint8_t(stage)); w.u8(progress); send(K_PREPARATION_STAGE, w);
+    }
 }
 bool active() { return g_phase != Phase::Idle && g_phase != Phase::Ended; }
 bool running() { return g_phase == Phase::Running; }
@@ -464,8 +561,10 @@ bool set_ready(bool value)
 {
     if (g_waiting || g_phase == Phase::Loading || g_phase == Phase::Running)
         return false;
+    if (value && !can_ready()) return false;
     g_ready = value;
     send_ready();
+    g_preparation_dirty = true;
     return true;
 }
 
@@ -489,6 +588,7 @@ bool request_play(const Key& key, const Key& locked)
     if (descriptor.roster.empty() || descriptor.roster.size() > ga::kPartyLimit)
         return false;
     g_descriptor = descriptor;
+    initialize_preparation();
     g_newest_run = descriptor.run_id;
     g_phase = Phase::Collecting;
     g_content = g_chosen = g_launch_started = g_loaded_sent = g_waiting = false;
@@ -500,8 +600,8 @@ bool request_play(const Key& key, const Key& locked)
     g_client_snapshot_time = 0;
     g_snapshot_revision = g_health_event = 0;
     g_error.clear();
-    // Selecting Play is the host's launch intent. Guests confirm after choosing captains.
-    g_ready = true;
+    // Every participant explicitly confirms after reviewing the shared lobby.
+    g_ready = false;
     if (!adventure_assets::prepare(descriptor.run_id, key)) {
         abort_run("Adventure content preparation could not be started.", true);
         return false;
@@ -524,13 +624,17 @@ void captain_selected(const Key& captain)
     bool changed = g_chosen && !(g_captain == captain);
     g_captain = captain;
     g_chosen = true;
+    if (auto* m = preparation_member(local_id())) {
+        m->captain = captain; m->validated = true; m->stage = ga::PreparationStage::Prepared; m->progress = 100;
+    }
+    g_preparation_dirty = true;
     if (host()) {
         if (!g_barrier.ack_captain(g_descriptor.run_id, 0, captain))
             return;
         if (changed) invalidate_party();
     } else {
         net::Writer w;
-        write_run(w, g_descriptor.run_id); write_key(w, captain);
+        write_run(w, g_descriptor.run_id); write_run(w, selection_serial(local_id())); write_key(w, captain);
         send(K_CAPTAIN, w);
     }
     send_ready();
@@ -601,6 +705,7 @@ void on_message(uint8_t from, net::Reader& r)
             g_phase == Phase::Running || g_phase == Phase::Loading)
             return;
         g_descriptor = descriptor;
+        initialize_preparation();
         g_newest_run = descriptor.run_id;
         g_settings = descriptor.difficulty;
         g_phase = Phase::Preparing;
@@ -616,6 +721,21 @@ void on_message(uint8_t from, net::Reader& r)
         if (!why.empty()) { abort_run(why, true); return; }
         if (!adventure_assets::prepare(descriptor.run_id, descriptor.adventure))
             abort_run("Adventure content receiver could not be prepared.", true);
+        return;
+    }
+    if (kind == K_PREPARATION) {
+        ga::PreparationView view;
+        if (from != 0 || !client() || g_phase != Phase::Preparing || !view.read(r) || !finished(r) ||
+            view.run != g_descriptor.run_id || view.revision <= g_preparation.revision ||
+            !(view.adventure == g_descriptor.adventure) || !(view.locked_captain == g_descriptor.locked_captain) ||
+            view.members.size() != g_descriptor.roster.size()) return;
+        for (const auto& m : view.members) if (!member(m.player)) return;
+        uint64_t old_serial = selection_serial(local_id()), old_epoch = g_preparation.epoch;
+        g_preparation = std::move(view);
+        if (g_preparation.epoch != old_epoch) invalidate_ready();
+        if (selection_serial(local_id()) > old_serial) {
+            g_chosen = false; g_change_pending = false; choose_captain();
+        }
         return;
     }
     if (kind == K_SNAPSHOT) {
@@ -655,17 +775,39 @@ void on_message(uint8_t from, net::Reader& r)
             break;
         }
         case K_CAPTAIN: {
+            uint64_t serial = read_run(r);
             Key key = read_key(r);
             bool changed = false;
             for (const auto& m : g_barrier.members())
                 if (m.player == from) changed = m.captain && !(m.captain_key == key);
-            if (finished(r) && g_barrier.ack_captain(run, from, key) && changed)
-                invalidate_party();
+            if (finished(r) && serial == selection_serial(from) &&
+                (!C.captain_validated || C.captain_validated(from, serial, key)) && g_barrier.ack_captain(run, from, key)) {
+                if (changed) invalidate_party();
+                g_preparation_dirty = true;
+            }
             break;
         }
         case K_READY: {
+            uint64_t epoch = read_run(r), serial = read_run(r);
             uint8_t value = r.u8();
-            if (finished(r) && value <= 1) g_barrier.set_ready(run, from, value != 0);
+            if (finished(r) && value <= 1 && epoch == g_preparation.epoch && serial == selection_serial(from)) {
+                g_barrier.set_ready(run, from, value != 0); g_preparation_dirty = true;
+            }
+            break;
+        }
+        case K_CHANGE_CAPTAIN: {
+            uint64_t serial = read_run(r);
+            if (finished(r)) grant_change(from, serial);
+            break;
+        }
+        case K_PREPARATION_STAGE: {
+            uint64_t serial = read_run(r);
+            auto stage = ga::PreparationStage(r.u8()); uint8_t progress = r.u8();
+            auto* m = preparation_member(from);
+            if (finished(r) && g_phase == Phase::Preparing && m && !m->validated && serial == m->serial &&
+                stage < ga::PreparationStage::Prepared && progress <= 100) {
+                m->stage = stage; m->progress = progress; g_preparation_dirty = true;
+            }
             break;
         }
         case K_LOADED: {
@@ -715,14 +857,19 @@ void tick(double now)
     g_last_wall = now;
     g_have_wall = true;
     adventure_assets::tick(now);
+    if (g_phase == Phase::Preparing && !g_content) captain_progress(ga::PreparationStage::Content,adventure_assets::progress());
     if (!active()) return;
     if (!C.sess || !C.sess->connected()) {
         abort_run("The co-op session ended.", false);
         return;
     }
+    if (host() && g_preparation_dirty && now - g_last_preparation >= .1) {
+        send_preparation(); g_last_preparation = now;
+    }
     if (host() && g_phase == Phase::Preparing && g_barrier.all_ready()) {
         if (!g_barrier.begin_loading(g_descriptor.run_id)) return;
         g_phase = Phase::Loading;
+        send_preparation();
         net::Writer w; write_run(w, g_descriptor.run_id); send(K_LAUNCH, w);
         queue_launch();
     }
@@ -853,6 +1000,7 @@ void reset()
     g_last_wall = g_simulation = g_last_snapshot = g_last_revive = 0;
     g_have_wall = false;
     g_error.clear();
+    g_preparation = {}; g_change_pending = false; g_preparation_dirty = false; g_last_preparation = 0;
     if (C.freeze) C.freeze(false);
 }
 

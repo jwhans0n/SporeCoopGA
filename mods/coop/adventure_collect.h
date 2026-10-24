@@ -9,6 +9,13 @@
 
 namespace adventure_collect {
 
+struct Presentation {
+    std::string name, author;
+    dbpf::Key image;
+};
+// Read-only, outside-frame metadata and installed thumbnail lookup.
+Presentation presentation(const dbpf::Key& resource);
+
 bool init(const SkHost* host, SkMod* mod);
 bool available();
 bool inspect(const dbpf::Key& scenario, dbpf::Key& locked_captain, std::string& error);

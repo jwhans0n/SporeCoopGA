@@ -1,7 +1,7 @@
 // SporeCoop mod: creature-stage co-op ("pack" mode). See docs/03-gameplay.md.
 // the release version (tools/package.sh names the zip after it)
 #ifndef COOP_VERSION
-#define COOP_VERSION "0.7.0-ga-preview.3"
+#define COOP_VERSION "0.7.0-ga-preview.4"
 #endif
 
 #include <winsock2.h>
@@ -2305,6 +2305,19 @@ void init_ui()
         return true;
     };
     a.set_adventure_difficulty = [](const ga::Difficulty& difficulty) { adventure::set_settings(difficulty); };
+    a.preparation = adventure::preparation;
+    a.asset_card = [](const dbpf::Key& key) {
+        auto card = adventure_collect::presentation(key);
+        return coop_ui::AssetCard{card.name, card.author, card.image};
+    };
+    a.captain_key = [](uint8_t player) {
+        auto key = adventure_captains::key_for(player);
+        if (!key.instance) if (const auto* run = adventure::current()) key = run->locked_captain;
+        return key;
+    };
+    a.can_ready = adventure::can_ready;
+    a.change_captain = [] { adventure::change_captain(); };
+    a.cancel_adventure = [] { adventure::cancel("The party cancelled adventure preparation."); };
     a.say = [](const std::string& t) {
         if (g_sess.connected())
             g_sess.send_chat(t);
@@ -2378,6 +2391,7 @@ int c_adventure(void*, int argc, const char* const* argv, SkOut* out)
         return 0;
     }
     if (!strcmp(argv[1], "cancel")) return adventure::cancel("The party cancelled adventure preparation.") ? 0 : 1;
+    if (!strcmp(argv[1], "captain")) return adventure::change_captain() ? 0 : 1;
     if (!strcmp(argv[1], "ready") && argc == 3) return adventure::set_ready(atoi(argv[2]) != 0) ? 0 : 1;
     if (!strcmp(argv[1], "start") && argc == 5) {
         dbpf::Key key{(uint32_t)strtoul(argv[2], nullptr, 0), (uint32_t)strtoul(argv[3], nullptr, 0),

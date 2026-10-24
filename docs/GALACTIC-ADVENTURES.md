@@ -8,9 +8,10 @@ verified only for the March 2017 GOG executable, SHA-256
 See [build identification](re/build-dc04.md). Every player needs Galactic Adventures
 and the same experimental SporeCoop build.
 
-Preview `0.7.0-ga-preview.3` adds native guest captain naming/saving and cancelled
-adventure recovery. It retains preview 2's large-adventure performance fix.
-Install the same preview for every player. Adventure rules and network format remain unchanged.
+Preview `0.7.0-ga-preview.4` adds the shared adventure/captain lobby and fixes the
+native music setting used by Mr Puzzle's Magical Gates. It retains native captain
+creation, cancelled adventure recovery and the large-adventure performance fix.
+Install the same preview for every player; this version uses network protocol 8.
 
 ## Start an adventure
 
@@ -22,7 +23,9 @@ Install the same preview for every player. Adventure rules and network format re
 4. Each player uses the native captain setup screens. Choose an existing captain
    or create a new one, enter its name, review it and finish saving. Adventures
    that require an authored captain keep that restriction.
-5. Wait for missing content and captain outfits to transfer, then confirm readiness.
+5. Review the adventure card and everyone's saved captain portraits in the shared
+   lobby. Wait for content and captain outfits to transfer. Every player, including
+   the host, presses **Ready** explicitly.
    Play begins after every participant has the content, captain and loaded adventure.
 
 The host controls shared objective and act progress. A qualifying action by any
@@ -30,6 +33,10 @@ teammate can advance the party's goals. Late joins and reconnects wait for the n
 attempt. Entry from the Space stage is outside this version's scope.
 Cancelling preparation returns both players to the native galaxy menu. Successfully
 saved captains remain available when retrying the same adventure.
+**Change captain** opens your native picker. Changing a captain clears everyone's
+readiness; cancelling a replacement keeps the previous saved captain. Locked
+adventures show the authored captain and disable replacement. **Cancel adventure**
+returns the party to the native galaxy menu while keeping the party connected.
 Use **Done** to return to the menu between completed attempts; native Replay navigation
 still needs validation.
 
@@ -83,9 +90,14 @@ original captain after **Done**. Restarting both game processes retained those
 values. Done returned both players to the menu after failure and success.
 Each results flow suppressed its single-player score submission once per player.
 
+Preview 4 also passed four-client Mr Puzzle entry and controlled act changes,
+four distinct named captain cards, simultaneous replacement cancellation and
+disconnect recovery. A missing-thumbnail fixture entered a shared native run.
+These checks do not establish a complete adventure playthrough.
+
 The success test used controlled completion. A complete adventure playthrough,
-all authored objective types, simultaneous conversations, four-player
-sessions and broader adventure compatibility still need validation. Automatic
+all authored objective types, simultaneous conversations, extended four-player
+play and broader adventure compatibility still need validation. Automatic
 transfers cover supported adventure and creation assets installed on the host;
 server-only references cannot be downloaded automatically. Unsupported custom
 gameplay props or act audio can block launch. External custom parts and other mod

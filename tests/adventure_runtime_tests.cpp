@@ -24,6 +24,7 @@ bool prepare(uint64_t run, const Key& key)
 bool share_with(uint8_t) { return true; }
 void on_message(uint8_t, net::Reader&) {}
 void tick(double) {}
+uint8_t progress() { return 0; }
 void reset() {}
 void release() {}
 std::string status() { return "fake assets"; }
@@ -53,9 +54,9 @@ static void acknowledge(const ga::Descriptor& d, uint8_t peer)
     content.u8(2); put_run(content, d.run_id); put_key(content, d.adventure);
     content.raw(d.manifest_hash.data(), d.manifest_hash.size()); incoming(peer, content);
     net::Writer captain;
-    captain.u8(3); put_run(captain, d.run_id); put_key(captain, {uint32_t(peer) + 1, 10, 20}); incoming(peer, captain);
+    captain.u8(3); put_run(captain, d.run_id); put_run(captain, 1); put_key(captain, {uint32_t(peer) + 1, 10, 20}); incoming(peer, captain);
     net::Writer ready;
-    ready.u8(4); put_run(ready, d.run_id); ready.u8(1); incoming(peer, ready);
+    ready.u8(4); put_run(ready, d.run_id); put_run(ready, 1); put_run(ready, 1); ready.u8(1); incoming(peer, ready);
 }
 static void acknowledge_loaded(const ga::Descriptor& d, uint8_t peer)
 {
@@ -160,6 +161,9 @@ int main()
     adventure::tick(1); drain();
     CHECK(launches == 0); // third member has not confirmed
     acknowledge(first, guest2.my_id());
+    adventure::tick(1.5); drain();
+    CHECK(launches == 0 && !adventure::ready()); // host must explicitly confirm too
+    CHECK(adventure::set_ready(true));
     adventure::tick(2); drain();
     CHECK(launches == 1 && frozen);
     CHECK(!adventure::set_settings(difficulty));
@@ -224,6 +228,7 @@ int main()
     CHECK(launches == 1);
     acknowledge(second, guest.my_id());
     acknowledge(second, guest2.my_id());
+    CHECK(adventure::set_ready(true));
     adventure::tick(132); drain();
     CHECK(launches == 2 && frozen);
     loaded = true;
@@ -243,6 +248,7 @@ int main()
     CHECK(adventure::request_play(key)); drain();
     auto third = *adventure::current();
     acknowledge(third, guest.my_id()); acknowledge(third, guest2.my_id());
+    CHECK(adventure::set_ready(true));
     adventure::tick(201);
     adventure::reset(); drain();
     CHECK(launches == 2 && !frozen && !adventure::active());
@@ -252,6 +258,7 @@ int main()
     CHECK(adventure::request_play(key)); drain();
     const auto failed = *adventure::current();
     acknowledge(failed, guest.my_id()); acknowledge(failed, guest2.my_id());
+    CHECK(adventure::set_ready(true));
     adventure::tick(201.5);
     CHECK(native_aborts == 0);
     drain();
@@ -269,6 +276,7 @@ int main()
     CHECK(adventure::request_play(key)); drain();
     const auto reset_abort = *adventure::current();
     acknowledge(reset_abort, guest.my_id()); acknowledge(reset_abort, guest2.my_id());
+    CHECK(adventure::set_ready(true));
     adventure::tick(201.75);
     CHECK(adventure::cancel("cancel queued load"));
     adventure::reset(); drain();
@@ -299,6 +307,26 @@ int main()
     CHECK(adventure::active());
     adventure_assets::context.prepared(100, key, std::string(64, 'a'));
     drain();
+    ga::PreparationView view;
+    CHECK(adventure::preparation(view));
+    view.revision=1;
+    for(auto& m:view.members) {
+        m.content=m.validated=true; m.captain={1,10,20}; m.stage=ga::PreparationStage::Prepared;
+        m.ready=m.player==0;
+    }
+    net::Writer preparation_packet; preparation_packet.u8(14); view.write(preparation_packet);
+    incoming(2,preparation_packet);
+    CHECK(!adventure::launch_ready(0)); // only the host publishes preparation
+    incoming(0,preparation_packet);
+    CHECK(adventure::launch_ready(0));
+    view.members[0].ready=false;
+    net::Writer stale_preparation; stale_preparation.u8(14); view.write(stale_preparation);
+    incoming(0,stale_preparation);
+    CHECK(adventure::launch_ready(0)); // same revision cannot overwrite readiness
+    view.revision=2;
+    net::Writer updated_preparation; updated_preparation.u8(14); view.write(updated_preparation);
+    incoming(0,updated_preparation);
+    CHECK(!adventure::launch_ready(0));
     CHECK(adventure::set_ready(true));
     net::Writer launch;
     launch.u8(5); put_run(launch, 100); incoming(2, launch); drain();
@@ -384,7 +412,21 @@ int main()
     stale_selection({321, 10, 20}); drain();
     CHECK(!adventure::launch_ready(0));
     pending_selection({322, 10, 20}); drain();
+    CHECK(!adventure::launch_ready(0));
+    CHECK(adventure::set_ready(true));
     CHECK(adventure::launch_ready(0));
+    auto replaced_selection = pending_selection;
+    CHECK(adventure::change_captain()); drain();
+    CHECK(!adventure::ready() && !adventure::can_ready());
+    ga::PreparationView preparation_view;
+    CHECK(adventure::preparation(preparation_view) && preparation_view.epoch == 2 && adventure::selection_serial(0)==2);
+    replaced_selection({323,10,20}); drain();
+    CHECK(!adventure::can_ready());
+    pending_selection({324,10,20}); drain();
+    CHECK(adventure::can_ready() && !adventure::launch_ready(0));
+    net::Writer old_ready; old_ready.u8(4); put_run(old_ready,adventure::current()->run_id);
+    put_run(old_ready,1); put_run(old_ready,1); old_ready.u8(1); incoming(guest.my_id(),old_ready);
+    CHECK(!adventure::launch_ready(guest.my_id()));
     CHECK(adventure::cancel("retry finished")); drain();
     CHECK(!adventure::cancel("repeat cleanup")); drain();
 

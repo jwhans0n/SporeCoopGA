@@ -85,6 +85,7 @@ Win button_like(Win parent, Win like, const Rect& r, const std::string& caption)
 // a text label: a button without a drawable that ignores the mouse
 Win label(Win parent, const Rect& r, const std::string& text, uint32_t font_id, uint32_t argb, int align);
 void set_label_color(Win label, uint32_t argb);
+void set_caption_padding(Win button, float pixels);
 // a one-line text field
 Win text_edit(Win parent, const Rect& r, const std::string& text, uint32_t font_id, int max_len);
 std::string edit_text(Win edit);

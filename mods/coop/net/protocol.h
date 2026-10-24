@@ -11,8 +11,8 @@
 namespace net {
 
 constexpr uint32_t kMagic = 0x4F435053; // 'SPCO'
-constexpr uint16_t kProtoVersion = 7; // 3: shared resources, ping marks; 4: lobby, LAN discovery; 5: 128-packet acks;
-                                      // 6: connection id in the header, unreliable BYE; 7: adventure runs/content/rules
+constexpr uint16_t kProtoVersion = 8; // 3: shared resources, ping marks; 4: lobby, LAN discovery; 5: 128-packet acks;
+                                      // 6: connection id; 7: adventure runs; 8: shared preparation and explicit readiness
 constexpr uint16_t kDefaultPort = 47810;
 constexpr int kMaxPlayers = 4; // host + 3 guests (Spore pack size)
 constexpr size_t kMaxPacket = 1200;

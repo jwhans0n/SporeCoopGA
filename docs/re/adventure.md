@@ -289,3 +289,24 @@ set, but its FFFFFFFF layout root is hidden (12 rather than13), which reproduces
 missing controls despite correct application state02CCDA9C and game mode02CCD1D2.
 Both wizard preview/effect handles +84/+88 must be stopped/released using the
 native DFBD40 finalization convention, without deleting saved creation records.
+
+## Preview 4: shared preparation
+
+The host maintains preparation member serials and a readiness epoch independently
+of cosmetic progress. Every participant starts unready. A replacement is granted
+only during preparation and only for its current serial, then clears all readiness
+and the owner's captain barrier before opening native UI. Ready carries both epoch
+and serial; the host additionally checks the completed, acknowledged captain
+transfer before accepting a captain key. Client progress never validates a model.
+
+Native Back from captain selection goes to stage1 (Choose an Adventure), rather
+than stage0. During party preparation either stage cancels the picker because the
+adventure is fixed by the party. Replacement cancellation republishes the previous
+saved captain under the new serial and leaves everyone unready. Initial cancellation
+uses preview3's full application-state/game-mode recovery. Delayed install work,
+model offers and callbacks are checked against the new serial before applying.
+
+Preparation UI reads are outside-frame, cached by actual local resource key. The
+host snapshot carries original keys; remote presentation resolves the already
+owner-scoped key, including property/PNG companions. Authored locks use the installed
+story creature directly and never require it to have personal-captain model type.

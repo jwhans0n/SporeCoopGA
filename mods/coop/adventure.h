@@ -21,6 +21,7 @@ struct Ctx {
     std::function<bool(const Key&, std::vector<dbpf::Record>&, std::string&)> collect;
     // A zero locked key requests a personal captain. Return a zero key to cancel.
     std::function<void(const Key& locked, std::function<void(const Key&)> selected)> choose_captain;
+    std::function<bool(uint8_t, uint64_t, const Key&)> captain_validated;
     std::function<bool(const Key& adventure, const Key& captain, std::string& error)> launch;
     // Close owned setup UI and restore the native menu before Scenario was entered.
     std::function<void()> abort_preparation;
@@ -51,6 +52,11 @@ const ga::Difficulty& settings();
 bool set_settings(const ga::Difficulty& difficulty);
 bool ready();
 bool launch_ready(uint8_t player);
+bool preparation(ga::PreparationView& view);
+bool can_ready();
+bool change_captain();
+uint64_t selection_serial(uint8_t player);
+void captain_progress(ga::PreparationStage stage, uint8_t progress = 0);
 bool set_ready(bool value);
 bool active();
 bool running(); // all frozen-roster captains loaded and the host committed the attempt

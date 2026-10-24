@@ -453,8 +453,34 @@ static void test_invalid_start_is_transactional()
     CHECK(a.descriptor().run_id == 1 && a.captain(0)->health == 100);
 }
 
+static void test_preparation_wire()
+{
+    PreparationView v;
+    v.run=5; v.revision=7; v.epoch=2; v.adventure={123,0x366A930D,456};
+    for(uint8_t i=0;i<4;++i) {
+        PreparationMember m; m.player=i; m.serial=i+1; m.stage=PreparationStage::Prepared;
+        m.captain={uint32_t(i)+1,10,20}; m.content=m.validated=m.ready=true; m.progress=100;
+        v.members.push_back(m);
+    }
+    auto decode=[](const PreparationView& x) {
+        net::Writer w; x.write(w); PreparationView out; net::Reader r(w.data.data(),w.size());
+        return out.read(r) && r.left()==0;
+    };
+    CHECK(decode(v));
+    auto bad=v; bad.members[1].player=0; CHECK(!decode(bad));
+    bad=v; bad.members[1].serial=0; CHECK(!decode(bad));
+    bad=v; bad.members[1].content=false; CHECK(!decode(bad));
+    bad=v; bad.members[1].validated=false; CHECK(!decode(bad));
+    bad=v; bad.members[1].progress=101; CHECK(!decode(bad));
+    bad=v; bad.epoch=0; CHECK(!decode(bad));
+    bad=v; bad.locked_captain={999,10,20}; CHECK(!decode(bad));
+    net::Writer w; v.write(w);
+    for(size_t n=0;n<w.size();++n) { PreparationView out; net::Reader r(w.data.data(),n); CHECK(!out.read(r)); }
+}
+
 int main()
 {
+    test_preparation_wire();
     test_difficulty();
     test_wire();
     test_descriptor_validation();

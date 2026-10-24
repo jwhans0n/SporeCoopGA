@@ -69,6 +69,27 @@ as `021407EE!2D67FCE4.01A527DB`, with a `.02B9F662` companion. Treating every mu
 as `D87454E6!ID.00B1B104` incorrectly rejected this stock adventure. Collection first
 checks the palette prop, then the native audio key, and requires a vanilla database.
 
+Preview 4 additionally recognizes music value1 as a native audio event without a
+standalone DBPF record. Mr Puzzle's Magical Gates is stock scenarioC2C7B154 and
+reproduces preview3's D87454E6!00000001.00B1B104 failure in isolated profiles.
+SetCurrentAct F1EF2B reads act+80, stores it at play+F4, and F1EFB4 calls657200.
+That cdecl helper routes the value through native audio event properties03475381
+and03475385 and dispatches via the audio system; it never performs a DBPF lookup.
+The collector preserves value1, skips its absent record, and still rejects custom
+palette/audio overrides and unresolved ordinary IDs. Error messages include the
+adventure, one-based act and full music ID. Muted tests do not establish audible
+playback, only unchanged authored values and successful native launch/act changes.
+
+Card metadata loads an owned native pollen metadata resource. NameText414E00
+returns metadata+78's UTF16 string pointer; AuthorText550880 returns+58. Native
+Sporepedia641800/641810 tailcall those helpers. Captain names override the body
+metadata with String16 property75ED3A1C from LoadAssetProperties. Native quickplay
+DFBEEB calls EEBE90, whose5BF960 helper writes this property. GetValueString16
+68A4E0 validates type13 and handles inline/pointer storage (returns68A4FD/68A507).
+Owner-scoped captain imports remap the image and property companions alongside the
+model. AddImageWindow807970 uses GetImage806320, returns an image window at807B33,
+and accepts cdecl(key*,float x,float y,parent); changing the window area scales it.
+
 Custom gameplay props, custom act audio and dependencies on mod-provided external
 parts are not closed automatically yet. Collection reports unsupported custom
 gameplay/audio records instead of silently claiming readiness. Ordinary captain

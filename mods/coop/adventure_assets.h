@@ -37,5 +37,6 @@ void release(); // only after native scenario resources have been released, outs
 // Additional verified creation records, outside the frame; does not replace a scenario transfer.
 bool register_records(const std::vector<dbpf::Record>& records, std::string& error);
 std::string status();
+uint8_t progress();
 
 } // namespace adventure_assets

@@ -303,6 +303,11 @@ Win button_like(Win parent, Win like, const Rect& r, const std::string& text)
     return w;
 }
 
+void set_caption_padding(Win w, float pixels)
+{
+    if (void* b = as_button(w)) vcall<void>(b, 0x54 / 4, pixels, 1.f, pixels, 1.f);
+}
+
 void set_label_color(Win w, uint32_t argb)
 {
     if (void* b = as_button(w))

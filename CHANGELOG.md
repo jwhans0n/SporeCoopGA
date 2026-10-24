@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Shared adventure lobby: 0.7.0-ga-preview.4
+
+- Accept native music event 1 used by Mr Puzzle's Magical Gates, preserving the
+  authored setting and retaining validation of unsupported custom dependencies.
+- Show the adventure artwork, title and author with four shared saved-captain
+  cards, native portraits, saved captain names, transfer progress and readiness.
+- Require explicit Ready from the host and every guest. Captain replacement
+  clears party readiness; cancelling replacement keeps the saved captain.
+- Synchronize preparation with run/revision/selection guards. Protocol 8 requires
+  the same preview on every participant. Keep preview 3 recovery and the FPS fix.
+
 ### Galactic Adventures captain recovery: 0.7.0-ga-preview.3
 
 - Guests use native captain creation, naming, review and saving before sharing

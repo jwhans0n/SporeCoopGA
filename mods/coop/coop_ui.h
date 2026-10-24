@@ -25,6 +25,10 @@ struct LanGame {
     std::string name, address, info;
     int players = 0, max_players = 0;
 };
+struct AssetCard {
+    std::string name, author;
+    dbpf::Key image;
+};
 
 // what the UI needs from the mod (filled in coop.cpp)
 struct Api {
@@ -46,6 +50,11 @@ struct Api {
     // may edit it, before an attempt. Guests see the same immutable launch settings.
     std::function<bool(ga::Difficulty&, int& party_size, bool& editable, std::string& status)> adventure_difficulty;
     std::function<void(const ga::Difficulty&)> set_adventure_difficulty;
+    std::function<bool(ga::PreparationView&)> preparation;
+    std::function<AssetCard(const dbpf::Key&)> asset_card;
+    std::function<dbpf::Key(uint8_t)> captain_key;
+    std::function<bool()> can_ready;
+    std::function<void()> change_captain, cancel_adventure;
     // own creation of the current stage: kind 0 creature / 1 cell / 2 ship, its name ("" = the
     // world's own), how many own creations of that kind exist; false = not shown. cycle: -1 / +1
     std::function<bool(int& kind, std::string& name, int& own)> creation;

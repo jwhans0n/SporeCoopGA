@@ -34,6 +34,7 @@ void* g_wizard;
 bool g_wizard_queued;
 unsigned g_wizard_step;
 Key g_wizard_adventure;
+Key g_fallback;
 bool g_available, g_picking;
 uint64_t g_run, g_generation, g_next;
 Selected g_selected;
@@ -240,7 +241,7 @@ void check_ready(uint8_t owner)
 void received(uint8_t owner, uint64_t run, uint64_t serial, const Key& original, content::Bundle bundle)
 {
     outside([owner, run, serial, original, bundle = std::move(bundle)]() mutable {
-        if (!current(run)) return;
+        if (!current(run) || serial != adventure::selection_serial(owner)) return;
         auto rx = g_receivers.find(owner);
         if (rx == g_receivers.end() || rx->second.serial != serial) return;
         Key use;
@@ -323,14 +324,23 @@ void pump_wizard()
         skg::thiscall<void>(a_Next, g_wizard);
         skg::thiscall<void>(a_Visibility, g_wizard, true);
         g_wizard_step = 3;
-    } else if (g_wizard_step == 3 && stage == 0) {
-        fail(mine(), g_run, 0, "captain selection was cancelled");
+    } else if (g_wizard_step == 3 && (stage == 0 || stage == 1)) {
+        // Back from the captain step returns to native adventure selection.
+        // The party already owns that selection, so this cancels our picker.
+        if (g_fallback.instance) {
+            Key previous = std::exchange(g_fallback, {});
+            g_picking = false;
+            Selected callback = std::exchange(g_selected, {});
+            close_picker(); restore_galaxy();
+            publish(previous, std::move(callback));
+        } else fail(mine(), g_run, 0, "captain selection was cancelled");
     }
 }
 
 void pump(Outgoing& out)
 {
-    if (!current(out.run) || S->pending_to(out.peer) > 24) return;
+    if (!current(out.run) || out.serial != adventure::selection_serial(out.owner)) { out.stage = 5; return; }
+    if (S->pending_to(out.peer) > 24) return;
     auto w = packet(Offer, out.owner, out.run, out.serial);
     auto& bundle = *out.bundle;
     if (out.stage == 0) {
@@ -396,9 +406,11 @@ bool publish(const Key& key, Selected callback)
     begin_run(d->run_id);
     if (g_selected) return false;
     g_selected = std::move(callback);
-    const uint64_t run = g_run, serial = ++g_next;
+    const uint64_t run = g_run, serial = adventure::selection_serial(mine());
+    if (!serial) { g_selected = {}; return false; }
+    adventure::captain_progress(ga::PreparationStage::Sharing);
     outside([key, run, serial] {
-        if (!current(run)) return;
+        if (!current(run) || serial != adventure::selection_serial(mine())) return;
         if (!captain(key)) { fail(mine(), run, serial, "the selection is not an outfitted Galactic Adventures captain"); return; }
         std::vector<dbpf::Record> records;
         std::string error;
@@ -436,8 +448,12 @@ bool choose(const Key& locked, Selected callback)
     if (!available() || !d || !callback || !adventure::participating(mine())) return false;
     begin_run(d->run_id);
     if (g_selected || g_picking) return false;
+    g_fallback = {};
+    auto previous = g_transfers.find(mine());
+    if (previous != g_transfers.end() && previous->second.ready && previous->second.serial != adventure::selection_serial(mine()))
+        g_fallback = previous->second.original;
     if (locked.instance && locked.type) {
-        Transfer t; t.run = g_run; t.original = t.mapped = locked; t.applied = t.ready = true;
+        Transfer t; t.run = g_run; t.serial = adventure::selection_serial(mine()); t.original = t.mapped = locked; t.applied = t.ready = true;
         g_transfers[mine()] = std::move(t);
         callback(locked);
         return true;
@@ -464,7 +480,7 @@ void on_message(uint8_t from, net::Reader& r)
     uint8_t kind = r.u8(), owner = r.u8();
     uint64_t run = get_run(r), serial = get_run(r);
     const auto* d = adventure::current();
-    if (!d || run != d->run_id || !serial || kind < Offer || kind > Error ||
+    if (!d || run != d->run_id || !serial || serial != adventure::selection_serial(owner) || kind < Offer || kind > Error ||
         !adventure::participating(owner) || (host() ? !adventure::participating(from) : from != 0)) return;
     begin_run(run);
     if (kind == Error) {
@@ -544,6 +560,7 @@ bool complete_native(const Key& adventure, const Key& key)
     g_picking = false;
     Selected callback = std::exchange(g_selected, {});
     outside([] { close_picker(); });
+    g_fallback = {};
     return publish(key, std::move(callback));
 }
 
@@ -589,16 +606,28 @@ void tick(double)
     if (!d || !S || !S->connected()) return;
     begin_run(d->run_id);
     if (g_picking && g_wizard && !g_wizard_queued) {
+        int stage = skg::field<int>(g_wizard, 0x20);
+        adventure::captain_progress(stage == 3 ? ga::PreparationStage::Naming : stage >= 9 ? ga::PreparationStage::Saving : ga::PreparationStage::Choosing);
         g_wizard_queued = true;
         outside([] { g_wizard_queued = false; pump_wizard(); });
     }
     for (auto& out : g_outgoing)
         for (unsigned i = 0; i < 4 && out.stage < 5; i++) pump(out);
     g_outgoing.erase(std::remove_if(g_outgoing.begin(), g_outgoing.end(), [](const auto& out) { return out.stage == 5; }), g_outgoing.end());
+    if (g_selected && !g_picking) {
+        uint8_t percent = 99;
+        for (const auto& out : g_outgoing) if (out.owner == mine() && out.serial == adventure::selection_serial(mine())) {
+            uint64_t sent = out.offset;
+            for (size_t i = 0; i < std::min<size_t>(out.record,out.bundle->records.size()); ++i) sent += out.bundle->records[i].data.size();
+            percent = std::min<uint8_t>(percent,out.bundle->bytes?uint8_t(std::min<uint64_t>(99,sent*100/out.bundle->bytes)):99);
+        }
+        adventure::captain_progress(ga::PreparationStage::Sharing,percent);
+    }
 }
 
 void reset()
 {
+    g_fallback = {};
     ++g_generation;
     g_selected = {};
     g_picking = false;
@@ -612,6 +641,18 @@ Key key_for(uint8_t player)
 {
     auto it = g_transfers.find(player);
     return it != g_transfers.end() && it->second.applied ? it->second.mapped : Key{};
+}
+
+bool validated(uint8_t player, uint64_t serial, const Key& key)
+{
+    const auto* d = adventure::current();
+    if (d && d->locked_captain.instance) {
+        void* rm = a_Rm ? *(void**)a_Rm : nullptr;
+        Key real;
+        return key == d->locked_captain && rm && skg::vcall<void*>(rm,0x30/4,&key,&real,(void*)nullptr);
+    }
+    auto it = g_transfers.find(player);
+    return it != g_transfers.end() && it->second.ready && it->second.serial == serial && it->second.original == key;
 }
 
 std::string status()

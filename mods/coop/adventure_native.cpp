@@ -388,14 +388,16 @@ adventure::Ctx coordinator_context()
     context.sess = C.sess; context.feed = C.feed; context.invalidate_ready = C.invalidate_ready;
     context.native_available = available; context.native_reason = unavailable;
     context.collect = adventure_collect::collect;
+    context.captain_validated = adventure_captains::validated;
     context.choose_captain = [](const dbpf::Key& locked, auto selected) {
         coop_ui::open(false);
         auto confirmed = [selected = std::move(selected)](const dbpf::Key& key) {
             selected(key);
             if (connected()) coop_ui::open(true);
         };
-        bool ok = C.sess && C.sess->role() == net::Role::Host && !locked.instance && g_host_captain.instance
-            ? adventure_captains::publish(g_host_captain, std::move(confirmed))
+        dbpf::Key initial_host = g_host_captain; g_host_captain = {};
+        bool ok = C.sess && C.sess->role() == net::Role::Host && !locked.instance && initial_host.instance
+            ? adventure_captains::publish(initial_host, std::move(confirmed))
             : adventure_captains::choose(locked, std::move(confirmed));
         if (!ok) {
             adventure::cancel(adventure_captains::status());

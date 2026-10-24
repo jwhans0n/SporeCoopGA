@@ -1,5 +1,22 @@
 # 4. Netcode
 
+## Adventure preparation (protocol 8)
+
+Reliable MSG_ADVENTURE subkind14 carries the host's preparation view: run,
+revision, readiness epoch, adventure/locked captain keys, loading flag and up to
+four members. Each member includes selection serial, cosmetic stage/progress,
+original captain key, validated content/captain flags and effective readiness.
+Subkind15 requests local captain replacement;16 reports cosmetic preparation
+progress. Existing resource bundle formats are unchanged.
+
+Ready messages include the readiness epoch and selection serial. Captain
+acknowledgements include the serial and must match the host's validated transfer.
+Replacement increments the serial/epoch, invalidates the captain barrier and clears
+party readiness before opening the picker. Neither stale acknowledgements nor
+cosmetic progress can release the barrier. Snapshots are sent on changes at most
+10Hz; clients accept only the host, current run/roster and increasing revision.
+All participants explicitly confirm Ready. Older previews fail protocol negotiation.
+
 ## 4.1 Topology
 
 Star: the host is the server, guests connect to it over UDP (port 47810).

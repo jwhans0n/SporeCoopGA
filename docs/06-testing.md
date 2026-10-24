@@ -407,3 +407,34 @@ Use a unique output directory for each WindowsLab runner: an older runner can
 write its final process metadata after a new runner starts if both share a path.
 An automated native Review click can arrive before Finish accepts input; require
 the panel to close and retry the mouse tap instead of assuming one tap saved it.
+
+Shared lobby regression (preview4, protocol8):
+
+```
+py -3 tools/tests/coop_adventure_lobby.py --metadata out/windows-lab/preview4-final-fixture/processes.json --output out/windows-lab/preview4-final-validation
+```
+
+This uses stock Mr Puzzle's Magical Gates and Adventure Town in recorded isolated
+profiles, native lobby buttons and captain creation, saved names/artwork, explicit
+host readiness, replacement cancellation, retry and disconnect recovery. Native
+buttons can ignore an initial click while acquiring focus; retry only after checking
+the expected state, especially for toggling Ready. Native Back control05933FE1
+returns captain selection to adventure selection (stage1); party preparation treats
+that as picker cancellation. `--instances 21,22,23,24 --four-player-only` exercises
+the stock adventure card, readiness barrier, authored captains and act snapshots
+with four isolated clients. This establishes those routes, not a full playthrough.
+
+Preview4 delivery validation passed the full lobby script with two and four
+clients, including four distinct saved captains and simultaneous replacement
+cancellation. Mr Puzzle's native act music remained [1,0,0,0] on all four clients.
+The final DLL passed ordinary Sporepedia Play, return from settings to the shared
+cards, native entry/cancellation and a405-actor regression at21.49/21.61 FPS.
+Portable tests, twelve existing Win32 fixtures and the115-function/four-global
+symbol manifest passed. Evidence is in out/windows-lab/preview4-*.
+
+For the missing-art case a stock scenario was cloned under7F00F004 with metadata
+and no PNG, registered through the existing verified packed-database ABI in a lab
+process, then transferred normally. Both clients displayed No preview, enabled
+Ready and entered the native run without faults. Dropping this fixture into the
+lab's Data/DataEP1 directories did not make it visible to the resource manager;
+do not assume copying a package registers it in this runner.
