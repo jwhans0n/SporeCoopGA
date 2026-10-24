@@ -160,3 +160,15 @@ clean:
 	rm -rf $(B)
 
 -include $(KIT_OBJ:.o=.d) $(COOP_OBJ:.o=.d)
+
+# Preview 6 verified interaction adapters (the tests include their implementation).
+INTERACTION_TEST_NET := mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp
+.PHONY: test-explosives-windows test-pickups-windows
+test-explosives-windows: $(B)/host/adventure_explosives_tests.exe
+$(B)/host/adventure_explosives_tests.exe: tests/adventure_explosives_tests.cpp mods/coop/adventure_explosives.cpp mods/coop/adventure_explosives.h $(INTERACTION_TEST_NET) $(ADVENTURE_ABI_HEADERS)
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/adventure_explosives_tests.cpp $(INTERACTION_TEST_NET) -o $@ -lws2_32
+test-pickups-windows: $(B)/host/adventure_pickups_tests.exe
+$(B)/host/adventure_pickups_tests.exe: tests/adventure_pickups_tests.cpp mods/coop/adventure_pickups.cpp mods/coop/adventure_pickups.h $(INTERACTION_TEST_NET) $(ADVENTURE_ABI_HEADERS)
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/adventure_pickups_tests.cpp $(INTERACTION_TEST_NET) -o $@ -lws2_32

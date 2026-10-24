@@ -352,12 +352,28 @@ bool init(const SkHost* host, SkMod* mod, Ctx context)
     world.run = [] { const auto* run = adventure::current(); return run ? run->run_id : 0; };
     world.active = [] { return adventure::running(); };
     world.held=adventure_flow::held;
+    world.explosive_environment=adventure_explosives::environmental_damage;
+    world.explosive_visual=adventure_explosives::visual_only;
+    world.simulation_time=[] {
+        adventure::CaptainState state;
+        return C.sess && adventure::captain_state(C.sess->my_id(),state) ? state.simulation_time : 0.0;
+    };
+    world.teleport=C.teleport;
+    world.interaction_failed=[](const std::string& reason) { adventure::cancel(reason); };
     world.difficulty = [] { const auto* run = adventure::current(); return run ? run->difficulty : adventure::settings(); };
     world.party_size = [] { const auto* run = adventure::current(); return run ? run->roster.size() : size_t(1); };
     world.captain_damage = adventure::captain_damage;
     world.captain_heal = adventure::captain_heal;
     world.result = [](bool success) { adventure::complete(success); };
     adventure_world::init(H, M, std::move(world));
+    auto pickups=adventure_world::pickups_context();
+    pickups.active=[] { return adventure::native_attempt() && game::mode_id()==modes::kScenario; };
+    pickups.held=[] { return !adventure::running() || adventure_flow::held(); };
+    g_symbols=adventure_pickups::init(H,M,std::move(pickups)) && g_symbols;
+    auto explosives=adventure_world::explosives_context();
+    explosives.active=[] { return adventure::native_attempt() && game::mode_id()==modes::kScenario; };
+    explosives.held=[] { return !adventure::running() || adventure_flow::held(); };
+    g_symbols=adventure_explosives::init(H,M,std::move(explosives)) && g_symbols;
     adventure_relationships::Ctx relationships;
     relationships.active = [] { return adventure::running() && game::mode_id() == modes::kScenario; };
     relationships.local_avatar = game::avatar;
@@ -501,15 +517,21 @@ adventure::Ctx coordinator_context()
     context.loaded = loaded; context.paused = paused; context.captain_of = C.captain_of;
     context.sample = sample; context.apply = apply; context.source = adventure_world::source;
     context.native_result = adventure_world::apply_result;
+    context.incoming_damage=adventure_pickups::adjust_damage;
     return context;
 }
 
-void tick(double now) { adventure_captains::tick(now); adventure_flow::tick(); adventure_world::tick(now); }
+void tick(double now) {
+    adventure_captains::tick(now); adventure_flow::tick(); adventure_world::tick(now);
+    adventure_explosives::tick(); adventure_pickups::tick();
+}
 void blocked_update(void* creature, int milliseconds) { adventure_social::blocked_update(creature, milliseconds); }
 void on_message(uint8_t from, net::Reader& message)
 {
     if (!message.left()) return;
     if (*message.cur() >= 192) adventure_captains::on_message(from, message);
+    else if(*message.cur()>=144 && *message.cur()<=151) adventure_explosives::on_message(from,message);
+    else if(*message.cur()>=152 && *message.cur()<=159) adventure_pickups::on_message(from,message);
     else if(*message.cur()>=160 && *message.cur()<=163) adventure_flow::on_message(from,message);
     else adventure_world::on_message(from, message);
 }
@@ -536,7 +558,9 @@ bool damage_filter(void* victim, float& amount, int type, void* attacker)
 }
 void reset()
 {
+    adventure_pickups::reset(); adventure_explosives::reset();
     adventure_flow::reset(); g_intro_run=0; g_intro_pending=false;
+    if (C.reset_movement) C.reset_movement();
     adventure_social::reset();
     g_frozen = false; g_host_captain = {}; g_captains.clear();
     for (const auto& [player, immunity] : g_invulnerability)
@@ -557,6 +581,7 @@ std::string status()
         "native social presentation: starts=" + std::to_string(social.starts) + " ticks=" + std::to_string(social.ticks) +
         " ends=" + std::to_string(social.ends) + " rejected=" + std::to_string(social.rejected) +
         " input_allowed=" + std::to_string(social.input_queries_allowed) + "\n" +
+        adventure_pickups::status()+"\n"+adventure_explosives::status()+"\n"+
         "native co-op results: suppressed score submissions=" + std::to_string(g_suppressed_scores) : unavailable();
 }
 } // namespace adventure_native

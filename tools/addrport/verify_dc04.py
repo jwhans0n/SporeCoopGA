@@ -17,14 +17,74 @@ EXE_SHA256 = 'dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37'
 UPSTREAM_COMMIT = '69b27b5b407a2c76e1e701ba27630a77a9ce5d01'
 
 
-def fn(name, address, prefix, returns, note, calls=()):
+def fn(name, address, prefix, returns, note, calls=(), vslots=()):
     return dict(name=name, address=address, prefix=prefix, returns=returns, note=note,
-                calls=calls)
+                calls=calls, vslots=vslots)
 
 
 # Return pairs are absolute return-instruction VA and stack bytes popped (0 = C3).
 # Source identity comes from upstream ModAPI plus the behavioral checks in the notes.
 FUNCTIONS = [
+    fn('SporeCoop::Adventure::WorldBounds', 0xC8A630, '83ec3856578bf98b078b5068', [(0xC8A6D7,4)],
+       'thiscall(spatial,Box24*out)->Box24*, ret4; six float min/max copied from local extents then transformed to world; native explosion F205A8/F205DB calls slot6C and averages min/max into centers',
+       [(0xC8A6BF,0xC89970),(0xC8A6CB,0x409DD0)],
+       [(0x146A3D0,0x6C,0xC8A630),(0x146CB68,0x6C,0xC8A630)]),
+    fn('SporeCoop::Adventure::BombFuseExpiry', 0xf20810, '568b7424088b4e048b018b50', [(0xf20856,0)],
+       'cdecl(nativeTimerTask*); objectref+4; kills timed bomb with ownHP,type19. Guard old coop callbacks before native cleanup flush executes them', []),
+    fn('SporeCoop::Adventure::ExplosionDelayExpiry', 0xf24910, '568b7424088b4e048b018b50', [(0xf24942,0),(0xf24950,0)],
+       'cdecl(nativeTimerTask*); retained object+4, checksnativeDestroyed then ExplodePowerup. Guard stale run before cleanup flush', [(0xf24939,0xf24730)]),
+    fn('SporeCoop::Adventure::SchedulePowerupExplosion', 0xf24960, 'f30f1044240c0f2e05b45248', [(0xf249aa,0)],
+       'cdecl(powerup*,combatantAttacker*,float delay); nonzero delay queues ExplosionDelayExpiry, otherwise actual explosion immediately', [(0xf2498f,0xf20220),(0xf249a1,0xf24730),(0xf24b80,0xf24960)]),
+    fn('SporeCoop::Adventure::FlushPowerupTimers', 0xf20310, '518b0d1c836c0156e8a30df1', [(0xf20386,0)],
+       'cdecl(); native scenario cleanup EF0BA0 calls atEF0BC6; flush EXECUTES callbacks+10 before releasing objects and pool records, does not merely discard', [(0xef0bc6,0xf20310)]),
+    fn('SporeCoop::Adventure::ApplyCreatureAbility', 0xc20390, '81eccc0000005556578bbc24', [(0xc21180,12),(0xc2118e,12)],
+       'thiscall(captain,combatantTarget,int abilityIndex,Vec3* hitPosition); ret0C; native outgoing damage boost C2064F and armor C206AE; GA skips random damage branch', [(0xc02b59,0xc20390),(0xc24024,0xc20390)]),
+    fn('SporeCoop::Adventure::ActivateMine', 0xf207d0, '8b4c24048b018b5004ffd285', [(15861775, 0)],
+       'cdecl(powerup*,combatant*); kills mine with own HP,type19; resulting actual blast is separate ExplodePowerup', [(15875550, 15861712), (15875831, 15861712)]),
+    fn('SporeCoop::Adventure::ActivateGrenade', 0xf20860, '568b7424088b068b50048bce', [(15861995, 0)],
+       'cdecl(powerup*,contactGameData*); requires thrown+30, preserves contact-reference+38 grace while age+34 below1sec; kills grenade with type19', [(15875455, 15861856)]),
+    fn('SporeCoop::Adventure::ArmGrenade', 0xf208f0, '538b5c240c568b74240c57c6', [(15862061, 0)],
+       'cdecl(powerup*,contactReferenceGameData*); sets thrown+30, age+34=0, retains reference+38; native throwing controller D7F9C0 passes acting captain through F20A70', []),
+    fn('SporeCoop::Adventure::StartBombFuse', 0xf210c0, '83ec0c568b7424148b068b50', [(15864203, 0)],
+       'cdecl(powerup*); native timed-bomb movement/fuse creation from properties, queues callback F20810', [(15864190, 15860256)]),
+    fn('SporeCoop::Adventure::ExplodePowerup', 0xf24730, '83ec2853568b7424348b068b', [(15878415, 0)],
+       'cdecl(powerup*,combatantAttacker*); authored class radius+498/damage+49C and property force, FX, blast, drop, destroy; no contents creation', [(15878252, 15866880), (15878366, 15877504), (15878379, 15872240), (15878404, 11674976)]),
+    fn('SporeCoop::Adventure::ExplosionRadius', 0xf24580, 'f30f1044241083ec180f2e05', [(15877585, 0), (15877929, 0)],
+       'cdecl(sourceGameData*,combatantAttacker*,float damage,float radius,float force); native sphere selection and falloff; radiuszero direct path', [(15877854, 15863632)]),
+    fn('SporeCoop::Adventure::ExplosionUnownedRadius', 0xf230f0, '83ec14c7042400000000c744', [(15872359, 0)],
+       'cdecl(sourceGameData*,Vec3* center,float damage,float radius,float force); native sphere selection and same falloff helper', [(15872340, 15863632)]),
+    fn('SporeCoop::Adventure::TickPowerupTimers', 0xf20390, '518b0d1c836c0156e8230df1', [(15860762, 0)],
+       'cdecl(float seconds); advances global scenario delayed callbacks elapsed+0C, executes callback+10 and releases; pause during group scenes', [(15675692, 15860624)]),
+    fn('SporeCoop::Adventure::TickPowerups', 0xf24c40, '83ec1c535657e835f4ffffe8', [(15879827, 0)],
+       'cdecl(float seconds); native powerup/respawner update, grenade age+34 increments F24CF9/F24DF3; pause with group scenes', [(15675704, 15879232), (15879455, 15863232), (15879705, 15863232)]),
+    fn('Simulator::cPhysicsWorld::Get', 0xb3d410, 'a1e8ea6701c3cccccccccccc', [(11785237, 0)],
+       'cdecl()->physics singleton167EAE8', []),
+    fn('Simulator::cPhysicsWorld::ApplyImpulse', 0xb453f0, '83ec08578bf9837f2000751e', [(11818007, 12), (11818059, 12), (11818137, 12)],
+       'thiscall(physics,spatial*,Vec3* impulse,bool); ret0C; native throw D7FCCD..D7FCD4 and explosion F20749..F20750 use same impulse dispatch', [(14154964, 11817968), (15861584, 11817968)]),
+    fn('SporeCoop::Adventure::GrenadeThrowReference', 0xf20a70, '8b4c240485c9742c8b018b50', [(15862436, 0)],
+       'cdecl(object*,actingCaptain*); concrete interactive ornament cast, grenade13 then tailjump ArmGrenade; native D7F9C0 passes EDI captain', [(14154187, 15862384)]),
+    fn('App::Property::GetFloat', 0x4e1ce0, '558bec83ec08837d08007428', [(5119258, 0)],
+       'cdecl(PropertyList*,uint32,float default)->float; ret; native boost property reader', [(15871724, 5119200)]),
+    fn('SporeCoop::Adventure::ActivateMedKit', 0xf225e0, '83ec445355568b742458d986', [(15869936, 0)],
+       'cdecl(powerup*,captain*); native heals collector plus posse, emits collect then destroys, do not replay wholesale in coop', [(15875636, 15869408)]),
+    fn('SporeCoop::Adventure::ActivateSpeedBoost', 0xf22ed0, '83ec08d9ee5355568b742418', [],
+       'cdecl(powerup*,captain*); speed modifier7, duration property; tailjmp UpdateGoals atF230E8; native also iterates posse', [(15875708, 15871696), (15871746, 12636704)]),
+    fn('SporeCoop::Adventure::ActivateDamageBoost', 0xf22c20, '83ec10d9ee5355568b742420', [],
+       'cdecl(powerup*,captain*); amountB14/flagB10, native expiry refresh; tailjmp UpdateGoals F22EC2; also iterates posse', [(15875740, 15871008)]),
+    fn('SporeCoop::Adventure::ActivateArmorBoost', 0xf22970, '83ec10d9ee5355568b742420', [],
+       'cdecl(powerup*,captain*); amountB1C/flagB18, native expiry refresh; tailjmp UpdateGoals F22C12; also iterates posse', [(15875772, 15870320)]),
+    fn('SporeCoop::Adventure::ActivateTeleporter', 0xf23280, '83ec34578b7c244080bf600e', [(15873193, 0)],
+       'cdecl(powerup*,captain*); native E60 cooldown2s, destination query plus owner cleanup, then also teleports posse', [(15875790, 15872640), (15872722, 15864288), (15872962, 15872464)]),
+    fn('SporeCoop::Adventure::TeleportDestination', 0xf211e0, '83ec0c5355568b74241c578d', [(15864441, 0), (15864506, 0)],
+       'cdecl(powerup*,Vec3* position,Quat* orientation)->bool AL; native authored exit query, rejects colocated/invalid exit', [(15872722, 15864288)]),
+    fn('SporeCoop::Adventure::TeleportCaptain', 0xf231d0, '8b44240c83ec0c5657508d4c', [(15872625, 0)],
+       'cdecl(powerup*,captain*,Vec3*,Quat*,bool playerEffect); owner-only native clamp, teleport, clear locomotion history and stop, effect', [(15872962, 15872464)]),
+    fn('SporeCoop::Adventure::PickupEffect', 0xf22500, '83ec38538b5c244456578b7c', [(15869394, 0)],
+       'cdecl(captain*,uint32 effect); get/create creature effect and scale to captain; collector-only visual helper', [(15871230, 15869184)]),
+    fn('SporeCoop::Adventure::OnCollect', 0xf1bcf0, '83ec1c83b99000000003890c', [(15843057, 8)],
+       'thiscall(play*,object*,captain*); ret8; native collect/use objective bookkeeping', [(15869880, 15842544)]),
+    fn('SporeCoop::Adventure::SetSpeedModifier', 0xc0d220, '8b54240453568bf183fa0873', [(12636943, 8)],
+       'thiscall(captain*,int modifier,bool enabled); ret8; modifier7 native speed boost flag and recalculation', [(15871746, 12636704)]),
     fn('SporeCoop::Adventure::HandlePlayMessage', 0xF1C570, '8b44240483ec10535556578b',
        [(0xF1C757,8),(0xF1C787,8),(0xF1C9B4,8)],
        'thiscall(play,uint32 messageID,void* payload)->bool, ret8; intro044F1189 directly writes state3, results070B18C7 payload+8=2 calls in-place replay',
@@ -364,6 +424,9 @@ def verify(pe):
             raw = pe.read(site, 5)
             if not raw or raw[0] != 0xE8 or site + 5 + struct.unpack('<i', raw[1:])[0] != target:
                 raise ValueError(entry['name'] + ': call edge mismatch at ' + hex(site))
+        for table, slot, target in entry.get('vslots', ()):
+            if pe.u32(table + slot) != target:
+                raise ValueError(entry['name'] + ': vtable slot mismatch at ' + hex(table + slot))
         evidence.append(entry)
     for entry in GLOBALS:
         va = entry['address']

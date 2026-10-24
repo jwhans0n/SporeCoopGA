@@ -34,6 +34,7 @@ struct Ctx {
     std::function<bool()> paused;
     std::function<void*(uint8_t)> captain_of;
     std::function<void(bool)> native_result;
+    std::function<float(uint8_t, float)> incoming_damage;
     // Sample captain positions/max HP without modifying game state. The host samples all
     // captains; each client supplies its own validated seed in its loaded acknowledgement.
     std::function<bool(uint8_t, ga::CaptainSeed&)> sample;

@@ -109,6 +109,8 @@ int main()
     bool success = false;
     std::vector<std::string> notices;
     std::vector<ga::Captain> latest;
+    float shield_divisor=1;
+    unsigned shield_calls=0;
     int objects[4]{};
     adventure::Ctx ctx;
     ctx.sess = &host;
@@ -136,6 +138,7 @@ int main()
         return true;
     };
     ctx.apply = [&](const std::vector<ga::Captain>& captains) { latest = captains; };
+    ctx.incoming_damage = [&](uint8_t, float amount) { ++shield_calls; return amount/shield_divisor; };
     ctx.source = [](void*, void*, int, ga::Source& source) { source = {ga::SourceKind::HostileActor, ga::kNoPlayer}; return true; };
     CHECK(adventure::init(&api, nullptr, ctx));
     const dbpf::Key key{123, 0x366A930D, 456};
@@ -183,6 +186,18 @@ int main()
     CHECK(adventure::running() && results == 0); // clients cannot award or end a host run
     CHECK(adventure::captain_state(1, state) && state.captain.health == 100 && state.run_id == first.run_id);
     CHECK(state.automatic_remaining == -1 && state.revive_progress == 0);
+
+    // Remote environmental hits and the local native damage path share exactly
+    // one shield calculation before captain authority. Healing bypasses it.
+    shield_divisor=2;
+    CHECK(adventure::captain_damage(2,{ga::SourceKind::Environment,ga::kNoPlayer},20)); drain();
+    CHECK(adventure::captain_state(2,state) && state.captain.health==90 && shield_calls==1);
+    float shield_hit=20;
+    CHECK(!adventure::damage_filter(&objects[2],shield_hit,0,nullptr)); drain();
+    CHECK(adventure::captain_state(2,state) && state.captain.health==80 && shield_calls==2);
+    CHECK(adventure::captain_heal(2,100)); drain();
+    CHECK(adventure::captain_state(2,state) && state.captain.health==100 && shield_calls==2);
+    shield_divisor=1;
 
     float amount = 100;
     CHECK(!adventure::damage_filter(&objects[1], amount, 0, nullptr)); drain();

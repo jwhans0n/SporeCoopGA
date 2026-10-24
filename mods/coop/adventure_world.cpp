@@ -5,6 +5,7 @@
 #include "adventure_relationships.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -57,7 +58,7 @@ static unsigned g_goal_hud_refreshes;
 static bool g_goal_hud_dirty;
 constexpr uint32_t kSpatial = 0x01186577, kCombatant = 0x013F94D4, kCreature = 0xCE9F6639;
 constexpr size_t kMaxActors = 2048, kMaxGoals = 3;
-enum Kind : uint8_t { Actors = 128, Goals = 129, Hit = 130, CaptainHit = 131, Interaction = 132, GoalEvent = 133, Roster = 134, SocialComplete = 135 };
+enum Kind : uint8_t { Actors = 128, Goals = 129, Hit = 130, CaptainHit = 131, Interaction = 132, GoalEvent = 133, Roster = 134, SocialComplete = 135, StaticActors = 136 };
 enum Action : uint8_t { PickUp, Drop, Give, Unlock };
 
 struct Identity {
@@ -70,6 +71,7 @@ struct NativeActor {
     void* combatant = nullptr;
     uint32_t marker = 0, incarnation = 0, noun = 0;
     uint8_t powerup_kind = 0;
+    bool static_candidate = false;
 };
 struct ActorState {
     Identity id{};
@@ -81,6 +83,7 @@ struct ActorState {
     int32_t party_relationship = -1; // native enum 0..7, -1 unavailable
     uint32_t sequence = 0;
     double seen = 0;
+    bool static_actor = false;
 };
 struct Binding { void* object; uint32_t incarnation; int act = -1; };
 static std::vector<NativeActor> g_native;
@@ -104,6 +107,20 @@ struct DamageSource { uint32_t victim_incarnation; ga::Source source; double tim
 static std::map<void*, DamageSource> g_last_source;
 static uint32_t g_roster_sequence;
 static std::set<Identity> g_roster_live;
+struct StaticHostActor { ActorState state, initial; bool promoted = false; };
+struct StaticSent { ActorState state; bool promoted = false; };
+static std::map<Identity, StaticHostActor> g_static_host;
+static std::map<uint8_t, std::map<Identity, StaticSent>> g_static_sent;
+static std::map<uint8_t, Identity> g_static_cursor;
+// Reliable baselines can precede the queued native act change. Retain each
+// bounded act independently until its native SetCurrentAct has completed.
+static std::array<std::map<Identity, ActorState>, 8> g_static_pending;
+static int g_static_act = -1;
+struct ReplicationStats {
+    uint64_t static_bytes = 0, dynamic_bytes = 0, baselines = 0, state_updates = 0, promotions = 0, deferred = 0;
+    size_t static_actors = 0, dynamic_actors = 0;
+};
+static ReplicationStats g_replication_stats;
 
 using Check_t = void(SK_THISCALL*)(void*);
 using Goals_t = bool(SK_THISCALL*)(void*);
@@ -129,6 +146,9 @@ static thread_local void* g_override_avatar;
 
 static bool goals_vector(uint8_t*, uint8_t*&, size_t&);
 static void observe_native_attempt(uint64_t);
+static void reset_replication();
+static int item_slot(void*, void*, bool);
+static bool same_pose(const ActorState&, const ActorState&);
 
 static bool host() { return C.sess && C.sess->role() == net::Role::Host; }
 static bool active()
@@ -247,8 +267,17 @@ static void enumerate()
         if (combatant && !skg::readable(combatant, 0x3C)) combatant = nullptr;
         void* powerup=powerup_for(object);
         int kind=powerup ? skg::field<int>(powerup,4) : 0;
+        // These common Cast interfaces are already used by the verified native
+        // action adapters. Runtime creatures/vehicles win over authored disguises.
+        bool stationary = !game::cast(object, kCreature) && !game::cast(object, 0x0137E8E0) &&
+            (game::cast(object, 0x0E9CB8BA) || game::cast(object, 0x0175CDC9) || game::cast(object, 0x03A25119));
+        // A grenade has independent flight/contact state even before its first
+        // observed movement. Never move it onto the stationary path.
+        if (kind == 10 || kind == 13 || (powerup && skg::field<bool>(powerup, 0x30))) stationary = false;
+        if (stationary && C.captain_of && C.sess) for (const auto& player : C.sess->players())
+            if (item_slot(C.captain_of(player.id), spatial, false) >= 0) { stationary = false; break; }
         g_native.push_back({object, spatial, combatant, marker, skg::field<uint32_t>(object, 0x24), noun,
-            uint8_t(kind>=1 && kind<=15 ? kind : 0)});
+            uint8_t(kind>=1 && kind<=15 ? kind : 0), stationary});
         return true;
     }, nullptr);
 }
@@ -374,6 +403,7 @@ static void SK_THISCALL picked_item(void* self, void* holder, void* item)
 }
 static void SK_THISCALL dropped_item(void* self, void* holder, void* item)
 {
+    if (C.explosive_visual && C.explosive_visual()) return;
     if (active() && !g_applying) {
         uint8_t player = owner(holder); Identity id;
         if (player != ga::kNoPlayer && identity(item, id)) {
@@ -547,8 +577,13 @@ static void SK_THISCALL set_state(void* self, int state)
 static void apply_actor(NativeActor& actor, const ActorState& state)
 {
     g_applying = true;
-    skg::vcall<void>(actor.spatial, 0x38 / 4, &state.position);
-    skg::vcall<void>(actor.spatial, 0x3C / 4, &state.orientation);
+    ActorState local;
+    local.position = skg::field<net::Vec3>(actor.spatial, 4);
+    local.orientation = skg::field<net::Quat>(actor.spatial, 0x10);
+    if (!state.static_actor || !same_pose(local, state)) {
+        skg::vcall<void>(actor.spatial, 0x38 / 4, &state.position);
+        skg::vcall<void>(actor.spatial, 0x3C / 4, &state.orientation);
+    }
     if (actor.combatant && (state.flags & 1)) {
         float current = skg::field<float>(actor.combatant, 0x38);
         skg::field<float>(actor.combatant, 0x2C) = state.max_tuning;
@@ -649,12 +684,130 @@ static void scale_health(NativeActor& actor, int act)
                                 factor, [&] { return max_health(actor.combatant); });
 }
 
+static bool same_pose(const ActorState& a, const ActorState& b)
+{
+    float dx = a.position.x - b.position.x, dy = a.position.y - b.position.y, dz = a.position.z - b.position.z;
+    if (dx * dx + dy * dy + dz * dz > 1e-8f) return false;
+    const auto& p = a.orientation; const auto& q = b.orientation;
+    float pn = p.x*p.x + p.y*p.y + p.z*p.z + p.w*p.w;
+    float qn = q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w;
+    float dot = p.x*q.x + p.y*q.y + p.z*q.z + p.w*q.w;
+    // q and -q represent the same orientation. Compare to the original published
+    // pose, rather than the previous sample, so slow movement accumulates.
+    if (pn > 1e-8f && qn > 1e-8f) return dot * dot >= pn * qn * (1.f - 2e-7f);
+    return p.x == q.x && p.y == q.y && p.z == q.z && p.w == q.w;
+}
+
+static bool same_gameplay(const ActorState& a, const ActorState& b)
+{
+    return a.noun == b.noun && a.health == b.health && a.maximum == b.maximum &&
+        a.max_tuning == b.max_tuning && a.flags == b.flags && a.party_relationship == b.party_relationship;
+}
+
+static void write_pose(net::Writer& w, const ActorState& state)
+{
+    w.f32(state.position.x); w.f32(state.position.y); w.f32(state.position.z);
+    w.f32(state.orientation.x); w.f32(state.orientation.y); w.f32(state.orientation.z); w.f32(state.orientation.w);
+}
+
+static void write_gameplay(net::Writer& w, const ActorState& state)
+{
+    w.f32(state.health); w.f32(state.maximum); w.f32(state.max_tuning); w.u8(state.flags);
+    w.u8(state.party_relationship >= 0 && state.party_relationship <= 7 ? uint8_t(state.party_relationship) : 0xFF);
+}
+
+static ActorState sample_actor(NativeActor& actor, int act)
+{
+    scale_health(actor, act);
+    ActorState state;
+    state.id = {actor.marker, actor.incarnation}; state.noun = actor.noun; state.sequence = g_sequence;
+    state.position = skg::field<net::Vec3>(actor.spatial, 4);
+    state.orientation = skg::field<net::Quat>(actor.spatial, 0x10);
+    state.health = actor.combatant ? skg::field<float>(actor.combatant, 0x38) : 0;
+    state.maximum = max_health(actor.combatant);
+    state.max_tuning = actor.combatant ? skg::field<float>(actor.combatant, 0x2C) : 0;
+    if (!std::isfinite(state.health) || !std::isfinite(state.maximum) || !std::isfinite(state.max_tuning) ||
+        state.maximum < 0 || state.max_tuning < 0) state.health = state.maximum = state.max_tuning = 0;
+    state.health = std::clamp(state.health, 0.f, state.maximum);
+    state.flags = actor.combatant ? uint8_t(1 | (state.health <= 0 ? 2 : 0)) : 0;
+    state.flags |= uint8_t(actor.powerup_kind << 4);
+    void* creature = game::cast(actor.object, kCreature);
+    if (creature && (skg::field<uint32_t>(creature, 0xB58) & 0x80)) state.flags |= 4;
+    void* relationships = creature && a_Relationships ? skg::cdecl_call<void*>(a_Relationships) : nullptr;
+    if (relationships) adventure_relationships::query_local_party(relationships,
+        static_cast<uint8_t*>(creature) + 0xB28, creature, state.party_relationship);
+    if (state.party_relationship < 0 || state.party_relationship > 7) state.party_relationship = -1;
+    return state;
+}
+
+static void send_static_actors(int act)
+{
+    constexpr size_t kPendingLimit = 64, kBatchesPerTick = 4, kChunkActors = 12;
+    std::set<uint8_t> peers;
+    for (const auto& player : C.sess->players()) if (player.id) {
+        peers.insert(player.id);
+        auto& sent = g_static_sent[player.id];
+        for (auto it = sent.begin(); it != sent.end();)
+            if (!g_static_host.count(it->first)) it = sent.erase(it); else ++it;
+        size_t batches = 0;
+        auto cursor = g_static_cursor.find(player.id);
+        auto it = cursor == g_static_cursor.end() ? g_static_host.begin() : g_static_host.upper_bound(cursor->second);
+        if (it == g_static_host.end()) it = g_static_host.begin();
+        size_t remaining = g_static_host.size();
+        while (remaining && batches < kBatchesPerTick) {
+            if (C.sess->pending_to(player.id) >= kPendingLimit) { ++g_replication_stats.deferred; break; }
+            net::Writer w; w.u8(StaticActors); put_run(w, g_run); w.u32(g_sequence); w.u8(uint8_t(act));
+            size_t count_offset = w.size(); w.u8(0);
+            std::vector<std::pair<Identity, StaticSent>> updates;
+            uint64_t baselines = 0, changes = 0;
+            while (remaining && updates.size() < kChunkActors) {
+                auto candidate = it++;
+                if (it == g_static_host.end()) it = g_static_host.begin();
+                --remaining;
+                // Resume after the last examined identity next tick. Frequently
+                // changing early actors cannot monopolize the bounded budget.
+                g_static_cursor[player.id] = candidate->first;
+                const auto& entry = candidate->second;
+                auto previous = sent.find(candidate->first);
+                bool initial = previous == sent.end();
+                bool promotion = entry.promoted && (initial || !previous->second.promoted);
+                if (entry.promoted && !promotion) continue;
+                if (!initial && !promotion && same_gameplay(previous->second.state, entry.state)) continue;
+                // Full records seed reconstruction and reliably settle promotion.
+                // State-only records never overwrite the retained transform.
+                uint8_t fields = promotion ? 2 : initial ? 1 : 0;
+                write_identity(w, candidate->first); w.u8(fields); w.u32(entry.state.noun);
+                if (fields) write_pose(w, entry.state);
+                write_gameplay(w, entry.state);
+                updates.push_back({candidate->first, {entry.state, entry.promoted}});
+                if (fields) ++baselines; else ++changes;
+            }
+            if (updates.empty()) break;
+            w.data[count_offset] = uint8_t(updates.size());
+            if (!C.sess->send_reliable_to(player.id, net::MSG_ADVENTURE, w)) break;
+            for (const auto& update : updates) sent[update.first] = update.second;
+            g_replication_stats.static_bytes += w.size();
+            g_replication_stats.baselines += baselines; g_replication_stats.state_updates += changes;
+            ++batches;
+        }
+    }
+    for (auto it = g_static_sent.begin(); it != g_static_sent.end();)
+        if (!peers.count(it->first)) it = g_static_sent.erase(it); else ++it;
+    for (auto it = g_static_cursor.begin(); it != g_static_cursor.end();)
+        if (!peers.count(it->first)) it = g_static_cursor.erase(it); else ++it;
+}
+
 static void send_actors()
 {
     // Health field writes do not change mappings. All native calls are getters.
     skg::ReadOnlyMemoryScope memory;
     int act = play() ? skg::field<int>(play(), 0xB8) : 0;
     ++g_sequence;
+    if (g_static_act != act) {
+        g_static_act = act; g_static_host.clear(); g_static_sent.clear(); g_static_cursor.clear();
+    }
+    std::set<Identity> live;
+    g_replication_stats.static_actors = g_replication_stats.dynamic_actors = 0;
     net::Writer w;
     size_t count_offset = 0;
     uint8_t count = 0;
@@ -666,36 +819,34 @@ static void send_actors()
     auto flush = [&] {
         if (!count) return;
         w.data[count_offset] = count;
-        for (const auto& player : C.sess->players()) if (player.id) C.sess->send_unreliable_to(player.id, net::MSG_ADVENTURE, w);
+        for (const auto& player : C.sess->players()) if (player.id && C.sess->send_unreliable_to(player.id, net::MSG_ADVENTURE, w))
+            g_replication_stats.dynamic_bytes += w.size();
     };
     begin();
     for (auto& actor : g_native) {
-        scale_health(actor, act);
-        const auto& pos = skg::field<net::Vec3>(actor.spatial, 4);
-        const auto& rot = skg::field<net::Quat>(actor.spatial, 0x10);
-        if (!finite(pos)) continue;
+        ActorState state = sample_actor(actor, act);
+        if (!finite(state.position) || !std::isfinite(state.orientation.x) || !std::isfinite(state.orientation.y) ||
+            !std::isfinite(state.orientation.z) || !std::isfinite(state.orientation.w)) continue;
+        live.insert(state.id);
+        auto tracked = g_static_host.find(state.id);
+        if (actor.static_candidate || tracked != g_static_host.end()) {
+            if (tracked == g_static_host.end()) tracked = g_static_host.emplace(state.id, StaticHostActor{state, state, false}).first;
+            auto& entry = tracked->second;
+            if (!entry.promoted && (!actor.static_candidate || !same_pose(entry.initial, state))) {
+                entry.promoted = true; ++g_replication_stats.promotions;
+            }
+            entry.state = state;
+            if (!entry.promoted) { ++g_replication_stats.static_actors; continue; }
+        }
+        ++g_replication_stats.dynamic_actors;
         if (count >= 12) { flush(); begin(); }
-        w.u32(actor.marker); w.u32(actor.incarnation); w.u32(actor.noun);
-        w.f32(pos.x); w.f32(pos.y); w.f32(pos.z);
-        w.f32(rot.x); w.f32(rot.y); w.f32(rot.z); w.f32(rot.w);
-        float hp = actor.combatant ? skg::field<float>(actor.combatant, 0x38) : 0;
-        float maximum = max_health(actor.combatant);
-        float tuning = actor.combatant ? skg::field<float>(actor.combatant, 0x2C) : 0;
-        if (!std::isfinite(hp) || !std::isfinite(maximum) || !std::isfinite(tuning) || maximum < 0 || tuning < 0) hp = maximum = tuning = 0;
-        hp = std::clamp(hp, 0.f, maximum);
-        uint8_t flags = actor.combatant ? (uint8_t)(1 | (hp <= 0 ? 2 : 0)) : 0;
-        void* creature = game::cast(actor.object, kCreature);
-        if (creature && (skg::field<uint32_t>(creature, 0xB58) & 0x80)) flags |= 4;
-        flags|=uint8_t(actor.powerup_kind<<4);
-        w.f32(hp); w.f32(maximum); w.f32(tuning); w.u8(flags);
-        int relationship = -1;
-        void* relationships = creature ? skg::cdecl_call<void*>(a_Relationships) : nullptr;
-        if (relationships) adventure_relationships::query_local_party(relationships,
-            static_cast<uint8_t*>(creature) + 0xB28, creature, relationship);
-        w.u8(relationship >= 0 && relationship <= 7 ? static_cast<uint8_t>(relationship) : 0xFF);
+        write_identity(w, state.id); w.u32(state.noun); write_pose(w, state); write_gameplay(w, state);
         ++count;
     }
     flush();
+    for (auto it = g_static_host.begin(); it != g_static_host.end();)
+        if (!live.count(it->first)) it = g_static_host.erase(it); else ++it;
+    send_static_actors(act);
 }
 
 static bool goals_vector(uint8_t* p, uint8_t*& begin, size_t& count)
@@ -994,6 +1145,42 @@ static void apply_roster(void* argument)
 }
 
 static uint32_t g_received_goals;
+static bool valid_actor_state(const ActorState& state, bool pose)
+{
+    return (!pose || (finite(state.position) && std::isfinite(state.orientation.x) && std::isfinite(state.orientation.y) &&
+        std::isfinite(state.orientation.z) && std::isfinite(state.orientation.w))) &&
+        std::isfinite(state.health) && std::isfinite(state.maximum) && std::isfinite(state.max_tuning) &&
+        state.health >= 0 && state.maximum >= 0 && state.health <= state.maximum && state.max_tuning >= 0 &&
+        state.max_tuning <= 1e9f && state.maximum <= 1e9f && !(state.flags & 8) &&
+        state.party_relationship >= -1 && state.party_relationship <= 7;
+}
+
+static void merge_actor_state(const ActorState& state, std::map<Identity, ActorState>& destination, bool full, bool current)
+{
+    if (g_retired_items.count(state.id)) return;
+    if (current && state.sequence < g_roster_sequence && !g_roster_live.count(state.id)) return;
+    auto previous = destination.find(state.id);
+    if (previous != destination.end() && (int32_t)(state.sequence - previous->second.sequence) <= 0) return;
+    if (previous == destination.end() && (!full || destination.size() >= kMaxActors)) return;
+    ActorState merged = state;
+    if (!full) {
+        if (previous->second.noun != state.noun) return;
+        merged.position = previous->second.position; merged.orientation = previous->second.orientation;
+    }
+    merged.seen = H->time_seconds();
+    destination[state.id] = merged;
+}
+
+static void apply_pending_static(uint8_t act)
+{
+    if (act >= g_static_pending.size()) return;
+    for (const auto& [id, state] : g_static_pending[act]) {
+        (void)id;
+        merge_actor_state(state, g_remote, true, true);
+    }
+    for (size_t i = 0; i <= act; ++i) g_static_pending[i].clear();
+}
+
 struct GoalTask { uint64_t run; uint32_t sequence, time; int32_t remaining; uint8_t act, state; std::vector<std::pair<bool, uint32_t>> goals; };
 static void refresh_goal_hud()
 {
@@ -1021,6 +1208,7 @@ static void apply_goals(void* arg)
         g_roster_live.clear(); g_roster_parts.clear(); g_roster_received.clear();
         g_spawn_attempt.clear(); g_markers.clear(); g_world_error.clear();
     }
+    apply_pending_static(task->act);
     uint8_t* goals; size_t count;
     if (goals_vector(p, goals, count) && count == task->goals.size()) {
         for (size_t i = 0; i < count; ++i) {
@@ -1044,6 +1232,10 @@ void on_message(uint8_t from, net::Reader& r)
 {
     uint8_t kind = r.u8(); uint64_t id = get_run(r);
     if (!r.ok() || !active() || id != run()) return;
+    // The reliable commit and first actor baseline can arrive in one receive
+    // pump, before tick observes the new run. Initialize before caching either
+    // message so that the next tick cannot erase an already acknowledged baseline.
+    if (g_run != id) { reset_replication(); g_run = id; }
     if (kind == Roster && !host() && !from) {
         uint32_t sequence = r.u32(); uint8_t act = r.u8(); uint16_t total = r.u16(), first = r.u16(); uint8_t count = r.u8();
         if (!r.ok() || !play() || act != skg::field<int>(play(), 0xB8) || total > kMaxActors || count > 80 ||
@@ -1083,6 +1275,33 @@ void on_message(uint8_t from, net::Reader& r)
             (task->type != 4 && task->type != 5) || !C.captain_can_act || !C.captain_can_act(from)) return;
         g_last_interaction[from] = event;
         H->run_outside_frame(apply_social_completion, task.release());
+    } else if (kind == StaticActors && !host() && from == 0) {
+        uint32_t sequence = r.u32(); uint8_t act = r.u8(), count = r.u8();
+        if (!r.ok() || act >= 8 || count > 12 || !play()) return;
+        int current_act = skg::field<int>(play(), 0xB8);
+        if (act < current_act) return;
+        struct Update { ActorState state; bool full; };
+        std::vector<Update> updates;
+        for (uint8_t i = 0; i < count; ++i) {
+            ActorState state; state.id = read_identity(r); uint8_t fields = r.u8(); state.noun = r.u32();
+            if (fields > 2) return;
+            bool full = fields != 0;
+            if (full) {
+                state.position = {r.f32(), r.f32(), r.f32()};
+                state.orientation = {r.f32(), r.f32(), r.f32(), r.f32()};
+            }
+            state.health = r.f32(); state.maximum = r.f32(); state.max_tuning = r.f32(); state.flags = r.u8();
+            uint8_t relationship = r.u8();
+            if (relationship != 0xFF && relationship > 7) return;
+            state.party_relationship = relationship == 0xFF ? -1 : relationship;
+            state.sequence = sequence; state.static_actor = fields != 2;
+            if (!r.ok() || !valid_actor_state(state, full)) return;
+            updates.push_back({state, full});
+        }
+        if (r.left()) return;
+        auto& destination = act == current_act ? g_remote : g_static_pending[act];
+        for (const auto& update : updates) merge_actor_state(update.state, destination, update.full, act == current_act);
+        ++g_snapshots;
     } else if (kind == Actors && !host() && from == 0) {
         uint32_t sequence = r.u32(); uint8_t act = r.u8(), count = r.u8();
         if (count > 12 || !play() || act != skg::field<int>(play(), 0xB8)) return;
@@ -1095,22 +1314,11 @@ void on_message(uint8_t from, net::Reader& r)
             uint8_t relationship = r.u8();
             if (relationship != 0xFF && relationship > 7) return;
             state.party_relationship = relationship == 0xFF ? -1 : relationship;
-            if (!r.ok() || !finite(state.position) || !std::isfinite(state.orientation.x) || !std::isfinite(state.orientation.y) ||
-                !std::isfinite(state.orientation.z) || !std::isfinite(state.orientation.w) || !std::isfinite(state.health) ||
-                !std::isfinite(state.maximum) || !std::isfinite(state.max_tuning) || state.health < 0 || state.maximum < 0 || state.health > state.maximum ||
-                state.max_tuning < 0 || state.max_tuning > 1e9f || state.maximum > 1e9f || (state.flags & 8)) return;
+            if (!r.ok() || !valid_actor_state(state, true)) return;
             states.push_back(state);
         }
         if (r.left()) return;
-        for (const auto& state : states) {
-            if(g_retired_items.count(state.id)) continue;
-            if (sequence < g_roster_sequence && !g_roster_live.count(state.id)) continue;
-            auto it = g_remote.find(state.id);
-            if (it != g_remote.end() && (int32_t)(sequence - it->second.sequence) <= 0) continue;
-            if (it == g_remote.end() && g_remote.size() >= kMaxActors) continue;
-            g_remote[state.id] = state;
-            g_remote[state.id].seen = H->time_seconds();
-        }
+        for (const auto& state : states) merge_actor_state(state, g_remote, true, true);
         ++g_snapshots;
     } else if (kind == Goals && !host() && from == 0) {
         auto task = std::make_unique<GoalTask>(); task->run = id; task->sequence = r.u32();
@@ -1161,6 +1369,7 @@ void on_message(uint8_t from, net::Reader& r)
 bool source(void* victim, void* attacker, int type, ga::Source& out)
 {
     if (!active()) return false;
+    if (C.explosive_environment && C.explosive_environment()) { out = {}; return true; }
     out = {};
     uint8_t player = owner(attacker);
     if (player != ga::kNoPlayer) { out.kind = ga::SourceKind::Captain; out.owner = player; }
@@ -1179,7 +1388,9 @@ bool source(void* victim, void* attacker, int type, ga::Source& out)
 
 bool damage_filter(void* victim, float& damage, int type, void* attacker)
 {
+    if (C.explosive_visual && C.explosive_visual()) return false;
     if(active() && C.held && C.held()) return false;
+    if (active() && C.explosive_environment && C.explosive_environment()) return true;
     if (!active() || g_applying) return true;
     uint8_t victim_owner = owner(victim);
     ga::Source attribution; source(victim, attacker, type, attribution);
@@ -1289,6 +1500,9 @@ static void reset_replication()
     g_opened_gates.clear(); g_retired_items.clear(); g_talk_cleanup=g_talk_presenting=g_talk_committing=false;
     g_last_source.clear();
     g_markers.clear(); g_roster_sequence = 0; g_roster_parts.clear(); g_roster_received.clear(); g_roster_live.clear();
+    g_static_host.clear(); g_static_sent.clear(); g_static_cursor.clear(); g_static_act = -1;
+    for (auto& pending : g_static_pending) pending.clear();
+    g_replication_stats = {};
     g_spawn_attempt.clear(); g_world_error.clear();
     g_goal_hud_dirty = false; g_goal_hud_refreshes = 0;
     adventure_world_vehicles::reset();
@@ -1299,6 +1513,12 @@ void reset()
 {
     reset_replication();
     g_native_result = {};
+}
+
+void peer_changed(uint8_t player)
+{
+    g_static_sent.erase(player);
+    g_static_cursor.erase(player);
 }
 
 void tick(double now)
@@ -1395,6 +1615,62 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
 }
 
 bool available() { return g_ok; }
+adventure_pickups::Ctx pickups_context()
+{
+    adventure_pickups::Ctx context;
+    context.sess=C.sess; context.run=run;
+    context.act=[] { auto* p=play(); return p ? skg::field<int>(p,0xB8) : -1; };
+    context.active=active; context.held=C.held; context.simulation_time=C.simulation_time;
+    context.captain_of=C.captain_of; context.captain_can_act=C.captain_can_act;
+    context.identity=[](void* object,adventure_pickups::Identity& output) {
+        enumerate(); Identity id; if(!identity(object,id)) return false;
+        output={id.marker,id.incarnation}; return true;
+    };
+    context.object_for=[](adventure_pickups::Identity id) { enumerate(); return object_for({id.marker,id.incarnation}); };
+    context.retire=[](adventure_pickups::Identity id) {
+        Identity key{id.marker,id.incarnation}; g_retired_items.insert(key); g_remote.erase(key); g_bindings.erase(key);
+    };
+    context.captain_heal=C.captain_heal; context.teleport=C.teleport;
+    context.failed=C.interaction_failed;
+    return context;
+}
+adventure_explosives::Ctx explosives_context()
+{
+    adventure_explosives::Ctx context;
+    context.sess=C.sess; context.run=run;
+    context.act=[] { auto* p=play(); return uint8_t(p ? std::clamp(skg::field<int>(p,0xB8),0,7) : 0); };
+    context.active=active; context.held=C.held;
+    context.identify=[](void* object,adventure_explosives::Identity& output) {
+        enumerate(); Identity id; if(!identity(object,id)) return false;
+        output={id.marker,id.incarnation}; return true;
+    };
+    context.object=[](adventure_explosives::Identity id) { enumerate(); return object_for({id.marker,id.incarnation}); };
+    context.powerup=powerup_for;
+    context.combatant=[](void* object) { return game::cast(object,kCombatant); };
+    context.from_spatial=object_from_spatial; context.captain=C.captain_of;
+    context.owner=owner; context.can_act=C.captain_can_act; context.nearby=nearby;
+    context.bounds=[](void* object,net::Vec3& minimum,net::Vec3& maximum) {
+        void* spatial=game::cast(object,kSpatial);
+        if(!spatial) return false;
+        struct Box { net::Vec3 minimum,maximum; } box;
+        skg::vcall<Box*>(spatial,0x6C/4,&box);
+        if(!finite(box.minimum) || !finite(box.maximum)) return false;
+        minimum=box.minimum; maximum=box.maximum; return true;
+    };
+    context.failed=C.interaction_failed;
+    context.owns_throw=[](uint8_t player,void* item) {
+        if(!C.captain_of) return false;
+        void* spatial=game::cast(item,kSpatial);
+        if(spatial && item_slot(C.captain_of(player),spatial,false)>=0) return true;
+        Identity id; if(!identity(item,id)) return false;
+        auto it=g_dropped.find(id);
+        return it!=g_dropped.end() && it->second.first==player && H->time_seconds()-it->second.second<=2.0;
+    };
+    context.retire=[](adventure_explosives::Identity id) {
+        Identity key{id.marker,id.incarnation}; g_retired_items.insert(key); g_remote.erase(key); g_bindings.erase(key);
+    };
+    return context;
+}
 std::string status(bool verbose)
 {
     char b[360];
@@ -1403,6 +1679,14 @@ std::string status(bool verbose)
              g_snapshots, g_hits, g_goal_updates, C.hostile_to_party || a_Hostile ? "native" : "unavailable",
              (unsigned)g_remote.size(), (unsigned)g_markers.size(), (unsigned)g_roster_live.size());
     std::string summary = b;
+    summary += "static replication: static=" + std::to_string(g_replication_stats.static_actors) +
+        " dynamic=" + std::to_string(g_replication_stats.dynamic_actors) +
+        " static_bytes=" + std::to_string(g_replication_stats.static_bytes) +
+        " dynamic_bytes=" + std::to_string(g_replication_stats.dynamic_bytes) +
+        " baselines=" + std::to_string(g_replication_stats.baselines) +
+        " state_updates=" + std::to_string(g_replication_stats.state_updates) +
+        " promoted=" + std::to_string(g_replication_stats.promotions) +
+        " deferred=" + std::to_string(g_replication_stats.deferred) + "\n";
     summary += "native goal HUD: refreshes=" + std::to_string(g_goal_hud_refreshes) +
                " pending=" + std::to_string(g_goal_hud_dirty ? 1 : 0) + "\n";
     summary += "native result: run=" + std::to_string(g_native_result.run) +
@@ -1430,6 +1714,11 @@ std::string status(bool verbose)
         const auto& pos = skg::field<net::Vec3>(actor.spatial, 4);
         out << "marker=" << actor.marker << " incarnation=" << actor.incarnation << " noun=" << actor.noun
             << " class=" << skg::field<int>(actor.object, 0x1C) << " pos=" << pos.x << "," << pos.y << "," << pos.z;
+        out << " static_candidate=" << (actor.static_candidate ? 1 : 0);
+        if(host()) {
+            auto tracked=g_static_host.find({actor.marker,actor.incarnation});
+            out << " replication=" << (tracked!=g_static_host.end() && !tracked->second.promoted ? "static" : "dynamic");
+        }
         if (actor.combatant) out << " hp=" << skg::field<float>(actor.combatant, 0x38) << " max_hp=" << max_health(actor.combatant)
                                 << " tuning=" << skg::field<float>(actor.combatant, 0x2C) << " hostile=" << (hostile(actor.object) ? 1 : 0);
         if (host()) {
@@ -1449,6 +1738,45 @@ int debug(int argc, const char* const* argv, SkOut* output)
     std::string action = argv[0];
     enumerate();
     auto number = [&](int n) { return n < argc ? std::strtoul(argv[n], nullptr, 0) : 0ul; };
+    if(action=="talk" && argc==4 && C.captain_of) {
+        uint8_t* goals; size_t count; unsigned index=number(1),marker=number(2),player=number(3);
+        auto address=H->sym("SporeCoop::Adventure::TalkBegin");
+        auto actor=std::find_if(g_native.begin(),g_native.end(),[&](const auto& a) { return a.marker==marker; });
+        void* captain=player<net::kMaxPlayers ? C.captain_of(uint8_t(player)) : nullptr;
+        if(!address || !captain || actor==g_native.end() || !goals_vector(play(),goals,count) || index>=count ||
+            skg::field<int>(goals+index*0x1AC,0x24)!=2) {
+            say("A native TalkTo goal, target and captain are required.\n"); return 1;
+        }
+        AvatarScope avatar(captain);
+        skg::thiscall<void>(address,play(),goals+index*0x1AC,actor->object);
+        say("Native conversation requested.\n"); return 0;
+    }
+    if(action=="fuse" && argc==2) {
+        auto address=H->sym("SporeCoop::Adventure::StartBombFuse");
+        auto actor=std::find_if(g_native.begin(),g_native.end(),[&](const auto& a) { return a.marker==number(1); });
+        void* powerup=actor!=g_native.end() ? powerup_for(actor->object) : nullptr;
+        if(!address || !powerup || skg::field<int>(powerup,4)!=10) {
+            say("A native timed bomb is required.\n"); return 1;
+        }
+        skg::cdecl_call<void>(address,powerup);
+        say("Native bomb fuse requested.\n"); return 0;
+    }
+    if(action=="abilityhit" && argc==4 && C.captain_of && C.captain_can_act) {
+        auto address=H->sym("SporeCoop::Adventure::ApplyCreatureAbility");
+        unsigned victim=number(1),attacker=number(2),index=number(3);
+        if(!address || victim>=net::kMaxPlayers || attacker>=net::kMaxPlayers || index>=64 ||
+            !C.captain_can_act(uint8_t(attacker)) || (C.held && C.held())) {
+            say("A verified ability and two participating captains are required.\n"); return 1;
+        }
+        void* source=C.captain_of(uint8_t(attacker));
+        void* target=C.captain_of(uint8_t(victim));
+        void* combatant=game::cast(target,kCombatant); net::Vec3 position;
+        if(!source || !combatant || !game::object_position(target,position)) {
+            say("The native captain combatants are unavailable.\n"); return 1;
+        }
+        skg::thiscall<bool>(address,source,combatant,int(index),&position);
+        say("Native captain ability damage requested.\n"); return 0;
+    }
     if (action == "relations" && argc <= 2 && a_Hostile && C.captain_of) {
         std::ostringstream out; size_t shown = 0;
         for (const auto& actor : g_native) {
@@ -1504,6 +1832,69 @@ int debug(int argc, const char* const* argv, SkOut* output)
         }
         return spawner;
     };
+    if(action=="nudge" && argc==5) {
+        auto* actor=marker_actor(uint32_t(number(1)));
+        net::Vec3 delta{std::strtof(argv[2],nullptr),std::strtof(argv[3],nullptr),std::strtof(argv[4],nullptr)};
+        if(!actor || !actor->static_candidate || !finite(delta) ||
+            delta.x*delta.x+delta.y*delta.y+delta.z*delta.z>100.f*100.f) {
+            say("A verified static candidate and finite offset within 100 metres are required.\n"); return 1;
+        }
+        auto pos=skg::field<net::Vec3>(actor->spatial,4);
+        pos.x+=delta.x;pos.y+=delta.y;pos.z+=delta.z;
+        // Use the same verified spatial setter as native mirror correction.
+        skg::vcall<void>(actor->spatial,0x38/4,&pos);
+        say("Native static actor moved.\n"); return 0;
+    }
+    if(action=="powerup" && argc==3 && C.captain_of) {
+        auto* actor=marker_actor(uint32_t(number(1)));
+        uint8_t player=uint8_t(number(2));
+        void* captain=player<net::kMaxPlayers ? C.captain_of(player) : nullptr;
+        void* powerup=actor ? powerup_for(actor->object) : nullptr;
+        const char* symbol=nullptr;
+        if(powerup) switch(skg::field<int>(powerup,4)) {
+            case 1: symbol="SporeCoop::Adventure::ActivateMedKit"; break;
+            case 3: symbol="SporeCoop::Adventure::ActivateSpeedBoost"; break;
+            case 4: symbol="SporeCoop::Adventure::ActivateDamageBoost"; break;
+            case 5: symbol="SporeCoop::Adventure::ActivateArmorBoost"; break;
+            case 6: symbol="SporeCoop::Adventure::ActivateMine"; break;
+            case 8: symbol="SporeCoop::Adventure::ActivateTeleporter"; break;
+            case 13: symbol="SporeCoop::Adventure::ActivateGrenade"; break;
+        }
+        auto address=symbol ? H->sym(symbol) : 0;
+        if(!captain || !powerup || !address) { say("A supported native powerup and captain are required.\n"); return 1; }
+        void* recipient=skg::field<int>(powerup,4)==6 ? game::cast(captain,kCombatant) : captain;
+        if(!recipient) { say("The native recipient is unavailable.\n"); return 1; }
+        skg::cdecl_call<void>(address,powerup,recipient);
+        say("Native powerup activation requested.\n"); return 0;
+    }
+    if(action=="throw" && argc>=3 && argc<=6 && C.captain_of) {
+        auto* actor=marker_actor(uint32_t(number(1)));
+        uint8_t player=uint8_t(number(2));
+        void* captain=player<net::kMaxPlayers ? C.captain_of(player) : nullptr;
+        void* powerup=actor ? powerup_for(actor->object) : nullptr;
+        void* spatial=actor ? actor->spatial : nullptr;
+        auto impulse=H->sym("Simulator::cPhysicsWorld::ApplyImpulse");
+        auto physics_get=H->sym("Simulator::cPhysicsWorld::Get");
+        net::Vec3 velocity{0,8,2};
+        if(argc>=4) velocity.x=std::strtof(argv[3],nullptr);
+        if(argc>=5) velocity.y=std::strtof(argv[4],nullptr);
+        if(argc>=6) velocity.z=std::strtof(argv[5],nullptr);
+        if(!captain || !actor || !powerup || !finite(velocity) || !impulse || !physics_get ||
+            (C.held && C.held()) || item_slot(captain,spatial,false)<0 ||
+            (skg::field<int>(powerup,4)!=10 && skg::field<int>(powerup,4)!=13)) {
+            say("A held native bomb or grenade is required.\n"); return 1;
+        }
+        if(skg::field<int>(powerup,4)==13) {
+            auto arm=H->sym("SporeCoop::Adventure::ArmGrenade");
+            if(!arm) { say("Native grenade arming is unavailable.\n"); return 1; }
+            skg::cdecl_call<void>(arm,powerup,captain);
+        }
+        if(!o_Drop(captain,spatial,0,false)) { say("The native throw could not drop its item.\n"); return 1; }
+        void* physics=skg::cdecl_call<void*>(physics_get);
+        if(!physics) { say("The native physics world is unavailable.\n"); return 1; }
+        skg::thiscall<void>(impulse,physics,spatial,&velocity,true);
+        say("Native explosive throw requested.\n"); return 0;
+    }
     if(action=="forgetgate" && argc==2 && !host()) {
         auto* actor=marker_actor(uint32_t(number(1)));
         void* powerup=actor ? powerup_for(actor->object) : nullptr;

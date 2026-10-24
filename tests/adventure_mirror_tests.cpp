@@ -15,8 +15,10 @@ struct Object {
     std::array<uint8_t, 0xE80> bytes{};
     std::array<uint8_t, 0x30> spatial{};
     std::array<uint8_t, 0x84> combatant{};
+    std::array<uint8_t, 0x3C> powerup{};
     uint32_t noun;
     bool has_combatant = false, is_creature = false;
+    bool is_vehicle = false, is_building = false, is_ornament = false, is_interactive = false;
 };
 std::vector<std::unique_ptr<Object>> objects;
 std::array<uint8_t, 0xD0> fake_mode{}, fake_data{};
@@ -28,6 +30,8 @@ std::array<uint8_t, 0x2C18> fake_resource{};
 std::array<uint8_t, 3 * 0x238> placements{};
 uint8_t* mode_pointer = fake_mode.data();
 void* spatial_vtable[16]{};
+void* combatant_vtable[24]{};
+unsigned pose_sets;
 unsigned creates;
 int failures;
 unsigned native_terminals, native_other_states;
@@ -53,13 +57,15 @@ void* create(uint32_t marker, uint32_t noun)
     auto value = std::make_unique<Object>(); value->noun = noun;
     auto* object = value->bytes.data();
     field<void**>(value->spatial.data(), 0) = spatial_vtable;
+    field<void**>(value->combatant.data(), 0) = combatant_vtable;
     field<uint8_t*>(object, 0x18) = placements.data() + marker * 0x238 + 4;
     field<int>(object, 0x1C) = static_cast<int>(marker);
     field<uint32_t>(object, 0x24) = static_cast<uint32_t>(objects.size() + 10);
     objects.push_back(std::move(value)); return object;
 }
-void SK_THISCALL position(void* spatial, const net::Vec3* p) { field<net::Vec3>(spatial, 4) = *p; }
+void SK_THISCALL position(void* spatial, const net::Vec3* p) { ++pose_sets; field<net::Vec3>(spatial, 4) = *p; }
 void SK_THISCALL orientation(void* spatial, const net::Quat* q) { field<net::Quat>(spatial, 0x10) = *q; }
+float SK_THISCALL maximum_hp(void* combatant) { return field<float>(combatant, 0x30); }
 void* SK_THISCALL get_marker(void*, void*) { return nullptr; }
 bool SK_THISCALL hostile_relation(void*, void*) { ++relation_calls; return true; }
 void SK_THISCALL refresh_hud(void* self, bool initial)
@@ -120,6 +126,11 @@ void* cast(void* p, uint32_t type)
     if (type == 0x01186577) return o->spatial.data();
     if (type == 0x013F94D4 && o->has_combatant) return o->combatant.data();
     if (type == 0xCE9F6639 && o->is_creature) return p;
+    if (type == 0x0137E8E0 && o->is_vehicle) return p;
+    if (type == 0x0E9CB8BA && o->is_building) return p;
+    if (type == 0x0175CDC9 && o->is_ornament) return p;
+    if (type == 0x03A25119 && o->is_interactive) return p;
+    if (type == 0x08367427 && (o->is_ornament || o->is_interactive)) return o->powerup.data();
     return nullptr;
 }
 void* avatar() { return nullptr; }
@@ -175,6 +186,256 @@ bool query_local_party(void* manager, const void* key, void* actor, int& value)
 }
 }
 
+static void static_replication_cases(net::Session& session, net::Session& client)
+{
+    using namespace adventure_world;
+    auto saved_native = g_native;
+    auto saved_remote = g_remote;
+    auto saved_bindings = g_bindings;
+    auto saved_retired = g_retired_items;
+    auto saved_host = g_static_host;
+    auto saved_sent = g_static_sent;
+    auto saved_cursor = g_static_cursor;
+    auto saved_pending = g_static_pending;
+    auto saved_stats = g_replication_stats;
+    auto saved_live = g_roster_live;
+    uint32_t saved_sequence = g_sequence, saved_roster = g_roster_sequence;
+    int saved_act = g_static_act;
+    auto* saved_session = C.sess;
+    g_static_host.clear(); g_static_sent.clear(); g_static_cursor.clear(); g_remote.clear(); g_bindings.clear(); g_retired_items.clear();
+    for (auto& pending : g_static_pending) pending.clear();
+    g_roster_sequence = 0; g_roster_live.clear(); g_sequence = 0; g_static_act = -1; g_replication_stats = {};
+    void* building = create(0, 101); auto* b = lookup(building); b->is_building = b->has_combatant = true;
+    field<float>(b->combatant.data(), 0x30) = 100; field<float>(b->combatant.data(), 0x38) = 25;
+    field<float>(b->combatant.data(), 0x2C) = 1; field<net::Quat>(b->spatial.data(), 0x10) = {0, 0, 0, 1};
+    void* prop = create(0, 101); lookup(prop)->is_ornament = true;
+    void* creature = create(0, 101); lookup(creature)->is_creature = lookup(creature)->is_ornament = true;
+    void* vehicle = create(0, 101); lookup(vehicle)->is_vehicle = lookup(vehicle)->is_ornament = true;
+    void* grenade = create(0, 101); lookup(grenade)->is_interactive = true;
+    field<int>(lookup(grenade)->powerup.data(), 4) = 13;
+    void* bomb = create(0, 101); lookup(bomb)->is_interactive = true;
+    field<int>(lookup(bomb)->powerup.data(), 4) = 10;
+    void* unknown = create(0, 101);
+    enumerate();
+    auto native = [&](void* object) { auto* actor = actor_for(object); return actor ? *actor : NativeActor{}; };
+    check(native(building).static_candidate && native(prop).static_candidate,
+          "verified native building and ornament casts select the stationary path");
+    check(!native(creature).static_candidate && !native(vehicle).static_candidate && !native(unknown).static_candidate &&
+          !native(grenade).static_candidate && !native(bomb).static_candidate,
+          "runtime creatures, vehicles, unknown classes, grenades and timed bombs keep legacy motion updates");
+    std::array<uint8_t, 0x24> held_slot{};
+    void* captain = C.captain_of ? C.captain_of(0) : nullptr;
+    if (captain) {
+        auto* first = field<uint8_t*>(captain, 0xE40); auto* last = field<uint8_t*>(captain, 0xE44);
+        field<void*>(held_slot.data(), 0x20) = lookup(prop)->spatial.data();
+        field<uint8_t*>(captain, 0xE40) = held_slot.data(); field<uint8_t*>(captain, 0xE44) = held_slot.data() + held_slot.size();
+        enumerate(); check(!native(prop).static_candidate, "a held prop stays on the dynamic path before its first changed pose");
+        field<uint8_t*>(captain, 0xE40) = first; field<uint8_t*>(captain, 0xE44) = last;
+    }
+    field<bool>(lookup(prop)->powerup.data(), 0x30) = true; enumerate();
+    check(!native(prop).static_candidate, "native thrown objects cannot be classified as stationary");
+    field<bool>(lookup(prop)->powerup.data(), 0x30) = false; enumerate();
+    g_native = {native(building), native(creature), native(unknown)};
+    std::vector<std::vector<uint8_t>> packets;
+    client.cb.custom = [&](uint8_t type, uint8_t from, net::Reader& reader) {
+        if (type == net::MSG_ADVENTURE && !from && reader.left() && (*reader.cur() == Actors || *reader.cur() == StaticActors))
+            packets.emplace_back(reader.cur(), reader.cur() + reader.left());
+    };
+    auto pump = [&] {
+        for (int i = 0; i < 1000; ++i) {
+            session.update(); client.update();
+            if (!session.pending_to(client.my_id()) && i >= 2) return;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        check(false, "static fixture reliable queue drains");
+    };
+    auto static_packets = [&] {
+        std::vector<std::vector<uint8_t>> result;
+        for (const auto& packet : packets) if (packet[0] == StaticActors) result.push_back(packet);
+        return result;
+    };
+    C.sess = &session; send_actors(); pump();
+    auto initial = static_packets();
+    check(initial.size() == 1 && initial[0].size() == 70 && g_replication_stats.baselines == 1 &&
+          g_replication_stats.static_actors == 1 && g_replication_stats.dynamic_actors == 2,
+          "first stationary observation sends one complete reliable reconstruction baseline alongside legacy dynamic actors");
+    uint64_t static_before = g_replication_stats.static_bytes, dynamic_before = g_replication_stats.dynamic_bytes;
+    for (int i = 0; i < 10; ++i) send_actors(); pump();
+    check(g_replication_stats.static_bytes == static_before && g_replication_stats.dynamic_bytes > dynamic_before,
+          "unchanged stationary objects use no recurring actor payload while creatures and unknown actors keep every dynamic tick");
+    field<net::Quat>(b->spatial.data(), 0x10) = {0, 0, 0, -1}; send_actors(); pump();
+    check(g_replication_stats.promotions == 0 && g_replication_stats.static_bytes == static_before,
+          "equivalent quaternion signs do not classify a stationary building as moving");
+    field<float>(b->combatant.data(), 0x38) = 20; packets.clear(); send_actors(); pump();
+    auto changed = static_packets();
+    check(changed.size() == 1 && changed[0].size() == 42 && g_replication_stats.state_updates == 1,
+          "building health changes send a compact reliable state record with no position or quaternion");
+    auto decode = [&](const std::vector<uint8_t>& packet, uint8_t sender = 0) {
+        auto* previous = C.sess; C.sess = &client;
+        net::Reader reader(packet.data(), packet.size()); on_message(sender, reader); C.sess = previous;
+    };
+    decode(initial[0]); decode(changed[0]);
+    Identity building_id{0, field<uint32_t>(building, 0x24)};
+    check(g_remote.count(building_id) && g_remote.at(building_id).health == 20 && g_remote.at(building_id).static_actor &&
+          g_remote.at(building_id).orientation.w == 1,
+          "state-only changes merge into the reliable cached transform rather than overwriting it");
+    ActorState target = g_remote.at(building_id); target.flags = 0;
+    NativeActor local = native(building); local.combatant = nullptr;
+    field<net::Quat>(b->spatial.data(), 0x10) = {0, 0, 0, 1}; unsigned sets = pose_sets;
+    apply_actor(local, target); apply_actor(local, target);
+    check(pose_sets == sets, "cached stationary snapshots avoid redundant native transform setters");
+    field<net::Vec3>(b->spatial.data(), 4) = {2, 0, 0}; apply_actor(local, target);
+    check(pose_sets == sets + 1 && field<net::Vec3>(b->spatial.data(), 4).x == 0,
+          "a repaired or drifting guest building receives its cached authoritative transform");
+
+    // Fill the existing ordered connection, then change HP twice. No new static
+    // messages queue while blocked; the next opportunity carries only latest HP.
+    net::Writer filler; filler.u8(255); put_run(filler, 0);
+    while (session.pending_to(client.my_id()) < 64) session.send_reliable_to(client.my_id(), net::MSG_ADVENTURE, filler);
+    static_before = g_replication_stats.static_bytes;
+    field<float>(b->combatant.data(), 0x38) = 15; send_actors();
+    field<float>(b->combatant.data(), 0x38) = 12; send_actors();
+    check(session.pending_to(client.my_id()) == 64 && g_replication_stats.static_bytes == static_before &&
+          g_replication_stats.deferred >= 2, "static transfer honors queue bounds and coalesces changes while the peer is congested");
+    pump(); packets.clear(); send_actors(); pump();
+    auto coalesced = static_packets();
+    check(coalesced.size() == 1, "one state packet catches up after congestion without replaying intermediate health");
+    if (!coalesced.empty()) decode(coalesced[0]);
+    check(g_remote.at(building_id).health == 12, "coalesced state carries the most recent absolute HP");
+    packets.clear(); peer_changed(client.my_id()); send_actors(); pump();
+    check(static_packets().size() == 1 && static_packets()[0].size() == 70,
+          "a reconnecting or reused peer receives a fresh complete baseline");
+
+    field<net::Vec3>(b->spatial.data(), 4) = {0.00005f, 0, 0}; send_actors();
+    field<net::Vec3>(b->spatial.data(), 4) = {0.00009f, 0, 0}; send_actors();
+    check(g_replication_stats.promotions == 0, "sub-tolerance movement stays stationary until its accumulated displacement matters");
+    field<net::Vec3>(b->spatial.data(), 4) = {0.0002f, 0, 0}; packets.clear(); send_actors(); pump();
+    auto promoted = static_packets();
+    check(g_replication_stats.promotions == 1 && g_replication_stats.dynamic_actors == 3 &&
+          promoted.size() == 1 && promoted[0].size() == 70,
+          "a moving building gets one reliable full correction and immediately joins the unchanged dynamic stream");
+    if (!promoted.empty()) decode(promoted[0]);
+    check(!g_remote.at(building_id).static_actor, "promotion clears the guest stationary classification");
+    field<net::Vec3>(b->spatial.data(), 4) = {0, 0, 0}; send_actors(); pump();
+    check(g_replication_stats.promotions == 1 && g_replication_stats.dynamic_actors == 3,
+          "promotion lasts for the current act and incarnation even if the object returns to its original pose");
+
+    auto packet = [&](uint32_t sequence, uint8_t act, uint8_t fields, ActorState state, bool malformed = false) {
+        net::Writer w; w.u8(StaticActors); put_run(w, g_run); w.u32(sequence); w.u8(act); w.u8(malformed ? 2 : 1);
+        auto record = [&](bool bad) {
+            write_identity(w, state.id); w.u8(fields); w.u32(state.noun); if (fields) write_pose(w, state);
+            if (bad) state.flags |= 8; write_gameplay(w, state);
+        };
+        record(false); if (malformed) record(true); return w.data;
+    };
+    ActorState future; future.id = {2, 7777}; future.noun = 101; future.position = {4, 5, 6};
+    future.orientation = {0, 0, 0, 1}; future.health = 30; future.maximum = 100; future.max_tuning = 1; future.flags = 1;
+    decode(packet(500, 1, 1, future), 1);
+    check(g_static_pending[1].empty(), "only the host can seed future static baselines");
+    decode(packet(500, 1, 1, future, true));
+    check(g_static_pending[1].empty(), "a malformed later record rejects the entire static chunk before mutation");
+    auto truncated = packet(500, 1, 1, future); truncated.pop_back(); decode(truncated);
+    check(g_static_pending[1].empty(), "a truncated static baseline cannot partially seed a future act");
+    decode(packet(500, 1, 0, future));
+    check(g_static_pending[1].empty(), "state-only updates cannot create an actor without a reconstruction baseline");
+    decode(packet(500, 1, 1, future)); future.health = 10; decode(packet(501, 1, 0, future));
+    check(!g_remote.count(future.id) && g_static_pending[1].at(future.id).health == 10,
+          "one-shot reliable baselines and later state merge while their native act change is still queued");
+    field<int>(fake_play.data(), 0xB8) = 1; apply_pending_static(1);
+    check(g_static_pending[1].empty() && g_remote.at(future.id).health == 10 && g_remote.at(future.id).position.x == 4,
+          "native act completion installs the staged full cached state");
+    future.position.x = 8; auto latest = future; latest.sequence = 600; latest.static_actor = false;
+    merge_actor_state(latest, g_remote, true, true); future.position.x = 1; decode(packet(599, 1, 1, future));
+    check(g_remote.at(future.id).position.x == 8 && !g_remote.at(future.id).static_actor,
+          "delayed reliable static state cannot rewind a newer dynamic pose after promotion");
+    g_retired_items.insert(future.id); future.position.x = 99; decode(packet(601, 1, 1, future));
+    check(g_remote.at(future.id).position.x == 8, "consumed-item tombstones reject delayed static baselines");
+    g_retired_items.erase(future.id);
+    for (uint32_t i = 0; i < kMaxActors; ++i) {
+        auto entry = future; entry.id.incarnation = 9000 + i; entry.sequence = 0;
+        g_static_pending[2].emplace(entry.id, entry);
+    }
+    decode(packet(700, 2, 1, future));
+    check(g_static_pending[2].size() == kMaxActors && !g_static_pending[2].count(future.id),
+          "future-act baselines obey the same actor capacity bound as the live cache");
+    auto existing = future; existing.id.incarnation = 9000; existing.health = 7;
+    decode(packet(701, 2, 0, existing));
+    check(g_static_pending[2].at(existing.id).health == 7,
+          "existing static state continues updating even when a future-act cache is at capacity");
+    field<int>(fake_play.data(), 0xB8) = 0;
+    C.sess = &session; send_actors();
+    field<int>(fake_play.data(), 0xB8) = 1; send_actors(); pump();
+    check(g_replication_stats.static_actors == 1 && g_replication_stats.dynamic_actors == 2,
+          "an act change begins fresh static classification and peer baselines");
+    ++field<uint32_t>(building, 0x24); ++g_native[0].incarnation;
+    send_actors(); pump();
+    Identity respawned{0, field<uint32_t>(building, 0x24)};
+    check(g_static_host.count(respawned) && !g_static_host.count(building_id) &&
+          g_static_sent[client.my_id()].count(respawned) && !g_static_sent[client.my_id()].count(building_id),
+          "respawned static incarnations receive fresh baselines and prune retired sender shadows");
+    g_static_host.clear(); g_static_sent.clear();
+    for (uint32_t i = 0; i < 80; ++i) {
+        auto state = future; state.id.incarnation = 12000 + i;
+        g_static_host.emplace(state.id, StaticHostActor{state, state, false});
+    }
+    send_static_actors(1);
+    check(g_static_sent[client.my_id()].size() == 48 && session.pending_to(client.my_id()) == 4,
+          "one tick queues at most four bounded static baseline chunks for each peer");
+    pump();
+    size_t dirtied = 0;
+    for (auto& [id, entry] : g_static_host) {
+        (void)id;
+        if (dirtied++ < 48) entry.state.health = 17;
+    }
+    send_static_actors(1); pump();
+    check(g_static_sent[client.my_id()].size() == 80,
+          "later baseline identities progress even when the earliest 48 actors all change again");
+    Identity tail{future.id.marker, 12079};
+    g_static_host.at(tail).state.health = 3;
+    for (int tick = 0; tick < 3; ++tick) {
+        size_t early = 0;
+        for (auto& [id, entry] : g_static_host) {
+            (void)id;
+            if (early++ < 48) entry.state.health = float(18 + tick);
+        }
+        send_static_actors(1); pump();
+    }
+    check(g_static_sent[client.my_id()].at(tail).state.health == 3,
+          "a later actor's state change is delivered while early actors remain continuously dirty");
+    // Reproduce the real receive-pump ordering: K_COMMIT makes C.run current,
+    // four reliable initial chunks arrive, then the first world tick executes.
+    // The sender already considers all 48 records sent and will not repeat them.
+    packets.clear(); g_static_host.clear(); g_static_sent.clear();
+    field<int>(fake_play.data(), 0xB8) = 0;
+    for (uint32_t i = 0; i < 48; ++i) {
+        auto state = future; state.id.incarnation = 16000 + i;
+        g_static_host.emplace(state.id, StaticHostActor{state, state, false});
+    }
+    C.sess = &session; send_static_actors(0); pump();
+    auto before_first_tick = static_packets();
+    check(before_first_tick.size() == 4 && g_static_sent[client.my_id()].size() == 48,
+          "the host queues all 48 one-shot initial static baselines and retains their sent shadows");
+    bool saved_mirror_queued = g_mirror_queued;
+    reset_replication(); C.sess = &client;
+    check(g_run == 0, "the guest has not initialized its world run before the first reliable baseline");
+    for (const auto& bytes : before_first_tick) decode(bytes);
+    check(g_run == run() && g_remote.size() == 48,
+          "early reliable static baselines initialize the current run before caching all four chunks");
+    g_mirror_queued = true; // Keep this ordering test independent of native actor factories.
+    tick(30); tick(30.1);
+    check(g_remote.size() == 48 && g_static_pending[0].empty(),
+          "the first and following world ticks preserve every already acknowledged static baseline");
+    g_mirror_queued = saved_mirror_queued;
+    for (void* object : {building, prop, creature, vehicle, grenade, bomb, unknown}) field<bool>(object, 0x21) = true;
+    field<int>(fake_play.data(), 0xB8) = 0;
+    client.cb.custom = {}; C.sess = saved_session;
+    g_native = std::move(saved_native); g_remote = std::move(saved_remote); g_bindings = std::move(saved_bindings);
+    g_retired_items = std::move(saved_retired); g_static_host = std::move(saved_host); g_static_sent = std::move(saved_sent);
+    g_static_cursor = std::move(saved_cursor);
+    g_static_pending = std::move(saved_pending); g_replication_stats = saved_stats; g_static_act = saved_act;
+    g_sequence = saved_sequence; g_roster_sequence = saved_roster; g_roster_live = std::move(saved_live);
+}
+
 int main()
 {
     using namespace adventure_world;
@@ -191,6 +452,7 @@ int main()
     }
     spatial_vtable[0x38 / 4] = reinterpret_cast<void*>(&position);
     spatial_vtable[0x3C / 4] = reinterpret_cast<void*>(&::orientation);
+    combatant_vtable[0x58 / 4] = reinterpret_cast<void*>(&maximum_hp);
     a_Mode = reinterpret_cast<uintptr_t>(&mode_pointer);
     a_GetMarker = reinterpret_cast<uintptr_t>(&get_marker);
     void* initial = create(0, 101);
@@ -509,6 +771,7 @@ int main()
     field<int>(fake_play.data(), 0xB8) = 0;
     field<net::Vec3>(lookup(partner)->spatial.data(), 4) = saved_partner_position;
     session.cb.custom = {}; g_last_interaction.clear(); g_social_completions.clear();
+    static_replication_cases(session, client);
     client.leave(); C.sess = &session; running = false;
 
     begin_native_attempt(fake_play.data()); running = true;

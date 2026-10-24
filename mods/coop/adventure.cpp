@@ -976,6 +976,7 @@ bool captain_damage(uint8_t victim, const ga::Source& source, float amount)
 {
     if (!host() || g_phase != Phase::Running || !member(victim))
         return false;
+    if (C.incoming_damage) amount = C.incoming_damage(victim, amount);
     g_authority.damage(g_descriptor.run_id, ++g_health_event, victim, source, amount);
     if (g_authority.phase() == ga::RunPhase::Failed) result(false);
     else snapshot();

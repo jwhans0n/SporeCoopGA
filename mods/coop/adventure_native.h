@@ -11,6 +11,8 @@ struct Ctx {
     std::function<void*(uint8_t)> captain_of;
     std::function<bool(uint8_t, net::PlayerState&)> remote_state;
     std::function<void()> invalidate_ready;
+    std::function<void(uint8_t, uint64_t, const net::Vec3&, const net::Quat&)> teleport;
+    std::function<void()> reset_movement;
 };
 
 bool init(const SkHost* host, SkMod* mod, Ctx context);

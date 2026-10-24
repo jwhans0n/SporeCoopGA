@@ -8,6 +8,8 @@
 #include "net/session.h"
 #include "sporekit.h"
 #include "adventure_flow.h"
+#include "adventure_pickups.h"
+#include "adventure_explosives.h"
 
 namespace adventure_world {
 
@@ -27,6 +29,10 @@ struct Ctx {
     std::function<bool(uint8_t, float)> captain_heal;
     std::function<void(bool success)> result;
     std::function<bool()> held;
+    std::function<bool()> explosive_environment, explosive_visual;
+    std::function<double()> simulation_time;
+    std::function<void(uint8_t,uint64_t,const net::Vec3&,const net::Quat&)> teleport;
+    std::function<void(const std::string&)> interaction_failed;
 };
 
 bool init(const SkHost* host, SkMod* mod, Ctx ctx);
@@ -34,6 +40,9 @@ bool available();
 void tick(double now);
 void on_message(uint8_t from, net::Reader& payload); // subkinds 128..191, consumes subkind itself
 void reset();
+void peer_changed(uint8_t player);
+adventure_pickups::Ctx pickups_context();
+adventure_explosives::Ctx explosives_context();
 bool update_filter(void* creature);
 bool is_live_mirror(void* actor); // current guest binding only; no native updates or state changes
 bool party_relationship(void* actor, int& value); // current live guest NPC's host-authored party relationship

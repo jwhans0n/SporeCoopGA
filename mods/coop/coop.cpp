@@ -1,7 +1,7 @@
 // SporeCoop mod: creature-stage co-op ("pack" mode). See docs/03-gameplay.md.
 // the release version (tools/package.sh names the zip after it)
 #ifndef COOP_VERSION
-#define COOP_VERSION "0.7.0-ga-preview.5"
+#define COOP_VERSION "0.7.0-ga-preview.6"
 #endif
 
 #include <winsock2.h>
@@ -34,7 +34,9 @@
 #include "adventure_captains.h"
 #include "adventure_collect.h"
 #include "adventure_native.h"
+#include "adventure_world.h"
 #include "adventure_flow.h"
+#include "net/adventure_motion.h"
 #include "adventure_progress.h"
 #include "gamefixes.h"
 #include "spacecoop.h"
@@ -244,6 +246,8 @@ bool g_save_on_share = true; // host saves before sending the world, so guests g
 const modes::Adapter* g_adapter = nullptr;
 void* g_local = nullptr; // entity the local player controls (adapter specific)
 
+net::AdventureMotion g_adventure_motion;
+
 net::PlayerState local_state()
 {
     net::PlayerState st;
@@ -255,6 +259,8 @@ net::PlayerState local_state()
         if (const auto* d = adventure::current()) {
             st.adventure_run = d->run_id;
             st.captain_selection = adventure::selection_serial(g_sess.my_id());
+            g_adventure_motion.begin(d->run_id);
+            st.movement_generation = g_adventure_motion.generation(g_sess.my_id());
         }
     }
     return st;
@@ -1346,6 +1352,7 @@ void setup_callbacks()
     };
     g_sess.cb.player_join = [](const net::PlayerInfo& p) {
         adventure::on_join(p.id);
+        adventure_world::peer_changed(p.id);
         shared::on_session_change();
         creations::on_player_join(p.id);
         g_dna_sent = -1; // resend the DNA total to the newcomer
@@ -1568,6 +1575,7 @@ void setup_callbacks()
     };
     g_sess.cb.player_leave = [](uint8_t id, uint8_t) {
         adventure::on_leave(id);
+        adventure_world::peer_changed(id);
         auto it = g_remotes.find(id);
         if (it == g_remotes.end())
             return;
@@ -1579,6 +1587,10 @@ void setup_callbacks()
         g_remotes.erase(it);
     };
     g_sess.cb.player_state = [](const net::PlayerState& s) {
+        if (adventure::active()) {
+            if (const auto* d = adventure::current()) g_adventure_motion.begin(d->run_id);
+            if (!g_adventure_motion.accepts(s)) return;
+        }
         auto& r = g_remotes[s.id];
         r.id = s.id;
         if (r.name.empty())
@@ -2547,6 +2559,32 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
         return true;
     };
     native.invalidate_ready = [] { g_ready.clear(); g_lobby_dirty = true; };
+    native.teleport = [](uint8_t player, uint64_t revision, const net::Vec3& position, const net::Quat& orientation) {
+        const auto* descriptor = adventure::current();
+        if (!descriptor || !adventure::running() || !adventure::participating(player) ||
+            !g_adventure_motion.correct(descriptor->run_id, player, revision, position, orientation)) return;
+        if (player == g_sess.my_id()) {
+            if (auto* captain = game::avatar()) { game::stop(captain); game::teleport(captain, position, orientation); }
+        } else {
+            auto it = g_remotes.find(player);
+            if (it == g_remotes.end()) return;
+            auto& remote = it->second;
+            net::PlayerState corrected;
+            const bool seeded = !remote.buf.empty();
+            if (seeded) corrected = remote.buf.latest();
+            remote.buf.clear(); remote.drv = {};
+            if (seeded) {
+                corrected.pos = position; corrected.rot = orientation; corrected.vel = {};
+                corrected.movement_generation = revision;
+                remote.buf.push(corrected, H->time_seconds());
+            }
+            if (remote.puppet) { game::stop(remote.puppet); game::teleport(remote.puppet, position, orientation); }
+        }
+    };
+    native.reset_movement = [] {
+        g_adventure_motion.reset();
+        for (auto& [id, remote] : g_remotes) { remote.buf.clear(); remote.drv = {}; }
+    };
     adventure_native::init(H, M, std::move(native));
     adventure::init(H, M, adventure_native::coordinator_context());
     game::set_extra_update_filter(adventure_native::update_filter);
