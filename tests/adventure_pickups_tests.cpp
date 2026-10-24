@@ -247,5 +247,16 @@ int main() {
     void* retry=make(true,4,30000,30000);auto retry_grant=packet(153,1,1,4,{30000,30000});
     retry_grant.f32(2);retry_grant.f32(float(simulation+5));retry_grant.u32(77);receive(0,retry_grant);tick();
     CHECK(!game::object_alive(retry)&&field<bool>(captains[1],0xB10)&&aborted==1&&!pickups::overflow);
+    // Deferring an accepted guest event uses the same1024 bound as initial
+    // reception. A smaller128 requeue cap silently lost the rest of a burst.
+    std::vector<void*> deferred;
+    for(uint32_t i=0;i<200;++i) {
+        deferred.push_back(make(true,1,40000+i,40000+i));
+        ++act;auto future=packet(153,40000+i,1,1,{40000+i,40000+i});--act;
+        future.f32(0);future.f32(float(simulation));future.u32(0);receive(0,future);
+    }
+    tick();CHECK(pickups::pending.size()==200);tick();CHECK(pickups::pending.size()==200);
+    ++act;tick();CHECK(pickups::pending.empty()&&aborted==1);
+    for(void* value:deferred) CHECK(!game::object_alive(value));
     pickups::reset();std::printf("adventure pickups: %d failures\n",failures);return failures?1:0;
 }

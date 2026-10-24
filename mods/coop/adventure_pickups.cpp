@@ -65,6 +65,7 @@ std::map<uint8_t,std::vector<Event>> outgoing;
 unsigned grants,warps,rejected;
 
 bool host() { return C.sess && C.sess->role()==net::Role::Host; }
+size_t queue_limit() { return host()?128:1024; }
 bool active() { return ready && C.sess && C.sess->connected() && C.active && C.active() && C.run && C.run(); }
 bool held() { return C.held && C.held(); }
 int act() { return C.act ? C.act() : -1; }
@@ -208,7 +209,7 @@ void commit(Event e) {
         if(skg::field<bool>(captain,0xE60) || (skg::field<uint32_t>(captain,0xB58)&256) || cooldowns[e.player]>clock() ||
            !skg::cdecl_call<bool>(a_destination,value,&e.position,&e.orientation) || !finite(e.position)||!finite(e.orientation)) {++rejected;return;}
         e.kind=Teleport;e.revision=++serial;e.until=float(clock()+2.0);
-        // The owner helper has the native clamp, flight/path cleanup, stop and
+        // The owner helper has native clamp, support/velocity cleanup, stop and
         // authored effect. The larger native activation also moves the posse.
         skg::cdecl_call<void>(a_teleport,value,captain,&e.position,&e.orientation,true);
         game::object_position(captain,e.position);e.orientation=game::orientation(captain);
@@ -282,6 +283,12 @@ bool apply(Event e) {
     }
     return true;
 }
+void report_overflow() {
+    if(!overflow_reported) {
+        overflow_reported=true;
+        C.failed("Adventure pickup synchronization exceeded its bounded pending queue. Cancel and retry the adventure.");
+    }
+}
 void drain(void* token) {
     std::unique_ptr<uint64_t> task(static_cast<uint64_t*>(token));
     if(*task!=generation) return;
@@ -292,13 +299,17 @@ void drain(void* token) {
     queued=false;
     if(failed_queue) {
         overflow=true;overflow_run=current_run;
-        if(!overflow_reported) {
-            overflow_reported=true;
-            C.failed("Adventure pickup synchronization exceeded its bounded pending queue. Cancel and retry the adventure.");
-        }
+        report_overflow();
         return;
     }
-    for(const auto& e:work) if(e.run==current_run && !apply(e) && pending.size()<128) pending.push_back(e);
+    for(const auto& e:work) if(e.run==current_run && !apply(e)) {
+        if(pending.size()<queue_limit()) pending.push_back(e);
+        else if(host()) ++rejected;
+        else {
+            overflow=true;overflow_run=current_run;
+            report_overflow();return;
+        }
+    }
     double now=clock();
     for(auto& [key,effect]:effects) if(host() && effect.active && now>effect.until) {
         effect.active=false;apply_effect(key.first,key.second,effect);
@@ -406,8 +417,7 @@ void on_message(uint8_t from,net::Reader& r) {
         if(!r.ok()||r.left()) return;
     }
     if(overflow && overflow_run==run) return;
-    const size_t limit=host()?128:1024;
-    if(pending.size()<limit) pending.push_back(e);
+    if(pending.size()<queue_limit()) pending.push_back(e);
     else if(host()) ++rejected; // a request was never accepted or mutated
     else {overflow=true;overflow_run=run;} // report from the outside-frame drain
 }

@@ -1509,6 +1509,17 @@ static void reset_replication()
     g_last_send = g_last_goals = 0; g_hit_sequence = 0;
 }
 
+static void retire_identity(Identity id)
+{
+    uint64_t current = run();
+    if (!current) return;
+    // A routed pickup/explosion event can precede every world packet and tick.
+    // Initialize before recording its tombstone, just as on_message does for
+    // baselines, so the first world tick cannot erase an accepted retirement.
+    if (g_run != current) { reset_replication(); g_run = current; }
+    g_retired_items.insert(id); g_remote.erase(id); g_bindings.erase(id);
+}
+
 void reset()
 {
     reset_replication();
@@ -1628,7 +1639,7 @@ adventure_pickups::Ctx pickups_context()
     };
     context.object_for=[](adventure_pickups::Identity id) { enumerate(); return object_for({id.marker,id.incarnation}); };
     context.retire=[](adventure_pickups::Identity id) {
-        Identity key{id.marker,id.incarnation}; g_retired_items.insert(key); g_remote.erase(key); g_bindings.erase(key);
+        retire_identity({id.marker,id.incarnation});
     };
     context.captain_heal=C.captain_heal; context.teleport=C.teleport;
     context.failed=C.interaction_failed;
@@ -1667,7 +1678,7 @@ adventure_explosives::Ctx explosives_context()
         return it!=g_dropped.end() && it->second.first==player && H->time_seconds()-it->second.second<=2.0;
     };
     context.retire=[](adventure_explosives::Identity id) {
-        Identity key{id.marker,id.incarnation}; g_retired_items.insert(key); g_remote.erase(key); g_bindings.erase(key);
+        retire_identity({id.marker,id.incarnation});
     };
     return context;
 }

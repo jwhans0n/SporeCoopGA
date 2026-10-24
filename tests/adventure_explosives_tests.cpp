@@ -24,7 +24,11 @@ std::vector<std::unique_ptr<Object>> objects;
 std::array<std::array<uint8_t,0x20>,4> captains{};
 void* powerup_table[3]{};
 void* combatant_table[4]{};
-unsigned activations,explosions,blasts,arms,bombs,timer_ticks,powerup_ticks,impulses,retirements,expiry_calls,queue_failures;
+unsigned activations,explosions,blasts,arms,bombs,timer_ticks,powerup_ticks,impulses,retirements,expiry_calls,queue_failures,effects;
+net::Vec3 last_effect_position;
+ex::Quat last_effect_orientation;
+float last_effect_scale;
+uint32_t last_effect_id;
 bool paused=false,enabled=true,in_range=true,owns=true,bound=true;
 bool giant=false;
 uint64_t run=7;
@@ -44,11 +48,15 @@ void* SK_THISCALL spatial(void* p) { return find(p); }
 void* SK_CDECL physics() { return reinterpret_cast<void*>(0x1234); }
 void SK_CDECL native_radius(void*,void*,float,float,float)
 { ++blasts; CHECK(ex::environmental_damage()); CHECK(!ex::visual_only()); }
+void SK_CDECL native_effect(const net::Vec3* p,const ex::Quat* q,float scale,uint32_t id)
+{ ++effects; last_effect_position=*p; last_effect_orientation=*q; last_effect_scale=scale; last_effect_id=id; }
 void SK_CDECL native_explode(void* p,void*)
 {
     ++explosions;
     if(ex::visual_only()) CHECK(!ex::environmental_damage());
     else CHECK(ex::environmental_damage());
+    net::Vec3 position{10,20,30}; ex::Quat orientation{0,0,0,1};
+    ex::effect(&position,&orientation,4,0x12345678);
     ex::radius(nullptr,nullptr,20,5,2); ex::unowned_radius(nullptr,nullptr,20,5,2);
     find(p)->removed=true;
 }
@@ -102,6 +110,7 @@ int main()
         {"SporeCoop::Adventure::ExplosionDelayExpiry",(uintptr_t)native_expiry},
         {"SporeCoop::Adventure::SchedulePowerupExplosion",(uintptr_t)native_schedule},
         {"SporeCoop::Adventure::ExplodePowerup",(uintptr_t)native_explode},
+        {"SporeCoop::Adventure::ExplosionEffect",(uintptr_t)native_effect},
         {"SporeCoop::Adventure::ExplosionRadius",(uintptr_t)native_radius},
         {"SporeCoop::Adventure::ExplosionUnownedRadius",(uintptr_t)native_radius},
         {"SporeCoop::Adventure::TickPowerupTimers",(uintptr_t)native_timers},
@@ -136,6 +145,7 @@ int main()
         auto* o=make(type); unsigned before=explosions;
         ex::explode(o->powerup.data(),nullptr); ex::explode(o->powerup.data(),nullptr);
         CHECK(explosions==before+1 && o->removed); CHECK(!ex::environmental_damage());
+        CHECK(ex::g_outgoing.back().message.effect==0x12345678 && ex::g_outgoing.back().message.scale==4);
     }
     CHECK(blasts==8);
     auto* mine=make(6); auto contact_request=ex::message(ex::Activate,mine->id,1,6);
@@ -184,15 +194,29 @@ int main()
     auto* barrel=make(15); before=blasts; unsigned before_explosions=explosions;
     ex::explode(barrel->powerup.data(),nullptr); CHECK(explosions==before_explosions);
     auto event=ex::message(ex::Detonated,barrel->id,0xFF,15);
+    event.position={100,200,300}; event.orientation={0,0,1,0}; event.scale=3; event.effect=123;
     incoming(1,event); drain(); CHECK(!barrel->removed); // A guest cannot forge host effects.
     paused=true; incoming(0,event); drain(); CHECK(!barrel->removed);
     paused=false; ex::tick(); drain(); CHECK(barrel->removed && blasts==before && retirements==1);
+    CHECK(last_effect_position.x==100 && last_effect_orientation.z==1 && last_effect_scale==3 && last_effect_id==123);
     incoming(0,event); drain(); CHECK(retirements==1);
     // Future-act events survive native SetAct ordering and are applied once.
     auto* future=make(6); event=ex::message(ex::Detonated,future->id,0xFF,6); event.act=1;
     incoming(0,event); drain(); CHECK(!future->removed); act=1; ex::tick(); drain(); CHECK(future->removed && retirements==2);
-    // A missing artwork/object binding still receives a tombstone.
-    event=ex::message(ex::Detonated,{999,999},0xFF,6); incoming(0,event); drain(); CHECK(retirements==3);
+    // A short-lived object can detonate before its guest binding exists. Show
+    // the host's exact native FX once and retire only that authoritative ID.
+    auto* newer=make(6); newer->id={999,1000};
+    event=ex::message(ex::Detonated,{999,999},0xFF,6);
+    event.position={50,60,70}; event.scale=6; event.effect=987;
+    unsigned old_effects=effects;
+    incoming(0,event); drain(); CHECK(retirements==3 && effects==old_effects+1 && !newer->removed);
+    CHECK(last_effect_position.x==50 && last_effect_scale==6 && last_effect_id==987);
+    incoming(0,event); drain(); CHECK(effects==old_effects+1 && retirements==3);
+    // A delayed baseline/binding for the spent ID cannot produce another effect.
+    auto* late=make(6); late->id={999,999}; event.serial++;
+    incoming(0,event); drain(); CHECK(!late->removed && effects==old_effects+1);
+    auto invalid=ex::message(ex::Detonated,{998,998},0xFF,6); invalid.scale=INFINITY;
+    incoming(0,invalid); drain(); CHECK(retirements==3 && effects==old_effects+1);
     ctx.sess=&host; CHECK(ex::init(&api,nullptr,ctx)); ex::tick();
     for(unsigned i=0;i<8193;++i) ex::publish(ex::message(ex::Triggered,{1000+i,1000+i},0xFF,6));
     CHECK(ex::g_outgoing.size()==8192); ex::tick(); ex::tick(); CHECK(queue_failures==1);

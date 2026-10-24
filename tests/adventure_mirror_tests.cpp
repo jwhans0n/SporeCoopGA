@@ -425,6 +425,27 @@ static void static_replication_cases(net::Session& session, net::Session& client
     tick(30); tick(30.1);
     check(g_remote.size() == 48 && g_static_pending[0].empty(),
           "the first and following world ticks preserve every already acknowledged static baseline");
+    for (bool pickup : {false, true}) {
+        reset_replication();
+        auto retired = future; retired.id.incarnation = pickup ? 17001 : 17000;
+        if (pickup) pickups_context().retire({retired.id.marker, retired.id.incarnation});
+        else explosives_context().retire({retired.id.marker, retired.id.incarnation});
+        check(g_run == run() && g_retired_items.count(retired.id),
+              "an initial routed pickup or explosion retirement establishes the world run before its tombstone");
+        tick(31); tick(31.1);
+        check(g_retired_items.count(retired.id), "the first world ticks retain an event's early exact-identity tombstone");
+        decode(packet(700, 0, 1, retired));
+        decode(packet(701, 1, 1, retired));
+        net::Writer dynamic; dynamic.u8(Actors); put_run(dynamic, g_run); dynamic.u32(702); dynamic.u8(0); dynamic.u8(1);
+        write_identity(dynamic, retired.id); dynamic.u32(retired.noun); write_pose(dynamic, retired); write_gameplay(dynamic, retired);
+        decode(dynamic.data);
+        check(!g_remote.count(retired.id) && !g_static_pending[1].count(retired.id) && g_bindings.empty(),
+              "delayed full dynamic, static and future-act states cannot recreate an early retired identity");
+        auto respawn = retired; ++respawn.id.incarnation;
+        decode(packet(703, 0, 1, respawn));
+        check(g_remote.count(respawn.id) && !g_retired_items.count(respawn.id),
+              "an early retirement leaves a newer same-marker incarnation eligible for its own baseline");
+    }
     g_mirror_queued = saved_mirror_queued;
     for (void* object : {building, prop, creature, vehicle, grenade, bomb, unknown}) field<bool>(object, 0x21) = true;
     field<int>(fake_play.data(), 0xB8) = 0;

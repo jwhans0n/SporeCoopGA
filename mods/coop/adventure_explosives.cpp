@@ -15,7 +15,7 @@
 namespace adventure_explosives {
 static const SkHost* H;
 static Ctx C;
-static bool g_ok, g_visual, g_applying, g_overflow, g_overflow_reported;
+static bool g_ok, g_visual, g_applying, g_overflow, g_overflow_reported, g_invalid_effect;
 static unsigned g_damage_depth;
 static uint64_t g_run, g_generation, g_serial;
 static uint8_t g_act;
@@ -26,12 +26,15 @@ using Timers = void(SK_CDECL*)(float);
 using Radius = void(SK_CDECL*)(void*,void*,float,float,float);
 using Impulse = void(SK_THISCALL*)(void*,void*,const net::Vec3*,bool);
 using Schedule = void(SK_CDECL*)(void*,void*,float);
+struct Quat { float x=0,y=0,z=0,w=1; };
+using Effect = void(SK_CDECL*)(const net::Vec3*,const Quat*,float,uint32_t);
 static Pair o_Mine,o_Contact,o_Arm,o_Explode;
 static Single o_Bomb,o_BombExpiry,o_ExplosionExpiry;
 static Schedule o_Schedule;
 static Timers o_Timers,o_Powerups;
 static Radius o_Radius,o_UnownedRadius;
 static Impulse o_Impulse;
+static Effect o_Effect;
 enum Kind : uint8_t { Activate=144,Triggered=145,Detonated=146,Arm=147,Armed=148,Throw=149,Thrown=150 };
 enum class Phase : uint8_t { Available,Triggered,Retired };
 struct State {
@@ -51,7 +54,16 @@ struct Message {
     uint64_t run=0,serial=0,generation=0;
     Identity id;
     net::Vec3 impulse;
+    net::Vec3 position;
+    Quat orientation;
+    float scale=1;
+    uint32_t effect=0;
 };
+// F24730 supplies the exact authored presentation before applying blast damage.
+// Capture those arguments rather than guessing a palette or class layout.
+struct EffectCapture { Message* event; bool sent=false; };
+static EffectCapture* g_capture;
+static const Message* g_guest_effect;
 struct Pending { Message message; uint8_t peer=0; };
 static std::deque<Pending> g_outgoing;
 static std::deque<Message> g_waiting;
@@ -74,6 +86,14 @@ static bool explosive(int type) { return type==6 || type==10 || type==13 || type
 static void put64(net::Writer& w,uint64_t v) { w.u32(uint32_t(v)); w.u32(uint32_t(v>>32)); }
 static uint64_t get64(net::Reader& r) { uint64_t v=r.u32(); return v|uint64_t(r.u32())<<32; }
 static bool finite(net::Vec3 p) { return std::isfinite(p.x)&&std::isfinite(p.y)&&std::isfinite(p.z); }
+static bool valid_effect(const Message& m)
+{
+    float q=m.orientation.x*m.orientation.x+m.orientation.y*m.orientation.y+
+            m.orientation.z*m.orientation.z+m.orientation.w*m.orientation.w;
+    return finite(m.position) && std::fabs(m.position.x)<=1.e7f && std::fabs(m.position.y)<=1.e7f &&
+        std::fabs(m.position.z)<=1.e7f && std::isfinite(q) && q>=0.0001f && q<=10000.f &&
+        std::isfinite(m.scale) && m.scale>=0 && m.scale<=1.e6f;
+}
 static bool touching(void* captain,void* item)
 {
     net::Vec3 a,b,c,d;
@@ -100,6 +120,11 @@ static net::Writer encode(const Message& m)
     net::Writer w; w.u8(m.kind); put64(w,m.run); w.u8(m.act); put64(w,m.serial);
     w.u32(m.id.marker); w.u32(m.id.incarnation); w.u8(m.player); w.u8(m.type);
     if(m.kind==Throw || m.kind==Thrown) { w.f32(m.impulse.x); w.f32(m.impulse.y); w.f32(m.impulse.z); }
+    if(m.kind==Detonated) {
+        w.f32(m.position.x); w.f32(m.position.y); w.f32(m.position.z);
+        w.f32(m.orientation.x); w.f32(m.orientation.y); w.f32(m.orientation.z); w.f32(m.orientation.w);
+        w.f32(m.scale); w.u32(m.effect);
+    }
     return w;
 }
 static void publish(Message m)
@@ -122,6 +147,18 @@ static void publish(Message m)
     else queue(0);
 }
 static bool room() { return g_outgoing.size()<384; }
+static void SK_CDECL effect(const net::Vec3* position,const Quat* orientation,float scale,uint32_t id)
+{
+    if(g_capture && !g_capture->sent && position && orientation) {
+        auto& m=*g_capture->event;
+        m.position=*position; m.orientation=*orientation; m.scale=scale; m.effect=id;
+        if(valid_effect(m)) { publish(m); g_capture->sent=true; }
+    }
+    if(g_visual && g_guest_effect) {
+        const auto& m=*g_guest_effect;
+        o_Effect(&m.position,&m.orientation,m.scale,m.effect);
+    } else o_Effect(position,orientation,scale,id);
+}
 static void own_callback(void* powerup)
 {
     void* native=object(powerup);
@@ -211,9 +248,15 @@ static void SK_CDECL explode(void* powerup,void* attacker)
     if(state.phase==Phase::Retired) return;
     state.phase=Phase::Retired;
     auto event=message(Detonated,id,0xFF,uint8_t(type(powerup))); state.revision=event.serial;
-    publish(event); ++g_detonated;
+    ++g_detonated;
+    EffectCapture capture{&event}; auto* previous=g_capture; g_capture=&capture;
     DamageScope damage;
     o_Explode(powerup,attacker);
+    g_capture=previous;
+    // The verified native implementation always invokes its presentation helper.
+    // A malformed native pose cannot be replicated safely; cancel through the
+    // existing deferred failure path instead of leaving peers in divergent state.
+    if(!capture.sent) g_invalid_effect=true;
 }
 static void SK_CDECL radius(void* source,void* attacker,float r,float damage,float force)
 {
@@ -316,11 +359,20 @@ static void apply(void* argument)
         }
         return;
     }
+    if(!host()) {
+        auto previous=g_states.find(m->id);
+        if(previous!=g_states.end() && (previous->second.phase==Phase::Retired || m->serial<=previous->second.revision)) return;
+    }
     void* item=C.object(m->id),*powerup=C.powerup(item);
     if(!powerup || type(powerup)!=m->type || !explosive(m->type)) {
         if(!host() && m->kind==Detonated) {
             auto& state=g_states[m->id];
-            if(m->serial>state.revision) { state.phase=Phase::Retired; state.revision=m->serial; C.retire(m->id); }
+            state.phase=Phase::Retired; state.revision=m->serial; C.retire(m->id);
+            // The native respawner may not have produced or bound this short-
+            // lived incarnation locally. Show the host's actual effect once;
+            // never destroy a same-marker sibling or a newer respawn by guess.
+            g_visual=true; o_Effect(&m->position,&m->orientation,m->scale,m->effect); g_visual=false;
+            ++g_detonated;
         } else ++g_rejected;
         return;
     }
@@ -352,14 +404,15 @@ static void apply(void* argument)
         }
         return;
     }
-    if(state.phase==Phase::Retired || m->serial<=state.revision) return;
     state.revision=m->serial;
     ApplyScope applying;
     if(m->kind==Detonated) {
         state.phase=Phase::Retired;
         // Retire before invoking native destruction so delayed snapshots cannot
         // recreate a consumed explosive. Native radius entry points are gated.
-        C.retire(m->id); g_visual=true; o_Explode(powerup,nullptr); g_visual=false; ++g_detonated;
+        C.retire(m->id); g_visual=true; g_guest_effect=m.get();
+        o_Explode(powerup,nullptr);
+        g_guest_effect=nullptr; g_visual=false; ++g_detonated;
     } else if(m->kind==Triggered) {
         state.phase=Phase::Triggered;
         // The native bomb helper supplies its fuse presentation. Its local
@@ -398,6 +451,7 @@ bool init(const SkHost* host_api,SkMod* mod,Ctx context)
         {"SporeCoop::Adventure::ExplosionDelayExpiry",(void*)explosion_expiry,(void**)&o_ExplosionExpiry},
         {"SporeCoop::Adventure::SchedulePowerupExplosion",(void*)schedule,(void**)&o_Schedule},
         {"SporeCoop::Adventure::ExplodePowerup",(void*)explode,(void**)&o_Explode},
+        {"SporeCoop::Adventure::ExplosionEffect",(void*)effect,(void**)&o_Effect},
         {"SporeCoop::Adventure::ExplosionRadius",(void*)radius,(void**)&o_Radius},
         {"SporeCoop::Adventure::ExplosionUnownedRadius",(void*)unowned_radius,(void**)&o_UnownedRadius},
         {"SporeCoop::Adventure::TickPowerupTimers",(void*)timers,(void**)&o_Timers},
@@ -414,7 +468,8 @@ bool available() { return g_ok; }
 void reset()
 {
     ++g_generation; g_run=0; g_serial=0; g_act=0;
-    g_visual=g_applying=g_overflow=g_overflow_reported=false; g_damage_depth=0;
+    g_visual=g_applying=g_overflow=g_overflow_reported=g_invalid_effect=false;
+    g_damage_depth=0; g_capture=nullptr; g_guest_effect=nullptr;
     g_states.clear(); g_native_fuses.clear(); g_requests.clear(); g_outgoing.clear(); g_waiting.clear(); g_last_request.clear();
     g_activated=g_detonated=g_throws=g_rejected=0;
 }
@@ -422,8 +477,12 @@ void tick()
 {
     if(!active()) { if(g_run) reset(); return; }
     sync_scope();
-    if(g_overflow) {
-        if(!g_overflow_reported) { g_overflow_reported=true; C.failed("Adventure explosive synchronization exceeded its reliable queue limit."); }
+    if(g_overflow || g_invalid_effect) {
+        if(!g_overflow_reported) {
+            g_overflow_reported=true;
+            C.failed(g_invalid_effect ? "Adventure explosive synchronization received an invalid native effect pose." :
+                "Adventure explosive synchronization exceeded its reliable queue limit.");
+        }
         return;
     }
     if(!held()) {
@@ -447,8 +506,12 @@ void on_message(uint8_t from,net::Reader& r)
     Message m; m.kind=r.u8(); m.run=get64(r); m.act=r.u8(); m.serial=get64(r);
     m.id={r.u32(),r.u32()}; m.player=r.u8(); m.type=r.u8();
     if(m.kind==Throw || m.kind==Thrown) m.impulse={r.f32(),r.f32(),r.f32()};
+    if(m.kind==Detonated) {
+        m.position={r.f32(),r.f32(),r.f32()};
+        m.orientation={r.f32(),r.f32(),r.f32(),r.f32()}; m.scale=r.f32(); m.effect=r.u32();
+    }
     if(!r.ok() || r.left() || !m.run || !m.serial || m.run!=C.run() || m.act<C.act() || m.act>=8 ||
-        !explosive(m.type) || !m.id.incarnation) return;
+        !explosive(m.type) || !m.id.incarnation || (m.kind==Detonated && !valid_effect(m))) return;
     if(host()) {
         if(!room() || m.act!=C.act() || (m.kind!=Activate && m.kind!=Arm && m.kind!=Throw) || from!=m.player || !connected(from) ||
             m.serial<=g_last_request[from]) return;

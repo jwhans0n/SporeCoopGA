@@ -25,6 +25,9 @@ def fn(name, address, prefix, returns, note, calls=(), vslots=()):
 # Return pairs are absolute return-instruction VA and stack bytes popped (0 = C3).
 # Source identity comes from upstream ModAPI plus the behavioral checks in the notes.
 FUNCTIONS = [
+    fn('SporeCoop::Adventure::ExplosionEffect', 0xF21C00, '83ec6056c744240400000000', [(0xF21D2F,0)],
+       'cdecl(Vec3* position,Quat* orientation,float scale,uint32 effect); actual authored explosion presentation, no damage/object destruction; F24730 passes its sampled native pose, radius-derived or object scale, and property effect ID',
+       [(0xF2486C,0xF21C00),(0xF21CC9,0x4AA060)]),
     fn('SporeCoop::Adventure::WorldBounds', 0xC8A630, '83ec3856578bf98b078b5068', [(0xC8A6D7,4)],
        'thiscall(spatial,Box24*out)->Box24*, ret4; six float min/max copied from local extents then transformed to world; native explosion F205A8/F205DB calls slot6C and averages min/max into centers',
        [(0xC8A6BF,0xC89970),(0xC8A6CB,0x409DD0)],
