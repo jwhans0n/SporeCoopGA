@@ -220,6 +220,41 @@ durable transaction across interruption. These passes do not establish that the
 full feature is complete.
 
 
+## Preview 4 party flow review (dc04)
+
+Source and installed-executable inspection on 2026-10-23 established the following
+limits. These findings do not represent an implemented fix or a new live fixture.
+
+* The coordinator commits after every native loaded acknowledgement, without an
+  acknowledgement of the beam-down Continue button. `adventure_native::loaded`
+  checks assets, avatar, mode and loading-screen visibility, not play state three.
+  The native Update jump table at `F1FF60` sends state three to `F1FB3B`.
+  Only that branch increments play `C0` and decrements `BC` (`F1FB56..F1FB6C`),
+  subject to its native cinematic/browser guards. Host goal snapshots supply
+  both authoritative clocks. A guest can enter local play before the host, and a
+  host state-three snapshot can set a guest to state three through `apply_goals`.
+  There is no all-player Continue barrier. The separate co-op recovery clock
+  tests the host time-manager pause flag, not the native play-state field.
+* Results message `070B18C7` with payload `+8=2` calls `EF1320` from
+  `F1C99B..F1C9A6`. This native replay method performs in-place Scenario teardown,
+  data reset and play reset (`EF0FE0`, `F45E70`, `F18F80`, `EF0E00`); it does
+  not pass through the Sporepedia loading hooks. The ended coordinator therefore
+  does not create a replacement run or restore preparation readiness.
+* Talk presentation is local to the initiating client. `count_goal` forwards a
+  guest's completed Talk objective to the host, which counts it once and can
+  advance the shared act. No conversation-start broadcast or party exit barrier
+  exists. Mirrored objective counts do not imply mirrored dialog presentation.
+* `net::PlayerState` carries no spatial scale. Scenario remote captains use
+  `creature_spawn` and are driven without copying the owner's actual scale.
+  This is a missing synchronization input consistent with the reported smaller
+  remote models; the precise native captain-to-NPC scale ratio is unmeasured.
+* Every party captain has the host-validated pickup/drop/give route. Pickup
+  rejects an item held by another captain. Actor snapshots carry transform,
+  health/death and social/relationship state, but no dedicated gate lock/open
+  state. Act changes and actor removal are synchronized separately. These paths
+  alone do not establish correct key consumption, gate animation or collision
+  synchronization for every native gate variant.
+
 ## Preview 3: native captain preparation and cancelled quickplay recovery (dc04)
 
 Verified against SHA256 dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37.
