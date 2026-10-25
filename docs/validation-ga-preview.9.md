@@ -249,3 +249,34 @@ record and verified RE notes. Profile/settings backup, installed hashes and
 visible startup evidence are appended to the repository report after delivery;
 the packaged report remains the pre-install validation record. No release or
 tag is created by this delivery.
+
+## Installed delivery
+
+Installed **0.7.3.2-ga-preview.9** after all game processes were closed.
+
+- Validated implementation commit: `a2775f34214adbeff9413cfa2c2abc55869ee74d`.
+- Independent cold backup: `D:\Code\SporeCoop\out\installed-fork-ga-preview9-20261025-033641`.
+- Matching Setup/pack completed successfully; all **14 payload paths** matched
+  expected hashes. Existing INI settings and the original native forwarding DLL
+  were preserved; updates remain pinned to this fork's published releases.
+- All **1392 checked personal profile files** were unchanged during installation,
+  preserving creations, saved captains and settings. Normal visible startup
+  happened afterward in the existing `coop_player1` / `coop_player2` profiles.
+- Both visible instances loaded preview 9 with **zero native faults**. Their
+  windows were arranged side by side without resizing. No party/adventure was
+  automatically started.
+- Package payload hashes, ZIP CRC and matching Setup/pack checks passed. The
+  installed stripped DLL's `.text` bytes match the final tested C7 DLL exactly.
+  The ZIP contains the pre-install report; this repository copy adds deployment.
+- No GitHub release or tag was created. The desktop launcher remains unchanged.
+
+| Delivered artifact | SHA-256 |
+|---|---|
+| ZIP | `678c7ead0021bff654aaaf4b39ee3d3e73e4c2d675526482a247aee21f746fa3` |
+| Pack | `fabbd9271003e535429d93832262b16c5c6a7a95ef9f30724529a94bb6fc7cbb` |
+| Setup | `87fb66f53a28e97b71c0f0f4369ebec0d41a06bfb925c0e9e6702fed81337c8f` |
+| Installed stripped co-op DLL | `55ba1a5be4c9ba8df221edb2fd5ad2c13c899772ad4313fab71010dda4ee4df8` |
+
+Local audit records: `out/lab/preview9-delivery/package-inspection.json`,
+`installed-code.json`, `runtime-visible.json`, and the backup's `installed.json`.
+Profiles and external creation resources are not included in the source commit.
