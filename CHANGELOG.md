@@ -223,8 +223,8 @@ each other, help each other, trade and finish the game together. Everything is o
 
 **0.7 cannot play with 0.6.x** (the network protocol changed): every player needs 0.7.0.
 
-**0.7.x is the last version for the old GOG 2016 build** (`SporeApp.exe` `922af7c7â€¦`). From 0.8 only
-the current GOG build (the 2024 update, `dc04aee5â€¦`, the code of the March 2017 patch that Spore
+**0.7.x is the last version for the old GOG 2016 build** (`SporeApp.exe` `922af7c7…`). From 0.8 only
+the current GOG build (the 2024 update, `dc04aee5…`, the code of the March 2017 patch that Spore
 ModAPI also targets) is supported: update the game through GOG.
 
 ### Space: new
@@ -307,8 +307,8 @@ the same game build.
 
 | Game build | System | Tested |
 |---|---|---|
-| GOG 2016 (`SporeApp.exe` SHA-256 `922af7c7â€¦`) | Linux, Wine / Bottles | Yes: developed on it; every stage, 2-4 players, the stability runs of 0.6.0 |
-| GOG 2024, the current GOG download (`dc04aee5â€¦`) | Windows 11 | Yes (0.6.1): every stage as host + guest, two game instances on one PC |
+| GOG 2016 (`SporeApp.exe` SHA-256 `922af7c7…`) | Linux, Wine / Bottles | Yes: developed on it; every stage, 2-4 players, the stability runs of 0.6.0 |
+| GOG 2024, the current GOG download (`dc04aee5…`) | Windows 11 | Yes (0.6.1): every stage as host + guest, two game instances on one PC |
 | GOG 2024 with a changed header (same code) | Windows 11 | Only with a modified copy of the GOG 2024 exe (0.6.2) |
 | GOG 2016 | Windows | Not tested (0.6.0 and older could not work on Windows, fixed in 0.6.1) |
 | GOG 2024 | Linux, Wine | Not tested |
@@ -346,7 +346,7 @@ need the same game build.
 
 ### The current GOG build and Windows
 - The current GOG download of the SPORE Collection (the 2024 update, `SporeApp.exe` 24 895 536
-  bytes, SHA-256 `dc04aee5â€¦`) is supported: it has its own symbol files
+  bytes, SHA-256 `dc04aee5…`) is supported: it has its own symbol files
   (`march2017_dc04aee5.sym`, `overrides_dc04aee5.sym`). Before, SporeKit found no symbols for it
   and the mod turned itself off. Players of one game still need the same build.
 - Windows: every game address was off by the exe's relocation when Windows loaded the exe at
@@ -424,7 +424,7 @@ guest far from the host swims in an empty pool; the guest's social game in Creat
 The first public release: co-op in every stage of Spore, with a shared world, everybody's own
 creations and mechanics that only work together.
 
-Tested with the GOG "SPORE Collection" build (`SporebinEP1\SporeApp.exe`, SHA-256 `922af7c7â€¦`).
+Tested with the GOG "SPORE Collection" build (`SporebinEP1\SporeApp.exe`, SHA-256 `922af7c7…`).
 Install: [docs/INSTALL.md](https://github.com/WoodyWizard/SporeCoop/blob/main/docs/INSTALL.md) - extract the zip into `SporebinEP1`, run
 `install.bat`. All players need this same version.
 
@@ -453,7 +453,7 @@ Install: [docs/INSTALL.md](https://github.com/WoodyWizard/SporeCoop/blob/main/do
 - The host's "game saved" box could stay open and pause the host.
 - The Co-op menu item could hang the game after several returns to the galaxy menu.
 - Cell teleports and respawns landed metres away.
-- World transfer is about 3Ã— faster (128-packet acknowledgement window).
+- World transfer is about 3× faster (128-packet acknowledgement window).
 
 ### Known issues
 See [docs/known-issues.md](https://github.com/WoodyWizard/SporeCoop/blob/main/docs/known-issues.md): a rejoin over a very lossy connection can take
