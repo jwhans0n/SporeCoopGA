@@ -194,3 +194,39 @@ Ignored local evidence is under `out/lab/`: `smooth-actors-preview9-native-motio
 directories. Build and verification logs are under
 `out/smooth-*`; the committed harness is
 `tools/tests/coop_adventure_actor_motion.py`.
+
+## Packaging and installed delivery
+
+Installed **0.7.3.3-ga-preview.10** with all game processes closed. All hidden
+native attempts ended and both lab games were verified in native galaxy menus
+before closing only those owned processes. Personal games had already exited
+independently; no personal adventure attempt was interrupted.
+
+- Validated implementation commit: `fbc19da`.
+- Independent cold backup:
+  `D:\Code\SporeCoop\out\installed-fork-ga-preview10-20261025-133743`.
+- Matching Setup/pack completed successfully. All **14 payload paths** matched
+  expected hashes. Existing INI settings, original forwarding DLL, launcher and
+  fork release update URL were preserved.
+- All **1,397 checked personal profile files** remained unchanged during
+  installation, preserving creations, captains and settings. Normal startup
+  occurred afterward in the existing `coop_player1` / `coop_player2` profiles.
+- Both visible instances loaded preview 10 with **zero native faults** and
+  matching loaded shadow DLL hashes. Windows were arranged side by side without
+  resizing. No party or adventure was automatically started.
+- Package inventory, payload SHA-256, ZIP CRC, complete staged-file equality,
+  documents, symbols and matching Setup/pack checks passed. Installed stripped
+  DLL `.text` hash/layout matches the native-tested C5 code exactly.
+- The ZIP contains the pre-install validation record. This repository copy
+  adds delivery evidence. No GitHub release or tag was created.
+
+| Delivered artifact | SHA-256 |
+|---|---|
+| ZIP | `eb0b6aef1e8a9262cbd1a55091ae8cb497a9b7e302df369ae87c88a75f28487c` |
+| Pack | `b3fca53509817b1a354d1dba9dee36865771eed497cda651737221b1e7f958f0` |
+| Setup | `4f45523c4d0d8733371a45ea6a944d472958ff2ac01066459650d99c469d177e` |
+| Installed stripped co-op DLL | `71ed292cb5caafcec7ed4d3b4b7920f31fe060d8a5a4b1db73104a2180f5d1fe` |
+
+Local audit records: `out/lab/preview10-delivery/package-inspection.json`,
+`installed-code.json`, `runtime-visible.json`, and the backup's `installed.json`.
+Personal profiles and external creation resources are excluded from source control.
