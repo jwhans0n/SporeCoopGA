@@ -151,3 +151,42 @@ Natural enemy acquisition and damage do not extend that separate input claim.
 Ignored evidence is under `out/lab/ga-enemy-targeting-re` and the baseline and
 candidate directories above. The committed harness is
 `tools/tests/coop_adventure_enemy_targeting.py`.
+
+
+## Installed delivery
+
+Final source build `870e85ccb2526e7648aca569e7fffbdb4db376e452c6ca9a3b2d50a4e408f6db`
+also passed a fresh guest smoke: **48/48 target samples**, six independent native
+getter checks, and natural health **232 to 185.64998**, matching owner and host
+puppet. Both lab games returned to native menus with zero faults before closing
+only those recorded private processes. Personal sessions had already exited;
+no personal adventure attempt was interrupted.
+
+- Validated implementation commit: `3de1dca200c1224b1f65b8498cb3f927902d9fbb`.
+- Installed **0.7.3.4-ga-preview.11**, protocol **14**, using matching Setup/pack.
+- Independent cold backup: `D:\Code\SporeCoop\out\installed-fork-ga-preview11-20261025-152322`.
+- All **14 payload paths** matched expected hashes. Existing settings, original
+  forwarding DLL, launchers and fork release update URL were preserved.
+- All **1,401 checked personal profile files** were unchanged during
+  installation, preserving creations, saved captains and settings. Normal startup
+  occurred afterward in the existing `coop_player1` / `coop_player2` profiles.
+- Both visible sessions loaded the exact packaged shadow DLL with native adapter
+  available and **zero faults**. Windows were arranged side by side without
+  resizing. No party or adventure was automatically started.
+- Package inventory, SHA-256, ZIP CRC, complete stage equality, documentation,
+  symbols and matching Setup/pack checks passed. Installed executable `.text`
+  bytes and layout match native-tested C3 exactly.
+- The ZIP contains the pre-install validation report. This repository copy adds
+  delivery evidence. No GitHub release or tag was created.
+
+| Artifact | SHA-256 |
+|---|---|
+| ZIP | `ef82d535bcc6b85776d61d27f81eb23ee33c5b4a1579a3d2d7c59d2aae0225a9` |
+| Pack | `25128c7515e7a6a4e589df639f6df558b1c9234487873224592f161362be9251` |
+| Setup | `4fca5dc5641d288e4d52e223feaceaffc371520662e4c6745cbe39e4739a36b4` |
+| Installed stripped co-op DLL | `aacf4ec7a6b27d2143e6b7a6dc545a9c8ba6a569b21062ac8935107c8b36c519` |
+
+Local audit records: `out/lab/preview11-delivery/package-inspection.json`,
+`installed-code.json`, `runtime-visible.json`, `visible-windows.json`, and the
+backup's `installed.json`. Personal profiles and creations are excluded from
+source control.
