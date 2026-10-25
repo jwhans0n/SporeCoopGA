@@ -1,299 +1,178 @@
 <p align="center">
-  <img src="docs/media/banner.svg" alt="SporeCoop - play every stage of Spore together" width="100%">
+  <img src="docs/media/banner.svg" alt="SporeCoopGA - Co-op Galactic Adventures for Spore." width="100%">
 </p>
 
 <p align="center">
-  <a href="https://github.com/jwhans0n/SporeCoopGA/releases"><img src="https://img.shields.io/github/v/release/jwhans0n/SporeCoopGA?include_prereleases&label=download&color=8ea6ff" alt="Latest release"></a>
-  <a href="https://github.com/jwhans0n/SporeCoopGA/actions/workflows/build.yml"><img src="https://github.com/jwhans0n/SporeCoopGA/actions/workflows/build.yml/badge.svg" alt="Build"></a>
+  <a href="https://github.com/jwhans0n/SporeCoopGA/actions/workflows/build.yml?query=branch%3Amain"><img src="https://github.com/jwhans0n/SporeCoopGA/actions/workflows/build.yml/badge.svg?branch=main" alt="Build"></a>
+  <img src="https://img.shields.io/badge/status-experimental%20GA%20preview-f0b44a" alt="Experimental GA preview">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-74c867" alt="MIT license"></a>
-  <img src="https://img.shields.io/badge/game-Spore%20GA%20(GOG%20%7C%20Steam)-f0b44a" alt="Spore Galactic Adventures (GOG | Steam)">
-  <img src="https://img.shields.io/badge/OS-Windows%20%7C%20Linux-5aa9e6" alt="Windows | Linux">
-  <img src="https://img.shields.io/badge/players-2%E2%80%934-ff7a5f" alt="2–4 players">
 </p>
 
-<!-- support:top:start -->
-<p align="center">
-  <a href="https://buymeacoffee.com/chamomilewoods"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-chamomilewoods-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black" alt="Buy me a coffee"></a>
-</p>
-<p align="center"><b>☕ Like this project? <a href="https://buymeacoffee.com/chamomilewoods">Support the author on Buy Me a Coffee</a></b></p>
-<!-- support:top:end -->
+# SporeCoopGA
 
-**SporeCoopGA** is a fork of [SporeCoop by WoodyWizard](https://github.com/WoodyWizard/SporeCoop).
-Preview `0.7.3.0-ga-preview.7` integrates upstream 0.7.2.1 with Galactic Adventures
-previews 1-6: shared Sporepedia adventures, saved captains, an adventure lobby,
-shared scenes and interactions, Replay and reduced static-object traffic.
-The native adventure adapter requires the exact GOG `dc04aee5` executable.
-Every player needs this fork version and protocol 10; upstream clients cannot join.
-See the [GA guide](docs/GALACTIC-ADVENTURES.md) for setup and tested limits.
+**Play Spore: Galactic Adventures together.** Form a party, choose your captains,
+and enter the same adventure from Sporepedia.
 
-**SporeCoop** is a multiplayer mod for Spore. Two to four friends evolve **in one world**, from the
-tide pool to the galaxy: everybody plays their own creature, the host's world is shared with the
-guests, and every stage has mechanics that only work together - revive a knocked-out cell, hunt as
-a pack, besiege a city from two sides, repair your partner's ship before it explodes.
+This fork focuses on co-op adventure play, with **shared live adventure editing**
+next on the roadmap and collaborative editing in other Spore editors later.
+Shared editing is planned and is not available in the current preview.
 
-<p align="center">
-  <img src="docs/media/tribe_host.jpg" alt="Tribe stage: Alice's and Bob's chiefs, a pincer attack notification" width="80%">
-</p>
+SporeCoopGA builds on [SporeCoop](https://github.com/WoodyWizard/SporeCoop) by
+[WoodyWizard](https://github.com/WoodyWizard). The current build is
+**`0.7.3.0-ga-preview.7`**, an experimental preview using protocol **10**.
 
 ## Contents
 
-- [Features](#features) · [Every stage together](#every-stage-together) · [Install](#install) ·
-  [Compatibility](#compatibility) · [How to play](#how-to-play) · [FAQ](#faq) · [Status and roadmap](#status-and-roadmap) ·
-  [Building from source](#building-from-source) · [Credits](#credits)
+- [Current GA features](#current-ga-features)
+- [Installation](#installation)
+- [Playing together](#playing-together)
+- [Compatibility and status](#compatibility-and-status)
+- [Roadmap](#roadmap)
+- [Development](#development)
+- [Credits](#credits)
 
-## Features
+## Current GA features
 
-- **Co-op from the main menu.** A *Co-op* item in Spore's own galaxy menu: host a game, find
-  friends on your network or type an address, chat and get ready in the lobby. **F9** opens it in game.
-- **One world.** The host's save is sent to every guest and loaded automatically. The host
-  simulates creatures, tribes, cities and ships; guests see the same world and act through the host.
-- **Your own creations.** Everybody plays their own creature, cell and spaceship from
-  *My Creations*, and the others see it.
-- **Experimental Galactic Adventures.** This fork includes Sporepedia adventure
-  parties, saved personal captains, shared captain cards and host difficulty settings.
-  The native adapter requires the exact GOG `dc04aee5` file; Steam adventures are
-  unvalidated and disabled. See the [GA guide](docs/GALACTIC-ADVENTURES.md).
-- **Evolve together.** Entering an editor or the next stage starts a vote; it begins when everybody
-  is ready, and the evolved world goes to everybody.
-- **Native look.** Windows, fonts and slide-in notifications use Spore's own interface.
-- **Safe for your saves.** A guest keeps the host's world in a separate slot; your own saves are
-  never overwritten.
+- **Shared Sporepedia adventures.** Form a party of up to four players, then use
+  an adventure's normal Play button. Supported missing adventure and captain
+  resources transfer during preparation; stock resources and cached transfers are reused.
+- **Your saved captain.** Select an existing captain or use the native creation,
+  naming and saving screens. Adventures with an authored captain keep that restriction.
+- **A shared adventure lobby.** Review the adventure card, captain portraits,
+  transfer progress and settings. Everyone, including the host, explicitly presses Ready.
+- **Shared objectives and scenes.** Host-authoritative progress keeps the party
+  in the same act. Beam-down Continue waits for everyone; conversation pages
+  advance independently, with a group confirmation before leaving.
+- **Synchronized interactions.** Shared keys and gates, explosives, crates,
+  collector-only power upgrades and independent teleporters follow the adventure
+  rules. The host controls authoritative damage and shared object state.
+- **Replay and recovery.** Replay returns to the shared lobby with saved captains
+  and everyone unready. Cancelling preparation restores the native menus for retry.
+- **Adventure performance work.** The preview retains the actor-memory validation
+  FPS fix. Unchanged static transforms stop recurring after their initial baseline;
+  moving actors continue receiving spatial updates.
 
-<table>
-  <tr>
-    <td width="50%"><img src="docs/media/ui_lobby_menu.jpg" alt="The co-op window in the galaxy menu: hosting a game"></td>
-    <td width="50%"><img src="docs/media/creature_guest_window.jpg" alt="The co-op lobby in game (F9): players, stage, ping, ready, own creature"></td>
-  </tr>
-  <tr>
-    <td>The <i>Co-op</i> window in the galaxy menu: host a game or join one.</td>
-    <td>In game, <b>F9</b>: players, stage, ping, readiness, chat and your own creature.</td>
-  </tr>
-</table>
+See the [GA guide](docs/GALACTIC-ADVENTURES.md) for interaction rules, settings,
+asset transfer, Replay and current limits.
 
-## Every stage together
+## Installation
 
-| Stage | What you do together |
-|---|---|
-| 🦠 **Cell: Symbiosis** | One tide pool. A killing bite only knocks you out for 10 s: a partner who swims right next to you revives you, otherwise you respawn as a small cell next to them. |
-| 🦎 **Creature: Pack** | Hunt the same animals for +25 % damage; when you are about to die near a partner, the pack saves you; partners heal each other. |
-| 🔥 **Tribe: Chiefs** | The tribe's members are split between players, each with their own chief (+20 % aura). Attack a tribe from two sides for +50 % (a *pincer*), perform together to make friends faster, kill the epic creature together for 80 food. |
-| 🏙️ **Civilization: Governors** | Every player governs their own cities and vehicles and picks a role: military, economic or religious. Two players besieging one city take it 50 % faster; a city under attack calls the others; superweapons fire only after a vote. |
-| 🚀 **Space: A galaxy together** | Each of you rules your own territory in one galaxy. See your partners on the galaxy map and fly to them with a click, defend each other's colonies, trade spice and give tool charges, take co-op contracts (a pirate armada that needs two ships, joint surveys), share one diplomacy toward the NPC empires and reach the galactic core together. A destroyed ship next to a partner is only disabled for 20 s. Or play as **rivals**: own budgets, alliances, wars, ship against ship. |
+Every player needs **Spore with Galactic Adventures**, the supported GOG executable
+described below, and **the same SporeCoopGA build**.
 
-<table>
-  <tr>
-    <td width="50%"><img src="docs/media/cell_host.jpg" alt="Cell stage: Bob's cell is knocked out, translucent, with a KO countdown; Alice is next to him"></td>
-    <td width="50%"><img src="docs/media/creature_host.jpg" alt="Creature stage: Alice and Bob's creatures in one pack"></td>
-  </tr>
-  <tr>
-    <td><b>Cell.</b> Bob is knocked out: Alice has 10 s to swim right next to him and revive him.</td>
-    <td><b>Creature.</b> Two players' own creatures in one pack, names above them.</td>
-  </tr>
-  <tr>
-    <td><img src="docs/media/civ_host.jpg" alt="Civilization stage: the capital is under attack, everybody is told"></td>
-    <td><img src="docs/media/space_host.jpg" alt="Space stage: Bob's ship is disabled, a REPAIR beacon shows where it is"></td>
-  </tr>
-  <tr>
-    <td><b>Civilization.</b> A city is under attack: every player gets the alarm and a beacon.</td>
-    <td><b>Space.</b> Bob's ship is disabled - a <i>REPAIR</i> beacon and a 20 s countdown.</td>
-  </tr>
-</table>
+**There is no published GitHub release yet.** Install the current development preview
+from this fork:
 
-## Install
+1. Open the [build workflow for `main`](https://github.com/jwhans0n/SporeCoopGA/actions/workflows/build.yml?query=branch%3Amain),
+   select the latest successful run for `main`, and download its **`sporecoop-zip`**
+   artifact. GitHub requires you to sign in to download workflow artifacts.
+2. Extract the downloaded artifact archive. Keep **`SporeCoopSetup.exe`** beside
+   its matching **`SporeCoop-<version>.pack`** file.
+3. Close Spore, run that setup, select the **SPORE** folder containing
+   `SporebinEP1`, and install.
+4. Start Galactic Adventures (`SporebinEP1\SporeApp.exe`). The galaxy menu should
+   contain **Co-op**.
 
-You need **Spore with Galactic Adventures** from **GOG** or **Steam**, on Windows or on Linux with
-Wine (Bottles, Lutris, Proton). Which versions are tested: [Compatibility](#compatibility). Every
-player installs the same SporeCoop version. Co-op adventures require the exact GOG
-build; Steam support covers the base stages.
+The artifact also contains a preview zip with `install.bat` for manual installation.
+Full setup, game-build checks, networking and troubleshooting are in the
+[installation guide](docs/INSTALL.md). Use this fork's packages for GA support.
 
-For the GA preview, download its release zip and use `install.bat`, or run the
-included setup beside its matching `.pack` file. A standalone setup checks the
-latest regular release and does not discover prereleases.
+**Updates use published [GitHub Releases](https://github.com/jwhans0n/SporeCoopGA/releases),
+not branches or Actions artifacts.** The current updater skips prereleases and does
+not order preview suffixes. Install GA preview updates manually using their matching
+package; merging new source into `main` does not update an installed game.
 
-1. Download **`SporeCoopSetup.exe`** from [Releases](https://github.com/jwhans0n/SporeCoopGA/releases)
-   and run it (on Linux: inside the game's Wine prefix, e.g. Bottles *Run Executable...*).
-2. It finds the game (GOG or Steam), shows which build you have, and **Install** downloads the
-   newest release from GitHub and checks it. Steam: if it does not find the game, choose the
-   Spore folder in `steamapps\common` (the one with `SporebinEP1`).
-3. Start Spore: the galaxy menu now has a **Co-op** item.
+## Playing together
 
-**Updates** come from this fork's releases. Install GA previews manually from the
-[Releases page](https://github.com/jwhans0n/SporeCoopGA/releases): the updater does not
-order preview suffixes. For regular releases, SporeCoop checks when the game starts, and the *Co-op* window offers an **Update** button (`[update] check=0` in `mods\coop.ini`
-turns the check off). The setup updates and uninstalls too. Prefer files? The release zip has
-`install.bat` / `uninstall.bat`.
+1. From the galaxy menu, the host opens **Co-op** and hosts a party. Other players
+   join before the adventure begins. **F9** opens party and chat controls.
+2. The host chooses the difficulty in **Adventure settings**.
+3. The host opens the adventure in **Sporepedia** and presses **Play**.
+4. Each player selects a captain, or creates, names and saves a new one using the
+   native captain screens.
+5. Review the adventure and captain cards. Wait for preparation to finish, then
+   **every player presses Ready**, including the host.
+6. After beam-down, **everyone presses Continue**. Gameplay and adventure clocks
+   wait for the whole party.
 
-The full guide (checking your game build, Linux, installing by hand, the internet, updating,
-uninstalling, troubleshooting) is in **[docs/INSTALL.md](docs/INSTALL.md)**.
+Changing a captain clears readiness. Cancelling preparation keeps successfully
+saved captains and returns the party to the menu. After results, a shared Replay
+opens another preparation lobby once everyone accepts their results.
 
-## Compatibility
+For LAN discovery, internet connections and port forwarding, see
+[networking in the installation guide](docs/INSTALL.md#7-playing-over-the-internet).
 
-SporeCoop runs the Galactic Adventures game, `SporebinEP1\SporeApp.exe`. Where it has been tested:
+## Compatibility and status
 
-| Game version | `SporeApp.exe` | Windows 11 | Linux (Wine / Proton) |
-|---|---|---|---|
-| **GOG**, the current download (2024 update) | 24 895 536 bytes, `dc04aee5…` | ✅ 0.6.1: every stage as host + guest; 0.7.1, 0.7.2: with a Steam player | ✅ 0.7.0: the full automated suite (every stage, every Space feature) |
-| **Steam**, Spore + Galactic Adventures (October 2024 update) | 25 066 744 bytes, `3010a413…` | ✅ 0.7.1, 0.7.2: Steam guest + GOG host (Creature), Steam offline ¹ | ✅ 0.7.1: Steam + Proton, offline |
-| **GOG 2016**, the older GOG download | 24 888 320 bytes, `922af7c7…` | ❔ not tested | ✅ up to 0.7.0: SporeCoop was developed on it ² |
-| EA app / Origin, disc | other files | ❌ not supported yet | ❌ not supported yet |
+Native co-op adventures currently require the **exact GOG 2024 executable**:
+`SporebinEP1\SporeApp.exe`, 24,895,536 bytes, with SHA-256:
 
-¹ With Steam **online** its overlay can keep the game's frames from the mod (no *Co-op* item,
-[issue #4](https://github.com/WoodyWizard/SporeCoop/issues/4)). Since 0.7.2 the mod then takes its
-frames from the game loop; tested by simulating that case, not yet with the real overlay.
-² 0.7.x is the last version for the GOG 2016 build; from 0.8 only the current GOG build (and Steam,
-which is the same game): update the game through GOG.
-
-**Playing together:** GOG 2024 and Steam players can play together (the same game code). A GOG
-2016 player cannot join a GOG 2024 or Steam host (the host turns away another build). Every player
-needs this fork's protocol 10. Upstream 0.7.0-0.7.2.1 clients use protocol 7
-and cannot join this preview. The historical matrix above describes upstream
-base-stage tests, not new Steam adventure validation.
-
-**Not tested yet:** two PCs over the internet with Windows on 0.7 (the network code is the same
-as on Linux, where it was tested), the EA app and disc versions. Which build you have:
-`SporeCoopSetup.exe` shows it, or see [INSTALL.md, section 2](docs/INSTALL.md#2-check-your-game-build).
-Tried another version? Please tell us in an [issue](https://github.com/jwhans0n/SporeCoopGA/issues)
-with `mods\logs\sporekit.log`.
-
-## How to play
-
-For **Galactic Adventures in this fork**, follow the
-[GA guide](docs/GALACTIC-ADVENTURES.md): form the lobby, choose Adventure settings,
-then use Sporepedia's normal Play button. This native adapter currently requires
-the verified `dc04aee5` executable.
-
-**Host**
-
-1. Galaxy menu → **Co-op** → type your name → **Host**.
-2. Load a save or start a new game. The window shows the addresses your friends can use.
-
-**Guest**
-
-1. Galaxy menu → **Co-op** → type your name.
-2. Click the host under *Games on your network*, or type the host's address (e.g. `100.64.12.7` on
-   Tailscale) → **Join**.
-3. The host's world arrives and loads by itself; you appear next to the host with your own creature.
-
-**In game**
-
-| Key / command | What it does |
-|---|---|
-| **F9** | the co-op window: players, stage, ping, readiness, chat, *Send my world*, *Leave* |
-| *I'm ready* | agree to evolve (editor, next stage) |
-| `Ctrl+Shift+C` → `coop status` | session details in the cheat console |
-| `coop say <text>` | chat |
-| `coop ping` | show everybody the place under your mouse (Tribe, Civilization) |
-| `coop give` | give your selected tribe members, vehicles or the opened city to a partner |
-| `coop role 1`…`3` | Civilization role: military, economic, religious |
-
-**Example: two friends over the internet**
-
-```
-Alice (GOG) and Bob (Steam) install Tailscale and the same SporeCoop version.
-Alice: Co-op → "Alice" → Host → loads her Tribe save.
-       The window says: friends connect to 100.64.12.7:47810
-Bob:   Co-op → "Bob" → 100.64.12.7 → Join.
-       Alice's tribe loads; Bob gets his share of the members and his own chief.
-Both:  F9 → I'm ready when the tribe is ready for Civilization.
+```text
+dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37
 ```
 
-## FAQ
+- **Verified GA configuration:** Windows with that exact executable. Steam and
+  other executables are not enabled for the native GA adapter; Linux GA play
+  remains unvalidated.
+- **Matching clients:** all participants need this fork build and protocol 10.
+  Upstream SporeCoop 0.7.0-0.7.2.1 clients use a different protocol and cannot join.
+- **Entry and joining:** adventures start from Sporepedia. Space-stage adventure
+  entry is outside this preview. Late joins and reconnects wait for the next attempt.
+- **Validation scope:** the current integration passed 13 native acceptance groups
+  on two isolated Windows profiles. Earlier previews include four-player checks;
+  the merged build has not had a fresh four-player integration run or a complete
+  adventure playthrough campaign.
 
-**Which game versions does it work with?** The current GOG and Steam versions of Spore + Galactic
-Adventures, on Windows and Linux: see [Compatibility](#compatibility). The Steam version is the GOG
-2024 game under Steam's DRM: SporeCoop waits until the game has unpacked itself and checks the code,
-so Steam and GOG players can play together. The EA app and disc versions are not supported yet
-(their `SporeApp.exe` is a different file: the game runs, co-op stays off). Every test, build by
-build: [INSTALL.md, section 2](docs/INSTALL.md#where-sporecoop-has-been-tested).
-This describes base-stage support. The native co-op adventure adapter requires
-the exact GOG `dc04aee5` file; Steam adventures remain disabled and unvalidated.
+The preview does not establish compatibility with every custom adventure, palette
+or objective. Read the [integration validation report](docs/integration-ga-upstream-0.7.2.1.md)
+for exact evidence and limits, and the [known issues](docs/known-issues.md) for
+recorded problems.
 
-**Do all players need the game?** Yes, every player needs their own copy of Spore + Galactic
-Adventures (GOG or Steam) and the same SporeCoop version.
+## Roadmap
 
-**What happens to my saves?** Nothing: the host saves before sending its world; guests keep the
-host's world in a separate save slot, and a guest's own save of the same planet is moved to
-`Games-sporecoop-backup` first.
+1. **Strengthen co-op adventure play (ongoing).** Broader adventure compatibility,
+   complete playthrough coverage, and extended multiplayer testing.
+2. **Shared live Adventure Editor (planned).** Multiple players create and edit
+   the same adventure together in real time.
+3. **Additional Spore editors (later, planned).** Extend collaborative editing
+   after the Adventure Editor.
 
-**Can we play in different stages?** The host decides the stage; a guest who is somewhere else is
-brought to the host's world.
+These are goals without announced dates. Shared adventure editing and other
+collaborative editors are not implemented in the current preview.
 
-**Does it change the game files?** It replaces `steam_api.dll` with a small loader (the original
-is kept as `steam_api_orig.dll` and still used) and adds `sporekit.dll`, a `mods` folder and
-`Data\SporeCoop.package`. `uninstall.bat` restores everything.
+## Development
 
-**Is it safe?** The whole source is here, and the release files are built from it by
-[GitHub Actions](https://github.com/jwhans0n/SporeCoopGA/actions). The mod listens on UDP 47810 only
-while you host; its debug console accepts connections from your own PC only (127.0.0.1). A world
-or creature received from another player is checked before it touches the disk: plain file names
-inside the save slot only, limited sizes. Updates are downloaded only from this repository's GitHub releases over HTTPS, checked
-against the release's SHA-256 sums, and may only replace SporeCoop's own files.
+SporeCoopGA inherits SporeCoop's multiplayer core, SporeKit runtime and Cell-to-Space
+systems. See the [original project](https://github.com/WoodyWizard/SporeCoop) for
+its base-stage feature overview. The fork's focus and validation are GA-specific;
+inherited upstream compatibility and test history are separate from GA results.
 
-## Status and roadmap
-
-Fork preview `0.7.3.0-ga-preview.7` integrates Galactic Adventures previews 1-6
-on upstream 0.7.2.1. Adventure fixture results and remaining compatibility limits
-are in the [GA guide](docs/GALACTIC-ADVENTURES.md).
-
-Upstream 0.7.2.1 provides co-op in every stage for up to 4 players, and a Space stage built for playing
-together (the F9 window's **Space** page: partners on the map, allied colonies, trade, contracts,
-shared diplomacy, the galactic core together, rivals mode). Tested automatically on real game
-instances: 50+ scenario tests with real clicks, bots that play every stage through real input for
-hours, 4-player sessions with rejoins, a chaos bot and simulated bad networks
-([stability report](docs/stability-report.md)).
-Known issues: [docs/known-issues.md](docs/known-issues.md).
-
-Next:
-
-- [ ] easier internet play (no VPN or port forwarding)
-- [ ] tests with the EA app build, and of the Steam build with Steam online (overlay)
-- [ ] four-player tests of the 0.7 Space features
-- [ ] complete adventure playthroughs, broader custom palettes and extended four-player play
-
-## Building from source
-
-SporeCoop is built on Linux with [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (32-bit
-Windows targets) and tested under Wine/Bottles.
+The project builds 32-bit Windows binaries on Linux with
+[llvm-mingw](https://github.com/mstorsjo/llvm-mingw).
 
 ```bash
-git clone https://github.com/jwhans0n/SporeCoopGA.git   # inside the SPORE game folder
+git clone https://github.com/jwhans0n/SporeCoopGA.git
 cd SporeCoopGA
-make LLVM_MINGW=/path/to/llvm-mingw   # steam_api.dll (loader), sporekit.dll, coop.dll, SporeCoop.package
-make test                             # unit tests (netcode, save format) + symbol check
-tools/package.sh                      # out/dist/SporeCoop-<version>.zip
+make LLVM_MINGW=/path/to/llvm-mingw
+make test
+tools/package.sh
 ```
 
-| Part | What it is | Where |
-|---|---|---|
-| loader | `steam_api.dll` proxy: the game loads it and it starts SporeKit | [`loader/`](loader/) |
-| SporeKit | runtime inside the game: symbols, hooks, console, input, hot reload, crash and hang logs | [`sporekit/`](sporekit/), [`sdk/`](sdk/include/) |
-| coop | the mod: sessions, world sharing, one module per stage, the co-op window | [`mods/coop/`](mods/coop/) |
-| symbols | addresses of game functions for this build (2 400+ ported, 240 verified by hand) | [`data/symbols/`](data/symbols/) |
-| tests | two-instance scenario tests, chaos bot, bad-network proxy, the parallel test lab | [`tools/tests/`](tools/tests/), [`tools/lab.py`](tools/lab.py) |
-
-Documentation: [architecture](docs/01-architecture.md), [netcode](docs/04-netcode.md),
-[reverse engineering](docs/05-re-notes.md) and [per-stage notes](docs/re/),
-[testing](docs/06-testing.md), [development pipeline](docs/10-dev-pipeline.md):
-all in [docs/](docs/README.md). Contributions are welcome: open an issue first for bigger changes.
+Start with the [documentation index](docs/README.md),
+[architecture](docs/01-architecture.md), [netcode](docs/04-netcode.md),
+[testing guide](docs/06-testing.md), and [reverse-engineering notes](docs/re/).
+Use isolated test profiles for development.
 
 ## Credits
 
-- Original SporeCoop built by [WoodyWizard](https://github.com/WoodyWizard).
+- Original SporeCoop and SporeKit by [WoodyWizard](https://github.com/WoodyWizard).
+  [Support the original SporeCoop author](https://buymeacoffee.com/chamomilewoods).
 - Galactic Adventures fork maintained by [jwhans0n](https://github.com/jwhans0n).
-- Function names and addresses were ported from [Spore ModAPI](https://github.com/Spore-Community/Spore-ModAPI)
-  by the Spore modding community; hooks by [MinHook](https://github.com/TsudaKageyu/minhook).
-  Details and licenses: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-- Spore is a trademark of Electronic Arts Inc. SporeCoop is an unofficial fan mod, not affiliated
-  with or endorsed by Electronic Arts or Maxis. It contains no game files.
+- Game function names and addresses draw on
+  [Spore ModAPI](https://github.com/Spore-Community/Spore-ModAPI) and the Spore
+  modding community. Hooks use [MinHook](https://github.com/TsudaKageyu/minhook).
+  See [third-party notices](THIRD_PARTY_NOTICES.md) for details.
+- Spore is a trademark of Electronic Arts Inc. This is an unofficial fan mod,
+  unaffiliated with Electronic Arts or Maxis. It contains no game files.
 
 Licensed under the [MIT license](LICENSE).
-
-<!-- support:bottom:start -->
-## ☕ Support the author
-
-If this project is useful to you, you can support the author - it really helps to keep working on it:
-
-**https://buymeacoffee.com/chamomilewoods**
-
-<a href="https://buymeacoffee.com/chamomilewoods"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="50"></a>
-<!-- support:bottom:end -->

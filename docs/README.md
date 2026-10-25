@@ -1,18 +1,40 @@
-# SporeCoop Documentation
+# SporeCoopGA Documentation
 
-1. [Architecture and loading into the game](01-architecture.md) - how code gets into the Spore process, lifecycle, symbol database.
-2. [SporeKit and the mod toolkit](02-modkit.md) - mod API, console, `sporectl`, hot reload, screenshots, input.
-3. [Co-op gameplay](03-gameplay.md) - what it looks like for players, shared-world rules, stages.
-4. [Netcode](04-netcode.md) - protocol, synchronization, interpolation, host authority.
-5. [Reverse engineering](05-re-notes.md) - methodology (REA + porting ModAPI addresses), discovered functions and structures.
-6. [Testing](06-testing.md) - Bottles, two game instances, fake peer, automated tests.
-7. [Co-op in all modes](07-modes.md) - mode adapters, places, shared resources, phase transitions.
-8. [Interface](08-ui.md) - "Co-op" entry in the main menu, connection window, lobby, LAN game discovery (native Spore windows).
-9. [Playing together in all phases](09-coop-design.md) - the "one world, one team" concept, what's done, engine breakdowns in [re/](re/).
-10. [Development pipeline](10-dev-pipeline.md) - test lanes, the lab, warm resets, invariants, chaos bot, bad network, fixtures, git and knowledge rules. Bugs not fixed yet: [known-issues.md](known-issues.md).
+SporeCoopGA focuses on playing Galactic Adventures together. Shared live
+Adventure Editor support, followed by other Spore editors, is planned in the
+[roadmap](../README.md#roadmap).
 
-Target game versions: GOG "SPORE Collection", `SporebinEP1/SporeApp.exe`:
-the 2016 build, SHA-256 `922af7c7908af2614b9caca2ffb1ec2353442022fd124866105724acaa24c26e`,
-24,888,320 bytes (not supported by Spore ModAPI, which only knows Disk and March2017, so its
-addresses are ported separately), and the 2024 build, SHA-256 `dc04aee5…`, 24,895,536 bytes, which
-has the March2017 layout - see section 5. Where each was tested: [INSTALL.md section 2](INSTALL.md#where-sporecoop-has-been-tested).
+## Galactic Adventures
+
+- [Installation](../README.md#installation): get the matching fork build for every player.
+- [Galactic Adventures co-op guide](GALACTIC-ADVENTURES.md): start from Sporepedia, select saved captains, ready up and play together.
+- [Integration validation report](integration-ga-upstream-0.7.2.1.md): current build evidence, compatibility and remaining validation limits.
+- [Known issues](known-issues.md): recorded limitations and open problems.
+
+The current integration uses protocol 10 and has native Windows validation on
+the exact GOG executable with SHA-256
+`dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
+Every participant needs Galactic Adventures and the same fork build. Steam and
+Linux GA compatibility is not established by this evidence. See the guide and
+validation report above before treating inherited platform support as GA support.
+
+## Foundation documentation
+
+These documents describe the inherited SporeCoop architecture, base-stage work
+and development tools. Some build targets, platform results and gameplay notes
+are historical; they do not expand the GA compatibility stated above.
+
+1. [Architecture and loading into the game](01-architecture.md): process loading, lifecycle and symbol database.
+2. [SporeKit and the mod toolkit](02-modkit.md): mod API, console, `sporectl`, hot reload, screenshots and input.
+3. [Co-op gameplay](03-gameplay.md): shared-world rules and inherited stage behavior.
+4. [Netcode](04-netcode.md): synchronization, interpolation and host authority.
+5. [Reverse engineering](05-re-notes.md): methodology, native functions and structures.
+6. [Testing](06-testing.md): isolated game instances, fake peers, Bottles and automation.
+7. [Co-op in all modes](07-modes.md): mode adapters, shared resources and phase transitions.
+8. [Interface](08-ui.md): native menus, connection window, lobby and LAN discovery.
+9. [Playing together in all phases](09-coop-design.md): upstream design and engine findings in [re/](re/).
+10. [Development pipeline](10-dev-pipeline.md): test lanes, fixtures, network testing and knowledge rules.
+
+The [inherited installation guide](INSTALL.md) records base-stage setup and
+historical GOG 2016/GOG 2024 platform testing. Use the fork installation entry
+above for current GA download guidance.
