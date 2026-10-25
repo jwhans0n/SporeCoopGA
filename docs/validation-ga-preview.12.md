@@ -219,3 +219,39 @@ The [preview 11 targeting report](validation-ga-preview.11.md),
 [preview 10 movement report](validation-ga-preview.10.md) and earlier reports
 retain their exact scope. Approximate movement, ordinary guest click/key combat
 input and broader compatibility remain subject to their recorded limits.
+
+## Installed delivery
+
+- Installed **0.7.3.5-ga-preview.12**, protocol **15**, from the inspected matching
+  Setup/pack after the user explicitly approved ending and restarting both
+  visible sessions. Both previous games were closed before installation.
+- Implementation commit: `e4eda7c41f475149f2ec6d07968fe04b910b644e`.
+- Independent cold backup:
+  `D:\Code\SporeCoop\out\installed-fork-ga-preview12-20261025-175054`.
+- All **14 payload paths** matched expected hashes. Existing settings, original
+  forwarding DLL, launchers and fork published-release update URL were preserved.
+- All **1,407 checked personal profile files** were unchanged during installation,
+  preserving saved captains, creations and settings. Normal startup followed in
+  the existing `coop_player1` and `coop_player2` profiles.
+- Both visible games reached native Galaxy and loaded the exact packaged shadow
+  DLL with the native adapter available and **zero faults**. Windows were placed
+  side by side without resizing. No party or adventure was started automatically.
+- Package inventory, SHA-256, ZIP CRC, stage equality, matching Setup/pack,
+  documents and native symbols passed inspection. The installed stripped DLL's
+  executable `.text` bytes and layout match native-tested C4 exactly:
+  `cbdb360eae16fdbf0cb2782b42bb884f2f60f7cc0f6a6ba139762a57dc0f2e11`.
+- The ZIP contains the complete pre-install validation report. This repository
+  copy adds delivery evidence. No GitHub release or tag was created.
+
+| Artifact | SHA-256 |
+|---|---|
+| ZIP | `a7e7b990cab7c171264803ee49f96fe244f8ffdfcf76e7bd33aef8be05729540` |
+| Pack | `eeface38127e65d6fa1ebe28869062cac449ba03955e1481bbe69ec69e01e6b8` |
+| Setup | `334e6cd850006d371a73d31a40aaacadc8a0aa943bcd8084499a5b1acf3d6e4d` |
+| Installed stripped co-op DLL | `8fd17b961ae0e8c7febf5262882d3f866419f0112194614073dbb919cad78825` |
+
+Local audit records: `out/lab/outcome-final-validation-index.json`,
+`out/lab/preview12-delivery/package-inspection.json`, `runtime-visible.json`,
+`visible-windows.json`, and the backup's `installed.json`. Private profiles,
+creations, crash dumps and other ignored lab evidence are excluded from source
+control.
