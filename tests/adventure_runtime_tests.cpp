@@ -464,7 +464,7 @@ int main()
     // Replay returns the party to preparation, with saved captains and no readiness.
     ctx.choose_captain=[](const dbpf::Key&,auto selected) { selected({330,10,20}); };
     unsigned reuses=0;
-    ctx.reuse_captain=[&](const dbpf::Key& key,auto selected) { CHECK(key==dbpf::Key(330,10,20)); ++reuses; selected(key); };
+    ctx.reuse_captain=[&](const dbpf::Key& key,auto selected) { CHECK((key==dbpf::Key{330,10,20})); ++reuses; selected(key); };
     CHECK(adventure::init(&api,nullptr,ctx));
     CHECK(adventure::request_play(key)); drain();
     auto replay_descriptor=*adventure::current();
@@ -481,7 +481,7 @@ int main()
     }
     adventure::tick(304); drain();
     CHECK(adventure::active() && adventure::current()->run_id>replay_descriptor.run_id);
-    CHECK(reuses==1 && adventure::selected_captain(0)==dbpf::Key(330,10,20) && !adventure::ready());
+    CHECK((reuses==1 && adventure::selected_captain(0)==dbpf::Key{330,10,20} && !adventure::ready()));
     CHECK(!adventure::results_accepted(true));
     CHECK(adventure::cancel("replay test complete")); drain();
 
@@ -537,7 +537,7 @@ int main()
     CHECK(adventure_assets::delivered.size()==1 && adventure_assets::delivered.front().first==64 && adventure_assets::delivered.front().second==1001);
     CHECK(native_delivered.size()==1 && native_delivered.front().first==192 && native_delivered.front().second==1001);
     CHECK(adventure_assets::wrong_run_messages==0);
-    CHECK(adventure::selected_captain(guest.my_id())==dbpf::Key(440,10,20));
+    CHECK((adventure::selected_captain(guest.my_id())==dbpf::Key{440,10,20}));
     CHECK(adventure::can_ready() && !adventure::ready());
     CHECK(adventure::set_ready(true) && adventure::ready());
     CHECK(adventure::cancel("ordered replay complete"));drain();
