@@ -1,10 +1,11 @@
 # Galactic Adventures co-op: experimental guide
 
-Fork preview `0.7.3.4-ga-preview.11` fixes authored player-team attack targets
-rejecting eligible guest captains. Native sensing, hostility and NPC target
-selection remain in control, with existing authored nonparty targets preserved.
-It retains preview
-10's native creature/vehicle waypoint followers, preview 9's unanimous party pause
+Fork preview `0.7.3.5-ga-preview.12` seals shared adventure wins and losses and
+coordinates results, menu return and Replay. A completed attempt cannot continue
+as an independent client adventure. See the
+[preview 12 validation report](validation-ga-preview.12.md) for acceptance evidence
+and limits. It retains preview 11's authored player-team enemy targeting,
+preview 10's native creature/vehicle waypoint followers, preview 9's unanimous party pause
 and six-metre revival, preview 8's music, held-item and confirmation fixes, and
 the upstream SporeCoop 0.7.2.1 integration. Source:
 [jwhans0n/SporeCoopGA](https://github.com/jwhans0n/SporeCoopGA).
@@ -25,7 +26,7 @@ Upstream calls this GOG 2024; the adventure RE notes call it March 2017 after th
 ModAPI address map. See [build identification](re/build-dc04.md). Steam and other
 same-code variants retain upstream base-stage support, but their native adventure
 adapter is disabled and adventure compatibility remains unvalidated. Every player
-needs Galactic Adventures and the same fork build (protocol 14); earlier GA
+needs Galactic Adventures and the same fork build (protocol 15); earlier GA
 previews and upstream 0.7.0-0.7.2.1 clients cannot join this preview.
 
 Preview `0.7.0-ga-preview.6` reduces traffic for stationary buildings and props and
@@ -62,10 +63,18 @@ saved captains remain available when retrying the same adventure.
 readiness; cancelling a replacement keeps the previous saved captain. Locked
 adventures show the authored captain and disable replacement. **Cancel adventure**
 returns the party to the native galaxy menu while keeping the party connected.
-After results are saved, **Done** returns to the menu. Any player can choose
-**Replay** to request another shared attempt. After everyone accepts their
-results, Replay opens the shared lobby with the saved captains and everyone
-unready. Review the lobby and press **Ready** again to launch.
+The first host-confirmed win or loss stops gameplay for everyone. Captains cannot
+keep moving, taking damage or advancing objectives while results are pending or
+open. Each player keeps the native results and captain-save flow.
+**Host Done returns the whole party to the menu**, keeping the party connected.
+**Guest Done accepts results locally** and returns that player to the menu.
+Any player can choose **Replay** to request another shared attempt. The host
+must also choose Replay, and starts it only after every remaining participant has
+applied and accepted their result. Replay opens the shared lobby with saved captains and everyone unready.
+Review the lobby and press **Ready** again to launch. Host Done cancels a pending
+Replay request and returns everyone to the menu instead.
+If a captain has a mandatory reward selection open, finish that native selection
+before the party exit completes. Host Done preserves the normal captain-save flow.
 
 An objective conversation opens its native camera and dialog on every player.
 Each player advances pages independently. **Finished** confirms that player's
@@ -167,7 +176,17 @@ progress bar and remaining revival time for nearby downed teammates. The optiona
 automatic-recovery rule also shows its countdown. The ring matches the six-metre
 revival rule. Duration and interruption rules remain unchanged.
 
+A downed captain can display **1 HP** because the mod keeps the native creature
+alive for revival. That display does not permit continued gameplay after a shared
+loss. The completed attempt stays stopped through results and menu recovery.
+
 ## Verified scope and current limits
+
+The [preview 12 validation report](validation-ga-preview.12.md) separates the
+reported Crystal Mine failure, deterministic native callback regressions,
+coordinator tests and paired results/menu/Replay checks. Its scope does not
+establish a complete playthrough or reproduce every timing of the reported
+client escape. Earlier preview evidence below keeps its original build label.
 
 The [preview 11 validation report](validation-ga-preview.11.md) records native
 enemy-targeting evidence separately from callback ABI fixtures. The final build

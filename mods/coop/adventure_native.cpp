@@ -10,6 +10,7 @@
 #include "adventure_catalog.h"
 #include "adventure_collect.h"
 #include "adventure_control.h"
+#include "adventure_results.h"
 #include "adventure_world.h"
 #include "adventure_relationships.h"
 #include "adventure_social.h"
@@ -37,6 +38,10 @@ adventure_flow::Scene g_talk_scene;
 double g_now, g_settling_deadline;
 bool g_settling_timeout_queued;
 uint64_t g_intro_settling;
+uint64_t g_result_end_run;
+void* g_result_end_play;
+uint32_t g_result_end_id;
+uint64_t g_result_messages_accepted, g_result_messages_rejected;
 dbpf::Key g_host_captain, g_score_adventure;
 std::vector<ga::Captain> g_captains;
 struct Immunity { void* object; bool authored; };
@@ -63,7 +68,7 @@ EndCinematic original_end_cinematic;
 
 void feed(const std::string& message) { if (C.feed) C.feed(message); }
 bool connected() { return C.sess && C.sess->connected(); }
-bool simulation_held() { return adventure_flow::held() || adventure_pause::held(); }
+bool simulation_held() { return adventure::outcome_locked() || adventure_flow::held() || adventure_pause::held(); }
 void* scenario()
 {
     uintptr_t pointer = H->sym("App::cScenarioMode::ptr");
@@ -183,6 +188,9 @@ void SK_THISCALL switch_mode(void* manager, int index)
 void SK_THISCALL update(void* self, int milliseconds)
 {
     if (connected() && g_frozen && game::mode_id() == modes::kScenario) return;
+    // Result animations still need native updates. No gameplay/intro update may
+    // resume while the host's outcome is pending or the party reviews results.
+    if (connected() && adventure::outcome_locked() && field<int>(self,0x90)!=5 && field<int>(self,0x90)!=6) return;
     if(simulation_held() && field<int>(self,0x90)==3) return;
     original_update(self, milliseconds);
 }
@@ -190,6 +198,17 @@ void SK_THISCALL update(void* self, int milliseconds)
 bool SK_THISCALL message(void* self, uint32_t type, void* data)
 {
     if(connected() && g_coop_attempt) {
+        if(type==0x070B18C7 && data && readable(data,12)) {
+            int choice=field<int>(data,8);
+            if(choice==1 || choice==2) {
+                adventure_results::accepted(self,choice);
+                bool accepted=adventure::results_accepted(choice==2);
+                if(choice==2 && accepted) coop_ui::open(true);
+                // Party return/replay is coordinated, including delayed native
+                // callbacks after a later attempt has replaced these results.
+                return false;
+            }
+        }
         if (type == 0x044F1189 && adventure::active() && self == play_mode() &&
             readable(self, 0xDC) && data && readable(data, 12)) {
             if (const auto* d = adventure::current()) {
@@ -207,6 +226,29 @@ bool SK_THISCALL message(void* self, uint32_t type, void* data)
                 }
             }
         }
+        if (adventure::outcome_locked()) {
+            // A final result can wait for a previously released native scene's
+            // cleanup. Only that owned Intro tail may write its ordinary state
+            // before terminal application; the owned Talk tail was handled above.
+            const uint64_t run=adventure::outcome_run();
+            if (!adventure_world::terminal_state(self) && type==0x044F1189 && self==play_mode() &&
+                readable(self,0x98) && field<int>(self,0x90)==1 && g_intro_settling==run && g_intro.released(run)) {
+                const bool result=original_message(self,type,data);
+                if (field<int>(self,0x90)==3) g_intro_settling=0;
+                return result;
+            }
+            if (!adventure_world::terminal_state(self) || !adventure_world::terminal_message_allowed(self, type) ||
+                !data || !readable(data,12) || g_result_end_run != run ||
+                g_result_end_play != self || field<uint32_t>(data,8) != g_result_end_id) {
+                ++g_result_messages_rejected;
+                return false;
+            }
+            // EndCinematic publishes synchronously after clearing its current ID.
+            // Consume the token before native result callbacks can reenter.
+            g_result_end_run=0; g_result_end_play=nullptr; g_result_end_id=0;
+            ++g_result_messages_accepted;
+            return original_message(self,type,data);
+        }
         if(type==0x044F1189 && !g_intro.releasing() && adventure::active() && field<int>(self,0x90)==1) {
             if(const auto* d=adventure::current()) {
                 if (g_intro.released(d->run_id)) {
@@ -220,15 +262,6 @@ bool SK_THISCALL message(void* self, uint32_t type, void* data)
                 adventure_flow::confirm_intro();
             }
             return false;
-        }
-        if(type==0x070B18C7 && data && readable(data,12)) {
-            int choice=field<int>(data,8);
-            if(choice==1 || choice==2) {
-                bool accepted=adventure::results_accepted(choice==2);
-                if(choice==2 && accepted) coop_ui::open(true);
-                // A delayed results callback must not restart/exit a later run.
-                if(choice==2 || !accepted) return false;
-            }
         }
     }
     return original_message(self,type,data);
@@ -283,6 +316,14 @@ void SK_THISCALL end_cinematic(void* self)
 {
     // Retain a fallback for direct native end/skip paths, also before cleanup.
     if (defer_intro_end(self, 0) || defer_talk_end(self, 0)) return;
+    if (connected() && g_coop_attempt && adventure::outcome_locked()) {
+        auto* play=play_mode(); auto cinematic=current_cinematic();
+        const int state=adventure_world::terminal_state(play);
+        if (play && state && field<int>(play,0x90)==state && field<int>(play,0x94)!=2 &&
+            cinematic.manager==reinterpret_cast<uintptr_t>(self) && cinematic.active && cinematic.id) {
+            g_result_end_run=adventure::outcome_run(); g_result_end_play=play; g_result_end_id=cinematic.id;
+        }
+    }
     original_end_cinematic(self);
 }
 
@@ -363,7 +404,9 @@ void SK_THISCALL initialize(void* self)
         ~Initializing() { --g_initializing; }
     } initializing;
     g_intro.reset();
+    adventure_results::reset();
     g_talk.reset(); g_talk_scene = {}; g_intro_settling = 0;
+    g_result_end_run=0; g_result_end_play=nullptr; g_result_end_id=0;
     g_settling_deadline = 0; g_settling_timeout_queued = false;
     adventure_world::begin_native_attempt(self);
     original_initialize(self);
@@ -502,6 +545,9 @@ bool init(const SkHost* host, SkMod* mod, Ctx context)
         "SporeCoop::Adventure::HandlePlayMessage", "Simulator::cCinematicManager::Get",
         "SporeCoop::cCinematicManager_EndCinematic", "SporeCoop::Adventure::HandleCinematicMessage"};
     g_symbols = H->sym_require(M, required, 19) == 0;
+    adventure_results::Ctx results;
+    results.run=adventure::outcome_run; results.applied=adventure_world::result_applied; results.feed=C.feed;
+    g_symbols=adventure_results::init(H,M,std::move(results)) && g_symbols;
     adventure_pause_native::Ctx native_pause;
     native_pause.active = [] { return adventure_pause::active() && game::mode_id() == modes::kScenario; };
     native_pause.held = adventure_pause::held;
@@ -521,6 +567,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context)
     controls.active = [] { return connected() && adventure::running() && game::mode_id() == modes::kScenario; };
     controls.local_avatar = game::avatar;
     controls.local_paused = adventure_pause::local_requested;
+    controls.terminal_pending = [] { return connected() && game::mode_id() == modes::kScenario && adventure::outcome_locked(); };
     controls.captain_state = [](void* object, ga::Captain& result) {
         if (!C.sess || !C.captain_of) return false;
         for (const auto& player : C.sess->players()) {
@@ -540,7 +587,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context)
     world.sess = C.sess; world.feed = C.feed; world.captain_of = C.captain_of;
     world.captain_can_act = [](uint8_t player) {
         adventure::CaptainState state;
-        return adventure::captain_state(player, state) && state.captain.life == ga::Life::Alive;
+        return !adventure::outcome_locked() && adventure::captain_state(player, state) && state.captain.life == ga::Life::Alive;
     };
     world.run = [] { const auto* run = adventure::current(); return run ? run->run_id : 0; };
     world.active = [] { return adventure::running(); };
@@ -718,6 +765,8 @@ adventure::Ctx coordinator_context()
     context.loaded = loaded; context.paused = paused; context.captain_of = C.captain_of;
     context.sample = sample; context.apply = apply; context.source = adventure_world::source;
     context.native_result = adventure_world::apply_result;
+    context.native_result_applied = [](bool success) { return adventure_world::result_applied(adventure::outcome_run(), success); };
+    context.prepare_result_exit=adventure_results::prepare_exit;
     context.native_settling = [] {
         const auto* d = adventure::current();
         return d && ((adventure_flow::release_pending() && adventure_flow::scene().run == d->run_id) ||
@@ -769,6 +818,7 @@ bool update_filter(void* creature)
 }
 bool damage_filter(void* victim, float& amount, int type, void* attacker)
 {
+    if (connected() && game::mode_id() == modes::kScenario && adventure::outcome_locked()) return false;
     if (adventure::running() && type != 10 && victim &&
         readable(victim, game::kCombatOff + 0x81)) {
         bool authored_immunity = field<bool>(victim, game::kCombatOff + 0x80);
@@ -781,10 +831,12 @@ bool damage_filter(void* victim, float& amount, int type, void* attacker)
 }
 void reset()
 {
+    adventure_results::reset();
     adventure_pause::reset(); adventure_pause_native::reset();
     adventure_control::reset();
     adventure_pickups::reset(); adventure_explosives::reset();
     adventure_flow::reset(); g_intro.reset(); g_talk.reset(); g_talk_scene = {};
+    g_result_end_run=0; g_result_end_play=nullptr; g_result_end_id=0;
     g_intro_settling = 0; g_settling_deadline = 0; g_settling_timeout_queued = false;
     if (C.reset_movement) C.reset_movement();
     adventure_social::reset();
@@ -812,6 +864,10 @@ std::string status()
         " id="+std::to_string(g_intro.cinematic().id)+"\n"+
         "native cinematic settling: intro="+std::to_string(g_intro_settling)+" talk="+std::to_string(g_talk.settling())+
         " talk_run="+std::to_string(g_talk_scene.run)+" talk_serial="+std::to_string(g_talk_scene.serial)+"\n"+
+        "native terminal messages: accepted="+std::to_string(g_result_messages_accepted)+
+        " rejected="+std::to_string(g_result_messages_rejected)+" token_run="+std::to_string(g_result_end_run)+
+        " token_id="+std::to_string(g_result_end_id)+"\n"+
+        adventure_results::status()+
         "native co-op results: suppressed score submissions=" + std::to_string(g_suppressed_scores) : unavailable();
 }
 } // namespace adventure_native

@@ -1102,3 +1102,60 @@ two-player Mine guest/host acquisition, natural damage and guest/host/guest
 switching checks. Native sensor ownership remains unchanged. Broader adventure,
 four-player and AI-command coverage is still outstanding. Earlier reports keep
 their build labels.
+
+### Preview 12 shared results and menu return
+
+Use protocol 15 and the exact dc04 executable in a private installation with
+recorded hidden, muted Windows lab profiles. Keep the bounded runner active;
+never send these commands to personal game instances. The current native outcome
+fixture uses the stock **Defend the Crystal Mine** and reviewed native damage to
+its authored generator. It does not call the controlled `finish` command or
+write the play state.
+
+```powershell
+py -3 tools/windows_lab.py prepare --destination out/windows-lab/preview12-installation
+py -3 tools/windows_lab.py run --installation out/windows-lab/preview12-installation --out out/windows-lab/preview12 --instances 2 --first-instance 83 --seconds 1800 --hidden
+py -3 tools/tests/coop_adventure_outcome.py --metadata out/windows-lab/preview12/processes.json --host 83 --guest 84 --out out/windows-lab/preview12-loss --act 2 --down-guest --done --require-party-return
+```
+
+Pin the loaded DLL with `--expected-sha256` from the candidate report. The fixture
+checks native failed state 6, act stability, actual result controls and ordinary
+movement/ability inputs after failure. Host Done alone must return both native
+game modes and application states to the galaxy menu while keeping the party
+connected. Repeat without a downed guest, and use `--guest-paused --resume` for
+the pause boundary. `--guest-replay-before-host-done --done --require-party-return`
+checks that host Done overrides a guest Replay request. The sampler's result
+analysis can be checked separately with `py -3 tools/tests/test_outcome_fixture.py`.
+
+Preserve the distinction between the two reported behaviors. The preview 11
+host-Done-first case reproduced a guest left in Scenario while the host exited.
+The complete natural timing of the personal guest's applied-6/actual-3 escape is
+not established by that menu reproduction. The actual-world Win32 mirror fixture
+exercises nested native failure during replicated application, late goal/act
+callbacks, terminal state monotonicity and actual native-state readback. Portable
+coordinator cases cover the first outcome seal, early acknowledgements/acceptance,
+Done/Replay ordering, duplicate cleanup, disconnect and replacement generations.
+None of those fixtures alone establishes natural full-adventure compatibility.
+
+After native failure/return checks, verify a fresh shared Replay lobby with saved
+captains and everyone unready, then explicitly Ready and complete the beam-down
+barrier again. Preserve native fault counts, process and DLL identities, command
+logs, screenshots and result JSON. The [preview 12 report](validation-ga-preview.12.md)
+records accepted cases and limits; earlier reports retain their build labels.
+
+The safe forced-exit UI adapter has a separate Win32 ABI fixture:
+
+```bash
+make test-results-windows
+```
+
+Run `build/host/adventure_results_tests.exe` on native Windows. It covers the
+normal Done message ABI, delayed native Saved publication, repeated polls without
+duplicate progression, mandatory reward choices and stale UI ownership. For
+paired acceptance, use `--host-done-during-guest-cinematic --done --require-party-return`
+on the outcome fixture so host Done reaches a guest whose result cinematic is
+still open. The test must not accidentally end that cinematic through guest
+Space or movement input. Native result state and a Saved choice do not establish
+durable captain progress: separately read the original captain's XP before and
+after a successful forced exit, exercise a mandatory level reward, and recheck
+the properties after restarting the isolated profile when claiming persistence.

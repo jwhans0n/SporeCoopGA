@@ -29,7 +29,8 @@ struct Held { void* object; uint32_t incarnation; };
 std::map<uint8_t, Held> held;
 uint64_t brains, walks, cursors, orders, entered, restored, corrections;
 struct MenuHold { void* object = nullptr; uint32_t incarnation = 0; net::Vec3 position; } menu_hold;
-uint64_t menu_stops;
+uint64_t menu_stops, terminal_stops;
+MenuHold terminal_hold;
 
 bool downed(void* object, ga::Captain* result = nullptr)
 {
@@ -44,6 +45,10 @@ bool menu_paused(void* object)
 {
     return ready && C.active() && C.local_paused && C.local_paused() && object && object == C.local_avatar();
 }
+bool terminal(void* object)
+{
+    return ready && C.terminal_pending && C.terminal_pending() && object && object == C.local_avatar();
+}
 void stop_orders(void* object)
 {
     game::stop(object);
@@ -53,23 +58,23 @@ void stop_orders(void* object)
 }
 void SK_THISCALL brain(void* object, float elapsed)
 {
-    if (downed(object) || menu_paused(object)) { ++brains; return; }
+    if (terminal(object) || downed(object) || menu_paused(object)) { ++brains; return; }
     original_brain(object, elapsed);
 }
 void SK_THISCALL walk(void* strategy)
 {
-    if (local_downed() || menu_paused(C.local_avatar())) { ++walks; return; }
+    if (terminal(C.local_avatar()) || local_downed() || menu_paused(C.local_avatar())) { ++walks; return; }
     original_walk(strategy);
 }
 bool SK_THISCALL cursor(void* strategy, bool first, bool second)
 {
-    if (local_downed() || menu_paused(C.local_avatar())) { ++cursors; return false; }
+    if (terminal(C.local_avatar()) || local_downed() || menu_paused(C.local_avatar())) { ++cursors; return false; }
     return original_cursor(strategy, first, second);
 }
 uintptr_t SK_THISCALL order(void* object, uint32_t a, uint32_t b, uint32_t c, uint32_t d,
                            uint32_t e, uint32_t f, uint32_t g)
 {
-    if (downed(object) || menu_paused(object)) { ++orders; return 0; }
+    if (terminal(object) || downed(object) || menu_paused(object)) { ++orders; return 0; }
     return original_order(object, a, b, c, d, e, f, g);
 }
 } // namespace
@@ -105,6 +110,20 @@ bool init(const SkHost* host, SkMod* mod, Ctx context)
 void creature_update(void* object, bool before)
 {
     ga::Captain state;
+    if (terminal(object) && readable(object, game::kFlagsOff + 8)) {
+        const uint32_t incarnation = field<uint32_t>(object, 0x24);
+        if (terminal_hold.object != object || terminal_hold.incarnation != incarnation) {
+            terminal_hold = {object, incarnation, game::position(object)};
+            stop_orders(object); ++terminal_stops;
+        }
+        field<net::Vec3>(object, game::kVelOff) = {};
+        const auto position = game::position(object);
+        const float dx = position.x - terminal_hold.position.x, dy = position.y - terminal_hold.position.y,
+                    dz = position.z - terminal_hold.position.z;
+        if (!before && dx * dx + dy * dy + dz * dz > .0001f) game::set_position(object, terminal_hold.position);
+        return;
+    }
+    if (terminal_hold.object == object) terminal_hold = {};
     if (!downed(object) && menu_paused(object) && readable(object, game::kFlagsOff + 8)) {
         uint32_t incarnation = field<uint32_t>(object, 0x24);
         if (menu_hold.object != object || menu_hold.incarnation != incarnation) {
@@ -148,12 +167,13 @@ void creature_update(void* object, bool before)
     }
 }
 
-void reset() { held.clear(); menu_hold = {}; }
+void reset() { held.clear(); menu_hold = {}; terminal_hold = {}; }
 std::string status()
 {
     return "downed controls: entries=" + std::to_string(entered) + " exits=" + std::to_string(restored) +
         " brain=" + std::to_string(brains) + " wasd=" + std::to_string(walks) +
         " cursor=" + std::to_string(cursors) + " orders=" + std::to_string(orders) +
-        " corrections=" + std::to_string(corrections) + " menu_stops=" + std::to_string(menu_stops) + "\n";
+        " corrections=" + std::to_string(corrections) + " menu_stops=" + std::to_string(menu_stops) +
+        " terminal_stops=" + std::to_string(terminal_stops) + "\n";
 }
 } // namespace adventure_control

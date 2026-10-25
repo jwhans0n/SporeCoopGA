@@ -26,7 +26,10 @@ def run(games, memories, rounds=2):
                 return False
             game.wait('native results panel',ready)
         for game in (guest,host):
-            choice='Done' if game==host and iteration==rounds-1 else 'Replay'
+            # Replay requires the host's explicit Replay choice. Host Done
+            # authoritatively returns the party to the galaxy menu, including
+            # when a guest has already requested Replay.
+            choice='Replay'
             def accept(game=game,choice=choice):
                 # Native result widgets can remain discoverable behind the
                 # newly opened lobby. A newer run confirms that the real result

@@ -47,6 +47,12 @@ std::string status() { return "fake assets"; }
 
 static std::vector<std::pair<SkTaskFn, void*>> tasks;
 static void queue(SkTaskFn fn, void* user) { tasks.push_back({fn, user}); }
+static void drain_turn()
+{
+    auto pending = std::move(tasks);
+    tasks.clear();
+    for (auto [fn, user] : pending) fn(user);
+}
 static void drain()
 {
     while (!tasks.empty()) {
@@ -79,11 +85,12 @@ static void acknowledge_loaded(const ga::Descriptor& d, uint8_t peer)
     loaded.u8(6); put_run(loaded, d.run_id);
     loaded.f32(100); loaded.f32(float(peer)); loaded.f32(0); loaded.f32(0); incoming(peer, loaded);
 }
-static net::Writer captain_snapshot(uint64_t run, uint64_t revision, double now)
+static net::Writer captain_snapshot(uint64_t run, uint64_t revision, double now,
+                                    ga::RunPhase phase = ga::RunPhase::Playing)
 {
     net::Writer w;
     w.u8(9); put_run(w, run); put_run(w, revision);
-    w.u8(uint8_t(ga::RunPhase::Playing)); w.u8(0); w.f64(now); w.u8(2);
+    w.u8(uint8_t(phase)); w.u8(0); w.f64(now); w.u8(2);
     for (uint8_t player = 0; player < 2; ++player) {
         w.u8(player); w.u8(uint8_t(player ? ga::Life::Downed : ga::Life::Alive));
         w.f32(player ? 0 : 100); w.f32(100);
@@ -92,6 +99,11 @@ static net::Writer captain_snapshot(uint64_t run, uint64_t revision, double now)
         w.u8(player ? 0 : ga::kNoPlayer); w.f64(player ? 1 : 0);
     }
     return w;
+}
+static void acknowledge_result(uint64_t run, uint8_t peer, bool success)
+{
+    net::Writer applied;
+    applied.u8(19); put_run(applied, run); applied.u8(success ? 1 : 0); incoming(peer, applied);
 }
 
 static bool connect(net::Session& host, net::Session& guest, const std::string& name)
@@ -123,6 +135,10 @@ int main()
     unsigned launches = 0, results = 0, invalidated = 0, native_aborts = 0;
     bool launch_ok = true;
     bool success = false;
+    bool result_readback = true, native_result_success = false;
+    uint64_t native_result_run = 0;
+    bool result_exit_ready = true;
+    unsigned result_exit_calls = 0;
     std::vector<std::string> notices;
     std::vector<ga::Captain> latest;
     float shield_divisor=1;
@@ -143,12 +159,20 @@ int main()
     };
     unsigned preparation_aborts = 0;
     ctx.abort_preparation = [&] { CHECK(!adventure::active()); preparation_aborts++; };
-    ctx.abort_native = [&] { CHECK(!adventure::active()); native_aborts++; };
+    ctx.abort_native = [&] { CHECK(!adventure::active()); native_aborts++; native_result_run = 0; };
     ctx.freeze = [&](bool value) { frozen = value; };
     ctx.loaded = [&](const dbpf::Key&) { return loaded; };
     ctx.paused = [&] { return paused; };
     ctx.captain_of = [&](uint8_t id) -> void* { return id < 4 ? &objects[id] : nullptr; };
-    ctx.native_result = [&](bool value) { CHECK(!native_goals_pending); results++; success = value; };
+    ctx.native_result = [&](bool value) {
+        CHECK(!native_goals_pending); results++; success = value;
+        native_result_run = adventure::outcome_run(); native_result_success = value;
+    };
+    ctx.native_result_applied = [&](bool value) {
+        return result_readback && native_result_run && native_result_run == adventure::outcome_run() &&
+               native_result_success == value;
+    };
+    ctx.prepare_result_exit = [&] { ++result_exit_calls; return result_exit_ready; };
     ctx.native_settling = [&] { return native_release_queued || native_settling || native_goals_pending; };
     ctx.sample = [](uint8_t id, ga::CaptainSeed& seed) {
         seed = {id, 100, {float(id) * 10, 0, 0}};
@@ -243,11 +267,16 @@ int main()
 
     CHECK(adventure::complete(true));
     CHECK(!adventure::complete(true) && !adventure::complete(false));
+    CHECK(adventure::outcome_locked() && adventure::outcome_run() == first.run_id);
+    CHECK(!adventure::captain_damage(0, {ga::SourceKind::Environment, ga::kNoPlayer}, 100));
+    CHECK(!adventure::captain_heal(1, 100) && !adventure::revive(1, true));
     CHECK(results == 0); // duplicate/conflicting completions cannot enqueue a second callback
     drain();
     CHECK(results == 1 && success && !adventure::active());
     CHECK(!adventure::captain_state(1, state));
     CHECK(!adventure::complete(true) && results == 1);
+    CHECK(adventure::results_accepted(false)); drain();
+    unsigned result_menu_aborts = native_aborts;
 
     // Stale acknowledgements cannot release the next run's barrier.
     loaded = false;
@@ -274,6 +303,8 @@ int main()
     CHECK(results == 2 && !success && !adventure::active());
     adventure::tick(200); drain();
     CHECK(results == 2); // pending automatic timers cannot revive a wiped party
+    CHECK(adventure::results_accepted(false)); drain();
+    result_menu_aborts = native_aborts;
 
     // Reset discards queued launch work before it can call the native adapter.
     loaded = false;
@@ -292,17 +323,17 @@ int main()
     acknowledge(failed, guest.my_id()); acknowledge(failed, guest2.my_id());
     CHECK(adventure::set_ready(true));
     adventure::tick(201.5);
-    CHECK(native_aborts == 0);
+    CHECK(native_aborts == result_menu_aborts);
     drain();
-    CHECK(launches == 3 && native_aborts == 1 && results == 2 && !frozen);
+    CHECK(launches == 3 && native_aborts == result_menu_aborts + 1 && results == 2 && !frozen);
     CHECK(!adventure::cancel("already cancelled")); drain();
-    CHECK(native_aborts == 1);
+    CHECK(native_aborts == result_menu_aborts + 1);
     launch_ok = true;
     // Cancelling captain selection must leave the surrounding native menu intact.
     CHECK(adventure::request_play(key));
     unsigned before_preparation_abort = preparation_aborts;
     CHECK(adventure::cancel("captain selection cancelled")); drain();
-    CHECK(native_aborts == 1 && results == 2);
+    CHECK(native_aborts == result_menu_aborts + 1 && results == 2);
     CHECK(preparation_aborts == before_preparation_abort + 1);
     // Reset invalidates a queued native abort before it can affect a later attempt.
     CHECK(adventure::request_play(key)); drain();
@@ -312,7 +343,7 @@ int main()
     adventure::tick(201.75);
     CHECK(adventure::cancel("cancel queued load"));
     adventure::reset(); drain();
-    CHECK(native_aborts == 1 && launches == 3 && results == 2);
+    CHECK(native_aborts == result_menu_aborts + 1 && launches == 3 && results == 2);
 
     // Exercise the client trust boundary and its half of the loading barrier.
     ctx.sess = &guest;
@@ -396,7 +427,14 @@ int main()
     net::Writer conflicting_result;
     conflicting_result.u8(11); put_run(conflicting_result, 100); conflicting_result.u8(0);
     incoming(0, conflicting_result);
-    CHECK(results == 2 && adventure::running());
+    CHECK(results == 2 && adventure::running() && adventure::outcome_locked() && adventure::outcome_run() == 100);
+    CHECK(!adventure::captain_damage(1, {ga::SourceKind::Environment, ga::kNoPlayer}, 1));
+    CHECK(!adventure::captain_heal(1, 100) && !adventure::revive(1, true));
+    auto late_playing = captain_snapshot(100, 100, 999);
+    incoming(0, late_playing); drain();
+    auto conflicting_snapshot = captain_snapshot(100, 101, 1000, ga::RunPhase::Failed);
+    incoming(0, conflicting_snapshot); drain();
+    CHECK(adventure::captain_state(guest.my_id(), state) && state.simulation_time == 2.5);
     drain();
     adventure::tick(202.1); drain();
     CHECK(results == 2 && adventure::running());
@@ -422,7 +460,7 @@ int main()
     CHECK(!adventure::ready());
     net::Writer raced_launch;
     raced_launch.u8(5); put_run(raced_launch, 101); incoming(0, raced_launch); drain();
-    CHECK(!adventure::active() && launches == 4 && native_aborts == 1);
+    CHECK(!adventure::active() && launches == 4 && native_aborts == result_menu_aborts + 1);
     CHECK(adventure::status().find("readiness changed") != std::string::npos);
     // An explicit reset invalidates queued native work. This is cancellation,
     // not a persistent reward transaction that survives disconnect/reload.
@@ -443,6 +481,7 @@ int main()
     incoming(0, reset_result);
     CHECK(adventure::running());
     adventure::reset(); drain();
+    CHECK(!adventure::outcome_locked() && !adventure::outcome_run());
     native_settling = native_goals_pending = false; adventure::tick(203.1); drain();
     CHECK(results == 3); // the old result cannot mutate the reset native session
     // Delayed native selection from a cancelled attempt cannot ready its retry.
@@ -495,9 +534,19 @@ int main()
     for(uint8_t id:replay_descriptor.roster) if(id) acknowledge_loaded(replay_descriptor,id);
     adventure::tick(302); drain(); CHECK(adventure::running());
     CHECK(adventure::complete(true)); drain();
-    CHECK(adventure::results_accepted(false)); adventure::tick(303); drain();
+    CHECK(adventure::results_accepted(true)); adventure::tick(303); drain();
     CHECK(!adventure::active());
+    // A UI click cannot substitute for proof that a peer actually entered its
+    // native result state. Wrong-outcome ACKs cannot satisfy that proof either.
     for(uint8_t id:replay_descriptor.roster) if(id) {
+        net::Writer premature; premature.u8(17); put_run(premature,replay_descriptor.run_id); premature.u8(1); incoming(id,premature);
+        acknowledge_result(replay_descriptor.run_id,id,false);
+        incoming(id,premature);
+    }
+    adventure::tick(303.5); drain();
+    CHECK(!adventure::active() && adventure::outcome_run()==replay_descriptor.run_id && reuses==0);
+    for(uint8_t id:replay_descriptor.roster) if(id) {
+        acknowledge_result(replay_descriptor.run_id,id,true);
         net::Writer accepted; accepted.u8(17); put_run(accepted,replay_descriptor.run_id); accepted.u8(1); incoming(id,accepted);
     }
     adventure::tick(304); drain();
@@ -652,6 +701,7 @@ int main()
         CHECK(adventure::complete(true));drain();
         CHECK(adventure::results_accepted(true));
         for(uint8_t id:reset_replay.roster) if(id) {
+            acknowledge_result(reset_replay.run_id,id,true);
             net::Writer accepted;accepted.u8(17);put_run(accepted,reset_replay.run_id);accepted.u8(0);incoming(id,accepted);
         }
         auto host_cleanup_aborts=native_aborts,host_cleanup_launches=launches;
@@ -727,6 +777,343 @@ int main()
     health_run(); adventure::tick(++health_clock); drain();
     CHECK(adventure::captain_state(0,state) && state.captain.health == 100);
     adventure::reset(); drain();
+
+    // Sealing an outcome is immediate even when native cinematic/goal cleanup
+    // still owns the result screen. Pending health and revive work must stop.
+    health_run();
+    const auto held_outcome_run = adventure::current()->run_id;
+    const auto held_results = results;
+    paused = true;
+    CHECK(adventure::captain_damage(1,environment,100));
+    native_settling = true;
+    CHECK(adventure::complete(false));
+    CHECK(adventure::running() && adventure::outcome_run()==held_outcome_run && adventure::outcome_locked());
+    CHECK(!adventure::captain_damage(0,environment,100) && !adventure::captain_heal(0,100));
+    CHECK(!adventure::revive(1,true) && !adventure::complete(true));
+    paused = false; adventure::tick(++health_clock); drain();
+    CHECK(results==held_results && adventure::captain_state(1,state) && state.captain.health==100);
+    native_settling = false; adventure::tick(++health_clock); drain();
+    CHECK(results==held_results+1 && !success && adventure::outcome_locked());
+    CHECK(!adventure::captain_state(1,state));
+    adventure::reset(); drain(); CHECK(!adventure::outcome_locked());
+
+    // Peers can finish their native UI before the host's current cinematic or
+    // goal callback settles. Keep their independent apply/accept facts while the
+    // host is still Running, including accept-first receive order.
+    for(bool accept_first:{false,true}) {
+        health_run();
+        const auto settling_descriptor=*adventure::current();
+        const auto settling_results=results, settling_preparations=adventure_assets::preparations;
+        native_settling=true;
+        CHECK(adventure::complete(true) && adventure::running() && adventure::outcome_locked());
+        uint8_t withheld=ga::kNoPlayer;
+        for(uint8_t id:settling_descriptor.roster) if(id) {
+            net::Writer accepted; accepted.u8(17); put_run(accepted,settling_descriptor.run_id); accepted.u8(1);
+            if(accept_first) incoming(id,accepted);
+            if(accept_first && id==settling_descriptor.roster.back()) withheld=id;
+            else acknowledge_result(settling_descriptor.run_id,id,true);
+            if(!accept_first) incoming(id,accepted);
+        }
+        adventure::tick(++health_clock); drain();
+        CHECK(adventure::running() && results==settling_results && !adventure::results_accepted(true));
+        CHECK(adventure_assets::preparations==settling_preparations);
+        native_settling=false; adventure::tick(++health_clock); drain();
+        CHECK(!adventure::active() && results==settling_results+1 && adventure::outcome_locked());
+        adventure::tick(++health_clock); drain();
+        CHECK(adventure_assets::preparations==settling_preparations); // host has not accepted
+        CHECK(adventure::results_accepted(true));
+        if(withheld!=ga::kNoPlayer) {
+            adventure::tick(++health_clock); drain();
+            CHECK(!adventure::active() && adventure::outcome_run()==settling_descriptor.run_id);
+            CHECK(adventure_assets::preparations==settling_preparations); // missing actual native proof
+            acknowledge_result(settling_descriptor.run_id,withheld,true);
+        }
+        adventure::tick(++health_clock); drain();
+        CHECK(adventure::current() && adventure::current()->run_id>settling_descriptor.run_id);
+        CHECK(adventure_assets::preparations==settling_preparations+1 && !adventure::ready());
+        CHECK((adventure::selected_captain(0)==dbpf::Key{440,10,20}));
+        CHECK(adventure::cancel("settling acknowledgement test complete")); drain();
+    }
+
+    // A callback having run does not prove native SetState survived its own
+    // callbacks. Retry a missing native result, then accept only its readback.
+    health_run(); result_readback = false;
+    const auto unread_results = results;
+    CHECK(adventure::complete(false)); drain();
+    CHECK(results==unread_results+1 && adventure::outcome_locked() && !adventure::results_accepted(true));
+    health_clock += .3; adventure::tick(health_clock); drain();
+    CHECK(results==unread_results+2 && !adventure::results_accepted(false));
+    result_readback = true;
+    health_clock += .1; adventure::tick(health_clock); drain();
+    CHECK(results==unread_results+2 && adventure::results_accepted(true));
+    adventure::reset(); drain(); CHECK(!adventure::outcome_locked());
+
+    // A persistent native result failure returns to the menu, retaining the
+    // gameplay fence until mandatory cleanup has run. It cannot become freeplay.
+    health_run(); result_readback = false;
+    CHECK(adventure::complete(false)); drain();
+    const auto timeout_aborts = native_aborts;
+    health_clock += 11; adventure::tick(health_clock);
+    CHECK(!adventure::active() && adventure::outcome_locked() && !tasks.empty());
+    drain();
+    CHECK(native_aborts==timeout_aborts+1 && !adventure::outcome_locked());
+    CHECK(adventure::status().find("results could not be displayed")!=std::string::npos);
+    result_readback = true;
+
+    // Host Done is an authoritative shared exit even if guests have not applied
+    // or accepted results. Its reliable menu packet must reach a real peer.
+    health_run();
+    const auto done_run = adventure::current()->run_id;
+    CHECK(adventure::complete(false)); drain();
+    // Earlier tests inject decoded packets directly. Drain their queued real
+    // reliable traffic before timing the new shared-exit wire observation.
+    for(int i=0;i<5000 && (host.pending_to(guest.my_id()) || host.pending_to(guest2.my_id()) ||
+                          guest.pending_to(0) || guest2.pending_to(0));++i) {
+        host.update(); guest.update(); guest2.update();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    unsigned return_packets = 0;
+    const auto old_guest_custom = guest.cb.custom;
+    guest.cb.custom = [&](uint8_t type,uint8_t from,net::Reader& packet) {
+        if(type!=net::MSG_ADVENTURE || from || !packet.left()) return;
+        const auto kind=packet.u8();
+        uint64_t run=packet.u32(); run|=uint64_t(packet.u32())<<32;
+        if(packet.ok() && kind==20 && run==done_run && !packet.left()) ++return_packets;
+    };
+    const auto done_aborts = native_aborts, done_preparations = adventure_assets::preparations;
+    CHECK(adventure::results_accepted(false));
+    CHECK(adventure::outcome_locked() && !adventure::results_accepted(true));
+    for(const auto& player:host.players()) if(player.id) {
+        const auto id=player.id;
+        acknowledge_result(done_run,id,false);
+        net::Writer late_replay; late_replay.u8(17); put_run(late_replay,done_run); late_replay.u8(1); incoming(id,late_replay);
+    }
+    for(int i=0;i<1000 && !return_packets;++i) {
+        host.update(); guest.update(); guest2.update();
+        if(!return_packets) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(return_packets==1); guest.cb.custom = old_guest_custom;
+    drain(); adventure::tick(++health_clock); drain();
+    CHECK(native_aborts==done_aborts+1 && adventure_assets::preparations==done_preparations);
+    CHECK(!adventure::outcome_locked() && !adventure::active() && host.connected() && guest.connected());
+    CHECK(!adventure::results_accepted(true));
+
+    // A terminal health snapshot is itself an authoritative outcome. No separate
+    // K_RESULT is required, and later Playing or conflicting results cannot win.
+    adventure::reset(); drain(); ctx.sess=&guest; ctx.native_message={};
+    unsigned guest_result_reuses=0;
+    ctx.reuse_captain=[&](const dbpf::Key& saved,auto selected) {
+        CHECK((saved==dbpf::Key{440,10,20})); ++guest_result_reuses; selected(saved);
+    };
+    CHECK(adventure::init(&api,nullptr,ctx));
+    auto start_client = [&](uint64_t run) {
+        native_release_queued=native_settling=native_goals_pending=false;
+        prepare_client(run);
+        adventure_assets::context.prepared(run,key,std::string(64,'a')); drain();
+        CHECK(adventure::set_ready(true)); incoming(0,transfer_packet(5,run)); drain();
+        loaded=true; adventure::tick(++health_clock); drain();
+        incoming(0,transfer_packet(7,run)); drain(); CHECK(adventure::running());
+    };
+    start_client(2000);
+    const auto terminal_results = results;
+    native_goals_pending=true;
+    auto failed_snapshot = captain_snapshot(2000,1,3,ga::RunPhase::Failed);
+    incoming(2,failed_snapshot); CHECK(!adventure::outcome_locked());
+    incoming(0,failed_snapshot);
+    CHECK(adventure::outcome_locked() && adventure::outcome_run()==2000 && adventure::running());
+    incoming(0,captain_snapshot(2000,2,400));
+    incoming(0,captain_snapshot(2000,3,401,ga::RunPhase::Won));
+    CHECK(adventure::captain_state(1,state) && state.simulation_time==3);
+    native_goals_pending=false; adventure::tick(++health_clock); drain();
+    CHECK(results==terminal_results+1 && !success && !adventure::active());
+    std::vector<uint8_t> result_wire_order;
+    const auto old_host_custom = host.cb.custom;
+    host.cb.custom = [&](uint8_t type,uint8_t from,net::Reader& packet) {
+        if(type!=net::MSG_ADVENTURE || from!=guest.my_id() || !packet.left()) return;
+        const auto kind=packet.u8();
+        uint64_t run=packet.u32(); run|=uint64_t(packet.u32())<<32;
+        if(packet.ok() && run==2000 && (kind==19 || kind==17)) result_wire_order.push_back(kind);
+    };
+    CHECK(adventure::results_accepted(true));
+    for(int i=0;i<1000 && result_wire_order.size()<2;++i) {
+        guest.update(); host.update(); guest2.update();
+        if(result_wire_order.size()<2) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(result_wire_order==std::vector<uint8_t>({19,17})); host.cb.custom = old_host_custom;
+    net::Writer late_win; late_win.u8(11); put_run(late_win,2000); late_win.u8(1); incoming(0,late_win); drain();
+    CHECK(results==terminal_results+1 && !success && adventure::outcome_locked());
+
+    // Host exit overtakes a guest's still-pending native results. Cleanup wins
+    // once, and late results or Replay cannot revive the departed attempt.
+    adventure::reset(); drain(); start_client(2001);
+    const auto pending_exit_results = results, pending_exit_aborts = native_aborts;
+    native_goals_pending=true;
+    incoming(0,captain_snapshot(2001,1,4,ga::RunPhase::Failed));
+    CHECK(adventure::outcome_locked() && adventure::running());
+    incoming(2,transfer_packet(20,2001)); CHECK(adventure::running());
+    incoming(0,transfer_packet(20,2001));
+    CHECK(!adventure::active() && adventure::outcome_locked());
+    incoming(0,transfer_packet(20,2001)); drain_turn();
+    CHECK(native_aborts==pending_exit_aborts && results==pending_exit_results && adventure::outcome_locked());
+    native_goals_pending=false; adventure::tick(++health_clock); drain();
+    CHECK(native_aborts==pending_exit_aborts+1 && results==pending_exit_results+1 && !adventure::outcome_locked());
+    incoming(0,transfer_packet(18,2001));
+    net::Writer late_failure; late_failure.u8(11); put_run(late_failure,2001); late_failure.u8(0); incoming(0,late_failure); drain();
+    CHECK(native_aborts==pending_exit_aborts+1 && results==pending_exit_results+1 && !adventure::active());
+
+    // Reset while result application is queued must cancel it, retain mandatory
+    // menu cleanup, and release the terminal fence for the next native run.
+    start_client(2002);
+    const auto reset_results = results, reset_native_aborts = native_aborts;
+    incoming(0,captain_snapshot(2002,1,5,ga::RunPhase::Failed));
+    CHECK(adventure::outcome_locked() && !tasks.empty());
+    adventure::reset(); drain();
+    CHECK(results==reset_results && native_aborts==reset_native_aborts+1 && !adventure::outcome_locked());
+
+    // A guest can accept Done locally and still join a later host Replay. The
+    // host's new descriptor remains ordered behind that final native cleanup.
+    start_client(2003);
+    incoming(0,captain_snapshot(2003,1,6,ga::RunPhase::Won)); drain();
+    const auto local_done_aborts=native_aborts, local_done_reuses=guest_result_reuses;
+    CHECK(adventure::results_accepted(false)); drain();
+    CHECK(native_aborts==local_done_aborts+1);
+    CHECK(!adventure::outcome_locked() && !adventure::active() && guest.connected());
+    incoming(0,transfer_packet(18,2003));
+    prepare_client(2004);
+    drain(); adventure::tick(++health_clock); drain();
+    CHECK(adventure::current() && adventure::current()->run_id==2004 && !adventure::ready());
+    adventure_assets::context.prepared(2004,key,std::string(64,'a')); drain();
+    CHECK(native_aborts==local_done_aborts+1 && guest_result_reuses==local_done_reuses+1);
+    CHECK((adventure::selected_captain(guest.my_id())==dbpf::Key{440,10,20}));
+    CHECK(adventure::cancel("outcome tests complete")); drain(); adventure::reset(); drain();
+
+    // Host Done arriving after local Done cleanup cannot recreate a terminal
+    // latch for an already departed native attempt or repeat native teardown.
+    start_client(2010);
+    incoming(0,captain_snapshot(2010,1,7,ga::RunPhase::Won)); drain();
+    const auto completed_done_aborts=native_aborts;
+    CHECK(adventure::results_accepted(false)); drain();
+    CHECK(native_aborts==completed_done_aborts+1 && !adventure::outcome_locked());
+    incoming(0,transfer_packet(20,2010)); incoming(0,transfer_packet(20,2010));
+    CHECK(!adventure::outcome_locked() && !adventure::outcome_run() && tasks.empty());
+    adventure::tick(++health_clock); drain();
+    CHECK(native_aborts==completed_done_aborts+1 && !adventure::active());
+
+    // Done and Replay share one mandatory cleanup lease. An early new manifest
+    // waits for that lease, and the saved captain survives the successful retry.
+    start_client(2020);
+    incoming(0,captain_snapshot(2020,1,8,ga::RunPhase::Won)); drain();
+    const auto pending_replay_aborts=native_aborts, pending_replay_reuses=guest_result_reuses;
+    CHECK(adventure::results_accepted(false));
+    incoming(0,transfer_packet(18,2020)); incoming(0,transfer_packet(18,2020));
+    prepare_client(2021);
+    CHECK(!adventure::active() && !tasks.empty() && adventure_assets::prepared_run!=2021);
+    drain(); CHECK(native_aborts==pending_replay_aborts+1 && !adventure::active());
+    adventure::tick(++health_clock); drain();
+    CHECK(adventure::current() && adventure::current()->run_id==2021 && !adventure::ready());
+    adventure_assets::context.prepared(2021,key,std::string(64,'a')); drain();
+    CHECK(native_aborts==pending_replay_aborts+1 && guest_result_reuses==pending_replay_reuses+1);
+    CHECK((adventure::selected_captain(guest.my_id())==dbpf::Key{440,10,20}));
+    CHECK(adventure::cancel("pending Done Replay complete")); drain(); adventure::reset(); drain();
+
+    // A final host exit beats a queued retry; repeated/reordered old commands
+    // cannot run two native teardowns or bring back the ended attempt.
+    start_client(2030);
+    incoming(0,captain_snapshot(2030,1,9,ga::RunPhase::Won)); drain();
+    const auto crossed_exit_aborts=native_aborts, crossed_exit_preparations=adventure_assets::preparations;
+    CHECK(adventure::results_accepted(false)); incoming(0,transfer_packet(18,2030));
+    incoming(0,transfer_packet(20,2030)); incoming(0,transfer_packet(18,2030)); incoming(0,transfer_packet(20,2030));
+    CHECK(!adventure::active() && adventure::outcome_locked()); drain();
+    adventure::tick(++health_clock); drain();
+    CHECK(native_aborts==crossed_exit_aborts+1 && !adventure::outcome_locked() && !adventure::active());
+    CHECK(adventure_assets::preparations==crossed_exit_preparations);
+
+    // Reset/disconnect invalidates retry work but retains the already queued
+    // mandatory native cleanup. A new preparation cannot overtake that cleanup.
+    start_client(2040);
+    incoming(0,captain_snapshot(2040,1,10,ga::RunPhase::Won)); drain();
+    const auto crossed_reset_aborts=native_aborts, crossed_reset_preparations=adventure_assets::preparations;
+    CHECK(adventure::results_accepted(false)); incoming(0,transfer_packet(18,2040)); prepare_client(2041);
+    CHECK(!adventure::active() && adventure_assets::prepared_run!=2041);
+    adventure::reset(); drain(); adventure::tick(++health_clock); drain();
+    CHECK(native_aborts==crossed_reset_aborts+1 && !adventure::active() && !adventure::outcome_locked());
+    CHECK(adventure_assets::preparations==crossed_reset_preparations);
+
+    start_client(2050);
+    incoming(0,captain_snapshot(2050,1,11,ga::RunPhase::Won)); drain();
+    const auto crossed_abort_aborts=native_aborts;
+    CHECK(adventure::results_accepted(false)); incoming(0,transfer_packet(18,2050));
+    net::Writer crossed_abort; crossed_abort.u8(8); put_run(crossed_abort,2050); crossed_abort.str16("host aborted crossed result cleanup");
+    incoming(0,crossed_abort); incoming(0,crossed_abort);
+    CHECK(!adventure::active()); drain(); adventure::tick(++health_clock); drain();
+    CHECK(native_aborts==crossed_abort_aborts+1 && !adventure::outcome_locked() && !adventure::active());
+
+    // Shared exits must preserve the normal captain save/reward choice before
+    // native teardown. Waiting neither spins the outside-frame queue nor admits
+    // the next adventure, and Done/Replay keep one cleanup lease.
+    start_client(2060);
+    incoming(0,captain_snapshot(2060,1,12,ga::RunPhase::Won)); drain();
+    const auto saving_aborts=native_aborts, saving_calls=result_exit_calls, saving_reuses=guest_result_reuses;
+    result_exit_ready=false;
+    CHECK(adventure::results_accepted(false)); drain_turn();
+    CHECK(native_aborts==saving_aborts && result_exit_calls==saving_calls+1 && adventure::outcome_locked());
+    CHECK(adventure::results_accepted(false)); incoming(0,transfer_packet(18,2060)); prepare_client(2061);
+    CHECK(!adventure::active() && adventure_assets::prepared_run!=2061);
+    adventure::tick(++health_clock); drain_turn();
+    CHECK(native_aborts==saving_aborts && result_exit_calls==saving_calls+2 && adventure::outcome_locked());
+    CHECK(!adventure::active() && adventure_assets::prepared_run!=2061);
+    result_exit_ready=true; adventure::tick(++health_clock); drain();
+    CHECK(native_aborts==saving_aborts+1 && !adventure::outcome_locked());
+    adventure::tick(++health_clock); drain();
+    CHECK(adventure::current() && adventure::current()->run_id==2061);
+    adventure_assets::context.prepared(2061,key,std::string(64,'a')); drain();
+    CHECK(guest_result_reuses==saving_reuses+1 && !adventure::ready());
+    CHECK((adventure::selected_captain(guest.my_id())==dbpf::Key{440,10,20}));
+    CHECK(adventure::cancel("saved result retry complete")); drain(); adventure::reset(); drain();
+
+    // A host exit can reach a guest before native result application. Finish its
+    // old scene, apply the authoritative result, then complete the ordinary save
+    // before allowing the native mode to leave.
+    start_client(2062);
+    const auto save_pending_results=results, save_pending_aborts=native_aborts, save_pending_calls=result_exit_calls;
+    native_goals_pending=true;
+    incoming(0,captain_snapshot(2062,1,13,ga::RunPhase::Won)); incoming(0,transfer_packet(20,2062));
+    result_exit_ready=false; drain_turn();
+    CHECK(results==save_pending_results && native_aborts==save_pending_aborts && result_exit_calls==save_pending_calls);
+    CHECK(adventure::outcome_locked() && !adventure::active());
+    native_goals_pending=false; result_readback=false;
+    adventure::tick(++health_clock); drain_turn();
+    CHECK(results==save_pending_results+1 && native_aborts==save_pending_aborts && result_exit_calls==save_pending_calls);
+    result_readback=true; adventure::tick(++health_clock); drain_turn();
+    CHECK(results==save_pending_results+1 && native_aborts==save_pending_aborts && result_exit_calls==save_pending_calls+1);
+    CHECK(adventure::outcome_locked());
+    result_exit_ready=true; adventure::tick(++health_clock); drain();
+    CHECK(native_aborts==save_pending_aborts+1 && !adventure::outcome_locked() && !adventure::active());
+
+    // Explicit reset/disconnect cancels a pending reward choice. It supersedes
+    // the save wait but keeps the same mandatory native cleanup, which must finish
+    // before another manifest can start preparing the next attempt.
+    start_client(2063);
+    incoming(0,captain_snapshot(2063,1,14,ga::RunPhase::Won)); drain();
+    const auto save_reset_aborts=native_aborts;
+    result_exit_ready=false; CHECK(adventure::results_accepted(false)); drain_turn();
+    CHECK(native_aborts==save_reset_aborts && adventure::outcome_locked());
+    CHECK(adventure::results_accepted(false)); incoming(0,transfer_packet(18,2063));
+    adventure::reset(); prepare_client(2064);
+    CHECK(!adventure::active() && adventure_assets::prepared_run!=2064);
+    drain(); adventure::tick(++health_clock); drain();
+    CHECK(native_aborts==save_reset_aborts+1 && !adventure::outcome_locked());
+    CHECK(adventure::current() && adventure::current()->run_id==2064);
+    result_exit_ready=true; CHECK(adventure::cancel("cancelled reward wait cleanup complete")); drain(); adventure::reset(); drain();
+
+    // Exercise the actual session-disconnected predicate, then the normal reset
+    // notification, while Done and Replay still own a single native cleanup.
+    start_client(2100);
+    incoming(0,captain_snapshot(2100,1,15,ga::RunPhase::Won)); drain();
+    const auto disconnected_aborts=native_aborts;
+    CHECK(adventure::results_accepted(false)); incoming(0,transfer_packet(18,2100));
+    guest.leave(); adventure::tick(++health_clock); adventure::reset(); drain();
+    CHECK(native_aborts==disconnected_aborts+1 && !adventure::outcome_locked() && !adventure::active());
 
     guest.leave(); guest2.leave(); host.leave();
     std::printf("adventure coordinator: %s (%d failures)\n", failures ? "FAILED" : "passed", failures);

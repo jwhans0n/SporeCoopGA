@@ -34,6 +34,12 @@ struct Ctx {
     std::function<bool()> paused;
     std::function<void*(uint8_t)> captain_of;
     std::function<void(bool)> native_result;
+    // True only after the current native play object actually holds this outcome.
+    std::function<bool(bool)> native_result_applied;
+    // Complete the normal native results save before a shared menu exit. False
+    // retains the sealed scene while native cinematics or reward choices finish.
+    // Called only outside the render frame, after actual terminal-state readback.
+    std::function<bool()> prepare_result_exit;
     // Reads native release/goal-work ownership without calling coordinator/flow
     // running() or held(). A received result waits for local cleanup and final goals.
     std::function<bool()> native_settling;
@@ -69,6 +75,10 @@ bool set_ready(bool value);
 bool active();
 bool running(); // all frozen-roster captains loaded and the host committed the attempt
 bool native_attempt(); // a current attempt has entered native loading/gameplay
+// The first authoritative outcome seals gameplay through native results/exit.
+// This remains valid after active()/current() stop exposing the running attempt.
+bool outcome_locked();
+uint64_t outcome_run();
 bool participating(uint8_t player); // excludes joins/reconnects after roster freeze
 struct CaptainState {
     uint64_t run_id = 0;

@@ -3,10 +3,20 @@
 Bugs found and not fixed yet. Each entry: what happens, how to reproduce it, what is known.
 Fixed entries move to the commit message (and a test).
 
-## Galactic Adventures preview 11: validation limits
+## Galactic Adventures preview 12: validation limits
 
-Preview `0.7.3.4-ga-preview.11` requires the exact dc04 GOG executable and matching
-protocol 14 clients. The targeting fix recognizes eligible guest captains in
+Preview `0.7.3.5-ga-preview.12` requires the exact dc04 GOG executable and matching
+protocol 15 clients. It seals the host's first win/loss decision, holds gameplay
+through native results, and coordinates host Done for the whole party. Replay
+waits for every remaining participant to apply and accept results. See the
+[preview 12 report](validation-ga-preview.12.md) for evidence and remaining limits.
+A read-only personal-session capture found a guest with result latch 6 but actual
+play state 3. The complete natural timing that reopened gameplay remains separate
+from deterministic callback and coordinator regressions.
+A downed captain's 1 HP display is intentional revival presentation. Continued
+play after a shared loss is a lifecycle bug, not an intended invincibility rule.
+
+The historical preview 11 targeting fix recognizes eligible guest captains in
 authored player-team attack matches. Native sensor visibility, hostility and
 nonparty targets retain their behavior. Targeted two-player Mine guest/host
 acquisition, natural damage and switching checks pass; broader adventure/AI-command

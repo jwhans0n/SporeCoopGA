@@ -13,7 +13,7 @@ std::array<uint8_t, 0x16A0> local{}, remote{}, outsider{};
 std::array<uint8_t, 0x610> local_behavior{}, remote_behavior{};
 ga::Captain local_state, remote_state;
 bool active = true;
-bool local_paused;
+bool local_paused, terminal_pending;
 int failures, hooks, brain_calls, walk_calls, cursor_calls, order_calls, stopped, positioned, cleared;
 void* last_strategy;
 std::string hash = "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37";
@@ -55,6 +55,7 @@ adventure_control::Ctx context()
     result.active = [] { return active; };
     result.local_avatar = [] { return local.data(); };
     result.local_paused = [] { return local_paused; };
+    result.terminal_pending = [] { return terminal_pending; };
     result.captain_state = [](void* object, ga::Captain& state) {
         if (object == local.data()) state = local_state;
         else if (object == remote.data()) state = remote_state;
@@ -134,8 +135,51 @@ int main()
     active = false; int writes = positioned;
     adventure_control::creature_update(reinterpret_cast<void*>(0x1234), true);
     adventure_control::brain(local.data(), .125f); check(issue(remote.data()) == 0xCAFE, "inactive adventure restores normal controls");
+    terminal_pending = true;
+    const int terminal_brains = brain_calls, terminal_walks = walk_calls, terminal_cursors = cursor_calls,
+              terminal_orders = order_calls, terminal_clears = cleared, terminal_stop_count = stopped;
+    // The coordinator has left Running and no longer supplies life state. The
+    // run outcome must retain input ownership until native results/exit settle.
+    local_state.life = ga::Life::Alive;
+    const auto terminal_position = game::position(local.data());
+    for (int n = 0; n < 1000; ++n) {
+        adventure_control::brain(local.data(), .125f); adventure_control::walk(strategy);
+        check(!adventure_control::cursor(strategy, true, false) && !issue(local.data()),
+              "terminal outcome blocks local input and abilities after Running ends");
+        adventure_control::creature_update(local.data(), true);
+        field<net::Vec3>(local.data(), game::kVelOff) = {5, 0, 0};
+        adventure_control::creature_update(local.data(), false);
+    }
+    check(brain_calls == terminal_brains && walk_calls == terminal_walks && cursor_calls == terminal_cursors &&
+          order_calls == terminal_orders, "terminal callbacks cannot fall through to native local controls");
+    check(stopped == terminal_stop_count + 1 && cleared == terminal_clears + 1 && positioned == writes,
+          "terminal transition clears native orders once without repeating pose writes");
+    check(field<net::Vec3>(local.data(), game::kVelOff).x == 0,
+          "terminal native visual update cannot retain gameplay momentum");
+    field<net::Vec3>(local.data(), game::kPosOff).x += 2;
+    adventure_control::creature_update(local.data(), false);
+    check(game::position(local.data()).x == terminal_position.x && positioned == writes + 1,
+          "terminal physics displacement is corrected to the entry anchor");
+    adventure_control::brain(outsider.data(), .125f);
+    check(issue(remote.data()) == 0xCAFE && brain_calls == terminal_brains + 1 && order_calls == terminal_orders + 1,
+          "terminal local input fence does not invent NPC or remote-captain authority");
+    field<uint32_t>(local.data(), 0x24) = 4;
+    adventure_control::creature_update(local.data(), true);
+    check(stopped == terminal_stop_count + 2 && cleared == terminal_clears + 2,
+          "terminal same-address incarnation replacement receives a fresh safe transition");
+    terminal_pending = false;
+    adventure_control::creature_update(local.data(), true);
+    check(!adventure_control::terminal_hold.object, "released outcome forgets its local native anchor");
+    adventure_control::walk(strategy);
+    check(adventure_control::cursor(strategy, true, false) && issue(local.data()) == 0xCAFE &&
+          walk_calls == terminal_walks + 1 && cursor_calls == terminal_cursors + 1,
+          "shared exit or retry restores ordinary controls without reviving or changing health");
+    terminal_pending = true;
+    adventure_control::creature_update(local.data(), true);
+    writes = positioned;
     adventure_control::reset();
-    check(positioned == writes && adventure_control::held.empty(), "cancellation forgets held pointers without touching retired objects");
+    check(positioned == writes && adventure_control::held.empty() && !adventure_control::terminal_hold.object,
+          "cancellation forgets held pointers without touching retired objects");
     std::printf("adventure native controls: %d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

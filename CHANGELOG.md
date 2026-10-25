@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+## [0.7.3.5-ga-preview.12] - 2026-10-25
+
+- Seal the first host-authoritative adventure win or loss for every participant.
+  Stop gameplay, damage, revival and objective/act progression while applying
+  results, including after the running phase ends. Late native callbacks and
+  goal batches cannot reopen the completed attempt.
+- Confirm actual native result state before acknowledging it. Keep native
+  results cinematics and captain saves, with recovery to the menu if native
+  result application fails. The 1 HP downed display remains intentional;
+  a failed attempt must not become playable through that display.
+- Make host Done return the whole party to the native menu while preserving
+  the connection. Guest Done accepts results locally. Replay requires every
+  remaining player to apply and accept their result, then reuses saved captains
+  in a shared lobby with fresh explicit readiness.
+- Preserve native captain saving before a forced party exit. Finish the native
+  result cinematic and use the normal enabled Done action; mandatory captain
+  reward selections still require the player's choice.
+- Coalesce overlapping Done, Replay, cancellation and disconnect cleanup so old
+  callbacks cannot tear down a replacement attempt. Retain early result
+  acknowledgements while host native cleanup is settling.
+- Use protocol 15 for result acknowledgements and the shared menu return.
+  Adventure/captain resource bundle formats and existing targeting, movement
+  and performance behavior are retained. See the
+  [preview 12 report](docs/validation-ga-preview.12.md) for validation and limits;
+  earlier reports keep their original scope.
+
 ## [0.7.3.4-ga-preview.11] - 2026-10-25
 
 - Fix authored player-team enemy targets rejecting eligible guest captains.

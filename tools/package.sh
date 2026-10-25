@@ -73,14 +73,19 @@ Based on SporeCoop by WoodyWizard: https://github.com/WoodyWizard/SporeCoop
 
 Install: extract this zip into SPORE\\SporebinEP1 and run install.bat (step by step: INSTALL.txt).
 Read GALACTIC-ADVENTURES.md for the adventure preview's verified cases and limits.
-All players need Galactic Adventures and this exact SporeCoopGA version (protocol 14).
+All players need Galactic Adventures and this exact SporeCoopGA version (protocol 15).
 Upstream SporeCoop 0.7.0-0.7.2.1 uses a different protocol and cannot join this preview.
 Client creatures and vehicles follow native waypoints; the host retains AI,
 combat and objective authority. Authored player-team attack targets can recognize
 eligible guest captains; native sensing, hostility and target selection remain
-in control. Targeted two-player Mine guest/host targeting, natural damage and
-switching checks pass; broader adventure compatibility remains unproven. See
-validation-ga-preview.11.md for evidence and limits. Earlier follower results
+in control. Shared wins/losses stop gameplay for the party. Host Done returns
+everyone to the menu; guest Done accepts results locally. Replay requires host
+Replay and every remaining player to apply and accept results, then opens a
+shared lobby with fresh explicit readiness. A downed captain's 1 HP display permits revival, not
+continued play after a shared loss. See validation-ga-preview.12.md for current
+acceptance evidence and limits. Historical preview 11 Mine guest/host targeting,
+natural damage and switching checks remain in validation-ga-preview.11.md.
+Broader adventure compatibility remains unproven. Earlier follower results
 retain residual movement lag. Ordinary guest click/key combat input remains
 unverified.
 
@@ -106,6 +111,10 @@ Each player chooses or creates, names and saves a captain, then reviews the
 shared adventure/captain cards and explicitly presses Ready after transfer.
 After loading and beam-down, every player presses Continue before clocks start.
 F9 opens party/chat controls in game. Late joins wait for the next attempt.
+Host Done keeps the party connected and cancels a pending Replay. Review the
+shared lobby and press Ready again when starting a Replay attempt.
+Finish mandatory native captain reward selections before a party exit completes;
+the normal native captain-save flow is preserved.
 For other stages, the host loads a save or starts a game and shares that world.
 
 Fork releases and problem reports: https://github.com/jwhans0n/SporeCoopGA
@@ -123,6 +132,7 @@ cp "$ROOT/THIRD_PARTY_NOTICES.md" "$STAGE/THIRD_PARTY_NOTICES.txt"
 cp "$ROOT/third_party/minhook/LICENSE.txt" "$STAGE/SporeCoop/MinHook-LICENSE.txt"
 cp "$ROOT/docs/INSTALL.md" "$STAGE/INSTALL.txt"
 cp "$ROOT/docs/GALACTIC-ADVENTURES.md" "$STAGE/GALACTIC-ADVENTURES.md"
+cp "$ROOT/docs/validation-ga-preview.12.md" "$STAGE/validation-ga-preview.12.md"
 cp "$ROOT/docs/validation-ga-preview.11.md" "$STAGE/validation-ga-preview.11.md"
 cp "$ROOT/docs/validation-ga-preview.10.md" "$STAGE/validation-ga-preview.10.md"
 cp "$ROOT/docs/validation-ga-preview.9.md" "$STAGE/validation-ga-preview.9.md"

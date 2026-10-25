@@ -184,6 +184,12 @@ $(B)/host/adventure_progress_tests.exe: mods/coop/adventure_progress.cpp tests/a
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include mods/coop/adventure_progress.cpp tests/adventure_progress_tests.cpp -o $@
 
+.PHONY: test-results-windows
+test-results-windows: $(B)/host/adventure_results_tests.exe
+$(B)/host/adventure_results_tests.exe: mods/coop/adventure_results.cpp mods/coop/adventure_results.h tests/adventure_results_tests.cpp mods/coop/sui.h $(ADVENTURE_ABI_HEADERS)
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include mods/coop/adventure_results.cpp tests/adventure_results_tests.cpp -o $@
+
 clean:
 	rm -rf $(B)
 

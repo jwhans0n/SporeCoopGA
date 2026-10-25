@@ -47,6 +47,7 @@ unsigned transform_sets;
 unsigned creates;
 int failures;
 unsigned native_terminals, native_other_states;
+unsigned native_goal_mutations;
 unsigned goal_act_sets;
 bool reentrant_result;
 void* teleported;
@@ -173,6 +174,9 @@ void SK_THISCALL result_state(void* self, int state)
         adventure_world::set_state(self, state == 5 ? 6 : 5);
     }
 }
+void SK_THISCALL native_goal_check(void*) { ++native_goal_mutations; }
+bool SK_THISCALL native_goal_update(void*) { ++native_goal_mutations; return false; }
+void SK_THISCALL native_goal_count(void*, void*, void*, void*) { ++native_goal_mutations; }
 void SK_THISCALL goal_act(void* self, int act, bool)
 {
     ++goal_act_sets;
@@ -1541,11 +1545,34 @@ int main()
     apply_result(false); set_state(fake_play.data(), 6); tick(21);
     check(native_terminals == 1 && g_native_result.applied == 5,
           "same-run duplicate conflicting and reentrant native results apply at most once");
-    set_state(fake_play.data(), 4);
-    check(native_other_states == 1 && g_native_result.applied == 5, "ordinary cinematic transition is not swallowed by terminal latch");
+    check(result_applied(1,true) && !result_applied(1,false) && !result_applied(2,true),
+          "result acknowledgement reads the actual native state and retained outcome run after coordinator end");
+    set_state(fake_play.data(), 3); set_state(fake_play.data(), 4);
+    native_state(fake_play.data(), 3);
+    check(native_other_states == 0 && field<int>(fake_play.data(),0x90)==5,
+          "late cinematic and gameplay transitions cannot reopen a terminal attempt");
+    o_Check=native_goal_check; o_Complete=native_goal_check;
+    o_Goals=native_goal_update; o_Count=native_goal_count;
+    check_goals(fake_play.data()); complete_act(fake_play.data());
+    check(update_goals(fake_play.data()), "terminal native goal refresh remains a successful no-op");
+    count_goal(fake_play.data(),hud_goals.data(),nullptr,nullptr);
+    check(native_goal_mutations==0,"ended objective callbacks cannot count goals or advance acts after Running ends");
+    field<int>(fake_play.data(),0x94)=0;
+    check(terminal_message_allowed(fake_play.data(),0x044F1189) &&
+          !terminal_message_allowed(fake_play.data(),0x01622184),
+          "native results cinematic may finish while later gameplay callbacks are fenced");
+    field<int>(fake_play.data(),0x94)=2;
+    check(!terminal_message_allowed(fake_play.data(),0x044F1189),"duplicate native result cinematic cannot reopen its panel");
+    field<int>(fake_play.data(),0x90)=3;
+    check(!result_applied(1,true) && !terminal_message_allowed(fake_play.data(),0x044F1189),
+          "a call latch alone cannot acknowledge a result or let a stale Finished message resume gameplay");
+    field<int>(fake_play.data(),0x90)=5;
     reported_run = 2; begin_native_attempt(fake_play.data()); running = true;
     field<int>(fake_play.data(), 0x90) = 3;
-    set_state(fake_play.data(), 6); apply_result(false);
+    g_applying=true; set_state(fake_play.data(), 6); g_applying=false;
+    check(result_requests==2 && native_terminals==1,
+          "native failure nested inside replicated damage still waits for coordinator authority");
+    apply_result(false);
     check(result_requests == 2 && native_terminals == 2 && g_native_result.run == 2 && g_native_result.applied == 6,
           "next co-op attempt can apply a new result on the same native play object");
     reported_run = 0; running = false; begin_native_attempt(fake_play.data());
@@ -1606,6 +1633,17 @@ int main()
     apply_result(true); apply_result(false);
     check(native_terminals == terminals_before + 1 && field<int>(fake_play.data(), 0x90) == 5,
           "authoritative coordinator result commits once after final goal application");
+    const unsigned completed_act_sets=goal_act_sets;
+    auto late_goal=std::make_unique<GoalTask>(); late_goal->run=reported_run;
+    late_goal->sequence=g_received_goals+1; late_goal->act=2; late_goal->state=3;
+    late_goal->goals={{false,99},{false,99},{false,99}};
+    apply_goals(late_goal.release());
+    check(goal_act_sets==completed_act_sets && field<int>(fake_play.data(),0xB8)==1 &&
+          field<int>(fake_play.data(),0x90)==5 && field<uint32_t>(hud_goals.data(),4)==5,
+          "already queued old goal work cannot replace acts, fields or state after terminal application");
+    receive_goals(goal_packet(12,6));
+    check(!g_deferred_goals,"late world packets cannot enqueue goal work after terminal application");
+    begin_native_attempt(fake_play.data()); field<int>(fake_play.data(),0x90)=3;
     finishing = true; receive_goals(goal_packet(12, 6));
     check(bool(g_deferred_goals), "replacement pending goal snapshot is retained within one run");
     finishing = false; flush_deferred_goals();

@@ -1,14 +1,18 @@
 # Installing SporeCoop
 
-This fork, `0.7.3.4-ga-preview.11`, combines upstream SporeCoop 0.7.2.1 with the
+This fork, `0.7.3.5-ga-preview.12`, combines upstream SporeCoop 0.7.2.1 with the
 Galactic Adventures changes described in [the GA guide](GALACTIC-ADVENTURES.md)
 for adventures started from Sporepedia. The native adventure adapter requires the
 exact GOG executable `dc04aee5...`; Steam and code-equivalent variants retain
 upstream base-stage support but have no enabled native GA adapter. Every player
-needs this fork build and protocol 14; upstream and earlier previews cannot join it.
-Preview 11 fixes authored player-team attack targets rejecting eligible guests.
-Targeted two-player Mine checks pass for native guest/host targeting, natural
-damage and switching; see the [validation report](validation-ga-preview.11.md).
+needs this fork build and protocol 15; upstream and earlier previews cannot join it.
+Preview 12 seals shared wins/losses and coordinates host Done for the whole party.
+Replay requires host Replay plus applied and accepted results for everyone.
+Mandatory native captain reward selections must finish before a party exit,
+preserving the normal captain-save flow. See the
+[current validation report](validation-ga-preview.12.md) for evidence and limits.
+Preview 11's targeted two-player Mine guest/host targeting, natural damage and
+switching checks remain recorded in its [report](validation-ga-preview.11.md).
 Broader adventure compatibility remains unproven.
 The retained preview 10 [report](validation-ga-preview.10.md) records two-player
 locomotion checks and material residual tracking lag; ordinary guest combat input
@@ -100,7 +104,7 @@ reverse-engineering notes call it March 2017 after the ModAPI address map.
 | File | `SPORE\SporebinEP1\SporeApp.exe` |
 | Size | 24 895 536 bytes |
 | SHA-256 | `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37` |
-| Verified scope | Preview 11 passes targeted two-player Mine guest/host targeting, natural damage and switching checks; broader compatibility remains unproven. See the [current report](validation-ga-preview.11.md). Preview 10 retains targeted two-player creature/land-vehicle motion results with residual lag; earlier reports retain their recorded scope. Steam GA is unvalidated and disabled. |
+| Verified scope | Preview 12's shared results, menu return and Replay evidence is recorded in the [current report](validation-ga-preview.12.md). Preview 11 retains targeted two-player Mine targeting/damage checks; preview 10 retains creature/land-vehicle motion results with residual lag. Broader compatibility remains unproven, and Steam GA is unvalidated and disabled. |
 
 Where the game usually is:
 
@@ -221,7 +225,7 @@ SPORE\
 
 * The main menu (galaxy screen) has a new **Co-op** item on the left.
 * `SporebinEP1\mods\logs\sporekit.log` exists and reports the installed version
-  (for this fork preview, `loaded coop v0.7.3.4-ga-preview.11`).
+  (for this fork preview, `loaded coop v0.7.3.5-ga-preview.12`).
 * Start a game, press **F9**: the co-op window opens.
 
 If there is no Co-op item, see [Troubleshooting](#9-troubleshooting).

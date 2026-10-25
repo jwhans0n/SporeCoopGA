@@ -55,6 +55,13 @@ bool damage_filter(void* victim, float& damage, int type, void* attacker);
 bool source(void* victim, void* attacker, int type, ga::Source& out);
 void begin_native_attempt(void* play); // call before native Initialize, including solo/retry
 void apply_result(bool success); // authoritative native result, outside the frame
+// The call latch survives Ended; acknowledgement additionally requires the
+// actual native state, rather than assuming original SetState kept that state.
+int terminal_state(void* play);
+bool result_applied(uint64_t run, bool success);
+// A completed attempt may finish its result cinematic once, but cannot consume
+// later gameplay or Intro/Talk callbacks through the native message handler.
+bool terminal_message_allowed(void* play, uint32_t type);
 bool validate_talk(uint8_t player, const adventure_flow::Scene&);
 bool present_talk(const adventure_flow::Scene&);
 void release_talk(const adventure_flow::Scene&);

@@ -2107,3 +2107,197 @@ Reviewed disassembly and verifier-ready details for this narrower path are
 `verified-behavior-target-spec.json` in `out/lab/ga-enemy-targeting-re/`.
 The unused generic-score ABI and its native cdecl double/ST0 dispatcher proof
 remain ignored diagnostic evidence, not a reason to hook additional selectors.
+
+## Terminal outcome ownership after native results
+
+The Crystal Mine report supplied a stronger counterexample than a missed result
+packet. A read-only capture of the personal guest found the coordinator Ended,
+the native result latch at run 1/applied 6, but the actual play object at act 4,
+state 3. Its suppressed-score count was zero. Therefore a prior call to native
+SetState 6 is not evidence that the guest remains in native results. This capture
+does not identify which earlier callback reopened gameplay, and the personal
+sessions were not modified to reconstruct that history.
+
+Two authority gaps were present in the adapter. The broad `g_applying` flag,
+intended for replicated interaction/damage callbacks, also allowed nested native
+terminal requests to bypass the coordinator. Separately, result idempotence only
+rejected later terminal 5/6 calls. Reliable goal application could still call the
+native helper with state 3/4, and goal/act authority guards disappeared when the
+coordinator left Running. The actual-world Win32 fixture reproduces both gaps:
+a native failure nested inside an applying scope must route to the coordinator,
+and an already queued goal batch must not change an applied terminal attempt's
+act, goals or state.
+
+`terminal_state(play)` is now a run/play-scoped latch that survives Ended and
+automatic replication reset. It fences every subsequent SetState request,
+CheckGoalProgress, CountGoal, CompleteAct, UpdateGoals and queued world goal
+application until explicit cleanup or the verified Initialize boundary. The
+shared applying flag never grants terminal authority. `result_applied(run,bool)`
+additionally checks actual Scenario mode, the current play pointer and native
+`play+90` against the expected 5/6. It can reject an acknowledgement even when
+the call latch says applied. This is native-state evidence, not proof that the
+captain's later results-panel save has succeeded.
+
+The verified native HandlePlayMessage `F1C570` has a second lifecycle boundary:
+the Intro Finished path directly writes `play+90=3` at `F1C6F3`, bypassing the
+SetState hook. The terminal branch at `F1C75A..F1C7C6` instead accepts state 5/6,
+opens the native results panel through `F18540` at `F1C7AE`, and records
+`play+94=2` at `F1C7B4`. It does not match the ended cinematic ID itself. The
+adapter permits only that terminal Finished message while the outcome is locked.
+It captures the current result cinematic's manager, run, play pointer and running
+ID in the existing EndCinematic hook before original cleanup. Original
+EndCinematic copies `manager+148` into the stack message, clears it, and publishes
+`044F1189` synchronously at `ADFFDA..ADFFE1`. The adapter requires the captured
+run/play/ID, matching actual terminal state, and `play+94!=2`, then consumes the
+token before forwarding. Delayed Intro/Talk events and duplicate results-panel
+opens are rejected. Initialize and explicit cleanup invalidate the token.
+
+The native simulation wrapper retains state-5/6 updates so their normal result
+animation and panel can finish. The host's outcome lock holds creature updates,
+controls and damage after Running ends and blocks any native gameplay/Intro
+update that would otherwise resume. The party can still choose Done or Replay.
+Both choices are consumed before the terminal event filter and coordinated by
+the run layer. Native results already perform the captain save before publishing
+`070B18C7`: the button handler calls `F16460` at `F17728`, and later `F17750`
+publishes the choice. The downstream Done branch `F1C994..F1CA1B` only selects
+the native exit route. Suppressing that downstream single-instance exit does
+not bypass the ordinary local results save.
+
+The installed executable was rechecked as 24,895,536 bytes with SHA-256
+`dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
+The existing verifier now checks the native Finished state write, terminal
+panel state, result choice branches, pre-publication save call and cinematic ID
+publication bytes. The terminal fence itself introduces no new callable symbols;
+the safe forced-acceptance path below adds one reviewed UI entry. The effective
+map resolves 2,755 names, with 187 reviewed functions, four globals and eight
+noncallable code sites. The expanded actual-world Win32 ABI fixture passed with
+zero failures. Paired native failure/Done/Replay acceptance is recorded in the
+delivery validation report; these static and isolated ABI checks alone do not
+claim a complete Crystal Mine playthrough.
+
+### Saving before a forced party Done exit
+
+Native result state 5/6 and its result-applied acknowledgement do not prove the
+captain has been saved. `F18540` enters the results panel and `F15770` calculates
+the XP target. Actual captain saving is later, through the ordinary result button
+handler. Cleanup `F17750` releases `results+B8` at `F17834..F17849` and publishes
+`070B18C7` at `F17944..F17949` only if the choice at `results+14` is nonzero. It
+does not call `F16460`. Immediately forcing a guest out after host Done could
+therefore discard that guest's unsaved success rewards.
+
+The new `ResultsHandleUIMessage=F16FA0` is verified thiscall with two stack
+arguments `(IWindow*, const UTFWin::Message*)`, bool AL return and `ret8` at
+`F1773F`, `F17078` and `F170B9`. Its vtable entry is `148C0AC`. The Done path
+accepts `Message.type=287259F6` (ComponentActivated) and `Message.a=07C79948`.
+At `F16FE9..F1701E` it hides the relevant native controls and sets choice 1;
+`F1771A..F17728` sets result phase `+D4=10` and calls the normal native
+`F16460(true)` save. The mod drives this reviewed UI entry, not the save helper
+directly and not any XP property writes.
+
+The result object is reacquired from the current Scenario display `+12C`, and
+its `+10` play reference must match the live current play object. The native
+layout at `+18` is a `UTFWin::UILayout*`, not an `IWindow*`. The existing verified
+`UILayout::GetContainerWindow=810610` is thiscall with no stack arguments and
+returns `layout+14 -> container+88`; the adapter validates those owners and calls
+it before any window operation. The resulting real window and Done button must
+both be visible; the button must be enabled. Native update `F17EC0..F17ED9`
+enables accepting buttons only for result
+phases 0 and 9. Mandatory reward selection phase 4 remains blocked, with a single
+message asking the player to finish selecting rewards. The adapter never chooses
+a reward or forces a disabled control. Before the result panel exists (`play+94`
+not 2), it may finish only the current active terminal cinematic through the
+existing verified EndCinematic entry. The terminal run/ID gate still validates
+that cinematic's Finished publication before opening results.
+
+The acceptance attempt is claimed before invoking the native button handler.
+Repeated cleanup polls cannot repeat progression. It waits until the actual
+native Saved choice message is observed for the same run and play pointer,
+before coordinator routing or destruction of the native panel. Native Initialize
+and explicit adapter reset invalidate these tokens. The party's owned cleanup
+lease waits for this acceptance before restoring menus; ordinary local Done and
+Replay acceptance already satisfy it. A native Saved choice is evidence of the
+ordinary native save path, not an independent durable-storage acknowledgement.
+
+The native Saved publication is synchronous. `F17936..F17949` obtains
+IMessageManager and calls its vtable slot `+14` with `070B18C7`; constructor
+`884B10` installs vtable `1427AC0`, whose `+14` entry is
+`cMessageManager::MessageSend=8854A0`. Its `+18` entry is instead
+`MessagePost=885980`. MessageSend invokes the registered recipients inline at
+`8855A0` or `88568A`, drains its temporary recipient list and returns at
+`8856F9`; it does not leave this payload in the asynchronous message queue.
+Consequently the normal Saved callback cannot be queued across a later Replay
+and credited to a reused play pointer. The shared Replay also waits for the
+owned save/cleanup lease before preparing another run. The synthetic delayed
+publication test is a conservative adapter check, not evidence that this native
+Saved path posts asynchronously.
+
+Repeat-adventure XP eligibility is also native. Initializer `1389040` hashes the
+ASCII name `scenarioCaptainAdventureHistory` at `148AEE4` into property ID
+global `16C7A58`. `EEBEC0(captainProperties, adventureKey)` reads that property
+as an array of 12-byte resource keys and returns true when all three key fields
+match. Results setup `F18540` calls it at `F1873F`. A remembered completion takes
+`F18805..F18816`, releases and clears the results object's captain properties at
+`+B8`, and presents the compact result panel. `F16460` then exits at `F16481`
+without writing captain XP. The ordinary successful save first calls `EEF250`
+at `F164AA`, recording the adventure key in that same property. That helper
+removes a duplicate before appending and bounds the history to 128 keys. This
+is a remembered-completion rule, not a permanent rule that an adventure can
+never award that captain again.
+
+The separate maximum-rank clamp in `F158BF..F158DF` limits target XP `+C8` to
+the maximum threshold when the next rank reaches the native threshold count.
+`EEC490` reads count `16C7A28`; `EEC4A0` reads threshold table `16C7A24`.
+Read-only captures from both private C4 processes found ten thresholds:
+100, 275, 525, 850, 1250, 1725, 2275, 2900, 3600 and 4375. Thus the observed
+100-to-100 repeat was not evidence of a 100-XP maximum. Its compact result panel
+matches the native remembered-completion branch. The first eligible controlled
+success and repeat-save observations are recorded separately in the validation
+report. The co-op adapter changes neither eligibility rule nor XP calculation,
+and introduces no callable aliases for these audited history helpers.
+
+`test-results-windows` exercises the actual adapter with a native Win32 thiscall
+UI fixture. It verifies the complete result pointer, two stack arguments and
+seven-word UTFWin message layout; exact build/symbol gating; terminal readback;
+cinematic-before-panel ordering; hidden, disabled and foreign UI rejection;
+mandatory reward waiting; synchronous and delayed Saved publication; reset
+ownership; and two thousand repeat polls without a second native button call.
+It passes with zero failures. Native forced-Done progression and persistence
+remain separate lab evidence in the delivery report.
+
+The first forced-save native candidate (C3) exposed the pointer-category error
+above. It passed the synthetic fixture because that fixture also incorrectly
+modeled `results+18` as an IWindow. In the private guest, `sui::visible` invoked
+the layout's incompatible virtual slot and faulted at preferred `81068D` with
+ECX `3F800000`, through DLL frames `adventure_results::prepare_exit` and
+`sui::visible`. The upstream nearest-symbol label `FindWindowByID+3D` is
+imprecise here: disassembly at `810670` is a container destructor. The wrong
+virtual-interface call reached that destructor. This was before native Save/Done dispatch, not evidence of a bad
+results-handler or EndCinematic ABI. The private crash report is
+`out/windows-lab/installation/SporebinEP1/mods/logs/crash-20261025-172230-i84.txt`;
+the failed case is `out/lab/outcome-candidate3-guest-cinematic-downed/result.json`.
+C4 replaces the invalid window cast with the verified container getter and
+extends the actual Win32 fixture with distinct UILayout, container and IWindow
+objects. Its window mocks explicitly reject a UILayout argument. This revised
+fixture passes with zero failures. Paired acceptance of the corrected candidate
+is recorded separately in the preview 12 validation report. The private C4 case
+completed host Done while the downed guest still had its terminal cinematic:
+the guest recorded one cinematic completion, one native Done dispatch and one
+Saved choice, and both peers returned to Galaxy without a native fault.
+
+### Private cold-start Data directory diagnostic
+
+One private C4 bootstrap attempt stopped before frame zero with native error
+1004, before the outcome adapter could execute. In the same verified executable,
+`7E918B..7E91A9` obtains path key `00A02149` through `688CA0`, tests that path
+with `932280`, and reports "Could not find the Data directory, we cannot run."
+only when that test fails. `932280` rejects a null or empty UTF-16 path,
+`GetFileAttributesW` returning `INVALID_FILE_ATTRIBUTES`, or a result without
+`FILE_ATTRIBUTE_DIRECTORY`. This check does not inspect package contents.
+
+The private installation had real Data and DataEP1 directories, and the existing
+EA registry DataDir values pointed to the installed game. The resolved path in
+the failed process was not captured, so the underlying bootstrap cause remains
+unproven. Serial private startup, waiting for the first instance to reach native
+Galaxy before starting the second, passed with the same C4 binary and profiles.
+This was a test-runner startup constraint; no registry or personal-profile
+settings were changed and no new native entry was called by production code.

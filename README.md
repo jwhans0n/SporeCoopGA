@@ -19,7 +19,7 @@ Shared editing is planned and is not available in the current preview.
 
 SporeCoopGA builds on [SporeCoop](https://github.com/WoodyWizard/SporeCoop) by
 [WoodyWizard](https://github.com/WoodyWizard). The current build is
-**`0.7.3.4-ga-preview.11`**, an experimental preview using protocol **14**.
+**`0.7.3.5-ga-preview.12`**, an experimental preview using protocol **15**.
 
 ## Contents
 
@@ -62,8 +62,12 @@ SporeCoopGA builds on [SporeCoop](https://github.com/WoodyWizard/SporeCoop) by
 - **Downed and revival feedback.** Downed captains stay in place while their
   normal visuals update. A six-metre revive ring, progress bar and timer show
   teammates where to stand and how long to remain nearby.
-- **Replay and recovery.** Replay returns to the shared lobby with saved captains
-  and everyone unready. Cancelling preparation restores the native menus for retry.
+- **Shared results and recovery.** A host-confirmed win or loss stops gameplay for
+  the party. Host Done returns everyone to the menu; guest Done accepts results
+  locally. Replay requires the host to choose Replay and everyone to apply and
+  accept their results, then opens
+  the shared lobby with saved captains and everyone unready. Cancelling preparation
+  restores the native menus for retry.
 - **Adventure performance work.** The preview retains the actor-memory validation
   FPS fix. Unchanged static transforms stop recurring after their initial baseline;
   moving actors continue receiving spatial updates.
@@ -112,8 +116,13 @@ package; merging new source into `main` does not update an installed game.
    wait for the whole party.
 
 Changing a captain clears readiness. Cancelling preparation keeps successfully
-saved captains and returns the party to the menu. After results, a shared Replay
-opens another preparation lobby once everyone accepts their results.
+saved captains and returns the party to the menu. After a win or loss, gameplay
+stays stopped. **Host Done returns the whole party to the menu.** Guest Done
+accepts that player's results locally. Any player can request Replay; the host
+must choose Replay and everyone must apply and accept their results before the
+shared lobby opens. Everyone presses Ready again. Finish any mandatory native
+captain reward selection before a party exit completes, so captain saving is
+preserved. The party stays connected through menu recovery.
 
 For LAN discovery, internet connections and port forwarding, see
 [networking in the installation guide](docs/INSTALL.md#7-playing-over-the-internet).
@@ -130,12 +139,15 @@ dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37
 - **Verified GA configuration:** Windows with that exact executable. Steam and
   other executables are not enabled for the native GA adapter; Linux GA play
   remains unvalidated.
-- **Matching clients:** all participants need this fork build and protocol 14.
+- **Matching clients:** all participants need this fork build and protocol 15.
   Earlier GA previews also require an update before joining.
   Upstream SporeCoop 0.7.0-0.7.2.1 clients use a different protocol and cannot join.
 - **Entry and joining:** adventures start from Sporepedia. Space-stage adventure
   entry is outside this preview. Late joins and reconnects wait for the next attempt.
-- **Validation scope:** preview 11 passes targeted two-player Mine checks for
+- **Validation scope:** preview 12's shared-result, menu return and Replay
+  acceptance is recorded separately in its
+  [validation report](docs/validation-ga-preview.12.md). Earlier preview 11 passes
+  targeted two-player Mine checks for
   native guest/host targeting, natural damage and target switching. Broader
   adventure compatibility remains unproven; see its
   [validation report](docs/validation-ga-preview.11.md) for exact evidence.
@@ -151,7 +163,7 @@ dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37
   A complete adventure playthrough campaign remains outstanding.
 
 The preview does not establish compatibility with every custom adventure, palette
-or objective. Read the [preview 11 validation report](docs/validation-ga-preview.11.md)
+or objective. Read the [preview 12 validation report](docs/validation-ga-preview.12.md)
 and [historical integration report](docs/integration-ga-upstream-0.7.2.1.md)
 for exact evidence and limits, and the [known issues](docs/known-issues.md) for
 recorded problems.

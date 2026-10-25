@@ -6,6 +6,35 @@ See [build-dc04.md](build-dc04.md) for compatibility and isolated native Windows
 testing, and [adventure-world.md](adventure-world.md) for content and world interfaces.
 Addresses below are preferred PE addresses. Runtime code resolves named symbols.
 
+## Terminal outcome control ownership
+
+`adventure_native::apply` intentionally renders an authoritative zero-health
+Downed captain as native 1 HP and temporarily immune. Native death must not run
+an independent respawn or results path. The coordinator life state, rather than
+that positive native HP, decides whether the captain may act. This presentation
+rule remains unchanged.
+
+The control adapter's original Downed predicate required coordinator Running,
+and its captain-state reader also stopped supplying state after Ended. A native
+results failure or subsequent nonterminal transition could therefore leave a
+1 HP captain without its Downed input fence. The outcome latch now supplies an
+independent optional terminal predicate, scoped by the native adapter to the
+connected co-op Scenario attempt. It holds the exact local avatar's verified
+brain, WASD, cursor and order entries even after Running/life state end. The
+first real native creature Update clears movement and queued orders once; stable
+updates remove residual velocity, correcting only actual displacement. Object
+incarnation replacement starts a fresh transition. Reset only forgets pointers.
+No native visual Update, camera input, authored health or immunity is changed by
+this narrow input fence. The shared outcome's simulation hold owns world-wide
+gameplay suspension and terminal/exit sequencing.
+
+The Win32 `test-controls-windows` fixture passed with 1,000 terminal iterations
+while the active predicate was false, including all four native callback ABIs,
+one-shot order removal, displacement correction, incarnation replacement,
+unrelated NPC/remote ownership, release and retry. This fixture verifies the
+control boundary; paired native failure, result and shared-exit acceptance are
+recorded separately in the preview validation report.
+
 ## Downed captain controls and local lighting (dc04, preview 8)
 
 The previous native adapter held a downed captain with `StopMovement` and

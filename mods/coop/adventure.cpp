@@ -14,7 +14,8 @@ namespace {
 enum Kind : uint8_t {
     K_SETTINGS, K_PREPARE, K_CONTENT, K_CAPTAIN, K_READY, K_LAUNCH, K_LOADED,
     K_COMMIT, K_ABORT, K_SNAPSHOT, K_REVIVE, K_RESULT, K_WAIT, K_INVALIDATE,
-    K_PREPARATION, K_CHANGE_CAPTAIN, K_PREPARATION_STAGE, K_RESULTS_ACCEPTED, K_REPLAY_PREPARE
+    K_PREPARATION, K_CHANGE_CAPTAIN, K_PREPARATION_STAGE, K_RESULTS_ACCEPTED, K_REPLAY_PREPARE,
+    K_RESULT_APPLIED, K_RETURN_MENU
 };
 enum class Phase { Idle, Collecting, Preparing, Loading, Running, Ended };
 
@@ -32,6 +33,11 @@ uint64_t g_generation, g_next_run, g_newest_run, g_settings_revision = 1, g_rece
 uint64_t g_snapshot_revision, g_health_event, g_result_run;
 uint64_t g_pending_result_run;
 bool g_pending_result_success, g_pending_result_announce;
+uint64_t g_outcome_run, g_exit_run, g_local_exit_run;
+bool g_outcome_success, g_result_announced, g_result_queued, g_local_result_applied;
+double g_result_started, g_result_retry;
+unsigned g_result_attempts;
+std::set<uint8_t> g_result_applied;
 double g_last_wall, g_simulation, g_last_snapshot, g_last_revive;
 uint8_t g_revive_target = ga::kNoPlayer;
 bool g_revive_held;
@@ -50,6 +56,11 @@ Key g_replay_captain;
 std::deque<std::vector<uint8_t>> g_cleanup_messages;
 size_t g_cleanup_bytes;
 bool g_cleanup_overflow;
+uint64_t g_cleanup_run, g_cleanup_completed_run, g_cleanup_ticket;
+bool g_cleanup_native;
+bool g_cleanup_save_result, g_cleanup_queued;
+struct Cleanup { uint64_t run, ticket; std::function<void()> completed; };
+Cleanup* g_cleanup_waiting;
 struct DeferredHealth {
     uint64_t run, event;
     uint8_t victim;
@@ -65,6 +76,14 @@ void clear_cleanup_messages()
     g_cleanup_messages.clear(); g_cleanup_bytes=0; g_cleanup_overflow=false;
 }
 
+void clear_outcome()
+{
+    g_outcome_run = g_exit_run = g_local_exit_run = 0;
+    g_outcome_success = g_result_announced = g_result_queued = g_local_result_applied = false;
+    g_result_started = g_result_retry = 0; g_result_attempts = 0;
+    g_result_applied.clear();
+}
+
 ga::PreparationMember* preparation_member(uint8_t player)
 {
     for (auto& m : g_preparation.members) if (m.player == player) return &m;
@@ -72,8 +91,10 @@ ga::PreparationMember* preparation_member(uint8_t player)
 }
 void initialize_preparation()
 {
+    g_cleanup_completed_run = 0;
     g_deferred_health.clear();
     g_pending_result_run = 0;
+    clear_outcome();
     g_preparation = {};
     g_preparation.run = g_descriptor.run_id;
     g_preparation.adventure = g_descriptor.adventure;
@@ -184,7 +205,7 @@ std::string unavailable()
     if (!g_assets_available)
         return "Adventure resource registration is unavailable for this game build.";
     if (!C.choose_captain || !C.launch || !C.abort_preparation || !C.abort_native || !C.freeze || !C.loaded || !C.sample || !C.apply || !C.source ||
-        !C.collect || !C.captain_of || !C.native_result)
+        !C.collect || !C.captain_of || !C.native_result || !C.native_result_applied || !C.prepare_result_exit)
         return "The game adapter has incomplete launch, content, or combat support.";
     return {};
 }
@@ -195,11 +216,63 @@ void invalidate_ready()
     if (C.invalidate_ready) C.invalidate_ready();
 }
 
+void cleanup_task(void* opaque)
+{
+    std::unique_ptr<Cleanup> task(static_cast<Cleanup*>(opaque));
+    g_cleanup_queued = false;
+    if (!g_cleaning || task->ticket != g_cleanup_ticket || task->run != g_cleanup_run) return;
+    if (C.freeze) C.freeze(false);
+    if (g_cleanup_save_result && g_outcome_run == task->run) {
+        bool ready = !(C.native_settling && C.native_settling());
+        if (ready && !C.native_result_applied(g_outcome_success)) C.native_result(g_outcome_success);
+        ready = ready && C.native_result_applied(g_outcome_success) && C.prepare_result_exit();
+        if (!ready) {
+            // Resume once per coordinator tick. Reposting here would spin the
+            // native outside-frame pump while a cinematic or reward UI waits.
+            g_cleanup_waiting = task.release();
+            return;
+        }
+    }
+    if (g_cleanup_native && C.abort_native) C.abort_native();
+    else if (C.abort_preparation) C.abort_preparation();
+    if (g_outcome_run == task->run) g_outcome_run = 0;
+    g_cleanup_completed_run = task->run;
+    g_result_queued = false;
+    g_cleaning = false;
+    if (task->completed) task->completed();
+}
+
+void resume_cleanup()
+{
+    if (!g_cleanup_waiting || g_cleanup_queued) return;
+    auto* task = std::exchange(g_cleanup_waiting, nullptr);
+    g_cleanup_queued = true;
+    H->run_outside_frame(cleanup_task, task);
+}
+
+bool queue_cleanup(uint64_t run, bool leave_native, std::function<void()> completed = {}, bool save_result = false)
+{
+    if (g_cleaning) {
+        // Done, cancellation and disconnect share the same mandatory exit.
+        // Superseding intent invalidates ordinary work, never its cleanup.
+        if (g_cleanup_run == run) g_cleanup_native |= leave_native;
+        resume_cleanup();
+        return false;
+    }
+    if (run && g_cleanup_completed_run == run) return false;
+    g_cleaning = true; g_cleanup_run = run; g_cleanup_native = leave_native;
+    g_cleanup_save_result = save_result;
+    g_cleanup_waiting = new Cleanup{run, ++g_cleanup_ticket, std::move(completed)};
+    resume_cleanup();
+    return true;
+}
+
 void abort_run(const std::string& reason, bool announce)
 {
     g_deferred_health.clear();
     clear_cleanup_messages();
     g_pending_result_run = 0;
+    g_exit_run = g_descriptor.run_id;
     const bool leave_native = g_launch_started || g_phase == Phase::Running;
     if (announce && g_descriptor.run_id) {
         net::Writer w;
@@ -217,16 +290,26 @@ void abort_run(const std::string& reason, bool announce)
     g_revive_held = false;
     invalidate_ready();
     adventure_assets::reset();
-    g_cleaning = true;
-    // Cleanup must survive reset/disconnect invalidating ordinary attempt callbacks.
-    H->run_outside_frame([](void* opaque) {
-        std::unique_ptr<bool> leave(static_cast<bool*>(opaque));
-        if (C.freeze) C.freeze(false);
-        if (*leave && C.abort_native) C.abort_native();
-        else if (C.abort_preparation) C.abort_preparation();
-        g_cleaning = false;
-    }, new bool(leave_native));
+    g_cleanup_save_result = false; // Cancellation supersedes pending results UI.
+    queue_cleanup(g_descriptor.run_id, leave_native);
     feed("Adventure: " + reason);
+}
+
+void leave_results(bool final)
+{
+    const uint64_t run = g_descriptor.run_id;
+    if (final) {
+        g_exit_run = run; g_replay_requested = g_replay_started = false;
+        g_replay_captain = {}; ++g_generation;
+    }
+    if (!run || g_local_exit_run == run) return;
+    g_local_exit_run = run;
+    g_phase = Phase::Ended; g_pending_result_run = 0;
+    g_deferred_health.clear(); g_revive_held = false;
+    if (!final) ++g_generation;
+    g_result_queued = false;
+    g_launch_started = false; invalidate_ready();
+    queue_cleanup(run, true, {}, true);
 }
 
 bool defer_cleanup_message(uint8_t from, const net::Reader& message)
@@ -290,21 +373,19 @@ void choose_captain()
 void prepare_replay()
 {
     if(g_replay_started) return;
-    g_replay_started=true; g_cleaning=true; ++g_generation;
+    g_replay_started=true; ++g_generation;
     const auto descriptor=g_descriptor;
+    const uint64_t generation=g_generation;
     g_replay_captain=g_captain;
     // Leaving the old native run is mandatory even if disconnect/reset cancels
     // the proposed retry before this task runs. Only starting that retry is
     // generation guarded, just as cancellation preserves mandatory cleanup.
-    using ReplayTask=std::pair<uint64_t,ga::Descriptor>;
-    H->run_outside_frame([](void* opaque) {
-        std::unique_ptr<ReplayTask> task(static_cast<ReplayTask*>(opaque));
-        if(C.abort_native) C.abort_native();
-        g_cleaning=false;
-        if(task->first==g_generation && g_phase==Phase::Ended &&
-            g_descriptor.run_id==task->second.run_id && host())
-            request_play(task->second.adventure,task->second.locked_captain);
-    },new ReplayTask(g_generation,descriptor));
+    auto retry = [generation, descriptor] {
+        if(generation==g_generation && g_phase==Phase::Ended && !g_exit_run &&
+            g_replay_started && g_descriptor.run_id==descriptor.run_id && host())
+            request_play(descriptor.adventure,descriptor.locked_captain);
+    };
+    if (!queue_cleanup(descriptor.run_id, true, retry, true) && !g_cleaning) retry();
 }
 
 void send_ready()
@@ -439,18 +520,50 @@ void snapshot()
     g_last_snapshot = g_last_wall;
 }
 
+bool confirm_result()
+{
+    if (g_local_result_applied) return true;
+    if (!C.native_result_applied || !C.native_result_applied(g_outcome_success)) return false;
+    g_local_result_applied = true;
+    if (host()) g_result_applied.insert(local_id());
+    else {
+        net::Writer w; write_run(w, g_outcome_run); w.u8(g_outcome_success ? 1 : 0);
+        send(K_RESULT_APPLIED, w);
+    }
+    return true;
+}
+
 void native_result(bool success)
 {
-    if (g_result_run == g_descriptor.run_id)
+    if (g_result_queued || g_local_result_applied || g_local_exit_run == g_descriptor.run_id)
         return;
     g_result_run = g_descriptor.run_id;
+    g_result_queued = true;
+    if (!g_result_attempts++) g_result_started = g_last_wall;
+    g_result_retry = g_last_wall + .25;
     const uint64_t run = g_descriptor.run_id;
     outside([run, success] {
-        if (run == g_descriptor.run_id) {
+        if (run == g_descriptor.run_id && g_phase == Phase::Ended &&
+            g_outcome_run == run && !g_exit_run && !g_local_exit_run) {
             if (C.freeze) C.freeze(false);
             if (C.native_result) C.native_result(success);
+            confirm_result();
         }
+        if (g_result_run == run) g_result_queued = false;
     });
+}
+
+void poll_result()
+{
+    if (g_phase != Phase::Ended || !g_outcome_run || g_exit_run || g_cleaning ||
+        g_local_exit_run == g_outcome_run || g_local_result_applied) return;
+    if (confirm_result()) return;
+    if (g_result_attempts && (g_last_wall - g_result_started > 10 || g_result_attempts >= 40)) {
+        abort_run("Native adventure results could not be displayed. The party returned to the menu.", true);
+        return;
+    }
+    if (!g_result_queued && g_last_wall >= g_result_retry &&
+        !(C.native_settling && C.native_settling())) native_result(g_outcome_success);
 }
 
 void finish_result(bool success, bool announce)
@@ -458,11 +571,12 @@ void finish_result(bool success, bool announce)
     if (g_phase != Phase::Running)
         return;
     g_deferred_health.clear();
-    if (announce) {
+    if (announce && !g_result_announced) {
         snapshot();
         net::Writer w;
         write_run(w, g_descriptor.run_id); w.u8(success ? 1 : 0);
         send(K_RESULT, w);
+        g_result_announced = true;
     }
     g_phase = Phase::Ended;
     g_barrier.abort(g_descriptor.run_id);
@@ -474,7 +588,18 @@ void finish_result(bool success, bool announce)
 
 void accept_result(bool success, bool announce)
 {
-    if (g_phase != Phase::Running || g_pending_result_run) return;
+    if (g_phase != Phase::Running || g_outcome_run || g_exit_run) return;
+    g_outcome_run = g_descriptor.run_id; g_outcome_success = success;
+    g_deferred_health.clear(); g_revive_held = false;
+    // Seal the peers immediately, even while native cinematic/goal cleanup is
+    // still settling locally. A terminal snapshot also carries this decision.
+    if (announce) {
+        if (g_authority.phase() == ga::RunPhase::Playing)
+            g_authority.finish(g_descriptor.run_id, success);
+        snapshot();
+        net::Writer w; write_run(w, g_descriptor.run_id); w.u8(success ? 1 : 0);
+        send(K_RESULT, w); g_result_announced = true;
+    }
     if (C.native_settling && C.native_settling()) {
         // At most one result for this run. Preserve the first authoritative
         // outcome until native Finished has released its old dialog resources.
@@ -488,7 +613,7 @@ void result(bool success) { accept_result(success, true); }
 
 bool apply_health(const DeferredHealth& event)
 {
-    if (!host() || g_phase != Phase::Running || event.run != g_descriptor.run_id ||
+    if (!host() || g_phase != Phase::Running || outcome_locked() || event.run != g_descriptor.run_id ||
         !member(event.victim) || g_excluded.count(event.victim) ||
         (event.source.kind == ga::SourceKind::Captain && g_excluded.count(event.source.owner))) return false;
     if (event.healing) g_authority.heal(event.run, event.event, event.victim, event.amount);
@@ -508,7 +633,7 @@ void drain_health()
 }
 bool health(uint8_t victim, const ga::Source& source, float amount, bool healing)
 {
-    if (!host() || g_phase != Phase::Running || !member(victim) || g_excluded.count(victim) ||
+    if (!host() || g_phase != Phase::Running || outcome_locked() || !member(victim) || g_excluded.count(victim) ||
         !std::isfinite(amount) || amount <= 0) return false;
     if (!healing && C.incoming_damage) amount = C.incoming_damage(victim, amount);
     if (!std::isfinite(amount) || amount < 0) return false;
@@ -584,11 +709,15 @@ bool read_snapshot(net::Reader& r)
     }
     if (!finished(r))
         return false;
+    const bool terminal = phase == uint8_t(ga::RunPhase::Won) || phase == uint8_t(ga::RunPhase::Failed);
+    const bool success = phase == uint8_t(ga::RunPhase::Won);
+    if (outcome_locked() && (!terminal || success != g_outcome_success)) return false;
     g_snapshot_revision = revision;
     g_client_captains = captains;
     g_client_snapshot_run = run;
     g_client_snapshot_time = now;
     apply_snapshot(captains);
+    if (terminal) accept_result(success, false);
     return true;
 }
 } // namespace
@@ -669,7 +798,9 @@ void captain_progress(ga::PreparationStage stage, uint8_t progress)
 }
 bool active() { return g_phase != Phase::Idle && g_phase != Phase::Ended; }
 bool running() { return g_phase == Phase::Running; }
-bool native_attempt() { return active() && (g_launch_started || g_phase==Phase::Running); }
+bool native_attempt() { return outcome_locked() || (active() && (g_launch_started || g_phase==Phase::Running)); }
+bool outcome_locked() { return g_outcome_run && g_outcome_run == g_descriptor.run_id; }
+uint64_t outcome_run() { return outcome_locked() ? g_outcome_run : 0; }
 bool captain_state(uint8_t player, CaptainState& state)
 {
     state = {};
@@ -698,7 +829,7 @@ bool captain_state(uint8_t player, CaptainState& state)
         state.grace_remaining = std::max(0.0, captain->protected_until - now);
     return true;
 }
-bool participating(uint8_t player) { return active() && member(player) && g_excluded.count(player) == 0; }
+bool participating(uint8_t player) { return (active() || outcome_locked()) && member(player) && g_excluded.count(player) == 0; }
 const ga::Descriptor* current() { return active() ? &g_descriptor : nullptr; }
 
 bool set_settings(const ga::Difficulty& difficulty)
@@ -727,7 +858,7 @@ bool set_ready(bool value)
 
 bool request_play(const Key& key, const Key& locked)
 {
-    if (!host() || active() || g_cleaning || !valid_key(key))
+    if (!host() || active() || outcome_locked() || g_cleaning || !valid_key(key))
         return false;
     std::string why = unavailable();
     if (!why.empty()) {
@@ -815,7 +946,7 @@ void on_join(uint8_t player)
 
 void on_leave(uint8_t player)
 {
-    if (!active() || !member(player))
+    if ((!active() && !outcome_locked()) || !member(player))
         return;
     if (!host()) {
         if (player == 0) abort_run("The adventure host disconnected.", false);
@@ -823,6 +954,7 @@ void on_leave(uint8_t player)
         return;
     }
     g_excluded.insert(player);
+    if (g_phase == Phase::Ended) return;
     g_deferred_health.erase(std::remove_if(g_deferred_health.begin(), g_deferred_health.end(), [&](const auto& event) {
         return event.victim == player || (event.source.kind == ga::SourceKind::Captain && event.source.owner == player);
     }), g_deferred_health.end());
@@ -916,9 +1048,25 @@ void on_message(uint8_t from, net::Reader& r)
         return;
     }
     if (run != g_descriptor.run_id || (host() && g_excluded.count(from))) return;
+    if (kind == K_RETURN_MENU) {
+        if (!client() || from || !finished(r) || g_exit_run == run ||
+            (!g_launch_started && g_result_run != run && !outcome_locked())) return;
+        if (!g_outcome_run && g_local_exit_run != run) g_outcome_run = run;
+        leave_results(true);
+        return;
+    }
+    if (kind == K_RESULT_APPLIED) {
+        uint8_t success = r.u8();
+        if (host() && from && member(from) && (g_phase == Phase::Running || g_phase == Phase::Ended) &&
+            g_outcome_run == run && !g_exit_run && success <= 1 &&
+            bool(success) == g_outcome_success && finished(r)) g_result_applied.insert(from);
+        return;
+    }
     if(kind==K_RESULTS_ACCEPTED) {
         uint8_t replay=r.u8();
-        if(!host() || !from || !member(from) || g_phase!=Phase::Ended || g_result_run!=run || replay>1 || !finished(r)) return;
+        if(!host() || !from || !member(from) ||
+            (g_phase!=Phase::Running && g_phase!=Phase::Ended) || g_outcome_run!=run ||
+            g_exit_run || replay>1 || !finished(r)) return;
         g_results_accepted.insert(from);
         if(replay) {
             g_replay_requested=true;
@@ -927,12 +1075,12 @@ void on_message(uint8_t from, net::Reader& r)
         return;
     }
     if(kind==K_REPLAY_PREPARE) {
-        if(client() && !from && finished(r) && g_phase==Phase::Ended && g_result_run==run) prepare_replay();
+        if(client() && !from && finished(r) && g_phase==Phase::Ended && g_result_run==run && !g_exit_run) prepare_replay();
         return;
     }
     if (kind == K_ABORT) {
         std::string reason = r.str16();
-        if (!finished(r) || (host() ? !member(from) : from != 0) || !active()) return;
+        if (!finished(r) || (host() ? !member(from) : from != 0) || (!active() && !outcome_locked())) return;
         abort_run(reason.empty() ? "Adventure preparation was cancelled." : reason, host());
         return;
     }
@@ -1025,16 +1173,23 @@ void on_message(uint8_t from, net::Reader& r)
 
 void tick(double now)
 {
+    resume_cleanup();
     drain_cleanup_messages();
     if (!std::isfinite(now)) return;
     double elapsed = g_have_wall && now >= g_last_wall ? now - g_last_wall : 0;
     g_last_wall = now;
     g_have_wall = true;
     adventure_assets::tick(now);
-    if(host() && g_phase==Phase::Ended && g_replay_requested && !g_replay_started && !g_cleaning) {
+    if (outcome_locked() && (!C.sess || !C.sess->connected())) {
+        abort_run("The co-op session ended during adventure results.", false);
+        return;
+    }
+    poll_result();
+    if(host() && g_phase==Phase::Ended && !g_exit_run && g_replay_requested && !g_replay_started && !g_cleaning) {
         auto players=C.sess->players();
         bool accepted=std::all_of(players.begin(),players.end(),[](const auto& p) {
-            return !member(p.id) || g_excluded.count(p.id) || g_results_accepted.count(p.id);
+            return !member(p.id) || g_excluded.count(p.id) ||
+                (g_results_accepted.count(p.id) && g_result_applied.count(p.id));
         });
         if(accepted) {
             net::Writer w; write_run(w,g_descriptor.run_id); send(K_REPLAY_PREPARE,w);
@@ -1127,10 +1282,10 @@ bool captain_heal(uint8_t victim, float amount)
 
 bool damage_filter(void* victim, float& amount, int type, void* attacker)
 {
-    if (g_phase != Phase::Running || !C.captain_of || !victim) return true;
+    if ((g_phase != Phase::Running && !outcome_locked()) || !C.captain_of || !victim) return true;
     for (uint8_t player : g_descriptor.roster) {
         if (C.captain_of(player) != victim) continue;
-        if (host()) {
+        if (host() && !outcome_locked()) {
             if (type == 10) captain_heal(player, std::abs(amount));
             else {
                 ga::Source source;
@@ -1144,7 +1299,7 @@ bool damage_filter(void* victim, float& amount, int type, void* attacker)
 
 bool revive(uint8_t target, bool held)
 {
-    if (g_phase != Phase::Running || !member(target)) return false;
+    if (g_phase != Phase::Running || outcome_locked() || !member(target)) return false;
     g_revive_target = target;
     g_revive_held = held;
     if (host()) return g_authority.revive(g_descriptor.run_id, local_id(), target, held);
@@ -1154,14 +1309,14 @@ bool revive(uint8_t target, bool held)
 
 bool complete(bool success)
 {
-    if (!host() || g_phase != Phase::Running || !g_authority.finish(g_descriptor.run_id, success)) return false;
+    if (!host() || g_phase != Phase::Running || outcome_locked() || !g_authority.finish(g_descriptor.run_id, success)) return false;
     result(success);
     return true;
 }
 
 bool cancel(const std::string& reason)
 {
-    if (!active()) return false;
+    if (!active() && !outcome_locked()) return false;
     abort_run(reason.empty() ? "Adventure cancelled." : reason, true);
     return true;
 }
@@ -1169,12 +1324,17 @@ bool cancel(const std::string& reason)
 bool results_accepted(bool replay)
 {
     if(!C.sess || !C.sess->connected() || g_phase!=Phase::Ended || !g_descriptor.run_id ||
-        g_result_run!=g_descriptor.run_id || !member(local_id())) return false;
+        g_result_run!=g_descriptor.run_id || g_exit_run || !g_local_result_applied || !member(local_id())) return false;
     if(host()) {
         g_results_accepted.insert(local_id());
         if(replay) g_replay_requested=true;
+        else {
+            net::Writer w; write_run(w, g_descriptor.run_id); send(K_RETURN_MENU, w);
+            leave_results(true);
+        }
     } else {
         net::Writer w; write_run(w,g_descriptor.run_id); w.u8(replay?1:0); send(K_RESULTS_ACCEPTED,w);
+        if (!replay) leave_results(false);
     }
     if(replay) feed("Co-op replay requested. Waiting for the party to accept their results.");
     return true;
@@ -1184,7 +1344,7 @@ void reset()
 {
     g_deferred_health.clear();
     clear_cleanup_messages();
-    if (active()) abort_run("The party disconnected during the adventure.", false);
+    if (!g_cleaning && (active() || outcome_locked())) abort_run("The party disconnected during the adventure.", false);
     g_generation++;
     adventure_assets::reset();
     g_barrier = {};
@@ -1202,12 +1362,14 @@ void reset()
     g_client_snapshot_time = 0;
     g_next_run = g_newest_run = g_snapshot_revision = g_health_event = g_result_run = g_received_settings = 0;
     g_pending_result_run = 0; g_pending_result_success = g_pending_result_announce = false;
+    clear_outcome();
     g_last_wall = g_simulation = g_last_snapshot = g_last_revive = 0;
     g_have_wall = false;
     g_error.clear();
     g_preparation = {}; g_change_pending = false; g_preparation_dirty = false; g_last_preparation = 0;
     g_results_accepted.clear(); g_replay_requested=g_replay_started=false; g_replay_captain={};
     if (C.freeze) C.freeze(false);
+    resume_cleanup();
 }
 
 std::string status()
@@ -1218,8 +1380,14 @@ std::string status()
     case Phase::Collecting: return "Preparing adventure content";
     case Phase::Preparing: return g_chosen ? "Waiting for party readiness" : "Choose your captain";
     case Phase::Loading: return "Loading adventure: waiting for every captain";
-    case Phase::Running: return "Adventure in progress";
-    case Phase::Ended: return g_replay_requested ? "Replay: waiting for the party to accept results" : "Adventure finished";
+    case Phase::Running: return outcome_locked() ? "Adventure finished: applying the shared result" : "Adventure in progress";
+    case Phase::Ended:
+        if (outcome_locked()) return std::string(g_outcome_success ? "Adventure completed" : "Adventure failed") +
+            ": result=" + (g_local_result_applied ? "applied" : "pending") +
+            " run=" + std::to_string(g_outcome_run) +
+            " confirmed=" + std::to_string(g_result_applied.size()) +
+            (g_replay_requested ? " Replay: waiting for the party to accept results" : "");
+        return g_replay_requested ? "Replay: waiting for the party to accept results" : "Adventure finished";
     default: {
         std::string why = unavailable();
         return why.empty() ? "Select an adventure in Sporepedia and press Play" : why;

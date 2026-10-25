@@ -247,6 +247,11 @@ static void put_run(net::Writer& w, uint64_t n) { w.u32((uint32_t)n); w.u32((uin
 static uint64_t get_run(net::Reader& r) { uint64_t lo = r.u32(); return lo | ((uint64_t)r.u32() << 32); }
 static bool finite(const net::Vec3& p) { return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z); }
 
+int terminal_state(void* p)
+{
+    return p && g_native_result.play == p && g_native_result.run ? g_native_result.applied : 0;
+}
+
 static uint8_t* mode()
 {
     uint8_t* m = a_Mode ? *(uint8_t**)a_Mode : nullptr;
@@ -290,6 +295,7 @@ static bool hostile(void* object)
 }
 static int SK_THISCALL generic_damage(void* self, float amount, uint32_t political, int type, const net::Vec3* direction, void* attacker)
 {
+    if (terminal_state(play())) return 0;
     // The animal override is already filtered by game.cpp before reaching this
     // common base. Other combatants use their native ToGameData interface.
     if (!active() || (uintptr_t)skg::vtable(self)[0x18 / 4] == a_AnimalDamage ||
@@ -831,6 +837,7 @@ static void SK_THISCALL dropped_item(void* self, void* holder, void* item)
 }
 static void completed_social(void* self, void* target, uint8_t type, Social_t original)
 {
+    if (terminal_state(self)) return;
     if (active() && !g_applying && self == play() && C.captain_of) {
         Identity id;
         void* creature = game::cast(target, kCreature);
@@ -857,7 +864,7 @@ static void SK_THISCALL befriended(void* self, void* target) { completed_social(
 static void SK_THISCALL allied(void* self, void* target) { completed_social(self, target, 5, o_Ally); }
 static void SK_THISCALL count_goal(void* self, void* goal, void* first, void* second)
 {
-    if (g_talk_cleanup) return;
+    if (g_talk_cleanup || terminal_state(self)) return;
     if (!active()) { o_Count(self, goal, first, second); return; }
     uint8_t* begin; size_t count;
     if (!goals_vector((uint8_t*)self, begin, count)) return;
@@ -886,6 +893,7 @@ static void SK_THISCALL count_goal(void* self, void* goal, void* first, void* se
 
 static void SK_THISCALL talk_start(void* self, void* goal, void* target)
 {
+    if (terminal_state(self)) return;
     if(!active() || g_talk_presenting) { o_TalkStart(self,goal,target); return; }
     uint8_t* begin; size_t count; Identity id;
     if(self!=play() || !goals_vector(static_cast<uint8_t*>(self),begin,count) || !identity(target,id)) return;
@@ -943,6 +951,7 @@ void release_talk(const adventure_flow::Scene& s)
 
 static void SK_THISCALL check_goals(void* self)
 {
+    if (terminal_state(self)) return;
     if(active() && C.held && C.held()) return;
     if (guest() && !g_applying) return;
     o_Check(self);
@@ -958,15 +967,20 @@ static void SK_THISCALL check_goals(void* self)
 }
 static void SK_THISCALL complete_act(void* self)
 {
+    if (terminal_state(self)) return;
     if (!guest() || g_applying) o_Complete(self);
 }
 static bool SK_THISCALL update_goals(void* self)
 {
+    if (terminal_state(self)) return true;
     if(active() && C.held && C.held()) return true;
     return guest() && !g_applying ? true : o_Goals(self);
 }
 static void native_state(void* self, int state)
 {
+    // Reliable goal batches and native callbacks must not reopen a completed
+    // attempt, even after the coordinator and replication leave Running.
+    if (terminal_state(self)) return;
     if ((state == 5 || state == 6) && g_native_result.play == self && g_native_result.run) {
         if (g_native_result.applied) return;
         // Original SetState can invoke callbacks. Claim before entering it so a
@@ -981,8 +995,8 @@ static void SK_THISCALL set_state(void* self, int state)
     if (running) observe_native_attempt(run());
     bool terminal = state == 5 || state == 6;
     bool scoped = g_native_result.play == self && g_native_result.run;
-    if (terminal && scoped && g_native_result.applied) return;
-    if (running && !g_applying && state >= 4) {
+    if (scoped && g_native_result.applied) return;
+    if (running && state >= 4) {
         if (host() && state == 4) { native_state(self, state); return; }
         if (host() && (state == 5 || state == 6) && C.result) {
             // Native CountGoal has already updated the completed objective.
@@ -994,7 +1008,7 @@ static void SK_THISCALL set_state(void* self, int state)
     }
     // The coordinator ends before its outside-frame native callback executes.
     // Keep authority during that interval and after replication has reset.
-    if (terminal && scoped && g_native_result.committed && !g_applying) return;
+    if (terminal && scoped && g_native_result.committed) return;
     native_state(self, state);
 }
 
@@ -1822,7 +1836,7 @@ static void apply_goals(void* arg)
         return;
     }
     uint8_t* p = play();
-    if (!p) return;
+    if (!p || terminal_state(p)) return;
     struct Applying {
         explicit Applying(uint64_t run) { g_goal_work_run = run; g_goal_apply_active = true; }
         ~Applying() { g_goal_apply_active = false; }
@@ -1873,7 +1887,7 @@ static void flush_deferred_goals()
 void on_message(uint8_t from, net::Reader& r)
 {
     uint8_t kind = r.u8(); uint64_t id = get_run(r);
-    if (!r.ok() || !active() || id != run()) return;
+    if (!r.ok() || !active() || id != run() || terminal_state(play())) return;
     // The reliable commit and first actor baseline can arrive in one receive
     // pump, before tick observes the new run. Initialize before caching either
     // message so that the next tick cannot erase an already acknowledged baseline.
@@ -2094,6 +2108,7 @@ bool source(void* victim, void* attacker, int type, ga::Source& out)
 
 bool damage_filter(void* victim, float& damage, int type, void* attacker)
 {
+    if (terminal_state(play())) return false;
     if (g_visual_animation) return false;
     if (C.explosive_visual && C.explosive_visual()) return false;
     if(active() && C.held && C.held()) return false;
@@ -2137,6 +2152,7 @@ bool damage_filter(void* victim, float& damage, int type, void* attacker)
 
 bool npc_ai_filter(void* creature)
 {
+    if (terminal_state(play())) return false;
     if (!guest() || g_applying || owner(creature) != ga::kNoPlayer) return true;
     skg::ReadOnlyMemoryScope memory;
     uint32_t marker;
@@ -2201,6 +2217,24 @@ void apply_result(bool success)
     g_applying = true; native_state(p, success ? 5 : 6); g_applying = previous;
 }
 
+bool result_applied(uint64_t id, bool success)
+{
+    auto* p = game::mode_id() == 0x01654C10 ? play() : nullptr;
+    const int state = success ? 5 : 6;
+    return id && p && g_native_result.run == id && terminal_state(p) == state &&
+           skg::field<int>(p, 0x90) == state;
+}
+
+bool terminal_message_allowed(void* p, uint32_t type)
+{
+    const int expected = terminal_state(p);
+    if (!expected) return true;
+    // HandlePlayMessage's Finished branch uses native state 5/6 to open results
+    // and records +94=2 afterward. Its state-1 branch instead writes +90=3.
+    return type == 0x044F1189 && skg::readable(p, 0x98) &&
+           skg::field<int>(p, 0x90) == expected && skg::field<int>(p, 0x94) != 2;
+}
+
 static void reset_replication()
 {
     g_run = 0; g_sequence = g_goal_sequence = g_received_goals = 0;
@@ -2263,7 +2297,7 @@ void tick(double now)
     if (!active()) { if (g_run) reset_replication(); return; }
     observe_native_attempt(run());
     if (run() != g_run) { reset_replication(); g_run = run(); }
-    if (!play()) return;
+    if (!play() || terminal_state(play())) return;
     flush_deferred_goals();
     flush_world_tasks();
     if (host()) {
@@ -2515,9 +2549,11 @@ std::string status(bool verbose)
     summary += "npc animations: sent=" + std::to_string(g_animations_sent) +
         " received=" + std::to_string(g_animations_received) + " played=" + std::to_string(g_animations_played) +
         " expired=" + std::to_string(g_animations_expired) + " queued=" + std::to_string(animation_pending) + "\n";
+    auto* result_play=game::mode_id()==0x01654C10 ? play() : nullptr;
     summary += "native result: run=" + std::to_string(g_native_result.run) +
                " committed=" + std::to_string(g_native_result.committed ? 1 : 0) +
-               " applied=" + std::to_string(g_native_result.applied) + "\n";
+               " applied=" + std::to_string(g_native_result.applied) +
+               " observed=" + std::to_string(result_play ? skg::field<int>(result_play,0x90) : -1) + "\n";
     summary += "items: attachments="+std::to_string(g_attachments.size())+" revision="+std::to_string(g_attachment_revision)+
         " throws="+std::to_string(g_item_throws)+" catches="+std::to_string(g_item_catches)+
         " gives="+std::to_string(g_item_gives)+" flying="+std::to_string(g_flying.size())+"\n";

@@ -8,6 +8,7 @@ Adventure Editor support, followed by other Spore editors, is planned in the
 
 - [Installation](../README.md#installation): get the matching fork build for every player.
 - [Galactic Adventures co-op guide](GALACTIC-ADVENTURES.md): start from Sporepedia, select saved captains, ready up and play together.
+- [Preview 12 validation report](validation-ga-preview.12.md): shared result authority, party menu return, Replay and current acceptance limits.
 - [Preview 11 validation report](validation-ga-preview.11.md): authored player-team enemy targeting for guests, native evidence and current limits.
 - [Preview 10 validation report](validation-ga-preview.10.md): native creature/vehicle followers, motion traces and current acceptance limits.
 - [Preview 9 validation report](validation-ga-preview.9.md): NPC presentation, unanimous pause and six-metre revival checks.
@@ -15,9 +16,12 @@ Adventure Editor support, followed by other Spore editors, is planned in the
 - [Preview 7 integration report](integration-ga-upstream-0.7.2.1.md): completed historical upstream merge validation.
 - [Known issues](known-issues.md): recorded limitations and open problems.
 
-The current preview `0.7.3.4-ga-preview.11` uses protocol 14. Targeted two-player
-Mine checks pass for native guest/host targeting, natural damage and switching;
-broader adventure compatibility remains unproven. Preview 10's locomotion results
+The current preview `0.7.3.5-ga-preview.12` uses protocol 15. It seals shared wins
+and losses, makes host Done return the party to the menu, and requires applied
+and accepted results before Replay opens a shared lobby with fresh readiness.
+See its report for acceptance evidence. Historical preview 11 two-player Mine
+checks pass for guest/host targeting, natural damage and switching; broader
+adventure compatibility remains unproven. Preview 10's locomotion results
 retain material residual tracking lag; earlier results retain their version
 labels. Ordinary guest combat input remains unverified.
 Native GA support requires the exact GOG executable with SHA-256
