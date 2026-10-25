@@ -6,6 +6,8 @@ and its Steam/frame-loop diagnostics. Source and downloads:
 [jwhans0n/SporeCoopGA](https://github.com/jwhans0n/SporeCoopGA).
 The earlier preview evidence below retains its original version labels; it does
 not automatically validate every upstream change in this integrated build.
+See the [integration validation report](integration-ga-upstream-0.7.2.1.md) for
+the merged build's test results and compatibility limits.
 
 The native adventure adapter requires the exact GOG executable, SHA-256
 `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
