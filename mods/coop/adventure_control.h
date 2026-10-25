@@ -12,6 +12,7 @@ struct Ctx {
     std::function<bool()> active;
     std::function<void*()> local_avatar;
     std::function<bool(void*, ga::Captain&)> captain_state;
+    std::function<bool()> local_paused;
 };
 bool init(const SkHost* host, SkMod* mod, Ctx context);
 // Called before and after the real native Creature::Update, never by filter queries.

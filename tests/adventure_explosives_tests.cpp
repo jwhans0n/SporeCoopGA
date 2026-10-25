@@ -220,7 +220,7 @@ int main()
     auto event=ex::message(ex::Detonated,barrel->id,0xFF,15);
     event.position={100,200,300}; event.orientation={0,0,1,0}; event.scale=3; event.effect=123;
     incoming(1,event); drain(); CHECK(!barrel->removed); // A guest cannot forge host effects.
-    paused=true; incoming(0,event); drain(); CHECK(!barrel->removed);
+    incoming(0,event); paused=true; drain(); CHECK(!barrel->removed); // queued before the final pause intent
     paused=false; ex::tick(); drain(); CHECK(barrel->removed && blasts==before && retirements==1);
     CHECK(last_effect_position.x==100 && last_effect_orientation.z==1 && last_effect_scale==3 && last_effect_id==123);
     incoming(0,event); drain(); CHECK(retirements==1);
@@ -239,6 +239,13 @@ int main()
     // A delayed baseline/binding for the spent ID cannot produce another effect.
     auto* late=make(6); late->id={999,999}; event.serial++;
     incoming(0,event); drain(); CHECK(!late->removed && effects==old_effects+1);
+    // Already queued host detonation work rechecks the hold, and cancellation
+    // discards its deferred visual/removal instead of executing on a later run.
+    auto* cancelled=make(6); auto cancelled_event=ex::message(ex::Detonated,cancelled->id,0xFF,6);
+    incoming(0,cancelled_event); paused=true; drain();
+    CHECK(!cancelled->removed && ex::g_waiting.size()==1);
+    ex::reset(); ++run; paused=false; ex::tick(); drain();
+    CHECK(!cancelled->removed && effects==old_effects+1 && retirements==3);
     auto invalid=ex::message(ex::Detonated,{998,998},0xFF,6); invalid.scale=INFINITY;
     incoming(0,invalid); drain(); CHECK(retirements==3 && effects==old_effects+1);
     ctx.sess=&host; CHECK(ex::init(&api,nullptr,ctx)); ex::tick();

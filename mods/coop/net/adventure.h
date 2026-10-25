@@ -15,7 +15,7 @@ namespace ga {
 
 constexpr uint8_t kNoPlayer = 255;
 constexpr size_t kPartyLimit = 4;
-constexpr float kReviveDistance = 2.f, kReviveHealth = 0.5f;
+constexpr float kReviveDistance = 6.f, kReviveHealth = 0.5f;
 constexpr double kReviveSeconds = 3.0, kAutomaticSeconds = 30.0, kGraceSeconds = 2.0;
 
 enum class DeathMode : uint8_t { ManualRevive, AnyDeathFails, AutomaticRevive };

@@ -73,7 +73,7 @@ Based on SporeCoop by WoodyWizard: https://github.com/WoodyWizard/SporeCoop
 
 Install: extract this zip into SPORE\\SporebinEP1 and run install.bat (step by step: INSTALL.txt).
 Read GALACTIC-ADVENTURES.md for the adventure preview's verified cases and limits.
-All players need Galactic Adventures and this exact SporeCoopGA version (protocol 11).
+All players need Galactic Adventures and this exact SporeCoopGA version (protocol 12).
 Upstream SporeCoop 0.7.0-0.7.2.1 uses a different protocol and cannot join this preview.
 
 Base-stage support retains upstream GOG 2024 (sha256 dc04aee5...), Steam
@@ -115,6 +115,7 @@ cp "$ROOT/THIRD_PARTY_NOTICES.md" "$STAGE/THIRD_PARTY_NOTICES.txt"
 cp "$ROOT/third_party/minhook/LICENSE.txt" "$STAGE/SporeCoop/MinHook-LICENSE.txt"
 cp "$ROOT/docs/INSTALL.md" "$STAGE/INSTALL.txt"
 cp "$ROOT/docs/GALACTIC-ADVENTURES.md" "$STAGE/GALACTIC-ADVENTURES.md"
+cp "$ROOT/docs/validation-ga-preview.9.md" "$STAGE/validation-ga-preview.9.md"
 cp "$ROOT/docs/validation-ga-preview.8.md" "$STAGE/validation-ga-preview.8.md"
 cp "$ROOT/docs/integration-ga-upstream-0.7.2.1.md" "$STAGE/integration-ga-upstream-0.7.2.1.md"
 mkdir -p "$STAGE/re"
@@ -126,5 +127,18 @@ cp "$ROOT/build/SporeCoopSetup.exe" "$STAGE/SporeCoopSetup.exe"
 "$STRIP" "$STAGE/SporeCoopSetup.exe"
 cp "$STAGE/SporeCoop-$VER.pack" "$STAGE/SporeCoopSetup.exe" "$ROOT/out/dist/"
 sed -i 's/\r*$/\r/' "$STAGE"/*.bat "$STAGE"/*.txt  # Windows line endings for cmd.exe and Notepad
-(cd "$STAGE" && rm -f "../SporeCoop-$VER.zip" && zip -qr "../SporeCoop-$VER.zip" .)
+if command -v zip >/dev/null 2>&1; then
+    (cd "$STAGE" && rm -f "../SporeCoop-$VER.zip" && zip -qr "../SporeCoop-$VER.zip" .)
+else
+    python3 - "$STAGE" "$ROOT/out/dist/SporeCoop-$VER.zip" <<'PY'
+from pathlib import Path
+import sys
+import zipfile
+stage, target = map(Path, sys.argv[1:])
+with zipfile.ZipFile(target, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+    for path in sorted(stage.rglob('*')):
+        if path.is_file():
+            archive.write(path, path.relative_to(stage).as_posix())
+PY
+fi
 echo "$ROOT/out/dist/SporeCoop-$VER.zip"

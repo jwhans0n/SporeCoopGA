@@ -65,6 +65,11 @@ const std::vector<void*>& creatures_updated();   // swap per frame (call once pe
 using UpdateFilter = bool (*)(void* creature);   // return false to skip the creature's Update
 void set_update_filter(UpdateFilter fn);
 void set_extra_update_filter(UpdateFilter fn); // composed with NPC filtering (adventure ownership/barriers)
+// Suppress autonomous NPC decisions without skipping the native visual,
+// locomotion and combatant maintenance in the enclosing creature Update.
+void set_npc_ai_filter(UpdateFilter fn);
+struct CreatureUpdateCounts { uint64_t native = 0, npc_ai_suppressed = 0; };
+CreatureUpdateCounts creature_update_counts();
 using BlockedUpdateHandler = void (*)(void* creature, int milliseconds);
 // Called once only by the real Update hook after a filter rejects its update.
 // Pure update-filter queries never invoke this handler.

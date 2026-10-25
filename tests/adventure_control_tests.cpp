@@ -13,6 +13,7 @@ std::array<uint8_t, 0x16A0> local{}, remote{}, outsider{};
 std::array<uint8_t, 0x610> local_behavior{}, remote_behavior{};
 ga::Captain local_state, remote_state;
 bool active = true;
+bool local_paused;
 int failures, hooks, brain_calls, walk_calls, cursor_calls, order_calls, stopped, positioned, cleared;
 void* last_strategy;
 std::string hash = "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37";
@@ -53,6 +54,7 @@ adventure_control::Ctx context()
     adventure_control::Ctx result;
     result.active = [] { return active; };
     result.local_avatar = [] { return local.data(); };
+    result.local_paused = [] { return local_paused; };
     result.captain_state = [](void* object, ga::Captain& state) {
         if (object == local.data()) state = local_state;
         else if (object == remote.data()) state = remote_state;
@@ -113,6 +115,22 @@ int main()
     field<uint32_t>(remote.data(), 0x24) = 3;
     adventure_control::creature_update(remote.data(), true);
     check(stopped == 3 && cleared == 3, "same-address reincarnated captain receives a fresh transition");
+    local_state.life = ga::Life::Alive; local_paused = true;
+    int previous_brains = brain_calls, previous_orders = order_calls;
+    adventure_control::brain(local.data(), .125f); check(!issue(local.data()), "a local pause intent blocks owner orders");
+    adventure_control::walk(strategy); check(!adventure_control::cursor(strategy, true, false), "a local pause blocks owner input");
+    check(brain_calls == previous_brains && order_calls == previous_orders, "owner pause cannot execute its old brain or commands");
+    adventure_control::brain(outsider.data(), .125f); check(issue(outsider.data()) == 0xCAFE,
+          "one player's pause leaves host NPC brains and orders advancing");
+    const auto menu_position = game::position(local.data());
+    adventure_control::creature_update(local.data(), true);
+    field<net::Vec3>(local.data(), game::kVelOff) = {5, 0, 0};
+    field<net::Vec3>(local.data(), game::kPosOff).x += 2;
+    adventure_control::creature_update(local.data(), false);
+    check(game::position(local.data()).x == menu_position.x && field<net::Vec3>(local.data(), game::kVelOff).x == 0,
+          "partial menu pause stops only the owner's residual motion at the native Update boundary");
+    local_paused = false; adventure_control::creature_update(local.data(), true);
+    adventure_control::brain(local.data(), .125f); check(issue(local.data()) == 0xCAFE, "Resume restores owner controls");
     active = false; int writes = positioned;
     adventure_control::creature_update(reinterpret_cast<void*>(0x1234), true);
     adventure_control::brain(local.data(), .125f); check(issue(remote.data()) == 0xCAFE, "inactive adventure restores normal controls");

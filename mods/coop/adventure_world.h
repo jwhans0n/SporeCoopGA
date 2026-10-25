@@ -46,7 +46,9 @@ void reset();
 void peer_changed(uint8_t player);
 adventure_pickups::Ctx pickups_context();
 adventure_explosives::Ctx explosives_context();
-bool update_filter(void* creature);
+bool npc_ai_filter(void* creature); // filter autonomous AI, preserving the enclosing native Update
+// Observe native visual clips only. Replication never replays abilities or damage.
+void on_animation(void* creature, uint32_t animation, int block, bool disable_blend, bool to_target);
 bool is_live_mirror(void* actor); // current guest binding only; no native updates or state changes
 bool party_relationship(void* actor, int& value); // current live guest NPC's host-authored party relationship
 bool damage_filter(void* victim, float& damage, int type, void* attacker);

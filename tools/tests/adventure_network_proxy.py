@@ -57,7 +57,8 @@ class NetworkProxy:
                 if kind == 52 and size:
                     sub = data[offset]
                     category = ('assets' if 64 <= sub <= 71 else 'captains' if sub >= 192 else
-                                'actors' if sub == 128 else 'static' if sub == 136 else 'world')
+                                'actors' if sub == 128 else 'static' if sub == 136 else
+                                'actor_animations' if sub == 139 else 'world')
                 counts[direction+'_'+category+'_payload_bytes'] += size
                 counts[direction+'_'+category+'_messages'] += 1
                 if kind == 52 and size >= 15 and data[offset] == 128:

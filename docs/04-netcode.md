@@ -271,3 +271,51 @@ Prepare, initializes that new run and cancels it explicitly, preserving the
 party connection. Abort/reset discard pending transfers. Native cleanup remains
 mandatory even if a later reset invalidates ordinary attempt callbacks. No
 resource bundle or wire format changes are needed for this ordering barrier.
+
+## 4.11 Unanimous adventure pause (protocol 12)
+
+Local user/menu pause intent is independent of Intro/Talk confirmation. Two
+reliable `MSG_ADVENTURE` subkinds carry the new policy:
+
+```text
+u8   subkind = 164       // participant -> host
+u64  run
+u64  local intent serial
+u8   paused             // exactly 0 or 1
+
+u8   subkind = 165       // host -> participants
+u64  run
+u64  snapshot revision
+u8   participant count  // 1..4, unique IDs, includes host and recipient
+repeat count:
+    u8   player
+    u64  accepted local intent serial
+    u8   paused         // exactly 0 or 1; unknown serial 0 cannot be paused
+```
+
+The host accepts increasing intent serials only from a connected eligible member
+of the frozen run roster. Unknown participants begin unpaused. The host coalesces
+all changes into one latest snapshot per tick; there is no event backlog or
+per-frame unchanged publication. A hold requires every current connected run
+participant to be paused. One Resume clears it, and disconnected/recycled IDs
+cannot retain pause authority.
+
+Guests accept increasing revisions only from the host, in the current run. IDs
+must belong to the frozen launch roster, but the host's complete snapshot owns
+the live subset. It need not match the guest Session's locally observed subset:
+the authoritative pause snapshot can arrive before its peer-leave notification.
+The recipient must also see its current local intent serial acknowledged before
+entering a shared hold. Local Resume ends its hold immediately, preventing an
+old all-paused snapshot from re-pausing a later menu visit.
+
+Validated current-run pause packets can initialize this small state before the
+first native frame, so keepalive's earlier Running commit cannot acknowledge and
+lose an initial intent. Old runs and wrong-source/kind messages cannot initiate
+that state. Host aggregate lookup is cached for native creature update filters.
+
+Native pause recalculation and puppet history resets are coalesced outside-frame
+work with generation invalidation. Reset/cancellation discards pending state.
+The existing PlayerState and adventure/captain resource bundle formats remain
+unchanged. Pause pose admission retains health/identity fields and sender-time
+ordering while rejecting spatial changes during the hold; interpolation resets
+preserve the separate authoritative teleport-generation fence.

@@ -35,6 +35,8 @@ static Update_t o_Update;
 static std::vector<void*> g_seen, g_seen_out;
 static UpdateFilter g_update_filter;
 static UpdateFilter g_extra_update_filter;
+static UpdateFilter g_npc_ai_filter;
+static CreatureUpdateCounts g_creature_update_counts;
 static BlockedUpdateHandler g_blocked_update_handler;
 static UpdateObserver g_update_observer;
 
@@ -50,6 +52,7 @@ static void SK_THISCALL h_Update(void* self, int dt)
         return;
     }
     if (g_update_observer) g_update_observer(self, true);
+    ++g_creature_update_counts.native;
     o_Update(self, dt);
     if (g_update_observer) g_update_observer(self, false);
 }
@@ -65,6 +68,8 @@ const std::vector<void*>& creatures_updated()
 
 void set_update_filter(UpdateFilter fn) { g_update_filter = fn; }
 void set_extra_update_filter(UpdateFilter fn) { g_extra_update_filter = fn; }
+void set_npc_ai_filter(UpdateFilter fn) { g_npc_ai_filter = fn; }
+CreatureUpdateCounts creature_update_counts() { return g_creature_update_counts; }
 void set_blocked_update_handler(BlockedUpdateHandler fn) { g_blocked_update_handler = fn; }
 void set_update_observer(UpdateObserver fn) { g_update_observer = fn; }
 bool is_destroyed(void* c) { return field<uint8_t>(c, 0x21) != 0; } // cGameData::mbIsDestroyed
@@ -230,6 +235,10 @@ static void SK_THISCALL h_NPCTickAI(void* self, float dt)
 {
     if (is_puppet(self))
         return; // remote players drive their puppets, no local AI
+    if (g_npc_ai_filter && !g_npc_ai_filter(self)) {
+        ++g_creature_update_counts.npc_ai_suppressed;
+        return;
+    }
     o_NPCTickAI(self, dt);
 }
 

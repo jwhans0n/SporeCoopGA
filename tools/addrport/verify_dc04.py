@@ -18,14 +18,21 @@ EXE_SHA256 = 'dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37'
 UPSTREAM_COMMIT = '69b27b5b407a2c76e1e701ba27630a77a9ce5d01'
 
 
-def fn(name, address, prefix, returns, note, calls=(), vslots=()):
+def fn(name, address, prefix, returns, note, calls=(), vslots=(), checks=()):
     return dict(name=name, address=address, prefix=prefix, returns=returns, note=note,
-                calls=calls, vslots=vslots)
+                calls=calls, vslots=vslots, checks=checks)
 
 
 # Return pairs are absolute return-instruction VA and stack bytes popped (0 = C3).
 # Source identity comes from upstream ModAPI plus the behavioral checks in the notes.
 FUNCTIONS = [
+    fn('SporeCoop::Adventure::RecalculatePauseFlags', 0xB320B0, '83ec0c53568bf18b4e48c7464800000000',
+       [(0xB321DF,0)],
+       'thiscall(timeManager),ret or tailcall effects vtable2C/30; first active signed counter selects flags; manager map+4C root+58, vector+68/+6C, entries counter/flags8 bytes. UserToggle04BF38A8 flags7, UIToggle04BF38A4 and ModalDialog04BF38A9 flags3 registered atB32500. Preserve counters and other pause reasons in active GA party policy',
+       [(0xB3234E,0xB320B0),(0xB3237E,0xB320B0),(0xB323BF,0xB320B0),(0xB32419,0xB320B0),(0xB324EA,0xB320B0)],
+       checks=[(0xB321FF,'8b4e688b40148b04c1'),
+               (0xE5C780,'8b410c8d5104578b7c240c8bca85c07416568b3739701072078bc88b4004eb028b0085c0'),
+               (0xB32500,'565768ac034601b8070000005068a838bf048bf1e887fdffff68a0034601bf030000005768a738bf048bcee870fdffff68940346015768a438bf048bcee85efdffff68840346015768a938bf048bcee84cfdffff')]),
     fn('SporeCoop::Adventure::HandleCinematicMessage', 0xAE0DB0, '8b44240481ec44020000535556578be9',
        [(0xAE0E37,8),(0xAE1D29,8),(0xAE1EC0,8),(0xAE1ED4,8)],
        'thiscall(cinematicManager,uint32 messageID,void* data)->bool AL,ret8; native captionContinue0445F729 mutates UI before EndCinematic, so gate the complete message branch',
@@ -456,6 +463,9 @@ def verify(pe):
         for table, slot, target in entry.get('vslots', ()):
             if pe.u32(table + slot) != target:
                 raise ValueError(entry['name'] + ': vtable slot mismatch at ' + hex(table + slot))
+        for site, encoded in entry.get('checks', ()):
+            if pe.read(site, len(bytes.fromhex(encoded))) != bytes.fromhex(encoded):
+                raise ValueError(entry['name'] + ': layout evidence mismatch at ' + hex(site))
         evidence.append(entry)
     for entry in GLOBALS:
         va = entry['address']

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check real downed movement and camera input in an existing hidden lab pair.
 
-Start a manual-revive adventure and separate captains by at least 4 metres first.
+Start a manual-revive adventure and separate captains by at least 8 metres first.
 Raw native positions are read independently of normalized player publications.
 Screenshots are retained for visual flicker and revive HUD review.
 """
@@ -75,37 +75,21 @@ def revive(games,readers,victim_index,records):
     victim,rescuer=games[victim_index],games[1-victim_index]
     memory=readers[victim_index]
     player=victim.player_id()
-    baseline=victim.wait('native two metre revive ring',lambda:ring(victim,player),timeout=5)
+    baseline=victim.wait('native six metre revive ring',lambda:ring(victim,player),timeout=5)
     check(baseline['progress']==0,'revival progressed with no captain nearby')
     def beside():
         position=list(pose(memory,avatar(memory))['position'])
-        position[0]+=-1 if player==0 else 1
+        position[0]-=5.5
         teleport(rescuer,records[rescuer.instance],position)
     beside()
     rescuer.wait('same downed ring on nearby rescuer',lambda:ring(rescuer,player),timeout=5)
     progressing=victim.wait('native revive progress and countdown',lambda:
         (state if (state:=ring(victim,player)) and state['progress']>=.15 else None),timeout=3)
     victim.record('revive-progress')
-    # The native host pause shares the same simulation-time pause predicate as
-    # scene holds. Observe the unpaused guest HUD while the authority is paused.
-    host,guest=games
-    host.call('key esc')
-    host.wait('host native pause menu',lambda:host.caption('Resume Game'),timeout=5)
-    try:
-        time.sleep(.15)
-        frozen_before=ring(guest,player)
-        clock_before=readers[0].goals()['elapsed']
-        check(frozen_before is not None,'guest revive ring disappeared during host pause')
-        time.sleep(1.1)
-        frozen_after=ring(guest,player)
-        clock_after=readers[0].goals()['elapsed']
-        check(frozen_after is not None and abs(frozen_after['progress']-frozen_before['progress'])<.02,
-              'revive progress advanced during native shared simulation pause')
-        check(clock_after==clock_before,'native host clock advanced in its pause menu')
-        guest.record('revive-host-pause')
-    finally:
-        host.press('Resume Game')
-    marker_teleport(rescuer,records[rescuer.instance],169,10 if rescuer.player_id()==0 else -10)
+    measured_distance=distance(pose(readers[1-victim_index],avatar(readers[1-victim_index]))['position'],
+                               pose(memory,avatar(memory))['position'])
+    check(2.5<measured_distance<=6.0,'native revival must start beyond the old two-metre range')
+    marker_teleport(rescuer,records[rescuer.instance],169,-13)
     moved_out=victim.wait('leaving revive radius resets progress',lambda:
         (state if (state:=ring(victim,player)) and state['progress']==0 else None),timeout=3)
     victim.record('revive-moved-out')
@@ -140,8 +124,8 @@ def revive(games,readers,victim_index,records):
     return dict(baseline=baseline,progressing=progressing,moved_out=moved_out,damage_reset=damaged,
                 revived_health=hp(victim),movement_before=before,movement_after=after,
                 camera_before=camera_before,camera_after=camera_after,
-                native_pause=dict(before=frozen_before,after=frozen_after,clock_before=clock_before,clock_after=clock_after),
-                group_hold='Native host pause tested with the same shared clock pause predicate; not combined with a conversation barrier.')
+                revive_distance=measured_distance,
+                group_hold='Unanimous native pause behavior is covered by the dedicated pause fixture.')
 
 
 def run(games, readers, victim_index):
@@ -151,8 +135,8 @@ def run(games, readers, victim_index):
     check(all('Adventure in progress' in game.adventure()['text'] and 'death=0' in game.adventure()['text'] for game in games),
           'a committed manual-revive attempt is required')
     initial = pose(memory, identity)
-    check(distance(initial['position'], pose(other, other_identity)['position']) >= 4,
-          'separate captains by at least 4 metres before the test to prevent proximity revival')
+    check(distance(initial['position'], pose(other, other_identity)['position']) >= 8,
+          'separate captains by at least 8 metres before the test to prevent proximity revival')
     victim.record('alive-before-downed')
     victim.call('key W down')
     try:

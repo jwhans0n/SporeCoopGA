@@ -28,6 +28,8 @@ bool ready;
 struct Held { void* object; uint32_t incarnation; };
 std::map<uint8_t, Held> held;
 uint64_t brains, walks, cursors, orders, entered, restored, corrections;
+struct MenuHold { void* object = nullptr; uint32_t incarnation = 0; net::Vec3 position; } menu_hold;
+uint64_t menu_stops;
 
 bool downed(void* object, ga::Captain* result = nullptr)
 {
@@ -38,25 +40,36 @@ bool downed(void* object, ga::Captain* result = nullptr)
     return true;
 }
 bool local_downed() { return downed(C.local_avatar()); }
+bool menu_paused(void* object)
+{
+    return ready && C.active() && C.local_paused && C.local_paused() && object && object == C.local_avatar();
+}
+void stop_orders(void* object)
+{
+    game::stop(object);
+    auto* behavior = field<uint8_t*>(object, 0xB4C);
+    if (behavior && readable(behavior, 0x1D0))
+        thiscall<void>(remove_orders, behavior + 8, UINT32_MAX, UINT32_MAX);
+}
 void SK_THISCALL brain(void* object, float elapsed)
 {
-    if (downed(object)) { ++brains; return; }
+    if (downed(object) || menu_paused(object)) { ++brains; return; }
     original_brain(object, elapsed);
 }
 void SK_THISCALL walk(void* strategy)
 {
-    if (local_downed()) { ++walks; return; }
+    if (local_downed() || menu_paused(C.local_avatar())) { ++walks; return; }
     original_walk(strategy);
 }
 bool SK_THISCALL cursor(void* strategy, bool first, bool second)
 {
-    if (local_downed()) { ++cursors; return false; }
+    if (local_downed() || menu_paused(C.local_avatar())) { ++cursors; return false; }
     return original_cursor(strategy, first, second);
 }
 uintptr_t SK_THISCALL order(void* object, uint32_t a, uint32_t b, uint32_t c, uint32_t d,
                            uint32_t e, uint32_t f, uint32_t g)
 {
-    if (downed(object)) { ++orders; return 0; }
+    if (downed(object) || menu_paused(object)) { ++orders; return 0; }
     return original_order(object, a, b, c, d, e, f, g);
 }
 } // namespace
@@ -92,6 +105,20 @@ bool init(const SkHost* host, SkMod* mod, Ctx context)
 void creature_update(void* object, bool before)
 {
     ga::Captain state;
+    if (!downed(object) && menu_paused(object) && readable(object, game::kFlagsOff + 8)) {
+        uint32_t incarnation = field<uint32_t>(object, 0x24);
+        if (menu_hold.object != object || menu_hold.incarnation != incarnation) {
+            menu_hold = {object, incarnation, game::position(object)};
+            stop_orders(object); ++menu_stops;
+        }
+        field<net::Vec3>(object, game::kVelOff) = {};
+        const auto position = game::position(object);
+        const float dx = position.x - menu_hold.position.x, dy = position.y - menu_hold.position.y,
+                    dz = position.z - menu_hold.position.z;
+        if (!before && dx * dx + dy * dy + dz * dz > .0001f) game::set_position(object, menu_hold.position);
+        return;
+    }
+    if (menu_hold.object == object) menu_hold = {};
     if (!downed(object, &state)) {
         // A replaced/destroyed object is never dereferenced during cleanup.
         for (auto it = held.begin(); it != held.end();) {
@@ -106,10 +133,7 @@ void creature_update(void* object, bool before)
     bool transition = it == held.end() || it->second.object != object || it->second.incarnation != incarnation;
     if (transition) {
         held[state.player] = {object, incarnation};
-        game::stop(object);
-        auto* behavior = field<uint8_t*>(object, 0xB4C);
-        if (behavior && readable(behavior, 0x1D0))
-            thiscall<void>(remove_orders, behavior + 8, UINT32_MAX, UINT32_MAX);
+        stop_orders(object);
         ++entered;
     }
     // Native physics and effects still run. Remove old jump/throw/drive momentum,
@@ -124,12 +148,12 @@ void creature_update(void* object, bool before)
     }
 }
 
-void reset() { held.clear(); }
+void reset() { held.clear(); menu_hold = {}; }
 std::string status()
 {
     return "downed controls: entries=" + std::to_string(entered) + " exits=" + std::to_string(restored) +
         " brain=" + std::to_string(brains) + " wasd=" + std::to_string(walks) +
         " cursor=" + std::to_string(cursors) + " orders=" + std::to_string(orders) +
-        " corrections=" + std::to_string(corrections) + "\n";
+        " corrections=" + std::to_string(corrections) + " menu_stops=" + std::to_string(menu_stops) + "\n";
 }
 } // namespace adventure_control

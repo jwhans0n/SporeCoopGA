@@ -243,6 +243,7 @@ void commit(Event e) {
 }
 bool apply(Event e) {
     if(!active()) return true;
+    if(held()) return false; // An earlier event/native callback may have established a hold.
     if(e.kind==Claim) {commit(e);return true;}
     if(e.kind==Expire) {
         auto& effect=effects[{e.player,e.type}];
@@ -292,6 +293,10 @@ void report_overflow() {
 void drain(void* token) {
     std::unique_ptr<uint64_t> task(static_cast<uint64_t*>(token));
     if(*task!=generation) return;
+    // A task can be queued just before the final pause intent arrives. Retain
+    // every accepted event (including teleport generation/cleanup) until Resume.
+    // Queue overflow still reports outside frame during a hold.
+    if(active() && held() && !(overflow && overflow_run==C.run())) {queued=false;return;}
     auto work=std::move(pending);pending.clear();
     if(!active()) {queued=false;return;}
     bool failed_queue=overflow && overflow_run==C.run();
@@ -310,6 +315,7 @@ void drain(void* token) {
             report_overflow();return;
         }
     }
+    if(held()) return;
     double now=clock();
     for(auto& [key,effect]:effects) if(host() && effect.active && now>effect.until) {
         effect.active=false;apply_effect(key.first,key.second,effect);

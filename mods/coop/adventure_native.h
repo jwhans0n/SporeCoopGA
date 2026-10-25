@@ -13,6 +13,7 @@ struct Ctx {
     std::function<void()> invalidate_ready;
     std::function<void(uint8_t, uint64_t, const net::Vec3&, const net::Quat&)> teleport;
     std::function<void()> reset_movement;
+    std::function<void()> reset_pause_movement;
 };
 
 bool init(const SkHost* host, SkMod* mod, Ctx context);
@@ -22,6 +23,8 @@ void on_message(uint8_t from, net::Reader& message);
 void reset();
 void shutdown();
 bool update_filter(void* creature);
+// Host-authoritative unanimous menu/user pause, independent of Intro/Talk holds.
+bool party_paused();
 void blocked_update(void* creature, int milliseconds);
 void creature_update(void* creature, bool before);
 bool damage_filter(void* victim, float& amount, int type, void* attacker);

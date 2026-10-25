@@ -116,9 +116,9 @@ is deliberately not an expectation for location-dependent lighting.
 
 ## Party protocol
 
-Protocol version 9 reserves message 52 for adventures. Coordinator messages use
+Protocol version 12 reserves message 52 for adventures. Coordinator messages use
 subkinds 0..63, content 64..71, world 128..159, party scenes 160..163, and captain
-models 192..223.
+models 192..223. Unanimous pause uses subkinds 164/165.
 The host freezes the roster and difficulty when Play is selected. Every roster member
 must verify the content manifest, select the required/personal captain, confirm
 readiness, load the same adventure and acknowledge the loaded captain before commit.
@@ -128,12 +128,126 @@ cancels the attempt; a disconnected captain cannot rescue or continue acting.
 The portable model is `net/adventure.*`; the runtime coordinator is `adventure.*`.
 All native loading, picker and result operations are queued outside Present. Monotonic
 run IDs, sender identity, phase checks and event/snapshot revisions reject stale or
-replayed messages. The host's simulation clock pauses with the native game.
+replayed messages. Intro/Talk holds and native non-menu pause reasons retain
+their existing clock behavior. Local user/menu pauses follow the unanimous
+party policy below.
+
+## Unanimous user/menu pause (dc04, preview 9)
+
+Preview 8's coordinator read only the host time manager's pause bit. An isolated
+baseline on the same executable reproduced a stopped host clock while a guest
+captain moved 0.5154 m under ordinary input. Host snapshots also kept resetting
+the guest's displayed clock, so that displayed clock alone does not establish
+whether guest native input or physics continued. The baseline ended normally at
+connected menus: `out/lab/preview9-pause-baseline/result.json`.
+
+The installed executable establishes the native counter and flag behavior:
+
+* `cGameTimeManager::Pause=B32330` and `Resume=B32360` are thiscall
+  `(manager,uint32 reason) -> int`, `ret4`. They increment/decrement the selected
+  signed counter, call `B320B0`, then return the preserved reason counter.
+* `Toggle=B32390` changes only counters equal to zero or one, then uses the same
+  recalculation. Native speed changes also call it at `B32419` and `B324EA`.
+* `RecalculatePauseFlags=B320B0` is thiscall `(manager)`, with no stack arguments.
+  It selects the **first** positive counter's flags; it does not OR all reasons.
+  A game-pause transition updates the native clock and publishes `03867294`;
+  audio changes publish `0546BBB8`, and effect changes invoke the native effects
+  manager's virtual `+2C/+30`. Its ordinary return is `B321DF`; effect paths
+  restore the stack and tail-call those virtual methods.
+* `B32500` registers UserToggle `04BF38A8` with flags 7, UIToggle `04BF38A4`
+  with flags 3, and ModalDialog `04BF38A9` with flags 3. Esc/menu entry `E18FB0`
+  calls Pause with UIToggle. Gameplay `04BF38A7` is a separate preserved reason.
+* `GetPauseCount=B321E0` and ordered-map lookup `E5C780` establish map `+4C`,
+  root `+58`, node key `+10`, value/index `+14`, left `+4`, right `+0`.
+  The vector at manager `+68/+6C` contains eight-byte counter/flags entries.
+
+`adventure_pause_native` hooks only that verified recalculation. During a running
+co-op adventure it reports the three local user/menu counters as pause intent.
+Until the host reports unanimous intent, those positive counters are excluded
+temporarily from native priority selection, then restored. Signed counters,
+native Pause/Resume return values and nested counter deltas remain intact;
+Cinematic, AdventureDialog, Gameplay and every other native reason keep their
+ordinary priority. The original transition performs native clock/audio/effects
+cleanup. Outside the active run, the original recalculation runs unchanged.
+Every map/vector read and traversal is bounded; an unexpected layout retains
+native behavior. The executable verifier checks the hook, caller edges,
+counter lookup layout and reason registration bytes before generating symbols.
+
+The host owns both the pause snapshot and its connected participant subset.
+Every participant starts with an unknown/unpaused intent. Only all confirmed
+positive intents produce the shared hold. One Resume ends it; a client also
+requires acknowledgement of its current local intent serial, so a delayed
+all-paused snapshot cannot approve a later menu visit. Guests validate snapshot
+IDs against the immutable run roster and require host plus self, without
+waiting for their local Session roster to observe a matching departure. This
+prevents a reordered peer-leave event from stranding an old shared hold.
+New joins and retired/recycled participant IDs cannot contribute to the run.
+Validated current-run intent/snapshot reception also initializes the bounded
+pause state before its first ordinary frame. This closes the keepalive window
+where Running can commit and acknowledge a guest's initial intent before native
+tick has initialized the run; stale runs and wrong senders cannot trigger that
+initialization. The host's aggregate is cached, so native per-creature `held()`
+queries do not copy or sort player rosters.
+
+The shared hold gates native play/creature updates, vehicle updates, powerup
+timers and authoritative objective/revival time. Existing Intro/Talk holds stay
+independent. A single local pause instead fences only that captain's native
+brain/input/orders and residual movement, leaving host NPC simulation and the
+other captains active. Menu and camera presentation remain native.
+
+Direct puppet driving needs an additional guard because it runs outside native
+simulation Update. `AdventurePauseMotion` pins the admitted pose while retaining
+nonspatial PlayerState fields and monotonic sender times. The puppet driver
+stops applying interpolation during the shared hold; transition cleanup clears
+interpolation and locomotion without clearing teleport generations. Old delayed
+movement cannot be re-admitted after Resume, and the first resumed state does
+not extrapolate across the time spent paused. Native flag recalculation and its
+transition cleanup are coalesced outside-frame tasks, invalidated by reset. The
+receive/driver guards also fence their own spatial work immediately; no
+resource/UI construction is added to Present.
+
+An already queued pickup task rechecks the hold before taking its pending
+events, and again between event application and expiry/materialization. Thus an
+approved teleport received just before pause retains its generation and native
+cleanup until Resume rather than moving a captain during the hold. The bounded
+queue still reports overflow outside frame while held; reset/run checks discard
+old work. Explosive queued application already had this execution-time hold
+check. Win32 pickup/explosive regressions exercise prequeue-then-pause, one-shot
+Resume and cancellation of deferred native work.
+
+The portable pause suite and ASan/UBSan cover four-player unanimity, local Resume,
+stale/duplicate/malformed packets, run reset, disconnected members, reordered
+departure snapshots, retained health, delayed movement and teleport fences.
+The Win32 pause fixture exercises the real native wrapper, reason priority,
+signed/nested counters, native restoration and cancelled queued work. Updated
+control fixtures verify that a local pause blocks its owner while unrelated NPC
+brains/orders still run. These pass. Native preview 9 acceptance is recorded
+separately; the static/fixture checks do not establish its game-level result.
+
+The two-client native Town act 1 pause regression passed on candidate 5, with
+both loaded shadows verified as SHA256
+`e5d55c37cfc92efb97208fe34e9c60b9fa49a040173205403a7258edc67565ac`.
+The actual MoveTo objective populated act 1 before measurement; saved captains
+remained alive at 92/90 HP. Host-only Esc left the guest moving 17.124 m,
+host NPCs moving 25.657 m, and the host clock advancing 4.176 seconds, with zero
+menu-owner drift. Guest-only Esc left the host moving 20.424 m and its clock
+advancing 4.550 seconds, again with zero menu-owner drift; the sampled Town
+NPCs naturally idled during this inverse case (0.003 m). With both native menus
+open, a settled 2.5-second held-W observation showed identical goals/clocks and
+zero captain or NPC displacement on both clients. Closing only the host menu
+released both native world clocks while the guest retained its local menu;
+puppet steps stayed within owner travel and prior correction error, with at most
+0.019 m excess. Both clients returned to connected galaxy menus with zero native
+faults. Evidence: `out/lab/preview9-pause-native-candidate5/result.json`.
+This establishes the candidate 5 pause core; later queued-combat changes require
+their own acceptance. Earlier Mine attempts retained their failed fixture
+prerequisites (live-combat knockouts or unwalkable distant placement) and are not
+reported as complete pause passes.
 
 ## Difficulty
 
 The host edits the lobby's Adventure settings before launch. Defaults are proximity
-revival (2 metres, 3 seconds), enemy health `1 + 0.5*(N-1)`, enemy damage 1, and
+revival (6 metres, 3 seconds), enemy health `1 + 0.5*(N-1)`, enemy damage 1, and
 captain-to-captain friendly fire 0%. Overrides replace the enemy multipliers; they do
 not multiply the party default again. N is the frozen launch roster size.
 

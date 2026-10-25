@@ -44,6 +44,6 @@ int main()
     CHECK(revive_timer(.5f,true,-1)=="Reviving: 1.5 s");
     CHECK(revive_timer(2,true,-1)=="Reviving: 0.0 s");
     CHECK(revive_timer(0,false,4.1)=="Recovery: 5 s");
-    CHECK(revive_timer(0,false,-1)=="Revive: stay within 2 m");
+    CHECK(revive_timer(0,false,-1)=="Revive: stay within 6 m");
     std::cout<<failures<<" failures\n"; return failures?EXIT_FAILURE:EXIT_SUCCESS;
 }

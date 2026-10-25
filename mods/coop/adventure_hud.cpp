@@ -240,9 +240,9 @@ void draw()
             float screen[2][2]; bool visible=true;
             for (size_t j=0;j<2;++j) {
                 float angle=float(i+j)*6.28318530718f/float(segments), ca=std::cos(angle),sa=std::sin(angle);
-                ga::Point p{ring.position.x+2.f*(a.x*ca+b.x*sa)+up.x*.04f,
-                            ring.position.y+2.f*(a.y*ca+b.y*sa)+up.y*.04f,
-                            ring.position.z+2.f*(a.z*ca+b.z*sa)+up.z*.04f};
+                ga::Point p{ring.position.x+ga::kReviveDistance*(a.x*ca+b.x*sa)+up.x*.04f,
+                            ring.position.y+ga::kReviveDistance*(a.y*ca+b.y*sa)+up.y*.04f,
+                            ring.position.z+ga::kReviveDistance*(a.z*ca+b.z*sa)+up.z*.04f};
                 visible=project(p,screen[j]) && visible;
             }
             if (visible) for (auto& xy:screen) vertices[count++]={xy[0],xy[1],0,1,color};

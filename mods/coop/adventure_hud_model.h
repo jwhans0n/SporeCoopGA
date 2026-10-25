@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include "net/adventure.h"
 
 namespace adventure_hud_model {
 struct Rect { float x1=0,y1=0,x2=0,y2=0; };
@@ -56,9 +57,9 @@ inline float caption_width(const std::string& text)
 inline std::string revive_timer(float value, bool reviving, double automatic)
 {
     char buffer[64];
-    if (reviving) snprintf(buffer,sizeof buffer,"Reviving: %.1f s",3.f*(1.f-progress(value)));
+    if (reviving) snprintf(buffer,sizeof buffer,"Reviving: %.1f s",ga::kReviveSeconds*(1.f-progress(value)));
     else if (automatic>=0 && std::isfinite(automatic)) snprintf(buffer,sizeof buffer,"Recovery: %.0f s",std::ceil(std::max(0.0,automatic)));
-    else return "Revive: stay within 2 m";
+    else { snprintf(buffer,sizeof buffer,"Revive: stay within %.0f m",double(ga::kReviveDistance)); }
     return buffer;
 }
 } // namespace adventure_hud_model

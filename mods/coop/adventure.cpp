@@ -50,6 +50,15 @@ Key g_replay_captain;
 std::deque<std::vector<uint8_t>> g_cleanup_messages;
 size_t g_cleanup_bytes;
 bool g_cleanup_overflow;
+struct DeferredHealth {
+    uint64_t run, event;
+    uint8_t victim;
+    ga::Source source;
+    float amount;
+    bool healing;
+};
+constexpr size_t kDeferredHealthLimit = 256;
+std::deque<DeferredHealth> g_deferred_health;
 
 void clear_cleanup_messages()
 {
@@ -63,6 +72,7 @@ ga::PreparationMember* preparation_member(uint8_t player)
 }
 void initialize_preparation()
 {
+    g_deferred_health.clear();
     g_pending_result_run = 0;
     g_preparation = {};
     g_preparation.run = g_descriptor.run_id;
@@ -187,6 +197,7 @@ void invalidate_ready()
 
 void abort_run(const std::string& reason, bool announce)
 {
+    g_deferred_health.clear();
     clear_cleanup_messages();
     g_pending_result_run = 0;
     const bool leave_native = g_launch_started || g_phase == Phase::Running;
@@ -446,6 +457,7 @@ void finish_result(bool success, bool announce)
 {
     if (g_phase != Phase::Running)
         return;
+    g_deferred_health.clear();
     if (announce) {
         snapshot();
         net::Writer w;
@@ -473,6 +485,49 @@ void accept_result(bool success, bool announce)
     finish_result(success, announce);
 }
 void result(bool success) { accept_result(success, true); }
+
+bool apply_health(const DeferredHealth& event)
+{
+    if (!host() || g_phase != Phase::Running || event.run != g_descriptor.run_id ||
+        !member(event.victim) || g_excluded.count(event.victim) ||
+        (event.source.kind == ga::SourceKind::Captain && g_excluded.count(event.source.owner))) return false;
+    if (event.healing) g_authority.heal(event.run, event.event, event.victim, event.amount);
+    else g_authority.damage(event.run, event.event, event.victim, event.source, event.amount);
+    return true;
+}
+void drain_health()
+{
+    if (!host() || g_phase != Phase::Running || (C.paused && C.paused())) return;
+    bool applied = false;
+    for (unsigned count = 0; count < 64 && !g_deferred_health.empty(); ++count) {
+        auto event = g_deferred_health.front(); g_deferred_health.pop_front();
+        applied = apply_health(event) || applied;
+        if (g_authority.phase() == ga::RunPhase::Failed) { result(false); return; }
+    }
+    if (applied) snapshot();
+}
+bool health(uint8_t victim, const ga::Source& source, float amount, bool healing)
+{
+    if (!host() || g_phase != Phase::Running || !member(victim) || g_excluded.count(victim) ||
+        !std::isfinite(amount) || amount <= 0) return false;
+    if (!healing && C.incoming_damage) amount = C.incoming_damage(victim, amount);
+    if (!std::isfinite(amount) || amount < 0) return false;
+    DeferredHealth event{g_descriptor.run_id, ++g_health_event, victim, source, amount, healing};
+    // Keep arrival order across Resume: fresh callbacks join older held work
+    // until the bounded FIFO drains, rather than overtaking a deferred hit.
+    if (!g_deferred_health.empty() || (C.paused && C.paused())) {
+        if (g_deferred_health.size() >= kDeferredHealthLimit) {
+            abort_run("Adventure health synchronization exceeded its bounded pending queue. Cancel and retry the adventure.", true);
+            return false;
+        }
+        g_deferred_health.push_back(event);
+    } else {
+        apply_health(event);
+        if (g_authority.phase() == ga::RunPhase::Failed) result(false);
+        else snapshot();
+    }
+    return true;
+}
 
 bool valid_seed(const ga::CaptainSeed& seed)
 {
@@ -768,6 +823,9 @@ void on_leave(uint8_t player)
         return;
     }
     g_excluded.insert(player);
+    g_deferred_health.erase(std::remove_if(g_deferred_health.begin(), g_deferred_health.end(), [&](const auto& event) {
+        return event.victim == player || (event.source.kind == ga::SourceKind::Captain && event.source.owner == player);
+    }), g_deferred_health.end());
     if (g_phase == Phase::Running) {
         g_authority.disconnect(g_descriptor.run_id, player);
         if (g_authority.phase() == ga::RunPhase::Failed) result(false);
@@ -1043,6 +1101,8 @@ void tick(double now)
         g_last_revive = now;
     }
     if (!host()) return;
+    drain_health();
+    if (g_phase != Phase::Running || g_pending_result_run) return;
     if (!C.paused || !C.paused()) g_simulation += elapsed;
     for (uint8_t player : g_descriptor.roster) {
         ga::CaptainSeed seed;
@@ -1057,21 +1117,12 @@ void tick(double now)
 
 bool captain_damage(uint8_t victim, const ga::Source& source, float amount)
 {
-    if (!host() || g_phase != Phase::Running || !member(victim))
-        return false;
-    if (C.incoming_damage) amount = C.incoming_damage(victim, amount);
-    g_authority.damage(g_descriptor.run_id, ++g_health_event, victim, source, amount);
-    if (g_authority.phase() == ga::RunPhase::Failed) result(false);
-    else snapshot();
-    return true;
+    return health(victim, source, amount, false);
 }
 
 bool captain_heal(uint8_t victim, float amount)
 {
-    if (!host() || g_phase != Phase::Running || !member(victim)) return false;
-    g_authority.heal(g_descriptor.run_id, ++g_health_event, victim, amount);
-    snapshot();
-    return true;
+    return health(victim, {}, amount, true);
 }
 
 bool damage_filter(void* victim, float& amount, int type, void* attacker)
@@ -1131,6 +1182,7 @@ bool results_accepted(bool replay)
 
 void reset()
 {
+    g_deferred_health.clear();
     clear_cleanup_messages();
     if (active()) abort_run("The party disconnected during the adventure.", false);
     g_generation++;

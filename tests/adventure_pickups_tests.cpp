@@ -207,6 +207,19 @@ int main() {
     captains[0]=previous_captain;tick();
     CHECK(warp_calls==warps_before+1&&tele_callbacks==callbacks_before+2&&object(captains[0])->position.x==61&&pickups::pending.empty());
     receive(0,older_teleport);receive(0,newer_teleport);tick();CHECK(warp_calls==warps_before+1&&tele_callbacks==callbacks_before+2);
+    // The final pause intent can arrive after a task was queued. Neither the
+    // motion generation nor native teleport cleanup may execute inside the hold.
+    auto paused_teleport=teleport_event(112,81);receive(0,paused_teleport);pickups::tick();
+    callbacks_before=tele_callbacks;warps_before=warp_calls;held=true;drain();
+    CHECK(tele_callbacks==callbacks_before&&warp_calls==warps_before&&pickups::teleports[0]==111&&pickups::pending.size()==1);
+    wall+=10;tick();CHECK(tele_callbacks==callbacks_before&&warp_calls==warps_before&&pickups::pending.size()==1);
+    held=false;tick();CHECK(tele_callbacks==callbacks_before+1&&warp_calls==warps_before+1&&pickups::teleports[0]==112&&pickups::pending.empty());
+    receive(0,paused_teleport);tick();CHECK(tele_callbacks==callbacks_before+1&&warp_calls==warps_before+1);
+    // Cancellation invalidates an already queued callback and its deferred warp.
+    auto cancelled_teleport=teleport_event(113,101);receive(0,cancelled_teleport);pickups::tick();held=true;drain();
+    pickups::reset();++run;held=false;tick();
+    CHECK(tele_callbacks==callbacks_before+1&&warp_calls==warps_before+1&&pickups::pending.empty());
+    receive(0,cancelled_teleport);tick();CHECK(tele_callbacks==callbacks_before+1&&warp_calls==warps_before+1);
     // Grants received before a captain exists retain their native fields and
     // artwork for that binding, then reapply once when a model is recreated.
     captains[1]=nullptr;unsigned artwork_before=effect_calls[1];

@@ -1,11 +1,11 @@
 # Installing SporeCoop
 
-This fork, `0.7.3.1-ga-preview.8`, combines upstream SporeCoop 0.7.2.1 with the
+This fork, `0.7.3.2-ga-preview.9`, combines upstream SporeCoop 0.7.2.1 with the
 Galactic Adventures changes described in [the GA guide](GALACTIC-ADVENTURES.md)
 for adventures started from Sporepedia. The native adventure adapter requires the
 exact GOG executable `dc04aee5...`; Steam and code-equivalent variants retain
 upstream base-stage support but have no enabled native GA adapter. Every player
-needs this fork build and protocol 11; upstream and earlier previews cannot join it.
+needs this fork build and protocol 12; upstream and earlier previews cannot join it.
 
 Every player installs the same SporeCoop version into their own copy of the game. The install
 replaces one file of the game (`steam_api.dll`, kept as `steam_api_orig.dll`) and adds a few
@@ -214,7 +214,7 @@ SPORE\
 
 * The main menu (galaxy screen) has a new **Co-op** item on the left.
 * `SporebinEP1\mods\logs\sporekit.log` exists and reports the installed version
-  (for this fork preview, `loaded coop v0.7.3.1-ga-preview.8`).
+  (for this fork preview, `loaded coop v0.7.3.2-ga-preview.9`).
 * Start a game, press **F9**: the co-op window opens.
 
 If there is no Co-op item, see [Troubleshooting](#9-troubleshooting).

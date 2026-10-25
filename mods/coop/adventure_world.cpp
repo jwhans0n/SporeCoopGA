@@ -10,11 +10,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cwchar>
+#include <deque>
 #include <map>
 #include <memory>
 #include <set>
 #include <sstream>
 #include <tuple>
+#include <type_traits>
+#include <variant>
 #include <vector>
 
 #include "game.h"
@@ -61,7 +64,7 @@ static unsigned g_goal_hud_refreshes;
 static bool g_goal_hud_dirty;
 constexpr uint32_t kSpatial = 0x01186577, kCombatant = 0x013F94D4, kCreature = 0xCE9F6639;
 constexpr size_t kMaxActors = 2048, kMaxGoals = 3;
-enum Kind : uint8_t { Actors = 128, Goals = 129, Hit = 130, CaptainHit = 131, Interaction = 132, GoalEvent = 133, Roster = 134, SocialComplete = 135, StaticActors = 136, Attachments = 137, ItemThrow = 138 };
+enum Kind : uint8_t { Actors = 128, Goals = 129, Hit = 130, CaptainHit = 131, Interaction = 132, GoalEvent = 133, Roster = 134, SocialComplete = 135, StaticActors = 136, Attachments = 137, ItemThrow = 138, ActorAnimations = 139 };
 enum Action : uint8_t { PickUp, Drop, Give, Unlock };
 
 struct Identity {
@@ -69,6 +72,29 @@ struct Identity {
     bool operator<(const Identity& b) const { return std::tie(marker, incarnation) < std::tie(b.marker, b.incarnation); }
     bool operator==(const Identity&) const = default;
 };
+struct SocialCompletionTask { uint64_t run; uint8_t from, act, type; Identity target; };
+struct InteractionTask {
+    uint64_t run;
+    uint8_t from, act, action, player;
+    Identity item, recipient;
+    double admitted = 0;
+};
+struct ActorHitTask { uint64_t run, event; uint8_t from, act; Identity actor; float damage; int type; };
+struct ThrowTask {
+    uint64_t run,event; uint8_t act,player; Identity item; net::Vec3 impulse; bool add;
+    double admitted = 0;
+};
+using WorldTask = std::variant<InteractionTask, ActorHitTask, ThrowTask>;
+static std::deque<WorldTask> g_pending_world_tasks;
+static uint64_t g_world_task_generation;
+static bool g_world_task_queued, g_world_task_overflow;
+static std::map<uint8_t, uint64_t> g_admitted_hit;
+constexpr size_t kMaxPendingWorldTasks = 256;
+static void queue_world_task(WorldTask);
+static std::deque<SocialCompletionTask> g_pending_social;
+static uint64_t g_social_generation;
+static bool g_social_queued, g_social_overflow;
+constexpr size_t kMaxPendingSocial = 256;
 struct Attachment {
     Identity item{}, holder{};
     uint8_t player = ga::kNoPlayer, slot = 0;
@@ -115,6 +141,21 @@ struct ActorState {
     bool static_actor = false;
 };
 struct Binding { void* object; uint32_t incarnation; int act = -1; };
+struct ActorAnimation {
+    Identity actor{};
+    uint64_t serial = 0;
+    uint32_t time = 0, animation = 0;
+    int32_t block = -1;
+    uint8_t flags = 0;
+    double seen = 0;
+};
+static std::map<Identity, ActorAnimation> g_host_animations;
+static std::map<uint8_t, uint64_t> g_animation_sent;
+static std::array<std::map<Identity, ActorAnimation>, 8> g_pending_animations;
+static uint64_t g_animation_sequence, g_animation_received;
+static int g_animation_act = -1;
+static unsigned g_animations_sent, g_animations_received, g_animations_played, g_animations_expired;
+static bool g_visual_animation;
 static std::vector<NativeActor> g_native;
 static bool g_native_overflow;
 static std::map<uint32_t, uint8_t*> g_markers;
@@ -350,6 +391,85 @@ static void* object_for(Identity id)
     for (const auto& actor : g_native) if (actor.marker == id.marker && actor.incarnation == id.incarnation) return actor.object;
     return nullptr;
 }
+void on_animation(void* creature, uint32_t animation, int block, bool disable_blend, bool to_target)
+{
+    auto* p = play();
+    if (!active() || !host() || g_applying || g_run != run() || !p ||
+        skg::field<int>(p, 0x90) != 3 || (C.held && C.held()) || owner(creature) != ga::kNoPlayer) return;
+    auto* actor = actor_for(creature);
+    if (!actor || actor->incarnation != skg::field<uint32_t>(creature, 0x24) ||
+        !game::cast(creature, kCreature) || !actor->combatant || skg::field<float>(actor->combatant, 0x38) <= 0) return;
+    int act = skg::field<int>(p, 0xB8);
+    if (act < 0 || act >= 8) return;
+    if (g_animation_act != act) { g_host_animations.clear(); g_animation_sent.clear(); g_animation_act = act; }
+    Identity id{actor->marker, actor->incarnation};
+    if (g_host_animations.size() >= kMaxActors && !g_host_animations.count(id)) return;
+    g_host_animations[id] = {id, ++g_animation_sequence, uint32_t(std::max(0, skg::field<int>(p, 0xC0))),
+        animation, block, uint8_t((disable_blend ? 1 : 0) | (to_target ? 2 : 0)), H->time_seconds()};
+}
+static void send_animations(double now)
+{
+    auto* p = play();
+    if (!p) return;
+    int act = skg::field<int>(p, 0xB8);
+    if (g_animation_act != act) { g_host_animations.clear(); g_animation_sent.clear(); g_animation_act = act; }
+    for (auto it = g_host_animations.begin(); it != g_host_animations.end();) {
+        if (now - it->second.seen > 2.0) it = g_host_animations.erase(it);
+        else ++it;
+    }
+    if (C.held && C.held()) return;
+    for (const auto& player : C.sess->players()) if (player.id) {
+        auto& sent = g_animation_sent[player.id];
+        std::vector<const ActorAnimation*> events;
+        for (const auto& [id, event] : g_host_animations) { (void)id; if (event.serial > sent) events.push_back(&event); }
+        std::sort(events.begin(), events.end(), [](const auto* a, const auto* b) { return a->serial < b->serial; });
+        // Coalesce to the latest clip per actor and bound additions to the
+        // existing ordered queue. Never build an unbounded animation backlog.
+        for (size_t first = 0, batches = 0; first < events.size() && batches < 2; first += 12, ++batches) {
+            if (C.sess->pending_to(player.id) >= 64) break;
+            size_t count = std::min<size_t>(12, events.size() - first);
+            net::Writer w; w.u8(ActorAnimations); put_run(w, g_run); w.u8(uint8_t(act)); w.u8(uint8_t(count));
+            for (size_t i = first; i < first + count; ++i) {
+                const auto& event = *events[i];
+                put_run(w, event.serial); w.u32(event.time);
+                w.u32(event.actor.marker); w.u32(event.actor.incarnation);
+                w.u32(event.animation); w.u32(uint32_t(event.block)); w.u8(event.flags);
+            }
+            if (!C.sess->send_reliable_to(player.id, net::MSG_ADVENTURE, w)) break;
+            sent = events[first + count - 1]->serial;
+            g_animations_sent += unsigned(count);
+        }
+    }
+}
+static void apply_animations(double now)
+{
+    auto* p = play();
+    if (!guest() || g_run != run() || !p) return;
+    int act = skg::field<int>(p, 0xB8);
+    if (act < 0 || act >= 8) return;
+    for (int i = 0; i < act; ++i) g_pending_animations[i].clear();
+    auto& pending = g_pending_animations[act];
+    unsigned applied = 0;
+    for (auto it = pending.begin(); it != pending.end();) {
+        const auto& event = it->second;
+        int64_t age = int64_t(skg::field<int>(p, 0xC0)) - event.time;
+        if (now - event.seen > 2.0 || age > 2000 || age < -3000) {
+            ++g_animations_expired; it = pending.erase(it); continue;
+        }
+        if ((C.held && C.held()) || skg::field<int>(p, 0x90) != 3 || applied >= 32) { ++it; continue; }
+        void* object = object_for(event.actor);
+        if (!object || !is_live_mirror(object) || !game::cast(object, kCreature)) { ++it; continue; }
+        // The existing wrapper suppresses animation-listener echo. Do not set
+        // g_applying: any incidental guest damage callback must stay fenced.
+        struct Visual {
+            bool previous = g_visual_animation;
+            Visual() { g_visual_animation = true; }
+            ~Visual() { g_visual_animation = previous; }
+        } visual;
+        game::play_animation(object, event.animation, event.block, (event.flags & 1) != 0);
+        ++g_animations_played; ++applied; it = pending.erase(it);
+    }
+}
 static void* object_from_spatial(void* spatial)
 {
     // Native pickup/drop helpers use this Cast slot to recover cGameData.
@@ -511,18 +631,17 @@ static void record_flight(Identity id,uint8_t player)
         g_flying[id]={player,uint8_t(skg::field<int>(p,0xB8)),center,simulation_now(),0};
     }
 }
-struct ThrowTask { uint64_t run,event; uint8_t act,player; Identity item; net::Vec3 impulse; bool add; };
-static void apply_item_throw(void* argument)
+static void apply_item_throw(const ThrowTask& value)
 {
-    std::unique_ptr<ThrowTask> task(static_cast<ThrowTask*>(argument));
+    const auto* task = &value;
     auto* p=play();
     if(!host() || !active() || task->run!=run() || !p || task->act!=skg::field<int>(p,0xB8) ||
-       !C.captain_can_act(task->player) || (C.held && C.held())) return;
+       !C.captain_can_act(task->player)) return;
     enumerate();
     void* captain=C.captain_of(task->player),*item=object_for(task->item),*spatial=game::cast(item,kSpatial);
     auto dropped=g_dropped.find(task->item);
     bool owns=spatial && (item_slot(captain,spatial,false)>=0 ||
-        (dropped!=g_dropped.end() && dropped->second.first==task->player && H->time_seconds()-dropped->second.second<=2));
+        (dropped!=g_dropped.end() && dropped->second.first==task->player && task->admitted-dropped->second.second<=2));
     float speed2=task->impulse.x*task->impulse.x+task->impulse.y*task->impulse.y+task->impulse.z*task->impulse.z;
     void* powerup=powerup_for(item); int kind=powerup ? skg::field<int>(powerup,4) : 0;
     if(!captain || !spatial || !owns || kind==10 || kind==13 || g_flying.count(task->item) ||
@@ -864,12 +983,19 @@ static void SK_THISCALL set_state(void* self, int state)
 static void apply_actor(NativeActor& actor, const ActorState& state)
 {
     g_applying = true;
+    void* creature = game::cast(actor.object, kCreature);
     ActorState local;
     local.position = skg::field<net::Vec3>(actor.spatial, 4);
     local.orientation = skg::field<net::Quat>(actor.spatial, 0x10);
     if (!attached(actor.spatial) && (!state.static_actor || !same_pose(local, state))) {
-        skg::vcall<void>(actor.spatial, 0x38 / 4, &state.position);
-        skg::vcall<void>(actor.spatial, 0x3C / 4, &state.orientation);
+        if (creature) {
+            // Creature SetTransform also marks its animated model dirty. The
+            // separate setters leave the spatial pose and rendered body apart.
+            skg::vcall<void>(actor.spatial, 0x44 / 4, &state.position, &state.orientation);
+        } else {
+            skg::vcall<void>(actor.spatial, 0x38 / 4, &state.position);
+            skg::vcall<void>(actor.spatial, 0x3C / 4, &state.orientation);
+        }
     }
     if (actor.combatant && (state.flags & 1)) {
         float current = skg::field<float>(actor.combatant, 0x38);
@@ -879,7 +1005,6 @@ static void apply_actor(NativeActor& actor, const ActorState& state)
             skg::vcall<int>(actor.combatant, 0x18 / 4, current + 1.f, UINT32_MAX, 0, &direction, (void*)nullptr);
         } else if (!(state.flags & 2)) skg::field<float>(actor.combatant, 0x38) = state.health;
     }
-    void* creature = game::cast(actor.object, kCreature);
     if ((state.flags & 4) && creature && !(skg::field<uint32_t>(creature, 0xB58) & 0x80)) {
         void* relationships = skg::cdecl_call<void*>(a_Relationships);
         if (relationships) skg::thiscall<void>(a_SocialEvent, relationships, 3, (uint8_t*)creature + 0xB28, creature);
@@ -1147,12 +1272,6 @@ static bool goals_vector(uint8_t* p, uint8_t*& begin, size_t& count)
     return true;
 }
 
-struct InteractionTask {
-    uint64_t run;
-    uint8_t from, act, action, player;
-    Identity item, recipient;
-};
-static void apply_interaction(void* argument);
 static void SK_CDECL activate_gate(void* captain, void* key, void* gate)
 {
     if(!active() || g_applying) { o_Gate(captain,key,gate); return; }
@@ -1164,15 +1283,14 @@ static void SK_CDECL activate_gate(void* captain, void* key, void* gate)
     if(!key || !gate || !identity(skg::vcall<void*>(key,1),item_id) ||
         !identity(skg::vcall<void*>(gate,1),gate_id)) return;
     if(!host()) interaction(Unlock,player,item_id,gate_id);
-    if(host()) H->run_outside_frame(apply_interaction,new InteractionTask{run(),player,
+    if(host()) queue_world_task(InteractionTask{run(),player,
         uint8_t(skg::field<int>(play(),0xB8)),Unlock,player,item_id,gate_id});
 }
-static void apply_interaction(void* argument)
+static void apply_interaction(const InteractionTask& value)
 {
-    std::unique_ptr<InteractionTask> task((InteractionTask*)argument);
+    const auto* task = &value;
     uint8_t* p = play();
-    if (!active() || task->run != run() || !p || task->act != skg::field<int>(p, 0xB8) || !C.captain_of ||
-        (C.held && C.held())) return;
+    if (!active() || task->run != run() || !p || task->act != skg::field<int>(p, 0xB8) || !C.captain_of) return;
     enumerate();
     void* captain = C.captain_of(task->player);
     void* item = object_for(task->item);
@@ -1222,7 +1340,7 @@ static void apply_interaction(void* argument)
             auto dropped = g_dropped.find(task->item);
             bool carrying = item_slot(captain, spatial, false) >= 0;
             bool recently_dropped = dropped != g_dropped.end() && dropped->second.first == task->player &&
-                                    H->time_seconds() - dropped->second.second <= 5.0;
+                                    task->admitted - dropped->second.second <= 5.0;
             bool held_elsewhere = false;
             if (host()) for (const auto& player : C.sess->players())
                 if (player.id != task->player && item_slot(C.captain_of(player.id), spatial, false) >= 0) held_elsewhere = true;
@@ -1259,35 +1377,33 @@ static bool request_container_give(void* captain, void* item, void* recipient)
     if (!identity(item, item_id) || !identity(recipient, recipient_id)) return false;
     uint8_t player = C.sess->my_id();
     if (!host()) return interaction(Give, player, item_id, recipient_id);
-    H->run_outside_frame(apply_interaction, new InteractionTask{run(), player,
+    queue_world_task(InteractionTask{run(), player,
         static_cast<uint8_t>(skg::field<int>(play(), 0xB8)), Give, player, item_id, recipient_id});
     return true;
 }
 
-struct SocialCompletionTask { uint64_t run; uint8_t from, act, type; Identity target; };
-static void apply_social_completion(void* argument)
+static void apply_social_completion(const SocialCompletionTask& task)
 {
-    std::unique_ptr<SocialCompletionTask> task((SocialCompletionTask*)argument);
     uint8_t* p = play();
-    if (!active() || !host() || task->run != run() || !p || skg::field<int>(p, 0x90) != 3 ||
-        task->act != skg::field<int>(p, 0xB8) || (task->type != 4 && task->type != 5) ||
-        !C.captain_of || !C.captain_can_act || !C.captain_can_act(task->from)) return;
+    if (!active() || !host() || task.run != run() || !p || skg::field<int>(p, 0x90) != 3 ||
+        task.act != skg::field<int>(p, 0xB8) || (task.type != 4 && task.type != 5) ||
+        !C.captain_of || !C.captain_can_act || !C.captain_can_act(task.from)) return;
     enumerate();
-    void* target = object_for(task->target);
-    void* captain = C.captain_of(task->from);
+    void* target = object_for(task.target);
+    void* captain = C.captain_of(task.from);
     void* creature = game::cast(target, kCreature);
     void* combatant = game::cast(target, kCombatant);
     if (!target || !captain || !creature || !combatant || !skg::readable(creature, 0xB60) ||
         skg::field<int>(target, 0x1C) < 0 || skg::field<bool>(creature, 0xB5E) ||
         !std::isfinite(skg::field<float>(combatant, 0x38)) || skg::field<float>(combatant, 0x38) <= 0 ||
         owner(target) != ga::kNoPlayer || !nearby(captain, target, 25.f)) return;
-    auto completion = std::make_tuple(task->act, task->type, task->target.marker, task->target.incarnation);
+    auto completion = std::make_tuple(task.act, task.type, task.target.marker, task.target.incarnation);
     if (g_social_completions.count(completion)) return;
     AvatarScope avatar(captain);
     int mode = skg::thiscall<int>(a_SocialMode, creature);
     // Native social mode evaluates the authored relationship and posse capacity.
     // Never accept a client-supplied goal index, class, count or relationship.
-    if (task->type == 4) {
+    if (task.type == 4) {
         // A successful recruitment minigame also emits Befriend before Ally.
         // Preserve its native event3/impressed state before the mode4 recruit.
         if ((mode != 1 && mode != 2 && mode != 4) || (skg::field<uint32_t>(creature, 0xB58) & 0x80)) return;
@@ -1308,11 +1424,40 @@ static void apply_social_completion(void* argument)
     }
 }
 
-struct ActorHitTask { uint64_t run, event; uint8_t from; Identity actor; float damage; int type; };
-static void apply_hit(void* argument)
+static void flush_social_completions()
 {
-    std::unique_ptr<ActorHitTask> task((ActorHitTask*)argument);
-    if (!active() || !host() || task->run != run() || task->event <= g_last_hit[task->from] || !C.captain_of) return;
+    if (g_social_queued || (!g_social_overflow && (g_pending_social.empty() || (C.held && C.held())))) return;
+    struct Token { uint64_t run, generation; };
+    g_social_queued = true;
+    H->run_outside_frame([](void* argument) {
+        std::unique_ptr<Token> token(static_cast<Token*>(argument));
+        if (token->generation != g_social_generation) return;
+        g_social_queued = false;
+        if (!active() || !host() || token->run != run()) return;
+        if (g_social_overflow) {
+            g_world_error = "Adventure social synchronization exceeded its bounded pending queue. Cancel and retry the adventure.";
+            g_pending_social.clear(); g_social_overflow = false;
+            if (C.interaction_failed) C.interaction_failed(g_world_error);
+            return;
+        }
+        // The last player's menu can open after this drain was queued. Keep
+        // accepted work until Resume rather than ACKing it into a lost action.
+        for (unsigned count = 0; count < 32 && !g_pending_social.empty(); ++count) {
+            if (C.held && C.held()) break;
+            auto task = g_pending_social.front(); g_pending_social.pop_front();
+            apply_social_completion(task);
+            if (!active() || !host() || token->run != run() || token->generation != g_social_generation) return;
+        }
+    }, new Token{run(), g_social_generation});
+}
+
+static void apply_hit(const ActorHitTask& value)
+{
+    const auto* task = &value;
+    auto* p = play();
+    if (!active() || !host() || task->run != run() || !p || task->act != skg::field<int>(p, 0xB8) ||
+        task->event <= g_last_hit[task->from] || !C.captain_of || !C.captain_can_act ||
+        !C.captain_can_act(task->from)) return;
     enumerate();
     void* target = object_for(task->actor);
     void* attacker = C.captain_of(task->from);
@@ -1325,6 +1470,47 @@ static void apply_hit(void* argument)
                    &direction, game::cast(attacker, kCombatant));
     g_applying = false;
     ++g_hits;
+}
+
+static void flush_world_tasks()
+{
+    if (g_world_task_queued || (!g_world_task_overflow && (g_pending_world_tasks.empty() || (C.held && C.held())))) return;
+    struct Token { uint64_t run, generation; };
+    g_world_task_queued = true;
+    H->run_outside_frame([](void* argument) {
+        std::unique_ptr<Token> token(static_cast<Token*>(argument));
+        if (token->generation != g_world_task_generation) return;
+        g_world_task_queued = false;
+        if (!active() || token->run != run()) return;
+        if (g_world_task_overflow) {
+            g_world_error = "Adventure gameplay synchronization exceeded its bounded pending queue. Cancel and retry the adventure.";
+            g_pending_world_tasks.clear(); g_world_task_overflow = false;
+            if (C.interaction_failed) C.interaction_failed(g_world_error);
+            return;
+        }
+        // Both native hit filtering and item ownership are hold-sensitive.
+        // Retain their source arrival order until the final hold is released.
+        for (unsigned count = 0; count < 32 && !g_pending_world_tasks.empty(); ++count) {
+            if (C.held && C.held()) break;
+            auto task = std::move(g_pending_world_tasks.front()); g_pending_world_tasks.pop_front();
+            std::visit([](const auto& value) {
+                if constexpr (std::is_same_v<std::decay_t<decltype(value)>, InteractionTask>) apply_interaction(value);
+                else if constexpr (std::is_same_v<std::decay_t<decltype(value)>, ActorHitTask>) apply_hit(value);
+                else apply_item_throw(value);
+            }, task);
+            if (!active() || token->run != run() || token->generation != g_world_task_generation) return;
+        }
+    }, new Token{run(), g_world_task_generation});
+}
+static void queue_world_task(WorldTask task)
+{
+    // Hold time must not expire Give/Throw recent-drop eligibility at arrival.
+    // Ownership and exact native identities are still revalidated.
+    if (auto* interaction = std::get_if<InteractionTask>(&task)) interaction->admitted = H->time_seconds();
+    if (auto* thrown = std::get_if<ThrowTask>(&task)) thrown->admitted = H->time_seconds();
+    if (g_pending_world_tasks.size() >= kMaxPendingWorldTasks) g_world_task_overflow = true;
+    else g_pending_world_tasks.push_back(std::move(task));
+    flush_world_tasks();
 }
 
 static void send_goals()
@@ -1589,6 +1775,28 @@ void on_message(uint8_t from, net::Reader& r)
             auto* task = new RosterTask{id, sequence, act, g_roster_parts};
             H->run_outside_frame(apply_roster, task);
         }
+    } else if (kind == ActorAnimations && !host() && from == 0) {
+        uint8_t act = r.u8(), count = r.u8();
+        auto* p = play();
+        if (!r.ok() || !p || act >= 8 || act < skg::field<int>(p, 0xB8) || !count || count > 12) return;
+        std::vector<ActorAnimation> events;
+        uint64_t previous = 0;
+        for (uint8_t i = 0; i < count; ++i) {
+            ActorAnimation event;
+            event.serial = get_run(r); event.time = r.u32(); event.actor = read_identity(r);
+            event.animation = r.u32(); event.block = int32_t(r.u32()); event.flags = r.u8(); event.seen = H->time_seconds();
+            if (!r.ok() || !event.serial || event.serial <= previous || event.time > INT32_MAX ||
+                event.actor.marker == UINT32_MAX || event.flags > 3) return;
+            previous = event.serial; events.push_back(event);
+        }
+        if (r.left()) return;
+        auto& pending = g_pending_animations[act];
+        for (const auto& event : events) {
+            if (event.serial <= g_animation_received) continue;
+            g_animation_received = event.serial;
+            if (pending.size() >= kMaxActors && !pending.count(event.actor)) { ++g_animations_expired; continue; }
+            pending[event.actor] = event; ++g_animations_received;
+        }
     } else if(kind==Attachments && !host() && from==0) {
         uint32_t revision=r.u32(); uint8_t act=r.u8(); uint16_t total=r.u16(),first=r.u16(); uint8_t count=r.u8();
         if(!r.ok() || !revision || act>=8 || total>kMaxActors || count>40 || first>total || count>total-first ||
@@ -1618,31 +1826,35 @@ void on_message(uint8_t from, net::Reader& r)
             g_attachment_pending[act]=assembly.parts; g_attachment_received[act]=revision;
         }
     } else if(kind==ItemThrow && host() && from>0 && from<4) {
-        uint64_t event=get_run(r); auto task=std::make_unique<ThrowTask>(); task->run=id; task->event=event;
-        task->act=r.u8(); task->player=r.u8(); task->item=read_identity(r);
-        task->impulse={r.f32(),r.f32(),r.f32()}; uint8_t add=r.u8(); task->add=add!=0;
-        if(!r.ok() || r.left() || !event || event<=g_last_throw[from] || task->act>=8 || task->player!=from ||
-           add>1 || !finite(task->impulse) || !C.captain_can_act(from)) return;
-        g_last_throw[from]=event; H->run_outside_frame(apply_item_throw,task.release());
+        uint64_t event=get_run(r); ThrowTask task{id,event,r.u8(),r.u8(),read_identity(r),{r.f32(),r.f32(),r.f32()},false};
+        uint8_t add=r.u8(); task.add=add!=0;
+        if(!r.ok() || r.left() || !event || event<=g_last_throw[from] || task.act>=8 || task.player!=from ||
+           add>1 || !finite(task.impulse) || !C.captain_can_act(from)) return;
+        g_last_throw[from]=event; queue_world_task(task);
     } else if (kind == Interaction && ((host() && from) || (!host() && !from))) {
         uint64_t event = get_run(r);
-        auto task = std::make_unique<InteractionTask>(); task->run = id; task->from = from;
-        task->act = r.u8(); task->action = r.u8(); task->player = r.u8();
-        task->item = read_identity(r); task->recipient = read_identity(r);
-        if (!r.ok() || r.left() || !event || event <= g_last_interaction[from] || task->act >= 8 || task->action > Unlock ||
-            (host() && task->player != from)) return;
+        InteractionTask task{id, from, r.u8(), r.u8(), r.u8(), read_identity(r), read_identity(r)};
+        if (!r.ok() || r.left() || !event || event <= g_last_interaction[from] || task.act >= 8 || task.action > Unlock ||
+            (host() && task.player != from)) return;
         g_last_interaction[from] = event;
-        H->run_outside_frame(apply_interaction, task.release());
+        queue_world_task(task);
     } else if (kind == GoalEvent && host() && from) {
         return; // Talk completion requires the shared scene barrier.
     } else if (kind == SocialComplete && host() && from) {
         uint64_t event = get_run(r);
-        auto task = std::make_unique<SocialCompletionTask>(); task->run = id; task->from = from;
-        task->act = r.u8(); task->type = r.u8(); task->target = read_identity(r);
-        if (!r.ok() || r.left() || !event || event <= g_last_interaction[from] || task->act >= 8 ||
-            (task->type != 4 && task->type != 5) || !C.captain_can_act || !C.captain_can_act(from)) return;
+        SocialCompletionTask task{id, from, r.u8(), r.u8(), read_identity(r)};
+        if (!r.ok() || r.left() || !event || event <= g_last_interaction[from] || task.act >= 8 ||
+            (task.type != 4 && task.type != 5) || !C.captain_can_act || !C.captain_can_act(from)) return;
         g_last_interaction[from] = event;
-        H->run_outside_frame(apply_social_completion, task.release());
+        const bool pending = std::any_of(g_pending_social.begin(), g_pending_social.end(), [&](const auto& previous) {
+            return previous.run == task.run && previous.from == task.from && previous.act == task.act &&
+                previous.type == task.type && previous.target == task.target;
+        });
+        if (!pending) {
+            if (g_pending_social.size() >= kMaxPendingSocial) g_social_overflow = true;
+            else g_pending_social.push_back(task);
+        }
+        flush_social_completions();
     } else if (kind == StaticActors && !host() && from == 0) {
         uint32_t sequence = r.u32(); uint8_t act = r.u8(), count = r.u8();
         if (!r.ok() || act >= 8 || count > 12 || !play()) return;
@@ -1728,10 +1940,12 @@ void on_message(uint8_t from, net::Reader& r)
         ++g_hits;
     } else if (kind == Hit && host()) {
         uint64_t event = get_run(r); Identity actor_id{r.u32(), r.u32()}; float damage = r.f32(); int type = (int)r.u32();
-        if (!r.ok() || r.left() || !event || event <= g_last_hit[from] || !std::isfinite(damage) || damage <= 0 || damage > 1e6f ||
+        auto* p = play();
+        if (!r.ok() || r.left() || !event || event <= g_admitted_hit[from] || !std::isfinite(damage) || damage <= 0 || damage > 1e6f ||
             type < 0 || type > 12 ||
-            !C.captain_of || !C.captain_of(from)) return;
-        H->run_outside_frame(apply_hit, new ActorHitTask{id, event, from, actor_id, damage, type});
+            !p || skg::field<int>(p, 0xB8) < 0 || skg::field<int>(p, 0xB8) >= 8 || !C.captain_of || !C.captain_of(from)) return;
+        g_admitted_hit[from] = event;
+        queue_world_task(ActorHitTask{id, event, from, uint8_t(skg::field<int>(p, 0xB8)), actor_id, damage, type});
     }
 }
 
@@ -1757,6 +1971,7 @@ bool source(void* victim, void* attacker, int type, ga::Source& out)
 
 bool damage_filter(void* victim, float& damage, int type, void* attacker)
 {
+    if (g_visual_animation) return false;
     if (C.explosive_visual && C.explosive_visual()) return false;
     if(active() && C.held && C.held()) return false;
     if (active() && C.explosive_environment && C.explosive_environment()) return true;
@@ -1797,13 +2012,15 @@ bool damage_filter(void* victim, float& damage, int type, void* attacker)
     return false; // local native scenario actors remain, but only host hits change their health
 }
 
-bool update_filter(void* creature)
+bool npc_ai_filter(void* creature)
 {
     if (!guest() || g_applying || owner(creature) != ga::kNoPlayer) return true;
     skg::ReadOnlyMemoryScope memory;
     uint32_t marker;
     if (!marker_of(creature, marker)) return true;
-    // Native death cleanup still advances after a host kill; live guest actors do not run AI.
+    // Only the NPC brain is filtered. The enclosing native creature Update must
+    // still refresh its rendered transform, animation and combatant state.
+    // Native death cleanup remains available after an authoritative host kill.
     void* combatant = game::cast(creature, kCombatant);
     return combatant && skg::field<float>(combatant, 0x38) <= 0;
 }
@@ -1864,6 +2081,9 @@ void apply_result(bool success)
 static void reset_replication()
 {
     g_run = 0; g_sequence = g_goal_sequence = g_received_goals = 0;
+    g_pending_world_tasks.clear(); ++g_world_task_generation; g_world_task_queued = g_world_task_overflow = false;
+    g_admitted_hit.clear();
+    g_pending_social.clear(); ++g_social_generation; g_social_queued = g_social_overflow = false;
     g_deferred_goals.reset();
     ++g_goal_generation; g_goal_work_run = 0; g_goal_apply_queued = g_goal_apply_active = false;
     g_native.clear(); g_remote.clear(); g_bindings.clear(); g_health_baselines.clear(); g_last_hit.clear(); g_last_captain_hit.clear();
@@ -1877,6 +2097,10 @@ static void reset_replication()
     g_attachments.clear(); g_attachment_sent.clear(); g_attachment_revision=0; g_attachment_act=-1;
     g_attached_spatials.clear(); g_flying.clear(); g_item_throws=g_item_catches=g_item_gives=0;
     g_attachment_assemblies={}; g_attachment_pending={}; g_attachment_received={};
+    g_host_animations.clear(); g_animation_sent.clear(); g_pending_animations = {};
+    g_animation_sequence = g_animation_received = 0; g_animation_act = -1;
+    g_animations_sent = g_animations_received = g_animations_played = g_animations_expired = 0;
+    g_visual_animation = false;
     std::fill(std::begin(g_last_throw),std::end(g_last_throw),0);
     g_spawn_attempt.clear(); g_world_error.clear();
     g_goal_hud_dirty = false; g_goal_hud_refreshes = 0;
@@ -1906,6 +2130,7 @@ void peer_changed(uint8_t player)
     g_static_sent.erase(player);
     g_static_cursor.erase(player);
     g_attachment_sent.erase(player);
+    g_animation_sent.erase(player);
 }
 
 void tick(double now)
@@ -1915,9 +2140,13 @@ void tick(double now)
     if (run() != g_run) { reset_replication(); g_run = run(); }
     if (!play()) return;
     flush_deferred_goals();
+    flush_world_tasks();
     if (host()) {
+        flush_social_completions();
         enumerate();
-        if (now - g_last_send >= 0.1) { g_last_send = now; send_actors(); send_attachments(skg::field<int>(play(),0xB8)); }
+        if (now - g_last_send >= 0.1) {
+            g_last_send = now; send_actors(); send_attachments(skg::field<int>(play(),0xB8)); send_animations(now);
+        }
         if (now - g_last_goals >= 0.5) { g_last_goals = now; send_goals(); send_roster(); }
         if(!g_flying.empty() && !g_catch_queued) {
             g_catch_queued=true;
@@ -1944,6 +2173,7 @@ void tick(double now)
                 if(carrying && !(C.held && C.held())) for(const auto& actor:g_native)
                     if(game::cast(actor.object,kCreature)) adventure_world_actions::poll_receive(actor.object);
             }
+            apply_animations(task->second);
         }, task);
     }
 }
@@ -2009,7 +2239,7 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
         vehicles.active = actions.active; vehicles.host = host; vehicles.run = run;
         vehicles.paused=C.held;
         vehicles.is_mirrored = [](void* object) {
-            if (update_filter(object)) return false;
+            if (npc_ai_filter(object)) return false;
             for (const auto& [id, binding] : g_bindings) if (binding.object == object) return true;
             return false;
         };
@@ -2108,6 +2338,14 @@ std::string status(bool verbose)
         " deferred=" + std::to_string(g_replication_stats.deferred) + "\n";
     summary += "native goal HUD: refreshes=" + std::to_string(g_goal_hud_refreshes) +
                " pending=" + std::to_string(g_goal_hud_dirty ? 1 : 0) + "\n";
+    auto creature_updates = game::creature_update_counts();
+    summary += "native creature updates: total=" + std::to_string(creature_updates.native) +
+               " npc_ai_suppressed=" + std::to_string(creature_updates.npc_ai_suppressed) + "\n";
+    size_t animation_pending = 0;
+    for (const auto& pending : g_pending_animations) animation_pending += pending.size();
+    summary += "npc animations: sent=" + std::to_string(g_animations_sent) +
+        " received=" + std::to_string(g_animations_received) + " played=" + std::to_string(g_animations_played) +
+        " expired=" + std::to_string(g_animations_expired) + " queued=" + std::to_string(animation_pending) + "\n";
     summary += "native result: run=" + std::to_string(g_native_result.run) +
                " committed=" + std::to_string(g_native_result.committed ? 1 : 0) +
                " applied=" + std::to_string(g_native_result.applied) + "\n";

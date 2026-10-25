@@ -251,10 +251,10 @@ static void test_revive_interruptions()
     CHECK(a.captain(1)->reviver == kNoPlayer);
     CHECK(a.revive(1, 0, 1, true));
     CHECK(a.tick(1, 4.99) && a.captain(1)->life == Life::Downed);
-    CHECK(a.position(1, 0, {3.01f, 0, 0})); // more than 2 m away
+    CHECK(a.position(1, 0, {7.01f, 0, 0})); // more than 6 m away
     CHECK(a.captain(1)->reviver == kNoPlayer);
     CHECK(!a.revive(1, 0, 1, true));
-    CHECK(a.position(1, 0, {3, 0, 0})); // exactly 2 m is accepted
+    CHECK(a.position(1, 0, {7, 0, 0})); // exactly 6 m is accepted
     CHECK(a.revive(1, 0, 1, true));
     CHECK(a.revive(1, 0, 1, false));
     CHECK(a.tick(1, 10) && a.captain(1)->life == Life::Downed);
@@ -436,6 +436,28 @@ static void test_proximity_alone_starts_revive()
     CHECK(interrupted.tick(1, 5) && interrupted.captain(1)->life == Life::Alive);
 }
 
+static void test_six_metre_revive_boundary()
+{
+    for (float distance : {5.5f, 6.f, 6.01f}) {
+        auto a = authority();
+        CHECK(a.damage(1, 1, 1, enemy(), 100) == 100);
+        const auto target = a.captain(1)->position;
+        CHECK(a.position(1, 0, {target.x + distance, target.y, target.z}));
+        CHECK(a.tick(1, 0));
+        CHECK((a.captain(1)->reviver == 0) == (distance <= 6.f));
+        CHECK(a.tick(1, 3));
+        CHECK((a.captain(1)->life == Life::Alive) == (distance <= 6.f));
+    }
+    auto a = authority();
+    CHECK(a.damage(1, 1, 1, enemy(), 100) == 100);
+    CHECK(a.position(1, 0, {6.5f, 0, 0}));
+    CHECK(a.tick(1, 0) && a.captain(1)->reviver == 0);
+    CHECK(a.tick(1, 2));
+    CHECK(a.position(1, 0, {7.01f, 0, 0}));
+    CHECK(a.captain(1)->reviver == kNoPlayer);
+    CHECK(a.tick(1, 10) && a.captain(1)->life == Life::Downed);
+}
+
 static void test_invalid_start_is_transactional()
 {
     Authority a;
@@ -494,6 +516,7 @@ int main()
     test_result_reward_eligibility();
     test_friendly_fire_revive_and_persistent_sources();
     test_proximity_alone_starts_revive();
+    test_six_metre_revive_boundary();
     test_invalid_start_is_transactional();
     std::printf("adventure rules: %s (%d failures)\n", failures ? "FAILED" : "passed", failures);
     return failures ? 1 : 0;

@@ -1260,3 +1260,278 @@ Portable layout/flow tests and native acceptance are distinct. Record actual
 screenshots, input checks, cancellation/retry, clock holds and device-reset
 results in the preview's validation report rather than inferring them from
 rectangle or countdown unit tests.
+
+## Guest creature presentation and NPC clips (dc04, preview 9)
+
+The preview 8 ownership filter rejected the complete living guest
+`cCreatureAnimal::Update=C0AE30`. Updating a creature's spatial position alone
+does not refresh its animated model. In the native Crystal Mine baseline,
+same-incarnation host/guest spatial positions matched while guest rendered
+models were about 45 and 95 metres from those positions. Native model root
+motion also creates smaller legitimate offsets on the host, so fixed acceptance
+compares against that control rather than requiring every model origin to equal
+its spatial position exactly. The read-only model chain is creature `+B54` to
+AnimatedCreature, then `+180` to its model and model translation `+C`.
+
+Preserve the enclosing native creature Update and filter only the existing
+verified `NPCTickAI=C09570` hook. Its float argument is passed by Update at
+`C0AF63`; Update's later native presentation/maintenance dispatch remains intact.
+This is necessary but was insufficient in native candidate 2: Update and clip
+replay counters advanced while the animation root and model stayed behind.
+Mirrored creatures also require the combined native pose operation described
+below; separate spatial setters do not publish the root-pose change.
+The host, party captains, ordinary solo play and native death cleanup keep their
+previous AI behavior. Core puppet suppression still runs first. The explicit
+filter is installed and cleared with the mod. Diagnostics distinguish actual
+native Update calls from suppressed NPC-brain dispatches; pure filter queries
+do not increment either count. The core Win32 fixture reproduces a stale visual
+pose with the former broad filter, then advances presentation through successive
+replicated poses with the NPC brain still fenced.
+
+The existing animation listener previously forwarded only the local avatar.
+World message 139 now carries host NPC visual clip requests: run, act, serial, shared
+simulation time, exact marker/incarnation, clip ID, block and blend/target
+provenance. The host coalesces the newest clip per actor, sends at most two
+12-event batches per peer per 100-ms actor tick, and adds nothing when that
+peer already has 64 reliable messages pending. Captures expire after two wall
+seconds; sorted global serials prevent duplicate or older playback without an
+unbounded incarnation-history map. The guest retains at most 2,048 coalesced
+events per bounded act and applies at most 32 per outside-frame pass, after
+normal binding/reconstruction. Changed runs/acts, replaced incarnations,
+unbound/dead actors, scene holds and stale timestamps cannot replay a clip onto
+an unrelated live actor.
+
+Replay uses the existing verified `PlayAnimation=C12470`, thiscall
+`(creature, animationID, block, disableBlend)`, `ret0C`. Its native body selects
+the animation resource and dispatches into AnimatedCreature clip/channel setup;
+it does not issue an ability or attack order. Targeted-call provenance is
+retained, but replay selects the visual clip rather than reconstructing an
+ability target, so targeted aiming is approximate. The existing listener runs
+before the native call, and native failure may return zero; whether a valid
+AnimIndex zero is possible has not been established. Events therefore represent
+observed host requests rather than proven successful clip handles. The guest's
+normal native clip lookup still decides whether its matching model can play
+them. The existing wrapper suppresses listener echo. A separate
+visual guard rejects incidental damage callbacks before guest hit forwarding;
+the broad `g_applying` gameplay bypass is deliberately absent. Native NPC damage
+and decisions remain host-owned. This is clip presentation, not arbitrary
+ability, projectile or gameplay-callback replication. Static actor transforms
+and the existing dynamic actor cadence are unchanged.
+
+The actual world fixture covers accepted clips, duplicate/nonhost/old-run and
+old-act packets, delayed bindings, replaced incarnations, shared-time expiry,
+coalescing, congestion, pause holds and incidental visual damage rejection.
+Native fixed-build motion, combat and added clip traffic are separate acceptance
+checks recorded in the preview validation report.
+
+## Creature spatial pose to animation root (dc04, preview 9)
+
+The installed animal constructor at `C06996` assigns spatial vtable `1469EC0`
+to creature `+C0`. Its separate position/orientation setters update the spatial
+subobject and the public AnimatedCreature pose, but do not set the native
+root-pose dirty flag. Ordinary animation processing can consequently put the
+old animation-root coordinates back into the spatial object. Asynchronous
+spatial reads can alternate between that old root and the replicated pose while
+the rendered model remains at the old location.
+
+| Native path | Verified installed behavior |
+| --- | --- |
+| Spatial vtable `+38`, `C0DEA0` | `thiscall(spatial, Vec3*)`, `ret4` at `C0DECB`; calls `C88800`, then copies position to spatial `+A94`'s AnimatedCreature `+4`. |
+| Spatial vtable `+3C`, `C0DF10` | `thiscall(spatial, Quaternion*)`, `ret4` at `C0DF85`; calls `C88860`, then updates the AnimatedCreature orientation. |
+| Spatial vtable `+44`, `C0C040` | `thiscall(spatial, Vec3*, Quaternion*)`, `ret8` at `C0C05C`; calls combined base setter `C888D0`, then sets spatial `+A9D`, which is creature `+B5D`. |
+| Graphics consumer at `E8C315` | Tests creature `+B5D`; when set, calls `A04710(animated, true)`, clears the flag and creature `+330`. This is an internal call site, not a new callable entry. |
+| Animation pose refresh `A04710` | Passes AnimatedCreature `+4`/`+10` to core synchronization `9B39F0`/`9B37F0`, then reaches model refresh `A04570`. |
+| Model refresh `A0458E`–`A045B4` | Loads AnimatedCreature `+180`, copies core `+18/+1C/+20` to model `+C/+10/+14`, and marks model Transform `+8`. `A05B60` independently confirms the model pointer, flags and retained reference layout. |
+
+The existing `game::teleport` uses this same two-argument spatial vtable `+44`
+operation for captains. Replication now uses it for creature poses, retaining
+the native combined-operation side effects and the existing attachment skip.
+Other actor types retain their existing setters. There is no direct write to a
+render model, animation core or dirty flag, and no call to an internal graphics
+consumer. NPC AI authority remains fenced at `NPCTickAI`.
+
+Native candidate 2 (`778a729c5aaea28afb114fdd82b5b3be98968384d31f514ef72be5cff797865b`)
+provided a controlled one-NPC check in the real Maxis Crystal Mine. The fixture
+passed guest NPC 105's current unmodified spatial pose through its actual
+vtable `+44`, whose target resolved to preferred address `C0C040`. The immediate
+sample had dirty flag 1 with a 71.39-metre model/root mismatch. After one
+rendered frame the engine cleared the flag and aligned the animation core,
+model and replicated spatial pose; subsequent frame checks retained zero
+measured mismatch. Untreated NPC 104's model remained at its old coordinates.
+The fixture wrote only disposable argument memory and invoked the reviewed
+native operation; no model/core/flag field was patched. Both games logged zero
+exceptions and returned to native menus afterward.
+
+Evidence: `out/lab/preview9-mine-candidate2-vt44-probe/result.json`, before/after
+screenshots and command logs; static installed disassembly is under
+`out/lab/preview9-mine-identity/`. The preceding 25-second candidate-2 trace still
+failed full model coherence despite receiving/playing 116 host clip requests;
+it must not be reported as a corrected-build pass. A fresh corrected-build
+trace, actual animation/health/objective observations and visual inspection are
+required separately.
+
+The subsequent corrected candidate-3 trace, loaded on both recorded lab clients
+as SHA-256 `e3c2da964abd2908d2836c3258593413597472812f1a964a192adc7aae366d83`,
+passed those targeted creature checks over 25 seconds of real Crystal Mine AI.
+Its asynchronous within-client spatial/model error p95 was 1.670 metres on the
+guest and 0.609 metres on the native host control, compared with 212.285 metres
+on candidate 2. Thirteen measured moving incarnation histories, including later
+spawns, now showed guest model movement following the spatial motion instead of
+remaining at old authored positions. Actual guest native Update advanced by
+12,105 calls while 10,208 NPC-brain dispatches were suppressed; 119 host visual
+clip requests were sent, received and played. The native generator fell from
+3,000 to 2,976.1499 HP on both clients and both native Kill counters advanced
+from zero to nine. Inspection of paired frame-11 screenshots showed the real
+defenders and hounds fighting in corresponding locations. Neither client logged
+an exception.
+
+This is targeted creature presentation and naturally occurring combat evidence,
+not complete combat or adventure coverage. Ordinary host W input did not meet
+the separate moving-host/stationary-guest prerequisite because captains still
+overlapped at spawn; model/root coherence does not depend on that condition.
+A subsequent ordinary guest body-click/ability attempt was inconclusive because
+the defended generator was naturally destroyed during input, entering native
+failure at simulation 213.666 seconds. Terminal cleanup changes to a target's
+HP cannot establish an accepted attack. Vehicle model-root parity was not
+measured by the creature reader. Evidence is under
+`out/lab/preview9-mine-candidate3-trace/` and
+`out/lab/preview9-mine-candidate3-guest-attack/`; the pair returned to clean native
+menus afterward in `out/lab/preview9-mine-candidate3-handoff/`.
+
+A cold-start ten-second smoke on the final candidate-4 DLL
+`cb1c3f36138ef6a58f187cbbac07f15d213c874b9ab0796b55b1f42a7a884c48`
+also passed, with 20 moving NPC incarnation histories. Guest model/spatial error
+p95 was 1.670 metres versus 0.473 metres on the host, and rendered models followed
+41–114 metres of spatial travel. Guest native Update advanced by 4,950 calls,
+with 4,500 NPC-brain dispatches suppressed; 46 clip requests were sent, received
+and played. Unlike the earlier overlapping-spawn trace, the host moved 81.72
+metres under ordinary W input while the idle guest drifted 0.661 metres, exceeding
+the fixture's strict 0.2-metre stationary threshold. This short smoke ended before
+any kills or generator damage; the combat deltas above belong to candidate 3.
+Both final loaded shadow hashes and native frames are retained in
+`out/lab/preview9-mine-final/`. The active real wave was handed directly to the
+separate final pause fixture.
+
+### Ordinary guest attack fixture entry checks
+
+The test-only `coop_adventure_guest_attack.py` uses the existing verified
+`IsHostileToCreature=C0B9C0` and `CreatureTarget=C0EFD0` getters to establish
+native hostility and that an ordinary body click selected the intended creature.
+Both entries remain covered by `verify_dc04.py`; no new production entry is
+introduced. Owner placement and read-only camera/health/identity observations
+reuse the previously reviewed fixture interfaces.
+
+The upstream `Simulator::cCreatureGameData::GetAbilityMode` at `D2E490` was
+independently checked in the installed dc04 executable. Its complete getter is
+`A1 94 E3 69 01 C3`: `mov eax,[0169E394]; ret` at `D2E495`, so the ABI is
+`cdecl()->int` with no stack arguments. Native stance values are zero for social
+and one for combat. The `0169F374` global recorded in older creature notes belongs
+to another executable build; it is not the dc04 address.
+
+Before invoking these three getters, the fixture checks their live entry bytes.
+The stance getter's absolute data operand is adjusted by the executable's ASLR
+delta; the other two prefixes retain their relative-call bytes. This is a
+test-only check in addition to live PID/executable-hash validation. Unnecessary
+ability-vector virtual calls and ability-definition field reads were removed.
+The fixture invokes no attack or damage function: attack input remains a normal
+native mouse click and key 1, and a passive loopback proxy distinguishes unique
+native Hit events from reliable retransmissions and captain callbacks. Static
+getter assembly and a fresh 163-function/four-global verification report are in
+`out/lab/preview9-guest-attack-entry-verification/`. This entry audit does not
+itself establish native attack acceptance.
+
+The single bounded final-candidate-7 attempt loaded SHA-256
+`b939580707f00867b823f01d0ab3f06dde8384c38213074d2bf8504a38d5d3e2`
+on both lab clients and passed those live entry-byte checks. It stopped before
+target-click/key1: after normal camera/stance settling the naturally moving
+Crystal Hound was 15.802 metres from the staged captain, outside the fixture's
+10-metre guard. The exact marker-7/incarnation-7162 target still had 33 HP on both
+clients, but no ordinary guest-hit acceptance can be inferred. The result is
+explicitly inconclusive in `out/lab/preview9-guest-attack-final/`. Cancellation
+restored both native galaxy menus with no faults, and the lab was closed before
+installation; no broader native combat pass is claimed.
+
+## Delayed captain health across unanimous pause (preview 9)
+
+A validated guest environmental hit can arrive after the host has entered a
+unanimous menu pause. The guest may have emitted it while only its own menu was
+open and the host simulation was still running. The world receiver already
+deduplicates hit serials, but its captain damage/heal callback reaches the
+coordinator directly, so the native actor-update pause fence alone cannot stop
+that delayed callback from changing captain health.
+
+The coordinator now admits validated captain damage and healing into one
+run-scoped FIFO while its aggregate pause predicate is true. New callbacks also
+join an existing queue after resume, preserving their admission order. Shield
+reduction is evaluated once at admission, and retained authority event IDs are
+applied once after resume, at most 64 entries per coordinator tick. Snapshots
+and downing remain unchanged until that application. The queue is capped at
+256 entries; overflow cancels the attempt with a synchronization diagnostic
+rather than silently dropping an accepted hit. Cancellation, reset, preparation
+replacement and terminal results clear it; leaving players remove queued events
+whose victim or captain source has departed.
+
+The real-session coordinator fixture covers delayed damage and healing while
+paused, exact-once resume, one-time shield reduction, deferred lethal downing,
+disconnect pruning, cancellation/reset/retry and bounded overflow recovery.
+The actual world receiver fixture separately checks that duplicate delayed hit
+and heal messages invoke the source API only once, and rejects an old-run
+message. These are deterministic fixture results; fresh native pause and
+combat acceptance remains separately recorded in the validation report.
+
+## Delayed social completion across a shared hold (preview 9)
+
+A genuine guest Befriend/Ally completion can already be reliable or queued when
+the final player opens a pause menu. Its former per-message native callback
+checked captain life and target eligibility but did not recheck the shared hold,
+so it could change native relationships and count an authored goal while paused.
+
+Social completions now enter one run-scoped FIFO with one generation-checked
+outside-frame drain. The drain checks the hold again before each action and
+retains accepted work until Resume. Repeated pending completions for the same
+sender, act, type and exact target identity coalesce; Befriend followed by Ally
+retains its order. After Resume, the existing native path rechecks run, act,
+captain life, target incarnation, health, proximity and social/recruitment
+eligibility before any relationship or objective callback. Reset/cancellation
+clears retained work and invalidates an already queued drain. Processing is
+limited to 32 actions per pass and retention to 256 entries; overflow cancels
+with an explicit social-synchronization diagnostic rather than dropping an
+acknowledged valid action silently.
+
+The actual-world Win32 fixture covers admission before the final hold, an
+already queued drain held before execution, duplicate/coalesced delivery,
+exact-once native relationship and matching-goal application after Resume,
+replaced act/run/incarnation, invalid source life, reset/discard, stale queued
+generations and bounded overflow. This is fixture evidence, separate from the
+native Mine and unanimous-pause runs in the validation report.
+
+The same queued boundary applies to guest actor hits and item pickup/drop/give/
+unlock actions. Previously an admitted hit consumed its applied serial before
+the native damage filter rejected it during a hold, and an item callback simply
+returned while held. Both paths now share a bounded 256-entry FIFO so their
+source arrival order survives a pause. Hit admission and native-application
+serials are separate, preventing duplicate reliable events from filling the
+retained queue or applying twice. The existing hit packet is unchanged: its
+current native act is captured at admission, and its host actor incarnation is
+rechecked after Resume. Item packets retain their transmitted act and exact
+item/recipient identities. Host-approved item changes on guests use the same
+retention boundary. Every action rechecks current run/act and native ownership
+or hit eligibility before applying; reset generations invalidate old drains.
+Give's recent-drop window is evaluated at admission time so a long shared hold
+cannot expire an otherwise valid queued handoff; ownership remains revalidated.
+Ordinary item Throw tasks use this same ordered drain and admission-time check
+for their existing two-second dropped-item window. Resume preserves the native
+impulse vector/add flag, thrower attribution and half-second pair grace; native
+timed-bomb/contact-grenade paths and fuse behavior are unchanged.
+Processing is bounded to 32 tasks per pass, and overflow cancels explicitly.
+
+The Win32 mirror fixture runs the real world damage filter in its native hit
+stub, reproducing why a held native call would reject an already admitted hit.
+It covers queued-before-hold and received-during-hold hit/item work, duplicate
+admission, pickup-hit-drop-hit ordering, exact-once Resume, approved guest
+ownership retention, recent-drop Give freshness across a long hold,
+queued Drop-Throw order, long-hold Throw freshness, native impulse/grace ABI and
+reset/discard without a throw,
+stale act/run/incarnation/source-life rejection,
+cancellation, replacement drain generations and bounded overflow. The native
+Mine combat observations remain a separate integration result.

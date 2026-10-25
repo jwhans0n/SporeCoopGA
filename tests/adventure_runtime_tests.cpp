@@ -667,6 +667,67 @@ int main()
         adventure::reset();drain();
     }
 
+    // A guest's environmental hit/heal can cross the final player's Pause in
+    // the opposite direction. Source API admission must not mutate health or
+    // life until Resume, and must retain the original arrival order.
+    double health_clock = 600;
+    auto health_run = [&] {
+        adventure::reset(); drain(); paused = false; loaded = true;
+        native_release_queued = native_settling = native_goals_pending = false;
+        shield_divisor = 1; ctx.sess = &host; ctx.reuse_captain = {};
+        ctx.choose_captain = [](const dbpf::Key&, auto selected) { selected({440,10,20}); };
+        CHECK(adventure::init(&api, nullptr, ctx));
+        ga::Difficulty settings; settings.death_mode = ga::DeathMode::AutomaticRevive;
+        CHECK(adventure::set_settings(settings)); CHECK(adventure::request_play(key)); drain();
+        const auto descriptor = *adventure::current();
+        for (uint8_t id : descriptor.roster) if (id) acknowledge(descriptor,id);
+        CHECK(adventure::set_ready(true)); adventure::tick(++health_clock); drain();
+        adventure::tick(++health_clock); drain();
+        for (uint8_t id : descriptor.roster) if (id) acknowledge_loaded(descriptor,id);
+        adventure::tick(++health_clock); drain(); CHECK(adventure::running());
+    };
+    const ga::Source environment{ga::SourceKind::Environment,ga::kNoPlayer};
+    health_run(); paused = true; shield_divisor = 2;
+    auto shield_before = shield_calls;
+    CHECK(adventure::captain_damage(1,environment,20)); CHECK(adventure::captain_heal(1,5));
+    CHECK(adventure::captain_state(1,state) && state.captain.health == 100 && state.captain.life == ga::Life::Alive);
+    shield_divisor = 4; adventure::tick(++health_clock); drain();
+    CHECK(adventure::captain_state(1,state) && state.captain.health == 100 && shield_calls == shield_before + 1);
+    paused = false; adventure::tick(++health_clock); drain();
+    CHECK(adventure::captain_state(1,state) && state.captain.health == 95 && shield_calls == shield_before + 1);
+    adventure::tick(++health_clock); drain();
+    CHECK(adventure::captain_state(1,state) && state.captain.health == 95); // exact-once drain
+    shield_divisor = 1; CHECK(adventure::captain_heal(1,100)); drain(); paused = true;
+    CHECK(adventure::captain_damage(1,environment,100)); adventure::tick(++health_clock); drain();
+    CHECK(adventure::captain_state(1,state) && state.captain.health == 100 && state.captain.life == ga::Life::Alive);
+    paused = false; adventure::tick(++health_clock); drain();
+    CHECK(adventure::captain_state(1,state) && state.captain.life == ga::Life::Downed && state.captain.health == 0);
+
+    health_run(); paused = true;
+    CHECK(adventure::captain_damage(1,environment,100)); CHECK(adventure::captain_heal(1,100));
+    CHECK(adventure::captain_damage(0,{ga::SourceKind::Captain,1},100));
+    adventure::on_leave(1); drain(); paused = false; adventure::tick(++health_clock); drain();
+    CHECK(adventure::captain_state(1,state) && state.captain.life == ga::Life::Disconnected);
+    CHECK(adventure::captain_state(0,state) && state.captain.health == 100); // disconnected source/recipient removed
+
+    health_run(); paused = true; CHECK(adventure::captain_damage(0,environment,100));
+    CHECK(adventure::cancel("cancel held health")); drain(); paused = false;
+    adventure::tick(++health_clock); drain(); CHECK(!adventure::active());
+    health_run(); adventure::tick(++health_clock); drain();
+    CHECK(adventure::captain_state(0,state) && state.captain.health == 100); // cancelled attempt cannot affect retry
+    paused = true; CHECK(adventure::captain_damage(0,environment,100)); adventure::reset(); drain();
+    health_run(); adventure::tick(++health_clock); drain();
+    CHECK(adventure::captain_state(0,state) && state.captain.health == 100); // reset invalidates held work
+
+    paused = true;
+    for (unsigned i = 0; i < 256; ++i) CHECK(adventure::captain_damage(0,environment,1));
+    CHECK(adventure::running() && adventure::captain_state(0,state) && state.captain.health == 100);
+    CHECK(!adventure::captain_damage(0,environment,1)); drain();
+    CHECK(!adventure::active() && adventure::status().find("health synchronization") != std::string::npos);
+    health_run(); adventure::tick(++health_clock); drain();
+    CHECK(adventure::captain_state(0,state) && state.captain.health == 100);
+    adventure::reset(); drain();
+
     guest.leave(); guest2.leave(); host.leave();
     std::printf("adventure coordinator: %s (%d failures)\n", failures ? "FAILED" : "passed", failures);
     return failures ? 1 : 0;

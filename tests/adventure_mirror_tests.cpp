@@ -23,6 +23,8 @@ struct Object {
     uint32_t noun;
     bool has_combatant = false, is_creature = false;
     bool is_vehicle = false, is_building = false, is_ornament = false, is_interactive = false;
+    bool model_dirty = false;
+    net::Vec3 model_position{};
 };
 std::vector<std::unique_ptr<Object>> objects;
 std::array<uint8_t, 0xD0> fake_mode{}, fake_data{};
@@ -36,6 +38,7 @@ uint8_t* mode_pointer = fake_mode.data();
 void* spatial_vtable[48]{};
 void* combatant_vtable[24]{};
 unsigned pose_sets;
+unsigned transform_sets;
 unsigned creates;
 int failures;
 unsigned native_terminals, native_other_states;
@@ -46,8 +49,18 @@ unsigned relation_calls;
 unsigned hud_calls;
 uint32_t expected_hud_count = 1;
 unsigned native_befriends, native_allies, relationship_events, recruit_calls;
+unsigned npc_clips;
+uint32_t last_npc_clip;
+int last_npc_block;
+bool last_npc_blend;
 unsigned captured_party_queries;
 unsigned item_picks, item_drops;
+unsigned native_actor_hits;
+unsigned native_throw_impulses, native_throw_graces, native_throw_sources;
+net::Vec3 native_throw_vector;
+bool native_throw_add;
+bool capture_world_actions;
+std::vector<char> world_action_order;
 bool item_receive_allowed = true;
 bool capture_party_query;
 void* expected_party_actor;
@@ -72,6 +85,17 @@ void* create(uint32_t marker, uint32_t noun)
 }
 void SK_THISCALL position(void* spatial, const net::Vec3* p) { ++pose_sets; field<net::Vec3>(spatial, 4) = *p; }
 void SK_THISCALL orientation(void* spatial, const net::Quat* q) { field<net::Quat>(spatial, 0x10) = *q; }
+void SK_THISCALL transform(void* spatial, const net::Vec3* p, const net::Quat* q)
+{
+    ++transform_sets; position(spatial,p); orientation(spatial,q);
+    for (auto& object : objects) if (object->spatial.data() == spatial) object->model_dirty = true;
+}
+void render_models()
+{
+    for (auto& object : objects) if (object->model_dirty) {
+        object->model_position = field<net::Vec3>(object->spatial.data(),4); object->model_dirty = false;
+    }
+}
 void* SK_THISCALL spatial_game_data(void* spatial,uint32_t type)
 {
     if(type!=0x017F243B) return nullptr;
@@ -89,12 +113,39 @@ bool SK_THISCALL item_pick(void* holder,void* spatial,int index,bool)
 {
     auto* first=field<uint8_t*>(holder,0xE40); auto* last=field<uint8_t*>(holder,0xE44);
     if(index<0 || first+index*0x24>=last) return false;
-    field<void*>(first+index*0x24,0x20)=spatial; ++item_picks; return true;
+    field<void*>(first+index*0x24,0x20)=spatial; ++item_picks;
+    if(capture_world_actions) world_action_order.push_back('P');
+    return true;
 }
 bool SK_THISCALL item_drop(void* holder,void* spatial,int,bool)
 {
     int index=adventure_world::item_slot(holder,spatial,false); if(index<0) return false;
-    field<void*>(field<uint8_t*>(holder,0xE40)+index*0x24,0x20)=nullptr; ++item_drops; return true;
+    field<void*>(field<uint8_t*>(holder,0xE40)+index*0x24,0x20)=nullptr; ++item_drops;
+    if(capture_world_actions) world_action_order.push_back('D');
+    return true;
+}
+int SK_THISCALL native_actor_damage(void* combatant,float amount,uint32_t,int type,const net::Vec3*,void*)
+{
+    void* target = nullptr;
+    for(auto& object:objects) if(object->combatant.data()==combatant) target=object->bytes.data();
+    // Match the real hook's hold check: invoking native damage while paused
+    // would reject it, even if a caller had already consumed its event serial.
+    if(!adventure_world::damage_filter(target,amount,type,nullptr)) return 0;
+    field<float>(combatant,0x38)-=amount; ++native_actor_hits;
+    if(capture_world_actions) world_action_order.push_back('H');
+    return 1;
+}
+void* SK_CDECL native_physics() { return &native_throw_impulses; }
+void SK_THISCALL native_throw_impulse(void* self,void*,const net::Vec3* impulse,bool add)
+{
+    check(self==&native_throw_impulses,"retained throw uses the native physics singleton as this");
+    ++native_throw_impulses; native_throw_vector=*impulse; native_throw_add=add;
+    if(capture_world_actions) world_action_order.push_back('T');
+}
+void SK_THISCALL native_throw_grace(void* self,void* captain,void* item,float seconds)
+{
+    check(self==&native_throw_impulses&&captain&&item&&seconds==.5f,"retained throw preserves native owner/item grace and its float ABI");
+    ++native_throw_graces;
 }
 float SK_THISCALL maximum_hp(void* combatant) { return field<float>(combatant, 0x30); }
 void* SK_THISCALL get_marker(void*, void*) { return nullptr; }
@@ -173,6 +224,19 @@ void* cast(void* p, uint32_t type)
 }
 void* avatar() { return nullptr; }
 uint32_t mode_id() { return 0x01654C10; }
+CreatureUpdateCounts creature_update_counts() { return {}; }
+void play_animation(void* object, uint32_t animation, int block, bool disable_blend)
+{
+    ++npc_clips; last_npc_clip = animation; last_npc_block = block; last_npc_blend = disable_blend;
+    check(!adventure_world::g_applying && adventure_world::g_visual_animation,
+          "NPC visual replay does not grant the broad gameplay-application bypass");
+    auto sequence = adventure_world::g_hit_sequence;
+    float damage = 10;
+    void* attacker = adventure_world::C.captain_of(adventure_world::C.sess->my_id());
+    check(!adventure_world::damage_filter(object, damage, 0, attacker) &&
+          adventure_world::g_hit_sequence == sequence,
+          "incidental visual damage is rejected before guest hit forwarding or HP authority");
+}
 bool object_position(void* p, net::Vec3& result)
 { auto* o = lookup(p); if (!o) return false; result = field<net::Vec3>(o->spatial.data(), 4); return true; }
 net::Quat orientation(void*) { return {0, 0, 0, 1}; }
@@ -198,7 +262,7 @@ namespace adventure_world_actions {
 bool init(const SkHost*, SkMod*, Ctx) { return true; }
 void poll_receive(void*) {}
 bool can_receive(void*,void*,bool) { return item_receive_allowed; }
-void throw_source(void*,void*) {}
+void throw_source(void*,void*) { ++native_throw_sources; }
 bool give(void*, void*, void*, std::string&, GiveResult*) { return false; }
 bool recruit(void* actor, std::string&) {
     ++recruit_calls;
@@ -608,6 +672,278 @@ static void item_replication_cases(net::Session& session,net::Session& client)
     g_flying.clear(); g_attached_spatials.clear(); enumerate();
 }
 
+static void held_world_task_cases(net::Session& session, net::Session& client, uint64_t& reported_run)
+{
+    using namespace adventure_world;
+    auto* saved_session=C.sess; auto saved_captains=C.captain_of; auto saved_can_act=C.captain_can_act;
+    auto saved_held=C.held; auto saved_failure=C.interaction_failed; auto saved_pick=o_Pick; auto saved_drop=o_Drop;
+    auto saved_damage=combatant_vtable[0x18/4];
+    auto saved_physics=a_Physics,saved_impulse=a_Impulse,saved_grace=a_ThrowGrace;
+    auto saved_bounds=spatial_vtable[0x6C/4];
+    int saved_act=field<int>(fake_play.data(),0xB8);
+    void* a=create(0,101); void* b=create(0,101); void* target=create(1,102); void* item=create(2,101);
+    lookup(target)->has_combatant=true; field<float>(lookup(target)->combatant.data(),0x38)=100;
+    std::array<uint8_t,0x24> slot{};
+    field<void*>(b,0xE40)=slot.data(); field<void*>(b,0xE44)=slot.data()+slot.size();
+    bool held=false, eligible=true;
+    C.sess=&session; C.captain_of=[&](uint8_t player) {return player==0?a:player==1?b:nullptr;};
+    C.captain_can_act=[&](uint8_t player) {return player<2 && eligible;}; C.held=[&] {return held;};
+    o_Pick=item_pick; o_Drop=item_drop; combatant_vtable[0x18/4]=reinterpret_cast<void*>(&native_actor_damage);
+    a_Physics=reinterpret_cast<uintptr_t>(&native_physics); a_Impulse=reinterpret_cast<uintptr_t>(&native_throw_impulse);
+    a_ThrowGrace=reinterpret_cast<uintptr_t>(&native_throw_grace); spatial_vtable[0x6C/4]=reinterpret_cast<void*>(&bounds);
+    reset_replication(); g_run=reported_run; field<int>(fake_play.data(),0xB8)=0; enumerate();
+    Identity target_id{},item_id{}; check(identity(target,target_id)&&identity(item,item_id),"pending world fixture has exact native identities");
+    auto receive=[&](const net::Writer& packet,uint8_t from=1) {
+        net::Reader reader(packet.data.data(),packet.size()); on_message(from,reader);
+    };
+    auto hit_packet=[&](uint64_t event,uint64_t scope=0) {
+        net::Writer w; w.u8(Hit); put_run(w,scope?scope:reported_run); put_run(w,event); write_identity(w,target_id); w.f32(5); w.u32(0); return w;
+    };
+    auto item_packet=[&](uint64_t event,uint8_t action,uint8_t act=0) {
+        net::Writer w; w.u8(Interaction); put_run(w,reported_run); put_run(w,event);
+        w.u8(act); w.u8(action); w.u8(1); write_identity(w,item_id); write_identity(w,{}); return w;
+    };
+    auto throw_packet=[&](uint64_t event,uint8_t act=0) {
+        net::Writer w; w.u8(ItemThrow); put_run(w,reported_run); put_run(w,event); w.u8(act); w.u8(1); write_identity(w,item_id);
+        w.f32(7); w.f32(8); w.f32(9); w.u8(1); return w;
+    };
+    capture_world_actions=true; world_action_order.clear();
+    unsigned hits_before=native_actor_hits,picks_before=item_picks,drops_before=item_drops;
+    receive(item_packet(1,PickUp)); receive(hit_packet(1)); receive(item_packet(2,Drop));
+    check(queued.size()==1&&g_pending_world_tasks.size()==3,"one ordered drain owns queued hits and item actions");
+    held=true; drain(); receive(hit_packet(1)); receive(item_packet(2,Drop)); receive(hit_packet(2));
+    flush_world_tasks(); drain();
+    check(g_pending_world_tasks.size()==4&&native_actor_hits==hits_before&&item_picks==picks_before&&
+          item_drops==drops_before&&!field<void*>(slot.data(),0x20)&&field<float>(lookup(target)->combatant.data(),0x38)==100,
+          "queued-before-pause and received-during-pause actions retain exact-once work without damage or inventory changes");
+    held=false; flush_world_tasks(); drain(); flush_world_tasks(); drain();
+    check(g_pending_world_tasks.empty()&&native_actor_hits==hits_before+2&&item_picks==picks_before+1&&item_drops==drops_before+1&&
+          field<float>(lookup(target)->combatant.data(),0x38)==90&&world_action_order==std::vector<char>({'P','H','D','H'}),
+          "Resume applies native hits and ownership actions once in their original source arrival order");
+
+    // A native Give can already have dropped its item locally. A long shared
+    // hold must not expire the recent-drop eligibility it had on admission.
+    std::array<uint8_t,0x24> recipient_slot{}; lookup(target)->is_creature=true;
+    field<void*>(target,0xE40)=recipient_slot.data(); field<void*>(target,0xE44)=recipient_slot.data()+recipient_slot.size();
+    field<void*>(recipient_slot.data(),0x20)=lookup(item)->spatial.data();
+    g_dropped[item_id]={1,H->time_seconds()};
+    auto give=item_packet(3,Give); give.data.resize(give.size()-8); write_identity(give,target_id);
+    auto gives_before=g_item_gives; receive(give); held=true; drain();
+    const auto* immediate_host=H; SkHost delayed_host=*H; delayed_host.time_seconds=[] {return 100.;}; H=&delayed_host;
+    held=false; flush_world_tasks(); drain(); H=immediate_host;
+    check(g_item_gives==gives_before+1&&!g_dropped.count(item_id),
+          "held time cannot expire a previously eligible native Give while exact ownership is revalidated");
+    field<void*>(recipient_slot.data(),0x20)=nullptr; lookup(target)->is_creature=false;
+
+    // Clients retain host-approved ownership changes too, rather than ACK/drop
+    // them while their authoritative pause snapshot is still held.
+    C.sess=&client; g_bindings[item_id]={item,field<uint32_t>(item,0x24),0};
+    receive(item_packet(10,PickUp),0); receive(item_packet(11,Drop),0); held=true; drain();
+    check(g_pending_world_tasks.size()==2&&item_picks==picks_before+1&&item_drops==drops_before+1,
+          "guest holds approved ownership changes without consuming them");
+    held=false; flush_world_tasks(); drain();
+    check(g_pending_world_tasks.empty()&&item_picks==picks_before+2&&item_drops==drops_before+2,
+          "guest Resume applies host-approved pickup/drop exactly once");
+    C.sess=&session; world_action_order.clear();
+
+    // Drop and its already emitted native impulse retain source order even if
+    // the shared hold begins before either queued callback can execute.
+    field<void*>(slot.data(),0x20)=lookup(item)->spatial.data();
+    unsigned impulses_before=native_throw_impulses,graces_before=native_throw_graces,sources_before=native_throw_sources;
+    receive(item_packet(4,Drop)); receive(throw_packet(1)); held=true; drain();
+    check(g_pending_world_tasks.size()==2&&native_throw_impulses==impulses_before&&field<void*>(slot.data(),0x20),
+          "queued Drop then Throw retains both ownership and impulse during the hold");
+    H=&delayed_host; held=false; flush_world_tasks(); drain(); H=immediate_host;
+    receive(throw_packet(1)); flush_world_tasks(); drain();
+    check(world_action_order==std::vector<char>({'D','T'})&&!field<void*>(slot.data(),0x20)&&
+          native_throw_impulses==impulses_before+1&&native_throw_graces==graces_before+1&&native_throw_sources==sources_before+1&&
+          native_throw_vector.x==7&&native_throw_vector.y==8&&native_throw_vector.z==9&&native_throw_add,
+          "Resume replays one native impulse after its Drop with unchanged vector, add flag, thrower and grace");
+    g_flying.clear(); world_action_order.clear(); field<void*>(slot.data(),0x20)=lookup(item)->spatial.data();
+    receive(item_packet(5,Drop)); drain(); receive(throw_packet(2)); held=true; drain();
+    H=&delayed_host; held=false; flush_world_tasks(); drain(); H=immediate_host;
+    check(world_action_order==std::vector<char>({'D','T'})&&native_throw_impulses==impulses_before+2,
+          "a throw admitted inside the two-second drop window survives a long shared hold");
+    g_flying.clear(); world_action_order.clear(); field<void*>(slot.data(),0x20)=lookup(item)->spatial.data();
+    receive(item_packet(6,Drop)); receive(throw_packet(3)); held=true; drain();
+    reset_replication(); g_run=reported_run; held=false; flush_world_tasks(); drain();
+    check(world_action_order.empty()&&native_throw_impulses==impulses_before+2&&field<void*>(slot.data(),0x20),
+          "cancel/reset discards a retained Drop and Throw without native impulse or ownership mutation");
+    field<void*>(slot.data(),0x20)=nullptr;
+    auto stale_pair=[&](uint64_t event,uint8_t act) {
+        receive(hit_packet(event)); receive(item_packet(event,PickUp,act)); receive(throw_packet(event,act)); held=true; drain();
+    };
+    stale_pair(20,0); field<int>(fake_play.data(),0xB8)=1; held=false; flush_world_tasks(); drain();
+    stale_pair(21,1); ++field<uint32_t>(target,0x24); ++field<uint32_t>(item,0x24);
+    held=false; flush_world_tasks(); drain(); --field<uint32_t>(target,0x24); --field<uint32_t>(item,0x24);
+    stale_pair(22,1); eligible=false; held=false; flush_world_tasks(); drain(); eligible=true;
+    stale_pair(23,1); ++reported_run; held=false; flush_world_tasks(); drain(); --reported_run;
+    check(world_action_order.empty()&&field<float>(lookup(target)->combatant.data(),0x38)==90&&!field<void*>(slot.data(),0x20),
+          "Resume revalidates act, exact native incarnations, source life and run before hit, ownership or throw mutation");
+    stale_pair(24,1); reset_replication(); g_run=reported_run; held=false; flush_world_tasks(); drain();
+    check(world_action_order.empty(),"cancel/reset discards retained hits and item actions");
+    receive(hit_packet(25)); receive(item_packet(25,PickUp,1));
+    reset_replication(); g_run=reported_run;
+    receive(item_packet(26,PickUp,1)); receive(hit_packet(26)); receive(item_packet(27,Drop,1)); drain();
+    check(world_action_order==std::vector<char>({'P','H','D'})&&g_pending_world_tasks.empty(),
+          "a stale queued drain cannot consume replacement-generation hits or ownership changes");
+
+    unsigned failures_before=0; C.interaction_failed=[&](const std::string& reason) {
+        check(reason.find("gameplay synchronization")!=std::string::npos,"pending gameplay overflow names its synchronization boundary"); ++failures_before;
+    };
+    held=true; auto final_health=field<float>(lookup(target)->combatant.data(),0x38);
+    for(unsigned i=0;i<kMaxPendingWorldTasks;++i) receive(hit_packet(100+i));
+    receive(hit_packet(100));
+    check(g_pending_world_tasks.size()==kMaxPendingWorldTasks&&queued.empty(),"pending gameplay work is bounded and duplicate hit serials consume no slots");
+    receive(item_packet(1000,PickUp,1)); drain();
+    check(failures_before==1&&g_pending_world_tasks.empty()&&field<float>(lookup(target)->combatant.data(),0x38)==final_health,
+          "bounded overflow reports cancellation instead of losing an acknowledged held hit or item action silently");
+    capture_world_actions=false; world_action_order.clear(); reset_replication(); g_run=reported_run;
+    for(void* object:{a,b,target,item}) field<bool>(object,0x21)=true;
+    C.sess=saved_session; C.captain_of=saved_captains; C.captain_can_act=saved_can_act; C.held=saved_held;
+    C.interaction_failed=saved_failure; o_Pick=saved_pick; o_Drop=saved_drop; combatant_vtable[0x18/4]=saved_damage;
+    a_Physics=saved_physics; a_Impulse=saved_impulse; a_ThrowGrace=saved_grace; spatial_vtable[0x6C/4]=saved_bounds;
+    field<int>(fake_play.data(),0xB8)=saved_act; enumerate();
+}
+
+static void held_health_admission_cases(net::Session& session, uint8_t from)
+{
+    using namespace adventure_world;
+    auto* old_session = C.sess; auto old_damage = C.captain_damage; auto old_heal = C.captain_heal; auto old_held = C.held;
+    C.sess = &session; C.held = [] { return true; };
+    unsigned damage = 0, heals = 0;
+    C.captain_damage = [&](uint8_t victim,const ga::Source& source,float amount) {
+        check(victim == from && source.kind == ga::SourceKind::Environment && amount == 20,
+              "delayed environment hit retains validated recipient, attribution and magnitude at the coordinator boundary");
+        ++damage; return true;
+    };
+    C.captain_heal = [&](uint8_t victim,float amount) { check(victim == from && amount == 20,"delayed heal retains its validated recipient and magnitude"); ++heals; return true; };
+    auto deliver = [&](uint64_t serial,int type,uint64_t scoped_run = 1) {
+        net::Writer w; w.u8(CaptainHit); put_run(w,scoped_run); put_run(w,serial);
+        w.u8(from); w.u8(ga::kNoPlayer); w.f32(20); w.u32(uint32_t(type));
+        net::Reader r(w.data.data(),w.size()); on_message(from,r);
+    };
+    deliver(1,0); deliver(1,0); deliver(2,10); deliver(2,10); deliver(3,0,2);
+    check(damage == 1 && heals == 1,
+          "reliable duplicates cannot enqueue repeated environment damage/healing during a hold, and stale runs cannot enter the health boundary");
+    C.sess = old_session; C.captain_damage = old_damage; C.captain_heal = old_heal; C.held = old_held;
+}
+
+static void animation_cases(net::Session& session, net::Session& client, void* live,
+                            adventure_world::Identity id, uint64_t& reported_run)
+{
+    using namespace adventure_world;
+    int old_state = field<int>(fake_play.data(), 0x90), old_time = field<int>(fake_play.data(), 0xC0);
+    auto old_held = C.held;
+    bool held = false;
+    C.held = [&] { return held; };
+    field<int>(fake_play.data(), 0x90) = 3; field<int>(fake_play.data(), 0xC0) = 0;
+    auto message = [&](uint64_t serial, Identity target, uint8_t act = 0, uint64_t scoped_run = 1,
+                       uint32_t animation = 0x12345678, uint32_t time = 0) {
+        net::Writer w; w.u8(ActorAnimations); put_run(w, scoped_run); w.u8(act); w.u8(1);
+        put_run(w, serial); w.u32(time); write_identity(w, target); w.u32(animation); w.u32(uint32_t(-1)); w.u8(1);
+        return w;
+    };
+    auto receive = [&](const net::Writer& w, uint8_t from = 0) {
+        net::Reader r(w.data.data(), w.data.size()); on_message(from, r);
+    };
+    uint64_t serial = 1;
+    receive(message(serial, id));
+    check(npc_clips == 0 && g_pending_animations[0].size() == 1,
+          "a host visual event queues until outside-frame application");
+    apply_animations(10);
+    check(npc_clips == 1 && last_npc_clip == 0x12345678 && last_npc_block == -1 && last_npc_blend,
+          "current host animation applies once to the exact live binding with native clip arguments");
+    receive(message(serial, id)); apply_animations(10);
+    check(npc_clips == 1, "duplicate animation delivery cannot repeat a clip or its incidental callbacks");
+    unsigned received = g_animations_received;
+    receive(message(++serial, id), 1);
+    receive(message(++serial, id, 0, 2));
+    receive(message(++serial, id, 8));
+    auto malformed = message(++serial, id); malformed.data.pop_back(); receive(malformed);
+    auto bad_flags = message(++serial, id); bad_flags.data.back() = 4; receive(bad_flags);
+    check(g_animations_received == received, "nonhost, stale-run, invalid-act and truncated animation packets are rejected atomically");
+    receive(message(++serial, id, 0, 1, 100)); receive(message(++serial, id, 0, 1, 200));
+    check(g_pending_animations[0].size() == 1, "queued clips coalesce to the latest event for an actor");
+    held = true; apply_animations(10); check(npc_clips == 1, "a group hold prevents native clip advancement");
+    held = false; apply_animations(10);
+    check(npc_clips == 2 && last_npc_clip == 200, "release applies only the newest coalesced clip");
+    receive(message(++serial, id));
+    auto binding = g_bindings.extract(id); apply_animations(10);
+    check(npc_clips == 2, "an event cannot apply to an unbound native object");
+    g_bindings.insert(std::move(binding)); apply_animations(10);
+    check(npc_clips == 3, "a not-yet-bound event can apply after its exact incarnation binds");
+    receive(message(++serial, id)); ++g_bindings[id].incarnation; apply_animations(10);
+    check(npc_clips == 3, "a replaced local incarnation cannot receive an old clip");
+    --g_bindings[id].incarnation; apply_animations(13);
+    check(npc_clips == 3 && g_pending_animations[0].empty(), "an expired event is discarded instead of replaying when a replacement later becomes available");
+    Identity old_host_id{id.marker, id.incarnation ^ 0x80000000u};
+    receive(message(++serial, old_host_id)); apply_animations(10);
+    check(npc_clips == 3, "an old host incarnation cannot target a same-marker successor");
+    apply_animations(13);
+    receive(message(++serial, id)); field<int>(fake_play.data(), 0xC0) = 3001; apply_animations(10);
+    check(npc_clips == 3, "a delayed reliable event is rejected using shared simulation age");
+    field<int>(fake_play.data(), 0xC0) = 0;
+    receive(message(++serial, id, 0, 1, 300, 10000)); apply_animations(10);
+    check(npc_clips == 3, "an implausibly future-dated clip cannot advance visual state");
+    receive(message(++serial, id)); ++reported_run; apply_animations(10); --reported_run;
+    check(npc_clips == 3, "queued clips do not survive a changed run before reset dispatch");
+    g_pending_animations[0].clear();
+    receive(message(++serial, id, 1)); apply_animations(10);
+    check(npc_clips == 3 && g_pending_animations[1].size() == 1, "next-act clips wait for their native act and binding");
+    field<int>(fake_play.data(), 0xB8) = 1; g_bindings[id].act = 1;
+    receive(message(++serial, id, 0)); apply_animations(10);
+    check(npc_clips == 4, "entering the matching act applies its clip and rejects previous-act events");
+    field<int>(fake_play.data(), 0xB8) = 0; g_bindings[id].act = 0;
+    receive(message(++serial, id)); g_remote[id].flags |= 2; apply_animations(10);
+    check(npc_clips == 4, "host-dead actors retain native death cleanup rather than stale live attack clips");
+    g_remote[id].flags &= uint8_t(~2); g_pending_animations[0].clear();
+    auto sequence = g_animation_sequence;
+    on_animation(live, 400, 0, false, false);
+    check(g_animation_sequence == sequence && g_host_animations.empty(), "guest native animation callbacks cannot echo host events");
+
+    C.sess = &session;
+    unsigned before = g_animations_received;
+    receive(message(++serial, id), client.my_id());
+    check(g_animations_received == before, "a client cannot grant the host NPC visual authority");
+    auto callback = client.cb.custom;
+    std::vector<std::vector<uint8_t>> packets;
+    client.cb.custom = [&](uint8_t type, uint8_t from, net::Reader& r) {
+        if (type == net::MSG_ADVENTURE && !from && r.left() && *r.cur() == ActorAnimations)
+            packets.emplace_back(r.cur(), r.cur() + r.left());
+    };
+    auto pump = [&] {
+        for (int i = 0; i < 1000; ++i) {
+            session.update(); client.update();
+            if (!session.pending_to(client.my_id()) && i >= 2) return;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        check(false, "animation fixture reliable queue drains");
+    };
+    on_animation(live, 500, 2, false, false); on_animation(live, 600, 3, true, true);
+    check(g_host_animations.size() == 1, "native host clip capture coalesces before transmission");
+    send_animations(10); pump();
+    check(packets.size() == 1 && packets[0].size() == 40 && g_animations_sent == 1,
+          "one reliable host packet contains the latest native clip with no recurring spatial fields");
+    net::Reader clip(packets[0].data(), packets[0].size()); clip.u8(); get_run(clip); clip.u8(); clip.u8();
+    get_run(clip); clip.u32(); read_identity(clip);
+    check(clip.u32() == 600 && clip.u32() == 3 && clip.u8() == 3 && !clip.left(),
+          "native clip, block and blend/target provenance survive serialization exactly");
+    net::Writer filler; filler.u8(255); put_run(filler, 0);
+    while (session.pending_to(client.my_id()) < 64) session.send_reliable_to(client.my_id(), net::MSG_ADVENTURE, filler);
+    on_animation(live, 700, 0, false, false); send_animations(10);
+    on_animation(live, 800, 0, false, false); send_animations(10);
+    check(session.pending_to(client.my_id()) == 64 && g_animations_sent == 1,
+          "congested animation sending honors queue bounds and retains only the latest native clip");
+    pump(); send_animations(10); pump();
+    check(packets.size() == 2 && g_animations_sent == 2, "drained peers receive one coalesced replacement rather than a playback backlog");
+    send_animations(13);
+    check(g_host_animations.empty(), "old native clip captures expire instead of accumulating across respawn waves");
+    client.cb.custom = callback; C.sess = &client; C.held = old_held;
+    field<int>(fake_play.data(), 0x90) = old_state; field<int>(fake_play.data(), 0xC0) = old_time;
+    g_pending_animations = {}; g_host_animations.clear(); g_animation_sent.clear();
+}
+
 int main()
 {
     using namespace adventure_world;
@@ -624,6 +960,7 @@ int main()
     }
     spatial_vtable[0x38 / 4] = reinterpret_cast<void*>(&position);
     spatial_vtable[0x3C / 4] = reinterpret_cast<void*>(&::orientation);
+    spatial_vtable[0x44 / 4] = reinterpret_cast<void*>(&transform);
     combatant_vtable[0x58 / 4] = reinterpret_cast<void*>(&maximum_hp);
     a_Mode = reinterpret_cast<uintptr_t>(&mode_pointer);
     a_GetMarker = reinterpret_cast<uintptr_t>(&get_marker);
@@ -709,13 +1046,33 @@ int main()
     g_bindings[newly_visible.id].act = 0; enumerate();
     auto result_before = g_native_result;
     check(is_live_mirror(live), "current living guest actor with exact host binding is eligible");
+    // dc04's separate setters do not mark creature+B5D. Model maintenance must
+    // observe SetTransform's dirty flag, as the one-NPC native probe established.
+    auto saved_pose = g_remote[newly_visible.id];
+    auto* live_native = actor_for(live);
+    net::Vec3 moved{71,12,3}; net::Quat rotated{0,0,0,1};
+    position(live_native->spatial,&moved); ::orientation(live_native->spatial,&rotated); render_models();
+    check(live_object->model_position.x != moved.x && !live_object->model_dirty,
+          "separate spatial setters reproduce a stale creature model despite matching numeric positions");
+    auto fixed_pose = saved_pose; fixed_pose.position = moved; fixed_pose.orientation = rotated;
+    auto transforms_before = transform_sets; apply_actor(*live_native,fixed_pose);
+    check(transform_sets == transforms_before + 1 && live_object->model_dirty,
+          "creature replication dispatches the two-argument combined transform and marks model maintenance dirty");
+    render_models();
+    check(live_object->model_position.x == moved.x && live_object->model_position.y == moved.y &&
+          !live_object->model_dirty && !npc_ai_filter(live),
+          "native-style render maintenance consumes the replicated creature pose while NPC decisions remain fenced");
+    apply_actor(*live_native,saved_pose); render_models();
+    check(!npc_ai_filter(live), "a living authored guest NPC suppresses only its autonomous brain");
     check(g_native_result.play == result_before.play && g_native_result.run == result_before.run &&
           g_native_result.committed == result_before.committed, "mirror eligibility has no native result lifecycle side effects");
     check(!is_live_mirror(local_extra) && !is_live_mirror(nullptr), "unbound sibling and null are ineligible");
     auto captains_before = C.captain_of;
     C.captain_of = [&](uint8_t id) { return id == client.my_id() ? live : nullptr; };
+    check(npc_ai_filter(live), "local party captains do not enter the NPC brain filter");
     check(!is_live_mirror(live), "party captains cannot be treated as mirrored NPCs"); C.captain_of = captains_before;
-    C.sess = &session; check(!is_live_mirror(live), "host actors are ineligible"); C.sess = &client;
+    C.sess = &session; check(!is_live_mirror(live), "host actors are ineligible");
+    check(npc_ai_filter(live), "the host continues to simulate authored NPC AI"); C.sess = &client;
     reported_run = 2; check(!is_live_mirror(live), "old run bindings are ineligible"); reported_run = 1;
     field<int>(fake_play.data(), 0xB8) = 1;
     check(!is_live_mirror(live), "previous-act binding is ineligible"); field<int>(fake_play.data(), 0xB8) = 0;
@@ -730,11 +1087,15 @@ int main()
     g_remote[newly_visible.id].health = 0;
     check(!is_live_mirror(live), "zero host health is ineligible"); g_remote[newly_visible.id].health = 10;
     field<float>(live_object->combatant.data(), 0x38) = 0;
+    check(npc_ai_filter(live), "host-killed guest creatures retain the native death-cleanup path");
     check(!is_live_mirror(live), "native death cleanup is ineligible"); field<float>(live_object->combatant.data(), 0x38) = 10;
     field<bool>(live, 0x20) = true; check(!is_live_mirror(live), "retired native actor is ineligible"); field<bool>(live, 0x20) = false;
     field<bool>(live, 0x21) = true; check(!is_live_mirror(live), "destroyed native actor is ineligible"); field<bool>(live, 0x21) = false;
-    running = false; check(!is_live_mirror(live), "ended adventure actor is ineligible"); running = true;
+    running = false; check(!is_live_mirror(live), "ended adventure actor is ineligible");
+    check(npc_ai_filter(live), "NPC AI authority fencing does not survive an ended attempt"); running = true;
     lookup(captain)->is_creature = lookup(partner)->is_creature = true;
+    animation_cases(session, client, live, newly_visible.id, reported_run);
+    held_health_admission_cases(session,client.my_id());
     a_Hostile = reinterpret_cast<uintptr_t>(&hostile_relation);
     const char* relations[] = {"relations", "1"};
     check(debug(2, relations, nullptr) == 0 && relation_calls == 2,
@@ -940,9 +1301,75 @@ int main()
     check(field<uint32_t>(live, 0xB58) == 0x180 && recruit_calls == 3 && native_allies == 2 &&
           relationship_events == 3 && native_befriends == 3 && field<int>(social_goal.data(), 4) == 1,
           "native Befriend then Ally preserves both completion flags and counts recruitment exactly once");
+
+    // A genuine completion may already be reliable/queued when the last menu
+    // opens. Keep it without mutating relationships or authored goal progress.
+    auto previous_held = C.held;
+    bool social_held = false; C.held = [&] { return social_held; };
+    field<int>(fake_play.data(), 0xB8) = 3; field<uint32_t>(live, 0xB58) = 0; native_social_mode = 2;
+    field<int>(social_goal.data(), 0x24) = 4; field<int>(social_goal.data(), 4) = 0;
+    auto relationships_before_hold = relationship_events, befriends_before_hold = native_befriends;
+    deliver(completion_packet(21, 4, 3));
+    check(queued.size() == 1 && g_pending_social.size() == 1, "one outside-frame drain owns an admitted completion");
+    social_held = true; drain();
+    deliver(completion_packet(21, 4, 3)); deliver(completion_packet(22, 4, 3));
+    flush_social_completions(); drain();
+    check(g_pending_social.size() == 1 && relationship_events == relationships_before_hold &&
+          native_befriends == befriends_before_hold && !field<uint32_t>(live, 0xB58) &&
+          !field<int>(social_goal.data(), 4),
+          "arrival-before-hold and duplicate completions retain one action without native or goal changes");
+    social_held = false; flush_social_completions(); drain(); flush_social_completions(); drain();
+    check(g_pending_social.empty() && relationship_events == relationships_before_hold + 1 &&
+          native_befriends == befriends_before_hold + 1 && field<int>(social_goal.data(), 4) == 1,
+          "Resume applies the retained native completion and authored objective exactly once");
+
+    const auto completed_before_stale = relationship_events;
+    field<int>(fake_play.data(), 0xB8) = 4; field<uint32_t>(live, 0xB58) = 0;
+    deliver(completion_packet(23, 4, 4)); social_held = true; drain();
+    field<int>(fake_play.data(), 0xB8) = 5; social_held = false; flush_social_completions(); drain();
+    check(g_pending_social.empty() && relationship_events == completed_before_stale,
+          "a retained completion cannot mutate a replaced act after Resume");
+    deliver(completion_packet(24, 4, 5)); social_held = true; drain();
+    ++field<uint32_t>(live, 0x24); social_held = false; flush_social_completions(); drain();
+    --field<uint32_t>(live, 0x24);
+    check(relationship_events == completed_before_stale, "Resume revalidates the exact target incarnation");
+    deliver(completion_packet(25, 4, 5)); social_held = true; drain();
+    captain_alive = false; social_held = false; flush_social_completions(); drain(); captain_alive = true;
+    check(relationship_events == completed_before_stale, "a disconnected/downed source cannot apply retained completion");
+    deliver(completion_packet(26, 4, 5)); social_held = true; drain();
+    ++reported_run; social_held = false; flush_social_completions(); drain(); --reported_run;
+    check(relationship_events == completed_before_stale, "a retained completion cannot cross an adventure run");
+
+    deliver(completion_packet(27, 4, 5)); social_held = true; drain();
+    reset_replication(); g_run = reported_run; social_held = false;
+    flush_social_completions(); drain();
+    check(g_pending_social.empty() && relationship_events == completed_before_stale,
+          "cancellation/reset discards held completions rather than replaying them on retry");
+    deliver(completion_packet(28, 4, 5)); // old drain is queued before native cleanup
+    reset_replication(); g_run = reported_run;
+    deliver(completion_packet(29, 4, 5)); drain();
+    check(g_pending_social.empty() && relationship_events == completed_before_stale + 1,
+          "a stale queued drain cannot consume or invalidate a replacement generation's completion");
+
+    // Retention is bounded even if a peer invents endlessly distinct targets.
+    auto previous_failure = C.interaction_failed;
+    unsigned social_failures = 0;
+    C.interaction_failed = [&](const std::string& reason) {
+        check(reason.find("social synchronization") != std::string::npos, "social overflow reports its synchronization boundary");
+        ++social_failures; running = false;
+    };
+    social_held = true;
+    for (unsigned i = 0; i < kMaxPendingSocial; ++i) deliver(completion_packet(100+i, 4, 5, 1, {1, 10000+i}));
+    check(g_pending_social.size() == kMaxPendingSocial && queued.empty(), "held social retention stops at its fixed queue limit");
+    deliver(completion_packet(100+kMaxPendingSocial, 4, 5, 1, {1, 20000})); drain();
+    check(social_failures == 1 && g_pending_social.empty() && relationship_events == completed_before_stale + 1,
+          "overflow fails explicitly without applying or silently losing a paused completion");
+    C.interaction_failed = previous_failure; C.held = previous_held; running = true;
+    reset_replication(); g_run = reported_run;
     field<int>(fake_play.data(), 0xB8) = 0;
     field<net::Vec3>(lookup(partner)->spatial.data(), 4) = saved_partner_position;
     session.cb.custom = {}; g_last_interaction.clear(); g_social_completions.clear();
+    held_world_task_cases(session,client,reported_run);
     static_replication_cases(session, client);
     spatial_vtable[0xB8/4]=reinterpret_cast<void*>(&spatial_game_data);
     spatial_vtable[0x6C/4]=reinterpret_cast<void*>(&bounds);

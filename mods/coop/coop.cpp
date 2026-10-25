@@ -1,7 +1,7 @@
 // SporeCoop mod: creature-stage co-op ("pack" mode). See docs/03-gameplay.md.
 // the release version (tools/package.sh names the zip after it)
 #ifndef COOP_VERSION
-#define COOP_VERSION "0.7.3.1-ga-preview.8"
+#define COOP_VERSION "0.7.3.2-ga-preview.9"
 #endif
 
 #include <winsock2.h>
@@ -39,6 +39,7 @@
 #include "adventure_flow.h"
 #include "adventure_hud.h"
 #include "net/adventure_motion.h"
+#include "net/adventure_pause_motion.h"
 #include "net/adventure_control.h"
 #include "adventure_progress.h"
 #include "gamefixes.h"
@@ -72,6 +73,7 @@ struct Remote {
     uint8_t id = 0;
     std::string name;
     net::SnapshotBuffer buf;
+    net::AdventurePauseMotion pause_motion;
     void* puppet = nullptr;
     drive::State drv;
     const modes::Adapter* puppet_adapter = nullptr; // adapter that created `puppet`
@@ -256,6 +258,25 @@ void* g_local = nullptr; // entity the local player controls (adapter specific)
 
 net::AdventureMotion g_adventure_motion;
 
+void sync_pause_motion(Remote& remote, double now)
+{
+    const auto* descriptor = adventure::current();
+    uint64_t run = g_mode == modes::kScenario && adventure::running() && descriptor ? descriptor->run_id : 0;
+    const bool paused = run && adventure_native::party_paused();
+    net::PlayerState seed;
+    const bool seeded = !remote.buf.empty();
+    if (seeded) {
+        seed = remote.buf.latest();
+        if (paused && remote.puppet) {
+            seed.pos = game::position(remote.puppet); seed.rot = game::orientation(remote.puppet);
+        }
+    }
+    if (!remote.pause_motion.transition(run, paused, seeded ? &seed : nullptr)) return;
+    remote.buf.clear(); remote.drv = {};
+    if (const auto* anchor = remote.pause_motion.anchor()) remote.buf.push(*anchor, now);
+    if (remote.puppet) game::stop(remote.puppet);
+}
+
 net::PlayerState local_state()
 {
     net::PlayerState st;
@@ -271,6 +292,7 @@ net::PlayerState local_state()
             st.movement_generation = g_adventure_motion.generation(g_sess.my_id());
             adventure::CaptainState life;
             if (adventure::captain_state(g_sess.my_id(), life)) ga::hold_downed_movement(life.captain, st);
+            if (adventure_native::party_paused()) { st.vel = {}; st.flags &= ~net::PF_MOVING; }
         }
     }
     return st;
@@ -281,6 +303,8 @@ bool same_place(const net::PlayerState& s) { return s.mode == g_mode && s.world 
 
 void drive_puppet(Remote& r, double now)
 {
+    sync_pause_motion(r, now);
+    if (r.pause_motion.paused()) return;
     net::PlayerState s;
     if (!r.buf.sample(now, s))
         return;
@@ -1386,8 +1410,8 @@ void on_overlay(void*, int, void*)
         adventure::CaptainState local;
         if (adventure::captain_state(g_sess.my_id(), local)) {
             const char* prompt = local.captain.life == ga::Life::Downed
-                ? "Downed: a teammate must stay within 2 m for 3 s."
-                : "Revive a downed teammate: stay within 2 m for 3 s.";
+                ? "Downed: a teammate must stay within 6 m for 3 s."
+                : "Revive a downed teammate: stay within 6 m for 3 s.";
             H->overlay_text(x, y + 4, 0xFFFFD040, prompt);
         }
     }
@@ -1396,6 +1420,7 @@ void on_overlay(void*, int, void*)
 
 void on_anim(void* creature, uint32_t anim, int block, bool disable_blend, bool to_target)
 {
+    adventure_world::on_animation(creature, anim, block, disable_blend, to_target);
     void* av = game::avatar();
     if (!av || creature != av)
         return;
@@ -1428,6 +1453,7 @@ void on_remote_anim(const net::AnimEvent& ev)
     auto it = g_remotes.find(ev.id);
     if (it == g_remotes.end() || !it->second.puppet)
         return;
+    if (g_mode == modes::kScenario && adventure_native::party_paused()) return;
     adventure::CaptainState life;
     if (g_mode == modes::kScenario && adventure::captain_state(ev.id, life) && life.captain.life == ga::Life::Downed)
         return;
@@ -1702,6 +1728,8 @@ void setup_callbacks()
         if (r.name.empty())
             r.name = g_sess.name_of(s.id);
         net::PlayerState received = s;
+        sync_pause_motion(r, H->time_seconds());
+        if (!r.pause_motion.admit(received)) return;
         adventure::CaptainState life;
         if (s.mode == modes::kScenario && adventure::captain_state(s.id, life))
             ga::hold_downed_movement(life.captain, received);
@@ -2595,6 +2623,7 @@ void on_unload()
     adventure::reset();
     adventure_native::shutdown();
     game::set_extra_update_filter(nullptr);
+    game::set_npc_ai_filter(nullptr);
     game::set_blocked_update_handler(nullptr);
     game::set_update_observer(nullptr);
     gamefixes::shutdown();
@@ -2706,11 +2735,16 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
     };
     native.reset_movement = [] {
         g_adventure_motion.reset();
-        for (auto& [id, remote] : g_remotes) { remote.buf.clear(); remote.drv = {}; }
+        for (auto& [id, remote] : g_remotes) { remote.buf.clear(); remote.drv = {}; remote.pause_motion.reset(); }
+    };
+    native.reset_pause_movement = [] {
+        const double now = H->time_seconds();
+        for (auto& [id, remote] : g_remotes) sync_pause_motion(remote, now);
     };
     adventure_native::init(H, M, std::move(native));
     adventure::init(H, M, adventure_native::coordinator_context());
     game::set_extra_update_filter(adventure_native::update_filter);
+    game::set_npc_ai_filter(adventure_world::npc_ai_filter);
     game::set_damage_filter([](void* victim, float& damage, int type, void* attacker) {
         if (game::mode_id() == modes::kScenario && adventure::active())
             return adventure_native::damage_filter(victim, damage, type, attacker);

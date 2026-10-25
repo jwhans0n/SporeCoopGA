@@ -15,6 +15,8 @@
 #include "adventure_social.h"
 #include "adventure_flow.h"
 #include "adventure_intro_gate.h"
+#include "adventure_pause.h"
+#include "adventure_pause_native.h"
 #include "game.h"
 #include "modes.h"
 #include "coop_ui.h"
@@ -61,6 +63,7 @@ EndCinematic original_end_cinematic;
 
 void feed(const std::string& message) { if (C.feed) C.feed(message); }
 bool connected() { return C.sess && C.sess->connected(); }
+bool simulation_held() { return adventure_flow::held() || adventure_pause::held(); }
 void* scenario()
 {
     uintptr_t pointer = H->sym("App::cScenarioMode::ptr");
@@ -180,7 +183,7 @@ void SK_THISCALL switch_mode(void* manager, int index)
 void SK_THISCALL update(void* self, int milliseconds)
 {
     if (connected() && g_frozen && game::mode_id() == modes::kScenario) return;
-    if(adventure_flow::held() && field<int>(self,0x90)==3) return;
+    if(simulation_held() && field<int>(self,0x90)==3) return;
     original_update(self, milliseconds);
 }
 
@@ -444,7 +447,7 @@ bool loaded(const dbpf::Key& key)
 bool paused()
 {
     auto* p=play_mode();
-    if(adventure_flow::held() || (p && field<int>(p,0x90)!=3)) return true;
+    if(simulation_held() || (p && field<int>(p,0x90)!=3)) return true;
     uintptr_t get = H->sym("Simulator::cGameTimeManager::Get");
     void* manager = get ? cdecl_call<void*>(get) : nullptr;
     return manager && (field<uint32_t>(manager, 0x48) & 1);
@@ -499,9 +502,25 @@ bool init(const SkHost* host, SkMod* mod, Ctx context)
         "SporeCoop::Adventure::HandlePlayMessage", "Simulator::cCinematicManager::Get",
         "SporeCoop::cCinematicManager_EndCinematic", "SporeCoop::Adventure::HandleCinematicMessage"};
     g_symbols = H->sym_require(M, required, 19) == 0;
+    adventure_pause_native::Ctx native_pause;
+    native_pause.active = [] { return adventure_pause::active() && game::mode_id() == modes::kScenario; };
+    native_pause.held = adventure_pause::held;
+    native_pause.local_intent = adventure_pause::local_intent;
+    native_pause.reset_movement = C.reset_pause_movement;
+    g_symbols = adventure_pause_native::init(H, M, std::move(native_pause)) && g_symbols;
+    adventure_pause::Ctx pause;
+    pause.sess = C.sess;
+    pause.run = [] { const auto* run = adventure::current(); return run ? run->run_id : 0; };
+    pause.running = adventure::running;
+    pause.members = [] { const auto* run = adventure::current(); return run ? run->roster : std::vector<uint8_t>{}; };
+    pause.eligible = adventure::participating;
+    pause.local_intent = adventure_pause_native::local_intent;
+    pause.changed = adventure_pause_native::changed;
+    g_symbols = adventure_pause::init(std::move(pause)) && g_symbols;
     adventure_control::Ctx controls;
     controls.active = [] { return connected() && adventure::running() && game::mode_id() == modes::kScenario; };
     controls.local_avatar = game::avatar;
+    controls.local_paused = adventure_pause::local_requested;
     controls.captain_state = [](void* object, ga::Captain& result) {
         if (!C.sess || !C.captain_of) return false;
         for (const auto& player : C.sess->players()) {
@@ -525,7 +544,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context)
     };
     world.run = [] { const auto* run = adventure::current(); return run ? run->run_id : 0; };
     world.active = [] { return adventure::running(); };
-    world.held=adventure_flow::held;
+    world.held=simulation_held;
     world.goals_held=adventure_flow::native_scene_held;
     world.explosive_environment=adventure_explosives::environmental_damage;
     world.explosive_visual=adventure_explosives::visual_only;
@@ -543,11 +562,11 @@ bool init(const SkHost* host, SkMod* mod, Ctx context)
     adventure_world::init(H, M, std::move(world));
     auto pickups=adventure_world::pickups_context();
     pickups.active=[] { return adventure::native_attempt() && game::mode_id()==modes::kScenario; };
-    pickups.held=[] { return !adventure::running() || adventure_flow::held(); };
+    pickups.held=[] { return !adventure::running() || simulation_held(); };
     g_symbols=adventure_pickups::init(H,M,std::move(pickups)) && g_symbols;
     auto explosives=adventure_world::explosives_context();
     explosives.active=[] { return adventure::native_attempt() && game::mode_id()==modes::kScenario; };
-    explosives.held=[] { return !adventure::running() || adventure_flow::held(); };
+    explosives.held=[] { return !adventure::running() || simulation_held(); };
     g_symbols=adventure_explosives::init(H,M,std::move(explosives)) && g_symbols;
     adventure_relationships::Ctx relationships;
     relationships.active = [] { return adventure::running() && game::mode_id() == modes::kScenario; };
@@ -565,7 +584,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context)
     social.active = [] {
         adventure::CaptainState state;
         return C.sess && C.sess->role() == net::Role::Client && adventure::running() &&
-            !g_frozen && !adventure_flow::held() && game::mode_id() == modes::kScenario &&
+            !g_frozen && !simulation_held() && game::mode_id() == modes::kScenario &&
             adventure::captain_state(C.sess->my_id(), state) && state.captain.life == ga::Life::Alive;
     };
     social.run = [] { const auto* run = adventure::current(); return run ? run->run_id : 0; };
@@ -724,10 +743,11 @@ void tick(double now) {
             adventure::cancel("The native cinematic did not finish after the party confirmed. Please retry the adventure.");
         }, new Timeout{d ? d->run_id : 0, g_intro.generation(), g_talk.generation()});
     }
-    adventure_captains::tick(now); adventure_flow::tick(); adventure_world::tick(now);
+    adventure_captains::tick(now); adventure_pause::tick(); adventure_flow::tick(); adventure_world::tick(now);
     adventure_explosives::tick(); adventure_pickups::tick();
 }
 void blocked_update(void* creature, int milliseconds) { adventure_social::blocked_update(creature, milliseconds); }
+bool party_paused() { return adventure_pause::held(); }
 void creature_update(void* creature, bool before) { adventure_control::creature_update(creature, before); }
 void on_message(uint8_t from, net::Reader& message)
 {
@@ -736,14 +756,16 @@ void on_message(uint8_t from, net::Reader& message)
     else if(*message.cur()>=144 && *message.cur()<=151) adventure_explosives::on_message(from,message);
     else if(*message.cur()>=152 && *message.cur()<=159) adventure_pickups::on_message(from,message);
     else if(*message.cur()>=160 && *message.cur()<=163) adventure_flow::on_message(from,message);
+    else if(*message.cur()>=164 && *message.cur()<=165) adventure_pause::on_message(from,message);
     else adventure_world::on_message(from, message);
 }
 bool update_filter(void* creature)
 {
     if (connected() && game::mode_id() == modes::kScenario) {
-        if (g_frozen || adventure_flow::held()) return false;
+        if (g_frozen || simulation_held()) return false;
     }
-    return adventure_world::update_filter(creature);
+    (void)creature;
+    return true; // Guest NPC authority is applied at NPCTickAI, preserving visual Update.
 }
 bool damage_filter(void* victim, float& amount, int type, void* attacker)
 {
@@ -759,6 +781,7 @@ bool damage_filter(void* victim, float& amount, int type, void* attacker)
 }
 void reset()
 {
+    adventure_pause::reset(); adventure_pause_native::reset();
     adventure_control::reset();
     adventure_pickups::reset(); adventure_explosives::reset();
     adventure_flow::reset(); g_intro.reset(); g_talk.reset(); g_talk_scene = {};
@@ -784,7 +807,7 @@ std::string status()
         "native social presentation: starts=" + std::to_string(social.starts) + " ticks=" + std::to_string(social.ticks) +
         " ends=" + std::to_string(social.ends) + " rejected=" + std::to_string(social.rejected) +
         " input_allowed=" + std::to_string(social.input_queries_allowed) + "\n" +
-        adventure_pickups::status()+"\n"+adventure_explosives::status()+"\n"+adventure_control::status()+
+        adventure_pickups::status()+"\n"+adventure_explosives::status()+"\n"+adventure_control::status()+adventure_pause::status()+
         "native intro cinematic: pending="+std::to_string(g_intro.pending())+" run="+std::to_string(g_intro.run())+
         " id="+std::to_string(g_intro.cinematic().id)+"\n"+
         "native cinematic settling: intro="+std::to_string(g_intro_settling)+" talk="+std::to_string(g_talk.settling())+

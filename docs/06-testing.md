@@ -958,3 +958,50 @@ quaternion/camera change after the valid 51-byte injection. Native host elapsed
 advanced 3840 to 26252 ms. `ga_preview8_native_handoff/result.json` confirms both
 native galaxy menus/application states, cleared probes, released injected keys
 and zero faults before the pair was handed back.
+
+### Native Crystal Mine motion, unanimous pause and six-metre revival
+
+These harnesses require native Windows, the verified dc04 GOG executable and
+matching mod/symbol files in a private lab installation. Use caller-owned hidden,
+muted profiles and the current runner's `processes.json`; never substitute normal
+player instance IDs or stale process metadata. Start the bounded runner in a
+separate terminal and keep it alive throughout the checks:
+
+```powershell
+py -3 tools/windows_lab.py probe --hidden
+py -3 tools/windows_lab.py prepare --destination out/windows-lab/preview9-installation
+py -3 tools/windows_lab.py run --installation out/windows-lab/preview9-installation --out out/windows-lab/preview9 --instances 2 --first-instance 81 --seconds 1800 --hidden
+```
+
+Start from both native galaxy menus. The stock Mine needs no personal captain;
+its authored captain, explicit Ready and Continue controls are exercised. A
+direct connection can stay active for the following pause check:
+
+```powershell
+py -3 tools/tests/coop_adventure_combat_movement.py --metadata out/windows-lab/preview9/processes.json --host 81 --guest 82 --out out/windows-lab/preview9-mine --seconds 25 --expect fixed --direct --keep-running
+py -3 tools/tests/coop_adventure_pause.py --metadata out/windows-lab/preview9/processes.json --instances 81,82 --output out/windows-lab/preview9-pause --require-npc-motion
+```
+
+The Mine trace records same-incarnation spatial and actual graphics-model poses,
+native Update/AI-fence counters, clip counters, generator health and objective
+counts. Numeric positions alone do not establish rendered movement. Inspect the
+screenshots alongside the model metrics; this check does not establish ordinary
+guest attack handling, vehicle visuals or a complete playthrough. Omit
+`--direct --keep-running` for a standalone run with proxy traffic accounting and
+automatic menu recovery. The pause harness requires an already playing shared
+adventure; it tests each player's menu separately, the unanimous native hold and
+one-player Resume, then normally cancels to both menus.
+
+For both-origin downed controls and revival, first provide two existing saved
+captains in the isolated profiles and replace these example names:
+
+```powershell
+py -3 tools/tests/coop_adventure_downed.py --metadata out/windows-lab/preview9/processes.json --host 81 --guest 82 --out out/windows-lab/preview9-downed --launch-town --both --captains CaptainA,CaptainB --port 47960
+```
+
+This Town check requires movement before each knockout and verifies revival
+outside the former two-metre range, radius/damage interruption and recovery. It
+leaves the attempt active for inspection; finish with normal shared cancellation
+and confirm both native menus before reload or handoff. Preserve JSON results,
+command logs, screenshots, native fault counts and the loaded shadow DLL hashes.
+Report actual native results separately from portable and Win32 ABI fixtures.

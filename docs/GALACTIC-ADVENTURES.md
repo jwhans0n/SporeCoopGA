@@ -1,15 +1,15 @@
 # Galactic Adventures co-op: experimental guide
 
-Fork preview `0.7.3.1-ga-preview.8` adds native music descriptor resolution,
-shared handheld-item giving/attachments/throws, compact group confirmations and
-revival feedback. It retains the preview 7 integration with upstream SporeCoop
-0.7.2.1, including SporeKit 0.3.4 and its Steam/frame-loop diagnostics. Source:
+Fork preview `0.7.3.2-ga-preview.9` addresses client NPC presentation and
+combat animation, adds unanimous party pause, and expands revival to six metres.
+It retains preview 8's music, held-item and confirmation fixes and the upstream
+SporeCoop 0.7.2.1 integration. Source:
 [jwhans0n/SporeCoopGA](https://github.com/jwhans0n/SporeCoopGA).
-Preview 8 has targeted two-player native checks and a four-player beam-down
-confirmation check. See its [validation report](validation-ga-preview.8.md) for
-recorded binaries, results and remaining coverage. The earlier preview evidence below retains its original version labels;
-the [preview 7 integration report](integration-ga-upstream-0.7.2.1.md) records
-that build's completed checks, rather than validating preview 8 automatically.
+Targeted preview 9 Windows checks passed. See its
+[validation report](validation-ga-preview.9.md) for current evidence and limits.
+The [preview 8 report](validation-ga-preview.8.md) and
+[preview 7 integration report](integration-ga-upstream-0.7.2.1.md) retain their
+original scope.
 
 The native adventure adapter requires the exact GOG executable, SHA-256
 `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
@@ -17,7 +17,7 @@ Upstream calls this GOG 2024; the adventure RE notes call it March 2017 after th
 ModAPI address map. See [build identification](re/build-dc04.md). Steam and other
 same-code variants retain upstream base-stage support, but their native adventure
 adapter is disabled and adventure compatibility remains unvalidated. Every player
-needs Galactic Adventures and the same fork build (protocol 11); earlier GA
+needs Galactic Adventures and the same fork build (protocol 12); earlier GA
 previews and upstream 0.7.0-0.7.2.1 clients cannot join this preview.
 
 Preview `0.7.0-ga-preview.6` reduces traffic for stationary buildings and props and
@@ -67,6 +67,13 @@ revalidated before presentation. A disconnected participant leaves the check.
 These confirmation checks no longer open the full co-op dialog automatically.
 **F9** still opens party/chat controls and the adventure cancellation action;
 cancelling restores the native menus.
+
+Opening Esc pauses your own input through the native menu. The shared adventure
+continues until every connected participant has a pause menu open. When everyone
+is paused, shared clocks and gameplay stop together; one player resuming releases
+the party pause. Beam-down and conversation confirmation holds remain separate.
+NPC AI and damage remain host-authoritative while clients update their rendered
+poses and replay host visual clip requests.
 
 Any captain can pick up a colored key and open its matching gate. The host checks
 ownership, range and color, then shares native gate opening and key consumption.
@@ -126,7 +133,7 @@ defaults.
 
 | Death rule | What happens |
 |---|---|
-| **Teammate revival** (default) | An alive teammate stays within 2 metres for 3 seconds to revive you. |
+| **Teammate revival** (default) | An alive teammate stays within 6 metres for 3 seconds to revive you. |
 | **Teammate revival + automatic recovery** | The same proximity revival is available; otherwise you recover after 30 seconds at the downed position. |
 | **Any death fails** | One captain's death ends the party's attempt. |
 
@@ -134,10 +141,10 @@ Revival restores 50% health and grants 2 seconds of damage protection. Damage to
 rescuer, moving out of range or disconnecting resets revival progress. **Everyone
 being downed always fails the attempt**, including with automatic recovery enabled.
 Downed captains cannot walk, jump or issue gameplay orders; normal creature
-visual/effect updates continue. The revive aid shows a two-metre ground ring,
+visual/effect updates continue. The revive aid shows a six-metre ground ring,
 progress bar and remaining revival time for nearby downed teammates. The optional
-automatic-recovery rule also shows its countdown. The aid does not change the
-revival radius, duration or interruption rules.
+automatic-recovery rule also shows its countdown. The ring matches the six-metre
+revival rule. Duration and interruption rules remain unchanged.
 
 ## Verified scope and current limits
 

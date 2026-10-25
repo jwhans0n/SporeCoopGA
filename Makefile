@@ -89,6 +89,8 @@ test:
 	$(B)/host/adventure_runtime_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include -o $(B)/host/adventure_flow_tests mods/coop/adventure_flow.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp tests/adventure_flow_tests.cpp
 	$(B)/host/adventure_flow_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -o $(B)/host/adventure_pause_tests mods/coop/adventure_pause.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp tests/adventure_pause_tests.cpp
+	$(B)/host/adventure_pause_tests
 	python3 tests/test_uifind.py
 	python3 tools/re_lint.py
 
@@ -104,6 +106,12 @@ $(B)/host/adventure_lifecycle_tests.exe: mods/coop/adventure_world_lifecycle.cpp
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $^ -o $@
 
 ADVENTURE_ABI_HEADERS := sdk/include/sporekit.h sdk/include/sporekit_game.hpp mods/coop/game.h mods/coop/net/protocol.h
+
+.PHONY: test-pause-windows
+test-pause-windows: $(B)/host/adventure_pause_native_tests.exe
+$(B)/host/adventure_pause_native_tests.exe: tests/adventure_pause_native_tests.cpp mods/coop/adventure_pause_native.cpp mods/coop/adventure_pause_native.h $(ADVENTURE_ABI_HEADERS) $(B)/obj/tests/native_fixture_rc.o
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/adventure_pause_native_tests.cpp $(B)/obj/tests/native_fixture_rc.o -o $@
 
 .PHONY: test-memory-windows
 test-memory-windows: $(B)/host/readable_memory_tests.exe
