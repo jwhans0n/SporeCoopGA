@@ -1,4 +1,5 @@
 #include "coop_ui.h"
+#include "coop_ui_pages.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -7,6 +8,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <map>
+#include <tuple>
 
 #include "modes.h"
 #include "space_ext.h"
@@ -34,6 +36,8 @@ static bool g_lb_down;      // the left mouse button in the last frame (the Co-o
 static double g_skip_since; // the Co-op item was clicked during the menu intro: open once it is over
 static double g_intro_over; // when that intro was over
 static bool g_raise = true; // move the window above all UI layers when it opens
+static bool g_adventure_page;
+static uint64_t g_last_preparation_run;
 bool g_log_msgs; // debug: log UI messages that reach our handlers
 
 constexpr uint32_t kIdMenuButton = 0xC00F0001, kIdDialog = 0xC00F0100;
@@ -207,9 +211,50 @@ struct Dialog {
     Win space_title = nullptr, space_back = nullptr, space_prev = nullptr, space_next = nullptr, space_pageno = nullptr;
     Win space_text[kSpaceRows] = {}, space_button[kSpaceRows] = {};
     std::function<void()> space_action[kSpaceRows];
+    std::vector<Win> page_adventure;
+    Win adventure_death = nullptr, adventure_health = nullptr, adventure_damage = nullptr;
+    Win adventure_fire = nullptr, adventure_status = nullptr;
+    std::vector<Win> adventure_controls;
+    struct Picture { Win window = nullptr; dbpf::Key key; };
+    std::vector<Win> page_preparation;
+    Win prep_title = nullptr, prep_author = nullptr, prep_hint = nullptr, prep_no_preview = nullptr;
+    Win prep_player[4] = {}, prep_captain[4] = {}, prep_stage[4] = {}, prep_ready[4] = {}, prep_placeholder[4] = {};
+    Win prep_ready_btn = nullptr, prep_change = nullptr, prep_chat[2] = {}, prep_edit = nullptr;
+    Picture adventure_picture, captain_picture[4];
 };
 static Dialog D;
 static std::map<std::string, Win> g_named; // for tests (coop.uistate)
+static std::map<std::tuple<uint32_t,uint32_t,uint32_t>, AssetCard> g_cards;
+
+static AssetCard card(const dbpf::Key& key)
+{
+    if (!key.instance) return {};
+    auto id = std::tuple{key.instance,key.type,key.group};
+    auto found = g_cards.find(id);
+    if (found != g_cards.end()) return found->second;
+    if (g_cards.size() >= 256) g_cards.clear();
+    return g_cards[id] = A.asset_card ? A.asset_card(key) : AssetCard{};
+}
+static std::string short_text(const std::string& text, size_t characters)
+{
+    size_t total = 0;
+    for (uint8_t c : text) if ((c & 0xC0) != 0x80) ++total;
+    if (total <= characters) return text;
+    characters = characters > 3 ? characters - 3 : 0;
+    size_t count = 0, offset = 0;
+    for (; offset < text.size(); ++offset) if ((uint8_t(text[offset]) & 0xC0) != 0x80 && ++count > characters) break;
+    return offset == text.size() ? text : text.substr(0,offset) + "...";
+}
+static void picture(Dialog::Picture& p, const dbpf::Key& key, const Rect& rect, bool visible)
+{
+    if (!(p.key == key)) {
+        if (p.window) { g_cache.erase(p.window); sui::remove_child(D.root,p.window); p.window = nullptr; }
+        p.key = key;
+        if (key.instance) p.window = sui::image_window(D.root,key.instance,key.group,rect.x1,rect.y1);
+        if (p.window) { sui::set_area(p.window,rect); sui::set_flag(p.window,sui::kFlagIgnoreMouse,true); }
+    }
+    show(p.window,visible);
+}
 
 static Win add_label(std::vector<Win>& page, const Rect& r, const std::string& t, uint32_t argb,
                      int align = sui::kAlignLeft)
@@ -354,6 +399,39 @@ static void do_send_chat()
     g_dirty = true;
 }
 
+static bool adventure_view(ga::Difficulty& difficulty, int& party, bool& editable, std::string& status)
+{
+    return A.adventure_difficulty && A.adventure_difficulty(difficulty, party, editable, status);
+}
+
+static void change_adventure(int field, int direction)
+{
+    ga::Difficulty difficulty;
+    int party = 1;
+    bool editable = false;
+    std::string status;
+    if (!adventure_view(difficulty, party, editable, status) || !editable || !A.set_adventure_difficulty)
+        return;
+    if (field == 0)
+        difficulty.death_mode = static_cast<ga::DeathMode>((static_cast<int>(difficulty.death_mode) + 1) % 3);
+    else if (field == 1)
+        difficulty.enemy_health_override = std::clamp(difficulty.health_multiplier(party) + direction * 0.25f, 0.25f, 10.f);
+    else if (field == 2)
+        difficulty.enemy_damage_override = std::clamp(difficulty.damage_multiplier() + direction * 0.25f, 0.25f, 10.f);
+    else if (field == 3) {
+        const uint8_t values[] = {0, 25, 50, 100};
+        int next = 0;
+        while (next < 4 && values[next] != difficulty.friendly_fire_percent)
+            ++next;
+        difficulty.friendly_fire_percent = values[(next + 1) % 4];
+    } else {
+        difficulty.enemy_health_override = 0;
+        difficulty.enemy_damage_override = 0;
+    }
+    A.set_adventure_difficulty(difficulty);
+    g_dirty = true;
+}
+
 static void build_dialog()
 {
     Win root = sui::find(sui::main_window(), kIdDialog);
@@ -491,6 +569,16 @@ static void build_dialog()
         g_dirty = true;
     });
     D.share_btn = add_button(L, "share", {260, 488, 480, 528}, T("Send my world", "Отправить мир"), [] {
+        if(A.party_waiting && A.party_waiting()) { if(A.cancel_adventure) A.cancel_adventure(); return; }
+        ga::Difficulty difficulty;
+        int party = 1;
+        bool editable = false;
+        std::string status;
+        if (adventure_view(difficulty, party, editable, status)) {
+            g_adventure_page = true;
+            g_dirty = true;
+            return;
+        }
         A.share_world();
         set_status(T("Sending the world to everyone...", "Мир отправляется всем..."), kYellow);
     });
@@ -534,6 +622,61 @@ static void build_dialog()
         g_space_first += kSpaceRows;
         g_dirty = true;
     });
+    auto& G = D.page_adventure;
+    add_label(G, {40, 108, 720, 136}, "Death rules", kGold);
+    D.adventure_death = add_button(G, "adventure_death", {40, 142, 720, 180}, "", [] { change_adventure(0, 1); });
+    D.adventure_controls.push_back(D.adventure_death);
+    add_label(G, {40, 186, 720, 212}, "Revive: within 2 m for 3 s. Automatic recovery: 30 s in place.", kDim);
+    add_label(G, {40, 214, 720, 240}, "The attempt always fails when the entire party is downed.", kDim);
+    add_label(G, {40, 248, 720, 274}, "Enemy stats", kGold);
+    D.adventure_health = add_label(G, {40, 284, 540, 312}, "", kWhite);
+    D.adventure_damage = add_label(G, {40, 326, 540, 354}, "", kWhite);
+    for (int field = 1; field <= 2; ++field) {
+        float y = field == 1 ? 280.f : 322.f;
+        for (int direction : {-1, 1}) {
+            std::string name = std::string("adventure_") + (field == 1 ? "health" : "damage") + (direction < 0 ? "_less" : "_more");
+            float x = direction < 0 ? 570.f : 650.f;
+            D.adventure_controls.push_back(add_button(G, name.c_str(), {x, y, x + 70, y + 34}, direction < 0 ? "-" : "+",
+                                                      [field, direction] { change_adventure(field, direction); }));
+        }
+    }
+    D.adventure_fire = add_button(G, "adventure_fire", {40, 366, 440, 404}, "", [] { change_adventure(3, 1); });
+    D.adventure_controls.push_back(D.adventure_fire);
+    D.adventure_controls.push_back(add_button(G, "adventure_reset", {460, 366, 720, 404}, "Use party scaling", [] { change_adventure(4, 1); }));
+    add_label(G, {40, 410, 720, 436}, "Settings are fixed during play. Friendly fire affects party captains.", kDim);
+    D.adventure_status = add_label(G, {40, 444, 720, 478}, "", kYellow);
+    add_button(G, "adventure_back", {40, 488, 240, 528}, "Back to lobby", [] { g_adventure_page = false; g_dirty = true; });
+    auto& R = D.page_preparation;
+    D.prep_no_preview = add_label(R,{40,106,112,174},"No preview",kDim,sui::kAlignCenter);
+    D.prep_title = add_label(R,{126,108,720,136},"",kGold);
+    D.prep_author = add_label(R,{126,138,720,162},"",kDim);
+    D.prep_hint = add_label(R,{40,178,720,204},"",kYellow);
+    for (int i=0;i<4;++i) {
+        float x=40.f+i*172.f;
+        D.prep_player[i]=add_label(R,{x,210,x+164,236},"",kGold,sui::kAlignCenter);
+        D.prep_placeholder[i]=add_label(R,{x,252,x+164,310},"No portrait",kDim,sui::kAlignCenter);
+        D.prep_captain[i]=add_label(R,{x,338,x+164,364},"",kWhite,sui::kAlignCenter);
+        D.prep_stage[i]=add_label(R,{x,366,x+164,392},"",kDim,sui::kAlignCenter);
+        D.prep_ready[i]=add_label(R,{x,394,x+164,420},"",kYellow,sui::kAlignCenter);
+    }
+    for (int i=0;i<2;++i) D.prep_chat[i]=add_label(R,{40,422.f+i*21,720,442.f+i*21},"",kWhite,sui::kAlignCenter);
+    D.prep_edit=add_edit(R,"prep_chat",{40,466,580,496},"",120);
+    auto send_prep=[] {
+        std::string message=sui::edit_text(D.prep_edit);
+        if (!message.empty()) { A.say(message); sui::set_edit_text(D.prep_edit,""); }
+    };
+    add_button(R,"prep_send",{590,462,720,496},"Send",send_prep);
+    if (D.prep_edit) sui::add_handler(D.prep_edit,[send_prep](Win,const sui::Msg& m) {
+        if (m.type==sui::kMsgKeyDown && (m.b&0xFFFF)==VK_RETURN) { send_prep(); return true; }
+        return false;
+    });
+    D.prep_ready_btn=add_button(R,"prep_ready",{30,506,156,542},"Ready",[] { A.set_ready(!A.ready()); });
+    D.prep_change=add_button(R,"prep_change",{166,506,316,542},"Change captain",[] { if(A.change_captain) A.change_captain(); });
+    add_button(R,"prep_settings",{326,506,426,542},"Settings",[] { g_adventure_page=true; g_dirty=true; });
+    add_button(R,"prep_cancel",{436,506,606,542},"Cancel adventure",[] { if(A.cancel_adventure) A.cancel_adventure(); });
+    add_button(R,"prep_leave",{616,506,740,542},"Leave party",[] { A.leave(); });
+    for (const char* name : {"prep_ready","prep_change","prep_settings","prep_cancel","prep_leave","prep_send"})
+        sui::set_caption_padding(g_named[name],3.f);
     // Enter in the chat field sends the message
     if (D.chat_edit)
         sui::add_handler(D.chat_edit, [](Win, const sui::Msg& m) {
@@ -667,8 +810,17 @@ static void refresh_lobby()
     show(D.creation_next, can);
     bool host = A.role() == 1;
     text(D.ready_btn, A.ready() ? T("Not ready", "Не готов") : T("I'm ready", "Я готов"));
-    show(D.share_btn, host);
-    text(D.share_btn, A.vote_active && A.vote_active() ? T("Start now", "Начать сейчас") : T("Send my world", "Отправить мир"));
+    ga::Difficulty difficulty;
+    int party = 1;
+    bool editable = false;
+    std::string adventure_status;
+    bool adventure = adventure_view(difficulty, party, editable, adventure_status);
+    bool waiting=A.party_waiting && A.party_waiting();
+    if(waiting) text(D.ready_btn,"Waiting for party");
+    sui::set_enabled(D.ready_btn,!waiting);
+    show(D.share_btn, host || adventure);
+    text(D.share_btn, adventure ? "Adventure settings" : A.vote_active && A.vote_active() ? T("Start now", "Начать сейчас") : T("Send my world", "Отправить мир"));
+    if(waiting) text(D.share_btn,"Cancel adventure");
     text(D.leave_btn, host ? T("Stop hosting", "Закрыть игру") : T("Leave", "Выйти"));
 }
 
@@ -697,6 +849,73 @@ static void refresh_space()
     show(D.space_next, pages > 1);
     show(D.space_pageno, pages > 1);
     text(D.space_pageno, std::to_string(g_space_first / kSpaceRows + 1) + "/" + std::to_string(pages));
+}
+
+static void refresh_adventure()
+{
+    ga::Difficulty difficulty;
+    int party = 1;
+    bool editable = false;
+    std::string status;
+    if (!adventure_view(difficulty, party, editable, status)) {
+        g_adventure_page = false;
+        g_dirty = true;
+        return;
+    }
+    const char* deaths[] = {"Teammate revival", "Any death fails", "Teammate revival + automatic recovery"};
+    unsigned mode = static_cast<unsigned>(difficulty.death_mode);
+    text(D.adventure_death, std::string("Death rule: ") + (mode < 3 ? deaths[mode] : "Invalid"));
+    char line[192];
+    snprintf(line, sizeof line, "Enemy health: %.2fx%s", difficulty.health_multiplier(party),
+             difficulty.enemy_health_override == 0 ? " (party scaling)" : " (host override)");
+    text(D.adventure_health, line);
+    snprintf(line, sizeof line, "Enemy damage: %.2fx", difficulty.damage_multiplier());
+    text(D.adventure_damage, line);
+    text(D.adventure_fire, "Friendly fire: " + std::to_string(difficulty.friendly_fire_percent) + "%");
+    text(D.adventure_status, status.empty() ? editable ? "Host: choose settings, then select an adventure in the Sporepedia."
+                                                                        : "Only the host can change settings before an attempt."
+                                                  : status);
+    for (Win w : D.adventure_controls)
+        sui::set_enabled(w, editable);
+}
+
+static void refresh_preparation(const ga::PreparationView& view)
+{
+    auto adventure=card(view.adventure);
+    text(D.prep_title,short_text(adventure.name.empty()?"Preparing adventure":adventure.name,55));
+    text(D.prep_author,adventure.author.empty()?"":"By "+short_text(adventure.author,48));
+    picture(D.adventure_picture,adventure.image,{40,106,112,174},true);
+    show(D.prep_no_preview,!D.adventure_picture.window);
+    text(D.prep_hint,view.loading?"Loading adventure together...":view.locked_captain.instance?
+         "Authored captain required. Everyone must press Ready.":"Choose your captain, then press Ready to join the adventure.");
+    auto players=A.players();
+    for (int i=0;i<4;++i) {
+        bool occupied=size_t(i)<view.members.size();
+        const ga::PreparationMember* m=occupied?&view.members[i]:nullptr;
+        PlayerRow player;
+        if (m) for (const auto& p:players) if(p.id==m->player) player=p;
+        auto key=m && A.captain_key?A.captain_key(m->player):dbpf::Key{};
+        auto captain=card(key);
+        text(D.prep_player[i],occupied?short_text(player.name,11)+(player.host?" (H)":player.me?" (you)":""):"Open slot");
+        float x=40.f+i*172.f;
+        picture(D.captain_picture[i],captain.image,{x+34,238,x+130,334},occupied);
+        show(D.prep_placeholder[i],occupied&&!D.captain_picture[i].window);
+        text(D.prep_captain[i],occupied?short_text(captain.name.empty()?key.instance?"Unnamed captain":"Choosing captain":captain.name,17):"");
+        std::string stage;
+        if(m) {
+            const char* stages[]={"Content","Selecting","Name / review","Saving","Sharing","Captain saved"};
+            stage=stages[unsigned(m->stage)];
+            if(m->stage==ga::PreparationStage::Content||m->stage==ga::PreparationStage::Sharing) stage+=" "+std::to_string(m->progress)+"%";
+        }
+        text(D.prep_stage[i],stage);
+        text(D.prep_ready[i],m?(m->ready?"Ready":m->validated?"Not ready":"Preparing..."):"");
+        color(D.prep_ready[i],m&&m->ready?kGreen:kYellow);
+    }
+    auto chat=A.chat();
+    for(int i=0;i<2;++i) { int j=int(chat.size())-2+i; text(D.prep_chat[i],j>=0?short_text(chat[j],52):""); }
+    text(D.prep_ready_btn,A.ready()?"Not ready":"Ready");
+    sui::set_enabled(D.prep_ready_btn,!view.loading && A.can_ready && A.can_ready());
+    sui::set_enabled(D.prep_change,!view.loading && !view.locked_captain.instance && A.can_ready && A.can_ready());
 }
 
 static void refresh()
@@ -729,25 +948,46 @@ static void refresh()
         return;
     }
     bool lobby = A.role() != 0;
+    ga::PreparationView preparation;
+    bool preparing = lobby && A.preparation && A.preparation(preparation);
+    if (preparing && preparation.run != g_last_preparation_run)
+        g_adventure_page = false;
+    g_last_preparation_run = preparing ? preparation.run : 0;
+    if (!lobby)
+        g_adventure_page = false;
     bool space = lobby && A.mode && A.mode() == modes::kSpace;
-    if (!space)
+    if (!space || preparing || g_adventure_page)
         g_space_page = false;
+    const Page page = select_page(lobby, preparing, g_adventure_page, g_space_page);
     for (Win w : D.page_connect)
-        show(w, !lobby);
+        show(w, page == Page::Connect);
     for (Win w : D.page_lobby)
-        show(w, lobby && !g_space_page);
+        show(w, page == Page::Lobby);
     for (Win w : D.page_space)
-        show(w, lobby && g_space_page);
-    show(D.space_btn, space && !g_space_page);
-    text(D.subtitle, lobby && g_space_page ? T("CO-OP: SPACE", "КООПЕРАТИВ: КОСМОС")
+        show(w, page == Page::Space);
+    for (Win w : D.page_adventure)
+        show(w, page == Page::AdventureSettings);
+    for (Win w : D.page_preparation)
+        show(w, page == Page::Preparation);
+    show(D.space_btn, space && page == Page::Lobby);
+    if (page != Page::Preparation) {
+        show(D.adventure_picture.window, false);
+        for (auto& p : D.captain_picture) show(p.window, false);
+    }
+    text(D.subtitle, page == Page::AdventureSettings ? "ADVENTURE DIFFICULTY"
+                     : page == Page::Space ? T("CO-OP: SPACE", "КООПЕРАТИВ: КОСМОС")
                      : lobby ? T("CO-OP LOBBY", "ЛОББИ КООПЕРАТИВА") : T("CO-OP", "КООПЕРАТИВ"));
     if (A.version_line)
         text(D.version, A.version_line());
     if (A.lan_scan)
         A.lan_scan(!lobby);
-    if (lobby && g_space_page)
+    if (page == Page::AdventureSettings)
+        refresh_adventure();
+    else if (page == Page::Preparation)
+        refresh_preparation(preparation);
+    else if (page == Page::Space)
         refresh_space();
-    else if (lobby)
+    else if (page == Page::Lobby)
         refresh_lobby();
     else
         refresh_connect();
@@ -854,6 +1094,15 @@ std::string debug_state()
                     (A.role() ? (g_space_page ? "space" : "lobby") : "connect") +
                     " menu_button=" + (g_menu_btn ? "yes" : "no") + "\n";
     char b[256];
+    ga::PreparationView preparation;
+    if(A.preparation && A.preparation(preparation)) {
+        s += "prep_controls ready_enabled="+std::to_string(bool(sui::flags(D.prep_ready_btn)&sui::kFlagEnabled))+" change_enabled="+std::to_string(bool(sui::flags(D.prep_change)&sui::kFlagEnabled))+" adventure_portrait="+std::to_string(D.adventure_picture.window!=nullptr)+"\n";
+        s += "preparation run="+std::to_string(preparation.run)+" revision="+std::to_string(preparation.revision)+" epoch="+std::to_string(preparation.epoch)+" title='"+sui::caption(D.prep_title)+"' author='"+sui::caption(D.prep_author)+"'\n";
+        for(size_t i=0;i<preparation.members.size();++i) {
+            const auto& m=preparation.members[i];
+            s += "captain player="+std::to_string(m.player)+" serial="+std::to_string(m.serial)+" name='"+sui::caption(D.prep_captain[i])+"' portrait="+std::to_string(D.captain_picture[i].window!=nullptr)+" ready="+std::to_string(m.ready)+" stage="+std::to_string(unsigned(m.stage))+"\n";
+        }
+    }
     if (g_menu_btn) {
         Rect r = sui::screen_rect(g_menu_btn);
         snprintf(b, sizeof b, "menu %.0f %.0f %.0f %.0f %d '%s'\n", r.x1, r.y1, r.x2, r.y2,
@@ -863,7 +1112,7 @@ std::string debug_state()
     for (auto& [name, w] : g_named) {
         Rect r = sui::screen_rect(w);
         bool vis = sui::visible(w) && D.root && sui::visible(D.root);
-        std::string cap = name == "name" || name == "address" || name == "port" || name == "chatedit"
+        std::string cap = name == "name" || name == "address" || name == "port" || name == "chatedit" || name == "prep_chat"
                               ? sui::edit_text(w) : sui::caption(w);
         snprintf(b, sizeof b, "%s %.0f %.0f %.0f %.0f %d '%s'\n", name.c_str(), r.x1, r.y1, r.x2, r.y2, (int)vis,
                  cap.c_str());

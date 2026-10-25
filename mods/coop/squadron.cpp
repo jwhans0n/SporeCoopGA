@@ -46,6 +46,7 @@ static void* player_ufo()
 static std::vector<void*> all_ufos()
 {
     std::vector<void*> r;
+    if (!g_ok || !a_GetAllUFOs) return r;
     void* nm = game::noun_manager();
     void* v = nm ? thiscall<void*>(a_GetAllUFOs, nm) : nullptr;
     if (!v)

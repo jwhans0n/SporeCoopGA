@@ -13,7 +13,7 @@
 namespace upd {
 
 // the GitHub API answer for the newest release (override for tests: [update] url in coop.ini)
-constexpr const char* kLatestUrl = "https://api.github.com/repos/WoodyWizard/SporeCoop/releases/latest";
+constexpr const char* kLatestUrl = "https://api.github.com/repos/jwhans0n/SporeCoopGA/releases/latest";
 
 using Progress = std::function<void(uint64_t got, uint64_t total)>;
 bool http_get(const std::string& url, std::vector<uint8_t>& out, std::string& err, const Progress& progress = {},

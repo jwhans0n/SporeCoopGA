@@ -2,6 +2,115 @@
 
 ## [Unreleased]
 
+## [0.7.3.0-ga-preview.7] - 2026-10-24
+
+Fork integration of upstream SporeCoop 0.7.2.1 and Galactic Adventures previews 1-6.
+The fork is maintained at [jwhans0n/SporeCoopGA](https://github.com/jwhans0n/SporeCoopGA),
+with the original SporeCoop project and its authors credited below and in README.md.
+
+- Retain upstream SporeKit 0.3.4 diagnostics, crash/hang reports, Steam DRM and
+  frame-loop support, and the existing non-adventure stages.
+- Include shared Sporepedia adventure preparation, saved captain creation/transfer,
+  explicit party readiness, group scenes, Replay, actor/combat/objective replication,
+  static-object traffic reduction and shared native interactions from preview 6.
+- Use protocol 10: every participant needs this fork build. Upstream 0.7.0-0.7.2.1
+  uses a different protocol and cannot join this preview.
+- Keep the native adventure adapter restricted to exact GOG executable SHA-256
+  `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
+  Upstream Steam and same-code recognition remains available for other stages;
+  it does not establish Steam Galactic Adventures support.
+- Direct fork downloads, update checks and new problem reports to SporeCoopGA.
+  No tag or release is created by this integration.
+
+### Earlier Galactic Adventures previews
+
+### Shared static objects and interactions: 0.7.0-ga-preview.6
+
+- Send verified stationary buildings and props once, then send reliable changed
+  health/state. Continue observing movement and promote moved, carried and thrown
+  objects to spatial replication. Creature and vehicle update rates stay unchanged.
+- Let the host own native mine, barrel, bomb and grenade activation, delayed
+  chains, damage and removal. Treat their explosions as environmental hazards
+  regardless of friendly fire. Preserve harmless crate behavior and native fuses.
+- Keep initial powerup spawning during group holds. Allow a timed bomb to be
+  picked up and thrown again while its original fuse continues.
+- Share pickup consumption and authored respawns. Apply health, speed, damage and
+  shield upgrades only to the collecting captain, with shared simulation expiry.
+- Validate authored teleport exits per captain, synchronize native cleanup and
+  cooldowns, and reject movement from before the teleport correction.
+- Preserve preparation message order during Replay cleanup so new content and
+  captain transfers reach the new run, including open-captain adventures.
+- Preserve shared keys/gates, saved captain creation, group scenes, Replay and the
+  existing performance fix. Protocol 10 requires the same preview on every player;
+  adventure/captain bundle formats and asset caching remain unchanged.
+
+### Adventure party flow: 0.7.0-ga-preview.5
+
+- Require every participant to confirm beam-down Continue before gameplay and
+  adventure clocks advance. Show who is still confirming.
+- Present objective conversations to the whole party, retain independent dialog
+  pages and complete the objective only after everyone presses Finished.
+- Route native Replay back through the shared lobby with saved captains and
+  everyone unready. Any participant may request it after accepting results.
+- Render remote captains from the current validated selection and copy their
+  owner's actual scale. Reject old run/selection packets and rebuild stale models.
+- Validate shared colored keys and gates on the host, synchronize native opening
+  and key consumption, and reconstruct the correct open gate after replica loss.
+- Retain preparation recovery and the large-adventure FPS fix. Protocol 9 requires
+  this preview on every participant; resource bundle formats remain unchanged.
+
+### Shared adventure lobby: 0.7.0-ga-preview.4
+
+- Accept native music event 1 used by Mr Puzzle's Magical Gates, preserving the
+  authored setting and retaining validation of unsupported custom dependencies.
+- Show the adventure artwork, title and author with four shared saved-captain
+  cards, native portraits, saved captain names, transfer progress and readiness.
+- Require explicit Ready from the host and every guest. Captain replacement
+  clears party readiness; cancelling replacement keeps the saved captain.
+- Synchronize preparation with run/revision/selection guards. Protocol 8 requires
+  the same preview on every participant. Keep preview 3 recovery and the FPS fix.
+
+### Galactic Adventures captain recovery: 0.7.0-ga-preview.3
+
+- Guests use native captain creation, naming, review and saving before sharing
+  their captain. Existing saved captains and authored captain restrictions remain.
+- Gate early loading animations until the native captain save completes. Readiness
+  reflects validated captain preparation and required transfer acknowledgements.
+- Cancelled preparation closes owned native pickers and restores both galaxy
+  application state and game mode. Clear pending callbacks and readiness on
+  cancellation/disconnect so the same adventure can be retried without restarting.
+- Retain preview 2's large-adventure performance fix and the existing wire format.
+
+### Galactic Adventures performance fix: 0.7.0-ga-preview.2
+
+- Batch memory-region validation during read-only actor traversals instead of
+  querying Windows for every field of every actor. Mapping checks remain fresh
+  between traversals, native mutations and frames.
+- Remove the guest's duplicate per-frame actor enumeration and keep native
+  result bookkeeping out of frequently called eligibility queries.
+- Add a two-session, 400-plus-actor FPS regression and native tests for guarded,
+  inaccessible and released memory. Network format and friendly-fire rules are
+  unchanged from preview 1.
+
+### Galactic Adventures preview: 0.7.0-ga-preview.1
+
+- Start a party adventure through the host's normal Sporepedia Play button, choose
+  personal captains, transfer supported missing adventure/captain assets, and wait
+  for every participant to finish loading before play begins.
+- Share host-authoritative actors, combat, objectives and act changes. Configure
+  enemy health/damage, friendly fire, teammate revival, automatic recovery or
+  failure on any death in Adventure settings.
+- Retain each player's local captain for native XP, progression and saving while
+  suppressing co-op submissions to the single-player adventure leaderboard.
+- Two isolated native Windows instances verified launch, guest objectives, actor
+  cleanup, friendly-fire settings, death/revival rules, native success/failure UI,
+  and captain progression persisting across restart. This is not a complete
+  adventure playthrough or four-player validation.
+- The native GA adapter is verified only for GOG March 2017 executable SHA-256
+  `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
+  Other stages on that executable remain unvalidated. See
+  [the preview guide](docs/GALACTIC-ADVENTURES.md) for setup and remaining limits.
+
 ## [0.7.2.1] - 2026-10-24
 
 Finding problems: crash reports ready to send, kept logs, the version in the game. 0.7.2.1 plays

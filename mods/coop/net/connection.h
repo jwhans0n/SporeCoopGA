@@ -44,6 +44,8 @@ constexpr unsigned kRelWindow = 2048;
 
 struct ConnStats {
     uint32_t packets_sent = 0, packets_recv = 0, resends = 0, acked = 0;
+    // Actual UDP payload bytes, including headers and retransmitted messages.
+    uint64_t bytes_sent = 0, bytes_recv = 0;
 };
 
 class Connection {

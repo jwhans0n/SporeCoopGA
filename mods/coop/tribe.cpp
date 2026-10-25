@@ -47,6 +47,8 @@ bool active() { return g_ok && C.sess && C.sess->connected() && game::mode_id() 
 
 static void* player_tribe()
 {
+    if (!a_GetPlayerTribe)
+        return nullptr;
     void* nm = game::noun_manager();
     return nm ? thiscall<void*>(a_GetPlayerTribe, nm) : nullptr;
 }
@@ -1152,6 +1154,8 @@ void for_each_owned(void (*fn)(void* citizen, uint8_t owner, void* user), void* 
 
 std::string status()
 {
+    if (!g_ok)
+        return "tribe: unavailable for this executable\n";
     char b[256];
     if (C.sess && C.sess->role() == net::Role::Host)
         snprintf(b, sizeof b, "tribe(host): members=%u cmds_done=%u rejected=%u gifts=%u unselected=%u\n",

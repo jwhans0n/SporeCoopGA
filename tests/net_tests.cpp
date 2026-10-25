@@ -15,6 +15,7 @@
 #include "net/connection.h"
 #include "net/discovery.h"
 #include "net/interp.h"
+#include "net/adventure_motion.h"
 #include "net/session.h"
 
 using namespace net;
@@ -35,13 +36,26 @@ static void test_buffer()
     s.id = 3; s.time_ms = 123456; s.pos = {1, 2, 3}; s.rot = {0, 0, 0.7071f, 0.7071f};
     s.vel = {4, 5, 6}; s.flags = PF_IN_WORLD | PF_RUNNING; s.anim = 7; s.health = 50; s.max_health = 100;
     s.species = 0xDEADBEEF;
+    s.scale=1.73f; s.adventure_run=0x1122334455667788ULL; s.captain_selection=0x8877665544332211ULL;
+    s.movement_generation=0xFEDCBA9876543210ULL;
     Writer w;
     s.write(w);
+    CHECK(w.size() == 95); // protocol 10, including the appended GA identity and teleport fields
     Reader r(w.data.data(), w.size());
     PlayerState t;
     CHECK(t.read(r));
     CHECK(t.id == 3 && t.time_ms == 123456 && t.pos.z == 3 && t.rot.w > 0.7f && t.flags == s.flags);
     CHECK(t.species == 0xDEADBEEF && t.max_health == 100);
+    CHECK(t.scale==s.scale && t.adventure_run==s.adventure_run && t.captain_selection==s.captain_selection);
+    CHECK(t.movement_generation==s.movement_generation);
+    CHECK(r.left() == 0);
+    // In particular, the upstream protocol 7 PlayerState prefix (67 bytes) cannot
+    // silently supply default GA identity fields after merging the two branches.
+    for (size_t bytes = 0; bytes < w.size(); ++bytes) {
+        Reader truncated(w.data.data(), bytes);
+        PlayerState incomplete;
+        CHECK(!incomplete.read(truncated));
+    }
     Reader bad(w.data.data(), 5);
     PlayerState u;
     CHECK(!u.read(bad));
@@ -58,6 +72,36 @@ static void test_buffer()
     w3.f64(123456.75);
     Reader r3(w3.data.data(), w3.size());
     CHECK(r3.u8() == 3 && r3.f64() == 123456.75 && r3.ok() && r3.left() == 0);
+}
+
+static void test_adventure_motion()
+{
+    printf("adventure teleport ordering and movement history\n");
+    AdventureMotion fence;
+    fence.begin(12);
+    PlayerState player;
+    player.id=2; player.mode=0x01654C10; player.adventure_run=12;
+    CHECK(fence.accepts(player));
+    const Vec3 exit{200,300,400}; const Quat rotation{0,0,0,1};
+    CHECK(fence.correct(12,2,8,exit,rotation));
+    CHECK(!fence.accepts(player)); // old UDP position after the reliable teleport
+    player.movement_generation=8;
+    CHECK(fence.accepts(player));
+    CHECK(!fence.correct(12,2,8,exit,rotation)); // duplicate must not reset movement again
+    CHECK(!fence.correct(12,2,7,exit,rotation));
+    CHECK(!fence.correct(11,2,20,exit,rotation)); // cancelled run callback
+    CHECK(!fence.correct(12,2,9,exit,{0,0,0,0}));
+    CHECK(!fence.correct(12,255,9,exit,rotation));
+    player.movement_generation=9;
+    CHECK(!fence.accepts(player)); // future pose waits for its host correction
+    player.id=1; player.movement_generation=0;
+    CHECK(fence.accepts(player)); // independent captain teleports
+    fence.begin(13); player.adventure_run=12;
+    CHECK(!fence.accepts(player));
+    player.adventure_run=13;
+    CHECK(fence.accepts(player));
+    fence.reset();
+    CHECK(fence.generation(2)==0);
 }
 
 // a snapshot in several big unreliable chunks: every chunk goes out (one per packet), none is lost
@@ -233,6 +277,58 @@ static void test_session()
     CHECK(bad.join("127.0.0.1:" + std::to_string(port), "x", err));
     pump(host, bad, 300);
     CHECK(why.find("build") != std::string::npos);
+}
+
+static void test_protocol_versions()
+{
+    printf("merged protocol boundary and HELLO version validation\n");
+    CHECK(kProtoVersion == 10 && kDiscoverPorts == 20);
+    CHECK(MSG_SPACE == 48 && MSG_ADVENTURE == 52);
+    Session host;
+    std::string err;
+    CHECK(host.host(0, "host", err));
+    UdpSocket socket;
+    CHECK(socket.open(0));
+    Endpoint destination;
+    CHECK(Endpoint::parse("127.0.0.1", host.port(), destination));
+    Connection guest;
+    guest.conn_id = 0x12345678;
+    Hello old;
+    old.proto = 7;
+    old.name = "old-version";
+    Writer hello;
+    old.write(hello);
+    guest.send_reliable(MSG_HELLO, hello);
+    std::vector<uint8_t> packet;
+    CHECK(guest.build_packet(1000, packet));
+    CHECK(Connection::looks_valid(packet.data(), packet.size()));
+    auto upstream = packet;
+    upstream[4] = 7;
+    upstream[5] = 0;
+    CHECK(!Connection::looks_valid(upstream.data(), upstream.size()));
+    bool delivered = false;
+    Connection receiver;
+    CHECK(!receiver.on_packet(upstream.data(), upstream.size(), 1000,
+                             [&](uint8_t, Reader&) { delivered = true; }));
+    CHECK(!delivered);
+    // A current transport carrying an incompatible HELLO receives an explicit
+    // rejection. Older transport headers are discarded before HELLO decoding.
+    CHECK(socket.send_to(destination, packet.data(), packet.size()));
+    Reject rejection;
+    for (int i = 0; i < 100 && !rejection.reason; ++i) {
+        host.update();
+        uint8_t data[2048];
+        Endpoint from;
+        for (int n; (n = socket.recv_from(from, data, sizeof data)) > 0;)
+            guest.on_packet(data, size_t(n), 1000 + i * 5, [&](uint8_t type, Reader& payload) {
+                CHECK(type == MSG_REJECT);
+                CHECK(rejection.read(payload));
+            });
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    CHECK(rejection.reason == REJ_VERSION);
+    CHECK(rejection.text.find("protocol") != std::string::npos);
+    CHECK(host.players().size() == 1);
 }
 
 // a UDP relay between guests and the host (like tools/tests/netem.py or a NAT that keeps its mapping):
@@ -594,6 +690,8 @@ static void test_updater()
           upd::compare_versions("0.10.0", "0.9.9") == 1 && upd::compare_versions("1.0", "1.0.1") == -1);
     CHECK(upd::compare_versions("0.7.2.1", "0.7.2") == 1 && upd::compare_versions("0.7.3", "0.7.2.1") == 1 &&
           upd::compare_versions("v0.7.2.1", "0.7.2.1") == 0);
+    CHECK(upd::compare_versions("0.7.3.0-ga-preview.7", "0.7.2.1") == 1);
+    CHECK(upd::compare_versions("0.7.3.1-ga-preview.8", "0.7.3.0-ga-preview.7") == 1);
     const char* json = R"({"html_url":"https://github.com/WoodyWizard/SporeCoop/releases/tag/v0.5.1","tag_name":"v0.5.1",
       "assets":[{"name":"SporeCoop-0.5.1.zip","browser_download_url":"https://github.com/WoodyWizard/SporeCoop/releases/download/v0.5.1/SporeCoop-0.5.1.zip"},
       {"name":"SporeCoop-0.5.1.pack","browser_download_url":"https://github.com/WoodyWizard/SporeCoop/releases/download/v0.5.1/SporeCoop-0.5.1.pack"},
@@ -610,6 +708,7 @@ static void test_updater()
 int main()
 {
     test_buffer();
+    test_adventure_motion();
     test_unreliable_chunks();
     test_dbpf();
     test_refpack_untrusted();
@@ -619,6 +718,7 @@ int main()
     test_bulk();
     test_bulk_bad_link();
     test_session();
+    test_protocol_versions();
     test_rejoin_same_endpoint();
     test_big_snapshot();
     test_interp();

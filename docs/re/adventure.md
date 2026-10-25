@@ -1,0 +1,548 @@
+# Galactic Adventures co-op entry and rules
+
+The implementation targets the installed March2017 Galactic Adventures executable,
+SHA256 `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
+See [build-dc04.md](build-dc04.md) for compatibility and isolated native Windows
+testing, and [adventure-world.md](adventure-world.md) for content and world interfaces.
+Addresses below are preferred PE addresses. Runtime code resolves named symbols.
+
+## Party protocol
+
+Protocol version 9 reserves message 52 for adventures. Coordinator messages use
+subkinds 0..63, content 64..71, world 128..159, party scenes 160..163, and captain
+models 192..223.
+The host freezes the roster and difficulty when Play is selected. Every roster member
+must verify the content manifest, select the required/personal captain, confirm
+readiness, load the same adventure and acknowledge the loaded captain before commit.
+New joins and reconnects wait for the next attempt. Disconnecting during preparation
+cancels the attempt; a disconnected captain cannot rescue or continue acting.
+
+The portable model is `net/adventure.*`; the runtime coordinator is `adventure.*`.
+All native loading, picker and result operations are queued outside Present. Monotonic
+run IDs, sender identity, phase checks and event/snapshot revisions reject stale or
+replayed messages. The host's simulation clock pauses with the native game.
+
+## Difficulty
+
+The host edits the lobby's Adventure settings before launch. Defaults are proximity
+revival (2 metres, 3 seconds), enemy health `1 + 0.5*(N-1)`, enemy damage 1, and
+captain-to-captain friendly fire 0%. Overrides replace the enemy multipliers; they do
+not multiply the party default again. N is the frozen launch roster size.
+
+Alternative death modes are any death fails, or proximity revival plus automatic
+revival after 30 seconds. Revival restores 50% health at the downed location, with
+2 seconds of damage protection. Moving the rescuer away, taking damage, disconnecting
+or becoming downed resets progress. One rescuer attends each downed captain; one
+rescuer cannot revive multiple captains at once. A full party wipe fails immediately,
+including when automatic revival is enabled. Inventory and energy remain native.
+
+Friendly fire choices are 0%, 25%, 50% and 100%, applied by the host to attributed
+captain hits. Self damage and allied NPC damage retain their authored amounts.
+The native combatant owner conversion is virtual `+0C`, so vehicle/building attackers
+are not incorrectly treated as creature subobjects. Native healing damage type 10
+uses the authoritative heal path. Authored captain invulnerability is retained;
+temporary downed immunity is restored only on the same live captain object.
+
+## Native entry
+
+`ResetRequest=EF1910` is cdecl, plain return at EF1962. Its request at `15ACCC8`
+contains adventure key `+0`, auxiliary key `+C`, captain key `+18`, entry kind `+24`
+and source kind `+28`. Native normal quick-play uses `(2,1)`; Space uses `(2,2)`.
+Space entry and editor preview are outside this feature's entry scope.
+
+`LoadingScreenGet=B3D510` is cdecl. `LoadingScreenShow=E3E350` is thiscall with
+`(bool on, uint32 modeID, bool transition)`, `retC` at E3E7ED. The usual arguments
+are `(1,01654C10,1)`. **This method displays UI and sends loading messages; it does
+not itself prevent a queued scenario transition.** An initial live test blocked it
+on a content error but the native state machine still entered Scenario.
+
+The adapter additionally gates `cGameModeManager::SwitchToIndex=7D8670` before the
+old mode's OnExit. Registry begin/end are manager `+14/+18`, entry stride `18`, mode
+ID at entry `+4`. The switch is thiscall with an index, `ret4`. Public
+`SetActiveMode=7D8CF0` accepts a mode ID, returns bool in AL and uses `ret4`.
+Replay sets the native request, shows loading and explicitly requests Scenario.
+Failed partial loads return to the galaxy menu through this same verified API.
+
+Scenario singleton `16C7AA4` holds data `+74`, play mode `+78`, and mode `+CC`.
+Loaded acknowledgement requires mode 2, data loaded `+124`, no missing assets
+`+14`, matching resource key at resource `+8`, a live avatar and loading screen
+visibility `+370` false. The first allocated avatar can still have provisional
+health before the loading screen closes, so its existence alone is insufficient.
+PlayMode::Update and creature updates are frozen until every captain has loaded.
+
+## Captain selection and results
+
+ShopperRequest ctor `644AC0` and dtor `644B10` are thiscall, plain returns; Show
+`64A900` is cdecl taking a request pointer. The 0x48-byte native request uses shipped
+configuration `5D4875D0` (inheriting B6277D21), Adventurer tab `8DF88930`, My Captains
+query `54C9C37C`, and model type `4178B8E8`. That model type is not a resource group.
+GetAssetModelType `EECAC0` is cdecl taking a ResourceKey pointer.
+
+AssetBrowser getter `401030` returns `[15D0C0C]`. Its unmanaged single-selection
+listener is at browser `+1A0`; vtable slot 0 is thiscall `(ResourceKey*)`. Accept
+and cancellation both call it; cancellation supplies a zero key. Reset detaches
+only owned listeners before destroying them. A native ABI fixture tests this
+contract, model/gear transfer, owner-specific remapping and every-peer acknowledgements.
+The selected local captain keeps its original key for native progression.
+
+Coordinator results enqueue at most one native result callback per attempt. Downed
+connected captains remain eligible; disconnected captains do not. The callback is
+guarded by generation and run, so reset/disconnect or a superseding attempt can
+cancel queued work. The in-memory claim is not a durable reward transaction, and
+the void native adapter does not acknowledge successful progression or saving.
+Native SetState 5/6 retains the
+normal local results/progression path. Native results function F15770 submits
+asset statistics `2D59837B` and `706CCB27` through Pollinator `60E920` (thiscall,
+stat ID, key pointer, int64 values pointer, count; `ret10`). During a co-op attempt
+the adapter suppresses those two submissions, preserving other native statistics.
+The suppression count appears in `coop.adventure` diagnostics. The controlled
+success/Done/restart test below verified the native progression path on both
+original captains; a full objective-driven adventure playthrough remains separate.
+
+## Validation
+
+`make test` covers portable networking, difficulty, launch barriers, authority,
+content validation, health tuning, and the coordinator over real UDP with fake
+native adapters. Result regressions cover duplicate/conflicting queued results,
+forged and stale packets, downed/disconnected eligibility, and reset cancellation.
+The optional Windows ABI targets are `test-captains-windows`,
+`test-lifecycle-windows`, `test-actions-windows`, `test-vehicles-windows`,
+`test-mirror-windows`, `test-progress-windows`, `test-relationships-windows`,
+`test-social-windows`, `test-blocked-update-windows`, and
+`test-debug-capabilities-windows`. Their executables run with fake native adapters and do not
+launch the game.
+`tools/tests/coop_adventure.py` drives isolated native menu/captain fixtures;
+`tools/tests/windows_task_lifetime.py` verifies queued callback lifetime across
+actual DLL unload. Test artifacts stay under ignored `out/windows-lab` paths.
+
+Native Windows validation on the isolated instances 21 and 22 has passed:
+
+* Sporepedia Adventure Town entry reached the same committed two-player run and
+  world `6666E0D1`, with 405 synchronized actors and reciprocal captain puppets.
+  The local captain keys remained `29055757` and `29055759`, type `2B978C46`,
+  group `40626200`, and native model type `4178B8E8`. Both processes remained
+  alive without logged exceptions. The successful pair artifact is
+  `out/windows-lab/coop-adventure-pair/result.json`.
+* Friendly fire 0 blocked captain damage in both directions. Native friendly fire
+  25% passed with host-originated and guest-originated combat across the tested
+  source categories. Environmental damage and healing updated authoritative health.
+  Proximity revival restored the host to 45/90 HP, damage interrupted revival,
+  and the two-second post-revival damage protection held.
+* Automatic recovery restored 45/90 HP at the exact downed position after
+  30.135 seconds. Artifact: `out/windows-lab/adventure-recovery/result.json`.
+  Friendly fire 50% passed from both origins, applying 10 damage for a 20-damage
+  captain hit. Artifact: `out/windows-lab/ff50-hit/result.json`.
+* Friendly fire 100% applied full damage from both attack origins and preserved
+  self damage. With Any Death Fails, one captain's death failed both players,
+  applied the native failure result once, and Done returned both to the menu.
+  No native faults were logged. Artifact:
+  `out/windows-lab/ff100-any-death/result.json`.
+* The final world comparison contained 439 host and 439 guest actors with exact
+  `(marker,noun,class)` multiset equality, no missing or extra guest actors,
+  all 439 guest bindings, and an empty pending set. Each guest vehicle tree,
+  weapon, timer and actor suppression counter reached 1130; all four host
+  counters remained zero. Artifacts: `out/native-act-reconcile/final-comparison.json`
+  and its associated final diagnostic captures. This validates the tested
+  act-change cleanup case; broader world behavior remains under test.
+* The guest's Move objective advanced act 0 to 1. A native Talk completion
+  callback advanced act 1 to 2 after a brief snapshot wait; an act 2 Talk callback
+  also passed after waiting for the host to receive the guest's position. This
+  validates those routes, not every objective type or a complete adventure playthrough.
+* An ordinary guest mouse click on Mr. Mayor opened the native conversation with
+  cinematic/text, Next pages and its normal completion control. Finishing the
+  conversation advanced both players from act 1 to 2, with zero logged faults.
+  This used normal input without a completion injection. Artifact and screenshots:
+  `out/windows-lab/native-social-ui/talk-result.json`.
+* Ordinary guest conversations completed the Gallery and Playwright partial
+  objectives, then the third act 2 objective advanced both players to act 3.
+  Carnie's act 3 conversation completed one of that act's two objectives on both
+  players. The corresponding `native-social-ui/{gallery-retry,playwright,spoffit-side,carnie}/result.json`
+  artifacts report PASS. These are real dialog/Next-control cases, and do not
+  establish the remaining Town objectives or a full adventure playthrough.
+* Fresh-process `coop.targets objs` queries passed in Menu and Scenario after the
+  legacy enumerators gained missing-capability guards. Native relationship
+  queries gave the same result for either party captain within each instance,
+  and relationship-alias counters increased. This establishes alias routing,
+  not autonomous enemy targeting or cross-instance cache equality. Artifact:
+  `out/windows-lab/native-social-ui/relations-and-targets.json`.
+* The final frozen DLL passed a fresh normal Sporepedia two-player launch
+  (`out/windows-lab/coop-adventure-final-retry/result.json`) and guest Move
+  contribution (`out/windows-lab/native-final-regression/move/result.json`).
+  A controlled host act selection followed by a guest native Talk completion
+  callback completed one of three goals; the guest's native HUD displayed the
+  green Gallery text and completion check, with one HUD refresh and no pending
+  repaint. Artifacts: `native-final-regression/partial-goal/result.json` and
+  `22-hud-partial.png`. This isolates the snapshot-to-HUD route rather than
+  claiming a new ordinary dialog playthrough on that DLL.
+* With dynamic relationship snapshots active, guard marker 140's native predicate
+  returned non-hostile for both captains on both processes, and the guest's
+  authoritative relationship counter increased. Scenario object diagnostics
+  remained available and both processes reported zero faults. Artifact:
+  `out/windows-lab/native-final-regression/relationship-hud-targets.json`.
+  This checks the previously divergent relationship query without forcing AI
+  attacks or establishing every NPC behavior.
+* Music's Lotta recruitment passed through an ordinary NPC mouse click and native
+  Sing response (key 1), winning the actual social minigame and advancing the host
+  and guest from act 1 to 2 through AllyWith. Both processes reported zero faults.
+  Artifact: `out/windows-lab/native-social-input/lotta-recruit-sing/result.json`.
+  This proves the tested recruitment UI/goal route. A separately found impressed
+  flag parity issue required accepting native mode 4's genuine Befriend callback
+  before Ally. The final DLL repeated the ordinary recruitment test and native
+  read-only inspection confirmed flags `180` and cached relationship 6 on both
+  processes, with zero faults. Artifact:
+  `out/windows-lab/native-final-social/lotta-parity-retry/result.json`.
+* The final DLL passed ordinary neutral Kid Befriend through a real body click
+  and native Sing responses. Both processes gained impressed flag `80`; the
+  unrelated act 2 Talk objectives remained unchanged and neither process logged
+  a fault. No active Befriend objective was present. This establishes the tested
+  non-objective social completion route, not every authored Befriend goal.
+  Artifact: `out/windows-lab/native-final-social/kid-befriend/result.json`.
+* A full party wipe produced the failure ending. Accepting each native ending
+  with control `0445C99D` reached the actual Mission Failed results panel on both
+  instances, with Replay/Done available. The coordinator was ended, and each
+  instance reported one suppressed score submission. The host displayed XP
+  0/10 and zero points. No faults were logged in the subsequent check.
+  Both players also returned to the menu through the native failure Done button.
+* A controlled success reached Mission Complete on both players. After choosing
+  an unlocked reward and accepting Done, the original captains each changed from
+  XP 0/level 0 to XP 100/level 1. Each score-suppression counter was one, and each
+  native result guard reported applied state 5. Both reached the menu. Restarting
+  both complete game processes with the same isolated profiles retained XP 100
+  and level 1 on each original key. Artifact:
+  `out/windows-lab/adventure-results/result.json`, including `restart_persistence`.
+  This test used controlled completion and does not establish a full playthrough.
+* Cancelling a prepared or loaded attempt returned to the galaxy menu.
+
+At the initial preview's validation point, native Replay navigation, every authored objective type,
+simultaneous conversations, a complete adventure playthrough, four-player
+sessions and broader adventure compatibility remain validation work. The observed
+Done/restart persistence pass does not make the coordinator's in-memory claim a
+durable transaction across interruption. These passes do not establish that the
+full feature is complete.
+
+
+## Preview 4 party flow review (dc04)
+
+Source and installed-executable inspection on 2026-10-23 established the following
+limits. These findings do not represent an implemented fix or a new live fixture.
+
+* The coordinator commits after every native loaded acknowledgement, without an
+  acknowledgement of the beam-down Continue button. `adventure_native::loaded`
+  checks assets, avatar, mode and loading-screen visibility, not play state three.
+  The native Update jump table at `F1FF60` sends state three to `F1FB3B`.
+  Only that branch increments play `C0` and decrements `BC` (`F1FB56..F1FB6C`),
+  subject to its native cinematic/browser guards. Host goal snapshots supply
+  both authoritative clocks. A guest can enter local play before the host, and a
+  host state-three snapshot can set a guest to state three through `apply_goals`.
+  There is no all-player Continue barrier. The separate co-op recovery clock
+  tests the host time-manager pause flag, not the native play-state field.
+* Results message `070B18C7` with payload `+8=2` calls `EF1320` from
+  `F1C99B..F1C9A6`. This native replay method performs in-place Scenario teardown,
+  data reset and play reset (`EF0FE0`, `F45E70`, `F18F80`, `EF0E00`); it does
+  not pass through the Sporepedia loading hooks. The ended coordinator therefore
+  does not create a replacement run or restore preparation readiness.
+* Talk presentation is local to the initiating client. `count_goal` forwards a
+  guest's completed Talk objective to the host, which counts it once and can
+  advance the shared act. No conversation-start broadcast or party exit barrier
+  exists. Mirrored objective counts do not imply mirrored dialog presentation.
+* `net::PlayerState` carries no spatial scale. Scenario remote captains use
+  `creature_spawn` and are driven without copying the owner's actual scale.
+  This is a missing synchronization input consistent with the reported smaller
+  remote models; the precise native captain-to-NPC scale ratio is unmeasured.
+* Every party captain has the host-validated pickup/drop/give route. Pickup
+  rejects an item held by another captain. Actor snapshots carry transform,
+  health/death and social/relationship state, but no dedicated gate lock/open
+  state. Act changes and actor removal are synchronized separately. These paths
+  alone do not establish correct key consumption, gate animation or collision
+  synchronization for every native gate variant.
+
+## Preview 3: native captain preparation and cancelled quickplay recovery (dc04)
+
+Verified against SHA256 dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37.
+The evidence manifest in `tools/addrport/verify_dc04.py` checks each new native
+entry point, its return sites, and the globals/vtable references before map generation.
+
+- Native front-end singleton is `016A1344`. Its component registry at +124 is an
+  RB tree (root +0C, sentinel +4; node right +0, left +4, integer ID +10,
+  component pointer +14). Component13 is the native 178-byte quickplay controller,
+  primary vtable147EDA0, secondary unmanaged browser listener at controller+8.
+  Use bounded lookup, never the inserting native map accessor DE75E0.
+- Controller +20 is stage, +24 resume stage, +28 frame countdown, +2C native
+  step index. +8C adventure key, +98 pending adventure key, +A4 captain key,
+  +7C personal-captain flag, +7F needs naming, +80 launch-animation flag.
+  Native stage2 selects/creates, stage3 names/reviews, stage8 awaits metadata.
+- DFE1F0 starts the native choose/create/name/review flow (thiscall, no arguments,
+  C3 at DFE421). Offline first use may select Welcome automatically; finish that
+  lookup before replacing the adventure with the party descriptor.
+- E00070 selects adventure metadata (thiscall key*, ret4 E00166). With stage1,
+  asynchronous completion parses native captain restrictions before resuming.
+  DF9EC0 advances the native step vector (no arguments, C3 DF9F7E/DF9F84).
+  DFAAF0 controls wizard visibility (thiscall bool, ret4 DFAC66).
+- **The first loading-screen call is too early to publish a captain.** DFAE20
+  starts a launch animation; DFC210 emits a loading signal before its countdown
+  reaches DFBD40. DFBD40 converts a raw creature to model type4178B8E8, writes
+  the entered name, saves it, fills the launch request and changes application
+  state. It is thiscall/no arguments, C3 DFBFC7. Intercept after that save, with
+  stage0 and the matching active attempt, while still gating Scenario entry.
+- Reset DF9AA0 (no args, C3 DF9AF3) hides native step panels. Front-end DE8680
+  requests component13 or component2 (thiscall int,bool, ret8 at DE86DE/DE86F3/
+  DE8701). Browser64A370 takes three bools (show, auxiliary, notify-cancel),
+  ret0C64A8FB. Close only a browser whose listener belongs to our controller;
+  detach it first, then call with false,false,false. Hiding the wizard alone
+  leaves the shopper visible, as reproduced in the hidden Windows lab.
+- Quickplay application state21851EBE is separate from GalaxyGameEntry game mode
+  02CCD1D2. Cancellation must switch application state to02CCDA9C even if game
+  mode already reports the galaxy menu. Previously both live player sessions
+  had quickplay application state while in GalaxyGameEntry, hiding GA controls.
+- Cancel/reset invalidates ordinary attempt callbacks. Mandatory native cleanup
+  survives that invalidation; new host requests wait until it finishes, and an
+  incoming client preparation is deferred behind it. A queued launch that never
+  called the adapter uses preparation cleanup; even a failed adapter call uses
+  loaded cleanup because it may have partially changed native state.
+
+No network kinds, resource transfer format, friendly-fire rules or read-only actor
+memory-validation performance optimizations are changed by this fix.
+
+Saving-animation cancellation additionally needs the native front-end Back path:
+DE0840 has no stack arguments and never reads ECX (C3 DE08AA). It resets galaxy
+view globals and sends07BE7DF5. DE52E0 takes frontend,bool (ret4 DE536A/DE536F,
+or tailcalls effect+8). Native Back calls both at DFE699 and DFE6B5. Without the
+view reset, cancellation immediately after Finish can leave application state
+and game mode correct but hide the menu controls. `coop.adventure recover` uses
+the same cleanup only while inactive in the galaxy, allowing a preview 2 menu to
+be repaired after upgrading without discarding a live game process.
+
+Browser wrapper53C6DC80 can remain as a cached empty window after normal native
+close. Assert browser+1C is false rather than asserting the wrapper was destroyed.
+
+The decisive launch-animation menu visibility flag is the native front-end
+UILayout at singleton+144. DFAE20 hides it via UILayout::SetVisible(false) at
+DFAE51, before entering Adventure application state. Restore that layout with
+SetVisible(true) after restoring galaxy application state/mode. Switching an
+already-current Menu application state is intentionally a no-op and cannot undo
+this independent layout visibility flag. The GA button's own visible flag stays
+set, but its FFFFFFFF layout root is hidden (12 rather than13), which reproduces
+missing controls despite correct application state02CCDA9C and game mode02CCD1D2.
+Both wizard preview/effect handles +84/+88 must be stopped/released using the
+native DFBD40 finalization convention, without deleting saved creation records.
+
+## Preview 4: shared preparation
+
+The host maintains preparation member serials and a readiness epoch independently
+of cosmetic progress. Every participant starts unready. A replacement is granted
+only during preparation and only for its current serial, then clears all readiness
+and the owner's captain barrier before opening native UI. Ready carries both epoch
+and serial; the host additionally checks the completed, acknowledged captain
+transfer before accepting a captain key. Client progress never validates a model.
+
+Native Back from captain selection goes to stage1 (Choose an Adventure), rather
+than stage0. During party preparation either stage cancels the picker because the
+adventure is fixed by the party. Replacement cancellation republishes the previous
+saved captain under the new serial and leaves everyone unready. Initial cancellation
+uses preview3's full application-state/game-mode recovery. Delayed install work,
+model offers and callbacks are checked against the new serial before applying.
+
+Preparation UI reads are outside-frame, cached by actual local resource key. The
+host snapshot carries original keys; remote presentation resolves the already
+owner-scoped key, including property/PNG companions. Authored locks use the installed
+story creature directly and never require it to have personal-captain model type.
+
+## Preview 5: shared scenes and replay (dc04)
+
+This implements the earlier preview 4 party-flow findings. The new scene layer
+uses `MSG_ADVENTURE` subkinds160 Snapshot,161 Confirm,162 Release and163 RequestTalk.
+Every scene is scoped by run and monotonically increasing scene serial. The host
+counts current connected run participants, validates requests, ignores duplicate
+or replaced confirmations and releases exactly once. Cleanup invalidates queued
+native work by generation. Late joins and reconnected IDs remain excluded from
+the current run. Dialog/UI operations run outside Present.
+
+- `HandlePlayMessage` F1C570 is thiscall(play,messageID,payload), bool, ret8.
+  Message044F1189 while play+90=1 directly enters playing state without calling
+  SetState. Intercept the message, record local confirmation and replay the
+  original handler only on party release. This preserves native intro cleanup;
+  writing state3 directly skips it. Early confirmation during the loaded barrier
+  is retained for the matching run. Native intro animation still ticks, while
+  state3 Update, actor AI, vehicle timers/weapons, damage, goals and co-op clocks
+  are held until everyone confirms.
+- TalkBegin F1A000 is thiscall(play,goal,target), ret8. TalkFinish F1C1D0 is
+  thiscall(play), ret. Native play+C8/CC/D4/D8 hold dialog data/page/target state.
+  The host checks active act, unfinished Talk goal, target class/incarnation,
+  alive initiating captain and range25. Native presentation starts locally on
+  all participants. Native Finish cleans up each camera/dialog independently,
+  with CountGoal suppressed. Only party release commits the host's Talk goal.
+  Old GoalEvent133 Talk completion is rejected. Additional valid requests queue
+  and are revalidated against current act/goals before presentation.
+- Results message070B18C7 payload+8 is1 Done,2 Replay. Native results save the
+  local captain before sending it. Intercept Replay before EF1320's in-place
+  single-player teardown. Coordinator17 ResultsAccepted and18 ReplayPrepare wait
+  for every remaining participant to accept saved results. Any participant can
+  request replay. Cleanup restores galaxy application state and game mode before
+  a fresh preparation/run. Saved original captains are republished, all readiness
+  starts false, and old callbacks cannot launch a later attempt. A Scenario exit
+  belonging to cleanup must not cancel the new preparation.
+- PlayerState now carries actual spatial scale, run and captain selection serial.
+  Scenario replicas require the current validated mapped model, matching owner
+  original species, run and serial. Do not fall back to the previous creation
+  cache or the local avatar's profile while transfer is incomplete. Rebuild the
+  puppet if its mapped key or run changes, and set the exact owner scale.
+
+The final hidden, muted four-client fixture passed intro confirmation with both
+native clocks unchanged while waiting, independent native conversation pages and
+group objective release. Two-client tests passed Replay twice, including guest
+Replay with host Done, and new guest captain replacement followed by selecting
+the previous saved captain in the next run. The actual puppet species matched
+the current mapped resource and scale. Portable flow tests cover queued scenes,
+wrong/stale confirmations, disconnects and invalidated native callbacks.
+Native cancellation and disconnects during intro and partly confirmed Talk also
+passed, with native menus restored and immediate retry in the same processes.
+Evidence: `out/windows-lab/preview5-release-{intro,talk,replay,models,flow-recovery}`
+and `out/preview5-tests-final.log`. These are partial native gameplay checks, not
+a complete adventure playthrough.
+
+## Preview 6: collector upgrades and independent teleporters (dc04)
+
+These entries were verified against the installed executable hash recorded above.
+`tools/addrport/verify_dc04.py` checks their prologues, returns and call sites.
+The adapter is `adventure_pickups`; it deliberately splits recipient effects from
+the native helpers' party/follower behavior. Native gameplay validation is
+reported separately from the ABI tests below.
+
+| Native entry | ABI and verified behavior |
+| --- | --- |
+| SporeCoop::Adventure::GetFloatDefault 4E1CE0 | cdecl(PropertyList*,propertyID,float default), float, ret at4E1D1A. Native scalar boost-property reader. |
+| ActivateMedKit F225E0 | cdecl(powerup,captain), ret F227F0. Restores maximum native HP, then also heals the local posse. |
+| ActivateSpeedBoost F22ED0 | cdecl(powerup,captain), tailcalls UpdateGoals at F230E8. Modifier7 and authored duration, including posse iteration. |
+| ActivateDamageBoost F22C20 | cdecl(powerup,captain), tailcalls UpdateGoals at F22EC2. B10 enabled/B14 amount, including posse iteration. |
+| ActivateArmorBoost F22970 | cdecl(powerup,captain), tailcalls UpdateGoals at F22C12. B18 enabled/B1C divisor, including posse iteration. |
+| SetSpeedModifier C0D220 | thiscall(captain,int,bool), ret8. Modifier7 changes FA4 bit128 and recalculates native movement speed. |
+| PickupEffect F22500 | cdecl(captain,effectID), ret F225D2. Creates/refreshes this creature's scaled native effect. |
+| OnCollect F1BCF0 | thiscall(play,object,captain), ret8 F1BEF1. Native collect/use objective bookkeeping. |
+| ActivateTeleporter F23280 | cdecl(powerup,captain), ret F234A9. Owner teleport, E60 two-second cooldown, then a separate posse teleport loop. |
+| TeleportDestination F211E0 | cdecl(powerup,Vec3*,Quat*), bool AL, ret F21279/F212BA. Native authored exit validation. |
+| TeleportCaptain F231D0 | cdecl(powerup,captain,Vec3*,Quat*,bool playerEffect), ret F23271. One captain's clamp, teleport, locomotion cleanup and authored effect. |
+| ApplyCreatureAbility C20390 | thiscall(captain,targetCombatant,abilityIndex,Vec3* hit), ret0C C21180/C2118E. Native damage calculation; forwarded by C02B59/C24024. |
+
+`GetFloatDefault` is deliberately a GA-specific symbol. Upstream's
+`App::Property::GetFloat=40CF10` is a separate bool-returning helper with a
+`float* out` argument, used by Space trade. Both accessors must stay available
+under distinct names; the pickup ABI fixture supplies both and verifies that
+boost properties use only the float/default reader at4E1CE0.
+
+`ReactToPowerup` F23BF0 rejects a dead creature at B5E. For medkit1, speed3,
+damage4 and armor5 it also requires B58 avatar flag512. The co-op hook accepts
+an owned, living party captain instead, validates the current host object
+identity/type and native spatial range, then claims that incarnation once.
+Only the collecting captain gains an effect. Do not replay the complete native
+activation on each client: each helper iterates the local posse too.
+
+`powerupDuration` is AAC3B137 and `powerupAmount` is6219412B, verified from their
+native initialization strings. The installed stock speed/damage/armor palettes
+have duration15 seconds; damage and armor amount2. Speed uses the fixed native
+modifier7, not the amount property. A medkit restores native maximum HP rather
+than treating amount as a partial heal. The class-act explosion amount/radius
+are different tuning inputs and must not replace these palette boost values.
+
+Native ApplyBoost F20290 refreshes the same creature/callback entry by resetting
+elapsed time to zero and replacing duration. The pool expires when elapsed is
+greater than duration. Co-op mirrors that refresh behavior using the host's
+shared simulation clock; group holds pause it. Only the host publishes expiry.
+An expiry stores the grant revision even if it arrives before the grant, so an
+older grant cannot re-enable a spent effect. Boosts persist across act changes;
+delayed older-act grants still retire their original pickup and apply the effect.
+
+The important damage boundary is before TakeDamage: native C2064F multiplies by
+attacker B14 when B10 is enabled, then C206AE divides by victim B1C when B18 is
+enabled. Keep the outgoing damage fields native and do not multiply forwarded
+hits again. For party captains, keep B18 false and apply the saved armor divisor
+once at the central host captain-health authority. This avoids double reduction
+and covers environmental explosions which bypass the creature ability calculator.
+The native player effect still renders through PickupEffect. Player effect
+property72AEEDA0 and NPC effect property6C3BB950 select different artwork.
+
+OnCollect's ordinary collect-goal path tests B58 flag 512 directly. Scope that
+flag around a host callback for a remote captain, restoring the previous flags
+afterwards. The host then destroys the consumed object and calls UpdateGoals,
+matching the native completion order. Guests retire the host marker/incarnation
+without firing independent objective callbacks. Authored respawns are new
+incarnations, even if they reuse the same placement or allocation address.
+
+Teleporter destinations are not class links. The powerup's marker provides
+position+1E8, orientation+1F4 and scale+204. With default secondary graphics,
+F20CB0 also applies the exit ornament's model-bone offset; a secondary graphics
+override uses the raw authored position. F211E0 rejects a destination at most
+`3*(entry spatial scale+1)` from the entry. The owner helper F231D0 applies the
+native planet clamp through F20930, uses spatial Teleport, clears ground support
+at captain+137 and zeros locomotion velocity through C41EC0 before StopMovement.
+Captain+137 is spatial+77 `mbSupported`; normal physics can set it true again
+after checking the new terrain. It is not a persistent flight flag. The helper
+has no posse loop. Co-op calls this helper and
+retains E60's two shared-simulation seconds per captain, with no group check.
+
+Teleport acceptance must publish the movement-generation fence before requiring
+an observer's puppet/source binding. Otherwise new-generation UDP state cannot
+create the puppet which native cleanup is waiting for. Accepted and completed
+cleanup revisions are separate. Delayed cleanup waits for native objects, runs
+once, and cannot rewind a newer accepted teleport. Timed upgrades likewise retain
+the last applied pointer/incarnation/revision/state and their artwork. A late or
+recreated puppet receives the current active fields/effect once, rather than
+replaying the effect or rewriting fields every frame. Expiry deferred by a
+missing captain clears it once when that binding returns.
+
+Wire subkinds 152 Claim, 153 Grant, 154 Expire and 155 Teleport are scoped by run,
+revision, act, recipient and object marker/incarnation. Host requests are bounded
+at 128 before acceptance. Per-peer accepted event queues are paced four per drain
+while transport pending is below 64; claims stop before mutation at 496 queued
+events, reserving space for expiry. Guest accepted events have a 1024-entry bound.
+Overflow cancels the attempt once through an outside-frame callback, including
+during a group hold, instead of silently acknowledging and discarding a valid
+grant or teleport. Distinct consumed identities are retained rather than merged
+away. The 1024-entry contact throttle prunes expired 0.3-second entries so many
+authored respawns cannot permanently disable later pickups.
+
+`tests/adventure_pickups_tests.cpp` runs the actual Win32 adapter against fake
+verified-signature native functions and real host/guest Sessions. It passes
+collector-only health/speed/damage/armor, claim races, refresh, host-only expiry,
+stale/ordered act and revision handling, native field restoration, teleport
+cooldown and missing-observer fences, late model bindings, reliable queue bounds,
+overflow cancellation/reset and more than 1024 distinct contact identities. It
+reported `adventure pickups: 0 failures`. This is ABI/unit evidence; the native
+integration harness and its result JSON establish separate gameplay evidence.
+
+The two-player native suite passed all five cases against preview 6 build 5b,
+DLL SHA256 `6d97642842f1992e06cf406d1cac18294fe4e1b9d0756f73b1017fd773dbee8f`.
+Its evidence is `out/windows-lab/preview6-pickup5-final2/result.json` with recorded
+isolated profiles 31/32. Both captains used native Bite index 5, type 30: base
+damage 1.5, boosted damage 3 and expired damage 1.5. Armor reduced an environmental
+12-point hit to 6 once, then restored 12 after expiry. Native Talk held shared
+clocks and the active boost for three wall-clock seconds. Teleport tests used
+actual contact, an authored native exit, invalid-exit rejection, simultaneous
+captain activations, native velocity cleanup and a captured distant pre-teleport
+UDP position resent with a current timestamp and old movement generation.
+Both games ended with zero native faults and returned to native galaxy menus.
+This is two-player fixture evidence, not a complete adventure playthrough.
+
+Final candidate 8, DLL SHA256
+`075ee6000269235d8a3c41572e01296b60a71e953dc70806a4d3c1ad3cc06f75`,
+then passed the native health/speed/teleporter routing smoke in
+`out/windows-lab/preview6-pickups-routing8/result.json`. It covers subkinds
+152..155 after the Replay and held powerup setup changes. During its native
+Talk hold, elapsed time 4052 and boost remaining 14.6732 stayed unchanged for
+three wall-clock seconds, followed by normal refresh and expiry. The same hidden
+pair passed two complete open-captain Town Replay rounds in
+`out/windows-lab/preview6-replay8/result.json`, retaining saved captains, explicit
+readiness, shared Continue/clocks, model scales and complete rosters without
+native faults. These final routing checks retain the separate build-5b full
+pickup/damage/armor acceptance rather than claiming those two cases were rerun.
+
+Candidate 8 repeated native health, speed and teleporter routing after coordinator
+cleanup routing and held PowerupUpdate initialization changed. Both loaded shadow
+DLLs had SHA256 `075ee6000269235d8a3c41572e01296b60a71e953dc70806a4d3c1ad3cc06f75`.
+`out/windows-lab/preview6-pickups-routing8/result.json` passed all three cases,
+covering Claim, Grant, Expire and Teleport. Native Talk held elapsed time at 4052
+and boost remaining time at 14.6732 seconds across three wall-clock seconds;
+native Next/Finished then released the group, and the boost expired normally.
+`out/windows-lab/preview6-replay8/result.json` also passed two native open-Town
+Replay rounds with saved captain reuse, fresh explicit readiness, shared Continue
+barriers, paused clocks, reciprocal models/scales and complete actor rosters.
+Both clients had zero native faults and returned to connected native menus.

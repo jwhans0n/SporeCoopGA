@@ -18,6 +18,27 @@ static uintptr_t g_pref_base = 0x400000, g_base = 0x400000;
 // a packed exe (Steam DRM): the build its data belongs to, and that build's unpacked .text hash
 static std::string g_pending_build, g_pending_text, g_data_hash;
 
+// On native Windows the loaded optional header can contain the relocated base.
+// Symbol files use preferred VAs, so obtain their reference base from the file.
+static bool disk_preferred_base(const wchar_t* path, uintptr_t& base)
+{
+    FILE* file = _wfopen(path, L"rb");
+    if (!file)
+        return false;
+    IMAGE_DOS_HEADER dos{};
+    IMAGE_NT_HEADERS32 nt{};
+    bool ok = fread(&dos, sizeof dos, 1, file) == 1 && dos.e_magic == IMAGE_DOS_SIGNATURE &&
+              dos.e_lfanew >= (LONG)sizeof dos && fseek(file, dos.e_lfanew, SEEK_SET) == 0 &&
+              fread(&nt, sizeof nt, 1, file) == 1 && nt.Signature == IMAGE_NT_SIGNATURE &&
+              nt.FileHeader.Machine == IMAGE_FILE_MACHINE_I386 &&
+              nt.FileHeader.SizeOfOptionalHeader >= sizeof(IMAGE_OPTIONAL_HEADER32) &&
+              nt.OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC && nt.OptionalHeader.ImageBase != 0;
+    fclose(file);
+    if (ok)
+        base = nt.OptionalHeader.ImageBase;
+    return ok;
+}
+
 uintptr_t image_base() { return g_base; }
 uintptr_t rebase(uintptr_t va) { return va - g_pref_base + g_base; }
 std::string exe_sha256() { return g_hash; }
@@ -84,29 +105,6 @@ static SymHeader file_hash_header(const std::wstring& path)
     return r;
 }
 
-// ImageBase as written in the exe file. The header in memory cannot be used: when Windows
-// relocates the exe (ASLR, e.g. to 0x410000) it rewrites OptionalHeader.ImageBase to the actual
-// base, so every symbol would be off by the relocation. Wine does not relocate the exe.
-static uintptr_t file_image_base(const wchar_t* path, uintptr_t fallback)
-{
-    FILE* f = _wfopen(path, L"rb");
-    if (!f)
-        return fallback;
-    uint8_t hdr[0x400];
-    size_t n = fread(hdr, 1, sizeof hdr, f);
-    fclose(f);
-    if (n < sizeof(IMAGE_DOS_HEADER))
-        return fallback;
-    auto* dos = (const IMAGE_DOS_HEADER*)hdr;
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew < 0 ||
-        (size_t)dos->e_lfanew + sizeof(IMAGE_NT_HEADERS32) > n)
-        return fallback;
-    auto* nt = (const IMAGE_NT_HEADERS32*)(hdr + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE || nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC)
-        return fallback;
-    return nt->OptionalHeader.ImageBase;
-}
-
 struct Cand {
     std::wstring name;
     SymHeader h;
@@ -156,10 +154,12 @@ bool symbols_load()
     g_pending_build.clear();
     HMODULE exe = GetModuleHandleW(nullptr);
     g_base = (uintptr_t)exe;
-
     wchar_t exe_path[MAX_PATH];
-    GetModuleFileNameW(exe, exe_path, MAX_PATH);
-    g_pref_base = file_image_base(exe_path, 0x400000);
+    DWORD length = GetModuleFileNameW(exe, exe_path, MAX_PATH);
+    if (!length || length >= MAX_PATH || !disk_preferred_base(exe_path, g_pref_base)) {
+        SKLOG(SK_ERROR, "could not read the executable's preferred image base; game-specific symbols are disabled");
+        return false;
+    }
     double t0 = now_seconds();
     g_hash = sha256_file_hex(exe_path);
     SKLOG(SK_INFO, "exe %s sha256=%s base=0x%08X (preferred 0x%08X) hashed in %.2fs",

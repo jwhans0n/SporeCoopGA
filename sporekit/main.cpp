@@ -2,6 +2,7 @@
 #include "core.h"
 
 #include <cstdio>
+#include <memory>
 
 namespace sk {
 
@@ -78,9 +79,24 @@ static int h_command_exec(const char* line, SkOut* out)
         reinterpret_cast<Out*>(out)->text += o;
     return r;
 }
+static std::function<void()> retained_task(SkTaskFn fn, void* user)
+{
+    // A queued callback may outlive mod.reload. Keep its DLL mapped through the
+    // callback and its payload cleanup; generation checks remain the mod's job.
+    HMODULE module = nullptr;
+    std::shared_ptr<void> keep_alive;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                          reinterpret_cast<LPCWSTR>(fn), &module))
+        keep_alive = std::shared_ptr<void>(module, [](void* held) { FreeLibrary(static_cast<HMODULE>(held)); });
+    return [fn, user, keep_alive = std::move(keep_alive)] {
+        (void)keep_alive;
+        fn(user);
+    };
+}
 static void h_run_on_main(SkTaskFn fn, void* u)
 {
-    run_on_main([fn, u] { fn(u); });
+    if (fn)
+        run_on_main(retained_task(fn, u));
 }
 static std::wstring mod_ini(SkMod* m) { return g_mods_dir + L"\\" + widen(m ? m->name : "sporekit") + L".ini"; }
 static int h_config_int(SkMod* m, const char* s, const char* k, int d) { return ini_int(mod_ini(m), s, k, d); }
@@ -99,7 +115,8 @@ static int h_config_set_str(SkMod* m, const char* s, const char* k, const char* 
 }
 static void h_run_outside_frame(SkTaskFn fn, void* u)
 {
-    run_outside_frame([fn, u] { fn(u); });
+    if (fn)
+        run_outside_frame(retained_task(fn, u));
 }
 static void* h_d3d_device() { return d3d_device(); }
 static void* h_game_window() { return game_window(); }

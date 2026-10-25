@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <numbers>
 #include <set>
 
 #include "game.h"
@@ -662,7 +663,7 @@ static void draw_map()
         for (auto& v : vis) {
             if (rings) // a dotted ring around the star, like a territory mark
                 for (int k = 0; k < 10; k++) {
-                    double a = k * 2 * M_PI / 10;
+                    double a = k * 2 * std::numbers::pi / 10;
                     text(v.x + (int)std::lround(14 * std::cos(a)) - 3, v.y + (int)std::lround(14 * std::sin(a)) - 10,
                          col, "•");
                 }

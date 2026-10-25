@@ -1,0 +1,23 @@
+# Native adventure world interfaces verified by disassembly and caller inspection.
+# exe_sha256=dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37
+# Evidence: docs/re/adventure-world.md.
+SporeCoop::Adventure::PickUpItem=0x00C15B20 ; verified static thiscall(creature,spatialItem,slotIndex,boolReplace)->bool; retC at C15D0A/C15D16/C15D22/C15D2C; item slots E40/E44 stride24, native pickup callback D7D1A0
+SporeCoop::Adventure::DropItem=0x00C15EB0 ; verified static thiscall(creature,spatialItem,int,bool)->bool; retC at C15EF4/C15F0F/C15F16; finds item+20, invokes C15D30 and OnDrop through D7D240
+SporeCoop::Adventure::OnPickUp=0x00F1AED0 ; verified static thiscall(play,holderGameData,itemGameData); ret8 at F1B051 or tailcall C8AEC0 with two replaced arguments; Hold/Give counters and native pickup effect
+SporeCoop::Adventure::OnDrop=0x00F1B060 ; verified static thiscall(play,holderGameData,itemGameData); ret8 at F1B13C; called D7D2DF after native item inventory removal
+SporeCoop::Adventure::CountGoal=0x00F1ACF0 ; verified static thiscall(play,goal,firstSpatial,secondSpatial); retC at F1AE6C/F1AEBF; increments goal+4 and compares required count+30
+SporeCoop::Adventure::OnBefriend=0x00F1D310 ; verified static thiscall(play,targetGameData); ret4 F1D3D7; type4 goal counters, native per-object map insertion
+SporeCoop::Adventure::OnAlly=0x00F1D3E0 ; verified static thiscall(play,targetGameData); ret4 F1D4A6; type5 goal counters, native per-object map insertion
+SporeCoop::Adventure::GetNativeAvatar=0x00B1FD00 ; verified static thiscall(nounManager)->creature, mov eax,[ecx+54]; ret B1FD03; trailing CC padding permits MinHook long jump
+SporeCoop::Adventure::SpeciesRelationshipsGet=0x00B3D5C0 ; verified static cdecl()->speciesRelationshipManager, mov eax,[167EB4C]; ret B3D5C5
+SporeCoop::Adventure::SpeciesSocialEvent=0x00BA4A00 ; verified static thiscall(manager,eventType,speciesKey*,creature), retC BA4AA3/BA4AEA/BA4D76/BA4D8E; native social win D9BBD0 uses event3 then sets target B58 bit80
+SporeCoop::Adventure::BuildingInventoryGive=0x00BCF600 ; verified static thiscall(building,itemGameData)->bool AL; ret4 BCF695/BCF69C; inventory+1EC, native Give D84093, emits OnPickUp BCF682
+SporeCoop::Adventure::VehicleInventoryGive=0x00CA44B0 ; verified static thiscall(vehicle,itemGameData)->bool AL; ret4 CA4545/CA4561; inventory+D94, native Give D840DF, emits OnPickUp CA4532
+SporeCoop::Adventure::VehicleGiveConsumesItem=0x00C9F0B0 ; verified static thiscall(vehicle)->bool; plain ret C9F0E5/C9F0EA; timer CD8/CF8, native Give D840B6 selects destroy-without-pickup branch
+SporeCoop::Adventure::PosseGet=0x00D53980 ; verified static cdecl()->posseManager; plain ret D539BA/D539D0, singleton169E5B8 lazy alloc58, native scenario F1D877
+SporeCoop::Adventure::PosseRecruit=0x00D542E0 ; verified static thiscall(posseManager,creature)->bool AL; ret4 D5464B/D5465A; native scenario F1D87E, capacity/duplicate checks, OnAlly D544C5
+SporeCoop::Adventure::ClassActRelationship=0x00BA29F0 ; verified static cdecl(class,act,optionalCreature)->int; plain ret BA2A54/5A/94/9A/B1/B4, creature null checked BA2A14; native relationship BA41FD
+SporeCoop::Adventure::GiveAnimationFinished=0x00C12560 ; verified static thiscall(creature,animationID)->bool AL; tail C0E420 ret4 C0E4B3/BA/C1/C7; native Give D84006
+SporeCoop::Adventure::TickContainerGive=0x00D83E90 ; verified static cdecl(actor,doubleTime,word4,word5,state,word7,floatDelta)->bool AL; eight stack words, native BT callback BC9477 cleanup20, ret D83F0B/D83FFF/D8410B, table158B280
+SporeCoop::Adventure::GetBehaviorOrder=0x00BC9810 ; verified static thiscall(orderList,maskLow,maskHigh)->order; ret8 BC9830/BC9851/BC9868; native Give D83EAB uses behavior+B4C+8, mask0/40000 and order+C==6
+SporeCoop::Adventure::CreatureSocialMode=0x00C0E800 ; verified static thiscall(creature)->int socialMode; plain ret C0E899/8AD/8C1/970/994/9B1/9CE/9E4/EA09; Scenario relation3=>2,4=>1,1/2/5=>0,6=>4 only with native posse capacity and nonparty actor; BA40E0 atC0E8DF

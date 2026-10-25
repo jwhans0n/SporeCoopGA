@@ -59,5 +59,7 @@ jobs:
           # the notes: this version's section of CHANGELOG.md
           awk -v v="$ver" '$0 ~ "^## \\[?"v"\\]?" {on=1; next} /^## / && on {exit} on' CHANGELOG.md > notes.md
           (cd dist && sha256sum SporeCoop-*.zip SporeCoop-*.pack SporeCoopSetup.exe > SHA256SUMS.txt)
+          release_flags=()
+          if [[ "$ver" == *-* ]]; then release_flags+=(--prerelease); fi
           gh release create "$GITHUB_REF_NAME" dist/SporeCoop-*.zip dist/SporeCoop-*.pack dist/SporeCoopSetup.exe dist/SHA256SUMS.txt \
-            --title "SporeCoop $ver" --notes-file notes.md
+            --title "SporeCoop $ver" --notes-file notes.md "${release_flags[@]}"

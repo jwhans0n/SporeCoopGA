@@ -1,0 +1,15 @@
+# Native adventure entry points verified against the installed March2017 executable.
+# exe_sha256=dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37
+# Evidence and runtime checks: docs/re/adventure.md.
+SporeCoop::Adventure::ResetRequest=0x00EF1910 ; verified static cdecl() -> launch request pointer; clears three ResourceKeys, sets request+0x24=1; plain ret at EF1962
+SporeCoop::Adventure::Request=0x015ACCC8 ; verified static writable launch request, returned by EF1910 and consumed by scenario initialization EF1D20
+SporeCoop::Adventure::LoadingScreenGet=0x00B3D510 ; verified static cdecl() loading screen getter; called by quick-play native launch DFC45F and EC4314
+SporeCoop::Adventure::LoadingScreenShow=0x00E3E350 ; verified static thiscall(loadingScreen,bool,modeID,bool), ret0xC at E3E7ED; native quick-play callers pass (1,0x1654C10,1)
+Simulator::cGameTimeManager::Get=0x00B3D480 ; verified static cdecl() -> time manager; native OnEnter EF24FF uses speed factors and Pause calls this getter
+Sporepedia::ShopperRequest::ctor=0x00644AC0 ; verified static thiscall(request), no arguments; initializes 0x48-byte native shopper request
+Sporepedia::ShopperRequest::Show=0x0064A900 ; verified static cdecl(request*), caller pops4; opens native asset browser with listener at request+0x38
+Sporepedia::ShopperRequest::dtor=0x00644B10 ; verified static thiscall(request), plain ret; native request cleanup
+Sporepedia::GetAssetModelType=0x00EECAC0 ; verified static cdecl(ResourceKey*), native quick-play DFBE6B compares result with adventurer type0x4178B8E8
+Sporepedia::AssetBrowser::Get=0x00401030 ; verified static cdecl() -> browser at [15D0C0C], plain ret; listener callback stored at browser+1A0
+SporeCoop::Adventure::RecordAssetStatistic=0x0060E920 ; verified static thiscall(pollinator,statID,ResourceKey*,int64Values*,count), ret0x10 at60E979; native resultsF15770 submits adventure result stats2D59837B/706CCB27 here
+SporeCoop::Adventure::ApplyCreatureAct=0x00C070D0 ; verified static thiscall(creature), plain ret atC073F8; native SetCurrentAct's F1E580 loop calls it, dereferences null class-act atC0714E for unclassed non-avatar captain replicas

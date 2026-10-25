@@ -34,12 +34,20 @@ typedef void(SK_THISCALL* Update_t)(void*, int);
 static Update_t o_Update;
 static std::vector<void*> g_seen, g_seen_out;
 static UpdateFilter g_update_filter;
+static UpdateFilter g_extra_update_filter;
+static BlockedUpdateHandler g_blocked_update_handler;
 
 static void SK_THISCALL h_Update(void* self, int dt)
 {
     g_seen.push_back(self);
-    if (g_update_filter && !g_update_filter(self))
+    if (g_extra_update_filter && !g_extra_update_filter(self)) {
+        if (g_blocked_update_handler) g_blocked_update_handler(self, dt);
         return;
+    }
+    if (g_update_filter && !g_update_filter(self)) {
+        if (g_blocked_update_handler) g_blocked_update_handler(self, dt);
+        return;
+    }
     o_Update(self, dt);
 }
 
@@ -53,6 +61,8 @@ const std::vector<void*>& creatures_updated()
 }
 
 void set_update_filter(UpdateFilter fn) { g_update_filter = fn; }
+void set_extra_update_filter(UpdateFilter fn) { g_extra_update_filter = fn; }
+void set_blocked_update_handler(BlockedUpdateHandler fn) { g_blocked_update_handler = fn; }
 bool is_destroyed(void* c) { return field<uint8_t>(c, 0x21) != 0; } // cGameData::mbIsDestroyed
 
 // ---- combat via cCreatureAnimal TakeDamage (cCombatant vtable[6], this = creature+0x5A8) ----
@@ -63,7 +73,9 @@ static DamageFilter g_damage_filter;
 static int SK_THISCALL h_TakeDamage(void* combatant, float dmg, uint32_t pol, int type, const void* pos, void* attacker)
 {
     void* self = (uint8_t*)combatant - kCombatOff;
-    void* att = attacker ? (uint8_t*)attacker - kCombatOff : nullptr;
+    // Attackers can be creatures, vehicles or other combatants. Their native virtual
+    // owner conversion handles the different subobject offsets.
+    void* att = attacker ? vcall<void*>(attacker, 0x0C / 4) : nullptr;
     if (g_damage_filter && !g_damage_filter(self, dmg, type, att))
         return 0;
     return o_TakeDamage(combatant, dmg, pol, type, pos, attacker);

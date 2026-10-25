@@ -64,6 +64,11 @@ void play_animation(void* c, uint32_t anim_id, int block, bool disable_blend);
 const std::vector<void*>& creatures_updated();   // swap per frame (call once per frame)
 using UpdateFilter = bool (*)(void* creature);   // return false to skip the creature's Update
 void set_update_filter(UpdateFilter fn);
+void set_extra_update_filter(UpdateFilter fn); // composed with NPC filtering (adventure ownership/barriers)
+using BlockedUpdateHandler = void (*)(void* creature, int milliseconds);
+// Called once only by the real Update hook after a filter rejects its update.
+// Pure update-filter queries never invoke this handler.
+void set_blocked_update_handler(BlockedUpdateHandler fn);
 bool is_destroyed(void* c);
 
 // ---- species / herds ----

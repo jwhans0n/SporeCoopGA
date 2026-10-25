@@ -1,26 +1,39 @@
-"""Spore UI windows by caption for test bots (coop.ui find): where a button is on the screen and
+"""Spore UI windows by caption for test bots (coop.ui findall): where a button is on the screen and
 whether it is shown, so a bot clicks it like a player would (pause menu, dialogs)."""
 import re
 
 LINE = re.compile(r'(?:- |Window )\S+ id=\S+ cmd=\S+ fl=0x([0-9A-Fa-f]+) \[(-?\d+) (-?\d+) (-?\d+) (-?\d+)\]')
 
 
+def match_groups(con, caption):
+    """Each matching window followed by its ancestors; support older find-only builds."""
+    quoted = '"' + caption.replace('\\', '\\\\').replace('"', '\\"') + '"'
+    response = con.call('coop.ui findall ' + quoted)
+    text = response.get('out', '')
+    if not any(re.fullmatch(r'match \d+', line) for line in text.splitlines()):
+        if 'no window with caption' in text:
+            return []
+        # Old c_ui treats an unknown subcommand as a depth-zero tree dump and
+        # can return ok=true. A match header distinguishes the additive command.
+        text = con.call('coop.ui find ' + quoted).get('out', '')
+    groups, current = [], []
+    for line in text.splitlines() + ['']:
+        if not line.strip() or re.fullmatch(r'match \d+', line):
+            if current:
+                groups.append(current)
+                current = []
+        elif LINE.match(line):
+            current.append(line)
+    return groups
+
+
 def find(con, caption):
     """[(x, y, visible)] for every window with this caption: its centre on the screen and whether it
     and all its parents are visible (flag 0x1); coordinates of a window are relative to its parent"""
-    out = []
-    group = []
-    for line in con.call(f'coop.ui find "{caption}"').get('out', '').splitlines() + ['']:
-        if line.startswith('- ') and group:
-            out.append(group)
-            group = []
-        m = LINE.match(line)
-        if m:
-            group.append((int(m.group(1), 16), *(int(m.group(i)) for i in range(2, 6))))
-    if group:
-        out.append(group)
     res = []
-    for g in out:
+    for group in match_groups(con, caption):
+        nodes = [LINE.match(line) for line in group]
+        g = [(int(node.group(1), 16), *(int(node.group(i)) for i in range(2, 6))) for node in nodes]
         ox = sum(w[1] for w in g[1:])
         oy = sum(w[2] for w in g[1:])
         f, x0, y0, x1, y1 = g[0]

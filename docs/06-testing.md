@@ -629,3 +629,240 @@ host's NPC proxies, `exc` 0 faults on both. Remove `background_mode=1` afterward
 * Rule: at most 6 lanes (12 games) at once on this machine (`tools/lab.py run ... --lanes 6`),
   fewer when the user works on the desktop. `journalctl -k | grep amdgpu` shows such resets;
   `coredumpctl list` the aborted programs.
+
+## 6.20 Native Win32 adapter fixtures
+
+Optional Makefile targets cross-compile fake native adapter fixtures and do not
+start the game. Run their EXEs on Windows. The relationship, social, mirror and
+blocked-update targets are `test-relationships-windows`, `test-social-windows`,
+`test-mirror-windows` and `test-blocked-update-windows`.
+
+The last target produces `build/host/adventure_tick_dispatch_tests.exe`. The
+unmanifested version was refused at process creation with Windows error 740
+(elevation required), including after renaming it. The explicit
+`tests/native_fixture.manifest` sets `requestedExecutionLevel=asInvoker`; the
+rebuilt fixture runs without elevation and reports its actual test result. A
+missing console line or unchanged PowerShell `$LASTEXITCODE` after launch failure
+is not a passing fixture. Python `subprocess.run` reports process-creation errors
+directly when diagnosing this Windows behavior.
+
+`test-debug-capabilities-windows` includes the actual legacy `debug.cpp` command
+implementation, then discards unrelated commands at link time. Its `coop.w2s`
+cases cover missing native capabilities before any native call, null managers and
+viewers, failed ray conversion and the valid fake ABI. It does not launch a game.
+
+
+### Preview 3 native preparation recovery (Windows)
+
+Run the hidden, muted Windows lab with two isolated profiles, then:
+
+```
+py -3 tools/tests/coop_adventure_preparation.py --metadata out/windows-lab/captain-recovery-fixture/processes.json --output out/windows-lab/captain-recovery-cancellation --key 29058784:366A930D:408A0000
+```
+
+The key above is the local `<Live or Die>` reproduction fixture, not a shipped
+stock key. Supply a resource already present in the isolated profile (or omit
+`--key` for Adventure Town). `--play` additionally creates two distinct named
+captains and verifies the committed run. Never point this test at player profiles.
+Checks cover selection/naming/browser/save-animation cancellation, immediate
+retry, disconnect, both native menu states, browser visibility and native faults.
+The old cached Sporepedia wrapper can remain after close; browser+1C is the active
+flag. Empty UI captions omit quotes entirely, so parse a single tree line before
+looking for quoted caption text; a multiline regex can consume the next control.
+
+
+Preview 3 delivery validation on 2026-10-23: `<Live or Die>` (local adventure key
+29058784:366A930D:408A0000) entered a committed two-player run with new captains
+2905A7A4 and2905A7A7, both model type4178B8E8 and XP0. Normal native Sporepedia
+Play also passed with an existing host captain and a new guest captain. The final
+matrix passed new/existing and existing/existing combinations, an authored
+captain adventure (6FCBCE96), loaded cancellation and menu recovery. The final
+405-actor Adventure Town regression measured21.61 FPS on each hidden session,
+with native game time advancing and no recorded native faults. Cancellation,
+name/review, open shopper, save-animation and disconnect recovery passed without
+restarting either game between attempts. Portable `make test` and11 Win32 ABI
+fixtures passed. Artifacts and detailed logs are in out/captain-recovery-re and
+out/windows-lab/captain-recovery-* (ignored local test output).
+
+Use a unique output directory for each WindowsLab runner: an older runner can
+write its final process metadata after a new runner starts if both share a path.
+An automated native Review click can arrive before Finish accepts input; require
+the panel to close and retry the mouse tap instead of assuming one tap saved it.
+
+Shared lobby regression (preview4, protocol8):
+
+```
+py -3 tools/tests/coop_adventure_lobby.py --metadata out/windows-lab/preview4-final-fixture/processes.json --output out/windows-lab/preview4-final-validation
+```
+
+This uses stock Mr Puzzle's Magical Gates and Adventure Town in recorded isolated
+profiles, native lobby buttons and captain creation, saved names/artwork, explicit
+host readiness, replacement cancellation, retry and disconnect recovery. Native
+buttons can ignore an initial click while acquiring focus; retry only after checking
+the expected state, especially for toggling Ready. Native Back control05933FE1
+returns captain selection to adventure selection (stage1); party preparation treats
+that as picker cancellation. `--instances 21,22,23,24 --four-player-only` exercises
+the stock adventure card, readiness barrier, authored captains and act snapshots
+with four isolated clients. This establishes those routes, not a full playthrough.
+
+Preview4 delivery validation passed the full lobby script with two and four
+clients, including four distinct saved captains and simultaneous replacement
+cancellation. Mr Puzzle's native act music remained [1,0,0,0] on all four clients.
+The final DLL passed ordinary Sporepedia Play, return from settings to the shared
+cards, native entry/cancellation and a405-actor regression at21.49/21.61 FPS.
+Portable tests, eleven current Win32 fixtures and the115-function/four-global
+symbol manifest passed. Evidence is in out/windows-lab/preview4-*.
+
+For the missing-art case a stock scenario was cloned under7F00F004 with metadata
+and no PNG, registered through the existing verified packed-database ABI in a lab
+process, then transferred normally. Both clients displayed No preview, enabled
+Ready and entered the native run without faults. Dropping this fixture into the
+lab's Data/DataEP1 directories did not make it visible to the resource manager;
+do not assume copying a package registers it in this runner.
+
+### Preview 5 shared scenes, replay, models and gates (Windows)
+
+Use a recorded hidden, muted WindowsLab installation and profiles. These scripts
+validate their process metadata and reject player profiles. In sequence:
+
+```
+py -3 tools/tests/coop_adventure_flow.py --metadata out/windows-lab/preview5-release/processes.json --output out/windows-lab/preview5-release-intro --instances 21,22,23,24
+py -3 tools/tests/coop_adventure_talk.py --metadata out/windows-lab/preview5-release/processes.json --out out/windows-lab/preview5-release-talk --x 557 --y 340 --observers 23,24
+py -3 tools/tests/coop_adventure_gates.py --metadata out/windows-lab/preview5-release/processes.json --output out/windows-lab/preview5-release-gates --instances 21,22,23,24
+```
+
+Before Talk, move guest22 near marker158 with its actual network player ID and
+allow snapshots to settle. Instance numbers and network player IDs differ:
+simultaneous joins can give instance22 playerID2. `Game.player_id()` reads the
+active network ID. The scripts verify native intro clock holds, every participant's
+confirmation, independent dialog pages, exact owner/puppet scales, native keys,
+wrong colors, key ownership/consumption and open-gate snapshot reconstruction.
+`forgetgate MARKER` is a guest diagnostic that deliberately removes an open gate
+for that last fixture; it requires the valid native lifecycle/sibling checks.
+
+After the four-player checks, disconnect and quit observers23/24 normally and
+keep21/22 in the party. Run `coop_adventure_replay.py --rounds 2`,
+`coop_adventure_models.py`, `coop_adventure_performance.py --seconds 8`, then
+`coop_adventure_flow_recovery.py`, passing the same metadata and distinct output
+directories. Replay includes guest Replay with host Done. Models creates a new
+guest captain, then selects an older saved captain next run; actual puppet
+species must match the current mapped resource. Recovery cancels partly confirmed
+intro/Talk and disconnects in each, checks both native menu states and retries.
+The existing lobby `playing()` helper now confirms every intro before waiting
+for native state3. Waiting for one player to enter state3 before confirming the
+others deadlocks the new intentional group barrier.
+
+Saved-captain selection first clicks the visible native My Creations tab.
+All Assets may expose a matching caption far outside the viewport, so finding
+the name alone does not prove that its card can receive a click.
+The browser also retains its window tree after closing: acknowledge opening
+with the native AssetBrowser +1C active flag, never its cached control presence.
+
+Native Talk starts at dialog index-1 before automatically reaching page0. Wait
+for the host's first text page before asserting that guest page clicks leave its
+page unchanged. Otherwise the native greeting transition causes a false failure.
+The `call` diagnostic target parser expects hexadecimal; use named symbols or an
+explicit 0x prefix, never a decimal rendering of an address. Verify the native
+signature before calling. `actorsat MARKER LIMIT` avoids ad hoc native probes
+when inspecting all respawner/physical incarnations at a placement.
+
+Portable `make test` includes `adventure_flow_tests` with fake native callbacks
+and real local sessions. Win32 lifecycle tests additionally prove that a physical
+gate uses CreateObjectInstance rather than its same-marker respawner factory.
+Final evidence is in `out/windows-lab/preview5-release-*`,
+`out/preview5-tests-final.log` and `out/preview5-abi-results.json`.
+
+### Preview 6 collector upgrades and teleporters (Windows)
+
+Use preview6/protocol10 in recorded hidden, muted Windows lab processes. Wait for
+the agent owning that lab to hand it over before running another native script.
+The pickup harness registers immutable interaction scenarios on the host only;
+guests receive their custom root through the real co-op asset transfer. It never
+edits a save or registers fixtures in a personal profile.
+
+```
+py -3 tools/tests/coop_adventure_pickups.py --metadata out/windows-lab/preview6/processes.json --output out/windows-lab/preview6-pickups
+py -3 tools/tests/coop_adventure_pickups.py --metadata out/windows-lab/preview6-four/processes.json --output out/windows-lab/preview6-four-pickups --instances 21,22,23,24
+```
+
+`--cases health,speed,damage,armor,teleporter` is the default; use a subset while
+debugging, and keep separate output folders for every attempt. The host port is
+47830 by default. Each guest joins through its own loopback capture proxy at the
+next consecutive port. Startup cancels an existing isolated attempt before
+waiting for every process to return to its native galaxy menu. The
+helper `adventure_interaction_fixture.py` builds/validates the fixture package and
+performs scoped read-only inspection or runtime field tuning.
+
+The accepted two-player build 5b run is
+`out/windows-lab/preview6-pickup5-final2/result.json`; all five native cases passed
+with zero faults on both clients. Its per-case checkpoint is separate from failed
+setup/debugging attempts. The handoff report in
+`out/windows-lab/preview6-pickup5-handoff/handoff.json` verifies normal cancellation
+to native menus and a direct connected party after the capture proxies closed.
+The later candidate-8 health/speed/teleporter routing suite also passed at
+`out/windows-lab/preview6-pickups-routing8/result.json`; the loaded shadow DLLs
+matched SHA256 `075ee6000269235d8a3c41572e01296b60a71e953dc70806a4d3c1ad3cc06f75`.
+Its clean pair handoff is `out/windows-lab/preview6-pair8-handoff/handoff.json`.
+
+After cleanup message routing and held initialization changed, candidate 8 passed
+`out/windows-lab/preview6-pickups-routing8/result.json` for health, speed and
+teleporters, covering all four pickup wire kinds. Speed also exercises the native
+Talk hold and timed expiry. The same DLL passed two open-Town native Replay rounds
+in `out/windows-lab/preview6-replay8/result.json`. Both loaded shadow DLL hashes
+and the clean connected-menu state are recorded in
+`out/windows-lab/preview6-pair8-handoff/handoff.json`.
+
+The scenarios clone Mr Puzzle class0 and preserve its native marker layout and
+authored five-unit respawn setting. Stable target markers are 108, 110, 112, 116,
+117 and 118. A physical consumable may not exist during Intro: the same-marker
+respawner9 is a distinct object, and its initial delay is correctly held until
+everyone presses Continue. Wait for the expected physical powerup after release.
+Do not bind a parent9 to a medkit/boost/teleporter merely because markers match.
+
+The harness uses real native proximity reactions for all accepted collections.
+It checks host and guest collector-only grants, shared consumption, simultaneous
+health claims, authored respawn/new identity, actual native magnitude, refresh
+and expiry. A genuine Talk entry followed by native Next/Finished controls holds
+the shared clocks while a boost remains active. Health reads come from both
+clients' actual native captains and their replicas.
+
+For outgoing damage, `abilityhit VICTIM_PLAYER ATTACKER_PLAYER ABILITY_INDEX` is
+the reviewed outside-frame diagnostic. It invokes ApplyCreatureAbility before
+the native boost calculation, with a real native ability and target position.
+Compare the unboosted, boosted and expired HP deltas. The older `world hit`
+diagnostic starts at TakeDamage after ability multipliers and cannot establish
+that a damage upgrade was applied once. It remains appropriate for environmental
+hits checking the central host armor divisor. Test friendly fire100 and preserve
+authored NPC/faction rules when choosing an actual ability target.
+
+The capture proxy records real protocol 10 PlayerState packets. The stale-movement
+case stages on a native surface far from the exit and retains its real UDP state.
+After teleport, it preserves that pre-teleport position/generation while using a
+current timestamp, preventing an ordinary timestamp check from masking a missing
+generation fence. Wait for the legitimate cooldown-probe movement to reach the
+exit on observers before injecting; otherwise native interpolation can look like
+a stale-packet rewind. A separate real guest transport packet attempts a
+claim for host0 and must be rejected. These are tightly scoped loopback faults,
+not accepted happy-path claims. Teleport checks also cover the authored exit,
+non-entering captains staying put, native cleanup, cooldown, invalid exits,
+simultaneous independent captain activations and retained source.
+
+Do not call FX-producing native helpers through generic `call`, which is a
+main-thread command rather than an outside-frame command. Read-only reviewed
+Cast/GetAbility/property calls are safe there. The pickup rejection probe calls
+only the installed preview6 hook, which queues its mutation outside the frame;
+refuse to run it against an older DLL. Use named symbols or explicit 0x native
+addresses and verified calling conventions. Fixture marker/class addresses from
+a private inspection are diagnostic after its resource is released; reacquire
+them in the actual loaded attempt before tuning.
+
+```
+make test-pickups-windows
+```
+
+Run its generated Win32 executable on Windows. This ABI suite includes missing
+observer puppets, replacement captain incarnations, expiry-before-grant ordering,
+more than 1024 respawn identities, stalled reliable peers and fail-closed accepted
+event overflow. `adventure pickups: 0 failures` does not substitute for a native
+integration `result.json`. Neither suite establishes a complete adventure
+playthrough or every custom palette/ability combination.

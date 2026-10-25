@@ -1,5 +1,12 @@
 # Installing SporeCoop
 
+This fork, `0.7.3.0-ga-preview.7`, combines upstream SporeCoop 0.7.2.1 with the
+Galactic Adventures work through preview 6. Read [the GA guide](GALACTIC-ADVENTURES.md)
+for adventures started from Sporepedia. The native adventure adapter requires the
+exact GOG executable `dc04aee5...`; Steam and code-equivalent variants retain
+upstream base-stage support but have no enabled native GA adapter. Every player
+needs this fork build and protocol 10; upstream 0.7.0-0.7.2.1 cannot join it.
+
 Every player installs the same SporeCoop version into their own copy of the game. The install
 replaces one file of the game (`steam_api.dll`, kept as `steam_api_orig.dll`) and adds a few
 others; your saves and creations are not touched.
@@ -23,10 +30,11 @@ others; your saves and creations are not touched.
 | Players | 2–4, every player with the **same SporeCoop version** (the network protocol is checked on join). |
 | Network | The same local network, a virtual LAN (Tailscale, ZeroTier, Radmin VPN), or UDP port 47810 forwarded to the host. |
 
-The mod is tested with the GOG builds (2016 on Linux, 2024 on Windows 11): the full list is in
-[section 2](#where-sporecoop-has-been-tested). Other builds (Steam, EA app, disc) have not been
-tested yet; if you try one, an [issue](https://github.com/WoodyWizard/SporeCoop/issues) with the
-result and `mods\logs\sporekit.log` helps.
+Upstream base-stage testing includes GOG builds and Steam offline; the precise
+historical results are in [section 2](#where-sporecoop-has-been-tested).
+The adventure preview's tested scope is separate. EA app and disc builds remain
+unvalidated. Report fork problems with `mods\logs\sporekit.log` in a
+[fork issue](https://github.com/jwhans0n/SporeCoopGA/issues).
 
 ## 2. Check your game build
 
@@ -41,7 +49,8 @@ SporeCoop has the game addresses for these builds of `SPORE\SporebinEP1\SporeApp
 The Steam `SporeApp.exe` is the GOG 2024 build with Steam's DRM wrapper (the game code is encrypted
 in the file and unpacked when the game starts). Since 0.7.1 SporeCoop recognises it, waits for the
 unpacked code, checks that it is the GOG 2024 code and then uses the GOG 2024 addresses: Steam and
-GOG 2024 players can play together. The log says "the unpacked code is the code of build dc04aee5...".
+GOG 2024 players can play together in the base stages. This recognition does not
+enable the exact-file-gated GA adapter on Steam. The log says "the unpacked code is the code of build dc04aee5...".
 Steam's own game folder is `steamapps\common\<Spore folder>`: install into its `SporebinEP1` as for GOG.
 
 **0.7.x is the last version for the GOG 2016 build.** From 0.8 SporeCoop supports only the current
@@ -72,8 +81,19 @@ then says "its code is the same as build ...".
 | Two different PCs over the internet or a VPN | Windows | Not tested with 0.6.1 on Windows (the network code itself is the same as on Linux, where it was tested) |
 
 If you try a build or system that is not tested, an
-[issue](https://github.com/WoodyWizard/SporeCoop/issues) with the result and
+[issue](https://github.com/jwhans0n/SporeCoopGA/issues) with the result and
 `mods\logs\sporekit.log` (it names the exe's `sha256` and `code_sha256`) helps.
+
+The Galactic Adventures preview uses a separate native adapter for the exact
+GOG file below. This is the same executable upstream calls GOG 2024; the GA
+reverse-engineering notes call it March 2017 after the ModAPI address map.
+
+| | |
+|---|---|
+| File | `SPORE\SporebinEP1\SporeApp.exe` |
+| Size | 24 895 536 bytes |
+| SHA-256 | `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37` |
+| Verified scope | Two- and four-player native adventure fixtures started from Sporepedia; see the preview guide for exact scope and remaining limits. Steam GA is unvalidated and disabled. |
 
 Where the game usually is:
 
@@ -97,10 +117,17 @@ sha256sum "SPORE/SporebinEP1/SporeApp.exe"
 
 ## 3. Install on Windows
 
-### With the setup (recommended)
+### With the setup
+
+For a GA prerelease, download its complete zip and keep the included
+`SporeCoopSetup.exe` beside the matching `SporeCoop-<version>.pack`. The setup
+can install that local pack even when GitHub has no regular fork release.
+The standalone setup and automatic update checks use GitHub's latest regular
+release endpoint, which excludes prereleases. The `install.bat` method below
+also installs the exact preview from the zip.
 
 1. Download **`SporeCoopSetup.exe`** from the
-   [latest release](https://github.com/WoodyWizard/SporeCoop/releases/latest) and run it.
+   [latest release](https://github.com/jwhans0n/SporeCoopGA/releases) and run it.
 2. It finds the game by itself (GOG and EA registry entries, common folders); if not, press
    **Browse...** and choose the SPORE folder (the one with `SporebinEP1`).
 3. It shows whether your game build is the tested one and which SporeCoop version is installed.
@@ -116,7 +143,7 @@ internet, run the `SporeCoopSetup.exe` from the release zip: it installs the upd
 ### With install.bat
 
 1. Download `SporeCoop-<version>.zip` from the
-   [latest release](https://github.com/WoodyWizard/SporeCoop/releases/latest).
+   [latest release](https://github.com/jwhans0n/SporeCoopGA/releases).
 2. Open the game folder and go into **`SporebinEP1`** (the folder with `SporeApp.exe`).
 3. Extract the zip there, so that `SporebinEP1` now contains `install.bat` and a `SporeCoop` folder.
 4. Run **`install.bat`**. If the game is under `C:\Program Files (x86)`, right-click it and choose
@@ -186,7 +213,8 @@ SPORE\
 ## 6. Check that it works
 
 * The main menu (galaxy screen) has a new **Co-op** item on the left.
-* `SporebinEP1\mods\logs\sporekit.log` exists and has a line `loaded coop v0.6.0`.
+* `SporebinEP1\mods\logs\sporekit.log` exists and reports the installed version
+  (for this fork preview, `loaded coop v0.7.3.0-ga-preview.7`).
 * Start a game, press **F9**: the co-op window opens.
 
 If there is no Co-op item, see [Troubleshooting](#9-troubleshooting).
@@ -207,7 +235,13 @@ Connections across a long distance work (the protocol was tested with 120 ms ± 
 
 ## 8. Update and uninstall
 
-**Update in the game:** after the start SporeCoop asks GitHub whether a newer release exists. If so,
+**Preview updates:** download future GA previews manually from the
+[fork Releases page](https://github.com/jwhans0n/SporeCoopGA/releases). The updater
+does not order preview suffixes, and GitHub's latest-release endpoint excludes
+prereleases. Keep all party members on the same build.
+
+**Update in the game:** after the start SporeCoop asks this fork's GitHub release
+source whether a newer regular release exists. If so,
 a notification says so and the **Co-op** window shows an **Update** button: the new files are
 downloaded, checked against the release's SHA-256 sums and installed; restart Spore to use them.
 All players update together (the network protocol has to match).
@@ -241,5 +275,5 @@ and reuses it next time. If you already have your own save of the same planet, i
 | *Games on your network* stays empty | Both PCs must be on the same network or VPN; allow SporeApp.exe in the firewall (private networks). Type the host's address instead. |
 | Join fails or times out | The host's UDP 47810 must be reachable (VPN or port forwarding). Every player needs the same SporeCoop version. |
 | The guest loads the world and then nothing | In Space the host must be in a star system, not on a planet (the game only saves off-planet). |
-| The game crashed or froze | Since 0.7.2.1 SporeCoop packs a report by itself when the game crashes, freezes for 30 s or closes right after an error: `mods\logs\SporeCoop-report-<date-time>.zip`, and the next start of the game tells you its name. Send that one file in an [issue](https://github.com/WoodyWizard/SporeCoop/issues). (Inside: the crash report `crash-<date-time>.txt` and its `.dmp`, the logs; the logs of the last 10 runs stay in `mods\logs\previous\`.) |
-| Something else | In the co-op window (F9) press **Report a problem**: it packs everything into one file, `mods\logs\SporeCoop-report-<date-time>.zip` (a report with your game build, Windows / Wine, memory, graphics card, other overlays and the co-op session; the logs of this and the last runs; the newest crash reports; the mod settings), and opens the folder with it selected. Send that one file (from host and guest) in an [issue](https://github.com/WoodyWizard/SporeCoop/issues) and say what you did. Your player name is in it; the address you last joined is not. The window's bottom line and the main menu show your SporeCoop version. |
+| The game crashed or froze | Since 0.7.2.1 SporeCoop packs a report by itself when the game crashes, freezes for 30 s or closes right after an error: `mods\logs\SporeCoop-report-<date-time>.zip`, and the next start of the game tells you its name. Send that one file in an [issue](https://github.com/jwhans0n/SporeCoopGA/issues). (Inside: the crash report `crash-<date-time>.txt` and its `.dmp`, the logs; the logs of the last 10 runs stay in `mods\logs\previous\`.) |
+| Something else | In the co-op window (F9) press **Report a problem**: it packs everything into one file, `mods\logs\SporeCoop-report-<date-time>.zip` (a report with your game build, Windows / Wine, memory, graphics card, other overlays and the co-op session; the logs of this and the last runs; the newest crash reports; the mod settings), and opens the folder with it selected. Send that one file (from host and guest) in an [issue](https://github.com/jwhans0n/SporeCoopGA/issues) and say what you did. Your player name is in it; the address you last joined is not. The window's bottom line and the main menu show your SporeCoop version. |

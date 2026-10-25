@@ -280,17 +280,17 @@ void refresh()
         game = L"Game: SporeApp.exe is not in this folder's SporebinEP1. Choose the SPORE folder.";
     else if (std::vector<uint8_t> exe = read_file(root + L"\\SporebinEP1\\SporeApp.exe");
              upd::sha256_hex(exe) == kGog2016Sha)
-        game = L"Game: Spore Galactic Adventures, GOG 2016 build (supported)";
+        game = L"Game: GOG 2016; base stages supported, co-op adventures unavailable";
     else if (upd::sha256_hex(exe) == kGog2024Sha)
-        game = L"Game: Spore Galactic Adventures, GOG 2024 build (supported)";
+        game = L"Game: GOG 2024; base stages and co-op adventure preview supported";
     else if (code_sha(exe) == kGog2024Code)
-        game = L"Game: Spore Galactic Adventures, same code as the GOG 2024 build (should work, not tested)";
+        game = L"Game: GOG 2024 code variant; base stages only, co-op adventures unavailable";
     else if (upd::sha256_hex(exe) == kSteamSha)
-        game = L"Game: Spore Galactic Adventures, Steam build (supported)";
+        game = L"Game: Steam; base stages supported, co-op adventures unvalidated";
     else if (code_sha(exe, true) == kGog2024Data)
-        game = L"Game: Spore Galactic Adventures, the GOG 2024 build under Steam's DRM (should work)";
+        game = L"Game: Steam code variant; base stages only, co-op adventures unvalidated";
     else
-        game = L"Game: Spore Galactic Adventures, a build SporeCoop has not been tested with yet";
+        game = L"Game: unvalidated build; co-op adventure adapter unavailable";
     SetWindowTextW(g_game, game.c_str());
     std::string v = is_game(root) ? upd::installed_version(root) : "";
     SetWindowTextW(g_inst, upd::widen("Installed: " + (v.empty() ? std::string("not installed") : "SporeCoop " + v)).c_str());
@@ -377,7 +377,7 @@ LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         lf.lfHeight = lf.lfHeight * 3 / 2;
         g_bold = CreateFontIndirectW(&lf);
         add(L"STATIC", L"SporeCoop " SETUP_VERSION, 0, 20, 14, 520, 28, 0, true);
-        add(L"STATIC", L"Play every stage of Spore together. This installs the mod into your game folder.", 0, 20,
+        add(L"STATIC", L"SporeCoopGA preview. Read GALACTIC-ADVENTURES.md before adventures.", 0, 20,
             44, 520, 20);
         add(L"STATIC", L"Game folder (the one with SporebinEP1):", 0, 20, 78, 520, 18);
         g_dir = add(L"EDIT", upd::widen(upd::narrow(find_game())).c_str(), ES_AUTOHSCROLL, 20, 98, 420, 24, ID_DIR);
@@ -389,7 +389,7 @@ LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         g_remove = add(L"BUTTON", L"Uninstall", BS_PUSHBUTTON, 200, 214, 120, 32, ID_REMOVE);
         add(L"BUTTON", L"Close", BS_PUSHBUTTON, 440, 214, 100, 32, ID_CLOSE);
         g_status = add(L"STATIC", L"", 0, 20, 258, 520, 36);
-        add(L"STATIC", L"github.com/WoodyWizard/SporeCoop  -  every player needs the same SporeCoop version", 0, 20,
+        add(L"STATIC", L"github.com/jwhans0n/SporeCoopGA  -  every player needs this fork version", 0, 20,
             300, 520, 18);
         refresh();
         CloseHandle(CreateThread(nullptr, 0, check_thread, nullptr, 0, nullptr));

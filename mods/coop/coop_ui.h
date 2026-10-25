@@ -1,7 +1,8 @@
 // Co-op user interface built from Spore's own UI: a "Co-op" item in the main menu and a
-// game dialog with three pages, "connect" (name, address, games on the network, hosting),
+// game dialog with "connect" (name, address, games on the network, hosting),
 // "lobby" (players, stage, ping, ready, chat, world transfer) and, in the Space stage, "space"
-// (the rows of the space features, space_ext.h). docs/08-ui.md.
+// (the rows of the space features, space_ext.h), plus adventure preparation and settings.
+// docs/08-ui.md.
 #pragma once
 
 #include <cstdint>
@@ -10,6 +11,7 @@
 #include <vector>
 
 #include "sporekit.h"
+#include "net/adventure.h"
 
 namespace coop_ui {
 
@@ -25,6 +27,10 @@ struct LanGame {
     std::string name, address, info;
     int players = 0, max_players = 0;
 };
+struct AssetCard {
+    std::string name, author;
+    dbpf::Key image;
+};
 
 // what the UI needs from the mod (filled in coop.cpp)
 struct Api {
@@ -39,9 +45,19 @@ struct Api {
     std::function<std::vector<PlayerRow>()> players;
     std::function<std::string()> world_line; // transfer progress / hints, "" if nothing
     std::function<bool()> ready;
+    std::function<bool()> party_waiting;
     std::function<void(bool)> set_ready;
     std::function<void()> share_world; // host (during a vote: start the evolution now)
     std::function<bool()> vote_active;
+    // Adventure difficulty is visible in the menu and during adventures. Only the host
+    // may edit it, before an attempt. Guests see the same immutable launch settings.
+    std::function<bool(ga::Difficulty&, int& party_size, bool& editable, std::string& status)> adventure_difficulty;
+    std::function<void(const ga::Difficulty&)> set_adventure_difficulty;
+    std::function<bool(ga::PreparationView&)> preparation;
+    std::function<AssetCard(const dbpf::Key&)> asset_card;
+    std::function<dbpf::Key(uint8_t)> captain_key;
+    std::function<bool()> can_ready;
+    std::function<void()> change_captain, cancel_adventure;
     // own creation of the current stage: kind 0 creature / 1 cell / 2 ship, its name ("" = the
     // world's own), how many own creations of that kind exist; false = not shown. cycle: -1 / +1
     std::function<bool(int& kind, std::string& name, int& own)> creation;

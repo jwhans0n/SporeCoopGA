@@ -333,7 +333,7 @@ static std::string diag_write_report_as(const std::string& base, const char* rea
     std::string s;
     s += "SporeCoop " + kind + " " + stamp() + (reason && *reason ? std::string(" (") + reason + ")" : "") + "\n";
     s += "Please attach this file (and the .dmp next to it, if there is one) to an issue:\n";
-    s += "https://github.com/WoodyWizard/SporeCoop/issues\n\n";
+    s += "https://github.com/jwhans0n/SporeCoopGA/issues\n\n";
     s += "== Environment\n" + diag_env() + "\n";
     if (ep && ep->ExceptionRecord && ep->ContextRecord) {
         EXCEPTION_RECORD* er = ep->ExceptionRecord;
@@ -489,7 +489,7 @@ std::string diag_write_bundle_with(const char* reason, const std::string& existi
     std::string stamp_now = stamp();
     std::string readme =
         "SporeCoop problem report " + stamp_now + "\n"
-        "Please attach this .zip to an issue: https://github.com/WoodyWizard/SporeCoop/issues\n"
+        "Please attach this .zip to an issue: https://github.com/jwhans0n/SporeCoopGA/issues\n"
         "and say what you did when the problem happened.\n\n"
         "Inside:\n"
         "  report-*.txt      the game build, Windows / Wine, memory, graphics card, other overlays and mods,\n"
