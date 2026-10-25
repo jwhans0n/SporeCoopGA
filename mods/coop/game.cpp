@@ -230,6 +230,9 @@ void play_animation(void* c, uint32_t anim_id, int block, bool disable_blend)
 
 typedef void(SK_THISCALL* NPCTickAI_t)(void*, float);
 static NPCTickAI_t o_NPCTickAI;
+static thread_local void* g_npc_ai_subject;
+
+void* npc_ai_subject() { return g_npc_ai_subject; }
 
 static void SK_THISCALL h_NPCTickAI(void* self, float dt)
 {
@@ -239,6 +242,11 @@ static void SK_THISCALL h_NPCTickAI(void* self, float dt)
         ++g_creature_update_counts.npc_ai_suppressed;
         return;
     }
+    struct SubjectScope {
+        void* previous;
+        explicit SubjectScope(void* subject) : previous(g_npc_ai_subject) { g_npc_ai_subject = subject; }
+        ~SubjectScope() { g_npc_ai_subject = previous; }
+    } scope(self);
     o_NPCTickAI(self, dt);
 }
 

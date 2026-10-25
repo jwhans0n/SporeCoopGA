@@ -73,11 +73,16 @@ Based on SporeCoop by WoodyWizard: https://github.com/WoodyWizard/SporeCoop
 
 Install: extract this zip into SPORE\\SporebinEP1 and run install.bat (step by step: INSTALL.txt).
 Read GALACTIC-ADVENTURES.md for the adventure preview's verified cases and limits.
-All players need Galactic Adventures and this exact SporeCoopGA version (protocol 13).
+All players need Galactic Adventures and this exact SporeCoopGA version (protocol 14).
 Upstream SporeCoop 0.7.0-0.7.2.1 uses a different protocol and cannot join this preview.
 Client creatures and vehicles follow native waypoints; the host retains AI,
-combat and objective authority. See validation-ga-preview.10.md for acceptance
-evidence and limits. Ordinary guest combat input remains unverified.
+combat and objective authority. Authored player-team attack targets can recognize
+eligible guest captains; native sensing, hostility and target selection remain
+in control. Targeted two-player Mine guest/host targeting, natural damage and
+switching checks pass; broader adventure compatibility remains unproven. See
+validation-ga-preview.11.md for evidence and limits. Earlier follower results
+retain residual movement lag. Ordinary guest click/key combat input remains
+unverified.
 
 Base-stage support retains upstream GOG 2024 (sha256 dc04aee5...), Steam
 (3010a413...: GOG 2024 game code under Steam's DRM), and GOG 2016 (922af7c7...).
@@ -118,6 +123,7 @@ cp "$ROOT/THIRD_PARTY_NOTICES.md" "$STAGE/THIRD_PARTY_NOTICES.txt"
 cp "$ROOT/third_party/minhook/LICENSE.txt" "$STAGE/SporeCoop/MinHook-LICENSE.txt"
 cp "$ROOT/docs/INSTALL.md" "$STAGE/INSTALL.txt"
 cp "$ROOT/docs/GALACTIC-ADVENTURES.md" "$STAGE/GALACTIC-ADVENTURES.md"
+cp "$ROOT/docs/validation-ga-preview.11.md" "$STAGE/validation-ga-preview.11.md"
 cp "$ROOT/docs/validation-ga-preview.10.md" "$STAGE/validation-ga-preview.10.md"
 cp "$ROOT/docs/validation-ga-preview.9.md" "$STAGE/validation-ga-preview.9.md"
 cp "$ROOT/docs/validation-ga-preview.8.md" "$STAGE/validation-ga-preview.8.md"

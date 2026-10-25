@@ -1,11 +1,17 @@
 # Galactic Adventures co-op: experimental guide
 
-Fork preview `0.7.3.3-ga-preview.10` adds native waypoint following for client
-creatures and vehicles, replacing recurring hard pose assignments between host
-updates. It retains preview 9's host-owned NPC AI/combat, unanimous party pause
+Fork preview `0.7.3.4-ga-preview.11` fixes authored player-team attack targets
+rejecting eligible guest captains. Native sensing, hostility and NPC target
+selection remain in control, with existing authored nonparty targets preserved.
+It retains preview
+10's native creature/vehicle waypoint followers, preview 9's unanimous party pause
 and six-metre revival, preview 8's music, held-item and confirmation fixes, and
 the upstream SporeCoop 0.7.2.1 integration. Source:
 [jwhans0n/SporeCoopGA](https://github.com/jwhans0n/SporeCoopGA).
+Preview 11 passes targeted two-player **Defend the Crystal Mine** checks for
+native guest/host targeting, natural damage and target switching. See its
+[validation report](validation-ga-preview.11.md) for exact evidence and limits;
+broader adventure compatibility remains unproven.
 Preview 10's two-player locomotion checks pass with residual tracking lag; see its
 [validation report](validation-ga-preview.10.md) for recorded evidence and limits.
 The [preview 9 report](validation-ga-preview.9.md),
@@ -19,7 +25,7 @@ Upstream calls this GOG 2024; the adventure RE notes call it March 2017 after th
 ModAPI address map. See [build identification](re/build-dc04.md). Steam and other
 same-code variants retain upstream base-stage support, but their native adventure
 adapter is disabled and adventure compatibility remains unvalidated. Every player
-needs Galactic Adventures and the same fork build (protocol 13); earlier GA
+needs Galactic Adventures and the same fork build (protocol 14); earlier GA
 previews and upstream 0.7.0-0.7.2.1 clients cannot join this preview.
 
 Preview `0.7.0-ga-preview.6` reduces traffic for stationary buildings and props and
@@ -80,6 +86,15 @@ prediction and catch-up. Native hard corrections handle initial binding, severe
 divergence, stuck followers and confirmed stationary disagreement. Clients keep
 native locomotion and replay host visual clip requests; attack and unknown clip
 requests retain their existing handling. Held items retain their attachment path.
+
+Some authored enemy instructions select the local captain's player team. Guest
+puppets have a different native ownership ID, so those instructions previously
+ignored guests even when the native sensor already saw them. The host now
+recognizes eligible living guest captains in that specific authored target match.
+Native sensors still decide visibility and native AI selects orders and attacks
+in one normal tick. Neutral relationships, existing nonparty combat targets and
+explicit authored object classes retain their behavior. This does not change
+captain ownership, avatar flags or native sensor lists.
 
 Any captain can pick up a colored key and open its matching gate. The host checks
 ownership, range and color, then shares native gate opening and key consumption.
@@ -153,6 +168,13 @@ automatic-recovery rule also shows its countdown. The ring matches the six-metre
 revival rule. Duration and interruption rules remain unchanged.
 
 ## Verified scope and current limits
+
+The [preview 11 validation report](validation-ga-preview.11.md) records native
+enemy-targeting evidence separately from callback ABI fixtures. The final build
+passes targeted two-player Mine guest/host acquisition, natural damage and
+switching checks. This does not establish every authored AI command or adventure.
+Passing relationship queries or sensing callbacks alone was insufficient to
+establish native attack behavior.
 
 The [preview 10 validation report](validation-ga-preview.10.md) separates follower
 reproductions, portable and native ABI fixtures, and current Windows observations.

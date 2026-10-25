@@ -39,6 +39,17 @@ void SK_THISCALL original_npc_ai(void* self, float seconds)
 {
     ++npc_ai_calls;
     check(self == actor && seconds == .123f, "NPC AI forwards the exact this pointer and float stack argument");
+    check(game::npc_ai_subject() == self, "native perception can observe only the current original NPC AI subject");
+}
+int nested_calls;
+void SK_THISCALL nested_npc_ai(void* self, float seconds)
+{
+    ++nested_calls;
+    check(game::npc_ai_subject()==self,"nested native AI scope identifies the exact current creature");
+    if(self==actor) {
+        game::h_NPCTickAI(reinterpret_cast<void*>(0x23456789),seconds);
+        check(game::npc_ai_subject()==actor,"nested return restores the enclosing NPC subject");
+    }
 }
 void SK_THISCALL native_visual_update(void* self, int milliseconds)
 {
@@ -110,6 +121,11 @@ int main()
           "existing remote captain puppet suppression remains effective before the adventure NPC filter");
     game::set_npc_ai_filter(nullptr); game::h_Update(actor, 123);
     check(npc_ai_calls == 2, "removing the adventure filter restores ordinary native NPC AI");
+    check(game::npc_ai_subject()==nullptr,"completed and suppressed NPC calls leave no perception subject behind");
+    game::o_NPCTickAI=nested_npc_ai;
+    game::h_NPCTickAI(actor,.123f);
+    check(nested_calls==2&&game::npc_ai_subject()==nullptr,
+          "one native call per subject and nested restoration preserve the outer no-subject boundary");
     std::printf("adventure blocked Update dispatch: %d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

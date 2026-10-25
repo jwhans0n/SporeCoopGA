@@ -40,7 +40,7 @@ static void test_buffer()
     s.movement_generation=0xFEDCBA9876543210ULL;
     Writer w;
     s.write(w);
-    CHECK(w.size() == 95); // protocol 13 retains the GA identity and teleport fields
+    CHECK(w.size() == 95); // protocol 14 retains the GA identity and teleport fields
     Reader r(w.data.data(), w.size());
     PlayerState t;
     CHECK(t.read(r));
@@ -282,7 +282,7 @@ static void test_session()
 static void test_protocol_versions()
 {
     printf("merged protocol boundary and HELLO version validation\n");
-    CHECK(kProtoVersion == 13 && kDiscoverPorts == 20);
+    CHECK(kProtoVersion == 14 && kDiscoverPorts == 20);
     CHECK(MSG_SPACE == 48 && MSG_ADVENTURE == 52);
     Session host;
     std::string err;

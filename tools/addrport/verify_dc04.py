@@ -26,6 +26,42 @@ def fn(name, address, prefix, returns, note, calls=(), vslots=(), checks=()):
 # Return pairs are absolute return-instruction VA and stack bytes popped (0 = C3).
 # Source identity comes from upstream ModAPI plus the behavioral checks in the notes.
 FUNCTIONS = [
+    fn('SporeCoop::BT_ValidTarget', 0xd993d0, '568b74240885f6743e80be5e0b000000',
+       [[14259222, 0], [14259226, 0]],
+       'cdecl(complete creature*)->same pointer/null,ret; rejects null/dead/untargetable/retired and cCreatureAnimal B58 bit4, does not require native avatar flag or scenario class',
+       calls=[[14259198, 11304976]], vslots=[], checks=[[14259161, '80be5e0b000000753580be3501000000742c8b068b502c8bceffd284c075'], [14259206, '85c07409f686580b0000047504']]),
+    fn('SporeCoop::Adventure::CreatureAwareness', 0xc0e650, '51568bf1e8b7d2f4ff3d104c65017546',
+       [[12641957, 0], [12641997, 0], [12642006, 0]],
+       'thiscall(complete creature)->ST0 float,ret; Scenario play modeCC2 returns current authored classAct+484 for non-avatar, otherwise phenotypeE84+34C or17.0',
+       calls=[[12621269, 12641872], [12641940, 12601520]], vslots=[], checks=[[12641924, '8b8e580b0000c1e909f6c10175148bc8e81762ffff85c07409d98084040000'], [12641949, 'd980840400005e']]),
+    fn('SporeCoop::Adventure::CreatureViewAngle', 0xc0c170, '518b81840e000085c0741bf30f108050',
+       [[12632469, 0], [12632477, 0]],
+       'thiscall(complete creature)->ST0 float,ret; nonnegative phenotypeE84+350 full FOV degrees or120 default',
+       calls=[[12621284, 12632432]], vslots=[], checks=[[12621289, 'd80d88cf4501'], [21352328, '35fa0e3c']]),
+    fn('SporeCoop::Adventure::CreaturePerceptionMultiplier', 0xd38a30, '51f30f100540374501568b7424108bce',
+       [[13863567, 0], [13863578, 0], [13863589, 0], [13863600, 0], [13863611, 0], [13863622, 0], [13863633, 0], [13863641, 0], [13863645, 0]],
+       'cdecl(int kind,complete creature)->ST0 float,ret; kinds1 hearing and2 sight share nonnegative phenotypeE84+358 or1.0',
+       calls=[[12621243, 13863472], [12621255, 13863472]], vslots=[], checks=[[13863648, '8b8ad3008b8ad3008b8ad300'], [13863503, '8bcee8aa38edfff30f1080580300000f57c90f2fc8f30f11442404760ef30f100540374501f30f11442404']]),
+    fn('SporeCoop::Adventure::CreatureCanHear', 0xc0d6c0, '0f57d2578b7c2408f30f108f800b0000',
+       [[12637989, 12], [12637995, 12], [12638124, 12], [12638130, 12]],
+       'thiscall(observerCreature,targetCreature,float hearingMultiplier,float edgeDistance)->boolAL,retC; positive target+B80 noise, observer phenotypeE84+354 or10.0, no new target/order writes',
+       calls=[[12621581, 12637888]], vslots=[], checks=[[12637913, '8b81840e000085c0740df30f1080540300000f2fc27308f30f1005b4c85001']]),
+    fn('SporeCoop::Adventure::NPCPerceptionCleanup', 0xc028f0, '8b442404568b70088b168b422c8bceff',
+       [[12593447, 0], [12593454, 0]],
+       'cdecl(perceptionRecord*)->boolAL,ret; true removes retired/avatar-bit0x200/untargetable/flag0x10 record; complete target+8, native owning ref+10. Only exact scoped cleanup callers may extend remote-party removal',
+       calls=[], vslots=[], checks=[[12622002, '8b86281100008b8e241100005068f028c0008dae241100005051e8afb0ffff83c40c508bcde874d4ffffd9'], [12601747, '8b0650ffd383c40484c0750d83c604'], [12596280, '8b0650ffd583c40484c075078b'], [12593413, '8b8e580b0000c1e909f6c1017515388635010000740df6861001000010750433c0']]),
+    fn('SporeCoop::Adventure::PerceptionPoolBack', 0xc05fe0, '8b41188b511c8b49243bc2750c83e904',
+       [[12607480, 0], [12607484, 0]],
+       'thiscall(native record deque*)->last record*,ret; deque back, caller must confirm nonempty',
+       calls=[[12621985, 12607456]], vslots=[], checks=[]),
+    fn('SporeCoop::Adventure::PerceptionPoolPopBack', 0xc06000, '8b41183b411c7424568d70ec8971188b',
+       [[12607537, 0]],
+       'thiscall(native record deque*),ret or native tailcall; pop_back balances record+10/+C intrusive refs; no raw list ownership writes',
+       calls=[[12621997, 12607488]], vslots=[], checks=[[12607497, '8d70ec8971188b4e1085c974078b018b5004ffd28b4e0c5e85c9740c8b018b5004ffe2']]),
+    fn('SporeCoop::Adventure::PerceptionRecordFactory', 0xc068b0, '83ec1453568b7424208b46188d481457',
+       [[12609885, 0]],
+       'cdecl(native deque*,targetCreature*,float edgeDistance,bool sight,bool heard)->record*,ret; returns0x14B native record owns target via+10. Guard exact C09570 factory caller before optional previous-party back cleanup',
+       calls=[[12622064, 12609712]], vslots=[], checks=[[12609808, '8b7c24288a4c24308a542434f30f1044242c8d70ec897e08f30f1106884e04885605'], [12609842, '8b5e103bfb741c85ff74088b078b108bcfffd2897e1085db74098b038b50048bcbffd2']]),
     fn('SporeCoop::Adventure::GetLocomotionRequest', 0xc42020, '8d81f4010000c3',
        [[12853286, 0]],
        'thiscall(locomotiveSpatial)->inline cLocomotionRequest*, ret; lea spatial+1F4. Native creature AI requests MoveTo then sets returnedrequest+5C from mode1 to2. Mode1/2 share goal completion; vehicle empty-route mode2 skips arrival sqrt cap, retaining later native acceleration/turn/collision.',
@@ -469,7 +505,75 @@ FUNCTIONS = [
        'thiscall(frontend,bool), ret4 or tailcall effect+8; native quickplay BackDFE6B5 passes true'),
     fn('UTFWin::UILayout::SetVisible', 0x810630, '8b491485c97405e974fdffff', [(0x81063E, 4), (0x810423, 4)],
        'thiscall(layout,bool), ret4 or tailcall8103B0; quickplay FinishDFAE51 hides frontend layout+144 with false'),
+    fn('SporeCoop::Adventure::NPCPlayerTargetScore', 14207776, '83ec0c53558b6c241883bd1c1000000156', [[14207967, 0], [14208236, 0], [14208327, 0]], ('cdecl(NPC*,double simulationTime,uint32 flags,targetOutput*,bool* '
+ 'accepted,decider*,context*)->ST0 float,ret; eight DWORD stack slots. Native callback dispatcher '
+ 'BC8B42 calls decider+8 and addsesp20. For read-only watched-NPC diagnostics, preserve all args '
+ 'and native float return without forcing score or target.'), calls=[], checks=[[12356376, '8b4c2430dd4424248b44241c8b564d5657518946048b4641525083ec08dd1c24893ec64608008b4f0853ffd183c420'], [12356418, 'ffd183c4205f5e5b59c3'], [14207781, '8b6c241883bd1c1000000156570f85ab010000f744242c080400000f849a000000'], [14208072, '807e04007506807e050074648b46088b90c00000008d88c00000008b4258ffd084c074488b760880be5e0b000000753c85f674388b168b42208bceffd03db7b48e017528'], [22570320, 'acece0120100000020cbd800'], [22579864, 'acece0120100000020cbd800'], [22603080, 'acece0120100000020cbd800']]),
+    fn('SporeCoop::Adventure::NPCDeciderScoreDispatcher', 12356320, '51dd4424180f57c0538b5c2418568b742428578b7c2414', [[12356427, 0], [12356450, 0]], ('Read-only diagnostic candidate only. cdecl(decider*,uint32 mode,uint32 index,NPC*,double '
+ 'time,context*,bool* accepted)->ST0 float, ret. Seven C args/eight DWORD stack slots. Child '
+ 'callers BC8C61..73 push accepted/context/double/NPC/index/mode/decider and addesp20. Original '
+ 'dispatcher applies BC8A50 before optional decider+8 score call; observing entry does not '
+ 'establish that callback executed.'), calls=[[12356358, 12356176]], checks=[[12356418, 'ffd183c4205f5e5b59c3'], [12356705, '505683ec08dd1c2451526a0157c644244800e868feffff']]),
+    fn('SporeCoop::Adventure::MatchesBehaviorTarget', 13095472, '568b74240c8b0683f808774eff248590d2c700', [[13095494, 0], [13095517, 0], [13095536, 0], [13095561, 0], [13095565, 0]], ('cdecl(complete cGameData*,const BehaviorTarget*)->bool AL, plain ret. Type1 invokes GameData '
+ 'primary+4C and compares politicalID to target+4. Creature primary146A080+4C=5AADB0 returns '
+ 'completeGameData+30. Type2 scenario class and type8 singleton avatar remain native. Native '
+ 'callback runs once; strict scoped host captain-category extension only at listed scenario '
+ 'condition/attack sites.'), calls=[[13095544, 11664640]], vslots=[[21405824, 76, 5942704]], checks=[[5942704, '8b4130c3'], [13095495, '8b4c24088b018b504cffd233c93b46045e0f94c18ac1c3']]),
 ]
+
+# Noncallable return labels scope native detours to reviewed caller instructions.
+CODE_SITES = [{'name': 'SporeCoop::Adventure::NPCPerceptionAvatarReturn',
+  'address': 12621203,
+  'prefix': '33db8bf8895c2410885c',
+  'note': 'noncallable return-address label after initial singleton perception-avatar read, never a function '
+          'entry',
+  'calls': [[12621198, 11664640]],
+  'checks': []},
+ {'name': 'SporeCoop::Adventure::NPCPerceptionCleanupReturn',
+  'address': 12601752,
+  'prefix': '83c40484c0750d83c604',
+  'note': 'noncallable callback return-address label in native sensed-vector remove_if, requires host NPC '
+          'subject scope',
+  'calls': [],
+  'checks': [[12601747, '8b0650ffd383c40484c0']]},
+ {'name': 'SporeCoop::Adventure::NPCPerceptionCopyCleanupReturn',
+  'address': 12596285,
+  'prefix': '83c40484c075078b0e89',
+  'note': 'noncallable callback return-address label in native sensed-vector remove-copy, requires host NPC '
+          'subject scope',
+  'calls': [],
+  'checks': [[12596280, '8b0650ffd583c40484c0']]},
+ {'name': 'SporeCoop::Adventure::PerceptionRecordFactoryReturn',
+  'address': 12622069,
+  'prefix': '8944243c83c4148d4424',
+  'note': 'noncallable native sensed-record factory return; earlier C04980/C06D50 vector cleanup is complete '
+          'before this call',
+  'calls': [[12622064, 12609712], [12622039, 12610896]],
+  'checks': [[12622044, 'd94424488b4c24188b54241c515251d91c245753e8bbcfffff']]},
+ {'address': 15470448,
+ 'calls': [[15470443, 13095472]],
+ 'name': 'SporeCoop::Adventure::AttackConditionTargetReturn',
+ 'note': 'Noncallable return label after native complete GameData/BehaviorTarget cdecl match; caller '
+         'addsesp8. Condition1 and action0 share native sensor and retirement checks.',
+ 'prefix': '83c40884c00f848b010000'},
+ {'address': 15470479,
+ 'calls': [[15470474, 13095472]],
+ 'name': 'SporeCoop::Adventure::AttackCurrentTargetReturn',
+ 'note': 'Noncallable return label after native complete GameData/BehaviorTarget cdecl match; caller '
+         'addsesp8. Condition1 and action0 share native sensor and retirement checks.',
+ 'prefix': '83c40884c0743c'},
+ {'address': 15470642,
+ 'calls': [[15470637, 13095472]],
+ 'name': 'SporeCoop::Adventure::AttackSensorTargetReturn',
+ 'note': 'Noncallable return label after native complete GameData/BehaviorTarget cdecl match; caller '
+         'addsesp8. Condition1 and action0 share native sensor and retirement checks.',
+ 'prefix': '83c40884c00f84b8000000'},
+ {'address': 15469813,
+ 'calls': [[15469808, 13095472]],
+ 'name': 'SporeCoop::Adventure::AttackSensorConditionReturn',
+ 'note': 'Noncallable return label after native complete GameData/BehaviorTarget cdecl match; caller '
+         'addsesp8. Condition1 and action0 share native sensor and retirement checks.',
+ 'prefix': '83c40884c00f85a7010000'}]
 
 GLOBALS = [
     dict(name='App::cScenarioMode::ptr', address=0x16C7AA4,
@@ -489,14 +593,14 @@ def verify(pe):
     if pe.image_base != 0x400000:
         raise ValueError('unexpected preferred image base')
     evidence = []
-    for entry in FUNCTIONS:
+    for entry in [*FUNCTIONS, *CODE_SITES]:
         va = entry['address']
         if not pe.in_text(va):
-            raise ValueError(entry['name'] + ': function outside .text')
+            raise ValueError(entry['name'] + ': native entry outside .text')
         expected = bytes.fromhex(entry['prefix'])
         if pe.read(va, len(expected)) != expected:
-            raise ValueError(entry['name'] + ': prologue mismatch')
-        for site, popped in entry['returns']:
+            raise ValueError(entry['name'] + ': entry prefix mismatch')
+        for site, popped in entry.get('returns', ()):
             expected = b'\xc3' if not popped else b'\xc2' + struct.pack('<H', popped)
             if pe.read(site, len(expected)) != expected:
                 raise ValueError(entry['name'] + ': return mismatch at ' + hex(site))
@@ -583,7 +687,7 @@ def main():
             args.write_map.write_text(rendered, encoding='utf-8', newline='\n')
         if args.report:
             args.report.write_text(json.dumps(dict(sha256=pe.sha256, symbols=evidence), indent=2) + '\n', encoding='utf-8')
-        print(f'verified {len(FUNCTIONS)} functions and {len(GLOBALS)} globals for {pe.sha256}')
+        print(f'verified {len(FUNCTIONS)} functions and {len(GLOBALS)} globals and {len(CODE_SITES)} code sites for {pe.sha256}')
         return 0
     except (OSError, ValueError, AssertionError) as exc:
         print('verification failed: ' + str(exc), file=sys.stderr)

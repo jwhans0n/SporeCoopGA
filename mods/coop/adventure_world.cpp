@@ -3,6 +3,7 @@
 #include "adventure_world_actions.h"
 #include "adventure_world_vehicles.h"
 #include "adventure_relationships.h"
+#include "adventure_targeting.h"
 
 #include <algorithm>
 #include <array>
@@ -170,6 +171,7 @@ static int g_animation_act = -1;
 static unsigned g_animations_sent, g_animations_received, g_animations_played, g_animations_expired;
 static bool g_visual_animation;
 static std::vector<NativeActor> g_native;
+static int g_native_act = -1;
 static bool g_native_overflow;
 static std::map<uint32_t, uint8_t*> g_markers;
 static std::map<Identity, double> g_spawn_attempt;
@@ -338,6 +340,8 @@ static void enumerate()
     // The registry, casts and marker getters below do not mutate native memory.
     skg::ReadOnlyMemoryScope memory;
     g_native.clear();
+    auto* current_play = play();
+    g_native_act = current_play ? skg::field<int>(current_play, 0xB8) : -1;
     g_native_overflow = false;
     refresh_markers();
     game::for_each_object([](void* object, uint32_t noun, void*) {
@@ -625,7 +629,8 @@ struct AvatarScope {
 };
 static void* SK_THISCALL native_avatar(void* self)
 {
-    return g_override_avatar ? g_override_avatar : o_Avatar(self);
+    if (g_override_avatar) return g_override_avatar;
+    return o_Avatar(self);
 }
 static bool nearby(void* a, void* b, float range)
 {
@@ -2204,7 +2209,9 @@ static void reset_replication()
     g_pending_social.clear(); ++g_social_generation; g_social_queued = g_social_overflow = false;
     g_deferred_goals.reset();
     ++g_goal_generation; g_goal_work_run = 0; g_goal_apply_queued = g_goal_apply_active = false;
-    g_native.clear(); g_remote.clear(); g_bindings.clear(); g_motion = {}; g_health_baselines.clear(); g_last_hit.clear(); g_last_captain_hit.clear();
+    g_native.clear(); g_native_act = -1;
+    g_remote.clear(); g_bindings.clear(); g_motion = {}; g_health_baselines.clear(); g_last_hit.clear(); g_last_captain_hit.clear();
+    adventure_targeting::reset();
     g_last_interaction.clear(); g_dropped.clear(); g_social_events.clear(); g_social_completions.clear(); g_interaction_sequence = 0;
     g_opened_gates.clear(); g_retired_items.clear(); g_talk_cleanup=g_talk_presenting=g_talk_committing=false;
     g_last_source.clear();
@@ -2369,6 +2376,40 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
         g_ok = adventure_world_actions::init(H, M, std::move(actions)) &&
                adventure_world_vehicles::init(H, M, std::move(vehicles));
     }
+    if (g_ok) {
+        adventure_targeting::Ctx targeting;
+        targeting.active = [] { return active() && host() && game::mode_id() == 0x01654C10 && !(C.held && C.held()); };
+        targeting.live_npc = [](void* object) {
+            auto* p = play();
+            if (!object || !p || g_run != run() || g_native_act != skg::field<int>(p, 0xB8) ||
+                owner(object) != ga::kNoPlayer || game::is_puppet(object) || !skg::readable(object, 0xB60)) return false;
+            auto* actor = actor_for(object);
+            return actor && actor->incarnation == skg::field<uint32_t>(object, 0x24) &&
+                !skg::field<bool>(object, 0x20) && game::object_alive(object) &&
+                game::cast(object, kCreature) && !game::is_dead(object) && game::health(object) > 0;
+        };
+        targeting.captains = [] {
+            std::vector<adventure_targeting::Captain> captains;
+            captains.reserve(net::kMaxPlayers);
+            for (const auto& player : C.sess->players()) {
+                if (!C.captain_can_act(player.id)) continue;
+                void* object = C.captain_of(player.id);
+                if (object && skg::readable(object, 0xB60) && !skg::field<bool>(object, 0x20) &&
+                    game::object_alive(object) && !game::is_dead(object) && game::health(object) > 0)
+                    captains.push_back({object, player.id});
+            }
+            return captains;
+        };
+        targeting.remote_captain = [](void* object) {
+            // Identity includes downed captains when preserving a current target.
+            // The separate Alive pool controls eligibility for new matches.
+            if (!object || !C.sess || !C.captain_of) return false;
+            for (const auto& player : C.sess->players())
+                if (player.id != C.sess->my_id() && C.captain_of(player.id) == object) return true;
+            return false;
+        };
+        g_ok = adventure_targeting::init(H, M, std::move(targeting));
+    }
     H->command_add(M, "coop.adventure.world", "Adventure native diagnostics and isolated-profile test actions",
                    [](void*, int argc, const char* const* argv, SkOut* out) { return debug(argc - 1, argv + 1, out); },
                    nullptr, SK_CMD_OUTSIDE_FRAME);
@@ -2463,6 +2504,7 @@ std::string status(bool verbose)
         " snaps=" + std::to_string(g_motion.snaps) + " initial=" + std::to_string(g_motion.initial) +
         " severe=" + std::to_string(g_motion.severe) + " stationary=" + std::to_string(g_motion.stationary) +
         " stuck=" + std::to_string(g_motion.stuck) + "\n";
+    summary += adventure_targeting::status() + "\n";
     summary += "native goal HUD: refreshes=" + std::to_string(g_goal_hud_refreshes) +
                " pending=" + std::to_string(g_goal_hud_dirty ? 1 : 0) + "\n";
     auto creature_updates = game::creature_update_counts();

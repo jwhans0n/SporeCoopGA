@@ -20,7 +20,7 @@ KIT_OBJ := $(patsubst %.cpp,$(B)/obj/%.o,$(KIT_SRC))
 COOP_SRC := $(wildcard mods/coop/*.cpp) $(wildcard mods/coop/net/*.cpp) $(wildcard updater/*.cpp)
 COOP_OBJ := $(patsubst %.cpp,$(B)/obj/%.o,$(COOP_SRC))
 
-.PHONY: all loader sporekit coop res setup clean test test-captains-windows test-lifecycle-windows test-actions-windows test-vehicles-windows test-mirror-windows test-progress-windows test-relationships-windows test-social-windows test-blocked-update-windows test-debug-capabilities-windows
+.PHONY: all loader sporekit coop res setup clean test test-captains-windows test-lifecycle-windows test-actions-windows test-vehicles-windows test-mirror-windows test-progress-windows test-relationships-windows test-targeting-windows test-social-windows test-blocked-update-windows test-debug-capabilities-windows
 all: loader sporekit coop res setup
 
 # game resources (icons, ...) for SporeCoop: Data/SporeCoop.package
@@ -125,7 +125,7 @@ ACTIONS_TEST_SRC := mods/coop/adventure_world_actions.cpp tests/adventure_action
 VEHICLES_TEST_SRC := mods/coop/adventure_world_vehicles.cpp tests/adventure_vehicle_tests.cpp
 RELATIONSHIPS_TEST_SRC := mods/coop/adventure_relationships.cpp tests/adventure_relationship_tests.cpp
 SOCIAL_TEST_SRC := mods/coop/adventure_social.cpp tests/adventure_social_tests.cpp
-MIRROR_TEST_SRC := tests/adventure_mirror_tests.cpp mods/coop/adventure_flow.cpp mods/coop/net/adventure.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp
+MIRROR_TEST_SRC := tests/adventure_mirror_tests.cpp mods/coop/adventure_flow.cpp mods/coop/adventure_targeting.cpp mods/coop/net/adventure.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp
 
 test-actions-windows: $(B)/host/adventure_actions_tests.exe
 $(B)/host/adventure_actions_tests.exe: $(ACTIONS_TEST_SRC) mods/coop/adventure_world_actions.h $(ADVENTURE_ABI_HEADERS)
@@ -141,6 +141,11 @@ test-relationships-windows: $(B)/host/adventure_relationship_tests.exe
 $(B)/host/adventure_relationship_tests.exe: $(RELATIONSHIPS_TEST_SRC) mods/coop/adventure_relationships.h $(ADVENTURE_ABI_HEADERS)
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(RELATIONSHIPS_TEST_SRC) -o $@
+
+test-targeting-windows: $(B)/host/adventure_targeting_tests.exe
+$(B)/host/adventure_targeting_tests.exe: tests/adventure_targeting_tests.cpp mods/coop/adventure_targeting.cpp mods/coop/adventure_targeting.h $(ADVENTURE_ABI_HEADERS)
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/adventure_targeting_tests.cpp mods/coop/adventure_targeting.cpp -o $@
 
 test-social-windows: $(B)/host/adventure_social_tests.exe
 $(B)/host/adventure_social_tests.exe: $(SOCIAL_TEST_SRC) mods/coop/adventure_social.h $(ADVENTURE_ABI_HEADERS)
@@ -170,7 +175,7 @@ $(B)/host/adventure_debug_capability_tests.exe: tests/adventure_debug_capability
 
 # The mirror fixture includes world.cpp directly; list it as a dependency only.
 test-mirror-windows: $(B)/host/adventure_mirror_tests.exe
-$(B)/host/adventure_mirror_tests.exe: $(MIRROR_TEST_SRC) mods/coop/adventure_world.cpp mods/coop/adventure_world.h mods/coop/adventure_world_actions.h mods/coop/adventure_world_lifecycle.h mods/coop/adventure_world_vehicles.h mods/coop/adventure_relationships.h mods/coop/net/adventure.h mods/coop/net/adventure_health.h mods/coop/net/adventure_actor_motion.h mods/coop/net/session.h mods/coop/net/buffer.h $(ADVENTURE_ABI_HEADERS)
+$(B)/host/adventure_mirror_tests.exe: $(MIRROR_TEST_SRC) mods/coop/adventure_world.cpp mods/coop/adventure_world.h mods/coop/adventure_world_actions.h mods/coop/adventure_world_lifecycle.h mods/coop/adventure_world_vehicles.h mods/coop/adventure_relationships.h mods/coop/adventure_targeting.h mods/coop/net/adventure.h mods/coop/net/adventure_health.h mods/coop/net/adventure_actor_motion.h mods/coop/net/session.h mods/coop/net/buffer.h $(ADVENTURE_ABI_HEADERS)
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(MIRROR_TEST_SRC) -o $@ -lws2_32
 

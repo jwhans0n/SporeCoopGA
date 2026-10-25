@@ -1050,3 +1050,55 @@ py -3 tools/tests/test_actor_motion_fixture.py
 Portable policy and sampler tests complement the native traces; they cannot
 prove native locomotion, terrain or collision behavior. Preserve command logs,
 JSON, screenshots and original build identities when comparing previews.
+
+### Preview 11 authored enemy targeting
+
+The targeting fixture builds separately from the portable suite:
+
+```bash
+make test-targeting-windows
+```
+
+Run `build/host/adventure_targeting_tests.exe` on native Windows. It exercises
+the cdecl two-argument authored matcher, exact condition/action caller fences,
+one original native call, political-ID role restrictions, living-party identity,
+native hostility and existing nonparty target protection. It models the adapter's
+boundaries; it does not prove autonomous enemy attacks in Spore. Earlier sensing,
+record-cleanup and score-dispatch candidates were diagnostic attempts, not the
+minimal fix for the native Mine failure.
+
+Use fresh hidden, muted profiles and a private installation as above for native
+acceptance. Keep the bounded runner active and supply its current metadata:
+
+```powershell
+py -3 tools/windows_lab.py prepare --destination out/windows-lab/preview11-installation
+py -3 tools/windows_lab.py run --installation out/windows-lab/preview11-installation --out out/windows-lab/preview11 --instances 2 --first-instance 81 --seconds 1800 --hidden
+py -3 tools/tests/coop_adventure_enemy_targeting.py --metadata out/windows-lab/preview11/processes.json --host 81 --guest 82 --out out/windows-lab/preview11-guest-targeting --near-player 1 --seconds 8 --maintain-near --native-forward --near-distance 6.5 --stage-interval 0.12 --expect attacked --port 47960
+```
+
+The harness launches stock **Defend the Crystal Mine**, stages only the captains,
+and records actual host-side captain proximity, native forward/cone geometry,
+enemy combat targets, authored custom entries, native ScenarioSensor membership,
+political IDs, diagnostic perception counts and owner health. It does not set enemy orders,
+targets, abilities or damage. It requires native target selection plus natural
+owner health loss for `--expect attacked`, then normally cancels to both menus.
+Repeat with `--near-player 0` as the host control. Use the final candidate's
+`--expected-sha256` value from its report to pin the loaded DLL. Neither a nearby
+guest on its own screen nor a positive relationship query proves the host's
+puppet was close enough to be detected.
+
+`--switches` accepts up to four alternating captain-staging phases within the
+bounded observation window. Inspect every phase and current native target;
+a single selected target is insufficient to establish repeated switching.
+Preserve neutral-NPC and authored nonparty target controls as separate cases.
+The actual Mine failure was a type-1/player-team match rejecting a guest already
+present in the native ScenarioSensor, not a reason to inject sensor entries or
+alter ownership. Keep native sensor/reference handling unchanged.
+
+These checks concern enemies targeting captains, not ordinary guest click/key
+attack input or complete playthroughs. The [preview 11 report](validation-ga-preview.11.md)
+records actual results and limits. The final matcher-only build passes targeted
+two-player Mine guest/host acquisition, natural damage and guest/host/guest
+switching checks. Native sensor ownership remains unchanged. Broader adventure,
+four-player and AI-command coverage is still outstanding. Earlier reports keep
+their build labels.

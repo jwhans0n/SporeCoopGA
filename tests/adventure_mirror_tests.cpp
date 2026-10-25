@@ -228,6 +228,10 @@ void* cast(void* p, uint32_t type)
     return nullptr;
 }
 void* avatar() { return nullptr; }
+void* npc_ai_subject() { return nullptr; }
+bool is_dead(void* object) { return field<bool>(object, kDeadOff); }
+float health(void* object) { return field<float>(object, kHpOff); }
+bool is_puppet(void*) { return false; }
 uint32_t mode_id() { return 0x01654C10; }
 CreatureUpdateCounts creature_update_counts() { return {}; }
 void play_animation(void* object, uint32_t animation, int block, bool disable_blend)

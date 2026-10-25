@@ -3,14 +3,19 @@
 Bugs found and not fixed yet. Each entry: what happens, how to reproduce it, what is known.
 Fixed entries move to the commit message (and a test).
 
-## Galactic Adventures preview 10: validation limits
+## Galactic Adventures preview 11: validation limits
 
-Preview `0.7.3.3-ga-preview.10` requires the exact dc04 GOG executable and matching
-protocol 13 clients. Its native creature and vehicle waypoint followers preserve
-host AI, combat and objective authority. Two-player locomotion checks pass;
-see the [preview 10 report](validation-ga-preview.10.md) for current evidence.
+Preview `0.7.3.4-ga-preview.11` requires the exact dc04 GOG executable and matching
+protocol 14 clients. The targeting fix recognizes eligible guest captains in
+authored player-team attack matches. Native sensor visibility, hostility and
+nonparty targets retain their behavior. Targeted two-player Mine guest/host
+acquisition, natural damage and switching checks pass; broader adventure/AI-command
+compatibility and four-player native targeting remain unproven. See the
+[preview 11 report](validation-ga-preview.11.md). Earlier relationship-query and
+sensing callback tests alone did not establish natural acquisition or attacks.
 
-Position tracking remains approximate: the final Mine trace has vehicle
+Position tracking remains approximate: the
+[preview 10 Mine trace](validation-ga-preview.10.md) has vehicle
 host-to-guest error p95 of 8.08/8.37 m and living creature histories from 3.84 to
 16.19 m, depending on the actor. Native turns/routes and scale can require
 corrections; repaired rendered motion does not establish precise combat parity.

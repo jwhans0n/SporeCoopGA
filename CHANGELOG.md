@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.7.3.4-ga-preview.11] - 2026-10-25
+
+- Fix authored player-team enemy targets rejecting eligible guest captains.
+  Remote puppets keep their native identity; a narrow host-side match recognizes
+  living party captains while preserving native sensing, hostility, authored
+  nonparty targets and one normal AI tick.
+- Keep native sensor candidate lists and ownership unchanged. The initial
+  perception-record workaround did not repair the actual authored target check
+  and is excluded from the minimal fix.
+- Use protocol 14 for matching native targeting behavior. Actor packets,
+  creation bundles, native waypoint followers and static-object handling retain
+  their existing formats and behavior.
+- Pass targeted two-player **Defend the Crystal Mine** checks: native guest and
+  host targeting, natural damage, and guest/host/guest target switching. See the
+  [preview 11 report](docs/validation-ga-preview.11.md). Broader compatibility,
+  residual movement lag and ordinary guest click/key combat input remain limits.
+
 ## [0.7.3.3-ga-preview.10] - 2026-10-25
 
 - Follow replicated host creature and vehicle positions with native waypoints using native locomotion between

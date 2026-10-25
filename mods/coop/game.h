@@ -69,6 +69,9 @@ void set_extra_update_filter(UpdateFilter fn); // composed with NPC filtering (a
 // Suppress autonomous NPC decisions without skipping the native visual,
 // locomotion and combatant maintenance in the enclosing creature Update.
 void set_npc_ai_filter(UpdateFilter fn);
+// Non-null only while the original NPCTickAI is executing on this thread.
+// Observing the subject never invokes or repeats native AI.
+void* npc_ai_subject();
 struct CreatureUpdateCounts { uint64_t native = 0, npc_ai_suppressed = 0; };
 CreatureUpdateCounts creature_update_counts();
 using BlockedUpdateHandler = void (*)(void* creature, int milliseconds);

@@ -1781,3 +1781,329 @@ results, not a controlled identical-AI trajectory comparison. Evidence is in
 request semantics over treating a far projected point as host path evidence;
 final acceptance still needs continuous travel, turns, stops and authority
 measurements on the chosen build.
+
+
+## Host NPC captain perception on GOG 2024 (dc04aee5)
+
+Native sensing, authored target matching and relationship lookup are separate
+paths. Remote party captains are ordinary `cCreatureAnimal` puppets in their
+own quiet herds, with no authored scenario class and no native avatar bit
+(`+B58 & 0x200`). Relationship aliasing does not fix either missing sensing or
+a failed authored target match. The investigation below first tested singleton
+perception, then established that the actual Mine failure occurs after native
+ScenarioSensor admission, at a political-ID match. The initial perception
+adapter is a negative candidate, not a prerequisite of that narrower fix.
+
+### Adventure applicability and singleton stimulus
+
+Native animal Update `C0AE30` calls `C09570` at `C0AF63` for every non-avatar
+animal. There is no Scenario-mode exclusion at that call. `C09570` requires a
+nonempty brain root at `creature+B4C`, then calls the noun manager's avatar
+getter `B1FD00` at `C0958E` (return `C09593`). It uses that one returned
+creature for its sight/hearing stimulus before running the existing behavior
+tree once at `C09B29`. Replacing unrelated avatar lookups inside behavior
+nodes would also change native authored-target semantics and is not justified
+by this perception call site.
+
+There is direct GA-specific evidence in the range helper: `C0E650` checks
+native game mode `0x1654C10`, Scenario mode `+CC==2`, and a non-avatar animal;
+when its current class-act exists, it returns authored awareness at class-act
+`+484`. Otherwise it falls back to phenotype `+34C` or the native default
+17.0. This supports the real adventure perception path, rather than inferring
+applicability from a creature-stage symbol name. Native Mine host-positive
+and guest-near observations must still be recorded separately from static RE.
+
+### Verified native perception helpers
+
+All addresses below are preferred-image addresses in the installed executable
+with SHA-256 `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
+The naming here describes the observed operation; new code must resolve named
+aliases through the build's symbol map and verifier.
+
+| Entry | Verified ABI and behavior |
+| --- | --- |
+| `C0E650` | `float __thiscall(creature*)`, plain ret; authored Scenario awareness or phenotype/default sight range. |
+| `C0C170` | `float __thiscall(creature*)`, plain ret; phenotype `+350` full field of view when nonnegative, otherwise 120 degrees. |
+| `D38A30` | `float __cdecl(int kind, creature*)`, plain ret; kinds 1 and 2 both return nonnegative phenotype `+358`, otherwise 1.0. |
+| `C0C290` | `bool __thiscall(creature*)`, exact leaf `8A81B10B0000C3`; reads `+BB1`, used as the target's stealth state. |
+| `C0D6C0` | `bool __thiscall(observer*, target*, float hearingMultiplier, float edgeDistance)`, `ret 0xC`; requires positive target noise at `+B80`, then compares distance with noise plus observer hearing coefficient times multiplier. Coefficient is phenotype `+354` when nonnegative, otherwise 10.0. |
+| `D993D0` (`SporeCoop::BT_ValidTarget`) | `creature* __cdecl(creature*)`, same pointer or null, plain returns `D99416/D9941A`; rejects null, dead `+B5E`, untargetable `+135`, retired primary virtual `+2C`, and animal flags `+B58 & 4`. It requires neither an avatar bit nor a scenario class. |
+
+The ordinary sight test in `C09570` uses range `C0E650(observer)` multiplied
+by `D38A30(2, observer)`. Its cone threshold is
+`cos(C0C170(observer) * 0.008726646192371845)`, or the cosine of half the full
+field of view in radians. It normalizes target-minus-observer using `C027F0`
+(which adds `1e-8` before its square root), subtracts both native spatial radii
+from center distance, clamps the result to zero, checks `+BB1` is false, and
+compares forward-dot and range. Hearing passes `D38A30(1, observer)` and that
+same edge distance to `C0D6C0`. No world raycast occurs in this ordinary sight
+branch. Later native branches provide additional near/noisy stealth detection
+and ability-dependent behavior; approximating those branches is not equivalent
+to proving that a cloaked target is undetectable.
+
+Native direction must not be inferred from velocity in a sensing fixture.
+The animal spatial vtable `1469EC0` has `+5C=C891B0`, ABI
+`Vector3* __thiscall(spatial*, Vector3* output)`, returns `C89221/C8924D`
+with `ret 4`. Native perception supplies its output buffer at `C09604` and
+calls the virtual at `C0960B`. It obtains the quaternion via virtual `+30`
+(`97E7C0`, exact leaf `8D4110C3`, returning spatial `+10`), rotates the native
+reference-forward vector, normalizes, and writes the supplied buffer. A
+fixture may preflight this vtable/function/return identity and use disposable
+scratch output without writing an NPC field. Native footprint virtual `+74`
+is `C37190`, exact leaf `D94160C3`, returning spatial `+60` as an ST0 float.
+Capture forward-dot, radius-subtracted range and target `+BB1` on the actual
+host-side guest puppet. Being near or ahead of velocity does not prove being
+inside the NPC's native cone. Reviewed static bytes are retained in
+`verified-forward-spec.json` under the same ignored evidence directory.
+
+### Perception record ownership and cleanup
+
+The sensed-creature vector is the pointer range at observer `+1124/+1128`.
+The vector stride is 4 bytes, not 0x14: `C04993/C0499F` load and advance a
+pointer, `C03444/C03448` copy a pointer and advance the destination by four,
+and `C06D6C` divides erased element bytes by four. Each pointer refers to a
+native 0x14-byte record owned by the observer's deque at `+1034`: `+0` edge distance (float), `+4` sight byte, `+5` hearing byte,
+`+8` complete target pointer, and `+10` intrusive owning reference. `C068B0`
+constructs/appends these records and balances native AddRef/Release; do not
+insert raw records, release their references, or overwrite their ownership.
+`C098B2..C09944` removes special records, appends the selected avatar's sensed
+record, sorts the pointer list and publishes a native `BC9960` stimulus.
+
+The special removal predicate `C028F0` is
+`bool __cdecl(const void* record)`, plain ret at `C02927/C0292E`, prefix
+`8B442404568B70088B168B422C8BCEFF`. It reads the complete target at `+8`
+and returns true for primary virtual `+2C` retirement, avatar bit `+B58 &
+0x200`, false targetability at `+135`, or target flags `+110 & 0x10`; it
+returns false for an otherwise valid ordinary animal. The native code pushes
+this predicate at `C098BF` and calls `C04980` at `C098CC`. The first callback
+is `C04996`, return `C04998`; its remove-copy phase calls at `C0343B`, return
+`C0343D`. Those are verified callback return sites for a narrowly scoped
+remote-party-record cleanup adapter.
+
+A guest substituted into the singleton perception read lacks the native
+avatar bit. Without corresponding scoped cleanup, the native predicate can
+retain its previous record and append another one. A safe adapter must retain
+original predicate results for every other record and every call outside the
+actual host NPC AI scope. Cleanup of the pointer vector does not itself prove
+that deque storage is bounded when selected captains alternate: `C05FE0` is
+native deque back(), and `C06000` is pop_back(), not front/pop_front. Native
+`C0988B..C098B2` pops the last owned record only if its `+10` reference matches
+the newly selected avatar. Repeated switching, hidden/invalid targets, run
+teardown and disconnected captains therefore need explicit record-count and
+lifetime validation. `C06FB0` clears the perception vectors and both owner
+deques during native brain reset; that is not evidence of per-tick clearing.
+
+The verified post-cleanup/pre-append boundary is native factory `C068B0`,
+called at `C098F0`, return `C098F5`. Its ABI is
+`record* __cdecl(deque*, creature* target, float edgeDistance, bool sight,
+bool heard)`, five 4-byte stack slots with only each bool's low byte consumed,
+plain ret at `C0695D`; the native caller pops `0x14` bytes. Native vector erase
+`C06D50` has completed at `C098D7` before this boundary. An adapter scoped to
+this exact caller and pool `liveHostNPC+1034` can discard a previous party
+record using native Back/PopBack after confirming it is no longer in the
+sensed pointer vector. The post-cleanup identity test must include the local
+host captain as well as remote captains: on a host-to-guest switch the native
+pre-cleanup equality no longer pops the old host record. A remote-only pool
+adapter would therefore leak one host record per such switch. Preserve nonparty entries; do not pop before pointer
+cleanup or manually release a record's intrusive owner. Factory arguments must
+be forwarded with the verified ABI, and native processing still runs once.
+
+For bounded read-only diagnostics, this deque has begin iterator current,
+block-begin, block-end and map-node at `+08/+0C/+10/+14`, and end iterator at
+`+18/+1C/+20/+24`. `C068B0` advances by record size `0x14`; its block end is
+`0xA0`, while `C05FE0` uses previous-block last-record offset `0x8C`, proving
+eight records per block. After checking readable/aligned/sane pointers, count
+is `8 * ((endNode-beginNode)/4) + (endCurrent-endBlockBegin)/0x14 -
+(beginCurrent-beginBlockBegin)/0x14`. The native nonempty test compares begin
+current `+08` with end current `+18`. Capture the raw iterators and reject an
+inconsistent read rather than inventing a count from a partial structure.
+
+### Authored class enumeration is a different path
+
+`F40BA0` (`GetObjectsForClass`) is a native thiscall taking scenario data,
+class index and an output vector, `ret 8`. Its special avatar class index is
+**-2**, not -1. It clears the output before filling it and appends the singleton
+native avatar with balanced intrusive references. Ordinary authored classes
+are enumerated from their placed scenario objects, with the existing respawner
+child handling. This output owns intrusive game-object references, so appending
+raw pointers or borrowing a foreign vector allocator would be incorrect.
+
+The verified caller `DC7760` reads authored `trackTargetClassIndex` at current
+class-act `+4C4`, uses this enumerator and chooses a nearby spatial result.
+Extending only class -2 could extend that explicit authored avatar-class
+query, but it is not evidence that all free-hostile acquisition uses this
+function. The verified singleton perception branch above is one observed
+discovery gap. Further caller checks are required before extending this
+enumerator: `EC2EC0` (query at `EC2F3A`) is an authored follow/track-spatial
+selector, selected by movement behavior `+4B8==5` at `EC3040`. Its custom
+avatar-target type also has a direct singleton read at `EC2EF0` instead of
+calling the class enumerator. `ED8850` and `ED8F40` class-query consumers
+manipulate spatial effects and class-distance display; they are not proof of
+autonomous Hound attack acquisition. Preserve native authored orders, neutral
+relationships, NPC-versus-NPC candidates and behavior-tree decisions rather
+than forcing a party target or changing every avatar getter.
+
+The first native candidate is deliberately recorded as a negative result.
+Candidate 1 DLL SHA-256
+`15e651e8bdd2a4d0ac9093b2a778d10f07f30c9ec9c5164b67945d86b44bf67a`
+placed the guest into the Hound's sensed records in all 81 corrected-forward
+samples, including 21 records with native sight true. The host-side guest
+puppet was targetable and not stealthed, its species differed from the Hound,
+and its sensed record appeared at most once. Nevertheless the native combat
+target and checked target getter stayed null, and owner health remained 232.
+The observed pool count was 1 through 4, not evidence for repeated-switch
+lifetime acceptance. Evidence is
+`out/lab/enemy-targeting-candidate1-guest-sight/result.json`. Adding the first
+singleton stimulus alone therefore does not establish attack targeting;
+downstream behavior-tree selection still needs verified coverage.
+
+Static disassembly, exact helper prefixes/returns and constants are retained
+under `out/lab/ga-enemy-targeting-re/`, including
+`perception-signatures.json`, `npc-ai.asm`, `awareness-getter.asm`,
+`perception-record-create.asm`, `perception-record-filters.asm`,
+`perception-remove-if.asm`, `perception-remove-copy.asm`,
+`perception-record-pool.asm` and `perception-native-clear.asm`.
+
+
+### Actual Mine custom behavior and political-ID mismatch
+
+The installed stock Maxis adventure **Defend the Crystal Mine** is resource
+`408A0000!6E008979.366A930D`. Hound marker 138, scenario class 1082, has a
+native 18-node tree whose active custom selectors include `EC0F00` twice and
+`EC15A0`. Its native custom entries are a 0x20-byte vector at complete animal
+`+674/+678`, with condition at `+0`, condition target type/value at `+4/+8`,
+action at `+C`, action target at `+10/+14` and secondary target at `+18/+1C`.
+Observed entry 0 unconditionally attacks explicit class 1069 (the generator,
+target type 2). Entry 1 uses condition 1 and attack action 0, with **target
+type 1, value 1 for both condition and action**. Entry 2 is unconditional
+action 10. This live authored data, rather than a generic creature-stage
+brain assumption, identifies the acquisition path relevant to this bug.
+
+`C7D210` is the exact leaf `lea eax,[ecx+68]; ret`. `EC0C90` condition 1 and
+`EC0F00` attack selection pass complete animal `+670` to it, so the actual
+ScenarioSensor candidate vector is animal `+6D8/+6DC`, stride 4. Its entries
+are **spatial pointers**, not complete creature pointers and not the sensed
+record pointers at `+1124`. Both loops use spatial virtual `+B8` with
+`17F243B` to obtain complete game data, reject retired objects and invoke the
+authored matcher. Animal spatial vtable `1469EC0+B8=C06500` subtracts `C0`
+then tail-calls the native cast, so an exact captain spatial pointer can also
+be recognized read-only as complete captain `+C0`. `C7DE50` populates this
+sensor from native contacts with native spatial ownership and geometry/LOS
+filters; do not insert borrowed references or synthesize candidates.
+
+`C7D230` is `bool __cdecl(cGameData* candidate, const BehaviorTarget* target)`.
+It consumes two stack arguments and returns AL with plain returns at
+`C7D246/C7D25D/C7D270/C7D289/C7D28D`. Its verified prefix is
+`568B74240C8B0683F808774EFF248590D2C700` (the branch bytes are `77 4E`).
+Type 1 invokes candidate primary virtual `+4C` and compares the returned
+political ID with `target+4`. For animals, primary table `146A080+4C=5AADB0`,
+the exact leaf `8B4130C3`, proves this ID is complete game data `+30`.
+Type 2 compares complete candidate `+1C` scenario class. Type 8 compares the
+exact singleton avatar pointer; types 3 through 7 reject. These alternatives
+must not be conflated with type 1 or broadened without a separate use case.
+
+The host-positive native control placed only the owner captain near the
+Hound. Its real sensor contained the host spatial in all 97 samples, native
+combat target selected that captain in 97/97, and native damage lowered
+owner health from 232 to 139.29996. The matching guest trial already contained
+the actual host-side guest spatial in 67/69 native sensor samples, while its
+combat target stayed null and guest health remained 232. A further 35-sample
+capture established **political ID 1 for each local owner, but FFFFFFFF for
+each remote puppet on both peers**. The host-side guest was admitted into the
+native ScenarioSensor in all 35 samples. Consequently both authored type-1,
+value-1 checks reject this otherwise native-sensed guest. The bug is an
+identity-category mismatch, not evidence that all native visibility is absent.
+The paired evidence is in `enemy-targeting-candidate1-scenario-sensor-host`,
+`enemy-targeting-candidate1-scenario-sensor-guest` and
+`enemy-targeting-candidate1-political-guest`, each under `out/lab/` with exact
+loaded-shadow hashes recorded in `result.json`.
+
+The verified matcher return boundaries are:
+
+| Native return label | Role |
+| --- | --- |
+| `EC0CF5` (call `EC0CF0`) | Condition-1 native sensor candidate match in `EC0C90`. |
+| `EC0F70` (call `EC0F6B`) | Current-target condition shortcut in `EC0F00`. |
+| `EC0F8F` (call `EC0F8A`) | Current-target action match in `EC0F00`. |
+| `EC1032` (call `EC102D`) | Ordinary attack sensor candidate match in `EC0F00`. |
+
+Each caller pops 8 bytes after the cdecl match. Covering only the attack
+candidate site cannot fix entry 1: its condition fails first at `EC0CF5`.
+A narrow adapter can retain the native result and extend only a false result
+at these exact sites, during the original live host NPC AI scope, for an
+alive participating remote captain when type is 1 and value equals the local
+captain's political ID. Native hostility and target validity still apply;
+keep existing nonparty combat targets, neutral relationships, explicit class
+1069 and all other target types/values native. Remote identity alone is not
+alive eligibility: a downed captain still has a puppet and native positive
+health. Consult the coordinator's participating/can-act captain set as well.
+Do not change political ID, species, avatar bits, authored data, native sensor
+storage or target output, and never add another native AI tick.
+
+Candidate 2 passed the isolated Win32 ABI fixture and a fresh native Mine
+trial. DLL SHA-256
+`2db7a47f3e35340a5e25cdebdbb1a85e2076db46c2da527e7da99f6da3fb5c02`
+selected the guest in 90/90 native target samples, with 12 independent getter
+checks. Its native ScenarioSensor contained the guest in 90/90 samples, actual
+host-side distance was 2.377-4.830 metres, and natural damage lowered guest
+health from 232 to 139.29996. The matched host control selected the host in
+93/93 samples and caused the same health loss. Neither run assigned an NPC
+target/order or manufactured damage. Evidence is
+`out/lab/enemy-targeting-candidate2-guest/result.json` and the matching
+`candidate2-host` directory.
+
+Candidate 2 still contained the initial perception adapter and diagnostic
+hooks, so that result alone did not prove the matcher sufficient. The final
+candidate removes singleton perception substitution, sensed-record cleanup/
+factory hooks and unused score diagnostics. Its one matcher hook retains the
+four verified sites; native sensors and record ownership remain unchanged.
+
+Final matcher-only DLL SHA-256
+`85bdebb2aed8dc870a6f0c37cdef29b25b02d2fb558a7ea3ac3a9fa49e71220d`
+passes fresh native Mine controls: guest selected in 93/93 target samples with
+12 getter checks, host in 95/95 with 12 getter checks, and each naturally loses
+92.70004 health (232 to 139.29996). The guest remains in the native
+ScenarioSensor in 93/93 samples despite removing the initial sensing adapter.
+A guest/host/guest sequence naturally selected and damaged each staged captain
+in all three phases, with health losses 55.62/18.54/18.54 over approximately
+2.96/2.64/2.58 seconds nearby. The native pool stayed within 2 through 4 records,
+ended at 3, and each captain appeared at most once; no ownership adapter was
+needed. Every case returned to connected native menus with zero faults.
+Evidence is `out/lab/enemy-targeting-candidate3-{guest,host,switches}/result.json`.
+This establishes the targeted two-player Mine fix, not all authored commands,
+four-player targeting or broader adventure compatibility.
+
+### Negative target-selector and diagnostic paths
+
+The generic player-target score `D8CB20` is registered as evaluator ID
+`12E0ECAC`, but is absent from this live Hound tree. Read-only diagnostics
+recorded zero calls both inside and outside its NPC AI scope in matched
+host/guest trials, despite sustained guest sight. Its flags-`408` branch
+uses the singleton avatar, while the alternative sensed-record branch
+requires native spatial `IsPlayerOwned` and a `cCreatureCitizen` noun. Remote
+animal captains fail both; changing ownership bits alone would not make that
+branch suitable. It is not the verified Mine attack selector.
+
+`D993D0` and the stricter animal conversion `D99460` reject native invalid,
+dead/retired or untargetable candidates but require neither an avatar bit
+nor an authored class. `D8BAE0` uses the friendly relationship predicate
+`C0BA00` (relationship 1), rather than hostile `C0B9C0` (2 or 5). `D8CD50`
+consumes an already-produced tree target. None explains this observed
+political-ID rejection, so no broad validity or relationship replacement is
+justified by those helpers.
+
+High-frequency external avatar returns `D49228/D4924E/D4AABF` are native
+ability-button/cooldown UI paths; their approximately tenfold counts match
+ability slots, not ten NPC target decisions. The rare host-only scoped avatar
+return `C0C3CF` belongs to `C0C3B0`, primary virtual `+D4`, which is called
+later at `EC109A` in the actual attack selector. It is consistent with an
+already-accepted host candidate, not proof of an earlier missing singleton
+read. Likewise, adding guests to the class `-2` enumerator would not repair
+an authored type-1 political match in an already-populated ScenarioSensor.
+
+Reviewed disassembly and verifier-ready details for this narrower path are
+`behavior-target-match.asm`, `custom-behavior-condition.asm`,
+`target-selection-d4.asm`, `sensor-candidate-admission.asm` and
+`verified-behavior-target-spec.json` in `out/lab/ga-enemy-targeting-re/`.
+The unused generic-score ABI and its native cdecl double/ST0 dispatcher proof
+remain ignored diagnostic evidence, not a reason to hook additional selectors.
