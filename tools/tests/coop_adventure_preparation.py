@@ -108,9 +108,14 @@ def main():
         host.wait('rejoined party', lambda: host.adventure()['players'] == 2)
         start(host, guest, args.key)
         if args.play:
+            from coop_adventure_lobby import lobby
             names = [f'PreparationNew{i}' for i in (args.host, args.guest)]
             for game, name in zip(games, names):
                 game.prepare_captain(name)
+            # Saving closes the native wizard before validation and transfer
+            # acknowledgements complete. Ready is intentionally disabled then.
+            for game in games:
+                lobby(game, len(games))
             host.call('coop.adventure ready 1')
             guest.call('coop.adventure ready 1')
             host.wait('same committed adventure', lambda: all(
