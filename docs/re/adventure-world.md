@@ -313,12 +313,12 @@ before native evaluation. It returns unavailable separately from friendly. Using
 this authored-class result for vehicles/buildings remains an inference: a direct
 native vehicle caller was not found and authored-team fixture tests are required.
 
-The aggregate scenario vehicle update is `F39DF0`, thiscall `(strategy,uint64 dt)`,
+The aggregate scenario vehicle update is `F39DF0`, thiscall `(strategy,int deltaTime,int deltaGameTime)`,
 `ret8` at `F39E65/F39FAE`. It enumerates vehicle noun `18C6DE8`; its adventure branch
 calls `C9F460` and `CA9850`, then behavior-tree tick `BC9160` at `F39F69`. Graphics
 update `CA3380` at `F39F77` and adventure combat update `EF1850` at `F39F91` follow.
-The generic tree tick is cdecl with nine dwords; argument five is the behavior agent
-(`vehicle+5D0`). A per-agent tree filter can suppress guest vehicle AI while retaining
+The generic tree tick is cdecl with nine dwords; argument five is the complete
+vehicle pointer (ESI pushed at `F39F53`), not its behavior-agent subobject. A per-agent tree filter can suppress guest vehicle AI while retaining
 graphics; skipping the entire aggregate update would freeze graphics and cleanup.
 
 Actual native posse recruitment is `D542E0`, thiscall `(posseManager,targetCreature)`
@@ -1535,3 +1535,249 @@ reset/discard without a throw,
 stale act/run/incarnation/source-life rejection,
 cancellation, replacement drain generations and bounded overflow. The native
 Mine combat observations remain a separate integration result.
+
+
+## Vehicle spatial, physics and rendered model paths (dc04, smooth actors)
+
+These addresses were inspected in the installed executable with SHA-256
+`dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
+The actual vehicle constructor starts at `CA7A30`, assigns primary vtable
+`1474B90` at `CA7A86`, and assigns spatial vtable `1474BE8` to vehicle `+34`
+at `CA7A80`. An older override comment calling `CA79C0` the constructor is
+incorrect: that address belongs to an unrelated preceding helper.
+
+| Native path | Installed behavior and ABI |
+| --- | --- |
+| Vehicle spatial `+38`, `C9FDF0` | `thiscall(spatial, Vec3*)`, `ret4 C9FEC0`; calls base `C88800`, which copies spatial `+4` and sets flags `+50` mask `0x01` and dirty byte `+74` when changed. |
+| Vehicle spatial `+3C`, `C9FED0` | `thiscall(spatial, Quat*)`, `ret4 C9FF45`; calls base `C88860` and marks the same dirty state. |
+| Vehicle spatial `+44`, `C888D0` | `thiscall(spatial, Vec3*, Quat*)`, `ret8 C88910`; invokes virtual `+38/+3C`, casts the owner, then calls `cPhysicsWorld::Get B3D410` and `B48870(owner,false)`. It has no creature `+B5D` dirty-byte operation. |
+| Vehicle spatial `+AC`, `C45E40` | `thiscall(spatial)->Model*`, plain `ret C45E46`; reads spatial `+9C`, which is vehicle `+D0`. |
+| Generic spatial view `E92C80` | Native view Update takes two integer deltas. At `E92D5D`, spatial flags `+50` mask `0x04` cause the existing model Transform to be copied back to spatial through its setters. Later `E92E0A` tests/clears dirty `+74`; `E92F10` applies the spatial position, orientation and scale through `537E10(model+8,Transform*)`. |
+
+For a normal vehicle, read position at vehicle `+38`, quaternion at `+44`,
+flags at `+84` (a 32-bit field), dirty at `+A8` (one byte), enabled at `+A9`
+(one byte), and actual model pointer at `+D0`. The model Transform begins at
+model `+8`; its translation is model `+C/+10/+14`. Read-only native observations
+must compare the spatial pose with that actual model, not only a replicated
+snapshot. Vehicle `+14` is the native `cGameData::mpView`; its Update slot is
+`+4`, but callers must validate the current view pointer and vtable before use.
+
+A vehicle using a creature resource has a separate AnimatedCreature at `+D00`.
+Creation/assignment is visible at `CA4191..CA42EA`; its animation core is `+17C`
+and actual model `+180`. Vehicle setters maintain its public pose. Do not assume
+this pointer exists on ordinary vehicle creations: both Crystal Mine tanks have
+zero `+D00` and use the ordinary `+D0` model chain.
+
+The teleport's additional native physics operation is material. The inspected
+`B48870` active-world branch reaches `B53AB0(spatial)`, which refreshes registered
+physics from the current native pose through `B4E2D0` and locomotive processing
+`B538C0`. This is a separately verified physics path, not an assumption that the
+creature-specific teleport flag also exists for vehicles. A controlled native
+current-pose probe below establishes this one-pose bridge. It does not by itself
+establish continuous follower movement. No raw model, physics-body or dirty-flag
+writes are authorized by this finding.
+The `0x04` branch is a verified possible back-copy path, not proof it executes
+for these tanks: native boundary samples showed flags `A000/A001`, without
+that mask. Physics updates can also restore their own pose before presentation.
+
+The existing authority filters do not contain the generic view maintenance:
+
+- `EF1850` delegates to scenario actor processor `EBDBB0`. Its inspected body
+  evaluates authored hazard/effect volumes and calls combatant damage at
+  `EBE00F/EBE0FA`; it does not call the generic view or copy model transforms.
+- `CA9850` only expires native combat/status timers and queues events `19/1B`.
+  Its tail `CA8310` restarts the timer and queues `1B`; neither refreshes models.
+- The native aggregate ignores the behavior-tree return at `F39F69` and always
+  continues to `CA3380` and `EF1850`. Returning pending from the guest tree hook
+  cannot skip those later operations. `CA3380` itself contains placement/view
+  effect work, not the actual model-transform copy; the older generic graphics
+  label should not be interpreted as proof of model-pose synchronization.
+
+Keep tree, weapons, timers and actor gameplay host-authoritative. Unfiltering an
+entire gameplay aggregate is not justified by the graphics symptom.
+
+### Verified vehicle locomotion interfaces
+
+All slots below belong to spatial vtable `1474BE8`, with `this=vehicle+34`:
+
+| Slot and native function | Verified ABI and behavior |
+| --- | --- |
+| `+E0`, `CA35A0` | `thiscall(spatial,Vec3* destination,float goalStop,float acceptableStop,bool straight)`, `ret10 CA37E8`; installs a locomotion request through virtual `+DC=C9EA20`, which forwards to `C43FA0`. |
+| `+C4`, `C9EE70` | `thiscall(spatial,float desiredSpeed,int flag)`, `ret8 C9EE82`; forwards to `C41E80`, which writes spatial `+1E0`. |
+| `+CC`, `C42080` | `thiscall(spatial)->float` in ST0, `ret C42086`; reads spatial `+1E4` standard speed. |
+| `+EC`, `C43800` | `thiscall(spatial)`, `ret C438E8`; clears the native locomotion request, calls `+C4(0,1)` and resets spatial `+270`. |
+
+MoveTo itself reapplies authored current-act speed at `CA37A0..CA37D6`, so a
+follower's chosen speed must be applied after MoveTo. These are verified calling
+interfaces, not yet native acceptance that mirrored vehicles can follow while
+gameplay AI remains suppressed. Preserve a distinct native physics correction
+path if locomotion cannot advance under the authority fences.
+
+Static assembly, vtable/return checks and proposed named symbol entries are in
+`out/lab/ga-smooth-vehicle-re/`. Production integrations must use named verified
+symbols, not hardcoded native addresses.
+
+The 20-second hidden baseline on preview-9 DLL
+`b939580707f00867b823f01d0ab3f06dde8384c38213074d2bf8504a38d5d3e2`
+reproduced the normal vehicle bug without manufactured AI: Crystal Mine vehicle
+9 moved 80.627 metres on the host while its guest spatial moved 82.128 metres
+and guest model moved zero; guest model/spatial error p95 was 83.993 metres.
+Vehicle 37 similarly had guest spatial travel 53.411 metres and zero model
+travel, with p95 error 52.539 metres. Guest dirty stayed set in 224 of 252 samples
+for each, versus two host samples; enabled was always true. Evidence is
+`out/lab/smooth-actors-preview9-native-motion/result.json`. This establishes the
+baseline, not a corrected-build pass.
+
+
+### Actual vehicle view and controlled physics-bridge probe
+
+The live Mine vehicles' native views resolve to preferred vtable `1486CBC`,
+Update `E956D0`, rather than an assumed building or generic view subclass.
+That Update handles model/material changes, then unconditionally calls generic
+spatial-view Update `E92C80` at `E95832`, passing its two integer deltas. This
+supports retaining the existing gameplay authority fences: the native view
+consumer exists independently of the skipped behavior, timer and actor calls.
+
+The bounded hidden/muted probe used preview-9 DLL
+`b939580707f00867b823f01d0ab3f06dde8384c38213074d2bf8504a38d5d3e2`
+and made exactly one native `+44` call on guest vehicle marker 9. Its input was
+a copied existing received host pose, not an invented destination. Before the
+call its actual model was 10.277 metres from that pose. The immediate model read
+was unchanged; after one rendered frame the native model exactly matched the
+copied pose and the dirty byte was clear. It retained that pose at frames 2/3.
+Later ordinary separate-setter snapshots again left the model behind, with
+3.268 metres error at frame 5 and 5.051 at frame 10. Untreated marker 37's model
+never moved and had 14.535/15.793 metres error at those checkpoints. Both games
+returned to connected native menus with zero recorded faults. Evidence:
+`out/lab/smooth-actors-preview9-vehicle-vt44-probe-retry1/result.json`.
+
+This establishes the native physics-relocation bridge for an ordinary vehicle
+correction. It is separate from the creature `+B5D` presentation flag and does
+not prove the generic view's `0x04` branch ran: observed flags remained
+`A000/A001`. Candidate validation must still measure actual model travel,
+spatial/model error and native health/objective authority during continuous
+following. The inspected MoveTo body only installs locomotion and desired
+speed; it does not call weapons, behavior-tree, actor-damage or objective
+callbacks. Whether native physics consumes that request under the retained
+fences remains an integration test, including StopMovement and stationary
+correction without drift.
+
+
+### Inherited vehicle request reads and short-goal braking
+
+Vehicle `CA7A3B..CA7A40` constructs `C439C0` with `this=vehicle+34`, so the
+locomotive fields are relative to that spatial subobject. The constructor
+initializes velocity at spatial `+1C8/+1CC/+1D0`; native movement update
+`C43358..C433C3` passes that vector through the locomotion strategy and copies
+its output back. The strategy pointer is spatial `+4CC`, which is vehicle
+`+500`. Read-only velocity sampling is therefore vehicle `+1FC` (three floats),
+not vehicle `+1C8`.
+
+Vehicle request entry `C9EA20` jumps to `C43FA0`; `C44021` copies the request
+into inline spatial `+1F4` using `C43F40`. The copy explicitly preserves the
+request destination `+14`, goal-stop float `+20`, mode integer `+5C`, and
+acceptable-stop float `+60`. Their complete vehicle offsets are respectively
+`+23C`, `+248`, `+284` and `+288`. These fields may be read without invoking a
+new native function. The request also owns a waypoint vector; `C42520` returns
+its last waypoint when nonempty, otherwise the inline destination. Diagnostics
+must distinguish the final destination from an active intermediate waypoint.
+
+GA land vehicle strategy construction `CA3173..CA31A5` installs vtable
+`14749B4`; its Update `+0C=CB3670` calls `CB3110` and `CAE420`. For a request
+with an empty waypoint vector and mode 1 (the false-bool MoveTo path),
+`CAE7CA..CAE80E` limits the target velocity magnitude to:
+
+`min(desiredSpeed, sqrt(nativeAcceleration * distanceToGoal), distanceToGoal/dt)`
+
+The vehicle acceleration virtual `+D0=C42240` forwards to `+CC=C42080`, so this
+branch uses native standard speed as its acceleration value. In particular,
+raising desired speed alone cannot remove the distance-dependent cap. A moving
+vehicle needs at least `speed*speed/standardSpeed` metres of navigation goal
+distance to sustain that speed in this branch. This explains why using the
+latest network pose plus only 100-200 ms of lead can cause a large trailing gap
+while the rendered model itself now moves correctly. A vehicle-specific,
+bounded navigation lookahead can account for native braking while preserving
+snapshot age bounds, native collision and the distinct correction path. It
+still requires native turn, stop and loss tests; the formula is not acceptance
+of a particular new policy or a reason to remove gameplay authority fences.
+
+Static evidence is retained in `locomotion-target-processing.asm`,
+`vehicle-ga-ground-strategy.asm`, `vehicle-ga-ground-core.asm` and
+`vehicle-ga-pose-consumer.asm` under `out/lab/ga-smooth-vehicle-re/`.
+
+
+The fourth MoveTo boolean is not a continuous-motion mode switch. False builds
+mode 1. True computes normalized `destination-currentPosition` and calls
+`AD2990`, which stores the direction at request `+50` and mode 3 at `+5C`.
+Mode 3 follows a direction-constrained path, then still applies the square-root
+speed cap at `CAEC35` and the subsequent desired-speed minimum. The native GA
+MoveTo call at `CADB3F..CADB56` passes false. Changing the bool to true should
+not be described as removing braking, and requires separate native validation.
+
+Each `C43FA0` admission copies the newly constructed request through `C43F40`.
+Its waypoint-vector assignment `C1B8F0` replaces any prior route with the new
+request's empty vector; it marks current strategy `+4` changed and resets
+spatial transit time `+1A0` to zero. Frequent MoveTo retargeting can therefore
+restart native route preparation. Preserve a bounded retarget cadence and
+measure turns as well as straight-line travel. A longer navigation goal can
+avoid braking, but can also change route choice; read-only diagnostics should
+record the effective final waypoint and route count alongside current pose,
+standard/desired speed and actual velocity.
+
+
+### Verified fly-through request mode and guarded scope
+
+Native request getter `C42020` is a nonvirtual thiscall leaf taking the
+locomotive spatial pointer, returning its inline request in EAX. Its complete
+bytes are `8D81F4010000C3` (`lea eax,[ecx+1F4]; ret`). Request mode is one
+32-bit integer at request `+5C`, hence spatial `+250`, complete creature
+`+310` or complete vehicle `+284`.
+
+Native creature AI demonstrates the intended post-admission mode change:
+`D6C102` obtains spatial EBP as complete creature EDI `+C0`; `D6C306` calls
+movement builder `C1C330` with the complete creature, and that builder dispatches
+its mode-1 request through spatial `+C0` at `C1C38C`. `D6C30D` then calls the
+request getter on EBP, and `D6C31B` writes request `+5C=2`. The adjacent native
+example repeats the getter at `D6C5DF` and mode write at `D6C5E8`. These are
+verified native request writes, not evidence that a broad AI helper should be
+called by a mirrored actor. Exact getter/AI-site byte checks are in
+`out/lab/ga-smooth-vehicle-re/verified-mode2-specs.json`.
+
+Vehicle `CAE420`'s empty-route jump table `CAF7E0` maps mode 1 to `CAE7CA`,
+mode 2 to `CAE858`, mode 3 to `CAE87B` and mode 4 back to `CAE7CA`. The mode-2
+branch multiplies normalized goal direction by desired speed, omitting mode 1's
+pre-arrival square-root braking. It rejoins `CAF218`, so native turning,
+orientation, collision and acceleration limiting (`CAF61B..CAF72E`) still run.
+Modes 1 and 2 share the same reached-goal branch `C4326B` through jump table
+`C432F0`; `C42030` applies the goal/stop-distance predicate. Native ground
+processing clears the request on completion at `CB33D6..CB3404`. Explicit
+StopMovement remains the verified mode-0, speed-zero path. Mode 2 is therefore
+a point fly-through request, not unrestricted velocity or removal of native
+collision. With a nonempty waypoint vector, vehicle processing follows its
+existing route branch and retains path/turn speed limits before rejoining the
+same acceleration code; mode 2 does not bypass those caps.
+
+A narrow adapter can issue the existing native MoveTo, obtain the request with
+the named getter, and change mode 1 to 2 only after confirming that exact mode
+and scoped mirrored ownership. It must retain native Stop and stale/hold/act/
+incarnation fences. The verified ordinary GA strategy is spatial `+4CC`,
+vtable `14749B4`, Update `+0C=CB3670`. Check its readable pointer/vtable and
+resolved named Update identity before applying vehicle mode 2. That strategy
+is shared by land and water in `CA3010`: complete vehicle `+B1C=0` is land,
+`1` water, and `2` air. A land-only accepted scope also requires `+B1C==0`;
+the strategy gate alone does not exclude water. Air takes another strategy.
+Native water/air movement remains unvalidated by the Mine tank evidence.
+
+Increasing future-goal lead alone did not establish parity. Candidate 2 DLL
+`db9a0dbb5a781808e495b7cd5ea9a72f9f1e5e07bf0ea6936aa2e027f663a28f`
+had vehicle 9/37 host-to-guest spatial error p95 of 9.755/14.850 metres.
+Candidate 3's longer lead, DLL
+`aa60891b59665d8f2d120676daf1ad4737a2373f223ec69590f95b8884d549ab`,
+had 15.140/13.816 metres in a separate natural Mine run; native model movement
+was restored but turns/tracking still diverged. These are negative candidate
+results, not a controlled identical-AI trajectory comparison. Evidence is in
+`out/lab/smooth-actors-candidate2-native-motion/result.json` and the matching
+`candidate3` directory. Prefer bounded near-future goals with verified native
+request semantics over treating a far projected point as host path evidence;
+final acceptance still needs continuous travel, turns, stops and authority
+measurements on the chosen build.

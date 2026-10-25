@@ -51,6 +51,7 @@ void set_orientation(void* c, const net::Quat& rot);
 void move_to(void* c, const net::Vec3& dst, float stop_dist);
 void stop(void* c);
 void set_speed(void* c, float speed);
+float standard_speed(void* c);
 float scale(void* c);
 float bounding_radius(void* c);
 void set_scale(void* c, float s);

@@ -1,11 +1,15 @@
 # Installing SporeCoop
 
-This fork, `0.7.3.2-ga-preview.9`, combines upstream SporeCoop 0.7.2.1 with the
+This fork, `0.7.3.3-ga-preview.10`, combines upstream SporeCoop 0.7.2.1 with the
 Galactic Adventures changes described in [the GA guide](GALACTIC-ADVENTURES.md)
 for adventures started from Sporepedia. The native adventure adapter requires the
 exact GOG executable `dc04aee5...`; Steam and code-equivalent variants retain
 upstream base-stage support but have no enabled native GA adapter. Every player
-needs this fork build and protocol 12; upstream and earlier previews cannot join it.
+needs this fork build and protocol 13; upstream and earlier previews cannot join it.
+Preview 10 adds native waypoint followers for client creatures and vehicles.
+Its [validation report](validation-ga-preview.10.md) records targeted two-player
+locomotion checks and material residual tracking lag; ordinary guest combat input
+remains unverified.
 
 Every player installs the same SporeCoop version into their own copy of the game. The install
 replaces one file of the game (`steam_api.dll`, kept as `steam_api_orig.dll`) and adds a few
@@ -93,7 +97,7 @@ reverse-engineering notes call it March 2017 after the ModAPI address map.
 | File | `SPORE\SporebinEP1\SporeApp.exe` |
 | Size | 24 895 536 bytes |
 | SHA-256 | `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37` |
-| Verified scope | Two- and four-player native adventure fixtures started from Sporepedia; see the preview guide for exact scope and remaining limits. Steam GA is unvalidated and disabled. |
+| Verified scope | Preview 10 passes targeted two-player creature and land-vehicle locomotion checks, with residual tracking lag. Earlier previews retain their recorded two- and four-player fixture scope. See the current [validation report](validation-ga-preview.10.md). Steam GA is unvalidated and disabled. |
 
 Where the game usually is:
 
@@ -214,7 +218,7 @@ SPORE\
 
 * The main menu (galaxy screen) has a new **Co-op** item on the left.
 * `SporebinEP1\mods\logs\sporekit.log` exists and reports the installed version
-  (for this fork preview, `loaded coop v0.7.3.2-ga-preview.9`).
+  (for this fork preview, `loaded coop v0.7.3.3-ga-preview.10`).
 * Start a game, press **F9**: the co-op window opens.
 
 If there is no Co-op item, see [Troubleshooting](#9-troubleshooting).

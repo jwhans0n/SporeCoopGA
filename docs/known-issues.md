@@ -3,6 +3,25 @@
 Bugs found and not fixed yet. Each entry: what happens, how to reproduce it, what is known.
 Fixed entries move to the commit message (and a test).
 
+## Galactic Adventures preview 10: validation limits
+
+Preview `0.7.3.3-ga-preview.10` requires the exact dc04 GOG executable and matching
+protocol 13 clients. Its native creature and vehicle waypoint followers preserve
+host AI, combat and objective authority. Two-player locomotion checks pass;
+see the [preview 10 report](validation-ga-preview.10.md) for current evidence.
+
+Position tracking remains approximate: the final Mine trace has vehicle
+host-to-guest error p95 of 8.08/8.37 m and living creature histories from 3.84 to
+16.19 m, depending on the actor. Native turns/routes and scale can require
+corrections; repaired rendered motion does not establish precise combat parity.
+
+Ordinary guest click/key target selection and attack input remain unverified.
+Controlled damage, matching objective counts and visible NPC combat do not
+establish that input path. Complete playthroughs, broader custom routes and
+authored speeds/scales, water/flying movement, and four-player follower coverage
+remain outside the current acceptance claim. Earlier preview results keep their
+original scope.
+
 ## Guest: fault in the tribe setup with a null simulator object (seen once)
 
 * `exception 0xC0000005 at 0x00B12D32` (data 0x2B4) on a guest of a 4-player tribe churn

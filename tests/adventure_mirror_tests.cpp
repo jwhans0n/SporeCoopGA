@@ -17,7 +17,7 @@ namespace {
 using skg::field;
 struct Object {
     std::array<uint8_t, 0xE80> bytes{};
-    std::array<uint8_t, 0x30> spatial{};
+    std::array<uint8_t, 0x500> spatial{};
     std::array<uint8_t, 0x84> combatant{};
     std::array<uint8_t, 0x3C> powerup{};
     uint32_t noun;
@@ -35,8 +35,13 @@ std::array<uint8_t, 3 * 0x1AC> hud_goals{};
 std::array<uint8_t, 0x2C18> fake_resource{};
 std::array<uint8_t, 3 * 0x238> placements{};
 uint8_t* mode_pointer = fake_mode.data();
-void* spatial_vtable[48]{};
+void* spatial_vtable[64]{};
 void* combatant_vtable[24]{};
+bool capture_motion = false, native_moving = false;
+unsigned motion_moves = 0, motion_stops = 0;
+net::Vec3 motion_target;
+float motion_speed = 0;
+std::vector<char> motion_order;
 unsigned pose_sets;
 unsigned transform_sets;
 unsigned creates;
@@ -240,6 +245,27 @@ void play_animation(void* object, uint32_t animation, int block, bool disable_bl
 bool object_position(void* p, net::Vec3& result)
 { auto* o = lookup(p); if (!o) return false; result = field<net::Vec3>(o->spatial.data(), 4); return true; }
 net::Quat orientation(void*) { return {0, 0, 0, 1}; }
+float scale(void*) { return 1.f; }
+float standard_speed(void*) { return 4.f; }
+void move_to(void* object, const net::Vec3& target, float radius)
+{
+    if (!capture_motion) return;
+    check(radius <= .1f, "native waypoint uses a small stop radius instead of falling idle at every packet");
+    ++motion_moves; motion_order.push_back('M'); motion_target = target;
+    motion_speed = 4.f; native_moving = true; // dc04 MoveTo restores standard speed.
+    if (auto* value=lookup(object)) field<int>(value->spatial.data(),0x250)=1;
+}
+void set_speed(void*, float speed)
+{
+    if (!capture_motion) return;
+    motion_order.push_back('S'); motion_speed = speed;
+}
+void stop(void*)
+{
+    if (!capture_motion) return;
+    ++motion_stops; motion_order.push_back('T'); native_moving = false;
+}
+
 void teleport(void* object, const net::Vec3& position, const net::Quat& orientation)
 { teleported = object; teleported_position = position; teleported_orientation = orientation; }
 }
@@ -944,6 +970,108 @@ static void animation_cases(net::Session& session, net::Session& client, void* l
     g_pending_animations = {}; g_host_animations.clear(); g_animation_sent.clear();
 }
 
+void SK_THISCALL vehicle_waypoint(void* spatial, const net::Vec3* target, float stop_radius, float acceptable, bool straight)
+{
+    check(acceptable==stop_radius*2 && !straight,"native vehicle MoveTo preserves four-argument waypoint ABI");
+    game::move_to(nullptr,*target,stop_radius);
+    field<int>(spatial,0x250)=1;
+}
+void SK_THISCALL vehicle_speed(void*,float speed,int mode)
+{
+    check(mode==0,"native desired-speed override retains its int mode argument"); game::set_speed(nullptr,speed);
+}
+void SK_THISCALL vehicle_stop(void*) { game::stop(nullptr); }
+float SK_THISCALL vehicle_standard(void*) { return game::standard_speed(nullptr); }
+void* SK_THISCALL movement_request(void* spatial) { return static_cast<uint8_t*>(spatial)+0x1F4; }
+void SK_THISCALL ground_strategy(void*,void*) {}
+
+void native_waypoint_regression(adventure_world::NativeActor& actor)
+{
+    using namespace adventure_world;
+    const auto saved_position=field<net::Vec3>(actor.spatial,4);
+    const auto saved_orientation=field<net::Quat>(actor.spatial,0x10);
+    const auto saved_motion=g_motion;
+    auto* object=lookup(actor.object);
+    const auto old_request=a_MovementRequest, old_strategy=a_VehicleGroundUpdate;
+    a_MovementRequest=reinterpret_cast<uintptr_t>(&movement_request);
+    a_VehicleGroundUpdate=reinterpret_cast<uintptr_t>(&ground_strategy);
+    void* strategy_table[4]={nullptr,nullptr,nullptr,reinterpret_cast<void*>(&ground_strategy)};
+    void** strategy=strategy_table;
+    field<void*>(actor.spatial,0x4CC)=&strategy;
+    const int old_type=field<int>(actor.object,0xB1C);
+    field<int>(actor.object,0xB1C)=0;
+    check(fly_through_waypoints(actor,object->is_creature),"verified native creature and land-vehicle strategies allow fly-through goals");
+    if(object->is_vehicle) {
+        field<int>(actor.object,0xB1C)=1;
+        check(!fly_through_waypoints(actor,false),"unvalidated water vehicle strategy retains native arrival behavior");
+        field<int>(actor.object,0xB1C)=0; strategy_table[3]=nullptr;
+        check(!fly_through_waypoints(actor,false),"unknown vehicle strategies cannot enable the mode2 optimization");
+        strategy_table[3]=reinterpret_cast<void*>(&ground_strategy);
+    }
+    Binding binding{actor.object,actor.incarnation,0};
+    ActorState packet; packet.id={actor.marker,777}; packet.noun=actor.noun;
+    packet.sequence=1; packet.seen=10; packet.position={0,0,0}; packet.orientation={0,0,0,1};
+    capture_motion=true; motion_moves=motion_stops=0; motion_order.clear(); native_moving=false;
+    const auto before=transform_sets;
+    apply_actor(actor,packet,&binding,10); render_models();
+    check(transform_sets==before+1,"fresh exact-incarnation binding uses one native transform initialization");
+    unsigned between_packet_steps=0;
+    for(int frame=1;frame<=120;++frame) {
+        const double now=10.+frame/60.;
+        if(frame%6==0) { ++packet.sequence; packet.seen=now; packet.position={float(frame/60.*4),0,0}; }
+        const auto previous=field<net::Vec3>(actor.spatial,4);
+        apply_actor(actor,packet,&binding,now);
+        if(native_moving) check(field<int>(actor.spatial,0x250)==2,"native MoveTo is followed by verified fly-through mode admission");
+        if(native_moving) {
+            auto current=field<net::Vec3>(actor.spatial,4);
+            const auto delta=adventure_actor_motion::difference(motion_target,current);
+            const float distance=adventure_actor_motion::length(delta);
+            if(distance>.001f) {
+                float step=std::min(distance,motion_speed/60.f);
+                current={current.x+delta.x*step/distance,current.y+delta.y*step/distance,current.z+delta.z*step/distance};
+                field<net::Vec3>(actor.spatial,4)=current;
+                object->model_position=current; // ordinary native locomotion/render maintenance
+            }
+        }
+        if(frame%6 && field<net::Vec3>(actor.spatial,4).x>previous.x) ++between_packet_steps;
+    }
+    check(transform_sets==before+1 && motion_moves>4 && between_packet_steps>70,
+          "real mirror command path keeps native locomotion advancing between packets without repeated transform snaps");
+    bool ordered=true;
+    for(size_t i=0;i<motion_order.size();++i) if(motion_order[i]=='M')
+        ordered=ordered&&i+1<motion_order.size()&&motion_order[i+1]=='S';
+    check(ordered&&motion_speed>4.f,"native MoveTo precedes desired catch-up speed so its standard-speed reset cannot discard it");
+    bool held=true; auto old_held=C.held; C.held=[&] { return held; };
+    const auto moves_before=motion_moves;
+    apply_actor(actor,packet,&binding,12.01);
+    check(motion_stops>0&&!native_moving,"group hold stops the native follower without relocating its body");
+    held=false; apply_actor(actor,packet,&binding,12.02);
+    check(motion_moves==moves_before,"Resume cannot reuse a pre-hold waypoint before a fresh host sample");
+    ++packet.sequence;packet.seen=12.1;packet.position={8.4f,0,0};
+    apply_actor(actor,packet,&binding,12.1);
+    // Two fresh samples establish velocity after Resume; the first may
+    // already be within the longer vehicle navigation goal's tolerance.
+    ++packet.sequence;packet.seen=12.2;packet.position={8.8f,0,0};
+    apply_actor(actor,packet,&binding,12.2);
+    check(motion_moves>moves_before,"fresh post-hold sample re-enables native following");
+    field<net::Vec3>(actor.spatial,4)={11.8f,0,0};
+    for(int i=1;i<=4;++i) { ++packet.sequence;packet.seen=12.2+i*.1;apply_actor(actor,packet,&binding,packet.seen); }
+    check(g_motion.stationary>saved_motion.stationary&&field<net::Vec3>(actor.spatial,4).x==8.8f,
+          "confirmed stationary desync permits a corrective native transform");
+    const unsigned idle_transforms=transform_sets;
+    ++packet.sequence;packet.seen=12.7;packet.orientation={0,0,.7071068f,.7071068f};
+    apply_actor(actor,packet,&binding,12.7);
+    apply_actor(actor,packet,&binding,12.71);
+    check(transform_sets==idle_transforms+(object->is_vehicle?1:0)&&field<net::Vec3>(actor.spatial,4).x==8.8f&&
+          field<net::Quat>(actor.spatial,0x10).z==packet.orientation.z,
+          "one fresh idle vehicle turn uses its physics bridge without translating or repeating the pose");
+    C.held=old_held;capture_motion=false;
+    field<net::Vec3>(actor.spatial,4)=saved_position;field<net::Quat>(actor.spatial,0x10)=saved_orientation;
+    object->model_position=saved_position;object->model_dirty=false;g_motion=saved_motion;
+    field<void*>(actor.spatial,0x4CC)=nullptr;field<int>(actor.object,0xB1C)=old_type;
+    a_MovementRequest=old_request;a_VehicleGroundUpdate=old_strategy;
+}
+
 int main()
 {
     using namespace adventure_world;
@@ -961,6 +1089,10 @@ int main()
     spatial_vtable[0x38 / 4] = reinterpret_cast<void*>(&position);
     spatial_vtable[0x3C / 4] = reinterpret_cast<void*>(&::orientation);
     spatial_vtable[0x44 / 4] = reinterpret_cast<void*>(&transform);
+    spatial_vtable[0xE0 / 4] = reinterpret_cast<void*>(&vehicle_waypoint);
+    spatial_vtable[0xC4 / 4] = reinterpret_cast<void*>(&vehicle_speed);
+    spatial_vtable[0xEC / 4] = reinterpret_cast<void*>(&vehicle_stop);
+    spatial_vtable[0xCC / 4] = reinterpret_cast<void*>(&vehicle_standard);
     combatant_vtable[0x58 / 4] = reinterpret_cast<void*>(&maximum_hp);
     a_Mode = reinterpret_cast<uintptr_t>(&mode_pointer);
     a_GetMarker = reinterpret_cast<uintptr_t>(&get_marker);
@@ -1063,6 +1195,10 @@ int main()
           !live_object->model_dirty && !npc_ai_filter(live),
           "native-style render maintenance consumes the replicated creature pose while NPC decisions remain fenced");
     apply_actor(*live_native,saved_pose); render_models();
+    native_waypoint_regression(*live_native);
+    live_object->is_creature=false;live_object->is_vehicle=true;
+    native_waypoint_regression(*live_native);
+    live_object->is_creature=true;live_object->is_vehicle=false;
     check(!npc_ai_filter(live), "a living authored guest NPC suppresses only its autonomous brain");
     check(g_native_result.play == result_before.play && g_native_result.run == result_before.run &&
           g_native_result.committed == result_before.committed, "mirror eligibility has no native result lifecycle side effects");

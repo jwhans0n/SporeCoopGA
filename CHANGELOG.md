@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.7.3.3-ga-preview.10] - 2026-10-25
+
+- Follow replicated host creature and vehicle positions with native waypoints using native locomotion between
+  network samples, with bounded prediction and catch-up. Reserve hard pose
+  corrections for initial binding, severe divergence, stuck movement and
+  confirmed stationary disagreement.
+- Keep NPC AI, combat, health and objectives host-authoritative. Preserve native
+  attachment behavior, existing attack/unknown clip handling, party holds and
+  run/act/incarnation resets.
+- Use protocol 13 so all participants run matching follower behavior. Actor
+  packet layouts, creation bundles and static-object optimization are unchanged.
+- See [preview 10 validation](docs/validation-ga-preview.10.md) for evidence and
+  limits, including residual tracking lag. Ordinary guest combat input remains
+  unverified.
+
 ## [0.7.3.2-ga-preview.9] - 2026-10-25
 
 - Keep client NPC visual updates running while the host owns NPC AI and damage.

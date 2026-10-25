@@ -83,6 +83,8 @@ test:
 	$(B)/host/adventure_music_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Imods/coop -o $(B)/host/adventure_world_tests tests/adventure_world_tests.cpp
 	$(B)/host/adventure_world_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -o $(B)/host/adventure_actor_motion_tests tests/adventure_actor_motion_tests.cpp
+	$(B)/host/adventure_actor_motion_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop/net -o $(B)/host/adventure_control_policy_tests tests/adventure_control_policy_tests.cpp
 	$(B)/host/adventure_control_policy_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Imods/coop -Isdk/include -o $(B)/host/adventure_runtime_tests mods/coop/adventure.cpp mods/coop/net/adventure.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp tests/adventure_runtime_tests.cpp
@@ -168,7 +170,7 @@ $(B)/host/adventure_debug_capability_tests.exe: tests/adventure_debug_capability
 
 # The mirror fixture includes world.cpp directly; list it as a dependency only.
 test-mirror-windows: $(B)/host/adventure_mirror_tests.exe
-$(B)/host/adventure_mirror_tests.exe: $(MIRROR_TEST_SRC) mods/coop/adventure_world.cpp mods/coop/adventure_world.h mods/coop/adventure_world_actions.h mods/coop/adventure_world_lifecycle.h mods/coop/adventure_world_vehicles.h mods/coop/adventure_relationships.h mods/coop/net/adventure.h mods/coop/net/adventure_health.h mods/coop/net/session.h mods/coop/net/buffer.h $(ADVENTURE_ABI_HEADERS)
+$(B)/host/adventure_mirror_tests.exe: $(MIRROR_TEST_SRC) mods/coop/adventure_world.cpp mods/coop/adventure_world.h mods/coop/adventure_world_actions.h mods/coop/adventure_world_lifecycle.h mods/coop/adventure_world_vehicles.h mods/coop/adventure_relationships.h mods/coop/net/adventure.h mods/coop/net/adventure_health.h mods/coop/net/adventure_actor_motion.h mods/coop/net/session.h mods/coop/net/buffer.h $(ADVENTURE_ABI_HEADERS)
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(MIRROR_TEST_SRC) -o $@ -lws2_32
 

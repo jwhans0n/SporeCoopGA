@@ -1,13 +1,15 @@
 # Galactic Adventures co-op: experimental guide
 
-Fork preview `0.7.3.2-ga-preview.9` addresses client NPC presentation and
-combat animation, adds unanimous party pause, and expands revival to six metres.
-It retains preview 8's music, held-item and confirmation fixes and the upstream
-SporeCoop 0.7.2.1 integration. Source:
+Fork preview `0.7.3.3-ga-preview.10` adds native waypoint following for client
+creatures and vehicles, replacing recurring hard pose assignments between host
+updates. It retains preview 9's host-owned NPC AI/combat, unanimous party pause
+and six-metre revival, preview 8's music, held-item and confirmation fixes, and
+the upstream SporeCoop 0.7.2.1 integration. Source:
 [jwhans0n/SporeCoopGA](https://github.com/jwhans0n/SporeCoopGA).
-Targeted preview 9 Windows checks passed. See its
-[validation report](validation-ga-preview.9.md) for current evidence and limits.
-The [preview 8 report](validation-ga-preview.8.md) and
+Preview 10's two-player locomotion checks pass with residual tracking lag; see its
+[validation report](validation-ga-preview.10.md) for recorded evidence and limits.
+The [preview 9 report](validation-ga-preview.9.md),
+[preview 8 report](validation-ga-preview.8.md) and
 [preview 7 integration report](integration-ga-upstream-0.7.2.1.md) retain their
 original scope.
 
@@ -17,7 +19,7 @@ Upstream calls this GOG 2024; the adventure RE notes call it March 2017 after th
 ModAPI address map. See [build identification](re/build-dc04.md). Steam and other
 same-code variants retain upstream base-stage support, but their native adventure
 adapter is disabled and adventure compatibility remains unvalidated. Every player
-needs Galactic Adventures and the same fork build (protocol 12); earlier GA
+needs Galactic Adventures and the same fork build (protocol 13); earlier GA
 previews and upstream 0.7.0-0.7.2.1 clients cannot join this preview.
 
 Preview `0.7.0-ga-preview.6` reduces traffic for stationary buildings and props and
@@ -72,8 +74,12 @@ Opening Esc pauses your own input through the native menu. The shared adventure
 continues until every connected participant has a pause menu open. When everyone
 is paused, shared clocks and gameplay stop together; one player resuming releases
 the party pause. Beam-down and conversation confirmation holds remain separate.
-NPC AI and damage remain host-authoritative while clients update their rendered
-poses and replay host visual clip requests.
+NPC AI, damage and objectives remain host-authoritative. Client creatures and
+vehicles use native waypoint movement between received host samples, with bounded
+prediction and catch-up. Native hard corrections handle initial binding, severe
+divergence, stuck followers and confirmed stationary disagreement. Clients keep
+native locomotion and replay host visual clip requests; attack and unknown clip
+requests retain their existing handling. Held items retain their attachment path.
 
 Any captain can pick up a colored key and open its matching gate. The host checks
 ownership, range and color, then shares native gate opening and key consumption.
@@ -147,6 +153,16 @@ automatic-recovery rule also shows its countdown. The ring matches the six-metre
 revival rule. Duration and interruption rules remain unchanged.
 
 ## Verified scope and current limits
+
+The [preview 10 validation report](validation-ga-preview.10.md) separates follower
+reproductions, portable and native ABI fixtures, and current Windows observations.
+The tested creature and land-vehicle models move with native locomotion; residual
+tracking lag remains material near interactions. Broader custom routes, authored
+speeds/scales, water/flying movement, four-player follower behavior and complete
+playthroughs require further coverage. Ordinary guest click/key target selection
+and attack input remain unverified; the controlled combat/damage checks below do
+not establish that input path. Earlier results retain their original version
+labels and do not expand preview 10's recorded scope.
 
 Preview 8's focused portable music tests and installed-data audit passed all
 23 distinct music values across 69 stock scenarios, including the reported

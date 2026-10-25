@@ -1005,3 +1005,48 @@ leaves the attempt active for inspection; finish with normal shared cancellation
 and confirm both native menus before reload or handoff. Preserve JSON results,
 command logs, screenshots, native fault counts and the loaded shadow DLL hashes.
 Report actual native results separately from portable and Win32 ABI fixtures.
+
+### Preview 10 native waypoint followers
+
+Use the same private, hidden and muted Windows lab requirements above, with the
+preview 10 DLL and its matching symbols. Prepare a separate installation and
+start a bounded runner in another terminal; use only its fresh `processes.json`:
+
+```powershell
+py -3 tools/windows_lab.py prepare --destination out/windows-lab/preview10-installation
+py -3 tools/windows_lab.py run --installation out/windows-lab/preview10-installation --out out/windows-lab/preview10 --instances 2 --first-instance 81 --seconds 1800 --hidden
+py -3 tools/tests/coop_adventure_actor_motion.py --metadata out/windows-lab/preview10/processes.json --host 81 --guest 82 --out out/windows-lab/preview10-motion --seconds 20 --hz 20 --port 47960
+```
+
+Start both clients at their native galaxy menus. The harness starts Maxis's
+**Defend the Crystal Mine** with its authored captain and explicitly uses Ready
+and beam-down Continue on each peer. It records same-incarnation host/guest
+spatial and actual rendered model paths, selected native clip IDs, clocks and
+channel generations, movement requests, health and objective counts. It uses no
+synthetic actor poses, damage or clip playback. By default it cancels normally
+and verifies both native menus afterward. `--keep-running` leaves the adventure
+active for the next caller-owned check; `--attach` samples an already playing
+attempt instead of launching one. Use an unused port and finish normal shared
+cancellation before reloading, unregistering fixtures or handing the pair back.
+
+The JSON result is a capture, not an automatic acceptance verdict. Compare
+native movement between packets and locomotion clip continuity with the host's
+own model motion. Keep channel replacement distinct from a retained loop clock
+wrapping. Check both creatures and vehicles, correction counts, health/objective
+agreement, faults and loaded DLL hashes. Numeric actor positions or a moving
+model alone cannot establish the expected gait. These traces do not establish
+ordinary guest click/key attack input, complete playthroughs or four-player
+follower behavior. The [preview 10 report](validation-ga-preview.10.md) records
+the accepted C5 candidate and material residual tracking limits.
+
+`make test` includes the portable follower policy tests for irregular arrivals,
+slow movement, stale samples, holds, identity resets and bounded corrections.
+The read-only sampler's clip-clock interpretation can be checked separately:
+
+```powershell
+py -3 tools/tests/test_actor_motion_fixture.py
+```
+
+Portable policy and sampler tests complement the native traces; they cannot
+prove native locomotion, terrain or collision behavior. Preserve command logs,
+JSON, screenshots and original build identities when comparing previews.

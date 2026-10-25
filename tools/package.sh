@@ -73,8 +73,11 @@ Based on SporeCoop by WoodyWizard: https://github.com/WoodyWizard/SporeCoop
 
 Install: extract this zip into SPORE\\SporebinEP1 and run install.bat (step by step: INSTALL.txt).
 Read GALACTIC-ADVENTURES.md for the adventure preview's verified cases and limits.
-All players need Galactic Adventures and this exact SporeCoopGA version (protocol 12).
+All players need Galactic Adventures and this exact SporeCoopGA version (protocol 13).
 Upstream SporeCoop 0.7.0-0.7.2.1 uses a different protocol and cannot join this preview.
+Client creatures and vehicles follow native waypoints; the host retains AI,
+combat and objective authority. See validation-ga-preview.10.md for acceptance
+evidence and limits. Ordinary guest combat input remains unverified.
 
 Base-stage support retains upstream GOG 2024 (sha256 dc04aee5...), Steam
 (3010a413...: GOG 2024 game code under Steam's DRM), and GOG 2016 (922af7c7...).
@@ -115,11 +118,12 @@ cp "$ROOT/THIRD_PARTY_NOTICES.md" "$STAGE/THIRD_PARTY_NOTICES.txt"
 cp "$ROOT/third_party/minhook/LICENSE.txt" "$STAGE/SporeCoop/MinHook-LICENSE.txt"
 cp "$ROOT/docs/INSTALL.md" "$STAGE/INSTALL.txt"
 cp "$ROOT/docs/GALACTIC-ADVENTURES.md" "$STAGE/GALACTIC-ADVENTURES.md"
+cp "$ROOT/docs/validation-ga-preview.10.md" "$STAGE/validation-ga-preview.10.md"
 cp "$ROOT/docs/validation-ga-preview.9.md" "$STAGE/validation-ga-preview.9.md"
 cp "$ROOT/docs/validation-ga-preview.8.md" "$STAGE/validation-ga-preview.8.md"
 cp "$ROOT/docs/integration-ga-upstream-0.7.2.1.md" "$STAGE/integration-ga-upstream-0.7.2.1.md"
 mkdir -p "$STAGE/re"
-cp "$ROOT"/docs/re/{adventure,adventure-world,build-dc04}.md "$STAGE/re/"
+cp "$ROOT"/docs/re/{adventure,adventure-world,creature,build-dc04}.md "$STAGE/re/"
 "$STRIP" "$STAGE/SporeCoop/sporekit.dll" "$STAGE/SporeCoop/mods/coop.dll" "$STAGE/SporeCoop/steam_api.sporekit.dll"
 # the update pack (in-game updates and the setup) and the setup itself, also next to the zip
 python3 "$ROOT/tools/mkpack.py" "$STAGE" "$VER" "$STAGE/SporeCoop-$VER.pack" >/dev/null

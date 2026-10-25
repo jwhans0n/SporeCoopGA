@@ -19,7 +19,7 @@ Shared editing is planned and is not available in the current preview.
 
 SporeCoopGA builds on [SporeCoop](https://github.com/WoodyWizard/SporeCoop) by
 [WoodyWizard](https://github.com/WoodyWizard). The current build is
-**`0.7.3.2-ga-preview.9`**, an experimental preview using protocol **12**.
+**`0.7.3.3-ga-preview.10`**, an experimental preview using protocol **13**.
 
 ## Contents
 
@@ -52,6 +52,10 @@ SporeCoopGA builds on [SporeCoop](https://github.com/WoodyWizard/SporeCoop) by
   keep their running fuse when caught; contact grenades retain impact behavior.
 - **Party pause.** Opening Esc stops your input; the shared adventure pauses
   when every connected participant is paused and resumes when anyone returns.
+- **Native actor movement.** Client creatures and vehicles follow host waypoints
+  between updates using native locomotion. Hard corrections handle initial
+  binding, large divergence, stuck movement and confirmed stationary disagreement;
+  the host retains AI, combat and objective authority.
 - **Downed and revival feedback.** Downed captains stay in place while their
   normal visuals update. A six-metre revive ring, progress bar and timer show
   teammates where to stand and how long to remain nearby.
@@ -123,20 +127,24 @@ dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37
 - **Verified GA configuration:** Windows with that exact executable. Steam and
   other executables are not enabled for the native GA adapter; Linux GA play
   remains unvalidated.
-- **Matching clients:** all participants need this fork build and protocol 12.
+- **Matching clients:** all participants need this fork build and protocol 13.
   Earlier GA previews also require an update before joining.
   Upstream SporeCoop 0.7.0-0.7.2.1 clients use a different protocol and cannot join.
 - **Entry and joining:** adventures start from Sporepedia. Space-stage adventure
   entry is outside this preview. Late joins and reconnects wait for the next attempt.
-- **Validation scope:** targeted preview 9 Windows checks passed. Its
-  [validation report](docs/validation-ga-preview.9.md) records NPC presentation,
-  unanimous pause and the six-metre revival checks. The
+- **Validation scope:** preview 10 repairs frozen vehicle models and verifies continuous
+  native creature walking in two-player Mine checks. Position tracking remains
+  approximate; its [validation report](docs/validation-ga-preview.10.md) records
+  material residual lag and the exact scope. The [preview 9 report](docs/validation-ga-preview.9.md) retains its
+  NPC presentation, unanimous pause and six-metre revival checks. The
   [preview 8 report](docs/validation-ga-preview.8.md) retains the earlier music,
   item, downed, lighting, conversation/Replay and four-player evidence.
+  Ordinary guest click/key combat input remains unverified; controlled damage
+  checks do not establish that input path.
   A complete adventure playthrough campaign remains outstanding.
 
 The preview does not establish compatibility with every custom adventure, palette
-or objective. Read the [preview 9 validation report](docs/validation-ga-preview.9.md)
+or objective. Read the [preview 10 validation report](docs/validation-ga-preview.10.md)
 and [historical integration report](docs/integration-ga-upstream-0.7.2.1.md)
 for exact evidence and limits, and the [known issues](docs/known-issues.md) for
 recorded problems.

@@ -257,3 +257,95 @@ broken save were kept in `out/vote-load-hang/`, not in git).
   saves only once the player controls something again, and a hook on `Simulator_HandleMessage`
   0xB63610 posts the quit message 0x4715068 again while our save is written (`world::save_busy`),
   as the game itself does while a mode switch is pending (`coop.vote`: "quit held for a save N").
+
+## Adventure follower locomotion and clip continuity (dc04)
+
+Verified installed executable SHA256:
+`dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
+The creature spatial vtable is `1469EC0`.
+
+| Spatial slot | Installed entry and ABI | Follower behavior |
+| --- | --- | --- |
+| `+C4` | `C11570`, thiscall `(spatial,float speed,int)`, `ret8` at `C115BA`/`C115D4` | Resolves creature speed through `C0D1B0`, writes desired speed at spatial `+1E0` using native creature flags. |
+| `+C8` | `C41EA0`, thiscall `(spatial)->float`, `ret` at `C41EA6` | Reads desired speed at `+1E0`. |
+| `+CC` | `C42080`, thiscall `(spatial)->float`, `ret` at `C42086` | Reads native standard speed at `+1E4`. |
+| `+E0` | `C435F0`, thiscall `(spatial,Vec3*,float goalStop,float acceptableStop,bool)`, `ret10` at `C437F4` | Builds native movement request and dispatches spatial `+DC`; false-bool path retains full 3D destination. |
+| `+EC` | `C43800`, thiscall `(spatial)`, `ret` at `C438E8` | Dispatches a native stop request and sets desired speed zero. |
+
+`MoveTo` restores standard speed itself: `C437C8` obtains `+CC`, then `C437E3`
+invokes `+C4` with that result and zero as the second argument. Issue MoveTo
+first, then the desired-speed adjustment. The older driver.h order allows
+MoveTo to overwrite its adjustment. No behavior-tree or combat order is needed.
+Native movement strategy, collision, water/flying and scale handling remain in
+the engine; representative native movement compatibility still needs testing.
+
+Preview 9 mirror() applies combined SetTransform to every cached dynamic
+creature each mirror frame, even without a new packet. It marks animation-root
+pose dirty (adventure-world.md), preventing native locomotion from advancing
+freely between samples. Reserve it for initial binding, severe divergence,
+confirmed stationary errors or a stuck path. Update native destinations at a
+bounded cadence, preserve the NPC AI fence, and avoid per-frame pose nudges.
+
+### Read-only current clip sampling
+
+Concrete AnimatedCreature vtable `1448AF0` has `+08=A0C5D0` (load),
+`+18=A029D0` (start) and `+58=A05090` (current clip). The last is thiscall
+`(animated,uint32* ID,float* time,int* extra,int* index)`, `ret10` at `A050FC`.
+A sampler can reproduce it without a new native call:
+
+1. Read creature `+B54`, then the query pointer stored at AnimatedCreature
+   `+184`. The query is not inline.
+2. `9FF690` reads layer at query `+FA4`, requiring less than 16; slot index is
+   query `+F0C+4*layer`, also less than 16. Slot is `query+8+F0*slotIndex`.
+3. The selector accepts nonnull slot `+0`, or a subindex at `+68` below 8 with
+   a nonnull pointer at slot `+8+12*subindex`.
+4. `A050B1` reads clip ID at slot `+D8`; `A050E2` reads playback time as a
+   double at `+A8` and returns a float; `A050F2` reads an extra int at `+B0`.
+   Slot `+B4` is the generation used by indexed lookup `9FF630`.
+
+Bounds-check all pointers and indexes. Record slot/index/generation with ID and
+clock: clock wrap alone does not distinguish a loop from a restart. The existing
+PlayAnimation C12470 path loads and starts a clip, so it is not an idempotent
+"ensure gait" API. A packet request or its return value does not prove restart.
+
+Installed classifier `A026E0` contains the idle-walk family from upstream ModAPI.
+`04866DAB` is idle_walk_lookat_loop; `04866D8E` is its start and `04866DB9` one
+of its stops. Adjacent classifier `A02740` also accepts `02481DE5`, `027844AD`,
+`04330667` and `05B6DDAE`, then delegates to that idle-walk classifier. The exact
+authored name of `02481DE5` is unverified here. Preserve unknown and attack clip
+semantics; do not blanket-deduplicate repeated IDs.
+
+Hidden baseline `out/lab/smooth-actors-preview9-native-motion/result.json`
+sampled current clip state about every 53 ms. Mine marker 138's host gait
+04866DAB progressed for the first 8.15 seconds; its guest generally retained
+02481DE5 despite spatial following over about 174 metres. A brief replicated
+host gait at time zero was replaced about 53 ms later. Across 20 creatures,
+there was one same-ID guest slot replacement and none on the host. This proves
+a locomotion/gait mismatch, not pervasive same-ID restart. Compare actual clip
+clocks, model increments and host controls again on the corrected build.
+
+The portable adventure_actor_motion.h fixture runs a native-style waypoint
+walker between 10-Hz packets with arrival jitter/loss, checks bounded prediction,
+confirmed stationarity, stale stop, stuck/severe corrections, scoped identity
+resets and hold/resume. Its results establish policy behavior; native appearance,
+authored movement compatibility and attack playback remain integration checks.
+
+For read-only braking diagnosis, the current movement request is inline at
+spatial `+1F4`, not a pointer. `C42020` returns that address. Creature spatial
+`+DC=C02AD0` delegates to `C43FA0`; `C44020` copies its request through `C43F40`
+to `spatial+1F4`. Request `+14` is the full destination Vec3, `+20` the goal-stop
+float, `+5C` the request mode (MoveTo false-bool uses 1, Stop uses 0), and `+60`
+the acceptable-stop float. `C435F0` constructs these fields and `C43F40` copies
+them; `C17F40` reads that same destination when request mode is nonzero.
+Velocity is spatial `+1C8`, confirmed by getter `D20610` and writer `C41EC0`.
+Creature-relative offsets are destination `+2C8`, goal-stop `+2D4`, mode `+310`,
+acceptable-stop `+314` and velocity `+288`. These fields permit comparing actual
+native speed and remaining route distance without issuing movement calls.
+
+The slow-drift policy regression exposed a separate stationarity error:
+per-packet motion below 0.025 m accumulated into real walking but was treated
+as stationary. The policy now compares a fixed quiet anchor and its net drift
+over time, and preserves observed 0.05/0.1 m/s speeds instead of falling back
+to full standard speed. Both slow cases, cumulative anchor displacement and
+bounded idle jitter pass alongside the original natural-speed tests. Native
+goal-stop radius and navigation lookahead remain separate integration concerns.

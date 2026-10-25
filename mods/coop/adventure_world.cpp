@@ -22,6 +22,7 @@
 
 #include "game.h"
 #include "net/adventure_health.h"
+#include "net/adventure_actor_motion.h"
 #include "sporekit_game.hpp"
 
 namespace adventure_world {
@@ -31,6 +32,7 @@ static SkMod* M;
 static Ctx C;
 static uintptr_t a_Mode, a_SetAct, a_GetMarker, a_Hostile, a_Befriend, a_Ally, a_Relationships, a_SocialEvent, a_AnimalDamage, a_SocialMode;
 static uintptr_t a_GoalHUD;
+static uintptr_t a_MovementRequest, a_VehicleGroundUpdate;
 static bool g_ok, g_applying;
 static bool g_talk_cleanup, g_talk_presenting, g_talk_committing;
 static uintptr_t a_GateKey, a_OpenGate;
@@ -62,7 +64,7 @@ static std::string g_world_error;
 static unsigned g_snapshots, g_hits, g_goal_updates;
 static unsigned g_goal_hud_refreshes;
 static bool g_goal_hud_dirty;
-constexpr uint32_t kSpatial = 0x01186577, kCombatant = 0x013F94D4, kCreature = 0xCE9F6639;
+constexpr uint32_t kSpatial = 0x01186577, kCombatant = 0x013F94D4, kCreature = 0xCE9F6639, kVehicle = 0x0137E8E0;
 constexpr size_t kMaxActors = 2048, kMaxGoals = 3;
 enum Kind : uint8_t { Actors = 128, Goals = 129, Hit = 130, CaptainHit = 131, Interaction = 132, GoalEvent = 133, Roster = 134, SocialComplete = 135, StaticActors = 136, Attachments = 137, ItemThrow = 138, ActorAnimations = 139 };
 enum Action : uint8_t { PickUp, Drop, Give, Unlock };
@@ -140,7 +142,18 @@ struct ActorState {
     double seen = 0;
     bool static_actor = false;
 };
-struct Binding { void* object; uint32_t incarnation; int act = -1; };
+struct Binding {
+    void* object;
+    uint32_t incarnation;
+    int act = -1;
+    adventure_actor_motion::Follower follower{};
+    adventure_actor_motion::Decision last_motion{};
+};
+struct MotionCounters {
+    uint64_t moves = 0, stops = 0, snaps = 0, initial = 0, severe = 0, stationary = 0, stuck = 0;
+};
+static MotionCounters g_motion;
+
 struct ActorAnimation {
     Identity actor{};
     uint64_t serial = 0;
@@ -980,17 +993,122 @@ static void SK_THISCALL set_state(void* self, int state)
     native_state(self, state);
 }
 
-static void apply_actor(NativeActor& actor, const ActorState& state)
+static bool fly_through_waypoints(const NativeActor& actor, bool creature)
+{
+    if (!a_MovementRequest) return false;
+    if (creature) return true;
+    if (!a_VehicleGroundUpdate || !skg::readable(actor.object, 0xB20) ||
+        skg::field<int>(actor.object, 0xB1C) != 0 || !skg::readable(actor.spatial, 0x4D0)) return false;
+    void* strategy = skg::field<void*>(actor.spatial, 0x4CC);
+    if (!strategy || !skg::readable(strategy, sizeof(void*))) return false;
+    void** table = skg::field<void**>(strategy, 0);
+    return table && skg::readable(table, 0x10) && reinterpret_cast<uintptr_t>(table[3]) == a_VehicleGroundUpdate;
+}
+
+static void follow_actor(NativeActor& actor, const ActorState& state, Binding& binding, double now, bool creature)
+{
+    using namespace adventure_actor_motion;
+    Scope scope{g_run, static_cast<uint8_t>(binding.act), state.id.incarnation, binding.incarnation};
+    const bool fresh = binding.follower.admit(scope, {state.sequence, state.position, state.orientation, state.seen});
+    Local local;
+    local.position = skg::field<net::Vec3>(actor.spatial, 4);
+    local.scale = creature ? game::scale(actor.object) : 1.f;
+    local.standard_speed = creature ? game::standard_speed(actor.object) : skg::vcall<float>(actor.spatial, 0xCC / 4);
+    const bool fly_through = fly_through_waypoints(actor, creature);
+    // Leave a bounded native route ahead, without projecting far across turns.
+    // Vehicle MoveTo replaces its path and transit timer, so retarget less often.
+    local.navigation_lead = creature || fly_through ? .15f : .65f;
+    local.command_interval = creature ? .15f : .35f;
+    local.held = C.held && C.held();
+    local.attached = attached(actor.spatial);
+    local.alive = !(state.flags & 2);
+    const auto decision = binding.follower.step(local, now);
+    if (decision.command != Command::Keep) binding.last_motion = decision;
+    auto stop = [&] {
+        if (creature) game::stop(actor.object);
+        else skg::vcall<void>(actor.spatial, 0xEC / 4);
+    };
+    auto follow_through = [&] {
+        if (!fly_through) return;
+        // Match verified native creature AI: MoveTo, then mode1 -> mode2.
+        // Mode2 retains native route/turn/collision and reached-goal handling,
+        // but avoids braking before each network waypoint. Stop still clears it.
+        using GetRequest = void*(SK_THISCALL*)(void*);
+        void* request = reinterpret_cast<GetRequest>(a_MovementRequest)(actor.spatial);
+        if (request && skg::readable(request, 0x60) && skg::field<int>(request, 0x5C) == 1)
+            skg::field<int>(request, 0x5C) = 2;
+    };
+    switch (decision.command) {
+    case Command::Move:
+        // Native MoveTo restores standard speed, so apply catch-up speed after it.
+        {
+            const float unit = std::isfinite(local.scale) ? std::clamp(local.scale, .25f, 2.f) : 1.f;
+            const float speed = adventure_actor_motion::length(binding.follower.velocity());
+            const float radius = std::min(.05f * unit, std::max(.001f, speed*.02f));
+            if (creature) {
+                game::move_to(actor.object, decision.target, radius);
+                follow_through();
+                game::set_speed(actor.object, decision.speed);
+            } else {
+                // dc04 vehicles use their own verified MoveTo override; native
+                // locomotion and physics keep the model advancing between goals.
+                skg::vcall<void>(actor.spatial, 0xE0 / 4, &decision.target, radius, radius*2.f, false);
+                follow_through();
+                skg::vcall<void>(actor.spatial, 0xC4 / 4, decision.speed, 0);
+            }
+        }
+        ++g_motion.moves;
+        break;
+    case Command::Stop:
+        stop(); ++g_motion.stops;
+        break;
+    case Command::Snap:
+        stop();
+        skg::vcall<void>(actor.spatial, 0x44 / 4, &decision.target, &decision.orientation);
+        ++g_motion.snaps;
+        if (decision.reason == Reason::Initial) ++g_motion.initial;
+        else if (decision.reason == Reason::Severe) ++g_motion.severe;
+        else if (decision.reason == Reason::Stationary) ++g_motion.stationary;
+        else if (decision.reason == Reason::Stuck) ++g_motion.stuck;
+        break;
+    case Command::Keep:
+        break;
+    }
+    // Retain the host's corpse/wreck pose without issuing living movement.
+    if (fresh && !local.alive && !local.held && !local.attached &&
+        adventure_actor_motion::distance(local.position, state.position) > .05f)
+        skg::vcall<void>(actor.spatial, 0x44 / 4, &state.position, &state.orientation);
+    // Native locomotion owns moving orientation. An idle host may still turn to
+    // face a target; publish that orientation once per fresh stationary sample.
+    if (fresh && !local.held && !local.attached && binding.follower.confirmed_stationary() &&
+        decision.command != Command::Snap) {
+        const auto& q = skg::field<net::Quat>(actor.spatial, 0x10);
+        float dot = q.x*state.orientation.x + q.y*state.orientation.y + q.z*state.orientation.z + q.w*state.orientation.w;
+        if (std::fabs(dot) < .9999f) {
+            if (creature) skg::vcall<void>(actor.spatial, 0x3C / 4, &state.orientation);
+            else {
+                const auto position = skg::field<net::Vec3>(actor.spatial, 4);
+                skg::vcall<void>(actor.spatial, 0x44 / 4, &position, &state.orientation);
+            }
+        }
+    }
+}
+
+static void apply_actor(NativeActor& actor, const ActorState& state, Binding* binding = nullptr, double now = 0)
 {
     g_applying = true;
     void* creature = game::cast(actor.object, kCreature);
+    void* vehicle = creature ? nullptr : game::cast(actor.object, kVehicle);
     ActorState local;
     local.position = skg::field<net::Vec3>(actor.spatial, 4);
     local.orientation = skg::field<net::Quat>(actor.spatial, 0x10);
-    if (!attached(actor.spatial) && (!state.static_actor || !same_pose(local, state))) {
-        if (creature) {
-            // Creature SetTransform also marks its animated model dirty. The
-            // separate setters leave the spatial pose and rendered body apart.
+    if ((creature || vehicle) && binding) {
+        follow_actor(actor, state, *binding, now, creature != nullptr);
+    } else if (!attached(actor.spatial) && (!state.static_actor || !same_pose(local, state))) {
+        if (creature || vehicle) {
+            // Creature SetTransform publishes its animation root; the vehicle
+            // operation also rebinds the native physics body to the received pose.
+            // Separate setters leave the rendered body at its old position.
             skg::vcall<void>(actor.spatial, 0x44 / 4, &state.position, &state.orientation);
         } else {
             skg::vcall<void>(actor.spatial, 0x38 / 4, &state.position);
@@ -1081,7 +1199,7 @@ static void mirror(double now)
                 if(actor) { g_bindings[id]={actor->object,actor->incarnation,skg::field<int>(play(),0xB8)}; bound.insert(actor->object); }
             }
         }
-        if (actor) apply_actor(*actor, state);
+        if (actor) apply_actor(*actor, state, &g_bindings.at(id), now);
     }
     if (!failed && g_bindings.size() == g_remote.size()) g_world_error.clear();
 }
@@ -2086,7 +2204,7 @@ static void reset_replication()
     g_pending_social.clear(); ++g_social_generation; g_social_queued = g_social_overflow = false;
     g_deferred_goals.reset();
     ++g_goal_generation; g_goal_work_run = 0; g_goal_apply_queued = g_goal_apply_active = false;
-    g_native.clear(); g_remote.clear(); g_bindings.clear(); g_health_baselines.clear(); g_last_hit.clear(); g_last_captain_hit.clear();
+    g_native.clear(); g_remote.clear(); g_bindings.clear(); g_motion = {}; g_health_baselines.clear(); g_last_hit.clear(); g_last_captain_hit.clear();
     g_last_interaction.clear(); g_dropped.clear(); g_social_events.clear(); g_social_completions.clear(); g_interaction_sequence = 0;
     g_opened_gates.clear(); g_retired_items.clear(); g_talk_cleanup=g_talk_presenting=g_talk_committing=false;
     g_last_source.clear();
@@ -2163,17 +2281,20 @@ void tick(double now)
             std::unique_ptr<std::pair<uint64_t, double>> task((std::pair<uint64_t, double>*)argument);
             g_mirror_queued = false;
             if (!guest() || task->first != run()) return;
-            enumerate(); mirror(task->second);
+            // Native modal/loading work may delay this callback. Expiration
+            // and movement freshness use execution time, never the queued age.
+            const double now = std::max(task->second, H->time_seconds());
+            enumerate(); mirror(now);
             auto* p=play(); if(!p) return;
-            if(task->second-g_last_item_apply>=0.1) {
-                g_last_item_apply=task->second;
+            if(now-g_last_item_apply>=0.1) {
+                g_last_item_apply=now;
                 apply_attachments(skg::field<int>(p,0xB8));
                 bool carrying=false;
                 each_slot(C.captain_of(C.sess->my_id()),[&](uint8_t,void*) { carrying=true; });
                 if(carrying && !(C.held && C.held())) for(const auto& actor:g_native)
                     if(game::cast(actor.object,kCreature)) adventure_world_actions::poll_receive(actor.object);
             }
-            apply_animations(task->second);
+            apply_animations(now);
         }, task);
     }
 }
@@ -2192,6 +2313,8 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
     a_SocialMode = H->sym("SporeCoop::Adventure::CreatureSocialMode");
     a_AnimalDamage = H->sym("Simulator::cCreatureAnimal::TakeDamage");
     a_GoalHUD = H->sym("SporeCoop::Adventure::RefreshGoalHUD");
+    a_MovementRequest = H->sym("SporeCoop::Adventure::GetLocomotionRequest");
+    a_VehicleGroundUpdate = H->sym("SporeCoop::Adventure::VehicleGAGroundLocomotionUpdate");
     uintptr_t check = H->sym("Simulator::cScenarioPlayMode::CheckGoalProgress");
     uintptr_t complete = H->sym("Simulator::cScenarioPlayMode::CompleteAct");
     uintptr_t goals = H->sym("Simulator::cScenarioPlayMode::UpdateGoals");
@@ -2211,7 +2334,7 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
     a_ThrowGrace=H->sym("SporeCoop::Adventure::ThrowPairGrace");
     o_Drop = (Drop_t)H->sym("SporeCoop::Adventure::DropItem");
     if (std::string(H->exe_sha256()) != "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37" ||
-        !a_Mode || !a_SetAct || !a_GetMarker || !a_Hostile || !a_Befriend || !a_Ally || !a_Relationships || !a_SocialEvent || !a_SocialMode || !a_AnimalDamage || !a_GoalHUD ||
+        !a_Mode || !a_SetAct || !a_GetMarker || !a_Hostile || !a_Befriend || !a_Ally || !a_Relationships || !a_SocialEvent || !a_SocialMode || !a_AnimalDamage || !a_GoalHUD || !a_MovementRequest || !a_VehicleGroundUpdate ||
         !check || !complete || !goals || !state || !pick || !picked || !dropped || !count || !avatar || !generic || !o_Drop || !C.sess || !C.captain_can_act ||
         !talk || !talk_end_address || !gate || !a_GateKey || !a_OpenGate || !a_Physics || !a_Impulse || !a_ThrowGrace || !adventure_world_lifecycle::init(H, M)) return false;
     g_ok = H->hook_create(M, (void*)check, (void*)check_goals, (void**)&o_Check) == 0 &&
@@ -2336,6 +2459,10 @@ std::string status(bool verbose)
         " state_updates=" + std::to_string(g_replication_stats.state_updates) +
         " promoted=" + std::to_string(g_replication_stats.promotions) +
         " deferred=" + std::to_string(g_replication_stats.deferred) + "\n";
+    summary += "actor motion: moves=" + std::to_string(g_motion.moves) + " stops=" + std::to_string(g_motion.stops) +
+        " snaps=" + std::to_string(g_motion.snaps) + " initial=" + std::to_string(g_motion.initial) +
+        " severe=" + std::to_string(g_motion.severe) + " stationary=" + std::to_string(g_motion.stationary) +
+        " stuck=" + std::to_string(g_motion.stuck) + "\n";
     summary += "native goal HUD: refreshes=" + std::to_string(g_goal_hud_refreshes) +
                " pending=" + std::to_string(g_goal_hud_dirty ? 1 : 0) + "\n";
     auto creature_updates = game::creature_update_counts();
@@ -2498,8 +2625,18 @@ int debug(int argc, const char* const* argv, SkOut* output)
                 void* powerup=powerup_for(actor.object);
                 if(powerup && skg::readable(powerup,0x3C)) out << " powerup=" << skg::field<int>(powerup,4)
                     << " key_category=" << (skg::field<void*>(powerup,0x18) ? skg::cdecl_call<uint32_t>(a_GateKey,powerup) : 0);
-                for (const auto& [id, binding] : g_bindings) if (binding.object == actor.object)
+                for (const auto& [id, binding] : g_bindings) if (binding.object == actor.object) {
                     out << " host_incarnation=" << id.incarnation;
+                    if (binding.follower.has_sample()) {
+                        const auto& sample=binding.follower.latest(); const auto& v=binding.follower.velocity();
+                        const auto& motion=binding.last_motion;
+                        out << " motion_seq=" << sample.sequence << " motion_age=" << std::max(0.,H->time_seconds()-sample.arrival_time)
+                            << " motion_velocity=(" << v.x << "," << v.y << "," << v.z << ")"
+                            << " motion_goal=(" << motion.target.x << "," << motion.target.y << "," << motion.target.z << ")"
+                            << " motion_speed=" << motion.speed << " motion_command=" << unsigned(motion.command)
+                            << " motion_reason=" << unsigned(motion.reason);
+                    }
+                }
                 out << "\n";
             }
         }
