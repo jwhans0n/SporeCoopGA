@@ -27,6 +27,13 @@ bool available();
 // outside Present. give() accepts an item still held by captain or already dropped.
 bool give(void* captain, void* recipient, void* item, std::string& error,
           GiveResult* result = nullptr);
+// A guest's mirrored NPC does not run its native receiving behavior. Observe
+// only its explicit order7, forward the local captain's intent, and clear it.
+void poll_receive(void* recipient);
+bool can_receive(void* creature, void* spatial, bool allow_held = false);
+// Native full throw retains a combatant reference for item contact attribution.
+// Uses the verified intrusive-reference setter, never a raw pointer assignment.
+void throw_source(void* captain, void* item);
 bool recruit(void* target, std::string& error);
 
 // Native authored class/act relationship, for non-creature scenario actors.

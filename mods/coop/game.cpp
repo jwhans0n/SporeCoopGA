@@ -36,6 +36,7 @@ static std::vector<void*> g_seen, g_seen_out;
 static UpdateFilter g_update_filter;
 static UpdateFilter g_extra_update_filter;
 static BlockedUpdateHandler g_blocked_update_handler;
+static UpdateObserver g_update_observer;
 
 static void SK_THISCALL h_Update(void* self, int dt)
 {
@@ -48,7 +49,9 @@ static void SK_THISCALL h_Update(void* self, int dt)
         if (g_blocked_update_handler) g_blocked_update_handler(self, dt);
         return;
     }
+    if (g_update_observer) g_update_observer(self, true);
     o_Update(self, dt);
+    if (g_update_observer) g_update_observer(self, false);
 }
 
 const std::vector<void*>& creatures_updated()
@@ -63,6 +66,7 @@ const std::vector<void*>& creatures_updated()
 void set_update_filter(UpdateFilter fn) { g_update_filter = fn; }
 void set_extra_update_filter(UpdateFilter fn) { g_extra_update_filter = fn; }
 void set_blocked_update_handler(BlockedUpdateHandler fn) { g_blocked_update_handler = fn; }
+void set_update_observer(UpdateObserver fn) { g_update_observer = fn; }
 bool is_destroyed(void* c) { return field<uint8_t>(c, 0x21) != 0; } // cGameData::mbIsDestroyed
 
 // ---- combat via cCreatureAnimal TakeDamage (cCombatant vtable[6], this = creature+0x5A8) ----

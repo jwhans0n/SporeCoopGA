@@ -73,12 +73,18 @@ test:
 	$(B)/host/net_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -o $(B)/host/ui_pages_tests tests/ui_pages_tests.cpp
 	$(B)/host/ui_pages_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -o $(B)/host/adventure_hud_tests tests/adventure_hud_tests.cpp
+	$(B)/host/adventure_hud_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Imods/coop -o $(B)/host/adventure_tests mods/coop/net/adventure.cpp tests/adventure_tests.cpp
 	$(B)/host/adventure_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Imods/coop -o $(B)/host/adventure_assets_tests mods/coop/net/adventure_assets.cpp mods/coop/net/dbpf.cpp updater/sha256.cpp tests/adventure_assets_tests.cpp
 	$(B)/host/adventure_assets_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -o $(B)/host/adventure_music_tests mods/coop/adventure_music.cpp mods/coop/net/dbpf.cpp tests/adventure_music_tests.cpp
+	$(B)/host/adventure_music_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Imods/coop -o $(B)/host/adventure_world_tests tests/adventure_world_tests.cpp
 	$(B)/host/adventure_world_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop/net -o $(B)/host/adventure_control_policy_tests tests/adventure_control_policy_tests.cpp
+	$(B)/host/adventure_control_policy_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Imods/coop -Isdk/include -o $(B)/host/adventure_runtime_tests mods/coop/adventure.cpp mods/coop/net/adventure.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp tests/adventure_runtime_tests.cpp
 	$(B)/host/adventure_runtime_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include -o $(B)/host/adventure_flow_tests mods/coop/adventure_flow.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp tests/adventure_flow_tests.cpp
@@ -134,6 +140,11 @@ $(B)/host/adventure_social_tests.exe: $(SOCIAL_TEST_SRC) mods/coop/adventure_soc
 # Includes the actual game.cpp Update wrapper, without linking game.cpp twice.
 # An explicit asInvoker manifest prevents installer autodetection on this fixture.
 test-blocked-update-windows: $(B)/host/adventure_tick_dispatch_tests.exe
+.PHONY: test-controls-windows
+test-controls-windows: $(B)/host/adventure_control_tests.exe
+$(B)/host/adventure_control_tests.exe: tests/adventure_control_tests.cpp mods/coop/adventure_control.cpp mods/coop/adventure_control.h $(ADVENTURE_ABI_HEADERS) $(B)/obj/tests/native_fixture_rc.o
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/adventure_control_tests.cpp $(B)/obj/tests/native_fixture_rc.o -o $@
 $(B)/obj/tests/native_fixture_rc.o: tests/native_fixture.rc tests/native_fixture.manifest
 	@mkdir -p $(dir $@)
 	$(WINDRES) -i tests/native_fixture.rc -o $@ --include-dir tests

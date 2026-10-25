@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools/tests'))
 from coop_adventure import Game, FixtureError, verify_lab
 from adventure_memory import AdventureMemory
+from coop_adventure_flow import confirmation_hud
 
 
 def main():
@@ -72,6 +73,9 @@ def main():
             raise FixtureError('guest dialog input advanced host pages, clocks or objectives: '+json.dumps(
                 dict(before=frozen,held=held,page_before=host_page,page_after=a.pointer(host_play+0xD4))))
         guest.record('waiting-for-host-dialog')
+        confirmation_hud(guest,len(games),'Conversation',True)
+        if not guest.caption('letterbox_top'):
+            raise FixtureError('local Finished dismissed its native cinematic before group release')
         for participant in observers+[host]:
             finished=False
             deadline=time.monotonic()+90
@@ -93,6 +97,9 @@ def main():
                 (g['count'], g['complete']) for g in x['goals']] == [
                 (g['count'], g['complete']) for g in y['goals']] else None
         guest.wait('conversation progress replicated', replicated, timeout=20)
+        for game in games:
+            if 'confirmation_hud=0' not in game.call('coop.adventure.hud'):
+                raise FixtureError('conversation confirmation labels survived group release')
         exceptions = [game.call('exc') for game in games]
         if any('total faults: 0' not in value for value in exceptions):
             raise FixtureError('conversation logged a native exception')

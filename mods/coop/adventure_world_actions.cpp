@@ -20,6 +20,8 @@ Ctx C;
 bool ready;
 uintptr_t a_mode, a_class, a_building, a_vehicle, a_consume, a_drop, a_picked;
 uintptr_t a_posse, a_recruit, a_relationship, a_noun, a_destroy, a_finished, a_order;
+uintptr_t a_receive, a_order_target, a_remove_order, a_pick;
+uintptr_t a_throw_source;
 using Tick = bool(SK_CDECL*)(void*, uint32_t, uint32_t, uint32_t, uint32_t, void*, uint32_t, float);
 Tick original_tick;
 
@@ -111,6 +113,12 @@ bool init(const SkHost* host, SkMod* mod, Ctx ctx)
     for (size_t i = 0; i < std::size(names); ++i) {
         *addresses[i] = H->sym(names[i]); if (!*addresses[i]) return false;
     }
+    a_receive = H->sym("SporeCoop::Adventure::CanReceiveItem");
+    a_order_target = H->sym("SporeCoop::Adventure::SocialOrderTarget");
+    a_remove_order = H->sym("SporeCoop::Adventure::RemoveBehaviorOrders");
+    a_pick = H->sym("SporeCoop::Adventure::PickUpItem");
+    a_throw_source = H->sym("SporeCoop::Adventure::SetThrowCombatantReference");
+    if (!a_receive || !a_order_target || !a_remove_order || !a_pick || !a_throw_source) return false;
     auto* tick = reinterpret_cast<void*>(H->sym("SporeCoop::Adventure::TickContainerGive"));
     if (!tick || H->hook_create(mod, tick, reinterpret_cast<void*>(&give_tick),
                                reinterpret_cast<void**>(&original_tick))) return false;
@@ -119,6 +127,41 @@ bool init(const SkHost* host, SkMod* mod, Ctx ctx)
 }
 
 bool available() { return ready; }
+
+bool can_receive(void* creature, void* spatial, bool allow_held)
+{
+    return ready && live(creature) && spatial && readable(creature,0xE48) &&
+        thiscall<bool>(a_receive,creature,spatial,allow_held,false);
+}
+
+void throw_source(void* captain, void* item)
+{
+    if(!ready || !live(captain) || !live(item)) return;
+    void* interactable=game::cast(item,0x0398420D);
+    void* combatant=game::cast(captain,0x013F94D4);
+    if(interactable && combatant && readable(interactable,0x110))
+        thiscall<void*>(a_throw_source,static_cast<uint8_t*>(interactable)+0x10C,combatant);
+}
+
+void poll_receive(void* recipient)
+{
+    uint8_t *data, *play; std::string error;
+    if (C.host() || !context(data, play, error) || !live(recipient) ||
+        !readable(recipient, 0xE48) || !game::cast(recipient, kCreature)) return;
+    auto* behavior = field<uint8_t*>(recipient, 0xB4C);
+    if (!behavior || !readable(behavior, 0x1D0)) return;
+    auto* order = thiscall<uint8_t*>(a_order, behavior + 8, 0, 0x40000);
+    if (!order || !readable(order, 0x30) || field<int>(order, 0xC) != 7) return;
+    void* donor = cdecl_call<void*>(a_order_target, order);
+    if (!donor || !C.local_captain(donor) || !readable(donor, 0xE48)) return;
+    uintptr_t first = field<uintptr_t>(donor, 0xE40), last = field<uintptr_t>(donor, 0xE44);
+    uint32_t slot = field<uint32_t>(order, 0x10);
+    if (last < first || (last-first)%0x24 || (last-first)/0x24 > 128 ||
+        slot >= (last-first)/0x24 || !readable(reinterpret_cast<void*>(first),last-first)) return;
+    void* item = spatial_cast(field<void*>(reinterpret_cast<void*>(first+slot*0x24),0x20), kGameData);
+    if (live(item) && C.request_give(donor,item,recipient))
+        thiscall<void>(a_remove_order, behavior+8, 0, 0x40000);
+}
 
 bool give(void* captain, void* recipient, void* item, std::string& error, GiveResult* result)
 {
@@ -132,6 +175,25 @@ bool give(void* captain, void* recipient, void* item, std::string& error, GiveRe
     void* spatial = game::cast(item, kSpatial);
     void* building = game::cast(recipient, kBuilding);
     void* vehicle = building ? nullptr : game::cast(recipient, kVehicle);
+    void* receiver = game::cast(recipient, kCreature);
+    if (creature && spatial && receiver) {
+        bool carrying;
+        if (!held(creature, spatial, carrying, error)) return false;
+        // Native receive initialization checks CanReceive(item,true,false),
+        // releases its current slot0 tool, then picks into slot0. Let the native
+        // replacement path perform that release; never fabricate its pointers.
+        if (!thiscall<bool>(a_receive, receiver, spatial, true, false)) {
+            error = "The creature cannot receive this native item."; return false;
+        }
+        if (carrying && !thiscall<bool>(a_drop, creature, spatial, 1, false)) {
+            error = "The captain could not release the item for Give."; return false;
+        }
+        if (!thiscall<bool>(a_pick, receiver, spatial, 0, true)) {
+            error = "The creature rejected the native item."; return false;
+        }
+        if (result) *result = GiveResult::Stored;
+        return true;
+    }
     if (!creature || !spatial || (!building && !vehicle)) {
         error = "The Give action requires a captain, a spatial item and a native container."; return false;
     }

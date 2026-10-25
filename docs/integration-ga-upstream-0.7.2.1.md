@@ -1,5 +1,10 @@
 # Galactic Adventures fork integration
 
+This report records historical preview 7 evidence. Current preview 8 uses
+protocol 11; its [separate validation report](validation-ga-preview.8.md) tracks
+new music, item, confirmation, downed and lighting changes. The passes below
+apply to the exact preview 7 binaries listed here.
+
 `0.7.3.0-ga-preview.7` integrates the complete Galactic Adventures preview 1-6
 history with upstream SporeCoop 0.7.2.1. Use the same fork build on every
 participant; this fork uses protocol 10. The completed checks cover the

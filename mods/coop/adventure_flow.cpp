@@ -13,13 +13,14 @@ const SkHost* H;
 Ctx C;
 Scene current;
 uint64_t generation, started_run, early_intro, sequence;
-bool intro_finished, presented, confirmed, confirm_sent, queued, releasing;
+bool intro_finished, presented, confirmed, confirm_sent, queued, releasing, release_queued;
 std::set<uint8_t> done;
 std::deque<std::pair<uint8_t, Scene>> requests;
 
 bool host() { return C.sess && C.sess->role() == net::Role::Host; }
 uint64_t run() { return C.run ? C.run() : 0; }
 bool running() { return C.sess && C.sess->connected() && C.running && C.running() && run(); }
+bool settling() { return C.settling && C.settling(); }
 void put64(net::Writer& w, uint64_t n) { w.u32(uint32_t(n)); w.u32(uint32_t(n >> 32)); }
 uint64_t get64(net::Reader& r) { uint64_t n = r.u32(); return n | (uint64_t(r.u32()) << 32); }
 void write(net::Writer& w, const Scene& s)
@@ -94,7 +95,7 @@ void update_native()
         auto ids=members();
         if(!ids.empty() && std::all_of(ids.begin(),ids.end(),[](uint8_t id) { return done.count(id); })) complete();
     }
-    if(host() && current.kind==Kind::None && intro_finished && !releasing) {
+    if(host() && current.kind==Kind::None && intro_finished && !releasing && !release_queued && !settling()) {
         while(!requests.empty()) {
             auto [id,s]=requests.front(); requests.pop_front();
             if(s.run!=run() || !member(id) || !C.validate_talk(id,s)) continue;
@@ -113,7 +114,7 @@ bool init(const SkHost* h, Ctx ctx)
 void reset()
 {
     ++generation; current={}; started_run=early_intro=sequence=0;
-    intro_finished=presented=confirmed=confirm_sent=queued=releasing=false;
+    intro_finished=presented=confirmed=confirm_sent=queued=releasing=release_queued=false;
     done.clear(); requests.clear();
 }
 void tick()
@@ -156,10 +157,23 @@ bool finish_talk()
     if(!running() || current.kind!=Kind::Talk || !presented || confirmed) return false;
     confirmed=true; return true;
 }
-bool held() { return running() && (!intro_finished || current.kind!=Kind::None); }
+bool held() { return running() && (!intro_finished || current.kind!=Kind::None || release_queued || settling()); }
+bool native_scene_held() { return running() && ((current.kind!=Kind::None && presented) || release_queued || settling()); }
+bool release_pending() { return release_queued; }
 bool local_waiting() { return held() && confirmed; }
 bool ready(uint8_t player) { return held() && (done.count(player) || (player==C.sess->my_id() && confirmed)); }
 Scene scene() { return current; }
+bool confirmation_view(ConfirmationView& view)
+{
+    view = {};
+    if (!held() || current.kind == Kind::None) return false;
+    view.scene = current;
+    for (uint8_t id : members()) {
+        bool local = id == C.sess->my_id(), accepted = done.count(id) != 0;
+        view.players.push_back({id, C.sess->name_of(id), local, accepted, local && confirmed && !accepted});
+    }
+    return !view.players.empty();
+}
 std::string status()
 {
     if(!held()) return {};
@@ -196,13 +210,16 @@ void on_message(uint8_t from, net::Reader& r)
         done=std::move(ready);
     } else if(kind==Release && !r.left() && same(s,current)) {
         current.kind=Kind::None;
+        release_queued=true;
         if(s.kind==Kind::Intro) intro_finished=true;
         confirmed=confirm_sent=presented=false;
         struct Task { uint64_t generation; Scene scene; };
         H->run_outside_frame([](void* arg) {
             std::unique_ptr<Task> t(static_cast<Task*>(arg));
-            if(t->generation!=generation || t->scene.run!=run() || !running()) return;
+            if(t->generation!=generation) return;
+            if(t->scene.run!=run() || !running()) { release_queued=false; return; }
             C.waiting(false); C.release(t->scene);
+            if(t->generation==generation) release_queued=false;
         },new Task{generation,s});
     }
 }

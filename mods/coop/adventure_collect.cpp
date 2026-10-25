@@ -1,4 +1,5 @@
 #include "adventure_collect.h"
+#include "adventure_music.h"
 
 #include <windows.h>
 
@@ -63,7 +64,7 @@ static bool vanilla(void* database)
         L"spore_game.package", L"spore_content.package", L"spore_graphics.package", L"spore_audio1.package",
         L"spore_audio2.package", L"patchdata.package", L"spore_pack_03.package", L"spore_ep1_data.package",
         L"spore_ep1_content_01.package", L"spore_ep1_content_02.package", L"spore_ep1_locale_01.package",
-        L"spore_ep1_locale_02.package"
+        L"spore_ep1_locale_02.package", L"boosterpack_01.package"
     };
     return names.count(filename) != 0;
 }
@@ -100,6 +101,38 @@ static bool extract(const Key& key, dbpf::Record& out, bool& built_in, std::stri
     skg::vcall<int>(record, 0x08 / 4); // IRecord's Release (its destructor precedes AddRef)
     if (!ok) error = "cannot read adventure resource or record exceeds 16 MiB: " + key_text(key);
     return ok;
+}
+
+static adventure_music::Lookup load_music(const Key& key, bool bytes,
+                                        adventure_music::Record& out, std::string& error)
+{
+    Key real;
+    void* db = find_record(key, real);
+    if (!db) return adventure_music::Lookup::Missing;
+    out.key = real;
+    out.built_in = vanilla(db);
+    if (!out.built_in) {
+        const wchar_t* location = skg::vcall<const wchar_t*>(db, 0x28 / 4);
+        if (location) {
+            size_t length = 0;
+            while (length < 1000 && skg::readable(location + length, 2) && location[length]) ++length;
+            out.source.resize(length * 4);
+            int size = WideCharToMultiByte(CP_UTF8, 0, location, int(length), out.source.data(),
+                                          int(out.source.size()), nullptr, nullptr);
+            out.source.resize(size > 0 ? size_t(size) : 0);
+        }
+        return adventure_music::Lookup::Found;
+    }
+    if (bytes) {
+        dbpf::Record record;
+        bool built_in = false;
+        if (!extract(real, record, built_in, error, true)) {
+            if (error.empty()) error = "cannot read native audio descriptor " + key_text(real);
+            return adventure_music::Lookup::Error;
+        }
+        out.data = std::move(record.data);
+    }
+    return adventure_music::Lookup::Found;
 }
 
 // An owned stream exposes the independently verified native IO::IStream ABI. Native scenario
@@ -362,6 +395,7 @@ bool collect(const Key& key, std::vector<dbpf::Record>& records, std::string& er
     uint8_t* scenario = (uint8_t*)skg::vcall<void*>(object, 0x0C / 4, kScenarioClass);
     bool ok = false;
     Collector collector{{}, {}, 0, false, error};
+    std::set<uint32_t> validated_music;
     if (!scenario || !skg::readable(scenario, 0x2CB0)) error = "the selected resource did not produce a scenario";
     else {
         // Native schema initialization confirms 130 avatar,178 posse,2BF4 classes,23C acts.
@@ -373,20 +407,20 @@ bool collect(const Key& key, std::vector<dbpf::Record>& records, std::string& er
              collector.vector(scenario, 0x23C, 0x534, 8, [&, act = size_t(0)](uint8_t* p) mutable {
                  const size_t index = act++;
                  uint32_t music = skg::field<uint32_t>(p, 0x80);
-                 if (!music || music == UINT32_MAX) return true;
-                 // SetCurrentAct F1EF2B..F1EFB4 passes this value to the native
-                 // audio event system, not FindRecord. Native event 1 has no
-                 // PaletteItems/audio DBPF record (Mr Puzzle's Magical Gates).
-                 Key music_key{music, kProp, 0xD87454E6};
-                 Key real; void* db = find_record(music_key, real);
-                 // Stock act music stores an audio ID directly, not necessarily a
-                 // PaletteItems prop. Welcome's 2D67FCE4 is native audio in EP1_Data.
-                 if (!db) db = find_record({music, 0x01A527DB, 0x021407EE}, real);
-                 if (!db && music == 1) return true;
-                 char context[100];
-                 snprintf(context, sizeof context, "Adventure %08X act %u music %08X: ", key.instance, unsigned(index + 1), music);
-                 if (!db) { error = std::string(context) + "missing act music dependency " + key_text(music_key); return false; }
-                 if (!vanilla(db)) { error = std::string(context) + "custom act music dependencies are not supported yet"; return false; }
+                 if (validated_music.count(music)) return true;
+                 adventure_music::Result resolution;
+                 std::string why;
+                 if (!adventure_music::validate(music, load_music, resolution, why)) {
+                     char context[100];
+                     snprintf(context, sizeof context, "Adventure %08X act %u music %08X: ", key.instance, unsigned(index + 1), music);
+                     error = std::string(context) + why;
+                     return false;
+                 }
+                 validated_music.insert(music);
+                 if (music && music != UINT32_MAX)
+                     H->log(M, SK_INFO, "adventure music: scenario=%08X act=%u authored=%08X native=%s dependencies=%u",
+                            key.instance, unsigned(index + 1), music,
+                            resolution.native_control ? "control" : "descriptor", unsigned(resolution.dependencies.size()));
                  return true;
              });
         if (ok) {

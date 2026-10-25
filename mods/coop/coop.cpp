@@ -1,7 +1,7 @@
 // SporeCoop mod: creature-stage co-op ("pack" mode). See docs/03-gameplay.md.
 // the release version (tools/package.sh names the zip after it)
 #ifndef COOP_VERSION
-#define COOP_VERSION "0.7.3.0-ga-preview.7"
+#define COOP_VERSION "0.7.3.1-ga-preview.8"
 #endif
 
 #include <winsock2.h>
@@ -37,7 +37,9 @@
 #include "adventure_native.h"
 #include "adventure_world.h"
 #include "adventure_flow.h"
+#include "adventure_hud.h"
 #include "net/adventure_motion.h"
+#include "net/adventure_control.h"
 #include "adventure_progress.h"
 #include "gamefixes.h"
 #include "spacecoop.h"
@@ -76,6 +78,7 @@ struct Remote {
     bool echo = false; // local loopback test remote
     dbpf::Key captain_model;
     uint64_t captain_run = 0;
+    bool captain_downed = false;
     uint64_t world_sent = 0; // host: (mode << 32 | save crc) last sent to this guest
     double other_mode_since = -1; // host: since when the guest plays another mode
     bool joined_phase = false; // host: the guest played the host's mode after the last world send
@@ -266,6 +269,8 @@ net::PlayerState local_state()
             st.captain_selection = adventure::selection_serial(g_sess.my_id());
             g_adventure_motion.begin(d->run_id);
             st.movement_generation = g_adventure_motion.generation(g_sess.my_id());
+            adventure::CaptainState life;
+            if (adventure::captain_state(g_sess.my_id(), life)) ga::hold_downed_movement(life.captain, st);
         }
     }
     return st;
@@ -279,6 +284,21 @@ void drive_puppet(Remote& r, double now)
     net::PlayerState s;
     if (!r.buf.sample(now, s))
         return;
+    adventure::CaptainState life;
+    const bool has_life = g_mode == modes::kScenario && adventure::captain_state(r.id, life);
+    const bool downed = has_life && ga::hold_downed_movement(life.captain, s);
+    if (downed != r.captain_downed) {
+        // Keep the newest sender timestamp while discarding interpolation and
+        // locomotion left over from the previous life state.
+        net::PlayerState latest = r.buf.latest();
+        if (has_life) latest.pos = {life.captain.position.x, life.captain.position.y, life.captain.position.z};
+        latest.vel = {};
+        r.buf.clear(); r.buf.push(latest, now); r.drv = {};
+        if (r.puppet) game::stop(r.puppet);
+        r.captain_downed = downed;
+        s = latest;
+        if (downed) ga::hold_downed_movement(life.captain, s);
+    }
     // dead players are hidden until they respawn
     bool visible = g_adapter && g_local && (s.flags & net::PF_IN_WORLD) && !(s.flags & net::PF_DEAD) &&
                    r.buf.age(now) < 5.0 && (r.echo || same_place(s));
@@ -317,7 +337,7 @@ void drive_puppet(Remote& r, double now)
         r.drv = drive::State{};
         feed(r.name + " appeared in the world");
     }
-    g_adapter->drive(r.puppet, s, r.drv, now);
+    if (!downed) g_adapter->drive(r.puppet, s, r.drv, now);
 }
 
 bool stage_mode(uint32_t m)
@@ -1029,7 +1049,7 @@ void on_frame(void*, int, void*)
                     g_sess.send_reliable_to(p.id, net::MSG_DNA, w);
         }
     }
-    if (g_sess.role() == net::Role::Host && now - g_last_time_sync > 1.0) {
+    if (g_sess.role() == net::Role::Host && ga::legacy_world_time(game::mode_id()) && now - g_last_time_sync > 1.0) {
         g_last_time_sync = now;
         net::Quat q;
         if (game::time_of_day(q)) {
@@ -1292,6 +1312,7 @@ void on_overlay(void*, int, void*)
         spacecoop::draw_overlay();
         draw_owner_tags();
         draw_civ_tags();
+        adventure_hud::draw();
     }
     // name tags above remote players
     void* av = labels ? g_local : nullptr;
@@ -1407,6 +1428,9 @@ void on_remote_anim(const net::AnimEvent& ev)
     auto it = g_remotes.find(ev.id);
     if (it == g_remotes.end() || !it->second.puppet)
         return;
+    adventure::CaptainState life;
+    if (g_mode == modes::kScenario && adventure::captain_state(ev.id, life) && life.captain.life == ga::Life::Downed)
+        return;
     game::play_animation(it->second.puppet, ev.anim, ev.block, ev.flags & 1);
     g_anims_played++;
 }
@@ -1497,7 +1521,7 @@ void setup_callbacks()
         if (type == net::MSG_WORLD_TIME && g_sess.role() == net::Role::Client) {
             net::Quat q;
             q.x = r.f32(); q.y = r.f32(); q.z = r.f32(); q.w = r.f32();
-            if (r.ok() && game::avatar())
+            if (r.ok() && game::avatar() && ga::legacy_world_time(game::mode_id()))
                 game::set_time_of_day(q);
             return;
         }
@@ -1677,7 +1701,11 @@ void setup_callbacks()
         r.id = s.id;
         if (r.name.empty())
             r.name = g_sess.name_of(s.id);
-        r.buf.push(s, H->time_seconds());
+        net::PlayerState received = s;
+        adventure::CaptainState life;
+        if (s.mode == modes::kScenario && adventure::captain_state(s.id, life))
+            ga::hold_downed_movement(life.captain, received);
+        r.buf.push(received, H->time_seconds());
     };
     g_sess.cb.chat = [](uint8_t id, const std::string& t) {
         feed("<" + g_sess.name_of(id) + "> " + t);
@@ -2568,6 +2596,7 @@ void on_unload()
     adventure_native::shutdown();
     game::set_extra_update_filter(nullptr);
     game::set_blocked_update_handler(nullptr);
+    game::set_update_observer(nullptr);
     gamefixes::shutdown();
     keepalive_stop();
     notify::shutdown();
@@ -2688,6 +2717,7 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
         return npc::damage_filter(victim, damage, type, attacker);
     });
     game::set_blocked_update_handler(adventure_native::blocked_update);
+    game::set_update_observer(adventure_native::creature_update);
     setup_callbacks();
     H->subscribe(M, SK_EV_FRAME, on_frame, nullptr);
     if (host_has_diag() && H->diag_context) {

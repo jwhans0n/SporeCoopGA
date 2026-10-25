@@ -63,22 +63,65 @@ companions. Existing FindRecord aliases can resolve a CRT request to a BEM key.
 Built-in dependencies are skipped only after resolving their native database to a
 known vanilla package basename. The adventure root is always included.
 
-Act music is `act+80`. Stock music may directly identify audio, without a PaletteItems
-prop. The installed Welcome adventure's `2D67FCE4` resolves in `Spore_EP1_Data.package`
-as `021407EE!2D67FCE4.01A527DB`, with a `.02B9F662` companion. Treating every music ID
-as `D87454E6!ID.00B1B104` incorrectly rejected this stock adventure. Collection first
-checks the palette prop, then the native audio key, and requires a vanilla database.
+Act music is `act+80`. It identifies a native audio descriptor/event, not a palette
+property or necessarily a same-ID audio sample. Earlier collectors checked
+`D87454E6!ID.00B1B104` and then `021407EE!ID.01A527DB`. Those assumptions rejected
+valid installed music whose descriptor refers to a different sample ID.
 
-Preview 4 additionally recognizes music value1 as a native audio event without a
-standalone DBPF record. Mr Puzzle's Magical Gates is stock scenarioC2C7B154 and
-reproduces preview3's D87454E6!00000001.00B1B104 failure in isolated profiles.
-SetCurrentAct F1EF2B reads act+80, stores it at play+F4, and F1EFB4 calls657200.
-That cdecl helper routes the value through native audio event properties03475381
-and03475385 and dispatches via the audio system; it never performs a DBPF lookup.
-The collector preserves value1, skips its absent record, and still rejects custom
-palette/audio overrides and unresolved ordinary IDs. Error messages include the
-adventure, one-based act and full music ID. Muted tests do not establish audible
-playback, only unchanged authored values and successful native launch/act changes.
+Preview 4 additionally recognizes music value 1 as a native audio event without a
+standalone DBPF record. Mr Puzzle's Magical Gates is stock scenario C2C7B154 and
+reproduces preview 3's D87454E6!00000001.00B1B104 failure in isolated profiles.
+SetCurrentAct F1EF2B reads act+80, stores it at play+F4, and F1EFB4 calls 657200.
+That cdecl helper routes the value through native audio event properties 03475381
+and 03475385 and dispatches via the audio system; it never performs a DBPF lookup.
+The collector preserves value 1 and skips its absent descriptor only when that
+effective key is missing. A custom override at that key is still rejected.
+
+The descriptor path is verified against dc04, beyond the generic event helper:
+AudioSystem's primary vtable is `1452CE8` (constructor `A3250F`), event handler
+`A2C6E6..A2C742` reads `03475381` and calls slot94=`A2E5F0`. That function calls
+slot138=`A22FD0` with the authored ID and group 021407EE at `A2E75D..A2E776`.
+`A22FF0` constructs type 02B9F662 and `A23021` performs native resource loading.
+The audio factory `A17610` advertises types 02B9F662 and 02C9EFF2. Parent reading at
+`A19F9F..A1A021` uses property 5F6317D5, defaulting missing/wildcard group/type to
+021407EE/02B9F662. Wave-array reading `A202BD..A20314` uses 701ED91E; `A28B70`
+takes only each wave key's instance, and `A28D9C..A28DA4` fixes its sample type/group
+to 01A527DB/021407EE. Other descriptor keys can be event parameters, audio control
+properties or curves; treating every key as a required resource is also incorrect.
+These additional addresses document static evidence; the collector does not call
+them and adds no native ABI dependency.
+
+The recurring The Eighth Day failure was authored music 3DAFBC30. Its real installed
+record in `Spore_EP1_Data.package` is `021407EE!3DAFBC30.02B9F662`, file offset 537711279,
+68 compressed/77 decoded bytes, SHA256
+`1e64a1f4161987be85350c502a8452af5f4ee654ae4871560d2a863f94a7ae46`.
+It inherits 869DB904, which inherits 51298C8E, and refers to sample 4BA53FA1 (same
+package, offset 454456738, 2,219,806 bytes). There is no 3DAFBC30.01A527DB. Stock scenario
+AF1BC5FF uses the same descriptor in acts 2/4, so an isolated stock reproduction is
+available without accessing a player's downloaded adventure. Welcome's 2D67FCE4
+descriptor refers to sample 2D67FCE4; it happens to have a matching sample ID.
+
+`adventure_music` now follows this verified descriptor/parent/wave path using
+effective ResourceManager records, checks built-in provenance on every visited
+edge, and rejects custom root, parent and sample overrides. It bounds descriptors,
+properties, lengths, references and recursion, rejects cycles/malformed streams,
+and validates each distinct music ID once per collection. It never rewrites an act's
+authored value, disables music, substitutes tracks, or transfers an unsupported
+custom audio graph. Missing ordinary descriptors still fail, with the adventure,
+one-based act, authored music ID and actual failing typed key in the diagnostic.
+The scalar/array property parser reads native big-endian headers and little-endian
+ResourceKey payloads; the existing verified record stream handles decompression.
+
+Focused portable tests include the real Eighth Day/Welcome descriptor bytes,
+inherited music settings, distinct sample IDs, custom overrides at each level,
+missing parents/samples, reserved controls, cycles and every truncated root length.
+An offline installed-data audit passed all 23 distinct music values across 69 stock
+scenarios, using serialized actMusicId attribute 078FE86A (constructor
+`138C768..138C7BC` maps this to +80). The compact audit package contains real decoded
+descriptors and sample-key baselines; it checks resolution/provenance, not audible
+playback. See `out/music-resolution/audit-input.json` for local record provenance.
+Muted native tests can establish successful load/act transitions and unchanged
+authored IDs, but must not be described as audible playback verification.
 
 Card metadata loads an owned native pollen metadata resource. NameText414E00
 returns metadata+78's UTF16 string pointer; AuthorText550880 returns+58. Native
@@ -1091,3 +1134,129 @@ explosive acceptance suite.
 The direct probe and explicitly transcribed manual observations are in
 `out/windows-lab/preview6-mine-probe/notes.json`; the raw per-game command logs
 record the physical respawn after moving captains away.
+
+## Preview 8 held items, receiving NPCs and physical catches (dc04)
+
+The old container-only Give hook does not cover creature recipients. The native
+receiving-creature behavior starts at `D8A210`, ticks at `D84120` (behavior table
+`1585338`, tick pointer `1585340`) and ends at `D8A470`. It uses order type7 under
+mask `0/40000`, donor object reference `order+2C`, and donor hand index `order+10`.
+Initialization resolves the donor through `D99830`, reads its hand through
+`C0FA00`, checks receiver eligibility with `C13DC0(item,true,false)`, and releases
+the receiver's existing slot0 item. The actual transfer at `D8432C/D8433E` drops
+from the donor and picks into receiver slot0 with native replacement enabled.
+`D99830` is cdecl(order,interfaceID), not a one-argument function. The mod reuses
+the existing verified one-argument `SocialOrderTarget=D998E0` wrapper instead;
+that wrapper supplies `D0036E08` internally and checks a live targetable donor.
+Guest NPC Update suppression prevented this behavior from advancing. The guest
+now observes only that explicit receive order outside Present, sends the local
+captain's intent, and clears the order with `BC9A60`, thiscall two masks, `ret8`.
+It does not enable independent guest NPC AI. The host performs native recipient
+eligibility and Drop/Pick; its actual native callback owns Give/Hold objectives.
+
+Native full throw begins at `D7F710`; `D7F9C0` is an interior block, not a safe
+function entry point. It drops through `C15EB0`, retains the throwing captain's
+combatant in interactable `+10C` with `AE6610` at `D7F9FB`, applies its calculated
+impulse at `D7FCD4`, and calls physics pair grace `B4C700` at `D7FCF4` with 0.5 s.
+`AE6610` is thiscall(storage,combatant), `ret4`, and retains/releases through native
+combatant virtual slots 60/64. `B4C700` is thiscall(physics,captainSpatial,itemSpatial,
+float duration), `retC`. Remote throws restore these operations. Reference storage
+is never assigned directly and no new explosion or friendly-fire rule is added.
+
+Reliable world subkind 137 carries a complete held-item relation snapshot, bounded
+to 2048 entries, at most 40 per chunk: run, revision, act, total, first, count, then
+item identity, holder identity, captain ID (255 for NPC) and hand index. Unchanged
+relations do not recur; the host coalesces newer snapshots under the 64-pending
+packet limit. Guests commit only complete valid revisions, retain missing endpoint
+bindings for reconstruction, and replay native attachments outside Present. Actor
+pose correction skips native held spatials. Native accepted pickup/drop/Give events
+also update the retained relation immediately, so an older completed snapshot
+cannot reattach a newly dropped item. Ordinary throw requests use subkind 138 with
+run/event/act, player, exact item identity, native impulse and add flag; sender,
+ownership/recent native drop, range, alive state and finite bounds are revalidated.
+
+Automatic catching is host-owned. It sweeps the physical item's bounding-box
+center between samples against captain bounds expanded by the item's extents,
+uses earliest contact then player ID, and requires native pickup eligibility and
+a free hand. It preserves the original thrower's 0.5 s grace. Ordinary items and
+native-repickable timed bombs can be caught; contact grenades keep their impact
+behavior. Timed-bomb OnPicked only resets its throw guard, preserving its armed
+state and original fuse. A stopped item leaves the flight tracker after 1 s.
+Native calls and authored marker/incarnation identities remain mandatory; no
+long-range attraction, invented item copies, or guest-owned catches are used.
+
+Win32 actions, world-mirror and explosives fixtures cover the adapter ABIs,
+initial NPC attachment sampling, delayed binding and reconstruction, duplicate
+and stale state, native recipient rejection, swept contact, simultaneous claims,
+full/incompatible/downed hands, thrower grace, contact-grenade exclusion and timed
+bomb repick without fuse restart. These fake-native tests do not establish the
+actual Phyrus Farmer rendering, real mouse Give order, or live throw trajectory.
+The subsequent candidate-2 private Windows pair established those native item
+paths separately: three Phyrus Farmers displayed their authored hammers on the
+guest, and removing each guest-only native attachment was repaired to the exact
+host item/owner/slot relation. A guest's ordinary mouse click gave Town key 354
+to Farmer 130, removing it from the donor inventory, adding it to the NPC hand
+on both clients and advancing the host Give counter exactly once. Key 355 then
+passed guest-to-host and host-to-guest through native physical impulses and
+automatic catches. The same two-way test with a native timed bomb retained one
+physical identity and detonated 15.235 simulation seconds after initial pickup,
+without restarting the authored 15-second fuse. All four checks logged zero
+native exceptions. Evidence is under `out/lab/items-town-hammer-native`,
+`items-town-give-native-ui`, `items-town-key-catch98` and
+`items-timed-bomb-catch2`. The throw fixture drives the rendering-safe native
+impulse adapter; a complete mouse-driven native throw animation is not asserted.
+
+Native act population is a fixture prerequisite: the debug `SetCurrentAct`
+command updates the current act and existing actors but does not reproduce the
+whole native act-completion population path. Town's farmers were absent after
+debug act selection. Completing the real MoveTo objective at marker 169 populated
+the citizens, bringing the host and guest to 437 actors. Discover the Farmer
+through the live species profile name; its authored name override is `***`.
+
+The new Give,
+Throw and detachtool debug probes require an explicit `winlab_` profile and run
+outside Present; the native item harness never edits a loaded profile.
+
+## Native confirmation and revival HUD (preview 8)
+
+The recorded dc04 Intro and Talk layout uses check control `0445C99D` and bottom
+letterbox `045023D0`. Their rectangles are relative to nested UI parents; use
+`sui::screen_rect`, rather than treating the stored area as a screen coordinate.
+The Intro narrative label is `0445C9AB`. Talk text uses the native speech panel
+at the top of the screen. A retained reference does not imply that a control's
+ancestors remain visible; the HUD searches visible branches only.
+
+`adventure_flow::confirmation_view` exposes connected run participants and
+host-acknowledged confirmations. A local sent confirmation remains pending
+until its acknowledgement arrives. The HUD adds owned native text labels in the
+bottom bar, immediately left of the check, with one column per participant and
+bounded player names. During Intro it leases a smaller narrative-label area to
+reserve the bottom rows; the original area is restored on release or cancellation.
+Check-button enablement belongs to a `(run, scene serial)` lease, so consecutive
+Talk scenes cannot inherit a disabled check from an earlier confirmation.
+
+Shared Talk gates the native final caption handler before its UI cleanup;
+holding `TalkFinish` alone is too late. Intermediate Next pages remain local.
+After party release, the matching native cinematic-end message performs cleanup
+and the host commits the Talk objective once, with native objective callbacks
+suppressed. Run/scene ownership, duplicate-end rejection and a bounded settling
+fence cover asynchronous caption advancement. The verified controls/flags and
+pending native acceptance are recorded in [the scene RE notes](adventure.md#native-talk-final-page-ownership-dc04-preview-8).
+F9 remains available; confirmation no longer opens
+the full co-op dialog automatically. Opening that dialog temporarily removes the
+owned letterbox labels and restores their leases; closing it refreshes the same
+scene without clearing confirmations.
+
+The revival overlay reads the existing authoritative Captain state outside
+Present at 10 Hz. It displays the existing two-metre radius and three-second
+hold, progress, and optional automatic-recovery countdown. It does not estimate
+progress from wall time. Overlay drawing projects a cached world-space ring and
+draws a progress bar during `SK_EV_OVERLAY`; it performs no native UI/resource
+lookups there. A D3D9 state block is created outside Present, captured/applied
+around drawing, released before device Reset and on unload, and recreated
+outside Present. Ordinary native visual updates continue while downed.
+
+Portable layout/flow tests and native acceptance are distinct. Record actual
+screenshots, input checks, cancellation/retry, clock holds and device-reset
+results in the preview's validation report rather than inferring them from
+rectangle or countdown unit tests.

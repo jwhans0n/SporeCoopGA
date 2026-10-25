@@ -33,12 +33,13 @@ std::array<uint8_t, 3 * 0x1AC> hud_goals{};
 std::array<uint8_t, 0x2C18> fake_resource{};
 std::array<uint8_t, 3 * 0x238> placements{};
 uint8_t* mode_pointer = fake_mode.data();
-void* spatial_vtable[16]{};
+void* spatial_vtable[48]{};
 void* combatant_vtable[24]{};
 unsigned pose_sets;
 unsigned creates;
 int failures;
 unsigned native_terminals, native_other_states;
+unsigned goal_act_sets;
 bool reentrant_result;
 void* teleported;
 unsigned relation_calls;
@@ -46,6 +47,8 @@ unsigned hud_calls;
 uint32_t expected_hud_count = 1;
 unsigned native_befriends, native_allies, relationship_events, recruit_calls;
 unsigned captured_party_queries;
+unsigned item_picks, item_drops;
+bool item_receive_allowed = true;
 bool capture_party_query;
 void* expected_party_actor;
 int native_social_mode = 2;
@@ -69,6 +72,30 @@ void* create(uint32_t marker, uint32_t noun)
 }
 void SK_THISCALL position(void* spatial, const net::Vec3* p) { ++pose_sets; field<net::Vec3>(spatial, 4) = *p; }
 void SK_THISCALL orientation(void* spatial, const net::Quat* q) { field<net::Quat>(spatial, 0x10) = *q; }
+void* SK_THISCALL spatial_game_data(void* spatial,uint32_t type)
+{
+    if(type!=0x017F243B) return nullptr;
+    for(auto& object:objects) if(object->spatial.data()==spatial) return object->bytes.data();
+    return nullptr;
+}
+void* SK_THISCALL bounds(void* spatial,void* output)
+{
+    auto p=field<net::Vec3>(spatial,4);
+    auto* values=static_cast<net::Vec3*>(output);
+    values[0]={p.x-0.25f,p.y-0.25f,p.z-0.25f};
+    values[1]={p.x+0.25f,p.y+0.25f,p.z+0.25f}; return output;
+}
+bool SK_THISCALL item_pick(void* holder,void* spatial,int index,bool)
+{
+    auto* first=field<uint8_t*>(holder,0xE40); auto* last=field<uint8_t*>(holder,0xE44);
+    if(index<0 || first+index*0x24>=last) return false;
+    field<void*>(first+index*0x24,0x20)=spatial; ++item_picks; return true;
+}
+bool SK_THISCALL item_drop(void* holder,void* spatial,int,bool)
+{
+    int index=adventure_world::item_slot(holder,spatial,false); if(index<0) return false;
+    field<void*>(field<uint8_t*>(holder,0xE40)+index*0x24,0x20)=nullptr; ++item_drops; return true;
+}
 float SK_THISCALL maximum_hp(void* combatant) { return field<float>(combatant, 0x30); }
 void* SK_THISCALL get_marker(void*, void*) { return nullptr; }
 bool SK_THISCALL hostile_relation(void*, void*) { ++relation_calls; return true; }
@@ -89,6 +116,13 @@ void SK_THISCALL result_state(void* self, int state)
         reentrant_result = false;
         adventure_world::set_state(self, state == 5 ? 6 : 5);
     }
+}
+void SK_THISCALL goal_act(void* self, int act, bool)
+{
+    ++goal_act_sets;
+    field<int>(self, 0xB8) = act;
+    // A native act change replaces the state a still-open dialog references.
+    field<void*>(self, 0xC8) = nullptr; field<void*>(self, 0xCC) = nullptr;
 }
 void output(SkOut*, const char*, ...) {}
 void queue(SkTaskFn function, void* argument) { queued.emplace_back(function, argument); }
@@ -162,6 +196,9 @@ bool recreate(uint8_t*, uint8_t* marker, int, const net::Vec3&, const net::Quat&
 
 namespace adventure_world_actions {
 bool init(const SkHost*, SkMod*, Ctx) { return true; }
+void poll_receive(void*) {}
+bool can_receive(void*,void*,bool) { return item_receive_allowed; }
+void throw_source(void*,void*) {}
 bool give(void*, void*, void*, std::string&, GiveResult*) { return false; }
 bool recruit(void* actor, std::string&) {
     ++recruit_calls;
@@ -459,6 +496,116 @@ static void static_replication_cases(net::Session& session, net::Session& client
     g_static_cursor = std::move(saved_cursor);
     g_static_pending = std::move(saved_pending); g_replication_stats = saved_stats; g_static_act = saved_act;
     g_sequence = saved_sequence; g_roster_sequence = saved_roster; g_roster_live = std::move(saved_live);
+}
+
+static void item_replication_cases(net::Session& session,net::Session& client)
+{
+    using namespace adventure_world;
+    auto saved_captains=C.captain_of; auto saved_can_act=C.captain_can_act; auto saved_clock=C.simulation_time;
+    auto* saved_session=C.sess; auto saved_bindings=g_bindings; auto saved_remote=g_remote;
+    auto saved_pick=o_Pick; auto saved_drop=o_Drop;
+    void* a=create(0,101),*b=create(0,101),*npc=create(1,102),*item=create(2,101);
+    for(void* creature:{a,b,npc}) lookup(creature)->is_creature=true;
+    lookup(item)->is_ornament=true;
+    std::array<std::array<uint8_t,0x24>,3> slots{};
+    unsigned index=0;
+    for(void* creature:{a,b,npc}) {
+        field<uint8_t*>(creature,0xE40)=slots[index].data();
+        field<uint8_t*>(creature,0xE44)=slots[index].data()+0x24; ++index;
+    }
+    C.captain_of=[&](uint8_t player) {return player==0?a:player==1?b:nullptr;};
+    C.captain_can_act=[](uint8_t player) {return player<2;};
+    double clock=10; C.simulation_time=[&]{return clock;};
+    o_Pick=item_pick; o_Drop=item_drop; C.sess=&session; field<int>(fake_play.data(),0xB8)=0;
+    check(item_fixture_profile(L"SporeApp.exe -sporekit-profile:winlab_items_61 -w") &&
+          !item_fixture_profile(L"SporeApp.exe -sporekit-profile:inst2") &&
+          !item_fixture_profile(L"SporeApp.exe -sporekit-profile:winlab_") &&
+          !item_fixture_profile(L"SporeApp.exe -sporekit-profile:winlab_bad!"),
+          "item fixture capability requires an explicitly named isolated lab profile");
+    field<int>(fake_play.data(),0x90)=3; g_run=C.run(); enumerate();
+    Identity item_id{},npc_id{}; check(identity(item,item_id)&&identity(npc,npc_id),"item fixture has exact host identities");
+    auto* spatial=lookup(item)->spatial.data(); field<void*>(slots[2].data(),0x20)=spatial;
+    g_attachments.clear(); g_attachment_act=-1; sample_attachments(0);
+    check(g_attachments.size()==1 && g_attachments[0].item==item_id && g_attachments[0].holder==npc_id &&
+          g_attachments[0].player==ga::kNoPlayer && g_attachments[0].slot==0,
+          "initial NPC tool attachment is sampled without a captain pickup event");
+    auto initial=g_attachments;
+    uint32_t revision=g_attachment_revision; sample_attachments(0);
+    check(g_attachment_revision==revision,"unchanged held tools do not produce recurring reliable updates");
+    refresh_attachment_spatials(); ActorState state=sample_actor(*actor_for(item),0); state.position={100,200,300};
+    unsigned poses_before=pose_sets; apply_actor(*actor_for(item),state);
+    check(pose_sets==poses_before,"world snapshots do not overwrite a native hand attachment pose");
+
+    C.sess=&client; g_bindings[item_id]={item,field<uint32_t>(item,0x24),0};
+    g_bindings[npc_id]={npc,field<uint32_t>(npc,0x24),0};
+    field<void*>(slots[2].data(),0x20)=nullptr;
+    g_attachment_pending[0]=initial; g_attachment_received[0]=1;
+    unsigned picks_before=item_picks; apply_attachments(0); apply_attachments(0);
+    check(field<void*>(slots[2].data(),0x20)==spatial && item_picks==picks_before+1,
+          "initial and repeated attachment snapshots restore the native NPC hand exactly once");
+    g_attachment_pending[0].clear(); g_attachment_received[0]=2; unsigned drops_before=item_drops; apply_attachments(0);
+    check(!field<void*>(slots[2].data(),0x20) && item_drops==drops_before+1,"a complete empty relation snapshot releases a dropped tool");
+    g_attachment_pending[0]=initial; g_bindings.erase(npc_id); picks_before=item_picks; apply_attachments(0);
+    check(item_picks==picks_before,"late attachment holder remains pending without guessing another NPC");
+    g_bindings[npc_id]={npc,field<uint32_t>(npc,0x24),0}; apply_attachments(0);
+    check(item_picks==picks_before+1,"late holder binding reconstructs its pending tool");
+
+    auto packet=[&](uint32_t serial,std::vector<Attachment> relations,uint16_t first=0,int total=-1,uint8_t sender=0) {
+        net::Writer writer; writer.u8(Attachments); put_run(writer,C.run()); writer.u32(serial); writer.u8(0);
+        writer.u16(total<0?uint16_t(relations.size()):uint16_t(total)); writer.u16(first); writer.u8(uint8_t(relations.size()));
+        for(const auto& relation:relations) { write_identity(writer,relation.item); write_identity(writer,relation.holder); writer.u8(relation.player); writer.u8(relation.slot); }
+        net::Reader reader(writer.data.data(),writer.size()); on_message(sender,reader);
+    };
+    g_attachment_assemblies={}; packet(10,initial);
+    check(g_attachment_received[0]==10,"reliable held relation parses its run, act and revision");
+    packet(9,{}); check(g_attachment_received[0]==10 && !g_attachment_pending[0].empty(),"older empty attachment snapshot cannot detach a newer tool");
+    auto duplicate=initial; duplicate.push_back(initial[0]); packet(11,duplicate);
+    check(g_attachment_received[0]==10,"duplicate item or hand entries cannot commit a malformed attachment snapshot");
+    auto second=initial[0]; ++second.item.incarnation; second.slot=1;
+    packet(12,{second},1,2);
+    check(g_attachment_received[0]==10,"an incomplete out-of-order relation snapshot retains the previous complete state");
+    packet(12,initial,0,2);
+    check(g_attachment_received[0]==12 && g_attachment_pending[0].size()==2,"reordered relation chunks commit atomically after every entry arrives");
+    packet(13,{},0,0,1);
+    check(g_attachment_received[0]==12,"a non-host peer cannot forge an authoritative empty relation snapshot");
+
+    C.sess=&session; field<void*>(slots[2].data(),0x20)=nullptr;
+    field<net::Vec3>(lookup(a)->spatial.data(),4)={0,0,0};
+    field<net::Vec3>(lookup(b)->spatial.data(),4)={20,0,0};
+    field<net::Vec3>(spatial,4)={2,0,0};
+    g_flying.clear(); g_flying[item_id]={1,0,{-2,0,0},9,0}; refresh_attachment_spatials();
+    unsigned caught_before=g_item_catches; catch_items();
+    check(g_item_catches==caught_before+1 && field<void*>(slots[0].data(),0x20)==spatial && g_flying.empty(),
+          "a swept ordinary throw reaches a captain and becomes one authoritative hand attachment");
+    field<void*>(slots[0].data(),0x20)=nullptr; refresh_attachment_spatials();
+    field<net::Vec3>(lookup(b)->spatial.data(),4)={0,0,0};
+    g_flying[item_id]={1,0,{-2,0,0},9,0}; catch_items();
+    check(field<void*>(slots[0].data(),0x20)==spatial && !field<void*>(slots[1].data(),0x20),
+          "simultaneous sweep contacts resolve deterministically by player ID");
+    field<void*>(slots[0].data(),0x20)=nullptr; field<net::Vec3>(lookup(b)->spatial.data(),4)={20,0,0};
+    refresh_attachment_spatials(); g_flying[item_id]={0,0,{-2,0,0},10,0}; caught_before=g_item_catches; catch_items();
+    check(g_item_catches==caught_before && !g_flying.empty(),"original thrower retains native half-second pair grace");
+    clock=10.6; field<net::Vec3>(spatial,4)={0,0,0}; catch_items();
+    check(g_item_catches==caught_before+1,"original thrower can catch a returning item after native pair grace");
+    field<void*>(slots[0].data(),0x20)=nullptr; refresh_attachment_spatials();
+    item_receive_allowed=false; g_flying[item_id]={1,0,{-2,0,0},9,0}; caught_before=g_item_catches; catch_items();
+    check(g_item_catches==caught_before,"native incompatible pickup eligibility prevents auto-catch"); item_receive_allowed=true;
+    C.captain_can_act=[](uint8_t) {return false;}; g_flying[item_id]={1,0,{-2,0,0},9,0}; catch_items();
+    check(g_item_catches==caught_before,"downed or disconnected captains cannot auto-catch");
+    C.captain_can_act=[](uint8_t player) {return player<2;};
+    field<void*>(slots[0].data(),0x20)=lookup(npc)->spatial.data();
+    g_flying[item_id]={1,0,{-2,0,0},9,0}; catch_items();
+    check(g_item_catches==caught_before,"a full hand is not replaced by automatic catching");
+    field<void*>(slots[0].data(),0x20)=nullptr; refresh_attachment_spatials();
+    field<int>(lookup(item)->powerup.data(),4)=13; g_flying[item_id]={1,0,{-2,0,0},9,0}; catch_items();
+    check(g_item_catches==caught_before && g_flying.empty(),"contact grenades retain impact behavior and are never auto-caught");
+    field<int>(lookup(item)->powerup.data(),4)=10; g_flying[item_id]={1,0,{-2,0,0},9,0}; catch_items();
+    check(g_item_catches==caught_before+1,"native-repickable timed bombs use the same authoritative catch route");
+    for(void* object:{a,b,npc,item}) field<bool>(object,0x21)=true;
+    C.captain_of=saved_captains; C.captain_can_act=saved_can_act; C.simulation_time=saved_clock; C.sess=saved_session;
+    o_Pick=saved_pick; o_Drop=saved_drop; g_bindings=std::move(saved_bindings); g_remote=std::move(saved_remote);
+    g_attachments.clear(); g_attachment_pending={}; g_attachment_assemblies={}; g_attachment_received={};
+    g_flying.clear(); g_attached_spatials.clear(); enumerate();
 }
 
 int main()
@@ -797,6 +944,9 @@ int main()
     field<net::Vec3>(lookup(partner)->spatial.data(), 4) = saved_partner_position;
     session.cb.custom = {}; g_last_interaction.clear(); g_social_completions.clear();
     static_replication_cases(session, client);
+    spatial_vtable[0xB8/4]=reinterpret_cast<void*>(&spatial_game_data);
+    spatial_vtable[0x6C/4]=reinterpret_cast<void*>(&bounds);
+    item_replication_cases(session,client);
     client.leave(); C.sess = &session; running = false;
 
     begin_native_attempt(fake_play.data()); running = true;
@@ -840,6 +990,94 @@ int main()
     reported_run = 4; begin_native_attempt(fake_play.data());
     set_state(fake_play.data(), 6); set_state(fake_play.data(), 6); apply_result(false);
     check(native_terminals == 5, "a pre-commit native loading failure keeps its path without duplicate terminal effects");
+
+    // A faster host may complete the dialog and send a new act/result before
+    // this guest's native Finished tail publishes its own cinematic end.
+    check(client.join("127.0.0.1:" + std::to_string(session.port()), "deferred-goal-client", error),
+          "deferred-goal fixture reconnects its isolated guest");
+    for (int i = 0; i < 1000 && !client.connected(); ++i) {
+        client.update(); session.update(); client.update();
+        if (!client.connected()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    check(client.connected(), "deferred-goal fixture guest is connected");
+    C.sess = &client; running = true; reported_run = 500; g_run = reported_run;
+    begin_native_attempt(fake_play.data());
+    field<int>(fake_play.data(), 0x90) = 3; field<int>(fake_play.data(), 0xB8) = 0;
+    field<uint8_t*>(fake_play.data(), 0x64) = hud_goals.data();
+    field<uint8_t*>(fake_play.data(), 0x68) = hud_goals.data() + hud_goals.size();
+    field<void*>(fake_play.data(), 0xC8) = hud_goals.data(); field<void*>(fake_play.data(), 0xCC) = live;
+    a_SetAct = reinterpret_cast<uintptr_t>(&goal_act);
+    bool finishing = true; C.held = [] { return true; }; C.goals_held = [&] { return finishing; };
+    auto goal_packet = [&](uint32_t revision, uint32_t progress, uint64_t attempt = 500) {
+        net::Writer packet; packet.u8(Goals); put_run(packet, attempt); packet.u32(revision);
+        packet.u8(1); packet.u8(5); packet.u32(1700); packet.u32(0); packet.u8(3);
+        packet.u8(1); packet.u32(progress); packet.u8(0); packet.u32(2); packet.u8(0); packet.u32(0);
+        return packet;
+    };
+    auto receive_goals = [&](const net::Writer& packet) {
+        net::Reader reader(packet.data.data(), packet.size()); on_message(0, reader);
+    };
+    unsigned terminals_before = native_terminals, updates_before = g_goal_updates;
+    g_received_goals = 0;
+    receive_goals(goal_packet(10, 3)); receive_goals(goal_packet(11, 5));
+    receive_goals(goal_packet(10, 4)); receive_goals(goal_packet(11, 99));
+    check(g_deferred_goals && g_deferred_goals->sequence == 11 && field<int>(fake_play.data(), 0xB8) == 0 &&
+          field<int>(fake_play.data(), 0x90) == 3 && field<void*>(fake_play.data(), 0xC8) == hud_goals.data() &&
+          field<void*>(fake_play.data(), 0xCC) == live && !goal_act_sets && native_terminals == terminals_before,
+          "validated final Goals coalesce before result and preserve native dialog fields despite stale/duplicate revisions");
+    check(goal_application_pending(), "coordinator result fence observes the validated deferred final goal batch");
+    flush_deferred_goals(); check(queued.empty(), "held dialog cannot queue its pending act mutation");
+    expected_hud_count = 5; finishing = false;
+    flush_deferred_goals(); flush_deferred_goals();
+    check(queued.size() == 1 && g_deferred_goals && goal_application_pending(),
+          "native cleanup queues one coalesced goal batch while the coordinator still retains its result");
+    drain();
+    check(goal_act_sets == 1 && g_goal_updates == updates_before + 1 && field<int>(fake_play.data(), 0xB8) == 1 &&
+          field<int>(fake_play.data(), 0x90) == 3 && field<uint32_t>(hud_goals.data(), 4) == 5 &&
+          native_terminals == terminals_before && !goal_application_pending(),
+          "final goal fields apply once before the coordinator alone may enter native results");
+    apply_result(true); apply_result(false);
+    check(native_terminals == terminals_before + 1 && field<int>(fake_play.data(), 0x90) == 5,
+          "authoritative coordinator result commits once after final goal application");
+    finishing = true; receive_goals(goal_packet(12, 6));
+    check(bool(g_deferred_goals), "replacement pending goal snapshot is retained within one run");
+    finishing = false; flush_deferred_goals();
+    reset_replication(); reported_run = 501; g_run = reported_run;
+    begin_native_attempt(fake_play.data()); field<int>(fake_play.data(), 0x90) = 3;
+    expected_hud_count = 7; receive_goals(goal_packet(1, 7, 501));
+    check(queued.size() == 2 && goal_application_pending(), "new-run goal work remains owned beside a reset-invalidated callback");
+    drain(); receive_goals(goal_packet(99, 8, 500));
+    check(goal_act_sets == 1 && field<uint32_t>(hud_goals.data(), 4) == 7 && !goal_application_pending(),
+          "reset-invalidated and delayed prior-run goal batches cannot overwrite the new final fields");
+
+    // Exercise the actual host terminal hook and existing reliable serializer.
+    // Its completed goal packet must enter the peer queue before K_RESULT.
+    C.sess = &session; running = true; g_run = reported_run;
+    hud_goals[0] = 1; field<uint32_t>(hud_goals.data(), 4) = 1;
+    field<int>(fake_play.data(), 0x90) = 3;
+    std::vector<uint8_t> terminal_order; bool final_goal_observed = false;
+    client.cb.custom = [&](uint8_t type, uint8_t from, net::Reader& reader) {
+        if (type != net::MSG_ADVENTURE || from || !reader.left()) return;
+        uint8_t kind = reader.u8();
+        if (kind != Goals && kind != 11) return;
+        terminal_order.push_back(kind);
+        if (kind == Goals) {
+            get_run(reader); reader.u32(); reader.u8(); reader.u8(); reader.u32(); reader.u32();
+            uint8_t count = reader.u8(); uint8_t complete = reader.u8(); uint32_t progress = reader.u32();
+            final_goal_observed = count == 3 && complete == 1 && progress == 1 && reader.ok();
+        }
+    };
+    C.result = [&](bool success) {
+        net::Writer packet; packet.u8(11); put_run(packet, reported_run); packet.u8(success ? 1 : 0);
+        session.broadcast_reliable(net::MSG_ADVENTURE, packet); running = false;
+    };
+    set_state(fake_play.data(), 5);
+    for (int i = 0; i < 1000 && terminal_order.size() < 2; ++i) {
+        session.update(); client.update();
+        if (terminal_order.size() < 2) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    check(terminal_order == std::vector<uint8_t>{Goals, 11} && final_goal_observed,
+          "native host terminal path publishes its completed final Goals reliably before the result");
     session.leave();
     std::printf("adventure mirror: %d failure(s)\n", failures);
     return failures ? 1 : 0;

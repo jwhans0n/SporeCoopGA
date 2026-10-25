@@ -89,6 +89,8 @@ struct Api {
 void init(const SkHost* host, SkMod* mod, Api api);
 void tick();     // every frame (inside Present): only schedules UI work outside the frame
 void open(bool on);
+// Outside-frame launch transition: hide before entering the native loading UI.
+void close_for_adventure_launch();
 bool is_open();
 void shutdown(); // mod unload: hide our windows
 std::string debug_state();

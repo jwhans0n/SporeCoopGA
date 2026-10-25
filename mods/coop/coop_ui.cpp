@@ -1,5 +1,6 @@
 #include "coop_ui.h"
 #include "coop_ui_pages.h"
+#include "adventure_hud.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -215,7 +216,7 @@ struct Dialog {
     Win adventure_death = nullptr, adventure_health = nullptr, adventure_damage = nullptr;
     Win adventure_fire = nullptr, adventure_status = nullptr;
     std::vector<Win> adventure_controls;
-    struct Picture { Win window = nullptr; dbpf::Key key; };
+    struct Picture { Win window = nullptr; dbpf::Key key; double retry_after = 0; };
     std::vector<Win> page_preparation;
     Win prep_title = nullptr, prep_author = nullptr, prep_hint = nullptr, prep_no_preview = nullptr;
     Win prep_player[4] = {}, prep_captain[4] = {}, prep_stage[4] = {}, prep_ready[4] = {}, prep_placeholder[4] = {};
@@ -224,16 +225,23 @@ struct Dialog {
 };
 static Dialog D;
 static std::map<std::string, Win> g_named; // for tests (coop.uistate)
-static std::map<std::tuple<uint32_t,uint32_t,uint32_t>, AssetCard> g_cards;
+struct CachedCard { AssetCard value; double retry_after=0; };
+static std::map<std::tuple<uint32_t,uint32_t,uint32_t>, CachedCard> g_cards;
 
 static AssetCard card(const dbpf::Key& key)
 {
     if (!key.instance) return {};
     auto id = std::tuple{key.instance,key.type,key.group};
     auto found = g_cards.find(id);
-    if (found != g_cards.end()) return found->second;
+    double now=H->time_seconds();
+    if (found != g_cards.end() && (!found->second.value.name.empty() || now<found->second.retry_after))
+        return found->second.value;
     if (g_cards.size() >= 256) g_cards.clear();
-    return g_cards[id] = A.asset_card ? A.asset_card(key) : AssetCard{};
+    // A guest can see a key before its metadata transfer is installed. Cache
+    // positive metadata; retry absent records outside the frame at a bounded rate.
+    auto value=A.asset_card ? A.asset_card(key) : AssetCard{};
+    g_cards[id]={value,now+1.0};
+    return value;
 }
 static std::string short_text(const std::string& text, size_t characters)
 {
@@ -247,9 +255,11 @@ static std::string short_text(const std::string& text, size_t characters)
 }
 static void picture(Dialog::Picture& p, const dbpf::Key& key, const Rect& rect, bool visible)
 {
-    if (!(p.key == key)) {
+    double now=H->time_seconds();
+    if (!(p.key == key) || (!p.window && key.instance && now>=p.retry_after)) {
         if (p.window) { g_cache.erase(p.window); sui::remove_child(D.root,p.window); p.window = nullptr; }
         p.key = key;
+        p.retry_after=now+1.0;
         if (key.instance) p.window = sui::image_window(D.root,key.instance,key.group,rect.x1,rect.y1);
         if (p.window) { sui::set_area(p.window,rect); sui::set_flag(p.window,sui::kFlagIgnoreMouse,true); }
     }
@@ -950,8 +960,10 @@ static void refresh()
     bool lobby = A.role() != 0;
     ga::PreparationView preparation;
     bool preparing = lobby && A.preparation && A.preparation(preparation);
-    if (preparing && preparation.run != g_last_preparation_run)
+    if (preparing && preparation.run != g_last_preparation_run) {
         g_adventure_page = false;
+        g_cards.clear();
+    }
     g_last_preparation_run = preparing ? preparation.run : 0;
     if (!lobby)
         g_adventure_page = false;
@@ -1005,6 +1017,16 @@ void init(const SkHost* host, SkMod* mod, Api api)
     g_ru = lang == "ru" || (lang == "auto" && PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_RUSSIAN);
     if (g_ok)
         sui::register_commands();
+    if (g_ok) {
+        adventure_hud::Ctx context;
+        context.players=[] {
+            std::vector<adventure_hud::Player> result;
+            for (const auto& p:A.players()) result.push_back({p.id,p.name,p.me});
+            return result;
+        };
+        context.blocked=[] { return is_open(); };
+        adventure_hud::init(H,M,std::move(context));
+    }
 }
 
 void open(bool on)
@@ -1020,12 +1042,21 @@ void open(bool on)
     g_dirty = true;
 }
 
+void close_for_adventure_launch()
+{
+    open(false);
+    g_raise = false;
+    if (D.root) show(D.root, false);
+    if (A.lan_scan) A.lan_scan(false);
+}
+
 bool is_open() { return g_want_open; }
 
 void tick()
 {
     if (!g_ok)
         return;
+    adventure_hud::tick();
     // F9: show/hide the co-op window anywhere in the game
     bool f9 = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
     if (f9 && !g_f9_down)
@@ -1082,6 +1113,7 @@ void tick()
 
 void shutdown()
 {
+    if (g_ok) adventure_hud::shutdown();
     if (D.root)
         sui::set_visible(D.root, false);
     if (g_menu_btn)

@@ -6,6 +6,114 @@ See [build-dc04.md](build-dc04.md) for compatibility and isolated native Windows
 testing, and [adventure-world.md](adventure-world.md) for content and world interfaces.
 Addresses below are preferred PE addresses. Runtime code resolves named symbols.
 
+## Downed captain controls and local lighting (dc04, preview 8)
+
+The previous native adapter held a downed captain with `StopMovement` and
+`SetPosition` only when a 10 Hz health snapshot was applied, while rejecting its
+entire `cCreatureAnimal::Update`. The authority already refused position changes
+for downed captains, but this did not stop native input strategies from issuing
+movement requests. Remote interpolation could also drive a downed puppet toward
+the owner's independently sampled motion. The resulting competing paths are a
+confirmed implementation defect. Native frame/camera and overlay-isolation
+acceptance below bounds the visual evidence; it does not establish every cause
+of the originally reported flicker.
+
+`adventure_control` fences the narrow native control paths and leaves the normal
+creature visual/effects/physics update intact:
+
+* `AvatarTickAI=C04020`: thiscall `(creature,float seconds)`, `ret4` at `C040ED`.
+  Native Update calls it at `C0B015` after testing the avatar bit. Its behavior-tree
+  dispatch is suppressed for an authoritative downed captain only.
+* `MoveAvatarWASD=D32330`: thiscall `(inputStrategy)`, plain return at `D32DE5`.
+  It obtains the native avatar, tests `mbDead` and strategy `+C0`, reads movement
+  triggers and generates avatar locomotion. Calls include `D32E81` and `D32EA9`.
+* `MoveAvatarToCursor=D31A70`: thiscall `(inputStrategy,bool,bool) -> bool`,
+  `ret8` at `D32329`. `D32E9A` passes `(0,1)`; its return is AL. The downed
+  wrapper returns false without generating a cursor movement request.
+* `IssueCreatureOrder=C032F0`: thiscall `(creature, seven stack words) -> order`,
+  `ret1C` at `C03357`. The third word contains float bits; the wrapper preserves
+  all seven words without reinterpreting or inventing an EASTL object.
+
+These entries and returns were inspected in the installed executable with SHA256
+`dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
+They are required capabilities for the adapter and are added to its executable
+verification manifest. Unsupported hashes install no control hooks.
+
+An observer around each allowed real creature Update owns the downed transition.
+It clears queued behavior orders with the verified `BC9A60` order-list method
+and both mask words set to `FFFFFFFF`, stops locomotion once, clears velocity,
+and uses the host's saved downed position. Stable updates do not rewrite the pose
+or restart an animation. A displacement caused by native physics is corrected
+after the actual update, rather than waiting for another health snapshot.
+Identity includes the native incarnation, so same-address reuse starts a new
+transition. Reset forgets owned state without dereferencing retired objects.
+Snapshot application retains authoritative health/immunity and no longer repeats
+the stop/pose operation. Downed movement publications and remote interpolation
+use the authority's anchor with zero velocity; old remote attack animations are
+ignored while that captain remains downed. Camera and UI input are not globally
+disabled, and standing captains retain their ordinary control paths.
+
+The legacy `WORLD_TIME` packet is a quaternion, despite its clock-like name.
+Static inspection confirms `TimeOfDay_GetObject=1021110` returns the active
+planet, while `TimeOfDay_Unavailable=1020F30` reads its current context. Native
+`cTimeOfDay::SetTimeOfDay=BC3070` is thiscall `(float time,Vector3* position)`,
+`ret8` at `BC30D0`; helper `BC2DC0` computes the planet orientation from both
+inputs, then calls spatial `SetOrientation` and `1021630` to apply it. Thus a
+host's planet quaternion is not a location-independent time value appropriate
+to every captain's local lighting. Scenario no longer sends or applies this
+legacy packet, including packets delayed across entry. Each native adventure
+retains authored/local lighting. The shared adventure simulation clock used by
+objectives, holds, boosts and revival remains authoritative and unchanged.
+Other stages retain the legacy time synchronization behavior.
+
+The Win32 `test-controls-windows` fixture exercises the actual four wrappers,
+including 10,000 blocked-control/update iterations, raw argument/return ABI,
+one-shot transition cleanup, native-update velocity cleanup, displacement
+correction, independent remote life state, incarnation replacement and reset.
+The actual game Update wrapper fixture checks balanced before/after observation
+and no observer calls for rejected updates. Portable tests cover the Scenario
+packet policy and downed movement normalization. These fixtures passed; native
+Town movement, camera, lighting and flicker verification is recorded separately.
+
+Native acceptance on 2026-10-25 used hidden, muted, isolated instances 71/72,
+candidate 3 of preview 8, loaded shadow SHA256
+`c0ae5bbc3ab30af32cb558d00eb8fb0410d0ebf4a2f43378173a20bbbd5558fc`.
+Both origin cases in
+`out/windows-lab/ga_preview8_native_downed_final/result.json` passed in populated
+Adventure Town act 1 after the actual opening MoveTo objective. Ordinary input
+moved the guest 2.70 m and host 2.91 m before knockout. During Downed, the raw
+main-thread `coop.cam` avatar position stayed at its anchor under held movement,
+jump and mouse input; the native control counters advanced and camera input
+remained usable. Each knockout entered once. Native radius exit and rescuer
+damage reset progress, revival restored half health and ordinary movement, and
+the two-metre ring/countdown appeared. A native host pause held progress and
+the native host clock exactly fixed. This exercises the shared clock pause
+predicate, not a combined conversation-and-revival scene.
+
+External asynchronous process reads can see physics integration before the
+after-Update correction, including a sampled 0.82 m transient in one placement.
+They are retained as diagnostics; frame-boundary acceptance reads native
+`game::position`, not normalized network publications. Sixteen rendered frames
+under held movement alternated `coop.overlay off/on`; frame-boundary position
+was constant and the camera settled monotonically to a native look-ahead offset.
+The straight ground shading edge persisted with the overlay off, after revival
+at 45 HP, and while alive at 1 HP. That edge is independent of ring drawing and the
+Downed control fence. See `ga_preview8_native_downed_render_isolation` and
+`ga_preview8_native_downed_health_isolation` under `out/windows-lab`. These
+sampled frames do not establish uninterrupted visual or full-playthrough coverage.
+
+`out/windows-lab/ga_preview8_native_lighting_final_verified/result.json` records
+the actual twenty-second lighting case. The host moved 63.01 m while the guest
+drifted 0.00201 m. The host planet orientation changed 4.95169 degrees; the stationary
+guest changed 0.000126 degrees. Real per-peer UDP counters observed zero type 22
+packets in either direction. A valid 51-byte legacy type 22 packet used the live
+host connection header while the guest was natively paused: a native
+`TimeOfDay_Apply` probe stayed at zero calls and the raw planet quaternion/camera
+remained identical. The shared host clock advanced 3840 to 26252 ms. No native faults
+were recorded, and the handoff report verifies menu/application-state recovery,
+released injected keys and no remaining probes. Host/guest quaternion equality
+is deliberately not an expectation for location-dependent lighting.
+
 ## Party protocol
 
 Protocol version 9 reserves message 52 for adventures. Coordinator messages use
@@ -347,6 +455,142 @@ host snapshot carries original keys; remote presentation resolves the already
 owner-scoped key, including property/PNG companions. Authored locks use the installed
 story creature directly and never require it to have personal-captain model type.
 
+## Native Intro cinematic ownership (dc04, preview 8)
+
+The caption check mark is control `0445C99D`. Its native handler at `AD94A0` is
+thiscall `(listener, window, message)`, returns bool in AL, and uses `ret8` at
+`AD9505` and `AD9538`. A click with `message+8 = 287259F6` sends `0445F729`.
+`HandleCinematicMessage = AE0DB0` is thiscall `(manager, messageID, payload)`,
+returns bool in AL, and uses `ret8` at `AE0E37`, `AE1D29`, `AE1EC0` and `AE1ED4`.
+Its Continue branch at `AE1CE6..AE1D1D` requires the native waiting flag at
+`manager+3A`, clears flags `38/3A/3B/3C`, changes caption modal state through
+`AD7880`, and resumes the native caption layout. This can retire the caption
+before the eventual cinematic-end call. The other inspected branches process
+caption OK `044EE075` through `AE1EC3 -> ADFF50`, and skip `044EE076` through
+`AE1EAF -> AE0000`. These three branches never read their payload pointer.
+
+The existing upstream symbol `SporeCoop::cCinematicManager_EndCinematic = ADFF50`
+is thiscall `(manager)`, with no stack arguments and a plain return at `ADFFF0`.
+Other verified callers are `AE001E` (skip tail-jump), `DE47F8` (tail-jump),
+`DEBC95` and `DEBE02`. They use the current native manager, including fresh calls
+to `Simulator::cCinematicManager::Get = B3D5D0`, cdecl(), plain return at
+`B3D5D5`, which returns singleton `167EB50`. No unverified AddRef or UI-object
+lifetime is assumed.
+
+EndCinematic tests active state at `manager+2C`, then calls `ADF7C0` at `ADFF60`.
+Cleanup stops the cinematic, hides its caption/letterbox UI, restores camera and
+audio state, and clears active state. EndCinematic then removes cinematic
+effects, decrements `GameInput+110`, clears the running ID at `manager+148`, and
+sends `044F1189` with the ended ID in `payload+8` at `ADFFDA/ADFFE1`. The stack
+message is destroyed immediately after synchronous MessageSend returns. Gating
+the play handler `F1C570` therefore happens too late. Native candidate 1 reproduced
+the disappearing UI after local confirmation despite frozen adventure clocks.
+Candidate 2 held EndCinematic and retained its identity token, but the native
+caption still disappeared: gating that end entry alone was also too late.
+
+Candidate 3 gates the three reviewed cinematic messages before native caption
+mutation, only for a current co-op Intro with play state 1 and the current manager.
+Continue also requires the native waiting flag. It records a non-owning token
+(run, manager address, running cinematic ID, message ID), confirms locally and
+consumes the message. EndCinematic remains a fallback for direct end paths.
+Group release runs outside Present, reacquires the singleton, verifies its
+address, active state and ID, then replays the original handler with the saved
+message ID and a null payload. The verified branches need no retained payload.
+A released-run bypass remains until reset/new entry because native caption
+advancement can call EndCinematic on a later frame, after the release callback
+returned. That native end and its play message must not enter the barrier again.
+
+Cancelled or replaced attempts clear the token and advance its generation; no
+stored UI pointer is dereferenced later. A changed cinematic cancels for a clean
+retry rather than ending an unrelated scene. The old play-message hook remains
+a fallback for an unreviewed publisher, with no claim that it can recreate UI
+that has already been destroyed.
+
+`adventure_flow_tests` exercises capture without cleanup, duplicate clicks,
+single release, synchronous and delayed-end bypasses, legacy-message fallback,
+reset/cancellation, stale runs/generations and manager/scene replacement. The
+Win32 adapter compiles with warnings as errors, and installed-dc04 verification
+checks the three named entries and their call edges. Native two-player black-bar
+and camera retention is separate acceptance evidence, pending the final test.
+
+### Native Talk final-page ownership (dc04, preview 8)
+
+The same early caption boundary applies to Talk. Native `TalkBegin` at
+`F1A000` starts cinematic `0148C248` through `AE08B0` and stores the returned
+cinematic ID in `play+D8`. `HandlePlayMessage` at `F1C764–F1C779` receives
+`044F1189`, compares its payload's `+8` ID with `play+D8`, then calls
+`TalkFinish` at `F1C1D0`. The cinematic has already cleaned its blackbar and
+camera before publishing that end message. Holding only `TalkFinish` therefore
+holds the objective, but cannot retain the native confirmation UI.
+
+Both the Finished check (`0445C99D`) and Next button (`062EF353`) publish
+`0445F729` through `AD94A0`. The native caption constructor binds the check to
+`caption+20` at `AD839C–AD83C0`, and Next to `caption+28` at
+`AD8401–AD8425`. The cinematic update's `this` is `manager+4`: its branches at
+`AE029A` and `AE02E7` use `manager+3B` to show Finished and `manager+3C` to
+show Next, respectively. The shared Talk gate consequently requires
+`manager+3A && manager+3B` before holding `0445F729`; intermediate Next pages
+pass through unchanged. Direct caption OK (`044EE075`) ends the cinematic;
+Skip (`044EE076`) is held only when `manager+154 == -1`, the verified direct
+end branch of `AE0000`. Neither captured branch reads its payload.
+
+On party release, replay the captured manager handler with the original message
+ID and a null payload. Caption advancement may publish the matching end message
+on a later frame. The adapter retains a run/scene-serial/cinematic-ID token and
+keeps simulation clocks and queued Talk presentation held until that message
+arrives. It clears the pending token before native Talk cleanup, suppresses its
+native objective callback, then commits the host objective through the existing
+single authoritative path. Duplicate end IDs are consumed. Cancellation and a
+new native entry invalidate the token by generation; a ten-second native cleanup
+timeout cancels the attempt for retry. Intro uses the same settling fence until
+its native message has entered playing state. Cinematic-manager updates and
+messages continue while the scenario play update is held.
+
+Guest Release receipt also sets a flow-owned pending flag before queuing native
+release work. This closes the receive-pump gap in which a host result can arrive
+before the adapter has established its native settling token. The coordinator's
+optional settling callback reads only those run-scoped flags, without calling
+`held()` or `running()` recursively. It retains the first authoritative result
+in one pending slot and keeps the run active until local cleanup completes;
+duplicates and conflicting results cannot replace it. Reset clears the slot.
+
+Guest goal batches received during a held scene are likewise coalesced to one
+newest validated `(run, revision, act)` batch. Native `SetCurrentAct`, goal writes
+and terminal-state changes wait until local cleanup releases the hold. The next
+outside-frame application revalidates the run and revision. This preserves the
+old dialog's goal/target fields when the host advances an act first. Reset drops
+the pending batch, and delayed prior-run work cannot modify a replacement scene.
+This fence uses `native_scene_held()`, which excludes an unpresented future Talk
+once old native cleanup has finished. Its prerequisite act batch can then apply
+before native presentation, while the ordinary `held()` clock pause remains in
+effect. A future Talk snapshot arriving before the old end cannot deadlock its
+own required act transition.
+
+The candidate 6 native one-act Puzzle fixture exposed an additional terminal
+ordering issue: both clients reached Mission Complete once, but the host's final
+Talk goal was complete/count 1 while the guest retained incomplete/count 0.
+The periodic goal sender stopped after the coordinator entered its ended phase.
+The host terminal `SetState` hook now sends one reliable existing-format Goals
+batch before invoking the coordinator result callback, after native CountGoal
+has updated that final objective. The following `K_RESULT` therefore cannot
+overtake the completed fields in the peer's reliable queue.
+
+Validated guest Goals are coalesced into one run/revision-scoped slot and one
+generation-scoped outside-frame callback. The coordinator's result fence also
+reads `goal_application_pending()`, covering queued, deferred and actively
+applying batches. It remains in the running phase until those final fields have
+applied. Goals can update the act, counts, completion flags and HUD, but cannot
+enter native terminal states 5/6 or award progression; the authoritative
+coordinator result alone commits that transition afterward. Reset invalidates
+queued callbacks without clearing newer-run ownership. Portable coordinator and
+Win32 world fixtures exercise same-pump Goals/result ordering, duplicate
+revisions, coalescing, and cancellation. The native terminal test now requires
+matching final goal counts as well as one-shot results on both clients.
+
+The portable gate/flow fixtures cover asynchronous replay, queued Talk,
+duplicate end IDs, replacement tokens and cancellation. Final native UI
+acceptance remains a separate check in the preview 8 validation report.
+
 ## Preview 5: shared scenes and replay (dc04)
 
 This implements the earlier preview 4 party-flow findings. The new scene layer
@@ -359,10 +603,13 @@ the current run. Dialog/UI operations run outside Present.
 
 - `HandlePlayMessage` F1C570 is thiscall(play,messageID,payload), bool, ret8.
   Message044F1189 while play+90=1 directly enters playing state without calling
-  SetState. Intercept the message, record local confirmation and replay the
-  original handler only on party release. This preserves native intro cleanup;
-  writing state3 directly skips it. Early confirmation during the loaded barrier
-  is retained for the matching run. Native intro animation still ticks, while
+  SetState. Preview 5 intercepted the message, recorded local confirmation and
+  replayed the original handler on party release. That holds gameplay clocks,
+  but does not preserve the native intro UI: the publisher already cleaned it
+  up before sending the message. Preview 8 gates the earlier native cinematic
+  end entry instead, as documented above. Writing state3 directly also skips
+  normal native completion. Early confirmation during the loaded barrier is
+  retained for the matching run. Native intro animation still ticks, while
   state3 Update, actor AI, vehicle timers/weapons, damage, goals and co-op clocks
   are held until everyone confirms.
 - TalkBegin F1A000 is thiscall(play,goal,target), ret8. TalkFinish F1C1D0 is
@@ -546,3 +793,33 @@ native Next/Finished then released the group, and the boost expired normally.
 Replay rounds with saved captain reuse, fresh explicit readiness, shared Continue
 barriers, paused clocks, reciprocal models/scales and complete actor rosters.
 Both clients had zero native faults and returned to connected native menus.
+
+### Preparation dialog and native loading completion (preview 8)
+
+On the installed GOG executable, the copied Eighth Day adventure remained in
+native loading state 2 with the co-op preparation dialog visible. Clicking its
+native close control on both test clients immediately allowed loading to finish.
+The fix hides the owned dialog synchronously, outside the render frame, before
+entering the native adventure loading screen. It uses the existing visibility
+API and adds no native entry point or loading-state bypass. F9 remains available
+after launch. Cold transferred metadata and images retry bounded negative cache
+lookups once per second; successful metadata stays cached for the current run.
+
+### Revival HUD device ownership and layout evidence (preview 8)
+
+The cached D3D9 state block belongs to the device that created it. SporeKit's
+CreateDevice hook can replace its current device without emitting a Reset pair,
+so retaining only the block is insufficient: capturing/restoring the old device
+would not restore state changed on the new one. The HUD now records the owning
+device, releases/rebuilds the block outside Present when that identity changes,
+and skips drawing until the current device matches. Lost-device handling releases
+the block before Reset; unload also releases it through owned queued cleanup.
+Each draw captures and restores the current state rather than reusing stale
+captured values. Native Reset and CreateDevice replacement with an active revive
+ring remain unexercised; static lifecycle review is distinct from native evidence.
+
+Portable confirmation-layout tests check rectangle bounds and non-overlap for
+one to four participants at widths 800, 1024 and 1920, plus minimum-height and
+name/countdown cases. They do not measure native font glyphs, prove long-name
+readability, exercise control-reference retirement or establish a native
+four-player party. Those claims require their recorded UI/gameplay checks.

@@ -34,6 +34,11 @@ struct Ctx {
     // Tombstone a guest identity and forget its snapshots/binding. No native removal.
     std::function<void(Identity)> retire;
     std::function<void(const std::string&)> failed;
+    // Return true when the world adapter handled an ordinary native item throw.
+    std::function<bool(void*,void*,const net::Vec3&,bool)> ordinary_throw;
+    // Host-only accepted flight. Restores native source/grace; only timed bombs
+    // enter the world's catch path and keep the same physical fuse.
+    std::function<void(Identity,uint8_t)> explosive_thrown;
 };
 
 bool init(const SkHost*,SkMod*,Ctx);

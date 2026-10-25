@@ -52,14 +52,22 @@ def playing(games, records):
         'Adventure in progress' in g.adventure()['text'] for g in games))
     memories=[AdventureMemory(game,records[game.instance])for game in games]
     try:
-        for game,memory in zip(games,memories):
-            game.wait('native intro Continue',lambda game=game,memory=memory:
-                memory.goals()['state']==3 or game.control(0x0445C99D))
-            if memory.goals()['state']!=3: game.click_control(0x0445C99D)
-        for _ in range(3):
+        # The last confirmation can release every native intro between reading
+        # state and looking up its button. Retry the combined state/control
+        # observation rather than waiting for a button in an already-ended scene.
+        deadline=time.monotonic()+games[0].timeout
+        while time.monotonic()<deadline:
+            if all(memory.goals()['state']==3 for memory in memories):
+                return
             for game,memory in zip(games,memories):
-                if memory.goals()['state']!=3 and game.control(0x0445C99D): game.click_control(0x0445C99D)
-        games[0].wait('all native intro confirmations',lambda:all(m.goals()['state']==3 for m in memories))
+                if memory.goals()['state']==3:
+                    continue
+                button=game.control(0x0445C99D)
+                if button and button[4] and memory.goals()['state']!=3:
+                    x1,y1,x2,y2,_=button
+                    game.click((x1+x2)//2,(y1+y2)//2)
+            time.sleep(.15)
+        raise FixtureError('timeout waiting for all native intro confirmations')
     finally:
         for memory in memories:memory.close()
 

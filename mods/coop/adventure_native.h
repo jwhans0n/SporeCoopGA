@@ -23,6 +23,7 @@ void reset();
 void shutdown();
 bool update_filter(void* creature);
 void blocked_update(void* creature, int milliseconds);
+void creature_update(void* creature, bool before);
 bool damage_filter(void* victim, float& amount, int type, void* attacker);
 std::string status();
 

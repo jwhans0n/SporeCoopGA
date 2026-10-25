@@ -866,3 +866,95 @@ more than 1024 respawn identities, stalled reliable peers and fail-closed accept
 event overflow. `adventure pickups: 0 failures` does not substitute for a native
 integration `result.json`. Neither suite establishes a complete adventure
 playthrough or every custom palette/ability combination.
+
+### Installed adventure music catalog regression
+
+`make test` includes portable `adventure_music_tests`. It exercises real stock
+descriptor bytes, inherited settings, distinct descriptor/sample IDs, provenance
+rejection, missing resources, truncated arrays/strings, and cycle bounds. A same-ID
+palette property or sample alone must not satisfy native act music resolution.
+
+Build a read-only offline audit from the installed dc04 packages:
+
+```powershell
+py -3 tools/tests/adventure_music_catalog.py --game "D:\GOG Galaxy\Games\SPORE"
+```
+
+The output stays under ignored `out/music-resolution`; the command does not
+connect to games, modify packages, open a player profile or launch audio. Its
+compact DBPF contains real decoded audio descriptors and empty sample-key
+baselines. Run the portable test executable with this package and its generated
+music ID list (from a Linux shell):
+
+```sh
+build/host/adventure_music_tests out/music-resolution/stock-audio-index.package $(cat out/music-resolution/music-ids.txt)
+```
+
+The 2026-10-24 installed-data audit passed all 23 distinct music values across 69
+stock scenarios; its input contains 40,400 indexed audio keys. Both 3DAFBC30
+(reported by The Eighth Day and used by stock AF1BC5FF acts 2/4) and 2D67FCE4 resolve
+their descriptor, two inherited descriptors, and actual wave sample. The audit
+also passed ASan/UBSan. Record native two-player launch/act results separately:
+offline package order is a baseline, while actual collection uses effective
+ResourceManager precedence and rejects custom overrides. Muted tests do not
+establish audible playback quality.
+
+### Native downed controls, revive HUD and local lighting
+
+`tools/tests/coop_adventure_downed.py` exercises actual captain input, proximity
+revival and its native HUD in recorded hidden, muted Windows lab profiles.
+`--launch-town --both` reuses two saved captains, completes Town's real opening
+MoveTo objective and tests both origins in populated act 1. It first requires
+ordinary WASD movement, then checks raw main-thread captain positions under
+held movement/jump, native brain/WASD/cursor fence counters, usable camera,
+one transition per knockout, radius/damage resets, half-health revival and
+restored movement. The countdown and native host clock must freeze while the
+host's native pause menu is open. This uses the shared pause predicate; it is
+not a conversation-plus-revival integration test.
+
+Town marker 169 disappears as an actor after that opening objective. The reviewed
+fixture helper can still read its authored position and call the same spatial
+Teleport virtual as `game::teleport`; it never modifies authored data. A positive
+global-X offset there lands in a tower for some captains. Use the open street
+and keep the other captain away during the input precondition. Distant ground
+key 98 is a stable staging point. Waiting for input to work while inside geometry
+does not validate a control fence. The `playing()` helper must also recheck
+native state while looking for Continue: final group release can remove that
+button between observations, and an accepted disabled button must not be clicked.
+
+The accepted candidate 3 results are
+`out/windows-lab/ga_preview8_native_downed_final/result.json`. Both loaded shadows
+had SHA256 `c0ae5bbc3ab30af32cb558d00eb8fb0410d0ebf4a2f43378173a20bbbd5558fc`.
+The host/guest ordinary-input preconditions moved 2.91 m/2.70 m; sampled raw frame
+positions had zero drift while downed, native fences advanced, revival reset and
+completed correctly, and both cameras/movement recovered without faults.
+Asynchronous process-memory samples are retained separately because they can
+observe physics before its after-Update correction; `coop.avatar` publications
+are intentionally normalized and cannot prove actual immobility.
+
+Visual isolation captured sixteen held-input frames with `coop.overlay off/on`,
+then compared downed, revived 45 HP and alive 1 HP frames. The large straight ground
+shading edge persisted with the overlay off and after revival, so it is independent
+of the revive HUD and Downed fence. Camera motion settled monotonically; sampled
+frames showed no alternating camera/pose jitter. Preserve the distinction between
+this sampled-frame evidence and full uninterrupted flicker/playthrough coverage.
+Artifacts are under `ga_preview8_native_downed_render_isolation` and
+`ga_preview8_native_downed_health_isolation` in `out/windows-lab`.
+
+`tools/tests/coop_adventure_lighting.py` starts Town through a loopback capture
+proxy on the supplied port. It records actual type 22 traffic, native planet
+quaternions, captain positions and camera matrices while the host walks and the
+guest stays still. A valid legacy packet is then injected through the expected
+host socket using its real connection header. During native guest pause,
+`TimeOfDay_Apply` must receive zero calls and the planet orientation must stay
+unchanged. The fixture clears its probe and verifies the host adventure clock
+continues. Require local authored lighting, not host/guest quaternion equality.
+
+`out/windows-lab/ga_preview8_native_lighting_final_verified/result.json` passed
+on the same candidate 3 shadows: host 63.01 m versus guest 0.00201 m displacement,
+host 4.95169 degrees versus guest 0.000126 degrees planet-orientation change, zero
+type 22 packets in both directions over 20 seconds, and no native Apply call or
+quaternion/camera change after the valid 51-byte injection. Native host elapsed
+advanced 3840 to 26252 ms. `ga_preview8_native_handoff/result.json` confirms both
+native galaxy menus/application states, cleared probes, released injected keys
+and zero faults before the pair was handed back.

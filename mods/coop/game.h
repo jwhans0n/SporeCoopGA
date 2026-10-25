@@ -69,6 +69,10 @@ using BlockedUpdateHandler = void (*)(void* creature, int milliseconds);
 // Called once only by the real Update hook after a filter rejects its update.
 // Pure update-filter queries never invoke this handler.
 void set_blocked_update_handler(BlockedUpdateHandler fn);
+// Runs only around an allowed native update. Presentation keeps advancing while
+// an adventure controller fences a downed captain's brain and movement commands.
+using UpdateObserver = void (*)(void* creature, bool before);
+void set_update_observer(UpdateObserver fn);
 bool is_destroyed(void* c);
 
 // ---- species / herds ----
@@ -101,7 +105,8 @@ inline void set_impressed(void* c, bool on)
     f = on ? (f | 0x80) : (f & ~0x80u);
 }
 
-// ---- time of day: orientation of the sky object (see docs/05-re-notes.md) ----
+// Legacy time of day: active planet orientation, not a position-independent clock.
+// GA uses native authored/local lighting (see docs/re/adventure.md).
 bool time_of_day(net::Quat& q);
 void set_time_of_day(const net::Quat& q);
 

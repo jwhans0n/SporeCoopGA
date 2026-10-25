@@ -25,6 +25,7 @@ std::array<std::array<uint8_t,0x20>,4> captains{};
 void* powerup_table[3]{};
 void* combatant_table[4]{};
 unsigned activations,explosions,blasts,arms,bombs,timer_ticks,powerup_ticks,impulses,retirements,expiry_calls,queue_failures,effects;
+unsigned prepared_throws;
 net::Vec3 last_effect_position;
 ex::Quat last_effect_orientation;
 float last_effect_scale;
@@ -140,6 +141,7 @@ int main()
     };
     ctx.retire=[](ex::Identity) { ++retirements; };
     ctx.failed=[](const std::string&) { ++queue_failures; };
+    ctx.explosive_thrown=[](ex::Identity,uint8_t player) { CHECK(ex::host() && player<2); ++prepared_throws; };
     CHECK(ex::init(&api,nullptr,ctx)); ex::tick();
     // All four explosive kinds use the native actual-explosion path once.
     for(int type:{6,10,13,15}) {
@@ -180,8 +182,8 @@ int main()
     auto toss=ex::message(ex::Throw,thrown->id,1,13); toss.impulse={1000,0,0};
     incoming(1,toss); drain(); CHECK(!impulses);
     toss=ex::message(ex::Throw,thrown->id,1,13); toss.impulse={5,3,2}; in_range=false; incoming(1,toss); drain(); CHECK(!impulses);
-    in_range=true; toss=ex::message(ex::Throw,thrown->id,1,13); toss.impulse={5,3,2}; incoming(1,toss); drain(); CHECK(impulses==1);
-    incoming(1,toss); drain(); CHECK(impulses==1);
+    in_range=true; toss=ex::message(ex::Throw,thrown->id,1,13); toss.impulse={5,3,2}; incoming(1,toss); drain(); CHECK(impulses==1 && prepared_throws==1);
+    incoming(1,toss); drain(); CHECK(impulses==1 && prepared_throws==1);
     // A duplicate throw stays rejected. Only a new trusted native pickup of
     // the same timed bomb clears its throw guard, never its existing fuse.
     auto* repicked=make(10); ex::bomb(repicked->powerup.data());

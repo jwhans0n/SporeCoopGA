@@ -8,11 +8,13 @@ Adventure Editor support, followed by other Spore editors, is planned in the
 
 - [Installation](../README.md#installation): get the matching fork build for every player.
 - [Galactic Adventures co-op guide](GALACTIC-ADVENTURES.md): start from Sporepedia, select saved captains, ready up and play together.
-- [Integration validation report](integration-ga-upstream-0.7.2.1.md): current build evidence, compatibility and remaining validation limits.
+- [Preview 8 validation report](validation-ga-preview.8.md): current candidate evidence, pending native checks and compatibility limits.
+- [Preview 7 integration report](integration-ga-upstream-0.7.2.1.md): completed historical upstream merge validation.
 - [Known issues](known-issues.md): recorded limitations and open problems.
 
-The current integration uses protocol 10 and has native Windows validation on
-the exact GOG executable with SHA-256
+The current preview `0.7.3.1-ga-preview.8` uses protocol 11. Native preview 8
+validation is in progress; completed preview 7 Windows results are historical.
+Native GA support requires the exact GOG executable with SHA-256
 `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
 Every participant needs Galactic Adventures and the same fork build. Steam and
 Linux GA compatibility is not established by this evidence. See the guide and

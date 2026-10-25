@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cwchar>
 #include <map>
 #include <memory>
 #include <set>
@@ -51,20 +52,48 @@ struct NativeResult {
 static NativeResult g_native_result;
 static uint32_t g_sequence, g_goal_sequence;
 static double g_last_send, g_last_goals;
+static double g_last_item_apply;
 static bool g_mirror_queued;
+static bool g_catch_queued;
 static std::string g_world_error;
 static unsigned g_snapshots, g_hits, g_goal_updates;
 static unsigned g_goal_hud_refreshes;
 static bool g_goal_hud_dirty;
 constexpr uint32_t kSpatial = 0x01186577, kCombatant = 0x013F94D4, kCreature = 0xCE9F6639;
 constexpr size_t kMaxActors = 2048, kMaxGoals = 3;
-enum Kind : uint8_t { Actors = 128, Goals = 129, Hit = 130, CaptainHit = 131, Interaction = 132, GoalEvent = 133, Roster = 134, SocialComplete = 135, StaticActors = 136 };
+enum Kind : uint8_t { Actors = 128, Goals = 129, Hit = 130, CaptainHit = 131, Interaction = 132, GoalEvent = 133, Roster = 134, SocialComplete = 135, StaticActors = 136, Attachments = 137, ItemThrow = 138 };
 enum Action : uint8_t { PickUp, Drop, Give, Unlock };
 
 struct Identity {
     uint32_t marker, incarnation;
     bool operator<(const Identity& b) const { return std::tie(marker, incarnation) < std::tie(b.marker, b.incarnation); }
+    bool operator==(const Identity&) const = default;
 };
+struct Attachment {
+    Identity item{}, holder{};
+    uint8_t player = ga::kNoPlayer, slot = 0;
+    bool operator==(const Attachment&) const = default;
+};
+struct AttachmentAssembly {
+    uint32_t revision = 0;
+    uint8_t act = 0;
+    std::vector<Attachment> parts;
+    std::vector<bool> received;
+};
+struct AttachmentSend { uint32_t revision = 0; size_t next = 0; };
+static std::vector<Attachment> g_attachments;
+static std::array<AttachmentAssembly,8> g_attachment_assemblies;
+static std::array<std::vector<Attachment>,8> g_attachment_pending;
+static std::array<uint32_t,8> g_attachment_received{};
+static std::map<uint8_t, AttachmentSend> g_attachment_sent;
+static uint32_t g_attachment_revision;
+static int g_attachment_act = -1;
+struct Flight { uint8_t owner; uint8_t act; net::Vec3 previous; double started, still_since = 0; };
+static std::map<Identity, Flight> g_flying;
+static uintptr_t a_Physics, a_Impulse, a_ThrowGrace;
+static uint64_t g_last_throw[4]{};
+static unsigned g_item_throws, g_item_catches, g_item_gives;
+static std::set<void*> g_attached_spatials;
 struct NativeActor {
     void* object = nullptr;
     void* spatial = nullptr;
@@ -149,6 +178,7 @@ static void observe_native_attempt(uint64_t);
 static void reset_replication();
 static int item_slot(void*, void*, bool);
 static bool same_pose(const ActorState&, const ActorState&);
+static void send_goals();
 
 static bool host() { return C.sess && C.sess->role() == net::Role::Host; }
 static bool active()
@@ -341,6 +371,118 @@ static int item_slot(void* creature, void* item, bool free_slot)
     }
     return -1;
 }
+template<class F> static void each_slot(void* creature, F callback)
+{
+    if (!creature || !skg::readable(creature,0xE48)) return;
+    uintptr_t first=skg::field<uintptr_t>(creature,0xE40),last=skg::field<uintptr_t>(creature,0xE44);
+    if(last<first || (last-first)%0x24 || (last-first)/0x24>128 ||
+       (first!=last && !skg::readable(reinterpret_cast<void*>(first),last-first))) return;
+    for(size_t i=0;i<(last-first)/0x24;++i) {
+        void* spatial=skg::field<void*>(reinterpret_cast<void*>(first+i*0x24),0x20);
+        if(spatial) callback(uint8_t(i),spatial);
+    }
+}
+template<class F> static void each_holder(F callback)
+{
+    if(C.captain_of && C.sess) for(const auto& player:C.sess->players()) {
+        void* captain=C.captain_of(player.id);
+        if(captain) callback(captain,player.id,Identity{});
+    }
+    for(const auto& actor:g_native) if(game::cast(actor.object,kCreature))
+        callback(actor.object,ga::kNoPlayer,Identity{actor.marker,actor.incarnation});
+}
+static bool attached(void* spatial)
+{
+    return g_attached_spatials.count(spatial)!=0;
+}
+static void refresh_attachment_spatials()
+{
+    skg::ReadOnlyMemoryScope memory;
+    g_attached_spatials.clear();
+    each_holder([](void* holder,uint8_t,Identity) {
+        each_slot(holder,[](uint8_t,void* spatial) { g_attached_spatials.insert(spatial); });
+    });
+}
+static void sample_attachments(int act)
+{
+    skg::ReadOnlyMemoryScope memory;
+    std::map<Identity,Attachment> relations;
+    each_holder([&](void* holder,uint8_t player,Identity holder_id) {
+        each_slot(holder,[&](uint8_t slot,void* spatial) {
+            Identity item;
+            if(relations.size()<kMaxActors && identity(object_from_spatial(spatial),item))
+                relations.emplace(item,Attachment{item,holder_id,player,slot});
+        });
+    });
+    std::vector<Attachment> current;
+    for(const auto& [id,relation]:relations) { (void)id; current.push_back(relation); }
+    if(act!=g_attachment_act || current!=g_attachments) {
+        g_attachment_act=act; g_attachments=std::move(current); ++g_attachment_revision;
+        if(!g_attachment_revision) ++g_attachment_revision;
+    }
+}
+static void send_attachments(int act)
+{
+    sample_attachments(act);
+    for(const auto& player:C.sess->players()) if(player.id) {
+        auto& sent=g_attachment_sent[player.id];
+        if(sent.revision!=g_attachment_revision) sent={g_attachment_revision,0};
+        if(sent.next>g_attachments.size()) continue;
+        for(unsigned batch=0;batch<2 && sent.next<=g_attachments.size();++batch) {
+            if(C.sess->pending_to(player.id)>=64) break;
+            size_t count=std::min<size_t>(40,g_attachments.size()-sent.next);
+            net::Writer w; w.u8(Attachments); put_run(w,g_run); w.u32(g_attachment_revision); w.u8(uint8_t(act));
+            w.u16(uint16_t(g_attachments.size())); w.u16(uint16_t(sent.next)); w.u8(uint8_t(count));
+            for(size_t i=0;i<count;++i) {
+                const auto& relation=g_attachments[sent.next+i]; write_identity(w,relation.item);
+                write_identity(w,relation.holder); w.u8(relation.player); w.u8(relation.slot);
+            }
+            if(!C.sess->send_reliable_to(player.id,net::MSG_ADVENTURE,w)) break;
+            sent.next+=count;
+            if(sent.next==g_attachments.size()) { ++sent.next; break; }
+        }
+    }
+}
+static void apply_attachments(int act)
+{
+    // Both endpoints can arrive after their reliable relation. Keep the complete
+    // host snapshot and retry binding without guessing at a same-marker sibling.
+    if(act<0 || act>=8 || !g_attachment_received[act]) return;
+    g_attachments=g_attachment_pending[act]; g_attachment_act=act;
+    std::map<void*,std::pair<void*,uint8_t>> expected;
+    for(const auto& relation:g_attachments) {
+        void* item=object_for(relation.item),*spatial=game::cast(item,kSpatial);
+        void* holder=relation.player==ga::kNoPlayer ? object_for(relation.holder) : C.captain_of(relation.player);
+        if(!spatial || !holder || !game::cast(holder,kCreature)) continue;
+        auto predicted=g_dropped.find(relation.item);
+        if(relation.player==C.sess->my_id() && predicted!=g_dropped.end() &&
+           predicted->second.first==relation.player && H->time_seconds()-predicted->second.second<=2 &&
+           item_slot(holder,spatial,false)<0) continue;
+        expected[spatial]={holder,relation.slot};
+    }
+    g_applying=true;
+    each_holder([&](void* holder,uint8_t,Identity) {
+        std::vector<void*> release;
+        each_slot(holder,[&](uint8_t slot,void* spatial) {
+            auto found=expected.find(spatial);
+            // Unbound identities remain pending, including relations whose holder
+            // is not ready yet. Their previous native attachment is retained.
+            Identity item;
+            if(!identity(object_from_spatial(spatial),item)) return;
+            bool mentioned=false;
+            for(const auto& relation:g_attachments) if(relation.item==item) { mentioned=true; break; }
+            if((found!=expected.end() && (found->second.first!=holder || found->second.second!=slot)) ||
+                (!mentioned && found==expected.end())) release.push_back(spatial);
+        });
+        for(void* spatial:release) o_Drop(holder,spatial,0,false);
+    });
+    for(const auto& [spatial,endpoint]:expected) {
+        void* holder=endpoint.first;
+        if(item_slot(holder,spatial,false)==endpoint.second) continue;
+        o_Pick(holder,spatial,int(endpoint.second),true);
+    }
+    g_applying=false;
+}
 struct AvatarScope {
     void* previous = nullptr;
     explicit AvatarScope(void* captain) {
@@ -358,6 +500,134 @@ static bool nearby(void* a, void* b, float range)
     if (!game::object_position(a, p) || !game::object_position(b, q)) return false;
     float x = p.x - q.x, y = p.y - q.y, z = p.z - q.z;
     return x*x + y*y + z*z <= range * range;
+}
+static double simulation_now() { return C.simulation_time ? C.simulation_time() : H->time_seconds(); }
+static bool world_box(void*,net::Vec3&,net::Vec3&);
+static void record_flight(Identity id,uint8_t player)
+{
+    auto* p=play(); void* item=object_for(id); net::Vec3 lo,hi;
+    if(host() && p && item && world_box(item,lo,hi)) {
+        net::Vec3 center{(lo.x+hi.x)*0.5f,(lo.y+hi.y)*0.5f,(lo.z+hi.z)*0.5f};
+        g_flying[id]={player,uint8_t(skg::field<int>(p,0xB8)),center,simulation_now(),0};
+    }
+}
+struct ThrowTask { uint64_t run,event; uint8_t act,player; Identity item; net::Vec3 impulse; bool add; };
+static void apply_item_throw(void* argument)
+{
+    std::unique_ptr<ThrowTask> task(static_cast<ThrowTask*>(argument));
+    auto* p=play();
+    if(!host() || !active() || task->run!=run() || !p || task->act!=skg::field<int>(p,0xB8) ||
+       !C.captain_can_act(task->player) || (C.held && C.held())) return;
+    enumerate();
+    void* captain=C.captain_of(task->player),*item=object_for(task->item),*spatial=game::cast(item,kSpatial);
+    auto dropped=g_dropped.find(task->item);
+    bool owns=spatial && (item_slot(captain,spatial,false)>=0 ||
+        (dropped!=g_dropped.end() && dropped->second.first==task->player && H->time_seconds()-dropped->second.second<=2));
+    float speed2=task->impulse.x*task->impulse.x+task->impulse.y*task->impulse.y+task->impulse.z*task->impulse.z;
+    void* powerup=powerup_for(item); int kind=powerup ? skg::field<int>(powerup,4) : 0;
+    if(!captain || !spatial || !owns || kind==10 || kind==13 || g_flying.count(task->item) ||
+       !nearby(captain,item,25.f) || !finite(task->impulse) || !std::isfinite(speed2) || speed2>250.f*250.f) return;
+    g_applying=true;
+    AvatarScope avatar(captain);
+    bool released=item_slot(captain,spatial,false)<0 || o_Drop(captain,spatial,0,false);
+    if(released) {
+        void* physics=skg::cdecl_call<void*>(a_Physics);
+        if(physics) {
+            adventure_world_actions::throw_source(captain,item);
+            skg::thiscall<void>(a_Impulse,physics,spatial,&task->impulse,task->add);
+            skg::thiscall<void>(a_ThrowGrace,physics,game::cast(captain,kSpatial),spatial,0.5f);
+            record_flight(task->item,task->player); ++g_item_throws;
+        }
+    }
+    g_applying=false;
+}
+static bool ordinary_throw(void*,void* spatial,const net::Vec3& impulse,bool add)
+{
+    if(!active() || g_applying) return false;
+    void* item=object_from_spatial(spatial); Identity id;
+    if(!identity(item,id)) return false;
+    auto dropped=g_dropped.find(id);
+    if(dropped==g_dropped.end() || H->time_seconds()-dropped->second.second>2) return false;
+    uint8_t player=dropped->second.first;
+    if(!C.captain_can_act(player) || (C.held && C.held())) return true;
+    float speed2=impulse.x*impulse.x+impulse.y*impulse.y+impulse.z*impulse.z;
+    if(!finite(impulse) || !std::isfinite(speed2) || speed2>250.f*250.f) return true;
+    if(host()) {
+        if(!g_flying.count(id)) {
+            adventure_world_actions::throw_source(C.captain_of(player),item);
+            record_flight(id,player); ++g_item_throws;
+        }
+        return false;
+    }
+    if(player!=C.sess->my_id()) return true;
+    auto* p=play(); if(!p) return true;
+    net::Writer w; w.u8(ItemThrow); put_run(w,run()); put_run(w,++g_interaction_sequence);
+    w.u8(uint8_t(skg::field<int>(p,0xB8))); w.u8(player); write_identity(w,id);
+    w.f32(impulse.x); w.f32(impulse.y); w.f32(impulse.z); w.u8(add?1:0);
+    // The native local throw retains its animation and predictive physics. Only
+    // the host may accept a catch or change the shared attachment afterwards.
+    return !C.sess->send_reliable_to(0,net::MSG_ADVENTURE,w);
+}
+
+static bool sweep_box(net::Vec3 start,net::Vec3 end,net::Vec3 minimum,net::Vec3 maximum,float& contact)
+{
+    float enter=0,leave=1;
+    const float from[]={start.x,start.y,start.z},to[]={end.x,end.y,end.z};
+    const float lo[]={minimum.x,minimum.y,minimum.z},hi[]={maximum.x,maximum.y,maximum.z};
+    for(int axis=0;axis<3;++axis) {
+        float delta=to[axis]-from[axis];
+        if(std::fabs(delta)<1e-6f) { if(from[axis]<lo[axis] || from[axis]>hi[axis]) return false; }
+        else {
+            float a=(lo[axis]-from[axis])/delta,b=(hi[axis]-from[axis])/delta;
+            if(a>b) std::swap(a,b);
+            enter=std::max(enter,a); leave=std::min(leave,b); if(enter>leave) return false;
+        }
+    }
+    contact=enter; return true;
+}
+static bool world_box(void* object,net::Vec3& minimum,net::Vec3& maximum)
+{
+    void* spatial=game::cast(object,kSpatial); if(!spatial) return false;
+    struct Box { net::Vec3 lo,hi; } box;
+    skg::vcall<Box*>(spatial,0x6C/4,&box);
+    if(!finite(box.lo) || !finite(box.hi) || box.lo.x>box.hi.x || box.lo.y>box.hi.y || box.lo.z>box.hi.z) return false;
+    minimum=box.lo; maximum=box.hi; return true;
+}
+static void catch_items()
+{
+    if(!host() || !play() || (C.held && C.held())) return;
+    double now=simulation_now();
+    for(auto it=g_flying.begin();it!=g_flying.end();) {
+        auto& flight=it->second; void* item=object_for(it->first); void* spatial=game::cast(item,kSpatial);
+        net::Vec3 lo,hi;
+        if(!item || !spatial || flight.act!=skg::field<int>(play(),0xB8) ||
+           !world_box(item,lo,hi)) { it=g_flying.erase(it); continue; }
+        net::Vec3 position{(lo.x+hi.x)*0.5f,(lo.y+hi.y)*0.5f,(lo.z+hi.z)*0.5f};
+        void* powerup=powerup_for(item); int kind=powerup ? skg::field<int>(powerup,4) : 0;
+        if(kind==13 || attached(spatial)) { it=g_flying.erase(it); continue; }
+        net::Vec3 half{(hi.x-lo.x)*0.5f,(hi.y-lo.y)*0.5f,(hi.z-lo.z)*0.5f};
+        uint8_t collector=ga::kNoPlayer; float first=2;
+        for(const auto& player:C.sess->players()) {
+            if(!C.captain_can_act(player.id) || (player.id==flight.owner && now-flight.started<0.5)) continue;
+            void* captain=C.captain_of(player.id); net::Vec3 a,b;
+            if(item_slot(captain,nullptr,true)<0 || !adventure_world_actions::can_receive(captain,spatial) || !world_box(captain,a,b)) continue;
+            a={a.x-half.x,a.y-half.y,a.z-half.z}; b={b.x+half.x,b.y+half.y,b.z+half.z};
+            float contact;
+            if(sweep_box(flight.previous,position,a,b,contact) &&
+               (contact<first || (contact==first && player.id<collector))) { first=contact; collector=player.id; }
+        }
+        if(collector!=ga::kNoPlayer) {
+            void* captain=C.captain_of(collector); int slot=item_slot(captain,nullptr,true);
+            g_applying=true; AvatarScope avatar(captain);
+            bool caught=slot>=0 && o_Pick(captain,spatial,slot,false); g_applying=false;
+            if(caught) { ++g_item_catches; g_dropped.erase(it->first); it=g_flying.erase(it); continue; }
+        }
+        float dx=position.x-flight.previous.x,dy=position.y-flight.previous.y,dz=position.z-flight.previous.z;
+        if(dx*dx+dy*dy+dz*dz<1e-6f) { if(!flight.still_since) flight.still_since=now; }
+        else flight.still_since=0;
+        if(flight.still_since && now-flight.still_since>1) { it=g_flying.erase(it); continue; }
+        flight.previous=position; ++it;
+    }
 }
 static bool interaction(uint8_t action, uint8_t player, Identity item, Identity recipient = {UINT32_MAX, UINT32_MAX})
 {
@@ -377,6 +647,7 @@ static bool SK_THISCALL pick_item(void* self, void* spatial, int slot, bool repl
     Identity id;
     if (!identity(object_from_spatial(spatial), id)) return host() ? o_Pick(self, spatial, slot, replace) : false;
     uint8_t player = owner(self);
+    if(!C.captain_can_act(player)) return false;
     if (!host()) {
         if (player != C.sess->my_id()) return false;
         interaction(PickUp, player, id);
@@ -400,6 +671,9 @@ static void SK_THISCALL picked_item(void* self, void* holder, void* item)
         }
     }
     o_Picked(self, holder, item);
+    if(active() && !g_applying) {
+        Identity id; if(identity(item,id)) g_flying.erase(id);
+    }
     if(active()) {
         uint8_t player=owner(holder); Identity id;
         if(player!=ga::kNoPlayer && identity(item,id))
@@ -489,7 +763,8 @@ static void SK_THISCALL talk_end(void* self)
 {
     if(!active() || adventure_flow::scene().kind!=adventure_flow::Kind::Talk) { o_TalkEnd(self); return; }
     if(adventure_flow::local_waiting()) return;
-    g_talk_cleanup=true; o_TalkEnd(self); g_talk_cleanup=false;
+    // Late fallback only: the cinematic adapter normally holds Finished before
+    // native caption cleanup, then invokes release_talk after its end message.
     adventure_flow::finish_talk();
 }
 
@@ -517,8 +792,10 @@ bool present_talk(const adventure_flow::Scene& s)
 void release_talk(const adventure_flow::Scene& s)
 {
     auto* p=play(); uint8_t* goals; size_t count;
-    if(!active() || !host() || !p || s.run!=run() || s.act!=skg::field<int>(p,0xB8) ||
+    if(!active() || !p || s.run!=run() || s.act!=skg::field<int>(p,0xB8) ||
         !goals_vector(p,goals,count) || s.goal>=count) return;
+    g_talk_cleanup=true; o_TalkEnd(p); g_talk_cleanup=false;
+    if (!host()) return;
     enumerate(); void* target=object_for({s.marker,s.incarnation});
     if(target) {
         g_talk_committing=true;
@@ -570,7 +847,12 @@ static void SK_THISCALL set_state(void* self, int state)
     if (terminal && scoped && g_native_result.applied) return;
     if (running && !g_applying && state >= 4) {
         if (host() && state == 4) { native_state(self, state); return; }
-        if (host() && (state == 5 || state == 6) && C.result) C.result(state == 5);
+        if (host() && (state == 5 || state == 6) && C.result) {
+            // Native CountGoal has already updated the completed objective.
+            // Queue its reliable final batch before the coordinator's result.
+            send_goals();
+            C.result(state == 5);
+        }
         return;
     }
     // The coordinator ends before its outside-frame native callback executes.
@@ -585,7 +867,7 @@ static void apply_actor(NativeActor& actor, const ActorState& state)
     ActorState local;
     local.position = skg::field<net::Vec3>(actor.spatial, 4);
     local.orientation = skg::field<net::Quat>(actor.spatial, 0x10);
-    if (!state.static_actor || !same_pose(local, state)) {
+    if (!attached(actor.spatial) && (!state.static_actor || !same_pose(local, state))) {
         skg::vcall<void>(actor.spatial, 0x38 / 4, &state.position);
         skg::vcall<void>(actor.spatial, 0x3C / 4, &state.orientation);
     }
@@ -608,6 +890,7 @@ static void apply_actor(NativeActor& actor, const ActorState& state)
 
 static void mirror(double now)
 {
+    refresh_attachment_spatials();
     auto compatible=[](const NativeActor& actor,const ActorState& state) {
         uint8_t expected=state.flags>>4;
         if(!expected) return true;
@@ -894,7 +1177,7 @@ static void apply_interaction(void* argument)
     void* captain = C.captain_of(task->player);
     void* item = object_for(task->item);
     void* spatial = game::cast(item, kSpatial);
-    if (!captain || !spatial || (host() && task->from != task->player)) return;
+    if (!captain || !spatial || (host() && (task->from != task->player || !C.captain_can_act(task->player)))) return;
     bool accepted = false;
     g_applying = true;
     {
@@ -944,27 +1227,34 @@ static void apply_interaction(void* argument)
             if (host()) for (const auto& player : C.sess->players())
                 if (player.id != task->player && item_slot(C.captain_of(player.id), spatial, false) >= 0) held_elsewhere = true;
             if (recipient && !held_elsewhere && (!host() || ((carrying || recently_dropped) && nearby(captain, recipient, 25.f)))) {
-                void* creature = game::cast(recipient, kCreature);
-                int slot = item_slot(creature, nullptr, true);
-                if (creature) {
-                    if (slot >= 0 && (!carrying || o_Drop(captain, spatial, 1, false)))
-                        accepted = o_Pick(creature, spatial, slot, true);
-                } else {
-                    std::string error;
-                    accepted = adventure_world_actions::give(captain, recipient, item, error);
-                    if (!accepted && !error.empty()) g_world_error = error;
-                }
+                std::string error;
+                accepted = item_slot(game::cast(recipient,kCreature),spatial,false)>=0 ||
+                    adventure_world_actions::give(captain, recipient, item, error);
+                if (!accepted && !error.empty()) g_world_error = error;
+                if(accepted) ++g_item_gives;
                 if (accepted) g_dropped.erase(task->item);
             }
         }
     }
     g_applying = false;
+    if(accepted && !host()) {
+        auto& relations=g_attachment_pending[task->act];
+        relations.erase(std::remove_if(relations.begin(),relations.end(),[&](const Attachment& relation) { return relation.item==task->item; }),relations.end());
+        if(task->action==PickUp) {
+            int slot=item_slot(captain,spatial,false);
+            if(slot>=0) relations.push_back({task->item,{},task->player,uint8_t(slot)});
+        } else if(task->action==Give) {
+            void* recipient=object_for(task->recipient); int slot=item_slot(game::cast(recipient,kCreature),spatial,false);
+            if(slot>=0) relations.push_back({task->item,task->recipient,ga::kNoPlayer,uint8_t(slot)});
+        }
+    }
     if (accepted && host() && task->action!=Unlock) interaction(task->action, task->player, task->item, task->recipient);
 }
 
 static bool request_container_give(void* captain, void* item, void* recipient)
 {
-    if (!active() || g_applying || !C.sess || owner(captain) != C.sess->my_id() || !play()) return false;
+    if (!active() || g_applying || !C.sess || owner(captain) != C.sess->my_id() || !play() ||
+        !C.captain_can_act(C.sess->my_id()) || (C.held && C.held())) return false;
     Identity item_id, recipient_id;
     if (!identity(item, item_id) || !identity(recipient, recipient_id)) return false;
     uint8_t player = C.sess->my_id();
@@ -1187,6 +1477,16 @@ static void apply_pending_static(uint8_t act)
 }
 
 struct GoalTask { uint64_t run; uint32_t sequence, time; int32_t remaining; uint8_t act, state; std::vector<std::pair<bool, uint32_t>> goals; };
+static std::unique_ptr<GoalTask> g_deferred_goals;
+static uint64_t g_goal_generation, g_goal_work_run;
+static bool g_goal_apply_queued, g_goal_apply_active;
+static bool goals_held() { return C.goals_held ? C.goals_held() : C.held && C.held(); }
+bool goal_application_pending()
+{
+    uint64_t current = run();
+    return current && ((g_deferred_goals && g_deferred_goals->run == current) ||
+        (g_goal_work_run == current && (g_goal_apply_queued || g_goal_apply_active)));
+}
 static void refresh_goal_hud()
 {
     // CountGoal calls this same HUD method after both partial and completed
@@ -1203,9 +1503,21 @@ static void refresh_goal_hud()
 static void apply_goals(void* arg)
 {
     std::unique_ptr<GoalTask> task((GoalTask*)arg);
-    if (!guest() || task->run != run() || task->sequence < g_received_goals) return;
+    if (!guest() || task->run != run() || task->sequence < g_received_goals ||
+        task->act >= 8 || task->state > 6 || task->goals.size() > kMaxGoals) return;
+    // Host completion may advance an act while this client is still processing
+    // the native Finished tail. Do not replace dialog goals/targets or enter
+    // results until local caption cleanup has finished. Keep one newest batch.
+    if (goals_held()) {
+        if (!g_deferred_goals || task->sequence >= g_deferred_goals->sequence) g_deferred_goals = std::move(task);
+        return;
+    }
     uint8_t* p = play();
     if (!p) return;
+    struct Applying {
+        explicit Applying(uint64_t run) { g_goal_work_run = run; g_goal_apply_active = true; }
+        ~Applying() { g_goal_apply_active = false; }
+    } applying(task->run);
     g_applying = true;
     if (skg::field<int>(p, 0xB8) != task->act) {
         skg::thiscall<void>(a_SetAct, p, (int)task->act, false);
@@ -1226,11 +1538,27 @@ static void apply_goals(void* arg)
         skg::field<int>(p, 0xC0) = (int)task->time;
         skg::field<int>(p, 0xBC) = task->remaining;
         refresh_goal_hud();
-        if (task->state >= 3 && task->state <= 6 && skg::field<int>(p, 0x90) != task->state &&
+        // Goal replication cannot award results/progression. The coordinator's
+        // authoritative result commits only after these final fields are set.
+        if (task->state >= 3 && task->state <= 4 && skg::field<int>(p, 0x90) != task->state &&
             !(task->state==3 && C.held && C.held())) native_state(p, task->state);
         ++g_goal_updates;
     }
     g_applying = false;
+}
+
+static void flush_deferred_goals()
+{
+    if (!g_deferred_goals || g_goal_apply_queued || goals_held()) return;
+    g_goal_apply_queued = true; g_goal_work_run = g_deferred_goals->run;
+    struct Task { uint64_t run, generation; };
+    H->run_outside_frame([](void* argument) {
+        std::unique_ptr<Task> task(static_cast<Task*>(argument));
+        if (task->generation != g_goal_generation) return;
+        g_goal_apply_queued = false;
+        if (!g_deferred_goals || g_deferred_goals->run != task->run) return;
+        apply_goals(g_deferred_goals.release());
+    }, new Task{g_goal_work_run, g_goal_generation});
 }
 
 void on_message(uint8_t from, net::Reader& r)
@@ -1261,6 +1589,41 @@ void on_message(uint8_t from, net::Reader& r)
             auto* task = new RosterTask{id, sequence, act, g_roster_parts};
             H->run_outside_frame(apply_roster, task);
         }
+    } else if(kind==Attachments && !host() && from==0) {
+        uint32_t revision=r.u32(); uint8_t act=r.u8(); uint16_t total=r.u16(),first=r.u16(); uint8_t count=r.u8();
+        if(!r.ok() || !revision || act>=8 || total>kMaxActors || count>40 || first>total || count>total-first ||
+           (total && !count) || revision<=g_attachment_received[act]) return;
+        std::vector<Attachment> chunk;
+        for(uint8_t i=0;i<count;++i) {
+            Attachment relation; relation.item=read_identity(r); relation.holder=read_identity(r);
+            relation.player=r.u8(); relation.slot=r.u8();
+            if(relation.slot>=128 || (relation.player!=ga::kNoPlayer && relation.player>=4) ||
+               relation.item.marker==UINT32_MAX || (relation.player==ga::kNoPlayer && relation.holder.marker==UINT32_MAX)) return;
+            chunk.push_back(relation);
+        }
+        if(!r.ok() || r.left()) return;
+        auto& assembly=g_attachment_assemblies[act];
+        if(revision<assembly.revision) return;
+        if(revision!=assembly.revision) { assembly={}; assembly.revision=revision; assembly.act=act; assembly.parts.resize(total); assembly.received.resize(total); }
+        if(assembly.parts.size()!=total) return;
+        for(size_t i=0;i<chunk.size();++i) {
+            if(assembly.received[first+i] && assembly.parts[first+i]!=chunk[i]) return;
+            assembly.parts[first+i]=chunk[i]; assembly.received[first+i]=true;
+        }
+        if(std::all_of(assembly.received.begin(),assembly.received.end(),[](bool ready){return ready;})) {
+            std::set<Identity> unique;
+            std::set<std::tuple<uint8_t,Identity,uint8_t>> slots;
+            for(const auto& relation:assembly.parts)
+                if(!unique.insert(relation.item).second || !slots.emplace(relation.player,relation.holder,relation.slot).second) return;
+            g_attachment_pending[act]=assembly.parts; g_attachment_received[act]=revision;
+        }
+    } else if(kind==ItemThrow && host() && from>0 && from<4) {
+        uint64_t event=get_run(r); auto task=std::make_unique<ThrowTask>(); task->run=id; task->event=event;
+        task->act=r.u8(); task->player=r.u8(); task->item=read_identity(r);
+        task->impulse={r.f32(),r.f32(),r.f32()}; uint8_t add=r.u8(); task->add=add!=0;
+        if(!r.ok() || r.left() || !event || event<=g_last_throw[from] || task->act>=8 || task->player!=from ||
+           add>1 || !finite(task->impulse) || !C.captain_can_act(from)) return;
+        g_last_throw[from]=event; H->run_outside_frame(apply_item_throw,task.release());
     } else if (kind == Interaction && ((host() && from) || (!host() && !from))) {
         uint64_t event = get_run(r);
         auto task = std::make_unique<InteractionTask>(); task->run = id; task->from = from;
@@ -1336,7 +1699,8 @@ void on_message(uint8_t from, net::Reader& r)
         }
         if (!r.ok() || r.left()) return;
         g_received_goals = task->sequence;
-        H->run_outside_frame(apply_goals, task.release());
+        g_deferred_goals = std::move(task);
+        flush_deferred_goals();
     } else if (kind == CaptainHit && host()) {
         uint64_t event = get_run(r); uint8_t victim = r.u8(), source_owner = r.u8();
         float damage = r.f32(); int type = (int)r.u32();
@@ -1500,6 +1864,8 @@ void apply_result(bool success)
 static void reset_replication()
 {
     g_run = 0; g_sequence = g_goal_sequence = g_received_goals = 0;
+    g_deferred_goals.reset();
+    ++g_goal_generation; g_goal_work_run = 0; g_goal_apply_queued = g_goal_apply_active = false;
     g_native.clear(); g_remote.clear(); g_bindings.clear(); g_health_baselines.clear(); g_last_hit.clear(); g_last_captain_hit.clear();
     g_last_interaction.clear(); g_dropped.clear(); g_social_events.clear(); g_social_completions.clear(); g_interaction_sequence = 0;
     g_opened_gates.clear(); g_retired_items.clear(); g_talk_cleanup=g_talk_presenting=g_talk_committing=false;
@@ -1508,10 +1874,14 @@ static void reset_replication()
     g_static_host.clear(); g_static_sent.clear(); g_static_cursor.clear(); g_static_act = -1;
     for (auto& pending : g_static_pending) pending.clear();
     g_replication_stats = {};
+    g_attachments.clear(); g_attachment_sent.clear(); g_attachment_revision=0; g_attachment_act=-1;
+    g_attached_spatials.clear(); g_flying.clear(); g_item_throws=g_item_catches=g_item_gives=0;
+    g_attachment_assemblies={}; g_attachment_pending={}; g_attachment_received={};
+    std::fill(std::begin(g_last_throw),std::end(g_last_throw),0);
     g_spawn_attempt.clear(); g_world_error.clear();
     g_goal_hud_dirty = false; g_goal_hud_refreshes = 0;
     adventure_world_vehicles::reset();
-    g_last_send = g_last_goals = 0; g_hit_sequence = 0;
+    g_last_send = g_last_goals = g_last_item_apply = 0; g_hit_sequence = 0;
 }
 
 static void retire_identity(Identity id)
@@ -1535,6 +1905,7 @@ void peer_changed(uint8_t player)
 {
     g_static_sent.erase(player);
     g_static_cursor.erase(player);
+    g_attachment_sent.erase(player);
 }
 
 void tick(double now)
@@ -1543,10 +1914,19 @@ void tick(double now)
     observe_native_attempt(run());
     if (run() != g_run) { reset_replication(); g_run = run(); }
     if (!play()) return;
+    flush_deferred_goals();
     if (host()) {
         enumerate();
-        if (now - g_last_send >= 0.1) { g_last_send = now; send_actors(); }
+        if (now - g_last_send >= 0.1) { g_last_send = now; send_actors(); send_attachments(skg::field<int>(play(),0xB8)); }
         if (now - g_last_goals >= 0.5) { g_last_goals = now; send_goals(); send_roster(); }
+        if(!g_flying.empty() && !g_catch_queued) {
+            g_catch_queued=true;
+            H->run_outside_frame([](void* arg) {
+                std::unique_ptr<uint64_t> run_id(static_cast<uint64_t*>(arg)); g_catch_queued=false;
+                if(!active() || !host() || *run_id!=run()) return;
+                enumerate(); refresh_attachment_spatials(); catch_items();
+            },new uint64_t(run()));
+        }
     } else if (!g_mirror_queued) {
         g_mirror_queued = true;
         auto* task = new std::pair<uint64_t, double>{g_run, now};
@@ -1555,6 +1935,15 @@ void tick(double now)
             g_mirror_queued = false;
             if (!guest() || task->first != run()) return;
             enumerate(); mirror(task->second);
+            auto* p=play(); if(!p) return;
+            if(task->second-g_last_item_apply>=0.1) {
+                g_last_item_apply=task->second;
+                apply_attachments(skg::field<int>(p,0xB8));
+                bool carrying=false;
+                each_slot(C.captain_of(C.sess->my_id()),[&](uint8_t,void*) { carrying=true; });
+                if(carrying && !(C.held && C.held())) for(const auto& actor:g_native)
+                    if(game::cast(actor.object,kCreature)) adventure_world_actions::poll_receive(actor.object);
+            }
         }, task);
     }
 }
@@ -1587,11 +1976,14 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
     uintptr_t gate=H->sym("SporeCoop::Adventure::ActivateGate");
     a_GateKey=H->sym("SporeCoop::Adventure::GateKey");
     a_OpenGate=H->sym("SporeCoop::Adventure::OpenGate");
+    a_Physics=H->sym("Simulator::cPhysicsWorld::Get");
+    a_Impulse=H->sym("Simulator::cPhysicsWorld::ApplyImpulse");
+    a_ThrowGrace=H->sym("SporeCoop::Adventure::ThrowPairGrace");
     o_Drop = (Drop_t)H->sym("SporeCoop::Adventure::DropItem");
     if (std::string(H->exe_sha256()) != "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37" ||
         !a_Mode || !a_SetAct || !a_GetMarker || !a_Hostile || !a_Befriend || !a_Ally || !a_Relationships || !a_SocialEvent || !a_SocialMode || !a_AnimalDamage || !a_GoalHUD ||
         !check || !complete || !goals || !state || !pick || !picked || !dropped || !count || !avatar || !generic || !o_Drop || !C.sess || !C.captain_can_act ||
-        !talk || !talk_end_address || !gate || !a_GateKey || !a_OpenGate || !adventure_world_lifecycle::init(H, M)) return false;
+        !talk || !talk_end_address || !gate || !a_GateKey || !a_OpenGate || !a_Physics || !a_Impulse || !a_ThrowGrace || !adventure_world_lifecycle::init(H, M)) return false;
     g_ok = H->hook_create(M, (void*)check, (void*)check_goals, (void**)&o_Check) == 0 &&
            H->hook_create(M, (void*)complete, (void*)complete_act, (void**)&o_Complete) == 0 &&
            H->hook_create(M, (void*)goals, (void*)update_goals, (void**)&o_Goals) == 0 &&
@@ -1685,6 +2077,17 @@ adventure_explosives::Ctx explosives_context()
     context.retire=[](adventure_explosives::Identity id) {
         retire_identity({id.marker,id.incarnation});
     };
+    context.ordinary_throw=ordinary_throw;
+    context.explosive_thrown=[](adventure_explosives::Identity id,uint8_t player) {
+        void* item=object_for({id.marker,id.incarnation}),*captain=C.captain_of(player);
+        void* spatial=game::cast(item,kSpatial),*physics=skg::cdecl_call<void*>(a_Physics);
+        if(item && captain && spatial && physics) {
+            adventure_world_actions::throw_source(captain,item);
+            skg::thiscall<void>(a_ThrowGrace,physics,game::cast(captain,kSpatial),spatial,0.5f);
+            void* powerup=powerup_for(item);
+            if(powerup && skg::field<int>(powerup,4)==10) record_flight({id.marker,id.incarnation},player);
+        }
+    };
     return context;
 }
 std::string status(bool verbose)
@@ -1708,6 +2111,9 @@ std::string status(bool verbose)
     summary += "native result: run=" + std::to_string(g_native_result.run) +
                " committed=" + std::to_string(g_native_result.committed ? 1 : 0) +
                " applied=" + std::to_string(g_native_result.applied) + "\n";
+    summary += "items: attachments="+std::to_string(g_attachments.size())+" revision="+std::to_string(g_attachment_revision)+
+        " throws="+std::to_string(g_item_throws)+" catches="+std::to_string(g_item_catches)+
+        " gives="+std::to_string(g_item_gives)+" flying="+std::to_string(g_flying.size())+"\n";
     auto vehicle = adventure_world_vehicles::counters();
     summary += "vehicle mirrors: trees=" + std::to_string(vehicle.trees) + " weapons=" + std::to_string(vehicle.weapons) +
                " timers=" + std::to_string(vehicle.timers) + " actors=" + std::to_string(vehicle.actors) + "\n";
@@ -1726,6 +2132,10 @@ std::string status(bool verbose)
             << " required=" << skg::field<int>(goal, 0x30) << " complete=" << (goal[0] ? 1 : 0) << "\n";
     }
     enumerate();
+    for(const auto& relation:g_attachments)
+        out << "attachment item=" << relation.item.marker << ":" << relation.item.incarnation
+            << " holder=" << relation.holder.marker << ":" << relation.holder.incarnation
+            << " player=" << unsigned(relation.player) << " slot=" << unsigned(relation.slot) << "\n";
     for (const auto& actor : g_native) {
         const auto& pos = skg::field<net::Vec3>(actor.spatial, 4);
         out << "marker=" << actor.marker << " incarnation=" << actor.incarnation << " noun=" << actor.noun
@@ -1746,12 +2156,29 @@ std::string status(bool verbose)
     return out.str();
 }
 
+static bool item_fixture_profile(const wchar_t* command)
+{
+    if(!command) return false;
+    const wchar_t* profile=std::wcsstr(command,L"-sporekit-profile:");
+    if(!profile) return false;
+    profile+=18;
+    if(std::wcsncmp(profile,L"winlab_",7)) return false;
+    size_t length=0;
+    for(;profile[length] && profile[length]!=L' ' && profile[length]!=L'"';++length)
+        if(!((profile[length]>=L'a' && profile[length]<=L'z') ||
+             (profile[length]>=L'0' && profile[length]<=L'9') || profile[length]==L'_')) return false;
+    return length>7;
+}
+
 int debug(int argc, const char* const* argv, SkOut* output)
 {
     auto say = [&](const std::string& text) { H->out_printf(output, "%s", text.c_str()); };
     if (!argc || std::string(argv[0]) == "status") { say(status(true)); return 0; }
     if (!active() || !play()) { say("No committed adventure is running.\n"); return 1; }
     std::string action = argv[0];
+    if((action=="give" || action=="throw" || action=="detachtool") && !item_fixture_profile(GetCommandLineW())) {
+        say("Native item fixture commands require an explicit isolated winlab_ profile.\n"); return 1;
+    }
     enumerate();
     auto number = [&](int n) { return n < argc ? std::strtoul(argv[n], nullptr, 0) : 0ul; };
     if(action=="talk" && argc==4 && C.captain_of) {
@@ -1848,6 +2275,15 @@ int debug(int argc, const char* const* argv, SkOut* output)
         }
         return spawner;
     };
+    if(action=="detachtool" && argc==3 && !host()) {
+        auto* actor=marker_actor(uint32_t(number(1))); size_t index=number(2); void* spatial=nullptr;
+        if(actor && game::cast(actor->object,kCreature))
+            each_slot(actor->object,[&](uint8_t slot,void* value) {if(slot==index) spatial=value;});
+        if(!actor || !spatial || index>=128) { say("A guest NPC held-tool slot is required.\n"); return 1; }
+        g_applying=true; bool released=o_Drop(actor->object,spatial,0,false); g_applying=false;
+        say(released?"Guest NPC tool released for reconstruction probe.\n":"Native NPC tool release failed.\n");
+        return released?0:1;
+    }
     if(action=="nudge" && argc==5) {
         auto* actor=marker_actor(uint32_t(number(1)));
         net::Vec3 delta{std::strtof(argv[2],nullptr),std::strtof(argv[3],nullptr),std::strtof(argv[4],nullptr)};
@@ -1895,12 +2331,11 @@ int debug(int argc, const char* const* argv, SkOut* output)
         if(argc>=4) velocity.x=std::strtof(argv[3],nullptr);
         if(argc>=5) velocity.y=std::strtof(argv[4],nullptr);
         if(argc>=6) velocity.z=std::strtof(argv[5],nullptr);
-        if(!captain || !actor || !powerup || !finite(velocity) || !impulse || !physics_get ||
-            (C.held && C.held()) || item_slot(captain,spatial,false)<0 ||
-            (skg::field<int>(powerup,4)!=10 && skg::field<int>(powerup,4)!=13)) {
-            say("A held native bomb or grenade is required.\n"); return 1;
+        if(!captain || !actor || !finite(velocity) || !impulse || !physics_get ||
+            !C.captain_can_act(player) || (C.held && C.held()) || item_slot(captain,spatial,false)<0) {
+            say("A held native item and active captain are required.\n"); return 1;
         }
-        if(skg::field<int>(powerup,4)==13) {
+        if(powerup && skg::field<int>(powerup,4)==13) {
             auto arm=H->sym("SporeCoop::Adventure::ArmGrenade");
             if(!arm) { say("Native grenade arming is unavailable.\n"); return 1; }
             skg::cdecl_call<void>(arm,powerup,captain);
@@ -1909,7 +2344,16 @@ int debug(int argc, const char* const* argv, SkOut* output)
         void* physics=skg::cdecl_call<void*>(physics_get);
         if(!physics) { say("The native physics world is unavailable.\n"); return 1; }
         skg::thiscall<void>(impulse,physics,spatial,&velocity,true);
-        say("Native explosive throw requested.\n"); return 0;
+        skg::thiscall<void>(a_ThrowGrace,physics,game::cast(captain,kSpatial),spatial,0.5f);
+        say("Native item throw requested.\n"); return 0;
+    }
+    if(action=="give" && argc>=3 && argc<=4) {
+        auto* item=marker_actor(uint32_t(number(1))); auto* recipient=marker_actor(uint32_t(number(2)));
+        uint8_t player=argc==4 ? uint8_t(number(3)) : C.sess->my_id();
+        void* captain=player<net::kMaxPlayers ? C.captain_of(player) : nullptr;
+        bool queued=item && recipient && captain && request_container_give(captain,item->object,recipient->object);
+        say(queued?"Native item Give requested.\n":"A local captain, held item and recipient are required.\n");
+        return queued?0:1;
     }
     if(action=="forgetgate" && argc==2 && !host()) {
         auto* actor=marker_actor(uint32_t(number(1)));

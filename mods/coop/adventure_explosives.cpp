@@ -328,7 +328,10 @@ static void SK_THISCALL impulse(void* self,void* spatial,const net::Vec3* veloci
     }
     void* item=C.from_spatial(spatial),*powerup=C.powerup(item);
     int native_type=type(powerup);
-    if(native_type!=10 && native_type!=13) { o_Impulse(self,spatial,velocity,add); return; }
+    if(native_type!=10 && native_type!=13) {
+        if(!C.ordinary_throw || !C.ordinary_throw(self,spatial,*velocity,add)) o_Impulse(self,spatial,velocity,add);
+        return;
+    }
     sync_scope();
     if(held() || !room() || !finite(*velocity)) return;
     Identity id; if(!C.identify(item,id)) return;
@@ -343,6 +346,7 @@ static void SK_THISCALL impulse(void* self,void* spatial,const net::Vec3* veloci
     }
     state.thrown=true; state.owner=player; state.revision=event.serial;
     o_Impulse(self,spatial,velocity,add); publish(event); ++g_throws;
+    if(C.explosive_thrown) C.explosive_thrown(id,player);
 }
 
 static void apply(void* argument)
@@ -402,6 +406,7 @@ static void apply(void* argument)
             state.thrown=true; state.owner=m->player;
             auto event=message(Thrown,m->id,m->player,m->type); event.impulse=m->impulse;
             state.revision=event.serial; publish(event); ++g_throws;
+            if(C.explosive_thrown) C.explosive_thrown(m->id,m->player);
         }
         return;
     }

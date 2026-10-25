@@ -19,7 +19,7 @@ Shared editing is planned and is not available in the current preview.
 
 SporeCoopGA builds on [SporeCoop](https://github.com/WoodyWizard/SporeCoop) by
 [WoodyWizard](https://github.com/WoodyWizard). The current build is
-**`0.7.3.0-ga-preview.7`**, an experimental preview using protocol **10**.
+**`0.7.3.1-ga-preview.8`**, an experimental preview using protocol **11**.
 
 ## Contents
 
@@ -42,10 +42,17 @@ SporeCoopGA builds on [SporeCoop](https://github.com/WoodyWizard/SporeCoop) by
   transfer progress and settings. Everyone, including the host, explicitly presses Ready.
 - **Shared objectives and scenes.** Host-authoritative progress keeps the party
   in the same act. Beam-down Continue waits for everyone; conversation pages
-  advance independently, with a group confirmation before leaving.
+  advance independently, with a group confirmation before leaving. Confirmations
+  appear in the native bottom black bar beside the check mark.
 - **Synchronized interactions.** Shared keys and gates, explosives, crates,
   collector-only power upgrades and independent teleporters follow the adventure
   rules. The host controls authoritative damage and shared object state.
+- **Shared handheld items.** Give items to NPCs through native interactions,
+  see their held tools, and throw eligible items between captains. Timed bombs
+  keep their running fuse when caught; contact grenades retain impact behavior.
+- **Downed and revival feedback.** Downed captains stay in place while their
+  normal visuals update. A two-metre revive ring, progress bar and timer show
+  teammates where to stand and how long to remain nearby.
 - **Replay and recovery.** Replay returns to the shared lobby with saved captains
   and everyone unready. Cancelling preparation restores the native menus for retry.
 - **Adventure performance work.** The preview retains the actor-memory validation
@@ -114,17 +121,20 @@ dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37
 - **Verified GA configuration:** Windows with that exact executable. Steam and
   other executables are not enabled for the native GA adapter; Linux GA play
   remains unvalidated.
-- **Matching clients:** all participants need this fork build and protocol 10.
+- **Matching clients:** all participants need this fork build and protocol 11.
+  Earlier GA previews also require an update before joining.
   Upstream SporeCoop 0.7.0-0.7.2.1 clients use a different protocol and cannot join.
 - **Entry and joining:** adventures start from Sporepedia. Space-stage adventure
   entry is outside this preview. Late joins and reconnects wait for the next attempt.
-- **Validation scope:** the current integration passed 13 native acceptance groups
-  on two isolated Windows profiles. Earlier previews include four-player checks;
-  the merged build has not had a fresh four-player integration run or a complete
-  adventure playthrough campaign.
+- **Validation scope:** preview 8 has recorded two-player music, item, downed,
+  lighting, conversation/results and Replay checks, plus a four-player beam-down
+  confirmation check at 1024x768. See its
+  [validation report](docs/validation-ga-preview.8.md) for exact binaries, checks
+  and limits. A complete adventure playthrough campaign remains outstanding.
 
 The preview does not establish compatibility with every custom adventure, palette
-or objective. Read the [integration validation report](docs/integration-ga-upstream-0.7.2.1.md)
+or objective. Read the [preview 8 validation report](docs/validation-ga-preview.8.md)
+and [historical integration report](docs/integration-ga-upstream-0.7.2.1.md)
 for exact evidence and limits, and the [known issues](docs/known-issues.md) for
 recorded problems.
 

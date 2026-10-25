@@ -30,6 +30,8 @@ bool g_ready, g_content, g_chosen, g_launch_started, g_loaded_sent, g_waiting;
 bool g_assets_available, g_have_wall, g_cleaning;
 uint64_t g_generation, g_next_run, g_newest_run, g_settings_revision = 1, g_received_settings;
 uint64_t g_snapshot_revision, g_health_event, g_result_run;
+uint64_t g_pending_result_run;
+bool g_pending_result_success, g_pending_result_announce;
 double g_last_wall, g_simulation, g_last_snapshot, g_last_revive;
 uint8_t g_revive_target = ga::kNoPlayer;
 bool g_revive_held;
@@ -61,6 +63,7 @@ ga::PreparationMember* preparation_member(uint8_t player)
 }
 void initialize_preparation()
 {
+    g_pending_result_run = 0;
     g_preparation = {};
     g_preparation.run = g_descriptor.run_id;
     g_preparation.adventure = g_descriptor.adventure;
@@ -185,6 +188,7 @@ void invalidate_ready()
 void abort_run(const std::string& reason, bool announce)
 {
     clear_cleanup_messages();
+    g_pending_result_run = 0;
     const bool leave_native = g_launch_started || g_phase == Phase::Running;
     if (announce && g_descriptor.run_id) {
         net::Writer w;
@@ -438,21 +442,37 @@ void native_result(bool success)
     });
 }
 
-void result(bool success)
+void finish_result(bool success, bool announce)
 {
     if (g_phase != Phase::Running)
         return;
-    snapshot();
-    net::Writer w;
-    write_run(w, g_descriptor.run_id); w.u8(success ? 1 : 0);
-    send(K_RESULT, w);
+    if (announce) {
+        snapshot();
+        net::Writer w;
+        write_run(w, g_descriptor.run_id); w.u8(success ? 1 : 0);
+        send(K_RESULT, w);
+    }
     g_phase = Phase::Ended;
     g_barrier.abort(g_descriptor.run_id);
     g_revive_held = false;
-    if (g_authority.claim_reward(g_descriptor.run_id, local_id()))
+    if (!announce || g_authority.claim_reward(g_descriptor.run_id, local_id()))
         native_result(success);
     feed(success ? "Adventure completed together." : "The party failed the adventure.");
 }
+
+void accept_result(bool success, bool announce)
+{
+    if (g_phase != Phase::Running || g_pending_result_run) return;
+    if (C.native_settling && C.native_settling()) {
+        // At most one result for this run. Preserve the first authoritative
+        // outcome until native Finished has released its old dialog resources.
+        g_pending_result_run = g_descriptor.run_id;
+        g_pending_result_success = success; g_pending_result_announce = announce;
+        return;
+    }
+    finish_result(success, announce);
+}
+void result(bool success) { accept_result(success, true); }
 
 bool valid_seed(const ga::CaptainSeed& seed)
 {
@@ -941,10 +961,7 @@ void on_message(uint8_t from, net::Reader& r)
     } else if (kind == K_RESULT) {
         uint8_t success = r.u8();
         if (!finished(r) || success > 1 || g_phase != Phase::Running) return;
-        g_phase = Phase::Ended;
-        g_revive_held = false;
-        native_result(success != 0);
-        feed(success ? "Adventure completed together." : "The party failed the adventure.");
+        accept_result(success != 0, false);
     }
 }
 
@@ -971,6 +988,15 @@ void tick(double now)
     if (!C.sess || !C.sess->connected()) {
         abort_run("The co-op session ended.", false);
         return;
+    }
+    if (g_pending_result_run) {
+        if (g_pending_result_run != g_descriptor.run_id || g_phase != Phase::Running) g_pending_result_run = 0;
+        else if (!(C.native_settling && C.native_settling())) {
+            bool success = g_pending_result_success, announce = g_pending_result_announce;
+            g_pending_result_run = 0;
+            finish_result(success, announce);
+            return;
+        }
     }
     if (host() && g_preparation_dirty && now - g_last_preparation >= .1) {
         send_preparation(); g_last_preparation = now;
@@ -1008,6 +1034,7 @@ void tick(double now)
         return;
     }
     if (g_phase != Phase::Running) return;
+    if (g_pending_result_run) return;
     if (g_revive_held && now - g_last_revive >= 0.1) {
         if (host()) g_authority.revive(g_descriptor.run_id, local_id(), g_revive_target, true);
         else {
@@ -1122,6 +1149,7 @@ void reset()
     g_client_snapshot_run = 0;
     g_client_snapshot_time = 0;
     g_next_run = g_newest_run = g_snapshot_revision = g_health_event = g_result_run = g_received_settings = 0;
+    g_pending_result_run = 0; g_pending_result_success = g_pending_result_announce = false;
     g_last_wall = g_simulation = g_last_snapshot = g_last_revive = 0;
     g_have_wall = false;
     g_error.clear();

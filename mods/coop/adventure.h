@@ -34,6 +34,9 @@ struct Ctx {
     std::function<bool()> paused;
     std::function<void*(uint8_t)> captain_of;
     std::function<void(bool)> native_result;
+    // Reads native release/goal-work ownership without calling coordinator/flow
+    // running() or held(). A received result waits for local cleanup and final goals.
+    std::function<bool()> native_settling;
     std::function<float(uint8_t, float)> incoming_damage;
     // Native/captain messages share the coordinator's ordered cleanup barrier.
     std::function<void(uint8_t, net::Reader&)> native_message;

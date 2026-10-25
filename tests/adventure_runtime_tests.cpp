@@ -119,6 +119,7 @@ int main()
     SkHost api{};
     api.run_outside_frame = queue;
     bool available = false, loaded = false, frozen = false, paused = false;
+    bool native_release_queued = false, native_settling = false, native_goals_pending = false;
     unsigned launches = 0, results = 0, invalidated = 0, native_aborts = 0;
     bool launch_ok = true;
     bool success = false;
@@ -147,7 +148,8 @@ int main()
     ctx.loaded = [&](const dbpf::Key&) { return loaded; };
     ctx.paused = [&] { return paused; };
     ctx.captain_of = [&](uint8_t id) -> void* { return id < 4 ? &objects[id] : nullptr; };
-    ctx.native_result = [&](bool value) { results++; success = value; };
+    ctx.native_result = [&](bool value) { CHECK(!native_goals_pending); results++; success = value; };
+    ctx.native_settling = [&] { return native_release_queued || native_settling || native_goals_pending; };
     ctx.sample = [](uint8_t id, ga::CaptainSeed& seed) {
         seed = {id, 100, {float(id) * 10, 0, 0}};
         return true;
@@ -385,13 +387,28 @@ int main()
     client_result.u8(11); put_run(client_result, 100); client_result.u8(1);
     incoming(2, client_result); drain();
     CHECK(results == 2 && adventure::active());
+    // Release and terminal result can share a receive pump, before the queued
+    // native release establishes its asynchronous cinematic ownership token.
+    native_release_queued = true;
+    native_goals_pending = true; // validated final Goals received earlier in the same pump
     incoming(0, client_result);
     incoming(0, client_result);
     net::Writer conflicting_result;
     conflicting_result.u8(11); put_run(conflicting_result, 100); conflicting_result.u8(0);
     incoming(0, conflicting_result);
-    CHECK(results == 2);
+    CHECK(results == 2 && adventure::running());
     drain();
+    adventure::tick(202.1); drain();
+    CHECK(results == 2 && adventure::running());
+    native_settling = true; native_release_queued = false;
+    adventure::tick(202.2); drain();
+    CHECK(results == 2 && adventure::running());
+    native_settling = false;
+    adventure::tick(202.3); drain();
+    CHECK(results == 2 && adventure::running()); // queued goal fields still precede results
+    queue([](void* pending) { *static_cast<bool*>(pending) = false; }, &native_goals_pending);
+    drain(); CHECK(results == 2 && adventure::running());
+    adventure::tick(202.4); drain();
     CHECK(results == 3 && success && !adventure::active());
     incoming(0, client_result); drain();
     CHECK(results == 3);
@@ -421,8 +438,12 @@ int main()
     final_commit.u8(7); put_run(final_commit, 102); incoming(0, final_commit); drain();
     net::Writer reset_result;
     reset_result.u8(11); put_run(reset_result, 102); reset_result.u8(1);
+    native_settling = true;
+    native_goals_pending = true;
     incoming(0, reset_result);
+    CHECK(adventure::running());
     adventure::reset(); drain();
+    native_settling = native_goals_pending = false; adventure::tick(203.1); drain();
     CHECK(results == 3); // the old result cannot mutate the reset native session
     // Delayed native selection from a cancelled attempt cannot ready its retry.
     ctx.sess = &host;

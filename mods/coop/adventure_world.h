@@ -29,6 +29,9 @@ struct Ctx {
     std::function<bool(uint8_t, float)> captain_heal;
     std::function<void(bool success)> result;
     std::function<bool()> held;
+    // Protects existing native dialog resources; an unpresented future Talk may
+    // need its authoritative act batch before it can open.
+    std::function<bool()> goals_held;
     std::function<bool()> explosive_environment, explosive_visual;
     std::function<double()> simulation_time;
     std::function<void(uint8_t,uint64_t,const net::Vec3&,const net::Quat&)> teleport;
@@ -53,6 +56,9 @@ void apply_result(bool success); // authoritative native result, outside the fra
 bool validate_talk(uint8_t player, const adventure_flow::Scene&);
 bool present_talk(const adventure_flow::Scene&);
 void release_talk(const adventure_flow::Scene&);
+// Read-only, run-scoped native goal work. The coordinator retains a received
+// result until this validated queued/deferred batch has applied outside frame.
+bool goal_application_pending();
 std::string status(bool verbose = false);
 int debug(int argc, const char* const* argv, SkOut* output); // outside frame; argv[0] is the subcommand
 

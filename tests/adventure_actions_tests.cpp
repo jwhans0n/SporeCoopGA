@@ -22,6 +22,7 @@ std::array<uint8_t, 0x27E8> class_entry{};
 std::array<uint8_t, 0x4E0> class_act{};
 std::array<uint8_t, 0x20> advanced{};
 std::array<uint8_t, 0x24> slot{};
+std::array<uint8_t, 0x24> receiver_slot{};
 std::array<uint8_t, 0x1D0> behavior{};
 std::array<uint8_t, 0x38> order{}, state{};
 std::array<uint8_t, 0x58> posse{};
@@ -31,6 +32,9 @@ bool playing = true, hosting = true, request_ok = true, finished = true, storage
 bool hook_fail;
 int failures, storage_calls, drop_calls, pickup_calls, destroy_calls, recruit_calls, relation_calls, request_calls, native_ticks, hook_calls;
 int relation = 5;
+bool receives = true;
+int removed_orders, receiver_picks;
+int throw_references;
 void* picked_holder;
 void* stored_holder;
 Tick hooked_tick;
@@ -55,6 +59,24 @@ bool SK_THISCALL store(void* recipient, void* value)
     return storage_ok;
 }
 bool SK_THISCALL vehicle_consumes(void* self) { check(self == vehicle.bytes.data(), "vehicle timer this"); return consumes; }
+bool SK_THISCALL receive_item(void* self,void* spatial,bool allow_held,bool mouth)
+{
+    check(self==target.bytes.data() && spatial==item.spatial.data() && allow_held && !mouth,"native receive eligibility ABI");
+    return receives;
+}
+bool SK_THISCALL pick(void* self,void* spatial,int index,bool replace)
+{
+    check(self==target.bytes.data() && spatial==item.spatial.data() && index==0 && replace,"native creature receive preserves slot0 replacement ABI");
+    field<void*>(receiver_slot.data(),0x20)=spatial; ++receiver_picks; return true;
+}
+void* SK_CDECL order_target(void* value) { check(value==order.data(),"receive order target ABI"); return captain.bytes.data(); }
+void SK_THISCALL remove_order(void* self,int low,int high)
+{ check(self==behavior.data()+8 && low==0 && high==0x40000,"receive order removal ABI"); ++removed_orders; }
+void* SK_THISCALL throw_reference(void* self,void* combatant)
+{
+    check(self==item.bytes.data()+0x10C && combatant==captain.bytes.data()+0x5A8,"native throw retains the combatant through its intrusive reference ABI");
+    ++throw_references; return self;
+}
 bool SK_THISCALL drop(void* self, void* spatial, int arg, bool replace)
 {
     check(self == captain.bytes.data() && spatial == item.spatial.data() && arg == 1 && !replace, "native Give drop ABI");
@@ -115,6 +137,8 @@ void* cast(void* value, uint32_t type)
 {
     auto* o = object(value);
     if (!o) return nullptr;
+    if(type==0x0398420D && o==&item) return o->bytes.data();
+    if(type==0x013F94D4 && o==&captain) return o->bytes.data()+0x5A8;
     return type == kSpatial ? o->spatial.data() : type == o->type ? o->bytes.data() : nullptr;
 }
 } // namespace game
@@ -135,6 +159,9 @@ int main()
     field<uint8_t*>(captain.bytes.data(), 0xE40) = slot.data();
     field<uint8_t*>(captain.bytes.data(), 0xE44) = slot.data() + slot.size();
     field<uint8_t*>(captain.bytes.data(), 0xB4C) = behavior.data();
+    field<uint8_t*>(target.bytes.data(), 0xB4C) = behavior.data();
+    field<uint8_t*>(target.bytes.data(), 0xE40) = receiver_slot.data();
+    field<uint8_t*>(target.bytes.data(), 0xE44) = receiver_slot.data()+receiver_slot.size();
     field<void*>(building.bytes.data(), 0x1EC) = data.data(); field<void*>(vehicle.bytes.data(), 0xD94) = data.data();
     field<void*>(state.data(), 0x18) = building.spatial.data(); field<void*>(state.data(), 0x1C) = item.spatial.data();
     field<int>(state.data(), 0) = 1; field<int>(state.data(), 0x28) = 99; field<int>(order.data(), 0xC) = 6;
@@ -154,10 +181,15 @@ int main()
         {"SporeCoop::Adventure::GiveAnimationFinished", reinterpret_cast<uintptr_t>(&animation_finished)},
         {"SporeCoop::Adventure::GetBehaviorOrder", reinterpret_cast<uintptr_t>(&get_order)},
         {"SporeCoop::Adventure::TickContainerGive", reinterpret_cast<uintptr_t>(&original)}};
+    symbols["SporeCoop::Adventure::CanReceiveItem"]=reinterpret_cast<uintptr_t>(&receive_item);
+    symbols["SporeCoop::Adventure::SocialOrderTarget"]=reinterpret_cast<uintptr_t>(&order_target);
+    symbols["SporeCoop::Adventure::RemoveBehaviorOrders"]=reinterpret_cast<uintptr_t>(&remove_order);
+    symbols["SporeCoop::Adventure::PickUpItem"]=reinterpret_cast<uintptr_t>(&pick);
+    symbols["SporeCoop::Adventure::SetThrowCombatantReference"]=reinterpret_cast<uintptr_t>(&throw_reference);
     SkHost host{}; host.sym = symbol; host.hook_create = hook; host.exe_sha256 = [] { return executable_hash; };
     adventure_world_actions::Ctx ctx{[] { return playing; }, [] { return hosting; },
         [](void* p) { return p == captain.bytes.data(); }, [](void* c, void* i, void* r) {
-            check(c == captain.bytes.data() && i == item.bytes.data() && r == building.bytes.data(), "intent keeps native object identities");
+            check(c == captain.bytes.data() && i == item.bytes.data() && (r == building.bytes.data() || r==target.bytes.data()), "intent keeps native object identities");
             ++request_calls; return request_ok;
         }};
     auto expected_hash = executable_hash; executable_hash = "different-build";
@@ -168,6 +200,8 @@ int main()
     check(adventure_world_actions::init(&host, nullptr, ctx), "native actions resolve and install");
     using namespace adventure_world_actions;
     std::string error; GiveResult result;
+    throw_source(captain.bytes.data(),item.bytes.data());
+    check(throw_references==1,"ordinary native item throw source is retained without raw native pointer writes");
     reset_item();
     check(give(captain.bytes.data(), building.bytes.data(), item.bytes.data(), error, &result) &&
           result == GiveResult::Stored && stored_holder == building.bytes.data() && drop_calls == 1, "building Give uses real inventory and drop");
@@ -185,6 +219,23 @@ int main()
     consumes = false; reset_item(); storage_ok = false;
     check(!give(captain.bytes.data(), building.bytes.data(), item.bytes.data(), error) && !field<bool>(item.bytes.data(), 0x20), "native storage rejection does not destroy item");
     storage_ok = true;
+    reset_item();
+    check(give(captain.bytes.data(),target.bytes.data(),item.bytes.data(),error) && receiver_picks==1 &&
+          !field<void*>(slot.data(),0x20) && field<void*>(receiver_slot.data(),0x20)==item.spatial.data(),
+          "NPC Give uses native drop and recipient attachment rather than a goal-only event");
+    receives=false; reset_item(); int drops_before=drop_calls;
+    check(!give(captain.bytes.data(),target.bytes.data(),item.bytes.data(),error) && drop_calls==drops_before && receiver_picks==1,
+          "native recipient rejection retains the donor item");
+    receives=true; hosting=false; field<int>(order.data(),0xC)=7; field<int>(order.data(),0x10)=0;
+    int requests_before=request_calls;
+    poll_receive(target.bytes.data());
+    check(request_calls==requests_before+1 && removed_orders==1 && field<void*>(slot.data(),0x20)==item.spatial.data(),
+          "guest receive order is forwarded without dropping its item or running NPC AI");
+    request_ok=false; poll_receive(target.bytes.data());
+    check(removed_orders==1,"failed guest Give send keeps its native order pending");
+    request_ok=true; field<uint32_t>(order.data(),0x10)=128; poll_receive(target.bytes.data());
+    check(removed_orders==1,"malformed donor slot is rejected before reading item pointers");
+    field<int>(order.data(),0xC)=6; hosting=true;
     check(recruit(target.bytes.data(), error) && recruit_calls == 1, "actual native posse operation");
     recruitment_ok = false;
     check(!recruit(target.bytes.data(), error) && recruit_calls == 2, "native capacity and duplicate rejection retained");
@@ -204,7 +255,8 @@ int main()
     check(!hostile(data.data(), building.bytes.data(), 0, is_hostile, error) && relation_calls == relations_before, "malformed advanced behavior rejected before native scan");
     field<bool>(class_act.data(), 0x4C8) = false;
     reset_item();
-    check(tick() && request_calls == 1 && field<int>(state.data(), 0) == 2 && !field<bool>(item.bytes.data(), 0x20), "host container intent intercepted before native consumption");
+    requests_before=request_calls;
+    check(tick() && request_calls == requests_before+1 && field<int>(state.data(), 0) == 2 && !field<bool>(item.bytes.data(), 0x20), "host container intent intercepted before native consumption");
     hosting = false; field<int>(state.data(), 0) = 1; request_ok = false;
     check(tick() && field<int>(state.data(), 0) == 1, "guest failed send stays pending without deletion");
     request_ok = true; finished = false;

@@ -1,13 +1,15 @@
 # Galactic Adventures co-op: experimental guide
 
-Fork preview `0.7.3.0-ga-preview.7` integrates the complete adventure work through
-`0.7.0-ga-preview.6` with upstream SporeCoop 0.7.2.1, including SporeKit 0.3.4
-and its Steam/frame-loop diagnostics. Source and downloads:
+Fork preview `0.7.3.1-ga-preview.8` adds native music descriptor resolution,
+shared handheld-item giving/attachments/throws, compact group confirmations and
+revival feedback. It retains the preview 7 integration with upstream SporeCoop
+0.7.2.1, including SporeKit 0.3.4 and its Steam/frame-loop diagnostics. Source:
 [jwhans0n/SporeCoopGA](https://github.com/jwhans0n/SporeCoopGA).
-The earlier preview evidence below retains its original version labels; it does
-not automatically validate every upstream change in this integrated build.
-See the [integration validation report](integration-ga-upstream-0.7.2.1.md) for
-the merged build's test results and compatibility limits.
+Preview 8 has targeted two-player native checks and a four-player beam-down
+confirmation check. See its [validation report](validation-ga-preview.8.md) for
+recorded binaries, results and remaining coverage. The earlier preview evidence below retains its original version labels;
+the [preview 7 integration report](integration-ga-upstream-0.7.2.1.md) records
+that build's completed checks, rather than validating preview 8 automatically.
 
 The native adventure adapter requires the exact GOG executable, SHA-256
 `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
@@ -15,14 +17,14 @@ Upstream calls this GOG 2024; the adventure RE notes call it March 2017 after th
 ModAPI address map. See [build identification](re/build-dc04.md). Steam and other
 same-code variants retain upstream base-stage support, but their native adventure
 adapter is disabled and adventure compatibility remains unvalidated. Every player
-needs Galactic Adventures and the same fork build (protocol 10); upstream
-0.7.0-0.7.2.1 clients cannot join this preview.
+needs Galactic Adventures and the same fork build (protocol 11); earlier GA
+previews and upstream 0.7.0-0.7.2.1 clients cannot join this preview.
 
 Preview `0.7.0-ga-preview.6` reduces traffic for stationary buildings and props and
 shares explosives, crates, power upgrades and teleporters. It retains group scenes,
 Replay, current captain identity/scale, keys/gates, the shared lobby, Mr Puzzle
 music, native captain creation, cancellation recovery and the performance fix.
-Install the same preview for every player; this version uses network protocol 10.
+Its protocol 10 results remain historical evidence for that preview.
 
 ## Start an adventure
 
@@ -39,7 +41,9 @@ Install the same preview for every player; this version uses network protocol 10
    the host, presses **Ready** explicitly.
 6. After loading and beam-down, everyone presses **Continue**. Gameplay and
    adventure clocks wait for every connected participant to confirm. Players who
-   confirm early see the party's confirmation status.
+   confirm early see each player's status in the native bottom black bar, to
+   the left of the check mark. A sent confirmation becomes Ready after the host
+   acknowledges it.
 
 The host controls shared objective and act progress. A qualifying action by any
 teammate can advance the party's goals. Late joins and reconnects wait for the next
@@ -60,7 +64,9 @@ Each player advances pages independently. **Finished** confirms that player's
 exit; the objective and clocks wait for the whole group. If another objective
 conversation is requested during one already in progress, it is queued and
 revalidated before presentation. A disconnected participant leaves the check.
-Cancelling an adventure from the waiting dialog restores the native menus.
+These confirmation checks no longer open the full co-op dialog automatically.
+**F9** still opens party/chat controls and the adventure cancellation action;
+cancelling restores the native menus.
 
 Any captain can pick up a colored key and open its matching gate. The host checks
 ownership, range and color, then shares native gate opening and key consumption.
@@ -73,6 +79,21 @@ friendly-fire settings do not reduce them. Crates retain their authored behavior
 a harmless crate does not acquire barrel damage. Carried and thrown objects keep
 spatial updates. Guests display approved effects while the host applies damage.
 
+Use the native Give interaction to hand an item to an NPC or eligible authored
+container. The host validates ownership, range and the recipient's native receive
+rules before applying the handoff. NPC tools and other held items use shared
+attachment state, retaining their native hand/slot placement instead of receiving
+competing loose-object transforms. This covers authored tools such as the Phyrus
+Farmer's hammers in Adventure Town; it does not add new item or objective rules.
+
+Captains can throw eligible handheld items toward each other using the native
+throw action. An alive captain with an available compatible hand slot catches
+the item when its flight crosses their native bounds. The host resolves the
+catch and publishes the new attachment. Timed hand bombs can be caught and
+thrown again while the original fuse continues. Contact grenades keep their
+native impact/explosion behavior and are excluded from automatic catches.
+An occupied hand or a native receive rejection prevents a catch.
+
 Health, speed, damage and shield pickups benefit only the collecting captain.
 Collection removes the shared pickup until its authored respawn. The host resolves
 simultaneous claims. Boost magnitude, refresh and expiry follow native properties;
@@ -84,6 +105,17 @@ preparation. Guests reuse installed stock resources and cached transferred asset
 This transfer is separate from gameplay traffic: unchanged static transforms stop
 recurring after a reliable baseline, while health/state changes remain reliable.
 Movement promotes a static object to regular spatial updates for that incarnation.
+
+Act music follows the game's native audio descriptor and inherited sample
+references. A valid track can use a different sample ID from its authored music
+ID; The Eighth Day's reported track is one such stock descriptor. Collection
+preserves the authored track, checks installed stock resources and rejects
+missing or unsupported custom audio. It does not replace music or build a list
+of exceptions for individual adventures.
+
+Each captain keeps native adventure lighting relative to their local position.
+The host's planet orientation is no longer copied to guests in adventures.
+Objective clocks, group holds, boost expiry and revival still use shared time.
 
 ## Difficulty
 
@@ -101,8 +133,21 @@ defaults.
 Revival restores 50% health and grants 2 seconds of damage protection. Damage to the
 rescuer, moving out of range or disconnecting resets revival progress. **Everyone
 being downed always fails the attempt**, including with automatic recovery enabled.
+Downed captains cannot walk, jump or issue gameplay orders; normal creature
+visual/effect updates continue. The revive aid shows a two-metre ground ring,
+progress bar and remaining revival time for nearby downed teammates. The optional
+automatic-recovery rule also shows its countdown. The aid does not change the
+revival radius, duration or interruption rules.
 
 ## Verified scope and current limits
+
+Preview 8's focused portable music tests and installed-data audit passed all
+23 distinct music values across 69 stock scenarios, including the reported
+The Eighth Day descriptor. These checks establish resource resolution, not
+audible playback or complete adventure playthroughs. Both clients also matched
+all eight authored music values in the copied Eighth Day native fixture. Its
+[validation report](validation-ga-preview.8.md) records those checks and the
+fixture limits. The results below retain their earlier preview labels.
 
 Two-player Adventure Town testing has covered personal captain transfer, shared
 entry, friendly fire at 0%, 25%, 50% and 100%, combat originating from either player,

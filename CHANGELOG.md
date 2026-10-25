@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+## [0.7.3.1-ga-preview.8] - 2026-10-25
+
+- Resolve act music through native audio descriptors and inherited sample
+  references, including The Eighth Day's music. Preserve authored IDs and reject
+  unsupported custom audio overrides instead of adding per-adventure allowlists.
+- Route guest item giving through native NPC/container receive behavior and share
+  complete held-item attachments, including NPC tools and replacement bindings.
+- Synchronize ordinary handheld throws and host-validated catches. Timed bombs
+  retain their existing fuse; contact grenades keep native impact behavior.
+- Show group beam-down/conversation confirmations in the native bottom black bar
+  beside its check mark. Add a two-metre revive ring, progress bar and timer.
+- Fence downed movement and orders while retaining native visual updates. Keep
+  adventure lighting local instead of copying the host's planet orientation;
+  shared gameplay clocks remain authoritative.
+- Use protocol 11 for item attachment and throw/catch messages; all players need
+  this preview. Adventure/captain resource bundle formats remain unchanged.
+- Record targeted two-player native acceptance and four-player beam-down UI
+  checks in [the preview 8 report](docs/validation-ga-preview.8.md), with remaining
+  coverage and delivery details.
+
 ## [0.7.3.0-ga-preview.7] - 2026-10-24
 
 Fork integration of upstream SporeCoop 0.7.2.1 and Galactic Adventures previews 1-6.

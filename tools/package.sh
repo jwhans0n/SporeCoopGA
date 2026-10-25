@@ -73,7 +73,7 @@ Based on SporeCoop by WoodyWizard: https://github.com/WoodyWizard/SporeCoop
 
 Install: extract this zip into SPORE\\SporebinEP1 and run install.bat (step by step: INSTALL.txt).
 Read GALACTIC-ADVENTURES.md for the adventure preview's verified cases and limits.
-All players need Galactic Adventures and this exact SporeCoopGA version (protocol 10).
+All players need Galactic Adventures and this exact SporeCoopGA version (protocol 11).
 Upstream SporeCoop 0.7.0-0.7.2.1 uses a different protocol and cannot join this preview.
 
 Base-stage support retains upstream GOG 2024 (sha256 dc04aee5...), Steam
@@ -101,8 +101,10 @@ F9 opens party/chat controls in game. Late joins wait for the next attempt.
 For other stages, the host loads a save or starts a game and shares that world.
 
 Fork releases and problem reports: https://github.com/jwhans0n/SporeCoopGA
-Updates use this fork's release source. Preview suffix ordering is not supported:
-install future preview builds manually from the fork's Releases page.
+Updates use published releases from this fork and skip prereleases. While no
+release exists, download sporecoop-zip from the latest successful main Actions
+build: https://github.com/jwhans0n/SporeCoopGA/actions/workflows/build.yml
+Extract it and keep SporeCoopSetup.exe beside its matching .pack file.
 Cheat console (Ctrl+Shift+C): coop host | coop join <ip> | coop leave.
 EOF
 # the toolchain the Makefile uses (LLVM_MINGW ?= ... there), unless set in the environment
@@ -113,6 +115,8 @@ cp "$ROOT/THIRD_PARTY_NOTICES.md" "$STAGE/THIRD_PARTY_NOTICES.txt"
 cp "$ROOT/third_party/minhook/LICENSE.txt" "$STAGE/SporeCoop/MinHook-LICENSE.txt"
 cp "$ROOT/docs/INSTALL.md" "$STAGE/INSTALL.txt"
 cp "$ROOT/docs/GALACTIC-ADVENTURES.md" "$STAGE/GALACTIC-ADVENTURES.md"
+cp "$ROOT/docs/validation-ga-preview.8.md" "$STAGE/validation-ga-preview.8.md"
+cp "$ROOT/docs/integration-ga-upstream-0.7.2.1.md" "$STAGE/integration-ga-upstream-0.7.2.1.md"
 mkdir -p "$STAGE/re"
 cp "$ROOT"/docs/re/{adventure,adventure-world,build-dc04}.md "$STAGE/re/"
 "$STRIP" "$STAGE/SporeCoop/sporekit.dll" "$STAGE/SporeCoop/mods/coop.dll" "$STAGE/SporeCoop/steam_api.sporekit.dll"
