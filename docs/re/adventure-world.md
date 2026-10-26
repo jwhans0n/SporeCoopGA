@@ -3100,9 +3100,9 @@ a field anywhere in that native payload. Compare decoded normalized payloads
 and the known marker fields before adding any opaque exclusion. Read-only
 receipt: `out/editor-native-re/c12-scale-readonly/receipt.json`.
 
-An OUT-only C13 diagnostic patch is prepared at
-`out/editor-native-re/c13-scale-diagnostic/diagnostic.patch`; it is not yet
-applied or native-tested. On this existing failure path it logs changed marker
+C13 adds bounded diagnostics to this existing failure path; actual native
+diagnostic acceptance is pending. The reviewed patch is retained at
+`out/editor-native-re/c13-scale-diagnostic/diagnostic.patch`. It logs changed marker
 `+20` scale and `+24` relative scale, plus raw `+220`/`+224` fields for at most
 eight placements. It also searches at most four embedded packages and reports
 the first 32 differing decoded payload bytes. Compressed size, index-declared

@@ -1,6 +1,7 @@
 #include "editor_native.h"
 #include "editor_native_bindings.h"
 #include "editor_native_tools.h"
+#include "net/dbpf.h"
 
 #include <algorithm>
 #include <array>
@@ -793,6 +794,67 @@ bool supported_changes(const Gesture& gesture,std::string& error){
     std::vector<uint8_t> left,right;
     if(!serialize(compared_before.p,left,error) || !serialize(compared_after.p,right,error))return false;
     if(left!=right){
+        // Diagnostic only: native serialization ends in a compressed DBPF.
+        // Compare its decoded body rather than mistaking its byte length for
+        // the authored field that actually changed. No native calls are added.
+        auto payload=[](const std::vector<uint8_t>& input,std::vector<uint8_t>& output){
+            static constexpr uint8_t magic[]={'D','B','P','F'};
+            auto cursor=input.begin();
+            for(unsigned attempt=0;attempt<4;++attempt){
+                cursor=std::search(cursor,input.end(),std::begin(magic),std::end(magic));
+                if(cursor==input.end())return false;
+                dbpf::Package package;
+                if(package.load(std::vector<uint8_t>(cursor,input.end()))){
+                    const auto* entry=package.find({0x01897C18,0x01897C18,0x01897C18});
+                    constexpr uint32_t diagnostic_limit=1u<<20;
+                    if(entry && entry->size<=diagnostic_limit && entry->usize<=diagnostic_limit){
+                        bool bounded=true;
+                        if(entry->refpack){
+                            const auto* packed=std::to_address(cursor)+entry->offset;
+                            const size_t header=entry->size && (packed[0]&0x80)?6:5;
+                            bounded=entry->size>=header;
+                            uint32_t declared=0;
+                            if(bounded)for(size_t i=2;i<header;++i)declared=(declared<<8)|packed[i];
+                            bounded=bounded && declared<=diagnostic_limit;
+                        }
+                        if(bounded && package.read(*entry,output))return output.size()<=diagnostic_limit;
+                    }
+                }
+                ++cursor;
+            }
+            return false;
+        };
+        if(H){
+            unsigned logged=0;
+            for(const auto& [id,to]:gesture.after.document.placements){
+                auto prior=gesture.before.document.placements.find(id);
+                if(prior==gesture.before.document.placements.end())continue;
+                auto* old_marker=marker(before.p,before_indices,id);
+                auto* new_marker=marker(after.p,after_indices,id);
+                if(!old_marker || !new_marker)continue;
+                const auto old_scale=skg::field<float>(old_marker,0x20),new_scale=skg::field<float>(new_marker,0x20);
+                const auto old_relative=skg::field<float>(old_marker,0x24),new_relative=skg::field<float>(new_marker,0x24);
+                if(old_scale==new_scale && old_relative==new_relative)continue;
+                H->log(M,SK_INFO,"Shared editor Scale diagnostic: placement=%llu:%u scale20=%.9g/%.9g relative24=%.9g/%.9g elevation220=%08X/%08X flags224=%08X/%08X",
+                    static_cast<unsigned long long>(id.id),id.generation,double(old_scale),double(new_scale),double(old_relative),double(new_relative),
+                    skg::field<uint32_t>(old_marker,0x220),skg::field<uint32_t>(new_marker,0x220),
+                    skg::field<uint32_t>(old_marker,0x224),skg::field<uint32_t>(new_marker,0x224));
+                if(++logged==8)break;
+            }
+            std::vector<uint8_t> decoded_before,decoded_after;
+            const bool decoded=payload(left,decoded_before) && payload(right,decoded_after);
+            std::string differences;
+            if(decoded){
+                unsigned recorded=0;
+                for(size_t i=0;i<std::min(decoded_before.size(),decoded_after.size()) && recorded<32;++i){
+                    if(decoded_before[i]==decoded_after[i])continue;
+                    char item[40];snprintf(item,sizeof item,"%zu:%02X>%02X ",i,unsigned(decoded_before[i]),unsigned(decoded_after[i]));
+                    differences+=item;++recorded;
+                }
+            }
+            H->log(M,SK_INFO,"Shared editor normalized payload diagnostic: decoded=%u size=%u/%u first32=%s",
+                unsigned(decoded),unsigned(decoded_before.size()),unsigned(decoded_after.size()),differences.c_str());
+        }
         const auto count=std::min(left.size(),right.size());
         size_t offset=0;while(offset<count && left[offset]==right[offset])++offset;
         char detail[128];
