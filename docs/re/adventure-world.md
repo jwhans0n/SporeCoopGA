@@ -3229,3 +3229,76 @@ classification; a retained ToolManager byte is not established as its cause.
 Receipts:
 `out/editor-native-candidate14/relative-only-save-reopen-retry/result.json` and
 `out/editor-native-candidate14/relative-only-large-native-save/result.json`.
+
+### Invalid placement cancels the current native entry, not the user's Undo
+
+The C14 red-Scale failure is an internal native cancellation routed through
+the entry-level Undo hook. Exact executable inspection verifies that `F03200`
+commits valid Scale at `F032BB -> F45920`, but its invalid/red branch calls
+`F030B0` at `F0329F`. That helper copies the selected marker identity, calls
+`F3BF00` at `F030E0`, and resolves/reselects the restored marker afterwards.
+`F3C9D0` resolves that identity in the restored marker pool; it does not copy
+the rejected Scale fields back. The finalizer clears ToolManager `+5` on both
+branches, so the observed invalid Scale is not proof of a stuck Tool byte.
+
+`F3BF00` checks native History `notEditing +20`, obtains `ownedEntry +24`,
+queries interface `0743BB11`, invokes its vtable `+10` Undo, clears/releases
+that owned entry and sets `notEditing` true. The exact assembly is important:
+Ghidra's initial function recovery treats the call as a PIC construction and
+joins the cancellation helper to another function. Raw `E8` call targets,
+instructions and stack returns establish the actual boundary.
+
+HistoryEntry constructor `F3CAE0` assigns the primary vtable `0148D26C` at
+`F3CAFA` and borrows its ScenarioData owner at `+0C`. Primary QueryInterface
+`F3CB70` accepts `0743BB11` and returns the same interface pointer with
+`ret 4`; vtable `+10` is already-verified `F464B0`, and `+14` is `F464C0`.
+The new `HistoryEntryVTable` symbol is read-only type evidence, not a callable
+native entry. The exact-executable verifier now checks all 33 symbols, the
+constructor assignment, these slots and QI bytes, the owned-current-entry
+dispatch, and both invalid-Scale cancellation caller edges. Existing verified
+`RestoreHistorySnapshot` (`F46400`, thiscall entry plus resource, `ret 4`)
+remains the only restoration call required by the proposed fix.
+
+The reviewed OUT adapter distinguishes cancellation only while native History
+owns an in-progress entry. It requires the exact entry captured by native
+Start, primary vtable, owner, native generation, monotonic gesture serial and
+cached project/epoch/local capability. It restores an independent before copy
+with the live local camera retained, then waits for the native finalizer and a
+later actual frame before asking Runtime to restore the latest canonical
+draft. This second restoration preserves disjoint commits accepted since
+Start; the before copy is not a replacement for the current canonical draft.
+Selection is retained by stable identity when it survives. Native mutation
+entry points and user history remain held until settlement. Unknown current
+entries never become chronological Undo; current failures request recovery,
+while replaced logical/native ownership retires only the stale hold. Runtime
+independently validates and deduplicates the cancellation ticket. No protocol
+change, global native Undo invocation or guessed native state write is needed.
+Status exposes the pending hold and monotonic shared cancellation serial. A
+separate saturating `ordinary_cancellations` counter observes only the exact
+ordinary owned current-entry branch before forwarding the original native
+Undo unchanged; committed history Undo and module-owned restoration are not
+counted. This permits an actual unshared red-placement comparison to establish
+that the original cancellation executed, rather than inferring it from an
+unchanged value after possibly ignored input. A scope change before finalizer
+entry retains Start's original ticket and retires it without restoring or
+faulting the replacement.
+
+The original C14 wrapper reproduces the routing defect in a controlled real
+i686 executable: in-progress entry cancellation calls OwnUndo, does not call
+the original native rollback, and leaves the rejected Scale value. The
+proposed production-cpp fixture passes 422 checks, covering ordinary native
+Undo, user chronological Undo, exact current-entry rollback, real frame delay,
+camera/selection retention, latest-canonical callback, duplicate finalization,
+input/history holds, unsupported entry/type, allocation failure, serial
+exhaustion, stale capability/project/epoch/native context and canonical
+restoration failure, plus ordinary diagnostic forwarding and pre-finalizer
+logical replacement. These are controlled ABI/ownership tests, not a running
+game pass. Actual ordinary unshared red cancellation, shared cancellation
+with an intervening disjoint commit, and the relative-only Scale acceptance
+branch remain pending the next isolated native candidate.
+
+Receipts: `out/editor-native-re/c15-scale-cancel.txt`,
+`out/editor-native-re/c15-scale-history-entry-asm.txt`,
+`out/editor-native-re/c15-scale-history-interface-asm.txt`, and
+`out/editor-native-re/c15-cancellation/` (OUT proposal, exact verifier report,
+controlled baseline and Win32 fixture).

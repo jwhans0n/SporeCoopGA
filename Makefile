@@ -68,6 +68,7 @@ $(B)/SporeCoopSetup.exe: installer/setup.cpp updater/winupdate.cpp updater/pack.
 
 # Portable editor transaction, durability, transport and owned-resource tests.
 EDITOR_CORE_SRC := mods/coop/net/editor_document.cpp
+SESSION_TRANSPORT_SRC := mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp
 EDITOR_WIRE_SRC := mods/coop/net/editor_protocol.cpp $(EDITOR_CORE_SRC) updater/sha256.cpp
 EDITOR_DELTA_SRC := mods/coop/net/editor_binary_delta.cpp updater/sha256.cpp
 EDITOR_PROJECT_SRC := mods/coop/editor_project.cpp mods/coop/net/editor_binary_delta.cpp mods/coop/net/adventure_assets.cpp mods/coop/net/dbpf.cpp $(EDITOR_WIRE_SRC)
@@ -98,8 +99,16 @@ test-editor:
 	$(B)/host/editor_project_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(EDITOR_SESSION_SRC) tests/editor_session_tests.cpp -o $(B)/host/editor_session_tests
 	$(B)/host/editor_session_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(SESSION_TRANSPORT_SRC) tests/session_transport_tests.cpp -o $(B)/host/session_transport_tests
+	$(B)/host/session_transport_tests
 
-test-editor-windows: $(B)/host/frame_metrics_tests.exe $(B)/host/editor_metrics_tests.exe $(B)/host/editor_native_bindings_tests.exe $(B)/host/editor_native_scale_tests.exe $(B)/host/editor_reopen_identity_tests.exe $(B)/host/editor_binary_delta_tests.exe $(B)/host/editor_document_tests.exe $(B)/host/editor_store_tests.exe $(B)/host/editor_protocol_tests.exe $(B)/host/editor_project_tests.exe $(B)/host/editor_session_tests.exe $(B)/host/editor_native_save_tests.exe $(B)/host/adventure_editor_preview_tests.exe $(B)/host/editor_runtime_windows_tests.exe $(B)/host/adventure_assets_native_tests.exe
+test-editor-windows: $(B)/host/frame_metrics_tests.exe $(B)/host/editor_metrics_tests.exe $(B)/host/editor_native_bindings_tests.exe $(B)/host/editor_native_scale_tests.exe $(B)/host/editor_reopen_identity_tests.exe $(B)/host/editor_binary_delta_tests.exe $(B)/host/editor_document_tests.exe $(B)/host/editor_store_tests.exe $(B)/host/editor_protocol_tests.exe $(B)/host/editor_project_tests.exe $(B)/host/editor_session_tests.exe $(B)/host/session_transport_tests.exe $(B)/host/editor_native_save_tests.exe $(B)/host/adventure_editor_preview_tests.exe $(B)/host/editor_runtime_windows_tests.exe $(B)/host/adventure_assets_native_tests.exe
+
+test-editor-windows: $(B)/host/editor_native_cancellation_tests.exe
+
+$(B)/host/editor_native_cancellation_tests.exe: tests/editor_native_cancellation_windows_tests.cpp mods/coop/editor_native.cpp mods/coop/editor_native.h mods/coop/editor_native_scale.h mods/coop/editor_native_bindings.h mods/coop/editor_native_tools.h mods/coop/net/dbpf.cpp $(ADVENTURE_ABI_HEADERS)
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/editor_native_cancellation_windows_tests.cpp mods/coop/net/dbpf.cpp -o $@
 
 $(B)/host/editor_metrics_tests.exe: tests/editor_metrics_tests.cpp mods/coop/editor_metrics.h mods/coop/net/editor_document.h
 	@mkdir -p $(B)/host
@@ -134,6 +143,9 @@ $(B)/host/editor_project_tests.exe: $(EDITOR_PROJECT_SRC) tests/editor_project_t
 $(B)/host/editor_session_tests.exe: $(EDITOR_SESSION_SRC) tests/editor_session_tests.cpp
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $^ -o $@ -lws2_32
+$(B)/host/session_transport_tests.exe: $(SESSION_TRANSPORT_SRC) tests/session_transport_tests.cpp mods/coop/net/session.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $(SESSION_TRANSPORT_SRC) tests/session_transport_tests.cpp -o $@ -lws2_32
 $(B)/host/editor_native_save_tests.exe: tests/editor_native_save_windows_tests.cpp mods/coop/editor_native_save.cpp mods/coop/editor_native_save.h mods/coop/editor_native.h mods/coop/editor_native_scale.h $(ADVENTURE_ABI_HEADERS)
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/editor_native_save_windows_tests.cpp -o $@

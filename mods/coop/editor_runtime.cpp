@@ -55,6 +55,21 @@ bool queued, frozen, beginning, closing, gc_due, recovery_available, scanned_rec
 bool native_playtesting, return_started, end_after_return, disconnected_return;
 bool save_publication_pending, before_apply_valid, native_copy_owned;
 bool native_attached, close_restored, close_preserve_offer;
+uint64_t observed_transport, retired_transport;
+struct TransportTeardown {
+    uint64_t transport = 0, native_generation = 0;
+    editor::wire::Context context;
+    editor::Peer local;
+};
+struct DeferredOffer {
+    uint64_t transport = 0;
+    editor::wire::Context context;
+    editor::Peer host, assigned;
+    std::vector<uint8_t> bytes;
+};
+std::optional<TransportTeardown> transport_teardown;
+std::optional<DeferredOffer> deferred_offer;
+std::optional<editor_native::CancellationTicket> settled_cancellation;
 std::string return_error;
 struct AdventureMessage {
     editor::wire::Context context;
@@ -109,6 +124,47 @@ struct PreviewSelection {
 std::optional<PreviewSelection> preview_selection;
 std::vector<editor::Scope> requested_scopes;
 
+// Packet dispatch only retires cached ownership. Native restoration waits for
+// the outside-frame drain, including when explicit Leave precedes role change.
+void retire_transport(bool explicit_stop) {
+    if (!controller || !C.session) return;
+    if (!transport_teardown) {
+        transport_teardown = TransportTeardown{observed_transport, native_generation,
+            controller->view().context, controller->view().local};
+        if (!closing) { closing = true; close_restored = false; }
+    }
+    retired_transport = std::max(retired_transport, explicit_stop ? C.session->transport_generation() : observed_transport);
+    if (deferred_offer && deferred_offer->transport <= retired_transport) deferred_offer.reset();
+    close_preserve_offer = false; reopen_saved.reset();
+    actions.clear(); pending.reset(); awaiting_operation.reset();
+    pending_preview_return.reset(); pending_preparation_cancel.reset(); preview_selection.reset();
+    requested_scopes.clear(); guarded_placements.clear(); observed_lease_grants.clear();
+    adventure_messages.clear(); adventure_message_bytes = 0;
+    beginning = false; recovery.reset(); pending_saved.reset(); incoming_resources.reset();
+    save_publication_pending = false; end_after_return = false;
+}
+void observe_transport() {
+    if (!C.session || transport_teardown || C.session->transport_generation() == observed_transport) return;
+    if (controller && (controller->view().phase != Phase::Idle || native_attached || closing || recovery || beginning || adventure_native::editor_preview()))
+        retire_transport(false);
+    else observed_transport = C.session->transport_generation();
+}
+bool authenticate_offer(uint8_t from, const uint8_t* bytes, size_t size, DeferredOffer& out) {
+    if (!C.session || from || C.session->role() != net::Role::Client || !C.session->connected() ||
+        size <= 9 || size > editor::wire::kPacketBytes + 9) return false;
+    net::Reader copy(bytes, size);
+    editor::Peer sender{copy.u8(), copy.u32()}; const auto recipient = copy.u32();
+    editor::wire::Message message; std::string error;
+    if (sender.slot || !sender.generation || !recipient || !editor::wire::read(copy, message, sender, true, error)) return false;
+    const auto* offer = std::get_if<editor::wire::Offer>(&message.payload);
+    if (!offer || offer->host != sender || offer->assigned.slot != C.session->my_id() || offer->assigned.generation != recipient) return false;
+    out = {C.session->transport_generation(), message.context, sender, offer->assigned, {bytes, bytes + size}};
+    return true;
+}
+bool teardown_scope_matches() {
+    return !transport_teardown || (controller && controller->view().context == transport_teardown->context &&
+        controller->view().local == transport_teardown->local);
+}
 void tell(const std::string& text) {
     status = text;
     if (H) H->log(M, SK_INFO, "editor: %s", text.c_str());
@@ -524,6 +580,41 @@ bool same_authored(const editor::Placement& a, const editor::Placement& b) {
     return a.class_id == b.class_id && a.act_id == b.act_id && a.protected_object == b.protected_object &&
         a.position == b.position && a.rotation == b.rotation && a.scale == b.scale && a.properties == b.properties;
 }
+editor_native::GestureScope current_gesture_scope() {
+    if (!controller || !native_attached || closing || recovery || transport_teardown || !C.session ||
+        !C.session->connected() || C.session->transport_generation() != observed_transport) return {};
+    const auto& view = controller->view();
+    return {view.context.project, view.context.epoch, view.local};
+}
+bool cancelled_gesture(const editor_native::CancellationTicket& ticket, std::string& error) {
+    // Native already rolled its rejected entry back to an independent before
+    // copy. This is not a user Undo and must never submit a history operation.
+    // Late tickets from another editor, transport or logical project are inert.
+    if (!controller || !native_attached || closing || frozen || recovery || transport_teardown ||
+        !session_active() || ticket.scope != current_gesture_scope() || ticket.generation != native_generation) return true;
+    const auto native = editor_native::state();
+    if (native.generation != ticket.generation || adventure_native::editor_preview() ||
+        (controller->view().phase != Phase::Ready && controller->view().phase != Phase::Preparing)) return true;
+    if (!ticket.gesture || !ticket.serial) { error = "The native cancellation ticket is incomplete"; return false; }
+    if (settled_cancellation && settled_cancellation->scope == ticket.scope && settled_cancellation->generation == ticket.generation &&
+        (ticket.serial <= settled_cancellation->serial || ticket.gesture <= settled_cancellation->gesture)) return true;
+    if (pending || awaiting_operation || !native.ready || native.gesture || editor_native_save::busy()) {
+        error = "The cancelled native gesture could not settle while another operation is pending"; return false;
+    }
+    if (!editor_native::validate(current_native, controller->state().document, error) ||
+        !editor_native::restore(current_native, error)) return false;
+    if (native.selected.size() == 1 && controller->state().document.placements.contains(native.selected.front()) &&
+        !editor_native::select_placement(native.selected.front(), error)) return false;
+    std::vector<editor::LeaseToken> release;
+    for (const auto& held : controller->view().local_leases) if (held.owner == controller->view().local)
+        release.push_back({held.scope, held.token});
+    if (!release.empty() && !controller->release_leases(release, error)) return false;
+    guarded_placements.clear(); requested_scopes.clear(); last_request = 0;
+    controller->clear_preview(); preview_active = false; last_presence_value.reset();
+    settled_cancellation = ticket;
+    tell("Spore cancelled the invalid placement gesture. The latest committed draft is restored.");
+    return true;
+}
 void captured(editor_native::Gesture gesture) {
     if (!controller || !session_active() || frozen || closing || recovery) return;
     if (gesture.generation != native_generation || editor_native::state().generation != native_generation) {
@@ -651,7 +742,7 @@ void refresh() {
     next.can_cancel = next.confirming && next.host && !closing && !recovery && !next.frozen;
     next.playtesting = v.phase == Phase::Playing;
     next.can_return = next.playtesting && next.host;
-    bool editing = next.active && !closing && !recovery && v.phase == Phase::Ready && !next.frozen && !awaiting_operation && !native.gesture && !editor_native_save::busy();
+    bool editing = native.ready && next.active && !closing && !recovery && v.phase == Phase::Ready && !next.frozen && !awaiting_operation && !native.gesture && !editor_native_save::busy();
     for (const auto& gesture : controller->state().history) if (gesture.operation.author == v.local) {
         next.can_undo = next.can_undo || gesture.applied;
         next.can_redo = next.can_redo || (!gesture.applied && gesture.redo_available);
@@ -854,21 +945,22 @@ void close_session(bool preserve_offer = false) {
     preview_selection.reset();
     observed_lease_grants.clear();
     if (!closing) { reopen_saved.reset(); closing = true; close_restored = false; close_preserve_offer = preserve_offer; }
-    close_preserve_offer |= preserve_offer || controller->view().phase == Phase::Offered;
+    close_preserve_offer = !transport_teardown && (close_preserve_offer || preserve_offer || controller->view().phase == Phase::Offered);
     // An accepted edit remains owned until active replicas have applied and
     // durably covered it. Keep pumping the controller and party transport while
     // authoring is held; reliable receipt alone does not prove application.
-    if (host() && session_active() && !controller->settled()) {
+    if (!transport_teardown && host() && session_active() && !controller->settled()) {
         status = "Delivering the last committed edit before ending shared editing"; return;
     }
     const auto native = editor_native::state();
     // Keep native input/history guards installed until the owned editor has
     // settled. A different generation belongs to a different native context.
-    if (editor_native_save::busy() || (native_attached && native.generation == native_generation && native.editing &&
+    const bool owned_context = native_attached && native.generation == native_generation && teardown_scope_matches();
+    if ((editor_native_save::busy() && (!transport_teardown || owned_context)) || (owned_context && native.editing &&
         (!native.ready || native.gesture))) {
         status = "Finishing the native gesture or save before ending shared editing"; return;
     }
-    if (native_attached && native.generation == native_generation && native.editing) {
+    if (owned_context && native.editing) {
         std::string error;
         if (!close_restored) {
             if (!editor_native::restore(current_native, error)) { frozen = true; tell("Ending shared editing is waiting for canonical restoration: " + error); return; }
@@ -883,7 +975,7 @@ void close_session(bool preserve_offer = false) {
         // that generation so its preserved durable draft can be recovered here.
         native_generation = editor_native::state().generation;
     }
-    const bool keep_offer = close_preserve_offer;
+    const bool keep_offer = !transport_teardown && close_preserve_offer && C.session && C.session->connected();
     const auto saved = controller->saved_coverage();
     if (!keep_offer && !frozen && native_copy_owned && native.ready && native.editing &&
         editor_native::state().generation == native_generation && controller->view().phase == Phase::Ready &&
@@ -903,6 +995,7 @@ void close_session(bool preserve_offer = false) {
     if (!keep_offer) controller->end(); pending.reset(); awaiting_operation.reset(); requested_scopes.clear(); guarded_placements.clear(); incoming_resources.reset();
     recovery.reset(); beginning = false; frozen = false; save_publication_pending = false;
     end_after_return = false; disconnected_return = false; pending_saved.reset();
+    pending_preview_return.reset();
     adventure_messages.clear(); adventure_message_bytes = 0;
     store.close(); closing = false; native_attached = close_restored = close_preserve_offer = false;
     tell(keep_offer ? "The previous playtest ended. Save your draft and return to Galaxy to join the new editing offer." :
@@ -940,6 +1033,37 @@ bool finish_return(std::string& error, bool restore_selection = false) {
     native_generation = editor_native::state().generation;
     status = "Returned to the committed adventure draft";
     return true;
+}
+void service_transport_teardown() {
+    if (!transport_teardown) return;
+    if (adventure_native::editor_preview()) {
+        // A replacement native context is not the editor owned by this cleanup.
+        // Still finish our GA lease, without stopping or restoring that context.
+        if (!teardown_scope_matches() || editor_native::state().generation != transport_teardown->native_generation) {
+            if (adventure::active() || adventure::outcome_locked()) { adventure::cancel("The editor party transport ended"); return; }
+            if (adventure::cleanup_pending()) return;
+            adventure::reset(); adventure_native::clear_editor_preview();
+            native_playtesting = return_started = false; return_error.clear();
+        } else {
+            disconnected_return = true;
+            if (!return_ready({editor::wire::ControlKind::HostReturnEditor, 1, 0, false, 0})) return;
+            // Native Stop normally retains the owner. Recheck before restoration.
+            if (editor_native::state().generation != transport_teardown->native_generation) return;
+            std::string error;
+            if (!finish_return(error)) { frozen = true; tell(error); return; }
+        }
+    }
+    close_session(false);
+    if (closing) return;
+    transport_teardown.reset(); observed_transport = C.session->transport_generation();
+    auto offered = std::move(deferred_offer); deferred_offer.reset();
+    if (offered && offered->transport == observed_transport && offered->transport > retired_transport) {
+        DeferredOffer checked;
+        if (authenticate_offer(0, offered->bytes.data(), offered->bytes.size(), checked) &&
+            checked.context == offered->context && checked.host == offered->host && checked.assigned == offered->assigned) {
+            net::Reader reader(offered->bytes.data(), offered->bytes.size()); controller->on_message(0, reader);
+        }
+    }
 }
 void finish_recovery() {
     if (closing || !recovery) return;
@@ -1038,9 +1162,13 @@ void execute(Action action) {
         break;
     case Action::Undo: undo_redo(false); break;
     case Action::Redo: undo_redo(true); break;
-    case Action::Save:
-        if (cached.can_save && check_native_integrity(error) && !(native_copy_owned ? editor_native_save::save(error) : editor_native_save::save_as(error))) tell(error);
+    case Action::Save: {
+        const auto native = editor_native::state();
+        if (cached.can_save && controller->view().phase == Phase::Ready && !frozen && !recovery &&
+            native.ready && !native.gesture && native.generation == native_generation && !editor_native_save::busy() &&
+            check_native_integrity(error) && !(native_copy_owned ? editor_native_save::save(error) : editor_native_save::save_as(error))) tell(error);
         break;
+    }
     case Action::Playtest:
         if (controller->view().phase == Phase::Playing) { if (host() && !controller->return_editor(error)) tell(error); }
         else if (cached.can_playtest && !pending && !save_publication_pending && !editor_native_save::busy() &&
@@ -1094,6 +1222,8 @@ void SK_CDECL drain(void*) {
     queued = false;
     if (!controller) return;
     try {
+        observe_transport();
+        if (transport_teardown) { service_transport_teardown(); refresh(); return; }
         submit_pending_gesture();
         controller->tick(now_ms());
         observe_lease_grants();
@@ -1184,6 +1314,7 @@ void request_preview_return(const PreviewReturnScope& request) {
     if (current_preview_return(request)) { pending_preview_return = request; schedule(); }
 }
 void action(Action value) {
+    if (transport_teardown || (C.session && C.session->transport_generation() <= retired_transport)) return;
     if (value == Action::Return) {
         if (controller) {
             const auto& view = controller->view();
@@ -1207,6 +1338,7 @@ void action(Action value) {
 bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     H = host_api; M = mod; C = std::move(context); reopen_saved.reset(); projection_override.reset();
     if (!C.session) return false;
+    observed_transport = C.session->transport_generation(); retired_transport = 0; transport_teardown.reset(); deferred_offer.reset(); settled_cancellation.reset();
     editor_session::Callbacks callbacks;
     callbacks.host_hooks.validate = [](const auto&, const auto&, const auto&, std::string& error) {
         auto native = editor_native::state();
@@ -1359,11 +1491,13 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         if (recovery) return recovery->state.document.schema.contains(editor_native::kRelativeScaleProperty);
         return !native_attached || current_native.document.schema.contains(editor_native::kRelativeScaleProperty);
     };
+    native.gesture_scope = current_gesture_scope;
+    native.cancelled = cancelled_gesture;
     native.gesture = captured;
     native.history = [](bool redo) { action(redo ? Action::Redo : Action::Undo); };
     native.history_available = [](bool redo) { return redo ? cached.can_redo : cached.can_undo; };
-    native.failure = [](const std::string& error) { frozen = true; tell(error); };
-    native.notice = [](const std::string& message) { tell(message); };
+    native.failure = [](const std::string& error) { if (!transport_teardown) { frozen = true; tell(error); } };
+    native.notice = [](const std::string& message) { if (!transport_teardown) tell(message); };
     native.gate = [](const std::vector<editor::ObjectId>& selection) {
         const auto state = editor_native::state();
         if (closing || !state.ready || state.generation != native_generation) return false;
@@ -1385,22 +1519,35 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     editor_native_save::Ctx saving;
     saving.shared_active = [] { return session_active() || recovery.has_value() || beginning || closing || native_attached; };
     saving.saved = [](editor::ResourceKey key) {
+        if (transport_teardown || (native_attached && editor_native::state().generation != native_generation)) return;
         if (recovery && recovery->saving) { recovery->saved_key = key; return; }
         if (beginning) { start_saved(); return; }
         saved_native(key);
     };
-    saving.cancelled = [] { beginning = false; if (recovery && recovery->saving) { recovery.reset(); frozen = true; } status = "Native save cancelled; the draft is preserved"; };
-    saving.error = [](const std::string& error) { beginning = false; if (recovery && recovery->saving) { recovery.reset(); frozen = true; } tell(error); };
+    saving.cancelled = [] { if (transport_teardown) return; beginning = false; if (recovery && recovery->saving) { recovery.reset(); frozen = true; } status = "Native save cancelled; the draft is preserved"; };
+    saving.error = [](const std::string& error) { if (transport_teardown) return; beginning = false; if (recovery && recovery->saving) { recovery.reset(); frozen = true; } tell(error); };
     saving.owned_preview = adventure_native::editor_preview;
     saving.return_requested = [] { action(Action::Return); };
     editor_native_save::init(H, M, std::move(saving));
     refresh(); return available;
 }
 void tick(double) { editor_native::tick(); editor_native_save::tick(); schedule(); }
-void on_message(uint8_t from, net::Reader& r) { if (controller) controller->on_message(from, r); schedule(); }
+void on_message(uint8_t from, net::Reader& r) {
+    observe_transport();
+    if (transport_teardown) {
+        DeferredOffer offer;
+        if (C.session->transport_generation() > retired_transport &&
+            (!deferred_offer || deferred_offer->transport < C.session->transport_generation()) &&
+            authenticate_offer(from, r.cur(), r.left(), offer)) deferred_offer = std::move(offer);
+        r.skip(r.left());
+    } else if (controller && C.session && C.session->connected() && C.session->transport_generation() > retired_transport) controller->on_message(from, r);
+    else r.skip(r.left());
+    schedule();
+}
 void on_adventure_message(uint8_t from, net::Reader& r) {
     const size_t size = r.left();
-    if (!controller || !session_active()) { r.skip(size); return; }
+    observe_transport();
+    if (transport_teardown || !controller || !session_active()) { r.skip(size); return; }
     const auto& v = controller->view();
     if (v.phase != Phase::Preparing && v.phase != Phase::Playing && v.phase != Phase::Returning) { r.skip(size); return; }
     if (size > net::kMaxPacket || adventure_messages.size() >= 512 || size > (1u << 20) - adventure_message_bytes) {
@@ -1409,16 +1556,13 @@ void on_adventure_message(uint8_t from, net::Reader& r) {
     AdventureMessage message{v.context, v.playtest_round, from, {r.cur(), r.cur() + size}};
     r.skip(size); adventure_message_bytes += size; adventure_messages.push_back(std::move(message)); schedule();
 }
-void on_join(uint8_t id) { if (controller) controller->on_join(id); schedule(); }
-void on_leave(uint8_t id) { if (controller) controller->on_leave(id); schedule(); }
+void on_join(uint8_t id) { observe_transport(); if (controller && !transport_teardown) controller->on_join(id); schedule(); }
+void on_leave(uint8_t id) { observe_transport(); if (controller && !transport_teardown) controller->on_leave(id); schedule(); }
 void session_ended() {
-    if (!controller || closing) return;
-    if (adventure_native::editor_preview()) { disconnected_return = true; schedule(); }
-    else close_session();
-    refresh();
+    retire_transport(true); schedule();
 }
 void mode_changed(uint32_t, uint32_t) { schedule(); }
-void shutdown() { reopen_saved.reset(); projection_override.reset(); if (controller) { controller->end(); controller.reset(); } store.close(); adventure_native::clear_editor_preview(); editor_native_save::shutdown(); editor_native::shutdown(); actions.clear(); pending_preview_return.reset(); pending_preparation_cancel.reset(); preview_selection.reset(); observed_lease_grants.clear(); queued = false; closing = native_attached = close_restored = close_preserve_offer = false; H = nullptr; }
+void shutdown() { settled_cancellation.reset(); transport_teardown.reset(); deferred_offer.reset(); observed_transport = retired_transport = 0; reopen_saved.reset(); projection_override.reset(); if (controller) { controller->end(); controller.reset(); } store.close(); adventure_native::clear_editor_preview(); editor_native_save::shutdown(); editor_native::shutdown(); actions.clear(); pending_preview_return.reset(); pending_preparation_cancel.reset(); preview_selection.reset(); observed_lease_grants.clear(); queued = false; closing = native_attached = close_restored = close_preserve_offer = false; H = nullptr; }
 bool active() { return cached.active; }
 bool authoring() {
     if (!controller || (controller->view().phase == Phase::Playing && native_playtesting)) return false;

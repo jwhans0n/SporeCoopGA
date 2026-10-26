@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
+#include <limits>
 
 namespace net {
 
@@ -34,8 +35,12 @@ static uint32_t new_conn_id(uint32_t salt)
 bool Session::host(uint16_t port, const std::string& name, std::string& err)
 {
     leave("restart");
+    if (transport_generation_ == std::numeric_limits<uint64_t>::max()) {
+        err = "transport generation exhausted"; return false;
+    }
     if (!sock_.open(port, &err))
         return false;
+    ++transport_generation_;
     role_ = Role::Host;
     my_id_ = 0;
     my_name_ = name;
@@ -47,6 +52,9 @@ bool Session::host(uint16_t port, const std::string& name, std::string& err)
 bool Session::join(const std::string& addr, const std::string& name, std::string& err)
 {
     leave("restart");
+    if (transport_generation_ == std::numeric_limits<uint64_t>::max()) {
+        err = "transport generation exhausted"; return false;
+    }
     Endpoint ep;
     if (!Endpoint::parse(addr, kDefaultPort, ep)) {
         err = "cannot resolve " + addr;
@@ -54,11 +62,12 @@ bool Session::join(const std::string& addr, const std::string& name, std::string
     }
     if (!sock_.open(0, &err))
         return false;
+    ++transport_generation_;
     role_ = Role::Client;
     my_name_ = name;
     welcomed_ = false;
     join_started_ = now_ms();
-    auto p = std::make_unique<Peer>();
+    auto p = std::make_shared<Peer>();
     p->id = 0;
     p->conn.remote = ep;
     p->conn.conn_id = new_conn_id(sock_.local_port());
@@ -78,6 +87,8 @@ void Session::leave(const char* why)
 {
     if (role_ == Role::None)
         return;
+    // Saturate only on final teardown; new transports fail rather than wrap.
+    if (transport_generation_ != std::numeric_limits<uint64_t>::max()) ++transport_generation_;
     uint32_t now = now_ms();
     for (auto& p : peers_) {
         // unreliable, in three packets: a reliable BYE waited behind any earlier lost message (and
@@ -292,6 +303,7 @@ void Session::drop_peer(size_t idx, uint8_t reason)
 
 void Session::handle_msg(Peer& p, uint8_t type, Reader& r)
 {
+    const auto message_transport = transport_generation_;
     if (role_ == Role::Host) {
         if (type == MSG_HELLO) {
             if (p.accepted)
@@ -347,6 +359,7 @@ void Session::handle_msg(Peer& p, uint8_t type, Reader& r)
             st.id = p.id; // never trust the id from the wire
             if (cb.player_state)
                 cb.player_state(st);
+            if (transport_generation_ != message_transport) return;
             Writer w;
             st.write(w);
             for (auto& o : peers_)
@@ -361,6 +374,7 @@ void Session::handle_msg(Peer& p, uint8_t type, Reader& r)
             c.id = p.id;
             if (cb.chat)
                 cb.chat(c.id, c.text);
+            if (transport_generation_ != message_transport) return;
             Writer w;
             c.write(w);
             broadcast_reliable(MSG_CHAT, w, p.id);
@@ -409,11 +423,13 @@ void Session::handle_msg(Peer& p, uint8_t type, Reader& r)
             if (pl.id == 0)
                 p.name = pl.name;
         logf(cb, "joined as player %u (host '%s', %d players)", my_id_, p.name.c_str(), (int)roster_.size());
-        if (cb.connected)
-            cb.connected();
-        for (auto& pl : roster_)
-            if (pl.id != my_id_ && cb.player_join)
-                cb.player_join(pl);
+        const auto joined = roster_;
+        if (cb.connected) cb.connected();
+        if (transport_generation_ != message_transport) return;
+        for (const auto& pl : joined) {
+            if (pl.id != my_id_ && cb.player_join) cb.player_join(pl);
+            if (transport_generation_ != message_transport) return;
+        }
         break;
     }
     case MSG_REJECT: {
@@ -473,10 +489,17 @@ void Session::handle_msg(Peer& p, uint8_t type, Reader& r)
 
 void Session::handle_packet(Peer& p, const uint8_t* data, size_t n, uint32_t now)
 {
+    // BYE/Reject and user callbacks can Leave or restart while Connection is
+    // delivering this packet. Retain its owner until on_packet unwinds, then
+    // discard remaining messages if that callback changed the transport.
+    const auto found = std::find_if(peers_.begin(), peers_.end(), [&](const auto& owner) { return owner.get() == &p; });
+    if (found == peers_.end()) return;
+    const auto owner = *found;
+    const auto packet_transport = transport_generation_;
     p.conn.stats.bytes_recv += n;
     p.conn.on_packet(data, n, now, [&](uint8_t type, Reader& r) {
-        if (role_ != Role::None)
-            handle_msg(p, type, r);
+        if (role_ != Role::None && transport_generation_ == packet_transport)
+            handle_msg(*owner, type, r);
     });
 }
 
@@ -497,6 +520,7 @@ void Session::flush(uint32_t now)
 
 void Session::update()
 {
+    const auto update_transport = transport_generation_;
     if (role_ == Role::None)
         return;
     uint32_t now = now_ms();
@@ -533,6 +557,7 @@ void Session::update()
                     if (peers_[k].get() == p) {
                         logf(cb, "a new connection from %s replaces player %u", from.str().c_str(), p->id);
                         drop_peer(k, 0);
+                        if (transport_generation_ != update_transport) return;
                         break;
                     }
                 p = nullptr;
@@ -541,7 +566,7 @@ void Session::update()
         if (!p) {
             if (role_ != Role::Host || peers_.size() >= 16)
                 continue;
-            auto np = std::make_unique<Peer>();
+            auto np = std::make_shared<Peer>();
             np->conn.remote = from;
             np->conn.conn_id = conn;
             np->conn.created_ms = now;
@@ -549,8 +574,8 @@ void Session::update()
             p = peers_.back().get();
         }
         handle_packet(*p, buf, n, now);
-        if (role_ == Role::None)
-            return; // left during handling
+        if (transport_generation_ != update_transport || role_ == Role::None)
+            return; // Left or restarted during packet callbacks; old now is retired.
     }
 
     // timeouts
@@ -572,9 +597,10 @@ void Session::update()
             auto& p = peers_[i];
             bool dead = p->bye || (p->accepted ? now - p->conn.last_recv_ms > timeout_ms
                                                : now - p->conn.created_ms > 10000);
-            if (dead)
+            if (dead) {
                 drop_peer(i, p->bye ? 0 : 1);
-            else
+                if (transport_generation_ != update_transport) return;
+            } else
                 i++;
         }
     }

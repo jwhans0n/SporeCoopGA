@@ -124,6 +124,24 @@ def verify(pe):
     raw=pe.read(0xF005C6,5)
     if raw[0]!=0xE8 or 0xF005CB+struct.unpack('<i',raw[1:])[0]!=0xF40840:
         raise ValueError('Native Scale companion calculation caller mismatch')
+    # F3BF00 invokes the owned, in-progress entry Undo to cancel invalid native
+    # placement. Its QI(0743BB11) returns this exact primary history interface.
+    for site, encoded in [(0xF3CAFA,'c7066cd24801'),
+                          (0xF3CB70,'8bc18b4c2404'),
+                          (0xF3CB7E,'81f911bb4307'),(0xF3CB94,'c20400'),
+                          (0xF3BF00,'803df865600100'),(0xF3BF09,'8b0dfc656001'),
+                          (0xF3BF18,'6811bb4307'),(0xF3BF27,'8b4210'),
+                          (0xF3BF2A,'ffd0'),(0xF3BF47,'c605f865600101')]:
+        raw=bytes.fromhex(encoded)
+        if pe.read(site,len(raw))!=raw:
+            raise ValueError('Owned history cancellation receipt mismatch '+hex(site))
+    for slot, target in [(0x0C,0xF3CB70),(0x10,0xF464B0),(0x14,0xF464C0)]:
+        if pe.u32(0x148D26C+slot)!=target:
+            raise ValueError('History primary interface slot mismatch '+hex(slot))
+    for site, target in [(0xF0329F,0xF030B0),(0xF030E0,0xF3BF00)]:
+        raw=pe.read(site,5)
+        if raw[0]!=0xE8 or site+5+struct.unpack('<i',raw[1:])[0]!=target:
+            raise ValueError('Native invalid-scale cancellation caller mismatch '+hex(site))
     # Native history has vector0, cursor14, editing flag20, owned entry24.
     if pe.read(0xF4582A,5) != bytes.fromhex('b9d8656001'):
         raise ValueError('History global reference mismatch')
@@ -141,6 +159,8 @@ def verify(pe):
     return [{'name':'SporeCoop::Editor::'+n,'address':a,'note':s}
             for n,a,p,r,s,c,k in ENTRIES] + [dict(name='SporeCoop::Editor::History',address=0x16065D8,
             note='global cScenarioEditHistory object; vector0,cursor14,notEditing20,ownedEntry24; not callable'),
+            dict(name='SporeCoop::Editor::HistoryEntryVTable',address=0x148D26C,
+                 note='read-only primary history interface vtable; ctorF3CAFA, QI0743BB11 returns this; Undo10/Redo14; F3BF00 owned current-entry cancellation uses Undo10, not chronological history'),
             dict(name='SporeCoop::Editor::Context',address=0x16C7B88,
                  note='global native editor context pointer; act0,ownedselectionGameData4,auxiliary8/10,tool68; verified EFC410/EFE810/F03770 references'),
             dict(name='SporeCoop::Editor::ToolManager',address=0x15AD298,

@@ -53,6 +53,9 @@ public:
     size_t pending_to(uint8_t id) const;
     bool send_unreliable_to(uint8_t id, uint8_t type, const Writer& w);
 
+    // Process-local transport identity. Never sent on the wire or reused after
+    // a successful Host/Join or an active Leave, including failed restarts.
+    uint64_t transport_generation() const { return transport_generation_; }
     Role role() const { return role_; }
     uint8_t my_id() const { return my_id_; }
     bool connected() const { return role_ == Role::Host || (role_ == Role::Client && welcomed_); }
@@ -73,13 +76,14 @@ private:
     uint8_t alloc_id() const;
     bool retired(uint32_t conn) const;
 
+    uint64_t transport_generation_ = 0;
     Role role_ = Role::None;
     UdpSocket sock_;
     std::string my_name_;
     uint8_t my_id_ = 0;
     bool welcomed_ = false;
     uint32_t join_started_ = 0;
-    std::vector<std::unique_ptr<Peer>> peers_;
+    std::vector<std::shared_ptr<Peer>> peers_;
     std::vector<PlayerInfo> roster_; // client: known players (incl. host)
     std::vector<uint32_t> retired_;  // host: conn ids of dropped peers (their late packets are ignored)
 };

@@ -1,6 +1,6 @@
 # Shared Adventure Editor: implementation validation
 
-Report revision 14, C14 typed scale and native file reopen, 2026-10-26. Branch:
+Report revision 15, cancellation and transport teardown follow-up, 2026-10-26. Branch:
 `feat/ga-adventure-editor`. The portable core and transport checkpoint is local
 commit `216f8b0`; native integration is recorded at `0a35c7b`, with lab tools at
 `a9b844f`. The C10 integration checkpoint is `071f6a4`, depending on network
@@ -826,3 +826,55 @@ the fix. Receipt: `out/editor-tombstone-c15/validation.json`; the Runtime output
 is `out/editor-integrated-c15/runtime-quick.txt`. No protocol, wire layout or
 Core ownership policy changed. These results do not establish actual native
 Clone Redo acceptance for the corrected candidate, which has not been deployed.
+
+### C15 cancellation and transport teardown, before native deployment
+
+The invalid Scale failure is now reproduced by a fixture that compiles the
+production native adapter for the actual i686 ABI. Native in-progress entry
+cancellation must restore that entry, rather than submit the player's prior
+action as Undo. The adapter verifies the current history entry, its primary
+interface, owner, native generation and the logical project/epoch/author captured
+at gesture Start. It restores a private before snapshot, preserves the local
+camera and selection, and waits for native finalization plus an actual frame
+advance before reconciling the latest committed draft. Cancelled or replaced
+contexts cannot restore or freeze a newer editor. Settlement submits no Core
+history operation. Unsupported cancellation entries freeze with recovery guidance.
+
+The exact GOG verifier passes 33 editor entries, including the read-only history
+interface vtable and its cancellation callers. The production adapter fixture
+passes 422 checks. A read-only ordinary-cancellation counter will distinguish an
+actual native red-placement rollback from ignored input in the game comparison.
+The Runtime fixture also covers a pre-existing own action, an intervening peer
+edit, duplicate/stale cancellation tickets, restoration failure and disabled
+Save/Undo/playtest controls while native settlement is held. These controlled
+tests do not establish actual native cancellation acceptance. Receipts:
+`out/editor-native-re/c15-cancellation/manifest.json` and
+`out/editor-cancellation-c15/validation.json`. The final Runtime fixture passes
+281 focused, 4,416 quick and 5,068 full checks, including the 24 MiB resource,
+cached join and recovery cases.
+
+The stale Offered state has a separate Runtime reproducer. Transport teardown
+now retires its old editor view even when native cleanup is already waiting.
+Cleanup remains scoped to the owned editor generation and logical capability;
+a newer native context is untouched. At most one authenticated offer from a
+later connected transport can wait until old cleanup finishes. Ordinary connected
+End/reoffer behavior remains available. Explicit Leave, remote disconnect,
+repeated cleanup, delayed callbacks and immediate rejoin are covered by fixtures.
+
+Those tests also exposed an existing transport use-after-free: receiving BYE or
+Reject could destroy the Connection while its packet callback was still running.
+Packet dispatch now retains its private peer owner until callback return, and a
+monotonic process-local transport generation retires remaining callbacks and the
+old update timestamp after Leave/rejoin. No wire layout changes. The transport
+fixture passes 63 checks on Win32 and Linux address/undefined/leak sanitizers.
+The teardown Runtime fixture passes 401 focused checks and 4,788 full checks;
+the editor UDP fixture passes 20,143 sanitizer checks. Timing-dependent polling
+counts vary. Receipt: `out/editor-transport-teardown-c15/validation.json`.
+
+All 17 freshly rebuilt GA Win32 regression fixtures pass with the transport
+change. The portable suite passes, and the published feature branch's
+[GitHub build and tests](https://github.com/jwhans0n/SporeCoopGA/actions/runs/40384731915)
+pass at `a7e37bf`. These precede the combined C15 native candidate acceptance.
+Native cancellation, tombstone Redo and reconnect still require actual game
+checks. The four-player WAN budget, bulk contention, large-editor FPS and
+settled memory gates remain open.

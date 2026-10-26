@@ -26,6 +26,7 @@ Ctx C;
 uintptr_t a_mode, a_history, a_act, a_ctor, a_read, a_write, a_copy, a_entry, a_restore, a_alloc;
 uintptr_t a_context, a_tools, a_marker, a_object, a_clone_marker, a_create_marker, a_delete_marker, a_apply_marker;
 uintptr_t a_loading, a_layout_find, a_display_vtable, a_erase_history, a_discard_history, a_copy_marker_rows, a_insert_marker;
+uintptr_t a_entry_vtable;
 bool supported, applying, queued;
 bool fence_queued;
 double last_fence;
@@ -274,6 +275,21 @@ struct HeldActor { editor::ObjectId id; void* object; };
 std::vector<HeldActor> gesture_actors;
 void* gesture_before_resource;
 std::map<uint32_t,editor::ObjectId> gesture_before_bindings;
+void* gesture_owner;
+void* gesture_entry;
+uint64_t gesture_generation=0,gesture_serial=0,gesture_counter=0,cancellation_counter=0;
+uint64_t ordinary_cancellations=0;
+GestureScope gesture_scope_pin;
+struct PendingCancellation {
+    CancellationTicket ticket;
+    void* mode;
+    void* owner;
+    uint64_t frame;
+    std::vector<editor::ObjectId> selected;
+    std::string failure;
+};
+std::optional<PendingCancellation> cancellation;
+bool cancellation_queued=false,cancellation_settling=false;
 using SelectFn=void(SK_THISCALL*)(void*,void*);
 using ToolFn=uint32_t(SK_THISCALL*)(void*,uint32_t,uint32_t,uint32_t);
 using CreateFn=bool(SK_THISCALL*)(void*,uint32_t);
@@ -320,8 +336,11 @@ void SK_CDECL drain(void*) {
 }
 void SK_THISCALL start(void* self) {
     editor_native::state();
-    bool observe=!applying && active() && self==data(mode()) && *reinterpret_cast<uint8_t*>(a_history+0x20);
+    bool observe=!applying && !cancellation && active() && self==data(mode()) && *reinterpret_cast<uint8_t*>(a_history+0x20);
     if(observe){
+        gesture_owner=self;gesture_entry=nullptr;gesture_generation=generation;
+        gesture_scope_pin=C.gesture_scope?C.gesture_scope():GestureScope{};
+        gesture_serial=gesture_counter==UINT64_MAX?0:++gesture_counter;
         gesture_clone=input_clone;
         release(gesture_before_resource);
         gesture_before_resource=construct();
@@ -332,6 +351,7 @@ void SK_THISCALL start(void* self) {
     }
     original_start(self);
     if(observe && !*reinterpret_cast<uint8_t*>(a_history+0x20)){
+        gesture_entry=*reinterpret_cast<void**>(a_history+0x24);
         for(auto actor:gesture_actors)release(actor.object);
         gesture_actors.clear();
         Rows map;
@@ -344,6 +364,94 @@ void SK_THISCALL start(void* self) {
         }
         gesture_before_bindings=bindings;
     }
+}
+
+bool valid_scope(const GestureScope& scope){
+    return scope.epoch && scope.author.slot<4 && scope.author.generation &&
+        std::any_of(scope.project.begin(),scope.project.end(),[](uint8_t byte){return byte!=0;});
+}
+bool cancellation_current(const PendingCancellation& item){
+    const auto scope=C.gesture_scope?C.gesture_scope():GestureScope{};
+    return active() && item.owner==data(mode()) && item.mode==mode() && item.ticket.generation==generation &&
+        item.ticket.gesture==gesture_serial && item.ticket.serial==cancellation_counter &&
+        scope==item.ticket.scope;
+}
+void SK_CDECL drain_cancellation(void*){
+    cancellation_queued=false;
+    if(!H || !cancellation)return;
+    const auto observed=editor_native::state();
+    if(!cancellation_current(*cancellation)){
+        cancellation.reset();return; // Only the replaced operation's hold is retired.
+    }
+    if(H->frame_index()<=cancellation->frame || observed.gesture || applying)return;
+    cancellation_settling=true;
+    const auto ready=editor_native::state();
+    if(!ready.ready){cancellation_settling=false;return;}
+    const auto item=*cancellation;
+    std::string error=item.failure;
+    bool okay=false;
+    if(error.empty()){
+        // Native finalization may have cleared selection. Preserve the live
+        // independent choice, if that stable placement survived cancellation.
+        void* target=item.selected.empty()?nullptr:marker_for_id(resource(item.owner),item.selected.front());
+        void* object=target?skg::thiscall<void*>(a_object,item.owner,target):nullptr;
+        void* tools=*reinterpret_cast<void**>(a_tools);
+        if(tools)original_select(tools,object);
+        refresh_selection();
+        if(C.cancelled)okay=C.cancelled(item.ticket,error);
+        else error="Native cancellation settlement is unavailable. Recover the committed draft.";
+    }
+    const bool current=cancellation_current(item);
+    if(cancellation && cancellation->ticket==item.ticket)cancellation.reset();
+    cancellation_settling=false;
+    if(current && !okay && C.failure)
+        C.failure(error.empty()?"Native cancellation could not restore the committed draft. Recover it.":error);
+}
+
+void cancel_current_entry(void* self){
+    // F3BF00 invokes this exact native entry Undo from the invalid-placement
+    // finalizer. It is not a request to move the user's chronological cursor.
+    refresh_selection();
+    const auto scope=C.gesture_scope?C.gesture_scope():GestureScope{};
+    editor_native::state();
+    // A reentrant finalizer owns the same existing settlement; never replace
+    // its ticket, restore twice or turn it into a chronological Undo.
+    if(cancellation)return;
+    const bool entry_owned=skg::readable(self,0x18) && skg::field<uintptr_t>(self,0)==a_entry_vtable &&
+        self==gesture_entry && self==*reinterpret_cast<void**>(a_history+0x24) &&
+        skg::field<void*>(self,0x0C)==data(mode()) && gesture_owner==data(mode()) &&
+        gesture_generation==generation && gesture_serial && gesture_before_resource;
+    const bool owned=entry_owned && valid_scope(gesture_scope_pin) && scope==gesture_scope_pin;
+    const bool exhausted=cancellation_counter==UINT64_MAX;
+    if(!exhausted)++cancellation_counter;
+    // A known entry retains Start's logical identity even if End/recovery has
+    // replaced that scope before its finalizer. The stale ticket then retires
+    // only its old hold without restoring or freezing the replacement.
+    PendingCancellation item{{entry_owned?gesture_scope_pin:scope,generation,gesture_serial,cancellation_counter},mode(),data(mode()),
+        H->frame_index(),selection,{}};
+    if(exhausted){
+        item.failure="Native cancellation serial is exhausted. Recover the committed draft.";
+    }else if(!owned){
+        item.failure="An in-progress native cancellation did not match its owned entry. Recover the committed draft.";
+    }else{
+        Owned before(construct());
+        if(!before.p)item.failure="Native cancellation could not allocate its before snapshot. Recover the committed draft.";
+        else{
+            skg::thiscall<void*>(a_copy,before.p,gesture_before_resource);
+            memcpy(skg::ptr_add<void>(before.p,0x2C30),skg::ptr_add<void>(resource(item.owner),0x2C30),0x20);
+            applying=true;
+            skg::thiscall<void>(a_restore,self,before.p);
+            applying=false;
+            bindings=gesture_before_bindings;
+        }
+    }
+    cancellation=std::move(item);
+    release(gesture_before_resource);gesture_before_resource=nullptr;
+    for(auto actor:gesture_actors)release(actor.object);
+    gesture_actors.clear();gesture_before_bindings.clear();
+    // A synchronous host dispatcher still cannot settle inside the native
+    // finalizer: the ticket requires a subsequent actual frame in the drain.
+    if(!cancellation_queued){cancellation_queued=true;H->run_outside_frame(drain_cancellation,nullptr);}
 }
 void SK_THISCALL select_native(void* self,void* object){
     original_select(self,object);
@@ -371,6 +479,7 @@ bool tool_rejection(size_t reason,uint32_t action,void* context,const State& obs
 uint32_t SK_THISCALL tool_native(void* self,uint32_t action,uint32_t a,uint32_t b){
     const State observed=editor_native::state();
     if(!applying && active() && (action==1 || action==6 || action==11)){
+        if(cancellation){++rejected;return 1;}
         refresh_selection();
         void* context=*reinterpret_cast<void**>(a_context);
         if(legacy_scale_blocked(action,tracks_relative_scale())){
@@ -414,6 +523,7 @@ uint32_t SK_THISCALL tool_native(void* self,uint32_t action,uint32_t a,uint32_t 
 void SK_THISCALL delete_native(void* self){
     editor_native::state();
     if(!applying && active()){
+        if(cancellation){++rejected;return;}
         refresh_selection();
         if(selection.empty() || !C.gate || !C.gate(selection)) {++rejected;return;}
     }
@@ -422,6 +532,7 @@ void SK_THISCALL delete_native(void* self){
 bool SK_THISCALL create_native(void* self,uint32_t class_id){
     editor_native::state();
     if(!applying && active()){
+        if(cancellation){++rejected;return false;}
         // Native EFEDC0 routes class -2 to authored avatar placement F432C0,
         // which is outside the shared placement roster and protected scope.
         if(class_id==UINT32_MAX-1 || !C.structure_gate || !C.structure_gate(class_id)){++rejected;return false;}
@@ -432,6 +543,7 @@ bool SK_THISCALL clone_selection_native(void* self,void* object){
     editor_native::state();
     std::optional<editor::ObjectId> source;
     if(!applying && active()){
+        if(cancellation){++rejected;return false;}
         void* context=*reinterpret_cast<void**>(a_context);
         void* marker=object?skg::thiscall<void*>(a_marker,data(mode()),object):nullptr;
         Rows map;
@@ -536,33 +648,46 @@ void SK_THISCALL commit(void* self) {
     if (!queued) { queued = true; H->run_outside_frame(drain, nullptr); }
 }
 void SK_THISCALL undo_native(void* self) {
-    if (!applying && active()) { if (C.history) C.history(false); return; }
+    editor_native::state();
+    if (!applying && active()) {
+        if(cancellation)return;
+        if(!*reinterpret_cast<uint8_t*>(a_history+0x20)){
+            cancel_current_entry(self);return;
+        }
+        if (C.history) C.history(false); return;
+    }
+    // Observe the original ordinary cancellation branch without changing it.
+    // User history Undo has no matching ownedEntry24 and is not counted.
+    if(!applying && editing() && !*reinterpret_cast<uint8_t*>(a_history+0x20) &&
+       self==*reinterpret_cast<void**>(a_history+0x24) && skg::readable(self,0x18) &&
+       skg::field<uintptr_t>(self,0)==a_entry_vtable && skg::field<void*>(self,0x0C)==data(mode()) &&
+       ordinary_cancellations!=UINT64_MAX)++ordinary_cancellations;
     original_undo(self);
 }
 void SK_THISCALL redo_native(void* self) {
-    if (!applying && active()) { if (C.history) C.history(true); return; }
+    if (!applying && active()) { if (!cancellation && C.history) C.history(true); return; }
     original_redo(self);
 }
 void SK_THISCALL history_undo(void* self){
     if(!applying && active() && self==reinterpret_cast<void*>(a_history)){
-        if(C.history)C.history(false);return;
+        if(!cancellation && C.history)C.history(false);return;
     }
     original_history_undo(self);
 }
 void SK_THISCALL history_redo(void* self){
     if(!applying && active() && self==reinterpret_cast<void*>(a_history)){
-        if(C.history)C.history(true);return;
+        if(!cancellation && C.history)C.history(true);return;
     }
     original_history_redo(self);
 }
 bool SK_THISCALL has_undo(void* self){
     if(!applying && active() && self==reinterpret_cast<void*>(a_history))
-        return C.history_available && C.history_available(false);
+        return !cancellation && C.history_available && C.history_available(false);
     return original_has_undo(self);
 }
 bool SK_THISCALL has_redo(void* self){
     if(!applying && active() && self==reinterpret_cast<void*>(a_history))
-        return C.history_available && C.history_available(true);
+        return !cancellation && C.history_available && C.history_available(true);
     return original_has_redo(self);
 }
 
@@ -640,6 +765,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     a_write=H->sym("Simulator::cScenarioResource::Write");
     a_copy=H->sym("SporeCoop::Editor::CopyScenarioResource");
     a_entry=H->sym("SporeCoop::Editor::HistoryEntryCtor");
+    a_entry_vtable=H->sym("SporeCoop::Editor::HistoryEntryVTable");
     a_restore=H->sym("SporeCoop::Editor::RestoreHistorySnapshot");
     a_alloc=H->sym("SporeCoop::Editor::Allocate");
     a_context=H->sym("SporeCoop::Editor::Context");
@@ -657,7 +783,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     a_discard_history=H->sym("SporeCoop::Editor::DiscardHistoryEntry");
     a_copy_marker_rows=H->sym("SporeCoop::Editor::CopyMarkerRows");
     a_insert_marker=H->sym("SporeCoop::Editor::InsertMarker");
-    supported = a_mode && a_history && a_act && a_ctor && a_read && a_write && a_copy && a_entry && a_restore && a_alloc &&
+    supported = a_mode && a_history && a_act && a_ctor && a_read && a_write && a_copy && a_entry && a_entry_vtable && a_restore && a_alloc &&
         a_context && a_tools && a_marker && a_object && a_clone_marker && a_create_marker && a_delete_marker && a_apply_marker && a_loading && a_layout_find && a_erase_history && a_discard_history && a_copy_marker_rows && a_insert_marker;
     if (!supported) return false;
     supported = install("SporeCoop::Editor::StartHistory", (void*)start, (void**)&original_start) &&
@@ -681,6 +807,8 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
 
 void shutdown() {
     ++generation;
+    cancellation.reset();cancellation_queued=cancellation_settling=false;
+    gesture_owner=gesture_entry=nullptr;gesture_generation=gesture_serial=0;gesture_scope_pin={};
     for (auto item : pending){release(item.entry);release(item.before);}
     release(gesture_before_resource);gesture_before_resource=nullptr;
     pending.clear();
@@ -690,7 +818,9 @@ void shutdown() {
 }
 
 void tick(){
-    if(!H || fence_queued)return;
+    if(!H)return;
+    if(cancellation && !cancellation_queued){cancellation_queued=true;H->run_outside_frame(drain_cancellation,nullptr);}
+    if(fence_queued)return;
     double now=H->time_seconds();
     if(now-last_fence<0.2)return;
     last_fence=now;fence_queued=true;H->run_outside_frame(fence_ui,nullptr);
@@ -716,7 +846,7 @@ State state() {
     void* container=skg::readable(layout,0x18)?skg::field<void*>(layout,0x14):nullptr;
     // data124 is invalidated by native thumbnail generation even in a settled
     // editor and preview. Require the successful native shell load instead.
-    s.ready=s.editing && display_valid && skg::field<int>(display,0x1C)==0 && skg::readable(container,0x8C) &&
+    s.ready=(!cancellation || cancellation_settling) && s.editing && display_valid && skg::field<int>(display,0x1C)==0 && skg::readable(container,0x8C) &&
         skg::readable(loading,0x371) && !skg::field<bool>(loading,0x370);
     s.playtesting=s.entry==0 && skg::field<int>(m,0xCC)==2;
     void* context=a_context?*reinterpret_cast<void**>(a_context):nullptr;
@@ -1219,10 +1349,11 @@ bool selection_pose(editor::ObjectId& object,editor::ObjectId& act,editor::Pose&
 }
 
 std::string status() {
-    auto s=state(); char b[300];
-    snprintf(b,sizeof b,"editor_native available=%u editing=%u ready=%u playtesting=%u entry=%u act=%u generation=%llu gesture=%u history=%u/%u captures=%llu restores=%llu rejected=%llu",
+    auto s=state(); char b[384];
+    snprintf(b,sizeof b,"editor_native available=%u editing=%u ready=%u playtesting=%u entry=%u act=%u generation=%llu gesture=%u history=%u/%u captures=%llu restores=%llu rejected=%llu cancellation=%u cancellation_serial=%llu ordinary_cancellations=%llu",
         s.available,s.editing,s.ready,s.playtesting,s.entry,s.act,(unsigned long long)s.generation,s.gesture,
-        s.history_cursor,s.history_size,(unsigned long long)captures,(unsigned long long)restores,(unsigned long long)rejected);
+        s.history_cursor,s.history_size,(unsigned long long)captures,(unsigned long long)restores,(unsigned long long)rejected,
+        unsigned(cancellation.has_value()),(unsigned long long)cancellation_counter,(unsigned long long)ordinary_cancellations);
     return b;
 }
 } // namespace editor_native

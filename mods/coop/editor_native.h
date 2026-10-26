@@ -51,9 +51,26 @@ struct Gesture {
     std::optional<editor::ObjectId> clone_source;
 };
 
+struct GestureScope {
+    editor::ProjectId project{};
+    uint64_t epoch = 0;
+    editor::Peer author;
+    bool operator==(const GestureScope&) const = default;
+};
+struct CancellationTicket {
+    GestureScope scope;
+    uint64_t generation = 0, gesture = 0, serial = 0;
+    bool operator==(const CancellationTicket&) const = default;
+};
+
 struct Ctx {
     // active gates only this shared document, never unrelated native editing.
     std::function<bool()> active;
+    // Cached logical identity, captured before an owned native gesture starts.
+    std::function<GestureScope()> gesture_scope;
+    // Native validation cancelled the current entry, not the user's history.
+    // Called outside Present after the finalizer and actual frame advance.
+    std::function<bool(const CancellationTicket&, std::string&)> cancelled;
     std::function<void(Gesture)> gesture;
     std::function<void(bool)> history; // false Undo, true Redo.
     // Cached chronological availability; native toolbar queries perform no work.
