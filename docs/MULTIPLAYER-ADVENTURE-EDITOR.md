@@ -125,6 +125,14 @@ Do not remove project artifacts while a project is active. Resource packages can
 retain native references beyond a playtest; they cannot be deleted or unmounted
 using an arbitrary cache eviction policy.
 
+For native round-trip investigation, `coop.editor inspect bytes OFFSET COUNT`
+exports at most 4,096 owned serialized bytes per call as hex, together with the
+full snapshot's size and SHA-256. It uses the existing read-only native capture
+outside the render frame, keeps no extra snapshot, and performs no file writes.
+An audit must require the same full hash and size on every page and verify the
+reassembled bytes before comparing opaque authored data. This is a diagnostic,
+not an editor mutation or recovery action.
+
 ## Party playtest
 
 The host selects **Playtest** after outstanding edits settle. Every participant,

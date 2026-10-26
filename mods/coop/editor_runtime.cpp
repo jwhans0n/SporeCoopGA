@@ -1815,6 +1815,36 @@ std::string debug(const std::vector<std::string>& args) {
                 " redo=" + std::to_string(gesture.redo_available) + " " + gesture.summary + "\n";
         return result;
     }
+    if (controller && args.size() > 1 && args[0] == "inspect") {
+        const std::string usage = "Usage: coop.editor inspect bytes OFFSET COUNT(1..4096)";
+        auto number = [](const std::string& value, size_t limit, size_t& result) {
+            if (value.empty() || value.size() > 9) return false;
+            size_t parsed = 0;
+            for (char c : value) {
+                if (c < '0' || c > '9') return false;
+                parsed = parsed * 10 + size_t(c - '0');
+                if (parsed > limit) return false;
+            }
+            result = parsed; return true;
+        };
+        size_t offset = 0, count = 0;
+        if (args.size() != 4 || args[1] != "bytes" || !number(args[2], 128u << 20, offset) ||
+            !number(args[3], 4096, count) || !count) return usage;
+        editor_native::Snapshot native;
+        std::string error;
+        if (!editor_native::capture(native, error)) return error;
+        if (offset > native.bytes.size()) return "NATIVE_BYTES_REJECTED: Offset exceeds the captured resource";
+        count = std::min(count, native.bytes.size() - offset);
+        std::string result = "NATIVE_BYTES size=" + std::to_string(native.bytes.size()) +
+            " offset=" + std::to_string(offset) + " count=" + std::to_string(count) +
+            " sha256=" + upd::sha256_hex(native.bytes) + "\nhex=";
+        static constexpr char digits[] = "0123456789abcdef";
+        result.reserve(result.size() + count * 2 + 1);
+        for (size_t i = offset; i < offset + count; ++i) {
+            result += digits[native.bytes[i] >> 4]; result += digits[native.bytes[i] & 15];
+        }
+        return result + "\n";
+    }
     if (controller && !args.empty() && (args[0] == "objects" || args[0] == "check" || args[0] == "roundtrip" || args[0] == "inspect")) {
         std::string error;
         editor_native::Snapshot native;

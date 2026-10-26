@@ -1140,3 +1140,14 @@ Receipt:
 Together with the strict four-player pass, this closes C16's large-editor FPS
 gate. It does not establish resource turnover, gameplay FPS or future candidate
 performance.
+
+An additional read-only `inspect bytes OFFSET COUNT` diagnostic exports owned
+native serialization in pages of at most 4,096 bytes, with the complete snapshot
+hash and size on every page. It retains no extra snapshot and writes no files.
+Its Win32 Runtime checks cover exact hex output, end-of-buffer, malformed and
+overflowing offsets/counts, output bounds, and unchanged native resources,
+restoration count, canonical state and durable checkpoint. Quick Runtime passes
+5,250 checks and full Runtime passes 5,901. This is not yet in the deployed C16
+DLL; actual cold opaque-data comparison awaits the integrated next candidate.
+The full fixture's 24 MiB closure remains synthetic test data, not genuine bulk
+network acceptance. Build: `out/editor-audit-c17/host/editor_runtime_windows_tests.exe`.

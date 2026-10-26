@@ -481,6 +481,23 @@ static void test_missing_authored_captain_blocks_prepare() {
     CHECK(inspection.find("placements=1 classes=1 acts=1 act=0 bytes=")==0);
     CHECK(inspection.find("native_sha256="+upd::sha256_hex(before))!=std::string::npos);
     CHECK(inspection.find("document_semantic_sha256=")!=std::string::npos&&native[0].snapshot.bytes==before&&native[0].restores==restores);
+    const auto state_before_audit=runtime_host::controller->state();
+    const auto durable_before_audit=runtime_host::store.snapshot();
+    const auto page=runtime_host::debug({"inspect","bytes","0","4096"});
+    const auto page_count=std::min(size_t(4096),before.size());
+    CHECK(page.starts_with("NATIVE_BYTES size="+std::to_string(before.size())+" offset=0 count="+std::to_string(page_count)+" sha256="+upd::sha256_hex(before)+"\nhex="));
+    CHECK(page.size()<12u*1024);
+    const auto hex_start=page.find("\nhex=")+5;
+    CHECK(page.size()-hex_start==page_count*2+1);
+    const char* hex="0123456789abcdef";
+    for(size_t i=0;i<page_count;++i){CHECK(page[hex_start+i*2]==hex[before[i]>>4]);CHECK(page[hex_start+i*2+1]==hex[before[i]&15]);}
+    const auto tail=runtime_host::debug({"inspect","bytes",std::to_string(before.size()),"4096"});
+    CHECK(tail.ends_with("\nhex=\n")&&tail.find(" count=0 ")!=std::string::npos);
+    CHECK(runtime_host::debug({"inspect","bytes",std::to_string(before.size()+1),"1"}).starts_with("NATIVE_BYTES_REJECTED"));
+    for(const auto& args:std::vector<std::vector<std::string>>{{"inspect","bytes","0","0"},{"inspect","bytes","0","4097"},{"inspect","bytes","-1","1"},{"inspect","bytes","134217729","1"},{"inspect","bytes","42949672960","1"},{"inspect","bytes","x","1"},{"inspect","bytes","0","1","extra"}})
+        CHECK(runtime_host::debug(args).starts_with("Usage:"));
+    CHECK(native[0].snapshot.bytes==before&&native[0].restores==restores);
+    CHECK(runtime_host::controller->state()==state_before_audit&&runtime_host::store.snapshot()==durable_before_audit);
     CHECK(native[0].save_callbacks.shared_active&&native[0].save_callbacks.shared_active());
     native[0].snapshot.captain={};runtime_host::refresh();CHECK(!runtime_host::view().can_playtest);
     CHECK(runtime_host::view().status.find("authored captain")!=std::string::npos);
