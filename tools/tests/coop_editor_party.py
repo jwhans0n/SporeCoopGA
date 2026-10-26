@@ -285,7 +285,9 @@ class EditorParty(EditorPair):
         safety = self.ownership.verify_windows()
         row = {'label': label, 'time': time.time(), 'states': [], 'safety': safety}
         for game in self.all_games:
-            self.verify(game); game.record(label)
+            self.verify(game)
+            if not getattr(self, 'compact_records', False):
+                game.record(label)
             faults = game.call('exc')
             if 'total faults: 0' not in faults:
                 raise FixtureError('Native faults on instance ' + str(game.instance) + ': ' + faults)
@@ -374,6 +376,46 @@ class EditorParty(EditorPair):
             raise FixtureError('Native placement body is outside the visible world viewport: '
                                + object_id + ' at ' + repr(point))
         return point
+
+    def gesture(self, game, label, action):
+        revision = status(self.host)['revision']
+        def committed():
+            state = status(self.host)
+            if state.get('frozen'):
+                raise FixtureError('Editor froze after ' + label + ': ' + state['text'])
+            if state['revision'] > revision + 1:
+                raise FixtureError(label + ' produced duplicate canonical gestures')
+            if state['revision'] == revision + 1:
+                self.converge(revision + 1); self.record(label)
+                return True
+            return False
+        for attempt in range(3):
+            # A previous input may complete after its observation window.
+            # Never issue another native action before checking that outcome.
+            if committed(): return
+            self.verify(game)
+            before = status(game)
+            action()
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                if committed(): return
+                current = status(game)
+                if (current.get('captures') == before.get('captures') and
+                        current.get('rejected',0) > before.get('rejected',0) and
+                        not current.get('gesture')):
+                    leases = game.call('coop.editor leases')
+                    if any(int(ms) >= 5000 for ms in re.findall(r'^lease .* remaining_ms=(\d+)',leases,re.M)):
+                        self.result.setdefault('prompt_lease_retries',[]).append(dict(
+                            label=label,attempt=attempt+1,time=time.time(),leases=leases,
+                            native_before=before['text'],native_after=current['text']))
+                        self.write()
+                        # This native action never started capture. Repeat the
+                        # ordinary gesture while its visible grant is fresh.
+                        break
+                time.sleep(.2)
+        if committed(): return
+        self.record(label + '-failed')
+        raise FixtureError('No canonical gesture accepted for ' + label)
 
     def palette_create(self, game):
         # These points have ordinary Alpine placement receipts. Their terrain
@@ -487,8 +529,10 @@ class EditorParty(EditorPair):
             self.selected(game, object_id)
             before_move = self.objects(self.host)[object_id]['position']
             radius = math.sqrt(sum(n*n for n in before_move))
-            if radius < 545:
-                raise FixtureError('The new native actor is below the verified601470 land fixture: radius=' + str(radius))
+            self.result.setdefault('creation_radii',{})[str(game.instance)] = radius
+            # A clear fallback terrain point has a different native elevation.
+            # Actual selection and the immediately verified Move establish
+            # interactability rather than assuming601470's specific radius.
             self.gesture(game, f'author-{index}-move', lambda g=game, obj=object_id, n=index: self.move_object(g,obj,-35-30*n))
             after_move = self.objects(self.host)[object_id]['position']
             if after_move == before_move:
@@ -810,31 +854,41 @@ class EditorParty(EditorPair):
             memory_reason='Raw retention window; sustained bound and retained-resource attribution need review',
             memory_author=self.host.instance, memory_object=object_id,
             memory_native_cap=self.args.history_cap, memory_required_post_cap=self.args.post_cap_cycles,
+            memory_body_offset=self.args.body_offset, memory_hit_checks=[],
+            memory_prewarm_requested=getattr(self.args,'prewarm_gestures',0), memory_prewarm_completed=0,
             memory_samples=[], memory_performance_scope='Four actual native editors; no FPS sampling')
 
-        def sample(cycle):
+        def sample(cycle, append=True):
             self.ownership.verify_windows()
             row = {'cycle': cycle, 'time': time.time(), 'processes': {}}
             for game in self.all_games:
                 state = status(game)
                 cursor, size = parse_native_history(state['text'])
-                content = game.call('coop.adventure status')
+                # The editor status appends the actual native asset registry.
+                # The general adventure coordinator status has no such counter.
+                content = '\n'.join(line for line in state['text'].splitlines()
+                                    if line.startswith('adventure content:'))
                 registered = re.search(r'\bregistered=(\d+)', content)
                 if not registered:
                     raise FixtureError('Registered native package counter is unavailable; attribution cannot proceed')
                 inspect = game.call('coop.editor inspect')
+                history = game.call('coop.editor history')
+                core_count = re.search(r'\bcount=(\d+)',history)
+                native_size = re.search(r'\bbytes=(\d+)',inspect)
+                if not core_count or not native_size:
+                    raise FixtureError('Core history/native byte counts are unavailable for retention attribution')
                 row['processes'][str(game.instance)] = dict(
                     pid=self.records[game.instance]['pid'], **memory(self.records[game.instance]['pid']),
                     revision=state['revision'], durable=state['durable'],
                     history_cursor=cursor, history_size=size, registered=int(registered[1]),
-                    native_status=state['text'], resource_status=content, inspect=inspect)
-            self.result['memory_samples'].append(row); self.write()
+                    core_history_count=int(core_count[1]), native_serialized_bytes=int(native_size[1]),
+                    selection=state.get('selection'), native_status=state['text'],
+                    resource_status=content, inspect=inspect, core_history=history)
+            if append:
+                self.result['memory_samples'].append(row); self.write()
             return row
 
-        initial = sample(0)
-        host_key = str(self.host.instance)
-        cap_cycle = 0 if initial['processes'][host_key]['history_size'] == self.args.history_cap else None
-        for cycle in range(1, self.args.cycles + 1):
+        def move(cycle, label):
             for game in self.all_games:
                 game.call('coop.uistate 0')
             time.sleep(1.4)
@@ -844,12 +898,64 @@ class EditorParty(EditorPair):
                 raise FixtureError('The verified memory-cycle actor is outside the local camera')
             source = (round(feet[0]), round(feet[1] - self.args.body_offset))
             target = (source[0] + (8 if cycle % 2 else -8), source[1])
-            self.gesture(self.host, f'memory-{cycle}-edit', lambda: self.slow_drag(self.host, source, target))
+            if any(not (356 <= p[0] < 1024 and 71 <= p[1] < 724) for p in (source,target)):
+                raise FixtureError('Memory-cycle input is outside the visible native world viewport: '
+                                   + repr((source,target)))
+            self.result['memory_hit_checks'].append(dict(cycle=cycle,source=source,target=target,
+                label=label,hits=self.host.call(f'coop.ui at {source[0]} {source[1]}')))
+            self.write()
+            self.gesture(self.host, label, lambda: self.slow_drag(self.host, source, target))
             after = self.objects(self.host)
-            if after[object_id]['position'] == before[object_id]['position'] or any(
-                    after[key]['position'] != value['position'] for key, value in before.items() if key != object_id):
+            if (set(after) != set(before) or
+                    after[object_id]['position'] == before[object_id]['position'] or
+                    any(after[key]['position'] != value['position'] for key,value in before.items() if key != object_id) or
+                    any(after[key][field] != value[field] for key,value in before.items() for field in ('class','scale'))):
                 raise FixtureError('Memory-cycle Move did not change only the intended stable placement')
+            if status(self.host).get('selection') != object_id:
+                raise FixtureError('Memory-cycle Move did not select the intended stable placement')
+
+        prewarm = getattr(self.args,'prewarm_gestures',0)
+        if prewarm:
+            self.result['memory_before_prewarm'] = sample(-1,False)
+            prior_compact = getattr(self,'compact_records',False)
+            try:
+                for gesture in range(1,prewarm+1):
+                    # Every move keeps normal native input, exact single-commit
+                    # and all-peer convergence checks. Save full screenshots
+                    # periodically; compact receipts still retain native checks.
+                    self.compact_records = gesture % 16 != 0 and gesture != prewarm
+                    move(gesture,f'memory-prewarm-{gesture}-edit')
+                    self.result['memory_prewarm_completed'] = gesture; self.write()
+            finally:
+                self.compact_records = prior_compact
+            time.sleep(self.args.settle_seconds)
+        host_key = str(self.host.instance)
+        if prewarm:
+            warmed = sample(-2,False)
+            self.result['memory_after_prewarm'] = warmed
+            before_prewarm = self.result['memory_before_prewarm']['processes']
+            if any(row['core_history_count'] != 128 for row in warmed['processes'].values()):
+                raise FixtureError('Genuine prewarm did not fill the unchanged 128-gesture semantic history bound')
+            if warmed['processes'][host_key]['history_size'] != self.args.history_cap:
+                raise FixtureError('Genuine prewarm did not fill the native history bound')
+            if any(row['registered'] != before_prewarm[key]['registered'] for key,row in warmed['processes'].items()):
+                raise FixtureError('Registered native packages grew during genuine prewarm moves')
+        permit = getattr(self.args,'memory_baseline_permit',None)
+        if permit:
+            self.result['memory_waiting_for_baseline'] = True; self.write()
+            self.host.wait('parent-owned permission marker before memory baseline',lambda:permit.is_file())
+            from coop_editor_performance import machine,process_roster
+            hardware = machine()
+            process_roster(hardware,[self.records[g.instance]['pid'] for g in self.all_games])
+            self.result['memory_baseline_environment'] = hardware
+            self.result['memory_waiting_for_baseline'] = False
+        initial = sample(0)
+        cap_cycle = 0 if initial['processes'][host_key]['history_size'] == self.args.history_cap else None
+        for cycle in range(1, self.args.cycles + 1):
+            move(cycle,f'memory-{cycle}-edit')
             self.preview(cycle)
+            if status(self.host).get('selection') != object_id:
+                raise FixtureError('Native Test/Return lost the memory-cycle placement selection')
             time.sleep(self.args.settle_seconds)
             row = sample(cycle)
             for game in self.all_games:
@@ -1025,6 +1131,10 @@ def main():
     run.add_argument('--cold-baseline',type=Path,help='closed-profile durable baseline for a true cold recovery stage')
     run.add_argument('--memory-object',help='previously verified host placement stable ID for retention cycles')
     run.add_argument('--post-cap-cycles',type=int,default=30)
+    run.add_argument('--prewarm-gestures',type=int,default=0,
+                     help='0..160 genuine native moves before the baseline; 128 fills current semantic history')
+    run.add_argument('--memory-baseline-permit',type=Path,
+                     help='wait for this out/ marker and exactly four Spore processes before baseline sampling')
     run.add_argument('--history-cap',type=int,choices=(25,),default=25,
                      help='verified native history capacity for the supported executable')
     run.add_argument('--body-offset',type=int,default=18,help='calibrated selectable body offset above the actor feet')
@@ -1068,6 +1178,10 @@ def main():
         parser.error('exact candidate hash, bounded seconds and1..80 cycles required')
     if not 30 <= args.post_cap_cycles <= 60 or not 1 <= args.history_cap <= 128 or not 4 <= args.body_offset <= 60 or not 1 <= args.settle_seconds <= 15:
         parser.error('bounded native retention settings required:30..60 post-cap cycles,1..128 history capacity,4..60 body offset,1..15s settling')
+    if not 0 <= args.prewarm_gestures <= 160:
+        parser.error('prewarm must contain 0..160 genuine native gestures')
+    if args.memory_baseline_permit and (ROOT/'out').resolve() not in args.memory_baseline_permit.resolve().parents:
+        parser.error('memory baseline permission marker must be under this worktree out directory')
     if args.memory_object and not re.fullmatch(r'[1-9][0-9]*:[1-9][0-9]*',args.memory_object):
         parser.error('memory object must be a stable object ID:generation')
     if not 1 <= args.port <= 65535 or not 1 <= args.timeout <= 300:

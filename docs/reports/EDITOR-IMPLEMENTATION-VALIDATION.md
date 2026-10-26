@@ -1,6 +1,6 @@
 # Shared Adventure Editor: implementation validation
 
-Report revision 9, C8/C9 native receipts and C10b validation in progress, 2026-10-26. Branch:
+Report revision 11, C11 native validation and ownership hardening, 2026-10-26. Branch:
 `feat/ga-adventure-editor`. The portable core and transport checkpoint is local
 commit `216f8b0`; native integration is recorded at `0a35c7b`, with lab tools at
 `a9b844f`. The C10 integration checkpoint is `071f6a4`, depending on network
@@ -78,7 +78,7 @@ not numbers of adventures or native playthroughs.
 | Serialized native bindings | 8,224 Win32 fixture checks | Stable placement bindings across compacted native serialization, holes, deletion and restoration. This is not proof of scene model correctness. |
 | Native Save adapter | 296 Win32 fixture checks | Verified Save As state/ownership and completion/failure handling using controlled native interfaces. Actual native Save As is separately exercised below. |
 | Editor/playtest bridge | 74 Win32 fixture checks | Run/submode fencing, owned preview lifecycle and asynchronous native return, including negative active-cinematic/pending-intro cases. C7 actual game testing found an additional startup hold. |
-| Integrated editor runtime | Final C10 full run: 3,017 Win32 checks; earlier C9 full/C10 quick: 2,427/2,377 | Native/document ownership, opaque history artifacts, Store durability and real UDP with controlled native APIs, cached JOIN, save/recovery and close settlement. The final sweep includes the conservative history and abandoned field-lease cases. |
+| Integrated editor runtime | C11 full: 3,235 Win32 checks; C11 focused: 2,594; previous C10 full: 3,017 | Native/document ownership, opaque history artifacts, Store durability and real UDP with controlled native APIs, cached JOIN, save/recovery and close settlement. C11 additionally models NativeStop clearing local selection, delayed return readiness, generation changes, stale callbacks and post-launch cancellation. Actual native acceptance is separate. |
 | Native asset registration | 253 Win32 fixture checks | Immutable dependency/resource lifetime and registration behavior in the native interface fixture. |
 | Frame metrics | 15 checks | Bounded numeric metric capture. No actual editor FPS budget is established by this test. |
 | Performance harness | 18 offline checks on Windows and WSL | Measurement/configuration helpers, including exact measured Spore process roster; actual large-native performance remains unmeasured. |
@@ -209,9 +209,9 @@ that fixture, not native long-run memory safety or performance.
   Create/Move/Clone/Delete and native history receipts below use valid native
   placement and selection. Keep native cast grouping and fixed input conflicts
   separate from co-op defects.
-- Recheck local selection restoration after Test/Return in the fixed candidate.
-  C10b preserves each tested local camera but loses every local selection.
-  The C8 twenty-cycle receipt does not pass that separate lifecycle gate.
+- Extend the C11 camera/selection Return receipt to remaining native lifecycle
+  adversity and object types. It closes the previously observed normal Return
+  selection-loss case on the tested four-player Alpine draft.
 - Extend actual four-player lifecycle adversity while preserving explicit
   readiness and the authored draft/history on return.
 - Exercise real game-process loss/reordering/duplicates, concurrent/conflicting
@@ -289,6 +289,15 @@ caches need separate accounting, followed by 30 or more cycles and a sustained
 post-capacity window. See `retention-summary.json` and
 `history-retention-analysis.json` beside the result. No actual FPS gate was
 measured during this six-process functional test.
+
+The native 25-entry cap alone does not bound the mod's 128 retained semantic
+gestures and associated opaque artifacts. The prepared C11 fixture can first
+perform 128 genuine native Move gestures, verifying all-peer convergence, then
+require the observed semantic count 128 and native count 25 before taking its
+baseline and thirty further edit/playtest/return samples. It also records core
+history counts, native serialized bytes, registered packages and private memory.
+This is prepared instrumentation, not a completed C11 memory result; no history
+limit or acceptance budget is changed.
 
 ## C9 cold recovery and fresh entry
 
@@ -442,3 +451,78 @@ closed with exit zero, and all four owned PIDs were verified gone. The lab's
 recorded child termination code follows its owned shutdown after reaching
 Galaxy; it is not evidence of a native crash. Profiles and durable revision 63
 were preserved. Receipt: `close-owned/result.json`.
+
+## C11 native lifecycle follow-up
+
+C11 private DLL SHA-256 is
+`054ad3a6a64d8021d833c51ca210a92811a85da792b0db938988027e3e73276e`,
+built from frozen checkpoint `2e09791`. The private runner verified all three
+actual loader maps against source and every process reported native adapter
+availability before input. Fresh normal Alpine Save As and four baseline joins
+passed. All four authors then completed actual immediate Move and native
+Ctrl+Z/Ctrl+Y for their newly created stable placement. A retained fixture failure
+had incorrectly applied the fixed 601,470 elevation threshold to a different
+clear drop point; that actor's successful immediate Move/Undo/Redo provides the
+follow-up interaction evidence. Receipts are under
+`out/editor-native-party-c11/{fresh-bootstrap,fresh-join,four-author-edit,remaining-authors}`.
+
+The separate four-player camera/selection gate passed: each peer changed its
+ordinary local camera without authoring a revision, entered Test only after all
+four explicit confirmations, observed natural simulation and reciprocal
+captains, and returned to its exact selected stable ID and local projected
+positions. No native faults occurred. Receipt:
+`out/editor-native-party-c11/camera-return/result.json`. This resolves the normal
+Return selection-loss case observed in C10b; it does not establish every
+failure/disconnect transition.
+
+The genuine 128-Move retention prewarm stopped at its retry limit after fifteen
+accepted moves. A subsequent instrumented retry committed the next move, and
+further genuine moves passed the native 25-entry history cap. This rules out a
+hard native-history stop in that case, but does not complete the 128-gesture
+warmup or a settled retention window. No memory baseline was taken. The helper
+requires a parent-owned marker and an exact four-process roster before that
+baseline. A preliminary fixture also stopped before any input because it queried
+the general adventure status for a registry counter; the corrected fixture reads
+the existing registry line in editor status. Failed and diagnostic receipts are
+retained under `memory`, `memory-run`, `prewarm16-instrumented` and
+`memory-prompt-retry` in the C11 party directory. There is no C11 memory-budget
+or large-editor FPS pass.
+
+Inside-attempt lease samples found a valid token disappearing between mouse-down
+and first motion, before another native capture or rejection. The native log also
+recorded one checked rejection for missing field ownership. Controlled-native
+follow-up made 160 host and 160 guest moves through the Runtime, including more
+than 64 lease decisions per peer, with 8,964 checks passing. Therefore the bounded
+decision cache is not established as the cause. A separate delayed-grant
+reproducer demonstrated the Runtime releasing a newly received token using the
+earlier request's idle timestamp, while that token remained locally usable before
+its release acknowledgement. Release/reacquisition fencing and grant grace are
+being corrected and require new candidate evidence.
+
+The actual two-player network fixture stopped during LAN move 23 after 22 measured
+acceptances and one warmup. It did not complete its required 30 samples, WAN or
+loss-stress phases, so it establishes no latency-budget pass. Both drafts remained
+converged and unfrozen; normal End preserved them. Receipt:
+`out/editor-native-network-c11/run/result.json`.
+
+Fresh ordinary native rotation before sharing changed only the single Ace's
+orientation, preserving its position and scale. The same calibrated ring input
+under sharing rejected before native Start and did not commit after three
+attempts. This is an open native guard issue, separate from the demonstrated lease
+timing race. Receipts: `out/editor-native-candidate11-fresh-yaw/result.json` and
+`out/editor-native-candidate11-shared-yaw/actual/result.json`. Creature scale input
+remains unverified. No guard was relaxed to convert those failures into passes.
+
+C11's full controlled-native Runtime suite passed 3,235 checks with frozen source
+and executable hashes. Its 24 MiB closure case retained 25,203,841 bytes in the
+artifact store after twenty edits and Save, compared with 25,166,419 initially.
+The cached JOIN transmitted 29,397 host and 751 guest bytes while retaining the
+24 MiB closure. These figures include fixture transport accounting and are not
+actual native-game bandwidth or memory measurements. Receipts:
+`out/editor-selection-c11-build/{validation,full-validation}.json`.
+
+A personal Spore process subsequently appeared outside the private test
+installation. It is excluded from input and shutdown ownership. Strict matched
+FPS acceptance requires an exclusive measured cohort; samples with that extra
+process can only be diagnostic until it closes naturally. The personal
+installation and published gameplay release remain unchanged.

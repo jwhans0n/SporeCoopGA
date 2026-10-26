@@ -31,6 +31,22 @@ def status(game):
     return values
 
 
+def retry_grant(text, selected):
+    """Read a local visible grant without assuming a pending request succeeded."""
+    local=re.search(r'^local=(\d+:\d+) phase=4 revision=\d+$',text,re.M)
+    members=re.findall(r'^member peer=(\d+:\d+) .*\bpending=(\d+)\b',text,re.M)
+    if (not local or not members or 'truncated=1' in text or
+            not any(peer==local[1] for peer,_ in members) or
+            any(int(pending)!=0 for _,pending in members)):
+        return False
+    for kind,object_id,token,remaining in re.findall(
+            r'^lease scope=(\w+) object=(\d+:\d+) token=(\d+) remaining_ms=(\d+)$',text,re.M):
+        if int(token)>0 and int(remaining)>0 and (kind=='Document' or
+                (kind=='Placement' and object_id==selected)):
+            return True
+    return False
+
+
 class EditorPair:
     def __init__(self, args):
         self.args = args
@@ -198,24 +214,54 @@ class EditorPair:
 
     def gesture(self, game, label, action):
         revision = status(self.host)['revision']
-        for _ in range(3):
+        def committed():
+            state=status(self.host)
+            if state.get('frozen'):
+                raise FixtureError('Editor froze after '+label+': '+state['text'])
+            if state['revision']>revision+1:
+                raise FixtureError(label+' produced duplicate canonical gestures')
+            if state['revision']==revision+1:
+                self.converge(revision+1);self.record(label)
+                return True
+            return False
+        for attempt in range(3):
+            # A delayed prior action may have committed after its poll window.
+            # Recheck immediately before every real repeat, including retries.
+            quiet_deadline=time.monotonic()+3
+            while True:
+                if committed():return
+                current=status(game)
+                leases=game.call('coop.editor leases')
+                pending=any(int(value)!=0 for value in re.findall(r'\bpending=(\d+)',leases))
+                if not current.get('gesture') and not pending:break
+                if time.monotonic()>=quiet_deadline:
+                    self.record(label+'-pending')
+                    raise FixtureError('A native or canonical operation is still pending before '+label)
+                time.sleep(.1)
             self.verify(game)
+            if committed():return
+            before=status(game)
             action()
             # First input may request a lease and be held before native mutation.
             # A second genuine gesture after lease delivery is allowed; no input
             # is replayed by this fixture behind a player's back.
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline:
-                state = status(self.host)
-                if state.get('frozen'):
-                    raise FixtureError('Editor froze after ' + label + ': ' + state['text'])
-                if state['revision'] == revision + 1:
-                    self.converge(revision + 1)
-                    self.record(label)
-                    return
-                if state['revision'] > revision + 1:
-                    raise FixtureError(label + ' produced duplicate canonical gestures')
-                time.sleep(.2)
+                if committed():return
+                current=status(game)
+                if (not current.get('gesture') and current.get('captures')==before.get('captures') and
+                        current.get('rejected',0)>before.get('rejected',0)):
+                    leases=game.call('coop.editor leases')
+                    if retry_grant(leases,current.get('selection')):
+                        self.result.setdefault('prompt_lease_retries',[]).append(dict(
+                            label=label,attempt=attempt+1,time=time.time(),leases=leases,
+                            native_before=before['text'],native_after=current['text']))
+                        self.write()
+                        # A rejected input started no native capture. Its grant
+                        # arrived, so the next real gesture can use it promptly.
+                        break
+                time.sleep(.05)
+        if committed():return
         self.record(label + '-failed')
         raise FixtureError('No canonical gesture accepted for ' + label)
 
@@ -228,7 +274,13 @@ class EditorPair:
                                 'scale': float(m[4]), 'screen': None if m[5] == 'hidden' else tuple(map(float,m[5].split(',')))}
                 rotation = re.search(r'\brotation=([^ ]+)',line)
                 if rotation:
-                    result[m[1]]['rotation'] = tuple(map(float,rotation[1].split(',')))
+                    try:
+                        components=tuple(map(float,rotation[1].split(',')))
+                        if len(components)==4:result[m[1]]['rotation']=components
+                    except ValueError:
+                        # The public console bounds large-object diagnostics;
+                        # a partial last quaternion is not a native field value.
+                        pass
         return result
 
     def body(self, game, object_id):

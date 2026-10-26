@@ -102,6 +102,9 @@ def run(args):
             else:
                 EditorPair.bootstrap(party)
             party.join()
+            # Every gesture still records canonical/native/fault checks. Avoid
+            # taking ninety redundant screenshots between the timed gestures.
+            party.compact_records=True
             if len(args.instances)==2:
                 party.result['gates'].pop('four_native_baselines',None)
             for game in party.all_games:
@@ -145,6 +148,7 @@ def run(args):
             party.result['pass']=True
             party.result['unvalidated']=[item for item in party.result.get('unvalidated',[]) if item!='real packet loss/reordering between game processes']
             party.result['method']='Native Runtime Controller.submit through own accepted decision after native/durable apply. Lease gating/inverse settlement precede measurement. Real UDP source bytes include headers, ACKs and retransmissions before injected duplication; IP/UDP headers excluded.'
+            party.compact_records=False
             party.record('native-network-complete')
             # Close the editor session while the owned proxies still exist.
             party.host.call('coop.editor end')
