@@ -2370,6 +2370,42 @@ ScenarioResource Write format, not an outer DBPF container. Read into a freshly
 constructed owned resource avoids depending on previous container contents.
 The ResourceObject key at `+08` is kept separately from serialized draft data.
 
+An actual cold reopen now distinguishes scalar property padding from authored
+data. Scenario Write `F25E00` emits magic `B523D4F9` and version 17, then calls
+the embedded property list at resource `+18` through vtable `+40`. Its vtable is
+`1408848`: Read `+3C` is `6A2F60`, Write `+40` is `6A1540`. Property-list headers
+are big endian; scalar ResourceKey values are 16 serialized bytes containing
+the little-endian 12-byte instance/type/group key and a reserved fourth word.
+Native `SetValueKey` at `422F40` copies only offsets `0/4/8`, or uses size `0C`
+on its alternate storage path; it leaves inline `+0C` untouched. `GetValueKey`
+at `6A1030` returns that typed key. Generic property reading at `694410` and
+writing at `693360` retain the 16-byte inline representation. Thus the fourth
+word is not an extra authored resource identity. The existing music descriptor
+reader independently uses the same scalar-key layout and ignores that word.
+
+For the actual private `Native C16 Save Proof` file, fresh C17 processes opened
+exact source `408A0000!29096B31.366A930D` through the native browser before any
+Recover. Full read-only export is 15,291 bytes, SHA-256 `ccb4e789...fc14a`; the
+saved checkpoint's snapshot is the same size, SHA-256 `9207984f...51b`. Only
+bytes 32-34 differ, in the reserved word of the first scalar key property
+`00B2CCCB`; its actual key `42840100!66AA7D12.00B1B104` is identical. Every byte
+outside that four-byte reserved word, including all remaining property metadata
+and the complete embedded DBPF, is identical. The known placement pose and
+semantic hash also match. Negative comparisons reject changes in all three
+actual key words and representative later authored/payload bytes. This closes
+this fixture's cold opaque round trip without changing product comparison
+rules or permitting arbitrary opaque exclusions. It does not establish every
+adventure's round trip.
+
+The live SDK console truncates one response at 8,191 characters. Although the
+read-only native byte command accepts up to 4,096 bytes, its hex plus header
+exceeds that transport limit. The audit helper now uses 2,048-byte pages and
+verifies the complete SHA and size on each page and after reassembly.
+Receipts: `out/editor-native-pair-c17-final/{cold-open,cold-bytes-retry}/`,
+`out/editor-audit-c17/cold-difference.json`, and the static exact-image
+`out/editor-native-re/c17-{cold-format,header,property-header,property-codec,property-value,key-size}.txt`.
+These additional addresses are static observations, not newly called interfaces.
+
 The input stream ABI is byte-count Read at vtable `+30`, not a bool result:
 `F2FD9F..F2FDB0` calls that slot and compares full EAX with the requested byte
 count. Primitive helper `93A6F0` converts its own result to bool. Write uses

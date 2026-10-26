@@ -1,6 +1,6 @@
 # Shared Adventure Editor: implementation validation
 
-Report revision 23, C17 exclusive retention window, 2026-10-26. Branch:
+Report revision 24, C17 cold native opaque round trip, 2026-10-26. Branch:
 `feat/ga-adventure-editor`. The portable core and transport checkpoint is local
 commit `216f8b0`; native integration is recorded at `0a35c7b`, with lab tools at
 `a9b844f`. The C10 integration checkpoint is `071f6a4`, depending on network
@@ -9,7 +9,7 @@ calibration changes require their own working-tree/run evidence.
 
 **Implementation is under validation and is not release-ready.** Portable tests
 and several real two/four-player workflows pass. Remaining native cancellation,
-cold opaque round trips, lifecycle, bulk contention and memory gates below prevent a
+broader lifecycle, bulk contention and memory gates below prevent a
 complete stages 0-4 claim.
 
 This development branch uses protocol 16. The published
@@ -1281,3 +1281,30 @@ receipt records all four successful exits. Receipts:
 The pushed camera checkpoint `662a139` and follow-up `27012bd` both passed GitHub
 Actions: runs 40415069319 and 40417161642. The published main/release and personal
 installation remain unchanged.
+
+### C17 actual cold native file comparison
+
+Two fresh, hidden, muted C17 processes opened the recorded private native file
+through normal UI. The selected card resolves exactly to
+`408A0000!29096B31.366A930D`; no Recover or shared-project restoration ran.
+Placement position, rotation and scale match the saved values, and the semantic
+hash remains `2d6a4afb22721c6dff3377db488c8389511aef19d35aac634ebbf23847c390c2`.
+
+The entire 15,291-byte native snapshot was exported read-only. Saved and cold
+raw SHA-256 values differ, but only three bytes differ, all inside one four-byte
+reserved scalar ResourceKey word at byte 32. Exact executable inspection
+confirms the property-list format and native 12-byte key setter inside its
+16-byte inline value. The actual instance/type/group key, every other metadata
+byte and the complete embedded payload are identical. Negative checks reject
+actual key and later authored/payload changes. This specific native file's cold
+opaque round trip passes; no product normalization rule or native symbol changes
+were required. Details and evidence are in
+[the owned-snapshot notes](../re/adventure-world.md#owned-snapshots-and-native-reconstruction).
+
+The initial 4,096-byte diagnostic page exceeded the real SDK console's
+8,191-character response limit. The corrected helper uses 2,048-byte pages;
+its boundary self-tests pass on Windows and WSL, and actual complete export
+passes with zero native faults. Both the original truncated attempt and the
+successful retry are retained. Receipts:
+`out/editor-native-pair-c17-final/{cold-open,cold-bytes-retry}/result.json` and
+`out/editor-audit-c17/cold-difference.json`.
