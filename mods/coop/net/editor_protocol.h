@@ -36,7 +36,8 @@ struct LeaseRequest { LeaseAction action{}; uint64_t serial = 0; Time ttl = 0; s
 struct LeaseReply { uint64_t serial = 0; LeaseResult result; };
 struct Presence { ObjectId selected; ObjectId act; bool editing = false; Peer author; };
 struct Coverage { Revision durable_revision = 0; std::string state_hash; };
-struct Saved { Revision saved_revision = 0; ResourceKey resource; };
+struct Saved { Revision saved_revision = 0; ResourceKey resource; uint64_t serial = 0; bool operator==(const Saved&) const = default; };
+struct SavedApplied { Saved saved; };
 struct Leave { uint8_t reason = 0; };
 enum class ControlKind : uint8_t {
     HostPreparePlaytest, GuestReadyPlaytest, HostBeginPlaytest,
@@ -45,7 +46,7 @@ enum class ControlKind : uint8_t {
 // serial is a host-assigned playtest round, independent of document revision.
 struct Control { ControlKind kind{}; uint64_t serial = 0; Revision revision = 0; bool ready = false; uint8_t ready_mask = 0, participant_mask = 0; };
 using Payload = std::variant<Offer, Join, TransferBegin, TransferChunk, TransferEnd,
-    LeaseRequest, LeaseReply, Request, Decision, Presence, Coverage, Saved, Leave, Control>;
+    LeaseRequest, LeaseReply, Request, Decision, Presence, Coverage, Saved, Leave, Control, SavedApplied>;
 struct Message { Context context; Payload payload; };
 
 // from_host is a transport role fact. sender is the connected Session peer,

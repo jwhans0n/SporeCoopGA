@@ -95,7 +95,8 @@ FIELDS(LeaseResult,v.code,v.reason,v.leases)
 FIELDS(LeaseReply,v.serial,v.result)
 FIELDS(Presence,v.selected,v.act,v.editing,v.author)
 FIELDS(Coverage,v.durable_revision,v.state_hash)
-FIELDS(Saved,v.saved_revision,v.resource)
+FIELDS(Saved,v.saved_revision,v.resource,v.serial)
+FIELDS(SavedApplied,v.saved)
 FIELDS(Leave,v.reason)
 FIELDS(Control,v.kind,v.serial,v.revision,v.ready,v.ready_mask,v.participant_mask)
 #undef FIELDS
@@ -213,7 +214,8 @@ void validate_payload(const Message& m) {
         if constexpr(std::is_same_v<T,Request>) {validate(p);need(p.project==m.context.project&&p.epoch==m.context.epoch&&p.base_revision==m.context.revision,"request context mismatch");}
         if constexpr(std::is_same_v<T,Decision>) {validate(p);need(p.revision==m.context.revision,"decision context mismatch");}
         if constexpr(std::is_same_v<T,Coverage>) need(p.durable_revision<=m.context.revision && hash(p.state_hash),"invalid durable coverage");
-        if constexpr(std::is_same_v<T,Saved>) need(p.saved_revision<=m.context.revision && p.resource.instance && p.resource.type,"invalid native save");
+        if constexpr(std::is_same_v<T,Saved>) need(p.serial && p.saved_revision<=m.context.revision && p.resource.instance && p.resource.type,"invalid native save");
+        if constexpr(std::is_same_v<T,SavedApplied>) need(p.saved.serial && p.saved.saved_revision<=m.context.revision && p.saved.resource.instance && p.saved.resource.type,"invalid applied native save");
         if constexpr(std::is_same_v<T,Leave>) need(p.reason<=3,"invalid leave reason");
         if constexpr(std::is_same_v<T,Presence>) need(peer(p.author),"invalid presence author");
         if constexpr(std::is_same_v<T,Control>) need(unsigned(p.kind)<=unsigned(ControlKind::HostEditorResumed) && p.serial && p.revision==m.context.revision &&
@@ -226,7 +228,7 @@ void direction(const Message& m,Peer sender,bool host) {
     need(peer(sender) && (host ? sender.slot==0 : sender.slot!=0),"invalid session sender");
     const auto index=m.payload.index();
     const bool only_host=index==0||index==6||index==8||index==11;
-    const bool only_guest=index==1||index==5||index==7||index==10;
+    const bool only_guest=index==1||index==5||index==7||index==10||index==14;
     need(!only_host||host,"client forged host authority"); need(!only_guest||!host,"host sent client-only request");
     if(const auto* q=std::get_if<Request>(&m.payload)) need(q->operation.author==sender,"request author differs from session peer");
     if(const auto* p=std::get_if<Presence>(&m.payload)) need(host||p->author==sender,"presence author differs from session peer");

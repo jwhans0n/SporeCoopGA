@@ -62,10 +62,10 @@ static void codec(){
 }
 static void authority(){
     auto c=context();std::string error;w::Message result;
-    std::vector<w::Payload> host_payloads{w::Offer{w::kSchema,"Shared adventure",guest},w::LeaseReply{5,{Code::Accepted,"",{}}},sample().decisions.begin()->second,w::Saved{3,{4,5,6}}};
+    std::vector<w::Payload> host_payloads{w::Offer{w::kSchema,"Shared adventure",guest},w::LeaseReply{5,{Code::Accepted,"",{}}},sample().decisions.begin()->second,w::Saved{3,{4,5,6},91}};
     for(const auto& p:host_payloads){const auto bytes=packet({c,p});CHECK(read(bytes,result,host,true));CHECK(!read(bytes,result,guest,false));CHECK(!read(bytes,result,other,true));}
     auto short_request=request();short_request.mutations.resize(1);
-    const std::string hash(64,'0');std::vector<w::Payload> guest_payloads{w::Join{0},w::LeaseRequest{w::LeaseAction::Acquire,4,1000,{{ScopeKind::Placement,{3,1},{}}},{}},short_request,w::Coverage{3,hash}};
+    const std::string hash(64,'0');std::vector<w::Payload> guest_payloads{w::Join{0},w::LeaseRequest{w::LeaseAction::Acquire,4,1000,{{ScopeKind::Placement,{3,1},{}}},{}},short_request,w::Coverage{3,hash},w::SavedApplied{{3,{4,5,6},91}}};
     for(const auto& p:guest_payloads){const auto bytes=packet({c,p});CHECK(read(bytes,result,guest,false));CHECK(!read(bytes,result,host,true));}
     auto q=short_request;const auto bytes=packet({c,q});CHECK(!read(bytes,result,other,false));CHECK(!read(bytes,result,Peer{1,93},false));
     const auto presence=packet({c,w::Presence{{3,1},{2,1},true,guest}});CHECK(read(presence,result,guest,false));CHECK(read(presence,result,host,true));CHECK(!read(presence,result,other,false));
@@ -73,6 +73,10 @@ static void authority(){
     const auto req=packet({c,w::TransferBegin{w::TransferKind::Request,1,42,hash}});CHECK(read(req,result,guest,false));CHECK(!read(req,result,host,true));
     for(unsigned i=0;i<=6;++i){const bool client=i==1||i==5;w::Control control{w::ControlKind(i),81,c.revision,i==1,0,uint8_t(i==0||i==2?3:0)};const auto b=packet({c,control});CHECK(read(b,result,client?guest:host,!client));CHECK(!read(b,result,client?host:guest,client));}
     net::Writer writer;CHECK(!w::write({c,w::Control{w::ControlKind::HostBeginPlaytest,0,3,false}},writer,error));CHECK(!w::write({c,w::Control{w::ControlKind::HostBeginPlaytest,1,2,false}},writer,error));CHECK(!w::write({c,w::Control{w::ControlKind::HostBeginPlaytest,1,3,true}},writer,error));
+    CHECK(!w::write({c,w::Saved{3,{4,5,6},0}},writer,error));CHECK(!w::write({c,w::SavedApplied{{3,{4,5,6},0}}},writer,error));
+    CHECK(!w::write({c,w::SavedApplied{{4,{4,5,6},91}}},writer,error));
+    auto saved_ack=packet({c,w::SavedApplied{{3,{4,5,6},91}}});
+    for(size_t cut=0;cut<saved_ack.size();++cut)CHECK(!read({saved_ack.begin(),saved_ack.begin()+cut},result,guest,false));
     CHECK(!w::write({c,w::Control{w::ControlKind::GuestReadyPlaytest,1,3,true,1}},writer,error));
     CHECK(!w::write({c,w::Control{w::ControlKind::HostReturnEditor,1,3,false,1}},writer,error));
     CHECK(!w::write({c,w::Control{w::ControlKind::GuestEditorReturned,1,3,true,0}},writer,error));
