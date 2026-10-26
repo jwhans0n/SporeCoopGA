@@ -184,6 +184,10 @@ recorded problems.
 These are goals without announced dates. Shared adventure editing and other
 collaborative editors are not implemented in the current release.
 
+The [multiplayer Adventure Editor implementation plan](docs/MULTIPLAYER-ADVENTURE-EDITOR-PLAN.md)
+is ready for review. It proposes staged implementation and validation gates;
+it does not add editor support to the released game.
+
 ## Development
 
 SporeCoopGA inherits SporeCoop's multiplayer core, SporeKit runtime and Cell-to-Space
