@@ -268,7 +268,11 @@ class EditorPair:
 
     def objects(self, game):
         result = {}
-        for line in game.call('coop.editor objects').splitlines():
+        for line in game.call('coop.editor objects').splitlines(keepends=True):
+            # The public console bounds large diagnostics. Its final row can
+            # end halfway through "hidden" or a number; it is not an object.
+            if not line.endswith('\n'):
+                continue
             m = re.match(r'(\d+:\d+) class=(\d+) pos=([^ ]+) scale=([^ ]+) screen=([^ ]+)', line)
             if m:
                 result[m[1]] = {'class': int(m[2]), 'position': tuple(map(float,m[3].split(','))),
