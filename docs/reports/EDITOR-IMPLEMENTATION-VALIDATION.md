@@ -1,6 +1,6 @@
 # Shared Adventure Editor: implementation validation
 
-Report revision 22, C17 lifecycle and retention admission, 2026-10-26. Branch:
+Report revision 23, C17 exclusive retention window, 2026-10-26. Branch:
 `feat/ga-adventure-editor`. The portable core and transport checkpoint is local
 commit `216f8b0`; native integration is recorded at `0a35c7b`, with lab tools at
 `a9b844f`. The C10 integration checkpoint is `071f6a4`, depending on network
@@ -653,8 +653,9 @@ run ineligible. Final private-memory growth was 22.71 MiB on the host and
 and still rose by about 0.205 MiB per cycle. These are raw retention observations,
 not an attribution to either leaks or caches. Normal shared End released
 13.98/3.35/3.91/1.68 MiB; normal native Galaxy exit released
-30.41/24.31/25.34/24.26 MiB relative to cycle 30. The owned games then closed
-normally. Receipt: `out/editor-native-party-c12/memory-diagnostic/retention-analysis.json`.
+30.41/24.31/25.34/24.26 MiB relative to cycle 30. The owned editors returned to
+Galaxy before WindowsLab process cleanup. Receipt:
+`out/editor-native-party-c12/memory-diagnostic/retention-analysis.json`.
 
 Separate C12 two-player native checks passed Build-hammer return, guest disconnect
 during preparation, and guest disconnect during Test followed by explicit rejoin.
@@ -1241,3 +1242,42 @@ Active gestures, queued operations, transfers, late work, divergent hashes,
 changed hardware or an extra Spore process still reject the sample. All 19
 fake-reader tests pass on Windows and WSL. Actual retention acceptance remains
 pending the new strict run; no memory threshold has changed.
+
+### C17 exclusive post-capacity window: functional pass, heap gate open
+
+The corrected collector completed 128 genuine warm-up Moves followed by 30
+changed Move/Test/Return cycles with exactly four live Spore processes. Every
+baseline, cycle and release sample rechecked that roster, CPU/GPU/driver identity,
+hidden/muted HWND ownership, native generation, canonical hashes, durable
+revision, selection and empty authoring/transfer queues before and after the
+passive counters. The raw result is eligible for memory review and is separate
+from timed FPS measurement.
+
+All 150 explicit-readiness holds passed. All 120 native clocks advanced, and all
+360 reciprocal captain checks passed with maximum reported position error
+1.00 m and age 0.16 seconds. Core history remained at 128 everywhere; host native
+history remained at 25. Native package counts stayed at their per-process
+baseline of 4/5/4/4. The first failed collector attempt did not produce these
+samples; its rejection remains recorded separately.
+
+This is still **not a sustained native-memory pass**. Final private-memory
+changes were +3.89/+3.46/+3.17/-0.52 MiB. Last-ten slopes remained positive:
+0.140/0.091/0.090/0.125 MiB per cycle. Host Core decision estimates grew by
+bounded metadata, but their unsaturated 1,024-entry decision limit and the
+logical capacity counters do not attribute all native/process allocation.
+Shared End and normal native Galaxy exit completed. Final Galaxy footprints
+were 28.45/19.94/18.57/21.55 MiB below their initial editing baselines. Normal
+release is proven; an active native heap plateau remains unproven.
+
+All four games then completed verified normal WM_CLOSE with exit code zero.
+The separate WindowsLab wrapper raced those completed exits and reported an
+Access Denied while trying to terminate an already exiting child; this is a
+lab cleanup race, not a native game fault. The independent exact-handle closure
+receipt records all four successful exits. Receipts:
+`out/editor-native-party-c17/memory-strict-retry/result.json`,
+`retention-analysis.json` in that directory, and
+`out/editor-native-party-c17/normal-close-result.json`.
+
+The pushed camera checkpoint `662a139` and follow-up `27012bd` both passed GitHub
+Actions: runs 40415069319 and 40417161642. The published main/release and personal
+installation remain unchanged.
