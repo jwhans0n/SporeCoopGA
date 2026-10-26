@@ -248,7 +248,7 @@ bool Coordinator::reset(State state, uint64_t epoch, std::string& error)
             if ((!c.clone_sources.empty() && c.intent != Intent::Forward) || c.clone_sources.size() > c.allocated.size()) { error = "Invalid clone provenance."; return false; }
             for (const auto& [target, source] : c.clone_sources)
                 if (!identity(source) || target == source || std::find(c.allocated.begin(), c.allocated.end(), target) == c.allocated.end() ||
-                    std::none_of(c.patch.objects.begin(), c.patch.objects.end(), [&](const ObjectEdit& e) { return e.object == target && !e.before && e.after; })) { error = "Clone provenance does not name an allocated placement."; return false; }
+                    std::none_of(c.patch.objects.begin(), c.patch.objects.end(), [clone_target = target](const ObjectEdit& e) { return e.object == clone_target && !e.before && e.after; })) { error = "Clone provenance does not name an allocated placement."; return false; }
         }
     }
     for (const auto& [p, sequence] : state.retired_sequences) if (!identity(p) || !sequence) { error = "Invalid operation retirement fence."; return false; }
