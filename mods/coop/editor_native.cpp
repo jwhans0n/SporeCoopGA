@@ -1,5 +1,6 @@
 #include "editor_native.h"
 #include "editor_native_bindings.h"
+#include "editor_native_tools.h"
 
 #include <algorithm>
 #include <array>
@@ -27,6 +28,9 @@ uintptr_t a_loading, a_layout_find, a_display_vtable, a_erase_history, a_discard
 bool supported, applying, queued;
 bool fence_queued;
 double last_fence;
+double last_tool_rejection_log=-1;
+std::array<double,6> last_tool_rejection{{-1,-1,-1,-1,-1,-1}};
+std::array<uint64_t,6> tool_rejection_counts{};
 std::map<sui::Win,uint32_t> fenced_windows;
 uint64_t fenced_generation=0;
 uint64_t generation = 1, captures = 0, restores = 0, rejected = 0;
@@ -337,18 +341,42 @@ void SK_THISCALL select_native(void* self,void* object){
     original_select(self,object);
     if(!applying && editing())refresh_selection();
 }
+void tool_rejection(size_t reason,uint32_t action,void* context,const State& observed){
+    ++rejected;
+    ++tool_rejection_counts[reason];
+    const double now=H->time_seconds();
+    // Input may retry every frame. Keep this diagnostic bounded globally and
+    // per cause; it only reads the already-owned context and observed state.
+    if(now-last_tool_rejection_log<0.25 || now-last_tool_rejection[reason]<1.0)return;
+    last_tool_rejection_log=now;last_tool_rejection[reason]=now;
+    static constexpr const char* reasons[]={"context-auxiliary","empty-selection","missing-placement-gate",
+        "placement-lease","missing-structure-gate","structure-lease"};
+    const bool readable=skg::readable(context,0x14);
+    const bool handles=skg::readable(context,0x24);
+    H->log(M,SK_INFO,"Shared editor tool rejected: reason=%s action=%u context=%p selected=%u object=%p auxiliary=%p rotation18=%p rotation1C=%p rotation20=%p ready=%u generation=%llu count=%llu",
+        reasons[reason],action,context,uint32_t(selection.size()),readable?skg::field<void*>(context,4):nullptr,
+        readable?skg::field<void*>(context,0x10):nullptr,handles?skg::field<void*>(context,0x18):nullptr,
+        handles?skg::field<void*>(context,0x1C):nullptr,handles?skg::field<void*>(context,0x20):nullptr,unsigned(observed.ready),
+        static_cast<unsigned long long>(observed.generation),static_cast<unsigned long long>(tool_rejection_counts[reason]));
+}
 uint32_t SK_THISCALL tool_native(void* self,uint32_t action,uint32_t a,uint32_t b){
-    editor_native::state();
+    const State observed=editor_native::state();
     if(!applying && active() && (action==1 || action==6 || action==11)){
         refresh_selection();
         void* context=*reinterpret_cast<void**>(a_context);
-        // Patrol-node editing changes opaque per-act paths and has no registered
-        // semantic transaction in this preview.
-        if(skg::readable(context,0x14) && skg::field<void*>(context,0x10)){++rejected;return 1;}
-        if(selection.empty() || !C.gate || !C.gate(selection) ||
-            (action==11 && (!C.structure_gate || !C.structure_gate(selected_class)))){
-            ++rejected;return 1;
-        }
+        // Native +10 is also the active rotation manipulator. Only its three
+        // verified pose handles may pass; path and unknown auxiliaries remain
+        // blocked, including every auxiliary clone action.
+        const uintptr_t auxiliary=skg::readable(context,0x14)?skg::field<uintptr_t>(context,0x10):0;
+        std::array<uintptr_t,3> rotations{};
+        if(skg::readable(context,0x24))rotations={skg::field<uintptr_t>(context,0x18),
+            skg::field<uintptr_t>(context,0x1C),skg::field<uintptr_t>(context,0x20)};
+        if(!supported_tool_auxiliary(action,auxiliary,rotations)){tool_rejection(0,action,context,observed);return 1;}
+        if(selection.empty()){tool_rejection(1,action,context,observed);return 1;}
+        if(!C.gate){tool_rejection(2,action,context,observed);return 1;}
+        if(!C.gate(selection)){tool_rejection(3,action,context,observed);return 1;}
+        if(action==11 && !C.structure_gate){tool_rejection(4,action,context,observed);return 1;}
+        if(action==11 && !C.structure_gate(selected_class)){tool_rejection(5,action,context,observed);return 1;}
     }
     auto previous=input_clone;
     if(action==11 && !selection.empty())input_clone=selection.front();

@@ -1,10 +1,21 @@
 #include "editor_native_bindings.h"
+#include "editor_native_tools.h"
 #include <cstdlib>
 #include <iostream>
 using namespace editor_native;
 static unsigned checks;
 #define CHECK(x) do { ++checks; if(!(x)){std::cerr<<__LINE__<<": " #x "\n";std::exit(1);} } while(0)
 int main(){
+    const std::array<uintptr_t,3> rotations{0x100,0x200,0x300};
+    for(auto action:{1u,6u}){
+        CHECK(supported_tool_auxiliary(action,0,{}));
+        for(auto handle:rotations)CHECK(supported_tool_auxiliary(action,handle,rotations));
+        CHECK(!supported_tool_auxiliary(action,0x400,rotations)); // Unknown/path control.
+        CHECK(!supported_tool_auxiliary(action,0x300,{})); // Unreadable handle context.
+    }
+    CHECK(supported_tool_auxiliary(11,0,rotations));
+    for(auto handle:rotations)CHECK(!supported_tool_auxiliary(11,handle,rotations));
+    CHECK(!supported_tool_auxiliary(11,0x400,rotations));
     const editor::ObjectId a{0x100000000ull,1},b{0x400000000ull,1},c{0x400000001ull,3};
     std::vector<Binding> out;std::string error;
     CHECK(serialized_bindings({},out,error));CHECK(out.empty());

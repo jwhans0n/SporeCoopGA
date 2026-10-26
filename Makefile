@@ -103,7 +103,7 @@ $(B)/host/editor_metrics_tests.exe: tests/editor_metrics_tests.cpp mods/coop/edi
 $(B)/host/frame_metrics_tests.exe: tests/frame_metrics_tests.cpp mods/coop/frame_metrics.h
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/frame_metrics_tests.cpp -o $@
-$(B)/host/editor_native_bindings_tests.exe: tests/editor_native_bindings_tests.cpp mods/coop/editor_native_bindings.h mods/coop/editor_native.h mods/coop/net/editor_document.h
+$(B)/host/editor_native_bindings_tests.exe: tests/editor_native_bindings_tests.cpp mods/coop/editor_native_bindings.h mods/coop/editor_native_tools.h mods/coop/editor_native.h mods/coop/net/editor_document.h
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/editor_native_bindings_tests.cpp -o $@
 $(B)/host/editor_binary_delta_tests.exe: $(EDITOR_DELTA_SRC) tests/editor_binary_delta_tests.cpp

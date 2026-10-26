@@ -2940,9 +2940,12 @@ does not call native game functions or write game memory. The drag helper also
 waits at least 120 ms after down and 60 ms per motion fraction: uncapped native
 editors can execute frame-only fences faster than ordinary drag thresholds.
 
-C10b ordinary unshared controls still did not produce Scale or expanded Tab
+C10b ordinary unshared controls after normal shared End still did not produce Scale or expanded Tab
 handles with these inputs, so this diagnostic alone is not evidence of a shared
-Scale defect. Native input dispatch remains a validation gate. Static wheel
+Scale defect. This control excludes the active input fence, but does not exclude
+retained tool state from prior native restoration or history retirement. A fresh
+ordinary editor before sharing remains a separate control. Native input dispatch
+remains a validation gate. Static wheel
 receipts are `out/editor-native-re/c10-wheel-query.txt`: `EF0910` forwards to
 game-input vtable `+60`, `B196F0`, which emits event-kind 8 through `B1C480`
 and then the configured dispatcher `B1BA80`. The ordinary editor's input-mode
@@ -2978,3 +2981,87 @@ Adventure Town followed by native ready reported 419 placements, 118 classes
 and five acts, source `408A0000!BF0CE0D0.366A930D`. Gameplay noun counts are a
 different measurement. No Town edits or native Save were performed for this
 count. Receipt: `out/editor-native-candidate10b-town-count-final`.
+
+C11 subsequently established a genuinely fresh ordinary control: normal
+Create opened Alpine Valley, imported Ace and placed one actor, before any
+shared Begin or native Restore (`restores=0`). Right-clicking its palette card
+and allowing the close camera to settle exposed the blue yaw ring. Dragging its
+front arc from `(601,475)` to `(625,435)` changed only the authored quaternion;
+position and uniform scale remained identical. The earlier unsuccessful left
+arc was a poor input target and is not evidence that native rotation is broken.
+Receipts: `out/editor-native-candidate11-fresh-yaw/result.json` and
+`out/editor-native-candidate11-fresh-ace-retry/result.json`. The latter fresh
+control also tried Shift-wheel down after a modifier-bearing mouse move: scale
+remained 2 and the quaternion/position did not change. This keeps native Scale
+input acceptance open without attributing it to shared restoration. No native
+save or shared session was started during these controls.
+
+The fresh C11 control proves the ordinary front-ring recipe only; a shared
+invocation is separate evidence. A bounded shared check can use the calibrated
+Alpine/Ace setup and require exact rotation changes with position/scale
+preserved on both participants, checking only the intended stable identity. Large
+Town diagnostics can truncate the last quaternion, so the fixture accepts only
+complete four-component rotation fields and never treats a partial last row
+as a native pose.
+
+The subsequent C11 shared front-ring check did not rotate the actor: three
+ordinary attempts increased the native rejection counter by three, without
+starting native history, changing revision zero or freezing either peer. The
+local selected identity remained valid, and no waiting-for-ownership status
+appeared. Both participants returned normally to Galaxy. This is a failed
+shared-rotation check, not a successful extension of the fresh ordinary control.
+Receipt: `out/editor-native-candidate11-shared-yaw/actual/result.json`.
+
+C12 static investigation corrects the earlier `Context+10` patrol-only label.
+It is the active auxiliary manipulator. `F03770` action 1 with nonzero `+10`
+and no existing dragged object calls `EFEB70`; that function owns `+0C`, starts
+the manipulator through its interface and invokes native StartHistory. The
+normal frame dispatcher `F02B30` then calls `F02040` while `+10` is nonzero.
+`F02040` dispatches by the manipulator's native type. Its `07ABDD8D` branch
+copies the resulting quaternion to marker `+10` and applies marker state;
+the `07A81824` branch also writes that quaternion except for its distinct
+`Context+14` special case. `EFCF10` explicitly compares `+10` against the
+rotation-handle pointers at `+18`, `+1C` and `+20`. Other branches modify
+per-act paths, secondary orientation or creature dimensions, so allowing every
+nonzero auxiliary would expose unsupported authored edits. Receipts:
+`out/editor-native-re/c12-tool-context.txt` and the earlier
+`out/editor-native-re/c11-transform-eligibility.txt`.
+
+The diagnostic-only C12 adapter retains its fail-closed auxiliary guard and
+logs the actual rejection cause before returning: auxiliary context, empty
+selection, missing or denied placement gate, or missing or denied structure
+gate. It includes action, selection count, context and selected/auxiliary
+pointers, the three rotation-handle pointers, native readiness, generation and
+the cause's count. A global 250 ms
+and per-cause one-second throttle bounds repeated input logging. These logs
+read the already-owned context and state; they perform no resource capture,
+UI traversal or new native calls. The isolated exact-CI i686 translation unit
+compiled with `-Wall -Wextra -Werror`; an actual C12 diagnostic run remains
+separate evidence.
+
+The isolated C12n run established that exact cause before native history could
+start. All three host front-ring attempts logged `context-auxiliary`, action 1,
+one selected placement, ready 1 and generation 3. Auxiliary `1A487DA0` exactly
+matched `rotation20=1A487DA0`; the other handle pointers were distinct. The
+shared revision stayed zero, neither peer froze, and normal End plus native
+Quit returned both to Galaxy with zero faults. C12n deliberately contained the
+new diagnostic and Runtime grant grace with the older Session object; it is not
+evidence for the later Session release fences. Receipts:
+`out/editor-native-candidate12n/rejection-logs.json`,
+`out/editor-native-candidate12n/shared-yaw-retry/result.json` and
+`out/editor-native-candidate12n/handoff/result.json`. Its first attempt timed
+out in redundant fresh-start creator-radial fixture clicks before editor entry;
+that failure is retained separately in `shared-yaw`.
+
+The subsequent narrow policy permits nonzero auxiliary pointers only for
+actions 1 and 6, only when the complete context through `+20` is readable, and
+only for an exact match with `+18`, `+1C` or `+20`. Stable placement selection
+and its exact lease are still mandatory. Every auxiliary action 11 and every
+unknown or path auxiliary remains blocked before native mutation. The pure
+policy fixture covers all three rotation identities, unknown identities,
+missing readable handles and clone rejection. Actual shared rotation after
+this change remains a separate native acceptance check.
+The binding/input-policy fixture passes 8,241 checks on both the portable host
+and actual i686 Win32 executable, including 17 new auxiliary-policy cases.
+The production native translation unit also compiles with the exact CI i686
+toolchain and `-Wall -Wextra -Werror`.
