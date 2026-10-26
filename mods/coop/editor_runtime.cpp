@@ -83,7 +83,7 @@ struct Recovery {
     uint64_t native_generation = 0;
 };
 std::optional<Recovery> recovery;
-enum class Action { Begin, Undo, Redo, Save, Playtest, Ready, Unready, Recover, End, Return };
+enum class Action { Begin, Undo, Redo, Save, Playtest, Ready, Unready, Recover, End, Return, CancelPreparation };
 std::deque<Action> actions;
 struct PreviewReturnScope {
     editor::ProjectId project;
@@ -91,6 +91,7 @@ struct PreviewReturnScope {
     editor::Revision revision = 0;
 };
 std::optional<PreviewReturnScope> pending_preview_return;
+std::optional<PreviewReturnScope> pending_preparation_cancel;
 struct PreviewSelection {
     PreviewReturnScope scope;
     std::optional<editor::ObjectId> selected;
@@ -622,6 +623,7 @@ void refresh() {
     next.waiting = closing || recovery.has_value() || awaiting_operation.has_value() || v.phase == Phase::Joining || v.phase == Phase::Syncing || v.phase == Phase::Preparing || v.phase == Phase::Returning;
     if (v.phase == Phase::Returning) next.status = "Waiting for every player to return to the committed draft";
     next.confirming = v.phase == Phase::Preparing;
+    next.can_cancel = next.confirming && next.host && !closing && !recovery && !next.frozen;
     next.playtesting = v.phase == Phase::Playing;
     next.can_return = next.playtesting && next.host;
     bool editing = next.active && !closing && !recovery && v.phase == Phase::Ready && !next.frozen && !awaiting_operation && !native.gesture && !editor_native_save::busy();
@@ -818,6 +820,7 @@ void undo_redo(bool redo) {
     if (!controller->submit(std::move(r), error)) { awaiting_operation.reset(); tell(error); }
 }
 void close_session(bool preserve_offer = false) {
+    pending_preparation_cancel.reset();
     preview_selection.reset();
     observed_lease_grants.clear();
     if (!closing) { closing = true; close_restored = false; close_preserve_offer = preserve_offer; }
@@ -965,6 +968,11 @@ bool current_preview_return(const PreviewReturnScope& request) {
     const bool returning = view.phase == Phase::Preparing || view.phase == Phase::Playing || view.phase == Phase::Returning;
     return returning && same_preview_context(request);
 }
+bool current_preparation_cancel(const PreviewReturnScope& request, bool queued = false) {
+    return controller && host() && !closing && !frozen && !recovery &&
+        (controller->view().phase == Phase::Preparing || (queued && controller->view().phase == Phase::Playing)) &&
+        same_preview_context(request);
+}
 void execute(Action action) {
     if (closing && action != Action::End) return;
     std::string error;
@@ -989,6 +997,10 @@ void execute(Action action) {
         if (controller->view().phase == Phase::Playing) { if (host() && !controller->return_editor(error)) tell(error); }
         else if (cached.can_playtest && !pending && !save_publication_pending && !editor_native_save::busy() &&
                  editor_native::state().ready && !editor_native::state().gesture && check_native_integrity(error) && !controller->prepare_playtest(error)) tell(error);
+        break;
+    case Action::CancelPreparation:
+        if (host() && (controller->view().phase == Phase::Preparing || controller->view().phase == Phase::Playing) &&
+            !controller->cancel_playtest(error)) tell(error);
         break;
     case Action::Ready: case Action::Unready: if (!controller->ready_playtest(action == Action::Ready, error)) tell(error); break;
     case Action::End:
@@ -1076,6 +1088,8 @@ void SK_CDECL drain(void*) {
         }
         auto work = std::move(actions); actions.clear();
         for (auto action : work) execute(action);
+        auto cancelling = std::move(pending_preparation_cancel); pending_preparation_cancel.reset();
+        if (cancelling && current_preparation_cancel(*cancelling, true)) execute(Action::CancelPreparation);
         auto returning = std::move(pending_preview_return); pending_preview_return.reset();
         if (returning && current_preview_return(*returning)) execute(Action::Return);
         if (session_active() && !closing && controller->view().phase == Phase::Ready && !frozen) {
@@ -1126,8 +1140,16 @@ void action(Action value) {
             const auto& view = controller->view();
             request_preview_return({view.context.project, view.context.epoch, view.playtest_round, view.playtest_revision});
         }
+    } else if (value == Action::CancelPreparation) {
+        if (controller) {
+            const auto& view = controller->view();
+            PreviewReturnScope scope{view.context.project, view.context.epoch, view.playtest_round, view.playtest_revision};
+            if (current_preparation_cancel(scope)) { pending_preparation_cancel = scope; schedule(); }
+        }
     } else if (actions.size() < 16) {
-        if (value == Action::End || value == Action::Recover) preview_selection.reset();
+        if (value == Action::End || value == Action::Recover) {
+            preview_selection.reset(); pending_preparation_cancel.reset();
+        }
         actions.push_back(value); schedule();
     }
 }
@@ -1260,7 +1282,20 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
             }
         }
         if (control.kind == K::HostReturnEditor || control.kind == K::HostCancelPlaytest) {
-            if (!finish_return(error, true)) return false;
+            pending_preparation_cancel.reset();
+            bool preparation_only = false;
+            if (control.kind == K::HostCancelPlaytest && !adventure_native::editor_preview() &&
+                !native_playtesting && !return_started && !adventure::active() &&
+                !adventure::outcome_locked() && !adventure::cleanup_pending()) {
+                const auto native = editor_native::state();
+                if (native_attached && native.editing && native.ready && !native.playtesting && !native.gesture) {
+                    if (!check_native_integrity(error)) return false;
+                    preview_selection.reset();
+                    status = "Playtest preparation cancelled. The adventure draft is unchanged";
+                    preparation_only = true;
+                }
+            }
+            if (!preparation_only && !finish_return(error, true)) return false;
         }
         if (C.open_panel) C.open_panel();
         return true;
@@ -1326,7 +1361,7 @@ void session_ended() {
     refresh();
 }
 void mode_changed(uint32_t, uint32_t) { schedule(); }
-void shutdown() { if (controller) { controller->end(); controller.reset(); } store.close(); adventure_native::clear_editor_preview(); editor_native_save::shutdown(); editor_native::shutdown(); actions.clear(); pending_preview_return.reset(); preview_selection.reset(); observed_lease_grants.clear(); queued = false; closing = native_attached = close_restored = close_preserve_offer = false; H = nullptr; }
+void shutdown() { if (controller) { controller->end(); controller.reset(); } store.close(); adventure_native::clear_editor_preview(); editor_native_save::shutdown(); editor_native::shutdown(); actions.clear(); pending_preview_return.reset(); pending_preparation_cancel.reset(); preview_selection.reset(); observed_lease_grants.clear(); queued = false; closing = native_attached = close_restored = close_preserve_offer = false; H = nullptr; }
 bool active() { return cached.active; }
 bool authoring() {
     if (!controller || (controller->view().phase == Phase::Playing && native_playtesting)) return false;
@@ -1340,6 +1375,7 @@ void undo() { action(Action::Undo); }
 void redo() { action(Action::Redo); }
 void save() { action(Action::Save); }
 void playtest() { action(Action::Playtest); }
+void cancel_playtest() { action(Action::CancelPreparation); }
 void set_ready(bool value) { action(value ? Action::Ready : Action::Unready); }
 void recover() { action(Action::Recover); }
 void end() { action(Action::End); }
@@ -1445,6 +1481,7 @@ std::string debug(const std::vector<std::string>& args) {
         else if (args[0] == "redo") redo();
         else if (args[0] == "save") save();
         else if (args[0] == "playtest") playtest();
+        else if (args[0] == "cancel") cancel_playtest();
         else if (args[0] == "ready") set_ready(args.size() < 2 || args[1] != "0");
         else if (args[0] == "recover") recover();
         else if (args[0] == "end") end();

@@ -1094,4 +1094,78 @@ static void test_delayed_lease_grant_gets_observed_idle_grace() {
     CHECK(spin([]{return runtime_guest::controller->view().phase==es::Phase::Idle&&!runtime_guest::closing;}));
     step();CHECK(runtime_guest::observed_lease_grants.empty());
 }
-int main(int argc,char** argv){const bool quick=argc==2&&std::string(argv[1])=="--quick";if(argc>1&&!quick)return 2;test_delayed_lease_grant_gets_observed_idle_grace();test_begin_ga_batch_and_end_returning();test_history_entry_rechecks_actual_native_holds();test_preview_return_callbacks_are_scoped_to_one_round();test_preview_restores_latest_independent_selection_before_ack();test_lease_diagnostic_is_bounded_and_read_only();test_conflicting_native_history_releases_document_ownership();test_guest_end_during_unlaunched_preparation_is_retryable();test_drag_preview_bridge_never_authors_remote_state();test_saved_resources_then_next_commit();test_guest_recovery_requires_owned_native_copy();test_pending_undo_keeps_ownership_across_foreign_commit();test_pending_artifacts_obey_capacity_and_preserve_durable_base();test_missing_authored_captain_blocks_prepare();test_uncertain_maintenance_freezes_until_reopen();test_end_waits_for_native_settle_and_retires_once();test_end_does_not_touch_replaced_native_context();test_idle_controller_keeps_owned_native_cleanup_isolated();test_delayed_gesture_cannot_restore_another_editor();test_host_end_delivers_accepted_structural_checkpoint();test_host_end_does_not_wait_for_departed_replica();test_host_end_waits_for_applied_same_revision_save();test_native_frozen_guest_does_not_block_host_close();test_native_recreation_waits_for_actual_next_frame();test_held_native_gesture_is_cancelled_by_end();test_recovery_retires_held_and_delayed_native_captures();test_recovery_wait_does_not_restore_replaced_context();test_native_save_enrichment_survives_edits_save_and_recovery();test_invalid_completed_save_does_not_replace_live_draft();test_opaque_gesture_changes_freeze_before_empty_semantic_return();test_uncaptured_opaque_changes_cannot_save_or_playtest();test_host_apply_rejects_uncaptured_opaque_changes();test_host_native_success_without_projection_cannot_commit();test_guest_native_success_without_projection_freezes_only_replica();test_held_native_gesture_is_fenced_by_generation_or_disconnect();test_held_move_accepts_disjoint_remote_revision();if(!quick)test_large_closure_retained_once_and_delta_recovery();std::printf("editor runtime: %u checks passed\n",checks);}
+
+static void test_preparation_cancel_preserves_draft_and_is_round_scoped() {
+    Party party;std::string error;capture_local_create();++game_frame;same_frame_drain(0);
+    CHECK(spin([]{return runtime_host::controller->settled()&&runtime_guest::controller->state().document.revision==1;}));
+    editor::ObjectId created{};for(const auto& [id,p]:runtime_host::controller->state().document.placements){(void)p;if(id!=placement)created=id;}
+    side=0;CHECK(editor_native::select_placement(placement,error));side=1;CHECK(editor_native::select_placement(created,error));
+    const auto canonical=runtime_host::controller->state();
+    const auto checkpoint0=runtime_host::store.snapshot(),checkpoint1=runtime_guest::store.snapshot();
+    const auto bytes0=native[0].snapshot.bytes,bytes1=native[1].snapshot.bytes;
+    const auto restores0=native[0].restores,restores1=native[1].restores;
+    auto prepare=[] {
+        side=0;runtime_host::playtest();
+        CHECK(spin([]{return runtime_host::controller->view().phase==es::Phase::Preparing&&runtime_guest::controller->view().phase==es::Phase::Preparing;}));
+        CHECK(runtime_host::view().can_cancel&&!runtime_guest::view().can_cancel);
+        for(const auto& [id,member]:runtime_host::controller->view().members){(void)id;CHECK(!member.ready);}
+    };
+    auto unchanged=[&] {
+        CHECK(runtime_host::controller->state()==canonical&&runtime_guest::controller->state()==canonical);
+        CHECK(runtime_host::store.snapshot()==checkpoint0&&runtime_guest::store.snapshot()==checkpoint1);
+        CHECK(native[0].snapshot.bytes==bytes0&&native[1].snapshot.bytes==bytes1);
+        CHECK(native[0].state.selected==std::vector<editor::ObjectId>{placement}&&native[1].state.selected==std::vector<editor::ObjectId>{created});
+        CHECK(native[0].restores==restores0&&native[1].restores==restores1);
+        CHECK(native[0].stops==0&&native[1].stops==0&&!native[0].preview&&!native[1].preview);
+        CHECK(sessions[0].connected()&&sessions[1].connected()&&!runtime_host::frozen&&!runtime_guest::frozen);
+    };
+    prepare();side=1;runtime_guest::cancel_playtest();CHECK(!runtime_guest::pending_preparation_cancel);step();
+    CHECK(runtime_host::controller->view().phase==es::Phase::Preparing);
+    side=0;runtime_host::debug({"cancel"});CHECK(runtime_host::pending_preparation_cancel);
+    const auto old_scope=*runtime_host::pending_preparation_cancel;
+    CHECK(spin([]{return runtime_host::controller->view().phase==es::Phase::Ready&&runtime_guest::controller->view().phase==es::Phase::Ready;}));unchanged();
+    prepare();side=1;runtime_guest::set_ready(true);
+    CHECK(spin([]{return runtime_host::controller->view().members.at(1).ready;}));
+    // Old queued input from the first round cannot cancel this new preparation.
+    runtime_host::pending_preparation_cancel=old_scope;side=0;runtime_host::schedule();step();
+    CHECK(runtime_host::controller->view().phase==es::Phase::Preparing&&!runtime_host::pending_preparation_cancel);
+    side=0;runtime_host::cancel_playtest();
+    CHECK(spin([]{return runtime_host::controller->view().phase==es::Phase::Ready&&runtime_guest::controller->view().phase==es::Phase::Ready;}));unchanged();
+    // Capture Cancel before the final Ready, then hold only its owned queue
+    // while HostBegin wins the controller turn and the guest is still loading.
+    prepare();side=0;runtime_host::cancel_playtest();CHECK(runtime_host::pending_preparation_cancel);
+    const auto loading_cancel=*runtime_host::pending_preparation_cancel;runtime_host::pending_preparation_cancel.reset();
+    side=1;CHECK(runtime_guest::controller->ready_playtest(true,error));runtime_guest::controller->tick(clock_ms);
+    side=0;CHECK(runtime_host::controller->ready_playtest(true,error));
+    CHECK(spin([]{return runtime_host::controller->view().phase==es::Phase::Playing&&native[0].state.playtesting;},false));
+    CHECK(runtime_guest::controller->view().phase==es::Phase::Preparing&&!native[1].preview);
+    side=0;runtime_host::cancel_playtest();CHECK(!runtime_host::pending_preparation_cancel);
+    runtime_host::pending_preparation_cancel=loading_cancel;runtime_host::schedule();
+    CHECK(spin([]{for(unsigned p=0;p<2;++p)if(native[p].cleanup)complete_cleanup(p);return runtime_host::controller->view().phase==es::Phase::Ready&&runtime_guest::controller->view().phase==es::Phase::Ready;}));
+    CHECK(native[0].stops==1&&native[1].stops==1&&runtime_host::controller->state()==canonical&&runtime_guest::controller->state()==canonical);
+    CHECK(native[0].state.selected==std::vector<editor::ObjectId>{placement}&&native[1].state.selected==std::vector<editor::ObjectId>{created});
+    prepare();side=0;runtime_host::set_ready(true);side=1;runtime_guest::set_ready(true);
+    CHECK(spin([]{return runtime_host::controller->view().phase==es::Phase::Playing&&runtime_guest::controller->view().phase==es::Phase::Playing;}));
+    runtime_host::pending_preparation_cancel=old_scope;side=0;runtime_host::schedule();step();
+    CHECK(runtime_host::controller->view().phase==es::Phase::Playing&&!runtime_host::pending_preparation_cancel);
+    side=0;native[0].preview->return_editor();
+    CHECK(spin([]{for(unsigned p=0;p<2;++p)if(native[p].cleanup)complete_cleanup(p);return runtime_host::controller->view().phase==es::Phase::Ready&&runtime_guest::controller->view().phase==es::Phase::Ready;}));
+    CHECK(runtime_host::controller->state()==canonical&&runtime_guest::controller->state()==canonical);
+    CHECK(native[0].state.selected==std::vector<editor::ObjectId>{placement}&&native[1].state.selected==std::vector<editor::ObjectId>{created});
+    prepare();side=0;runtime_host::cancel_playtest();CHECK(runtime_host::pending_preparation_cancel);
+    runtime_host::end();CHECK(!runtime_host::pending_preparation_cancel);
+    CHECK(spin([]{return runtime_host::controller->view().phase==es::Phase::Idle&&runtime_guest::controller->view().phase==es::Phase::Idle;}));
+    // Recovery deliberately rehosts the durable project under a new epoch.
+    // Neither an old queued scope nor a recovery action can carry Cancel over.
+    runtime_host::pending_preparation_cancel=old_scope;side=0;runtime_host::recover();
+    CHECK(!runtime_host::pending_preparation_cancel);
+    CHECK(spin([]{return runtime_host::controller->view().phase==es::Phase::Ready&&runtime_guest::controller->view().phase==es::Phase::Offered;}));
+    CHECK(runtime_host::controller->view().context.epoch!=old_scope.epoch);
+    side=1;CHECK(runtime_guest::controller->accept_offer(error));
+    CHECK(spin([]{return runtime_guest::controller->view().phase==es::Phase::Ready&&runtime_host::controller->settled();}));
+    prepare();runtime_host::pending_preparation_cancel=old_scope;side=0;runtime_host::schedule();step();
+    CHECK(runtime_host::controller->view().phase==es::Phase::Preparing&&!runtime_host::pending_preparation_cancel);
+    runtime_host::cancel_playtest();CHECK(spin([]{return runtime_host::controller->view().phase==es::Phase::Ready&&runtime_guest::controller->view().phase==es::Phase::Ready;}));
+}
+
+int main(int argc,char** argv){const bool quick=argc==2&&std::string(argv[1])=="--quick";if(argc>1&&!quick)return 2;test_preparation_cancel_preserves_draft_and_is_round_scoped();test_delayed_lease_grant_gets_observed_idle_grace();test_begin_ga_batch_and_end_returning();test_history_entry_rechecks_actual_native_holds();test_preview_return_callbacks_are_scoped_to_one_round();test_preview_restores_latest_independent_selection_before_ack();test_lease_diagnostic_is_bounded_and_read_only();test_conflicting_native_history_releases_document_ownership();test_guest_end_during_unlaunched_preparation_is_retryable();test_drag_preview_bridge_never_authors_remote_state();test_saved_resources_then_next_commit();test_guest_recovery_requires_owned_native_copy();test_pending_undo_keeps_ownership_across_foreign_commit();test_pending_artifacts_obey_capacity_and_preserve_durable_base();test_missing_authored_captain_blocks_prepare();test_uncertain_maintenance_freezes_until_reopen();test_end_waits_for_native_settle_and_retires_once();test_end_does_not_touch_replaced_native_context();test_idle_controller_keeps_owned_native_cleanup_isolated();test_delayed_gesture_cannot_restore_another_editor();test_host_end_delivers_accepted_structural_checkpoint();test_host_end_does_not_wait_for_departed_replica();test_host_end_waits_for_applied_same_revision_save();test_native_frozen_guest_does_not_block_host_close();test_native_recreation_waits_for_actual_next_frame();test_held_native_gesture_is_cancelled_by_end();test_recovery_retires_held_and_delayed_native_captures();test_recovery_wait_does_not_restore_replaced_context();test_native_save_enrichment_survives_edits_save_and_recovery();test_invalid_completed_save_does_not_replace_live_draft();test_opaque_gesture_changes_freeze_before_empty_semantic_return();test_uncaptured_opaque_changes_cannot_save_or_playtest();test_host_apply_rejects_uncaptured_opaque_changes();test_host_native_success_without_projection_cannot_commit();test_guest_native_success_without_projection_freezes_only_replica();test_held_native_gesture_is_fenced_by_generation_or_disconnect();test_held_move_accepts_disjoint_remote_revision();if(!quick)test_large_closure_retained_once_and_delta_recovery();std::printf("editor runtime: %u checks passed\n",checks);}

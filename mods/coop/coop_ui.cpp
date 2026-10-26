@@ -739,7 +739,9 @@ static void build_dialog()
         else if (A.editor_playtest) A.editor_playtest();
     });
     D.editor_recover = add_button(E, "editor_recover", {244, 504, 412, 540}, "Recover", [] {
-        if (A.editor_recover) A.editor_recover();
+        const auto view = A.editor ? A.editor() : coop_editor::View{};
+        if (view.can_cancel) { if (A.editor_cancel) A.editor_cancel(); }
+        else if (A.editor_recover) A.editor_recover();
     });
     D.editor_end = add_button(E, "editor_end", {422, 504, 590, 540}, "End editing", [] {
         if (A.editor_end) A.editor_end();
@@ -1024,7 +1026,8 @@ static void refresh_editor(const coop_editor::View& view)
     sui::set_enabled(D.editor_undo, view.can_undo);
     sui::set_enabled(D.editor_redo, view.can_redo);
     sui::set_enabled(D.editor_save, view.can_save);
-    sui::set_enabled(D.editor_recover, view.can_recover);
+    text(D.editor_recover, view.can_cancel ? "Cancel playtest" : "Recover");
+    sui::set_enabled(D.editor_recover, view.can_cancel || view.can_recover);
     sui::set_enabled(D.editor_end, view.active || view.offered);
     text(D.editor_test, view.playtesting ? "Return to draft" : view.confirming ? view.ready ? "Not ready" : "Ready" : "Playtest");
     sui::set_enabled(D.editor_test, view.can_playtest || view.confirming || view.can_return);

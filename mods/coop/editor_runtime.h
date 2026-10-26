@@ -31,7 +31,7 @@ struct View {
     bool can_begin = false, can_undo = false, can_redo = false;
     bool can_save = false, can_playtest = false, can_recover = false;
     bool waiting = false, ready = false, frozen = false, natively_saved = false;
-    bool confirming = false, playtesting = false, can_return = false;
+    bool confirming = false, playtesting = false, can_return = false, can_cancel = false;
     uint64_t revision = 0, durable_revision = 0, saved_revision = 0;
     std::string title, status, selection;
     std::vector<PlayerView> players;
@@ -67,6 +67,7 @@ void undo();
 void redo();
 void save();
 void playtest();
+void cancel_playtest(); // Host-only cancellation of this preparation round.
 void set_ready(bool);
 void recover();
 void end();

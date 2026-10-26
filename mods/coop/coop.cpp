@@ -2580,6 +2580,7 @@ void init_ui()
     a.editor_redo = coop_editor::redo;
     a.editor_save = coop_editor::save;
     a.editor_playtest = coop_editor::playtest;
+    a.editor_cancel = coop_editor::cancel_playtest;
     a.editor_recover = coop_editor::recover;
     a.editor_end = coop_editor::end;
     a.editor_ready = coop_editor::set_ready;
