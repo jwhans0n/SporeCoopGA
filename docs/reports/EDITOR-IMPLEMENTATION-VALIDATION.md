@@ -1,6 +1,6 @@
 # Shared Adventure Editor: implementation validation
 
-Report revision 12, integrated C12 ownership and transform hardening, 2026-10-26. Branch:
+Report revision 13, C12 retention and C13 lifecycle follow-up, 2026-10-26. Branch:
 `feat/ga-adventure-editor`. The portable core and transport checkpoint is local
 commit `216f8b0`; native integration is recorded at `0a35c7b`, with lab tools at
 `a9b844f`. The C10 integration checkpoint is `071f6a4`, depending on network
@@ -205,7 +205,8 @@ that fixture, not native long-run memory safety or performance.
 
 ## Remaining acceptance gates
 
-- Complete actual rotation and uniform scale on all advertised peers. The C10b
+- Complete actual uniform scale on all advertised peers. C12 rotation passed
+  for both two and four players. The C10b
   Create/Move/Clone/Delete and native history receipts below use valid native
   placement and selection. Keep native cast grouping and fixed input conflicts
   separate from co-op defects.
@@ -216,14 +217,15 @@ that fixture, not native long-run memory safety or performance.
   readiness and the authored draft/history on return.
 - Exercise real game-process loss/reordering/duplicates, concurrent/conflicting
   gestures, delayed callbacks, Save, disconnect and recovery boundaries.
-- Extend the C9 cold host recovery receipt below to guest imported recovery
-  with mandatory new native Save As, native reopen and adverse save/recovery
-  boundaries. The earlier graceful in-process receipt alone does not close it.
+- Extend the C9 cold host recovery and C13 same-process imported-guest recovery
+  receipts to cold imported recovery, native file reopen and adverse
+  save/recovery boundaries. Imported recovery's mandatory new native Save As
+  passed in C13; it does not prove reopening a native saved file before Recover.
 - Extend the C12 two-game native latency receipt below to four players and bulk
   asset contention. Measure large-editor frame time and retained memory against
   matched process-count/hardware/window/content baselines. Large-editor FPS
-  remains unmeasured. The 20-cycle memory samples below do not establish a
-  steady-state bound.
+  remains unmeasured. The 30-cycle post-capacity diagnostic below does not
+  establish a steady-state bound.
 - Recheck affected suites after further fixes and publish candidate-specific evidence
   before any release-ready or complete stages 0-4 claim.
 
@@ -628,3 +630,69 @@ The machine also had the four-game functional cohort and one unowned personal
 game running. Their PIDs and hardware are recorded with the measurement; no
 matched FPS or memory claim is inferred. Receipts:
 `out/editor-native-network-c12/{run/result,handoff,environment-diagnostic}.json`.
+
+### C12 post-capacity retention diagnostic and native return adversity
+
+The four-game functional retention run completed 128 genuine Move transactions
+before its baseline, then 30 changed edit/Test/Return cycles. Core history stayed
+at 128 on all peers, host native history at 25, and registered package count at
+one per peer. All 150 explicit-ready hold checks passed; 120 native clocks
+advanced and 360 reciprocal captain checks passed, with maximum received pose
+error 0.99 m and state age 0.13 seconds. This closes that functional cycle window.
+
+It does not pass memory or FPS acceptance. Seven Spore PIDs were live at baseline,
+including three outside the measured cohort; diagnostic mode explicitly made the
+run ineligible. Final private-memory growth was 22.71 MiB on the host and
+27.84/28.19/26.98 MiB on guests. The guests' last ten samples each spanned about
+0.15 MiB with slightly negative slopes, while the host's last ten spanned 1.76 MiB
+and still rose by about 0.205 MiB per cycle. These are raw retention observations,
+not an attribution to either leaks or caches. Normal shared End released
+13.98/3.35/3.91/1.68 MiB; normal native Galaxy exit released
+30.41/24.31/25.34/24.26 MiB relative to cycle 30. The owned games then closed
+normally. Receipt: `out/editor-native-party-c12/memory-diagnostic/retention-analysis.json`.
+
+Separate C12 two-player native checks passed Build-hammer return, guest disconnect
+during preparation, and guest disconnect during Test followed by explicit rejoin.
+Each preserved a genuinely edited draft, history and local context and completed
+normal Galaxy exit without native faults. Source identities and verified authored
+content matched; raw native hashes remain diagnostic because only the documented
+local camera and derived selection bits may normalize. Earlier raw-hash and
+obstructed-input fixture failures remain recorded. Receipt:
+`out/editor-native-lifecycle-c12/validation.json`; detailed reproduction notes are
+in [the native save notes](../re/adventure-editor-save.md).
+
+## C13 preparation Cancel and imported recovery
+
+The C13 private DLL is SHA-256
+`db87a588ab30c0be25912c9ad61f125b403df77d1c1873915edea0353c632678`.
+It adds a scoped **Cancel playtest** action during preparation. A queued action
+remains valid if the final Ready crossed it into that same round's startup;
+different project, epoch, revision or round callbacks cannot cancel a later Test.
+No new cancellation is admitted after that preparation phase.
+
+Controlled-native Runtime checks passed 2,938 focused and 3,579 full assertions,
+including zero/one-Ready cancellation, stale callbacks, immediate retry and the
+final-Ready race. The repository-wide portable rerun passed with unchanged C13
+production/test inputs and zero knowledge-lint problems. Receipts:
+`out/editor-preparation-cancel-c13/validation.json` and
+`out/editor-portable-c13/validation.json`.
+
+Actual two-player native checks then passed the visible zero-Ready Cancel button
+at 1024x768, public Cancel after one Ready, and immediate retry through natural
+Test clocks and normal Build-hammer return. A second stage recovered the former
+guest's imported project: authority remained withheld until ordinary native Save
+As completed and its successful-save dialog was confirmed. The resource changed
+from `408A0000!2909430D.366A930D` to `408A0000!29094310.366A930D`, preserving
+project, revision 1, history and authored placements. The former host explicitly
+rejoined the recovered draft and both reported matching verified authored content.
+
+Both stages returned normally to Galaxy, detached and offline, with zero native
+faults. The personal game and installation were untouched. Receipt:
+`out/editor-native-lifecycle-c13/validation.json`, including result and screenshot
+hashes. These are same-process two-player observations. Cold native file reopen,
+cold imported recovery, natural successful/failed Test results, four-player
+lifecycle adversity, bulk asset contention, large-editor FPS and sustained memory
+acceptance remain open. C13's subsequent Scale diagnostic has not passed: it
+isolated native marker companion `+24` / property `071147E9` changing while
+physical scale `+20` stayed at its tier boundary. A typed-field correction is
+being prepared; opaque comparison has not been broadly relaxed.

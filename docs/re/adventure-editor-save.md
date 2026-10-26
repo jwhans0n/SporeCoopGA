@@ -701,3 +701,44 @@ independent imported-guest recovery, packet adversity, large-editor FPS or
 sustained memory acceptance. Direct Cancel requires the later C13 candidate.
 The exact artifact hashes and final harness checks are recorded in
 `out/editor-native-lifecycle-c12/validation.json`.
+
+### Native preparation Cancel and imported recovery, candidate 13
+
+Two additional native two-player stages passed on 2026-10-26 with exact C13 DLL
+`db87a588ab30c0be25912c9ad61f125b403df77d1c1873915edea0353c632678`,
+instances 87/88 and owned PIDs 43136/39344. Each stage began at Galaxy, used a
+fresh ordinary native Save As, then retained one genuine shared Move as canonical
+and durable revision 1 with one history entry.
+
+The preparation stage exercised the visible **Cancel playtest** button with zero
+Ready confirmations. Its 1024x768 screenshot shows the caption and normal native
+dialog styling; ordinary caption input executed the cancellation. A second round
+used the public Cancel action after one explicit host Ready. Both returned to the
+same draft with identical verified authored checks, source, semantic state,
+history, selection and camera projections. An immediate retry then required both
+explicit Ready actions, advanced natural native Test clocks, and returned through
+the actual Build hammer with the same local context. No synthetic result or
+beam acknowledgement was used. Evidence:
+`out/editor-native-lifecycle-c13/cancel-preparation/result.json` and
+`87-zero-ready-cancel-button.png` in that directory.
+
+The imported recovery stage detached the shared draft, made its former guest the
+new party host, and requested Recover. The ordinary native successful-save
+dialog appeared while the editor was still non-authoritative. Only after its
+normal confirmation did the recovered host become Ready. The saved resource
+changed from `408A0000!2909430D.366A930D` to
+`408A0000!29094310.366A930D`; project identity, revision 1, history and authored
+placements were preserved. The former host explicitly joined that recovered
+draft, and both peers reported the same verified authored check for the new
+resource identity. Evidence:
+`out/editor-native-lifecycle-c13/imported-recovery/result.json`, including
+`88-mandatory-imported-recovery-native-save.png`.
+
+Both stages completed normal exit and party Leave with no forced dialogs or
+native faults. The final read-only handoff recorded both original owned PIDs at
+Galaxy, editor phase 0 and offline, with `total faults: 0`. Runner 38436 and the
+game processes were retained for their owner. Exact result, screenshot, source
+and handoff hashes are in `out/editor-native-lifecycle-c13/validation.json`.
+These are two-player, same-process native lifecycle observations, not evidence
+of cold-process recovery, four-player cancellation, large-editor FPS, sustained
+memory or release readiness.
