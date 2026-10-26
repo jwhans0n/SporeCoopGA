@@ -368,6 +368,7 @@ bool remember_artifacts(const editor::State& state, const editor::Change& change
 bool persist(const editor::State& state, const editor::Change& change, std::string& error) {
     editor_native::Snapshot after;
     if (!editor_native::capture(after, error)) return false;
+    if (!editor_native::validate(after, state.document, error)) return false;
     after.document = state.document;
     after.source = {resources.root.instance, resources.root.type, resources.root.group};
     auto archive = history_artifacts;
