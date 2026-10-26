@@ -141,6 +141,7 @@ class SamplingTests(unittest.TestCase):
         self.assertEqual(perf.values('revision=18446744073709551615 cap=-1')['revision'], 18446744073709551615)
         self.assertEqual(perf.values('cap=-1')['cap'], -1)
         self.assertEqual(perf.values('p95_ms=12.5')['p95_ms'], 12.5)
+        self.assertNotIn('native_sha256', perf.values('native_sha256=123abc'))
     def test_readonly_configuration_and_sampling_contract(self):
         with patch.object(perf, 'Game', FakeGame), patch.object(perf, '_verify_game'), patch.object(perf, 'memory', return_value={}), \
              patch.object(perf.time, 'sleep'), patch.object(perf.time, 'monotonic', side_effect=(100., 120.)):

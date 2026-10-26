@@ -29,7 +29,7 @@ from adventure_interaction_fixture import _verify_game
 
 def values(text):
     return {key: float(value) if '.' in value else int(value)
-            for key, value in re.findall(r'\b([a-z_][a-z0-9_]*)=(-?[0-9]+(?:\.[0-9]+)?)', text)}
+            for key, value in re.findall(r'\b([a-z_][a-z0-9_]*)=(-?[0-9]+(?:\.[0-9]+)?)(?=\s|$)', text)}
 
 
 def configuration(game):
