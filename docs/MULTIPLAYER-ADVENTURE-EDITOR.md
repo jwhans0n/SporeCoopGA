@@ -20,8 +20,9 @@ Older protocol 15 gameplay clients cannot join an editor build's party.
 The placement adapter implements creation from templates already in the draft,
 duplication, deletion, movement, rotation and uniform scale. Scale tracks both
 physical size and the native continuous-scale companion; two-player native
-Scale/Undo/Redo, including the physical clamp, now pass. Four-player hardening
-remains under validation. Older recovery projects without the typed companion
+Scale/Undo/Redo, including the physical clamp, now pass. All four authors also
+pass native rotation, Scale, scaled Clone and Delete with Undo/Redo. The full
+preview remains under validation. Older recovery projects without the typed companion
 retain their schema and hold Scale until a new native copy is shared.
 The adapter preserves opaque
 scenario fields through owned native snapshots. Existing objective references and

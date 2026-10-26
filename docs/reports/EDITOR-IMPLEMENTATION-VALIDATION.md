@@ -1112,3 +1112,31 @@ both before and after every admitted sample, and records normal End/Galaxy
 release snapshots. Sixteen pure tests and the existing party harness self-test
 pass. It cannot automatically declare a memory pass. Actual strict memory
 acceptance remains pending.
+
+A fresh pair of C16 processes subsequently reopened the exact native saved root
+`408A0000!29096B31.366A930D` through the ordinary browser before any Recover.
+The browser correctly contained two same-title Save As versions; each actual
+card was inspected and only the expected source was admitted. The projected
+semantic hash and complete known placement pose matched the prior reopen.
+The raw native hash changed from `9207984f...` to `ccb4e789...`, with serialized
+size 15,291 bytes in the fresh process. Full opaque-data acceptance remains
+open until those differences are explained and compared, rather than omitted.
+The first Create click at cold Galaxy was ignored and is now retried only until
+the actual radial opens. The first browser selection also exposed a short
+loading interval where native readiness preceded visible editor controls; early
+exit input was ignored. Once settled, normal exit succeeded with zero faults.
+Receipts: `out/editor-native-pair-c16-final/cold-reopen-exact-root/` and
+`cold-reopen-settled/result.json`.
+
+The strict two-player 419-placement Adventure Town comparison also passes with
+the same process, camera and configuration requirements as the four-player
+run. Median FPS ratios are 1.002018 and 1.001328; p95 frame-time ratios are
+0.996271 and 0.995206. The setup needed a normal native browser search because
+recent private creations put Adventure Town off-screen. Earlier setup attempts
+collected no FPS samples and remain failed/inconclusive receipts. The corrected
+run retained the original budgets and required the exact 419-placement source.
+Receipt:
+`out/editor-native-pair-c16-final/fps-two-search-settled/performance-result.json`.
+Together with the strict four-player pass, this closes C16's large-editor FPS
+gate. It does not establish resource turnover, gameplay FPS or future candidate
+performance.
