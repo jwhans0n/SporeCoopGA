@@ -162,6 +162,7 @@ test:
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -o $(B)/host/adventure_pause_tests mods/coop/adventure_pause.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp tests/adventure_pause_tests.cpp
 	$(B)/host/adventure_pause_tests
 	python3 tests/test_uifind.py
+	python3 tests/editor_performance_tool_tests.py
 	python3 tools/re_lint.py
 
 # Optional Win32 ABI test with a fake native adapter. Run the .exe on Windows (no game).

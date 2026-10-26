@@ -1,6 +1,7 @@
 """Offline contract tests: no Windows process, console connection or native input."""
 import copy
 import json
+import io
 from pathlib import Path
 import sys
 import tempfile
@@ -150,6 +151,7 @@ class SamplingTests(unittest.TestCase):
         self.assertEqual(commands.count('coop.frame_metrics stop'), 1)
         self.assertEqual(result['sample_stop'] - result['sample_start'], 20)
         self.assertTrue(FakeGame.last.saved)
+        self.assertEqual(FakeGame.last.output, Path('unused/report-commands'))
     def test_interrupted_recording_is_stopped_in_finally(self):
         with patch.object(perf, 'Game', FakeGame), patch.object(perf, '_verify_game'), patch.object(perf, 'memory', return_value={}), \
              patch.object(perf.time, 'sleep', side_effect=(None, perf.FixtureError('interrupted'))), patch.object(perf.time, 'monotonic', return_value=100.):
@@ -178,6 +180,15 @@ class SamplingTests(unittest.TestCase):
         for after in (before + 'frames: Present has not reached SporeKit\nframes: Present reaches SporeKit again\n',
                       before + 'frames: [sporekit] frames=loop\n', 'wrapped log\n', ''):
             with self.assertRaises(perf.FixtureError): perf.source_fence(before, after)
+    def test_sampling_without_execute_never_connects_to_games(self):
+        with tempfile.TemporaryDirectory(prefix='editor-perf-offline-') as temp:
+            output = Path(temp) / 'refused.json'
+            argv = ['performance', 'sample', '--metadata', str(Path(temp) / 'nonexistent.json'),
+                '--expected-dll-sha256', '1' * 64, '--instances', '2', '3', '--kind', 'shared',
+                '--fixture', 'offline-test', '--hardware', 'offline-test', '--output', str(output)]
+            with patch.object(sys, 'argv', argv), patch.object(perf, 'Game') as game, patch.object(sys, 'stdout', io.StringIO()):
+                self.assertEqual(perf.main(), 1); game.assert_not_called()
+            self.assertIn('--execute', json.loads(output.read_text())['error'])
 
 
 if __name__ == '__main__': unittest.main()
