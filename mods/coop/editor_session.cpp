@@ -1288,6 +1288,31 @@ bool Controller::return_editor(std::string& error)
     return i.queue_local(w::Control{w::ControlKind::HostReturnEditor, i.view.playtest_round, i.view.playtest_revision, false, 0}, 64, error);
 }
 
+SavedCoverage Controller::saved_coverage() const
+{
+    const auto& i = *impl_;
+    SavedCoverage result;
+    if (!i.active() || !i.view.saved) return result;
+    const auto& saved = *i.view.saved;
+    result.revision = saved.saved_revision; result.serial = saved.serial;
+    result.current = saved.saved_revision == i.context().revision && saved.serial != 0;
+    if (!i.hosting) {
+        result.expected = 1; result.applied = i.local_saved_ack == saved.serial ? 1 : 0;
+        return result;
+    }
+    result.expected = 1;
+    auto own = i.saved_acks.find(0);
+    result.applied = own != i.saved_acks.end() && own->second == saved.serial ? 1 : 0;
+    for (const auto& [id, member] : i.view.members) {
+        if (!id || member.phase == Phase::Offered || member.phase == Phase::Frozen ||
+            member.phase == Phase::Disconnected || member.phase == Phase::Idle) continue;
+        ++result.expected;
+        auto ack = i.saved_acks.find(id);
+        if (ack != i.saved_acks.end() && ack->second == saved.serial) ++result.applied;
+    }
+    return result;
+}
+
 bool Controller::settled() const
 {
     const auto& i = *impl_;

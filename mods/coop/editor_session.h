@@ -35,6 +35,12 @@ struct View {
     editor::Revision locally_durable = 0;
     std::optional<editor::wire::Saved> saved;
 };
+struct SavedCoverage {
+    editor::Revision revision = 0;
+    uint64_t serial = 0;
+    size_t applied = 0, expected = 0;
+    bool current = false;
+};
 struct Config {
     uint8_t message_type = 53;
     size_t inbound_packets = 512, inbound_bytes = 1u << 20;
@@ -124,6 +130,7 @@ public:
     // peers. Same-revision Saves also require acknowledge_saved from every active
     // participant; transport ACKs alone never satisfy native save completion.
     bool settled() const;
+    SavedCoverage saved_coverage() const; // Exact native SavedApplied serials, not transport ACKs.
     const editor::State& state() const;
     const View& view() const;
 

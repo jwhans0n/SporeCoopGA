@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "net/editor_document.h"
+#include "editor_native_scale.h"
 #include "sporekit.h"
 
 namespace editor_native {
@@ -58,6 +59,10 @@ struct Ctx {
     // Cached chronological availability; native toolbar queries perform no work.
     std::function<bool(bool)> history_available;
     std::function<void(const std::string&)> failure;
+    // A blocked legacy control is a notice, never a failure/freeze.
+    std::function<void(const std::string&)> notice;
+    // Default true for new/unshared editors; Runtime scopes legacy recovery.
+    std::function<bool()> relative_scale_tracked;
     // Native mutation input must be held until this exact selection has leases.
     std::function<bool(const std::vector<editor::ObjectId>&)> gate;
     std::function<bool(uint32_t)> structure_gate; // Existing native class ID.

@@ -30,8 +30,10 @@ bool supported, applying, queued;
 bool fence_queued;
 double last_fence;
 double last_tool_rejection_log=-1;
-std::array<double,6> last_tool_rejection{{-1,-1,-1,-1,-1,-1}};
-std::array<uint64_t,6> tool_rejection_counts{};
+std::array<double,8> last_tool_rejection{{-1,-1,-1,-1,-1,-1,-1,-1}};
+double last_legacy_scale_notice=-10;
+double last_clone_scale_notice=-10;
+std::array<uint64_t,8> tool_rejection_counts{};
 std::map<sui::Win,uint32_t> fenced_windows;
 uint64_t fenced_generation=0;
 uint64_t generation = 1, captures = 0, restores = 0, rejected = 0;
@@ -54,6 +56,7 @@ bool editing() {
            skg::field<int>(m, 0xD0) == 0 && skg::readable(resource(data(m)), kResourceSize);
 }
 bool active() { return editing() && C.active && C.active(); }
+bool tracks_relative_scale(){return !C.relative_scale_tracked || C.relative_scale_tracked();}
 void addref(void* p) { if (p) skg::vcall<int>(p, 0); }
 void release(void* p) { if (p) skg::vcall<int>(p, 1); }
 struct Owned {
@@ -193,7 +196,9 @@ void refresh_selection() {
     }
 }
 bool projection(void* r, Snapshot& out, std::string& error,
-                const std::map<uint32_t,editor::ObjectId>* supplied=nullptr) {
+                const std::map<uint32_t,editor::ObjectId>* supplied=nullptr,
+                std::optional<bool> requested_scale_mode=std::nullopt) {
+    const bool tracked=requested_scale_mode?*requested_scale_mode:tracks_relative_scale();
     Rows classes, markers, acts;
     if (!rows(r, 0x2BF4, 0x27E8, 1024, classes) || !rows(r, 0x2C10, 0x238, kPlacementLimit, markers) ||
         !rows(r, 0x23C, 0x534, 8, acts)) {
@@ -201,6 +206,7 @@ bool projection(void* r, Snapshot& out, std::string& error,
     }
     out.document = {};
     out.document.next_id = 4ull << 32;
+    if(tracked)out.document.schema=relative_scale_schema();
     for (auto p = classes.begin; p != classes.end; p += 0x27E8)
         out.document.classes.insert({(2ull << 32) | skg::field<uint32_t>(p, 0), 1});
     uint32_t count = uint32_t((acts.end - acts.begin) / 0x534);
@@ -218,6 +224,7 @@ bool projection(void* r, Snapshot& out, std::string& error,
         placement.position = skg::field<editor::Vec3>(marker, 4);
         placement.rotation = skg::field<editor::Rotation>(marker, 0x10);
         placement.scale = skg::field<float>(marker, 0x20);
+        if(!project_relative_scale(placement,tracked,skg::field<float>(marker,0x24),error))return false;
         if (!out.document.classes.count(placement.class_id)) {
             error = "Native editor marker has no scenario class"; return false;
         }
@@ -342,16 +349,16 @@ void SK_THISCALL select_native(void* self,void* object){
     original_select(self,object);
     if(!applying && editing())refresh_selection();
 }
-void tool_rejection(size_t reason,uint32_t action,void* context,const State& observed){
+bool tool_rejection(size_t reason,uint32_t action,void* context,const State& observed){
     ++rejected;
     ++tool_rejection_counts[reason];
     const double now=H->time_seconds();
     // Input may retry every frame. Keep this diagnostic bounded globally and
     // per cause; it only reads the already-owned context and observed state.
-    if(now-last_tool_rejection_log<0.25 || now-last_tool_rejection[reason]<1.0)return;
+    if(now-last_tool_rejection_log<0.25 || now-last_tool_rejection[reason]<1.0)return false;
     last_tool_rejection_log=now;last_tool_rejection[reason]=now;
     static constexpr const char* reasons[]={"context-auxiliary","empty-selection","missing-placement-gate",
-        "placement-lease","missing-structure-gate","structure-lease"};
+        "placement-lease","missing-structure-gate","structure-lease","legacy-scale-disabled","clone-scale-disabled"};
     const bool readable=skg::readable(context,0x14);
     const bool handles=skg::readable(context,0x24);
     H->log(M,SK_INFO,"Shared editor tool rejected: reason=%s action=%u context=%p selected=%u object=%p auxiliary=%p rotation18=%p rotation1C=%p rotation20=%p ready=%u generation=%llu count=%llu",
@@ -359,12 +366,31 @@ void tool_rejection(size_t reason,uint32_t action,void* context,const State& obs
         readable?skg::field<void*>(context,0x10):nullptr,handles?skg::field<void*>(context,0x18):nullptr,
         handles?skg::field<void*>(context,0x1C):nullptr,handles?skg::field<void*>(context,0x20):nullptr,unsigned(observed.ready),
         static_cast<unsigned long long>(observed.generation),static_cast<unsigned long long>(tool_rejection_counts[reason]));
+    return true;
 }
 uint32_t SK_THISCALL tool_native(void* self,uint32_t action,uint32_t a,uint32_t b){
     const State observed=editor_native::state();
     if(!applying && active() && (action==1 || action==6 || action==11)){
         refresh_selection();
         void* context=*reinterpret_cast<void**>(a_context);
+        if(legacy_scale_blocked(action,tracks_relative_scale())){
+            tool_rejection(6,action,context,observed);
+            const double now=H->time_seconds();
+            if(C.notice && now-last_legacy_scale_notice>=5){
+                last_legacy_scale_notice=now;
+                C.notice("Scale is unavailable in this older shared draft. Save a native copy and start a new shared project to enable it.");
+            }
+            return 1;
+        }
+        if(clone_scale_blocked(action,observed.gesture,gesture_clone.has_value())){
+            tool_rejection(7,action,context,observed);
+            const double now=H->time_seconds();
+            if(C.notice && now-last_clone_scale_notice>=5){
+                last_clone_scale_notice=now;
+                C.notice("Finish the clone before scaling it.");
+            }
+            return 1;
+        }
         // Native +10 is also the active rotation manipulator. Only its three
         // verified pose handles may pass; path and unknown auxiliaries remain
         // blocked, including every auxiliary clone action.
@@ -730,6 +756,11 @@ bool capture(Snapshot& out, std::string& error) {
 
 bool supported_changes(const Gesture& gesture,std::string& error){
     if(!supported || !a_copy_marker_rows || !a_insert_marker){error="Native authored-change validation is unavailable";return false;}
+    bool tracked=false;
+    if(gesture.before.document.schema!=gesture.after.document.schema ||
+       !relative_scale_mode(gesture.after.document,tracked,error)){
+        error="Native placement-property schema changed during a gesture";return false;
+    }
     Owned before(parse(gesture.before.bytes,error));if(!before.p)return false;
     Owned after(parse(gesture.after.bytes,error));if(!after.p)return false;
     Owned compared_before(construct()),compared_after(construct()),empty(construct());
@@ -781,11 +812,20 @@ bool supported_changes(const Gesture& gesture,std::string& error){
         const uint32_t old_flags=skg::field<uint32_t>(normalized_old,0x224);
         const uint32_t new_flags=skg::field<uint32_t>(normalized_new,0x224);
         skg::field<uint32_t>(normalized_new,0x224)=(new_flags&~0x16u)|(old_flags&0x16u);
+        if(tracked){
+            float old_relative=0,new_relative=0;
+            if(!relative_scale_value(prior->second,true,old_relative,error) ||
+               !relative_scale_value(to,true,new_relative,error))return false;
+            if(source!=id && old_relative!=new_relative){
+                error="A native clone must preserve its source scale-range companion";return false;
+            }
+            if(old_relative!=new_relative)
+                skg::field<float>(normalized_new,0x24)=skg::field<float>(normalized_old,0x24);
+        }
         if(prior->second.scale!=to.scale){
             skg::field<float>(normalized_new,0x20)=skg::field<float>(normalized_old,0x20);
-            // Native scaling owns the related normalized scale as well. Without
-            // a scale gesture, a change to this field remains unsupported.
-            skg::field<float>(normalized_new,0x24)=skg::field<float>(normalized_old,0x24);
+            // Legacy drafts retain their historical scale20-only semantics.
+            if(!tracked)skg::field<float>(normalized_new,0x24)=skg::field<float>(normalized_old,0x24);
         }
     }
     // Camera ownership is local. Every remaining serialized difference is an
@@ -872,6 +912,7 @@ bool validate(const Snapshot& snapshot,const editor::Document& document,std::str
     if(document.placements.size()>kPlacementLimit || snapshot.bindings.size()>kPlacementLimit){
         error="Native editor placement limit exceeded";return false;
     }
+    bool tracked=false;if(!relative_scale_mode(document,tracked,error))return false;
     Owned copy(parse(snapshot.bytes,error));if(!copy.p)return false;
     std::map<uint32_t,editor::ObjectId> supplied;
     std::set<editor::ObjectId> ids;
@@ -881,7 +922,7 @@ bool validate(const Snapshot& snapshot,const editor::Document& document,std::str
         }
     }
     Snapshot projected;projected.act=snapshot.act;
-    if(!projection(copy.p,projected,error,&supplied))return false;
+    if(!projection(copy.p,projected,error,&supplied,tracked))return false;
     if(projected.document.classes!=document.classes || projected.document.acts!=document.acts ||
        projected.document.placements.size()!=document.placements.size() || supplied.size()!=document.placements.size() ||
        !document.acts.count({(3ull<<32)|snapshot.act,1})){
@@ -892,7 +933,7 @@ bool validate(const Snapshot& snapshot,const editor::Document& document,std::str
         if(it==document.placements.end()){error="Native snapshot contains an uncommitted placement";return false;}
         const auto& wanted=it->second;
         if(p.class_id!=wanted.class_id || p.act_id!=wanted.act_id || p.position!=wanted.position ||
-           p.rotation!=wanted.rotation || p.scale!=wanted.scale || !wanted.properties.empty() ||
+           p.rotation!=wanted.rotation || p.scale!=wanted.scale || p.properties!=wanted.properties ||
            !std::isfinite(p.scale) || p.scale<=0 || !std::isfinite(p.position.x) ||
            !std::isfinite(p.position.y) || !std::isfinite(p.position.z) || !std::isfinite(p.rotation.x) ||
            !std::isfinite(p.rotation.y) || !std::isfinite(p.rotation.z) || !std::isfinite(p.rotation.w)){
@@ -985,16 +1026,19 @@ bool apply(const editor::Document& document, std::string& error) {
 
 bool apply(const editor::Document& document,const editor::Change& change,const Snapshot* artifact,std::string& error) {
     if(document.placements.size()>kPlacementLimit){error="Native editor placement limit exceeded";return false;}
+    bool tracked=false;if(!relative_scale_mode(document,tracked,error))return false;
     Snapshot snapshot;
     if (!capture(snapshot,error)) return false;
-    if (snapshot.document.classes != document.classes || snapshot.document.acts != document.acts) {
+    if (snapshot.document.classes != document.classes || snapshot.document.acts != document.acts ||
+        snapshot.document.schema!=document.schema) {
         error="Shared editing cannot change native classes or acts yet"; return false;
     }
     for(const auto& [id,to]:document.placements){
         auto from=snapshot.document.placements.find(id);
+        float required_relative=0;if(!relative_scale_value(to,tracked,required_relative,error))return false;
         if((from!=snapshot.document.placements.end() &&
-            (from->second.class_id!=to.class_id || from->second.act_id!=to.act_id || from->second.properties!=to.properties)) ||
-           !to.properties.empty() || !document.classes.count(to.class_id) ||
+            (from->second.class_id!=to.class_id || from->second.act_id!=to.act_id)) ||
+           !document.classes.count(to.class_id) ||
            !std::isfinite(to.scale) || to.scale<=0 || !std::isfinite(to.position.x) ||
            !std::isfinite(to.position.y) || !std::isfinite(to.position.z) ||
            !std::isfinite(to.rotation.x) || !std::isfinite(to.rotation.y) ||
@@ -1088,13 +1132,16 @@ bool apply(const editor::Document& document,const editor::Change& change,const S
         void* marker=marker_for_id(resource(owner),id);
         if(!marker)return fail("Native transform target is no longer bound");
         float previous=skg::field<float>(marker,0x20);
-        float relative=skg::field<float>(marker,0x24);
+        float relative=skg::field<float>(marker,0x24),required_relative=relative;
+        if(!relative_scale_value(to,tracked,required_relative,error)){const auto reason=error;return fail(reason.c_str());}
         if(skg::field<editor::Vec3>(marker,4)==to.position &&
-           skg::field<editor::Rotation>(marker,0x10)==to.rotation && previous==to.scale)continue;
+           skg::field<editor::Rotation>(marker,0x10)==to.rotation && previous==to.scale &&
+           (!tracked || relative==required_relative))continue;
         skg::field<editor::Vec3>(marker,4)=to.position;
         skg::field<editor::Rotation>(marker,0x10)=to.rotation;
         skg::field<float>(marker,0x20)=to.scale;
-        if(previous>0 && std::isfinite(relative))skg::field<float>(marker,0x24)=relative*(to.scale/previous);
+        if(tracked)skg::field<float>(marker,0x24)=required_relative;
+        else if(previous>0 && std::isfinite(relative))skg::field<float>(marker,0x24)=relative*(to.scale/previous);
         skg::thiscall<void>(a_apply_marker,owner,marker,false);
         changed=true;
     }

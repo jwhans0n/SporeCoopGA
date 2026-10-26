@@ -3112,3 +3112,68 @@ to accept unknown data. It adds no native calls and changes no authored
 normalization or rollback behavior. The immutable base decodes to native
 schema `01A80D26` with 34 sized fields; its saved-base decoded payload is only
 read-only context, not the missing post-Scale proof.
+
+The actual C13 diagnostic resolved that field without accepting an opaque
+difference. With one Ace captain selected through native Locate, an ordinary
+Shift-wheel `+2` request was followed by its actual usable placement grant,
+then native Shift-wheel `-2`. The native Scale history changed marker `+24`
+from `0.5` to `0.479587317`, while physical scale `+20` stayed `2` and raw
+elevation `+220` and flags `+224` stayed zero. The decoded 3075-byte payload
+differed only at offsets 689 to 692: `3F 00 00 00` became `3E F5 8C 78`.
+The native field index identifies these four bytes as float property
+`071147E9`, following physical-scale property `071147E8`. The compressed
+envelope length change was a consequence of that authored float. C13 correctly
+rejected and restored this unsupported mutation; both participants returned
+normally to Galaxy with zero faults. Receipt:
+`out/editor-native-candidate13/scale-known-recipe/result.json`.
+The earlier one-notch attempts did not enter native Scale history and remain
+separate failed input calibrations, not additional property results.
+
+Exact static receipts establish the two-field semantics. `F004F0`, called by
+ToolAction 6 at `F0382E`, starts native history and supplies marker `+24` as
+an output pointer to `F40840` (`F005B7`, `F005C6`), then stores the returned
+physical float at `+20` (`F005CF`). The reflection descriptor at `138C2B8`
+names property `071147E9`; `138C2F4` specifies offset `24`. The creature
+calculation `EED310` clamps its returned physical scale to native tier bounds,
+but calculates the companion from the original requested size around the
+native default scale. Its lower and upper branches do not clamp that companion
+to `[0,1]`. Native tier values are initialized at runtime and no numeric tier
+bounds are inferred from their zero-filled image storage. `F3D930` applies
+physical `+20` through the actor interface; its `EED640` editor-state helper
+does not read `+24`. This limited consumer audit does not assert that the
+companion is unused everywhere else. Receipts:
+`out/editor-native-re/c14-scale-semantic.txt` and
+`out/editor-native-re/c14-scale-consumer.txt`.
+
+The reviewed C14 proposal remains outside production until integration. New
+documents register exactly one required placement Number property,
+`071147E9`, preserving its exact finite float throughout capture, validation,
+apply, Undo, Redo and checkpoint recovery. The admitted numeric range is the
+full finite float range, with NaN and infinities rejected. Target-document
+schema determines private validation; Runtime explicitly scopes incoming and
+recovered capture mode, including asynchronous Save completion. A companion
+change is represented even when physical scale, position and orientation are
+unchanged. Opaque normalization admits only the represented `+24` field;
+elevation, other flags, class fields, terrain and global fields retain the
+existing rejection behavior. Pose previews continue to expose physical `+20`
+only and do not claim exact companion preview rendering.
+
+Legacy schema-empty checkpoints and their chronological history are retained
+without migration. Their native Scale action is blocked before mutation with
+a throttled explanation; Move, Rotate, structural editing, recovery and
+playtest retain their old projection. Starting a new shared project from a
+native saved copy explicitly selects the new capability. The existing Clone
+wire remains unchanged: ordinary Clone must preserve its source companion,
+including a source whose physical scale is unchanged. Scale input during an
+active Clone is held until that gesture finishes. A mismatching native Clone
+companion remains a rejection, not an implicit extra operation.
+
+The OUT proposal at `out/editor-native-re/c14-scale-semantic/native.patch`
+passes 184 schema/projection/core/wire checks on the portable host and actual
+i686 Win32 executable. These include companion-only guarded commits, exact
+float bits, Clone/Delete history, combined physical/companion Undo, persisted
+history recovery and legacy-history retention. The proposed adapter compiles
+with the exact CI i686 toolchain and `-Wall -Wextra -Werror`; the extended
+exact-executable verifier passes all 32 existing entries plus the five Scale
+field/caller receipts without adding symbols. These are static and controlled
+tests. Actual C14 native Scale, Clone, Save and recovery acceptance is pending.

@@ -17,6 +17,7 @@
 #include "editor_native.h"
 #include "editor_native_save.h"
 #include "editor_metrics.h"
+#include "editor_reopen_identity.h"
 #include "editor_project.h"
 #include "editor_session.h"
 #include "editor_store.h"
@@ -35,6 +36,15 @@ Ctx C;
 std::unique_ptr<editor_session::Controller> controller;
 editor_store::Store store;
 editor_native::Snapshot current_native, before_apply;
+std::optional<editor_native::Snapshot> reopen_saved;
+std::optional<bool> projection_override;
+struct ProjectionScope {
+    std::optional<bool> before = projection_override;
+    explicit ProjectionScope(const editor::Document& document) {
+        projection_override = document.schema.contains(editor_native::kRelativeScaleProperty);
+    }
+    ~ProjectionScope() { projection_override = before; }
+};
 editor_project::Resources resources;
 std::optional<editor_project::Resources> incoming_resources;
 std::optional<editor::wire::Saved> pending_saved;
@@ -552,7 +562,18 @@ void captured(editor_native::Gesture gesture) {
                     r.mutations.push_back(m);
                 }
             }
-            if (placement.properties != next->second.properties) { frozen = true; tell("An unregistered native property edit was blocked. Recover the draft."); return; }
+            std::set<uint32_t> properties;
+            for (const auto& [property, value] : prior->second.properties) { (void)value; properties.insert(property); }
+            for (const auto& [property, value] : next->second.properties) { (void)value; properties.insert(property); }
+            for (auto property : properties) {
+                const editor::FieldKey key{editor::Field::Property, property};
+                const auto before = editor::value(prior->second, key), after = editor::value(next->second, key);
+                if (before == after) continue;
+                if (!doc.schema.contains(property)) { frozen = true; tell("An unregistered native property edit was blocked. Recover the draft."); return; }
+                editor::Mutation mutation; mutation.target = id; mutation.field = key;
+                mutation.value = after; mutation.expected = editor::field_revision(guard->second, key);
+                r.mutations.push_back(std::move(mutation));
+            }
         }
     }
     for (const auto& [id, placement] : gesture.after.document.placements) if (!doc.placements.contains(id)) {
@@ -561,6 +582,10 @@ void captured(editor_native::Gesture gesture) {
         if (gesture.clone_source) {
             auto source = guarded_placements.find(*gesture.clone_source);
             if (source == guarded_placements.end()) { frozen = true; tell("The native clone source has no editing ownership. Recover the draft."); return; }
+            if (placement.properties != source->second.properties) {
+                error = "Cloning and changing a placement property in one gesture is unsupported; repeat Clone and Scale separately";
+                stop_unsupported(error); return;
+            }
             m.kind = editor::MutationKind::Clone; m.target = *gesture.clone_source; m.initial = {};
             m.expected = source->second.revision;
             m.clone_pose = editor::Pose{placement.position, placement.rotation, placement.scale};
@@ -758,10 +783,15 @@ void saved_native(editor::ResourceKey key) {
     tell("The shared adventure draft was saved by Spore");
 }
 void start_saved() {
+    reopen_saved.reset();
     beginning = false;
     std::string error;
     editor_native::Snapshot native;
     if (!editor_native::capture(native, error) || !native.source.instance || native.source.type != 0x366A930D) { tell(error.empty() ? "Save a new native adventure draft before sharing" : error); return; }
+    bool tracked = false;
+    if (!editor_native::relative_scale_mode(native.document, tracked, error) || !tracked) {
+        tell(error.empty() ? "The native draft lacks the required continuous-scale projection; sharing did not start" : error); return;
+    }
     editor::State state; state.document = native.document;
     std::random_device random;
     for (auto& byte : state.document.project) byte = uint8_t(random());
@@ -823,7 +853,7 @@ void close_session(bool preserve_offer = false) {
     pending_preparation_cancel.reset();
     preview_selection.reset();
     observed_lease_grants.clear();
-    if (!closing) { closing = true; close_restored = false; close_preserve_offer = preserve_offer; }
+    if (!closing) { reopen_saved.reset(); closing = true; close_restored = false; close_preserve_offer = preserve_offer; }
     close_preserve_offer |= preserve_offer || controller->view().phase == Phase::Offered;
     // An accepted edit remains owned until active replicas have applied and
     // durably covered it. Keep pumping the controller and party transport while
@@ -854,6 +884,22 @@ void close_session(bool preserve_offer = false) {
         native_generation = editor_native::state().generation;
     }
     const bool keep_offer = close_preserve_offer;
+    const auto saved = controller->saved_coverage();
+    if (!keep_offer && !frozen && native_copy_owned && native.ready && native.editing &&
+        editor_native::state().generation == native_generation && controller->view().phase == Phase::Ready &&
+        !save_publication_pending && !pending_saved && saved.current && saved.expected &&
+        saved.applied == saved.expected && saved.revision == current_native.document.revision &&
+        controller->view().saved && controller->view().saved->resource == current_native.source && controller->settled()) {
+        editor_native::Snapshot observed;
+        std::string error;
+        if (editor_native::capture(observed, error) && observed.source == current_native.source &&
+            editor_native::validate(observed, current_native.document, error) && supported_between(current_native, observed, error)) {
+            // Native resource envelopes omit projected captain metadata. Retain
+            // the verified live metadata and canonical logical namespace in the
+            // proof pin, without rewriting any native or durable resource.
+            observed.document = current_native.document; reopen_saved = std::move(observed);
+        } else if (H) H->log(M, SK_INFO, "Saved-draft reopen proof was not pinned: %s", error.c_str());
+    }
     if (!keep_offer) controller->end(); pending.reset(); awaiting_operation.reset(); requested_scopes.clear(); guarded_placements.clear(); incoming_resources.reset();
     recovery.reset(); beginning = false; frozen = false; save_publication_pending = false;
     end_after_return = false; disconnected_return = false; pending_saved.reset();
@@ -904,6 +950,7 @@ void finish_recovery() {
         recovery.reset(); frozen = true; tell("Recovery stopped because the native editor context changed"); return;
     }
     if (context.gesture || editor_native_save::busy()) return;
+    ProjectionScope projection(recovery->state.document);
     std::string error;
     if (!recovery->restored) {
         if (!editor_native::restore(recovery->native, error)) { recovery.reset(); frozen = true; tell(error); return; }
@@ -978,6 +1025,7 @@ void execute(Action action) {
     std::string error;
     switch (action) {
     case Action::Begin:
+        reopen_saved.reset();
         if (controller->view().phase == Phase::Offered) {
             if (game::mode_id() != modes::kMenu) { tell("Save your local draft and return to Galaxy before joining shared editing"); break; }
             if (!controller->accept_offer(error)) tell(error);
@@ -1023,6 +1071,7 @@ void execute(Action action) {
             tell("The host returns the party to the adventure draft");
         break;
     case Action::Recover: {
+        reopen_saved.reset();
         if (!host() || !recovery_available) break;
         if (!store.healthy() && !store.open(project_root, project_id, error)) { tell(error); break; }
         auto checkpoint = store.snapshot();
@@ -1156,7 +1205,7 @@ void action(Action value) {
 } // namespace
 
 bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
-    H = host_api; M = mod; C = std::move(context);
+    H = host_api; M = mod; C = std::move(context); reopen_saved.reset(); projection_override.reset();
     if (!C.session) return false;
     editor_session::Callbacks callbacks;
     callbacks.host_hooks.validate = [](const auto&, const auto&, const auto&, std::string& error) {
@@ -1204,6 +1253,8 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     };
     callbacks.baseline_ready = [](const editor::State&) { return editor_native::state().ready; };
     callbacks.apply_baseline = [](const editor::State& state, std::string& error) {
+        ProjectionScope projection(state.document);
+        reopen_saved.reset();
         if (!incoming_resources || incoming_context.project != state.document.project || incoming_context.epoch != state.document.epoch || incoming_context.revision != state.document.revision) {
             error = "The editor baseline has no matching verified resources"; return false;
         }
@@ -1303,10 +1354,16 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     controller = std::make_unique<editor_session::Controller>(*C.session, std::move(callbacks));
     editor_native::Ctx native;
     native.active = [] { return session_active() || recovery.has_value() || closing || native_attached; };
+    native.relative_scale_tracked = [] {
+        if (projection_override) return *projection_override;
+        if (recovery) return recovery->state.document.schema.contains(editor_native::kRelativeScaleProperty);
+        return !native_attached || current_native.document.schema.contains(editor_native::kRelativeScaleProperty);
+    };
     native.gesture = captured;
     native.history = [](bool redo) { action(redo ? Action::Redo : Action::Undo); };
     native.history_available = [](bool redo) { return redo ? cached.can_redo : cached.can_undo; };
     native.failure = [](const std::string& error) { frozen = true; tell(error); };
+    native.notice = [](const std::string& message) { tell(message); };
     native.gate = [](const std::vector<editor::ObjectId>& selection) {
         const auto state = editor_native::state();
         if (closing || !state.ready || state.generation != native_generation) return false;
@@ -1361,7 +1418,7 @@ void session_ended() {
     refresh();
 }
 void mode_changed(uint32_t, uint32_t) { schedule(); }
-void shutdown() { if (controller) { controller->end(); controller.reset(); } store.close(); adventure_native::clear_editor_preview(); editor_native_save::shutdown(); editor_native::shutdown(); actions.clear(); pending_preview_return.reset(); pending_preparation_cancel.reset(); preview_selection.reset(); observed_lease_grants.clear(); queued = false; closing = native_attached = close_restored = close_preserve_offer = false; H = nullptr; }
+void shutdown() { reopen_saved.reset(); projection_override.reset(); if (controller) { controller->end(); controller.reset(); } store.close(); adventure_native::clear_editor_preview(); editor_native_save::shutdown(); editor_native::shutdown(); actions.clear(); pending_preview_return.reset(); pending_preparation_cancel.reset(); preview_selection.reset(); observed_lease_grants.clear(); queued = false; closing = native_attached = close_restored = close_preserve_offer = false; H = nullptr; }
 bool active() { return cached.active; }
 bool authoring() {
     if (!controller || (controller->view().phase == Phase::Playing && native_playtesting)) return false;
@@ -1380,6 +1437,25 @@ void set_ready(bool value) { action(value ? Action::Ready : Action::Unready); }
 void recover() { action(Action::Recover); }
 void end() { action(Action::End); }
 std::string debug(const std::vector<std::string>& args) {
+    if (args.size() == 1 && args[0] == "verify-reopen") {
+        const auto native = editor_native::state();
+        if (!controller || controller->view().phase != Phase::Idle || session_active() || native_attached || closing ||
+            beginning || recovery || frozen || pending || awaiting_operation || pending_saved ||
+            editor_native_save::busy() || adventure_native::editor_preview() || adventure::cleanup_pending() ||
+            !native.editing || !native.ready || native.playtesting || native.gesture)
+            return "REOPEN_REJECTED: Verification requires a detached idle native editor";
+        if (!reopen_saved) return "REOPEN_REJECTED: End a fully acknowledged native save at the latest canonical revision first";
+        ProjectionScope projection(reopen_saved->document);
+        editor_native::Snapshot observed, mapped;
+        std::string error;
+        if (!editor_native::capture(observed, error) ||
+            !editor_reopen_probe::remap_reopened(*reopen_saved, observed, mapped, error) ||
+            !editor_native::validate(mapped, reopen_saved->document, error) || !supported_between(*reopen_saved, mapped, error))
+            return "REOPEN_REJECTED: " + error;
+        char source[40];
+        snprintf(source, sizeof source, "%08X!%08X.%08X", mapped.source.group, mapped.source.instance, mapped.source.type);
+        return "REOPEN_VERIFIED revision=" + std::to_string(reopen_saved->document.revision) + " source=" + source;
+    }
     if (controller && args.size() == 1 && args[0] == "leases") {
         const auto& view = controller->view();
         auto object = [](editor::ObjectId id) { return std::to_string(id.id) + ":" + std::to_string(id.generation); };
@@ -1467,10 +1543,17 @@ std::string debug(const std::vector<std::string>& args) {
         for (const auto& [id, p] : native.document.placements) {
             float xy[2]{};
             const bool projected = H->world_to_screen && H->world_to_screen(&p.position.x, xy) && std::isfinite(xy[0]) && std::isfinite(xy[1]);
+            std::string relative;
+            auto property = p.properties.find(editor_native::kRelativeScaleProperty);
+            if (native.document.schema.contains(editor_native::kRelativeScaleProperty) && property != p.properties.end()) {
+                if (const auto* value = std::get_if<float>(&property->second)) {
+                    char text[48]; snprintf(text, sizeof text, " relative_scale=%.9g", double(*value)); relative = text;
+                }
+            }
             result += std::to_string(id.id) + ":" + std::to_string(id.generation) + " class=" + std::to_string(p.class_id.id) +
                 " pos=" + std::to_string(p.position.x) + "," + std::to_string(p.position.y) + "," + std::to_string(p.position.z) +
                 " scale=" + std::to_string(p.scale) + (projected ? " screen=" + std::to_string(xy[0]) + "," + std::to_string(xy[1]) : " screen=hidden") +
-                " rotation=" + std::to_string(p.rotation.x) + "," + std::to_string(p.rotation.y) + "," + std::to_string(p.rotation.z) + "," + std::to_string(p.rotation.w) + "\n";
+                " rotation=" + std::to_string(p.rotation.x) + "," + std::to_string(p.rotation.y) + "," + std::to_string(p.rotation.z) + "," + std::to_string(p.rotation.w) + relative + "\n";
             if (result.size() > 12000) break;
         }
         return result.empty() ? "No placements" : result;
@@ -1488,8 +1571,11 @@ std::string debug(const std::vector<std::string>& args) {
         else if (args[0] == "return") action(Action::Return);
     }
     refresh();
+    const auto saved = controller ? controller->saved_coverage() : editor_session::SavedCoverage{};
     return cached.title + "\n" + cached.status + "\nrevision=" + std::to_string(cached.revision) +
         " durable=" + std::to_string(cached.durable_revision) + " frozen=" + std::to_string(cached.frozen) +
+        " saved_revision=" + std::to_string(saved.revision) + " saved_applied=" + std::to_string(saved.applied) +
+        " saved_expected=" + std::to_string(saved.expected) + " settled=" + std::to_string(controller && controller->settled()) +
         " phase=" + std::to_string(controller ? uint8_t(controller->view().phase) : 0) +
         " project=" + (controller ? editor_store::project_name(controller->view().context.project) : "") +
         " capability=" + std::to_string(controller ? controller->view().local.slot : 255) + ":" + std::to_string(controller ? controller->view().local.generation : 0) +

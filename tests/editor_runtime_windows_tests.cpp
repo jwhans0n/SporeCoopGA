@@ -81,8 +81,8 @@ struct Native {
 std::array<Native,2> native;
 editor::Document seed() {
     editor::Document d;d.project[0]=1;d.epoch=7;d.next_id=5ull<<32;
-    d.classes.insert(class_id);d.acts.insert(act_id);
-    editor::Placement p;p.object=placement;p.class_id=class_id;p.act_id=act_id;d.placements.emplace(p.object,p);
+    d.classes.insert(class_id);d.acts.insert(act_id);d.schema=editor_native::relative_scale_schema();
+    editor::Placement p;p.object=placement;p.class_id=class_id;p.act_id=act_id;p.properties[editor_native::kRelativeScaleProperty]=.5f;d.placements.emplace(p.object,p);
     return d;
 }
 std::vector<uint8_t> body(const editor::Document& d,uint8_t opaque=0xA5) {
@@ -172,13 +172,18 @@ namespace editor_native {
 bool init(const SkHost*,SkMod*,Ctx ctx){native[side].callbacks=std::move(ctx);return true;}
 void shutdown(){}void tick(){}State state(){return native[side].state;}
 editor::ResourceKey avatar(){return native[side].snapshot.captain;}bool avatar_locked(){return true;}
-bool capture(Snapshot& value,std::string& error){CHECK(!dispatching);if(!native[side].state.ready){error="Injected native not ready";return false;}value=native[side].snapshot;return true;}
+bool capture(Snapshot& value,std::string& error){CHECK(!dispatching);if(!native[side].state.ready){error="Injected native not ready";return false;}value=native[side].snapshot;
+    if(native[side].callbacks.relative_scale_tracked&&!native[side].callbacks.relative_scale_tracked()){
+        value.document.schema.clear();for(auto& [id,p]:value.document.placements){(void)id;p.properties.clear();}
+    }return true;}
 bool validate(const Snapshot& snapshot,const editor::Document& wanted,std::string& error){
     CHECK(!dispatching);editor::State parsed;
     if(snapshot.bytes.empty()||!ew::decode_state(std::vector<uint8_t>(snapshot.bytes.begin()+1,snapshot.bytes.end()),parsed,error))return false;
     const auto& d=parsed.document;
     if(d.classes!=wanted.classes||d.acts!=wanted.acts||d.placements.size()!=wanted.placements.size()){error="Injected persisted projection mismatch";return false;}
-    for(const auto& [id,p]:d.placements){auto it=wanted.placements.find(id);if(it==wanted.placements.end()||p.class_id!=it->second.class_id||p.act_id!=it->second.act_id||p.position!=it->second.position||p.rotation!=it->second.rotation||p.scale!=it->second.scale){error="Injected persisted field mismatch";return false;}}
+    auto binding=snapshot.bindings.begin();
+    for(const auto& [id,p]:d.placements){(void)id;if(binding==snapshot.bindings.end()){error="Injected missing binding";return false;}
+        auto it=wanted.placements.find(binding++->object);if(it==wanted.placements.end()||p.class_id!=it->second.class_id||p.act_id!=it->second.act_id||p.position!=it->second.position||p.rotation!=it->second.rotation||p.scale!=it->second.scale||p.properties!=it->second.properties){error="Injected persisted field mismatch";return false;}}
     return true;
 }
 bool supported_changes(const Gesture& gesture,std::string& error){CHECK(!dispatching);
@@ -186,7 +191,8 @@ bool supported_changes(const Gesture& gesture,std::string& error){CHECK(!dispatc
         error="Injected unsupported opaque authoring change";return false;
     }return true;
 }
-bool restore(const Snapshot& value,std::string&){CHECK(!dispatching);CHECK(native[side].state.ready);native[side].snapshot=value;native[side].snapshot.captain=avatar_key;++native[side].restores;return true;}
+bool restore(const Snapshot& value,std::string&){CHECK(!dispatching);CHECK(native[side].state.ready);
+    if(native[side].callbacks.relative_scale_tracked)CHECK(native[side].callbacks.relative_scale_tracked()==!value.document.schema.empty());native[side].snapshot=value;native[side].snapshot.captain=avatar_key;++native[side].restores;return true;}
 bool rebaseline(std::string& error){CHECK(!dispatching);auto& n=native[side];if(!n.rebaseline_ready||n.state.gesture){error="Injected native capture pending";return false;}
     CHECK(n.state.ready);++n.rebaselines;++n.state.generation;n.state.history_cursor=n.state.history_size=0;return true;}
 bool apply(const editor::Document& doc,std::string& error){return apply(doc,editor::Change{},nullptr,error);}
@@ -402,7 +408,7 @@ static void test_large_closure_retained_once_and_delta_recovery() {
     for(unsigned edit=0;edit<20;++edit) {
         editor::Request request;request.summary="Create with unchanged large dependencies";request.base_revision=edit;
         for(const auto& held:runtime_host::controller->view().local_leases)request.leases.push_back({held.scope,held.token});
-        editor::Mutation mutation;mutation.kind=editor::MutationKind::Create;mutation.initial.class_id=class_id;mutation.initial.act_id=act_id;
+        editor::Mutation mutation;mutation.kind=editor::MutationKind::Create;mutation.initial.class_id=class_id;mutation.initial.act_id=act_id;mutation.initial.properties[editor_native::kRelativeScaleProperty]=.5f;
         mutation.initial.position={float(edit+1),0,0};request.mutations={mutation};
         side=0;CHECK(runtime_host::controller->submit(request,error));
         CHECK(spin([&]{return runtime_guest::controller->state().document.revision==edit+1;},true,30000));
@@ -536,7 +542,7 @@ static void accept_create_before_guest_dispatch() {
     CHECK(spin([]{return !runtime_host::controller->view().local_leases.empty();}));
     editor::Request request;request.summary="Accepted Create immediately before End";
     for(const auto& held:runtime_host::controller->view().local_leases)request.leases.push_back({held.scope,held.token});
-    editor::Mutation m;m.kind=editor::MutationKind::Create;m.initial.class_id=class_id;m.initial.act_id=act_id;m.initial.position={4,5,6};request.mutations={m};
+    editor::Mutation m;m.kind=editor::MutationKind::Create;m.initial.class_id=class_id;m.initial.act_id=act_id;m.initial.properties[editor_native::kRelativeScaleProperty]=.5f;m.initial.position={4,5,6};request.mutations={m};
     side=0;CHECK(runtime_host::controller->submit(request,error));
     CHECK(spin([]{return runtime_host::controller->state().document.revision==1;},false));
     CHECK(runtime_guest::controller->state().document.revision==0);
@@ -1168,4 +1174,179 @@ static void test_preparation_cancel_preserves_draft_and_is_round_scoped() {
     runtime_host::cancel_playtest();CHECK(spin([]{return runtime_host::controller->view().phase==es::Phase::Ready&&runtime_guest::controller->view().phase==es::Phase::Ready;}));
 }
 
-int main(int argc,char** argv){const bool quick=argc==2&&std::string(argv[1])=="--quick";if(argc>1&&!quick)return 2;test_preparation_cancel_preserves_draft_and_is_round_scoped();test_delayed_lease_grant_gets_observed_idle_grace();test_begin_ga_batch_and_end_returning();test_history_entry_rechecks_actual_native_holds();test_preview_return_callbacks_are_scoped_to_one_round();test_preview_restores_latest_independent_selection_before_ack();test_lease_diagnostic_is_bounded_and_read_only();test_conflicting_native_history_releases_document_ownership();test_guest_end_during_unlaunched_preparation_is_retryable();test_drag_preview_bridge_never_authors_remote_state();test_saved_resources_then_next_commit();test_guest_recovery_requires_owned_native_copy();test_pending_undo_keeps_ownership_across_foreign_commit();test_pending_artifacts_obey_capacity_and_preserve_durable_base();test_missing_authored_captain_blocks_prepare();test_uncertain_maintenance_freezes_until_reopen();test_end_waits_for_native_settle_and_retires_once();test_end_does_not_touch_replaced_native_context();test_idle_controller_keeps_owned_native_cleanup_isolated();test_delayed_gesture_cannot_restore_another_editor();test_host_end_delivers_accepted_structural_checkpoint();test_host_end_does_not_wait_for_departed_replica();test_host_end_waits_for_applied_same_revision_save();test_native_frozen_guest_does_not_block_host_close();test_native_recreation_waits_for_actual_next_frame();test_held_native_gesture_is_cancelled_by_end();test_recovery_retires_held_and_delayed_native_captures();test_recovery_wait_does_not_restore_replaced_context();test_native_save_enrichment_survives_edits_save_and_recovery();test_invalid_completed_save_does_not_replace_live_draft();test_opaque_gesture_changes_freeze_before_empty_semantic_return();test_uncaptured_opaque_changes_cannot_save_or_playtest();test_host_apply_rejects_uncaptured_opaque_changes();test_host_native_success_without_projection_cannot_commit();test_guest_native_success_without_projection_freezes_only_replica();test_held_native_gesture_is_fenced_by_generation_or_disconnect();test_held_move_accepts_disjoint_remote_revision();if(!quick)test_large_closure_retained_once_and_delta_recovery();std::printf("editor runtime: %u checks passed\n",checks);}
+
+static void test_relative_scale_only_capture_undo_redo_and_recovery() {
+    Party party;std::string error;side=0;
+    const editor::FieldKey field{editor::Field::Property,editor_native::kRelativeScaleProperty};
+    CHECK(native[0].callbacks.relative_scale_tracked&&native[0].callbacks.relative_scale_tracked());
+    CHECK(native[0].callbacks.gate({placement})==false);
+    CHECK(spin([]{return !runtime_host::controller->view().local_leases.empty();}));
+    side=0;CHECK(native[0].callbacks.gate({placement}));
+    editor_native::Gesture gesture;gesture.generation=native[0].state.generation;
+    gesture.before=native[0].snapshot;gesture.after=gesture.before;
+    gesture.after.document.placements.at(placement).properties[editor_native::kRelativeScaleProperty]=.479587317f;
+    gesture.after.bytes=body(gesture.after.document);native[0].snapshot=gesture.after;
+    runtime_host::captured(std::move(gesture));
+    CHECK(runtime_host::pending&&runtime_host::pending->request.mutations.size()==1);
+    CHECK(runtime_host::pending->request.mutations.front().field==field);
+    CHECK(runtime_host::pending->request.mutations.front().expected==0);
+    CHECK(spin([]{return runtime_host::controller->state().document.revision==1&&runtime_guest::controller->state().document.revision==1&&!runtime_host::awaiting_operation;}));
+    auto check=[&](float expected,editor::Revision revision){
+        for(unsigned p=0;p<2;++p){const auto& document=p?runtime_guest::controller->state().document:runtime_host::controller->state().document;
+            CHECK(document.revision==revision&&document.placements.at(placement).scale==1);
+            CHECK(std::get<float>(document.placements.at(placement).properties.at(editor_native::kRelativeScaleProperty))==expected);
+            CHECK(editor::field_revision(document.placements.at(placement),field)==revision);
+        }
+    };
+    check(.479587317f,1);
+    side=0;const auto restored=native[0].restores;const auto native_bytes=native[0].snapshot.bytes;
+    const auto checkpoint=runtime_host::store.snapshot();const auto diagnostic=runtime_host::debug({"objects"});
+    const auto key=diagnostic.find(" relative_scale=");CHECK(key!=std::string::npos);
+    CHECK(std::strtof(diagnostic.c_str()+key+16,nullptr)==.479587317f);
+    CHECK(native[0].restores==restored&&native[0].snapshot.bytes==native_bytes&&runtime_host::store.snapshot()==checkpoint);
+    CHECK(spin([]{return runtime_host::controller->view().local_leases.empty()&&runtime_host::controller->settled();}));
+    side=0;runtime_host::undo();CHECK(spin([]{return !runtime_host::controller->view().local_leases.empty();}));
+    side=0;runtime_host::undo();CHECK(spin([]{return runtime_guest::controller->state().document.revision==2&&!runtime_host::awaiting_operation;}));check(.5f,2);
+    CHECK(spin([]{return runtime_host::controller->view().local_leases.empty()&&runtime_host::controller->settled();}));
+    side=0;runtime_host::redo();CHECK(spin([]{return !runtime_host::controller->view().local_leases.empty();}));
+    side=0;runtime_host::redo();CHECK(spin([]{return runtime_guest::controller->state().document.revision==3&&!runtime_host::awaiting_operation;}));check(.479587317f,3);
+    const auto old_epoch=runtime_host::controller->state().document.epoch;
+    side=0;runtime_host::end();CHECK(spin([]{return runtime_host::controller->view().phase==es::Phase::Idle&&runtime_guest::controller->view().phase==es::Phase::Idle;}));
+    side=0;runtime_host::recover();CHECK(spin([]{return runtime_host::controller->view().phase==es::Phase::Ready&&runtime_guest::controller->view().phase==es::Phase::Offered;}));
+    CHECK(runtime_host::controller->state().document.epoch!=old_epoch);
+    CHECK(runtime_host::controller->state().history.size()==1);
+    CHECK(std::get<float>(runtime_host::current_native.document.placements.at(placement).properties.at(editor_native::kRelativeScaleProperty))==.479587317f);
+    side=1;CHECK(runtime_guest::controller->accept_offer(error));CHECK(spin([]{return runtime_guest::controller->view().phase==es::Phase::Ready&&runtime_host::controller->settled();}));check(.479587317f,3);
+}
+static void test_legacy_recovery_keeps_schema_history_and_scoped_capture() {
+    Party party;std::string error;side=0;
+    CHECK(!native[0].callbacks.gate({placement}));CHECK(spin([]{return !runtime_host::controller->view().local_leases.empty();}));
+    side=0;CHECK(native[0].callbacks.gate({placement}));
+    editor_native::Gesture original;original.generation=native[0].state.generation;original.before=native[0].snapshot;original.after=original.before;
+    original.after.document.placements.at(placement).position.y=2;original.after.bytes=body(original.after.document);native[0].snapshot=original.after;runtime_host::captured(std::move(original));
+    CHECK(spin([]{return runtime_guest::controller->state().document.revision==1&&runtime_host::controller->settled();}));
+    side=0;runtime_host::end();
+    CHECK(spin([]{return runtime_host::controller->view().phase==es::Phase::Idle&&runtime_guest::controller->view().phase==es::Phase::Idle;}));
+    editor_store::Store old;CHECK(old.open(runtime_host::project_root,runtime_host::project_id,error));
+    auto checkpoint=old.snapshot();editor::State state;editor_native::Snapshot snapshot;
+    CHECK(editor_project::load_snapshot(checkpoint,state,snapshot,error));
+    state.document.schema.clear();for(auto& [id,p]:state.document.placements){(void)id;p.properties.clear();}
+    snapshot.document=state.document;snapshot.bytes=body(state.document);std::vector<uint8_t> old_mapping;
+    CHECK(editor_project::store_snapshot(state,snapshot,"Legacy C13 draft",checkpoint,error));
+    checkpoint.manifest=old.snapshot().manifest;CHECK(old.checkpoint(checkpoint,error));old.close();
+    side=0;runtime_host::recover();
+    CHECK(spin([]{return runtime_host::controller->view().phase==es::Phase::Ready&&runtime_guest::controller->view().phase==es::Phase::Offered;}));
+    CHECK(runtime_host::controller->state().document.schema.empty()&&runtime_host::controller->state().history.size()==1);
+    CHECK(native[0].callbacks.relative_scale_tracked&&!native[0].callbacks.relative_scale_tracked());
+    side=1;CHECK(runtime_guest::controller->accept_offer(error));
+    CHECK(spin([]{return runtime_guest::controller->view().phase==es::Phase::Ready&&runtime_host::controller->settled();}));
+    side=1;CHECK(!native[1].callbacks.relative_scale_tracked());
+    CHECK(runtime_guest::current_native.document.schema.empty()&&!runtime_guest::projection_override);
+    CHECK(runtime_guest::controller->state().document.placements.at(placement).properties.empty());
+    CHECK(runtime_guest::debug({"objects"}).find("relative_scale=")==std::string::npos);
+    side=0;CHECK(native[0].callbacks.gate({placement})==false);CHECK(spin([]{return !runtime_host::controller->view().local_leases.empty();}));
+    side=0;CHECK(native[0].callbacks.gate({placement}));
+    editor_native::Gesture gesture;gesture.generation=native[0].state.generation;gesture.before=native[0].snapshot;gesture.after=gesture.before;
+    gesture.after.document.placements.at(placement).position.x=4;gesture.after.bytes=body(gesture.after.document);native[0].snapshot=gesture.after;runtime_host::captured(std::move(gesture));
+    CHECK(spin([]{return runtime_guest::controller->state().document.revision==2&&!runtime_host::awaiting_operation;}));
+    CHECK(runtime_host::controller->state().document.schema.empty()&&runtime_host::controller->state().history.size()==2);
+    CHECK(runtime_guest::controller->state().document.placements.at(placement).position.x==4);
+    CHECK(spin([]{return runtime_host::controller->view().local_leases.empty()&&runtime_host::controller->settled();}));
+    side=0;runtime_host::undo();CHECK(spin([]{return !runtime_host::controller->view().local_leases.empty();}));
+    side=0;runtime_host::undo();CHECK(spin([]{return runtime_guest::controller->state().document.revision==3&&!runtime_host::awaiting_operation;}));
+    CHECK(runtime_host::controller->state().document.schema.empty()&&runtime_guest::controller->state().document.schema.empty());
+    CHECK(runtime_guest::controller->state().document.placements.at(placement).position==editor::Vec3{0,2,0});
+}
+static void test_verify_reopen_read_only_exact_saved_identity() {
+    Party party;std::string error;side=0;
+    CHECK(spin([]{return runtime_host::controller->settled();}));
+    auto coverage=runtime_host::controller->saved_coverage();CHECK(coverage.current&&coverage.revision==0&&coverage.expected==2&&coverage.applied==2);
+    const auto status=runtime_host::debug({"status"});CHECK(status.find("saved_revision=0 saved_applied=2 saved_expected=2 settled=1")!=std::string::npos);
+    CHECK(runtime_host::debug({"verify-reopen"}).starts_with("REOPEN_REJECTED"));
+    runtime_host::end();CHECK(spin([]{return runtime_host::controller->view().phase==es::Phase::Idle&&runtime_guest::controller->view().phase==es::Phase::Idle;}));
+    CHECK(runtime_host::reopen_saved&&!runtime_guest::reopen_saved);
+    CHECK(runtime_host::reopen_saved->captain==avatar_key);
+    side=0;const auto before=native[0].snapshot;const auto restores=native[0].restores,saves=native[0].save_calls,saveas=native[0].save_as_calls;
+    const auto expected="REOPEN_VERIFIED revision=0 source=408A0000!00000064.366A930D";
+    CHECK(runtime_host::debug({"verify-reopen"})==expected);
+    CHECK(native[0].restores==restores&&native[0].save_calls==saves&&native[0].save_as_calls==saveas&&native[0].snapshot.bytes==before.bytes);
+    auto renamed=native[0].snapshot;auto p=renamed.document.placements.extract(placement);const editor::ObjectId reopened{0x12345,1};p.key()=reopened;p.mapped().object=reopened;renamed.document.placements.insert(std::move(p));renamed.bindings.front().object=reopened;
+    native[0].snapshot=renamed;CHECK(runtime_host::debug({"verify-reopen"})==expected);CHECK(native[0].snapshot.document.placements.contains(reopened));
+    native[0].snapshot=before;native[0].snapshot.source.instance++;CHECK(runtime_host::debug({"verify-reopen"}).starts_with("REOPEN_REJECTED"));
+    native[0].snapshot=before;native[0].snapshot.bytes[0]^=1;CHECK(runtime_host::debug({"verify-reopen"}).starts_with("REOPEN_REJECTED"));
+    native[0].snapshot=before;native[0].snapshot.document.placements.at(placement).position.x=7;native[0].snapshot.bytes=body(native[0].snapshot.document);CHECK(runtime_host::debug({"verify-reopen"}).starts_with("REOPEN_REJECTED"));
+    CHECK(native[0].restores==restores&&native[0].save_calls==saves&&native[0].save_as_calls==saveas);
+    native[0].snapshot=before;native[0].snapshot.document.placements.at(placement).properties[editor_native::kRelativeScaleProperty]=.31f;native[0].snapshot.bytes=body(native[0].snapshot.document);CHECK(runtime_host::debug({"verify-reopen"}).starts_with("REOPEN_REJECTED"));
+    native[0].snapshot=before;++native[0].state.generation;CHECK(runtime_host::debug({"verify-reopen"})==expected);
+    CHECK(!runtime_host::frozen&&native[0].restores==restores&&native[0].save_calls==saves&&native[0].save_as_calls==saveas);
+    side=1;CHECK(runtime_guest::debug({"verify-reopen"}).starts_with("REOPEN_REJECTED"));
+}
+static void test_unsaved_end_does_not_pin_reopen_and_partial_saved_ack_is_not_complete() {
+    Party party;capture_local_create();++game_frame;same_frame_drain(0);
+    CHECK(spin([]{return runtime_guest::controller->state().document.revision==1&&runtime_host::controller->settled();}));
+    side=0;const auto old=runtime_host::controller->saved_coverage();CHECK(!old.current&&old.revision==0);
+    runtime_host::end();CHECK(spin([]{return runtime_host::controller->view().phase==es::Phase::Idle&&runtime_guest::controller->view().phase==es::Phase::Idle;}));
+    CHECK(!runtime_host::reopen_saved);side=0;const auto restores=native[0].restores;CHECK(runtime_host::debug({"verify-reopen"}).starts_with("REOPEN_REJECTED"));CHECK(native[0].restores==restores);
+}
+
+
+static void test_saved_coverage_requires_guest_native_completion_before_pin() {
+    Party party;side=1;native[1].state.gesture=true;side=0;
+    runtime_host::saved_native({saved_key.instance,saved_key.type,saved_key.group});
+    CHECK(spin([]{const auto s=runtime_host::controller->saved_coverage();return s.current&&s.expected==2&&s.applied==1;},false));
+    CHECK(!runtime_host::controller->settled());side=0;runtime_host::end();step(false);
+    CHECK(runtime_host::closing&&!runtime_host::reopen_saved);
+    CHECK(runtime_host::debug({"status"}).find("saved_applied=1 saved_expected=2 settled=0")!=std::string::npos);
+    native[1].state.gesture=false;
+    CHECK(spin([]{return runtime_host::controller->view().phase==es::Phase::Idle&&runtime_guest::controller->view().phase==es::Phase::Idle;}));
+    CHECK(runtime_host::reopen_saved&&runtime_host::reopen_saved->source.instance==saved_key.instance);
+    side=0;const auto restores=native[0].restores;CHECK(runtime_host::debug({"verify-reopen"})=="REOPEN_VERIFIED revision=0 source=408A0000!00000065.366A930D");CHECK(native[0].restores==restores);
+}
+
+
+static void test_clone_preserves_companion_and_rejects_compound_property_change() {
+    Party party;std::string error;side=0;
+    CHECK(!native[0].callbacks.gate({placement}));CHECK(spin([]{return !runtime_host::controller->view().local_leases.empty();}));
+    side=0;CHECK(native[0].callbacks.gate({placement}));
+    editor_native::Gesture scale;scale.generation=native[0].state.generation;scale.before=native[0].snapshot;scale.after=scale.before;
+    scale.after.document.placements.at(placement).properties[editor_native::kRelativeScaleProperty]=.47f;
+    scale.after.bytes=body(scale.after.document);native[0].snapshot=scale.after;runtime_host::captured(std::move(scale));
+    CHECK(spin([]{return runtime_guest::controller->state().document.revision==1&&!runtime_host::awaiting_operation&&runtime_host::controller->settled();}));
+    CHECK(spin([]{return runtime_host::controller->view().local_leases.empty();}));side=0;
+    CHECK(runtime_host::controller->request_leases({{editor::ScopeKind::Document,{},{}}},15000,error));
+    CHECK(spin([]{return !runtime_host::controller->view().local_leases.empty();}));side=0;
+    runtime_host::guarded_placements[placement]=runtime_host::controller->state().document.placements.at(placement);
+    editor_native::Gesture clone;clone.generation=native[0].state.generation;clone.before=native[0].snapshot;clone.after=clone.before;clone.clone_source=placement;
+    auto p=clone.after.document.placements.at(placement);p.object={12345,1};p.position.x=3;
+    clone.after.document.placements.emplace(p.object,p);clone.after.bindings.push_back({p.object,1});clone.after.bytes=body(clone.after.document);
+    native[0].snapshot=clone.after;runtime_host::captured(std::move(clone));
+    CHECK(spin([]{return runtime_guest::controller->state().document.revision==2&&!runtime_host::awaiting_operation&&runtime_host::controller->settled();}));
+    for(const auto& [id,value]:runtime_host::controller->state().document.placements){(void)id;CHECK(std::get<float>(value.properties.at(editor_native::kRelativeScaleProperty))==.47f);CHECK(value.scale==1);}
+    CHECK(spin([]{return runtime_host::controller->view().local_leases.empty();}));side=0;
+    CHECK(runtime_host::controller->request_leases({{editor::ScopeKind::Document,{},{}}},15000,error));
+    CHECK(spin([]{return !runtime_host::controller->view().local_leases.empty();}));side=0;
+    runtime_host::guarded_placements[placement]=runtime_host::controller->state().document.placements.at(placement);
+    editor_native::Gesture compound;compound.generation=native[0].state.generation;compound.before=native[0].snapshot;compound.after=compound.before;compound.clone_source=placement;
+    p=compound.after.document.placements.at(placement);p.object={12346,1};p.position.x=4;p.properties[editor_native::kRelativeScaleProperty]=.3f;
+    compound.after.document.placements.emplace(p.object,p);compound.after.bindings.push_back({p.object,2});compound.after.bytes=body(compound.after.document);
+    native[0].snapshot=compound.after;const auto canonical=runtime_host::controller->state();runtime_host::captured(std::move(compound));
+    CHECK(runtime_host::frozen&&!runtime_host::pending&&runtime_host::controller->state()==canonical);
+    CHECK(native[0].snapshot.document.placements.size()==2&&runtime_host::status.find("Clone and Scale separately")!=std::string::npos);
+    CHECK(runtime_guest::controller->state()==canonical);
+}
+
+
+static void test_legacy_pending_recovery_mode_overrides_detached_old_context() {
+    Party party;side=0;
+    auto work=runtime_host::Recovery{};work.state.document=seed();work.state.document.schema.clear();
+    for(auto& [id,p]:work.state.document.placements){(void)id;p.properties.clear();}
+    work.saving=true;runtime_host::recovery=work;runtime_host::native_attached=false;
+    CHECK(!native[0].callbacks.relative_scale_tracked());
+    {runtime_host::ProjectionScope incoming(seed());CHECK(native[0].callbacks.relative_scale_tracked());}
+    CHECK(!native[0].callbacks.relative_scale_tracked());
+    runtime_host::recovery.reset();CHECK(native[0].callbacks.relative_scale_tracked());
+    runtime_host::native_attached=true;CHECK(native[0].callbacks.relative_scale_tracked());
+    CHECK(native[0].callbacks.notice);native[0].callbacks.notice("Legacy Scale is held until a new shared copy is started");CHECK(!runtime_host::frozen);
+}
+
+int main(int argc,char** argv){const bool quick=argc==2&&std::string(argv[1])=="--quick";if(argc>1&&!quick)return 2;test_legacy_pending_recovery_mode_overrides_detached_old_context();test_clone_preserves_companion_and_rejects_compound_property_change();test_saved_coverage_requires_guest_native_completion_before_pin();test_relative_scale_only_capture_undo_redo_and_recovery();test_legacy_recovery_keeps_schema_history_and_scoped_capture();test_verify_reopen_read_only_exact_saved_identity();test_unsaved_end_does_not_pin_reopen_and_partial_saved_ack_is_not_complete();test_preparation_cancel_preserves_draft_and_is_round_scoped();test_delayed_lease_grant_gets_observed_idle_grace();test_begin_ga_batch_and_end_returning();test_history_entry_rechecks_actual_native_holds();test_preview_return_callbacks_are_scoped_to_one_round();test_preview_restores_latest_independent_selection_before_ack();test_lease_diagnostic_is_bounded_and_read_only();test_conflicting_native_history_releases_document_ownership();test_guest_end_during_unlaunched_preparation_is_retryable();test_drag_preview_bridge_never_authors_remote_state();test_saved_resources_then_next_commit();test_guest_recovery_requires_owned_native_copy();test_pending_undo_keeps_ownership_across_foreign_commit();test_pending_artifacts_obey_capacity_and_preserve_durable_base();test_missing_authored_captain_blocks_prepare();test_uncertain_maintenance_freezes_until_reopen();test_end_waits_for_native_settle_and_retires_once();test_end_does_not_touch_replaced_native_context();test_idle_controller_keeps_owned_native_cleanup_isolated();test_delayed_gesture_cannot_restore_another_editor();test_host_end_delivers_accepted_structural_checkpoint();test_host_end_does_not_wait_for_departed_replica();test_host_end_waits_for_applied_same_revision_save();test_native_frozen_guest_does_not_block_host_close();test_native_recreation_waits_for_actual_next_frame();test_held_native_gesture_is_cancelled_by_end();test_recovery_retires_held_and_delayed_native_captures();test_recovery_wait_does_not_restore_replaced_context();test_native_save_enrichment_survives_edits_save_and_recovery();test_invalid_completed_save_does_not_replace_live_draft();test_opaque_gesture_changes_freeze_before_empty_semantic_return();test_uncaptured_opaque_changes_cannot_save_or_playtest();test_host_apply_rejects_uncaptured_opaque_changes();test_host_native_success_without_projection_cannot_commit();test_guest_native_success_without_projection_freezes_only_replica();test_held_native_gesture_is_fenced_by_generation_or_disconnect();test_held_move_accepts_disjoint_remote_revision();if(!quick)test_large_closure_retained_once_and_delta_recovery();std::printf("editor runtime: %u checks passed\n",checks);}

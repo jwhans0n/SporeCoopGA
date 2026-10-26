@@ -113,6 +113,17 @@ def verify(pe):
         for site, encoded in checks:
             raw=bytes.fromhex(encoded)
             if pe.read(site,len(raw))!=raw: raise ValueError(name + ': layout mismatch ' + hex(site))
+    # Marker float +24 is the separately serialized scale-range companion.
+    # Native Scale supplies its output pointer before writing physical +20.
+    for site, encoded in [(0x138C2B8,'c7442414e9471107'),
+                          (0x138C2F4,'c744241824000000'),
+                          (0xF005B7,'8d5624'),(0xF005CF,'d95e20')]:
+        raw=bytes.fromhex(encoded)
+        if pe.read(site,len(raw))!=raw:
+            raise ValueError('Marker scale-range companion receipt mismatch '+hex(site))
+    raw=pe.read(0xF005C6,5)
+    if raw[0]!=0xE8 or 0xF005CB+struct.unpack('<i',raw[1:])[0]!=0xF40840:
+        raise ValueError('Native Scale companion calculation caller mismatch')
     # Native history has vector0, cursor14, editing flag20, owned entry24.
     if pe.read(0xF4582A,5) != bytes.fromhex('b9d8656001'):
         raise ValueError('History global reference mismatch')
