@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+- Add a development Adventure Editor collaboration pipeline for the exact GOG
+  executable: host-ordered placement gestures, scoped leases, stable identities,
+  checked own-action Undo/Redo and bounded durable recovery projects.
+- Integrate verified native snapshots, private Save As and a separate party
+  playtest/return path. Keep unsupported class, act, goal, terrain and nested-editor
+  mutations read-only. Editor development uses protocol 16; the published
+  gameplay release remains protocol 15.
+- Reuse immutable dependencies during placement updates and retain their recovery
+  closure once. Keep native saving, guest durability and group readiness separate.
+- Add portable, Win32 orchestration and isolated native editor fixtures. Native
+  editor acceptance is in progress; see the
+  [development guide](docs/MULTIPLAYER-ADVENTURE-EDITOR.md). This is not a published
+  usable editor preview.
+
 ## [0.7.4.0] - 2026-10-25
 
 - Publish the first SporeCoopGA release, collecting the Galactic Adventures

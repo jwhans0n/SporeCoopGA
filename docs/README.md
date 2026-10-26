@@ -1,8 +1,8 @@
 # SporeCoopGA Documentation
 
-SporeCoopGA focuses on playing Galactic Adventures together. Shared live
-Adventure Editor support, followed by other Spore editors, is planned in the
-[roadmap](../README.md#roadmap).
+SporeCoopGA focuses on playing Galactic Adventures together. Shared Adventure
+Editor placement support is under validation. Broader adventure semantics and
+other Spore editors follow in the [roadmap](../README.md#roadmap).
 
 ## Galactic Adventures
 
@@ -16,7 +16,9 @@ Adventure Editor support, followed by other Spore editors, is planned in the
 - [Preview 8 validation report](validation-ga-preview.8.md): recorded music, item, confirmation, lighting and downed checks.
 - [Preview 7 integration report](integration-ga-upstream-0.7.2.1.md): completed historical upstream merge validation.
 - [Known issues](known-issues.md): recorded limitations and open problems.
-- [Multiplayer Adventure Editor implementation plan](MULTIPLAYER-ADVENTURE-EDITOR-PLAN.md): initial preview, Undo rules and native research gates; later shared history, independent acts and playtesting while editing. Planned, not implemented.
+- [Shared Adventure Editor development guide](MULTIPLAYER-ADVENTURE-EDITOR.md): placement collaboration under validation, native controls, saving and recovery. Separate from the published gameplay release.
+- [Shared editor validation report](reports/EDITOR-IMPLEMENTATION-VALIDATION.md): automated evidence, isolated native runs and outstanding acceptance gates.
+- [Multiplayer Adventure Editor implementation plan](MULTIPLAYER-ADVENTURE-EDITOR-PLAN.md): acceptance stages and Undo rules; later shared history, independent acts and playtesting while editing.
 
 The first published GA release **[`0.7.4.0`](https://github.com/jwhans0n/SporeCoopGA/releases/tag/v0.7.4.0)**
 uses protocol 15 and remains experimental. It retains preview 12 gameplay,

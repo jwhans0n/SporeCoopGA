@@ -1,14 +1,22 @@
 # Live multiplayer Adventure Editor: implementation plan
 
-**Status: proposed, not implemented.** This plan follows the published
+**Status: implementation under validation.** The placement collaboration core,
+native adapter, durable project store and group playtest integration are being
+implemented against the stages below. See the
+[development guide](MULTIPLAYER-ADVENTURE-EDITOR.md) for supported controls and
+remaining acceptance gates. This plan follows the published
 [v0.7.4.0 release](https://github.com/jwhans0n/SporeCoopGA/releases/tag/v0.7.4.0).
 That release supports co-op adventure play, not shared adventure editing. This
-document changes no game code, installed files, or released protocol 15.
+release remains unchanged. Editor development uses protocol 16; it does not
+change installed files or the published protocol 15 release.
 
 The goal is for a party to create and edit one adventure together in native Spore
 editor windows, playtest a committed draft together, and return to that draft.
-Native feasibility work must precede implementation promises. All newly proposed
-native editing, history, Save As, and editor-transition APIs remain unverified.
+Native feasibility work must precede implementation promises. Verified editing,
+history, Save As and transition recipes are recorded in
+[the authoring notes](re/adventure-world.md#editor-ui-mutation-ownership-and-chronological-native-history)
+and [the save notes](re/adventure-editor-save.md). Future APIs still require
+their own verification and runtime acceptance.
 
 ## Scope and defaults
 
@@ -89,8 +97,9 @@ commands, context menus, and hotkeys.
 Add a game-independent collaboration coordinator, a native Adventure Editor adapter,
 a durable project store, and a small native collaboration panel. Keep authoring
 messages separate from gameplay's run-scoped adventure messages. Assign a future
-protocol version when implementation introduces incompatible messages; protocol 15
-remains unchanged by this plan.
+protocol version when implementation introduces incompatible messages. The
+placement implementation introduces protocol 16 and `MSG_EDITOR`; the published
+GA release retains protocol 15.
 
 Each project has a persistent UUID. Each hosted session has a new epoch; each
 committed transaction advances a document revision. Assign stable IDs and

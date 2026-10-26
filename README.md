@@ -176,8 +176,9 @@ recorded problems.
 
 1. **Strengthen co-op adventure play (ongoing).** Broader adventure compatibility,
    complete playthrough coverage, and extended multiplayer testing.
-2. **Shared live Adventure Editor (planned).** Multiple players create and edit
-   the same adventure together in real time.
+2. **Shared live Adventure Editor (in development).** Multiple players create and
+   edit the same adventure together in real time. Placement integration is under
+   validation; it is separate from the published gameplay release.
 3. **Additional Spore editors (later, planned).** Extend collaborative editing
    after the Adventure Editor.
 
@@ -190,7 +191,9 @@ preview includes shared placement/property editing, conservative per-player Undo
 saving, recovery and whole-party playtests. Follow-up work covers shared activity
 history and selective Undo/reapplication, independent act editing when additional
 native work is required, and playtesting while other participants continue editing.
-These editing features remain planned.
+The [editor development guide](docs/MULTIPLAYER-ADVENTURE-EDITOR.md) documents the
+restricted placement implementation and its remaining acceptance gates. Adventure
+semantics and the later editing milestones remain planned.
 
 ## Development
 
