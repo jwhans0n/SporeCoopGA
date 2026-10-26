@@ -16,8 +16,9 @@ native editing, history, Save As, and editor-transition APIs remain unverified.
 | --- | --- |
 | Party and compatibility | Host plus one to three guests; matching mod versions and supported GOG 2024 executable `dc04aee5` only. |
 | Authority | Host orders and validates semantic editing transactions. No multi-master merge or host migration. |
-| View | Each player owns their camera, selection, inspector, and browsing previews. Independent act browsing requires native verification. |
+| View | Each player owns their camera, selection, inspector, and browsing previews. Investigate independent act editing early; use a host-selected shared act if it needs a later milestone. |
 | Concurrent editing | Renewable locks on affected placements, shared classes/templates, acts, or document settings. |
+| History | Automatic gesture transactions and ordinary own-action Undo/Redo in v1; shared activity/history UI and selective operations are later work. No manual commits required. |
 | Saving | Host creates a new native local draft with Save As. Original adventure remains intact. Guests persist verified recovery checkpoints/journals and report their durable revision. |
 | Playtest | Party confirms an immutable committed snapshot; editing stops until everyone returns. |
 | Initial exclusions | Terrain sculpting, nested creation editors, automatic EA publication, mixed builds, and editing while others playtest. |
@@ -27,9 +28,10 @@ The first usable placement preview completes stages 0-4, including four-player
 hardening for every advertised feature. It covers opening/joining a project, presence, placement
 creation/duplication/deletion and transforms, supported property editing, checked
 Undo, saving, recovery, and party playtest. Stage 5 adds acts, objectives,
-conversations, global settings, and terrain as their native transactions become
-verified. A restricted placement preview must say which authoring controls remain
-unavailable; it must not be presented as complete Adventure Editor support.
+conversations, and global settings as their native transactions become verified.
+Terrain remains a separate expansion. A restricted placement preview must say
+which authoring controls remain unavailable; it must not be presented as complete
+Adventure Editor support.
 The host enters through normal native creation/opening UI, starts a new adventure
 or a private draft copy of an existing one, then invites collaborators.
 
@@ -64,8 +66,8 @@ submodes and audit the following with isolated profiles:
    of an object selected or inspected by another player.
 4. Verify native Undo/Redo, local Save As, asynchronous save completion, close/reopen,
    and metadata ownership. Preserve original author/source metadata honestly.
-5. Determine whether each process can browse a different act without changing the
-   authoritative document or misapplying properties to another act.
+5. Determine whether each process can browse and edit a different act without
+   changing another player's context or misapplying properties to another act.
 6. Verify editor-to-playtest-to-editor transitions preserve the unsaved document and
    history, including cancellation, results, disconnects, and native modal dialogs.
 
@@ -77,8 +79,10 @@ captain puppets, player-state replication, gameplay actor hooks, and goal author
 Every newly used native function needs signature/call-site verification, symbol
 overrides, RE notes, and runtime evidence. If independent act browsing is unsafe,
 an explicitly restricted preview may use a host-selected act with a synchronization
-barrier; independent cameras remain required. Unsupported native mutations must be
-disabled or read-only, including toolbar commands, context menus, and hotkeys.
+barrier; independent cameras remain required. Independent act editing then gets a
+dedicated follow-up gate rather than blocking the initial shared-act workflow.
+Unsupported native mutations must be disabled or read-only, including toolbar
+commands, context menus, and hotkeys.
 
 ## Document identity and transactions
 
@@ -109,7 +113,9 @@ safe operations; otherwise reject with a reason and current values. Never silent
 overwrite a conflicting edit or reinterpret stale coordinates against changed data.
 
 Lock before enabling a native mutation. Coalesce unreliable drag previews; one
-reliable final gesture becomes one transaction. Previews never alter durable state.
+native gesture, such as a drag, deletion, or completed property edit, automatically
+becomes one transaction. Manual commits or history management are not required.
+Previews never alter durable state.
 Use a scoped remote-application guard to prevent callbacks from echoing committed
 operations back onto the network. Native canonicalization must converge rather
 than execute twice for the originating player.
@@ -127,6 +133,7 @@ class/template changes require a class lock and identify all affected placements
 Act, objective, conversation, and global settings use their own scopes; structural
 operations acquire their required scopes together. Terrain starts excluded, then
 uses an exclusive verified transaction before finer concurrency is considered.
+Shared class/template and global locks still coordinate edits across different acts.
 
 Leases renew while editing and expire on disconnect or abandoned gestures. Fence
 every request with its lease generation so delayed commits cannot regain ownership.
@@ -135,12 +142,30 @@ Presence shows player names, selections, editing ownership, pending commits, and
 connection state; cameras remain local. Allow independent objects to be edited
 without a document-wide lock.
 
-Undo submits a checked semantic inverse of that player's committed operation.
-Apply it only when affected state and dependencies still match; otherwise explain
-the conflict. Redo is another validated transaction. Native Undo/Redo buttons and
-shortcuts must route through this policy, not undo another player's latest native
-history entry. Multi-object operations remain one history item. Bound retained
-history and disclose when an operation can no longer be undone.
+V1 Undo targets the author's latest still-applied original gesture in chronological
+order and submits its checked semantic inverse. Redo targets that author's most
+recently undone gesture in normal redo order and checks its forward operation.
+Unsafe Undo or Redo leaves both the draft and history cursor unchanged, explains
+the conflict, and never automatically skips to an older action. Earlier independent
+edits retain their eligibility, but v1 does not provide selection of older changes.
+Native buttons and shortcuts must follow this policy.
+
+Link Undo/Redo transactions to their original gesture; do not treat them as new
+forward gestures. A new own forward gesture clears that author's redo branch while
+retaining audit records. Other players' edits can invalidate preconditions but do
+not silently clear another author's history. Multi-object gestures stay one item.
+
+Retain bounded metadata: operation ID, author, committed revision, action summary,
+affected stable IDs/generations and fields, forward/inverse data or resource
+references, dependency/precondition information, and Undo/Redo links. Explain when
+retention limits make an action unavailable. These records support recovery and
+future history features; they do not promise unlimited Undo.
+
+Later, add a read-only shared activity feed before selective history controls.
+Explicitly choosing an older change to undo or reapply creates a new validated
+operation against the current draft, preserving unrelated later edits. Changed or
+missing dependencies may reject it. V1 excludes selective operations, multi-change
+cherry-picking, branching, and merging; advanced history needs its own design gate.
 
 ## Saving and recovery
 
@@ -223,6 +248,23 @@ the editor or a recoverable project state. Keep nested Creature/building/vehicle
 editors outside the initial scope: existing independent-editor tests record
 pause/save-modal hazards and do not establish safe nested shared authoring.
 
+### Later: playtest while editing
+
+Keep the initial everyone-holds group playtest unchanged. A separate later workflow
+would pin an immutable revision for testers while authors continue a newer draft;
+simulation state never merges into authored data. On return, testers catch up to
+the current draft without overwriting intervening edits.
+
+This needs a native feasibility and authority design gate, not just another UI
+option. Verify per-participant submodes and preserve every pinned resource version,
+including same-key assets whose draft versions change. Prove lookup isolation for
+snapshot roots and dependencies so newer draft registrations cannot shadow them;
+keeping an old package open is insufficient. A playing host lacks an
+active native editor to apply draft operations; an editing host lacks the active
+play mode needed for current authoritative AI/objectives. Resolve both document and
+gameplay authority explicitly, without assuming host migration, a second simulator,
+or existing support. Verify resource lifetimes, cancellation, disconnects, and return.
+
 ## Staged delivery and acceptance
 
 Each stage is a separate reviewable implementation with evidence. A failed native
@@ -232,12 +274,18 @@ calls or hidden document divergence.
 | Stage | Scope and exit gate |
 | --- | --- |
 | 0. Native authoring audit | Verified transaction, dirty/history, identity, save, submode, and return recipes; create/edit/delete/Undo/save/reopen round trip in one isolated process. Record unsupported controls and failure recovery. |
-| 1. Collaboration core | Portable typed command, revision, lease, deduplication, inverse, journal, and recovery tests pass under reordered/duplicate input. No native mutation required. |
+| 1. Collaboration core | Portable typed command, revision, lease, deduplication, chronological own-action Undo/Redo, bounded journal metadata, and recovery tests pass under reordered/duplicate input. No native mutation required. |
 | 2. Shared placement integration | Two players edit separate objects concurrently; same-object conflicts reject safely; create/clone/delete/transforms converge; independent cameras, guarded callbacks, and native history routing verified. Not yet the usable preview release. |
 | 3. Durable authoring | Native Save As/reopen, cold recovery, late join, disconnect/rejoin, asset import, and memory turnover pass. Original source remains unchanged. |
 | 4. Shared playtest and placement preview | Readiness, immutable snapshot, failure/success/cancel/disconnect, and editor return preserve draft/history without gameplay contamination or XP awards. All stages 0-4 advertised features pass two- then four-player adversity, recovery, and performance gates before this usable preview release. |
-| 5. Adventure semantics | Add verified class/act/goal/conversation/global transactions with dependency-aware locks. Validate independent act browsing or document the restricted synchronized-act preview. Repeat the complete two-/four-player gates for every added operation before release. |
-| 6. Expansion | Terrain and nested asset workflows receive separate feasibility gates; additional editors implement their own mutation/history/serialization/lifecycle adapters. |
+| 5. Adventure semantics | Add verified class/act/goal/conversation/global transactions with dependency-aware locks. Keep the shared-act fallback if independent act editing needs more work. Repeat the complete two-/four-player gates for every added operation before release. |
+| Follow-up A. Independent acts | If not resolved by the native audit, verify separate act contexts and simultaneous authoring, with cross-act shared-template/global locks and safe context restoration. |
+| Follow-up B. History UI | First expose a read-only shared activity feed. Then design explicit older-change Undo/reapply with current-draft validation, dependency rejection, and preservation of unrelated edits. Advanced branching/merging/cherry-picking is not part of v1. |
+| Follow-up C. Concurrent playtest | Design and verify separate participant submodes, document/gameplay authority, pinned resource versions, continued draft editing, and catch-up on return. Keep simulation changes separate. |
+| Follow-up D. Expansion | Terrain and nested asset workflows receive separate feasibility gates; additional editors implement their own mutation/history/serialization/lifecycle adapters. |
+
+Follow-ups are separate planning items, not prerequisites for the initial group
+playtest preview or claims of implemented native support.
 
 ## Validation and performance gates
 
@@ -248,12 +296,18 @@ participants and then four. Do not alter personal profiles or running sessions.
 | Area | Required pass criteria |
 | --- | --- |
 | Convergence | Every peer reaches the same committed semantic state and IDs after concurrent/disjoint/conflicting edits, duplicate delivery, delete/Undo, joins, and reconnects. No uncaptured native edits or feedback loops. |
+| History | Blocked Undo/Redo changes neither draft nor history cursor and never skips actions. Earlier independent edits retain valid checks; conflicting dependencies reject safely. Verify original-gesture links, new-own-edit redo clearing, other-author edits, bounded retention, and preservation of unrelated changes. Retained inverse/dependency metadata survives checkpoint/recovery. |
 | Round trips | Save, cold reopen, checkpoint recovery, and playtest return preserve supported fields, references, metadata, and opaque scenario data. Compare normalized semantics plus opaque payloads; byte differences require explained native normalization, not blanket omission. |
 | Native lifecycle | Actual UI saves complete; no stale pointer/callback use, leaked locks, stuck dialogs, or unintended Galaxy/Space transitions. At least 20 edit/playtest/return cycles preserve draft/history and release superseded resources. |
 | Network adversity | Exercise 100 ms RTT with 1% loss, duplicates, and reordering; separately stress 10% loss and disconnects. No accepted operation is lost or applied twice; bounded overflow produces explicit resync, not divergence. |
 | Interaction latency | Proposed p95 request-to-confirmation: at most 200 ms on LAN (RTT at most 20 ms), 500 ms at 100 ms RTT/1% loss, and 750 ms during a 2 Mbit/s asset transfer on that WAN profile. Measure actual retransmissions and queue delay. |
 | Performance | On identical large-editor fixtures, median FPS declines at most 10% and p95 frame time increases at most 15% against independent native editors with the same process count, hardware, cameras, window/rendering configuration, and fixture counts. After settled resource cleanup, repeated cycles show no monotonic retained-memory growth. Record configuration and samples. |
 | Regression | Existing captain, lobby/readiness, resource/music, cancellation, terminal results/Replay, interactions, targeting, and large-adventure FPS tests remain passing. |
+
+Future gates additionally cover independent act contexts with shared-template/global
+conflicts, selective history against changed/deleted dependencies, and simultaneous
+editing/testing that preserves both the old snapshot and newer draft through asset
+replacement, save, disconnect, and return. These do not expand v1 acceptance scope.
 
 Instrument epoch/revision, operation decisions, lease owner, apply suppression,
 native transactions, durable flushes, resource references, and per-peer bytes.

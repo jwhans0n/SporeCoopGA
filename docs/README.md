@@ -16,7 +16,7 @@ Adventure Editor support, followed by other Spore editors, is planned in the
 - [Preview 8 validation report](validation-ga-preview.8.md): recorded music, item, confirmation, lighting and downed checks.
 - [Preview 7 integration report](integration-ga-upstream-0.7.2.1.md): completed historical upstream merge validation.
 - [Known issues](known-issues.md): recorded limitations and open problems.
-- [Multiplayer Adventure Editor implementation plan](MULTIPLAYER-ADVENTURE-EDITOR-PLAN.md): proposed shared editing, native research gates, staged delivery and acceptance checks. Planned, not implemented.
+- [Multiplayer Adventure Editor implementation plan](MULTIPLAYER-ADVENTURE-EDITOR-PLAN.md): initial preview, Undo rules and native research gates; later shared history, independent acts and playtesting while editing. Planned, not implemented.
 
 The first published GA release **[`0.7.4.0`](https://github.com/jwhans0n/SporeCoopGA/releases/tag/v0.7.4.0)**
 uses protocol 15 and remains experimental. It retains preview 12 gameplay,

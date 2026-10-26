@@ -185,8 +185,12 @@ These are goals without announced dates. Shared adventure editing and other
 collaborative editors are not implemented in the current release.
 
 The [multiplayer Adventure Editor implementation plan](docs/MULTIPLAYER-ADVENTURE-EDITOR-PLAN.md)
-is ready for review. It proposes staged implementation and validation gates;
-it does not add editor support to the released game.
+records the initial preview decisions and validation gates. The first planned
+preview includes shared placement/property editing, conservative per-player Undo,
+saving, recovery and whole-party playtests. Follow-up work covers shared activity
+history and selective Undo/reapplication, independent act editing when additional
+native work is required, and playtesting while other participants continue editing.
+These editing features remain planned.
 
 ## Development
 
