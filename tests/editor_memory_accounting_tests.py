@@ -9,7 +9,7 @@ REPO = next(parent for parent in Path(__file__).resolve().parents
             if (parent / 'Makefile').is_file() and (parent / 'tools/tests').is_dir())
 sys.path.insert(0, str(REPO / 'tools/tests'))
 sys.path.insert(0, str(HERE / 'tools/tests'))
-from editor_memory_accounting import parse_accounting, collect_sample, AccountingError, NotSettled
+from editor_memory_accounting import parse_accounting, collect_sample, AccountingError, NotSettled, QUIESCENT
 from coop_editor_performance import process_roster, FixtureError
 
 
@@ -29,6 +29,7 @@ def counters(**changed):
         immutable_base_capacity=15310, native_before_capacity=15676,
         native_reopen_capacity=0, requested_scopes=0,
         future_counter=77)
+    result.update({field: 0 for field in QUIESCENT})
     result.update(changed)
     return result
 
@@ -47,6 +48,7 @@ class FakeGame:
         self.in_menu = False
         self.on_accounting = None
         self.accounting = response()
+        self.check = 'CONVERGED ' + 'a' * 64
         self.core_count = 128
         self.state = dict(revision=192, durable=192, phase=4, frozen=0,
             ready=1, editing=1, gesture=0, playtesting=0, selection='1:1',
@@ -56,6 +58,8 @@ class FakeGame:
 
     def call(self, command):
         self.commands.append(command)
+        if command == 'coop.editor check':
+            return self.check
         if command == 'coop.editor inspect':
             if self.in_menu:
                 raise AssertionError('The collector tried to capture a native resource at Galaxy')
@@ -115,14 +119,15 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(row['native_status'], row['native_status_after'])
             self.assertEqual(row['private_bytes'], row['os_after_accounting']['private_bytes'])
             self.assertGreater(row['private_bytes'], row['os_before_accounting']['private_bytes'])
-            self.assertEqual(game.commands, ['coop.editor inspect', 'coop.editor history', 'coop.editor accounting'])
+            self.assertEqual(game.commands, ['coop.editor check', 'coop.editor inspect', 'coop.editor history',
+                'coop.editor accounting', 'coop.editor accounting', 'coop.editor check'])
         self.assertNotIn('memory_gate_passed', sample)
 
     def test_each_strict_sample_rejects_an_unmeasured_or_missing_game(self):
         self.environment['spore_pids'].append(999)
         with self.assertRaises(FixtureError):
             self.sample(baseline_environment=None)
-        self.assertFalse(any(game.commands for game in self.games))
+        self.assertTrue(all(game.commands == ['coop.editor check'] for game in self.games))
         self.environment['spore_pids'] = [101, 102, 103]
         with self.assertRaises(FixtureError):
             self.sample(baseline_environment=None)
@@ -139,14 +144,14 @@ class CollectorTests(unittest.TestCase):
         self.environment['gpu'][0]['DriverVersion'] = 'changed'
         with self.assertRaises(AccountingError):
             self.sample(baseline_environment=baseline)
-        self.assertFalse(any(game.commands for game in self.games))
+        self.assertTrue(all(game.commands == ['coop.editor check'] for game in self.games))
 
-    def test_unsettled_or_nondurable_state_is_retryable_without_capture(self):
-        self.games[1].state['text'] = self.games[1].state['text'].replace('settled=1', 'settled=0')
+    def test_active_or_nondurable_state_is_retryable_without_capture(self):
+        self.games[1].state['gesture'] = 1
         with self.assertRaises(NotSettled):
             self.sample()
         self.assertFalse(any(game.commands for game in self.games))
-        self.games[1].state['text'] = self.games[1].state['text'].replace('settled=0', 'settled=1')
+        self.games[1].state['gesture'] = 0
         self.games[1].state['durable'] = 191
         with self.assertRaises(NotSettled):
             self.sample()
@@ -171,9 +176,36 @@ class CollectorTests(unittest.TestCase):
                 self.games[0].on_accounting = lambda f=field, v=value: self.games[0].state.update({f: v})
                 with self.assertRaises(NotSettled):
                     self.sample()
-        self.setUp()
-        self.games[0].on_accounting = lambda: self.games[0].state.update(
-            text=self.games[0].state['text'].replace('settled=1', 'settled=0'))
+
+    def test_periodic_presence_acks_do_not_hide_authoring_or_transfer_work(self):
+        self.games[1].state['text'] = self.games[1].state['text'].replace('settled=1', 'settled=0')
+        self.games[1].accounting = response(counters(transport_reliable_out=1))
+        row = self.sample()['processes']['90']
+        self.assertFalse(row['transport_ack_idle'])
+        self.assertEqual(row['accounting']['transport_reliable_out'], 1)
+        for field in QUIESCENT:
+            with self.subTest(field=field):
+                self.games[1].accounting = response(counters(**{field: 1}))
+                with self.assertRaises(NotSettled):
+                    self.sample()
+
+    def test_new_work_after_collection_is_rejected(self):
+        calls = []
+        def new_work():
+            calls.append(True)
+            if len(calls) == 2:
+                self.games[0].accounting = response(counters(actions=1))
+        self.games[0].on_accounting = new_work
+        with self.assertRaises(NotSettled):
+            self.sample()
+        self.assertEqual(len(calls), 2)
+
+    def test_divergent_or_changed_native_checks_are_rejected(self):
+        self.games[1].check = 'CONVERGED ' + 'b' * 64
+        with self.assertRaises(NotSettled):
+            self.sample()
+        self.games[1].check = self.games[0].check
+        self.games[0].on_accounting = lambda: setattr(self.games[0], 'check', 'CONVERGED ' + 'b' * 64)
         with self.assertRaises(NotSettled):
             self.sample()
 

@@ -23,6 +23,14 @@ LIMITS = {
     'lease_reply_limit_per_channel': 64,
     'transport_packet_history_limit_per_connection': 1024,
 }
+# Periodic reliable presence is expected even while the authored draft is idle.
+# Its acknowledgement queue is measured, not confused with pending authoring.
+QUIESCENT = {
+    'input_count', 'local_count', 'queued_packets', 'queued_transfers',
+    'pending_leases', 'release_fences', 'lease_retirements', 'deferred_count',
+    'held_count', 'staged_size', 'receiving', 'requested_scopes', 'actions',
+    'guarded_placements', 'pending_native_capacity', 'adventure_queue_count',
+}
 REQUIRED = set(LIMITS) | {
     'history', 'decisions', 'coordinator_history', 'coordinator_decisions',
     'replica_history', 'replica_decisions', 'hashes', 'lease_decisions',
@@ -33,7 +41,7 @@ REQUIRED = set(LIMITS) | {
     'store_native_size', 'store_native_capacity', 'record_data_size', 'record_data_capacity',
     'immutable_base_capacity', 'native_before_capacity', 'native_reopen_capacity',
     'requested_scopes',
-}
+} | QUIESCENT
 
 
 def parse_accounting(text):
@@ -79,8 +87,7 @@ def _admitted(states, mode):
             raise AccountingError('A participant froze; no settled retention sample is valid')
         if state.get('phase') != phase or state.get('gesture') or state.get('playtesting'):
             raise NotSettled('The native editor lifecycle has not settled')
-        if not _number(state['text'], 'settled'):
-            raise NotSettled('The editor still has accepted work or transport acknowledgements outstanding')
+        _number(state['text'], 'settled')  # Preserve the stronger transport-idle diagnostic below.
         if mode == 'galaxy':
             if state.get('editing'):
                 raise NotSettled('The native editor has not returned to Galaxy')
@@ -108,6 +115,21 @@ def _context(state):
     return tuple(result)
 
 
+def _quiet(accounting):
+    pending = sorted(field for field in QUIESCENT if accounting[field])
+    if pending:
+        raise NotSettled('The editor still has authoring/transfer work outstanding: ' + repr(pending))
+
+
+def _checks(games, mode):
+    if mode != 'editing':
+        return None
+    checks = [game.call('coop.editor check').strip() for game in games]
+    if any(not re.fullmatch(r'CONVERGED [0-9a-f]{64}', value) for value in checks) or len(set(checks)) != 1:
+        raise NotSettled('Native canonical hashes have not converged on all participants')
+    return checks
+
+
 def collect_sample(games, records, *, mode, strict, status, memory, machine,
                    process_roster, verify_windows, baseline_environment=None):
     """Collect one settled read-only sample; never classifies allocator leaks.
@@ -125,6 +147,7 @@ def collect_sample(games, records, *, mode, strict, status, memory, machine,
     states = [status(game) for game in games]
     _admitted(states, mode)
     contexts = [_context(state) for state in states]
+    checks = _checks(games, mode)
     environment = machine()
     complete = process_roster(environment, measured, diagnostic=not strict)
     if strict and not complete:
@@ -154,6 +177,7 @@ def collect_sample(games, records, *, mode, strict, status, memory, machine,
         clock = time.monotonic()
         raw = game.call('coop.editor accounting')
         accounting = parse_accounting(raw)
+        _quiet(accounting)
         collection_seconds = time.monotonic() - clock
         after_accounting = memory(records[game.instance]['pid'])
         if accounting['history'] != int(core_count[1]):
@@ -169,10 +193,16 @@ def collect_sample(games, records, *, mode, strict, status, memory, machine,
             native_serialized_bytes=int(native_size[1]) if native_size else None,
             native_inspect_available=mode != 'galaxy',
             selection=state.get('selection'), native_status=state['text'],
+            transport_ack_idle=bool(_number(state['text'], 'settled')),
             inspect=inspect, core_history=history,
             accounting_interpretation='Shared references may alias. Capacity units are field-specific; estimates are not allocator/process bytes.')
     after = [status(game) for game in games]
     _admitted(after, mode)
+    accounting_after = [parse_accounting(game.call('coop.editor accounting')) for game in games]
+    for value in accounting_after:
+        _quiet(value)
+    if _checks(games, mode) != checks:
+        raise NotSettled('The native canonical draft changed while passive counters were collected')
     for before, current, context in zip(states, after, contexts):
         if (any(before.get(key) != current.get(key) for key in
                 ('revision', 'durable', 'phase', 'frozen', 'editing', 'ready', 'gesture', 'playtesting', 'selection')) or
@@ -185,9 +215,13 @@ def collect_sample(games, records, *, mode, strict, status, memory, machine,
     safety_after = verify_windows()
     if mode == 'galaxy' and any(not game.menu() for game in games):
         raise NotSettled('A game left Galaxy while passive counters were being collected')
-    for game, state in zip(games, after):
+    for game, state, counts in zip(games, after, accounting_after):
         row['processes'][str(game.instance)]['native_status_after'] = state['text']
         row['processes'][str(game.instance)]['selection_after'] = state.get('selection')
+        row['processes'][str(game.instance)]['transport_ack_idle_after'] = bool(_number(state['text'], 'settled'))
+        row['processes'][str(game.instance)]['accounting_after'] = counts
+    row['canonical_checks'] = checks
+    row['admission'] = 'Same native canonical/durable draft with empty authoring and transfer queues before/after. Periodic presence acknowledgements remain measured.'
     row['environment_after'] = environment_after
     row['safety_after'] = safety_after
     row['roster_complete'] = complete and complete_after

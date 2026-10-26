@@ -1,6 +1,6 @@
 # Shared Adventure Editor: implementation validation
 
-Report revision 21, C17 native failure return, 2026-10-26. Branch:
+Report revision 22, C17 lifecycle and retention admission, 2026-10-26. Branch:
 `feat/ga-adventure-editor`. The portable core and transport checkpoint is local
 commit `216f8b0`; native integration is recorded at `0a35c7b`, with lab tools at
 `a9b844f`. The C10 integration checkpoint is `071f6a4`, depending on network
@@ -1215,3 +1215,29 @@ specific camera defect, not the remaining complete-playthrough or XP gate.
 
 Additional lifecycle routes, cold opaque-data comparison, replay/promotion,
 memory turnover and genuine bulk-contention acceptance remain separate gates.
+
+The C17 naturally completed one-MoveTo success fixture also passes all four
+native result panels, frozen terminal clocks, Done return and immediate retry.
+No outcome is injected. Receipt:
+`out/editor-native-party-c17/natural-success/result.json`.
+
+The C17 lifecycle run passes normal native Build-hammer return with distinct
+local cameras/selections on all four participants. Guest disconnect during both
+preparation and active playtest preserves its authored resource, camera and
+selection before normal exit. Each fresh-capability rejoin converges with the
+surviving three. These route gates passed in
+`out/editor-native-party-c17/memory-strict/result.json`, but that combined run
+is not a memory pass: its initial sample timed out before prewarm or measurement.
+
+The timeout exposed a collector admission issue. Native runtime refresh sends
+reliable presence every 300 ms, even without editing. The stronger
+`Controller::settled()` transport-idle diagnostic can therefore be false during
+an otherwise idle, fully converged draft. The revised passive collector requires
+matching native canonical hashes and durable revisions, unchanged exact logical
+and native ownership, and empty authoring/transfer queues both before and after
+collection. It retains the transport-idle flags and actual reliable packet
+counts rather than treating periodic acknowledgements as pending authoring.
+Active gestures, queued operations, transfers, late work, divergent hashes,
+changed hardware or an extra Spore process still reject the sample. All 19
+fake-reader tests pass on Windows and WSL. Actual retention acceptance remains
+pending the new strict run; no memory threshold has changed.
