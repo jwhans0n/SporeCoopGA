@@ -637,3 +637,67 @@ No mod DLL was built or deployed by this sweep, and no game session or installed
 file was changed. Adapter fixtures substitute native engine APIs; these results
 do not establish broader native editor acceptance, actual network latency or
 the large-editor FPS and sustained-memory gates.
+
+### Native lifecycle checksum calibration, candidate 12
+
+The first native Build-hammer lifecycle run on 2026-10-26 used the exact private
+C12 DLL `0a4a8a96a70a7da46d32d4253a4045b7b09e518966fb47be158b168335aff065`,
+instances 87/88 and owned PIDs 51668/55888. The historical failed result is retained
+at `out/editor-native-lifecycle-c12/native-return/result.json`; its failure was an
+overly strict harness requirement that raw native serialized bytes remain equal.
+
+Both peers completed the real native hammer return. Their authored semantic
+checksums, canonical `CONVERGED` check, history, resource key, selected placement
+and screen projections were unchanged. The host projection remained
+`(492.009369,529.599304)` and the guest projection remained
+`(504.678436,437.325928)`. Before Test, both raw snapshots had SHA-256
+`40ebf4406022edd2fa479aeda2fa3e2ba111184c7cc888192a9b417f3369fb6b`
+despite their different local views. After return the raw checksums were
+`38625e9add89409d54852f568717e060fa45053dd431b39782f9c9454f104bae`
+and `f3c12f307e9a1eb476b27a1b5773fc7c278776ab386847fb7f3b5c844bff8aa9`.
+No byte-level attribution of those differences was established by this run.
+
+The acceptance invariant is the existing verified native integrity path:
+`validate(snapshot, canonicalDocument)` plus
+`supported_between(current_native, snapshot)`. It checks authored content while
+normalizing the documented local camera block at resource `+0x2C30`, length `0x20`,
+and the verified derived placement flags `+0x224 & 0x16`; supported semantic poses
+are separately checked against the canonical document. Native Test/return and
+restoration can publish local camera/bookkeeping state into the resource body.
+The resource raw SHA therefore remains diagnostic, rather than a requirement of
+raw-byte identity or evidence that a difference is exclusively camera data.
+
+The calibrated harness requires identical `CONVERGED` checks before/after, exact
+authored semantics/history/source identity, exact local selection and less than
+one pixel of local projection drift. The historical failed run is not relabeled
+as an acceptance pass. Calibration evidence is recorded separately under
+`out/editor-native-lifecycle-c12`; a fresh native run is required for a pass.
+
+Three fresh two-player C12 runs subsequently passed, each starting from Galaxy
+with a new native Save As and one genuine shared Move retained as revision 1,
+durable revision 1 and one canonical history entry:
+
+| Actual native stage | Recorded result | Observed boundary |
+| --- | --- | --- |
+| Native Build-hammer return | `out/editor-native-lifecycle-c12/native-return-calibrated-r2/result.json` | Both captains entered native Test; ordinary hammer input returned both peers with their own selection, camera projections and verified authored draft unchanged. |
+| Guest disconnect during preparation | `out/editor-native-lifecycle-c12/disconnect-preparing/result.json` | One host Ready confirmation preceded guest Leave. Host authoring resumed; guest retained the detached native draft and explicitly rejoined with capability `1:8` replaced by `1:9`. |
+| Guest disconnect during Test | `out/editor-native-lifecycle-c12/disconnect-playing/result.json` | Both entered native Test before guest Leave. Host returned to the draft; explicit guest rejoin replaced capability `1:11` with `1:12`, preserving the verified draft and history on both peers. |
+
+Every stage completed normal editor exit and party Leave without forced dialogs
+or native faults. The final read-only handoff at
+`out/editor-native-lifecycle-c12/handoff/result.json` recorded both original owned
+PIDs at Galaxy, editor phase 0, offline and `total faults: 0`; the runner and game
+processes remained alive for their owner. The first calibrated run's inherited
+`four_native_baselines` gate name is historical helper wording for its two
+participants, not four-player evidence. The helper now labels two/four according
+to the actual roster; historical result files remain unchanged.
+
+An intermediate calibrated attempt failed before Test because the seed drag hit
+the open co-op panel and produced no canonical operation. Its failed result is
+preserved at `out/editor-native-lifecycle-c12/native-return-calibrated/result.json`.
+The successful retry explicitly closed that panel before ordinary placement
+input. These native runs do not establish direct host preparation Cancel,
+independent imported-guest recovery, packet adversity, large-editor FPS or
+sustained memory acceptance. Direct Cancel requires the later C13 candidate.
+The exact artifact hashes and final harness checks are recorded in
+`out/editor-native-lifecycle-c12/validation.json`.

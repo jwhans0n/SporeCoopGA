@@ -47,7 +47,7 @@ def public_command(line):
     if command == 'coop.editor':
         return (len(words) == 2 and words[1] in {
             'status', 'objects', 'check', 'inspect', 'history', 'begin', 'join',
-            'undo', 'redo', 'save', 'playtest', 'return', 'end', 'recover', 'leases'} or (
+            'undo', 'redo', 'save', 'playtest', 'cancel', 'return', 'end', 'recover', 'leases'} or (
                 len(words) == 3 and words[1] == 'ready' and words[2] in {'0', '1'})
             or words[1:] in (['timing'], ['timing','reset'], ['timing','stop']))
     if command == 'coop.ui':
@@ -316,7 +316,8 @@ class EditorParty(EditorPair):
             projects = [parse_identity(state['text'])[0] for state in states]
             checks = [game.call('coop.editor check').strip() for game in games]
             return checks[0] if len(set(projects)) == len(set(checks)) == 1 and checks[0].startswith('CONVERGED ') else False
-        return self.host.wait('four-player native/durable canonical convergence', ready)
+        count = {2:'two',3:'three',4:'four'}.get(len(games),str(len(games)))
+        return self.host.wait(count + '-player native/durable canonical convergence', ready)
 
     def bootstrap(self):
         for game in self.games:
@@ -355,8 +356,9 @@ class EditorParty(EditorPair):
             game.wait('explicit shared-editor offer', lambda g=game: status(g).get('phase') == 1)
             game.call('coop.editor join')
         self.result['initial_hash'] = self.converge()
-        self.result['gates']['four_native_baselines'] = True
-        self.record('four-player-baseline')
+        count = {2:'two',3:'three',4:'four'}.get(len(self.all_games),str(len(self.all_games)))
+        self.result['gates'][count + '_native_baselines'] = True
+        self.record(count + '-player-baseline')
 
     def objects(self, game):
         result = super().objects(game)
@@ -544,6 +546,41 @@ class EditorParty(EditorPair):
             if self.objects(self.host)[object_id]['position'] != after_move:
                 raise FixtureError('Own Redo did not restore the moved transform')
         self.result['gates']['four_authors_create_move_undo_redo'] = True
+
+    def yaw(self):
+        """Normal native Locate plus the verified front yaw handle, all authors."""
+        for game in self.all_games:
+            game.call('coop.uistate 0')
+        time.sleep(1.4)
+        for author,game in enumerate(self.all_games):
+            game.call('move 88 170');game.call('click 88 170 right')
+            game.call('wait.frames 25 15000');time.sleep(1.8)
+            target=status(game).get('selection')
+            before=self.objects(self.host);local=self.objects(game)
+            if target not in before or target not in local:
+                raise FixtureError('Native Locate did not expose a known selected placement for yaw')
+            feet=local[target]['screen']
+            if feet is None or math.dist(feet,(512,394))>3:
+                raise FixtureError('Native Locate has not settled at the verified yaw camera: '+repr(feet))
+            calibration=dict(instance=game.instance,target=target,screen=feet,
+                source=[601,475],destination=[625,435],
+                hits=game.call('coop.ui at 601 475'))
+            self.result.setdefault('yaw_calibrations',[]).append(calibration);self.write()
+            self.gesture(game,f'author-{author}-native-yaw',lambda g=game:self.slow_drag(g,(601,475),(625,435)))
+            after=self.objects(self.host)
+            old_q=before[target]['rotation'];new_q=after[target]['rotation']
+            magnitude=math.sqrt(sum(n*n for n in old_q)*sum(n*n for n in new_q))
+            cosine=abs(sum(a*b for a,b in zip(old_q,new_q))/magnitude) if magnitude>0 else math.inf
+            if set(before)!=set(after) or not math.isfinite(cosine) or cosine>=1-1e-8:
+                raise FixtureError('Native yaw did not change the selected orientation beyond quaternion sign')
+            calibration.update(angular_cosine=cosine,angle_degrees=math.degrees(2*math.acos(min(1,cosine))))
+            for identity,prior in before.items():
+                for field in ('class','position','scale','rotation'):
+                    if identity==target and field=='rotation':continue
+                    if after[identity][field]!=prior[field]:
+                        raise FixtureError('Native yaw changed an unrelated placement field: '+identity+' '+field)
+            self.selected(game,target);self.record(f'author-{author}-native-yaw-verified')
+        self.result['gates']['four_authors_native_yaw']=True
 
     def concurrent(self):
         if len(self.created) != 4:
@@ -845,7 +882,10 @@ class EditorParty(EditorPair):
         Completion is not a memory-budget pass. The raw samples must be reviewed
         against retained history/resources and the documented cleanup budget.
         """
-        from coop_editor_performance import memory
+        from coop_editor_performance import memory, machine, process_roster
+        diagnostic = bool(getattr(self.args,'memory_diagnostic',False))
+        if not diagnostic and not getattr(self.args,'memory_baseline_permit',None):
+            raise FixtureError('Memory windows require explicit diagnostic mode or a strict parent-owned baseline permit')
         self.converge()
         object_id = self.args.memory_object or self.created.get(self.host.instance)
         if object_id not in self.objects(self.host):
@@ -856,7 +896,8 @@ class EditorParty(EditorPair):
             memory_native_cap=self.args.history_cap, memory_required_post_cap=self.args.post_cap_cycles,
             memory_body_offset=self.args.body_offset, memory_hit_checks=[],
             memory_prewarm_requested=getattr(self.args,'prewarm_gestures',0), memory_prewarm_completed=0,
-            memory_samples=[], memory_performance_scope='Four actual native editors; no FPS sampling')
+            memory_samples=[], memory_performance_scope='Four actual native editors; no FPS sampling',
+            memory_diagnostic=diagnostic, memory_acceptance_eligible=False)
 
         def sample(cycle, append=True):
             self.ownership.verify_windows()
@@ -941,14 +982,23 @@ class EditorParty(EditorPair):
             if any(row['registered'] != before_prewarm[key]['registered'] for key,row in warmed['processes'].items()):
                 raise FixtureError('Registered native packages grew during genuine prewarm moves')
         permit = getattr(self.args,'memory_baseline_permit',None)
-        if permit:
+        if diagnostic:
+            hardware = machine()
+            measured = [self.records[g.instance]['pid'] for g in self.all_games]
+            complete = process_roster(hardware,measured,diagnostic=True)
+            self.result.update(memory_baseline_environment=hardware,
+                memory_roster_complete=complete,
+                memory_unmeasured_spore_pids=sorted(set(hardware['spore_pids'])-set(measured)),
+                memory_reason='Explicit functional/retention diagnostic only; strict memory acceptance is disabled')
+            self.write()
+        elif permit:
             self.result['memory_waiting_for_baseline'] = True; self.write()
             self.host.wait('parent-owned permission marker before memory baseline',lambda:permit.is_file())
-            from coop_editor_performance import machine,process_roster
             hardware = machine()
             process_roster(hardware,[self.records[g.instance]['pid'] for g in self.all_games])
             self.result['memory_baseline_environment'] = hardware
             self.result['memory_waiting_for_baseline'] = False
+            self.result['memory_acceptance_eligible'] = True
         initial = sample(0)
         cap_cycle = 0 if initial['processes'][host_key]['history_size'] == self.args.history_cap else None
         for cycle in range(1, self.args.cycles + 1):
@@ -973,7 +1023,7 @@ class EditorParty(EditorPair):
             self.write()
             if post_cap >= self.args.post_cap_cycles:
                 self.result['memory_window_completed'] = True
-                self.result['gates']['native_post_cap_retention_window'] = True
+                self.result['gates']['native_post_cap_functional_window_diagnostic' if diagnostic else 'native_post_cap_retention_window'] = True
                 self.write(); return
         raise FixtureError('Bounded memory run did not obtain the required post-native-cap sample window')
 
@@ -1127,12 +1177,14 @@ def main():
     run.add_argument('--instances',nargs=4,type=int,default=[89,90,91,92])
     run.add_argument('--port',type=int,default=45189); run.add_argument('--timeout',type=float,default=150)
     run.add_argument('--seconds',type=int,default=3300); run.add_argument('--cycles',type=int,default=20)
-    run.add_argument('--stage',choices=('all','bootstrap','join','cold_recovery','edit','structural','concurrent','history_conflict','cycles','camera','memory','reconnect','recovery','snapshot'),default='all')
+    run.add_argument('--stage',choices=('all','bootstrap','join','cold_recovery','edit','structural','yaw','concurrent','history_conflict','cycles','camera','memory','reconnect','recovery','snapshot'),default='all')
     run.add_argument('--cold-baseline',type=Path,help='closed-profile durable baseline for a true cold recovery stage')
     run.add_argument('--memory-object',help='previously verified host placement stable ID for retention cycles')
     run.add_argument('--post-cap-cycles',type=int,default=30)
     run.add_argument('--prewarm-gestures',type=int,default=0,
                      help='0..160 genuine native moves before the baseline; 128 fills current semantic history')
+    run.add_argument('--memory-diagnostic',action='store_true',
+                     help='explicit functional/retention window with full process roster; cannot pass memory acceptance')
     run.add_argument('--memory-baseline-permit',type=Path,
                      help='wait for this out/ marker and exactly four Spore processes before baseline sampling')
     run.add_argument('--history-cap',type=int,choices=(25,),default=25,
@@ -1180,6 +1232,10 @@ def main():
         parser.error('bounded native retention settings required:30..60 post-cap cycles,1..128 history capacity,4..60 body offset,1..15s settling')
     if not 0 <= args.prewarm_gestures <= 160:
         parser.error('prewarm must contain 0..160 genuine native gestures')
+    if args.stage == 'memory' and not (args.memory_diagnostic or args.memory_baseline_permit):
+        parser.error('memory stage requires --memory-diagnostic or --memory-baseline-permit')
+    if args.memory_diagnostic and args.memory_baseline_permit:
+        parser.error('diagnostic memory mode cannot bypass a strict parent-owned baseline permission gate')
     if args.memory_baseline_permit and (ROOT/'out').resolve() not in args.memory_baseline_permit.resolve().parents:
         parser.error('memory baseline permission marker must be under this worktree out directory')
     if args.memory_object and not re.fullmatch(r'[1-9][0-9]*:[1-9][0-9]*',args.memory_object):
