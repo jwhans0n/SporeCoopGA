@@ -3309,6 +3309,42 @@ Receipts: `out/editor-native-re/c15-scale-cancel.txt`,
 `out/editor-native-re/c15-cancellation/` (OUT proposal, exact verifier report,
 controlled baseline and Win32 fixture).
 
+### Ordinary invalid-placement setup: verified bounds and height input
+
+Further exact-image static inspection of `dc04aee5` identifies the ordinary
+invalid-placement bound. `B7E620` reads the terrain descriptor's base-radius
+float at `+34`, falling back to 500. `B7E650` returns exactly twice that value.
+`F92760` independently computes terrain height as base `+34` plus the sampled
+height times amplitude `+38`. `F3B880` tests all eight actual world-AABB corners
+against the sphere of radius twice the base radius; equality is accepted. A
+screen edge, water placement, a red highlight or the anchor radius alone does
+not prove that the invalid-finalization branch executed.
+
+Normal Ctrl-drag selects radial height movement. `697A50` updates the key bitset;
+`6979C0` derives the native input bit 2 from `VK_CONTROL` (17), visible at
+ScenarioMode `+40`. `EFC5D0` uses it to choose Context `+68 == 2`, and `F01B00`
+dispatches that mode to `EFDAF0`, which projects cursor movement onto the
+object's radial axis and updates elevation `+220`. Mode 1 (`F01490`) instead
+preserves the old elevation during surface motion.
+
+Above-ground permission is class-dependent: `EEC800` calls `F25DE0`, which
+rejects `.crt` creatures, vehicles and UFOs but permits ordinary buildings and
+props. `EFDAF0` snaps forbidden positive elevation back to terrain. Raising Ace
+therefore cannot establish an elevated ordinary cancellation fixture. A building
+or prop can be prepared before sharing, leaving shared height authoring blocked.
+
+The native modifier bit is distinct from Windows mouse-message flags. Normal
+Control-held left-down/move uses `MK_CONTROL | MK_LBUTTON = 0x9`; left-up while
+Control remains held uses `0x8`, followed by Control-up and an unmodified move.
+SporeKit 0.3.4's move/wheel helpers omit Control/Shift `wParam` bits, so modifier
+probes need consistent ordinary messages to the exact owned HWND as well as the
+normal key state. No new callable alias or direct native mutation is introduced.
+
+Receipt: `out/editor-native-re/C17-CANCELLATION-HANDOFF.md`, SHA-256
+`55df06bac1497ab392215084082d4cde0f00230af558dad6b06061f0e7772969`.
+This is a verified input/validity recipe, not an actual ordinary cancellation
+pass. Positive ordinary rollback and shared interleaving remain execution gates.
+
 ### Shared act feasibility and the first-act preview restriction
 
 Native editor act selection is process-local `Context +0`, read by verified
