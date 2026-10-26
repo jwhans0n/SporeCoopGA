@@ -98,7 +98,42 @@ def saved_coverage(text):
         result[key] = int(found[1])
     if result['settled'] not in (0, 1) or result['saved_applied'] > result['saved_expected']:
         raise FixtureError('Invalid native Save coverage diagnostic')
+    root = re.search(r'\bsaved_source_root=([0-9A-F]{8}![0-9A-F]{8}\.366A930D)\b', text)
+    if not root or int(root[1][9:17], 16) == 0:
+        raise FixtureError('The candidate lacks a valid logical native Save root')
+    result['saved_source_root'] = root[1]
     return result
+
+
+def native_saved_gate(states, live_sources, previous_sources, revision):
+    """SavedApplied covers logical roots; each guest keeps its native local key."""
+    count = len(states)
+    if count not in (2, 4) or len(live_sources) != count or len(previous_sources) != count:
+        raise FixtureError('Native Save proof requires the exact owned two/four participant roster')
+    if any(state.get('frozen') for state in states):
+        raise FixtureError('Native save/checkpoint froze a participant')
+    if any(state.get('phase') != 4 or state.get('revision') != revision or
+            state.get('durable') != revision for state in states):
+        return False
+    coverage = [saved_coverage(state['text']) for state in states]
+    host = coverage[0]
+    if (host['saved_revision'] != revision or not host['settled'] or
+            host['saved_expected'] != count or host['saved_applied'] != count):
+        return False
+    root = host['saved_source_root']
+    if any(item['saved_revision'] != revision or item['saved_source_root'] != root or
+            item['saved_applied'] != 1 or item['saved_expected'] != 1 for item in coverage[1:]):
+        return False
+    # Native restore deliberately retains the live resource's key. The host's
+    # ordinary completed Save rotates its key, while imported guests retain their
+    # own existing aliases. Exact SavedApplied still proves the shared new root.
+    if (live_sources[0] != root or root == previous_sources[0] or
+            live_sources[1:] != previous_sources[1:]):
+        return False
+    return {'coverage': host, 'source': root,
+        'logical_sources': [item['saved_source_root'] for item in coverage],
+        'live_native_sources': live_sources,
+        'guest_native_alias_policy': 'Preserved local resource keys; exact logical SavedApplied is required.'}
 
 
 def reopen_receipt(text):
@@ -203,6 +238,7 @@ class NativeSave(Lifecycle):
         before = self.checkpoint('before-genuine-native-save')
         revision = before[str(self.host.instance)]['state']['revision']
         old_source = before[str(self.host.instance)]['inspected']['source']
+        previous_sources = [before[str(game.instance)]['inspected']['source'] for game in self.active_games]
         self.host.call('coop.editor save')
         self.host.wait('actual native successful Save confirmation', lambda:
             ' saved.' in self.host.call('coop.ui tree 7'))
@@ -221,7 +257,7 @@ class NativeSave(Lifecycle):
                     coverage['saved_applied'] != coverage['saved_expected']):
                 return False
             sources = [inspected(game.call('coop.editor inspect'))['source'] for game in self.active_games]
-            return {'coverage': coverage, 'source': sources[0]} if len(set(sources)) == 1 and sources[0] != old_source else False
+            return native_saved_gate(states, sources, previous_sources, revision)
         saved = self.host.wait('latest native Save and every exact SavedApplied acknowledgement', saved_everywhere)
         self.converge(revision)
         after = self.checkpoint('native-save-acknowledged-on-every-peer')
@@ -343,7 +379,7 @@ def main():
     parser.add_argument('--timeout', type=int, default=120)
     args = parser.parse_args()
     if args.self_test:
-        assert saved_coverage('saved_revision=9 saved_applied=4 saved_expected=4 settled=1')['saved_applied'] == 4
+        assert saved_coverage('saved_revision=9 saved_applied=4 saved_expected=4 settled=1 saved_source_root=408A0000!12345678.366A930D')['saved_applied'] == 4
         assert reopen_receipt('REOPEN_VERIFIED revision=9 source=408A0000!12345678.366A930D\n')['revision'] == 9
         sample = {'1:1': {'class': 8, 'position': (1, 2, 3), 'rotation': (0, 0, 0, 1), 'scale': 1}}
         assert pose_multiset(sample) == pose_multiset({'88:9': sample['1:1']})
@@ -356,6 +392,36 @@ def main():
                 pass
             else:
                 raise AssertionError('Proof parser accepted incomplete evidence')
+        old_root, new_root = '408A0000!11111111.366A930D', '408A0000!22222222.366A930D'
+        def covered(expected, applied=None, root=new_root, settled=1, durable=9, revision=9):
+            applied = expected if applied is None else applied
+            return {'phase': 4, 'revision': revision, 'durable': durable, 'frozen': 0,
+                'text': f'saved_revision=9 saved_applied={applied} saved_expected={expected} '
+                    f'settled={settled} saved_source_root={root}'}
+        valid = [covered(2), covered(1)]
+        proof = native_saved_gate(valid, [new_root, old_root], [old_root, old_root], 9)
+        assert proof and proof['source'] == new_root and proof['logical_sources'] == [new_root] * 2
+        assert proof['live_native_sources'] == [new_root, old_root]
+        assert not native_saved_gate([covered(2, applied=1), covered(1)], [new_root, old_root], [old_root] * 2, 9)
+        assert not native_saved_gate([covered(2), covered(1, applied=0)], [new_root, old_root], [old_root] * 2, 9)
+        assert not native_saved_gate([covered(2, settled=0), covered(1)], [new_root, old_root], [old_root] * 2, 9)
+        assert not native_saved_gate([covered(2), covered(1, root=old_root)], [new_root, old_root], [old_root] * 2, 9)
+        assert not native_saved_gate([covered(2), covered(1, durable=8)], [new_root, old_root], [old_root] * 2, 9)
+        assert not native_saved_gate([covered(2), covered(1, revision=8)], [new_root, old_root], [old_root] * 2, 9)
+        assert not native_saved_gate(valid, [old_root, old_root], [old_root] * 2, 9)
+        assert not native_saved_gate(valid, [new_root, new_root], [old_root] * 2, 9)
+        assert not native_saved_gate(valid, [new_root, old_root], [new_root, old_root], 9)
+        aliases = [old_root, old_root, '408A0000!33333333.366A930D', '408A0000!44444444.366A930D']
+        assert native_saved_gate([covered(4), covered(1), covered(1), covered(1)], [new_root] + aliases[1:], aliases, 9)
+        for invalid in ['saved_revision=9 saved_applied=2 saved_expected=2 settled=1',
+                'saved_revision=9 saved_applied=2 saved_expected=2 settled=1 saved_source_root=408A0000!00000000.366A930D',
+                'saved_revision=9 saved_applied=2 saved_expected=2 settled=1 saved_source_root=408A0000!22222222.00000000']:
+            try:
+                saved_coverage(invalid)
+            except FixtureError:
+                pass
+            else:
+                raise AssertionError('Proof parser accepted missing/invalid logical saved root')
         assert public_command('coop.editor save') and not public_command('coop.adventure.world finish success')
         class Menu:
             def __init__(self, state):

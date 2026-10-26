@@ -41,6 +41,25 @@ struct SavedCoverage {
     size_t applied = 0, expected = 0;
     bool current = false;
 };
+// Passive outside-frame diagnostics. Sizes/capacities describe retained logical
+// containers; shared buffer references may alias and estimates are not heap/RSS.
+struct Accounting {
+    net::ConnectionAccounting transport;
+    size_t history = 0, decisions = 0, decision_order = 0, state_estimate = 0;
+    size_t coordinator_history = 0, coordinator_decisions = 0, coordinator_estimate = 0;
+    size_t replica_history = 0, replica_decisions = 0, replica_estimate = 0;
+    size_t tombstones = 0, retired_sequences = 0, truncated_authors = 0, leases = 0;
+    size_t channels = 0, hashes = 0, completed_transfers = 0, lease_decisions = 0, released_scope_fences = 0;
+    size_t local_leases = 0, lease_reply_capacity = 0, completed_hash_capacity = 0, revision_hash_capacity = 0;
+    size_t input_count = 0, input_bytes = 0, local_count = 0, local_bytes = 0;
+    size_t queued_packets = 0, queued_transfers = 0, output_bytes = 0;
+    size_t transfer_reference_size = 0, transfer_reference_capacity = 0;
+    size_t pending_leases = 0, release_fences = 0, lease_retirements = 0, lease_stamps = 0;
+    size_t deferred_count = 0, deferred_bytes = 0, held_count = 0, held_bytes = 0;
+    size_t resource_size = 0, resource_capacity = 0, baseline_size = 0, baseline_capacity = 0;
+    size_t staged_size = 0, staged_capacity = 0;
+    size_t receiving = 0, receiver_data_size = 0, receiver_data_capacity = 0, receiver_chunk_capacity = 0;
+};
 struct Config {
     uint8_t message_type = 53;
     size_t inbound_packets = 512, inbound_bytes = 1u << 20;
@@ -48,8 +67,11 @@ struct Config {
     size_t transfer_bytes = 224u << 20, catchup_decisions = 256;
     size_t reliable_window = 24, packets_per_tick = 16;
 };
+enum class TracePoint : uint8_t { HostRequestReceived, HostDecisionQueued, DecisionDecoded };
 struct Callbacks {
     editor::Hooks host_hooks;
+    // Optional outside-frame numeric diagnostics. Does not affect wire or policy.
+    std::function<void(TracePoint, const editor::ProjectId&, const editor::OperationId&, editor::Revision)> trace;
     // Outside-frame cache inventory. Claims must describe independently hashed
     // owned bytes. Empty inventory preserves the full verified baseline path.
     std::function<bool(editor::wire::Join&, std::string&)> prepare_join;
@@ -130,6 +152,7 @@ public:
     // peers. Same-revision Saves also require acknowledge_saved from every active
     // participant; transport ACKs alone never satisfy native save completion.
     bool settled() const;
+    Accounting accounting() const; // No native work, encoding, I/O or cache mutation.
     SavedCoverage saved_coverage() const; // Exact native SavedApplied serials, not transport ACKs.
     const editor::State& state() const;
     const View& view() const;

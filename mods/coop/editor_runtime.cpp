@@ -17,6 +17,7 @@
 #include "editor_native.h"
 #include "editor_native_save.h"
 #include "editor_metrics.h"
+#include "editor_stage_metrics.h"
 #include "editor_reopen_identity.h"
 #include "editor_project.h"
 #include "editor_session.h"
@@ -87,7 +88,34 @@ uint64_t last_preview;
 bool preview_active;
 std::optional<editor::wire::Presence> last_presence_value;
 editor_metrics::Confirmations confirmation_metrics;
+editor_stage_metrics::Buffer<> stage_metrics;
+uint64_t stage_qpc() noexcept {
+    LARGE_INTEGER value{};return QueryPerformanceCounter(&value)&&value.QuadPart>0?uint64_t(value.QuadPart):0;
+}
+void stage_stamp(const editor::ProjectId& project,const editor::OperationId& operation,editor::Revision revision,
+                 editor_stage_metrics::Stage stage,uint8_t success=0) noexcept {
+    if(stage_metrics.recording())stage_metrics.record(project,operation,revision,stage,stage_qpc(),success);
+}
+struct StageScope {
+    editor::ProjectId project;editor::OperationId operation;editor::Revision revision;
+    editor_stage_metrics::Stage end;bool okay=false;
+    StageScope(const editor::Document& document,const editor::OperationId& op,
+               editor_stage_metrics::Stage begin,editor_stage_metrics::Stage finish) noexcept:
+        project(document.project),operation(op),revision(document.revision),end(finish){stage_stamp(project,operation,revision,begin);}
+    ~StageScope(){stage_stamp(project,operation,revision,end,okay?1:2);}
+};
+
 editor::ProjectId project_id;
+
+bool supported_act(uint32_t act, std::string& error) {
+    if (!act) return true;
+    error = "Shared placement editing currently requires the first act (Act 1). Other acts remain available in the ordinary editor.";
+    return false;
+}
+bool supported_native_act(std::string& error) {
+    const auto native = editor_native::state();
+    return !native.editing || supported_act(native.act, error);
+}
 editor::Peer local_capability;
 std::map<editor::ObjectId, editor::Placement> guarded_placements;
 std::string status, resource_hash;
@@ -459,6 +487,7 @@ bool remember_artifacts(const editor::State& state, const editor::Change& change
     return true;
 }
 bool persist(const editor::State& state, const editor::Change& change, std::string& error) {
+    StageScope work(state.document,change.operation,editor_stage_metrics::Stage::PersistWorkBegin,editor_stage_metrics::Stage::PersistWorkEnd);
     editor_native::Snapshot after;
     if (!editor_native::capture(after, error)) return false;
     if (!editor_native::validate(after, state.document, error)) return false;
@@ -476,7 +505,10 @@ bool persist(const editor::State& state, const editor::Change& change, std::stri
     // The immutable dependency closure is retained once. Current scenario bytes
     // and stable marker bindings are already part of the durable snapshot.
     saved.manifest = manifest(resource_hash, archive);
-    if (!store.commit(saved, error)) {
+    bool committed=false;
+    { StageScope durable(state.document,change.operation,editor_stage_metrics::Stage::DurableBegin,editor_stage_metrics::Stage::DurableEnd);
+      committed=store.commit(saved,error);durable.okay=committed; }
+    if (!committed) {
         if (!store.healthy()) throw std::runtime_error("Editor disk acceptance is uncertain; reopen the recovery checkpoint: " + error);
         return false;
     }
@@ -484,9 +516,10 @@ bool persist(const editor::State& state, const editor::Change& change, std::stri
     current_native = std::move(after); resources = std::move(next_resources);
     history_artifacts.swap(archive);
     incoming_resources.reset(); gc_due = state.document.revision % 16 == 0;
-    return true;
+    work.okay=true;return true;
 }
 bool apply(const editor::Document& before, const editor::Document& after, const editor::Change& change, std::string& error) {
+    StageScope work(after,change.operation,editor_stage_metrics::Stage::ApplyWorkBegin,editor_stage_metrics::Stage::ApplyWorkEnd);
     before_apply_valid = false;
     if (editor_native::state().generation != native_generation) { error = "The native editor belongs to a different context"; return false; }
     if (frozen || !editor_native::capture(before_apply, error)) return false;
@@ -517,7 +550,10 @@ bool apply(const editor::Document& before, const editor::Document& after, const 
             source = &artifact;
         }
     }
-    if (!editor_native::apply(after, change, source, error)) return false;
+    bool applied=false;
+    { StageScope native(after,change.operation,editor_stage_metrics::Stage::NativeApplyBegin,editor_stage_metrics::Stage::NativeApplyEnd);
+      applied=editor_native::apply(after,change,source,error);native.okay=applied; }
+    if(!applied)return false;
     if (pending && pending->request.operation == change.operation && !change.allocated.empty()) {
         std::string selection_error;
         // The inverse removes the native temporary selection. Restore the new
@@ -526,7 +562,7 @@ bool apply(const editor::Document& before, const editor::Document& after, const 
         if (!editor_native::select_placement(change.allocated.front(), selection_error) && H)
             H->log(M, SK_INFO, "Shared editor local selection: %s", selection_error.c_str());
     }
-    return true;
+    work.okay=true;return true;
 }
 bool rollback(const editor::Document&, const editor::Document&, const editor::Change&, std::string& error) {
     return !before_apply_valid || editor_native::restore(before_apply, error);
@@ -717,6 +753,7 @@ void submit_pending_gesture() {
     pending->submitted = true;
     std::string error;
     const auto operation=request.operation;
+    stage_stamp(controller->state().document.project,operation,controller->state().document.revision,editor_stage_metrics::Stage::LocalSubmit);
     confirmation_metrics.begin(operation,H->time_seconds());
     if (!controller->submit(std::move(request), error)) { confirmation_metrics.cancel(operation);pending.reset(); awaiting_operation.reset(); tell(error); }
     else status = "Waiting for the host to commit the placement gesture";
@@ -729,10 +766,12 @@ void refresh() {
     next.host = host(); next.offered = v.phase == Phase::Offered; next.active = session_active() || closing;
     next.visible = C.session && C.session->connected();
     next.can_begin = !next.active && !closing && !beginning && (!C.adventure_busy || !C.adventure_busy()) &&
-        ((next.host && native.ready && editor_native_save::available()) || (next.offered && game::mode_id() == modes::kMenu));
+        ((next.host && native.ready && native.act == 0 && editor_native_save::available()) || (next.offered && game::mode_id() == modes::kMenu));
     next.revision = doc.revision; next.durable_revision = v.locally_durable;
     next.title = v.name.empty() ? "Shared Adventure Editor" : v.name;
     next.status = status.empty() ? v.error : status;
+    if (!next.active && next.host && native.editing && native.act != 0)
+        supported_act(native.act, next.status);
     auto identity=[](editor::ObjectId id) { return "Placement " + std::to_string(id.id) + ":" + std::to_string(id.generation); };
     next.selection = native.selected.empty() ? "No placement selected" : identity(native.selected.front());
     next.frozen = frozen || v.phase == Phase::Frozen;
@@ -879,6 +918,7 @@ void start_saved() {
     std::string error;
     editor_native::Snapshot native;
     if (!editor_native::capture(native, error) || !native.source.instance || native.source.type != 0x366A930D) { tell(error.empty() ? "Save a new native adventure draft before sharing" : error); return; }
+    if (!supported_act(native.act, error)) { tell(error); return; }
     bool tracked = false;
     if (!editor_native::relative_scale_mode(native.document, tracked, error) || !tracked) {
         tell(error.empty() ? "The native draft lacks the required continuous-scale projection; sharing did not start" : error); return;
@@ -938,6 +978,7 @@ void undo_redo(bool redo) {
     auto r = request(redo ? editor::Intent::Redo : editor::Intent::Undo);
     std::string error;
     awaiting_operation = r.operation;
+    stage_stamp(controller->state().document.project,r.operation,controller->state().document.revision,editor_stage_metrics::Stage::LocalSubmit);
     if (!controller->submit(std::move(r), error)) { awaiting_operation.reset(); tell(error); }
 }
 void close_session(bool preserve_offer = false) {
@@ -1069,6 +1110,10 @@ void finish_recovery() {
     if (closing || !recovery) return;
     const auto context = editor_native::state();
     if (!context.ready) return;
+    std::string act_error;
+    if (!supported_act(recovery->native.act, act_error) || !supported_native_act(act_error)) {
+        recovery.reset(); tell(act_error); return;
+    }
     if (!recovery->native_generation) recovery->native_generation = native_attached ? native_generation : context.generation;
     if (context.generation != recovery->native_generation) {
         recovery.reset(); frozen = true; tell("Recovery stopped because the native editor context changed"); return;
@@ -1155,6 +1200,7 @@ void execute(Action action) {
             if (!controller->accept_offer(error)) tell(error);
         }
         else if (host() && !session_active() && editor_native::state().editing && !beginning && (!C.adventure_busy || !C.adventure_busy())) {
+            if (!supported_native_act(error)) { tell(error); break; }
             beginning = true;
             if (!editor_native_save::save_as(error)) { beginning = false; tell(error); }
             else status = "Save a new native draft to start shared editing";
@@ -1205,7 +1251,9 @@ void execute(Action action) {
         auto checkpoint = store.snapshot();
         editor::State recovered; editor_native::Snapshot native;
         editor::Peer recovered_capability; bool owned = false;
-        if (!editor_project::load_snapshot(checkpoint, recovered, native, error) || !parse_manifest(checkpoint.manifest, resource_hash, history_artifacts, error, &recovered_capability, &owned)) { tell(error); break; }
+        if (!editor_project::load_snapshot(checkpoint, recovered, native, error) ||
+            !supported_act(native.act, error) || !supported_native_act(error) ||
+            !parse_manifest(checkpoint.manifest, resource_hash, history_artifacts, error, &recovered_capability, &owned)) { tell(error); break; }
         std::vector<uint8_t> envelope;
         if (!read_blob(resource_hash, envelope, editor::wire::kResourceBytes, error) || !editor_project::decode_resources(envelope, resources, error) ||
             !replace_root(resources, native, error) || !editor_project::encode_resources(resources, envelope, error) ||
@@ -1340,9 +1388,15 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     if (!C.session) return false;
     observed_transport = C.session->transport_generation(); retired_transport = 0; transport_teardown.reset(); deferred_offer.reset(); settled_cancellation.reset();
     editor_session::Callbacks callbacks;
-    callbacks.host_hooks.validate = [](const auto&, const auto&, const auto&, std::string& error) {
+    callbacks.trace=[](editor_session::TracePoint point,const editor::ProjectId& project,const editor::OperationId& operation,editor::Revision revision) noexcept {
+        using P=editor_session::TracePoint;using S=editor_stage_metrics::Stage;
+        const auto stage=point==P::HostRequestReceived?S::HostRequestReceived:point==P::HostDecisionQueued?S::HostDecisionQueued:S::DecisionDecoded;
+        stage_stamp(project,operation,revision,stage);
+    };
+    callbacks.host_hooks.validate = [](const auto&, const auto& after, const auto& change, std::string& error) {
+        StageScope span(after,change.operation,editor_stage_metrics::Stage::ValidateBegin,editor_stage_metrics::Stage::ValidateEnd);
         auto native = editor_native::state();
-        if (closing || frozen || recovery || native.generation != native_generation || editor_native_save::busy() || save_publication_pending || !native.ready || native.gesture) { error = "The native draft is not currently editable"; return false; } return true;
+        if (closing || frozen || recovery || native.generation != native_generation || editor_native_save::busy() || save_publication_pending || !native.ready || native.gesture) { error = "The native draft is not currently editable"; return false; } span.okay=true;return true;
     };
     callbacks.host_hooks.apply = apply; callbacks.host_hooks.rollback = rollback; callbacks.host_hooks.persist = persist;
     callbacks.apply_committed = apply; callbacks.rollback_committed = rollback; callbacks.persist_guest = persist;
@@ -1373,6 +1427,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         const bool baseline = controller->view().phase == Phase::Joining || controller->view().phase == Phase::Syncing;
         if (baseline ? !editor_project::decode_join_resources(bytes,resources,content,error) :
             !editor_project::decode_resources(bytes,content,error,resources.base_root)) return false;
+        if (!supported_act(content.act, error) || (baseline && !supported_native_act(error))) return false;
         if (baseline) {
             if (!adventure_assets::register_records(content.bundle.records, error)) return false;
             if (!editor_native::state().editing && !editor_native::enter({content.root.instance, content.root.type, content.root.group}, error)) return false;
@@ -1391,7 +1446,8 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
             error = "The editor baseline has no matching verified resources"; return false;
         }
         editor_native::Snapshot native;
-        if (!editor_project::native_snapshot(*incoming_resources, state.document, native, error) ||
+        if (!supported_act(incoming_resources->act, error) || !supported_native_act(error) ||
+            !editor_project::native_snapshot(*incoming_resources, state.document, native, error) ||
             !adventure_assets::register_records(incoming_resources->bundle.records, error)) return false;
         if (!editor_native::state().editing && !editor_native::enter(native.source, error)) return false;
         if (!editor_native::restore(native, error) || !editor_native::apply(state.document, error)) return false;
@@ -1406,6 +1462,8 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         tell("Joined the shared placement draft"); return true;
     };
     callbacks.decision = [](const editor::Decision& decision) {
+        if(decision.accepted()&&decision.change&&awaiting_operation&&decision.change->operation==*awaiting_operation)
+            stage_stamp(controller->state().document.project,decision.change->operation,decision.revision,editor_stage_metrics::Stage::OwnConfirmed);
         confirmation_metrics.complete(decision,H->time_seconds());
         const bool own = awaiting_operation && (!decision.change || decision.change->operation == *awaiting_operation);
         if (own) { pending.reset(); awaiting_operation.reset(); requested_scopes.clear(); }
@@ -1581,6 +1639,113 @@ void set_ready(bool value) { action(value ? Action::Ready : Action::Unready); }
 void recover() { action(Action::Recover); }
 void end() { action(Action::End); }
 std::string debug(const std::vector<std::string>& args) {
+    if (args.size() == 1 && args[0] == "accounting") {
+        if (!controller) return "Editor accounting unavailable";
+        char text[8192]; size_t used = 0;
+        auto add = [&](const char* name, size_t value) {
+            if (used + 80 >= sizeof text) return;
+            const int count = snprintf(text + used, sizeof text - used, "%s=%llu\n", name, static_cast<unsigned long long>(value));
+            if (count > 0 && size_t(count) < sizeof text - used) used += size_t(count);
+        };
+        const auto a = controller->accounting();
+        add("history", a.history);
+        add("decisions", a.decisions);
+        add("decision_order", a.decision_order);
+        add("state_estimate", a.state_estimate);
+        add("coordinator_history", a.coordinator_history);
+        add("coordinator_decisions", a.coordinator_decisions);
+        add("coordinator_estimate", a.coordinator_estimate);
+        add("replica_history", a.replica_history);
+        add("replica_decisions", a.replica_decisions);
+        add("replica_estimate", a.replica_estimate);
+        add("tombstones", a.tombstones);
+        add("retired_sequences", a.retired_sequences);
+        add("truncated_authors", a.truncated_authors);
+        add("leases", a.leases);
+        add("local_leases", a.local_leases);
+        add("channels", a.channels);
+        add("hashes", a.hashes);
+        add("completed_transfers", a.completed_transfers);
+        add("lease_decisions", a.lease_decisions);
+        add("released_scope_fences", a.released_scope_fences);
+        add("lease_reply_capacity", a.lease_reply_capacity);
+        add("completed_hash_capacity", a.completed_hash_capacity);
+        add("revision_hash_capacity", a.revision_hash_capacity);
+        add("input_count", a.input_count);
+        add("input_bytes", a.input_bytes);
+        add("local_count", a.local_count);
+        add("local_bytes", a.local_bytes);
+        add("queued_packets", a.queued_packets);
+        add("queued_transfers", a.queued_transfers);
+        add("output_bytes", a.output_bytes);
+        add("transfer_reference_size", a.transfer_reference_size);
+        add("transfer_reference_capacity", a.transfer_reference_capacity);
+        add("pending_leases", a.pending_leases);
+        add("release_fences", a.release_fences);
+        add("lease_retirements", a.lease_retirements);
+        add("lease_stamps", a.lease_stamps);
+        add("deferred_count", a.deferred_count);
+        add("deferred_bytes", a.deferred_bytes);
+        add("held_count", a.held_count);
+        add("held_bytes", a.held_bytes);
+        add("resource_size", a.resource_size);
+        add("resource_capacity", a.resource_capacity);
+        add("baseline_size", a.baseline_size);
+        add("baseline_capacity", a.baseline_capacity);
+        add("staged_size", a.staged_size);
+        add("staged_capacity", a.staged_capacity);
+        add("receiving", a.receiving);
+        add("receiver_data_size", a.receiver_data_size);
+        add("receiver_data_capacity", a.receiver_data_capacity);
+        add("receiver_chunk_capacity", a.receiver_chunk_capacity);
+        add("transport_connections", a.transport.connections);
+        add("transport_sent_packets", a.transport.sent_packets);
+        add("transport_sent_id_capacity", a.transport.sent_id_capacity);
+        add("transport_reliable_out", a.transport.reliable_out);
+        add("transport_reliable_in", a.transport.reliable_in);
+        add("transport_unreliable_out", a.transport.unreliable_out);
+        add("transport_unreliable_slots_capacity", a.transport.unreliable_slots_capacity);
+        add("transport_payload_size", a.transport.payload_size);
+        add("transport_payload_capacity", a.transport.payload_capacity);
+        add("transport_packet_history_limit_per_connection", 1024);
+        add("history_limit", editor::Limits{}.history); add("decision_limit", editor::Limits{}.decisions);
+        add("hash_limit", editor_session::Config{}.catchup_decisions + 16); add("lease_reply_limit_per_channel", 64);
+        add("native_current_size", current_native.bytes.size()); add("native_current_capacity", current_native.bytes.capacity());
+        add("native_before_size", before_apply.bytes.size()); add("native_before_capacity", before_apply.bytes.capacity());
+        add("native_before_valid", before_apply_valid ? 1 : 0);
+        add("native_reopen_capacity", reopen_saved ? reopen_saved->bytes.capacity() : 0);
+        add("artifact_count", history_artifacts.size()); add("resource_records", resources.bundle.records.size());
+        size_t resource_size = 0, resource_capacity = 0;
+        for (const auto& record : resources.bundle.records) { resource_size += record.data.size(); resource_capacity += record.data.capacity(); }
+        add("record_data_size", resource_size); add("record_data_capacity", resource_capacity);
+        add("immutable_base_capacity", resources.base_root ? resources.base_root->capacity() : 0);
+        const auto& snapshot = store.snapshot();
+        add("store_native_size", snapshot.native_snapshot.size()); add("store_native_capacity", snapshot.native_snapshot.capacity());
+        add("store_document_size", snapshot.document.size()); add("store_document_capacity", snapshot.document.capacity());
+        add("store_mapping_capacity", snapshot.id_mapping.capacity()); add("store_manifest_capacity", snapshot.manifest.capacity());
+        add("recovery_native_capacity", recovery ? recovery->native.bytes.capacity() : 0);
+        add("recovery_envelope_capacity", recovery ? recovery->envelope.capacity() : 0);
+        add("adventure_queue_count", adventure_messages.size()); add("adventure_queue_bytes", adventure_message_bytes);
+        add("pending_native_capacity", pending ? pending->gesture.before.bytes.capacity() + pending->gesture.after.bytes.capacity() : 0);
+        add("actions", actions.size()); add("guarded_placements", guarded_placements.size());
+        add("observed_grants", observed_lease_grants.size()); add("requested_scopes", requested_scopes.size());
+        return std::string("Passive editor container counts/capacities; shared references can alias; estimates are not allocator or process bytes.\n") + std::string(text, used);
+    }
+    if(!args.empty()&&args[0]=="stages") {
+        if(args.size()==2&&args[1]=="reset") {
+            LARGE_INTEGER frequency{};
+            if(!QueryPerformanceFrequency(&frequency)||frequency.QuadPart<=0||!stage_metrics.reset(GetCurrentProcessId(),uint64_t(frequency.QuadPart),stage_qpc()))return "Stage diagnostics clock unavailable";
+            return stage_metrics.report(0,0);
+        }
+        if(args.size()==2&&args[1]=="stop"){stage_metrics.stop();return stage_metrics.report(0,0);}
+        if(args.size()>=2&&args[1]=="read"&&args.size()<=4){
+            auto number=[](const std::string& value,size_t limit,size_t& result){if(value.empty()||value.size()>5)return false;size_t n=0;for(char c:value){if(c<'0'||c>'9')return false;n=n*10+size_t(c-'0');if(n>limit)return false;}result=n;return true;};
+            size_t offset=0,count=32;
+            if((args.size()>2&&!number(args[2],4096,offset))||(args.size()>3&&!number(args[3],32,count)))return "Usage: coop.editor stages read [offset0..4096] [count0..32]";
+            return stage_metrics.report(offset,count);
+        }
+        return "Usage: coop.editor stages reset|stop|read [offset] [count]";
+    }
     if (args.size() == 1 && args[0] == "verify-reopen") {
         const auto native = editor_native::state();
         if (!controller || controller->view().phase != Phase::Idle || session_active() || native_attached || closing ||
@@ -1716,10 +1881,14 @@ std::string debug(const std::vector<std::string>& args) {
     }
     refresh();
     const auto saved = controller ? controller->saved_coverage() : editor_session::SavedCoverage{};
+    const auto saved_root = controller && controller->view().saved ? controller->view().saved->resource : editor::ResourceKey{};
+    char saved_source_root[32];
+    snprintf(saved_source_root, sizeof saved_source_root, "%08X!%08X.%08X", saved_root.group, saved_root.instance, saved_root.type);
     return cached.title + "\n" + cached.status + "\nrevision=" + std::to_string(cached.revision) +
         " durable=" + std::to_string(cached.durable_revision) + " frozen=" + std::to_string(cached.frozen) +
         " saved_revision=" + std::to_string(saved.revision) + " saved_applied=" + std::to_string(saved.applied) +
         " saved_expected=" + std::to_string(saved.expected) + " settled=" + std::to_string(controller && controller->settled()) +
+        " saved_source_root=" + std::string(saved_source_root) +
         " phase=" + std::to_string(controller ? uint8_t(controller->view().phase) : 0) +
         " project=" + (controller ? editor_store::project_name(controller->view().context.project) : "") +
         " capability=" + std::to_string(controller ? controller->view().local.slot : 255) + ":" + std::to_string(controller ? controller->view().local.generation : 0) +

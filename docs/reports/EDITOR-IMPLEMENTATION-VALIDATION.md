@@ -1,6 +1,6 @@
 # Shared Adventure Editor: implementation validation
 
-Report revision 15, cancellation and transport teardown follow-up, 2026-10-26. Branch:
+Report revision 17, C15 recovery and integrated C16 diagnostics, 2026-10-26. Branch:
 `feat/ga-adventure-editor`. The portable core and transport checkpoint is local
 commit `216f8b0`; native integration is recorded at `0a35c7b`, with lab tools at
 `a9b844f`. The C10 integration checkpoint is `071f6a4`, depending on network
@@ -758,13 +758,14 @@ even though Core permits exact retained tombstones. A separate C15 fix and real
 UDP regression are under validation. The original actual failure is
 `out/editor-native-candidate14/typed-scale/result.json`.
 
-Repeated enlarged Scale reached a native red/invalid-placement cancellation.
-The host's live pose then differed from its canonical draft and the guest. Normal
-End restored the canonical draft, and both exited without faults. Static follow-up
-identified native cancellation calling the same entry Undo function intercepted
-for user Undo. A scoped cancellation fix requires its own runtime evidence;
-blindly allowing global native Undo would not preserve concurrent edits. The
-failure receipt is
+Repeated enlarged Scale left the host's live pose different from its canonical
+draft and the guest, with a red placement appearance. C14 had no counter proving
+that a native cancellation actually executed. Normal End restored the canonical
+draft, and both exited without faults. Static follow-up separately identified
+native cancellation calling the same entry Undo function intercepted for user
+Undo. A scoped cancellation fix requires its own runtime evidence; the visual
+appearance alone does not establish that this branch caused the observed
+divergence. The failure receipt is
 `out/editor-native-candidate14/relative-only-large-native-save/result.json`.
 Earlier bounded boundary-search and UI calibration failures remain separate and
 do not prove a relative-only actual native acceptance case.
@@ -875,6 +876,121 @@ All 17 freshly rebuilt GA Win32 regression fixtures pass with the transport
 change. The portable suite passes, and the published feature branch's
 [GitHub build and tests](https://github.com/jwhans0n/SporeCoopGA/actions/runs/40384731915)
 pass at `a7e37bf`. These precede the combined C15 native candidate acceptance.
-Native cancellation, tombstone Redo and reconnect still require actual game
-checks. The four-player WAN budget, bulk contention, large-editor FPS and
-settled memory gates remain open.
+The combined C15 candidate passes all 17 freshly built editor Win32 fixtures,
+including full Runtime (5,067 checks) and UDP (15,195 checks), with every recorded
+source input unchanged after the run. The applied Native, Runtime and transport
+files match the independently tested proposals after line-ending normalization.
+Candidate SHA-256:
+
+```text
+5afca1756c395a3ee00b039365002ecf5279c34ecefe5480d3f99c35544e815f
+```
+
+The 69,890,048-byte DLL and exact maps were backed up and deployed only to the
+private test installation while all private games were closed. Receipt:
+`out/editor-integrated-c15/validation.json`; deployment:
+`out/editor-native-candidate15/deploy.json`. Native cancellation, tombstone Redo
+and reconnect still require actual game checks. The four-player WAN budget,
+bulk contention, large-editor FPS and settled memory gates remain open.
+
+### C15 actual history and Scale boundary checks
+
+Both native authors passed Create/Undo/Redo and Delete/Undo/Redo with exact
+stable identities and authored values. The initial complete driver then stopped
+at an explicitly inconclusive invalid-placement search. A separate scaled Clone
+regression passed for both authors: ordinary Clone preserved the source's exact
+scale companion, native Ctrl+Z/Ctrl+Y restored the same clone identity, and
+Delete/Undo/Redo preserved all remaining fields. Cleanup reached detached native
+editors and offline party state. Receipts:
+`out/editor-native-c15-acceptance/run-native-key-retry/result.json` (partial
+history passes, overall inconclusive) and
+`out/editor-native-c15-acceptance/run-clone-two-events/result.json` (passed).
+
+Both authors also passed a genuine physical-unchanged/companion-changed Scale
+operation at the native upper bound. Physical float bits stayed `00006041`
+(14); the host companion changed `100c833f` to `fc37863f`, then the guest changed
+it to `1f82813f`. Each used two ordinary wheel events with the verified signed
+magnitude, followed by native Undo and Redo. Every other authored field remained
+identical and cancellation counters stayed unchanged. Single-event attempts and
+fixed input points that missed the enlarged body remain failed calibration
+receipts. No particular internal cause for the single-event behavior is claimed.
+
+The subsequent native Save completed at revision 7 with exact SavedApplied 2/2.
+The generic Save/reopen harness nevertheless timed out before reopening. Its
+additional condition required each live native source key to equal the saved
+root. The host rotated to `408A0000!29095FA2.366A930D`; the guest retained its
+private `408A0000!29095FA1.366A930D`. The adapter deliberately preserves each
+live resource key during restoration. Host settled status was observed true in
+238 samples, so the receipt does not establish a coordinator settlement defect.
+A logical saved-root diagnostic and corrected alias-aware harness are being
+validated before retry. The complete run remains failed; its separate Scale
+checks do not establish native file reopen. Receipt:
+`out/editor-native-c15-acceptance/run-relative-two-events/result.json` and its
+per-process command logs.
+
+The actual C15 transport lifecycle run subsequently passed connected End,
+explicit Leave, former-guest Host role change and authenticated rejoin. It also
+passed disconnect/rejoin during both preparation and active playtest, preserving
+the draft and history. Both processes returned to Galaxy, offline, with zero
+native faults, and the owning runner closed them normally. Receipt:
+`out/editor-native-c15-acceptance/run-teardown/result.json`.
+
+Two bounded pure-wheel searches did not invoke native cancellation, including
+valid Scale at physical 14 / companion 1.02380562. The verified native branch
+and 422-check routing fixture remain distinct from an actual invalid-input
+cancellation pass, which is still pending.
+
+### C16 first-act guard and read-only diagnostics, before native deployment
+
+The act audit found that resource restoration rebuilds using the local native
+act without setting it. A fresh guest normally starts on Act 1. This preview
+now restricts sharing to Act 1 before Save As, baseline registration/entry and
+recovery, and rechecks the actual loaded context. Core and wire types still
+support general acts. A baseline Runtime test reproduces the missing guard;
+210 focused checks pass with the restriction. Synchronized host act changes and
+independent acts remain unverified follow-up work. Receipt:
+`out/editor-act0-c16/validation.json`.
+
+Opt-in timing uses a fixed 4,096-event numeric buffer and 32-event console pages.
+It records operation identity, Windows QPC, native apply and durable-save spans
+outside the render frame. External packet tracing records reliable IDs and
+actual loss/retransmission chronology without changing policy or payloads.
+The actual four-player WAN failure remains 519.477 ms against 500 ms. The
+instrumented Runtime passes 5,276 full checks; recorder, proxy, collector and
+correlation fixtures pass separately. Receipt:
+`out/editor-wan-diagnostics-c15/validation.json`.
+
+Passive accounting exposes bounded logical containers and buffer capacities;
+these are explicitly not allocator or process-memory totals. The closed C12
+checkpoint contains 128 history entries but only 192 of 1,024 retained decisions,
+so history saturation did not establish saturation of every container. The
+3,425-check accounting suite passes on Win32 and address/undefined/leak
+sanitizers; combined Runtime accounting and trace checks pass. This identifies
+unsaturated containers without attributing the OS memory slope. Receipts:
+`out/editor-accounting-c16/validation-trace.json` and `retention-audit.md`.
+
+The combined pre-saved-root C16 build passes all 19 freshly built editor Win32
+fixtures, including full Runtime 5,347 checks. Its SHA-256 is
+`abb0f30306bb80fc0a277980308fdf00573eb9589ea265aec4d94569ae308672`.
+It has not been deployed. The alias-aware saved-root follow-up must receive
+its own final build and verification before the next private deployment.
+
+The final C16 build includes that read-only logical saved-root diagnostic and
+the stricter alias-aware harness. It requires identical logical saved roots,
+exact SavedApplied coverage and revision on every peer, the host's new native
+root, and each guest's unchanged private live alias. It does not relax native
+document integrity or settlement checks. All 19 freshly built Win32 fixtures
+pass, and all recorded production/test/symbol inputs remained unchanged during
+the build and test run. Candidate SHA-256:
+
+```text
+0f2a5b1d4b4e0edd533d12dae900d7b137bff37b6e9a300147a3a27f8abb4acf
+```
+
+The DLL is 71,383,552 bytes. Repository-wide portable `make test` also passes,
+including the new passive accounting and timing recorder fixtures and symbol
+lint (345 used, 2,919 known, zero problems). The portable run began before the
+saved-root follow-up, whose production changes are Windows-only; its native
+Save/reopen Python self-test ran with the corrected helper. Receipts:
+`out/editor-integrated-c16/validation.json` and `portable.log`. Actual native
+acceptance of this candidate remains separate.

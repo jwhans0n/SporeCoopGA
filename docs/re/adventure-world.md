@@ -3232,14 +3232,20 @@ Receipts:
 
 ### Invalid placement cancels the current native entry, not the user's Undo
 
-The C14 red-Scale failure is an internal native cancellation routed through
-the entry-level Undo hook. Exact executable inspection verifies that `F03200`
-commits valid Scale at `F032BB -> F45920`, but its invalid/red branch calls
-`F030B0` at `F0329F`. That helper copies the selected marker identity, calls
-`F3BF00` at `F030E0`, and resolves/reselects the restored marker afterwards.
-`F3C9D0` resolves that identity in the restored marker pool; it does not copy
-the rejected Scale fields back. The finalizer clears ToolManager `+5` on both
-branches, so the observed invalid Scale is not proof of a stuck Tool byte.
+The C14 red-looking Scale result motivated inspection of native current-entry
+cancellation, but that appearance did not positively prove the cancellation
+executed. Subsequent C15 ordinary wheel input reached physical scale 14 with
+companion 1.02380562 without increasing either cancellation diagnostic counter.
+Those wheel attempts must remain distinct from a verified invalid-placement
+input. Exact executable inspection establishes the branch itself: `F03200`
+commits a valid current gesture at `F032BB -> F45920`; when the editor spatial
+object's native invalid flag `+6E` is set, it calls `F030B0` at `F0329F`. That
+helper copies the selected marker identity, calls `F3BF00` at `F030E0`, and
+resolves/reselects the restored marker afterwards. `F3C9D0` resolves that
+identity in the restored marker pool; it does not copy rejected fields back.
+The finalizer clears ToolManager `+5` on both branches. Neither an unchanged
+value after ignored input nor a red-looking screenshot proves a stuck Tool
+byte or an actual current-entry cancellation.
 
 `F3BF00` checks native History `notEditing +20`, obtains `ownedEntry +24`,
 queries interface `0743BB11`, invokes its vtable `+10` Undo, clears/releases
@@ -3302,3 +3308,73 @@ Receipts: `out/editor-native-re/c15-scale-cancel.txt`,
 `out/editor-native-re/c15-scale-history-interface-asm.txt`, and
 `out/editor-native-re/c15-cancellation/` (OUT proposal, exact verifier report,
 controlled baseline and Win32 fixture).
+
+### Shared act feasibility and the first-act preview restriction
+
+Native editor act selection is process-local `Context +0`, read by verified
+`EFC410`. Marker position `+04`, orientation `+10`, physical scale `+20` and
+scale-range companion `+24` are global placement fields. Native class data
+contains act-indexed settings, and scene reconstruction uses the current editor
+act. These facts establish separate native context storage and shared authored
+fields, not safe independent-act collaboration. No two-peer different-act
+authoring acceptance or verified editor act-setting barrier has been completed.
+
+The current projection assigns each global placement a read-only `act_id`
+corresponding to the captured editor context. Snapshot metadata retains that
+act index, but `editor_native::restore` does not set the live editor act; its
+verified `F46400` rebuilds using native `GetAct`. A fresh guest normally starts
+at index zero. Thus a host choosing a nonzero act before sharing is not sufficient
+to synchronize the fallback: the incoming bytes can validate against snapshot
+metadata while the guest's next live capture belongs to another act. There is
+no approved native setter to close that gap in this preview.
+
+The OUT C16 proposal restricts shared placement sessions to the first act
+(native index zero, displayed Act 1). It blocks Begin before native Save As,
+rechecks the completed asynchronous saved snapshot, rejects incoming nonzero-act
+resources before registration or editor entry, and rejects nonzero recovery
+before native entry, restoration or a new Save As. It also checks an already
+open/just-loaded native editor's actual act before restoring a baseline or
+recovery. The panel disables unsupported Begin and explains the first-act
+restriction. Ordinary native editing and the portable general-act document/wire
+formats remain unchanged; unsupported checkpoints are retained without migration.
+
+Independent cameras and selections retain their separate acceptance evidence.
+Independent acts and host-selected act changes with a synchronization barrier
+remain future native feasibility work, including shared-template/global locks
+across acts. The verified field layout alone is not a complete Stage 0
+independent-act feasibility result.
+
+Controlled first-act Runtime tests exercise pre-Save rejection, the asynchronous
+Save completion recheck, incoming general-act UDP baselines rejected before any
+native registration/entry/restore, persisted recovery retention, and a loaded
+context that lands in the wrong act. Actual nonzero-act native refusal remains
+a separate next-candidate check. OUT receipts are in `out/editor-act0-c16/`.
+
+### Candidate ordinary-input relative-only Scale sequence
+
+`F004F0` computes requested size from the current physical marker `+20` times
+`exp(nativeRate * inputDelta)`. `EED310` clamps its physical return to the
+selected native tier while computing companion `+24` from the original
+unclamped request. Therefore repeated identical input at a fixed physical
+clamp can recompute the same companion indefinitely. Sending more identical
+wheel messages does not necessarily exercise a companion-only change.
+
+The existing input dispatcher `B1BA80` event eight preserves wheel magnitude:
+`B1BBF0` converts the signed integer wheel value to float and `B1BBF4`
+multiplies by constant `013F5C98` (`8988083C`, approximately `1/120`). There is
+no integer-notch division or quantization at that conversion. A single ordinary
+delta-240 wheel packet differs from two delta-120 packets because Scale derives
+each request anew from physical size. The exact raw receipts are in
+`out/editor-native-re/c16-scale-wheel-magnitude-asm.txt`, with the existing
+decompilation in `out/editor-native-re/c11-key-mapping.txt`.
+
+A bounded source-supported candidate is to shrink a creature on clear terrain
+to an actually observed lower physical clamp, then change the ordinary packet
+magnitude (for example one same-direction 240-unit packet after 120-unit
+packets). Require unchanged physical float bits, changed companion bits, no
+cancellation, peer convergence and exact native Undo/Redo. A 60-unit packet is
+another magnitude the conversion can represent. Ignored hover input is not
+proof of a clamp; actual native history/gesture activity must be observed, and
+the now-small creature may need native Locate again. This avoids relying on the
+upper-size red-placement branch. No numeric native bound is invented, and no
+actual relative-only acceptance is claimed by this static proposal.

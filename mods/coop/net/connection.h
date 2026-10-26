@@ -48,6 +48,14 @@ struct ConnStats {
     uint64_t bytes_sent = 0, bytes_recv = 0;
 };
 
+// Logical retained transport containers, excluding allocator/deque/map overhead.
+struct ConnectionAccounting {
+    size_t connections = 0, sent_packets = 0, sent_id_capacity = 0;
+    size_t reliable_out = 0, reliable_in = 0, unreliable_out = 0, unreliable_slots_capacity = 0;
+    size_t payload_size = 0, payload_capacity = 0;
+    bool operator==(const ConnectionAccounting&) const = default;
+};
+
 class Connection {
 public:
     using Deliver = std::function<void(uint8_t type, Reader& payload)>;
@@ -110,6 +118,17 @@ public:
     // unreliable messages not sent by the end of a flush are stale by the next one
     void drop_unreliable() { unrel_out_.clear(); }
     size_t unreliable_queued() const { return unrel_out_.size(); }
+    ConnectionAccounting retained_accounting() const {
+        ConnectionAccounting a; a.connections = 1; a.sent_packets = sent_.size();
+        a.reliable_out = rel_out_.size(); a.reliable_in = rel_in_.size();
+        a.unreliable_out = unrel_out_.size(); a.unreliable_slots_capacity = unrel_out_.capacity();
+        for (const auto& packet : sent_) a.sent_id_capacity += packet.rel_ids.capacity() * sizeof(uint16_t);
+        for (const auto& message : rel_out_) { a.payload_size += message.payload.size(); a.payload_capacity += message.payload.capacity(); }
+        for (const auto& [serial, message] : rel_in_) { (void)serial; a.payload_size += message.second.size(); a.payload_capacity += message.second.capacity(); }
+        for (const auto& message : unrel_out_) { a.payload_size += message.second.size(); a.payload_capacity += message.second.capacity(); }
+        return a;
+    }
+
 
 private:
 };

@@ -92,6 +92,10 @@ public:
     bool finish(const Context&, const TransferEnd&, std::vector<uint8_t>&, std::string&);
     void reset();
     bool active() const { return serial_ != 0; }
+    // Logical retained vector storage, not an allocator or process-byte claim.
+    size_t retained_data_size() const { return data_.size(); }
+    size_t retained_data_capacity() const { return data_.capacity(); }
+    size_t retained_chunk_capacity() const { return chunks_.capacity(); }
     TransferKind kind() const { return kind_; }
     Peer sender() const { return sender_; }
 private:

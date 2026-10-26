@@ -27,8 +27,12 @@ the authored captain are protected. Deleting a placement required by an objectiv
 is rejected conservatively.
 
 Class import and class properties, act changes, objectives, conversations, global
-settings, terrain and nested asset editors are read-only while sharing. Prepare
-templates, the authored test captain and the shared act before starting. There
+settings, terrain and nested asset editors are read-only while sharing. This
+placement preview supports only the first act (Act 1). Select it before starting
+sharing; other acts remain available in the ordinary native editor. Nonzero-act
+shared baselines and recovery checkpoints are refused without opening or
+restoring them. Independent acts and synchronized host act changes remain planned.
+Prepare templates and the authored test captain before starting. There
 are no additional registered placement properties beyond transforms in this implementation. Unsupported
 controls must remain disabled; they are not safe ways around the shared panel.
 

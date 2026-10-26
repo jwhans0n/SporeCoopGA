@@ -553,6 +553,7 @@ struct Controller::Impl {
 void Controller::Impl::host_request(uint8_t from, const Request& request)
 {
     if (!hosting || !view.members.contains(from) || request.operation.author != view.members.at(from).peer) return;
+    if (!draining_requests && callbacks.trace) callbacks.trace(TracePoint::HostRequestReceived, context().project, request.operation, context().revision);
     if (!draining_requests && view.phase == Phase::Ready && (!held_requests.empty() || !authoring_ready())) {
         std::vector<uint8_t> bytes; std::string error;
         if (!w::encode_request(request, bytes, error)) { freeze(from, error); return; }
@@ -596,6 +597,7 @@ void Controller::Impl::host_request(uint8_t from, const Request& request)
         staged.reset(); baseline_cache.reset();
         if (callbacks.host_hooks.persist) view.locally_durable = decision.revision;
         clear_previews();coverage(); retire_nonlive_leases(); broadcast({context(), decision});
+        if (callbacks.trace) callbacks.trace(TracePoint::HostDecisionQueued, context().project, decision.change->operation, decision.revision);
     } else {
         staged.reset();
         if (coordinator.frozen()) freeze(0, decision.reason);
@@ -865,6 +867,9 @@ void Controller::Impl::message(uint8_t from, w::Message message)
     if (auto* join = std::get_if<w::Join>(&message.payload)) {
         if (hosting && from && view.members.at(from).phase == Phase::Offered && message.context.revision<=context().revision) synchronize(from,*join); return;
     }
+    if (!hosting && !draining_deferred && callbacks.trace)
+        if (const auto* decision = std::get_if<Decision>(&message.payload); decision && decision->accepted() && decision->change)
+            callbacks.trace(TracePoint::DecisionDecoded, message.context.project, decision->change->operation, decision->revision);
     bool wait_for_authoring = false;
     if (!hosting && !draining_deferred && !pending_baseline && deferred.empty()) {
         if (auto* decision = std::get_if<Decision>(&message.payload); decision && decision->accepted() && !replica.decisions.contains(decision->change->operation)) wait_for_authoring = !authoring_ready();
@@ -1339,6 +1344,39 @@ bool Controller::return_editor(std::string& error)
     auto& i = *impl_;
     if (!i.hosting || i.view.phase != Phase::Playing) { error = "Only the host can return the active playtest to editing."; return false; }
     return i.queue_local(w::Control{w::ControlKind::HostReturnEditor, i.view.playtest_round, i.view.playtest_revision, false, 0}, 64, error);
+}
+
+Accounting Controller::accounting() const {
+    const auto& i = *impl_; Accounting a; a.transport = i.session.retained_accounting();
+    const auto& state = i.state();
+    a.history = state.history.size(); a.decisions = state.decisions.size(); a.decision_order = state.decision_order.size(); a.state_estimate = editor::bytes(state);
+    const auto& coordinator = i.coordinator.state();
+    a.coordinator_history = coordinator.history.size(); a.coordinator_decisions = coordinator.decisions.size(); a.coordinator_estimate = editor::bytes(coordinator);
+    a.replica_history = i.replica.history.size(); a.replica_decisions = i.replica.decisions.size(); a.replica_estimate = editor::bytes(i.replica);
+    a.tombstones = state.document.tombstones.size(); a.retired_sequences = state.retired_sequences.size(); a.truncated_authors = state.history_truncated.size(); a.leases = i.coordinator.leases().size();
+    a.channels = i.channels.size(); a.hashes = i.hashes.size(); a.local_leases = i.view.local_leases.size();
+    for (const auto& [revision, hash] : i.hashes) { (void)revision; a.revision_hash_capacity += hash.capacity(); }
+    a.input_count = i.input.size(); a.input_bytes = i.input_bytes; a.local_count = i.local.size(); a.local_bytes = i.local_bytes; a.output_bytes = i.output_bytes;
+    for (const auto& [peer, channel] : i.channels) {
+        (void)peer; a.completed_transfers += channel.completed.size(); a.lease_decisions += channel.lease_decisions.size(); a.released_scope_fences += channel.released_lease_scopes.size();
+        for (const auto& [serial, reply] : channel.lease_decisions) { (void)serial; a.lease_reply_capacity += reply.first.result.leases.capacity() * sizeof(editor::Lease) + reply.first.result.reason.capacity(); }
+        for (const auto& [serial, completed] : channel.completed) { (void)serial; a.completed_hash_capacity += completed.second.hash.capacity(); }
+        a.queued_packets += channel.priority.size(); a.receiving += channel.receiver.active() ? 1 : 0;
+        a.receiver_data_size += channel.receiver.retained_data_size(); a.receiver_data_capacity += channel.receiver.retained_data_capacity(); a.receiver_chunk_capacity += channel.receiver.retained_chunk_capacity();
+        for (const auto& queued : channel.ordered) {
+            if (const auto* transfer = std::get_if<Impl::Transfer>(&queued)) {
+                ++a.queued_transfers;
+                if (transfer->bytes) { a.transfer_reference_size += transfer->bytes->size(); a.transfer_reference_capacity += transfer->bytes->capacity(); }
+            } else ++a.queued_packets;
+        }
+    }
+    a.pending_leases = i.pending_leases.size(); a.release_fences = i.release_fences.size(); a.lease_retirements = i.lease_retirements.size(); a.lease_stamps = i.lease_grant_revisions.size();
+    a.deferred_count = i.deferred.size(); a.deferred_bytes = i.deferred_bytes; a.held_count = i.held_requests.size(); a.held_bytes = i.held_request_bytes;
+    if (i.resources) { a.resource_size = i.resources->size(); a.resource_capacity = i.resources->capacity(); }
+    if (i.baseline_cache) { a.baseline_size = i.baseline_cache->size(); a.baseline_capacity = i.baseline_cache->capacity(); }
+    if (i.staged && i.staged->bytes) { a.staged_size += i.staged->bytes->size(); a.staged_capacity += i.staged->bytes->capacity(); }
+    if (i.staged && i.staged->broadcast_bytes) { a.staged_size += i.staged->broadcast_bytes->size(); a.staged_capacity += i.staged->broadcast_bytes->capacity(); }
+    return a;
 }
 
 SavedCoverage Controller::saved_coverage() const

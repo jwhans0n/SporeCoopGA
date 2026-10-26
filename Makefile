@@ -81,6 +81,8 @@ test-editor:
 	@mkdir -p $(B)/host
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop tests/editor_metrics_tests.cpp -o $(B)/host/editor_metrics_tests
 	$(B)/host/editor_metrics_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop tests/editor_stage_metrics_tests.cpp -o $(B)/host/editor_stage_metrics_tests
+	$(B)/host/editor_stage_metrics_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include tests/editor_native_bindings_tests.cpp -o $(B)/host/editor_native_bindings_tests
 	$(B)/host/editor_native_bindings_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include $(EDITOR_WIRE_SRC) tests/editor_native_scale_tests.cpp -o $(B)/host/editor_native_scale_tests
@@ -99,12 +101,26 @@ test-editor:
 	$(B)/host/editor_project_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(EDITOR_SESSION_SRC) tests/editor_session_tests.cpp -o $(B)/host/editor_session_tests
 	$(B)/host/editor_session_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(EDITOR_SESSION_SRC) tests/editor_accounting_tests.cpp -o $(B)/host/editor_accounting_tests
+	$(B)/host/editor_accounting_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(SESSION_TRANSPORT_SRC) tests/session_transport_tests.cpp -o $(B)/host/session_transport_tests
 	$(B)/host/session_transport_tests
 
 test-editor-windows: $(B)/host/frame_metrics_tests.exe $(B)/host/editor_metrics_tests.exe $(B)/host/editor_native_bindings_tests.exe $(B)/host/editor_native_scale_tests.exe $(B)/host/editor_reopen_identity_tests.exe $(B)/host/editor_binary_delta_tests.exe $(B)/host/editor_document_tests.exe $(B)/host/editor_store_tests.exe $(B)/host/editor_protocol_tests.exe $(B)/host/editor_project_tests.exe $(B)/host/editor_session_tests.exe $(B)/host/session_transport_tests.exe $(B)/host/editor_native_save_tests.exe $(B)/host/adventure_editor_preview_tests.exe $(B)/host/editor_runtime_windows_tests.exe $(B)/host/adventure_assets_native_tests.exe
 
 test-editor-windows: $(B)/host/editor_native_cancellation_tests.exe
+
+test-editor-windows: $(B)/host/editor_stage_metrics_tests.exe
+
+test-editor-windows: $(B)/host/editor_accounting_tests.exe
+
+$(B)/host/editor_accounting_tests.exe: $(EDITOR_SESSION_SRC) tests/editor_accounting_tests.cpp mods/coop/editor_session.h mods/coop/net/session.h mods/coop/net/connection.h mods/coop/net/editor_protocol.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $(EDITOR_SESSION_SRC) tests/editor_accounting_tests.cpp -o $@ -lws2_32
+
+$(B)/host/editor_stage_metrics_tests.exe: tests/editor_stage_metrics_tests.cpp mods/coop/editor_stage_metrics.h mods/coop/net/editor_document.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_stage_metrics_tests.cpp -o $@
 
 $(B)/host/editor_native_cancellation_tests.exe: tests/editor_native_cancellation_windows_tests.cpp mods/coop/editor_native.cpp mods/coop/editor_native.h mods/coop/editor_native_scale.h mods/coop/editor_native_bindings.h mods/coop/editor_native_tools.h mods/coop/net/dbpf.cpp $(ADVENTURE_ABI_HEADERS)
 	@mkdir -p $(B)/host

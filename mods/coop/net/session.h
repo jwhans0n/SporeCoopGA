@@ -56,6 +56,16 @@ public:
     // Process-local transport identity. Never sent on the wire or reused after
     // a successful Host/Join or an active Leave, including failed restarts.
     uint64_t transport_generation() const { return transport_generation_; }
+    ConnectionAccounting retained_accounting() const {
+        ConnectionAccounting a;
+        for (const auto& peer : peers_) {
+            const auto p = peer->conn.retained_accounting();
+            a.connections += p.connections; a.sent_packets += p.sent_packets; a.sent_id_capacity += p.sent_id_capacity;
+            a.reliable_out += p.reliable_out; a.reliable_in += p.reliable_in; a.unreliable_out += p.unreliable_out;
+            a.unreliable_slots_capacity += p.unreliable_slots_capacity; a.payload_size += p.payload_size; a.payload_capacity += p.payload_capacity;
+        }
+        return a;
+    }
     Role role() const { return role_; }
     uint8_t my_id() const { return my_id_; }
     bool connected() const { return role_ == Role::Host || (role_ == Role::Client && welcomed_); }

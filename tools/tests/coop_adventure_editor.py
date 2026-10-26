@@ -121,9 +121,21 @@ class EditorPair:
             if self.args.fixture == 'blank':
                 if not host.caption('Choose a Planet'):
                     if not host.control(0x07A7F798):
-                        if not host.control(0x03685038):
-                            host.press('Create')
-                        host.wait('ordinary Create radial', lambda: host.control(0x07A7B140))
+                        next_create = 0.
+                        def creator_ready():
+                            nonlocal next_create
+                            if host.control(0x07A7B140):
+                                return True
+                            if host.caption('letterbox_top'):
+                                host.call('key esc')
+                                next_create = time.monotonic() + .75
+                            elif time.monotonic() >= next_create and host.caption('Create'):
+                                # Cold Galaxy mode precedes its usable menu.
+                                # Retry only until the radial actually opens.
+                                host.press('Create')
+                                next_create = time.monotonic() + 1.
+                            return False
+                        host.wait('ordinary Create radial', creator_ready)
                         host.click(553,522)
                         host.wait('native adventure creator option', lambda: host.control(0x07A7F798))
                     next_click = 0.
@@ -314,10 +326,13 @@ class EditorPair:
         finally:
             game.call('key ctrl up')
 
-    def modified_wheel(self, game, point, notches, shift=False, ctrl=False, left_held=False):
+    def modified_wheel(self, game, point, notches, shift=False, ctrl=False, left_held=False, raw_delta=None):
         """Deliver ordinary Windows wheel modifier bits missing from SporeKit0.3.4."""
         if not isinstance(notches,int) or not 1 <= abs(notches) <= 4:
             raise FixtureError('Modified wheel input is limited to one through four notches')
+        if raw_delta is not None and (type(raw_delta) is not int or
+                raw_delta not in (-240,-120,-60,60,120,240) or abs(notches) > 2 or raw_delta*notches <= 0):
+            raise FixtureError('Raw wheel input requires at most two matching signed 60, 120 or 240-unit events')
         self.verify(game)
         info=game.call('info')
         match=re.search(r'\bhwnd=([0-9A-Fa-f]+)',info)
@@ -356,7 +371,7 @@ class EditorPair:
             # user's real mouse or invoking native tool actions directly.
             mouse_message(0x0200,modifiers,client_point)
             game.call('wait.frames 3 15000')
-            delta=120 if notches>0 else -120
+            delta=raw_delta if raw_delta is not None else (120 if notches>0 else -120)
             for _ in range(abs(notches)):
                 wparam=modifiers|((delta&0xFFFF)<<16)
                 lparam=(screen.x&0xFFFF)|((screen.y&0xFFFF)<<16)
