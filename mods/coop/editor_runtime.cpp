@@ -88,6 +88,11 @@ struct PreviewReturnScope {
     editor::Revision revision = 0;
 };
 std::optional<PreviewReturnScope> pending_preview_return;
+struct PreviewSelection {
+    PreviewReturnScope scope;
+    std::optional<editor::ObjectId> selected;
+};
+std::optional<PreviewSelection> preview_selection;
 std::vector<editor::Scope> requested_scopes;
 
 void tell(const std::string& text) {
@@ -101,6 +106,13 @@ bool session_active() {
     return phase != Phase::Idle && phase != Phase::Disconnected && phase != Phase::Offered;
 }
 bool host() { return C.session && C.session->role() == net::Role::Host; }
+bool same_preview_context(const PreviewReturnScope& scope) {
+    if (!controller) return false;
+    const auto& view = controller->view();
+    return view.context.project == scope.project && view.context.epoch == scope.epoch &&
+        view.playtest_round == scope.round && view.playtest_revision == scope.revision &&
+        controller->state().document.revision == scope.revision;
+}
 uint64_t now_ms() { return uint64_t(std::max(0.0, H->time_seconds()) * 1000); }
 void u64(net::Writer& w, uint64_t v) { w.u32(uint32_t(v)); w.u32(uint32_t(v >> 32)); }
 uint64_t u64(net::Reader& r) { uint64_t lo = r.u32(); return lo | (uint64_t(r.u32()) << 32); }
@@ -784,6 +796,7 @@ void undo_redo(bool redo) {
     if (!controller->submit(std::move(r), error)) { awaiting_operation.reset(); tell(error); }
 }
 void close_session(bool preserve_offer = false) {
+    preview_selection.reset();
     if (!closing) { closing = true; close_restored = false; close_preserve_offer = preserve_offer; }
     close_preserve_offer |= preserve_offer || controller->view().phase == Phase::Offered;
     // An accepted edit remains owned until active replicas have applied and
@@ -838,9 +851,17 @@ bool return_ready(const editor::wire::Control& control) {
     }
     return !return_error.empty() || editor_native::state().ready;
 }
-bool finish_return(std::string& error) {
+bool finish_return(std::string& error, bool restore_selection = false) {
     if (!return_error.empty()) { error = return_error; return false; }
+    std::optional<editor::ObjectId> selected;
+    if (restore_selection && !closing && !end_after_return && !disconnected_return && preview_selection &&
+        adventure_native::editor_preview() && same_preview_context(preview_selection->scope)) selected = preview_selection->selected;
     if (!editor_native::restore(current_native, error)) return false;
+    // Native Stop clears the editor selection. Preserve the independent local
+    // choice made immediately before this round, not a committed snapshot's UI.
+    if (selected && controller->state().document.placements.contains(*selected) &&
+        !editor_native::select_placement(*selected, error)) return false;
+    preview_selection.reset();
     adventure::reset();
     adventure_native::clear_editor_preview();
     native_playtesting = false; return_started = false; return_error.clear();
@@ -919,9 +940,7 @@ bool current_preview_return(const PreviewReturnScope& request) {
     if (!controller || !adventure_native::editor_preview()) return false;
     const auto& view = controller->view();
     const bool returning = view.phase == Phase::Preparing || view.phase == Phase::Playing || view.phase == Phase::Returning;
-    return returning && view.context.project == request.project && view.context.epoch == request.epoch &&
-        view.playtest_round == request.round && view.playtest_revision == request.revision &&
-        controller->state().document.revision == request.revision;
+    return returning && same_preview_context(request);
 }
 void execute(Action action) {
     if (closing && action != Action::End) return;
@@ -950,6 +969,7 @@ void execute(Action action) {
         break;
     case Action::Ready: case Action::Unready: if (!controller->ready_playtest(action == Action::Ready, error)) tell(error); break;
     case Action::End:
+        preview_selection.reset();
         if (!host() && controller->view().phase == Phase::Preparing && !adventure_native::editor_preview()) {
             // No GA attempt exists before HostBegin. Leave the editor directly;
             // its scoped Leave cancels the host's preparation and offers rejoin.
@@ -992,6 +1012,9 @@ void SK_CDECL drain(void*) {
     try {
         submit_pending_gesture();
         controller->tick(now_ms());
+        if (preview_selection && (!same_preview_context(preview_selection->scope) ||
+            (controller->view().phase != Phase::Preparing && controller->view().phase != Phase::Playing &&
+             controller->view().phase != Phase::Returning))) preview_selection.reset();
         while (!adventure_messages.empty()) {
             auto& message = adventure_messages.front(); const auto& v = controller->view();
             bool matching = message.context.project == v.context.project && message.context.epoch == v.context.epoch && message.round == v.playtest_round;
@@ -1079,7 +1102,10 @@ void action(Action value) {
             const auto& view = controller->view();
             request_preview_return({view.context.project, view.context.epoch, view.playtest_round, view.playtest_revision});
         }
-    } else if (actions.size() < 16) { actions.push_back(value); schedule(); }
+    } else if (actions.size() < 16) {
+        if (value == Action::End || value == Action::Recover) preview_selection.reset();
+        actions.push_back(value); schedule();
+    }
 }
 } // namespace
 
@@ -1178,8 +1204,13 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     callbacks.control = [](const editor::wire::Control& control, std::string& error) {
         using K = editor::wire::ControlKind;
         if (control.kind == K::HostBeginPlaytest) {
+            preview_selection.reset();
             if (!check_native_integrity(error)) return false;
             const auto context = controller->view().context;
+            PreviewSelection local{{context.project, context.epoch, control.serial, control.revision}, std::nullopt};
+            const auto selected = editor_native::state().selected;
+            if (selected.size() > 1) { error = "The native preview supports one local placement selection"; return false; }
+            if (!selected.empty() && controller->state().document.placements.contains(selected.front())) local.selected = selected.front();
             adventure_native::EditorPreview preview;
             preview.project = context.project; preview.epoch = context.epoch; preview.round = control.serial; preview.revision = control.revision;
             preview.adventure = resources.root;
@@ -1199,12 +1230,13 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
             return_started = false; return_error.clear();
             const auto authored_avatar = preview.authored_avatar;
             if (!adventure_native::set_editor_preview(std::move(preview), error)) return false;
+            preview_selection = std::move(local);
             if (host() && !adventure::request_play(resources.root, authored_avatar)) {
-                error = adventure::status(); adventure_native::clear_editor_preview(); return false;
+                error = adventure::status(); preview_selection.reset(); adventure_native::clear_editor_preview(); return false;
             }
         }
         if (control.kind == K::HostReturnEditor || control.kind == K::HostCancelPlaytest) {
-            if (!finish_return(error)) return false;
+            if (!finish_return(error, true)) return false;
         }
         if (C.open_panel) C.open_panel();
         return true;
@@ -1270,7 +1302,7 @@ void session_ended() {
     refresh();
 }
 void mode_changed(uint32_t, uint32_t) { schedule(); }
-void shutdown() { if (controller) { controller->end(); controller.reset(); } store.close(); adventure_native::clear_editor_preview(); editor_native_save::shutdown(); editor_native::shutdown(); actions.clear(); pending_preview_return.reset(); queued = false; closing = native_attached = close_restored = close_preserve_offer = false; H = nullptr; }
+void shutdown() { if (controller) { controller->end(); controller.reset(); } store.close(); adventure_native::clear_editor_preview(); editor_native_save::shutdown(); editor_native::shutdown(); actions.clear(); pending_preview_return.reset(); preview_selection.reset(); queued = false; closing = native_attached = close_restored = close_preserve_offer = false; H = nullptr; }
 bool active() { return cached.active; }
 bool authoring() {
     if (!controller || (controller->view().phase == Phase::Playing && native_playtesting)) return false;

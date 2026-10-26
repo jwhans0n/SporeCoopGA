@@ -70,10 +70,12 @@ struct Native {
     std::optional<adventure_native::EditorPreview> preview;
     bool active=false,cleanup=false,return_ready=true,save_busy=false,rebaseline_ready=true;
     bool silently_refuse_apply=false,partially_apply=false;
+    bool bump_generation_on_stop=false;
     unsigned cancels=0,stops=0,restores=0,ga_received=0,ga_delivered=0;
     unsigned save_as_calls=0,save_calls=0;
     unsigned rebaselines=0;
     unsigned structural_applies=0;uint64_t structural_frame=0;
+    unsigned selections=0;
     std::optional<std::vector<uint8_t>> persisted_bytes;
 };
 std::array<Native,2> native;
@@ -193,7 +195,7 @@ bool apply(const editor::Document& doc,const editor::Change& change,const Snapsh
     n.snapshot.document=doc;if(n.partially_apply&&!n.snapshot.document.placements.empty())n.snapshot.document.placements.begin()->second.position.x+=1;
     n.snapshot.bytes=body(n.snapshot.document,artifact&&!artifact->bytes.empty()?artifact->bytes.front():n.snapshot.bytes.empty()?0xA5:n.snapshot.bytes.front());bind_native(n);return true;}
 bool enter(const editor::ResourceKey& key,std::string&){auto& n=native[side];n.state.editing=n.state.ready=true;n.snapshot.source=key;return true;}
-bool select_placement(editor::ObjectId id,std::string&){CHECK(!dispatching);auto& n=native[side];if(!n.snapshot.document.placements.contains(id))return false;n.state.selected={id};return true;}
+bool select_placement(editor::ObjectId id,std::string&){CHECK(!dispatching);auto& n=native[side];if(!n.state.ready||n.state.gesture||!n.snapshot.document.placements.contains(id))return false;n.state.selected={id};++n.selections;return true;}
 bool selection_pose(editor::ObjectId& id,editor::ObjectId& act,editor::Pose& pose){CHECK(!dispatching);auto& n=native[side];
     if(!n.state.ready||!n.state.gesture||n.state.selected.empty())return false;auto found=n.snapshot.document.placements.find(n.state.selected.front());
     if(found==n.snapshot.document.placements.end())return false;id=found->first;act=found->second.act_id;pose={found->second.position,found->second.rotation,found->second.scale};return true;}
@@ -206,7 +208,7 @@ bool save_as(std::string&){++native[side].save_as_calls;native[side].save_busy=t
 bool save(std::string&){++native[side].save_calls;native[side].save_busy=true;return true;}
 bool read_saved(const editor::ResourceKey&,std::vector<uint8_t>& bytes,std::string&){CHECK(!dispatching);bytes=native[side].persisted_bytes.value_or(native[side].snapshot.bytes);return true;}
 bool playtest(bool on,std::string&){CHECK(!dispatching);auto& n=native[side];if(on){n.state.playtesting=true;n.state.editing=n.state.ready=false;}
-    else{CHECK(!n.cleanup);++n.stops;n.state.playtesting=false;n.state.editing=true;n.state.ready=n.return_ready;}return true;}
+    else{CHECK(!n.cleanup);++n.stops;n.state.playtesting=false;n.state.editing=true;n.state.ready=n.return_ready;n.state.selected.clear();if(n.bump_generation_on_stop)++n.state.generation;}return true;}
 }
 namespace adventure_assets {bool register_records(const std::vector<dbpf::Record>&,std::string&){CHECK(!dispatching);return true;}std::string status(){return "fixture registered=0";}}
 namespace adventure_collect {
@@ -897,6 +899,74 @@ static void test_lease_diagnostic_is_bounded_and_read_only() {
     CHECK(runtime_host::controller->state()==state&&runtime_guest::controller->state()==guest_state&&runtime_host::store.snapshot()==checkpoint);
     CHECK(native[0].snapshot.bytes==bytes&&native[0].restores==restores);
 }
+static void test_preview_restores_latest_independent_selection_before_ack() {
+    Party party;std::string error;capture_local_create();++game_frame;same_frame_drain(0);
+    CHECK(spin([]{return runtime_guest::controller->state().document.revision==1&&runtime_host::controller->settled()&&!runtime_host::awaiting_operation;}));
+    editor::ObjectId created{};for(const auto& [id,p]:runtime_host::controller->state().document.placements){(void)p;if(id!=placement)created=id;}
+    CHECK(created.id);
+    // These independent choices happen after the last authored gesture. They
+    // cannot be recovered from the committed resource or another peer's state.
+    side=0;CHECK(editor_native::select_placement(placement,error));
+    side=1;CHECK(editor_native::select_placement(created,error));
+    const auto selected0=native[0].selections,selected1=native[1].selections;
+    const auto canonical=runtime_host::controller->state().document;
+    const auto bytes0=runtime_host::current_native.bytes,bytes1=runtime_guest::current_native.bytes;
+    native[0].bump_generation_on_stop=native[1].bump_generation_on_stop=true;
+    auto launch=[] {
+        std::string error;side=0;CHECK(runtime_host::controller->prepare_playtest(error));
+        CHECK(spin([]{return runtime_guest::controller->view().phase==es::Phase::Preparing;}));
+        side=1;CHECK(runtime_guest::controller->ready_playtest(true,error));
+        side=0;CHECK(runtime_host::controller->ready_playtest(true,error));
+        CHECK(spin([]{return runtime_host::controller->view().phase==es::Phase::Playing&&runtime_guest::controller->view().phase==es::Phase::Playing&&native[0].state.playtesting&&native[1].state.playtesting;}));
+    };
+    auto settle_cleanup=[] {
+        for(unsigned p=0;p<2;++p)if(native[p].cleanup)complete_cleanup(p);
+    };
+    launch();
+    CHECK(runtime_host::preview_selection&&runtime_host::preview_selection->selected==placement);
+    CHECK(runtime_guest::preview_selection&&runtime_guest::preview_selection->selected==created);
+    const auto old_host=native[0].preview->return_editor,old_guest=native[1].preview->return_editor;
+    // A delayed guest editor load must hold the group ACK. Its selected marker
+    // is restored only after its own ready gate, even across native generation.
+    native[1].return_ready=false;side=0;old_host();
+    CHECK(spin([&]{settle_cleanup();return native[0].stops==1&&native[1].stops==1;}));
+    CHECK(runtime_host::controller->view().phase==es::Phase::Returning&&runtime_guest::controller->view().phase==es::Phase::Returning);
+    CHECK(native[0].state.selected==std::vector<editor::ObjectId>{placement});
+    CHECK(native[1].state.selected.empty()&&native[0].selections==selected0+1&&native[1].selections==selected1);
+    native[1].state.ready=true;
+    CHECK(spin([]{return runtime_host::controller->view().phase==es::Phase::Ready&&runtime_guest::controller->view().phase==es::Phase::Ready;}));
+    CHECK(native[1].state.selected==std::vector<editor::ObjectId>{created});
+    CHECK(native[0].selections==selected0+1&&native[1].selections==selected1+1);
+    CHECK(!runtime_host::preview_selection&&!runtime_guest::preview_selection);
+    CHECK(runtime_host::native_generation==native[0].state.generation&&runtime_guest::native_generation==native[1].state.generation);
+    CHECK(native[0].snapshot.bytes==bytes0&&native[1].snapshot.bytes==bytes1);
+    CHECK(runtime_host::controller->state().document==canonical&&runtime_guest::controller->state().document==canonical);
+    native[1].return_ready=true;
+    side=0;old_host();side=1;old_guest();for(unsigned i=0;i<3;++i)step();
+    CHECK(native[0].selections==selected0+1&&native[1].selections==selected1+1);
+    side=0;CHECK(editor_native::select_placement(created,error));side=1;CHECK(editor_native::select_placement(placement,error));
+    const auto second0=native[0].selections,second1=native[1].selections;
+    launch();side=0;old_host();side=1;old_guest();step();
+    CHECK(runtime_host::controller->view().phase==es::Phase::Playing&&runtime_guest::controller->view().phase==es::Phase::Playing);
+    CHECK(native[0].selections==second0&&native[1].selections==second1);
+    // An expired logical editor context cannot restore its selection into the
+    // current round. The other peer still restores its own current selection.
+    CHECK(runtime_host::preview_selection);++runtime_host::preview_selection->scope.epoch;
+    side=0;native[0].preview->return_editor();
+    CHECK(spin([&]{settle_cleanup();return runtime_host::controller->view().phase==es::Phase::Ready&&runtime_guest::controller->view().phase==es::Phase::Ready;}));
+    CHECK(native[0].state.selected.empty()&&native[0].selections==second0);
+    CHECK(native[1].state.selected==std::vector<editor::ObjectId>{placement}&&native[1].selections==second1+1);
+    CHECK(!runtime_host::preview_selection&&!runtime_guest::preview_selection);
+    CHECK(!runtime_host::frozen&&!runtime_guest::frozen);
+    side=0;CHECK(editor_native::select_placement(created,error));
+    const auto cancelled0=native[0].selections,cancelled1=native[1].selections;
+    launch();side=0;CHECK(runtime_host::controller->cancel_playtest(error));
+    CHECK(spin([&]{settle_cleanup();return runtime_host::controller->view().phase==es::Phase::Ready&&runtime_guest::controller->view().phase==es::Phase::Ready;}));
+    CHECK(native[0].state.selected==std::vector<editor::ObjectId>{created});
+    CHECK(native[1].state.selected==std::vector<editor::ObjectId>{placement});
+    CHECK(native[0].selections==cancelled0+1&&native[1].selections==cancelled1+1);
+    CHECK(!runtime_host::preview_selection&&!runtime_guest::preview_selection);
+}
 static void test_conflicting_native_history_releases_document_ownership() {
     Party party;std::string error;capture_local_create();++game_frame;same_frame_drain(0);
     CHECK(spin([]{return runtime_host::controller->state().document.revision==1&&runtime_guest::controller->state().document.revision==1&&!runtime_host::awaiting_operation;}));
@@ -971,4 +1041,4 @@ static void test_conflicting_native_history_releases_document_ownership() {
     CHECK(spin([&]{return std::any_of(host_controller.view().local_leases.begin(),host_controller.view().local_leases.end(),[&](const auto& held){return held.scope==document_scope&&held.owner==host_controller.view().local&&held.expires>clock_ms;});}));
     CHECK(!pending(0)&&!pending(1)&&!awaiting(0)&&!awaiting(1));
 }
-int main(int argc,char** argv){const bool quick=argc==2&&std::string(argv[1])=="--quick";if(argc>1&&!quick)return 2;test_begin_ga_batch_and_end_returning();test_history_entry_rechecks_actual_native_holds();test_preview_return_callbacks_are_scoped_to_one_round();test_lease_diagnostic_is_bounded_and_read_only();test_conflicting_native_history_releases_document_ownership();test_guest_end_during_unlaunched_preparation_is_retryable();test_drag_preview_bridge_never_authors_remote_state();test_saved_resources_then_next_commit();test_guest_recovery_requires_owned_native_copy();test_pending_undo_keeps_ownership_across_foreign_commit();test_pending_artifacts_obey_capacity_and_preserve_durable_base();test_missing_authored_captain_blocks_prepare();test_uncertain_maintenance_freezes_until_reopen();test_end_waits_for_native_settle_and_retires_once();test_end_does_not_touch_replaced_native_context();test_idle_controller_keeps_owned_native_cleanup_isolated();test_delayed_gesture_cannot_restore_another_editor();test_host_end_delivers_accepted_structural_checkpoint();test_host_end_does_not_wait_for_departed_replica();test_host_end_waits_for_applied_same_revision_save();test_native_frozen_guest_does_not_block_host_close();test_native_recreation_waits_for_actual_next_frame();test_held_native_gesture_is_cancelled_by_end();test_recovery_retires_held_and_delayed_native_captures();test_recovery_wait_does_not_restore_replaced_context();test_native_save_enrichment_survives_edits_save_and_recovery();test_invalid_completed_save_does_not_replace_live_draft();test_opaque_gesture_changes_freeze_before_empty_semantic_return();test_uncaptured_opaque_changes_cannot_save_or_playtest();test_host_apply_rejects_uncaptured_opaque_changes();test_host_native_success_without_projection_cannot_commit();test_guest_native_success_without_projection_freezes_only_replica();test_held_native_gesture_is_fenced_by_generation_or_disconnect();test_held_move_accepts_disjoint_remote_revision();if(!quick)test_large_closure_retained_once_and_delta_recovery();std::printf("editor runtime: %u checks passed\n",checks);}
+int main(int argc,char** argv){const bool quick=argc==2&&std::string(argv[1])=="--quick";if(argc>1&&!quick)return 2;test_begin_ga_batch_and_end_returning();test_history_entry_rechecks_actual_native_holds();test_preview_return_callbacks_are_scoped_to_one_round();test_preview_restores_latest_independent_selection_before_ack();test_lease_diagnostic_is_bounded_and_read_only();test_conflicting_native_history_releases_document_ownership();test_guest_end_during_unlaunched_preparation_is_retryable();test_drag_preview_bridge_never_authors_remote_state();test_saved_resources_then_next_commit();test_guest_recovery_requires_owned_native_copy();test_pending_undo_keeps_ownership_across_foreign_commit();test_pending_artifacts_obey_capacity_and_preserve_durable_base();test_missing_authored_captain_blocks_prepare();test_uncertain_maintenance_freezes_until_reopen();test_end_waits_for_native_settle_and_retires_once();test_end_does_not_touch_replaced_native_context();test_idle_controller_keeps_owned_native_cleanup_isolated();test_delayed_gesture_cannot_restore_another_editor();test_host_end_delivers_accepted_structural_checkpoint();test_host_end_does_not_wait_for_departed_replica();test_host_end_waits_for_applied_same_revision_save();test_native_frozen_guest_does_not_block_host_close();test_native_recreation_waits_for_actual_next_frame();test_held_native_gesture_is_cancelled_by_end();test_recovery_retires_held_and_delayed_native_captures();test_recovery_wait_does_not_restore_replaced_context();test_native_save_enrichment_survives_edits_save_and_recovery();test_invalid_completed_save_does_not_replace_live_draft();test_opaque_gesture_changes_freeze_before_empty_semantic_return();test_uncaptured_opaque_changes_cannot_save_or_playtest();test_host_apply_rejects_uncaptured_opaque_changes();test_host_native_success_without_projection_cannot_commit();test_guest_native_success_without_projection_freezes_only_replica();test_held_native_gesture_is_fenced_by_generation_or_disconnect();test_held_move_accepts_disjoint_remote_revision();if(!quick)test_large_closure_retained_once_and_delta_recovery();std::printf("editor runtime: %u checks passed\n",checks);}
