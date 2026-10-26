@@ -198,7 +198,22 @@ def machine():
     return data
 
 
-def sessions(report):
+def process_roster(hardware, measured, diagnostic=False):
+    running = hardware.get('spore_pids')
+    if (not isinstance(running, list) or not running or
+            any(type(pid) is not int or pid <= 0 for pid in running) or len(set(running)) != len(running)):
+        raise FixtureError('The complete live Spore process roster is invalid')
+    if any(type(pid) is not int or pid <= 0 for pid in measured) or len(set(measured)) != len(measured):
+        raise FixtureError('Measured Spore process identities are invalid')
+    if not set(measured).issubset(running):
+        raise FixtureError('A measured process is missing from the live Spore roster')
+    complete = set(measured) == set(running)
+    if not complete and not diagnostic:
+        raise FixtureError('Large-editor measurement must cover every live Spore process; use --diagnostic with unrelated games present')
+    return complete
+
+
+def sessions(report, diagnostic=False):
     if report.get('schema') != 2 or not re.fullmatch(r'[0-9a-f]{64}', report.get('expected_dll_sha256', '')) or not report.get('machine') or not report.get('sporekit_ini_sha256'):
         raise FixtureError('Use current owned-process samples with recorded native configuration')
     seconds = report.get('seconds_requested', 0)
@@ -222,6 +237,7 @@ def sessions(report):
         if not row.get('source_fence', {}).get('verified'):
             raise FixtureError('A sample cannot rule out temporary non-Present frame sources')
         result[instance] = row
+    process_roster(report['machine'], [row['pid'] for row in rows], diagnostic)
     overlap = min(row['sample_stop'] for row in rows) - max(row['sample_start'] for row in rows)
     if overlap < seconds * .9:
         raise FixtureError('Peer recording intervals did not cover the same workload')
@@ -254,7 +270,10 @@ def compare(args):
         raise FixtureError('Both reports must be successful samples of the stated kind')
     if baseline['fixture'] != shared['fixture'] or baseline['hardware'] != shared['hardware'] or baseline['minimum_placements'] != shared['minimum_placements'] or baseline.get('machine') != shared.get('machine') or baseline.get('expected_dll_sha256') != shared.get('expected_dll_sha256') or baseline.get('seconds_requested') != shared.get('seconds_requested') or baseline.get('sporekit_ini_sha256') != shared.get('sporekit_ini_sha256'):
         raise FixtureError('Fixture, hardware or requested fixture size differs')
-    original, current = sessions(baseline), sessions(shared)
+    diagnostic = getattr(args, 'diagnostic', False)
+    if not diagnostic and (baseline.get('diagnostic') or shared.get('diagnostic')):
+        raise FixtureError('Diagnostic samples cannot establish the large-editor gate; use --diagnostic for comparison')
+    original, current = sessions(baseline, diagnostic), sessions(shared, diagnostic)
     if original.keys() != current.keys():
         raise FixtureError('Process count or instance roster differs')
     comparisons = []
@@ -283,6 +302,7 @@ def main():
     sub = p.add_subparsers(dest='action', required=True)
     capture = sub.add_parser('sample')
     capture.add_argument('--metadata', type=Path, required=True)
+    capture.add_argument('--diagnostic', action='store_true', help='Allow unrelated Spore games; this recording cannot establish large-editor acceptance')
     capture.add_argument('--execute', action='store_true', help='Explicitly authorize metrics recording in verified owned games')
     capture.add_argument('--expected-dll-sha256', required=True)
     capture.add_argument('--instances', nargs='+', type=int, required=True)
@@ -315,7 +335,8 @@ def main():
                 if settings.getint('sporekit', 'log_level', fallback=0) > 1:
                     raise FixtureError('Frame-source coverage requires debug/info logging in the cold-start lab configuration')
                 hardware = machine()
-                result.update(schema=2, kind=args.kind, fixture=args.fixture, hardware=args.hardware, machine=hardware,
+                process_roster(hardware, [ownership.records[i]['pid'] for i in args.instances], args.diagnostic)
+                result.update(schema=2, diagnostic=args.diagnostic, kind=args.kind, fixture=args.fixture, hardware=args.hardware, machine=hardware,
                     expected_dll_sha256=args.expected_dll_sha256, sporekit_ini_sha256=ini_hash,
                     seconds_requested=args.seconds, minimum_placements=args.minimum_placements)
                 barrier = threading.Barrier(len(args.instances))
@@ -324,7 +345,7 @@ def main():
                 ownership.verify_windows()
                 if hardware != machine() or hashlib.sha256(ini.read_bytes()).hexdigest() != ini_hash:
                     raise FixtureError('Hardware/driver identity or total Spore process roster changed during measurement')
-                sessions(result)
+                sessions(result, args.diagnostic)
             finally:
                 ownership.close()
             result['pass'] = True

@@ -67,6 +67,26 @@ class ComparisonTests(unittest.TestCase):
             current = report('shared'); edit(current)
             with self.assertRaises(perf.FixtureError): self.run_compare(report(), current)
 
+    def test_extra_live_games_require_explicit_diagnostic(self):
+        baseline, current = report(), report('shared')
+        for value in (baseline, current): value['machine']['spore_pids'].append(9999)
+        with self.assertRaises(perf.FixtureError): self.run_compare(baseline, current)
+        result = self.run_compare(baseline, current, True)
+        self.assertTrue(result['pass']); self.assertFalse(result['large_editor_gate'])
+        self.assertFalse(perf.process_roster(baseline['machine'], [1002, 1003], True))
+        with self.assertRaises(perf.FixtureError): perf.process_roster(baseline['machine'], [1002, 1003])
+
+    def test_missing_or_malformed_live_roster_is_never_diagnostic_evidence(self):
+        for running in ([1002], [1002, 1002, 1003], [1002, True], [1002, 1003.0], []):
+            with self.assertRaises(perf.FixtureError): perf.process_roster({'spore_pids': running}, [1002, 1003], True)
+
+    def test_diagnostic_capture_cannot_be_promoted_to_acceptance(self):
+        baseline, current = report(), report('shared')
+        baseline['diagnostic'] = current['diagnostic'] = True
+        with self.assertRaises(perf.FixtureError): self.run_compare(baseline, current)
+        result = self.run_compare(baseline, current, True)
+        self.assertTrue(result['pass']); self.assertFalse(result['large_editor_gate'])
+
     def test_invalid_metrics_cannot_create_a_pass(self):
         for name, value in (('median_fps', 0), ('median_fps', float('nan')), ('p95_ms', float('inf')),
                             ('p95_ms', -1), ('samples', 99), ('samples', 8193), ('invalid', 1), ('recording', 1),
