@@ -66,6 +66,71 @@ $(B)/SporeCoopSetup.exe: installer/setup.cpp updater/winupdate.cpp updater/pack.
 	$(CXX) $(CXXFLAGS) -DSETUP_VERSION='"$(COOP_VERSION)"' -municode -mwindows -static -o $@ $(filter-out mods/coop/coop.cpp,$^) \
 		-lwinhttp -lcomctl32 -lshell32 -lole32 -ladvapi32 -luser32 -lgdi32
 
+# Portable editor transaction, durability, transport and owned-resource tests.
+EDITOR_CORE_SRC := mods/coop/net/editor_document.cpp
+EDITOR_WIRE_SRC := mods/coop/net/editor_protocol.cpp $(EDITOR_CORE_SRC) updater/sha256.cpp
+EDITOR_DELTA_SRC := mods/coop/net/editor_binary_delta.cpp updater/sha256.cpp
+EDITOR_PROJECT_SRC := mods/coop/editor_project.cpp mods/coop/net/editor_binary_delta.cpp mods/coop/net/adventure_assets.cpp mods/coop/net/dbpf.cpp $(EDITOR_WIRE_SRC)
+EDITOR_SESSION_SRC := mods/coop/editor_session.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp $(EDITOR_WIRE_SRC)
+EDITOR_RUNTIME_FIXTURE_SRC := tests/editor_runtime_windows_tests.cpp mods/coop/editor_store.cpp mods/coop/editor_project.cpp mods/coop/net/editor_binary_delta.cpp mods/coop/net/adventure_assets.cpp mods/coop/net/dbpf.cpp $(EDITOR_SESSION_SRC)
+ADVENTURE_ASSETS_NATIVE_FIXTURE_SRC := tests/adventure_assets_native_windows_tests.cpp mods/coop/net/adventure_assets.cpp mods/coop/net/dbpf.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp updater/sha256.cpp
+ADVENTURE_ABI_HEADERS := sdk/include/sporekit.h sdk/include/sporekit_game.hpp mods/coop/game.h mods/coop/net/protocol.h
+.PHONY: test-editor test-editor-windows
+test-editor:
+	@mkdir -p $(B)/host
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include tests/editor_native_bindings_tests.cpp -o $(B)/host/editor_native_bindings_tests
+	$(B)/host/editor_native_bindings_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(EDITOR_DELTA_SRC) tests/editor_binary_delta_tests.cpp -o $(B)/host/editor_binary_delta_tests
+	$(B)/host/editor_binary_delta_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include $(EDITOR_CORE_SRC) tests/editor_document_tests.cpp -o $(B)/host/editor_document_tests
+	$(B)/host/editor_document_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop mods/coop/editor_store.cpp updater/sha256.cpp tests/editor_store_tests.cpp -o $(B)/host/editor_store_tests
+	$(B)/host/editor_store_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(EDITOR_WIRE_SRC) tests/editor_protocol_tests.cpp -o $(B)/host/editor_protocol_tests
+	$(B)/host/editor_protocol_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include $(EDITOR_PROJECT_SRC) tests/editor_project_tests.cpp -o $(B)/host/editor_project_tests
+	$(B)/host/editor_project_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(EDITOR_SESSION_SRC) tests/editor_session_tests.cpp -o $(B)/host/editor_session_tests
+	$(B)/host/editor_session_tests
+
+test-editor-windows: $(B)/host/frame_metrics_tests.exe $(B)/host/editor_native_bindings_tests.exe $(B)/host/editor_binary_delta_tests.exe $(B)/host/editor_document_tests.exe $(B)/host/editor_store_tests.exe $(B)/host/editor_protocol_tests.exe $(B)/host/editor_project_tests.exe $(B)/host/editor_session_tests.exe $(B)/host/editor_native_save_tests.exe $(B)/host/adventure_editor_preview_tests.exe $(B)/host/editor_runtime_windows_tests.exe $(B)/host/adventure_assets_native_tests.exe
+$(B)/host/frame_metrics_tests.exe: tests/frame_metrics_tests.cpp mods/coop/frame_metrics.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/frame_metrics_tests.cpp -o $@
+$(B)/host/editor_native_bindings_tests.exe: tests/editor_native_bindings_tests.cpp mods/coop/editor_native_bindings.h mods/coop/editor_native.h mods/coop/net/editor_document.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/editor_native_bindings_tests.cpp -o $@
+$(B)/host/editor_binary_delta_tests.exe: $(EDITOR_DELTA_SRC) tests/editor_binary_delta_tests.cpp
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $^ -o $@
+$(B)/host/editor_document_tests.exe: $(EDITOR_CORE_SRC) tests/editor_document_tests.cpp
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $^ -o $@
+$(B)/host/editor_store_tests.exe: mods/coop/editor_store.cpp updater/sha256.cpp tests/editor_store_tests.cpp
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $^ -o $@
+$(B)/host/editor_protocol_tests.exe: $(EDITOR_WIRE_SRC) tests/editor_protocol_tests.cpp
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $^ -o $@
+$(B)/host/editor_project_tests.exe: $(EDITOR_PROJECT_SRC) tests/editor_project_tests.cpp
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $^ -o $@
+$(B)/host/editor_session_tests.exe: $(EDITOR_SESSION_SRC) tests/editor_session_tests.cpp
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $^ -o $@ -lws2_32
+$(B)/host/editor_native_save_tests.exe: tests/editor_native_save_windows_tests.cpp mods/coop/editor_native_save.cpp mods/coop/editor_native_save.h mods/coop/editor_native.h $(ADVENTURE_ABI_HEADERS)
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/editor_native_save_windows_tests.cpp -o $@
+$(B)/host/adventure_editor_preview_tests.exe: tests/adventure_editor_preview_windows_tests.cpp mods/coop/adventure_native.cpp mods/coop/adventure_native.h mods/coop/editor_native.h $(ADVENTURE_ABI_HEADERS) mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/adventure_editor_preview_windows_tests.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp -o $@ -lws2_32
+$(B)/host/editor_runtime_windows_tests.exe: $(EDITOR_RUNTIME_FIXTURE_SRC) mods/coop/editor_runtime.cpp mods/coop/editor_runtime.h mods/coop/editor_native.h mods/coop/editor_native_save.h mods/coop/adventure_native.h mods/coop/editor_store.h mods/coop/editor_project.h mods/coop/editor_session.h $(wildcard mods/coop/net/editor_*.h) $(ADVENTURE_ABI_HEADERS)
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(EDITOR_RUNTIME_FIXTURE_SRC) -o $@ -lws2_32
+$(B)/host/adventure_assets_native_tests.exe: $(ADVENTURE_ASSETS_NATIVE_FIXTURE_SRC) mods/coop/adventure_assets.cpp mods/coop/adventure_assets.h $(ADVENTURE_ABI_HEADERS)
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(ADVENTURE_ASSETS_NATIVE_FIXTURE_SRC) -o $@ -lws2_32
+
 # native Linux unit tests for portable netcode
 test:
 	@mkdir -p $(B)/host
@@ -73,6 +138,9 @@ test:
 	$(B)/host/net_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -o $(B)/host/ui_pages_tests tests/ui_pages_tests.cpp
 	$(B)/host/ui_pages_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -o $(B)/host/frame_metrics_tests tests/frame_metrics_tests.cpp
+	$(B)/host/frame_metrics_tests
+	$(MAKE) test-editor
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -o $(B)/host/adventure_hud_tests tests/adventure_hud_tests.cpp
 	$(B)/host/adventure_hud_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Imods/coop -o $(B)/host/adventure_tests mods/coop/net/adventure.cpp tests/adventure_tests.cpp
@@ -106,8 +174,6 @@ test-lifecycle-windows: $(B)/host/adventure_lifecycle_tests.exe
 $(B)/host/adventure_lifecycle_tests.exe: mods/coop/adventure_world_lifecycle.cpp tests/adventure_lifecycle_tests.cpp
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $^ -o $@
-
-ADVENTURE_ABI_HEADERS := sdk/include/sporekit.h sdk/include/sporekit_game.hpp mods/coop/game.h mods/coop/net/protocol.h
 
 .PHONY: test-pause-windows
 test-pause-windows: $(B)/host/adventure_pause_native_tests.exe

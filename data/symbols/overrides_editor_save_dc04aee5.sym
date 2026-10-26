@@ -1,0 +1,16 @@
+# Exact dc04 GOG native Adventure Editor save and preview lifecycle.
+# exe_sha256=dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37
+# evidence=tools/addrport/verify_editor_save_dc04.py; docs/re/adventure-editor-save.md
+SporeCoop::Editor::DisplayVtable=0x01489DFC ; verified static: UI base primary vtable initialized ED5130, allocated98 at EF2154 and owned at ScenarioMode+14
+SporeCoop::Editor::CanSave=0x00F41110 ; verified static: thiscall(data,uint32 reasonOut), bool AL, ret4; native pending/editor/avatar/dirty eligibility gate
+SporeCoop::Editor::BeginSaveCopy=0x00ED7390 ; verified static: thiscall(UIbase,bool replaceOriginal), ret4; native eligibility, input hold and tail F3D760; false preserves original through data+1C=true
+SporeCoop::Editor::SaveResourcePipeline=0x00F44E80 ; verified static: thiscall(data), bool AL, plain ret F4547B; fresh key, native metadata/artwork/scenario saves, dirty clear and FD7A08D0 only on success
+SporeCoop::Editor::SaveInputHold=0x00ED4B80 ; verified static: native thiscall(UIbase unused,bool release), ret4 ED4CCA; installs/removes input-capture window2CCDA9C, ECX unused
+SporeCoop::Editor::NativePreview=0x00EF12D0 ; verified static: thiscall(ScenarioMode,int unused), ret4; CC1 to CC2, native editor cleanup/data2/world init; ED67E1 native Play caller
+SporeCoop::Editor::NativeReturn=0x00EF1280 ; verified static: thiscall(ScenarioMode), plain ret EF12BA/EF12C6; CC2 to CC1, native play cleanup/data1/editor init
+SporeCoop::Editor::PreviewCleanup=0x00F18F30 ; verified static: thiscall(play), plain ret or tailEFC9D0; native hammer-stop F0EB0B and results cleanup
+SporeCoop::Editor::ReturnDisplayMode=0x00ED47A0 ; verified static: thiscall(UIbase,int mode), ret4; writesUI+20; native hammer-stop sets0 before NativeReturn
+SporeCoop::Editor::SelectDisplayMode=0x00ED6620 ; verified static: thiscall(UIbase,int 0build1play2planet), ret4 ED6908; native panel cleanup/button states/mode notification, play calls NativePreview
+SporeCoop::Editor::PreviewCaptain=0x00FF3DB0 ; verified static: thiscall(data), captain pointer EAX; used by top native Play ED7E5D before validation
+SporeCoop::Editor::ValidatePlacement=0x00F412C0 ; verified static: thiscall(data,marker,int,int,int), bool AL, ret10; ED7E66..7E6F validates captain before Play; EFEA0B/EFEA4B validate ordinary drags, updates derived marker224 mask0x16
+SporeCoop::Editor::EditorCommand=0x00ED75E0 ; verified static: thiscall(UIbase,int action),ret4 ED78BB; raw Save/Done/Cancel/New command routing before ui58 assignment; native callers ED7FC0 ED7FE9 EDA319

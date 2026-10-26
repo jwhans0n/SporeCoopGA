@@ -19,6 +19,9 @@ struct Ctx {
     std::function<bool()> native_available;
     std::function<std::string()> native_reason;
     std::function<bool(const Key&, std::vector<dbpf::Record>&, std::string&)> collect;
+    // Optional content policy for a pinned editor preview. Ordinary GA mounts
+    // the validated bundle. Cache-only requires the existing dependency owner.
+    std::function<bool(uint64_t, const Key&, bool& cache_only, std::string&)> content_registration;
     // A zero locked key requests a personal captain. Return a zero key to cancel.
     std::function<void(const Key& locked, std::function<void(const Key&)> selected)> choose_captain;
     std::function<void(const Key&, std::function<void(const Key&)>)> reuse_captain;
@@ -75,6 +78,7 @@ bool set_ready(bool value);
 bool active();
 bool running(); // all frozen-roster captains loaded and the host committed the attempt
 bool native_attempt(); // a current attempt has entered native loading/gameplay
+bool cleanup_pending(); // read-only exit barrier, including queued native cleanup
 // The first authoritative outcome seals gameplay through native results/exit.
 // This remains valid after active()/current() stop exposing the running attempt.
 bool outcome_locked();

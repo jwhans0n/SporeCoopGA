@@ -38,6 +38,7 @@ static double g_skip_since; // the Co-op item was clicked during the menu intro:
 static double g_intro_over; // when that intro was over
 static bool g_raise = true; // move the window above all UI layers when it opens
 static bool g_adventure_page;
+static bool g_editor_page;
 static uint64_t g_last_preparation_run;
 bool g_log_msgs; // debug: log UI messages that reach our handlers
 
@@ -222,6 +223,13 @@ struct Dialog {
     Win prep_player[4] = {}, prep_captain[4] = {}, prep_stage[4] = {}, prep_ready[4] = {}, prep_placeholder[4] = {};
     Win prep_ready_btn = nullptr, prep_change = nullptr, prep_chat[2] = {}, prep_edit = nullptr;
     Picture adventure_picture, captain_picture[4];
+    std::vector<Win> page_editor;
+    Win editor_btn = nullptr, editor_title = nullptr, editor_status = nullptr;
+    Win editor_selection = nullptr, editor_saved = nullptr;
+    Win editor_player[4] = {}, editor_progress[4] = {}, editor_checkpoint[4] = {};
+    Win editor_begin = nullptr, editor_undo = nullptr, editor_redo = nullptr;
+    Win editor_save = nullptr, editor_test = nullptr, editor_recover = nullptr, editor_end = nullptr;
+    Win editor_chat[2] = {}, editor_edit = nullptr;
 };
 static Dialog D;
 static std::map<std::string, Win> g_named; // for tests (coop.uistate)
@@ -489,6 +497,7 @@ static void build_dialog()
     D.subtitle = add_label(common, {0, 70, kW, 96}, T("CO-OP", "КООПЕРАТИВ"), kGold, sui::kAlignCenter);
     // every page: which SporeCoop and game build run, and a report for bug reports
     D.version = add_label(common, {40, 548, 500, 570}, A.version_line ? A.version_line() : "", kDim);
+    if (A.version_line && text_width(A.version_line()) > 440) sui::set_font(D.version, D.font_button);
     D.report_btn = add_button(common, "report", {510, 542, 720, 574}, T("Report a problem", "Сообщить об ошибке"),
                               do_report);
 
@@ -570,6 +579,10 @@ static void build_dialog()
     });
     D.space_btn = add_button(L, "space", {580, 66, 720, 98}, T("Space >", "Космос >"), [] {
         g_space_page = true;
+        g_dirty = true;
+    });
+    D.editor_btn = add_button(L, "editor", {460, 66, 720, 98}, "Adventure Editor >", [] {
+        g_editor_page = true;
         g_dirty = true;
     });
     D.chat_edit = add_edit(L, "chatedit", {40, 438, 560, 470}, "", 120);
@@ -685,6 +698,57 @@ static void build_dialog()
     add_button(R,"prep_settings",{326,506,426,542},"Settings",[] { g_adventure_page=true; g_dirty=true; });
     add_button(R,"prep_cancel",{436,506,606,542},"Cancel adventure",[] { if(A.cancel_adventure) A.cancel_adventure(); });
     add_button(R,"prep_leave",{616,506,740,542},"Leave party",[] { A.leave(); });
+
+    auto& E = D.page_editor;
+    D.editor_title = add_label(E, {40, 104, 720, 132}, "Edit an adventure together", kGold);
+    D.editor_status = add_label(E, {40, 138, 720, 166}, "", kYellow);
+    D.editor_saved = add_label(E, {40, 170, 720, 196}, "", kDim);
+    for (int i = 0; i < 4; ++i) {
+        float y = 208.f + i * 30;
+        D.editor_player[i] = add_label(E, {40, y, 300, y + 26}, "", kWhite);
+        D.editor_progress[i] = add_label(E, {310, y, 530, y + 26}, "", kDim);
+        D.editor_checkpoint[i] = add_label(E, {540, y, 720, y + 26}, "", kDim);
+    }
+    D.editor_selection = add_label(E, {40, 332, 720, 358}, "", kDim);
+    D.editor_begin = add_button(E, "editor_begin", {40, 370, 256, 408}, "Start sharing", [] {
+        if (A.editor_begin) A.editor_begin();
+    });
+    D.editor_undo = add_button(E, "editor_undo", {266, 370, 370, 408}, "Undo", [] {
+        if (A.editor_undo) A.editor_undo();
+    });
+    D.editor_redo = add_button(E, "editor_redo", {380, 370, 484, 408}, "Redo", [] {
+        if (A.editor_redo) A.editor_redo();
+    });
+    D.editor_save = add_button(E, "editor_save", {494, 370, 720, 408}, "Save draft", [] {
+        if (A.editor_save) A.editor_save();
+    });
+    for (int i = 0; i < 2; ++i)
+        D.editor_chat[i] = add_label(E, {40, 416.f + i * 22, 720, 438.f + i * 22}, "", kWhite);
+    D.editor_edit = add_edit(E, "editor_chat", {40, 462, 590, 494}, "", 120);
+    add_button(E, "editor_send", {600, 460, 720, 496}, "Send", [] {
+        std::string message = sui::edit_text(D.editor_edit);
+        if (!message.empty() && A.say) {
+            A.say(message);
+            sui::set_edit_text(D.editor_edit, "");
+        }
+    });
+    D.editor_test = add_button(E, "editor_playtest", {40, 504, 234, 540}, "Playtest", [] {
+        auto view = A.editor ? A.editor() : coop_editor::View{};
+        if (view.confirming) { if (A.editor_ready) A.editor_ready(!view.ready); }
+        else if (A.editor_playtest) A.editor_playtest();
+    });
+    D.editor_recover = add_button(E, "editor_recover", {244, 504, 412, 540}, "Recover", [] {
+        if (A.editor_recover) A.editor_recover();
+    });
+    D.editor_end = add_button(E, "editor_end", {422, 504, 590, 540}, "End editing", [] {
+        if (A.editor_end) A.editor_end();
+    });
+    add_button(E, "editor_back", {600, 504, 720, 540}, "Back", [] {
+        g_editor_page = false;
+        g_dirty = true;
+    });
+    for (const char* name : {"editor_begin","editor_undo","editor_redo","editor_save","editor_playtest","editor_recover","editor_end","editor_back","editor_send"})
+        sui::set_caption_padding(g_named[name],3.f);
     for (const char* name : {"prep_ready","prep_change","prep_settings","prep_cancel","prep_leave","prep_send"})
         sui::set_caption_padding(g_named[name],3.f);
     // Enter in the chat field sends the message
@@ -928,6 +992,46 @@ static void refresh_preparation(const ga::PreparationView& view)
     sui::set_enabled(D.prep_change,!view.loading && !view.locked_captain.instance && A.can_ready && A.can_ready());
 }
 
+static void refresh_editor(const coop_editor::View& view)
+{
+    text(D.editor_title, short_text(view.title.empty() ? "Edit an adventure together" : view.title, 62));
+    text(D.editor_status, short_text(view.status, 64));
+    color(D.editor_status, view.frozen ? kRed : kYellow);
+    text(D.editor_saved, !view.active ? "Open a native adventure draft, then start shared editing."
+         : "Revision " + std::to_string(view.revision) + " | Local checkpoint " + std::to_string(view.durable_revision) +
+           " | Spore save " + (view.natively_saved ? std::to_string(view.saved_revision) : "none"));
+    text(D.editor_selection, short_text(view.selection, 68));
+    for (size_t i = 0; i < 4; ++i) {
+        bool have = i < view.players.size();
+        show(D.editor_player[i], have);
+        show(D.editor_progress[i], have);
+        show(D.editor_checkpoint[i], have);
+        if (!have) continue;
+        const auto& player = view.players[i];
+        const std::string markers = std::string(player.host ? " (host)" : "") + (player.local ? " - you" : "");
+        text(D.editor_player[i], short_text(player.name, 24 - markers.size()) + markers);
+        text(D.editor_progress[i], short_text(player.status + (player.selection.empty() ? "" : ": " + player.selection), 20));
+        text(D.editor_checkpoint[i], player.local || view.host
+             ? "Checkpoint " + std::to_string(player.local ? view.durable_revision : player.durable_revision)
+             : "Reported to host");
+        color(D.editor_progress[i], player.ready ? kGreen : kDim);
+    }
+    text(D.editor_begin, view.offered ? "Join editing" : "Start sharing");
+    sui::set_enabled(D.editor_begin, view.can_begin);
+    sui::set_enabled(D.editor_undo, view.can_undo);
+    sui::set_enabled(D.editor_redo, view.can_redo);
+    sui::set_enabled(D.editor_save, view.can_save);
+    sui::set_enabled(D.editor_recover, view.can_recover);
+    sui::set_enabled(D.editor_end, view.active || view.offered);
+    text(D.editor_test, view.playtesting ? "Return to draft" : view.confirming ? view.ready ? "Not ready" : "Ready" : "Playtest");
+    sui::set_enabled(D.editor_test, view.can_playtest || view.confirming || view.can_return);
+    auto chat = A.chat ? A.chat() : std::vector<std::string>{};
+    for (size_t i = 0; i < 2; ++i) {
+        size_t start = chat.size() > 2 ? chat.size() - 2 : 0;
+        text(D.editor_chat[i], start + i < chat.size() ? short_text(chat[start + i], 68) : "");
+    }
+}
+
 static void refresh()
 {
     g_pending = false;
@@ -958,6 +1062,7 @@ static void refresh()
         return;
     }
     bool lobby = A.role() != 0;
+    auto editor = A.editor ? A.editor() : coop_editor::View{};
     ga::PreparationView preparation;
     bool preparing = lobby && A.preparation && A.preparation(preparation);
     if (preparing && preparation.run != g_last_preparation_run) {
@@ -967,10 +1072,11 @@ static void refresh()
     g_last_preparation_run = preparing ? preparation.run : 0;
     if (!lobby)
         g_adventure_page = false;
+    if (!lobby || !editor.visible) g_editor_page = false;
     bool space = lobby && A.mode && A.mode() == modes::kSpace;
     if (!space || preparing || g_adventure_page)
         g_space_page = false;
-    const Page page = select_page(lobby, preparing, g_adventure_page, g_space_page);
+    const Page page = select_page(lobby, preparing, g_adventure_page, g_space_page, g_editor_page);
     for (Win w : D.page_connect)
         show(w, page == Page::Connect);
     for (Win w : D.page_lobby)
@@ -981,12 +1087,16 @@ static void refresh()
         show(w, page == Page::AdventureSettings);
     for (Win w : D.page_preparation)
         show(w, page == Page::Preparation);
+    for (Win w : D.page_editor)
+        show(w, page == Page::Editor);
     show(D.space_btn, space && page == Page::Lobby);
+    show(D.editor_btn, editor.visible && !space && page == Page::Lobby);
     if (page != Page::Preparation) {
         show(D.adventure_picture.window, false);
         for (auto& p : D.captain_picture) show(p.window, false);
     }
     text(D.subtitle, page == Page::AdventureSettings ? "ADVENTURE DIFFICULTY"
+                     : page == Page::Editor ? "CO-OP ADVENTURE EDITOR"
                      : page == Page::Space ? T("CO-OP: SPACE", "КООПЕРАТИВ: КОСМОС")
                      : lobby ? T("CO-OP LOBBY", "ЛОББИ КООПЕРАТИВА") : T("CO-OP", "КООПЕРАТИВ"));
     if (A.version_line)
@@ -997,6 +1107,8 @@ static void refresh()
         refresh_adventure();
     else if (page == Page::Preparation)
         refresh_preparation(preparation);
+    else if (page == Page::Editor)
+        refresh_editor(editor);
     else if (page == Page::Space)
         refresh_space();
     else if (page == Page::Lobby)
@@ -1048,6 +1160,14 @@ void close_for_adventure_launch()
     g_raise = false;
     if (D.root) show(D.root, false);
     if (A.lan_scan) A.lan_scan(false);
+}
+
+void open_editor()
+{
+    g_editor_page = true;
+    g_adventure_page = g_space_page = false;
+    open(true);
+    g_dirty = true;
 }
 
 bool is_open() { return g_want_open; }

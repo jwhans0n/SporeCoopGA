@@ -1,7 +1,7 @@
 // SporeCoop mod: creature-stage co-op ("pack" mode). See docs/03-gameplay.md.
 // the release version (tools/package.sh names the zip after it)
 #ifndef COOP_VERSION
-#define COOP_VERSION "0.7.4.0"
+#define COOP_VERSION "0.7.5.0-ga-editor-preview.1"
 #endif
 
 #include <winsock2.h>
@@ -21,6 +21,8 @@
 #include <string>
 
 #include "coop_ui.h"
+#include "editor_runtime.h"
+#include "frame_metrics.h"
 #include "driver.h"
 #include "game.h"
 #include "modes.h"
@@ -69,6 +71,8 @@ void coop_register_debug_commands(const SkHost* host, SkMod* self); // debug.cpp
 
 namespace {
 
+coop_metrics::FrameSamples g_frame_samples;
+
 struct Remote {
     uint8_t id = 0;
     std::string name;
@@ -105,6 +109,7 @@ extern bool g_host_away;
 extern float g_solo_dna;
 bool on_dna(float delta)
 {
+    if (coop_editor::authoring()) return true;
     if (social::goal_dna(delta))
         return false; // a goal card's reward: the host pays it into the shared pool once
     if (g_sess.role() == net::Role::Client && g_sess.connected() && delta > 0 && g_host_away) {
@@ -712,6 +717,10 @@ int SK_THISCALL h_SimMsg(void* self, uint32_t id, void* data)
 
 bool SK_CDECL h_Submit(void* req)
 {
+    if (coop_editor::authoring()) {
+        feed("Nested creation editors are read-only during shared adventure editing.");
+        return false;
+    }
     uint32_t mode = game::mode_id();
     if (!g_vote_bypass && req && stage_mode(mode) && g_sess.connected() && g_sess.players().size() > 1) {
         if (g_sess.role() == net::Role::Host) {
@@ -791,6 +800,7 @@ void vote_tick(double now)
 
 void on_mode_change(uint32_t from, uint32_t to)
 {
+    coop_editor::mode_changed(from, to);
     if (from == modes::kScenario && to != modes::kScenario) {
         if(adventure::native_attempt()) {
             adventure::cancel("A player left the adventure. Return to the lobby for the next attempt.");
@@ -933,8 +943,9 @@ void keepalive_task(void*)
     if (H->time_seconds() - g_last_frame < 0.5 || g_sess.role() == net::Role::None)
         return;
     g_sess.update();
+    coop_editor::tick(H->time_seconds());
     adventure::tick(H->time_seconds());
-    if (g_sess.role() == net::Role::Host)
+    if (g_sess.role() == net::Role::Host && !coop_editor::authoring())
         world::tick(g_sess);
 }
 
@@ -1006,6 +1017,7 @@ static void diag_tick(double now)
              game::mode_id(), g_world);
     std::string s = b;
     s += g_sess.status() + world::status();
+    s += "\nEditor: " + coop_editor::view().status + "\n";
     for (auto& [id, r] : g_remotes)
         s += "remote " + std::to_string(id) + " '" + r.name + "' puppet " + (r.puppet ? "yes" : "no") + "\n";
     size_t first = g_chat.size() > 8 ? g_chat.size() - 8 : 0;
@@ -1043,11 +1055,13 @@ std::string make_report(const char* reason)
 void on_frame(void*, int, void*)
 {
     double now = H->time_seconds();
+    g_frame_samples.sample(now);
     g_last_frame = now;
     diag_tick(now);
     notify::tick(now);
     creations::tick(now);
     g_sess.update();
+    coop_editor::tick(now);
     adventure::tick(now);
     adventure_native::tick(now);
     lobby_tick(now);
@@ -1055,6 +1069,18 @@ void on_frame(void*, int, void*)
     submit_tick(now);
     coop_ui::tick();
     menu_tick(now);
+    if (coop_editor::authoring()) {
+        uint32_t previous = g_mode;
+        g_mode = game::mode_id();
+        if (g_mode != previous) on_mode_change(previous, g_mode);
+        g_adapter = nullptr;
+        g_local = nullptr;
+        g_world = 0;
+        if (g_last_avatar) { forget_puppets(); npc::on_world_change(); }
+        g_last_avatar = nullptr;
+        autoupdate::tick();
+        return;
+    }
     if (g_sess.role() == net::Role::Host)
         world::tick(g_sess);
     else
@@ -1420,6 +1446,7 @@ void on_overlay(void*, int, void*)
 
 void on_anim(void* creature, uint32_t anim, int block, bool disable_blend, bool to_target)
 {
+    if (coop_editor::authoring()) return;
     adventure_world::on_animation(creature, anim, block, disable_blend, to_target);
     void* av = game::avatar();
     if (!av || creature != av)
@@ -1467,6 +1494,7 @@ void setup_callbacks()
     g_sess.cb.log = [](const std::string& s) { LOG("net: %s", s.c_str()); };
     g_sess.cb.connected = [] { feed("connected to host"); };
     g_sess.cb.disconnected = [](const std::string& why) {
+        coop_editor::session_ended();
         feed("disconnected: " + why);
         chat_log("* disconnected: " + why);
         g_ready.clear();
@@ -1486,10 +1514,13 @@ void setup_callbacks()
         g_remotes.clear();
     };
     g_sess.cb.player_join = [](const net::PlayerInfo& p) {
-        adventure::on_join(p.id);
-        adventure_world::peer_changed(p.id);
-        shared::on_session_change();
-        creations::on_player_join(p.id);
+        coop_editor::on_join(p.id);
+        if (!coop_editor::authoring()) {
+            adventure::on_join(p.id);
+            adventure_world::peer_changed(p.id);
+            shared::on_session_change();
+            creations::on_player_join(p.id);
+        }
         g_dna_sent = -1; // resend the DNA total to the newcomer
         auto& r = g_remotes[p.id];
         r.id = p.id;
@@ -1497,6 +1528,7 @@ void setup_callbacks()
         feed(p.name + " joined the pack");
         chat_log("* " + p.name + " joined");
         g_lobby_dirty = true;
+        if (coop_editor::authoring()) return;
         bool own_worlds = g_adapter && g_adapter->own_worlds;
         bool playing = g_adapter && g_local && stage_mode(g_mode);
         if (g_sess.role() == net::Role::Host && g_share_world && !own_worlds && !playing) {
@@ -1516,10 +1548,16 @@ void setup_callbacks()
         }
     };
     g_sess.cb.custom = [](uint8_t type, uint8_t from, net::Reader& r) {
-        if (type == net::MSG_ADVENTURE) {
-            adventure::on_message(from, r);
+        if (type == net::MSG_EDITOR) {
+            coop_editor::on_message(from, r);
             return;
         }
+        if (type == net::MSG_ADVENTURE) {
+            if (coop_editor::active() || coop_editor::playtest_owned()) coop_editor::on_adventure_message(from, r);
+            else adventure::on_message(from, r);
+            return;
+        }
+        if (coop_editor::authoring()) return;
         if (type == net::MSG_ANIM) {
             net::AnimEvent ev;
             if (ev.read(r))
@@ -1706,6 +1744,7 @@ void setup_callbacks()
             world::on_message(type, r, g_sess.name_of(0));
     };
     g_sess.cb.player_leave = [](uint8_t id, uint8_t) {
+        coop_editor::on_leave(id);
         adventure::on_leave(id);
         adventure_world::peer_changed(id);
         auto it = g_remotes.find(id);
@@ -1719,6 +1758,7 @@ void setup_callbacks()
         g_remotes.erase(it);
     };
     g_sess.cb.player_state = [](const net::PlayerState& s) {
+        if (coop_editor::authoring()) return;
         if (adventure::active()) {
             if (const auto* d = adventure::current()) g_adventure_motion.begin(d->run_id);
             if (!g_adventure_motion.accepts(s)) return;
@@ -1773,6 +1813,7 @@ bool do_join(const std::string& addr, std::string& err)
 
 void do_leave()
 {
+    coop_editor::session_ended();
     adventure::reset();
     adventure_native::reset();
     g_sess.leave("user");
@@ -2508,6 +2549,15 @@ void init_ui()
     a.can_ready = adventure::can_ready;
     a.change_captain = [] { adventure::change_captain(); };
     a.cancel_adventure = [] { adventure::cancel("The party cancelled adventure preparation."); };
+    a.editor = coop_editor::view;
+    a.editor_begin = coop_editor::begin;
+    a.editor_undo = coop_editor::undo;
+    a.editor_redo = coop_editor::redo;
+    a.editor_save = coop_editor::save;
+    a.editor_playtest = coop_editor::playtest;
+    a.editor_recover = coop_editor::recover;
+    a.editor_end = coop_editor::end;
+    a.editor_ready = coop_editor::set_ready;
     a.say = [](const std::string& t) {
         if (g_sess.connected())
             g_sess.send_chat(t);
@@ -2620,6 +2670,7 @@ int c_adventure(void*, int argc, const char* const* argv, SkOut* out)
 
 void on_unload()
 {
+    coop_editor::shutdown();
     adventure::reset();
     adventure_native::shutdown();
     game::set_extra_update_filter(nullptr);
@@ -2743,6 +2794,13 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
     };
     adventure_native::init(H, M, std::move(native));
     adventure::init(H, M, adventure_native::coordinator_context());
+    coop_editor::Ctx editor;
+    editor.session = &g_sess;
+    editor.feed = feed;
+    editor.adventure_busy = adventure::active;
+    editor.open_panel = coop_ui::open_editor;
+    editor.close_panel = [] { coop_ui::open(false); };
+    coop_editor::init(H, M, std::move(editor));
     game::set_extra_update_filter(adventure_native::update_filter);
     game::set_npc_ai_filter(adventure_world::npc_ai_filter);
     game::set_damage_filter([](void* victim, float& damage, int type, void* attacker) {
@@ -2776,6 +2834,33 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
     H->command_add(M, "coop.status", "session, players and puppets", c_status, nullptr, MT);
     adventure_progress::init(H, M);
     H->command_add(M, "coop.adventure", "adventure status, difficulty, readiness and cancellation", c_adventure, nullptr, SK_CMD_OUTSIDE_FRAME);
+    H->command_add(M, "coop.editor", "shared Adventure Editor status and actions", [](void*, int argc, const char* const* argv, SkOut* out) {
+        std::vector<std::string> args;
+        for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
+        SAY("%s", coop_editor::debug(args).c_str());
+        return 0;
+    }, nullptr, SK_CMD_OUTSIDE_FRAME);
+    H->command_add(M, "coop.frame_metrics", "coop.frame_metrics start|stop|status|config - bounded presented-frame test samples", [](void*, int argc, const char* const* argv, SkOut* out) {
+        if (argc > 1 && std::string(argv[1]) == "config") {
+            const uintptr_t address = H->sym("App::FrameLimit_ptr");
+            void* app = address && skg::readable(reinterpret_cast<void*>(address), sizeof(void*))
+                ? *reinterpret_cast<void**>(address) : nullptr;
+            void* config = skg::readable(app, 0x40) ? skg::field<void*>(app, 0x3C) : nullptr;
+            if (!skg::readable(config, 0xB4)) { SAY("Frame configuration is unavailable"); return 1; }
+            int width = 0, height = 0;
+            if (H->screen_size) H->screen_size(&width, &height);
+            if (width <= 0 || height <= 0) { SAY("Rendered backbuffer dimensions are unavailable"); return 1; }
+            SAY("frame_limit_ms=%d screen_width=%d screen_height=%d", skg::field<int>(config, 0xB0), width, height);
+            return 0;
+        }
+        if (argc > 1 && std::string(argv[1]) == "start") g_frame_samples.start();
+        else if (argc > 1 && std::string(argv[1]) == "stop") g_frame_samples.stop();
+        const auto sample = g_frame_samples.summary();
+        SAY("samples=%zu invalid=%zu recording=%u seconds=%.6f mean_fps=%.6f median_fps=%.6f median_ms=%.6f p95_ms=%.6f",
+            sample.samples, sample.invalid, unsigned(sample.recording), sample.seconds,
+            sample.mean_fps, sample.median_fps, sample.median_ms, sample.p95_ms);
+        return 0;
+    }, nullptr, SK_CMD_OUTSIDE_FRAME);
     H->command_add(M, "coop.name", "coop.name <nick>", c_name, nullptr, MT);
     H->command_add(M, "coop.say", "coop.say <text> - chat", c_say, nullptr, MT);
     H->command_add(M, "coop.avatar", "print local avatar state", c_avatar, nullptr, MT);

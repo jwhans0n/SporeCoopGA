@@ -12,6 +12,7 @@
 
 #include "sporekit.h"
 #include "net/adventure.h"
+#include "editor_runtime.h"
 
 namespace coop_ui {
 
@@ -58,6 +59,10 @@ struct Api {
     std::function<dbpf::Key(uint8_t)> captain_key;
     std::function<bool()> can_ready;
     std::function<void()> change_captain, cancel_adventure;
+    std::function<coop_editor::View()> editor;
+    std::function<void()> editor_begin, editor_undo, editor_redo, editor_save;
+    std::function<void()> editor_playtest, editor_recover, editor_end;
+    std::function<void(bool)> editor_ready;
     // own creation of the current stage: kind 0 creature / 1 cell / 2 ship, its name ("" = the
     // world's own), how many own creations of that kind exist; false = not shown. cycle: -1 / +1
     std::function<bool(int& kind, std::string& name, int& own)> creation;
@@ -91,6 +96,7 @@ void tick();     // every frame (inside Present): only schedules UI work outside
 void open(bool on);
 // Outside-frame launch transition: hide before entering the native loading UI.
 void close_for_adventure_launch();
+void open_editor();
 bool is_open();
 void shutdown(); // mod unload: hide our windows
 std::string debug_state();

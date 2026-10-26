@@ -5,6 +5,7 @@
 #include <cmath>
 #include <map>
 #include <memory>
+#include <optional>
 
 #include "adventure_captains.h"
 #include "adventure_catalog.h"
@@ -21,6 +22,7 @@
 #include "game.h"
 #include "modes.h"
 #include "coop_ui.h"
+#include "editor_native.h"
 #include "sporekit_game.hpp"
 
 namespace adventure_native {
@@ -42,7 +44,19 @@ uint64_t g_result_end_run;
 void* g_result_end_play;
 uint32_t g_result_end_id;
 uint64_t g_result_messages_accepted, g_result_messages_rejected;
-dbpf::Key g_host_captain, g_score_adventure;
+dbpf::Key g_host_captain, g_score_adventure, g_score_local_adventure;
+struct Preview {
+    EditorPreview config;
+    editor_native::Snapshot snapshot;
+    void* mode = nullptr;
+    void* data = nullptr;
+    void* resource = nullptr;
+    uint64_t run = 0;
+    bool launched = false, returning = false, ready_queued = false;
+    bool intro_queued = false, intro_confirmed = false;
+};
+std::optional<Preview> g_preview;
+uint64_t g_preview_generation = 1;
 std::vector<ga::Captain> g_captains;
 struct Immunity { void* object; bool authored; };
 std::map<uint8_t, Immunity> g_invulnerability;
@@ -80,12 +94,100 @@ void* play_mode()
     void* object = scenario();
     return object && game::mode_id() == modes::kScenario ? field<void*>(object, 0x78) : nullptr;
 }
+bool preview_current()
+{
+    return g_preview && connected() && g_preview->config.current && g_preview->config.current();
+}
+bool preview_bound(bool playing)
+{
+    if (!g_preview || scenario() != g_preview->mode || !readable(g_preview->mode, 0xE0)) return false;
+    void* mode = g_preview->mode;
+    return game::mode_id() == modes::kScenario && field<int>(mode, 0xD0) == 0 &&
+        field<int>(mode, 0xCC) == (playing ? 2 : 1) && field<void*>(mode, 0x74) == g_preview->data &&
+        readable(g_preview->data, 0x128) && field<void*>(g_preview->data, 0x10) == g_preview->resource &&
+        readable(g_preview->resource, 0x14) && field<dbpf::Key>(g_preview->resource, 8) ==
+            dbpf::Key{g_preview->snapshot.source.instance, g_preview->snapshot.source.type, g_preview->snapshot.source.group};
+}
+bool preview_attempt()
+{
+    const auto* d = adventure::current();
+    return preview_current() && d && d->adventure == g_preview->config.adventure &&
+        d->locked_captain == g_preview->config.authored_avatar && (!g_preview->run || g_preview->run == d->run_id);
+}
+bool content_registration(uint64_t run, const dbpf::Key& root, bool& cache_only, std::string& error)
+{
+    cache_only = false;
+    if (!g_preview) return true;
+    const auto* d = adventure::current();
+    if (!preview_attempt() || !d || d->run_id != run || root != g_preview->config.adventure ||
+        !preview_bound(false) || g_preview->returning) {
+        error = "The shared editor dependency owner no longer matches this confirmed playtest.";
+        return false;
+    }
+    // The restricted shared editor already loaded this immutable dependency
+    // closure. Revised roots are owned serializations, not extra live DBs.
+    g_preview->run = run;
+    cache_only = true;
+    error.clear();
+    return true;
+}
+void preview_return()
+{
+    if (!g_preview || g_preview->returning) return;
+    g_preview->returning = true;
+    auto callback = g_preview->config.return_editor;
+    if (callback) callback();
+}
+void schedule_preview_ready()
+{
+    if (!g_preview || g_preview->returning || g_preview->ready_queued || !preview_attempt() ||
+        !adventure::can_ready() || adventure::ready()) return;
+    struct Ready { uint64_t generation, run; };
+    g_preview->ready_queued = true;
+    H->run_outside_frame([](void* opaque) {
+        std::unique_ptr<Ready> ready(static_cast<Ready*>(opaque));
+        if (ready->generation != g_preview_generation || !g_preview) return;
+        g_preview->ready_queued = false;
+        const auto* d = adventure::current();
+        if (d && d->run_id == ready->run && !g_preview->returning && preview_attempt() &&
+            adventure::can_ready() && !adventure::ready()) adventure::set_ready(true);
+    }, new Ready{g_preview_generation, adventure::current()->run_id});
+}
 adventure_intro::Cinematic current_cinematic()
 {
     uintptr_t getter = H->sym("Simulator::cCinematicManager::Get");
     void* manager = getter ? cdecl_call<void*>(getter) : nullptr;
     if (!manager || !readable(manager, 0x160)) return {};
     return {reinterpret_cast<uintptr_t>(manager), field<uint32_t>(manager, 0x2C), field<uint32_t>(manager, 0x148)};
+}
+bool loaded(const dbpf::Key& key);
+bool preview_intro_ready()
+{
+    if (!g_preview || g_preview->returning || !g_preview->launched || !preview_attempt() ||
+        !adventure::running() || !loaded(g_preview->config.adventure) || g_intro.pending()) return false;
+    const auto scene = adventure_flow::scene();
+    void* play = play_mode();
+    // Native editor Test enters Playing directly, without the quickplay beam
+    // cinematic or its Continue control. Every participant already explicitly
+    // confirmed this immutable editor round. Keep the normal flow barrier until
+    // all participants have entered that native playing state, then acknowledge
+    // this missing cinematic through the existing run-scoped confirmation path.
+    return scene.kind == adventure_flow::Kind::Intro && scene.run == g_preview->run &&
+        readable(play, 0x94) && field<int>(play, 0x90) == 3 && !current_cinematic().active;
+}
+void schedule_preview_intro()
+{
+    if (!g_preview || g_preview->intro_queued || g_preview->intro_confirmed || !preview_intro_ready()) return;
+    struct Intro { uint64_t generation, run; };
+    g_preview->intro_queued = true;
+    H->run_outside_frame([](void* opaque) {
+        std::unique_ptr<Intro> intro(static_cast<Intro*>(opaque));
+        if (intro->generation != g_preview_generation || !g_preview) return;
+        g_preview->intro_queued = false;
+        if (g_preview->run != intro->run || !preview_intro_ready()) return;
+        g_preview->intro_confirmed = true;
+        adventure_flow::confirm_intro();
+    }, new Intro{g_preview_generation, g_preview->run});
 }
 bool available()
 {
@@ -108,7 +210,8 @@ bool sporepedia_request()
     uintptr_t address = H->sym("SporeCoop::Adventure::Request");
     return address && readable(reinterpret_cast<void*>(address), 0x40) &&
            game::mode_id() != modes::kSpace && game::mode_id() != modes::kEdit && game::mode_id() != modes::kEditor &&
-           field<int>(reinterpret_cast<void*>(address), 0x28) != 2;
+           field<int>(reinterpret_cast<void*>(address), 0x24) == 2 &&
+           field<int>(reinterpret_cast<void*>(address), 0x28) == 1;
 }
 
 void capture_request()
@@ -157,9 +260,10 @@ void SK_THISCALL show(void* self, bool on, uint32_t mode, bool transition)
     if (g_recovering && on && mode == modes::kScenario) return;
     // Results can outlive Scenario. Only a fresh solo/native entry retires the
     // previous co-op score guard; ordinary runtime cleanup must retain it.
-    if (on && mode == modes::kScenario && !g_replay && (!connected() || !sporepedia_request())) {
+    if (on && mode == modes::kScenario && !g_replay && !g_preview && (!connected() || !sporepedia_request())) {
         g_coop_attempt = false;
         g_score_adventure = {};
+        g_score_local_adventure = {};
     }
     if (!on || mode != modes::kScenario || !connected() || g_replay || !sporepedia_request()) {
         original_show(self, on, mode, transition);
@@ -201,6 +305,12 @@ bool SK_THISCALL message(void* self, uint32_t type, void* data)
         if(type==0x070B18C7 && data && readable(data,12)) {
             int choice=field<int>(data,8);
             if(choice==1 || choice==2) {
+                if (g_preview) {
+                    // Editor results return to the shared immutable draft. They
+                    // never enter quickplay Replay or captain progression saves.
+                    if (g_preview->launched && self == play_mode() && preview_bound(true)) preview_return();
+                    return false;
+                }
                 adventure_results::accepted(self,choice);
                 bool accepted=adventure::results_accepted(choice==2);
                 if(choice==2 && accepted) coop_ui::open(true);
@@ -417,7 +527,7 @@ void SK_THISCALL record_statistic(void* self, uint32_t statistic, const dbpf::Ke
 {
     // The native results panel submits these two adventure result statistics to
     // Pollinator. Keep local captain progression and the rest of its result UI intact.
-    if (g_coop_attempt && asset && *asset == g_score_adventure &&
+    if (g_coop_attempt && asset && (*asset == g_score_adventure || *asset == g_score_local_adventure) &&
         (statistic == 0x2D59837B || statistic == 0x706CCB27)) {
         ++g_suppressed_scores;
         return;
@@ -430,6 +540,31 @@ bool launch(const dbpf::Key& adventure, const dbpf::Key& captain, std::string& e
     if (!available() || !adventure.instance || !captain.instance) {
         error = unavailable();
         return false;
+    }
+    if (g_preview) {
+        if (!preview_attempt() || adventure != g_preview->config.adventure ||
+            captain != g_preview->config.authored_avatar || !preview_bound(false) || g_preview->returning) {
+            error = "The shared editor playtest no longer matches its confirmed draft.";
+            return false;
+        }
+        g_preview->run = adventure::current()->run_id;
+        g_coop_attempt = true;
+        g_score_adventure = adventure;
+        const auto& local = g_preview->snapshot.source;
+        g_score_local_adventure = {local.instance, local.type, local.group};
+        coop_ui::close_for_adventure_launch();
+        g_replay = true;
+        const uint64_t generation = g_preview_generation;
+        auto native_launch = g_preview->config.launch;
+        const bool entered = native_launch(error);
+        g_replay = false;
+        if (!entered || generation != g_preview_generation || !preview_current() || !preview_bound(true)) {
+            if (error.empty()) error = "The native shared editor playtest did not start.";
+            return false;
+        }
+        g_preview->launched = true;
+        error.clear();
+        return true;
     }
     // Match the native quick-play request (DFBDE9 and DFBF25), then enter through
     // the game's loading screen rather than entering Scenario directly from Present.
@@ -447,6 +582,7 @@ bool launch(const dbpf::Key& adventure, const dbpf::Key& captain, std::string& e
     field<int>(request, 0x28) = 1;
     g_coop_attempt = true;
     g_score_adventure = adventure;
+    g_score_local_adventure = {};
     g_replay = true;
     // A visible preparation dialog can hold native loading completion. This
     // callback already runs outside the frame, so hide it before mode entry.
@@ -479,10 +615,15 @@ bool loaded(const dbpf::Key& key)
     void* object = scenario();
     void* play = play_mode();
     void* data = object ? field<void*>(object, 0x74) : nullptr;
-    if (g_initializing || !play || !data || !readable(data, 0x128) || !field<bool>(data, 0x124) || !game::avatar()) return false;
+    if (g_initializing || !play || !data || !readable(data, 0x128) || !game::avatar()) return false;
     void* resource = field<void*>(data, 0x10);
     void* loading = cdecl_call<void*>(H->sym("SporeCoop::Adventure::LoadingScreenGet"));
-    return resource && readable(resource, 0x14) && field<dbpf::Key>(resource, 8) == key &&
+    if (g_preview) {
+        return preview_attempt() && g_preview->launched && !g_preview->returning && key == g_preview->config.adventure &&
+            preview_bound(true) && !field<bool>(data, 0x14) &&
+            loading && readable(loading, 0x371) && !field<bool>(loading, 0x370);
+    }
+    return field<bool>(data, 0x124) && resource && readable(resource, 0x14) && field<dbpf::Key>(resource, 8) == key &&
            !field<bool>(data, 0x14) && field<int>(object, 0xCC) == 2 &&
            loading && readable(loading, 0x371) && !field<bool>(loading, 0x370);
 }
@@ -531,6 +672,41 @@ void apply(const std::vector<ga::Captain>& captains)
     }
 }
 } // namespace
+
+bool set_editor_preview(EditorPreview config, std::string& error)
+{
+    if (!H || !available() || g_preview || adventure::active() || adventure::outcome_locked() || adventure::cleanup_pending() ||
+        !connected() || std::all_of(config.project.begin(), config.project.end(), [](uint8_t v) { return v == 0; }) ||
+        !config.epoch || !config.round || !config.adventure.instance || config.adventure.type != 0x366A930D ||
+        !config.authored_avatar.instance || !config.authored_avatar.type ||
+        !config.current || !config.launch || !config.return_editor || !config.current()) {
+        error = "The shared editor playtest has no current confirmed draft or native adventure adapter.";
+        return false;
+    }
+    Preview preview;
+    preview.config = std::move(config);
+    if (!editor_native::capture(preview.snapshot, error)) return false;
+    preview.mode = scenario();
+    preview.data = preview.mode ? field<void*>(preview.mode, 0x74) : nullptr;
+    preview.resource = readable(preview.data, 0x128) ? field<void*>(preview.data, 0x10) : nullptr;
+    if (!preview.snapshot.source.instance || preview.snapshot.source.type != 0x366A930D ||
+        preview.snapshot.bytes.empty() ||
+        dbpf::Key{preview.snapshot.captain.instance, preview.snapshot.captain.type, preview.snapshot.captain.group} != preview.config.authored_avatar) {
+        error = "The editor playtest requires its current saved draft and authored captain.";
+        return false;
+    }
+    g_preview = std::move(preview);
+    if (!preview_bound(false)) {
+        g_preview.reset();
+        error = "The native editor identity changed while preparing its shared playtest.";
+        return false;
+    }
+    ++g_preview_generation;
+    error.clear();
+    return true;
+}
+bool editor_preview() { return g_preview.has_value(); }
+void clear_editor_preview() { ++g_preview_generation; g_preview.reset(); }
 
 bool init(const SkHost* host, SkMod* mod, Ctx context)
 {
@@ -711,9 +887,25 @@ adventure::Ctx coordinator_context()
     adventure::Ctx context;
     context.sess = C.sess; context.feed = C.feed; context.invalidate_ready = C.invalidate_ready;
     context.native_available = available; context.native_reason = unavailable;
-    context.collect = adventure_collect::collect;
+    context.collect = [](const dbpf::Key& root, std::vector<dbpf::Record>& records, std::string& error) {
+        if (!g_preview) return adventure_collect::collect(root, records, error);
+        if (!preview_attempt() || root != g_preview->config.adventure || !preview_bound(false) || g_preview->returning) {
+            error = "The shared editor draft changed before playtest content collection.";
+            return false;
+        }
+        g_preview->run = adventure::current()->run_id;
+        return adventure_collect::collect_snapshot(root, g_preview->snapshot.bytes, records, error);
+    };
+    context.content_registration = content_registration;
     context.captain_validated = adventure_captains::validated;
     context.choose_captain = [](const dbpf::Key& locked, auto selected) {
+        if (g_preview) {
+            if (!preview_attempt() || locked != g_preview->config.authored_avatar || g_preview->returning ||
+                !adventure_captains::choose(locked, std::move(selected))) {
+                adventure::cancel("The shared editor playtest captain no longer matches its confirmed draft.");
+            } else g_preview->run = adventure::current()->run_id;
+            return;
+        }
         coop_ui::open(false);
         auto confirmed = [selected = std::move(selected)](const dbpf::Key& key) {
             selected(key);
@@ -741,6 +933,14 @@ adventure::Ctx coordinator_context()
         if (!frozen && adventure::running()) coop_ui::open(false);
     };
     auto restore_menu = [] {
+        if (g_preview) {
+            // The editor controller owns the return transition and restoration.
+            // Preparation cancellation must not switch the native app to Galaxy.
+            adventure_captains::close_picker();
+            adventure_native::reset();
+            preview_return();
+            return;
+        }
         g_frozen = false;
         adventure_captains::close_picker();
         adventure_native::reset();
@@ -766,7 +966,7 @@ adventure::Ctx coordinator_context()
     context.sample = sample; context.apply = apply; context.source = adventure_world::source;
     context.native_result = adventure_world::apply_result;
     context.native_result_applied = [](bool success) { return adventure_world::result_applied(adventure::outcome_run(), success); };
-    context.prepare_result_exit=adventure_results::prepare_exit;
+    context.prepare_result_exit=[] { return g_preview ? true : adventure_results::prepare_exit(); };
     context.native_settling = [] {
         const auto* d = adventure::current();
         return d && ((adventure_flow::release_pending() && adventure_flow::scene().run == d->run_id) ||
@@ -780,6 +980,8 @@ adventure::Ctx coordinator_context()
 
 void tick(double now) {
     g_now = now;
+    schedule_preview_ready();
+    schedule_preview_intro();
     if ((g_intro_settling || g_talk.settling()) && now >= g_settling_deadline && !g_settling_timeout_queued) {
         g_settling_timeout_queued = true;
         struct Timeout { uint64_t run, intro_generation, talk_generation; };
@@ -849,7 +1051,7 @@ void reset()
     adventure_captains::reset(); adventure_world::reset();
     adventure_relationships::reset();
 }
-void shutdown() { reset(); }
+void shutdown() { reset(); clear_editor_preview(); }
 std::string status()
 {
     auto social = adventure_social::counters();

@@ -30,6 +30,12 @@ int main()
           "cancelled preparation restores the party lobby");
     check(select_page(true, false, true, false) == Page::AdventureSettings,
           "adventure difficulty is available before choosing an adventure");
+    check(select_page(true, false, false, false, true) == Page::Editor,
+          "shared authoring has its own controls");
+    check(select_page(false, false, false, false, true) == Page::Connect,
+          "editor controls cannot survive losing the party");
+    check(select_page(true, true, false, false, true) == Page::Preparation,
+          "an editor playtest uses the existing captain preparation view");
     std::printf("UI page routing: %s\n", failures ? "FAIL" : "PASS");
     return failures ? 1 : 0;
 }

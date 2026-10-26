@@ -732,6 +732,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx ctx)
     assets.sess = C.sess;
     assets.feed = C.feed;
     assets.collect = C.collect;
+    assets.registration_policy = C.content_registration;
     assets.prepared = prepared;
     assets.peer_prepared = peer_prepared;
     assets.failed = [](uint64_t run, const std::string& error) {
@@ -799,6 +800,7 @@ void captain_progress(ga::PreparationStage stage, uint8_t progress)
 bool active() { return g_phase != Phase::Idle && g_phase != Phase::Ended; }
 bool running() { return g_phase == Phase::Running; }
 bool native_attempt() { return outcome_locked() || (active() && (g_launch_started || g_phase==Phase::Running)); }
+bool cleanup_pending() { return g_cleaning; }
 bool outcome_locked() { return g_outcome_run && g_outcome_run == g_descriptor.run_id; }
 uint64_t outcome_run() { return outcome_locked() ? g_outcome_run : 0; }
 bool captain_state(uint8_t player, CaptainState& state)
@@ -892,7 +894,7 @@ bool request_play(const Key& key, const Key& locked)
     // Every participant explicitly confirms after reviewing the shared lobby.
     g_ready = false;
     if (!adventure_assets::prepare(descriptor.run_id, key)) {
-        abort_run("Adventure content preparation could not be started.", true);
+        if (active()) abort_run("Adventure content preparation could not be started.", true);
         return false;
     }
     return true;
@@ -1013,7 +1015,7 @@ void on_message(uint8_t from, net::Reader& r)
         if (g_waiting) { g_phase = Phase::Ended; return; }
         std::string why = unavailable();
         if (!why.empty()) { abort_run(why, true); return; }
-        if (!adventure_assets::prepare(descriptor.run_id, descriptor.adventure))
+        if (!adventure_assets::prepare(descriptor.run_id, descriptor.adventure) && active())
             abort_run("Adventure content receiver could not be prepared.", true);
         return;
     }

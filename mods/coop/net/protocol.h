@@ -12,7 +12,7 @@
 namespace net {
 
 constexpr uint32_t kMagic = 0x4F435053; // 'SPCO'
-constexpr uint16_t kProtoVersion = 15; // 3: shared resources; 4: lobby/discovery; 5: 128-packet acks;
+constexpr uint16_t kProtoVersion = 16; // 3: shared resources; 4: lobby/discovery; 5: 128-packet acks;
                                       // 6: connection id/BYE; 7: upstream Space features and GA runs;
                                       // 8: GA preparation; 9: party flow/captain identity;
                                       // 10: static state, interactions and teleport generations;
@@ -21,6 +21,7 @@ constexpr uint16_t kProtoVersion = 15; // 3: shared resources; 4: lobby/discover
                                       // 13: matching native actor follower capabilities (wire/bundles retained)
                                       // 14: matching native party perception (wire/bundles retained)
                                       // 15: verified terminal result acknowledgements and shared menu exit
+                                      // 16: separate project-scoped collaborative Adventure Editor messages
 constexpr uint16_t kDefaultPort = 47810;
 constexpr int kMaxPlayers = 4; // host + 3 guests (Spore pack size)
 constexpr size_t kMaxPacket = 1200;
@@ -81,6 +82,7 @@ enum MsgType : uint8_t {
                           // u32 reaction anim, f32 dna}; 3 guest -> host goal reward {u16 0, key[3],
                           // u8 outcome (6 ally, 5 extinct), f32 dna}, paid once per species and outcome
     MSG_ADVENTURE = 52,  // u8 subkind, run-scoped adventure coordination; 64..71 resource transfer
+    MSG_EDITOR = 53,     // project/epoch-scoped authoring, kept separate from gameplay runs
     MSG_CELL_KO = 44,     // any -> host -> all: u8 player, u8 state (0 up,1 out,2 revived,3 respawned),
                           // u8 tenths of a second left, u8 revive progress 0..255
 };

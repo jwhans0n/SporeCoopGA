@@ -21,6 +21,10 @@ struct Ctx {
     // closure, normalizing server references in an owned scenario copy when needed. No SDK
     // layouts are guessed here: the build-specific runtime supplies the verified collector.
     std::function<bool(const Key&, std::vector<dbpf::Record>&, std::string&)> collect;
+    // Resolve once for this run/key and recheck before outside-frame apply.
+    // Cache-only is valid only when a pinned editor draft already owns all
+    // immutable native dependencies. False fails preparation without mounting.
+    std::function<bool(uint64_t, const Key&, bool& cache_only, std::string&)> registration_policy;
     std::function<void(uint64_t run, const Key&, const std::string& hash)> prepared;
     std::function<void(uint8_t peer, uint64_t run, const Key&, const std::string& hash)> peer_prepared;
     std::function<void(uint64_t run, const std::string&)> failed;

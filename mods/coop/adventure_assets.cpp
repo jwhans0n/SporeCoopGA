@@ -23,7 +23,7 @@ static uint64_t g_run, g_generation;
 static Key g_key;
 static content::Bundle g_bundle;
 static content::Receiver g_rx;
-static bool g_preparing, g_prepared, g_applying;
+static bool g_preparing, g_prepared, g_applying, g_cache_only;
 static std::string g_error;
 static std::map<std::string, void*> g_databases;
 static int g_priority = 4000;
@@ -174,7 +174,7 @@ static void forget_database(void* db)
     if (db) skg::vcall<int>((uint8_t*)db + 4, 1); // release our caller reference
 }
 
-static bool apply_bundle(const content::Bundle& b, std::string& error)
+static bool cache_bundle(const content::Bundle& b, std::string& error)
 {
     if (!paths()) { error = "cannot find the isolated adventure content cache"; return false; }
     for (size_t i = 0; i < b.records.size(); ++i)
@@ -182,6 +182,12 @@ static bool apply_bundle(const content::Bundle& b, std::string& error)
             error = "cannot cache an adventure resource";
             return false;
         }
+    return true;
+}
+
+static bool apply_bundle(const content::Bundle& b, std::string& error)
+{
+    if (!cache_bundle(b, error)) return false;
     if (auto it = g_databases.find(b.hash); it != g_databases.end()) {
         // A previous run may have registered another version under the same resource keys.
         // Promote this cached database again instead of letting that other version shadow it.
@@ -238,7 +244,14 @@ static void apply_task(void* arg)
     std::unique_ptr<ApplyTask> task((ApplyTask*)arg);
     if (task->generation != g_generation || task->run != g_run) return;
     std::string error;
-    if (!apply_bundle(task->bundle, error)) { fail(task->run, error, task->guest); return; }
+    bool cache_only = false;
+    if ((C.registration_policy && !C.registration_policy(task->run, g_key, cache_only, error)) || cache_only != g_cache_only) {
+        fail(task->run, error.empty() ? "adventure content registration ownership changed during preparation" : error, task->guest);
+        return;
+    }
+    if (!(cache_only ? cache_bundle(task->bundle, error) : apply_bundle(task->bundle, error))) {
+        fail(task->run, error, task->guest); return;
+    }
     g_bundle = std::move(task->bundle);
     g_preparing = false;
     g_prepared = true;
@@ -283,6 +296,7 @@ void reset()
     ++g_generation;
     g_run = 0; g_key = {}; g_bundle = {}; g_rx.reset(); g_out.clear();
     g_preparing = g_prepared = g_applying = false;
+    g_cache_only = false;
     g_error.clear();
 }
 
@@ -291,6 +305,11 @@ bool prepare(uint64_t run, const Key& key)
     if (!H || !C.sess || !C.sess->connected() || !run || !key.instance || !key.type) return false;
     reset();
     g_run = run; g_key = key; g_preparing = true;
+    std::string error;
+    if (C.registration_policy && !C.registration_policy(run, key, g_cache_only, error)) {
+        fail(run, error.empty() ? "adventure content registration ownership is unavailable" : error, !host());
+        return false;
+    }
     if (host()) H->run_outside_frame(collect_task, new CollectTask{g_generation, run, key});
     return true;
 }
@@ -425,10 +444,10 @@ uint8_t progress()
 std::string status()
 {
     char b[256];
-    snprintf(b, sizeof b, "adventure content: run=%llu %s resources=%u bytes=%u receive=%u/%u peers=%u registered=%u",
+    snprintf(b, sizeof b, "adventure content: run=%llu %s resources=%u bytes=%u receive=%u/%u peers=%u registered=%u cache_only=%u",
              (unsigned long long)g_run, g_prepared ? "prepared" : g_preparing ? "preparing" : "idle",
              (unsigned)g_bundle.records.size(), g_bundle.bytes, g_rx.received(), g_rx.bytes(),
-             (unsigned)g_out.size(), (unsigned)g_databases.size());
+             (unsigned)g_out.size(), (unsigned)g_databases.size(), unsigned(g_cache_only));
     return std::string(b) + (g_error.empty() ? "" : " error=" + g_error) + "\n";
 }
 
