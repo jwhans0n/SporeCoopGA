@@ -55,6 +55,9 @@ struct AdventureMessage {
 std::deque<AdventureMessage> adventure_messages;
 size_t adventure_message_bytes;
 uint64_t sequence, native_generation, last_renew, last_presence, last_request, last_lease_use;
+editor::wire::Context observed_lease_context;
+editor::Peer observed_lease_peer;
+std::set<std::pair<editor::Scope, uint64_t>> observed_lease_grants;
 uint64_t last_preview;
 bool preview_active;
 std::optional<editor::wire::Presence> last_presence_value;
@@ -480,6 +483,25 @@ bool lease(const std::vector<editor::Scope>& scopes) {
     }
     return false;
 }
+void observe_lease_grants() {
+    const auto& view = controller->view();
+    if (view.phase != Phase::Ready || view.context.project != observed_lease_context.project ||
+        view.context.epoch != observed_lease_context.epoch || view.local != observed_lease_peer)
+        observed_lease_grants.clear();
+    observed_lease_context = view.context;
+    observed_lease_peer = view.local;
+    std::set<std::pair<editor::Scope, uint64_t>> current;
+    if (view.phase == Phase::Ready) for (const auto& held : view.local_leases) {
+        if (held.owner != view.local || held.expires <= now_ms()) continue;
+        const auto key = std::make_pair(held.scope, held.token);
+        current.insert(key);
+        // A queued request can wait longer than the unused-ownership timeout.
+        // Start that grace when its valid grant becomes locally usable. Renewal
+        // of an already observed token does not extend idle ownership.
+        if (!observed_lease_grants.contains(key)) last_lease_use = now_ms();
+    }
+    observed_lease_grants = std::move(current);
+}
 editor::Request request(editor::Intent intent) {
     const auto& doc = controller->state().document;
     editor::Request r; r.project = doc.project; r.epoch = doc.epoch;
@@ -797,6 +819,7 @@ void undo_redo(bool redo) {
 }
 void close_session(bool preserve_offer = false) {
     preview_selection.reset();
+    observed_lease_grants.clear();
     if (!closing) { closing = true; close_restored = false; close_preserve_offer = preserve_offer; }
     close_preserve_offer |= preserve_offer || controller->view().phase == Phase::Offered;
     // An accepted edit remains owned until active replicas have applied and
@@ -1012,6 +1035,7 @@ void SK_CDECL drain(void*) {
     try {
         submit_pending_gesture();
         controller->tick(now_ms());
+        observe_lease_grants();
         if (preview_selection && (!same_preview_context(preview_selection->scope) ||
             (controller->view().phase != Phase::Preparing && controller->view().phase != Phase::Playing &&
              controller->view().phase != Phase::Returning))) preview_selection.reset();
@@ -1302,7 +1326,7 @@ void session_ended() {
     refresh();
 }
 void mode_changed(uint32_t, uint32_t) { schedule(); }
-void shutdown() { if (controller) { controller->end(); controller.reset(); } store.close(); adventure_native::clear_editor_preview(); editor_native_save::shutdown(); editor_native::shutdown(); actions.clear(); pending_preview_return.reset(); preview_selection.reset(); queued = false; closing = native_attached = close_restored = close_preserve_offer = false; H = nullptr; }
+void shutdown() { if (controller) { controller->end(); controller.reset(); } store.close(); adventure_native::clear_editor_preview(); editor_native_save::shutdown(); editor_native::shutdown(); actions.clear(); pending_preview_return.reset(); preview_selection.reset(); observed_lease_grants.clear(); queued = false; closing = native_attached = close_restored = close_preserve_offer = false; H = nullptr; }
 bool active() { return cached.active; }
 bool authoring() {
     if (!controller || (controller->view().phase == Phase::Playing && native_playtesting)) return false;

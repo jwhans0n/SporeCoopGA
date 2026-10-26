@@ -1041,4 +1041,51 @@ static void test_conflicting_native_history_releases_document_ownership() {
     CHECK(spin([&]{return std::any_of(host_controller.view().local_leases.begin(),host_controller.view().local_leases.end(),[&](const auto& held){return held.scope==document_scope&&held.owner==host_controller.view().local&&held.expires>clock_ms;});}));
     CHECK(!pending(0)&&!pending(1)&&!awaiting(0)&&!awaiting(1));
 }
-int main(int argc,char** argv){const bool quick=argc==2&&std::string(argv[1])=="--quick";if(argc>1&&!quick)return 2;test_begin_ga_batch_and_end_returning();test_history_entry_rechecks_actual_native_holds();test_preview_return_callbacks_are_scoped_to_one_round();test_preview_restores_latest_independent_selection_before_ack();test_lease_diagnostic_is_bounded_and_read_only();test_conflicting_native_history_releases_document_ownership();test_guest_end_during_unlaunched_preparation_is_retryable();test_drag_preview_bridge_never_authors_remote_state();test_saved_resources_then_next_commit();test_guest_recovery_requires_owned_native_copy();test_pending_undo_keeps_ownership_across_foreign_commit();test_pending_artifacts_obey_capacity_and_preserve_durable_base();test_missing_authored_captain_blocks_prepare();test_uncertain_maintenance_freezes_until_reopen();test_end_waits_for_native_settle_and_retires_once();test_end_does_not_touch_replaced_native_context();test_idle_controller_keeps_owned_native_cleanup_isolated();test_delayed_gesture_cannot_restore_another_editor();test_host_end_delivers_accepted_structural_checkpoint();test_host_end_does_not_wait_for_departed_replica();test_host_end_waits_for_applied_same_revision_save();test_native_frozen_guest_does_not_block_host_close();test_native_recreation_waits_for_actual_next_frame();test_held_native_gesture_is_cancelled_by_end();test_recovery_retires_held_and_delayed_native_captures();test_recovery_wait_does_not_restore_replaced_context();test_native_save_enrichment_survives_edits_save_and_recovery();test_invalid_completed_save_does_not_replace_live_draft();test_opaque_gesture_changes_freeze_before_empty_semantic_return();test_uncaptured_opaque_changes_cannot_save_or_playtest();test_host_apply_rejects_uncaptured_opaque_changes();test_host_native_success_without_projection_cannot_commit();test_guest_native_success_without_projection_freezes_only_replica();test_held_native_gesture_is_fenced_by_generation_or_disconnect();test_held_move_accepts_disjoint_remote_revision();if(!quick)test_large_closure_retained_once_and_delta_recovery();std::printf("editor runtime: %u checks passed\n",checks);}
+static void test_delayed_lease_grant_gets_observed_idle_grace() {
+    Party party;
+    side=1;CHECK(!native[1].callbacks.gate({placement}));
+    const auto requested=runtime_guest::last_lease_use;
+    runtime_guest::tick(now_seconds());run_tasks(1);
+    auto transport_only=[] {
+        for(unsigned i=0;i<8;++i){network();std::this_thread::sleep_for(std::chrono::milliseconds(1));}
+    };
+    transport_only();clock_ms+=6000;
+    side=0;runtime_host::tick(now_seconds());run_tasks(0);transport_only();
+    runtime_guest::last_renew=clock_ms-4001;
+    side=1;runtime_guest::tick(now_seconds());run_tasks(1);
+    CHECK(runtime_guest::controller->view().local_leases.size()==1);
+    CHECK(runtime_guest::last_lease_use==clock_ms&&clock_ms-requested>=6000);
+    const auto granted=runtime_guest::controller->view().local_leases.front();
+    CHECK(granted.expires>clock_ms&&runtime_guest::observed_lease_grants.size()==1);
+    CHECK(native[1].callbacks.gate({placement}));
+    for(unsigned i=0;i<8;++i)step();
+    CHECK(runtime_guest::controller->view().local_leases.size()==1);
+    side=1;editor_native::Gesture gesture;gesture.generation=native[1].state.generation;
+    gesture.before=native[1].snapshot;gesture.after=gesture.before;
+    gesture.after.document.placements.at(placement).position={9,8,7};
+    gesture.after.bytes=body(gesture.after.document);native[1].snapshot=gesture.after;
+    runtime_guest::captured(std::move(gesture));
+    CHECK(runtime_guest::pending&&runtime_guest::awaiting_operation);
+    CHECK(spin([]{return runtime_host::controller->state().document.revision==1&&
+        runtime_guest::controller->state().document.revision==1&&!runtime_guest::awaiting_operation;}));
+    CHECK(spin([]{return runtime_guest::controller->view().local_leases.empty();}));
+    // An unused grant gets a finite grace. Renewing the same token preserves
+    // its original observed-use time rather than holding ownership forever.
+    side=1;CHECK(!native[1].callbacks.gate({placement}));
+    CHECK(spin([]{return !runtime_guest::controller->view().local_leases.empty();}));
+    const auto idle_observed=runtime_guest::last_lease_use;
+    const auto idle_token=runtime_guest::controller->view().local_leases.front().token;
+    clock_ms+=4000;runtime_guest::last_renew=clock_ms-4001;
+    for(unsigned i=0;i<8;++i)step();
+    CHECK(runtime_guest::last_lease_use==idle_observed);
+    CHECK(runtime_guest::controller->view().local_leases.size()==1&&
+        runtime_guest::controller->view().local_leases.front().token==idle_token);
+    clock_ms+=2000;runtime_guest::last_renew=clock_ms-4001;
+    CHECK(spin([]{return runtime_guest::controller->view().local_leases.empty();}));
+    step();CHECK(runtime_guest::observed_lease_grants.empty());
+    CHECK(!runtime_host::frozen&&!runtime_guest::frozen&&!runtime_guest::awaiting_operation);
+    side=1;runtime_guest::end();
+    CHECK(spin([]{return runtime_guest::controller->view().phase==es::Phase::Idle&&!runtime_guest::closing;}));
+    step();CHECK(runtime_guest::observed_lease_grants.empty());
+}
+int main(int argc,char** argv){const bool quick=argc==2&&std::string(argv[1])=="--quick";if(argc>1&&!quick)return 2;test_delayed_lease_grant_gets_observed_idle_grace();test_begin_ga_batch_and_end_returning();test_history_entry_rechecks_actual_native_holds();test_preview_return_callbacks_are_scoped_to_one_round();test_preview_restores_latest_independent_selection_before_ack();test_lease_diagnostic_is_bounded_and_read_only();test_conflicting_native_history_releases_document_ownership();test_guest_end_during_unlaunched_preparation_is_retryable();test_drag_preview_bridge_never_authors_remote_state();test_saved_resources_then_next_commit();test_guest_recovery_requires_owned_native_copy();test_pending_undo_keeps_ownership_across_foreign_commit();test_pending_artifacts_obey_capacity_and_preserve_durable_base();test_missing_authored_captain_blocks_prepare();test_uncertain_maintenance_freezes_until_reopen();test_end_waits_for_native_settle_and_retires_once();test_end_does_not_touch_replaced_native_context();test_idle_controller_keeps_owned_native_cleanup_isolated();test_delayed_gesture_cannot_restore_another_editor();test_host_end_delivers_accepted_structural_checkpoint();test_host_end_does_not_wait_for_departed_replica();test_host_end_waits_for_applied_same_revision_save();test_native_frozen_guest_does_not_block_host_close();test_native_recreation_waits_for_actual_next_frame();test_held_native_gesture_is_cancelled_by_end();test_recovery_retires_held_and_delayed_native_captures();test_recovery_wait_does_not_restore_replaced_context();test_native_save_enrichment_survives_edits_save_and_recovery();test_invalid_completed_save_does_not_replace_live_draft();test_opaque_gesture_changes_freeze_before_empty_semantic_return();test_uncaptured_opaque_changes_cannot_save_or_playtest();test_host_apply_rejects_uncaptured_opaque_changes();test_host_native_success_without_projection_cannot_commit();test_guest_native_success_without_projection_freezes_only_replica();test_held_native_gesture_is_fenced_by_generation_or_disconnect();test_held_move_accepts_disjoint_remote_revision();if(!quick)test_large_closure_retained_once_and_delta_recovery();std::printf("editor runtime: %u checks passed\n",checks);}
