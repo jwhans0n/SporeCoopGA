@@ -145,9 +145,16 @@ class EditorPair:
                 # Leave the verified native placement point free for the
                 # collaborative Create test. Move the original through the
                 # ordinary editor before any party/session ownership begins.
+                host.wait('single native setup placement', lambda: len(self.objects(host)) == 1)
+                # Frame fences alone can finish before an uncapped editor has
+                # loaded the selectable creature model. Use the actual native
+                # projection after a bounded wall-clock settling interval.
+                time.sleep(.6)
                 native_original=self.objects(host)
-                host.click(601,442)
-                self.slow_drag(host,(601,442),(500,442))
+                original_id=next(iter(native_original))
+                start=self.body(host,original_id)
+                host.click(*start)
+                self.slow_drag(host,start,(start[0]-100,start[1]))
                 host.call('wait.frames 25 15000')
                 moved_original=self.objects(host)
                 if (len(native_original)!=1 or set(moved_original)!=set(native_original) or

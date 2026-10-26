@@ -46,6 +46,14 @@ class ComparisonTests(unittest.TestCase):
         self.assertTrue(result['large_editor_gate'])
         self.assertFalse(result['memory_turnover_verified'])
 
+    def test_offline_status_with_following_diagnostics(self):
+        baseline = report()
+        for row in baseline['sessions']:
+            row['party'] = 'offline\nadventure: idle\neditor: detached\n'
+        self.assertTrue(self.run_compare(baseline, report('shared'))['large_editor_gate'])
+        for text in ('', 'editor: offline\n', 'client id=1 connected\noffline\n'):
+            self.assertFalse(perf.offline(text))
+
     def test_budget_boundaries_and_regressions(self):
         for fps, p95, expected in ((90., 23., True), (89.9, 23., False), (100., 23.01, False)):
             current = report('shared')

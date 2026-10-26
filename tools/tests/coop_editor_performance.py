@@ -32,6 +32,11 @@ def values(text):
             for key, value in re.findall(r'\b([a-z_][a-z0-9_]*)=(-?[0-9]+(?:\.[0-9]+)?)(?=\s|$)', text)}
 
 
+def offline(text):
+    # The first line is party state; later lines contain mod diagnostics.
+    return bool(text.splitlines()) and text.splitlines()[0].strip() == 'offline'
+
+
 def configuration(game):
     result = {name: game.call(command) for name, command in (
         ('frame', 'coop.frame_metrics config'), ('background', 'bg'), ('window', 'window'), ('mods', 'mods'))}
@@ -117,7 +122,7 @@ def sample(instance, record, args, barrier=None):
         if args.kind == 'independent' and 'phase=0' not in state_before:
             raise FixtureError('Independent measurement requires an inactive editor coordinator')
         party = game.call('coop.status')
-        if args.kind == 'independent' and party.strip() != 'offline':
+        if args.kind == 'independent' and not offline(party):
             raise FixtureError('Independent native editors must leave the party before baseline measurement')
         if args.kind == 'shared' and not (party.startswith('host port=') or re.match(r'client id=\d+ connected\n', party)):
             raise FixtureError('Shared measurement requires a connected editor party')
@@ -242,7 +247,7 @@ def sessions(report, diagnostic=False):
     if overlap < seconds * .9:
         raise FixtureError('Peer recording intervals did not cover the same workload')
     if report.get('kind') == 'independent':
-        if any(row.get('party', '').strip() != 'offline' for row in rows):
+        if any(not offline(row.get('party', '')) for row in rows):
             raise FixtureError('Independent native baseline still had co-op gameplay enabled')
     elif report.get('kind') == 'shared':
         slots, hosts = [], []
@@ -281,7 +286,7 @@ def compare(args):
         prior = original[instance]
         if row['pid'] != prior['pid'] or row['inspect'] != prior['inspect'] or row['configuration'] != prior['configuration'] or row['projection'] != prior['projection']:
             raise FixtureError('Use the same processes, exact authored fixture/camera and render configuration')
-        if prior.get('party', '').strip() != 'offline':
+        if not offline(prior.get('party', '')):
             raise FixtureError('Independent native baseline still had co-op gameplay enabled')
         if not getattr(args, 'diagnostic', False) and (len(current) not in (2, 4) or baseline['minimum_placements'] < 400 or
                 min(row['counts']['placements'], prior['counts']['placements']) < 400 or
