@@ -1,4 +1,5 @@
 #include "adventure_assets.h"
+#include "package_admission_windows.h"
 
 #include <windows.h>
 
@@ -6,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <limits>
 #include <memory>
 
 #include "sporekit_game.hpp"
@@ -27,6 +29,7 @@ static bool g_preparing, g_prepared, g_applying, g_cache_only;
 static std::string g_error;
 static std::map<std::string, void*> g_databases;
 static int g_priority = 4000;
+static package_admission::ProcessBudget g_admission;
 
 enum Kind : uint8_t { Offer = 64, Record = 65, Need = 66, Chunk = 67, Done = 68, Ack = 69, Error = 70, ManifestDone = 71 };
 constexpr uint16_t kNeedDone = 0xFFFF;
@@ -188,53 +191,67 @@ static bool cache_bundle(const content::Bundle& b, std::string& error)
 static bool apply_bundle(const content::Bundle& b, std::string& error)
 {
     if (!cache_bundle(b, error)) return false;
-    if (auto it = g_databases.find(b.hash); it != g_databases.end()) {
-        // A previous run may have registered another version under the same resource keys.
-        // Promote this cached database again instead of letting that other version shadow it.
-        void* rm = a_Rm ? *(void**)a_Rm : nullptr;
-        if (rm && skg::vcall<bool>(rm, 0x50 / 4, false, it->second, 0) &&
-            skg::vcall<bool>(rm, 0x50 / 4, true, it->second, ++g_priority)) return true;
-        error = "cannot activate the cached adventure package database";
-        return false;
-    }
-    std::wstring path = cached_path(b.hash, L".package");
-    if (!write_file(path, dbpf::write(b.records), true)) { error = "cannot create or validate the immutable adventure package"; return false; }
+    if (g_priority == std::numeric_limits<int>::max()) { error = "Native package priority is exhausted. Restart Spore before importing more content."; return false; }
+    const auto cached = g_databases.find(b.hash);
     void* rm = a_Rm ? *(void**)a_Rm : nullptr;
     if (!rm || !a_New || !a_DbCtor) { error = "adventure package registration symbols are unavailable"; return false; }
-    Key real{};
-    void* resident = skg::vcall<void*>(rm, 0x30 / 4, &b.root, &real, (void*)nullptr);
-    const wchar_t* location = resident ? skg::vcall<const wchar_t*>(resident, 0x28 / 4) : nullptr;
-    std::wstring resident_path;
-    for (size_t i = 0; location && i < 1000 && skg::readable(location + i, sizeof(wchar_t)); ++i) {
-        if (!location[i]) break;
-        resident_path += location[i];
+    std::wstring path = cached_path(b.hash, L".package");
+    if (cached == g_databases.end() && !write_file(path, dbpf::write(b.records), true)) {
+        error = "cannot create or validate the immutable adventure package"; return false;
     }
-    if (!resident_path.empty() && resident_path.size() < 1000 && _wcsicmp(resident_path.c_str(), path.c_str()) == 0) {
-        // Native resource-manager ownership can outlive this DLL's state on reload.
-        // Reuse that database instead of constructing a second handle to its file.
-        skg::vcall<int>((uint8_t*)resident + 4, 0);
-        g_databases[b.hash] = resident;
-        H->log(M, SK_INFO, "adventure content: reused resident package manifest %s", b.hash.c_str());
+    package_admission::Ticket ticket;
+    if (!g_admission.begin(g_dir, b.hash, {b.root.instance, b.root.type, b.root.group}, b.bytes,
+                           cached != g_databases.end(), ticket, error)) return false;
+    auto failed = [&] {
+        std::string why;
+        g_admission.finish(ticket, false, why); // no refund or unsafe native eviction
+        if (!why.empty()) error += (error.empty() ? "" : "; ") + why;
+        return false;
+    };
+    try {
+        if (cached != g_databases.end()) {
+            // Verified same-module exact-owned priority promotion retains our caller reference.
+            // This is not native resource release or an ownership guess after DLL reload.
+            if (skg::vcall<bool>(rm, 0x50 / 4, false, cached->second, 0) &&
+                skg::vcall<bool>(rm, 0x50 / 4, true, cached->second, ++g_priority))
+                return g_admission.finish(ticket, true, error);
+            error = "cannot activate the cached adventure package database";
+            return failed();
+        }
+        Key real{};
+        void* resident = skg::vcall<void*>(rm, 0x30 / 4, &b.root, &real, (void*)nullptr);
+        const wchar_t* location = resident ? skg::vcall<const wchar_t*>(resident, 0x28 / 4) : nullptr;
+        std::wstring resident_path;
+        for (size_t i = 0; location && i < 1000 && skg::readable(location + i, sizeof(wchar_t)); ++i) {
+            if (!location[i]) break;
+            resident_path += location[i];
+        }
+        if (!resident_path.empty() && resident_path.size() < 1000 && _wcsicmp(resident_path.c_str(), path.c_str()) == 0) {
+            error = "an imported database is resident without current-module ownership; restart Spore";
+            return failed(); // never take another caller AddRef from an unproven resident
+        }
+        // Process reservation is committed before this first native construction attempt.
+        void* db = skg::cdecl_call<void*>(a_New, 0x388u, "SporeCoop adventure", 0, 0, 0, 0);
+        if (!db) { error = "cannot allocate the adventure package database"; return failed(); }
+        skg::thiscall<void*>(a_DbCtor, db, path.c_str(), (void*)nullptr);
+        skg::vcall<int>((uint8_t*)db + 4, 0); // existing verified caller reference
+        if (!skg::vcall<bool>(db, 0x04 / 4) || !skg::vcall<bool>(db, 0x18 / 4, 1, 6, false)) {
+            skg::vcall<int>((uint8_t*)db + 4, 1);
+            error = "cannot open the adventure package database"; return failed();
+        }
+        if (!skg::vcall<bool>(rm, 0x50 / 4, true, db, ++g_priority)) {
+            skg::vcall<int>((uint8_t*)db + 4, 1);
+            error = "cannot register the adventure package database"; return failed();
+        }
+        g_databases[b.hash] = db;
+        if (!g_admission.finish(ticket, true, error)) return false;
+        H->log(M, SK_INFO, "adventure content: registered %u resources, %u bytes, manifest %s",
+               (unsigned)b.records.size(), b.bytes, b.hash.c_str());
         return true;
+    } catch (...) {
+        error = "an exception interrupted native package admission";
+        return failed(); // preserve charged uncertainty instead of guessing native cleanup
     }
-    void* db = skg::cdecl_call<void*>(a_New, 0x388u, "SporeCoop adventure", 0, 0, 0, 0);
-    if (!db) { error = "cannot allocate the adventure package database"; return false; }
-    skg::thiscall<void*>(a_DbCtor, db, path.c_str(), (void*)nullptr);
-    skg::vcall<int>((uint8_t*)db + 4, 0); // caller reference, as in creations.cpp
-    if (!skg::vcall<bool>(db, 0x04 / 4) || !skg::vcall<bool>(db, 0x18 / 4, 1, 6, false)) {
-        skg::vcall<int>((uint8_t*)db + 4, 1);
-        error = "cannot open the adventure package database";
-        return false;
-    }
-    if (!skg::vcall<bool>(rm, 0x50 / 4, true, db, ++g_priority)) {
-        skg::vcall<int>((uint8_t*)db + 4, 1);
-        error = "cannot register the adventure package database";
-        return false;
-    }
-    g_databases[b.hash] = db;
-    H->log(M, SK_INFO, "adventure content: registered %u resources, %u bytes, manifest %s",
-           (unsigned)b.records.size(), b.bytes, b.hash.c_str());
-    return true;
 }
 
 struct ApplyTask { uint64_t generation, run; content::Bundle bundle; bool guest; };
@@ -288,7 +305,15 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
     a_New = H->sym("Memory::operator_new_named");
     a_DbCtor = H->sym("Resource::DatabasePackedFile::ctor");
     a_Rm = H->sym("Resource::ResourceManager_ptr");
+    std::string admission_error;
+    if (!g_admission.init(H, M, admission_error)) H->log(M, SK_WARN, "adventure content: %s", admission_error.c_str());
     return C.sess && a_GetDb && a_New && a_DbCtor && a_Rm;
+}
+
+void shutdown()
+{
+    reset();
+    g_admission.shutdown(); // retain native references and the single process owner handle
 }
 
 void reset()
@@ -448,7 +473,12 @@ std::string status()
              (unsigned long long)g_run, g_prepared ? "prepared" : g_preparing ? "preparing" : "idle",
              (unsigned)g_bundle.records.size(), g_bundle.bytes, g_rx.received(), g_rx.bytes(),
              (unsigned)g_out.size(), (unsigned)g_databases.size(), unsigned(g_cache_only));
-    return std::string(b) + (g_error.empty() ? "" : " error=" + g_error) + "\n";
+    const auto admission = g_admission.accounting();
+    char budget[256];
+    snprintf(budget, sizeof budget, " admission_count=%u admission_payload_bytes=%u admission_limit_count=%u admission_limit_payload_bytes=%u admission_success=%u admission_uncertain=%u admission_boot=%u admission_reload=%u admission_flags=%u",
+             admission.count, admission.bytes, package_admission::kMaxPackages, package_admission::kMaxBytes,
+             admission.successful, admission.uncertain, admission.boot_stage, unsigned(admission.reloaded), admission.flags);
+    return std::string(b) + budget + (g_error.empty() ? "" : " error=" + g_error) + "\n";
 }
 
 } // namespace adventure_assets

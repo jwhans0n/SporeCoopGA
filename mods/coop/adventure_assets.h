@@ -31,6 +31,7 @@ struct Ctx {
 };
 
 bool init(const SkHost* host, SkMod* mod, Ctx ctx);
+void shutdown(); // detach process ledger view; never release live native databases
 // Host: collect and register content. Guest: expect only this run/key from the host.
 bool prepare(uint64_t run, const Key& scenario);
 bool share_with(uint8_t peer);

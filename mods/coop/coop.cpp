@@ -34,6 +34,7 @@
 #include "civ.h"
 #include "autoupdate.h"
 #include "adventure.h"
+#include "adventure_assets.h"
 #include "adventure_captains.h"
 #include "adventure_collect.h"
 #include "adventure_native.h"
@@ -2698,6 +2699,7 @@ void on_unload()
 {
     coop_editor::shutdown();
     adventure::reset();
+    adventure_assets::shutdown();
     adventure_native::shutdown();
     game::set_extra_update_filter(nullptr);
     game::set_npc_ai_filter(nullptr);

@@ -125,6 +125,16 @@ Do not remove project artifacts while a project is active. Resource packages can
 retain native references beyond a playtest; they cannot be deleted or unmounted
 using an arbitrary cache eviction policy.
 
+Native imports have a process-wide admission limit of 32 charged package attempts
+and 256 MiB of validated uncompressed package payload, while each bundle keeps
+its existing 128 MiB limit. Reusing a successfully owned package does not charge
+another import. These are admission limits, not a bound on expanded native heap
+or GPU memory. Failed or interrupted native imports retain their charge; unknown
+ownership prevents more imports. Save the current draft and fully restart Spore
+when the mod requests it. Shared End does not unload packages or reset the limit.
+See the [package ownership notes](re/imported-package-admission.md) for scope and
+validation limits.
+
 For native round-trip investigation, `coop.editor inspect bytes OFFSET COUNT`
 exports at most 4,096 owned serialized bytes per call as hex, together with the
 full snapshot's size and SHA-256. It uses the existing read-only native capture
@@ -220,4 +230,9 @@ advertised operations to pass these gates. Broader editor support remains roadma
 work until it has equivalent evidence.
 
 End shared editing and return to Galaxy before using developer hot reload.
-Unloading the mod during an active native editor gesture is unsupported.
+After any native package was admitted in that process, imports and package reuse
+are refused following a DLL reload because native ownership cannot be proved.
+Fully restart Spore before importing again; saved creations and durable project
+files are retained. A late first load without the normal cold-start lifecycle
+also requires a restart. Unloading during an active native editor gesture is
+unsupported.
