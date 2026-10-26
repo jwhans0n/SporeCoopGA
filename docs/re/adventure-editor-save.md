@@ -583,3 +583,57 @@ passed 2,060 checks, including the earlier history-entry and timing regressions.
 Hashes and commands are recorded in
 `out/editor-return-scope-build/validation.json`. These source/fixture checks do
 not change the running C9 candidate or establish actual native C10 acceptance.
+
+## Final isolated candidate 10 regression sweep
+
+The source snapshot at `0afb659` (including production integration `071f6a4`)
+passed the complete portable `make test` and a fresh exact-20261006 i686
+`test-editor-windows` build with at most two compiler jobs. All 13 Windows
+fixtures then passed, including the full Runtime executable rather than its
+quick subset. All 244 recorded production, test, helper and symbol inputs had
+identical hashes before and after the sweep.
+
+| Fixture | Portable checks | Win32 checks |
+| --- | ---: | ---: |
+| Frame metrics | 15 | 15 |
+| Confirmation metrics | 8 | 8 |
+| Native serialized bindings | 8,224 | 8,224 |
+| Binary delta | 6,410 | 6,410 |
+| Semantic core | 2,753 | 2,753 |
+| Durable store | 2,483 | 2,473 |
+| Protocol | 5,845 | 5,845 |
+| Project and cached Join envelopes | 4,684 | 4,684 |
+| Controller with real UDP and fake native APIs | 14,065 | 8,837 |
+| Native save contract | Not run here | 296 |
+| Owned editor preview contract | Not run here | 74 |
+| Native asset registration policy | Not run here | 253 |
+| Full Runtime orchestration | Not run here | 3,017 |
+
+Controller counts include scheduler-dependent polling assertions. Portable GA
+rules, coordinator, flow, pause, music, asset, actor-motion and control-policy
+regressions also passed. Offline Python checks passed 6 UI-find, 18 performance
+helper and 4 network-proxy tests. Symbol lint reported 344 used symbols, 2,918
+known and zero problems; missing symbols for the frozen unsupported 2016 build
+remain informational. The optional real EditorSaves package read in `net_tests`
+was unavailable in this environment.
+
+The full Runtime case retains a synthetic 24 MiB dependency closure through 20
+structural edits, Save, recovery and a verified cached Join. It recorded initial
+CAS usage 25,166,419 bytes and final usage 25,203,841 bytes. Its cached Join sent
+29,397 host UDP bytes and 751 guest UDP bytes. These are isolated fixture values,
+not measurements of a native adventure, bulk-content contention or game FPS.
+
+All 17 archived GA Windows fixtures were re-executed successfully. Their binary
+hashes match `out/ga-regression-windows-final-tests.json`, and declared Make
+prerequisites required no rebuild. That older archive has no compiled-source
+manifest; these are identified as archived-binary reruns rather than new builds.
+
+Exact commands, output, source hashes and executable hashes are in
+`out/editor-final-c10/validation.json`, with separate portable/build logs,
+Windows results, archived-GA results and source-before/source-after manifests.
+The full Runtime executable SHA-256 is
+`db12769d02842a52c6fb9b822d8ed535bc466e9a4cfa978f57f3d5717ef1a3c7`.
+No mod DLL was built or deployed by this sweep, and no game session or installed
+file was changed. Adapter fixtures substitute native engine APIs; these results
+do not establish broader native editor acceptance, actual network latency or
+the large-editor FPS and sustained-memory gates.

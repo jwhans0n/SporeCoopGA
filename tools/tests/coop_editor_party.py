@@ -40,14 +40,19 @@ def public_command(line):
     command = words[0]
     if command in {'info', 'ping', 'exc', 'game.mode', 'coop.status', 'coop.avatar'}:
         return len(words) == 1
-    if command in {'move', 'click', 'drag', 'button', 'key', 'text', 'shot', 'wait.frames'}:
+    if command == 'coop.frame_metrics':
+        return words[1:] == ['config']
+    if command in {'move', 'click', 'drag', 'button', 'key', 'wheel', 'text', 'shot', 'wait.frames'}:
         return len(words) > 1
     if command == 'coop.editor':
-        return len(words) == 2 and words[1] in {
+        return (len(words) == 2 and words[1] in {
             'status', 'objects', 'check', 'inspect', 'history', 'begin', 'join',
-            'undo', 'redo', 'save', 'playtest', 'return', 'end', 'recover'} or (
+            'undo', 'redo', 'save', 'playtest', 'return', 'end', 'recover', 'leases'} or (
                 len(words) == 3 and words[1] == 'ready' and words[2] in {'0', '1'})
+            or words[1:] in (['timing'], ['timing','reset'], ['timing','stop']))
     if command == 'coop.ui':
+        if len(words) == 4 and words[1] == 'at':
+            return all(re.fullmatch(r'[0-9]{1,4}', value) for value in words[2:])
         return len(words) > 1 and words[1] in {'tree', 'where', 'find', 'findall'}
     if command == 'coop.uistate':
         return len(words) == 1 or len(words) == 2 and words[1] in {'0', '1'}
@@ -109,6 +114,13 @@ def parse_history(text):
         if match:
             entries.append((*map(int, match.groups()[:-1]), match.group(8)))
     return entries
+
+
+def parse_native_history(text):
+    match = re.search(r'\bhistory=(\d+)/(\d+)', text)
+    if not match:
+        raise FixtureError('Native history cursor/size are unavailable: ' + text)
+    return tuple(map(int, match.groups()))
 
 
 def native_play(game):
@@ -344,6 +356,96 @@ class EditorParty(EditorPair):
         self.result['gates']['four_native_baselines'] = True
         self.record('four-player-baseline')
 
+    def objects(self, game):
+        result = super().objects(game)
+        for line in game.call('coop.editor objects').splitlines():
+            identity = re.match(r'(\d+:\d+) ', line)
+            rotation = re.search(r'\brotation=([^ ]+)', line)
+            if identity and identity[1] in result and rotation:
+                value = tuple(map(float,rotation[1].split(',')))
+                if len(value) != 4 or not all(math.isfinite(n) for n in value):
+                    raise FixtureError('Native rotation diagnostic is invalid')
+                result[identity[1]]['rotation'] = value
+        return result
+
+    def body(self, game, object_id):
+        point = super().body(game, object_id)
+        if not (356 <= point[0] < 1024 and 71 <= point[1] < 724):
+            raise FixtureError('Native placement body is outside the visible world viewport: '
+                               + object_id + ' at ' + repr(point))
+        return point
+
+    def palette_create(self, game):
+        # These points have ordinary Alpine placement receipts. Their terrain
+        # validity still depends on the current camera; the enclosing gesture
+        # requires a real canonical Create rather than assuming success.
+        attempts = []
+        for point in ((601,470), (430,470), (625,490)):
+            hits = game.call(f'coop.ui at {point[0]} {point[1]}')
+            controls = re.findall(r'^([0-9A-Fa-f]{8}) ', hits, re.M)
+            clear = ('07625680' in controls and
+                     not any(control.upper().startswith('100A') for control in controls))
+            attempts.append(dict(point=point, hits=hits, clear=clear))
+            if clear:
+                break
+        else:
+            raise FixtureError('Verified palette drop points are covered by native cast controls; '
+                               'move the camera or existing placements through normal input')
+        receipts = self.result.setdefault('palette_drop_checks', [])
+        receipts.append(dict(instance=game.instance, attempts=attempts, chosen=point))
+        del receipts[:-128]
+        self.write()
+        self.slow_drag(game, (88,170), point)
+
+    def cold_recovery(self):
+        if not self.args.cold_baseline:
+            raise FixtureError('Cold recovery requires the captured closed-profile baseline')
+        baseline = json.loads(self.args.cold_baseline.read_text(encoding='utf-8'))
+        durable = baseline['verified_store']
+        expected = baseline['expected_before_cold'][0]
+        for game in self.all_games:
+            game.dismiss_registration()
+            if not game.menu():
+                raise FixtureError('True cold recovery must start from Galaxy on every fresh process')
+        self.host.call(f'coop.host {self.args.port} EditorColdRecoveryHost')
+        for game in self.all_games[1:]:
+            game.call(f'coop.join 127.0.0.1:{self.args.port} EditorColdRecovery{game.instance}')
+            game.wait('party connection before cold recovery', lambda g=game: 'connected' in g.call('coop.status'))
+        self.host.call('coop.editor recover')
+        self.host.wait('cold host durable native recovery', lambda: status(self.host).get('phase') == 4 and status(self.host).get('ready'))
+        self.join()
+        self.converge(durable['revision'])
+        if parse_identity(status(self.host)['text'])[0] != durable['project']:
+            raise FixtureError('Cold recovery changed the persistent project identity')
+        old_history = parse_history(expected['history'])
+        old_semantic = re.search(r'document_semantic_sha256=([0-9a-f]{64})', expected['inspect'])[1]
+        for game in self.all_games:
+            inspected = game.call('coop.editor inspect')
+            opaque = re.search(r'native_sha256=([0-9a-f]{64})', inspected)
+            semantic = re.search(r'document_semantic_sha256=([0-9a-f]{64})', inspected)
+            if not opaque or opaque[1] != durable['native_sha256'] or not semantic or semantic[1] != old_semantic:
+                raise FixtureError('Cold native recovery changed opaque or normalized semantic content')
+            if parse_history(game.call('coop.editor history')) != old_history:
+                raise FixtureError('Cold recovery changed original author gestures or inverse history')
+        before = {key:{k:v for k,v in row.items() if k != 'screen'} for key,row in self.objects(self.host).items()}
+        self.record('true-cold-recovered-c8-draft')
+        self.gesture(self.host,'cold-recovered-own-native-undo',lambda:self.hotkey(self.host,'z'))
+        self.gesture(self.host,'cold-recovered-own-native-redo',lambda:self.hotkey(self.host,'y'))
+        after = {key:{k:v for k,v in row.items() if k != 'screen'} for key,row in self.objects(self.host).items()}
+        if before != after:
+            raise FixtureError('Cold recovered Undo/Redo did not restore exact stable placements')
+        self.result['cold_recovered_revision'] = durable['revision']
+        self.result['cold_recovered_project'] = durable['project']
+        self.result['gates']['true_cold_host_recovery'] = True
+        self.result['unvalidated'] = [item for item in self.result['unvalidated'] if item != 'cold-process checkpoint recovery']
+        self.result['unvalidated'].append('guest imported checkpoint recovery with mandatory new native Save As')
+        self.record('cold-recovered-native-history-converged')
+        self.host.call('coop.editor end')
+        self.host.wait('all cold-recovered editors detached',lambda:all(status(g).get('phase') == 0 for g in self.all_games))
+        for game in self.all_games:
+            self.exit_editor(game)
+        self.record('cold-recovery-ended-at-Galaxy')
+
     def move_object(self, game, object_id, horizontal=45):
         source = self.body(game, object_id)
         target = (max(180, min(880, source[0] + horizontal)), max(250, min(620, source[1] - 8)))
@@ -358,17 +460,36 @@ class EditorParty(EditorPair):
             super().hotkey(game, key)
 
     def edit(self):
+        for game in self.all_games:
+            game.call('coop.uistate 0')
+        time.sleep(1.4)
+        baseline = self.objects(self.host)
+        if len(baseline) != 1:
+            raise FixtureError('Safe per-author creation requires the fresh one-placement Alpine baseline')
+        original = next(iter(baseline))
+        def clear_land_point():
+            self.slow_drag(self.host, self.body(self.host, original), (430, 422))
+        self.gesture(self.host, 'clear-verified-601-land-point', clear_land_point)
+        if self.objects(self.host)[original]['position'] == baseline[original]['position']:
+            raise FixtureError('The original native actor did not leave the verified creation point')
+        self.result['creation_calibration'] = {
+            'source': [601,470], 'original': original, 'baseline': baseline[original],
+            'reason': 'Native unshared650470 can bury an unselectable actor; use verified land and avoid overlap'}
         for index, game in enumerate(self.all_games):
             game.call('coop.uistate 0')
             before = self.objects(self.host)
-            self.gesture(game, f'author-{index}-create', lambda g=game, n=index: self.slow_drag(g, (88,170), (430+n*100,450+(n%2)*55)))
+            self.gesture(game, f'author-{index}-create', lambda g=game: self.palette_create(g))
             added = set(self.objects(self.host)) - set(before)
             if len(added) != 1:
                 raise FixtureError('Create must add exactly one stable placement')
             object_id = added.pop(); self.created[game.instance] = object_id
             self.result['authored_placements'] = self.created.copy()
+            self.selected(game, object_id)
             before_move = self.objects(self.host)[object_id]['position']
-            self.gesture(game, f'author-{index}-move', lambda g=game, obj=object_id: self.move_object(g,obj,35))
+            radius = math.sqrt(sum(n*n for n in before_move))
+            if radius < 545:
+                raise FixtureError('The new native actor is below the verified601470 land fixture: radius=' + str(radius))
+            self.gesture(game, f'author-{index}-move', lambda g=game, obj=object_id, n=index: self.move_object(g,obj,-35-30*n))
             after_move = self.objects(self.host)[object_id]['position']
             if after_move == before_move:
                 raise FixtureError('New native model was not interactable after Create')
@@ -383,8 +504,33 @@ class EditorParty(EditorPair):
     def concurrent(self):
         if len(self.created) != 4:
             raise FixtureError('Concurrent UI checks require the per-author edit stage')
+        # Build real, independently selectable targets through normal UI. Native
+        # cast icons deliberately group when their rectangles overlap; the
+        # compact first-operation row is not a valid cross-player hit fixture.
+        for participant in self.all_games:
+            participant.call('coop.uistate 0')
+        time.sleep(1.4)
+        for index, game in enumerate(self.all_games):
+            before = self.objects(self.host)
+            self.gesture(game,f'concurrent-author-{index}-create',lambda g=game:self.palette_create(g))
+            added = set(self.objects(self.host)) - set(before)
+            if len(added) != 1:
+                raise FixtureError('Concurrent fixture Create did not allocate one stable placement')
+            object_id = added.pop(); self.selected(game,object_id)
+            def spread(g=game,obj=object_id,n=index):
+                source = self.body(g,obj)
+                self.slow_drag(g,source,(430+80*n,522))
+            self.gesture(game,f'concurrent-author-{index}-spaced-move',spread)
+            self.created[game.instance] = object_id
+        projected = [self.objects(self.host)[self.created[g.instance]]['screen'] for g in self.all_games]
+        if any(p is None for p in projected) or any(math.dist(a,b)<60 for i,a in enumerate(projected) for b in projected[i+1:]):
+            raise FixtureError('Concurrent native cast icons are not independently selectable at60px spacing')
+        for game in self.all_games:
+            self.selected(game,self.created[game.instance])
+        self.result['authored_placements'] = self.created.copy()
+        self.result['concurrent_targets'] = projected; self.record('four-independent-native-hit-targets')
         for conflict in (False, True):
-            games = self.all_games[1:3]
+            games = self.all_games[1:3] if conflict else self.all_games
             objects = [self.created[game.instance] for game in games]
             if conflict: objects[1] = objects[0]
             start_revision = status(self.host)['revision']
@@ -395,14 +541,14 @@ class EditorParty(EditorPair):
                 def move(pair):
                     game, obj = pair
                     source = self.body(game,obj); barrier.wait(timeout=10)
-                    self.slow_drag(game,source,(source[0]+30,source[1]-8))
-                with ThreadPoolExecutor(max_workers=2) as pool:
+                    self.slow_drag(game,source,(source[0]+(-8 if conflict else 8),source[1]-3))
+                with ThreadPoolExecutor(max_workers=len(pending)) as pool:
                     list(pool.map(move,pending))
                 time.sleep(2); self.converge()
                 delta = status(self.host)['revision'] - start_revision
-                if delta >= (1 if conflict else 2):
+                if delta >= (1 if conflict else 4):
                     break
-            expected = (1,2) if conflict else (2,)
+            expected = (1,2) if conflict else (4,)
             if delta not in expected:
                 raise FixtureError('Concurrent gestures did not serialize within their expected revision count: ' + str(delta))
             now = self.objects(self.host)
@@ -411,6 +557,120 @@ class EditorParty(EditorPair):
             self.result['gates']['concurrent_same_placement' if conflict else 'concurrent_disjoint'] = {
                 'accepted_gestures': delta, 'meaning': 'serialized or one noncommitted; UI timing does not prove simultaneous lease ownership'}
             self.record('concurrent-conflict' if conflict else 'concurrent-disjoint')
+
+    def structural(self, instances=None):
+        if len(self.created) != 4:
+            raise FixtureError('Per-author structural checks require the saved four-author edit identities')
+        for game in self.all_games:
+            game.call('coop.uistate 0')
+        time.sleep(1.4)
+        for index, game in enumerate(self.all_games):
+            if instances is not None and game.instance not in instances:
+                continue
+            source_id = self.created[game.instance]
+            before = self.objects(self.host)
+            def clone():
+                source = self.body(game, source_id)
+                try:
+                    game.call('key alt down')
+                    self.slow_drag(game, source, (430, source[1]))
+                finally:
+                    game.call('key alt up')
+            self.gesture(game, f'author-{index}-clone', clone)
+            added = set(self.objects(self.host)) - set(before)
+            if len(added) != 1:
+                raise FixtureError('Clone must allocate exactly one new stable placement')
+            clone_id = added.pop()
+            self.selected(game, clone_id)
+            clone_state = self.objects(self.host)[clone_id]
+            if clone_state['class'] != before[source_id]['class'] or clone_state['position'] == before[source_id]['position']:
+                raise FixtureError('Clone failed to preserve the source class and final native gesture pose')
+            # Native selection is already verified. Del acts on that selection;
+            # clicking an overlapping icon again could choose a different group.
+            self.gesture(game, f'author-{index}-delete-clone', lambda g=game:g.call('key del'))
+            if clone_id in self.objects(self.host):
+                raise FixtureError('Native Delete did not remove the selected clone')
+            self.gesture(game, f'author-{index}-undo-delete', lambda g=game:self.hotkey(g,'z'))
+            restored = self.objects(self.host).get(clone_id)
+            if not restored or any(restored[k] != clone_state[k] for k in ('class','position','scale')):
+                raise FixtureError('Undo Delete did not restore the exact cloned identity and values')
+            self.gesture(game, f'author-{index}-undo-clone', lambda g=game:self.hotkey(g,'z'))
+            if clone_id in self.objects(self.host):
+                raise FixtureError('Undo Clone did not remove its original allocated identity')
+            self.gesture(game, f'author-{index}-redo-clone', lambda g=game:self.hotkey(g,'y'))
+            restored = self.objects(self.host).get(clone_id)
+            if not restored or any(restored[k] != clone_state[k] for k in ('class','position','scale')):
+                raise FixtureError('Redo Clone did not restore its original allocated identity and values')
+            self.gesture(game, f'author-{index}-redo-delete', lambda g=game:self.hotkey(g,'y'))
+            after = self.objects(self.host)
+            if set(before) != set(after) or any(any(before[key][k] != after[key][k] for k in ('class','position','scale')) for key in before):
+                raise FixtureError('Clone/Delete history altered an unrelated authored placement')
+            self.record(f'author-{index}-clone-delete-history-complete')
+        self.result['gates']['four_authors_clone_delete_native_history' if instances is None else 'selected_authors_clone_delete_native_history'] = True
+
+    def history_conflict(self):
+        if len(self.created) != 4:
+            raise FixtureError('History conflict checks require the spaced concurrent fixture identities')
+        a,b = self.all_games[1:3]
+        target = self.created[a.instance]
+        for game in self.all_games:
+            game.call('coop.uistate 0')
+        time.sleep(1.4)
+        original = self.objects(self.host)
+        self.gesture(a,'history-earlier-independent-create',lambda:self.palette_create(a))
+        independent = set(self.objects(self.host)) - set(original)
+        if len(independent) != 1:
+            raise FixtureError('History fixture requires one earlier independent own action')
+        independent = independent.pop()
+        independent_state = self.objects(self.host)[independent]
+        self.gesture(a,'history-latest-own-move',lambda:self.move_object(a,target,8))
+        own_position = self.objects(self.host)[target]['position']
+        self.gesture(b,'history-other-author-conflict',lambda:self.move_object(b,target,-8))
+
+        def blocked(game,key,label):
+            revision = status(self.host)['revision']
+            before = self.converge()
+            history = [parse_history(g.call('coop.editor history')) for g in self.all_games]
+            cursor = parse_native_history(status(game)['text'])
+            explained = False
+            for attempt in range(5):
+                self.hotkey(game,key);time.sleep(2)
+                if status(self.host)['revision'] != revision or self.converge() != before:
+                    raise FixtureError('Blocked native history changed the draft or skipped an older action')
+                if 'The edited field changed; no older action was selected.' in status(game)['text']:
+                    explained = True;break
+            if not explained:
+                raise FixtureError('Blocked native history did not report the checked-field conflict')
+            if history != [parse_history(g.call('coop.editor history')) for g in self.all_games] or cursor != parse_native_history(status(game)['text']):
+                raise FixtureError('Blocked native history changed original gesture flags or the native cursor')
+            if self.objects(self.host)[independent]['position'] != independent_state['position']:
+                raise FixtureError('Blocked history changed the earlier independent action')
+            self.record(label)
+
+        blocked(a,'z','blocked-own-undo-no-skip')
+        self.gesture(b,'history-resolve-other-author-undo',lambda:self.hotkey(b,'z'))
+        # Another author's Undo is itself a new revision. V1 does not silently
+        # rebase A's old inverse across that foreign operation, even when poses
+        # happen to match. Keep that conservative rejection explicit.
+        blocked(a,'z','foreign-undo-does-not-rebase-older-own-history')
+        before_redo = self.objects(self.host)
+        self.gesture(a,'redo-fixture-new-own-create',lambda:self.palette_create(a))
+        added = set(self.objects(self.host)) - set(before_redo)
+        if len(added) != 1:
+            raise FixtureError('Redo conflict fixture requires one new owned placement')
+        redo_object = added.pop(); self.selected(a,redo_object)
+        def spaced_redo():
+            source = self.body(a,redo_object);self.slow_drag(a,source,(430,592))
+        self.gesture(a,'redo-fixture-spaced-own-move',spaced_redo)
+        self.gesture(a,'redo-fixture-latest-own-move',lambda:self.move_object(a,redo_object,8))
+        self.gesture(a,'redo-fixture-own-undo',lambda:self.hotkey(a,'z'))
+        self.gesture(b,'redo-fixture-conflicting-foreign-move',lambda:self.move_object(b,redo_object,8))
+        blocked(a,'y','blocked-own-redo-cursor-unchanged')
+        final = self.objects(self.host)
+        if final[target]['position'] != own_position or final[independent]['position'] != independent_state['position']:
+            raise FixtureError('History conflict checks did not preserve the earlier actions and unrelated values')
+        self.result['gates']['native_blocked_undo_redo_no_skip_or_cursor_change'] = True
+        self.record('checked-native-history-conflicts-complete')
 
     def confirmation(self, count, expected_caption):
         for game in self.active_games:
@@ -472,12 +732,144 @@ class EditorParty(EditorPair):
         if len(self.created) != 4:
             raise FixtureError('Changed edit/preview cycles require the per-author placements')
         for cycle in range(1,self.args.cycles+1):
+            for participant in self.all_games:
+                participant.call('coop.uistate 0')
             game = self.all_games[(cycle-1)%4]; obj = self.created[game.instance]
-            direction = 35 if (cycle-1)//4 % 2 == 0 else -35
+            direction = 10 if (cycle-1)//4 % 2 == 0 else -10
             self.gesture(game,f'cycle-{cycle}-edit',lambda g=game,o=obj,d=direction:self.move_object(g,o,d))
             self.preview(cycle); self.completed_cycles += 1
             self.result['completed_changed_preview_cycles'] = self.completed_cycles; self.write()
         self.result['gates']['twenty_changed_preview_returns'] = self.completed_cycles >= 20
+
+    def camera(self):
+        """Keep every participant's ordinary camera and selection across Test."""
+        revision = status(self.host)['revision']
+        for index, game in enumerate(self.all_games):
+            game.call('coop.uistate 0')
+        time.sleep(1.4)
+        initial = {g.instance:self.objects(g) for g in self.all_games}
+        for index, game in enumerate(self.all_games):
+            # Native wheel input is a local camera operation on clear ground.
+            # Deliver it through the normal input queue and let it settle.
+            game.call('wheel 780 300 ' + str(1 if index % 2 == 0 else -1))
+            game.call('wait.frames 15 15000')
+        time.sleep(1.4)
+        before = {}
+        for game in self.all_games:
+            placements = self.objects(game)
+            if not any(placements[key]['screen'] != initial[game.instance][key]['screen'] for key in placements):
+                raise FixtureError('Ordinary native wheel did not change the local camera')
+            before[str(game.instance)] = dict(placements=placements,
+                selection=status(game).get('selection'), inspect=game.call('coop.editor inspect'))
+            if before[str(game.instance)]['selection'] not in placements:
+                raise FixtureError('Camera/selection return requires a genuinely selected live placement')
+        if status(self.host)['revision'] != revision:
+            raise FixtureError('Ordinary camera movement unexpectedly authored an edit')
+        self.result['camera_before_playtest'] = before; self.record('independent-local-cameras-before-test')
+        self.preview(1)
+        for game in self.all_games:
+            game.call('coop.uistate 0')
+        time.sleep(1.4)
+        after = {}; failures = []
+        for game in self.all_games:
+            current = self.objects(game); previous = before[str(game.instance)]
+            drift = {}
+            for key, value in previous['placements'].items():
+                p, q = value['screen'], current.get(key,{}).get('screen')
+                if p is None or q is None:
+                    if p != q: drift[key] = 'visibility changed'
+                elif math.dist(p,q) >= 1:
+                    drift[key] = math.dist(p,q)
+            selected = status(game).get('selection')
+            after[str(game.instance)] = dict(placements=current,selection=selected,
+                inspect=game.call('coop.editor inspect'),screen_drift=drift)
+            if drift or selected != previous['selection']:
+                failures.append(dict(instance=game.instance,screen_drift=drift,
+                    selection_before=previous['selection'],selection_after=selected))
+        self.result['camera_after_playtest'] = after
+        self.result['camera_failures'] = failures; self.write()
+        if status(self.host)['revision'] != revision:
+            raise FixtureError('Camera/playtest lifecycle changed the authored revision')
+        if failures:
+            raise FixtureError('Native Test did not preserve each local camera/selection: ' + repr(failures))
+        self.result['gates']['independent_camera_selection_return'] = True
+        self.record('independent-local-cameras-preserved')
+
+    def memory(self):
+        """Attribute a long actual native return window after native history caps.
+
+        Completion is not a memory-budget pass. The raw samples must be reviewed
+        against retained history/resources and the documented cleanup budget.
+        """
+        from coop_editor_performance import memory
+        self.converge()
+        object_id = self.args.memory_object or self.created.get(self.host.instance)
+        if object_id not in self.objects(self.host):
+            raise FixtureError('Memory cycles require an explicit verified host placement identity')
+        self.result.update(memory_window_completed=False, memory_gate_passed=False,
+            memory_reason='Raw retention window; sustained bound and retained-resource attribution need review',
+            memory_author=self.host.instance, memory_object=object_id,
+            memory_native_cap=self.args.history_cap, memory_required_post_cap=self.args.post_cap_cycles,
+            memory_samples=[], memory_performance_scope='Four actual native editors; no FPS sampling')
+
+        def sample(cycle):
+            self.ownership.verify_windows()
+            row = {'cycle': cycle, 'time': time.time(), 'processes': {}}
+            for game in self.all_games:
+                state = status(game)
+                cursor, size = parse_native_history(state['text'])
+                content = game.call('coop.adventure status')
+                registered = re.search(r'\bregistered=(\d+)', content)
+                if not registered:
+                    raise FixtureError('Registered native package counter is unavailable; attribution cannot proceed')
+                inspect = game.call('coop.editor inspect')
+                row['processes'][str(game.instance)] = dict(
+                    pid=self.records[game.instance]['pid'], **memory(self.records[game.instance]['pid']),
+                    revision=state['revision'], durable=state['durable'],
+                    history_cursor=cursor, history_size=size, registered=int(registered[1]),
+                    native_status=state['text'], resource_status=content, inspect=inspect)
+            self.result['memory_samples'].append(row); self.write()
+            return row
+
+        initial = sample(0)
+        host_key = str(self.host.instance)
+        cap_cycle = 0 if initial['processes'][host_key]['history_size'] == self.args.history_cap else None
+        for cycle in range(1, self.args.cycles + 1):
+            for game in self.all_games:
+                game.call('coop.uistate 0')
+            time.sleep(1.4)
+            before = self.objects(self.host)
+            feet = before[object_id]['screen']
+            if feet is None:
+                raise FixtureError('The verified memory-cycle actor is outside the local camera')
+            source = (round(feet[0]), round(feet[1] - self.args.body_offset))
+            target = (source[0] + (8 if cycle % 2 else -8), source[1])
+            self.gesture(self.host, f'memory-{cycle}-edit', lambda: self.slow_drag(self.host, source, target))
+            after = self.objects(self.host)
+            if after[object_id]['position'] == before[object_id]['position'] or any(
+                    after[key]['position'] != value['position'] for key, value in before.items() if key != object_id):
+                raise FixtureError('Memory-cycle Move did not change only the intended stable placement')
+            self.preview(cycle)
+            time.sleep(self.args.settle_seconds)
+            row = sample(cycle)
+            for game in self.all_games:
+                key = str(game.instance)
+                if row['processes'][key]['registered'] != initial['processes'][key]['registered']:
+                    raise FixtureError('Registered native packages grew during edit/playtest/return cycles')
+            size = row['processes'][host_key]['history_size']
+            if size > self.args.history_cap:
+                raise FixtureError('Native history exceeded the expected verified capacity')
+            if cap_cycle is None and size == self.args.history_cap:
+                cap_cycle = cycle
+            post_cap = cycle - cap_cycle if cap_cycle is not None else 0
+            self.result.update(memory_completed_cycles=cycle, memory_cap_cycle=cap_cycle,
+                               memory_post_cap_cycles=post_cap)
+            self.write()
+            if post_cap >= self.args.post_cap_cycles:
+                self.result['memory_window_completed'] = True
+                self.result['gates']['native_post_cap_retention_window'] = True
+                self.write(); return
+        raise FixtureError('Bounded memory run did not obtain the required post-native-cap sample window')
 
     def exit_editor(self, game):
         game.call('coop.uistate 0')
@@ -554,6 +946,16 @@ import windows_lab
 from windows_lab import WindowsLab
 from sporectl import Console
 if hashlib.sha256((installation/'SporebinEP1/mods/coop.dll').read_bytes()).hexdigest()!=a.expected_dll_sha256.lower():raise SystemExit('private DLL candidate mismatch; no deployment performed')
+source_root=OUT.parents[1]
+map_receipts=[]
+for name in ('overrides_editor_dc04aee5.sym','overrides_editor_save_dc04aee5.sym','overrides_editor_history_dc04aee5.sym'):
+    source=source_root/'data/symbols'/name
+    target=installation/'SporebinEP1/mods/sporekit/symbols'/name
+    if not source.is_file() or not target.is_file() or source.read_bytes()!=target.read_bytes():
+        raise SystemExit('actual loader map differs from frozen source: '+str(target))
+    map_receipts.append(dict(source=str(source),target=str(target),sha256=hashlib.sha256(target.read_bytes()).hexdigest()))
+OUT.mkdir(parents=True,exist_ok=True)
+(OUT/'preflight.json').write_text(json.dumps(dict(candidate_sha256=a.expected_dll_sha256.lower(),actual_loader_maps=map_receipts),indent=2)+'\n',encoding='utf-8')
 initial=OLD/'out/windows-lab/ga_editor_party_c7'
 if (OUT/'stop-request').exists():raise SystemExit('old stop-request exists; review the closed runner before reuse')
 live=subprocess.run(['powershell','-NoProfile','-NonInteractive','-Command',
@@ -592,6 +994,10 @@ try:
     with WindowsLab(installation,initial,4,89,True) as lab:
         lab.output=OUT;lab.record();lab.enforce_audio()
         (OUT/'startup.json').write_text(json.dumps([c.call('info') for c in lab.consoles],indent=2)+'\n',encoding='utf-8')
+        editor_startup=[c.call('coop.editor status') for c in lab.consoles]
+        (OUT/'editor-startup.json').write_text(json.dumps(editor_startup,indent=2)+'\n',encoding='utf-8')
+        if any(not value.get('ok') or not re.search(r'\beditor_native available=1\b',value.get('out','')) for value in editor_startup):
+            raise RuntimeError('The native editor adapter is unavailable at cold Galaxy startup; no editor input was sent')
         print(json.dumps(dict(ready=True,expected_dll_sha256=a.expected_dll_sha256,pids=[p.pid for p,_,_ in lab.processes])),flush=True)
         deadline=time.monotonic()+a.seconds
         while time.monotonic()<deadline and not (OUT/'stop-request').exists():
@@ -615,7 +1021,14 @@ def main():
     run.add_argument('--instances',nargs=4,type=int,default=[89,90,91,92])
     run.add_argument('--port',type=int,default=45189); run.add_argument('--timeout',type=float,default=150)
     run.add_argument('--seconds',type=int,default=3300); run.add_argument('--cycles',type=int,default=20)
-    run.add_argument('--stage',choices=('all','bootstrap','join','edit','concurrent','cycles','reconnect','recovery','snapshot'),default='all')
+    run.add_argument('--stage',choices=('all','bootstrap','join','cold_recovery','edit','structural','concurrent','history_conflict','cycles','camera','memory','reconnect','recovery','snapshot'),default='all')
+    run.add_argument('--cold-baseline',type=Path,help='closed-profile durable baseline for a true cold recovery stage')
+    run.add_argument('--memory-object',help='previously verified host placement stable ID for retention cycles')
+    run.add_argument('--post-cap-cycles',type=int,default=30)
+    run.add_argument('--history-cap',type=int,choices=(25,),default=25,
+                     help='verified native history capacity for the supported executable')
+    run.add_argument('--body-offset',type=int,default=18,help='calibrated selectable body offset above the actor feet')
+    run.add_argument('--settle-seconds',type=float,default=2)
     run.add_argument('--no-onboard-host',dest='onboard_host',action='store_false')
     run.add_argument('--no-beam-check','--no-simulation-check',dest='beam_check',action='store_false',
                      help='diagnostic only: skip native simulation clocks and reciprocal captain proof')
@@ -628,10 +1041,16 @@ def main():
     if args.action == 'self-test':
         assert public_command('coop.editor ready 1') and public_command('coop.adventure.world status')
         assert public_command('drag 88 170 600 470')
+        assert public_command('coop.ui at 601 470')
+        assert not public_command('coop.ui at pointer write')
         assert not public_command('mem.write 0x1234 FF') and not public_command('call Anything cdecl')
         assert not public_command('coop.adventure.world finish 1') and not public_command('game.mode set Scenario')
         assert parse_identity('project=0123 capability=2:71') == ('0123',(2,71))
         assert parse_history('author=2:71 sequence=5 epoch=88 revision=9 applied=1 redo=0 Move') == [(2,71,5,88,9,1,0,'Move')]
+        assert parse_native_history('editor_native ready=1 history=25/25 captures=77') == (25,25)
+        parser_probe = object.__new__(EditorParty)
+        parsed = parser_probe.objects(argparse.Namespace(call=lambda _: '7:1 class=9 pos=1,2,3 scale=2 screen=500,450 rotation=0,0,0,1'))
+        assert parsed['7:1']['rotation'] == (0.,0.,0.,1.)
         session = '\n'.join(f"remote {i} 'Peer{i}' puppet=0x1234 state=yes age=0.10s pos=(1 2 3)\n   puppet pos=(1 2 3) err=0.00 rot_err=0.0\ntogether {i} 1" for i in (1,2,3))
         assert parse_party_positions('pos=(1 2 3) |r|=3.7', session)['local'] == (1.,2.,3.)
         assert parse_party_positions('pos=(1 2 3)', session.replace('err=0.00','err=2.00',1)) is None
@@ -645,8 +1064,12 @@ def main():
     if not args.execute: parser.error('run requires --execute after the candidate runner is approved and started')
     if len(set(args.instances)) != 4 or min(args.instances) < 2 or max(args.instances) > 100:
         parser.error('four distinct private instances2..100 required')
-    if not re.fullmatch('[0-9a-fA-F]{64}',args.expected_dll_sha256) or not 1 <= args.seconds <= 3500 or not 1 <= args.cycles <= 40:
-        parser.error('exact candidate hash, bounded seconds and1..40 cycles required')
+    if not re.fullmatch('[0-9a-fA-F]{64}',args.expected_dll_sha256) or not 1 <= args.seconds <= 3500 or not 1 <= args.cycles <= 80:
+        parser.error('exact candidate hash, bounded seconds and1..80 cycles required')
+    if not 30 <= args.post_cap_cycles <= 60 or not 1 <= args.history_cap <= 128 or not 4 <= args.body_offset <= 60 or not 1 <= args.settle_seconds <= 15:
+        parser.error('bounded native retention settings required:30..60 post-cap cycles,1..128 history capacity,4..60 body offset,1..15s settling')
+    if args.memory_object and not re.fullmatch(r'[1-9][0-9]*:[1-9][0-9]*',args.memory_object):
+        parser.error('memory object must be a stable object ID:generation')
     if not 1 <= args.port <= 65535 or not 1 <= args.timeout <= 300:
         parser.error('valid UDP port and bounded timeout required')
     args.expected_dll_sha256 = args.expected_dll_sha256.lower()
@@ -654,12 +1077,14 @@ def main():
     party = None
     try:
         party = EditorParty(args)
-        stages = ('bootstrap','join','edit','concurrent','cycles','reconnect','recovery') if args.stage == 'all' else (args.stage,)
+        stages = ('bootstrap','join','edit','structural','concurrent','cycles','reconnect','recovery') if args.stage == 'all' else (args.stage,)
         for stage in stages:
             if stage == 'snapshot': party.record('snapshot')
             else: getattr(party,stage)()
         party.result['pass'] = True
-        party.result['four_player_workflow_pass'] = args.stage == 'all' and args.cycles >= 20 and args.beam_check and all(party.result['gates'].values())
+        required = {'four_authors_create_move_undo_redo', 'four_authors_clone_delete_native_history',
+                    'four_authors_native_rotate_scale', 'native_blocked_undo_redo_no_skip_or_cursor_change'}
+        party.result['four_player_workflow_pass'] = args.stage == 'all' and args.cycles >= 20 and args.beam_check and required.issubset(party.result['gates']) and all(party.result['gates'].values())
         party.result['complete_acceptance'] = False
         party.write(); print(json.dumps(party.result,indent=2)); return 0
     except Exception as error:

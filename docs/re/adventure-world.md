@@ -2913,3 +2913,40 @@ maps with their verified sources before launching; the acceptance fixture fails
 before input if the adapter is unavailable. Deployment and preflight receipts:
 `out/editor-native-candidate10/deploy-corrected.json` and
 `out/editor-native-candidate10b-preflight.json`.
+
+The corrected C10b pair verified a narrower positive read-only route on both
+participants: normal double-click did not open the editable class controls,
+authored native bytes stayed unchanged after settling, and a subsequent normal
+placement Move committed on each client. This does not claim a visible slider
+and close-button test, because the shared opener was blocked before the pane
+became editable. Receipt:
+`out/editor-native-candidate10b-class-negative-final/result.json`.
+
+### Hidden-lab transform-input diagnostics
+
+The installed EP1 `readme_en-us.txt` lists Shift plus mouse wheel for Scale,
+held Tab with the selected object for advanced rotation, and right-click on the
+left palette to locate an asset. The last operation genuinely zooms to the
+actor and exposes its normal blue rotation ring and vertical handle; it is a
+useful ordinary UI route when whole-planet cast icons obscure manipulators.
+See `out/editor-native-candidate10b-ordinary-locate/87-native-locate.png`.
+
+SporeKit 0.3.4's queued `input_wheel` posts `MAKEWPARAM(0, delta)`, omitting
+mouse modifier bits. The fixture therefore has a bounded ordinary Win32 wheel
+helper with current owned HWND/PID checks, `ClientToScreen`, real held keyboard
+input and matching `MK_SHIFT`/`MK_CONTROL`/held-left-button flags. It waits for
+both native frames and wall-clock delivery before releasing modifiers. This
+does not call native game functions or write game memory. The drag helper also
+waits at least 120 ms after down and 60 ms per motion fraction: uncapped native
+editors can execute frame-only fences faster than ordinary drag thresholds.
+
+C10b ordinary unshared controls still did not produce Scale or expanded Tab
+handles with these inputs, so this diagnostic alone is not evidence of a shared
+Scale defect. Native input dispatch remains a validation gate. Static wheel
+receipts are `out/editor-native-re/c10-wheel-query.txt`: `EF0910` forwards to
+game-input vtable `+60`, `B196F0`, which emits event-kind 8 through `B1C480`
+and then the configured dispatcher `B1BA80`. The ordinary editor's input-mode
+global `15ACC34` was 4, satisfying that entry's mode check. Manipulator visibility
+`EFCF10` queries game-input vtable `+18`, `B18CD0`, which calls `8D3A40` for
+the action hash held at `15AD294` (`07A98D04` in this instance). No speculative
+native input-state write or manipulator finalizer was introduced.
