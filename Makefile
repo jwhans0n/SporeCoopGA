@@ -211,6 +211,7 @@ test:
 	python3 tests/editor_network_proxy_tests.py
 	python3 tools/tests/coop_editor_lifecycle.py --self-test
 	python3 tools/tests/coop_editor_save.py --self-test
+	python3 tools/tests/editor_native_audit.py --self-test
 	python3 tools/re_lint.py
 
 # Optional Win32 ABI test with a fake native adapter. Run the .exe on Windows (no game).
