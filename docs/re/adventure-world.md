@@ -3328,7 +3328,7 @@ to synchronize the fallback: the incoming bytes can validate against snapshot
 metadata while the guest's next live capture belongs to another act. There is
 no approved native setter to close that gap in this preview.
 
-The OUT C16 proposal restricts shared placement sessions to the first act
+The integrated C16 implementation restricts shared placement sessions to the first act
 (native index zero, displayed Act 1). It blocks Begin before native Save As,
 rechecks the completed asynchronous saved snapshot, rejects incoming nonzero-act
 resources before registration or editor entry, and rejects nonzero recovery
@@ -3347,8 +3347,11 @@ independent-act feasibility result.
 Controlled first-act Runtime tests exercise pre-Save rejection, the asynchronous
 Save completion recheck, incoming general-act UDP baselines rejected before any
 native registration/entry/restore, persisted recovery retention, and a loaded
-context that lands in the wrong act. Actual nonzero-act native refusal remains
-a separate next-candidate check. OUT receipts are in `out/editor-act0-c16/`.
+context that lands in the wrong act. An actual C16 ordinary Add Act then Begin
+test passed: native act index 1 was rejected before Save As, preserving the
+native snapshot and generation with zero faults. Receipts are in
+`out/editor-act0-c16/` and
+`out/editor-native-c16-acceptance/act-guard/result.json`.
 
 ### Candidate ordinary-input relative-only Scale sequence
 

@@ -1,6 +1,6 @@
 # Shared Adventure Editor: implementation validation
 
-Report revision 17, C15 recovery and integrated C16 diagnostics, 2026-10-26. Branch:
+Report revision 18, C16 actual Save/reopen and act guard, 2026-10-26. Branch:
 `feat/ga-adventure-editor`. The portable core and transport checkpoint is local
 commit `216f8b0`; native integration is recorded at `0a35c7b`, with lab tools at
 `a9b844f`. The C10 integration checkpoint is `071f6a4`, depending on network
@@ -994,3 +994,35 @@ saved-root follow-up, whose production changes are Windows-only; its native
 Save/reopen Python self-test ran with the corrected helper. Receipts:
 `out/editor-integrated-c16/validation.json` and `portable.log`. Actual native
 acceptance of this candidate remains separate.
+
+### C16 actual Save/reopen and first-act refusal
+
+The final C16 candidate and exact symbol maps were deployed only to the private
+installation with every private game closed and a C15 backup retained. Both
+hidden processes then passed a fresh normal Alpine creation, native Save As,
+explicit shared Join, a genuine authored Move, and another native Save. At
+revision 1 the host reported exact SavedApplied 2/2 and both peers reported
+logical root `408A0000!29096B31.366A930D`; the guest kept its original private
+live alias `408A0000!29096B30.366A930D` as designed. Normal End and native exit
+preceded reopening the exact-title file through the ordinary browser.
+`REOPEN_VERIFIED revision=1` then confirmed the saved root, stable placement
+poses and opaque authored fields before any Recover action. Native faults
+remained zero and normal cleanup completed. Receipt:
+`out/editor-native-c16-acceptance/run-save/result.json`.
+
+An ordinary Add Act switched the detached editor to native index 1. Begin then
+refused with the first-act explanation before invoking Save As, without changing
+the native snapshot or editor generation. The normal unshared act control
+remained usable. Receipt: `out/editor-native-c16-acceptance/act-guard/result.json`.
+
+The ordinary invalid-drag probe instead produced a valid native Move, so it is
+inconclusive for cancellation and is not counted as a rollback pass. Attempts
+to author a minimal natural-results fixture have not yet produced a verified
+goal. Those remaining gates stay open. The two private processes subsequently
+returned to Galaxy/offline with zero faults and closed normally. The user's
+separate personal game was then closed normally with their explicit permission
+for the exclusive four-player cohort. No personal installation update occurred.
+
+The feature branch's [C16 GitHub build and tests](https://github.com/jwhans0n/SporeCoopGA/actions/runs/40394478123)
+pass at `e5aaf45`. This is independent of the still-running native network and
+performance acceptance work.

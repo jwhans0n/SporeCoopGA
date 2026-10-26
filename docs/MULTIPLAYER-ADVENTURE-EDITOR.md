@@ -18,9 +18,11 @@ and the exact GOG executable with SHA-256
 Older protocol 15 gameplay clients cannot join an editor build's party.
 
 The placement adapter implements creation from templates already in the draft,
-duplication, deletion, movement and rotation. Uniform scale has a semantic
-transaction, but the current native audit rejects and rolls back an additional
-unclassified scenario-data change. Scale is not an accepted native control yet.
+duplication, deletion, movement, rotation and uniform scale. Scale tracks both
+physical size and the native continuous-scale companion; two-player native
+Scale/Undo/Redo, including the physical clamp, now pass. Four-player hardening
+remains under validation. Older recovery projects without the typed companion
+retain their schema and hold Scale until a new native copy is shared.
 The adapter preserves opaque
 scenario fields through owned native snapshots. Existing objective references and
 the authored captain are protected. Deleting a placement required by an objective
@@ -156,6 +158,8 @@ with the intended isolated test profile.
 | `coop.editor timing reset` | Clear the previous timing samples and start recording. |
 | `coop.editor timing stop` | Stop recording and discard any unfinished measurement. |
 | `coop.editor timing` | Report the sample count, recording state, capacity and `confirmation_ms` values. |
+| `coop.editor stages reset`, `stop`, `read OFFSET COUNT` | Opt-in bounded numeric operation stages, native apply and durable-save spans, paged at most 32 events per read. |
+| `coop.editor accounting` | Read-only logical container counts and capacities, including retained project, resource and transport state. These are not allocator or process-memory totals. |
 
 The lease readout uses cached controller data, is bounded to 12 KiB and changes
 no ownership, native resources or durable state. It can distinguish waiting for
