@@ -139,6 +139,8 @@ For native round-trip investigation, `coop.editor inspect bytes OFFSET COUNT`
 exports at most 4,096 owned serialized bytes per call as hex, together with the
 full snapshot's size and SHA-256. It uses the existing read-only native capture
 outside the render frame, keeps no extra snapshot, and performs no file writes.
+The SDK console truncates responses at 8,191 characters; use 2,048-byte pages
+(`coop.editor inspect bytes 0 2048`) to leave room for hex and its header.
 An audit must require the same full hash and size on every page and verify the
 reassembled bytes before comparing opaque authored data. This is a diagnostic,
 not an editor mutation or recovery action.

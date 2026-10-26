@@ -12,6 +12,9 @@ from coop_adventure_editor import status
 from sporectl import Console
 
 LIMIT = 128 << 20
+# The real SDK console truncates one command's output at 8,191 characters.
+# Hex plus its header must fit, even though the native diagnostic allows 4 KiB.
+PAGE = 2048
 
 
 def byte_command(command):
@@ -35,7 +38,7 @@ def page(text, offset, identity=None):
     size, actual_offset, count = map(int, found.groups()[:3])
     if not 0 < size <= LIMIT or offset != actual_offset or not 0 <= offset <= size:
         raise ValueError('Native snapshot page identity/offset is invalid')
-    if count != min(4096, size - offset) or len(found[5]) != count * 2:
+    if count != min(PAGE, size - offset) or len(found[5]) != count * 2:
         raise ValueError('Native snapshot page size is invalid')
     current = (size, found[4])
     if identity is not None and current != identity:
@@ -56,14 +59,18 @@ def self_test():
     digest = hashlib.sha256(body).hexdigest()
     def response(at, data, size=len(body), sha=digest):
         return f'NATIVE_BYTES size={size} offset={at} count={len(data)} sha256={sha}\nhex={data.hex()}\n'
-    identity, first = page(response(0, body[:4096]), 0)
-    _, last = page(response(4096, body[4096:]), 4096, identity)
-    assert first + last == body
-    for text, offset, previous in ((response(0, body[:4096]), 1, None),
-            (response(4096, body[4096:], sha='0'*64), 4096, identity),
+    identity = None
+    assembled = bytearray()
+    for offset in range(0, len(body), PAGE):
+        identity, part = page(response(offset, body[offset:offset+PAGE]), offset, identity)
+        assembled.extend(part)
+    assert assembled == body
+    assert len(response(0, body[:PAGE])) < 8191
+    for text, offset, previous in ((response(0, body[:PAGE]), 1, None),
+            (response(PAGE, body[PAGE:PAGE*2], sha='0'*64), PAGE, identity),
             (response(0, body[:4]), 0, None),
-            (response(0, body[:4096], size=LIMIT+1), 0, None),
-            (response(0, body[:4096]) + 'extra', 0, None)):
+            (response(0, body[:PAGE], size=LIMIT+1), 0, None),
+            (response(0, body[:PAGE]) + 'extra', 0, None)):
         try:
             page(text, offset, previous)
         except ValueError:
@@ -118,7 +125,7 @@ def main():
         identity = None; data = bytearray()
         while identity is None or len(data) < identity[0]:
             owner.verify_windows()
-            identity, part = page(game.call(f'coop.editor inspect bytes {len(data)} 4096'), len(data), identity)
+            identity, part = page(game.call(f'coop.editor inspect bytes {len(data)} {PAGE}'), len(data), identity)
             data.extend(part)
         if hashlib.sha256(data).hexdigest() != identity[1]:
             raise ValueError('Reassembled native snapshot hash is invalid')
