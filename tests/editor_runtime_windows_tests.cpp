@@ -1037,6 +1037,12 @@ static void test_conflicting_native_history_releases_document_ownership() {
     CHECK(spin([&]{return std::any_of(guest_controller.view().local_leases.begin(),guest_controller.view().local_leases.end(),[&](const auto& held){return held.scope==document_scope&&held.owner==guest_controller.view().local&&held.expires>clock_ms;});}));
     std::vector<editor::LeaseToken> tokens;for(const auto& held:guest_controller.view().local_leases)tokens.push_back({held.scope,held.token});
     side=1;CHECK(guest_controller.release_leases(tokens,error));CHECK(spin(unleased));
+    // Release quarantines the local token immediately. Complete its reliable
+    // delivery and host controller turn before this direct cross-peer handoff;
+    // an empty local View alone no longer means the host has released it.
+    const auto release_started=clock_ms;step();
+    CHECK(spin([]{return sessions[1].pending_to(0)==0;}));step();
+    CHECK(clock_ms-release_started<15000);
     side=0;CHECK(host_controller.request_leases({document_scope},15000,error));
     CHECK(spin([&]{return std::any_of(host_controller.view().local_leases.begin(),host_controller.view().local_leases.end(),[&](const auto& held){return held.scope==document_scope&&held.owner==host_controller.view().local&&held.expires>clock_ms;});}));
     CHECK(!pending(0)&&!pending(1)&&!awaiting(0)&&!awaiting(1));
