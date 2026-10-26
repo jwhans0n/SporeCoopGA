@@ -147,6 +147,9 @@ std::optional<PreviewReturnScope> pending_preview_return;
 std::optional<PreviewReturnScope> pending_preparation_cancel;
 struct PreviewSelection {
     PreviewReturnScope scope;
+    editor_native::LocalView view;
+    uint64_t view_wait_started = 0;
+    uint64_t native_owner_generation = 0, returned_generation = 0;
     std::optional<editor::ObjectId> selected;
 };
 std::optional<PreviewSelection> preview_selection;
@@ -165,7 +168,7 @@ void retire_transport(bool explicit_stop) {
     if (deferred_offer && deferred_offer->transport <= retired_transport) deferred_offer.reset();
     close_preserve_offer = false; reopen_saved.reset();
     actions.clear(); pending.reset(); awaiting_operation.reset();
-    pending_preview_return.reset(); pending_preparation_cancel.reset(); preview_selection.reset();
+    pending_preview_return.reset(); pending_preparation_cancel.reset();
     requested_scopes.clear(); guarded_placements.clear(); observed_lease_grants.clear();
     adventure_messages.clear(); adventure_message_bytes = 0;
     beginning = false; recovery.reset(); pending_saved.reset(); incoming_resources.reset();
@@ -210,6 +213,17 @@ bool same_preview_context(const PreviewReturnScope& scope) {
     return view.context.project == scope.project && view.context.epoch == scope.epoch &&
         view.playtest_round == scope.round && view.playtest_revision == scope.revision &&
         controller->state().document.revision == scope.revision;
+}
+bool owned_preview_context() {
+    if(!preview_selection || !adventure_native::editor_preview())return false;
+    const auto& scope=preview_selection->scope;
+    const auto& document=current_native.document;
+    return document.project==scope.project && document.epoch==scope.epoch && document.revision==scope.revision &&
+        adventure_native::editor_preview_matches(scope.project,scope.epoch,scope.round,scope.revision);
+}
+uint64_t preview_native_generation() {
+    if(!preview_selection)return 0;
+    return return_started?preview_selection->returned_generation:preview_selection->native_owner_generation;
 }
 uint64_t now_ms() { return uint64_t(std::max(0.0, H->time_seconds()) * 1000); }
 void u64(net::Writer& w, uint64_t v) { w.u32(uint32_t(v)); w.u32(uint32_t(v >> 32)); }
@@ -1046,27 +1060,71 @@ bool return_ready(const editor::wire::Control& control) {
     using K = editor::wire::ControlKind;
     if (control.kind != K::HostReturnEditor && control.kind != K::HostCancelPlaytest) return true;
     if (!adventure_native::editor_preview()) return editor_native::state().ready;
+    if (!return_error.empty()) return true;
+    if (!owned_preview_context()) {
+        return_error="The retained local view does not belong to the bound Test round";return true;
+    }
+    {
+        const auto expected=preview_native_generation();
+        if (!expected || editor_native::state().generation!=expected) {
+            return_error="The native editor context changed during this Test round";return true;
+        }
+    }
     if (adventure::active() || adventure::outcome_locked()) {
         adventure::cancel("The party is returning to the adventure draft");
         return false;
     }
     if (adventure::cleanup_pending()) return false;
     if (!return_started) {
+        if(!adventure_native::editor_preview_owner()) {
+            return_error="The bound native editor owner changed before returning from Test";return true;
+        }
         return_started = true;
         if (editor_native::state().playtesting && !editor_native_save::playtest(false, return_error)) return true;
+        if (preview_selection) preview_selection->returned_generation=editor_native::state().generation;
     }
-    return !return_error.empty() || editor_native::state().ready;
+    if (!return_error.empty()) return true;
+    if (!editor_native::state().ready) return false;
+    // Camera activation can lag native Stop. Retry without acknowledging the
+    // return or choosing a default/selected-marker camera in the meantime.
+    editor_native::LocalView ready_view;std::string waiting;
+    if(editor_native::capture_view(ready_view,waiting)) {
+        if(preview_selection)preview_selection->view_wait_started=0;
+        return true;
+    }
+    if(!owned_preview_context()) {
+        return_error="The local camera pin does not belong to this Test round";return true;
+    }
+    if(!preview_selection->view_wait_started)preview_selection->view_wait_started=now_ms();
+    if(now_ms()-preview_selection->view_wait_started>=5000) {
+        return_error="The native editor camera did not become available after Test: "+waiting;return true;
+    }
+    if(status!=waiting)tell(waiting);
+    return false;
 }
-bool finish_return(std::string& error, bool restore_selection = false) {
+bool finish_return(std::string& error, bool confirmed_group_return = false) {
     if (!return_error.empty()) { error = return_error; return false; }
     std::optional<editor::ObjectId> selected;
-    if (restore_selection && !closing && !end_after_return && !disconnected_return && preview_selection &&
-        adventure_native::editor_preview() && same_preview_context(preview_selection->scope)) selected = preview_selection->selected;
+    std::optional<editor_native::LocalView> view;
+    if (adventure_native::editor_preview()) {
+        if (!owned_preview_context() || (confirmed_group_return && !same_preview_context(preview_selection->scope))) {
+            error="The local camera pin does not belong to this Test round";return false;
+        }
+        if(!preview_selection->returned_generation || editor_native::state().generation!=preview_selection->returned_generation) {
+            error="The native editor context changed before restoring this Test round";return false;
+        }
+        view=preview_selection->view;
+    }
+    if (view) selected=preview_selection->selected;
+    const auto return_generation=editor_native::state().generation;
     if (!editor_native::restore(current_native, error)) return false;
     // Native Stop clears the editor selection. Preserve the independent local
     // choice made immediately before this round, not a committed snapshot's UI.
-    if (selected && controller->state().document.placements.contains(*selected) &&
+    if (selected && current_native.document.placements.contains(*selected) &&
         !editor_native::select_placement(*selected, error)) return false;
+    // Selection can itself focus/adjust the native view. Restore the actual
+    // pre-Test local camera last, including when no marker was selected.
+    if (view && !editor_native::restore_view(*view,return_generation,error)) return false;
     preview_selection.reset();
     adventure::reset();
     adventure_native::clear_editor_preview();
@@ -1080,15 +1138,20 @@ void service_transport_teardown() {
     if (adventure_native::editor_preview()) {
         // A replacement native context is not the editor owned by this cleanup.
         // Still finish our GA lease, without stopping or restoring that context.
-        if (!teardown_scope_matches() || editor_native::state().generation != transport_teardown->native_generation) {
+        const auto expected=owned_preview_context()?preview_native_generation():transport_teardown->native_generation;
+        if (!teardown_scope_matches() || !owned_preview_context() || !expected || editor_native::state().generation != expected) {
             if (adventure::active() || adventure::outcome_locked()) { adventure::cancel("The editor party transport ended"); return; }
             if (adventure::cleanup_pending()) return;
-            adventure::reset(); adventure_native::clear_editor_preview();
+            adventure::reset(); adventure_native::clear_editor_preview();preview_selection.reset();
             native_playtesting = return_started = false; return_error.clear();
         } else {
             disconnected_return = true;
-            if (!return_ready({editor::wire::ControlKind::HostReturnEditor, 1, 0, false, 0})) return;
-            // Native Stop normally retains the owner. Recheck before restoration.
+            const bool ready=return_ready({editor::wire::ControlKind::HostReturnEditor, 1, 0, false, 0});
+            // Only the synchronously authorized Stop may advance this cleanup
+            // lease. Retain the original comparison while Stop has not run.
+            if (return_started && owned_preview_context() && preview_selection->returned_generation)
+                transport_teardown->native_generation=preview_selection->returned_generation;
+            if(!ready)return;
             if (editor_native::state().generation != transport_teardown->native_generation) return;
             std::string error;
             if (!finish_return(error)) { frozen = true; tell(error); return; }
@@ -1226,7 +1289,6 @@ void execute(Action action) {
         break;
     case Action::Ready: case Action::Unready: if (!controller->ready_playtest(action == Action::Ready, error)) tell(error); break;
     case Action::End:
-        preview_selection.reset();
         if (!host() && controller->view().phase == Phase::Preparing && !adventure_native::editor_preview()) {
             // No GA attempt exists before HostBegin. Leave the editor directly;
             // its scoped Leave cancels the host's preparation and offers rejoin.
@@ -1275,7 +1337,7 @@ void SK_CDECL drain(void*) {
         submit_pending_gesture();
         controller->tick(now_ms());
         observe_lease_grants();
-        if (preview_selection && (!same_preview_context(preview_selection->scope) ||
+        if (preview_selection && !adventure_native::editor_preview() && (!same_preview_context(preview_selection->scope) ||
             (controller->view().phase != Phase::Preparing && controller->view().phase != Phase::Playing &&
              controller->view().phase != Phase::Returning))) preview_selection.reset();
         while (!adventure_messages.empty()) {
@@ -1376,7 +1438,7 @@ void action(Action value) {
         }
     } else if (actions.size() < 16) {
         if (value == Action::End || value == Action::Recover) {
-            preview_selection.reset(); pending_preparation_cancel.reset();
+            if(!adventure_native::editor_preview())preview_selection.reset(); pending_preparation_cancel.reset();
         }
         actions.push_back(value); schedule();
     }
@@ -1385,6 +1447,8 @@ void action(Action value) {
 
 bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     H = host_api; M = mod; C = std::move(context); reopen_saved.reset(); projection_override.reset();
+    native_playtesting=return_started=disconnected_return=end_after_return=false;return_error.clear();
+    preview_selection.reset();pending_preview_return.reset();pending_preparation_cancel.reset();
     if (!C.session) return false;
     observed_transport = C.session->transport_generation(); retired_transport = 0; transport_teardown.reset(); deferred_offer.reset(); settled_cancellation.reset();
     editor_session::Callbacks callbacks;
@@ -1494,7 +1558,8 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
             preview_selection.reset();
             if (!check_native_integrity(error)) return false;
             const auto context = controller->view().context;
-            PreviewSelection local{{context.project, context.epoch, control.serial, control.revision}, std::nullopt};
+            PreviewSelection local{{context.project, context.epoch, control.serial, control.revision}, {}, 0, native_generation, 0, std::nullopt};
+            if (!editor_native::capture_view(local.view,error)) return false;
             const auto selected = editor_native::state().selected;
             if (selected.size() > 1) { error = "The native preview supports one local placement selection"; return false; }
             if (!selected.empty() && controller->state().document.placements.contains(selected.front())) local.selected = selected.front();
@@ -1620,7 +1685,7 @@ void session_ended() {
     retire_transport(true); schedule();
 }
 void mode_changed(uint32_t, uint32_t) { schedule(); }
-void shutdown() { settled_cancellation.reset(); transport_teardown.reset(); deferred_offer.reset(); observed_transport = retired_transport = 0; reopen_saved.reset(); projection_override.reset(); if (controller) { controller->end(); controller.reset(); } store.close(); adventure_native::clear_editor_preview(); editor_native_save::shutdown(); editor_native::shutdown(); actions.clear(); pending_preview_return.reset(); pending_preparation_cancel.reset(); preview_selection.reset(); observed_lease_grants.clear(); queued = false; closing = native_attached = close_restored = close_preserve_offer = false; H = nullptr; }
+void shutdown() { native_playtesting=return_started=disconnected_return=end_after_return=false;return_error.clear();settled_cancellation.reset(); transport_teardown.reset(); deferred_offer.reset(); observed_transport = retired_transport = 0; reopen_saved.reset(); projection_override.reset(); if (controller) { controller->end(); controller.reset(); } store.close(); adventure_native::clear_editor_preview(); editor_native_save::shutdown(); editor_native::shutdown(); actions.clear(); pending_preview_return.reset(); pending_preparation_cancel.reset(); preview_selection.reset(); observed_lease_grants.clear(); queued = false; closing = native_attached = close_restored = close_preserve_offer = false; H = nullptr; }
 bool active() { return cached.active; }
 bool authoring() {
     if (!controller || (controller->view().phase == Phase::Playing && native_playtesting)) return false;

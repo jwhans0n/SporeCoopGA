@@ -116,7 +116,19 @@ bool set_ready(bool value){++t_ready_calls;t_ready=value;return true;}
 int main() {
     std::string error;
     CHECK(t_session.host(0,"native-editor-bridge-test",error));
-    reset();auto p=config();p.project={};CHECK(!adventure_native::set_editor_preview(p,error));
+    reset();auto p=config();
+    CHECK(!adventure_native::editor_preview_matches(p.project,p.epoch,p.round,p.revision));
+    CHECK(!adventure_native::editor_preview_owner());
+    CHECK(adventure_native::set_editor_preview(p,error));
+    CHECK(adventure_native::editor_preview_matches(p.project,p.epoch,p.round,p.revision));
+    CHECK(adventure_native::editor_preview_owner());
+    CHECK(!adventure_native::editor_preview_matches(p.project,p.epoch,p.round+1,p.revision));
+    t_current=false;CHECK(adventure_native::editor_preview_matches(p.project,p.epoch,p.round,p.revision));
+    CHECK(adventure_native::editor_preview_owner());
+    skg::field<void*>(t_data.data(),0x10)=nullptr;CHECK(!adventure_native::editor_preview_owner());
+    skg::field<void*>(t_data.data(),0x10)=t_resource.data();
+    adventure_native::clear_editor_preview();CHECK(!adventure_native::editor_preview_matches(p.project,p.epoch,p.round,p.revision));
+    reset();p=config();p.project={};CHECK(!adventure_native::set_editor_preview(p,error));
     reset();t_active=true;CHECK(!adventure_native::set_editor_preview(config(),error));
     reset();t_outcome=true;CHECK(!adventure_native::set_editor_preview(config(),error));
     reset();t_cleanup=true;CHECK(!adventure_native::set_editor_preview(config(),error));

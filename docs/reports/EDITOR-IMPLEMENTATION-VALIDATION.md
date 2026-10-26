@@ -1,6 +1,6 @@
 # Shared Adventure Editor: implementation validation
 
-Report revision 19, C16 four-player acceptance and camera finding, 2026-10-26. Branch:
+Report revision 21, C17 native failure return, 2026-10-26. Branch:
 `feat/ga-adventure-editor`. The portable core and transport checkpoint is local
 commit `216f8b0`; native integration is recorded at `0a35c7b`, with lab tools at
 `a9b844f`. The C10 integration checkpoint is `071f6a4`, depending on network
@@ -8,8 +8,8 @@ checkpoint `7f7c3da`; measurement tooling is recorded at `b65ba3b`. Later
 calibration changes require their own working-tree/run evidence.
 
 **Implementation is under validation and is not release-ready.** Portable tests
-and several real two/four-player workflows pass. Remaining native transform,
-history, lifecycle, network and performance acceptance gates below prevent a
+and several real two/four-player workflows pass. Remaining native cancellation,
+cold opaque round trips, lifecycle, bulk contention and memory gates below prevent a
 complete stages 0-4 claim.
 
 This development branch uses protocol 16. The published
@@ -1151,3 +1151,67 @@ restoration count, canonical state and durable checkpoint. Quick Runtime passes
 DLL; actual cold opaque-data comparison awaits the integrated next candidate.
 The full fixture's 24 MiB closure remains synthetic test data, not genuine bulk
 network acceptance. Build: `out/editor-audit-c17/host/editor_runtime_windows_tests.exe`.
+
+### C17 integration and actual failure return
+
+The local camera fix captures the actual active editor orbit target, rendered
+quaternion and current orbit scalars immediately before Test. It restores the
+canonical draft and local selection first, then restores those values through
+verified native instant setters. No camera pointer survives Test and no camera
+values enter the shared document or network. Three new named functions bring
+the exact-executable editor verifier to 36 entries. The native ABI fixture
+passes 639 checks, including different current/desired views and no selection.
+
+Cleanup retains this one value pin through End and transport loss. It checks
+the immutable native preview's exact project/epoch/round/revision independently
+of a disconnected Controller, plus the existing native mode/data/resource/key
+owner before Stop. Only that synchronous owned Stop can advance the cleanup's
+native generation. Replacement contexts receive no Stop or restoration. Return
+acknowledgement follows canonical, selection and camera restoration. Delayed
+camera activation retries for up to five seconds after native readiness; a
+missing or stale owner fails closed. Init/shutdown now clear transient return
+latches exposed by a controlled failure. Native Preview passes 84 checks;
+focused return tests pass 818, quick Runtime 5,799 and full Runtime 6,451.
+An independent ownership review found no remaining blocker. Receipts:
+`out/editor-camera-c17/` and `out/editor-camera-c17-returns/`.
+
+Imported native databases now have a process-lifetime admission ledger with at
+most 32 charged package attempts and 256 MiB validated aggregate payload. This
+does not bound expanded native/graphics memory. Same-module exact-owned cached
+priority promotion retains its caller reference and consumes no new admission.
+Uncertain failures remain charged. A trusted cold SDK lifecycle is mandatory;
+nonempty DLL reload requires restart because database lifetime cannot be proved.
+The fixed 1,960-byte ledger uses one process-owned mapping handle and never
+stores a native pointer or unloads a live resource. Controlled tests pass 3,238
+core checks on Win32 and Linux sanitizers, 14,230 Windows lifecycle/mapping
+checks and 987 native ABI/content checks. The
+[ownership notes](../re/imported-package-admission.md) describe limits and
+failure behavior. Receipt: `out/editor-package-admission-c16/implementation-receipt.json`.
+
+The integrated DLL is 71,650,816 bytes, SHA-256
+`15993dd20451c0189c0b9b86f850746c16632038fa931fecf600353635ba27b4`.
+All 21 Windows suites and 21 additional admission cases pass. The repository-wide
+portable `make test` also returns zero, and all frozen source inputs remained
+unchanged. All 36 exact-executable editor symbol checks pass. Receipts:
+`out/editor-integrated-c17/validation.json`, `portable-validation.json` and
+`native-symbol-verification.json`.
+
+This candidate was installed only in the private test copy, with a C16 backup.
+Four hidden, muted games reached normal Galaxy and `admission_boot=3` at cold
+startup. Their first genuine native collection/import charged one package and
+52,743 validated payload bytes each, with no uncertain admission.
+
+The original C16 natural timeout camera regression now passes on all four C17
+processes. The ordinary saved fixture has one actual MoveTo objective and a
+60-second native timer. All four naturally reached failure at simulation time
+60,033 ms, retained the frozen terminal clock, displayed Mission Failed, and
+returned through the host's normal Done action. The unselected host's landmark
+stayed exactly `(511.999969,394.242371)`; the three independent guest landmarks
+stayed `(512,384.000427)`. Canonical authored content, native source, selection
+and semantic history were preserved. Immediate Prepare/Cancel retry also passed,
+and cleanup completed normally with zero native faults. Receipt:
+`out/editor-native-party-c17/natural-failure/result.json`. This resolves C16's
+specific camera defect, not the remaining complete-playthrough or XP gate.
+
+Additional lifecycle routes, cold opaque-data comparison, replay/promotion,
+memory turnover and genuine bulk-contention acceptance remain separate gates.

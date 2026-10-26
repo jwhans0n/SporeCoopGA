@@ -706,6 +706,11 @@ bool set_editor_preview(EditorPreview config, std::string& error)
     return true;
 }
 bool editor_preview() { return g_preview.has_value(); }
+bool editor_preview_matches(const std::array<uint8_t,16>& project,uint64_t epoch,uint64_t round,uint64_t revision) {
+    return g_preview && g_preview->config.project==project && g_preview->config.epoch==epoch &&
+        g_preview->config.round==round && g_preview->config.revision==revision;
+}
+bool editor_preview_owner() { return preview_bound(false) || preview_bound(true); }
 void clear_editor_preview() { ++g_preview_generation; g_preview.reset(); }
 
 bool init(const SkHost* host, SkMod* mod, Ctx context)

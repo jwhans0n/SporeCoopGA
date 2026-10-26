@@ -142,7 +142,107 @@ void set_enabled(Win,bool){CHECK(false);} void release(Win){CHECK(false);} void 
 uint32_t control_id(Win){CHECK(false);return 0;} uint32_t flags(Win){CHECK(false);return 0;}
 std::vector<Win> children(Win){CHECK(false);return {};}
 }
+namespace {
+std::array<uint8_t,0x318> v_camera,v_replacement;
+std::array<void*,21> v_manager_vt{};
+std::array<void*,17> v_cameras_vt{};
+std::array<void*,4> v_camera_vt{};
+void** v_manager=v_manager_vt.data();
+void** v_cameras=v_cameras_vt.data();
+void* v_active=v_camera.data();
+void* v_named=v_camera.data();
+bool v_cast=true,v_refuse=false;
+unsigned v_gets=0,v_looks=0,v_sets=0;
+void* SK_CDECL v_get_manager(){++v_gets;return &v_manager;}
+void* SK_THISCALL v_get_cameras(void* self){CHECK(self==&v_manager);return &v_cameras;}
+void* SK_THISCALL v_get_active(void* self){CHECK(self==&v_cameras);return v_active;}
+void* SK_THISCALL v_get_named(void* self,uint32_t id){CHECK(self==&v_cameras);CHECK(id==0x00EBB801);return v_named;}
+void* SK_THISCALL v_get_cast(void* self,uint32_t id){CHECK(self==v_active);CHECK(id==0x011966ED);return v_cast?self:nullptr;}
+const float* SK_THISCALL v_target(void* self){
+    static std::array<float,3> target;
+    for(unsigned i=0;i<3;++i)target[i]=skg::field<float>(self,0x54+4*i)*skg::field<float>(self,0x28);
+    return target.data();
+}
+void SK_THISCALL v_orbit(void* self,float* yaw,float* pitch,float* distance){
+    *yaw=skg::field<float>(self,0x154);*pitch=skg::field<float>(self,0x130);*distance=skg::field<float>(self,0x10C);
+}
+void SK_THISCALL v_look(void* self,const float* point,const float* quaternion,bool instant){
+    CHECK(self==v_active);CHECK(instant);++v_looks;
+    if(v_refuse)return;
+    const float radius=std::sqrt(point[0]*point[0]+point[1]*point[1]+point[2]*point[2]);
+    for(unsigned i=0;i<3;++i)skg::field<float>(self,0x54+4*i)=point[i]/radius;
+    skg::field<float>(self,0x28)=radius;
+    std::memcpy(skg::ptr_add<void>(self,0xAC),quaternion,sizeof(float)*4);
+}
+void SK_THISCALL v_set(void* self,float yaw,float pitch,float distance){
+    CHECK(self==v_active);++v_sets;if(v_refuse)return;
+    skg::field<float>(self,0x154)=skg::field<float>(self,0x15C)=yaw;
+    skg::field<float>(self,0x130)=skg::field<float>(self,0x138)=pitch;
+    skg::field<float>(self,0x10C)=skg::field<float>(self,0x114)=distance;
+}
+void view_fixture(){
+    reset();v_camera.fill(0);v_replacement.fill(0);v_manager_vt.fill(nullptr);v_cameras_vt.fill(nullptr);v_camera_vt.fill(nullptr);
+    v_manager=v_manager_vt.data();v_cameras=v_cameras_vt.data();v_active=v_named=v_camera.data();
+    v_cast=true;v_refuse=false;v_gets=v_looks=v_sets=0;
+    v_manager_vt[0x50/4]=reinterpret_cast<void*>(v_get_cameras);
+    v_cameras_vt[0x38/4]=reinterpret_cast<void*>(v_get_active);
+    v_cameras_vt[0x40/4]=reinterpret_cast<void*>(v_get_named);
+    v_camera_vt[0x0C/4]=reinterpret_cast<void*>(v_get_cast);
+    skg::field<void*>(v_camera.data(),0)=v_camera_vt.data();
+    skg::field<float>(v_camera.data(),0x54)=1;skg::field<float>(v_camera.data(),0x28)=500;
+    skg::field<float>(v_camera.data(),0xB8)=1;
+    skg::field<float>(v_camera.data(),0x154)=.3f;skg::field<float>(v_camera.data(),0x130)=.6f;skg::field<float>(v_camera.data(),0x10C)=123;
+    skg::field<float>(v_camera.data(),0x15C)=8;skg::field<float>(v_camera.data(),0x138)=9;skg::field<float>(v_camera.data(),0x114)=999;
+    skg::field<float>(v_camera.data(),0x2AC)=-2;skg::field<float>(v_camera.data(),0x2B0)=2;
+    skg::field<float>(v_camera.data(),0x26C)=.01f;skg::field<float>(v_camera.data(),0x270)=.02f;
+    skg::field<float>(v_camera.data(),0x310)=.1f;skg::field<float>(v_camera.data(),0x314)=10000;
+    a_view_manager=uintptr_t(v_get_manager);a_view_target=uintptr_t(v_target);a_view_orbit=uintptr_t(v_orbit);
+    a_view_set_orbit=uintptr_t(v_set);a_view_lookat=uintptr_t(v_look);
+}
+void test_local_view(){
+    std::string error;
+    view_fixture();select_native(t_tool_pointer,nullptr);
+    const auto live=t_live;const auto owner=t_data;const auto history=t_history;
+    LocalView pinned;CHECK(capture_view(pinned,error));CHECK(state().selected.empty());CHECK(v_gets==1);
+    CHECK((pinned.target==std::array<float,3>({500,0,0})));
+    CHECK((pinned.rotation==std::array<float,4>({0,0,0,1})));
+    CHECK((pinned.orbit==std::array<float,3>({.3f,.6f,123})));CHECK(!v_looks&&!v_sets);
+    // Camera replacement during native Test is legitimate. No borrowed camera
+    // pointer survives capture; return resolves the current owned editor view.
+    v_replacement=v_camera;v_active=v_named=v_replacement.data();
+    skg::field<float>(v_replacement.data(),0x130)=0;
+    skg::field<float>(v_replacement.data(),0x10C)=999;
+    CHECK(restore_view(pinned,state().generation,error));CHECK(v_looks==1&&v_sets==1);
+    LocalView after;CHECK(capture_view(after,error)&&same_view(pinned,after));
+    CHECK(skg::field<float>(v_camera.data(),0x10C)==123);
+    CHECK(t_live==live&&t_data==owner&&t_history==history&&state().selected.empty());
+    // Exact native owner, camera identity, finite values and settings fail
+    // before any setter, with no focus-on-selected fallback.
+    for(unsigned kind=0;kind<9;++kind){
+        view_fixture();CHECK(capture_view(pinned,error));const auto before=v_looks;
+        uint64_t expected=state().generation;
+        if(kind==0)++expected;
+        if(kind==1)v_named=v_replacement.data();
+        if(kind==2)v_cast=false;
+        if(kind==3)pinned.orbit[0]=std::numeric_limits<float>::quiet_NaN();
+        if(kind==4)pinned.rotation={0,0,0,0};
+        if(kind==5)skg::field<float>(v_camera.data(),0x26C)=5;
+        if(kind==6)pinned.orbit[1]=3;
+        if(kind==7)a_view_orbit=0;
+        if(kind==8)skg::field<int>(t_mode.data(),0xCC)=2;
+        CHECK(!restore_view(pinned,expected,error));CHECK(v_looks==before&&!error.empty());
+    }
+    view_fixture();CHECK(capture_view(pinned,error));
+    skg::field<float>(v_camera.data(),0x130)=0;v_refuse=true;
+    CHECK(!restore_view(pinned,state().generation,error));CHECK(v_looks==1&&v_sets==1);
+    // A nonfinite native view cannot replace a previously valid pin.
+    view_fixture();CHECK(capture_view(pinned,error));const auto old=pinned;
+    skg::field<float>(v_camera.data(),0x10C)=std::numeric_limits<float>::infinity();
+    CHECK(!capture_view(pinned,error)&&pinned==old);
+}
+}
 int main(){
+    test_local_view();
     using namespace editor_native;
     // Ordinary editing keeps the native entry-level Undo behavior intact.
     reset();t_active=false;undo_native(t_entry.data());CHECK(t_original_undo==1&&!t_own_undo&&!cancellation);

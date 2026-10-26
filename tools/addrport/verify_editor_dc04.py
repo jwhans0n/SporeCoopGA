@@ -94,12 +94,62 @@ ENTRIES = [
     ('FindLayoutWindow',0x810650,'8b491485c97405e944fcffff33c0c20800',[(0x81065E,8)],
      'thiscall(UILayout,uint32 controlID,bool recursive)->IWindow*,ret8 or tail8102A0; searches this layout owned controls; property UI root073E6BA0, never disable shared parentlayer returned by GetContainerWindow',
      [(0xEDEC4D,0x810650)],[(0xEDEC46,'6a0168a06b3e07'),(0x8102FB,'c20800'),(0x810304,'c20800')]),
+    ('CurrentOrbitTarget',
+ 11600224,
+ 'b80100000084056cbd6701',
+ [(11600304, 0)],
+ 'thiscall(editor orbit camera)->borrowed static Vec3*,ret; current direction54/58/5C times radius28, copied before '
+ 'any later native call',
+ [],
+ [(11600243, 'f30f104128'), (11600248, 'f30f104954'), (11600253, 'f30f105158'), (11600258, 'f30f10595c')]),
+    ('CurrentOrbitScalars',
+ 11596192,
+ 'd981540100008b4424048b542408',
+ [(11596228, 12)],
+ 'thiscall(editor orbit camera,float*yaw,float*pitch,float*distance),retC; actual rendered scalar values154/130/10C; '
+ 'distinct from desired getterB0F170',
+ [],
+ [(11596192, 'd98154010000'),
+  (11596208, 'd98130010000'),
+  (11596220, 'd9810c010000'),
+  (11613253, 'f30f10830c010000'),
+  (11613359, 'f30f108330010000'),
+  (11613385, 'd98354010000'),
+  (11613503, '8d8bac000000'),
+  (11613709, 'f30f105b28'),
+  (11613746, 'f30f594354')]),
+    ('SetOrbitScalarsInstant',
+ 11601600,
+ '83ec10f30f104424140f57c9',
+ [(11601919, 12)],
+ 'thiscall(editor orbit camera,float yaw,float pitch,float distance),retC; native instant current/desired setter and '
+ 'interpolation cleanup, native pitch2AC/2B0 clamp and distance>=0.1',
+ [(15720012, 11601600)],
+ [(11601689, 'f30f1081ac020000'), (11601703, 'f30f1081b0020000'), (11601909, 'c6810403000001')]),
 ]
 
 
 def verify(pe):
     if pe.sha256 != SHA or pe.image_base != 0x400000:
         raise ValueError('unsupported native executable: ' + pe.sha256)
+    # Native camera identity/current-view restoration, separately cross-checked
+    # against the editor initialize/cleanup and final camera transform paths.
+    camera_known=[('SimCamera_LookAt', 11611408, '83ec2055568bf1', 11611844, 12), ('IGameModeManager_Get', 6806736, 'a1b0d85f01', 6806741, 0), ('CameraByID', 8152992, '83ec0856578bf9', 8153051, 4), ('OrbitCameraCast', 11595952, '8bc18b4c240481f9ed661901', 11595980, 4), ('ActiveCamera', 8151616, '8b81a800000085c0', 8151635, 0)]
+    camera_calls=[(15728762, 15719872), (15720012, 11601600), (15720378, 11611408), (15720392, 11614960), (15720407, 11600928)]
+    camera_fields=[(11600243, 'f30f104128'), (11600248, 'f30f104954'), (11600253, 'f30f105158'), (11600258, 'f30f10595c'), (11596192, 'd98154010000'), (11596208, 'd98130010000'), (11596220, 'd9810c010000'), (11613253, 'f30f10830c010000'), (11613359, 'f30f108330010000'), (11613385, 'd98354010000'), (11613503, '8d8bac000000'), (11613709, 'f30f105b28'), (11613746, 'f30f594354'), (11601689, 'f30f1081ac020000'), (11601703, 'f30f1081b0020000'), (11601909, 'c6810403000001'), (15719902, '8b4250'), (15719911, '8b4240'), (15719933, '8b420c'), (15719936, '68ed661901'), (15719914, '6801b8eb00'), (15743821, '8b4250'), (15743830, '8b4238'), (15743848, '8b420c'), (15743851, '68ed661901'), (16056077, '8b1089511c')]
+    for name,address,prefix,ret,count in camera_known:
+        raw=bytes.fromhex(prefix)
+        returned=b'\xc3' if not count else b'\xc2'+struct.pack('<H',count)
+        if pe.read(address,len(raw))!=raw or pe.read(ret,len(returned))!=returned:
+            raise ValueError('Native editor camera ABI mismatch: '+name)
+    for site,target in camera_calls:
+        raw=pe.read(site,5)
+        if raw[0]!=0xE8 or site+5+struct.unpack('<i',raw[1:])[0]!=target:
+            raise ValueError('Native editor camera call mismatch '+hex(site))
+    for site,encoded in camera_fields:
+        raw=bytes.fromhex(encoded)
+        if pe.read(site,len(raw))!=raw:
+            raise ValueError('Native editor current-camera field mismatch '+hex(site))
     for name, address, prefix, returns, note, calls, checks in ENTRIES:
         if not pe.in_text(address) or pe.read(address,len(bytes.fromhex(prefix))) != bytes.fromhex(prefix):
             raise ValueError(name + ': entry mismatch')

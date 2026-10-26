@@ -1,6 +1,7 @@
 // Exact-build native Adventure Editor adapter. Call mutations outside Present.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -43,6 +44,19 @@ struct State {
     uint64_t generation = 0;
     uint32_t history_size = 0, history_cursor = 0;
     std::vector<editor::ObjectId> selected;
+};
+
+// Local values only, never persisted or sent to another player. The Runtime
+// pins these to one exact project/epoch/playtest round. No native pointer is
+// retained across Test, including the camera itself.
+struct LocalView {
+    std::array<float, 3> target{};
+    std::array<float, 4> rotation{};
+    std::array<float, 3> orbit{};
+    // Native camera settings used by its final transform/viewer consumer. They
+    // must match on return; the adapter never overwrites camera configuration.
+    std::array<float, 4> settings{};
+    bool operator==(const LocalView&) const = default;
 };
 
 struct Gesture {
@@ -96,6 +110,10 @@ void bind(const std::vector<Binding>&);
 // Normal local native selection, outside Present; never changes authored bytes.
 bool select_placement(editor::ObjectId, std::string& error);
 bool capture(Snapshot&, std::string& error);
+// Outside Present, from the actual active native editor camera. These fail
+// closed when that camera or its exact current context is unavailable.
+bool capture_view(LocalView&, std::string& error);
+bool restore_view(const LocalView&, uint64_t expected_generation, std::string& error);
 // Reject unsupported authored changes after private normalization of known poses.
 bool supported_changes(const Gesture&, std::string& error);
 bool validate(const Snapshot&, const editor::Document&, std::string& error);

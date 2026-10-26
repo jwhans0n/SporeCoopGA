@@ -30,6 +30,10 @@ struct EditorPreview {
 // Outside Present: pins an owned native snapshot and its local resource identity.
 bool set_editor_preview(EditorPreview, std::string& error);
 bool editor_preview();
+// Cached immutable binding identity, independent of a disconnected Controller.
+bool editor_preview_matches(const std::array<uint8_t,16>& project, uint64_t epoch, uint64_t round, uint64_t revision);
+// Read-only existing mode/data/resource/key ownership check, before native Stop.
+bool editor_preview_owner();
 void clear_editor_preview();
 
 bool init(const SkHost* host, SkMod* mod, Ctx context);

@@ -3411,3 +3411,105 @@ actual live interpolated camera, and ordinary resource restore must not be
 assumed to restore that projection. Keep the local-camera acceptance gate open.
 Receipts: `out/editor-native-party-c16/natural-success/`,
 `natural-failure-class-retry/` and `ordinary-step-150816/`.
+
+
+## Editor local camera return: exact current view, C17 proposal
+
+C16's actual four-player natural timeout froze clocks and reached native
+failure state 6 on every peer. Host Done returned every peer to the retained
+draft with unchanged source, IDs, history and authored resource. The local
+camera gate failed on the unselected host: Ace projected Y changed from
+394.242371 before Test to 384.000427 afterward. The three guests retained their
+own projections. The separate actual natural-success return passed its view
+gate. These are independent lifecycle and camera findings; this section does
+not claim a running-game camera fix.
+
+The exact dc04 executable's editor cleanup F03880 and native Save F44E80 write
+ScenarioResource +2C30..2C4F from desired orbit target B101C0, desired quaternion
+644A30 (camera +CC) and current distance C376A0 (+10C). Ordinary snapshot capture
+only calls ScenarioResource Write and need not refresh those fields. Native
+EFF670 enters the editor camera consumer EFDDC0 at F0007A. That consumer calls
+instant LookAt B12D10, B13AF0 and distance setter B10420. History reconstruction
+F46400 has no verified edge to that consumer. A copied 32-byte resource view
+therefore cannot establish actual live-view preservation.
+
+The native final transform B133E0 instead consumes current target direction
++54/+58/+5C times radius +28, current quaternion +AC..B8, yaw +154, pitch +130
+and distance +10C. B10160 returns the current orbit point through a borrowed
+static Vec3, plain ret. B0F1A0 is thiscall(camera,float*,float*,float*), ret C,
+and returns those three current scalars. It differs from desired getter
+B0F170 (+15C/+138/+114). B106C0 is thiscall(camera,float,float,float), ret C;
+it sets current/desired values immediately, clears native interpolation state,
+clamps pitch to native +2AC/+2B0 and distance to at least 0.1, and marks the
+transform dirty. Native EFDE4C calls it during editor initialization.
+
+The staged adapter captures values only, with no camera pointer surviving
+Test. It resolves CameraManager freshly through verified GameModeManager Get
+and virtual +50, requires the +38 active camera to equal +40 editor camera ID
+00EBB801, and uses Cast(+0C,011966ED). These borrowed access paths are directly
+used by F03880 and EFDDC0. GetCameraByID 7C67A0 returns its borrowed array entry
+without acquiring a caller ref. Runtime pins view values to exact project,
+epoch, round and revision. It checks the pre-Test Native generation before
+module-owned Stop, records only that Stop's synchronously returned generation,
+and rechecks it before canonical/view restoration. A replacement context in
+the same logical round is rejected before Stop or a native write.
+
+After canonical draft and independent selection restoration, the proposal
+uses existing approved SimCamera_LookAt B12D10(point,quaternion,true), then
+B106C0(current scalars). Native readback must match; no derived field, broader
+camera constructor, spring/path builder or selection-focus helper is invoked.
+Four finite native transform/viewer settings (+26C/+270/+310/+314) must match,
+and are never overwritten. Missing activation holds return acknowledgment for
+up to five seconds; stale ownership, invalid values, incompatible settings or
+failed readback fails closed with recovery. NoneSelected needs no fallback.
+General remote-edit/snapshot restoration retains its existing local-view rule.
+
+OUT evidence: out/editor-camera-c17/PROPOSAL.md, exact-byte verification.json,
+the staged 36-entry native map/verifier, and existing c16-camera*.txt receipts.
+Controlled Win32 Native ABI tests pass 639 checks, including existing native
+cancellation regressions. Focused two-peer Runtime view tests pass 454 checks,
+including delayed activation/no early ACK, different local views, NoneSelected,
+legitimate Stop generation advance and same-round replacement/no-write.
+The rebased Win32 Runtime quick suite passes 5,515 checks and full suite passes
+6,166 checks, including its 24 MiB retained-closure/cached-join regressions.
+Runtime init/shutdown now clear transient preview-return latches, allowing the
+new controlled owner-failure case to be followed by a fresh session.
+Running-game C17 natural failure and Hammer-return camera checks remain required.
+
+
+### Retained local context during End and disconnect
+
+The initial C17 camera proposal preserved normal group return but inherited
+selection-pin retirement on End, transport retirement and inactive Controller
+phases. Those paths also called finish_return with its prior false default.
+That would skip local-view restoration on an otherwise owned disconnect/End.
+The reviewed followup retains its value pin until the native preview lease has
+actually retired, including Frozen/Disconnected/Idle Controller phases.
+
+set_editor_preview already refuses a replacement while g_preview exists. The
+new ordinary C++ editor_preview_matches predicate checks the immutable bound
+project/epoch/round/revision, independent of config.current or connectivity.
+The read-only editor_preview_owner predicate reuses existing preview_bound to
+verify the exact mode/data/resource/key before module-owned Stop. Neither
+introduces a native entry point, guessed layout or retained camera pointer.
+Cleanup also requires the retained pin to match the current_native document's
+project/epoch/revision. A different same-revision Test round is rejected.
+
+Every owned preview finish restores the pinned selection and actual local view
+after the canonical draft, including End/disconnect. Only confirmed normal
+group-return callbacks additionally require the Controller's current round;
+retired cleanup uses the immutable bridge lease. Before Stop the original
+native generation is mandatory. Only that exact synchronous module-owned Stop
+can publish its new generation, which then updates the transport cleanup lease
+and is rechecked through delayed readiness and restoration. Replaced native
+contexts retain the existing no-Stop/no-restore retirement branch.
+
+OUT followup: out/editor-camera-c17-returns. Strict cross-compile and Native
+Preview Win32 fixture 84 checks pass. Focused view/lifecycle Runtime tests pass
+818 checks; Runtime quick 5,799 and full 6,451 checks pass, including retained
+24 MiB closure/cached-join tests. These cover End while playing, host transport
+loss with both Stop generations advancing, private-draft selection/view
+preservation, exact bound-round and resource-owner mismatch, and replacement
+generation no-write. Health independently reviewed the ordering/ownership with
+no concrete blocker. Actual C17 native return/End/disconnect camera results
+remain pending, and no running-game camera-fix claim follows from fixtures.

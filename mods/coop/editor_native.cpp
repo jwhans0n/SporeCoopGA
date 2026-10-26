@@ -27,6 +27,7 @@ uintptr_t a_mode, a_history, a_act, a_ctor, a_read, a_write, a_copy, a_entry, a_
 uintptr_t a_context, a_tools, a_marker, a_object, a_clone_marker, a_create_marker, a_delete_marker, a_apply_marker;
 uintptr_t a_loading, a_layout_find, a_display_vtable, a_erase_history, a_discard_history, a_copy_marker_rows, a_insert_marker;
 uintptr_t a_entry_vtable;
+uintptr_t a_view_manager, a_view_target, a_view_orbit, a_view_set_orbit, a_view_lookat;
 bool supported, applying, queued;
 bool fence_queued;
 double last_fence;
@@ -754,6 +755,104 @@ void SK_CDECL fence_ui(void*){
 }
 } // namespace
 
+namespace {
+// Exact native camera access paths: F03880 uses the active camera (+38),
+// EFDDC0 resolves the Adventure Editor camera ID (+40), both Cast(+0C) to
+// 011966ED. Borrowed pointers are used only inside this synchronous call.
+bool view_slot(void* object, unsigned index) {
+    if (!skg::readable(object, sizeof(void*))) return false;
+    void** vt=skg::vtable(object);
+    return skg::readable(vt, (index+1)*sizeof(void*)) && vt[index];
+}
+void* view_camera(std::string& error) {
+    if (!a_view_manager || !a_view_target || !a_view_orbit || !a_view_set_orbit || !a_view_lookat) {
+        error="The verified local editor camera adapter is unavailable";return nullptr;
+    }
+    void* manager=skg::cdecl_call<void*>(a_view_manager);
+    if (!view_slot(manager,0x50/4)) {error="The native camera manager is unavailable";return nullptr;}
+    void* cameras=skg::vcall<void*>(manager,0x50/4);
+    if (!view_slot(cameras,0x38/4) || !view_slot(cameras,0x40/4)) {
+        error="The native editor camera manager is unavailable";return nullptr;
+    }
+    void* active_camera=skg::vcall<void*>(cameras,0x38/4);
+    void* editor_camera=skg::vcall<void*>(cameras,0x40/4,uint32_t(0x00EBB801));
+    if (!active_camera || active_camera!=editor_camera || !view_slot(active_camera,0x0C/4)) {
+        error="Waiting for the active native Adventure Editor camera";return nullptr;
+    }
+    void* orbit=skg::vcall<void*>(active_camera,0x0C/4,uint32_t(0x011966ED));
+    if (!skg::readable(orbit,0x318)) {error="The native editor orbit camera is unavailable";return nullptr;}
+    return orbit;
+}
+bool finite_view(const LocalView& view) {
+    for (float value:view.target) if (!std::isfinite(value)) return false;
+    for (float value:view.rotation) if (!std::isfinite(value)) return false;
+    for (float value:view.orbit) if (!std::isfinite(value)) return false;
+    for (float value:view.settings) if (!std::isfinite(value)) return false;
+    double radius=0,norm=0;
+    for (float value:view.target) radius+=double(value)*value;
+    for (float value:view.rotation) norm+=double(value)*value;
+    return radius>1e-10 && norm>0.999 && norm<1.001 && view.orbit[2]>=0.1f;
+}
+void read_view(void* camera, LocalView& view) {
+    // B10160 returns a borrowed static vector, copied before another call.
+    const float* target=skg::thiscall<const float*>(a_view_target,camera);
+    if (!skg::readable(target,sizeof(float)*3)) {view={};return;}
+    std::memcpy(view.target.data(),target,sizeof(float)*3);
+    // B133E0 final transform consumes the current quaternion AC, not the
+    // desired CC used by native Save and the 32-byte ScenarioResource view.
+    std::memcpy(view.rotation.data(),skg::ptr_add<void>(camera,0xAC),sizeof(float)*4);
+    skg::thiscall<void>(a_view_orbit,camera,&view.orbit[0],&view.orbit[1],&view.orbit[2]);
+    view.settings={skg::field<float>(camera,0x26C),skg::field<float>(camera,0x270),
+        skg::field<float>(camera,0x310),skg::field<float>(camera,0x314)};
+}
+bool same_view(const LocalView& a,const LocalView& b) {
+    auto close_enough=[](float x,float y){return std::fabs(double(x)-y)<=1e-5*std::max(1.0,std::max(std::fabs(double(x)),std::fabs(double(y))));};
+    for(unsigned i=0;i<3;++i)if(!close_enough(a.target[i],b.target[i])||!close_enough(a.orbit[i],b.orbit[i]))return false;
+    // A quaternion and its negation encode the same rotation.
+    bool positive=true,negative=true;
+    for(unsigned i=0;i<4;++i){positive&=close_enough(a.rotation[i],b.rotation[i]);negative&=close_enough(a.rotation[i],-b.rotation[i]);}
+    return (positive||negative)&&a.settings==b.settings;
+}
+}
+
+bool capture_view(LocalView& view, std::string& error) {
+    const auto native=state();
+    if (!native.ready || native.gesture || applying) {error="The native editor is not ready to capture its local view";return false;}
+    void* camera=view_camera(error);if(!camera)return false;
+    LocalView captured;read_view(camera,captured);
+    if (!finite_view(captured)) {error="The native editor returned an invalid local view";return false;}
+    if(state().generation!=native.generation) {error="The native editor changed while capturing its local view";return false;}
+    view=captured;return true;
+}
+
+bool restore_view(const LocalView& view, uint64_t expected_generation, std::string& error) {
+    const auto native=state();
+    if (!native.ready || native.gesture || applying || native.generation!=expected_generation) {
+        error="The native editor context is not ready to restore this local view";return false;
+    }
+    if(!finite_view(view)){error="The pinned local editor view is invalid";return false;}
+    void* camera=view_camera(error);if(!camera)return false;
+    LocalView current;read_view(camera,current);
+    if(!finite_view(current)||current.settings!=view.settings) {
+        error="The native editor camera settings changed during Test";return false;
+    }
+    const float low=skg::field<float>(camera,0x2AC),high=skg::field<float>(camera,0x2B0);
+    if(!std::isfinite(low)||!std::isfinite(high)||low>high||view.orbit[1]<low||view.orbit[1]>high) {
+        error="The pinned local editor view exceeds the native camera limits";return false;
+    }
+    if(state().generation!=expected_generation) {error="The native editor changed before restoring its local view";return false;}
+    // Existing native instant LookAt restores current orbit point/quaternion.
+    // B106C0 then sets all current/desired scalar values, including the actual
+    // angles omitted from ScenarioResource's persisted camera fields.
+    skg::thiscall<void>(a_view_lookat,camera,view.target.data(),view.rotation.data(),true);
+    skg::thiscall<void>(a_view_set_orbit,camera,view.orbit[0],view.orbit[1],view.orbit[2]);
+    LocalView restored;read_view(camera,restored);
+    if(state().generation!=expected_generation || !finite_view(restored) || !same_view(view,restored)) {
+        error="The native editor could not restore the pinned local view";return false;
+    }
+    return true;
+}
+
 bool init(const SkHost* host, SkMod* mod, Ctx context) {
     H = host; M = mod; C = std::move(context);
     if (!H || std::string(H->exe_sha256()) != "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37") return false;
@@ -783,6 +882,11 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     a_discard_history=H->sym("SporeCoop::Editor::DiscardHistoryEntry");
     a_copy_marker_rows=H->sym("SporeCoop::Editor::CopyMarkerRows");
     a_insert_marker=H->sym("SporeCoop::Editor::InsertMarker");
+    a_view_manager=H->sym("App::IGameModeManager::Get");
+    a_view_target=H->sym("SporeCoop::Editor::CurrentOrbitTarget");
+    a_view_orbit=H->sym("SporeCoop::Editor::CurrentOrbitScalars");
+    a_view_set_orbit=H->sym("SporeCoop::Editor::SetOrbitScalarsInstant");
+    a_view_lookat=H->sym("SporeCoop::SimCamera_LookAt");
     supported = a_mode && a_history && a_act && a_ctor && a_read && a_write && a_copy && a_entry && a_entry_vtable && a_restore && a_alloc &&
         a_context && a_tools && a_marker && a_object && a_clone_marker && a_create_marker && a_delete_marker && a_apply_marker && a_loading && a_layout_find && a_erase_history && a_discard_history && a_copy_marker_rows && a_insert_marker;
     if (!supported) return false;
