@@ -65,6 +65,27 @@ class ProxyTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,'queue exceeded'):
                     proxy.snapshot()
 
+    def test_rate_limit_serializes_actual_udp_payloads(self):
+        with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as host, socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as guest:
+            host.bind(('127.0.0.1',0));host.settimeout(2)
+            guest.bind(('127.0.0.1',0))
+            with EditorProxy(host.getsockname()[1]) as proxy:
+                rate=80000
+                proxy.configure(Profile(bits_second=rate))
+                packets=[packet(reliable=n,payload=bytes([n])*960) for n in range(3)]
+                begun=time.monotonic()
+                for data in packets:guest.sendto(data,('127.0.0.1',proxy.port))
+                received=[host.recvfrom(2048)[0] for _ in packets]
+                elapsed=time.monotonic()-begun
+                self.assertEqual(received,packets)
+                # The final packet cannot depart before all source payloads
+                # have consumed their share of this direction's link budget.
+                expected=sum(map(len,packets))*8/rate
+                self.assertGreaterEqual(elapsed,expected-.015)
+                stats=proxy.snapshot()['up']
+                self.assertEqual(stats['source_udp_payload_bytes'],sum(map(len,packets)))
+                self.assertEqual(stats['forwarded_udp_payload_bytes'],sum(map(len,packets)))
+
 
 if __name__=='__main__':
     unittest.main()

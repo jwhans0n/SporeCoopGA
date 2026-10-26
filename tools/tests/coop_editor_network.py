@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PROFILES = (
     ('lan', Profile(), 200),
     ('wan_100ms_1percent', Profile(rtt_ms=100,loss=.01,reorder=.02,duplicate=.01), 500),
+    ('wan_100ms_1percent_2mbit', Profile(rtt_ms=100,loss=.01,reorder=.02,duplicate=.01,bits_second=2000000), 750),
     ('stress_100ms_10percent', Profile(rtt_ms=100,loss=.10,reorder=.05,duplicate=.02), None),
 )
 
@@ -145,6 +146,7 @@ def run(args):
                 if budget and p95>budget:
                     raise FixtureError(f'Actual native {name} p95 {p95:.2f}ms exceeds {budget}ms')
             party.result.update(pass_native_network=True,bulk_asset_contention_pass=False)
+            party.result['rate_limit_scope']='Symmetric per peer and direction. The 2 Mbit/s profile measures native gestures under rate limiting, without a concurrent bulk transfer; it cannot establish the asset-contention budget.'
             party.result['pass']=True
             party.result['unvalidated']=[item for item in party.result.get('unvalidated',[]) if item!='real packet loss/reordering between game processes']
             party.result['method']='Native Runtime Controller.submit through own accepted decision after native/durable apply. Lease gating/inverse settlement precede measurement. Real UDP source bytes include headers, ACKs and retransmissions before injected duplication; IP/UDP headers excluded.'
