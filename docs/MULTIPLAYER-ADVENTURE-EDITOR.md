@@ -42,7 +42,8 @@ controls must remain disabled; they are not safe ways around the shared panel.
    editors open after verified content arrives. Editing remains held until the
    checkpoint and its bindings have been applied.
 
-The panel shows participants, selections, committed revision, your local
+The panel shows participants, full placement identities, ownership, pending
+commits, connection state, committed revision, your local
 checkpoint and the latest confirmed native save revision. The host also sees
 each peer's durable checkpoint revision. Guest panels label other players'
 checkpoint coverage as reported to the host rather than claiming an unknown
@@ -55,6 +56,15 @@ The host validates placement and field ownership before mutations. Disjoint
 placements can change independently. A conflicting gesture changes nothing and
 reports why it was rejected. If ownership is still arriving, wait for it and repeat
 the gesture. Leases expire or are released after abandoned interaction.
+
+While another player drags an existing placement, a labeled transform hint shows
+their proposed position and orientation. These coalesced, short-lived hints do not
+move the committed placement or change the saved draft. Only current ownership
+can publish a hint; cancellation, replacement ownership and playtest preparation
+retire it. Browsing and new-placement previews remain local until the host has
+accepted a stable placement identity. Spore groups overlapping cast icons in its
+normal editor UI; the author keeps the new placement selected after creation or
+duplication, while other players retain their own selections.
 
 One native gesture becomes one transaction automatically. **Undo** targets your
 latest still-applied original action. If another edit makes its inverse unsafe,
@@ -85,9 +95,13 @@ checkpoint, committed journal and content-addressed native artifacts. The mod
 does not externally rewrite active EditorSaves or Pollination databases.
 
 Immutable dependencies and the initial native root are retained once. Placement
-resource messages carry checked copy/literal patches against that root. Full
-join envelopes include the base; live deltas require the already verified base.
-Both base and reconstructed bytes are hashed before native parsing. This editor
+resource messages carry checked copy/literal patches against that root. A joining
+player advertises only independently verified records and base bytes retained in
+the current process. The host pins a checkpoint and transfers missing content;
+an empty cache receives the full envelope. Cached content is checked again during
+assembly, and an invalid or incomplete assembly cannot reach native parsing.
+Cold processes can fall back to full transfer. Live deltas require the already
+verified base. Both base and reconstructed bytes are hashed before native parsing. This editor
 envelope does not change the existing GA or captain resource bundle formats.
 
 On host loss, edits freeze. Host a co-op party before selecting **Recover**;
@@ -114,6 +128,49 @@ must finish restoring its draft before the
 host releases the authoring hold. Gameplay health, destruction, objectives and
 act progression never become authored edits, and test play awards no quickplay
 captain XP. Cancellation or disconnection must preserve a recoverable draft.
+
+## Developer diagnostics
+
+These commands support controlled development tests. Their output does not
+establish native acceptance or release readiness. Use the public console only
+with the intended isolated test profile.
+
+| Command | Readout or action |
+| --- | --- |
+| `coop.editor leases` | Local lease scopes, stable object identities, tokens and remaining milliseconds; participant phases, selections, ownership, pending work and preview lease identity. |
+| `coop.editor timing reset` | Clear the previous timing samples and start recording. |
+| `coop.editor timing stop` | Stop recording and discard any unfinished measurement. |
+| `coop.editor timing` | Report the sample count, recording state, capacity and `confirmation_ms` values. |
+
+The lease readout uses cached controller data, is bounded to 12 KiB and changes
+no ownership, native resources or durable state. It can distinguish waiting for
+a grant from an expired lease or a participant still applying a checkpoint.
+Tokens identify current capabilities; the diagnostic does not grant them.
+
+Timing retains at most 256 accepted captured native placement gestures. Each
+sample starts at `Controller::submit`, after ownership waiting and native inverse
+settlement, and ends at that author's accepted canonical decision after native
+application and durable checkpointing. Other authors' commits and rejected
+operations do not produce samples. This measures confirmation latency after
+submission, excluding the time to acquire ownership, perform the gesture or wait
+for its native inverse. Start and stop collection at settled boundaries; it is
+not an end-to-end mouse-input timer or an FPS measurement.
+
+The newer scoped Return fence and cached-content Join remain under integration
+validation. Isolated Runtime tests retain old return callbacks across rounds and
+verify their project, epoch, round and revision cannot affect the new preview.
+Those tests substitute native APIs. Cache-aware transfer still requires actual
+cold and warm joins with verified native reconstruction; neither mechanism is a
+claim that a C10 game-process test has passed.
+
+The opt-in [native network harness](../tools/tests/coop_editor_network.py) uses
+already-owned hidden, muted two- or four-player processes, exact candidate hashes
+and ordinary native gestures through a bounded loopback impairment proxy. It
+records submission-to-confirmation samples and UDP traffic, including source
+retransmissions. Its LAN, WAN and packet-adversity stage does not establish bulk
+asset-contention performance, the large-editor FPS gate or sustained memory
+retention. Those remain separate acceptance tests in the
+[validation report](reports/EDITOR-IMPLEMENTATION-VALIDATION.md).
 
 ## Validation
 

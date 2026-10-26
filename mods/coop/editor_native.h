@@ -71,6 +71,8 @@ editor::ResourceKey avatar();
 bool avatar_locked();
 // Binding ownership survives native vector reorders and snapshot reconstruction.
 void bind(const std::vector<Binding>&);
+// Normal local native selection, outside Present; never changes authored bytes.
+bool select_placement(editor::ObjectId, std::string& error);
 bool capture(Snapshot&, std::string& error);
 // Reject unsupported authored changes after private normalization of known poses.
 bool supported_changes(const Gesture&, std::string& error);
@@ -83,6 +85,8 @@ bool rebaseline(std::string& error);
 bool apply(const editor::Document&, std::string& error);
 bool apply(const editor::Document&, const editor::Change&, const Snapshot* artifact, std::string& error);
 bool enter(const editor::ResourceKey&, std::string& error);
+// Outside Present. Reads only the selected in-progress native transform.
+bool selection_pose(editor::ObjectId& object, editor::ObjectId& act, editor::Pose& pose);
 std::string status();
 
 } // namespace editor_native

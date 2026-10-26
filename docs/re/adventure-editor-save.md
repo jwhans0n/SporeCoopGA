@@ -434,6 +434,15 @@ diagnostic mode and cannot claim this gate. The measured limits remain median
 FPS ratio at least 0.90 and p95 frame-time ratio at most 1.15. Two process-memory
 snapshots are diagnostic and do not establish the separate 20-cycle memory gate.
 
+Large-editor sampling now also requires every live Spore PID to belong to the
+measured two-/four-process cohort. Merely matching the total PID list before and
+after cannot exclude another game's changing workload. Other Spore processes
+require explicit `--diagnostic` sampling; diagnostic recordings cannot later be
+promoted to acceptance by omitting the comparison flag. The helper never closes
+personal or unrelated games to meet this condition. Its 18 offline tests pass on
+Windows Python and WSL, including extra/missing/duplicate PID cases and diagnostic
+promotion rejection.
+
 Prepare a large fixture through ordinary native authoring while disconnected:
 choose an existing lightweight template, place it by palette drag onto verified
 visible terrain positions, and check an exact increment of one after each
@@ -514,3 +523,63 @@ hashes and results are in `out/editor/transient-presence/validation.json`.
 These source/fixture results do not establish actual native hint readability,
 cache-hit joins or guest cancellation UI in the game. They require the next
 candidate's controlled integration tests; the running C8 binary is unchanged.
+
+
+## Recheck native state at history entry
+
+The native history availability hooks use cached collaboration state to keep UI
+queries cheap. The cache can predate a newly started native gesture, save or
+transition, and the public history command reaches the same action queue. The
+runtime history entry therefore rechecks actual native editing/readiness,
+gesture state and owner generation, plus recovery, save-busy and pending native
+Save publication, before acquiring a lease or assigning an operation sequence.
+A held Undo/Redo does not become another pending transaction that could collide
+with capture of the still-active native gesture. The chronological checked-inverse
+policy and retention rules are unchanged.
+
+The focused Runtime fixture first creates through the actual captured-gesture
+and real-frame submission path. With an existing document lease, each native hold
+must leave the operation sequence, pending state, semantic history, native bytes
+and durable checkpoint unchanged. Once the holds clear, ordinary own Undo and
+Redo both commit and converge. This differs from seeding directly through the
+Controller: that test-only path has its own auto-assigned operation counter and
+must not be mistaken for a Runtime gesture's explicit sequence. Two unrelated
+existing fixture calls also now select the host's fake dispatch context explicitly
+after polling the guest.
+
+The exact 20261006 i686 build
+`out/editor-undo-entry-build/host/editor_runtime_windows_tests.exe --quick`
+passed 1,902 checks, including the independent timing fixture's one local sample
+and zero remote samples. The performance helper's 18 offline tests also pass on
+Windows and WSL. Exact source/executable hashes and commands are recorded in
+`out/editor-undo-entry-build/validation.json`. These changes and the UTF-8-safe
+cached hint-name prefix were tested in source/isolated fixtures only; the already
+running C9 candidate remains unchanged and needs a later deployment.
+
+## Scope delayed playtest returns to their original round
+
+Native preview result/return callbacks now capture the collaboration project,
+epoch, playtest round and canonical revision. A single bounded pending return
+slot validates that identity both when queued and when dispatched outside the
+frame. It requires the current owned preview in Preparing, Playing or Returning.
+An old callback cannot return a later round, and public or native Return while
+the editor is already Ready leaves its status unchanged. A current host callback
+still drives the existing authoritative return and mandatory GA cleanup; a guest
+callback during play still explains host ownership. No native ABI or protocol
+changes are involved.
+
+The isolated Runtime test retains callbacks across a complete return and a new
+preparation/playing round, delays an old scoped queue item until that new round,
+and verifies no new GA cancellation or return. It also verifies a valid current
+native return completes once on both peers. The read-only `coop.editor leases`
+diagnostic reports cached local scopes, tokens and remaining milliseconds, plus
+member phases, selections, host-derived ownership, pending state and preview
+lease identity. Output is bounded to 12 KiB and does not capture, restore or mutate
+native resources.
+
+The exact 20261006 i686 isolated Runtime executable
+`out/editor-return-scope-build/host/editor_runtime_windows_tests.exe --quick`
+passed 2,060 checks, including the earlier history-entry and timing regressions.
+Hashes and commands are recorded in
+`out/editor-return-scope-build/validation.json`. These source/fixture checks do
+not change the running C9 candidate or establish actual native C10 acceptance.

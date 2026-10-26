@@ -28,6 +28,7 @@ bool supported, applying, queued;
 bool fence_queued;
 double last_fence;
 std::map<sui::Win,uint32_t> fenced_windows;
+uint64_t fenced_generation=0;
 uint64_t generation = 1, captures = 0, restores = 0, rejected = 0;
 void* observed_mode;
 void* observed_data;
@@ -274,6 +275,7 @@ ImportFn original_import;
 CloneSelectionFn original_clone_selection;
 using ScriptInputFn=bool(SK_THISCALL*)(void*,void*,void*);
 ScriptInputFn original_script_input;
+ScriptInputFn original_class_input;
 struct Pending {
     void* entry;
     void* before;
@@ -416,6 +418,19 @@ bool SK_THISCALL script_input(void* self,void* window,void* message){
     }
     return original_script_input(self,window,message);
 }
+bool SK_THISCALL class_input(void* self,void* window,void* message){
+    auto* script=static_cast<uint8_t*>(script_ui());
+    auto* settings=script && skg::readable(script,0x1C)?skg::field<uint8_t*>(script,0x18):nullptr;
+    if(!applying && active() && settings && self==settings+0xC){
+        // Class settings register their own binder on each native descendant;
+        // ScriptUI's parent IWinProc does not own these slider notifications.
+        // Preserve the normal dismiss control, whose native handler has no
+        // authored setter branch. All other class-property input is read-only.
+        if(!skg::readable(message,0x10) || skg::field<uint32_t>(message,8)!=0x287259F6 ||
+           skg::field<uint32_t>(message,0xC)!=0x0595E0A8)return false;
+    }
+    return original_class_input(self,window,message);
+}
 void SK_THISCALL commit(void* self) {
     bool observe = !applying && active() && self == data(mode()) &&
         !*reinterpret_cast<uint8_t*>(a_history + 0x20);
@@ -515,8 +530,26 @@ void disable_owned(sui::Win window){
     }
     sui::set_enabled(window,false);
 }
+void disable_properties(sui::Win root){
+    std::vector<sui::Win> pending_windows;
+    if(root)pending_windows.push_back(root);
+    size_t visited=0;
+    while(!pending_windows.empty() && visited++<2048){
+        auto window=pending_windows.back();pending_windows.pop_back();
+        // The owned close button remains usable. Native class input is also
+        // guarded before its setter, including the first UI tick after open.
+        if(sui::control_id(window)!=0x0595E0A8){
+            if(fenced_windows.contains(window) || fenced_windows.size()<4096)disable_owned(window);
+        }
+        auto descendants=sui::children(window);
+        if(descendants.size()>2048 || pending_windows.size()+descendants.size()>2048)break;
+        pending_windows.insert(pending_windows.end(),descendants.begin(),descendants.end());
+    }
+}
 void SK_CDECL fence_ui(void*){
     fence_queued=false;
+    state();
+    if(fenced_generation!=generation){restore_fences();fenced_generation=generation;}
     if(!supported || !active()){restore_fences();return;}
     // Ordinary native Save/Done/Cancel are brokered by the collaboration panel.
     // Its verified save adapter can still show and complete the normal save UI.
@@ -536,7 +569,7 @@ void SK_CDECL fence_ui(void*){
     if(skg::readable(layout,0x18)){
         // GetContainerWindow is the shared parent layer, not this layout's
         // owned subtree. Disable only its exact native property UI root.
-        disable_owned(skg::thiscall<sui::Win>(a_layout_find,layout,uint32_t(0x073E6BA0),true));
+        disable_properties(skg::thiscall<sui::Win>(a_layout_find,layout,uint32_t(0x073E6BA0),true));
     }
 }
 } // namespace
@@ -586,7 +619,8 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
         install("SporeCoop::Editor::RedoHistory",(void*)history_redo,(void**)&original_history_redo) &&
         install("SporeCoop::Editor::HasUndo",(void*)has_undo,(void**)&original_has_undo) &&
         install("SporeCoop::Editor::HasRedo",(void*)has_redo,(void**)&original_has_redo) &&
-        install("SporeCoop::Editor::ScriptInput",(void*)script_input,(void**)&original_script_input);
+        install("SporeCoop::Editor::ScriptInput",(void*)script_input,(void**)&original_script_input) &&
+        install("SporeCoop::Editor::ClassInput",(void*)class_input,(void**)&original_class_input);
     return supported;
 }
 
@@ -730,7 +764,16 @@ bool supported_changes(const Gesture& gesture,std::string& error){
     memcpy(skg::ptr_add<void>(compared_after.p,0x2C30),skg::ptr_add<void>(compared_before.p,0x2C30),0x20);
     std::vector<uint8_t> left,right;
     if(!serialize(compared_before.p,left,error) || !serialize(compared_after.p,right,error))return false;
-    if(left!=right){error="Shared editing rejected an unsupported avatar, template, act, global or placement property change";return false;}
+    if(left!=right){
+        const auto count=std::min(left.size(),right.size());
+        size_t offset=0;while(offset<count && left[offset]==right[offset])++offset;
+        char detail[128];
+        if(offset<count)snprintf(detail,sizeof detail," (normalized byte %zu: %02X to %02X; sizes %zu/%zu)",
+            offset,unsigned(left[offset]),unsigned(right[offset]),left.size(),right.size());
+        else snprintf(detail,sizeof detail," (normalized length differs at %zu; sizes %zu/%zu)",offset,left.size(),right.size());
+        error=std::string("Shared editing rejected an unsupported avatar, template, act, global or placement property change")+detail;
+        return false;
+    }
     error.clear();return true;
 }
 
@@ -976,6 +1019,27 @@ bool apply(const editor::Document& document,const editor::Change& change,const S
     return true;
 }
 
+bool select_placement(editor::ObjectId id,std::string& error){
+    const auto current=state();
+    if(!current.ready || current.gesture || applying){
+        error="Wait for the native editor before selecting the saved placement";return false;
+    }
+    void* owner=data(mode());
+    void* marker=marker_for_id(resource(owner),id);
+    void* object=marker?skg::thiscall<void*>(a_object,owner,marker):nullptr;
+    void* tools=a_tools?*reinterpret_cast<void**>(a_tools):nullptr;
+    if(!object || !tools){
+        error="The saved placement is not currently available for local selection";return false;
+    }
+    // Use the same verified selection path as ordinary native editing. The
+    // native cast-icon grouper keeps this one marker out of overlapping stacks.
+    applying=true;
+    original_select(tools,object);
+    applying=false;
+    refresh_selection();
+    error.clear();return true;
+}
+
 bool enter(const editor::ResourceKey& key,std::string& error){
     if(!supported || !key.instance || key.type!=0x366A930D || game::mode_id()!=modes::kMenu){
         error="A registered adventure can enter the native editor only from Galaxy";return false;
@@ -1003,6 +1067,18 @@ bool enter(const editor::ResourceKey& key,std::string& error){
         error="The game declined native Adventure Editor entry";return false;
     }
     return true;
+}
+
+bool selection_pose(editor::ObjectId& object,editor::ObjectId& act,editor::Pose& pose){
+    const auto current=state();
+    if(!active() || applying || !current.ready || !current.gesture || current.selected.empty())return false;
+    void* marker=marker_for_id(resource(data(mode())),current.selected.front());
+    if(!skg::readable(marker,0x28))return false;
+    editor::Pose candidate{skg::field<editor::Vec3>(marker,4),skg::field<editor::Rotation>(marker,0x10),skg::field<float>(marker,0x20)};
+    if(!std::isfinite(candidate.position.x) || !std::isfinite(candidate.position.y) || !std::isfinite(candidate.position.z) ||
+       !std::isfinite(candidate.rotation.x) || !std::isfinite(candidate.rotation.y) || !std::isfinite(candidate.rotation.z) ||
+       !std::isfinite(candidate.rotation.w) || !std::isfinite(candidate.scale) || candidate.scale<=0)return false;
+    object=current.selected.front();act={(3ull<<32)|current.act,1};pose=candidate;return true;
 }
 
 std::string status() {

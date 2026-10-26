@@ -15,7 +15,15 @@ struct PlayerView {
     uint8_t id = 255;
     std::string name, selection, status;
     bool host = false, local = false, ready = false;
+    bool pending = false, owns_selection = false;
     uint64_t applied_revision = 0, durable_revision = 0;
+};
+
+struct TransformHint {
+    std::string label;
+    net::Vec3 position;
+    net::Quat rotation;
+    float scale = 1;
 };
 
 struct View {
@@ -27,6 +35,7 @@ struct View {
     uint64_t revision = 0, durable_revision = 0, saved_revision = 0;
     std::string title, status, selection;
     std::vector<PlayerView> players;
+    std::vector<TransformHint> previews;
 };
 
 struct Ctx {
@@ -49,6 +58,8 @@ bool active();
 bool authoring(); // Suppresses legacy gameplay replication only while editing.
 bool playtest_owned();
 View view();
+// Immutable cached overlay data. No native work or resource creation.
+const std::vector<TransformHint>& transform_hints();
 
 // Actions enqueue work; native functions are never called by a render callback.
 void begin();

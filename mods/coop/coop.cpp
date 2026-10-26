@@ -1356,6 +1356,31 @@ void on_overlay(void*, int, void*)
     bool labels = !g_menu_up && !coop_ui::is_open();
     if (!labels)
         g_menu_hidden++;
+    if (coop_editor::authoring()) {
+        if (!labels || !H->world_to_screen || !H->overlay_text) return;
+        // Unreliable editing hints are cached outside the frame. They never
+        // reposition the canonical native objects or allocate scene resources.
+        for (const auto& hint : coop_editor::transform_hints()) {
+            const float point[3]={hint.position.x,hint.position.y,hint.position.z};
+            float screen[2];
+            if(!H->world_to_screen(point,screen) || screen[0]<0 || screen[1]<0 || screen[0]>=sw || screen[1]>=sh)continue;
+            constexpr uint32_t color=0xFF80C8FF;
+            H->overlay_text(int(screen[0])-4,int(screen[1])-10,color,"+");
+            const int width=text_width(hint.label);
+            H->overlay_text(std::clamp(int(screen[0])-width/2,0,std::max(0,sw-width)),int(screen[1])-32,color,hint.label.c_str());
+            const auto& q=hint.rotation;
+            const float size=std::clamp(hint.scale*2.f,0.25f,25.f);
+            const float axes[2][3]={
+                {1-2*(q.y*q.y+q.z*q.z),2*(q.x*q.y+q.w*q.z),2*(q.x*q.z-q.w*q.y)},
+                {2*(q.x*q.y-q.w*q.z),1-2*(q.x*q.x+q.z*q.z),2*(q.y*q.z+q.w*q.x)}};
+            for(int axis=0;axis<2;++axis){
+                const float tip[3]={point[0]+axes[axis][0]*size,point[1]+axes[axis][1]*size,point[2]+axes[axis][2]*size};
+                float projected[2];
+                if(H->world_to_screen(tip,projected))H->overlay_text(int(projected[0])-4,int(projected[1])-10,color,axis?">":"x");
+            }
+        }
+        return;
+    }
     if (labels) {
         draw_marks();
         cellsync::draw_overlay();

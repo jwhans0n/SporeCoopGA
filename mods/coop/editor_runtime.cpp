@@ -16,6 +16,7 @@
 #include "adventure_native.h"
 #include "editor_native.h"
 #include "editor_native_save.h"
+#include "editor_metrics.h"
 #include "editor_project.h"
 #include "editor_session.h"
 #include "editor_store.h"
@@ -54,6 +55,10 @@ struct AdventureMessage {
 std::deque<AdventureMessage> adventure_messages;
 size_t adventure_message_bytes;
 uint64_t sequence, native_generation, last_renew, last_presence, last_request, last_lease_use;
+uint64_t last_preview;
+bool preview_active;
+std::optional<editor::wire::Presence> last_presence_value;
+editor_metrics::Confirmations confirmation_metrics;
 editor::ProjectId project_id;
 editor::Peer local_capability;
 std::map<editor::ObjectId, editor::Placement> guarded_placements;
@@ -77,6 +82,12 @@ struct Recovery {
 std::optional<Recovery> recovery;
 enum class Action { Begin, Undo, Redo, Save, Playtest, Ready, Unready, Recover, End, Return };
 std::deque<Action> actions;
+struct PreviewReturnScope {
+    editor::ProjectId project;
+    uint64_t epoch = 0, round = 0;
+    editor::Revision revision = 0;
+};
+std::optional<PreviewReturnScope> pending_preview_return;
 std::vector<editor::Scope> requested_scopes;
 
 void tell(const std::string& text) {
@@ -425,6 +436,14 @@ bool apply(const editor::Document& before, const editor::Document& after, const 
         }
     }
     if (!editor_native::apply(after, change, source, error)) return false;
+    if (pending && pending->request.operation == change.operation && !change.allocated.empty()) {
+        std::string selection_error;
+        // The inverse removes the native temporary selection. Restore the new
+        // stable selection for its author, as ordinary placement does. Other
+        // players retain their own selection and native overlapping-icon groups.
+        if (!editor_native::select_placement(change.allocated.front(), selection_error) && H)
+            H->log(M, SK_INFO, "Shared editor local selection: %s", selection_error.c_str());
+    }
     return true;
 }
 bool rollback(const editor::Document&, const editor::Document&, const editor::Change&, std::string& error) {
@@ -546,7 +565,9 @@ void submit_pending_gesture() {
     auto request = r;
     pending->submitted = true;
     std::string error;
-    if (!controller->submit(std::move(request), error)) { pending.reset(); awaiting_operation.reset(); tell(error); }
+    const auto operation=request.operation;
+    confirmation_metrics.begin(operation,H->time_seconds());
+    if (!controller->submit(std::move(request), error)) { confirmation_metrics.cancel(operation);pending.reset(); awaiting_operation.reset(); tell(error); }
     else status = "Waiting for the host to commit the placement gesture";
 }
 void refresh() {
@@ -561,7 +582,8 @@ void refresh() {
     next.revision = doc.revision; next.durable_revision = v.locally_durable;
     next.title = v.name.empty() ? "Shared Adventure Editor" : v.name;
     next.status = status.empty() ? v.error : status;
-    next.selection = native.selected.empty() ? "No placement selected" : "Placement " + std::to_string(native.selected.front().id);
+    auto identity=[](editor::ObjectId id) { return "Placement " + std::to_string(id.id) + ":" + std::to_string(id.generation); };
+    next.selection = native.selected.empty() ? "No placement selected" : identity(native.selected.front());
     next.frozen = frozen || v.phase == Phase::Frozen;
     next.waiting = closing || recovery.has_value() || awaiting_operation.has_value() || v.phase == Phase::Joining || v.phase == Phase::Syncing || v.phase == Phase::Preparing || v.phase == Phase::Returning;
     if (v.phase == Phase::Returning) next.status = "Waiting for every player to return to the committed draft";
@@ -586,8 +608,49 @@ void refresh() {
     for (const auto& [slot, member] : v.members) {
         PlayerView player; player.id = slot; player.name = member.name; player.host = slot == 0; player.local = slot == v.local.slot;
         player.ready = member.ready; player.durable_revision = member.coverage.durable_revision; player.applied_revision = member.applied_revision;
-        player.selection = member.presence.selected.id ? "Placement " + std::to_string(member.presence.selected.id) : "Browsing";
-        player.status = member.phase == Phase::Ready ? "Editing" : member.phase == Phase::Syncing ? "Receiving draft" : member.phase == Phase::Playing ? "Playtesting" : member.phase == Phase::Returning ? "Returning to draft" : "Waiting";
+        player.selection = member.presence.selected.id ? identity(member.presence.selected) : "No placement selected";
+        player.pending = member.presence.pending;
+        player.owns_selection = (member.presence.ownership & editor::wire::kOwnSelection) != 0;
+        auto phase=member.phase;
+        if (!next.host && !player.local && member.presence.author==member.peer) {
+            using P=editor::wire::PresencePhase;
+            switch(member.presence.phase){
+            case P::Ready: phase=Phase::Ready;break;
+            case P::Syncing: phase=Phase::Syncing;break;
+            case P::Preparing: phase=Phase::Preparing;break;
+            case P::Playing: phase=Phase::Playing;break;
+            case P::Returning: phase=Phase::Returning;break;
+            case P::Frozen: phase=Phase::Frozen;break;
+            case P::Disconnected: phase=Phase::Disconnected;break;
+            case P::Offered: phase=Phase::Offered;break;
+            }
+        }
+        switch(phase){
+        case Phase::Ready:
+            player.status=player.pending ? "Commit pending" : member.presence.editing ? player.owns_selection ? "Editing owned placement" : "Editing draft structure" :
+                player.owns_selection ? "Owns selected placement" : (member.presence.ownership & editor::wire::kOwnDocument) ? "Owns draft structure" : "Browsing";break;
+        case Phase::Joining: case Phase::Syncing: player.status="Receiving draft";break;
+        case Phase::Preparing: player.status=player.ready ? "Playtest ready" : "Confirm playtest";break;
+        case Phase::Playing: player.status="Playtesting";break;
+        case Phase::Returning: player.status="Returning to draft";break;
+        case Phase::Frozen: player.status="Needs recovery";break;
+        case Phase::Disconnected: player.status="Disconnected";break;
+        case Phase::Offered: player.status="Invited to edit";break;
+        case Phase::Idle: player.status="Not editing";break;
+        }
+        if (!player.local && v.phase==Phase::Ready && member.preview && member.preview->expires>now_ms()) {
+            const auto& hint=member.preview->value;
+            if (doc.placements.contains(hint.object)) {
+                TransformHint shown;
+                size_t name_bytes=std::min<size_t>(20,member.name.size());
+                while(name_bytes && name_bytes<member.name.size() &&
+                      (uint8_t(member.name[name_bytes])&0xC0)==0x80)--name_bytes;
+                shown.label=member.name.substr(0,name_bytes)+": "+identity(hint.object)+" (preview)";
+                shown.position={hint.pose.position.x,hint.pose.position.y,hint.pose.position.z};
+                shown.rotation={hint.pose.rotation.x,hint.pose.rotation.y,hint.pose.rotation.z,hint.pose.rotation.w};
+                shown.scale=hint.pose.scale;next.previews.push_back(std::move(shown));
+            }
+        }
         next.players.push_back(std::move(player));
         if (slot == v.local.slot) next.ready = member.ready;
     }
@@ -698,7 +761,12 @@ void start_saved() {
     if (C.open_panel) C.open_panel();
 }
 void undo_redo(bool redo) {
-    if (!controller || closing || controller->view().phase != Phase::Ready || awaiting_operation || frozen) return;
+    if (!controller || closing || recovery || controller->view().phase != Phase::Ready || awaiting_operation || frozen ||
+        save_publication_pending || editor_native_save::busy()) return;
+    // Cached toolbar availability can predate the native input event. Recheck
+    // ownership and transitions before acquiring leases or queuing history work.
+    const auto native = editor_native::state();
+    if (!native.editing || !native.ready || native.gesture || native.generation != native_generation) return;
     const auto& state = controller->state(); const editor::Gesture* target = nullptr;
     for (const auto& gesture : state.history) if (gesture.operation.author == controller->view().local) {
         if (!redo && gesture.applied && (!target || gesture.original_revision > target->original_revision)) target = &gesture;
@@ -847,6 +915,14 @@ void finish_recovery() {
     native_attached = true;
     tell("Recovered the last durable draft in a new editing session");
 }
+bool current_preview_return(const PreviewReturnScope& request) {
+    if (!controller || !adventure_native::editor_preview()) return false;
+    const auto& view = controller->view();
+    const bool returning = view.phase == Phase::Preparing || view.phase == Phase::Playing || view.phase == Phase::Returning;
+    return returning && view.context.project == request.project && view.context.epoch == request.epoch &&
+        view.playtest_round == request.round && view.playtest_revision == request.revision &&
+        controller->state().document.revision == request.revision;
+}
 void execute(Action action) {
     if (closing && action != Action::End) return;
     std::string error;
@@ -874,15 +950,22 @@ void execute(Action action) {
         break;
     case Action::Ready: case Action::Unready: if (!controller->ready_playtest(action == Action::Ready, error)) tell(error); break;
     case Action::End:
-        if (adventure_native::editor_preview() || controller->view().phase == Phase::Preparing || controller->view().phase == Phase::Playing || controller->view().phase == Phase::Returning) {
+        if (!host() && controller->view().phase == Phase::Preparing && !adventure_native::editor_preview()) {
+            // No GA attempt exists before HostBegin. Leave the editor directly;
+            // its scoped Leave cancels the host's preparation and offers rejoin.
+            close_session();
+        } else if (adventure_native::editor_preview() || controller->view().phase == Phase::Preparing || controller->view().phase == Phase::Playing || controller->view().phase == Phase::Returning) {
             end_after_return = true;
             if (host() && controller->view().phase != Phase::Returning) { if (!controller->cancel_playtest(error)) tell(error); }
             else adventure::cancel("A collaborator ended the playtest");
         } else close_session();
         break;
     case Action::Return:
+        if (!adventure_native::editor_preview()) break;
         if (host() && controller->view().phase == Phase::Playing) { if (!controller->return_editor(error)) tell(error); }
-        else if (!host() && !disconnected_return) tell("The host returns the party to the adventure draft");
+        else if (host() && controller->view().phase == Phase::Preparing) { if (!controller->cancel_playtest(error)) tell(error); }
+        else if (!host() && !disconnected_return && (controller->view().phase == Phase::Playing || controller->view().phase == Phase::Preparing))
+            tell("The host returns the party to the adventure draft");
         break;
     case Action::Recover: {
         if (!host() || !recovery_available) break;
@@ -946,6 +1029,8 @@ void SK_CDECL drain(void*) {
         }
         auto work = std::move(actions); actions.clear();
         for (auto action : work) execute(action);
+        auto returning = std::move(pending_preview_return); pending_preview_return.reset();
+        if (returning && current_preview_return(*returning)) execute(Action::Return);
         if (session_active() && !closing && controller->view().phase == Phase::Ready && !frozen) {
             auto native = editor_native::state();
             if (!recovery && (!native.editing || native.generation != native_generation)) { frozen = true; tell("The native editor changed context. Recover or end shared editing."); }
@@ -958,14 +1043,23 @@ void SK_CDECL drain(void*) {
                     else { controller->release_leases(tokens, error); requested_scopes.clear(); guarded_placements.clear(); }
                 }
             }
-            if (now_ms() - last_presence >= 300) {
+            editor::wire::Presence presence;
+            if (!native.selected.empty()) presence.selected = native.selected.front();
+            presence.act = {(3ull << 32) | native.act, 1}; presence.editing = native.gesture;
+            presence.pending = awaiting_operation.has_value();
+            if (now_ms() - last_presence >= 300 || !last_presence_value || *last_presence_value != presence) {
                 last_presence = now_ms(); std::string error;
-                editor::wire::Presence presence;
-                if (!native.selected.empty()) presence.selected = native.selected.front();
-                presence.act = {(3ull << 32) | native.act, 1}; presence.editing = native.gesture;
-                controller->set_presence(presence, error);
+                if(controller->set_presence(presence,error))last_presence_value=presence;
+            }
+            if (now_ms()-last_preview>=100) {
+                last_preview=now_ms();editor::ObjectId object,act;editor::Pose pose;std::string error;
+                if(!recovery && !awaiting_operation && native.generation==native_generation &&
+                   editor_native::selection_pose(object,act,pose) && controller->state().document.placements.contains(object) &&
+                   controller->set_preview(object,act,pose,error))preview_active=true;
+                else if(preview_active){controller->clear_preview();preview_active=false;}
             }
         }
+        else if(preview_active){controller->clear_preview();preview_active=false;last_presence_value.reset();}
         refresh();
     } catch (const std::exception& e) { frozen = true; tell(std::string("Shared editing stopped safely: ") + e.what()); refresh(); }
     // A local native failure must be visible to the host. Otherwise a connected
@@ -976,7 +1070,17 @@ void SK_CDECL drain(void*) {
     }
 }
 void schedule() { if (H && controller && !queued) { queued = true; H->run_outside_frame(drain, nullptr); } }
-void action(Action value) { if (actions.size() < 16) { actions.push_back(value); schedule(); } }
+void request_preview_return(const PreviewReturnScope& request) {
+    if (current_preview_return(request)) { pending_preview_return = request; schedule(); }
+}
+void action(Action value) {
+    if (value == Action::Return) {
+        if (controller) {
+            const auto& view = controller->view();
+            request_preview_return({view.context.project, view.context.epoch, view.playtest_round, view.playtest_revision});
+        }
+    } else if (actions.size() < 16) { actions.push_back(value); schedule(); }
+}
 } // namespace
 
 bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
@@ -993,10 +1097,29 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         auto native = editor_native::state();
         return !closing && !frozen && !recovery && native.generation == native_generation && !save_publication_pending && !editor_native_save::busy() && native.ready && !native.gesture;
     };
+    callbacks.prepare_join = [](editor::wire::Join& join,std::string& error) {
+        if(!resources.root.instance || resources.bundle.records.empty())return true;
+        editor_project::JoinInventory inventory;
+        if(!editor_project::make_inventory(resources,inventory,error)){
+            if(H)H->log(M,SK_INFO,"Ignoring unverified editor join cache: %s",error.c_str());
+            error.clear();return true;
+        }
+        join.base_hash=inventory.base_hash;join.base_size=inventory.base_size;
+        for(const auto& entry:inventory.records)join.records.push_back({{entry.key.instance,entry.key.type,entry.key.group},entry.size,entry.hash});
+        return true;
+    };
+    callbacks.resources_for_join = [](const std::vector<uint8_t>& pinned,const editor::wire::Join& join,std::vector<uint8_t>& envelope,std::string& error) {
+        editor_project::Resources content;
+        if(!editor_project::decode_resources(pinned,content,error))return false;
+        editor_project::JoinInventory inventory;inventory.base_hash=join.base_hash;inventory.base_size=join.base_size;
+        for(const auto& entry:join.records)inventory.records.push_back({{entry.key.instance,entry.key.type,entry.key.group},entry.size,entry.hash});
+        return editor_project::encode_join_resources(content,inventory,envelope,error);
+    };
     callbacks.apply_resources = [](const std::vector<uint8_t>& bytes, const editor::wire::Context& scope, std::string& error) {
         editor_project::Resources content;
         const bool baseline = controller->view().phase == Phase::Joining || controller->view().phase == Phase::Syncing;
-        if (!editor_project::decode_resources(bytes, content, error, baseline ? nullptr : resources.base_root)) return false;
+        if (baseline ? !editor_project::decode_join_resources(bytes,resources,content,error) :
+            !editor_project::decode_resources(bytes,content,error,resources.base_root)) return false;
         if (baseline) {
             if (!adventure_assets::register_records(content.bundle.records, error)) return false;
             if (!editor_native::state().editing && !editor_native::enter({content.root.instance, content.root.type, content.root.group}, error)) return false;
@@ -1028,6 +1151,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         tell("Joined the shared placement draft"); return true;
     };
     callbacks.decision = [](const editor::Decision& decision) {
+        confirmation_metrics.complete(decision,H->time_seconds());
         const bool own = awaiting_operation && (!decision.change || decision.change->operation == *awaiting_operation);
         if (own) { pending.reset(); awaiting_operation.reset(); requested_scopes.clear(); }
         if (decision.accepted()) status = "Placement gesture committed";
@@ -1069,7 +1193,9 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
                 bool okay = editor_native_save::playtest(true, failure);
                 native_playtesting = okay; if (okay && C.close_panel) C.close_panel(); return okay;
             };
-            preview.return_editor = [] { action(Action::Return); };
+            preview.return_editor = [scope = PreviewReturnScope{context.project, context.epoch, control.serial, control.revision}] {
+                request_preview_return(scope);
+            };
             return_started = false; return_error.clear();
             const auto authored_avatar = preview.authored_avatar;
             if (!adventure_native::set_editor_preview(std::move(preview), error)) return false;
@@ -1144,7 +1270,7 @@ void session_ended() {
     refresh();
 }
 void mode_changed(uint32_t, uint32_t) { schedule(); }
-void shutdown() { if (controller) { controller->end(); controller.reset(); } store.close(); adventure_native::clear_editor_preview(); editor_native_save::shutdown(); editor_native::shutdown(); actions.clear(); queued = false; closing = native_attached = close_restored = close_preserve_offer = false; H = nullptr; }
+void shutdown() { if (controller) { controller->end(); controller.reset(); } store.close(); adventure_native::clear_editor_preview(); editor_native_save::shutdown(); editor_native::shutdown(); actions.clear(); pending_preview_return.reset(); queued = false; closing = native_attached = close_restored = close_preserve_offer = false; H = nullptr; }
 bool active() { return cached.active; }
 bool authoring() {
     if (!controller || (controller->view().phase == Phase::Playing && native_playtesting)) return false;
@@ -1152,6 +1278,7 @@ bool authoring() {
 }
 bool playtest_owned() { return adventure_native::editor_preview(); }
 View view() { return cached; }
+const std::vector<TransformHint>& transform_hints() { return cached.previews; }
 void begin() { action(Action::Begin); }
 void undo() { action(Action::Undo); }
 void redo() { action(Action::Redo); }
@@ -1161,6 +1288,45 @@ void set_ready(bool value) { action(value ? Action::Ready : Action::Unready); }
 void recover() { action(Action::Recover); }
 void end() { action(Action::End); }
 std::string debug(const std::vector<std::string>& args) {
+    if (controller && args.size() == 1 && args[0] == "leases") {
+        const auto& view = controller->view();
+        auto object = [](editor::ObjectId id) { return std::to_string(id.id) + ":" + std::to_string(id.generation); };
+        auto scope = [&](const editor::Scope& value) {
+            static const char* names[] = {"Document", "Class", "Act", "Placement", "Field"};
+            const auto kind = size_t(value.kind);
+            return std::string(kind < std::size(names) ? names[kind] : "Unknown") + " object=" + object(value.object);
+        };
+        std::string result = "local=" + std::to_string(view.local.slot) + ":" + std::to_string(view.local.generation) +
+            " phase=" + std::to_string(uint8_t(view.phase)) + " revision=" + std::to_string(view.context.revision) + "\n";
+        auto append = [&](const std::string& line) {
+            if (result.size() + line.size() + 16 > 12u * 1024) return false;
+            result += line; return true;
+        };
+        const auto now = now_ms();
+        for (const auto& lease : view.local_leases) {
+            if (!append("lease scope=" + scope(lease.scope) + " token=" + std::to_string(lease.token) +
+                " remaining_ms=" + std::to_string(lease.expires > now ? lease.expires - now : 0) + "\n")) {
+                result += "truncated=1\n"; return result;
+            }
+        }
+        for (const auto& [id, member] : view.members) {
+            (void)id;
+            if (!append("member peer=" + std::to_string(member.peer.slot) + ":" + std::to_string(member.peer.generation) +
+                " phase=" + std::to_string(uint8_t(member.phase)) + " selected=" + object(member.presence.selected) +
+                " ownership=" + std::to_string(member.presence.ownership) + " pending=" + std::to_string(member.presence.pending) +
+                " preview_scope=" + scope(member.presence.preview_lease.scope) +
+                " preview_token=" + std::to_string(member.presence.preview_lease.token) + "\n")) {
+                result += "truncated=1\n"; break;
+            }
+        }
+        return result;
+    }
+    if (!args.empty() && args[0]=="timing") {
+        if(args.size()==2 && args[1]=="reset")confirmation_metrics.reset();
+        else if(args.size()==2 && args[1]=="stop")confirmation_metrics.stop();
+        else if(args.size()!=1)return "Usage: coop.editor timing [reset|stop]";
+        return confirmation_metrics.report();
+    }
     if (controller && !args.empty() && args[0] == "history") {
         const auto local = controller->view().local;
         std::string result = "local=" + std::to_string(local.slot) + ":" + std::to_string(local.generation) +
@@ -1211,7 +1377,8 @@ std::string debug(const std::vector<std::string>& args) {
             const bool projected = H->world_to_screen && H->world_to_screen(&p.position.x, xy) && std::isfinite(xy[0]) && std::isfinite(xy[1]);
             result += std::to_string(id.id) + ":" + std::to_string(id.generation) + " class=" + std::to_string(p.class_id.id) +
                 " pos=" + std::to_string(p.position.x) + "," + std::to_string(p.position.y) + "," + std::to_string(p.position.z) +
-                " scale=" + std::to_string(p.scale) + (projected ? " screen=" + std::to_string(xy[0]) + "," + std::to_string(xy[1]) : " screen=hidden") + "\n";
+                " scale=" + std::to_string(p.scale) + (projected ? " screen=" + std::to_string(xy[0]) + "," + std::to_string(xy[1]) : " screen=hidden") +
+                " rotation=" + std::to_string(p.rotation.x) + "," + std::to_string(p.rotation.y) + "," + std::to_string(p.rotation.z) + "," + std::to_string(p.rotation.w) + "\n";
             if (result.size() > 12000) break;
         }
         return result.empty() ? "No placements" : result;
@@ -1233,6 +1400,7 @@ std::string debug(const std::vector<std::string>& args) {
         " phase=" + std::to_string(controller ? uint8_t(controller->view().phase) : 0) +
         " project=" + (controller ? editor_store::project_name(controller->view().context.project) : "") +
         " capability=" + std::to_string(controller ? controller->view().local.slot : 255) + ":" + std::to_string(controller ? controller->view().local.generation : 0) +
-        "\n" + editor_native::status();
+        "\nselection=" + cached.selection + " previews=" + std::to_string(cached.previews.size()) +
+        "\n" + editor_native::status() + "\n" + adventure_assets::status();
 }
 } // namespace coop_editor

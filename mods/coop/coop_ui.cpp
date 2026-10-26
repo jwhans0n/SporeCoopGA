@@ -226,7 +226,7 @@ struct Dialog {
     std::vector<Win> page_editor;
     Win editor_btn = nullptr, editor_title = nullptr, editor_status = nullptr;
     Win editor_selection = nullptr, editor_saved = nullptr;
-    Win editor_player[4] = {}, editor_progress[4] = {}, editor_checkpoint[4] = {};
+    Win editor_player[4] = {}, editor_progress[4] = {}, editor_checkpoint[4] = {}, editor_target[4] = {};
     Win editor_begin = nullptr, editor_undo = nullptr, editor_redo = nullptr;
     Win editor_save = nullptr, editor_test = nullptr, editor_recover = nullptr, editor_end = nullptr;
     Win editor_chat[2] = {}, editor_edit = nullptr;
@@ -702,14 +702,15 @@ static void build_dialog()
     auto& E = D.page_editor;
     D.editor_title = add_label(E, {40, 104, 720, 132}, "Edit an adventure together", kGold);
     D.editor_status = add_label(E, {40, 138, 720, 166}, "", kYellow);
-    D.editor_saved = add_label(E, {40, 170, 720, 196}, "", kDim);
+    D.editor_saved = add_label(E, {40, 170, 720, 192}, "", kDim);
     for (int i = 0; i < 4; ++i) {
-        float y = 208.f + i * 30;
-        D.editor_player[i] = add_label(E, {40, y, 300, y + 26}, "", kWhite);
-        D.editor_progress[i] = add_label(E, {310, y, 530, y + 26}, "", kDim);
-        D.editor_checkpoint[i] = add_label(E, {540, y, 720, y + 26}, "", kDim);
+        float y = 196.f + i * 36;
+        D.editor_player[i] = add_label(E, {40, y, 300, y + 20}, "", kWhite);
+        D.editor_progress[i] = add_label(E, {310, y, 720, y + 20}, "", kDim);
+        D.editor_target[i] = add_label(E, {40, y + 18, 420, y + 38}, "", kDim);
+        D.editor_checkpoint[i] = add_label(E, {430, y + 18, 720, y + 38}, "", kDim);
     }
-    D.editor_selection = add_label(E, {40, 332, 720, 358}, "", kDim);
+    D.editor_selection = add_label(E, {40, 344, 720, 366}, "", kDim);
     D.editor_begin = add_button(E, "editor_begin", {40, 370, 256, 408}, "Start sharing", [] {
         if (A.editor_begin) A.editor_begin();
     });
@@ -1006,15 +1007,17 @@ static void refresh_editor(const coop_editor::View& view)
         show(D.editor_player[i], have);
         show(D.editor_progress[i], have);
         show(D.editor_checkpoint[i], have);
+        show(D.editor_target[i], have);
         if (!have) continue;
         const auto& player = view.players[i];
         const std::string markers = std::string(player.host ? " (host)" : "") + (player.local ? " - you" : "");
         text(D.editor_player[i], short_text(player.name, 24 - markers.size()) + markers);
-        text(D.editor_progress[i], short_text(player.status + (player.selection.empty() ? "" : ": " + player.selection), 20));
+        text(D.editor_progress[i], short_text(player.status, 40));
+        text(D.editor_target[i], player.selection);
         text(D.editor_checkpoint[i], player.local || view.host
              ? "Checkpoint " + std::to_string(player.local ? view.durable_revision : player.durable_revision)
              : "Reported to host");
-        color(D.editor_progress[i], player.ready ? kGreen : kDim);
+        color(D.editor_progress[i], player.pending ? kYellow : player.ready || player.owns_selection ? kGreen : kDim);
     }
     text(D.editor_begin, view.offered ? "Join editing" : "Start sharing");
     sui::set_enabled(D.editor_begin, view.can_begin);
