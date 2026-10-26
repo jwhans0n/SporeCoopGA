@@ -43,7 +43,7 @@ struct Controller::Impl {
         std::deque<Out> ordered;
         w::Receiver receiver;
         std::map<uint64_t, std::pair<w::Context, w::TransferBegin>> completed;
-        std::map<uint64_t, w::LeaseReply> lease_decisions;
+        std::map<uint64_t, std::pair<w::LeaseReply, Revision>> lease_decisions;
         uint64_t retired_lease_serial = 0;
         std::map<Scope,uint64_t> released_lease_scopes;
         Revision baseline = 0;
@@ -55,6 +55,7 @@ struct Controller::Impl {
     using Local = std::variant<Request, w::LeaseRequest, w::Presence, w::Saved, w::Control>;
     struct PendingLease { w::LeaseRequest request; Time sent = 0; bool emitted = false; };
     struct ReleaseFence { LeaseToken token; uint64_t serial = 0; };
+    struct LeaseStamp { uint64_t token = 0, serial = 0; Revision revision = 0; };
     struct PreviewInput { uint8_t from; Peer sender; uint32_t recipient; w::Message message; };
     struct ResourceStage {
         Revision revision = 0;
@@ -80,6 +81,11 @@ struct Controller::Impl {
     std::deque<std::pair<Local, size_t>> local;
     std::map<uint64_t, PendingLease> pending_leases;
     std::vector<ReleaseFence> release_fences;
+    // Revisions are host-issued metadata already present in the message envelope.
+    // Retain deletion fences while the exact ID is live or tombstoned, so a late
+    // pre-delete Grant/Renew cannot regain authority after Undo restoration.
+    std::map<ObjectId, Revision> lease_retirements;
+    std::map<Scope, LeaseStamp> lease_grant_revisions;
     std::array<std::optional<PreviewInput>,4> preview_input;
     std::array<std::optional<w::Message>,4> preview_relay;
     std::array<std::optional<w::Presence>,4> presence_relay;
@@ -287,7 +293,22 @@ struct Controller::Impl {
     bool stale_grant(uint64_t serial, const Scope& scope) const {
         return std::any_of(release_fences.begin(),release_fences.end(),[&](const ReleaseFence& f) { return serial < f.serial && overlapping(f.token.scope,scope); });
     }
-    void clear_lease_requests() { pending_leases.clear(); release_fences.clear(); }
+    void clear_lease_requests() {
+        pending_leases.clear(); release_fences.clear(); lease_retirements.clear(); lease_grant_revisions.clear();
+    }
+    void retire_nonlive_leases() {
+        const auto& document = state().document;
+        // Core invalidates all non-live Placement/Field tokens after each new
+        // commit. A fresh grant at this same revision was issued afterward and
+        // remains valid even when its priority reply overtakes this commit.
+        for (const auto& [object, revision] : document.tombstones) {
+            (void)revision; lease_retirements[object] = document.revision;
+        }
+        // At most current placement+tombstone identities, within document limits.
+        std::erase_if(lease_retirements, [&](const auto& item) {
+            return !document.placements.contains(item.first) && !document.tombstones.contains(item.first);
+        });
+    }
     void service_leases() {
         // A host may still hold an atomically rejected Release's valid token.
         // Never republish that token implicitly; only a later explicit grant can
@@ -314,8 +335,20 @@ struct Controller::Impl {
     }
     void prune_local_leases() {
         std::erase_if(view.local_leases, [&](const Lease& lease) {
-            return quarantined(lease) || lease.expires <= now || ((lease.scope.kind == ScopeKind::Placement || lease.scope.kind == ScopeKind::Field) &&
-                !state().document.placements.contains(lease.scope.object));
+            if (quarantined(lease) || lease.expires <= now) return true;
+            if (lease.scope.kind != ScopeKind::Placement && lease.scope.kind != ScopeKind::Field) return false;
+            const auto& document = state().document;
+            if (!document.placements.contains(lease.scope.object) && !document.tombstones.contains(lease.scope.object)) return true;
+            auto retired = lease_retirements.find(lease.scope.object);
+            if (retired == lease_retirements.end()) return false;
+            auto issued = lease_grant_revisions.find(lease.scope);
+            return issued == lease_grant_revisions.end() || issued->second.token != lease.token || issued->second.revision < retired->second;
+        });
+        // One metadata record per retained local scope, never per packet/retry.
+        std::erase_if(lease_grant_revisions, [&](const auto& item) {
+            return std::none_of(view.local_leases.begin(), view.local_leases.end(), [&](const Lease& lease) {
+                return lease.scope == item.first && lease.token == item.second.token;
+            });
         });
     }
     net::Writer address(uint8_t to, const net::Writer& packet) const {
@@ -468,7 +501,7 @@ struct Controller::Impl {
 
     void host_request(uint8_t from, const Request& request);
     void lease_request(uint8_t from, const w::LeaseRequest& request);
-    void lease_reply(const w::LeaseReply& reply);
+    void lease_reply(const w::LeaseReply& reply, Revision issued_revision);
     void control(uint8_t from, const w::Control& control);
     void progress_return() {
         if (!hosting || view.phase != Phase::Returning || !local_returned) return;
@@ -562,7 +595,7 @@ void Controller::Impl::host_request(uint8_t from, const Request& request)
         }
         staged.reset(); baseline_cache.reset();
         if (callbacks.host_hooks.persist) view.locally_durable = decision.revision;
-        clear_previews();coverage(); broadcast({context(), decision});
+        clear_previews();coverage(); retire_nonlive_leases(); broadcast({context(), decision});
     } else {
         staged.reset();
         if (coordinator.frozen()) freeze(0, decision.reason);
@@ -583,7 +616,10 @@ void Controller::Impl::lease_request(uint8_t from, const w::LeaseRequest& reques
             std::any_of(request.tokens.begin(),request.tokens.end(),[&](const LeaseToken& token) { return overlapping(token.scope,fence.first); }));
     });
     w::LeaseReply reply;
-    if (remembered != ch.lease_decisions.end()) reply = remembered->second;
+    Revision issued_revision = context().revision;
+    if (remembered != ch.lease_decisions.end()) {
+        reply = remembered->second.first; issued_revision = remembered->second.second;
+    }
     else if (request.serial <= ch.retired_lease_serial || released) reply = {request.serial, {Code::ExpiredOperation, "This lease request predates a release or its original decision expired; it will not execute again.", {}}};
     else {
         reply.serial = request.serial;
@@ -598,15 +634,20 @@ void Controller::Impl::lease_request(uint8_t from, const w::LeaseRequest& reques
             reply.result = {coordinator.release(owner, request.tokens) ? Code::Accepted : Code::LeaseExpired, {}, {}};
         }
         else reply.result = {Code::Invalid, "Unknown lease action.", {}};
-        ch.lease_decisions[request.serial] = reply;
+        ch.lease_decisions[request.serial] = {reply, issued_revision};
         while (ch.lease_decisions.size() > 64) { ch.retired_lease_serial = std::max(ch.retired_lease_serial, ch.lease_decisions.begin()->first); ch.lease_decisions.erase(ch.lease_decisions.begin()); }
         std::erase_if(ch.released_lease_scopes,[&](const auto& fence) { return fence.second <= ch.retired_lease_serial; });
     }
-    if (!from) lease_reply(reply);
-    else { std::string error; if (!queue(from, {context(), reply}, true, error)) freeze(from, error); }
+    if (!from) lease_reply(reply, issued_revision);
+    else {
+        // A cached grant retains its actual issue revision. Restamping a revoked
+        // old token with the current revision would defeat deletion fences.
+        auto scope = context(); scope.revision = issued_revision;
+        std::string error; if (!queue(from, {scope, reply}, true, error)) freeze(from, error);
+    }
 }
 
-void Controller::Impl::lease_reply(const w::LeaseReply& reply)
+void Controller::Impl::lease_reply(const w::LeaseReply& reply, Revision issued_revision)
 {
     auto found = pending_leases.find(reply.serial); if (found == pending_leases.end() || !found->second.emitted) return;
     const auto pending = found->second; pending_leases.erase(found);
@@ -620,13 +661,24 @@ void Controller::Impl::lease_reply(const w::LeaseReply& reply)
     for (auto lease : reply.result.leases) {
         if (lease.owner != view.local) { freeze(0, "A lease reply assigned another player's capability."); return; }
         if (stale_grant(reply.serial,lease.scope)) continue;
+        if (lease.scope.kind == ScopeKind::Placement || lease.scope.kind == ScopeKind::Field) {
+            auto retired = lease_retirements.find(lease.scope.object);
+            if (retired != lease_retirements.end() && issued_revision < retired->second) continue;
+        }
+        auto previous = lease_grant_revisions.find(lease.scope);
+        if (previous != lease_grant_revisions.end() && reply.serial < previous->second.serial) continue;
         if (!hosting) {
             if (pending.sent > UINT64_MAX - pending.request.ttl) { freeze(0, "Local lease deadline overflow."); return; }
             lease.expires = pending.sent + pending.request.ttl;
         }
         std::erase_if(release_fences,[&](const ReleaseFence& f) { return f.serial < reply.serial && f.token.scope == lease.scope && f.token.token == lease.token; });
         std::erase_if(view.local_leases, [&](const Lease& old) { return old.scope == lease.scope; });
-        if (lease.expires > now) view.local_leases.push_back(lease);
+        if (lease.expires > now) {
+            auto& issued = lease_grant_revisions[lease.scope];
+            issued.revision = issued.token == lease.token ? std::max(issued.revision, issued_revision) : issued_revision;
+            issued.token = lease.token; issued.serial = reply.serial;
+            view.local_leases.push_back(lease);
+        }
     }
 }
 
@@ -843,13 +895,14 @@ void Controller::Impl::message(uint8_t from, w::Message message)
             if (!editor::apply_committed(replica, *decision, error, hooks)) { freeze(0, error); return; }
             if (callbacks.persist_guest) view.locally_durable = replica.document.revision;
             clear_previews();coverage();
+            if (!duplicate) retire_nonlive_leases();
         }
         prune_local_leases();
         if (!duplicate && callbacks.decision) callbacks.decision(*decision);
         return;
     }
     if (auto* lease = std::get_if<w::LeaseRequest>(&message.payload)) { lease_request(from, *lease); return; }
-    if (auto* reply = std::get_if<w::LeaseReply>(&message.payload)) { if (!hosting) lease_reply(*reply); return; }
+    if (auto* reply = std::get_if<w::LeaseReply>(&message.payload)) { if (!hosting) lease_reply(*reply, message.context.revision); return; }
     if (auto* value = std::get_if<w::Presence>(&message.payload)) { presence(from,*value); return; }
     if (auto* cover = std::get_if<w::Coverage>(&message.payload)) {
         if (!hosting || !from || message.context.revision > context().revision) return;

@@ -80,6 +80,7 @@ struct Party {
     std::array<std::vector<std::pair<w::LeaseReply,std::vector<uint8_t>>>,4> held_lease_replies;
     std::array<std::vector<w::LeaseRequest>,4> wire_lease_requests;
     std::array<std::vector<w::LeaseReply>,4> wire_lease_replies;
+    std::array<std::vector<std::pair<uint64_t,Revision>>,4> wire_lease_reply_revisions;
     bool dispatching = false, ticking = false, release_on_decision = false, publish_deltas = false, auto_ack_saved = true;
     size_t structural_bytes = 12000;
     std::function<void(unsigned)> after_own_decision;
@@ -156,6 +157,7 @@ struct Party {
                     if (auto* request = std::get_if<w::LeaseRequest>(&message.payload)) wire_lease_requests[from].push_back(*request);
                     if (auto* reply = std::get_if<w::LeaseReply>(&message.payload)) {
                         wire_lease_replies[p].push_back(*reply);
+                        wire_lease_reply_revisions[p].push_back({reply->serial,message.context.revision});
                         if (hold_lease_replies[p]) {
                             held_lease_replies[p].push_back({*reply,{r.cur(),r.cur()+r.left()}});r.skip(r.left());return;
                         }
@@ -1065,9 +1067,167 @@ static void test_join_inventory_failures_preserve_party_and_draft()
     CHECK(p.native[1].imports==0&&p.received_joins.size()==1);
 }
 
-int main()
+
+static bool exact_grant(Party& p,unsigned author,Scope scope,std::vector<LeaseToken>& tokens,Time ttl=3000)
 {
-    CHECK(net::net_init()); test_release_quarantines_and_waits_for_reply(); test_host_release_quarantine_survives_view_refresh(); test_distinct_release_tokens_keep_both_quarantined(); test_reordered_lease_requests_cannot_recreate_released_scope(); test_deferred_lease_bounds_and_lifecycle(); test_repeated_release_fences_past_cache_window(); test_large_join_inventory_is_bounded_pinned_and_nonblocking(); test_join_inventory_failures_preserve_party_and_draft(); test_transient_preview_authority_coalescing_and_lifecycle(); test_guest_end_preparing_reoffers_without_freezing_party(); test_two_player_and_real_udp(); test_host_durable_coverage(); test_four_players_and_controls(); test_large_operation_transfer(); test_saved_snapshot_waits_for_native_gesture(); test_delete_revokes_lease_before_native_decision(0); test_delete_revokes_lease_before_native_decision(1); test_accepted_retry_keeps_new_gesture_ownership(0); test_accepted_retry_keeps_new_gesture_ownership(1); test_queued_begin_and_new_roster(); test_native_gesture_transaction_holds(); test_same_controller_host_to_guest(); test_delta_resources_keep_complete_late_join_cache(); test_failed_delta_staging_publishes_nothing(); test_close_waits_for_accepted_structural_commit(); test_settled_waits_for_join_but_excludes_failed_peer(); test_same_revision_saved_needs_explicit_applied_ack(); test_local_freeze_notifies_party_once(); test_deferred_baseline_and_fail_closed(); test_import_and_input_bounds(); test_rehost_authorship_and_document_hash(); test_real_udp_packet_adversity(2); test_real_udp_packet_adversity(4);
+    std::string error;CHECK(p.controllers[author]->request_leases({scope},ttl,error));
+    const auto usable=[&]{return std::any_of(p.controllers[author]->view().local_leases.begin(),p.controllers[author]->view().local_leases.end(),[&](const Lease& l){return l.scope==scope&&l.owner==p.controllers[author]->view().local;});};
+    const bool ready=p.spin(usable,1200);CHECK(ready);
+    if(!ready){
+        const auto& replies=p.wire_lease_replies[author];
+        std::printf("tombstone grant lost: author=%u object=%llu:%u kind=%u hostAccepted=%d revision=%llu\n",author,
+            static_cast<unsigned long long>(scope.object.id),scope.object.generation,unsigned(scope.kind),
+            !replies.empty()&&replies.back().result.accepted(),static_cast<unsigned long long>(p.controllers[author]->state().document.revision));
+        return false;
+    }
+    for(unsigned i=0;i<5;++i)p.step();
+    CHECK(usable());tokens.clear();for(const auto& l:p.controllers[author]->view().local_leases)if(l.scope==scope)tokens.push_back({l.scope,l.token});return !tokens.empty();
+}
+static bool history_request(Party& p,unsigned author,Intent intent,const std::vector<LeaseToken>& tokens,Revision revision,uint64_t sequence=0)
+{
+    Request request;request.intent=intent;request.summary="Restore own native gesture";request.leases=tokens;
+    request.base_revision=p.controllers[author]->state().document.revision;request.operation.sequence=sequence;
+    std::string error;CHECK(p.controllers[author]->submit(request,error));return p.revision(revision);
+}
+static ObjectId clone_then_undo(Party& p,unsigned author)
+{
+    const auto clone_id=ObjectId{p.controllers[0]->state().document.next_id,1};
+    auto tokens=p.grant(author);Mutation clone;clone.kind=MutationKind::Clone;clone.target=object_a;
+    clone.expected=p.controllers[author]->state().document.placements.at(object_a).revision;
+    Request request;request.summary="Clone before tombstone restoration";request.base_revision=p.controllers[author]->state().document.revision;
+    request.leases=tokens;request.mutations={clone};std::string error;CHECK(p.controllers[author]->submit(request,error));CHECK(p.revision(1));
+    CHECK(p.controllers[0]->state().document.placements.contains(clone_id));
+    CHECK(history_request(p,author,Intent::Undo,tokens,2));
+    CHECK(p.controllers[0]->state().document.tombstones.contains(clone_id));p.release(author,tokens);return clone_id;
+}
+static void test_tombstone_restoration_grants(unsigned players,unsigned author,bool deletion)
+{
+    Party p(players);p.start();p.accept();std::string error;ObjectId target;
+    if(!deletion)target=clone_then_undo(p,author);
+    else{
+        target=object_a;auto tokens=p.grant(author,{ScopeKind::Placement,target,{}});
+        Mutation erase;erase.kind=MutationKind::Delete;erase.target=target;Request request;request.summary="Delete before tombstone Undo";request.leases=tokens;request.mutations={erase};
+        CHECK(p.controllers[author]->submit(request,error));CHECK(p.revision(1));
+        CHECK(p.controllers[author]->view().local_leases.empty());
+    }
+    const auto before=p.controllers[0]->state().document.revision;
+    const Scope field_scope{ScopeKind::Field,target,position};std::vector<LeaseToken> tokens;
+    if(!exact_grant(p,author,field_scope,tokens))return;
+    const auto field_token=tokens.front().token;CHECK(p.controllers[author]->renew_leases(tokens,3000,error));
+    CHECK(p.spin([&]{return std::any_of(p.controllers[author]->view().local_leases.begin(),p.controllers[author]->view().local_leases.end(),[&](const Lease& l){return l.scope==field_scope&&l.token==field_token;});}));
+    p.release(author,tokens);
+    const Scope scope{ScopeKind::Placement,target,{}};
+    if(!exact_grant(p,author,scope,tokens))return;
+    const auto serial=uint64_t(1000+author);const auto persists=p.native[0].persists;
+    CHECK(history_request(p,author,deletion?Intent::Undo:Intent::Redo,tokens,before+1,serial));
+    CHECK(p.native[0].persists==persists+1);
+    for(unsigned i=0;i<players;++i){CHECK(p.controllers[i]->state().document.placements.contains(target));CHECK(!p.controllers[i]->state().document.tombstones.contains(target));CHECK(p.controllers[i]->view().phase==es::Phase::Ready);}
+    // Replaying the exact accepted operation can only return its old decision.
+    Request duplicate;duplicate.intent=deletion?Intent::Undo:Intent::Redo;duplicate.operation.sequence=serial;duplicate.base_revision=before;duplicate.leases=tokens;
+    CHECK(p.controllers[author]->submit(duplicate,error));for(unsigned i=0;i<20;++i)p.step();
+    CHECK(p.controllers[0]->state().document.revision==before+1&&p.native[0].persists==persists+1);
+    p.release(author,tokens);
+    const auto errors=p.native[author].errors;
+    CHECK(p.controllers[author]->request_leases({{ScopeKind::Placement,{target.id,target.generation+1},{}}},3000,error));
+    CHECK(p.spin([&]{return p.native[author].errors>errors;}));CHECK(p.controllers[author]->view().local_leases.empty());
+    CHECK(p.controllers[author]->request_leases({{ScopeKind::Placement,{target.id+100000,1},{}}},3000,error));
+    for(unsigned i=0;i<20;++i)p.step();CHECK(p.controllers[author]->view().local_leases.empty());
+}
+static void test_tombstone_expiry_release_and_renew()
+{
+    Party p(2);p.start();p.accept();const auto target=clone_then_undo(p,1);std::string error;
+    std::vector<LeaseToken> tokens;const Scope scope{ScopeKind::Placement,target,{}};
+    if(!exact_grant(p,1,scope,tokens,1000))return;
+    p.hold_lease_replies[1]=true;const auto renew=p.controllers[1]->renew_leases(tokens,1000,error);CHECK(renew);
+    CHECK(p.spin([&]{return !p.held_lease_replies[1].empty();}));
+    for(auto& origin:p.origins)origin+=5000;p.step();CHECK(p.controllers[1]->view().local_leases.empty());
+    p.hold_lease_replies[1]=false;if(!exact_grant(p,1,scope,tokens))return;
+    const auto fresh=tokens.front().token;
+    p.deliver_lease_reply(1,renew);p.step();
+    CHECK(p.controllers[1]->view().local_leases.size()==1&&p.controllers[1]->view().local_leases.front().token==fresh);
+    p.release(1,tokens);CHECK(p.controllers[1]->view().local_leases.empty());
+    if(!exact_grant(p,1,scope,tokens))return;CHECK(history_request(p,1,Intent::Redo,tokens,3));
+}
+static void test_predelete_grant_and_renew_cannot_revive_after_restore()
+{
+    Party p(2);p.start();p.accept();std::string error;
+    const Scope scope{ScopeKind::Placement,object_a,{}};auto tokens=p.grant(1,scope);const auto old_tokens=tokens;
+    p.hold_lease_replies[1]=true;
+    const auto acquire=p.controllers[1]->request_leases({scope},3000,error),renew=p.controllers[1]->renew_leases(tokens,3000,error);CHECK(acquire&&renew);
+    CHECK(p.spin([&]{return p.held_lease_replies[1].size()==2;}));
+    Mutation erase;erase.kind=MutationKind::Delete;erase.target=object_a;Request request;request.summary="Delete after delayed old grants";request.leases=tokens;request.mutations={erase};
+    CHECK(p.controllers[1]->submit(request,error));CHECK(p.revision(1));CHECK(p.controllers[1]->view().local_leases.empty());
+    p.hold_lease_replies[1]=false;if(!exact_grant(p,1,scope,tokens))return;
+    const auto fresh=tokens.front().token;CHECK(history_request(p,1,Intent::Undo,tokens,2));
+    const auto replies=p.wire_lease_replies[1].size();
+    preview_packet(p,0,1,{p.controllers[1]->view().context,w::LeaseRequest{w::LeaseAction::Acquire,acquire,3000,{scope},{}}});
+    preview_packet(p,0,1,{p.controllers[1]->view().context,w::LeaseRequest{w::LeaseAction::Renew,renew,3000,{},old_tokens}});
+    CHECK(p.spin([&]{return p.wire_lease_replies[1].size()>=replies+2;}));
+    for(const auto& [serial,revision]:p.wire_lease_reply_revisions[1])if(serial==acquire||serial==renew)CHECK(revision==0);
+    CHECK(p.controllers[1]->view().local_leases.size()==1&&p.controllers[1]->view().local_leases.front().token==fresh);
+    p.deliver_lease_reply(1,acquire);p.deliver_lease_reply(1,renew);for(unsigned i=0;i<5;++i)p.step();
+    CHECK(p.controllers[1]->view().local_leases.size()==1&&p.controllers[1]->view().local_leases.front().token==fresh);
+    p.release(1,tokens);
+}
+static void test_tombstone_grants_are_fenced_by_actual_commit_revision(bool grant_before_replica)
+{
+    Party p(4);p.start();p.accept();std::string error;const auto target=clone_then_undo(p,1);
+    const Scope scope{ScopeKind::Placement,target,{}};
+    uint64_t held_serial=0;
+    if(!grant_before_replica){
+        p.hold_lease_replies[1]=true;held_serial=p.controllers[1]->request_leases({scope},3000,error);CHECK(held_serial);
+        CHECK(p.spin([&]{return !p.held_lease_replies[1].empty();}));
+    }else p.native[1].authoring=false;
+    auto foreign=p.grant(2,{ScopeKind::Field,object_b,position});
+    CHECK(p.controllers[2]->submit(p.edit(2,object_b,position,Vec3{77,0,0},foreign),error));
+    CHECK(p.spin([&]{return p.controllers[0]->state().document.revision==3;}));
+    std::vector<LeaseToken> tokens;
+    if(grant_before_replica){
+        CHECK(p.controllers[1]->state().document.revision==2);
+        if(!exact_grant(p,1,scope,tokens))return;
+        const auto fresh=tokens.front().token;p.native[1].authoring=true;CHECK(p.revision(3));
+        CHECK(std::any_of(p.controllers[1]->view().local_leases.begin(),p.controllers[1]->view().local_leases.end(),[&](const Lease& l){return l.scope==scope&&l.token==fresh;}));
+    }else{
+        CHECK(p.revision(3));p.deliver_lease_reply(1,held_serial);for(unsigned i=0;i<5;++i)p.step();
+        CHECK(p.controllers[1]->view().local_leases.empty());p.hold_lease_replies[1]=false;
+        if(!exact_grant(p,1,scope,tokens))return;
+        // A duplicate older canonical decision cannot retire a fresh grant.
+        for(const auto& [op,decision]:p.controllers[0]->state().decisions){(void)op;if(decision.accepted()&&decision.revision==3){preview_packet(p,1,0,{p.controllers[0]->view().context,decision});break;}}
+        for(unsigned i=0;i<5;++i)p.step();CHECK(!p.controllers[1]->view().local_leases.empty());
+    }
+    CHECK(history_request(p,1,Intent::Redo,tokens,4));
+    CHECK(p.controllers[3]->state().document.placements.contains(target));
+}
+
+static void test_retired_grants_do_not_cross_epoch_or_object_generation()
+{
+    Party p(2);p.start();p.accept();std::string error;
+    auto tokens=p.grant(1,{ScopeKind::Placement,object_a,{}});p.hold_lease_replies[1]=true;
+    const auto renew=p.controllers[1]->renew_leases(tokens,3000,error);CHECK(renew);CHECK(p.spin([&]{return !p.held_lease_replies[1].empty();}));
+    p.controllers[0]->end();CHECK(p.spin([&]{return p.controllers[1]->view().phase==es::Phase::Idle;}));
+    auto next=seed();++next.document.epoch;const ObjectId replacement{object_a.id,object_a.generation+1};
+    auto node=next.document.placements.extract(object_a);node.key()=replacement;node.mapped().object=replacement;next.document.placements.insert(std::move(node));
+    p.hold_lease_replies[1]=false;p.start(next);p.accept();p.deliver_lease_reply(1,renew);for(unsigned i=0;i<5;++i)p.step();
+    CHECK(p.controllers[1]->view().local_leases.empty());CHECK(!p.controllers[1]->state().document.placements.contains(object_a));
+    if(!exact_grant(p,1,{ScopeKind::Placement,replacement,{}},tokens))return;
+    const auto before=p.native[1].errors;CHECK(p.controllers[1]->request_leases({{ScopeKind::Placement,object_a,{}}},3000,error));
+    CHECK(p.spin([&]{return p.native[1].errors>before;}));CHECK(p.controllers[1]->view().local_leases.size()==1&&p.controllers[1]->view().local_leases.front().scope.object==replacement);
+    CHECK(p.controllers[1]->submit(p.edit(1,replacement,position,Vec3{10,20,30},tokens),error));CHECK(p.revision(1));
+}
+
+static void test_tombstone_regressions()
+{
+    test_retired_grants_do_not_cross_epoch_or_object_generation();
+    for(unsigned author=0;author<2;++author){test_tombstone_restoration_grants(2,author,false);test_tombstone_restoration_grants(2,author,true);}
+    for(unsigned author=0;author<4;++author){test_tombstone_restoration_grants(4,author,false);test_tombstone_restoration_grants(4,author,true);}
+    test_tombstone_expiry_release_and_renew();test_predelete_grant_and_renew_cannot_revive_after_restore();
+    test_tombstone_grants_are_fenced_by_actual_commit_revision(false);test_tombstone_grants_are_fenced_by_actual_commit_revision(true);
+}
+
+int main(int argc,char** argv)
+{
+    const bool focused=argc==2&&std::string(argv[1])=="--tombstones";if(argc>1&&!focused)return 2;
+    CHECK(net::net_init()); test_tombstone_regressions(); if(!focused){test_release_quarantines_and_waits_for_reply(); test_host_release_quarantine_survives_view_refresh(); test_distinct_release_tokens_keep_both_quarantined(); test_reordered_lease_requests_cannot_recreate_released_scope(); test_deferred_lease_bounds_and_lifecycle(); test_repeated_release_fences_past_cache_window(); test_large_join_inventory_is_bounded_pinned_and_nonblocking(); test_join_inventory_failures_preserve_party_and_draft(); test_transient_preview_authority_coalescing_and_lifecycle(); test_guest_end_preparing_reoffers_without_freezing_party(); test_two_player_and_real_udp(); test_host_durable_coverage(); test_four_players_and_controls(); test_large_operation_transfer(); test_saved_snapshot_waits_for_native_gesture(); test_delete_revokes_lease_before_native_decision(0); test_delete_revokes_lease_before_native_decision(1); test_accepted_retry_keeps_new_gesture_ownership(0); test_accepted_retry_keeps_new_gesture_ownership(1); test_queued_begin_and_new_roster(); test_native_gesture_transaction_holds(); test_same_controller_host_to_guest(); test_delta_resources_keep_complete_late_join_cache(); test_failed_delta_staging_publishes_nothing(); test_close_waits_for_accepted_structural_commit(); test_settled_waits_for_join_but_excludes_failed_peer(); test_same_revision_saved_needs_explicit_applied_ack(); test_local_freeze_notifies_party_once(); test_deferred_baseline_and_fail_closed(); test_import_and_input_bounds(); test_rehost_authorship_and_document_hash(); test_real_udp_packet_adversity(2); test_real_udp_packet_adversity(4);}
     std::printf("editor_session UDP/fake-native: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

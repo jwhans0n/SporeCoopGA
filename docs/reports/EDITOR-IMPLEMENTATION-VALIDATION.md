@@ -1,6 +1,6 @@
 # Shared Adventure Editor: implementation validation
 
-Report revision 13, C12 retention and C13 lifecycle follow-up, 2026-10-26. Branch:
+Report revision 14, C14 typed scale and native file reopen, 2026-10-26. Branch:
 `feat/ga-adventure-editor`. The portable core and transport checkpoint is local
 commit `216f8b0`; native integration is recorded at `0a35c7b`, with lab tools at
 `a9b844f`. The C10 integration checkpoint is `071f6a4`, depending on network
@@ -205,7 +205,10 @@ that fixture, not native long-run memory safety or performance.
 
 ## Remaining acceptance gates
 
-- Complete actual uniform scale on all advertised peers. C12 rotation passed
+- Complete actual uniform scale, including invalid native cancellation, on all
+  advertised peers. C14 small-object Scale and native Undo/Redo passed for both
+  authors, but the relative-only boundary and four-player cases remain open.
+  C12 rotation passed
   for both two and four players. The C10b
   Create/Move/Clone/Delete and native history receipts below use valid native
   placement and selection. Keep native cast grouping and fixed input conflicts
@@ -222,7 +225,9 @@ that fixture, not native long-run memory safety or performance.
   save/recovery boundaries. Imported recovery's mandatory new native Save As
   passed in C13; it does not prove reopening a native saved file before Recover.
 - Extend the C12 two-game native latency receipt below to four players and bulk
-  asset contention. Measure large-editor frame time and retained memory against
+  asset contention. C14 four-player LAN passed, but its WAN p95 exceeded the
+  target; later rate/loss-stress profiles did not execute. Measure large-editor
+  frame time and retained memory against
   matched process-count/hardware/window/content baselines. Large-editor FPS
   remains unmeasured. The 30-cycle post-capacity diagnostic below does not
   establish a steady-state bound.
@@ -696,3 +701,128 @@ acceptance remain open. C13's subsequent Scale diagnostic has not passed: it
 isolated native marker companion `+24` / property `071147E9` changing while
 physical scale `+20` stayed at its tier boundary. A typed-field correction is
 being prepared; opaque comparison has not been broadly relaxed.
+
+## C14 continuous scale, legacy projects and native file reopen
+
+The private C14 DLL is SHA-256
+`148f63c91e11109b85ad1b10e01e707adb86d3f5744be2a4cd54f3712cf1754c`,
+69,672,448 bytes. The existing private installation was backed up and all private
+games closed before deployment. The personal installation and game were untouched.
+All three loaded maps still match their reviewed source; exact-image verification
+passes 32 editor entries, 13 save entries and two history entries. No additional
+callable native address was introduced for the scale correction.
+
+New projects register native property `071147E9`, marker `+24`, as a required finite
+float alongside physical scale `+20`. The native calculation does not impose a
+final zero-to-one clamp on that companion. Capture emits its own checked Property
+Set, even when physical scale is unchanged; application writes the exact value.
+Ordinary Clone must preserve it. Combined Clone/property changes remain unsupported.
+Legacy schema-empty recovery retains its old schema and history and blocks new
+native Scale input with a nonfatal explanation; starting a new shared project from
+a native copy enables the new projection without rewriting the old project.
+
+The full portable run passed, including 184 scale/schema checks, 150 read-only
+reopen identity checks and 18,211 real-UDP Session assertions with native doubles.
+All fifteen freshly built Win32 editor fixtures passed; Runtime's focused run
+passed 3,732 checks and Session passed 12,874. The exact staged Runtime full run
+passed 4,384 checks; its ten applied production/native-contract files matched the
+reviewed proposal after line-ending normalization. Receipts are
+`out/editor-runtime-c14/validation.json` and
+`out/editor-integrated-c14/{build-result,windows-validation}.json`, with the full
+portable log at `out/editor-integrated-c14/portable.log`. These are fixture/build
+results, separate from actual native observations below.
+
+The actual legacy recovery test passed on both native processes. It recovered
+C13 project `5cd1e3d3fa534ed26493fa5ae477ba6b`, source
+`408A0000!29094310.366A930D`, without migration. Each author's attempted Scale
+stopped before native history or canonical mutation, preserving raw bytes,
+revision and history. Genuine Move and native Undo still passed. Receipt:
+`out/editor-native-candidate14/legacy-recovery/result.json`.
+
+The small typed native workflow then passed both authors' Scale and native
+Ctrl+Z/Ctrl+Y with exact companion convergence. A genuine native Save at revision
+6 received both exact SavedApplied acknowledgements. Normal End and native exit
+preceded ordinary exact-title reopening of the saved resource. The read-only
+command returned `REOPEN_VERIFIED revision=6 source=408A0000!29094C76.366A930D`
+before any Recover or native repair. It validates the observed saved bytes and
+opaque authored content using only copied identity rebinding. Subsequent
+checkpoint recovery preserved the scale companion and history. Both games
+returned normally to Galaxy, offline and without native faults. Receipt:
+`out/editor-native-candidate14/scale-save-native-reopen-retry/result.json`.
+This is a same-process native-file reopen pass, not a cold-process reopen pass.
+
+Separate failures remain recorded. Guest Clone preserved the companion and Undo
+removed it, but Redo could not retain an explicitly granted tombstone capability
+after document ownership expired. Session tick pruning discarded non-live IDs
+even though Core permits exact retained tombstones. A separate C15 fix and real
+UDP regression are under validation. The original actual failure is
+`out/editor-native-candidate14/typed-scale/result.json`.
+
+Repeated enlarged Scale reached a native red/invalid-placement cancellation.
+The host's live pose then differed from its canonical draft and the guest. Normal
+End restored the canonical draft, and both exited without faults. Static follow-up
+identified native cancellation calling the same entry Undo function intercepted
+for user Undo. A scoped cancellation fix requires its own runtime evidence;
+blindly allowing global native Undo would not preserve concurrent edits. The
+failure receipt is
+`out/editor-native-candidate14/relative-only-large-native-save/result.json`.
+Earlier bounded boundary-search and UI calibration failures remain separate and
+do not prove a relative-only actual native acceptance case.
+
+### C14 actual four-player network and remaining test limits
+
+Thirty LAN native gestures converged with p95 confirmation 194.693 ms, below the
+200 ms budget. Thirty gestures under 100 ms RTT, 1% loss, 2% reordering and 1%
+duplication also converged, but p95 was 519.477 ms, above the 500 ms target. The
+fixture correctly stopped with failure at revision 61; its rate-limited and
+10%-loss profiles did not execute. Earlier two-player passes do not replace this
+failed four-player gate. Receipt: `out/editor-native-network-c14/four/result.json`.
+
+All four subsequently exited their native editors normally to Galaxy, offline
+and with zero native faults, before the owned runner stopped. Two guests retained
+an old Offered view after transport teardown; this is a distinct lifecycle defect,
+not an active adventure or a native crash. Exact final phases are recorded at
+`out/editor-native-party-c14/normal-close/result.json`; the report does not claim
+all four were Idle. A teardown fix is being prepared separately.
+
+Actual Adventure Town content has 419 placements but only four transferred
+records: its cold project envelope is 148,024 bytes, approximately 0.59 seconds
+at an ideal 2 Mbit/s. Stock creations are deliberately omitted by the collector.
+This cannot establish thirty samples of sustained bulk contention. The shared
+host-link test preparation has five passing Windows/Linux UDP/parser tests in
+`out/editor-native-bulk`, but genuine larger native content and overlapping
+game-process measurements remain required. No synthetic padding is a substitute.
+
+Natural success/failure Test results, failed loading, cold native reopen,
+four-player scale/cancellation, sustained bulk contention, four-player WAN
+latency, large-editor FPS and settled memory acceptance remain open. The
+restricted preview is still under validation and is not ready for installation,
+main merge or release.
+
+### C15 restoration ownership follow-up, before native deployment
+
+The native Clone Redo failure has a separate real-UDP reproducer. Frozen C14
+Session code failed twelve focused assertions: the host granted exact tombstone
+Placement/Field capabilities, but guests removed them on ordinary ticks. An
+intermediate correction exposed six further failures involving cached replies
+restamped with a newer revision and an expired Renew displacing a newer token.
+Both failing source/executable/output sets are retained.
+
+The applied Session correction preserves Core's policy that every accepted
+commit retires non-live Placement/Field capabilities. It records the retirement
+revision per exact retained identity and the host issue revision/serial per
+usable local scope/token. A new tombstone grant survives idle ticks; an older
+grant cannot return after deletion, unrelated commits or restoration. Equal
+revision grants that overtake a deferred replica commit remain valid. The
+64-entry reply cache retains its original issue revision instead of restamping
+revoked payloads. Older Renew replies cannot replace a newer usable token.
+Metadata remains bounded by retained document identities and local lease scopes;
+release quarantine, expiry and project/epoch/peer fences still apply.
+
+The final focused suite passed 2,178 checks on both Linux sanitizers and Win32.
+Full Linux ASan/UBSan/leak testing passed 19,866 checks; full Win32 testing passed
+14,874. A fresh integrated Runtime quick build passed 3,732 checks after applying
+the fix. Receipt: `out/editor-tombstone-c15/validation.json`; the Runtime output
+is `out/editor-integrated-c15/runtime-quick.txt`. No protocol, wire layout or
+Core ownership policy changed. These results do not establish actual native
+Clone Redo acceptance for the corrected candidate, which has not been deployed.

@@ -3145,7 +3145,7 @@ companion is unused everywhere else. Receipts:
 `out/editor-native-re/c14-scale-semantic.txt` and
 `out/editor-native-re/c14-scale-consumer.txt`.
 
-The reviewed C14 proposal remains outside production until integration. New
+The reviewed C14 source change uses an explicit schema capability. New
 documents register exactly one required placement Number property,
 `071147E9`, preserving its exact finite float throughout capture, validation,
 apply, Undo, Redo and checkpoint recovery. The admitted numeric range is the
@@ -3177,3 +3177,55 @@ with the exact CI i686 toolchain and `-Wall -Wextra -Werror`; the extended
 exact-executable verifier passes all 32 existing entries plus the five Scale
 field/caller receipts without adding symbols. These are static and controlled
 tests. Actual C14 native Scale, Clone, Save and recovery acceptance is pending.
+
+The isolated C14 DLL
+`148f63c91e11109b85ad1b10e01e707adb86d3f5744be2a4cd54f3712cf1754c`
+then passed an actual legacy-recovery gate before creating a new typed project.
+Instance 88 reopened its owned C13 checkpoint
+`5cd1e3d3fa534ed26493fa5ae477ba6b`, revision 1, with source
+`408A0000!29094310.366A930D` and the original gestures preserved. Both peers'
+ordinary calibrated Scale attempts received the nonfatal legacy explanation;
+native history, canonical revision, raw snapshot bytes and existing history
+were unchanged. A genuine native Move and its chronological Undo still worked
+without introducing the new property. Normal End, native exit and party leave
+returned both hidden participants to Galaxy with zero faults. Receipt:
+`out/editor-native-candidate14/legacy-recovery/result.json`.
+
+The first new typed project passed host and guest native Scale with exact
+companion convergence and native Ctrl+Z/Ctrl+Y. Those inputs changed both
+physical and companion values, so they do not establish the relative-only
+branch. The guest's ordinary Clone preserved its source companion exactly and
+Undo removed the clone, but Redo could not retain editing ownership. Read-only
+inspection found that the Session pruned every local grant for an absent
+placement, whereas the core explicitly permits a restoration lease for a
+tombstone. This is a separate Session restoration defect; it does not justify
+weakening the native companion checks or fabricating a successful Redo.
+The failed gate and normal fault-free cleanup are retained at
+`out/editor-native-candidate14/typed-scale/result.json`.
+
+A separate small-fixture C14 run passed native persistence without depending
+on that blocked Clone Redo. Each author scaled the one existing placement and
+used native Ctrl+Z/Ctrl+Y; both physical and exact companion floats converged.
+Native Save completed at revision 6 with two of two explicit SavedApplied
+acknowledgements. After normal End and native exit, the exact saved title was
+opened through the native browser. Read-only verification returned
+`REOPEN_VERIFIED revision=6 source=408A0000!29094C76.366A930D`
+before any Recover call. Subsequent checkpoint recovery retained the same
+authored floats and chronological history. Both participants returned normally
+to Galaxy and left the party with zero faults. Receipt:
+`out/editor-native-candidate14/scale-save-native-reopen-retry/result.json`.
+This proves the two-field Scale/persistence path, not an observed native
+physical-unchanged Scale gesture or a fixed tombstone lease path.
+
+The bounded relative-only search remains separate. Its first 64 ordinary
+positive notches produced 16 committed Scale gestures and crossed a native
+size tier, but did not produce unchanged physical scale with changed
+companion. An enlarged saved-copy continuation reached a red, invalid native
+placement at physical `14` and companion `1.00022388` without committing a
+shared gesture; the canonical draft and guest retained `13.456227` and
+`0.977342188`. Normal End restored the canonical draft and both clients exited
+without faults. That invalid-placement/finalization branch requires further
+classification; a retained ToolManager byte is not established as its cause.
+Receipts:
+`out/editor-native-candidate14/relative-only-save-reopen-retry/result.json` and
+`out/editor-native-candidate14/relative-only-large-native-save/result.json`.

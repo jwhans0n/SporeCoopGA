@@ -147,6 +147,8 @@ with the intended isolated test profile.
 | Command | Readout or action |
 | --- | --- |
 | `coop.editor leases` | Local lease scopes, stable object identities, tokens and remaining milliseconds; participant phases, selections, ownership, pending work and preview lease identity. |
+| `coop.editor status` | Includes the latest native saved revision, exact SavedApplied coverage and settlement state. Transport acknowledgements alone do not count as native application. |
+| `coop.editor verify-reopen` | After a fully acknowledged native Save and normal End, compare the normally reopened exact native file against the saved authored state. This detached-editor diagnostic performs no recovery or repair. |
 | `coop.editor timing reset` | Clear the previous timing samples and start recording. |
 | `coop.editor timing stop` | Stop recording and discard any unfinished measurement. |
 | `coop.editor timing` | Report the sample count, recording state, capacity and `confirmation_ms` values. |
