@@ -9,7 +9,7 @@ namespace editor::wire {
 constexpr uint32_t kSchema = 1;
 constexpr size_t kPacketBytes = 1100, kChunkBytes = 900;
 constexpr size_t kStateBytes = 64u << 20, kOperationBytes = 8u << 20;
-constexpr size_t kResourceBytes = 128u << 20;
+constexpr size_t kResourceBytes = 128u << 20, kJoinBytes = 256u << 10;
 constexpr size_t kQueueBytes = kResourceBytes + kOperationBytes;
 
 bool encode_state(const State&, std::vector<uint8_t>&, std::string&);
@@ -26,15 +26,44 @@ struct Context {
     bool operator==(const Context&) const = default;
 };
 struct Offer { uint32_t schema = kSchema; std::string name; Peer assigned; Peer host{0,1}; };
-struct Join { Revision durable_revision = 0; };
-enum class TransferKind : uint8_t { Baseline, Request, Decision, Resources };
+struct ContentClaim {
+    ResourceKey key; uint32_t size = 0; std::string hash;
+    bool operator==(const ContentClaim&) const = default;
+};
+struct Join {
+    Revision durable_revision = 0;
+    std::string base_hash = {};
+    uint32_t base_size = 0;
+    std::vector<ContentClaim> records = {}; // unique (group,type,instance) order
+    bool operator==(const Join&) const = default;
+};
+bool encode_join(const Join&, std::vector<uint8_t>&, std::string&);
+bool decode_join(const std::vector<uint8_t>&, Join&, std::string&);
+enum class TransferKind : uint8_t { Baseline, Request, Decision, Resources, Join };
 struct TransferBegin { TransferKind kind{}; uint64_t serial = 0; uint32_t total = 0; std::string hash; };
 struct TransferChunk { uint64_t serial = 0; uint32_t offset = 0; std::vector<uint8_t> bytes; };
 struct TransferEnd { uint64_t serial = 0; };
 enum class LeaseAction : uint8_t { Acquire, Renew, Release };
 struct LeaseRequest { LeaseAction action{}; uint64_t serial = 0; Time ttl = 0; std::vector<Scope> scopes; std::vector<LeaseToken> tokens; };
 struct LeaseReply { uint64_t serial = 0; LeaseResult result; };
-struct Presence { ObjectId selected; ObjectId act; bool editing = false; Peer author; };
+enum class PresencePhase : uint8_t { Ready, Syncing, Preparing, Playing, Returning, Frozen, Disconnected, Offered };
+inline constexpr uint8_t kOwnSelection = 1, kOwnDocument = 2;
+struct Presence {
+    ObjectId selected; ObjectId act; bool editing = false; Peer author;
+    bool pending = false;
+    // Host-derived hints, never capabilities. Guests send zero/Ready.
+    uint8_t ownership = 0;
+    PresencePhase phase = PresencePhase::Ready;
+    LeaseToken preview_lease = {}; // Host-derived current selection capability identity.
+    bool operator==(const Presence&) const = default;
+};
+// Noncanonical hint for an already committed placement. The host verifies the
+// exact live lease before relaying. A released lease cannot resurrect a ghost.
+struct TransformPreview {
+    Peer author; uint64_t serial = 0; bool active = true;
+    ObjectId object, act; Pose pose; LeaseToken lease;
+    bool operator==(const TransformPreview&) const = default;
+};
 struct Coverage { Revision durable_revision = 0; std::string state_hash; };
 struct Saved { Revision saved_revision = 0; ResourceKey resource; uint64_t serial = 0; bool operator==(const Saved&) const = default; };
 struct SavedApplied { Saved saved; };
@@ -46,7 +75,7 @@ enum class ControlKind : uint8_t {
 // serial is a host-assigned playtest round, independent of document revision.
 struct Control { ControlKind kind{}; uint64_t serial = 0; Revision revision = 0; bool ready = false; uint8_t ready_mask = 0, participant_mask = 0; };
 using Payload = std::variant<Offer, Join, TransferBegin, TransferChunk, TransferEnd,
-    LeaseRequest, LeaseReply, Request, Decision, Presence, Coverage, Saved, Leave, Control, SavedApplied>;
+    LeaseRequest, LeaseReply, Request, Decision, Presence, Coverage, Saved, Leave, Control, SavedApplied, TransformPreview>;
 struct Message { Context context; Payload payload; };
 
 // from_host is a transport role fact. sender is the connected Session peer,

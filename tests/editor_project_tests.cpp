@@ -1,5 +1,7 @@
 #include "editor_project.h"
 #include "net/buffer.h"
+#include "../../updater/sha256.h"
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 
@@ -177,6 +179,156 @@ static void test_v2_root_delta(const editor_native::Snapshot& native) {
     CHECK(ep::decode_resources(envelope(native, dbpf::write({{root, native.bytes}})), legacy, error));
     CHECK(legacy.base_root && *legacy.base_root == native.bytes);
 }
+static bool same_resources(const ep::Resources& a, const ep::Resources& b) {
+    return a.root == b.root && a.act == b.act && a.bindings == b.bindings && a.bundle.hash == b.bundle.hash &&
+           a.bundle.bytes == b.bundle.bytes && root_bytes(a) == root_bytes(b) && a.base_root && b.base_root && *a.base_root == *b.base_root;
+}
+static void test_join_cache(const editor_native::Snapshot& native) {
+    std::string error;
+    ep::Resources host; host.root = {native.source.instance, native.source.type, native.source.group};
+    host.act = native.act; host.bindings = native.bindings;
+    std::vector<uint8_t> base(131072); uint32_t random = 0x534133;
+    for (auto& b : base) { random ^= random << 13; random ^= random >> 17; random ^= random << 5; b = uint8_t(random); }
+    auto target = base; target[981] ^= 0x87; target[54321] ^= 0x34;
+    host.base_root = std::make_shared<const std::vector<uint8_t>>(base);
+    const dbpf::Key first{11, 3, 4}, second{12, 3, 4}, empty{13, 3, 4};
+    CHECK(net::adventure_content::make_bundle(host.root, {{host.root, target}, {first, std::vector<uint8_t>(65536, 0xA5)},
+        {second, std::vector<uint8_t>(98304, 0x59)}, {empty, {}}}, host.bundle, error));
+    ep::JoinInventory inventory; CHECK(ep::make_inventory(host, inventory, error));
+    CHECK(inventory.base_size == base.size() && inventory.base_hash == upd::sha256_hex(base) && inventory.records.size() == 3);
+    CHECK(inventory.records[0].key == first && inventory.records[1].key == second && inventory.records[2].key == empty);
+    CHECK(inventory.records[2].size == 0 && inventory.records[2].hash == upd::sha256_hex(std::vector<uint8_t>{}));
+    std::vector<uint8_t> encoded; CHECK(ep::encode_inventory(inventory, encoded, error));
+    ep::JoinInventory roundtrip; CHECK(ep::decode_inventory(encoded, roundtrip, error));
+    CHECK(roundtrip.base_hash == inventory.base_hash && roundtrip.records[1].hash == inventory.records[1].hash);
+    for (size_t cut = 0; cut < encoded.size(); ++cut) {
+        const auto before = roundtrip.base_hash;
+        CHECK(!ep::decode_inventory({encoded.begin(), encoded.begin() + cut}, roundtrip, error));
+        CHECK(roundtrip.base_hash == before && roundtrip.records.size() == 3);
+    }
+    auto invalid = encoded; invalid.push_back(0); CHECK(!ep::decode_inventory(invalid, roundtrip, error));
+    invalid = encoded; put32(invalid, 76, 0xFFFFFFFF); CHECK(!ep::decode_inventory(invalid, roundtrip, error));
+    invalid = encoded; invalid[12] = 'G'; CHECK(!ep::decode_inventory(invalid, roundtrip, error));
+    invalid.assign(ep::kInventoryBytes + 1, 0); CHECK(!ep::decode_inventory(invalid, roundtrip, error));
+    auto bad_claims = inventory; bad_claims.records.push_back(bad_claims.records.back());
+    std::vector<uint8_t> untouched{3, 4}; CHECK(!ep::encode_inventory(bad_claims, untouched, error)); CHECK(untouched == (std::vector<uint8_t>{3, 4}));
+    bad_claims = inventory; std::swap(bad_claims.records[0], bad_claims.records[1]); CHECK(!ep::verify_inventory(bad_claims, error));
+    bad_claims = inventory; bad_claims.base_size = 0; CHECK(!ep::verify_inventory(bad_claims, error));
+    bad_claims = inventory; bad_claims.records[0].size = net::adventure_content::kMaxRecordBytes + 1; CHECK(!ep::verify_inventory(bad_claims, error));
+    ep::JoinInventory maximum;
+    for (uint32_t i = 0; i < net::adventure_content::kMaxRecords; ++i) maximum.records.push_back({{i, 3, 4}, 0, inventory.records[2].hash});
+    CHECK(ep::encode_inventory(maximum, encoded, error)); CHECK(encoded.size() == 80 + 80 * maximum.records.size());
+    CHECK(ep::decode_inventory(encoded, roundtrip, error) && roundtrip.records.size() == maximum.records.size());
+    maximum.records.push_back({{9999, 3, 4}, 0, inventory.records[2].hash}); CHECK(!ep::verify_inventory(maximum, error));
+    ep::JoinInventory absent; CHECK(ep::encode_inventory(absent, encoded, error)); CHECK(ep::decode_inventory(encoded, roundtrip, error));
+    CHECK(roundtrip.base_hash.empty() && roundtrip.records.empty());
+    encoded[12] = '0'; CHECK(!ep::decode_inventory(encoded, roundtrip, error));
+
+    ep::Resources cache = host, decoded;
+    std::vector<uint8_t> bytes;
+    CHECK(ep::encode_join_resources(host, inventory, bytes, error)); CHECK(get32(bytes, 0) == 0x314A4445);
+    CHECK(bytes.size() < 3000); CHECK(ep::decode_join_resources(bytes, cache, decoded, error)); CHECK(same_resources(decoded, host));
+    const auto all_hit = bytes;
+    const auto manifest_at = 12 + get32(bytes, 8);
+    const auto records_at = manifest_at + 72;
+    const auto bodies_at = records_at + inventory.records.size() * 80;
+    CHECK(get32(bytes, bodies_at) == 0);
+    CHECK(ep::encode_join_resources(host, absent, bytes, error)); CHECK(get32(bytes, 0) == 0x31524445 && get32(bytes, 4) == 2);
+    ep::Resources wrong_cache = cache; wrong_cache.base_root = std::make_shared<const std::vector<uint8_t>>(base.size(), 0);
+    CHECK(ep::decode_join_resources(bytes, wrong_cache, decoded, error)); CHECK(same_resources(decoded, host));
+    CHECK(ep::decode_join_resources(envelope(native, dbpf::write({{host.root, target}})), ep::JoinCacheRead{}, decoded, error));
+    CHECK(root_bytes(decoded) == target);
+
+    ep::JoinInventory partial = inventory; partial.records.resize(1);
+    CHECK(ep::encode_join_resources(host, partial, bytes, error));
+    CHECK(bytes.size() > 98304 && bytes.size() < 101304); CHECK(get32(bytes, bodies_at) == 2);
+    CHECK(get32(bytes, bodies_at + 4) == 2 && get32(bytes, bodies_at + 8) == 98304);
+    const auto last_body = bodies_at + 12 + 98304; CHECK(get32(bytes, last_body) == 3 && get32(bytes, last_body + 4) == 0);
+    ep::Resources only_first = cache;
+    std::erase_if(only_first.bundle.records, [&](const auto& r) { return !(r.key == first); });
+    CHECK(ep::decode_join_resources(bytes, only_first, decoded, error)); CHECK(same_resources(decoded, host));
+    const auto partial_wire = bytes;
+    partial = inventory; partial.base_hash.clear(); partial.base_size = 0;
+    CHECK(ep::encode_join_resources(host, partial, bytes, error)); CHECK(get32(bytes, bodies_at) == 1);
+    CHECK(get32(bytes, bodies_at + 4) == 0 && get32(bytes, bodies_at + 8) == base.size());
+    ep::Resources no_base = cache; no_base.base_root.reset();
+    CHECK(ep::decode_join_resources(bytes, no_base, decoded, error)); CHECK(same_resources(decoded, host));
+    // A stale same-key record and an equal body under the wrong key are not hits.
+    partial = inventory; partial.records[0].hash = inventory.records[1].hash;
+    CHECK(ep::encode_join_resources(host, partial, bytes, error)); CHECK(get32(bytes, bodies_at) == 1 && get32(bytes, bodies_at + 4) == 1);
+    CHECK(ep::decode_join_resources(bytes, cache, decoded, error)); CHECK(same_resources(decoded, host));
+
+    auto reject = [&](const std::vector<uint8_t>& input, const ep::Resources& available) {
+        const auto old_hash = decoded.bundle.hash; const auto old_base = decoded.base_root; const auto old_key = decoded.root;
+        CHECK(!ep::decode_join_resources(input, available, decoded, error));
+        CHECK(decoded.bundle.hash == old_hash && decoded.base_root == old_base && decoded.root == old_key);
+    };
+    reject(all_hit, wrong_cache); reject(all_hit, no_base);
+    auto missing = cache; std::erase_if(missing.bundle.records, [&](const auto& r) { return r.key == first; }); reject(all_hit, missing);
+    auto corrupt = cache; for (auto& r : corrupt.bundle.records) if (r.key == first) r.data[0] ^= 1; reject(all_hit, corrupt);
+    for (size_t cut = 0; cut < all_hit.size(); ++cut) reject({all_hit.begin(), all_hit.begin() + cut}, cache);
+    invalid = all_hit; invalid.push_back(0); reject(invalid, cache);
+    invalid = all_hit; put32(invalid, 4, 2); reject(invalid, cache);
+    invalid = all_hit; put32(invalid, 20, 1); reject(invalid, cache); // root delta flags.
+    invalid = all_hit; put32(invalid, manifest_at, 0); reject(invalid, cache);
+    invalid = all_hit; put32(invalid, manifest_at + 68, 2048); reject(invalid, cache);
+    invalid = all_hit; invalid[records_at + 16] = 'X'; reject(invalid, cache);
+    invalid = all_hit; put32(invalid, records_at, host.root.instance); put32(invalid, records_at + 4, host.root.type);
+    put32(invalid, records_at + 8, host.root.group); reject(invalid, cache);
+    invalid = partial_wire; put32(invalid, bodies_at + 4, 4); reject(invalid, cache);
+    invalid = partial_wire; put32(invalid, bodies_at + 8, 1); reject(invalid, cache);
+    invalid = partial_wire; put32(invalid, last_body, 2); reject(invalid, cache);
+    invalid = partial_wire; invalid[bodies_at + 12] ^= 1; reject(invalid, cache);
+    invalid = partial_wire; invalid.pop_back(); reject(invalid, cache);
+    // Logical declared totals are bounded before dependency reads, even if the
+    // attacker tries to alias cheap cached records into many large claims.
+    ep::JoinInventory huge = inventory; huge.records.clear();
+    for (uint32_t i = 0; i < 9; ++i) huge.records.push_back({{i, 3, 4}, net::adventure_content::kMaxRecordBytes, inventory.records[0].hash});
+    CHECK(!ep::verify_inventory(huge, error));
+    int base_reads = 0, record_reads = 0;
+    ep::JoinCacheRead reader;
+    reader.base = [&](const auto&, uint32_t, auto& out) { ++base_reads; out = base; return true; };
+    reader.record = [&](const auto& entry, auto& out) { ++record_reads; for (const auto& r : cache.bundle.records) if (r.key == entry.key) { out = r.data; return true; } return false; };
+    ep::JoinInventory verified;
+    CHECK(ep::make_inventory(inventory, reader, verified, error)); CHECK(base_reads == 1 && record_reads == 3 && verified.records.size() == 3);
+    reader.record = [&](const auto& entry, auto& out) { for (const auto& r : cache.bundle.records) if (r.key == entry.key && !(r.key == second)) { out = r.data; if (r.key == first) out[0] ^= 1; return true; } return false; };
+    CHECK(ep::make_inventory(inventory, reader, verified, error)); CHECK(verified.records.size() == 1 && verified.records[0].key == empty);
+    reader.base = [](const auto&, uint32_t, auto&) -> bool { throw 1; };
+    CHECK(!ep::make_inventory(inventory, reader, verified, error)); CHECK(verified.records.size() == 1);
+    CHECK(!ep::decode_join_resources(all_hit, reader, decoded, error)); CHECK(same_resources(decoded, host));
+    // A valid 128 MiB dependency manifest plus the nonempty root exceeds the
+    // aggregate bound. Reject before a single dependency cache callback runs.
+    net::Writer aggregate;
+    aggregate.raw(all_hit.data(), manifest_at + 68); aggregate.u32(8);
+    for (uint32_t i = 0; i < 8; ++i) {
+        aggregate.u32(i); aggregate.u32(3); aggregate.u32(4);
+        aggregate.u32(net::adventure_content::kMaxRecordBytes); aggregate.raw(inventory.records[0].hash.data(), 64);
+    }
+    aggregate.u32(0); record_reads = 0;
+    reader.base = [&](const auto&, uint32_t, auto& out) { out = base; return true; };
+    reader.record = [&](const auto&, auto&) { ++record_reads; return false; };
+    CHECK(!ep::decode_join_resources(aggregate.data, reader, decoded, error));
+    CHECK(record_reads == 0 && same_resources(decoded, host));
+    CHECK(error == "Editor join dependency replaces its root or exceeds its limit");
+    // Equal bytes under another key cannot satisfy an omitted same-hash record.
+    missing = cache;
+    for (auto& r : missing.bundle.records) if (r.key == first) ++r.key.instance;
+    reject(all_hit, missing);
+    // SaveAs can rotate the root key without invalidating immutable base and
+    // dependency hits. The current root is reconstructed before being exposed.
+    auto rotated = host; rotated.root.instance += 1;
+    for (auto& r : rotated.bundle.records) if (r.key == host.root) { r.key = rotated.root; r.data[777] ^= 0xF1; }
+    CHECK(net::adventure_content::make_bundle(rotated.root, rotated.bundle.records, rotated.bundle, error));
+    CHECK(ep::encode_join_resources(rotated, inventory, bytes, error)); CHECK(bytes.size() < 3000);
+    CHECK(ep::decode_join_resources(bytes, cache, decoded, error)); CHECK(same_resources(decoded, rotated));
+    for (unsigned trial = 0; trial < 500; ++trial) {
+        auto fuzzed = all_hit; random ^= random << 13; random ^= random >> 17; random ^= random << 5;
+        fuzzed[random % fuzzed.size()] ^= uint8_t(1u << (random % 8));
+        ep::Resources result = decoded;
+        if (!ep::decode_join_resources(fuzzed, cache, result, error)) CHECK(same_resources(result, decoded));
+        else CHECK(result.bundle.bytes <= net::adventure_content::kMaxBytes && result.base_root && !root_bytes(result).empty());
+    }
+}
 int main() {
     std::string error;
     editor_native::Snapshot native;
@@ -185,6 +337,7 @@ int main() {
     native.bytes = {0, 255, 13, 37, 0};
     test_record_pre_read_limits(native);
     test_v2_root_delta(native);
+    test_join_cache(native);
     std::vector<uint8_t> bytes;
     CHECK(ep::encode_mapping(native, bytes, error));
     editor_native::Snapshot decoded;

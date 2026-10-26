@@ -10,6 +10,8 @@
 namespace editor_session {
 
 enum class Phase : uint8_t { Idle, Offered, Joining, Syncing, Ready, Preparing, Playing, Returning, Frozen, Disconnected };
+inline constexpr editor::Time kPreviewLifetime = 1000, kPreviewInterval = 50;
+struct PreviewView { editor::wire::TransformPreview value; editor::Time expires = 0; };
 struct Member {
     editor::Peer peer;
     std::string name;
@@ -17,6 +19,7 @@ struct Member {
     editor::wire::Presence presence;
     editor::wire::Coverage coverage;
     bool ready = false;
+    std::optional<PreviewView> preview;
     editor::Revision applied_revision = 0;
 };
 struct View {
@@ -41,6 +44,13 @@ struct Config {
 };
 struct Callbacks {
     editor::Hooks host_hooks;
+    // Outside-frame cache inventory. Claims must describe independently hashed
+    // owned bytes. Empty inventory preserves the full verified baseline path.
+    std::function<bool(editor::wire::Join&, std::string&)> prepare_join;
+    // Immutable full payload is pinned to the baseline chosen by the host. This
+    // can omit verified cache hits; no host resource cache is replaced by it.
+    std::function<bool(const std::vector<uint8_t>&, const editor::wire::Join&,
+                       std::vector<uint8_t>&, std::string&)> resources_for_join;
     // Returning true means the owned import/application is complete. Failure
     // freezes this replica until a newly accepted baseline; no callbacks run in
     // on_message or Session's packet-dispatch callbacks.
@@ -94,6 +104,9 @@ public:
     uint64_t renew_leases(const std::vector<editor::LeaseToken>&, editor::Time ttl, std::string& error);
     uint64_t release_leases(const std::vector<editor::LeaseToken>&, std::string& error);
     bool set_presence(editor::wire::Presence, std::string& error);
+    // Latest-only unreliable hint. Does not apply native edits or persist state.
+    bool set_preview(editor::ObjectId, editor::ObjectId act, editor::Pose, std::string& error);
+    void clear_preview();
     bool publish_saved(editor::wire::Saved, std::string& error);
     // Guest only, after native root application and durable opaque checkpoint
     // completion. Deferring a Saved callback must also defer this acknowledgement.

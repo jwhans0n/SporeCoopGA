@@ -451,3 +451,66 @@ The helper's offline regression tests cover invalid metrics and mismatched
 processes, capped/small diagnostics, camera checks, recording cleanup and temporary
 fallback/log rollover. They do not create a native 400-placement fixture or prove
 an FPS pass. Actual large-editor measurements remain an outstanding native gate.
+
+
+## Transient presence and cache-aware joining
+
+The post-C8 editor transport adds existing-placement transform hints. They are
+separate from accepted operations: neither receiving a hint nor expiring it calls
+native application, mutates the document/history, or writes a durable record.
+The controller retains at most one pending hint per author and publishes the
+latest one through the existing unreliable Session channel at most every 50 ms.
+Hints expire after 1,000 ms without an accepted refresh. New placements remain
+local previews until the host allocates their committed stable identity.
+
+Each hint is scoped by project, epoch, canonical revision, author capability and
+monotonic serial. The host checks a committed placement and its act, finite pose,
+unit quaternion, positive scale and the exact current placement/document lease.
+It also requires matching selection, active editing and no pending commit.
+Guests accept only host-relayed hints matching the latest host-derived selection
+ownership and exact lease token. The token is an identity fence, not independent
+authority: request ownership still depends on the authenticated Session peer.
+This prevents an unseen delayed relay from resurrecting a ghost after a no-edit
+playtest return or a release/regrant at the same document revision. Commit,
+release, expiry, disconnect and control transitions clear hints; a same-serial
+clear wins over an active hint already queued for that author.
+
+Presence now includes reported pending work, host-derived selection/document
+ownership and the host's participant phase. A guest cannot assert ownership or a
+host phase. The host publishes current selection lease identity so stale hints
+cannot survive replaced ownership. Normal guest authoring Leave is distinct from
+failure: it cancels an active preparation/playtest, keeps the party connected and
+creates a fresh editing offer after return. Remaining editors can continue and
+the guest can explicitly rejoin with a new capability. Failed replicas still
+freeze for explicit recovery.
+
+Cache-aware Join carries a bounded typed inventory: an optional immutable base
+SHA/size and up to 2,048 ordered unique resource-key/size/SHA claims. Claims obey
+the existing 16 MiB record and 128 MiB bundle limits. An inventory larger than the
+1,100-byte editor packet is transferred through guest-only `TransferKind::Join`
+with a 256 KiB cap, chunk verification and the existing bounded reliable transfer
+scheduler. It does not place the entire inventory in the priority queue.
+Only an authenticated offered participant can complete that transfer. The host
+then passes its immutable current full resource payload to the verified cache
+codec and pins the resulting peer envelope with the chosen baseline revision.
+The peer-specific envelope never replaces the host's full late-join cache.
+Empty inventories retain the full verified transfer path. Duplicate completed
+inventory seals remain recognized after baseline scheduling. Cache byte
+verification and missing-resource reconstruction are defined in `editor_project`;
+no adventure/captain resource bundle format changes.
+
+The final focused tests use real two-/four-peer UDP Sessions with isolated native
+adapters. They cover 1,000 coalesced samples, unchanged canonical/native/durable
+state, stale/forged capabilities and revisions, bad lease identities, release,
+TTL, pending commits, controls, disconnect and a delayed relay first processed
+after return/regrant. Join tests transfer all 2,048 claims while another editor
+commits first, verify the latest pinned full payload, preserve full fallback on a
+later join, reject preparation/negotiation failures, and ignore duplicate seals.
+The final Linux ASan/UBSan/leak run passed 14,099 Session checks; the exact
+20261006 i686 Win32 run passed 8,844. Protocol tests passed 5,845 on both. Session
+counts include scheduler-dependent polling assertions. Executables and sanitizer
+binaries are under `out/editor/transient-presence/host`; exact source/executable
+hashes and results are in `out/editor/transient-presence/validation.json`.
+These source/fixture results do not establish actual native hint readability,
+cache-hit joins or guest cancellation UI in the game. They require the next
+candidate's controlled integration tests; the running C8 binary is unchanged.

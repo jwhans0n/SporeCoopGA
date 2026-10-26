@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <deque>
+#include <cmath>
 #include <set>
 #include <stdexcept>
 #include <type_traits>
@@ -52,6 +53,7 @@ struct Controller::Impl {
     struct HeldRequest { Peer author; Request request; size_t cost = 0; };
     using Local = std::variant<Request, w::LeaseRequest, w::Presence, w::Saved, w::Control>;
     struct PendingLease { w::LeaseRequest request; Time sent = 0; };
+    struct PreviewInput { uint8_t from; Peer sender; uint32_t recipient; w::Message message; };
     struct ResourceStage {
         Revision revision = 0;
         Buffer bytes, broadcast_bytes;
@@ -75,6 +77,15 @@ struct Controller::Impl {
     std::deque<Input> input;
     std::deque<std::pair<Local, size_t>> local;
     std::map<uint64_t, PendingLease> pending_leases;
+    std::array<std::optional<PreviewInput>,4> preview_input;
+    std::array<std::optional<w::Message>,4> preview_relay;
+    std::array<std::optional<w::Presence>,4> presence_relay;
+    std::array<Peer,4> preview_authors{};
+    std::array<uint64_t,4> preview_seen{};
+    std::optional<w::Message> preview_local;
+    std::optional<w::Presence> presence_local;
+    uint64_t preview_sequence = 0;
+    Time preview_sent = 0;
     std::map<uint8_t, uint64_t> saved_acks;
     uint64_t local_saved_ack = 0;
     std::map<Revision, std::string> hashes;
@@ -106,6 +117,143 @@ struct Controller::Impl {
     w::Context context() const { const auto& d = state().document; return {d.project, d.epoch, d.revision}; }
     bool active() const { return view.phase != Phase::Idle && view.phase != Phase::Disconnected; }
     bool authoring_ready() const { return !callbacks.authoring_ready || callbacks.authoring_ready(); }
+    static w::PresencePhase presence_phase(Phase phase) {
+        switch(phase) {
+        case Phase::Ready:return w::PresencePhase::Ready;
+        case Phase::Joining:case Phase::Syncing:return w::PresencePhase::Syncing;
+        case Phase::Preparing:return w::PresencePhase::Preparing;
+        case Phase::Playing:return w::PresencePhase::Playing;
+        case Phase::Returning:return w::PresencePhase::Returning;
+        case Phase::Frozen:return w::PresencePhase::Frozen;
+        case Phase::Disconnected:case Phase::Idle:return w::PresencePhase::Disconnected;
+        default:return w::PresencePhase::Offered;
+        }
+    }
+    static Phase member_phase(w::PresencePhase phase) {
+        switch(phase) {
+        case w::PresencePhase::Ready:return Phase::Ready;
+        case w::PresencePhase::Syncing:return Phase::Syncing;
+        case w::PresencePhase::Preparing:return Phase::Preparing;
+        case w::PresencePhase::Playing:return Phase::Playing;
+        case w::PresencePhase::Returning:return Phase::Returning;
+        case w::PresencePhase::Frozen:return Phase::Frozen;
+        case w::PresencePhase::Disconnected:return Phase::Disconnected;
+        default:return Phase::Offered;
+        }
+    }
+    bool owns(Peer author,ObjectId object,const LeaseToken* token=nullptr) const {
+        const auto& held=hosting?coordinator.leases():view.local_leases;
+        return std::any_of(held.begin(),held.end(),[&](const Lease& l){
+            return l.owner==author && l.expires>now && (!token || (l.scope==token->scope&&l.token==token->token)) &&
+                (l.scope.kind==ScopeKind::Document || (l.scope.kind==ScopeKind::Placement&&l.scope.object==object));
+        });
+    }
+    LeaseToken selection_lease(Peer author,ObjectId object) const {
+        if(object==ObjectId{})return {};
+        const auto& held=hosting?coordinator.leases():view.local_leases;
+        LeaseToken placement;
+        for(const auto& l:held)if(l.owner==author&&l.expires>now){
+            if(l.scope.kind==ScopeKind::Document)return {l.scope,l.token};
+            if(l.scope.kind==ScopeKind::Placement&&l.scope.object==object)placement={l.scope,l.token};
+        }
+        return placement;
+    }
+    void clear_preview_for(uint8_t slot,bool relay=true) {
+        auto found=view.members.find(slot);
+        if(found==view.members.end() || !found->second.preview)return;
+        auto value=found->second.preview->value;
+        found->second.preview.reset();
+        if(hosting&&relay){value.active=false;value.object={};value.act={};value.pose={};value.lease={};preview_relay[slot]=w::Message{context(),value};}
+    }
+    void clear_previews() {
+        for(auto& [slot,member]:view.members){(void)slot;member.preview.reset();}
+        preview_local.reset();preview_input={};preview_relay={};
+    }
+    void presence(uint8_t from,w::Presence value) {
+        auto found=view.members.find(value.author.slot);
+        if(hosting) {
+            if(found==view.members.end() || value.author!=found->second.peer || value.author.slot!=from)return;
+            if((value.selected!=ObjectId{}&&!state().document.placements.contains(value.selected)) ||
+               (value.act!=ObjectId{}&&!state().document.acts.contains(value.act)))return;
+            value.ownership=0;value.preview_lease={};value.phase=presence_phase(found->second.phase);
+            if(found->second.phase==Phase::Ready){
+                value.preview_lease=selection_lease(value.author,value.selected);
+                if(value.preview_lease.token)value.ownership|=w::kOwnSelection;
+                for(const auto& lease:coordinator.leases())if(lease.owner==value.author&&lease.expires>now&&lease.scope.kind==ScopeKind::Document)value.ownership|=w::kOwnDocument;
+                if(!value.ownership)value.editing=false;
+            }else{value.editing=false;value.pending=false;}
+        } else {
+            if(from || (found!=view.members.end()&&found->second.peer.generation>value.author.generation))return;
+            const auto roster=session.players();if(std::none_of(roster.begin(),roster.end(),[&](const net::PlayerInfo& p){return p.id==value.author.slot;}))return;
+            auto& member=view.members[value.author.slot];member.peer=value.author;member.name=session.name_of(value.author.slot);member.phase=member_phase(value.phase);
+            found=view.members.find(value.author.slot);
+        }
+        auto& member=found->second;
+        if(member.presence.selected!=value.selected || member.presence.preview_lease!=value.preview_lease || !value.editing || value.pending)clear_preview_for(value.author.slot);
+        member.presence=value;
+        if(callbacks.presence)callbacks.presence(value.author,value);
+        if(hosting)presence_relay[value.author.slot]=value;
+    }
+    void refresh_presence() {
+        if(!hosting)return;
+        for(auto& [slot,member]:view.members){
+            if(!member.peer.generation)continue;
+            auto value=member.presence;
+            auto expected=value;expected.author=member.peer;expected.phase=presence_phase(member.phase);expected.ownership=0;expected.preview_lease={};
+            if(member.phase==Phase::Ready){
+                expected.preview_lease=selection_lease(member.peer,value.selected);
+                if(expected.preview_lease.token)expected.ownership|=w::kOwnSelection;
+                for(const auto& l:coordinator.leases())if(l.owner==member.peer&&l.expires>now&&l.scope.kind==ScopeKind::Document)expected.ownership|=w::kOwnDocument;
+                if(!expected.ownership)expected.editing=false;
+            }else{expected.editing=false;expected.pending=false;}
+            if(expected!=value)presence(slot,expected);
+        }
+    }
+    void preview(uint8_t from,const w::Message& message) {
+        const auto& value=std::get<w::TransformPreview>(message.payload);
+        if(view.phase!=Phase::Ready || !same_context(message.context,view.context) || message.context.revision!=context().revision)return;
+        auto member=view.members.find(value.author.slot);
+        if(member==view.members.end() || member->second.peer!=value.author || member->second.phase!=Phase::Ready || (hosting&&value.author.slot!=from))return;
+        const auto slot=value.author.slot;
+        if(preview_authors[slot]!=value.author){preview_authors[slot]=value.author;preview_seen[slot]=0;}
+        if(value.serial<preview_seen[slot] || (value.active&&value.serial==preview_seen[slot]))return;
+        if(value.active){
+            const auto object=state().document.placements.find(value.object);
+            if(object==state().document.placements.end() || object->second.act_id!=value.act ||
+                !state().document.acts.contains(value.act) || member->second.presence.selected!=value.object ||
+                !member->second.presence.editing || member->second.presence.pending ||
+                !(member->second.presence.ownership&w::kOwnSelection) || member->second.presence.preview_lease!=value.lease ||
+                (hosting&&!owns(value.author,value.object,&value.lease)))return;
+            if(now>UINT64_MAX-kPreviewLifetime)return;
+            member->second.preview=PreviewView{value,now+kPreviewLifetime};
+        }else member->second.preview.reset();
+        preview_seen[slot]=value.serial;
+        if(hosting)preview_relay[slot]=message;
+    }
+    void service_previews() {
+        if(presence_local){auto value=*presence_local;presence_local.reset();if(hosting)presence(0,value);else{std::string error;if(!queue(0,{context(),value},true,error))report(error);}}
+        refresh_presence();
+        for(auto& input:preview_input)if(input){auto value=std::move(*input);input.reset();
+            if(value.sender.slot!=value.from || !value.recipient)continue;
+            if(hosting){auto m=view.members.find(value.from);if(m==view.members.end()||m->second.peer!=value.sender||value.recipient!=view.local.generation)continue;}
+            else if(value.from || value.sender!=host_author() || value.recipient!=view.local.generation)continue;
+            preview(value.from,value.message);
+        }
+        if(hosting&&preview_local){auto value=std::move(*preview_local);preview_local.reset();preview(0,value);}
+        for(auto& [slot,member]:view.members)if(member.preview &&
+            (member.preview->expires<=now || member.phase!=Phase::Ready ||
+             (hosting&&!owns(member.peer,member.preview->value.object,&member.preview->value.lease))))clear_preview_for(slot);
+        if(hosting)for(auto& value:presence_relay)if(value){auto copy=*value;value.reset();broadcast({context(),copy},true);}
+        if(now-preview_sent<kPreviewInterval)return;
+        preview_sent=now;
+        if(hosting){
+            for(auto& message:preview_relay)if(message){
+                net::Writer packet;std::string error;
+                if(w::write(*message,packet,error))for(const auto& [id,member]:view.members)if(id&&member.phase==Phase::Ready)session.send_unreliable_to(id,config.message_type,address(id,packet));
+                message.reset();
+            }
+        }else if(preview_local){net::Writer packet;std::string error;if(w::write(*preview_local,packet,error))session.send_unreliable_to(0,config.message_type,address(0,packet));preview_local.reset();}
+    }
     void prune_local_leases() {
         std::erase_if(view.local_leases, [&](const Lease& lease) {
             return lease.expires <= now || ((lease.scope.kind == ScopeKind::Placement || lease.scope.kind == ScopeKind::Field) &&
@@ -147,7 +295,7 @@ struct Controller::Impl {
         return true;
     }
     bool queue_transfer(uint8_t to, const w::Context& ctx, w::TransferKind kind, Buffer bytes, std::string& error, const std::string& known_hash = {}) {
-        if (!bytes || bytes->empty() || bytes->size() > (kind == w::TransferKind::Resources ? w::kResourceBytes : kind == w::TransferKind::Baseline ? w::kStateBytes : w::kOperationBytes)) { error = "Invalid editor transfer size."; return false; }
+        if (!bytes || bytes->empty() || bytes->size() > (kind == w::TransferKind::Resources ? w::kResourceBytes : kind == w::TransferKind::Baseline ? w::kStateBytes : kind == w::TransferKind::Join ? w::kJoinBytes : w::kOperationBytes)) { error = "Invalid editor transfer size."; return false; }
         auto& ch = channels[to];
         bool retained = staged && (staged->bytes == bytes || staged->broadcast_bytes == bytes);
         for (const auto& [id, other] : channels) { (void)id; for (const auto& item : other.ordered) if (auto* t = std::get_if<Transfer>(&item); t && t->bytes == bytes) retained = true; }
@@ -160,6 +308,7 @@ struct Controller::Impl {
         std::vector<uint8_t> bytes; w::TransferKind kind;
         if (auto* request = std::get_if<Request>(&message.payload)) { if (!w::encode_request(*request, bytes, error)) return false; kind = w::TransferKind::Request; }
         else if (auto* decision = std::get_if<Decision>(&message.payload)) { if (!w::encode_decision(*decision, bytes, error)) return false; kind = w::TransferKind::Decision; }
+        else if (auto* join = std::get_if<w::Join>(&message.payload)) { if (!w::encode_join(*join, bytes, error)) return false; kind = w::TransferKind::Join; }
         else return false;
         return queue_transfer(to, message.context, kind, std::make_shared<const std::vector<uint8_t>>(std::move(bytes)), error);
     }
@@ -173,11 +322,11 @@ struct Controller::Impl {
     void freeze(uint8_t from, const std::string& why) {
         if (hosting && from != 0) {
             auto member = view.members.find(from);
-            if (member != view.members.end()) { coordinator.disconnect(member->second.peer); member->second.phase = Phase::Frozen; member->second.ready = false; }
+            if (member != view.members.end()) { coordinator.disconnect(member->second.peer); member->second.phase = Phase::Frozen; member->second.ready = false;clear_preview_for(from); }
             std::erase_if(held_requests, [&](const HeldRequest& item) { if (item.author.slot != from) return false; held_request_bytes -= item.cost; return true; });
             clear_channel(from); std::string ignored; queue(from, {context(), w::Leave{3}}, true, ignored); report(why); progress_return();
         } else {
-            const auto ctx = view.context;
+            const auto ctx = view.context;clear_previews();
             view.phase = Phase::Frozen; view.local_leases.clear(); channels.clear(); output_bytes = 0;
             pending_baseline.reset(); pending_control.reset(); returning_control.reset(); returned.clear(); local_returned = false; deferred.clear(); deferred_bytes = 0; held_requests.clear(); held_request_bytes = 0; staged.reset(); pending_leases.clear();
             if (hosting) {
@@ -209,17 +358,25 @@ struct Controller::Impl {
         Member member; member.peer = capability; member.name = session.name_of(id); view.members[id] = member;
         std::string error; if (!queue(id, {context(), w::Offer{w::kSchema, view.name, capability, view.local}}, true, error)) freeze(id, error);
     }
-    void synchronize(uint8_t from) {
+    void synchronize(uint8_t from,const w::Join& join) {
         auto it = view.members.find(from); if (!hosting || it == view.members.end()) return;
         auto& member = it->second;
         if (view.phase != Phase::Ready || !resources) { freeze(from, "The host is not available for an editor baseline."); return; }
-        clear_channel(from);
+        auto completed=std::move(channels[from].completed);
+        clear_channel(from);channels[from].completed=std::move(completed);
         const auto ctx = context(); std::string error;
         if (!baseline_cache || baseline_cache_revision != ctx.revision) {
             std::vector<uint8_t> bytes; if (!w::encode_state(state(), bytes, error)) { freeze(from, error); return; }
             baseline_cache = std::make_shared<const std::vector<uint8_t>>(std::move(bytes)); baseline_cache_revision = ctx.revision;
         }
-        if (!queue_transfer(from, ctx, w::TransferKind::Resources, resources, error, resources_hash) || !queue_transfer(from, ctx, w::TransferKind::Baseline, baseline_cache, error)) { freeze(from, error); return; }
+        Buffer for_peer=resources;std::string peer_hash=resources_hash;
+        if(callbacks.resources_for_join && (!join.base_hash.empty() || !join.records.empty())){
+            std::vector<uint8_t> encoded;
+            bool okay=false;try{okay=callbacks.resources_for_join(*resources,join,encoded,error);}catch(...){error="Verified join cache negotiation threw.";}
+            if(!okay || encoded.empty() || encoded.size()>w::kResourceBytes){freeze(from,error.empty()?"Verified join cache negotiation failed.":error);return;}
+            for_peer=std::make_shared<const std::vector<uint8_t>>(std::move(encoded));peer_hash=upd::sha256_hex(*for_peer);
+        }
+        if (!queue_transfer(from, ctx, w::TransferKind::Resources, for_peer, error, peer_hash) || !queue_transfer(from, ctx, w::TransferKind::Baseline, baseline_cache, error)) { freeze(from, error); return; }
         channels[from].baseline = ctx.revision; channels[from].baseline_save_serial = view.saved ? view.saved->serial : 0;
         member.phase = Phase::Syncing; member.ready = false;
     }
@@ -236,7 +393,7 @@ struct Controller::Impl {
                 if (!tokens.empty()) coordinator.release(member.peer, tokens);
             }
         }
-        view.local_leases.clear(); pending_leases.clear();
+        view.local_leases.clear(); pending_leases.clear();clear_previews();
     }
     uint8_t ready_mask() const { uint8_t mask = 0; for (const auto& [id, member] : view.members) if (id < 4 && member.ready) mask |= uint8_t(1u << id); return mask; }
     void set_ready_mask(uint8_t mask) { for (auto& [id, member] : view.members) member.ready = id < 4 && ((mask >> id) & 1); }
@@ -347,7 +504,7 @@ void Controller::Impl::host_request(uint8_t from, const Request& request)
         }
         staged.reset(); baseline_cache.reset();
         if (callbacks.host_hooks.persist) view.locally_durable = decision.revision;
-        coverage(); broadcast({context(), decision});
+        clear_previews();coverage(); broadcast({context(), decision});
     } else {
         staged.reset();
         if (coordinator.frozen()) freeze(0, decision.reason);
@@ -475,6 +632,7 @@ void Controller::Impl::transfer(uint8_t from, const w::Message& message)
             if (done->second.first != message.context || !same_transfer(done->second.second, *begin)) freeze(from, "A completed editor transfer nonce was reused.");
             return;
         }
+        if(hosting && begin->kind==w::TransferKind::Join && (view.members.at(from).phase!=Phase::Offered || message.context.revision>context().revision)){freeze(from,"Join inventory is outside its offered scope.");return;}
         if (!hosting && begin->kind == w::TransferKind::Resources && view.phase != Phase::Joining && view.phase != Phase::Syncing && view.phase != Phase::Ready && view.phase != Phase::Preparing && view.phase != Phase::Playing && view.phase != Phase::Returning) return;
         if (!hosting && begin->kind == w::TransferKind::Baseline && (view.phase != Phase::Syncing || !ch.resources)) { freeze(0, "A baseline arrived before verified resources."); return; }
         if (!hosting && begin->kind == w::TransferKind::Baseline && pending_baseline) { freeze(0, "A pending native baseline cannot be replaced without a new offer."); return; }
@@ -508,6 +666,9 @@ void Controller::Impl::transfer(uint8_t from, const w::Message& message)
         const auto& d = baseline.document;
         if (d.project != message.context.project || d.epoch != message.context.epoch || d.revision != message.context.revision) { freeze(0, "The sealed native baseline disagreed with its transfer scope."); return; }
         pending_baseline = std::move(baseline); pending_baseline_context = message.context;
+    } else if(kind==w::TransferKind::Join){
+        w::Join join;if(!w::decode_join(bytes,join,error)){freeze(from,error);return;}
+        this->message(from,{message.context,std::move(join)});
     } else if (kind == w::TransferKind::Request) {
         Request request; if (!w::decode_request(bytes, request, error)) { freeze(from, error); return; }
         if (request.project != message.context.project || request.epoch != message.context.epoch || request.base_revision != message.context.revision) { freeze(from, "A transferred request disagreed with its scope."); return; }
@@ -566,6 +727,7 @@ void Controller::Impl::message(uint8_t from, w::Message message)
         if (hosting || from || offer_message->assigned.slot != session.my_id()) return;
         if (same_context(message.context, view.context) && offer_message->assigned.generation <= view.local.generation) return;
         channels.clear(); output_bytes = 0; pending_leases.clear(); staged.reset(); pending_baseline.reset(); pending_control.reset(); returning_control.reset(); returned.clear(); local_returned = false; deferred.clear(); deferred_bytes = 0; held_requests.clear(); held_request_bytes = 0;
+        clear_previews();presence_local.reset();presence_relay={};preview_authors={};preview_seen={};preview_sequence=0;
         view = {}; view.phase = Phase::Offered; view.local = offer_message->assigned;
         view.name = offer_message->name; view.context = message.context;
         Member own; own.peer = view.local; own.name = session.name_of(view.local.slot); view.members[view.local.slot] = own;
@@ -576,7 +738,7 @@ void Controller::Impl::message(uint8_t from, w::Message message)
     if (view.phase == Phase::Frozen && !std::holds_alternative<w::Leave>(message.payload)) return;
     if (hosting && (!view.members.contains(from) || view.members.at(from).phase == Phase::Frozen)) return;
     if (auto* join = std::get_if<w::Join>(&message.payload)) {
-        (void)join; if (hosting && from && view.members.at(from).phase == Phase::Offered) synchronize(from); return;
+        if (hosting && from && view.members.at(from).phase == Phase::Offered && message.context.revision<=context().revision) synchronize(from,*join); return;
     }
     bool wait_for_authoring = false;
     if (!hosting && !draining_deferred && !pending_baseline && deferred.empty()) {
@@ -607,7 +769,7 @@ void Controller::Impl::message(uint8_t from, w::Message message)
             if (!hooks.apply) { freeze(0, "Native committed-edit application is unavailable."); return; }
             if (!editor::apply_committed(replica, *decision, error, hooks)) { freeze(0, error); return; }
             if (callbacks.persist_guest) view.locally_durable = replica.document.revision;
-            coverage();
+            clear_previews();coverage();
         }
         prune_local_leases();
         if (!duplicate && callbacks.decision) callbacks.decision(*decision);
@@ -615,17 +777,7 @@ void Controller::Impl::message(uint8_t from, w::Message message)
     }
     if (auto* lease = std::get_if<w::LeaseRequest>(&message.payload)) { lease_request(from, *lease); return; }
     if (auto* reply = std::get_if<w::LeaseReply>(&message.payload)) { if (!hosting) lease_reply(*reply); return; }
-    if (auto* presence = std::get_if<w::Presence>(&message.payload)) {
-        if (presence->author.slot >= 4) return;
-        if (hosting && presence->author != view.members.at(from).peer) return;
-        auto found = view.members.find(presence->author.slot);
-        if (found != view.members.end() && found->second.peer.generation > presence->author.generation) return;
-        auto& member = view.members[presence->author.slot]; member.peer = presence->author;
-        member.name = session.name_of(presence->author.slot); member.presence = *presence;
-        if (callbacks.presence) callbacks.presence(presence->author, *presence);
-        if (hosting) broadcast({context(), *presence}, true);
-        return;
-    }
+    if (auto* value = std::get_if<w::Presence>(&message.payload)) { presence(from,*value); return; }
     if (auto* cover = std::get_if<w::Coverage>(&message.payload)) {
         if (!hosting || !from || message.context.revision > context().revision) return;
         auto hash = hashes.find(message.context.revision);
@@ -658,7 +810,12 @@ void Controller::Impl::message(uint8_t from, w::Message message)
         pending_baseline.reset(); if (!hosting) { pending_control.reset(); returning_control.reset(); returned.clear(); local_returned = false; } deferred.clear(); deferred_bytes = 0;
         if (hosting) {
             if (view.phase == Phase::Preparing || view.phase == Phase::Playing) control(0, {w::ControlKind::HostCancelPlaytest, view.playtest_round, view.playtest_revision, false, 0});
-            freeze(from, leave->reason == 3 ? "A participant needs explicit native/baseline recovery." : "A participant left the shared editor.");
+            if(leave->reason==0){
+                auto& member=view.members.at(from);coordinator.disconnect(member.peer);member.phase=Phase::Idle;member.ready=false;
+                clear_preview_for(from);clear_channel(from);saved_acks.erase(from);
+                std::erase_if(held_requests,[&](const HeldRequest& item){if(item.author.slot!=from)return false;held_request_bytes-=item.cost;return true;});
+                pending_offers.insert(from);
+            }else freeze(from, leave->reason == 3 ? "A participant needs explicit native/baseline recovery." : "A participant left the shared editor.");
             progress_return();
         } else if (leave->reason == 3) freeze(0, "The host requires an explicit editor baseline recovery.");
         else { view.phase = Phase::Idle; view.local_leases.clear(); channels.clear(); output_bytes = 0; }
@@ -775,8 +932,14 @@ bool Controller::accept_offer(std::string& error)
 {
     auto& i = *impl_;
     if (i.hosting || i.view.phase != Phase::Offered || !i.session.connected()) { error = "There is no newly offered editor baseline to accept."; return false; }
+    w::Join join;
+    try{if(i.callbacks.prepare_join&&!i.callbacks.prepare_join(join,error))return false;}
+    catch(...){error="Preparing the verified join inventory failed.";return false;}
+    std::vector<uint8_t> checked;if(!w::encode_join(join,checked,error))return false;
+    if(join.durable_revision>i.view.context.revision){error="The join durability claim exceeds this offered project revision.";return false;}
+    i.clear_previews();i.presence_local.reset();i.presence_relay={};i.preview_authors={};i.preview_seen={};i.preview_sequence=0;
     i.replica = {}; i.channels.clear(); i.output_bytes = 0; i.view.local_leases.clear(); i.pending_leases.clear(); i.view.locally_durable = 0;
-    if (!i.queue(0, {i.view.context, w::Join{0}}, true, error)) return false;
+    if (!i.queue(0, {i.view.context, std::move(join)}, true, error)) return false;
     i.view.phase = Phase::Joining; error.clear(); return true;
 }
 
@@ -790,6 +953,7 @@ void Controller::end()
             else i.session.send_reliable_to(0, i.config.message_type, i.address(0, packet));
         }
     }
+    i.clear_previews();i.presence_local.reset();i.presence_relay={};i.preview_authors={};i.preview_seen={};i.preview_sequence=0;
     i.channels.clear(); i.input.clear(); i.local.clear(); i.pending_leases.clear(); i.saved_acks.clear(); i.local_saved_ack = 0; i.hashes.clear(); i.overflow.clear(); i.pending_offers.clear();
     i.resources.reset(); i.resources_hash.clear(); i.baseline_cache.reset(); i.staged.reset(); i.pending_baseline.reset(); i.pending_control.reset(); i.returning_control.reset(); i.returned.clear(); i.local_returned = false; i.deferred.clear(); i.deferred_bytes = 0; i.held_requests.clear(); i.held_request_bytes = 0;
     i.input_bytes = i.output_bytes = i.local_bytes = 0; i.coverage_pending = false; i.view = {};
@@ -799,6 +963,19 @@ void Controller::end()
 void Controller::on_message(uint8_t from, net::Reader& reader)
 {
     auto& i = *impl_; const size_t count = reader.left();
+    constexpr size_t tag_offset=envelope_bytes+1+16+8+8;
+    if(count>tag_offset && reader.cur()[tag_offset]==std::variant_size_v<w::Payload>-1){
+        net::Reader copy(reader.cur(),count);Peer sender{copy.u8(),copy.u32()};const auto recipient=copy.u32();
+        w::Message message;std::string error;
+        if(count<=w::kPacketBytes+envelope_bytes && w::read(copy,message,sender,from==0,error)){
+            const auto& value=std::get<w::TransformPreview>(message.payload);auto& pending=i.preview_input[value.author.slot];
+            if(!pending || std::get<w::TransformPreview>(pending->message.payload).author!=value.author ||
+                std::get<w::TransformPreview>(pending->message.payload).serial<value.serial ||
+                (std::get<w::TransformPreview>(pending->message.payload).serial==value.serial&&!value.active))
+                pending=Impl::PreviewInput{from,sender,recipient,std::move(message)};
+        }
+        reader.skip(count);return;
+    }
     if (count <= envelope_bytes || count > w::kPacketBytes + envelope_bytes || i.input.size() >= i.config.inbound_packets || i.input_bytes + count > i.config.inbound_bytes) { i.overflow.insert(from); reader.skip(count); return; }
     Impl::Input entry; entry.from = from; entry.bytes.assign(reader.cur(), reader.cur() + count); reader.skip(count);
     i.input_bytes += count; i.input.push_back(std::move(entry));
@@ -837,9 +1014,11 @@ void Controller::tick(Time now)
                     if (auto member = i.view.members.find(entry.from); member != i.view.members.end()) { i.coordinator.disconnect(member->second.peer); i.view.members.erase(member); }
                     i.saved_acks.erase(entry.from);
                     std::erase_if(i.held_requests, [&](const Impl::HeldRequest& item) { if (item.author.slot != entry.from) return false; i.held_request_bytes -= item.cost; return true; });
+                    i.clear_preview_for(entry.from);if(entry.from<4){i.preview_input[entry.from].reset();i.preview_relay[entry.from].reset();}
                     i.clear_channel(entry.from);
                     i.progress_return();
-                } else if (!entry.from) { i.view.phase = Phase::Disconnected; i.pending_control.reset(); i.pending_baseline.reset(); i.deferred.clear(); i.deferred_bytes = 0; i.view.local_leases.clear(); i.channels.clear(); i.output_bytes = 0; i.report("The editor host disconnected; locally durable recovery remains available."); }
+                } else if (!entry.from) { i.clear_previews();i.view.phase = Phase::Disconnected; i.pending_control.reset(); i.pending_baseline.reset(); i.deferred.clear(); i.deferred_bytes = 0; i.view.local_leases.clear(); i.channels.clear(); i.output_bytes = 0; i.report("The editor host disconnected; locally durable recovery remains available."); }
+                else {i.clear_preview_for(entry.from,false);i.view.members.erase(entry.from);}
                 continue;
             }
             if (i.hosting && (!entry.from || !i.view.members.contains(entry.from))) continue;
@@ -889,7 +1068,7 @@ void Controller::tick(Time now)
             i.coverage_pending = false; std::string error; auto ctx = i.context();
             if (!i.queue(0, {ctx, w::Coverage{i.view.locally_durable, i.hashes.at(ctx.revision)}}, true, error)) i.freeze(0, error);
         }
-        i.pump();
+        i.service_previews();i.pump();
     } catch (const std::exception& error) { i.freeze(0, error.what()); }
     catch (...) { i.freeze(0, "Editor controller callback failed."); }
 }
@@ -934,9 +1113,29 @@ bool Controller::set_presence(w::Presence presence, std::string& error)
     auto& i = *impl_; if (i.view.phase != Phase::Ready && i.view.phase != Phase::Preparing) { error = "No shared editor presence is active."; return false; }
     presence.author = i.view.local;
     if ((presence.selected != ObjectId{} && !i.state().document.placements.contains(presence.selected)) || (presence.act != ObjectId{} && !i.state().document.acts.contains(presence.act))) { error = "Presence selected an unknown placement or act."; return false; }
-    i.view.members[i.view.local.slot].presence = presence;
-    if (i.hosting) return i.queue_local(presence, 128, error);
-    return i.queue(0, {i.context(), presence}, true, error);
+    presence.ownership=0;presence.preview_lease={};presence.phase=w::PresencePhase::Ready;
+    i.presence_local=presence;error.clear();return true;
+}
+
+bool Controller::set_preview(ObjectId object,ObjectId act,Pose pose,std::string& error)
+{
+    auto& i=*impl_;
+    if(i.view.phase!=Phase::Ready || !i.view.local.generation || i.preview_sequence==UINT64_MAX){error="No editable preview scope is active.";return false;}
+    auto found=i.state().document.placements.find(object);
+    if(found==i.state().document.placements.end() || found->second.act_id!=act){error="A preview requires an existing placement in its committed act.";return false;}
+    const auto lease=i.selection_lease(i.view.local,object);
+    if(!lease.token){error="A preview requires current placement ownership.";return false;}
+    w::TransformPreview value{i.view.local,i.preview_sequence+1,true,object,act,pose,lease};
+    w::Message message{i.context(),value};net::Writer check;
+    if(!w::write(message,check,error))return false;
+    ++i.preview_sequence;i.preview_local=std::move(message);return true;
+}
+void Controller::clear_preview()
+{
+    auto& i=*impl_;i.clear_preview_for(i.view.local.slot,false);i.preview_local.reset();
+    if(!i.view.context.epoch || !i.view.local.generation || i.preview_sequence==UINT64_MAX)return;
+    w::TransformPreview value;value.author=i.view.local;value.serial=++i.preview_sequence;value.active=false;
+    i.preview_local=w::Message{i.context(),value};
 }
 
 bool Controller::publish_saved(w::Saved saved, std::string& error)

@@ -1,5 +1,6 @@
 // Real Session UDP loopback, deliberately fake native adapters. No game/profile.
 #include "editor_session.h"
+#include "../updater/sha256.h"
 
 #include <algorithm>
 #include <chrono>
@@ -78,6 +79,10 @@ struct Party {
     std::array<bool, 4> tick_enabled{true, true, true, true};
     bool dispatching = false, ticking = false, release_on_decision = false, publish_deltas = false, auto_ack_saved = true;
     size_t structural_bytes = 12000;
+    std::array<w::Join,4> join_claims;
+    bool fail_join_prepare=false,fail_join_resources=false,small_join_resources=false;
+    std::vector<w::Join> received_joins;
+    std::vector<std::vector<uint8_t>> pinned_join_resources;
     unsigned count;
     uint32_t begun = net::now_ms();
     explicit Party(unsigned players, es::Config config = {}, bool adverse = false) : count(players)
@@ -87,6 +92,11 @@ struct Party {
             sessions[p].build = 0xDC04AEE5;
             auto& f = native[p]; f.document = seed().document;
             es::Callbacks cb;
+            cb.prepare_join=[&,p](w::Join& join,std::string& error){CHECK(!dispatching);if(fail_join_prepare){error="Injected inventory read failure";return false;}join=join_claims[p];return true;};
+            cb.resources_for_join=[&](const std::vector<uint8_t>& full,const w::Join& join,std::vector<uint8_t>& output,std::string& error){
+                CHECK(ticking&&!dispatching);received_joins.push_back(join);pinned_join_resources.push_back(full);
+                if(fail_join_resources){error="Injected cache negotiation failure";return false;}output=full;if(small_join_resources)output.resize(96);return true;
+            };
             cb.host_hooks.apply = [&, p](const Document& before, const Document& after, const Change&, std::string&) { CHECK(ticking && !dispatching && native[p].document == before); native[p].document = after; return true; };
             cb.host_hooks.rollback = [&, p](const Document& before, const Document&, const Change&, std::string&) { native[p].document = before; return true; };
             cb.host_hooks.persist = [&, p](const State&, const Change& change, std::string& error) {
@@ -540,7 +550,7 @@ static void test_close_waits_for_accepted_structural_commit()
     auto lease = p.grant(0); p.structural_bytes = 64000; p.native[1].authoring = false;
     Mutation clone; clone.kind = MutationKind::Clone; clone.target = object_a;
     Request request; request.summary = "Commit then immediately request host close"; request.leases = lease; request.mutations = {clone};
-    std::string error; CHECK(p.controllers[0]->submit(request, error));
+    std::string error; CHECK(p.spin([&]{return p.controllers[0]->settled();})); CHECK(p.controllers[0]->submit(request, error));
     CHECK(p.controllers[0]->state().document.revision == 0 && p.controllers[0]->settled()); // Unaccepted Requests are not the barrier.
     CHECK(p.spin([&] { return p.controllers[0]->state().document.revision == 1; }));
     CHECK(!p.controllers[0]->settled()); // Most resource packets and the Decision are still queued.
@@ -737,9 +747,145 @@ static void test_rehost_authorship_and_document_hash()
     CHECK(p.controllers[0]->view().local == owner);
 }
 
+static void preview_packet(Party& p,unsigned to,unsigned from,const w::Message& message,std::optional<Peer> envelope={})
+{
+    net::Writer packet;std::string error;CHECK(w::write(message,packet,error));
+    packet=addressed(envelope.value_or(p.controllers[from]->view().local),p.controllers[to]->view().local,packet);
+    net::Reader reader(packet.data.data(),packet.size());p.controllers[to]->on_message(uint8_t(from),reader);CHECK(reader.left()==0);
+}
+static void test_transient_preview_authority_coalescing_and_lifecycle()
+{
+    Party p(4);p.start();p.accept();std::string error;
+    auto leases=p.grant(1,{ScopeKind::Placement,object_a,{}});
+    w::Presence presence;presence.selected=object_a;presence.act={2,1};presence.editing=true;
+    CHECK(p.controllers[1]->set_presence(presence,error));
+    CHECK(p.spin([&]{for(unsigned i=0;i<4;++i){auto found=p.controllers[i]->view().members.find(1);if(found==p.controllers[i]->view().members.end()||!(found->second.presence.ownership&w::kOwnSelection))return false;}return true;}));
+    const auto document=p.controllers[0]->state().document;
+    std::array<int,4> persists{};for(unsigned i=0;i<4;++i)persists[i]=p.native[i].persists;
+    const auto pending=p.sessions[1].pending_to(0);
+    for(unsigned i=1;i<=1000;++i)CHECK(p.controllers[1]->set_preview(object_a,{2,1},Pose{{float(i),2,3},{0,0,0,1},2},error));
+    CHECK(p.sessions[1].pending_to(0)==pending);
+    CHECK(p.spin([&]{for(unsigned i=0;i<4;++i){auto& member=p.controllers[i]->view().members.at(1);if(!member.preview||member.preview->value.pose.position.x!=1000)return false;}return true;}));
+    const auto accepted=p.controllers[0]->view().members.at(1).preview->value;
+    const auto expires=p.controllers[0]->view().members.at(1).preview->expires;
+    for(unsigned i=0;i<4;++i){CHECK(p.controllers[i]->state().document==document);CHECK(p.native[i].document==document&&p.native[i].persists==persists[i]);}
+    auto ctx=p.controllers[0]->view().context;
+    auto stale=accepted;--stale.serial;stale.pose.position.x=-1;preview_packet(p,0,1,{ctx,stale});
+    stale=accepted;stale.pose.position.x=-2;preview_packet(p,0,1,{ctx,stale});p.step();
+    CHECK(p.controllers[0]->view().members.at(1).preview->value==accepted&&p.controllers[0]->view().members.at(1).preview->expires==expires);
+    auto invalid=accepted;++invalid.serial;invalid.pose.position.x=-3;++invalid.lease.token;
+    preview_packet(p,0,1,{ctx,invalid});p.step();CHECK(p.controllers[0]->view().members.at(1).preview->value==accepted);
+    invalid=accepted;++invalid.serial;invalid.act={999,1};preview_packet(p,0,1,{ctx,invalid});p.step();CHECK(p.controllers[0]->view().members.at(1).preview->value==accepted);
+    auto wrong=ctx;++wrong.epoch;invalid=accepted;++invalid.serial;preview_packet(p,0,1,{wrong,invalid});
+    wrong=ctx;++wrong.revision;preview_packet(p,0,1,{wrong,invalid});
+    auto old_cap=p.controllers[1]->view().local;++old_cap.generation;preview_packet(p,0,1,{ctx,invalid},old_cap);
+    preview_packet(p,0,2,{ctx,invalid});p.step();CHECK(p.controllers[0]->view().members.at(1).preview->value==accepted);
+    CHECK(p.controllers[0]->view().phase==es::Phase::Ready);
+    p.release(1,leases);
+    CHECK(p.spin([&]{for(unsigned i=0;i<4;++i)if(p.controllers[i]->view().members.at(1).preview)return false;return true;}));
+    leases=p.grant(1,{ScopeKind::Placement,object_a,{}});
+    preview_packet(p,0,1,{ctx,invalid});p.step();CHECK(!p.controllers[0]->view().members.at(1).preview);
+    presence.editing=true;CHECK(p.controllers[1]->set_presence(presence,error));
+    CHECK(p.spin([&]{return p.controllers[0]->view().members.at(1).presence.editing;}));
+    CHECK(p.controllers[1]->set_preview(object_a,{2,1},Pose{{7,8,9},{0,0,0,1},1},error));
+    CHECK(p.spin([&]{return p.controllers[0]->view().members.at(1).preview.has_value();}));
+    CHECK(p.spin([&]{for(unsigned i=0;i<4;++i)if(p.controllers[i]->view().members.at(1).preview)return false;return true;},2000));
+    CHECK(p.controllers[0]->state().document==document);
+    CHECK(p.controllers[1]->set_preview(object_a,{2,1},Pose{{8,8,9},{0,0,0,1},1},error));
+    CHECK(p.spin([&]{return p.controllers[2]->view().members.at(1).preview.has_value();}));
+    p.controllers[1]->clear_preview();CHECK(p.spin([&]{for(unsigned i=0;i<4;++i)if(p.controllers[i]->view().members.at(1).preview)return false;return true;}));
+    // A host clear with the same author serial wins over an active datagram
+    // already queued this tick; reordering cannot resurrect that exact hint.
+    auto latest=accepted;latest.serial=1004;latest.lease=leases.front();
+    auto tombstone=latest;tombstone.active=false;tombstone.object={};tombstone.act={};tombstone.pose={};tombstone.lease={};
+    preview_packet(p,2,0,{ctx,latest});preview_packet(p,2,0,{ctx,tombstone});p.step();CHECK(!p.controllers[2]->view().members.at(1).preview);
+    preview_packet(p,2,0,{ctx,latest});p.step();CHECK(!p.controllers[2]->view().members.at(1).preview);
+    CHECK(p.controllers[1]->set_preview(object_a,{2,1},Pose{{9,8,9},{0,0,0,1},1},error));
+    CHECK(p.spin([&]{return p.controllers[0]->view().members.at(1).preview.has_value();}));
+    presence.pending=true;presence.editing=false;CHECK(p.controllers[1]->set_presence(presence,error));
+    CHECK(p.spin([&]{return p.controllers[0]->view().members.at(1).presence.pending&&!p.controllers[0]->view().members.at(1).preview;}));
+    CHECK(p.controllers[1]->submit(p.edit(1,object_a,position,Vec3{30,40,50},leases),error));CHECK(p.revision(1));
+    for(unsigned i=0;i<4;++i)CHECK(!p.controllers[i]->view().members.at(1).preview);
+    invalid=accepted;invalid.serial=999999;invalid.lease=leases.front();preview_packet(p,0,1,{ctx,invalid});p.step();
+    CHECK(!p.controllers[0]->view().members.at(1).preview); // Old revision, even with a live token.
+    p.release(1,leases);
+    leases=p.grant(1,{ScopeKind::Placement,object_a,{}});presence.pending=false;presence.editing=true;CHECK(p.controllers[1]->set_presence(presence,error));
+    CHECK(p.spin([&]{return p.controllers[2]->view().members.at(1).presence.editing;}));
+    p.tick_enabled[2]=false;CHECK(p.controllers[1]->set_preview(object_a,{2,1},Pose{{77,78,79},{0,0,0,1},1},error));
+    CHECK(p.spin([&]{return p.controllers[0]->view().members.at(1).preview.has_value();}));
+    const auto delayed_relay=p.controllers[0]->view().members.at(1).preview->value;
+    CHECK(p.controllers[0]->prepare_playtest(error));CHECK(p.spin([&]{return p.controllers[3]->view().phase==es::Phase::Preparing;}));
+    for(unsigned n=0;n<10;++n)p.step();p.tick_enabled[2]=true;
+    CHECK(p.spin([&]{return p.controllers[2]->view().phase==es::Phase::Preparing;}));
+    CHECK(!p.controllers[1]->set_preview(object_a,{2,1},Pose{},error));
+    CHECK(p.controllers[0]->cancel_playtest(error));CHECK(p.spin([&]{for(unsigned i=0;i<4;++i)if(p.controllers[i]->view().phase!=es::Phase::Ready)return false;return true;}));
+    CHECK(p.spin([&]{return p.controllers[2]->view().members.at(1).phase==es::Phase::Ready;}));
+    leases=p.grant(1,{ScopeKind::Placement,object_a,{}});presence.pending=false;presence.editing=true;CHECK(p.controllers[1]->set_presence(presence,error));
+    CHECK(p.spin([&]{return p.controllers[0]->view().members.at(1).presence.editing&&p.controllers[2]->view().members.at(1).presence.editing;}));
+    preview_packet(p,2,0,{p.controllers[0]->view().context,delayed_relay});p.step();CHECK(!p.controllers[2]->view().members.at(1).preview);
+    CHECK(p.controllers[1]->set_preview(object_a,{2,1},Pose{},error));
+    CHECK(p.spin([&]{return p.controllers[2]->view().members.at(1).preview.has_value();}));
+    p.sessions[1].leave("preview owner disconnect");CHECK(p.spin([&]{return !p.controllers[0]->view().members.contains(1)&&!p.controllers[2]->view().members.contains(1);}));
+}
+static void test_guest_end_preparing_reoffers_without_freezing_party()
+{
+    Party p(2);p.start();p.accept();std::string error;
+    CHECK(p.controllers[0]->prepare_playtest(error));CHECK(p.spin([&]{return p.controllers[1]->view().phase==es::Phase::Preparing;}));
+    const auto old=p.controllers[1]->view().local;p.controllers[1]->end();
+    CHECK(p.spin([&]{return p.controllers[0]->view().phase==es::Phase::Ready&&p.controllers[1]->view().phase==es::Phase::Offered;}));
+    CHECK(p.sessions[0].connected()&&p.sessions[1].connected());CHECK(p.controllers[0]->view().members.at(1).phase==es::Phase::Offered);
+    CHECK(p.controllers[1]->view().local.generation>old.generation);
+    auto lease=p.grant(0);CHECK(p.controllers[0]->submit(p.edit(0,object_a,position,Vec3{17,18,19},lease),error));
+    CHECK(p.spin([&]{return p.controllers[0]->state().document.revision==1;}));p.release(0,lease);
+    p.accept();CHECK(p.controllers[1]->state().document==p.controllers[0]->state().document);
+    CHECK(p.controllers[0]->prepare_playtest(error));CHECK(p.spin([&]{return p.controllers[1]->view().phase==es::Phase::Preparing;}));
+}
+
+static void test_large_join_inventory_is_bounded_pinned_and_nonblocking()
+{
+    es::Config config;config.packets_per_tick=1;Party p(4,config);p.start();std::string error;
+    CHECK(p.controllers[1]->accept_offer(error));CHECK(p.controllers[3]->accept_offer(error));
+    CHECK(p.spin([&]{return p.controllers[0]->view().members.at(1).phase==es::Phase::Ready&&p.controllers[0]->view().members.at(3).phase==es::Phase::Ready;}));
+    auto lease=p.grant(3,{ScopeKind::Placement,object_b,{}});
+    auto& inventory=p.join_claims[2];inventory.base_hash=std::string(64,'a');inventory.base_size=1024;
+    for(unsigned i=0;i<2048;++i)inventory.records.push_back({{i+1,9,1},1,std::string(64,'b')});
+    std::vector<uint8_t> encoded;CHECK(w::encode_join(inventory,encoded,error));CHECK(encoded.size()>w::kPacketBytes&&encoded.size()<=w::kJoinBytes);
+    const auto offered=p.controllers[2]->view().context;const auto capability=p.controllers[2]->view().local;
+    p.small_join_resources=true;CHECK(p.controllers[2]->accept_offer(error));CHECK(p.native[2].imports==0);
+    CHECK(p.controllers[3]->submit(p.edit(3,object_b,position,Vec3{19,20,21},lease),error));
+    CHECK(p.spin([&]{return p.controllers[0]->state().document.revision==1;}));CHECK(p.received_joins.empty());
+    CHECK(p.controllers[0]->update_resources(resource(1),1,error,false));
+    CHECK(p.spin([&]{return p.controllers[2]->view().phase==es::Phase::Ready&&p.controllers[0]->view().members.at(2).phase==es::Phase::Ready;},7000));
+    CHECK(p.received_joins.size()==1&&p.received_joins.front()==inventory);
+    CHECK(p.pinned_join_resources.front()==resource(1));CHECK(p.native[2].imported_payloads.front()==resource(1,96));
+    CHECK(p.native[1].imported_payloads.front()==resource(0));CHECK(p.native[3].imported_payloads.front()==resource(0));
+    CHECK(p.controllers[2]->state().document==p.controllers[0]->state().document);
+    // Baseline scheduling must retain the completed inventory seal. Delayed
+    // duplicate Begin/End cannot invoke the callback twice or freeze the peer.
+    w::TransferBegin begin{w::TransferKind::Join,1,uint32_t(encoded.size()),upd::sha256_hex(encoded)};
+    preview_packet(p,0,2,{offered,begin},capability);preview_packet(p,0,2,{offered,w::TransferEnd{1}},capability);p.step();
+    CHECK(p.controllers[0]->view().members.at(2).phase==es::Phase::Ready&&p.received_joins.size()==1);
+    p.controllers[2]->end();CHECK(p.spin([&]{return p.controllers[2]->view().phase==es::Phase::Offered;}));
+    p.join_claims[2]={};CHECK(p.controllers[2]->accept_offer(error));
+    CHECK(p.spin([&]{return p.controllers[2]->view().phase==es::Phase::Ready;}));
+    CHECK(p.native[2].imported_payloads.back()==resource(1));CHECK(p.received_joins.size()==1); // Full host cache was never replaced.
+}
+static void test_join_inventory_failures_preserve_party_and_draft()
+{
+    Party p(2);p.start();std::string error;const auto offered=p.controllers[1]->view().context;
+    p.fail_join_prepare=true;CHECK(!p.controllers[1]->accept_offer(error));CHECK(p.controllers[1]->view().phase==es::Phase::Offered);
+    CHECK(p.native[1].imports==0&&p.sessions[1].connected());p.fail_join_prepare=false;
+    p.join_claims[1].base_hash=std::string(64,'c');p.join_claims[1].base_size=1;p.fail_join_resources=true;
+    CHECK(p.controllers[1]->accept_offer(error));CHECK(p.spin([&]{return p.controllers[1]->view().phase==es::Phase::Frozen;}));
+    CHECK(p.controllers[0]->view().phase==es::Phase::Ready&&p.controllers[0]->state().document==seed().document);
+    CHECK(p.native[1].imports==0&&p.sessions[0].connected()&&p.sessions[1].connected());
+    auto stale=offered;++stale.epoch;w::Join empty;preview_packet(p,0,1,{stale,empty});p.step();
+    CHECK(p.native[1].imports==0&&p.received_joins.size()==1);
+}
+
 int main()
 {
-    CHECK(net::net_init()); test_two_player_and_real_udp(); test_host_durable_coverage(); test_four_players_and_controls(); test_large_operation_transfer(); test_saved_snapshot_waits_for_native_gesture(); test_delete_revokes_lease_before_native_decision(0); test_delete_revokes_lease_before_native_decision(1); test_accepted_retry_keeps_new_gesture_ownership(0); test_accepted_retry_keeps_new_gesture_ownership(1); test_queued_begin_and_new_roster(); test_native_gesture_transaction_holds(); test_same_controller_host_to_guest(); test_delta_resources_keep_complete_late_join_cache(); test_failed_delta_staging_publishes_nothing(); test_close_waits_for_accepted_structural_commit(); test_settled_waits_for_join_but_excludes_failed_peer(); test_same_revision_saved_needs_explicit_applied_ack(); test_local_freeze_notifies_party_once(); test_deferred_baseline_and_fail_closed(); test_import_and_input_bounds(); test_rehost_authorship_and_document_hash(); test_real_udp_packet_adversity(2); test_real_udp_packet_adversity(4);
+    CHECK(net::net_init()); test_large_join_inventory_is_bounded_pinned_and_nonblocking(); test_join_inventory_failures_preserve_party_and_draft(); test_transient_preview_authority_coalescing_and_lifecycle(); test_guest_end_preparing_reoffers_without_freezing_party(); test_two_player_and_real_udp(); test_host_durable_coverage(); test_four_players_and_controls(); test_large_operation_transfer(); test_saved_snapshot_waits_for_native_gesture(); test_delete_revokes_lease_before_native_decision(0); test_delete_revokes_lease_before_native_decision(1); test_accepted_retry_keeps_new_gesture_ownership(0); test_accepted_retry_keeps_new_gesture_ownership(1); test_queued_begin_and_new_roster(); test_native_gesture_transaction_holds(); test_same_controller_host_to_guest(); test_delta_resources_keep_complete_late_join_cache(); test_failed_delta_staging_publishes_nothing(); test_close_waits_for_accepted_structural_commit(); test_settled_waits_for_join_but_excludes_failed_peer(); test_same_revision_saved_needs_explicit_applied_ack(); test_local_freeze_notifies_party_once(); test_deferred_baseline_and_fail_closed(); test_import_and_input_bounds(); test_rehost_authorship_and_document_hash(); test_real_udp_packet_adversity(2); test_real_udp_packet_adversity(4);
     std::printf("editor_session UDP/fake-native: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

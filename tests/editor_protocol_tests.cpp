@@ -110,18 +110,55 @@ static void transfer(std::vector<uint8_t> bytes,w::TransferKind kind,Peer sender
 static void transfers(){
     std::string error;std::vector<uint8_t> bytes;CHECK(w::encode_state(sample(),bytes,error));transfer(bytes,w::TransferKind::Baseline,host,true);
     CHECK(w::encode_request(request(),bytes,error));transfer(bytes,w::TransferKind::Request,guest,false);
+    w::Join join;join.base_size=100;join.base_hash=std::string(64,'a');join.records.push_back({{1,2,3},42,std::string(64,'b')});
+    CHECK(w::encode_join(join,bytes,error));transfer(bytes,w::TransferKind::Join,guest,false);
     CHECK(w::encode_decision(sample().decisions.begin()->second,bytes,error));transfer(bytes,w::TransferKind::Decision,host,true);
     bytes.resize(4517);for(size_t i=0;i<bytes.size();++i)bytes[i]=uint8_t(i*71);transfer(bytes,w::TransferKind::Resources,host,true);
     w::Receiver receiver;auto c=context();const std::string hash(64,'0');
-    for(auto [kind,limit]:std::vector<std::pair<w::TransferKind,size_t>>{{w::TransferKind::Baseline,w::kStateBytes},{w::TransferKind::Request,w::kOperationBytes},{w::TransferKind::Resources,w::kResourceBytes}}){CHECK(!receiver.begin(c,{kind,1,uint32_t(limit+1),hash},kind==w::TransferKind::Request?guest:host,kind!=w::TransferKind::Request,error));CHECK(!receiver.active());}
+    for(auto [kind,limit]:std::vector<std::pair<w::TransferKind,size_t>>{{w::TransferKind::Baseline,w::kStateBytes},{w::TransferKind::Request,w::kOperationBytes},{w::TransferKind::Resources,w::kResourceBytes},{w::TransferKind::Join,w::kJoinBytes}}){CHECK(!receiver.begin(c,{kind,1,uint32_t(limit+1),hash},(kind==w::TransferKind::Request||kind==w::TransferKind::Join)?guest:host,kind!=w::TransferKind::Request&&kind!=w::TransferKind::Join,error));CHECK(!receiver.active());}
     CHECK(!receiver.begin(c,{w::TransferKind(255),1,1,hash},host,true,error));CHECK(!receiver.active());
     // A valid hash cannot turn arbitrary bytes into a baseline or a forged request.
     const auto all=messages(c,w::TransferKind::Baseline,{1,2,3});CHECK(receiver.begin(c,std::get<w::TransferBegin>(all[0].payload),host,true,error));CHECK(receiver.chunk(c,std::get<w::TransferChunk>(all[1].payload),error));CHECK(!receiver.finish(c,std::get<w::TransferEnd>(all[2].payload),bytes,error));receiver.reset();
     auto q=request();q.operation.author=other;CHECK(w::encode_request(q,bytes,error));const auto forged=messages(c,w::TransferKind::Request,bytes);CHECK(receiver.begin(c,std::get<w::TransferBegin>(forged.front().payload),guest,false,error));for(size_t i=1;i+1<forged.size();++i)CHECK(receiver.chunk(c,std::get<w::TransferChunk>(forged[i].payload),error));CHECK(!receiver.finish(c,std::get<w::TransferEnd>(forged.back().payload),bytes,error));
+}
+static void preview_authority_and_malformed()
+{
+    const auto c=context();std::string error;w::Message result;net::Writer output;
+    w::TransformPreview preview{guest,1,true,{3,1},{2,1},Pose{{1,2,3},{0,0,0,1},2},{{ScopeKind::Placement,{3,1},{}},8}};
+    const auto bytes=packet({c,preview});CHECK(read(bytes,result,guest,false));CHECK(read(bytes,result,host,true));CHECK(!read(bytes,result,other,false));
+    CHECK(std::get<w::TransformPreview>(result.payload)==preview);
+    for(size_t cut=0;cut<bytes.size();++cut)CHECK(!read({bytes.begin(),bytes.begin()+cut},result,guest,false));
+    auto bad=preview;bad.pose.position.x=std::numeric_limits<float>::infinity();CHECK(!w::write({c,bad},output,error));
+    bad=preview;bad.pose.rotation={0,0,0,0};CHECK(!w::write({c,bad},output,error));
+    bad=preview;bad.pose.scale=0;CHECK(!w::write({c,bad},output,error));
+    bad=preview;bad.lease.scope.object={4,1};CHECK(!w::write({c,bad},output,error));
+    bad=preview;bad.serial=0;CHECK(!w::write({c,bad},output,error));
+    bad=preview;bad.active=false;CHECK(!w::write({c,bad},output,error));
+    bad.object={};bad.act={};bad.pose={};bad.lease={};CHECK(read(packet({c,bad}),result,guest,false));
+    w::Presence presence{{3,1},{2,1},true,guest};presence.pending=true;presence.ownership=w::kOwnSelection;presence.preview_lease=preview.lease;
+    CHECK(read(packet({c,presence}),result,host,true));CHECK(!read(packet({c,presence}),result,guest,false));
+    presence.ownership=0;presence.preview_lease={};presence.phase=w::PresencePhase::Frozen;CHECK(!read(packet({c,presence}),result,guest,false));
+    presence.phase=w::PresencePhase::Ready;CHECK(read(packet({c,presence}),result,guest,false));
+}
+static void join_inventory_codec_bounds_and_authority()
+{
+    w::Join join;join.base_hash=std::string(64,'a');join.base_size=1024;
+    for(unsigned i=0;i<2048;++i)join.records.push_back({{i+1,9,1},1,std::string(64,'b')});
+    std::vector<uint8_t> bytes;std::string error;CHECK(w::encode_join(join,bytes,error));CHECK(bytes.size()>w::kPacketBytes&&bytes.size()<=w::kJoinBytes);
+    w::Join decoded;CHECK(w::decode_join(bytes,decoded,error));CHECK(decoded==join);
+    for(size_t cut:{size_t(0),size_t(3),size_t(8),bytes.size()/2,bytes.size()-1}){decoded=join;CHECK(!w::decode_join({bytes.begin(),bytes.begin()+cut},decoded,error));CHECK(decoded==join);}
+    auto bad=join;bad.records.push_back({{9999,9,1},1,std::string(64,'b')});CHECK(!w::encode_join(bad,bytes,error));
+    bad=join;bad.records[1]=bad.records[0];CHECK(!w::encode_join(bad,bytes,error));
+    bad=join;bad.records[0].size=(16u<<20)+1;CHECK(!w::encode_join(bad,bytes,error));
+    bad=join;bad.base_size=0;CHECK(!w::encode_join(bad,bytes,error));
+    bad=join;bad.records[0].hash[0]='z';CHECK(!w::encode_join(bad,bytes,error));
+    auto c=context();w::Message parsed;const auto header=packet({c,w::TransferBegin{w::TransferKind::Join,1,100,std::string(64,'0')}});
+    CHECK(read(header,parsed,guest,false));CHECK(!read(header,parsed,host,true));
+    net::Writer packet_output;CHECK(!w::write({c,join},packet_output,error));
 }
 static void malformed(){
     std::mt19937 random(0x41876);w::Message message;std::string error;State state;Request request;Decision decision;
     for(unsigned i=0;i<3000;++i){std::vector<uint8_t> bytes(random()%512);for(auto& x:bytes)x=uint8_t(random());read(bytes,message,guest,false);w::decode_state(bytes,state,error);w::decode_request(bytes,request,error);w::decode_decision(bytes,decision,error);}
     CHECK(true);
 }
-int main(){codec();authority();transfers();malformed();std::cout<<"editor protocol: "<<checks<<" checks passed\n";}
+int main(){codec();authority();transfers();preview_authority_and_malformed();join_inventory_codec_bounds_and_authority();malformed();std::cout<<"editor protocol: "<<checks<<" checks passed\n";}

@@ -6,6 +6,7 @@
 #include <limits>
 #include <stdexcept>
 #include <type_traits>
+#include <tuple>
 
 namespace editor::wire {
 namespace {
@@ -53,9 +54,10 @@ template<class T> constexpr unsigned maximum() {
     if constexpr(std::is_same_v<T,MutationKind>) return 3;
     if constexpr(std::is_same_v<T,Intent>) return 2;
     if constexpr(std::is_same_v<T,Code>) return unsigned(Code::Busy);
-    if constexpr(std::is_same_v<T,TransferKind>) return 3;
+    if constexpr(std::is_same_v<T,TransferKind>) return 4;
     if constexpr(std::is_same_v<T,LeaseAction>) return 2;
     if constexpr(std::is_same_v<T,ControlKind>) return 6;
+    if constexpr(std::is_same_v<T,PresencePhase>) return 7;
     return 0;
 }
 #define FIELDS(T,...) template<class A> void fields(A& a,T& v) { a(__VA_ARGS__); }
@@ -86,14 +88,16 @@ FIELDS(Gesture,v.operation,v.original_revision,v.transition_revision,v.summary,v
 FIELDS(State,v.document,v.history,v.decisions,v.decision_order,v.retired_sequences,v.history_truncated)
 FIELDS(Context,v.project,v.epoch,v.revision)
 FIELDS(Offer,v.schema,v.name,v.assigned,v.host)
-FIELDS(Join,v.durable_revision)
+FIELDS(ContentClaim,v.key,v.size,v.hash)
+FIELDS(Join,v.durable_revision,v.base_hash,v.base_size,v.records)
 FIELDS(TransferBegin,v.kind,v.serial,v.total,v.hash)
 FIELDS(TransferChunk,v.serial,v.offset,v.bytes)
 FIELDS(TransferEnd,v.serial)
 FIELDS(LeaseRequest,v.action,v.serial,v.ttl,v.scopes,v.tokens)
 FIELDS(LeaseResult,v.code,v.reason,v.leases)
 FIELDS(LeaseReply,v.serial,v.result)
-FIELDS(Presence,v.selected,v.act,v.editing,v.author)
+FIELDS(Presence,v.selected,v.act,v.editing,v.author,v.pending,v.ownership,v.phase,v.preview_lease)
+FIELDS(TransformPreview,v.author,v.serial,v.active,v.object,v.act,v.pose,v.lease)
 FIELDS(Coverage,v.durable_revision,v.state_hash)
 FIELDS(Saved,v.saved_revision,v.resource,v.serial)
 FIELDS(SavedApplied,v.saved)
@@ -191,6 +195,21 @@ void validate(const Decision& d) {
                 std::find(c.allocated.begin(),c.allocated.end(),allocated)!=c.allocated.end(),"invalid native clone identity");
     }
 }
+void validate(const Join& value) {
+    need(value.durable_revision!=UINT64_MAX && value.records.size()<=2048 &&
+        ((value.base_size==0)==value.base_hash.empty()) && value.base_size<=(16u<<20) &&
+        (!value.base_size || hash(value.base_hash)),"invalid join cache inventory");
+    uint64_t total=0;
+    const auto order=[](const ContentClaim& c){return std::tuple{c.key.group,c.key.type,c.key.instance};};
+    for(size_t n=0;n<value.records.size();++n){const auto& record=value.records[n];
+        need(record.key.type && record.size<=(16u<<20) && hash(record.hash) &&
+            (!n || order(value.records[n-1])<order(record)),"invalid or unordered join cache claim");
+        total+=record.size;need(total<=kResourceBytes,"join cache inventory exceeds bundle bounds");
+    }
+}
+size_t transfer_limit(TransferKind kind) {
+    return kind==TransferKind::Resources?kResourceBytes:kind==TransferKind::Baseline?kStateBytes:kind==TransferKind::Join?kJoinBytes:kOperationBytes;
+}
 template<class T> bool encode(const T& object,std::vector<uint8_t>& bytes,size_t limit,std::string& error) {
     try { validate(object); Encode e{{},limit}; e.one(object); bytes=std::move(e.w.data); error.clear(); return true; }
     catch(const std::exception& e) { error=e.what(); return false; }
@@ -205,7 +224,8 @@ void validate_payload(const Message& m) {
     std::visit([&](const auto& p){
         using T=std::decay_t<decltype(p)>;
         if constexpr(std::is_same_v<T,Offer>) need(p.schema==kSchema && !p.name.empty() && p.name.size()<=256 && peer(p.assigned) && p.assigned.slot!=0 && peer(p.host) && p.host.slot==0,"unsupported offer");
-        if constexpr(std::is_same_v<T,TransferBegin>) need(unsigned(p.kind)<=unsigned(TransferKind::Resources) && p.serial && p.total && p.total<=(p.kind==TransferKind::Resources?kResourceBytes:p.kind==TransferKind::Baseline?kStateBytes:kOperationBytes) && hash(p.hash),"invalid transfer header");
+        if constexpr(std::is_same_v<T,TransferBegin>) need(unsigned(p.kind)<=unsigned(TransferKind::Join) && p.serial && p.total && p.total<=transfer_limit(p.kind) && hash(p.hash),"invalid transfer header");
+        if constexpr(std::is_same_v<T,Join>) {validate(p);need(p.durable_revision<=m.context.revision,"join durable revision exceeds its offered scope");}
         if constexpr(std::is_same_v<T,TransferChunk>) need(p.serial && !p.bytes.empty() && p.bytes.size()<=kChunkBytes && p.offset%kChunkBytes==0,"invalid transfer chunk");
         if constexpr(std::is_same_v<T,TransferEnd>) need(p.serial,"invalid transfer end");
         if constexpr(std::is_same_v<T,LeaseRequest>) need(p.serial && p.ttl<=30000 && p.scopes.size()<=64 && p.tokens.size()<=64 &&
@@ -217,7 +237,20 @@ void validate_payload(const Message& m) {
         if constexpr(std::is_same_v<T,Saved>) need(p.serial && p.saved_revision<=m.context.revision && p.resource.instance && p.resource.type,"invalid native save");
         if constexpr(std::is_same_v<T,SavedApplied>) need(p.saved.serial && p.saved.saved_revision<=m.context.revision && p.saved.resource.instance && p.saved.resource.type,"invalid applied native save");
         if constexpr(std::is_same_v<T,Leave>) need(p.reason<=3,"invalid leave reason");
-        if constexpr(std::is_same_v<T,Presence>) need(peer(p.author),"invalid presence author");
+        if constexpr(std::is_same_v<T,Presence>) need(peer(p.author) && p.ownership<=3 && unsigned(p.phase)<=unsigned(PresencePhase::Offered) &&
+            ((p.ownership&kOwnSelection) ? (p.selected.id&&p.selected.generation&&p.preview_lease.token&&
+                (p.preview_lease.scope.kind==ScopeKind::Document || (p.preview_lease.scope.kind==ScopeKind::Placement&&p.preview_lease.scope.object==p.selected))) :
+                p.preview_lease==LeaseToken{}),"invalid presence authority");
+        if constexpr(std::is_same_v<T,TransformPreview>) {
+            const auto id=[](ObjectId v){return v.id && v.generation;};
+            const float norm=p.pose.rotation.x*p.pose.rotation.x+p.pose.rotation.y*p.pose.rotation.y+p.pose.rotation.z*p.pose.rotation.z+p.pose.rotation.w*p.pose.rotation.w;
+            need(peer(p.author) && p.serial && std::isfinite(norm) && norm>=0.99f && norm<=1.01f &&
+                std::isfinite(p.pose.scale) && p.pose.scale>0 &&
+                (p.active ? (id(p.object)&&id(p.act)&&p.lease.token &&
+                    (p.lease.scope.kind==ScopeKind::Document ||
+                     (p.lease.scope.kind==ScopeKind::Placement&&p.lease.scope.object==p.object))) :
+                    (p.object==ObjectId{}&&p.act==ObjectId{}&&p.lease==LeaseToken{})),"invalid transform preview");
+        }
         if constexpr(std::is_same_v<T,Control>) need(unsigned(p.kind)<=unsigned(ControlKind::HostEditorResumed) && p.serial && p.revision==m.context.revision &&
             (p.kind==ControlKind::GuestReadyPlaytest || !p.ready) && p.ready_mask<=15 && p.participant_mask<=15 &&
             ((p.kind!=ControlKind::HostPreparePlaytest && p.kind!=ControlKind::HostBeginPlaytest) || ((p.participant_mask&1) && !(p.ready_mask&~p.participant_mask))) &&
@@ -231,14 +264,17 @@ void direction(const Message& m,Peer sender,bool host) {
     const bool only_guest=index==1||index==5||index==7||index==10||index==14;
     need(!only_host||host,"client forged host authority"); need(!only_guest||!host,"host sent client-only request");
     if(const auto* q=std::get_if<Request>(&m.payload)) need(q->operation.author==sender,"request author differs from session peer");
-    if(const auto* p=std::get_if<Presence>(&m.payload)) need(host||p->author==sender,"presence author differs from session peer");
+    if(const auto* p=std::get_if<Presence>(&m.payload)) need(host || (p->author==sender && !p->ownership && p->phase==PresencePhase::Ready && p->preview_lease==LeaseToken{}),"presence author or authority differs from session peer");
+    if(const auto* p=std::get_if<TransformPreview>(&m.payload)) need(host||p->author==sender,"preview author differs from session peer");
     if(const auto* t=std::get_if<TransferBegin>(&m.payload))
-        need((t->kind==TransferKind::Request) ? !host : host,"invalid transfer authority");
+        need((t->kind==TransferKind::Request || t->kind==TransferKind::Join) ? !host : host,"invalid transfer authority");
     if(const auto* c=std::get_if<Control>(&m.payload))
         need((c->kind==ControlKind::GuestReadyPlaytest || c->kind==ControlKind::GuestEditorReturned) ? !host : host,"invalid playtest authority");
 }
 }
 
+bool encode_join(const Join& j,std::vector<uint8_t>& b,std::string& e) { return encode(j,b,kJoinBytes,e); }
+bool decode_join(const std::vector<uint8_t>& b,Join& j,std::string& e) { return decode(b,j,kJoinBytes,e); }
 bool encode_state(const State& s,std::vector<uint8_t>& b,std::string& e) { return encode(s,b,kStateBytes,e); }
 bool decode_state(const std::vector<uint8_t>& b,State& s,std::string& e) { return decode(b,s,kStateBytes,e); }
 bool encode_request(const Request& q,std::vector<uint8_t>& b,std::string& e) { return encode(q,b,kOperationBytes,e); }
@@ -275,6 +311,7 @@ bool Receiver::chunk(const Context& c,const TransferChunk& p,std::string& error)
 bool Receiver::finish(const Context& c,const TransferEnd& p,std::vector<uint8_t>& out,std::string& error) {
     try {need(active()&&c==context_&&p.serial==serial_&&received_==data_.size(),"incomplete or stale transfer");
         need(upd::sha256_hex(data_)==hash_,"transfer checksum mismatch");
+        if(kind_==TransferKind::Join) {Join j;need(decode_join(data_,j,error),"invalid join inventory");validate_payload({c,j});}
         if(kind_==TransferKind::Baseline) {State s;need(decode_state(data_,s,error),"invalid baseline");need(s.document.project==c.project&&s.document.epoch==c.epoch&&s.document.revision==c.revision,"baseline scope mismatch");}
         if(kind_==TransferKind::Request) {Request q;need(decode_request(data_,q,error),"invalid request");need(q.project==c.project&&q.epoch==c.epoch&&q.base_revision==c.revision&&q.operation.author==sender_,"request scope or session author mismatch");}
         if(kind_==TransferKind::Decision) {Decision d;need(decode_decision(data_,d,error),"invalid decision");need(d.revision==c.revision,"decision scope mismatch");}
