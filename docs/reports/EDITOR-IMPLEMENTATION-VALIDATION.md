@@ -1,6 +1,6 @@
 # Shared Adventure Editor: implementation validation
 
-Report revision 18, C16 actual Save/reopen and act guard, 2026-10-26. Branch:
+Report revision 19, C16 four-player acceptance and camera finding, 2026-10-26. Branch:
 `feat/ga-adventure-editor`. The portable core and transport checkpoint is local
 commit `216f8b0`; native integration is recorded at `0a35c7b`, with lab tools at
 `a9b844f`. The C10 integration checkpoint is `071f6a4`, depending on network
@@ -1026,3 +1026,89 @@ for the exclusive four-player cohort. No personal installation update occurred.
 The feature branch's [C16 GitHub build and tests](https://github.com/jwhans0n/SporeCoopGA/actions/runs/40394478123)
 pass at `e5aaf45`. This is independent of the still-running native network and
 performance acceptance work.
+
+### C16 four-player native acceptance
+
+The exclusive cohort contained exactly four hidden, muted private Spore
+processes, with the same final C16 DLL and exact loader maps. The user's personal
+game had been closed normally with their explicit authorization. No personal
+profile, installation or settings were changed.
+
+All four authors passed native Yaw, typed Scale with native Undo/Redo, scaled
+Clone with Undo/Redo, and Delete with Undo/Redo. Each operation preserved exact
+identities and fields on all participants, with zero native faults. Receipt:
+`out/editor-native-party-c16/transform-history/acceptance.json`.
+
+Thirty genuine native Moves per network profile each produced exactly one
+accepted commit and converged durably on all four peers. Confirmation p95:
+
+| Profile | C16 p95 | Budget | Result |
+| --- | ---: | ---: | --- |
+| LAN | 194.458 ms | 200 ms | Pass |
+| 100 ms RTT, 1% loss, 2% reorder, 1% duplication | 334.361 ms | 500 ms | Pass |
+| Same WAN, symmetric 2 Mbit/s per peer | 331.197 ms | 750 ms | Pass |
+| 100 ms RTT, 10% loss, 5% reorder, 2% duplication | 792.097 ms | No latency budget | Converged |
+
+The per-peer limiter is not an aggregate host-link measurement. This run did
+not transfer a genuine missing asset bundle concurrently, so bulk contention
+remains open. All 30 WAN operations have complete identity-scoped native/QPC
+and external UDP traces. The longest WAN sample was 557.736 ms, including
+7.544 ms host request-to-decision and 310.571 ms from first proxy forwarding
+to decoded decision; this alone does not identify a loss/retransmission cause.
+The earlier C14 WAN p95 failure remains recorded. No reliability policy was
+changed to obtain this new pass. Receipt:
+`out/editor-native-party-c16/network-traced/result.json`.
+
+The strict four-player large-editor comparison used a native Save As copy of
+Adventure Town with 419 placements, identical processes/cameras/configuration,
+frame cap disabled and Present sampling. Shared editing was sampled first,
+then normal End/Leave detached the same native drafts without restoration or
+authored input before the independent baseline. Twenty-second samples after
+eight-second settling passed: median FPS ratios were 0.998325, 0.998369,
+0.997252 and 0.998356; p95 frame-time ratios were 1.006249, 1.006571,
+1.006214 and 1.006985. Budgets remain median FPS at least 0.90 and p95
+frame-time ratio at most 1.15. The first harness attempt stopped before input
+because its factory omitted `stage`; the corrected retry is the measurement.
+Receipt: `out/editor-native-party-c16/fps-four-retry/performance-result.json`.
+The separate two-player FPS comparison and settled memory window remain open.
+
+### C16 natural results and local camera defect
+
+Normal native input produced a minimal one-act adventure with one Move To
+objective targeting its sole actual placement class. The native class was
+1024, not zero; the catalog reports the marker's runtime ID, which can be
+`UINT_MAX` before play. Validation requires the actual class and single marker,
+not a fabricated slot-zero identity. The first fixture-gate attempt rejected
+these legitimate values before Test and was corrected without changing game
+data. Fixture authoring remains ordinary detached editing, not Stage 5 support.
+
+With the authored captain near the target and no timer, all four players
+reached real native success state 5 after approximately 1.5 seconds, displayed
+Mission Complete, and kept their result clocks frozen. Host Done returned all
+four to the same Ready draft, preserving authored fields, local camera and
+selection, and history. An immediate Test retry and cancellation also passed.
+No outcome was injected. Receipt:
+`out/editor-native-party-c16/natural-success/result.json`.
+
+With the captain away and the native 60-second timer enabled, all four reached
+real failure state 6 at 60,020 ms and displayed Mission Failed. Their clocks
+remained frozen, and host Done returned everyone to Ready with the authored
+draft and history preserved. The acceptance check correctly failed because
+the host's locally located camera shifted its projected landmark from
+`(511.999969,394.242371)` to `(512,384.000427)`; all three guest cameras stayed
+unchanged. This is a production return-path defect, not a timeout or content
+failure. It remains open until a verified local-camera restoration fixes it
+and the same native failure test passes. Receipt:
+`out/editor-native-party-c16/natural-failure-class-retry/result.json`.
+
+Both natural-result runs ended with normal detached editor cleanup. The owner
+then returned all four to Galaxy/offline with zero faults and closed them
+normally. These small fixtures do not establish complete authored adventure
+playthrough or reward/XP coverage.
+
+The passive memory collector now records logical capacities separately from OS
+private/working-set counters, verifies the complete roster and settled context
+both before and after every admitted sample, and records normal End/Galaxy
+release snapshots. Sixteen pure tests and the existing party harness self-test
+pass. It cannot automatically declare a memory pass. Actual strict memory
+acceptance remains pending.

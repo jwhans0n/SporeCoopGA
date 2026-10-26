@@ -3381,3 +3381,33 @@ proof of a clamp; actual native history/gesture activity must be observed, and
 the now-small creature may need native Locate again. This avoids relying on the
 upper-size red-placement branch. No numeric native bound is invented, and no
 actual relative-only acceptance is claimed by this static proposal.
+
+### Ordinary minimal natural-results fixture, GOG 2024 C16
+
+Normal native Locate is available by right-clicking the actual placement
+palette image (Ace at 88,170 in the 1024x768 fixture). After the camera settles,
+drag the goal pin at 744,594 onto the located creature's actual body, hold for
+one second, and release. The successful fixture showed the native radial menu;
+hovering 599,490 displayed Move To and selecting it authored one objective.
+Earlier planet-overview drags that only showed a blue pin did not prove a
+target was accepted. Both camera focus and held settling differed in the
+successful sequence, so their individual necessity is not established.
+
+The actual first placement class is 1024 (logical class 8589935616), not zero.
+`coop.adventure.catalog` prints marker runtime ID at `+22C`, not editor slot
+identity; an unplayed marker can report 4294967295. Require the actual matching
+class and exactly one native target rather than an assumed runtime ID zero.
+The ordinary act timer checkbox 07462210 at 767,722 toggles the native
+60-second timer. No numeric timer edit or 30-second preset was verified.
+Dragging the authored captain portrait from 967,655 to a world point normally
+places the captain. These controls are used only before sharing; goals and
+avatar editing remain restricted while sharing.
+
+Actual four-player success and timeout both reach native results and host Done
+returns all editors. A located host camera at landmark y=394.242371 returned
+at y=384.000427 in the timeout fixture, while default guest cameras stayed
+unchanged. The saved resource's 32-byte view at `+2C30` is not proof of the
+actual live interpolated camera, and ordinary resource restore must not be
+assumed to restore that projection. Keep the local-camera acceptance gate open.
+Receipts: `out/editor-native-party-c16/natural-success/`,
+`natural-failure-class-retry/` and `ordinary-step-150816/`.

@@ -47,7 +47,7 @@ def public_command(line):
     if command == 'coop.editor':
         return (len(words) == 2 and words[1] in {
             'status', 'objects', 'check', 'inspect', 'history', 'begin', 'join',
-            'undo', 'redo', 'save', 'playtest', 'cancel', 'return', 'end', 'recover', 'leases'} or (
+            'undo', 'redo', 'save', 'playtest', 'cancel', 'return', 'end', 'recover', 'leases', 'accounting'} or (
                 len(words) == 3 and words[1] == 'ready' and words[2] in {'0', '1'})
             or words[1:] in (['timing'], ['timing','reset'], ['timing','stop']))
     if command == 'coop.ui':
@@ -883,6 +883,7 @@ class EditorParty(EditorPair):
         against retained history/resources and the documented cleanup budget.
         """
         from coop_editor_performance import memory, machine, process_roster
+        from editor_memory_accounting import collect_sample, NotSettled
         diagnostic = bool(getattr(self.args,'memory_diagnostic',False))
         if not diagnostic and not getattr(self.args,'memory_baseline_permit',None):
             raise FixtureError('Memory windows require explicit diagnostic mode or a strict parent-owned baseline permit')
@@ -897,34 +898,26 @@ class EditorParty(EditorPair):
             memory_body_offset=self.args.body_offset, memory_hit_checks=[],
             memory_prewarm_requested=getattr(self.args,'prewarm_gestures',0), memory_prewarm_completed=0,
             memory_samples=[], memory_performance_scope='Four actual native editors; no FPS sampling',
-            memory_diagnostic=diagnostic, memory_acceptance_eligible=False)
+            memory_diagnostic=diagnostic, memory_acceptance_eligible=False,
+            memory_release_samples=[], memory_release_completed=False,
+            memory_accounting_scope='Passive bounded logical counts/capacities, not allocator/process/native allocation totals',
+            memory_decision_bound=1024, memory_history_bound=128, memory_native_history_bound=25)
 
-        def sample(cycle, append=True):
-            self.ownership.verify_windows()
-            row = {'cycle': cycle, 'time': time.time(), 'processes': {}}
-            for game in self.all_games:
-                state = status(game)
-                cursor, size = parse_native_history(state['text'])
-                # The editor status appends the actual native asset registry.
-                # The general adventure coordinator status has no such counter.
-                content = '\n'.join(line for line in state['text'].splitlines()
-                                    if line.startswith('adventure content:'))
-                registered = re.search(r'\bregistered=(\d+)', content)
-                if not registered:
-                    raise FixtureError('Registered native package counter is unavailable; attribution cannot proceed')
-                inspect = game.call('coop.editor inspect')
-                history = game.call('coop.editor history')
-                core_count = re.search(r'\bcount=(\d+)',history)
-                native_size = re.search(r'\bbytes=(\d+)',inspect)
-                if not core_count or not native_size:
-                    raise FixtureError('Core history/native byte counts are unavailable for retention attribution')
-                row['processes'][str(game.instance)] = dict(
-                    pid=self.records[game.instance]['pid'], **memory(self.records[game.instance]['pid']),
-                    revision=state['revision'], durable=state['durable'],
-                    history_cursor=cursor, history_size=size, registered=int(registered[1]),
-                    core_history_count=int(core_count[1]), native_serialized_bytes=int(native_size[1]),
-                    selection=state.get('selection'), native_status=state['text'],
-                    resource_status=content, inspect=inspect, core_history=history)
+        def sample(cycle, append=True, mode='editing', label=None):
+            def settled_sample():
+                strict = not diagnostic and self.result['memory_acceptance_eligible']
+                try:
+                    return collect_sample(self.all_games, self.records,
+                        mode=mode, strict=strict, status=status, memory=memory,
+                        machine=machine, process_roster=process_roster,
+                        verify_windows=self.ownership.verify_windows,
+                        baseline_environment=self.result.get('memory_baseline_environment') if strict else None)
+                except NotSettled:
+                    return False
+            row = self.host.wait('settled passive retention sample ' + str(label or cycle), settled_sample)
+            row['cycle'] = cycle
+            if label is not None:
+                row['label'] = label
             if append:
                 self.result['memory_samples'].append(row); self.write()
             return row
@@ -1024,8 +1017,25 @@ class EditorParty(EditorPair):
             if post_cap >= self.args.post_cap_cycles:
                 self.result['memory_window_completed'] = True
                 self.result['gates']['native_post_cap_functional_window_diagnostic' if diagnostic else 'native_post_cap_retention_window'] = True
-                self.write(); return
-        raise FixtureError('Bounded memory run did not obtain the required post-native-cap sample window')
+                self.write(); break
+        else:
+            raise FixtureError('Bounded memory run did not obtain the required post-native-cap sample window')
+        # These are normal owned lifecycle actions, after the unchanged genuine
+        # Move/Test/Return window. They are not timed FPS samples or memory passes.
+        self.result['memory_release_samples'].append(sample(cycle,False,label='settled-before-Shared-End'))
+        self.write()
+        self.host.call('coop.editor end')
+        time.sleep(self.args.settle_seconds)
+        self.result['memory_release_samples'].append(sample(cycle,False,mode='detached',label='settled-after-Shared-End'))
+        self.write()
+        for game in self.all_games:
+            self.exit_editor(game)
+        time.sleep(self.args.settle_seconds)
+        self.result['memory_release_samples'].append(sample(cycle,False,mode='galaxy',label='settled-after-normal-native-Galaxy-exit'))
+        self.result['memory_release_completed'] = True
+        self.result['memory_gate_passed'] = False
+        self.result['memory_reason'] = 'Raw changed-draft retention and normal-release snapshots completed; sustained memory acceptance still requires independent review'
+        self.write()
 
     def exit_editor(self, game):
         game.call('coop.uistate 0')
@@ -1202,6 +1212,7 @@ def main():
     args = parser.parse_args()
     if args.action == 'self-test':
         assert public_command('coop.editor ready 1') and public_command('coop.adventure.world status')
+        assert public_command('coop.editor accounting') and not public_command('coop.editor accounting reset')
         assert public_command('drag 88 170 600 470')
         assert public_command('coop.ui at 601 470')
         assert not public_command('coop.ui at pointer write')
@@ -1211,7 +1222,7 @@ def main():
         assert parse_history('author=2:71 sequence=5 epoch=88 revision=9 applied=1 redo=0 Move') == [(2,71,5,88,9,1,0,'Move')]
         assert parse_native_history('editor_native ready=1 history=25/25 captures=77') == (25,25)
         parser_probe = object.__new__(EditorParty)
-        parsed = parser_probe.objects(argparse.Namespace(call=lambda _: '7:1 class=9 pos=1,2,3 scale=2 screen=500,450 rotation=0,0,0,1'))
+        parsed = parser_probe.objects(argparse.Namespace(call=lambda _: '7:1 class=9 pos=1,2,3 scale=2 screen=500,450 rotation=0,0,0,1\n'))
         assert parsed['7:1']['rotation'] == (0.,0.,0.,1.)
         session = '\n'.join(f"remote {i} 'Peer{i}' puppet=0x1234 state=yes age=0.10s pos=(1 2 3)\n   puppet pos=(1 2 3) err=0.00 rot_err=0.0\ntogether {i} 1" for i in (1,2,3))
         assert parse_party_positions('pos=(1 2 3) |r|=3.7', session)['local'] == (1.,2.,3.)

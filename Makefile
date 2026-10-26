@@ -207,6 +207,7 @@ test:
 	$(B)/host/adventure_pause_tests
 	python3 tests/test_uifind.py
 	python3 tests/editor_performance_tool_tests.py
+	python3 tests/editor_memory_accounting_tests.py
 	python3 tests/editor_network_proxy_tests.py
 	python3 tools/tests/coop_editor_lifecycle.py --self-test
 	python3 tools/tests/coop_editor_save.py --self-test

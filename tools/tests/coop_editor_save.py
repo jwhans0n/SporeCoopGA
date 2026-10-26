@@ -33,9 +33,19 @@ def edit_browser(game):
         game.click(473, 516)  # Fallback only while the actual Welcome is visible.
     else:
         if not game.control(0x07A7F798):
-            if not game.control(0x03685038):
-                game.press('Create')
-            game.wait('normal existing Create radial', lambda: game.control(0x07A7B140))
+            next_create = 0.
+            def radial_ready():
+                nonlocal next_create
+                if game.control(0x07A7B140):
+                    return True
+                if game.caption('letterbox_top'):
+                    game.call('key esc')
+                    next_create = time.monotonic() + .75
+                elif time.monotonic() >= next_create and game.caption('Create'):
+                    game.press('Create')
+                    next_create = time.monotonic() + 1.
+                return False
+            game.wait('normal existing Create radial', radial_ready)
             game.click(553, 522)
             game.wait('normal Galactic Adventures creation choices', lambda: game.control(0x07A7F798))
         game.click(820, 410)  # Measured Edit Adventure, distinct from Create820350.
@@ -427,7 +437,8 @@ def main():
             def __init__(self, state):
                 self.state = state; self.events = []
             def caption(self, value):
-                return self.state == 'welcome' and value == 'Welcome to Spore Galactic Adventures'
+                return ((self.state == 'welcome' and value == 'Welcome to Spore Galactic Adventures') or
+                        (self.state == 'closed' and value == 'Create'))
             def control(self, value):
                 return ((self.state == 'ga' and value == 0x07A7F798) or
                         (self.state == 'radial' and value in (0x03685038, 0x07A7B140)))
@@ -437,7 +448,7 @@ def main():
             def press(self, caption):
                 self.events.append(('press', caption)); self.state = 'radial'
             def wait(self, description, predicate):
-                assert predicate(), description
+                assert predicate() or predicate(), description
             def call(self, command):
                 self.events.append(('call', command))
         for initial, actions in (
