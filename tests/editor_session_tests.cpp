@@ -76,9 +76,13 @@ struct Party {
     std::array<FakeNative, 4> native;
     std::array<std::unique_ptr<UdpAdversary>, 4> adversaries;
     std::array<Time, 4> origins{1000000, 4000, 900000000, 700000};
-    std::array<bool, 4> tick_enabled{true, true, true, true};
+    std::array<bool, 4> tick_enabled{true, true, true, true}, hold_lease_replies{};
+    std::array<std::vector<std::pair<w::LeaseReply,std::vector<uint8_t>>>,4> held_lease_replies;
+    std::array<std::vector<w::LeaseRequest>,4> wire_lease_requests;
+    std::array<std::vector<w::LeaseReply>,4> wire_lease_replies;
     bool dispatching = false, ticking = false, release_on_decision = false, publish_deltas = false, auto_ack_saved = true;
     size_t structural_bytes = 12000;
+    std::function<void(unsigned)> after_own_decision;
     std::array<w::Join,4> join_claims;
     bool fail_join_prepare=false,fail_join_resources=false,small_join_resources=false;
     std::vector<w::Join> received_joins;
@@ -130,6 +134,7 @@ struct Party {
                 CHECK(ticking && !dispatching); native[p].decisions++;
                 if (decision.accepted() && decision.change->operation.author == controllers[p]->view().local) {
                     const auto& leases = controllers[p]->view().local_leases; native[p].own_decision_leases.push_back(leases.size());
+                    if (after_own_decision) after_own_decision(p);
                     if (release_on_decision && !leases.empty()) {
                         std::vector<LeaseToken> tokens; for (const auto& lease : leases) tokens.push_back({lease.scope, lease.token});
                         std::string error; CHECK(controllers[p]->release_leases(tokens, error));
@@ -146,7 +151,16 @@ struct Party {
             sessions[p].cb.custom = [&, p, message_type = config.message_type](uint8_t type, uint8_t from, net::Reader& r) {
                 if (type != message_type) return;
                 net::Reader copy(r.cur(), r.left()); Peer sender{copy.u8(), copy.u32()}; copy.u32(); w::Message message; std::string error;
-                if (w::read(copy, message, sender, from == 0, error)) if (auto* decision = std::get_if<Decision>(&message.payload); decision && decision->accepted()) ++native[p].wire_decisions;
+                if (w::read(copy, message, sender, from == 0, error)) {
+                    if (auto* decision = std::get_if<Decision>(&message.payload); decision && decision->accepted()) ++native[p].wire_decisions;
+                    if (auto* request = std::get_if<w::LeaseRequest>(&message.payload)) wire_lease_requests[from].push_back(*request);
+                    if (auto* reply = std::get_if<w::LeaseReply>(&message.payload)) {
+                        wire_lease_replies[p].push_back(*reply);
+                        if (hold_lease_replies[p]) {
+                            held_lease_replies[p].push_back({*reply,{r.cur(),r.cur()+r.left()}});r.skip(r.left());return;
+                        }
+                    }
+                }
                 controllers[p]->on_message(from, r);
             };
             sessions[p].cb.player_join = [&, p](const net::PlayerInfo& player) { controllers[p]->on_join(player.id); };
@@ -183,6 +197,11 @@ struct Party {
         CHECK(spin([&] { for (unsigned p = 1; p < count; ++p) if (controllers[p]->view().phase != es::Phase::Ready) return false; return true; }));
         CHECK(spin([&] { for (unsigned p = 1; p < count; ++p) if (controllers[0]->view().members.at(sessions[p].my_id()).phase != es::Phase::Ready) return false; return true; }));
     }
+    void deliver_lease_reply(unsigned p, uint64_t serial) {
+        auto& held=held_lease_replies[p];auto found=std::find_if(held.begin(),held.end(),[&](const auto& item){return item.first.serial==serial;});
+        CHECK(found!=held.end());if(found==held.end())return;
+        auto bytes=std::move(found->second);held.erase(found);net::Reader reader(bytes.data(),bytes.size());controllers[p]->on_message(0,reader);CHECK(!reader.left());
+    }
     std::vector<LeaseToken> grant(unsigned p, Scope scope = {}) {
         std::string error; CHECK(controllers[p]->request_leases({scope}, 3000, error));
         CHECK(spin([&] { return !controllers[p]->view().local_leases.empty(); }));
@@ -194,7 +213,11 @@ struct Party {
         return okay;
     }
     void release(unsigned p, const std::vector<LeaseToken>& tokens) {
-        std::string error; CHECK(controllers[p]->release_leases(tokens, error)); CHECK(spin([&] { return controllers[p]->view().local_leases.empty(); }));
+        std::string error;const auto serial=controllers[p]->release_leases(tokens,error);CHECK(serial);
+        CHECK(controllers[p]->view().local_leases.empty());
+        // Immediate local quarantine is not evidence the host processed Release.
+        if(p)CHECK(spin([&]{return std::any_of(wire_lease_replies[p].begin(),wire_lease_replies[p].end(),[&](const auto& reply){return reply.serial==serial;});}));
+        else step();
     }
     Request edit(unsigned p, ObjectId object, FieldKey field, Value value, const std::vector<LeaseToken>& tokens) {
         Request r; const auto& d = controllers[p]->state().document; r.base_revision = d.revision; r.summary = "Own native gesture"; r.leases = tokens;
@@ -753,6 +776,165 @@ static void preview_packet(Party& p,unsigned to,unsigned from,const w::Message& 
     packet=addressed(envelope.value_or(p.controllers[from]->view().local),p.controllers[to]->view().local,packet);
     net::Reader reader(packet.data.data(),packet.size());p.controllers[to]->on_message(uint8_t(from),reader);CHECK(reader.left()==0);
 }
+
+// Session still ACKs these real UDP replies; delaying only outside-frame editor
+// dispatch proves transport ACKs alone cannot unlock a new lease acquisition.
+static void test_release_quarantines_and_waits_for_reply()
+{
+    Party p(4);p.start();p.accept();std::string error;
+    auto tokens=p.grant(1,{ScopeKind::Placement,object_a,{}});
+    const auto old=tokens.front().token;p.hold_lease_replies[1]=true;
+    auto renew=p.controllers[1]->renew_leases(tokens,3000,error);CHECK(renew);
+    auto older_acquire=p.controllers[1]->request_leases({tokens.front().scope},3000,error);CHECK(older_acquire);
+    CHECK(p.spin([&]{return p.held_lease_replies[1].size()==2;}));
+    auto release=p.controllers[1]->release_leases(tokens,error);CHECK(release);
+    CHECK(p.controllers[1]->view().local_leases.empty()); // Before any tick or ACK.
+    CHECK(!p.controllers[1]->renew_leases(tokens,3000,error));
+    CHECK(!p.controllers[1]->submit(p.edit(1,object_a,position,Vec3{90,0,0},tokens),error));
+    CHECK(!p.controllers[1]->set_preview(object_a,{2,1},Pose{},error));
+    auto acquire=p.controllers[1]->request_leases({tokens.front().scope},3000,error);CHECK(acquire);
+    CHECK(p.spin([&]{return p.held_lease_replies[1].size()==3;}));
+    CHECK(std::none_of(p.wire_lease_requests[1].begin(),p.wire_lease_requests[1].end(),[&](const auto& q){return q.serial==acquire;}));
+    // An unrelated object remains independently editable while the release waits.
+    auto disjoint=p.controllers[1]->request_leases({{ScopeKind::Placement,object_b,{}}},3000,error);CHECK(disjoint);
+    CHECK(p.spin([&]{return p.held_lease_replies[1].size()==4;}));
+    p.deliver_lease_reply(1,disjoint);p.step();
+    CHECK(p.controllers[1]->view().local_leases.size()==1);
+    CHECK(p.controllers[1]->view().local_leases.front().scope.object==object_b);
+    // Neither older accepted reply can restore the quarantined token.
+    p.deliver_lease_reply(1,older_acquire);p.deliver_lease_reply(1,renew);p.step();
+    CHECK(p.controllers[1]->view().local_leases.size()==1);
+    CHECK(p.controllers[1]->view().local_leases.front().scope.object==object_b);
+    // Deferred TTL starts at emission, even when ACK dispatch took longer than TTL.
+    p.origins[1]+=4000;p.step();CHECK(p.controllers[1]->view().local_leases.empty());
+    p.deliver_lease_reply(1,release);p.step();
+    CHECK(p.spin([&]{return p.held_lease_replies[1].size()==1;}));
+    const auto granted=p.held_lease_replies[1].front().first;
+    CHECK(granted.serial==acquire&&granted.result.accepted());
+    CHECK(granted.result.leases.front().token!=old);
+    p.deliver_lease_reply(1,acquire);p.step();
+    CHECK(p.controllers[1]->view().local_leases.size()==1);
+    auto renewed=p.controllers[1]->view().local_leases.front();
+    CHECK(renewed.expires>p.origins[1]+uint32_t(net::now_ms()-p.begun)+2500);
+    CHECK(renewed.token!=old);
+    p.hold_lease_replies[1]=false;
+    CHECK(p.controllers[1]->submit(p.edit(1,object_a,position,Vec3{90,0,0},{{renewed.scope,renewed.token}}),error));CHECK(p.revision(1));
+    for(unsigned peer=0;peer<4;++peer)CHECK(p.controllers[peer]->view().phase==es::Phase::Ready);
+}
+
+static void test_host_release_quarantine_survives_view_refresh()
+{
+    Party p(2);p.start();p.accept();std::string error;
+    auto tokens=p.grant(0,{ScopeKind::Placement,object_a,{}});const auto old=tokens.front().token;
+    CHECK(p.controllers[0]->release_leases(tokens,error));CHECK(p.controllers[0]->view().local_leases.empty());
+    CHECK(!p.controllers[0]->renew_leases(tokens,3000,error));
+    CHECK(!p.controllers[0]->submit(p.edit(0,object_a,position,Vec3{7,0,0},tokens),error));
+    CHECK(p.controllers[0]->request_leases({tokens.front().scope},3000,error));
+    CHECK(p.spin([&]{return !p.controllers[0]->view().local_leases.empty();}));
+    CHECK(p.controllers[0]->view().local_leases.front().token!=old);
+    CHECK(p.controllers[0]->view().local_leases.size()==1);
+    // Invalid all-or-nothing release must not implicitly republish its valid part.
+    tokens={{p.controllers[0]->view().local_leases.front().scope,p.controllers[0]->view().local_leases.front().token},{{ScopeKind::Placement,object_b,{}},UINT64_C(999999)}};
+    CHECK(p.controllers[0]->release_leases(tokens,error));CHECK(p.controllers[0]->view().local_leases.empty());
+    for(int i=0;i<8;++i)p.step();CHECK(p.controllers[0]->view().local_leases.empty());
+    CHECK(p.controllers[0]->request_leases({tokens.front().scope},3000,error));
+    CHECK(p.spin([&]{return !p.controllers[0]->view().local_leases.empty();}));
+    CHECK(p.controllers[0]->view().local_leases.front().token==tokens.front().token); // Explicit grant restores it safely.
+    p.controllers[0]->freeze_local("Explicit native recovery required");p.step();
+    CHECK(p.controllers[0]->view().phase==es::Phase::Frozen&&p.controllers[0]->view().local_leases.empty());
+}
+
+static void test_distinct_release_tokens_keep_both_quarantined()
+{
+    es::Config config;config.inbound_packets=1;config.reliable_window=1;config.packets_per_tick=1;Party p(2,config);p.start();p.accept();std::string error;
+    auto held=p.grant(0,{ScopeKind::Placement,object_a,{}});const auto initial=held.front();
+    p.after_own_decision=[&](unsigned author){if(author)return;
+        CHECK(p.controllers[0]->release_leases(held,error));
+        CHECK(p.controllers[0]->release_leases({{initial.scope,initial.token+UINT64_C(999999)}},error));
+    };
+    CHECK(p.controllers[0]->submit(p.edit(0,object_a,position,Vec3{100,0,0},held),error));
+    CHECK(p.spin([&]{return p.native[0].decisions==1;}));
+    // The one-packet budget left both Releases queued at this host refresh.
+    CHECK(p.controllers[0]->view().local_leases.empty());
+    CHECK(!p.controllers[0]->renew_leases(held,3000,error));
+    p.after_own_decision={};for(int i=0;i<8;++i)p.step();
+    CHECK(p.controllers[0]->view().local_leases.empty());
+    CHECK(!p.grant(0,{ScopeKind::Placement,object_a,{}}).empty());
+}
+
+static void test_reordered_lease_requests_cannot_recreate_released_scope()
+{
+    Party p(4);p.start();p.accept();std::string error;
+    auto tokens=p.grant(1,{ScopeKind::Placement,object_a,{}});const auto ctx=p.controllers[1]->view().context;
+    w::LeaseRequest release{w::LeaseAction::Release,1002,0,{},tokens};
+    preview_packet(p,0,1,{ctx,release});p.step();
+    // These are first deliveries, not duplicates remembered in the host LRU.
+    preview_packet(p,0,1,{ctx,w::LeaseRequest{w::LeaseAction::Acquire,1000,3000,{tokens.front().scope},{}}});
+    preview_packet(p,0,1,{ctx,w::LeaseRequest{w::LeaseAction::Renew,1001,3000,{},tokens}});p.step();
+    CHECK(p.spin([&]{return p.wire_lease_replies[1].size()>=4;}));
+    for(auto serial:{1000u,1001u}){
+        auto found=std::find_if(p.wire_lease_replies[1].begin(),p.wire_lease_replies[1].end(),[&](const auto& reply){return reply.serial==serial;});
+        CHECK(found!=p.wire_lease_replies[1].end()&&found->result.code==Code::ExpiredOperation);
+    }
+    // Earlier unrelated acquisition is allowed; the serial fence is scoped.
+    preview_packet(p,0,1,{ctx,w::LeaseRequest{w::LeaseAction::Acquire,999,3000,{{ScopeKind::Placement,object_b,{}}},{}}});p.step();
+    CHECK(p.spin([&]{return std::any_of(p.wire_lease_replies[1].begin(),p.wire_lease_replies[1].end(),[](const auto& r){return r.serial==999;});}));
+    auto disjoint=std::find_if(p.wire_lease_replies[1].begin(),p.wire_lease_replies[1].end(),[](const auto& r){return r.serial==999;});CHECK(disjoint->result.accepted());
+    auto other=p.grant(2,tokens.front().scope);CHECK(other.front().token!=tokens.front().token);
+    CHECK(p.controllers[2]->submit(p.edit(2,object_a,position,Vec3{40,0,0},other),error));CHECK(p.revision(1));
+    p.release(2,other);
+    preview_packet(p,0,1,{ctx,w::LeaseRequest{w::LeaseAction::Acquire,1003,3000,{tokens.front().scope},{}}});p.step();
+    CHECK(p.spin([&]{return std::any_of(p.wire_lease_replies[1].begin(),p.wire_lease_replies[1].end(),[](const auto& r){return r.serial==1003;});}));
+    auto fresh=std::find_if(p.wire_lease_replies[1].begin(),p.wire_lease_replies[1].end(),[](const auto& r){return r.serial==1003;});
+    CHECK(fresh->result.accepted());auto fresh_tokens=std::vector<LeaseToken>{{fresh->result.leases.front().scope,fresh->result.leases.front().token}};
+    preview_packet(p,0,1,{ctx,release});p.step(); // Retried old Release only returns its original decision.
+    auto request=p.edit(1,object_a,position,Vec3{50,0,0},fresh_tokens);
+    CHECK(p.controllers[1]->submit(request,error));CHECK(p.revision(2));
+}
+
+static void test_deferred_lease_bounds_and_lifecycle()
+{
+    Party p(2);p.start();p.accept();std::string error;
+    auto tokens=p.grant(1);p.hold_lease_replies[1]=true;
+    const auto release=p.controllers[1]->release_leases(tokens,error);CHECK(release);
+    for(int i=0;i<63;++i)CHECK(p.controllers[1]->request_leases({Scope{}},3000,error));
+    CHECK(!p.controllers[1]->request_leases({Scope{}},3000,error));
+    CHECK(p.spin([&]{return p.held_lease_replies[1].size()==1;}));
+    auto requests=p.wire_lease_requests[1].size();
+    CHECK(p.controllers[0]->prepare_playtest(error));CHECK(p.spin([&]{return p.controllers[1]->view().phase==es::Phase::Preparing;}));
+    p.deliver_lease_reply(1,release);p.step();CHECK(p.controllers[1]->view().local_leases.empty());
+    CHECK(p.wire_lease_requests[1].size()==requests); // Revocation retired all deferred requests.
+    CHECK(p.controllers[0]->cancel_playtest(error));CHECK(p.spin([&]{return p.controllers[1]->view().phase==es::Phase::Ready;}));
+    p.hold_lease_replies[1]=false;auto fresh=p.grant(1);CHECK(fresh.front().token!=tokens.front().token);p.release(1,fresh);
+    // End/rehost resets fences, while old-context replies stay harmless.
+    fresh=p.grant(1);p.hold_lease_replies[1]=true;auto last=p.controllers[1]->release_leases(fresh,error);CHECK(last);
+    CHECK(p.controllers[1]->request_leases({Scope{}},3000,error));CHECK(p.spin([&]{return !p.held_lease_replies[1].empty();}));
+    auto next=p.controllers[0]->state();++next.document.epoch;p.controllers[0]->end();
+    CHECK(p.spin([&]{return p.controllers[1]->view().phase==es::Phase::Idle;}));
+    p.start(next);p.hold_lease_replies[1]=false;p.accept();p.deliver_lease_reply(1,last);p.step();CHECK(p.controllers[1]->view().local_leases.empty());
+    CHECK(!p.grant(1).empty());
+}
+
+static void test_repeated_release_fences_past_cache_window()
+{
+    Party p(4);p.start();p.accept();std::string error;uint64_t first_release=0;std::vector<LeaseToken> first_tokens;
+    for(unsigned round=0;round<128;++round){
+        const auto author=round%4;auto tokens=p.grant(author,{ScopeKind::Placement,object_a,{}});
+        CHECK(p.controllers[author]->submit(p.edit(author,object_a,position,Vec3{float(round+1000),0,0},tokens),error));CHECK(p.revision(round+1));
+        CHECK(p.controllers[author]->renew_leases(tokens,3000,error));
+        const auto released=p.controllers[author]->release_leases(tokens,error);CHECK(released);CHECK(p.controllers[author]->view().local_leases.empty());
+        if(author==1&&!first_release){first_release=released;first_tokens=tokens;}
+        CHECK(p.controllers[author]->request_leases({tokens.front().scope},3000,error));
+        CHECK(p.spin([&]{return !p.controllers[author]->view().local_leases.empty();}));
+        const auto fresh=p.controllers[author]->view().local_leases.front();CHECK(fresh.token!=tokens.front().token);
+        p.release(author,{{fresh.scope,fresh.token}});
+    }
+    auto fresh=p.grant(1,{ScopeKind::Placement,object_a,{}});
+    preview_packet(p,0,1,{p.controllers[1]->view().context,w::LeaseRequest{w::LeaseAction::Release,first_release,0,{},first_tokens}});p.step();
+    CHECK(p.controllers[1]->submit(p.edit(1,object_a,position,Vec3{2000,0,0},fresh),error));CHECK(p.revision(129));
+    for(unsigned peer=0;peer<4;++peer)CHECK(p.controllers[peer]->view().phase==es::Phase::Ready&&p.native[peer].errors==0);
+}
+
 static void test_transient_preview_authority_coalescing_and_lifecycle()
 {
     Party p(4);p.start();p.accept();std::string error;
@@ -885,7 +1067,7 @@ static void test_join_inventory_failures_preserve_party_and_draft()
 
 int main()
 {
-    CHECK(net::net_init()); test_large_join_inventory_is_bounded_pinned_and_nonblocking(); test_join_inventory_failures_preserve_party_and_draft(); test_transient_preview_authority_coalescing_and_lifecycle(); test_guest_end_preparing_reoffers_without_freezing_party(); test_two_player_and_real_udp(); test_host_durable_coverage(); test_four_players_and_controls(); test_large_operation_transfer(); test_saved_snapshot_waits_for_native_gesture(); test_delete_revokes_lease_before_native_decision(0); test_delete_revokes_lease_before_native_decision(1); test_accepted_retry_keeps_new_gesture_ownership(0); test_accepted_retry_keeps_new_gesture_ownership(1); test_queued_begin_and_new_roster(); test_native_gesture_transaction_holds(); test_same_controller_host_to_guest(); test_delta_resources_keep_complete_late_join_cache(); test_failed_delta_staging_publishes_nothing(); test_close_waits_for_accepted_structural_commit(); test_settled_waits_for_join_but_excludes_failed_peer(); test_same_revision_saved_needs_explicit_applied_ack(); test_local_freeze_notifies_party_once(); test_deferred_baseline_and_fail_closed(); test_import_and_input_bounds(); test_rehost_authorship_and_document_hash(); test_real_udp_packet_adversity(2); test_real_udp_packet_adversity(4);
+    CHECK(net::net_init()); test_release_quarantines_and_waits_for_reply(); test_host_release_quarantine_survives_view_refresh(); test_distinct_release_tokens_keep_both_quarantined(); test_reordered_lease_requests_cannot_recreate_released_scope(); test_deferred_lease_bounds_and_lifecycle(); test_repeated_release_fences_past_cache_window(); test_large_join_inventory_is_bounded_pinned_and_nonblocking(); test_join_inventory_failures_preserve_party_and_draft(); test_transient_preview_authority_coalescing_and_lifecycle(); test_guest_end_preparing_reoffers_without_freezing_party(); test_two_player_and_real_udp(); test_host_durable_coverage(); test_four_players_and_controls(); test_large_operation_transfer(); test_saved_snapshot_waits_for_native_gesture(); test_delete_revokes_lease_before_native_decision(0); test_delete_revokes_lease_before_native_decision(1); test_accepted_retry_keeps_new_gesture_ownership(0); test_accepted_retry_keeps_new_gesture_ownership(1); test_queued_begin_and_new_roster(); test_native_gesture_transaction_holds(); test_same_controller_host_to_guest(); test_delta_resources_keep_complete_late_join_cache(); test_failed_delta_staging_publishes_nothing(); test_close_waits_for_accepted_structural_commit(); test_settled_waits_for_join_but_excludes_failed_peer(); test_same_revision_saved_needs_explicit_applied_ack(); test_local_freeze_notifies_party_once(); test_deferred_baseline_and_fail_closed(); test_import_and_input_bounds(); test_rehost_authorship_and_document_hash(); test_real_udp_packet_adversity(2); test_real_udp_packet_adversity(4);
     std::printf("editor_session UDP/fake-native: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

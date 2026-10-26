@@ -100,6 +100,9 @@ public:
     void on_leave(uint8_t id);
     void tick(editor::Time now);
     bool submit(editor::Request, std::string& error);
+    // Release quarantines local tokens immediately. Overlapping acquisition is
+    // bounded and deferred until the authenticated release decision arrives;
+    // lease deadlines begin when that deferred request is actually emitted.
     uint64_t request_leases(const std::vector<editor::Scope>&, editor::Time ttl, std::string& error);
     uint64_t renew_leases(const std::vector<editor::LeaseToken>&, editor::Time ttl, std::string& error);
     uint64_t release_leases(const std::vector<editor::LeaseToken>&, std::string& error);

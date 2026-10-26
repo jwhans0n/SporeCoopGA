@@ -45,6 +45,7 @@ struct Controller::Impl {
         std::map<uint64_t, std::pair<w::Context, w::TransferBegin>> completed;
         std::map<uint64_t, w::LeaseReply> lease_decisions;
         uint64_t retired_lease_serial = 0;
+        std::map<Scope,uint64_t> released_lease_scopes;
         Revision baseline = 0;
         uint64_t baseline_save_serial = 0;
         bool resources = false;
@@ -52,7 +53,8 @@ struct Controller::Impl {
     struct Input { uint8_t kind = 0, from = 0; std::vector<uint8_t> bytes; };
     struct HeldRequest { Peer author; Request request; size_t cost = 0; };
     using Local = std::variant<Request, w::LeaseRequest, w::Presence, w::Saved, w::Control>;
-    struct PendingLease { w::LeaseRequest request; Time sent = 0; };
+    struct PendingLease { w::LeaseRequest request; Time sent = 0; bool emitted = false; };
+    struct ReleaseFence { LeaseToken token; uint64_t serial = 0; };
     struct PreviewInput { uint8_t from; Peer sender; uint32_t recipient; w::Message message; };
     struct ResourceStage {
         Revision revision = 0;
@@ -77,6 +79,7 @@ struct Controller::Impl {
     std::deque<Input> input;
     std::deque<std::pair<Local, size_t>> local;
     std::map<uint64_t, PendingLease> pending_leases;
+    std::vector<ReleaseFence> release_fences;
     std::array<std::optional<PreviewInput>,4> preview_input;
     std::array<std::optional<w::Message>,4> preview_relay;
     std::array<std::optional<w::Presence>,4> presence_relay;
@@ -144,7 +147,7 @@ struct Controller::Impl {
     bool owns(Peer author,ObjectId object,const LeaseToken* token=nullptr) const {
         const auto& held=hosting?coordinator.leases():view.local_leases;
         return std::any_of(held.begin(),held.end(),[&](const Lease& l){
-            return l.owner==author && l.expires>now && (!token || (l.scope==token->scope&&l.token==token->token)) &&
+            return l.owner==author && l.expires>now && (author!=view.local || !quarantined(l)) && (!token || (l.scope==token->scope&&l.token==token->token)) &&
                 (l.scope.kind==ScopeKind::Document || (l.scope.kind==ScopeKind::Placement&&l.scope.object==object));
         });
     }
@@ -152,7 +155,7 @@ struct Controller::Impl {
         if(object==ObjectId{})return {};
         const auto& held=hosting?coordinator.leases():view.local_leases;
         LeaseToken placement;
-        for(const auto& l:held)if(l.owner==author&&l.expires>now){
+        for(const auto& l:held)if(l.owner==author&&l.expires>now&&(author!=view.local || !quarantined(l))){
             if(l.scope.kind==ScopeKind::Document)return {l.scope,l.token};
             if(l.scope.kind==ScopeKind::Placement&&l.scope.object==object)placement={l.scope,l.token};
         }
@@ -254,9 +257,64 @@ struct Controller::Impl {
             }
         }else if(preview_local){net::Writer packet;std::string error;if(w::write(*preview_local,packet,error))session.send_unreliable_to(0,config.message_type,address(0,packet));preview_local.reset();}
     }
+    bool quarantined(const Lease& lease) const {
+        return std::any_of(release_fences.begin(), release_fences.end(), [&](const ReleaseFence& f) {
+            return f.token.scope == lease.scope && f.token.token == lease.token;
+        });
+    }
+    bool overlapping(const Scope& a, const Scope& b) const {
+        if (a.kind == ScopeKind::Document || b.kind == ScopeKind::Document || a == b) return true;
+        auto covers = [&](const Scope& x, const Scope& y) {
+            if (x.kind == ScopeKind::Placement && y.kind == ScopeKind::Field) return x.object == y.object;
+            if ((x.kind == ScopeKind::Class || x.kind == ScopeKind::Act) && (y.kind == ScopeKind::Placement || y.kind == ScopeKind::Field)) {
+                auto found = state().document.placements.find(y.object);
+                return found == state().document.placements.end() || (x.kind == ScopeKind::Class ? found->second.class_id : found->second.act_id) == x.object;
+            }
+            return false;
+        };
+        if (covers(a,b) || covers(b,a)) return true;
+        if ((a.kind == ScopeKind::Class && b.kind == ScopeKind::Act) || (a.kind == ScopeKind::Act && b.kind == ScopeKind::Class))
+            for (const auto& [id,p] : state().document.placements) { (void)id; if (p.class_id == (a.kind == ScopeKind::Class ? a.object : b.object) && p.act_id == (a.kind == ScopeKind::Act ? a.object : b.object)) return true; }
+        return false;
+    }
+    bool release_pending(const std::vector<Scope>& scopes) const {
+        for (const auto& [serial,pending] : pending_leases) { (void)serial;
+            if (pending.request.action != w::LeaseAction::Release) continue;
+            for (const auto& token : pending.request.tokens) for (const auto& scope : scopes) if (overlapping(token.scope,scope)) return true;
+        }
+        return false;
+    }
+    bool stale_grant(uint64_t serial, const Scope& scope) const {
+        return std::any_of(release_fences.begin(),release_fences.end(),[&](const ReleaseFence& f) { return serial < f.serial && overlapping(f.token.scope,scope); });
+    }
+    void clear_lease_requests() { pending_leases.clear(); release_fences.clear(); }
+    void service_leases() {
+        // A host may still hold an atomically rejected Release's valid token.
+        // Never republish that token implicitly; only a later explicit grant can
+        // make it usable again. Other fences retire once all older replies drain.
+        std::erase_if(release_fences,[&](const ReleaseFence& f) {
+            if (pending_leases.contains(f.serial)) return false;
+            for (const auto& [serial,pending] : pending_leases) if (serial < f.serial && pending.emitted && pending.request.action != w::LeaseAction::Release) {
+                const auto& request = pending.request;
+                if (std::any_of(request.scopes.begin(),request.scopes.end(),[&](const Scope& scope) { return overlapping(scope,f.token.scope); }) ||
+                    std::any_of(request.tokens.begin(),request.tokens.end(),[&](const LeaseToken& token) { return overlapping(token.scope,f.token.scope); })) return false;
+            }
+            return !hosting || std::none_of(coordinator.leases().begin(),coordinator.leases().end(),[&](const Lease& l) { return l.owner == view.local && l.expires > now && l.scope == f.token.scope && l.token == f.token.token; });
+        });
+        if (view.phase != Phase::Ready) return;
+        for (auto& [serial,pending] : pending_leases) {
+            (void)serial;
+            if (pending.emitted || release_pending(pending.request.scopes)) continue;
+            net::Writer encoded; std::string error;
+            if (!w::write({context(),pending.request},encoded,error)) { freeze(0,error); return; }
+            bool okay = hosting ? queue_local(pending.request,encoded.size(),error) : queue(0,{context(),pending.request},true,error);
+            if (!okay) continue; // Remains bounded by the pending-request limit.
+            pending.sent = now; pending.emitted = true;
+        }
+    }
     void prune_local_leases() {
         std::erase_if(view.local_leases, [&](const Lease& lease) {
-            return lease.expires <= now || ((lease.scope.kind == ScopeKind::Placement || lease.scope.kind == ScopeKind::Field) &&
+            return quarantined(lease) || lease.expires <= now || ((lease.scope.kind == ScopeKind::Placement || lease.scope.kind == ScopeKind::Field) &&
                 !state().document.placements.contains(lease.scope.object));
         });
     }
@@ -328,7 +386,7 @@ struct Controller::Impl {
         } else {
             const auto ctx = view.context;clear_previews();
             view.phase = Phase::Frozen; view.local_leases.clear(); channels.clear(); output_bytes = 0;
-            pending_baseline.reset(); pending_control.reset(); returning_control.reset(); returned.clear(); local_returned = false; deferred.clear(); deferred_bytes = 0; held_requests.clear(); held_request_bytes = 0; staged.reset(); pending_leases.clear();
+            pending_baseline.reset(); pending_control.reset(); returning_control.reset(); returned.clear(); local_returned = false; deferred.clear(); deferred_bytes = 0; held_requests.clear(); held_request_bytes = 0; staged.reset(); clear_lease_requests();
             if (hosting) {
                 for (auto& [id, member] : view.members) { member.phase = Phase::Frozen; member.ready = false; if (id) { std::string ignored; queue(id, {ctx, w::Leave{3}}, true, ignored); } }
             } else if (view.local.generation && ctx.epoch) { std::string ignored; queue(0, {ctx, w::Leave{3}}, true, ignored); }
@@ -393,7 +451,7 @@ struct Controller::Impl {
                 if (!tokens.empty()) coordinator.release(member.peer, tokens);
             }
         }
-        view.local_leases.clear(); pending_leases.clear();clear_previews();
+        view.local_leases.clear(); clear_lease_requests();clear_previews();
     }
     uint8_t ready_mask() const { uint8_t mask = 0; for (const auto& [id, member] : view.members) if (id < 4 && member.ready) mask |= uint8_t(1u << id); return mask; }
     void set_ready_mask(uint8_t mask) { for (auto& [id, member] : view.members) member.ready = id < 4 && ((mask >> id) & 1); }
@@ -520,19 +578,29 @@ void Controller::Impl::lease_request(uint8_t from, const w::LeaseRequest& reques
     if (!hosting || !view.members.contains(from)) return;
     auto& ch = channels[from];
     auto remembered = ch.lease_decisions.find(request.serial);
+    const bool released = request.action != w::LeaseAction::Release && std::any_of(ch.released_lease_scopes.begin(),ch.released_lease_scopes.end(),[&](const auto& fence) {
+        return request.serial < fence.second && (std::any_of(request.scopes.begin(),request.scopes.end(),[&](const Scope& scope) { return overlapping(scope,fence.first); }) ||
+            std::any_of(request.tokens.begin(),request.tokens.end(),[&](const LeaseToken& token) { return overlapping(token.scope,fence.first); }));
+    });
     w::LeaseReply reply;
     if (remembered != ch.lease_decisions.end()) reply = remembered->second;
-    else if (request.serial <= ch.retired_lease_serial) reply = {request.serial, {Code::ExpiredOperation, "The original lease decision expired; this request will not execute again.", {}}};
+    else if (request.serial <= ch.retired_lease_serial || released) reply = {request.serial, {Code::ExpiredOperation, "This lease request predates a release or its original decision expired; it will not execute again.", {}}};
     else {
         reply.serial = request.serial;
         auto owner = view.members.at(from).peer;
         if (view.phase != Phase::Ready || view.members.at(from).phase != Phase::Ready) reply.result = {Code::Busy, "Authoring is held or this participant needs a baseline.", {}};
         else if (request.action == w::LeaseAction::Acquire) reply.result = coordinator.acquire(owner, request.scopes, now, request.ttl);
         else if (request.action == w::LeaseAction::Renew) reply.result = coordinator.renew(owner, request.tokens, now, request.ttl);
-        else if (request.action == w::LeaseAction::Release) reply.result = {coordinator.release(owner, request.tokens) ? Code::Accepted : Code::LeaseExpired, {}, {}};
+        else if (request.action == w::LeaseAction::Release) {
+            // A delayed, previously unseen Acquire/Renew must not recreate a
+            // scope after this release, even if UDP reordered its first delivery.
+            for (const auto& token : request.tokens) ch.released_lease_scopes[token.scope] = std::max(ch.released_lease_scopes[token.scope],request.serial);
+            reply.result = {coordinator.release(owner, request.tokens) ? Code::Accepted : Code::LeaseExpired, {}, {}};
+        }
         else reply.result = {Code::Invalid, "Unknown lease action.", {}};
         ch.lease_decisions[request.serial] = reply;
         while (ch.lease_decisions.size() > 64) { ch.retired_lease_serial = std::max(ch.retired_lease_serial, ch.lease_decisions.begin()->first); ch.lease_decisions.erase(ch.lease_decisions.begin()); }
+        std::erase_if(ch.released_lease_scopes,[&](const auto& fence) { return fence.second <= ch.retired_lease_serial; });
     }
     if (!from) lease_reply(reply);
     else { std::string error; if (!queue(from, {context(), reply}, true, error)) freeze(from, error); }
@@ -540,18 +608,23 @@ void Controller::Impl::lease_request(uint8_t from, const w::LeaseRequest& reques
 
 void Controller::Impl::lease_reply(const w::LeaseReply& reply)
 {
-    auto found = pending_leases.find(reply.serial); if (found == pending_leases.end()) return;
+    auto found = pending_leases.find(reply.serial); if (found == pending_leases.end() || !found->second.emitted) return;
     const auto pending = found->second; pending_leases.erase(found);
-    if (!reply.result.accepted()) { report(reply.result.reason.empty() ? "The editing lease was rejected." : reply.result.reason); return; }
+    // An authenticated reply, including LeaseExpired, proves the host finished
+    // this Release. Deferred overlapping acquisition may now be emitted.
     if (pending.request.action == w::LeaseAction::Release) {
-        std::erase_if(view.local_leases, [&](const Lease& l) { return std::any_of(pending.request.tokens.begin(), pending.request.tokens.end(), [&](const LeaseToken& token) { return l.scope == token.scope && l.token == token.token; }); }); return;
+        if (!reply.result.accepted()) report(reply.result.reason.empty() ? "The editing lease was already released or expired." : reply.result.reason);
+        return;
     }
+    if (!reply.result.accepted()) { report(reply.result.reason.empty() ? "The editing lease was rejected." : reply.result.reason); return; }
     for (auto lease : reply.result.leases) {
         if (lease.owner != view.local) { freeze(0, "A lease reply assigned another player's capability."); return; }
+        if (stale_grant(reply.serial,lease.scope)) continue;
         if (!hosting) {
             if (pending.sent > UINT64_MAX - pending.request.ttl) { freeze(0, "Local lease deadline overflow."); return; }
             lease.expires = pending.sent + pending.request.ttl;
         }
+        std::erase_if(release_fences,[&](const ReleaseFence& f) { return f.serial < reply.serial && f.token.scope == lease.scope && f.token.token == lease.token; });
         std::erase_if(view.local_leases, [&](const Lease& old) { return old.scope == lease.scope; });
         if (lease.expires > now) view.local_leases.push_back(lease);
     }
@@ -726,7 +799,7 @@ void Controller::Impl::message(uint8_t from, w::Message message)
     if (auto* offer_message = std::get_if<w::Offer>(&message.payload)) {
         if (hosting || from || offer_message->assigned.slot != session.my_id()) return;
         if (same_context(message.context, view.context) && offer_message->assigned.generation <= view.local.generation) return;
-        channels.clear(); output_bytes = 0; pending_leases.clear(); staged.reset(); pending_baseline.reset(); pending_control.reset(); returning_control.reset(); returned.clear(); local_returned = false; deferred.clear(); deferred_bytes = 0; held_requests.clear(); held_request_bytes = 0;
+        channels.clear(); output_bytes = 0; clear_lease_requests(); staged.reset(); pending_baseline.reset(); pending_control.reset(); returning_control.reset(); returned.clear(); local_returned = false; deferred.clear(); deferred_bytes = 0; held_requests.clear(); held_request_bytes = 0;
         clear_previews();presence_local.reset();presence_relay={};preview_authors={};preview_seen={};preview_sequence=0;
         view = {}; view.phase = Phase::Offered; view.local = offer_message->assigned;
         view.name = offer_message->name; view.context = message.context;
@@ -818,7 +891,7 @@ void Controller::Impl::message(uint8_t from, w::Message message)
             }else freeze(from, leave->reason == 3 ? "A participant needs explicit native/baseline recovery." : "A participant left the shared editor.");
             progress_return();
         } else if (leave->reason == 3) freeze(0, "The host requires an explicit editor baseline recovery.");
-        else { view.phase = Phase::Idle; view.local_leases.clear(); channels.clear(); output_bytes = 0; }
+        else { view.phase = Phase::Idle; view.local_leases.clear(); clear_lease_requests(); channels.clear(); output_bytes = 0; }
         return;
     }
     if (auto* command = std::get_if<w::Control>(&message.payload)) control(from, *command);
@@ -938,7 +1011,7 @@ bool Controller::accept_offer(std::string& error)
     std::vector<uint8_t> checked;if(!w::encode_join(join,checked,error))return false;
     if(join.durable_revision>i.view.context.revision){error="The join durability claim exceeds this offered project revision.";return false;}
     i.clear_previews();i.presence_local.reset();i.presence_relay={};i.preview_authors={};i.preview_seen={};i.preview_sequence=0;
-    i.replica = {}; i.channels.clear(); i.output_bytes = 0; i.view.local_leases.clear(); i.pending_leases.clear(); i.view.locally_durable = 0;
+    i.replica = {}; i.channels.clear(); i.output_bytes = 0; i.view.local_leases.clear(); i.clear_lease_requests(); i.view.locally_durable = 0;
     if (!i.queue(0, {i.view.context, std::move(join)}, true, error)) return false;
     i.view.phase = Phase::Joining; error.clear(); return true;
 }
@@ -954,7 +1027,7 @@ void Controller::end()
         }
     }
     i.clear_previews();i.presence_local.reset();i.presence_relay={};i.preview_authors={};i.preview_seen={};i.preview_sequence=0;
-    i.channels.clear(); i.input.clear(); i.local.clear(); i.pending_leases.clear(); i.saved_acks.clear(); i.local_saved_ack = 0; i.hashes.clear(); i.overflow.clear(); i.pending_offers.clear();
+    i.channels.clear(); i.input.clear(); i.local.clear(); i.clear_lease_requests(); i.saved_acks.clear(); i.local_saved_ack = 0; i.hashes.clear(); i.overflow.clear(); i.pending_offers.clear();
     i.resources.reset(); i.resources_hash.clear(); i.baseline_cache.reset(); i.staged.reset(); i.pending_baseline.reset(); i.pending_control.reset(); i.returning_control.reset(); i.returned.clear(); i.local_returned = false; i.deferred.clear(); i.deferred_bytes = 0; i.held_requests.clear(); i.held_request_bytes = 0;
     i.input_bytes = i.output_bytes = i.local_bytes = 0; i.coverage_pending = false; i.view = {};
     i.hosting = false;
@@ -1017,7 +1090,7 @@ void Controller::tick(Time now)
                     i.clear_preview_for(entry.from);if(entry.from<4){i.preview_input[entry.from].reset();i.preview_relay[entry.from].reset();}
                     i.clear_channel(entry.from);
                     i.progress_return();
-                } else if (!entry.from) { i.clear_previews();i.view.phase = Phase::Disconnected; i.pending_control.reset(); i.pending_baseline.reset(); i.deferred.clear(); i.deferred_bytes = 0; i.view.local_leases.clear(); i.channels.clear(); i.output_bytes = 0; i.report("The editor host disconnected; locally durable recovery remains available."); }
+                } else if (!entry.from) { i.clear_previews();i.view.phase = Phase::Disconnected; i.pending_control.reset(); i.pending_baseline.reset(); i.deferred.clear(); i.deferred_bytes = 0; i.view.local_leases.clear(); i.clear_lease_requests(); i.channels.clear(); i.output_bytes = 0; i.report("The editor host disconnected; locally durable recovery remains available."); }
                 else {i.clear_preview_for(entry.from,false);i.view.members.erase(entry.from);}
                 continue;
             }
@@ -1052,10 +1125,11 @@ void Controller::tick(Time now)
                 else { i.view.saved = value; i.saved_acks.clear(); i.saved_acks[0] = value.serial; if (i.callbacks.saved) i.callbacks.saved(value); i.broadcast({i.context(), value}); }
             }, action);
         }
-        std::erase_if(i.view.local_leases, [&](const Lease& l) { return l.expires <= now; });
+        i.service_leases();
+        i.prune_local_leases();
         if (i.hosting) {
             i.view.local_leases.clear();
-            for (const auto& lease : i.coordinator.leases()) if (lease.owner == i.view.local && lease.expires > now) i.view.local_leases.push_back(lease);
+            if (i.view.phase == Phase::Ready) for (const auto& lease : i.coordinator.leases()) if (lease.owner == i.view.local && lease.expires > now && !i.quarantined(lease)) i.view.local_leases.push_back(lease);
         }
         i.service_baseline();
         i.service_requests();
@@ -1077,6 +1151,9 @@ bool Controller::submit(Request request, std::string& error)
 {
     auto& i = *impl_;
     if (i.view.phase != Phase::Ready) { error = "Authoring is held or needs a native baseline."; return false; }
+    if (std::any_of(request.leases.begin(),request.leases.end(),[&](const LeaseToken& t) {
+        return std::any_of(i.release_fences.begin(),i.release_fences.end(),[&](const auto& f) { return f.token == t; });
+    })) { error = "An editing lease is being released; wait for a new grant."; return false; }
     const auto ctx = i.context();
     if ((request.project != ProjectId{} && request.project != ctx.project) || (request.epoch && request.epoch != ctx.epoch) ||
         (request.operation.author != Peer{} && request.operation.author != i.view.local) || (request.operation.epoch && request.operation.epoch != ctx.epoch)) { error = "A local request supplied stale or foreign identity."; return false; }
@@ -1097,10 +1174,40 @@ uint64_t lease(Impl& i, w::LeaseAction action, const std::vector<Scope>& scopes,
     if (i.view.phase != Phase::Ready || i.pending_leases.size() >= 64 || i.lease_serial == UINT64_MAX) { error = "Editing leases are held or their queue is full."; return 0; }
     w::LeaseRequest request{action, ++i.lease_serial, ttl, scopes, tokens};
     net::Writer encoded; if (!w::write({i.context(), request}, encoded, error)) return 0;
-    i.pending_leases[request.serial] = {request, i.now};
-    bool okay = i.hosting ? i.queue_local(request, encoded.size(), error) : i.queue(0, {i.context(), request}, action != w::LeaseAction::Release, error);
-    if (!okay) { i.pending_leases.erase(request.serial); return 0; }
-    return request.serial;
+    if (action == w::LeaseAction::Renew && std::any_of(tokens.begin(),tokens.end(),[&](const LeaseToken& t) {
+        return std::any_of(i.release_fences.begin(),i.release_fences.end(),[&](const auto& f) { return f.token == t; });
+    })) { error = "A releasing editing lease cannot be renewed."; return 0; }
+    if (action == w::LeaseAction::Release) {
+        const auto extra = std::count_if(tokens.begin(),tokens.end(),[&](const LeaseToken& token) {
+            return std::none_of(i.release_fences.begin(),i.release_fences.end(),[&](const auto& fence) { return fence.token == token; });
+        });
+        if (i.release_fences.size()+size_t(extra)>64*64+64) { error="The local lease retirement queue is full."; return 0; }
+    }
+    bool deferred = action == w::LeaseAction::Acquire && i.release_pending(scopes);
+    i.pending_leases[request.serial] = {request, deferred ? 0 : i.now, !deferred};
+    if (!deferred) {
+        bool okay = i.hosting ? i.queue_local(request, encoded.size(), error) : i.queue(0, {i.context(), request}, action != w::LeaseAction::Release, error);
+        if (!okay) { i.pending_leases.erase(request.serial); return 0; }
+    }
+    if (action == w::LeaseAction::Release) {
+        // Retire superseded grants now. Their reliable packets may still arrive,
+        // but neither their old reply nor an unseen host request may revive them.
+        std::erase_if(i.pending_leases,[&](const auto& entry) {
+            const auto& old = entry.second.request;
+            if (old.serial >= request.serial || old.action == w::LeaseAction::Release) return false;
+            return std::any_of(tokens.begin(),tokens.end(),[&](const LeaseToken& token) {
+                return std::any_of(old.scopes.begin(),old.scopes.end(),[&](const Scope& scope) { return i.overlapping(scope,token.scope); }) ||
+                    std::any_of(old.tokens.begin(),old.tokens.end(),[&](const LeaseToken& t) { return i.overlapping(t.scope,token.scope); });
+            });
+        });
+        for (const auto& token : tokens) {
+            auto found = std::find_if(i.release_fences.begin(),i.release_fences.end(),[&](const auto& f) { return f.token == token; });
+            if (found == i.release_fences.end()) i.release_fences.push_back({token,request.serial});
+            else *found = {token,request.serial};
+        }
+        i.prune_local_leases(); i.clear_preview_for(i.view.local.slot); i.preview_local.reset();
+    }
+    error.clear(); return request.serial;
 }
 }
 
