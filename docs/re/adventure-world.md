@@ -3065,3 +3065,50 @@ The binding/input-policy fixture passes 8,241 checks on both the portable host
 and actual i686 Win32 executable, including 17 new auxiliary-policy cases.
 The production native translation unit also compiles with the exact CI i686
 toolchain and `-Wall -Wextra -Werror`.
+
+The integrated C12 candidate (`0a4a8a96a70a7da46d32d4253a4045b7b09e518966fb47be158b168335aff065`)
+then passed actual shared front-ring rotation on both host and guest. Their
+ordinary native gestures advanced revisions 0 to 1 and 1 to 2 respectively;
+only the intended quaternion changed, while position, uniform scale, template
+and identities stayed equal. Both native/canonical views converged and normal
+End plus Quit returned both participants to Galaxy without faults. The first
+blocked input requested a lease; retries waited for its actual local grant.
+Receipt: `out/editor-native-candidate12/shared-yaw-retry/result.json`. The first
+cold attempt missed a one-shot Create-menu click before editor entry and is
+preserved in `shared-yaw`; it is not a native rotation failure. The calibrated
+algorithm is retained as the tracked `yaw` fixture stage. Among multiple actors
+of one template, Locate's selected stable identity and camera must be checked
+before any ring input; the one-placement proof does not establish arbitrary
+same-template Locate behavior.
+
+C12 also reached real native Scale input. Ordinary modifier-bearing Shift-wheel
+input produced a ToolAction 6 placement-lease rejection, then a subsequent
+minus input entered native history. Its captured result failed the opaque
+authored-change check and was restored to the committed draft: normalized
+byte 14266 changed from `01` to `07`, sizes 15295 and 15301. This is a failed
+Scale acceptance check, not an input-delivery-only gap. Later variations in the
+already frozen session are not independent Scale tests. The bounded audit
+ended normally in Galaxy with zero native faults. Receipt:
+`out/editor-native-candidate12/scale-audit/result.json`.
+
+The serialized offset alone does not identify the changed authored field. An
+immutable copy of that project's saved CAS base shows byte 14266 begins a
+little-endian size 1025, followed at 14270 by an embedded DBPF. Its one record,
+`01897C18!01897C18.01897C18`, has 893 RefPack-compressed bytes representing
+3075 uncompressed bytes. A six-byte package-length change may originate from
+a field anywhere in that native payload. Compare decoded normalized payloads
+and the known marker fields before adding any opaque exclusion. Read-only
+receipt: `out/editor-native-re/c12-scale-readonly/receipt.json`.
+
+An OUT-only C13 diagnostic patch is prepared at
+`out/editor-native-re/c13-scale-diagnostic/diagnostic.patch`; it is not yet
+applied or native-tested. On this existing failure path it logs changed marker
+`+20` scale and `+24` relative scale, plus raw `+220`/`+224` fields for at most
+eight placements. It also searches at most four embedded packages and reports
+the first 32 differing decoded payload bytes. Compressed size, index-declared
+size and the RefPack header's decoded size are each capped at 1 MiB before
+decoding. Unavailable decoding stays a diagnostic failure, never permission
+to accept unknown data. It adds no native calls and changes no authored
+normalization or rollback behavior. The immutable base decodes to native
+schema `01A80D26` with 34 sized fields; its saved-base decoded payload is only
+read-only context, not the missing post-Scale proof.

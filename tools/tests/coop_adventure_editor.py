@@ -9,6 +9,7 @@ Use --stage for diagnostic partial runs; --stage all reports the two-peer workfl
 import argparse
 import ctypes
 import json
+import math
 from pathlib import Path
 import re
 import sys
@@ -435,6 +436,60 @@ class EditorPair:
             raise FixtureError('Own chronological Redo changed a remote placement or restored the wrong gesture')
         self.result['edited_hash'] = self.converge()
 
+    def yaw(self, games=None, target_ids=None):
+        """Use the verified Alpine/Ace native ring; never guess a grouped target.
+
+        A party wrapper may supply its participant list and expected instance-to-
+        stable-ID mapping. Locate among multiple same-class actors is not assumed
+        to preserve selection: validate its actual target and calibrated camera.
+        """
+        participants=list(self.games if games is None else games)
+        for game in participants:
+            self.verify(game)
+            current=status(game)
+            if current.get('phase')!=4 or not current.get('ready') or current.get('gesture'):
+                raise FixtureError('Native yaw requires settled shared editing')
+            game.call('coop.uistate 0')
+        time.sleep(1.3)
+        self.converge()
+        def authored(value):
+            return {key:value.get(key) for key in ('class','position','scale','rotation')}
+        for game in participants:
+            game.call('move 88 170');game.call('click 88 170 right')
+            game.call('wait.frames 25 15000');time.sleep(1.8)
+            object_id=status(game).get('selection')
+            if target_ids is not None and target_ids.get(game.instance)!=object_id:
+                raise FixtureError('Native Locate did not select the intended yaw placement')
+            before_all=self.objects(game);before=before_all.get(object_id)
+            point=before.get('screen') if before else None
+            if (not point or abs(point[0]-512)>15 or abs(point[1]-394)>15 or
+                    'rotation' not in before):
+                raise FixtureError('Native Locate has not exposed the calibrated front rotation ring')
+            revision=status(self.host)['revision']
+            self.gesture(game,str(game.instance)+'-native-yaw',
+                         lambda:self.slow_drag(game,(601,475),(625,435)))
+            after_all=self.objects(game);after=after_all.get(object_id)
+            if set(after_all)!=set(before_all):
+                raise FixtureError('Native yaw changed placement identities')
+            for other in before_all:
+                if other!=object_id and authored(after_all[other])!=authored(before_all[other]):
+                    raise FixtureError('Native yaw changed an unrelated placement: '+other)
+            if (not after or after['position']!=before['position'] or after['scale']!=before['scale'] or
+                    after['class']!=before['class'] or 'rotation' not in after):
+                raise FixtureError('Native yaw changed fields outside the intended rotation')
+            q0,q1=before['rotation'],after['rotation']
+            denominator=math.sqrt(sum(v*v for v in q0)*sum(v*v for v in q1))
+            if not math.isfinite(denominator) or denominator<=0:
+                raise FixtureError('Native yaw returned an invalid quaternion')
+            cosine=abs(sum(a*b for a,b in zip(q0,q1)))/denominator
+            if cosine>.99999:
+                raise FixtureError('Native yaw did not change the intended orientation')
+            self.converge(revision+1)
+            self.result.setdefault('native_yaw',[]).append(dict(instance=game.instance,object=object_id,
+                revision_before=revision,revision_after=revision+1,before=authored(before),after=authored(after),
+                absolute_quaternion_cosine=cosine,other_placements_unchanged=True))
+            self.record(str(game.instance)+'-native-yaw-converged')
+
     def playtest(self):
         for cycle in range(self.args.playtest_cycles):
             before = self.converge()
@@ -616,7 +671,7 @@ def main():
     p.add_argument('--title', default='Native Shared Editor Acceptance')
     p.add_argument('--roundtrip-cycles', type=int, default=1)
     p.add_argument('--playtest-cycles', type=int, default=1)
-    p.add_argument('--stage', choices=('all','bootstrap','join','edit','playtest','negative','hints','class_negative','snapshot'), default='all')
+    p.add_argument('--stage', choices=('all','bootstrap','join','edit','yaw','playtest','negative','hints','class_negative','snapshot'), default='all')
     args = p.parse_args(); pair = None
     try:
         pair = EditorPair(args)
