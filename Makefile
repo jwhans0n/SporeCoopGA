@@ -78,6 +78,8 @@ ADVENTURE_ABI_HEADERS := sdk/include/sporekit.h sdk/include/sporekit_game.hpp mo
 .PHONY: test-editor test-editor-windows
 test-editor:
 	@mkdir -p $(B)/host
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop tests/editor_metrics_tests.cpp -o $(B)/host/editor_metrics_tests
+	$(B)/host/editor_metrics_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include tests/editor_native_bindings_tests.cpp -o $(B)/host/editor_native_bindings_tests
 	$(B)/host/editor_native_bindings_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(EDITOR_DELTA_SRC) tests/editor_binary_delta_tests.cpp -o $(B)/host/editor_binary_delta_tests
@@ -93,7 +95,11 @@ test-editor:
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(EDITOR_SESSION_SRC) tests/editor_session_tests.cpp -o $(B)/host/editor_session_tests
 	$(B)/host/editor_session_tests
 
-test-editor-windows: $(B)/host/frame_metrics_tests.exe $(B)/host/editor_native_bindings_tests.exe $(B)/host/editor_binary_delta_tests.exe $(B)/host/editor_document_tests.exe $(B)/host/editor_store_tests.exe $(B)/host/editor_protocol_tests.exe $(B)/host/editor_project_tests.exe $(B)/host/editor_session_tests.exe $(B)/host/editor_native_save_tests.exe $(B)/host/adventure_editor_preview_tests.exe $(B)/host/editor_runtime_windows_tests.exe $(B)/host/adventure_assets_native_tests.exe
+test-editor-windows: $(B)/host/frame_metrics_tests.exe $(B)/host/editor_metrics_tests.exe $(B)/host/editor_native_bindings_tests.exe $(B)/host/editor_binary_delta_tests.exe $(B)/host/editor_document_tests.exe $(B)/host/editor_store_tests.exe $(B)/host/editor_protocol_tests.exe $(B)/host/editor_project_tests.exe $(B)/host/editor_session_tests.exe $(B)/host/editor_native_save_tests.exe $(B)/host/adventure_editor_preview_tests.exe $(B)/host/editor_runtime_windows_tests.exe $(B)/host/adventure_assets_native_tests.exe
+
+$(B)/host/editor_metrics_tests.exe: tests/editor_metrics_tests.cpp mods/coop/editor_metrics.h mods/coop/net/editor_document.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_metrics_tests.cpp -o $@
 $(B)/host/frame_metrics_tests.exe: tests/frame_metrics_tests.cpp mods/coop/frame_metrics.h
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/frame_metrics_tests.cpp -o $@
@@ -124,7 +130,7 @@ $(B)/host/editor_native_save_tests.exe: tests/editor_native_save_windows_tests.c
 $(B)/host/adventure_editor_preview_tests.exe: tests/adventure_editor_preview_windows_tests.cpp mods/coop/adventure_native.cpp mods/coop/adventure_native.h mods/coop/editor_native.h $(ADVENTURE_ABI_HEADERS) mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/adventure_editor_preview_windows_tests.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp -o $@ -lws2_32
-$(B)/host/editor_runtime_windows_tests.exe: $(EDITOR_RUNTIME_FIXTURE_SRC) mods/coop/editor_runtime.cpp mods/coop/editor_runtime.h mods/coop/editor_native.h mods/coop/editor_native_save.h mods/coop/adventure_native.h mods/coop/editor_store.h mods/coop/editor_project.h mods/coop/editor_session.h $(wildcard mods/coop/net/editor_*.h) $(ADVENTURE_ABI_HEADERS)
+$(B)/host/editor_runtime_windows_tests.exe: $(EDITOR_RUNTIME_FIXTURE_SRC) mods/coop/editor_runtime.cpp mods/coop/editor_runtime.h mods/coop/editor_metrics.h mods/coop/editor_native.h mods/coop/editor_native_save.h mods/coop/adventure_native.h mods/coop/editor_store.h mods/coop/editor_project.h mods/coop/editor_session.h $(wildcard mods/coop/net/editor_*.h) $(ADVENTURE_ABI_HEADERS)
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(EDITOR_RUNTIME_FIXTURE_SRC) -o $@ -lws2_32
 $(B)/host/adventure_assets_native_tests.exe: $(ADVENTURE_ASSETS_NATIVE_FIXTURE_SRC) mods/coop/adventure_assets.cpp mods/coop/adventure_assets.h $(ADVENTURE_ABI_HEADERS)
@@ -163,6 +169,7 @@ test:
 	$(B)/host/adventure_pause_tests
 	python3 tests/test_uifind.py
 	python3 tests/editor_performance_tool_tests.py
+	python3 tests/editor_network_proxy_tests.py
 	python3 tools/re_lint.py
 
 # Optional Win32 ABI test with a fake native adapter. Run the .exe on Windows (no game).
