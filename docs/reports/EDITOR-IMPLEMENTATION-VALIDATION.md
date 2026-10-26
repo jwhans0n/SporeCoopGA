@@ -219,10 +219,11 @@ that fixture, not native long-run memory safety or performance.
 - Extend the C9 cold host recovery receipt below to guest imported recovery
   with mandatory new native Save As, native reopen and adverse save/recovery
   boundaries. The earlier graceful in-process receipt alone does not close it.
-- Measure actual command latency, large-editor frame time and retained memory
-  against matched process-count/hardware/window/content baselines. Actual native
-  WAN latency and large-editor FPS remain unmeasured. The 20-cycle memory
-  samples below do not establish a steady-state bound.
+- Extend the C12 two-game native latency receipt below to four players and bulk
+  asset contention. Measure large-editor frame time and retained memory against
+  matched process-count/hardware/window/content baselines. Large-editor FPS
+  remains unmeasured. The 20-cycle memory samples below do not establish a
+  steady-state bound.
 - Recheck affected suites after further fixes and publish candidate-specific evidence
   before any release-ready or complete stages 0-4 claim.
 
@@ -577,3 +578,53 @@ cold bootstrap had missed an ordinary Create radial click before entering the
 editor; that failed fixture receipt remains separate. This resolves the two-peer
 rotation guard failure. Uniform scale and four-author rotation remain separate
 native gates.
+
+The subsequent Scale audit established that Shift-wheel reaches native tool
+action 6. After ownership arrived, the gesture entered native history, but the
+opaque-data guard detected a serialized change outside the modeled scale fields
+and restored the draft without a canonical commit. Sizes were 15,295 and 15,301
+bytes, with the first normalized mismatch at byte 14,266. No native fault was
+recorded, and both processes exited normally to Galaxy. This is a failed native
+Scale acceptance case requiring field classification, rather than an unresolved
+input-delivery assumption. Receipt:
+`out/editor-native-candidate12/scale-audit/result.json`. No broader opaque-data
+exception was added to obtain a pass.
+
+The four-game C12 operation matrix subsequently passed native Create, Move and
+Ctrl+Z/Ctrl+Y for all authors (17 exact revisions), disjoint and contested native
+drags, and a quaternion-only native rotation from every author. Offline angular
+checks confirmed approximately 19.18 degrees per rotation, not quaternion sign
+changes. Receipts: `out/editor-native-party-c12/{four-author-edit,concurrent,yaw}`.
+The separate 128-Move prewarm filled Core history to exactly 128 on all peers,
+with host native history capped at 25 and one registered package per peer.
+The post-cap Test/Return retention window is recorded separately; these operation
+checks do not imply a memory or FPS pass.
+
+### Actual C12 two-game network measurements
+
+The actual native network fixture completed 30 accepted gestures per profile,
+plus one warmup, at canonical revision 121. Every intended operation committed
+exactly once and both native drafts converged. The fixture then completed normal
+End, native exit and party leave; the separate handoff verified both at Galaxy,
+editor phase zero and zero native faults.
+
+| Profile | Native submission-to-confirmation p95 | Result |
+| --- | --- | --- |
+| Loopback LAN | 190.776 ms | Below 200 ms. |
+| 100 ms RTT, 1% loss, 2% reordering, 1% duplication | 287.038 ms | Below 500 ms. |
+| Same WAN with symmetric 2 Mbit/s per peer/direction | 287.081 ms | Below 750 ms under rate limiting only. |
+| 100 ms RTT, 10% loss, 5% reordering, 2% duplication | 699.761 ms | All operations converged; no normal-network latency target applies. |
+
+Timing starts at the Runtime's Controller submission after lease gating and
+native inverse settlement, and ends after the author's accepted canonical native
+application and durable commit. Proxy traffic records source UDP payload bytes,
+headers, acknowledgements and actual retransmissions before injected duplicates;
+IP/UDP headers are excluded. This is actual engine/IO evidence, unlike the earlier
+controlled-native benchmark. There was no simultaneous bulk asset transfer, so
+the 2 Mbit/s row does not pass the asset-contention gate. It is a two-player
+receipt, not four-player network adversity acceptance.
+
+The machine also had the four-game functional cohort and one unowned personal
+game running. Their PIDs and hardware are recorded with the measurement; no
+matched FPS or memory claim is inferred. Receipts:
+`out/editor-native-network-c12/{run/result,handoff,environment-diagnostic}.json`.

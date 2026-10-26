@@ -18,7 +18,10 @@ and the exact GOG executable with SHA-256
 Older protocol 15 gameplay clients cannot join an editor build's party.
 
 The placement adapter implements creation from templates already in the draft,
-duplication, deletion, movement, rotation and uniform scale. It preserves opaque
+duplication, deletion, movement and rotation. Uniform scale has a semantic
+transaction, but the current native audit rejects and rolls back an additional
+unclassified scenario-data change. Scale is not an accepted native control yet.
+The adapter preserves opaque
 scenario fields through owned native snapshots. Existing objective references and
 the authored captain are protected. Deleting a placement required by an objective
 is rejected conservatively.
@@ -121,6 +124,12 @@ The host selects **Playtest** after outstanding edits settle. Every participant,
 including the host, explicitly confirms the fixed revision. Authoring stays held
 while the party uses that snapshot. The native editor's authored test captain is
 used; this is not a new Sporepedia quickplay attempt.
+
+During readiness preparation, the host has **Cancel playtest** beside the
+Ready button. It returns the connected party to the same editable draft; the
+next attempt starts everyone unready. This control replaces **Recover** only
+while the host is preparing a playtest. Ending shared editing is a separate
+action. Cancellation is scoped to that project and preparation round.
 
 Only the host returns the party through **Return to draft**, native preview
 return or result exit. Guests wait for that group return. Each native editor
