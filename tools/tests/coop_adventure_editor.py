@@ -272,6 +272,12 @@ class EditorPair:
         user.PostMessageW.argtypes=(ctypes.c_void_p,ctypes.c_uint,ctypes.c_size_t,ctypes.c_ssize_t)
         if not user.ClientToScreen(hwnd,ctypes.byref(screen)):
             raise FixtureError('The owned wheel input point could not be projected')
+        def mouse_message(message,modifiers,coordinates):
+            if not user.GetWindowThreadProcessId(hwnd,ctypes.byref(owner)) or owner.value!=self.records[game.instance]['pid']:
+                raise FixtureError('The native wheel input HWND changed ownership before sending')
+            if not user.PostMessageW(hwnd,message,modifiers,coordinates):
+                raise FixtureError('The ordinary modified mouse input was rejected')
+        client_point=(point[0]&0xFFFF)|((point[1]&0xFFFF)<<16)
         game.call(f'move {point[0]} {point[1]}')
         try:
             if shift:game.call('key shift down')
@@ -281,19 +287,22 @@ class EditorPair:
             # left_held is only supplied while the fixture's ordinary button
             # down is outstanding; it does not manufacture a native drag.
             modifiers=(4 if shift else 0)|(8 if ctrl else 0)|(1 if left_held else 0)
+            # SporeKit's ordinary move also omits Shift/Ctrl in wParam. Deliver
+            # the changed modifier state before the wheel without moving the
+            # user's real mouse or invoking native tool actions directly.
+            mouse_message(0x0200,modifiers,client_point)
+            game.call('wait.frames 3 15000')
             delta=120 if notches>0 else -120
             for _ in range(abs(notches)):
-                if not user.GetWindowThreadProcessId(hwnd,ctypes.byref(owner)) or owner.value!=self.records[game.instance]['pid']:
-                    raise FixtureError('The native wheel input HWND changed ownership before sending')
                 wparam=modifiers|((delta&0xFFFF)<<16)
                 lparam=(screen.x&0xFFFF)|((screen.y&0xFFFF)<<16)
-                if not user.PostMessageW(hwnd,0x020A,wparam,lparam):
-                    raise FixtureError('The ordinary modified wheel input was rejected')
+                mouse_message(0x020A,wparam,lparam)
                 game.call('wait.frames 6 15000')
                 time.sleep(.12)
         finally:
             if ctrl:game.call('key ctrl up')
             if shift:game.call('key shift up')
+            mouse_message(0x0200,1 if left_held else 0,client_point)
 
     def edit(self):
         for game in self.games:

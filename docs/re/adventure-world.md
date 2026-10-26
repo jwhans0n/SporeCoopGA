@@ -2950,3 +2950,31 @@ global `15ACC34` was 4, satisfying that entry's mode check. Manipulator visibili
 `EFCF10` queries game-input vtable `+18`, `B18CD0`, which calls `8D3A40` for
 the action hash held at `15AD294` (`07A98D04` in this instance). No speculative
 native input-state write or manipulator finalizer was introduced.
+
+Further static checks distinguish the two controls. `EECD40` maps `.crt`
+`2B978C46` to category `E34E8A60`, outfitted creature `074E0069` to
+`E137FF08`, vehicle `.vcl` to `5B3D1D0D`, and UFO to `D37C1045`.
+`EFCF10` calls `F25450`, which excludes these four categories from the
+additional three-axis handles. Buildings `.bld` (`2399BE55`, category
+`B10E526F`) pass that check. Therefore absence of expanded Tab handles on Ace
+is not proof of failed keyboard delivery. In fact, a read-only observation of
+the native command table `167BEF0` showed count zero before input, then count
+one with hash `07A98D04` while the ordinary Tab key was held. Both Shift-wheel
+directions remained unproved in the ordinary editor. `F40840` does not
+categorically reject creature scaling: ordinary creature assets delegate to
+`EED310`'s authored native min/max and tier bounds; avatar class `-2` and
+gameplay properties use separate paths. Receipts:
+`out/editor-native-re/c11-transform-eligibility.txt` and
+`out/editor-native-re/c10-native-held-key-readonly.json`.
+
+`B3D340` is the existing `cGameViewManager::Get`, not a keyboard-device
+singleton. Its `+34` picks the world object; `B18DB0` queries the verified
+spatial interface `01186577`. Do not label its spatial visibility/ownership
+flags as keyboard modifiers or write them to manufacture input.
+
+The C10b ordinary native Edit route also established a large authored fixture
+without constructing synthetic content: normal Sporepedia selection of
+Adventure Town followed by native ready reported 419 placements, 118 classes
+and five acts, source `408A0000!BF0CE0D0.366A930D`. Gameplay noun counts are a
+different measurement. No Town edits or native Save were performed for this
+count. Receipt: `out/editor-native-candidate10b-town-count-final`.
