@@ -156,18 +156,20 @@ submission, excluding the time to acquire ownership, perform the gesture or wait
 for its native inverse. Start and stop collection at settled boundaries; it is
 not an end-to-end mouse-input timer or an FPS measurement.
 
-The newer scoped Return fence and cached-content Join remain under integration
+The scoped Return fence and cached-content Join remain under integration
 validation. Isolated Runtime tests retain old return callbacks across rounds and
 verify their project, epoch, round and revision cannot affect the new preview.
-Those tests substitute native APIs. Cache-aware transfer still requires actual
-cold and warm joins with verified native reconstruction; neither mechanism is a
-claim that a C10 game-process test has passed.
+Those tests substitute native APIs. The C11 four-game normal Return check
+preserved each local camera and selected stable placement. This does not cover
+every cancellation or disconnect path. Cache-aware transfer still requires actual
+cold and warm joins with verified native reconstruction.
 
 The opt-in [native network harness](../tools/tests/coop_editor_network.py) uses
 already-owned hidden, muted two- or four-player processes, exact candidate hashes
 and ordinary native gestures through a bounded loopback impairment proxy. It
 records submission-to-confirmation samples and UDP traffic, including source
-retransmissions. Its LAN, WAN and packet-adversity stage does not establish bulk
+retransmissions. Its rate-limited profile shapes each peer and direction to
+2 Mbit/s without a concurrent bulk transfer. Its LAN, WAN and packet-adversity stage does not establish bulk
 asset-contention performance, the large-editor FPS gate or sustained memory
 retention. Those remain separate acceptance tests in the
 [validation report](reports/EDITOR-IMPLEMENTATION-VALIDATION.md).

@@ -1,6 +1,6 @@
 # Shared Adventure Editor: implementation validation
 
-Report revision 11, C11 native validation and ownership hardening, 2026-10-26. Branch:
+Report revision 12, integrated C12 ownership and transform hardening, 2026-10-26. Branch:
 `feat/ga-adventure-editor`. The portable core and transport checkpoint is local
 commit `216f8b0`; native integration is recorded at `0a35c7b`, with lab tools at
 `a9b844f`. The C10 integration checkpoint is `071f6a4`, depending on network
@@ -526,3 +526,54 @@ installation. It is excluded from input and shutdown ownership. Strict matched
 FPS acceptance requires an exclusive measured cohort; samples with that extra
 process can only be diagnostic until it closes naturally. The personal
 installation and published gameplay release remain unchanged.
+
+## C12 integrated ownership and transform follow-up
+
+The full C12 private DLL is SHA-256
+`0a4a8a96a70a7da46d32d4253a4045b7b09e518966fb47be158b168335aff065`.
+Its deployment receipt is `out/editor-native-candidate12/deploy.json`, including
+the prior DLL backup and hashes of all three maps in the actual loader directory.
+The private games were closed before replacement. Personal files were untouched.
+
+The controlled delayed-grant reproducer established both halves of the C11
+ownership race: the Runtime started idle expiry at request time rather than when
+the usable grant arrived, and a released token remained locally usable until the
+host replied. Runtime grant grace now starts when a new usable token is observed;
+renewing the same token does not extend idle grace. Session Release immediately
+quarantines the token. Overlapping acquisition waits for the authenticated release
+decision, with its TTL starting at outbound admission. Scoped serial fences reject
+previously unseen older Acquire/Renew requests after Release while allowing older
+disjoint requests to proceed. All queues and fence retention remain bounded.
+
+The final Session tests passed 17,724 Linux ASan/UBSan/leak checks and 13,018
+Win32 checks, including 128 four-author edits crossing every peer's 64-entry
+lease-decision cache, delayed replies, rejected atomic Release and replayed old
+requests. Receipt: `out/editor-lease-c12/validation.json`. The integrated Runtime
+passed 2,672 focused and 3,313 full Win32 checks with unchanged input hashes.
+Its 24 MiB closure test sent 64,702 host and 3,879 guest bytes for twenty edits and
+Save; cached JOIN sent 29,536/782 bytes. These are controlled-native measurements,
+not native game bandwidth or memory acceptance. Receipt:
+`out/editor-integrated-c12/validation.json`.
+
+The rotation rejection was independently traced to the native active auxiliary
+pointer equaling the verified rotation handle at context `+20`. Treating every
+auxiliary as patrol-path editing blocked that legitimate pose gesture. The C12
+policy permits only the three verified rotation-handle identities for actions 1
+and 6, still requiring a selected stable placement and its lease. Unknown/path
+auxiliaries and auxiliary cloning remain blocked. Pure policy/binding fixtures
+passed 8,241 checks on both Linux and Win32, and the native adapter passed strict
+compilation. The diagnostic C12n failure receipt is retained separately at
+`out/editor-native-candidate12n/rejection-logs.json`; it is not the full C12 build
+and does not establish a successful shared rotation. Actual C12 acceptance follows
+separately.
+
+The full C12 two-game shared rotation check subsequently passed for both host
+and guest. Each actual native ring drag committed once (revision 0 to 1, then
+1 to 2), changed the selected placement's quaternion and preserved position,
+uniform scale, class and stable identities. Both native drafts converged, and
+normal End and native exit returned both to Galaxy with zero recorded faults.
+Receipt: `out/editor-native-candidate12/shared-yaw-retry/result.json`. The first
+cold bootstrap had missed an ordinary Create radial click before entering the
+editor; that failed fixture receipt remains separate. This resolves the two-peer
+rotation guard failure. Uniform scale and four-author rotation remain separate
+native gates.
