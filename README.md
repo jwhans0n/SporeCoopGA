@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/jwhans0n/SporeCoopGA/actions/workflows/build.yml?query=branch%3Amain"><img src="https://github.com/jwhans0n/SporeCoopGA/actions/workflows/build.yml/badge.svg?branch=main" alt="Build"></a>
-  <img src="https://img.shields.io/badge/status-experimental%20GA%20preview-f0b44a" alt="Experimental GA preview">
+  <img src="https://img.shields.io/badge/status-experimental%20GA-f0b44a" alt="Experimental Galactic Adventures support">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-74c867" alt="MIT license"></a>
 </p>
 
@@ -15,11 +15,12 @@ and enter the same adventure from Sporepedia.
 
 This fork focuses on co-op adventure play, with **shared live adventure editing**
 next on the roadmap and collaborative editing in other Spore editors later.
-Shared editing is planned and is not available in the current preview.
+Shared editing is planned and is not available in the current release.
 
 SporeCoopGA builds on [SporeCoop](https://github.com/WoodyWizard/SporeCoop) by
-[WoodyWizard](https://github.com/WoodyWizard). The current build is
-**`0.7.3.5-ga-preview.12`**, an experimental preview using protocol **15**.
+[WoodyWizard](https://github.com/WoodyWizard). The first published GA release is
+**[`0.7.4.0`](https://github.com/jwhans0n/SporeCoopGA/releases/tag/v0.7.4.0)**,
+using protocol **15**. Galactic Adventures support remains **experimental**.
 
 ## Contents
 
@@ -68,7 +69,7 @@ SporeCoopGA builds on [SporeCoop](https://github.com/WoodyWizard/SporeCoop) by
   accept their results, then opens
   the shared lobby with saved captains and everyone unready. Cancelling preparation
   restores the native menus for retry.
-- **Adventure performance work.** The preview retains the actor-memory validation
+- **Adventure performance work.** The release retains the actor-memory validation
   FPS fix. Unchanged static transforms stop recurring after their initial baseline;
   moving actors continue receiving spatial updates.
 
@@ -80,27 +81,27 @@ asset transfer, Replay and current limits.
 Every player needs **Spore with Galactic Adventures**, the supported GOG executable
 described below, and **the same SporeCoopGA build**.
 
-**There is no published GitHub release yet.** Install the current development preview
-from this fork:
+Install the published release from this fork:
 
-1. Open the [build workflow for `main`](https://github.com/jwhans0n/SporeCoopGA/actions/workflows/build.yml?query=branch%3Amain),
-   select the latest successful run for `main`, and download its **`sporecoop-zip`**
-   artifact. GitHub requires you to sign in to download workflow artifacts.
-2. Extract the downloaded artifact archive. Keep **`SporeCoopSetup.exe`** beside
-   its matching **`SporeCoop-<version>.pack`** file.
+1. Open the [0.7.4.0 release](https://github.com/jwhans0n/SporeCoopGA/releases/tag/v0.7.4.0)
+   and download **`SporeCoop-0.7.4.0.zip`**.
+2. Extract the release zip. Keep **`SporeCoopSetup.exe`** beside its matching
+   **`SporeCoop-0.7.4.0.pack`** file.
 3. Close Spore, run that setup, select the **SPORE** folder containing
    `SporebinEP1`, and install.
 4. Start Galactic Adventures (`SporebinEP1\SporeApp.exe`). The galaxy menu should
    contain **Co-op**.
 
-The artifact also contains a preview zip with `install.bat` for manual installation.
+The zip also includes `install.bat` for manual installation.
 Full setup, game-build checks, networking and troubleshooting are in the
 [installation guide](docs/INSTALL.md). Use this fork's packages for GA support.
 
 **Updates use published [GitHub Releases](https://github.com/jwhans0n/SporeCoopGA/releases),
-not branches or Actions artifacts.** The current updater skips prereleases and does
-not order preview suffixes. Install GA preview updates manually using their matching
-package; merging new source into `main` does not update an installed game.
+not branches or Actions artifacts.** Version 0.7.4.0 is published as a normal
+release so the updater can discover it; its GA support is still experimental.
+The updater skips prereleases and compares up to four numeric version components.
+This release sorts above `0.7.3.5-ga-preview.12`. Merging new source into `main`
+does not update an installed game.
 
 ## Playing together
 
@@ -140,12 +141,14 @@ dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37
   other executables are not enabled for the native GA adapter; Linux GA play
   remains unvalidated.
 - **Matching clients:** all participants need this fork build and protocol 15.
-  Earlier GA previews also require an update before joining.
+  Update GA previews to this release before joining. Previews using protocol 14
+  or older cannot join.
   Upstream SporeCoop 0.7.0-0.7.2.1 clients use a different protocol and cannot join.
 - **Entry and joining:** adventures start from Sporepedia. Space-stage adventure
-  entry is outside this preview. Late joins and reconnects wait for the next attempt.
-- **Validation scope:** preview 12's shared-result, menu return and Replay
-  acceptance is recorded separately in its
+  entry is outside this release. Late joins and reconnects wait for the next attempt.
+- **Validation scope:** the [0.7.4.0 release report](docs/validation-ga-0.7.4.0.md)
+  records release packaging and checks. Preview 12's shared-result, menu return and
+  Replay acceptance remains recorded in its
   [validation report](docs/validation-ga-preview.12.md). Earlier preview 11 passes
   targeted two-player Mine checks for
   native guest/host targeting, natural damage and target switching. Broader
@@ -162,8 +165,9 @@ dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37
   checks do not establish that input path.
   A complete adventure playthrough campaign remains outstanding.
 
-The preview does not establish compatibility with every custom adventure, palette
-or objective. Read the [preview 12 validation report](docs/validation-ga-preview.12.md)
+The release does not establish compatibility with every custom adventure, palette
+or objective. Read the [release validation report](docs/validation-ga-0.7.4.0.md),
+[preview 12 validation report](docs/validation-ga-preview.12.md)
 and [historical integration report](docs/integration-ga-upstream-0.7.2.1.md)
 for exact evidence and limits, and the [known issues](docs/known-issues.md) for
 recorded problems.
@@ -178,7 +182,7 @@ recorded problems.
    after the Adventure Editor.
 
 These are goals without announced dates. Shared adventure editing and other
-collaborative editors are not implemented in the current preview.
+collaborative editors are not implemented in the current release.
 
 ## Development
 

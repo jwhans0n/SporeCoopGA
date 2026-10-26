@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [0.7.4.0] - 2026-10-25
+
+- Publish the first SporeCoopGA release, collecting the Galactic Adventures
+  co-op work through preview 12. Play shared Sporepedia adventures with saved
+  captains, an explicit Ready lobby, shared scenes and objectives, synchronized
+  interactions, revival, party pause, enemy targeting and coordinated results.
+- Retain preview 12 gameplay and protocol 15. This release adds no editor support
+  or new gameplay behavior. Galactic Adventures support remains experimental and
+  requires the exact supported GOG executable and matching release builds.
+- Provide a normal published release for the fork's existing updater. Numeric
+  version 0.7.4.0 sorts above 0.7.3.5-ga-preview.12 without relying on preview
+  suffix ordering. Keep Setup beside its matching update pack when extracting.
+- Document release installation and preserve the historical preview reports,
+  including their compatibility, movement and combat-input limits. See the
+  [release validation report](docs/validation-ga-0.7.4.0.md).
+
 ## [0.7.3.5-ga-preview.12] - 2026-10-25
 
 - Seal the first host-authoritative adventure win or loss for every participant.

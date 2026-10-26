@@ -56,10 +56,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ver="${GITHUB_REF_NAME#v}"
+          source_ver="$(sed -n 's/^#define COOP_VERSION "\([^"]*\)"/\1/p' mods/coop/coop.cpp)"
+          test "$ver" = "$source_ver" || { echo "Tag version differs from COOP_VERSION" >&2; exit 1; }
           # the notes: this version's section of CHANGELOG.md
           awk -v v="$ver" '$0 ~ "^## \\[?"v"\\]?" {on=1; next} /^## / && on {exit} on' CHANGELOG.md > notes.md
           (cd dist && sha256sum SporeCoop-*.zip SporeCoop-*.pack SporeCoopSetup.exe > SHA256SUMS.txt)
           release_flags=()
-          if [[ "$ver" == *-* ]]; then release_flags+=(--prerelease); fi
+          if [[ "$ver" == *-* ]]; then release_flags+=(--prerelease); else release_flags+=(--latest); fi
           gh release create "$GITHUB_REF_NAME" dist/SporeCoop-*.zip dist/SporeCoop-*.pack dist/SporeCoopSetup.exe dist/SHA256SUMS.txt \
-            --title "SporeCoop $ver" --notes-file notes.md "${release_flags[@]}"
+            --verify-tag --title "SporeCoopGA $ver" --notes-file notes.md "${release_flags[@]}"

@@ -1,10 +1,13 @@
 # Galactic Adventures co-op: experimental guide
 
-Fork preview `0.7.3.5-ga-preview.12` seals shared adventure wins and losses and
-coordinates results, menu return and Replay. A completed attempt cannot continue
+Fork release **[`0.7.4.0`](https://github.com/jwhans0n/SporeCoopGA/releases/tag/v0.7.4.0)**
+is the first published Galactic Adventures co-op release. GA support remains
+**experimental**. It retains preview 12 gameplay, including shared wins and losses,
+coordinated results, menu return and Replay. A completed attempt cannot continue
 as an independent client adventure. See the
-[preview 12 validation report](validation-ga-preview.12.md) for acceptance evidence
-and limits. It retains preview 11's authored player-team enemy targeting,
+[release report](validation-ga-0.7.4.0.md) for release checks and the
+[preview 12 validation report](validation-ga-preview.12.md) for its native evidence
+and limits. The release retains preview 11's authored player-team enemy targeting,
 preview 10's native creature/vehicle waypoint followers, preview 9's unanimous party pause
 and six-metre revival, preview 8's music, held-item and confirmation fixes, and
 the upstream SporeCoop 0.7.2.1 integration. Source:
@@ -26,8 +29,8 @@ Upstream calls this GOG 2024; the adventure RE notes call it March 2017 after th
 ModAPI address map. See [build identification](re/build-dc04.md). Steam and other
 same-code variants retain upstream base-stage support, but their native adventure
 adapter is disabled and adventure compatibility remains unvalidated. Every player
-needs Galactic Adventures and the same fork build (protocol 15); earlier GA
-previews and upstream 0.7.0-0.7.2.1 clients cannot join this preview.
+needs Galactic Adventures and the same fork release (protocol 15). GA previews
+using older protocols and upstream 0.7.0-0.7.2.1 clients cannot join this release.
 
 Preview `0.7.0-ga-preview.6` reduces traffic for stationary buildings and props and
 shares explosives, crates, power upgrades and teleporters. It retains group scenes,
@@ -181,6 +184,10 @@ alive for revival. That display does not permit continued gameplay after a share
 loss. The completed attempt stays stopped through results and menu recovery.
 
 ## Verified scope and current limits
+
+The [0.7.4.0 release report](validation-ga-0.7.4.0.md) records release packaging,
+version ordering and checks. Publishing a release does not broaden the native
+compatibility and gameplay evidence retained from the previews.
 
 The [preview 12 validation report](validation-ga-preview.12.md) separates the
 reported Crystal Mine failure, deterministic native callback regressions,

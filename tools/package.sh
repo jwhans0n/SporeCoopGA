@@ -35,7 +35,7 @@ if defined HAVE if /i not "%HAVE%"=="%WANT1%" if /i not "%HAVE%"=="%WANT2%" if /
   echo.
 )
 if /i "%HAVE%"=="%WANT2%" (
-  echo Exact GOG 2024 executable: co-op Galactic Adventures preview is available.
+  echo Exact GOG 2024 executable: experimental co-op Galactic Adventures is available.
 ) else (
   echo Native co-op adventures require the exact GOG 2024 executable.
   echo Steam support is retained for base stages; Steam co-op adventures are unvalidated.
@@ -67,14 +67,15 @@ pause
 EOF
 
 cat > "$STAGE/README-SporeCoop.txt" <<EOF
-SporeCoopGA $VER - Galactic Adventures preview on SporeCoop 0.7.2.1
+SporeCoopGA $VER - Experimental Galactic Adventures co-op on SporeCoop 0.7.2.1
 https://github.com/jwhans0n/SporeCoopGA
 Based on SporeCoop by WoodyWizard: https://github.com/WoodyWizard/SporeCoop
 
 Install: extract this zip into SPORE\\SporebinEP1 and run install.bat (step by step: INSTALL.txt).
-Read GALACTIC-ADVENTURES.md for the adventure preview's verified cases and limits.
+Release: https://github.com/jwhans0n/SporeCoopGA/releases/tag/v0.7.4.0
+Read GALACTIC-ADVENTURES.md for the adventure release's verified cases and limits.
 All players need Galactic Adventures and this exact SporeCoopGA version (protocol 15).
-Upstream SporeCoop 0.7.0-0.7.2.1 uses a different protocol and cannot join this preview.
+Upstream SporeCoop 0.7.0-0.7.2.1 uses a different protocol and cannot join this release.
 Client creatures and vehicles follow native waypoints; the host retains AI,
 combat and objective authority. Authored player-team attack targets can recognize
 eligible guest captains; native sensing, hostility and target selection remain
@@ -82,8 +83,9 @@ in control. Shared wins/losses stop gameplay for the party. Host Done returns
 everyone to the menu; guest Done accepts results locally. Replay requires host
 Replay and every remaining player to apply and accept results, then opens a
 shared lobby with fresh explicit readiness. A downed captain's 1 HP display permits revival, not
-continued play after a shared loss. See validation-ga-preview.12.md for current
-acceptance evidence and limits. Historical preview 11 Mine guest/host targeting,
+continued play after a shared loss. See validation-ga-0.7.4.0.md for release checks
+and validation-ga-preview.12.md for its native acceptance evidence and limits.
+Gameplay and protocol are retained from preview 12. Historical preview 11 Mine guest/host targeting,
 natural damage and switching checks remain in validation-ga-preview.11.md.
 Broader adventure compatibility remains unproven. Earlier follower results
 retain residual movement lag. Ordinary guest click/key combat input remains
@@ -100,7 +102,7 @@ dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37.
 This is the executable upstream calls GOG 2024, called March 2017 in the GA RE notes.
 Steam and other same-code variants retain base-stage support but are not enabled
 for the native GA adapter. Adventures start from Sporepedia; Space-stage entry
-is outside this preview's scope.
+is outside this release's scope.
 
 Host: main menu -> Co-op -> name -> Host. The window shows addresses for friends.
 Internet play needs UDP port 47810 forwarding or a VPN such as Tailscale/ZeroTier.
@@ -118,10 +120,10 @@ the normal native captain-save flow is preserved.
 For other stages, the host loads a save or starts a game and shares that world.
 
 Fork releases and problem reports: https://github.com/jwhans0n/SporeCoopGA
-Updates use published releases from this fork and skip prereleases. While no
-release exists, download sporecoop-zip from the latest successful main Actions
-build: https://github.com/jwhans0n/SporeCoopGA/actions/workflows/build.yml
-Extract it and keep SporeCoopSetup.exe beside its matching .pack file.
+Download the release zip, extract it and keep SporeCoopSetup.exe beside its
+matching .pack file. Updates use published releases from this fork and skip
+prereleases. Version 0.7.4.0 sorts above 0.7.3.5-ga-preview.12 for the updater;
+Galactic Adventures support remains experimental.
 Cheat console (Ctrl+Shift+C): coop host | coop join <ip> | coop leave.
 EOF
 # the toolchain the Makefile uses (LLVM_MINGW ?= ... there), unless set in the environment
@@ -132,6 +134,7 @@ cp "$ROOT/THIRD_PARTY_NOTICES.md" "$STAGE/THIRD_PARTY_NOTICES.txt"
 cp "$ROOT/third_party/minhook/LICENSE.txt" "$STAGE/SporeCoop/MinHook-LICENSE.txt"
 cp "$ROOT/docs/INSTALL.md" "$STAGE/INSTALL.txt"
 cp "$ROOT/docs/GALACTIC-ADVENTURES.md" "$STAGE/GALACTIC-ADVENTURES.md"
+cp "$ROOT/docs/validation-ga-0.7.4.0.md" "$STAGE/validation-ga-0.7.4.0.md"
 cp "$ROOT/docs/validation-ga-preview.12.md" "$STAGE/validation-ga-preview.12.md"
 cp "$ROOT/docs/validation-ga-preview.11.md" "$STAGE/validation-ga-preview.11.md"
 cp "$ROOT/docs/validation-ga-preview.10.md" "$STAGE/validation-ga-preview.10.md"

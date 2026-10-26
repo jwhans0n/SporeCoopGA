@@ -1,16 +1,19 @@
 # Installing SporeCoop
 
-This fork, `0.7.3.5-ga-preview.12`, combines upstream SporeCoop 0.7.2.1 with the
+This fork, `0.7.4.0`, combines upstream SporeCoop 0.7.2.1 with the
 Galactic Adventures changes described in [the GA guide](GALACTIC-ADVENTURES.md)
-for adventures started from Sporepedia. The native adventure adapter requires the
+for adventures started from Sporepedia. This first published GA release remains
+experimental. Download [release 0.7.4.0](https://github.com/jwhans0n/SporeCoopGA/releases/tag/v0.7.4.0).
+The native adventure adapter requires the
 exact GOG executable `dc04aee5...`; Steam and code-equivalent variants retain
 upstream base-stage support but have no enabled native GA adapter. Every player
-needs this fork build and protocol 15; upstream and earlier previews cannot join it.
-Preview 12 seals shared wins/losses and coordinates host Done for the whole party.
+needs this fork release and protocol 15; upstream and previews using older protocols cannot join it.
+The release retains preview 12 gameplay, including shared wins/losses and host Done for the whole party.
 Replay requires host Replay plus applied and accepted results for everyone.
 Mandatory native captain reward selections must finish before a party exit,
 preserving the normal captain-save flow. See the
-[current validation report](validation-ga-preview.12.md) for evidence and limits.
+[release validation report](validation-ga-0.7.4.0.md) for release checks and the
+[preview 12 report](validation-ga-preview.12.md) for its native evidence and limits.
 Preview 11's targeted two-player Mine guest/host targeting, natural damage and
 switching checks remain recorded in its [report](validation-ga-preview.11.md).
 Broader adventure compatibility remains unproven.
@@ -43,7 +46,7 @@ others; your saves and creations are not touched.
 
 Upstream base-stage testing includes GOG builds and Steam offline; the precise
 historical results are in [section 2](#where-sporecoop-has-been-tested).
-The adventure preview's tested scope is separate. EA app and disc builds remain
+The adventure release's tested scope is separate. EA app and disc builds remain
 unvalidated. Report fork problems with `mods\logs\sporekit.log` in a
 [fork issue](https://github.com/jwhans0n/SporeCoopGA/issues).
 
@@ -95,7 +98,7 @@ If you try a build or system that is not tested, an
 [issue](https://github.com/jwhans0n/SporeCoopGA/issues) with the result and
 `mods\logs\sporekit.log` (it names the exe's `sha256` and `code_sha256`) helps.
 
-The Galactic Adventures preview uses a separate native adapter for the exact
+Experimental Galactic Adventures support uses a separate native adapter for the exact
 GOG file below. This is the same executable upstream calls GOG 2024; the GA
 reverse-engineering notes call it March 2017 after the ModAPI address map.
 
@@ -104,7 +107,7 @@ reverse-engineering notes call it March 2017 after the ModAPI address map.
 | File | `SPORE\SporebinEP1\SporeApp.exe` |
 | Size | 24 895 536 bytes |
 | SHA-256 | `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37` |
-| Verified scope | Preview 12's shared results, menu return and Replay evidence is recorded in the [current report](validation-ga-preview.12.md). Preview 11 retains targeted two-player Mine targeting/damage checks; preview 10 retains creature/land-vehicle motion results with residual lag. Broader compatibility remains unproven, and Steam GA is unvalidated and disabled. |
+| Verified scope | The [0.7.4.0 release report](validation-ga-0.7.4.0.md) records release checks. Preview 12 retains its shared results, menu return and Replay evidence; preview 11 retains Mine targeting/damage checks; preview 10 retains creature/land-vehicle motion results with residual lag. Broader compatibility remains unproven, and Steam GA is unvalidated and disabled. |
 
 Where the game usually is:
 
@@ -130,15 +133,17 @@ sha256sum "SPORE/SporebinEP1/SporeApp.exe"
 
 ### With the setup
 
-For a GA prerelease, download its complete zip and keep the included
-`SporeCoopSetup.exe` beside the matching `SporeCoop-<version>.pack`. The setup
-can install that local pack even when GitHub has no regular fork release.
-The standalone setup and automatic update checks use GitHub's latest regular
+Download [release 0.7.4.0](https://github.com/jwhans0n/SporeCoopGA/releases/tag/v0.7.4.0)
+and extract `SporeCoop-0.7.4.0.zip`. Keep the included `SporeCoopSetup.exe` beside
+the matching `SporeCoop-0.7.4.0.pack`. The setup can install that local pack
+without downloading another copy. Close every Spore session before installation.
+The standalone setup and automatic update checks use this fork's latest regular
 release endpoint, which excludes prereleases. The `install.bat` method below
-also installs the exact preview from the zip.
+also installs the exact release from the zip.
 
 1. Download **`SporeCoopSetup.exe`** from the
-   [latest release](https://github.com/jwhans0n/SporeCoopGA/releases) and run it.
+   [0.7.4.0 release](https://github.com/jwhans0n/SporeCoopGA/releases/tag/v0.7.4.0)
+   or use the one included beside its matching pack, then run it.
 2. It finds the game by itself (GOG and EA registry entries, common folders); if not, press
    **Browse...** and choose the SPORE folder (the one with `SporebinEP1`).
 3. It shows whether your game build is the tested one and which SporeCoop version is installed.
@@ -225,7 +230,7 @@ SPORE\
 
 * The main menu (galaxy screen) has a new **Co-op** item on the left.
 * `SporebinEP1\mods\logs\sporekit.log` exists and reports the installed version
-  (for this fork preview, `loaded coop v0.7.3.5-ga-preview.12`).
+  (for this fork release, `loaded coop v0.7.4.0`).
 * Start a game, press **F9**: the co-op window opens.
 
 If there is no Co-op item, see [Troubleshooting](#9-troubleshooting).
@@ -246,7 +251,11 @@ Connections across a long distance work (the protocol was tested with 120 ms ± 
 
 ## 8. Update and uninstall
 
-**Preview updates:** download future GA previews manually from the
+**Release updates:** version 0.7.4.0 is a normal published release that the updater
+can discover. It compares up to four numeric components and sorts this version
+above `0.7.3.5-ga-preview.12`; GA support remains experimental.
+
+**Preview builds:** download any future GA prereleases manually from the
 [fork Releases page](https://github.com/jwhans0n/SporeCoopGA/releases). The updater
 does not order preview suffixes, and GitHub's latest-release endpoint excludes
 prereleases. Keep all party members on the same build.
