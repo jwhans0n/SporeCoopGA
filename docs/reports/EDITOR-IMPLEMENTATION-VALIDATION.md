@@ -1,6 +1,6 @@
 # Shared Adventure Editor: implementation validation
 
-Report revision 27, C17 native cancellation and collector defect, 2026-10-26. Branch:
+Report revision 28, C18 repeated playtest and four-player FPS, 2026-10-26. Branch:
 `feat/ga-adventure-editor`. The portable core and transport checkpoint is local
 commit `216f8b0`; native integration is recorded at `0a35c7b`, with lab tools at
 `a9b844f`. The C10 integration checkpoint is `071f6a4`, depending on network
@@ -27,13 +27,13 @@ not silently become a C18 gate pass after the collector correction.
 | Area | Current evidence and remaining work |
 | --- | --- |
 | Core, transport and ABI checks | C18: all 22 Windows suites, 21 additional admission cases and portable `make test` pass with frozen source inputs. |
-| Native placement and history | C10-C17: real two/four-player creation, transforms, clone/delete, conflicts, chronological own Undo/Redo and bounded history pass. C18 actual placement prewarm is underway. |
+| Native placement and history | C10-C17: real two/four-player creation, transforms, clone/delete, conflicts, chronological own Undo/Redo and bounded history pass. C18 adds 128 actual changed warm-up Moves and 30 edit/Test/Return cycles. |
 | Native cancellation | C17: four players preserve a disjoint host commit while an invalid guest Scale is held, then cancelled. Pure Scale also preserves poses and history. Additional two-player/cancellation breadth and a C18 native recheck remain. |
 | Native save and recovery | Actual Save As/reopen, cold project recovery and one complete cold native-file opaque comparison pass. The one fixture is not broad adventure round-trip coverage. |
-| Playtest and return | C17: four-player natural failure/success, Done, Build hammer and preparation/playing disconnect return preserve draft and local view. C18 cycle rerun, additional End/Replay/loading paths and actual no-XP evidence remain. |
-| Large-editor FPS | C17: unobstructed two/four-player comparisons pass on 419 placements. The earlier covered four-player sample is excluded. C18 rerun remains. |
+| Playtest and return | C17: four-player natural failure/success, Done, Build hammer and preparation/playing disconnect return preserve draft and local view. C18 adds 30 complete group cycles; additional End/Replay/loading paths and actual no-XP evidence remain. |
+| Large-editor FPS | C18: unobstructed four-player comparison passes on 419 placements. C17 two/four-player comparisons also pass. The earlier covered four-player sample is excluded. |
 | Collector memory defect | Reproduced in C17; C18 real four-player idle test proves stable 64-entry capacity with continuing native updates. |
-| Sustained retained memory | Open. C17 raw private-byte slopes did not establish a plateau. C18's exclusive 128-edit warm-up and 30 edit/Test/Return window is running. |
+| Sustained retained memory | Open. C18's exclusive 128-edit warm-up and 30 edit/Test/Return window completes with stable resource/history bounds, but positive tail private-byte slopes do not yet establish an active-editor plateau. All four release below baseline on normal Galaxy return. |
 | Genuine bulk contention | Open. Aggregate 2 Mbit/s WAN instrumentation and real-content provenance are prepared; actual fresh-peer contention and the unchanged 750 ms p95 gate still need execution. |
 | Gameplay regression breadth | C18 automated suites pass. Actual large-adventure FPS and the remaining captain/lobby/music/interactions/targeting/results/Replay native coverage are separate gates. |
 
@@ -1462,3 +1462,39 @@ frame (observed 0-59), instead of C17's growing thousands. Normal cleanup
 completes. This proves the specific collector correction in the real game;
 the broader retained-memory gate still awaits its new window. Receipt:
 `out/editor-native-party-c18/collector-growth-192753/result.json`.
+
+### C18 exclusive repeated playtest and retained-memory window
+
+Four exact C18 processes complete 128 real changed native Moves, followed by
+30 changed Move/Test/Return cycles. Each of the 31 settled samples verifies the
+same four PIDs, canonical native checks, locally durable revision, returned
+context and empty authoring queues on both sides of collection. There are 150
+explicit readiness holds, 120 native clock advances of 1,527-1,758 ms, and 360
+remote captain checks (maximum position error 1 m and age 0.13 s). Core history
+stays at 128 entries, native host history at 25, guest native history at zero,
+and native package counts remain unchanged. No FPS sampler or compilation runs
+during this window. Functional cycles and normal release pass.
+
+This does not yet pass the active retained-memory gate. Private bytes rise by
+12.99/6.32/7.05/5.19 MiB over the measured window. The last ten samples span
+0.27/0.28/0.67/0.27 MiB, with positive fitted slopes of
+0.019/0.025/0.072/0.019 MiB per cycle. Bounded decision/hash caches have not yet
+reached their retention limits; their measured logical growth is recorded but
+does not explain every native heap allocation. Normal Galaxy return leaves
+all four below baseline by 24.20/12.44/14.03/17.78 MiB. This demonstrates release
+on exit, not an active-editor plateau. The collector fix remains independently
+proven; further warm-up or allocation attribution is still required. Receipts:
+`out/editor-native-party-c18/memory-strict-retry/result.json` and
+`memory-strict-retry/retention-analysis.json`.
+
+### C18 unobstructed four-player large-editor FPS
+
+The same four processes then pass a 419-placement shared/independent editor
+comparison with identical cameras, rendering configuration and hardware. Native
+registration is absent before and after both samples. Median FPS ratios are
+1.00254/1.00034/1.00178/1.00297; p95 frame-time ratios are
+1.00170/1.00051/1.00315/1.00117. All meet the original budgets. Cleanup returns
+every client to offline Galaxy, then exact owned HWNDs receive normal WM_CLOSE;
+all four exit with code zero before their owner lease expires. Receipts:
+`out/editor-native-party-c18/fps-four/performance-result.json` and
+`out/editor-native-party-c18/normal-close-result.json`.
