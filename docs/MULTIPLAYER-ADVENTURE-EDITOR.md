@@ -167,6 +167,9 @@ captain XP. Cancellation or disconnection must preserve a recoverable draft.
 
 ## Developer diagnostics
 
+Use the [testing playbook](EDITOR-TESTING-PLAYBOOK.md) to distinguish focused
+development checks from integration and opt-in overnight release acceptance.
+
 These commands support controlled development tests. Their output does not
 establish native acceptance or release readiness. Use the public console only
 with the intended isolated test profile.

@@ -1,6 +1,6 @@
 # Shared Adventure Editor: implementation validation
 
-Report revision 30, complete C19 native bulk acceptance, 2026-10-26. Branch:
+Report revision 31, separate development and release testing, 2026-10-26. Branch:
 `feat/ga-adventure-editor`. The portable core and transport checkpoint is local
 commit `216f8b0`; native integration is recorded at `0a35c7b`, with lab tools at
 `a9b844f`. The C10 integration checkpoint is `071f6a4`, depending on network
@@ -9,8 +9,22 @@ calibration changes require their own working-tree/run evidence.
 
 **Implementation is under validation and is not release-ready.** Portable tests
 and several real two/four-player workflows pass. Remaining lifecycle and
-cancellation breadth, bulk contention and memory gates below prevent a
+cancellation breadth, gameplay regressions and memory gates below prevent a
 complete stages 0-4 claim.
+
+Long acceptance sweeps are now reserved for an explicitly requested release
+window, following the [testing playbook](../EDITOR-TESTING-PLAYBOOK.md).
+Focused development can continue while release gates remain pending. The C19
+saturated-memory attempt was interrupted during warm-up when the user requested
+a faster development cadence; it is not a memory pass or a native failure.
+It recorded 19 completed warm-up gestures without admitting a measured baseline.
+All four owned processes then returned normally to Galaxy and closed with exit
+code zero. The interrupted receipt is
+`out/editor-native-party-c19-saturated/memory-strict-saturated/result.json`;
+normal exits are in that cohort's `normal-close-result.json`.
+The preceding no-XP probe could not load the fixture's original captain property
+list and stopped before playtest. No natural Replay or no-XP pass is inferred
+from that probe. Existing C17 natural-results evidence retains its original scope.
 
 This development branch uses protocol 16. The published
 [0.7.4.0 gameplay release](../validation-ga-0.7.4.0.md), protocol 15, remains

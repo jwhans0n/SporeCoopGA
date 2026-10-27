@@ -298,6 +298,13 @@ playtest preview or claims of implemented native support.
 
 ## Validation and performance gates
 
+These are release-acceptance gates. During implementation, use focused
+deterministic tests and short two-player native reproductions, then integration
+checks at coherent checkpoints. Reserve the long matrix for an explicitly
+requested overnight candidate run. See the [testing playbook](EDITOR-TESTING-PLAYBOOK.md).
+Pending acceptance checks do not prevent private feature development and must
+remain visible before any user-facing release.
+
 Use [lab tooling](../tools/windows_lab.py) and
 [test guidance](06-testing.md) with hidden, muted, isolated profiles, first two
 participants and then four. Do not alter personal profiles or running sessions.
