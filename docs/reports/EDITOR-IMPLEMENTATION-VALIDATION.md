@@ -1553,3 +1553,22 @@ three loader maps remain unchanged. The fork's CI also passes at
 Receipts: `out/editor-integrated-c19/validation.json` and
 `out/editor-native-candidate19/deploy.json`. This does not promote native C18
 memory, cancellation or FPS evidence to a C19 pass.
+
+The first actual C19 episode reduces native confirmation time to
+595.84/654.27/593.88 ms. Host apply work falls to 89-92 ms and author application
+to 95-101 ms, while durable-flush checks remain intact. These are diagnostic
+measurements, not an accepted latency run: the fresh peer's native registration
+modal does not close after one click, its later own edit is never attempted, and
+the long UI wait overflows the late proxy's bounded trace. Native stage captures
+remain complete, but full transform/transfer correlation is unavailable. The
+payload still matches the independently pinned real-resource envelope.
+
+Normal cleanup also fails on that modal. The private lab eventually stops its
+owned processes with exit code one; they are not counted as normal exits or
+native gameplay crashes. The original three had reached Galaxy before the final
+cleanup timeout. Subsequent tests must settle first-use registration before
+importing and make cleanup safe when a process is already at Galaxy. The new
+cohort uses fresh profiles rather than treating this forced cleanup as a passed
+recovery test. Receipts: `out/editor-native-bulk-c19/run1/result.json`,
+`episode-01/bulk-episode-1/episode.json`, raw captures and
+`partial-timing-diagnostic.json`. All acceptance gaps remain open.
