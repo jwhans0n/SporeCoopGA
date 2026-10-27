@@ -1572,3 +1572,18 @@ cohort uses fresh profiles rather than treating this forced cleanup as a passed
 recovery test. Receipts: `out/editor-native-bulk-c19/run1/result.json`,
 `episode-01/bulk-episode-1/episode.json`, raw captures and
 `partial-timing-diagnostic.json`. All acceptance gaps remain open.
+
+C19's fresh-profile retry closes each real registration dialog before import
+and keeps complete bounded proxy captures. Three overlapping confirmations are
+755.58/722.28/629.45 ms; a fourth, non-overlapping confirmation is 592.26 ms.
+This is still not the required thirty-sample p95 pass. All four reach matching
+native/durable revision six. The new author's first drag then uses a stale
+screen point while native Locate is easing, causing an actual native invalid
+placement cancellation. The cancellation serial advances once, no new
+canonical operation commits, and all four retain revision six without freezing.
+This provides a narrow real cancellation observation, not the outstanding full
+cancellation/adversity matrix. All four games then complete normal WM_CLOSE
+with exit code zero. The failed new-author edit keeps the episode ineligible.
+Receipts: `out/editor-native-bulk-c19/run2/result.json`, its episode/correlation
+receipts and public native input logs. The next test waits for actual projected
+coordinates to stabilize rather than assuming a fixed Locate delay.

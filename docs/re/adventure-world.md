@@ -3662,3 +3662,17 @@ artifact and live-marker checks. Controlled actual-i686 adapter tests cover
 and nonfinite rejection. Runtime negatives retain the full opaque guard for
 changed bytes, bindings or act. These are controlled checks, not a native
 latency pass. See the implementation report's C18 bulk/C19 section.
+
+Native Locate can keep easing long after a short frame or wall-time fence.
+In the C19 cold-join fixture, the attempted body point is `(568,214)` while the
+eventual projection of the same unchanged placement is `(496.770569,276.791992)`
+(before the body offset). Reusing the initial point through lease retries hits
+different geometry and triggers native invalid-placement cancellation. A fixed
+3.5-second wait is insufficient on this fixture. The corrected OUT harness
+requires successive actual projections to stay within 0.03 pixels for two
+seconds before taking its input point. It does not set the camera or any native
+transform. The failed attempt preserves all four canonical/durable revisions,
+advances one owned cancellation serial and exits normally. Source:
+`out/editor-native-bulk-c19/run2`, especially the new-author failure record and
+`96-commands.json`. This observation is separate from the earlier C17 pure
+Scale/concurrent-commit cancellation acceptance.
