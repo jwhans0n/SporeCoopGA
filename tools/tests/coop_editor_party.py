@@ -361,16 +361,9 @@ class EditorParty(EditorPair):
         self.record(count + '-player-baseline')
 
     def objects(self, game):
-        result = super().objects(game)
-        for line in game.call('coop.editor objects').splitlines():
-            identity = re.match(r'(\d+:\d+) ', line)
-            rotation = re.search(r'\brotation=([^ ]+)', line)
-            if identity and identity[1] in result and rotation:
-                value = tuple(map(float,rotation[1].split(',')))
-                if len(value) != 4 or not all(math.isfinite(n) for n in value):
-                    raise FixtureError('Native rotation diagnostic is invalid')
-                result[identity[1]]['rotation'] = value
-        return result
+        # One response is one projection. A second read can truncate at a
+        # different row while Locate eases and numeric string lengths change.
+        return super().objects(game)
 
     def body(self, game, object_id):
         point = super().body(game, object_id)
@@ -1224,6 +1217,18 @@ def main():
         parser_probe = object.__new__(EditorParty)
         parsed = parser_probe.objects(argparse.Namespace(call=lambda _: '7:1 class=9 pos=1,2,3 scale=2 screen=500,450 rotation=0,0,0,1\n'))
         assert parsed['7:1']['rotation'] == (0.,0.,0.,1.)
+        calls=[]
+        complete='7:1 class=9 pos=1,2,3 scale=2 screen=500,450 rotation=0,0,0,1 relative_scale=0.5\n'
+        def changing_diagnostic(_):
+            calls.append(1)
+            return complete if len(calls)==1 else complete[:-4]
+        parsed=parser_probe.objects(argparse.Namespace(call=changing_diagnostic))
+        assert len(calls)==1 and parsed['7:1']['rotation']==(0.,0.,0.,1.) and parsed['7:1']['relative_scale']==.5
+        for tail in ('8:1 class=9 pos=1,2,3 scale=2 screen=',
+                     '8:1 class=9 pos=1,2,3 scale=2 screen=500,450 rotation=0,0,',
+                     '8:1 class=9 pos=1,2,3 scale=2 screen=500,450 rotation=0,0,0,1 relative_scale='):
+            parsed=parser_probe.objects(argparse.Namespace(call=lambda _,tail=tail:complete+tail))
+            assert set(parsed)=={'7:1'} and parsed['7:1']['relative_scale']==.5
         session = '\n'.join(f"remote {i} 'Peer{i}' puppet=0x1234 state=yes age=0.10s pos=(1 2 3)\n   puppet pos=(1 2 3) err=0.00 rot_err=0.0\ntogether {i} 1" for i in (1,2,3))
         assert parse_party_positions('pos=(1 2 3) |r|=3.7', session)['local'] == (1.,2.,3.)
         assert parse_party_positions('pos=(1 2 3)', session.replace('err=0.00','err=2.00',1)) is None

@@ -305,6 +305,13 @@ class EditorPair:
                         # The public console bounds large-object diagnostics;
                         # a partial last quaternion is not a native field value.
                         pass
+                relative = re.search(r'\brelative_scale=(\S+)',line)
+                if relative:
+                    try:
+                        value=float(relative[1])
+                        if math.isfinite(value):result[m[1]]['relative_scale']=value
+                    except ValueError:
+                        pass
         return result
 
     def body(self, game, object_id):

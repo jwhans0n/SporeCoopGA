@@ -1587,3 +1587,15 @@ with exit code zero. The failed new-author edit keeps the episode ineligible.
 Receipts: `out/editor-native-bulk-c19/run2/result.json`, its episode/correlation
 receipts and public native input logs. The next test waits for actual projected
 coordinates to stabilize rather than assuming a fixed Locate delay.
+
+The following run exposes a diagnostic-reader defect during that camera wait.
+The party harness reads the bounded object table twice: the first read admits a
+complete placement row, while the second can truncate the same row's quaternion
+at a different character as projected coordinates change. Combining them raises
+a numeric parsing error. The harness now gets transforms and the optional scale
+companion from one response and excludes its incomplete trailing row. Pure
+regressions for coherent reads and truncated screen/rotation/companion rows pass
+on Windows and WSL. No native DLL or protocol change is involved. C19's original
+native build receipt stays separate from this later harness revision. All four
+games in the interrupted run complete normal exit with code zero. Receipt:
+`out/editor-native-bulk-c19/run3/result.json` and the retained public responses.
