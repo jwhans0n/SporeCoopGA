@@ -3616,3 +3616,29 @@ preservation, exact bound-round and resource-owner mismatch, and replacement
 generation no-write. Health independently reviewed the ordering/ownership with
 no concrete blocker. Actual C17 native return/End/disconnect camera results
 remain pending, and no running-game camera-fix claim follows from fixtures.
+
+### Native Move and first-use bulk-fixture calibration (C18)
+
+The real `408A0000!29058784.366A930D` (`Live or Die`) fixture opens through
+the native browser with 648 placements. The fresh private host initially shows
+disabled Adventure creation controls. Normal visible Welcome Play, captain
+creation/naming/save and native exit unlock those controls. The browser contains
+two exact-title cards, so native source identity must be checked after opening;
+title matching alone is insufficient. These observations do not require a new
+native call or an external edit to the loaded profile.
+
+A normal shared drag of its floating Plane Piece, stable placement
+`4294967300:1`, changes position from
+`(920.854065,104.872391,299.871033)` to
+`(923.027283,109.683479,293.896576)`. Its native orientation also changes from
+`(-0.411485,0.514416,-0.619385,-0.427105)` to
+`(-0.414161,0.511443,-0.619552,-0.427846)`, while class, scale and relative
+scale stay fixed. All three native editors converge on that committed gesture.
+The orientation change is an observed part of this native Move; the exact
+internal adjustment algorithm is not established by this input test. Tests must
+retain and compare its full canonical result rather than assume every Move
+preserves the selected placement's quaternion. Unrelated placements must remain
+unchanged. The initial position-only harness rejects this observation and is
+not a bulk-latency result. Both setup cohorts complete normal exit with code
+zero. Receipts: `out/editor-native-bulk/c18-run1`, `c18-run2`, their ordinary
+input logs and `c18-run2/after-first-move-objects.txt`.
