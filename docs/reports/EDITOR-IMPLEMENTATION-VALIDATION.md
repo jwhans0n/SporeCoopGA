@@ -1,6 +1,6 @@
 # Shared Adventure Editor: implementation validation
 
-Report revision 28, C18 repeated playtest and four-player FPS, 2026-10-26. Branch:
+Report revision 29, actual bulk contention and C19 optimization, 2026-10-26. Branch:
 `feat/ga-adventure-editor`. The portable core and transport checkpoint is local
 commit `216f8b0`; native integration is recorded at `0a35c7b`, with lab tools at
 `a9b844f`. The C10 integration checkpoint is `071f6a4`, depending on network
@@ -34,7 +34,7 @@ not silently become a C18 gate pass after the collector correction.
 | Large-editor FPS | C18: unobstructed four-player comparison passes on 419 placements. C17 two/four-player comparisons also pass. The earlier covered four-player sample is excluded. |
 | Collector memory defect | Reproduced in C17; C18 real four-player idle test proves stable 64-entry capacity with continuing native updates. |
 | Sustained retained memory | Open. C18's exclusive 128-edit warm-up and 30 edit/Test/Return window completes with stable resource/history bounds, but positive tail private-byte slopes do not yet establish an active-editor plateau. All four release below baseline on normal Galaxy return. |
-| Genuine bulk contention | Open. Aggregate 2 Mbit/s WAN instrumentation and real-content provenance are prepared; actual fresh-peer contention and the unchanged 750 ms p95 gate still need execution. |
+| Genuine bulk contention | Failed C18 exploratory run: three actual overlapping confirmations take 997-1,030 ms, above the unchanged 750 ms target. The real 1.99 MB payload matches verified provenance; a separate new-peer body-calibration failure prevents episode acceptance. Native apply/integrity work dominates the recorded timing. C19 optimization and a complete rerun remain. |
 | Gameplay regression breadth | C18 automated suites pass. Actual large-adventure FPS and the remaining captain/lobby/music/interactions/targeting/results/Replay native coverage are separate gates. |
 
 Stages 5 and later remain roadmap work. None of these observations enable
@@ -1498,3 +1498,47 @@ every client to offline Galaxy, then exact owned HWNDs receive normal WM_CLOSE;
 all four exit with code zero before their owner lease expires. Receipts:
 `out/editor-native-party-c18/fps-four/performance-result.json` and
 `out/editor-native-party-c18/normal-close-result.json`.
+
+### C18 real bulk contention: failed acceptance and timing attribution
+
+The real `Live or Die` source opens normally with 648 placements, is saved to
+a private native copy, and supports genuine, distinct native Moves from both
+existing collaborators. A cold fourth profile sends an observed empty content
+inventory. Its actual Resources SHA-256 and size match the independently
+decoded revision-pinned envelope: 1,986,296 bytes and 230 resource records.
+Four genuine existing-author Moves commit; three overlap actual Resources
+serialization on the aggregate 2 Mbit/s WAN with 100 ms RTT, 1% loss, reordering
+and duplicates. Their request-to-confirmation times are
+996.99/1029.85/1017.85 ms, exceeding the unchanged 750 ms target. These three
+samples are insufficient for the required thirty-sample p95 and already show
+a problem; no bulk pass is claimed.
+
+All four reach matching native/durable revision six before the new collaborator's
+own edit. Its body calibration then fails after the ordinary palette click,
+which can toggle an already-open Buildings palette closed. That setup explanation
+still needs a successful native recheck. No accepted new-peer edit or complete
+episode follows. The test now checks the visible palette before toggling it.
+All four games complete normal exit with code zero; no game files
+or personal installation are modified. Raw receipts:
+`out/editor-native-bulk/c18-run3/episode-01/bulk-episode-1/episode.json`,
+`correlation.json`, proxy captures, and the cohort `result.json`.
+
+The actual timing separates transport from processing. Host apply work costs
+273-290 ms and host persistence 81-83 ms. Author application costs 294-311 ms
+and persistence 76-78 ms; the recorded durable flush itself is only 3.5-4.5 ms.
+The next candidate removes redundant opaque normalization only after full
+projection validation proves identical owned bytes, bindings and act. Changed
+bytes or identities retain the full existing guard. Pure transforms also avoid
+retaining every actor, decoding a structural artifact and repeatedly resolving
+unchanged placements. Structural operations retain that path. No native ABI,
+protocol, dependency validation or durable-confirmation rule changes. C19
+requires controlled regression checks and actual native reruns; this is not a
+claim that the latency target has been met.
+
+Focused C19 controlled regressions pass: 1,683 Win32 native-adapter assertions,
+including a real adapter apply over 1,024 controlled markers with only the last
+transform changed and no structural reads or actor lookups, and 5,771 quick
+runtime assertions. The latter retain full projection validation for identical
+bytes, reject mismatched projections and malformed bytes, and require the
+existing opaque guard after any byte, binding or act change. The complete build
+and actual running-game latency rerun remain separate gates.

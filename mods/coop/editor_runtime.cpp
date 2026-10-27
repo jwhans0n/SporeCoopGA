@@ -477,7 +477,13 @@ bool stop_unsupported(std::string& error) {
     return false;
 }
 bool native_integrity(const editor_native::Snapshot& snapshot, const editor::Document& document, std::string& error) {
-    return editor_native::validate(snapshot, document, error) && supported_between(current_native, snapshot, error);
+    if (!editor_native::validate(snapshot, document, error)) return false;
+    // Validation above still decodes and checks the complete native projection.
+    // Identical owned bytes and bindings cannot introduce an opaque authored
+    // change, so avoid cloning, normalizing and rewriting the same resource.
+    if (current_native.act == snapshot.act && current_native.bindings == snapshot.bindings &&
+        current_native.bytes == snapshot.bytes) return true;
+    return supported_between(current_native, snapshot, error);
 }
 bool check_native_integrity(std::string& error) {
     if (editor_native::state().generation != native_generation) {

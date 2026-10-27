@@ -3642,3 +3642,23 @@ unchanged. The initial position-only harness rejects this observation and is
 not a bulk-latency result. Both setup cohorts complete normal exit with code
 zero. Receipts: `out/editor-native-bulk/c18-run1`, `c18-run2`, their ordinary
 input logs and `c18-run2/after-first-move-objects.txt`.
+
+C18's first real bulk run attributes most confirmation delay to native
+apply/integrity work, not durable flush or proxy delivery. The C19 optimization
+adds no native symbol, function or layout. After the existing full native
+projection validator succeeds, Runtime can omit opaque normalization only when
+the entire owned serialized byte vector, serialized bindings and act exactly
+match its committed snapshot. Any difference uses the existing normalizer.
+Malformed bytes and mismatched supported fields still fail that first validator.
+
+For a nonstructural apply, the freshly captured live projection identifies
+unchanged placements before native lookup. No marker roster changes, so the
+adapter need not retain every actor or decode a structural source copy.
+Changed markers use the same verified apply call and full before snapshot for
+rollback; persistence still captures and validates the canonical result before
+acknowledgement. Structural create/delete/restore retain the original actor,
+artifact and live-marker checks. Controlled actual-i686 adapter tests cover
+1,024 markers, exact preservation of every other marker, no-op reapplication
+and nonfinite rejection. Runtime negatives retain the full opaque guard for
+changed bytes, bindings or act. These are controlled checks, not a native
+latency pass. See the implementation report's C18 bulk/C19 section.

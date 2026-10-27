@@ -27,6 +27,7 @@ void* t_tool_pointer=&t_tool_pointer;
 bool t_active=true,t_restore_fail=false,t_callback_fail=false,t_alloc_fail=false;
 uint64_t t_frame=10;
 unsigned t_restores=0,t_original_undo=0,t_own_undo=0,t_settled=0,t_failed=0;
+unsigned t_object_lookups=0,t_writes=0,t_reads=0,t_transforms=0;
 GestureScope t_scope;
 CancellationTicket t_seen;
 std::string t_failure;
@@ -56,10 +57,20 @@ void* SK_THISCALL t_copy(void* dst,const void* src){
     t_rows[dst].assign(begin,end);rows_for(dst);return dst;
 }
 void* SK_THISCALL t_object(void* owner,void* marker){
+    ++t_object_lookups;
     CHECK(owner==t_data.data());
     auto& rows=t_rows[t_live.data()];
     for(unsigned i=0;i<2;++i)if(marker==rows.data()+i*0x238+4)return t_actors[i].data();
     return nullptr;
+}
+bool SK_THISCALL t_write(void*,Stream* stream){
+    ++t_writes;const uint8_t byte=0xA5;return write(stream,&byte,1);
+}
+bool SK_THISCALL t_no_read(void*,Stream*){++t_reads;return false;}
+void SK_THISCALL t_transform(void* owner,void* marker,bool shared){
+    CHECK(owner==t_data.data()&&!shared&&applying);
+    CHECK(marker==t_rows[t_live.data()].data()+(kPlacementLimit-1)*0x238+4);
+    ++t_transforms;
 }
 void* SK_THISCALL t_marker(void* owner,void* actor){
     CHECK(owner==t_data.data());
@@ -241,7 +252,44 @@ void test_local_view(){
     CHECK(!capture_view(pinned,error)&&pinned==old);
 }
 }
+static void test_large_transform_without_roster_work(){
+    using namespace editor_native;
+    reset();skg::field<void*>(t_context.data(),4)=nullptr;
+    std::array<uint8_t,0x27E8> classes{};std::array<uint8_t,0x534> acts{};
+    skg::field<uint32_t>(classes.data(),0)=1024;
+    skg::field<void*>(t_live.data(),0x2BF4)=classes.data();
+    skg::field<void*>(t_live.data(),0x2BF8)=classes.data()+classes.size();
+    skg::field<void*>(t_live.data(),0x23C)=acts.data();
+    skg::field<void*>(t_live.data(),0x240)=acts.data()+acts.size();
+    auto& rows=t_rows[t_live.data()];rows.assign(kPlacementLimit*0x238,0);rows_for(t_live.data());
+    for(unsigned i=0;i<kPlacementLimit;++i){
+        auto* marker=rows.data()+i*0x238+4;
+        skg::field<uint32_t>(marker,0)=1024;
+        skg::field<editor::Vec3>(marker,4)={float(i),0,0};
+        skg::field<editor::Rotation>(marker,0x10)={0,0,0,1};
+        skg::field<float>(marker,0x20)=1;skg::field<float>(marker,0x24)=.5f;
+    }
+    a_write=uintptr_t(t_write);a_read=uintptr_t(t_no_read);a_apply_marker=uintptr_t(t_transform);
+    t_object_lookups=t_writes=t_reads=t_transforms=0;
+    Snapshot before;std::string error;CHECK(capture(before,error));
+    auto wanted=before.document;wanted.placements.rbegin()->second.position.y=3;
+    const auto raw=rows;
+    CHECK(editor_native::apply(wanted,error));
+    CHECK(t_transforms==1&&t_object_lookups==0&&t_reads==0&&t_writes==2);
+    CHECK(t_allocations.empty()&&skg::field<bool>(t_data.data(),0x84));
+    for(unsigned i=0;i<kPlacementLimit;++i){
+        auto* marker=rows.data()+i*0x238+4;
+        CHECK(skg::field<float>(marker,8)==(i==kPlacementLimit-1?3.f:0.f));
+    }
+    auto expected=raw;skg::field<float>(expected.data()+(kPlacementLimit-1)*0x238+4,8)=3;
+    CHECK(rows==expected);
+    CHECK(editor_native::apply(wanted,error));CHECK(t_transforms==1&&t_object_lookups==0&&t_reads==0);
+    wanted.placements.rbegin()->second.position.x=std::numeric_limits<float>::infinity();
+    CHECK(!editor_native::apply(wanted,error));CHECK(rows==expected&&t_transforms==1&&t_reads==0);
+    reset();CHECK(t_allocations.empty());
+}
 int main(){
+    test_large_transform_without_roster_work();
     test_local_view();
     using namespace editor_native;
     // Ordinary editing keeps the native entry-level Undo behavior intact.

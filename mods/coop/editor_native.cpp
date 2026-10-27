@@ -1282,7 +1282,13 @@ bool apply(const editor::Document& document,const editor::Change& change,const S
     }
     Owned source(artifact?parse(artifact->bytes,error):nullptr);
     if(artifact && !source.p)return false;
-    Owned base(parse(snapshot.bytes,error));if(!base.p)return false;
+    const bool structural=document.placements.size()!=snapshot.document.placements.size() ||
+        std::any_of(snapshot.document.placements.begin(),snapshot.document.placements.end(),
+            [&](const auto& row){return !document.placements.contains(row.first);});
+    // Only roster changes can invalidate live slots or need an owned marker
+    // artifact. A transform preserves the roster captured immediately above.
+    Owned base(structural?parse(snapshot.bytes,error):nullptr);
+    if(structural && !base.p)return false;
     auto source_marker=[&](editor::ObjectId id)->void*{
         if(artifact)for(const auto& b:artifact->bindings)
             if(b.object==id)return marker_for_key(source.p,b.marker);
@@ -1293,7 +1299,7 @@ bool apply(const editor::Document& document,const editor::Change& change,const S
     struct Actor { editor::ObjectId id; std::unique_ptr<Owned> reference; };
     std::vector<Actor> actors;
     void* owner=data(mode());
-    for(const auto& b:snapshot.bindings){
+    if(structural)for(const auto& b:snapshot.bindings){
         // Snapshot indices name its dense serialized resource. Live pool slots
         // can have holes and must be resolved through stable identity instead.
         void* marker=marker_for_id(resource(owner),b.object);
@@ -1363,6 +1369,10 @@ bool apply(const editor::Document& document,const editor::Change& change,const S
         if(object){addref(object);actors.push_back({id,std::make_unique<Owned>(object)});}
     }
     for(const auto& [id,to]:document.placements){
+        auto before=snapshot.document.placements.find(id);
+        if(!structural && before!=snapshot.document.placements.end() && before->second.position==to.position &&
+           before->second.rotation==to.rotation && before->second.scale==to.scale &&
+           before->second.properties==to.properties)continue;
         void* marker=marker_for_id(resource(owner),id);
         if(!marker)return fail("Native transform target is no longer bound");
         float previous=skg::field<float>(marker,0x20);

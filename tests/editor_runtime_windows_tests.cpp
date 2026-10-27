@@ -79,6 +79,7 @@ struct Native {
     unsigned rebaselines=0;
     unsigned structural_applies=0;uint64_t structural_frame=0;
     unsigned selections=0,enters=0,registrations=0;
+    unsigned validations=0,opaque_checks=0;
     std::optional<std::vector<uint8_t>> persisted_bytes;
 };
 std::array<Native,2> native;
@@ -187,6 +188,7 @@ bool restore_view(const LocalView& value,uint64_t generation,std::string& error)
     if(!n.state.ready||n.state.gesture||!n.view_ready||n.state.generation!=generation||n.refuse_view_restore){error="Injected local camera restore failed";return false;}
     ++n.view_restores;n.view=value;return true;}
 bool validate(const Snapshot& snapshot,const editor::Document& wanted,std::string& error){
+    ++native[side].validations;
     CHECK(!dispatching);editor::State parsed;
     if(snapshot.bytes.empty()||!ew::decode_state(std::vector<uint8_t>(snapshot.bytes.begin()+1,snapshot.bytes.end()),parsed,error))return false;
     const auto& d=parsed.document;
@@ -197,6 +199,7 @@ bool validate(const Snapshot& snapshot,const editor::Document& wanted,std::strin
     return true;
 }
 bool supported_changes(const Gesture& gesture,std::string& error){CHECK(!dispatching);
+    ++native[side].opaque_checks;
     if(gesture.before.bytes.empty()||gesture.after.bytes.empty()||gesture.before.bytes.front()!=gesture.after.bytes.front()){
         error="Injected unsupported opaque authoring change";return false;
     }return true;
@@ -756,7 +759,36 @@ static void test_uncaptured_opaque_changes_cannot_save_or_playtest() {
     CHECK(!native[0].save_calls&&!native[0].save_as_calls&&!native[0].preview&&!native[0].active);
     CHECK(runtime_host::controller->state().document.revision==0&&runtime_host::store.snapshot().native_snapshot==canonical);}
 }
+static void test_identical_native_snapshot_validation() {
+    Party party;side=0;std::string error;
+    const auto canonical=native[0].snapshot;
+    const auto wanted=runtime_host::controller->state().document;
+    auto validates=native[0].validations,opaque=native[0].opaque_checks;
+    CHECK(runtime_host::native_integrity(canonical,wanted,error));
+    CHECK(native[0].validations==validates+1&&native[0].opaque_checks==opaque);
+    // Identical bytes still need complete projection validation before the
+    // opaque comparison can be omitted.
+    auto mismatch=wanted;mismatch.placements.at(placement).position.x+=1;
+    CHECK(!runtime_host::native_integrity(canonical,mismatch,error));
+    CHECK(native[0].opaque_checks==opaque);
+    auto malformed=canonical;malformed.bytes.resize(1);
+    CHECK(!runtime_host::native_integrity(malformed,wanted,error));
+    CHECK(native[0].opaque_checks==opaque);
+    auto changed=canonical;changed.bytes.front()^=1;
+    CHECK(!runtime_host::native_integrity(changed,wanted,error));
+    CHECK(native[0].opaque_checks==++opaque);
+    // The stub accepts these projections, so count the full opaque guard to
+    // verify that equal bytes alone never bypass changed bindings or act.
+    changed=canonical;++changed.bindings.front().marker;
+    runtime_host::native_integrity(changed,wanted,error);
+    CHECK(native[0].opaque_checks==++opaque);
+    changed=canonical;++changed.act;
+    runtime_host::native_integrity(changed,wanted,error);
+    CHECK(native[0].opaque_checks==++opaque);
+    CHECK(native[0].snapshot.bytes==canonical.bytes&&!runtime_host::frozen);
+}
 static void test_host_apply_rejects_uncaptured_opaque_changes() {
+    test_identical_native_snapshot_validation();
     Party party;std::string error;side=1;
     CHECK(runtime_guest::controller->request_leases({{editor::ScopeKind::Field,placement,{editor::Field::Position,0}}},15000,error));
     CHECK(spin([]{return !runtime_guest::controller->view().local_leases.empty();}));
