@@ -8,8 +8,8 @@ checkpoint `7f7c3da`; measurement tooling is recorded at `b65ba3b`. Later
 calibration changes require their own working-tree/run evidence.
 
 **Implementation is under validation and is not release-ready.** Portable tests
-and several real two/four-player workflows pass. Remaining native cancellation,
-broader lifecycle, bulk contention and memory gates below prevent a
+and several real two/four-player workflows pass. Remaining lifecycle and
+cancellation breadth, bulk contention and memory gates below prevent a
 complete stages 0-4 claim.
 
 This development branch uses protocol 16. The published
@@ -1418,3 +1418,15 @@ layout or symbol changes are introduced. The actual Win32 Update-wrapper test
 passes 2,000 simulated authoring frames and checks that resumed gameplay receives
 only current observations. C18 still needs its combined build and actual native
 memory/performance rerun; the C17 gate results do not automatically transfer.
+
+C18's combined validation now passes: 22 Win32 suites plus 21 additional
+package-admission cases, and repository-wide portable `make test`. Frozen source
+inputs remain unchanged. The new DLL is 71,650,816 bytes, SHA-256
+`1970184ea9b51bc6a1991fc71a4c661fceb9b8673d407212dbb2885b4bbc75df`.
+It is installed only in the private test copy, with a C17 DLL/map backup. All
+three native loader maps remain byte-identical. The four prior games completed
+normal WM_CLOSE with exit code zero; four fresh C18 processes reached trusted
+cold startup (`admission_boot=3`). Receipts:
+`out/editor-integrated-c18/validation.json`,
+`out/editor-native-candidate18/deploy.json`, and
+`out/editor-native-party-c18/editor-startup.json`.
