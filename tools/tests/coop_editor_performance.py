@@ -37,6 +37,14 @@ def offline(text):
     return bool(text.splitlines()) and text.splitlines()[0].strip() == 'offline'
 
 
+def editor_uncovered(game):
+    # First-use registration can open after a cold imported editor loads. Check
+    # actual visible captions outside the timed window, rather than trusting
+    # Scenario mode or a valid projected camera to prove unobstructed rendering.
+    if game.caption('Login') or game.caption("If you don't register"):
+        raise FixtureError('A native registration dialog covers the editor; close it before sampling')
+
+
 def configuration(game):
     result = {name: game.call(command) for name, command in (
         ('frame', 'coop.frame_metrics config'), ('background', 'bg'), ('window', 'window'), ('mods', 'mods'))}
@@ -128,6 +136,8 @@ def sample(instance, record, args, barrier=None):
             raise FixtureError('Shared measurement requires a connected editor party')
         config = configuration(game)
         camera = projection(game, config)
+        editor_uncovered(game)
+        game.shot('performance-before')
         before_memory = memory(record['pid'])
         # Do not include serializer/inspection or previous asynchronous UI work.
         time.sleep(2)
@@ -145,6 +155,8 @@ def sample(instance, record, args, barrier=None):
         after = game.call('coop.editor inspect')
         state_after = game.call('coop.editor status')
         info_after = game.call('info')
+        editor_uncovered(game)
+        game.shot('performance-after')
         if before != after or 'frames from: Present' not in info_after:
             raise FixtureError('The authored fixture, camera, or frame source changed during measurement')
         if config != configuration(game) or camera != projection(game, config):
@@ -164,7 +176,8 @@ def sample(instance, record, args, barrier=None):
         return {'instance': instance, 'pid': record['pid'], 'inspect': before, 'counts': counts,
                 'configuration': config, 'projection': camera, 'state': state_before, 'info': info, 'party': party,
                 'sample_start': start_wall, 'sample_stop': stop_wall, 'source_fence': source,
-                'metrics': measured, 'memory_before': before_memory, 'memory_after': after_memory}
+                'metrics': measured, 'memory_before': before_memory, 'memory_after': after_memory,
+                'registration_uncovered': True}
     except Exception:
         if barrier:
             barrier.abort()

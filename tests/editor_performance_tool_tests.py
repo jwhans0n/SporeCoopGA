@@ -33,6 +33,12 @@ def report(kind='independent'):
 
 
 class ComparisonTests(unittest.TestCase):
+    def test_visible_registration_rejects_performance_sample(self):
+        for caption in ('Login', "If you don't register"):
+            with self.assertRaises(perf.FixtureError):
+                perf.editor_uncovered(SimpleNamespace(caption=lambda value: value == caption))
+        perf.editor_uncovered(SimpleNamespace(caption=lambda value: None))
+
     def run_compare(self, baseline, shared, diagnostic=False):
         with tempfile.TemporaryDirectory(prefix='editor-perf-offline-') as temp:
             directory = Path(temp)
@@ -160,6 +166,8 @@ class FakeGame:
         if command not in responses: raise AssertionError('Unexpected command: ' + command)
         return responses[command]
     def save_log(self): self.saved = True
+    def caption(self, text): return None
+    def shot(self, label): return (1024, 768)
 
 
 class SamplingTests(unittest.TestCase):

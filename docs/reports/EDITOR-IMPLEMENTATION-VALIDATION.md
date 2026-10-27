@@ -1338,3 +1338,26 @@ snapshot configuration was unavailable because the OS refused the required
 privilege (0xd0000061). The PID-only configuration was disabled again, its final
 query confirms disabled, and no recording or global image setting was started.
 The active retained-memory gate remains open.
+
+The subsequent shared attempt did not reproduce that pure native Scale path.
+Delete correctly required a document-wide lease and could not commit during a
+held placement gesture. A guest held Move combined with wheel scaling allowed
+an unrelated host Scale to commit, but then tripped the strict opaque native
+authoring guard (normalized byte 23022, sizes 60679/60677). The guest requested
+an explicit baseline rather than silently accepting that unknown change. No
+native cancellation serial advanced, so this is a failed, inconclusive shared
+cancellation test and needs further investigation, not rollback acceptance.
+The private draft remained recoverable. Both processes returned to Galaxy and
+completed normal WM_CLOSE with exit code zero. Receipts:
+`out/editor-native-pair-c17-final/shared-cancel-182438/result.json`,
+`detach-result.json` and `normal-close-result.json`.
+
+The fresh four-process C17 FPS calculation met the numeric budgets, but two new
+profiles still displayed native registration dialogs over their editor view.
+Those samples are excluded from final large-editor acceptance. The dialogs were
+closed normally, and all four returned to Galaxy. The sampler now rejects a
+visible registration prompt before and after recording and saves screenshots
+outside the timed interval. Its 20 offline tests pass on Windows and WSL.
+The original raw comparison remains at
+`out/editor-native-party-c17-final/fps-four/comparison.json`; it is not promoted
+to an unobstructed four-editor pass.
