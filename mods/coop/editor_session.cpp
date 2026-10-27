@@ -273,14 +273,20 @@ struct Controller::Impl {
         auto covers = [&](const Scope& x, const Scope& y) {
             if (x.kind == ScopeKind::Placement && y.kind == ScopeKind::Field) return x.object == y.object;
             if ((x.kind == ScopeKind::Class || x.kind == ScopeKind::Act) && (y.kind == ScopeKind::Placement || y.kind == ScopeKind::Field)) {
+                auto settings=state().document.class_settings.find(y.object);
+                if(settings!=state().document.class_settings.end())return y.kind==ScopeKind::Field &&
+                    (x.kind==ScopeKind::Class?settings->second.class_id:settings->second.act_id)==x.object;
                 auto found = state().document.placements.find(y.object);
                 return found == state().document.placements.end() || (x.kind == ScopeKind::Class ? found->second.class_id : found->second.act_id) == x.object;
             }
             return false;
         };
         if (covers(a,b) || covers(b,a)) return true;
-        if ((a.kind == ScopeKind::Class && b.kind == ScopeKind::Act) || (a.kind == ScopeKind::Act && b.kind == ScopeKind::Class))
+        if ((a.kind == ScopeKind::Class && b.kind == ScopeKind::Act) || (a.kind == ScopeKind::Act && b.kind == ScopeKind::Class)){
             for (const auto& [id,p] : state().document.placements) { (void)id; if (p.class_id == (a.kind == ScopeKind::Class ? a.object : b.object) && p.act_id == (a.kind == ScopeKind::Act ? a.object : b.object)) return true; }
+            for(const auto& [id,c]:state().document.class_settings){(void)id;if(c.class_id==(a.kind==ScopeKind::Class?a.object:b.object) &&
+                c.act_id==(a.kind==ScopeKind::Act?a.object:b.object))return true;}
+        }
         return false;
     }
     bool release_pending(const std::vector<Scope>& scopes) const {
@@ -338,6 +344,7 @@ struct Controller::Impl {
             if (quarantined(lease) || lease.expires <= now) return true;
             if (lease.scope.kind != ScopeKind::Placement && lease.scope.kind != ScopeKind::Field) return false;
             const auto& document = state().document;
+            if(lease.scope.kind==ScopeKind::Field && document.class_settings.contains(lease.scope.object))return false;
             if (!document.placements.contains(lease.scope.object) && !document.tombstones.contains(lease.scope.object)) return true;
             auto retired = lease_retirements.find(lease.scope.object);
             if (retired == lease_retirements.end()) return false;

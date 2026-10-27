@@ -7,8 +7,9 @@ implemented against the stages below. See the
 remaining acceptance gates. This plan follows the published
 [v0.7.4.0 release](https://github.com/jwhans0n/SporeCoopGA/releases/tag/v0.7.4.0).
 That release supports co-op adventure play, not shared adventure editing. This
-release remains unchanged. Editor development uses protocol 16; it does not
-change installed files or the published protocol 15 release.
+release remains unchanged. The placement preview uses protocol 16. Further
+class-property development uses protocol 17; the installed placement preview and
+the published protocol 15 release are separate from that development branch.
 
 The goal is for a party to create and edit one adventure together in native Spore
 editor windows, playtest a committed draft together, and return to that draft.

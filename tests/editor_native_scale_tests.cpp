@@ -23,6 +23,10 @@ static State seed(bool tracked=true){
 int main(){
     std::string error;float relative=0;bool tracked=false;
     auto initial=seed();CHECK(relative_scale_mode(initial.document,tracked,error));CHECK(tracked);
+    auto unsupported=initial.document;unsupported.class_schema[1]={ValueKind::Boolean};
+    CHECK(!relative_scale_mode(unsupported,tracked,error));
+    unsupported=initial.document;unsupported.class_settings[{5,1}]={};
+    CHECK(!relative_scale_mode(unsupported,tracked,error));
     for(float v:{0.f,.5f,.479587317f,1.f,-.25f,1.25f,std::numeric_limits<float>::lowest(),std::numeric_limits<float>::max()}){
         auto p=initial.document.placements.at(object);CHECK(project_relative_scale(p,true,v,error));
         CHECK(relative_scale_value(p,true,relative,error));CHECK(relative==v);CHECK(p.scale==2);

@@ -82,6 +82,15 @@ struct Reference {
     ObjectId owner, target; // Read-only external goal/avatar references.
     auto operator<=>(const Reference&) const = default;
 };
+// A cast/template setting belongs to one class in one authored act, rather
+// than to any individual placed instance. Its identity survives placement edits.
+struct ClassActSettings {
+    ObjectId object, class_id, act_id;
+    std::map<uint32_t, Value> properties;
+    Revision revision = 0;
+    std::map<FieldKey, Revision> field_revisions;
+    bool operator==(const ClassActSettings&) const = default;
+};
 struct Document {
     ProjectId project{};
     uint64_t epoch = 0;
@@ -92,6 +101,8 @@ struct Document {
     std::map<ObjectId, Placement> placements;
     std::map<ObjectId, Revision> tombstones;
     std::vector<Reference> external_references;
+    std::map<uint32_t, PropertySpec> class_schema;
+    std::map<ObjectId, ClassActSettings> class_settings;
     // This is only a supported semantic projection. Opaque native data stays owned
     // by the native adapter/store and is never reconstructed from this structure.
     bool operator==(const Document&) const = default;
@@ -240,6 +251,10 @@ size_t bytes(const Patch&);
 size_t bytes(const State&);
 std::optional<Value> value(const Placement&, FieldKey);
 Revision field_revision(const Placement&, FieldKey);
+// Class settings and placements share checked field transactions and history,
+// while keeping separate schemas, identities and ownership scopes.
+std::optional<Value> value(const Document&, ObjectId, FieldKey);
+Revision field_revision(const Document&, ObjectId, FieldKey);
 // Replica path: canonical ordered host acceptance only. It recomputes semantic
 // before/after/inverse data and all per-author cursor transitions. Unknown native
 // fields remain the adapter's responsibility. Rejection leaves state unchanged.

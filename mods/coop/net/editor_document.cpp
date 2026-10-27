@@ -83,12 +83,15 @@ bool placement_shape(const Placement& p, const Document& d, const Limits& limits
         if (!field_key(field) || (field.field == Field::Property && !d.schema.contains(field.property)) || (versions && rev > p.revision)) return false;
     return true;
 }
-bool field_value(FieldKey k, const std::optional<Value>& v, const Document& d, const Limits& limits)
+bool field_value(FieldKey k, const std::optional<Value>& v, const Document& d, const Limits& limits, ObjectId object = {})
 {
     if (!field_key(k)) return false;
+    const bool settings = d.class_settings.contains(object);
+    if (settings && k.field != Field::Property) return false;
     if (k.field == Field::Property) {
-        auto it = d.schema.find(k.property);
-        return it != d.schema.end() && (v ? typed(*v, it->second, limits) : it->second.optional);
+        const auto& schema = settings ? d.class_schema : d.schema;
+        auto it = schema.find(k.property);
+        return it != schema.end() && (v ? typed(*v, it->second, limits) : it->second.optional);
     }
     if (!v) return false;
     if (k.field == Field::Position) { auto* x = std::get_if<Vec3>(&*v); return x && position(*x); }
@@ -116,14 +119,35 @@ Revision absent_revision(const Document& d, ObjectId id)
 {
     auto it = d.tombstones.find(id); return it == d.tombstones.end() ? 0 : it->second;
 }
+bool editable(const Document& d, ObjectId id) {
+    return d.placements.contains(id) || d.class_settings.contains(id);
+}
+Scope field_scope(const Document& d,ObjectId id,FieldKey field){
+    auto c=d.class_settings.find(id);
+    return c==d.class_settings.end()?Scope{ScopeKind::Field,id,field}:
+        Scope{ScopeKind::Class,c->second.class_id,{}};
+}
+Revision object_revision(const Document& d, ObjectId id) {
+    auto p=d.placements.find(id);
+    if(p!=d.placements.end())return p->second.revision;
+    auto c=d.class_settings.find(id);
+    return c==d.class_settings.end()?0:c->second.revision;
+}
+void set(Document& d, ObjectId id, FieldKey field, const std::optional<Value>& v, Revision revision) {
+    auto p=d.placements.find(id);
+    if(p!=d.placements.end()){set(p->second,field,v,revision);return;}
+    auto& c=d.class_settings.at(id);
+    if(v)c.properties[field.property]=*v;else c.properties.erase(field.property);
+    c.field_revisions[field]=revision;c.revision=revision;
+}
 bool check(const Document& d, const Check& c)
 {
-    auto it = d.placements.find(c.object);
     if (!identity(c.object)) return false;
-    if (c.kind == CheckKind::Absent) return it == d.placements.end() && absent_revision(d, c.object) == c.expected;
-    if (it == d.placements.end()) return false;
-    if (c.kind == CheckKind::Object) return it->second.revision == c.expected;
-    return c.kind == CheckKind::Field && field_key(c.field) && field_revision(it->second, c.field) == c.expected;
+    if (c.kind == CheckKind::Absent) return !editable(d,c.object) && !d.classes.contains(c.object) && !d.acts.contains(c.object) && absent_revision(d, c.object) == c.expected;
+    if (!editable(d,c.object)) return false;
+    if (c.kind == CheckKind::Object) return object_revision(d,c.object) == c.expected;
+    return c.kind == CheckKind::Field && field_key(c.field) &&
+        (!d.class_settings.contains(c.object) || c.field.field==Field::Property) && field_revision(d,c.object,c.field) == c.expected;
 }
 bool patch_shape(const Patch& p, const Document& d, const Limits& l)
 {
@@ -138,7 +162,7 @@ bool patch_shape(const Patch& p, const Document& d, const Limits& l)
     for (const auto& e : p.fields)
         if (!identity(e.object) || objects.contains(e.object) || !fields.insert({e.object, e.field}).second ||
             e.expected > d.revision || e.restored_revision > d.revision || e.restored_object_revision > d.revision ||
-            !field_value(e.field, e.before, d, l) || !field_value(e.field, e.after, d, l)) return false;
+            !field_value(e.field, e.before, d, l,e.object) || !field_value(e.field, e.after, d, l,e.object)) return false;
     for (const auto& c : p.dependencies)
         if (!identity(c.object) || c.kind > CheckKind::Absent || c.expected > d.revision ||
             (c.kind == CheckKind::Field ? !field_key(c.field) : c.field != FieldKey{})) return false;
@@ -167,10 +191,31 @@ Revision field_revision(const Placement& p, FieldKey field)
 {
     auto it = p.field_revisions.find(field); return it == p.field_revisions.end() ? 0 : it->second;
 }
+std::optional<Value> value(const Document& d,ObjectId id,FieldKey field) {
+    auto p=d.placements.find(id);
+    if(p!=d.placements.end())return value(p->second,field);
+    auto c=d.class_settings.find(id);
+    if(c==d.class_settings.end() || field.field!=Field::Property)return {};
+    auto v=c->second.properties.find(field.property);
+    return v==c->second.properties.end()?std::optional<Value>{}:v->second;
+}
+Revision field_revision(const Document& d,ObjectId id,FieldKey field) {
+    auto p=d.placements.find(id);
+    if(p!=d.placements.end())return field_revision(p->second,field);
+    auto c=d.class_settings.find(id);
+    if(c==d.class_settings.end())return 0;
+    auto r=c->second.field_revisions.find(field);
+    return r==c->second.field_revisions.end()?0:r->second;
+}
 size_t bytes(const Document& d)
 {
     size_t n = 128 + (d.classes.size() + d.acts.size() + d.tombstones.size()) * 48 + d.schema.size() * 64 + d.external_references.size() * 32;
     for (const auto& [id, p] : d.placements) { (void)id; n += placement_bytes(p); }
+    n += d.class_schema.size()*64;
+    for(const auto& [id,c]:d.class_settings){
+        (void)id;n+=128+c.field_revisions.size()*32;
+        for(const auto& [key,v]:c.properties){(void)key;n+=16+value_bytes(v);}
+    }
     return n;
 }
 size_t bytes(const Patch& p)
@@ -187,7 +232,8 @@ bool valid(const Document& d, const Limits& l, std::string& error)
     auto bad = [&](const char* why) { error = why; return false; };
     if (!project(d.project) || !d.epoch || !d.next_id || d.next_id == UINT64_MAX || d.revision == UINT64_MAX) return bad("Invalid project identity, epoch, revision or ID allocator.");
     if (d.placements.size() > l.placements || d.classes.size() > l.classes || d.acts.size() > l.acts ||
-        d.tombstones.size() > l.tombstones || d.schema.size() > l.properties * 8 || d.external_references.size() > l.dependencies * 16 || bytes(d) > l.document_bytes) return bad("Document exceeds a configured bound.");
+        d.tombstones.size() > l.tombstones || d.schema.size() > l.properties * 8 || d.class_schema.size()>l.properties*8 ||
+        d.class_settings.size()>l.classes*l.acts || d.external_references.size() > l.dependencies * 16 || bytes(d) > l.document_bytes) return bad("Document exceeds a configured bound.");
     if (d.classes.empty() || d.acts.empty()) return bad("A document needs known classes and acts.");
     std::map<uint64_t, ObjectId> ids;
     auto add = [&](ObjectId id) { return identity(id) && id.id < d.next_id && ids.emplace(id.id, id).second; };
@@ -197,6 +243,23 @@ bool valid(const Document& d, const Limits& l, std::string& error)
         if (!id || spec.kind < ValueKind::Number || spec.kind > ValueKind::Resource || !std::isfinite(spec.minimum) ||
             !std::isfinite(spec.maximum) || spec.minimum > spec.maximum || spec.max_text > l.text_bytes ||
             (spec.kind == ValueKind::Text && !spec.max_text)) return bad("Invalid editable-property schema.");
+    for(const auto& [id,spec]:d.class_schema)
+        if(!id || spec.kind<ValueKind::Number || spec.kind>ValueKind::Resource || !std::isfinite(spec.minimum) ||
+           !std::isfinite(spec.maximum) || spec.minimum>spec.maximum || spec.max_text>l.text_bytes ||
+           (spec.kind==ValueKind::Text && !spec.max_text))return bad("Invalid class-property schema.");
+    std::set<std::pair<ObjectId,ObjectId>> class_acts;
+    for(const auto& [id,c]:d.class_settings){
+        if(!add(id) || id!=c.object || !d.classes.contains(c.class_id) || !d.acts.contains(c.act_id) ||
+           !class_acts.emplace(c.class_id,c.act_id).second || c.revision>d.revision || c.properties.size()>l.properties ||
+           c.field_revisions.size()>d.class_schema.size())return bad("Invalid class/act settings identity or revision.");
+        for(const auto& [property,v]:c.properties)
+            if(!field_value({Field::Property,property},v,d,l,id))return bad("Invalid class-property value.");
+        for(const auto& [property,spec]:d.class_schema)
+            if(!spec.optional && !c.properties.contains(property))return bad("A required class property is missing.");
+        for(const auto& [field,revision]:c.field_revisions)
+            if(field.field!=Field::Property || !d.class_schema.contains(field.property) || revision>c.revision)
+                return bad("Invalid class-property revision.");
+    }
     for (const auto& [id, p] : d.placements) {
         if (!add(id) || id != p.object || !placement_shape(p, d, l, true)) return bad("Invalid placement, field value or revision.");
         for (const auto& [property, v] : p.properties) {
@@ -206,6 +269,14 @@ bool valid(const Document& d, const Limits& l, std::string& error)
     }
     for (const auto& [id, revision] : d.tombstones)
         if (!add(id) || revision > d.revision) return bad("Invalid or reused deleted identity.");
+    for(const auto& [id,c]:d.class_settings)for(const auto& [property,v]:c.properties){
+        (void)id;(void)property;
+        if(auto* ref=std::get_if<ObjectId>(&v);ref && identity(*ref) &&
+           !d.placements.contains(*ref) && !d.class_settings.contains(*ref) && !d.classes.contains(*ref) && !d.acts.contains(*ref))
+            return bad("A class-property reference is missing.");
+        if(auto* ref=std::get_if<ObjectId>(&v);ref && identity(*ref) && ids.at(ref->id)!=*ref)
+            return bad("A class-property reference has an old generation.");
+    }
     std::set<Reference> refs;
     for (const auto& ref : d.external_references) {
         if (!identity(ref.owner) || !d.placements.contains(ref.target) || !refs.insert(ref).second) return bad("Invalid external objective/avatar reference.");
@@ -283,6 +354,8 @@ bool Coordinator::scope_valid(const Scope& s) const
     if (!identity(s.object)) return false;
     if (s.kind == ScopeKind::Class) return s.field == FieldKey{} && d.classes.contains(s.object);
     if (s.kind == ScopeKind::Act) return s.field == FieldKey{} && d.acts.contains(s.object);
+    if(d.class_settings.contains(s.object))return s.kind==ScopeKind::Field &&
+        s.field.field==Field::Property && d.class_schema.contains(s.field.property);
     if (!d.placements.contains(s.object) && !d.tombstones.contains(s.object)) return false;
     return s.kind == ScopeKind::Placement ? s.field == FieldKey{} : field_key(s.field) && (s.field.field != Field::Property || d.schema.contains(s.field.property));
 }
@@ -291,6 +364,9 @@ bool Coordinator::covers(const Scope& a, const Scope& b) const
     if (a.kind == ScopeKind::Document || a == b) return true;
     if (a.kind == ScopeKind::Placement && b.kind == ScopeKind::Field && a.object == b.object) return true;
     if ((a.kind == ScopeKind::Class || a.kind == ScopeKind::Act) && (b.kind == ScopeKind::Placement || b.kind == ScopeKind::Field)) {
+        auto settings=state_.document.class_settings.find(b.object);
+        if(settings!=state_.document.class_settings.end())return b.kind==ScopeKind::Field &&
+            (a.kind==ScopeKind::Class?settings->second.class_id:settings->second.act_id)==a.object;
         auto it = state_.document.placements.find(b.object);
         return it != state_.document.placements.end() && (a.kind == ScopeKind::Class ? it->second.class_id : it->second.act_id) == a.object;
     }
@@ -301,11 +377,14 @@ bool Coordinator::overlaps(const Scope& a, const Scope& b) const
     if (covers(a, b) || covers(b, a)) return true;
     if ((a.kind == ScopeKind::Class && b.kind == ScopeKind::Act) || (a.kind == ScopeKind::Act && b.kind == ScopeKind::Class)) {
         for (const auto& [id, p] : state_.document.placements) { (void)id; if (p.class_id == (a.kind == ScopeKind::Class ? a.object : b.object) && p.act_id == (a.kind == ScopeKind::Act ? a.object : b.object)) return true; }
+        for(const auto& [id,c]:state_.document.class_settings){(void)id;if(c.class_id==(a.kind==ScopeKind::Class?a.object:b.object) &&
+            c.act_id==(a.kind==ScopeKind::Act?a.object:b.object))return true;}
     }
     // Deleted placements can be restored by Undo. Until their native class/act
     // context is restored, conservatively conflict with class and act writers.
     auto unknown = [&](const Scope& x, const Scope& y) {
-        return (x.kind == ScopeKind::Class || x.kind == ScopeKind::Act) && (y.kind == ScopeKind::Placement || y.kind == ScopeKind::Field) && !state_.document.placements.contains(y.object);
+        return (x.kind == ScopeKind::Class || x.kind == ScopeKind::Act) && (y.kind == ScopeKind::Placement || y.kind == ScopeKind::Field) &&
+            !state_.document.placements.contains(y.object) && !state_.document.class_settings.contains(y.object);
     };
     return unknown(a, b) || unknown(b, a);
 }
@@ -407,6 +486,11 @@ bool references(const Document& d)
         }
     }
     for (const auto& ref : d.external_references) if (!d.placements.contains(ref.target)) return false;
+    for(const auto& [id,c]:d.class_settings)for(const auto& [property,v]:c.properties){
+        (void)id;(void)property;
+        if(auto* ref=std::get_if<ObjectId>(&v);ref && identity(*ref) &&
+           !d.placements.contains(*ref) && !d.class_settings.contains(*ref) && !d.classes.contains(*ref) && !d.acts.contains(*ref))return false;
+    }
     return true;
 }
 
@@ -432,9 +516,8 @@ Code apply_patch(const Document& before, const Patch& input, const Limits& limit
         }
     }
     for (const auto& e : input.fields) {
-        auto it = before.placements.find(e.object);
-        if (it == before.placements.end()) return bad(Code::MissingObject, "The edited placement no longer exists.");
-        if (field_revision(it->second, e.field) != e.expected || value(it->second, e.field) != e.before) return bad(Code::Conflict, "The edited field changed; no older action was selected.");
+        if (!editable(before,e.object)) return bad(Code::MissingObject, "The edited object no longer exists.");
+        if (field_revision(before,e.object,e.field) != e.expected || value(before,e.object,e.field) != e.before) return bad(Code::Conflict, "The edited field changed; no older action was selected.");
         if (e.before == e.after) return bad(Code::Invalid, "A no-op field change is not a gesture.");
     }
     after = before; after.revision++;
@@ -451,8 +534,8 @@ Code apply_patch(const Document& before, const Patch& input, const Limits& limit
         inverse.objects.push_back({e.object, e.after, e.before, after.revision});
     }
     for (auto& e : canonical.fields) {
-        Revision old_object_revision = before.placements.at(e.object).revision;
-        set(after.placements.at(e.object), e.field, e.after, after.revision);
+        Revision old_object_revision = object_revision(before,e.object);
+        set(after,e.object,e.field,e.after,after.revision);
         inverse.fields.push_back({e.object, e.field, e.after, e.before, after.revision, e.expected, old_object_revision});
     }
     if (!references(after)) return bad(Code::Referenced, "Deleting this placement would orphan a placement or objective reference.");
@@ -461,10 +544,9 @@ Code apply_patch(const Document& before, const Patch& input, const Limits& limit
     if (!valid(after, limits, error)) return Code::Invalid;
     inverse.dependencies = input.dependencies;
     for (auto& c : inverse.dependencies) {
-        auto it = after.placements.find(c.object);
-        if (it == after.placements.end()) { c.kind = CheckKind::Absent; c.expected = absent_revision(after, c.object); }
-        else if (c.kind == CheckKind::Field) c.expected = field_revision(it->second, c.field);
-        else { c.kind = CheckKind::Object; c.expected = it->second.revision; }
+        if (!editable(after,c.object)) { c.kind = CheckKind::Absent; c.expected = absent_revision(after, c.object); }
+        else if (c.kind == CheckKind::Field) c.expected = field_revision(after,c.object,c.field);
+        else { c.kind = CheckKind::Object; c.expected = object_revision(after,c.object); }
     }
     return Code::Accepted;
 }
@@ -493,8 +575,7 @@ void refresh_history(State& state, const Change& change, const Patch& requested)
         if (g.operation == change.gesture || g.operation.author != change.operation.author) continue;
         for (Patch* patch : {&g.undo, &g.redo}) {
             for (auto& e : patch->fields) {
-                auto live = state.document.placements.find(e.object);
-                if (live == state.document.placements.end() || value(live->second, e.field) != e.before) continue;
+                if (!editable(state.document,e.object) || value(state.document,e.object,e.field) != e.before) continue;
                 for (const auto& r : restored)
                     if (r.object == e.object && r.field == e.field && e.expected == r.field_revision) e.expected = state.document.revision;
             }
@@ -505,12 +586,11 @@ void refresh_history(State& state, const Change& change, const Patch& requested)
                     if (r.object == e.object && e.expected == r.object_revision) { e.expected = state.document.revision; e.before = live->second; }
             }
             for (auto& dependency : patch->dependencies) {
-                auto live = state.document.placements.find(dependency.object);
-                if (live == state.document.placements.end()) continue;
+                if (!editable(state.document,dependency.object)) continue;
                 for (const auto& r : restored) {
                     if (r.object != dependency.object) continue;
-                    if (dependency.kind == CheckKind::Field && dependency.field == r.field && dependency.expected == r.field_revision) dependency.expected = field_revision(live->second, r.field);
-                    if (r.whole && dependency.kind == CheckKind::Object && dependency.expected == r.object_revision) dependency.expected = live->second.revision;
+                    if (dependency.kind == CheckKind::Field && dependency.field == r.field && dependency.expected == r.field_revision) dependency.expected = field_revision(state.document,dependency.object,r.field);
+                    if (r.whole && dependency.kind == CheckKind::Object && dependency.expected == r.object_revision) dependency.expected = object_revision(state.document,dependency.object);
                 }
             }
         }
@@ -576,6 +656,14 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
                 if (m.kind == MutationKind::Clone) clone_sources[p.object] = m.target;
                 allocated.push_back(p.object); patch.objects.push_back({p.object, std::nullopt, p, 0});
             } else {
+                if(m.kind==MutationKind::Set && state_.document.class_settings.contains(m.target)){
+                    if(!field_value(m.field,m.value,state_.document,limits_,m.target))
+                        return reject(Code::Unsupported,"The class property is not registered, typed and valid.");
+                    auto code=leased(r,field_scope(state_.document,m.target,m.field),now);
+                    if(code!=Code::Accepted)return reject(code,"Editing shared cast properties requires their class lease.");
+                    patch.fields.push_back({m.target,m.field,value(state_.document,m.target,m.field),m.value,m.expected});
+                    continue;
+                }
                 auto it = state_.document.placements.find(m.target);
                 if (it == state_.document.placements.end()) return reject(Code::MissingObject, "The edited placement is missing or belongs to an old generation.");
                 if (m.kind == MutationKind::Delete) {
@@ -612,7 +700,7 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
             if (code != Code::Accepted) return reject(code, "Undo/Redo requires its placement lease.");
         }
         for (const auto& e : patch.fields) {
-            auto code = leased(r, {ScopeKind::Field, e.object, e.field}, now);
+            auto code = leased(r, field_scope(state_.document,e.object,e.field), now);
             if (code != Code::Accepted) return reject(code, "Undo/Redo requires its edited-field lease.");
         }
     }
@@ -681,7 +769,9 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
     // Deleting a placement invalidates outstanding field/placement capabilities;
     // Undo restoration must explicitly reacquire one, even for the original author.
     std::erase_if(leases_, [&](const Lease& lease) {
-        return (lease.scope.kind == ScopeKind::Placement || lease.scope.kind == ScopeKind::Field) && !state_.document.placements.contains(lease.scope.object);
+        return (lease.scope.kind == ScopeKind::Placement || lease.scope.kind == ScopeKind::Field) &&
+            !state_.document.placements.contains(lease.scope.object) &&
+            !(lease.scope.kind==ScopeKind::Field && state_.document.class_settings.contains(lease.scope.object));
     });
     return accepted;
 }

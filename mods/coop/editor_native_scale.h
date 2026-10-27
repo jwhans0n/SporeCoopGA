@@ -16,6 +16,9 @@ inline bool clone_scale_blocked(uint32_t action,bool gesture,bool clone_source){
     return action==6 && gesture && clone_source;
 }
 inline bool relative_scale_mode(const editor::Document& document,bool& tracked,std::string& error){
+    if(!document.class_schema.empty() || !document.class_settings.empty()){
+        error="Shared class settings require their verified native adapter";return false;
+    }
     tracked=!document.schema.empty();
     if(tracked && document.schema!=relative_scale_schema()){
         error="Unsupported native placement-property schema";return false;

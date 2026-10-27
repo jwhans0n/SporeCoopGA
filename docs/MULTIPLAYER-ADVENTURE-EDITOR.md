@@ -17,6 +17,12 @@ and the exact GOG executable with SHA-256
 `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
 Older protocol 15 gameplay clients cannot join an editor build's party.
 
+These instructions describe the locally installed placement preview. Further
+authoring development on `feat/ga-editor-semantics` uses protocol 17 and is not
+installed automatically. Its class-property transaction support does not yet
+enable the corresponding native controls. See the
+[authoring progress](EDITOR-SEMANTICS-PROGRESS.md).
+
 The placement adapter implements creation from templates already in the draft,
 duplication, deletion, movement, rotation and uniform scale. Scale tracks both
 physical size and the native continuous-scale companion; two-player native

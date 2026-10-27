@@ -1153,6 +1153,12 @@ void open(bool on)
         return;
     g_want_open = on;
     if (on) {
+        const auto editor = A.editor ? A.editor() : coop_editor::View{};
+        if (prefer_editor_on_open(A.role && A.role() != 0, editor.visible,
+                                  editor.active, editor.offered, editor.can_begin)) {
+            g_editor_page = true;
+            g_adventure_page = g_space_page = false;
+        }
         g_raise = true;
         if (D.root)
             sui::set_edit_text(D.name_edit, A.name()); // fresh values when the dialog appears

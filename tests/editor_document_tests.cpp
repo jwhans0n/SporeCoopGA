@@ -70,7 +70,7 @@ struct Fixture {
         auto result = core.submit(r, now); release_all(p); return result;
     }
     Mutation set(ObjectId id, FieldKey f, std::optional<Value> v) const {
-        Mutation m; m.target = id; m.field = f; m.value = std::move(v); m.expected = field_revision(doc().placements.at(id), f); return m;
+        Mutation m; m.target = id; m.field = f; m.value = std::move(v); m.expected = field_revision(doc(),id,f); return m;
     }
     Mutation erase(ObjectId id) const { Mutation m; m.kind = MutationKind::Delete; m.target = id; m.expected = doc().placements.at(id).revision; return m; }
 };
@@ -415,10 +415,99 @@ static void test_replica_and_nonce_recovery()
     CHECK(host.core.state().document.epoch == 0x1234 && !host.core.state().history.empty());
 }
 
+static State class_seed(){
+    auto s=seed();auto& d=s.document;d.next_id=23;
+    d.class_schema[200]={ValueKind::Number,1,10000,0,false,false};
+    d.class_schema[201]={ValueKind::Text,0,0,64,true,false};
+    d.class_schema[202]={ValueKind::Reference,0,0,0,true,true};
+    for(unsigned i=0;i<3;++i){
+        ClassActSettings c;c.object={20+i,1};c.class_id=i==1?class_b:class_a;c.act_id=i==2?act_b:act_a;
+        c.properties[200]=100.f;c.properties[201]=std::string("Original class");
+        d.class_settings.emplace(c.object,c);
+    }
+    return s;
+}
+static void test_class_settings(){
+    constexpr ObjectId settings{20,1},other_settings{21,1},other_act{22,1};
+    constexpr FieldKey health{Field::Property,200},name{Field::Property,201},target{Field::Property,202};
+    std::string error;auto s=class_seed();CHECK(valid(s.document,{},error));
+    auto bad=s;bad.document.class_settings.at(settings).act_id={999,1};CHECK(!valid(bad.document,{},error));
+    bad=s;bad.document.class_settings.at(settings).class_id={999,1};CHECK(!valid(bad.document,{},error));
+    bad=s;bad.document.class_settings.at(other_act).act_id=act_a;CHECK(!valid(bad.document,{},error));
+    bad=s;bad.document.class_settings.at(settings).properties.erase(200);CHECK(!valid(bad.document,{},error));
+    bad=s;bad.document.class_settings.at(settings).properties[200]=-1.f;CHECK(!valid(bad.document,{},error));
+    bad=s;bad.document.class_settings.at(settings).properties[200]=true;CHECK(!valid(bad.document,{},error));
+    bad=s;bad.document.class_settings.at(settings).field_revisions[health]=1;CHECK(!valid(bad.document,{},error));
+    bad=s;bad.document.class_settings.at(settings).properties[202]=ObjectId{10,2};CHECK(!valid(bad.document,{},error));
+    bad=s;bad.document.class_settings.at(settings).properties[202]=ObjectId{99,1};CHECK(!valid(bad.document,{},error));
+    bad=s;bad.document.class_schema[200].maximum=std::numeric_limits<double>::infinity();CHECK(!valid(bad.document,{},error));
+
+    Fixture f({},s);
+    CHECK(f.forward(0,{f.set(b,pos,Vec3{55,0,0})}).accepted());
+    auto placements=f.doc().placements;
+    auto tokens=f.grant(0,{{ScopeKind::Class,class_a,{}}});
+    CHECK(!f.core.acquire(f.peers[1],{{ScopeKind::Placement,a,{}}},f.now,1000).accepted());
+    // Class ownership coordinates all its authored acts, including empty ones.
+    CHECK(!f.core.acquire(f.peers[1],{{ScopeKind::Act,act_b,{}}},f.now,1000).accepted());
+    auto other_tokens=f.grant(1,{{ScopeKind::Class,class_b,{}}});
+    auto q=f.request(0);q.leases=tokens;q.mutations={f.set(settings,health,250.f)};
+    auto accepted=f.core.submit(q,f.now);CHECK(accepted.accepted());
+    CHECK(f.doc().placements==placements && value(f.doc(),settings,health)==Value(250.f));
+    CHECK(value(f.doc(),other_act,health)==Value(100.f));
+    auto r=f.request(1);r.leases=other_tokens;r.mutations={f.set(other_settings,health,500.f)};
+    CHECK(f.core.submit(r,f.now).accepted());f.release_all(0);f.release_all(1);
+    auto document=f.doc();CHECK(f.history(0,Intent::Undo).accepted());
+    CHECK(value(f.doc(),settings,health)==Value(100.f) && value(f.doc(),other_settings,health)==Value(500.f));
+    CHECK(f.history(0,Intent::Redo).accepted());CHECK(value(f.doc(),settings,health)==Value(250.f));
+
+    // A narrow field lease does not authorize native class-wide rebuilding.
+    tokens=f.grant(2,{field_scope(settings,health)});q=f.request(2);q.leases=tokens;
+    q.mutations={f.set(settings,health,300.f)};document=f.doc();
+    CHECK(!f.core.submit(q,f.now).accepted() && f.doc()==document);f.release_all(2);
+    CHECK(!f.core.acquire(f.peers[2],{{ScopeKind::Placement,settings,{}}},f.now,1000).accepted());
+    CHECK(f.forward(2,{f.set(settings,pos,Vec3{})}).code==Code::Unsupported);
+    CHECK(f.forward(2,{f.set(settings,health,std::numeric_limits<float>::quiet_NaN())}).code==Code::Unsupported);
+
+    // Another author's disjoint field survives chronological Undo/Redo.
+    CHECK(f.forward(1,{f.set(settings,name,std::string("Guest label"))}).accepted());
+    CHECK(f.history(0,Intent::Undo).accepted());CHECK(value(f.doc(),settings,name)==Value(std::string("Guest label")));
+    CHECK(f.history(0,Intent::Redo).accepted());
+    CHECK(f.forward(1,{f.set(settings,health,400.f)}).accepted());
+    auto history=f.core.state().history;document=f.doc();auto conflict=f.history(0,Intent::Undo);
+    CHECK(conflict.code==Code::Conflict && f.doc()==document && f.core.state().history==history);
+    const auto& older=f.core.state().history.front();CHECK(older.applied && older.operation.author==f.peers[0]);
+    CHECK(older.undo.fields.size()==1 && older.undo.fields.front().object==b);
+    CHECK(older.undo.fields.front().before==value(f.doc(),b,pos));
+    CHECK(older.undo.fields.front().expected==field_revision(f.doc(),b,pos));
+
+    Fixture multi({},s);State replica=s;
+    for(float v:{200.f,300.f,400.f}){
+        auto d=multi.forward(0,{multi.set(settings,health,v)});CHECK(d.accepted());
+        CHECK(apply_committed(replica,d,error));CHECK(replica==multi.core.state());
+    }
+    for(unsigned i=0;i<3;++i){auto d=multi.history(0,Intent::Undo);CHECK(d.accepted());CHECK(apply_committed(replica,d,error));CHECK(replica==multi.core.state());}
+    CHECK(value(multi.doc(),settings,health)==Value(100.f));
+    for(unsigned i=0;i<3;++i){auto d=multi.history(0,Intent::Redo);CHECK(d.accepted());CHECK(apply_committed(replica,d,error));CHECK(replica==multi.core.state());}
+    CHECK(value(multi.doc(),settings,health)==Value(400.f));
+
+    // Typed references prevent deleting a still-required placed target.
+    CHECK(multi.forward(0,{multi.set(settings,target,a)}).accepted());
+    document=multi.doc();CHECK(multi.forward(1,{multi.erase(a)}).code==Code::Referenced);CHECK(multi.doc()==document);
+    CHECK(multi.forward(0,{multi.set(settings,target,ObjectId{})}).accepted());CHECK(multi.forward(1,{multi.erase(a)}).accepted());
+
+    Fixture rollback({},s);auto original=rollback.doc();int restored=0;
+    Hooks hooks;hooks.apply=[](const auto&,const auto&,const auto&,auto&){return true;};
+    hooks.persist=[](const auto&,const auto&,auto&){return false;};
+    hooks.rollback=[&](const auto& before,const auto&,const auto&,auto&){++restored;return before==original;};
+    CHECK(rollback.forward(0,{rollback.set(settings,health,200.f)},hooks).code==Code::PersistenceFailed);
+    CHECK(rollback.doc()==original && restored==1 && rollback.core.state().history.empty());
+}
+
 int main()
 {
     test_validation(); test_create_clone_delete(); test_clone_final_pose(); test_concurrent_fields_and_batches(); test_reference_integrity(); test_leases();
     test_undo_chronology_and_conflict(); test_own_multistep_and_structural_history(); test_redo_and_author_isolation(); test_dedup_retention_and_epoch(); test_hooks_and_atomicity(); test_four_author_adversity(); test_replica_and_nonce_recovery();
+    test_class_settings();
     std::printf("editor_document: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

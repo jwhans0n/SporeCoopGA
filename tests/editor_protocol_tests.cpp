@@ -161,4 +161,47 @@ static void malformed(){
     for(unsigned i=0;i<3000;++i){std::vector<uint8_t> bytes(random()%512);for(auto& x:bytes)x=uint8_t(random());read(bytes,message,guest,false);w::decode_state(bytes,state,error);w::decode_request(bytes,request,error);w::decode_decision(bytes,decision,error);}
     CHECK(true);
 }
-int main(){codec();authority();transfers();preview_authority_and_malformed();join_inventory_codec_bounds_and_authority();malformed();std::cout<<"editor protocol: "<<checks<<" checks passed\n";}
+static void class_settings_codec(){
+    auto s=sample();auto& d=s.document;d.next_id=6;
+    d.class_schema[200]={ValueKind::Number,1,10000,0,false,false};
+    ClassActSettings c;c.object={5,1};c.class_id={1,1};c.act_id={2,1};c.revision=3;
+    c.properties[200]=100.f;c.field_revisions[{Field::Property,200}]=3;d.class_settings[c.object]=c;
+    std::string error;std::vector<uint8_t> bytes;CHECK(w::encode_state(s,bytes,error));
+    State result;CHECK(w::decode_state(bytes,result,error) && result==s);
+    for(size_t cut=0;cut<bytes.size();++cut){auto unchanged=s;
+        CHECK(!w::decode_state({bytes.begin(),bytes.begin()+cut},unchanged,error));CHECK(unchanged==s);}
+    auto bad=bytes;bad[24]=2;result=s;CHECK(!w::decode_state(bad,result,error) && result==s);
+    bad=bytes;bad.push_back(0);CHECK(!w::decode_state(bad,result,error) && result==s);
+    auto legacy=s;legacy.document.class_schema.clear();legacy.document.class_settings.clear();
+    std::vector<uint8_t> old;CHECK(w::encode_state(legacy,old,error));
+    CHECK(old.size()+28<bytes.size());CHECK(std::equal(old.begin(),old.end(),bytes.begin()+28));
+    // Malicious extension counts fail before unbounded allocation.
+    bad=bytes;for(size_t i=28+old.size();i<32+old.size();++i)bad[i]=255;
+    CHECK(!w::decode_state(bad,result,error) && result==s);
+    CHECK(w::decode_state(old,result,error) && result==legacy);
+    std::vector<uint8_t> again;CHECK(w::encode_state(result,again,error) && again==old);
+    // Legacy UUIDs matching both magic words remain unambiguous: their epoch
+    // at byte16 is nonzero, unlike the new versioned wrapper.
+    uint64_t magic=UINT64_C(0x3153504344455053);std::memcpy(legacy.document.project.data(),&magic,8);
+    std::memcpy(legacy.document.project.data()+8,&magic,8);
+    CHECK(w::encode_state(legacy,old,error));CHECK(w::decode_state(old,result,error) && result==legacy);
+
+    Coordinator core;CHECK(core.reset(s,s.document.epoch,error));CHECK(core.connect(host));
+    auto lease=core.acquire(host,{{ScopeKind::Class,{1,1},{}}},0,1000);CHECK(lease.accepted());
+    State replica=s;
+    for(unsigned i=0;i<3;++i){
+        Request q;q.project=d.project;q.epoch=d.epoch;q.base_revision=core.state().document.revision;
+        q.operation={host,100+i,d.epoch};q.summary="Class health";
+        q.leases.push_back({lease.leases.front().scope,lease.leases.front().token});
+        if(!i){Mutation m;m.target=c.object;m.field={Field::Property,200};m.value=200.f;m.expected=3;q.mutations.push_back(m);}
+        else q.intent=i==1?Intent::Undo:Intent::Redo;
+        auto decision=core.submit(q,i);CHECK(decision.accepted());
+        std::vector<uint8_t> encoded;CHECK(w::encode_decision(decision,encoded,error));Decision decoded;
+        CHECK(w::decode_decision(encoded,decoded,error));CHECK(apply_committed(replica,decoded,error));
+        CHECK(w::encode_state(core.state(),encoded,error));CHECK(w::decode_state(encoded,result,error));
+        CHECK(result==core.state() && replica==core.state());
+        Coordinator recovered;CHECK(recovered.reset(result,1000+i,error));
+        CHECK(recovered.state().history==core.state().history);
+    }
+}
+int main(){codec();authority();transfers();preview_authority_and_malformed();join_inventory_codec_bounds_and_authority();malformed();class_settings_codec();std::cout<<"editor protocol: "<<checks<<" checks passed\n";}

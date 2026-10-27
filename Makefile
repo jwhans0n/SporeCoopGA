@@ -146,21 +146,21 @@ $(B)/host/editor_reopen_identity_tests.exe: tests/editor_reopen_identity_tests.c
 $(B)/host/editor_binary_delta_tests.exe: $(EDITOR_DELTA_SRC) tests/editor_binary_delta_tests.cpp
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $^ -o $@
-$(B)/host/editor_document_tests.exe: $(EDITOR_CORE_SRC) tests/editor_document_tests.cpp
+$(B)/host/editor_document_tests.exe: $(EDITOR_CORE_SRC) tests/editor_document_tests.cpp mods/coop/net/editor_document.h
 	@mkdir -p $(B)/host
-	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $^ -o $@
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(filter %.cpp,$^) -o $@
 $(B)/host/editor_store_tests.exe: mods/coop/editor_store.cpp updater/sha256.cpp tests/editor_store_tests.cpp
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $^ -o $@
-$(B)/host/editor_protocol_tests.exe: $(EDITOR_WIRE_SRC) tests/editor_protocol_tests.cpp
+$(B)/host/editor_protocol_tests.exe: $(EDITOR_WIRE_SRC) tests/editor_protocol_tests.cpp mods/coop/net/editor_document.h mods/coop/net/editor_protocol.h
 	@mkdir -p $(B)/host
-	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $^ -o $@
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $(filter %.cpp,$^) -o $@
 $(B)/host/editor_project_tests.exe: $(EDITOR_PROJECT_SRC) tests/editor_project_tests.cpp
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $^ -o $@
-$(B)/host/editor_session_tests.exe: $(EDITOR_SESSION_SRC) tests/editor_session_tests.cpp
+$(B)/host/editor_session_tests.exe: $(EDITOR_SESSION_SRC) tests/editor_session_tests.cpp mods/coop/net/editor_document.h mods/coop/net/editor_protocol.h mods/coop/editor_session.h
 	@mkdir -p $(B)/host
-	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $^ -o $@ -lws2_32
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $(filter %.cpp,$^) -o $@ -lws2_32
 $(B)/host/session_transport_tests.exe: $(SESSION_TRANSPORT_SRC) tests/session_transport_tests.cpp mods/coop/net/session.h
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $(SESSION_TRANSPORT_SRC) tests/session_transport_tests.cpp -o $@ -lws2_32

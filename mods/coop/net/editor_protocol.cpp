@@ -72,6 +72,7 @@ FIELDS(FieldKey,v.field,v.property)
 FIELDS(PropertySpec,v.kind,v.minimum,v.maximum,v.max_text,v.optional,v.nullable)
 FIELDS(Placement,v.object,v.class_id,v.act_id,v.protected_object,v.position,v.rotation,v.scale,v.properties,v.revision,v.field_revisions)
 FIELDS(Reference,v.owner,v.target)
+FIELDS(ClassActSettings,v.object,v.class_id,v.act_id,v.properties,v.revision,v.field_revisions)
 FIELDS(Document,v.project,v.epoch,v.revision,v.next_id,v.classes,v.acts,v.schema,v.placements,v.tombstones,v.external_references)
 FIELDS(Check,v.object,v.kind,v.field,v.expected)
 FIELDS(Scope,v.kind,v.object,v.field)
@@ -275,8 +276,36 @@ void direction(const Message& m,Peer sender,bool host) {
 
 bool encode_join(const Join& j,std::vector<uint8_t>& b,std::string& e) { return encode(j,b,kJoinBytes,e); }
 bool decode_join(const std::vector<uint8_t>& b,Join& j,std::string& e) { return decode(b,j,kJoinBytes,e); }
-bool encode_state(const State& s,std::vector<uint8_t>& b,std::string& e) { return encode(s,b,kStateBytes,e); }
-bool decode_state(const std::vector<uint8_t>& b,State& s,std::string& e) { return decode(b,s,kStateBytes,e); }
+// Empty placement-only documents keep their exact original encoding. The
+// optional, versioned wrapper adds class-owned settings to durable checkpoints.
+// Session protocol 17 fences older peers before this new state can be offered.
+constexpr uint64_t kClassSettingsState=UINT64_C(0x3153504344455053);
+bool encode_state(const State& s,std::vector<uint8_t>& b,std::string& error) {
+    try {
+        validate(s);Encode e{{},kStateBytes};
+        if(!s.document.class_schema.empty() || !s.document.class_settings.empty()){
+            // A legacy state starts with a 16-byte project and nonzero epoch.
+            // Zero at byte16 makes this wrapper unambiguous for every valid
+            // legacy project identity, including one matching our magic bytes.
+            e(kClassSettingsState,kClassSettingsState,uint64_t(0),uint32_t(1),s,
+                s.document.class_schema,s.document.class_settings);
+        }else e.one(s);
+        b=std::move(e.w.data);error.clear();return true;
+    } catch(const std::exception& e){error=e.what();return false;}
+}
+bool decode_state(const std::vector<uint8_t>& b,State& s,std::string& error) {
+    try {
+        need(!b.empty() && b.size()<=kStateBytes,"invalid encoded length");Decode d(b);State result{};
+        uint64_t prefix[3]{};if(b.size()>=sizeof prefix)std::memcpy(prefix,b.data(),sizeof prefix);
+        if(prefix[0]==kClassSettingsState && prefix[1]==kClassSettingsState && !prefix[2]){
+            uint64_t first=0,second=0,reserved=0;uint32_t version=0;d(first,second,reserved,version);
+            need(version==1,"unsupported class-settings checkpoint extension");d.one(result);
+            d(result.document.class_schema,result.document.class_settings);
+            need(!result.document.class_schema.empty() || !result.document.class_settings.empty(),"noncanonical empty class-settings extension");
+        }else d.one(result);
+        need(d.r.ok() && !d.r.left(),"trailing bytes");validate(result);s=std::move(result);error.clear();return true;
+    } catch(const std::exception& e){error=e.what();return false;}
+}
 bool encode_request(const Request& q,std::vector<uint8_t>& b,std::string& e) { return encode(q,b,kOperationBytes,e); }
 bool decode_request(const std::vector<uint8_t>& b,Request& q,std::string& e) { return decode(b,q,kOperationBytes,e); }
 bool encode_decision(const Decision& d,std::vector<uint8_t>& b,std::string& e) { return encode(d,b,kOperationBytes,e); }

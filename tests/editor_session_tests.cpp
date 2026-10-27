@@ -223,7 +223,7 @@ struct Party {
     }
     Request edit(unsigned p, ObjectId object, FieldKey field, Value value, const std::vector<LeaseToken>& tokens) {
         Request r; const auto& d = controllers[p]->state().document; r.base_revision = d.revision; r.summary = "Own native gesture"; r.leases = tokens;
-        Mutation m; m.target = object; m.field = field; m.value = std::move(value); m.expected = field_revision(d.placements.at(object), field); r.mutations = {m}; return r;
+        Mutation m; m.target = object; m.field = field; m.value = std::move(value); m.expected = field_revision(d,object,field); r.mutations = {m}; return r;
     }
 };
 
@@ -1224,10 +1224,50 @@ static void test_tombstone_regressions()
     test_tombstone_grants_are_fenced_by_actual_commit_revision(false);test_tombstone_grants_are_fenced_by_actual_commit_revision(true);
 }
 
+static void test_shared_class_properties_udp(unsigned count){
+    Party p(count);auto s=seed();s.document.next_id=6;
+    const ObjectId settings{5,1};const FieldKey health{Field::Property,200},name{Field::Property,201};
+    s.document.class_schema[200]={ValueKind::Number,1,10000,0,false,false};
+    s.document.class_schema[201]={ValueKind::Text,0,0,64,true,false};
+    ClassActSettings c;c.object=settings;c.class_id={1,1};c.act_id={2,1};
+    c.properties[200]=100.f;c.properties[201]=std::string("Initial cast");s.document.class_settings[settings]=c;
+    p.start(s);p.accept();const auto placements=s.document.placements;const unsigned author=count-1;std::string error;
+    for(unsigned i=0;i<count;++i)CHECK(p.controllers[i]->state().document.class_settings==s.document.class_settings);
+    auto tokens=p.grant(author,{ScopeKind::Class,{1,1},{}});
+    CHECK(p.controllers[author]->submit(p.edit(author,settings,health,200.f,tokens),error));CHECK(p.revision(1));
+    p.release(author,tokens);
+    auto host_tokens=p.grant(0,{ScopeKind::Class,{1,1},{}});
+    CHECK(p.controllers[0]->submit(p.edit(0,settings,name,std::string("Host cast label"),host_tokens),error));CHECK(p.revision(2));
+    p.release(0,host_tokens);
+    tokens=p.grant(author,{ScopeKind::Class,{1,1},{}});
+    CHECK(history_request(p,author,Intent::Undo,tokens,3));
+    for(unsigned i=0;i<count;++i){
+        CHECK(value(p.controllers[i]->state().document,settings,health)==Value(100.f));
+        CHECK(value(p.controllers[i]->state().document,settings,name)==Value(std::string("Host cast label")));
+    }
+    CHECK(history_request(p,author,Intent::Redo,tokens,4));p.release(author,tokens);
+    host_tokens=p.grant(0,{ScopeKind::Class,{1,1},{}});
+    CHECK(p.controllers[0]->submit(p.edit(0,settings,health,300.f,host_tokens),error));CHECK(p.revision(5));p.release(0,host_tokens);
+    tokens=p.grant(author,{ScopeKind::Class,{1,1},{}});
+    const auto prior=p.native[author].decisions;const auto history=p.controllers[0]->state().history;
+    Request undo;undo.intent=Intent::Undo;undo.base_revision=5;undo.leases=tokens;
+    CHECK(p.controllers[author]->submit(undo,error));CHECK(p.spin([&]{return p.native[author].decisions>prior;}));
+    for(unsigned i=0;i<count;++i){
+        const auto& state=p.controllers[i]->state();CHECK(state.document.revision==5);
+        CHECK(state.document.placements==placements && state.history==history);
+        CHECK(value(state.document,settings,health)==Value(300.f));
+        CHECK(p.native[i].document==state.document);
+    }
+    p.release(author,tokens);
+}
+
 int main(int argc,char** argv)
 {
-    const bool focused=argc==2&&std::string(argv[1])=="--tombstones";if(argc>1&&!focused)return 2;
-    CHECK(net::net_init()); test_tombstone_regressions(); if(!focused){test_release_quarantines_and_waits_for_reply(); test_host_release_quarantine_survives_view_refresh(); test_distinct_release_tokens_keep_both_quarantined(); test_reordered_lease_requests_cannot_recreate_released_scope(); test_deferred_lease_bounds_and_lifecycle(); test_repeated_release_fences_past_cache_window(); test_large_join_inventory_is_bounded_pinned_and_nonblocking(); test_join_inventory_failures_preserve_party_and_draft(); test_transient_preview_authority_coalescing_and_lifecycle(); test_guest_end_preparing_reoffers_without_freezing_party(); test_two_player_and_real_udp(); test_host_durable_coverage(); test_four_players_and_controls(); test_large_operation_transfer(); test_saved_snapshot_waits_for_native_gesture(); test_delete_revokes_lease_before_native_decision(0); test_delete_revokes_lease_before_native_decision(1); test_accepted_retry_keeps_new_gesture_ownership(0); test_accepted_retry_keeps_new_gesture_ownership(1); test_queued_begin_and_new_roster(); test_native_gesture_transaction_holds(); test_same_controller_host_to_guest(); test_delta_resources_keep_complete_late_join_cache(); test_failed_delta_staging_publishes_nothing(); test_close_waits_for_accepted_structural_commit(); test_settled_waits_for_join_but_excludes_failed_peer(); test_same_revision_saved_needs_explicit_applied_ack(); test_local_freeze_notifies_party_once(); test_deferred_baseline_and_fail_closed(); test_import_and_input_bounds(); test_rehost_authorship_and_document_hash(); test_real_udp_packet_adversity(2); test_real_udp_packet_adversity(4);}
+    const bool focused=argc==2&&std::string(argv[1])=="--tombstones";
+    const bool classes=argc==2&&std::string(argv[1])=="--class-settings";
+    if(argc>1&&!focused&&!classes)return 2;
+    CHECK(net::net_init());if(!focused){test_shared_class_properties_udp(2);test_shared_class_properties_udp(4);}
+    if(!classes){test_tombstone_regressions(); if(!focused){test_release_quarantines_and_waits_for_reply(); test_host_release_quarantine_survives_view_refresh(); test_distinct_release_tokens_keep_both_quarantined(); test_reordered_lease_requests_cannot_recreate_released_scope(); test_deferred_lease_bounds_and_lifecycle(); test_repeated_release_fences_past_cache_window(); test_large_join_inventory_is_bounded_pinned_and_nonblocking(); test_join_inventory_failures_preserve_party_and_draft(); test_transient_preview_authority_coalescing_and_lifecycle(); test_guest_end_preparing_reoffers_without_freezing_party(); test_two_player_and_real_udp(); test_host_durable_coverage(); test_four_players_and_controls(); test_large_operation_transfer(); test_saved_snapshot_waits_for_native_gesture(); test_delete_revokes_lease_before_native_decision(0); test_delete_revokes_lease_before_native_decision(1); test_accepted_retry_keeps_new_gesture_ownership(0); test_accepted_retry_keeps_new_gesture_ownership(1); test_queued_begin_and_new_roster(); test_native_gesture_transaction_holds(); test_same_controller_host_to_guest(); test_delta_resources_keep_complete_late_join_cache(); test_failed_delta_staging_publishes_nothing(); test_close_waits_for_accepted_structural_commit(); test_settled_waits_for_join_but_excludes_failed_peer(); test_same_revision_saved_needs_explicit_applied_ack(); test_local_freeze_notifies_party_once(); test_deferred_baseline_and_fail_closed(); test_import_and_input_bounds(); test_rehost_authorship_and_document_hash(); test_real_udp_packet_adversity(2); test_real_udp_packet_adversity(4);}}
     std::printf("editor_session UDP/fake-native: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

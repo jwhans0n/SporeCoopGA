@@ -36,6 +36,19 @@ int main()
           "editor controls cannot survive losing the party");
     check(select_page(true, true, false, false, true) == Page::Preparation,
           "an editor playtest uses the existing captain preparation view");
+    using coop_ui::prefer_editor_on_open;
+    check(prefer_editor_on_open(true,true,false,false,true),
+          "a host ready to share sees the editor controls immediately");
+    check(prefer_editor_on_open(true,true,false,true,false),
+          "a guest sees an offered editor even while Join is held");
+    check(prefer_editor_on_open(true,true,true,false,false),
+          "active collaborators reopen their editor controls");
+    check(!prefer_editor_on_open(true,true,false,false,false),
+          "an ordinary connected Galaxy party keeps its lobby");
+    check(!prefer_editor_on_open(false,true,true,true,true),
+          "a disconnected party cannot reopen authoring controls");
+    check(!prefer_editor_on_open(true,false,true,true,true),
+          "an unavailable editor cannot take over the dialog");
     std::printf("UI page routing: %s\n", failures ? "FAIL" : "PASS");
     return failures ? 1 : 0;
 }

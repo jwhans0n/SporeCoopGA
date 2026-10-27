@@ -2897,6 +2897,30 @@ native Ctrl+Z/Ctrl+Y and explicit-Ready native preview simulation/return; see
 
 ### Native class-property binder requires its own input guard
 
+Stage 5 property receipts now have a separate read-only verifier:
+`tools/addrport/verify_editor_properties_dc04.py`. It first verifies the existing
+exact-build editor ABI, then 23 additional class-property receipts against the
+installed GOG executable. This does not add callable symbols or enable controls.
+
+`EE538A` reads the selected native class ID from the ClassInput interface at
+`+14` (the interface itself is class-settings `+0C`). `EE53AB` resolves that
+class through `F3E740`; `EE53BA..EE53C5` reads the current act and indexes the
+class's `+70` vector with stride `4E0`. This is shared class/act state, not
+independent per-placement tuning.
+
+Awareness control `0792BF78` uses component `0742CD10`. Its begin message
+`07A4489C` reads class-act float `+484` and calls native StartHistory at
+`EE5A22`; value message `EF00A884` multiplies the slider fraction by the exact
+175.0 constant at `148A700`, writing `+484` at `EE6473`. End message `07A44749`
+uses finalizer `EDE300`, then calls `F42660` from `EE5B22`.
+
+That final helper is not merely an inspector refresh: it iterates authored acts
+and goals, and its `F42890` path clears bit zero at goal `+14`. Any enabled
+property transaction must account for the native authored side effects or reject
+and restore the entire unsupported change. Never normalize away goal changes or
+call this helper as if it were a read-only UI update. The owned-snapshot byte
+guard remains required. Live mutation/refresh acceptance is still open.
+
 C9 exposed a real read-only UI gap. Disabling root `073E6BA0` left its
 descendant sliders enabled (`0xB`), and their separately registered native
 binder handled speed-slider input despite the ScriptUI `EE4290` guard.
