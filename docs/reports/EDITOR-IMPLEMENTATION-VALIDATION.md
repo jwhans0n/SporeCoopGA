@@ -1,6 +1,6 @@
 # Shared Adventure Editor: implementation validation
 
-Report revision 25, C17 cold file, FPS and ordinary cancellation, 2026-10-26. Branch:
+Report revision 26, C17 actual shared cancellation, 2026-10-26. Branch:
 `feat/ga-adventure-editor`. The portable core and transport checkpoint is local
 commit `216f8b0`; native integration is recorded at `0a35c7b`, with lab tools at
 `a9b844f`. The C10 integration checkpoint is `071f6a4`, depending on network
@@ -1361,3 +1361,30 @@ outside the timed interval. Its 20 offline tests pass on Windows and WSL.
 The original raw comparison remains at
 `out/editor-native-party-c17-final/fps-four/comparison.json`; it is not promoted
 to an unobstructed four-editor pass.
+
+### C17 four-player native cancellation with a concurrent disjoint commit
+
+The pure native Scale route now passes with all four participants. An unrelated
+host Scale commits first; an invalid guest Scale then advances the owned native
+cancellation serial, preserves every exposed authored pose and the full native
+canonical check, and changes no collaboration history. All four remain ready
+and locally durable. Receipt:
+`out/editor-native-party-c17-final/pure-cancel-184814/result.json`.
+
+A separate run holds a pure native Scale open using ordinary Shift/wheel input,
+without an outstanding Move or mouse button. While the guest still owns that
+native gesture, the host commits a Scale on a different placement. The guest's
+authoring hold correctly defers the incoming commit. Normal Shift release and
+an unmodified mouse move finalize the invalid placement and invoke the owned
+cancellation path. All four then converge on the host's new revision and full
+canonical native check. The host edit survives, every other exposed pose is
+unchanged, and history contains exactly the peer edit, with no chronological
+Undo or rejected-gesture entry. Receipt:
+`out/editor-native-party-c17-final/held-wheel-185236/result.json`.
+
+The first held-wheel harness incorrectly waited for all-peer convergence before
+releasing the guest hold. Its manual normal release and failed test receipt are
+retained separately; it is not the accepted run. The corrected harness waits
+only for the host commit during the hold, then checks all peers after release.
+The earlier combined Move/wheel case remains a separate unsupported-data guard
+observation; the passing pure Scale tests do not waive that guard.
