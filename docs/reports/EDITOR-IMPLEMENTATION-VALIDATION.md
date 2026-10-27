@@ -12,6 +12,15 @@ and several real two/four-player workflows pass. Remaining lifecycle and
 cancellation breadth, gameplay regressions and memory gates below prevent a
 complete stages 0-4 claim.
 
+At the user's explicit request, the frozen C19 placement preview was installed
+into the normal local GOG installation for hands-on development use. The existing
+SporeCoop Two Players launcher retains profiles `coop_player1`/`coop_player2` and
+now loads `0.7.5.0-ga-editor-preview.1` (protocol 16). Matching tested SporeKit,
+loader and symbol files were installed together. Nine changed files were backed
+up under `out/personal-editor-install/20261027T051447Z`; all installed hashes
+were read back. Profiles, creations and settings were not modified. This local
+opt-in installation is not a public release or completion of pending acceptance.
+
 Long acceptance sweeps are now reserved for an explicitly requested release
 window, following the [testing playbook](../EDITOR-TESTING-PLAYBOOK.md).
 Focused development can continue while release gates remain pending. The C19
