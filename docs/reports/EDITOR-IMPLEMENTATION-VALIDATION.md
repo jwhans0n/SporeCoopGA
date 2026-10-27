@@ -20,13 +20,13 @@ for the intended acceptance criteria.
 
 ## Current acceptance status
 
-The current private candidate is C18, built from code at `d343307`. Its complete
-Windows and portable checks pass. Native C17 evidence remains useful but does
-not silently become a C18 gate pass after the collector correction.
+The current private candidate is C19, built from code at `6295b51`. Its complete
+Windows and portable checks pass. Native C17/C18 evidence remains useful but
+does not silently become a C19 gate pass after the latest native-work optimization.
 
 | Area | Current evidence and remaining work |
 | --- | --- |
-| Core, transport and ABI checks | C18: all 22 Windows suites, 21 additional admission cases and portable `make test` pass with frozen source inputs. |
+| Core, transport and ABI checks | C19: all 38 Windows editor/GA suites, 21 additional admission cases and portable `make test` pass with frozen source inputs. |
 | Native placement and history | C10-C17: real two/four-player creation, transforms, clone/delete, conflicts, chronological own Undo/Redo and bounded history pass. C18 adds 128 actual changed warm-up Moves and 30 edit/Test/Return cycles. |
 | Native cancellation | C17: four players preserve a disjoint host commit while an invalid guest Scale is held, then cancelled. Pure Scale also preserves poses and history. Additional two-player/cancellation breadth and a C18 native recheck remain. |
 | Native save and recovery | Actual Save As/reopen, cold project recovery and one complete cold native-file opaque comparison pass. The one fixture is not broad adventure round-trip coverage. |
@@ -35,7 +35,7 @@ not silently become a C18 gate pass after the collector correction.
 | Collector memory defect | Reproduced in C17; C18 real four-player idle test proves stable 64-entry capacity with continuing native updates. |
 | Sustained retained memory | Open. C18's exclusive 128-edit warm-up and 30 edit/Test/Return window completes with stable resource/history bounds, but positive tail private-byte slopes do not yet establish an active-editor plateau. All four release below baseline on normal Galaxy return. |
 | Genuine bulk contention | Failed C18 exploratory run: three actual overlapping confirmations take 997-1,030 ms, above the unchanged 750 ms target. The real 1.99 MB payload matches verified provenance; a separate new-peer body-calibration failure prevents episode acceptance. Native apply/integrity work dominates the recorded timing. C19 optimization and a complete rerun remain. |
-| Gameplay regression breadth | C18 automated suites pass. Actual large-adventure FPS and the remaining captain/lobby/music/interactions/targeting/results/Replay native coverage are separate gates. |
+| Gameplay regression breadth | C19's complete automated editor/GA suite passes. Actual large-adventure FPS and the remaining captain/lobby/music/interactions/targeting/results/Replay native coverage are separate gates. |
 
 Stages 5 and later remain roadmap work. None of these observations enable
 unsupported act, template, goal, conversation, terrain or nested-editor authoring.
@@ -1542,3 +1542,14 @@ runtime assertions. The latter retain full projection validation for identical
 bytes, reject mismatched projections and malformed bytes, and require the
 existing opaque guard after any byte, binding or act change. The complete build
 and actual running-game latency rerun remain separate gates.
+
+C19's complete frozen validation now passes: 38 Win32 editor/GA suites, 21
+additional admission cases and repository-wide portable `make test`. DLL size
+is 71,659,008 bytes, SHA-256
+`f63796d23c67b1d44aa30cbd45ee0df1fd8a3b73ccd9804928dd85e969da192f`.
+Only the marked private lab copy is updated, with a C18 DLL/map backup. All
+three loader maps remain unchanged. The fork's CI also passes at
+[`6295b51`](https://github.com/jwhans0n/SporeCoopGA/actions/runs/40442017376).
+Receipts: `out/editor-integrated-c19/validation.json` and
+`out/editor-native-candidate19/deploy.json`. This does not promote native C18
+memory, cancellation or FPS evidence to a C19 pass.
