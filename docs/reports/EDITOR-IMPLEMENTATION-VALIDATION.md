@@ -1430,3 +1430,13 @@ cold startup (`admission_boot=3`). Receipts:
 `out/editor-integrated-c18/validation.json`,
 `out/editor-native-candidate18/deploy.json`, and
 `out/editor-native-party-c18/editor-startup.json`.
+
+The actual C18 idle-editor reproduction now passes. With 59 real editable
+creatures per process, collector capacity stays at 64 entries on every client;
+the previous-scene vector remains empty. An additional 10,502-10,710 original
+native updates execute per process during the same eight-second interval, so
+the fix does not disable creature updates. Input queue sizes stay within one
+frame (observed 0-59), instead of C17's growing thousands. Normal cleanup
+completes. This proves the specific collector correction in the real game;
+the broader retained-memory gate still awaits its new window. Receipt:
+`out/editor-native-party-c18/collector-growth-192753/result.json`.
