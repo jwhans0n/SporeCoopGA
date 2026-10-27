@@ -1,6 +1,6 @@
 # Shared Adventure Editor: implementation validation
 
-Report revision 24, C17 cold native opaque round trip, 2026-10-26. Branch:
+Report revision 25, C17 cold file, FPS and ordinary cancellation, 2026-10-26. Branch:
 `feat/ga-adventure-editor`. The portable core and transport checkpoint is local
 commit `216f8b0`; native integration is recorded at `0a35c7b`, with lab tools at
 `a9b844f`. The C10 integration checkpoint is `071f6a4`, depending on network
@@ -1308,3 +1308,33 @@ passes with zero native faults. Both the original truncated attempt and the
 successful retry are retained. Receipts:
 `out/editor-native-pair-c17-final/{cold-open,cold-bytes-retry}/result.json` and
 `out/editor-audit-c17/cold-difference.json`.
+
+### C17 two-player large-editor performance
+
+The exclusive two-process comparison passes on the same 419-placement native
+Adventure Town copy, with identical process identities, hardware, cameras and
+rendering settings. Shared editing was measured first, then independent native
+editing after normal End/Leave, without authored input or native restoration
+between windows. Median FPS ratios are 1.00188 and 1.00416; p95 frame-time ratios
+are 1.00158 and 1.00201. Both meet the unchanged 0.90 and 1.15 budgets. This is an
+FPS pass, not a memory pass. Receipt:
+`out/editor-native-pair-c17-final/fps-two/performance-result.json`.
+
+### C17 positive ordinary native Scale cancellation
+
+Ordinary native Ctrl-drag raised a real building before any shared session.
+Reducing its scale allowed a further small native elevation. At position
+`(-625.684753,264.873322,447.391357)`, enlarging Cheery Backdrop 1 from scale
+4.434603 crosses the native validity boundary. The original cancellation counter
+advances from two to three, and the complete exposed placement pose returns
+exactly to its prior value. No native memory or scenario file was externally
+written. Earlier clamp-only attempts remain inconclusive and are not counted.
+This establishes an ordinary positive fixture; shared cancellation with a
+disjoint peer commit is a separate gate. Receipt:
+`out/editor-native-pair-c17-final/scale-bound-181513/result.json`.
+
+Native heap attribution through PID-only Windows Performance Recorder heap
+snapshot configuration was unavailable because the OS refused the required
+privilege (0xd0000061). The PID-only configuration was disabled again, its final
+query confirms disabled, and no recording or global image setting was started.
+The active retained-memory gate remains open.
