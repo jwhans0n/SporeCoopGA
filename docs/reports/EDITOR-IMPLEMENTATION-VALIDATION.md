@@ -18,6 +18,28 @@ unchanged. See the [development guide](../MULTIPLAYER-ADVENTURE-EDITOR.md) for t
 current restricted controls and the [plan](../MULTIPLAYER-ADVENTURE-EDITOR-PLAN.md)
 for the intended acceptance criteria.
 
+## Current acceptance status
+
+The current private candidate is C18, built from code at `d343307`. Its complete
+Windows and portable checks pass. Native C17 evidence remains useful but does
+not silently become a C18 gate pass after the collector correction.
+
+| Area | Current evidence and remaining work |
+| --- | --- |
+| Core, transport and ABI checks | C18: all 22 Windows suites, 21 additional admission cases and portable `make test` pass with frozen source inputs. |
+| Native placement and history | C10-C17: real two/four-player creation, transforms, clone/delete, conflicts, chronological own Undo/Redo and bounded history pass. C18 actual placement prewarm is underway. |
+| Native cancellation | C17: four players preserve a disjoint host commit while an invalid guest Scale is held, then cancelled. Pure Scale also preserves poses and history. Additional two-player/cancellation breadth and a C18 native recheck remain. |
+| Native save and recovery | Actual Save As/reopen, cold project recovery and one complete cold native-file opaque comparison pass. The one fixture is not broad adventure round-trip coverage. |
+| Playtest and return | C17: four-player natural failure/success, Done, Build hammer and preparation/playing disconnect return preserve draft and local view. C18 cycle rerun, additional End/Replay/loading paths and actual no-XP evidence remain. |
+| Large-editor FPS | C17: unobstructed two/four-player comparisons pass on 419 placements. The earlier covered four-player sample is excluded. C18 rerun remains. |
+| Collector memory defect | Reproduced in C17; C18 real four-player idle test proves stable 64-entry capacity with continuing native updates. |
+| Sustained retained memory | Open. C17 raw private-byte slopes did not establish a plateau. C18's exclusive 128-edit warm-up and 30 edit/Test/Return window is running. |
+| Genuine bulk contention | Open. Aggregate 2 Mbit/s WAN instrumentation and real-content provenance are prepared; actual fresh-peer contention and the unchanged 750 ms p95 gate still need execution. |
+| Gameplay regression breadth | C18 automated suites pass. Actual large-adventure FPS and the remaining captain/lobby/music/interactions/targeting/results/Replay native coverage are separate gates. |
+
+Stages 5 and later remain roadmap work. None of these observations enable
+unsupported act, template, goal, conversation, terrain or nested-editor authoring.
+
 ## Scope and evidence boundaries
 
 Native checks use the GOG 2024 executable, 24,895,536 bytes, SHA-256:
