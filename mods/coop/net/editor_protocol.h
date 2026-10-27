@@ -74,8 +74,22 @@ enum class ControlKind : uint8_t {
 };
 // serial is a host-assigned playtest round, independent of document revision.
 struct Control { ControlKind kind{}; uint64_t serial = 0; Revision revision = 0; bool ready = false; uint8_t ready_mask = 0, participant_mask = 0; };
+// Native toolbar requests and one host-ordered local-copy export barrier.
+// These are lifecycle commands, never authored document operations.
+enum class CommandKind : uint8_t {
+    RequestPlaytest, ReplyPlaytest, RequestExport, HoldExport, ExportHeld,
+    BeginExport, FinishExport, EndExport, ExitEditor
+};
+struct Command {
+    CommandKind kind{};
+    uint64_t serial = 0;
+    Revision revision = 0;
+    Peer actor;
+    bool accepted = false;
+    bool operator==(const Command&) const = default;
+};
 using Payload = std::variant<Offer, Join, TransferBegin, TransferChunk, TransferEnd,
-    LeaseRequest, LeaseReply, Request, Decision, Presence, Coverage, Saved, Leave, Control, SavedApplied, TransformPreview>;
+    LeaseRequest, LeaseReply, Request, Decision, Presence, Coverage, Saved, Leave, Control, SavedApplied, TransformPreview, Command>;
 struct Message { Context context; Payload payload; };
 
 // from_host is a transport role fact. sender is the connected Session peer,

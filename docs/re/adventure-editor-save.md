@@ -53,6 +53,23 @@ as a preview or editor-return helper.
 
 ## Save As, completion and preserved originals
 
+### Coordinated native Exit continuation
+
+The native confirmation callback `ED73F0` resumes pending commands through
+`ED5820(UIbase)`. The entry reads `UIbase+58`, dispatches actions 1 and 3 to
+`ED586A`, pushes `07EAF738`, and calls the ordinary native exit at `ED5240`.
+The selected branch returns with plain `ret` at `ED5875`; its default branch
+clears `+58` and returns at `ED583B`. This is a thiscall with no stack arguments.
+The verified name is `SporeCoop::Editor::ContinueCommand`; the exact-image save
+verifier checks its entry and exit branch return. Intercepting this continuation
+can hold an already confirmed Exit without inventing a dialog result or allowing
+the native context to disappear before accepted shared edits settle. Calling
+the original continuation with action 1 is reserved for an owned, authorized
+group exit. Cancelling the ordinary confirmation clears `+58`; a cancelled or
+replaced context must not execute a retained continuation.
+
+This static receipt alone does not establish a successful two-game group exit.
+
 The ordinary native save uses its own key generator, thumbnail/metadata work,
 resource manager writes and confirmation UI. The mod does not construct a native
 creation database record or overwrite Pollination/EditorSaves externally.
@@ -119,6 +136,45 @@ the native pair must also render the same authored environment.
 This preserves the game's ordinary save-completion guarantees; it does not add an
 independent operating-system power-loss guarantee to native creation databases.
 
+### Unsaved planet snapshot export
+
+`F27C00(owned ScenarioResource*)` is a thiscall with no stack arguments, plain
+return at `F27C7B`. Native Save calls it at `F45201` on its independently allocated
+scenario copy. It passes destination `resource+18` to
+`F33A50(ScenarioMode+18, PropertyList*)`, then replaces property `02A907B7` using
+the active planet service. `F33A50` refreshes its terrain cache, copies its
+PropertyList into the supplied destination, and returns `ret4`. It does not
+invoke the creation database save pipeline. The new verified callable name is
+`SporeCoop::Editor::CaptureTerrain`; the exact-image save verifier covers its
+entry, return and native Save/export call edges. Read-only decompilation and
+assembly are retained in `out/editor-native-flow/terrain-query.txt`.
+
+The unsaved-baseline adapter must parse an owned copy, export there, serialize
+it and validate the unchanged semantic projection before sharing. Exporting
+directly into the active adventure is unnecessary. Normal gesture capture keeps
+its existing behavior. Native two-game terrain appearance still needs checking;
+matching hashes alone do not establish the same environment.
+
+### Private working keys must retain the native creation group
+
+`F44A90` compares the supplied key's **group**, at key `+8`, against the native
+configured group global `15B03A8` (`F44AA2..F44AA8`). A different group returns
+false before resource loading. The initial value is `408A0000`; read the named
+global at runtime instead of assuming that value. The verified name is
+`SporeCoop::Editor::CreationGroup`, also used by native Save key generation.
+Private project identity does not permit inventing another resource group.
+Use a collision-checked private instance within the native group, and retain
+separate provenance and native-save ownership.
+
+The negative native receipt is candidate C2's hidden guest crash at live
+`ED2F48`, preferred `EE2F48`, with base `3F0000`. The rejected group left the
+native resource's act list uninitialized; the UI then dereferenced the absent
+current act. Its crash receipt is `out/editor-native-flow/candidate-c2/crash-i74.txt`.
+The adapter now checks the configured group and parses/validates the expected
+act before entering the native editor. Metadata lookup in `F44A90` is optional:
+its missing-metadata branch `F44C5E` rejoins scenario loading at `F44BA0`.
+The read-only loader decompilation is `out/editor-native-flow/load-query.txt`.
+
 ### Dirty state after canonical remote changes
 
 `F3B7C0` and `F3B2C0` consider a document modified when its saved native history
@@ -143,6 +199,37 @@ An unchanged source may fail native `CanSave` with reason5 until the normal
 native editing workflow establishes a change. The save adapter preserves this
 gate; other native avatar/transition failures are not converted into permission
 to save.
+
+### Live metadata outside ScenarioResource (preview 3)
+
+Native `CanSave` reason4 is an empty name: it compares `data+4C` and `data+50`.
+These are the begin/end of the native UTF-16 name, with description at `+5C`
+and tags at `+6C`. Genre is `data+7C`, compared/written at `F3B670/F3B675`.
+The native name setter starts at `F3CC00` with its `INameableEntity` subobject
+in ECX (`data+4`), computes `this+48` at `F3CC0C`, and calls `423690` at
+`F3CC39`. It marks `this+81`, equivalently `data+85`, at `F3CC73`.
+Thus `+85` is metadata changed, not a generic imported flag. Existing local
+rollback field names retain their encoding and are not sent over the network.
+
+`AssignMetadataText=423690` is thiscall `(string16*,begin,end)->string16*`,
+`ret8` at `423733`. It owns allocation/replacement; never copy native string
+ownership pointers. Preview 3 captures three bounded owned UTF-16 strings and
+genre separately from scenario bytes, carries them in mapping version2, and
+still reads mapping version1 checkpoints. GA/captain bundle formats are unchanged.
+Applying a snapshot installs metadata before native history restoration refreshes
+the editor. This does not enable native metadata authoring while sharing.
+
+C4's actual guest copy failed with reason4 because an unsaved host name was not
+in the transferred scenario bytes. It was not an unchanged-document rejection.
+The failed export restored the shared draft and released its hold. Read-only
+receipts are `out/editor-native-flow/metadata-query.txt` and
+`metadata-fields-query.txt`; the save verifier checks the assign ABI and fields.
+
+An explicit copy of an otherwise unchanged valid draft sets the verified
+metadata-publication flag only for native Save As, then repeats `CanSave`.
+Other eligibility failures remain rejected. Cancel/start failure restores that
+flag; guest export restores its full captured dirty state after completion.
+Ordinary replacement Save retains its existing native unchanged gate.
 
 `ED4B80` takes one stack boolean and returns `ret4`; native callers also pass the
 UI base in ECX, although the body does not use ECX. It manages input-capture window

@@ -29,17 +29,25 @@ bool valid_bindings(const std::vector<editor_native::Binding>& bindings, std::st
 bool encode_mapping(const editor_native::Snapshot& s, std::vector<uint8_t>& out, std::string& error) {
     if (s.act >= editor::Limits{}.acts || !valid_bindings(s.bindings, error)) return false;
     net::Writer w;
-    w.u32(kMapping); w.u32(1); w.u32(s.act);
+    w.u32(kMapping); w.u32(s.metadata ? 2 : 1); w.u32(s.act);
     key(w, {s.source.instance, s.source.type, s.source.group});
     w.u32(uint32_t(s.bindings.size()));
     for (const auto& b : s.bindings) { id(w, b.object); w.u32(b.marker); }
+    if(s.metadata) {
+        w.u32(s.metadata->genre);
+        for(const auto& text:s.metadata->text) {
+            if(text.size()>4096 || text.find(u'\0')!=std::u16string::npos) {error="Invalid editor metadata text";return false;}
+            w.u32(uint32_t(text.size()));for(char16_t c:text)w.u16(uint16_t(c));
+        }
+    }
     out = std::move(w.data); return true;
 }
 bool decode_mapping(const std::vector<uint8_t>& bytes, editor_native::Snapshot& s, std::string& error) {
     if (bytes.size() > editor_store::kMappingBytes) { error = "Editor mapping exceeds its limit"; return false; }
     net::Reader r(bytes.data(), bytes.size());
     editor_native::Snapshot candidate;
-    if (r.u32() != kMapping || r.u32() != 1) { error = "Unsupported editor mapping"; return false; }
+    const auto magic=r.u32(),version=r.u32();
+    if (magic != kMapping || (version!=1 && version!=2)) { error = "Unsupported editor mapping"; return false; }
     candidate.act = r.u32(); auto source = key(r);
     candidate.source = {source.instance, source.type, source.group};
     uint32_t count = r.u32();
@@ -47,8 +55,17 @@ bool decode_mapping(const std::vector<uint8_t>& bytes, editor_native::Snapshot& 
         error = "Invalid editor mapping size or act"; return false;
     }
     for (uint32_t i = 0; i < count; ++i) { auto object = id(r); candidate.bindings.push_back({object, r.u32()}); }
+    if(version==2) {
+        candidate.metadata.emplace();candidate.metadata->genre=r.u32();
+        for(auto& text:candidate.metadata->text) {
+            const auto size=r.u32();
+            if(!r.ok() || size>4096 || size>r.left()/2) {error="Invalid editor metadata length";return false;}
+            for(uint32_t i=0;i<size;++i) {const auto c=r.u16();if(!c){error="Invalid editor metadata text";return false;}text.push_back(char16_t(c));}
+        }
+    }
     if (!r.ok() || r.left() || !valid_bindings(candidate.bindings, error)) { if (error.empty()) error = "Truncated editor mapping"; return false; }
     s.act = candidate.act; s.source = candidate.source; s.bindings = std::move(candidate.bindings);
+    s.metadata=std::move(candidate.metadata);
     return true;
 }
 static bool encode_resource_envelope(const Resources& resources, std::vector<uint8_t>& out, std::string& error, bool delta) {
@@ -63,6 +80,7 @@ static bool encode_resource_envelope(const Resources& resources, std::vector<uin
     editor_native::Snapshot mapping;
     mapping.source = {resources.root.instance, resources.root.type, resources.root.group};
     mapping.act = resources.act; mapping.bindings = resources.bindings;
+    mapping.metadata=resources.metadata;
     std::vector<uint8_t> bindings;
     if (!encode_mapping(mapping, bindings, error)) return false;
     const std::vector<uint8_t>* root = nullptr;
@@ -138,6 +156,7 @@ static bool decode_v2(net::Reader& r, Resources& out, std::string& error,
     }
     if (!r.ok() || r.left() || !net::adventure_content::make_bundle(candidate.root, std::move(records), candidate.bundle, error)) return false;
     candidate.act = native.act; candidate.bindings = std::move(native.bindings); candidate.base_root = std::move(base);
+    candidate.metadata=std::move(native.metadata);
     out = std::move(candidate); error.clear(); return true;
 }
 static bool decode_resource_envelope(const std::vector<uint8_t>& bytes, Resources& resources, std::string& error,
@@ -180,6 +199,7 @@ static bool decode_resource_envelope(const std::vector<uint8_t>& bytes, Resource
         if (error.empty()) error = "Invalid editor root resource"; return false;
     }
     candidate.act = native.act; candidate.bindings = std::move(native.bindings);
+    candidate.metadata=std::move(native.metadata);
     for (const auto& record : candidate.bundle.records) if (record.key == candidate.root) candidate.base_root = std::make_shared<const std::vector<uint8_t>>(record.data);
     resources = std::move(candidate); error.clear(); return true;
 }
@@ -238,6 +258,7 @@ bool encode_join(const Resources& resources, const JoinInventory& peer, std::vec
     if (!cached_base && !any_record) return encode_resources(resources, out, error);
     Resources normalized; normalized.root = resources.root; normalized.act = resources.act;
     normalized.bindings = resources.bindings; normalized.base_root = resources.base_root;
+    normalized.metadata=resources.metadata;
     for (const auto& record : verified.records) if (record.key == resources.root) normalized.bundle.records.push_back(record);
     if (!normalized.base_root) for (const auto& record : verified.records) if (record.key == resources.root)
         normalized.base_root = std::make_shared<const std::vector<uint8_t>>(record.data);
@@ -410,6 +431,7 @@ bool native_snapshot(const Resources& resources, const editor::Document& doc, ed
     editor_native::Snapshot candidate;
     candidate.source = {resources.root.instance, resources.root.type, resources.root.group};
     candidate.act = resources.act; candidate.bindings = resources.bindings; candidate.document = doc;
+    candidate.metadata=resources.metadata;
     if (candidate.bindings.size() != doc.placements.size()) { error = "Editor resource bindings do not match the document"; return false; }
     for (const auto& b : candidate.bindings) if (!doc.placements.contains(b.object)) { error = "Editor resource contains an unknown placement identity"; return false; }
     for (const auto& record : resources.bundle.records) if (record.key == resources.root) candidate.bytes = record.data;

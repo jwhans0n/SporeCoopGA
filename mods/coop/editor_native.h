@@ -24,6 +24,11 @@ struct Binding {
 };
 
 struct Snapshot {
+    struct Metadata {
+        std::array<std::u16string,3> text; // native name, description and tags
+        uint32_t genre = 0;
+        bool operator==(const Metadata&) const = default;
+    };
     struct Dirty { uint32_t saved_revision = 0; bool dirty = false, imported = false; };
     // Owned native serialization, including fields absent from the projection.
     std::vector<uint8_t> bytes;
@@ -36,6 +41,7 @@ struct Snapshot {
     uint32_t act = 0;
     // Local rollback metadata only. Never serialize this into a network artifact.
     std::optional<Dirty> local_dirty;
+    std::optional<Metadata> metadata;
 };
 
 struct State {
@@ -110,6 +116,11 @@ void bind(const std::vector<Binding>&);
 // Normal local native selection, outside Present; never changes authored bytes.
 bool select_placement(editor::ObjectId, std::string& error);
 bool capture(Snapshot&, std::string& error);
+// Initial unsaved baseline: export the active native planet properties into an
+// owned resource copy, as native Save does, without publishing a creation.
+bool capture_draft(Snapshot&, std::string& error);
+uint32_t creation_group(); // Native configured group, not a mod-owned namespace.
+bool validate_entry(const std::vector<uint8_t>&, uint32_t act, std::string& error);
 // Outside Present, from the actual active native editor camera. These fail
 // closed when that camera or its exact current context is unavailable.
 bool capture_view(LocalView&, std::string& error);

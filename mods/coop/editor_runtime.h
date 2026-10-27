@@ -32,17 +32,22 @@ struct View {
     bool can_save = false, can_playtest = false, can_recover = false;
     bool waiting = false, ready = false, frozen = false, natively_saved = false;
     bool confirming = false, playtesting = false, can_return = false, can_cancel = false;
+    bool native_editing = false, join_prompt = false, test_request = false, retry = false, exporting = false;
     uint64_t revision = 0, durable_revision = 0, saved_revision = 0;
     std::string title, status, selection;
+    std::string requester;
+    std::string prompt_identity;
     std::vector<PlayerView> players;
     std::vector<TransformHint> previews;
 };
 
 struct Ctx {
+    bool automatic_follow = true;
     net::Session* session = nullptr;
     std::function<void(const std::string&)> feed;
     std::function<bool()> adventure_busy;
     std::function<void()> open_panel, close_panel;
+    std::function<void()> leave_party;
 };
 
 bool init(const SkHost*, SkMod*, Ctx);
@@ -71,6 +76,8 @@ void cancel_playtest(); // Host-only cancellation of this preparation round.
 void set_ready(bool);
 void recover();
 void end();
+void approve_playtest(bool);
+void resolve_join(int choice); // 0 Save, 1 Discard, 2 Cancel.
 std::string debug(const std::vector<std::string>& args);
 
 } // namespace coop_editor

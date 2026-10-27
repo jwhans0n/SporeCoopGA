@@ -89,6 +89,10 @@ struct Callbacks {
     // Native history gestures and asynchronous saves must settle before another
     // semantic edit is applied. Transport/leases/presence continue while held.
     std::function<bool()> authoring_ready;
+    // A lifecycle barrier rejects new mutations instead of queuing them until
+    // after the pinned export revision. Native gesture settlement stays separate.
+    std::function<bool()> authoring_held;
+    std::function<void(uint8_t, const editor::wire::Command&)> command;
     std::function<bool(const editor::State&, std::string&)> apply_baseline;
     editor::Hooks::Native apply_committed, rollback_committed;
     std::function<bool(const editor::State&, const editor::Change&, std::string&)> persist_guest;
@@ -135,6 +139,9 @@ public:
     uint64_t renew_leases(const std::vector<editor::LeaseToken>&, editor::Time ttl, std::string& error);
     uint64_t release_leases(const std::vector<editor::LeaseToken>&, std::string& error);
     bool set_presence(editor::wire::Presence, std::string& error);
+    // Outside-frame only. Host commands can target a peer or all active peers;
+    // guest commands always target the host. Native callbacks run during tick.
+    bool send_command(editor::wire::Command, std::string& error, uint8_t to = 255);
     // Latest-only unreliable hint. Does not apply native edits or persist state.
     bool set_preview(editor::ObjectId, editor::ObjectId act, editor::Pose, std::string& error);
     void clear_preview();

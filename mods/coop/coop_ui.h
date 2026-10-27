@@ -63,6 +63,8 @@ struct Api {
     std::function<void()> editor_begin, editor_undo, editor_redo, editor_save;
     std::function<void()> editor_playtest, editor_cancel, editor_recover, editor_end;
     std::function<void(bool)> editor_ready;
+    std::function<void(bool)> editor_approve;
+    std::function<void(int)> editor_join_choice;
     // own creation of the current stage: kind 0 creature / 1 cell / 2 ship, its name ("" = the
     // world's own), how many own creations of that kind exist; false = not shown. cycle: -1 / +1
     std::function<bool(int& kind, std::string& name, int& own)> creation;

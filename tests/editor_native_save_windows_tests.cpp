@@ -24,7 +24,7 @@ Object t_manager{t_manager_vt.data()},t_database{t_database_vt.data()},t_record{
 std::deque<std::pair<SkTaskFn,void*>> t_tasks;
 std::vector<int> t_order;
 Key t_before{41,0x366A930D,0x12345678},t_after{42,0x366A930D,0x87654321};
-bool t_gate=true,t_native_success=true,t_readback=true,t_truncate=false,t_gesture=false,t_no_start=false;
+bool t_gate=true,t_native_success=true,t_readback=true,t_truncate=false,t_gesture=false,t_no_start=false,t_unchanged=false;
 int t_saved=0,t_cancelled=0,t_errors=0,t_holds=0,t_closed=0,t_released=0,t_native_calls=0;
 uint32_t t_offset=0;
 bool t_replaced=false;
@@ -33,15 +33,18 @@ bool t_shared=false,t_editor_active=true;
 unsigned t_command_calls=0,t_display_calls=0;
 unsigned t_set_captain_calls=0;
 unsigned t_return_requests=0;
+unsigned t_exit_calls=0,t_exit_confirmed=0,t_exit_cancelled=0;
+std::vector<editor_native_save::Request> t_requests;
 std::string t_error;
 Key t_saved_key;
 using Fn=bool(SK_THISCALL*)(void*);
 Fn t_detour;
 using ReturnFn=void(SK_THISCALL*)(void*);
 ReturnFn t_return_detour;
+ReturnFn t_continue_detour;
 using CommandFn=void(SK_THISCALL*)(void*,int);
 CommandFn t_command_detour,t_display_detour;
-bool SK_THISCALL t_can_save(void* data,uint32_t* reason){CHECK(data==t_data.data());*reason=t_gate?0:5;return t_gate;}
+bool SK_THISCALL t_can_save(void* data,uint32_t* reason){CHECK(data==t_data.data());const bool allowed=t_gate && (!t_unchanged || skg::field<bool>(data,0x85));*reason=allowed?0:5;return allowed;}
 void SK_THISCALL t_begin(void* ui,bool replace){CHECK(ui==t_ui.data());CHECK(skg::field<uint32_t>(ui,0x58)==2);t_replaced=replace;
     if(!t_no_start){skg::field<uint32_t>(t_data.data(),0x18)=1;skg::field<uint8_t>(t_data.data(),0x1C)=!replace;}}
 bool SK_THISCALL t_pipeline(void* data){++t_native_calls;if(data!=t_data.data())return t_native_success;
@@ -63,7 +66,9 @@ void SK_THISCALL t_return(void* self){CHECK(self==t_mode.data());t_order.push_ba
 void SK_THISCALL t_cleanup(void* self){CHECK(self==t_play.data());t_order.push_back(1);}
 void SK_THISCALL t_return_display(void* self,int mode){CHECK(self==t_ui.data());CHECK(mode==0);t_order.push_back(2);}
 void SK_THISCALL t_display(void* self,int mode){CHECK(self==t_ui.data());CHECK(mode==0||mode==1);CHECK(!t_shared||mode==0||editor_native_save::owned_native);++t_display_calls;if(mode==1)skg::field<int>(t_mode.data(),0xCC)=2;}
-void SK_THISCALL t_command(void* self,int){CHECK(self==t_ui.data());++t_command_calls;}
+void SK_THISCALL t_command(void* self,int action){CHECK(self==t_ui.data());++t_command_calls;
+    if(editor_native_save::exiting)skg::field<uint32_t>(self,0x58)=uint32_t(action);}
+void SK_THISCALL t_continue(void* self){CHECK(self==t_ui.data());++t_exit_calls;skg::field<uint32_t>(self,0x58)=0;}
 void* SK_THISCALL t_captain(void* self){CHECK(self==t_data.data());return t_resource.data();}
 bool SK_THISCALL t_set_captain(void* self,void* captain,int a,int b,int c){CHECK(self==t_data.data());CHECK(captain==t_resource.data());CHECK(!a&&!b&&!c);++t_set_captain_calls;return true;}
 uintptr_t t_sym(const char* name){
@@ -75,7 +80,8 @@ uintptr_t t_sym(const char* name){
         {"SporeCoop::Editor::NativeReturn",uintptr_t(t_return)},{"SporeCoop::Editor::PreviewCleanup",uintptr_t(t_cleanup)},
         {"SporeCoop::Editor::ReturnDisplayMode",uintptr_t(t_return_display)},{"SporeCoop::Editor::SelectDisplayMode",uintptr_t(t_display)},
         {"SporeCoop::Editor::PreviewCaptain",uintptr_t(t_captain)},{"SporeCoop::Editor::ValidatePlacement",uintptr_t(t_set_captain)},
-        {"SporeCoop::Editor::EditorCommand",uintptr_t(t_command)}};
+        {"SporeCoop::Editor::EditorCommand",uintptr_t(t_command)},
+        {"SporeCoop::Editor::ContinueCommand",uintptr_t(t_continue)}};
     auto it=names.find(name);return it==names.end()?0:it->second;
 }
 const char* t_sha(){return "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37";}
@@ -83,15 +89,17 @@ int t_hook(SkMod*,void* target,void* detour,void** original){*original=target;
     if(target==reinterpret_cast<void*>(t_pipeline))t_detour=reinterpret_cast<Fn>(detour);
     else if(target==reinterpret_cast<void*>(t_return))t_return_detour=reinterpret_cast<ReturnFn>(detour);
     else if(target==reinterpret_cast<void*>(t_command))t_command_detour=reinterpret_cast<CommandFn>(detour);
+    else if(target==reinterpret_cast<void*>(t_continue))t_continue_detour=reinterpret_cast<ReturnFn>(detour);
     else{CHECK(target==reinterpret_cast<void*>(t_display));t_display_detour=reinterpret_cast<CommandFn>(detour);}return 0;}
 void t_outside(SkTaskFn fn,void* user){t_tasks.emplace_back(fn,user);}
 void drain(){auto tasks=std::move(t_tasks);t_tasks.clear();for(auto [fn,user]:tasks)fn(user);}
 void poll(){editor_native_save::tick();drain();}
 void reset(){
     editor_native_save::shutdown();drain();t_mode.fill(0);t_data.fill(0);t_ui.fill(0);t_resource.fill(0);t_parsed.fill(0);t_play.fill(0);t_order.clear();
-    t_mode_pointer=t_mode.data();t_rm_pointer=&t_manager;t_gate=t_native_success=t_readback=true;t_truncate=t_gesture=t_no_start=false;
+    t_mode_pointer=t_mode.data();t_rm_pointer=&t_manager;t_gate=t_native_success=t_readback=true;t_truncate=t_gesture=t_no_start=t_unchanged=false;
     t_saved=t_cancelled=t_errors=t_holds=t_closed=t_released=t_native_calls=0;t_replaced=false;t_error.clear();t_saved_key={};
     t_owned_preview=false;t_return_requests=0;t_shared=false;t_editor_active=true;t_command_calls=t_display_calls=t_set_captain_calls=0;
+    t_exit_calls=t_exit_confirmed=t_exit_cancelled=0;t_requests.clear();
     skg::field<int>(t_mode.data(),0xCC)=1;skg::field<void*>(t_mode.data(),0x14)=t_ui.data();skg::field<void*>(t_mode.data(),0x74)=t_data.data();skg::field<void*>(t_mode.data(),0x78)=t_play.data();
     skg::field<void*>(t_data.data(),0x10)=t_resource.data();skg::field<uintptr_t>(t_ui.data(),0)=uintptr_t(t_ui_vtable.data());skg::field<Key>(t_resource.data(),8)=t_before;
     t_manager_vt[0x30/4]=reinterpret_cast<void*>(t_find);t_manager_vt[0x1C/4]=reinterpret_cast<void*>(t_get_private);t_database_vt[0x34/4]=reinterpret_cast<void*>(t_open);
@@ -102,6 +110,8 @@ void reset(){
     editor_native_save::Ctx ctx;ctx.saved=[](Key key){++t_saved;t_saved_key=key;};ctx.cancelled=[](){++t_cancelled;};ctx.error=[](const std::string& e){++t_errors;t_error=e;};
     ctx.owned_preview=[](){return t_owned_preview;};ctx.return_requested=[](){++t_return_requests;};
     ctx.shared_active=[](){return t_shared;};
+    ctx.request=[](editor_native_save::Request r){t_requests.push_back(r);};
+    ctx.exit_confirmed=[](){++t_exit_confirmed;};ctx.exit_cancelled=[](){++t_exit_cancelled;};
     CHECK(editor_native_save::init(&host,nullptr,std::move(ctx)));CHECK(editor_native_save::available());
 }
 }
@@ -110,11 +120,31 @@ namespace editor_native {State state(){State s;s.gesture=t_gesture;
     s.ready=s.editing;s.playtesting=t_editor_active&&skg::field<int>(t_mode.data(),0xCC)==2&&skg::field<int>(t_mode.data(),0xD0)==0;return s;}}
 int main(){
     std::string error;
+    reset();t_shared=true;
+    t_command_detour(t_ui.data(),1);t_command_detour(t_ui.data(),2);t_command_detour(t_ui.data(),3);
+    t_display_detour(t_ui.data(),1);
+    CHECK(t_requests==std::vector<editor_native_save::Request>({editor_native_save::Request::Exit,
+        editor_native_save::Request::Save,editor_native_save::Request::SaveExit,editor_native_save::Request::Play}));
+    CHECK(!t_command_calls&&!t_display_calls);
+    CHECK(editor_native_save::request_exit(error));CHECK(t_command_calls==1&&!t_exit_confirmed&&!t_exit_calls);
+    t_continue_detour(t_ui.data());t_continue_detour(t_ui.data());CHECK(t_exit_confirmed==1&&!t_exit_calls);
+    CHECK(editor_native_save::complete_exit(error));CHECK(t_exit_calls==1&&!t_exit_cancelled);
+    reset();CHECK(editor_native_save::request_exit(error));skg::field<uint32_t>(t_ui.data(),0x58)=0;poll();
+    CHECK(t_exit_cancelled==1&&!t_exit_confirmed&&!t_exit_calls);
+    reset();CHECK(editor_native_save::request_exit(error));t_mode_pointer=nullptr;poll();CHECK(t_exit_cancelled==1&&!t_exit_calls);
+    reset();t_shared=true;CHECK(editor_native_save::request_exit(error));t_shared=false;
+    t_continue_detour(t_ui.data());CHECK(t_exit_calls==1&&!t_exit_confirmed);
+    reset();CHECK(editor_native_save::restore_identity({}, {9,true,true},error));
+    CHECK(skg::field<Key>(t_resource.data(),8)==Key{}&&skg::field<uint32_t>(t_data.data(),0x80)==9&&skg::field<bool>(t_data.data(),0x84));
     reset();CHECK(editor_native_save::save_as(error));CHECK(editor_native_save::busy());CHECK(!t_replaced);CHECK(skg::field<uint8_t>(t_data.data(),0x1C)==1);CHECK(!editor_native_save::save_as(error));
     CHECK(t_detour(t_data.data()));for(int i=0;i<2000;++i)poll();CHECK(!t_saved&&editor_native_save::busy());CHECK(t_offset==0);
     skg::field<uint32_t>(t_ui.data(),0x58)=0;poll();CHECK(t_saved==1&&t_saved_key==t_after);CHECK(t_offset==512);CHECK(t_closed==1&&t_released==1);CHECK(!editor_native_save::busy());poll();CHECK(t_saved==1);
     reset();CHECK(editor_native_save::save(error));CHECK(t_replaced);CHECK(skg::field<uint8_t>(t_data.data(),0x1C)==0);
     reset();t_gate=false;CHECK(!editor_native_save::save_as(error));CHECK(!editor_native_save::busy());CHECK(skg::field<Key>(t_resource.data(),8)==t_before);CHECK(!t_saved&&!t_errors);
+    reset();t_unchanged=true;CHECK(!editor_native_save::save(error));CHECK(!skg::field<bool>(t_data.data(),0x85));
+    CHECK(editor_native_save::save_as(error));CHECK(skg::field<bool>(t_data.data(),0x85));
+    skg::field<uint32_t>(t_data.data(),0x18)=0;skg::field<uint32_t>(t_ui.data(),0x58)=0;poll();
+    CHECK(!editor_native_save::busy()&&t_cancelled==1&&!skg::field<bool>(t_data.data(),0x85));
     reset();t_gesture=true;CHECK(!editor_native_save::save_as(error));CHECK(!editor_native_save::busy());
     reset();t_no_start=true;CHECK(!editor_native_save::save_as(error));CHECK(!editor_native_save::busy());CHECK(t_holds==1&&skg::field<uint32_t>(t_ui.data(),0x58)==0);CHECK(!t_errors);
     reset();CHECK(editor_native_save::save_as(error));t_native_success=false;CHECK(!t_detour(t_data.data()));poll();CHECK(t_errors==1&&!t_saved&&!editor_native_save::busy());CHECK(t_holds==1&&skg::field<uint32_t>(t_ui.data(),0x58)==0);

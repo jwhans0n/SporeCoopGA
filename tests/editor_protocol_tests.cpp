@@ -204,4 +204,21 @@ static void class_settings_codec(){
         CHECK(recovered.state().history==core.state().history);
     }
 }
-int main(){codec();authority();transfers();preview_authority_and_malformed();join_inventory_codec_bounds_and_authority();malformed();class_settings_codec();std::cout<<"editor protocol: "<<checks<<" checks passed\n";}
+static void native_commands(){
+    for(unsigned kind=0;kind<=unsigned(w::CommandKind::ExitEditor);++kind){
+        const auto k=w::CommandKind(kind);
+        const bool client=k==w::CommandKind::RequestPlaytest || k==w::CommandKind::RequestExport ||
+            k==w::CommandKind::ExportHeld || k==w::CommandKind::FinishExport;
+        w::Command command{k,19,context().revision,guest,k==w::CommandKind::ReplyPlaytest || k==w::CommandKind::FinishExport || k==w::CommandKind::EndExport};
+        const auto bytes=packet({context(),command});w::Message decoded;
+        CHECK(read(bytes,decoded,client?guest:host,!client));CHECK(std::get<w::Command>(decoded.payload)==command);
+        CHECK(!read(bytes,decoded,client?host:guest,client));
+        if(client)CHECK(!read(bytes,decoded,other,false));
+        for(size_t cut=0;cut<bytes.size();++cut)CHECK(!read({bytes.begin(),bytes.begin()+cut},decoded,client?guest:host,!client));
+        auto trailing=bytes;trailing.push_back(0);CHECK(!read(trailing,decoded,client?guest:host,!client));
+        net::Writer out;std::string error;
+        command.serial=0;CHECK(!w::write({context(),command},out,error));
+        command.serial=19;command.revision++;CHECK(!w::write({context(),command},out,error));
+    }
+}
+int main(){codec();authority();transfers();preview_authority_and_malformed();join_inventory_codec_bounds_and_authority();malformed();class_settings_codec();native_commands();std::cout<<"editor protocol: "<<checks<<" checks passed\n";}

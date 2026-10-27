@@ -10,6 +10,7 @@ struct Resources {
     dbpf::Key root;
     uint32_t act = 0;
     std::vector<editor_native::Binding> bindings;
+    std::optional<editor_native::Snapshot::Metadata> metadata;
     net::adventure_content::Bundle bundle;
     std::shared_ptr<const std::vector<uint8_t>> base_root;
 };

@@ -19,6 +19,7 @@ other Spore editors follow in the [roadmap](../README.md#roadmap).
 - [Shared Adventure Editor development guide](MULTIPLAYER-ADVENTURE-EDITOR.md): placement collaboration under validation, native controls, saving and recovery. Separate from the published gameplay release.
 - [Shared editor validation report](reports/EDITOR-IMPLEMENTATION-VALIDATION.md): automated evidence, isolated native runs and outstanding acceptance gates.
 - [Shared editor testing playbook](EDITOR-TESTING-PLAYBOOK.md): focused development checks, integration checkpoints and opt-in overnight release acceptance.
+- [Automatic editor sharing validation](reports/EDITOR-NATIVE-FLOW-VALIDATION.md): unsaved drafts, native controls, export isolation and automatic party following in preview 3.
 - [Shared authoring progress](EDITOR-SEMANTICS-PROGRESS.md): class properties, templates, shared acts, objectives and conversations; [first development checkpoint](reports/EDITOR-SEMANTICS-VALIDATION.md).
 - [Multiplayer Adventure Editor implementation plan](MULTIPLAYER-ADVENTURE-EDITOR-PLAN.md): acceptance stages and Undo rules; later shared history, independent acts and playtesting while editing.
 

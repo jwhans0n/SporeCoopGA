@@ -47,6 +47,15 @@ static void* find_record(const Key& key, Key& real)
     real = {};
     return rm ? skg::vcall<void*>(rm, 0x30 / 4, &key, &real, (void*)nullptr) : nullptr;
 }
+bool unused_snapshot_key(const Key& key)
+{
+    if(!g_supported || !manager() || !key.instance || key.type!=kAdventure)return false;
+    Key real;
+    for(uint32_t type:{kAdventure,kMeta,kSummary,kPng,0xFD60F0C1u})
+        if(find_record({key.instance,type,key.group},real))return false;
+    return !find_record({key.instance,0x05528D58,0x40A00200},real) &&
+        !find_record({key.instance,kProp,0x408AE500},real);
+}
 
 static bool vanilla(void* database)
 {

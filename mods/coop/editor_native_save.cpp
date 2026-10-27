@@ -14,6 +14,7 @@ SkMod* M;
 Ctx C;
 uintptr_t a_mode,a_rm,a_vtable,a_can_save,a_begin_save,a_pipeline,a_hold;
 uintptr_t a_preview,a_return,a_cleanup,a_return_display,a_display,a_captain,a_validate_placement,a_command;
+uintptr_t a_continue;
 bool supported=false,queued=false;
 bool return_notified=false;
 bool owned_native=false;
@@ -27,7 +28,7 @@ struct Pending {
     void* ui=nullptr;
     void* resource=nullptr;
     Key before,after;
-    bool copy=false,executed=false,success=false;
+    bool copy=false,executed=false,success=false,copy_dirty=false,previous_metadata_dirty=false;
 };
 std::optional<Pending> pending;
 using Pipeline=bool(SK_THISCALL*)(void*);
@@ -36,9 +37,24 @@ using Return=void(SK_THISCALL*)(void*);
 Return original_return;
 using Command=void(SK_THISCALL*)(void*,int);
 Command original_command,original_display;
+Return original_continue;
+struct Exit { void* mode; void* ui; uint64_t generation; bool confirmed=false,shared_scope=false; };
+std::optional<Exit> exiting;
 bool shared(){return C.shared_active && C.shared_active();}
+bool owns_ui(void* self) {
+    void* m=a_mode?*reinterpret_cast<void**>(a_mode):nullptr;
+    return skg::readable(m,0xDC) && skg::field<void*>(m,0x14)==self &&
+        skg::readable(self,0x98) && skg::field<uintptr_t>(self,0)==a_vtable;
+}
 void SK_THISCALL command_native(void* self,int action){
-    if(shared() && !owned_native)return;
+    if(shared() && !owned_native) {
+        if(owns_ui(self) && C.request) {
+            if(action==1) C.request(Request::Exit);
+            else if(action==2) C.request(Request::Save);
+            else if(action==3) C.request(Request::SaveExit);
+        }
+        return;
+    }
     original_command(self,action);
 }
 void SK_THISCALL display_native(void* self,int action){
@@ -49,8 +65,22 @@ void SK_THISCALL display_native(void* self,int action){
         skg::field<int>(m,0xCC)==1 && skg::field<int>(m,0xD0)==0 &&
         skg::field<void*>(m,0x14)==self && skg::readable(self,0x98) &&
         skg::field<uintptr_t>(self,0)==a_vtable && (skg::field<int>(self,0x1C)==-1 || skg::field<int>(self,0x1C)==0);
-    if(shared() && !owned_native && !initial_build)return;
+    if(shared() && !owned_native && !initial_build) {
+        if(owns_ui(self) && C.request && (action==0 || action==1))
+            C.request(action==1 ? Request::Play : Request::Build);
+        return;
+    }
     original_display(self,action);
+}
+void SK_THISCALL continue_native(void* self) {
+    if(exiting && exiting->shared_scope && !shared())exiting.reset();
+    void* m=a_mode?*reinterpret_cast<void**>(a_mode):nullptr;
+    if(exiting && exiting->mode==m && exiting->ui==self && owns_ui(self) &&
+        editor_native::state().generation==exiting->generation && skg::field<uint32_t>(self,0x58)==1) {
+        if(!exiting->confirmed) { exiting->confirmed=true; if(C.exit_confirmed)C.exit_confirmed(); }
+        return;
+    }
+    original_continue(self);
 }
 
 void* mode(){return a_mode?*reinterpret_cast<void**>(a_mode):nullptr;}
@@ -127,6 +157,7 @@ void SK_THISCALL return_native(void* self){
     return_notified=false;original_return(self);
 }
 void fail(const std::string& error){
+    if(pending && pending->copy_dirty && current(*pending))skg::field<bool>(pending->data,0x85)=pending->previous_metadata_dirty;
     if(pending && current(*pending) && skg::field<uint32_t>(pending->ui,0x58)==2){
         skg::field<uint32_t>(pending->ui,0x58)=0;
         skg::thiscall<void>(a_hold,pending->ui,true);
@@ -134,9 +165,23 @@ void fail(const std::string& error){
     pending.reset();if(C.error)C.error(error);
 }
 void poll(){
+    if(exiting && exiting->shared_scope && !shared())exiting.reset();
+    if(exiting) {
+        if(mode()!=exiting->mode || !owns_ui(exiting->ui) || editor_native::state().generation!=exiting->generation) {
+            exiting.reset(); if(C.exit_cancelled)C.exit_cancelled();
+        } else if(!exiting->confirmed && !skg::field<uint32_t>(exiting->ui,0x58)) {
+            exiting.reset(); if(C.exit_cancelled)C.exit_cancelled();
+        }
+    }
     if(!pending)return;
     if(!current(*pending)){pending.reset();if(C.cancelled)C.cancelled();return;}
-    if(!pending->executed)return;
+    if(!pending->executed) {
+        if(!skg::field<uint32_t>(pending->data,0x18) && !skg::field<uint32_t>(pending->ui,0x58)) {
+            if(pending->copy_dirty)skg::field<bool>(pending->data,0x85)=pending->previous_metadata_dirty;
+            pending.reset();if(C.cancelled)C.cancelled();
+        }
+        return;
+    }
     if(!pending->success){fail("The native adventure save failed");return;}
     if(!pending->after.instance || pending->after.type!=kAdventure || pending->after==pending->before){
         fail("The native save did not establish a new adventure identity");return;
@@ -153,7 +198,16 @@ bool begin(bool copy,std::string& error){
     Pending p;if(!ready(p,error))return false;
     uint32_t reason=0;
     if(!skg::thiscall<bool>(a_can_save,p.data,&reason)){
-        error="Native adventure save is unavailable (reason "+std::to_string(reason)+")";return false;
+        // An explicit local copy is a new metadata publication even when its
+        // placements match the source. Retain all other native eligibility gates.
+        if(copy && reason==5) {
+            p.previous_metadata_dirty=skg::field<bool>(p.data,0x85);p.copy_dirty=true;
+            skg::field<bool>(p.data,0x85)=true;
+            if(!skg::thiscall<bool>(a_can_save,p.data,&reason)) {
+                skg::field<bool>(p.data,0x85)=p.previous_metadata_dirty;
+                error="Native adventure save is unavailable (reason "+std::to_string(reason)+")";return false;
+            }
+        } else {error="Native adventure save is unavailable (reason "+std::to_string(reason)+")";return false;}
     }
     p.copy=copy;pending=p;
     // Mode2 is the ordinary Save command that remains in the editor. Mode3 is
@@ -164,6 +218,7 @@ bool begin(bool copy,std::string& error){
         if(pending && current(*pending) && skg::field<uint32_t>(p.ui,0x58)==2){
             skg::field<uint32_t>(p.ui,0x58)=0;skg::thiscall<void>(a_hold,p.ui,true);
         }
+        if(pending && pending->copy_dirty && current(*pending))skg::field<bool>(pending->data,0x85)=pending->previous_metadata_dirty;
         pending.reset();error="Native adventure save did not start";return false;
     }
     error.clear();return true;
@@ -181,15 +236,17 @@ bool init(const SkHost* host,SkMod* mod,Ctx context){
     a_return_display=H->sym("SporeCoop::Editor::ReturnDisplayMode");a_display=H->sym("SporeCoop::Editor::SelectDisplayMode");
     a_captain=H->sym("SporeCoop::Editor::PreviewCaptain");a_validate_placement=H->sym("SporeCoop::Editor::ValidatePlacement");
     a_command=H->sym("SporeCoop::Editor::EditorCommand");
+    a_continue=H->sym("SporeCoop::Editor::ContinueCommand");
     supported=a_mode&&a_rm&&a_vtable&&a_can_save&&a_begin_save&&a_pipeline&&a_hold&&a_preview&&a_return&&
-        a_cleanup&&a_return_display&&a_display&&a_captain&&a_validate_placement&&a_command;
+        a_cleanup&&a_return_display&&a_display&&a_captain&&a_validate_placement&&a_command&&a_continue;
     if(supported)supported=H->hook_create(M,reinterpret_cast<void*>(a_pipeline),reinterpret_cast<void*>(pipeline),reinterpret_cast<void**>(&original_pipeline))==0;
     if(supported)supported=H->hook_create(M,reinterpret_cast<void*>(a_return),reinterpret_cast<void*>(return_native),reinterpret_cast<void**>(&original_return))==0;
     if(supported)supported=H->hook_create(M,reinterpret_cast<void*>(a_command),reinterpret_cast<void*>(command_native),reinterpret_cast<void**>(&original_command))==0;
     if(supported)supported=H->hook_create(M,reinterpret_cast<void*>(a_display),reinterpret_cast<void*>(display_native),reinterpret_cast<void**>(&original_display))==0;
+    if(supported)supported=H->hook_create(M,reinterpret_cast<void*>(a_continue),reinterpret_cast<void*>(continue_native),reinterpret_cast<void**>(&original_continue))==0;
     return supported;
 }
-void shutdown(){++generation;pending.reset();queued=false;supported=false;return_notified=false;owned_native=false;C={};}
+void shutdown(){++generation;pending.reset();exiting.reset();queued=false;supported=false;return_notified=false;owned_native=false;C={};}
 bool available(){return supported;}
 bool busy(){return bool(pending);}
 bool save_as(std::string& error){return begin(true,error);}
@@ -197,6 +254,27 @@ bool save(std::string& error){return begin(false,error);}
 bool read_saved(const Key& key,std::vector<uint8_t>& bytes,std::string& error){
     if(!supported){error="Native adventure save readback is unavailable";return false;}
     return persisted(key,error,&bytes);
+}
+bool request_exit(std::string& error) {
+    Pending p; if(exiting || !ready(p,error))return false;
+    exiting=Exit{p.mode,p.ui,editor_native::state().generation,false,shared()};
+    NativeScope ownership; original_command(p.ui,1); error.clear();return true;
+}
+bool complete_exit(std::string& error) {
+    void* m=mode();void* ui=skg::readable(m,0x18)?skg::field<void*>(m,0x14):nullptr;
+    if(!supported || pending || !owns_ui(ui) || !editor_native::state().ready || editor_native::state().gesture) {
+        error="The native editor is not ready to complete its exit";return false;
+    }
+    exiting.reset();NativeScope ownership;
+    skg::field<uint32_t>(ui,0x58)=1;original_continue(ui);error.clear();return true;
+}
+bool restore_identity(Key key, editor_native::Snapshot::Dirty dirty,std::string& error) {
+    Pending p;if(!ready(p,error))return false;
+    skg::field<Key>(p.resource,8)=key;
+    skg::field<uint32_t>(p.data,0x80)=dirty.saved_revision;
+    skg::field<bool>(p.data,0x84)=dirty.dirty;
+    skg::field<bool>(p.data,0x85)=dirty.imported;
+    error.clear();return true;
 }
 bool playtest(bool on,std::string& error){
     NativeScope ownership;
@@ -223,7 +301,7 @@ bool playtest(bool on,std::string& error){
     error.clear();return true;
 }
 void tick(){
-    if(!supported || !pending || queued)return;
+    if(!supported || (!pending && !exiting) || queued)return;
     queued=true;auto* ticket=new uint64_t(generation);
     H->run_outside_frame([](void* opaque){std::unique_ptr<uint64_t> ticket(static_cast<uint64_t*>(opaque));
         if(*ticket!=generation)return;queued=false;poll();},ticket);

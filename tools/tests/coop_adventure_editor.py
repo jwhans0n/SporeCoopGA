@@ -185,25 +185,21 @@ class EditorPair:
                 text = host.call('coop.editor roundtrip')
                 if 'roundtrip=identical' not in text:
                     raise FixtureError('Native owned snapshot roundtrip failed: ' + text)
-        host.call(f'coop.host {self.args.port} EditorHost')
-        guest.call(f'coop.join 127.0.0.1:{self.args.port} EditorGuest')
-        guest.wait('party connection', lambda: 'connected' in guest.call('coop.status'))
         for game in self.games:
             game.call('coop.uistate 0')
-        # A legitimate authored title edit makes native CanSave eligible. Merely
-        # opening an untouched Maxis template correctly produces reason5.
+        # Prepare unsupported title settings before the party starts sharing.
+        # Hosting captures the live draft and never invokes native Save As.
         host.click(515, 751)
         host.call('wait.frames 20 15000')  # Native name panel focus/transition.
         host.call('text ' + quote(self.args.title))
         host.click(669, 748)
         host.call('wait.frames 20 15000')
-        host.call('coop.editor begin')
-        host.wait('native successful save confirmation', lambda: ' saved.' in host.call('coop.ui tree 7'))
-        host.record('native-save-confirmation')
-        host.click(772, 470)  # Actual native successful-save confirmation check.
+        host.call(f'coop.host {self.args.port} EditorHost')
+        guest.call(f'coop.join 127.0.0.1:{self.args.port} EditorGuest')
+        guest.wait('party connection', lambda: 'connected' in guest.call('coop.status'))
         host.wait('host durable shared draft', lambda: status(host).get('phase') == 4)
-        guest.wait('shared draft offered', lambda: status(guest).get('phase') == 1)
-        self.record('native-save-and-offer')
+        guest.wait('guest joins native editor automatically', lambda: status(guest).get('phase') == 4)
+        self.record('automatic-unsaved-start-and-join')
 
     def join(self):
         if status(self.guest).get('phase') == 1:
@@ -578,15 +574,10 @@ class EditorPair:
         baseline = self.converge()
         revision = status(self.host)['revision']
         attempts = [
-            ('native-play-button', lambda game: game.click(513,35)),
             ('native-terraform-button', lambda game: game.click(571,35)),
             ('native-title-control', lambda game: game.click(515,751)),
             ('native-act-add-control', lambda game: game.click(806,722)),
             ('native-act-next-control', lambda game: game.click(850,722)),
-            ('native-save-button', lambda game: game.click(897,753)),
-            ('native-done-button', lambda game: game.click(1006,753)),
-            ('native-cancel-button', lambda game: game.click(968,753)),
-            ('native-save-shortcut', lambda game: self.hotkey(game,'s')),
             ('native-reset-shortcut', lambda game: self.hotkey(game,'n')),
             ('authored-avatar-drag', lambda game: self.slow_drag(game,(967,655),(700,470))),
         ]

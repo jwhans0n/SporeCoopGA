@@ -12,16 +12,15 @@ continue editing remain later milestones in the
 
 ## Compatibility and scope
 
-Every participant needs the same editor build and protocol 16, Galactic Adventures
+Every participant needs `0.7.5.0-ga-editor-preview.3`, protocol 18, Galactic Adventures
 and the exact GOG executable with SHA-256
 `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
-Older protocol 15 gameplay clients cannot join an editor build's party.
+Older gameplay and editor previews receive an explicit version mismatch.
 
-These instructions describe the locally installed placement preview. Further
-authoring development on `feat/ga-editor-semantics` uses protocol 17 and is not
-installed automatically. Its class-property transaction support does not yet
-enable the corresponding native controls. See the
-[authoring progress](EDITOR-SEMANTICS-PROGRESS.md).
+This preview adds automatic party following and native editor controls to the
+placement adapter. Its class-property transaction support does not yet enable
+the corresponding native controls. See the [authoring progress](EDITOR-SEMANTICS-PROGRESS.md)
+and the [native-flow validation report](reports/EDITOR-NATIVE-FLOW-VALIDATION.md).
 
 The placement adapter implements creation from templates already in the draft,
 duplication, deletion, movement, rotation and uniform scale. Scale tracks both
@@ -43,28 +42,30 @@ shared baselines and recovery checkpoints are refused without opening or
 restoring them. Independent acts and synchronized host act changes remain planned.
 Prepare templates and the authored test captain before starting. There
 are no additional registered placement properties beyond transforms in this implementation. Unsupported
-controls must remain disabled; they are not safe ways around the shared panel.
+controls remain disabled while sharing.
 
 ## Start and join
 
-1. Connect the party through **Co-op**. The host opens an adventure in the native
-   Adventure Editor. Guests remain at Galaxy.
-2. Give the draft a new name using the native editor before starting. An unchanged
-   existing adventure can fail Spore's native save validation.
-3. Open **F9**, then **Adventure Editor**. The host selects **Start sharing**
-   and completes the normal native Save As flow, including its confirmation.
-   Sharing starts only after the new native resource has been read back.
-4. Guests open the same panel and select **Join editing**. Their native
-   editors open after verified content arrives. Editing remains held until the
-   checkpoint and its bindings have been applied.
+1. The host opens an adventure in the native Adventure Editor and hosts through
+   **Co-op**. Hosting first and then opening the editor also works. Select Act 1
+   before sharing.
+2. Guests join the normal party. From Galaxy, they automatically receive the live
+   draft and open their own editor after content validation. Editing stays held
+   until the baseline has been applied.
+3. Start editing with the native placement controls. A completely unsaved, empty
+   adventure can be shared. Sharing captures terrain and dependencies into a
+   private project checkpoint; it does not perform a native save.
 
-The panel shows participants, full placement identities, ownership, pending
-commits, connection state, committed revision, your local
-checkpoint and the latest confirmed native save revision. The host also sees
-each peer's durable checkpoint revision. Guest panels label other players'
-checkpoint coverage as reported to the host rather than claiming an unknown
-revision. Closing the panel leaves the session active. Ending shared editing
-preserves the party connection and the private draft.
+There is no separate editing page. **F9** opens the normal party/chat lobby,
+which shows **Adventure Editor**, transfer progress, failures and **Retry editor
+connection** when relevant. Closing the lobby leaves editing active.
+
+If a guest has an unrelated draft open, a compact **Save / Discard / Cancel**
+prompt protects it. Save completes Spore's native Save As before switching;
+Discard uses the native exit confirmation. Cancel leaves the party and preserves
+the guest's editor, preventing another immediate automatic offer. Cancelling a
+native save or exit keeps the draft open. Native save eligibility still applies
+to saving a local creation, including required authored content.
 
 ## Edit and history
 
@@ -100,10 +101,18 @@ part of this preview.
 
 ## Save and recover
 
-**Save draft** is host-only and uses Spore's native save UI. It holds new authoring
-transactions until asynchronous native saving completes. A durable checkpoint is
-distinct from a native save; later accepted edits make the saved revision older
-than the current draft again.
+Use Spore's native **Save** button. Host Save holds authoring until the coordinated
+native save completes. The first save creates a new host-owned local creation,
+preserving an imported or existing source; later saves update that owned copy.
+The private shared project identity and original creation provenance are separate.
+A durable checkpoint is distinct from a native save; later edits make the saved
+revision older than the current draft again.
+
+Guest Save creates a local copy of the committed shared revision through native
+Save As. Everyone briefly holds authoring while the copy is written. The guest's
+shared working resource identity and dirty state are restored before resuming.
+The export does not change shared history, revisions or host save coverage.
+Complete or cancel the native confirmation dialog normally.
 
 Each profile stores a private project under its `SporeCoop/editor-projects`
 directory, alongside its native save directory. The project has a UUID, verified
@@ -123,9 +132,9 @@ envelope does not change the existing GA or captain resource bundle formats.
 On host loss, edits freeze. Host a co-op party before selecting **Recover**;
 recovery starts from Galaxy or the settled owned editor. It rehosts the last
 locally durable checkpoint in a new session epoch. Its revision can be behind the old host's
-revision. An imported guest checkpoint must complete a new native Save As before
-rehosting, so a remote source cannot become an overwritten local draft. Recovery
-does not merge unacknowledged local gestures or elect a host automatically.
+revision. Recovering an unsaved or imported checkpoint does not require Save As.
+The first explicit native Save creates a new local copy. Recovery does not merge
+unacknowledged local gestures or elect a host automatically.
 
 Do not remove project artifacts while a project is active. Resource packages can
 retain native references beyond a playtest; they cannot be deleted or unmounted
@@ -153,23 +162,28 @@ not an editor mutation or recovery action.
 
 ## Party playtest
 
-The host selects **Playtest** after outstanding edits settle. Every participant,
-including the host, explicitly confirms the fixed revision. Authoring stays held
-while the party uses that snapshot. The native editor's authored test captain is
-used; this is not a new Sporepedia quickplay attempt.
+The host presses native **Play** after edits settle. Guest Play requests host
+approval through a compact prompt. After approval, a compact readiness prompt
+shows every participant; everyone, including the host, explicitly confirms the
+fixed revision. Host **Cancel playtest** returns the party to editing. Each new
+attempt starts everyone unready. Authoring remains held throughout playtest.
+The native editor's authored test captain is used; normal native test eligibility
+still applies.
 
-During readiness preparation, the host has **Cancel playtest** beside the
-Ready button. It returns the connected party to the same editable draft; the
-next attempt starts everyone unready. This control replaces **Recover** only
-while the host is preparing a playtest. Ending shared editing is a separate
-action. Cancellation is scoped to that project and preparation round.
-
-Only the host returns the party through **Return to draft**, native preview
-return or result exit. Guests wait for that group return. Each native editor
+Only the host returns the party through native **Build**, preview return or
+result exit. Guests wait for that group return. Each native editor
 must finish restoring its draft before the
 host releases the authoring hold. Gameplay health, destruction, objectives and
 act progression never become authored edits, and test play awards no quickplay
 captain XP. Cancellation or disconnection must preserve a recoverable draft.
+
+## Exit
+
+Host native **Exit** or **Save + Exit** settles accepted changes, honors Spore's
+confirmation/cancellation and returns the party to Galaxy while keeping it
+connected. Guest Exit leaves the party and returns that guest to Galaxy. Guest
+Save + Exit first creates a local copy. Saved creations and recovery checkpoints
+are preserved. Rejoining the party follows the host's current editor again.
 
 ## Developer diagnostics
 
@@ -233,12 +247,11 @@ through `make test`. `make test-editor-windows` builds Win32 fixtures for the
 native save contract, preview ownership and full runtime orchestration. Those
 fixtures substitute native game APIs; they do not establish in-game acceptance.
 
-Native testing uses hidden, muted, isolated Windows profiles. The required gates
-remain two- then four-player operation coverage, save/reopen and recovery,
-playtest cancellation and return, at least 20 cycles, network adversity, resource
-turnover and measured editor performance. A usable preview requires all
-advertised operations to pass these gates. Broader editor support remains roadmap
-work until it has equivalent evidence.
+Native testing uses hidden, muted, isolated Windows profiles. Focused preview
+checks cover the changed native workflow. Sustained cycle, network, resource,
+FPS and memory acceptance remains in the opt-in overnight playbook. This
+development preview is not a completed public release acceptance claim. Broader
+editor support remains roadmap work until it has equivalent evidence.
 
 End shared editing and return to Galaxy before using developer hot reload.
 After any native package was admitted in that process, imports and package reuse

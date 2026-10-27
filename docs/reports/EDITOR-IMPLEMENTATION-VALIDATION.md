@@ -1,5 +1,9 @@
 # Shared Adventure Editor: implementation validation
 
+This is the historical placement checkpoint through C19. The subsequent
+automatic sharing/native-controls preview is recorded in the
+[preview 3 validation report](EDITOR-NATIVE-FLOW-VALIDATION.md).
+
 Report revision 31, separate development and release testing, 2026-10-26. Branch:
 `feat/ga-adventure-editor`. The portable core and transport checkpoint is local
 commit `216f8b0`; native integration is recorded at `0a35c7b`, with lab tools at

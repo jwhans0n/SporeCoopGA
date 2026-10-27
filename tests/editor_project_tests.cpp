@@ -180,13 +180,14 @@ static void test_v2_root_delta(const editor_native::Snapshot& native) {
     CHECK(legacy.base_root && *legacy.base_root == native.bytes);
 }
 static bool same_resources(const ep::Resources& a, const ep::Resources& b) {
-    return a.root == b.root && a.act == b.act && a.bindings == b.bindings && a.bundle.hash == b.bundle.hash &&
+    return a.root == b.root && a.act == b.act && a.bindings == b.bindings && a.metadata==b.metadata && a.bundle.hash == b.bundle.hash &&
            a.bundle.bytes == b.bundle.bytes && root_bytes(a) == root_bytes(b) && a.base_root && b.base_root && *a.base_root == *b.base_root;
 }
 static void test_join_cache(const editor_native::Snapshot& native) {
     std::string error;
     ep::Resources host; host.root = {native.source.instance, native.source.type, native.source.group};
     host.act = native.act; host.bindings = native.bindings;
+    host.metadata=editor_native::Snapshot::Metadata{{u"Cached draft",u"",u"preview"},0};
     std::vector<uint8_t> base(131072); uint32_t random = 0x534133;
     for (auto& b : base) { random ^= random << 13; random ^= random >> 17; random ^= random << 5; b = uint8_t(random); }
     auto target = base; target[981] ^= 0x87; target[54321] ^= 0x34;
@@ -343,11 +344,18 @@ int main() {
     editor_native::Snapshot decoded;
     CHECK(ep::decode_mapping(bytes, decoded, error));
     CHECK(decoded.source == native.source && decoded.act == native.act && decoded.bindings == native.bindings);
+    const auto legacy=bytes;
+    native.metadata=editor_native::Snapshot::Metadata{{u"Unsaved draft",u"Description \u03a9",u"coop,preview"},0xE27DDAD4};
+    CHECK(ep::encode_mapping(native,bytes,error));
+    CHECK(ep::decode_mapping(bytes,decoded,error));CHECK(decoded.metadata==native.metadata);
+    auto too_long=native;too_long.metadata->text[0].assign(4097,u'x');
+    std::vector<uint8_t> refused;CHECK(!ep::encode_mapping(too_long,refused,error));
     for (size_t n = 0; n < bytes.size(); ++n) {
         auto before = decoded.bindings;
         CHECK(!ep::decode_mapping({bytes.begin(), bytes.begin() + n}, decoded, error));
         CHECK(decoded.bindings == before);
     }
+    CHECK(ep::decode_mapping(legacy,decoded,error));CHECK(!decoded.metadata);
     auto duplicate = native; duplicate.bindings[1].marker = 7;
     CHECK(!ep::encode_mapping(duplicate, bytes, error));
     duplicate = native; duplicate.bindings[1].object = duplicate.bindings[0].object;
@@ -357,12 +365,14 @@ int main() {
     ep::Resources resources;
     resources.root = {native.source.instance, native.source.type, native.source.group};
     resources.act = native.act; resources.bindings = native.bindings;
+    resources.metadata=native.metadata;
     CHECK(net::adventure_content::make_bundle(resources.root, {{resources.root, native.bytes}, {{12, 3, 4}, {7, 0, 8}}}, resources.bundle, error));
     CHECK(ep::encode_resources(resources, bytes, error));
     ep::Resources imported;
     CHECK(ep::decode_resources(bytes, imported, error));
     CHECK(imported.root == resources.root && imported.bundle.hash == resources.bundle.hash);
     CHECK(imported.bindings == native.bindings);
+    CHECK(imported.metadata==native.metadata);
     CHECK(imported.base_root && *imported.base_root == native.bytes);
     const auto original = bytes;
     for (size_t n = 0; n < bytes.size(); ++n) {

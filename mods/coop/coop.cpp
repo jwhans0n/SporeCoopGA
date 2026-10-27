@@ -1,7 +1,7 @@
 // SporeCoop mod: creature-stage co-op ("pack" mode). See docs/03-gameplay.md.
 // the release version (tools/package.sh names the zip after it)
 #ifndef COOP_VERSION
-#define COOP_VERSION "0.7.5.0-ga-editor-preview.2"
+#define COOP_VERSION "0.7.5.0-ga-editor-preview.3"
 #endif
 
 #include <winsock2.h>
@@ -895,6 +895,17 @@ void follow_phase(double now)
     }
 }
 
+struct Activity { uint32_t mode=0; uint8_t editor=0; bool operator==(const Activity&) const=default; };
+std::map<uint8_t,Activity> g_activities;
+std::optional<Activity> g_sent_activity;
+uint64_t g_activity_transport=0;
+Activity local_activity() {
+    const auto editor=coop_editor::view();
+    return {game::mode_id(),uint8_t(editor.native_editing?1:editor.offered || editor.waiting?2:0)};
+}
+std::string activity_name(const Activity& value) {
+    return value.editor==1?"Adventure Editor":value.editor==2?"Loading Adventure Editor":modes::mode_name(value.mode);
+}
 void send_lobby()
 {
     net::Writer w;
@@ -908,6 +919,10 @@ void send_lobby()
     }
     for (auto& p : pl) // roles after the main table (older guests stop reading before them)
         w.u8(g_roles[p.id]);
+    for (auto& p : pl) {
+        const auto activity=p.id==g_sess.my_id()?local_activity():g_activities[p.id];
+        w.u8(p.id);w.u32(activity.mode);w.u8(activity.editor);
+    }
     for (auto& p : pl)
         if (p.id != 0)
             g_sess.send_reliable_to(p.id, net::MSG_LOBBY, w);
@@ -915,16 +930,24 @@ void send_lobby()
 
 void lobby_tick(double now)
 {
+    if(g_sess.connected()) {
+        const auto activity=local_activity();const auto generation=g_sess.transport_generation();
+        if(!g_sent_activity || *g_sent_activity!=activity || g_activity_transport!=generation) {
+            g_sent_activity=activity;g_activity_transport=generation;g_activities[g_sess.my_id()]=activity;
+            if(g_sess.role()==net::Role::Client) {net::Writer w;w.u32(activity.mode);w.u8(activity.editor);g_sess.send_reliable_to(0,net::MSG_ACTIVITY,w);}
+            g_lobby_dirty=true;
+        }
+    } else {g_sent_activity.reset();g_activities.clear();}
     if (g_sess.role() == net::Role::Host) {
         if (g_lobby_dirty || now - g_last_lobby > 1.0) {
             g_lobby_dirty = false;
             g_last_lobby = now;
             send_lobby();
-            const char* mode = modes::mode_name(g_mode);
+            const auto mode = activity_name(local_activity());
             std::string world = modes::current_world_name();
             if (world.size() > 4 && world.substr(world.size() - 4) == ".spo")
                 world.resize(world.size() - 4);
-            g_sess.lobby_info = std::string(mode) + (world.empty() || !g_adapter ? "" : " - " + world);
+            g_sess.lobby_info = mode + (world.empty() || !g_adapter ? "" : " - " + world);
         }
     }
     if (g_disc_on)
@@ -1543,6 +1566,7 @@ void setup_callbacks()
         g_remotes.clear();
     };
     g_sess.cb.player_join = [](const net::PlayerInfo& p) {
+        g_activities.erase(p.id);
         coop_editor::on_join(p.id);
         if (!coop_editor::authoring()) {
             adventure::on_join(p.id);
@@ -1690,6 +1714,11 @@ void setup_callbacks()
             }
             return;
         }
+        if(type==net::MSG_ACTIVITY && g_sess.role()==net::Role::Host && from) {
+            const Activity value{r.u32(),r.u8()};
+            if(r.ok() && !r.left() && value.editor<=2) {g_activities[from]=value;g_lobby_dirty=true;}
+            return;
+        }
         if (type == net::MSG_LOBBY && g_sess.role() == net::Role::Client) {
             uint8_t n = r.u8();
             std::map<uint8_t, bool> ready;
@@ -1710,6 +1739,14 @@ void setup_callbacks()
                     for (auto& [id, on] : ready)
                         g_roles[id] = r.u8();
                     g_roles[g_sess.my_id()] = my_role;
+                }
+                if(r.left()==ready.size()*6) {
+                    std::map<uint8_t,Activity> activities;
+                    for(size_t i=0;i<ready.size();++i) {
+                        const auto id=r.u8();Activity value{r.u32(),r.u8()};
+                        if(value.editor>2 || !ready.contains(id) || !activities.emplace(id,value).second)return;
+                    }
+                    if(r.ok())g_activities=std::move(activities);
                 }
             }
             return;
@@ -1773,6 +1810,7 @@ void setup_callbacks()
             world::on_message(type, r, g_sess.name_of(0));
     };
     g_sess.cb.player_leave = [](uint8_t id, uint8_t) {
+        g_activities.erase(id);
         coop_editor::on_leave(id);
         adventure::on_leave(id);
         adventure_world::peer_changed(id);
@@ -2216,6 +2254,8 @@ std::vector<coop_ui::PlayerRow> ui_players()
         }
         if (!r.me)
             r.ping_ms = host || p.id == 0 ? g_sess.rtt_of(p.id) : (g_lobby_rtt.count(p.id) ? g_lobby_rtt[p.id] : -1);
+        if(r.me)r.stage=activity_name(local_activity());
+        else if(auto it=g_activities.find(p.id);it!=g_activities.end())r.stage=activity_name(it->second);
         v.push_back(r);
     }
     return v;
@@ -2236,6 +2276,8 @@ std::string ui_session_line()
 
 std::string ui_world_line()
 {
+    const auto editor=coop_editor::view();
+    if(editor.native_editing || editor.active || editor.offered)return editor.status;
     if (g_vote.active) {
         int ready = 0, n = 0;
         for (auto& p : g_sess.players()) {
@@ -2539,6 +2581,8 @@ void init_ui()
     };
     a.players = ui_players;
     a.world_line = [] {
+        const auto editor=coop_editor::view();
+        if(editor.native_editing || editor.active || editor.offered || editor.retry)return editor.status;
         auto flow=adventure_flow::status();
         if(!flow.empty()) return flow.substr(0,flow.find('\n'));
         return !g_vote.active && (g_mode == modes::kMenu || g_mode == modes::kScenario)
@@ -2588,6 +2632,8 @@ void init_ui()
     a.editor_recover = coop_editor::recover;
     a.editor_end = coop_editor::end;
     a.editor_ready = coop_editor::set_ready;
+    a.editor_approve = coop_editor::approve_playtest;
+    a.editor_join_choice = coop_editor::resolve_join;
     a.say = [](const std::string& t) {
         if (g_sess.connected())
             g_sess.send_chat(t);
@@ -2831,6 +2877,7 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
     editor.adventure_busy = adventure::active;
     editor.open_panel = coop_ui::open_editor;
     editor.close_panel = [] { coop_ui::open(false); };
+    editor.leave_party = do_leave;
     coop_editor::init(H, M, std::move(editor));
     game::set_extra_update_filter(adventure_native::update_filter);
     game::set_npc_ai_filter(adventure_world::npc_ai_filter);

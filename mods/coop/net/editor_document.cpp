@@ -234,7 +234,9 @@ bool valid(const Document& d, const Limits& l, std::string& error)
     if (d.placements.size() > l.placements || d.classes.size() > l.classes || d.acts.size() > l.acts ||
         d.tombstones.size() > l.tombstones || d.schema.size() > l.properties * 8 || d.class_schema.size()>l.properties*8 ||
         d.class_settings.size()>l.classes*l.acts || d.external_references.size() > l.dependencies * 16 || bytes(d) > l.document_bytes) return bad("Document exceeds a configured bound.");
-    if (d.classes.empty() || d.acts.empty()) return bad("A document needs known classes and acts.");
+    // A new native adventure has acts before its first cast member is added.
+    // Placements/settings still require their parent class below.
+    if (d.acts.empty()) return bad("A document needs at least one known act.");
     std::map<uint64_t, ObjectId> ids;
     auto add = [&](ObjectId id) { return identity(id) && id.id < d.next_id && ids.emplace(id.id, id).second; };
     for (auto id : d.classes) if (!add(id)) return bad("Invalid or reused class identity.");

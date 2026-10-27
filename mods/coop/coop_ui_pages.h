@@ -3,19 +3,13 @@
 
 namespace coop_ui {
 
-enum class Page { Connect, Lobby, Space, AdventureSettings, Preparation, Editor };
+enum class Page { Connect, Lobby, Space, AdventureSettings, Preparation };
 
-constexpr bool prefer_editor_on_open(bool connected, bool visible, bool active, bool offered, bool can_begin)
-{
-    return connected && visible && (active || offered || can_begin);
-}
-
-constexpr Page select_page(bool lobby, bool preparing, bool settings, bool space, bool editor = false)
+constexpr Page select_page(bool lobby, bool preparing, bool settings, bool space)
 {
     if (!lobby) return Page::Connect;
     if (settings) return Page::AdventureSettings;
     if (preparing) return Page::Preparation;
-    if (editor) return Page::Editor;
     return space ? Page::Space : Page::Lobby;
 }
 

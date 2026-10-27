@@ -47,6 +47,16 @@ repeated cycles. The existing entry points are
 `tools/tests/coop_adventure_editor.py`, `coop_editor_lifecycle.py`,
 `coop_editor_save.py` and `coop_editor_party.py` in that same directory.
 
+Preview 3 adds `tools/tests/coop_editor_native_flow.py` for short automatic
+sharing/native-control checks. It defaults to preparation only and never starts
+or deploys games. Use an existing owned hidden/muted cohort, its process metadata
+and exact DLL hash with `--execute`. Run `empty` with two instances, `toolbar`
+with four, then `handoff` with the original pair and the same `--fixture-tag`.
+The toolbar stage saves two local test creations that the handoff stage reopens.
+Output directories must be new. `--onboard-guest` is only for the native game's
+first-use captain gate in a fresh toolbar profile. This is an integration fixture,
+not the sustained overnight playbook.
+
 Record the result, continue development, and run integration checks at a coherent
 checkpoint. Repeat unrelated checks only when a change, failure or unresolved
 concern justifies doing so.

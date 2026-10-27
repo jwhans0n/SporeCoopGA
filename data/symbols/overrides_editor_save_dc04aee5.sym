@@ -1,5 +1,6 @@
 # Exact dc04 GOG native Adventure Editor save and preview lifecycle.
 # exe_sha256=dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37
+SporeCoop::Editor::AssignMetadataText=0x00423690 ; verified thiscall(string16*,const char16_t* begin,const char16_t* end)->string16*, ret8 at423733; native name setterF3CC39 calls it on data+4C; owned bounded metadata only, outside frame
 # evidence=tools/addrport/verify_editor_save_dc04.py; docs/re/adventure-editor-save.md
 SporeCoop::Editor::DisplayVtable=0x01489DFC ; verified static: UI base primary vtable initialized ED5130, allocated98 at EF2154 and owned at ScenarioMode+14
 SporeCoop::Editor::CanSave=0x00F41110 ; verified static: thiscall(data,uint32 reasonOut), bool AL, ret4; native pending/editor/avatar/dirty eligibility gate
@@ -14,3 +15,6 @@ SporeCoop::Editor::SelectDisplayMode=0x00ED6620 ; verified static: thiscall(UIba
 SporeCoop::Editor::PreviewCaptain=0x00FF3DB0 ; verified static: thiscall(data), captain pointer EAX; used by top native Play ED7E5D before validation
 SporeCoop::Editor::ValidatePlacement=0x00F412C0 ; verified static: thiscall(data,marker,int,int,int), bool AL, ret10; ED7E66..7E6F validates captain before Play; EFEA0B/EFEA4B validate ordinary drags, updates derived marker224 mask0x16
 SporeCoop::Editor::EditorCommand=0x00ED75E0 ; verified static: thiscall(UIbase,int action),ret4 ED78BB; raw Save/Done/Cancel/New command routing before ui58 assignment; native callers ED7FC0 ED7FE9 EDA319
+SporeCoop::Editor::ContinueCommand=0x00ED5820 ; verified static: thiscall(UIbase), plain ret ED583B/ED5875; dispatches pending UI58, action1/3 branches ED586A to native exit ED5240 with argument07EAF738; confirmation callback ED73F0 calls this continuation
+SporeCoop::Editor::CaptureTerrain=0x00F27C00 ; verified static: thiscall(owned ScenarioResource), plain ret F27C7B; native Save calls F45201 on its private copy, exports active ScenarioMode+18 terrain properties into resource+18 and adds property02A907B7; no creation database save
+SporeCoop::Editor::CreationGroup=0x015B03A8 ; verified static: uint32 native configured adventure group, initial408A0000; LoadScenarioResource compares key.group here at F44AA2 and rejects other groups before loading, Save key generation reads the same global

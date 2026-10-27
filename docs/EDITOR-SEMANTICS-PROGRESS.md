@@ -1,9 +1,9 @@
 # Shared adventure authoring implementation
 
-The current locally installed build is the C19 placement preview described in the
-[editor guide](MULTIPLAYER-ADVENTURE-EDITOR.md). Subsequent authoring work happens
-in a development branch and private lab; it does not silently replace the build
-being used for hands-on testing.
+The automatic native-flow preview is described in the
+[editor guide](MULTIPLAYER-ADVENTURE-EDITOR.md) and its
+[validation report](reports/EDITOR-NATIVE-FLOW-VALIDATION.md). It extends the
+placement preview without enabling the unfinished native property controls.
 
 ## Implemented development checkpoint
 
@@ -23,10 +23,9 @@ Branch `feat/ga-editor-semantics` now adds:
 - Development protocol 17 and version `0.7.5.0-ga-editor-preview.2`, giving older
   clients an explicit session-version mismatch. Existing GA/captain content
   bundle formats are unchanged. This source version is not a published release.
-- F9 page routing that opens the shared editing panel directly when the host can
-  share, a guest has an offer, or a shared session is active. Ordinary Galaxy
-  parties retain their normal lobby. Native live verification of this UI
-  refinement is still pending; it is not installed into the user's running games.
+- The former F9 editor page has been superseded by automatic sharing and native
+  controls on `feat/ga-editor-native-flow`, preview 3 / protocol 18. The normal
+  party lobby remains available for chat, progress, retry and recovery.
 
 Focused checks: 2,894 Win32 document assertions, 8,245 protocol assertions,
 186 native-schema/scale assertions, 307 focused real-UDP/controller assertions
@@ -39,6 +38,24 @@ The native property controls remain held. Projection/application, input gating,
 owned UI refresh and a short actual two-player property workflow still need to
 be integrated before those controls can be advertised as implemented gameplay.
 The current adapter rejects class-setting payloads until that integration exists.
+
+## Automatic sharing checkpoint
+
+Preview 3 captures the live draft, including an unsaved empty adventure's terrain,
+under a private project identity without saving a creation. The party host starts
+sharing when its native editor is ready; guests follow automatically after the
+baseline transfer. Reliable activity distinguishes editing from adventure play.
+An unrelated guest draft receives Save/Discard/Cancel protection.
+
+Native history controls use the existing transactional policy. Native host Save
+creates and then updates a host-owned copy; guest Save exports a pinned local
+copy under a coordinated hold and restores its shared working context. Native
+Play supports guest approval requests and explicit participant readiness. Native
+Build and Exit use the coordinated return/exit lifecycle. Recovery of an unsaved
+checkpoint no longer requires an immediate native Save As.
+
+The native-flow report records focused test evidence and remaining limits.
+Sustained stress, FPS and memory gates remain in the overnight playbook.
 
 ## Active scope
 

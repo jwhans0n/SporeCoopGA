@@ -561,7 +561,8 @@ void Controller::Impl::host_request(uint8_t from, const Request& request)
 {
     if (!hosting || !view.members.contains(from) || request.operation.author != view.members.at(from).peer) return;
     if (!draining_requests && callbacks.trace) callbacks.trace(TracePoint::HostRequestReceived, context().project, request.operation, context().revision);
-    if (!draining_requests && view.phase == Phase::Ready && (!held_requests.empty() || !authoring_ready())) {
+    const bool held = callbacks.authoring_held && callbacks.authoring_held();
+    if (!held && !draining_requests && view.phase == Phase::Ready && (!held_requests.empty() || !authoring_ready())) {
         std::vector<uint8_t> bytes; std::string error;
         if (!w::encode_request(request, bytes, error)) { freeze(from, error); return; }
         if (held_requests.size() >= config.catchup_decisions || held_request_bytes + bytes.size() > config.outbound_bytes) { freeze(from, "Native gesture request waiting exceeded a bounded queue."); return; }
@@ -570,7 +571,7 @@ void Controller::Impl::host_request(uint8_t from, const Request& request)
     auto hooks = callbacks.host_hooks;
     const auto validate = hooks.validate;
     hooks.validate = [&](const Document& before, const Document& after, const Change& change, std::string& error) {
-        if (view.phase != Phase::Ready || view.members.at(from).phase != Phase::Ready) { error = "Authoring is held or this participant needs a baseline."; return false; }
+        if (held || view.phase != Phase::Ready || view.members.at(from).phase != Phase::Ready) { error = "Authoring is held or this participant needs a baseline."; return false; }
         return !validate || validate(before, after, change, error);
     };
     const auto persist = hooks.persist;
@@ -871,6 +872,14 @@ void Controller::Impl::message(uint8_t from, w::Message message)
     if (!active() || !same_context(message.context, view.context)) return;
     if (view.phase == Phase::Frozen && !std::holds_alternative<w::Leave>(message.payload)) return;
     if (hosting && (!view.members.contains(from) || view.members.at(from).phase == Phase::Frozen)) return;
+    if (auto* command = std::get_if<w::Command>(&message.payload)) {
+        const bool request=command->kind==w::CommandKind::RequestExport || command->kind==w::CommandKind::RequestPlaytest ||
+            command->kind==w::CommandKind::ReplyPlaytest || command->kind==w::CommandKind::EndExport;
+        const bool reply=command->kind==w::CommandKind::ReplyPlaytest && view.phase==Phase::Preparing;
+        if ((message.context.revision == context().revision || (request && message.context.revision<context().revision)) && (view.phase == Phase::Ready || reply) && callbacks.command)
+            callbacks.command(from, *command);
+        return;
+    }
     if (auto* join = std::get_if<w::Join>(&message.payload)) {
         if (hosting && from && view.members.at(from).phase == Phase::Offered && message.context.revision<=context().revision) synchronize(from,*join); return;
     }
@@ -1102,7 +1111,7 @@ void Controller::on_message(uint8_t from, net::Reader& reader)
 {
     auto& i = *impl_; const size_t count = reader.left();
     constexpr size_t tag_offset=envelope_bytes+1+16+8+8;
-    if(count>tag_offset && reader.cur()[tag_offset]==std::variant_size_v<w::Payload>-1){
+    if(count>tag_offset && reader.cur()[tag_offset]==w::Payload{w::TransformPreview{}}.index()){
         net::Reader copy(reader.cur(),count);Peer sender{copy.u8(),copy.u32()};const auto recipient=copy.u32();
         w::Message message;std::string error;
         if(count<=w::kPacketBytes+envelope_bytes && w::read(copy,message,sender,from==0,error)){
@@ -1287,6 +1296,21 @@ bool Controller::set_presence(w::Presence presence, std::string& error)
     if ((presence.selected != ObjectId{} && !i.state().document.placements.contains(presence.selected)) || (presence.act != ObjectId{} && !i.state().document.acts.contains(presence.act))) { error = "Presence selected an unknown placement or act."; return false; }
     presence.ownership=0;presence.preview_lease={};presence.phase=w::PresencePhase::Ready;
     i.presence_local=presence;error.clear();return true;
+}
+
+bool Controller::send_command(w::Command command, std::string& error, uint8_t to)
+{
+    auto& i = *impl_;
+    const bool reply=command.kind==w::CommandKind::ReplyPlaytest && i.hosting && i.view.phase==Phase::Preparing;
+    if ((i.view.phase != Phase::Ready && !reply) || command.revision > i.context().revision) {
+        error = "The editor command no longer matches the current draft"; return false;
+    }
+    net::Writer check;
+    auto scope=i.context();scope.revision=command.revision;
+    if (!w::write({scope, command}, check, error)) return false;
+    if (!i.hosting) return i.queue(0, {scope, command}, false, error);
+    if (to != 255) return i.queue(to, {scope, command}, false, error);
+    i.broadcast({scope, command}); error.clear(); return true;
 }
 
 bool Controller::set_preview(ObjectId object,ObjectId act,Pose pose,std::string& error)

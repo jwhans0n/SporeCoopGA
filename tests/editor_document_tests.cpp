@@ -505,6 +505,13 @@ static void test_class_settings(){
 
 int main()
 {
+    {
+        auto blank=seed();blank.document.classes.clear();blank.document.placements.clear();
+        std::string error;CHECK(valid(blank.document,{},error));
+        Coordinator coordinator;CHECK(coordinator.reset(blank,1,error));
+        auto invalid=blank.document;invalid.placements.emplace(a,seed().document.placements.at(a));
+        CHECK(!valid(invalid,{},error));invalid=blank.document;invalid.acts.clear();CHECK(!valid(invalid,{},error));
+    }
     test_validation(); test_create_clone_delete(); test_clone_final_pose(); test_concurrent_fields_and_batches(); test_reference_integrity(); test_leases();
     test_undo_chronology_and_conflict(); test_own_multistep_and_structural_history(); test_redo_and_author_isolation(); test_dedup_retention_and_epoch(); test_hooks_and_atomicity(); test_four_author_adversity(); test_replica_and_nonce_recovery();
     test_class_settings();

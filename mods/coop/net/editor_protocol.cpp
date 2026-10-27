@@ -58,6 +58,7 @@ template<class T> constexpr unsigned maximum() {
     if constexpr(std::is_same_v<T,LeaseAction>) return 2;
     if constexpr(std::is_same_v<T,ControlKind>) return 6;
     if constexpr(std::is_same_v<T,PresencePhase>) return 7;
+    if constexpr(std::is_same_v<T,CommandKind>) return unsigned(CommandKind::ExitEditor);
     return 0;
 }
 #define FIELDS(T,...) template<class A> void fields(A& a,T& v) { a(__VA_ARGS__); }
@@ -104,6 +105,7 @@ FIELDS(Saved,v.saved_revision,v.resource,v.serial)
 FIELDS(SavedApplied,v.saved)
 FIELDS(Leave,v.reason)
 FIELDS(Control,v.kind,v.serial,v.revision,v.ready,v.ready_mask,v.participant_mask)
+FIELDS(Command,v.kind,v.serial,v.revision,v.actor,v.accepted)
 #undef FIELDS
 struct Encode {
     net::Writer w; size_t limit;
@@ -224,6 +226,9 @@ void validate_payload(const Message& m) {
     need(context(m.context),"invalid message context");
     std::visit([&](const auto& p){
         using T=std::decay_t<decltype(p)>;
+        if constexpr(std::is_same_v<T,Command>) need(p.serial && peer(p.actor) && p.revision==m.context.revision &&
+            unsigned(p.kind)<=unsigned(CommandKind::ExitEditor) &&
+            (!p.accepted || p.kind==CommandKind::ReplyPlaytest || p.kind==CommandKind::FinishExport || p.kind==CommandKind::EndExport),"invalid native editor command");
         if constexpr(std::is_same_v<T,Offer>) need(p.schema==kSchema && !p.name.empty() && p.name.size()<=256 && peer(p.assigned) && p.assigned.slot!=0 && peer(p.host) && p.host.slot==0,"unsupported offer");
         if constexpr(std::is_same_v<T,TransferBegin>) need(unsigned(p.kind)<=unsigned(TransferKind::Join) && p.serial && p.total && p.total<=transfer_limit(p.kind) && hash(p.hash),"invalid transfer header");
         if constexpr(std::is_same_v<T,Join>) {validate(p);need(p.durable_revision<=m.context.revision,"join durable revision exceeds its offered scope");}
@@ -271,6 +276,11 @@ void direction(const Message& m,Peer sender,bool host) {
         need((t->kind==TransferKind::Request || t->kind==TransferKind::Join) ? !host : host,"invalid transfer authority");
     if(const auto* c=std::get_if<Control>(&m.payload))
         need((c->kind==ControlKind::GuestReadyPlaytest || c->kind==ControlKind::GuestEditorReturned) ? !host : host,"invalid playtest authority");
+    if(const auto* c=std::get_if<Command>(&m.payload)) {
+        const bool guest=c->kind==CommandKind::RequestPlaytest || c->kind==CommandKind::RequestExport ||
+            c->kind==CommandKind::ExportHeld || c->kind==CommandKind::FinishExport;
+        need(guest ? (!host && c->actor==sender) : host,"invalid native editor command authority");
+    }
 }
 }
 

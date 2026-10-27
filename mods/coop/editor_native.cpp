@@ -732,10 +732,10 @@ void SK_CDECL fence_ui(void*){
     state();
     if(fenced_generation!=generation){restore_fences();fenced_generation=generation;}
     if(!supported || !active()){restore_fences();return;}
-    // Ordinary native Save/Done/Cancel are brokered by the collaboration panel.
-    // Its verified save adapter can still show and complete the normal save UI.
-    constexpr uint32_t ids[]={0x07466E50,0x07104132,0x07104131,0x04766FF0,
-        0x07108388,0xBBBB1001,0x90439D7C,0x06FCB638,0x272EB68E};
+    // Unsupported authoring remains held. Save/Done/Cancel/Play are intercepted
+    // by the native command adapter and retain their ordinary toolbar locations.
+    constexpr uint32_t ids[]={0x07466E50,0x07104132,0x04766FF0,
+        0x07108388,0x272EB68E};
     void* display=skg::readable(mode(),0x18)?skg::field<void*>(mode(),0x14):nullptr;
     void* main_layout=skg::readable(display,0x28)?skg::field<void*>(display,0x24):nullptr;
     if(skg::readable(main_layout,0x18))for(auto id:ids){
@@ -985,7 +985,43 @@ bool capture(Snapshot& out, std::string& error) {
     void* owner=data(mode());
     if(!capture_resource(resource(owner),s.act,out,error))return false;
     out.local_dirty=Snapshot::Dirty{skg::field<uint32_t>(owner,0x80),skg::field<bool>(owner,0x84),skg::field<bool>(owner,0x85)};
+    Snapshot::Metadata metadata;metadata.genre=skg::field<uint32_t>(owner,0x7C);
+    for(size_t i=0;i<metadata.text.size();++i) {
+        const auto offset=0x4C+16*i;
+        const auto begin=skg::field<uintptr_t>(owner,offset),end=skg::field<uintptr_t>(owner,offset+4);
+        if(end<begin || (end-begin)%2 || end-begin>8192 || (end!=begin && !skg::readable(reinterpret_cast<void*>(begin),end-begin))) {
+            error="The native adventure metadata is unavailable or oversized";return false;
+        }
+        if(end!=begin)metadata.text[i].assign(reinterpret_cast<const char16_t*>(begin),(end-begin)/2);
+    }
+    out.metadata=std::move(metadata);
     return true;
+}
+bool capture_draft(Snapshot& out,std::string& error) {
+    Snapshot draft;if(!capture(draft,error))return false;
+    const auto export_terrain=H->sym("SporeCoop::Editor::CaptureTerrain");
+    void* m=mode();void* terrain=skg::readable(m,0x1C)?skg::field<void*>(m,0x18):nullptr;
+    if(!export_terrain || !skg::readable(terrain,0x10) || !skg::readable(skg::field<void*>(terrain,0x0C),0x34)) {
+        error="The native planet snapshot exporter is unavailable";return false;
+    }
+    Owned copy(parse(draft.bytes,error));if(!copy.p)return false;
+    // F45201 exports into Save's owned scenario copy. Its destination is the
+    // resource PropertyList at +18, not the active adventure or a database.
+    skg::thiscall<void>(export_terrain,copy.p);
+    if(!serialize(copy.p,draft.bytes,error) || !validate(draft,draft.document,error))return false;
+    out=std::move(draft);return true;
+}
+uint32_t creation_group() {
+    const auto address=H?H->sym("SporeCoop::Editor::CreationGroup"):0;
+    return address && skg::readable(reinterpret_cast<void*>(address),4)?*reinterpret_cast<const uint32_t*>(address):0;
+}
+bool validate_entry(const std::vector<uint8_t>& bytes,uint32_t act,std::string& error) {
+    if(!supported){error="Native editor validation is unavailable";return false;}
+    Owned copy(parse(bytes,error));if(!copy.p)return false;
+    Snapshot projected;projected.act=act;
+    if(!projection(copy.p,projected,error))return false;
+    projected.bytes=bytes;
+    return validate(projected,projected.document,error);
 }
 
 bool supported_changes(const Gesture& gesture,std::string& error){
@@ -1200,6 +1236,19 @@ bool restore(const Snapshot& snapshot, std::string& error) {
     void* memory=skg::cdecl_call<void*>(a_alloc,size_t(0x18),"CoopEditorRestore",0,0,0,0);
     if(!memory){error="Native editor history allocation failed";return false;}
     Owned entry(skg::thiscall<void*>(a_entry,memory,data(mode()),copy.p,copy.p));
+    if(snapshot.metadata) {
+        const auto assign=H->sym("SporeCoop::Editor::AssignMetadataText");
+        if(!assign){error="The native metadata text adapter is unavailable";return false;}
+        for(size_t i=0;i<snapshot.metadata->text.size();++i) {
+            const auto& text=snapshot.metadata->text[i];
+            if(text.size()>4096 || text.find(u'\0')!=std::u16string::npos){error="Invalid native metadata text";return false;}
+        }
+        for(size_t i=0;i<snapshot.metadata->text.size();++i) {
+            const auto& text=snapshot.metadata->text[i];
+            skg::thiscall<void>(assign,skg::ptr_add<void>(data(mode()),0x4C+16*i),text.data(),text.data()+text.size());
+        }
+        skg::field<uint32_t>(data(mode()),0x7C)=snapshot.metadata->genre;
+    }
     addref(entry.p);
     applying=true;
     skg::thiscall<void>(a_restore,entry.p,copy.p);
@@ -1422,7 +1471,7 @@ bool select_placement(editor::ObjectId id,std::string& error){
 }
 
 bool enter(const editor::ResourceKey& key,std::string& error){
-    if(!supported || !key.instance || key.type!=0x366A930D || game::mode_id()!=modes::kMenu){
+    if(!supported || !key.instance || key.type!=0x366A930D || !creation_group() || key.group!=creation_group() || game::mode_id()!=modes::kMenu){
         error="A registered adventure can enter the native editor only from Galaxy";return false;
     }
     const char* required[]={"SporeCoop::Adventure::ResetRequest","SporeCoop::Adventure::LoadingScreenGet",
