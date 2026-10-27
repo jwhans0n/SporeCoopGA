@@ -1071,6 +1071,9 @@ void on_frame(void*, int, void*)
     coop_ui::tick();
     menu_tick(now);
     if (coop_editor::authoring()) {
+        // Native editable creatures still dispatch Update. NPC replication is
+        // suspended here, so its ordinary per-frame collector drain is skipped.
+        game::discard_creature_updates();
         uint32_t previous = g_mode;
         g_mode = game::mode_id();
         if (g_mode != previous) on_mode_change(previous, g_mode);

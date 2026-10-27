@@ -3376,6 +3376,37 @@ SporeKit 0.3.4's move/wheel helpers omit Control/Shift `wParam` bits, so modifie
 probes need consistent ordinary messages to the exact owned HWND as well as the
 normal key state. No new callable alias or direct native mutation is introduced.
 
+Pure wheel scaling remains an active native gesture until normal modifier
+release and an unmodified mouse move. Holding Shift and posting only ordinary
+wheel messages therefore permits an actual disjoint host commit while a guest
+owns a rejected Scale, without mixing in Move or mouse-button actions. The C17
+four-player run `out/editor-native-party-c17-final/held-wheel-185236/result.json`
+confirms current-entry cancellation preserves that peer commit and history.
+Wheel picking matters: the accepted fixture uses the selected building's visible
+body. A scale limit or an ignored wheel over clear world is not cancellation.
+
+### Shared authoring must drain creature observations
+
+`game::h_Update` appends every observed native creature to `g_seen`, including
+editable creatures. `npc::tick` normally calls `game::creatures_updated()` each
+frame, which swaps and clears the input vector. The shared editor's early return
+skips that consumer, so repeated updates accumulated pointers indefinitely.
+
+C17 read-only observations of the exact loaded shadow DLL confirm the problem:
+all four real Town editors retain another 10,325-10,679 entries in eight seconds
+without authored input. Earlier editor use left capacity for 1,048,576 pointers
+in one collector vector per process. The observer verifies the C17 DLL hash and
+its named debug symbols before reading vector headers; it makes no game calls
+or memory writes. Receipt:
+`out/editor-native-party-c17-final/collector-growth-190626/result.json`.
+
+The correction discards both input and previous-scene observations every shared
+authoring frame, without sorting, dereferencing actors or running NPC replication.
+Gameplay retains its normal consumer. The actual Update-wrapper regression runs
+2,000 frames with 32 observations each, verifies bounded collection, and confirms
+resumed gameplay receives only its new observations. This fixes a demonstrated
+mod allocation source; it does not by itself establish a native heap plateau.
+
 Receipt: `out/editor-native-re/C17-CANCELLATION-HANDOFF.md`, SHA-256
 `55df06bac1497ab392215084082d4cde0f00230af558dad6b06061f0e7772969`.
 This is a verified input/validity recipe, not an actual ordinary cancellation

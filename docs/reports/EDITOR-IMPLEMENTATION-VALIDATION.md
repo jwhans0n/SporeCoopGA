@@ -1,6 +1,6 @@
 # Shared Adventure Editor: implementation validation
 
-Report revision 26, C17 actual shared cancellation, 2026-10-26. Branch:
+Report revision 27, C17 native cancellation and collector defect, 2026-10-26. Branch:
 `feat/ga-adventure-editor`. The portable core and transport checkpoint is local
 commit `216f8b0`; native integration is recorded at `0a35c7b`, with lab tools at
 `a9b844f`. The C10 integration checkpoint is `071f6a4`, depending on network
@@ -1388,3 +1388,33 @@ retained separately; it is not the accepted run. The corrected harness waits
 only for the host commit during the hold, then checks all peers after release.
 The earlier combined Move/wheel case remains a separate unsupported-data guard
 observation; the passing pure Scale tests do not waive that guard.
+
+### C17 unobstructed four-player large-editor FPS
+
+The corrected run rejects visible registration before and after sampling and
+retains bracketing screenshots. All four native editors display the real
+419-placement fixture. Shared and independent measurements use the same PIDs,
+CPU/GPU/driver, native camera projections and render configuration; normal
+End/Leave separates the windows without authored input or restoration. Median
+FPS ratios are 0.99994/0.99978/0.99789/0.99715. The p95 frame-time ratios are
+0.99721/1.00123/0.99937/0.99618. All meet the unchanged budgets, and native
+cleanup completes normally. This passes the four-player editor FPS gate;
+retained memory and large-adventure gameplay remain separate checks. Receipt:
+`out/editor-native-party-c17-final/fps-four-uncovered/performance-result.json`.
+
+### C18 correction: unconsumed native creature observations
+
+An exact-C17, read-only observation found a real unbounded mod allocation while
+shared editing bypasses the ordinary NPC consumer. Four real Town editors add
+10,679/10,325/10,502/10,502 pointer entries in eight idle seconds. One collector
+vector in each process had retained capacity for 1,048,576 pointers. This is a
+demonstrated source of growth, not attribution of every prior private-byte change.
+The native noun-list observation remains separate from the mod vector readings.
+Receipt: `out/editor-native-party-c17-final/collector-growth-190626/result.json`.
+
+The correction discards unconsumed and previous-scene observations each
+authoring frame while preserving the ordinary gameplay consumer. No native call,
+layout or symbol changes are introduced. The actual Win32 Update-wrapper test
+passes 2,000 simulated authoring frames and checks that resumed gameplay receives
+only current observations. C18 still needs its combined build and actual native
+memory/performance rerun; the C17 gate results do not automatically transfer.

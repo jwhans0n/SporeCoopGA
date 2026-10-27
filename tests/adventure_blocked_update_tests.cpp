@@ -42,6 +42,7 @@ void SK_THISCALL original_npc_ai(void* self, float seconds)
     check(game::npc_ai_subject() == self, "native perception can observe only the current original NPC AI subject");
 }
 int nested_calls;
+void SK_THISCALL collect_only(void*, int) {}
 void SK_THISCALL nested_npc_ai(void* self, float seconds)
 {
     ++nested_calls;
@@ -126,6 +127,25 @@ int main()
     game::h_NPCTickAI(actor,.123f);
     check(nested_calls==2&&game::npc_ai_subject()==nullptr,
           "one native call per subject and nested restoration preserve the outer no-subject boundary");
+    // Reproduce the shared editor's suspended NPC consumer with actual Update
+    // collection. The previous early return retained every observed pointer.
+    game::set_npc_ai_filter(nullptr);game::set_extra_update_filter(nullptr);
+    game::set_update_filter(nullptr);game::set_update_observer(nullptr);
+    game::o_Update=collect_only;
+    game::discard_creature_updates();
+    std::vector<void*>{}.swap(game::g_seen);
+    std::vector<void*>{}.swap(game::g_seen_out);
+    for(int frame=0;frame<2000;++frame){
+        for(int object=0;object<32;++object)
+            game::h_Update(reinterpret_cast<void*>(uintptr_t(0x100000+object*16)),123);
+        check(game::g_seen.size()==32,"authoring still observes native creature updates");
+        game::discard_creature_updates();
+        check(game::g_seen.empty()&&game::g_seen_out.empty(),"every authoring frame discards unconsumed and previous-scene observations");
+    }
+    check(game::g_seen.capacity()<=32,"continued authoring never grows the collection beyond one frame");
+    game::h_Update(actor,123);
+    const auto& resumed=game::creatures_updated();
+    check(resumed.size()==1&&resumed.front()==actor,"resumed gameplay receives only its current native update");
     std::printf("adventure blocked Update dispatch: %d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

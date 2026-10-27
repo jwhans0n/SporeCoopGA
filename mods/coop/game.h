@@ -63,6 +63,9 @@ void play_animation(void* c, uint32_t anim_id, int block, bool disable_blend);
 
 // ---- creature registry: every cCreatureAnimal that ran Update since the last call ----
 const std::vector<void*>& creatures_updated();   // swap per frame (call once per frame)
+// Authoring has no NPC replication consumer. Drop observed pointers each frame
+// without sorting or retaining updates from an earlier native scene.
+void discard_creature_updates();
 using UpdateFilter = bool (*)(void* creature);   // return false to skip the creature's Update
 void set_update_filter(UpdateFilter fn);
 void set_extra_update_filter(UpdateFilter fn); // composed with NPC filtering (adventure ownership/barriers)

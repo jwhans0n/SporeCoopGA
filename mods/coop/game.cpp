@@ -66,6 +66,12 @@ const std::vector<void*>& creatures_updated()
     return g_seen_out;
 }
 
+void discard_creature_updates()
+{
+    g_seen.clear();
+    g_seen_out.clear();
+}
+
 void set_update_filter(UpdateFilter fn) { g_update_filter = fn; }
 void set_extra_update_filter(UpdateFilter fn) { g_extra_update_filter = fn; }
 void set_npc_ai_filter(UpdateFilter fn) { g_npc_ai_filter = fn; }
