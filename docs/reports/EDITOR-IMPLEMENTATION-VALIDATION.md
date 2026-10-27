@@ -1,6 +1,6 @@
 # Shared Adventure Editor: implementation validation
 
-Report revision 29, actual bulk contention and C19 optimization, 2026-10-26. Branch:
+Report revision 30, complete C19 native bulk acceptance, 2026-10-26. Branch:
 `feat/ga-adventure-editor`. The portable core and transport checkpoint is local
 commit `216f8b0`; native integration is recorded at `0a35c7b`, with lab tools at
 `a9b844f`. The C10 integration checkpoint is `071f6a4`, depending on network
@@ -34,7 +34,7 @@ does not silently become a C19 gate pass after the latest native-work optimizati
 | Large-editor FPS | C18: unobstructed four-player comparison passes on 419 placements. C17 two/four-player comparisons also pass. The earlier covered four-player sample is excluded. |
 | Collector memory defect | Reproduced in C17; C18 real four-player idle test proves stable 64-entry capacity with continuing native updates. |
 | Sustained retained memory | Open. C18's exclusive 128-edit warm-up and 30 edit/Test/Return window completes with stable resource/history bounds, but positive tail private-byte slopes do not yet establish an active-editor plateau. All four release below baseline on normal Galaxy return. |
-| Genuine bulk contention | Failed C18 exploratory run: three actual overlapping confirmations take 997-1,030 ms, above the unchanged 750 ms target. The real 1.99 MB payload matches verified provenance; a separate new-peer body-calibration failure prevents episode acceptance. Native apply/integrity work dominates the recorded timing. C19 optimization and a complete rerun remain. |
+| Genuine bulk contention | C19 passes: thirty qualifying confirmations across ten genuinely cold collaborators, aggregate 2 Mbit/s WAN, p95 719.97 ms against the unchanged 750 ms budget. Each cold peer imports the verified real bundle, edits, converges and exits normally; the original three remain in one session until final normal cleanup. |
 | Gameplay regression breadth | C19's complete automated editor/GA suite passes. Actual large-adventure FPS and the remaining captain/lobby/music/interactions/targeting/results/Replay native coverage are separate gates. |
 
 Stages 5 and later remain roadmap work. None of these observations enable
@@ -1599,3 +1599,38 @@ on Windows and WSL. No native DLL or protocol change is involved. C19's original
 native build receipt stays separate from this later harness revision. All four
 games in the interrupted run complete normal exit with code zero. Receipt:
 `out/editor-native-bulk-c19/run3/result.json` and the retained public responses.
+
+### C19 complete native aggregate-link bulk gate
+
+The corrected run passes the unchanged bulk gate. Three persistent hidden,
+muted editors use the real 648-placement `Live or Die` draft. Ten new fourth
+collaborators each start with a fresh profile and an observed empty Join content
+inventory. Each actual full Resources envelope matches the independently decoded
+revision-pinned native source: about 1.99 MB, 230 records. Native transforms by
+the two existing guests overlap actually forwarded Resources serialization.
+All their traffic shares one 2 Mbit/s host upload and download link with
+100 ms RTT, 1% loss, 2% reordering and 1% duplication; per-peer shaping is off.
+
+Thirty exact operation-keyed confirmations qualify. P95 is **719.9659 ms**, below
+750 ms. The 1,049.4951 ms dropped-request/retransmission sample remains included;
+no outlier is removed. Each cold collaborator catches up to the complete native
+canonical state, makes its own ordinary edit, reaches local durability on all
+four clients, leaves normally and exits with code zero. The original three keep
+the same PIDs, hardware and session through all episodes and reach revision 52.
+Their final Shared End, Leave, native Galaxy return and WM_CLOSE also exit zero.
+This is a native bulk-gate pass, not complete stages 0-4 acceptance.
+
+Captured UDP payload totals include real source retransmissions, ACKs and
+keepalives. Injected duplicates are separate; IP/UDP header overhead is excluded.
+
+| Peer scope across ten complete captured episodes | Host to peer bytes | Peer to host bytes | Retransmitted message bytes, both directions |
+| --- | ---: | ---: | ---: |
+| Persistent guest 94 | 2,089,954 | 1,154,995 | 22,889 |
+| Persistent guest 95 | 2,089,234 | 1,150,080 | 21,340 |
+| Ten fresh guests at instance 96, combined | 25,578,960 | 770,697 | 623,300 |
+
+The last row covers ten distinct native processes/profiles. These whole-episode
+byte counts are not an average transfer-rate claim. The shared-link QPC service
+intervals and full packet records establish actual contention and retransmission
+accounting. Receipts: `out/editor-native-bulk-c19/run4/result.json`, its ten
+episode/provenance/correlation/proxy captures and `reviewed-bulk-summary.json`.
