@@ -670,7 +670,10 @@ void finish_held_input(){
 void deny_held_input(const std::vector<editor::Scope>& scopes){
     for(const auto& scope:scopes){
         if(held_tool && (scope.kind==editor::ScopeKind::Document || scope.object==held_tool->object))finish_held_input();
-        if(scope.kind==editor::ScopeKind::Document)held_import.reset();
+        if(scope.kind==editor::ScopeKind::Document){
+            if(held_import)H->log(M,SK_DEBUG,"Cast queue denied: keys=%u",unsigned(held_import->size()));
+            held_import.reset();
+        }
         if(held_class_removal && (scope.kind==editor::ScopeKind::Document || scope.object==editor::ObjectId{(2ull<<32)|held_class_removal->index,1}))held_class_removal.reset();
         if(held_creation && (scope.kind==editor::ScopeKind::Document || scope.object==editor::ObjectId{(2ull<<32)|held_creation->class_index,1}))held_creation.reset();
     }
@@ -717,10 +720,20 @@ void SK_CDECL continue_input(void*){
         }
     }
     if(held_import){
-        const auto scope=C.gesture_scope?C.gesture_scope():GestureScope{};
-        if(!active() || state().generation!=import_generation || scope!=import_scope || H->time_seconds()-import_started>2 || (GetKeyState(VK_ESCAPE)&0x8000))held_import.reset();
-        else if(C.structure_gate && C.structure_gate(0)){
+        const auto scope=C.import_scope?C.import_scope():C.gesture_scope?C.gesture_scope():GestureScope{};
+        // Upload and canonical application already have their own cancellation
+        // and transfer bounds. Their latency is not an ownership-input timeout
+        // for the next key selected in the same native picker.
+        if(!pending.empty() || queued || gesture_before_resource || (C.transaction_pending && C.transaction_pending()))
+            import_started=H->time_seconds();
+        if(!active() || state().generation!=import_generation || scope!=import_scope || H->time_seconds()-import_started>2 || (GetKeyState(VK_ESCAPE)&0x8000)){
+            H->log(M,SK_DEBUG,"Cast queue retired: keys=%u active=%u generation=%u scope=%u elapsed=%.3f",unsigned(held_import->size()),active(),state().generation==import_generation,scope==import_scope,H->time_seconds()-import_started);
+            held_import.reset();
+        }
+        else if(pending.empty() && !queued && !gesture_before_resource &&
+                !(C.transaction_pending && C.transaction_pending()) && C.structure_gate && C.structure_gate(0)){
             const auto key=held_import->front();held_import->pop_front();
+            H->log(M,SK_DEBUG,"Cast queue drain: key=%08X!%08X.%08X remaining=%u",key.group,key.instance,key.type,unsigned(held_import->size()));
             if(held_import->empty())held_import.reset();
             import_started=H->time_seconds();import_native(data(mode()),&key);
         }
@@ -916,9 +929,10 @@ uint32_t SK_THISCALL import_native(void* self,const editor::ResourceKey* key){
     editor_native::state();
     if(!applying && active()){
         if(speech_pending() || !tracks_cast() || !key || self!=data(mode()) || !C.structure_gate)return UINT32_MAX;
-        if(!C.structure_gate(0)){
-            if(!C.gesture_scope || !valid_scope(C.gesture_scope()))return UINT32_MAX;
-            const auto scope=C.gesture_scope();
+        if(!pending.empty() || queued || gesture_before_resource ||
+           (C.transaction_pending && C.transaction_pending()) || !C.structure_gate(0)){
+            const auto scope=C.import_scope?C.import_scope():C.gesture_scope?C.gesture_scope():GestureScope{};
+            if(!valid_scope(scope))return UINT32_MAX;
             if(!held_import){
                 held_import.emplace();import_scope=scope;
                 import_generation=generation;import_started=H->time_seconds();
@@ -927,12 +941,14 @@ uint32_t SK_THISCALL import_native(void* self,const editor::ResourceKey* key){
             if(std::find(held_import->begin(),held_import->end(),*key)==held_import->end()){
                 if(held_import->size()>=32){if(C.notice)C.notice("Choose up to 32 cast assets at a time");return UINT32_MAX;}
                 held_import->push_back(*key);
+                H->log(M,SK_DEBUG,"Cast queued: key=%08X!%08X.%08X keys=%u",key->group,key->instance,key->type,unsigned(held_import->size()));
             }
             return UINT32_MAX;
         }
         const bool prior=input_cast;input_cast=true;
         start(self);
         const auto result=original_import(self,key);
+        H->log(M,SK_DEBUG,"Cast native import: key=%08X!%08X.%08X class=%u",key->group,key->instance,key->type,result);
         if(result!=UINT32_MAX)commit(self);
         else {
             cancel_current_entry(*reinterpret_cast<void**>(a_history+0x24));

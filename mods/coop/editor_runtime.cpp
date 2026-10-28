@@ -813,11 +813,12 @@ bool same_authored(const editor::Placement& a, const editor::Placement& b) {
     return a.class_id == b.class_id && a.act_id == b.act_id && a.protected_object == b.protected_object &&
         a.position == b.position && a.rotation == b.rotation && a.scale == b.scale && a.properties == b.properties;
 }
-editor_native::GestureScope current_gesture_scope() {
+editor_native::GestureScope current_gesture_scope(bool retained_import=false) {
     if (!controller || !native_attached || closing || recovery || transport_teardown || !C.session ||
         !C.session->connected() || C.session->transport_generation() != observed_transport) return {};
     const auto& view = controller->view();
-    if(view.phase!=Phase::Ready || exporting || pending_export_request || native_exit_requested || save_publication_pending || awaiting_operation)return {};
+    if(view.phase!=Phase::Ready || exporting || pending_export_request || native_exit_requested || save_publication_pending ||
+       (!retained_import && awaiting_operation))return {};
     return {view.context.project, view.context.epoch, view.local};
 }
 bool cancelled_gesture(const editor_native::CancellationTicket& ticket, std::string& error) {
@@ -2276,7 +2277,8 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         if(recovery)return !recovery->state.document.class_schema.empty();
         return !native_attached || !current_native.document.class_schema.empty();
     };
-    native.gesture_scope = current_gesture_scope;
+    native.gesture_scope = [] { return current_gesture_scope(); };
+    native.import_scope = [] { return current_gesture_scope(true); };
     native.cancelled = cancelled_gesture;
     native.gesture = captured;
     native.history = [](bool redo) { action(redo ? Action::Redo : Action::Undo); };
@@ -2350,6 +2352,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         std::vector<dbpf::Record> records;
         return adventure_collect::collect_snapshot(resources.root,snapshot.bytes,records,error);
     };
+    native.transaction_pending = [] { return pending.has_value() || awaiting_operation.has_value(); };
     native.object_revision = [](editor::ObjectId object)->std::optional<editor::Revision> {
         if(!controller)return std::nullopt;
         const auto& placements=controller->state().document.placements;

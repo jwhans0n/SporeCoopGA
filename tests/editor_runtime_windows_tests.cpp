@@ -2093,7 +2093,26 @@ static void test_native_exit_host_keeps_party_guest_leaves() {
         CHECK(native[0].state.editing&&runtime_host::active());
     }
 }
+static void test_retained_cast_import_owner_scope() {
+    Party party;side=0;
+    const auto owner=native[0].callbacks.import_scope();
+    CHECK(owner.epoch && owner==native[0].callbacks.gesture_scope());
+    CHECK(!native[0].callbacks.transaction_pending());
+    runtime_host::awaiting_operation=editor::OperationId{owner.author,1,owner.epoch};
+    CHECK(native[0].callbacks.transaction_pending());
+    CHECK(!native[0].callbacks.gesture_scope().epoch);
+    CHECK(native[0].callbacks.import_scope()==owner);
+    runtime_host::save_publication_pending=true;CHECK(!native[0].callbacks.import_scope().epoch);
+    runtime_host::save_publication_pending=false;
+    runtime_host::closing=true;CHECK(!native[0].callbacks.import_scope().epoch);
+    runtime_host::closing=false;
+    runtime_host::native_attached=false;CHECK(!native[0].callbacks.import_scope().epoch);
+    runtime_host::native_attached=true;runtime_host::awaiting_operation.reset();
+    CHECK(!native[0].callbacks.transaction_pending());
+    CHECK(native[0].callbacks.import_scope()==owner && native[0].callbacks.gesture_scope()==owner);
+}
 static void test_all_native_flow_cases() {
+    test_retained_cast_import_owner_scope();
     test_native_solo_play_holds_and_restores_without_coop();test_solo_tester_disconnect_releases_party_hold();
     test_automatic_unsaved_start_and_native_host_save();
     test_native_guest_export_isolation_and_cancel();

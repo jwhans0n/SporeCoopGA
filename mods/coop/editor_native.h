@@ -110,6 +110,9 @@ struct Ctx {
     std::function<bool(uint32_t)> class_gate;
     std::function<bool(uint32_t)> remove_class_gate;
     std::function<bool(const Snapshot&,std::string&)> validate_dependencies;
+    std::function<bool()> transaction_pending;
+    // Stable batch owner even while a submitted local operation settles.
+    std::function<GestureScope()> import_scope;
 };
 
 bool init(const SkHost*, SkMod*, Ctx);
