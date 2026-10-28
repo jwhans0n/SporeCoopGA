@@ -7,6 +7,7 @@
 #include <unordered_map>
 
 #include "game.h"
+#include "adventure_native.h"
 #include "sporekit.h"
 #include "sporekit_game.hpp"
 
@@ -79,6 +80,7 @@ static float creature_tag(void* p) { return game::bounding_radius(p) * 1.3f + 0.
 static uint32_t S2(const char* n);
 static uint32_t adventure_place()
 {
+    if(adventure_native::editor_preview())return adventure_native::editor_preview_place();
     uintptr_t p = S2("App::cScenarioMode::ptr");
     uint8_t* sm = p ? *(uint8_t**)p : nullptr;
     if (!sm || !skg::readable(sm, 0xD0))

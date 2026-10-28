@@ -39,12 +39,16 @@ editor_store::Store store;
 editor_native::Snapshot current_native, before_apply;
 std::optional<editor_native::Snapshot> reopen_saved;
 std::optional<bool> projection_override;
+std::optional<bool> extended_projection_override,cast_projection_override;
 struct ProjectionScope {
     std::optional<bool> before = projection_override;
+    std::optional<bool> before_extended=extended_projection_override,before_cast=cast_projection_override;
     explicit ProjectionScope(const editor::Document& document) {
         projection_override = document.schema.contains(editor_native::kRelativeScaleProperty);
+        extended_projection_override=document.schema.contains(editor_native::kElevationProperty);
+        cast_projection_override=!document.class_schema.empty();
     }
-    ~ProjectionScope() { projection_override = before; }
+    ~ProjectionScope() { projection_override = before;extended_projection_override=before_extended;cast_projection_override=before_cast; }
 };
 editor_project::Resources resources;
 std::optional<editor_project::Resources> incoming_resources;
@@ -118,6 +122,8 @@ bool supported_native_act(std::string& error) {
 }
 editor::Peer local_capability;
 std::map<editor::ObjectId, editor::Placement> guarded_placements;
+std::map<editor::ObjectId, editor::ClassActSettings> guarded_settings;
+std::map<editor::OperationId,editor_project::Resources> cast_uploads;
 std::string status, resource_hash;
 editor::ResourceKey source_creation;
 uint64_t automatic_generation=0, automatic_transport=0;
@@ -145,7 +151,7 @@ bool handoff_saving=false;
 struct Artifact { std::string before, after; };
 bool parse_manifest(const std::vector<uint8_t>&, std::string&, std::map<editor::OperationId, Artifact>&, std::string&, editor::Peer* = nullptr, bool* = nullptr);
 std::map<editor::OperationId, Artifact> history_artifacts;
-struct Pending { editor::Request request; editor_native::Gesture gesture; uint64_t reverted_frame = 0; bool submitted = false; };
+struct Pending { editor::Request request; editor_native::Gesture gesture; uint64_t reverted_frame = 0; bool submitted = false; std::vector<uint8_t> assets={}; };
 std::optional<Pending> pending;
 std::optional<editor::OperationId> awaiting_operation;
 struct Recovery {
@@ -159,8 +165,16 @@ struct Recovery {
     uint64_t native_generation = 0;
 };
 std::optional<Recovery> recovery;
-enum class Action { Begin, Undo, Redo, Save, Playtest, Ready, Unready, Recover, End, Return, CancelPreparation, NativeExit, SaveExit, ApproveTest, DeclineTest, HandoffSave, HandoffDiscard, HandoffCancel };
+enum class Action { Begin, Undo, Redo, Save, Playtest, Solo, Ready, Unready, Recover, End, Return, CancelPreparation, NativeExit, SaveExit, ApproveTest, DeclineTest, HandoffSave, HandoffDiscard, HandoffCancel };
 std::deque<Action> actions;
+struct WaitingHistory {
+    editor_native::GestureScope scope;
+    uint64_t generation=0,started=0;
+    editor::OperationId gesture;
+    editor::Revision transition=0;
+    bool redo=false;
+};
+std::optional<WaitingHistory> waiting_history;
 struct PreviewReturnScope {
     editor::ProjectId project;
     uint64_t epoch = 0, round = 0;
@@ -168,6 +182,7 @@ struct PreviewReturnScope {
 };
 std::optional<PreviewReturnScope> pending_preview_return;
 std::optional<PreviewReturnScope> pending_preparation_cancel;
+std::optional<PreviewReturnScope> pending_solo_return;
 struct PreviewSelection {
     PreviewReturnScope scope;
     editor_native::LocalView view;
@@ -176,11 +191,22 @@ struct PreviewSelection {
     std::optional<editor::ObjectId> selected;
 };
 std::optional<PreviewSelection> preview_selection;
+struct SoloPreview {
+    PreviewReturnScope scope;
+    editor_native::Snapshot snapshot;
+    editor_native::LocalView view;
+    std::optional<editor::ObjectId> selected;
+    uint64_t generation=0,returned_frame=0,view_wait_started=0;
+};
+std::optional<SoloPreview> solo_preview;
+std::optional<PreviewReturnScope> solo_ready_scope;
+uint64_t pending_solo_request=0;
 std::vector<editor::Scope> requested_scopes;
 
 // Packet dispatch only retires cached ownership. Native restoration waits for
 // the outside-frame drain, including when explicit Leave precedes role change.
 void retire_transport(bool explicit_stop) {
+    waiting_history.reset();
     if (!controller || !C.session) return;
     if (!transport_teardown) {
         transport_teardown = TransportTeardown{observed_transport, native_generation,
@@ -435,16 +461,44 @@ bool replace_root(editor_project::Resources& content, const editor_native::Snaps
 bool root_delta(const editor_project::Resources& content, std::vector<uint8_t>& bytes, std::string& error) {
     return editor_project::encode_delta_resources(content, bytes, error);
 }
-bool merge_delta(editor_project::Resources delta, editor_project::Resources& merged, std::string& error) {
-    if (delta.bundle.records.size() != 1 || delta.bundle.records.front().key != delta.root) {
-        error = "A live editor resource update must contain exactly the current adventure root"; return false;
+bool merge_dependencies(editor_project::Resources& target,const editor_project::Resources& source,std::string& error){
+    if(source.root!=target.root || source.act!=target.act){error="Cast content belongs to another shared draft";return false;}
+    auto records=target.bundle.records;
+    for(const auto& record:source.bundle.records){
+        if(record.key==source.root)continue;
+        auto existing=std::find_if(records.begin(),records.end(),[&](const auto& item){return item.key==record.key;});
+        if(existing!=records.end()){
+            if(existing->data!=record.data){error="An imported asset conflicts with an existing resource key";return false;}
+        }else records.push_back(record);
     }
+    net::adventure_content::Bundle bundle;
+    if(!net::adventure_content::make_bundle(target.root,std::move(records),bundle,error))return false;
+    target.bundle=std::move(bundle);return true;
+}
+bool collect_cast_assets(const editor_native::Snapshot& native,std::vector<uint8_t>& envelope,std::string& error){
+    std::vector<dbpf::Record> records;
+    if(!adventure_collect::collect_snapshot(resources.root,native.bytes,records,error))return false;
+    editor_project::Resources collected=resources;
+    if(!net::adventure_content::make_bundle(resources.root,std::move(records),collected.bundle,error))return false;
+    auto content=resources;
+    if(!merge_dependencies(content,collected,error))return false;
+    auto snapshot=native;snapshot.source={resources.root.instance,resources.root.type,resources.root.group};
+    if(!replace_root(content,snapshot,error))return false;
+    std::erase_if(content.bundle.records,[&](const auto& record){return record.key!=content.root && std::any_of(resources.bundle.records.begin(),resources.bundle.records.end(),[&](const auto& old){return old.key==record.key;});});
+    net::adventure_content::Bundle delta;
+    if(!net::adventure_content::make_bundle(content.root,std::move(content.bundle.records),delta,error))return false;
+    content.bundle=std::move(delta);content.base_root.reset();
+    return editor_project::encode_resources(content,envelope,error);
+}
+bool merge_delta(editor_project::Resources delta, editor_project::Resources& merged, std::string& error) {
+    auto root=std::find_if(delta.bundle.records.begin(),delta.bundle.records.end(),[&](const auto& row){return row.key==delta.root;});
+    if(root==delta.bundle.records.end()){error="The editor update has no native root";return false;}
     editor_native::Snapshot native;
     native.source = {delta.root.instance, delta.root.type, delta.root.group};
-    native.act = delta.act; native.bindings = std::move(delta.bindings); native.bytes = std::move(delta.bundle.records.front().data);
+    native.act = delta.act; native.bindings = std::move(delta.bindings); native.bytes = root->data;
     native.metadata=std::move(delta.metadata);
     auto candidate = resources;
-    if (!replace_root(candidate, native, error)) return false;
+    if (!replace_root(candidate, native, error) || !merge_dependencies(candidate,delta,error)) return false;
     merged = std::move(candidate); return true;
 }
 std::vector<uint8_t> manifest(const std::string& assets, const std::map<editor::OperationId, Artifact>& history) {
@@ -499,15 +553,84 @@ bool load_artifact(const std::string& hash, editor_native::Snapshot& native, std
     candidate.bytes.assign(r.cur(), r.cur() + size); native = std::move(candidate); return true;
 }
 bool structural(const editor::Change& change) { return !change.patch.objects.empty(); }
+bool expand_legacy_state(editor::State& state,editor_native::Snapshot& native,std::string& error){
+    auto candidate=state;
+    if(!editor_native::canonicalize_cast_state(candidate,error))return false;
+    if(state.document.schema.contains(editor_native::kElevationProperty) && state.document.schema.contains(editor_native::kSoundPitchProperty) && !state.document.class_schema.empty()){
+        if(!editor_native::validate(native,candidate.document,error))return false;
+        state=std::move(candidate);native.document=state.document;return true;
+    }
+    const auto old_schema=state.document.schema;
+    const bool relative=old_schema.contains(editor_native::kRelativeScaleProperty);
+    editor_native::Snapshot expanded;
+    if(!editor_native::expand_snapshot(native,relative,expanded,error) || expanded.document.classes!=candidate.document.classes || expanded.document.acts!=candidate.document.acts)return false;
+    auto fill=[&](editor::Placement& placement,const editor_native::Snapshot& source)->bool{
+        auto found=source.document.placements.find(placement.object);
+        if(found==source.document.placements.end() || found->second.class_id!=placement.class_id || found->second.position!=placement.position ||
+           found->second.rotation!=placement.rotation || found->second.scale!=placement.scale)return false;
+        for(const auto& [key,value]:found->second.properties)if(!old_schema.contains(key))placement.properties[key]=value;
+        return true;
+    };
+    for(auto& [id,placement]:candidate.document.placements){(void)id;if(!fill(placement,expanded)){error="The legacy checkpoint has mismatched native placements";return false;}}
+    for(auto& gesture:candidate.history){
+        if(gesture.undo.objects.empty() && gesture.redo.objects.empty())continue;
+        auto artifact=history_artifacts.find(gesture.operation);
+        if(artifact==history_artifacts.end()){error="Legacy structural history has no owned native artifact";return false;}
+        editor_native::Snapshot prior,next,prior_expanded,next_expanded;
+        if(!load_artifact(artifact->second.before,prior,error) || !load_artifact(artifact->second.after,next,error) ||
+           !editor_native::expand_snapshot(prior,relative,prior_expanded,error) || !editor_native::expand_snapshot(next,relative,next_expanded,error))return false;
+        for(auto* patch:{&gesture.undo,&gesture.redo})for(auto& object:patch->objects)for(auto* placement:{&object.before,&object.after})if(*placement){
+            auto copy=**placement;
+            if(!fill(copy,prior_expanded) && !fill(copy,next_expanded)){error="Legacy Undo cannot be matched to its exact native placement artifact";return false;}
+            **placement=std::move(copy);
+        }
+    }
+    candidate.document.schema=expanded.document.schema;
+    if(candidate.document.class_schema.empty()){
+        candidate.document.class_schema=expanded.document.class_schema;
+        candidate.document.class_settings=expanded.document.class_settings;
+    }else{
+        if(candidate.document.class_schema!=expanded.document.class_schema || candidate.document.class_settings.size()!=expanded.document.class_settings.size()){
+            error="The recovery cast schema differs from its owned native snapshot";return false;
+        }
+        for(const auto& [id,settings]:candidate.document.class_settings){
+            auto found=expanded.document.class_settings.find(id);
+            if(found==expanded.document.class_settings.end() || settings.class_id!=found->second.class_id || settings.act_id!=found->second.act_id || settings.properties!=found->second.properties){
+                error="The recovery cast data differs from its owned native snapshot";return false;
+            }
+        }
+        // An additive placement upgrade must retain existing cast revisions
+        // and Undo preconditions, including classes with no placed instances.
+    }
+    for(const auto& reference:expanded.document.external_references)
+        if(expanded.document.classes.contains(reference.target) &&
+           std::find(candidate.document.external_references.begin(),candidate.document.external_references.end(),reference)==candidate.document.external_references.end())
+            candidate.document.external_references.push_back(reference);
+    candidate.document.next_class=expanded.document.next_class;
+    candidate.document.next_id=std::max(candidate.document.next_id,expanded.document.next_id);
+    editor::Coordinator checked;
+    if(!checked.reset(candidate,candidate.document.epoch,error))return false;
+    expanded.document=candidate.document;
+    state=std::move(candidate);native=std::move(expanded);return true;
+}
+bool cast_change(const editor::Change& change){
+    return !change.patch.classes.empty() || std::any_of(change.patch.fields.begin(),change.patch.fields.end(),[](const auto& field){return field.field==editor::FieldKey{editor::Field::Property,editor_native::kCastBlockProperty};});
+}
 bool supported_between(const editor_native::Snapshot& before, const editor_native::Snapshot& after, std::string& error) {
     editor_native::Gesture check; check.generation = native_generation; check.before = before; check.after = after;
     return editor_native::supported_changes(check, error);
 }
 bool stop_unsupported(std::string& error) {
-    frozen = true; guarded_placements.clear();
+    guarded_placements.clear();guarded_settings.clear();
     std::string restore_error;
-    if (!editor_native::restore(current_native, restore_error)) error += "; canonical restoration failed: " + restore_error;
-    tell("Unsupported native authoring was blocked; recover the committed draft: " + error);
+    if (!editor_native::restore(current_native, restore_error)){frozen=true;error += "; canonical restoration failed: " + restore_error;}
+    else {
+        std::vector<editor::LeaseToken> tokens;
+        for(const auto& lease:controller->view().local_leases)tokens.push_back({lease.scope,lease.token});
+        if(!tokens.empty())controller->release_leases(tokens,restore_error);
+        requested_scopes.clear();
+    }
+    tell(std::string(frozen?"Recover the committed draft: ":"The edit was rejected and the committed draft restored: ")+error);
     return false;
 }
 bool native_integrity(const editor_native::Snapshot& snapshot, const editor::Document& document, std::string& error) {
@@ -550,15 +673,23 @@ bool persist(const editor::State& state, const editor::Change& change, std::stri
     auto archive = history_artifacts;
     if (!remember_artifacts(state, change, after, archive, error)) return false;
     auto next_resources = resources;
+    if(cast_change(change)){
+        auto uploaded=cast_uploads.find(change.operation);
+        const auto* extra=host() && uploaded!=cast_uploads.end()?&uploaded->second:incoming_resources?&*incoming_resources:nullptr;
+        if(extra && !merge_dependencies(next_resources,*extra,error))return false;
+    }
     std::vector<uint8_t> envelope, delta;
     if (!replace_root(next_resources, after, error) || !editor_project::encode_resources(next_resources, envelope, error) ||
         (structural(change) && !root_delta(next_resources, delta, error))) return false;
-    if (host() && !controller->update_resources(std::move(envelope), state.document.revision, error, structural(change), std::move(delta))) return false;
+    auto next_hash=resource_hash;
+    if(next_resources.bundle.records.size()!=resources.bundle.records.size() && (!reserve_artifacts({&envelope},error) || !put_blob(envelope,next_hash,error)))return false;
+    if(cast_change(change))delta=envelope;
+    if (host() && !controller->update_resources(std::move(envelope), state.document.revision, error, structural(change)||cast_change(change), std::move(delta))) return false;
     editor_store::Snapshot saved;
     if (!editor_project::store_snapshot(state, after, controller->view().name, saved, error)) return false;
     // The immutable dependency closure is retained once. Current scenario bytes
     // and stable marker bindings are already part of the durable snapshot.
-    saved.manifest = manifest(resource_hash, archive);
+    saved.manifest = manifest(next_hash, archive);
     bool committed=false;
     { StageScope durable(state.document,change.operation,editor_stage_metrics::Stage::DurableBegin,editor_stage_metrics::Stage::DurableEnd);
       committed=store.commit(saved,error);durable.okay=committed; }
@@ -568,6 +699,7 @@ bool persist(const editor::State& state, const editor::Change& change, std::stri
     }
     // All allocations and publication payloads were staged before durable I/O.
     current_native = std::move(after); resources = std::move(next_resources);
+    resource_hash=std::move(next_hash);cast_uploads.erase(change.operation);
     history_artifacts.swap(archive);
     incoming_resources.reset(); gc_due = state.document.revision % 16 == 0;
     work.okay=true;return true;
@@ -580,6 +712,17 @@ bool apply(const editor::Document& before, const editor::Document& after, const 
     if (!native_integrity(before_apply, before, error)) return stop_unsupported(error);
     before_apply_valid = true;
     before_apply.document = before;
+    if(cast_change(change)){
+        auto uploaded=cast_uploads.find(change.operation);
+        const auto* content=host() && uploaded!=cast_uploads.end()?&uploaded->second:incoming_resources?&*incoming_resources:nullptr;
+        if(host() && change.intent==editor::Intent::Forward && !content){error="The cast operation has no validated dependency upload";return false;}
+        if(content){
+            auto merged=resources;if(!merge_dependencies(merged,*content,error))return false;
+            std::vector<dbpf::Record> added;
+            for(const auto& record:merged.bundle.records)if(record.key!=merged.root && std::none_of(resources.bundle.records.begin(),resources.bundle.records.end(),[&](const auto& old){return old.key==record.key;}))added.push_back(record);
+            if(!adventure_assets::register_records(added,error))return false;
+        }
+    }
     editor_native::Snapshot artifact;
     const editor_native::Snapshot* source = nullptr;
     if (structural(change)) {
@@ -608,7 +751,7 @@ bool apply(const editor::Document& before, const editor::Document& after, const 
     { StageScope native(after,change.operation,editor_stage_metrics::Stage::NativeApplyBegin,editor_stage_metrics::Stage::NativeApplyEnd);
       applied=editor_native::apply(after,change,source,error);native.okay=applied; }
     if(!applied)return false;
-    if (pending && pending->request.operation == change.operation && !change.allocated.empty()) {
+    if (pending && pending->request.operation == change.operation && !change.allocated.empty() && after.placements.contains(change.allocated.front())) {
         std::string selection_error;
         // The inverse removes the native temporary selection. Restore the new
         // stable selection for its author, as ordinary placement does. Other
@@ -636,7 +779,7 @@ bool lease(const std::vector<editor::Scope>& scopes) {
     if (requested_scopes != scopes || time - last_request >= 2000) {
         requested_scopes = scopes; last_request = time; std::string error;
         if (!controller->request_leases(scopes, 15000, error)) tell(error);
-        else status = "Waiting for editing ownership. Repeat the gesture when ownership is granted.";
+        else status = "Waiting for editing ownership";
     }
     return false;
 }
@@ -674,6 +817,7 @@ editor_native::GestureScope current_gesture_scope() {
     if (!controller || !native_attached || closing || recovery || transport_teardown || !C.session ||
         !C.session->connected() || C.session->transport_generation() != observed_transport) return {};
     const auto& view = controller->view();
+    if(view.phase!=Phase::Ready || exporting || pending_export_request || native_exit_requested || save_publication_pending || awaiting_operation)return {};
     return {view.context.project, view.context.epoch, view.local};
 }
 bool cancelled_gesture(const editor_native::CancellationTicket& ticket, std::string& error) {
@@ -716,21 +860,40 @@ void captured(editor_native::Gesture gesture) {
     if (!supported_between(current_native, gesture.before, error) || !editor_native::supported_changes(gesture, error)) {
         stop_unsupported(error); return;
     }
-    if (gesture.before.document.classes != doc.classes || gesture.after.document.classes != doc.classes ||
+    if (gesture.before.document.classes != doc.classes ||
         gesture.before.document.acts != doc.acts || gesture.after.document.acts != doc.acts || gesture.after.act != current_native.act) {
-        frozen = true;
-        if (!editor_native::restore(current_native, error)) tell("Unsupported authoring changed the draft; recovery is required: " + error);
-        else tell("Shared editing is frozen after an unsupported template or act edit. Recover the committed draft.");
+        error="The native gesture changed an unsupported act or started from a stale cast roster";stop_unsupported(error);
         return;
     }
     auto r = request(editor::Intent::Forward); r.summary = "Edit placement";
     editor::Change revert;
+    bool editing_cast=false;
+    for(const auto& [id,settings]:doc.class_settings){
+        auto next=gesture.after.document.class_settings.find(id);
+        if(next!=gesture.after.document.class_settings.end() && next->second.properties==settings.properties)continue;
+        auto guard=guarded_settings.find(id);
+        if(guard==guarded_settings.end()){error="The cast gesture has no class ownership";stop_unsupported(error);return;}
+        if(next==gesture.after.document.class_settings.end()){
+            editor::Mutation mutation;mutation.kind=editor::MutationKind::DeleteClass;mutation.target=settings.class_id;mutation.expected=guard->second.revision;
+            r.mutations.push_back(std::move(mutation));
+        }else for(const auto& [key,value]:next->second.properties){
+            const editor::FieldKey field{editor::Field::Property,key};
+            if(editor::value(doc,id,field)==std::optional<editor::Value>{value})continue;
+            editor::Mutation mutation;mutation.target=id;mutation.field=field;mutation.value=value;mutation.expected=editor::field_revision(doc,id,field);
+            r.mutations.push_back(std::move(mutation));
+        }
+        editing_cast=true;
+    }
+    for(const auto& [id,settings]:gesture.after.document.class_settings)if(!doc.class_settings.contains(id)){
+        editor::Mutation mutation;mutation.kind=editor::MutationKind::CreateClass;mutation.class_initial=settings;
+        mutation.class_initial->revision=0;mutation.class_initial->field_revisions.clear();r.mutations.push_back(std::move(mutation));editing_cast=true;
+    }
     for (const auto& [id, placement] : doc.placements) {
         auto prior = gesture.before.document.placements.find(id), next = gesture.after.document.placements.find(id);
         if (prior != gesture.before.document.placements.end() && next != gesture.after.document.placements.end() && same_authored(prior->second, next->second)) continue;
         auto guard = guarded_placements.find(id);
         if (prior == gesture.before.document.placements.end() || guard == guarded_placements.end()) {
-            frozen = true; tell("The native gesture did not start from the committed placement state. Recover the draft."); return;
+            error="The native gesture has no current placement ownership";stop_unsupported(error);return;
         }
         if (next == gesture.after.document.placements.end()) {
             editor::Mutation m; m.kind = editor::MutationKind::Delete; m.target = id; m.expected = guard->second.revision;
@@ -773,8 +936,13 @@ void captured(editor_native::Gesture gesture) {
         }
         r.mutations.push_back(m); revert.patch.objects.push_back({id, placement, std::nullopt, 0}); r.summary = "Create placement";
     }
-    guarded_placements.clear();
+    guarded_placements.clear();guarded_settings.clear();
     if (r.mutations.empty()) return;
+    std::vector<uint8_t> assets;
+    if(editing_cast){
+        r.summary="Edit cast";
+        if(!collect_cast_assets(gesture.after,assets,error)){stop_unsupported(error);return;}
+    }
     // The native gesture supplies the transaction, not an extra committed apply.
     // Restore the latest canonical placement state before requesting acceptance.
     if (!editor_native::apply(doc, revert, &current_native, error)) {
@@ -782,6 +950,7 @@ void captured(editor_native::Gesture gesture) {
     }
     if (!H->frame_index) { frozen = true; tell("Native gesture submission requires the game frame counter"); return; }
     pending = Pending{r, std::move(gesture), H->frame_index(), false};
+    pending->assets=std::move(assets);
     awaiting_operation = r.operation;
     status = "Waiting for the next game frame before submitting the placement gesture";
 }
@@ -809,6 +978,9 @@ void submit_pending_gesture() {
     const auto operation=request.operation;
     stage_stamp(controller->state().document.project,operation,controller->state().document.revision,editor_stage_metrics::Stage::LocalSubmit);
     confirmation_metrics.begin(operation,H->time_seconds());
+    if(!pending->assets.empty() && !controller->upload_assets(operation,pending->assets,error)){
+        confirmation_metrics.cancel(operation);pending.reset();awaiting_operation.reset();tell(error);return;
+    }
     if (!controller->submit(std::move(request), error)) { confirmation_metrics.cancel(operation);pending.reset(); awaiting_operation.reset(); tell(error); }
     else status = "Waiting for the host to commit the placement gesture";
 }
@@ -840,10 +1012,14 @@ void refresh() {
     next.frozen = frozen || v.phase == Phase::Frozen;
     next.waiting = closing || recovery.has_value() || awaiting_operation.has_value() || v.phase == Phase::Joining || v.phase == Phase::Syncing || v.phase == Phase::Preparing || v.phase == Phase::Returning;
     if (v.phase == Phase::Returning) next.status = "Waiting for every player to return to the committed draft";
-    next.confirming = v.phase == Phase::Preparing;
-    next.can_cancel = next.confirming && next.host && !closing && !recovery && !next.frozen;
+    next.confirming = v.phase == Phase::Preparing && v.playtest_mode==editor::wire::PlaytestMode::Together;
+    next.can_cancel = v.phase==Phase::Preparing && next.host && !closing && !recovery && !next.frozen;
     next.playtesting = v.phase == Phase::Playing;
-    next.can_return = next.playtesting && next.host;
+    next.can_return = next.playtesting && (next.host || (v.playtest_mode==editor::wire::PlaytestMode::Solo && v.local==v.playtest_tester));
+    if(v.playtest_mode==editor::wire::PlaytestMode::Solo && (v.phase==Phase::Preparing || v.phase==Phase::Playing)){
+        const auto name=C.session?C.session->name_of(v.playtest_tester.slot):"A collaborator";
+        next.status=name+" is testing solo. Shared editing is paused";next.waiting=true;
+    }
     bool editing = native.ready && next.active && !closing && !recovery && !exporting && !pending_export_request && !native_exit_requested && v.phase == Phase::Ready && !next.frozen && !awaiting_operation && !native.gesture && !editor_native_save::busy();
     for (const auto& gesture : controller->state().history) if (gesture.operation.author == v.local) {
         next.can_undo = next.can_undo || gesture.applied;
@@ -852,7 +1028,7 @@ void refresh() {
     next.can_undo &= editing; next.can_redo &= editing;
     next.can_save = editing && !save_publication_pending;
     const auto authored_avatar = editor_native::avatar();
-    next.can_playtest = editing && next.host && !save_publication_pending && authored_avatar.instance && authored_avatar.type &&
+    next.can_playtest = editing && !save_publication_pending && authored_avatar.instance && authored_avatar.type &&
         std::all_of(v.members.begin(), v.members.end(), [](const auto& entry) { return entry.second.phase == Phase::Ready; });
     if (editing && next.host && (!authored_avatar.instance || !authored_avatar.type))
         next.status = "An authored captain is required for playtesting. End sharing to configure the captain in Spore.";
@@ -885,7 +1061,7 @@ void refresh() {
                 player.owns_selection ? "Owns selected placement" : (member.presence.ownership & editor::wire::kOwnDocument) ? "Owns draft structure" : "Browsing";break;
         case Phase::Joining: case Phase::Syncing: player.status="Receiving draft";break;
         case Phase::Preparing: player.status=player.ready ? "Playtest ready" : "Confirm playtest";break;
-        case Phase::Playing: player.status="Playtesting";break;
+        case Phase::Playing: player.status=v.playtest_mode==editor::wire::PlaytestMode::Together || member.peer==v.playtest_tester?"Playtesting":"Waiting for solo tester";break;
         case Phase::Returning: player.status="Returning to draft";break;
         case Phase::Frozen: player.status="Needs recovery";break;
         case Phase::Disconnected: player.status="Disconnected";break;
@@ -1043,10 +1219,10 @@ void start_saved() {
     auto checkpoint = store.snapshot(); checkpoint.manifest = manifest(resource_hash, history_artifacts);
     if (!store.checkpoint(checkpoint, error)) { frozen = true; tell(error); return; }
     save_publication_pending = false;
-    tell("Shared placement editing started. Templates, acts, terrain and nested editors are read-only.");
+    tell("Shared editing started. Cast settings and asset imports are available in Act 1.");
     if(C.close_panel)C.close_panel();
 }
-void undo_redo(bool redo) {
+void undo_redo(bool redo,std::optional<editor::OperationId> pinned={}) {
     if (!controller || closing || recovery || controller->view().phase != Phase::Ready || awaiting_operation || frozen ||
         save_publication_pending || exporting || pending_export_request || native_exit_requested || editor_native_save::busy()) return;
     // Cached toolbar availability can predate the native input event. Recheck
@@ -1055,6 +1231,7 @@ void undo_redo(bool redo) {
     if (!native.editing || !native.ready || native.gesture || native.generation != native_generation) return;
     const auto& state = controller->state(); const editor::Gesture* target = nullptr;
     for (const auto& gesture : state.history) if (gesture.operation.author == controller->view().local) {
+        if(pinned && gesture.operation!=*pinned)continue;
         if (!redo && gesture.applied && (!target || gesture.original_revision > target->original_revision)) target = &gesture;
         if (redo && !gesture.applied && gesture.redo_available && (!target || gesture.transition_revision > target->transition_revision)) target = &gesture;
     }
@@ -1062,8 +1239,17 @@ void undo_redo(bool redo) {
     std::vector<editor::Scope> scopes;
     const auto& patch = redo ? target->redo : target->undo;
     for (const auto& object : patch.objects) scopes.push_back({editor::ScopeKind::Placement, object.object, {}});
-    for (const auto& field : patch.fields) scopes.push_back({editor::ScopeKind::Field, field.object, field.field});
-    if (!lease(scopes)) return;
+    for (const auto& field : patch.fields){
+        auto settings=state.document.class_settings.find(field.object);
+        scopes.push_back(settings==state.document.class_settings.end()?editor::Scope{editor::ScopeKind::Field,field.object,field.field}:editor::Scope{editor::ScopeKind::Class,settings->second.class_id,{}});
+    }
+    if(!patch.classes.empty())scopes={editor::Scope{editor::ScopeKind::Document,{},{}}};
+    if (!lease(scopes)) {
+        if(!waiting_history || waiting_history->gesture!=target->operation || waiting_history->redo!=redo)
+            waiting_history=WaitingHistory{current_gesture_scope(),native.generation,now_ms(),target->operation,target->transition_revision,redo};
+        return;
+    }
+    waiting_history.reset();
     auto r = request(redo ? editor::Intent::Redo : editor::Intent::Undo);
     std::string error;
     awaiting_operation = r.operation;
@@ -1071,6 +1257,7 @@ void undo_redo(bool redo) {
     if (!controller->submit(std::move(r), error)) { awaiting_operation.reset(); tell(error); }
 }
 void close_session(bool preserve_offer = false) {
+    waiting_history.reset();
     pending_preparation_cancel.reset();
     preview_selection.reset();
     observed_lease_grants.clear();
@@ -1124,6 +1311,7 @@ void close_session(bool preserve_offer = false) {
         } else if (H) H->log(M, SK_INFO, "Saved-draft reopen proof was not pinned: %s", error.c_str());
     }
     if (!keep_offer) controller->end(); pending.reset(); awaiting_operation.reset(); requested_scopes.clear(); guarded_placements.clear(); incoming_resources.reset();
+    guarded_settings.clear();cast_uploads.clear();solo_preview.reset();solo_ready_scope.reset();pending_solo_return.reset();pending_solo_request=0;
     recovery.reset(); beginning = false; frozen = false; save_publication_pending = false;
     end_after_return = false; disconnected_return = false; pending_saved.reset();
     pending_preview_return.reset();
@@ -1139,6 +1327,23 @@ void close_session(bool preserve_offer = false) {
 bool return_ready(const editor::wire::Control& control) {
     using K = editor::wire::ControlKind;
     if (control.kind != K::HostReturnEditor && control.kind != K::HostCancelPlaytest) return true;
+    if(controller && controller->view().playtest_mode==editor::wire::PlaytestMode::Solo){
+        if(!solo_preview)return editor_native::state().ready;
+        if(!return_error.empty())return true;
+        auto& solo=*solo_preview;
+        if(!same_preview_context(solo.scope) || editor_native::state().generation!=solo.generation){return_error="The solo preview belongs to a replaced editor context";return true;}
+        if(editor_native::state().playtesting){
+            if(!editor_native_save::playtest(false,return_error))return true;
+            solo.generation=editor_native::state().generation;solo.returned_frame=H->frame_index();return false;
+        }
+        if(solo.returned_frame && H->frame_index()<=solo.returned_frame)return false;
+        if(!editor_native::state().ready)return false;
+        editor_native::LocalView view;std::string error;
+        if(editor_native::capture_view(view,error)){solo.view_wait_started=0;return true;}
+        if(!solo.view_wait_started)solo.view_wait_started=now_ms();
+        if(now_ms()-solo.view_wait_started>=5000){return_error="The native editor camera did not become available after solo testing: "+error;return true;}
+        return false;
+    }
     if (!adventure_native::editor_preview()) return editor_native::state().ready;
     if (!return_error.empty()) return true;
     if (!owned_preview_context()) {
@@ -1182,6 +1387,18 @@ bool return_ready(const editor::wire::Control& control) {
     if(status!=waiting)tell(waiting);
     return false;
 }
+bool finish_solo(std::string& error){
+    if(!return_error.empty()){error=return_error;return false;}
+    if(!solo_preview)return true;
+    const auto& solo=*solo_preview;
+    if(editor_native::state().generation!=solo.generation){error="The solo preview editor changed before restoration";return false;}
+    if(!editor_native::restore(solo.snapshot,error) ||
+       (solo.selected && !editor_native::select_placement(*solo.selected,error)) ||
+       !editor_native::restore_view(solo.view,solo.generation,error))return false;
+    solo_preview.reset();solo_ready_scope.reset();native_playtesting=false;
+    native_generation=editor_native::state().generation;return_error.clear();
+    status="Solo test finished. Shared editing resumed";return true;
+}
 bool finish_return(std::string& error, bool confirmed_group_return = false) {
     if (!return_error.empty()) { error = return_error; return false; }
     std::optional<editor::ObjectId> selected;
@@ -1215,6 +1432,17 @@ bool finish_return(std::string& error, bool confirmed_group_return = false) {
 }
 void service_transport_teardown() {
     if (!transport_teardown) return;
+    if(solo_preview){
+        if(editor_native::state().generation!=solo_preview->generation){solo_preview.reset();}
+        else {
+            if(editor_native::state().playtesting){
+                if(!editor_native_save::playtest(false,return_error)){frozen=true;tell(return_error);return;}
+                solo_preview->generation=editor_native::state().generation;solo_preview->returned_frame=H->frame_index();return;
+            }
+            if(!editor_native::state().ready || H->frame_index()<=solo_preview->returned_frame)return;
+            std::string error;if(!finish_solo(error)){frozen=true;tell(error);return;}
+        }
+    }
     if (adventure_native::editor_preview()) {
         // A replacement native context is not the editor owned by this cleanup.
         // Still finish our GA lease, without stopping or restoring that context.
@@ -1377,8 +1605,22 @@ void receive_command(uint8_t from,const Command& value) {
     const auto& view=controller->view();
     if(host()) {
         auto member=view.members.find(from);
-        if(!from || member==view.members.end() || member->second.peer!=value.actor || member->second.phase!=Phase::Ready)return;
+        if(!from || member==view.members.end() || member->second.peer!=value.actor ||
+           (member->second.phase!=Phase::Ready && !(value.kind==CommandKind::ReturnSolo && member->second.phase==Phase::Playing)))return;
         if(seen_command_peers[from]!=member->second.peer){seen_command_peers[from]=member->second.peer;seen_commands[from]=0;}
+        if(value.kind==CommandKind::ReturnSolo){
+            if(view.playtest_mode==editor::wire::PlaytestMode::Solo && view.phase==Phase::Playing && value.actor==view.playtest_tester && value.serial==view.playtest_round){std::string error;if(!controller->return_editor(error))tell(error);}
+            return;
+        }
+        if(value.kind==CommandKind::RequestSolo){
+            if(value.serial<=seen_commands[from])return;
+            seen_commands[from]=value.serial;
+            auto reply=value;reply.kind=CommandKind::ReplySolo;
+            std::string error;
+            reply.accepted=!test_request && !exporting && !native_exit_requested && cached.can_playtest && check_native_integrity(error) &&
+                controller->prepare_playtest(error,editor::wire::PlaytestMode::Solo,value.actor);
+            send_command(reply,from);if(!error.empty())tell(error);return;
+        }
         if(value.kind==CommandKind::RequestPlaytest || value.kind==CommandKind::RequestExport) {
             if(value.serial<=seen_commands[from])return;
             seen_commands[from]=value.serial;
@@ -1394,6 +1636,10 @@ void receive_command(uint8_t from,const Command& value) {
         return;
     }
     if(from)return;
+    if(value.kind==CommandKind::ReplySolo){
+        if(value.actor!=view.local || value.serial!=pending_solo_request)return;
+        pending_solo_request=0;if(!value.accepted)tell("The shared draft is busy. Try solo Play after edits settle");return;
+    }
     if(value.kind==CommandKind::ReplyPlaytest) {
         if(value.actor!=view.local || value.serial!=pending_test_request)return;
         pending_test_request=0;tell(value.accepted?"The host approved the group playtest":"The host declined or could not start the playtest");return;
@@ -1528,6 +1774,15 @@ void execute(Action action) {
             check_native_integrity(error) && !(native_copy_owned ? editor_native_save::save(error) : editor_native_save::save_as(error))) tell(error);
         break;
     }
+    case Action::Solo:
+        if(!cached.can_playtest || pending || exporting || pending_export_request || native_exit_requested)break;
+        if(host()){
+            if(check_native_integrity(error) && !controller->prepare_playtest(error,editor::wire::PlaytestMode::Solo,controller->view().local))tell(error);
+        }else if(!pending_solo_request){
+            auto request=command(CommandKind::RequestSolo,controller->view().local);
+            if(send_command(request))pending_solo_request=request.serial;
+        }
+        break;
     case Action::Playtest:
         if(controller->view().phase==Phase::Preparing) {
             if(!controller->ready_playtest(!cached.ready,error))tell(error);break;
@@ -1557,6 +1812,13 @@ void execute(Action action) {
         break;
     case Action::NativeExit:
         test_request.reset();
+        if(controller->view().playtest_mode==editor::wire::PlaytestMode::Solo && controller->view().phase==Phase::Playing){
+            exit_after_return=true;
+            if(host()){if(!controller->cancel_playtest(error))tell(error);}
+            else if(controller->view().local==controller->view().playtest_tester)execute(Action::Return);
+            else {if(C.leave_party)C.leave_party();}
+            break;
+        }
         if(controller->view().phase==Phase::Preparing || controller->view().phase==Phase::Returning) {
             if(host() || controller->view().phase==Phase::Returning) {
                 exit_after_return=true;
@@ -1598,6 +1860,13 @@ void execute(Action action) {
         break;
     case Action::Ready: case Action::Unready: if (!controller->ready_playtest(action == Action::Ready, error)) tell(error); break;
     case Action::End:
+        if(controller->view().playtest_mode==editor::wire::PlaytestMode::Solo && controller->view().phase==Phase::Playing){
+            end_after_return=true;
+            if(host()){if(!controller->cancel_playtest(error))tell(error);}
+            else if(controller->view().local==controller->view().playtest_tester)execute(Action::Return);
+            else close_session();
+            break;
+        }
         if (!host() && controller->view().phase == Phase::Preparing && !adventure_native::editor_preview()) {
             // No GA attempt exists before HostBegin. Leave the editor directly;
             // its scoped Leave cancels the host's preparation and offers rejoin.
@@ -1609,6 +1878,14 @@ void execute(Action action) {
         } else close_session();
         break;
     case Action::Return:
+        if(controller->view().playtest_mode==editor::wire::PlaytestMode::Solo){
+            const auto& view=controller->view();
+            if(host() && view.phase==Phase::Playing){if(!controller->return_editor(error))tell(error);}
+            else if(!host() && view.phase==Phase::Playing && view.local==view.playtest_tester && solo_preview && same_preview_context(solo_preview->scope)){
+                auto returned=command(CommandKind::ReturnSolo,view.local);returned.serial=view.playtest_round;send_command(returned);
+            }
+            break;
+        }
         if (!adventure_native::editor_preview()) break;
         if (host() && controller->view().phase == Phase::Playing) { if (!controller->return_editor(error)) tell(error); }
         else if (host() && controller->view().phase == Phase::Preparing) { if (!controller->cancel_playtest(error)) tell(error); }
@@ -1625,6 +1902,7 @@ void execute(Action action) {
         if (!editor_project::load_snapshot(checkpoint, recovered, native, error) ||
             !supported_act(native.act, error) || !supported_native_act(error) ||
             !parse_manifest(checkpoint.manifest, resource_hash, history_artifacts, error, &recovered_capability, &owned)) { tell(error); break; }
+        if(!expand_legacy_state(recovered,native,error)){tell("The legacy checkpoint was preserved: "+error);break;}
         std::vector<uint8_t> envelope;
         if (!read_blob(resource_hash, envelope, editor::wire::kResourceBytes, error) || !editor_project::decode_resources(envelope, resources, error) ||
             !replace_root(resources, native, error) || !editor_project::encode_resources(resources, envelope, error) ||
@@ -1647,6 +1925,21 @@ void SK_CDECL drain(void*) {
         submit_pending_gesture();
         controller->tick(now_ms());
         observe_lease_grants();
+        if(waiting_history){
+            const auto held=*waiting_history;
+            const auto& history=controller->state().history;
+            const bool same=held.scope==current_gesture_scope() && held.generation==editor_native::state().generation && now_ms()-held.started<=2000 &&
+                std::any_of(history.begin(),history.end(),[&](const auto& item){return item.operation==held.gesture && item.transition_revision==held.transition && item.applied!=held.redo;});
+            if(!same || frozen || closing || awaiting_operation)waiting_history.reset();
+            else undo_redo(held.redo,held.gesture);
+        }
+        if(controller->view().phase==Phase::Preparing && controller->view().playtest_mode==editor::wire::PlaytestMode::Solo){
+            const auto& view=controller->view();
+            if((!solo_ready_scope || !same_preview_context(*solo_ready_scope)) && editor_native::state().ready && !pending && !awaiting_operation && !editor_native::state().gesture){
+                std::string error;
+                if(check_native_integrity(error) && controller->ready_playtest(true,error))solo_ready_scope=PreviewReturnScope{view.context.project,view.context.epoch,view.playtest_round,view.playtest_revision};
+            }
+        }
         if (preview_selection && !adventure_native::editor_preview() && (!same_preview_context(preview_selection->scope) ||
             (controller->view().phase != Phase::Preparing && controller->view().phase != Phase::Playing &&
              controller->view().phase != Phase::Returning))) preview_selection.reset();
@@ -1691,6 +1984,8 @@ void SK_CDECL drain(void*) {
         if (cancelling && current_preparation_cancel(*cancelling, true)) execute(Action::CancelPreparation);
         auto returning = std::move(pending_preview_return); pending_preview_return.reset();
         if (returning && current_preview_return(*returning)) execute(Action::Return);
+        auto solo_return=std::move(pending_solo_return);pending_solo_return.reset();
+        if(solo_return && controller->view().playtest_mode==editor::wire::PlaytestMode::Solo && same_preview_context(*solo_return))execute(Action::Return);
         service_export();service_native_exit();service_automatic_follow();
         if(exit_after_return && controller->view().phase==Phase::Ready && !adventure_native::editor_preview()) {
             exit_after_return=false;execute(Action::NativeExit);
@@ -1742,7 +2037,8 @@ void action(Action value) {
     if (value == Action::Return) {
         if (controller) {
             const auto& view = controller->view();
-            request_preview_return({view.context.project, view.context.epoch, view.playtest_round, view.playtest_revision});
+            if(view.playtest_mode==editor::wire::PlaytestMode::Solo){pending_solo_return=PreviewReturnScope{view.context.project,view.context.epoch,view.playtest_round,view.playtest_revision};schedule();}
+            else request_preview_return({view.context.project, view.context.epoch, view.playtest_round, view.playtest_revision});
         }
     } else if (value == Action::CancelPreparation) {
         if (controller) {
@@ -1760,7 +2056,10 @@ void action(Action value) {
 } // namespace
 
 bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
+    waiting_history.reset();
     H = host_api; M = mod; C = std::move(context); reopen_saved.reset(); projection_override.reset();
+    solo_preview.reset();solo_ready_scope.reset();pending_solo_return.reset();pending_solo_request=0;
+    guarded_settings.clear();cast_uploads.clear();extended_projection_override.reset();cast_projection_override.reset();
     automatic_generation=automatic_transport=retained_editor_generation=native_exit_generation=0;follow_failed=false;
     native_exit_requested=native_exit_confirmed=exit_after_save=exit_broadcast=remote_exit=handoff=handoff_saving=false;
     exit_after_return=false;
@@ -1772,6 +2071,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     observed_transport = C.session->transport_generation(); retired_transport = 0; transport_teardown.reset(); deferred_offer.reset(); settled_cancellation.reset();
     editor_session::Callbacks callbacks;
     callbacks.command=receive_command;
+    callbacks.lease_denied=[](const auto& scopes){waiting_history.reset();editor_native::deny_input(scopes);};
     callbacks.authoring_held=[] {return exporting.has_value() || native_exit_requested;};
     callbacks.trace=[](editor_session::TracePoint point,const editor::ProjectId& project,const editor::OperationId& operation,editor::Revision revision) noexcept {
         using P=editor_session::TracePoint;using S=editor_stage_metrics::Stage;
@@ -1784,6 +2084,18 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         if (closing || frozen || recovery || exporting || native_exit_requested || native.generation != native_generation || editor_native_save::busy() || save_publication_pending || !native.ready || native.gesture) { error = "The native draft is not currently editable"; return false; } span.okay=true;return true;
     };
     callbacks.host_hooks.apply = apply; callbacks.host_hooks.rollback = rollback; callbacks.host_hooks.persist = persist;
+    callbacks.assets = [](editor::OperationId operation,const std::vector<uint8_t>& bytes,std::string& error){
+        if(!controller || operation.epoch!=controller->view().context.epoch)return false;
+        if(controller->state().decisions.contains(operation))return true;
+        editor_project::Resources content;
+        if(!editor_project::decode_resources(bytes,content,error))return false;
+        auto merged=resources;if(!merge_dependencies(merged,content,error))return false;
+        std::erase_if(cast_uploads,[&](const auto& item){return item.first.author==operation.author;});
+        uint64_t staged=content.bundle.bytes;
+        for(const auto& [id,value]:cast_uploads){(void)id;staged+=value.bundle.bytes;}
+        if(cast_uploads.size()>=4 || staged>editor::wire::kResourceBytes){error="The cast dependency staging queue is full";return false;}
+        cast_uploads.emplace(operation,std::move(content));return true;
+    };
     callbacks.apply_committed = apply; callbacks.rollback_committed = rollback; callbacks.persist_guest = persist;
     callbacks.authoring_ready = [] {
         auto native = editor_native::state();
@@ -1879,6 +2191,22 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     callbacks.control_ready = return_ready;
     callbacks.control = [](const editor::wire::Control& control, std::string& error) {
         using K = editor::wire::ControlKind;
+        if(controller->view().playtest_mode==editor::wire::PlaytestMode::Solo){
+            if(control.kind==K::HostBeginPlaytest && controller->view().local==controller->view().playtest_tester){
+                if(!check_native_integrity(error))return false;
+                SoloPreview local;const auto& view=controller->view();
+                local.scope={view.context.project,view.context.epoch,view.playtest_round,view.playtest_revision};
+                if(!editor_native::capture(local.snapshot,error) || !editor_native::capture_view(local.view,error))return false;
+                const auto selected=editor_native::state().selected;if(!selected.empty())local.selected=selected.front();
+                local.generation=editor_native::state().generation;
+                return_error.clear();solo_preview=std::move(local);
+                if(!editor_native_save::playtest(true,error)){solo_preview.reset();return false;}
+                solo_preview->generation=editor_native::state().generation;native_playtesting=true;
+                if(C.close_panel)C.close_panel();
+            }
+            if(control.kind==K::HostReturnEditor || control.kind==K::HostCancelPlaytest)return finish_solo(error);
+            return true;
+        }
         if (control.kind == K::HostBeginPlaytest) {
             preview_selection.reset();
             if (!check_native_integrity(error)) return false;
@@ -1938,6 +2266,16 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         if (recovery) return recovery->state.document.schema.contains(editor_native::kRelativeScaleProperty);
         return !native_attached || current_native.document.schema.contains(editor_native::kRelativeScaleProperty);
     };
+    native.extended_poses_tracked = [] {
+        if(extended_projection_override)return *extended_projection_override;
+        if(recovery)return recovery->state.document.schema.contains(editor_native::kElevationProperty);
+        return !native_attached || current_native.document.schema.contains(editor_native::kElevationProperty);
+    };
+    native.cast_tracked = [] {
+        if(cast_projection_override)return *cast_projection_override;
+        if(recovery)return !recovery->state.document.class_schema.empty();
+        return !native_attached || !current_native.document.class_schema.empty();
+    };
     native.gesture_scope = current_gesture_scope;
     native.cancelled = cancelled_gesture;
     native.gesture = captured;
@@ -1962,6 +2300,64 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         const auto state = editor_native::state();
         return !closing && !exporting && !pending_export_request && !native_exit_requested && state.ready && state.generation == native_generation && lease({{editor::ScopeKind::Document, {}, {}}});
     };
+    native.class_gate = [](uint32_t index){
+        if(!controller || !native_attached)return false;
+        const auto state=editor_native::state();
+        const editor::ObjectId class_id{(2ull<<32)|index,1};
+        if(closing || exporting || pending_export_request || native_exit_requested || !state.ready || state.generation!=native_generation ||
+           !controller->state().document.classes.contains(class_id) || !lease({{editor::ScopeKind::Class,class_id,{}}}))return false;
+        for(const auto& [id,settings]:controller->state().document.class_settings)if(settings.class_id==class_id)guarded_settings.try_emplace(id,settings);
+        // Class ownership also covers its placements. Native disguise/model
+        // changes can update their scale companions while rebuilding actors;
+        // capture those changes in the same owned class transaction.
+        for(const auto& [id,p]:controller->state().document.placements)
+            if(p.class_id==class_id)guarded_placements.try_emplace(id,p);
+        return true;
+    };
+    native.remove_class_gate = [](uint32_t index){
+        if(!controller || !native_attached || closing || exporting || pending_export_request || native_exit_requested)return false;
+        const auto state=editor_native::state();
+        if(!state.ready || state.generation!=native_generation)return false;
+        const auto& doc=controller->state().document;
+        const editor::ObjectId class_id{(2ull<<32)|index,1};
+        if(!doc.classes.contains(class_id))return false;
+        std::set<editor::ObjectId> removed{class_id};
+        std::vector<editor::Scope> scopes{{editor::ScopeKind::Document,{},{}},{editor::ScopeKind::Class,class_id,{}}};
+        for(const auto& [id,p]:doc.placements)if(p.class_id==class_id){
+            if(p.protected_object)return false;
+            removed.insert(id);scopes.push_back({editor::ScopeKind::Placement,id,{}});
+        }
+        for(const auto& ref:doc.external_references)if(removed.contains(ref.target))return false;
+        const auto references_removed=[&](const auto& properties){
+            for(const auto& [key,value]:properties){
+                (void)key;
+                if(auto* ref=std::get_if<editor::ObjectId>(&value);ref && removed.contains(*ref))return true;
+                if(auto* block=std::get_if<editor::StructuredValue>(&value))
+                    for(auto ref:block->references)if(removed.contains(ref))return true;
+            }
+            return false;
+        };
+        for(const auto& [id,settings]:doc.class_settings)
+            if(settings.class_id!=class_id && references_removed(settings.properties))return false;
+        for(const auto& [id,p]:doc.placements)
+            if(p.class_id!=class_id && references_removed(p.properties))return false;
+        if(!lease(scopes))return false;
+        for(const auto& [id,p]:doc.placements)if(p.class_id==class_id)guarded_placements.try_emplace(id,p);
+        for(const auto& [id,settings]:doc.class_settings)if(settings.class_id==class_id)guarded_settings.try_emplace(id,settings);
+        return true;
+    };
+    native.validate_dependencies = [](const editor_native::Snapshot& snapshot,std::string& error){
+        std::vector<dbpf::Record> records;
+        return adventure_collect::collect_snapshot(resources.root,snapshot.bytes,records,error);
+    };
+    native.object_revision = [](editor::ObjectId object)->std::optional<editor::Revision> {
+        if(!controller)return std::nullopt;
+        const auto& placements=controller->state().document.placements;
+        auto found=placements.find(object);
+        if(found!=placements.end())return found->second.revision;
+        for(const auto& [id,settings]:controller->state().document.class_settings){(void)id;if(settings.class_id==object)return settings.revision;}
+        return std::nullopt;
+    };
     bool available = editor_native::init(H, M, std::move(native));
     editor_native_save::Ctx saving;
     saving.shared_active = [] { return session_active() || recovery.has_value() || beginning || closing || native_attached || handoff; };
@@ -1976,12 +2372,12 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     };
     saving.cancelled = [] { if(export_before)finish_export(false);if(handoff)++handoff_prompt_serial;handoff_saving=false;exit_after_save=false; if (transport_teardown) return; beginning = false; if (recovery && recovery->saving) { recovery.reset(); frozen = true; } status = "Native save cancelled; the draft is preserved"; };
     saving.error = [](const std::string& error) { if(export_before)finish_export(false);if(handoff)++handoff_prompt_serial;handoff_saving=false;exit_after_save=false; if (transport_teardown) return; beginning = false; if (recovery && recovery->saving) { recovery.reset(); frozen = true; } tell(error); };
-    saving.owned_preview = adventure_native::editor_preview;
+    saving.owned_preview = []{return adventure_native::editor_preview() || solo_preview.has_value();};
     saving.return_requested = [] { action(Action::Return); };
     saving.request = [](editor_native_save::Request request) {
         using R=editor_native_save::Request;
         action(request==R::Save?Action::Save:request==R::SaveExit?Action::SaveExit:
-            request==R::Exit?Action::NativeExit:request==R::Play?Action::Playtest:Action::Return);
+            request==R::Exit?Action::NativeExit:request==R::Play?Action::Solo:Action::Return);
     };
     saving.exit_confirmed=[] {native_exit_confirmed=true;schedule();};
     saving.exit_cancelled=[] {if(handoff)++handoff_prompt_serial;native_exit_requested=native_exit_confirmed=exit_after_save=false;schedule();};
@@ -2019,10 +2415,10 @@ void session_ended() {
     retire_transport(true); schedule();
 }
 void mode_changed(uint32_t, uint32_t) { schedule(); }
-void shutdown() { native_playtesting=return_started=disconnected_return=end_after_return=false;return_error.clear();settled_cancellation.reset(); transport_teardown.reset(); deferred_offer.reset(); observed_transport = retired_transport = 0; reopen_saved.reset(); projection_override.reset(); if (controller) { controller->end(); controller.reset(); } store.close(); adventure_native::clear_editor_preview(); editor_native_save::shutdown(); editor_native::shutdown(); actions.clear(); pending_preview_return.reset(); pending_preparation_cancel.reset(); preview_selection.reset(); observed_lease_grants.clear(); queued = false; closing = native_attached = close_restored = close_preserve_offer = false; H = nullptr; }
+void shutdown() { waiting_history.reset();guarded_settings.clear();cast_uploads.clear();solo_preview.reset();solo_ready_scope.reset();pending_solo_return.reset();pending_solo_request=0;native_playtesting=return_started=disconnected_return=end_after_return=false;return_error.clear();settled_cancellation.reset(); transport_teardown.reset(); deferred_offer.reset(); observed_transport = retired_transport = 0; reopen_saved.reset(); projection_override.reset(); if (controller) { controller->end(); controller.reset(); } store.close(); adventure_native::clear_editor_preview(); editor_native_save::shutdown(); editor_native::shutdown(); actions.clear(); pending_preview_return.reset(); pending_preparation_cancel.reset(); preview_selection.reset(); observed_lease_grants.clear(); queued = false; closing = native_attached = close_restored = close_preserve_offer = false; H = nullptr; }
 bool active() { return cached.active; }
 bool authoring() {
-    if (!controller || (controller->view().phase == Phase::Playing && native_playtesting)) return false;
+    if (!controller || (controller->view().phase == Phase::Playing && native_playtesting && controller->view().playtest_mode==editor::wire::PlaytestMode::Together)) return false;
     return session_active() || native_attached || closing || recovery.has_value() || beginning;
 }
 bool playtest_owned() { return adventure_native::editor_preview(); }
@@ -2033,6 +2429,7 @@ void undo() { action(Action::Undo); }
 void redo() { action(Action::Redo); }
 void save() { action(Action::Save); }
 void playtest() { action(Action::Playtest); }
+void return_to_editor() { action(Action::Return); }
 void cancel_playtest() { action(Action::CancelPreparation); }
 void set_ready(bool value) { action(value ? Action::Ready : Action::Unready); }
 void recover() { action(Action::Recover); }
@@ -2288,6 +2685,35 @@ std::string debug(const std::vector<std::string>& args) {
             if (native.document.schema.contains(editor_native::kRelativeScaleProperty) && property != p.properties.end()) {
                 if (const auto* value = std::get_if<float>(&property->second)) {
                     char text[48]; snprintf(text, sizeof text, " relative_scale=%.9g", double(*value)); relative = text;
+                }
+            }
+            if(auto found=p.properties.find(editor_native::kElevationProperty);found!=p.properties.end()){
+                if(const auto* value=std::get_if<float>(&found->second)){
+                    char text[48];snprintf(text,sizeof text," elevation=%.9g",double(*value));relative+=text;
+                }
+            }
+            for(auto [key,label]:{std::pair{editor_native::kSoundPitchProperty," pitch="},std::pair{editor_native::kSoundGainProperty," gain="}}){
+                if(auto found=p.properties.find(key);found!=p.properties.end())if(const auto* value=std::get_if<float>(&found->second)){
+                    char text[48];snprintf(text,sizeof text,"%.9g",double(*value));relative+=label;relative+=text;
+                }
+            }
+            if(auto found=p.properties.find(editor_native::kDestinationPositionProperty);found!=p.properties.end()){
+                if(const auto* value=std::get_if<editor::Vec3>(&found->second)){
+                    char text[192];float destination_xy[2]{};
+                    const bool visible=H->world_to_screen && H->world_to_screen(&value->x,destination_xy) && std::isfinite(destination_xy[0]) && std::isfinite(destination_xy[1]);
+                    snprintf(text,sizeof text," destination=%.9g,%.9g,%.9g",double(value->x),double(value->y),double(value->z));relative+=text;
+                    if(visible){snprintf(text,sizeof text," destination_screen=%.6f,%.6f",double(destination_xy[0]),double(destination_xy[1]));relative+=text;}
+                    else relative+=" destination_screen=hidden";
+                }
+                if(auto rotation=p.properties.find(editor_native::kDestinationRotationProperty);rotation!=p.properties.end()){
+                    if(const auto* value=std::get_if<editor::Rotation>(&rotation->second)){
+                        char text[192];snprintf(text,sizeof text," destination_rotation=%.9g,%.9g,%.9g,%.9g",double(value->x),double(value->y),double(value->z),double(value->w));relative+=text;
+                    }
+                }
+                if(auto scale=p.properties.find(editor_native::kDestinationScaleProperty);scale!=p.properties.end()){
+                    if(const auto* value=std::get_if<float>(&scale->second)){
+                        char text[48];snprintf(text,sizeof text," destination_scale=%.9g",double(*value));relative+=text;
+                    }
                 }
             }
             result += std::to_string(id.id) + ":" + std::to_string(id.generation) + " class=" + std::to_string(p.class_id.id) +

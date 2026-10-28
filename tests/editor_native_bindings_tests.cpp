@@ -16,6 +16,11 @@ int main(){
     CHECK(supported_tool_auxiliary(11,0,rotations));
     for(auto handle:rotations)CHECK(!supported_tool_auxiliary(11,handle,rotations));
     CHECK(!supported_tool_auxiliary(11,0x400,rotations));
+    CHECK(supported_tool_auxiliary(1,0x400,rotations,0x400,0x500));
+    CHECK(supported_tool_auxiliary(1,0x500,rotations,0x400,0x500));
+    CHECK(!supported_tool_auxiliary(6,0x400,rotations,0x400,0x500));
+    CHECK(!supported_tool_auxiliary(11,0x500,rotations,0x400,0x500));
+    CHECK(!supported_tool_auxiliary(1,0x600,rotations,0x400,0x500));
     const editor::ObjectId a{0x100000000ull,1},b{0x400000000ull,1},c{0x400000001ull,3};
     std::vector<Binding> out;std::string error;
     CHECK(serialized_bindings({},out,error));CHECK(out.empty());

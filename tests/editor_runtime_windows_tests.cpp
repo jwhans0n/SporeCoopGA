@@ -45,6 +45,8 @@ namespace runtime_guest { using coop_editor::Ctx; using coop_editor::View; using
 #include "../mods/coop/editor_runtime.cpp"
 #undef coop_editor
 
+namespace editor_native { void deny_input(const std::vector<editor::Scope>&){} }
+
 namespace {
 namespace fs = std::filesystem;
 namespace es = editor_session;
@@ -190,7 +192,19 @@ struct Party {
 
 namespace game {uint32_t mode_id(){return native[side].state.editing||native[side].state.playtesting?modes::kScenario:modes::kMenu;}}
 namespace editor_native {
+bool canonicalize_cast_state(editor::State&,std::string&){return true;}
 bool capture_draft(Snapshot& value,std::string& error){return capture(value,error);}
+bool expand_snapshot(const Snapshot& input,bool,Snapshot& out,std::string& error){
+    // This double's owned bytes already contain its complete semantic model.
+    // It does not model additional native fields or establish native migration.
+    out=input;
+    if(out.document.acts.empty()){
+        editor::State parsed;
+        if(input.bytes.empty() || !ew::decode_state(std::vector<uint8_t>(input.bytes.begin()+1,input.bytes.end()),parsed,error))return false;
+        out.document=parsed.document;
+    }
+    return true;
+}
 uint32_t creation_group(){return 0x408A0000;}
 bool validate_entry(const std::vector<uint8_t>& bytes,uint32_t act,std::string& error){
     editor::State parsed;
@@ -770,7 +784,7 @@ static void test_opaque_gesture_changes_freeze_before_empty_semantic_return() {
     if(prior)gesture.before.bytes.front()=0xB2;
     gesture.after.bytes.front()=0xB2;native[0].snapshot=gesture.after;
     runtime_host::captured(std::move(gesture));
-    CHECK(runtime_host::frozen&&!runtime_host::pending&&!runtime_host::awaiting_operation);
+    CHECK(!runtime_host::frozen&&!runtime_host::pending&&!runtime_host::awaiting_operation);
     CHECK(native[0].restores==restored+1&&native[0].structural_applies==applied&&native[0].snapshot.bytes==canonical);
     CHECK(runtime_host::controller->state().document.revision==0&&runtime_host::store.snapshot().native_snapshot==canonical);}
 }
@@ -782,7 +796,7 @@ static void test_uncaptured_opaque_changes_cannot_save_or_playtest() {
     const auto diagnosis=runtime_host::debug({"check"});CHECK(diagnosis.starts_with("DIVERGED:"));
     CHECK(native[0].restores==restored&&native[0].snapshot.bytes.front()==0xB3&&!runtime_host::frozen);
     if(preview)runtime_host::playtest();else runtime_host::save();same_frame_drain(0);
-    CHECK(runtime_host::frozen&&native[0].restores==restored+1&&native[0].snapshot.bytes==canonical);
+    CHECK(!runtime_host::frozen&&native[0].restores==restored+1&&native[0].snapshot.bytes==canonical);
     CHECK(!native[0].save_calls&&!native[0].save_as_calls&&!native[0].preview&&!native[0].active);
     CHECK(runtime_host::controller->state().document.revision==0&&runtime_host::store.snapshot().native_snapshot==canonical);}
 }
@@ -823,7 +837,8 @@ static void test_host_apply_rejects_uncaptured_opaque_changes() {
     for(const auto& held:runtime_guest::controller->view().local_leases)request.leases.push_back({held.scope,held.token});
     editor::Mutation mutation;mutation.target=placement;mutation.field={editor::Field::Position,0};mutation.value=editor::Vec3{8,8,8};request.mutations={mutation};
     const auto canonical=runtime_host::current_native.bytes;native[0].snapshot.bytes.front()=0xB4;
-    side=1;CHECK(runtime_guest::controller->submit(request,error));CHECK(spin([]{return runtime_host::frozen;}));
+    side=1;CHECK(runtime_guest::controller->submit(request,error));CHECK(spin([]{return runtime_guest::status.find("unsupported")!=std::string::npos;}));
+    CHECK(!runtime_host::frozen&&!runtime_guest::frozen);
     CHECK(native[0].snapshot.bytes==canonical&&runtime_host::controller->state().document.revision==0);
     CHECK(runtime_host::store.snapshot().native_snapshot==canonical);
 }
@@ -1157,13 +1172,12 @@ static void test_conflicting_native_history_releases_document_ownership() {
     undo(0);
     CHECK(host_controller.state().document==restored&&host_controller.state().history==restored_history);
     CHECK(runtime_host::status.find("no older action was selected")!=std::string::npos);
-    // A single further native Undo can acquire its field lease while asking the
-    // user to repeat the input. Abandon it here: no operation is awaiting, but
-    // this live field scope must not prevent a later Document grant forever.
+    // One further native Undo retains that exact request through its lease
+    // latency, rejects its stale field precondition, and releases the scope.
     const auto abandoned_sequence=runtime_host::sequence;
     side=0;native[0].callbacks.history(false);
-    CHECK(spin([&]{return std::any_of(host_controller.view().local_leases.begin(),host_controller.view().local_leases.end(),[&](const auto& held){return held.scope.kind==editor::ScopeKind::Field&&held.scope.object==created;});}));
-    CHECK(runtime_host::sequence==abandoned_sequence&&!awaiting(0)&&!pending(0));
+    CHECK(spin([&]{return runtime_host::sequence==abandoned_sequence+1&&!awaiting(0)&&!runtime_host::waiting_history&&unleased();}));
+    CHECK(!pending(0)&&host_controller.state().document==restored);
     const auto idle=clock_ms;
     while(clock_ms-idle<16000){clock_ms+=195;step();}
     CHECK(unleased()&&!pending(0)&&!pending(1)&&!awaiting(0)&&!awaiting(1));
@@ -1351,6 +1365,26 @@ static void test_relative_scale_only_capture_undo_redo_and_recovery() {
     side=1;CHECK(runtime_guest::controller->accept_offer(error));CHECK(spin([]{return runtime_guest::controller->view().phase==es::Phase::Ready&&runtime_host::controller->settled();}));check(.479587317f,3);
 }
 static void test_legacy_recovery_keeps_schema_history_and_scoped_capture() {
+    {
+        Party party;side=0;std::string error;
+        auto state=runtime_host::controller->state();state.document.revision=4;state.document.next_id=6ull<<32;
+        state.document.schema=editor_native::placement_property_schema();state.document.schema.erase(editor_native::kSoundPitchProperty);state.document.schema.erase(editor_native::kSoundGainProperty);
+        state.document.class_schema=editor_native::cast_property_schema();
+        editor::ClassActSettings settings;settings.object={5ull<<32,1};settings.class_id=*state.document.classes.begin();settings.act_id=*state.document.acts.begin();settings.revision=4;
+        const editor::FieldKey field{editor::Field::Property,editor_native::kCastBlockProperty};
+        settings.properties[field.property]=editor::StructuredValue{editor_native::kCastBlockFormat,{1,2,3},{}};settings.field_revisions[field]=4;
+        state.document.class_settings[settings.object]=settings;
+        editor::Gesture gesture;gesture.operation={runtime_host::controller->view().local,1,state.document.epoch};gesture.original_revision=gesture.transition_revision=4;gesture.applied=true;gesture.summary="Retained cast edit";
+        auto old=std::get<editor::StructuredValue>(settings.properties.at(field.property));old.bytes={3,2,1};
+        gesture.undo.fields.push_back({settings.object,field,settings.properties.at(field.property),editor::Value{old},4});state.history.push_back(gesture);
+        auto snapshot=native[0].snapshot;snapshot.document=state.document;snapshot.document.schema=editor_native::placement_property_schema();
+        snapshot.document.class_settings.at(settings.object).revision=0;snapshot.document.class_settings.at(settings.object).field_revisions.clear();
+        for(auto& [id,p]:snapshot.document.placements){(void)id;p.properties[editor_native::kSoundPitchProperty]=1.f;p.properties[editor_native::kSoundGainProperty]=.375f;}
+        const auto before=state;CHECK(runtime_host::expand_legacy_state(state,snapshot,error));
+        CHECK(state.document.class_settings==before.document.class_settings&&state.history==before.history);
+        CHECK(state.document.schema.contains(editor_native::kSoundPitchProperty));
+        CHECK(state.document.placements.at(placement).properties.at(editor_native::kSoundGainProperty)==editor::Value{.375f});
+    }
     Party party;std::string error;side=0;
     CHECK(!native[0].callbacks.gate({placement}));CHECK(spin([]{return !runtime_host::controller->view().local_leases.empty();}));
     side=0;CHECK(native[0].callbacks.gate({placement}));
@@ -1462,12 +1496,42 @@ static void test_clone_preserves_companion_and_rejects_compound_property_change(
     p=compound.after.document.placements.at(placement);p.object={12346,1};p.position.x=4;p.properties[editor_native::kRelativeScaleProperty]=.3f;
     compound.after.document.placements.emplace(p.object,p);compound.after.bindings.push_back({p.object,2});compound.after.bytes=body(compound.after.document);
     native[0].snapshot=compound.after;const auto canonical=runtime_host::controller->state();runtime_host::captured(std::move(compound));
-    CHECK(runtime_host::frozen&&!runtime_host::pending&&runtime_host::controller->state()==canonical);
+    CHECK(!runtime_host::frozen&&!runtime_host::pending&&runtime_host::controller->state()==canonical);
     CHECK(native[0].snapshot.document.placements.size()==2&&runtime_host::status.find("Clone and Scale separately")!=std::string::npos);
     CHECK(runtime_guest::controller->state()==canonical);
 }
 
 
+static void test_class_owned_placement_companion_transaction() {
+    Party party;side=0;
+    CHECK(!native[0].callbacks.class_gate(1));
+    CHECK(spin([]{return !runtime_host::controller->view().local_leases.empty();}));side=0;
+    CHECK(native[0].callbacks.class_gate(1));CHECK(runtime_host::guarded_placements.contains(placement));
+    const auto before=native[0].snapshot;
+    editor_native::Gesture edit;edit.generation=native[0].state.generation;edit.before=before;edit.after=before;
+    edit.after.document.placements.at(placement).scale=2;
+    edit.after.document.placements.at(placement).properties[editor_native::kRelativeScaleProperty]=.75f;
+    edit.after.bytes=body(edit.after.document);native[0].snapshot=edit.after;runtime_host::captured(std::move(edit));
+    CHECK(spin([]{return runtime_guest::controller->state().document.revision==1 && !runtime_host::awaiting_operation;}));
+    CHECK(!runtime_host::frozen && runtime_host::controller->state().history.size()==1);
+    side=0;native[0].callbacks.history(false);
+    CHECK(spin([]{return runtime_guest::controller->state().document.revision==2 && !runtime_host::awaiting_operation;}));
+    CHECK(runtime_host::controller->state().document.placements.at(placement).scale==1);
+    CHECK(std::get<float>(runtime_host::controller->state().document.placements.at(placement).properties.at(editor_native::kRelativeScaleProperty))==.5f);
+}
+static void test_unowned_native_gesture_restores_without_freezing() {
+    Party party;side=0;
+    const auto canonical=runtime_host::controller->state();
+    const auto before=native[0].snapshot;const auto restores=native[0].restores;
+    editor_native::Gesture move;move.generation=native[0].state.generation;move.before=before;move.after=before;
+    move.after.document.placements.at(placement).position.x+=4;
+    move.after.bytes=body(move.after.document);native[0].snapshot=move.after;
+    runtime_host::captured(std::move(move));
+    CHECK(!runtime_host::frozen && !runtime_host::pending && !runtime_host::awaiting_operation);
+    CHECK(runtime_host::controller->state()==canonical && runtime_guest::controller->state()==canonical);
+    CHECK(native[0].restores==restores+1 && native[0].snapshot.document==before.document);
+    CHECK(runtime_host::status.find("no current placement ownership")!=std::string::npos);
+}
 static void test_legacy_pending_recovery_mode_overrides_detached_old_context() {
     Party party;side=0;
     auto work=runtime_host::Recovery{};work.state.document=seed();work.state.document.schema.clear();
@@ -1946,7 +2010,7 @@ static void test_native_guest_export_isolation_and_cancel() {
 }
 static void test_native_guest_playtest_request_requires_host_and_all_ready() {
     Party party(0,0xA5,true,true);
-    side=1;native[1].save_callbacks.request(editor_native_save::Request::Play);
+    side=1;runtime_guest::playtest(); // The separate Test Together action.
     CHECK(spin([]{return runtime_host::view().test_request;}));
     CHECK(runtime_host::controller->view().phase==es::Phase::Ready&&!native[0].preview&&!native[1].preview);
     side=0;runtime_host::approve_playtest(true);
@@ -1957,6 +2021,44 @@ static void test_native_guest_playtest_request_requires_host_and_all_ready() {
     CHECK(spin([]{return runtime_guest::view().ready;}));CHECK(!native[0].preview&&!native[1].preview);
     side=0;runtime_host::set_ready(true);
     CHECK(spin([]{return native[0].state.playtesting&&native[1].state.playtesting;}));
+}
+static void test_native_solo_play_holds_and_restores_without_coop(){
+    for(unsigned tester=0;tester<2;++tester){
+        Party party(0,0xA5,true,true);
+        const auto state=runtime_host::controller->state();
+        const auto views=std::array{native[0].view,native[1].view};
+        side=int(tester);native[tester].save_callbacks.request(editor_native_save::Request::Play);
+        CHECK(spin([&]{return runtime_host::controller->view().phase==es::Phase::Playing && runtime_guest::controller->view().phase==es::Phase::Playing && native[tester].state.playtesting;}));
+        CHECK(!native[1-tester].state.playtesting && native[1-tester].state.ready);
+        CHECK(!native[0].preview && !native[1].preview && !native[0].active && !native[1].active);
+        side=0;CHECK(runtime_host::authoring());side=1;CHECK(runtime_guest::authoring());
+        CHECK(!runtime_host::view().confirming && !runtime_guest::view().confirming);
+        side=int(1-tester);CHECK(!native[1-tester].callbacks.gate({placement}));
+        const auto old_round=runtime_host::controller->view().playtest_round;
+        const auto& held=runtime_host::controller->view();
+        const runtime_host::PreviewReturnScope old_scope{held.context.project,held.context.epoch,held.playtest_round,held.playtest_revision};
+        side=int(tester);native[tester].save_callbacks.return_requested();
+        CHECK(spin([]{return runtime_host::controller->view().phase==es::Phase::Ready && runtime_guest::controller->view().phase==es::Phase::Ready;}));
+        CHECK(native[0].view==views[0] && native[1].view==views[1]);
+        CHECK(runtime_host::controller->state()==state && runtime_guest::controller->state()==state);
+        CHECK(native[tester].stops==1 && native[1-tester].stops==0);
+        side=int(tester);native[tester].save_callbacks.request(editor_native_save::Request::Play);
+        CHECK(spin([&]{return native[tester].state.playtesting && runtime_host::controller->view().playtest_round>old_round;}));
+        side=0;runtime_host::pending_solo_return=runtime_host::PreviewReturnScope{old_scope.project,old_scope.epoch,old_scope.round,old_scope.revision};
+        step();CHECK(native[tester].state.playtesting && native[tester].stops==1);
+        side=int(tester);native[tester].save_callbacks.return_requested();
+        CHECK(spin([]{return runtime_host::controller->view().phase==es::Phase::Ready && runtime_guest::controller->view().phase==es::Phase::Ready;}));
+        CHECK(!runtime_host::frozen && !runtime_guest::frozen);
+    }
+}
+static void test_solo_tester_disconnect_releases_party_hold(){
+    Party party(0,0xA5,true,true);
+    const auto document=runtime_host::controller->state().document;
+    side=1;native[1].save_callbacks.request(editor_native_save::Request::Play);
+    CHECK(spin([]{return native[1].state.playtesting && runtime_host::controller->view().phase==es::Phase::Playing;}));
+    side=1;runtime_guest::session_ended();sessions[1].leave();
+    CHECK(spin([]{return native[1].state.ready && runtime_host::controller->view().phase==es::Phase::Ready && !runtime_guest::transport_teardown;}));
+    CHECK(runtime_host::controller->state().document==document && !runtime_host::frozen && native[1].stops==1);
 }
 static void test_automatic_handoff_preserves_local_draft_on_cancel() {
     Party party(0,0xA5,true,true,true);
@@ -1992,6 +2094,7 @@ static void test_native_exit_host_keeps_party_guest_leaves() {
     }
 }
 static void test_all_native_flow_cases() {
+    test_native_solo_play_holds_and_restores_without_coop();test_solo_tester_disconnect_releases_party_hold();
     test_automatic_unsaved_start_and_native_host_save();
     test_native_guest_export_isolation_and_cancel();
     test_native_guest_playtest_request_requires_host_and_all_ready();
@@ -2011,4 +2114,4 @@ static void test_all_native_flow_cases() {
     }
 }
 
-int main(int argc,char** argv){if(argc==2&&std::string(argv[1])=="--native-flow-only"){test_all_native_flow_cases();std::printf("native editor flow: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--view-only"){test_transport_teardown_remote_host_disconnect_order_and_preview_cleanup();test_owned_end_keeps_local_view_and_selection();test_bound_preview_cleanup_requires_exact_round_and_native_owner();test_preview_restores_latest_independent_selection_before_ack();test_preview_local_view_none_selected_and_stale_pin();test_preview_native_owner_replacement_never_writes_view();std::printf("local editor view: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--stages-only"){test_bounded_stage_diagnostics();std::printf("bounded stage runtime: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--act0-only"){test_all_first_act_restrictions();std::printf("first-act restriction: %u checks passed\n",checks);return 0;}const bool quick=argc==2&&std::string(argv[1])=="--quick";if(argc>1&&!quick&&std::string(argv[1])!="--teardown-only"&&std::string(argv[1])!="--cancellation-only"&&std::string(argv[1])!="--accounting-only"&&std::string(argv[1])!="--saved-root-only")return 2;if(argc==2&&std::string(argv[1])=="--saved-root-only"){test_saved_root_diagnostic_distinguishes_native_local_alias();std::printf("logical saved-root diagnostic: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--accounting-only"){test_passive_accounting_does_not_touch_native_or_durable_state();std::printf("runtime passive accounting: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--cancellation-only"){test_all_native_cancellations();std::printf("native cancellation: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--teardown-only"){test_all_transport_teardown_cases();std::printf("transport teardown: %u checks passed\n",checks);return 0;}test_saved_root_diagnostic_distinguishes_native_local_alias();test_passive_accounting_does_not_touch_native_or_durable_state();test_all_first_act_restrictions();test_all_native_cancellations();test_all_transport_teardown_cases();test_legacy_pending_recovery_mode_overrides_detached_old_context();test_clone_preserves_companion_and_rejects_compound_property_change();test_saved_coverage_requires_guest_native_completion_before_pin();test_relative_scale_only_capture_undo_redo_and_recovery();test_legacy_recovery_keeps_schema_history_and_scoped_capture();test_verify_reopen_read_only_exact_saved_identity();test_unsaved_end_does_not_pin_reopen_and_partial_saved_ack_is_not_complete();test_preparation_cancel_preserves_draft_and_is_round_scoped();test_delayed_lease_grant_gets_observed_idle_grace();test_begin_ga_batch_and_end_returning();test_history_entry_rechecks_actual_native_holds();test_preview_return_callbacks_are_scoped_to_one_round();test_preview_restores_latest_independent_selection_before_ack();test_preview_local_view_none_selected_and_stale_pin();test_preview_native_owner_replacement_never_writes_view();test_lease_diagnostic_is_bounded_and_read_only();test_conflicting_native_history_releases_document_ownership();test_guest_end_during_unlaunched_preparation_is_retryable();test_drag_preview_bridge_never_authors_remote_state();test_saved_resources_then_next_commit();test_guest_recovery_requires_owned_native_copy();test_pending_undo_keeps_ownership_across_foreign_commit();test_pending_artifacts_obey_capacity_and_preserve_durable_base();test_missing_authored_captain_blocks_prepare();test_uncertain_maintenance_freezes_until_reopen();test_end_waits_for_native_settle_and_retires_once();test_end_does_not_touch_replaced_native_context();test_idle_controller_keeps_owned_native_cleanup_isolated();test_delayed_gesture_cannot_restore_another_editor();test_host_end_delivers_accepted_structural_checkpoint();test_host_end_does_not_wait_for_departed_replica();test_host_end_waits_for_applied_same_revision_save();test_native_frozen_guest_does_not_block_host_close();test_native_recreation_waits_for_actual_next_frame();test_held_native_gesture_is_cancelled_by_end();test_recovery_retires_held_and_delayed_native_captures();test_recovery_wait_does_not_restore_replaced_context();test_native_save_enrichment_survives_edits_save_and_recovery();test_invalid_completed_save_does_not_replace_live_draft();test_opaque_gesture_changes_freeze_before_empty_semantic_return();test_uncaptured_opaque_changes_cannot_save_or_playtest();test_host_apply_rejects_uncaptured_opaque_changes();test_host_native_success_without_projection_cannot_commit();test_guest_native_success_without_projection_freezes_only_replica();test_held_native_gesture_is_fenced_by_generation_or_disconnect();test_held_move_accepts_disjoint_remote_revision();if(!quick)test_large_closure_retained_once_and_delta_recovery();std::printf("editor runtime: %u checks passed\n",checks);}
+int main(int argc,char** argv){if(argc==2&&std::string(argv[1])=="--native-flow-only"){test_all_native_flow_cases();std::printf("native editor flow: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--view-only"){test_transport_teardown_remote_host_disconnect_order_and_preview_cleanup();test_owned_end_keeps_local_view_and_selection();test_bound_preview_cleanup_requires_exact_round_and_native_owner();test_preview_restores_latest_independent_selection_before_ack();test_preview_local_view_none_selected_and_stale_pin();test_preview_native_owner_replacement_never_writes_view();std::printf("local editor view: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--stages-only"){test_bounded_stage_diagnostics();std::printf("bounded stage runtime: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--act0-only"){test_all_first_act_restrictions();std::printf("first-act restriction: %u checks passed\n",checks);return 0;}const bool quick=argc==2&&std::string(argv[1])=="--quick";if(argc>1&&!quick&&std::string(argv[1])!="--teardown-only"&&std::string(argv[1])!="--cancellation-only"&&std::string(argv[1])!="--accounting-only"&&std::string(argv[1])!="--saved-root-only")return 2;if(argc==2&&std::string(argv[1])=="--saved-root-only"){test_saved_root_diagnostic_distinguishes_native_local_alias();std::printf("logical saved-root diagnostic: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--accounting-only"){test_passive_accounting_does_not_touch_native_or_durable_state();std::printf("runtime passive accounting: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--cancellation-only"){test_all_native_cancellations();std::printf("native cancellation: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--teardown-only"){test_all_transport_teardown_cases();std::printf("transport teardown: %u checks passed\n",checks);return 0;}test_saved_root_diagnostic_distinguishes_native_local_alias();test_passive_accounting_does_not_touch_native_or_durable_state();test_all_first_act_restrictions();test_all_native_cancellations();test_all_transport_teardown_cases();test_class_owned_placement_companion_transaction();test_unowned_native_gesture_restores_without_freezing();test_legacy_pending_recovery_mode_overrides_detached_old_context();test_clone_preserves_companion_and_rejects_compound_property_change();test_saved_coverage_requires_guest_native_completion_before_pin();test_relative_scale_only_capture_undo_redo_and_recovery();test_legacy_recovery_keeps_schema_history_and_scoped_capture();test_verify_reopen_read_only_exact_saved_identity();test_unsaved_end_does_not_pin_reopen_and_partial_saved_ack_is_not_complete();test_preparation_cancel_preserves_draft_and_is_round_scoped();test_delayed_lease_grant_gets_observed_idle_grace();test_begin_ga_batch_and_end_returning();test_history_entry_rechecks_actual_native_holds();test_preview_return_callbacks_are_scoped_to_one_round();test_preview_restores_latest_independent_selection_before_ack();test_preview_local_view_none_selected_and_stale_pin();test_preview_native_owner_replacement_never_writes_view();test_lease_diagnostic_is_bounded_and_read_only();test_conflicting_native_history_releases_document_ownership();test_guest_end_during_unlaunched_preparation_is_retryable();test_drag_preview_bridge_never_authors_remote_state();test_saved_resources_then_next_commit();test_guest_recovery_requires_owned_native_copy();test_pending_undo_keeps_ownership_across_foreign_commit();test_pending_artifacts_obey_capacity_and_preserve_durable_base();test_missing_authored_captain_blocks_prepare();test_uncertain_maintenance_freezes_until_reopen();test_end_waits_for_native_settle_and_retires_once();test_end_does_not_touch_replaced_native_context();test_idle_controller_keeps_owned_native_cleanup_isolated();test_delayed_gesture_cannot_restore_another_editor();test_host_end_delivers_accepted_structural_checkpoint();test_host_end_does_not_wait_for_departed_replica();test_host_end_waits_for_applied_same_revision_save();test_native_frozen_guest_does_not_block_host_close();test_native_recreation_waits_for_actual_next_frame();test_held_native_gesture_is_cancelled_by_end();test_recovery_retires_held_and_delayed_native_captures();test_recovery_wait_does_not_restore_replaced_context();test_native_save_enrichment_survives_edits_save_and_recovery();test_invalid_completed_save_does_not_replace_live_draft();test_opaque_gesture_changes_freeze_before_empty_semantic_return();test_uncaptured_opaque_changes_cannot_save_or_playtest();test_host_apply_rejects_uncaptured_opaque_changes();test_host_native_success_without_projection_cannot_commit();test_guest_native_success_without_projection_freezes_only_replica();test_held_native_gesture_is_fenced_by_generation_or_disconnect();test_held_move_accepts_disjoint_remote_revision();if(!quick)test_large_closure_retained_once_and_delta_recovery();std::printf("editor runtime: %u checks passed\n",checks);}

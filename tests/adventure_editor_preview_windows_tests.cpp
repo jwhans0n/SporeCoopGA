@@ -50,6 +50,7 @@ ga::Descriptor t_descriptor;
 editor_native::Snapshot t_snapshot;
 bool t_active=false,t_outcome=false,t_cleanup=false,t_current=true,t_can_ready=true,t_ready=false,t_have_descriptor=true;
 bool t_running=false;
+bool t_world_ready=true;
 adventure_flow::Scene t_scene;
 int t_launches=0,t_returns=0,t_ready_calls=0,t_closes=0,t_statistics=0,t_intro_confirms=0;
 constexpr dbpf::Key t_logical{91,0x366A930D,0x11111111},t_local{42,0x366A930D,0x22222222},t_avatar{7,0x00B1B104,0x33333333};
@@ -94,7 +95,7 @@ void reset() {
 namespace game { uint32_t mode_id(){return modes::kScenario;} void* avatar(){return t_resource.data();} }
 namespace adventure_collect { bool available(){return true;} }
 namespace adventure_captains { bool available(){return true;} }
-namespace adventure_world { bool available(){return true;} }
+namespace adventure_world { bool available(){return true;} bool ready_for_run(uint64_t run){return t_world_ready && run==t_descriptor.run_id;} }
 namespace adventure_relationships { bool available(){return true;} }
 namespace adventure_social { bool available(){return true;} }
 namespace editor_native { bool capture(Snapshot& value,std::string& error){value=t_snapshot;error.clear();return true;} }
@@ -142,6 +143,9 @@ int main() {
     reset();CHECK(adventure_native::set_editor_preview(config(),error));CHECK(adventure_native::editor_preview());
     CHECK(!adventure_native::set_editor_preview(config(),error));CHECK(!adventure_native::loaded(t_logical));
     CHECK(adventure_native::launch(t_logical,t_avatar,error));CHECK(t_launches==1&&t_closes==1);
+    CHECK(!adventure_native::editor_preview_place());t_running=true;
+    const auto party_place=adventure_native::editor_preview_place();CHECK(party_place!=0);
+    t_current=false;CHECK(!adventure_native::editor_preview_place());t_current=true;
     CHECK(adventure_native::loaded(t_logical));CHECK(!adventure_native::loaded(t_local));
     skg::field<bool>(t_data.data(),0x124)=false;CHECK(adventure_native::loaded(t_logical));
     skg::field<bool>(t_loading.data(),0x370)=true;CHECK(!adventure_native::loaded(t_logical));skg::field<bool>(t_loading.data(),0x370)=false;
@@ -150,6 +154,20 @@ int main() {
     skg::field<dbpf::Key>(t_resource.data(),8)={43,t_local.type,t_local.group};CHECK(!adventure_native::loaded(t_logical));
     skg::field<dbpf::Key>(t_resource.data(),8)=t_local;t_descriptor.run_id++;CHECK(!adventure_native::loaded(t_logical));
     reset();CHECK(adventure_native::set_editor_preview(config(),error));t_current=false;CHECK(!adventure_native::launch(t_logical,t_avatar,error));CHECK(!t_launches);
+    reset();
+    // Another participant has a different local native Save As key, but the
+    // same immutable project/round and gameplay run describe the same place.
+    skg::field<dbpf::Key>(t_resource.data(),8)={444,t_local.type,0x77777777};
+    t_snapshot.source={444,t_local.type,0x77777777};
+    CHECK(adventure_native::set_editor_preview(config(),error));CHECK(adventure_native::launch(t_logical,t_avatar,error));t_running=true;
+    CHECK(adventure_native::editor_preview_place()==party_place);
+    t_descriptor.run_id++;CHECK(!adventure_native::editor_preview_place());
+    // Native Test supports a new unsaved draft. Its immutable transfer root is
+    // canonical, while the local resource identity remains the zero key.
+    reset();t_snapshot.source={};skg::field<dbpf::Key>(t_resource.data(),8)={};
+    CHECK(adventure_native::set_editor_preview(config(),error));
+    CHECK(adventure_native::launch(t_logical,t_avatar,error));t_running=true;
+    CHECK(adventure_native::editor_preview_place()==party_place);
     reset();CHECK(adventure_native::set_editor_preview(config(),error));p=config();
     CHECK(!adventure_native::launch(t_local,t_avatar,error));CHECK(!t_launches);
     reset();CHECK(adventure_native::set_editor_preview(config(),error));
@@ -206,6 +224,22 @@ int main() {
     skg::field<int>(t_play.data(),0x90)=3;
     adventure_native::schedule_preview_intro();CHECK(t_tasks.size()==1);
     adventure_native::clear_editor_preview();drain();CHECK(!t_intro_confirms);
+    reset();CHECK(adventure_native::preview_gameplay_ready());
+    CHECK(adventure_native::set_editor_preview(config(),error));CHECK(adventure_native::launch(t_logical,t_avatar,error));
+    t_running=true;t_descriptor.roster={0,1};
+    std::array<uint8_t,game::kHpOff+sizeof(float)> captain{};skg::field<float>(captain.data(),game::kHpOff)=100;
+    bool remote_alive=false,remote_scope=true;
+    adventure_native::C.captain_of=[&](uint8_t peer)->void*{return peer==1 && !remote_alive?nullptr:captain.data();};
+    adventure_native::C.remote_state=[&](uint8_t,net::PlayerState& state){state.mode=modes::kScenario;state.world=adventure_native::editor_preview_place()+(remote_scope?0:2);return true;};
+    t_world_ready=false;CHECK(!adventure_native::preview_gameplay_ready());
+    t_world_ready=true;CHECK(!adventure_native::preview_gameplay_ready());
+    remote_alive=true;
+    remote_scope=false;CHECK(!adventure_native::preview_gameplay_ready());remote_scope=true;
+    skg::field<float>(captain.data(),game::kHpOff)=0;CHECK(!adventure_native::preview_gameplay_ready());
+    skg::field<float>(captain.data(),game::kHpOff)=100;CHECK(adventure_native::preview_gameplay_ready());
+    skg::field<float>(captain.data(),game::kHpOff)=0;t_world_ready=false;CHECK(adventure_native::preview_gameplay_ready());
+    t_current=false;CHECK(!adventure_native::preview_gameplay_ready());
+    t_current=true;CHECK(adventure_native::preview_gameplay_ready());
     adventure_native::clear_editor_preview();t_session.leave();drain();
     std::printf("adventure editor preview: %u checks passed\n",checks);
 }

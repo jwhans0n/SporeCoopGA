@@ -39,7 +39,7 @@ struct Join {
 };
 bool encode_join(const Join&, std::vector<uint8_t>&, std::string&);
 bool decode_join(const std::vector<uint8_t>&, Join&, std::string&);
-enum class TransferKind : uint8_t { Baseline, Request, Decision, Resources, Join };
+enum class TransferKind : uint8_t { Baseline, Request, Decision, Resources, Join, Assets };
 struct TransferBegin { TransferKind kind{}; uint64_t serial = 0; uint32_t total = 0; std::string hash; };
 struct TransferChunk { uint64_t serial = 0; uint32_t offset = 0; std::vector<uint8_t> bytes; };
 struct TransferEnd { uint64_t serial = 0; };
@@ -72,13 +72,14 @@ enum class ControlKind : uint8_t {
     HostPreparePlaytest, GuestReadyPlaytest, HostBeginPlaytest,
     HostReturnEditor, HostCancelPlaytest, GuestEditorReturned, HostEditorResumed
 };
+enum class PlaytestMode : uint8_t { Together, Solo };
 // serial is a host-assigned playtest round, independent of document revision.
-struct Control { ControlKind kind{}; uint64_t serial = 0; Revision revision = 0; bool ready = false; uint8_t ready_mask = 0, participant_mask = 0; };
+struct Control { ControlKind kind{}; uint64_t serial = 0; Revision revision = 0; bool ready = false; uint8_t ready_mask = 0, participant_mask = 0; PlaytestMode mode=PlaytestMode::Together; Peer tester={}; };
 // Native toolbar requests and one host-ordered local-copy export barrier.
 // These are lifecycle commands, never authored document operations.
 enum class CommandKind : uint8_t {
     RequestPlaytest, ReplyPlaytest, RequestExport, HoldExport, ExportHeld,
-    BeginExport, FinishExport, EndExport, ExitEditor
+    BeginExport, FinishExport, EndExport, ExitEditor, RequestSolo, ReplySolo, ReturnSolo
 };
 struct Command {
     CommandKind kind{};

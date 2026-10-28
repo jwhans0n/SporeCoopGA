@@ -56,7 +56,7 @@ bool decode_mapping(const std::vector<uint8_t>& bytes, editor_native::Snapshot& 
     }
     for (uint32_t i = 0; i < count; ++i) { auto object = id(r); candidate.bindings.push_back({object, r.u32()}); }
     if(version==2) {
-        candidate.metadata.emplace();candidate.metadata->genre=r.u32();
+        candidate.metadata=editor_native::Snapshot::Metadata{};candidate.metadata->genre=r.u32();
         for(auto& text:candidate.metadata->text) {
             const auto size=r.u32();
             if(!r.ok() || size>4096 || size>r.left()/2) {error="Invalid editor metadata length";return false;}

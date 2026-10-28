@@ -1613,6 +1613,8 @@ int main()
     };
     unsigned terminals_before = native_terminals, updates_before = g_goal_updates;
     g_received_goals = 0;
+    g_applied_goals_run=0;g_roster_sequence=1;g_roster_received={true};
+    check(!ready_for_run(500), "received or deferred goals cannot report a successful native group launch");
     receive_goals(goal_packet(10, 3)); receive_goals(goal_packet(11, 5));
     receive_goals(goal_packet(10, 4)); receive_goals(goal_packet(11, 99));
     check(g_deferred_goals && g_deferred_goals->sequence == 11 && field<int>(fake_play.data(), 0xB8) == 0 &&
@@ -1630,6 +1632,8 @@ int main()
           field<int>(fake_play.data(), 0x90) == 3 && field<uint32_t>(hud_goals.data(), 4) == 5 &&
           native_terminals == terminals_before && !goal_application_pending(),
           "final goal fields apply once before the coordinator alone may enter native results");
+    check(ready_for_run(500) && !ready_for_run(501), "launch readiness requires this run's applied authoritative goals");
+    g_roster_received={false};check(!ready_for_run(500), "an incomplete roster cannot report shared gameplay ready");g_roster_received={true};
     apply_result(true); apply_result(false);
     check(native_terminals == terminals_before + 1 && field<int>(fake_play.data(), 0x90) == 5,
           "authoritative coordinator result commits once after final goal application");

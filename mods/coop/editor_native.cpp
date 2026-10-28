@@ -15,6 +15,7 @@
 
 #include "sporekit_game.hpp"
 #include "game.h"
+#include <windows.h>
 #include "modes.h"
 #include "sui.h"
 
@@ -27,6 +28,9 @@ uintptr_t a_mode, a_history, a_act, a_ctor, a_read, a_write, a_copy, a_entry, a_
 uintptr_t a_context, a_tools, a_marker, a_object, a_clone_marker, a_create_marker, a_delete_marker, a_apply_marker;
 uintptr_t a_loading, a_layout_find, a_display_vtable, a_erase_history, a_discard_history, a_copy_marker_rows, a_insert_marker;
 uintptr_t a_entry_vtable;
+uintptr_t a_tool_tick;
+uintptr_t a_copy_class_rows,a_copy_class,a_insert_class;
+uintptr_t a_speech_ui,a_behavior_data;
 uintptr_t a_view_manager, a_view_target, a_view_orbit, a_view_set_orbit, a_view_lookat;
 bool supported, applying, queued;
 bool fence_queued;
@@ -47,6 +51,9 @@ std::map<uint32_t,uint32_t> incarnations;
 std::vector<editor::ObjectId> selection;
 uint32_t selected_class;
 std::optional<editor::ObjectId> input_clone, gesture_clone;
+bool input_cast=false,gesture_cast=false;
+bool input_speech=false;
+uint32_t script_events=0;
 constexpr uint32_t kResourceSize = 0x2CB0, kLimit = 32u << 20;
 
 void* mode() { return a_mode ? *reinterpret_cast<void**>(a_mode) : nullptr; }
@@ -59,6 +66,8 @@ bool editing() {
 }
 bool active() { return editing() && C.active && C.active(); }
 bool tracks_relative_scale(){return !C.relative_scale_tracked || C.relative_scale_tracked();}
+bool tracks_extended_poses(){return !C.extended_poses_tracked || C.extended_poses_tracked();}
+bool tracks_cast(){return !C.cast_tracked || C.cast_tracked();}
 void addref(void* p) { if (p) skg::vcall<int>(p, 0); }
 void release(void* p) { if (p) skg::vcall<int>(p, 1); }
 struct Owned {
@@ -162,12 +171,92 @@ bool rows(void* r, uint32_t offset, uint32_t stride, uint32_t limit, Rows& out) 
         (end != begin && !skg::readable(reinterpret_cast<void*>(begin), end - begin))) return false;
     out = {reinterpret_cast<uint8_t*>(begin), reinterpret_cast<uint8_t*>(end)}; return true;
 }
+bool owned_class_gate(void* target){
+    if(!tracks_cast() || !C.class_gate)return false;
+    Rows classes;if(!rows(resource(data(mode())),0x2BF4,0x27E8,1024,classes))return false;
+    for(auto row=classes.begin;row!=classes.end;row+=0x27E8)
+        if(row+8==target)return C.class_gate(skg::field<uint32_t>(row,0));
+    return false;
+}
 editor::ObjectId marker_id(uint32_t key,const std::map<uint32_t,editor::ObjectId>* supplied=nullptr) {
     const auto& source=supplied?*supplied:bindings;
     auto it = source.find(key);
     auto incarnation=incarnations.find(key);
     return it != source.end() ? it->second : editor::ObjectId{(1ull << 32) | key,
         incarnation==incarnations.end()?1:incarnation->second};
+}
+struct MarkerAudio {
+    void* owner=nullptr;
+    void* resource_pin=nullptr;
+    uint64_t generation_pin=0;
+    uint32_t slot=0,class_index=0;
+    float pitch=0,gain=0;
+    MarkerAudio(void* candidate_owner,void* marker){
+        if(!active() || !tracks_extended_poses() || candidate_owner!=data(mode()))return;
+        auto* r=resource(candidate_owner);Rows map;
+        if(!rows(r,0x2C10,0x238,kPlacementLimit,map))return;
+        const auto begin=reinterpret_cast<uintptr_t>(map.begin),end=reinterpret_cast<uintptr_t>(map.end),p=reinterpret_cast<uintptr_t>(marker);
+        if(p<begin+4 || p>=end || (p-begin-4)%0x238 || !live_slot(static_cast<uint8_t*>(marker)-4))return;
+        owner=candidate_owner;resource_pin=r;generation_pin=generation;slot=uint32_t((p-begin-4)/0x238);
+        class_index=skg::field<uint32_t>(marker,0);pitch=skg::field<float>(marker,0x1E0);gain=skg::field<float>(marker,0x1E4);
+    }
+    ~MarkerAudio(){
+        if(!owner || owner!=data(mode()) || resource(owner)!=resource_pin || generation!=generation_pin)return;
+        Rows map;if(!rows(resource_pin,0x2C10,0x238,kPlacementLimit,map) || slot>=uint32_t((map.end-map.begin)/0x238))return;
+        auto* marker=map.begin+slot*0x238+4;
+        if(!live_slot(marker-4) || skg::field<uint32_t>(marker,0)!=class_index)return;
+        // Pose and selection refreshes reconstruct sound controls. Keep the
+        // authored source values, including a genuine setter's new values.
+        skg::field<float>(marker,0x1E0)=pitch;skg::field<float>(marker,0x1E4)=gain;
+    }
+};
+bool class_block(uint8_t* row,editor::StructuredValue& block,std::string& error){
+    Owned fragment(construct());if(!fragment.p){error="Cannot allocate the owned cast subtree";return false;}
+    // F2E670 leaves screenshot types 68..74 uninitialized. They and the local
+    // camera belong to the wrapper, never the authored class subtree.
+    std::memset(skg::ptr_add<void>(fragment.p,0x68),0,0x10);
+    std::memset(skg::ptr_add<void>(fragment.p,0x2C30),0,0x20);
+    skg::field<float>(fragment.p,0x2C48)=1.f;
+    const std::array<uintptr_t,3> slice{reinterpret_cast<uintptr_t>(row),reinterpret_cast<uintptr_t>(row+0x27E8),reinterpret_cast<uintptr_t>(row+0x27E8)};
+    skg::thiscall<void*>(a_copy_class_rows,skg::ptr_add<void>(fragment.p,0x2BF4),slice.data());
+    skg::field<uint32_t>(fragment.p,0x2C0C)=skg::field<uint32_t>(row,0)+1;
+    auto* copied=skg::field<uint8_t*>(fragment.p,0x2BF4)+8;
+    // Match the collector's verified normalization on this owned class copy.
+    // Server IDs are local lookup hints; the canonical subtree uses local keys.
+    for(uint32_t offset:{0u,0x28u,0x50u}){
+        auto& server=skg::field<uint64_t>(copied,offset+0x10);
+        if(server && server!=UINT64_MAX){
+            const auto resolve=H->sym("Simulator::Scenario::ResolveLocalServerAsset");
+            editor::ResourceKey key;
+            if(!resolve || !skg::cdecl_call<bool>(resolve,server,&key) || !key.instance){error="A cast dependency is not installed locally";return false;}
+            skg::field<editor::ResourceKey>(copied,offset)=key;server=UINT64_MAX;
+        }
+    }
+    canonical_cast_asset_hints(copied);
+    block.format=kCastBlockFormat;
+    if(!serialize(fragment.p,block.bytes,error))return false;
+    // Native Read normalizes deprecated fields. Hash the owned read/write
+    // representation so capture, transfer and application compare that form.
+    Owned normalized(parse(block.bytes,error));if(!normalized.p)return false;
+    std::memset(skg::ptr_add<void>(normalized.p,0x68),0,0x10);
+    std::memset(skg::ptr_add<void>(normalized.p,0x2C30),0,0x20);
+    skg::field<float>(normalized.p,0x2C48)=1.f;
+    if(!serialize(normalized.p,block.bytes,error))return false;
+    if(block.bytes.size()>editor::Limits{}.structured_bytes){error="The cast subtree exceeds its transaction limit";return false;}
+    Rows acts;
+    auto* normalized_class=skg::field<uint8_t*>(normalized.p,0x2BF4)+8;
+    if(!rows(normalized_class,0x70,0x4E0,8,acts)){error="Invalid native cast act collection";return false;}
+    std::set<editor::ObjectId> references;
+    for(auto act=acts.begin;act!=acts.end;act+=0x4E0){
+        for(auto offset:{0x4BCu,0x4C0u,0x4C4u})behavior_class_reference(references,2,skg::field<int32_t>(act,offset));
+        Rows rules;
+        if(!rows(act,0x4CC,0x20,1024,rules)){error="Invalid native behavior rule collection";return false;}
+        for(auto rule=rules.begin;rule!=rules.end;rule+=0x20)
+            for(auto offset:{4u,0x10u,0x18u})
+                behavior_class_reference(references,skg::field<int32_t>(rule,offset),skg::field<int32_t>(rule,offset+4));
+    }
+    block.references.assign(references.begin(),references.end());
+    return true;
 }
 void* marker_for_key(void* r, uint32_t key) {
     Rows map;
@@ -199,8 +288,12 @@ void refresh_selection() {
 }
 bool projection(void* r, Snapshot& out, std::string& error,
                 const std::map<uint32_t,editor::ObjectId>* supplied=nullptr,
-                std::optional<bool> requested_scale_mode=std::nullopt) {
+                std::optional<bool> requested_scale_mode=std::nullopt,
+                std::optional<bool> requested_extended=std::nullopt,
+                std::optional<bool> requested_cast=std::nullopt) {
     const bool tracked=requested_scale_mode?*requested_scale_mode:tracks_relative_scale();
+    const bool extended=requested_extended.value_or(tracks_extended_poses());
+    const bool cast=requested_cast.value_or(tracks_cast());
     Rows classes, markers, acts;
     if (!rows(r, 0x2BF4, 0x27E8, 1024, classes) || !rows(r, 0x2C10, 0x238, kPlacementLimit, markers) ||
         !rows(r, 0x23C, 0x534, 8, acts)) {
@@ -208,9 +301,23 @@ bool projection(void* r, Snapshot& out, std::string& error,
     }
     out.document = {};
     out.document.next_id = 4ull << 32;
-    if(tracked)out.document.schema=relative_scale_schema();
+    if(extended)out.document.schema=tracked?placement_property_schema():legacy_extended_schema();
+    else if(tracked)out.document.schema=relative_scale_schema();
     for (auto p = classes.begin; p != classes.end; p += 0x27E8)
         out.document.classes.insert({(2ull << 32) | skg::field<uint32_t>(p, 0), 1});
+    if(cast){
+        out.document.class_schema=cast_property_schema();
+        out.document.next_class=skg::field<uint32_t>(r,0x2C0C);
+        out.document.next_id=6ull<<32;
+        for(auto row=classes.begin;row!=classes.end;row+=0x27E8){
+            const auto index=skg::field<uint32_t>(row,0);
+            editor::ClassActSettings settings;
+            settings.object={(5ull<<32)|index,1};settings.class_id={(2ull<<32)|index,1};settings.act_id={(3ull<<32)|out.act,1};
+            editor::StructuredValue value;if(!class_block(row,value,error))return false;
+            settings.properties[kCastBlockProperty]=std::move(value);
+            out.document.class_settings.emplace(settings.object,std::move(settings));
+        }
+    }
     uint32_t count = uint32_t((acts.end - acts.begin) / 0x534);
     for (uint32_t i = 0; i < count; ++i) out.document.acts.insert({(3ull << 32) | i, 1});
     out.bindings.clear();
@@ -227,6 +334,18 @@ bool projection(void* r, Snapshot& out, std::string& error,
         placement.rotation = skg::field<editor::Rotation>(marker, 0x10);
         placement.scale = skg::field<float>(marker, 0x20);
         if(!project_relative_scale(placement,tracked,skg::field<float>(marker,0x24),error))return false;
+        if(extended){
+            placement.properties[kElevationProperty]=skg::field<float>(marker,0x220);
+            placement.properties[kSoundPitchProperty]=skg::field<float>(marker,0x1E0);
+            placement.properties[kSoundGainProperty]=skg::field<float>(marker,0x1E4);
+            for(auto row=classes.begin;row!=classes.end;row+=0x27E8){
+                if(skg::field<uint32_t>(row,0)!=uint32_t(placement.class_id.id) ||
+                   skg::field<uint32_t>(row,8)!=0x90C48D09u)continue;
+                placement.properties[kDestinationPositionProperty]=skg::field<editor::Vec3>(marker,0x1E8);
+                placement.properties[kDestinationRotationProperty]=skg::field<editor::Rotation>(marker,0x1F4);
+                placement.properties[kDestinationScaleProperty]=skg::field<float>(marker,0x204);
+            }
+        }
         if (!out.document.classes.count(placement.class_id)) {
             error = "Native editor marker has no scenario class"; return false;
         }
@@ -234,7 +353,8 @@ bool projection(void* r, Snapshot& out, std::string& error,
         out.document.next_id=std::max(out.document.next_id,placement.object.id+1);
         out.bindings.push_back({placement.object, key});
     }
-    // Goals name classes, so every matching placement is conservatively retained.
+    // Goals name classes, including classes with no instances. Matching
+    // placements remain conservatively retained for older recovery semantics.
     // This uses the same reviewed authored layout as adventure_catalog, distinct
     // from the larger runtime goal records in cScenarioPlayMode.
     uint32_t act_index=0;
@@ -246,6 +366,8 @@ bool projection(void* r, Snapshot& out, std::string& error,
             if(skg::field<uint32_t>(goal,0)==0)continue;
             auto owner=editor::ObjectId{(3ull<<32)|0x1000u|(act_index*3+goal_index),1};
             std::set<uint32_t> targets{skg::field<uint32_t>(goal,4),skg::field<uint32_t>(goal,8)};
+            if(cast)for(auto id:out.document.classes)
+                if(targets.count(uint32_t(id.id)))out.document.external_references.push_back({owner,id});
             for(const auto& [id,placement]:out.document.placements)
                 if(targets.count(uint32_t(placement.class_id.id)))out.document.external_references.push_back({owner,id});
         }
@@ -269,6 +391,10 @@ bool capture_resource(void* r, uint32_t act, Snapshot& out, std::string& error,
 
 using HistoryFn = void(SK_THISCALL*)(void*);
 HistoryFn original_start, original_commit, original_undo, original_redo;
+HistoryFn original_tick_tools;
+using ApplyMarkerFn=void(SK_THISCALL*)(void*,void*,uint32_t);
+ApplyMarkerFn original_apply_marker;
+HistoryFn original_ground_step,original_vertical_step,original_radial_step,original_auxiliary_step;
 HistoryFn original_history_undo,original_history_redo;
 using HistoryQueryFn=bool(SK_THISCALL*)(void*);
 HistoryQueryFn original_has_undo,original_has_redo;
@@ -301,10 +427,66 @@ ToolFn original_tool;
 HistoryFn original_delete;
 CreateFn original_create;
 ImportFn original_import;
+using RemoveClassFn=void(SK_THISCALL*)(void*,uint32_t);
+RemoveClassFn original_remove_class;
 CloneSelectionFn original_clone_selection;
 using ScriptInputFn=bool(SK_THISCALL*)(void*,void*,void*);
 ScriptInputFn original_script_input;
 ScriptInputFn original_class_input;
+using CardActionFn=bool(SK_THISCALL*)(void*,uint32_t,void*,uint32_t);
+CardActionFn original_card_action;
+using PaletteMessageFn=bool(SK_THISCALL*)(void*,uint32_t,uint32_t);
+PaletteMessageFn original_palette_message;
+using SpeechApplyFn=void(SK_CDECL*)();
+SpeechApplyFn original_speech_apply;
+SpeechApplyFn original_behavior_apply;
+struct HeldTool {
+    GestureScope scope;
+    uint64_t generation;
+    editor::ObjectId object;
+    editor::Revision revision;
+    void* manager;
+    uint32_t action,a,b;
+    uintptr_t auxiliary;
+    bool released=false;
+    double started=0;
+    uint32_t modifiers=0;
+    bool native_started=false,focused=false;
+};
+std::optional<HeldTool> held_tool;
+struct HeldCreation {
+    GestureScope scope;
+    uint64_t generation;
+    uint32_t class_index;
+    editor::Revision revision;
+    void* manager;
+    double started;
+    uint32_t modifiers;
+    bool released=false,focused=false;
+};
+std::optional<HeldCreation> held_creation;
+std::optional<std::deque<editor::ResourceKey>> held_import;
+struct HeldClassRemoval {
+    GestureScope scope;
+    uint64_t generation;
+    uint32_t index;
+    editor::Revision revision;
+    double started;
+    void* listener=nullptr;
+};
+std::optional<HeldClassRemoval> held_class_removal;
+GestureScope import_scope;
+uint64_t import_generation=0;
+double import_started=0;
+bool input_queued=false;
+void SK_THISCALL commit(void*);
+uint32_t SK_THISCALL import_native(void*,const editor::ResourceKey*);
+void SK_THISCALL remove_class_native(void*,uint32_t);
+void* palette_listener(){
+    void* display=skg::readable(mode(),0x18)?skg::field<void*>(mode(),0x14):nullptr;
+    auto* palette=skg::readable(display,0x18)?skg::field<uint8_t*>(display,0x14):nullptr;
+    return skg::readable(palette,0xC)?palette+8:nullptr;
+}
 struct Pending {
     void* entry;
     void* before;
@@ -313,8 +495,11 @@ struct Pending {
     uint32_t act;
     std::optional<editor::ObjectId> clone_source;
     std::map<uint32_t,editor::ObjectId> before_bindings,after_bindings;
+    GestureScope scope;
+    void* speech=nullptr;
 };
 std::deque<Pending> pending;
+bool speech_pending(){return std::any_of(pending.begin(),pending.end(),[](const auto& item){return item.speech!=nullptr;});}
 
 void SK_CDECL drain(void*) {
     editor_native::state(); // Retire a replaced native owner before old callbacks.
@@ -322,8 +507,13 @@ void SK_CDECL drain(void*) {
     auto work = std::move(pending);
     pending.clear();
     for (const auto& item : work) {
+        if(item.speech && a_speech_ui && *reinterpret_cast<void**>(a_speech_ui)==item.speech && active() && item.generation==generation &&
+           (!C.gesture_scope || item.scope==C.gesture_scope())){
+            pending.push_back(item);continue;
+        }
         Owned entry(item.entry),before(item.before);
-        if (!active() || applying || item.owner != data(mode()) || item.generation != generation) continue;
+        if (!active() || applying || item.owner != data(mode()) || item.generation != generation ||
+            (C.gesture_scope && item.scope!=C.gesture_scope())) continue;
         Gesture gesture;
         gesture.generation = generation;
         gesture.clone_source = item.clone_source;
@@ -343,6 +533,7 @@ void SK_THISCALL start(void* self) {
         gesture_scope_pin=C.gesture_scope?C.gesture_scope():GestureScope{};
         gesture_serial=gesture_counter==UINT64_MAX?0:++gesture_counter;
         gesture_clone=input_clone;
+        gesture_cast=input_cast;
         release(gesture_before_resource);
         gesture_before_resource=construct();
         if(gesture_before_resource)skg::thiscall<void*>(a_copy,gesture_before_resource,resource(self));
@@ -454,9 +645,125 @@ void cancel_current_entry(void* self){
     // finalizer: the ticket requires a subsequent actual frame in the drain.
     if(!cancellation_queued){cancellation_queued=true;H->run_outside_frame(drain_cancellation,nullptr);}
 }
+void finish_held_input();
 void SK_THISCALL select_native(void* self,void* object){
+    MarkerAudio audio(data(mode()),active() && object && a_marker?skg::thiscall<void*>(a_marker,data(mode()),object):nullptr);
+    void* context=a_context?*reinterpret_cast<void**>(a_context):nullptr;
+    if(held_tool && skg::readable(context,8) && skg::field<void*>(context,4)!=object)finish_held_input();
     original_select(self,object);
     if(!applying && editing())refresh_selection();
+    if(held_tool && (selection.empty() || selection.front()!=held_tool->object))finish_held_input();
+    if(!applying && active() && !selection.empty() && C.gate)C.gate(selection);
+}
+bool real_focus(){
+    GUITHREADINFO info{};info.cbSize=sizeof info;
+    const auto window=H && H->game_window?static_cast<HWND>(H->game_window()):nullptr;
+    return window && GetGUIThreadInfo(GetCurrentThreadId(),&info) && (info.hwndFocus==window || IsChild(window,info.hwndFocus));
+}
+void finish_held_input(){
+    if(!held_tool)return;
+    const auto item=*held_tool;held_tool.reset();
+    if(item.native_started && active() && !cancellation && item.generation==generation &&
+       item.manager==*reinterpret_cast<void**>(a_tools) && state().gesture)
+        original_tool(item.manager,0,0,0);
+}
+void deny_held_input(const std::vector<editor::Scope>& scopes){
+    for(const auto& scope:scopes){
+        if(held_tool && (scope.kind==editor::ScopeKind::Document || scope.object==held_tool->object))finish_held_input();
+        if(scope.kind==editor::ScopeKind::Document)held_import.reset();
+        if(held_class_removal && (scope.kind==editor::ScopeKind::Document || scope.object==editor::ObjectId{(2ull<<32)|held_class_removal->index,1}))held_class_removal.reset();
+        if(held_creation && (scope.kind==editor::ScopeKind::Document || scope.object==editor::ObjectId{(2ull<<32)|held_creation->class_index,1}))held_creation.reset();
+    }
+}
+// Native Start prepares local drag anchors/history. Authoring steps remain
+// stopped until ownership arrives, including between the press and release.
+void SK_THISCALL tick_tools(void* self){if(!held_tool)original_tick_tools(self);}
+void* selected_marker(){
+    if(!active())return nullptr;
+    void* context=a_context?*reinterpret_cast<void**>(a_context):nullptr;
+    void* object=skg::readable(context,8)?skg::field<void*>(context,4):nullptr;
+    return object && a_marker?skg::thiscall<void*>(a_marker,data(mode()),object):nullptr;
+}
+void SK_THISCALL ground_step(void* self){if(!held_tool){MarkerAudio audio(data(mode()),selected_marker());original_ground_step(self);}}
+void SK_THISCALL vertical_step(void* self){if(!held_tool){MarkerAudio audio(data(mode()),selected_marker());original_vertical_step(self);}}
+void SK_THISCALL radial_step(void* self){if(!held_tool){MarkerAudio audio(data(mode()),selected_marker());original_radial_step(self);}}
+void SK_THISCALL auxiliary_step(void* self){if(!held_tool){MarkerAudio audio(data(mode()),selected_marker());original_auxiliary_step(self);}}
+void SK_THISCALL apply_marker_state(void* self,void* marker,uint32_t flags){
+    MarkerAudio audio(self,marker);original_apply_marker(self,marker,flags);
+}
+void SK_CDECL continue_input(void*){
+    input_queued=false;
+    if(held_creation){
+        const auto item=*held_creation;
+        const auto observed=state();
+        const auto scope=C.gesture_scope?C.gesture_scope():GestureScope{};
+        const auto revision=C.object_revision?C.object_revision({(2ull<<32)|item.class_index,1}):std::nullopt;
+        if(!active() || applying || !observed.ready || observed.gesture || observed.generation!=item.generation || scope!=item.scope ||
+           !revision || *revision!=item.revision || item.manager!=*reinterpret_cast<void**>(a_tools) ||
+           H->time_seconds()-item.started>2 || (GetKeyState(VK_ESCAPE)&0x8000) || (item.focused && !real_focus()))held_creation.reset();
+        else if(C.structure_gate && C.structure_gate(item.class_index)){
+            held_creation.reset();
+            auto& modifiers=skg::field<uint32_t>(mode(),0x40);const auto previous=modifiers;modifiers=item.modifiers;
+            auto& latch=skg::field<uint8_t>(item.manager,4);const auto previous_latch=latch;latch=1;
+            // F00670 owns StartHistory, marker creation and cursor attachment.
+            // Invoke it only after the structure grant, then consume the same
+            // cursor movement and release through its ordinary tool finalizer.
+            if(original_create(item.manager,item.class_index)){
+                original_tick_tools(item.manager);
+                if(item.released)original_tool(item.manager,0,0,0);
+            }
+            latch=previous_latch;
+            modifiers=previous;
+        }
+    }
+    if(held_import){
+        const auto scope=C.gesture_scope?C.gesture_scope():GestureScope{};
+        if(!active() || state().generation!=import_generation || scope!=import_scope || H->time_seconds()-import_started>2 || (GetKeyState(VK_ESCAPE)&0x8000))held_import.reset();
+        else if(C.structure_gate && C.structure_gate(0)){
+            const auto key=held_import->front();held_import->pop_front();
+            if(held_import->empty())held_import.reset();
+            import_started=H->time_seconds();import_native(data(mode()),&key);
+        }
+    }
+    if(held_class_removal){
+        const auto item=*held_class_removal;
+        const auto revision=C.object_revision?C.object_revision({(2ull<<32)|item.index,1}):std::nullopt;
+        const auto scope=C.gesture_scope?C.gesture_scope():GestureScope{};
+        if(!active() || generation!=item.generation || scope!=item.scope || !revision || *revision!=item.revision ||
+           (item.listener && item.listener!=palette_listener()) || H->time_seconds()-item.started>2 || (GetKeyState(VK_ESCAPE)&0x8000))held_class_removal.reset();
+        else if(C.remove_class_gate && C.remove_class_gate(item.index)){
+            held_class_removal.reset();
+            if(item.listener)original_palette_message(item.listener,0x07326686,item.index);
+            else remove_class_native(data(mode()),item.index);
+        }
+    }
+    if(!held_tool)return;
+    const auto observed=state();
+    const auto item=*held_tool;
+    refresh_selection();
+    const auto revision=C.object_revision?C.object_revision(item.object):std::nullopt;
+    const auto current_scope=C.gesture_scope?C.gesture_scope():GestureScope{};
+    void* context=a_context?*reinterpret_cast<void**>(a_context):nullptr;
+    if(!active() || applying || !observed.ready || (!item.native_started && observed.gesture) || item.generation!=generation ||
+       item.scope!=current_scope || !revision || *revision!=item.revision || selection!=std::vector<editor::ObjectId>{item.object} ||
+       item.manager!=*reinterpret_cast<void**>(a_tools) || !skg::readable(context,0x2C) ||
+       skg::field<uintptr_t>(context,0x10)!=item.auxiliary || (GetKeyState(VK_ESCAPE)&0x8000) ||
+       (item.focused && !real_focus()) || H->time_seconds()-item.started>2){
+        finish_held_input();return;
+    }
+    if(!C.gate || !C.gate(selection))return;
+    held_tool.reset();
+    // ToolAction tests this native input latch before starting a drag. A quick
+    // release may have cleared it while the ownership grant was in flight.
+    auto& latch=skg::field<uint8_t>(item.manager,4);
+    const auto previous=latch;latch=1;
+    auto& modifiers=skg::field<uint32_t>(mode(),0x40);
+    const auto current_modifiers=modifiers;modifiers=item.modifiers;
+    if(!item.native_started)original_tool(item.manager,item.action,item.a,item.b);
+    original_tick_tools(item.manager);
+    if(item.released)original_tool(item.manager,0,0,0);
+    modifiers=current_modifiers;
+    latch=previous;
 }
 bool tool_rejection(size_t reason,uint32_t action,void* context,const State& observed){
     ++rejected;
@@ -479,6 +786,18 @@ bool tool_rejection(size_t reason,uint32_t action,void* context,const State& obs
 }
 uint32_t SK_THISCALL tool_native(void* self,uint32_t action,uint32_t a,uint32_t b){
     const State observed=editor_native::state();
+    MarkerAudio audio(data(mode()),selected_marker());
+    if(!applying && active() && speech_pending() && action!=0)return 1;
+    if(!applying && active() && held_creation){
+        if(action==0){held_creation->released=true;return 1;}
+        if(action==1)return 1;
+        held_creation.reset();
+    }
+    if(!applying && active() && held_tool){
+        if(action==0){held_tool->released=true;return 1;}
+        if(action==1)return 1;
+        finish_held_input();
+    }
     if(!applying && active() && (action==1 || action==6 || action==11)){
         if(cancellation){++rejected;return 1;}
         refresh_selection();
@@ -508,10 +827,33 @@ uint32_t SK_THISCALL tool_native(void* self,uint32_t action,uint32_t a,uint32_t 
         std::array<uintptr_t,3> rotations{};
         if(skg::readable(context,0x24))rotations={skg::field<uintptr_t>(context,0x18),
             skg::field<uintptr_t>(context,0x1C),skg::field<uintptr_t>(context,0x20)};
-        if(!supported_tool_auxiliary(action,auxiliary,rotations)){tool_rejection(0,action,context,observed);return 1;}
+        auto pose_handle=[&](uint32_t offset,uint32_t first,uint32_t second=0)->uintptr_t{
+            if(!skg::readable(context,offset+4))return 0;
+            const auto handle=skg::field<uintptr_t>(context,offset);
+            if(!handle || handle!=auxiliary || !skg::readable(reinterpret_cast<void*>(handle),4))return 0;
+            auto* vtable=skg::vtable(reinterpret_cast<void*>(handle));
+            if(!skg::readable(vtable,0x3C) || !vtable[0x38/4])return 0;
+            const auto type=skg::vcall<uint32_t>(reinterpret_cast<void*>(handle),0x38/4);
+            return type==first || (second && type==second)?handle:0;
+        };
+        const auto ball=pose_handle(0x24,0x07ABDD8D,0x07A81824);
+        const auto secondary=tracks_extended_poses()?pose_handle(0x14,0x07A81824):0;
+        const auto destination=tracks_extended_poses()?pose_handle(0x28,0x076C67DF):0;
+        if(!supported_tool_auxiliary(action,auxiliary,rotations,ball,destination,secondary)){tool_rejection(0,action,context,observed);return 1;}
         if(selection.empty()){tool_rejection(1,action,context,observed);return 1;}
         if(!C.gate){tool_rejection(2,action,context,observed);return 1;}
-        if(!C.gate(selection)){tool_rejection(3,action,context,observed);return 1;}
+        if(!C.gate(selection)){
+            tool_rejection(3,action,context,observed);
+            const auto revision=selection.size()==1 && C.object_revision?C.object_revision(selection.front()):std::nullopt;
+            if(action==1 && revision && C.gesture_scope && a_tool_tick && original_tick_tools && valid_scope(C.gesture_scope())){
+                held_tool=HeldTool{C.gesture_scope(),generation,selection.front(),*revision,self,action,a,b,auxiliary,false,H->time_seconds(),skg::field<uint32_t>(mode(),0x40),true,real_focus()};
+                original_tool(self,action,a,b);
+                // Initialize the native grab at its original press point. The
+                // four authored pose steps above are held during this tick.
+                if(held_tool)original_tick_tools(self);
+            }
+            return 1;
+        }
         if(action==11 && !C.structure_gate){tool_rejection(4,action,context,observed);return 1;}
         if(action==11 && !C.structure_gate(selected_class)){tool_rejection(5,action,context,observed);return 1;}
     }
@@ -524,7 +866,7 @@ uint32_t SK_THISCALL tool_native(void* self,uint32_t action,uint32_t a,uint32_t 
 void SK_THISCALL delete_native(void* self){
     editor_native::state();
     if(!applying && active()){
-        if(cancellation){++rejected;return;}
+        if(cancellation || speech_pending()){++rejected;return;}
         refresh_selection();
         if(selection.empty() || !C.gate || !C.gate(selection)) {++rejected;return;}
     }
@@ -533,10 +875,17 @@ void SK_THISCALL delete_native(void* self){
 bool SK_THISCALL create_native(void* self,uint32_t class_id){
     editor_native::state();
     if(!applying && active()){
-        if(cancellation){++rejected;return false;}
+        if(cancellation || speech_pending()){++rejected;return false;}
         // Native EFEDC0 routes class -2 to authored avatar placement F432C0,
         // which is outside the shared placement roster and protected scope.
-        if(class_id==UINT32_MAX-1 || !C.structure_gate || !C.structure_gate(class_id)){++rejected;return false;}
+        if(class_id==UINT32_MAX-1 || !C.structure_gate){++rejected;return false;}
+        if(!C.structure_gate(class_id)){
+            const auto revision=C.object_revision?C.object_revision({(2ull<<32)|class_id,1}):std::nullopt;
+            const auto scope=C.gesture_scope?C.gesture_scope():GestureScope{};
+            if(revision && valid_scope(scope) && !state().gesture && self==*reinterpret_cast<void**>(a_tools))
+                held_creation=HeldCreation{scope,generation,class_id,*revision,self,H->time_seconds(),skg::field<uint32_t>(mode(),0x40),false,real_focus()};
+            ++rejected;return false;
+        }
     }
     return original_create(self,class_id);
 }
@@ -544,7 +893,7 @@ bool SK_THISCALL clone_selection_native(void* self,void* object){
     editor_native::state();
     std::optional<editor::ObjectId> source;
     if(!applying && active()){
-        if(cancellation){++rejected;return false;}
+        if(cancellation || speech_pending()){++rejected;return false;}
         void* context=*reinterpret_cast<void**>(a_context);
         void* marker=object?skg::thiscall<void*>(a_marker,data(mode()),object):nullptr;
         Rows map;
@@ -566,11 +915,61 @@ bool SK_THISCALL clone_selection_native(void* self,void* object){
 uint32_t SK_THISCALL import_native(void* self,const editor::ResourceKey* key){
     editor_native::state();
     if(!applying && active()){
-        ++rejected;
-        H->log(M,SK_INFO,"Shared editor: class import is read-only; load templates before sharing");
-        return UINT32_MAX;
+        if(speech_pending() || !tracks_cast() || !key || self!=data(mode()) || !C.structure_gate)return UINT32_MAX;
+        if(!C.structure_gate(0)){
+            if(!C.gesture_scope || !valid_scope(C.gesture_scope()))return UINT32_MAX;
+            const auto scope=C.gesture_scope();
+            if(!held_import){
+                held_import.emplace();import_scope=scope;
+                import_generation=generation;import_started=H->time_seconds();
+            }
+            if(import_generation!=generation || import_scope!=scope)return UINT32_MAX;
+            if(std::find(held_import->begin(),held_import->end(),*key)==held_import->end()){
+                if(held_import->size()>=32){if(C.notice)C.notice("Choose up to 32 cast assets at a time");return UINT32_MAX;}
+                held_import->push_back(*key);
+            }
+            return UINT32_MAX;
+        }
+        const bool prior=input_cast;input_cast=true;
+        start(self);
+        const auto result=original_import(self,key);
+        if(result!=UINT32_MAX)commit(self);
+        else {
+            cancel_current_entry(*reinterpret_cast<void**>(a_history+0x24));
+            original_commit(self);
+        }
+        input_cast=prior;return result;
     }
     return original_import(self,key);
+}
+bool SK_THISCALL palette_message(void* self,uint32_t message,uint32_t payload){
+    editor_native::state();
+    if(!applying && active() && message==0x07326686 && self==palette_listener()){
+        if(speech_pending() || !tracks_cast() || !C.remove_class_gate)return false;
+        if(!C.remove_class_gate(payload)){
+            const auto scope=C.gesture_scope?C.gesture_scope():GestureScope{};
+            const auto revision=C.object_revision?C.object_revision({(2ull<<32)|payload,1}):std::nullopt;
+            if(valid_scope(scope) && revision)held_class_removal=HeldClassRemoval{scope,generation,payload,*revision,H->time_seconds(),self};
+            return false;
+        }
+    }
+    return original_palette_message(self,message,payload);
+}
+void SK_THISCALL remove_class_native(void* self,uint32_t index){
+    editor_native::state();
+    if(!applying && active()){
+        if(speech_pending() || !tracks_cast() || self!=data(mode()) || !C.remove_class_gate)return;
+        if(!C.remove_class_gate(index)){
+            const auto scope=C.gesture_scope?C.gesture_scope():GestureScope{};
+            const auto revision=C.object_revision?C.object_revision({(2ull<<32)|index,1}):std::nullopt;
+            if(valid_scope(scope) && revision)held_class_removal=HeldClassRemoval{scope,generation,index,*revision,H->time_seconds()};
+            return;
+        }
+        const auto previous=input_cast;input_cast=true;
+        start(self);original_remove_class(self,index);commit(self);
+        input_cast=previous;return;
+    }
+    original_remove_class(self,index);
 }
 void* script_ui(){
     void* display=skg::readable(mode(),0x18)?skg::field<void*>(mode(),0x14):nullptr;
@@ -579,9 +978,25 @@ void* script_ui(){
 bool SK_THISCALL script_input(void* self,void* window,void* message){
     auto* script=static_cast<uint8_t*>(script_ui());
     if(!applying && active() && script && self==script+8){
-        // This IWinProc owns authored act, goal, class and text controls. None
-        // has a shared semantic transaction yet. Do not invoke their setters;
-        // leave the event unhandled so independent camera/tool procs still run.
+        const auto type=skg::readable(message,0x10)?skg::field<uint32_t>(message,8):0;
+        if(held_creation && type==sui::kMsgMouseUp)held_creation->released=true;
+        if(script_events<64 && (type==0x287259F6 || (type>=6 && type<=8))){
+            ++script_events;
+            H->log(M,SK_DEBUG,"Shared editor script input: type=%08X control=%08X window=%08X cast=%u",
+                skg::field<uint32_t>(message,8),skg::field<uint32_t>(message,0xC),window?sui::control_id(window):0,unsigned(tracks_cast()));
+        }
+        // Permit only the exact cast inspector subtree. Timeline, goals,
+        // terrain and adventure-wide authoring retain their separate fences.
+        auto* settings=skg::readable(script,0x1C)?skg::field<uint8_t*>(script,0x18):nullptr;
+        void* layout=skg::readable(settings,0x24)?skg::field<void*>(settings,0x10):nullptr;
+        auto root=layout?skg::thiscall<sui::Win>(a_layout_find,layout,uint32_t(0x073E6BA0),true):nullptr;
+        for(auto parent=window;parent && root;parent=sui::parent(parent))if(parent==root){
+            if(tracks_cast() && C.class_gate && C.class_gate(skg::field<uint32_t>(settings,0x20))){
+                const auto previous=input_cast;input_cast=true;
+                const auto result=original_script_input(self,window,message);input_cast=previous;return result;
+            }
+            break;
+        }
         return false;
     }
     return original_script_input(self,window,message);
@@ -593,11 +1008,44 @@ bool SK_THISCALL class_input(void* self,void* window,void* message){
         // Class settings register their own binder on each native descendant;
         // ScriptUI's parent IWinProc does not own these slider notifications.
         // Preserve the normal dismiss control, whose native handler has no
-        // authored setter branch. All other class-property input is read-only.
-        if(!skg::readable(message,0x10) || skg::field<uint32_t>(message,8)!=0x287259F6 ||
-           skg::field<uint32_t>(message,0xC)!=0x0595E0A8)return false;
+        // authored setter branch. Guard other input before its native setter.
+        const bool dismiss=skg::readable(message,0x10) && skg::field<uint32_t>(message,8)==0x287259F6 &&
+           skg::field<uint32_t>(message,0xC)==0x0595E0A8;
+        if(speech_pending() && !dismiss && !(skg::readable(message,0x10) && skg::field<uint32_t>(message,0xC)==0x074656A0))return false;
+        if(!dismiss && (!tracks_cast() || !skg::readable(self,0x18) || !C.class_gate || !C.class_gate(skg::field<uint32_t>(self,0x14))))return false;
+        const bool prior=input_cast;input_cast=true;
+        const auto result=original_class_input(self,window,message);input_cast=prior;return result;
     }
     return original_class_input(self,window,message);
+}
+bool SK_THISCALL card_action(void* self,uint32_t first,void* window,uint32_t third){
+    if(!applying && active() && window){
+        const auto control=sui::control_id(window);
+        // Randomize replaces the asset and recreates actors. The supported
+        // inspector disguise picker has its own class ownership boundary.
+        if(control==0x073272B0){
+            if(C.notice)C.notice("Asset randomization is unavailable while sharing.");
+            return true;
+        }
+    }
+    return original_card_action(self,first,window,third);
+}
+void SK_CDECL speech_apply(){
+    if(!applying && active()){
+        void* ui=a_speech_ui?*reinterpret_cast<void**>(a_speech_ui):nullptr;
+        if(!skg::readable(ui,8) || !owned_class_gate(skg::field<void*>(ui,4)))return;
+        const auto previous=input_cast,previous_speech=input_speech;input_cast=input_speech=true;
+        original_speech_apply();input_cast=previous;input_speech=previous_speech;return;
+    }
+    original_speech_apply();
+}
+void SK_CDECL behavior_apply(){
+    if(!applying && active()){
+        void* owner=a_behavior_data?*reinterpret_cast<void**>(a_behavior_data):nullptr;
+        if(!skg::readable(owner,4) || !owned_class_gate(skg::field<void*>(owner,0)))return;
+        const auto previous=input_cast;input_cast=true;original_behavior_apply();input_cast=previous;return;
+    }
+    original_behavior_apply();
 }
 void SK_THISCALL commit(void* self) {
     bool observe = !applying && active() && self == data(mode()) &&
@@ -622,6 +1070,17 @@ void SK_THISCALL commit(void* self) {
                     // pool deletion never compacts other indices, so a surviving
                     // uninstantiated slot retains its previous explicit binding.
                     auto previous=gesture_before_bindings.find(key);
+                    // A disguise or other class refresh can replace its scene
+                    // actor without replacing the authored marker. Native pool
+                    // slots do not compact. A live slot with the same class in
+                    // the independently owned before retains its identity even
+                    // when the old actor is no longer mapped by ScenarioData.
+                    void* old_marker=marker_for_key(gesture_before_resource,key);
+                    if(previous!=gesture_before_bindings.end() && old_marker &&
+                       skg::field<uint32_t>(old_marker,0)==skg::field<uint32_t>(p,4)){
+                        after[key]=previous->second;continue;
+                    }
+                    if(gesture_cast && previous!=gesture_before_bindings.end()){after[key]=previous->second;continue;}
                     bool observed=previous!=gesture_before_bindings.end() && std::any_of(gesture_actors.begin(),gesture_actors.end(),
                         [&](const HeldActor& actor){return actor.id==previous->second;});
                     if(previous!=gesture_before_bindings.end() && !observed){after[key]=previous->second;continue;}
@@ -639,13 +1098,22 @@ void SK_THISCALL commit(void* self) {
     for(auto actor:gesture_actors)release(actor.object);
     gesture_actors.clear();
     if (!entry) {release(before);return;}
+    void* speech=input_speech && a_speech_ui?*reinterpret_cast<void**>(a_speech_ui):nullptr;
+    if(before && speech && !pending.empty()){
+        auto& previous=pending.back();
+        if(previous.speech==speech && previous.owner==self && previous.generation==generation && previous.scope==gesture_scope_pin){
+            // Native speech commits every character. Retain the first owned
+            // before and the latest owned after until this dialog closes.
+            release(previous.entry);release(before);previous.entry=entry;previous.after_bindings=bindings;return;
+        }
+    }
     if (!before || pending.size() >= 8) {
         release(entry);release(before); ++rejected;
         if (C.failure) C.failure(before?"Native editor gestures exceeded the pending transaction limit":"Native editor before snapshot allocation failed");
         return;
     }
     uint32_t act = skg::cdecl_call<uint32_t>(a_act);
-    pending.push_back({entry,before,self,generation,act,gesture_clone,gesture_before_bindings,bindings});
+    pending.push_back({entry,before,self,generation,act,gesture_clone,gesture_before_bindings,bindings,gesture_scope_pin,speech});
     if (!queued) { queued = true; H->run_outside_frame(drain, nullptr); }
 }
 void SK_THISCALL undo_native(void* self) {
@@ -750,10 +1218,14 @@ void SK_CDECL fence_ui(void*){
     if(skg::readable(layout,0x18)){
         // GetContainerWindow is the shared parent layer, not this layout's
         // owned subtree. Disable only its exact native property UI root.
-        disable_properties(skg::thiscall<sui::Win>(a_layout_find,layout,uint32_t(0x073E6BA0),true));
+        auto root=skg::thiscall<sui::Win>(a_layout_find,layout,uint32_t(0x073E6BA0),true);
+        if(!tracks_cast())disable_properties(root);
+        else if(root && sui::visible(root) && C.class_gate && skg::readable(settings,0x24))C.class_gate(skg::field<uint32_t>(settings,0x20));
     }
 }
 } // namespace
+
+void deny_input(const std::vector<editor::Scope>& scopes){deny_held_input(scopes);}
 
 namespace {
 // Exact native camera access paths: F03880 uses the active camera (+38),
@@ -854,6 +1326,8 @@ bool restore_view(const LocalView& view, uint64_t expected_generation, std::stri
 }
 
 bool init(const SkHost* host, SkMod* mod, Ctx context) {
+    script_events=0;
+    input_speech=false;
     H = host; M = mod; C = std::move(context);
     if (!H || std::string(H->exe_sha256()) != "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37") return false;
     a_mode=H->sym("App::cScenarioMode::ptr");
@@ -869,6 +1343,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     a_alloc=H->sym("SporeCoop::Editor::Allocate");
     a_context=H->sym("SporeCoop::Editor::Context");
     a_tools=H->sym("SporeCoop::Editor::ToolManager");
+    a_tool_tick=H->sym("SporeCoop::Editor::TickTools");
     a_marker=H->sym("Simulator::cScenarioData::GetMarkerForObject");
     a_object=H->sym("Simulator::cScenarioData::GetObjectForMarker");
     a_clone_marker=H->sym("SporeCoop::Editor::CloneMarker");
@@ -881,6 +1356,11 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     a_erase_history=H->sym("SporeCoop::Editor::EraseHistoryRange");
     a_discard_history=H->sym("SporeCoop::Editor::DiscardHistoryEntry");
     a_copy_marker_rows=H->sym("SporeCoop::Editor::CopyMarkerRows");
+    a_copy_class_rows=H->sym("SporeCoop::Editor::CopyClassRows");
+    a_copy_class=H->sym("SporeCoop::Editor::CopyClass");
+    a_insert_class=H->sym("SporeCoop::Editor::ClassByIndex");
+    a_speech_ui=H->sym("SporeCoop::Editor::SpeechUI");
+    a_behavior_data=H->sym("SporeCoop::Editor::BehaviorData");
     a_insert_marker=H->sym("SporeCoop::Editor::InsertMarker");
     a_view_manager=H->sym("App::IGameModeManager::Get");
     a_view_target=H->sym("SporeCoop::Editor::CurrentOrbitTarget");
@@ -888,7 +1368,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     a_view_set_orbit=H->sym("SporeCoop::Editor::SetOrbitScalarsInstant");
     a_view_lookat=H->sym("SporeCoop::SimCamera_LookAt");
     supported = a_mode && a_history && a_act && a_ctor && a_read && a_write && a_copy && a_entry && a_entry_vtable && a_restore && a_alloc &&
-        a_context && a_tools && a_marker && a_object && a_clone_marker && a_create_marker && a_delete_marker && a_apply_marker && a_loading && a_layout_find && a_erase_history && a_discard_history && a_copy_marker_rows && a_insert_marker;
+        a_context && a_tools && a_marker && a_object && a_clone_marker && a_create_marker && a_delete_marker && a_apply_marker && a_loading && a_layout_find && a_erase_history && a_discard_history && a_copy_marker_rows && a_insert_marker && a_copy_class_rows && a_copy_class && a_insert_class && a_speech_ui && a_behavior_data;
     if (!supported) return false;
     supported = install("SporeCoop::Editor::StartHistory", (void*)start, (void**)&original_start) &&
         install("SporeCoop::Editor::CommitHistory", (void*)commit, (void**)&original_commit) &&
@@ -896,21 +1376,35 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
         install("SporeCoop::Editor::RedoHistoryEntry", (void*)redo_native, (void**)&original_redo) &&
         install("SporeCoop::Editor::SetSelection", (void*)select_native, (void**)&original_select) &&
         install("SporeCoop::Editor::ToolAction", (void*)tool_native, (void**)&original_tool) &&
+        install("SporeCoop::Editor::TickTools",(void*)tick_tools,(void**)&original_tick_tools) &&
+        install("SporeCoop::Editor::GroundDragStep",(void*)ground_step,(void**)&original_ground_step) &&
+        install("SporeCoop::Editor::VerticalDragStep",(void*)vertical_step,(void**)&original_vertical_step) &&
+        install("SporeCoop::Editor::RadialDragStep",(void*)radial_step,(void**)&original_radial_step) &&
+        install("SporeCoop::Editor::AuxiliaryDragStep",(void*)auxiliary_step,(void**)&original_auxiliary_step) &&
+        install("SporeCoop::Adventure::ApplyMarkerState",(void*)apply_marker_state,(void**)&original_apply_marker) &&
         install("SporeCoop::Editor::DeleteSelection", (void*)delete_native, (void**)&original_delete) &&
         install("SporeCoop::Editor::PlaceClass", (void*)create_native, (void**)&original_create) &&
         install("SporeCoop::Editor::CloneSelection", (void*)clone_selection_native, (void**)&original_clone_selection) &&
         install("SporeCoop::Editor::ImportClass", (void*)import_native, (void**)&original_import) &&
+        install("SporeCoop::Editor::RemoveClass", (void*)remove_class_native, (void**)&original_remove_class) &&
         install("SporeCoop::Editor::UndoHistory",(void*)history_undo,(void**)&original_history_undo) &&
         install("SporeCoop::Editor::RedoHistory",(void*)history_redo,(void**)&original_history_redo) &&
         install("SporeCoop::Editor::HasUndo",(void*)has_undo,(void**)&original_has_undo) &&
         install("SporeCoop::Editor::HasRedo",(void*)has_redo,(void**)&original_has_redo) &&
         install("SporeCoop::Editor::ScriptInput",(void*)script_input,(void**)&original_script_input) &&
-        install("SporeCoop::Editor::ClassInput",(void*)class_input,(void**)&original_class_input);
+        install("SporeCoop::Editor::ClassInput",(void*)class_input,(void**)&original_class_input) &&
+        install("SporeCoop::Editor::CastCardAction",(void*)card_action,(void**)&original_card_action) &&
+        install("SporeCoop::Editor::PaletteMessage",(void*)palette_message,(void**)&original_palette_message) &&
+        install("SporeCoop::Editor::ApplySpeech",(void*)speech_apply,(void**)&original_speech_apply) &&
+        install("SporeCoop::Editor::ApplyBehaviors",(void*)behavior_apply,(void**)&original_behavior_apply);
     return supported;
 }
 
 void shutdown() {
     ++generation;
+    input_speech=false;
+    held_tool.reset();held_creation.reset();held_class_removal.reset();input_queued=false;
+    held_import.reset();
     cancellation.reset();cancellation_queued=cancellation_settling=false;
     gesture_owner=gesture_entry=nullptr;gesture_generation=gesture_serial=0;gesture_scope_pin={};
     for (auto item : pending){release(item.entry);release(item.before);}
@@ -923,6 +1417,8 @@ void shutdown() {
 
 void tick(){
     if(!H)return;
+    if(!pending.empty() && !queued){queued=true;H->run_outside_frame(drain,nullptr);}
+    if((held_tool || held_import || held_creation || held_class_removal) && !input_queued){input_queued=true;H->run_outside_frame(continue_input,nullptr);}
     if(cancellation && !cancellation_queued){cancellation_queued=true;H->run_outside_frame(drain_cancellation,nullptr);}
     if(fence_queued)return;
     double now=H->time_seconds();
@@ -956,7 +1452,7 @@ State state() {
     void* context=a_context?*reinterpret_cast<void**>(a_context):nullptr;
     if(s.editing && skg::readable(context,4))s.act=skg::field<uint32_t>(context,0);
     s.selected=selection;
-    s.gesture=!*reinterpret_cast<uint8_t*>(a_history+0x20);
+    s.gesture=!*reinterpret_cast<uint8_t*>(a_history+0x20) || (active() && speech_pending());
     s.history_cursor=*reinterpret_cast<uint32_t*>(a_history+0x14);
     uintptr_t begin=*reinterpret_cast<uintptr_t*>(a_history),end=*reinterpret_cast<uintptr_t*>(a_history+4);
     if(end>=begin && (end-begin)%4==0) s.history_size=uint32_t((end-begin)/4);
@@ -1015,6 +1511,48 @@ uint32_t creation_group() {
     const auto address=H?H->sym("SporeCoop::Editor::CreationGroup"):0;
     return address && skg::readable(reinterpret_cast<void*>(address),4)?*reinterpret_cast<const uint32_t*>(address):0;
 }
+bool expand_snapshot(const Snapshot& input,bool relative,Snapshot& out,std::string& error){
+    if(!supported){error="Native snapshot expansion is unavailable";return false;}
+    Owned copy(parse(input.bytes,error));if(!copy.p)return false;
+    std::map<uint32_t,editor::ObjectId> supplied;
+    for(const auto& binding:input.bindings)if(!supplied.emplace(binding.marker,binding.object).second){error="Duplicate legacy placement binding";return false;}
+    auto expanded=input;
+    if(!projection(copy.p,expanded,error,&supplied,relative,true,true))return false;
+    out=std::move(expanded);return true;
+}
+bool canonicalize_cast_state(editor::State& state,std::string& error){
+    // Recovery may predate machine-hint normalization. Upgrade every retained
+    // precondition together, without changing revisions or retiring history.
+    std::map<std::vector<uint8_t>,editor::StructuredValue> cache;
+    auto value=[&](editor::Value& v){
+        auto* block=std::get_if<editor::StructuredValue>(&v);
+        if(!block || block->format!=kCastBlockFormat){error="Invalid recovery cast block";return false;}
+        auto found=cache.find(block->bytes);
+        if(found==cache.end()){
+            Owned owned(parse(block->bytes,error));Rows classes;
+            if(!owned.p || !rows(owned.p,0x2BF4,0x27E8,1,classes) || classes.end-classes.begin!=0x27E8){error="Invalid recovery cast fragment";return false;}
+            editor::StructuredValue normalized;
+            if(!class_block(classes.begin,normalized,error))return false;
+            found=cache.emplace(block->bytes,std::move(normalized)).first;
+        }
+        if(found->second.references!=block->references){error="Recovery cast normalization changed its references";return false;}
+        *block=found->second;return true;
+    };
+    auto settings=[&](editor::ClassActSettings& settings){
+        auto found=settings.properties.find(kCastBlockProperty);
+        return found==settings.properties.end() || value(found->second);
+    };
+    auto patch=[&](editor::Patch& patch){
+        for(auto& c:patch.classes)for(auto* side:{&c.before,&c.after})if(*side && !settings(**side))return false;
+        for(auto& f:patch.fields)if(f.field==editor::FieldKey{editor::Field::Property,kCastBlockProperty})
+            for(auto* side:{&f.before,&f.after})if(*side && !value(**side))return false;
+        return true;
+    };
+    for(auto& [id,c]:state.document.class_settings){(void)id;if(!settings(c))return false;}
+    for(auto& h:state.history)if(!patch(h.undo) || !patch(h.redo))return false;
+    for(auto& [id,d]:state.decisions){(void)id;if(d.change && (!patch(d.change->patch) || !patch(d.change->inverse)))return false;}
+    return true;
+}
 bool validate_entry(const std::vector<uint8_t>& bytes,uint32_t act,std::string& error) {
     if(!supported){error="Native editor validation is unavailable";return false;}
     Owned copy(parse(bytes,error));if(!copy.p)return false;
@@ -1037,6 +1575,33 @@ bool supported_changes(const Gesture& gesture,std::string& error){
     if(!compared_before.p || !compared_after.p || !empty.p){error="Native authored-change allocation failed";return false;}
     skg::thiscall<void*>(a_copy,compared_before.p,before.p);
     skg::thiscall<void*>(a_copy,compared_after.p,after.p);
+    if(!gesture.after.document.class_schema.empty()){
+        if(gesture.before.document.class_schema!=gesture.after.document.class_schema || !cast_schema(gesture.after.document,error))return false;
+        // Class changes are represented by independently owned typed subtrees.
+        // Compare the remaining scenario against the same class roster.
+        skg::thiscall<void*>(a_copy_class_rows,skg::ptr_add<void>(compared_after.p,0x2BF4),skg::ptr_add<void>(compared_before.p,0x2BF4));
+        skg::field<uint32_t>(compared_after.p,0x2C0C)=skg::field<uint32_t>(compared_before.p,0x2C0C);
+    }
+    // F42660 derives the validation bit and diagnostic from current cast data.
+    // Preserve every authored goal field, and compare only these companions
+    // against their prior values on our owned comparison copies.
+    Rows old_acts,new_acts;
+    if(!rows(compared_before.p,0x23C,0x534,8,old_acts) || !rows(compared_after.p,0x23C,0x534,8,new_acts)){
+        error="Native authored act comparison is invalid";return false;
+    }
+    if(old_acts.end-old_acts.begin==new_acts.end-new_acts.begin){
+        for(auto old_act=old_acts.begin,new_act=new_acts.begin;old_act!=old_acts.end;old_act+=0x534,new_act+=0x534){
+            Rows old_goals,new_goals;
+            if(!rows(old_act,0x84,0x188,3,old_goals) || !rows(new_act,0x84,0x188,3,new_goals)){
+                error="Native authored goal comparison is invalid";return false;
+            }
+            if(old_goals.end-old_goals.begin!=new_goals.end-new_goals.begin)continue;
+            for(auto a=old_goals.begin,b=new_goals.begin;a!=old_goals.end;a+=0x188,b+=0x188){
+                skg::field<uint32_t>(b,0x14)=(skg::field<uint32_t>(b,0x14)&~1u)|(skg::field<uint32_t>(a,0x14)&1u);
+                skg::field<uint32_t>(b,0x184)=skg::field<uint32_t>(a,0x184);
+            }
+        }
+    }
     auto clear_markers=[&](void* resource){
         // Exactly the native DFFA00 composition: owning row copy followed by
         // its free-index/count metadata. Never edit vector ownership pointers.
@@ -1077,6 +1642,18 @@ bool supported_changes(const Gesture& gesture,std::string& error){
         if(!normalized_old || !normalized_new){error="Native authored-change marker copy failed";return false;}
         skg::field<editor::Vec3>(normalized_new,4)=skg::field<editor::Vec3>(normalized_old,4);
         skg::field<editor::Rotation>(normalized_new,0x10)=skg::field<editor::Rotation>(normalized_old,0x10);
+        if(gesture.after.document.schema.contains(kElevationProperty)){
+            skg::field<float>(normalized_new,0x220)=skg::field<float>(normalized_old,0x220);
+            if(gesture.after.document.schema.contains(kSoundPitchProperty)){
+                skg::field<float>(normalized_new,0x1E0)=skg::field<float>(normalized_old,0x1E0);
+                skg::field<float>(normalized_new,0x1E4)=skg::field<float>(normalized_old,0x1E4);
+            }
+            if(to.properties.contains(kDestinationPositionProperty)){
+                skg::field<editor::Vec3>(normalized_new,0x1E8)=skg::field<editor::Vec3>(normalized_old,0x1E8);
+                skg::field<editor::Rotation>(normalized_new,0x1F4)=skg::field<editor::Rotation>(normalized_old,0x1F4);
+                skg::field<float>(normalized_new,0x204)=skg::field<float>(normalized_old,0x204);
+            }
+        }
         // F412C0 placement validation derives only bits10/2/4 from native
         // collision/placement checks. Other marker flags remain authored.
         const uint32_t old_flags=skg::field<uint32_t>(normalized_old,0x224);
@@ -1192,7 +1769,28 @@ bool validate(const Snapshot& snapshot,const editor::Document& document,std::str
         }
     }
     Snapshot projected;projected.act=snapshot.act;
-    if(!projection(copy.p,projected,error,&supplied,tracked))return false;
+    if(!projection(copy.p,projected,error,&supplied,tracked,document.schema.contains(kElevationProperty),!document.class_schema.empty()))return false;
+    if(!cast_schema(document,error))return false;
+    if(projected.document.class_settings.size()!=document.class_settings.size() || (!document.class_schema.empty() && projected.document.next_class!=document.next_class)){error="Native cast roster differs from the committed draft";return false;}
+    for(const auto& [id,settings]:projected.document.class_settings){
+        auto found=document.class_settings.find(id);
+        if(found==document.class_settings.end() || settings.class_id!=found->second.class_id || settings.act_id!=found->second.act_id || settings.properties!=found->second.properties){
+            error="Native cast properties differ from the committed draft";
+            if(found!=document.class_settings.end()){
+                auto have=settings.properties.find(kCastBlockProperty),want=found->second.properties.find(kCastBlockProperty);
+                if(have!=settings.properties.end() && want!=found->second.properties.end()){
+                    const auto* a=std::get_if<editor::StructuredValue>(&have->second);const auto* b=std::get_if<editor::StructuredValue>(&want->second);
+                    if(a && b){
+                        size_t first=0;while(first<std::min(a->bytes.size(),b->bytes.size()) && a->bytes[first]==b->bytes[first])++first;
+                        H->log(M,SK_DEBUG,"Native cast mismatch: class=%u native=%u committed=%u first=%u nativeByte=%02X committedByte=%02X",
+                            uint32_t(settings.class_id.id),unsigned(a->bytes.size()),unsigned(b->bytes.size()),unsigned(first),
+                            first<a->bytes.size()?a->bytes[first]:0,first<b->bytes.size()?b->bytes[first]:0);
+                    }
+                }
+            }
+            return false;
+        }
+    }
     if(projected.document.classes!=document.classes || projected.document.acts!=document.acts ||
        projected.document.placements.size()!=document.placements.size() || supplied.size()!=document.placements.size() ||
        !document.acts.count({(3ull<<32)|snapshot.act,1})){
@@ -1203,10 +1801,23 @@ bool validate(const Snapshot& snapshot,const editor::Document& document,std::str
         if(it==document.placements.end()){error="Native snapshot contains an uncommitted placement";return false;}
         const auto& wanted=it->second;
         if(p.class_id!=wanted.class_id || p.act_id!=wanted.act_id || p.position!=wanted.position ||
-           p.rotation!=wanted.rotation || p.scale!=wanted.scale || p.properties!=wanted.properties ||
+           p.rotation!=wanted.rotation || p.scale!=wanted.scale || !same_native_properties(p.properties,wanted.properties) ||
            !std::isfinite(p.scale) || p.scale<=0 || !std::isfinite(p.position.x) ||
            !std::isfinite(p.position.y) || !std::isfinite(p.position.z) || !std::isfinite(p.rotation.x) ||
            !std::isfinite(p.rotation.y) || !std::isfinite(p.rotation.z) || !std::isfinite(p.rotation.w)){
+            if(H){
+                H->log(M,SK_DEBUG,"Native placement mismatch: object=%llu pos=%.9g,%.9g,%.9g/%.9g,%.9g,%.9g rot=%.9g,%.9g,%.9g,%.9g/%.9g,%.9g,%.9g,%.9g scale=%.9g/%.9g properties=%u/%u",
+                    static_cast<unsigned long long>(id.id),double(p.position.x),double(p.position.y),double(p.position.z),double(wanted.position.x),double(wanted.position.y),double(wanted.position.z),
+                    double(p.rotation.x),double(p.rotation.y),double(p.rotation.z),double(p.rotation.w),double(wanted.rotation.x),double(wanted.rotation.y),double(wanted.rotation.z),double(wanted.rotation.w),
+                    double(p.scale),double(wanted.scale),unsigned(p.properties.size()),unsigned(wanted.properties.size()));
+                unsigned shown=0;
+                for(const auto& [key,value]:p.properties){
+                    auto old=wanted.properties.find(key);if(old==wanted.properties.end() || old->second==value)continue;
+                    if(auto* a=std::get_if<float>(&value))if(auto* b=std::get_if<float>(&old->second))
+                        H->log(M,SK_DEBUG,"Native placement scalar mismatch: key=%08X actual=%.9g expected=%.9g",key,double(*a),double(*b));
+                    if(++shown==8)break;
+                }
+            }
             error="Native snapshot placement fields do not match the committed document";return false;
         }
     }
@@ -1221,6 +1832,15 @@ bool validate(const Snapshot& snapshot,const editor::Document& document,std::str
 }
 
 bool restore(const Snapshot& snapshot, std::string& error) {
+    // Scene reconstruction also installs the snapshot camera. That camera
+    // belongs to the saved draft, while each participant's live browsing
+    // camera belongs to that participant, including during remote commits.
+    std::optional<LocalView> local_view;
+    std::string view_error;
+    if(void* camera=view_camera(view_error)){
+        LocalView current;read_view(camera,current);
+        if(finite_view(current))local_view=current;
+    }
     auto s=state();
     if (!s.ready || s.gesture || applying) { error="Native Adventure Editor cannot restore during this transition"; return false; }
     if(!validate(snapshot,snapshot.document,error))return false;
@@ -1270,7 +1890,18 @@ bool restore(const Snapshot& snapshot, std::string& error) {
         if(tools)original_select(tools,object);
     }
     refresh_selection();
+    // The native scene/selection rebuild reconstructs sound controls. Its
+    // serialized source must remain the committed value rather than acquiring
+    // another round-trip error on every restoration.
+    for(const auto& [id,placement]:snapshot.document.placements){
+        void* marker=marker_for_id(resource(data(mode())),id);if(!marker)continue;
+        for(auto [key,offset]:{std::pair{kSoundPitchProperty,0x1E0u},std::pair{kSoundGainProperty,0x1E4u}}){
+            auto found=placement.properties.find(key);
+            if(found!=placement.properties.end())if(const auto* value=std::get_if<float>(&found->second))skg::field<float>(marker,offset)=*value;
+        }
+    }
     ++restores;
+    if(local_view && !restore_view(*local_view,generation,error))return false;
     return true;
 }
 
@@ -1312,9 +1943,63 @@ bool apply(const editor::Document& document,const editor::Change& change,const S
     bool tracked=false;if(!relative_scale_mode(document,tracked,error))return false;
     Snapshot snapshot;
     if (!capture(snapshot,error)) return false;
-    if (snapshot.document.classes != document.classes || snapshot.document.acts != document.acts ||
+    if ((!tracks_cast() && snapshot.document.classes != document.classes) || snapshot.document.acts != document.acts ||
         snapshot.document.schema!=document.schema) {
         error="Shared editing cannot change native classes or acts yet"; return false;
+    }
+    bool cast_changed=snapshot.document.classes!=document.classes || snapshot.document.next_class!=document.next_class;
+    for(const auto& [id,settings]:document.class_settings){
+        auto found=snapshot.document.class_settings.find(id);
+        if(found==snapshot.document.class_settings.end() || found->second.properties!=settings.properties)cast_changed=true;
+    }
+    if(cast_changed){
+        if(!cast_schema(document,error))return false;
+        Owned merged(parse(snapshot.bytes,error)),empty(construct());
+        if(!merged.p || !empty.p)return false;
+        skg::thiscall<void*>(a_copy_class_rows,skg::ptr_add<void>(merged.p,0x2BF4),skg::ptr_add<void>(empty.p,0x2BF4));
+        for(const auto& [id,settings]:document.class_settings){
+            (void)id;
+            auto value=settings.properties.find(kCastBlockProperty);
+            const auto* block=value==settings.properties.end()?nullptr:std::get_if<editor::StructuredValue>(&value->second);
+            if(!block || block->format!=kCastBlockFormat || block->bytes.size()>editor::Limits{}.structured_bytes){error="Invalid native cast subtree";return false;}
+            Owned fragment(parse(block->bytes,error));if(!fragment.p)return false;
+            Rows classes;
+            if(!rows(fragment.p,0x2BF4,0x27E8,1,classes) || classes.end-classes.begin!=0x27E8 ||
+               settings.class_id!=editor::ObjectId{(2ull<<32)|skg::field<uint32_t>(classes.begin,0),1}){
+                error="A cast subtree has a different native class identity";return false;
+            }
+            uint32_t index=uint32_t(settings.class_id.id);
+            void* target=skg::thiscall<void*>(a_insert_class,skg::ptr_add<void>(merged.p,0x2BF4),&index);
+            if(!target){error="Cannot allocate the canonical cast class";return false;}
+            skg::thiscall<void*>(a_copy_class,target,classes.begin+8);
+        }
+        skg::field<uint32_t>(merged.p,0x2C0C)=document.next_class;
+        auto prepared=snapshot;
+        prepared.document.classes=document.classes;prepared.document.class_schema=document.class_schema;
+        prepared.document.class_settings=document.class_settings;prepared.document.next_class=document.next_class;
+        // Class removal and all its placements form one transaction. Build an
+        // internally valid owned resource before rebuilding the live scene;
+        // validating a new class roster against old placements would reject
+        // every populated class removal before its placement phase ran.
+        if(std::any_of(snapshot.document.placements.begin(),snapshot.document.placements.end(),
+                [&](const auto& row){return !document.classes.contains(row.second.class_id);})){
+            Owned retained(construct());if(!retained.p){error="Cannot allocate retained native placements";return false;}
+            prepared.bindings.clear();
+            for(const auto& binding:snapshot.bindings){
+                auto placement=snapshot.document.placements.find(binding.object);
+                if(placement==snapshot.document.placements.end() || !document.classes.contains(placement->second.class_id))continue;
+                void* marker=marker_for_key(merged.p,binding.marker);
+                if(!marker){error="A retained cast placement has lost its native binding";return false;}
+                auto index=skg::thiscall<uint32_t>(a_insert_marker,skg::ptr_add<void>(retained.p,0x2C10),marker);
+                prepared.bindings.push_back({binding.object,index});
+            }
+            skg::thiscall<void*>(a_copy_marker_rows,skg::ptr_add<void>(merged.p,0x2C10),skg::ptr_add<void>(retained.p,0x2C10));
+            skg::field<uint32_t>(merged.p,0x2C24)=skg::field<uint32_t>(retained.p,0x2C24);
+            skg::field<uint32_t>(merged.p,0x2C28)=skg::field<uint32_t>(retained.p,0x2C28);
+            std::erase_if(prepared.document.placements,[&](const auto& row){return !document.classes.contains(row.second.class_id);});
+        }
+        if(!serialize(merged.p,prepared.bytes,error) || !validate(prepared,prepared.document,error) ||
+           (C.validate_dependencies && !C.validate_dependencies(prepared,error)) || !restore(prepared,error) || !capture(snapshot,error))return false;
     }
     for(const auto& [id,to]:document.placements){
         auto from=snapshot.document.placements.find(id);
@@ -1429,12 +2114,23 @@ bool apply(const editor::Document& document,const editor::Change& change,const S
         if(!relative_scale_value(to,tracked,required_relative,error)){const auto reason=error;return fail(reason.c_str());}
         if(skg::field<editor::Vec3>(marker,4)==to.position &&
            skg::field<editor::Rotation>(marker,0x10)==to.rotation && previous==to.scale &&
-           (!tracked || relative==required_relative))continue;
+           (!tracked || relative==required_relative) && before!=snapshot.document.placements.end() &&
+           before->second.properties==to.properties)continue;
         skg::field<editor::Vec3>(marker,4)=to.position;
         skg::field<editor::Rotation>(marker,0x10)=to.rotation;
         skg::field<float>(marker,0x20)=to.scale;
         if(tracked)skg::field<float>(marker,0x24)=required_relative;
         else if(previous>0 && std::isfinite(relative))skg::field<float>(marker,0x24)=relative*(to.scale/previous);
+        auto companion=[&]<class T>(uint32_t property,uint32_t offset){
+            auto found=to.properties.find(property);
+            if(found!=to.properties.end())skg::field<T>(marker,offset)=std::get<T>(found->second);
+        };
+        companion.template operator()<float>(kElevationProperty,0x220);
+        companion.template operator()<float>(kSoundPitchProperty,0x1E0);
+        companion.template operator()<float>(kSoundGainProperty,0x1E4);
+        companion.template operator()<editor::Vec3>(kDestinationPositionProperty,0x1E8);
+        companion.template operator()<editor::Rotation>(kDestinationRotationProperty,0x1F4);
+        companion.template operator()<float>(kDestinationScaleProperty,0x204);
         skg::thiscall<void>(a_apply_marker,owner,marker,false);
         changed=true;
     }

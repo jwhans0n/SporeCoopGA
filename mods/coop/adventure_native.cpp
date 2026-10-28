@@ -52,6 +52,7 @@ struct Preview {
     void* data = nullptr;
     void* resource = nullptr;
     uint64_t run = 0;
+    uint64_t gameplay_ready_run = 0;
     bool launched = false, returning = false, ready_queued = false;
     bool intro_queued = false, intro_confirmed = false;
 };
@@ -689,10 +690,9 @@ bool set_editor_preview(EditorPreview config, std::string& error)
     preview.mode = scenario();
     preview.data = preview.mode ? field<void*>(preview.mode, 0x74) : nullptr;
     preview.resource = readable(preview.data, 0x128) ? field<void*>(preview.data, 0x10) : nullptr;
-    if (!preview.snapshot.source.instance || preview.snapshot.source.type != 0x366A930D ||
-        preview.snapshot.bytes.empty() ||
+    if (preview.snapshot.bytes.empty() ||
         dbpf::Key{preview.snapshot.captain.instance, preview.snapshot.captain.type, preview.snapshot.captain.group} != preview.config.authored_avatar) {
-        error = "The editor playtest requires its current saved draft and authored captain.";
+        error = "The editor playtest requires its current draft and authored captain.";
         return false;
     }
     g_preview = std::move(preview);
@@ -711,6 +711,31 @@ bool editor_preview_matches(const std::array<uint8_t,16>& project,uint64_t epoch
         g_preview->config.round==round && g_preview->config.revision==revision;
 }
 bool editor_preview_owner() { return preview_bound(false) || preview_bound(true); }
+uint32_t editor_preview_place() {
+    if(!preview_attempt() || !preview_bound(true) || !g_preview->launched || g_preview->returning || !adventure::running())return 0;
+    const auto* descriptor=adventure::current();
+    const auto key=descriptor->adventure;const auto run=descriptor->run_id;
+    return (key.instance ^ (key.group*0x9E3779B1u) ^ uint32_t(run) ^ uint32_t(run>>32))|1u;
+}
+bool preview_gameplay_ready(){
+    if(!g_preview)return true;
+    const auto place=editor_preview_place();const auto* descriptor=adventure::current();
+    if(!place || !descriptor || !C.sess || !C.captain_of)return false;
+    if(g_preview->gameplay_ready_run==descriptor->run_id)return true;
+    if(!adventure_world::ready_for_run(descriptor->run_id))return false;
+    for(auto peer:descriptor->roster){
+        void* captain=C.captain_of(peer);
+        if(!skg::readable(captain,game::kHpOff+sizeof(float)) ||
+           !std::isfinite(skg::field<float>(captain,game::kHpOff)) || skg::field<float>(captain,game::kHpOff)<=0)return false;
+        if(peer!=C.sess->my_id()){
+            net::PlayerState state;
+            if(!C.remote_state || !C.remote_state(peer,state) || state.mode!=modes::kScenario || state.world!=place)return false;
+        }
+    }
+    // A later downed captain does not turn an established run into a launch.
+    g_preview->gameplay_ready_run=descriptor->run_id;
+    return true;
+}
 void clear_editor_preview() { ++g_preview_generation; g_preview.reset(); }
 
 bool init(const SkHost* host, SkMod* mod, Ctx context)
@@ -968,6 +993,7 @@ adventure::Ctx coordinator_context()
     context.abort_preparation = restore_menu;
     context.abort_native = restore_menu;
     context.loaded = loaded; context.paused = paused; context.captain_of = C.captain_of;
+    context.launch_report_ready=preview_gameplay_ready;
     context.sample = sample; context.apply = apply; context.source = adventure_world::source;
     context.native_result = adventure_world::apply_result;
     context.native_result_applied = [](bool success) { return adventure_world::result_applied(adventure::outcome_run(), success); };

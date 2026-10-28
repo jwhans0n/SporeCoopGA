@@ -34,6 +34,9 @@ struct Ctx {
     std::function<void()> abort_native;
     std::function<void(bool)> freeze;
     std::function<bool(const Key&)> loaded;
+    // Optional read-only launch status gate. Simulation may already run while
+    // replicas and the first authoritative gameplay baseline are constructed.
+    std::function<bool()> launch_report_ready;
     std::function<bool()> paused;
     std::function<void*(uint8_t)> captain_of;
     std::function<void(bool)> native_result;

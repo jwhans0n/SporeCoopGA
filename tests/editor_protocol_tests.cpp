@@ -71,6 +71,18 @@ static void authority(){
     const auto presence=packet({c,w::Presence{{3,1},{2,1},true,guest}});CHECK(read(presence,result,guest,false));CHECK(read(presence,result,host,true));CHECK(!read(presence,result,other,false));
     for(auto kind:{w::TransferKind::Baseline,w::TransferKind::Decision,w::TransferKind::Resources}){const auto b=packet({c,w::TransferBegin{kind,1,42,hash}});CHECK(read(b,result,host,true));CHECK(!read(b,result,guest,false));}
     const auto req=packet({c,w::TransferBegin{w::TransferKind::Request,1,42,hash}});CHECK(read(req,result,guest,false));CHECK(!read(req,result,host,true));
+    const auto assets=packet({c,w::TransferBegin{w::TransferKind::Assets,9,42,hash}});
+    CHECK(read(assets,result,guest,false));CHECK(!read(assets,result,host,true));
+    for(auto kind:{w::CommandKind::RequestSolo,w::CommandKind::ReturnSolo}){
+        const auto solo=packet({c,w::Command{kind,7,c.revision,guest,false}});
+        CHECK(read(solo,result,guest,false));CHECK(!read(solo,result,other,false));CHECK(!read(solo,result,host,true));
+    }
+    const auto solo_reply=packet({c,w::Command{w::CommandKind::ReplySolo,7,c.revision,guest,true}});
+    CHECK(read(solo_reply,result,host,true));CHECK(!read(solo_reply,result,guest,false));
+    w::Control solo{w::ControlKind::HostPreparePlaytest,7,c.revision,false,0,3};solo.mode=w::PlaytestMode::Solo;solo.tester=guest;
+    const auto solo_prepare=packet({c,solo});CHECK(read(solo_prepare,result,host,true));
+    CHECK(std::get<w::Control>(result.payload).mode==solo.mode);
+    CHECK(std::get<w::Control>(result.payload).tester==solo.tester);CHECK(!read(solo_prepare,result,guest,false));
     for(unsigned i=0;i<=6;++i){const bool client=i==1||i==5;w::Control control{w::ControlKind(i),81,c.revision,i==1,0,uint8_t(i==0||i==2?3:0)};const auto b=packet({c,control});CHECK(read(b,result,client?guest:host,!client));CHECK(!read(b,result,client?host:guest,client));}
     net::Writer writer;CHECK(!w::write({c,w::Control{w::ControlKind::HostBeginPlaytest,0,3,false}},writer,error));CHECK(!w::write({c,w::Control{w::ControlKind::HostBeginPlaytest,1,2,false}},writer,error));CHECK(!w::write({c,w::Control{w::ControlKind::HostBeginPlaytest,1,3,true}},writer,error));
     CHECK(!w::write({c,w::Saved{3,{4,5,6},0}},writer,error));CHECK(!w::write({c,w::SavedApplied{{3,{4,5,6},0}}},writer,error));

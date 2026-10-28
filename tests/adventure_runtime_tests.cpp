@@ -131,6 +131,7 @@ int main()
     SkHost api{};
     api.run_outside_frame = queue;
     bool available = false, loaded = false, frozen = false, paused = false;
+    bool report_ready=true;
     bool native_release_queued = false, native_settling = false, native_goals_pending = false;
     unsigned launches = 0, results = 0, invalidated = 0, native_aborts = 0;
     bool launch_ok = true;
@@ -162,6 +163,7 @@ int main()
     ctx.abort_native = [&] { CHECK(!adventure::active()); native_aborts++; native_result_run = 0; };
     ctx.freeze = [&](bool value) { frozen = value; };
     ctx.loaded = [&](const dbpf::Key&) { return loaded; };
+    ctx.launch_report_ready=[&]{return report_ready;};
     ctx.paused = [&] { return paused; };
     ctx.captain_of = [&](uint8_t id) -> void* { return id < 4 ? &objects[id] : nullptr; };
     ctx.native_result = [&](bool value) {
@@ -221,6 +223,9 @@ int main()
     acknowledge_loaded(first, guest2.my_id());
     adventure::tick(5); drain();
     CHECK(!frozen && latest.size() == 3);
+    report_ready=false;CHECK(adventure::running());
+    CHECK(adventure::status().find("waiting for shared gameplay")!=std::string::npos);
+    report_ready=true;CHECK(adventure::status()=="Adventure in progress");
     net::Writer forged_result;
     forged_result.u8(11); put_run(forged_result, first.run_id); forged_result.u8(1);
     incoming(guest.my_id(), forged_result); drain();

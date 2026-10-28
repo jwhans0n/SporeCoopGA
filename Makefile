@@ -81,6 +81,9 @@ ADVENTURE_ABI_HEADERS := sdk/include/sporekit.h sdk/include/sporekit_game.hpp mo
 .PHONY: test-editor test-editor-windows
 test-editor:
 	@mkdir -p $(B)/host
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include $(EDITOR_WIRE_SRC) tests/editor_cast_tests.cpp -o $(B)/host/editor_cast_tests
+	$(B)/host/editor_cast_tests
+	@mkdir -p $(B)/host
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop tests/editor_metrics_tests.cpp -o $(B)/host/editor_metrics_tests
 	$(B)/host/editor_metrics_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop tests/editor_stage_metrics_tests.cpp -o $(B)/host/editor_stage_metrics_tests
@@ -111,6 +114,10 @@ test-editor:
 test-editor-windows: $(B)/host/package_admission_tests.exe $(B)/host/package_admission_windows_tests.exe $(B)/host/frame_metrics_tests.exe $(B)/host/editor_metrics_tests.exe $(B)/host/editor_native_bindings_tests.exe $(B)/host/editor_native_scale_tests.exe $(B)/host/editor_reopen_identity_tests.exe $(B)/host/editor_binary_delta_tests.exe $(B)/host/editor_document_tests.exe $(B)/host/editor_store_tests.exe $(B)/host/editor_protocol_tests.exe $(B)/host/editor_project_tests.exe $(B)/host/editor_session_tests.exe $(B)/host/session_transport_tests.exe $(B)/host/editor_native_save_tests.exe $(B)/host/adventure_editor_preview_tests.exe $(B)/host/editor_runtime_windows_tests.exe $(B)/host/adventure_assets_native_tests.exe
 
 test-editor-windows: $(B)/host/editor_native_cancellation_tests.exe
+test-editor-windows: $(B)/host/editor_cast_tests.exe
+$(B)/host/editor_cast_tests.exe: tests/editor_cast_tests.cpp mods/coop/editor_native_cast.h mods/coop/editor_native_scale.h $(EDITOR_WIRE_SRC) mods/coop/net/editor_document.h mods/coop/net/editor_protocol.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(EDITOR_WIRE_SRC) tests/editor_cast_tests.cpp -o $@
 
 test-editor-windows: $(B)/host/editor_stage_metrics_tests.exe
 

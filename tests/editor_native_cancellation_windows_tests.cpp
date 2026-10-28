@@ -23,9 +23,19 @@ std::deque<std::pair<SkTaskFn,void*>> t_tasks;
 void* t_mode_pointer=t_mode.data();
 void* t_context_pointer=t_context.data();
 void* t_loading_pointer=t_loading.data();
-void* t_tool_pointer=&t_tool_pointer;
+std::array<uint8_t,16> t_tool;
+void* t_tool_pointer=t_tool.data();
 bool t_active=true,t_restore_fail=false,t_callback_fail=false,t_alloc_fail=false;
 uint64_t t_frame=10;
+double t_time=1;
+unsigned t_presses=0,t_finishes=0,t_ticks=0,t_steps=0;
+bool t_granted=false;
+bool t_audio_drift=false;
+bool t_retired_actor=false;
+uint32_t t_card_id=0;
+unsigned t_card_calls=0;
+unsigned t_palette_calls=0;
+editor::Revision t_revision=0;
 unsigned t_restores=0,t_original_undo=0,t_own_undo=0,t_settled=0,t_failed=0;
 unsigned t_object_lookups=0,t_writes=0,t_reads=0,t_transforms=0;
 GestureScope t_scope;
@@ -74,10 +84,12 @@ void SK_THISCALL t_transform(void* owner,void* marker,bool shared){
 }
 void* SK_THISCALL t_marker(void* owner,void* actor){
     CHECK(owner==t_data.data());
+    if(t_retired_actor)return nullptr;
     for(unsigned i=0;i<2;++i)if(actor==t_actors[i].data())return t_rows[t_live.data()].data()+i*0x238+4;
     return nullptr;
 }
-void SK_THISCALL t_select(void* tools,void* actor){CHECK(tools==t_tool_pointer);skg::field<void*>(t_context.data(),4)=actor;}
+void noisy_audio(void* marker){if(t_audio_drift){skg::field<float>(marker,0x1E0)+=.00000238f;skg::field<float>(marker,0x1E4)+=.00000119f;}}
+void SK_THISCALL t_select(void* tools,void* actor){CHECK(tools==t_tool_pointer);skg::field<void*>(t_context.data(),4)=actor;if(actor)noisy_audio(t_marker(t_data.data(),actor));}
 void SK_THISCALL t_start(void* owner){
     CHECK(owner==t_data.data());skg::field<void*>(t_entry.data(),0)=t_entry_vt.data();
     skg::field<void*>(t_entry.data(),0x0C)=owner;
@@ -91,6 +103,31 @@ void SK_THISCALL t_restore(void* entry,void* before){
     skg::field<void*>(t_context.data(),4)=nullptr;
 }
 uint64_t t_get_frame(){return t_frame;}
+double t_get_time(){return t_time;}
+void t_log(SkMod*,int,const char*,...){}
+void SK_THISCALL t_step(void*){++t_steps;value(t_live.data(),0)=99;noisy_audio(t_rows[t_live.data()].data()+4);}
+void SK_THISCALL t_apply_audio(void* owner,void* marker,uint32_t){CHECK(owner==t_data.data());noisy_audio(marker);skg::field<float>(marker,0x20)=3.f;}
+void SK_THISCALL t_tick(void*){++t_ticks;ground_step(nullptr);}
+uint32_t SK_THISCALL t_tool_action(void* manager,uint32_t action,uint32_t,uint32_t){
+    CHECK(manager==t_tool_pointer);
+    if(action==1){++t_presses;start(t_data.data());}
+    else if(!action){++t_finishes;skg::field<uint8_t>(t_history.data(),0x20)=1;}
+    return 1;
+}
+bool SK_THISCALL t_create(void* manager,uint32_t index){CHECK(index==7);t_tool_action(manager,1,0,0);return true;}
+void SK_THISCALL t_remove_class(void* owner,uint32_t index){CHECK(owner==t_data.data() && index==7);++t_steps;value(t_live.data(),0)=77;}
+bool SK_THISCALL t_card_action(void* self,uint32_t first,void* window,uint32_t third){
+    CHECK(self==t_tool_pointer && first==17 && window==&t_card_id && third==23);++t_card_calls;return false;
+}
+bool SK_THISCALL t_palette_message(void* self,uint32_t message,uint32_t payload){
+    CHECK(self==t_layout.data()+8 && message==0x07326686 && payload==7);++t_palette_calls;
+    start(t_data.data());remove_class_native(t_data.data(),payload);return false;
+}
+bool SK_THISCALL t_script_input(void*,void*,void*){CHECK(input_cast);start(t_data.data());value(t_live.data(),0)+=1;commit(t_data.data());return true;}
+sui::Win SK_THISCALL t_inspector_root(void* self,uint32_t id,bool recursive){CHECK(self==t_layout.data() && id==0x073E6BA0 && recursive);return &t_card_id;}
+uint32_t SK_CDECL t_act(){return 0;}
+void SK_THISCALL t_commit(void*){skg::field<uint8_t>(t_history.data(),0x20)=1;}
+void SK_CDECL t_speech(){start(t_data.data());value(t_live.data(),0)+=1;commit(t_data.data());}
 void t_outside(SkTaskFn task,void* user){t_tasks.emplace_back(task,user);}
 void drain(){auto work=std::move(t_tasks);t_tasks.clear();for(auto [task,user]:work)task(user);}
 void next_drain(){++t_frame;editor_native::cancellation_queued=true;drain_cancellation(nullptr);}
@@ -101,6 +138,8 @@ void native_cancel(void* entry=nullptr){
 }
 void begin(){start(t_data.data());CHECK(!t_allocations.empty());CHECK(gesture_serial!=0);}
 void reset(){
+    held_tool.reset();held_import.reset();held_creation.reset();held_class_removal.reset();
+    for(auto item:pending){release(item.entry);release(item.before);}pending.clear();
     if(gesture_before_resource){release(gesture_before_resource);gesture_before_resource=nullptr;}
     for(auto held:gesture_actors)release(held.object);
     gesture_actors.clear();gesture_before_bindings.clear();
@@ -110,16 +149,25 @@ void reset(){
     t_entry.fill(0);t_other_entry.fill(0);t_other_data.fill(0);
     for(auto& actor:t_actors){actor.fill(0);skg::field<void*>(actor.data(),0)=t_actor_vt.data();skg::field<int>(actor.data(),4)=1;}
     t_resource_vt[0]=reinterpret_cast<void*>(t_addref);t_resource_vt[1]=reinterpret_cast<void*>(t_release);
+    t_entry_vt=t_resource_vt;skg::field<int>(t_entry.data(),4)=1;
     t_actor_vt=t_resource_vt;
     t_mode_pointer=t_mode.data();t_context_pointer=t_context.data();t_loading_pointer=t_loading.data();
     t_active=true;t_callback_fail=t_alloc_fail=t_restore_fail=false;
-    t_frame=10;t_restores=t_original_undo=t_own_undo=t_settled=t_failed=0;t_failure.clear();t_seen={};
+    t_audio_drift=false;
+    t_retired_actor=false;
+    t_frame=10;t_time=1;t_presses=t_finishes=t_ticks=t_steps=0;t_granted=false;t_revision=0;
+    t_restores=t_original_undo=t_own_undo=t_settled=t_failed=0;t_failure.clear();t_seen={};
     t_scope={};t_scope.project[0]=0xAD;t_scope.epoch=9;t_scope.author={1,3};
     a_mode=uintptr_t(&t_mode_pointer);a_context=uintptr_t(&t_context_pointer);a_loading=uintptr_t(&t_loading_pointer);
     a_tools=uintptr_t(&t_tool_pointer);a_history=uintptr_t(t_history.data());a_entry_vtable=uintptr_t(t_entry_vt.data());
     a_object=uintptr_t(t_object);a_marker=uintptr_t(t_marker);a_copy=uintptr_t(t_copy);a_ctor=uintptr_t(t_ctor);
     a_alloc=uintptr_t(t_allocate);a_restore=uintptr_t(t_restore);a_display_vtable=0;
+    a_speech_ui=0;a_act=uintptr_t(t_act);input_speech=false;
     original_start=t_start;original_undo=t_undo;original_select=t_select;
+    original_create=t_create;original_commit=t_commit;original_speech_apply=t_speech;original_apply_marker=t_apply_audio;
+    original_remove_class=t_remove_class;
+    a_tool_tick=uintptr_t(t_tick);original_tool=t_tool_action;original_tick_tools=t_tick;
+    original_ground_step=original_vertical_step=original_radial_step=original_auxiliary_step=t_step;
     skg::field<int>(t_mode.data(),0xCC)=1;skg::field<void*>(t_mode.data(),0x74)=t_data.data();
     skg::field<void*>(t_mode.data(),0x14)=t_display.data();skg::field<void*>(t_data.data(),0x10)=t_live.data();
     skg::field<void*>(t_display.data(),0x24)=t_layout.data();skg::field<void*>(t_layout.data(),0x14)=t_container.data();
@@ -132,8 +180,12 @@ void reset(){
     gesture_owner=gesture_entry=nullptr;gesture_generation=gesture_serial=gesture_counter=cancellation_counter=0;gesture_scope_pin={};
     ordinary_cancellations=0;
     bindings.clear();incarnations.clear();selection.clear();pending.clear();
-    static SkHost host{};host.frame_index=t_get_frame;host.run_outside_frame=t_outside;H=&host;
+    static SkHost host{};host.frame_index=t_get_frame;host.run_outside_frame=t_outside;
+    host.time_seconds=t_get_time;host.log=t_log;H=&host;
     C={};C.active=[](){return t_active;};C.gesture_scope=[](){return t_scope;};
+    C.extended_poses_tracked=[] {return false;};C.cast_tracked=[] {return false;};
+    C.gate=[](const auto&){return t_granted;};
+    C.object_revision=[](editor::ObjectId)->std::optional<editor::Revision>{return t_revision;};
     C.history=[](bool redo){CHECK(!redo);++t_own_undo;};C.failure=[](const std::string& error){++t_failed;t_failure=error;};
     C.cancelled=[](const CancellationTicket& ticket,std::string& error){
         CHECK(state().ready);CHECK(!state().gesture);CHECK(ticket.scope==t_scope);CHECK(ticket.generation==state().generation);
@@ -146,12 +198,160 @@ void reset(){
     };
     CHECK(state().ready);refresh_selection();CHECK(selection.size()==1);
 }
+void test_pending_press(){
+    reset();
+    CHECK(tool_native(t_tool_pointer,1,17,23)==1);
+    CHECK(held_tool&&t_presses==1&&t_ticks==1&&!t_steps&&state().gesture);
+    CHECK(value(t_live.data(),0)==1);
+    tick_tools(t_tool_pointer);ground_step(nullptr);vertical_step(nullptr);radial_step(nullptr);auxiliary_step(nullptr);
+    CHECK(t_ticks==1&&!t_steps);
+    // The complete quick drag, including release, survives its lease latency.
+    CHECK(tool_native(t_tool_pointer,0,0,0)==1&&held_tool->released&&!t_finishes);
+    continue_input(nullptr);CHECK(held_tool&&!t_steps&&!t_finishes);
+    t_granted=true;continue_input(nullptr);
+    CHECK(!held_tool&&t_presses==1&&t_ticks==2&&t_steps==1&&t_finishes==1&&!state().gesture);
+    CHECK(value(t_live.data(),0)==99);
+    for(unsigned kind=0;kind<9;++kind){
+        reset();tool_native(t_tool_pointer,1,0,0);CHECK(held_tool&&!t_steps);
+        if(kind==0)++t_revision;
+        if(kind==1)++t_scope.epoch;
+        if(kind==2)++t_scope.author.generation;
+        if(kind==3)++generation;
+        if(kind==4)t_time=4;
+        if(kind==5)held_tool->focused=true; // No owning game window in this fixture.
+        if(kind==6)skg::field<uintptr_t>(t_context.data(),0x10)=1;
+        if(kind==7){deny_input({{editor::ScopeKind::Placement,held_tool->object,{}}});}
+        if(kind==8){select_native(t_tool_pointer,t_actors[1].data());}
+        t_granted=true;continue_input(nullptr);
+        CHECK(!held_tool&&!t_steps&&value(t_live.data(),0)==1);
+        CHECK(t_finishes==(kind==3?0u:1u));
+    }
+    reset();
+}
+void test_pending_palette_drag(){
+    reset();C.structure_gate=[](uint32_t index){CHECK(index==7);return t_granted;};
+    CHECK(!create_native(t_tool_pointer,7));CHECK(held_creation&&!state().gesture&&!t_presses&&!t_steps);
+    tool_native(t_tool_pointer,0,0,0);CHECK(held_creation->released);
+    continue_input(nullptr);CHECK(held_creation&&!t_presses&&!t_steps);
+    t_granted=true;continue_input(nullptr);
+    CHECK(!held_creation&&t_presses==1&&t_ticks==1&&t_steps==1&&t_finishes==1&&!state().gesture);
+    for(unsigned kind=0;kind<6;++kind){
+        reset();C.structure_gate=[](uint32_t){return t_granted;};CHECK(!create_native(t_tool_pointer,7)&&held_creation);
+        if(kind==0)++t_scope.epoch;
+        if(kind==1)++t_revision;
+        if(kind==2)t_active=false;
+        if(kind==3)t_time=4;
+        if(kind==4)held_creation->focused=true;
+        if(kind==5)deny_input({{editor::ScopeKind::Document,{},{}}});
+        t_granted=true;continue_input(nullptr);CHECK(!held_creation&&!t_presses&&!t_steps&&!state().gesture);
+    }
+}
+void test_pending_class_removal(){
+    reset();C.cast_tracked=[]{return true;};C.remove_class_gate=[](uint32_t index){CHECK(index==7);return t_granted;};
+    remove_class_native(t_data.data(),7);CHECK(held_class_removal && !t_steps && value(t_live.data(),0)==1);
+    continue_input(nullptr);CHECK(held_class_removal && !t_steps);
+    t_granted=true;continue_input(nullptr);
+    CHECK(!held_class_removal && t_steps==1 && value(t_live.data(),0)==77 && pending.size()==1);
+    for(unsigned kind=0;kind<6;++kind){
+        reset();C.cast_tracked=[]{return true;};C.remove_class_gate=[](uint32_t){return t_granted;};
+        remove_class_native(t_data.data(),7);CHECK(held_class_removal && !t_steps);
+        if(kind==0)++t_scope.epoch;
+        if(kind==1)++t_scope.author.generation;
+        if(kind==2)++t_revision;
+        if(kind==3)++generation;
+        if(kind==4)t_time=4;
+        if(kind==5)deny_input({{editor::ScopeKind::Document,{},{}}});
+        t_granted=true;continue_input(nullptr);
+        CHECK(!held_class_removal && !t_steps && value(t_live.data(),0)==1);
+    }
+}
+void test_palette_removal_waits_before_ui_and_history(){
+    reset();skg::field<void*>(t_display.data(),0x14)=t_layout.data();
+    original_palette_message=t_palette_message;t_palette_calls=0;
+    C.cast_tracked=[]{return true;};C.remove_class_gate=[](uint32_t index){CHECK(index==7);return t_granted;};
+    CHECK(!palette_message(t_layout.data()+8,0x07326686,7));
+    CHECK(held_class_removal && held_class_removal->listener==t_layout.data()+8 && !t_palette_calls && !gesture_entry && pending.empty());
+    continue_input(nullptr);CHECK(!t_palette_calls && !t_steps);
+    t_granted=true;continue_input(nullptr);
+    CHECK(!held_class_removal && t_palette_calls==1 && t_steps==1 && pending.size()==1);
+    reset();skg::field<void*>(t_display.data(),0x14)=t_layout.data();
+    C.cast_tracked=[]{return true;};C.remove_class_gate=[](uint32_t){return false;};
+    t_palette_calls=0;palette_message(t_layout.data()+8,0x07326686,7);CHECK(held_class_removal);
+    // A rebuilt palette cannot receive the old deferred notification.
+    skg::field<void*>(t_display.data(),0x14)=t_context.data();t_granted=true;continue_input(nullptr);
+    CHECK(!held_class_removal && !t_palette_calls && !t_steps && pending.empty());
+}
+void test_coalesced_speech(){
+    reset();std::array<uint8_t,0x27E8> classes{};std::array<uint8_t,8> ui{};void* ui_pointer=ui.data();
+    skg::field<uint32_t>(classes.data(),0)=7;
+    skg::field<void*>(t_live.data(),0x2BF4)=classes.data();skg::field<void*>(t_live.data(),0x2BF8)=classes.data()+classes.size();
+    skg::field<void*>(ui.data(),4)=classes.data()+8;a_speech_ui=uintptr_t(&ui_pointer);
+    C.cast_tracked=[]{return true;};C.class_gate=[](uint32_t index){CHECK(index==7);return t_granted;};
+    speech_apply();CHECK(pending.empty()&&value(t_live.data(),0)==1&&!state().gesture);
+    t_granted=true;
+    for(unsigned i=0;i<128;++i){
+        speech_apply();CHECK(pending.size()==1&&t_allocations.size()==1&&state().gesture);
+        CHECK(value(pending.front().before,0)==1&&pending.front().speech==ui.data());
+    }
+    CHECK(value(t_live.data(),0)==129&&!t_failed);
+    editor_native::drain(nullptr);CHECK(pending.size()==1&&state().gesture);
+    // A delayed text finalizer may never apply to a replaced logical epoch.
+    ++t_scope.epoch;editor_native::drain(nullptr);
+    CHECK(pending.empty()&&t_allocations.empty()&&!state().gesture&&!t_failed);
+}
+void test_pose_refresh_preserves_authored_audio(){
+    reset();C.extended_poses_tracked=[]{return true;};t_audio_drift=true;
+    auto* marker=t_rows[t_live.data()].data()+4;
+    skg::field<float>(marker,0x1E0)=1.f;skg::field<float>(marker,0x1E4)=.375f;
+    for(unsigned i=0;i<64;++i){
+        apply_marker_state(t_data.data(),marker,0);
+        select_native(t_tool_pointer,t_actors[0].data());ground_step(nullptr);
+        CHECK(skg::field<float>(marker,0x1E0)==1.f&&skg::field<float>(marker,0x1E4)==.375f);
+        CHECK(value(t_live.data(),0)==99.f); // The pose still applied.
+    }
+    // A real parameter setter supplies its new value before transform refresh.
+    skg::field<float>(marker,0x1E0)=1.25f;apply_marker_state(t_data.data(),marker,0);
+    CHECK(skg::field<float>(marker,0x1E0)==1.25f&&skg::field<float>(marker,0x1E4)==.375f);
+    t_active=false;apply_marker_state(t_data.data(),marker,0);
+    CHECK(skg::field<float>(marker,0x1E0)!=1.25f);
+}
+void test_card_action_scope(){
+    reset();original_card_action=t_card_action;t_card_calls=0;
+    for(auto id:{0x073272B0u}){
+        t_card_id=id;CHECK(card_action(t_tool_pointer,17,&t_card_id,23));
+        CHECK(!t_card_calls && !t_failed && !state().gesture);
+    }
+    t_card_id=0x07464588;CHECK(!card_action(t_tool_pointer,17,&t_card_id,23));CHECK(t_card_calls==1);
+    t_card_id=0x073D54A0;CHECK(!card_action(t_tool_pointer,17,&t_card_id,23));CHECK(t_card_calls==2);
+    t_active=false;t_card_id=0x073272B0;CHECK(!card_action(t_tool_pointer,17,&t_card_id,23));CHECK(t_card_calls==3);
+}
+void test_cast_actor_rebuild_keeps_marker_identity(){
+    for(unsigned changed=0;changed<2;++changed){
+        reset();begin();const auto before=bindings;
+        t_retired_actor=true;
+        if(changed)skg::field<uint32_t>(t_rows[t_live.data()].data()+4,0)=7;
+        commit(t_data.data());CHECK(pending.size()==1);
+        if(changed)CHECK(pending.front().after_bindings.at(0)!=before.at(0));
+        else CHECK(pending.front().after_bindings==before);
+    }
+}
+void test_script_cast_callback_keeps_bindings(){
+    reset();std::array<uint8_t,0x24> script{},settings{};std::array<uint8_t,0x10> message{};
+    skg::field<void*>(t_display.data(),0x18)=script.data();skg::field<void*>(script.data(),0x18)=settings.data();
+    skg::field<void*>(settings.data(),0x10)=t_layout.data();skg::field<uint32_t>(settings.data(),0x20)=7;
+    a_layout_find=uintptr_t(t_inspector_root);original_script_input=t_script_input;
+    C.cast_tracked=[]{return true;};C.class_gate=[](uint32_t index){CHECK(index==7);return t_granted;};
+    CHECK(!script_input(script.data()+8,&t_card_id,message.data()));CHECK(pending.empty() && !input_cast);
+    t_granted=true;CHECK(script_input(script.data()+8,&t_card_id,message.data()));
+    CHECK(gesture_cast && !input_cast && pending.size()==1 && value(t_live.data(),0)==2);
+}
 }
 namespace game { uint32_t mode_id(){return modes::kScenario;} }
 namespace sui {
 void set_enabled(Win,bool){CHECK(false);} void release(Win){CHECK(false);} void add_ref(Win){CHECK(false);}
-uint32_t control_id(Win){CHECK(false);return 0;} uint32_t flags(Win){CHECK(false);return 0;}
+uint32_t control_id(Win w){CHECK(w==&t_card_id);return t_card_id;} uint32_t flags(Win){CHECK(false);return 0;}
 std::vector<Win> children(Win){CHECK(false);return {};}
+Win parent(Win){CHECK(false);return nullptr;}bool visible(Win){CHECK(false);return false;}
 }
 namespace {
 std::array<uint8_t,0x318> v_camera,v_replacement;
@@ -289,6 +489,24 @@ static void test_large_transform_without_roster_work(){
     reset();CHECK(t_allocations.empty());
 }
 int main(){
+    // The native multi-select picker invokes import once for each selected key.
+    // None may overwrite an earlier selection while document ownership waits.
+    reset();C.cast_tracked=[] {return true;};C.structure_gate=[](uint32_t index){CHECK(index==0);return false;};
+    for(uint32_t key=1;key<=33;++key){editor::ResourceKey asset{key,7,9};CHECK(import_native(t_data.data(),&asset)==UINT32_MAX);}
+    CHECK(held_import && held_import->size()==32);
+    for(size_t i=0;i<held_import->size();++i)CHECK((*held_import)[i].instance==i+1);
+    editor::ResourceKey duplicate{1,7,9};CHECK(import_native(t_data.data(),&duplicate)==UINT32_MAX);CHECK(held_import->size()==32);
+    continue_input(nullptr);CHECK(held_import->size()==32 && t_allocations.empty());
+    ++t_scope.epoch;continue_input(nullptr);CHECK(!held_import && t_allocations.empty());
+    test_pending_press();
+    test_card_action_scope();
+    test_cast_actor_rebuild_keeps_marker_identity();
+    test_script_cast_callback_keeps_bindings();
+    test_pending_class_removal();
+    test_palette_removal_waits_before_ui_and_history();
+    test_pending_palette_drag();
+    test_coalesced_speech();
+    test_pose_refresh_preserves_authored_audio();
     test_large_transform_without_roster_work();
     test_local_view();
     using namespace editor_native;

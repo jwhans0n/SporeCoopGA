@@ -393,7 +393,7 @@ struct Controller::Impl {
         return true;
     }
     bool queue_transfer(uint8_t to, const w::Context& ctx, w::TransferKind kind, Buffer bytes, std::string& error, const std::string& known_hash = {}) {
-        if (!bytes || bytes->empty() || bytes->size() > (kind == w::TransferKind::Resources ? w::kResourceBytes : kind == w::TransferKind::Baseline ? w::kStateBytes : kind == w::TransferKind::Join ? w::kJoinBytes : w::kOperationBytes)) { error = "Invalid editor transfer size."; return false; }
+        if (!bytes || bytes->empty() || bytes->size() > ((kind == w::TransferKind::Resources || kind == w::TransferKind::Assets) ? w::kResourceBytes : kind == w::TransferKind::Baseline ? w::kStateBytes : kind == w::TransferKind::Join ? w::kJoinBytes : w::kOperationBytes)) { error = "Invalid editor transfer size."; return false; }
         auto& ch = channels[to];
         bool retained = staged && (staged->bytes == bytes || staged->broadcast_bytes == bytes);
         for (const auto& [id, other] : channels) { (void)id; for (const auto& item : other.ordered) if (auto* t = std::get_if<Transfer>(&item); t && t->bytes == bytes) retained = true; }
@@ -498,6 +498,7 @@ struct Controller::Impl {
     void progress_ready() {
         if (pending_control) return;
         w::Control progress{w::ControlKind::HostPreparePlaytest, view.playtest_round, view.playtest_revision, false, ready_mask(), view.playtest_participants};
+        progress.mode=view.playtest_mode;progress.tester=view.playtest_tester;
         broadcast({context(), progress});
         if (std::any_of(view.members.begin(), view.members.end(), [](const auto& pair) { return pair.second.phase != Phase::Preparing || !pair.second.ready; })) return;
         auto begin = progress; begin.kind = w::ControlKind::HostBeginPlaytest; std::string error;
@@ -667,7 +668,10 @@ void Controller::Impl::lease_reply(const w::LeaseReply& reply, Revision issued_r
         if (!reply.result.accepted()) report(reply.result.reason.empty() ? "The editing lease was already released or expired." : reply.result.reason);
         return;
     }
-    if (!reply.result.accepted()) { report(reply.result.reason.empty() ? "The editing lease was rejected." : reply.result.reason); return; }
+    if (!reply.result.accepted()) {
+        if(callbacks.lease_denied)callbacks.lease_denied(pending.request.scopes);
+        report(reply.result.reason.empty() ? "The editing lease was rejected." : reply.result.reason); return;
+    }
     for (auto lease : reply.result.leases) {
         if (lease.owner != view.local) { freeze(0, "A lease reply assigned another player's capability."); return; }
         if (stale_grant(reply.serial,lease.scope)) continue;
@@ -708,10 +712,12 @@ void Controller::Impl::control(uint8_t from, const w::Control& command)
             member.ready = command.ready; progress_ready(); return;
         }
         if (command.kind == w::ControlKind::HostPreparePlaytest) {
+            if(command.mode==w::PlaytestMode::Solo && (!view.members.contains(command.tester.slot) || view.members.at(command.tester.slot).peer!=command.tester)){report("The solo tester is no longer a current collaborator");return;}
             if (view.phase != Phase::Ready || !held_requests.empty() || !authoring_ready() || command.serial != round + 1 || command.revision != context().revision ||
                 std::any_of(view.members.begin(), view.members.end(), [&](const auto& pair) { return pair.second.phase != Phase::Ready || pair.second.applied_revision != context().revision; })) { report("Every editor participant must catch up before group playtest."); return; }
             revoke_leases(); view.phase = Phase::Preparing; round = command.serial;
             view.playtest_round = round; view.playtest_revision = command.revision;
+            view.playtest_mode=command.mode;view.playtest_tester=command.tester;
             view.playtest_participants = 0;
             for (const auto& [id, member] : view.members) { (void)member; if (id < 4) view.playtest_participants |= uint8_t(1u << id); }
             for (auto& [id, member] : view.members) { (void)id; member.ready = false; member.phase = Phase::Preparing; }
@@ -729,13 +735,14 @@ void Controller::Impl::control(uint8_t from, const w::Control& command)
     if (from || command.serial < view.playtest_round) return;
     if (command.kind == w::ControlKind::HostPreparePlaytest) {
         if (command.serial == view.playtest_round && view.phase == Phase::Preparing && command.revision == view.playtest_revision) {
-            if (command.participant_mask != view.playtest_participants) { freeze(0, "The host changed the immutable playtest roster."); return; }
+            if (command.participant_mask != view.playtest_participants || command.mode!=view.playtest_mode || command.tester!=view.playtest_tester) { freeze(0, "The host changed the immutable playtest roster."); return; }
             set_ready_mask(command.ready_mask); return;
         }
         if (view.phase != Phase::Ready || command.serial <= view.playtest_round || command.revision != context().revision) return;
         if (!(command.participant_mask & uint8_t(1u << view.local.slot))) { freeze(0, "This playtest round omitted its participating recipient."); return; }
         revoke_leases(); view.phase = Phase::Preparing; view.playtest_round = command.serial; view.playtest_revision = command.revision;
         view.playtest_participants = command.participant_mask;
+        view.playtest_mode=command.mode;view.playtest_tester=command.tester;
         for (uint8_t id = 0; id < 4; ++id) if ((command.participant_mask >> id) & 1) {
             if (!view.members.contains(id)) { Member m; m.peer = {id, 0}; m.name = session.name_of(id); view.members[id] = m; }
             view.members[id].phase = Phase::Preparing;
@@ -744,7 +751,7 @@ void Controller::Impl::control(uint8_t from, const w::Control& command)
         if (!invoke_control(command, error)) freeze(0, error);
     } else if (command.kind == w::ControlKind::HostBeginPlaytest) {
         if (view.phase != Phase::Preparing || command.serial != view.playtest_round || command.revision != view.playtest_revision) return;
-        if (command.participant_mask != view.playtest_participants || command.ready_mask != view.playtest_participants) { freeze(0, "The host began a group playtest without its complete immutable roster confirmations."); return; }
+        if (command.participant_mask != view.playtest_participants || command.ready_mask != view.playtest_participants || command.mode!=view.playtest_mode || command.tester!=view.playtest_tester) { freeze(0, "The host began a group playtest without its complete immutable roster confirmations."); return; }
         if (!invoke_control(command, error)) { freeze(0, error); return; }
         set_ready_mask(command.ready_mask); view.phase = Phase::Playing;
         for (auto& [id, member] : view.members) { (void)id; member.phase = Phase::Playing; }
@@ -796,6 +803,14 @@ void Controller::Impl::transfer(uint8_t from, const w::Message& message)
         try { if (!callbacks.apply_resources || !callbacks.apply_resources(bytes, message.context, error)) { freeze(0, error.empty() ? "Native resource import is unavailable or failed." : error); return; } }
         catch (...) { freeze(0, "Native resource import threw."); return; }
         ch.resources = true; if (view.phase == Phase::Joining) view.phase = Phase::Syncing;
+    } else if(kind==w::TransferKind::Assets){
+        if(!hosting || !view.members.contains(from) || view.phase!=Phase::Ready){report("Cast content arrived outside shared authoring");return;}
+        net::Reader reader(bytes.data(),bytes.size());OperationId operation;
+        operation.author.slot=reader.u8();operation.author.generation=reader.u32();
+        if(!reader.raw(&operation.sequence,8) || !reader.raw(&operation.epoch,8) || !operation.sequence ||
+           operation.author!=view.members.at(from).peer || operation.epoch!=context().epoch || message.context.revision>context().revision){report("Cast content has stale or foreign ownership");return;}
+        std::vector<uint8_t> content(reader.cur(),reader.cur()+reader.left());
+        if(!callbacks.assets || !callbacks.assets(operation,content,error))report(error.empty()?"Cast content was rejected":error);
     } else if (kind == w::TransferKind::Baseline) {
         State baseline; if (!w::decode_state(bytes, baseline, error)) { freeze(0, error); return; }
         const auto& d = baseline.document;
@@ -874,9 +889,11 @@ void Controller::Impl::message(uint8_t from, w::Message message)
     if (hosting && (!view.members.contains(from) || view.members.at(from).phase == Phase::Frozen)) return;
     if (auto* command = std::get_if<w::Command>(&message.payload)) {
         const bool request=command->kind==w::CommandKind::RequestExport || command->kind==w::CommandKind::RequestPlaytest ||
-            command->kind==w::CommandKind::ReplyPlaytest || command->kind==w::CommandKind::EndExport;
-        const bool reply=command->kind==w::CommandKind::ReplyPlaytest && view.phase==Phase::Preparing;
-        if ((message.context.revision == context().revision || (request && message.context.revision<context().revision)) && (view.phase == Phase::Ready || reply) && callbacks.command)
+            command->kind==w::CommandKind::ReplyPlaytest || command->kind==w::CommandKind::RequestSolo || command->kind==w::CommandKind::ReplySolo || command->kind==w::CommandKind::EndExport;
+        const bool reply=(command->kind==w::CommandKind::ReplyPlaytest || command->kind==w::CommandKind::ReplySolo) && view.phase==Phase::Preparing;
+        const bool solo_return=hosting && command->kind==w::CommandKind::ReturnSolo && view.phase==Phase::Playing &&
+            view.playtest_mode==w::PlaytestMode::Solo && command->actor==view.playtest_tester && command->serial==view.playtest_round;
+        if ((message.context.revision == context().revision || (request && message.context.revision<context().revision)) && (view.phase == Phase::Ready || reply || solo_return) && callbacks.command)
             callbacks.command(from, *command);
         return;
     }
@@ -1240,6 +1257,14 @@ bool Controller::submit(Request request, std::string& error)
     if (i.hosting) return i.queue_local(std::move(request), bytes.size(), error);
     return i.queue(0, {{ctx.project, ctx.epoch, request.base_revision}, request}, false, error);
 }
+bool Controller::upload_assets(OperationId operation,const std::vector<uint8_t>& bytes,std::string& error){
+    auto& i=*impl_;
+    if(i.view.phase!=Phase::Ready || operation.author!=i.view.local || operation.epoch!=i.context().epoch || !operation.sequence || bytes.empty() || bytes.size()>w::kResourceBytes-25){error="Invalid cast content upload scope or size";return false;}
+    if(i.hosting)return i.callbacks.assets && i.callbacks.assets(operation,bytes,error);
+    net::Writer packet;packet.u8(operation.author.slot);packet.u32(operation.author.generation);
+    packet.raw(&operation.sequence,8);packet.raw(&operation.epoch,8);packet.raw(bytes.data(),bytes.size());
+    return i.queue_transfer(0,i.context(),w::TransferKind::Assets,std::make_shared<const std::vector<uint8_t>>(std::move(packet.data)),error);
+}
 
 namespace {
 template<class Impl>
@@ -1301,8 +1326,10 @@ bool Controller::set_presence(w::Presence presence, std::string& error)
 bool Controller::send_command(w::Command command, std::string& error, uint8_t to)
 {
     auto& i = *impl_;
-    const bool reply=command.kind==w::CommandKind::ReplyPlaytest && i.hosting && i.view.phase==Phase::Preparing;
-    if ((i.view.phase != Phase::Ready && !reply) || command.revision > i.context().revision) {
+    const bool reply=(command.kind==w::CommandKind::ReplyPlaytest || command.kind==w::CommandKind::ReplySolo) && i.hosting && i.view.phase==Phase::Preparing;
+    const bool solo_return=command.kind==w::CommandKind::ReturnSolo && !i.hosting && i.view.phase==Phase::Playing &&
+        i.view.playtest_mode==w::PlaytestMode::Solo && command.actor==i.view.local && command.actor==i.view.playtest_tester && command.serial==i.view.playtest_round && command.revision==i.context().revision;
+    if ((i.view.phase != Phase::Ready && !reply && !solo_return) || command.revision > i.context().revision) {
         error = "The editor command no longer matches the current draft"; return false;
     }
     net::Writer check;
@@ -1350,11 +1377,13 @@ bool Controller::acknowledge_saved(const w::Saved& saved, std::string& error)
     if (!i.queue(0, {i.context(), w::SavedApplied{saved}}, true, error)) return false;
     i.local_saved_ack = saved.serial; error.clear(); return true;
 }
-bool Controller::prepare_playtest(std::string& error)
+bool Controller::prepare_playtest(std::string& error,w::PlaytestMode mode,Peer tester)
 {
     auto& i = *impl_;
     if (!i.hosting || i.view.phase != Phase::Ready || i.round == UINT64_MAX) { error = "Only a ready host can prepare the next group playtest."; return false; }
-    return i.queue_local(w::Control{w::ControlKind::HostPreparePlaytest, i.round + 1, i.context().revision, false, 0}, 64, error);
+    w::Control command{w::ControlKind::HostPreparePlaytest, i.round + 1, i.context().revision, false, 0};
+    command.mode=mode;command.tester=tester;
+    return i.queue_local(command,64,error);
 }
 bool Controller::ready_playtest(bool ready, std::string& error)
 {

@@ -72,6 +72,7 @@ void undo();
 void redo();
 void save();
 void playtest();
+void return_to_editor();
 void cancel_playtest(); // Host-only cancellation of this preparation round.
 void set_ready(bool);
 void recover();

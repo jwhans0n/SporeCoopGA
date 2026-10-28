@@ -1763,6 +1763,7 @@ static void apply_roster(void* argument)
 }
 
 static uint32_t g_received_goals;
+static uint64_t g_applied_goals_run;
 static bool valid_actor_state(const ActorState& state, bool pose)
 {
     return (!pose || (finite(state.position) && std::isfinite(state.orientation.x) && std::isfinite(state.orientation.y) &&
@@ -1866,6 +1867,7 @@ static void apply_goals(void* arg)
         if (task->state >= 3 && task->state <= 4 && skg::field<int>(p, 0x90) != task->state &&
             !(task->state==3 && C.held && C.held())) native_state(p, task->state);
         ++g_goal_updates;
+        g_applied_goals_run=task->run;
     }
     g_applying = false;
 }
@@ -2238,6 +2240,7 @@ bool terminal_message_allowed(void* p, uint32_t type)
 static void reset_replication()
 {
     g_run = 0; g_sequence = g_goal_sequence = g_received_goals = 0;
+    g_applied_goals_run=0;
     g_pending_world_tasks.clear(); ++g_world_task_generation; g_world_task_queued = g_world_task_overflow = false;
     g_admitted_hit.clear();
     g_pending_social.clear(); ++g_social_generation; g_social_queued = g_social_overflow = false;
@@ -2451,6 +2454,12 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
 }
 
 bool available() { return g_ok; }
+bool ready_for_run(uint64_t expected){
+    if(!expected || !active() || g_run!=expected || run()!=expected || !g_world_error.empty() || !play())return false;
+    if(host())return g_goal_sequence!=0;
+    return g_applied_goals_run==expected && g_roster_sequence &&
+        std::all_of(g_roster_received.begin(),g_roster_received.end(),[](bool received){return received;});
+}
 adventure_pickups::Ctx pickups_context()
 {
     adventure_pickups::Ctx context;

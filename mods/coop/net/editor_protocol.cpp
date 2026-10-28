@@ -47,18 +47,19 @@ template<class T> struct Optional<std::optional<T>> : std::true_type {};
 template<class T> struct Variant : std::false_type {};
 template<class... T> struct Variant<std::variant<T...>> : std::true_type {};
 template<class T> constexpr unsigned maximum() {
-    if constexpr(std::is_same_v<T,ValueKind>) return 7;
+    if constexpr(std::is_same_v<T,ValueKind>) return unsigned(ValueKind::Structured);
     if constexpr(std::is_same_v<T,Field>) return 3;
     if constexpr(std::is_same_v<T,CheckKind>) return 2;
     if constexpr(std::is_same_v<T,ScopeKind>) return 4;
-    if constexpr(std::is_same_v<T,MutationKind>) return 3;
+    if constexpr(std::is_same_v<T,MutationKind>) return unsigned(MutationKind::DeleteClass);
     if constexpr(std::is_same_v<T,Intent>) return 2;
     if constexpr(std::is_same_v<T,Code>) return unsigned(Code::Busy);
-    if constexpr(std::is_same_v<T,TransferKind>) return 4;
+    if constexpr(std::is_same_v<T,TransferKind>) return unsigned(TransferKind::Assets);
     if constexpr(std::is_same_v<T,LeaseAction>) return 2;
     if constexpr(std::is_same_v<T,ControlKind>) return 6;
     if constexpr(std::is_same_v<T,PresencePhase>) return 7;
-    if constexpr(std::is_same_v<T,CommandKind>) return unsigned(CommandKind::ExitEditor);
+    if constexpr(std::is_same_v<T,CommandKind>) return unsigned(CommandKind::ReturnSolo);
+    if constexpr(std::is_same_v<T,PlaytestMode>)return unsigned(PlaytestMode::Solo);
     return 0;
 }
 #define FIELDS(T,...) template<class A> void fields(A& a,T& v) { a(__VA_ARGS__); }
@@ -69,6 +70,7 @@ FIELDS(Vec3,v.x,v.y,v.z)
 FIELDS(Rotation,v.x,v.y,v.z,v.w)
 FIELDS(Pose,v.position,v.rotation,v.scale)
 FIELDS(ResourceKey,v.instance,v.type,v.group)
+FIELDS(StructuredValue,v.format,v.bytes,v.references)
 FIELDS(FieldKey,v.field,v.property)
 FIELDS(PropertySpec,v.kind,v.minimum,v.maximum,v.max_text,v.optional,v.nullable)
 FIELDS(Placement,v.object,v.class_id,v.act_id,v.protected_object,v.position,v.rotation,v.scale,v.properties,v.revision,v.field_revisions)
@@ -79,11 +81,12 @@ FIELDS(Check,v.object,v.kind,v.field,v.expected)
 FIELDS(Scope,v.kind,v.object,v.field)
 FIELDS(Lease,v.scope,v.owner,v.token,v.expires)
 FIELDS(LeaseToken,v.scope,v.token)
-FIELDS(Mutation,v.kind,v.target,v.initial,v.field,v.value,v.expected,v.clone_pose)
+FIELDS(Mutation,v.kind,v.target,v.initial,v.field,v.value,v.expected,v.clone_pose,v.class_initial)
 FIELDS(Request,v.project,v.epoch,v.operation,v.base_revision,v.intent,v.summary,v.mutations,v.dependencies,v.leases)
 FIELDS(ObjectEdit,v.object,v.before,v.after,v.expected)
 FIELDS(FieldEdit,v.object,v.field,v.before,v.after,v.expected,v.restored_revision,v.restored_object_revision)
-FIELDS(Patch,v.objects,v.fields,v.dependencies)
+FIELDS(ClassEdit,v.object,v.before,v.after,v.expected)
+template<class A> void fields(A& a,Patch& v){a(v.objects,v.fields,v.dependencies);if(a.extended)a(v.classes);}
 FIELDS(Change,v.operation,v.gesture,v.intent,v.revision,v.summary,v.patch,v.inverse,v.allocated,v.clone_sources)
 FIELDS(Decision,v.code,v.reason,v.revision,v.change)
 FIELDS(Gesture,v.operation,v.original_revision,v.transition_revision,v.summary,v.applied,v.redo_available,v.undo,v.redo)
@@ -104,11 +107,11 @@ FIELDS(Coverage,v.durable_revision,v.state_hash)
 FIELDS(Saved,v.saved_revision,v.resource,v.serial)
 FIELDS(SavedApplied,v.saved)
 FIELDS(Leave,v.reason)
-FIELDS(Control,v.kind,v.serial,v.revision,v.ready,v.ready_mask,v.participant_mask)
+FIELDS(Control,v.kind,v.serial,v.revision,v.ready,v.ready_mask,v.participant_mask,v.mode,v.tester)
 FIELDS(Command,v.kind,v.serial,v.revision,v.actor,v.accepted)
 #undef FIELDS
 struct Encode {
-    net::Writer w; size_t limit;
+    net::Writer w; size_t limit; bool extended=true;
     template<class... T> void operator()(const T&... v) { (one(v),...); }
     template<class T> void one(const T& v) {
         if constexpr(std::is_same_v<T,bool>) w.u8(v?1:0);
@@ -119,6 +122,8 @@ struct Encode {
         } else if constexpr(std::is_same_v<T,std::string>) {
             need(v.size()<=1024 && text(v),"invalid text"); w.u32(uint32_t(v.size()));
             if(!v.empty()) w.raw(v.data(),v.size());
+        } else if constexpr(std::is_same_v<T,std::vector<uint8_t>>) {
+            need(v.size()<=Limits{}.structured_bytes,"binary property exceeds bound");w.u32(uint32_t(v.size()));if(!v.empty())w.raw(v.data(),v.size());
         } else if constexpr(std::is_same_v<T,ProjectId>) w.raw(v.data(),v.size());
         else if constexpr(Optional<T>::value) { one(bool(v)); if(v) one(*v); }
         else if constexpr(Variant<T>::value) { w.u8(uint8_t(v.index())); std::visit([&](const auto& x){one(x);},v); }
@@ -133,7 +138,7 @@ struct Encode {
     }
 };
 struct Decode {
-    net::Reader r; size_t budget;
+    net::Reader r; size_t budget; bool extended=true;
     explicit Decode(const std::vector<uint8_t>& bytes):r(bytes.data(),bytes.size()),budget(std::min(kStateBytes*2,bytes.size()*8+(1u<<20))) {}
     void claim(size_t n) { need(n<=budget,"allocation budget exceeded"); budget-=n; }
     template<class... T> void operator()(T&... v) { (one(v),...); }
@@ -152,6 +157,8 @@ struct Decode {
         } else if constexpr(std::is_same_v<T,std::string>) {
             const size_t n=r.u32(); need(n<=1024 && n<=r.left(),"invalid text length"); claim(n);
             v.assign(reinterpret_cast<const char*>(r.cur()),n); r.skip(n); need(text(v),"invalid UTF-8 text");
+        } else if constexpr(std::is_same_v<T,std::vector<uint8_t>>) {
+            const size_t n=r.u32();need(n<=Limits{}.structured_bytes && n<=r.left(),"invalid binary property size");claim(n);v.assign(r.cur(),r.cur()+n);r.skip(n);
         } else if constexpr(std::is_same_v<T,ProjectId>) need(r.raw(v.data(),v.size()),"truncated project");
         else if constexpr(Optional<T>::value) { bool present=false; one(present); if(present) {v.emplace();one(*v);}else v.reset(); }
         else if constexpr(Variant<T>::value) variant(v,r.u8());
@@ -211,7 +218,7 @@ void validate(const Join& value) {
     }
 }
 size_t transfer_limit(TransferKind kind) {
-    return kind==TransferKind::Resources?kResourceBytes:kind==TransferKind::Baseline?kStateBytes:kind==TransferKind::Join?kJoinBytes:kOperationBytes;
+    return (kind==TransferKind::Resources || kind==TransferKind::Assets)?kResourceBytes:kind==TransferKind::Baseline?kStateBytes:kind==TransferKind::Join?kJoinBytes:kOperationBytes;
 }
 template<class T> bool encode(const T& object,std::vector<uint8_t>& bytes,size_t limit,std::string& error) {
     try { validate(object); Encode e{{},limit}; e.one(object); bytes=std::move(e.w.data); error.clear(); return true; }
@@ -227,10 +234,10 @@ void validate_payload(const Message& m) {
     std::visit([&](const auto& p){
         using T=std::decay_t<decltype(p)>;
         if constexpr(std::is_same_v<T,Command>) need(p.serial && peer(p.actor) && p.revision==m.context.revision &&
-            unsigned(p.kind)<=unsigned(CommandKind::ExitEditor) &&
-            (!p.accepted || p.kind==CommandKind::ReplyPlaytest || p.kind==CommandKind::FinishExport || p.kind==CommandKind::EndExport),"invalid native editor command");
+            unsigned(p.kind)<=unsigned(CommandKind::ReturnSolo) &&
+            (!p.accepted || p.kind==CommandKind::ReplyPlaytest || p.kind==CommandKind::ReplySolo || p.kind==CommandKind::FinishExport || p.kind==CommandKind::EndExport),"invalid native editor command");
         if constexpr(std::is_same_v<T,Offer>) need(p.schema==kSchema && !p.name.empty() && p.name.size()<=256 && peer(p.assigned) && p.assigned.slot!=0 && peer(p.host) && p.host.slot==0,"unsupported offer");
-        if constexpr(std::is_same_v<T,TransferBegin>) need(unsigned(p.kind)<=unsigned(TransferKind::Join) && p.serial && p.total && p.total<=transfer_limit(p.kind) && hash(p.hash),"invalid transfer header");
+        if constexpr(std::is_same_v<T,TransferBegin>) need(unsigned(p.kind)<=unsigned(TransferKind::Assets) && p.serial && p.total && p.total<=transfer_limit(p.kind) && hash(p.hash),"invalid transfer header");
         if constexpr(std::is_same_v<T,Join>) {validate(p);need(p.durable_revision<=m.context.revision,"join durable revision exceeds its offered scope");}
         if constexpr(std::is_same_v<T,TransferChunk>) need(p.serial && !p.bytes.empty() && p.bytes.size()<=kChunkBytes && p.offset%kChunkBytes==0,"invalid transfer chunk");
         if constexpr(std::is_same_v<T,TransferEnd>) need(p.serial,"invalid transfer end");
@@ -260,7 +267,8 @@ void validate_payload(const Message& m) {
         if constexpr(std::is_same_v<T,Control>) need(unsigned(p.kind)<=unsigned(ControlKind::HostEditorResumed) && p.serial && p.revision==m.context.revision &&
             (p.kind==ControlKind::GuestReadyPlaytest || !p.ready) && p.ready_mask<=15 && p.participant_mask<=15 &&
             ((p.kind!=ControlKind::HostPreparePlaytest && p.kind!=ControlKind::HostBeginPlaytest) || ((p.participant_mask&1) && !(p.ready_mask&~p.participant_mask))) &&
-            ((p.kind==ControlKind::HostPreparePlaytest || p.kind==ControlKind::HostBeginPlaytest) || !p.ready_mask),"invalid playtest control");
+            ((p.kind==ControlKind::HostPreparePlaytest || p.kind==ControlKind::HostBeginPlaytest) || !p.ready_mask) &&
+            p.mode<=PlaytestMode::Solo && ((p.mode==PlaytestMode::Together && p.tester==Peer{}) || (p.mode==PlaytestMode::Solo && peer(p.tester) && ((p.participant_mask>>p.tester.slot)&1))),"invalid playtest control");
     },m.payload);
 }
 void direction(const Message& m,Peer sender,bool host) {
@@ -273,11 +281,11 @@ void direction(const Message& m,Peer sender,bool host) {
     if(const auto* p=std::get_if<Presence>(&m.payload)) need(host || (p->author==sender && !p->ownership && p->phase==PresencePhase::Ready && p->preview_lease==LeaseToken{}),"presence author or authority differs from session peer");
     if(const auto* p=std::get_if<TransformPreview>(&m.payload)) need(host||p->author==sender,"preview author differs from session peer");
     if(const auto* t=std::get_if<TransferBegin>(&m.payload))
-        need((t->kind==TransferKind::Request || t->kind==TransferKind::Join) ? !host : host,"invalid transfer authority");
+        need((t->kind==TransferKind::Request || t->kind==TransferKind::Join || t->kind==TransferKind::Assets) ? !host : host,"invalid transfer authority");
     if(const auto* c=std::get_if<Control>(&m.payload))
         need((c->kind==ControlKind::GuestReadyPlaytest || c->kind==ControlKind::GuestEditorReturned) ? !host : host,"invalid playtest authority");
     if(const auto* c=std::get_if<Command>(&m.payload)) {
-        const bool guest=c->kind==CommandKind::RequestPlaytest || c->kind==CommandKind::RequestExport ||
+        const bool guest=c->kind==CommandKind::RequestPlaytest || c->kind==CommandKind::RequestExport || c->kind==CommandKind::RequestSolo || c->kind==CommandKind::ReturnSolo ||
             c->kind==CommandKind::ExportHeld || c->kind==CommandKind::FinishExport;
         need(guest ? (!host && c->actor==sender) : host,"invalid native editor command authority");
     }
@@ -293,12 +301,15 @@ constexpr uint64_t kClassSettingsState=UINT64_C(0x3153504344455053);
 bool encode_state(const State& s,std::vector<uint8_t>& b,std::string& error) {
     try {
         validate(s);Encode e{{},kStateBytes};
-        if(!s.document.class_schema.empty() || !s.document.class_settings.empty()){
+        const bool current=s.document.next_class || std::any_of(s.document.class_schema.begin(),s.document.class_schema.end(),[](const auto& row){return row.second.kind==ValueKind::Structured;});
+        e.extended=current;
+        if(current || !s.document.class_schema.empty() || !s.document.class_settings.empty()){
             // A legacy state starts with a 16-byte project and nonzero epoch.
             // Zero at byte16 makes this wrapper unambiguous for every valid
             // legacy project identity, including one matching our magic bytes.
-            e(kClassSettingsState,kClassSettingsState,uint64_t(0),uint32_t(1),s,
+            e(kClassSettingsState,kClassSettingsState,uint64_t(0),uint32_t(current?2:1),s,
                 s.document.class_schema,s.document.class_settings);
+            if(current)e(s.document.next_class);
         }else e.one(s);
         b=std::move(e.w.data);error.clear();return true;
     } catch(const std::exception& e){error=e.what();return false;}
@@ -309,10 +320,11 @@ bool decode_state(const std::vector<uint8_t>& b,State& s,std::string& error) {
         uint64_t prefix[3]{};if(b.size()>=sizeof prefix)std::memcpy(prefix,b.data(),sizeof prefix);
         if(prefix[0]==kClassSettingsState && prefix[1]==kClassSettingsState && !prefix[2]){
             uint64_t first=0,second=0,reserved=0;uint32_t version=0;d(first,second,reserved,version);
-            need(version==1,"unsupported class-settings checkpoint extension");d.one(result);
+            need(version==1 || version==2,"unsupported class-settings checkpoint extension");d.extended=version>=2;d.one(result);
             d(result.document.class_schema,result.document.class_settings);
-            need(!result.document.class_schema.empty() || !result.document.class_settings.empty(),"noncanonical empty class-settings extension");
-        }else d.one(result);
+            if(version>=2)d(result.document.next_class);
+            need(!result.document.class_schema.empty() || !result.document.class_settings.empty() || result.document.next_class,"noncanonical empty class-settings extension");
+        }else {d.extended=false;d.one(result);}
         need(d.r.ok() && !d.r.left(),"trailing bytes");validate(result);s=std::move(result);error.clear();return true;
     } catch(const std::exception& e){error=e.what();return false;}
 }

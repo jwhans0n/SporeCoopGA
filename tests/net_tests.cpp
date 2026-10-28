@@ -282,7 +282,7 @@ static void test_session()
 static void test_protocol_versions()
 {
     printf("merged protocol boundary and HELLO version validation\n");
-    CHECK(kProtoVersion == 16 && kDiscoverPorts == 20);
+    CHECK(kProtoVersion == 19 && kDiscoverPorts == 20);
     CHECK(MSG_SPACE == 48 && MSG_ADVENTURE == 52 && MSG_EDITOR == 53);
     Session host;
     std::string err;
@@ -294,7 +294,7 @@ static void test_protocol_versions()
     Connection guest;
     guest.conn_id = 0x12345678;
     Hello old;
-    old.proto = 7;
+    old.proto = 18;
     old.name = "old-version";
     Writer hello;
     old.write(hello);
@@ -303,7 +303,7 @@ static void test_protocol_versions()
     CHECK(guest.build_packet(1000, packet));
     CHECK(Connection::looks_valid(packet.data(), packet.size()));
     auto upstream = packet;
-    upstream[4] = 7;
+    upstream[4] = 18;
     upstream[5] = 0;
     CHECK(!Connection::looks_valid(upstream.data(), upstream.size()));
     bool delivered = false;

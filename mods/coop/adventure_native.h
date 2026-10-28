@@ -34,6 +34,9 @@ bool editor_preview();
 bool editor_preview_matches(const std::array<uint8_t,16>& project, uint64_t epoch, uint64_t round, uint64_t revision);
 // Read-only existing mode/data/resource/key ownership check, before native Stop.
 bool editor_preview_owner();
+// Canonical gameplay identity for the bound group run, or zero while held/stale.
+// Independent native Save As keys must never separate the party's captains.
+uint32_t editor_preview_place();
 void clear_editor_preview();
 
 bool init(const SkHost* host, SkMod* mod, Ctx context);

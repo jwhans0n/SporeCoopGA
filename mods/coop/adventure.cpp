@@ -1382,7 +1382,10 @@ std::string status()
     case Phase::Collecting: return "Preparing adventure content";
     case Phase::Preparing: return g_chosen ? "Waiting for party readiness" : "Choose your captain";
     case Phase::Loading: return "Loading adventure: waiting for every captain";
-    case Phase::Running: return outcome_locked() ? "Adventure finished: applying the shared result" : "Adventure in progress";
+    case Phase::Running:
+        if(outcome_locked())return "Adventure finished: applying the shared result";
+        if(C.launch_report_ready && !C.launch_report_ready())return "Starting Test Together: waiting for shared gameplay";
+        return "Adventure in progress";
     case Phase::Ended:
         if (outcome_locked()) return std::string(g_outcome_success ? "Adventure completed" : "Adventure failed") +
             ": result=" + (g_local_result_applied ? "applied" : "pending") +

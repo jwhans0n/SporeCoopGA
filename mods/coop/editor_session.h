@@ -30,6 +30,8 @@ struct View {
     uint64_t playtest_round = 0;
     uint8_t playtest_participants = 0;
     editor::Revision playtest_revision = 0;
+    editor::wire::PlaytestMode playtest_mode=editor::wire::PlaytestMode::Together;
+    editor::Peer playtest_tester;
     std::map<uint8_t, Member> members;
     std::vector<editor::Lease> local_leases;
     editor::Revision locally_durable = 0;
@@ -93,10 +95,14 @@ struct Callbacks {
     // after the pinned export revision. Native gesture settlement stays separate.
     std::function<bool()> authoring_held;
     std::function<void(uint8_t, const editor::wire::Command&)> command;
+    // A guest's immutable dependencies arrive before its ordered cast request.
+    // This stages owned bytes only; native registration belongs to host apply.
+    std::function<bool(editor::OperationId,const std::vector<uint8_t>&,std::string&)> assets;
     std::function<bool(const editor::State&, std::string&)> apply_baseline;
     editor::Hooks::Native apply_committed, rollback_committed;
     std::function<bool(const editor::State&, const editor::Change&, std::string&)> persist_guest;
     std::function<void(const editor::Decision&)> decision;
+    std::function<void(const std::vector<editor::Scope>&)> lease_denied;
     std::function<void(editor::Peer, const editor::wire::Presence&)> presence;
     std::function<void(editor::Peer, const editor::wire::Coverage&)> coverage;
     std::function<void(const editor::wire::Saved&)> saved;
@@ -132,6 +138,7 @@ public:
     void on_leave(uint8_t id);
     void tick(editor::Time now);
     bool submit(editor::Request, std::string& error);
+    bool upload_assets(editor::OperationId,const std::vector<uint8_t>&,std::string& error);
     // Release quarantines local tokens immediately. Overlapping acquisition is
     // bounded and deferred until the authenticated release decision arrives;
     // lease deadlines begin when that deferred request is actually emitted.
@@ -149,7 +156,7 @@ public:
     // Guest only, after native root application and durable opaque checkpoint
     // completion. Deferring a Saved callback must also defer this acknowledgement.
     bool acknowledge_saved(const editor::wire::Saved&, std::string& error);
-    bool prepare_playtest(std::string& error);
+    bool prepare_playtest(std::string& error,editor::wire::PlaytestMode mode=editor::wire::PlaytestMode::Together,editor::Peer tester={});
     bool ready_playtest(bool, std::string& error);
     bool cancel_playtest(std::string& error);
     bool return_editor(std::string& error);

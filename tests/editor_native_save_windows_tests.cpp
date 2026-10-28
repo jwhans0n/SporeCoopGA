@@ -17,6 +17,8 @@ std::array<uint8_t,0x128> t_data;
 std::array<uint8_t,0x98> t_ui;
 std::array<uint8_t,0x2CB0> t_resource,t_parsed;
 std::array<uint8_t,0x100> t_play;
+std::array<uint8_t,0x160> t_cinematic;
+bool t_end_replaces=false,t_end_held=false;
 void* t_mode_pointer=t_mode.data();
 void* t_rm_pointer;
 std::array<void*,24> t_ui_vtable{},t_manager_vt{},t_database_vt{},t_record_vt{},t_stream_vt{},t_private_vt{};
@@ -64,6 +66,11 @@ int SK_THISCALL t_release_private(void* self){CHECK(self==&t_private);return 0;}
 void SK_THISCALL t_preview(void*,int){}
 void SK_THISCALL t_return(void* self){CHECK(self==t_mode.data());t_order.push_back(3);skg::field<int>(self,0xCC)=1;}
 void SK_THISCALL t_cleanup(void* self){CHECK(self==t_play.data());t_order.push_back(1);}
+void* SK_CDECL t_cinematic_get(){return t_cinematic.data();}
+void SK_THISCALL t_cinematic_end(void* self){CHECK(self==t_cinematic.data());t_order.push_back(0);
+    if(!t_end_held)skg::field<uint32_t>(self,0x2C)=0;
+    if(t_end_replaces)t_mode_pointer=nullptr;
+}
 void SK_THISCALL t_return_display(void* self,int mode){CHECK(self==t_ui.data());CHECK(mode==0);t_order.push_back(2);}
 void SK_THISCALL t_display(void* self,int mode){CHECK(self==t_ui.data());CHECK(mode==0||mode==1);CHECK(!t_shared||mode==0||editor_native_save::owned_native);++t_display_calls;if(mode==1)skg::field<int>(t_mode.data(),0xCC)=2;}
 void SK_THISCALL t_command(void* self,int action){CHECK(self==t_ui.data());++t_command_calls;
@@ -78,6 +85,8 @@ uintptr_t t_sym(const char* name){
         {"SporeCoop::Editor::BeginSaveCopy",uintptr_t(t_begin)},{"SporeCoop::Editor::SaveResourcePipeline",uintptr_t(t_pipeline)},
         {"SporeCoop::Editor::SaveInputHold",uintptr_t(t_hold)},{"SporeCoop::Editor::NativePreview",uintptr_t(t_preview)},
         {"SporeCoop::Editor::NativeReturn",uintptr_t(t_return)},{"SporeCoop::Editor::PreviewCleanup",uintptr_t(t_cleanup)},
+        {"Simulator::cCinematicManager::Get",uintptr_t(t_cinematic_get)},
+        {"SporeCoop::cCinematicManager_EndCinematic",uintptr_t(t_cinematic_end)},
         {"SporeCoop::Editor::ReturnDisplayMode",uintptr_t(t_return_display)},{"SporeCoop::Editor::SelectDisplayMode",uintptr_t(t_display)},
         {"SporeCoop::Editor::PreviewCaptain",uintptr_t(t_captain)},{"SporeCoop::Editor::ValidatePlacement",uintptr_t(t_set_captain)},
         {"SporeCoop::Editor::EditorCommand",uintptr_t(t_command)},
@@ -95,6 +104,7 @@ void t_outside(SkTaskFn fn,void* user){t_tasks.emplace_back(fn,user);}
 void drain(){auto tasks=std::move(t_tasks);t_tasks.clear();for(auto [fn,user]:tasks)fn(user);}
 void poll(){editor_native_save::tick();drain();}
 void reset(){
+    t_cinematic.fill(0);t_end_replaces=t_end_held=false;
     editor_native_save::shutdown();drain();t_mode.fill(0);t_data.fill(0);t_ui.fill(0);t_resource.fill(0);t_parsed.fill(0);t_play.fill(0);t_order.clear();
     t_mode_pointer=t_mode.data();t_rm_pointer=&t_manager;t_gate=t_native_success=t_readback=true;t_truncate=t_gesture=t_no_start=t_unchanged=false;
     t_saved=t_cancelled=t_errors=t_holds=t_closed=t_released=t_native_calls=0;t_replaced=false;t_error.clear();t_saved_key={};
@@ -154,6 +164,16 @@ int main(){
     reset();CHECK(editor_native_save::save_as(error));editor_native_save::tick();editor_native_save::shutdown();drain();CHECK(!t_saved&&!t_cancelled&&!t_errors);
     reset();skg::field<int>(t_mode.data(),0xD0)=1;CHECK(!editor_native_save::playtest(true,error));skg::field<int>(t_mode.data(),0xD0)=0;CHECK(editor_native_save::playtest(true,error));CHECK(skg::field<int>(t_mode.data(),0xCC)==2);CHECK(editor_native_save::playtest(false,error));CHECK(t_order==std::vector<int>({1,2,3}));CHECK(skg::field<int>(t_mode.data(),0xCC)==1);
     reset();t_owned_preview=true;CHECK(editor_native_save::playtest(true,error));t_return_detour(t_mode.data());t_return_detour(t_mode.data());CHECK(t_return_requests==1);CHECK(skg::field<int>(t_mode.data(),0xCC)==2);CHECK(editor_native_save::playtest(false,error));CHECK(skg::field<int>(t_mode.data(),0xCC)==1);CHECK(t_order==std::vector<int>({1,2,3}));
+    for(int terminal:{3,5,6}){
+        reset();CHECK(editor_native_save::playtest(true,error));skg::field<int>(t_play.data(),0x90)=terminal;
+        skg::field<uint32_t>(t_cinematic.data(),0x2C)=1;
+        CHECK(editor_native_save::playtest(false,error));CHECK(t_order==std::vector<int>({0,1,2,3}));
+        CHECK(!skg::field<uint32_t>(t_cinematic.data(),0x2C));
+    }
+    reset();CHECK(editor_native_save::playtest(true,error));skg::field<uint32_t>(t_cinematic.data(),0x2C)=1;t_end_replaces=true;
+    CHECK(!editor_native_save::playtest(false,error));CHECK(t_order==std::vector<int>({0}));
+    reset();CHECK(editor_native_save::playtest(true,error));skg::field<uint32_t>(t_cinematic.data(),0x2C)=1;t_end_held=true;
+    CHECK(!editor_native_save::playtest(false,error));CHECK(t_order==std::vector<int>({0}));
     // Ordinary commands pass through; shared hotkeys cannot exit or replace the
     // draft, or enter raw preview outside the coordinator's readiness barrier.
     reset();for(int mode=0;mode<5;++mode)t_command_detour(t_ui.data(),mode);CHECK(t_command_calls==5);

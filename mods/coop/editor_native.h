@@ -11,6 +11,7 @@
 
 #include "net/editor_document.h"
 #include "editor_native_scale.h"
+#include "editor_native_cast.h"
 #include "sporekit.h"
 
 namespace editor_native {
@@ -100,9 +101,15 @@ struct Ctx {
     std::function<void(const std::string&)> notice;
     // Default true for new/unshared editors; Runtime scopes legacy recovery.
     std::function<bool()> relative_scale_tracked;
+    std::function<bool()> extended_poses_tracked;
+    std::function<bool()> cast_tracked;
     // Native mutation input must be held until this exact selection has leases.
     std::function<bool(const std::vector<editor::ObjectId>&)> gate;
+    std::function<std::optional<editor::Revision>(editor::ObjectId)> object_revision;
     std::function<bool(uint32_t)> structure_gate; // Existing native class ID.
+    std::function<bool(uint32_t)> class_gate;
+    std::function<bool(uint32_t)> remove_class_gate;
+    std::function<bool(const Snapshot&,std::string&)> validate_dependencies;
 };
 
 bool init(const SkHost*, SkMod*, Ctx);
@@ -119,6 +126,10 @@ bool capture(Snapshot&, std::string& error);
 // Initial unsaved baseline: export the active native planet properties into an
 // owned resource copy, as native Save does, without publishing a creation.
 bool capture_draft(Snapshot&, std::string& error);
+// Decode an owned legacy snapshot privately. Does not open/modify the live editor.
+bool expand_snapshot(const Snapshot&,bool relative_scale,Snapshot&,std::string& error);
+// Private recovery copies only: retain class/history revisions and references.
+bool canonicalize_cast_state(editor::State&,std::string& error);
 uint32_t creation_group(); // Native configured group, not a mod-owned namespace.
 bool validate_entry(const std::vector<uint8_t>&, uint32_t act, std::string& error);
 // Outside Present, from the actual active native editor camera. These fail
@@ -138,6 +149,8 @@ bool apply(const editor::Document&, const editor::Change&, const Snapshot* artif
 bool enter(const editor::ResourceKey&, std::string& error);
 // Outside Present. Reads only the selected in-progress native transform.
 bool selection_pose(editor::ObjectId& object, editor::ObjectId& act, editor::Pose& pose);
+// Outside frame, after the current scoped ownership request was denied.
+void deny_input(const std::vector<editor::Scope>&);
 std::string status();
 
 } // namespace editor_native

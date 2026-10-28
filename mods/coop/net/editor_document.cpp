@@ -40,6 +40,7 @@ bool utf8(const std::string& s)
 size_t value_bytes(const Value& v)
 {
     if (auto* s = std::get_if<std::string>(&v)) return 24 + s->size();
+    if (auto* s = std::get_if<StructuredValue>(&v)) return 64 + s->bytes.size() + s->references.size()*16;
     return 40;
 }
 size_t placement_bytes(const Placement& p)
@@ -58,18 +59,27 @@ bool typed(const Value& v, const PropertySpec& spec, const Limits& limits)
 {
     if (v.index() != size_t(spec.kind)) return false;
     switch (spec.kind) {
+    case ValueKind::Position: return position(std::get<Vec3>(v));
+    case ValueKind::Rotation: return rotation(std::get<Rotation>(v));
     case ValueKind::Number: { float x = std::get<float>(v); return finite(x) && x >= spec.minimum && x <= spec.maximum; }
     case ValueKind::Boolean: return true;
     case ValueKind::Integer: { auto x = std::get<int64_t>(v); return static_cast<long double>(x) >= spec.minimum && static_cast<long double>(x) <= spec.maximum; }
     case ValueKind::Text: { const auto& s = std::get<std::string>(v); return s.size() <= std::min<size_t>(spec.max_text, limits.text_bytes) && utf8(s); }
     case ValueKind::Reference: { auto id = std::get<ObjectId>(v); return identity(id) || (spec.nullable && id == ObjectId{}); }
     case ValueKind::Resource: { auto k = std::get<ResourceKey>(v); return (k.instance && k.type) || (spec.nullable && k == ResourceKey{}); }
+    case ValueKind::Structured: {
+        const auto& data=std::get<StructuredValue>(v);
+        if(!data.format || data.bytes.empty() || data.bytes.size()>limits.structured_bytes || data.references.size()>limits.dependencies)return false;
+        std::set<ObjectId> refs;
+        for(auto id:data.references)if(!identity(id) || !refs.insert(id).second)return false;
+        return true;
+    }
     default: return false;
     }
 }
 bool placement_shape(const Placement& p, const Document& d, const Limits& limits, bool versions)
 {
-    if (!identity(p.object) || !d.classes.contains(p.class_id) || !d.acts.contains(p.act_id) ||
+    if (!identity(p.object) || (!d.classes.contains(p.class_id) && !(versions && d.tombstones.contains(p.class_id))) || !d.acts.contains(p.act_id) ||
         !position(p.position) || !rotation(p.rotation) || !finite(p.scale) || p.scale <= 0 || p.scale > 1000 ||
         p.properties.size() > limits.properties || p.field_revisions.size() > d.schema.size() + 3) return false;
     if (versions && p.revision > d.revision) return false;
@@ -86,7 +96,7 @@ bool placement_shape(const Placement& p, const Document& d, const Limits& limits
 bool field_value(FieldKey k, const std::optional<Value>& v, const Document& d, const Limits& limits, ObjectId object = {})
 {
     if (!field_key(k)) return false;
-    const bool settings = d.class_settings.contains(object);
+    const bool settings = d.class_settings.contains(object) || (!d.placements.contains(object) && k.field==Field::Property && d.class_schema.contains(k.property));
     if (settings && k.field != Field::Property) return false;
     if (k.field == Field::Property) {
         const auto& schema = settings ? d.class_schema : d.schema;
@@ -151,9 +161,18 @@ bool check(const Document& d, const Check& c)
 }
 bool patch_shape(const Patch& p, const Document& d, const Limits& l)
 {
-    if (p.objects.size() + p.fields.size() > l.mutations || p.dependencies.size() > l.dependencies) return false;
+    if (p.objects.size() + p.fields.size() + p.classes.size() > l.mutations || p.dependencies.size() > l.dependencies) return false;
     std::set<ObjectId> objects;
     std::set<std::pair<ObjectId, FieldKey>> fields;
+    for(const auto& e:p.classes){
+        if(!identity(e.object) || bool(e.before)==bool(e.after) || !objects.insert(e.object).second || e.expected>d.revision)return false;
+        for(const auto* item:{&e.before,&e.after})if(*item){
+            const auto& c=**item;
+            if(!identity(c.object) || c.class_id!=e.object || !d.acts.contains(c.act_id) || c.revision>d.revision || c.properties.size()>l.properties)return false;
+            for(const auto& [key,v]:c.properties){auto spec=d.class_schema.find(key);if(spec==d.class_schema.end() || !typed(v,spec->second,l))return false;}
+            for(const auto& [key,spec]:d.class_schema)if(!spec.optional && !c.properties.contains(key))return false;
+        }
+    }
     for (const auto& e : p.objects) {
         if (!identity(e.object) || bool(e.before) == bool(e.after) || !objects.insert(e.object).second || e.expected > d.revision) return false;
         for (const auto* v : {&e.before, &e.after})
@@ -223,6 +242,10 @@ size_t bytes(const Patch& p)
     size_t n = 32 + p.dependencies.size() * 48;
     for (const auto& e : p.objects) n += 48 + (e.before ? placement_bytes(*e.before) : 0) + (e.after ? placement_bytes(*e.after) : 0);
     for (const auto& e : p.fields) n += 64 + (e.before ? value_bytes(*e.before) : 0) + (e.after ? value_bytes(*e.after) : 0);
+    for(const auto& e:p.classes)for(const auto* item:{&e.before,&e.after})if(*item){
+        n+=160+(**item).field_revisions.size()*32;
+        for(const auto& [key,v]:(**item).properties){(void)key;n+=16+value_bytes(v);}
+    }
     return n;
 }
 size_t bytes(const State& s) { return bytes(s.document) + history_bytes(s) + decisions_bytes(s) + (s.retired_sequences.size() + s.history_truncated.size()) * 48; }
@@ -242,11 +265,11 @@ bool valid(const Document& d, const Limits& l, std::string& error)
     for (auto id : d.classes) if (!add(id)) return bad("Invalid or reused class identity.");
     for (auto id : d.acts) if (!add(id)) return bad("Invalid or reused act identity.");
     for (const auto& [id, spec] : d.schema)
-        if (!id || spec.kind < ValueKind::Number || spec.kind > ValueKind::Resource || !std::isfinite(spec.minimum) ||
+        if (!id || spec.kind > ValueKind::Structured || !std::isfinite(spec.minimum) ||
             !std::isfinite(spec.maximum) || spec.minimum > spec.maximum || spec.max_text > l.text_bytes ||
             (spec.kind == ValueKind::Text && !spec.max_text)) return bad("Invalid editable-property schema.");
     for(const auto& [id,spec]:d.class_schema)
-        if(!id || spec.kind<ValueKind::Number || spec.kind>ValueKind::Resource || !std::isfinite(spec.minimum) ||
+        if(!id || spec.kind<ValueKind::Number || spec.kind>ValueKind::Structured || !std::isfinite(spec.minimum) ||
            !std::isfinite(spec.maximum) || spec.minimum>spec.maximum || spec.max_text>l.text_bytes ||
            (spec.kind==ValueKind::Text && !spec.max_text))return bad("Invalid class-property schema.");
     std::set<std::pair<ObjectId,ObjectId>> class_acts;
@@ -263,7 +286,7 @@ bool valid(const Document& d, const Limits& l, std::string& error)
                 return bad("Invalid class-property revision.");
     }
     for (const auto& [id, p] : d.placements) {
-        if (!add(id) || id != p.object || !placement_shape(p, d, l, true)) return bad("Invalid placement, field value or revision.");
+        if (!add(id) || id != p.object || !d.classes.contains(p.class_id) || !placement_shape(p, d, l, true)) return bad("Invalid placement, field value or revision.");
         for (const auto& [property, v] : p.properties) {
             (void)property;
             if (auto* ref = std::get_if<ObjectId>(&v); ref && identity(*ref) && !d.placements.contains(*ref)) return bad("A placement reference is missing.");
@@ -273,15 +296,24 @@ bool valid(const Document& d, const Limits& l, std::string& error)
         if (!add(id) || revision > d.revision) return bad("Invalid or reused deleted identity.");
     for(const auto& [id,c]:d.class_settings)for(const auto& [property,v]:c.properties){
         (void)id;(void)property;
+        if(auto* data=std::get_if<StructuredValue>(&v))for(auto ref:data->references)
+            if(!d.placements.contains(ref) && !d.class_settings.contains(ref) && !d.classes.contains(ref) && !d.acts.contains(ref))
+                return bad("A structured class-property reference is missing.");
         if(auto* ref=std::get_if<ObjectId>(&v);ref && identity(*ref) &&
            !d.placements.contains(*ref) && !d.class_settings.contains(*ref) && !d.classes.contains(*ref) && !d.acts.contains(*ref))
             return bad("A class-property reference is missing.");
         if(auto* ref=std::get_if<ObjectId>(&v);ref && identity(*ref) && ids.at(ref->id)!=*ref)
             return bad("A class-property reference has an old generation.");
     }
+    for(const auto& [id,p]:d.placements)for(const auto& [property,v]:p.properties){
+        (void)id;(void)property;
+        if(auto* data=std::get_if<StructuredValue>(&v))for(auto ref:data->references)
+            if(!d.placements.contains(ref) && !d.class_settings.contains(ref) && !d.classes.contains(ref) && !d.acts.contains(ref))
+                return bad("A structured placement-property reference is missing.");
+    }
     std::set<Reference> refs;
     for (const auto& ref : d.external_references) {
-        if (!identity(ref.owner) || !d.placements.contains(ref.target) || !refs.insert(ref).second) return bad("Invalid external objective/avatar reference.");
+        if (!identity(ref.owner) || (!d.placements.contains(ref.target) && !d.classes.contains(ref.target)) || !refs.insert(ref).second) return bad("Invalid external objective/avatar reference.");
         auto known = ids.find(ref.owner.id);
         if (ref.owner.id >= d.next_id || (known != ids.end() && known->second != ref.owner)) return bad("An external reference owner has an invalid or reused identity.");
         ids.emplace(ref.owner.id, ref.owner);
@@ -305,8 +337,8 @@ bool Coordinator::reset(State state, uint64_t epoch, std::string& error)
         if (!identity(g.operation) || !g.original_revision || g.original_revision > state.document.revision ||
             g.transition_revision < g.original_revision || g.transition_revision > state.document.revision ||
             !seen.insert(g.operation).second || g.summary.size() > limits_.summary_bytes || !utf8(g.summary) || (g.applied && g.redo_available) ||
-            (g.applied && g.undo.objects.empty() && g.undo.fields.empty()) ||
-            (g.redo_available && g.redo.objects.empty() && g.redo.fields.empty()) ||
+            (g.applied && g.undo.objects.empty() && g.undo.fields.empty() && g.undo.classes.empty()) ||
+            (g.redo_available && g.redo.objects.empty() && g.redo.fields.empty() && g.redo.classes.empty()) ||
             !patch_shape(g.undo, state.document, limits_) || !patch_shape(g.redo, state.document, limits_)) { error = "Invalid original-gesture history."; return false; }
     }
     seen.clear();
@@ -480,14 +512,21 @@ namespace {
 
 bool references(const Document& d)
 {
+    auto known=[&](ObjectId id){return d.classes.contains(id) || d.acts.contains(id) || d.placements.contains(id) || d.class_settings.contains(id);};
+    for(const auto& [id,c]:d.class_settings)for(const auto& [property,v]:c.properties){
+        (void)id;(void)property;
+        if(auto* data=std::get_if<StructuredValue>(&v))for(auto ref:data->references)if(!known(ref))return false;
+    }
     for (const auto& [id, p] : d.placements) {
         (void)id;
+        if(!d.classes.contains(p.class_id))return false;
         for (const auto& [property, v] : p.properties) {
             (void)property;
+            if(auto* data=std::get_if<StructuredValue>(&v))for(auto ref:data->references)if(!known(ref))return false;
             if (auto* ref = std::get_if<ObjectId>(&v); ref && identity(*ref) && !d.placements.contains(*ref)) return false;
         }
     }
-    for (const auto& ref : d.external_references) if (!d.placements.contains(ref.target)) return false;
+    for (const auto& ref : d.external_references) if (!d.placements.contains(ref.target) && !d.classes.contains(ref.target)) return false;
     for(const auto& [id,c]:d.class_settings)for(const auto& [property,v]:c.properties){
         (void)id;(void)property;
         if(auto* ref=std::get_if<ObjectId>(&v);ref && identity(*ref) &&
@@ -503,7 +542,17 @@ Code apply_patch(const Document& before, const Patch& input, const Limits& limit
 {
     auto bad = [&](Code code, const char* why) { error = why; return code; };
     if (!patch_shape(input, before, limits)) return bad(Code::Invalid, "Malformed or oversized semantic patch.");
-    if (input.objects.empty() && input.fields.empty()) return bad(Code::Invalid, "An empty gesture is not an edit.");
+    if (input.objects.empty() && input.fields.empty() && input.classes.empty()) return bad(Code::Invalid, "An empty gesture is not an edit.");
+    for(const auto& e:input.classes){
+        const auto& item=e.before?*e.before:*e.after;
+        auto found=before.class_settings.find(item.object);
+        if(e.before){
+            if(!before.classes.contains(e.object) || found==before.class_settings.end() || found->second!=*e.before || found->second.revision!=e.expected)
+                return bad(Code::Conflict,"The shared cast class changed before removal.");
+        }else if(before.classes.contains(e.object) || found!=before.class_settings.end() || absent_revision(before,e.object)!=e.expected ||
+                 before.placements.contains(item.object) || before.acts.contains(item.object))
+            return bad(Code::Conflict,"The shared cast identity is no longer absent.");
+    }
     for (const auto& c : input.dependencies) if (!check(before, c)) return bad(Code::Conflict, "An explicit dependency changed or disappeared.");
     for (const auto& e : input.objects) {
         auto it = before.placements.find(e.object);
@@ -524,6 +573,22 @@ Code apply_patch(const Document& before, const Patch& input, const Limits& limit
     }
     after = before; after.revision++;
     canonical = input; inverse = {};
+    for(auto& e:canonical.classes){
+        if(e.after){
+            auto settings=*e.after;settings.revision=after.revision;settings.field_revisions.clear();
+            for(const auto& [key,v]:settings.properties){(void)v;settings.field_revisions[{Field::Property,key}]=after.revision;}
+            e.after=settings;after.classes.insert(e.object);after.class_settings[settings.object]=settings;
+            after.tombstones.erase(e.object);after.tombstones.erase(settings.object);
+            after.next_id=std::max(after.next_id,std::max(e.object.id,settings.object.id)+1);
+            const auto index=uint32_t(e.object.id);
+            if(index==UINT32_MAX)return bad(Code::Limit,"Native cast identities are exhausted.");
+            after.next_class=std::max(after.next_class,index+1);
+        }else{
+            after.classes.erase(e.object);after.class_settings.erase(e.before->object);
+            after.tombstones[e.object]=after.revision;after.tombstones[e.before->object]=after.revision;
+        }
+        inverse.classes.push_back({e.object,e.after,e.before,after.revision});
+    }
     for (auto& e : canonical.objects) {
         if (e.after) {
             Placement p = *e.after; stamp(p, after.revision); e.after = p;
@@ -540,7 +605,7 @@ Code apply_patch(const Document& before, const Patch& input, const Limits& limit
         set(after,e.object,e.field,e.after,after.revision);
         inverse.fields.push_back({e.object, e.field, e.after, e.before, after.revision, e.expected, old_object_revision});
     }
-    if (!references(after)) return bad(Code::Referenced, "Deleting this placement would orphan a placement or objective reference.");
+    if (!references(after)) return bad(Code::Referenced, "This edit would orphan a placement, class, behavior or objective reference.");
     if (after.placements.size() > limits.placements || after.tombstones.size() > limits.tombstones || bytes(after) > limits.document_bytes)
         return bad(Code::Limit, "The candidate document exceeds a configured bound.");
     if (!valid(after, limits, error)) return Code::Invalid;
@@ -573,9 +638,20 @@ void refresh_history(State& state, const Change& change, const Patch& requested)
         for (const auto& [property, v] : e.after->properties) { (void)v; fields.insert({Field::Property, property}); }
         for (auto field : fields) restored.push_back({e.object, field, field_revision(*e.after, field), e.after->revision, true});
     }
+    for(const auto& e:requested.classes)if(e.after){
+        for(const auto& [key,v]:e.after->properties){
+            (void)v;auto prior=e.after->field_revisions.find({Field::Property,key});
+            restored.push_back({e.after->object,{Field::Property,key},prior==e.after->field_revisions.end()?0:prior->second,e.after->revision,true});
+        }
+    }
     for (auto& g : state.history) {
         if (g.operation == change.gesture || g.operation.author != change.operation.author) continue;
         for (Patch* patch : {&g.undo, &g.redo}) {
+            for(auto& e:patch->classes)if(e.before){
+                auto live=state.document.class_settings.find(e.before->object);
+                if(live==state.document.class_settings.end() || live->second.properties!=e.before->properties)continue;
+                for(const auto& r:restored)if(r.object==e.before->object && e.expected==r.object_revision){e.expected=state.document.revision;e.before=live->second;}
+            }
             for (auto& e : patch->fields) {
                 if (!editable(state.document,e.object) || value(state.document,e.object,e.field) != e.before) continue;
                 for (const auto& r : restored)
@@ -630,8 +706,32 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
     if (r.intent == Intent::Forward) {
         if (r.mutations.empty()) return reject(Code::Invalid, "A forward gesture requires mutations.");
         uint64_t next_id = state_.document.next_id;
+        uint32_t next_class=state_.document.next_class;
         for (const auto& m : r.mutations) {
-            if (m.kind > MutationKind::Set) return reject(Code::Invalid, "Unknown mutation kind.");
+            if (m.kind > MutationKind::DeleteClass) return reject(Code::Invalid, "Unknown mutation kind.");
+            if(m.kind==MutationKind::CreateClass || m.kind==MutationKind::DeleteClass){
+                if(m.initial!=Placement{} || m.clone_pose || m.field!=FieldKey{} || m.value)
+                    return reject(Code::Invalid,"A cast operation cannot contain placement data.");
+                const auto code=leased(r,{},now);
+                if(code!=Code::Accepted)return reject(code,"Importing or removing cast requires document ownership.");
+                if(m.kind==MutationKind::CreateClass){
+                    if(!m.class_initial || m.target!=ObjectId{} || m.expected || next_class==UINT32_MAX)return reject(Code::Invalid,"Invalid cast creation.");
+                    auto settings=*m.class_initial;
+                    const ObjectId class_id{(2ull<<32)|next_class,1},settings_id{(5ull<<32)|next_class,1};
+                    if(settings.class_id!=class_id || settings.object!=settings_id || settings.revision || !settings.field_revisions.empty() ||
+                       state_.document.classes.contains(class_id) || state_.document.tombstones.contains(class_id))
+                        return reject(Code::Conflict,"The native cast allocation changed; reopen the asset picker.");
+                    ++next_class;
+                    patch.classes.push_back({class_id,std::nullopt,settings,0});allocated.push_back(class_id);allocated.push_back(settings_id);
+                }else{
+                    if(m.class_initial)return reject(Code::Invalid,"Cast removal cannot supply class data.");
+                    auto found=std::find_if(state_.document.class_settings.begin(),state_.document.class_settings.end(),[&](const auto& row){return row.second.class_id==m.target;});
+                    if(found==state_.document.class_settings.end())return reject(Code::MissingObject,"The cast class is missing.");
+                    patch.classes.push_back({m.target,found->second,std::nullopt,m.expected});
+                }
+                continue;
+            }
+            if(m.class_initial)return reject(Code::Invalid,"Only cast creation may supply class data.");
             if (m.kind != MutationKind::Clone && m.clone_pose) return reject(Code::Invalid, "Only cloning may provide a final clone pose.");
             if (m.kind != MutationKind::Create && m.initial != Placement{}) return reject(Code::Invalid, "Only creation may provide initial placement data.");
             if (m.kind != MutationKind::Set && (m.value || m.field != FieldKey{})) return reject(Code::Invalid, "Only field changes may provide a value or field selector.");
@@ -704,6 +804,10 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
         for (const auto& e : patch.fields) {
             auto code = leased(r, field_scope(state_.document,e.object,e.field), now);
             if (code != Code::Accepted) return reject(code, "Undo/Redo requires its edited-field lease.");
+        }
+        if(!patch.classes.empty()){
+            const auto code=leased(r,{},now);
+            if(code!=Code::Accepted)return reject(code,"Cast Undo/Redo requires document ownership.");
         }
     }
     State candidate = state_;
@@ -798,6 +902,13 @@ bool apply_committed(State& state, const Decision& decision, std::string& error,
     request.intent = change.intent; request.summary = change.summary;
     request.leases.push_back({lease.leases[0].scope, lease.leases[0].token});
     if (change.intent == Intent::Forward) {
+        for(const auto& e:change.patch.classes){
+            Mutation m;
+            if(e.after && !e.before){m.kind=MutationKind::CreateClass;m.class_initial=*e.after;m.class_initial->revision=0;m.class_initial->field_revisions.clear();}
+            else if(e.before && !e.after){m.kind=MutationKind::DeleteClass;m.target=e.object;m.expected=e.expected;}
+            else return bad("A canonical cast patch is malformed.");
+            request.mutations.push_back(std::move(m));
+        }
         for (const auto& e : change.patch.objects) {
             Mutation m;
             if (e.after && !e.before) {

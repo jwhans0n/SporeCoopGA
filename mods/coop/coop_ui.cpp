@@ -222,7 +222,7 @@ struct Dialog {
     Win prep_player[4] = {}, prep_captain[4] = {}, prep_stage[4] = {}, prep_ready[4] = {}, prep_placeholder[4] = {};
     Win prep_ready_btn = nullptr, prep_change = nullptr, prep_chat[2] = {}, prep_edit = nullptr;
     Picture adventure_picture, captain_picture[4];
-    Win editor_retry = nullptr, editor_recover = nullptr;
+    Win editor_retry = nullptr, editor_recover = nullptr, editor_test = nullptr, editor_return = nullptr;
 };
 static Dialog D;
 static std::map<std::string, Win> g_named; // for tests (coop.uistate)
@@ -579,6 +579,12 @@ static void build_dialog()
     });
     D.editor_recover = add_button(L, "editor_recover", {280, 66, 450, 98}, "Recover draft", [] {
         if(A.editor_recover)A.editor_recover();
+    });
+    D.editor_test = add_button(L,"editor_test_together",{280,66,450,98},"Test Together",[]{
+        if(A.editor_playtest)A.editor_playtest();
+    });
+    D.editor_return = add_button(L,"editor_return",{280,66,450,98},"Return to Editor",[]{
+        if(A.editor_return)A.editor_return();
     });
     D.chat_edit = add_edit(L, "chatedit", {40, 438, 560, 470}, "", 120);
     D.send_btn = add_button(L, "send", {570, 434, 720, 474}, T("Send", "Отправить"), do_send_chat);
@@ -1069,6 +1075,8 @@ static void refresh()
     show(D.space_btn, space && page == Page::Lobby);
     show(D.editor_retry, page == Page::Lobby && editor.retry);
     show(D.editor_recover, page == Page::Lobby && editor.can_recover);
+    show(D.editor_test,page==Page::Lobby && editor.active && editor.can_playtest);
+    show(D.editor_return,page==Page::Lobby && editor.active && editor.can_return);
     if (page != Page::Preparation) {
         show(D.adventure_picture.window, false);
         for (auto& p : D.captain_picture) show(p.window, false);

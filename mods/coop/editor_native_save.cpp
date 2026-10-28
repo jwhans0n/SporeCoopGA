@@ -15,6 +15,7 @@ Ctx C;
 uintptr_t a_mode,a_rm,a_vtable,a_can_save,a_begin_save,a_pipeline,a_hold;
 uintptr_t a_preview,a_return,a_cleanup,a_return_display,a_display,a_captain,a_validate_placement,a_command;
 uintptr_t a_continue;
+uintptr_t a_cinematic_get,a_cinematic_end;
 bool supported=false,queued=false;
 bool return_notified=false;
 bool owned_native=false;
@@ -233,12 +234,14 @@ bool init(const SkHost* host,SkMod* mod,Ctx context){
     a_begin_save=H->sym("SporeCoop::Editor::BeginSaveCopy");a_pipeline=H->sym("SporeCoop::Editor::SaveResourcePipeline");
     a_hold=H->sym("SporeCoop::Editor::SaveInputHold");a_preview=H->sym("SporeCoop::Editor::NativePreview");
     a_return=H->sym("SporeCoop::Editor::NativeReturn");a_cleanup=H->sym("SporeCoop::Editor::PreviewCleanup");
+    a_cinematic_get=H->sym("Simulator::cCinematicManager::Get");
+    a_cinematic_end=H->sym("SporeCoop::cCinematicManager_EndCinematic");
     a_return_display=H->sym("SporeCoop::Editor::ReturnDisplayMode");a_display=H->sym("SporeCoop::Editor::SelectDisplayMode");
     a_captain=H->sym("SporeCoop::Editor::PreviewCaptain");a_validate_placement=H->sym("SporeCoop::Editor::ValidatePlacement");
     a_command=H->sym("SporeCoop::Editor::EditorCommand");
     a_continue=H->sym("SporeCoop::Editor::ContinueCommand");
     supported=a_mode&&a_rm&&a_vtable&&a_can_save&&a_begin_save&&a_pipeline&&a_hold&&a_preview&&a_return&&
-        a_cleanup&&a_return_display&&a_display&&a_captain&&a_validate_placement&&a_command&&a_continue;
+        a_cleanup&&a_return_display&&a_display&&a_captain&&a_validate_placement&&a_command&&a_continue&&a_cinematic_get&&a_cinematic_end;
     if(supported)supported=H->hook_create(M,reinterpret_cast<void*>(a_pipeline),reinterpret_cast<void*>(pipeline),reinterpret_cast<void**>(&original_pipeline))==0;
     if(supported)supported=H->hook_create(M,reinterpret_cast<void*>(a_return),reinterpret_cast<void*>(return_native),reinterpret_cast<void**>(&original_return))==0;
     if(supported)supported=H->hook_create(M,reinterpret_cast<void*>(a_command),reinterpret_cast<void*>(command_native),reinterpret_cast<void**>(&original_command))==0;
@@ -294,6 +297,18 @@ bool playtest(bool on,std::string& error){
         }
         void* play=skg::field<void*>(m,0x78);void* ui=skg::field<void*>(m,0x14);
         if(!skg::readable(play,0xA0) || !skg::readable(ui,0x98) || skg::field<uintptr_t>(ui,0)!=a_vtable){error="Native playtest return context is unavailable";return false;}
+        // Native hammer Stop assumes its gameplay HUD is visible. Results and
+        // interrupted Talk can retain the cinematic camera/input hold instead.
+        // End it while this preview still owns the live play object, before
+        // cleanup invalidates its synchronous native end-message recipient.
+        void* cinematic=skg::cdecl_call<void*>(a_cinematic_get);
+        if(!skg::readable(cinematic,0x160)){error="Native playtest cinematic context is unavailable";return false;}
+        if(skg::field<uint32_t>(cinematic,0x2C))skg::thiscall<void>(a_cinematic_end,cinematic);
+        if(mode()!=m || skg::field<int>(m,0xCC)!=2 || skg::field<int>(m,0xD0)!=0 ||
+           skg::field<void*>(m,0x78)!=play || skg::field<void*>(m,0x14)!=ui ||
+           skg::field<uint32_t>(cinematic,0x2C)){
+            error="Native playtest cinematic did not release its owned context";return false;
+        }
         // Exact native hammer-stop order F0EB09..F0EB25, not quickplay Done.
         skg::thiscall<void>(a_cleanup,play);skg::thiscall<void>(a_return_display,ui,0);original_return(m);
         if(mode()!=m || skg::field<int>(m,0xCC)!=1){error="Native playtest did not return to the editor";return false;}

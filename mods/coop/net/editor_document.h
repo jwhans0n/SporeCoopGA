@@ -51,8 +51,14 @@ struct ResourceKey {
     uint32_t instance = 0, type = 0, group = 0;
     auto operator<=>(const ResourceKey&) const = default;
 };
-using Value = std::variant<Vec3, Rotation, float, bool, int64_t, std::string, ObjectId, ResourceKey>;
-enum class ValueKind : uint8_t { Position, Rotation, Number, Boolean, Integer, Text, Reference, Resource };
+struct StructuredValue {
+    uint32_t format = 0;
+    std::vector<uint8_t> bytes;
+    std::vector<ObjectId> references;
+    bool operator==(const StructuredValue&) const = default;
+};
+using Value = std::variant<Vec3, Rotation, float, bool, int64_t, std::string, ObjectId, ResourceKey, StructuredValue>;
+enum class ValueKind : uint8_t { Position, Rotation, Number, Boolean, Integer, Text, Reference, Resource, Structured };
 enum class Field : uint8_t { Position, Rotation, Scale, Property };
 struct FieldKey {
     Field field = Field::Position;
@@ -103,6 +109,7 @@ struct Document {
     std::vector<Reference> external_references;
     std::map<uint32_t, PropertySpec> class_schema;
     std::map<ObjectId, ClassActSettings> class_settings;
+    uint32_t next_class = 0; // Native cast index, host ordered and never reused.
     // This is only a supported semantic projection. Opaque native data stays owned
     // by the native adapter/store and is never reconstructed from this structure.
     bool operator==(const Document&) const = default;
@@ -132,7 +139,7 @@ struct Lease {
 };
 struct LeaseToken { Scope scope; uint64_t token = 0; bool operator==(const LeaseToken&) const = default; };
 
-enum class MutationKind : uint8_t { Create, Clone, Delete, Set };
+enum class MutationKind : uint8_t { Create, Clone, Delete, Set, CreateClass, DeleteClass };
 struct Mutation {
     MutationKind kind = MutationKind::Set;
     ObjectId target; // Clone: source. Create: zero; host allocates the new ID.
@@ -141,6 +148,7 @@ struct Mutation {
     std::optional<Value> value; // Set: null removes an optional property.
     Revision expected = 0; // Set: field revision. Delete/clone: object revision.
     std::optional<Pose> clone_pose; // Clone only: final Ctrl-drag pose, one gesture.
+    std::optional<ClassActSettings> class_initial={}; // CreateClass only.
     bool operator==(const Mutation&) const = default;
 };
 enum class Intent : uint8_t { Forward, Undo, Redo };
@@ -171,10 +179,17 @@ struct FieldEdit {
     Revision restored_revision = 0, restored_object_revision = 0;
     bool operator==(const FieldEdit&) const = default;
 };
+struct ClassEdit {
+    ObjectId object; // Class identity. Settings have their own identity.
+    std::optional<ClassActSettings> before, after;
+    Revision expected = 0;
+    bool operator==(const ClassEdit&) const = default;
+};
 struct Patch {
     std::vector<ObjectEdit> objects;
     std::vector<FieldEdit> fields;
     std::vector<Check> dependencies;
+    std::vector<ClassEdit> classes={};
     bool operator==(const Patch&) const = default;
 };
 struct Change {
@@ -227,6 +242,7 @@ struct Limits {
     size_t decisions = 1024, decision_bytes = 8u << 20;
     size_t document_bytes = 32u << 20, summary_bytes = 256, text_bytes = 1024;
     Time max_lease_ms = 30000;
+    size_t structured_bytes = 256u << 10;
 };
 struct Hooks {
     // No callbacks run for rejected/duplicate requests. apply may partially fail;
