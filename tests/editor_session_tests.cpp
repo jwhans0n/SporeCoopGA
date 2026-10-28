@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <limits>
 #include <thread>
 
 using namespace editor;
@@ -1261,12 +1262,46 @@ static void test_shared_class_properties_udp(unsigned count){
     p.release(author,tokens);
 }
 
+static void test_creation_preview_is_ephemeral_and_owned(){
+    Party p(4);p.start();p.accept();std::string error;const auto document=p.controllers[0]->state().document;
+    const auto structure=p.grant(1,{ScopeKind::Structure,{},{}});
+    CHECK(p.controllers[1]->request_leases({{ScopeKind::Class,{1,1},{}}},3000,error));
+    CHECK(p.spin([&]{return p.controllers[1]->view().local_leases.size()==2;}));
+    std::vector<LeaseToken> asset;for(const auto& l:p.controllers[1]->view().local_leases)if(l.scope.kind==ScopeKind::Class)asset.push_back({l.scope,l.token});
+    w::Presence presence;presence.act={2,1};presence.editing=true;
+    CHECK(p.controllers[1]->set_presence(presence,error));
+    CHECK(p.spin([&]{return p.controllers[0]->view().members.at(1).presence.editing;}));
+    CHECK(p.controllers[0]->view().members.at(1).presence.owned_scopes.size()==2);
+    const Pose pose{{50,60,70},{0,0,0,1},2},exit{{80,90,100},{0,.6f,0,.8f},3};
+    CHECK(p.controllers[1]->set_preview({999,1},{2,1},pose,error,{1,1},true,exit));
+    CHECK(p.spin([&]{for(unsigned i=0;i<4;++i)if(!p.controllers[i]->view().members.at(1).preview)return false;return true;}));
+    const auto hint=p.controllers[0]->view().members.at(1).preview->value;
+    CHECK(hint.creating&&hint.destination==exit&&hint.class_id==(ObjectId{1,1}));
+    for(unsigned i=0;i<4;++i)CHECK(p.controllers[i]->state().document==document&&p.native[i].document==document);
+    auto invalid=hint;invalid.lease.token++;invalid.serial++;
+    preview_packet(p,0,1,{p.controllers[0]->view().context,invalid});p.step();
+    CHECK(p.controllers[0]->view().members.at(1).preview->value==hint);
+    CHECK(!p.controllers[1]->set_preview({999,1},{2,1},pose,error,{999,1},true));
+    auto bad=exit;bad.position.x=std::numeric_limits<float>::infinity();
+    CHECK(!p.controllers[1]->set_preview({999,1},{2,1},pose,error,{1,1},true,bad));
+    CHECK(p.controllers[1]->release_leases(asset,error));
+    CHECK(p.spin([&]{for(unsigned i=0;i<4;++i)if(p.controllers[i]->view().members.at(1).preview)return false;return true;}));
+    CHECK(!p.controllers[1]->set_preview({999,1},{2,1},pose,error,{1,1},true));
+    p.release(1,structure);
+    for(unsigned i=0;i<4;++i)CHECK(p.controllers[i]->state().document==document);
+}
+
 int main(int argc,char** argv)
 {
+    if(argc==2&&std::string(argv[1])=="--previews"){
+        CHECK(net::net_init());test_transient_preview_authority_coalescing_and_lifecycle();test_creation_preview_is_ephemeral_and_owned();
+        std::printf("editor preview transport: %d checks, %d failures\n",checks,failures);return failures?1:0;
+    }
     const bool focused=argc==2&&std::string(argv[1])=="--tombstones";
     const bool classes=argc==2&&std::string(argv[1])=="--class-settings";
     if(argc>1&&!focused&&!classes)return 2;
-    CHECK(net::net_init());if(!focused){test_shared_class_properties_udp(2);test_shared_class_properties_udp(4);}
+    CHECK(net::net_init());if(!focused&&!classes)test_creation_preview_is_ephemeral_and_owned();
+    if(!focused){test_shared_class_properties_udp(2);test_shared_class_properties_udp(4);}
     if(!classes){test_tombstone_regressions(); if(!focused){test_release_quarantines_and_waits_for_reply(); test_host_release_quarantine_survives_view_refresh(); test_distinct_release_tokens_keep_both_quarantined(); test_reordered_lease_requests_cannot_recreate_released_scope(); test_deferred_lease_bounds_and_lifecycle(); test_repeated_release_fences_past_cache_window(); test_large_join_inventory_is_bounded_pinned_and_nonblocking(); test_join_inventory_failures_preserve_party_and_draft(); test_transient_preview_authority_coalescing_and_lifecycle(); test_guest_end_preparing_reoffers_without_freezing_party(); test_two_player_and_real_udp(); test_host_durable_coverage(); test_four_players_and_controls(); test_large_operation_transfer(); test_saved_snapshot_waits_for_native_gesture(); test_delete_revokes_lease_before_native_decision(0); test_delete_revokes_lease_before_native_decision(1); test_accepted_retry_keeps_new_gesture_ownership(0); test_accepted_retry_keeps_new_gesture_ownership(1); test_queued_begin_and_new_roster(); test_native_gesture_transaction_holds(); test_same_controller_host_to_guest(); test_delta_resources_keep_complete_late_join_cache(); test_failed_delta_staging_publishes_nothing(); test_close_waits_for_accepted_structural_commit(); test_settled_waits_for_join_but_excludes_failed_peer(); test_same_revision_saved_needs_explicit_applied_ack(); test_local_freeze_notifies_party_once(); test_deferred_baseline_and_fail_closed(); test_import_and_input_bounds(); test_rehost_authorship_and_document_hash(); test_real_udp_packet_adversity(2); test_real_udp_packet_adversity(4);}}
     std::printf("editor_session UDP/fake-native: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

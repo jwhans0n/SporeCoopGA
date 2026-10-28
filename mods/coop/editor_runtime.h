@@ -24,6 +24,8 @@ struct TransformHint {
     net::Vec3 position;
     net::Quat rotation;
     float scale = 1;
+    uint32_t color = 0xFF80C8FF;
+    bool locked = false;
 };
 
 struct View {
@@ -39,6 +41,9 @@ struct View {
     std::string prompt_identity;
     std::vector<PlayerView> players;
     std::vector<TransformHint> previews;
+    std::vector<TransformHint> selections;
+    std::vector<std::string> locks;
+    bool world_hints = false;
 };
 
 struct Ctx {
@@ -65,6 +70,9 @@ bool playtest_owned();
 View view();
 // Immutable cached overlay data. No native work or resource creation.
 const std::vector<TransformHint>& transform_hints();
+const std::vector<TransformHint>& selection_hints();
+const std::vector<std::string>& lock_hints();
+bool world_hints_visible();
 
 // Actions enqueue work; native functions are never called by a render callback.
 void begin();

@@ -150,7 +150,8 @@ public:
     // guest commands always target the host. Native callbacks run during tick.
     bool send_command(editor::wire::Command, std::string& error, uint8_t to = 255);
     // Latest-only unreliable hint. Does not apply native edits or persist state.
-    bool set_preview(editor::ObjectId, editor::ObjectId act, editor::Pose, std::string& error);
+    bool set_preview(editor::ObjectId, editor::ObjectId act, editor::Pose, std::string& error,
+                     editor::ObjectId class_id={},bool creating=false,std::optional<editor::Pose> destination={});
     void clear_preview();
     bool publish_saved(editor::wire::Saved, std::string& error);
     // Guest only, after native root application and durable opaque checkpoint

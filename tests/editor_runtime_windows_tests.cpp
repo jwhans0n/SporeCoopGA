@@ -85,10 +85,17 @@ struct Native {
     std::optional<std::vector<uint8_t>> persisted_bytes;
 };
 std::array<Native,2> native;
+bool seed_cast_settings=false;
 editor::Document seed() {
     editor::Document d;d.project[0]=1;d.epoch=7;d.next_id=5ull<<32;
     d.classes.insert(class_id);d.acts.insert(act_id);d.schema=editor_native::relative_scale_schema();
     editor::Placement p;p.object=placement;p.class_id=class_id;p.act_id=act_id;p.properties[editor_native::kRelativeScaleProperty]=.5f;d.placements.emplace(p.object,p);
+    if(seed_cast_settings){
+        d.next_id=6ull<<32;d.class_schema=editor_native::cast_property_schema();
+        editor::ClassActSettings settings;settings.object={(5ull<<32)|1,1};settings.class_id=class_id;settings.act_id=act_id;
+        settings.properties[editor_native::kCastBlockProperty]=editor::StructuredValue{editor_native::kCastBlockFormat,{1,2,3},{}};
+        d.class_settings.emplace(settings.object,std::move(settings));
+    }
     return d;
 }
 std::vector<uint8_t> body(const editor::Document& d,uint8_t opaque=0xA5) {
@@ -256,6 +263,12 @@ bool select_placement(editor::ObjectId id,std::string&){CHECK(!dispatching);auto
 bool selection_pose(editor::ObjectId& id,editor::ObjectId& act,editor::Pose& pose){CHECK(!dispatching);auto& n=native[side];
     if(!n.state.ready||!n.state.gesture||n.state.selected.empty())return false;auto found=n.snapshot.document.placements.find(n.state.selected.front());
     if(found==n.snapshot.document.placements.end())return false;id=found->first;act=found->second.act_id;pose={found->second.position,found->second.rotation,found->second.scale};return true;}
+bool selection_preview(LivePreview& value){
+    if(!selection_pose(value.object,value.act,value.pose))return false;
+    value.class_id=native[side].snapshot.document.placements.at(value.object).class_id;return true;
+}
+void update_previews(const std::vector<LivePreview>&){CHECK(!dispatching);}
+std::string visual_status(){CHECK(!dispatching);return "controlled visual status";}
 std::string status(){return "fake native";}
 }
 namespace editor_native_save {
@@ -349,7 +362,8 @@ static void test_drag_preview_bridge_never_authors_remote_state() {
     CHECK(spin([]{return runtime_guest::transform_hints().size()==1;}));
     const auto hint=runtime_guest::transform_hints().front();
     CHECK(hint.position.x==12&&hint.position.y==13&&hint.position.z==14&&hint.scale==2);
-    CHECK(hint.label.find("Host")!=std::string::npos&&hint.label.find(std::to_string(placement.id))!=std::string::npos);
+    CHECK(hint.label.find("Host")!=std::string::npos&&hint.label.find("moving")!=std::string::npos);
+    CHECK(!runtime_guest::selection_hints().empty()&&runtime_guest::selection_hints().front().locked);
     CHECK(runtime_host::transform_hints().empty());
     CHECK(native[1].snapshot.bytes==guest_live&&runtime_guest::current_native.bytes==guest_native);
     CHECK(runtime_host::current_native.bytes==canonical&&runtime_host::controller->state().document.revision==0&&runtime_guest::controller->state().document.revision==0);
@@ -2111,7 +2125,35 @@ static void test_retained_cast_import_owner_scope() {
     CHECK(!native[0].callbacks.transaction_pending());
     CHECK(native[0].callbacks.import_scope()==owner && native[0].callbacks.gesture_scope()==owner);
 }
+static void test_cast_property_undo_then_remove_refreshes_ownership_snapshot(){
+    seed_cast_settings=true;Party party;seed_cast_settings=false;side=0;
+    const editor::ObjectId settings_id{(5ull<<32)|1,1};
+    CHECK(!native[0].callbacks.class_gate(1));CHECK(spin([]{return !runtime_host::controller->view().local_leases.empty();}));side=0;
+    CHECK(native[0].callbacks.class_gate(1));
+    editor_native::Gesture edit;edit.generation=native[0].state.generation;edit.before=native[0].snapshot;edit.after=edit.before;
+    std::get<editor::StructuredValue>(edit.after.document.class_settings.at(settings_id).properties.at(editor_native::kCastBlockProperty)).bytes={3,2,1};
+    edit.after.bytes=body(edit.after.document);native[0].snapshot=edit.after;runtime_host::captured(std::move(edit));
+    CHECK(spin([]{return runtime_guest::controller->state().document.revision==1&&!runtime_host::awaiting_operation;}));
+    CHECK(spin([]{return runtime_host::controller->view().local_leases.empty();}));side=0;
+    CHECK(!native[0].callbacks.class_gate(1));CHECK(spin([]{return !runtime_host::controller->view().local_leases.empty();}));side=0;
+    CHECK(native[0].callbacks.class_gate(1));CHECK(runtime_host::guarded_settings.at(settings_id).revision==1);
+    runtime_host::undo();CHECK(spin([]{return runtime_guest::controller->state().document.revision==2&&!runtime_host::awaiting_operation;}));
+    CHECK(spin([]{side=0;return native[0].callbacks.remove_class_gate(1);}));side=0;
+    CHECK(runtime_host::guarded_settings.at(settings_id).revision==2);
+    editor_native::Gesture remove;remove.generation=native[0].state.generation;remove.before=native[0].snapshot;remove.after=remove.before;
+    remove.after.document.classes.erase(class_id);remove.after.document.class_settings.erase(settings_id);remove.after.document.placements.clear();
+    remove.after.bytes=body(remove.after.document);native[0].snapshot=remove.after;runtime_host::captured(std::move(remove));
+    CHECK(spin([]{return runtime_guest::controller->state().document.revision==3&&!runtime_host::awaiting_operation;}));
+    CHECK(runtime_host::controller->state().document.classes.empty()&&runtime_guest::controller->state().document.placements.empty());
+    CHECK(!runtime_host::frozen&&!runtime_guest::frozen);
+}
 static void test_all_native_flow_cases() {
+    {
+        Party party;side=0;const auto requests=runtime_host::controller->accounting().pending_leases;
+        CHECK(!native[0].callbacks.gate({{123456,1}}));
+        CHECK(runtime_host::controller->accounting().pending_leases==requests);
+    }
+    test_cast_property_undo_then_remove_refreshes_ownership_snapshot();
     test_retained_cast_import_owner_scope();
     test_native_solo_play_holds_and_restores_without_coop();test_solo_tester_disconnect_releases_party_hold();
     test_automatic_unsaved_start_and_native_host_save();

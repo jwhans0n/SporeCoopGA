@@ -50,7 +50,7 @@ template<class T> constexpr unsigned maximum() {
     if constexpr(std::is_same_v<T,ValueKind>) return unsigned(ValueKind::Structured);
     if constexpr(std::is_same_v<T,Field>) return 3;
     if constexpr(std::is_same_v<T,CheckKind>) return 2;
-    if constexpr(std::is_same_v<T,ScopeKind>) return 4;
+    if constexpr(std::is_same_v<T,ScopeKind>) return 5;
     if constexpr(std::is_same_v<T,MutationKind>) return unsigned(MutationKind::DeleteClass);
     if constexpr(std::is_same_v<T,Intent>) return 2;
     if constexpr(std::is_same_v<T,Code>) return unsigned(Code::Busy);
@@ -101,8 +101,8 @@ FIELDS(TransferEnd,v.serial)
 FIELDS(LeaseRequest,v.action,v.serial,v.ttl,v.scopes,v.tokens)
 FIELDS(LeaseResult,v.code,v.reason,v.leases)
 FIELDS(LeaseReply,v.serial,v.result)
-FIELDS(Presence,v.selected,v.act,v.editing,v.author,v.pending,v.ownership,v.phase,v.preview_lease)
-FIELDS(TransformPreview,v.author,v.serial,v.active,v.object,v.act,v.pose,v.lease)
+FIELDS(Presence,v.selected,v.act,v.editing,v.author,v.pending,v.ownership,v.phase,v.preview_lease,v.owned_scopes)
+FIELDS(TransformPreview,v.author,v.serial,v.active,v.object,v.act,v.pose,v.lease,v.class_id,v.creating,v.destination)
 FIELDS(Coverage,v.durable_revision,v.state_hash)
 FIELDS(Saved,v.saved_revision,v.resource,v.serial)
 FIELDS(SavedApplied,v.saved)
@@ -250,19 +250,23 @@ void validate_payload(const Message& m) {
         if constexpr(std::is_same_v<T,Saved>) need(p.serial && p.saved_revision<=m.context.revision && p.resource.instance && p.resource.type,"invalid native save");
         if constexpr(std::is_same_v<T,SavedApplied>) need(p.saved.serial && p.saved.saved_revision<=m.context.revision && p.saved.resource.instance && p.saved.resource.type,"invalid applied native save");
         if constexpr(std::is_same_v<T,Leave>) need(p.reason<=3,"invalid leave reason");
-        if constexpr(std::is_same_v<T,Presence>) need(peer(p.author) && p.ownership<=3 && unsigned(p.phase)<=unsigned(PresencePhase::Offered) &&
+        if constexpr(std::is_same_v<T,Presence>) need(peer(p.author) && p.ownership<=3 && p.owned_scopes.size()<=32 && unsigned(p.phase)<=unsigned(PresencePhase::Offered) &&
             ((p.ownership&kOwnSelection) ? (p.selected.id&&p.selected.generation&&p.preview_lease.token&&
                 (p.preview_lease.scope.kind==ScopeKind::Document || (p.preview_lease.scope.kind==ScopeKind::Placement&&p.preview_lease.scope.object==p.selected))) :
                 p.preview_lease==LeaseToken{}),"invalid presence authority");
         if constexpr(std::is_same_v<T,TransformPreview>) {
             const auto id=[](ObjectId v){return v.id && v.generation;};
-            const float norm=p.pose.rotation.x*p.pose.rotation.x+p.pose.rotation.y*p.pose.rotation.y+p.pose.rotation.z*p.pose.rotation.z+p.pose.rotation.w*p.pose.rotation.w;
-            need(peer(p.author) && p.serial && std::isfinite(norm) && norm>=0.99f && norm<=1.01f &&
-                std::isfinite(p.pose.scale) && p.pose.scale>0 &&
+            const auto pose=[](const Pose& v){
+                const float norm=v.rotation.x*v.rotation.x+v.rotation.y*v.rotation.y+v.rotation.z*v.rotation.z+v.rotation.w*v.rotation.w;
+                return std::isfinite(norm) && norm>=0.99f && norm<=1.01f && std::isfinite(v.scale) && v.scale>0 && v.scale<=1e6f &&
+                    std::isfinite(v.position.x) && std::isfinite(v.position.y) && std::isfinite(v.position.z) &&
+                    std::abs(v.position.x)<=1e6f && std::abs(v.position.y)<=1e6f && std::abs(v.position.z)<=1e6f;
+            };
+            need(peer(p.author) && p.serial && pose(p.pose) && (!p.destination || pose(*p.destination)) &&
                 (p.active ? (id(p.object)&&id(p.act)&&p.lease.token &&
-                    (p.lease.scope.kind==ScopeKind::Document ||
-                     (p.lease.scope.kind==ScopeKind::Placement&&p.lease.scope.object==p.object))) :
-                    (p.object==ObjectId{}&&p.act==ObjectId{}&&p.lease==LeaseToken{})),"invalid transform preview");
+                    (p.creating ? (id(p.class_id) && (p.lease.scope.kind==ScopeKind::Structure || p.lease.scope.kind==ScopeKind::Document)) :
+                     (p.lease.scope.kind==ScopeKind::Document || (p.lease.scope.kind==ScopeKind::Placement&&p.lease.scope.object==p.object)))) :
+                    (p.object==ObjectId{}&&p.act==ObjectId{}&&p.lease==LeaseToken{} && p.class_id==ObjectId{} && !p.creating && !p.destination)),"invalid transform preview");
         }
         if constexpr(std::is_same_v<T,Control>) need(unsigned(p.kind)<=unsigned(ControlKind::HostEditorResumed) && p.serial && p.revision==m.context.revision &&
             (p.kind==ControlKind::GuestReadyPlaytest || !p.ready) && p.ready_mask<=15 && p.participant_mask<=15 &&
@@ -278,7 +282,7 @@ void direction(const Message& m,Peer sender,bool host) {
     const bool only_guest=index==1||index==5||index==7||index==10||index==14;
     need(!only_host||host,"client forged host authority"); need(!only_guest||!host,"host sent client-only request");
     if(const auto* q=std::get_if<Request>(&m.payload)) need(q->operation.author==sender,"request author differs from session peer");
-    if(const auto* p=std::get_if<Presence>(&m.payload)) need(host || (p->author==sender && !p->ownership && p->phase==PresencePhase::Ready && p->preview_lease==LeaseToken{}),"presence author or authority differs from session peer");
+    if(const auto* p=std::get_if<Presence>(&m.payload)) need(host || (p->author==sender && !p->ownership && p->phase==PresencePhase::Ready && p->preview_lease==LeaseToken{} && p->owned_scopes.empty()),"presence author or authority differs from session peer");
     if(const auto* p=std::get_if<TransformPreview>(&m.payload)) need(host||p->author==sender,"preview author differs from session peer");
     if(const auto* t=std::get_if<TransferBegin>(&m.payload))
         need((t->kind==TransferKind::Request || t->kind==TransferKind::Join || t->kind==TransferKind::Assets) ? !host : host,"invalid transfer authority");

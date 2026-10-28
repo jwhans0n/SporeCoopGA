@@ -55,6 +55,8 @@ struct Presence {
     uint8_t ownership = 0;
     PresencePhase phase = PresencePhase::Ready;
     LeaseToken preview_lease = {}; // Host-derived current selection capability identity.
+    // Host-derived display summaries, never usable capabilities.
+    std::vector<Scope> owned_scopes = {};
     bool operator==(const Presence&) const = default;
 };
 // Noncanonical hint for an already committed placement. The host verifies the
@@ -62,6 +64,9 @@ struct Presence {
 struct TransformPreview {
     Peer author; uint64_t serial = 0; bool active = true;
     ObjectId object, act; Pose pose; LeaseToken lease;
+    ObjectId class_id = {};
+    bool creating = false;
+    std::optional<Pose> destination = {};
     bool operator==(const TransformPreview&) const = default;
 };
 struct Coverage { Revision durable_revision = 0; std::string state_hash; };

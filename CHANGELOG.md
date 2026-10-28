@@ -8,11 +8,15 @@
 - Integrate verified native snapshots, private Save As, initiating-player solo
   Play and an explicit Test Together action with host approval and group readiness.
   Keep unsupported act, goal, terrain and nested-editor mutations read-only.
-  Editor development uses protocol 19 / preview 4; the published
+  Editor development uses protocol 20 / preview 5; the published
   gameplay release remains protocol 15.
 - Retain the first drag while ownership arrives. Synchronize sound pose
   companions, separate teleporter endpoints, ball rotation, native cast settings
   and checked cast imports/removals with conservative Undo/Redo.
+- Allow unrelated asset property editing, import and removal concurrently.
+  Retain independent inspectors across native refreshes, refresh ownership after
+  Undo, and update remote teleporter exit displays immediately. Add player-colored
+  selection/lock hints and native live movement/placement previews.
 - Reuse immutable dependencies during placement updates and retain their recovery
   closure once. Keep native saving, guest durability and group readiness separate.
 - Add portable, Win32 orchestration and isolated native editor fixtures. Native

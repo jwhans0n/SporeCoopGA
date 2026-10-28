@@ -51,6 +51,7 @@ struct State {
     uint64_t generation = 0;
     uint32_t history_size = 0, history_cursor = 0;
     std::vector<editor::ObjectId> selected;
+    bool world_visible = true; // Native editor layout, excluding fullscreen pickers.
 };
 
 // Local values only, never persisted or sent to another player. The Runtime
@@ -152,6 +153,17 @@ bool apply(const editor::Document&, const editor::Change&, const Snapshot* artif
 bool enter(const editor::ResourceKey&, std::string& error);
 // Outside Present. Reads only the selected in-progress native transform.
 bool selection_pose(editor::ObjectId& object, editor::ObjectId& act, editor::Pose& pose);
+struct LivePreview {
+    editor::Peer author;
+    editor::ObjectId object, act, class_id;
+    editor::Pose pose;
+    bool creating = false;
+    std::optional<editor::Pose> destination;
+};
+bool selection_preview(LivePreview&);
+// Render components only, outside Present. Never writes authored marker bytes.
+void update_previews(const std::vector<LivePreview>&);
+std::string visual_status(); // Read-only native render positions, outside frame.
 // Outside frame, after the current scoped ownership request was denied.
 void deny_input(const std::vector<editor::Scope>&);
 std::string status();

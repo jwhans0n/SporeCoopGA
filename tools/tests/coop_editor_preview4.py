@@ -98,6 +98,17 @@ def playtests(games,record,converged,together_only=False,leave_running=False):
         try:mover.call('wait.frames 30 15000')
         finally:mover.call('key w up')
     later=host.wait('reciprocal moving remote captains',positions)
+    # All captains initially share the authored spawn. A first movement can be
+    # blocked by native body collision until the other owners move away.
+    # Retry ordinary input, retaining the same initial movement assertion.
+    for direction in ('w','a'):
+        blocked=[i for i in range(len(games))if sum((a-b)**2 for a,b in zip(initial[i]['local'],later[i]['local']))<.25]
+        if not blocked:break
+        for i in blocked:
+            games[i].call('key '+direction+' down')
+            try:games[i].call('wait.frames 60 15000')
+            finally:games[i].call('key '+direction+' up')
+        later=host.wait('reciprocal movement after native spawn collision',positions)
     if any(sum((a-b)**2 for a,b in zip(initial[i]['local'],later[i]['local']))<.25 for i in range(len(games))):
         raise RuntimeError('A native captain did not move during co-op preview')
     for first,last in zip(initial,later):

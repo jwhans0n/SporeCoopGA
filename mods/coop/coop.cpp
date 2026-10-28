@@ -1,7 +1,7 @@
 // SporeCoop mod: creature-stage co-op ("pack" mode). See docs/03-gameplay.md.
 // the release version (tools/package.sh names the zip after it)
 #ifndef COOP_VERSION
-#define COOP_VERSION "0.7.5.0-ga-editor-preview.4"
+#define COOP_VERSION "0.7.5.0-ga-editor-preview.5"
 #endif
 
 #include <winsock2.h>
@@ -1384,15 +1384,15 @@ void on_overlay(void*, int, void*)
     if (!labels)
         g_menu_hidden++;
     if (coop_editor::authoring()) {
-        if (!labels || !H->world_to_screen || !H->overlay_text) return;
-        // Unreliable editing hints are cached outside the frame. They never
-        // reposition the canonical native objects or allocate scene resources.
-        for (const auto& hint : coop_editor::transform_hints()) {
+        if (!labels || !coop_editor::world_hints_visible() || !H->world_to_screen || !H->overlay_text) return;
+        // All native render work and ownership inspection is cached outside
+        // the frame. This callback only projects colored collaboration marks.
+        const auto draw_editor_hint=[&](const coop_editor::TransformHint& hint) {
             const float point[3]={hint.position.x,hint.position.y,hint.position.z};
             float screen[2];
-            if(!H->world_to_screen(point,screen) || screen[0]<0 || screen[1]<0 || screen[0]>=sw || screen[1]>=sh)continue;
-            constexpr uint32_t color=0xFF80C8FF;
-            H->overlay_text(int(screen[0])-4,int(screen[1])-10,color,"+");
+            if(!H->world_to_screen(point,screen) || screen[0]<0 || screen[1]<0 || screen[0]>=sw || screen[1]>=sh)return;
+            const uint32_t color=hint.color;
+            H->overlay_text(int(screen[0])-4,int(screen[1])-10,color,hint.locked?"#":"+");
             const int width=text_width(hint.label);
             H->overlay_text(std::clamp(int(screen[0])-width/2,0,std::max(0,sw-width)),int(screen[1])-32,color,hint.label.c_str());
             const auto& q=hint.rotation;
@@ -1405,6 +1405,20 @@ void on_overlay(void*, int, void*)
                 float projected[2];
                 if(H->world_to_screen(tip,projected))H->overlay_text(int(projected[0])-4,int(projected[1])-10,color,axis?">":"x");
             }
+            for(int step=0;step<24;++step){
+                const float angle=float(step)*6.2831853f/24;
+                const float a=std::cos(angle)*size,b=std::sin(angle)*size;
+                const float rim[3]={point[0]+axes[0][0]*a+axes[1][0]*b,point[1]+axes[0][1]*a+axes[1][1]*b,point[2]+axes[0][2]*a+axes[1][2]*b};
+                float projected[2];if(H->world_to_screen(rim,projected) && projected[0]>=0 && projected[1]>=0 && projected[0]<sw && projected[1]<sh)
+                    H->overlay_text(int(projected[0])-2,int(projected[1])-6,color,".");
+            }
+        };
+        for(const auto& hint:coop_editor::selection_hints())draw_editor_hint(hint);
+        for(const auto& hint:coop_editor::transform_hints())draw_editor_hint(hint);
+        int lock_row=0;
+        for(const auto& label:coop_editor::lock_hints()){
+            if(lock_row>=8)break;
+            H->overlay_text(12,std::max(8,sh-164)+lock_row++*17,0xFFFFD080,label.c_str());
         }
         return;
     }

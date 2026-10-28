@@ -157,6 +157,16 @@ struct Controller::Impl {
                 (l.scope.kind==ScopeKind::Document || (l.scope.kind==ScopeKind::Placement&&l.scope.object==object));
         });
     }
+    bool owns_preview(const w::TransformPreview& value) const {
+        if(!value.creating)return owns(value.author,value.object,&value.lease);
+        const auto& held=hosting?coordinator.leases():view.local_leases;
+        bool structure=false,asset=false;
+        for(const auto& l:held)if(l.owner==value.author && l.expires>now && (value.author!=view.local || !quarantined(l))){
+            if((l.scope.kind==ScopeKind::Structure || l.scope.kind==ScopeKind::Document) && l.scope==value.lease.scope && l.token==value.lease.token)structure=true;
+            if(l.scope.kind==ScopeKind::Document || (l.scope.kind==ScopeKind::Class && l.scope.object==value.class_id))asset=true;
+        }
+        return structure&&asset;
+    }
     LeaseToken selection_lease(Peer author,ObjectId object) const {
         if(object==ObjectId{})return {};
         const auto& held=hosting?coordinator.leases():view.local_leases;
@@ -172,7 +182,7 @@ struct Controller::Impl {
         if(found==view.members.end() || !found->second.preview)return;
         auto value=found->second.preview->value;
         found->second.preview.reset();
-        if(hosting&&relay){value.active=false;value.object={};value.act={};value.pose={};value.lease={};preview_relay[slot]=w::Message{context(),value};}
+        if(hosting&&relay){value.active=false;value.object={};value.act={};value.pose={};value.lease={};value.class_id={};value.creating=false;value.destination.reset();preview_relay[slot]=w::Message{context(),value};}
     }
     void clear_previews() {
         for(auto& [slot,member]:view.members){(void)slot;member.preview.reset();}
@@ -184,12 +194,15 @@ struct Controller::Impl {
             if(found==view.members.end() || value.author!=found->second.peer || value.author.slot!=from)return;
             if((value.selected!=ObjectId{}&&!state().document.placements.contains(value.selected)) ||
                (value.act!=ObjectId{}&&!state().document.acts.contains(value.act)))return;
-            value.ownership=0;value.preview_lease={};value.phase=presence_phase(found->second.phase);
+            value.ownership=0;value.preview_lease={};value.owned_scopes.clear();value.phase=presence_phase(found->second.phase);
             if(found->second.phase==Phase::Ready){
                 value.preview_lease=selection_lease(value.author,value.selected);
                 if(value.preview_lease.token)value.ownership|=w::kOwnSelection;
-                for(const auto& lease:coordinator.leases())if(lease.owner==value.author&&lease.expires>now&&lease.scope.kind==ScopeKind::Document)value.ownership|=w::kOwnDocument;
-                if(!value.ownership)value.editing=false;
+                for(const auto& lease:coordinator.leases())if(lease.owner==value.author&&lease.expires>now){
+                    if(lease.scope.kind==ScopeKind::Document || lease.scope.kind==ScopeKind::Structure)value.ownership|=w::kOwnDocument;
+                    if(value.owned_scopes.size()<32)value.owned_scopes.push_back(lease.scope);
+                }
+                if(value.owned_scopes.empty())value.editing=false;
             }else{value.editing=false;value.pending=false;}
         } else {
             if(from || (found!=view.members.end()&&found->second.peer.generation>value.author.generation))return;
@@ -198,7 +211,8 @@ struct Controller::Impl {
             found=view.members.find(value.author.slot);
         }
         auto& member=found->second;
-        if(member.presence.selected!=value.selected || member.presence.preview_lease!=value.preview_lease || !value.editing || value.pending)clear_preview_for(value.author.slot);
+        if(!value.editing || value.pending || (member.preview && !member.preview->value.creating &&
+           (member.presence.selected!=value.selected || member.presence.preview_lease!=value.preview_lease)))clear_preview_for(value.author.slot);
         member.presence=value;
         if(callbacks.presence)callbacks.presence(value.author,value);
         if(hosting)presence_relay[value.author.slot]=value;
@@ -208,12 +222,15 @@ struct Controller::Impl {
         for(auto& [slot,member]:view.members){
             if(!member.peer.generation)continue;
             auto value=member.presence;
-            auto expected=value;expected.author=member.peer;expected.phase=presence_phase(member.phase);expected.ownership=0;expected.preview_lease={};
+            auto expected=value;expected.author=member.peer;expected.phase=presence_phase(member.phase);expected.ownership=0;expected.preview_lease={};expected.owned_scopes.clear();
             if(member.phase==Phase::Ready){
                 expected.preview_lease=selection_lease(member.peer,value.selected);
                 if(expected.preview_lease.token)expected.ownership|=w::kOwnSelection;
-                for(const auto& l:coordinator.leases())if(l.owner==member.peer&&l.expires>now&&l.scope.kind==ScopeKind::Document)expected.ownership|=w::kOwnDocument;
-                if(!expected.ownership)expected.editing=false;
+                for(const auto& l:coordinator.leases())if(l.owner==member.peer&&l.expires>now){
+                    if(l.scope.kind==ScopeKind::Document || l.scope.kind==ScopeKind::Structure)expected.ownership|=w::kOwnDocument;
+                    if(expected.owned_scopes.size()<32)expected.owned_scopes.push_back(l.scope);
+                }
+                if(expected.owned_scopes.empty())expected.editing=false;
             }else{expected.editing=false;expected.pending=false;}
             if(expected!=value)presence(slot,expected);
         }
@@ -228,11 +245,14 @@ struct Controller::Impl {
         if(value.serial<preview_seen[slot] || (value.active&&value.serial==preview_seen[slot]))return;
         if(value.active){
             const auto object=state().document.placements.find(value.object);
-            if(object==state().document.placements.end() || object->second.act_id!=value.act ||
-                !state().document.acts.contains(value.act) || member->second.presence.selected!=value.object ||
-                !member->second.presence.editing || member->second.presence.pending ||
-                !(member->second.presence.ownership&w::kOwnSelection) || member->second.presence.preview_lease!=value.lease ||
-                (hosting&&!owns(value.author,value.object,&value.lease)))return;
+            if(!state().document.acts.contains(value.act) || !member->second.presence.editing || member->second.presence.pending ||
+               (hosting&&!owns_preview(value)))return;
+            if(value.creating){
+                if(object!=state().document.placements.end() || !state().document.classes.contains(value.class_id) ||
+                   !(member->second.presence.ownership&w::kOwnDocument))return;
+            }else if(object==state().document.placements.end() || object->second.act_id!=value.act ||
+                     (value.class_id!=ObjectId{} && object->second.class_id!=value.class_id) || member->second.presence.selected!=value.object ||
+                     !(member->second.presence.ownership&w::kOwnSelection) || member->second.presence.preview_lease!=value.lease)return;
             if(now>UINT64_MAX-kPreviewLifetime)return;
             member->second.preview=PreviewView{value,now+kPreviewLifetime};
         }else member->second.preview.reset();
@@ -251,7 +271,7 @@ struct Controller::Impl {
         if(hosting&&preview_local){auto value=std::move(*preview_local);preview_local.reset();preview(0,value);}
         for(auto& [slot,member]:view.members)if(member.preview &&
             (member.preview->expires<=now || member.phase!=Phase::Ready ||
-             (hosting&&!owns(member.peer,member.preview->value.object,&member.preview->value.lease))))clear_preview_for(slot);
+             (hosting&&!owns_preview(member.preview->value))))clear_preview_for(slot);
         if(hosting)for(auto& value:presence_relay)if(value){auto copy=*value;value.reset();broadcast({context(),copy},true);}
         if(now-preview_sent<kPreviewInterval)return;
         preview_sent=now;
@@ -1319,7 +1339,7 @@ bool Controller::set_presence(w::Presence presence, std::string& error)
     auto& i = *impl_; if (i.view.phase != Phase::Ready && i.view.phase != Phase::Preparing) { error = "No shared editor presence is active."; return false; }
     presence.author = i.view.local;
     if ((presence.selected != ObjectId{} && !i.state().document.placements.contains(presence.selected)) || (presence.act != ObjectId{} && !i.state().document.acts.contains(presence.act))) { error = "Presence selected an unknown placement or act."; return false; }
-    presence.ownership=0;presence.preview_lease={};presence.phase=w::PresencePhase::Ready;
+    presence.ownership=0;presence.preview_lease={};presence.owned_scopes.clear();presence.phase=w::PresencePhase::Ready;
     i.presence_local=presence;error.clear();return true;
 }
 
@@ -1340,15 +1360,20 @@ bool Controller::send_command(w::Command command, std::string& error, uint8_t to
     i.broadcast({scope, command}); error.clear(); return true;
 }
 
-bool Controller::set_preview(ObjectId object,ObjectId act,Pose pose,std::string& error)
+bool Controller::set_preview(ObjectId object,ObjectId act,Pose pose,std::string& error,ObjectId class_id,bool creating,std::optional<Pose> destination)
 {
     auto& i=*impl_;
     if(i.view.phase!=Phase::Ready || !i.view.local.generation || i.preview_sequence==UINT64_MAX){error="No editable preview scope is active.";return false;}
     auto found=i.state().document.placements.find(object);
-    if(found==i.state().document.placements.end() || found->second.act_id!=act){error="A preview requires an existing placement in its committed act.";return false;}
-    const auto lease=i.selection_lease(i.view.local,object);
+    if(creating ? (found!=i.state().document.placements.end() || !i.state().document.classes.contains(class_id) || !i.state().document.acts.contains(act)) :
+       (found==i.state().document.placements.end() || found->second.act_id!=act)){error="A preview requires a current placement or owned cast asset.";return false;}
+    auto lease=i.selection_lease(i.view.local,object);
+    if(creating)for(const auto& l:i.view.local_leases)if(l.owner==i.view.local && l.expires>i.now && !i.quarantined(l) &&
+        (l.scope.kind==ScopeKind::Structure || l.scope.kind==ScopeKind::Document)){lease={l.scope,l.token};break;}
     if(!lease.token){error="A preview requires current placement ownership.";return false;}
     w::TransformPreview value{i.view.local,i.preview_sequence+1,true,object,act,pose,lease};
+    value.class_id=class_id;value.creating=creating;value.destination=destination;
+    if(!i.owns_preview(value)){error="A preview requires current placement or structure/class ownership.";return false;}
     w::Message message{i.context(),value};net::Writer check;
     if(!w::write(message,check,error))return false;
     ++i.preview_sequence;i.preview_local=std::move(message);return true;

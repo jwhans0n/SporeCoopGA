@@ -46,7 +46,7 @@ def public_command(line):
         return len(words) > 1
     if command == 'coop.editor':
         return (len(words) == 2 and words[1] in {
-            'status', 'objects', 'check', 'inspect', 'history', 'begin', 'join',
+            'status', 'objects', 'check', 'inspect', 'history', 'begin', 'join', 'visuals',
             'undo', 'redo', 'save', 'playtest', 'cancel', 'return', 'end', 'recover', 'leases', 'accounting'} or (
                 len(words) == 3 and words[1] == 'ready' and words[2] in {'0', '1'})
             or words[1:] in (['timing'], ['timing','reset'], ['timing','stop']))

@@ -1163,3 +1163,63 @@ C37 supplies a separate retained import-owner scope during that local wait;
 project, epoch, participant generation, native generation and all other
 transition checks still apply. Its input fixture has 4,450 checks, including
 temporary new-input ineligibility and cancellation on a changed participant.
+
+## Preview 5: independent asset ownership and native live visuals (2026-10-28)
+
+Document ownership overlapped every class inspector. Native creation/import and
+class removal now acquire a separate Structure capability. Placement creation
+also owns its source class; removal owns the affected class and placements.
+Document remains the exclusive whole-draft capability. Tombstoned placements
+retain their class/act relationship through retained history, so restoring B does
+not conflict with a live inspector for A. Lease-use timestamps are per scope.
+
+The native four-player C3 run found a second removal failure after property Undo:
+`guarded_settings` still described the pre-Undo revision. Forward property edits
+used current field revisions, but DeleteClass used that stale object revision.
+Own decisions retire the old guards; idle native gates and removal recapture
+current owned revisions. A Win32 regression now performs the actual property
+transaction, Undo and populated class removal through Runtime callbacks.
+
+Teleporter entrance and exit have separate spatial components. `F3D930` refreshes
+the entrance but does not copy marker `1E8/1F4/204` into the exit display.
+`EFCD20` resolves Cast `0175CDC9`, reads its secondary object at `54`, then
+sets spatial component `01186577` through virtual `38/3C/40` (position pointer,
+quaternion pointer, float scale). `B18D40` is exactly Cast `01186577`.
+`EFCD20` itself has caller stack cleanup and is not called through thiscall.
+The adapter uses the individually verified spatial setters. This fixes the
+host-to-client display refresh without selecting another participant's object.
+
+Live movement writes those render components only. Authored markers remain at
+their committed poses. On expiry, ownership loss, cancellation or a new revision,
+the adapter resolves current marker bindings again and restores current poses.
+No borrowed scene pointer survives a delayed movement callback.
+
+New-placement previews use the existing verified `CreateObjectInstance EEDD40`
+cdecl `(key,pos,quat,scale,isAvatar,class,marker,acts,act)`. The preview supplies
+`false` and null marker/act pointers, creates no ScenarioData mapping and holds
+one intrusive object reference. Noun-manager destruction removes the temporary
+scene object, followed by release of that reference. A generation-scoped peer,
+exact live Structure/Class capability, project/epoch/revision, monotonic serial
+and one-second expiry fence each hint. The wire path is bounded and latest-only.
+Source capture sends at most ten updates per second. There is no per-update
+transaction, persistence or native history entry.
+
+`EE3610` is the ordinary inspector open/rebind method: thiscall(settings,classID),
+ret4. `EE3F85` handles gear message `07465518` by passing script `18` settings.
+`810110` reads layout `14` container visibility byte `8C`, returning AL with a
+plain ret. The full-screen root IWindow can remain visible while this layout is
+closed. Inspector capture/restore therefore uses this native layout predicate.
+Native scene refresh and local selection rebuilding preserve the open local
+class inspector when its class still exists. Opening it never selects another
+participant's object. The main editor layout predicate also hides world hints
+while a native full-screen picker covers it.
+
+Native fixture findings retained under `out/editor-preview5`: single-jump drag
+input can initialize a native anchor without subsequent displacement; use the
+ordinary multi-move drag helper. A populated card's `04A1CB6D` picker action is
+Replace, not the empty Add card. The initial import fixture hit that action and
+correctly rejected its unowned class replacement, restoring the committed draft.
+The corrected fixture uses the verified empty Add card. Native raw class memory
+contains uninitialized padding and inactive fixed-array storage; compare owned,
+normalized serialized class subtrees, not raw memory byte equality. No test
+writes native process memory or edits a loaded profile database.

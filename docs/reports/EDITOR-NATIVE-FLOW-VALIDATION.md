@@ -1,11 +1,12 @@
 # Automatic editor sharing and native controls
 
-The preview 3 evidence is retained below. Preview 4 implementation and current
-native validation appear at the end of this report.
+The preview 3 and 4 evidence is retained below. Preview 5 implementation and
+current native validation appear at the end of this report.
 
-Latest verified development candidate: preview **4**, protocol **19**, branch
+Current development candidate: preview **5**, protocol **20**, branch
 `fix/ga-editor-preview4`. See the appended native matrix for the exact candidate
-hashes and test limitations. The installed personal preview has not been updated.
+hashes and test limitations. Earlier installation statements describe their
+individual validation runs.
 
 Development preview `0.7.5.0-ga-editor-preview.3`, protocol **18**, branch
 `feat/ga-editor-native-flow`, 2026-10-27. This is a focused integration report,
@@ -359,3 +360,61 @@ The Windows status smoke is narrower than the Linux/Bottles smoke suite.
 installation update was performed. The archive is an experimental preview;
 sustained performance and overnight acceptance remain scheduled release-window
 work, and the unsupported nested Create Your Own route is recorded in known issues.
+
+## Preview 5: asset isolation, selection visibility and live models
+
+Candidate `0.7.5.0-ga-editor-preview.5`, protocol **20**, 2026-10-28, on
+`fix/ga-editor-preview4`. DLL SHA-256:
+`1ec689c42299df7c05dcc7b26bfc1c75acefea2ba0c7b724148694e8e1f1103b`.
+The exact GOG executable and authored-captain/Act 1 restrictions are unchanged.
+Protocol 19 participants must upgrade. Existing durable document/checkpoint
+formats remain readable; the new ownership/presence/preview fields are transient.
+
+The allocation capability no longer overlaps unrelated asset properties. Class
+removal retains its class/placement/reference checks. Ownership snapshots refresh
+after own decisions and idle gates, including property Undo followed by removal.
+Native refreshes preserve the participant's open inspector when its asset exists.
+Remote selections and class/placement locks have player-colored viewport labels
+and rings, plus asset-ownership summaries in the normal lobby and viewport.
+
+Native spatial setters refresh teleporter exits immediately, independently of
+entrances. Live movement updates visible native models; uncommitted placement
+uses a temporary scene object without an authored marker or cast allocation.
+Only the final native gesture creates the transaction and Undo item. Latest-only
+updates have scoped capabilities, monotonic serials, revision/generation checks
+and a one-second expiry. Native cancellation/lifecycle cleanup is exercised by
+the controlled i686 fixture and portable transport tests; the live native matrix
+below asserts completion/history cleanup rather than assuming Escape cancels an
+already granted native placement.
+
+Final evidence is under `out/editor-preview5`:
+
+| Evidence | Result |
+| --- | --- |
+| `full-repository-tests-final.log` | Complete repository `make test` passed, including protocol boundary tests and RE lint. |
+| `win32-fixtures-final.log` | Native input/render/inspector 4,498; cast/companion transactions 193; document 2,898; wire 8,905; project 5,167; store 2,473; native bindings 8,246; scale 186; native Save 431; preview bridge 105; accounting 3,425. |
+| `win32-session-final.log` | 18,146 checks, zero failures, including four-peer preview ownership/expiry/disconnect and real UDP loss, duplication and reordering. |
+| `c5-runtime-final.log`, `c5-native-flow-final.log` | Full Win32 Runtime 16,006 checks; focused native-flow 1,332. The latter includes property edit, Undo, removal and rejection of unallocated placement lease requests. |
+| `baseline-c5` | Four cold native processes recovered the prior durable project and converged on the supported projection. |
+| `all-c5-final` | **20 native checkpoints passed**, four participants, revision **122**, zero frozen replicas and zero caught faults. Both roles independently viewed/edited assets, removed and imported unrelated cast while the other inspector stayed open, and used Undo. |
+| `all-c5-final`, teleporter checks | Entrance and exit movement from each role updated all four actual native spatial components before release. Each committed once, refreshed without a spectator click, and restored its rendered pose on Undo. |
+| `all-c5-final`, placement checks | Both roles produced moving native preview models on all other participants before release, with unchanged revision/history while held. Completion allocated one placement and one history item; Undo/Redo/Undo never resurrected a temporary preview actor. |
+| `playtests-c5-final` | Solo native Play/Build passed for all four testers while observers stayed in their editors. Guest Test Together request, host approval, four explicit readiness confirmations, one gameplay run, reciprocal moving captains and coordinated native Build return passed with the same draft/hash/history. |
+| `final-lab-cleanup`, `windows-status-smoke.log` | All four participants ended shared editing, returned through native Exit and left the party with zero caught faults. The official Windows status regression passed on all four private children before closing them. |
+
+The earlier C1/C3/C5 failed fixture receipts are retained. They distinguish
+single-jump drag anchoring, a populated card's Replace action mistaken for Add,
+and the genuine stale ownership revision after property Undo. Replacement was
+rejected safely and restored the committed draft. Raw-memory class comparisons
+also exposed native padding/inactive-storage differences; they are not semantic
+class edits. Final native checks use ordinary UI input and read-only render
+diagnostics, with no process-memory writes or loaded-save rewrites.
+
+The first group-movement probe had one captain blocked by the co-located native
+spawn bodies. Retrying ordinary movement after the other owners moved away
+produced matching movement on all replicas. The fixture now makes bounded normal
+input retries and retains its original per-owner/remote displacement assertions;
+it does not reposition captains or relax the successful-launch criteria.
+
+The existing release-window performance/overnight gates remain open. This preview
+is not merged; Linux/Bottles `lab.py run smoke` remains required before merging.

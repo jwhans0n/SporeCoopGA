@@ -17,6 +17,15 @@ std::array<uint8_t,0x8C> t_container;
 std::array<uint8_t,0x371> t_loading;
 std::array<void*,8> t_entry_vt{},t_resource_vt{},t_actor_vt{};
 std::array<std::array<uint8_t,8>,2> t_actors;
+std::array<std::array<uint8_t,0x50>,3> t_models;
+std::array<void*,17> t_model_vt;
+std::array<uint8_t,0x58> t_teleporter;
+std::array<uint8_t,0x28> t_ghost_actor;
+unsigned t_ghosts_created=0,t_ghosts_destroyed=0;
+bool t_inspector_visible=false;
+unsigned t_inspector_opens=0;
+bool SK_THISCALL t_layout_visible(void*){return t_inspector_visible;}
+void SK_THISCALL t_inspector_open(void* settings,uint32_t index){CHECK(index==7);skg::field<uint32_t>(settings,0x20)=index;t_inspector_visible=true;++t_inspector_opens;}
 std::map<void*,std::vector<uint8_t>> t_rows;
 std::set<void*> t_allocations;
 std::deque<std::pair<SkTaskFn,void*>> t_tasks;
@@ -54,6 +63,20 @@ int SK_THISCALL t_release(void* r){
     CHECK(count>=0);
     if(!count&&t_allocations.erase(r)){t_rows.erase(r);std::free(r);}
     return count;
+}
+void* SK_THISCALL t_cast(void* actor,uint32_t type){
+    if(type==0x0175CDC9 && actor==t_actors[0].data())return t_teleporter.data();
+    if(type!=0x01186577)return nullptr;
+    for(size_t i=0;i<2;++i)if(actor==t_actors[i].data())return t_models[i].data();
+    return actor==t_ghost_actor.data()?t_models[2].data():nullptr;
+}
+void SK_THISCALL t_model_position(void* model,const editor::Vec3* p){skg::field<editor::Vec3>(model,4)=*p;}
+void SK_THISCALL t_model_rotation(void* model,const editor::Rotation* q){skg::field<editor::Rotation>(model,0x10)=*q;}
+void SK_THISCALL t_model_scale(void* model,float scale){skg::field<float>(model,0x20)=scale;}
+void* SK_CDECL t_preview_create(const editor::ResourceKey*,const editor::Vec3* p,const editor::Rotation* q,float scale,bool avatar,uint32_t asset,void* marker,void* acts,uint32_t act){
+    CHECK(!avatar&&asset==7&&!marker&&!acts&&act==0);++t_ghosts_created;
+    t_ghost_actor.fill(0);skg::field<void*>(t_ghost_actor.data(),0)=t_actor_vt.data();skg::field<int>(t_ghost_actor.data(),4)=1;
+    t_model_position(t_models[2].data(),p);t_model_rotation(t_models[2].data(),q);t_model_scale(t_models[2].data(),scale);return t_ghost_actor.data();
 }
 void* SK_CDECL t_allocate(size_t size,const char*,int,int,int,int){
     CHECK(size==0x2CB0);if(t_alloc_fail)return nullptr;
@@ -228,6 +251,60 @@ void test_pending_press(){
     }
     reset();
 }
+void test_render_only_collaboration(){
+    reset();a_preview_factory=0;
+    t_actor_vt[3]=(void*)t_cast;
+    t_model_vt.fill(nullptr);t_model_vt[0x38/4]=(void*)t_model_position;t_model_vt[0x3C/4]=(void*)t_model_rotation;t_model_vt[0x40/4]=(void*)t_model_scale;
+    for(auto& model:t_models){model.fill(0);skg::field<void*>(model.data(),0)=t_model_vt.data();}
+    t_teleporter.fill(0);skg::field<void*>(t_teleporter.data(),0x54)=t_actors[1].data();
+    auto* marker=t_rows[t_live.data()].data()+4;
+    skg::field<editor::Rotation>(marker,0x10)={};skg::field<editor::Rotation>(marker,0x1F4)={};
+    skg::field<editor::Vec3>(marker,0x1E8)={3,4,5};skg::field<float>(marker,0x204)=2;
+    bindings[0]={42,1};
+    const auto authored=t_rows[t_live.data()];
+    LivePreview hint;hint.author={1,9};hint.object={42,1};hint.act={3ull<<32,1};hint.class_id={(2ull<<32)|7,1};
+    hint.pose={{10,20,30},{0,0,.6f,.8f},3};hint.destination=editor::Pose{{40,50,60},{.6f,0,0,.8f},4};
+    update_previews({hint});
+    CHECK(skg::field<editor::Vec3>(t_models[0].data(),4)==hint.pose.position);
+    CHECK(skg::field<editor::Vec3>(t_models[1].data(),4)==hint.destination->position);
+    CHECK(t_rows[t_live.data()]==authored && !skg::field<bool>(t_data.data(),0x84));
+    CHECK(visual_status().find("exit=40,50,60")!=std::string::npos);
+    hint.pose.position.x=15;update_previews({hint});CHECK(skg::field<float>(t_models[0].data(),4)==15);
+    update_previews({});
+    CHECK(skg::field<editor::Vec3>(t_models[0].data(),4)==skg::field<editor::Vec3>(marker,4));
+    CHECK(skg::field<editor::Vec3>(t_models[1].data(),4)==skg::field<editor::Vec3>(marker,0x1E8));
+    CHECK(t_rows[t_live.data()]==authored);
+    std::vector<uint8_t> classes(0x27E8);skg::field<uint32_t>(classes.data(),0)=7;
+    skg::field<editor::ResourceKey>(classes.data(),8)={9,7,3};
+    skg::field<void*>(t_live.data(),0x2BF4)=classes.data();skg::field<void*>(t_live.data(),0x2BF8)=classes.data()+classes.size();
+    t_ghosts_created=t_ghosts_destroyed=0;a_preview_factory=uintptr_t(t_preview_create);
+    hint.creating=true;hint.object={999,1};update_previews({hint});
+    CHECK(t_ghosts_created==1 && preview_actors.size()==1 && t_rows[t_live.data()]==authored);
+    hint.pose.position.x=19;update_previews({hint});CHECK(t_ghosts_created==1 && skg::field<float>(t_models[2].data(),4)==19);
+    CHECK(visual_status().find("ghost=1:9")!=std::string::npos);
+    update_previews({});CHECK(preview_actors.empty()&&t_ghosts_destroyed==1&&t_rows[t_live.data()]==authored);
+    hint.author.generation=10;update_previews({hint});CHECK(t_ghosts_created==2);
+    t_active=false;update_previews({});CHECK(preview_actors.empty()&&t_ghosts_destroyed==2);
+    a_preview_factory=0;t_actor_vt[3]=nullptr;reset();
+}
+void test_independent_inspector_survives_scene_refresh(){
+    reset();
+    std::array<uint8_t,0x1C> script{};
+    std::array<uint8_t,0x30> settings{};
+    std::vector<uint8_t> classes(0x27E8);
+    skg::field<void*>(t_display.data(),0x18)=script.data();skg::field<void*>(script.data(),0x18)=settings.data();
+    skg::field<void*>(settings.data(),0x10)=t_layout.data();skg::field<uint32_t>(settings.data(),0x20)=7;
+    skg::field<uint32_t>(classes.data(),0)=7;skg::field<void*>(t_live.data(),0x2BF4)=classes.data();skg::field<void*>(t_live.data(),0x2BF8)=classes.data()+classes.size();
+    a_inspector_open=uintptr_t(t_inspector_open);a_layout_shown=uintptr_t(t_layout_visible);
+    t_inspector_visible=true;t_inspector_opens=0;
+    {InspectorView browsing;t_inspector_visible=false;}
+    CHECK(t_inspector_visible&&t_inspector_opens==1);
+    {InspectorView browsing;}
+    CHECK(t_inspector_visible&&t_inspector_opens==1); // No toggling an already visible independent inspector.
+    {InspectorView browsing;t_inspector_visible=false;skg::field<uint32_t>(classes.data(),0)=8;}
+    CHECK(!t_inspector_visible&&t_inspector_opens==1); // The inspected asset was removed.
+    a_inspector_open=a_layout_shown=0;reset();
+}
 void test_pending_palette_drag(){
     reset();C.structure_gate=[](uint32_t index){CHECK(index==7);return t_granted;};
     CHECK(!create_native(t_tool_pointer,7));CHECK(held_creation&&!state().gesture&&!t_presses&&!t_steps);
@@ -346,7 +423,7 @@ void test_script_cast_callback_keeps_bindings(){
     CHECK(gesture_cast && !input_cast && pending.size()==1 && value(t_live.data(),0)==2);
 }
 }
-namespace game { uint32_t mode_id(){return modes::kScenario;} }
+namespace game { uint32_t mode_id(){return modes::kScenario;} void destroy_creature(void* actor){CHECK(actor==t_ghost_actor.data());++t_ghosts_destroyed;skg::field<bool>(actor,0x20)=true;t_release(actor);} }
 namespace sui {
 void set_enabled(Win,bool){CHECK(false);} void release(Win){CHECK(false);} void add_ref(Win){CHECK(false);}
 uint32_t control_id(Win w){CHECK(w==&t_card_id);return t_card_id;} uint32_t flags(Win){CHECK(false);return 0;}
@@ -489,9 +566,11 @@ static void test_large_transform_without_roster_work(){
     reset();CHECK(t_allocations.empty());
 }
 int main(){
+    test_independent_inspector_survives_scene_refresh();
+    test_render_only_collaboration();
     // The native multi-select picker invokes import once for each selected key.
     // None may overwrite an earlier selection while document ownership waits.
-    reset();C.cast_tracked=[] {return true;};C.structure_gate=[](uint32_t index){CHECK(index==0);return false;};
+    reset();C.cast_tracked=[] {return true;};C.structure_gate=[](uint32_t index){CHECK(index==UINT32_MAX);return false;};
     for(uint32_t key=1;key<=33;++key){editor::ResourceKey asset{key,7,9};CHECK(import_native(t_data.data(),&asset)==UINT32_MAX);}
     CHECK(held_import && held_import->size()==32);
     for(size_t i=0;i<held_import->size();++i)CHECK((*held_import)[i].instance==i+1);

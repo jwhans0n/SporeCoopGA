@@ -31,6 +31,8 @@ uintptr_t a_entry_vtable;
 uintptr_t a_tool_tick;
 uintptr_t a_copy_class_rows,a_copy_class,a_insert_class;
 uintptr_t a_speech_ui,a_behavior_data;
+uintptr_t a_preview_factory;
+uintptr_t a_inspector_open,a_layout_shown;
 uintptr_t a_view_manager, a_view_target, a_view_orbit, a_view_set_orbit, a_view_lookat;
 bool supported, applying, queued;
 bool fence_queued;
@@ -49,6 +51,8 @@ bool observed_scenario;
 std::map<uint32_t, editor::ObjectId> bindings;
 std::map<uint32_t,uint32_t> incarnations;
 std::vector<editor::ObjectId> selection;
+struct PreviewActor { void* object=nullptr; editor::ObjectId source,asset; };
+std::map<editor::Peer,PreviewActor> preview_actors;
 uint32_t selected_class;
 std::optional<editor::ObjectId> input_clone, gesture_clone;
 bool input_cast=false,gesture_cast=false;
@@ -65,11 +69,40 @@ bool editing() {
            skg::field<int>(m, 0xD0) == 0 && skg::readable(resource(data(m)), kResourceSize);
 }
 bool active() { return editing() && C.active && C.active(); }
+bool native_slot(void* object,unsigned slot){
+    if(!skg::readable(object,sizeof(void*)))return false;
+    auto vt=skg::vtable(object);
+    return skg::readable(vt,(slot+1)*sizeof(void*)) && vt[slot];
+}
+void* native_cast(void* object,uint32_t type){
+    return native_slot(object,3)?skg::vcall<void*>(object,3,type):nullptr;
+}
+bool render_pose(void* object,const editor::Pose& pose){
+    // B18D40 is precisely Cast(01186577). F3D930 and EFCD20 use these
+    // component setters, with no writes to the authored ScenarioResource.
+    void* model=native_cast(object,0x01186577);
+    if(!native_slot(model,0x40/4))return false;
+    skg::vcall<void>(model,0x38/4,&pose.position);
+    skg::vcall<void>(model,0x3C/4,&pose.rotation);
+    skg::vcall<void>(model,0x40/4,pose.scale);
+    return true;
+}
+bool render_destination(void* object,const editor::Pose& pose){
+    // EFCD20: the teleporter interface owns a separate exit object at +54.
+    void* teleporter=native_cast(object,0x0175CDC9);
+    return skg::readable(teleporter,0x58) && render_pose(skg::field<void*>(teleporter,0x54),pose);
+}
 bool tracks_relative_scale(){return !C.relative_scale_tracked || C.relative_scale_tracked();}
 bool tracks_extended_poses(){return !C.extended_poses_tracked || C.extended_poses_tracked();}
 bool tracks_cast(){return !C.cast_tracked || C.cast_tracked();}
 void addref(void* p) { if (p) skg::vcall<int>(p, 0); }
 void release(void* p) { if (p) skg::vcall<int>(p, 1); }
+void clear_preview_actor(PreviewActor& actor){
+    if(actor.object){
+        if(skg::readable(actor.object,0x21) && !skg::field<bool>(actor.object,0x20))game::destroy_creature(actor.object);
+        release(actor.object);actor.object=nullptr;
+    }
+}
 struct Owned {
     void* p = nullptr;
     explicit Owned(void* value = nullptr) : p(value) {}
@@ -731,7 +764,7 @@ void SK_CDECL continue_input(void*){
             held_import.reset();
         }
         else if(pending.empty() && !queued && !gesture_before_resource &&
-                !(C.transaction_pending && C.transaction_pending()) && C.structure_gate && C.structure_gate(0)){
+                !(C.transaction_pending && C.transaction_pending()) && C.structure_gate && C.structure_gate(UINT32_MAX)){
             const auto key=held_import->front();held_import->pop_front();
             H->log(M,SK_DEBUG,"Cast queue drain: key=%08X!%08X.%08X remaining=%u",key.group,key.instance,key.type,unsigned(held_import->size()));
             if(held_import->empty())held_import.reset();
@@ -930,7 +963,7 @@ uint32_t SK_THISCALL import_native(void* self,const editor::ResourceKey* key){
     if(!applying && active()){
         if(speech_pending() || !tracks_cast() || !key || self!=data(mode()) || !C.structure_gate)return UINT32_MAX;
         if(!pending.empty() || queued || gesture_before_resource ||
-           (C.transaction_pending && C.transaction_pending()) || !C.structure_gate(0)){
+           (C.transaction_pending && C.transaction_pending()) || !C.structure_gate(UINT32_MAX)){
             const auto scope=C.import_scope?C.import_scope():C.gesture_scope?C.gesture_scope():GestureScope{};
             if(!valid_scope(scope))return UINT32_MAX;
             if(!held_import){
@@ -991,6 +1024,32 @@ void* script_ui(){
     void* display=skg::readable(mode(),0x18)?skg::field<void*>(mode(),0x14):nullptr;
     return skg::readable(display,0x1C)?skg::field<void*>(display,0x18):nullptr;
 }
+void* inspector_settings(){
+    void* script=script_ui();return skg::readable(script,0x1C)?skg::field<void*>(script,0x18):nullptr;
+}
+bool inspector_shown(void* settings){
+    void* layout=skg::readable(settings,0x24)?skg::field<void*>(settings,0x10):nullptr;
+    return a_layout_shown && skg::readable(layout,0x18) && skg::thiscall<bool>(a_layout_shown,layout);
+}
+struct InspectorView {
+    void* owner=data(mode());
+    std::optional<uint32_t> asset;
+    InspectorView(){
+        void* settings=inspector_settings();
+        if(a_inspector_open && inspector_shown(settings))asset=skg::field<uint32_t>(settings,0x20);
+    }
+    ~InspectorView(){
+        if(!asset || !editing() || owner!=data(mode()))return;
+        Rows classes;if(!rows(resource(owner),0x2BF4,0x27E8,1024,classes))return;
+        bool exists=false;for(auto row=classes.begin;row!=classes.end;row+=0x27E8)if(skg::field<uint32_t>(row,0)==*asset){exists=true;break;}
+        if(!exists)return;
+        void* settings=inspector_settings();
+        if(!skg::readable(settings,0x24) || (inspector_shown(settings)&&skg::field<uint32_t>(settings,0x20)==*asset))return;
+        const bool prior=applying;applying=true;
+        skg::thiscall<void>(a_inspector_open,settings,*asset);
+        applying=prior;
+    }
+};
 bool SK_THISCALL script_input(void* self,void* window,void* message){
     auto* script=static_cast<uint8_t*>(script_ui());
     if(!applying && active() && script && self==script+8){
@@ -1236,7 +1295,7 @@ void SK_CDECL fence_ui(void*){
         // owned subtree. Disable only its exact native property UI root.
         auto root=skg::thiscall<sui::Win>(a_layout_find,layout,uint32_t(0x073E6BA0),true);
         if(!tracks_cast())disable_properties(root);
-        else if(root && sui::visible(root) && C.class_gate && skg::readable(settings,0x24))C.class_gate(skg::field<uint32_t>(settings,0x20));
+        else if(root && inspector_shown(settings) && C.class_gate)C.class_gate(skg::field<uint32_t>(settings,0x20));
     }
 }
 } // namespace
@@ -1366,6 +1425,9 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     a_create_marker=H->sym("SporeCoop::Editor::CreateMarker");
     a_delete_marker=H->sym("SporeCoop::Editor::DeleteMarker");
     a_apply_marker=H->sym("SporeCoop::Adventure::ApplyMarkerState");
+    a_preview_factory=H->sym("Simulator::cScenarioData::CreateObjectInstance");
+    a_inspector_open=H->sym("SporeCoop::Editor::OpenClassInspector");
+    a_layout_shown=H->sym("SporeCoop::Editor::LayoutShown");
     a_loading=H->sym("SporeCoop::Editor::LoadingScreen");
     a_layout_find=H->sym("SporeCoop::Editor::FindLayoutWindow");
     a_display_vtable=H->sym("SporeCoop::Editor::DisplayVtable");
@@ -1383,7 +1445,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     a_view_orbit=H->sym("SporeCoop::Editor::CurrentOrbitScalars");
     a_view_set_orbit=H->sym("SporeCoop::Editor::SetOrbitScalarsInstant");
     a_view_lookat=H->sym("SporeCoop::SimCamera_LookAt");
-    supported = a_mode && a_history && a_act && a_ctor && a_read && a_write && a_copy && a_entry && a_entry_vtable && a_restore && a_alloc &&
+    supported = a_inspector_open && a_layout_shown && a_preview_factory && a_mode && a_history && a_act && a_ctor && a_read && a_write && a_copy && a_entry && a_entry_vtable && a_restore && a_alloc &&
         a_context && a_tools && a_marker && a_object && a_clone_marker && a_create_marker && a_delete_marker && a_apply_marker && a_loading && a_layout_find && a_erase_history && a_discard_history && a_copy_marker_rows && a_insert_marker && a_copy_class_rows && a_copy_class && a_insert_class && a_speech_ui && a_behavior_data;
     if (!supported) return false;
     supported = install("SporeCoop::Editor::StartHistory", (void*)start, (void**)&original_start) &&
@@ -1417,6 +1479,8 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
 }
 
 void shutdown() {
+    update_previews({});
+    for(auto& [peer,actor]:preview_actors){(void)peer;clear_preview_actor(actor);}preview_actors.clear();
     ++generation;
     input_speech=false;
     held_tool.reset();held_creation.reset();held_class_removal.reset();input_queued=false;
@@ -1460,6 +1524,7 @@ State state() {
         (!a_display_vtable || skg::field<uintptr_t>(display,0)==a_display_vtable);
     void* layout=display_valid?skg::field<void*>(display,0x24):nullptr;
     void* container=skg::readable(layout,0x18)?skg::field<void*>(layout,0x14):nullptr;
+    s.world_visible=a_layout_shown && skg::readable(layout,0x18) && skg::thiscall<bool>(a_layout_shown,layout);
     // data124 is invalidated by native thumbnail generation even in a settled
     // editor and preview. Require the successful native shell load instead.
     s.ready=(!cancellation || cancellation_settling) && s.editing && display_valid && skg::field<int>(display,0x1C)==0 && skg::readable(container,0x8C) &&
@@ -1848,6 +1913,7 @@ bool validate(const Snapshot& snapshot,const editor::Document& document,std::str
 }
 
 bool restore(const Snapshot& snapshot, std::string& error) {
+    InspectorView inspector;
     // Scene reconstruction also installs the snapshot camera. That camera
     // belongs to the saved draft, while each participant's live browsing
     // camera belongs to that participant, including during remote commits.
@@ -1955,6 +2021,7 @@ bool apply(const editor::Document& document, std::string& error) {
 }
 
 bool apply(const editor::Document& document,const editor::Change& change,const Snapshot* artifact,std::string& error) {
+    InspectorView inspector;
     if(document.placements.size()>kPlacementLimit){error="Native editor placement limit exceeded";return false;}
     bool tracked=false;if(!relative_scale_mode(document,tracked,error))return false;
     Snapshot snapshot;
@@ -2148,6 +2215,12 @@ bool apply(const editor::Document& document,const editor::Change& change,const S
         companion.template operator()<editor::Rotation>(kDestinationRotationProperty,0x1F4);
         companion.template operator()<float>(kDestinationScaleProperty,0x204);
         skg::thiscall<void>(a_apply_marker,owner,marker,false);
+        if(to.properties.contains(kDestinationPositionProperty)){
+            const editor::Pose exit{std::get<editor::Vec3>(to.properties.at(kDestinationPositionProperty)),
+                std::get<editor::Rotation>(to.properties.at(kDestinationRotationProperty)),
+                std::get<float>(to.properties.at(kDestinationScaleProperty))};
+            render_destination(skg::thiscall<void*>(a_object,owner,marker),exit);
+        }
         changed=true;
     }
     void* tools=*reinterpret_cast<void**>(a_tools);
@@ -2221,6 +2294,100 @@ bool selection_pose(editor::ObjectId& object,editor::ObjectId& act,editor::Pose&
        !std::isfinite(candidate.rotation.x) || !std::isfinite(candidate.rotation.y) || !std::isfinite(candidate.rotation.z) ||
        !std::isfinite(candidate.rotation.w) || !std::isfinite(candidate.scale) || candidate.scale<=0)return false;
     object=current.selected.front();act={(3ull<<32)|current.act,1};pose=candidate;return true;
+}
+
+bool selection_preview(LivePreview& out){
+    if(!selection_pose(out.object,out.act,out.pose))return false;
+    void* marker=marker_for_id(resource(data(mode())),out.object);
+    if(!skg::readable(marker,0x230))return false;
+    out.class_id={(2ull<<32)|skg::field<uint32_t>(marker,0),1};
+    out.creating=input_clone.has_value() || gesture_clone.has_value();
+    // The stable binding is installed only after canonical allocation.
+    bool bound=false;for(const auto& [slot,id]:bindings){(void)slot;if(id==out.object){bound=true;break;}}
+    out.creating=out.creating || !bound;
+    Rows classes;if(!rows(resource(data(mode())),0x2BF4,0x27E8,1024,classes))return false;
+    out.destination.reset();
+    for(auto row=classes.begin;row!=classes.end;row+=0x27E8)if(skg::field<uint32_t>(row,0)==uint32_t(out.class_id.id) &&
+        skg::field<uint32_t>(row,8)==0x90C48D09u){
+        out.destination=editor::Pose{skg::field<editor::Vec3>(marker,0x1E8),skg::field<editor::Rotation>(marker,0x1F4),skg::field<float>(marker,0x204)};break;
+    }
+    return true;
+}
+
+void update_previews(const std::vector<LivePreview>& values){
+    static void* visual_owner=nullptr;
+    static void* visual_resource=nullptr;
+    static std::set<editor::ObjectId> shown;
+    void* owner=data(mode());void* r=resource(owner);
+    if(!editing() || owner!=visual_owner || r!=visual_resource){
+        shown.clear();visual_owner=owner;visual_resource=r;
+        for(auto& [peer,actor]:preview_actors){(void)peer;clear_preview_actor(actor);}preview_actors.clear();
+    }
+    if(!editing() || applying || !state().ready)return;
+    // Resolve every object afresh. Scene reconstruction, deletions and pool
+    // reuse cannot leave a borrowed render pointer in a delayed callback.
+    for(auto id:shown){
+        void* marker=marker_for_id(r,id);if(!marker)continue;
+        void* object=skg::thiscall<void*>(a_object,owner,marker);
+        render_pose(object,{skg::field<editor::Vec3>(marker,4),skg::field<editor::Rotation>(marker,0x10),skg::field<float>(marker,0x20)});
+        if(native_cast(object,0x0175CDC9))render_destination(object,{skg::field<editor::Vec3>(marker,0x1E8),skg::field<editor::Rotation>(marker,0x1F4),skg::field<float>(marker,0x204)});
+    }
+    shown.clear();
+    std::set<editor::Peer> creating;
+    for(const auto& value:values){
+        if(!active())break;
+        if(value.act!=editor::ObjectId{(3ull<<32)|state().act,1})continue;
+        if(value.creating){
+            if(!a_preview_factory)continue;
+            creating.insert(value.author);
+            auto& actor=preview_actors[value.author];
+            if(actor.source!=value.object || actor.asset!=value.class_id){clear_preview_actor(actor);actor.source=value.object;actor.asset=value.class_id;}
+            if(!actor.object){
+                Rows classes;if(!rows(r,0x2BF4,0x27E8,1024,classes))continue;
+                for(auto row=classes.begin;row!=classes.end;row+=0x27E8)if(skg::field<uint32_t>(row,0)==uint32_t(value.class_id.id)){
+                    const auto key=skg::field<editor::ResourceKey>(row,8);
+                    // Native scene factory, no marker or ScenarioData map entry.
+                    // The noun registry owns it; our reference survives scene teardown.
+                    actor.object=skg::cdecl_call<void*>(a_preview_factory,&key,&value.pose.position,&value.pose.rotation,
+                        value.pose.scale,false,uint32_t(value.class_id.id),(void*)nullptr,(void*)nullptr,uint32_t(value.act.id));
+                    addref(actor.object);break;
+                }
+            }
+            if(actor.object){render_pose(actor.object,value.pose);if(value.destination)render_destination(actor.object,*value.destination);}
+            continue;
+        }
+        void* marker=marker_for_id(r,value.object);if(!marker)continue;
+        void* object=skg::thiscall<void*>(a_object,owner,marker);
+        if(render_pose(object,value.pose))shown.insert(value.object);
+        if(value.destination)render_destination(object,*value.destination);
+    }
+    for(auto it=preview_actors.begin();it!=preview_actors.end();){
+        if(creating.contains(it->first)){++it;continue;}
+        clear_preview_actor(it->second);it=preview_actors.erase(it);
+    }
+}
+
+std::string visual_status(){
+    if(!state().ready || applying)return "Native editor visuals unavailable";
+    std::string result;
+    const auto position=[](void* object){
+        void* spatial=native_cast(object,0x01186577);if(!skg::readable(spatial,16))return std::string("unavailable");
+        const auto p=skg::field<editor::Vec3>(spatial,4);char text[96];
+        snprintf(text,sizeof text,"%.9g,%.9g,%.9g",double(p.x),double(p.y),double(p.z));return std::string(text);
+    };
+    size_t count=0;
+    for(const auto& [slot,id]:bindings){
+        (void)slot;if(count++>=64)break;
+        void* marker=marker_for_id(resource(data(mode())),id);if(!marker)continue;
+        void* object=skg::thiscall<void*>(a_object,data(mode()),marker);
+        result+="placement="+std::to_string(id.id)+":"+std::to_string(id.generation)+" render="+position(object);
+        void* teleporter=native_cast(object,0x0175CDC9);
+        if(skg::readable(teleporter,0x58))result+=" exit="+position(skg::field<void*>(teleporter,0x54));
+        result+='\n';
+    }
+    for(const auto& [peer,actor]:preview_actors)result+="ghost="+std::to_string(peer.slot)+":"+std::to_string(peer.generation)+" class="+
+        std::to_string(actor.asset.id)+" render="+position(actor.object)+"\n";
+    return result.empty()?"No native placement visuals":result;
 }
 
 std::string status() {

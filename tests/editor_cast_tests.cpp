@@ -14,6 +14,38 @@ static constexpr ObjectId act{3ull<<32,1},cast{2ull<<32,1},settings{5ull<<32,1};
 static constexpr FieldKey block{Field::Property,editor_native::kCastBlockProperty};
 static State seed(){State s;auto& d=s.document;d.project[0]=9;d.epoch=7;d.next_id=6ull<<32;d.acts.insert(act);d.class_schema=editor_native::cast_property_schema();return s;}
 static ClassActSettings initial(){ClassActSettings c;c.object=settings;c.class_id=cast;c.act_id=act;c.properties[block.property]=StructuredValue{editor_native::kCastBlockFormat,{1,2,3},{}};return c;}
+static void unrelated_asset_ownership(){
+    auto s=seed();auto& d=s.document;d.next_class=2;
+    const ObjectId b{cast.id|1,1},bs{settings.id|1,1};
+    auto a=initial(),other=initial();other.class_id=b;other.object=bs;
+    d.classes={cast,b};d.class_settings={{settings,a},{bs,other}};
+    Placement p;p.object={30,1};p.class_id=b;p.act_id=act;d.placements[p.object]=p;
+    Coordinator core;std::string error;CHECK(core.reset(s,7,error));CHECK(core.connect(host));CHECK(core.connect(guest));
+    const auto held=core.acquire(host,{{ScopeKind::Class,cast,{}}},0,30000);CHECK(held.accepted());
+    const auto guest_owned=core.acquire(guest,{{ScopeKind::Structure,{},{}},{ScopeKind::Class,b,{}}},0,30000);CHECK(guest_owned.accepted());
+    CHECK(core.acquire(guest,{{ScopeKind::Class,cast,{}}},0,30000).code==Code::Conflict);
+    CHECK(core.acquire(guest,{{ScopeKind::Document,{},{}}},0,30000).code==Code::Conflict);
+    uint64_t sequence=0;
+    auto submit=[&](std::vector<Mutation> mutations,Intent intent=Intent::Forward){
+        Request r;r.project=d.project;r.epoch=7;r.operation={guest,++sequence,7};r.base_revision=core.state().document.revision;r.intent=intent;r.mutations=std::move(mutations);r.summary="Unrelated assets";
+        for(const auto& l:guest_owned.leases)r.leases.push_back({l.scope,l.token});return core.submit(r,0);
+    };
+    auto third=initial();third.class_id.id|=2;third.object.id|=2;
+    Mutation add;add.kind=MutationKind::CreateClass;add.class_initial=third;
+    CHECK(submit({add}).accepted()); // Host keeps A's inspector open during import.
+    Mutation edit;edit.target=bs;edit.field=block;edit.value=StructuredValue{editor_native::kCastBlockFormat,{9,8,7},{}};
+    CHECK(submit({edit}).accepted());
+    Mutation remove;remove.kind=MutationKind::DeleteClass;remove.target=b;remove.expected=2;
+    Mutation erase;erase.kind=MutationKind::Delete;erase.target=p.object;
+    CHECK(submit({remove,erase}).accepted());
+    CHECK(!core.state().document.classes.contains(b)&&core.state().document.classes.contains(cast));
+    CHECK(core.acquire(guest,{{ScopeKind::Placement,p.object,{}}},0,30000).accepted()); // Retained B does not overlap A.
+    CHECK(submit({},Intent::Undo).accepted());
+    CHECK(core.state().document.classes.contains(b)&&core.state().document.placements.contains(p.object));
+    CHECK(submit({},Intent::Redo).accepted());
+    CHECK(core.state().document.class_settings.at(settings)==a);
+    auto forged=add;forged.class_initial=initial();CHECK(!submit({forged}).accepted());
+}
 static void referenced_import_undo(){
     std::string error;
     for(bool objective:{false,true}){
@@ -44,6 +76,7 @@ static void referenced_import_undo(){
     CHECK(refs==std::set<ObjectId>{{(2ull<<32)|1024,1}});
 }
 int main(){
+    unrelated_asset_ownership();
     std::array<uint8_t,0x90> asset_data;asset_data.fill(0xA5);
     auto expected=asset_data;
     for(size_t offset:{0xCu,0x34u,0x5Cu})std::fill_n(expected.begin()+offset,4,0);

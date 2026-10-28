@@ -123,7 +123,8 @@ struct Check {
     Revision expected = 0;
     bool operator==(const Check&) const = default;
 };
-enum class ScopeKind : uint8_t { Document, Class, Act, Placement, Field };
+// Structure serializes native allocation without locking unrelated cast settings.
+enum class ScopeKind : uint8_t { Document, Class, Act, Placement, Field, Structure };
 struct Scope {
     ScopeKind kind = ScopeKind::Document;
     ObjectId object;

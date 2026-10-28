@@ -12,7 +12,7 @@ continue editing remain later milestones in the
 
 ## Compatibility and scope
 
-Every participant needs `0.7.5.0-ga-editor-preview.4`, protocol 19, Galactic Adventures
+Every participant needs `0.7.5.0-ga-editor-preview.5`, protocol 20, Galactic Adventures
 and the exact GOG executable with SHA-256
 `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
 Older gameplay and editor previews receive an explicit version mismatch.
@@ -21,6 +21,20 @@ This preview adds retained first-press dragging, sound pose companions,
 independent teleporter endpoints, the native multi-axis ball, cast properties
 and cast imports. See the [authoring progress](EDITOR-SEMANTICS-PROGRESS.md)
 and the [native-flow validation report](reports/EDITOR-NATIVE-FLOW-VALIDATION.md).
+
+Preview 5 separates cast/placement allocation from individual asset ownership.
+An open property inspector holds its asset, while other players can edit,
+import and remove unrelated assets. Undo refreshes the ownership snapshot before
+another gesture. Native scene refreshes retain each participant's open inspector
+when that asset still exists.
+
+Collaborators have distinct selection colors and labels. A lock marks every
+placed instance of the owned asset; the lobby and viewport also identify asset
+property ownership. Placement and movement previews update the native visible
+models while dragging, including teleporter exits. New placements use temporary
+scene objects. These previews do not add cast entries, authored markers or Undo
+items. The completed gesture commits once; cancellation, expiry, ownership loss
+and disconnect retire its preview. Fullscreen native pickers hide world hints.
 
 The placement adapter implements creation from the native cast browser,
 duplication, deletion, movement, rotation and uniform scale. Scale tracks both

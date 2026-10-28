@@ -11,6 +11,13 @@ namespace {
 bool identity(ObjectId id) { return id.id && id.generation; }
 bool identity(Peer p) { return p.slot < 4 && p.generation; }
 bool identity(OperationId op) { return identity(op.author) && op.sequence && op.epoch; }
+const Placement* retained_placement(const State& state,ObjectId id){
+    auto found=state.document.placements.find(id);
+    if(found!=state.document.placements.end())return &found->second;
+    for(auto g=state.history.rbegin();g!=state.history.rend();++g)for(const auto* patch:{&g->undo,&g->redo})
+        for(const auto& e:patch->objects)if(e.object==id){if(e.after)return &*e.after;if(e.before)return &*e.before;}
+    return nullptr;
+}
 bool project(const ProjectId& id) { return std::any_of(id.begin(), id.end(), [](auto v) { return v != 0; }); }
 bool finite(float v) { return std::isfinite(v); }
 bool position(Vec3 v) { return finite(v.x) && finite(v.y) && finite(v.z) && std::abs(v.x) <= 1e7f && std::abs(v.y) <= 1e7f && std::abs(v.z) <= 1e7f; }
@@ -382,11 +389,12 @@ bool Coordinator::clock(Time now)
 }
 bool Coordinator::scope_valid(const Scope& s) const
 {
-    if (s.kind > ScopeKind::Field) return false;
+    if (s.kind > ScopeKind::Structure) return false;
     const auto& d = state_.document;
-    if (s.kind == ScopeKind::Document) return s.object == ObjectId{} && s.field == FieldKey{};
+    if (s.kind == ScopeKind::Document || s.kind == ScopeKind::Structure) return s.object == ObjectId{} && s.field == FieldKey{};
     if (!identity(s.object)) return false;
-    if (s.kind == ScopeKind::Class) return s.field == FieldKey{} && d.classes.contains(s.object);
+    if (s.kind == ScopeKind::Class) return s.field == FieldKey{} && (d.classes.contains(s.object) ||
+        ((s.object.id>>32)==2 && d.tombstones.contains(s.object)));
     if (s.kind == ScopeKind::Act) return s.field == FieldKey{} && d.acts.contains(s.object);
     if(d.class_settings.contains(s.object))return s.kind==ScopeKind::Field &&
         s.field.field==Field::Property && d.class_schema.contains(s.field.property);
@@ -401,8 +409,8 @@ bool Coordinator::covers(const Scope& a, const Scope& b) const
         auto settings=state_.document.class_settings.find(b.object);
         if(settings!=state_.document.class_settings.end())return b.kind==ScopeKind::Field &&
             (a.kind==ScopeKind::Class?settings->second.class_id:settings->second.act_id)==a.object;
-        auto it = state_.document.placements.find(b.object);
-        return it != state_.document.placements.end() && (a.kind == ScopeKind::Class ? it->second.class_id : it->second.act_id) == a.object;
+        auto* placement=retained_placement(state_,b.object);
+        return placement && (a.kind == ScopeKind::Class ? placement->class_id : placement->act_id) == a.object;
     }
     return false;
 }
@@ -418,7 +426,7 @@ bool Coordinator::overlaps(const Scope& a, const Scope& b) const
     // context is restored, conservatively conflict with class and act writers.
     auto unknown = [&](const Scope& x, const Scope& y) {
         return (x.kind == ScopeKind::Class || x.kind == ScopeKind::Act) && (y.kind == ScopeKind::Placement || y.kind == ScopeKind::Field) &&
-            !state_.document.placements.contains(y.object) && !state_.document.class_settings.contains(y.object);
+            !retained_placement(state_,y.object) && !state_.document.class_settings.contains(y.object);
     };
     return unknown(a, b) || unknown(b, a);
 }
@@ -712,8 +720,8 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
             if(m.kind==MutationKind::CreateClass || m.kind==MutationKind::DeleteClass){
                 if(m.initial!=Placement{} || m.clone_pose || m.field!=FieldKey{} || m.value)
                     return reject(Code::Invalid,"A cast operation cannot contain placement data.");
-                const auto code=leased(r,{},now);
-                if(code!=Code::Accepted)return reject(code,"Importing or removing cast requires document ownership.");
+                const auto code=leased(r,{ScopeKind::Structure,{},{}},now);
+                if(code!=Code::Accepted)return reject(code,"Importing or removing cast requires structure ownership.");
                 if(m.kind==MutationKind::CreateClass){
                     if(!m.class_initial || m.target!=ObjectId{} || m.expected || next_class==UINT32_MAX)return reject(Code::Invalid,"Invalid cast creation.");
                     auto settings=*m.class_initial;
@@ -725,6 +733,8 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
                     patch.classes.push_back({class_id,std::nullopt,settings,0});allocated.push_back(class_id);allocated.push_back(settings_id);
                 }else{
                     if(m.class_initial)return reject(Code::Invalid,"Cast removal cannot supply class data.");
+                    const auto owned=leased(r,{ScopeKind::Class,m.target,{}},now);
+                    if(owned!=Code::Accepted)return reject(owned,"Removing cast requires ownership of that class.");
                     auto found=std::find_if(state_.document.class_settings.begin(),state_.document.class_settings.end(),[&](const auto& row){return row.second.class_id==m.target;});
                     if(found==state_.document.class_settings.end())return reject(Code::MissingObject,"The cast class is missing.");
                     patch.classes.push_back({m.target,found->second,std::nullopt,m.expected});
@@ -736,7 +746,7 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
             if (m.kind != MutationKind::Create && m.initial != Placement{}) return reject(Code::Invalid, "Only creation may provide initial placement data.");
             if (m.kind != MutationKind::Set && (m.value || m.field != FieldKey{})) return reject(Code::Invalid, "Only field changes may provide a value or field selector.");
             if (m.kind == MutationKind::Create || m.kind == MutationKind::Clone) {
-                auto code = leased(r, {}, now);
+                auto code = leased(r, {ScopeKind::Structure, {}, {}}, now);
                 if (code != Code::Accepted) return reject(code, "Creating or cloning requires the document structure lease.");
                 Placement p;
                 if (m.kind == MutationKind::Create) {
@@ -753,6 +763,8 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
                     patch.dependencies.push_back({m.target, CheckKind::Object, {}, m.expected});
                     transient_dependencies++;
                 }
+                auto class_owned=leased(r,{ScopeKind::Class,p.class_id,{}},now);
+                if(class_owned!=Code::Accepted)return reject(class_owned,"Placing an asset requires ownership of its class.");
                 if (next_id >= UINT64_MAX - 1) return reject(Code::Limit, "The stable ID allocator is exhausted.");
                 p.object = {next_id++, 1}; p.revision = 0; p.field_revisions.clear();
                 if (m.kind == MutationKind::Clone) clone_sources[p.object] = m.target;
@@ -806,8 +818,12 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
             if (code != Code::Accepted) return reject(code, "Undo/Redo requires its edited-field lease.");
         }
         if(!patch.classes.empty()){
-            const auto code=leased(r,{},now);
-            if(code!=Code::Accepted)return reject(code,"Cast Undo/Redo requires document ownership.");
+            const auto code=leased(r,{ScopeKind::Structure,{},{}},now);
+            if(code!=Code::Accepted)return reject(code,"Cast Undo/Redo requires structure ownership.");
+            for(const auto& entry:patch.classes)if(entry.before){
+                const auto owned=leased(r,{ScopeKind::Class,entry.object,{}},now);
+                if(owned!=Code::Accepted)return reject(owned,"Cast Undo/Redo requires ownership of the affected class.");
+            }
         }
     }
     State candidate = state_;
