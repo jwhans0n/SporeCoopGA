@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Complete an ordinary native conversation in an existing isolated GA pair.
 
-The caller supplies a visible NPC body coordinate after positioning the captain.
+The caller supplies a visible NPC body coordinate after positioning the captain,
+or explicitly selects the existing private-lab Talk request entry point.
 Only mouse clicks and native Next/Finished controls complete the conversation.
 No objective callback or result is injected.
 """
@@ -23,11 +24,20 @@ def main():
     parser.add_argument('--host', type=int, default=21)
     parser.add_argument('--guest', type=int, default=22)
     parser.add_argument('--observers',default='')
-    parser.add_argument('--x', type=int, required=True)
-    parser.add_argument('--y', type=int, required=True)
+    parser.add_argument('--x', type=int)
+    parser.add_argument('--y', type=int)
+    parser.add_argument('--request-target', type=int,
+                        help='Private lab: request native Talk for this authored placement index')
+    parser.add_argument('--goal-index', type=int, default=0)
     parser.add_argument('--metadata', type=Path, default=ROOT / 'out/windows-lab/runtime-bootstrap-3/processes.json')
     parser.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
+    if args.request_target is None and (args.x is None or args.y is None):
+        parser.error('Supply NPC body --x/--y or an explicit --request-target')
+    if args.request_target is not None and args.request_target < 0:
+        parser.error('The authored placement index must be nonnegative')
+    if not 0 <= args.goal_index <= 7:
+        parser.error('The native act goal index must be0..7')
     observer_ids=tuple(int(x)for x in args.observers.split(',')if x)
     records = verify_lab(args.metadata, (args.host, args.guest)+observer_ids)
     host, guest = Game(args.host, args.out), Game(args.guest, args.out)
@@ -41,7 +51,17 @@ def main():
         if before['act'] != b.goals()['act']:
             raise FixtureError('captains are in different acts')
         pages = []
-        guest.click(args.x, args.y)
+        if args.request_target is None:
+            guest.click(args.x, args.y)
+            source = 'ordinary NPC mouse click, independent native pages and group Finished controls'
+        else:
+            peer = guest.player_id()
+            guest.call(f'coop.adventure.world near {args.request_target} {peer} 1 0')
+            # The host validates proximity against the replicated captain pose.
+            # Let that pose arrive before sending the reliable Talk request.
+            guest.call('wait.frames 30 15000')
+            guest.call(f'coop.adventure.world talk {args.goal_index} {args.request_target} {peer}')
+            source = 'private lab Talk request; independent native pages and group Finished controls'
         guest.wait('native conversation cinematic opens',
                    lambda: guest.caption('letterbox_top'), timeout=12)
         host.wait('same native conversation on host',lambda: host.caption('letterbox_top'),timeout=12)
@@ -106,10 +126,10 @@ def main():
         result = dict(result='PASS', profiles=records, before=before, host=a.goals(),
                       guest=b.goals(), pages=pages, exceptions=exceptions,
                       held=held,host_page_while_guest_read=host_page,observers=[m.goals()for m in readers[2:]],
-                      source='ordinary NPC mouse click, independent native pages and group Finished controls')
+                      source=source)
         args.out.mkdir(parents=True, exist_ok=True)
         (args.out / 'result.json').write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
-        print('PASS: ordinary guest conversation and shared objective progress')
+        print('PASS: native guest conversation and shared objective progress')
         return 0
     except (FixtureError, OSError, ValueError) as error:
         print('FAIL:', error)

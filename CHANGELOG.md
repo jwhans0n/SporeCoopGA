@@ -5,10 +5,14 @@
 - Add a development Adventure Editor collaboration pipeline for the exact GOG
   executable: host-ordered placement gestures, scoped leases, stable identities,
   checked own-action Undo/Redo and bounded durable recovery projects.
-- Integrate verified native snapshots, private Save As and a separate party
-  playtest/return path. Keep unsupported class, act, goal, terrain and nested-editor
-  mutations read-only. Editor development uses protocol 16; the published
+- Integrate verified native snapshots, private Save As, initiating-player solo
+  Play and an explicit Test Together action with host approval and group readiness.
+  Keep unsupported act, goal, terrain and nested-editor mutations read-only.
+  Editor development uses protocol 19 / preview 4; the published
   gameplay release remains protocol 15.
+- Retain the first drag while ownership arrives. Synchronize sound pose
+  companions, separate teleporter endpoints, ball rotation, native cast settings
+  and checked cast imports/removals with conservative Undo/Redo.
 - Reuse immutable dependencies during placement updates and retain their recovery
   closure once. Keep native saving, guest durability and group readiness separate.
 - Add portable, Win32 orchestration and isolated native editor fixtures. Native

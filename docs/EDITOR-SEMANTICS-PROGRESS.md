@@ -3,7 +3,21 @@
 The automatic native-flow preview is described in the
 [editor guide](MULTIPLAYER-ADVENTURE-EDITOR.md) and its
 [validation report](reports/EDITOR-NATIVE-FLOW-VALIDATION.md). It extends the
-placement preview without enabling the unfinished native property controls.
+placement preview with native cast properties and separate solo/group testing.
+
+Preview 4 / protocol 19 on `fix/ga-editor-preview4` adds owned native class
+subtrees, behavior/text reference validation, class creation/removal, dependency
+uploads from guests, retained first-press input and endpoint/audio pose fields.
+Native two-player checks now cover the cast-property families, direct drags,
+sound movement, both teleporter endpoints and multi-axis ball rotation.
+Four private native editors have passed cold recovery, sound movement and Undo
+from every role, initiating-player solo Play/Build, and Test Together with
+reciprocal moving captains. Detailed failures and remaining acceptance gates
+are tracked in the validation report; these results are not a release claim.
+The final candidate also passed host/guest multi-selection imports with checked
+Undo/Redo, native shared conversations/objectives, ordinary Mission Complete/Done
+return, and exact-source native Save/reopen of the supported projection. The
+Linux/Bottles merge smoke and sustained release-window acceptance remain open.
 
 ## Implemented development checkpoint
 

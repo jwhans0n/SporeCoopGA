@@ -3,6 +3,15 @@
 Bugs found and not fixed yet. Each entry: what happens, how to reproduce it, what is known.
 Fixed entries move to the commit message (and a test).
 
+## Shared editor preview 4: nested Create Your Own remains unsupported
+
+From a shared editor's native creature picker, selecting the Create Your Own
+tile can leave a black native transition even though the committed draft remains
+available and no game exception is caught. This enters the excluded nested-editor
+route. Use stock assets or existing saved creations in this preview. Restart and
+Recover restores the private draft. Observed while correcting an animated-picker
+fixture on C32; the supported import and property routes are tested separately.
+
 ## Galactic Adventures preview 12: validation limits
 
 Preview `0.7.3.5-ga-preview.12` requires the exact dc04 GOG executable and matching

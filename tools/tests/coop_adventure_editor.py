@@ -308,6 +308,20 @@ class EditorPair:
                         if math.isfinite(value):result[m[1]]['relative_scale']=value
                     except ValueError:
                         pass
+                for field,count in (('destination',3),('destination_rotation',4),('destination_screen',2)):
+                    match=re.search(r'\b'+field+r'=(\S+)',line)
+                    if match:
+                        try:
+                            values=tuple(map(float,match[1].split(',')))
+                            if len(values)==count and all(math.isfinite(n) for n in values):result[m[1]][field]=values
+                        except ValueError:pass
+                for field in ('elevation','destination_scale','pitch','gain'):
+                    match=re.search(r'\b'+field+r'=(\S+)',line)
+                    if match:
+                        try:
+                            value=float(match[1])
+                            if math.isfinite(value):result[m[1]][field]=value
+                        except ValueError:pass
         return result
 
     def body(self, game, object_id):

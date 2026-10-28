@@ -1,4 +1,11 @@
-# Automatic editor sharing and native controls: preview 3
+# Automatic editor sharing and native controls
+
+The preview 3 evidence is retained below. Preview 4 implementation and current
+native validation appear at the end of this report.
+
+Latest verified development candidate: preview **4**, protocol **19**, branch
+`fix/ga-editor-preview4`. See the appended native matrix for the exact candidate
+hashes and test limitations. The installed personal preview has not been updated.
 
 Development preview `0.7.5.0-ga-editor-preview.3`, protocol **18**, branch
 `feat/ga-editor-native-flow`, 2026-10-27. This is a focused integration report,
@@ -174,3 +181,181 @@ instructions. The launcher still starts the same two profiles. Preserved setting
 and individual launcher hashes were verified. All four C7 lab processes returned
 to Galaxy and closed normally with exit code zero; no personal session was active
 when installation began.
+# Preview 4 implementation validation, 2026-10-28
+
+Worktree: `D:/Code/SporeCoop-wt/ga-adventure-editor`, branch
+`fix/ga-editor-preview4`. Supported executable: GOG 2024 `dc04aee5`.
+The personal installation and personal profiles have not been changed.
+
+The editor portable target passed after replacing a default optional metadata
+construction that Clang 14 with libstdc++ 13 rejected. Win32 editor fixtures also
+passed, including 165 cast/endpoint checks, 8,891 wire checks, 3,603 native input
+and cancellation checks, 6,824 runtime checks including the large closure path,
+and existing two/four-peer UDP packet-adversity coverage. Runtime native-flow
+selection passed 568 checks for solo host/guest testing and the separate group
+request route. These are model/ABI fixtures, not native gameplay acceptance.
+
+Evidence is under `out/editor-preview4/`: `portable-tests2.log`,
+`win-fixtures-build.log`, `win-fixtures-results.log`, and native RE query receipts.
+The focused native fixture is `tools/tests/coop_editor_preview4.py`.
+
+Private native pair 91/92 was launched through `tools/windows_lab.py`, hidden
+and muted. The empty never-saved draft synchronized successfully on protocol 19.
+The first cohort stalled in D3D9 after first-use onboarding, with no caught game
+faults. Reports `report-20261028-010344-i91.txt` and
+`report-20261028-010343-i92.txt` were retained in the private installation logs.
+The retry rendered and entered both native editors. Early import fixture runs
+timed out searching a remembered empty `Recent Downloads` filter. No successful
+stock/custom import, movement, or group gameplay acceptance is claimed by those
+failed runs.
+
+Later native evidence:
+
+| Candidate and artifact | Observed result |
+| --- | --- |
+| C7, `cast-c7` and `native-ui-explore` | Guest stock import, checked class Undo/Redo, health 100 to 450 with no instances, inspector retained. The first Undo input still required a retry at this candidate. |
+| C7, `playtests-c7` | Native solo Play/Build passed for both roles. Group launch rejected an unsaved native source; this exposed and led to removal of the old saved-key restriction. |
+| C9, `playtests-c9` | Native solo for both roles, guest Test Together request, host approval, explicit readiness, reciprocal moving live captains, coordinated Build return, unchanged committed checks/history, zero caught faults. Shared interactions/objectives and four players remain unverified. |
+| C9, `properties-c9` | Respawn changed as one transaction with zero instances. Multi-character speech reproduced a capture-queue overflow and frozen recovery state. |
+| C12, `import-c12` | Guest native stock import, single-input checked Undo/Redo, and one physical drag places that asset after structure ownership arrives. |
+| C12, `movement-c12` | One physical drag each for host and guest moves the existing placement, one canonical transaction and Undo item each. |
+
+C12 contains native Speech/Captions and Advanced Behaviors mutation guards.
+Speech's per-character native commits are retained as one owned before/latest
+after until the exact dialog closes. Its 128-character i686 regression also
+checks no mutation before class ownership and stale-epoch retirement. Fresh
+native text and the rest of the property matrix are still running.
+
+The complete repository `make test` passed in `full-repository-tests2.log`.
+The initial run found a stale protocol-16 assertion in the general network
+fixture; it now requires protocol 19 and rejects a protocol-18 HELLO/header.
+Later native input changes are covered by the rebuilt i686 fixture. Native
+symbol lint passes with zero problems. The follow-up results below supersede
+the remaining native movement/import gates in this initial checkpoint.
+No merge or release was performed.
+
+## Preview 4 follow-up matrix
+
+All native evidence below used the private GOG 2024 installation, invisible and
+muted profiles `winlab_preview4_c1_91` through `94`, via `windows_lab.py`.
+Candidate C26 SHA-256:
+`c374fb4974142787da80257575d710cdc2541ec2773dc2a3d8a822d129038feb`.
+
+| Evidence under `out/editor-preview4/` | Result |
+| --- | --- |
+| `properties-c12-resume`, `speech-c12` | Both roles: health, awareness, speed, damage, stance, respawn, visibility, speech and captions. Native text coalesces to one synchronized action. |
+| `sound-c17` | Both roles: emitter movement and single Undo, exact pitch/gain. |
+| `sound-c19-four` | Cold recovery followed by movement/Undo from all four editors, matching native checks and zero caught faults. |
+| `endpoints-c18` | Both entrance and destination movement/Undo by host and guest; the other endpoint is unchanged. |
+| `ball-c18d` | Both roles: actual white sphere rotation across quaternion axes, unchanged position/opposite endpoint and Undo. |
+| `playtests-c19-four` | Solo Play/Build for every participant with observers remaining in editors; guest Test Together request, host approval, all explicit ready, one run, reciprocal moving remote captains, coordinated return, unchanged draft/history. |
+| `remove-c21b`, `remove-c26` | Host/guest populated class removal, Undo, Redo and Undo; four matching checks, retained stable placement identities and authored fields. C26 gates before palette card/history mutation. |
+| `behavior-c21` | Guest advanced rule changes, one history item, Undo/Redo, four matching native checks. Host advanced rule changes passed in `behaviors-c20-explore`. |
+| `custom-c21`, `host-custom-c25b` | Existing private creations imported by either role, including guest upload/host admission, distribution, single history item and Undo/Redo. |
+| `disguises-c25` | Both roles: native object picker, class subtree plus scale companion, stable placement identities, Undo/Redo/Undo and exact scale restoration on all four editors. |
+| `asset-matrix-c25b` | Full host/guest stock/custom native picker matrix, one canonical class and history item per import, checked Undo/Redo, four matching native checks. |
+
+Failure findings are retained. C12 sound reconstruction changed pitch by 10 ULP;
+C16 repeated refresh reached 20 ULP, disproving tolerance alone. C17 preserves
+exact authored sound scalars at refresh boundaries. C19/C20 class deletion was
+rejected safely because application validated a new class map with old markers;
+C21 fixes the owned intermediate ordering. C21/C22 disguise failed from actor
+replacement and missing placement guards; C23 retains surviving marker identity,
+C24 includes scale companions under the existing class lease, and C25 passes
+both roles. The destination visibility menu has no native Disguised option;
+an earlier fixture incorrectly requested it. Native picker/category clicks can
+be ignored during animation; the revised asset matrix verifies the filter first.
+
+`full-repository-tests3.log` passed the complete repository suite.
+The latest full Win32 Runtime run (`c25-runtime-full.log`) passed **6,991** checks,
+including the large closure and cached join. The rebuilt i686 native fixture
+passed **4,309** checks at C26, including retained quick release, cast actor
+replacement, audio refresh, speech coalescing and palette pre-mutation gating.
+The cast/endpoint fixture has **174** checks; wire has **8,891**. Later changes
+were confined to the native adapter, Runtime guards, fixtures and documentation.
+Symbol lint and Python syntax checks pass. Existing two/four-peer real UDP
+loss/reorder tests passed earlier in this branch.
+
+## Preview 4 Save and gameplay completion
+
+`playtests-c28-four` and `playtests-c31-four` passed solo Play/Build for all four
+participants, guest Test Together approval, every readiness confirmation,
+reciprocal moving captains and coordinated Build. The revision and history were
+unchanged by each round. Launch status additionally waits for the live scoped
+captains and the authoritative goals/roster baseline; it retains that accepted
+launch state for the run when a captain is later downed.
+
+`talk-c28-four-b` and `talk-c28-terminal` completed two actual native conversations
+on four clients. Only their initial Talk request used the explicit private lab
+entry point. Pages and Finished controls used ordinary native UI. Guest completion
+alone held host clocks/pages/goals; every participant then confirmed before the
+host advanced objectives. Both completed counts replicated and produced the
+actual shared success result. `results-return-c28/result.json` verifies public
+group Return, disappearance of the terminal cinematic, native editor HUDs,
+matching authored values and unchanged history. Screen reprojection varied by
+less than one thousandth of a pixel on guests after the camera roundtrip.
+
+C28 found and fixed a retained cinematic camera/input hold on terminal return.
+The i686 save fixture has **431** checks, including playing, success, failure,
+replaced context and a cinematic that refuses to release. Native solo terminal
+results were not separately completed in the game; solo Build and the shared
+native cleanup/state-machine paths are covered.
+
+`save-c31-four` passed native Save at revision7 with all four explicit native
+acknowledgements. `history-after-save-c31` passed placement and class-property
+Undo/Redo across that boundary. `save-reopen-c31-four-e` passed another Save,
+normal close, selection of the exact new native resource and equality of the
+complete supported projection before Recover. This includes full cast subtrees
+and the extended placement fields. Automatic sharing immediately creates a new
+baseline on native reopen, so this run uses exact-source and projection proof;
+the idle-only opaque adventure-wide resource probe was not applied. Those global
+authoring fields remain outside this change.
+
+Failure receipts remain available. C28/C30 Save rejected the imported class's
+machine lookup hint, populated by native Save. C31 normalizes only that hint on
+owned copies and upgrades retained recovery preconditions without dropping
+history. The Save harness also needed pending-ack polling, exact-source handling
+of duplicate titles, and recognition of the fresh automatic reopen baseline.
+
+`full-repository-tests5.log` and `full-repository-tests6.log` passed the repository
+suite. `c31-runtime-full.log` passed **6,991** Win32 Runtime checks, including the
+large dependency closure. The preview bridge has **105** checks, cast has **176**,
+wire has **8,891**, and the real two/four-peer UDP fixture passed **15,501** checks
+in `final-win-results.log`. The later import queue fixture has **4,442** i686
+checks. Symbol lint reports zero problems.
+
+Final native batch validation and private Windows status smoke are recorded in
+the final candidate addendum below. The Linux/Bottles `lab.py run smoke` gate is
+still required before merging; it was not substituted by a Windows status check.
+Sustained performance and overnight release acceptance remain reserved for a
+release window. This branch is not merged.
+
+## Final preview 4 candidate
+
+Candidate C37 DLL SHA-256:
+`d362db973ea8291ef3f70f0f6d7e73357f553ed5b57bb96f32f424ca941a29b2`.
+Version `0.7.5.0-ga-editor-preview.4`, protocol **19**, supported GOG 2024 only.
+
+| Final evidence under `out/editor-preview4/` | Result |
+| --- | --- |
+| `batch-imports-c37-four` | Cold recovery; host and guest each selected two actual native stock thumbnails. Both classes and both history items appeared, followed by Undo/Redo/Undo for each asset, with four converged clients and zero caught faults. |
+| `gameplay-c37-launch` | Guest normal-lobby request, host approval, four explicit readiness confirmations, one run, live reciprocal captains and owner-matched moving remote positions. |
+| `talk-c37-four`, `talk-c37-terminal` | Native pages/Finished on all four clients, host-authoritative completion of both Talk goals, replicated counters and the real shared success result. Initial approach/Talk request uses the explicitly scoped private lab entry point. |
+| `results-done-c37` | Four normal native Mission Complete panels. Host Done restored all four editor HUDs with identical authored values/history and no caught faults. |
+| `c37-runtime-final.log`, `c37-native-flow-final.log` | 6,992 full Win32 Runtime checks and 616 focused native-flow checks, including the retained import-owner scope. |
+| `c37-build.log` | Final i686 native input fixture: 4,450 checks. Save fixture remains 431; preview bridge 105. |
+| `final-lab-cleanup` | Ordinary native exits to Galaxy, four disconnected private profiles and zero caught faults. |
+| `out/windows-lab/preview4_c1/status-regression.json` | Windows lab offline/temporary-host/offline status smoke passed on all four owned, hidden, muted children. |
+
+The final import batch distinguishes stable owner identity from permission to
+start a new gesture. Both direct import and queue drain wait for prior capture,
+upload and canonical application. Waiting through that operation does not erase
+the original project/epoch/participant/native-generation checks. The earlier
+single-key, capture, timeout and transient empty-scope failures are retained in
+the RE notes and native run receipts.
+
+The Windows status smoke is narrower than the Linux/Bottles smoke suite.
+`lab.py run smoke` remains a merge gate. No merge, push, release or personal
+installation update was performed. The archive is an experimental preview;
+sustained performance and overnight acceptance remain scheduled release-window
+work, and the unsupported nested Create Your Own route is recorded in known issues.

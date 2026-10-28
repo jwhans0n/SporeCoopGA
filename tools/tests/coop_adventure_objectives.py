@@ -17,15 +17,16 @@ def run(host, guest, host_memory, guest_memory):
     other = guest_memory.goals()
     if before['act'] != other['act']:
         raise FixtureError('captains are in different acts')
-    goal = next((g for g in before['goals'] if not g['complete'] and g['type'] in (1, 2, 4, 5) and g['targets']), None)
+    goal = next((g for g in before['goals'] if not g['complete'] and g['type'] in (1, 4, 5) and g['targets']), None)
     if not goal:
-        raise FixtureError('fixture requires an active move/talk/befriend/ally objective')
+        raise FixtureError('fixture requires a move/befriend/ally objective; Talk uses coop_adventure_talk.py')
     marker = goal['targets'][0]
-    guest.call(f'coop.adventure.world near {marker} 1')
+    peer = guest.player_id()
+    guest.call(f'coop.adventure.world near {marker} {peer}')
     if goal['type'] != 1:
         def arrived():
             local = re.search(r'pos=\(([-\d.]+) ([-\d.]+) ([-\d.]+)\)', guest.call('coop.avatar'))
-            remote = re.search(r'remote 1 .*?pos=\(([-\d.]+) ([-\d.]+) ([-\d.]+)\)', host.call('coop.status'))
+            remote = re.search(r'remote '+str(peer)+r' .*?pos=\(([-\d.]+) ([-\d.]+) ([-\d.]+)\)', host.call('coop.status'))
             return (local and remote and
                     sum((float(a) - float(b)) ** 2 for a, b in zip(local.groups(), remote.groups())) < 16)
         guest.wait('host receives the guest position before its social completion', arrived, timeout=10)

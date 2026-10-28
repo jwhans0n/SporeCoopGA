@@ -4,25 +4,25 @@ The editor implementation is under validation. It is separate from the published
 0.7.4.0 GA gameplay release. Do not treat passing portable tests as acceptance of
 the native editor or install this development build over an active game.
 
-The initial scope is shared placement editing, with each player keeping their
-own camera and selection. The host orders changes to one draft. Stage 5 adds
-adventure semantics; independent acts, advanced history and playing while others
+The preview supports shared placement and native cast editing, with each player
+keeping their own camera and selection. The host orders changes to one draft.
+Independent acts, advanced history and playing while others
 continue editing remain later milestones in the
 [implementation plan](MULTIPLAYER-ADVENTURE-EDITOR-PLAN.md).
 
 ## Compatibility and scope
 
-Every participant needs `0.7.5.0-ga-editor-preview.3`, protocol 18, Galactic Adventures
+Every participant needs `0.7.5.0-ga-editor-preview.4`, protocol 19, Galactic Adventures
 and the exact GOG executable with SHA-256
 `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
 Older gameplay and editor previews receive an explicit version mismatch.
 
-This preview adds automatic party following and native editor controls to the
-placement adapter. Its class-property transaction support does not yet enable
-the corresponding native controls. See the [authoring progress](EDITOR-SEMANTICS-PROGRESS.md)
+This preview adds retained first-press dragging, sound pose companions,
+independent teleporter endpoints, the native multi-axis ball, cast properties
+and cast imports. See the [authoring progress](EDITOR-SEMANTICS-PROGRESS.md)
 and the [native-flow validation report](reports/EDITOR-NATIVE-FLOW-VALIDATION.md).
 
-The placement adapter implements creation from templates already in the draft,
+The placement adapter implements creation from the native cast browser,
 duplication, deletion, movement, rotation and uniform scale. Scale tracks both
 physical size and the native continuous-scale companion; two-player native
 Scale/Undo/Redo, including the physical clamp, now pass. All four authors also
@@ -34,15 +34,21 @@ scenario fields through owned native snapshots. Existing objective references an
 the authored captain are protected. Deleting a placement required by an objective
 is rejected conservatively.
 
-Class import and class properties, act changes, objectives, conversations, global
-settings, terrain and nested asset editors are read-only while sharing. This
-placement preview supports only the first act (Act 1). Select it before starting
+The native cast inspector supports behaviors, respawn, visibility/disguise,
+speech and captions. Class settings update every affected instance and also
+work before any instance is placed. Either role can add stock assets or existing
+creations through the native picker; guest content is validated by the host
+before its canonical class is allocated. Conflicting dependency bytes under
+the same resource key are rejected. Import failure restores the committed cast.
+
+Act changes, objectives, adventure-wide settings, terrain and nested asset
+editors remain read-only while sharing. This preview supports only Act 1. Select it before starting
 sharing; other acts remain available in the ordinary native editor. Nonzero-act
 shared baselines and recovery checkpoints are refused without opening or
 restoring them. Independent acts and synchronized host act changes remain planned.
-Prepare templates and the authored test captain before starting. There
-are no additional registered placement properties beyond transforms in this implementation. Unsupported
-controls remain disabled while sharing.
+Prepare the authored test captain before starting. Unsupported auxiliary
+manipulators remain blocked. Existing checkpoints are upgraded from verified
+owned native snapshots without replacing the prior durable checkpoint early.
 
 ## Start and join
 
@@ -71,8 +77,10 @@ to saving a local creation, including required authored content.
 
 The host validates placement and field ownership before mutations. Disjoint
 placements can change independently. A conflicting gesture changes nothing and
-reports why it was rejected. If ownership is still arriving, wait for it and repeat
-the gesture. Leases expire or are released after abandoned interaction.
+reports why it was rejected. An initial drag waits for ownership and continues
+with the same press and release, including a quick drag released before the
+grant arrives. Escape, focus loss, denial and replacement context cancel held
+input. Leases expire or are released after abandoned interaction.
 
 While another player drags an existing placement, a labeled transform hint shows
 their proposed position and orientation. These coalesced, short-lived hints do not
@@ -160,17 +168,22 @@ An audit must require the same full hash and size on every page and verify the
 reassembled bytes before comparing opaque authored data. This is a diagnostic,
 not an editor mutation or recovery action.
 
-## Party playtest
+## Solo Play and Test Together
 
-The host presses native **Play** after edits settle. Guest Play requests host
-approval through a compact prompt. After approval, a compact readiness prompt
-shows every participant; everyone, including the host, explicitly confirms the
-fixed revision. Host **Cancel playtest** returns the party to editing. Each new
-attempt starts everyone unready. Authoring remains held throughout playtest.
+Native **Play** starts solo testing for its initiating player after the host
+settles edits and obtains the shared hold. The other participants stay in their
+editors with authoring paused. Solo testing does not enable party gameplay
+replication or require group readiness. The tester's native **Build** or results
+return restores the draft and releases the hold.
+
+Choose **Test Together** in the normal Co-op lobby to test as a party. Guest
+activation requests host approval. After approval, everyone, including the
+host, explicitly confirms the same committed revision. Each new attempt starts
+everyone unready. Authoring remains paused throughout either testing mode.
 The native editor's authored test captain is used; normal native test eligibility
 still applies.
 
-Only the host returns the party through native **Build**, preview return or
+For Test Together, the host returns the party through native **Build**, lobby return or
 result exit. Guests wait for that group return. Each native editor
 must finish restoring its draft before the
 host releases the authoring hold. Gameplay health, destruction, objectives and

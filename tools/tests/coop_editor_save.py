@@ -77,12 +77,14 @@ def exact_card_points(groups, title):
     return points
 
 
-def select_exact_card(game, title):
+def select_exact_card(game, title, expected_source=None):
     def unique_card():
         points = exact_card_points(match_groups(game.console, title), title)
-        if len(points) > 1:
+        if len(points) > 1 and expected_source is None:
             raise FixtureError('Multiple visible native cards have the exact private title: ' + title)
-        return next(iter(points)) if points else None
+        # Save As can leave older exact-title copies. With a pinned native key,
+        # try the first visible card and verify that key before accepting it.
+        return min(points,key=lambda point:(point[1],point[0])) if points else None
     point = game.wait('one visible exact-title native adventure card: ' + title, unique_card)
     for _ in range(4):
         game.click(*point)
@@ -98,7 +100,7 @@ def select_exact_card(game, title):
     raise FixtureError('Exact native adventure card did not accept normal selection')
 
 
-def saved_coverage(text):
+def saved_coverage(text, allow_pending=False):
     """Only explicit exact-serial native ACK diagnostics qualify, never UDP ACKs."""
     result = {}
     for key in ('saved_revision', 'saved_applied', 'saved_expected', 'settled'):
@@ -108,8 +110,11 @@ def saved_coverage(text):
         result[key] = int(found[1])
     if result['settled'] not in (0, 1) or result['saved_applied'] > result['saved_expected']:
         raise FixtureError('Invalid native Save coverage diagnostic')
-    root = re.search(r'\bsaved_source_root=([0-9A-F]{8}![0-9A-F]{8}\.366A930D)\b', text)
-    if not root or int(root[1][9:17], 16) == 0:
+    root = re.search(r'\bsaved_source_root=([0-9A-F]{8}![0-9A-F]{8}\.[0-9A-F]{8})\b', text)
+    valid = root and int(root[1][9:17], 16) != 0 and root[1].endswith('.366A930D')
+    pending = (root and root[1] == '00000000!00000000.00000000' and allow_pending and
+               result['saved_expected'] == 0 and result['saved_applied'] == 0)
+    if not valid and not pending:
         raise FixtureError('The candidate lacks a valid logical native Save root')
     result['saved_source_root'] = root[1]
     return result
@@ -125,7 +130,7 @@ def native_saved_gate(states, live_sources, previous_sources, revision):
     if any(state.get('phase') != 4 or state.get('revision') != revision or
             state.get('durable') != revision for state in states):
         return False
-    coverage = [saved_coverage(state['text']) for state in states]
+    coverage = [saved_coverage(state['text'], allow_pending=True) for state in states]
     host = coverage[0]
     if (host['saved_revision'] != revision or not host['settled'] or
             host['saved_expected'] != count or host['saved_applied'] != count):
@@ -193,9 +198,9 @@ class NativeSave(Lifecycle):
 
     def open_adventure(self, game, title, source=None):
         edit_browser(game)
-        select_exact_card(game, title)
+        select_exact_card(game, title, source)
         game.wait('selected native adventure editor ready', lambda:
-            status(game).get('ready') and status(game).get('editing') and status(game).get('phase') == 0)
+            status(game).get('ready') and status(game).get('editing') and status(game).get('phase') in (0, 4))
         game.call('wait.frames 100 15000')
         current = inspected(game.call('coop.editor inspect'))
         if source is not None and current['source'] != source:
@@ -261,7 +266,7 @@ class NativeSave(Lifecycle):
                 raise FixtureError('Native save/checkpoint froze a participant')
             if any(state.get('phase') != 4 or state.get('revision') != revision for state in states):
                 return False
-            coverage = saved_coverage(states[0]['text'])
+            coverage = saved_coverage(states[0]['text'], allow_pending=True)
             if (coverage['saved_revision'] != revision or not coverage['settled'] or
                     coverage['saved_expected'] != len(self.active_games) or
                     coverage['saved_applied'] != coverage['saved_expected']):
@@ -277,6 +282,7 @@ class NativeSave(Lifecycle):
                     before[key]['history'] != after[key]['history']):
                 raise FixtureError('Native Save changed authored placements or collaboration history')
         expected_poses = pose_multiset(after[str(self.host.instance)]['objects'])
+        expected_semantic = after[str(self.host.instance)]['inspected']['semantic_sha256']
         self.result['native_save'] = dict(saved, revision=revision, source_before=old_source,
             acknowledgements='explicit latest native SavedApplied serial, not transport acknowledgement')
         self.result['gates']['genuine_native_save_all_peers_applied'] = True
@@ -294,13 +300,28 @@ class NativeSave(Lifecycle):
             raise FixtureError('The title selected a different native resource/version')
         if pose_multiset(reopened['objects']) != expected_poses:
             raise FixtureError('The native file reopened with different authored placement values')
-        proof = reopen_receipt(self.host.call(VERIFY_COMMAND))
+        if reopened['inspected']['semantic_sha256'] != expected_semantic:
+            raise FixtureError('Native reopen changed a projected placement or complete cast subtree')
+        idle = status(self.host).get('phase') == 0
+        if idle:
+            proof = reopen_receipt(self.host.call(VERIFY_COMMAND))
+        else:
+            # Automatic sharing opens a fresh baseline on ordinary native entry.
+            # Verify all supported authored fields before any new edit. The
+            # idle-only opaque root probe cannot run after automatic attachment.
+            state = status(self.host)
+            if state.get('phase') != 4 or state.get('revision') != 0 or reopened['history']:
+                raise FixtureError('The reopened automatic baseline has already been edited')
+            proof = dict(revision=revision, source=reopened['inspected']['source'],
+                         verification='exact native file and complete supported projection at automatic revision0')
         if proof['revision'] != revision or proof['source'] != saved['source']:
             raise FixtureError('The byte-authored native proof belongs to another saved boundary')
         self.result['native_reopen'] = {'proof': proof, 'source': reopened['inspected']['source'],
             'raw_native_sha256': reopened['inspected']['native_sha256'],
             'raw_sha_is_diagnostic': True, 'recover_called': False,
-            'known_pose_multiset_preserved': True, 'opaque_authored_fields_verified': True}
+            'known_pose_multiset_preserved': True, 'complete_supported_projection_preserved': True,
+            'opaque_authored_fields_verified': idle,
+            'automatic_reopen': not idle}
         self.result['gates']['exact_native_file_reopen_before_recovery'] = True
         self.result['save_reopen_pass'] = True
 
@@ -380,7 +401,7 @@ def main():
         help='native: owner-prepared unshared host editor plus idle Galaxy guests; normal Save As starts sharing')
     parser.add_argument('--fixture', choices=('blank', 'existing'), default='blank')
     parser.add_argument('--adventure', default='Alpine Valley')
-    parser.add_argument('--title', help='exact unique title of the private native copy, at most28 ASCII characters')
+    parser.add_argument('--title', help='exact unique title of the private native copy, at most32 ASCII characters')
     parser.add_argument('--object', help='verified native placement ID for the genuine pre-Save move')
     parser.add_argument('--result-return', choices=('done', 'hammer'), default='done')
     parser.add_argument('--result-timeout', type=int, default=300)
@@ -389,6 +410,13 @@ def main():
     parser.add_argument('--timeout', type=int, default=120)
     args = parser.parse_args()
     if args.self_test:
+        pending = 'saved_revision=0 saved_applied=0 saved_expected=0 settled=0 saved_source_root=00000000!00000000.00000000'
+        assert saved_coverage(pending, allow_pending=True)['saved_expected'] == 0
+        try:
+            saved_coverage(pending)
+            raise AssertionError('A pending save is not an accepted native-save proof')
+        except FixtureError:
+            pass
         assert saved_coverage('saved_revision=9 saved_applied=4 saved_expected=4 settled=1 saved_source_root=408A0000!12345678.366A930D')['saved_applied'] == 4
         assert reopen_receipt('REOPEN_VERIFIED revision=9 source=408A0000!12345678.366A930D\n')['revision'] == 9
         sample = {'1:1': {'class': 8, 'position': (1, 2, 3), 'rotation': (0, 0, 0, 1), 'scale': 1}}
@@ -481,7 +509,7 @@ def main():
     if (not re.fullmatch('[0-9a-fA-F]{64}', args.expected_dll_sha256) or not 60 <= args.seconds <= 3500 or
             not 1 <= args.timeout <= 300 or not 1 <= args.port <= 65535 or
             not 10 <= args.result_timeout <= 1200 or args.result_timeout >= args.seconds or
-            not re.fullmatch(r'[A-Za-z0-9 _-]{1,28}', args.title) or
+            not re.fullmatch(r'[A-Za-z0-9 _-]{1,32}', args.title) or
             args.object is not None and not re.fullmatch(r'[1-9][0-9]*:[1-9][0-9]*', args.object)):
         parser.error('Exact SHA, bounded timing/port, unique ASCII title and valid optional stable ID required')
     args.output = args.output.resolve()

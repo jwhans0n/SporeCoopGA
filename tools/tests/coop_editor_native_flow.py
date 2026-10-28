@@ -199,7 +199,7 @@ def run_toolbar(args):
   active=games
   host.wait('four editors join automatically',converge)
   record('four-player-automatic-convergence')
-  guest.click_control(0x07104131)
+  guest.call('coop.uistate 1');guest.call('wait.frames 6 15000');guest.press('Test Together')
   host.wait('compact host approval request',lambda:'editor_prompt=2' in host.call('coop.uistate'))
   record('native-play-request')
   prompt_button(host,0)

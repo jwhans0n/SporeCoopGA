@@ -129,7 +129,7 @@ def native_play(game):
     return dict(zip(('act', 'state', 'time_ms', 'remaining_ms'), map(int, match.groups()))) if match else None
 
 
-def parse_party_positions(avatar, session):
+def parse_party_positions(avatar, session, expected_remotes=3):
     local = re.search(r'^pos=\(([^)]+)\)', avatar, re.M)
     if not local:
         return None
@@ -153,7 +153,7 @@ def parse_party_positions(avatar, session):
             return None
         if any(len(row[k]) != 3 or not all(math.isfinite(n) for n in row[k]) for k in ('position', 'puppet_position')):
             raise FixtureError('A native party puppet position is invalid')
-    return dict(local=position, remotes=remotes) if len(remotes) == 3 else None
+    return dict(local=position, remotes=remotes) if len(remotes) == expected_remotes else None
 
 
 class Ownership:

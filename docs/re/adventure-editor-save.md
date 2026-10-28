@@ -829,3 +829,337 @@ and handoff hashes are in `out/editor-native-lifecycle-c13/validation.json`.
 These are two-player, same-process native lifecycle observations, not evidence
 of cold-process recovery, four-player cancellation, large-editor FPS, sustained
 memory or release readiness.
+
+### Preview 4 native authoring audit (2026-10-28, in progress)
+
+This work uses only GOG 2024 `dc04aee5`. Protocol 19 rejects older peers before
+authoring. The changes are on `fix/ga-editor-preview4`, based on the native-flow
+preview. Native verification is still in progress; the portable fixtures do not
+establish that a particular native control or manipulator works in a game.
+
+The exact executable establishes these boundaries:
+
+| Entry | Verified signature and use |
+| --- | --- |
+| `F03770` | `thiscall(toolManager, action, word, word)`, `ret 0C`. Action 1 begins dragging; action 0 finalizes it. |
+| `F02B30` | `thiscall(toolManager)`, plain return. Dispatches ordinary and auxiliary movement. |
+| `F01B00` | Initializes native grab anchors at context `64/68/78/7C/88/A0`, then invokes a pose step. |
+| `F01490` | Ground pose step, no incoming register or stack arguments, plain returns `F017E7/F01AFA`. |
+| `EFDAF0` | Vertical pose step, no incoming register or stack arguments, plain return `EFDD75`. Writes marker position and elevation `220`. |
+| `F01090` | Radial pose step, no incoming register or stack arguments, plain return `F0148F`. |
+| `F02040` | `thiscall(toolManager)`, plain return. Uses incoming ECX via EBP, so it is not interchangeable with the static ordinary pose steps. |
+| `DFEE50` | `thiscall(classData, const classData*)`, `ret 4`. Deep copy, including acts, dialog strings, behaviors and graphics references. |
+| `DFF8B0` | `thiscall(classMap, const classMap*)`, `ret 4`. Owns the copied `27E8` rows. A borrowed three-pointer descriptor can describe a one-row source slice during this call. |
+| `ED36D0` | `thiscall(classMap, const uint32 index*)`, `ret 4`. Sorted insertion returns class data. `F46357` supplies resource `2BF4` and an index address. |
+| `F462F0` | `thiscall(scenarioData, const ResourceKey*)`, `ret 4`. Allocates the current resource `2C0C` class index, then increments the counter. Palette callers already open native history. |
+
+Teleporter detection follows native predicate `F25260`: class data's first DWORD
+equals `90C48D09`. This is the asset instance key, not a general object-type enum.
+The marker's entrance remains position `04`, quaternion `10`, scale `20`, and
+continuous scale companion `24`. The destination is position `1E8`, quaternion
+`1F4`, scale `204`; elevation is `220`. Native `F02040` uses context `14` for
+secondary orientation, `28` for destination translation, and checks manipulator
+type `076C67DF`. Quaternion branches use `07A81824` and `07ABDD8D`. Unknown path
+and dimension manipulators remain outside the allowed set.
+
+`F42660` derives goal validation bit 0 at goal `14` and diagnostic code `184`.
+These are separate from authored goal definitions. Class controls can trigger
+this validation, so native acceptance must check this companion behavior.
+
+Class rows contain data at `row+08`, size `27E0`. Act records are an owned fixed
+vector at class `70`, stride `4E0`. Copy routines `DFEC20/DFCCB0` agree with the
+[upstream class/act layout](https://github.com/Spore-Community/Spore-ModAPI/blob/master/Spore%20ModAPI/Spore/Simulator/cScenarioClassAct.h).
+Dialog vectors are at act `04/170/2DC`, with `44` byte elements. Standard behavior
+class targets are at `4BC/4C0/4C4`; custom entries are at `4CC`, stride `20`.
+`EC8510/EC81B0` enumerate `(2, classIndex)` targets directly from resource `2BF4`.
+`EC8510` also supplies type 0 (Any), type 8 (Player), and type 1 (team).
+`EC8110` supplies type 3 with emote values. Only type 2 contributes a class
+reference. All three target pairs in each custom entry and all standard targets
+are projected across every owned act, with bounded vectors and duplicate removal.
+Goals also protect their target classes when no instances exist. Undo of an
+import must reject if another class's behavior or an objective still names it.
+
+The input continuation prepares only native history and grab anchors at the
+original press. It holds the frame dispatcher and all four authored pose steps
+until placement ownership arrives. The retained gesture includes release,
+modifiers, object revision, project, epoch, participant generation, native
+generation and auxiliary identity. Native model fixtures cover quick release,
+denial, focus loss, selection replacement and stale scope retirement. This is
+not yet a two-player direct-drag acceptance result.
+
+Native picker setup must explicitly select its stock or personal filter. Fresh
+guest onboarding left `Recent Downloads` selected, with zero matching stock
+cards. Waiting for `Ace` in that filter produced a harness timeout, not an import
+transaction. The focused fixture now selects `Maxis` before choosing the stock
+card and retains each participant's UI screenshots and history.
+
+Native C7 established guest stock import into an empty cast, canonical allocation
+at index 1024, distribution, checked class Undo/Redo, and a health change from
+100 to 450 with zero placed instances. The native inspector stayed open after
+the committed update. Class-fragment capture originally failed byte comparison:
+`F2E670` leaves four screenshot-type DWORDs at `68..74` uninitialized. Zero those
+wrapper fields and the local camera on the private fragment before serializing,
+then normalize through native Read/Write. This does not alter the live class.
+Evidence: `out/editor-preview4/cast-c7` and `native-ui-explore`.
+
+Advanced Behaviors opens by Ctrl-clicking a stance button. SporeKit 0.3.4 mouse
+input omits MK_CONTROL from `wParam`, even with its Ctrl key down. The fixture
+therefore posts ordinary mouse messages with modifier flags after verifying the
+input HWND belongs to the exact hidden private PID. No native calls or memory
+writes are used to exercise controls. Closing Advanced Behaviors commits its
+owned rule collection as one native history gesture.
+
+Both C7 participants exercised native Play separately and returned with native
+Build. The observer remained in the paused editor, party gameplay stayed at run
+0, and checks/history matched after return. Test Together then exposed the old
+bridge's saved-key requirement on a new draft (native source zero). Native solo
+Test accepts that draft, and the group already owns a nonzero canonical transfer
+root, so the bridge now pins the local zero identity alongside its exact native
+mode/data/resource owner. C9 passed both native solo roles, explicit guest group
+request/host approval/readiness, reciprocal live moving captains, and group Build
+return with unchanged checks and history. Evidence: `out/editor-preview4/playtests-c9`.
+
+Group place identity must come from the canonical run, not each local Save As
+key: `coop.cpp` compares world identity before spawning remote captains. The
+editor bridge supplies a run-scoped place only while its exact confirmed native
+preview is playing. Saved-key differences, stale rounds, held preparation and
+return are covered by the Win32 bridge fixture. C9 established reciprocal moving
+native captains; shared objective/interaction and four-player checks remain.
+
+The native Speech/Captions mutator is `F0A960`, `cdecl()->void` with no incoming
+register arguments, plain return or a tail call to `F45920` CommitHistory.
+`F0A984` calls StartHistory, and `F0A830` copies UI dialog strings into class-act
+collections. The class `20` flag selects all acts versus the current act. Active
+speech data is global `016C7D90`, with class data at `04`. `F0BA70` closes this UI
+and clears the global. This is a separate setter boundary from `EE5380`.
+
+C9 native text input reproduced one history commit per character and overflowed
+the eight-entry capture queue before any deferred transaction could run. The
+adapter now checks class ownership at `F0A960`, retains the first owned before
+and latest owned after while that exact dialog remains open, then submits one
+transaction after close. The retained native entry is scoped to project, epoch,
+participant and native generation. The i686 fixture sends 128 such commits,
+asserts one retained capture and no unowned mutation, then rejects a stale epoch.
+C12 passed multi-character speech and captions for both roles. The first C12
+fixture used a fixed popup Close coordinate and timed out while the real dialog
+remained open. Native `CEFA1100` text-field bounds establish the correct close
+and tab coordinates; the repaired fixture and a separate exact close confirmed
+one canonical item and responsive matching editors. Evidence: `speech-c12`,
+`properties-c12`, and `properties-c12-resume`.
+
+`ECA1D0` is the separate Advanced Behaviors mutator, also `cdecl()->void` with
+no incoming register arguments and native Start/Commit. Data-owner global
+`016C757C` holds class data at `00`; `ECB520` initializes it. Both mutators honor
+native all-acts versus current-act propagation and now gate that exact class
+before calling the original routine.
+
+`F00670` placement-from-cast starts history, creates/attaches the native object,
+and sets tool cursor state. If its structure lease is pending, retain the class
+identity/revision, scope, modifiers and release without calling it. Once granted,
+run the original function, consume current cursor movement, and finalize the
+same release. Model coverage includes quick release and stale/denied input. A
+C12 passed this one-drag placement check, followed by a single existing-object
+drag for both roles. Evidence: `import-c12` and `movement-c12`.
+
+C12 stock teleporter import/placement by the host passed. Its actual general
+ball at context `24`, type `07ABDD8D`, changed all quaternion components while
+leaving its entrance position fixed, with one canonical item and matching peers.
+Unlike the creature's speech icon, this is the visible sphere on a non-creature
+rotation ring. Evidence: `ball-c12/ball-result.json`, `special-assets-c12`.
+
+Sound audit: native Alarm Buzz import/placement by the guest passed. At the
+Locate camera the draggable emitter origin is `(512,394)`, not the floating
+speaker image above it. The large cone is the gain control: context `54`, type
+`0771AD6A`; it remains blocked as an auxiliary outside pose movement. The actual
+origin ground drag reproduced the original sound error. Host revision 33 was
+accepted while the guest froze applying it after its initial canonical restore.
+The normalized decoded resource differed only at byte 1580, `3F800000` becoming
+`3F80000A` in the final marker attribute `078D5A93`.
+
+Exact-image registration `138C30C..138C366` binds `078D5A93`, string `pitch` at
+`1452728`, to marker `1E0`. The next registration binds `078D5A94` to gain `1E4`.
+The first difference is a 10-ULP reconstruction of pitch 1.0 by native sound UI,
+not a changed gain or distance collection. Both scalars now project, apply and
+participate in history, and native validation permits at most 16 ULP only for
+these two nonnegative finite sound values. Larger or other-field differences
+still reject. Their original scalar values remain in the committed document;
+an unrelated movement does not authorize a sound-tool edit. New recovery
+hydration includes both fields. Further native verification is required.
+Evidence: `sound-c12/decoded-field1580.json`, `owned-native-history.json`,
+`committed32.native`, `sound-native-before-after.json`, and the private game logs.
+
+### Preview 4 native follow-up: audio, populated class removal and picker callbacks
+
+C15 cold recovery hydrated the two sound fields while retaining existing class
+settings revisions and history. Replacing the revisions with zero during an
+additive migration makes prior class Undo unsafe; the migration now verifies
+the expanded native values and retains the original class objects. The prior
+checkpoint stays durable until the upgraded state has been written.
+
+The 16-ULP comparison by itself did not fix audio. C15 passed host movement and
+Undo but rejected the guest move. C16 logged pitch `1.00000238`, 20 ULP above
+1.0, with unchanged gain, pose companions and class bytes. Repeated native
+selection/scene reconstruction accumulated the error. C17 preserves exact
+authored pitch/gain across the verified ApplyMarkerState `F3D930` (thiscall,
+data/marker/flags, ret8), selection and pose refresh boundaries. It restores the
+committed scalar values after scene reconstruction. The guard pins resource,
+generation, pool slot and class, and never dereferences a replaced marker.
+The small comparison tolerance remains restricted to these two fields.
+The i686 fixture repeats the noisy native refresh 64 times and also preserves
+an intentional new parameter value supplied before refresh.
+
+C17 `sound-c17` passed host and guest movement/Undo with exact authored audio.
+C19 `sound-c19-four` passed those checks from all four editors after cold
+recovery. C18 `endpoints-c18` passed both entrance and destination movement/Undo
+from both roles, preserving the other endpoint. `ball-c18d` passed quaternion
+changes across axes, unchanged position/opposite endpoint and Undo on both
+roles. Native Locate resets zoom; clicking an already-selected category can
+collapse the cast browser. Fixtures must verify the visible card before Locate.
+Earlier ball attempts picked the teleporter body or background and are retained
+as failed fixture runs, not successful ball evidence.
+
+`F45480` is the native populated class remover, thiscall(data, classIndex),
+ret4 at `F4580D`, called only at `ED44B0` inside palette history. It removes
+placements and clears references in other classes. Shared removal therefore
+preflights references and holds document, class and affected placement leases.
+C19/C20 deletion was safely rejected because canonical application installed
+the new class map while the owned intermediate still had the old placements.
+Removing placements twice did not fix it and was discarded. C21 rebuilds the
+owned marker pool with retained placements and matching bindings before
+validating/restoring the class map. `remove-c21b` passed host and guest removal,
+Undo, Redo and Undo with four matching native checks and exact retained poses.
+
+C20/C21 native advanced-rule changes passed on host and guest, including guest
+Undo/Redo. `custom-c21` passed guest import of the existing private
+`Preview4Captain92` creation: seven dependency records were uploaded, admitted
+by the host, distributed, then checked Undo/Redo passed on all four editors.
+
+The cast-card dice is Randomize, control `073272B0`, not Disguise. It replaces
+the cast asset through palette message `073E7B71`, rebuilding actors. Its
+unowned C21 path froze safely at the old durable revision; explicit recovery
+restored revision80 and history. Card action `ECE4C0` is thiscall with three
+raw words, retC; the second argument is an IWindow read from entry ESP+8 and
+queried at vtable1C. Randomize is blocked at this input boundary.
+Control `073D54A0` was initially misclassified: it suspends the scenario for
+the ordinary Sporepedia picker, including new cast imports. Blocking it broke
+imports, so C25 explicitly leaves it enabled. It is not a nested editor guard.
+
+The inspector Normal/Invisible/Disguised menu is the actual disguise control.
+Selecting Disguised opens Choose an Object. The stock card is spelled
+`Abandonned Saucer` in this executable. Its asynchronous callback also uses the
+owned ScriptUI class subtree, which had the class gate but lacked input_cast.
+C22 adds the missing tag, but that alone did not fix the complete native path.
+C23 additionally retains the binding of a surviving native marker pool slot
+with the same class even if its scene actor was replaced. A changed class or a
+previously free slot cannot inherit that identity through this rule. The i686
+fixture retires the old actor mapping to reproduce this case.
+
+C24 found the remaining companion: choosing Abandonned Saucer changes native
+physical scale from 1.0 to 0.3 while relative scale remains 0.5. The class lease
+already covers its placements in Coordinator, but Runtime only retained class
+settings guards. The class gate now retains affected placement guards too, so
+the class subtree and native scale change form one checked transaction. C24
+passed the host case. C25 `disguises-c25` passed both roles with one history item,
+stable placement identities, matching four-player native checks, exact scale
+restoration on Undo, Redo and Undo. Teleporter destination's native visibility
+menu only offers Normal/Invisible; Disguised is an entrance option. The earlier
+guest fixture incorrectly requested an unavailable destination option.
+### Preview 4 palette removal, gameplay launch and terminal cleanup
+
+`SporeCoop::Editor::PaletteMessage` at ED4110 is
+`thiscall(palette+8, messageType, rawPayload)`, `ret8`. Remove message 07326686
+carries the native class index. The palette removes its visible card and opens
+history before calling data removal F45480. Gate this entry before either side
+effect; retaining only the data hook leaves a hidden card after rejection.
+Pending removal pins the palette listener, project, epoch, native generation,
+class revision and participant identity. C26 host/guest populated removal and
+checked Undo/Redo passed on four private clients. Removing Ace while an authored
+Talk goal references its class was rejected with no card, revision or history
+change (`gameplay-c26/reference-rejection.json`).
+
+An editor preview's live local native resource key can differ between players,
+and an unsaved draft can have a zero source instance. Its gameplay place must
+derive from the immutable co-op adventure descriptor and run, under the exact
+owned native preview. C26/C28 four-player tests compared every remote captain
+against its owner's local moving position, not just entry into native Playing.
+Launch status now waits for each live scoped captain, the authoritative goals
+baseline, and the guest roster baseline. The success gate is retained for that
+run after initial acceptance so a later downed captain is not a new launch.
+
+Native hammer Stop F0EB09..F0EB25 assumes the ordinary gameplay HUD. An interrupted
+Talk or terminal cinematic can retain the cinematic UI, camera and input hold
+after cleanup reports native Build. Before the owned preview cleanup, use the
+already verified `Simulator::cCinematicManager::Get` and
+`SporeCoop::cCinematicManager_EndCinematic` (ADFF50, thiscall(manager), ret).
+The end message is synchronous, so it must run while its play object still
+exists. Recheck native mode/play/display identity and that the cinematic
+actually released before cleanup; replaced or still-held contexts fail safely.
+The i686 save fixture covers playing, success and failure, context replacement
+and retained cinematic holds (431 checks at C28).
+
+The first private Talk request was rejected because reliable interaction arrived
+before the captain pose used by the host's proximity check. The fixture now
+waits for pose replication before requesting Talk. Its initial request uses the
+explicit lab command; all pages and Finished controls use normal native UI.
+C28 four-player conversations held host clocks/pages/goals while only a guest
+confirmed, then completed both authored Talk goals with replicated counts and
+the actual shared success result. `world social` intentionally cannot complete
+Talk outside the group conversation commit, so the generic objective fixture
+now excludes Talk and uses the actual guest player ID.
+
+C28/C30 coordinated Save rejected class 1027 after custom import. Decoding the
+two owned class fragments found exactly four changed bytes, at decoded offsets
+8D6..8D9: attribute `62B74271`, from zero to `5523CA25`. Initializer
+138A250..138A3ED and the native string at 148C688 identify it as `mMachineId`,
+asset reference offset C. The resource key, server ID, model type, behaviors,
+text, stats and all other bytes matched. This is the local machine lookup hint
+already described in adventure-world.md, filled by native Save for an imported
+creation. Canonical class fragments clear only those three machine hints on
+private copies. Recovery normalizes the document, both history directions and
+retained decision patches together, checking that class references stay exact;
+revisions and history entries are retained. Detailed byte capture was confined
+to the C30 diagnostic candidate and removed after identifying the field.
+
+The native multi-select picker calls F462F0 once per asset in the same UI turn.
+A single pending key loses earlier selections while document ownership arrives.
+C32 retains a FIFO of up to 32 distinct keys under the same project/epoch/author
+and native generation, draining one owned import at a time. Each asset keeps its
+own checked creation transaction. Denial, Escape, timeout and context replacement
+retire the pending queue. The i686 input fixture now has 4,418 checks, including
+queue order, bounds, duplicate suppression and no mutation before ownership.
+
+Native picker thumbnail positions are animated during entry. Reading their UI
+rectangles as soon as the title appears produces stale coordinates; an early
+batch fixture clicked Create Your Own instead. Its excluded nested-editor path
+left a black native transition with the committed draft intact and no caught
+exception. The next private run recovered the checkpoint. Wait for the picker
+layout to settle and verify its selected-item count before accepting a batch.
+
+The C32/C33 native host batch produced both transactions, but a guest's second
+key expired while its first cumulative dependency bundle uploaded and applied.
+C33 also prevents another import while native capture/drain is outstanding.
+C34 keeps the next key's ownership timer fresh while an authorized local
+transaction is in flight; the transaction retains its own transfer/cancellation
+bounds. Context, generation, Escape and denied-ownership retirement still apply.
+The i686 fixture covers both barriers and the resumed ownership timeout, with
+4,442 checks. These are distinct from the animation mistakes in the UI fixture.
+
+The transaction-in-flight condition must also block both direct import and FIFO
+drain, not just refresh their timer. Runtime's generic lease helper refuses an
+awaiting submitted operation, but deliberately allows the earlier retained
+`pending` gesture to acquire/retain its own lease. A guest upload remains in that
+earlier phase. Without the explicit import barrier, the next key can enter with
+a valid document lease while the sole Runtime pending slot still owns its first
+gesture. The regression now proves neither path calls the structure gate during
+that interval. This explains the guest-only missing second class in C32..C34.
+The final input fixture has 4,444 checks. Import queue/drain/native-result debug
+receipts log resource keys and bounded counts, without native pointers or text.
+
+C36's trace identified the final cancellation: `scope=0` immediately after the
+first accepted import. `current_gesture_scope` deliberately returns an empty
+new-input scope while `awaiting_operation` is set. That is correct for starting
+another gesture, but incorrectly retired the already-authorized import batch.
+C37 supplies a separate retained import-owner scope during that local wait;
+project, epoch, participant generation, native generation and all other
+transition checks still apply. Its input fixture has 4,450 checks, including
+temporary new-input ineligibility and cancellation on a changed participant.

@@ -191,9 +191,10 @@ preview includes shared placement/property editing, conservative per-player Undo
 saving, recovery and whole-party playtests. Follow-up work covers shared activity
 history and selective Undo/reapplication, independent act editing when additional
 native work is required, and playtesting while other participants continue editing.
-The [editor development guide](docs/MULTIPLAYER-ADVENTURE-EDITOR.md) documents the
-restricted placement implementation and its remaining acceptance gates. Adventure
-semantics and the later editing milestones remain planned.
+The [editor development guide](docs/MULTIPLAYER-ADVENTURE-EDITOR.md) documents
+preview 4 placement fixes, native cast properties/imports, solo Play and Test
+Together, along with their remaining acceptance gates. Objectives, independent
+act authoring and the later editing milestones remain planned.
 
 ## Development
 
