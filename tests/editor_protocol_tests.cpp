@@ -79,11 +79,12 @@ static void authority(){
     }
     const auto solo_reply=packet({c,w::Command{w::CommandKind::ReplySolo,7,c.revision,guest,true}});
     CHECK(read(solo_reply,result,host,true));CHECK(!read(solo_reply,result,guest,false));
-    w::Control solo{w::ControlKind::HostPreparePlaytest,7,c.revision,false,0,3};solo.mode=w::PlaytestMode::Solo;solo.tester=guest;
+    w::Control solo{w::ControlKind::HostPreparePlaytest,7,c.revision,false,0,3};solo.mode=w::PlaytestMode::Solo;solo.tester=guest;solo.start_act={2,1};
     const auto solo_prepare=packet({c,solo});CHECK(read(solo_prepare,result,host,true));
     CHECK(std::get<w::Control>(result.payload).mode==solo.mode);
+    CHECK(std::get<w::Control>(result.payload).start_act==solo.start_act);
     CHECK(std::get<w::Control>(result.payload).tester==solo.tester);CHECK(!read(solo_prepare,result,guest,false));
-    for(unsigned i=0;i<=6;++i){const bool client=i==1||i==5;w::Control control{w::ControlKind(i),81,c.revision,i==1,0,uint8_t(i==0||i==2?3:0)};const auto b=packet({c,control});CHECK(read(b,result,client?guest:host,!client));CHECK(!read(b,result,client?host:guest,client));}
+    for(unsigned i=0;i<=6;++i){const bool client=i==1||i==5;w::Control control{w::ControlKind(i),81,c.revision,i==1,0,uint8_t(i==0||i==2?3:0)};if(i==0||i==2)control.start_act={2,1};const auto b=packet({c,control});CHECK(read(b,result,client?guest:host,!client));CHECK(!read(b,result,client?host:guest,client));}
     net::Writer writer;CHECK(!w::write({c,w::Control{w::ControlKind::HostBeginPlaytest,0,3,false}},writer,error));CHECK(!w::write({c,w::Control{w::ControlKind::HostBeginPlaytest,1,2,false}},writer,error));CHECK(!w::write({c,w::Control{w::ControlKind::HostBeginPlaytest,1,3,true}},writer,error));
     CHECK(!w::write({c,w::Saved{3,{4,5,6},0}},writer,error));CHECK(!w::write({c,w::SavedApplied{{3,{4,5,6},0}}},writer,error));
     CHECK(!w::write({c,w::SavedApplied{{4,{4,5,6},91}}},writer,error));
@@ -94,7 +95,10 @@ static void authority(){
     CHECK(!w::write({c,w::Control{w::ControlKind::GuestEditorReturned,1,3,true,0}},writer,error));
     CHECK(!w::write({c,w::Control{w::ControlKind::HostEditorResumed,1,3,false,1}},writer,error));
     CHECK(!w::write({c,w::Control{w::ControlKind::HostPreparePlaytest,1,3,false,16}},writer,error));
-    CHECK(read(packet({c,w::Control{w::ControlKind::HostPreparePlaytest,1,3,false,7,7}}),result,host,true));
+    w::Control together{w::ControlKind::HostPreparePlaytest,1,3,false,7,7};together.start_act={2,1};
+    CHECK(read(packet({c,together}),result,host,true));
+    together.start_act={2,0};CHECK(!w::write({c,together},writer,error));
+    together.start_act={};CHECK(!w::write({c,together},writer,error));
     CHECK(!w::write({c,w::Control{w::ControlKind::HostBeginPlaytest,1,3,false,7,3}},writer,error));
     CHECK(!w::write({c,w::Control{w::ControlKind::HostPreparePlaytest,1,3,false,0,2}},writer,error));
     CHECK(!w::write({c,w::Offer{w::kSchema,"bad",host}},writer,error));CHECK(!w::write({c,w::Offer{w::kSchema,"bad",Peer{1,0}}},writer,error));

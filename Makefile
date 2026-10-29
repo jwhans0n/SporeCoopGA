@@ -115,7 +115,7 @@ test-editor-windows: $(B)/host/package_admission_tests.exe $(B)/host/package_adm
 
 test-editor-windows: $(B)/host/editor_native_cancellation_tests.exe
 test-editor-windows: $(B)/host/editor_cast_tests.exe
-$(B)/host/editor_cast_tests.exe: tests/editor_cast_tests.cpp mods/coop/editor_native_cast.h mods/coop/editor_native_scale.h $(EDITOR_WIRE_SRC) mods/coop/net/editor_document.h mods/coop/net/editor_protocol.h
+$(B)/host/editor_cast_tests.exe: tests/editor_cast_tests.cpp mods/coop/editor_native_cast.h mods/coop/editor_native_scale.h mods/coop/editor_native_authoring.h $(EDITOR_WIRE_SRC) mods/coop/net/editor_document.h mods/coop/net/editor_protocol.h
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(EDITOR_WIRE_SRC) tests/editor_cast_tests.cpp -o $@
 
@@ -131,9 +131,9 @@ $(B)/host/editor_stage_metrics_tests.exe: tests/editor_stage_metrics_tests.cpp m
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_stage_metrics_tests.cpp -o $@
 
-$(B)/host/editor_native_cancellation_tests.exe: tests/editor_native_cancellation_windows_tests.cpp mods/coop/editor_native.cpp mods/coop/editor_native.h mods/coop/editor_native_scale.h mods/coop/editor_native_bindings.h mods/coop/editor_native_tools.h mods/coop/net/dbpf.cpp $(ADVENTURE_ABI_HEADERS)
+$(B)/host/editor_native_cancellation_tests.exe: tests/editor_native_cancellation_windows_tests.cpp mods/coop/editor_native.cpp mods/coop/editor_native.h mods/coop/editor_native_authoring.h mods/coop/editor_native_scale.h mods/coop/editor_native_bindings.h mods/coop/editor_native_tools.h mods/coop/net/dbpf.cpp mods/coop/net/editor_document.cpp $(ADVENTURE_ABI_HEADERS)
 	@mkdir -p $(B)/host
-	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/editor_native_cancellation_windows_tests.cpp mods/coop/net/dbpf.cpp -o $@
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/editor_native_cancellation_windows_tests.cpp mods/coop/net/dbpf.cpp mods/coop/net/editor_document.cpp -o $@
 
 $(B)/host/editor_metrics_tests.exe: tests/editor_metrics_tests.cpp mods/coop/editor_metrics.h mods/coop/net/editor_document.h
 	@mkdir -p $(B)/host
@@ -177,7 +177,7 @@ $(B)/host/editor_native_save_tests.exe: tests/editor_native_save_windows_tests.c
 $(B)/host/adventure_editor_preview_tests.exe: tests/adventure_editor_preview_windows_tests.cpp mods/coop/adventure_native.cpp mods/coop/adventure_native.h mods/coop/editor_native.h mods/coop/editor_native_scale.h $(ADVENTURE_ABI_HEADERS) mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/adventure_editor_preview_windows_tests.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp -o $@ -lws2_32
-$(B)/host/editor_runtime_windows_tests.exe: $(EDITOR_RUNTIME_FIXTURE_SRC) mods/coop/editor_runtime.cpp mods/coop/editor_runtime.h mods/coop/editor_metrics.h mods/coop/editor_native.h mods/coop/editor_native_scale.h mods/coop/editor_reopen_identity.h mods/coop/editor_native_bindings.h mods/coop/editor_native_save.h mods/coop/adventure_native.h mods/coop/editor_store.h mods/coop/editor_project.h mods/coop/editor_session.h $(wildcard mods/coop/net/editor_*.h) $(ADVENTURE_ABI_HEADERS)
+$(B)/host/editor_runtime_windows_tests.exe: $(EDITOR_RUNTIME_FIXTURE_SRC) mods/coop/editor_runtime.cpp mods/coop/editor_runtime.h mods/coop/editor_metrics.h mods/coop/editor_native.h mods/coop/editor_native_authoring.h mods/coop/editor_native_scale.h mods/coop/editor_reopen_identity.h mods/coop/editor_native_bindings.h mods/coop/editor_native_save.h mods/coop/adventure_native.h mods/coop/editor_store.h mods/coop/editor_project.h mods/coop/editor_session.h $(wildcard mods/coop/net/editor_*.h) $(ADVENTURE_ABI_HEADERS)
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(EDITOR_RUNTIME_FIXTURE_SRC) -o $@ -lws2_32
 $(B)/host/package_admission_tests.exe: $(PACKAGE_ADMISSION_SRC) tests/package_admission_tests.cpp mods/coop/package_admission.h

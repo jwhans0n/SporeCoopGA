@@ -564,6 +564,15 @@ bool launch(const dbpf::Key& adventure, const dbpf::Key& captain, std::string& e
             return false;
         }
         g_preview->launched = true;
+        // Native editor Play always initializes Act 1. Apply the confirmed
+        // starting act only after that initialization, before loaded ACKs.
+        if(g_preview->config.start_act){
+            const auto select=H->sym("Simulator::cScenarioPlayMode::SetCurrentAct");
+            void* play=play_mode();
+            if(!select || !readable(play,0xBC)){error="The confirmed playtest act cannot be selected";return false;}
+            thiscall<void>(select,play,int(g_preview->config.start_act),false);
+            if(field<uint32_t>(play,0xB8)!=g_preview->config.start_act){error="The native playtest did not select its confirmed act";return false;}
+        }
         error.clear();
         return true;
     }
@@ -621,7 +630,10 @@ bool loaded(const dbpf::Key& key)
     void* loading = cdecl_call<void*>(H->sym("SporeCoop::Adventure::LoadingScreenGet"));
     if (g_preview) {
         return preview_attempt() && g_preview->launched && !g_preview->returning && key == g_preview->config.adventure &&
-            preview_bound(true) && !field<bool>(data, 0x14) &&
+            // data14 remembers missing assets from the original native Load,
+            // even after the user accepts stock replacements. This owned
+            // draft's current closure was already validated on every peer.
+            preview_bound(true) &&
             loading && readable(loading, 0x371) && !field<bool>(loading, 0x370);
     }
     return field<bool>(data, 0x124) && resource && readable(resource, 0x14) && field<dbpf::Key>(resource, 8) == key &&
@@ -678,7 +690,7 @@ bool set_editor_preview(EditorPreview config, std::string& error)
 {
     if (!H || !available() || g_preview || adventure::active() || adventure::outcome_locked() || adventure::cleanup_pending() ||
         !connected() || std::all_of(config.project.begin(), config.project.end(), [](uint8_t v) { return v == 0; }) ||
-        !config.epoch || !config.round || !config.adventure.instance || config.adventure.type != 0x366A930D ||
+        !config.epoch || !config.round || config.start_act>=8 || !config.adventure.instance || config.adventure.type != 0x366A930D ||
         !config.authored_avatar.instance || !config.authored_avatar.type ||
         !config.current || !config.launch || !config.return_editor || !config.current()) {
         error = "The shared editor playtest has no current confirmed draft or native adventure adapter.";
@@ -1086,7 +1098,10 @@ void shutdown() { reset(); clear_editor_preview(); }
 std::string status()
 {
     auto social = adventure_social::counters();
-    return available() ? adventure::status() + "\n" + adventure_flow::status()+"\n" + adventure_captains::status() + "\n" + adventure_world::status() +
+    const auto preview=g_preview?"\nnative editor preview: current="+std::to_string(preview_current())+" owner="+std::to_string(editor_preview_owner())+
+        " launched="+std::to_string(g_preview->launched)+" loaded="+std::to_string(loaded(g_preview->config.adventure))+
+        " start_act="+std::to_string(g_preview->config.start_act)+" returning="+std::to_string(g_preview->returning):std::string{};
+    return available() ? adventure::status() + preview + "\n" + adventure_flow::status()+"\n" + adventure_captains::status() + "\n" + adventure_world::status() +
         "native party relationship aliases=" + std::to_string(adventure_relationships::aliased_calls()) +
         " authoritative=" + std::to_string(adventure_relationships::authoritative_calls()) + "\n" +
         "native social presentation: starts=" + std::to_string(social.starts) + " ticks=" + std::to_string(social.ticks) +

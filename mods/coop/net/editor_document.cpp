@@ -86,7 +86,7 @@ bool typed(const Value& v, const PropertySpec& spec, const Limits& limits)
 }
 bool placement_shape(const Placement& p, const Document& d, const Limits& limits, bool versions)
 {
-    if (!identity(p.object) || (!d.classes.contains(p.class_id) && !(versions && d.tombstones.contains(p.class_id))) || !d.acts.contains(p.act_id) ||
+    if (!identity(p.object) || (!d.classes.contains(p.class_id) && !(versions && d.tombstones.contains(p.class_id))) || (!d.acts.contains(p.act_id) && !(versions && d.tombstones.contains(p.act_id))) ||
         !position(p.position) || !rotation(p.rotation) || !finite(p.scale) || p.scale <= 0 || p.scale > 1000 ||
         p.properties.size() > limits.properties || p.field_revisions.size() > d.schema.size() + 3) return false;
     if (versions && p.revision > d.revision) return false;
@@ -103,6 +103,11 @@ bool placement_shape(const Placement& p, const Document& d, const Limits& limits
 bool field_value(FieldKey k, const std::optional<Value>& v, const Document& d, const Limits& limits, ObjectId object = {})
 {
     if (!field_key(k)) return false;
+    if(d.settings.contains(object) || (d.tombstones.contains(object) && k.field==Field::Property && d.settings_schema.contains(k.property))){
+        if(k.field!=Field::Property)return false;
+        auto spec=d.settings_schema.find(k.property);
+        return spec!=d.settings_schema.end() && (v?typed(*v,spec->second,limits):spec->second.optional);
+    }
     const bool settings = d.class_settings.contains(object) || (!d.placements.contains(object) && k.field==Field::Property && d.class_schema.contains(k.property));
     if (settings && k.field != Field::Property) return false;
     if (k.field == Field::Property) {
@@ -137,20 +142,26 @@ Revision absent_revision(const Document& d, ObjectId id)
     auto it = d.tombstones.find(id); return it == d.tombstones.end() ? 0 : it->second;
 }
 bool editable(const Document& d, ObjectId id) {
-    return d.placements.contains(id) || d.class_settings.contains(id);
+    return d.placements.contains(id) || d.class_settings.contains(id) || d.settings.contains(id);
 }
 Scope field_scope(const Document& d,ObjectId id,FieldKey field){
+    if(d.settings.contains(id))return {ScopeKind::Settings,id,{}};
     auto c=d.class_settings.find(id);
     return c==d.class_settings.end()?Scope{ScopeKind::Field,id,field}:
         Scope{ScopeKind::Class,c->second.class_id,{}};
 }
 Revision object_revision(const Document& d, ObjectId id) {
+    auto s=d.settings.find(id);if(s!=d.settings.end())return s->second.revision;
     auto p=d.placements.find(id);
     if(p!=d.placements.end())return p->second.revision;
     auto c=d.class_settings.find(id);
     return c==d.class_settings.end()?0:c->second.revision;
 }
 void set(Document& d, ObjectId id, FieldKey field, const std::optional<Value>& v, Revision revision) {
+    if(auto s=d.settings.find(id);s!=d.settings.end()){
+        if(v)s->second.properties[field.property]=*v;else s->second.properties.erase(field.property);
+        s->second.field_revisions[field]=revision;s->second.revision=revision;return;
+    }
     auto p=d.placements.find(id);
     if(p!=d.placements.end()){set(p->second,field,v,revision);return;}
     auto& c=d.class_settings.at(id);
@@ -164,18 +175,35 @@ bool check(const Document& d, const Check& c)
     if (!editable(d,c.object)) return false;
     if (c.kind == CheckKind::Object) return object_revision(d,c.object) == c.expected;
     return c.kind == CheckKind::Field && field_key(c.field) &&
-        (!d.class_settings.contains(c.object) || c.field.field==Field::Property) && field_revision(d,c.object,c.field) == c.expected;
+        ((!d.class_settings.contains(c.object) && !d.settings.contains(c.object)) || c.field.field==Field::Property) && field_revision(d,c.object,c.field) == c.expected;
 }
 bool patch_shape(const Patch& p, const Document& d, const Limits& l)
 {
-    if (p.objects.size() + p.fields.size() + p.classes.size() > l.mutations || p.dependencies.size() > l.dependencies) return false;
+    if(p.acts){
+        if(p.acts->expected>d.revision || p.acts->restored_revision>d.revision)return false;
+        for(const auto* list:{&p.acts->before,&p.acts->after}){
+            if(list->empty() || list->size()>l.acts)return false;
+            std::set<ObjectId> ids;
+            for(const auto& row:*list){
+                if(!identity(row.object) || !identity(row.act_id) || row.kind!=SettingsKind::Act ||
+                   !ids.insert(row.object).second || !ids.insert(row.act_id).second || row.revision>d.revision ||
+                   row.properties.size()>l.properties || row.field_revisions.size()>d.settings_schema.size())return false;
+                for(const auto& [key,v]:row.properties){auto spec=d.settings_schema.find(key);if(spec==d.settings_schema.end() || !typed(v,spec->second,l))return false;}
+                for(const auto& [field,rev]:row.field_revisions)if(field.field!=Field::Property || !d.settings_schema.contains(field.property) || rev>row.revision)return false;
+            }
+        }
+    }
+    if(p.acts && (!p.objects.empty() || !p.classes.empty() || std::any_of(p.fields.begin(),p.fields.end(),[&](const auto& field){
+        return !d.class_settings.contains(field.object) && !(d.tombstones.contains(field.object) && field.field.field==Field::Property && d.class_schema.contains(field.field.property));
+    })))return false;
+    if (p.objects.size() + p.fields.size() + p.classes.size() > (p.acts?l.classes:l.mutations) || p.dependencies.size() > l.dependencies) return false;
     std::set<ObjectId> objects;
     std::set<std::pair<ObjectId, FieldKey>> fields;
     for(const auto& e:p.classes){
         if(!identity(e.object) || bool(e.before)==bool(e.after) || !objects.insert(e.object).second || e.expected>d.revision)return false;
         for(const auto* item:{&e.before,&e.after})if(*item){
             const auto& c=**item;
-            if(!identity(c.object) || c.class_id!=e.object || !d.acts.contains(c.act_id) || c.revision>d.revision || c.properties.size()>l.properties)return false;
+            if(!identity(c.object) || c.class_id!=e.object || (!d.acts.contains(c.act_id) && !d.tombstones.contains(c.act_id)) || c.revision>d.revision || c.properties.size()>l.properties)return false;
             for(const auto& [key,v]:c.properties){auto spec=d.class_schema.find(key);if(spec==d.class_schema.end() || !typed(v,spec->second,l))return false;}
             for(const auto& [key,spec]:d.class_schema)if(!spec.optional && !c.properties.contains(key))return false;
         }
@@ -213,11 +241,23 @@ std::optional<Value> value(const Placement& p, FieldKey field)
     }
     return {};
 }
+std::vector<AuthoringSettings> act_roster(const Document& d){
+    std::vector<AuthoringSettings> result;
+    for(auto act:d.act_order){
+        auto row=std::find_if(d.settings.begin(),d.settings.end(),[&](const auto& value){return value.second.kind==SettingsKind::Act && value.second.act_id==act;});
+        if(row==d.settings.end())return {};result.push_back(row->second);
+    }
+    return result;
+}
 Revision field_revision(const Placement& p, FieldKey field)
 {
     auto it = p.field_revisions.find(field); return it == p.field_revisions.end() ? 0 : it->second;
 }
 std::optional<Value> value(const Document& d,ObjectId id,FieldKey field) {
+    if(auto s=d.settings.find(id);s!=d.settings.end()){
+        auto v=s->second.properties.find(field.property);
+        return field.field==Field::Property && v!=s->second.properties.end()?std::optional<Value>{v->second}:std::nullopt;
+    }
     auto p=d.placements.find(id);
     if(p!=d.placements.end())return value(p->second,field);
     auto c=d.class_settings.find(id);
@@ -226,6 +266,9 @@ std::optional<Value> value(const Document& d,ObjectId id,FieldKey field) {
     return v==c->second.properties.end()?std::optional<Value>{}:v->second;
 }
 Revision field_revision(const Document& d,ObjectId id,FieldKey field) {
+    if(auto s=d.settings.find(id);s!=d.settings.end()){
+        auto r=s->second.field_revisions.find(field);return r==s->second.field_revisions.end()?0:r->second;
+    }
     auto p=d.placements.find(id);
     if(p!=d.placements.end())return field_revision(p->second,field);
     auto c=d.class_settings.find(id);
@@ -235,9 +278,13 @@ Revision field_revision(const Document& d,ObjectId id,FieldKey field) {
 }
 size_t bytes(const Document& d)
 {
-    size_t n = 128 + (d.classes.size() + d.acts.size() + d.tombstones.size()) * 48 + d.schema.size() * 64 + d.external_references.size() * 32;
+    size_t n = 128 + (d.classes.size() + d.acts.size() + d.tombstones.size()) * 48 + d.schema.size() * 64 + d.external_references.size() * 32 + d.act_order.size()*16;
     for (const auto& [id, p] : d.placements) { (void)id; n += placement_bytes(p); }
-    n += d.class_schema.size()*64;
+    n += (d.class_schema.size()+d.settings_schema.size())*64;
+    for(const auto& [id,s]:d.settings){
+        (void)id;n+=128+s.field_revisions.size()*32;
+        for(const auto& [key,v]:s.properties){(void)key;n+=16+value_bytes(v);}
+    }
     for(const auto& [id,c]:d.class_settings){
         (void)id;n+=128+c.field_revisions.size()*32;
         for(const auto& [key,v]:c.properties){(void)key;n+=16+value_bytes(v);}
@@ -247,6 +294,9 @@ size_t bytes(const Document& d)
 size_t bytes(const Patch& p)
 {
     size_t n = 32 + p.dependencies.size() * 48;
+    if(p.acts)for(const auto* list:{&p.acts->before,&p.acts->after})for(const auto& row:*list){
+        n+=160+row.field_revisions.size()*32;for(const auto& [key,v]:row.properties){(void)key;n+=16+value_bytes(v);}
+    }
     for (const auto& e : p.objects) n += 48 + (e.before ? placement_bytes(*e.before) : 0) + (e.after ? placement_bytes(*e.after) : 0);
     for (const auto& e : p.fields) n += 64 + (e.before ? value_bytes(*e.before) : 0) + (e.after ? value_bytes(*e.after) : 0);
     for(const auto& e:p.classes)for(const auto* item:{&e.before,&e.after})if(*item){
@@ -263,10 +313,14 @@ bool valid(const Document& d, const Limits& l, std::string& error)
     if (!project(d.project) || !d.epoch || !d.next_id || d.next_id == UINT64_MAX || d.revision == UINT64_MAX) return bad("Invalid project identity, epoch, revision or ID allocator.");
     if (d.placements.size() > l.placements || d.classes.size() > l.classes || d.acts.size() > l.acts ||
         d.tombstones.size() > l.tombstones || d.schema.size() > l.properties * 8 || d.class_schema.size()>l.properties*8 ||
-        d.class_settings.size()>l.classes*l.acts || d.external_references.size() > l.dependencies * 16 || bytes(d) > l.document_bytes) return bad("Document exceeds a configured bound.");
+        d.class_settings.size()>l.classes*l.acts || d.settings.size()>l.acts+1 || d.settings_schema.size()>l.properties*8 ||
+        d.external_references.size() > l.dependencies * 16 || bytes(d) > l.document_bytes) return bad("Document exceeds a configured bound.");
     // A new native adventure has acts before its first cast member is added.
     // Placements/settings still require their parent class below.
     if (d.acts.empty()) return bad("A document needs at least one known act.");
+    if(d.act_revision>d.revision || (d.act_order.empty() && d.act_revision) || (!d.act_order.empty() &&
+        (d.act_order.size()!=d.acts.size() || std::set<ObjectId>(d.act_order.begin(),d.act_order.end())!=d.acts || act_roster(d).size()!=d.acts.size())))
+        return bad("Invalid ordered act roster or revision.");
     std::map<uint64_t, ObjectId> ids;
     auto add = [&](ObjectId id) { return identity(id) && id.id < d.next_id && ids.emplace(id.id, id).second; };
     for (auto id : d.classes) if (!add(id)) return bad("Invalid or reused class identity.");
@@ -292,6 +346,24 @@ bool valid(const Document& d, const Limits& l, std::string& error)
             if(field.field!=Field::Property || !d.class_schema.contains(field.property) || revision>c.revision)
                 return bad("Invalid class-property revision.");
     }
+    for(const auto& [key,spec]:d.settings_schema)
+        if(!key || spec.kind>ValueKind::Structured || !std::isfinite(spec.minimum) || !std::isfinite(spec.maximum) ||
+           spec.minimum>spec.maximum || spec.max_text>l.text_bytes || (spec.kind==ValueKind::Text && !spec.max_text))
+            return bad("Invalid authoring settings schema.");
+    std::set<std::pair<SettingsKind,ObjectId>> setting_owners;
+    for(const auto& [id,s]:d.settings){
+        if(!add(id) || id!=s.object || s.kind>SettingsKind::Captain || s.revision>d.revision ||
+           s.properties.size()>l.properties || s.field_revisions.size()>d.settings_schema.size() ||
+           (s.kind==SettingsKind::Act?!d.acts.contains(s.act_id):s.act_id!=ObjectId{}) ||
+           !setting_owners.emplace(s.kind,s.act_id).second)return bad("Invalid authoring settings owner or revision.");
+        for(const auto& [key,v]:s.properties)
+            if(!field_value({Field::Property,key},v,d,l,id))return bad("Invalid authoring settings value.");
+        for(const auto& [key,spec]:d.settings_schema)
+            if(!spec.optional && !s.properties.contains(key))return bad("A required authoring property is missing.");
+        for(const auto& [key,revision]:s.field_revisions)
+            if(key.field!=Field::Property || !d.settings_schema.contains(key.property) || revision>s.revision)
+                return bad("Invalid authoring property revision.");
+    }
     for (const auto& [id, p] : d.placements) {
         if (!add(id) || id != p.object || !d.classes.contains(p.class_id) || !placement_shape(p, d, l, true)) return bad("Invalid placement, field value or revision.");
         for (const auto& [property, v] : p.properties) {
@@ -301,6 +373,13 @@ bool valid(const Document& d, const Limits& l, std::string& error)
     }
     for (const auto& [id, revision] : d.tombstones)
         if (!add(id) || revision > d.revision) return bad("Invalid or reused deleted identity.");
+    const auto known=[&](ObjectId id){return d.placements.contains(id) || d.class_settings.contains(id) || d.settings.contains(id) || d.classes.contains(id) || d.acts.contains(id);};
+    for(const auto& [id,s]:d.settings)for(const auto& [key,v]:s.properties){
+        (void)id;(void)key;
+        if(auto* block=std::get_if<StructuredValue>(&v))for(auto ref:block->references)
+            if(!known(ref))return bad("An authoring settings reference is missing.");
+        if(auto* ref=std::get_if<ObjectId>(&v);ref && identity(*ref) && !known(*ref))return bad("An authoring settings reference is missing.");
+    }
     for(const auto& [id,c]:d.class_settings)for(const auto& [property,v]:c.properties){
         (void)id;(void)property;
         if(auto* data=std::get_if<StructuredValue>(&v))for(auto ref:data->references)
@@ -344,8 +423,8 @@ bool Coordinator::reset(State state, uint64_t epoch, std::string& error)
         if (!identity(g.operation) || !g.original_revision || g.original_revision > state.document.revision ||
             g.transition_revision < g.original_revision || g.transition_revision > state.document.revision ||
             !seen.insert(g.operation).second || g.summary.size() > limits_.summary_bytes || !utf8(g.summary) || (g.applied && g.redo_available) ||
-            (g.applied && g.undo.objects.empty() && g.undo.fields.empty() && g.undo.classes.empty()) ||
-            (g.redo_available && g.redo.objects.empty() && g.redo.fields.empty() && g.redo.classes.empty()) ||
+            (g.applied && g.undo.objects.empty() && g.undo.fields.empty() && g.undo.classes.empty() && !g.undo.acts) ||
+            (g.redo_available && g.redo.objects.empty() && g.redo.fields.empty() && g.redo.classes.empty() && !g.redo.acts) ||
             !patch_shape(g.undo, state.document, limits_) || !patch_shape(g.redo, state.document, limits_)) { error = "Invalid original-gesture history."; return false; }
     }
     seen.clear();
@@ -389,13 +468,15 @@ bool Coordinator::clock(Time now)
 }
 bool Coordinator::scope_valid(const Scope& s) const
 {
-    if (s.kind > ScopeKind::Structure) return false;
+    if (s.kind > ScopeKind::Settings) return false;
     const auto& d = state_.document;
     if (s.kind == ScopeKind::Document || s.kind == ScopeKind::Structure) return s.object == ObjectId{} && s.field == FieldKey{};
     if (!identity(s.object)) return false;
     if (s.kind == ScopeKind::Class) return s.field == FieldKey{} && (d.classes.contains(s.object) ||
         ((s.object.id>>32)==2 && d.tombstones.contains(s.object)));
     if (s.kind == ScopeKind::Act) return s.field == FieldKey{} && d.acts.contains(s.object);
+    if(d.settings.contains(s.object))return s.kind==ScopeKind::Settings?s.field==FieldKey{}:
+        s.kind==ScopeKind::Field && s.field.field==Field::Property && d.settings_schema.contains(s.field.property);
     if(d.class_settings.contains(s.object))return s.kind==ScopeKind::Field &&
         s.field.field==Field::Property && d.class_schema.contains(s.field.property);
     if (!d.placements.contains(s.object) && !d.tombstones.contains(s.object)) return false;
@@ -404,6 +485,11 @@ bool Coordinator::scope_valid(const Scope& s) const
 bool Coordinator::covers(const Scope& a, const Scope& b) const
 {
     if (a.kind == ScopeKind::Document || a == b) return true;
+    if(a.kind==ScopeKind::Settings && b.kind==ScopeKind::Field && a.object==b.object)return true;
+    if(a.kind==ScopeKind::Act && (b.kind==ScopeKind::Settings || b.kind==ScopeKind::Field)){
+        auto s=state_.document.settings.find(b.object);
+        if(s!=state_.document.settings.end())return s->second.kind==SettingsKind::Act && s->second.act_id==a.object;
+    }
     if (a.kind == ScopeKind::Placement && b.kind == ScopeKind::Field && a.object == b.object) return true;
     if ((a.kind == ScopeKind::Class || a.kind == ScopeKind::Act) && (b.kind == ScopeKind::Placement || b.kind == ScopeKind::Field)) {
         auto settings=state_.document.class_settings.find(b.object);
@@ -426,7 +512,7 @@ bool Coordinator::overlaps(const Scope& a, const Scope& b) const
     // context is restored, conservatively conflict with class and act writers.
     auto unknown = [&](const Scope& x, const Scope& y) {
         return (x.kind == ScopeKind::Class || x.kind == ScopeKind::Act) && (y.kind == ScopeKind::Placement || y.kind == ScopeKind::Field) &&
-            !retained_placement(state_,y.object) && !state_.document.class_settings.contains(y.object);
+            !retained_placement(state_,y.object) && !state_.document.class_settings.contains(y.object) && !state_.document.settings.contains(y.object);
     };
     return unknown(a, b) || unknown(b, a);
 }
@@ -520,7 +606,12 @@ namespace {
 
 bool references(const Document& d)
 {
-    auto known=[&](ObjectId id){return d.classes.contains(id) || d.acts.contains(id) || d.placements.contains(id) || d.class_settings.contains(id);};
+    auto known=[&](ObjectId id){return d.classes.contains(id) || d.acts.contains(id) || d.placements.contains(id) || d.class_settings.contains(id) || d.settings.contains(id);};
+    for(const auto& [id,s]:d.settings)for(const auto& [key,v]:s.properties){
+        (void)id;(void)key;
+        if(auto* block=std::get_if<StructuredValue>(&v))for(auto ref:block->references)if(!known(ref))return false;
+        if(auto* ref=std::get_if<ObjectId>(&v);ref && identity(*ref) && !known(*ref))return false;
+    }
     for(const auto& [id,c]:d.class_settings)for(const auto& [property,v]:c.properties){
         (void)id;(void)property;
         if(auto* data=std::get_if<StructuredValue>(&v))for(auto ref:data->references)if(!known(ref))return false;
@@ -550,7 +641,20 @@ Code apply_patch(const Document& before, const Patch& input, const Limits& limit
 {
     auto bad = [&](Code code, const char* why) { error = why; return code; };
     if (!patch_shape(input, before, limits)) return bad(Code::Invalid, "Malformed or oversized semantic patch.");
-    if (input.objects.empty() && input.fields.empty() && input.classes.empty()) return bad(Code::Invalid, "An empty gesture is not an edit.");
+    if (input.objects.empty() && input.fields.empty() && input.classes.empty() && !input.acts) return bad(Code::Invalid, "An empty gesture is not an edit.");
+    if(input.acts){
+        const auto current=act_roster(before);const auto& expected=input.acts->before;
+        if(before.act_order.empty() || input.acts->expected!=before.act_revision || expected.size()!=current.size())
+            return bad(Code::Conflict,"The act order changed; no older action was selected.");
+        for(size_t i=0;i<current.size();++i){
+            const bool retained=std::any_of(input.acts->after.begin(),input.acts->after.end(),[&](const auto& row){return row.act_id==current[i].act_id && row.object==current[i].object;});
+            if(expected[i].act_id!=current[i].act_id || expected[i].object!=current[i].object || (!retained && expected[i]!=current[i]))
+                return bad(Code::Conflict,"An act being removed changed; no older action was selected.");
+        }
+        for(const auto& field:input.fields)if(before.settings.contains(field.object) && before.settings.at(field.object).kind==SettingsKind::Act)
+            return bad(Code::Invalid,"Act metadata and roster changes require separate gestures.");
+    }
+    if(input.acts && input.acts->before==input.acts->after)return bad(Code::Invalid,"An unchanged act roster is not a gesture.");
     for(const auto& e:input.classes){
         const auto& item=e.before?*e.before:*e.after;
         auto found=before.class_settings.find(item.object);
@@ -581,9 +685,39 @@ Code apply_patch(const Document& before, const Patch& input, const Limits& limit
     }
     after = before; after.revision++;
     canonical = input; inverse = {};
+    if(canonical.acts){
+        auto& roster=*canonical.acts;std::set<ObjectId> surviving;
+        roster.before=act_roster(before);
+        for(auto& row:roster.after){
+            auto current=before.settings.find(row.object);
+            if(current!=before.settings.end() && current->second.act_id==row.act_id)row=current->second;
+            else {
+                row.revision=after.revision;row.field_revisions.clear();
+                for(const auto& [key,v]:row.properties){(void)v;row.field_revisions[{Field::Property,key}]=after.revision;}
+            }
+        }
+        for(const auto& row:roster.after){surviving.insert(row.act_id);surviving.insert(row.object);}
+        for(const auto& row:roster.before){
+            after.acts.erase(row.act_id);after.settings.erase(row.object);
+            if(!surviving.contains(row.act_id))after.tombstones[row.act_id]=after.revision;
+            if(!surviving.contains(row.object))after.tombstones[row.object]=after.revision;
+        }
+        after.act_order.clear();after.act_revision=after.revision;
+        for(auto& row:roster.after){
+            after.acts.insert(row.act_id);after.act_order.push_back(row.act_id);after.settings[row.object]=row;
+            for(auto id:{row.act_id,row.object}){
+                if(id.id>=UINT64_MAX-1)return bad(Code::Limit,"Act identities are exhausted.");
+                after.next_id=std::max(after.next_id,id.id+1);after.tombstones.erase(id);
+            }
+        }
+        const auto anchor=*after.acts.begin();
+        for(auto& [id,p]:after.placements)if(p.act_id!=anchor){(void)id;p.act_id=anchor;p.revision=after.revision;}
+        for(auto& [id,c]:after.class_settings)if(c.act_id!=anchor){(void)id;c.act_id=anchor;c.revision=after.revision;}
+        inverse.acts=ActRosterEdit{roster.after,roster.before,after.revision,before.act_revision};
+    }
     for(auto& e:canonical.classes){
         if(e.after){
-            auto settings=*e.after;settings.revision=after.revision;settings.field_revisions.clear();
+            auto settings=*e.after;if(!after.act_order.empty())settings.act_id=*after.acts.begin();settings.revision=after.revision;settings.field_revisions.clear();
             for(const auto& [key,v]:settings.properties){(void)v;settings.field_revisions[{Field::Property,key}]=after.revision;}
             e.after=settings;after.classes.insert(e.object);after.class_settings[settings.object]=settings;
             after.tombstones.erase(e.object);after.tombstones.erase(settings.object);
@@ -599,7 +733,9 @@ Code apply_patch(const Document& before, const Patch& input, const Limits& limit
     }
     for (auto& e : canonical.objects) {
         if (e.after) {
-            Placement p = *e.after; stamp(p, after.revision); e.after = p;
+            Placement p = *e.after;
+            if(!after.act_order.empty())p.act_id=*after.acts.begin();
+            stamp(p, after.revision); e.after = p;
             after.placements[e.object] = p; after.tombstones.erase(e.object);
             if (e.object.id >= after.next_id) {
                 if (e.object.id >= UINT64_MAX - 1) return bad(Code::Limit, "The stable ID allocator is exhausted.");
@@ -655,6 +791,15 @@ void refresh_history(State& state, const Change& change, const Patch& requested)
     for (auto& g : state.history) {
         if (g.operation == change.gesture || g.operation.author != change.operation.author) continue;
         for (Patch* patch : {&g.undo, &g.redo}) {
+            if(patch->acts && requested.acts && patch->acts->expected==requested.acts->restored_revision){
+                auto expected=patch->acts->before,current=act_roster(state.document);
+                for(auto* rows:{&expected,&current})for(auto& row:*rows){row.revision=0;row.field_revisions.clear();row.properties.clear();}
+                if(expected==current){
+                    const auto live=act_roster(state.document);
+                    for(size_t i=0;i<live.size();++i)if(patch->acts->before[i].properties==live[i].properties)patch->acts->before[i]=live[i];
+                    patch->acts->expected=state.document.act_revision;
+                }
+            }
             for(auto& e:patch->classes)if(e.before){
                 auto live=state.document.class_settings.find(e.before->object);
                 if(live==state.document.class_settings.end() || live->second.properties!=e.before->properties)continue;
@@ -705,7 +850,9 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
     if (!clock(now)) return reject(Code::Invalid, "Host monotonic time moved backwards.");
     if (r.base_revision > revision) return reject(Code::StaleRevision, "The operation expects a future document revision.");
     if (revision >= UINT64_MAX - 1) return reject(Code::Limit, "The document revision space is exhausted.");
-    if (r.intent > Intent::Redo || r.summary.size() > limits_.summary_bytes || !utf8(r.summary) || r.mutations.size() > limits_.mutations ||
+    const bool roster_request=std::count_if(r.mutations.begin(),r.mutations.end(),[](const auto& m){return m.kind==MutationKind::SetActs;})==1 &&
+        std::all_of(r.mutations.begin(),r.mutations.end(),[](const auto& m){return m.kind==MutationKind::SetActs || m.kind==MutationKind::Set;});
+    if (r.intent > Intent::Redo || r.summary.size() > limits_.summary_bytes || !utf8(r.summary) || r.mutations.size() > (roster_request?limits_.classes+1:limits_.mutations) ||
         r.dependencies.size() > limits_.dependencies || r.leases.size() > limits_.leases) return reject(Code::Invalid, "Invalid gesture envelope or configured bound.");
     std::set<Scope> supplied;
     for (const auto& l : r.leases) if (!l.token || !scope_valid(l.scope) || !supplied.insert(l.scope).second) return reject(Code::Invalid, "Invalid or duplicate lease token.");
@@ -716,7 +863,24 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
         uint64_t next_id = state_.document.next_id;
         uint32_t next_class=state_.document.next_class;
         for (const auto& m : r.mutations) {
-            if (m.kind > MutationKind::DeleteClass) return reject(Code::Invalid, "Unknown mutation kind.");
+            if (m.kind > MutationKind::SetActs) return reject(Code::Invalid, "Unknown mutation kind.");
+            if(m.kind==MutationKind::SetActs){
+                if(!m.act_roster || patch.acts || state_.document.act_order.empty() || m.target!=ObjectId{} || m.initial!=Placement{} || m.field!=FieldKey{} || m.value || m.clone_pose || m.class_initial)
+                    return reject(Code::Invalid,"Invalid act roster operation.");
+                const auto code=leased(r,{ScopeKind::Document,{},{}},now);
+                if(code!=Code::Accepted)return reject(code,"Changing the act roster requires the shared authoring hold.");
+                for(const auto& row:*m.act_roster)if(!state_.document.acts.contains(row.act_id)){
+                    if(next_id>=UINT64_MAX-2 || row.act_id!=ObjectId{next_id,1} || row.object!=ObjectId{next_id+1,1} || row.revision || !row.field_revisions.empty())
+                        return reject(Code::Conflict,"The act allocation changed; retry the roster operation.");
+                    next_id+=2;
+                }else{
+                    auto existing=state_.document.settings.find(row.object);
+                    if(existing==state_.document.settings.end() || existing->second!=row)
+                        return reject(Code::Conflict,"An existing act changed while its roster operation was pending.");
+                }
+                patch.acts=ActRosterEdit{act_roster(state_.document),*m.act_roster,m.expected};continue;
+            }
+            if(m.act_roster)return reject(Code::Invalid,"Only act roster operations may provide act rows.");
             if(m.kind==MutationKind::CreateClass || m.kind==MutationKind::DeleteClass){
                 if(m.initial!=Placement{} || m.clone_pose || m.field!=FieldKey{} || m.value)
                     return reject(Code::Invalid,"A cast operation cannot contain placement data.");
@@ -770,11 +934,11 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
                 if (m.kind == MutationKind::Clone) clone_sources[p.object] = m.target;
                 allocated.push_back(p.object); patch.objects.push_back({p.object, std::nullopt, p, 0});
             } else {
-                if(m.kind==MutationKind::Set && state_.document.class_settings.contains(m.target)){
+                if(m.kind==MutationKind::Set && (state_.document.class_settings.contains(m.target) || state_.document.settings.contains(m.target))){
                     if(!field_value(m.field,m.value,state_.document,limits_,m.target))
                         return reject(Code::Unsupported,"The class property is not registered, typed and valid.");
                     auto code=leased(r,field_scope(state_.document,m.target,m.field),now);
-                    if(code!=Code::Accepted)return reject(code,"Editing shared cast properties requires their class lease.");
+                    if(code!=Code::Accepted)return reject(code,"Editing shared properties requires ownership of their settings.");
                     patch.fields.push_back({m.target,m.field,value(state_.document,m.target,m.field),m.value,m.expected});
                     continue;
                 }
@@ -808,6 +972,10 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
         }
         const auto& g = state_.history[*gesture_index];
         patch = r.intent == Intent::Undo ? g.undo : g.redo;
+        if(patch.acts){
+            const auto code=leased(r,{ScopeKind::Document,{},{}},now);
+            if(code!=Code::Accepted)return reject(code,"Act roster Undo/Redo requires the shared authoring hold.");
+        }
         patch.dependencies.insert(patch.dependencies.end(), r.dependencies.begin(), r.dependencies.end());
         for (const auto& e : patch.objects) {
             auto code = leased(r, {ScopeKind::Placement, e.object, {}}, now);
@@ -891,9 +1059,11 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
     // Deleting a placement invalidates outstanding field/placement capabilities;
     // Undo restoration must explicitly reacquire one, even for the original author.
     std::erase_if(leases_, [&](const Lease& lease) {
+        if(lease.scope.kind==ScopeKind::Act)return !state_.document.acts.contains(lease.scope.object);
+        if(lease.scope.kind==ScopeKind::Settings)return !state_.document.settings.contains(lease.scope.object);
         return (lease.scope.kind == ScopeKind::Placement || lease.scope.kind == ScopeKind::Field) &&
             !state_.document.placements.contains(lease.scope.object) &&
-            !(lease.scope.kind==ScopeKind::Field && state_.document.class_settings.contains(lease.scope.object));
+            !(lease.scope.kind==ScopeKind::Field && (state_.document.class_settings.contains(lease.scope.object) || state_.document.settings.contains(lease.scope.object)));
     });
     return accepted;
 }
@@ -918,6 +1088,15 @@ bool apply_committed(State& state, const Decision& decision, std::string& error,
     request.intent = change.intent; request.summary = change.summary;
     request.leases.push_back({lease.leases[0].scope, lease.leases[0].token});
     if (change.intent == Intent::Forward) {
+        if(change.patch.acts){
+            Mutation m;m.kind=MutationKind::SetActs;m.expected=change.patch.acts->expected;m.act_roster=change.patch.acts->after;
+            for(auto& row:*m.act_roster){
+                auto old=state.document.settings.find(row.object);
+                row.revision=old==state.document.settings.end()?0:old->second.revision;
+                row.field_revisions=old==state.document.settings.end()?std::map<FieldKey,Revision>{}:old->second.field_revisions;
+            }
+            request.mutations.push_back(std::move(m));
+        }
         for(const auto& e:change.patch.classes){
             Mutation m;
             if(e.after && !e.before){m.kind=MutationKind::CreateClass;m.class_initial=*e.after;m.class_initial->revision=0;m.class_initial->field_revisions.clear();}

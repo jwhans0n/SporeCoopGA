@@ -356,6 +356,25 @@ int main() {
         CHECK(decoded.bindings == before);
     }
     CHECK(ep::decode_mapping(legacy,decoded,error));CHECK(!decoded.metadata);
+    {
+        auto ordered=native;ordered.act=1;
+        for(uint64_t n:{19u,7u,41u}){
+            editor::AuthoringSettings row;row.act_id={n,2};row.object={n+100,3};
+            ordered.document.act_order.push_back(row.act_id);ordered.document.settings[row.object]=row;
+        }
+        CHECK(ep::encode_mapping(ordered,bytes,error));CHECK(get32(bytes,4)==3);
+        CHECK(ep::decode_mapping(bytes,decoded,error));CHECK(decoded.document.act_order==ordered.document.act_order);
+        CHECK(decoded.document.settings==ordered.document.settings && decoded.metadata==ordered.metadata);
+        const auto retained=decoded.document.act_order;
+        for(size_t size=0;size<bytes.size();++size){
+            CHECK(!ep::decode_mapping({bytes.begin(),bytes.begin()+size},decoded,error));CHECK(decoded.document.act_order==retained);
+        }
+        auto bad=bytes;const size_t first=bad.size()-3*24;
+        std::copy_n(bad.begin()+first,12,bad.begin()+first+12);
+        CHECK(!ep::decode_mapping(bad,decoded,error));CHECK(decoded.document.act_order==retained);
+        auto duplicate=ordered;duplicate.document.act_order[1]=duplicate.document.act_order[0];
+        CHECK(!ep::encode_mapping(duplicate,bad,error));
+    }
     auto duplicate = native; duplicate.bindings[1].marker = 7;
     CHECK(!ep::encode_mapping(duplicate, bytes, error));
     duplicate = native; duplicate.bindings[1].object = duplicate.bindings[0].object;

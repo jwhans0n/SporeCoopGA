@@ -154,7 +154,8 @@ struct Controller::Impl {
         const auto& held=hosting?coordinator.leases():view.local_leases;
         return std::any_of(held.begin(),held.end(),[&](const Lease& l){
             return l.owner==author && l.expires>now && (author!=view.local || !quarantined(l)) && (!token || (l.scope==token->scope&&l.token==token->token)) &&
-                (l.scope.kind==ScopeKind::Document || (l.scope.kind==ScopeKind::Placement&&l.scope.object==object));
+                (l.scope.kind==ScopeKind::Document || ((l.scope.kind==ScopeKind::Placement ||
+                 (l.scope.kind==ScopeKind::Settings && state().document.settings.contains(object) && state().document.settings.at(object).kind==SettingsKind::Captain)) && l.scope.object==object));
         });
     }
     bool owns_preview(const w::TransformPreview& value) const {
@@ -173,7 +174,7 @@ struct Controller::Impl {
         LeaseToken placement;
         for(const auto& l:held)if(l.owner==author&&l.expires>now&&(author!=view.local || !quarantined(l))){
             if(l.scope.kind==ScopeKind::Document)return {l.scope,l.token};
-            if(l.scope.kind==ScopeKind::Placement&&l.scope.object==object)placement={l.scope,l.token};
+            if((l.scope.kind==ScopeKind::Placement || (l.scope.kind==ScopeKind::Settings && state().document.settings.contains(object) && state().document.settings.at(object).kind==SettingsKind::Captain)) && l.scope.object==object)placement={l.scope,l.token};
         }
         return placement;
     }
@@ -192,7 +193,8 @@ struct Controller::Impl {
         auto found=view.members.find(value.author.slot);
         if(hosting) {
             if(found==view.members.end() || value.author!=found->second.peer || value.author.slot!=from)return;
-            if((value.selected!=ObjectId{}&&!state().document.placements.contains(value.selected)) ||
+            if((value.selected!=ObjectId{}&&!state().document.placements.contains(value.selected) &&
+                !(state().document.settings.contains(value.selected) && state().document.settings.at(value.selected).kind==SettingsKind::Captain)) ||
                (value.act!=ObjectId{}&&!state().document.acts.contains(value.act)))return;
             value.ownership=0;value.preview_lease={};value.owned_scopes.clear();value.phase=presence_phase(found->second.phase);
             if(found->second.phase==Phase::Ready){
@@ -245,13 +247,17 @@ struct Controller::Impl {
         if(value.serial<preview_seen[slot] || (value.active&&value.serial==preview_seen[slot]))return;
         if(value.active){
             const auto object=state().document.placements.find(value.object);
+            const auto settings=state().document.settings.find(value.object);
+            const bool captain=settings!=state().document.settings.end() && settings->second.kind==SettingsKind::Captain;
             if(!state().document.acts.contains(value.act) || !member->second.presence.editing || member->second.presence.pending ||
                (hosting&&!owns_preview(value)))return;
             if(value.creating){
                 if(object!=state().document.placements.end() || !state().document.classes.contains(value.class_id) ||
                    !(member->second.presence.ownership&w::kOwnDocument))return;
-            }else if(object==state().document.placements.end() || object->second.act_id!=value.act ||
-                     (value.class_id!=ObjectId{} && object->second.class_id!=value.class_id) || member->second.presence.selected!=value.object ||
+            }else if((!captain && (object==state().document.placements.end() ||
+                     (state().document.settings.empty() && object->second.act_id!=value.act) ||
+                     (value.class_id!=ObjectId{} && object->second.class_id!=value.class_id))) ||
+                     (captain && value.class_id!=ObjectId{}) || member->second.presence.selected!=value.object ||
                      !(member->second.presence.ownership&w::kOwnSelection) || member->second.presence.preview_lease!=value.lease)return;
             if(now>UINT64_MAX-kPreviewLifetime)return;
             member->second.preview=PreviewView{value,now+kPreviewLifetime};
@@ -291,6 +297,10 @@ struct Controller::Impl {
     bool overlapping(const Scope& a, const Scope& b) const {
         if (a.kind == ScopeKind::Document || b.kind == ScopeKind::Document || a == b) return true;
         auto covers = [&](const Scope& x, const Scope& y) {
+            if(x.kind==ScopeKind::Settings && y.kind==ScopeKind::Field && x.object==y.object)return true;
+            if(x.kind==ScopeKind::Act && (y.kind==ScopeKind::Settings || y.kind==ScopeKind::Field)){
+                auto s=state().document.settings.find(y.object);if(s!=state().document.settings.end())return s->second.kind==SettingsKind::Act && s->second.act_id==x.object;
+            }
             if (x.kind == ScopeKind::Placement && y.kind == ScopeKind::Field) return x.object == y.object;
             if ((x.kind == ScopeKind::Class || x.kind == ScopeKind::Act) && (y.kind == ScopeKind::Placement || y.kind == ScopeKind::Field)) {
                 auto settings=state().document.class_settings.find(y.object);
@@ -519,6 +529,7 @@ struct Controller::Impl {
         if (pending_control) return;
         w::Control progress{w::ControlKind::HostPreparePlaytest, view.playtest_round, view.playtest_revision, false, ready_mask(), view.playtest_participants};
         progress.mode=view.playtest_mode;progress.tester=view.playtest_tester;
+        progress.start_act=view.playtest_act;
         broadcast({context(), progress});
         if (std::any_of(view.members.begin(), view.members.end(), [](const auto& pair) { return pair.second.phase != Phase::Preparing || !pair.second.ready; })) return;
         auto begin = progress; begin.kind = w::ControlKind::HostBeginPlaytest; std::string error;
@@ -593,12 +604,17 @@ void Controller::Impl::host_request(uint8_t from, const Request& request)
     const auto validate = hooks.validate;
     hooks.validate = [&](const Document& before, const Document& after, const Change& change, std::string& error) {
         if (held || view.phase != Phase::Ready || view.members.at(from).phase != Phase::Ready) { error = "Authoring is held or this participant needs a baseline."; return false; }
+        // A roster can change every class column. Check the complete canonical
+        // decision before any native apply or durable acceptance, including
+        // both directions of its checked history.
+        std::vector<uint8_t> encoded;
+        if(!w::encode_decision({Code::Accepted,{},change.revision,change},encoded,error))return false;
         return !validate || validate(before, after, change, error);
     };
     const auto persist = hooks.persist;
     hooks.persist = [&](const State& candidate, const Change& change, std::string& error) {
         if (persist && !persist(candidate, change, error)) return false;
-        if (!change.patch.objects.empty() && (!staged || staged->revision != change.revision || !staged->broadcast))
+        if ((!change.patch.objects.empty() || change.patch.acts) && (!staged || staged->revision != change.revision || !staged->broadcast))
             throw std::runtime_error("A structural commit has no opaque-preserving target resource payload.");
         return true;
     };
@@ -732,12 +748,14 @@ void Controller::Impl::control(uint8_t from, const w::Control& command)
             member.ready = command.ready; progress_ready(); return;
         }
         if (command.kind == w::ControlKind::HostPreparePlaytest) {
+            if(!state().document.acts.contains(command.start_act)){report("The requested playtest act is unavailable");return;}
             if(command.mode==w::PlaytestMode::Solo && (!view.members.contains(command.tester.slot) || view.members.at(command.tester.slot).peer!=command.tester)){report("The solo tester is no longer a current collaborator");return;}
             if (view.phase != Phase::Ready || !held_requests.empty() || !authoring_ready() || command.serial != round + 1 || command.revision != context().revision ||
                 std::any_of(view.members.begin(), view.members.end(), [&](const auto& pair) { return pair.second.phase != Phase::Ready || pair.second.applied_revision != context().revision; })) { report("Every editor participant must catch up before group playtest."); return; }
             revoke_leases(); view.phase = Phase::Preparing; round = command.serial;
             view.playtest_round = round; view.playtest_revision = command.revision;
             view.playtest_mode=command.mode;view.playtest_tester=command.tester;
+            view.playtest_act=command.start_act;
             view.playtest_participants = 0;
             for (const auto& [id, member] : view.members) { (void)member; if (id < 4) view.playtest_participants |= uint8_t(1u << id); }
             for (auto& [id, member] : view.members) { (void)id; member.ready = false; member.phase = Phase::Preparing; }
@@ -755,14 +773,16 @@ void Controller::Impl::control(uint8_t from, const w::Control& command)
     if (from || command.serial < view.playtest_round) return;
     if (command.kind == w::ControlKind::HostPreparePlaytest) {
         if (command.serial == view.playtest_round && view.phase == Phase::Preparing && command.revision == view.playtest_revision) {
-            if (command.participant_mask != view.playtest_participants || command.mode!=view.playtest_mode || command.tester!=view.playtest_tester) { freeze(0, "The host changed the immutable playtest roster."); return; }
+            if (command.participant_mask != view.playtest_participants || command.mode!=view.playtest_mode || command.tester!=view.playtest_tester || command.start_act!=view.playtest_act) { freeze(0, "The host changed the immutable playtest roster or starting act."); return; }
             set_ready_mask(command.ready_mask); return;
         }
         if (view.phase != Phase::Ready || command.serial <= view.playtest_round || command.revision != context().revision) return;
+        if(!state().document.acts.contains(command.start_act)){freeze(0,"The host selected an unavailable playtest act");return;}
         if (!(command.participant_mask & uint8_t(1u << view.local.slot))) { freeze(0, "This playtest round omitted its participating recipient."); return; }
         revoke_leases(); view.phase = Phase::Preparing; view.playtest_round = command.serial; view.playtest_revision = command.revision;
         view.playtest_participants = command.participant_mask;
         view.playtest_mode=command.mode;view.playtest_tester=command.tester;
+        view.playtest_act=command.start_act;
         for (uint8_t id = 0; id < 4; ++id) if ((command.participant_mask >> id) & 1) {
             if (!view.members.contains(id)) { Member m; m.peer = {id, 0}; m.name = session.name_of(id); view.members[id] = m; }
             view.members[id].phase = Phase::Preparing;
@@ -771,7 +791,7 @@ void Controller::Impl::control(uint8_t from, const w::Control& command)
         if (!invoke_control(command, error)) freeze(0, error);
     } else if (command.kind == w::ControlKind::HostBeginPlaytest) {
         if (view.phase != Phase::Preparing || command.serial != view.playtest_round || command.revision != view.playtest_revision) return;
-        if (command.participant_mask != view.playtest_participants || command.ready_mask != view.playtest_participants || command.mode!=view.playtest_mode || command.tester!=view.playtest_tester) { freeze(0, "The host began a group playtest without its complete immutable roster confirmations."); return; }
+        if (command.participant_mask != view.playtest_participants || command.ready_mask != view.playtest_participants || command.mode!=view.playtest_mode || command.tester!=view.playtest_tester || command.start_act!=view.playtest_act) { freeze(0, "The host changed the confirmed playtest roster or starting act."); return; }
         if (!invoke_control(command, error)) { freeze(0, error); return; }
         set_ready_mask(command.ready_mask); view.phase = Phase::Playing;
         for (auto& [id, member] : view.members) { (void)id; member.phase = Phase::Playing; }
@@ -1338,7 +1358,8 @@ bool Controller::set_presence(w::Presence presence, std::string& error)
 {
     auto& i = *impl_; if (i.view.phase != Phase::Ready && i.view.phase != Phase::Preparing) { error = "No shared editor presence is active."; return false; }
     presence.author = i.view.local;
-    if ((presence.selected != ObjectId{} && !i.state().document.placements.contains(presence.selected)) || (presence.act != ObjectId{} && !i.state().document.acts.contains(presence.act))) { error = "Presence selected an unknown placement or act."; return false; }
+    const bool captain=i.state().document.settings.contains(presence.selected) && i.state().document.settings.at(presence.selected).kind==SettingsKind::Captain;
+    if ((presence.selected != ObjectId{} && !i.state().document.placements.contains(presence.selected) && !captain) || (presence.act != ObjectId{} && !i.state().document.acts.contains(presence.act))) { error = "Presence selected an unknown placement or act."; return false; }
     presence.ownership=0;presence.preview_lease={};presence.owned_scopes.clear();presence.phase=w::PresencePhase::Ready;
     i.presence_local=presence;error.clear();return true;
 }
@@ -1365,8 +1386,10 @@ bool Controller::set_preview(ObjectId object,ObjectId act,Pose pose,std::string&
     auto& i=*impl_;
     if(i.view.phase!=Phase::Ready || !i.view.local.generation || i.preview_sequence==UINT64_MAX){error="No editable preview scope is active.";return false;}
     auto found=i.state().document.placements.find(object);
+    const bool captain=i.state().document.settings.contains(object) && i.state().document.settings.at(object).kind==SettingsKind::Captain;
     if(creating ? (found!=i.state().document.placements.end() || !i.state().document.classes.contains(class_id) || !i.state().document.acts.contains(act)) :
-       (found==i.state().document.placements.end() || found->second.act_id!=act)){error="A preview requires a current placement or owned cast asset.";return false;}
+       (!i.state().document.acts.contains(act) || (!captain && (found==i.state().document.placements.end() ||
+        (i.state().document.settings.empty() && found->second.act_id!=act))))){error="A preview requires a current placement or owned cast asset.";return false;}
     auto lease=i.selection_lease(i.view.local,object);
     if(creating)for(const auto& l:i.view.local_leases)if(l.owner==i.view.local && l.expires>i.now && !i.quarantined(l) &&
         (l.scope.kind==ScopeKind::Structure || l.scope.kind==ScopeKind::Document)){lease={l.scope,l.token};break;}
@@ -1402,12 +1425,14 @@ bool Controller::acknowledge_saved(const w::Saved& saved, std::string& error)
     if (!i.queue(0, {i.context(), w::SavedApplied{saved}}, true, error)) return false;
     i.local_saved_ack = saved.serial; error.clear(); return true;
 }
-bool Controller::prepare_playtest(std::string& error,w::PlaytestMode mode,Peer tester)
+bool Controller::prepare_playtest(std::string& error,w::PlaytestMode mode,Peer tester,ObjectId start_act)
 {
     auto& i = *impl_;
     if (!i.hosting || i.view.phase != Phase::Ready || i.round == UINT64_MAX) { error = "Only a ready host can prepare the next group playtest."; return false; }
     w::Control command{w::ControlKind::HostPreparePlaytest, i.round + 1, i.context().revision, false, 0};
     command.mode=mode;command.tester=tester;
+    command.start_act=start_act==ObjectId{}?(i.state().document.act_order.empty()?*i.state().document.acts.begin():i.state().document.act_order.front()):start_act;
+    if(!i.state().document.acts.contains(command.start_act)){error="The requested playtest act is unavailable";return false;}
     return i.queue_local(command,64,error);
 }
 bool Controller::ready_playtest(bool ready, std::string& error)

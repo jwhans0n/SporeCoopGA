@@ -79,7 +79,7 @@ enum class ControlKind : uint8_t {
 };
 enum class PlaytestMode : uint8_t { Together, Solo };
 // serial is a host-assigned playtest round, independent of document revision.
-struct Control { ControlKind kind{}; uint64_t serial = 0; Revision revision = 0; bool ready = false; uint8_t ready_mask = 0, participant_mask = 0; PlaytestMode mode=PlaytestMode::Together; Peer tester={}; };
+struct Control { ControlKind kind{}; uint64_t serial = 0; Revision revision = 0; bool ready = false; uint8_t ready_mask = 0, participant_mask = 0; PlaytestMode mode=PlaytestMode::Together; Peer tester={}; ObjectId start_act={}; };
 // Native toolbar requests and one host-ordered local-copy export barrier.
 // These are lifecycle commands, never authored document operations.
 enum class CommandKind : uint8_t {

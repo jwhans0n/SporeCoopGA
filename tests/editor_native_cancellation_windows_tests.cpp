@@ -42,6 +42,9 @@ bool t_granted=false;
 bool t_audio_drift=false;
 bool t_retired_actor=false;
 uint32_t t_card_id=0;
+std::array<void*,8> t_text_vt{};
+void* t_text=t_text_vt.data();
+uint32_t t_text_id=0;
 unsigned t_card_calls=0;
 unsigned t_palette_calls=0;
 editor::Revision t_revision=0;
@@ -161,7 +164,7 @@ void native_cancel(void* entry=nullptr){
 }
 void begin(){start(t_data.data());CHECK(!t_allocations.empty());CHECK(gesture_serial!=0);}
 void reset(){
-    held_tool.reset();held_import.reset();held_creation.reset();held_class_removal.reset();
+    held_tool.reset();held_import.reset();held_creation.reset();held_class_removal.reset();held_captain_asset.reset();
     for(auto item:pending){release(item.entry);release(item.before);}pending.clear();
     if(gesture_before_resource){release(gesture_before_resource);gesture_before_resource=nullptr;}
     for(auto held:gesture_actors)release(held.object);
@@ -202,11 +205,11 @@ void reset(){
     cancellation.reset();cancellation_queued=cancellation_settling=false;
     gesture_owner=gesture_entry=nullptr;gesture_generation=gesture_serial=gesture_counter=cancellation_counter=0;gesture_scope_pin={};
     ordinary_cancellations=0;
-    bindings.clear();incarnations.clear();selection.clear();pending.clear();
+    bindings.clear();incarnations.clear();selection.clear();pending.clear();act_identity={};
     static SkHost host{};host.frame_index=t_get_frame;host.run_outside_frame=t_outside;
     host.time_seconds=t_get_time;host.log=t_log;H=&host;
     C={};C.active=[](){return t_active;};C.gesture_scope=[](){return t_scope;};
-    C.extended_poses_tracked=[] {return false;};C.cast_tracked=[] {return false;};
+    C.extended_poses_tracked=[] {return false;};C.cast_tracked=[] {return false;};C.authoring_tracked=[]{return false;};
     C.gate=[](const auto&){return t_granted;};
     C.object_revision=[](editor::ObjectId)->std::optional<editor::Revision>{return t_revision;};
     C.history=[](bool redo){CHECK(!redo);++t_own_undo;};C.failure=[](const std::string& error){++t_failed;t_failure=error;};
@@ -418,15 +421,112 @@ void test_script_cast_callback_keeps_bindings(){
     skg::field<void*>(settings.data(),0x10)=t_layout.data();skg::field<uint32_t>(settings.data(),0x20)=7;
     a_layout_find=uintptr_t(t_inspector_root);original_script_input=t_script_input;
     C.cast_tracked=[]{return true;};C.class_gate=[](uint32_t index){CHECK(index==7);return t_granted;};
+    C.authoring_tracked=[]{return true;};C.settings_gate=[](editor::ObjectId){CHECK(false);return true;};
+    skg::field<uint32_t>(message.data(),8)=sui::kMsgComponentActivated;
     CHECK(!script_input(script.data()+8,&t_card_id,message.data()));CHECK(pending.empty() && !input_cast);
     t_granted=true;CHECK(script_input(script.data()+8,&t_card_id,message.data()));
     CHECK(gesture_cast && !input_cast && pending.size()==1 && value(t_live.data(),0)==2);
+}
+unsigned t_authoring_inputs=0,t_settings_checks=0;
+bool SK_THISCALL t_authoring_input(void*,void*,void*){++t_authoring_inputs;return true;}
+void test_captain_and_act_input_ownership(){
+    reset();t_authoring_inputs=t_settings_checks=0;
+    C.authoring_tracked=[]{return true;};
+    original_captain_input=original_script_input=t_authoring_input;
+    C.settings_gate=[](editor::ObjectId object){++t_settings_checks;CHECK(object==kCaptainObject);return t_granted;};
+    std::array<uint8_t,0x1C> message{};
+    skg::field<uint32_t>(message.data(),8)=sui::kMsgComponentActivated;
+    skg::field<uint32_t>(message.data(),0xC)=0x0770B540;
+    CHECK(!captain_input(t_tool_pointer,&t_card_id,message.data()));
+    CHECK(t_settings_checks==1&&!t_authoring_inputs);
+    t_granted=true;CHECK(captain_input(t_tool_pointer,&t_card_id,message.data()));
+    CHECK(t_settings_checks==2&&t_authoring_inputs==1);
+    C.authoring_tracked=[]{return false;};
+    CHECK(!captain_input(t_tool_pointer,&t_card_id,message.data())&&t_authoring_inputs==1);
+    C.authoring_tracked=[]{return true;};
+    std::array<uint8_t,0x24> script{};skg::field<void*>(t_display.data(),0x18)=script.data();
+    C.settings_gate=[](editor::ObjectId object){++t_settings_checks;CHECK(object==act_settings_id(0));return t_granted;};
+    skg::field<uint32_t>(message.data(),8)=3; // No authored EE4290 branch.
+    CHECK(script_input(script.data()+8,&t_card_id,message.data()));
+    CHECK(t_settings_checks==2&&t_authoring_inputs==2);
+    skg::field<uint32_t>(message.data(),8)=sui::kMsgComponentActivated;
+    skg::field<uint32_t>(message.data(),0xC)=0x0743B8E3;
+    CHECK(script_input(script.data()+8,&t_card_id,message.data()));
+    CHECK(t_settings_checks==2&&t_authoring_inputs==3);
+    skg::field<uint32_t>(message.data(),0xC)=0x07462210;
+    t_granted=false;CHECK(!script_input(script.data()+8,&t_card_id,message.data()));
+    CHECK(t_settings_checks==3&&t_authoring_inputs==3);
+    t_granted=true;CHECK(script_input(script.data()+8,&t_card_id,message.data()));
+    CHECK(t_settings_checks==4&&t_authoring_inputs==4);
+    skg::field<uint32_t>(message.data(),0xC)=0x07BD2DD0;
+    CHECK(!script_input(script.data()+8,&t_card_id,message.data())&&t_authoring_inputs==4);
+    int roster_action=-1;C.act_action=[&](int value){roster_action=value;};
+    CHECK(!script_input(script.data()+8,&t_card_id,message.data())&&roster_action==0);
+    skg::field<uint32_t>(message.data(),0xC)=0x0743BC38;
+    CHECK(!script_input(script.data()+8,&t_card_id,message.data())&&roster_action==1);
+    editor::Document reordered;const editor::ObjectId stable{91,2},settings{92,3};
+    reordered.act_order={stable};editor::AuthoringSettings row;row.object=settings;row.act_id=stable;reordered.settings[settings]=row;
+    bind_acts(reordered);C.settings_gate=[&](editor::ObjectId value){CHECK(value==settings);return true;};
+    skg::field<uint32_t>(message.data(),0xC)=0x07462210;
+    CHECK(script_input(script.data()+8,&t_card_id,message.data())&&t_authoring_inputs==5);
+    C.settings_gate=[](editor::ObjectId){CHECK(false);return false;};
+    for(auto type:{3u,8u,0x1Bu}){
+        skg::field<uint32_t>(message.data(),8)=type;
+        CHECK(script_input(script.data()+8,&t_card_id,message.data()));
+        CHECK(captain_input(t_tool_pointer,&t_card_id,message.data()));
+    }
+    unsigned text_checks=0;C.settings_gate=[&](editor::ObjectId value){CHECK(value==settings);++text_checks;return t_granted;};
+    t_text_vt[7]=reinterpret_cast<void*>(t_authoring_input);
+    for(auto id:{0x0743B978u,0x0710A140u,0x05CA82B7u,0x07CCBD48u,0x07DF4C98u}){
+        t_text_id=id;skg::field<void*>(message.data(),0x18)=&t_text;
+        skg::field<void*>(message.data(),0)=&t_text;
+        skg::field<uint32_t>(message.data(),0xC)=1;
+        for(auto type:{0x1Bu,0x1Cu}){
+            skg::field<uint32_t>(message.data(),8)=type;const auto calls=text_checks;
+            CHECK(script_input(script.data()+8,&t_card_id,message.data())&&text_checks==calls);
+        }
+        skg::field<uint32_t>(message.data(),0xC)=0;
+        t_granted=false;skg::field<uint32_t>(message.data(),8)=0x1B;
+        const auto calls=text_checks;CHECK(script_input(script.data()+8,&t_card_id,message.data()));
+        CHECK(text_checks==calls+1); // Focus reserves without writing authored data.
+        skg::field<uint32_t>(message.data(),8)=3;
+        CHECK(script_input(script.data()+8,&t_card_id,message.data())&&text_checks==calls+2);
+        skg::field<uint32_t>(message.data(),8)=0x1C;
+        const auto inputs=t_authoring_inputs;
+        CHECK(!script_input(script.data()+8,&t_card_id,message.data())&&t_authoring_inputs==inputs);
+        t_granted=true;CHECK(script_input(script.data()+8,&t_card_id,message.data()));
+        CHECK(t_authoring_inputs==inputs+1);
+    }
+}
+unsigned t_captain_assets=0;
+void SK_THISCALL t_set_captain(void* owner,const editor::ResourceKey* key){
+    CHECK(owner==t_data.data());CHECK(key && key->instance==17 && key->type==19);
+    CHECK(t_granted);++t_captain_assets;skg::field<editor::ResourceKey>(t_live.data(),0x130)=*key;
+}
+void test_async_captain_asset_keeps_value_and_rechecks_identity(){
+    reset();t_captain_assets=0;C.authoring_tracked=[]{return true;};
+    original_captain_asset=t_set_captain;C.settings_gate=[](editor::ObjectId id){CHECK(id==kCaptainObject);return t_granted;};
+    editor::ResourceKey key{17,19,23};captain_asset(t_data.data(),&key);
+    CHECK(!t_captain_assets&&held_captain_asset&&held_captain_asset->key==key);
+    key.instance=99; // The picker callback's storage has gone away.
+    t_granted=true;continue_input(nullptr);
+    CHECK(t_captain_assets==1&&!held_captain_asset&&pending.size()==1);
+    CHECK(skg::field<editor::ResourceKey>(t_live.data(),0x130)==(editor::ResourceKey{17,19,23}));
+    for(unsigned retire=0;retire<4;++retire){
+        reset();C.authoring_tracked=[]{return true;};original_captain_asset=t_set_captain;
+        C.settings_gate=[](editor::ObjectId){return t_granted;};key={17,19,23};captain_asset(t_data.data(),&key);CHECK(held_captain_asset);
+        if(retire==0)++t_scope.author.generation;
+        if(retire==1)++generation;
+        if(retire==2)++t_revision;
+        if(retire==3)deny_held_input({{editor::ScopeKind::Settings,kCaptainObject,{}}});
+        t_granted=true;continue_input(nullptr);CHECK(!held_captain_asset&&t_captain_assets==1);
+    }
 }
 }
 namespace game { uint32_t mode_id(){return modes::kScenario;} void destroy_creature(void* actor){CHECK(actor==t_ghost_actor.data());++t_ghosts_destroyed;skg::field<bool>(actor,0x20)=true;t_release(actor);} }
 namespace sui {
 void set_enabled(Win,bool){CHECK(false);} void release(Win){CHECK(false);} void add_ref(Win){CHECK(false);}
-uint32_t control_id(Win w){CHECK(w==&t_card_id);return t_card_id;} uint32_t flags(Win){CHECK(false);return 0;}
+uint32_t control_id(Win w){CHECK(w==&t_card_id||w==&t_text);return w==&t_text?t_text_id:t_card_id;} uint32_t flags(Win){CHECK(false);return 0;}
 std::vector<Win> children(Win){CHECK(false);return {};}
 Win parent(Win){CHECK(false);return nullptr;}bool visible(Win){CHECK(false);return false;}
 }
@@ -566,6 +666,8 @@ static void test_large_transform_without_roster_work(){
     reset();CHECK(t_allocations.empty());
 }
 int main(){
+    test_captain_and_act_input_ownership();
+    test_async_captain_asset_keeps_value_and_rechecks_identity();
     test_independent_inspector_survives_scene_refresh();
     test_render_only_collaboration();
     // The native multi-select picker invokes import once for each selected key.

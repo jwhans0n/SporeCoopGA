@@ -222,6 +222,7 @@ void add_child(Win p, Win c) { vcall<void>(p, 0xD8 / 4, c); }
 void remove_child(Win p, Win c) { vcall<void>(p, 0xDC / 4, c); }
 void bring_to_front(Win p, Win c) { vcall<void>(p, 0xE8 / 4, c); }
 void set_drawable(Win w, void* d) { vcall<void>(w, 0xB0 / 4, d); }
+void set_fill_color(Win w, uint32_t argb) { vcall<void>(w, 0xAC / 4, argb); }
 
 // ---------------- layouts ----------------
 Win load_layout(uint32_t instance, uint32_t group)

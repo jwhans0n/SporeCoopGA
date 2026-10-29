@@ -35,6 +35,8 @@ struct View {
     bool waiting = false, ready = false, frozen = false, natively_saved = false;
     bool confirming = false, playtesting = false, can_return = false, can_cancel = false;
     bool native_editing = false, join_prompt = false, test_request = false, retry = false, exporting = false;
+    bool test_menu = false;
+    bool can_move_act_left = false, can_move_act_right = false;
     uint64_t revision = 0, durable_revision = 0, saved_revision = 0;
     std::string title, status, selection;
     std::string requester;
@@ -86,6 +88,8 @@ void set_ready(bool);
 void recover();
 void end();
 void approve_playtest(bool);
+void choose_test(int choice); // 0 solo, 1 together, 2 dismiss.
+void edit_acts(int action); // 0 add, 1 delete, 2 left, 3 right.
 void resolve_join(int choice); // 0 Save, 1 Discard, 2 Cancel.
 std::string debug(const std::vector<std::string>& args);
 

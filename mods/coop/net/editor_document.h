@@ -97,6 +97,15 @@ struct ClassActSettings {
     std::map<FieldKey, Revision> field_revisions;
     bool operator==(const ClassActSettings&) const = default;
 };
+enum class SettingsKind : uint8_t { Act, Captain };
+struct AuthoringSettings {
+    ObjectId object, act_id; // Captain settings are adventure-wide: zero act.
+    SettingsKind kind = SettingsKind::Act;
+    std::map<uint32_t, Value> properties;
+    Revision revision = 0;
+    std::map<FieldKey, Revision> field_revisions;
+    bool operator==(const AuthoringSettings&) const = default;
+};
 struct Document {
     ProjectId project{};
     uint64_t epoch = 0;
@@ -110,11 +119,16 @@ struct Document {
     std::map<uint32_t, PropertySpec> class_schema;
     std::map<ObjectId, ClassActSettings> class_settings;
     uint32_t next_class = 0; // Native cast index, host ordered and never reused.
+    std::map<uint32_t, PropertySpec> settings_schema;
+    std::map<ObjectId, AuthoringSettings> settings;
+    std::vector<ObjectId> act_order;
+    Revision act_revision=0;
     // This is only a supported semantic projection. Opaque native data stays owned
     // by the native adapter/store and is never reconstructed from this structure.
     bool operator==(const Document&) const = default;
 };
 
+std::vector<AuthoringSettings> act_roster(const Document&);
 enum class CheckKind : uint8_t { Object, Field, Absent };
 struct Check {
     ObjectId object;
@@ -124,7 +138,7 @@ struct Check {
     bool operator==(const Check&) const = default;
 };
 // Structure serializes native allocation without locking unrelated cast settings.
-enum class ScopeKind : uint8_t { Document, Class, Act, Placement, Field, Structure };
+enum class ScopeKind : uint8_t { Document, Class, Act, Placement, Field, Structure, Settings };
 struct Scope {
     ScopeKind kind = ScopeKind::Document;
     ObjectId object;
@@ -140,7 +154,7 @@ struct Lease {
 };
 struct LeaseToken { Scope scope; uint64_t token = 0; bool operator==(const LeaseToken&) const = default; };
 
-enum class MutationKind : uint8_t { Create, Clone, Delete, Set, CreateClass, DeleteClass };
+enum class MutationKind : uint8_t { Create, Clone, Delete, Set, CreateClass, DeleteClass, SetActs };
 struct Mutation {
     MutationKind kind = MutationKind::Set;
     ObjectId target; // Clone: source. Create: zero; host allocates the new ID.
@@ -150,6 +164,7 @@ struct Mutation {
     Revision expected = 0; // Set: field revision. Delete/clone: object revision.
     std::optional<Pose> clone_pose; // Clone only: final Ctrl-drag pose, one gesture.
     std::optional<ClassActSettings> class_initial={}; // CreateClass only.
+    std::optional<std::vector<AuthoringSettings>> act_roster={}; // SetActs only, in native order.
     bool operator==(const Mutation&) const = default;
 };
 enum class Intent : uint8_t { Forward, Undo, Redo };
@@ -186,11 +201,18 @@ struct ClassEdit {
     Revision expected = 0;
     bool operator==(const ClassEdit&) const = default;
 };
+struct ActRosterEdit {
+    std::vector<AuthoringSettings> before,after;
+    Revision expected=0;
+    Revision restored_revision=0;
+    bool operator==(const ActRosterEdit&) const=default;
+};
 struct Patch {
     std::vector<ObjectEdit> objects;
     std::vector<FieldEdit> fields;
     std::vector<Check> dependencies;
     std::vector<ClassEdit> classes={};
+    std::optional<ActRosterEdit> acts={};
     bool operator==(const Patch&) const = default;
 };
 struct Change {

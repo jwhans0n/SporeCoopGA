@@ -27,17 +27,28 @@ bool valid_bindings(const std::vector<editor_native::Binding>& bindings, std::st
 }
 }
 bool encode_mapping(const editor_native::Snapshot& s, std::vector<uint8_t>& out, std::string& error) {
-    if (s.act >= editor::Limits{}.acts || !valid_bindings(s.bindings, error)) return false;
+    if (s.act >= editor::Limits{}.acts) { error="The native editor supports up to eight acts"; return false; }
+    if (!valid_bindings(s.bindings, error)) return false;
+    const auto ordered=editor::act_roster(s.document);const bool acts=!s.document.act_order.empty();
+    if(acts && (ordered.empty() || ordered.size()>8 || ordered.size()!=s.document.act_order.size() || s.act>=ordered.size())){error="Invalid native act identity mapping";return false;}
     net::Writer w;
-    w.u32(kMapping); w.u32(s.metadata ? 2 : 1); w.u32(s.act);
+    w.u32(kMapping); w.u32(acts?3:s.metadata ? 2 : 1); w.u32(s.act);
     key(w, {s.source.instance, s.source.type, s.source.group});
     w.u32(uint32_t(s.bindings.size()));
     for (const auto& b : s.bindings) { id(w, b.object); w.u32(b.marker); }
+    if(acts)w.u8(s.metadata.has_value());
     if(s.metadata) {
         w.u32(s.metadata->genre);
         for(const auto& text:s.metadata->text) {
             if(text.size()>4096 || text.find(u'\0')!=std::u16string::npos) {error="Invalid editor metadata text";return false;}
             w.u32(uint32_t(text.size()));for(char16_t c:text)w.u16(uint16_t(c));
+        }
+    }
+    if(acts){
+        w.u32(uint32_t(ordered.size()));std::set<editor::ObjectId> ids;
+        for(const auto& row:ordered){
+            if(!row.act_id.id || !row.act_id.generation || !row.object.id || !row.object.generation || !ids.insert(row.act_id).second || !ids.insert(row.object).second){error="Duplicate or invalid native act identities";return false;}
+            id(w,row.act_id);id(w,row.object);
         }
     }
     out = std::move(w.data); return true;
@@ -47,7 +58,7 @@ bool decode_mapping(const std::vector<uint8_t>& bytes, editor_native::Snapshot& 
     net::Reader r(bytes.data(), bytes.size());
     editor_native::Snapshot candidate;
     const auto magic=r.u32(),version=r.u32();
-    if (magic != kMapping || (version!=1 && version!=2)) { error = "Unsupported editor mapping"; return false; }
+    if (magic != kMapping || version<1 || version>3) { error = "Unsupported editor mapping"; return false; }
     candidate.act = r.u32(); auto source = key(r);
     candidate.source = {source.instance, source.type, source.group};
     uint32_t count = r.u32();
@@ -55,7 +66,9 @@ bool decode_mapping(const std::vector<uint8_t>& bytes, editor_native::Snapshot& 
         error = "Invalid editor mapping size or act"; return false;
     }
     for (uint32_t i = 0; i < count; ++i) { auto object = id(r); candidate.bindings.push_back({object, r.u32()}); }
-    if(version==2) {
+    uint8_t metadata=version==2?1:0;
+    if(version==3){metadata=r.u8();if(metadata>1){error="Invalid metadata mapping flag";return false;}}
+    if(metadata) {
         candidate.metadata=editor_native::Snapshot::Metadata{};candidate.metadata->genre=r.u32();
         for(auto& text:candidate.metadata->text) {
             const auto size=r.u32();
@@ -63,9 +76,20 @@ bool decode_mapping(const std::vector<uint8_t>& bytes, editor_native::Snapshot& 
             for(uint32_t i=0;i<size;++i) {const auto c=r.u16();if(!c){error="Invalid editor metadata text";return false;}text.push_back(char16_t(c));}
         }
     }
+    if(version==3){
+        const auto count=r.u32();std::set<editor::ObjectId> ids;
+        if(!r.ok() || !count || count>8 || candidate.act>=count || count>r.left()/24){error="Invalid native act mapping count";return false;}
+        for(uint32_t i=0;i<count;++i){
+            const auto act=id(r),object=id(r);
+            if(!act.id || !act.generation || !object.id || !object.generation || !ids.insert(act).second || !ids.insert(object).second){error="Invalid native act mapping identities";return false;}
+            candidate.document.act_order.push_back(act);candidate.document.acts.insert(act);
+            auto& row=candidate.document.settings[object];row.object=object;row.act_id=act;
+        }
+    }
     if (!r.ok() || r.left() || !valid_bindings(candidate.bindings, error)) { if (error.empty()) error = "Truncated editor mapping"; return false; }
     s.act = candidate.act; s.source = candidate.source; s.bindings = std::move(candidate.bindings);
     s.metadata=std::move(candidate.metadata);
+    if(version==3){s.document.act_order=std::move(candidate.document.act_order);s.document.acts=std::move(candidate.document.acts);s.document.settings=std::move(candidate.document.settings);}
     return true;
 }
 static bool encode_resource_envelope(const Resources& resources, std::vector<uint8_t>& out, std::string& error, bool delta) {
@@ -453,6 +477,13 @@ bool load_snapshot(const editor_store::Snapshot& stored, editor::State& state, e
     if (candidate.document.project != stored.project || candidate.document.epoch != stored.epoch || candidate.document.revision != stored.revision ||
         snapshot.bindings.size() != candidate.document.placements.size()) { error = "Editor checkpoint identities do not match"; return false; }
     for (const auto& binding : snapshot.bindings) if (!candidate.document.placements.contains(binding.object)) { error = "Editor checkpoint has an unknown placement binding"; return false; }
+    if(!snapshot.document.act_order.empty()){
+        if(snapshot.document.act_order!=candidate.document.act_order){error="Editor checkpoint act order differs from its native mapping";return false;}
+        for(const auto& [id,row]:snapshot.document.settings){
+            auto found=candidate.document.settings.find(id);
+            if(found==candidate.document.settings.end() || found->second.kind!=editor::SettingsKind::Act || found->second.act_id!=row.act_id){error="Editor checkpoint act settings identities differ";return false;}
+        }
+    }
     snapshot.document = candidate.document; snapshot.bytes = stored.native_snapshot;
     state = std::move(candidate); native = std::move(snapshot); return true;
 }

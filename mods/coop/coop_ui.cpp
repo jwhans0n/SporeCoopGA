@@ -223,6 +223,7 @@ struct Dialog {
     Win prep_ready_btn = nullptr, prep_change = nullptr, prep_chat[2] = {}, prep_edit = nullptr;
     Picture adventure_picture, captain_picture[4];
     Win editor_retry = nullptr, editor_recover = nullptr, editor_test = nullptr, editor_return = nullptr;
+    Win editor_act_left=nullptr,editor_act_right=nullptr;
 };
 static Dialog D;
 static std::map<std::string, Win> g_named; // for tests (coop.uistate)
@@ -586,6 +587,8 @@ static void build_dialog()
     D.editor_return = add_button(L,"editor_return",{280,66,450,98},"Return to Editor",[]{
         if(A.editor_return)A.editor_return();
     });
+    D.editor_act_left=add_button(L,"editor_act_left",{400,404,555,434},"Move act left",[]{if(A.editor_act_action)A.editor_act_action(2);});
+    D.editor_act_right=add_button(L,"editor_act_right",{565,404,720,434},"Move act right",[]{if(A.editor_act_action)A.editor_act_action(3);});
     D.chat_edit = add_edit(L, "chatedit", {40, 438, 560, 470}, "", 120);
     D.send_btn = add_button(L, "send", {570, 434, 720, 474}, T("Send", "Отправить"), do_send_chat);
     D.ready_btn = add_button(L, "ready", {40, 488, 240, 528}, "", [] {
@@ -951,11 +954,13 @@ struct EditorPrompt {
     std::string identity;
     int kind=0;
     bool consumed=false;
+    void* outside_handler=nullptr;
 };
 static EditorPrompt EP;
 static void close_editor_prompt()
 {
     if(!EP.root)return;
+    if(EP.outside_handler)sui::remove_handler(sui::main_window(),EP.outside_handler);
     sui::set_visible(EP.root,false);
     if(auto parent=sui::parent(EP.root))sui::remove_child(parent,EP.root);
     sui::release(EP.root);EP={};
@@ -963,7 +968,7 @@ static void close_editor_prompt()
 static void refresh_editor_prompt()
 {
     const auto view=A.editor?A.editor():coop_editor::View{};
-    const int kind=view.join_prompt?1:view.test_request?2:view.confirming?3:0;
+    const int kind=view.join_prompt?1:view.test_request?2:view.confirming?3:view.test_menu?4:0;
     if(!kind){close_editor_prompt();return;}
     if(EP.root && (EP.kind!=kind || EP.identity!=view.prompt_identity))close_editor_prompt();
     if(!EP.root) {
@@ -976,6 +981,14 @@ static void refresh_editor_prompt()
             if(auto w=sui::find(root,id))sui::set_visible(w,false);
         int sw=0,sh=0;H->screen_size(&sw,&sh);
         sui::set_area(root,{(sw-520.f)/2,(sh-350.f)/2,(sw+520.f)/2,(sh+350.f)/2});
+        if(kind==4){
+            sui::set_drawable(root,nullptr);sui::set_fill_color(root,0xE5202834);
+            auto play=sui::find(sui::main_window(),0x07104131);
+            const auto anchor=play&&sui::visible(play)?sui::screen_rect(play):sui::Rect{sw/2.f,8,sw/2.f+46,54};
+            const float x=std::clamp(anchor.x1,8.f,std::max(8.f,sw-208.f));
+            const float y=std::clamp(anchor.y2+4,8.f,std::max(8.f,sh-112.f));
+            sui::set_area(root,{x,y,x+200,y+104});
+        }
         EP.title=sui::label(root,{28,100,492,128},"",font,kGold,sui::kAlignCenter);
         EP.hint=sui::label(root,{28,132,492,158},"",font,kWhite,sui::kAlignCenter);
         for(unsigned i=0;i<4;++i)EP.players[i]=sui::label(root,{32,164.f+23*i,488,186.f+23*i},"",font,kWhite,sui::kAlignCenter);
@@ -983,13 +996,15 @@ static void refresh_editor_prompt()
         for(int i=0;i<3;++i) {
             auto button=sui::button_like(root,like,{24.f+164*i,284,180.f+164*i,322},"");
             EP.buttons[i]=button;sui::set_font(button,font);sui::set_caption_padding(button,3);
+            if(kind==4)sui::set_area(button,{12.f,12.f+42*i,188.f,48.f+42*i});
             sui::add_handler(button,[identity,kind,i](Win,const sui::Msg& message) {
                 if(!sui::is_click(message))return false;
                 const auto current=A.editor?A.editor():coop_editor::View{};
-                if(current.prompt_identity!=identity || (kind==1?!current.join_prompt:kind==2?!current.test_request:!current.confirming))return true;
+                if(current.prompt_identity!=identity || (kind==1?!current.join_prompt:kind==2?!current.test_request:kind==3?!current.confirming:!current.test_menu))return true;
                 if(kind!=3) {if(EP.consumed)return true;EP.consumed=true;}
                 if(kind==1){if(A.editor_join_choice)A.editor_join_choice(i);}
                 else if(kind==2){if(A.editor_approve)A.editor_approve(i==0);}
+                else if(kind==4){if(A.editor_test_choice)A.editor_test_choice(i);}
                 else if(i==0){if(A.editor_ready)A.editor_ready(!current.ready);}
                 else if(current.host){if(A.editor_cancel)A.editor_cancel();}
                 else if(A.leave)A.leave();
@@ -999,19 +1014,29 @@ static void refresh_editor_prompt()
         auto main=sui::main_window();if(auto p=sui::parent(root))if(p!=main)sui::remove_child(p,root);
         if(sui::parent(root)!=main)sui::add_child(main,root);
         sui::set_flag(root,sui::kFlagAlwaysInFront,true);
+        if(kind==4)EP.outside_handler=sui::add_handler(main,[identity](Win,const sui::Msg& message){
+            if(!EP.root || EP.kind!=4 || EP.identity!=identity)return false;
+            if(message.type==sui::kMsgKeyDown && message.a==0x1B){if(A.editor_test_choice)A.editor_test_choice(2);return true;}
+            if(message.type!=sui::kMsgMouseDown || !message.source)return false;
+            for(auto w=message.source;w;w=sui::parent(w))if(w==EP.root)return false;
+            if(A.editor_test_choice)A.editor_test_choice(2);return false;
+        });
     }
     sui::set_caption(EP.title,kind==1?"Join the host's Adventure Editor?":kind==2?"Group playtest request":"Confirm group playtest");
     sui::set_caption(EP.hint,kind==1?"Save or discard your local draft before joining.":kind==2?
         short_text(view.requester+" would like to test the adventure.",55):"Everyone confirms revision "+std::to_string(view.revision)+".");
+    sui::set_visible(EP.title,kind!=4);sui::set_visible(EP.hint,kind!=4);
     for(unsigned i=0;i<4;++i) {
         std::string line;
         if(kind==3 && i<view.players.size()) {const auto& p=view.players[i];line=short_text(p.name,34)+(p.local?" (you)":"")+(p.ready?" - Ready":" - Waiting");}
         sui::set_caption(EP.players[i],line);
+        sui::set_visible(EP.players[i],kind!=4);
     }
     for(int i=0;i<3;++i) {
         sui::set_visible(EP.buttons[i],kind==1 || i<2);
         sui::set_caption(EP.buttons[i],kind==1?(i==0?"Save":i==1?"Discard":"Cancel"):
             kind==2?(i==0?"Approve":"Decline"):
+            kind==4?(i==0?"Test Solo":"Test Together"):
             i==0?(view.ready?"Not ready":"Ready"):(view.host?"Cancel playtest":"Leave party"));
     }
     sui::set_visible(EP.root,true);sui::bring_to_front(sui::main_window(),EP.root);
@@ -1098,6 +1123,13 @@ static void refresh()
         refresh_lobby();
     else
         refresh_connect();
+    show(D.editor_act_left,page==Page::Lobby && editor.active && editor.native_editing);
+    show(D.editor_act_right,page==Page::Lobby && editor.active && editor.native_editing);
+    if(editor.active && page==Page::Lobby){
+        show(D.jump_btn,false);show(D.give_btn,false);show(D.creation_next,false);
+        sui::set_enabled(D.editor_act_left,editor.can_move_act_left);
+        sui::set_enabled(D.editor_act_right,editor.can_move_act_right);
+    }
 }
 
 static void refresh_task(void*) { refresh(); }

@@ -1,7 +1,7 @@
 // SporeCoop mod: creature-stage co-op ("pack" mode). See docs/03-gameplay.md.
 // the release version (tools/package.sh names the zip after it)
 #ifndef COOP_VERSION
-#define COOP_VERSION "0.7.5.0-ga-editor-preview.5"
+#define COOP_VERSION "0.7.5.0-ga-editor-preview.6"
 #endif
 
 #include <winsock2.h>
@@ -2648,6 +2648,8 @@ void init_ui()
     a.editor_end = coop_editor::end;
     a.editor_ready = coop_editor::set_ready;
     a.editor_approve = coop_editor::approve_playtest;
+    a.editor_test_choice = coop_editor::choose_test;
+    a.editor_act_action = coop_editor::edit_acts;
     a.editor_join_choice = coop_editor::resolve_join;
     a.say = [](const std::string& t) {
         if (g_sess.connected())

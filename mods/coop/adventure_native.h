@@ -23,6 +23,7 @@ struct EditorPreview {
     std::array<uint8_t,16> project{};
     uint64_t epoch=0,round=0,revision=0;
     dbpf::Key adventure,authored_avatar;
+    uint32_t start_act=0;
     std::function<bool()> current; // exact project/epoch/round/revision ownership
     std::function<bool(std::string&)> launch;
     std::function<void()> return_editor; // queues a host-authoritative group return

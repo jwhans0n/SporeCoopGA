@@ -99,6 +99,7 @@ Win image_window(Win parent, uint32_t instance, uint32_t group, float x, float y
 // a new SporeStdDrawable copying `src` (a SporeStdDrawable) with another icon image
 void* std_drawable_with_icon(void* src, void* icon);
 void set_drawable(Win w, void* drawable);
+void set_fill_color(Win w, uint32_t argb);
 
 // ---- events ----
 // fn(window, message) -> handled. The handler object lives in sporekit (safe on hot reload).

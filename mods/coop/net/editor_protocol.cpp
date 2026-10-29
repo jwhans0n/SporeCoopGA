@@ -50,8 +50,9 @@ template<class T> constexpr unsigned maximum() {
     if constexpr(std::is_same_v<T,ValueKind>) return unsigned(ValueKind::Structured);
     if constexpr(std::is_same_v<T,Field>) return 3;
     if constexpr(std::is_same_v<T,CheckKind>) return 2;
-    if constexpr(std::is_same_v<T,ScopeKind>) return 5;
-    if constexpr(std::is_same_v<T,MutationKind>) return unsigned(MutationKind::DeleteClass);
+    if constexpr(std::is_same_v<T,ScopeKind>) return unsigned(ScopeKind::Settings);
+    if constexpr(std::is_same_v<T,SettingsKind>) return unsigned(SettingsKind::Captain);
+    if constexpr(std::is_same_v<T,MutationKind>) return unsigned(MutationKind::SetActs);
     if constexpr(std::is_same_v<T,Intent>) return 2;
     if constexpr(std::is_same_v<T,Code>) return unsigned(Code::Busy);
     if constexpr(std::is_same_v<T,TransferKind>) return unsigned(TransferKind::Assets);
@@ -76,17 +77,19 @@ FIELDS(PropertySpec,v.kind,v.minimum,v.maximum,v.max_text,v.optional,v.nullable)
 FIELDS(Placement,v.object,v.class_id,v.act_id,v.protected_object,v.position,v.rotation,v.scale,v.properties,v.revision,v.field_revisions)
 FIELDS(Reference,v.owner,v.target)
 FIELDS(ClassActSettings,v.object,v.class_id,v.act_id,v.properties,v.revision,v.field_revisions)
+FIELDS(AuthoringSettings,v.object,v.act_id,v.kind,v.properties,v.revision,v.field_revisions)
 FIELDS(Document,v.project,v.epoch,v.revision,v.next_id,v.classes,v.acts,v.schema,v.placements,v.tombstones,v.external_references)
 FIELDS(Check,v.object,v.kind,v.field,v.expected)
 FIELDS(Scope,v.kind,v.object,v.field)
 FIELDS(Lease,v.scope,v.owner,v.token,v.expires)
 FIELDS(LeaseToken,v.scope,v.token)
-FIELDS(Mutation,v.kind,v.target,v.initial,v.field,v.value,v.expected,v.clone_pose,v.class_initial)
+template<class A> void fields(A& a,Mutation& v){a(v.kind,v.target,v.initial,v.field,v.value,v.expected,v.clone_pose,v.class_initial);if(a.roster_extended)a(v.act_roster);}
 FIELDS(Request,v.project,v.epoch,v.operation,v.base_revision,v.intent,v.summary,v.mutations,v.dependencies,v.leases)
 FIELDS(ObjectEdit,v.object,v.before,v.after,v.expected)
 FIELDS(FieldEdit,v.object,v.field,v.before,v.after,v.expected,v.restored_revision,v.restored_object_revision)
 FIELDS(ClassEdit,v.object,v.before,v.after,v.expected)
-template<class A> void fields(A& a,Patch& v){a(v.objects,v.fields,v.dependencies);if(a.extended)a(v.classes);}
+FIELDS(ActRosterEdit,v.before,v.after,v.expected,v.restored_revision)
+template<class A> void fields(A& a,Patch& v){a(v.objects,v.fields,v.dependencies);if(a.extended)a(v.classes);if(a.roster_extended)a(v.acts);}
 FIELDS(Change,v.operation,v.gesture,v.intent,v.revision,v.summary,v.patch,v.inverse,v.allocated,v.clone_sources)
 FIELDS(Decision,v.code,v.reason,v.revision,v.change)
 FIELDS(Gesture,v.operation,v.original_revision,v.transition_revision,v.summary,v.applied,v.redo_available,v.undo,v.redo)
@@ -107,11 +110,11 @@ FIELDS(Coverage,v.durable_revision,v.state_hash)
 FIELDS(Saved,v.saved_revision,v.resource,v.serial)
 FIELDS(SavedApplied,v.saved)
 FIELDS(Leave,v.reason)
-FIELDS(Control,v.kind,v.serial,v.revision,v.ready,v.ready_mask,v.participant_mask,v.mode,v.tester)
+FIELDS(Control,v.kind,v.serial,v.revision,v.ready,v.ready_mask,v.participant_mask,v.mode,v.tester,v.start_act)
 FIELDS(Command,v.kind,v.serial,v.revision,v.actor,v.accepted)
 #undef FIELDS
 struct Encode {
-    net::Writer w; size_t limit; bool extended=true;
+    net::Writer w; size_t limit; bool extended=true,roster_extended=true;
     template<class... T> void operator()(const T&... v) { (one(v),...); }
     template<class T> void one(const T& v) {
         if constexpr(std::is_same_v<T,bool>) w.u8(v?1:0);
@@ -138,7 +141,7 @@ struct Encode {
     }
 };
 struct Decode {
-    net::Reader r; size_t budget; bool extended=true;
+    net::Reader r; size_t budget; bool extended=true,roster_extended=true;
     explicit Decode(const std::vector<uint8_t>& bytes):r(bytes.data(),bytes.size()),budget(std::min(kStateBytes*2,bytes.size()*8+(1u<<20))) {}
     void claim(size_t n) { need(n<=budget,"allocation budget exceeded"); budget-=n; }
     template<class... T> void operator()(T&... v) { (one(v),...); }
@@ -189,7 +192,9 @@ void validate(const State& s) {
 void validate(const Request& q) {
     Limits limits;
     need(project(q.project) && q.epoch && operation(q.operation) && q.operation.epoch==q.epoch,"invalid request scope");
-    need(q.summary.size()<=limits.summary_bytes && q.mutations.size()<=limits.mutations &&
+    const bool roster=std::count_if(q.mutations.begin(),q.mutations.end(),[](const auto& m){return m.kind==MutationKind::SetActs;})==1 &&
+        std::all_of(q.mutations.begin(),q.mutations.end(),[](const auto& m){return m.kind==MutationKind::SetActs || m.kind==MutationKind::Set;});
+    need(q.summary.size()<=limits.summary_bytes && q.mutations.size()<=(roster?limits.classes+1:limits.mutations) &&
          q.dependencies.size()<=limits.dependencies && q.leases.size()<=limits.leases,"request exceeds limit");
     need(q.intent==Intent::Forward ? !q.mutations.empty() : q.mutations.empty(),"invalid history request shape");
 }
@@ -252,7 +257,7 @@ void validate_payload(const Message& m) {
         if constexpr(std::is_same_v<T,Leave>) need(p.reason<=3,"invalid leave reason");
         if constexpr(std::is_same_v<T,Presence>) need(peer(p.author) && p.ownership<=3 && p.owned_scopes.size()<=32 && unsigned(p.phase)<=unsigned(PresencePhase::Offered) &&
             ((p.ownership&kOwnSelection) ? (p.selected.id&&p.selected.generation&&p.preview_lease.token&&
-                (p.preview_lease.scope.kind==ScopeKind::Document || (p.preview_lease.scope.kind==ScopeKind::Placement&&p.preview_lease.scope.object==p.selected))) :
+                (p.preview_lease.scope.kind==ScopeKind::Document || ((p.preview_lease.scope.kind==ScopeKind::Placement || p.preview_lease.scope.kind==ScopeKind::Settings)&&p.preview_lease.scope.object==p.selected))) :
                 p.preview_lease==LeaseToken{}),"invalid presence authority");
         if constexpr(std::is_same_v<T,TransformPreview>) {
             const auto id=[](ObjectId v){return v.id && v.generation;};
@@ -265,10 +270,12 @@ void validate_payload(const Message& m) {
             need(peer(p.author) && p.serial && pose(p.pose) && (!p.destination || pose(*p.destination)) &&
                 (p.active ? (id(p.object)&&id(p.act)&&p.lease.token &&
                     (p.creating ? (id(p.class_id) && (p.lease.scope.kind==ScopeKind::Structure || p.lease.scope.kind==ScopeKind::Document)) :
-                     (p.lease.scope.kind==ScopeKind::Document || (p.lease.scope.kind==ScopeKind::Placement&&p.lease.scope.object==p.object)))) :
+                     (p.lease.scope.kind==ScopeKind::Document || ((p.lease.scope.kind==ScopeKind::Placement || p.lease.scope.kind==ScopeKind::Settings)&&p.lease.scope.object==p.object)))) :
                     (p.object==ObjectId{}&&p.act==ObjectId{}&&p.lease==LeaseToken{} && p.class_id==ObjectId{} && !p.creating && !p.destination)),"invalid transform preview");
         }
         if constexpr(std::is_same_v<T,Control>) need(unsigned(p.kind)<=unsigned(ControlKind::HostEditorResumed) && p.serial && p.revision==m.context.revision &&
+            ((!p.start_act.id && !p.start_act.generation) || (p.start_act.id && p.start_act.generation)) &&
+            ((p.kind!=ControlKind::HostPreparePlaytest && p.kind!=ControlKind::HostBeginPlaytest) || (p.start_act.id && p.start_act.generation)) &&
             (p.kind==ControlKind::GuestReadyPlaytest || !p.ready) && p.ready_mask<=15 && p.participant_mask<=15 &&
             ((p.kind!=ControlKind::HostPreparePlaytest && p.kind!=ControlKind::HostBeginPlaytest) || ((p.participant_mask&1) && !(p.ready_mask&~p.participant_mask))) &&
             ((p.kind==ControlKind::HostPreparePlaytest || p.kind==ControlKind::HostBeginPlaytest) || !p.ready_mask) &&
@@ -306,14 +313,18 @@ bool encode_state(const State& s,std::vector<uint8_t>& b,std::string& error) {
     try {
         validate(s);Encode e{{},kStateBytes};
         const bool current=s.document.next_class || std::any_of(s.document.class_schema.begin(),s.document.class_schema.end(),[](const auto& row){return row.second.kind==ValueKind::Structured;});
-        e.extended=current;
-        if(current || !s.document.class_schema.empty() || !s.document.class_settings.empty()){
+        const bool authoring=!s.document.settings_schema.empty() || !s.document.settings.empty();
+        const bool roster=!s.document.act_order.empty();e.roster_extended=roster;
+        e.extended=current || authoring;
+        if(current || !s.document.class_schema.empty() || !s.document.class_settings.empty() || authoring){
             // A legacy state starts with a 16-byte project and nonzero epoch.
             // Zero at byte16 makes this wrapper unambiguous for every valid
             // legacy project identity, including one matching our magic bytes.
-            e(kClassSettingsState,kClassSettingsState,uint64_t(0),uint32_t(current?2:1),s,
+            e(kClassSettingsState,kClassSettingsState,uint64_t(0),uint32_t(roster?4:authoring?3:current?2:1),s,
                 s.document.class_schema,s.document.class_settings);
-            if(current)e(s.document.next_class);
+            if(current || authoring)e(s.document.next_class);
+            if(authoring)e(s.document.settings_schema,s.document.settings);
+            if(roster)e(s.document.act_order,s.document.act_revision);
         }else e.one(s);
         b=std::move(e.w.data);error.clear();return true;
     } catch(const std::exception& e){error=e.what();return false;}
@@ -324,11 +335,13 @@ bool decode_state(const std::vector<uint8_t>& b,State& s,std::string& error) {
         uint64_t prefix[3]{};if(b.size()>=sizeof prefix)std::memcpy(prefix,b.data(),sizeof prefix);
         if(prefix[0]==kClassSettingsState && prefix[1]==kClassSettingsState && !prefix[2]){
             uint64_t first=0,second=0,reserved=0;uint32_t version=0;d(first,second,reserved,version);
-            need(version==1 || version==2,"unsupported class-settings checkpoint extension");d.extended=version>=2;d.one(result);
+            need(version>=1 && version<=4,"unsupported authoring-settings checkpoint extension");d.extended=version>=2;d.roster_extended=version>=4;d.one(result);
             d(result.document.class_schema,result.document.class_settings);
             if(version>=2)d(result.document.next_class);
-            need(!result.document.class_schema.empty() || !result.document.class_settings.empty() || result.document.next_class,"noncanonical empty class-settings extension");
-        }else {d.extended=false;d.one(result);}
+            if(version>=3)d(result.document.settings_schema,result.document.settings);
+            if(version>=4)d(result.document.act_order,result.document.act_revision);
+            need(!result.document.class_schema.empty() || !result.document.class_settings.empty() || result.document.next_class || !result.document.settings_schema.empty(),"noncanonical empty class-settings extension");
+        }else {d.extended=d.roster_extended=false;d.one(result);}
         need(d.r.ok() && !d.r.left(),"trailing bytes");validate(result);s=std::move(result);error.clear();return true;
     } catch(const std::exception& e){error=e.what();return false;}
 }

@@ -53,6 +53,8 @@ bool t_running=false;
 bool t_world_ready=true;
 adventure_flow::Scene t_scene;
 int t_launches=0,t_returns=0,t_ready_calls=0,t_closes=0,t_statistics=0,t_intro_confirms=0;
+unsigned t_act_selections=0;
+void SK_THISCALL t_select_act(void* play,int act,bool transition){CHECK(play==t_play.data() && act==2 && !transition);++t_act_selections;skg::field<int>(play,0xB8)=act;}
 constexpr dbpf::Key t_logical{91,0x366A930D,0x11111111},t_local{42,0x366A930D,0x22222222},t_avatar{7,0x00B1B104,0x33333333};
 void* SK_CDECL t_loading_get() { return t_loading.data(); }
 void* SK_CDECL t_cinematic_get() { return t_cinematic.data(); }
@@ -60,6 +62,7 @@ uintptr_t t_sym(const char* name) {
     if (std::string(name)=="App::cScenarioMode::ptr") return uintptr_t(&t_mode_pointer);
     if (std::string(name)=="SporeCoop::Adventure::LoadingScreenGet") return uintptr_t(t_loading_get);
     if (std::string(name)=="Simulator::cCinematicManager::Get") return uintptr_t(t_cinematic_get);
+    if (std::string(name)=="Simulator::cScenarioPlayMode::SetCurrentAct") return uintptr_t(t_select_act);
     return 0;
 }
 void t_outside(SkTaskFn fn,void* user) { t_tasks.emplace_back(fn,user); }
@@ -86,6 +89,7 @@ void reset() {
     t_descriptor={};t_descriptor.run_id=8;t_descriptor.adventure=t_logical;t_descriptor.locked_captain=t_avatar;
     t_active=t_outcome=t_cleanup=t_ready=false;t_current=t_can_ready=t_have_descriptor=true;
     t_launches=t_returns=t_ready_calls=t_closes=t_statistics=t_intro_confirms=0;
+    t_act_selections=0;
     t_running=false;t_scene={};
     static SkHost host{};host.sym=t_sym;host.run_outside_frame=t_outside;
     adventure_native::H=&host;adventure_native::C.sess=&t_session;adventure_native::g_symbols=true;
@@ -148,12 +152,18 @@ int main() {
     t_current=false;CHECK(!adventure_native::editor_preview_place());t_current=true;
     CHECK(adventure_native::loaded(t_logical));CHECK(!adventure_native::loaded(t_local));
     skg::field<bool>(t_data.data(),0x124)=false;CHECK(adventure_native::loaded(t_logical));
+    skg::field<bool>(t_data.data(),0x14)=true;CHECK(adventure_native::loaded(t_logical));
+    skg::field<bool>(t_data.data(),0x14)=false;
     skg::field<bool>(t_loading.data(),0x370)=true;CHECK(!adventure_native::loaded(t_logical));skg::field<bool>(t_loading.data(),0x370)=false;
     skg::field<int>(t_mode.data(),0xD0)=1;CHECK(!adventure_native::loaded(t_logical));skg::field<int>(t_mode.data(),0xD0)=0;
     adventure_native::g_initializing=1;CHECK(!adventure_native::loaded(t_logical));adventure_native::g_initializing=0;
     skg::field<dbpf::Key>(t_resource.data(),8)={43,t_local.type,t_local.group};CHECK(!adventure_native::loaded(t_logical));
     skg::field<dbpf::Key>(t_resource.data(),8)=t_local;t_descriptor.run_id++;CHECK(!adventure_native::loaded(t_logical));
     reset();CHECK(adventure_native::set_editor_preview(config(),error));t_current=false;CHECK(!adventure_native::launch(t_logical,t_avatar,error));CHECK(!t_launches);
+    reset();p=config();p.start_act=8;CHECK(!adventure_native::set_editor_preview(p,error));
+    reset();p=config();p.start_act=2;CHECK(adventure_native::set_editor_preview(p,error));
+    CHECK(adventure_native::launch(t_logical,t_avatar,error));CHECK(t_act_selections==1 && skg::field<int>(t_play.data(),0xB8)==2);
+    CHECK(adventure_native::loaded(t_logical));
     reset();
     // Another participant has a different local native Save As key, but the
     // same immutable project/round and gameplay run describe the same place.

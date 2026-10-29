@@ -32,6 +32,7 @@ struct View {
     editor::Revision playtest_revision = 0;
     editor::wire::PlaytestMode playtest_mode=editor::wire::PlaytestMode::Together;
     editor::Peer playtest_tester;
+    editor::ObjectId playtest_act;
     std::map<uint8_t, Member> members;
     std::vector<editor::Lease> local_leases;
     editor::Revision locally_durable = 0;
@@ -157,7 +158,7 @@ public:
     // Guest only, after native root application and durable opaque checkpoint
     // completion. Deferring a Saved callback must also defer this acknowledgement.
     bool acknowledge_saved(const editor::wire::Saved&, std::string& error);
-    bool prepare_playtest(std::string& error,editor::wire::PlaytestMode mode=editor::wire::PlaytestMode::Together,editor::Peer tester={});
+    bool prepare_playtest(std::string& error,editor::wire::PlaytestMode mode=editor::wire::PlaytestMode::Together,editor::Peer tester={},editor::ObjectId start_act={});
     bool ready_playtest(bool, std::string& error);
     bool cancel_playtest(std::string& error);
     bool return_editor(std::string& error);

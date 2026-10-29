@@ -12,6 +12,7 @@
 #include "net/editor_document.h"
 #include "editor_native_scale.h"
 #include "editor_native_cast.h"
+#include "editor_native_authoring.h"
 #include "sporekit.h"
 
 namespace editor_native {
@@ -104,11 +105,15 @@ struct Ctx {
     std::function<bool()> relative_scale_tracked;
     std::function<bool()> extended_poses_tracked;
     std::function<bool()> cast_tracked;
+    std::function<bool()> authoring_tracked;
     // Native mutation input must be held until this exact selection has leases.
     std::function<bool(const std::vector<editor::ObjectId>&)> gate;
     std::function<std::optional<editor::Revision>(editor::ObjectId)> object_revision;
     std::function<bool(uint32_t)> structure_gate; // Existing native class ID.
     std::function<bool(uint32_t)> class_gate;
+    std::function<bool(editor::ObjectId)> settings_gate;
+    std::function<bool()> navigation_allowed;
+    std::function<void(int)> act_action;
     std::function<bool(uint32_t)> remove_class_gate;
     std::function<bool(const Snapshot&,std::string&)> validate_dependencies;
     std::function<bool()> transaction_pending;
@@ -122,8 +127,15 @@ void tick(); // Queues native UI fences outside Present.
 State state();
 editor::ResourceKey avatar();
 bool avatar_locked();
+// Local browsing only. Does not create a shared authored transaction.
+bool select_act(uint32_t, std::string& error);
 // Binding ownership survives native vector reorders and snapshot reconstruction.
 void bind(const std::vector<Binding>&);
+// Stable logical acts follow their native ordering across roster transactions.
+void bind_acts(const editor::Document&);
+// 0 add after current, 1 delete current, 2 move left, 3 move right.
+// Builds an owned native gesture without retaining any native UI payload.
+bool edit_acts(int action, const editor::Document&, std::string& error);
 // Normal local native selection, outside Present; never changes authored bytes.
 bool select_placement(editor::ObjectId, std::string& error);
 bool capture(Snapshot&, std::string& error);
@@ -164,6 +176,7 @@ bool selection_preview(LivePreview&);
 // Render components only, outside Present. Never writes authored marker bytes.
 void update_previews(const std::vector<LivePreview>&);
 std::string visual_status(); // Read-only native render positions, outside frame.
+std::string authoring_status(); // Bounded read-only act/captain diagnostics.
 // Outside frame, after the current scoped ownership request was denied.
 void deny_input(const std::vector<editor::Scope>&);
 std::string status();

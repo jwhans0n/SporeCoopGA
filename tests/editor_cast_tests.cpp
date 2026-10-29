@@ -2,6 +2,7 @@
 // controlled data here; actual game parsing is covered by the native lab.
 #include "editor_native_cast.h"
 #include "editor_native_scale.h"
+#include "editor_native_authoring.h"
 #include "net/editor_protocol.h"
 #include <cstdlib>
 #include <array>
@@ -75,7 +76,134 @@ static void referenced_import_undo(){
         editor_native::behavior_class_reference(refs,type,value);
     CHECK(refs==std::set<ObjectId>{{(2ull<<32)|1024,1}});
 }
+static void independent_act_and_captain_settings(){
+    using namespace editor_native;
+    auto baseline=seed();auto& d=baseline.document;d.next_id=9ull<<32;d.classes.insert(cast);
+    const ObjectId second_act{(3ull<<32)|1,1};d.acts.insert(second_act);d.settings_schema=authoring_property_schema();
+    const FieldKey act_field{Field::Property,kActBlockProperty},locked{Field::Property,kCaptainLockedProperty};
+    for(unsigned index=0;index<2;++index){
+        AuthoringSettings s;s.object=act_settings_id(index);s.act_id={(3ull<<32)|index,1};
+        s.properties[kActBlockProperty]=StructuredValue{kActBlockFormat,{uint8_t(index+1)}, {}};d.settings.emplace(s.object,s);
+    }
+    AuthoringSettings captain;captain.object=kCaptainObject;captain.kind=SettingsKind::Captain;
+    captain.properties={{kCaptainLockedProperty,false},{kCaptainPositionProperty,Vec3{}},{kCaptainRotationProperty,Rotation{}},
+        {kCaptainAssetProperty,ResourceKey{1,2,3}}};d.settings.emplace(captain.object,captain);
+    std::string error;CHECK(valid(d,{},error));Coordinator core;CHECK(core.reset(baseline,7,error));
+    CHECK(core.connect(host));CHECK(core.connect(guest));State replica=baseline;
+    auto a=core.acquire(host,{{ScopeKind::Settings,act_settings_id(0),{}}},100,30000);CHECK(a.accepted());
+    auto b=core.acquire(guest,{{ScopeKind::Settings,act_settings_id(1),{}}},100,30000);CHECK(b.accepted());
+    CHECK(core.acquire(guest,{{ScopeKind::Settings,act_settings_id(0),{}}},100,30000).code==Code::Conflict);
+    auto c=core.acquire(guest,{{ScopeKind::Settings,kCaptainObject,{}}},100,30000);CHECK(c.accepted());
+    CHECK(core.acquire(host,{{ScopeKind::Settings,kCaptainObject,{}}},100,30000).code==Code::Conflict);
+    CHECK(core.acquire(host,{{ScopeKind::Class,cast,{}}},100,30000).accepted());
+    uint64_t sequence=0;
+    auto submit=[&](Peer who,Intent intent,std::vector<Mutation> mutations){
+        Request r;r.project=d.project;r.epoch=7;r.base_revision=core.state().document.revision;
+        r.operation={who,++sequence,7};r.intent=intent;r.summary="Authoring settings";r.mutations=std::move(mutations);
+        for(const auto& lease:core.leases())if(lease.owner==who)r.leases.push_back({lease.scope,lease.token});
+        auto decision=core.submit(r,100);
+        if(decision.accepted()){
+            CHECK(apply_committed(replica,decision,error));CHECK(replica==core.state());
+            std::vector<uint8_t> bytes;State decoded;CHECK(wire::encode_state(core.state(),bytes,error));
+            CHECK(bytes.size()>28 && bytes[24]==3);CHECK(wire::decode_state(bytes,decoded,error));CHECK(decoded==core.state());
+        }
+        return decision;
+    };
+    Mutation first;first.target=act_settings_id(0);first.field=act_field;first.value=StructuredValue{kActBlockFormat,{9},{cast}};
+    CHECK(submit(host,Intent::Forward,{first}).accepted());
+    Mutation second;second.target=act_settings_id(1);second.field=act_field;second.value=StructuredValue{kActBlockFormat,{8},{}};
+    CHECK(submit(guest,Intent::Forward,{second}).accepted());
+    Mutation change_captain;change_captain.target=kCaptainObject;change_captain.field=locked;change_captain.value=true;
+    Mutation move=change_captain;move.field={Field::Property,kCaptainPositionProperty};move.value=Vec3{3,4,5};
+    auto moved=submit(guest,Intent::Forward,{change_captain,move});CHECK(moved.accepted() && moved.change->patch.fields.size()==2);
+    auto shared=core.state();CHECK(submit(host,Intent::Undo,{}).accepted());
+    CHECK(value(core.state().document,act_settings_id(1),act_field)==second.value);
+    CHECK(value(core.state().document,kCaptainObject,locked)==Value{true});
+    CHECK(submit(host,Intent::Redo,{}).accepted());
+    CHECK(submit(guest,Intent::Undo,{}).accepted());
+    CHECK(value(core.state().document,kCaptainObject,locked)==Value{false});
+    CHECK(value(core.state().document,act_settings_id(0),act_field)==first.value);
+    change_captain.expected=field_revision(core.state().document,kCaptainObject,locked);change_captain.value=1.f;
+    CHECK(submit(guest,Intent::Forward,{change_captain}).code==Code::Unsupported);
+    // A goal edited on another act must still protect the referenced class.
+    auto referenced=core.state();referenced.document.epoch=8;
+    referenced.document.class_settings[settings]=initial();referenced.document.next_class=1;
+    CHECK(core.reset(referenced,8,error));CHECK(core.connect(host));
+    auto structure=core.acquire(host,{{ScopeKind::Structure,{},{}},{ScopeKind::Class,cast,{}}},100,30000);CHECK(structure.accepted());
+    Request removal;removal.project=d.project;removal.epoch=8;removal.operation={host,1,8};removal.base_revision=core.state().document.revision;removal.summary="Remove referenced cast";
+    Mutation remove;remove.kind=MutationKind::DeleteClass;remove.target=cast;removal.mutations={remove};
+    for(const auto& lease:structure.leases)removal.leases.push_back({lease.scope,lease.token});
+    CHECK(core.submit(removal,100).code==Code::Referenced);
+    CHECK(core.state().document.classes.contains(cast));
+    (void)shared;
+}
+static void ordered_act_roster(){
+    using namespace editor_native;
+    auto baseline=seed();auto& d=baseline.document;d.next_id=9ull<<32;d.classes.insert(cast);d.class_settings[settings]=initial();
+    d.settings_schema=authoring_property_schema();const ObjectId b{act.id|1,1};d.acts.insert(b);d.act_order={act,b};
+    for(unsigned i=0;i<2;++i){AuthoringSettings row;row.object=act_settings_id(i);row.act_id=d.act_order[i];row.properties[kActBlockProperty]=StructuredValue{kActBlockFormat,{uint8_t(i+1)},{}};d.settings[row.object]=row;}
+    Placement p;p.object={20,1};p.class_id=cast;p.act_id=act;d.placements[p.object]=p;
+    Coordinator core;std::string error;CHECK(core.reset(baseline,7,error));CHECK(core.connect(host));CHECK(core.connect(guest));State replica=baseline;
+    uint64_t sequence=0;
+    auto submit=[&](Peer author,Intent intent,std::vector<Mutation> mutations){
+        auto grant=core.acquire(author,{{}},100,30000);CHECK(grant.accepted());
+        Request r;r.project=d.project;r.epoch=7;r.operation={author,++sequence,7};r.base_revision=core.state().document.revision;r.intent=intent;r.summary="Act roster";r.mutations=std::move(mutations);
+        for(const auto& l:grant.leases)r.leases.push_back({l.scope,l.token});
+        auto result=core.submit(r,100);CHECK(core.release(author,r.leases));
+        if(result.accepted()){CHECK(apply_committed(replica,result,error));CHECK(replica==core.state());std::vector<uint8_t> bytes;State roundtrip;const bool encoded=wire::encode_state(replica,bytes,error);if(!encoded)std::cerr<<"roster revision "<<replica.document.revision<<": "<<error<<'\n';CHECK(encoded);CHECK(bytes[24]==4);CHECK(wire::decode_state(bytes,roundtrip,error));CHECK(roundtrip==replica);}
+        return result;
+    };
+    Mutation add;add.kind=MutationKind::SetActs;add.act_roster=act_roster(d);
+    AuthoringSettings row;row.act_id={d.next_id,1};row.object={d.next_id+1,1};row.properties[kActBlockProperty]=StructuredValue{kActBlockFormat,{3},{}};
+    add.act_roster->insert(add.act_roster->begin()+1,row);CHECK(submit(guest,Intent::Forward,{add}).accepted());
+    CHECK(core.state().document.act_order==(std::vector<ObjectId>{act,row.act_id,b}));
+    Mutation reorder;reorder.kind=MutationKind::SetActs;reorder.expected=1;reorder.act_roster=act_roster(core.state().document);
+    std::swap((*reorder.act_roster)[0],(*reorder.act_roster)[2]);CHECK(submit(host,Intent::Forward,{reorder}).accepted());
+    CHECK(core.state().document.act_order==(std::vector<ObjectId>{b,row.act_id,act}));
+    Mutation erase;erase.kind=MutationKind::SetActs;erase.expected=2;erase.act_roster=act_roster(core.state().document);erase.act_roster->pop_back();
+    CHECK(submit(host,Intent::Forward,{erase}).accepted());
+    CHECK(core.state().document.placements.at(p.object).act_id==b && core.state().document.class_settings.at(settings).act_id==b);
+    CHECK(core.state().document.tombstones.contains(act));
+    Mutation move;move.target=p.object;move.field={Field::Position,0};move.value=Vec3{4,5,6};
+    CHECK(submit(guest,Intent::Forward,{move}).accepted());
+    Mutation text;text.target=act_settings_id(1);text.field={Field::Property,kActBlockProperty};text.value=StructuredValue{kActBlockFormat,{9},{}};
+    CHECK(submit(guest,Intent::Forward,{text}).accepted());
+    CHECK(submit(host,Intent::Undo,{}).accepted());
+    CHECK(core.state().document.act_order==(std::vector<ObjectId>{b,row.act_id,act}));
+    CHECK(core.state().document.placements.at(p.object).position==(Vec3{4,5,6}));
+    CHECK(core.state().document.placements.at(p.object).act_id==act);
+    CHECK(value(core.state().document,text.target,text.field)==text.value);
+    CHECK(submit(host,Intent::Undo,{}).accepted());
+    CHECK(core.state().document.act_order==(std::vector<ObjectId>{act,row.act_id,b}));
+    CHECK(value(core.state().document,text.target,text.field)==text.value);
+    CHECK(submit(host,Intent::Redo,{}).accepted());
+    CHECK(submit(host,Intent::Redo,{}).accepted());
+    auto bad=erase;bad.expected=core.state().document.act_revision;bad.act_roster=std::vector<AuthoringSettings>{};CHECK(!submit(host,Intent::Forward,{bad}).accepted());
+    bad.act_roster=act_roster(core.state().document);bad.act_roster->push_back(bad.act_roster->front());CHECK(!submit(host,Intent::Forward,{bad}).accepted());
+}
+static void placement_history_after_act_deletion(){
+    using namespace editor_native;
+    auto baseline=seed();auto& d=baseline.document;d.next_id=9ull<<32;d.classes.insert(cast);d.class_settings[settings]=initial();
+    const ObjectId second{act.id|1,1};d.acts.insert(second);d.act_order={act,second};d.settings_schema=authoring_property_schema();
+    for(unsigned i=0;i<2;++i){AuthoringSettings row;row.object=act_settings_id(i);row.act_id=d.act_order[i];row.properties[kActBlockProperty]=StructuredValue{kActBlockFormat,{uint8_t(i+1)},{}};d.settings[row.object]=row;}
+    Placement p;p.object={20,1};p.class_id=cast;p.act_id=act;p.position={3,4,5};d.placements[p.object]=p;
+    Coordinator core;std::string error;CHECK(core.reset(baseline,7,error));CHECK(core.connect(host));CHECK(core.connect(guest));State replica=baseline;uint64_t sequence=0;
+    auto submit=[&](Peer author,Intent intent,std::vector<Mutation> changes){
+        auto grant=core.acquire(author,{{}},0,30000);CHECK(grant.accepted());
+        Request r;r.project=d.project;r.epoch=7;r.operation={author,++sequence,7};r.base_revision=core.state().document.revision;r.intent=intent;r.summary="Placement history across acts";r.mutations=std::move(changes);
+        for(const auto& lease:grant.leases)r.leases.push_back({lease.scope,lease.token});
+        auto result=core.submit(r,0);CHECK(result.accepted());CHECK(core.release(author,r.leases));CHECK(apply_committed(replica,result,error));CHECK(replica==core.state());
+    };
+    Mutation erase;erase.kind=MutationKind::Delete;erase.target=p.object;submit(guest,Intent::Forward,{erase});
+    Mutation roster;roster.kind=MutationKind::SetActs;roster.act_roster=act_roster(core.state().document);roster.act_roster->erase(roster.act_roster->begin());
+    submit(host,Intent::Forward,{roster});submit(guest,Intent::Undo,{});
+    const auto& restored=core.state().document.placements.at(p.object);CHECK(restored.act_id==second && restored.position==p.position);
+    std::vector<uint8_t> bytes;State recovered;CHECK(wire::encode_state(core.state(),bytes,error));CHECK(wire::decode_state(bytes,recovered,error));CHECK(recovered==core.state());
+}
 int main(){
+    placement_history_after_act_deletion();
+    ordered_act_roster();
+    independent_act_and_captain_settings();
     unrelated_asset_ownership();
     std::array<uint8_t,0x90> asset_data;asset_data.fill(0xA5);
     auto expected=asset_data;
