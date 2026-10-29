@@ -48,6 +48,7 @@ unsigned creates;
 int failures;
 unsigned native_terminals, native_other_states;
 unsigned native_goal_mutations;
+unsigned goal_pins,goal_unpins,goal_live_pins;
 unsigned goal_act_sets;
 bool reentrant_result;
 void* teleported;
@@ -175,6 +176,14 @@ void SK_THISCALL result_state(void* self, int state)
     }
 }
 void SK_THISCALL native_goal_check(void*) { ++native_goal_mutations; }
+void SK_THISCALL goal_reference(void** slot,void* object){
+    if(object){++goal_pins;++goal_live_pins;}else if(*slot){++goal_unpins;--goal_live_pins;}
+    *slot=object;
+}
+void SK_THISCALL pinned_goal_check(void*){
+    check(goal_live_pins==1 && adventure_world::g_override_avatar,"native spatial goal uses one retained exact captain");
+    ++native_goal_mutations;
+}
 bool SK_THISCALL native_goal_update(void*) { ++native_goal_mutations; return false; }
 void SK_THISCALL native_goal_count(void*, void*, void*, void*) { ++native_goal_mutations; }
 void SK_THISCALL goal_act(void* self, int act, bool)
@@ -1518,6 +1527,26 @@ int main()
     spatial_vtable[0xB8/4]=reinterpret_cast<void*>(&spatial_game_data);
     spatial_vtable[0x6C/4]=reinterpret_cast<void*>(&bounds);
     item_replication_cases(session,client);
+    {
+        auto previous_eligibility=C.captain_can_act;auto previous_held=C.held;
+        C.sess=&session;C.held=[] {return false;};C.captain_can_act=[](uint8_t player){return player<2;};
+        running=true;g_run=reported_run;begin_native_attempt(fake_play.data());field<int>(fake_play.data(),0x90)=3;
+        field<float>(captain,game::kHpOff)=field<float>(partner,game::kHpOff)=100;
+        field<bool>(captain,game::kDeadOff)=field<bool>(partner,game::kDeadOff)=false;
+        field<bool>(captain,0x20)=field<bool>(partner,0x20)=false;field<bool>(captain,0x21)=field<bool>(partner,0x21)=false;
+        a_ObjectReference=reinterpret_cast<uintptr_t>(&goal_reference);o_Check=pinned_goal_check;
+        native_goal_mutations=goal_pins=goal_unpins=goal_live_pins=0;
+        check_goals(fake_play.data());
+        check(native_goal_mutations==2 && goal_pins==2 && goal_unpins==2 && !goal_live_pins && !g_override_avatar,"living party spatial goals balance retained references and restore avatar scope");
+        field<float>(partner,game::kHpOff)=0;check_goals(fake_play.data());
+        check(native_goal_mutations==3 && goal_pins==3,"downed remote captain is excluded from native goal evaluation");
+        field<bool>(captain,0x20)=true;check_goals(fake_play.data());
+        check(native_goal_mutations==3,"retired local captain is excluded while other captains are downed");
+        field<bool>(captain,0x20)=false;field<float>(partner,game::kHpOff)=100;
+        C.captain_can_act=[](uint8_t){return false;};check_goals(fake_play.data());
+        check(native_goal_mutations==3 && !goal_live_pins,"life-state fences override still-readable captain bytes");
+        C.captain_can_act=previous_eligibility;C.held=previous_held;native_goal_mutations=0;
+    }
     client.leave(); C.sess = &session; running = false;
 
     begin_native_attempt(fake_play.data()); running = true;

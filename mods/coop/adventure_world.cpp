@@ -32,7 +32,7 @@ static const SkHost* H;
 static SkMod* M;
 static Ctx C;
 static uintptr_t a_Mode, a_SetAct, a_GetMarker, a_Hostile, a_Befriend, a_Ally, a_Relationships, a_SocialEvent, a_AnimalDamage, a_SocialMode;
-static uintptr_t a_GoalHUD;
+static uintptr_t a_GoalHUD,a_ObjectReference;
 static uintptr_t a_MovementRequest, a_VehicleGroundUpdate;
 static bool g_ok, g_applying;
 static bool g_talk_cleanup, g_talk_presenting, g_talk_committing;
@@ -954,15 +954,35 @@ static void SK_THISCALL check_goals(void* self)
     if (terminal_state(self)) return;
     if(active() && C.held && C.held()) return;
     if (guest() && !g_applying) return;
-    o_Check(self);
+    auto can_check=[](uint8_t player){
+        if(!C.captain_of || !C.captain_can_act || !C.captain_can_act(player))return false;
+        void* captain=C.captain_of(player);
+        return captain && skg::readable(captain,0xB60) && game::object_alive(captain) &&
+            !skg::field<bool>(captain,0x20) && !game::is_dead(captain) && game::health(captain)>0;
+    };
+    // Co-op can retain a downed captain after native death cleanup. Native
+    // spatial goals dereference its avatar unconditionally; only Alive actors
+    // may participate in these local or temporarily aliased goal checks.
+    auto check_captain=[&](void* captain){
+        // A completed goal may change acts and retire this actor before the
+        // native routine finishes checking its remaining goals. Keep the
+        // exact aliased object alive until that entire native call returns.
+        struct Pin {
+            void* object=nullptr;
+            explicit Pin(void* value){skg::thiscall<void>(a_ObjectReference,&object,value);}
+            ~Pin(){skg::thiscall<void>(a_ObjectReference,&object,(void*)nullptr);}
+        } pin(captain);
+        AvatarScope scope(pin.object);o_Check(self);
+    };
+    if(!active() || !host())o_Check(self);
+    else if(can_check(0))check_captain(C.captain_of(0));
     if (!active() || !host() || !C.captain_of || !skg::readable(self, 0xBC)) return;
     int act = skg::field<int>(self, 0xB8);
     for (const auto& player : C.sess->players()) {
-        if (!player.id || skg::field<int>(self, 0x90) != 3 || skg::field<int>(self, 0xB8) != act) continue;
+        if (!player.id || !can_check(player.id) || skg::field<int>(self, 0x90) != 3 || skg::field<int>(self, 0xB8) != act) continue;
         void* captain = C.captain_of(player.id);
         if (!captain) continue;
-        AvatarScope scope(captain);
-        o_Check(self);
+        check_captain(captain);
     }
 }
 static void SK_THISCALL complete_act(void* self)
@@ -2357,6 +2377,7 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
     a_SocialMode = H->sym("SporeCoop::Adventure::CreatureSocialMode");
     a_AnimalDamage = H->sym("Simulator::cCreatureAnimal::TakeDamage");
     a_GoalHUD = H->sym("SporeCoop::Adventure::RefreshGoalHUD");
+    a_ObjectReference=H->sym("SporeCoop::Adventure::AssignObjectReference");
     a_MovementRequest = H->sym("SporeCoop::Adventure::GetLocomotionRequest");
     a_VehicleGroundUpdate = H->sym("SporeCoop::Adventure::VehicleGAGroundLocomotionUpdate");
     uintptr_t check = H->sym("Simulator::cScenarioPlayMode::CheckGoalProgress");
@@ -2378,7 +2399,7 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
     a_ThrowGrace=H->sym("SporeCoop::Adventure::ThrowPairGrace");
     o_Drop = (Drop_t)H->sym("SporeCoop::Adventure::DropItem");
     if (std::string(H->exe_sha256()) != "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37" ||
-        !a_Mode || !a_SetAct || !a_GetMarker || !a_Hostile || !a_Befriend || !a_Ally || !a_Relationships || !a_SocialEvent || !a_SocialMode || !a_AnimalDamage || !a_GoalHUD || !a_MovementRequest || !a_VehicleGroundUpdate ||
+        !a_Mode || !a_SetAct || !a_GetMarker || !a_Hostile || !a_Befriend || !a_Ally || !a_Relationships || !a_SocialEvent || !a_SocialMode || !a_AnimalDamage || !a_GoalHUD || !a_ObjectReference || !a_MovementRequest || !a_VehicleGroundUpdate ||
         !check || !complete || !goals || !state || !pick || !picked || !dropped || !count || !avatar || !generic || !o_Drop || !C.sess || !C.captain_can_act ||
         !talk || !talk_end_address || !gate || !a_GateKey || !a_OpenGate || !a_Physics || !a_Impulse || !a_ThrowGrace || !adventure_world_lifecycle::init(H, M)) return false;
     g_ok = H->hook_create(M, (void*)check, (void*)check_goals, (void**)&o_Check) == 0 &&
@@ -2709,6 +2730,10 @@ int debug(int argc, const char* const* argv, SkOut* output)
             for (const auto& actor : g_native) if ((action=="actorsat" ? actor.marker==first : actor.marker>=first) && shown++ < limit) {
                 out << "marker=" << actor.marker << " incarnation=" << actor.incarnation << " noun=" << actor.noun
                     << " object=" << actor.object << " class=" << skg::field<int>(actor.object, 0x1C);
+                const auto pos=skg::field<net::Vec3>(actor.spatial,4);float xy[2];
+                out << " pos=(" << pos.x << "," << pos.y << "," << pos.z << ")";
+                if(H->world_to_screen && H->world_to_screen(&pos.x,xy) && std::isfinite(xy[0]) && std::isfinite(xy[1]))out << " screen=(" << xy[0] << "," << xy[1] << ")";
+                if(actor.combatant)out << " hp=" << skg::field<float>(actor.combatant,0x38) << " max_hp=" << max_health(actor.combatant) << " hostile=" << (hostile(actor.object)?1:0);
                 void* powerup=powerup_for(actor.object);
                 if(powerup && skg::readable(powerup,0x3C)) out << " powerup=" << skg::field<int>(powerup,4)
                     << " key_category=" << (skg::field<void*>(powerup,0x18) ? skg::cdecl_call<uint32_t>(a_GateKey,powerup) : 0);
