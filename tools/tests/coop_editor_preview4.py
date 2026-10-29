@@ -55,6 +55,8 @@ def playtests(games,record,converged,together_only=False,leave_running=False):
     for tester in ([] if together_only else games):
         for game in games:game.call('coop.uistate 0')
         tester.click_control(0x07104131)
+        tester.wait('native Play test choice',lambda:'editor_prompt=4' in tester.call('coop.uistate'))
+        tester.press('Test Solo')
         host.wait('solo native Play',lambda:all(status(g).get('phase')==6 for g in games) and status(tester).get('playtesting'))
         for observer in games:
             if observer is not tester and (status(observer).get('playtesting') or not status(observer).get('editing')):
@@ -70,7 +72,9 @@ def playtests(games,record,converged,together_only=False,leave_running=False):
         match=re.search(r"^editor_prompt_button0 (\d+) (\d+) (\d+) (\d+) 1 ",game.call('coop.uistate'),re.M)
         if not match:return False
         r=tuple(map(int,match.groups()));game.click((r[0]+r[2])//2,(r[1]+r[3])//2);return True
-    guest.call('coop.uistate 1');guest.call('wait.frames 6 15000');guest.press('Test Together')
+    guest.click_control(0x07104131)
+    guest.wait('native Play group choice',lambda:'editor_prompt=4' in guest.call('coop.uistate'))
+    guest.press('Test Together')
     host.wait('guest Test Together host approval',lambda:'editor_prompt=2' in host.call('coop.uistate'))
     record('test-together-request');prompt(host)
     host.wait('explicit readiness on all participants',lambda:all('editor_prompt=3' in g.call('coop.uistate') for g in games))
@@ -470,7 +474,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--execute',action='store_true');parser.add_argument('--onboard',action='store_true')
     parser.add_argument('--stage',choices=('baseline','imports','playtests','group-launch','properties','movement','sound','teleporters','ball','class-removal','disguises','asset-matrix','batch-imports'),default='imports')
-    parser.add_argument('--attach',action='store_true',help='Continue an owned, empty shared native editor pair')
+    parser.add_argument('--attach',action='store_true',help='Continue an owned shared native editor party')
     parser.add_argument('--recover',action='store_true',help='Recover the private host checkpoint and join its guest')
     parser.add_argument('--metadata',type=Path);parser.add_argument('--dll-sha256')
     parser.add_argument('--output',type=Path);parser.add_argument('--instances',type=int,nargs='+',default=[91,92])

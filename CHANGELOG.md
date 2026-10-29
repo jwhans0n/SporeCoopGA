@@ -7,8 +7,8 @@
   checked own-action Undo/Redo and bounded durable recovery projects.
 - Integrate verified native snapshots, private Save As, initiating-player solo
   Play and an explicit Test Together action with host approval and group readiness.
-  Keep unsupported act, goal, terrain and nested-editor mutations read-only.
-  Editor development uses protocol 20 / preview 5; the published
+  Keep terrain and nested-editor mutations read-only.
+  Editor development uses protocol 21 / preview 6; the published
   gameplay release remains protocol 15.
 - Retain the first drag while ownership arrives. Synchronize sound pose
   companions, separate teleporter endpoints, ball rotation, native cast settings
@@ -17,6 +17,12 @@
   Retain independent inspectors across native refreshes, refresh ownership after
   Undo, and update remote teleporter exit displays immediately. Add player-colored
   selection/lock hints and native live movement/placement previews.
+- Add independent act browsing, native act goals/names/descriptions/timers and
+  shared captain movement, replacement and locking. Support act creation,
+  deletion and reordering with stable identities and checked history. Add a
+  Test Solo / Test Together popup to native Play. Repair group launch after
+  accepted missing-asset replacement, apply the confirmed starting act and retain
+  living captain references during native spatial goal evaluation.
 - Reuse immutable dependencies during placement updates and retain their recovery
   closure once. Keep native saving, guest durability and group readiness separate.
 - Add portable, Win32 orchestration and isolated native editor fixtures. Native

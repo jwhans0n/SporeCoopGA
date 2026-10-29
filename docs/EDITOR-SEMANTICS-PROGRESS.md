@@ -5,6 +5,24 @@ The automatic native-flow preview is described in the
 [validation report](reports/EDITOR-NATIVE-FLOW-VALIDATION.md). It extends the
 placement preview with native cast properties and separate solo/group testing.
 
+## Current preview 6 checkpoint
+
+Preview 6 / protocol 21 on `feat/ga-editor-multi-act` adds independent act browsing,
+per-act names/descriptions/timers/goals, captain ownership and replacement, stable
+act creation/deletion/reordering, and a native Play popup for Test Solo or Test
+Together. The group run starts in the host's confirmed act; every editor restores
+its own view on return. State wrapper v4 and native mapping v3 retain old recovery
+readers and keep surviving act identities stable across index changes.
+
+Private four-player native runs verify roster editing with Undo/Redo, independent
+metadata edits, captain replacement and movement, and cold recovery. Group tests
+in Obnoxious SpacePonies now reach one gameplay run with hostile ponies and finite
+health in Act 3. Detailed combat assertions and remaining validation gates belong
+to the current matrix in the linked report. No main merge or release acceptance
+is implied by these preview results.
+
+## Historical preview 4 checkpoint
+
 Preview 4 / protocol 19 on `fix/ga-editor-preview4` adds owned native class
 subtrees, behavior/text reference validation, class creation/removal, dependency
 uploads from guests, retained first-press input and endpoint/audio pose fields.

@@ -1,5 +1,127 @@
 # Native Adventure Editor saving and preview (dc04)
 
+## Preview 6 act/captain authoring investigation
+
+Static receipts in `out/editor-preview6/native1.txt` through `native8.txt` use the
+same supported executable below. Native receipts are summarized in the
+[validation report](../reports/EDITOR-NATIVE-FLOW-VALIDATION.md).
+
+* Placement position, orientation and scale are adventure-wide marker fields
+  `04/10/20`. Marker acts at `28` are `34`-byte wander/patrol records, not separate
+  placement transforms. Local act browsing must not relabel the stable placement
+  or cast ownership identity. These layouts agree with the upstream
+  [marker](https://github.com/Spore-Community/Spore-ModAPI/blob/master/Spore%20ModAPI/Spore/Simulator/cScenarioMarker.h)
+  and marker-act headers and were checked against `F44210` and `F3D930`.
+* Native acts are `534`-byte rows at resource `23C`. Names/descriptions are owning
+  scenario strings at `00/3C`; time limit/visibility are `78/7C`; music is `80`;
+  goals at `84` have stride `188` and a maximum of three. `DFED80` deep-assigns
+  one row (`thiscall`, `ret4`), while `DFF620` owns act-vector assignment
+  (`thiscall`, `ret4`). Never copy their string/vector ownership pointers.
+* `EFC7B0` is `cdecl(act)` with a plain return. It updates the local context and
+  calls `F462B0(data,1,previous,next)` only when the act changes. There is no
+  history boundary. Native history restore uses the current context act, so a
+  canonical scene refresh can preserve independent browsing.
+* Captain settings are resource asset `130`, pose `150/15C/16C`, health `170`,
+  invulnerability `174`, and authored lock `175`. `F3D930` writes the special
+  `data+8C` captain marker's pose back to these resource fields. `F432C0` creates
+  this special class `FFFFFFFE` marker; it is not a normal cast allocation.
+* `F40980` is a posse-member append helper, not a captain setter. Its editor
+  message callers also handle initial posse; it must not be hooked as though it
+  changed the authored captain.
+* `ED0B40` is the separate captain-property IWinProc (`thiscall(window,message)`,
+  `ret8`); lock control `0770B540` owns a normal Start/Commit pair and writes
+  `resource+175`. Class-property handler `EE5380` explicitly excludes negative
+  special class indices, so enabling the ordinary cast inspector is insufficient.
+
+The cross-act report names Obnoxious SpacePonies: Solo applies aggression and
+finite health correctly, while Together previously showed the aggressive visual
+without attacks, damage or finite health. C2 reached one private four-player run
+after the missing-assets launch fix in `adventure-world.md`. Its Act 2 intentionally
+retains shields; ponies attacked captains with matching hostility and health.
+C2 later crashed during spatial goal evaluation. C5's lifetime guard survived a
+longer combat session and shared Mission Complete, then restored all four drafts.
+Starting together in Act 3 applied hostility and finite `202/202` pony health on
+all four clients. Native player damage remains a separate acceptance assertion.
+
+Further static receipts `out/editor-preview6/native20.txt` through `native26.txt`:
+
+* Captain asset acceptance is asynchronous palette `ED3AAE`, calling `F42420`
+  inside Start/Commit. `F42420` is `thiscall(data,ResourceKey*)`, `ret4`, writes
+  `130/134/138` and recreates the special captain through `F41A50`. Hold a copied
+  resource key for ownership replay, never a palette payload or callback pointer.
+* `F448E0` AddAct and `F440B0` DeleteAct are `thiscall(data,index)`, `ret4`.
+  Their only receiver access is resource `+10`; they can build an owned private
+  resource without calling native UI or scene code. Add accepts insertion
+  positions `1..count` up to eight acts. Both update the matching class-act and
+  marker-act collections. Native controls are `07BD2DD0` and `0743BC38`.
+* Class-act vector assignment `DFEC20` is `thiscall(dst,src*)`, `ret4`, with
+  `4E0` rows at classData `70` (class map row `78`). Marker-act assignment
+  `DFCEB0` has the same convention, `34` rows at marker `28`. Marker-act
+  owning patrol points start at `1C`, followed by style `30`; the first `1C`
+  bytes are primitive wander/deprecated-position data. Do not use the upstream
+  header's conflicting patrol offset without checking native `DFB860`.
+* Owning insertions `F44620` (act), `F43720` (class-act) and `F42C60`
+  (marker-act) take `thiscall(vector,position,src*)`, `ret8`. Source rows must
+  belong to a separate owned resource when the destination may reallocate.
+  Reorder all three vectors together; raw row copies alias strings and paths.
+* `EE3700` validates goal assignment/drop. It is not an act-reorder function.
+* C3 added an act from a guest and converged all four native drafts at revision
+  6 with zero caught faults. Immediate roster Undo was denied by overlapping
+  ownership. Broad IWinProc gates were acquiring/renewing leases for nonmutating
+  panel messages. `ED0B40` only authors captain lock on `287259F6/0770B540` and
+  health on `07A4489C`, `07A44749`, `EF00A884` with control `0742CD10`.
+  Picker browsing delegates to ECF370; its accepted resource key is independently
+  fenced by F42420. `EE5380` authors on messages `6`, `7`, `1C`, `0685A2B9`,
+  `04CAB02D`, `EF00A884`, `07A44749`, `07A4489C`, `287259F6`. Mouse movement
+  (`8`), paint and focus gain must not acquire class/captain ownership.
+  ScriptUI `1C` commits text for controls `0743B978`, `0710A140`,
+  `05CA82B7`, `07CCBD48` and the inline goal count `07DF4C98`. The last calls
+  `EE3440` on Enter or focus loss and writes goal `0C` inside Start/Commit.
+  Focus notifications use argument `0`; `1B/1C` with argument `1` are mouse
+  enter/leave. Reserve ownership on actual text focus and renew while typing.
+  Mouse hover must not acquire an act lease, and only focus loss can commit text.
+  Native input fixtures cover
+  these nonmutating messages and stable settings ownership after reordering.
+
+Native failure and recovery receipts:
+
+* C4's roster Undo requested Document plus many redundant Class leases and exceeded
+  the `1100`-byte LeaseReply bound after the host had durably accepted it. Roster
+  Undo now requests only Document. Ordinary history scopes are deduplicated;
+  captain position plus quaternion otherwise requested its Settings scope twice.
+* C8 passed four-player Add/Undo/Redo, reorder/Undo and Delete/Undo through native
+  controls. Independent act views survived. Private roster gestures and cold
+  recovery have no native cursor entries. The exact owned native toolbar buttons
+  `B006EF6E`/`F006EFA5` must use shared chronological availability, as do the hooked
+  command getters. Never add a dummy native resource edit to make Undo available.
+* C6 accepted stock captain Ace from the guest native picker and restored the
+  prior Bardados key through Undo without losing its pose. C8 captain drag and
+  Undo converged all four drafts with one history item. Checkpoints read back
+  through v4 state and v3 native mapping in cold C7, C8 and C9 processes.
+* Win32 harness key injection is asynchronous. Keep Ctrl held across a frame
+  fence around Z/Y, then release it. Immediate down/key/up can clear the polled
+  modifier before the game handles Z and falsely report a broken native shortcut.
+  The numeric-count input attempts did not reliably enter a new value. C11 also
+  reproduced the same failure in a detached unshared editor. Do not claim native
+  numeric-entry acceptance from those attempts. Final native goal acceptance uses
+  the All control and goal deletion, each with checked Undo. These are distinct
+  from the deterministic complete goal-block tests.
+* C10's temporary input trace treated keyboard message `18` as a window pointer.
+  A Ctrl input crashed the diagnostic candidate at `07E1310A` with an invalid
+  execution target. This introspection is removed from the final source; field
+  `18` is inspected as a window only for verified focus notifications. The C12
+  authoring and roster runs repeat native keyboard history without faults.
+  Receipt: `out/editor-preview6/c10/crash/crash-20261029-004551-i92.txt`.
+
+The new checkpoint wrapper v4 stores stable act order and its revision. Native
+mapping v3 stores matching ordered act/settings identities and validates them
+against the loaded canonical state. Existing mapping v1/v2 remain readable.
+Logical act IDs survive native index changes; the settings owner is independent of its
+displayed act number. Rare roster changes require Document ownership, while
+ordinary metadata edits retain per-act settings ownership. Native placement pose
+and cast data remain adventure-wide; the canonical parent is the minimum live
+act ID and is reanchored when that act is deleted.
+
 These static receipts apply only to installed GOG executable SHA-256
 `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
 They establish addresses, call arguments, field ownership and stack cleanup.

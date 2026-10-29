@@ -3700,3 +3700,45 @@ advances one owned cancellation serial and exits normally. Source:
 `out/editor-native-bulk-c19/run2`, especially the new-author failure record and
 `96-commands.json`. This observation is separate from the earlier C17 pure
 Scale/concurrent-commit cancellation acceptance.
+
+## Preview 6 group launch and native spatial goal lifetime
+
+The private C1 Obnoxious SpacePonies reproduction entered native play mode on
+four participants but never left co-op Loading. Read-only process receipts
+`out/editor-preview6/c1/read-preview.json` showed host ScenarioData `14 == 1`,
+guest `14 == 0`, and no active loading screen on any participant. This byte is
+`mHadMissingAssets`, as the upstream cScenarioData header also records. Accepting
+native missing-creation replacements leaves this historical flag set. It is not
+a loading-state predicate. The editor bridge may ignore it only after the exact
+owned editor-preview launch and its validated dependency preparation. Ordinary
+quickplay retains its prior loading checks.
+
+C2 `out/editor-preview6/c2/group-c2-actual` reached Adventure in progress with
+one run identity and 233 mirrored world actors. The host and guest then advanced
+to Act 2 through the ordinary test-next-act button. `ponies-act2` receipts show
+matching act, hostility and health, and actual captain damage from the ponies.
+Do not infer finite health from this act: its authored shields are enabled.
+
+C2 subsequently crashed at `F1F607` in CheckGoalProgress, attempting execution at
+`29623600` while casting the avatar for a spatial goal. The receipt is
+`out/editor-preview6/c2/crash/crash-20261028-214526-i91.txt`. Co-op can retain
+downed captain bindings after native death cleanup; a goal can also complete an
+act and retire the aliased captain before the native routine finishes its other
+goals. The new guard requires Alive, positive health and nonretired native flags
+for local and remote checks. Each native call retains its exact aliased actor
+through verified AssignObjectReference `B5FAB0`, balancing the reference after
+the AvatarScope ends. The native mirror fixture covers living, downed, retired
+and life-state-fenced actors, balanced references and restored avatar scope.
+C5 subsequently ran the native four-player Act 3 preview for more than five
+minutes, received NPC attacks, advanced through an ordinary spatial goal to
+Mission Complete, and returned all four editors at revision20 with unchanged
+history and authored captain settings. No repeat of the goal crash occurred.
+C9 again started all four participants in confirmed Act 3 with hostile ponies
+at `202/202`, rather than the shielded Act 2 tuning. NPC damage downed the host;
+the public group return restored every editor at revision38 with one hash.
+Receipts: `out/editor-preview6/c5/group-act3`, `spatial-goal-after-combat`,
+`group-results-return`, and `c9/group-act3`, `host-pony-attack`, `group-return`.
+The attempted attack used an empty native ability slot. The same private captain
+has empty slots in ordinary Solo, so these inputs do not establish player damage
+against the ponies. Keep that manual/native attack assertion separate from the
+verified group launch, finite NPC health and NPC-to-captain damage.

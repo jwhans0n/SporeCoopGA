@@ -339,7 +339,8 @@ class EditorPair:
     @staticmethod
     def hotkey(game, key):
         try:
-            game.call('key ctrl down'); game.call('key ' + key)
+            game.call('key ctrl down');game.call('wait.frames 2 15000')
+            game.call('key ' + key);game.call('wait.frames 4 15000')
         finally:
             game.call('key ctrl up')
 

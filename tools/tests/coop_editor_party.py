@@ -46,7 +46,7 @@ def public_command(line):
         return len(words) > 1
     if command == 'coop.editor':
         return (len(words) == 2 and words[1] in {
-            'status', 'objects', 'check', 'inspect', 'history', 'begin', 'join', 'visuals',
+            'status', 'objects', 'check', 'inspect', 'history', 'begin', 'join', 'visuals', 'acts',
             'undo', 'redo', 'save', 'playtest', 'cancel', 'return', 'end', 'recover', 'leases', 'accounting'} or (
                 len(words) == 3 and words[1] == 'ready' and words[2] in {'0', '1'})
             or words[1:] in (['timing'], ['timing','reset'], ['timing','stop']))
@@ -62,7 +62,11 @@ def public_command(line):
         return len(words) == 1
     if command == 'coop.adventure':
         return words[1:] == ['status']
+    if command == 'coop.adventure.catalog':
+        return 1<=len(words[1:])<=16 and all(re.fullmatch(r'[0-9a-fA-F]{1,8}',v)for v in words[1:])
     if command in {'coop.adventure.world', 'coop.adventure.hud'}:
+        if command=='coop.adventure.world' and len(words)==4 and words[1]in{'actors','actorsat'}:
+            return words[2].isdigit()and words[3].isdigit()and 0<=int(words[2])<1024 and 1<=int(words[3])<=48
         return words[1:] in ([], ['status'])
     return False
 

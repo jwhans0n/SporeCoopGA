@@ -26,8 +26,8 @@ def main():
     args = parser.parse_args()
     version = re.search(r'^#define COOP_VERSION "([^"]+)"',
                         (ROOT / 'mods/coop/coop.cpp').read_text(), re.M)[1]
-    if not re.fullmatch(r'0\.7\.5\.0-ga-editor-preview\.5', version):
-        parser.error('This packaging recipe is scoped to editor preview 5')
+    if not re.fullmatch(r'0\.7\.5\.0-ga-editor-preview\.6', version):
+        parser.error('This packaging recipe is scoped to editor preview 6')
     kit = args.kit_installation.resolve()
     if sha(kit / 'SporebinEP1/SporeApp.exe') != EXE:
         parser.error('The supporting installation is not the verified GOG executable')
@@ -65,30 +65,32 @@ def main():
                     return match[0]
                 path, marker, anchor = target.partition('#')
                 resolved = (source.parent / path).resolve().relative_to(ROOT)
-                return '](' + 'https://github.com/jwhans0n/SporeCoopGA/blob/feat/ga-editor-native-flow/' + resolved.as_posix() + marker + anchor + ')'
+                return '](' + 'https://github.com/jwhans0n/SporeCoopGA/blob/feat/ga-editor-multi-act/' + resolved.as_posix() + marker + anchor + ')'
             data = re.sub(r'\]\(([^)]+)\)', link, source.read_text(encoding='utf-8'))
             (distribution / source.name).write_text(data, encoding='utf-8')
         else:
             shutil.copy2(source, distribution / source.name)
     (distribution / 'README.txt').write_text(
-        f'SporeCoopGA {version} (experimental editor preview, protocol 20)\n\n'
+        f'SporeCoopGA {version} (experimental editor preview, protocol 21)\n\n'
         'Extract this folder. Keep SporeCoopSetup.exe beside its matching .pack.\n'
         'End all game sessions before installing. Select the normal SPORE installation.\n'
         'All participants need this exact preview and Galactic Adventures.\n'
         'Supported SporebinEP1/SporeApp.exe SHA-256:\n' + EXE + '\n\n'
-        'Host a party and open the native Adventure Editor at Act 1. Guests join\n'
+        'Host a party and open the native Adventure Editor. Guests join\n'
         'the party and follow automatically. Unsaved drafts can be shared. F9 is\n'
         'the normal party/chat lobby. Use native Undo/Redo, Save, Play and Build.\n'
-        'Native Play tests only its initiating player. Use Test Together in F9\n'
-        'for host approval and explicit party readiness before a co-op test.\n'
+        'Native Play offers Test Solo or Test Together. Group testing requires\n'
+        'host approval and explicit party readiness for one committed revision.\n'
+        'Each player browses acts independently. Use native act properties,\n'
+        'timeline add/delete and the lobby Move act left/right controls.\n'
         'Read the guide and validation report for scope and pending release gates.\n\n'
-        'Terrain, nested creation editors, independent acts, selective history and\n'
+        'Terrain, nested creation editors, selective history and\n'
         'editing during playtest remain unavailable. Other unsupported authoring\n'
         'controls remain held. Sustained release acceptance is pending.\n\n'
         'Fork: https://github.com/jwhans0n/SporeCoopGA\n'
         'Based on SporeCoop by WoodyWizard: https://github.com/WoodyWizard/SporeCoop\n',
         encoding='utf-8')
-    manifest = {'version': version, 'protocol': 20, 'supported_exe_sha256': EXE,
+    manifest = {'version': version, 'protocol': 21, 'supported_exe_sha256': EXE,
                 'complete_release_acceptance': False,
                 'payload': {str(p.relative_to(stage)).replace('\\', '/'): sha(p)
                             for p in sorted(stage.rglob('*')) if p.is_file()},

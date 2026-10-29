@@ -1,10 +1,10 @@
 # Automatic editor sharing and native controls
 
-The preview 3 and 4 evidence is retained below. Preview 5 implementation and
+The preview 3, 4 and 5 evidence is retained below. Preview 6 implementation and
 current native validation appear at the end of this report.
 
-Current development candidate: preview **5**, protocol **20**, branch
-`fix/ga-editor-preview4`. See the appended native matrix for the exact candidate
+Current development candidate: preview **6**, protocol **21**, branch
+`feat/ga-editor-multi-act`. See the appended native matrix for the exact candidate
 hashes and test limitations. Earlier installation statements describe their
 individual validation runs.
 
@@ -418,3 +418,100 @@ it does not reposition captains or relax the successful-launch criteria.
 
 The existing release-window performance/overnight gates remain open. This preview
 is not merged; Linux/Bottles `lab.py run smoke` remains required before merging.
+
+## Preview 6: independent acts, captain authoring and Play choices
+
+Development branch `feat/ga-editor-multi-act`, protocol **21**, version
+`0.7.5.0-ga-editor-preview.6`. Final native candidate C12:
+`e71442347342f4aaf3cc876c4c608f91e2ec28ae0e8f26019efe4c450066f80f`.
+All native runs below use the supported dc04 executable, private stopped-profile
+copies, hidden windows and muted audio. No personal profile database was modified.
+The original seven fixes and preview5 collaboration behavior remain in this build.
+
+This adds independent browsing of all existing acts; per-act names, descriptions,
+timers and goals; captain movement, locking and native-picker replacement; and
+creation/deletion/reordering of one to eight acts. Surviving logical act/settings
+identities remain stable across native index changes. The native Play button now
+offers Test Solo and Test Together. Group preparation pins the host's selected
+act for every participant. Return restores each player's own act and view.
+
+New typed settings and roster operations retain existing ownership, dependency,
+reference and history checks. A roster transaction moves native act, class-act
+and marker-act columns together using owned native copies. Native mapping v3 and
+state wrapper v4 preserve older recovery readers and validate their identity maps
+against canonical state. New roster requests can include bounded class companions
+beyond the ordinary 64 operation limit, with unchanged 8 MiB wire/history bounds
+and a canonical wire preflight before live application or durable acceptance.
+
+### Current deterministic and Win32 evidence
+
+Receipts are under `out/editor-preview6`.
+
+| Check | Result |
+| --- | --- |
+| Full repository `make test` | Passed, `repository-test-c9.log`; portable core is unchanged in C12. |
+| Cast, authoring and roster transactions | 377 checks, including stable identities, conflicts, references, restore after deleted acts and checked history. |
+| Document / protocol / project / store | 2,898 / 8,927 / 5,634 / 2,483 checks passed. |
+| UDP/controller with fake native adapters | 23,065 checks passed; timing-dependent totals vary. |
+| Passive accounting / serialized bindings | 3,425 / 8,246 checks passed. |
+| Final Win32 runtime quick suite | 10,184 checks, `runtime-c12-quick.log`; includes roster transactions with 80 classes and captain pose Undo scope deduplication. |
+| Final native input/cancellation fixture | 4,667 checks, `native-c12.log`; focus versus mouse hover, per-act ownership, copied captain keys, denial and stale contexts. |
+| Native preview bridge / gameplay mirror | 112 preview checks and zero mirror failures after the launch/goal lifetime fixes. |
+| Symbol lint and whitespace | Passed; 372 used symbols, 2,955 known, zero supported-build problems. |
+
+### Native receipts
+
+| Receipt | Verified behavior |
+| --- | --- |
+| `c12/probe` | Four fresh processes recovered v4 state and v3 native mappings with one draft hash, no frozen replica and no caught fault. Earlier C3/C4 runs also exercised legacy hydration and upgraded cold recovery. |
+| `c12/authoring` | **18 checkpoints passed.** Guest act name and host description in another act; per-author Undo preserving the other act; native timer; goal All and deletion with Undo; captain lock from both roles; guest captain drag with Undo/Redo/Undo. Every forward edit created one history item and all four drafts converged. |
+| `c12/roster` | **10 checkpoints passed.** Independent act views; guest Add/Undo/Redo; reorder/Undo; original roster restoration; host Delete/Undo. Surviving local views and every native companion column remained valid. |
+| `c12/playtests` | **12 checkpoints passed.** All four initiating players used native Play -> Test Solo and native Build while observers stayed in their editors and no party run began. Guest Play -> Test Together requested host approval; four explicit readiness confirmations started one run with reciprocal moving captains. Native group Build returned the same draft/hash/history. |
+| `c12/native-reopen` | Native Save at revision64 received host4/4 and guest1/1 SavedApplied coverage for one logical root. Act/captain values and history were unchanged. Sharing ended, all players left, and the exact owned saved file reopened through My Creations before any recovery. Both its complete serialized native SHA and supported-projection SHA matched the saved resource. |
+| `c12/late-new-act` | Three editors committed a fifth act, then the fourth joined and received its stable native mapping and complete companion columns. All four converged. Host Undo removed the added act on the late participant too, restoring the original four acts without faults. |
+| `c6/captain-picker-accept`, `captain-replacement-undo` | Guest native picker accepted stock Ace, distributed its dependency and converged all four editors. Undo restored Bardados while retaining its authored pose. |
+| `c5/group-act3`, `spatial-goal-after-combat`, `group-results-return` | Reported adventure: all four players entered Act 3 with hostile ponies and finite 202/202 health. NPC attacks, a later shared spatial goal, Mission Complete and coordinated return completed without the earlier goal crash. |
+| `c9/group-act3`, `group-return`, `solo-build-return` | Confirmed Act 3 on all four participants, NPC-to-captain damage/downing, exact revision38 group return, then ordinary Solo/Build preserving that revision and independent views. |
+
+### Failure findings and remaining gates
+
+The initial group reproduction entered native preview while the co-op coordinator
+remained Loading. Host ScenarioData +14 retained its historical missing-assets flag
+after native replacements. The repaired owned-editor bridge validates the current
+closure and ignores that historical byte only for its exact preview. The following
+native spatial-goal crash was fixed by checking captain life/retirement and pinning
+the aliased actor across the complete native goal call. See the existing RE notes
+for addresses, signatures and the unsuccessful candidates.
+
+Roster Undo originally requested redundant scopes and exceeded the small LeaseReply
+bound after host acceptance. It now holds only Document for roster history and
+deduplicates ordinary settings scopes. Private roster gestures and recovered history
+also required refreshing the exact native Undo/Redo buttons from shared history.
+The key harness now holds Ctrl across frame fences so modifiers arrive reliably.
+
+The first scratch Save waiter incorrectly required host-style4/4 coverage on each
+guest. Guests acknowledge their own native application as1/1 and retain their local
+resource aliases; the logical saved root is shared. The corrected native-reopen
+receipt checks that role distinction directly and preserves the failed waiter log.
+The generic `settled` diagnostic also includes pending transport queues, separate
+from exact SavedApplied acknowledgements and the successful native file check.
+
+C10 was a temporary diagnostic build, never an installation candidate. Its input
+trace read a keyboard-only payload as a window pointer and crashed during Ctrl
+injection. That trace is removed. C12 repeats the authoring/history inputs with no
+caught faults. Numeric goal-entry injection also failed in a detached unshared
+native editor; native numeric-count entry remains a manual acceptance item. Complete
+goal subtrees are covered deterministically, and All/deletion are verified natively.
+
+Player-to-pony damage is not established by these reported-adventure receipts.
+The private Bardados captain exposes empty native attack slots in both Solo and
+Together; the attempted keys did not select an available attack. Finite pony health,
+hostile AI, NPC damage and real replicated party movement are verified separately.
+
+Linux/Bottles `tools/lab.py run smoke --lanes 3` could not execute here: this WSL
+worktree's Windows absolute git pointer fails the lab's initial git query, and the
+environment has no Flatpak/Bottles installation. Receipt: `lab-smoke1.log`. Windows
+native integration and repository tests pass, but **no main merge is performed**.
+WAN/adversity at the new native boundaries, sustained performance and overnight
+release-window acceptance remain open. Same-asset inspector edits stay serialized
+across acts; adventure-wide settings, terrain and nested editors remain held.

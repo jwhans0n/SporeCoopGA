@@ -6,13 +6,13 @@ the native editor or install this development build over an active game.
 
 The preview supports shared placement and native cast editing, with each player
 keeping their own camera and selection. The host orders changes to one draft.
-Independent acts, advanced history and playing while others
-continue editing remain later milestones in the
+Players can browse and edit different acts independently. Advanced history and
+playing while others continue editing remain later milestones in the
 [implementation plan](MULTIPLAYER-ADVENTURE-EDITOR-PLAN.md).
 
 ## Compatibility and scope
 
-Every participant needs `0.7.5.0-ga-editor-preview.5`, protocol 20, Galactic Adventures
+Every participant needs `0.7.5.0-ga-editor-preview.6`, protocol 21, Galactic Adventures
 and the exact GOG executable with SHA-256
 `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
 Older gameplay and editor previews receive an explicit version mismatch.
@@ -22,8 +22,8 @@ independent teleporter endpoints, the native multi-axis ball, cast properties
 and cast imports. See the [authoring progress](EDITOR-SEMANTICS-PROGRESS.md)
 and the [native-flow validation report](reports/EDITOR-NATIVE-FLOW-VALIDATION.md).
 
-Preview 5 separates cast/placement allocation from individual asset ownership.
-An open property inspector holds its asset, while other players can edit,
+Cast/placement allocation is separate from individual asset ownership.
+Property changes hold their asset, while other players can edit,
 import and remove unrelated assets. Undo refreshes the ownership snapshot before
 another gesture. Native scene refreshes retain each participant's open inspector
 when that asset still exists.
@@ -44,9 +44,9 @@ pass native rotation, Scale, scaled Clone and Delete with Undo/Redo. The full
 preview remains under validation. Older recovery projects without the typed companion
 retain their schema and hold Scale until a new native copy is shared.
 The adapter preserves opaque
-scenario fields through owned native snapshots. Existing objective references and
-the authored captain are protected. Deleting a placement required by an objective
-is rejected conservatively.
+scenario fields through owned native snapshots. Retained objective and behavior
+references are checked before removal. The captain has its own shared ownership
+scope and can be moved, replaced or locked by either role.
 
 The native cast inspector supports behaviors, respawn, visibility/disguise,
 speech and captions. Class settings update every affected instance and also
@@ -55,20 +55,27 @@ creations through the native picker; guest content is validated by the host
 before its canonical class is allocated. Conflicting dependency bytes under
 the same resource key are rejected. Import failure restores the committed cast.
 
-Act changes, objectives, adventure-wide settings, terrain and nested asset
-editors remain read-only while sharing. This preview supports only Act 1. Select it before starting
-sharing; other acts remain available in the ordinary native editor. Nonzero-act
-shared baselines and recovery checkpoints are refused without opening or
-restoring them. Independent acts and synchronized host act changes remain planned.
-Prepare the authored test captain before starting. Unsupported auxiliary
-manipulators remain blocked. Existing checkpoints are upgraded from verified
-owned native snapshots without replacing the prior durable checkpoint early.
+Act names, descriptions, timers and goals use the native controls with independent
+ownership for each act. Switching acts changes only your view. Placement poses
+remain adventure-wide, matching Spore's native authoring model. An asset's shared
+inspector lease covers its class, so simultaneous edits to that asset remain
+serialized even when the players browse different acts.
+
+Use the native timeline **+** and trash controls to add and delete acts. The
+Co-op lobby also has **Move act left / Move act right** for the current act.
+Roster changes briefly require the shared authoring hold and preserve stable act
+identities, behavior columns and patrol paths. Other players keep viewing their
+current act; deleting that act selects a surviving neighbor. Spore supports one
+to eight acts. Adventure-wide settings, terrain authoring and nested creation
+editors remain held. Unsupported auxiliary manipulators remain blocked.
+Existing checkpoints are upgraded from verified owned native snapshots without
+replacing the prior durable checkpoint early.
 
 ## Start and join
 
 1. The host opens an adventure in the native Adventure Editor and hosts through
-   **Co-op**. Hosting first and then opening the editor also works. Select Act 1
-   before sharing.
+   **Co-op**. Hosting first and then opening the editor also works. Any supported
+   act can be selected before sharing.
 2. Guests join the normal party. From Galaxy, they automatically receive the live
    draft and open their own editor after content validation. Editing stays held
    until the baseline has been applied.
@@ -184,18 +191,21 @@ not an editor mutation or recovery action.
 
 ## Solo Play and Test Together
 
-Native **Play** starts solo testing for its initiating player after the host
+Native **Play** opens a compact **Test Solo / Test Together** menu.
+**Test Solo** starts testing for its initiating player after the host
 settles edits and obtains the shared hold. The other participants stay in their
 editors with authoring paused. Solo testing does not enable party gameplay
 replication or require group readiness. The tester's native **Build** or results
 return restores the draft and releases the hold.
 
-Choose **Test Together** in the normal Co-op lobby to test as a party. Guest
+Choose **Test Together** from that menu or the normal Co-op lobby to test as a party. Guest
 activation requests host approval. After approval, everyone, including the
 host, explicitly confirms the same committed revision. Each new attempt starts
 everyone unready. Authoring remains paused throughout either testing mode.
 The native editor's authored test captain is used; normal native test eligibility
-still applies.
+still applies. Group testing starts in the host's selected act at the confirmed
+revision. Native act transitions apply the authored behaviors and goals before
+the host begins authoritative gameplay.
 
 For Test Together, the host returns the party through native **Build**, lobby return or
 result exit. Guests wait for that group return. Each native editor
