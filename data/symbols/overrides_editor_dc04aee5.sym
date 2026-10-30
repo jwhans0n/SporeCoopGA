@@ -66,3 +66,6 @@ SporeCoop::Editor::AddAct=0x00F448E0 ; verified static: thiscall(ScenarioData,ui
 SporeCoop::Editor::DeleteAct=0x00F440B0 ; verified static: thiscall(ScenarioData,uint32 index),ret4 F4420A; only receiver access resource+10, erases act and matching owning class/marker act rows, native UI caller EE4D4B
 SporeCoop::Editor::ClassByIndex=0x00ED36D0 ; verified static: thiscall(classMap,const uint32 index*)->classData,ret4; F462F0 calls with resource+2BF4 and address of index; owning sorted insertion/default construction through ED3650 and F2D100
 SporeCoop::Editor::LoadingScreen=0x0167EB28 ; verified static: global loading screen pointer; existing verified B3D510 getter, active flag370; ready requires native Build display1C zero and inactive loading
+SporeCoop::Editor::MarkerCtor=0x00F2A960 ; verified static: thiscall(storage234)->marker,ret; initializes owning inline marker-act vector28/2C/30 and detached placement IDFFFFFFFF at228
+SporeCoop::Editor::MarkerDtor=0x00DFC580 ; verified static: thiscall(marker),ret; destroys owning path/act storage, never frees marker storage itself
+SporeCoop::Editor::ResizeMarkerActs=0x00F42D90 ; verified static: thiscall(marker+28,uint32 count),ret4; constructs/destroys native34 act rows, up to eight for editor previews

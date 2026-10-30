@@ -1345,3 +1345,52 @@ The corrected fixture uses the verified empty Add card. Native raw class memory
 contains uninitialized padding and inactive fixed-array storage; compare owned,
 normalized serialized class subtrees, not raw memory byte equality. No test
 writes native process memory or edits a loaded profile database.
+
+
+## Preview 7: marker-dependent placement previews (dc04)
+
+Installed remote crashes `crash-20261029-172303-i2.txt` and
+`crash-20261029-172435-i2.txt` both fault at runtime014B12D0, preferredF212D0,
+inside CreatePowerupObjectInstance. EBX is zero. Its first argument is the
+marker and F212D0 dereferences its class immediately. The temporary preview
+called CreateObjectInstance with a null marker; the stack returns through
+EEE21A and the editor Runtime's update_previews call. Existing creature-only
+preview tests incorrectly blessed null marker/acts arguments.
+
+MarkerCtor F2A960 is thiscall(storage234), returns its storage, plain retF2AAC9.
+It initializes the owning inline act vector28/2C/30, with inline begin40 and
+allocation sentinel3C zero. MarkerDtor DFC580 is thiscall(marker), retDFC5C4;
+it destroys path and act storage without freeing the outer marker. Native
+CreateMarker calls these atF44276/F44291. ResizeMarkerActs F42D90 takes
+this=marker+28 and uint32 count, ret4 atF42E06/F42E1E; its native caller is
+F4437C. The symbol verifier now checks those signatures and call sites.
+
+Each preview owns this detached marker and constructs the current one-to-eight
+native act rows before calling the factory. Its class and both endpoint poses
+come from the admitted hint. Placement228 remains FFFFFFFF. Neither the live
+resource pool nor ScenarioData maps receive a preview entry. The factory's
+linked exit borrows the same marker and must be pinned too.
+
+Both ornaments are retired exactly once using DestroyInstance, whose B22560
+implementation queues intrusive references. Their marker pointers are detached
+before freeing storage. AssignObjectReference B5FAB0 clears the checked parent54
+and child50 links while both pins remain held; release follows, then MarkerDtor.
+A failed factory drops its owned marker and may retry the same hint later.
+
+The private native fixture found that Escape and dropping back over the cast
+card finalized this placement gesture rather than cancelling it. Those attempts
+are retained as fixture failures, not cancellation passes. Win32 tests separately
+verify withdrawn-preview cleanup, linked references and factory failure/retry.
+
+On the private reported adventure, native Save/reopen changed two building
+positions by one float ULP per changed component (largest delta0.000030518).
+All other34 placements, complete cast and act/captain settings, quaternions,
+scales and properties, including both teleporter endpoints, matched exactly
+after existing stable-ID remapping. Marker0 changed from
+(-51.15800476,-111.1454239,484.7984924) to
+(-51.15800095,-111.1454163,484.7984619); marker3 from
+(-210.5035248,-428.4013672,288.2240906) to
+(-210.50354,-428.4013977,288.2241211). This is consistent with native position
+normalization, but a detached native baseline was not measured here. The exact
+semantic-hash assertion failed and is retained; no serialization mask or
+authored-position rounding was added to hide the difference.

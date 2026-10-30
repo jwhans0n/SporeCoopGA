@@ -17,10 +17,14 @@ std::array<uint8_t,0x8C> t_container;
 std::array<uint8_t,0x371> t_loading;
 std::array<void*,8> t_entry_vt{},t_resource_vt{},t_actor_vt{};
 std::array<std::array<uint8_t,8>,2> t_actors;
-std::array<std::array<uint8_t,0x50>,3> t_models;
+std::array<std::array<uint8_t,0x50>,4> t_models;
 std::array<void*,17> t_model_vt;
 std::array<uint8_t,0x58> t_teleporter;
 std::array<uint8_t,0x28> t_ghost_actor;
+std::array<uint8_t,0x28> t_ghost_exit;
+std::array<uint8_t,0x58> t_ghost_parent_interface,t_ghost_exit_interface;
+bool t_ghost_linked=false,t_ghost_fail=false;
+unsigned t_marker_constructions=0,t_marker_destructions=0;
 unsigned t_ghosts_created=0,t_ghosts_destroyed=0;
 bool t_inspector_visible=false;
 unsigned t_inspector_opens=0;
@@ -68,17 +72,37 @@ int SK_THISCALL t_release(void* r){
     return count;
 }
 void* SK_THISCALL t_cast(void* actor,uint32_t type){
+    if(type==0x0175CDC9 && t_ghost_linked){
+        if(actor==t_ghost_actor.data())return t_ghost_parent_interface.data();
+        if(actor==t_ghost_exit.data())return t_ghost_exit_interface.data();
+    }
     if(type==0x0175CDC9 && actor==t_actors[0].data())return t_teleporter.data();
     if(type!=0x01186577)return nullptr;
     for(size_t i=0;i<2;++i)if(actor==t_actors[i].data())return t_models[i].data();
-    return actor==t_ghost_actor.data()?t_models[2].data():nullptr;
+    return actor==t_ghost_actor.data()?t_models[2].data():actor==t_ghost_exit.data()?t_models[3].data():nullptr;
 }
+void* SK_THISCALL t_marker_ctor(void* marker){++t_marker_constructions;skg::field<void*>(marker,0x28)=static_cast<uint8_t*>(marker)+0x40;return marker;}
+void SK_THISCALL t_marker_dtor(void* marker){
+    CHECK(skg::field<void*>(t_ghost_actor.data(),0x18)!=marker && skg::field<void*>(t_ghost_exit.data(),0x18)!=marker);++t_marker_destructions;
+}
+void SK_THISCALL t_marker_resize(void* acts,uint32_t count){CHECK(count>0&&count<=8);skg::field<uint8_t*>(acts,4)=skg::field<uint8_t*>(acts,0)+count*0x34;}
+void SK_THISCALL t_assign(void** slot,void* value){if(value)t_addref(value);auto* old=*slot;*slot=value;if(old)t_release(old);}
 void SK_THISCALL t_model_position(void* model,const editor::Vec3* p){skg::field<editor::Vec3>(model,4)=*p;}
 void SK_THISCALL t_model_rotation(void* model,const editor::Rotation* q){skg::field<editor::Rotation>(model,0x10)=*q;}
 void SK_THISCALL t_model_scale(void* model,float scale){skg::field<float>(model,0x20)=scale;}
 void* SK_CDECL t_preview_create(const editor::ResourceKey*,const editor::Vec3* p,const editor::Rotation* q,float scale,bool avatar,uint32_t asset,void* marker,void* acts,uint32_t act){
-    CHECK(!avatar&&asset==7&&!marker&&!acts&&act==0);++t_ghosts_created;
+    CHECK(!avatar&&asset==7&&marker&&acts&&act==0);++t_ghosts_created;
+    CHECK(skg::field<uint32_t>(marker,0)==asset&&skg::field<void*>(marker,0x28)==acts);
+    if(t_ghost_fail)return nullptr;
     t_ghost_actor.fill(0);skg::field<void*>(t_ghost_actor.data(),0)=t_actor_vt.data();skg::field<int>(t_ghost_actor.data(),4)=1;
+    skg::field<void*>(t_ghost_actor.data(),0x18)=marker;
+    if(t_ghost_linked){
+        t_ghost_exit.fill(0);skg::field<void*>(t_ghost_exit.data(),0)=t_actor_vt.data();
+        skg::field<int>(t_ghost_exit.data(),4)=2;skg::field<int>(t_ghost_actor.data(),4)=2;
+        skg::field<void*>(t_ghost_exit.data(),0x18)=marker;
+        skg::field<void*>(t_ghost_parent_interface.data(),0x54)=t_ghost_exit.data();
+        skg::field<void*>(t_ghost_exit_interface.data(),0x50)=t_ghost_actor.data();
+    }
     t_model_position(t_models[2].data(),p);t_model_rotation(t_models[2].data(),q);t_model_scale(t_models[2].data(),scale);return t_ghost_actor.data();
 }
 void* SK_CDECL t_allocate(size_t size,const char*,int,int,int,int){
@@ -281,6 +305,9 @@ void test_render_only_collaboration(){
     skg::field<editor::ResourceKey>(classes.data(),8)={9,7,3};
     skg::field<void*>(t_live.data(),0x2BF4)=classes.data();skg::field<void*>(t_live.data(),0x2BF8)=classes.data()+classes.size();
     t_ghosts_created=t_ghosts_destroyed=0;a_preview_factory=uintptr_t(t_preview_create);
+    a_marker_ctor=uintptr_t(t_marker_ctor);a_marker_dtor=uintptr_t(t_marker_dtor);
+    a_resize_marker_acts=uintptr_t(t_marker_resize);a_object_reference=uintptr_t(t_assign);
+    std::array<uint8_t,0x534> acts{};skg::field<void*>(t_live.data(),0x23C)=acts.data();skg::field<void*>(t_live.data(),0x240)=acts.data()+acts.size();
     hint.creating=true;hint.object={999,1};update_previews({hint});
     CHECK(t_ghosts_created==1 && preview_actors.size()==1 && t_rows[t_live.data()]==authored);
     hint.pose.position.x=19;update_previews({hint});CHECK(t_ghosts_created==1 && skg::field<float>(t_models[2].data(),4)==19);
@@ -288,6 +315,14 @@ void test_render_only_collaboration(){
     update_previews({});CHECK(preview_actors.empty()&&t_ghosts_destroyed==1&&t_rows[t_live.data()]==authored);
     hint.author.generation=10;update_previews({hint});CHECK(t_ghosts_created==2);
     t_active=false;update_previews({});CHECK(preview_actors.empty()&&t_ghosts_destroyed==2);
+    t_active=true;t_ghost_linked=true;update_previews({hint});
+    CHECK(preview_actors.at(hint.author).secondary==t_ghost_exit.data());
+    CHECK(skg::field<editor::Vec3>(t_models[3].data(),4)==hint.destination->position);
+    update_previews({});CHECK(t_ghosts_destroyed==4 && !skg::field<int>(t_ghost_actor.data(),4) && !skg::field<int>(t_ghost_exit.data(),4));
+    CHECK(!skg::field<void*>(t_ghost_parent_interface.data(),0x54) && !skg::field<void*>(t_ghost_exit_interface.data(),0x50));
+    t_ghost_linked=false;t_ghost_fail=true;update_previews({hint});CHECK(!preview_actors.at(hint.author).object&&!preview_actors.at(hint.author).marker);
+    t_ghost_fail=false;update_previews({hint});CHECK(preview_actors.at(hint.author).object);update_previews({});
+    CHECK(t_marker_constructions==t_marker_destructions && t_rows[t_live.data()]==authored);
     a_preview_factory=0;t_actor_vt[3]=nullptr;reset();
 }
 void test_independent_inspector_survives_scene_refresh(){
@@ -523,7 +558,7 @@ void test_async_captain_asset_keeps_value_and_rechecks_identity(){
     }
 }
 }
-namespace game { uint32_t mode_id(){return modes::kScenario;} void destroy_creature(void* actor){CHECK(actor==t_ghost_actor.data());++t_ghosts_destroyed;skg::field<bool>(actor,0x20)=true;t_release(actor);} }
+namespace game { uint32_t mode_id(){return modes::kScenario;} void destroy_creature(void* actor){CHECK(actor==t_ghost_actor.data()||actor==t_ghost_exit.data());++t_ghosts_destroyed;skg::field<bool>(actor,0x20)=true;t_release(actor);} }
 namespace sui {
 void set_enabled(Win,bool){CHECK(false);} void release(Win){CHECK(false);} void add_ref(Win){CHECK(false);}
 uint32_t control_id(Win w){CHECK(w==&t_card_id||w==&t_text);return w==&t_text?t_text_id:t_card_id;} uint32_t flags(Win){CHECK(false);return 0;}

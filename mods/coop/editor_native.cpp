@@ -10,6 +10,7 @@
 #include <cstring>
 #include <deque>
 #include <memory>
+#include <new>
 #include <set>
 #include <utility>
 
@@ -32,6 +33,7 @@ uintptr_t a_tool_tick;
 uintptr_t a_copy_class_rows,a_copy_class,a_insert_class;
 uintptr_t a_speech_ui,a_behavior_data;
 uintptr_t a_preview_factory;
+uintptr_t a_marker_ctor,a_marker_dtor,a_resize_marker_acts,a_object_reference;
 uintptr_t a_inspector_open,a_layout_shown;
 uintptr_t a_copy_acts,a_copy_act,a_select_act;
 uintptr_t a_copy_class_acts,a_copy_marker_acts,a_insert_act,a_insert_class_act,a_insert_marker_act,a_add_act,a_delete_act;
@@ -55,7 +57,12 @@ bool observed_scenario;
 std::map<uint32_t, editor::ObjectId> bindings;
 std::map<uint32_t,uint32_t> incarnations;
 std::vector<editor::ObjectId> selection;
-struct PreviewActor { void* object=nullptr; editor::ObjectId source,asset; };
+struct PreviewActor {
+    void* object=nullptr;
+    void* secondary=nullptr;
+    std::unique_ptr<uint8_t[]> marker;
+    editor::ObjectId source,asset,act;
+};
 std::map<editor::Peer,PreviewActor> preview_actors;
 uint32_t selected_class;
 std::optional<editor::ObjectId> input_clone, gesture_clone;
@@ -103,10 +110,23 @@ bool tracks_authoring(){return authoring_override.value_or(!C.authoring_tracked 
 void addref(void* p) { if (p) skg::vcall<int>(p, 0); }
 void release(void* p) { if (p) skg::vcall<int>(p, 1); }
 void clear_preview_actor(PreviewActor& actor){
-    if(actor.object){
-        if(skg::readable(actor.object,0x21) && !skg::field<bool>(actor.object,0x20))game::destroy_creature(actor.object);
-        release(actor.object);actor.object=nullptr;
+    // Both ornaments borrow the detached marker. Pin both until native removal
+    // has completed, then break the intrusive parent/child cycle. DestroyInstance
+    // queues references too, so detach their marker before releasing its storage.
+    for(void* object:{actor.object,actor.secondary})if(object && skg::readable(object,0x28)){
+        if(!skg::field<bool>(object,0x20))game::destroy_creature(object);
+        if(skg::field<void*>(object,0x18)==actor.marker.get())skg::field<void*>(object,0x18)=nullptr;
     }
+    if(actor.secondary && a_object_reference){
+        void* parent=native_cast(actor.object,0x0175CDC9);
+        void* child=native_cast(actor.secondary,0x0175CDC9);
+        if(skg::readable(parent,0x58) && skg::field<void*>(parent,0x54)==actor.secondary)
+            skg::thiscall<void>(a_object_reference,skg::ptr_add<void>(parent,0x54),(void*)nullptr);
+        if(skg::readable(child,0x54) && skg::field<void*>(child,0x50)==actor.object)
+            skg::thiscall<void>(a_object_reference,skg::ptr_add<void>(child,0x50),(void*)nullptr);
+    }
+    release(actor.secondary);release(actor.object);actor.secondary=actor.object=nullptr;
+    if(actor.marker){skg::thiscall<void>(a_marker_dtor,actor.marker.get());actor.marker.reset();}
 }
 struct Owned {
     void* p = nullptr;
@@ -1665,6 +1685,9 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     a_delete_marker=H->sym("SporeCoop::Editor::DeleteMarker");
     a_apply_marker=H->sym("SporeCoop::Adventure::ApplyMarkerState");
     a_preview_factory=H->sym("Simulator::cScenarioData::CreateObjectInstance");
+    a_marker_ctor=H->sym("SporeCoop::Editor::MarkerCtor");a_marker_dtor=H->sym("SporeCoop::Editor::MarkerDtor");
+    a_resize_marker_acts=H->sym("SporeCoop::Editor::ResizeMarkerActs");
+    a_object_reference=H->sym("SporeCoop::Adventure::AssignObjectReference");
     a_inspector_open=H->sym("SporeCoop::Editor::OpenClassInspector");
     a_layout_shown=H->sym("SporeCoop::Editor::LayoutShown");
     a_copy_acts=H->sym("SporeCoop::Editor::CopyActs");a_copy_act=H->sym("SporeCoop::Editor::CopyAct");
@@ -2799,19 +2822,38 @@ void update_previews(const std::vector<LivePreview>& values){
         const auto local=index<act_identity.act_order.size()?act_identity.act_order[index]:editor::ObjectId{(3ull<<32)|index,1};
         if(value.act!=local && (value.creating || !tracks_authoring()))continue;
         if(value.creating){
-            if(!a_preview_factory)continue;
+            if(!a_preview_factory || !a_marker_ctor || !a_marker_dtor || !a_resize_marker_acts || !a_object_reference)continue;
             creating.insert(value.author);
             auto& actor=preview_actors[value.author];
-            if(actor.source!=value.object || actor.asset!=value.class_id){clear_preview_actor(actor);actor.source=value.object;actor.asset=value.class_id;}
+            if(actor.source!=value.object || actor.asset!=value.class_id || actor.act!=value.act){clear_preview_actor(actor);actor.source=value.object;actor.asset=value.class_id;actor.act=value.act;}
             if(!actor.object){
                 Rows classes;if(!rows(r,0x2BF4,0x27E8,1024,classes))continue;
                 for(auto row=classes.begin;row!=classes.end;row+=0x27E8)if(skg::field<uint32_t>(row,0)==uint32_t(value.class_id.id)){
                     const auto key=skg::field<editor::ResourceKey>(row,8);
-                    // Native scene factory, no marker or ScenarioData map entry.
-                    // The noun registry owns it; our reference survives scene teardown.
+                    Rows acts;if(!rows(r,0x23C,0x534,8,acts) || acts.begin==acts.end)break;
+                    actor.marker.reset(new(std::nothrow) uint8_t[0x234]{});
+                    if(!actor.marker)break;
+                    skg::thiscall<void*>(a_marker_ctor,actor.marker.get());
+                    skg::thiscall<void>(a_resize_marker_acts,actor.marker.get()+0x28,uint32_t((acts.end-acts.begin)/0x534));
+                    auto* marker=actor.marker.get();
+                    skg::field<uint32_t>(marker,0)=uint32_t(value.class_id.id);
+                    skg::field<editor::Vec3>(marker,4)=value.pose.position;
+                    skg::field<editor::Rotation>(marker,0x10)=value.pose.rotation;
+                    skg::field<float>(marker,0x20)=value.pose.scale;
+                    const auto exit=value.destination.value_or(value.pose);
+                    skg::field<editor::Vec3>(marker,0x1E8)=exit.position;
+                    skg::field<editor::Rotation>(marker,0x1F4)=exit.rotation;
+                    skg::field<float>(marker,0x204)=exit.scale;
+                    // Marker storage is detached from ScenarioResource and both
+                    // native lookup maps. Powerup factories require it even for
+                    // rendering and the linked teleporter exit borrows it too.
                     actor.object=skg::cdecl_call<void*>(a_preview_factory,&key,&value.pose.position,&value.pose.rotation,
-                        value.pose.scale,false,uint32_t(value.class_id.id),(void*)nullptr,(void*)nullptr,index);
-                    addref(actor.object);break;
+                        value.pose.scale,false,uint32_t(value.class_id.id),(void*)marker,skg::field<void*>(marker,0x28),index);
+                    addref(actor.object);
+                    void* teleporter=native_cast(actor.object,0x0175CDC9);
+                    if(skg::readable(teleporter,0x58)){actor.secondary=skg::field<void*>(teleporter,0x54);addref(actor.secondary);}
+                    if(!actor.object)clear_preview_actor(actor);
+                    break;
                 }
             }
             if(actor.object){render_pose(actor.object,value.pose);if(value.destination)render_destination(actor.object,*value.destination);}
@@ -2846,8 +2888,12 @@ std::string visual_status(){
         if(skg::readable(teleporter,0x58))result+=" exit="+position(skg::field<void*>(teleporter,0x54));
         result+='\n';
     }
-    for(const auto& [peer,actor]:preview_actors)result+="ghost="+std::to_string(peer.slot)+":"+std::to_string(peer.generation)+" class="+
-        std::to_string(actor.asset.id)+" render="+position(actor.object)+"\n";
+    for(const auto& [peer,actor]:preview_actors){
+        result+="ghost="+std::to_string(peer.slot)+":"+std::to_string(peer.generation)+" class="+
+            std::to_string(actor.asset.id)+" render="+position(actor.object);
+        if(actor.secondary)result+=" exit="+position(actor.secondary);
+        result+='\n';
+    }
     return result.empty()?"No native placement visuals":result;
 }
 

@@ -10,6 +10,15 @@ from pe import PE
 
 SHA = 'dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37'
 ENTRIES = [
+    ('MarkerCtor',0xF2A960,'8bc1c700ffffffff',[(0xF2AAC9,0)],
+     'thiscall(storage234)->marker,ret; initializes owning inline marker-act vector28/2C/30 and detached placement IDFFFFFFFF at228',
+     [(0xF44276,0xF2A960)],[(0xF2A9DF,'89503c'),(0xF2A9E5,'894828')]),
+    ('MarkerDtor',0xDFC580,'568bf18b860c020000',[(0xDFC5C4,0)],
+     'thiscall(marker),ret; destroys owning path/act storage, never frees marker storage itself',
+     [(0xF44291,0xDFC580)],[]),
+    ('ResizeMarkerActs',0xF42D90,'83ec345355568bf1',[(0xF42E06,4),(0xF42E1E,4)],
+     'thiscall(marker+28,uint32 count),ret4; constructs/destroys native34 act rows, up to eight for editor previews',
+     [(0xF4437C,0xF42D90)],[]),
     ('Allocate',0xF47240,'8b4424188b4c24148b542408508b4424',[(0xF47269,0)],
      'cdecl(size,name,flags0,flags0,int0,int0)->native allocation,ret; GeneralAllocator16C8B44 through928C80; pairs withF47220 plainfree, NOT9262B0 header allocation',
      [(0xF45877,0xF47240),(0xF458B4,0xF47240),(0xF47264,0x928C80)],
