@@ -91,17 +91,60 @@ static void native_records()
         CHECK(validate(id, library.loader(), result, error));
         CHECK(result.dependencies.empty()); CHECK(result.native_control == (id == 1));
     }
-    // A same-ID palette or raw sample is not native descriptor resolution.
-    library.put(sample(0x12345678));
+    // A palette alone does not satisfy either native audio path.
     library.put({0x12345678, 0x00B1B104, 0xD87454E6});
     CHECK(!validate(0x12345678, library.loader(), result, error));
-    CHECK(error.find("021407EE!12345678.02B9F662") != std::string::npos);
+    CHECK(error.find("021407EE!12345678.01A527DB") != std::string::npos);
     // Real stock3F604E1B has variable-length String16 array elements. The
     // header's native element size16 is not a serialized fixed string stride.
     library.put(descriptor(0x3F604E1B), hex("00000001dc98300e0013009c0000000300000010"
         "0000000866006f006f00740074007900700065000000000c650070006900630066006f006f0074007400790070006500"
         "0000000b73007500720066006100630065007400790070006500"));
     CHECK(validate(0x3F604E1B, library.loader(), result, error));
+}
+
+static void direct_samples()
+{
+    auto library = stock(); Result result; std::string error;
+    // Motel of Melora act6: installed Spore_Audio1 contains this sample with
+    // no descriptor. Native wave selection falls back to the authored ID.
+    library.put(sample(0x8F7E1796));
+    CHECK(validate(0x8F7E1796, library.loader(), result, error));
+    CHECK(error.empty() && result.direct_sample && !result.native_control);
+    CHECK(result.dependencies == std::vector<dbpf::Key>{sample(0x8F7E1796)});
+    CHECK(library.lookups == 2);
+    CHECK(validate(0x3DAFBC30, library.loader(), result, error));
+    CHECK(!result.direct_sample && !result.native_control && result.dependencies.size() == 4);
+    // The native descriptor path takes precedence over a same-ID sample.
+    library.put(sample(0x3DAFBC30), {}, false);
+    CHECK(validate(0x3DAFBC30, library.loader(), result, error));
+    CHECK(!result.direct_sample && result.dependencies.back() == sample(0x4BA53FA1));
+    library.records[identity(sample(0x8F7E1796))].built_in = false;
+    library.records[identity(sample(0x8F7E1796))].source = "CustomAudio.package";
+    CHECK(!validate(0x8F7E1796, library.loader(), result, error));
+    CHECK(error.find("unsupported custom native audio") != std::string::npos);
+    CHECK(error.find("CustomAudio.package") != std::string::npos);
+    library.put(sample(0x8F7E1796));
+    library.records[identity(sample(0x8F7E1796))].key = sample(7);
+    CHECK(!validate(0x8F7E1796, library.loader(), result, error));
+    CHECK(error.find("key alias") != std::string::npos);
+    library.put(sample(0x8F7E1796));
+    library.put(descriptor(0x8F7E1796), {}, false);
+    CHECK(!validate(0x8F7E1796, library.loader(), result, error));
+    CHECK(error.find("unsupported custom native audio") != std::string::npos);
+    library.put(descriptor(0x8F7E1796), {0});
+    CHECK(!validate(0x8F7E1796, library.loader(), result, error));
+    CHECK(error.find("invalid or unsupported") != std::string::npos);
+    // A same-ID sample never papers over a missing inherited descriptor.
+    library = stock(); library.records.erase(identity(descriptor(0x869DB904)));
+    library.put(sample(0x3DAFBC30)); library.put(sample(0x869DB904));
+    CHECK(!validate(0x3DAFBC30, library.loader(), result, error));
+    CHECK(error.find("021407EE!869DB904.02B9F662") != std::string::npos);
+    Loader unreadable = [](const dbpf::Key&, bool, Record&, std::string& why) {
+        why = "native descriptor read failed"; return Lookup::Error;
+    };
+    CHECK(!validate(0x8F7E1796, unreadable, result, error));
+    CHECK(error == "native descriptor read failed");
 }
 
 static void effective_provenance()
@@ -196,7 +239,7 @@ static void audit(const char* path, const std::vector<uint32_t>& ids)
 
 int main(int argc, char** argv)
 {
-    native_records(); effective_provenance(); malformed();
+    native_records(); direct_samples(); effective_provenance(); malformed();
     if (argc >= 2) {
         std::vector<uint32_t> ids;
         for (int i = 2; i < argc; ++i) ids.push_back(uint32_t(std::strtoul(argv[i], nullptr, 16)));

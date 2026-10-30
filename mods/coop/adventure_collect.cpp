@@ -329,7 +329,8 @@ static bool collect_resource(const Key& key, uint8_t* scenario, Collector& colle
             if (music && music != UINT32_MAX)
                 H->log(M, SK_INFO, "adventure music: scenario=%08X act=%u authored=%08X native=%s dependencies=%u",
                        key.instance, unsigned(index + 1), music,
-                       resolution.native_control ? "control" : "descriptor", unsigned(resolution.dependencies.size()));
+                       resolution.native_control ? "control" : resolution.direct_sample ? "sample" : "descriptor",
+                       unsigned(resolution.dependencies.size()));
             return true;
         });
     if (ok) {

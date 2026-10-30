@@ -107,7 +107,7 @@ edge, and rejects custom root, parent and sample overrides. It bounds descriptor
 properties, lengths, references and recursion, rejects cycles/malformed streams,
 and validates each distinct music ID once per collection. It never rewrites an act's
 authored value, disables music, substitutes tracks, or transfers an unsupported
-custom audio graph. Missing ordinary descriptors still fail, with the adventure,
+custom audio graph. Missing required descriptors/samples still fail, with the adventure,
 one-based act, authored music ID and actual failing typed key in the diagnostic.
 The scalar/array property parser reads native big-endian headers and little-endian
 ResourceKey payloads; the existing verified record stream handles decompression.
@@ -122,6 +122,39 @@ descriptors and sample-key baselines; it checks resolution/provenance, not audib
 playback. See `out/music-resolution/audit-input.json` for local record provenance.
 Muted native tests can establish successful load/act transitions and unchanged
 authored IDs, but must not be described as audible playback verification.
+
+### Editor preview 8: raw-sample music fallback, Motel of Melora
+
+The installed preview7 log and a private two-player reproduction both rejected
+Motel of Melora ('22 Edition), scenario290DE23F, act6, music8F7E1796. Its source
+music IDs are0,4BA21A81,D75F9DB1,0,0,8F7E1796,C4C2988F. There is no installed
+021407EE!8F7E1796.02B9F662. Spore_Audio1.package does contain
+021407EE!8F7E1796.01A527DB at344059900,491284 uncompressed bytes, SHA256
+2e3066a6c4b5de5085ed64a6f1f9ffd0c0a22a102f3a31a1c28b6a1fa57f2b81.
+The earlier validator wrongly treated every ordinary missing root descriptor as
+fatal even when this native fallback sample was installed.
+
+Static dc04 evidence: A22FD0 constructs the descriptor key and returns false
+atA2303E..A2304E when the audio resource loader refuses it. The A2E5F0 caller
+atA2E75D..A2E776 tolerates that absence and continues through the default property
+set into AudioSystem slot90=A28410 atA2E7F0..A2E80F. Wave selection reads701ED91E
+atA286E1..A286F1; A286F5..A28701 replaces a zero wave instance with the original
+authored ID. The existing sample path then uses the audio group/sample type.
+No descriptor or authored value needs to be synthesized or rewritten.
+
+The resolver now tries that same-ID stock sample only after a missing root
+descriptor. A present descriptor retains priority, including its inherited
+parents and wave references. Custom overrides, unreadable/malformed descriptors,
+aliases and missing inherited parents cannot fall through to the sample path.
+The sample uses the same effective native provenance checks as descriptor waves.
+This corrects the old blanket test rejecting a raw sample alone; a palette alone
+still cannot satisfy either native path. Reserved control1 retains its existing
+separate handling. Diagnostic collection logs identify `native=sample`.
+
+Protocol22 and authored/recovery formats are unchanged. Muted native tests can
+prove admission, unchanged native act music and edit/history behavior; they do
+not establish audible playback quality. Offline catalog checks now accept
+additional reported IDs with `adventure_music_catalog.py --music 8F7E1796`.
 
 Card metadata loads an owned native pollen metadata resource. NameText414E00
 returns metadata+78's UTF16 string pointer; AuthorText550880 returns+58. Native

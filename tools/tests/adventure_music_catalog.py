@@ -100,7 +100,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--game', type=Path, required=True)
     parser.add_argument('--output', type=Path, default=ROOT / 'out/music-resolution')
+    parser.add_argument('--music', type=lambda value: int(value, 16), nargs='*', default=[],
+                        help='Additional reported authored music IDs in hexadecimal')
     args = parser.parse_args()
+    if any(not 0 <= value <= 0xFFFFFFFF for value in args.music):
+        parser.error('Additional music IDs must fit uint32')
     game, output = args.game.resolve(), args.output.resolve()
     if output == game or game in output.parents:
         raise ValueError('audit output must be outside the game installation')
@@ -128,9 +132,10 @@ def main():
                     decoded_sha256=hashlib.sha256(data).hexdigest() if typ == DESCRIPTOR else None))
     output.mkdir(parents=True, exist_ok=True)
     write_package(output / 'stock-audio-index.package', records)
-    (output / 'music-ids.txt').write_text(' '.join(sorted(music)) + '\n', encoding='utf-8')
+    extra_ids = [f'{value:08X}' for value in args.music]
+    (output / 'music-ids.txt').write_text(' '.join(sorted(set(music) | set(extra_ids))) + '\n', encoding='utf-8')
     report = dict(executable_sha256=EXE_SHA256, scenarios=len(scenarios), act_music_values=music,
-                  scenario_records=scenarios, audio_record_candidates=candidates,
+                  scenario_records=scenarios, additional_music_ids=extra_ids, audio_record_candidates=candidates,
                   note='Offline stock baseline only; sample payloads omitted; no audible or live override proof.')
     (output / 'audit-input.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
     print(f'{len(scenarios)} stock scenarios, {len(music)} act music values, {len(records)} indexed audio resources')
