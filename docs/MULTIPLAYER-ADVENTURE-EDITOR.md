@@ -12,7 +12,7 @@ playing while others continue editing remain later milestones in the
 
 ## Compatibility and scope
 
-Every participant needs `0.7.5.0-ga-editor-preview.7`, protocol 22, Galactic Adventures
+Every participant needs `0.7.5.0-ga-editor-preview.8`, protocol 22, Galactic Adventures
 and the exact GOG executable with SHA-256
 `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
 Older gameplay and editor previews receive an explicit version mismatch.

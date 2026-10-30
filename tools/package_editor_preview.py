@@ -26,8 +26,8 @@ def main():
     args = parser.parse_args()
     version = re.search(r'^#define COOP_VERSION "([^"]+)"',
                         (ROOT / 'mods/coop/coop.cpp').read_text(), re.M)[1]
-    if not re.fullmatch(r'0\.7\.5\.0-ga-editor-preview\.7', version):
-        parser.error('This packaging recipe is scoped to editor preview 7')
+    if not re.fullmatch(r'0\.7\.5\.0-ga-editor-preview\.8', version):
+        parser.error('This packaging recipe is scoped to editor preview 8')
     kit = args.kit_installation.resolve()
     if sha(kit / 'SporebinEP1/SporeApp.exe') != EXE:
         parser.error('The supporting installation is not the verified GOG executable')

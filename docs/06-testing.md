@@ -872,12 +872,16 @@ playthrough or every custom palette/ability combination.
 `make test` includes portable `adventure_music_tests`. It exercises real stock
 descriptor bytes, inherited settings, distinct descriptor/sample IDs, provenance
 rejection, missing resources, truncated arrays/strings, and cycle bounds. A same-ID
-palette property or sample alone must not satisfy native act music resolution.
+palette property alone cannot satisfy native act music resolution. When the root
+descriptor is absent, native music may use a same-ID installed stock sample;
+the Motel of Melora regression covers that fallback and its provenance checks.
 
 Build a read-only offline audit from the installed dc04 packages:
 
 ```powershell
 py -3 tools/tests/adventure_music_catalog.py --game "D:\GOG Galaxy\Games\SPORE"
+# Include the reported raw-sample music ID in the generated audit list:
+py -3 tools/tests/adventure_music_catalog.py --game "D:\GOG Galaxy\Games\SPORE" --music 8F7E1796
 ```
 
 The output stays under ignored `out/music-resolution`; the command does not
@@ -898,6 +902,14 @@ also passed ASan/UBSan. Record native two-player launch/act results separately:
 offline package order is a baseline, while actual collection uses effective
 ResourceManager precedence and rejects custom overrides. Muted tests do not
 establish audible playback quality.
+
+`tools/tests/coop_editor_music.py` attaches to two caller-owned hidden/muted
+private editors, with the reported adventure already open on the host. Exact
+process metadata and candidate DLL SHA are required. `--expect-rejection` verifies
+the old missing-audio diagnostic; the normal path requires native convergence,
+independent act views, a guest edit and Undo, and unchanged read-only native music
+IDs throughout. It does not launch games, deploy, write process memory or rewrite
+profile databases. Its default fixture is Motel of Melora act6/music8F7E1796.
 
 ### Native downed controls, revive HUD and local lighting
 

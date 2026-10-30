@@ -8,7 +8,7 @@
 - Integrate verified native snapshots, private Save As, initiating-player solo
   Play and an explicit Test Together action with host approval and group readiness.
   Keep terrain and nested-editor mutations read-only.
-  Editor development uses protocol 22 / preview 7; the published
+  Editor development uses protocol 22 / preview 8; the published
   gameplay release remains protocol 15.
 - Retain the first drag while ownership arrives. Synchronize sound pose
   companions, separate teleporter endpoints, ball rotation, native cast settings
@@ -25,6 +25,9 @@
   living captain references during native spatial goal evaluation.
 - Fix teleporter placement previews passing null markers to the native powerup
   factory. Own detached marker/act data and both linked ornaments through cleanup.
+- Resolve installed raw act-music samples when the native root descriptor is
+  absent, matching Spore's fallback. This unblocks Motel of Melora act 6 while
+  preserving authored music IDs and rejecting missing or custom dependencies.
   Restore host-authoritative NPC teleporter contact in Test Together and ordinary
   co-op, with per-actor movement generations and reliable native cleanup.
 - Reuse immutable dependencies during placement updates and retain their recovery

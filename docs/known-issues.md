@@ -3,6 +3,22 @@
 Bugs found and not fixed yet. Each entry: what happens, how to reproduce it, what is known.
 Fixed entries move to the commit message (and a test).
 
+## Shared editor preview 8: large adventures and native memory limits
+
+Private Motel of Melora ('22 Edition) validation at1600x1200/high detail reached
+1955 of2047 MiB of the supported non-LAA process address space. Its animation
+allocator returned null before the native9AC8E0 write, producing an access
+violation. This remains an engine/memory acceptance limit; the music-admission
+fix does not change the executable or patch its allocator. Lower private detail
+allowed both editors to converge and a guest timer edit to commit. That run
+later exited with C0000409 during screenshot capture, so sustained editing and
+native Undo acceptance on this large fixture remain incomplete.
+
+The cold guest spent about11 minutes in the native Calculating Animation
+Variance stage before joining. Earlier120/300-second fixture timeouts were
+insufficient; no native state was written to force loading completion. These
+tests changed only private graphics preferences, not the player's settings.
+
 ## Shared editor preview 4: nested Create Your Own remains unsupported
 
 From a shared editor's native creature picker, selecting the Create Your Own

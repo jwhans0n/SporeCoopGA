@@ -621,3 +621,68 @@ was launched to verify the shortcut. An initial post-copy guard compared setting
 against the old preview6 receipt, detected a since-changed coop.ini and rolled
 back. The successful deployment compares against the current pre-update settings
 snapshot and preserves it. Original profile database hashes remain unchanged.
+
+## Preview 8: Motel of Melora music admission
+
+Version `0.7.5.0-ga-editor-preview.8`, protocol **22**, 2026-10-30. Candidate DLL:
+`d9ffea0ab1839eb881a3c0e1870df8ab823a932bdd3998aa647f6e27adadbd08`.
+This changes native audio resolution only. It adds no wire, authored-save or
+recovery format and does not change the supported executable or graphics settings.
+
+The installed preview7 log and a private two-player reproduction both rejected
+`Motel of Melora ('22 Edition)`, root `408A0000!290DE23F.366A930D`, act6/music
+`8F7E1796`. The descriptor is absent, but the real stock sample exists in
+Spore_Audio1.package. Native music supports this fallback. The resolver now checks
+the same-ID sample only after a missing root descriptor, preserving the authored
+ID. Present descriptors retain precedence. Custom samples, descriptor overrides,
+aliases, malformed/unreadable descriptors and missing inherited parents still fail.
+The existing RE notes record the installed sample hash and native caller evidence.
+
+### Evidence and limits
+
+Receipts are under `out/melora-music`.
+
+| Check | Result |
+| --- | --- |
+| `repository-tests.log` | Complete repository `make test` passed; RE lint375 used/2958 known, zero supported-build problems. |
+| `catalog-audit.log` | All23 installed stock act music values across69 scenarios, plus the reported8F7E1796 value, passed. The reported value resolves to one real installed sample. |
+| `music-win32.log`, `music-sanitizers.log` | Win32 resolver and ASan/UBSan checks passed, including direct-sample fallback, descriptor precedence and failure/provenance boundaries. |
+| `symbol-verifier.log` |39 existing editor signatures/caller sets verified. This fix introduces no native function call or symbol. |
+| `before-reproduction/result.json` | Exact preview7 missing-audio error reproduced with the two owned private processes; native act music IDs captured independently. |
+| Lower-detail native run | Host collected707 records/257 dependencies, registered7,496,045 bytes and started sharing. The guest imported the same bundle and joined after its cold native animation-variance load. Both reached phase4 with the same CONVERGED hash. Host viewed act6 while the guest viewed act1. |
+| `native-admission-timer-evidence.json` | A normal guest timer checkbox changed act1 from unlimited to60 seconds. Host shared history records exactly one revision1 transaction by guest1:1. Native collectors on both roles continued to resolve act6 as `native=sample`; the four nonzero authored music IDs stayed unchanged in those collection logs. |
+| `windows-status-smoke.log` | Official Windows status regression passed on two fresh hidden/muted candidate processes; those exact children were stopped afterward. This is narrower than Linux lab smoke. |
+
+The complete editor-music edit/Undo fixture has **no passing native result**.
+Its initial checks ran before native loading finished, and120/300-second join
+waits were too short: the guest took about11 minutes in Calculating Animation
+Variance. After convergence, the synthetic name-entry attempt left a native text
+buffer without a committed document edit. The later explicit act-property focus
+and native timer checkbox did commit, as the separate receipt records. The fixture
+now uses that checkbox, waits for its settings lease and makes screenshot readback
+optional. Its full Undo path remains unverified on this large adventure.
+
+At1600x1200/high detail the private host exhausted the native non-LAA address
+space:1955/2047 MiB, followed by a null animation allocation at preferred9AC8E0.
+Lower private texture/bake/planet/game detail allowed convergence and the timer
+edit, but that run later exited C0000409 during screenshot capture. These are
+recorded in known issues; they are not presented as a stable large-adventure
+acceptance pass or fixed by the music change. An earlier restart also produced
+a D3D/USER32 watchdog report before opening the adventure; a clean restart
+rendered normally. None of these runs changed personal graphics preferences.
+
+All original personal package hashes remained unchanged. The supported exe and
+its large-address flag are unchanged. Muted tests do not establish audible music
+quality. Linux/Bottles smoke is unavailable because the Windows worktree pointer
+fails WSL's initial git query and Bottles/Flatpak is absent (`lab-smoke.log`).
+The branch is not merged. Large-scene memory, native Undo and sustained acceptance
+remain open; the missing-audio rejection itself is reproduced and repaired.
+
+Preview8 is installed for `SporeCoop Two Players` in the existing GOG installation.
+DLL, dependency-package and symbol hashes match the packaged payload; the version
+marker and shortcut/launcher description identify preview8/protocol22. Current
+settings and individual player launch commands retain their pre-update hashes.
+Receipt: `out/melora-music/installation-verification.json`. The complete previous
+preview7 payload, settings, version marker, launcher and shortcut are retained in
+`out/melora-music/preview7-rollback-20261030-005759`, with restoration destinations
+and checked backup hashes. No game was running during installation.
