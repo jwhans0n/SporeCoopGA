@@ -29,6 +29,7 @@ uint64_t run=10;int act=0,failures;double simulation=100,wall=100;bool active=tr
 unsigned speed_calls,effect_calls[2]{},collect_calls,goal_calls,destroy_calls,warp_calls,tele_callbacks,heals[2]{};
 unsigned default_float_calls,out_float_calls;
 unsigned aborted;
+unsigned actor_callbacks=0,npc_warps=0;
 float healed[2]{};
 std::vector<adventure_pickups::Identity> retired;
 #define CHECK(c) do {if(!(c)){std::printf("FAIL %d: %s\n",__LINE__,#c);++fixture::failures;}}while(0)
@@ -61,7 +62,7 @@ bool SK_CDECL destination(void* value,net::Vec3* pos,net::Quat* rot) {
     auto* p=static_cast<Properties*>(field<void*>(value,0x18));*pos=p->exit;*rot={0,0,0,1};return p->valid;
 }
 void SK_CDECL teleport(void* value,void* captain,const net::Vec3* pos,const net::Quat* rot,bool player) {
-    CHECK(value&&player);object(captain)->position=*pos;object(captain)->rotation=*rot;
+    CHECK(value);if(!player)++npc_warps;object(captain)->position=*pos;object(captain)->rotation=*rot;
     field<bool>(captain,0x137)=false;++warp_calls;
 }
 void SK_CDECL original(void*,void*) {CHECK(false);}
@@ -90,6 +91,7 @@ void* cast(void* value,uint32_t type) {
     if(type==0x08367427)return p->item?static_cast<uint8_t*>(value)+0x130:nullptr;
     if(type==0x01186577)return static_cast<uint8_t*>(value)+0xC0;
     if(type==0x013F94D4)return static_cast<uint8_t*>(value)+0x5A8;
+    if(type==0xCE9F6639)return p->item?nullptr:value;
     return nullptr;
 }
 bool object_alive(void* value) {return fixture::object(value)&&!skg::field<bool>(value,0x20);}
@@ -129,8 +131,46 @@ int main() {
     c.object_for=[](pickups::Identity id)->void* {auto i=identities.find({id.marker,id.incarnation});return i==identities.end()?nullptr:i->second;};
     c.retire=[](pickups::Identity id){retired.push_back(id);};c.captain_heal=[](uint8_t p,float hp){++heals[p];healed[p]=hp;return true;};
     c.teleport=[](uint8_t p,uint64_t rev,const net::Vec3& pos,const net::Quat& rot){CHECK(p<2&&rev);if(captains[p]){object(captains[p])->position=pos;object(captains[p])->rotation=rot;}++tele_callbacks;};
+    c.actor_teleport=[](pickups::Identity id,uint64_t rev,net::Vec3&,net::Quat&){CHECK(id.incarnation&&rev);++actor_callbacks;return true;};
     c.failed=[](const std::string& reason){CHECK(reason.find("pending queue")!=std::string::npos);++aborted;};
     CHECK(pickups::init(&api,nullptr,c));tick();
+    {
+        void* npc=make(false,0,60,60);void* entry=make(true,8,61,61);
+        pickups::teleporter(pickups::powerup(entry),npc);tick();
+        CHECK(npc_warps==1 && actor_callbacks==1 && field<bool>(npc,0xE60) && object(npc)->position.x==20);
+        pickups::teleporter(pickups::powerup(entry),npc);tick();CHECK(npc_warps==1);
+        simulation+=2.1;tick();CHECK(!field<bool>(npc,0xE60));
+        object(npc)->position={};held=true;pickups::teleporter(pickups::powerup(entry),npc);tick();CHECK(npc_warps==1);held=false;wall+=1;
+        field<bool>(npc,0xB5E)=true;pickups::teleporter(pickups::powerup(entry),npc);tick();CHECK(npc_warps==1);
+        field<bool>(npc,0xB5E)=false;wall+=1;pickups::teleporter(pickups::powerup(entry),npc);pickups::tick();pickups::reset();drain();CHECK(npc_warps==1);
+        // Resolve both identities again after contact, including an act switch
+        // or respawn between native collision and the outside-frame callback.
+        wall+=1;pickups::teleporter(pickups::powerup(entry),npc);pickups::tick();
+        identities.erase({60,60});drain();CHECK(npc_warps==1);
+        identities[{60,60}]=npc;wall+=1;
+        pickups::teleporter(pickups::powerup(entry),npc);pickups::tick();++act;drain();--act;CHECK(npc_warps==1);
+        object(entry)->props.valid=false;wall+=1;pickups::teleporter(pickups::powerup(entry),npc);tick();CHECK(npc_warps==1);
+        object(entry)->props.valid=true;object(npc)->position={100,0,0};wall+=1;
+        pickups::teleporter(pickups::powerup(entry),npc);tick();CHECK(npc_warps==1);
+        object(npc)->position={};field<uint32_t>(npc,0xB58)|=256;wall+=1;
+        pickups::teleporter(pickups::powerup(entry),npc);tick();CHECK(npc_warps==1);
+        field<uint32_t>(npc,0xB58)&=~256u;field<bool>(npc,0xE60)=true;wall+=1;
+        pickups::teleporter(pickups::powerup(entry),npc);tick();CHECK(npc_warps==1);
+        field<bool>(npc,0xE60)=false;
+        // Separate NPC cooldowns and captain contacts can share an entry.
+        void* other=make(false,0,64,64);wall+=1;
+        pickups::teleporter(pickups::powerup(entry),npc);
+        pickups::teleporter(pickups::powerup(entry),other);
+        pickups::teleporter(pickups::powerup(entry),captains[0]);tick();
+        CHECK(npc_warps==3 && object(captains[0])->position.x==20 && object(captains[1])->position.x==0);
+        CHECK(field<bool>(npc,0xE60) && field<bool>(other,0xE60));
+        simulation+=3;held=true;tick();CHECK(field<bool>(npc,0xE60));held=false;
+        // A recycled native pointer must not receive the old cooldown restore.
+        field<uint32_t>(npc,0x24)=600;tick();
+        CHECK(field<bool>(npc,0xE60) && !field<bool>(other,0xE60));
+        pickups::reset();object(captains[0])->position={};
+        warp_calls=tele_callbacks=collect_calls=goal_calls=0;tick();
+    }
     CHECK(pickups::a_float==reinterpret_cast<uintptr_t>(property));
     void* hp=make(true,1,1,10);CHECK(pickups::activate(hp,captains[1]));tick();
     CHECK(heals[1]==1&&heals[0]==0&&healed[1]==120&&destroy_calls==1&&collect_calls==1&&effect_calls[1]==1&&effect_calls[0]==0);
@@ -171,6 +211,41 @@ int main() {
     CHECK(!(field<uint32_t>(captains[1],0xFA4)&128)&&!field<bool>(captains[1],0xB18));
     // Guest host-events are trusted only from host and grants never heal other captains.
     pickups::C.sess=&guest;tick();unsigned before=heals[0]+heals[1];
+    {
+        void* npc=make(false,0,62,62);void* entry=make(true,8,63,63);
+        auto warp=packet(156,900,255,8,{63,63});warp.u32(62);warp.u32(62);
+        warp.f32(6.5f);warp.f32(0);warp.f32(0);warp.f32(0);warp.f32(0);warp.f32(0);warp.f32(1);warp.f32(float(simulation+2));
+        const auto prior=npc_warps;
+        pickups::teleporter(pickups::powerup(entry),npc);tick();CHECK(npc_warps==prior); // guest contact cannot authorize an NPC
+        receive(1,warp);tick();CHECK(npc_warps==prior);
+        held=true;receive(0,warp);tick();CHECK(npc_warps==prior);held=false;tick();
+        CHECK(npc_warps==prior+1 && object(npc)->position.x==6.5f && field<bool>(npc,0xE60));
+        receive(0,warp);tick();CHECK(npc_warps==prior+1);
+        simulation+=2.1;tick();CHECK(!field<bool>(npc,0xE60));
+        auto old=pickups::C.actor_teleport;
+        pickups::C.actor_teleport=[](pickups::Identity,uint64_t,net::Vec3& p,net::Quat&){p.x=8;return true;};
+        auto delayed=packet(156,901,255,8,{63,63});delayed.u32(62);delayed.u32(62);
+        for(float n:{6.5f,0.f,0.f,0.f,0.f,0.f,1.f,float(simulation+2)})delayed.f32(n);
+        receive(0,delayed);tick();CHECK(npc_warps==prior+2 && object(npc)->position.x==8);
+        pickups::C.actor_teleport=old;
+        // Accepted events retain their generation while an actor is unbound.
+        auto deferred=packet(156,902,255,8,{63,63});deferred.u32(62);deferred.u32(62);
+        for(float n:{12.f,0.f,0.f,0.f,0.f,0.f,1.f,float(simulation+2)})deferred.f32(n);
+        identities.erase({62,62});receive(0,deferred);tick();
+        CHECK(npc_warps==prior+2 && pickups::pending.size()==1);
+        identities[{62,62}]=npc;tick();CHECK(npc_warps==prior+3 && pickups::pending.empty());
+        receive(0,deferred);tick();CHECK(npc_warps==prior+3);
+        auto expired=packet(156,903,255,8,{63,63});expired.u32(62);expired.u32(62);
+        for(float n:{15.f,0.f,0.f,0.f,0.f,0.f,1.f,float(simulation+2)})expired.f32(n);
+        identities.erase({62,62});receive(0,expired);tick();simulation+=3;tick();
+        CHECK(npc_warps==prior+3 && pickups::pending.empty());identities[{62,62}]=npc;
+        // Reset invalidates delayed native cleanup, even if the queued task
+        // survives into a replacement run with the same marker numbers.
+        auto cancelled=packet(156,904,255,8,{63,63});cancelled.u32(62);cancelled.u32(62);
+        for(float n:{16.f,0.f,0.f,0.f,0.f,0.f,1.f,float(simulation+2)})cancelled.f32(n);
+        receive(0,cancelled);pickups::tick();pickups::reset();++run;drain();
+        CHECK(npc_warps==prior+3);receive(0,cancelled);tick();CHECK(npc_warps==prior+3);
+    }
     void* remote=make(true,4,9,18);auto grant=packet(153,50,1,4,{9,18});grant.f32(7);grant.f32(float(simulation+5));grant.u32(77);
     receive(1,grant);tick();CHECK(game::object_alive(remote));receive(0,grant);tick();
     CHECK(!game::object_alive(remote)&&field<bool>(captains[1],0xB10)&&field<float>(captains[1],0xB14)==7&&heals[0]+heals[1]==before);

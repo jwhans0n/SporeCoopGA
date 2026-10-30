@@ -404,7 +404,7 @@ static void static_replication_cases(net::Session& session, net::Session& client
     };
     C.sess = &session; send_actors(); pump();
     auto initial = static_packets();
-    check(initial.size() == 1 && initial[0].size() == 70 && g_replication_stats.baselines == 1 &&
+    check(initial.size() == 1 && initial[0].size() == 78 && g_replication_stats.baselines == 1 &&
           g_replication_stats.static_actors == 1 && g_replication_stats.dynamic_actors == 2,
           "first stationary observation sends one complete reliable reconstruction baseline alongside legacy dynamic actors");
     uint64_t static_before = g_replication_stats.static_bytes, dynamic_before = g_replication_stats.dynamic_bytes;
@@ -416,7 +416,7 @@ static void static_replication_cases(net::Session& session, net::Session& client
           "equivalent quaternion signs do not classify a stationary building as moving");
     field<float>(b->combatant.data(), 0x38) = 20; packets.clear(); send_actors(); pump();
     auto changed = static_packets();
-    check(changed.size() == 1 && changed[0].size() == 42 && g_replication_stats.state_updates == 1,
+    check(changed.size() == 1 && changed[0].size() == 50 && g_replication_stats.state_updates == 1,
           "building health changes send a compact reliable state record with no position or quaternion");
     auto decode = [&](const std::vector<uint8_t>& packet, uint8_t sender = 0) {
         auto* previous = C.sess; C.sess = &client;
@@ -451,7 +451,7 @@ static void static_replication_cases(net::Session& session, net::Session& client
     if (!coalesced.empty()) decode(coalesced[0]);
     check(g_remote.at(building_id).health == 12, "coalesced state carries the most recent absolute HP");
     packets.clear(); peer_changed(client.my_id()); send_actors(); pump();
-    check(static_packets().size() == 1 && static_packets()[0].size() == 70,
+    check(static_packets().size() == 1 && static_packets()[0].size() == 78,
           "a reconnecting or reused peer receives a fresh complete baseline");
 
     field<net::Vec3>(b->spatial.data(), 4) = {0.00005f, 0, 0}; send_actors();
@@ -460,7 +460,7 @@ static void static_replication_cases(net::Session& session, net::Session& client
     field<net::Vec3>(b->spatial.data(), 4) = {0.0002f, 0, 0}; packets.clear(); send_actors(); pump();
     auto promoted = static_packets();
     check(g_replication_stats.promotions == 1 && g_replication_stats.dynamic_actors == 3 &&
-          promoted.size() == 1 && promoted[0].size() == 70,
+          promoted.size() == 1 && promoted[0].size() == 78,
           "a moving building gets one reliable full correction and immediately joins the unchanged dynamic stream");
     if (!promoted.empty()) decode(promoted[0]);
     check(!g_remote.at(building_id).static_actor, "promotion clears the guest stationary classification");
@@ -1212,6 +1212,22 @@ int main()
           !live_object->model_dirty && !npc_ai_filter(live),
           "native-style render maintenance consumes the replicated creature pose while NPC decisions remain fenced");
     apply_actor(*live_native,saved_pose); render_models();
+    {
+        auto context=pickups_context();adventure_pickups::Identity id{saved_pose.id.marker,saved_pose.id.incarnation};
+        net::Vec3 point{6.5f,0,0};net::Quat rotation{0,0,0,1};
+        check(context.actor_teleport(id,10,point,rotation),"NPC reliable teleport admits its generation before local cleanup");
+        auto moved_state=g_remote.at(saved_pose.id);moved_state.position.x=9;moved_state.sequence+=1;moved_state.motion_generation=10;
+        merge_actor_state(moved_state,g_remote,true,true);
+        point.x=6.5f;check(context.actor_teleport(id,10,point,rotation)&&point.x==9,"delayed reliable NPC cleanup uses the latest same-generation snapshot pose");
+        auto stale=moved_state;stale.motion_generation=0;stale.sequence+=100;stale.position.x=0;
+        merge_actor_state(stale,g_remote,true,true);
+        check(g_remote.at(saved_pose.id).position.x==9,"a later-sequence pre-teleport snapshot cannot rewind an NPC");
+        check(!context.actor_teleport(id,9,point,rotation),"older reliable NPC teleport is rejected");
+        auto latest=moved_state;latest.motion_generation=11;latest.sequence+=2;latest.position.x=10;
+        merge_actor_state(latest,g_remote,true,true);
+        check(g_remote.at(saved_pose.id).motion_generation==11,"new-generation snapshots establish their own late-observer baseline");
+        g_actor_warps.erase(saved_pose.id);g_remote[saved_pose.id]=saved_pose;
+    }
     native_waypoint_regression(*live_native);
     live_object->is_creature=false;live_object->is_vehicle=true;
     native_waypoint_regression(*live_native);
@@ -1274,7 +1290,9 @@ int main()
     check(captured.u8() == Actors && get_run(captured) == 1, "host relationship snapshot crosses the real UDP session");
     captured.u32(); check(captured.u8() == 0 && captured.u8() == 1, "host snapshot identifies its act and bounded actor count");
     read_identity(captured); captured.u32();
-    for (int i = 0; i < 10; ++i) captured.f32();
+    for (int i = 0; i < 7; ++i) captured.f32();
+    get_run(captured);
+    for (int i = 0; i < 3; ++i) captured.f32();
     captured.u8();
     check(captured.u8() == 6 && captured.ok() && !captured.left() && captured_party_queries == 1,
           "host serializes its real relationship query result after the actor fields");
@@ -1287,6 +1305,7 @@ int main()
             write_identity(w, newly_visible.id); w.u32(newly_visible.noun);
             w.f32(0); w.f32(0); w.f32(0);
             w.f32(0); w.f32(0); w.f32(0); w.f32(1);
+            put_run(w,0);
             w.f32(10); w.f32(10); w.f32(1); w.u8(1); w.u8(value);
         };
         record(relationship); if (malformed_second) record(8);

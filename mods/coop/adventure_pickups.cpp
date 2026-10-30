@@ -22,7 +22,7 @@ bool overflow,overflow_reported;
 uint64_t overflow_run;
 uint64_t generation=1,current_run,serial;
 constexpr uint8_t kNone=0xFF;
-enum Message : uint8_t { Claim=152, Grant=153, Expire=154, Teleport=155 };
+enum Message : uint8_t { Claim=152, Grant=153, Expire=154, Teleport=155, ActorTeleport=156 };
 using Activate=void(SK_CDECL*)(void*,void*);
 Activate originals[9]{};
 uintptr_t a_mode,a_float,a_speed,a_effect,a_collect,a_goals,a_destination,a_teleport;
@@ -46,6 +46,7 @@ struct Original {
 struct Event {
     uint8_t kind=0,act=0,player=0,type=0;
     Identity item{};
+    Identity actor{};
     uint64_t revision=0,ref=0,run=0;
     float amount=0,until=0;
     uint32_t effect=0;
@@ -57,6 +58,10 @@ std::map<uint8_t,Original> originals_state;
 std::map<uint8_t,uint64_t> teleports;
 std::map<uint8_t,uint64_t> teleport_cleanup;
 std::map<uint8_t,double> cooldowns;
+struct ActorCooldown { double until=0; void* object=nullptr; uint32_t incarnation=0; bool previous=false; };
+std::map<Identity,ActorCooldown> actor_cooldowns;
+std::map<Identity,uint64_t> actor_cleanup;
+std::map<std::pair<Identity,Identity>,double> actor_requested;
 std::map<uint8_t,uint64_t> claims;
 std::map<std::pair<uint8_t,Identity>,double> requested;
 std::set<Identity> consumed;
@@ -143,7 +148,8 @@ net::Writer encode(const Event& e) {
     net::Writer w;w.u8(e.kind);put64(w,current_run);put64(w,e.revision);w.u8(e.act);w.u8(e.player);w.u8(e.type);put_id(w,e.item);
     if(e.kind==Grant) {w.f32(e.amount);w.f32(e.until);w.u32(e.effect);}
     else if(e.kind==Expire) put64(w,e.ref);
-    else if(e.kind==Teleport) {
+    else if(e.kind==Teleport || e.kind==ActorTeleport) {
+        if(e.kind==ActorTeleport)put_id(w,e.actor);
         w.f32(e.position.x);w.f32(e.position.y);w.f32(e.position.z);
         w.f32(e.orientation.x);w.f32(e.orientation.y);w.f32(e.orientation.z);w.f32(e.orientation.w);w.f32(e.until);
     }
@@ -199,6 +205,24 @@ bool in_range(void* item,void* captain) {
     float x=a.x-b.x,y=a.y-b.y,z=a.z-b.z;
     return x*x+y*y+z*z<=radius*radius;
 }
+void commit_actor(Event e) {
+    if(!active() || !host() || held() || e.act!=act() || !publication_space())return;
+    void* item=C.object_for(e.item);void* actor=C.object_for(e.actor);void* value=powerup(item);
+    if(!value || skg::field<int>(value,4)!=8 || !game::object_alive(item) || !actor || owner(actor)!=kNone ||
+       !game::cast(actor,0xCE9F6639) || !game::object_alive(actor) || !skg::readable(actor,0xFA8) ||
+       skg::field<bool>(actor,0xB5E) || skg::field<bool>(actor,0xE60) ||
+       (skg::field<uint32_t>(actor,0xB58)&256) || !in_range(item,actor) ||
+       !skg::cdecl_call<bool>(a_destination,value,&e.position,&e.orientation) || !finite(e.position) || !finite(e.orientation)) {++rejected;return;}
+    auto previous=actor_cooldowns.find(e.actor);
+    if(previous!=actor_cooldowns.end() && previous->second.until>clock())return;
+    e.kind=ActorTeleport;e.revision=++serial;e.until=float(clock()+2.0);
+    ActorCooldown cooldown{e.until,actor,skg::field<uint32_t>(actor,0x24),skg::field<bool>(actor,0xE60)};
+    skg::cdecl_call<void>(a_teleport,value,actor,&e.position,&e.orientation,false);
+    game::object_position(actor,e.position);e.orientation=game::orientation(actor);
+    skg::field<bool>(actor,0xE60)=true;actor_cooldowns[e.actor]=cooldown;
+    C.actor_teleport(e.actor,e.revision,e.position,e.orientation);
+    actor_cleanup[e.actor]=e.revision;send(e);++warps;
+}
 void commit(Event e) {
     if(!active() || held() || e.act!=act() || !C.captain_can_act(e.player) || !publication_space()) {++rejected;return;}
     void* item=C.object_for(e.item);void* captain=C.captain_of(e.player);void* value=powerup(item);
@@ -244,6 +268,24 @@ void commit(Event e) {
 bool apply(Event e) {
     if(!active()) return true;
     if(held()) return false; // An earlier event/native callback may have established a hold.
+    if(e.kind==ActorTeleport){
+        if(e.act<act())return true;
+        if(e.act>act())return false;
+        if(host()){commit_actor(e);return true;}
+        if(e.revision<=actor_cleanup[e.actor])return true;
+        // Snapshots can arrive first and already contain a later pose within
+        // this generation. Native effects must use that pose, not rewind it.
+        if(!C.actor_teleport(e.actor,e.revision,e.position,e.orientation))return true;
+        void* actor=C.object_for(e.actor);void* value=powerup(C.object_for(e.item));
+        if(!actor || !value)return clock()>=e.until;
+        if(!game::cast(actor,0xCE9F6639) || !game::object_alive(actor) || !skg::readable(actor,0xFA8))return true;
+        auto old=actor_cooldowns.find(e.actor);
+        const bool previous=old!=actor_cooldowns.end()?old->second.previous:skg::field<bool>(actor,0xE60);
+        skg::cdecl_call<void>(a_teleport,value,actor,&e.position,&e.orientation,false);
+        actor_cooldowns[e.actor]={e.until,actor,skg::field<uint32_t>(actor,0x24),previous};
+        skg::field<bool>(actor,0xE60)=clock()<e.until;
+        actor_cleanup[e.actor]=e.revision;++warps;return true;
+    }
     if(e.kind==Claim) {commit(e);return true;}
     if(e.kind==Expire) {
         auto& effect=effects[{e.player,e.type}];
@@ -335,10 +377,29 @@ void drain(void* token) {
         it=cooldowns.erase(it);
     }
     if(host()) flush();
+    for(auto it=actor_cooldowns.begin();it!=actor_cooldowns.end();){
+        if(now<it->second.until){++it;continue;}
+        void* object=C.object_for(it->first);const auto& old=it->second;
+        if(object==old.object && skg::readable(object,0xFA8) && skg::field<uint32_t>(object,0x24)==old.incarnation)
+            skg::field<bool>(object,0xE60)=old.previous;
+        it=actor_cooldowns.erase(it);
+    }
 }
 void hook(void* value,void* captain,int type) {
     if(!active()) {originals[type](value,captain);return;}
     uint8_t player=owner(captain);
+    if(type==8 && player==kNone && host() && !held() && C.actor_teleport){
+        if(current_run!=C.run()){reset();current_run=C.run();}
+        void* item=value?skg::vcall<void*>(value,1):nullptr;Event e;
+        if(!C.identity(item,e.item) || !C.identity(captain,e.actor))return;
+        const auto key=std::make_pair(e.item,e.actor);const double now=H->time_seconds();
+        auto found=actor_requested.find(key);if(found!=actor_requested.end() && now-found->second<.3)return;
+        for(auto it=actor_requested.begin();it!=actor_requested.end();)if(now-it->second>=.3)it=actor_requested.erase(it);else ++it;
+        if(actor_requested.size()>=1024)return;
+        actor_requested[key]=now;e.kind=ActorTeleport;e.type=8;e.act=uint8_t(act());e.player=kNone;e.run=current_run;
+        if(pending.size()<128)pending.push_back(e);
+        return;
+    }
     // Native helpers grant to the posse, so even a non-owner mirror must not
     // execute an independent full helper during an active co-op adventure.
     if(player==kNone || (!host()&&player!=C.sess->my_id())) return;
@@ -357,7 +418,7 @@ bool init(const SkHost* api,SkMod* mod,Ctx ctx) {
     constexpr const char* hash="dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37";
     if(!api||!api->sym||!api->hook_create||!api->exe_sha256||!api->run_outside_frame||
        !api->exe_sha256()||std::strcmp(api->exe_sha256(),hash)||!ctx.sess||!ctx.run||!ctx.act||!ctx.active||
-       !ctx.simulation_time||!ctx.captain_of||!ctx.captain_can_act||!ctx.identity||!ctx.object_for||!ctx.retire||!ctx.captain_heal||!ctx.teleport||!ctx.failed) return false;
+       !ctx.simulation_time||!ctx.captain_of||!ctx.captain_can_act||!ctx.identity||!ctx.object_for||!ctx.retire||!ctx.captain_heal||!ctx.teleport||!ctx.actor_teleport||!ctx.failed) return false;
     H=api;C=std::move(ctx);
     a_mode=H->sym("App::cScenarioMode::ptr");
     a_float=H->sym("SporeCoop::Adventure::GetFloatDefault");a_speed=H->sym("SporeCoop::Adventure::SetSpeedModifier");
@@ -408,7 +469,8 @@ void tick() {
 void on_message(uint8_t from,net::Reader& r) {
     if(!active()) return;
     Event e;e.kind=r.u8();uint64_t run=get64(r);e.run=run;e.revision=get64(r);e.act=r.u8();e.player=r.u8();e.type=r.u8();e.item=get_id(r);
-    if(!r.ok()||run!=C.run()||!e.revision||e.act>=8||e.player>=4||!supported(e.type)) return;
+    if(!r.ok()||run!=C.run()||!e.revision||e.act>=8||!supported(e.type) ||
+       (e.kind==ActorTeleport?e.player!=kNone:e.player>=4)) return;
     if(e.kind==Claim) {
         if(!host()||!from||from!=e.player||(current_run==run&&e.revision<=claims[from])||r.left()) return;
         if(current_run==run) claims[from]=e.revision;
@@ -416,7 +478,8 @@ void on_message(uint8_t from,net::Reader& r) {
         if(host()||from!=0) return;
         if(e.kind==Grant) {e.amount=r.f32();e.until=r.f32();e.effect=r.u32();if(e.type==8||!std::isfinite(e.amount)||e.amount<0||!std::isfinite(e.until)||(e.type==5&&e.amount==0)) return;}
         else if(e.kind==Expire) {e.ref=get64(r);if(e.type!=3&&e.type!=4&&e.type!=5) return;}
-        else if(e.kind==Teleport) {
+        else if(e.kind==Teleport || e.kind==ActorTeleport) {
+            if(e.kind==ActorTeleport){e.actor=get_id(r);if(!e.actor.incarnation || e.actor.marker==UINT32_MAX)return;}
             e.position={r.f32(),r.f32(),r.f32()};e.orientation={r.f32(),r.f32(),r.f32(),r.f32()};e.until=r.f32();
             if(e.type!=8||!finite(e.position)||!finite(e.orientation)||!std::isfinite(e.until)) return;
         } else return;
@@ -434,6 +497,12 @@ float adjust_damage(uint8_t recipient,float amount) {
 }
 void reset() {
     ++generation;queued=false;
+    for(const auto& [id,old]:actor_cooldowns){
+        void* object=C.object_for?C.object_for(id):nullptr;
+        if(object==old.object && skg::readable(object,0xFA8) && skg::field<uint32_t>(object,0x24)==old.incarnation)
+            skg::field<bool>(object,0xE60)=old.previous;
+    }
+    actor_cooldowns.clear();actor_cleanup.clear();actor_requested.clear();
     for(const auto& [player,old]:originals_state) {
         void* captain=C.captain_of?C.captain_of(player):nullptr;
         if(!captain||captain!=old.captain||!skg::readable(captain,0xFA8)||skg::field<uint32_t>(captain,0x24)!=old.incarnation) continue;

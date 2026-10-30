@@ -966,3 +966,53 @@ one to four participants at widths 800, 1024 and 1920, plus minimum-height and
 name/countdown cases. They do not measure native font glyphs, prove long-name
 readability, exercise control-reference retirement or establish a native
 four-player party. Those claims require their recorded UI/gameplay checks.
+
+
+## Editor preview 7: NPC teleporter contacts (dc04)
+
+The reported fixture is the player's `coop test`, saved scenario
+408A0000!2909E915.366A930D. Read-only discovery found it in EditorSaves.package;
+native tests use stopped-profile private copies. The screenshot shows an NPC
+standing on the entry. The adapter's shared pickup hook returned immediately
+for owner FF, suppressing precisely this native contact in co-op.
+
+ReactToPowerup F23BF0 resolves a living creature and dispatches type8 atF23ECC
+without the avatar512 condition used by types1/3/4/5. ActivateTeleporter F23280
+checks E60 and B58 bit256, resolves the native destination, calls F231D0 for
+its entering creature, then separately enumerates the local posse. Co-op must
+not replay that whole function. F231D0 accepts any native creature: false for
+its last argument selects NPC artwork instead of the player effect. It applies
+native planet clamp, spatial Teleport, support and velocity cleanup, and Stop.
+
+Only the host accepts an NPC contact. The queued task stores source and recipient
+marker/incarnation, run and act, and resolves both again before mutation. Native
+range, eligibility and destination validation precede the single-creature call.
+NPC cooldown uses two shared simulation seconds and restores only the matching
+pointer/incarnation's prior E60 value. Holds defer accepted events and expiry.
+Captain cooldowns and movement fences remain separate; boosts remain collector-only.
+
+Pickup subkind156 is a reliable host NPC teleport, using player FF, source
+identity, recipient identity, revision, destination pose and cooldown deadline.
+Actor snapshots now include a uint64 movement generation. A newer generation
+resets the native follower even for a short valid teleport; older generations
+cannot overwrite newer state. A delayed reliable cleanup uses the latest accepted
+same-generation pose. A full snapshot is sufficient to seed a late observer.
+Missing native bindings defer cleanup; if still absent after the simulation-time
+cooldown expires, the expired effect is dropped while the snapshot fence remains.
+Run/act/incarnation checks prevent it applying to a replacement actor.
+
+Protocol22 rejects older clients before gameplay. Editor document, saved resource
+and recovery formats do not change. The hidden winlab_ fixture can inspect
+`actors`/`actorsat` during Solo and use `actorroute NPC ENTRY` to request ordinary
+native locomotion towards an entry. It neither activates a powerup nor directly
+teleports the NPC. Active co-op guests cannot issue this fixture action.
+
+The reported adventure produces61 runtime actors from36 authored markers.
+Marker5 has both a type9 spawner and its concrete living creature. Native
+regressions must use `actorsat 5 48` and match the creature object and host
+incarnation. The first48 global rows omit observer bindings, and the spawner's
+generation remains zero when its spawned creature teleports. Both caused false
+failures in the initial fixture. Read-only model/spatial samples established
+matching observer exits before the fixture was corrected. The final fixture
+requires actual native contact plus a newer movement generation and matching
+rendered models; Solo instead requires an observed discontinuity.
