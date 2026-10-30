@@ -8,7 +8,7 @@
 - Integrate verified native snapshots, private Save As, initiating-player solo
   Play and an explicit Test Together action with host approval and group readiness.
   Keep terrain and nested-editor mutations read-only.
-  Editor development uses protocol 21 / preview 6; the published
+  Editor development uses protocol 22 / preview 7; the published
   gameplay release remains protocol 15.
 - Retain the first drag while ownership arrives. Synchronize sound pose
   companions, separate teleporter endpoints, ball rotation, native cast settings
@@ -23,6 +23,10 @@
   Test Solo / Test Together popup to native Play. Repair group launch after
   accepted missing-asset replacement, apply the confirmed starting act and retain
   living captain references during native spatial goal evaluation.
+- Fix teleporter placement previews passing null markers to the native powerup
+  factory. Own detached marker/act data and both linked ornaments through cleanup.
+  Restore host-authoritative NPC teleporter contact in Test Together and ordinary
+  co-op, with per-actor movement generations and reliable native cleanup.
 - Reuse immutable dependencies during placement updates and retain their recovery
   closure once. Keep native saving, guest durability and group readiness separate.
 - Add portable, Win32 orchestration and isolated native editor fixtures. Native

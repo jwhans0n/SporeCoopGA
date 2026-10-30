@@ -282,7 +282,7 @@ static void test_session()
 static void test_protocol_versions()
 {
     printf("merged protocol boundary and HELLO version validation\n");
-    CHECK(kProtoVersion == 21 && kDiscoverPorts == 20);
+    CHECK(kProtoVersion == 22 && kDiscoverPorts == 20);
     CHECK(MSG_SPACE == 48 && MSG_ADVENTURE == 52 && MSG_EDITOR == 53);
     Session host;
     std::string err;

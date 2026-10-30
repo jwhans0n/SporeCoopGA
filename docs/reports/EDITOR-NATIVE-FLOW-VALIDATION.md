@@ -515,3 +515,109 @@ native integration and repository tests pass, but **no main merge is performed**
 WAN/adversity at the new native boundaries, sustained performance and overnight
 release-window acceptance remain open. Same-asset inspector edits stay serialized
 across acts; adventure-wide settings, terrain and nested editors remain held.
+
+## Preview 7: teleporter placement and NPC contacts
+
+Development branch `feat/ga-editor-multi-act`, protocol **22**, version
+`0.7.5.0-ga-editor-preview.7`, 2026-10-29. Final candidate C2 DLL SHA-256:
+`f3baa0369f6fbf34b17f1ecbaf94e4d557b28b0e7cee85ab6ec1f7ff08addd13`.
+Protocol21 clients must upgrade. Authored adventure and editor recovery formats
+are unchanged. Temporary marker storage and gameplay movement generations are
+not persisted into authored data.
+
+Two installed observer crashes showed a null marker dereference in the native
+powerup factory. Placement previews now own constructed detached marker/act data
+and pin both linked teleporter objects until checked native retirement and
+reference release. Neither the shared marker pool nor native placement maps
+receive preview entries. An invalid factory result retires the detached state
+and allows retry. Final placement retains one transaction and one Undo item.
+
+The shared pickup adapter previously discarded every non-captain contact.
+Eligible host NPC contacts now use the native single-creature helper with NPC
+effects and locomotion cleanup. Reliable subkind156 and snapshot movement
+generations reset observer interpolation without moving unrelated captains.
+Run, act and actor-incarnation fences also cover deferred bindings and cooldowns.
+The path is shared by Test Together and ordinary co-op. Native eligibility,
+collector-only upgrades and independent captain teleports remain intact.
+
+### Deterministic and Win32 evidence
+
+Receipts are under `out/editor-preview7`.
+
+| Check | Result |
+| --- | --- |
+| `repository-test-c2.log` | Full repository `make test` passed; symbol lint375 used/2958 known, zero supported-build problems. |
+| `native-c2.log` | 4,703 Win32 input/cancellation checks passed, including required nonnull native marker/acts, both linked objects, cleanup, failed factory and retry. |
+| `pickups-expanded-final.log` | Zero failures. Host-only NPC authority, eligibility/range/invalid exits, separate NPC cooldowns, simultaneous captain contact, holds, missing identities/bindings, incarnation replacement, expired effects and stale run callbacks. Existing collector/captain checks still pass. |
+| `mirror-c2.log` | Zero failures. Actual world movement-generation admission, delayed same-generation pose and stale-generation rejection, with updated static/dynamic record parsing. |
+| Actor motion tests in `make test` | A6.5m teleport resets interpolation immediately; older generations cannot enter the new follower scope. |
+| Executable verifier |39 native editor signatures/caller sets verified against the supported executable; original symbol entries retained alongside the three new marker helpers. |
+| `windows-status-smoke.log` | Official Windows status regression passed on all four private native children; all four ended with zero caught faults and were stopped by exact owned handles. |
+
+### Private native adventure evidence
+
+The reported `coop test` was discovered read-only at
+`408A0000!2909E915.366A930D` in the host's EditorSaves.package. It contains one
+act,28 classes and36 markers, producing61 runtime actors. All runs used private
+profile/installation copies, invisible windows and muted audio. Eight original
+player profile packages retained their recorded hashes after testing.
+
+| Receipt | Verified behavior |
+| --- | --- |
+| `c1/placements-two-offline` | Host and guest teleporter drag/commit with observer previews and Undo/Redo/Undo; no caught fault. C1 preceded the final linked-exit diagnostics and expired-binding guard. |
+| `c2/recovery` | Four cold processes recovered the durable draft and converged before native editing. |
+| `c2/placements-four` | Eight checkpoints. Every participant placed a teleporter while all three observers displayed both live endpoints before release. Draft revision/history stayed unchanged while held. Each release committed once; Undo/Redo/Undo retired temporary objects. Final revision36, zero frozen replicas/faults. |
+| `c2/group-launch` | Native guest Play -> Test Together, host approval, four explicit readiness confirmations and one run with reciprocal moving captains. |
+| `c2/npc-together-filtered` | Actual host NPC5 locomotion/contact with entry11 produced a newer teleport generation and the authored exit on all four spatial components and visible model transforms. No direct activation or teleport probe was used. |
+| `c2/solo-launch`, `c2/npc-solo` | Native Play -> Solo left the three observers editing. The same NPC/entry reached the authored exit through the native Solo contact path. |
+| `c2/native-save-confirmed` | Native Save at revision36 completed host4/4 and guest1/1 SavedApplied acknowledgement coverage for logical root `408A0000!290D9A68.366A930D`. |
+| Native saved-file reopen / `reopen-identity-comparison.log` | The exact saved file reopened through My Creations before recovery. All28 classes, act/captain settings and34/36 placements matched after stable-ID mapping. Two buildings differed only by one float ULP in position, maximum0.000030518m; all teleporter transforms/properties matched. The exact semantic-hash check failed and is retained, not reported as a hash-equality pass. |
+
+### Negative findings and remaining gates
+
+Initial NPC fixture failures came from paging only the first48 global actors
+and confusing the source spawner with its spawned creature. The corrected fixture
+selects exact host incarnation/object identity through `actorsat` and independently
+checks native rendered-model positions. A native saved-success confirmation also
+had to be dismissed before the final SavedApplied acknowledgements could complete.
+The initial waiter timeout is retained alongside its corrected successful receipt.
+
+Escape and dropping over the cast card finalized the tested placement rather
+than cancelling it. Those native attempts remain failures; cancellation and
+allocation failure/retry are established by the controlled Win32 fixture.
+Independent-act switching, cloning, native respawn, distant/invalid exits and
+adverse timing at these new native boundaries still need dedicated live checks.
+The reported adventure itself has only one act.
+
+Ordinary co-op entered a four-player run, but its NPC regression did not pass.
+After the prior editor/save sequence the native Gameplay pause reason retained
+a positive counter and the NPC did not walk. Fresh-process retries stalled in
+adventure/captain preparation with missing metadata/disabled native Next, including
+a normal native-picker attempt. These receipts are not evidence of successful
+ordinary NPC contact; that live check remains open despite the shared tested
+adapter path. No native pause counter or actor pose was written to force a pass.
+
+Linux/Bottles `tools/lab.py run smoke --lanes 3` cannot run here: the Windows
+absolute worktree git pointer fails WSL's initial git query, and Bottles/Flatpak
+is unavailable. Receipt: `lab-smoke.log`. The Windows status smoke is narrower.
+No main merge is performed. Sustained performance, overnight acceptance and the
+remaining native matrix above are not complete release acceptance.
+
+### Local preview delivery
+
+The tested C2 payload is installed in `D:\GOG Galaxy\Games\SPORE` for the desktop
+`SporeCoop Two Players` shortcut. Its target and working directory resolve to
+that installation's existing two-player launcher. The launcher/shortcut identify
+preview7/protocol22; the player1/player2 launch commands and current settings
+retain their pre-update hashes. Every packaged executable, dependency package
+and symbol file was checked against its installed counterpart. Receipt:
+`out/editor-preview7/installation-verification.json`.
+
+The complete previous installed payload, settings, version marker, launcher and
+shortcut are retained with checked hashes and restoration destinations under
+`out/editor-preview7/preview6-rollback-20261029-191110`. Its DLL is the recorded
+preview6 C12 hash. No game was running during deployment and no personal game
+was launched to verify the shortcut. An initial post-copy guard compared settings
+against the old preview6 receipt, detected a since-changed coop.ini and rolled
+back. The successful deployment compares against the current pre-update settings
+snapshot and preserves it. Original profile database hashes remain unchanged.

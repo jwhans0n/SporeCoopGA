@@ -12,7 +12,7 @@ playing while others continue editing remain later milestones in the
 
 ## Compatibility and scope
 
-Every participant needs `0.7.5.0-ga-editor-preview.6`, protocol 21, Galactic Adventures
+Every participant needs `0.7.5.0-ga-editor-preview.7`, protocol 22, Galactic Adventures
 and the exact GOG executable with SHA-256
 `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
 Older gameplay and editor previews receive an explicit version mismatch.
@@ -35,6 +35,12 @@ models while dragging, including teleporter exits. New placements use temporary
 scene objects. These previews do not add cast entries, authored markers or Undo
 items. The completed gesture commits once; cancellation, expiry, ownership loss
 and disconnect retire its preview. Fullscreen native pickers hide world hints.
+
+Teleporter previews own detached native marker/act data and both linked scene
+objects, preventing observer crashes while another player places one. In Test
+Together and ordinary co-op, the host applies native eligible NPC contacts and
+replicates each teleport immediately. Captain contacts remain independent; an
+NPC entering a teleporter does not move the other players or their followers.
 
 The placement adapter implements creation from the native cast browser,
 duplication, deletion, movement, rotation and uniform scale. Scale tracks both
