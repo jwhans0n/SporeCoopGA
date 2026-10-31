@@ -53,6 +53,7 @@ def run(args):
                 if ('large-address flag on (4GB patch)' not in value or
                         not re.search(r'game address space \d+ of 4095 MB used', value)):
                     raise RuntimeError('Both native games must have the verified 4 GB address space')
+            result['memory_ceiling_verified'] = True
         if not status(host).get('editing'):
             raise RuntimeError('Open the reported adventure in the private host editor first')
         host.wait('reported native editor finishes loading', lambda: status(host).get('ready'), timeout=300)
@@ -70,6 +71,7 @@ def run(args):
             result['rejection'] = text
         else:
             host.wait('both native editors converge with reported music', converged, timeout=args.join_timeout)
+            result['editors_converged'] = True
             memories.append(AdventureMemory(guest, records[guest.instance]))
             if any(music_ids(memory) != baseline for memory in memories):
                 raise RuntimeError('Sharing changed an authored music ID')
@@ -85,9 +87,12 @@ def run(args):
                 return tuple(line for line in game.call('coop.editor acts').splitlines()
                              if line.startswith(('act=', ' goal=')))
             original = authored(guest)
-            if not guest.caption('Description & Music'):
-                guest.click_control(0x0743B978)
-            guest.click_control(0x0710A140)
+            result['independent_act_views_verified'] = True
+            # Use the native name-focus path already used by the authoring
+            # fixture to reserve this act. The description popup's control is
+            # absent when that popup is closed, regardless of cached captions.
+            guest.click_control(0x0743B978)
+            guest.click(800, 450)
             guest.wait('act property ownership', lambda:
                        'lease scope=Settings ' in guest.call('coop.editor leases'))
             # A native checkbox avoids text-entry/focus timing in a cold,
@@ -98,10 +103,12 @@ def run(args):
                 raise RuntimeError('The guest edit did not produce one history item')
             if authored(host) == original:
                 raise RuntimeError('The guest edit did not reach the host')
+            result['property_edit_committed'] = True
             guest.call('coop.editor undo')
             host.wait('guest Undo preserves authored music', lambda: converged(revision + 2))
             if any(authored(game) != original for game in games):
                 raise RuntimeError('Undo did not restore native act metadata')
+            result['undo_verified'] = True
             result['authored_music_after'] = [music_ids(memory) for memory in memories]
             if any(values != baseline for values in result['authored_music_after']):
                 raise RuntimeError('Editing or Undo changed an authored music ID')

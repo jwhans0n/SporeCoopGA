@@ -686,3 +686,79 @@ Receipt: `out/melora-music/installation-verification.json`. The complete previou
 preview7 payload, settings, version marker, launcher and shortcut are retained in
 `out/melora-music/preview7-rollback-20261030-005759`, with restoration destinations
 and checked backup hashes. No game was running during installation.
+
+## Local preview 8 4 GB update (2026-10-30)
+
+This is a local compatibility update on the existing preview 8 / protocol 22
+branch, without a protocol, document, recovery or authored-save format change.
+The original GOG 2024 executable remains supported. Its exact LAA variant is
+also supported, with full-file SHA-256
+`47f60c4db38fda1f15c5a3525617e171b0a98d728d99d645b035aa794a9199ab`.
+The original and patched executables differ only at file byte `0x136`, `02`
+to `22`. Complete code, data and text fingerprints are unchanged. A real-image
+patch/restore round trip reproduced the original bytes and SHA exactly.
+Evidence: `out/4gb/executable-verification.json`.
+
+The co-op native adapters share a two-value full-file allowlist. A matching
+symbol build or code-only hash does not authorize other modified executables.
+SporeKit continues reporting the actual executable SHA and selects the original
+2,842-symbol map through its existing same-code verification. The network build
+ID remains the canonical original. The new DLL SHA-256 is
+`b280b22339ea610e2c04d7089e90b11e3a30cf1f326fce8b7881677a14b1a992`.
+It is required alongside the patched executable; the prior preview 8 DLL's
+native guards intentionally reject the changed image.
+
+`make test B=out/4gb/portable` passed, including six new patch/backup/rollback
+checks and exact native identity rejection cases. Nineteen selected Win32
+fixtures passed, including the native control test with both original and LAA
+identities, actor mirroring, pickups, effects, saving and editor restoration.
+The LAA-linked x86 memory fixture observed the 4 GB ceiling, allocated at
+`0x90000000` and read/wrote that page through the ordinary native pointer helper.
+The first memory fixture build used an earlier link recipe and correctly failed
+its new upper-address assertion; a forced rebuild with the reviewed LAA link
+flag passed. Evidence: `out/4gb/win32-results.json`, `repository-tests.log` and
+`4gb-memory-build.log` (the latter is directly under `out`).
+
+Two invisible, muted private Windows games cold-started with the exact new DLL
+and executable. Both reported `4095 MB` total user address space and the LAA
+flag enabled; native editor adapters remained available. The host opened a
+private Motel of Melora ('22 Edition) through the normal native browser and
+started sharing. This run uses a 1024x768 native backbuffer, with private detail
+preferences set to 3; it does not reproduce the earlier 1600x1200 viewport.
+The initial harness searched outside the actual viewport, then used the actual
+1024-wide browser search field. No authored or game state was injected.
+The guest completed its normal Calculating Animation Variance stage after
+roughly 12 minutes. Both editors converged at revision 0 with hash
+`128e0ddb2778bedbed730120039fbf19266d3609eeb17daa114946a03f4ecaa0`.
+Independent act views were verified: host act 6, guest act 1. Music IDs remained
+unchanged. The last sampled footprints were about 1812 / 1877 MiB of 4095 MiB.
+This is admission and browsing acceptance, not a fresh 1600x1200 exhaustion test.
+
+The full UI regression stopped before any property transaction: its expected
+description-popup control `0710A140` was absent in the current layout. Native
+fault checks before shutdown remained zero. The original failed result and
+command logs are retained, without labeling this a successful edit/Undo run.
+The fixture now uses the established native name-focus path to reserve the
+act before the timer, matching the existing authoring fixture. That fixture
+adjustment has syntax validation but has not received another native run.
+Scoped receipt: `out/4gb/native/admission-evidence.json`; full attempt:
+`out/4gb/native/regression/result.json`. The runner closed only its own two
+private games after the test failure; their recorded termination code 1 is
+runner cleanup, not an observed native game crash. Full native editing/Undo,
+Save/reopen, Test Together and four-player stability under LAA remain unverified.
+
+The user's `SporeCoop Two Players` shortcut still resolves to the existing
+installation, and both player launchers resolve to its patched SporeApp.exe.
+Only that executable and the matching co-op DLL were updated. Shortcut, launcher,
+settings, loader and SporeKit hashes retain their pre-update values. The original
+executable and matching preview 8 DLL, plus a checked restore script, are retained
+at `out/4gb/rollback-20261030-192523`. A second original-byte executable backup
+is next to the installed image as `SporeApp.exe.pre-4gb.bak`. Installed hashes
+were checked after copying; no personal game process was running. Receipt:
+`out/4gb/installation-verification.json`.
+
+The ceiling is per instance, not a reservation or an unlimited native allocator.
+The change does not establish sustained stability for every large adventure.
+Linux lab smoke was attempted but failed at its initial WSL git query because
+this Windows worktree pointer is not usable there. Evidence:
+`out/4gb/lab-smoke.log`. No main merge or public release is claimed.

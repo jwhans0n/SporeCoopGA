@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- Support the exact GOG 2024 Large Address Aware executable variant for up to
+  4 GB per game on 64-bit Windows. Preserve full-file native adapter checks,
+  provide verified patch/backup/rollback tooling and retain protocol 22.
+
 - Add a development Adventure Editor collaboration pipeline for the exact GOG
   executable: host-ordered placement gestures, scoped leases, stable identities,
   checked own-action Undo/Redo and bounded durable recovery projects.
