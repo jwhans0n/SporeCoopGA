@@ -17,6 +17,17 @@ and the exact GOG executable with SHA-256
 `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
 Older gameplay and editor previews receive an explicit version mismatch.
 
+The local 4 GB update also accepts the exact Large Address Aware variant,
+SHA-256 `47f60c4db38fda1f15c5a3525617e171b0a98d728d99d645b035aa794a9199ab`.
+This changes one PE header bit, with no game code, data, wire or save changes.
+It permits up to 4 GB of address space per instance on 64-bit Windows. The
+updated co-op DLL is required: the original preview 8 DLL rejects this variant.
+`tools/large_address_aware.py <SporeApp.exe>` inspects an image; `--apply` creates
+a verified original backup before patching, and `--restore` restores it. Close
+all game sessions first. Unknown executable images and conflicting backups are
+refused. This raises the address-space ceiling, without guaranteeing every
+large adventure or native allocation will fit.
+
 This preview adds retained first-press dragging, sound pose companions,
 independent teleporter endpoints, the native multi-axis ball, cast properties
 and cast imports. See the [authoring progress](EDITOR-SEMANTICS-PROGRESS.md)

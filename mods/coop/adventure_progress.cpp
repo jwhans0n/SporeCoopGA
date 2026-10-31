@@ -7,7 +7,6 @@
 namespace adventure_progress {
 namespace {
 static_assert(sizeof(void*) == 4, "Native captain progression requires the Win32 ABI.");
-constexpr const char* kHash = "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37";
 constexpr uint32_t kXP = 0xCF837237, kLevel = 0x5888EF41;
 uintptr_t a_load, a_int32;
 bool ready;
@@ -41,7 +40,7 @@ bool init(const SkHost* host, SkMod*)
     ready = false; a_load = a_int32 = 0;
     if (!host || !host->sym || !host->exe_sha256) return false;
     const char* hash = host->exe_sha256();
-    if (!hash || std::strcmp(hash, kHash) != 0) return false;
+    if (!skg::supported_gog2024(hash)) return false;
     a_load = host->sym("SporeCoop::Adventure::LoadAssetProperties");
     a_int32 = host->sym("App::Property::GetValueInt32");
     ready = a_load && a_int32;

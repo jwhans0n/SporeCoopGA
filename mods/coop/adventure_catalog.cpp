@@ -13,7 +13,6 @@
 
 namespace adventure_catalog {
 namespace {
-constexpr const char* kHash = "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37";
 const SkHost* H;
 uintptr_t resource_manager;
 
@@ -116,7 +115,7 @@ bool init(const SkHost* host, SkMod* mod)
 {
     if (!host || !host->exe_sha256 || !host->sym || !host->command_add || !host->out_printf) return false;
     const char* hash = host->exe_sha256();
-    if (!hash || std::strcmp(hash, kHash)) return false;
+    if (!skg::supported_gog2024(hash)) return false;
     resource_manager = host->sym("Resource::ResourceManager_ptr");
     if (!resource_manager) return false;
     H = host;

@@ -12,7 +12,6 @@ namespace adventure_world_actions {
 namespace {
 using namespace skg;
 static_assert(sizeof(void*) == 4, "The native adventure adapter requires Win32.");
-constexpr const char* kHash = "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37";
 constexpr uint32_t kSpatial = 0x01186577, kCreature = 0xCE9F6639;
 constexpr uint32_t kBuilding = 0x0E9CB8BA, kVehicle = 0x0137E8E0, kGameData = 0x017F243B;
 const SkHost* H;
@@ -100,7 +99,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx ctx)
     if (!H || !H->sym || !H->exe_sha256 || !H->hook_create || !C.active || !C.host ||
         !C.local_captain || !C.request_give) return false;
     const char* hash = H->exe_sha256();
-    if (!hash || std::strcmp(hash, kHash)) return false;
+    if (!skg::supported_gog2024(hash)) return false;
     const char* names[] = {"App::cScenarioMode::ptr", "Simulator::cScenarioData::GetClass",
         "SporeCoop::Adventure::BuildingInventoryGive", "SporeCoop::Adventure::VehicleInventoryGive",
         "SporeCoop::Adventure::VehicleGiveConsumesItem", "SporeCoop::Adventure::DropItem",

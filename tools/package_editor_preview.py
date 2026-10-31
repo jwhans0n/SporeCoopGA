@@ -10,6 +10,8 @@ import subprocess
 import sys
 import zipfile
 
+from large_address_aware import SUPPORTED_EXES, GOG2024_LAA
+
 ROOT = Path(__file__).resolve().parents[1]
 EXE = 'dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37'
 
@@ -29,7 +31,7 @@ def main():
     if not re.fullmatch(r'0\.7\.5\.0-ga-editor-preview\.8', version):
         parser.error('This packaging recipe is scoped to editor preview 8')
     kit = args.kit_installation.resolve()
-    if sha(kit / 'SporebinEP1/SporeApp.exe') != EXE:
+    if sha(kit / 'SporebinEP1/SporeApp.exe') not in SUPPORTED_EXES:
         parser.error('The supporting installation is not the verified GOG executable')
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -75,7 +77,8 @@ def main():
         'Extract this folder. Keep SporeCoopSetup.exe beside its matching .pack.\n'
         'End all game sessions before installing. Select the normal SPORE installation.\n'
         'All participants need this exact preview and Galactic Adventures.\n'
-        'Supported SporebinEP1/SporeApp.exe SHA-256:\n' + EXE + '\n\n'
+        'Supported SporebinEP1/SporeApp.exe SHA-256:\n' + EXE + '\n' +
+        'Optional exact 4 GB variant:\n' + GOG2024_LAA + '\n\n'
         'Host a party and open the native Adventure Editor. Guests join\n'
         'the party and follow automatically. Unsaved drafts can be shared. F9 is\n'
         'the normal party/chat lobby. Use native Undo/Redo, Save, Play and Build.\n'
@@ -90,7 +93,7 @@ def main():
         'Fork: https://github.com/jwhans0n/SporeCoopGA\n'
         'Based on SporeCoop by WoodyWizard: https://github.com/WoodyWizard/SporeCoop\n',
         encoding='utf-8')
-    manifest = {'version': version, 'protocol': 22, 'supported_exe_sha256': EXE,
+    manifest = {'version': version, 'protocol': 22, 'supported_exe_sha256': EXE, 'supported_laa_exe_sha256': GOG2024_LAA,
                 'complete_release_acceptance': False,
                 'payload': {str(p.relative_to(stage)).replace('\\', '/'): sha(p)
                             for p in sorted(stage.rglob('*')) if p.is_file()},

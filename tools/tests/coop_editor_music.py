@@ -47,6 +47,12 @@ def run(args):
 
     try:
         owner.verify_windows()
+        if args.require_4gb:
+            result['memory_before'] = [g.call('env') for g in games]
+            for value in result['memory_before']:
+                if ('large-address flag on (4GB patch)' not in value or
+                        not re.search(r'game address space \d+ of 4095 MB used', value)):
+                    raise RuntimeError('Both native games must have the verified 4 GB address space')
         if not status(host).get('editing'):
             raise RuntimeError('Open the reported adventure in the private host editor first')
         host.wait('reported native editor finishes loading', lambda: status(host).get('ready'), timeout=300)
@@ -63,7 +69,7 @@ def run(args):
                 raise RuntimeError('The baseline did not reproduce the reported rejection')
             result['rejection'] = text
         else:
-            host.wait('both native editors converge with reported music', converged, timeout=300)
+            host.wait('both native editors converge with reported music', converged, timeout=args.join_timeout)
             memories.append(AdventureMemory(guest, records[guest.instance]))
             if any(music_ids(memory) != baseline for memory in memories):
                 raise RuntimeError('Sharing changed an authored music ID')
@@ -101,6 +107,7 @@ def run(args):
                 raise RuntimeError('Editing or Undo changed an authored music ID')
             result['participants'] = [status(g) for g in games]
         result['faults'] = [g.call('exc') for g in games]
+        result['memory_after'] = [g.call('env') for g in games]
         if any('total faults: 0' not in value for value in result['faults']):
             raise RuntimeError('A native fault occurred')
         if args.screenshots:
@@ -133,12 +140,14 @@ def main():
     parser.add_argument('--expect-rejection', action='store_true')
     parser.add_argument('--screenshots', action='store_true',
                         help='Opt in to native backbuffer readback on large scenes')
+    parser.add_argument('--require-4gb', action='store_true', help='Require 4 GB in both native processes')
+    parser.add_argument('--join-timeout', type=int, default=900, help='Bounded cold large-adventure load timeout')
     args = parser.parse_args()
     if not args.execute:
         print(json.dumps(dict(prepared=True, launches_games=False)))
         return
     if (not args.metadata or not args.output or len(set(args.instances)) != 2 or
-            not 0 <= args.act < 8 or not 0 < args.music < 0xFFFFFFFF or
+            not 0 <= args.act < 8 or not 0 < args.music < 0xFFFFFFFF or not 60 <= args.join_timeout <= 1800 or
             not re.fullmatch('[0-9a-f]{64}', args.dll_sha256 or '')):
         parser.error('Exact owned metadata, DLL SHA, output and bounded act/music are required')
     run(args)

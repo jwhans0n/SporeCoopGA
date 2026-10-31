@@ -12,7 +12,6 @@
 namespace adventure_control {
 namespace {
 using namespace skg;
-constexpr const char* kHash = "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37";
 using Brain = void(SK_THISCALL*)(void*, float);
 using Walk = void(SK_THISCALL*)(void*);
 using Cursor = bool(SK_THISCALL*)(void*, bool, bool);
@@ -84,7 +83,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context)
     if (ready || !host || !host->sym || !host->exe_sha256 || !host->hook_create ||
         !context.active || !context.local_avatar || !context.captain_state) return false;
     const char* hash = host->exe_sha256();
-    if (!hash || std::strcmp(hash, kHash)) return false;
+    if (!skg::supported_gog2024(hash)) return false;
     const char* names[] = {"SporeCoop::Adventure::AvatarTickAI", "SporeCoop::Adventure::MoveAvatarWASD",
         "SporeCoop::Adventure::MoveAvatarToCursor", "SporeCoop::Adventure::IssueCreatureOrder"};
     std::array<uintptr_t, 4> addresses{};

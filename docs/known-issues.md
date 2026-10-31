@@ -9,7 +9,10 @@ Private Motel of Melora ('22 Edition) validation at1600x1200/high detail reached
 1955 of2047 MiB of the supported non-LAA process address space. Its animation
 allocator returned null before the native9AC8E0 write, producing an access
 violation. This remains an engine/memory acceptance limit; the music-admission
-fix does not change the executable or patch its allocator. Lower private detail
+fix did not change the executable or patch its allocator. The subsequent local
+4 GB update accepts an exact one-bit LAA executable variant and raises the
+per-instance ceiling on 64-bit Windows; native allocation failures and sustained
+large-adventure stability still require separate validation. Lower private detail
 allowed both editors to converge and a guest timer edit to commit. That run
 later exited with C0000409 during screenshot capture, so sustained editing and
 native Undo acceptance on this large fixture remain incomplete.

@@ -8,6 +8,8 @@
 // right after `this`: declare them explicitly as thiscall<T*>(addr, obj, &ret, ...).
 #pragma once
 
+#include "sporekit_build.hpp"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif

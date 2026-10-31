@@ -1,5 +1,17 @@
 # 6. Testing
 
+The local GOG 2024 4 GB update has portable identity/backup/rollback checks in
+`make test`. `make test-memory-windows test-controls-windows` builds the native
+fixtures. On 64-bit Windows, run `readable_memory_tests.exe` to verify the 4 GB
+ceiling and allocation/readability at `0x90000000`; run
+`adventure_control_tests.exe --laa` to exercise the native hooks with the exact
+patched fingerprint. The same control test without the flag checks the original.
+The hidden Windows lab accepts only those two full-file identities and checks
+the running console against the exact selected file. The private Motel music
+fixture accepts `--require-4gb --join-timeout 900` to require the raised ceiling
+on both games while checking real shared editing and Undo. Temporary profiles
+and rendering/audio restrictions remain mandatory.
+
 > Running the tests in parallel (lanes, `tools/lab.py`, warm resets, chaos bot, bad network):
 > [10-dev-pipeline.md](10-dev-pipeline.md). This page covers the single-lane basics.
 

@@ -30,6 +30,7 @@ from adventure_interaction_fixture import _verify_game, EXE_SHA256
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools'))
+from large_address_aware import SUPPORTED_EXES
 from sporectl import Console
 
 
@@ -174,7 +175,7 @@ class Ownership:
             raise FixtureError('The installation lacks its private-copy marker')
         exe = self.installation / 'SporebinEP1' / 'SporeApp.exe'
         dll = self.installation / 'SporebinEP1' / 'mods' / 'coop.dll'
-        if hashlib.sha256(exe.read_bytes()).hexdigest() != EXE_SHA256:
+        if hashlib.sha256(exe.read_bytes()).hexdigest() not in SUPPORTED_EXES:
             raise FixtureError('The private executable is not the supported GOG image')
         if hashlib.sha256(dll.read_bytes()).hexdigest() != expected_dll:
             raise FixtureError('The private DLL does not match the requested candidate')
@@ -1107,6 +1108,7 @@ installation=OLD/'out/windows-lab/installation'
 sys.path.insert(0,str(OLD/'tools'))
 import windows_lab
 from windows_lab import WindowsLab
+from large_address_aware import SUPPORTED_EXES
 from sporectl import Console
 if hashlib.sha256((installation/'SporebinEP1/mods/coop.dll').read_bytes()).hexdigest()!=a.expected_dll_sha256.lower():raise SystemExit('private DLL candidate mismatch; no deployment performed')
 source_root=OUT.parents[1]

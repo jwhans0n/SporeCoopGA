@@ -20,6 +20,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools'))
+from large_address_aware import SUPPORTED_EXES
 from mkpackage import build as build_package  # noqa: E402
 from coop_adventure import Game, FixtureError, verify_lab  # noqa: E402
 from adventure_memory import AdventureMemory  # noqa: E402
@@ -321,7 +322,7 @@ def _verify_game(game, record, menu=False):
     if not record.get('profile', '').startswith('winlab_') or record.get('exit_code') is not None:
         raise FixtureError('an active isolated Windows lab record is required')
     info = game.call('info')
-    if f"pid={record['pid']}\n" not in info or f'exe sha256={EXE_SHA256}' not in info:
+    if f"pid={record['pid']}\n" not in info or not any(f'exe sha256={sha}' in info for sha in SUPPORTED_EXES):
         raise FixtureError('the console PID or reviewed executable does not match lab metadata')
     if menu and ('GalaxyGameEntry' not in game.call('game.mode') or
                  not re.search(r'\bactive=0\b', game.call('coop.adventure status'))):

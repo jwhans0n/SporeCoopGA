@@ -13,7 +13,6 @@ namespace adventure_targeting {
 static_assert(sizeof(void*) == 4, "Native captain targeting requires Win32.");
 namespace {
 using namespace skg;
-constexpr const char* kHash = "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37";
 using Match = bool(SK_CDECL*)(void*, const void*);
 using Hostile = bool(SK_THISCALL*)(void*, void*);
 using ValidTarget = void*(SK_CDECL*)(void*);
@@ -85,7 +84,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx ctx)
     if (ready || !host || !host->sym || !host->exe_sha256 || !host->hook_create ||
         !ctx.active || !ctx.live_npc || !ctx.captains || !ctx.remote_captain) return false;
     const char* hash = host->exe_sha256();
-    if (!hash || std::strcmp(hash, kHash)) return false;
+    if (!skg::supported_gog2024(hash)) return false;
     const char* names[] = {
         "SporeCoop::Adventure::MatchesBehaviorTarget",
         "SporeCoop::Adventure::AttackConditionTargetReturn",

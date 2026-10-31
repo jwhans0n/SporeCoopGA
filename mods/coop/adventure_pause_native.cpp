@@ -10,7 +10,6 @@
 namespace adventure_pause_native {
 namespace {
 using namespace skg;
-constexpr const char* kHash = "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37";
 constexpr std::array<uint32_t, 3> kLocalTypes{0x04BF38A8, 0x04BF38A4, 0x04BF38A9};
 using Recalculate = void(SK_THISCALL*)(void*);
 Recalculate original;
@@ -90,7 +89,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context)
     if (ready || !host || !host->sym || !host->hook_create || !host->run_outside_frame ||
         !host->exe_sha256 || !context.active || !context.held || !context.local_intent) return false;
     const char* hash = host->exe_sha256();
-    if (!hash || std::strcmp(hash, kHash)) return false;
+    if (!skg::supported_gog2024(hash)) return false;
     auto address = host->sym("SporeCoop::Adventure::RecalculatePauseFlags");
     getter = host->sym("Simulator::cGameTimeManager::Get");
     if (!address || !getter || host->hook_create(mod, reinterpret_cast<void*>(address),

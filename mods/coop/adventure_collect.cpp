@@ -370,7 +370,7 @@ bool init(const SkHost* h, SkMod* m)
     a_Properties = H->sym("SporeCoop::Adventure::LoadAssetProperties");
     a_String16 = H->sym("App::Property::GetValueString16");
     // Field offsets and native vtable slots below have been inspected in this exact image.
-    g_supported = std::string(H->exe_sha256()) == "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37" && a_Rm;
+    g_supported = skg::supported_gog2024(H->exe_sha256()) && a_Rm;
     return g_supported;
 }
 

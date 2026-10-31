@@ -11,7 +11,6 @@ namespace adventure_world_vehicles {
 static_assert(sizeof(void*) == 4, "The native adventure adapter requires the Win32 ABI.");
 
 namespace {
-constexpr const char* kHash = "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37";
 constexpr std::array<const char*, 4> kSymbols = {
     "SporeCoop::Adventure::TickBehaviorTree",
     "SporeCoop::Adventure::TickVehicleWeapons",
@@ -91,7 +90,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx ctx)
     if (!H || !H->sym || !H->exe_sha256 || !H->hook_create || !H->hook_remove ||
         !C.active || !C.host || !C.run || !C.is_mirrored) return false;
     const char* hash = H->exe_sha256();
-    if (!hash || std::strcmp(hash, kHash) != 0) return false;
+    if (!skg::supported_gog2024(hash)) return false;
     std::array<void*, 4> targets{};
     for (size_t i = 0; i < targets.size(); ++i) {
         targets[i] = reinterpret_cast<void*>(H->sym(kSymbols[i]));

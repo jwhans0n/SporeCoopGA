@@ -8,7 +8,6 @@
 namespace adventure_relationships {
 static_assert(sizeof(void*) == 4, "The native relationship adapter requires Win32.");
 namespace {
-constexpr const char* kHash = "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37";
 using Relationship = int(SK_THISCALL*)(void*, const void*, void*, void*);
 Relationship original;
 Ctx C;
@@ -51,7 +50,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx ctx)
     if (ready || !host || !host->sym || !host->exe_sha256 || !host->hook_create ||
         !ctx.active || !ctx.remote_captain || !ctx.local_avatar) return false;
     const char* hash = host->exe_sha256();
-    if (!hash || std::strcmp(hash, kHash)) return false;
+    if (!skg::supported_gog2024(hash)) return false;
     auto* target = reinterpret_cast<void*>(host->sym("SporeCoop::Adventure::GetCreatureRelationship"));
     if (!target) return false;
     C = std::move(ctx);

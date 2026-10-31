@@ -3775,3 +3775,25 @@ The attempted attack used an empty native ability slot. The same private captain
 has empty slots in ordinary Solo, so these inputs do not establish player damage
 against the ponies. Keep that manual/native attack assertion separate from the
 verified group launch, finite NPC health and NPC-to-captain damage.
+
+## GOG 2024 Large Address Aware identity (2026-10-30)
+
+The installed GOG 2024 PE32/x86 image is 24,895,536 bytes. Its PE header starts
+at file offset `0x120`; Characteristics is at `0x136` and is `0x0102`.
+Setting `IMAGE_FILE_LARGE_ADDRESS_AWARE` changes only byte `0x136` from `02`
+to `22`, yielding full-file SHA-256
+`47f60c4db38fda1f15c5a3525617e171b0a98d728d99d645b035aa794a9199ab`.
+Clearing that bit reproduces the entire original `dc04aee5` file exactly.
+Code, data, resource sections, entry point and preferred image base do not change.
+SporeKit already selects the original symbols using its verified code fingerprint;
+its reported executable SHA remains the actual file hash. The native co-op adapters
+now accept only the two exact full-file hashes through `supported_gog2024`.
+Neither symbol identity alone nor a prefix match authorizes native adapters.
+The canonical network build ID remains `dc04aee5`, with no protocol/save change.
+
+The first patched private pair cold-booted with all 2,842 symbols and native
+editor availability, reporting `4095 MB` total user address space on 64-bit
+Windows. A separately linked x86 LAA regression allocated/wrote/read a native
+page at `0x90000000` through the ordinary pointer-validation helper. The native
+control fixture passes for both hashes; unknown hashes still install no hooks.
+See the editor validation report for the subsequent adventure-level evidence.

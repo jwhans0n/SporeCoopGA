@@ -228,7 +228,7 @@ bool begin(bool copy,std::string& error){
 
 bool init(const SkHost* host,SkMod* mod,Ctx context){
     shutdown();H=host;M=mod;C=std::move(context);
-    if(!H || std::string(H->exe_sha256())!="dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37")return false;
+    if(!H || !skg::supported_gog2024(H->exe_sha256()))return false;
     a_mode=H->sym("App::cScenarioMode::ptr");a_rm=H->sym("Resource::ResourceManager_ptr");
     a_vtable=H->sym("SporeCoop::Editor::DisplayVtable");a_can_save=H->sym("SporeCoop::Editor::CanSave");
     a_begin_save=H->sym("SporeCoop::Editor::BeginSaveCopy");a_pipeline=H->sym("SporeCoop::Editor::SaveResourcePipeline");

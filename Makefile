@@ -77,7 +77,7 @@ EDITOR_RUNTIME_FIXTURE_SRC := tests/editor_runtime_windows_tests.cpp mods/coop/e
 PACKAGE_ADMISSION_SRC := mods/coop/package_admission.cpp
 PACKAGE_ADMISSION_WINDOWS_SRC := $(PACKAGE_ADMISSION_SRC) mods/coop/package_admission_windows.cpp
 ADVENTURE_ASSETS_NATIVE_FIXTURE_SRC := $(PACKAGE_ADMISSION_WINDOWS_SRC) tests/adventure_assets_native_windows_tests.cpp mods/coop/net/adventure_assets.cpp mods/coop/net/dbpf.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp updater/sha256.cpp
-ADVENTURE_ABI_HEADERS := sdk/include/sporekit.h sdk/include/sporekit_game.hpp mods/coop/game.h mods/coop/net/protocol.h
+ADVENTURE_ABI_HEADERS := sdk/include/sporekit.h sdk/include/sporekit_game.hpp sdk/include/sporekit_build.hpp mods/coop/game.h mods/coop/net/protocol.h
 .PHONY: test-editor test-editor-windows
 test-editor:
 	@mkdir -p $(B)/host
@@ -195,6 +195,9 @@ $(B)/host/adventure_assets_native_tests.exe: $(ADVENTURE_ASSETS_NATIVE_FIXTURE_S
 # native Linux unit tests for portable netcode
 test:
 	@mkdir -p $(B)/host
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Isdk/include tests/native_build_tests.cpp -o $(B)/host/native_build_tests
+	$(B)/host/native_build_tests
+	python3 tests/large_address_aware_tests.py
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(PACKAGE_ADMISSION_SRC) tests/package_admission_tests.cpp -o $(B)/host/package_admission_tests
 	$(B)/host/package_admission_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Imods/coop -o $(B)/host/net_tests mods/coop/net/*.cpp updater/pack.cpp updater/sha256.cpp tests/net_tests.cpp
@@ -252,9 +255,9 @@ $(B)/host/adventure_pause_native_tests.exe: tests/adventure_pause_native_tests.c
 
 .PHONY: test-memory-windows
 test-memory-windows: $(B)/host/readable_memory_tests.exe
-$(B)/host/readable_memory_tests.exe: tests/readable_memory_tests.cpp sdk/include/sporekit_game.hpp
+$(B)/host/readable_memory_tests.exe: tests/readable_memory_tests.cpp sdk/include/sporekit_game.hpp sdk/include/sporekit_build.hpp
 	@mkdir -p $(B)/host
-	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Isdk/include tests/readable_memory_tests.cpp -o $@
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Wl,--large-address-aware -Isdk/include tests/readable_memory_tests.cpp -o $@
 
 ACTIONS_TEST_SRC := mods/coop/adventure_world_actions.cpp tests/adventure_actions_tests.cpp
 VEHICLES_TEST_SRC := mods/coop/adventure_world_vehicles.cpp tests/adventure_vehicle_tests.cpp
@@ -315,7 +318,7 @@ $(B)/host/adventure_mirror_tests.exe: $(MIRROR_TEST_SRC) mods/coop/adventure_wor
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(MIRROR_TEST_SRC) -o $@ -lws2_32
 
 test-progress-windows: $(B)/host/adventure_progress_tests.exe
-$(B)/host/adventure_progress_tests.exe: mods/coop/adventure_progress.cpp tests/adventure_progress_tests.cpp mods/coop/adventure_progress.h mods/coop/net/dbpf.h sdk/include/sporekit.h sdk/include/sporekit_game.hpp
+$(B)/host/adventure_progress_tests.exe: mods/coop/adventure_progress.cpp tests/adventure_progress_tests.cpp mods/coop/adventure_progress.h mods/coop/net/dbpf.h sdk/include/sporekit.h sdk/include/sporekit_game.hpp sdk/include/sporekit_build.hpp
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include mods/coop/adventure_progress.cpp tests/adventure_progress_tests.cpp -o $@
 

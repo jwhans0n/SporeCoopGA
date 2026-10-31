@@ -415,9 +415,8 @@ void SK_CDECL teleporter(void* p,void* c) {hook(p,c,8);}
 
 bool init(const SkHost* api,SkMod* mod,Ctx ctx) {
     if(ready) return true;
-    constexpr const char* hash="dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37";
     if(!api||!api->sym||!api->hook_create||!api->exe_sha256||!api->run_outside_frame||
-       !api->exe_sha256()||std::strcmp(api->exe_sha256(),hash)||!ctx.sess||!ctx.run||!ctx.act||!ctx.active||
+       !skg::supported_gog2024(api->exe_sha256())||!ctx.sess||!ctx.run||!ctx.act||!ctx.active||
        !ctx.simulation_time||!ctx.captain_of||!ctx.captain_can_act||!ctx.identity||!ctx.object_for||!ctx.retire||!ctx.captain_heal||!ctx.teleport||!ctx.actor_teleport||!ctx.failed) return false;
     H=api;C=std::move(ctx);
     a_mode=H->sym("App::cScenarioMode::ptr");

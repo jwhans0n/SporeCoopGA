@@ -10,7 +10,6 @@
 namespace adventure_social {
 static_assert(sizeof(void*) == 4, "The native social adapter requires Win32.");
 namespace {
-constexpr const char* kHash = "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37";
 constexpr uint32_t kSocialDecider = 0x14FCF96E, kPropose = 0x341BD4BE;
 // Native BT BC943D/9477/94B4 cleans 7/8/6 stack words respectively.
 using Start = bool(SK_CDECL*)(void*, uint32_t, uint32_t, uint32_t, uint32_t, void*, uint32_t);
@@ -143,7 +142,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx ctx)
     if (ready || !host || !host->sym || !host->exe_sha256 || !host->frame_index || !host->hook_create || !ctx.active || !ctx.run ||
         !ctx.act || !ctx.local_avatar || !ctx.mirrored || !ctx.listed) return false;
     const char* hash = host->exe_sha256();
-    if (!hash || std::strcmp(hash, kHash)) return false;
+    if (!skg::supported_gog2024(hash)) return false;
     const char* names[] = {"SporeCoop::Adventure::SocialProposeStart", "SporeCoop::Adventure::SocialProposeTick",
         "SporeCoop::Adventure::SocialProposeEnd", "SporeCoop::Adventure::GetBehaviorOrder",
         "SporeCoop::Adventure::SocialOrderTarget", "SporeCoop::Adventure::CreatureTarget",
