@@ -6,6 +6,8 @@
 #include "net/session.h"
 
 #include <memory>
+#include <optional>
+#include <utility>
 
 namespace editor_session {
 
@@ -131,6 +133,30 @@ struct Callbacks {
 // Hashes only the canonical Document, never peer-private decision caches/history.
 bool document_hash(const editor::Document&, std::string& hash, std::string& error);
 
+// Owned publication bytes and their computed digests. Only the pure builder
+// can create a valid value; publication never accepts caller-supplied hashes.
+class PreparedResources {
+public:
+    PreparedResources(const PreparedResources&) = default;
+    PreparedResources(PreparedResources&&) noexcept = default;
+    PreparedResources& operator=(const PreparedResources&) = default;
+    PreparedResources& operator=(PreparedResources&&) noexcept = default;
+private:
+    using Buffer = std::shared_ptr<const std::vector<uint8_t>>;
+    Buffer full_, outgoing_;
+    std::string full_hash_, outgoing_hash_;
+    bool broadcast_;
+    PreparedResources(Buffer full, Buffer outgoing, std::string full_hash,
+                      std::string outgoing_hash, bool broadcast)
+        : full_(std::move(full)), outgoing_(std::move(outgoing)),
+          full_hash_(std::move(full_hash)), outgoing_hash_(std::move(outgoing_hash)), broadcast_(broadcast) {}
+    friend std::optional<PreparedResources> prepare_resources(std::vector<uint8_t>,std::vector<uint8_t>,bool,std::string&);
+    friend class Controller;
+};
+// Pure owned-byte work, safe on a worker. Empty broadcast bytes reuse full bytes.
+std::optional<PreparedResources> prepare_resources(std::vector<uint8_t> full,
+    std::vector<uint8_t> broadcast_bytes, bool broadcast, std::string& error);
+
 class Controller {
 public:
     Controller(net::Session&, Callbacks = {}, Config = {});
@@ -143,6 +169,9 @@ public:
     // supplies a smaller immutable delta for peers that already have the baseline.
     bool update_resources(std::vector<uint8_t> full, editor::Revision target, std::string& error,
                           bool broadcast = true, std::vector<uint8_t> broadcast_bytes = {});
+    // Outside-frame publication of immutable worker-prepared bytes. Rechecks
+    // the live context, target and queue bounds without hashing/copying payloads.
+    bool update_resources(PreparedResources, editor::Revision target, std::string& error);
     bool accept_offer(std::string& error);
     void end(); // Authoring session only; leaves the party transport connected.
     // Outside-frame failure notification; keeps the last document for recovery

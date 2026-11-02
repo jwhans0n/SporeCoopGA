@@ -5,8 +5,10 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <future>
 #include <limits>
 #include <thread>
+#include <type_traits>
 
 using namespace editor;
 namespace es = editor_session;
@@ -625,6 +627,71 @@ static void test_failed_delta_staging_publishes_nothing()
     bounded.controllers[0]->on_join(1);
     CHECK(bounded.spin([&] { return bounded.controllers[1]->view().phase == es::Phase::Offered; })); CHECK(bounded.controllers[1]->accept_offer(error));
     CHECK(bounded.spin([&] { return bounded.native[1].baselines == 2; })); CHECK(bounded.native[1].imported_payloads.back() == resource(0));
+}
+
+static void test_worker_prepared_resource_publication()
+{
+    static_assert(!std::is_default_constructible_v<es::PreparedResources>);
+    static_assert(!std::is_constructible_v<es::PreparedResources,
+        std::shared_ptr<const std::vector<uint8_t>>,std::shared_ptr<const std::vector<uint8_t>>,
+        std::string,std::string,bool>);
+    std::string error;
+    CHECK(!es::prepare_resources({}, {}, true, error)); CHECK(!error.empty());
+    CHECK(!es::prepare_resources(std::vector<uint8_t>(w::kResourceBytes+1), {}, true, error));
+    CHECK(!es::prepare_resources(resource(0),std::vector<uint8_t>(w::kResourceBytes+1),false,error));
+    Party p(2);p.start();p.accept();
+    auto full=resource(0,20000),delta=resource(0,80);full.back()=0xB2;delta.back()=0xD2;
+    const auto expected_full=full,expected_delta=delta;
+    auto future=std::async(std::launch::async,[full,delta]{
+        std::string worker_error;
+        auto prepared=es::prepare_resources(full,delta,true,worker_error);
+        return std::make_pair(std::move(prepared),worker_error);
+    });
+    auto [prepared,worker_error]=future.get();CHECK(prepared.has_value());CHECK(worker_error.empty());
+    if(!prepared)return;
+    full.back()=0;delta.back()=0; // Preparation owns bytes independently of the caller.
+    CHECK(!p.controllers[1]->update_resources(*prepared,0,error)); // Live host authority is checked at publication.
+    CHECK(!p.controllers[0]->update_resources(*prepared,2,error));
+    auto retained=*prepared;
+    auto publication=std::move(*prepared);
+    CHECK(!p.controllers[0]->update_resources(std::move(*prepared),0,error)); // Moved-from values carry no authority.
+    CHECK(p.controllers[0]->update_resources(std::move(publication),0,error));CHECK(error.empty());
+    CHECK(p.controllers[0]->publish_saved({0,{0x8822,0x366A930D,0}},error));
+    CHECK(p.spin([&]{return p.native[1].saved==1;}));
+    CHECK(p.native[1].imported_payloads.back()==expected_delta);
+    p.controllers[0]->on_join(1);
+    CHECK(p.spin([&]{return p.controllers[1]->view().phase==es::Phase::Offered;}));
+    CHECK(p.controllers[1]->accept_offer(error));
+    CHECK(p.spin([&]{return p.native[1].baselines==2&&p.controllers[1]->view().phase==es::Phase::Ready;}));
+    CHECK(p.native[1].imported_payloads.back()==expected_full);
+    CHECK(p.spin([&]{return p.controllers[0]->settled();}));
+    const auto tokens=p.grant(0,{ScopeKind::Placement,object_a,{}});
+    CHECK(p.controllers[0]->submit(p.edit(0,object_a,position,Vec3{31,4,5},tokens),error));CHECK(p.revision(1));
+    CHECK(!p.controllers[0]->update_resources(std::move(retained),0,error)); // The worker result can become stale.
+    p.release(0,tokens);
+
+    auto cache=resource(1,18000);cache.back()=0xE2;
+    auto quiet=es::prepare_resources(cache,resource(1,32),false,error);CHECK(quiet.has_value());
+    if(!quiet)return;
+    const auto imports=p.native[1].imports;
+    CHECK(p.controllers[0]->update_resources(std::move(*quiet),1,error));
+    for(unsigned i=0;i<20;++i)p.step();CHECK(p.native[1].imports==imports);
+    p.controllers[0]->on_join(1);
+    CHECK(p.spin([&]{return p.controllers[1]->view().phase==es::Phase::Offered;}));
+    CHECK(p.controllers[1]->accept_offer(error));
+    CHECK(p.spin([&]{return p.native[1].baselines==3&&p.controllers[1]->view().phase==es::Phase::Ready;}));
+    CHECK(p.native[1].imported_payloads.back()==cache);
+
+    es::Config config;config.transfer_bytes=20000;Party bounded(2,config);bounded.start();bounded.accept();
+    auto large=es::prepare_resources(resource(0),resource(0,9000),true,error);CHECK(large.has_value());
+    if(!large)return;
+    CHECK(!bounded.controllers[0]->update_resources(std::move(*large),0,error));
+    for(unsigned i=0;i<20;++i)bounded.step();CHECK(bounded.native[1].imports==1);
+    bounded.controllers[0]->on_join(1);
+    CHECK(bounded.spin([&]{return bounded.controllers[1]->view().phase==es::Phase::Offered;}));
+    CHECK(bounded.controllers[1]->accept_offer(error));
+    CHECK(bounded.spin([&]{return bounded.native[1].baselines==2&&bounded.controllers[1]->view().phase==es::Phase::Ready;}));
+    CHECK(bounded.native[1].imported_payloads.back()==resource(0));
 }
 
 static void test_close_waits_for_accepted_structural_commit()
@@ -1354,7 +1421,7 @@ static void test_creation_preview_is_ephemeral_and_owned(){
 int main(int argc,char** argv)
 {
     if(argc==2&&std::string(argv[1])=="--durability"){
-        CHECK(net::net_init());test_asynchronous_durable_acceptance();test_asynchronous_failure_restores_before_acceptance();test_project_and_planet_field_leases_survive_refresh();
+        CHECK(net::net_init());test_asynchronous_durable_acceptance();test_asynchronous_failure_restores_before_acceptance();test_project_and_planet_field_leases_survive_refresh();test_worker_prepared_resource_publication();
         std::printf("editor async durability: %d checks, %d failures\n",checks,failures);return failures?1:0;
     }
     if(argc==2&&std::string(argv[1])=="--previews"){
@@ -1364,7 +1431,7 @@ int main(int argc,char** argv)
     const bool focused=argc==2&&std::string(argv[1])=="--tombstones";
     const bool classes=argc==2&&std::string(argv[1])=="--class-settings";
     if(argc>1&&!focused&&!classes)return 2;
-    CHECK(net::net_init());if(!focused&&!classes){test_creation_preview_is_ephemeral_and_owned();test_asynchronous_durable_acceptance();test_asynchronous_failure_restores_before_acceptance();test_project_and_planet_field_leases_survive_refresh();}
+    CHECK(net::net_init());if(!focused&&!classes){test_creation_preview_is_ephemeral_and_owned();test_asynchronous_durable_acceptance();test_asynchronous_failure_restores_before_acceptance();test_project_and_planet_field_leases_survive_refresh();test_worker_prepared_resource_publication();}
     if(!focused){test_shared_class_properties_udp(2);test_shared_class_properties_udp(4);}
     if(!classes){test_tombstone_regressions(); if(!focused){test_release_quarantines_and_waits_for_reply(); test_host_release_quarantine_survives_view_refresh(); test_distinct_release_tokens_keep_both_quarantined(); test_reordered_lease_requests_cannot_recreate_released_scope(); test_deferred_lease_bounds_and_lifecycle(); test_repeated_release_fences_past_cache_window(); test_large_join_inventory_is_bounded_pinned_and_nonblocking(); test_join_inventory_failures_preserve_party_and_draft(); test_transient_preview_authority_coalescing_and_lifecycle(); test_guest_end_preparing_reoffers_without_freezing_party(); test_two_player_and_real_udp(); test_host_durable_coverage(); test_four_players_and_controls(); test_large_operation_transfer(); test_saved_snapshot_waits_for_native_gesture(); test_delete_revokes_lease_before_native_decision(0); test_delete_revokes_lease_before_native_decision(1); test_accepted_retry_keeps_new_gesture_ownership(0); test_accepted_retry_keeps_new_gesture_ownership(1); test_queued_begin_and_new_roster(); test_native_gesture_transaction_holds(); test_same_controller_host_to_guest(); test_delta_resources_keep_complete_late_join_cache(); test_failed_delta_staging_publishes_nothing(); test_close_waits_for_accepted_structural_commit(); test_settled_waits_for_join_but_excludes_failed_peer(); test_same_revision_saved_needs_explicit_applied_ack(); test_local_freeze_notifies_party_once(); test_deferred_baseline_and_fail_closed(); test_import_and_input_bounds(); test_rehost_authorship_and_document_hash(); test_real_udp_packet_adversity(2); test_real_udp_packet_adversity(4);}}
     std::printf("editor_session UDP/fake-native: %d checks, %d failures\n", checks, failures);

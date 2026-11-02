@@ -27,6 +27,23 @@ bool document_hash(const Document& document, std::string& hash, std::string& err
     hash = upd::sha256_hex(bytes); return true;
 }
 
+std::optional<PreparedResources> prepare_resources(std::vector<uint8_t> full,
+    std::vector<uint8_t> broadcast_bytes,bool broadcast,std::string& error)
+{
+    if(full.empty() || full.size()>w::kResourceBytes || broadcast_bytes.size()>w::kResourceBytes){
+        error="Invalid prepared resource size.";return {};
+    }
+    try{
+        if(!broadcast)broadcast_bytes.clear();
+        auto buffer=std::make_shared<const std::vector<uint8_t>>(std::move(full));
+        auto full_hash=upd::sha256_hex(*buffer);
+        auto outgoing=broadcast_bytes.empty()?buffer:std::make_shared<const std::vector<uint8_t>>(std::move(broadcast_bytes));
+        auto outgoing_hash=outgoing==buffer?full_hash:upd::sha256_hex(*outgoing);
+        error.clear();
+        return PreparedResources{std::move(buffer),std::move(outgoing),std::move(full_hash),std::move(outgoing_hash),broadcast};
+    }catch(const std::exception& failure){error=failure.what();return {};}
+}
+
 struct Controller::Impl {
     struct Transfer {
         w::Context context;
@@ -1185,29 +1202,33 @@ bool Controller::start(State state, std::vector<uint8_t> resources, const std::s
 
 bool Controller::update_resources(std::vector<uint8_t> resources, Revision target, std::string& error, bool broadcast, std::vector<uint8_t> broadcast_bytes)
 {
+    auto prepared=prepare_resources(std::move(resources),std::move(broadcast_bytes),broadcast,error);
+    return prepared && update_resources(std::move(*prepared),target,error);
+}
+
+bool Controller::update_resources(PreparedResources prepared,Revision target,std::string& error)
+{
     auto& i = *impl_;
-    if (!i.hosting || i.view.phase != Phase::Ready || resources.empty() || resources.size() > w::kResourceBytes || broadcast_bytes.size() > w::kResourceBytes || target < i.context().revision || target > i.context().revision + 1) { error = "Invalid host resource revision or size."; return false; }
-    if (!broadcast) broadcast_bytes.clear();
-    if (i.transfer_bytes() + resources.size() + broadcast_bytes.size() > i.config.transfer_bytes) { error = "Resource staging exceeds bounded transfer memory."; return false; }
-    for (const auto& [id, member] : i.view.members) if (id && broadcast && (member.phase == Phase::Ready || member.phase == Phase::Syncing)) {
+    if (!i.hosting || i.view.phase != Phase::Ready || !prepared.full_ || !prepared.outgoing_ || target < i.context().revision || target > i.context().revision + 1) { error = "Invalid host resource revision or size."; return false; }
+    const auto outgoing_size=prepared.outgoing_==prepared.full_?0:prepared.outgoing_->size();
+    if (i.transfer_bytes() + prepared.full_->size() + outgoing_size > i.config.transfer_bytes) { error = "Resource staging exceeds bounded transfer memory."; return false; }
+    for (const auto& [id, member] : i.view.members) if (id && prepared.broadcast_ && (member.phase == Phase::Ready || member.phase == Phase::Syncing)) {
         auto ch = i.channels.find(id);
         if (ch != i.channels.end() && ch->second.ordered.size() + ch->second.priority.size() + 2 > i.config.outbound_packets) { error = "Resource publication needs room for its commit decision."; return false; }
     }
-    Buffer buffer = std::make_shared<const std::vector<uint8_t>>(std::move(resources));
-    auto full_hash = upd::sha256_hex(*buffer);
-    Buffer outgoing = broadcast_bytes.empty() ? buffer : std::make_shared<const std::vector<uint8_t>>(std::move(broadcast_bytes));
-    auto broadcast_hash = outgoing == buffer ? full_hash : upd::sha256_hex(*outgoing);
+    auto buffer=std::move(prepared.full_),outgoing=std::move(prepared.outgoing_);
+    auto full_hash=std::move(prepared.full_hash_),broadcast_hash=std::move(prepared.outgoing_hash_);
     if (target == i.context().revision && !i.coordinator.applying()) {
         std::vector<uint8_t> queued; queued.reserve(i.view.members.size());
         auto rollback = [&] { for (auto previous : queued) i.channels.at(previous).ordered.pop_back(); };
         try {
-            if (broadcast) for (const auto& [id, member] : i.view.members) if (id && (member.phase == Phase::Ready || member.phase == Phase::Syncing)) {
+            if (prepared.broadcast_) for (const auto& [id, member] : i.view.members) if (id && (member.phase == Phase::Ready || member.phase == Phase::Syncing)) {
                 if (!i.queue_transfer(id, i.context(), w::TransferKind::Resources, outgoing, error, broadcast_hash)) { rollback(); return false; }
                 queued.push_back(id);
             }
         } catch (...) { rollback(); throw; }
         i.resources = std::move(buffer); i.resources_hash = std::move(full_hash);
-    } else i.staged = Impl::ResourceStage{target, std::move(buffer), std::move(outgoing), std::move(full_hash), std::move(broadcast_hash), broadcast};
+    } else i.staged = Impl::ResourceStage{target, std::move(buffer), std::move(outgoing), std::move(full_hash), std::move(broadcast_hash), prepared.broadcast_};
     error.clear(); return true;
 }
 
