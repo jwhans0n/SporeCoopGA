@@ -912,3 +912,65 @@ fault counters are in `out/preview9-c14-vehicle-failure-full/result.json`.
 Creation-return materialization and the host cast discrepancy must be fixed and
 rerun before release. No personal preview payload or 4 GB executable was
 replaced, and no main merge was performed.
+
+## Follow-up: one verified projection for native pose captures
+
+The candidate 14 profile exposed a repeated projection even when the live-scene
+comparison eventually reported a cache hit: the first validation of a captured
+after-image still decoded and projected that image again. The follow-up projects
+one owned native Read of the serialized pose image and retains its immutable
+value proof. It checks the original marker class, position, quaternion, scale,
+relative scale, elevation, sound and destination primitives against that
+projection, plus Captain primitives, metadata, exact bindings and fresh resolved
+class/Captain/Crew identities. A second native Write closes callback changes.
+Only the seven explicitly witnessed placement companion properties may differ;
+their presence must stay unchanged. Unrelated structured properties and all
+generic class, Crew, terrain and creation changes keep the original full path.
+
+Read-only comparison work can borrow at most two parsed owners within the same
+synchronous native drain callback, with a 16 MiB retained serialized-input cap.
+The lifetime bound counts borrowed owners even after index eviction. Native
+owners die on the game thread at the outer callback boundary; workers and
+recovery/network snapshots receive only owned bytes and values. Immutable
+projection-cache hits also avoid copying the entire retained document.
+
+The value-proof identity is separate from gesture authorization. It remains
+available during a submitted operation and an owned Ready, Preparing, Playing
+or Returning context with the same attached project, epoch, local participant
+and transport. Save, export, recovery, teardown and incomplete contexts still
+withdraw it. Native generation, actual scene owners and source keys remain
+independent exact proof fences. The real native adapter test withdraws the
+authorizing scope during submission, verifies zero additional Reads for the
+existing proof, and confirms native gesture input is still blocked. Exact
+terrain materialization witnesses use that read identity too; twelve nonempty
+map cases retain normalization during an input hold and retire it on an actual
+project, participant, generation or scene replacement.
+
+Local cumulative QPC counters now separate native Read, Write, projection,
+asset resolution and supported-change work. These spans are inclusive and must
+not be added together. Deferred parsed-owner destruction is outside the inner
+supported-change span; actual frame measurements still include that cost.
+The performance harness checks zero retained owners at external callback
+boundaries and records per-gesture counter deltas outside its measured frames.
+
+The independent review found and corrected an initially overbroad placement
+property copy before candidate delivery. Controlled tests now reject an unknown
+structured-property change alongside movement, reject normalized live pose or
+Captain primitives, and retain opaque marker-act rejection. They also cover
+pool holes, both teleporter endpoints, sound companions, quaternion changes,
+resolver races, stale scope/generation, nested Read reentry, allocation failure,
+history routing and native-owner destruction. The strict actual-i686 run passed
+2,122 focused pose-capture checks, 4,671 focused terrain materialization checks
+and 20,198 complete native adapter checks, with 48 compile inputs unchanged.
+Resolver callbacks which fail while replacing an owner or context produce no
+gesture and cannot enter the generic fallback. Source, executable and log hashes are in
+`out/preview9-phase1-receipt.json`; logs are
+`out/editor-preview9-phase1-{build,focused,full,terrain}.log`.
+
+The retained candidate 14 counter asymmetry also identified a legitimate local
+native root alias differing from the canonical resource-envelope key. Its exact
+fallback cost is not established by those counters, since the fallback can
+itself reuse an existing projection. Separating a pinned local scene identity
+from the canonical envelope remains a reviewed follow-up, not part of this
+patch. The new capture work still needs measured two/four-player validation;
+the failed candidate 14 timing budgets have not been waived.

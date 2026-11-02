@@ -1454,7 +1454,7 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
         ++generation;CHECK(validate(base,base.document,error));CHECK(t_reads==reads+1);
         {ValidationScope nested;CHECK(validate(base,base.document,error));CHECK(t_reads==reads+1);}
     }
-    CHECK(!validated_snapshot && !validation_depth);const auto reads=t_reads;CHECK(validate(base,base.document,error));CHECK(t_reads==reads);
+    CHECK(parsed_images.empty() && !parsed_image_bytes && !validation_depth);const auto reads=t_reads;CHECK(validate(base,base.document,error));CHECK(t_reads==reads);
     // A copied Snapshot cannot smuggle an unsupported metadata edit behind an
     // otherwise equal native byte stream or a successful validation cache hit.
     Gesture metadata_change;metadata_change.before=base;metadata_change.after=base;
@@ -1495,8 +1495,12 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
 #include "editor_native_act_cache_fixture.h"
 #include "editor_native_crew_assets_fixture.h"
 #include "editor_native_recent_fixture.h"
+#include "editor_native_pose_capture_fixture.h"
 #include "editor_native_terrain_materialization_fixture.h"
 int main(int argc,char** argv){
+    if(argc==2&&std::string(argv[1])=="--pose-capture-only"){
+        test_pose_capture_proofs();std::printf("native pose capture proofs: %u checks passed\n",checks);return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--terrain-materialization-only"){
         test_terrain_materialization_hooks();std::printf("native terrain materialization: %u checks passed\n",checks);return 0;
     }
@@ -1504,6 +1508,7 @@ int main(int argc,char** argv){
         test_recent_native_proofs();std::printf("native recent proofs: %u checks passed\n",checks);return 0;
     }
     test_recent_native_proofs();
+    test_pose_capture_proofs();
     test_terrain_materialization_hooks();
     test_owned_crew_asset_versions();
     test_act_projection_production_cache();test_act_projection_cache_bounds();

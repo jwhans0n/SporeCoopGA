@@ -26,6 +26,15 @@
 #include "sui.h"
 
 namespace editor_native {
+struct CreationTerrainProof {
+    GestureScope scope;uint64_t serial=0,generation=0;
+    SceneOwner owner;uintptr_t tool=0;
+    Snapshot entry;
+    editor_native_terrain_materialization::Recipe rendered;
+    editor_native_terrain_materialization::Materialization materialization;
+    size_t owned_bytes=0;
+    mutable bool retired=false;
+};
 namespace {
 const SkHost* H;
 SkMod* M;
@@ -59,18 +68,15 @@ std::array<uint64_t,8> tool_rejection_counts{};
 std::map<sui::Win,uint32_t> fenced_windows;
 uint64_t fenced_generation=0;
 uint64_t generation = 1, captures = 0, restores = 0, rejected = 0;
-struct ValidatedSnapshot {
-    std::vector<uint8_t> bytes;
-    std::vector<Binding> bindings;
-    editor::Document document;
-    editor::ResourceKey source,captain;
-    bool captain_locked=false;
-    std::optional<Snapshot::Metadata> metadata;
-    uint64_t generation=0;
-    uint32_t act=0;
-};
-std::optional<ValidatedSnapshot> validated_snapshot;
 unsigned validation_depth=0;
+WorkStats native_work;
+GestureScope value_scope(){return C.projection_scope?C.projection_scope():C.gesture_scope?C.gesture_scope():GestureScope{};}
+uint64_t work_clock(){LARGE_INTEGER value{};return QueryPerformanceCounter(&value)&&value.QuadPart>0?uint64_t(value.QuadPart):0;}
+struct WorkTimer {
+    WorkSpan& span;uint64_t begin=work_clock();
+    explicit WorkTimer(WorkSpan& value):span(value){++span.calls;}
+    ~WorkTimer(){const auto end=work_clock();if(begin&&end>=begin)span.ticks+=end-begin;}
+};
 struct ResolvedAssetWitness {uint64_t server=0;editor::ResourceKey key;bool operator==(const ResolvedAssetWitness&)const=default;};
 struct ProjectedSnapshot {
     Snapshot image;
@@ -91,6 +97,7 @@ struct ScopedResolutionAudit {
     ~ScopedResolutionAudit(){resolution_audit=previous;}
 };
 bool resolve_asset(uint64_t server,editor::ResourceKey& key){
+    WorkTimer timer(native_work.resolutions);
     const auto resolve=H&&H->sym?H->sym("Simulator::Scenario::ResolveLocalServerAsset"):0;
     if(!resolve || !skg::cdecl_call<bool>(resolve,server,&key))return false;
     if(resolution_audit){
@@ -102,7 +109,7 @@ bool resolve_asset(uint64_t server,editor::ResourceKey& key){
     return true;
 }
 void remember_projection(const Snapshot&,const std::vector<ResolvedAssetWitness>&,const GestureScope&,uint64_t);
-bool projected_snapshot(const Snapshot&,Snapshot&,std::string&);
+std::shared_ptr<const ProjectedSnapshot> projected_snapshot(const Snapshot&,std::string&);
 editor_native_cache::ClassesCache class_projection_cache;
 editor_native_act_cache::Cache act_projection_cache;
 [[maybe_unused]] uint64_t validation_hits=0;
@@ -121,7 +128,12 @@ struct PreviewActor {
 std::map<editor::Peer,PreviewActor> preview_actors;
 uint32_t selected_class;
 std::optional<editor::ObjectId> input_clone, gesture_clone;
-bool input_cast=false,gesture_cast=false;
+bool input_cast=false,gesture_cast=false,input_pose=false,gesture_pose=false;
+struct ScopedPoseInput {
+    bool previous=input_pose;
+    explicit ScopedPoseInput(bool pose=true){input_pose=previous||pose;}
+    ~ScopedPoseInput(){input_pose=previous;}
+};
 bool input_speech=false;
 uint32_t script_events=0;
 constexpr uint32_t kResourceSize = 0x2CB0, kLimit = 32u << 20;
@@ -308,6 +320,7 @@ void* construct() {
     return p;
 }
 void* parse(const std::vector<uint8_t>& bytes, std::string& error) {
+    WorkTimer timer(native_work.reads);
     if (bytes.empty() || bytes.size() > kLimit) { error = "Invalid native editor snapshot size"; return nullptr; }
     if(bytes.size()>=8 && editor::terrain_word(bytes,0)==0xB523D4F9 && editor::terrain_word(bytes,4)==17){
         editor_native_terrain::Properties checked;if(!editor_native_terrain::decode(bytes,checked,error))return nullptr;
@@ -327,12 +340,80 @@ void* parse(const std::vector<uint8_t>& bytes, std::string& error) {
     return std::exchange(result.p, nullptr);
 }
 bool serialize(void* p, std::vector<uint8_t>& bytes, std::string& error) {
+    WorkTimer timer(native_work.writes);
     Stream stream{stream_vtable, {}, 0, 1, false, false};
     if (!skg::readable(p, kResourceSize) || !skg::thiscall<bool>(a_write, p, &stream) ||
         stream.failed || stream.bytes.empty()) {
         error = "Native editor snapshot serialization failed"; return false;
     }
     bytes = std::move(stream.bytes); return true;
+}
+
+// These owners exist only inside the outer synchronous ValidationScope. No
+// native address is stored in a Snapshot or handed to a worker. Only the
+// explicitly read-only consumers below may borrow one; mutations keep using
+// their own constructed/Read resource.
+size_t parsed_owner_count=0,parsed_owner_bytes=0;
+struct ParsedImage {
+    std::vector<uint8_t> bytes;
+    editor::ResourceKey source;
+    GestureScope scope;
+    uint64_t generation=0;
+    void* resource=nullptr;
+    ~ParsedImage(){
+        if(resource){release(resource);--parsed_owner_count;parsed_owner_bytes-=bytes.size();}
+    }
+};
+std::deque<std::shared_ptr<const ParsedImage>> parsed_images;
+size_t parsed_image_bytes=0;
+struct ReadImage {
+    std::shared_ptr<const ParsedImage> retained;
+    Owned owned;
+    void* p=nullptr;
+    void* get()const{return p;}
+};
+bool read_image(const Snapshot& image,ReadImage& out,std::string& error){
+    const auto scope=value_scope();
+    if(validation_depth)for(auto at=parsed_images.rbegin();at!=parsed_images.rend();++at){
+        const auto& found=**at;
+        if(found.generation==generation && found.scope==scope && found.source==image.source && found.bytes==image.bytes){
+            out.retained=*at;out.p=found.resource;++native_work.parsed_hits;return true;
+        }
+    }
+    ++native_work.parsed_misses;
+    const auto pinned_generation=generation;
+    Owned parsed(parse(image.bytes,error));if(!parsed.p)return false;
+    if(generation!=pinned_generation || value_scope()!=scope || generation!=pinned_generation){
+        error="The immutable native image belongs to an expired editor";return false;
+    }
+    // Native Read omits the external ScenarioResource identity at +8.
+    skg::field<editor::ResourceKey>(parsed.p,8)=image.source;
+    constexpr size_t limit=16u<<20;
+    if(validation_depth && image.bytes.size()<=limit){
+        try{
+            // A borrowed owner may outlive its deque entry during reentry.
+            // Count its native lifetime, not just currently indexed entries.
+            for(auto at=parsed_images.begin();at!=parsed_images.end() &&
+                (parsed_owner_count>=2 || parsed_owner_bytes>limit-image.bytes.size());){
+                if(at->use_count()==1){parsed_image_bytes-=(*at)->bytes.size();at=parsed_images.erase(at);}
+                else ++at;
+            }
+            if(parsed_owner_count>=2 || parsed_owner_bytes>limit-image.bytes.size()){
+                out.owned.p=std::exchange(parsed.p,nullptr);out.p=out.owned.p;return true;
+            }
+            auto entry=std::make_shared<ParsedImage>();entry->bytes=image.bytes;entry->source=image.source;
+            entry->scope=scope;entry->generation=pinned_generation;
+            while(!parsed_images.empty()&&(parsed_images.size()>=2 || parsed_image_bytes>limit-image.bytes.size())){
+                parsed_image_bytes-=parsed_images.front()->bytes.size();parsed_images.pop_front();
+            }
+            parsed_images.push_back(entry);parsed_image_bytes+=image.bytes.size();
+            entry->resource=std::exchange(parsed.p,nullptr);++parsed_owner_count;parsed_owner_bytes+=image.bytes.size();
+            native_work.parsed_peak_owners=std::max(native_work.parsed_peak_owners,parsed_owner_count);
+            native_work.parsed_peak_bytes=std::max(native_work.parsed_peak_bytes,parsed_owner_bytes);
+            out.p=entry->resource;out.retained=std::move(entry);return true;
+        }catch(const std::bad_alloc&){} // Reuse is optional; the owned Read still succeeds.
+    }
+    out.owned.p=std::exchange(parsed.p,nullptr);out.p=out.owned.p;return true;
 }
 
 struct Rows { uint8_t* begin = nullptr; uint8_t* end = nullptr; };
@@ -665,6 +746,21 @@ bool asset_witnesses(void* resource,const editor::Document& document,std::vector
     }
     out=std::move(found);return true;
 }
+bool resolved_asset_values(void* resource,const editor::Document& document,std::vector<editor::ResourceKey>& out,std::string& error){
+    std::vector<editor::ResourceKey> values;
+    auto value=[&](void* native){editor::ResourceKey key;if(!class_primary_asset(native,key,error))return false;values.push_back(key);return true;};
+    if(!document.class_schema.empty()){
+        Rows classes;if(!rows(resource,0x2BF4,0x27E8,1024,classes))return false;
+        for(auto row=classes.begin;row!=classes.end;row+=0x27E8)
+            for(auto offset:{0u,0x28u,0x50u})if(!value(row+8+offset))return false;
+    }
+    if(document.settings.contains(kCaptainObject)&&!value(skg::ptr_add<void>(resource,0x130)))return false;
+    if(document.settings.contains(kCrewObject)){
+        Rows crew;if(!rows(resource,0x178,0x38,3,crew))return false;
+        for(auto row=crew.begin;row!=crew.end;row+=0x38)if(!value(row))return false;
+    }
+    out=std::move(values);return true;
+}
 bool current_asset_witnesses(const std::vector<ResolvedAssetWitness>& assets){
     if(assets.empty())return true;
     for(const auto& asset:assets){
@@ -687,7 +783,7 @@ void remember_projection(const Snapshot& image,const std::vector<ResolvedAssetWi
         charged+=assets.size()*sizeof(ResolvedAssetWitness);
         if(image.metadata)for(const auto& text:image.metadata->text)charged+=text.size()*sizeof(char16_t);
         if(charged>limit)return;
-        if(native_generation!=generation || (C.gesture_scope && C.gesture_scope()!=scope))return;
+        if(native_generation!=generation || value_scope()!=scope || native_generation!=generation)return;
         for(auto at=projected_snapshots.begin();at!=projected_snapshots.end();++at)
             if((*at)->generation==generation && (*at)->scope==scope && same_projection_image((*at)->image,image)){
                 projected_snapshot_bytes-=(*at)->cost;projected_snapshots.erase(at);break;
@@ -699,8 +795,8 @@ void remember_projection(const Snapshot& image,const std::vector<ResolvedAssetWi
         projected_snapshots.push_back(std::move(immutable));projected_snapshot_bytes+=charged;
     }catch(const std::bad_alloc&){} // Optional reuse cannot reject a valid projection.
 }
-bool projected_snapshot(const Snapshot& image,Snapshot& out,std::string& error){
-    const auto scope=C.gesture_scope?C.gesture_scope():GestureScope{};
+std::shared_ptr<const ProjectedSnapshot> projected_snapshot(const Snapshot& image,std::string& error){
+    const auto scope=value_scope();
     std::shared_ptr<const ProjectedSnapshot> retained;
     for(auto at=projected_snapshots.rbegin();at!=projected_snapshots.rend();++at){
         if((*at)->generation==generation && (*at)->scope==scope && same_projection_image((*at)->image,image)){
@@ -710,11 +806,10 @@ bool projected_snapshot(const Snapshot& image,Snapshot& out,std::string& error){
     // Resolver callbacks cannot invalidate the retained owning proof or leave
     // an iterator into a cache cleared by a new native context.
     if(retained && current_asset_witnesses(retained->assets) &&
-       (!C.gesture_scope || C.gesture_scope()==scope) && retained->generation==generation){
-        try{out=retained->image;++projected_snapshot_hits;error.clear();return true;}
-        catch(const std::bad_alloc&){}
+       value_scope()==scope && retained->generation==generation){
+        ++projected_snapshot_hits;error.clear();return retained;
     }
-    ++projected_snapshot_misses;return false;
+    ++projected_snapshot_misses;return {};
 }
 bool class_roster_fingerprint(void* resource,const Rows& classes,editor_native_cache::Key& key,std::string& error){
     // Server IDs are resolver hints rather than immutable resource identities.
@@ -784,6 +879,7 @@ bool projection(void* r, Snapshot& out, std::string& error,
                 std::optional<bool> requested_authoring=std::nullopt,
                 const editor::Document* identity=nullptr,
                 const std::vector<uint8_t>* native_bytes=nullptr,bool allow_recipe_replacement=false) {
+    WorkTimer timer(native_work.projections);
     struct ScopedAuthoring {
         std::optional<bool> prior=authoring_override;
         explicit ScopedAuthoring(std::optional<bool> value){if(value)authoring_override=value;}
@@ -965,11 +1061,11 @@ bool capture_metadata(void* owner,Snapshot::Metadata& metadata,std::string& erro
 RecentMatches reuse_resource_projection(void* resource,Snapshot& out,const std::map<uint32_t,editor::ObjectId>* supplied,
                                const editor::Document* identity,std::string& error){
     if(projected_snapshots.empty())return RecentMatches::Different;
-    const auto scope=C.gesture_scope?C.gesture_scope():GestureScope{};
+    const auto scope=value_scope();
     const auto pinned_generation=generation;auto* pinned_mode=mode();auto* pinned_data=data(pinned_mode);
     const bool live_input=editor_native::resource(pinned_data)==resource;
     auto consistent=[&]{
-        if(generation!=pinned_generation || (C.gesture_scope && C.gesture_scope()!=scope))return false;
+        if(generation!=pinned_generation || value_scope()!=scope || generation!=pinned_generation)return false;
         return !live_input || (mode()==pinned_mode && data(pinned_mode)==pinned_data &&
             editor_native::resource(pinned_data)==resource && skg::readable(resource,kResourceSize) &&
             skg::field<editor::ResourceKey>(resource,8)==out.source);
@@ -1067,6 +1163,116 @@ bool capture_resource(void* r, uint32_t act, Snapshot& out, std::string& error,
     if(!serialized_bindings(out.bindings,compact,error))return false;
     out.bindings=std::move(compact);
     ++captures; return true;
+}
+
+struct PoseCaptureProof {
+    std::vector<ResolvedAssetWitness> assets;
+    GestureScope scope;
+    uint64_t generation=0;
+};
+bool only_existing_pose_fields(const editor::Document& before,const editor::Document& after){
+    if(before.placements.size()!=after.placements.size())return false;
+    auto expected=before;bool changed=false;
+    for(const auto& [id,placement]:after.placements){
+        auto found=expected.placements.find(id);if(found==expected.placements.end())return false;
+        auto& prior=found->second;
+        changed=changed || prior.position!=placement.position || prior.rotation!=placement.rotation ||
+            prior.scale!=placement.scale || prior.properties!=placement.properties;
+        prior.position=placement.position;prior.rotation=placement.rotation;
+        prior.scale=placement.scale;
+        // A new typed property is not automatically a pose companion. Keep
+        // every unrelated or structured value exact unless its original live
+        // primitive is explicitly checked by direct_pose_fields below.
+        for(auto key:{kRelativeScaleProperty,kElevationProperty,kSoundPitchProperty,kSoundGainProperty,
+                      kDestinationPositionProperty,kDestinationRotationProperty,kDestinationScaleProperty}){
+            auto old=prior.properties.find(key);const auto next=placement.properties.find(key);
+            if((old==prior.properties.end())!=(next==placement.properties.end()))return false;
+            if(old!=prior.properties.end())old->second=next->second;
+        }
+    }
+    return changed && expected==after;
+}
+bool direct_pose_fields(void* resource,const std::map<uint32_t,editor::ObjectId>& supplied,const Snapshot& image){
+    Rows markers;if(!rows(resource,0x2C10,0x238,kPlacementLimit,markers))return false;
+    size_t count=0;
+    for(auto raw=markers.begin;raw!=markers.end;raw+=0x238)if(live_slot(raw)){
+        const auto key=slot_index(markers,raw);auto identity=supplied.find(key);
+        if(identity==supplied.end())return false;
+        auto found=image.document.placements.find(identity->second);if(found==image.document.placements.end())return false;
+        const auto& p=found->second;auto* marker=raw+4;++count;
+        auto same=[&]<class T>(uint32_t property,uint32_t offset){
+            auto value=p.properties.find(property);if(value==p.properties.end())return true;
+            const auto* wanted=std::get_if<T>(&value->second);return wanted&&*wanted==skg::field<T>(marker,offset);
+        };
+        if(skg::field<uint32_t>(marker,0)!=uint32_t(p.class_id.id) || skg::field<editor::Vec3>(marker,4)!=p.position ||
+           skg::field<editor::Rotation>(marker,0x10)!=p.rotation || skg::field<float>(marker,0x20)!=p.scale ||
+           !same.template operator()<float>(kRelativeScaleProperty,0x24) || !same.template operator()<float>(kElevationProperty,0x220) ||
+           !same.template operator()<float>(kSoundPitchProperty,0x1E0) || !same.template operator()<float>(kSoundGainProperty,0x1E4) ||
+           !same.template operator()<editor::Vec3>(kDestinationPositionProperty,0x1E8) ||
+           !same.template operator()<editor::Rotation>(kDestinationRotationProperty,0x1F4) ||
+           !same.template operator()<float>(kDestinationScaleProperty,0x204))return false;
+    }
+    return count==image.document.placements.size();
+}
+RecentMatches capture_pose_resource(void* r,uint32_t act,const Snapshot& before,
+                                   const std::map<uint32_t,editor::ObjectId>& supplied,
+                                   const Snapshot::Metadata& metadata,Snapshot& out,PoseCaptureProof& proof,std::string& error){
+    const auto scope=C.gesture_scope?C.gesture_scope():GestureScope{};const auto pinned_generation=generation;
+    const auto projection_scope=value_scope();
+    auto* pinned_mode=mode();auto* pinned_data=data(pinned_mode);auto* pinned_live=resource(pinned_data);
+    const auto pinned_source=skg::readable(pinned_live,kResourceSize)?skg::field<editor::ResourceKey>(pinned_live,8):editor::ResourceKey{};
+    auto current=[&]{
+        return generation==pinned_generation&&(!C.gesture_scope||C.gesture_scope()==scope)&&value_scope()==projection_scope&&
+            mode()==pinned_mode&&data(pinned_mode)==pinned_data&&resource(pinned_data)==pinned_live&&
+            skg::readable(pinned_live,kResourceSize)&&skg::field<editor::ResourceKey>(pinned_live,8)==pinned_source&&
+            generation==pinned_generation;
+    };
+    auto different=[&]{
+        if(current())return RecentMatches::Different;
+        error="The native pose capture owner or context expired";return RecentMatches::Error;
+    };
+    Snapshot image;image.act=act;image.source=skg::field<editor::ResourceKey>(r,8);image.metadata=metadata;
+    if(act!=before.act || image.source!=before.source)return different();
+    ScopedResolutionAudit resolution_proof;
+    std::vector<editor::ResourceKey> original_assets,parsed_assets,settled_assets;
+    if(!resolved_asset_values(r,before.document,original_assets,error))return different();
+    Rows markers;std::vector<Binding> bindings;
+    if(!rows(r,0x2C10,0x238,kPlacementLimit,markers))return different();
+    for(auto marker=markers.begin;marker!=markers.end;marker+=0x238)if(live_slot(marker)){
+        const auto index=slot_index(markers,marker);auto found=supplied.find(index);
+        if(found==supplied.end())return different();
+        bindings.push_back({found->second,index});
+    }
+    if(!serialized_bindings(bindings,image.bindings,error) || image.bindings!=before.bindings)return different();
+    if(!serialize(r,image.bytes,error) || !normalize_materialized_terrain(image.bytes,error))return different();
+    if(!current()){error="The pose capture context changed during serialization";return RecentMatches::Error;}
+    ReadImage parsed;if(!read_image(image,parsed,error))return different();
+    std::vector<ResolvedAssetWitness> before_assets,after_assets;
+    if(!asset_witnesses(parsed.p,before.document,before_assets,error))return different();
+    std::map<uint32_t,editor::ObjectId> dense;for(const auto& binding:image.bindings)dense.emplace(binding.marker,binding.object);
+    if(!projection(parsed.p,image,error,&dense,std::nullopt,std::nullopt,std::nullopt,std::nullopt,nullptr,&image.bytes) ||
+       !hydrate_native_captain(parsed.p,image,error))return different();
+    image.bindings=before.bindings;
+    if(!only_existing_pose_fields(before.document,image.document) ||
+       !captain_sidecar_matches(r,image,image.document,error) ||
+       !direct_pose_fields(r,supplied,image) ||
+       std::memcmp(skg::ptr_add<void>(r,0x150),skg::ptr_add<void>(parsed.p,0x150),0x26))return different();
+    if(!asset_witnesses(parsed.p,image.document,after_assets,error))return different();
+    if(!resolved_asset_values(parsed.p,image.document,parsed_assets,error) ||
+       !resolved_asset_values(r,image.document,settled_assets,error))return different();
+    if(!current() || resolution_proof.audit.failed || before_assets!=after_assets){
+        error="The native pose projection context or asset resolution changed";return RecentMatches::Error;
+    }
+    if(original_assets!=parsed_assets || original_assets!=settled_assets)return different();
+    // Close the source image after every native projection/resolver callback.
+    // A Write/Read normalization may not silently change the user's live pose.
+    std::vector<uint8_t> settled;
+    if(!serialize(r,settled,error) || !normalize_materialized_terrain(settled,error))return different();
+    if(!current()){error="The pose capture context expired during verification";return RecentMatches::Error;}
+    if(settled!=image.bytes || skg::field<editor::ResourceKey>(r,8)!=image.source ||
+       !direct_pose_fields(r,supplied,image) ||
+       std::memcmp(skg::ptr_add<void>(r,0x150),skg::ptr_add<void>(parsed.p,0x150),0x26))return different();
+    proof={std::move(after_assets),projection_scope,pinned_generation};out=std::move(image);return RecentMatches::Match;
 }
 
 using HistoryFn = void(SK_THISCALL*)(void*);
@@ -1223,6 +1429,7 @@ struct Pending {
     void* speech=nullptr;
     std::optional<Snapshot::Metadata> before_metadata,after_metadata;
     std::string metadata_error;
+    bool pose_candidate=false;
 };
 std::deque<Pending> pending;
 bool speech_pending(){return std::any_of(pending.begin(),pending.end(),[](const auto& item){return item.speech!=nullptr;});}
@@ -1241,6 +1448,7 @@ void SK_CDECL drain(void*) {
         Owned entry(item.entry),before(item.before);
         if (!active() || applying || item.owner != data(mode()) || item.generation != generation ||
             (C.gesture_scope && item.scope!=C.gesture_scope())) continue;
+        ValidationScope image_scope;
         Gesture gesture;
         gesture.generation = generation;
         gesture.clone_source = item.clone_source;
@@ -1249,8 +1457,30 @@ void SK_CDECL drain(void*) {
         bool ok=item.metadata_error.empty() && item.before_metadata && item.after_metadata;
         if(!ok)error=item.metadata_error.empty()?"The native gesture lost its authored metadata witnesses":item.metadata_error;
         ok=ok&&capture_resource(before.p,item.act,gesture.before,error,&item.before_bindings,nullptr,true);
-        ok=ok&&capture_resource(skg::field<void*>(entry.p,0x14),item.act,gesture.after,error,&item.after_bindings,nullptr,true);
-        if(ok){gesture.before.metadata=item.before_metadata;gesture.after.metadata=item.after_metadata;}
+        if(ok)gesture.before.metadata=item.before_metadata;
+        bool projected_pose=false;PoseCaptureProof pose_proof;
+        if(ok && item.pose_candidate && !item.clone_source && item.before_bindings==item.after_bindings &&
+           item.before_metadata==item.after_metadata && terrain_grounding.empty() && !terrain_capturing){
+            const auto captured=capture_pose_resource(skg::field<void*>(entry.p,0x14),item.act,gesture.before,
+                item.after_bindings,*item.after_metadata,gesture.after,pose_proof,error);
+            if(captured==RecentMatches::Error)ok=false;
+            else if(captured==RecentMatches::Match)projected_pose=true;
+            else {++native_work.pose_fallbacks;error.clear();}
+        }
+        if(ok&&!projected_pose)ok=capture_resource(skg::field<void*>(entry.p,0x14),item.act,gesture.after,error,&item.after_bindings,nullptr,true);
+        if(ok)gesture.after.metadata=item.after_metadata;
+        if(ok&&projected_pose){
+            Snapshot::Metadata current;
+            const bool authorized=!C.gesture_scope||item.scope==C.gesture_scope();
+            const bool projection_current=pose_proof.scope==value_scope();
+            if(!authorized || !projection_current || item.owner!=data(mode()) || item.generation!=generation ||
+               !capture_metadata(item.owner,current,error) || current!=*item.after_metadata){
+                ok=false;if(error.empty())error="The native pose capture lost its owner or metadata witness";
+            }else{
+                remember_projection(gesture.after,pose_proof.assets,pose_proof.scope,pose_proof.generation);
+                ++native_work.pose_captures;++captures;
+            }
+        }
         if(C.gesture_capture)C.gesture_capture(false);
         if(ok){
             if (C.gesture) C.gesture(std::move(gesture));
@@ -1267,6 +1497,7 @@ void SK_THISCALL start(void* self) {
         gesture_serial=gesture_counter==UINT64_MAX?0:++gesture_counter;
         gesture_clone=input_clone;
         gesture_cast=input_cast;
+        gesture_pose=input_pose&&!input_cast;
         gesture_before_metadata.reset();gesture_metadata_error.clear();
         Snapshot::Metadata metadata;
         if(capture_metadata(self,metadata,gesture_metadata_error))gesture_before_metadata=std::move(metadata);
@@ -1299,7 +1530,8 @@ bool valid_scope(const GestureScope& scope){
         std::any_of(scope.project.begin(),scope.project.end(),[](uint8_t byte){return byte!=0;});
 }
 std::optional<TerrainMaterializationOwner> materialization_owner(void* self){
-    const auto scope=C.gesture_scope?C.gesture_scope():GestureScope{};
+    // This identifies an existing value-only proof; it grants no editing lease.
+    const auto scope=value_scope();
     if(!active() || !valid_scope(scope) || self!=terraform_mode() || !skg::readable(self,0xCC))return std::nullopt;
     void* m=mode();void* d=data(m);void* r=resource(d);
     if(!skg::readable(r,kResourceSize))return std::nullopt;
@@ -1995,10 +2227,10 @@ void* selected_marker(){
     void* object=skg::readable(context,8)?skg::field<void*>(context,4):nullptr;
     return object && a_marker?skg::thiscall<void*>(a_marker,data(mode()),object):nullptr;
 }
-void SK_THISCALL ground_step(void* self){if(!held_tool){MarkerAudio audio(data(mode()),selected_marker());original_ground_step(self);}}
-void SK_THISCALL vertical_step(void* self){if(!held_tool){MarkerAudio audio(data(mode()),selected_marker());original_vertical_step(self);}}
-void SK_THISCALL radial_step(void* self){if(!held_tool){MarkerAudio audio(data(mode()),selected_marker());original_radial_step(self);}}
-void SK_THISCALL auxiliary_step(void* self){if(!held_tool){MarkerAudio audio(data(mode()),selected_marker());original_auxiliary_step(self);}}
+void SK_THISCALL ground_step(void* self){if(!held_tool){ScopedPoseInput pose;MarkerAudio audio(data(mode()),selected_marker());original_ground_step(self);}}
+void SK_THISCALL vertical_step(void* self){if(!held_tool){ScopedPoseInput pose;MarkerAudio audio(data(mode()),selected_marker());original_vertical_step(self);}}
+void SK_THISCALL radial_step(void* self){if(!held_tool){ScopedPoseInput pose;MarkerAudio audio(data(mode()),selected_marker());original_radial_step(self);}}
+void SK_THISCALL auxiliary_step(void* self){if(!held_tool){ScopedPoseInput pose;MarkerAudio audio(data(mode()),selected_marker());original_auxiliary_step(self);}}
 void SK_THISCALL apply_marker_state(void* self,void* marker,uint32_t flags){
     MarkerAudio audio(self,marker);original_apply_marker(self,marker,flags);
 }
@@ -2218,6 +2450,7 @@ uint32_t SK_THISCALL tool_native(void* self,uint32_t action,uint32_t a,uint32_t 
             const auto revision=selection.size()==1 && C.object_revision?C.object_revision(selection.front()):std::nullopt;
             if(action==1 && revision && C.gesture_scope && a_tool_tick && original_tick_tools && valid_scope(C.gesture_scope())){
                 held_tool=HeldTool{C.gesture_scope(),generation,selection.front(),*revision,self,action,a,b,auxiliary,false,H->time_seconds(),skg::field<uint32_t>(mode(),0x40),true,real_focus()};
+                ScopedPoseInput pose;
                 original_tool(self,action,a,b);
                 // Initialize the native grab at its original press point. The
                 // four authored pose steps above are held during this tick.
@@ -2230,6 +2463,7 @@ uint32_t SK_THISCALL tool_native(void* self,uint32_t action,uint32_t a,uint32_t 
     }
     auto previous=input_clone;
     if(action==11 && !selection.empty())input_clone=selection.front();
+    ScopedPoseInput pose(action==1||action==6);
     uint32_t result=original_tool(self,action,a,b);
     input_clone=previous;
     return result;
@@ -2652,7 +2886,7 @@ void SK_THISCALL commit(void* self) {
     }
     uint32_t act = skg::cdecl_call<uint32_t>(a_act);
     pending.push_back({entry,before,self,generation,act,gesture_clone,gesture_before_bindings,bindings,gesture_scope_pin,speech,
-        std::move(before_metadata),std::move(after_metadata),std::move(metadata_error)});
+        std::move(before_metadata),std::move(after_metadata),std::move(metadata_error),gesture_pose&&!gesture_cast&&!speech&&!gesture_clone});
     if (!queued) { queued = true; H->run_outside_frame(drain, nullptr); }
 }
 void SK_THISCALL undo_native(void* self) {
@@ -2848,6 +3082,82 @@ bool capture_view(LocalView& view, std::string& error) {
     view=captured;return true;
 }
 
+bool capture_creation_terrain(const GestureScope& scope,uint64_t serial,const SceneOwner& owner,const Snapshot& entry,
+                              CreationTerrainTicket& out,std::string& error){
+    try{
+        const auto native=state();const auto current=materialization_owner(terraform_mode());
+        const auto authorized=[&]{
+            SceneOwner actual;
+            return valid_scope(scope) && serial && current && current->scope==scope && native.ready && !native.gesture &&
+                current->generation==native.generation && C.gesture_scope && C.gesture_scope()==scope &&
+                C.creation_return_current && C.creation_return_current(scope,serial) &&
+                capture_scene_owner(actual,error) && actual==owner && state().generation==native.generation &&
+                materialization_owner(terraform_mode())==current;
+        };
+        if(!authorized()){error="The creation cannot retain its current native terrain owner";return false;}
+        if(!validate(entry,entry.document,error))return false;
+        if(!terrain_materialization_error.empty() ||
+           (!terrain_materialization.empty() && terrain_materialization_owner!=current)){
+            error="The creation's native terrain materialization proof is unavailable";return false;
+        }
+        editor_native_terrain_materialization::Recipe rendered,canonical;
+        if(!materialization_recipe(terraform_mode(),rendered,error) ||
+           !editor_native_terrain_materialization::from_bytes(entry.bytes,canonical,error))return false;
+        auto normalized=rendered;terrain_materialization.normalize_recipe(normalized);
+        if(normalized!=canonical){error="The creation's native terrain does not match its committed entry recipe";return false;}
+        constexpr size_t limit=64u<<20;size_t charged=sizeof(CreationTerrainProof);
+        const auto charge=[&](size_t bytes){if(bytes>limit-charged)return false;charged+=bytes;return true;};
+        if(!charge(entry.bytes.size()) || !charge(editor::bytes(entry.document)) ||
+           !charge(entry.bindings.size()*sizeof(Binding)) || !charge(terrain_materialization.owned_bytes())){
+            error="The creation's retained terrain proof exceeds 64 MiB";return false;
+        }
+        if(entry.metadata)for(const auto& text:entry.metadata->text)if(!charge(text.size()*sizeof(char16_t))){
+            error="The creation's retained terrain proof exceeds 64 MiB";return false;
+        }
+        for(const auto& kind:rendered.rows)for(const auto& row:kind)
+            if(!charge(sizeof(row)+row.bytes.capacity()+row.references.capacity()*sizeof(editor::ObjectId))){
+                error="The creation's retained terrain proof exceeds 64 MiB";return false;
+            }
+        auto proof=std::make_shared<CreationTerrainProof>();
+        proof->scope=scope;proof->serial=serial;proof->generation=native.generation;proof->owner=owner;proof->tool=current->tool;
+        proof->entry=entry;proof->rendered=std::move(rendered);proof->materialization=terrain_materialization;proof->owned_bytes=charged;
+        if(!authorized()){error="The native terrain owner changed while retaining the creation entry";return false;}
+        editor_native_terrain_materialization::Recipe settled;
+        if(!materialization_recipe(terraform_mode(),settled,error))return false;
+        if(settled!=proof->rendered){error="The native terrain recipe changed while retaining the creation entry";return false;}
+        out=std::move(proof);error.clear();return true;
+    }catch(const std::bad_alloc&){error="Cannot allocate the owned creation terrain proof";return false;}
+}
+bool resume_creation_terrain(const CreationTerrainTicket& ticket,const GestureScope& scope,uint64_t serial,const SceneOwner& owner,
+                             const Snapshot& entry,uint64_t returned_generation,std::string& error){
+    if(!ticket || ticket->retired){error="The creation terrain return ticket is unavailable or retired";return false;}
+    ticket->retired=true; // One attempt only. Runtime records success before any later return retry.
+    try{
+        const auto authorized=[&]{
+            const auto native=creation_scene_state(owner);const auto current=materialization_owner(terraform_mode());
+            return valid_scope(scope) && serial && returned_generation && ticket->scope==scope && ticket->serial==serial &&
+                ticket->owner==owner && native.settled() && native.generation==returned_generation &&
+                returned_generation>=ticket->generation && current && current->scope==scope && current->generation==returned_generation &&
+                current->tool==ticket->tool && C.gesture_scope && C.gesture_scope()==scope &&
+                C.creation_return_current && C.creation_return_current(scope,serial);
+        };
+        if(!authorized() || !same_projection_image(ticket->entry,entry) || ticket->entry.document!=entry.document){
+            error="The creation terrain return no longer owns its exact native entry";return false;
+        }
+        editor_native_terrain_materialization::Recipe actual;
+        if(!materialization_recipe(terraform_mode(),actual,error))return false;
+        if(actual!=ticket->rendered){error="The native terrain recipe changed while the creation editor was open";return false;}
+        auto restored=ticket->materialization;
+        if(!authorized()){error="The native terrain owner changed while resuming the creation";return false;}
+        editor_native_terrain_materialization::Recipe settled;
+        if(!materialization_recipe(terraform_mode(),settled,error))return false;
+        if(settled!=ticket->rendered){error="The native terrain recipe changed while resuming the creation";return false;}
+        terrain_materialization=std::move(restored);terrain_materialization_owner=materialization_owner(terraform_mode());
+        terrain_materialization_error.clear();terrain_materialization_error_reported=false;
+        for(auto& rows:terrain_authored_rows)rows.clear();
+        error.clear();return true;
+    }catch(const std::bad_alloc&){error="Cannot restore the owned creation terrain proof";return false;}
+}
 bool capture_scene_owner(SceneOwner& owner,std::string& error){
     const auto native=state();
     void* current_mode=mode();void* current_data=data(current_mode);void* current_resource=resource(current_data);
@@ -3507,6 +3817,8 @@ bool validate_entry(const std::vector<uint8_t>& bytes,uint32_t act,std::string& 
 }
 
 bool supported_changes(const Gesture& gesture,std::string& error){
+    ValidationScope scope;
+    WorkTimer timer(native_work.supported);
     if(!supported || !a_copy_marker_rows || !a_insert_marker){error="Native authored-change validation is unavailable";return false;}
     if(!valid_metadata(gesture.before.metadata,error) || !valid_metadata(gesture.after.metadata,error))return false;
     // Missing metadata is explicitly unknown for legacy recovery. New native
@@ -3519,8 +3831,8 @@ bool supported_changes(const Gesture& gesture,std::string& error){
        !relative_scale_mode(gesture.after.document,tracked,error)){
         error="Native placement-property schema changed during a gesture";return false;
     }
-    Owned before(parse(gesture.before.bytes,error));if(!before.p)return false;
-    Owned after(parse(gesture.after.bytes,error));if(!after.p)return false;
+    ReadImage before,after;
+    if(!read_image(gesture.before,before,error) || !read_image(gesture.after,after,error))return false;
     if(!captain_sidecar_matches(before.p,gesture.before,gesture.before.document,error) ||
        !captain_sidecar_matches(after.p,gesture.after,gesture.after.document,error))return false;
     const bool roster=gesture.before.document.act_order!=gesture.after.document.act_order;
@@ -3820,34 +4132,39 @@ bool validate_projection(const Snapshot& projected,const Snapshot& snapshot,cons
     error.clear();return true;
 }
 
-ValidationScope::ValidationScope(){if(!validation_depth)validated_snapshot.reset();++validation_depth;}
-ValidationScope::~ValidationScope(){if(validation_depth && !--validation_depth)validated_snapshot.reset();}
+ValidationScope::ValidationScope(){
+    if(!validation_depth){parsed_images.clear();parsed_image_bytes=0;}
+    ++validation_depth;
+}
+ValidationScope::~ValidationScope(){
+    if(validation_depth&&--validation_depth==0){parsed_images.clear();parsed_image_bytes=0;}
+}
 bool validate(const Snapshot& snapshot,const editor::Document& document,std::string& error){
+    ValidationScope scope;
     if(!supported){error="Native editor validation is unavailable";return false;}
     if(document.placements.size()>kPlacementLimit || snapshot.bindings.size()>kPlacementLimit){
         error="Native editor placement limit exceeded";return false;
     }
     bool tracked=false;if(!relative_scale_mode(document,tracked,error))return false;
     if(!valid_metadata(snapshot.metadata,error))return false;
-    Snapshot retained;
-    if(projected_snapshot(snapshot,retained,error) &&
-       retained.document.schema==document.schema && retained.document.class_schema==document.class_schema &&
-       retained.document.settings_schema==document.settings_schema && retained.document.act_order==document.act_order){
+    const auto retained=projected_snapshot(snapshot,error);
+    if(retained && retained->image.document.schema==document.schema && retained->image.document.class_schema==document.class_schema &&
+       retained->image.document.settings_schema==document.settings_schema && retained->image.document.act_order==document.act_order){
         // The producer already projected these exact immutable bytes with
         // fresh resolver witnesses. Still compare every wanted typed field;
         // a forged Document or sidecar cannot borrow the producer's proof.
-        if(validate_projection(retained,snapshot,document,error)){++validation_hits;return true;}
+        if(validate_projection(retained->image,snapshot,document,error)){++validation_hits;return true;}
         // Stable logical IDs and project-only settings are supplied separately
         // from native bytes. A different wanted identity needs fresh projection;
         // its rejection must come from that full check, never from an old key.
         error.clear();
     }
-    Owned copy(parse(snapshot.bytes,error));if(!copy.p)return false;
+    ReadImage copy;if(!read_image(snapshot,copy,error))return false;
     ScopedResolutionAudit resolution_proof;
-    const auto proof_generation=generation;const auto proof_scope=C.gesture_scope?C.gesture_scope():GestureScope{};
+    const auto proof_generation=generation;const auto proof_scope=value_scope();
     std::vector<ResolvedAssetWitness> assets_before;
-    if(!asset_witnesses(copy.p,document,assets_before,error))return false;
-    if(!captain_sidecar_matches(copy.p,snapshot,document,error))return false;
+    if(!asset_witnesses(copy.get(),document,assets_before,error))return false;
+    if(!captain_sidecar_matches(copy.get(),snapshot,document,error))return false;
     std::map<uint32_t,editor::ObjectId> supplied;
     std::set<editor::ObjectId> ids;
     for(const auto& b:snapshot.bindings){
@@ -3856,11 +4173,11 @@ bool validate(const Snapshot& snapshot,const editor::Document& document,std::str
         }
     }
     Snapshot projected;projected.act=snapshot.act;
-    if(!projection(copy.p,projected,error,&supplied,tracked,document.schema.contains(kElevationProperty),!document.class_schema.empty(),!document.settings_schema.empty(),&document,&snapshot.bytes))return false;
+    if(!projection(copy.get(),projected,error,&supplied,tracked,document.schema.contains(kElevationProperty),!document.class_schema.empty(),!document.settings_schema.empty(),&document,&snapshot.bytes))return false;
     if(!validate_projection(projected,snapshot,document,error))return false;
     std::vector<ResolvedAssetWitness> assets_after;
-    if(!asset_witnesses(copy.p,document,assets_after,error))return false;
-    if(resolution_proof.audit.failed || assets_before!=assets_after || generation!=proof_generation || (C.gesture_scope && C.gesture_scope()!=proof_scope)){
+    if(!asset_witnesses(copy.get(),document,assets_after,error))return false;
+    if(resolution_proof.audit.failed || assets_before!=assets_after || generation!=proof_generation || value_scope()!=proof_scope || generation!=proof_generation){
         error="Native asset resolution or editor context changed during validation";return false;
     }
     // Retain the actual projection, not the caller's assertions or native
@@ -3868,12 +4185,6 @@ bool validate(const Snapshot& snapshot,const editor::Document& document,std::str
     projected.bytes=snapshot.bytes;projected.source=snapshot.source;projected.bindings=snapshot.bindings;
     projected.captain=snapshot.captain;projected.captain_locked=snapshot.captain_locked;projected.metadata=snapshot.metadata;
     remember_projection(projected,assets_after,proof_scope,proof_generation);
-    if(validation_depth && snapshot.bytes.size()+editor::bytes(document)<=(16u<<20)){
-        // Caching is optional. A cache allocation failure cannot turn a fully
-        // checked snapshot into a failure or retain a partially built key.
-        try{validated_snapshot=ValidatedSnapshot{snapshot.bytes,snapshot.bindings,document,snapshot.source,snapshot.captain,snapshot.captain_locked,snapshot.metadata,generation,snapshot.act};}
-        catch(const std::bad_alloc&){validated_snapshot.reset();}
-    }
     error.clear();return true;
 }
 
@@ -4930,6 +5241,12 @@ std::string authoring_status(){
 ProjectionCacheStats projection_cache_stats(){
     const auto stats=class_projection_cache.stats();return {stats.bytes,stats.entries,stats.hits,stats.misses};
 }
+WorkStats work_stats(){
+    auto result=native_work;LARGE_INTEGER frequency{};
+    if(QueryPerformanceFrequency(&frequency)&&frequency.QuadPart>0)result.frequency=uint64_t(frequency.QuadPart);
+    result.parsed_entries=parsed_images.size();result.parsed_bytes=parsed_image_bytes;
+    result.parsed_owners=parsed_owner_count;result.parsed_owner_bytes=parsed_owner_bytes;return result;
+}
 std::string status() {
     auto s=state();const auto resume=creation_scene_state({});const auto cache=projection_cache_stats();const auto acts=act_projection_cache.stats();char b[1536];
     snprintf(b,sizeof b,"editor_native available=%u editing=%u ready=%u playtesting=%u entry=%u act=%u generation=%llu gesture=%u history=%u/%u captures=%llu restores=%llu rejected=%llu cancellation=%u cancellation_serial=%llu ordinary_cancellations=%llu class_cache_bytes=%zu class_cache_entries=%zu class_cache_hits=%llu class_cache_misses=%llu act_cache_bytes=%zu act_cache_entries=%zu act_cache_hits=%llu act_cache_misses=%llu projection_proof_bytes=%zu projection_proof_entries=%zu projection_proof_hits=%llu projection_proof_misses=%llu recent_match_hits=%llu recent_match_different=%llu recent_match_errors=%llu pose_roundtrip_hits=%llu pose_roundtrip_fallbacks=%llu resume_available=%u resume_initialization=%u resume_enter_pending=%u resume_transitioning=%u world_visible=%u",
@@ -4942,6 +5259,16 @@ std::string status() {
         (unsigned long long)recent_match_hits,(unsigned long long)recent_match_different,(unsigned long long)recent_match_errors,
         (unsigned long long)pose_roundtrip_hits,(unsigned long long)pose_roundtrip_fallbacks,
         unsigned(resume.available),resume.initialization,unsigned(resume.enter_pending),unsigned(resume.transitioning),unsigned(resume.world_visible));
-    return b;
+    std::string result=b;const auto work=work_stats();char detail[1024];
+    snprintf(detail,sizeof detail," native_work_frequency=%llu native_read_calls=%llu native_read_ticks=%llu native_write_calls=%llu native_write_ticks=%llu native_projection_calls=%llu native_projection_ticks=%llu native_resolution_calls=%llu native_resolution_ticks=%llu native_supported_calls=%llu native_supported_ticks=%llu parsed_image_hits=%llu parsed_image_misses=%llu parsed_image_entries=%zu parsed_image_bytes=%zu parsed_image_owners=%zu parsed_image_owner_bytes=%zu parsed_image_peak_owners=%zu parsed_image_peak_bytes=%zu pose_capture_hits=%llu pose_capture_fallbacks=%llu",
+        (unsigned long long)work.frequency,(unsigned long long)work.reads.calls,(unsigned long long)work.reads.ticks,
+        (unsigned long long)work.writes.calls,(unsigned long long)work.writes.ticks,
+        (unsigned long long)work.projections.calls,(unsigned long long)work.projections.ticks,
+        (unsigned long long)work.resolutions.calls,(unsigned long long)work.resolutions.ticks,
+        (unsigned long long)work.supported.calls,(unsigned long long)work.supported.ticks,
+        (unsigned long long)work.parsed_hits,(unsigned long long)work.parsed_misses,work.parsed_entries,work.parsed_bytes,
+        work.parsed_owners,work.parsed_owner_bytes,work.parsed_peak_owners,work.parsed_peak_bytes,
+        (unsigned long long)work.pose_captures,(unsigned long long)work.pose_fallbacks);
+    return result+detail;
 }
 } // namespace editor_native

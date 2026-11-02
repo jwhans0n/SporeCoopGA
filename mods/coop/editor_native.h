@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -20,6 +21,19 @@ namespace editor_native {
 inline constexpr uint32_t kPlacementLimit = 4096;
 struct ProjectionCacheStats {size_t bytes=0,entries=0;uint64_t hits=0,misses=0;};
 ProjectionCacheStats projection_cache_stats();
+// Inclusive game-thread CPU spans. These local diagnostics never enter a draft
+// or packet; nested Read/Write/projection work is intentionally counted twice.
+struct WorkSpan {uint64_t calls=0,ticks=0;};
+struct WorkStats {
+    uint64_t frequency=0;
+    WorkSpan reads,writes,projections,resolutions,supported;
+    uint64_t parsed_hits=0,parsed_misses=0,pose_captures=0,pose_fallbacks=0;
+    size_t parsed_entries=0,parsed_bytes=0;
+    // Retained owners include borrowed entries no longer indexed in the cache;
+    // ordinary uncached local Read owners remain the existing fallback path.
+    size_t parsed_owners=0,parsed_owner_bytes=0,parsed_peak_owners=0,parsed_peak_bytes=0;
+};
+WorkStats work_stats();
 
 struct Binding {
     editor::ObjectId object;
@@ -107,6 +121,10 @@ struct Ctx {
     std::function<bool()> active;
     // Cached logical identity, captured before an owned native gesture starts.
     std::function<GestureScope()> gesture_scope;
+    // Read-only proof identity across submitted operations and owned test
+    // transitions. This grants no input/lease/native mutation permission;
+    // authoring still uses gesture_scope and its existing input holds.
+    std::function<GestureScope()> projection_scope;
     // The runtime owns the creation session nonce and authorizes only its
     // current, not-yet-materialized return. Called synchronously outside frame.
     std::function<bool(const GestureScope&,uint64_t serial)> creation_return_current;
@@ -190,6 +208,17 @@ bool restore_view(const LocalView&, uint64_t expected_generation, std::string& e
 bool capture_scene_owner(SceneOwner&,std::string& error);
 SceneResumeState creation_scene_state(const SceneOwner&);
 bool resume_creation_scene_camera(const GestureScope&,uint64_t serial,uint64_t expected_generation,const SceneOwner&,std::string& error);
+// One participant-local creation only. This opaque token owns exact primitive
+// materialization values and entry identity, never native objects. Retained
+// address identities are compared only against freshly verified native owners.
+// Capture before leaving; resume once after the same native scene has settled.
+// A reopened adventure establishes fresh terrain provenance instead.
+struct CreationTerrainProof;
+using CreationTerrainTicket=std::shared_ptr<const CreationTerrainProof>;
+bool capture_creation_terrain(const GestureScope&,uint64_t serial,const SceneOwner&,const Snapshot& entry,
+                              CreationTerrainTicket&,std::string& error);
+bool resume_creation_terrain(const CreationTerrainTicket&,const GestureScope&,uint64_t serial,const SceneOwner&,
+                             const Snapshot& entry,uint64_t returned_generation,std::string& error);
 // Reject unsupported authored changes after private normalization of known poses.
 bool supported_changes(const Gesture&, std::string& error);
 // Bound synchronous validation work. Any retained projection proof owns only
