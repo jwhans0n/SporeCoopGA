@@ -42,7 +42,7 @@ simultaneously, and this change does not add automatic publication.
 | Portable boundary failures | The first two attempts exposed old protocol-22 and 1,024-placement test expectations. Commit `c73ec00` preserves explicit protocol-22 rejection and checks the named 4,096-placement bound plus one. Failed logs remain as `out/preview9-portable-tests-attempt1.log` and `attempt2.log`; the final complete run passes. |
 | Worker-prepared resource publication | Commit `80013c3`: strict Linux and i686 builds pass. Both focused durability runs pass 340 checks; the full Linux UDP/controller suite passes 29,802 checks. The tests cover worker-owned full/delta buffers, private hash provenance, stale/moved-from/guest rejection, live transfer limits, cache-only updates and complete late joins. Receipts: `out/preview9-prepared-resources-session.log` and `out/preview9-prepared-resources-win32.log`. These are controlled network tests, not measured native commit performance. |
 | Win32 controlled fixtures | `out/preview9-final-win32.json` records all 41 executables exiting 0, with individual executable hashes. Counts include authoring extensions 328, cast 393, native cancellation/terrain/cache 8,670, terrain 118 using a genuine 162-record recipe with 30 properties and 1,027 preserved adventure bytes, collector 101, creation lifecycle 211, complexity 32, native Save 444, reopen identity 150 and UDP/controller 21,495. The runtime fixture is separate from this batch. These checks substitute native game APIs. The initial 25-of-26 batch and corrected stale reopen expectation remain retained in their earlier receipts. |
-| Separate runtime fixture snapshots | `out/editor-preview9-creation/runtime-full-current.log` records 20,655 checks passing, including the 24 MiB retained-closure stress test. Twenty structural edits plus Save send 123,659 host / 51,348 guest bytes and grow CAS by 42,798 bytes; cached rejoin sends 33,733 / 754 bytes. The newer foreign-durable-input regression passes 595 checks in `runtime-durable-input.log`; native flow including it passes 1,912 in `runtime-native-flow-async-gates.log`. The full rerun with that regression remains pending in `runtime-full-async-gates.log`. These controlled fixture results do not establish native startup safety. |
+| Separate runtime fixture snapshots | The newer `out/editor-preview9-creation/runtime-full-async-gates.log` passes 21,318 checks, including foreign-durable-input fencing and the 24 MiB retained-closure stress test. Twenty structural edits plus Save send 123,835 host / 52,172 guest bytes and grow CAS by 42,798 bytes; cached rejoin sends 33,733 / 754 bytes. The focused regression passes 595 checks in `runtime-durable-input.log`; native flow including it passes 1,912 in `runtime-native-flow-async-gates.log`. Baseline readiness passes 173 in `runtime-baseline-readiness.log`. The earlier 20,655-check full run remains in `runtime-full-current.log`. These controlled fixture results do not establish native startup safety. |
 | Cross build and frozen diagnostic payload | `out/preview9-candidate4-build.log` records the candidate 4 co-op DLL and affected fixture cross build. `out/preview9-candidate4-deployment/receipt.json` records checkout HEAD `dbe2012` and pins DLL `53a1c9bc234b2c7c1161e65e5f57bb19f7838c2a51de2e3a88aef0a8fe29df59`, the exact LAA executable and installed map hashes. It was deployed only to the private lab installation. Candidate 4 is a frozen diagnostic payload with the native crash below, not an accepted release; the receipt's HEAD is not a substitute for recording any uncommitted build inputs. |
 | Hidden Windows render probe | `out/preview9-hidden-probe.log` reports a working hidden-window D3D adapter, three successful presentations and unchanged input desktop. It establishes fixture capability only, not game launch or authoring acceptance. |
 | Initial private native startup | `out/preview9-two-runner.log` records two private processes loading the exact LAA executable and SporeKit; its loaded-map list omits the separate creation/complexity maps. Inspection of `sporekit/symbols.cpp` found discovery requires the executable header within ten 512-byte `fgets` reads. The separate maps lacked a usable header. Corrected-map startup is recorded below; neither startup alone establishes feature acceptance. |
@@ -126,9 +126,36 @@ during initial native entry: `Simulator::cPlanetModel::IsInWater+0x57`, IP
 not yet editing or ready. The runner then retires the host. No warm-up or measured
 gesture ran. Input logs, crash text, report archive, actual Windows minidump and
 hashed evidence receipt are retained under `out/preview9-commit-diagnostic-c4`.
-The transition failure remains a native acceptance blocker. The performance
+The logged symbol label is not the verified function identity: relocation maps
+the fault to native preferred address `00B7E587`, in helper `00B7E580` with a null
+planet-model member at `+24`. Static investigation found that Joining ownership
+gates blocked native Terraform initialization. Commit `dba4afe` adds narrow
+initialization guards around the verified native load and activation boundaries.
+The rebuilt native result is recorded below. The performance
 tool's optional exact-candidate gate now pauses after warm-up until compilers are
 quiescent; 14 offline tests pass in `out/preview9-commit-tool-gate-selftest.log`.
+
+Candidate 5 (`e9ade4004d31f505b983e1e008a42ea6802ecb1779407f79b79dc676a40627d1`)
+passes the owned hidden/muted preflight with 2,901 loaded symbols and zero faults
+in `out/preview9-commit-c5-preflight.json`. Both players enter Adventure Town at
+shared revision 0 and native ready 1, crossing the earlier crash boundary.
+Read-only convergence checking then finds a guest quaternion mismatch before any
+gesture: object `4294967549` has equal position, scale and property counts, but
+rotation `-0.588576794,-0.170447201,0.266058296,0.744144619` versus committed
+`-0.588576674,-0.170447186,0.266058296,0.744144559`. The host converges and the guest
+diverges; both report zero faults. No retirement input or warm-up/measurement was
+issued after this check. Native normalization/restoration remains an acceptance
+blocker. Exact outputs and log snapshots are retained in
+`out/preview9-commit-diagnostic-c5/native-baseline-check.json` and
+`baseline-artifacts.json`.
+
+The c5 fixture also exposed a separate tool error: it waited for an explicit
+offer after automatic native joining. Commit `76cd86e` handles explicit offers
+and already joining/ready participants for two and four players, requiring exact
+project/epoch identity before and after convergence. The next payload exposes
+its epoch in public status. Sixteen offline tests pass in
+`out/preview9-commit-tool-auto-join-selftest.log`. The original timed-out fixture
+receipt is retained and is not counted as a native convergence or timing pass.
 
 ## Required native acceptance
 
