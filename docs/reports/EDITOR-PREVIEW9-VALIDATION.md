@@ -144,8 +144,8 @@ gesture: object `4294967549` has equal position, scale and property counts, but
 rotation `-0.588576794,-0.170447201,0.266058296,0.744144619` versus committed
 `-0.588576674,-0.170447186,0.266058296,0.744144559`. The host converges and the guest
 diverges; both report zero faults. No retirement input or warm-up/measurement was
-issued after this check. Native normalization/restoration remains an acceptance
-blocker. Exact outputs and log snapshots are retained in
+issued after this check. Native normalization/restoration blocks acceptance of
+this candidate. Exact outputs and log snapshots are retained in
 `out/preview9-commit-diagnostic-c5/native-baseline-check.json` and
 `baseline-artifacts.json`. The failed phase-4 scene was not retained after the
 helper timed out: closing its UDP proxy automatically ended the guest session.
@@ -167,6 +167,60 @@ next reproduction must retain the same project, epoch, native generation and
 restore count through the bounded raw-marker evidence collection. Nineteen
 offline routing, join, divergence and timing tests pass in
 `out/preview9-commit-tool-direct-lan-selftest.log`.
+
+### Candidate 6 native baseline and measured release lag
+
+Candidate 6 DLL
+`82afd4a885c30b381d0198dc3e9bf4956c1a6cccde20e5e672d37da23403a94a`
+passes the exact hidden/muted process preflight and direct-LAN Adventure Town
+bootstrap. It includes capture of the loaded native terrain before the first
+baseline restore; equal terrain identity avoids unnecessary regeneration. Both
+players converge with identical native snapshot SHA256
+`2fcb508d4572c04bcd075cd55f4f410b5f866e5e0f8dda0a4eb59035c46f57c7` and matching
+project/epoch. The 419-placement, 118-class, five-act adventure is unchanged at
+this baseline. Receipts: `out/preview9-commit-c6-preflight.json` and
+`out/preview9-commit-diagnostic-c6/result.json`.
+
+The first automatic warm-up target was under native UI at the overview camera;
+three gestures produced no selection or canonical edit. Ordinary native Locate
+on the Lead Actor card and camera settlement exposed placement `4294967303:1`.
+The attach retry explicitly verifies the baseline hash and uses that placement.
+Warm-up produces one synchronized history item per author. With all compilers,
+fixtures and other game diagnostics paused, the run then completes 30 measured
+gestures per author, each with one exact operation and all-player convergence.
+No denied retry counts as a measured sample.
+
+The LAN timing gate **fails**:
+
+| Metric | Host 95 | Guest 96 |
+| --- | ---: | ---: |
+| Own submit to confirmation p95 | 375.14 ms | 933.59 ms |
+| Own release to confirmation p95 | 801.43 ms | 1,359.88 ms |
+| Commit-window maximum frame gap p95, 60 windows each | 415.02 ms | 417.26 ms |
+| Worst individual window's native frame-gap p95 | 329.73 ms | 371.70 ms |
+| Largest frame gap | 416.89 ms | 460.42 ms |
+| Own capture p95 | 153.20 ms | 156.05 ms |
+| Own supported-change validation p95 | 161.77 ms | 148.49 ms |
+| Own inverse preparation p95 | 82.94 ms | 83.51 ms |
+| Own native apply p95 | 299.05 ms | 300.12 ms |
+| Own persistence preparation/completion p95 | 102.74 ms | 105.24 ms |
+| Own durable interval p95 | 48.48 ms | 50.69 ms |
+
+For guest-authored operations, host request receipt to decision queue p95 is
+376.79 ms. The largest measured spans are native capture, validation, inverse
+preparation and application; durable I/O alone does not account for the release
+lag. These stage spans identify where to profile next and do not identify one
+unmeasured native subroutine as the cause. Confirmation limits remain 200 ms LAN
+and frame limits 100 ms p95 / 250 ms maximum.
+
+At the end both players have revision 62, durable revision 62, 62 canonical
+history items (31 per author including warm-up), the same converged hash and zero
+native faults. The direct party remains connected after the failed timing gate.
+All samples, exact QPC stages, frame distributions, baseline and final proof are
+under `out/preview9-commit-diagnostic-c6-r2`, including `measured-summary.json`,
+`warmup-history-proof.json` and `final-state-proof.json`. The run is diagnostic;
+it does not pass performance acceptance or establish four-player, WAN,
+concurrent asset-transfer or feature-UI acceptance.
 
 ## Required native acceptance
 
