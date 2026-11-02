@@ -146,6 +146,15 @@ int main(){
     main_node->children.push_back(live_picker);step();CHECK(shown(panel.root));main_node->children.pop_back();
     click(panel.new_button);step();click(panel.choices[0]);CHECK(created==1&&created_type==0x2B978C46);
     click(panel.edit_button);CHECK(edited==1);
+    // Native Options retains cached windows too. Only its visible owning
+    // panel path blocks authoring, including clicks queued before update.
+    auto options=make(main_node,0x0615B50D);auto options_body=make(options,0x064C23F8);
+    sui::set_visible(options,false);step();CHECK(shown(panel.root));
+    sui::set_visible(options,true);sui::set_visible(options_body,false);step();CHECK(shown(panel.root));
+    click(panel.new_button);step();CHECK(editor_creation_ui::want_menu);
+    sui::set_visible(options_body,true);click(panel.choices[0]);CHECK(created==1&&!editor_creation_ui::want_menu);
+    step();CHECK(!shown(panel.root));sui::set_visible(options,false);step();CHECK(shown(panel.root));
+    auto unrelated_options=make(main_node,0x064C23F8);step();CHECK(shown(panel.root));sui::set_visible(unrelated_options,false);
     // Existing transition guards remain effective independently of picker IDs.
     creation=true;step();CHECK(!shown(panel.root));creation=false;
     lobby=true;step();CHECK(!shown(panel.root));lobby=false;step();CHECK(shown(panel.root));

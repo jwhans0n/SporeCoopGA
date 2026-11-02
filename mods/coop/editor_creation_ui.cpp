@@ -22,26 +22,28 @@ struct Panel {
 constexpr uint32_t kRoot=0xC00F0300,kNew=0xC00F0301,kEdit=0xC00F0302,kChoice=0xC00F0310;
 constexpr std::array<uint32_t,4> types{0x2B978C46,0x2399BE55,0x24682294,0x476A98C7};
 constexpr std::array<const char*,4> labels{"New creature","New building","New vehicle","New spaceship"};
-bool native_picker_visible(sui::Win main){
+bool native_modal_visible(sui::Win main){
     // Sporepedia keeps its root and empty scaffold visible after closing.
     // Its header/card/sidebar frames are visible only while a picker is open.
     // Search their current owning visible path, including duplicate roots.
     // Native child lists are bounded by sui::children; this traversal also
     // bounds depth, total work and stack size, failing closed on overflow.
-    struct Entry {sui::Win window;unsigned depth;bool picker;};
+    struct Entry {sui::Win window;unsigned depth;bool picker,options;};
     constexpr size_t limit=4096;
-    std::vector<Entry> stack{{main,0,false}};size_t visited=0;
+    std::vector<Entry> stack{{main,0,false,false}};size_t visited=0;
     while(!stack.empty()){
-        const auto [window,depth,in_picker]=stack.back();stack.pop_back();
+        const auto [window,depth,in_picker,in_options]=stack.back();stack.pop_back();
         if(!window || window==panel.root || !sui::visible(window))continue;
         if(++visited>limit || depth>=64)return true;
         const auto id=sui::control_id(window);
         const bool picker=in_picker || id==0x53C6DC80;
         if(picker && (id==0x53C5B392 || id==0x53C5B391 || id==0x53C5B390))return true;
+        const bool options=in_options || id==0x0615B50D;
+        if(options && id==0x064C23F8)return true;
         for(auto child:sui::children(window)){
             if(sui::parent(child)!=window)continue;
             if(stack.size()>=limit)return true;
-            stack.push_back({child,depth+1,picker});
+            stack.push_back({child,depth+1,picker,options});
         }
     }
     return false;
@@ -57,7 +59,7 @@ bool current(){
     const auto view=coop_editor::view();
     return panel.root && sui::visible(panel.root) && panel.main==sui::main_window() &&
         view.active && !view.frozen && view.native_editing && view.prompt_identity==panel.identity &&
-        !editor_creation::active() && !native_picker_visible(panel.main);
+        !editor_creation::active() && !native_modal_visible(panel.main);
 }
 void handler(sui::Win window,std::function<bool(sui::Win,const sui::Msg&)> callback){
     if(auto value=sui::add_handler(window,std::move(callback)))panel.handlers.push_back({window,value});
@@ -106,7 +108,7 @@ void SK_CDECL update(void*){
     const auto view=coop_editor::view();const auto native=editor_native::state();
     const bool visible=view.active && view.native_editing && native.ready && native.world_visible &&
         !view.frozen && !view.playtesting && !view.exporting && !editor_creation::active() && !coop_ui::is_open() &&
-        !native_picker_visible(sui::main_window());
+        !native_modal_visible(sui::main_window());
     if(panel.root && (panel.main!=sui::main_window() || panel.identity!=view.prompt_identity))clear();
     if(!visible){want_menu=false;if(panel.root)sui::set_visible(panel.root,false);return;}
     if(!panel.root && !build(view))return;
