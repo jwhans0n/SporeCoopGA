@@ -85,6 +85,7 @@ struct Party {
     std::array<std::vector<w::LeaseRequest>,4> wire_lease_requests;
     std::array<std::vector<uint8_t>,4> wire_leaves;
     std::array<std::vector<w::LeaseReply>,4> wire_lease_replies;
+    std::array<std::vector<w::ComplexityState>,4> wire_complexity_states;
     std::array<std::vector<std::pair<uint64_t,Revision>>,4> wire_lease_reply_revisions;
     bool dispatching = false, ticking = false, release_on_decision = false, publish_deltas = false, auto_ack_saved = true;
     size_t structural_bytes = 12000;
@@ -173,6 +174,7 @@ struct Party {
                 if (type != message_type) return;
                 net::Reader copy(r.cur(), r.left()); Peer sender{copy.u8(), copy.u32()}; copy.u32(); w::Message message; std::string error;
                 if (w::read(copy, message, sender, from == 0, error)) {
+                    if(auto* value=std::get_if<w::ComplexityState>(&message.payload))wire_complexity_states[p].push_back(*value);
                     if (auto* leave = std::get_if<w::Leave>(&message.payload)) wire_leaves[p].push_back(leave->reason);
                     if (auto* decision = std::get_if<Decision>(&message.payload); decision && decision->accepted()) ++native[p].wire_decisions;
                     if (auto* request = std::get_if<w::LeaseRequest>(&message.payload)) wire_lease_requests[from].push_back(*request);
@@ -1472,8 +1474,13 @@ static void test_creation_preview_is_ephemeral_and_owned(){
     for(unsigned i=0;i<4;++i)CHECK(p.controllers[i]->state().document==document);
 }
 
+#include "editor_complexity_session_fixture.h"
 int main(int argc,char** argv)
 {
+    if(argc==2&&std::string(argv[1])=="--complexity"){
+        CHECK(net::net_init());test_complexity_cohort(2);test_complexity_cohort(4);test_complexity_join_and_recovery();test_complexity_old_ack();test_complexity_queue_retry_and_stale_context();test_complexity_disable_is_not_a_general_bypass();
+        std::printf("editor complexity UDP: %d checks, %d failures\n",checks,failures);return failures?1:0;
+    }
     if(argc==2&&std::string(argv[1])=="--recovery"){
         CHECK(net::net_init());test_recovery_teardown_holds_guests_until_authenticated_reoffer();test_recovery_hold_survives_host_loss();
         std::printf("editor recovery transport: %d checks, %d failures\n",checks,failures);return failures?1:0;
@@ -1487,6 +1494,7 @@ int main(int argc,char** argv)
         std::printf("editor preview transport: %d checks, %d failures\n",checks,failures);return failures?1:0;
     }
     const bool focused=argc==2&&std::string(argv[1])=="--tombstones";
+    if(argc==1){CHECK(net::net_init());test_complexity_cohort(2);test_complexity_cohort(4);test_complexity_join_and_recovery();test_complexity_old_ack();test_complexity_queue_retry_and_stale_context();test_complexity_disable_is_not_a_general_bypass();}
     const bool classes=argc==2&&std::string(argv[1])=="--class-settings";
     if(argc>1&&!focused&&!classes)return 2;
     CHECK(net::net_init());if(!focused&&!classes){test_recovery_teardown_holds_guests_until_authenticated_reoffer();test_recovery_hold_survives_host_loss();test_creation_preview_is_ephemeral_and_owned();test_asynchronous_durable_acceptance();test_asynchronous_failure_restores_before_acceptance();test_project_and_planet_field_leases_survive_refresh();test_worker_prepared_resource_publication();}

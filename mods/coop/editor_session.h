@@ -23,6 +23,8 @@ struct Member {
     bool ready = false;
     std::optional<PreviewView> preview;
     editor::Revision applied_revision = 0;
+    std::optional<editor::ComplexityCapability> complexity;
+    uint64_t complexity_serial=0;
 };
 struct View {
     Phase phase = Phase::Idle;
@@ -39,6 +41,8 @@ struct View {
     std::vector<editor::Lease> local_leases;
     editor::Revision locally_durable = 0;
     std::optional<editor::wire::Saved> saved;
+    bool complexity_ready=false;
+    std::string complexity_error;
 };
 struct SavedCoverage {
     editor::Revision revision = 0;
@@ -194,6 +198,9 @@ public:
     uint64_t renew_leases(const std::vector<editor::LeaseToken>&, editor::Time ttl, std::string& error);
     uint64_t release_leases(const std::vector<editor::LeaseToken>&, std::string& error);
     bool set_presence(editor::wire::Presence, std::string& error);
+    // Outside frame. The local value survives context resets; authenticated
+    // cohort claims/acknowledgements never do. Defaults do not require equality.
+    bool set_complexity_capability(const editor::ComplexityCapability&,std::string& error);
     // Outside-frame only. Host commands can target a peer or all active peers;
     // guest commands always target the host. Native callbacks run during tick.
     bool send_command(editor::wire::Command, std::string& error, uint8_t to = 255);

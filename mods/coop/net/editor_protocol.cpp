@@ -47,6 +47,7 @@ template<class T> struct Optional<std::optional<T>> : std::true_type {};
 template<class T> struct Variant : std::false_type {};
 template<class... T> struct Variant<std::variant<T...>> : std::true_type {};
 template<class T> constexpr size_t container_limit(){
+    if constexpr(std::is_same_v<T,std::vector<ComplexityAck>>)return 4;
     if constexpr(std::is_same_v<T,std::vector<Mutation>> || std::is_same_v<T,std::vector<TerrainEdit>>)return 2*Limits{}.terrain_records+Limits{}.mutations;
     if constexpr(std::is_same_v<T,std::vector<ObjectId>>)return Limits{}.terrain_records+Limits{}.mutations;
     return 16384;
@@ -67,6 +68,7 @@ template<class T> constexpr unsigned maximum() {
     if constexpr(std::is_same_v<T,PresencePhase>) return unsigned(PresencePhase::Creating);
     if constexpr(std::is_same_v<T,CommandKind>) return unsigned(CommandKind::ExportQueued);
     if constexpr(std::is_same_v<T,PlaytestMode>)return unsigned(PlaytestMode::Solo);
+    if constexpr(std::is_same_v<T,ComplexityReason>)return unsigned(ComplexityReason::Changed);
     return 0;
 }
 #define FIELDS(T,...) template<class A> void fields(A& a,T& v) { a(__VA_ARGS__); }
@@ -120,6 +122,10 @@ FIELDS(SavedApplied,v.saved)
 FIELDS(Leave,v.reason)
 FIELDS(Control,v.kind,v.serial,v.revision,v.ready,v.ready_mask,v.participant_mask,v.mode,v.tester,v.start_act)
 FIELDS(Command,v.kind,v.serial,v.revision,v.actor,v.accepted)
+FIELDS(ComplexityCapability,v.policy,v.formula,v.words[0],v.words[1],v.words[2],v.words[3],v.words[4],v.words[5],v.words[6],v.words[7],v.words[8],v.words[9],v.words[10],v.words[11],v.words[12],v.available,v.reason)
+FIELDS(ComplexityClaim,v.serial,v.value)
+FIELDS(ComplexityAck,v.peer,v.serial)
+FIELDS(ComplexityState,v.serial,v.host,v.members,v.ready)
 #undef FIELDS
 struct Encode {
     net::Writer w; size_t limit; bool extended=true,roster_extended=true,planet_extended=true;
@@ -245,6 +251,15 @@ void validate_payload(const Message& m) {
     need(context(m.context),"invalid message context");
     std::visit([&](const auto& p){
         using T=std::decay_t<decltype(p)>;
+        if constexpr(std::is_same_v<T,ComplexityClaim>)need(p.serial&&valid_complexity(p.value),"invalid native complexity claim");
+        if constexpr(std::is_same_v<T,ComplexityState>){
+            need(p.serial&&valid_complexity(p.host)&&!p.members.empty()&&p.members.size()<=4,"invalid native complexity cohort");
+            uint8_t seen=0;for(const auto& member:p.members){
+                need(peer(member.peer)&&!(seen&(1u<<member.peer.slot)),"invalid native complexity cohort member");seen|=uint8_t(1u<<member.peer.slot);
+                need(!p.ready||member.serial,"ready complexity cohort lacks current claim");
+            }
+            need((seen&1)&&(!p.ready||p.host.available),"ready complexity cohort lacks verified host");
+        }
         if constexpr(std::is_same_v<T,Command>) need(p.serial && peer(p.actor) && p.revision==m.context.revision &&
             unsigned(p.kind)<=unsigned(CommandKind::ExportQueued) &&
             (!p.accepted || p.kind==CommandKind::ReplyPlaytest || p.kind==CommandKind::ReplySolo || p.kind==CommandKind::FinishExport || p.kind==CommandKind::EndExport),"invalid native editor command");
@@ -297,6 +312,8 @@ void direction(const Message& m,Peer sender,bool host) {
     const bool only_host=index==0||index==6||index==8||index==11;
     const bool only_guest=index==1||index==5||index==7||index==10||index==14;
     need(!only_host||host,"client forged host authority"); need(!only_guest||!host,"host sent client-only request");
+    if(std::holds_alternative<ComplexityClaim>(m.payload))need(!host,"host sent client-only complexity claim");
+    if(std::holds_alternative<ComplexityState>(m.payload))need(host,"client forged complexity cohort authority");
     if(const auto* q=std::get_if<Request>(&m.payload)) need(q->operation.author==sender,"request author differs from session peer");
     if(const auto* p=std::get_if<Presence>(&m.payload)) need(host || (p->author==sender && !p->ownership && p->phase==PresencePhase::Ready && p->preview_lease==LeaseToken{} && p->owned_scopes.empty()),"presence author or authority differs from session peer");
     if(const auto* p=std::get_if<TransformPreview>(&m.payload)) need(host||p->author==sender,"preview author differs from session peer");

@@ -1,6 +1,7 @@
 // Bounded portable editor messages and canonical durable-state serialization.
 #pragma once
 #include "editor_document.h"
+#include "editor_complexity.h"
 #include "buffer.h"
 #include <string>
 #include <variant>
@@ -99,8 +100,17 @@ struct Command {
     bool accepted = false;
     bool operator==(const Command&) const = default;
 };
+struct ComplexityClaim {uint64_t serial=0;ComplexityCapability value;bool operator==(const ComplexityClaim&)const=default;};
+struct ComplexityAck {Peer peer;uint64_t serial=0;bool operator==(const ComplexityAck&)const=default;};
+// Host-derived cohort evidence. A guest also requires an acknowledgement of its
+// latest local claim; delayed host readiness cannot bless changed local tuning.
+struct ComplexityState {
+    uint64_t serial=0;ComplexityCapability host;std::vector<ComplexityAck> members;bool ready=false;
+    bool operator==(const ComplexityState&)const=default;
+};
 using Payload = std::variant<Offer, Join, TransferBegin, TransferChunk, TransferEnd,
-    LeaseRequest, LeaseReply, Request, Decision, Presence, Coverage, Saved, Leave, Control, SavedApplied, TransformPreview, Command>;
+    LeaseRequest, LeaseReply, Request, Decision, Presence, Coverage, Saved, Leave, Control, SavedApplied, TransformPreview, Command,
+    ComplexityClaim,ComplexityState>;
 struct Message { Context context; Payload payload; };
 
 // from_host is a transport role fact. sender is the connected Session peer,

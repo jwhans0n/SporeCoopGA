@@ -92,3 +92,34 @@ not a current Sporepedia publishing guarantee or compatibility proof for a
 specific installed package. Native publishing, dependency validation and the
 private co-op workflow still require their own checks. This implementation must
 leave captain rewards and object-size tuning untouched.
+
+### Shared tuning admission
+
+The unreleased protocol23 appends authenticated complexity claims and cohort
+acknowledgements without changing existing message tags. A capability carries
+policy1, formula identityDC04DB80, twelve exact float32 weight words and the
+MaxComplexity word. Unavailable evidence carries a bounded reason and zeroed
+words. Each context has fresh claim/cohort sequences; the existing project,
+epoch and complete participant generation envelope fences every message.
+
+Ordinary native budgets do not require equal or available capabilities.
+Enabling Extended, authoring while Extended, initial Extended baseline
+materialization and affirmative playtest readiness require identical available
+proofs for the current participant cohort. A guest additionally requires the
+host's acknowledgement of its current local claim sequence. Retired peers and
+old epochs cannot supply that acknowledgement. Changed local evidence withdraws
+readiness immediately; a bounded outbound queue failure retains the current
+claim for retry. This proof transport has no live Adventure scene dependency.
+
+A tuning conflict preserves the draft and permits the exact single Project
+COMP field change from true to false. Combining that change with a placement
+edit still rejects. Cancellation, Unready and playtest return remain available.
+The Runtime keeps read-only projection identity separate from authoring
+permission while this hold is active, so canonical application and detached
+host work can continue.
+
+Strict Linux and actual i686 protocol/UDP fixtures cover two and four peers,
+all thirteen mismatched words, missing proofs, late join, fresh recovery epochs,
+stale participant generations/acknowledgements, bounded-queue retry, the exact
+disable exception and queued playtest expiry. These are deterministic transport
+and policy checks, not a running-game complexity boundary or publication result.

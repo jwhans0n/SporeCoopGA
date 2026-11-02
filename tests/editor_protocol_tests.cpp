@@ -237,4 +237,38 @@ static void native_commands(){
         command.serial=19;command.revision++;CHECK(!w::write({context(),command},out,error));
     }
 }
-int main(){codec();authority();transfers();preview_authority_and_malformed();join_inventory_codec_bounds_and_authority();malformed();class_settings_codec();native_commands();std::cout<<"editor protocol: "<<checks<<" checks passed\n";}
+static void complexity_capability_codec(){
+    ComplexityCapability proof;proof.available=true;proof.reason=ComplexityReason::None;
+    proof.words.fill(std::bit_cast<uint32_t>(1.0f));proof.words[12]=std::bit_cast<uint32_t>(10.0f);
+    w::ComplexityClaim claim{17,proof};w::ComplexityState cohort{18,proof,{{host,3},{guest,17}},true};
+    for(const auto& payload:std::vector<w::Payload>{claim,cohort}){
+        const auto bytes=packet({context(),payload});w::Message decoded;
+        const bool from_host=std::holds_alternative<w::ComplexityState>(payload);
+        CHECK(read(bytes,decoded,from_host?host:guest,from_host));
+        if(from_host)CHECK(std::get<w::ComplexityState>(decoded.payload)==cohort);
+        else CHECK(std::get<w::ComplexityClaim>(decoded.payload)==claim);
+        CHECK(!read(bytes,decoded,from_host?guest:host,!from_host));
+        for(size_t n=0;n<bytes.size();++n)CHECK(!read({bytes.begin(),bytes.begin()+n},decoded,from_host?host:guest,from_host));
+        auto trailing=bytes;trailing.push_back(0);CHECK(!read(trailing,decoded,from_host?host:guest,from_host));
+    }
+    for(unsigned n=0;n<9;++n){
+        auto bad=claim;
+        if(n==0)bad.serial=0;if(n==1)++bad.value.policy;if(n==2)++bad.value.formula;
+        if(n==3)bad.value.words[0]=std::bit_cast<uint32_t>(-1.0f);
+        if(n==4)bad.value.words[5]=0x7FC00000;if(n==5)bad.value.words[12]=0;
+        if(n==6)bad.value.reason=ComplexityReason::CodeConflict;
+        if(n==7){bad.value.available=false;bad.value.reason=ComplexityReason::Unavailable;}
+        if(n==8)bad.value.reason=ComplexityReason(255);
+        net::Writer bytes;std::string error;CHECK(!w::write({context(),bad},bytes,error));
+    }
+    for(unsigned n=0;n<5;++n){
+        auto bad=cohort;
+        if(n==0)bad.members.clear();if(n==1)bad.members.push_back(bad.members[0]);
+        if(n==2)bad.members[1].serial=0;if(n==3)bad.members.erase(bad.members.begin());
+        if(n==4){bad.host={};bad.ready=true;}
+        net::Writer bytes;std::string error;CHECK(!w::write({context(),bad},bytes,error));
+    }
+    claim.value={};const auto unavailable=packet({context(),claim});w::Message decoded;
+    CHECK(read(unavailable,decoded,guest,false));CHECK(!std::get<w::ComplexityClaim>(decoded.payload).value.available);
+}
+int main(){codec();authority();transfers();preview_authority_and_malformed();join_inventory_codec_bounds_and_authority();malformed();class_settings_codec();native_commands();complexity_capability_codec();std::cout<<"editor protocol: "<<checks<<" checks passed\n";}

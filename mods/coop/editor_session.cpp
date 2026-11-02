@@ -66,6 +66,7 @@ struct Controller::Impl {
         Revision baseline = 0;
         uint64_t baseline_save_serial = 0;
         bool resources = false;
+        bool baseline_covered=false;
     };
     struct Input { uint8_t kind = 0, from = 0; std::vector<uint8_t> bytes; };
     struct HeldRequest { Peer author; Request request; size_t cost = 0; };
@@ -141,6 +142,10 @@ struct Controller::Impl {
     uint64_t serial = 0, lease_serial = 0, operation_sequence = 0, round = 0;
     Time now = 0;
     bool hosting = false, ticking = false, coverage_pending = false;
+    std::optional<ComplexityCapability> local_complexity;
+    bool complexity_claim_pending=false;
+    uint64_t complexity_claim_serial=0,complexity_state_serial=0;
+    std::optional<w::ComplexityState> remote_complexity,published_complexity;
 
     Impl(net::Session& s, Callbacks cb, Config cfg) : session(s), callbacks(std::move(cb)), config(cfg) {}
     const State& state() const { return hosting ? coordinator.state() : replica; }
@@ -148,6 +153,76 @@ struct Controller::Impl {
     w::Context context() const { const auto& d = state().document; return {d.project, d.epoch, d.revision}; }
     bool active() const { return view.phase != Phase::Idle && view.phase != Phase::Disconnected; }
     bool authoring_ready() const { return !pending_commit && (!callbacks.authoring_ready || callbacks.authoring_ready()); }
+    static bool complexity_member(const Member& member){
+        return member.peer.slot==0||member.phase==Phase::Joining||member.phase==Phase::Syncing||member.phase==Phase::Ready||
+            member.phase==Phase::Preparing||member.phase==Phase::Playing||member.phase==Phase::Returning;
+    }
+    void reset_complexity_context(){
+        complexity_claim_serial=complexity_state_serial=0;complexity_claim_pending=false;remote_complexity.reset();published_complexity.reset();
+        view.complexity_ready=false;view.complexity_error="Extended Complexity is waiting for current native tuning proofs.";
+    }
+    void bind_local_complexity(){
+        if(!local_complexity||!view.local.generation)return;
+        if(!complexity_claim_serial)complexity_claim_serial=1;
+        auto& member=view.members[view.local.slot];member.complexity=*local_complexity;member.complexity_serial=complexity_claim_serial;
+    }
+    void refresh_complexity(){
+        bool ready=false;
+        if(hosting){
+            ready=local_complexity&&local_complexity->available&&complexity_claim_serial;
+            for(const auto& [slot,member]:view.members)if(complexity_member(member)){
+                (void)slot;
+                if(!member.complexity||!member.complexity_serial||!member.complexity->available||
+                   !local_complexity||*member.complexity!=*local_complexity)ready=false;
+            }
+        }else if(remote_complexity&&local_complexity&&local_complexity->available&&complexity_claim_serial){
+            const auto& cohort=*remote_complexity;
+            ready=cohort.ready&&cohort.host==*local_complexity;
+            const auto own=std::find_if(cohort.members.begin(),cohort.members.end(),[&](const w::ComplexityAck& a){return a.peer==view.local;});
+            const auto host=std::find_if(cohort.members.begin(),cohort.members.end(),[&](const w::ComplexityAck& a){return a.peer==host_author();});
+            ready=ready&&own!=cohort.members.end()&&own->serial==complexity_claim_serial&&host!=cohort.members.end();
+        }
+        view.complexity_ready=ready;
+        view.complexity_error=ready?"":"Extended Complexity requires identical current verified native code and all thirteen tuning values from every participant.";
+    }
+    void publish_complexity(uint8_t only=255){
+        refresh_complexity();if(!hosting||!active()||!local_complexity||view.phase==Phase::Frozen)return;
+        w::ComplexityState value;value.host=*local_complexity;value.ready=view.complexity_ready;
+        for(const auto& [slot,member]:view.members)if(complexity_member(member)){
+            (void)slot;value.members.push_back({member.peer,member.complexity_serial});
+        }
+        if(value.members.empty())return;
+        auto previous=published_complexity;if(previous)previous->serial=0;
+        const bool changed=!previous||*previous!=value;
+        if(changed){
+            if(complexity_state_serial==UINT64_MAX){freeze(0,"Native complexity proof sequence exhausted.");return;}
+            value.serial=++complexity_state_serial;published_complexity=value;
+        }else value=*published_complexity;
+        if(!changed&&only==255)return;
+        std::vector<uint8_t> failed;
+        for(const auto& [slot,member]:view.members)if(slot&&(changed||only==255||only==slot)&&
+            member.phase!=Phase::Idle&&member.phase!=Phase::Disconnected&&member.phase!=Phase::Frozen){
+            std::string error;if(!queue(slot,{context(),value},true,error))failed.push_back(slot);
+        }
+        for(auto slot:failed)freeze(slot,"Native complexity proof publication exceeded its bounded queue.");
+    }
+    bool send_complexity_claim(std::string& error){
+        bind_local_complexity();refresh_complexity();
+        if(hosting){publish_complexity();complexity_claim_pending=false;error.clear();return true;}
+        if(!active()||!local_complexity||!view.local.generation){error.clear();return true;}
+        const bool sent=queue(0,{view.context,w::ComplexityClaim{complexity_claim_serial,*local_complexity}},true,error);
+        complexity_claim_pending=!sent;return sent;
+    }
+    bool complexity_allows(const Document& before,const Document& after,const Change& change,std::string& error){
+        refresh_complexity();
+        if(!extended_complexity(before)&&!extended_complexity(after))return true;
+        const auto& p=change.patch;
+        const bool disable=extended_complexity(before)&&!extended_complexity(after)&&p.objects.empty()&&p.classes.empty()&&
+            !p.acts&&p.terrain.empty()&&p.dependencies.empty()&&p.fields.size()==1&&
+            p.fields.front().object==kComplexityProjectObject&&p.fields.front().field==FieldKey{Field::Property,kComplexityProperty};
+        if(disable||view.complexity_ready)return true;
+        error=view.complexity_error;return false;
+    }
     static w::PresencePhase presence_phase(Phase phase) {
         switch(phase) {
         case Phase::Ready:return w::PresencePhase::Ready;
@@ -517,6 +592,7 @@ struct Controller::Impl {
         Peer capability{id, ++generations[id]}; if (!coordinator.connect(capability)) { report("Cannot assign an editor peer capability."); return; }
         Member member; member.peer = capability; member.name = session.name_of(id); view.members[id] = member;
         std::string error; if (!queue(id, {context(), w::Offer{w::kSchema, view.name, capability, view.local}}, true, error)) freeze(id, error);
+        publish_complexity(id);
     }
     void synchronize(uint8_t from,const w::Join& join) {
         auto it = view.members.find(from); if (!hosting || it == view.members.end()) return;
@@ -539,6 +615,7 @@ struct Controller::Impl {
         if (!queue_transfer(from, ctx, w::TransferKind::Resources, for_peer, error, peer_hash) || !queue_transfer(from, ctx, w::TransferKind::Baseline, baseline_cache, error)) { freeze(from, error); return; }
         channels[from].baseline = ctx.revision; channels[from].baseline_save_serial = view.saved ? view.saved->serial : 0;
         member.phase = Phase::Syncing; member.ready = false;
+        publish_complexity(from);
     }
     bool invoke_control(const w::Control& control, std::string& error) {
         try { if (!callbacks.control || !callbacks.control(control, error)) { if (error.empty()) error = "Native editor playtest/return is unavailable."; return false; } return true; }
@@ -559,6 +636,7 @@ struct Controller::Impl {
     void set_ready_mask(uint8_t mask) { for (auto& [id, member] : view.members) member.ready = id < 4 && ((mask >> id) & 1); }
     void progress_ready() {
         if (pending_control) return;
+        refresh_complexity();if(extended_complexity(state().document)&&!view.complexity_ready){report(view.complexity_error);return;}
         w::Control progress{w::ControlKind::HostPreparePlaytest, view.playtest_round, view.playtest_revision, false, ready_mask(), view.playtest_participants};
         progress.mode=view.playtest_mode;progress.tester=view.playtest_tester;
         progress.start_act=view.playtest_act;
@@ -639,6 +717,7 @@ void Controller::Impl::host_request(uint8_t from, const Request& request)
     const auto validate = hooks.validate;
     hooks.validate = [&](const Document& before, const Document& after, const Change& change, std::string& error) {
         if (held || view.phase != Phase::Ready || view.members.at(from).phase != Phase::Ready) { error = "Authoring is held or this participant needs a baseline."; return false; }
+        if(!complexity_allows(before,after,change,error))return false;
         // A roster can change every class column. Check the complete canonical
         // decision before any native apply or durable acceptance, including
         // both directions of its checked history.
@@ -750,7 +829,13 @@ void Controller::Impl::lease_request(uint8_t from, const w::LeaseRequest& reques
     else {
         reply.serial = request.serial;
         auto owner = view.members.at(from).peer;
+        const bool complexity_setting=request.action==w::LeaseAction::Acquire&&request.scopes.size()==1&&
+            request.scopes.front().kind==ScopeKind::Field&&request.scopes.front().object==kComplexityProjectObject&&
+            request.scopes.front().field==FieldKey{Field::Property,kComplexityProperty};
+        refresh_complexity();
         if (view.phase != Phase::Ready || view.members.at(from).phase != Phase::Ready) reply.result = {Code::Busy, "Authoring is held or this participant needs a baseline.", {}};
+        else if(extended_complexity(state().document)&&!view.complexity_ready&&request.action!=w::LeaseAction::Release&&!complexity_setting)
+            reply.result={Code::Busy,view.complexity_error,{}};
         else if (request.action == w::LeaseAction::Acquire) reply.result = coordinator.acquire(owner, request.scopes, now, request.ttl);
         else if (request.action == w::LeaseAction::Renew) reply.result = coordinator.renew(owner, request.tokens, now, request.ttl);
         else if (request.action == w::LeaseAction::Release) {
@@ -814,6 +899,10 @@ void Controller::Impl::lease_reply(const w::LeaseReply& reply, Revision issued_r
 void Controller::Impl::control(uint8_t from, const w::Control& command)
 {
     std::string error;
+    refresh_complexity();
+    if(extended_complexity(state().document)&&!view.complexity_ready&&
+       (command.kind==w::ControlKind::HostPreparePlaytest||command.kind==w::ControlKind::HostBeginPlaytest||
+        (command.kind==w::ControlKind::GuestReadyPlaytest&&command.ready))){report(view.complexity_error);return;}
     if (hosting) {
         if (from) {
             if (command.kind == w::ControlKind::GuestEditorReturned) {
@@ -956,6 +1045,7 @@ void Controller::Impl::service_baseline()
 {
     if (!pending_baseline || view.phase != Phase::Syncing) return;
     if (!same_context(pending_baseline_context, view.context)) { pending_baseline.reset(); deferred.clear(); deferred_bytes = 0; return; }
+    refresh_complexity();if(extended_complexity(pending_baseline->document)&&!view.complexity_ready)return;
     std::string error;
     try {
         if (callbacks.baseline_ready && !callbacks.baseline_ready(*pending_baseline)) return;
@@ -1004,11 +1094,31 @@ void Controller::Impl::message(uint8_t from, w::Message message)
         view.name = offer_message->name; view.context = message.context;
         Member own; own.peer = view.local; own.name = session.name_of(view.local.slot); view.members[view.local.slot] = own;
         Member host; host.peer = offer_message->host; host.name = session.name_of(0); view.members[0] = host;
+        reset_complexity_context();bind_local_complexity();refresh_complexity();
         return;
     }
     if (!active() || !same_context(message.context, view.context)) return;
     if (view.phase == Phase::Frozen && !std::holds_alternative<w::Leave>(message.payload)) return;
     if (hosting && (!view.members.contains(from) || view.members.at(from).phase == Phase::Frozen)) return;
+    if(auto* claim=std::get_if<w::ComplexityClaim>(&message.payload)){
+        if(!hosting||!from)return;
+        auto& member=view.members.at(from);
+        if(claim->serial<member.complexity_serial)return;
+        if(claim->serial==member.complexity_serial){
+            if(!member.complexity||*member.complexity!=claim->value)freeze(from,"A native complexity claim serial changed its value.");
+            return;
+        }
+        member.complexity=claim->value;member.complexity_serial=claim->serial;publish_complexity();return;
+    }
+    if(auto* value=std::get_if<w::ComplexityState>(&message.payload)){
+        if(hosting||from)return;
+        if(remote_complexity&&value->serial<remote_complexity->serial)return;
+        if(remote_complexity&&value->serial==remote_complexity->serial){
+            if(*value!=*remote_complexity)freeze(0,"A native complexity cohort serial changed its value.");
+            return;
+        }
+        remote_complexity=*value;refresh_complexity();return;
+    }
     if (auto* command = std::get_if<w::Command>(&message.payload)) {
         const bool request=command->kind==w::CommandKind::RequestExport || command->kind==w::CommandKind::RequestPlaytest ||
             command->kind==w::CommandKind::ReplyPlaytest || command->kind==w::CommandKind::RequestSolo || command->kind==w::CommandKind::ReplySolo || command->kind==w::CommandKind::EndExport;
@@ -1083,9 +1193,12 @@ void Controller::Impl::message(uint8_t from, w::Message message)
         auto hash = hashes.find(message.context.revision);
         if (hash == hashes.end() || hash->second != cover->state_hash) { freeze(from, "The participant's canonical document hash diverged; a new baseline is required."); return; }
         auto& member = view.members.at(from);
+        if(member.phase==Phase::Syncing)channels[from].baseline_covered=true;
         if (message.context.revision >= member.applied_revision) {
             member.applied_revision = message.context.revision; member.coverage = *cover;
-            if (member.phase == Phase::Syncing && message.context.revision >= channels[from].baseline) {
+            refresh_complexity();
+            if (member.phase == Phase::Syncing && message.context.revision >= channels[from].baseline &&
+                (!extended_complexity(state().document)||view.complexity_ready)) {
                 if (view.saved && channels[from].baseline_save_serial == view.saved->serial) saved_acks[from] = view.saved->serial;
                 member.phase = Phase::Ready;
             }
@@ -1189,11 +1302,13 @@ bool Controller::start(State state, std::vector<uint8_t> resources, const std::s
     i.resources = std::make_shared<const std::vector<uint8_t>>(std::move(resources));
     i.resources_hash = upd::sha256_hex(*i.resources);
     i.view = {}; i.view.phase = Phase::Ready; i.view.local = host; i.view.name = name; i.view.context = i.context();
+    i.reset_complexity_context();
     i.operation_sequence = 0; i.round = 0;
     for (const auto& [operation, decision] : i.coordinator.state().decisions) { (void)decision; if (operation.author == host && operation.epoch == epoch) i.operation_sequence = std::max(i.operation_sequence, operation.sequence); }
     if (auto retired = i.coordinator.state().retired_sequences.find(host); retired != i.coordinator.state().retired_sequences.end()) i.operation_sequence = std::max(i.operation_sequence, retired->second);
     for (const auto& gesture : i.coordinator.state().history) if (gesture.operation.author == host && gesture.operation.epoch == epoch) i.operation_sequence = std::max(i.operation_sequence, gesture.operation.sequence);
     Member member; member.peer = host; member.name = i.session.name_of(0); member.phase = Phase::Ready; member.applied_revision = i.context().revision; i.view.members[0] = member;
+    i.bind_local_complexity();i.refresh_complexity();
     if (i.callbacks.host_hooks.persist) i.view.locally_durable = i.context().revision;
     i.generations = historical; i.generations[0] = std::max(historical[0], host.generation); i.coverage();
     for (const auto& player : i.session.players()) if (player.id) on_join(player.id);
@@ -1243,6 +1358,7 @@ bool Controller::accept_offer(std::string& error)
     if(join.durable_revision>i.view.context.revision){error="The join durability claim exceeds this offered project revision.";return false;}
     i.clear_previews();i.presence_local.reset();i.presence_intent.reset();i.presence_relay={};i.preview_authors={};i.preview_seen={};i.preview_sequence=0;
     i.replica = {}; i.channels.clear(); i.output_bytes = 0; i.view.local_leases.clear(); i.clear_lease_requests(); i.view.locally_durable = 0;
+    if(!i.send_complexity_claim(error))return false;
     if (!i.queue(0, {i.view.context, std::move(join)}, true, error)) return false;
     i.view.phase = Phase::Joining; error.clear(); return true;
 }
@@ -1279,6 +1395,7 @@ void Controller::end_session(bool recovery)
     i.channels.clear(); i.input.clear(); i.local.clear(); i.clear_lease_requests(); i.saved_acks.clear(); i.local_saved_ack = 0; i.hashes.clear(); i.overflow.clear(); i.pending_offers.clear();
     i.resources.reset(); i.resources_hash.clear(); i.baseline_cache.reset(); i.staged.reset(); i.pending_baseline.reset(); i.pending_control.reset(); i.returning_control.reset(); i.returned.clear(); i.local_returned = false; i.deferred.clear(); i.deferred_bytes = 0; i.held_requests.clear(); i.held_request_bytes = 0;
     i.input_bytes = i.output_bytes = i.local_bytes = 0; i.coverage_pending = false; i.view = {};
+    i.reset_complexity_context();
     i.hosting = false;
 }
 
@@ -1382,6 +1499,10 @@ void Controller::tick(Time now)
             i.view.local_leases.clear();
             if (i.view.phase == Phase::Ready) for (const auto& lease : i.coordinator.leases()) if (lease.owner == i.view.local && lease.expires > now && !i.quarantined(lease)) i.view.local_leases.push_back(lease);
         }
+        i.publish_complexity();
+        if(i.hosting&&(!extended_complexity(i.state().document)||i.view.complexity_ready))for(auto& [slot,member]:i.view.members)
+            if(slot&&member.phase==Phase::Syncing&&i.channels[slot].baseline_covered&&member.applied_revision>=i.channels[slot].baseline)
+                member.phase=Phase::Ready;
         i.service_baseline();
         i.service_requests();
         i.service_deferred();
@@ -1474,6 +1595,20 @@ uint64_t Controller::request_leases(const std::vector<Scope>& scopes, Time ttl, 
 uint64_t Controller::renew_leases(const std::vector<LeaseToken>& tokens, Time ttl, std::string& error) { return lease(*impl_, w::LeaseAction::Renew, {}, tokens, ttl, error); }
 uint64_t Controller::release_leases(const std::vector<LeaseToken>& tokens, std::string& error) { return lease(*impl_, w::LeaseAction::Release, {}, tokens, 0, error); }
 
+bool Controller::set_complexity_capability(const ComplexityCapability& value,std::string& error){
+    auto& i=*impl_;
+    if(!valid_complexity(value)){error="Invalid native complexity capability.";return false;}
+    const bool changed=!i.local_complexity||*i.local_complexity!=value;
+    if(changed&&i.complexity_claim_serial==UINT64_MAX){error="Native complexity claim sequence exhausted.";return false;}
+    i.local_complexity=value;
+    if(!i.active()||!i.view.local.generation){i.refresh_complexity();error.clear();return true;}
+    if(!i.complexity_claim_serial)i.complexity_claim_serial=1;
+    else if(changed)++i.complexity_claim_serial;
+    if(changed)i.complexity_claim_pending=true;
+    i.bind_local_complexity();i.refresh_complexity();
+    if(!changed&&!i.complexity_claim_pending){error.clear();return true;}
+    return i.send_complexity_claim(error);
+}
 bool Controller::set_presence(w::Presence presence, std::string& error)
 {
     auto& i = *impl_; if (i.view.phase != Phase::Ready && i.view.phase != Phase::Preparing) { error = "No shared editor presence is active."; return false; }
@@ -1549,6 +1684,7 @@ bool Controller::prepare_playtest(std::string& error,w::PlaytestMode mode,Peer t
 {
     auto& i = *impl_;
     if (!i.hosting || i.view.phase != Phase::Ready || i.round == UINT64_MAX) { error = "Only a ready host can prepare the next group playtest."; return false; }
+    i.refresh_complexity();if(extended_complexity(i.state().document)&&!i.view.complexity_ready){error=i.view.complexity_error;return false;}
     w::Control command{w::ControlKind::HostPreparePlaytest, i.round + 1, i.context().revision, false, 0};
     command.mode=mode;command.tester=tester;
     command.start_act=start_act==ObjectId{}?(i.state().document.act_order.empty()?*i.state().document.acts.begin():i.state().document.act_order.front()):start_act;
@@ -1559,6 +1695,7 @@ bool Controller::ready_playtest(bool ready, std::string& error)
 {
     auto& i = *impl_;
     if (i.view.phase != Phase::Preparing) { error = "There is no current group playtest confirmation."; return false; }
+    i.refresh_complexity();if(ready&&extended_complexity(i.state().document)&&!i.view.complexity_ready){error=i.view.complexity_error;return false;}
     w::Control command{w::ControlKind::GuestReadyPlaytest, i.view.playtest_round, i.view.playtest_revision, ready, 0};
     if (i.hosting) return i.queue_local(command, 64, error);
     return i.queue(0, {i.context(), command}, false, error);
