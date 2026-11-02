@@ -1019,21 +1019,25 @@ void* v_active=v_camera.data();
 void* v_named=v_camera.data();
 bool v_cast=true,v_refuse=false;
 unsigned v_gets=0,v_looks=0,v_sets=0;
-void* SK_CDECL v_get_manager(){++v_gets;return &v_manager;}
-void* SK_THISCALL v_get_cameras(void* self){CHECK(self==&v_manager);return &v_cameras;}
-void* SK_THISCALL v_get_active(void* self){CHECK(self==&v_cameras);return v_active;}
-void* SK_THISCALL v_get_named(void* self,uint32_t id){CHECK(self==&v_cameras);CHECK(id==0x00EBB801);return v_named;}
-void* SK_THISCALL v_get_cast(void* self,uint32_t id){CHECK(self==v_active||self==v_named);CHECK(id==0x011966ED);return v_cast?self:nullptr;}
+std::function<void(unsigned)> v_callback;
+void* SK_CDECL v_get_manager(){++v_gets;if(v_callback)v_callback(0);return &v_manager;}
+void* SK_THISCALL v_get_cameras(void* self){CHECK(self==&v_manager);if(v_callback)v_callback(1);return &v_cameras;}
+void* SK_THISCALL v_get_active(void* self){CHECK(self==&v_cameras);if(v_callback)v_callback(2);return v_active;}
+void* SK_THISCALL v_get_named(void* self,uint32_t id){CHECK(self==&v_cameras);CHECK(id==0x00EBB801);if(v_callback)v_callback(3);return v_named;}
+void* SK_THISCALL v_get_cast(void* self,uint32_t id){CHECK(self==v_active||self==v_named);CHECK(id==0x011966ED);if(v_callback)v_callback(4);return v_cast?self:nullptr;}
 const float* SK_THISCALL v_target(void* self){
+    if(v_callback)v_callback(5);
     static std::array<float,3> target;
     for(unsigned i=0;i<3;++i)target[i]=skg::field<float>(self,0x54+4*i)*skg::field<float>(self,0x28);
     return target.data();
 }
 void SK_THISCALL v_orbit(void* self,float* yaw,float* pitch,float* distance){
+    if(v_callback)v_callback(6);
     *yaw=skg::field<float>(self,0x154);*pitch=skg::field<float>(self,0x130);*distance=skg::field<float>(self,0x10C);
 }
 void SK_THISCALL v_look(void* self,const float* point,const float* quaternion,bool instant){
     CHECK(self==v_active);CHECK(instant);++v_looks;
+    if(v_callback)v_callback(7);
     if(v_refuse)return;
     const float radius=std::sqrt(point[0]*point[0]+point[1]*point[1]+point[2]*point[2]);
     for(unsigned i=0;i<3;++i)skg::field<float>(self,0x54+4*i)=point[i]/radius;
@@ -1041,7 +1045,7 @@ void SK_THISCALL v_look(void* self,const float* point,const float* quaternion,bo
     std::memcpy(skg::ptr_add<void>(self,0xAC),quaternion,sizeof(float)*4);
 }
 void SK_THISCALL v_set(void* self,float yaw,float pitch,float distance){
-    CHECK(self==v_active);++v_sets;if(v_refuse)return;
+    CHECK(self==v_active);++v_sets;if(v_callback)v_callback(8);if(v_refuse)return;
     skg::field<float>(self,0x154)=skg::field<float>(self,0x15C)=yaw;
     skg::field<float>(self,0x130)=skg::field<float>(self,0x138)=pitch;
     skg::field<float>(self,0x10C)=skg::field<float>(self,0x114)=distance;
@@ -1049,7 +1053,7 @@ void SK_THISCALL v_set(void* self,float yaw,float pitch,float distance){
 void view_fixture(){
     reset();v_camera.fill(0);v_replacement.fill(0);v_manager_vt.fill(nullptr);v_cameras_vt.fill(nullptr);v_camera_vt.fill(nullptr);
     v_manager=v_manager_vt.data();v_cameras=v_cameras_vt.data();v_active=v_named=v_camera.data();
-    v_cast=true;v_refuse=false;v_gets=v_looks=v_sets=0;
+    v_cast=true;v_refuse=false;v_gets=v_looks=v_sets=0;v_callback={};
     v_manager_vt[0x50/4]=reinterpret_cast<void*>(v_get_cameras);
     v_cameras_vt[0x38/4]=reinterpret_cast<void*>(v_get_active);
     v_cameras_vt[0x40/4]=reinterpret_cast<void*>(v_get_named);
@@ -1211,7 +1215,7 @@ void test_metadata_caption_notification(){
     a_metadata_message_manager=a_metadata_message_send=0;reset();
 }
 std::array<uint8_t,0x100> v_terrain;
-bool SK_THISCALL v_terrain_loaded(void* self){CHECK(self==v_terrain.data());return skg::field<void*>(self,0xFC)==nullptr;}
+bool SK_THISCALL v_terrain_loaded(void* self){CHECK(self==v_terrain.data());if(v_callback)v_callback(9);return skg::field<void*>(self,0xFC)==nullptr;}
 void test_local_view(){
     std::string error;
     view_fixture();select_native(t_tool_pointer,nullptr);
@@ -1260,7 +1264,7 @@ void test_local_view(){
     skg::field<void*>(t_terraform.data(),0x190)=v_terrain.data();
     a_terrain_vtable=0x12345678;skg::field<uintptr_t>(v_terrain.data(),0)=a_terrain_vtable;a_terrain_loaded=uintptr_t(v_terrain_loaded);
     skg::field<float>(v_camera.data(),0x130)=0;
-    deferred_local_view=DeferredLocalView{pinned,t_scope,generation,mode(),data(mode())};
+    deferred_local_view=DeferredLocalView{pinned,t_scope,generation,mode(),data(mode()),resource(data(mode())),skg::field<editor::ResourceKey>(resource(data(mode())),8)};
     terrain_rebuilding=true;terrain_rebuild_frame=t_frame;
     CHECK(!state().ready);drain_local_view(nullptr);CHECK(deferred_local_view&&!v_looks);
     ++t_frame;skg::field<void*>(v_terrain.data(),0xFC)=v_terrain.data();drain_local_view(nullptr);CHECK(deferred_local_view&&!v_looks&&!state().ready);
@@ -1269,7 +1273,7 @@ void test_local_view(){
     CHECK(capture_view(after,error)&&same_view(pinned,after));
     for(unsigned reason=0;reason<5;++reason){
         view_fixture();CHECK(capture_view(pinned,error));
-        deferred_local_view=DeferredLocalView{pinned,t_scope,generation,mode(),data(mode())};
+        deferred_local_view=DeferredLocalView{pinned,t_scope,generation,mode(),data(mode()),resource(data(mode())),skg::field<editor::ResourceKey>(resource(data(mode())),8)};
         if(reason==0)++generation;if(reason==1)++t_scope.epoch;
         if(reason==2)++t_scope.author.generation;if(reason==3)deferred_local_view->owner=t_other_data.data();
         if(reason==4)deferred_local_view->mode=nullptr;
@@ -1502,7 +1506,11 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
 #include "editor_native_pose_capture_fixture.h"
 #include "editor_native_terrain_materialization_fixture.h"
 #include "editor_native_diagnostic_fixture.h"
+#include "editor_native_view_fence_fixture.h"
 int main(int argc,char** argv){
+    if(argc==2&&std::string(argv[1])=="--view-fence-only"){
+        test_native_view_fences();std::printf("native view fences: %u checks passed\n",checks);return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--diagnostic-only"){
         test_native_payload_diagnostics();std::printf("native payload diagnostics: %u checks passed\n",checks);return 0;
     }
@@ -1518,6 +1526,7 @@ int main(int argc,char** argv){
     if(argc==2&&std::string(argv[1])=="--recent-only"){
         test_recent_native_proofs();std::printf("native recent proofs: %u checks passed\n",checks);return 0;
     }
+    test_native_view_fences();
     test_native_payload_diagnostics();
     test_history_toolbar_current_layout();
     test_recent_native_proofs();

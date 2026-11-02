@@ -205,6 +205,10 @@ bool validate_entry(const std::vector<uint8_t>&, uint32_t act, std::string& erro
 // closed when that camera or its exact current context is unavailable.
 bool capture_view(LocalView&, std::string& error);
 bool restore_view(const LocalView&, uint64_t expected_generation, std::string& error);
+// Read identity and caller policy remain pinned across the existing camera
+// callbacks. The copied callback must inspect only owned Runtime state.
+bool restore_view_fenced(const LocalView&,uint64_t expected_generation,SceneOwner owner,GestureScope scope,
+                         std::function<bool()> current,std::string& error);
 bool capture_scene_owner(SceneOwner&,std::string& error);
 SceneResumeState creation_scene_state(const SceneOwner&);
 bool resume_creation_scene_camera(const GestureScope&,uint64_t serial,uint64_t expected_generation,const SceneOwner&,std::string& error);

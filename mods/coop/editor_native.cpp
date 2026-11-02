@@ -173,7 +173,10 @@ bool terrain_materialization_error_queued=false;
 bool terrain_materialization_error_reported=false;
 bool normalize_materialized_terrain(std::vector<uint8_t>&,std::string&);
 void clear_terrain_materialization(){terrain_materialization.clear();terrain_materialization_owner.reset();terrain_materialization_error.clear();terrain_materialization_error_reported=false;for(auto& rows:terrain_authored_rows)rows.clear();}
-struct DeferredLocalView {LocalView view;GestureScope scope;uint64_t generation=0;void* mode=nullptr;void* owner=nullptr;};
+struct DeferredLocalView {
+    LocalView view;GestureScope scope;uint64_t generation=0;void* mode=nullptr;void* owner=nullptr;
+    void* resource=nullptr;editor::ResourceKey source;
+};
 std::optional<DeferredLocalView> deferred_local_view;
 bool local_view_queued=false,local_view_settling=false;
 editor_native_complexity::Bounds complexity_bounds;
@@ -3260,22 +3263,31 @@ bool view_slot(void* object, unsigned index) {
     void** vt=skg::vtable(object);
     return skg::readable(vt, (index+1)*sizeof(void*)) && vt[index];
 }
-void* view_camera(std::string& error) {
+void* view_camera(std::string& error,const std::function<bool()>* current=nullptr) {
+    auto checked=[&]{
+        if(!current || (*current)())return true;
+        error="The local editor camera belongs to an expired scene";return false;
+    };
     if (!a_view_manager || !a_view_target || !a_view_orbit || !a_view_set_orbit || !a_view_lookat) {
         error="The verified local editor camera adapter is unavailable";return nullptr;
     }
     void* manager=skg::cdecl_call<void*>(a_view_manager);
+    if(!checked())return nullptr;
     if (!view_slot(manager,0x50/4)) {error="The native camera manager is unavailable";return nullptr;}
     void* cameras=skg::vcall<void*>(manager,0x50/4);
+    if(!checked())return nullptr;
     if (!view_slot(cameras,0x38/4) || !view_slot(cameras,0x40/4)) {
         error="The native editor camera manager is unavailable";return nullptr;
     }
     void* active_camera=skg::vcall<void*>(cameras,0x38/4);
+    if(!checked())return nullptr;
     void* editor_camera=skg::vcall<void*>(cameras,0x40/4,uint32_t(0x00EBB801));
+    if(!checked())return nullptr;
     if (!active_camera || active_camera!=editor_camera || !view_slot(active_camera,0x0C/4)) {
         error="Waiting for the active native Adventure Editor camera";return nullptr;
     }
     void* orbit=skg::vcall<void*>(active_camera,0x0C/4,uint32_t(0x011966ED));
+    if(!checked())return nullptr;
     if (!skg::readable(orbit,0x318)) {error="The native editor orbit camera is unavailable";return nullptr;}
     return orbit;
 }
@@ -3289,17 +3301,19 @@ bool finite_view(const LocalView& view) {
     for (float value:view.rotation) norm+=double(value)*value;
     return radius>1e-10 && norm>0.999 && norm<1.001 && view.orbit[2]>=0.1f;
 }
-void read_view(void* camera, LocalView& view) {
+bool read_view(void* camera, LocalView& view,const std::function<bool()>* current=nullptr) {
     // B10160 returns a borrowed static vector, copied before another call.
     const float* target=skg::thiscall<const float*>(a_view_target,camera);
-    if (!skg::readable(target,sizeof(float)*3)) {view={};return;}
+    if ((current && !(*current)()) || !skg::readable(target,sizeof(float)*3)) {view={};return false;}
     std::memcpy(view.target.data(),target,sizeof(float)*3);
     // B133E0 final transform consumes the current quaternion AC, not the
     // desired CC used by native Save and the 32-byte ScenarioResource view.
     std::memcpy(view.rotation.data(),skg::ptr_add<void>(camera,0xAC),sizeof(float)*4);
     skg::thiscall<void>(a_view_orbit,camera,&view.orbit[0],&view.orbit[1],&view.orbit[2]);
+    if(current && !(*current)()){view={};return false;}
     view.settings={skg::field<float>(camera,0x26C),skg::field<float>(camera,0x270),
         skg::field<float>(camera,0x310),skg::field<float>(camera,0x314)};
+    return true;
 }
 bool same_view(const LocalView& a,const LocalView& b) {
     auto close_enough=[](float x,float y){return std::fabs(double(x)-y)<=1e-5*std::max(1.0,std::max(std::fabs(double(x)),std::fabs(double(y))));};
@@ -3518,14 +3532,36 @@ bool notify_metadata_caption(const SceneOwner& owner,uint64_t expected_generatio
     error.clear();return true;
 }
 
-bool restore_view(const LocalView& view, uint64_t expected_generation, std::string& error) {
+bool deferred_view_current(const DeferredLocalView& item,const std::function<bool()>* required_current=nullptr){
+    try{
+    if(valid_scope(item.scope) && value_scope()!=item.scope)return false;
+    if(!editing())return false;
+    if(required_current && (!*required_current || !(*required_current)()))return false;
+    if(valid_scope(item.scope) && value_scope()!=item.scope)return false;
+    return generation==item.generation && mode()==item.mode && data(item.mode)==item.owner &&
+        resource(item.owner)==item.resource && skg::readable(item.resource,kResourceSize) &&
+        skg::field<editor::ResourceKey>(item.resource,8)==item.source;
+    }catch(...){return false;}
+}
+bool restore_view_impl(const LocalView& view,uint64_t expected_generation,const DeferredLocalView* pin,
+                       const std::function<bool()>* required_current,std::string& error){
+    auto current_identity=[&]{
+        try{return generation==expected_generation && (!pin || deferred_view_current(*pin,required_current));}
+        catch(...){return false;}
+    };
+    auto expired=[&]{error="The pinned local editor view belongs to an expired scene";return false;};
+    std::function<bool()> checked_identity;if(pin)checked_identity=current_identity;
+    const auto* identity=pin?&checked_identity:nullptr;
     const auto native=state();
     if (!native.ready || native.gesture || applying || native.generation!=expected_generation) {
         error="The native editor context is not ready to restore this local view";return false;
     }
+    if(!current_identity())return expired();
     if(!finite_view(view)){error="The pinned local editor view is invalid";return false;}
-    void* camera=view_camera(error);if(!camera)return false;
-    LocalView current;read_view(camera,current);
+    void* camera=view_camera(error,identity);if(!camera)return false;
+    if(!current_identity())return expired();
+    LocalView current;read_view(camera,current,identity);
+    if(!current_identity())return expired();
     if(!finite_view(current)||current.settings!=view.settings) {
         error="The native editor camera settings changed during Test";return false;
     }
@@ -3533,30 +3569,45 @@ bool restore_view(const LocalView& view, uint64_t expected_generation, std::stri
     if(!std::isfinite(low)||!std::isfinite(high)||low>high||view.orbit[1]<low||view.orbit[1]>high) {
         error="The pinned local editor view exceeds the native camera limits";return false;
     }
-    if(state().generation!=expected_generation) {error="The native editor changed before restoring its local view";return false;}
+    if(state().generation!=expected_generation || !current_identity())return expired();
     // Existing native instant LookAt restores current orbit point/quaternion.
     // B106C0 then sets all current/desired scalar values, including the actual
     // angles omitted from ScenarioResource's persisted camera fields.
     skg::thiscall<void>(a_view_lookat,camera,view.target.data(),view.rotation.data(),true);
+    if(!current_identity())return expired();
     skg::thiscall<void>(a_view_set_orbit,camera,view.orbit[0],view.orbit[1],view.orbit[2]);
-    LocalView restored;read_view(camera,restored);
-    if(state().generation!=expected_generation || !finite_view(restored) || !same_view(view,restored)) {
+    if(!current_identity())return expired();
+    LocalView restored;read_view(camera,restored,identity);
+    if(state().generation!=expected_generation || !current_identity())return expired();
+    if(!finite_view(restored) || !same_view(view,restored)) {
         error="The native editor could not restore the pinned local view";return false;
     }
     return true;
+}
+bool restore_view(const LocalView& view,uint64_t expected_generation,std::string& error){
+    return restore_view_impl(view,expected_generation,nullptr,nullptr,error);
+}
+bool restore_view_fenced(const LocalView& view,uint64_t expected_generation,SceneOwner owner,GestureScope scope,
+                         std::function<bool()> current,std::string& error){
+    // A Runtime callback may retire its optional hold while a native getter
+    // runs. Retain only copied values and a value-owned policy callback.
+    const auto copied_view=view;
+    if(!valid_scope(scope) || !current){error="The local view restoration has no current scene authority";return false;}
+    const DeferredLocalView pin{copied_view,scope,expected_generation,reinterpret_cast<void*>(owner.mode),
+        reinterpret_cast<void*>(owner.data),reinterpret_cast<void*>(owner.resource),owner.source};
+    return restore_view_impl(copied_view,expected_generation,&pin,&current,error);
 }
 void SK_CDECL drain_local_view(void*){
     local_view_queued=false;if(!deferred_local_view)return;
     const auto item=*deferred_local_view;
     const auto native=state();
-    const auto scope=C.gesture_scope?C.gesture_scope():GestureScope{};
-    if(item.generation!=native.generation || item.mode!=mode() || item.owner!=data(mode()) || !editing() ||
-       (valid_scope(item.scope) && item.scope!=scope)){
+    if(item.generation!=native.generation || !deferred_view_current(item)){
         deferred_local_view.reset();return;
     }
     if(!terrain_settled() || native.gesture || applying)return;
+    if(!deferred_view_current(item)){deferred_local_view.reset();return;}
     local_view_settling=true;std::string error;
-    const bool okay=restore_view(item.view,item.generation,error);
+    const bool okay=restore_view_impl(item.view,item.generation,&item,nullptr,error);
     local_view_settling=false;deferred_local_view.reset();
     if(!okay && C.failure)C.failure(error);
 }
@@ -4462,6 +4513,29 @@ bool normalize_saved_grounding(Snapshot& snapshot,const editor::Document& docume
     snapshot=std::move(result);return true;
 }
 
+void log_restore_quaternions(const Snapshot& snapshot,void* candidate,const char* stage){
+    // Primitive-only diagnostics: never project, serialize, resolve an actor or
+    // modify an authored value. Snapshot bindings name this restored pool.
+    if(!H || !H->log || !skg::readable(candidate,kResourceSize))return;
+    Rows markers;if(!rows(candidate,0x2C10,0x238,kPlacementLimit,markers))return;
+    unsigned logged=0;const size_t count=size_t(markers.end-markers.begin)/0x238;
+    for(const auto& binding:snapshot.bindings){
+        if(binding.marker>=count)continue;
+        const auto found=snapshot.document.placements.find(binding.object);
+        if(found==snapshot.document.placements.end())continue;
+        auto* raw=markers.begin+binding.marker*0x238;
+        if(!live_slot(raw) || skg::field<uint32_t>(raw+4,0)!=uint32_t(found->second.class_id.id))continue;
+        const auto actual=skg::field<editor::Rotation>(raw+4,0x10);
+        if(actual==found->second.rotation)continue;
+        std::array<uint32_t,4> a{},b{};std::memcpy(a.data(),&actual,sizeof actual);
+        std::memcpy(b.data(),&found->second.rotation,sizeof found->second.rotation);
+        H->log(M,SK_DEBUG,"Native restore quaternion diagnostic: stage=%s object=%llu:%u marker=%u actual=%08X,%08X,%08X,%08X canonical=%08X,%08X,%08X,%08X",
+            stage,static_cast<unsigned long long>(binding.object.id),binding.object.generation,binding.marker,
+            a[0],a[1],a[2],a[3],b[0],b[1],b[2],b[3]);
+        if(++logged==8)break;
+    }
+}
+
 bool restore(const Snapshot& snapshot, std::string& error) {
     InspectorView inspector;
     // Scene reconstruction also installs the snapshot camera. That camera
@@ -4517,11 +4591,15 @@ bool restore(const Snapshot& snapshot, std::string& error) {
     // RestoreHistorySnapshot rebuilds through the current native act. Clamp
     // before its copy when deletion removed the old last act.
     if(s.act>=snapshot.document.acts.size())original_select_act(uint32_t(snapshot.document.acts.size()-1));
+    log_restore_quaternions(snapshot,copy.p,"parsed-before-restore");
     skg::thiscall<void>(a_restore,entry.p,copy.p);
+    log_restore_quaternions(snapshot,resource(data(mode())),"after-restore");
     original_select_act(local_act);
+    log_restore_quaternions(snapshot,resource(data(mode())),"after-act-selection");
     if(rebuild_terrain){
         original_terrain_load(terraform_mode(),skg::ptr_add<void>(copy.p,0x18));
         terrain_rebuild(terraform_mode());
+        log_restore_quaternions(snapshot,resource(data(mode())),"after-terrain-rebuild");
     }
     if(snapshot.local_dirty){
         skg::field<uint32_t>(data(mode()),0x80)=snapshot.local_dirty->saved_revision;
@@ -4543,6 +4621,7 @@ bool restore(const Snapshot& snapshot, std::string& error) {
         if(tools)original_select(tools,object);
     }
     refresh_selection();
+    log_restore_quaternions(snapshot,resource(data(mode())),"after-placement-selection");
     // The native scene/selection rebuild reconstructs sound controls. Its
     // serialized source must remain the committed value rather than acquiring
     // another round-trip error on every restoration.
@@ -4557,7 +4636,11 @@ bool restore(const Snapshot& snapshot, std::string& error) {
     ++restores;
     if(local_view){
         if(terrain_rebuilding){
-            deferred_local_view=DeferredLocalView{*local_view,C.gesture_scope?C.gesture_scope():GestureScope{},generation,mode(),data(mode())};
+            const auto read_scope=value_scope();
+            void* current_mode=mode();void* current_data=data(current_mode);void* current_resource=resource(current_data);
+            if(!skg::readable(current_resource,kResourceSize)){error="The deferred local view lost its native resource";return false;}
+            deferred_local_view=DeferredLocalView{*local_view,read_scope,generation,current_mode,current_data,current_resource,
+                skg::field<editor::ResourceKey>(current_resource,8)};
             error.clear();
         }else if(!restore_view(*local_view,generation,error))return false;
     }
