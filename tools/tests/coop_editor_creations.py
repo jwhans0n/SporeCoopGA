@@ -25,9 +25,18 @@ NEW, EDIT, CHOICE = 0xC00F0301, 0xC00F0302, 0xC00F0310
 ASSET = re.compile(r'^asset class=(\d+:\d+) settings=(\d+:\d+) key=([0-9A-Fa-f]{8})!([0-9A-Fa-f]{8})\.([0-9A-Fa-f]{8}) content_revision=(\d+) behavior_sha256=([0-9a-f]{64})$')
 
 
+def creation_command(line):
+    if line in ('coop.editor assets', 'coop.editor creations'):
+        return True
+    if re.fullmatch(r'coop\.editor model [0-9A-Fa-f]{8}![0-9A-Fa-f]{8}\.[0-9A-Fa-f]{8}', line):
+        return True
+    match = re.fullmatch(r'coop\.editor asset ([0-9]{1,20}):([0-9]{1,10})', line)
+    return bool(match and 0 < int(match[1]) <= 0xFFFFFFFFFFFFFFFF and 0 < int(match[2]) <= 0xFFFFFFFF)
+
+
 class CreationConsole(PublicConsole):
     def call(self, line):
-        if line in ('coop.editor assets', 'coop.editor creations'):
+        if creation_command(line):
             if time.monotonic() > self.deadline:
                 raise FixtureError('Creation fixture deadline expired')
             # The parent validates every other command against public_command.
@@ -349,6 +358,15 @@ def run(args):
 
 
 def self_test():
+    for line in ('coop.editor assets', 'coop.editor creations', 'coop.editor asset 8589935934:1',
+                 'coop.editor model 40646200!2912711D.24682294'):
+        assert creation_command(line)
+    for line in ('coop.editor asset 0:1', 'coop.editor asset 18446744073709551616:1',
+                 'coop.editor asset 1:4294967296', 'coop.editor model ../bad',
+                 'coop.editor model 40646200!2912711D.2468229G',
+                 'coop.editor model 40646200!2912711D.24682294\ncoop.editor end',
+                 'coop.editor model 40646200!2912711D.24682294 extra'):
+        assert not creation_command(line)
     row = 'revision=7 durable=7 canonicaldocumenthash='+'a'*64+'\nasset class=8589934593:1 settings=21474836481:1 key=40626200!7D000001.2B978C46 content_revision=6 behavior_sha256='+'b'*64+'\n'
     assert assets(row)['rows']['8589934593:1']['key'] == (0x40626200, 0x7D000001, 0x2B978C46)
     try:
