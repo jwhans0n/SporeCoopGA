@@ -40,6 +40,7 @@ simultaneously, and this change does not add automatic publication.
 | Full portable repository suite | `make test B=out/editor-preview9-portable` exited 0. `out/preview9-portable-tests.log` includes document 2,898, protocol 8,946, authoring extensions 166, terrain codec 84, cast 377, sparse store 2,015, project 5,634, UDP/controller 43,384 and accounting 3,425 checks. |
 | Portable tool and symbol checks | Commit-performance parser 10, existing performance parser 20, network proxy 6 and memory-accounting collector 19 tests passed. Creation, lifecycle, Save/reopen and native-audit self-tests passed. RE lint reports 391 used symbols, 3,007 known and zero supported-build problems; the frozen unsupported 922af7c7 warning is informational. |
 | Portable boundary failures | The first two attempts exposed old protocol-22 and 1,024-placement test expectations. Commit `c73ec00` preserves explicit protocol-22 rejection and checks the named 4,096-placement bound plus one. Failed logs remain as `out/preview9-portable-tests-attempt1.log` and `attempt2.log`; the final complete run passes. |
+| Worker-prepared resource publication | Commit `80013c3`: strict Linux and i686 builds pass. Both focused durability runs pass 340 checks; the full Linux UDP/controller suite passes 29,802 checks. The tests cover worker-owned full/delta buffers, private hash provenance, stale/moved-from/guest rejection, live transfer limits, cache-only updates and complete late joins. Receipts: `out/preview9-prepared-resources-session.log` and `out/preview9-prepared-resources-win32.log`. These are controlled network tests, not measured native commit performance. |
 | Win32 controlled fixtures | Initial batch `out/preview9-win32-fixtures.json`: 25 of 26 executables passed. This includes native cancellation/terrain/cache 8,016, creation lifecycle 211, complexity bounds 32 and native Save 444 checks. The reopen executable still used the old 1,025-placement failure expectation; its rebuilt replacement passes 150 checks in `out/preview9-reopen-win32.log`. These fixtures substitute native game APIs. A final batch for subsequent source changes remains required. |
 | Cross build | `out/preview9-build.log` records the co-op DLL and editor fixture cross build. The final candidate is not frozen by this report; incremental build logs and exact payload hashes must accompany native acceptance. |
 | Hidden Windows render probe | `out/preview9-hidden-probe.log` reports a working hidden-window D3D adapter, three successful presentations and unchanged input desktop. It establishes fixture capability only, not game launch or authoring acceptance. |
@@ -98,6 +99,18 @@ was collected after startup failed; it is not an untouched original baseline.
 The fixture again timed out before any benchmark gesture. The paused scene was
 retained for read-only native investigation. The tool now captures its original
 baseline before title input/hosting; 12 offline tests pass after this follow-up.
+
+The read-only audit of the retained failed scene examined all 118 classes and
+590 class/act rows. It found zero missing active references and five inactive
+pickup references to class 1109. Native selectors use their standard target only
+when the matching mode is active, or custom rules when the custom flag is set.
+Commit `4708c4d` makes projected reference metadata follow those native selectors,
+preserves the native field bytes and permits exact old metadata during recovery
+migration. Receipt:
+`out/preview9-commit-diagnostic-c3/active-class-reference-audit.json`. This finding
+identifies an inactive-reference metadata rejection; the post-failure restore
+count does not establish that restoration changed the data. A rebuilt native
+sharing attempt is still required.
 
 ## Required native acceptance
 
