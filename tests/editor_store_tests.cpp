@@ -108,7 +108,7 @@ static void sparse_journal(){
     CHECK(store.create(t.root,s,error));const auto dir=store.directory();
     for(unsigned i=0;i<30;++i){
         auto candidate=store.snapshot();++candidate.revision;
-        candidate.native_snapshot[16384+i]=uint8_t(i);candidate.document.push_back(uint8_t(i));
+        candidate.native_snapshot[16384+i]=uint8_t(i);candidate.document[0]=uint8_t(i);candidate.document.push_back(uint8_t(i));
         CHECK(store.commit(candidate,error));s=std::move(candidate);
     }
     // Thirty sparse gestures must not write thirty full native/history copies.

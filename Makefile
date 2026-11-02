@@ -88,8 +88,14 @@ test-editor:
 	$(B)/host/editor_metrics_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop tests/editor_stage_metrics_tests.cpp -o $(B)/host/editor_stage_metrics_tests
 	$(B)/host/editor_stage_metrics_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include $(EDITOR_WIRE_SRC) tests/editor_authoring_extensions_tests.cpp -o $(B)/host/editor_authoring_extensions_tests
+	$(B)/host/editor_authoring_extensions_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include tests/editor_native_bindings_tests.cpp -o $(B)/host/editor_native_bindings_tests
 	$(B)/host/editor_native_bindings_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(EDITOR_CORE_SRC) tests/editor_native_pose_tests.cpp -o $(B)/host/editor_native_pose_tests
+	$(B)/host/editor_native_pose_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(EDITOR_CORE_SRC) tests/editor_native_terrain_tests.cpp -o $(B)/host/editor_native_terrain_tests
+	$(B)/host/editor_native_terrain_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include $(EDITOR_WIRE_SRC) tests/editor_native_scale_tests.cpp -o $(B)/host/editor_native_scale_tests
 	$(B)/host/editor_native_scale_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include tests/editor_reopen_identity_tests.cpp -o $(B)/host/editor_reopen_identity_tests
@@ -98,7 +104,7 @@ test-editor:
 	$(B)/host/editor_binary_delta_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include $(EDITOR_CORE_SRC) tests/editor_document_tests.cpp -o $(B)/host/editor_document_tests
 	$(B)/host/editor_document_tests
-	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop mods/coop/editor_store.cpp updater/sha256.cpp tests/editor_store_tests.cpp -o $(B)/host/editor_store_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop mods/coop/editor_store.cpp $(EDITOR_DELTA_SRC) tests/editor_store_tests.cpp -o $(B)/host/editor_store_tests
 	$(B)/host/editor_store_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(EDITOR_WIRE_SRC) tests/editor_protocol_tests.cpp -o $(B)/host/editor_protocol_tests
 	$(B)/host/editor_protocol_tests
@@ -120,6 +126,36 @@ $(B)/host/editor_cast_tests.exe: tests/editor_cast_tests.cpp mods/coop/editor_na
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(EDITOR_WIRE_SRC) tests/editor_cast_tests.cpp -o $@
 
 test-editor-windows: $(B)/host/editor_stage_metrics_tests.exe
+test-editor-windows: $(B)/host/editor_authoring_extensions_tests.exe $(B)/host/editor_creation_tests.exe
+test-editor-windows: $(B)/host/editor_native_pose_tests.exe
+test-editor-windows: $(B)/host/editor_native_terrain_tests.exe $(B)/host/editor_native_complexity_tests.exe
+test-editor-windows: $(B)/host/adventure_collect_tests.exe
+
+$(B)/host/adventure_collect_tests.exe: tests/adventure_collect_windows_tests.cpp mods/coop/adventure_collect.cpp mods/coop/adventure_collect.h mods/coop/adventure_music.cpp mods/coop/adventure_music.h mods/coop/net/dbpf.cpp $(ADVENTURE_ABI_HEADERS)
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-unused-function -static -Imods/coop -Isdk/include tests/adventure_collect_windows_tests.cpp mods/coop/adventure_music.cpp mods/coop/net/dbpf.cpp -o $@
+
+$(B)/host/editor_native_cancellation_tests.exe: $(wildcard mods/coop/editor_native*.h) mods/coop/net/editor_terrain.h
+
+$(B)/host/editor_native_terrain_tests.exe: $(EDITOR_CORE_SRC) tests/editor_native_terrain_tests.cpp mods/coop/editor_native_terrain.h mods/coop/net/editor_terrain.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $(EDITOR_CORE_SRC) tests/editor_native_terrain_tests.cpp -o $@
+
+$(B)/host/editor_native_complexity_tests.exe: tests/editor_native_complexity_windows_tests.cpp mods/coop/editor_native_complexity.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/editor_native_complexity_windows_tests.cpp -o $@
+
+$(B)/host/editor_native_pose_tests.exe: $(EDITOR_CORE_SRC) tests/editor_native_pose_tests.cpp mods/coop/editor_native_pose.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $(EDITOR_CORE_SRC) tests/editor_native_pose_tests.cpp -o $@
+
+$(B)/host/editor_authoring_extensions_tests.exe: $(EDITOR_WIRE_SRC) tests/editor_authoring_extensions_tests.cpp mods/coop/net/editor_document.h mods/coop/net/editor_protocol.h mods/coop/net/editor_terrain.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(EDITOR_WIRE_SRC) tests/editor_authoring_extensions_tests.cpp -o $@
+
+$(B)/host/editor_creation_tests.exe: tests/editor_creation_windows_tests.cpp mods/coop/editor_creation.cpp mods/coop/editor_creation.h mods/coop/editor_creation_ui.h mods/coop/editor_creation_native.cpp mods/coop/editor_creation_native.h mods/coop/net/adventure_assets.cpp mods/coop/net/dbpf.cpp updater/sha256.cpp
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-missing-field-initializers -static -Imods/coop -Isdk/include tests/editor_creation_windows_tests.cpp mods/coop/net/adventure_assets.cpp mods/coop/net/dbpf.cpp updater/sha256.cpp -luser32 -o $@
 
 test-editor-windows: $(B)/host/editor_accounting_tests.exe
 
@@ -156,7 +192,7 @@ $(B)/host/editor_binary_delta_tests.exe: $(EDITOR_DELTA_SRC) tests/editor_binary
 $(B)/host/editor_document_tests.exe: $(EDITOR_CORE_SRC) tests/editor_document_tests.cpp mods/coop/net/editor_document.h
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(filter %.cpp,$^) -o $@
-$(B)/host/editor_store_tests.exe: mods/coop/editor_store.cpp updater/sha256.cpp tests/editor_store_tests.cpp
+$(B)/host/editor_store_tests.exe: mods/coop/editor_store.cpp $(EDITOR_DELTA_SRC) tests/editor_store_tests.cpp
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $^ -o $@
 $(B)/host/editor_protocol_tests.exe: $(EDITOR_WIRE_SRC) tests/editor_protocol_tests.cpp mods/coop/net/editor_document.h mods/coop/net/editor_protocol.h
@@ -229,10 +265,13 @@ test:
 	$(B)/host/adventure_pause_tests
 	python3 tests/test_uifind.py
 	python3 tests/editor_performance_tool_tests.py
+	python3 tests/editor_commit_performance_tool_tests.py
 	python3 tests/editor_memory_accounting_tests.py
 	python3 tests/editor_network_proxy_tests.py
 	python3 tools/tests/coop_editor_lifecycle.py --self-test
 	python3 tools/tests/coop_editor_save.py --self-test
+	python3 tools/tests/coop_editor_creations.py --self-test
+	python3 tests/editor_preview_package_tests.py
 	python3 tools/tests/editor_native_audit.py --self-test
 	python3 tools/re_lint.py
 

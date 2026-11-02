@@ -42,6 +42,10 @@ int main(){
     CHECK(buffer.reset(11,10000000,200));CHECK(buffer.size()==0&&buffer.recording());
     CHECK(!buffer.record(project,op,1,Stage::LocalSubmit,199));CHECK(buffer.clock_error()&&!buffer.recording());
     CHECK(buffer.reset(11,10000000,200));
+    CHECK(buffer.record(project,op,1,Stage::HostRequestReceived,220));
+    CHECK(buffer.record(project,op,1,Stage::GestureRelease,205));
+    CHECK(!buffer.clock_error());CHECK(buffer.record(project,op,1,Stage::SceneReady,225));
+    CHECK(buffer.reset(11,10000000,200));
     allocation_forbidden=true;
     for(unsigned i=0;i<8;++i)CHECK(buffer.record(project,op,i,Stage::LocalSubmit,200+i));
     CHECK(!buffer.record(project,op,9,Stage::LocalSubmit,208));

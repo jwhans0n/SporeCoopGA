@@ -51,6 +51,7 @@ struct Accounting {
     size_t history = 0, decisions = 0, decision_order = 0, state_estimate = 0;
     size_t coordinator_history = 0, coordinator_decisions = 0, coordinator_estimate = 0;
     size_t replica_history = 0, replica_decisions = 0, replica_estimate = 0;
+    size_t prepared_history = 0, prepared_decisions = 0, prepared_estimate = 0;
     size_t tombstones = 0, retired_sequences = 0, truncated_authors = 0, leases = 0;
     size_t channels = 0, hashes = 0, completed_transfers = 0, lease_decisions = 0, released_scope_fences = 0;
     size_t local_leases = 0, lease_reply_capacity = 0, completed_hash_capacity = 0, revision_hash_capacity = 0;
@@ -71,6 +72,7 @@ struct Config {
     size_t reliable_window = 24, packets_per_tick = 16;
 };
 enum class TracePoint : uint8_t { HostRequestReceived, HostDecisionQueued, DecisionDecoded };
+enum class Durability : uint8_t { Pending, Durable, Rejected, Uncertain };
 struct Callbacks {
     editor::Hooks host_hooks;
     // Optional outside-frame numeric diagnostics. Does not affect wire or policy.
@@ -92,6 +94,9 @@ struct Callbacks {
     // Native history gestures and asynchronous saves must settle before another
     // semantic edit is applied. Transport/leases/presence continue while held.
     std::function<bool()> authoring_ready;
+    // A missing revision means the local native scene is away or rebuilding.
+    // Default adapters materialize synchronously with canonical acceptance.
+    std::function<std::optional<editor::Revision>()> rendered_revision;
     // A lifecycle barrier rejects new mutations instead of queuing them until
     // after the pinned export revision. Native gesture settlement stays separate.
     std::function<bool()> authoring_held;
@@ -102,6 +107,15 @@ struct Callbacks {
     std::function<bool(const editor::State&, std::string&)> apply_baseline;
     editor::Hooks::Native apply_committed, rollback_committed;
     std::function<bool(const editor::State&, const editor::Change&, std::string&)> persist_guest;
+    // Owned-byte work only. Native application has completed, but the semantic
+    // state and decision remain unaccepted until poll_persist reports Durable.
+    // Both callbacks run outside Present. Completion must be fenced to the
+    // exact project/epoch/revision supplied to begin_persist.
+    std::function<bool(const editor::State&,const editor::Change&,std::string&)> begin_persist;
+    std::function<Durability(std::string&)> poll_persist;
+    // Teardown only: join the owned-byte worker and return its known outcome
+    // before controller/context destruction. Never used by the ordinary tick.
+    std::function<Durability(std::string&)> settle_persist;
     std::function<void(const editor::Decision&)> decision;
     std::function<void(const std::vector<editor::Scope>&)> lease_denied;
     std::function<void(editor::Peer, const editor::wire::Presence&)> presence;

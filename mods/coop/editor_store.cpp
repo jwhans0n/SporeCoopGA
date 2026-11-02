@@ -1,5 +1,6 @@
 #include "editor_store.h"
 #include "net/buffer.h"
+#include "net/editor_binary_delta.h"
 #include "../../updater/sha256.h"
 #include <algorithm>
 #include <cerrno>
@@ -69,14 +70,41 @@ template<class Bytes> void delta(net::Writer& w,const Bytes& base,const Bytes& n
     while(prefix<base.size()&&prefix<next.size()&&base[prefix]==next[prefix])++prefix;
     while(suffix<base.size()-prefix&&suffix<next.size()-prefix&&base[base.size()-1-suffix]==next[next.size()-1-suffix])++suffix;
     const auto middle=next.size()-prefix-suffix;
+    if(middle>4096 && middle>next.size()/2){
+        // Keep unchanged history when a front revision and an appended entry
+        // change together. Each bounded chunk verifies exact copy bytes.
+        net::Writer chunks;const auto width=editor::binary_delta::kRootBytes;
+        const auto count=(next.size()+width-1)/width;chunks.u32(uint32_t(count));
+        bool okay=true;std::string error;
+        for(size_t i=0;i<count && okay;++i){
+            const auto at=i*width;
+            std::vector<uint8_t> prior(base.begin()+std::min(at,base.size()),base.begin()+std::min(at+width,base.size()));
+            std::vector<uint8_t> target(next.begin()+at,next.begin()+std::min(at+width,next.size())),patch;
+            okay=editor::binary_delta::encode(prior,target,patch,error);if(okay)blob(chunks,patch);
+        }
+        if(okay && chunks.data.size()<middle+12){w.u8(3);w.raw(chunks.data.data(),chunks.data.size());return;}
+    }
     if(middle+12<next.size()+4){
         w.u8(2);w.u32(uint32_t(prefix));w.u32(uint32_t(suffix));w.u32(uint32_t(middle));
         if(middle)w.raw(next.data()+prefix,middle);
     }else{w.u8(1);w.u32(uint32_t(next.size()));if(!next.empty())w.raw(next.data(),next.size());}
 }
 template<class Bytes> void delta(net::Reader& r,const Bytes& base,Bytes& next,size_t limit){
-    const auto kind=r.u8();need(r.ok()&&kind<=2,"invalid journal delta kind");
+    const auto kind=r.u8();need(r.ok()&&kind<=3,"invalid journal delta kind");
     if(!kind){next=base;return;}
+    if(kind==3){
+        const auto count=r.u32();const auto width=editor::binary_delta::kRootBytes;
+        need(r.ok()&&count&&count<=(limit+width-1)/width,"invalid journal chunk count");Bytes staged;
+        for(size_t i=0;i<count;++i){
+            std::vector<uint8_t> patch,target;blob(r,patch,editor::binary_delta::kPatchBytes);
+            const auto at=i*width;
+            std::vector<uint8_t> prior(base.begin()+std::min(at,base.size()),base.begin()+std::min(at+width,base.size()));
+            std::string error;need(editor::binary_delta::apply(prior,patch,target,error),"invalid journal chunk patch");
+            need(target.size()<=limit-staged.size() && (i+1==count || target.size()==width),"invalid journal chunk size");
+            staged.insert(staged.end(),target.begin(),target.end());
+        }
+        next=std::move(staged);return;
+    }
     const size_t prefix=kind==2?r.u32():0,suffix=kind==2?r.u32():0,n=r.u32();
     need(r.ok()&&prefix<=base.size()&&suffix<=base.size()-prefix&&prefix<=limit&&suffix<=limit-prefix&&
          n<=limit-prefix-suffix&&n<=r.left(),"invalid journal delta range");

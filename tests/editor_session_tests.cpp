@@ -78,6 +78,7 @@ struct Party {
     std::array<std::unique_ptr<UdpAdversary>, 4> adversaries;
     std::array<Time, 4> origins{1000000, 4000, 900000000, 700000};
     std::array<bool, 4> tick_enabled{true, true, true, true}, hold_lease_replies{};
+    std::array<bool,4> hold_durability{true,true,true,true},durability_pending{};
     std::array<std::vector<std::pair<w::LeaseReply,std::vector<uint8_t>>>,4> held_lease_replies;
     std::array<std::vector<w::LeaseRequest>,4> wire_lease_requests;
     std::array<std::vector<w::LeaseReply>,4> wire_lease_replies;
@@ -91,7 +92,7 @@ struct Party {
     std::vector<std::vector<uint8_t>> pinned_join_resources;
     unsigned count;
     uint32_t begun = net::now_ms();
-    explicit Party(unsigned players, es::Config config = {}, bool adverse = false) : count(players)
+    explicit Party(unsigned players, es::Config config = {}, bool adverse = false, bool asynchronous = false) : count(players)
     {
         std::string error;
         for (unsigned p = 0; p < 4; ++p) {
@@ -130,6 +131,21 @@ struct Party {
                 CHECK(ticking && !dispatching && native[p].document == s.document); native[p].persists++;
                 if (native[p].fail_persist) { error = "Injected guest persistence failure"; return false; } return true;
             };
+            if(asynchronous){
+                const auto stage=p?cb.persist_guest:cb.host_hooks.persist;
+                cb.begin_persist=[&,p,stage](const State& state,const Change& change,std::string& error){
+                    CHECK(ticking&&!dispatching&&!durability_pending[p]);
+                    if(!stage(state,change,error))return false;durability_pending[p]=true;return true;
+                };
+                cb.poll_persist=[&,p](std::string& error){
+                    CHECK(ticking&&!dispatching&&durability_pending[p]);
+                    if(hold_durability[p])return es::Durability::Pending;
+                    durability_pending[p]=false;
+                    if(native[p].fail_persist){error="Injected delayed durable failure";return es::Durability::Rejected;}
+                    return es::Durability::Durable;
+                };
+                cb.settle_persist=[&,p](std::string&){durability_pending[p]=false;return es::Durability::Durable;};
+            }
             cb.control = [&, p](const w::Control&, std::string&) { CHECK(ticking && !dispatching); native[p].controls++; return true; };
             cb.control_ready = [&, p](const w::Control&) { CHECK(ticking && !dispatching); return native[p].controls_ready; };
             cb.decision = [&, p](const Decision& decision) {
@@ -228,6 +244,50 @@ struct Party {
     }
 };
 
+static void test_asynchronous_durable_acceptance(){
+    Party p(2,{},false,true);p.start();p.accept();std::string error;
+    const auto tokens=p.grant(1,{ScopeKind::Placement,object_a,{}});
+    CHECK(p.controllers[1]->submit(p.edit(1,object_a,position,Vec3{31,4,5},tokens),error));
+    CHECK(p.spin([&]{return p.durability_pending[0];}));
+    CHECK(p.controllers[0]->state().document.revision==0);CHECK(p.controllers[1]->state().document.revision==0);
+    CHECK(!p.controllers[0]->settled());CHECK(p.native[1].wire_decisions==0);
+    for(unsigned i=0;i<10;++i)p.step();CHECK(p.controllers[0]->state().document.revision==0);
+    p.hold_durability[0]=false;CHECK(p.spin([&]{return p.durability_pending[1];}));
+    CHECK(p.controllers[0]->state().document.revision==1);CHECK(p.controllers[1]->state().document.revision==0);
+    CHECK(p.controllers[1]->view().locally_durable==0);CHECK(!p.controllers[1]->settled());
+    p.hold_durability[1]=false;CHECK(p.revision(1));CHECK(p.controllers[1]->view().locally_durable==1);
+    CHECK(p.native[0].persists==1&&p.native[1].persists==1);
+}
+static void test_asynchronous_failure_restores_before_acceptance(){
+    Party p(2,{},false,true);p.start();p.accept();std::string error;
+    const auto tokens=p.grant(1,{ScopeKind::Placement,object_a,{}});const auto before=p.controllers[0]->state().document;
+    CHECK(p.controllers[1]->submit(p.edit(1,object_a,position,Vec3{31,4,5},tokens),error));
+    CHECK(p.spin([&]{return p.durability_pending[0];}));p.native[0].fail_persist=true;p.hold_durability[0]=false;
+    CHECK(p.spin([&]{return p.native[1].decisions==1;}));
+    CHECK(p.controllers[0]->state().document==before);CHECK(p.native[0].document==before);
+    CHECK(p.controllers[1]->state().document==before);CHECK(p.native[1].wire_decisions==0);
+}
+static void test_project_and_planet_field_leases_survive_refresh(){
+    auto state=seed();auto& document=state.document;
+    const ObjectId project{12ull<<32,1},planet{11ull<<32,1};
+    const FieldKey enabled{Field::Property,101},water{Field::Property,102};
+    document.next_id=13ull<<32;
+    document.settings_schema[101]={ValueKind::Boolean,0,0,0,true,false};
+    document.settings_schema[102]={ValueKind::Number,0,1,0,true,false};
+    AuthoringSettings budget;budget.object=project;budget.kind=SettingsKind::Project;budget.properties[101]=false;
+    AuthoringSettings environment;environment.object=planet;environment.kind=SettingsKind::Planet;environment.properties[102]=0.0f;
+    document.settings[project]=budget;document.settings[planet]=environment;
+    Party p(2);p.start(state);p.accept();std::string error;Revision revision=0;
+    for(unsigned author=0;author<2;++author)for(const auto& [object,field]:{std::pair{project,enabled},std::pair{planet,water}}){
+        const Scope scope{ScopeKind::Field,object,field};const auto tokens=p.grant(author,scope);
+        for(unsigned tick=0;tick<20;++tick)p.step();
+        CHECK(std::any_of(p.controllers[author]->view().local_leases.begin(),p.controllers[author]->view().local_leases.end(),[&](const auto& lease){return lease.scope==scope;}));
+        const Value changed=object==project?Value{author==0}:Value{author==0?0.25f:0.75f};
+        CHECK(p.controllers[author]->submit(p.edit(author,object,field,changed,tokens),error));
+        CHECK(p.revision(++revision));CHECK(value(p.controllers[0]->state().document,object,field)==std::optional<Value>{changed});
+        p.release(author,tokens);
+    }
+}
 static void test_two_player_and_real_udp()
 {
     Party p(2); p.start();
@@ -1293,6 +1353,10 @@ static void test_creation_preview_is_ephemeral_and_owned(){
 
 int main(int argc,char** argv)
 {
+    if(argc==2&&std::string(argv[1])=="--durability"){
+        CHECK(net::net_init());test_asynchronous_durable_acceptance();test_asynchronous_failure_restores_before_acceptance();test_project_and_planet_field_leases_survive_refresh();
+        std::printf("editor async durability: %d checks, %d failures\n",checks,failures);return failures?1:0;
+    }
     if(argc==2&&std::string(argv[1])=="--previews"){
         CHECK(net::net_init());test_transient_preview_authority_coalescing_and_lifecycle();test_creation_preview_is_ephemeral_and_owned();
         std::printf("editor preview transport: %d checks, %d failures\n",checks,failures);return failures?1:0;
@@ -1300,7 +1364,7 @@ int main(int argc,char** argv)
     const bool focused=argc==2&&std::string(argv[1])=="--tombstones";
     const bool classes=argc==2&&std::string(argv[1])=="--class-settings";
     if(argc>1&&!focused&&!classes)return 2;
-    CHECK(net::net_init());if(!focused&&!classes)test_creation_preview_is_ephemeral_and_owned();
+    CHECK(net::net_init());if(!focused&&!classes){test_creation_preview_is_ephemeral_and_owned();test_asynchronous_durable_acceptance();test_asynchronous_failure_restores_before_acceptance();test_project_and_planet_field_leases_survive_refresh();}
     if(!focused){test_shared_class_properties_udp(2);test_shared_class_properties_udp(4);}
     if(!classes){test_tombstone_regressions(); if(!focused){test_release_quarantines_and_waits_for_reply(); test_host_release_quarantine_survives_view_refresh(); test_distinct_release_tokens_keep_both_quarantined(); test_reordered_lease_requests_cannot_recreate_released_scope(); test_deferred_lease_bounds_and_lifecycle(); test_repeated_release_fences_past_cache_window(); test_large_join_inventory_is_bounded_pinned_and_nonblocking(); test_join_inventory_failures_preserve_party_and_draft(); test_transient_preview_authority_coalescing_and_lifecycle(); test_guest_end_preparing_reoffers_without_freezing_party(); test_two_player_and_real_udp(); test_host_durable_coverage(); test_four_players_and_controls(); test_large_operation_transfer(); test_saved_snapshot_waits_for_native_gesture(); test_delete_revokes_lease_before_native_decision(0); test_delete_revokes_lease_before_native_decision(1); test_accepted_retry_keeps_new_gesture_ownership(0); test_accepted_retry_keeps_new_gesture_ownership(1); test_queued_begin_and_new_roster(); test_native_gesture_transaction_holds(); test_same_controller_host_to_guest(); test_delta_resources_keep_complete_late_join_cache(); test_failed_delta_staging_publishes_nothing(); test_close_waits_for_accepted_structural_commit(); test_settled_waits_for_join_but_excludes_failed_peer(); test_same_revision_saved_needs_explicit_applied_ack(); test_local_freeze_notifies_party_once(); test_deferred_baseline_and_fail_closed(); test_import_and_input_bounds(); test_rehost_authorship_and_document_hash(); test_real_udp_packet_adversity(2); test_real_udp_packet_adversity(4);}}
     std::printf("editor_session UDP/fake-native: %d checks, %d failures\n", checks, failures);

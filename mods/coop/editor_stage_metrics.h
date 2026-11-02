@@ -13,7 +13,8 @@ enum class Stage : uint8_t {
     LocalSubmit, HostRequestReceived, ValidateBegin, ValidateEnd,
     ApplyWorkBegin, ApplyWorkEnd, NativeApplyBegin, NativeApplyEnd,
     PersistWorkBegin, PersistWorkEnd, DurableBegin, DurableEnd,
-    HostDecisionQueued, DecisionDecoded, OwnConfirmed
+    HostDecisionQueued, DecisionDecoded, OwnConfirmed, GestureRelease, SceneReady,
+    CaptureBegin, CaptureEnd, SupportedBegin, SupportedEnd, InverseBegin, InverseEnd
 };
 inline const char* name(Stage stage) noexcept {
     switch(stage) {
@@ -32,6 +33,14 @@ inline const char* name(Stage stage) noexcept {
     case Stage::HostDecisionQueued:return "host_decision_queued";
     case Stage::DecisionDecoded:return "decision_decoded";
     case Stage::OwnConfirmed:return "own_confirmed";
+    case Stage::GestureRelease:return "gesture_release";
+    case Stage::SceneReady:return "scene_ready";
+    case Stage::CaptureBegin:return "capture_begin";
+    case Stage::CaptureEnd:return "capture_end";
+    case Stage::SupportedBegin:return "supported_begin";
+    case Stage::SupportedEnd:return "supported_end";
+    case Stage::InverseBegin:return "inverse_begin";
+    case Stage::InverseEnd:return "inverse_end";
     }
     return "invalid";
 }
@@ -64,10 +73,15 @@ public:
         if(!recording_)return false;
         bool valid_project=false;for(auto b:project)valid_project|=b!=0;
         if(!valid_project || operation.author.slot>=4 || !operation.author.generation ||
-           !operation.sequence || !operation.epoch || unsigned(stage)>unsigned(Stage::OwnConfirmed) || success>2)return false;
-        if(qpc<last_){clock_error_=true;recording_=false;return false;}
+           !operation.sequence || !operation.epoch || unsigned(stage)>unsigned(Stage::InverseEnd) || success>2)return false;
+        // Native release is sampled before capture and acquires its operation
+        // identity only after a valid gesture is projected. It may be appended
+        // later than an unrelated transport stage without moving the clock.
+        const bool sampled=stage==Stage::GestureRelease || stage==Stage::CaptureBegin || stage==Stage::CaptureEnd ||
+            stage==Stage::SupportedBegin || stage==Stage::SupportedEnd;
+        if(qpc<started_ || (qpc<last_ && !sampled)){clock_error_=true;recording_=false;return false;}
         if(count_==Capacity){++overflow_;recording_=false;return false;}
-        last_=qpc;events_[count_++]={project,operation,revision,qpc,stage,success};return true;
+        last_=std::max(last_,qpc);events_[count_++]={project,operation,revision,qpc,stage,success};return true;
     }
     // Formatting belongs only to an outside-frame console command. Pagination
     // bounds the console reply even when a complete diagnostic buffer is full.

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "net/session.h"
+#include "net/editor_document.h"
 #include "sporekit.h"
 
 namespace coop_editor {
@@ -37,7 +38,8 @@ struct View {
     bool native_editing = false, join_prompt = false, test_request = false, retry = false, exporting = false;
     bool test_menu = false;
     bool can_move_act_left = false, can_move_act_right = false;
-    uint64_t revision = 0, durable_revision = 0, saved_revision = 0;
+    bool extended_complexity=false,can_complexity=false;
+    uint64_t revision = 0, durable_revision = 0, saved_revision = 0, rendered_revision = 0;
     std::string title, status, selection;
     std::string requester;
     std::string prompt_identity;
@@ -90,6 +92,9 @@ void end();
 void approve_playtest(bool);
 void choose_test(int choice); // 0 solo, 1 together, 2 dismiss.
 void edit_acts(int action); // 0 add, 1 delete, 2 left, 3 right.
+void create_asset(uint32_t resource_type);
+void edit_asset(editor::ObjectId class_id);
+void set_extended_complexity(bool);
 void resolve_join(int choice); // 0 Save, 1 Discard, 2 Cancel.
 std::string debug(const std::vector<std::string>& args);
 

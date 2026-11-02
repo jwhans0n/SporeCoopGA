@@ -4,16 +4,24 @@
 
 - Support the exact GOG 2024 Large Address Aware executable variant for up to
   4 GB per game on 64-bit Windows. Preserve full-file native adapter checks,
-  provide verified patch/backup/rollback tooling and retain protocol 22.
+  provide verified patch/backup/rollback tooling.
 
 - Add a development Adventure Editor collaboration pipeline for the exact GOG
   executable: host-ordered placement gestures, scoped leases, stable identities,
   checked own-action Undo/Redo and bounded durable recovery projects.
 - Integrate verified native snapshots, private Save As, initiating-player solo
   Play and an explicit Test Together action with host approval and group readiness.
-  Keep terrain and nested-editor mutations read-only.
-  Editor development uses protocol 22 / preview 8; the published
+  Editor development uses protocol 23 / preview 9; the published
   gameplay release remains protocol 15.
+- Add candidate Crew authoring, ordered concurrent Terraform recipes, optional
+  Extended Complexity and independent native creation sessions. Preserve separate
+  content leases and immutable shared asset versions while guests continue
+  authoring with the host in another editor. Native acceptance and publication
+  eligibility remain unverified; see the
+  [preview 9 validation report](docs/reports/EDITOR-PREVIEW9-VALIDATION.md).
+- Separate canonical, durable and rendered revisions. Prepare commits once,
+  encode and persist owned bytes on workers, and retain sparse journal deltas.
+  Instrument native release, capture, validation, persistence and scene readiness.
 - Retain the first drag while ownership arrives. Synchronize sound pose
   companions, separate teleporter endpoints, ball rotation, native cast settings
   and checked cast imports/removals with conservative Undo/Redo.

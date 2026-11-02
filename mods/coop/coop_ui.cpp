@@ -224,6 +224,7 @@ struct Dialog {
     Picture adventure_picture, captain_picture[4];
     Win editor_retry = nullptr, editor_recover = nullptr, editor_test = nullptr, editor_return = nullptr;
     Win editor_act_left=nullptr,editor_act_right=nullptr;
+    Win editor_complexity=nullptr;
 };
 static Dialog D;
 static std::map<std::string, Win> g_named; // for tests (coop.uistate)
@@ -589,6 +590,10 @@ static void build_dialog()
     });
     D.editor_act_left=add_button(L,"editor_act_left",{400,404,555,434},"Move act left",[]{if(A.editor_act_action)A.editor_act_action(2);});
     D.editor_act_right=add_button(L,"editor_act_right",{565,404,720,434},"Move act right",[]{if(A.editor_act_action)A.editor_act_action(3);});
+    D.editor_complexity=add_button(L,"editor_complexity",{10,404,390,434},"Complexity: Native",[]{
+        const auto editor=A.editor?A.editor():coop_editor::View{};
+        if(editor.can_complexity && A.editor_complexity)A.editor_complexity(!editor.extended_complexity);
+    });
     D.chat_edit = add_edit(L, "chatedit", {40, 438, 560, 470}, "", 120);
     D.send_btn = add_button(L, "send", {570, 434, 720, 474}, T("Send", "Отправить"), do_send_chat);
     D.ready_btn = add_button(L, "ready", {40, 488, 240, 528}, "", [] {
@@ -1125,10 +1130,13 @@ static void refresh()
         refresh_connect();
     show(D.editor_act_left,page==Page::Lobby && editor.active && editor.native_editing);
     show(D.editor_act_right,page==Page::Lobby && editor.active && editor.native_editing);
+    show(D.editor_complexity,page==Page::Lobby && editor.active && editor.native_editing);
     if(editor.active && page==Page::Lobby){
         show(D.jump_btn,false);show(D.give_btn,false);show(D.creation_next,false);
         sui::set_enabled(D.editor_act_left,editor.can_move_act_left);
         sui::set_enabled(D.editor_act_right,editor.can_move_act_right);
+        sui::set_enabled(D.editor_complexity,editor.can_complexity);
+        text(D.editor_complexity,editor.extended_complexity?"Complexity: Extended":"Complexity: Native");
     }
 }
 

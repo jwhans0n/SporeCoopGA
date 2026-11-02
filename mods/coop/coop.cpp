@@ -2649,6 +2649,7 @@ void init_ui()
     a.editor_approve = coop_editor::approve_playtest;
     a.editor_test_choice = coop_editor::choose_test;
     a.editor_act_action = coop_editor::edit_acts;
+    a.editor_complexity = coop_editor::set_extended_complexity;
     a.editor_join_choice = coop_editor::resolve_join;
     a.say = [](const std::string& t) {
         if (g_sess.connected())
@@ -2950,9 +2951,9 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
         if (argc > 1 && std::string(argv[1]) == "start") g_frame_samples.start();
         else if (argc > 1 && std::string(argv[1]) == "stop") g_frame_samples.stop();
         const auto sample = g_frame_samples.summary();
-        SAY("samples=%zu invalid=%zu recording=%u seconds=%.6f mean_fps=%.6f median_fps=%.6f median_ms=%.6f p95_ms=%.6f",
+        SAY("samples=%zu invalid=%zu recording=%u seconds=%.6f mean_fps=%.6f median_fps=%.6f median_ms=%.6f p95_ms=%.6f max_ms=%.6f",
             sample.samples, sample.invalid, unsigned(sample.recording), sample.seconds,
-            sample.mean_fps, sample.median_fps, sample.median_ms, sample.p95_ms);
+            sample.mean_fps, sample.median_fps, sample.median_ms, sample.p95_ms, sample.max_ms);
         return 0;
     }, nullptr, SK_CMD_OUTSIDE_FRAME);
     H->command_add(M, "coop.name", "coop.name <nick>", c_name, nullptr, MT);
