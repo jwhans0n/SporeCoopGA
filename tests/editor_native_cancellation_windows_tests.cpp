@@ -1056,6 +1056,11 @@ void view_fixture(){
     a_view_set_orbit=uintptr_t(v_set);a_view_lookat=uintptr_t(v_look);
 }
 std::array<uint8_t,0x10> v_simulator,v_simulator_camera_state;
+std::array<uint8_t,0x30> v_simulator_modes;
+uint32_t v_initialization=4;
+bool v_world_visible=true,v_modes_missing=false;
+void* SK_CDECL v_get_simulator_modes(){return v_modes_missing?nullptr:v_simulator_modes.data();}
+bool SK_THISCALL v_world_shown(void* self){CHECK(self==t_layout.data());return v_world_visible;}
 unsigned v_activations=0;
 bool v_activation_refuse=false,v_activation_replace=false,v_activation_expire=false,v_activation_stale_cache=false,v_simulator_missing=false;
 void* SK_CDECL v_get_simulator(){return v_simulator_missing?nullptr:v_simulator.data();}
@@ -1074,6 +1079,8 @@ bool SK_THISCALL v_activate_simulator(void* self,uint32_t id){
 }
 void creation_camera_fixture(){
     view_fixture();v_simulator.fill(0);v_simulator_camera_state.fill(0);v_activations=0;
+    v_simulator_modes.fill(0);v_initialization=4;v_world_visible=true;v_modes_missing=false;
+    a_get_simulator_mode_manager=uintptr_t(v_get_simulator_modes);a_scenario_initialization=uintptr_t(&v_initialization);a_layout_shown=uintptr_t(v_world_shown);
     skg::field<void*>(v_simulator_camera_state.data(),0)=v_simulator.data();
     v_activation_refuse=v_activation_replace=v_activation_expire=v_activation_stale_cache=v_simulator_missing=false;
     v_active=v_replacement.data(); // The departed creation editor's camera.
@@ -1084,16 +1091,20 @@ void creation_camera_fixture(){
 }
 void test_creation_scene_camera_resume(){
     creation_camera_fixture();std::string error;
+    SceneOwner scene;CHECK(capture_scene_owner(scene,error));
+    CHECK(scene.mode==uintptr_t(t_mode.data())&&scene.data==uintptr_t(t_data.data())&&scene.resource==uintptr_t(t_live.data()));
+    CHECK(creation_scene_state(scene).settled());
     const auto owner=t_data;const auto resource=t_live;const auto history=t_history;const auto camera=v_camera;
     const auto selected=state().selected;const auto expected=state().generation;
-    CHECK(resume_creation_scene_camera(t_scope,7,expected,error));
+    CHECK(resume_creation_scene_camera(t_scope,7,expected,scene,error));
     CHECK(v_activations==1&&v_active==v_camera.data()&&skg::field<void*>(v_simulator_camera_state.data(),0xC)==v_camera.data());
     CHECK(!v_looks&&!v_sets&&v_camera==camera&&t_data==owner&&t_live==resource&&t_history==history&&state().selected==selected);
     // An already-active App camera still refreshes Simulator's cached owner.
     skg::field<void*>(v_simulator_camera_state.data(),0xC)=nullptr;
-    CHECK(resume_creation_scene_camera(t_scope,7,expected,error)&&v_activations==2&&skg::field<void*>(v_simulator_camera_state.data(),0xC)==v_camera.data());
-    for(unsigned kind=0;kind<18;++kind){
+    CHECK(resume_creation_scene_camera(t_scope,7,expected,scene,error)&&v_activations==2&&skg::field<void*>(v_simulator_camera_state.data(),0xC)==v_camera.data());
+    for(unsigned kind=0;kind<30;++kind){
         creation_camera_fixture();auto scope=t_scope;uint64_t serial=7,native=state().generation;
+        CHECK(capture_scene_owner(scene,error));
         if(kind==0)scope.project[0]^=1;if(kind==1)++scope.epoch;if(kind==2)++scope.author.generation;
         if(kind==3)++serial;if(kind==4)++native;if(kind==5)scope={};
         if(kind==6)t_game_mode_id=modes::kEditor;if(kind==7)skg::field<int>(t_mode.data(),0xCC)=2;
@@ -1102,17 +1113,42 @@ void test_creation_scene_camera_resume(){
         if(kind==11)a_activate_simulator_camera=0;if(kind==12)a_get_simulator_system=0;
         if(kind==13)v_named=nullptr;if(kind==14)v_cast=false;if(kind==15)v_simulator_missing=true;
         if(kind==16)a_get_simulator_camera_state=0;if(kind==17)skg::field<void*>(v_simulator_camera_state.data(),0)=nullptr;
+        if(kind==18)v_initialization=3;if(kind==19)skg::field<bool>(t_mode.data(),0xDC)=true;
+        if(kind==20)skg::field<bool>(v_simulator_modes.data(),0x28)=true;if(kind==21)v_world_visible=false;
+        if(kind==22)a_get_simulator_mode_manager=0;if(kind==23)a_scenario_initialization=0;
+        if(kind==24)v_modes_missing=true;if(kind==25)scene.mode=1;if(kind==26)scene.data=1;
+        if(kind==27)scene.resource=1;if(kind==28)++scene.source.instance;if(kind==29)scene={};
         const auto untouched=v_active;
-        CHECK(!resume_creation_scene_camera(scope,serial,native,error)&&!error.empty());
+        CHECK(!resume_creation_scene_camera(scope,serial,native,scene,error)&&!error.empty());
         CHECK(!v_activations&&v_active==untouched&&!v_looks&&!v_sets);
     }
     for(unsigned kind=0;kind<4;++kind){
         creation_camera_fixture();const auto native=state().generation;
+        CHECK(capture_scene_owner(scene,error));
         if(kind==0)v_activation_refuse=true;if(kind==1)v_activation_replace=true;if(kind==2)v_activation_expire=true;
         if(kind==3)v_activation_stale_cache=true;
-        CHECK(!resume_creation_scene_camera(t_scope,7,native,error)&&!error.empty());
+        CHECK(!resume_creation_scene_camera(t_scope,7,native,scene,error)&&!error.empty());
         CHECK(v_activations==1&&!v_looks&&!v_sets);
     }
+    // A deferred native OnEnter remains distinct from generic editor readiness.
+    // No flag, source, owner or view is changed by the read-only resume probe.
+    creation_camera_fixture();CHECK(capture_scene_owner(scene,error));
+    auto resume=creation_scene_state(scene);CHECK(resume.available&&resume.owner&&resume.ready&&resume.world_visible&&resume.settled());
+    for(unsigned kind=0;kind<5;++kind){
+        creation_camera_fixture();CHECK(capture_scene_owner(scene,error));
+        if(kind==0)v_initialization=0;if(kind==1)skg::field<bool>(t_mode.data(),0xDC)=true;
+        if(kind==2)skg::field<bool>(v_simulator_modes.data(),0x28)=true;if(kind==3)v_world_visible=false;
+        if(kind==4)skg::field<editor::ResourceKey>(t_live.data(),8).instance=7;
+        const auto before_mode=t_mode;const auto before_data=t_data;const auto before_resource=t_live;
+        resume=creation_scene_state(scene);CHECK(!resume.settled());
+        CHECK(t_mode==before_mode&&t_data==before_data&&t_live==before_resource&&!v_activations);
+        CHECK(resume.ready); // These native resume fences were missing from ready.
+    }
+    creation_camera_fixture();CHECK(capture_scene_owner(scene,error));
+    t_game_mode_id=modes::kEditor;SceneOwner untouched=scene;
+    CHECK(!capture_scene_owner(untouched,error)&&untouched==scene);
+    CHECK(!creation_scene_state(scene).available);
+    a_get_simulator_mode_manager=a_scenario_initialization=a_layout_shown=0;
     reset();
 }
 std::array<uint8_t,0x100> v_terrain;

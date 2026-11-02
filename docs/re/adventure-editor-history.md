@@ -165,10 +165,14 @@ message's `+08` mode ID to `cGameModeManager::SetActiveMode` (`7D8CF0`). Its
 `SwitchToIndex` (`7D8670`) calls the old mode's `+1C` OnExit and the new mode's
 `+18` OnEnter. It has no generic camera restoration. Scenario OnEnter
 `EF24C0` sets mode `+DC=1`; the first ordinary Scenario update consumes that
-flag at `EF2F3C` and invokes editor resume `EF0990` at `EF2FB2`. The orbit-camera
-accesses in that resume function get and reset the registered camera, rather
-than selecting it as App's active camera. The adapter's history restoration
-does not directly clear mode `+DC` or the native Scenario initialization state.
+flag at `EF2F3C` and invokes editor resume `EF0990` at `EF2FB2`. That resume
+unconditionally calls `EFF670` at `EF09A3`; its complete path reaches
+`EFDDC0` at `F0007A`, which activates `00EBB801`. A completed ordinary native
+editor resume therefore restores the orbit camera. The earlier direct-access
+audit of `EF0990` missed this indirect call. The C6 receipt does not establish
+whether resume was incomplete or another later action replaced the camera.
+The adapter's history restoration does not directly clear mode `+DC` or the
+native Scenario initialization state.
 
 The narrow native camera ownership boundary is `B5CEF0`,
 `thiscall(SimulatorSystem*, uint32 cameraID) -> bool`, `ret4`. Native edit-world
@@ -189,10 +193,23 @@ object, calls this paired boundary, and then verifies both exact active-camera
 identity and cached orbit identity. No raw camera-manager fields are written.
 
 The adapter requires the exact project, epoch, participant generation, creation
-session serial, and returned native generation. Runtime authorizes only its
+session serial, returned native generation, and entry scene owner. The local
+owner witness retains only numeric mode/data/resource identities and the actual
+source key; return compares freshly resolved objects without dereferencing a
+retained address. Ordinary OnEnter `EF24C0` and initialization reset `EF1BC0`
+use the current ScenarioData, rather than the separate cold scene allocation
+path at `EF1D20`. An unexpected owner replacement rejects this return.
+Runtime authorizes only its
 current, not yet materialized creation return, and all native access occurs in
-the outside-frame drain. Non-Scenario, playtest, unready, active-gesture, replaced
-scope, missing camera, or missing owner rejects before activation. The broader
+the outside-frame drain. Its read-only resume probe requires global
+`015ACC34 == 4`, consumed mode `+DC`, cleared SimulatorGameModeManager `+28`,
+and a visible native world layout, in addition to ordinary editor readiness.
+Scenario Update `EF2EF6..EF2FB2` verifies these transition/initialization/OnEnter
+states before editor resume. The named manager getter `B3D420` returns the
+singleton at `0167EAEC`. No adapter writes these flags. Camera activation is an
+idempotent fallback after this settled state, not a substitute for native resume.
+Non-Scenario, playtest, unready, active-gesture, replaced scope, missing camera,
+or missing owner rejects before activation. The broader
 `EFDDC0` setup also focuses the authored captain and loads its camera bookmark;
 the adapter does not call it. The runtime restores its separately pinned local
 camera and selection and waits for scene acknowledgement afterward.

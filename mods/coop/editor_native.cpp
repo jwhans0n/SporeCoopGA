@@ -44,6 +44,7 @@ editor::Document act_identity;
 std::optional<bool> authoring_override;
 uintptr_t a_view_manager, a_view_target, a_view_orbit, a_view_set_orbit, a_view_lookat;
 uintptr_t a_get_simulator_system,a_get_simulator_camera_state,a_activate_simulator_camera;
+uintptr_t a_scenario_initialization,a_get_simulator_mode_manager;
 bool supported, applying, queued;
 bool fence_queued;
 double last_fence;
@@ -2399,16 +2400,48 @@ bool capture_view(LocalView& view, std::string& error) {
     view=captured;return true;
 }
 
-bool resume_creation_scene_camera(const GestureScope& scope,uint64_t serial,uint64_t expected_generation,std::string& error){
-    // E11332 resumes the game mode, but its manager does not restore the camera.
+bool capture_scene_owner(SceneOwner& owner,std::string& error){
+    const auto native=state();
+    void* current_mode=mode();void* current_data=data(current_mode);void* current_resource=resource(current_data);
+    if(!native.editing || !native.ready || native.playtesting || native.gesture || applying ||
+       !skg::readable(current_resource,kResourceSize)){
+        error="The native Adventure Editor cannot pin its current scene owner";return false;
+    }
+    const SceneOwner captured{uintptr_t(current_mode),uintptr_t(current_data),uintptr_t(current_resource),skg::field<editor::ResourceKey>(current_resource,8)};
+    if(state().generation!=native.generation){error="The native Adventure Editor changed while pinning its scene owner";return false;}
+    owner=captured;error.clear();return true;
+}
+SceneResumeState creation_scene_state(const SceneOwner& owner){
+    const auto native=state();SceneResumeState result;
+    result.generation=native.generation;result.world_visible=native.world_visible;
+    result.ready=native.editing&&native.ready&&!native.playtesting&&!native.gesture&&!applying;
+    void* current_mode=mode();void* current_data=data(current_mode);void* current_resource=resource(current_data);
+    // Compare opaque identities before reading only the freshly resolved owner.
+    result.owner=owner.mode && owner.data && owner.resource && uintptr_t(current_mode)==owner.mode &&
+        uintptr_t(current_data)==owner.data && uintptr_t(current_resource)==owner.resource &&
+        skg::readable(current_resource,kResourceSize) && skg::field<editor::ResourceKey>(current_resource,8)==owner.source;
+    if(game::mode_id()!=modes::kScenario || !skg::readable(current_mode,0xDD) ||
+       !a_scenario_initialization || !skg::readable(reinterpret_cast<void*>(a_scenario_initialization),4) || !a_get_simulator_mode_manager)return result;
+    void* simulator_modes=skg::cdecl_call<void*>(a_get_simulator_mode_manager);
+    if(!skg::readable(simulator_modes,0x29))return result;
+    result.available=true;
+    result.initialization=*reinterpret_cast<const uint32_t*>(a_scenario_initialization);
+    result.enter_pending=skg::field<bool>(current_mode,0xDC);
+    result.transitioning=skg::field<bool>(simulator_modes,0x28);
+    return result;
+}
+bool resume_creation_scene_camera(const GestureScope& scope,uint64_t serial,uint64_t expected_generation,const SceneOwner& owner,std::string& error){
+    // Ordinary Scenario resume reaches this paired activation through
+    // EF0990 -> EFF670 -> EFDDC0. Require its consumed OnEnter state before
+    // this idempotent fallback; camera activation cannot substitute for resume.
     // Native edit-world setup calls B5CEF0 with EBB801: this switches the App
     // camera AND updates Simulator's cached orbit interface. A bare App switch
     // leaves that second owner stale. The complete setup also focuses captain,
     // so use only this verified paired boundary and preserve the caller's view.
     const auto owned=[&]{
-        const auto native=state();
+        const auto native=creation_scene_state(owner);
         return valid_scope(scope) && serial && expected_generation && active() &&
-            native.editing && native.ready && !native.playtesting && !native.gesture && !applying &&
+            native.settled() &&
             native.generation==expected_generation && C.gesture_scope && C.gesture_scope()==scope &&
             C.creation_return_current && C.creation_return_current(scope,serial);
     };
@@ -2552,6 +2585,8 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     a_get_simulator_system=H->sym("SporeCoop::Editor::GetSimulatorSystem");
     a_get_simulator_camera_state=H->sym("SporeCoop::Editor::GetSimulatorCameraState");
     a_activate_simulator_camera=H->sym("SporeCoop::Editor::ActivateSimulatorCamera");
+    a_scenario_initialization=H->sym("SporeCoop::Editor::ScenarioInitializationState");
+    a_get_simulator_mode_manager=H->sym("SporeCoop::Editor::GetSimulatorModeManager");
     a_view_target=H->sym("SporeCoop::Editor::CurrentOrbitTarget");
     a_view_orbit=H->sym("SporeCoop::Editor::CurrentOrbitScalars");
     a_view_set_orbit=H->sym("SporeCoop::Editor::SetOrbitScalarsInstant");
@@ -4156,12 +4191,13 @@ ProjectionCacheStats projection_cache_stats(){
     const auto stats=class_projection_cache.stats();return {stats.bytes,stats.entries,stats.hits,stats.misses};
 }
 std::string status() {
-    auto s=state();const auto cache=projection_cache_stats();char b[640];
-    snprintf(b,sizeof b,"editor_native available=%u editing=%u ready=%u playtesting=%u entry=%u act=%u generation=%llu gesture=%u history=%u/%u captures=%llu restores=%llu rejected=%llu cancellation=%u cancellation_serial=%llu ordinary_cancellations=%llu class_cache_bytes=%zu class_cache_entries=%zu class_cache_hits=%llu class_cache_misses=%llu",
+    auto s=state();const auto resume=creation_scene_state({});const auto cache=projection_cache_stats();char b[768];
+    snprintf(b,sizeof b,"editor_native available=%u editing=%u ready=%u playtesting=%u entry=%u act=%u generation=%llu gesture=%u history=%u/%u captures=%llu restores=%llu rejected=%llu cancellation=%u cancellation_serial=%llu ordinary_cancellations=%llu class_cache_bytes=%zu class_cache_entries=%zu class_cache_hits=%llu class_cache_misses=%llu resume_available=%u resume_initialization=%u resume_enter_pending=%u resume_transitioning=%u world_visible=%u",
         s.available,s.editing,s.ready,s.playtesting,s.entry,s.act,(unsigned long long)s.generation,s.gesture,
         s.history_cursor,s.history_size,(unsigned long long)captures,(unsigned long long)restores,(unsigned long long)rejected,
         unsigned(cancellation.has_value()),(unsigned long long)cancellation_counter,(unsigned long long)ordinary_cancellations,
-        cache.bytes,cache.entries,(unsigned long long)cache.hits,(unsigned long long)cache.misses);
+        cache.bytes,cache.entries,(unsigned long long)cache.hits,(unsigned long long)cache.misses,
+        unsigned(resume.available),resume.initialization,unsigned(resume.enter_pending),unsigned(resume.transitioning),unsigned(resume.world_visible));
     return b;
 }
 } // namespace editor_native

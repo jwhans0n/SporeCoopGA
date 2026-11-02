@@ -10,6 +10,11 @@ from pe import PE
 
 SHA = 'dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37'
 ENTRIES = [
+    ('GetSimulatorModeManager',0xB3D420,'a1ecea6701',[(0xB3D425,0)],
+     'cdecl()->SimulatorGameModeManager,plain ret; Scenario Update rejects transition flag28 before initialization and pending OnEnter resume',
+     [(0xEF2EF6,0xB3D420),(0xEF2548,0xEF1BC0),(0xEF2FB2,0xEF0990),(0xEF09A3,0xEFF670),(0xF0007A,0xEFDDC0)],
+     [(0xEF252B,'c686dc00000001'),(0xEF2EFB,'80782800'),(0xEF2F05,'833d34cc5a0104'),
+      (0xEF2F2E,'80bedc00000000'),(0xEF2F3C,'c686dc00000000'),(0x148AFF0,'c024ef00'),(0x148B014,'f02eef00')]),
     ('GetSimulatorCameraState',0xB3D320,'b8c0ea6701',[(0xB3D325,0)],
      'cdecl()->singleton storage; word0 is SimulatorSystem pointer,wordC is cached active orbit interface',
      [(0xB5CF10,0xB3D320)],[(0xB3D330,'a1c0ea6701'),(0xB5CF46,'89460c'),(0xB5CF57,'89460c')]),
@@ -371,7 +376,9 @@ def verify(pe):
             dict(name='SporeCoop::Editor::ToolManager',address=0x15AD298,
                  note='global native tool manager pointer; SetSelection vt20,ToolAction vt2C,DeleteSelection vt10,PlaceClass vt34; verified148B708 slots'),
             dict(name='SporeCoop::Editor::LoadingScreen',address=0x167EB28,
-                 note='global loading screen pointer; existing verified B3D510 getter, active flag370; ready requires native Build display1C zero and inactive loading')]
+                 note='global loading screen pointer; existing verified B3D510 getter, active flag370; ready requires native Build display1C zero and inactive loading'),
+            dict(name='SporeCoop::Editor::ScenarioInitializationState',address=0x15ACC34,
+                 note='read-only initialization word; Scenario Update requires4 after transition flag28 clears, then consumes modeDC before editor resumeEF0990; no adapter writes')]
 
 
 def main():

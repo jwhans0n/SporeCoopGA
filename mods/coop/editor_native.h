@@ -70,6 +70,19 @@ struct LocalView {
     std::array<float, 4> settings{};
     bool operator==(const LocalView&) const = default;
 };
+// Opaque values only. Match freshly resolved owners; never dereference retained
+// addresses after a creation editor has replaced the active game mode.
+struct SceneOwner {
+    uintptr_t mode=0,data=0,resource=0;
+    editor::ResourceKey source;
+    bool operator==(const SceneOwner&) const = default;
+};
+struct SceneResumeState {
+    uint64_t generation=0;
+    uint32_t initialization=0;
+    bool available=false,owner=false,ready=false,enter_pending=false,transitioning=false,world_visible=false;
+    bool settled() const {return available&&owner&&ready&&initialization==4&&!enter_pending&&!transitioning&&world_visible;}
+};
 
 struct Gesture {
     Snapshot before, after;
@@ -167,7 +180,9 @@ bool validate_entry(const std::vector<uint8_t>&, uint32_t act, std::string& erro
 // closed when that camera or its exact current context is unavailable.
 bool capture_view(LocalView&, std::string& error);
 bool restore_view(const LocalView&, uint64_t expected_generation, std::string& error);
-bool resume_creation_scene_camera(const GestureScope&,uint64_t serial,uint64_t expected_generation,std::string& error);
+bool capture_scene_owner(SceneOwner&,std::string& error);
+SceneResumeState creation_scene_state(const SceneOwner&);
+bool resume_creation_scene_camera(const GestureScope&,uint64_t serial,uint64_t expected_generation,const SceneOwner&,std::string& error);
 // Reject unsupported authored changes after private normalization of known poses.
 bool supported_changes(const Gesture&, std::string& error);
 // Reuse an exact immutable validation result only in one synchronous operation.

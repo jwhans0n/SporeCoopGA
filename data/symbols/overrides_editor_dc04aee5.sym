@@ -1,5 +1,7 @@
 # SporeKit verified native Adventure Editor overrides for GOG 2024.
 # exe_sha256=dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37
+SporeCoop::Editor::GetSimulatorModeManager=0x00B3D420 ; verified dc04 static: cdecl(),mov eax,[167EAEC],plain ret B3D425; Scenario Update EF2EF6 reads transition flag28 before resume
+SporeCoop::Editor::ScenarioInitializationState=0x015ACC34 ; verified dc04 static: data word; Scenario OnEnter EF2548 resets initializerEF1BC0, Update EF2F05 requires4 before consuming modeDC and editor resumeEF0990
 SporeCoop::Editor::GetSimulatorSystem=0x00B3D330 ; verified dc04 static: cdecl(),mov eax,[167EAC0],plain ret B3D335; native Scenario camera owner getter
 SporeCoop::Editor::GetSimulatorCameraState=0x00B3D320 ; verified dc04 static: cdecl(),mov eax,167EAC0,plain ret B3D325; singleton storage+00 is SimulatorSystem pointer,+0C receives active orbit interface from B5CF46/57
 SporeCoop::Editor::ActivateSimulatorCamera=0x00B5CEF0 ; verified dc04 static: thiscall(SimulatorSystem*,uint32 cameraID)->bool,ret4 B5CF50/61/68; App CameraManager slot34 activates registered ID then cached Simulator orbit+0C is refreshed from active camera Cast11966ED; native EFDdd0 passes EBB801, no focus/bookmark calls
