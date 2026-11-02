@@ -156,6 +156,32 @@ static void test_rejection_scene_failed_hold_recovery_rejects_replacement(){
         CHECK(runtime_host::store.snapshot()==checkpoint&&runtime_host::controller->state()==canonical);
     }
 }
+static void test_rejection_scene_failed_original_owner_can_recover_after_frozen_publication(){
+    Party party;auto& n=native[0];begin_rejected_scene(0);n.defer_readiness_on_restore=false;n.state.ready=true;
+    n.refuse_draft_capture=true;
+    CHECK(spin([]{return runtime_host::frozen&&runtime_host::controller->view().phase==es::Phase::Frozen;}));
+    CHECK(runtime_host::rejection_restore&&runtime_host::rejection_restore->failed&&!runtime_host::native_identity_lost);
+    n.refuse_draft_capture=false;
+    const auto checkpoint=runtime_host::store.snapshot();const auto old=runtime_host::controller->state();
+    const auto guest_checkpoint=runtime_guest::store.snapshot();const auto guest_document=runtime_guest::controller->state().document;
+    const auto registrations=n.registrations;n.transition_defer_ready=true;side=0;runtime_host::recover();
+    CHECK(spin([]{return runtime_host::recovery&&runtime_host::recovery->controller_started&&runtime_host::recovery->terrain&&runtime_host::recovery->terrain->materializing;}));
+    CHECK(!runtime_host::rejection_restore&&n.registrations>registrations&&!runtime_host::native_identity_lost);
+    CHECK(runtime_host::store.snapshot()==checkpoint&&runtime_host::recovery->state.document.epoch!=old.document.epoch);
+    CHECK(!runtime_host::view().can_save&&!runtime_host::view().can_playtest&&!n.state.ready);
+    for(unsigned i=0;i<5;++i)step();
+    CHECK(runtime_guest::controller->view().phase==es::Phase::Frozen&&runtime_guest::controller->state().document==guest_document);
+    CHECK(runtime_guest::store.snapshot()==guest_checkpoint&&runtime_host::store.snapshot()==checkpoint);
+    n.transition_defer_ready=false;n.state.ready=true;
+    CHECK(spin([]{return !runtime_host::recovery&&!runtime_host::frozen;}));
+    CHECK(runtime_host::controller->state().document.revision==old.document.revision&&runtime_host::controller->state().history==old.history);
+    CHECK(runtime_host::controller->state().document.placements==old.document.placements);
+    CHECK(runtime_host::store.snapshot().epoch==runtime_host::controller->state().document.epoch);
+    CHECK(spin([]{return runtime_guest::controller->view().phase==es::Phase::Offered&&!runtime_guest::closing;}));
+    side=1;std::string error;CHECK(runtime_guest::controller->accept_offer(error));
+    CHECK(spin([]{return runtime_guest::controller->view().phase==es::Phase::Ready;}));
+    CHECK(runtime_guest::controller->state().document==runtime_host::controller->state().document);
+}
 static void test_rejection_scene_begin_never_adopts_state_callback_replacement(){
     for(unsigned author=0;author<2;++author)for(unsigned replaced=0;replaced<4;++replaced){
         Party party;auto& n=native[author];side=int(author);
@@ -227,6 +253,7 @@ static void test_all_rejection_restore_cases(){
     test_rejection_scene_fenced_view_expiry_and_failed_restore();
     test_rejection_scene_last_readiness_getter_never_writes_expired_owner();
     test_rejection_scene_failed_hold_recovery_rejects_replacement();
+    test_rejection_scene_failed_original_owner_can_recover_after_frozen_publication();
     test_rejection_scene_begin_never_adopts_state_callback_replacement();
     test_rejection_scene_generic_callers_keep_preoperation_owner();
     test_rejection_scene_fenced_restore_never_writes_a_replacement();

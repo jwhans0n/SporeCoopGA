@@ -1423,7 +1423,8 @@ bool rejected_recovery_owner(const RejectionRestore& pin,std::string& error){
            !native_attached || closing || recovery || transport_teardown || !C.session || !C.session->connected() ||
            observed_transport!=pin.transport || C.session->transport_generation()!=pin.transport || native_generation!=pin.generation)return false;
         const auto& view=controller->view();const auto& doc=controller->state().document;
-        return view.phase==Phase::Ready && view.context.project==pin.scope.project && view.context.epoch==pin.scope.epoch &&
+        return (view.phase==Phase::Ready || view.phase==Phase::Frozen) &&
+            view.context.project==pin.scope.project && view.context.epoch==pin.scope.epoch &&
             view.local==pin.scope.author && doc.project==pin.scope.project && doc.epoch==pin.scope.epoch;
     };
     if(!current()){error="The rejected edit's recovery context expired";return false;}

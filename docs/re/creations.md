@@ -1135,3 +1135,13 @@ selection/view callbacks that alter authored pose or opaque bytes, failed
 captures/restores, and identity expiry during readiness, begin, restore and
 recovery callbacks. These tests exercise orchestration with native doubles;
 the actual C19 two-player terrain/restoration acceptance remains pending.
+
+The C20 recovery follow-up accepts the failed hold's exact original owner in
+either Ready or published Frozen phase. It retains every project, epoch,
+participant, transport, source and native-generation fence; mutation controls
+remain blocked. A real UDP regression starts from the published failure,
+keeps both previous checkpoints while the new canonical recovery is unready,
+then requires strict publication and authenticated guest rejoin. The strict
+actual-i686 runs pass 7,465 focused restoration checks, 1,508 captured-identity
+checks and 40,689 full Runtime checks, with 71 pinned inputs unchanged in
+`out/preview9-c20-runtime-receipt.json`.
