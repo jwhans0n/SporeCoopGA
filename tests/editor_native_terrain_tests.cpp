@@ -51,6 +51,24 @@ static void roundtrip(){
     // Canonical merge overwrites only typed recipe/global fields. The DBPF
     // adventure tail and unknown planet property remain exact.
     auto normalized=merged;CHECK(normalize_supported(normalized,source,error));CHECK(normalized==source);
+    // A verified whole-planet Load can change both existing payloads and count.
+    // Ordinary brushes keep rejecting ambiguity. The opted-in replacement
+    // deletes every old identity and appends fresh records in native order.
+    changed=d;real(changed.terrain.at({100,1}).payload.bytes,16,99);
+    changed.terrain.emplace(editor::ObjectId{103,1},stroke(103,4,31));changed.next_terrain_order=5;
+    CHECK(merge(source,changed,merged,error));CHECK(!project(merged,d,actual,error));
+    CHECK(project(merged,d,actual,error,true));CHECK(actual.terrain.size()==4);
+    CHECK(std::none_of(d.terrain.begin(),d.terrain.end(),[&](const auto& old){return actual.terrain.contains(old.first);}));
+    CHECK(actual.next_terrain_order==8);
+    const auto replacement=editor::terrain_recipe(actual),wanted=editor::terrain_recipe(changed);
+    for(const auto kind:{editor::TerrainKind::Effect,editor::TerrainKind::Model}){
+        std::vector<editor::StructuredValue> a,b;
+        for(const auto& row:replacement)if(row.kind==kind){a.push_back(row.payload);CHECK(row.object.id>=d.next_id&&row.revision==0);}
+        for(const auto& row:wanted)if(row.kind==kind)b.push_back(row.payload);
+        CHECK(a==b);
+    }
+    editor::Document stable;CHECK(project(merged,actual,stable,error));CHECK(stable.terrain==actual.terrain);
+    std::vector<uint8_t> rewritten;CHECK(merge(source,actual,rewritten,error));CHECK(rewritten==merged);
 }
 static void rejected(){
     auto source=baseline();editor::Document d;std::string error;CHECK(project(source,{},d,error));
@@ -74,6 +92,18 @@ static void captured(const char* path){
     CHECK(project(merged,d,roundtrip,error));CHECK(roundtrip.terrain==d.terrain);
     Properties q;CHECK(decode(merged,q,error));CHECK(q.tail==p.tail);
     for(const auto& [id,value]:p.fields)if(!recipe_property(id) && !planet_properties().contains(id))CHECK(q.fields.at(id)==value);
+    auto replacement=d;auto first=replacement.terrain.begin();CHECK(first!=replacement.terrain.end());
+    if(first!=replacement.terrain.end()){
+        real(first->second.payload.bytes,16,editor::terrain_float(first->second.payload.bytes,16)+.125f);
+        auto append=first->second;append.object={replacement.next_id++,1};append.order=replacement.next_terrain_order++;append.revision=0;
+        real(append.payload.bytes,16,editor::terrain_float(append.payload.bytes,16)+.125f);replacement.terrain.emplace(append.object,append);
+        CHECK(merge(bytes,replacement,merged,error));editor::Document replaced;
+        CHECK(!project(merged,d,replaced,error));CHECK(project(merged,d,replaced,error,true));
+        CHECK(replaced.terrain.size()==d.terrain.size()+1);
+        CHECK(std::none_of(d.terrain.begin(),d.terrain.end(),[&](const auto& old){return replaced.terrain.contains(old.first);}));
+        CHECK(decode(merged,q,error)&&q.tail==p.tail);
+        for(const auto& [id,value]:p.fields)if(!recipe_property(id) && !planet_properties().contains(id))CHECK(q.fields.at(id)==value);
+    }
     std::printf("Captured native fixture: %zu recipe records, %zu properties, %zu preserved adventure bytes\n",d.terrain.size(),p.fields.size(),p.tail.size());
 }
 int main(int argc,char** argv){roundtrip();rejected();if(argc>1)captured(argv[1]);std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

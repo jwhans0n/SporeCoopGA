@@ -109,7 +109,7 @@ inline bool array(const Properties& p,uint32_t id,uint16_t type,uint32_t width,s
     count=be32(v.value.data());if(count>kRecipeLimit || v.value.size()!=8+count*width){error="Native terrain recipe column exceeds its bounds";return false;}
     bytes.assign(v.value.begin()+8,v.value.end());return true;
 }
-inline bool project(const std::vector<uint8_t>& bytes,const editor::Document& identity,editor::Document& document,std::string& error){
+inline bool project(const std::vector<uint8_t>& bytes,const editor::Document& identity,editor::Document& document,std::string& error,bool allow_recipe_replacement=false){
     Properties p;if(!decode(bytes,p,error))return false;
     document.terrain.clear();document.settings.erase(kPlanetObject);
     editor::AuthoringSettings planet;planet.object=kPlanetObject;planet.kind=editor::SettingsKind::Planet;
@@ -149,6 +149,15 @@ inline bool project(const std::vector<uint8_t>& bytes,const editor::Document& id
                 const auto* prior=exact->second.front();exact->second.pop_front();row.object=prior->object;row.order=prior->order;row.revision=prior->revision;
             }else {
                 if(incoming.size()!=previous.size() && std::any_of(previous.begin(),previous.end(),[&](const auto* old){return !present.contains(old->payload.bytes);})){
+                    if(allow_recipe_replacement){
+                        // Only a verified whole-recipe Load boundary may opt in.
+                        // All old records are checked deletions, all incoming
+                        // native records get fresh IDs and immutable order. No
+                        // ambiguous old row is guessed to be the same stamp.
+                        editor::Document replacement;replacement.next_id=std::max(identity.next_id,document.next_id);
+                        replacement.next_terrain_order=identity.next_terrain_order;
+                        return project(bytes,replacement,document,error,false);
+                    }
                     error="A native terrain gesture changed an ambiguous record identity";return false;
                 }
                 if(i<previous.size() && !used.contains(previous[i]->object) && !present.contains(previous[i]->payload.bytes)){

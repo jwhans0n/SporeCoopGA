@@ -189,7 +189,7 @@ void native_cancel(void* entry=nullptr){
 }
 void begin(){start(t_data.data());CHECK(!t_allocations.empty());CHECK(gesture_serial!=0);}
 void reset(){
-    held_terrain_controls.clear();terrain_before.reset();terrain_pending=terrain_rebuilding=terrain_capturing=false;terrain_available=false;
+    held_terrain_controls.clear();terrain_before.reset();terrain_pending=terrain_rebuilding=terrain_capturing=terrain_recipe_replacement=false;terrain_available=false;
     deferred_local_view.reset();local_view_queued=local_view_settling=false;
     held_tool.reset();held_import.reset();held_creation.reset();held_class_removal.reset();held_captain_asset.reset();held_crew_action.reset();
     for(auto item:pending){release(item.entry);release(item.before);}pending.clear();
@@ -369,7 +369,7 @@ void test_terrain_control_retry(){
     terrain_commit(t_terraform.data());CHECK(terrain_starts==1&&terrain_commits==1);
     // Per-field conflict, epoch, generation, act, focus, timeout and explicit
     // denial all retire the desired value without touching native state.
-    for(unsigned reason=0;reason<8;++reason){
+    for(unsigned reason=0;reason<10;++reason){
         setup_terrain_retry();hold_terrain_value(0,0); // Null pointer is rejected.
         CHECK(held_terrain_controls.empty());std::array<uint32_t,3> pointed{1,2,3};hold_terrain_value(0,uint32_t(uintptr_t(pointed.data())));
         if(reason==0)act_identity.settings.at(editor_native_terrain::kPlanetObject).properties[0x968C496A]=true;
@@ -379,8 +379,10 @@ void test_terrain_control_retry(){
         if(reason==5)t_time+=3;
         if(reason==6)deny_input({{editor::ScopeKind::Field,editor_native_terrain::kPlanetObject,{editor::Field::Property,0x968C496A}}});
         if(reason==7)++act_identity.settings.at(editor_native_terrain::kPlanetObject).field_revisions[{editor::Field::Property,0x968C496A}];
+        if(reason==8)deny_input({{editor::ScopeKind::Authoring,{},{}}});
+        if(reason==9)skg::field<void*>(t_mode.data(),0x74)=t_other_data.data();
         t_granted=true;continue_terrain_control();CHECK(held_terrain_controls.empty()&&!terrain_values_called&&!terrain_starts);
-        if(reason==0||reason==6||reason==7)CHECK(!t_failure.empty());
+        if(reason==0||reason==6||reason==7||reason==8)CHECK(!t_failure.empty());
     }
     setup_terrain_retry();
     std::array<float,2> heights{.2f,.8f};std::array<editor::Vec3,2> colors{{{1,0,0},{0,1,0}}};
