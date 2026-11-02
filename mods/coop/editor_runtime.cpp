@@ -598,6 +598,51 @@ bool collect_cast_assets(const editor_native::Snapshot& native,std::vector<uint8
     content.bundle=std::move(delta);content.base_root.reset();
     return editor_project::encode_resources(content,envelope,error);
 }
+bool canonicalize_crew_assets(editor_native::Gesture& gesture,std::string& error){
+    const editor::FieldKey field{editor::Field::Property,editor_native::kCrewRosterProperty};
+    if(editor::value(gesture.before.document,editor_native::kCrewObject,field)==
+       editor::value(gesture.after.document,editor_native::kCrewObject,field))return true;
+    std::vector<editor::ResourceKey> before,after;
+    if(!editor_native::crew_assets(gesture.before.document,before,error) ||
+       !editor_native::crew_assets(gesture.after.document,after,error))return false;
+    std::map<editor::ResourceKey,editor::ResourceKey> versions;
+    std::set<editor::ResourceKey> examined;
+    std::vector<dbpf::Record> admitted;
+    const auto reserved=[&](const editor::ResourceKey& key){
+        const dbpf::Key native_key{key.instance,key.type,key.group};
+        return editor_creation_native::resource_reserved(key) ||
+            std::any_of(resources.bundle.records.begin(),resources.bundle.records.end(),[&](const auto& row){return row.key==native_key;}) ||
+            std::any_of(admitted.begin(),admitted.end(),[&](const auto& row){return row.key==native_key;}) ||
+            std::any_of(versions.begin(),versions.end(),[&](const auto& row){return row.second==key;});
+    };
+    for(const auto& key:after){
+        // Removal/reordering and a lock or capacity edit keep the exact
+        // already-admitted identities, including duplicate crew members.
+        if(std::find(before.begin(),before.end(),key)!=before.end() || !examined.insert(key).second)continue;
+        if(!key.instance || !key.type){error="The selected crew member has an incomplete resource identity";return false;}
+        std::vector<dbpf::Record> source,records;editor::ResourceKey version;
+        if(!adventure_collect::collect_creation({key.instance,key.type,key.group},source,error))return false;
+        if(source.empty())continue; // Verified stock resources stay native.
+        if(!editor_creation_native::immutable_version(gesture.after.document.project,key,source,reserved,version,records,error))return false;
+        for(auto& record:records){
+            auto prior=std::find_if(admitted.begin(),admitted.end(),[&](const auto& row){return row.key==record.key;});
+            if(prior!=admitted.end()){
+                if(prior->data!=record.data){error="The selected crew assets have conflicting dependencies";return false;}
+            }else admitted.push_back(std::move(record));
+        }
+        versions.emplace(key,version);
+    }
+    if(versions.empty())return true;
+    std::vector<editor_native::CrewAssetRemap> edits;
+    for(uint32_t slot=0;slot<after.size();++slot)if(auto version=versions.find(after[slot]);version!=versions.end())
+        edits.push_back({slot,after[slot],version->second});
+    // Admission may populate immutable resource caches, but never the live
+    // draft or history. Only the checked private snapshot receives aliases.
+    if(!register_native_records(resources.root,admitted,error))return false;
+    editor_native::Snapshot normalized;
+    if(!editor_native::remap_crew_assets(gesture.after,edits,normalized,error))return false;
+    gesture.after=std::move(normalized);return true;
+}
 bool merge_delta(editor_project::Resources delta, editor_project::Resources& merged, std::string& error) {
     auto root=std::find_if(delta.bundle.records.begin(),delta.bundle.records.end(),[&](const auto& row){return row.key==delta.root;});
     if(root==delta.bundle.records.end()){error="The editor update has no native root";return false;}
@@ -1431,6 +1476,9 @@ void captured(editor_native::Gesture gesture) {
     if (!supported_between(current_native, gesture.before, error) || !editor_native::supported_changes(gesture, error)) {
         stop_unsupported(error); return;
     }
+    // First prove the actual native gesture. Project-owned creation identities
+    // are then a separate allowlisted transformation of its owned after copy.
+    if(!canonicalize_crew_assets(gesture,error)){stop_unsupported(error);return;}
     const auto supported_end=stage_qpc();
     const bool roster=gesture.after.document.act_order!=doc.act_order;
     if (gesture.before.document.classes != doc.classes || gesture.before.document.acts != doc.acts ||
