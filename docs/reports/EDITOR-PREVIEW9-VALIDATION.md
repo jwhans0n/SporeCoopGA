@@ -772,3 +772,21 @@ inspection retained the host's 181 effect records and the observer's original
 `out/preview9-c12-terrain-card-drag/` and
 `out/preview9-c12-terrain-rpm/result.json`. Simultaneous terrain and Terraform
 Undo/Redo remain unaccepted until this native discrepancy is resolved and rerun.
+
+The explicit recovery action restored revision 62 in a new epoch and both
+participants returned to Ready without faults. The observer's native check
+converged, but the host's native check diverged, so complete recovery acceptance
+failed. The recipe row counts returned to the original 180 effects and 102
+models. `out/preview9-c12-terrain-recovery/` and
+`out/preview9-c12-terrain-recovery-rpm/` retain both outcomes. Both participants
+then left co-op and used normal native Quit/discard to Galaxy with zero faults
+before their owning runner stopped them; see
+`out/preview9-c12-terrain-retirement/result.json`.
+
+The full retained comparison identified transform bookkeeping-counter changes
+and small position changes on three prior effects and seven prior models.
+Native inspection traced position feedback from reconstructed editor proxies
+into the recipe during terrain regeneration. Approximate coordinate matching is
+not accepted as an identity fix. Follow-up validation must prove the exact
+owned input/output relationship, preserve real authored changes and cover
+recovery as well as new terrain placement.
