@@ -119,13 +119,28 @@ int main(){
     // A hidden cached picker must not block authoring, even when its child
     // remains individually visible. A later live duplicate must block it.
     auto hidden_owner=make(main_node,2);sui::set_visible(hidden_owner,false);
-    make(hidden_owner,0x53C6DC80);step();CHECK(shown(panel.root));
+    make(make(hidden_owner,0x53C6DC80),0x53C5B392);step();CHECK(shown(panel.root));
+    // Actual closed Sporepedia retains a visible root/scaffold and hidden
+    // content frames, whose cached captions may themselves remain visible.
+    auto scaffold=make(main_node,0x53C6DC80);make(scaffold,0x94174874);
+    for(auto id:{0x53C5B392u,0x53C5B391u,0x53C5B390u}){
+        auto frame=make(scaffold,id);sui::set_visible(frame,false);make(frame,0x9999);
+    }
+    step();CHECK(shown(panel.root)&&editor_creation_ui::want_menu);
+    // A similarly named frame outside an owning picker is unrelated.
+    auto unrelated_frame=make(main_node,0x53C5B392);step();CHECK(shown(panel.root));
+    sui::set_visible(unrelated_frame,false);
     auto live_owner=make(main_node,3);auto live_picker=make(live_owner,0x53C6DC80);
+    auto live_frame=make(live_picker,0x53C5B392);
     CHECK(sui::find(main_node,0x53C6DC80)!=live_picker);
     // Test a queued click before the next UI update: cached runtime editing
     // state is still true, but the actual current picker must reject it.
     click(panel.choices[0]);CHECK(created==0&&!editor_creation_ui::want_menu);
     step();CHECK(!shown(panel.root));click(panel.new_button);CHECK(!editor_creation_ui::want_menu);
+    // Each observed native frame independently identifies an open browser.
+    for(auto id:{0x53C5B391u,0x53C5B390u}){
+        live_frame->id=id;step();CHECK(!shown(panel.root));
+    }
     sui::set_visible(live_owner,false);step();CHECK(shown(panel.root));
     // A stale child-list reference is not an owning visible UI path.
     main_node->children.push_back(live_picker);step();CHECK(shown(panel.root));main_node->children.pop_back();
