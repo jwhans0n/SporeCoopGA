@@ -24,9 +24,22 @@ def checked_history(text):
     return rows
 
 
-def require_crew_hit(hits,action):
-    ids={int(value,16) for value in re.findall(r'^([0-9A-Fa-f]{8}) ',hits,re.M)}
-    required={0x064A90A0,0x03D98304}
+def require_crew_hit(hits,action,header=None):
+    rectangles={int(ident,16):tuple(map(int,(left,top,right,bottom))) for ident,left,top,right,bottom in re.findall(
+        r'^([0-9A-Fa-f]{8}) (-?\d+) (-?\d+) (-?\d+) (-?\d+) enabled=1\b',hits,re.M)}
+    ids=set(rectangles)
+    required={0x03D98304}
+    if header is None:required.add(0x064A90A0)
+    else:
+        # Crew's title is a sibling above the card body. A body-center hit
+        # cannot include it. Pin the fresh unique Crew title rectangle to this
+        # card, so Captain's reused lock/card IDs cannot authorize the click.
+        title=re.fullmatch(r'064A90A0 (-?\d+) (-?\d+) (-?\d+) (-?\d+) enabled=1\s*',header)
+        card=rectangles.get(0x03D98304)
+        if not title or not card:raise FixtureError('The owning Crew title/card is unavailable')
+        left,top,right,bottom=map(int,title.groups());x=(left+right)//2
+        if not (left<right and top<bottom and card[0]<=x<card[2] and card[1]<=bottom-1<card[3] and top<card[1]+16):
+            raise FixtureError('The filled card does not belong to the measured Crew title')
     if action=='lock':required.add(0x07C4B4A0)
     elif action=='remove':required.add(0x04ACFCAF)
     elif action!='replace':raise FixtureError('Unknown bounded Crew card action')
@@ -81,7 +94,9 @@ def run(args):
         if args.stage not in ('probe','controls'):author.call('coop.uistate 0')
         revision=args.revision
         if args.stage=='controls':
+            author.call(f'move {args.member_point[0]} {args.member_point[1]}');author.call('wait.frames 8 15000')
             result['crew_controls']=dict(tree=author.call('coop.ui findall "Crew"'),
+                header=author.call('coop.ui where 064A90A0'),
                 filled_card=author.call('coop.ui where 03D98304'),remove_first_match=author.call('coop.ui where 04ACFCAF'),
                 lock_first_match=author.call('coop.ui where 07C4B4A0'),member_hit=author.call(f'coop.ui at {args.member_point[0]} {args.member_point[1]}'))
             if args.remove_point:result['crew_controls']['remove_hit']=author.call(f'coop.ui at {args.remove_point[0]} {args.remove_point[1]}')
@@ -95,7 +110,9 @@ def run(args):
         if args.stage in ('add','capacity-add','replace'):
             x,y=args.member_point if args.stage=='replace' else args.slot
             hits=author.call(f'coop.ui at {x} {y}');result['slot_hit']=hits;write()
-            if args.stage=='replace':require_crew_hit(hits,'replace')
+            if args.stage=='replace':
+                result['crew_header']=author.call('coop.ui where 064A90A0');write()
+                require_crew_hit(hits,'replace',result['crew_header'])
             elif '03D982FF ' not in hits or '03D98298 ' not in hits:raise FixtureError('The measured native Crew slot is absent')
             author.click(x,y);author.wait('native Creature picker',lambda:author.control(0x53C6DC80))
             # The visible native title is "Choose one or more Creatures".
@@ -110,7 +127,8 @@ def run(args):
             record('replace' if args.stage=='replace' else 'add')
         if args.stage=='remove':
             x,y=args.remove_point;hits=author.call(f'coop.ui at {x} {y}');result['crew_remove_hit']=hits;write()
-            require_crew_hit(hits,'remove');author.click(x,y);revision+=1
+            result['crew_header']=author.call('coop.ui where 064A90A0');write()
+            require_crew_hit(hits,'remove',result['crew_header']);author.click(x,y);revision+=1
             host.wait('all-participant Crew removal',lambda:settled(revision))
             require_history_item(before,checked_history(host.call('coop.editor history')),capabilities[author.instance])
             if semantic(host)==before_semantic:raise FixtureError('Crew removal had no authored effect')
@@ -119,7 +137,8 @@ def run(args):
             author.call(f'move {args.slot[0]} {args.slot[1]}');author.call('wait.frames 8 15000')
             x,y=args.lock_point;hits=author.call(f'coop.ui at {x} {y}')
             result['crew_lock_hit']=hits;write()
-            require_crew_hit(hits,'lock')
+            result['crew_header']=author.call('coop.ui where 064A90A0');write()
+            require_crew_hit(hits,'lock',result['crew_header'])
             # Captain and Crew reuse the lock ID. The owning Crew point is
             # measured independently; global first-match lookup is unsafe.
             author.click(x,y);revision+=1;host.wait('all-participant Crew lock',lambda:settled(revision))
@@ -154,14 +173,22 @@ def self_test():
         except FixtureError:checks+=1
         else:raise AssertionError('An unsafe Crew fixture input was accepted')
     crew='064A90A0 974 451 1005 467 enabled=1\n03D98304 962 459 1044 521 enabled=1\n'
-    for action,extra in [('replace',''),('lock','07C4B4A0 '),('remove','04ACFCAF ')]:
+    for action,extra in [('replace',''),('lock','07C4B4A0 968 457 987 476 enabled=1\n'),('remove','04ACFCAF 1005 459 1024 478 enabled=1\n')]:
         require_crew_hit(crew+extra,action);checks+=1
         rejects(lambda a=action,e=extra:require_crew_hit(crew.replace('03D98304','03D982FF')+e,a))
         rejects(lambda a=action,e=extra:require_crew_hit(crew.replace('064A90A0','00000000')+e,a))
-    rejects(lambda:require_crew_hit(crew+'07C4B4A0 ','replace'))
-    rejects(lambda:require_crew_hit(crew+'04ACFCAF ','replace'))
+    rejects(lambda:require_crew_hit(crew+'07C4B4A0 968 457 987 476 enabled=1\n','replace'))
+    rejects(lambda:require_crew_hit(crew+'04ACFCAF 1005 459 1024 478 enabled=1\n','replace'))
     rejects(lambda:require_crew_hit(crew,'remove'))
     rejects(lambda:require_crew_hit(crew,'unknown'))
+    body='03D98304 962 459 1044 521 enabled=1\n03D982FF 980 472 1024 518 enabled=1\n'
+    title='064A90A0 974 451 1005 467 enabled=1\n'
+    require_crew_hit(body,'replace',title);checks+=1
+    rejects(lambda:require_crew_hit(body.replace('459 1044 521','600 1044 662'),'replace',title))
+    rejects(lambda:require_crew_hit(body,'replace',title.replace('enabled=1','enabled=0')))
+    rejects(lambda:require_crew_hit(body,'replace',title.replace('974 451 1005 467','100 451 131 467')))
+    rejects(lambda:require_crew_hit(body.replace('enabled=1','enabled=0'),'replace',title))
+    rejects(lambda:require_crew_hit(body+'07C4B4A0 968 457 987 476 enabled=1\n','replace',title))
     text='local=1:7 count=1\nauthor=1:7 sequence=3 epoch=8 revision=9 applied=1 redo=0 Edit adventure crew\n'
     rows=checked_history(text);require_history_item([],rows,(1,7));checks+=1
     rejects(lambda:checked_history(text.replace('count=1','count=2')))
