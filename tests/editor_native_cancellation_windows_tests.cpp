@@ -191,6 +191,7 @@ void native_cancel(void* entry=nullptr){
 void begin(){start(t_data.data());CHECK(!t_allocations.empty());CHECK(gesture_serial!=0);}
 void reset(){
     act_projection_cache.clear();
+    clear_terrain_materialization();
     held_terrain_preset.reset();a_copy_terrain_properties=0;
     held_terrain_controls.clear();terrain_before.reset();terrain_pending=terrain_rebuilding=terrain_capturing=terrain_recipe_replacement=false;terrain_available=false;
     deferred_local_view.reset();local_view_queued=local_view_settling=false;
@@ -1438,7 +1439,7 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
         auto& p=next.placements.at(id);p.position={4,5,6};p.revision=1;p.field_revisions[{editor::Field::Position,0}]=1;
         editor::Change change;change.revision=1;change.patch.fields.push_back({id,{editor::Field::Position,0},base.document.placements.at(id).position,p.position,0});
         Snapshot prepared;CHECK(prepare(base,next,change,nullptr,prepared,error));CHECK(prepared.document==next);
-        CHECK(raw==live_before && t_pose_row_copies==2 && t_pose_inserts==4); // Only opaque comparison rebuilds rows.
+        CHECK(raw==live_before && !t_pose_row_copies && !t_pose_inserts); // Exact reverse proof needs no roster rebuild.
         auto unsupported=prepared;unsupported.bytes[12+4+0x100]^=1;Gesture invalid;invalid.before=base;invalid.after=unsupported;
         CHECK(!supported_changes(invalid,error)); // Pose optimization cannot admit an unrelated opaque marker mutation.
         CHECK(prepare(base,next,change,nullptr,prepared,error));CHECK(raw==live_before);
@@ -1449,11 +1450,11 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
         forged=base;forged.bindings[0].marker=9999;CHECK(!validate(forged,base.document,error));
         forged=base;forged.act=1;CHECK(!validate(forged,base.document,error));
         auto wrong=base.document;wrong.placements.at(id).position.x=99;CHECK(!validate(base,wrong,error));
-        const auto reads=t_reads;CHECK(validate(base,base.document,error));CHECK(t_reads==reads+1);
-        ++generation;CHECK(validate(base,base.document,error));CHECK(t_reads==reads+2);
-        {ValidationScope nested;CHECK(validate(base,base.document,error));CHECK(t_reads==reads+2);}
+        const auto reads=t_reads;CHECK(validate(base,base.document,error));CHECK(t_reads==reads);
+        ++generation;CHECK(validate(base,base.document,error));CHECK(t_reads==reads+1);
+        {ValidationScope nested;CHECK(validate(base,base.document,error));CHECK(t_reads==reads+1);}
     }
-    CHECK(!validated_snapshot && !validation_depth);const auto reads=t_reads;CHECK(validate(base,base.document,error));CHECK(t_reads==reads+1);
+    CHECK(!validated_snapshot && !validation_depth);const auto reads=t_reads;CHECK(validate(base,base.document,error));CHECK(t_reads==reads);
     // A copied Snapshot cannot smuggle an unsupported metadata edit behind an
     // otherwise equal native byte stream or a successful validation cache hit.
     Gesture metadata_change;metadata_change.before=base;metadata_change.after=base;
@@ -1493,7 +1494,12 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
 }
 #include "editor_native_act_cache_fixture.h"
 #include "editor_native_crew_assets_fixture.h"
-int main(){
+#include "editor_native_recent_fixture.h"
+int main(int argc,char** argv){
+    if(argc==2&&std::string(argv[1])=="--recent-only"){
+        test_recent_native_proofs();std::printf("native recent proofs: %u checks passed\n",checks);return 0;
+    }
+    test_recent_native_proofs();
     test_owned_crew_asset_versions();
     test_act_projection_production_cache();test_act_projection_cache_bounds();
     test_entry_hydrates_nonzero_captain_before_scene_entry();
