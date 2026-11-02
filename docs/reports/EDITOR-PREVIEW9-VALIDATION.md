@@ -562,6 +562,40 @@ executable identities, and retains `complete_release_acceptance: false`.
 That archive contains the report snapshot from before this appendix and must
 be regenerated for a final delivery. No personal installation was changed.
 
+The live four-player Crew capacity-plus action succeeds at revision 1 with one
+Crew Undo item and zero native faults
+(`out/preview9-c10-crew-capacity/result.json`). Selecting the unique visible
+Spice Crawler card then rejects locally with
+`A verified local creation is required for shared content versioning`.
+All four return Ready at committed/durable revision 1, with zero faults and
+strict convergence hash
+`11210af23cae60837323b4eab2d65644fceb6f030a9961c4eed95b8f6c6920db`.
+The rejection evidence is
+`out/preview9-c10-crew-select/rejection-all-four.json`. No rejected after-image
+was persisted, and this result does not assert a separately captured raw key
+for that selection.
+
+Native projection intentionally resets its Document's coordinator metadata.
+The new runtime path incorrectly supplied that empty projected project ID to
+immutable versioning instead of the fenced canonical session context. The
+existing controlled fixture had retained canonical metadata and missed this
+integration error. The narrow candidate 11 correction pins the current context
+before collection and tests ordinary empty native project/epoch/revision fields
+for both authors. It does not remap legacy custom references already present
+in an initial adventure baseline; those retain independent collision checks.
+Live selected-Crew versioning remains pending the corrected native candidate.
+
+The corrected runtime is committed as `2e52bd7` and compiled into candidate 11
+DLL `2cd5ba3b81f38026a7d7a40624939a592cd2345e72313e81ce8418445f937431`.
+Its focused Crew run passes 1,825 checks and the full Win32 runtime run passes
+31,130, including the retained 24 MiB closure case. Both native-style empty
+project projections now admit the intended version through the current canonical
+context. Missing authority rejects before collection, and a scene replacement
+during collection produces no restore/apply writes to the replacement scene.
+`out/editor-preview9-adoption/crew-context-receipt.json` records matching frozen
+candidate runtime/header hashes, fixture executable and actual logs. These
+controlled results do not replace the pending live Crew selection check.
+
 ## Required native acceptance
 
 Actual two- and four-player candidate runs remain pending for crew edits,
