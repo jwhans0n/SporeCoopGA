@@ -242,7 +242,40 @@ void test_creation_terrain_ticket(){
     tmc_properties.clear();act_cache_rows.clear();a_write=old_write;a_read=old_read;a_copy_acts=old_acts;a_copy_crew=old_crew;
     a_layout_shown=old_shown;a_scenario_initialization=old_init;a_get_simulator_mode_manager=old_modes;H=old_host;reset();
 }
+void test_terrain_materialization_read_scope(){
+    std::string error;
+    for(unsigned reason=0;reason<12;++reason){
+        tmf_setup();C.projection_scope=[] {return t_scope;};
+        const auto authored=tmf_bytes();terrain_materialize(t_terraform.data());
+        const auto rendered=tmf_bytes();CHECK(rendered!=authored&&!terrain_materialization.empty());
+        const auto witness_bytes=terrain_materialization.owned_bytes();
+        // Awaiting a normal commit withdraws mutation authorization while the
+        // exact project/scene read identity remains current.
+        C.gesture_scope=[] {return GestureScope{};};t_granted=true;
+        auto normalized=rendered;
+        CHECK(normalize_materialized_terrain(normalized,error)&&normalized==authored);
+        CHECK(terrain_materialization.owned_bytes()==witness_bytes&&!terrain_materialization.empty());
+        CHECK(!terrain_begin(t_terraform.data())&&!terrain_before&&!terrain_starts);
+        CHECK(tmf_bytes()==rendered); // Read proofs never write the native recipe.
+        auto alternate_mode=t_mode;auto alternate_data=t_data;auto alternate_resource=t_live;auto alternate_tool=t_terraform;
+        if(reason==0)++t_scope.project[0];if(reason==1)++t_scope.epoch;
+        if(reason==2)++t_scope.author.slot;if(reason==3)++t_scope.author.generation;
+        if(reason==4)++generation;
+        if(reason==5)t_mode_pointer=alternate_mode.data();
+        if(reason==6)skg::field<void*>(t_mode.data(),0x74)=alternate_data.data();
+        if(reason==7)skg::field<void*>(t_data.data(),0x10)=alternate_resource.data();
+        if(reason==8)skg::field<void*>(t_mode.data(),0x18)=alternate_tool.data();
+        if(reason==9)++skg::field<editor::ResourceKey>(t_live.data(),8).instance;
+        if(reason==10)C.projection_scope=[] {return GestureScope{};};
+        if(reason==11)t_game_mode_id=modes::kEditor;
+        normalized=rendered;
+        CHECK(normalize_materialized_terrain(normalized,error)&&normalized==rendered&&terrain_materialization.empty());
+        CHECK(!terrain_materialization_owner);
+    }
+    reset();
+}
 void test_terrain_materialization_hooks(){
+    test_terrain_materialization_read_scope();
     tmf_setup();const auto before=tmf_bytes();const auto resource_before=t_live;std::string error;
     terrain_materialize(t_terraform.data());CHECK(tmf_calls==1&&terrain_materialization_error.empty()&&!terrain_materialization.empty());
     const auto rendered=tmf_bytes();CHECK(rendered!=before);auto normalized=rendered;
