@@ -4201,6 +4201,56 @@ static void test_failed_creation_return_retires_on_end_or_leave(){
         CHECK(!creation_records[author].empty());creation_content_enabled=false;
     }
 }
+static void test_failed_creation_return_is_terminal_and_keeps_first_error(){
+    for(unsigned author=0;author<2;++author)for(bool module_finished:{false,true}){
+        seed_creation_settings=true;Party party;seed_creation_settings=false;
+        auto value=creation_request(author,0x2B978C46);creation_enter(value);
+        auto& n=native[author];auto& context=editor_creation::fixture_contexts[author];
+        const auto canonical=author?runtime_guest::current_native:runtime_host::current_native;
+        const auto checkpoint=author?runtime_guest::store.snapshot():runtime_host::store.snapshot();
+        const auto ticket=author?runtime_guest::local_creation->terrain_ticket:runtime_host::local_creation->terrain_ticket;
+        n.state.editing=n.state.ready=true;
+        // The native scene returns with a real authored-field mismatch. Its
+        // first strict entry check must remain authoritative after freezing.
+        n.snapshot.document.placements.at(placement).position={99,98,97};n.snapshot.bytes=body(n.snapshot.document);
+        const editor_creation::Result result{value.request,{},true};std::string error;side=int(author);
+        fixture_logs.clear();retain_fixture_logs=true;
+        if(module_finished){
+            CHECK(!context.returned(value.scope,result,error)&&error=="Injected persisted field mismatch");
+            creation_active[author]=false;context.finished(value.scope,false,error);
+        }else{
+            // Runtime also owns an automatic return after the native module
+            // has closed. A nonempty failure here has the same terminal rule.
+            creation_active[author]=false;step();
+        }
+        auto failed=[&]{return author?runtime_guest::local_creation->return_failed:runtime_host::local_creation->return_failed;};
+        auto first_error=[&]{return author?runtime_guest::local_creation->return_error:runtime_host::local_creation->return_error;};
+        CHECK(failed()&&first_error()=="Injected persisted field mismatch");
+        CHECK(author?runtime_guest::frozen:runtime_host::frozen);
+        const auto terminal="The creation was retained locally, but the committed adventure could not be restored: "+first_error();
+        CHECK(author?runtime_guest::status==terminal:runtime_host::status==terminal);
+        const auto calls=std::array{n.draft_capture_attempts,n.capture_calls,n.validations,n.registrations,n.restores,
+            n.apply_calls,n.view_restores,n.creation_resumes,n.selections,n.terrain_ticket_resumes};
+        n.refuse_draft_capture=true; // A retry would lose the original reason.
+        for(unsigned i=0;i<15;++i)step();
+        side=int(author);error.clear();CHECK(!context.returned(value.scope,result,error)&&error==first_error());
+        context.finished(value.scope,false,"A later callback must not replace the first error");
+        context.finished(value.scope,true,"A stale successful completion must not retire the failure");
+        CHECK(calls==std::array{n.draft_capture_attempts,n.capture_calls,n.validations,n.registrations,n.restores,
+            n.apply_calls,n.view_restores,n.creation_resumes,n.selections,n.terrain_ticket_resumes});
+        CHECK(first_error()=="Injected persisted field mismatch");
+        // The terminal notice and the existing Controller::freeze_local error
+        // echo occur once each; subsequent native ticks cannot repeat them.
+        CHECK(std::count_if(fixture_logs.begin(),fixture_logs.end(),[&](const auto& line){return line=="editor: "+terminal;})==2);
+        CHECK(author?runtime_guest::local_creation->terrain_ticket==ticket:runtime_host::local_creation->terrain_ticket==ticket);
+        CHECK(author?runtime_guest::local_creation->entry_native.document==canonical.document:runtime_host::local_creation->entry_native.document==canonical.document);
+        CHECK(author?runtime_guest::current_native.bytes==canonical.bytes:runtime_host::current_native.bytes==canonical.bytes);
+        CHECK(author?runtime_guest::store.snapshot()==checkpoint:runtime_host::store.snapshot()==checkpoint);
+        CHECK(!runtime_host::controller->state().document.revision&&!runtime_guest::controller->state().document.revision);
+        CHECK(runtime_host::controller->state().history.empty()&&runtime_guest::controller->state().history.empty());
+        retain_fixture_logs=false;
+    }
+}
 static void test_all_creation_lifecycle_cases(){
     const auto run=[](const char* name,void (*test)()){
         if(std::getenv("SPORECOOP_FIXTURE_TRACE"))std::printf("CREATION lifecycle %s\n",name);test();
@@ -4212,6 +4262,7 @@ static void test_all_creation_lifecycle_cases(){
     run("native resume holds",test_creation_return_waits_for_native_resume_before_camera);
     run("replaced owner",test_creation_return_rejects_replaced_scene_before_writes);
     run("failed return End/Leave",test_failed_creation_return_retires_on_end_or_leave);
+    run("failed return is terminal",test_failed_creation_return_is_terminal_and_keeps_first_error);
 }
 static void test_all_creation_runtime_cases(){
     test_creation_guest_entry_waits_for_host_echo();

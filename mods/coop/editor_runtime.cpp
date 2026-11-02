@@ -76,7 +76,8 @@ struct LocalCreation {
     std::optional<editor::Revision> scene_revision;
     uint64_t scene_frame=0;
     uint64_t resume_started=0;
-    bool entered_adventure=false,camera_resumed=false,terrain_resumed=false;
+    bool entered_adventure=false,camera_resumed=false,terrain_resumed=false,return_failed=false;
+    std::string return_error;
 };
 std::optional<LocalCreation> local_creation;
 struct RejectionRestore {
@@ -1875,6 +1876,7 @@ editor_creation::PrepareResult prepare_creation(const editor_creation::Scope& sc
 }
 bool materialize_creation_return(std::string& error){
     if(!local_creation || durable_commit)return false;
+    if(local_creation->return_failed){error=local_creation->return_error;return false;}
     if(!controller || !resources.root.instance || current_native.bytes.empty() || controller->state().document.acts.empty() ||
        controller->state().document.project!=local_creation->scope.project || controller->state().document.epoch!=local_creation->scope.epoch){
         error="The creation is saved locally. Reopen the retained adventure recovery checkpoint to continue";return false;
@@ -1953,9 +1955,15 @@ bool materialize_creation_return(std::string& error){
     rendered_revision=controller->state().document.revision;local_creation->materialized=true;
     return true;
 }
+void fail_creation_return(const std::string& error){
+    if(!local_creation || local_creation->materialized || local_creation->return_failed)return;
+    local_creation->return_failed=true;local_creation->return_error=error;frozen=true;
+    tell("The creation was retained locally, but the committed adventure could not be restored: "+error);
+}
 bool return_creation(const editor_creation::Scope& scope,const editor_creation::Result& result,std::string& error){
     if(!local_creation || local_creation->scope!=scope){error="This creation result has no retained adventure view";return false;}
     auto& saved=*local_creation;
+    if(saved.return_failed){error=saved.return_error;return false;}
     if(!creation_current(scope)){error="The creation was saved locally; its shared adventure session expired";return false;}
     if(!result.cancelled && !saved.submitted){
         if(durable_commit || pending || awaiting_operation || exporting || pending_export_request)return false;
@@ -3716,10 +3724,10 @@ void SK_CDECL drain(void*) {
             if(error.empty() && !editor_creation::open(source.type,source,action.target,error) && error.empty())error="The native creation editor is unavailable";
             if(!error.empty())tell(error);
         }
-        if(local_creation && !editor_creation::active() && !durable_commit){
+        if(local_creation && !local_creation->return_failed && !frozen && !editor_creation::active() && !durable_commit){
             std::string error;
             if(materialize_creation_return(error))local_creation.reset();
-            else if(!error.empty()){frozen=true;tell("The creation was retained locally, but the committed adventure could not be restored: "+error);}
+            else if(!error.empty())fail_creation_return(error);
         }
         observe_lease_grants();
         if(complexity_request && controller->view().phase==Phase::Ready && !pending && !awaiting_operation && !durable_commit && !detached_scene() && !frozen && !closing){
@@ -4407,12 +4415,13 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     creation.prepare=prepare_creation;creation.current=creation_current;creation.lease_valid=creation_lease;creation.returned=return_creation;
     creation.notice=[](const std::string& value){tell(value);};
     creation.finished=[](const editor_creation::Scope& scope,bool okay,const std::string& reason){
-        if(!local_creation || local_creation->scope!=scope)return;
+        if(!local_creation || local_creation->scope!=scope || local_creation->return_failed)return;
         std::vector<editor::LeaseToken> tokens;
         for(const auto& item:controller->view().local_leases)if(item.scope.kind==editor::ScopeKind::Content &&
             local_creation->request.target && item.scope.object==*local_creation->request.target)tokens.push_back({item.scope,item.token});
         std::string error;if(!tokens.empty())controller->release_leases(tokens,error);
         if(local_creation->materialized)local_creation.reset();
+        else if(!okay && !reason.empty()){fail_creation_return(reason);schedule();return;}
         status=okay?reason:"The creation remains saved locally: "+reason;schedule();
     };
     editor_creation::init(H,M,std::move(creation));
