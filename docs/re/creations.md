@@ -430,3 +430,31 @@ Its self-test and Python compilation pass; no running-game result or measured
 recipe is claimed by those checks. The production i686 lifecycle fixture now
 passes 211 checks, including same-key Save routing, both logical and companion resource
 identity collisions, and the host ABI's zero-success hook registration.
+
+Uploaded creation closures are checked against the host's effective native
+ResourceManager before package registration. This uses the collector's existing
+read-only dc04 ABI: ResourceManager FindRecord vtable30, database RecordOpen34
+with read access1, creation6 and lazy=true, record stream18, RecordClose24 and
+Release08, then stream size1C, seek28 and read30. Native streams supply
+decompressed bytes. The comparison includes vanilla packages and permits only
+an exact key with equal bytes; a different effective key, including another
+resource format, is rejected. An existing resource that cannot be read also
+rejects admission. Only the exact mutable adventure root is exempt. This check
+does not allocate a host remapping or mount the proposed package.
+
+`tests/adventure_collect_windows_tests.cpp` exercises that production collector
+under the i686 ABI with controlled ResourceManager, database, record and stream
+vtables. Its 88 checks pass for equal bytes, changed bytes, missing resources,
+typed aliases, failed open/read/seek, oversized records, exact-root exemption,
+duplicate keys, unavailable manager and balanced record close/release. The
+controlled fixture does not establish running-game package collision behavior.
+
+Act roster edits use a separate Authoring lease. It covers authored adventure
+fields while excluding Content and the primary content ResourceKey field;
+Document remains a complete hold. The portable authoring extension fixture
+passes 222 checks, including roster Undo/Redo concurrent with another player's
+asset Content lease and preservation of the later immutable content version.
+Production runtime UDP and durable-store creation fixtures pass 1350 checks,
+including independent guest return and act reordering while the host edits an
+existing asset. These tests use controlled native scenes rather than game
+processes. Native all-family, two-player and four-player acceptance is pending.

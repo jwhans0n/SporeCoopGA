@@ -20,6 +20,9 @@ bool init(const SkHost* host, SkMod* mod);
 bool available();
 // Probe the resource manager without opening or changing a database.
 bool unused_snapshot_key(const dbpf::Key&);
+// Outside frame, before shared editor import/registration. Only the exact
+// mutable adventure root is exempt from installed effective-byte comparison.
+bool validate_uploaded_records(const dbpf::Key& mutable_root,const std::vector<dbpf::Record>& records,std::string& error);
 bool inspect(const dbpf::Key& scenario, dbpf::Key& locked_captain, std::string& error);
 bool collect_creation(const dbpf::Key& creation, std::vector<dbpf::Record>& records, std::string& error);
 bool collect(const dbpf::Key& scenario, std::vector<dbpf::Record>& records, std::string& error);

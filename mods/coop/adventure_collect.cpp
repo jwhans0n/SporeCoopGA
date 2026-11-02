@@ -113,6 +113,40 @@ static bool extract(const Key& key, dbpf::Record& out, bool& built_in, std::stri
     return ok;
 }
 
+bool validate_uploaded_records(const Key& mutable_root,const std::vector<dbpf::Record>& records,std::string& error)
+{
+    error.clear();
+    if(!g_supported || !manager() || !mutable_root.instance || mutable_root.type!=kAdventure || records.size()>content::kMaxRecords){
+        error="Installed resource validation is unavailable for this shared adventure";return false;
+    }
+    std::set<Key,KeyLess> seen;size_t bytes=0;
+    for(const auto& incoming:records){
+        if(!incoming.key.instance || !incoming.key.type || !seen.insert(incoming.key).second ||
+           incoming.data.size()>content::kMaxRecordBytes || incoming.data.size()>content::kMaxBytes-bytes){
+            error="The uploaded resource list is invalid or exceeds its bounds";return false;
+        }
+        bytes+=incoming.data.size();
+        if(incoming.key==mutable_root)continue;
+        Key effective;auto* database=find_record(incoming.key,effective);
+        if(!database)continue;
+        // A resolver alias may select another format or identity before the
+        // incoming higher-priority package is mounted. Equal raw bytes cannot
+        // establish interchangeable typed identity for that collision.
+        if(effective!=incoming.key){
+            error="An uploaded asset aliases another installed resource: "+key_text(incoming.key)+" -> "+key_text(effective);return false;
+        }
+        dbpf::Record installed;bool built_in=false;
+        if(!extract(incoming.key,installed,built_in,error,true)){
+            if(error.empty())error="An installed asset became unreadable during upload validation: "+key_text(incoming.key);
+            return false;
+        }
+        if(installed.key!=incoming.key || installed.data!=incoming.data){
+            error="An uploaded asset conflicts with an installed resource: "+key_text(incoming.key);return false;
+        }
+    }
+    return true;
+}
+
 static adventure_music::Lookup load_music(const Key& key, bool bytes,
                                         adventure_music::Record& out, std::string& error)
 {
