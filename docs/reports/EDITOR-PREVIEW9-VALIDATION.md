@@ -397,6 +397,38 @@ asset-transfer contention, Motel of Melora or release performance pass is
 claimed. Limits remain 200 ms LAN confirmation and 100 ms p95 / 250 ms maximum
 frame gaps.
 
+## Candidate 8: exact gesture witnesses and return metadata
+
+Candidate 8 DLL is
+`3e9ebfa9decf0e46bf710e60d68af355f83cf6c6450fa0877a3b353bc9b4594d`.
+`out/preview9-candidate8-source.json` verifies unchanged tracked build inputs
+before and after compilation; its private deployment receipt pins the installed
+maps and unchanged 4 GB executable. No personal installation was updated.
+
+The native queue now copies metadata independently at gesture Start and Commit.
+Previously those queued snapshots omitted metadata, defeating the existing
+exact-byte shortcut against the canonical snapshot and causing extra opaque
+normalization. Known metadata changes still reject, and legacy missing metadata
+remains explicitly unknown. Scoped validation reuse covers the synchronous
+capture callback. These changes require new native timing evidence; they do not
+turn candidate 7's failed measurements into a pass.
+
+Typed Captain resource/lock values now hydrate atomically from the authoritative
+document in Project construction/loading and verified native projection. The
+native guard resolves server-backed Captain keys before comparing sidecars.
+Metadata restoration sends the verified synchronous native NameChanged message
+to refresh the bound title controls while preserving dirty flags and scene
+ownership. The queued-message lifetime and creation-return fixes remain intact.
+
+The full current portable repository suite exits 0 in
+`out/preview9-portable-current.log`. The current full Win32 runtime fixture
+passes 30,059 checks; its executable and source hashes match the separately
+verified build receipt (`out/preview9-current-full-test-receipt.json`). The
+Project fixture passes 5,683 checks. The real native adapter fixture passes
+10,394 checks, and exact ABI verification passes 91 entries. These substitute
+native APIs and do not establish real terrain, creation or timing acceptance.
+The four-player candidate 8 native run is still in progress.
+
 ## Required native acceptance
 
 Actual two- and four-player candidate runs remain pending for crew edits,
