@@ -88,6 +88,7 @@ struct Native {
     unsigned save_as_calls=0,save_calls=0;
     unsigned rebaselines=0;
     unsigned structural_applies=0;uint64_t structural_frame=0;
+    unsigned capture_calls=0,apply_calls=0;
     unsigned selections=0,enters=0,registrations=0;
     unsigned validations=0,opaque_checks=0;
     std::optional<std::vector<uint8_t>> persisted_bytes;
@@ -319,7 +320,7 @@ bool edit_acts(int action,const editor::Document& document,std::string& error){
 }
 void shutdown(){}void tick(){}State state(){return native[side].state;}
 editor::ResourceKey avatar(){return native[side].snapshot.captain;}bool avatar_locked(){return true;}
-bool capture(Snapshot& value,std::string& error){CHECK(!dispatching);if(!native[side].state.ready){error="Injected native not ready";return false;}value=native[side].snapshot;
+bool capture(Snapshot& value,std::string& error){CHECK(!dispatching);++native[side].capture_calls;if(!native[side].state.ready){error="Injected native not ready";return false;}value=native[side].snapshot;
     if(native[side].callbacks.relative_scale_tracked&&!native[side].callbacks.relative_scale_tracked()){
         value.document.schema.clear();for(auto& [id,p]:value.document.placements){(void)id;p.properties.clear();}
     }return true;}
@@ -356,6 +357,7 @@ bool rebaseline(std::string& error){CHECK(!dispatching);auto& n=native[side];if(
     CHECK(n.state.ready);++n.rebaselines;++n.state.generation;n.state.history_cursor=n.state.history_size=0;return true;}
 bool apply(const editor::Document& doc,std::string& error){return apply(doc,editor::Change{},nullptr,error);}
 bool apply(const editor::Document& doc,const editor::Change& change,const Snapshot* artifact,std::string& error){CHECK(!dispatching);auto& n=native[side];
+    ++n.apply_calls;
     if(n.defer_readiness_on_restore && !n.state.ready){++n.unready_apply_attempts;error="Injected native terrain is still rebuilding";return false;}
     if(!change.patch.objects.empty()){++n.structural_applies;n.structural_frame=game_frame;}
     if(n.silently_refuse_apply)return true;
@@ -1093,13 +1095,239 @@ static void test_held_move_accepts_disjoint_remote_revision() {
     const auto begun=net::now_ms();
     while(runtime_guest::controller->state().document.revision==1&&net::now_ms()-begun<3000){network();same_frame_drain(0);same_frame_drain(1);std::this_thread::sleep_for(std::chrono::milliseconds(1));}
     CHECK(game_frame==frame&&runtime_guest::controller->state().document.revision==2);
-    CHECK(runtime_guest::pending&&!runtime_guest::pending->submitted&&runtime_guest::pending->request.base_revision==1);
+    CHECK(runtime_guest::pending&&runtime_guest::pending->request.base_revision==1);
+    // Existing-placement tentative input needs no inverse-frame retirement.
+    // Its request can already be submitted, while a foreign commit forces the
+    // checked canonical restore and prevents adoption of its stale after-image.
+    CHECK(runtime_guest::pending->submitted&&!runtime_guest::pending->tentative);
     CHECK(!runtime_guest::frozen&&native[1].snapshot.document.placements.at(other).position==editor::Vec3{11,12,13});
     ++game_frame;same_frame_drain(1);
     CHECK(spin([]{return runtime_host::controller->state().document.revision==3&&runtime_guest::controller->state().document.revision==3;}));
     CHECK(!runtime_guest::pending&&!runtime_guest::awaiting_operation&&!runtime_guest::frozen);
     CHECK(native[0].snapshot.document.placements.at(placement).position==editor::Vec3{3,2,1}&&native[0].snapshot.document.placements.at(other).position==editor::Vec3{11,12,13});
     CHECK(native[1].snapshot.document.placements.at(placement).position==editor::Vec3{3,2,1}&&native[1].snapshot.document.placements.at(other).position==editor::Vec3{11,12,13});
+}
+static void grant_tentative_placement(unsigned author,editor::ObjectId object=placement){
+    if(std::getenv("SPORECOOP_FIXTURE_TRACE"))std::printf("TENTATIVE grant author=%u object=%llu\n",author,static_cast<unsigned long long>(object.id));
+    side=int(author);CHECK(!native[author].callbacks.gate({object}));
+    CHECK(spin([&]{side=int(author);return native[author].callbacks.gate({object});}));
+}
+static editor_native::Snapshot capture_tentative_move(unsigned author,editor::Vec3 position={3,2,1}){
+    side=int(author);auto& n=native[author];
+    editor_native::Gesture move;move.generation=n.state.generation;move.before=n.snapshot;move.after=move.before;
+    move.after.document.placements.at(placement).position=position;move.after.bytes=body(move.after.document);
+    n.snapshot=move.after;const auto after=move.after;
+    if(author)runtime_guest::captured(std::move(move));else runtime_host::captured(std::move(move));
+    CHECK(author?runtime_guest::pending.has_value():runtime_host::pending.has_value());
+    CHECK(!(author?runtime_guest::pending->submitted:runtime_host::pending->submitted));
+    CHECK(n.snapshot.bytes==after.bytes&&n.snapshot.document==after.document);
+    CHECK(native[author].callbacks.transaction_pending());
+    return after;
+}
+static void test_tentative_move_adopts_without_inverse_or_reapply(){
+    for(unsigned author=0;author<2;++author){
+        Party party;grant_tentative_placement(author);
+        const auto before=native[author].snapshot;
+        const auto restores=native[author].restores,applies=native[author].apply_calls;
+        const auto observed_applies=native[1-author].apply_calls;
+        capture_tentative_move(author);
+        CHECK(native[author].restores==restores&&native[author].apply_calls==applies);
+        CHECK(runtime_host::controller->state().document.revision==0&&runtime_guest::controller->state().document.revision==0);
+        CHECK(runtime_host::store.durable_revision()==0&&runtime_guest::store.durable_revision()==0);
+        CHECK(spin([]{return runtime_host::controller->state().document.revision==1&&runtime_guest::controller->state().document.revision==1&&
+            !runtime_host::awaiting_operation&&!runtime_guest::awaiting_operation;}));
+        CHECK(native[author].restores==restores&&native[author].apply_calls==applies);
+        CHECK(native[1-author].apply_calls==observed_applies+1);
+        CHECK(!runtime_host::frozen&&!runtime_guest::frozen);
+        for(unsigned p=0;p<2;++p){
+            const auto& state=p?runtime_guest::controller->state():runtime_host::controller->state();
+            CHECK(state.history.size()==1&&state.history.front().operation.author.slot==author);
+            CHECK(native[p].snapshot.document.placements.at(placement).position==editor::Vec3{3,2,1});
+        }
+        side=int(author);if(author)runtime_guest::undo();else runtime_host::undo();
+        CHECK(spin([]{return runtime_host::controller->state().document.revision==2&&runtime_guest::controller->state().document.revision==2;}));
+        CHECK(runtime_host::controller->state().history.size()==1&&runtime_guest::controller->state().history.size()==1);
+        CHECK(native[0].snapshot.document.placements.at(placement).position==before.document.placements.at(placement).position);
+        CHECK(native[1].snapshot.document.placements.at(placement).position==before.document.placements.at(placement).position);
+        side=int(author);if(author)runtime_guest::redo();else runtime_host::redo();
+        CHECK(spin([]{return runtime_host::controller->state().document.revision==3&&runtime_guest::controller->state().document.revision==3;}));
+        CHECK(runtime_host::controller->state().history.size()==1&&runtime_guest::controller->state().history.size()==1);
+        CHECK(native[0].snapshot.document.placements.at(placement).position==editor::Vec3{3,2,1});
+        CHECK(native[1].snapshot.document.placements.at(placement).position==editor::Vec3{3,2,1});
+    }
+}
+static void reject_prepared_commit(unsigned peer,const char* reason){
+    const auto reject=[&](auto& job){
+        CHECK(!job.flushing&&job.task.valid());
+        CHECK(job.task.wait_for(std::chrono::seconds(5))==std::future_status::ready);
+        CHECK(job.task.get());job.error=reason;
+        std::promise<bool> completion;job.task=completion.get_future();completion.set_value(false);
+    };
+    if(peer)reject(*runtime_guest::durable_commit);else reject(*runtime_host::durable_commit);
+}
+static void test_tentative_move_checked_rejection_restores_committed(){
+    for(unsigned author=0;author<2;++author){
+        Party party;grant_tentative_placement(author);
+        const auto canonical=author?runtime_guest::current_native:runtime_host::current_native;
+        const auto state=runtime_host::controller->state();
+        const auto host_checkpoint=runtime_host::store.snapshot(),guest_checkpoint=runtime_guest::store.snapshot();
+        const auto restores=native[author].restores,applies=native[author].apply_calls;
+        capture_tentative_move(author);
+        CHECK(spin([]{return bool(runtime_host::durable_commit);}));
+        CHECK(runtime_host::before_apply.document==state.document);
+        CHECK(runtime_host::controller->state().document.revision==0&&runtime_host::store.snapshot()==host_checkpoint);
+        reject_prepared_commit(0,"Injected checked tentative durability rejection");
+        CHECK(spin([&]{return !runtime_host::durable_commit&&!runtime_host::pending&&!runtime_guest::pending&&
+            !runtime_host::awaiting_operation&&!runtime_guest::awaiting_operation&&
+            (native[author].restores>restores||native[author].apply_calls>applies);}));
+        CHECK(!runtime_host::frozen&&!runtime_guest::frozen);
+        CHECK(runtime_host::controller->state().document==state.document&&runtime_guest::controller->state().document==state.document);
+        CHECK(runtime_host::controller->state().history.empty()&&runtime_guest::controller->state().history.empty());
+        CHECK(runtime_host::store.snapshot()==host_checkpoint&&runtime_guest::store.snapshot()==guest_checkpoint);
+        side=int(author);std::string error;
+        CHECK(native[author].snapshot.bytes.front()==canonical.bytes.front()&&editor_native::validate(native[author].snapshot,state.document,error));
+        CHECK(native[0].snapshot.document.placements.at(placement).position==editor::Vec3{});
+        CHECK(native[1].snapshot.document.placements.at(placement).position==editor::Vec3{});
+    }
+}
+static void test_tentative_move_expired_ownership_restores_without_history(){
+    for(unsigned author=0;author<2;++author){
+        Party party;grant_tentative_placement(author);capture_tentative_move(author);
+        const auto state=runtime_host::controller->state();
+        const auto checkpoint=author?runtime_guest::store.snapshot():runtime_host::store.snapshot();
+        clock_ms+=20000;
+        CHECK(spin([]{return !runtime_host::pending&&!runtime_guest::pending&&
+            !runtime_host::awaiting_operation&&!runtime_guest::awaiting_operation;}));
+        CHECK(!runtime_host::frozen&&!runtime_guest::frozen);
+        CHECK(runtime_host::controller->state().document==state.document&&runtime_guest::controller->state().document==state.document);
+        CHECK(runtime_host::controller->state().history.empty()&&runtime_guest::controller->state().history.empty());
+        CHECK((author?runtime_guest::store.snapshot():runtime_host::store.snapshot())==checkpoint);
+        CHECK(native[0].snapshot.document.placements.at(placement).position==editor::Vec3{});
+        CHECK(native[1].snapshot.document.placements.at(placement).position==editor::Vec3{});
+    }
+}
+static void test_tentative_guest_durable_rejection_keeps_recovery_base(){
+    Party party;grant_tentative_placement(1);
+    const auto canonical=runtime_guest::current_native;const auto checkpoint=runtime_guest::store.snapshot();
+    capture_tentative_move(1);
+    CHECK(spin([]{return bool(runtime_guest::durable_commit);}));
+    CHECK(runtime_host::controller->state().document.revision==1&&runtime_guest::controller->state().document.revision==0);
+    CHECK(runtime_guest::before_apply.document==runtime_guest::controller->state().document);
+    reject_prepared_commit(1,"Injected checked adopted replica durability rejection");
+    CHECK(spin([]{return runtime_guest::controller->view().phase==es::Phase::Frozen;}));
+    CHECK(runtime_guest::controller->state().document.revision==0&&runtime_guest::store.snapshot()==checkpoint);
+    CHECK(runtime_guest::current_native.bytes==canonical.bytes&&native[1].snapshot.bytes==canonical.bytes);
+    CHECK(runtime_guest::controller->state().history.empty()&&runtime_host::controller->state().history.size()==1);
+    CHECK(!runtime_host::frozen&&runtime_guest::store.healthy());
+}
+static void test_tentative_move_rebases_after_foreign_commit(){
+    for(unsigned author=0;author<2;++author){
+        seed_unrelated_placement=true;Party party;seed_unrelated_placement=false;
+        const unsigned other=1-author;std::string error;
+        grant_tentative_placement(author);grant_tentative_placement(other,unrelated_placement);
+        const auto restores=native[author].restores,applies=native[author].apply_calls;
+        capture_tentative_move(author);const auto frame=game_frame;
+        auto& peer=other?runtime_guest::controller:runtime_host::controller;
+        editor::Request request;request.summary="Foreign placement changes while local pose is tentative";request.base_revision=0;
+        for(const auto& held:peer->view().local_leases)request.leases.push_back({held.scope,held.token});
+        editor::Mutation move;move.target=unrelated_placement;move.field={editor::Field::Position,0};move.value=editor::Vec3{11,12,13};
+        move.expected=editor::field_revision(peer->state().document,move.target,move.field);request.mutations={move};
+        side=int(other);CHECK(peer->submit(request,error));
+        const auto begun=net::now_ms();
+        auto& local=author?runtime_guest::controller:runtime_host::controller;
+        while(local->state().document.revision==0&&net::now_ms()-begun<5000){
+            clock_ms+=5;network();side=0;runtime_host::controller->tick(now_seconds()*1000);
+            side=1;runtime_guest::controller->tick(now_seconds()*1000);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        CHECK(game_frame==frame&&local->state().document.revision==1);
+        CHECK(author?runtime_guest::pending.has_value():runtime_host::pending.has_value());
+        CHECK(native[author].restores==restores&&native[author].apply_calls==applies+2);
+        CHECK(!(author?runtime_guest::pending->tentative:runtime_host::pending->tentative));
+        CHECK(native[author].snapshot.document.placements.at(placement).position==editor::Vec3{});
+        CHECK(native[author].snapshot.document.placements.at(unrelated_placement).position==editor::Vec3{11,12,13});
+        CHECK(spin([]{return runtime_host::controller->state().document.revision==2&&runtime_guest::controller->state().document.revision==2;}));
+        CHECK(native[author].apply_calls==applies+3);
+        for(unsigned p=0;p<2;++p){
+            CHECK(native[p].snapshot.document.placements.at(placement).position==editor::Vec3{3,2,1});
+            CHECK(native[p].snapshot.document.placements.at(unrelated_placement).position==editor::Vec3{11,12,13});
+        }
+        CHECK(runtime_host::controller->state().history.size()==2&&runtime_guest::controller->state().history.size()==2);
+        side=int(author);if(author)runtime_guest::undo();else runtime_host::undo();
+        CHECK(spin([]{return runtime_host::controller->state().document.revision==3&&runtime_guest::controller->state().document.revision==3;}));
+        CHECK(native[0].snapshot.document.placements.at(placement).position==editor::Vec3{});
+        CHECK(native[1].snapshot.document.placements.at(placement).position==editor::Vec3{});
+        CHECK(native[0].snapshot.document.placements.at(unrelated_placement).position==editor::Vec3{11,12,13});
+        CHECK(native[1].snapshot.document.placements.at(unrelated_placement).position==editor::Vec3{11,12,13});
+        CHECK(runtime_host::controller->state().history.size()==2&&runtime_guest::controller->state().history.size()==2);
+    }
+}
+static void test_tentative_move_never_writes_replacement_scene(){
+    for(unsigned author=0;author<2;++author){
+        Party party;grant_tentative_placement(author);capture_tentative_move(author);
+        const auto checkpoint=author?runtime_guest::store.snapshot():runtime_host::store.snapshot();
+        const auto restores=native[author].restores,applies=native[author].apply_calls;
+        ++native[author].state.generation;native[author].snapshot.bytes.front()=0x66;
+        native[author].snapshot.source.instance=777;const auto replacement=native[author].snapshot;
+        CHECK(spin([&]{return author?runtime_guest::frozen:runtime_host::frozen;}));
+        CHECK(native[author].restores==restores&&native[author].apply_calls==applies);
+        CHECK(native[author].snapshot.bytes==replacement.bytes&&native[author].snapshot.source==replacement.source);
+        CHECK((author?runtime_guest::store.snapshot():runtime_host::store.snapshot())==checkpoint);
+        CHECK((author?runtime_guest::controller->state():runtime_host::controller->state()).document.revision==0);
+    }
+}
+static void test_tentative_identity_replacement_never_writes_new_owner(){
+    for(unsigned author=0;author<2;++author)for(bool durable:{false,true})for(bool bindings:{false,true}){
+        Party party;grant_tentative_placement(author);capture_tentative_move(author);
+        const auto checkpoint=author?runtime_guest::store.snapshot():runtime_host::store.snapshot();
+        if(durable)CHECK(spin([&]{return author?bool(runtime_guest::durable_commit):bool(runtime_host::durable_commit);}));
+        const auto restores=native[author].restores,applies=native[author].apply_calls;
+        if(bindings)++native[author].snapshot.bindings.front().marker;
+        else native[author].snapshot.source.instance=777;
+        const auto replacement=native[author].snapshot;
+        if(durable)reject_prepared_commit(author,"Injected rejection after native identity replacement");
+        CHECK(spin([&]{return author?
+            (runtime_guest::frozen||runtime_guest::controller->view().phase==es::Phase::Frozen):
+            (runtime_host::frozen||runtime_host::controller->view().phase==es::Phase::Frozen);}));
+        CHECK(native[author].restores==restores&&native[author].apply_calls==applies);
+        CHECK(native[author].snapshot.bytes==replacement.bytes&&native[author].snapshot.source==replacement.source&&
+            native[author].snapshot.bindings==replacement.bindings);
+        CHECK((author?runtime_guest::store.snapshot():runtime_host::store.snapshot())==checkpoint);
+        const auto& local=author?runtime_guest::controller->state():runtime_host::controller->state();
+        CHECK(local.document.revision==0&&local.history.empty());
+    }
+}
+static void test_tentative_move_recapture_rejects_opaque_change(){
+    for(unsigned author=0;author<2;++author){
+        Party party;grant_tentative_placement(author);capture_tentative_move(author);
+        const auto checkpoint=author?runtime_guest::store.snapshot():runtime_host::store.snapshot();
+        native[author].snapshot.bytes.front()=0xB7;
+        if(author){
+            // The host accepted the valid semantic request before observing our
+            // unrelated local corruption. Only this replica must refuse it.
+            CHECK(spin([]{return runtime_guest::controller->view().phase==es::Phase::Frozen;}));
+            CHECK(runtime_host::controller->state().document.revision==1&&runtime_guest::controller->state().document.revision==0);
+            CHECK(runtime_host::controller->state().history.size()==1&&runtime_guest::controller->state().history.empty());
+        }else{
+            CHECK(spin([]{return !runtime_host::pending&&!runtime_host::awaiting_operation;}));
+            CHECK(runtime_host::controller->state().document.revision==0&&runtime_guest::controller->state().document.revision==0);
+            CHECK(runtime_host::controller->state().history.empty()&&runtime_guest::controller->state().history.empty());
+        }
+        CHECK((author?runtime_guest::store.snapshot():runtime_host::store.snapshot())==checkpoint);
+    }
+}
+static void test_all_tentative_move_cases(){
+    const auto run=[](const char* name,void (*test)()){
+        if(std::getenv("SPORECOOP_FIXTURE_TRACE"))std::printf("TENTATIVE %s\n",name);test();
+    };
+    run("acceptance",test_tentative_move_adopts_without_inverse_or_reapply);
+    run("checked rejection",test_tentative_move_checked_rejection_restores_committed);
+    run("expired ownership",test_tentative_move_expired_ownership_restores_without_history);
+    run("replica rejection",test_tentative_guest_durable_rejection_keeps_recovery_base);
+    run("intervening commit",test_tentative_move_rebases_after_foreign_commit);
+    run("replacement scene",test_tentative_move_never_writes_replacement_scene);
+    run("source/binding replacement",test_tentative_identity_replacement_never_writes_new_owner);
+    run("opaque mutation",test_tentative_move_recapture_rejects_opaque_change);
 }
 static void test_history_entry_rechecks_actual_native_holds() {
     Party party;std::string error;capture_local_create();++game_frame;same_frame_drain(0);
@@ -2845,4 +3073,4 @@ static LONG CALLBACK fixture_fault_trace(EXCEPTION_POINTERS* fault){
     }
     std::fflush(stdout);return EXCEPTION_CONTINUE_SEARCH;
 }
-int main(int argc,char** argv){if(argc==2&&std::string(argv[1])=="--baseline-readiness-only"){run_case("test_baseline_accepts_owned_restore_before_scene_readiness",test_baseline_accepts_owned_restore_before_scene_readiness);std::printf("baseline scene readiness: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--durable-input-only"){run_case("test_foreign_durable_commit_fences_owned_native_input",test_foreign_durable_commit_fences_owned_native_input);std::printf("foreign durable input: %u checks passed\n",checks);return 0;}if(std::getenv("SPORECOOP_FIXTURE_TRACE"))AddVectoredExceptionHandler(0,fixture_fault_trace);if(argc==2&&std::string(argv[1])=="--tail-only"){run_case("test_host_apply_rejects_uncaptured_opaque_changes",test_host_apply_rejects_uncaptured_opaque_changes);run_case("test_host_native_success_without_projection_cannot_commit",test_host_native_success_without_projection_cannot_commit);run_case("test_guest_native_success_without_projection_freezes_only_replica",test_guest_native_success_without_projection_freezes_only_replica);run_case("test_held_native_gesture_is_fenced_by_generation_or_disconnect",test_held_native_gesture_is_fenced_by_generation_or_disconnect);run_case("test_held_move_accepts_disjoint_remote_revision",test_held_move_accepts_disjoint_remote_revision);std::printf("runtime tail: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--fences-only"){run_case("test_held_native_gesture_is_fenced_by_generation_or_disconnect",test_held_native_gesture_is_fenced_by_generation_or_disconnect);run_case("test_held_move_accepts_disjoint_remote_revision",test_held_move_accepts_disjoint_remote_revision);std::printf("held gesture fences: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--creations-only"){run_case("test_all_creation_runtime_cases",test_all_creation_runtime_cases);std::printf("creation runtime: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--native-flow-only"){run_case("test_all_native_flow_cases",test_all_native_flow_cases);std::printf("native editor flow: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--view-only"){run_case("test_transport_teardown_remote_host_disconnect_order_and_preview_cleanup",test_transport_teardown_remote_host_disconnect_order_and_preview_cleanup);run_case("test_owned_end_keeps_local_view_and_selection",test_owned_end_keeps_local_view_and_selection);run_case("test_bound_preview_cleanup_requires_exact_round_and_native_owner",test_bound_preview_cleanup_requires_exact_round_and_native_owner);run_case("test_preview_restores_latest_independent_selection_before_ack",test_preview_restores_latest_independent_selection_before_ack);run_case("test_preview_local_view_none_selected_and_stale_pin",test_preview_local_view_none_selected_and_stale_pin);run_case("test_preview_native_owner_replacement_never_writes_view",test_preview_native_owner_replacement_never_writes_view);std::printf("local editor view: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--stages-only"){run_case("test_bounded_stage_diagnostics",test_bounded_stage_diagnostics);std::printf("bounded stage runtime: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--act0-only"){run_case("test_all_act_boundaries",test_all_act_boundaries);std::printf("act boundary: %u checks passed\n",checks);return 0;}const bool quick=argc==2&&std::string(argv[1])=="--quick";if(argc>1&&!quick&&std::string(argv[1])!="--teardown-only"&&std::string(argv[1])!="--cancellation-only"&&std::string(argv[1])!="--accounting-only"&&std::string(argv[1])!="--saved-root-only")return 2;if(argc==2&&std::string(argv[1])=="--saved-root-only"){run_case("test_saved_root_diagnostic_distinguishes_native_local_alias",test_saved_root_diagnostic_distinguishes_native_local_alias);std::printf("logical saved-root diagnostic: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--accounting-only"){run_case("test_passive_accounting_does_not_touch_native_or_durable_state",test_passive_accounting_does_not_touch_native_or_durable_state);std::printf("runtime passive accounting: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--cancellation-only"){run_case("test_all_native_cancellations",test_all_native_cancellations);std::printf("native cancellation: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--teardown-only"){run_case("test_all_transport_teardown_cases",test_all_transport_teardown_cases);std::printf("transport teardown: %u checks passed\n",checks);return 0;}run_case("test_baseline_accepts_owned_restore_before_scene_readiness",test_baseline_accepts_owned_restore_before_scene_readiness);run_case("test_foreign_durable_commit_fences_owned_native_input",test_foreign_durable_commit_fences_owned_native_input);run_case("test_all_creation_runtime_cases",test_all_creation_runtime_cases);run_case("test_saved_root_diagnostic_distinguishes_native_local_alias",test_saved_root_diagnostic_distinguishes_native_local_alias);run_case("test_passive_accounting_does_not_touch_native_or_durable_state",test_passive_accounting_does_not_touch_native_or_durable_state);run_case("test_all_act_boundaries",test_all_act_boundaries);run_case("test_all_native_cancellations",test_all_native_cancellations);run_case("test_all_transport_teardown_cases",test_all_transport_teardown_cases);run_case("test_class_owned_placement_companion_transaction",test_class_owned_placement_companion_transaction);run_case("test_unowned_native_gesture_restores_without_freezing",test_unowned_native_gesture_restores_without_freezing);run_case("test_legacy_pending_recovery_mode_overrides_detached_old_context",test_legacy_pending_recovery_mode_overrides_detached_old_context);run_case("test_clone_preserves_companion_and_rejects_compound_property_change",test_clone_preserves_companion_and_rejects_compound_property_change);run_case("test_saved_coverage_requires_guest_native_completion_before_pin",test_saved_coverage_requires_guest_native_completion_before_pin);run_case("test_relative_scale_only_capture_undo_redo_and_recovery",test_relative_scale_only_capture_undo_redo_and_recovery);run_case("test_legacy_recovery_keeps_schema_history_and_scoped_capture",test_legacy_recovery_keeps_schema_history_and_scoped_capture);run_case("test_verify_reopen_read_only_exact_saved_identity",test_verify_reopen_read_only_exact_saved_identity);run_case("test_unsaved_end_does_not_pin_reopen_and_partial_saved_ack_is_not_complete",test_unsaved_end_does_not_pin_reopen_and_partial_saved_ack_is_not_complete);run_case("test_preparation_cancel_preserves_draft_and_is_round_scoped",test_preparation_cancel_preserves_draft_and_is_round_scoped);run_case("test_delayed_lease_grant_gets_observed_idle_grace",test_delayed_lease_grant_gets_observed_idle_grace);run_case("test_begin_ga_batch_and_end_returning",test_begin_ga_batch_and_end_returning);run_case("test_history_entry_rechecks_actual_native_holds",test_history_entry_rechecks_actual_native_holds);run_case("test_preview_return_callbacks_are_scoped_to_one_round",test_preview_return_callbacks_are_scoped_to_one_round);run_case("test_preview_restores_latest_independent_selection_before_ack",test_preview_restores_latest_independent_selection_before_ack);run_case("test_preview_local_view_none_selected_and_stale_pin",test_preview_local_view_none_selected_and_stale_pin);run_case("test_preview_native_owner_replacement_never_writes_view",test_preview_native_owner_replacement_never_writes_view);run_case("test_lease_diagnostic_is_bounded_and_read_only",test_lease_diagnostic_is_bounded_and_read_only);run_case("test_conflicting_native_history_releases_document_ownership",test_conflicting_native_history_releases_document_ownership);run_case("test_guest_end_during_unlaunched_preparation_is_retryable",test_guest_end_during_unlaunched_preparation_is_retryable);run_case("test_drag_preview_bridge_never_authors_remote_state",test_drag_preview_bridge_never_authors_remote_state);run_case("test_saved_resources_then_next_commit",test_saved_resources_then_next_commit);run_case("test_guest_recovery_requires_owned_native_copy",test_guest_recovery_requires_owned_native_copy);run_case("test_pending_undo_keeps_ownership_across_foreign_commit",test_pending_undo_keeps_ownership_across_foreign_commit);run_case("test_pending_artifacts_obey_capacity_and_preserve_durable_base",test_pending_artifacts_obey_capacity_and_preserve_durable_base);run_case("test_missing_authored_captain_blocks_prepare",test_missing_authored_captain_blocks_prepare);run_case("test_uncertain_maintenance_freezes_until_reopen",test_uncertain_maintenance_freezes_until_reopen);run_case("test_end_waits_for_native_settle_and_retires_once",test_end_waits_for_native_settle_and_retires_once);run_case("test_end_does_not_touch_replaced_native_context",test_end_does_not_touch_replaced_native_context);run_case("test_idle_controller_keeps_owned_native_cleanup_isolated",test_idle_controller_keeps_owned_native_cleanup_isolated);run_case("test_delayed_gesture_cannot_restore_another_editor",test_delayed_gesture_cannot_restore_another_editor);run_case("test_host_end_delivers_accepted_structural_checkpoint",test_host_end_delivers_accepted_structural_checkpoint);run_case("test_host_end_does_not_wait_for_departed_replica",test_host_end_does_not_wait_for_departed_replica);run_case("test_host_end_waits_for_applied_same_revision_save",test_host_end_waits_for_applied_same_revision_save);run_case("test_native_frozen_guest_does_not_block_host_close",test_native_frozen_guest_does_not_block_host_close);run_case("test_native_recreation_waits_for_actual_next_frame",test_native_recreation_waits_for_actual_next_frame);run_case("test_held_native_gesture_is_cancelled_by_end",test_held_native_gesture_is_cancelled_by_end);run_case("test_recovery_retires_held_and_delayed_native_captures",test_recovery_retires_held_and_delayed_native_captures);run_case("test_recovery_wait_does_not_restore_replaced_context",test_recovery_wait_does_not_restore_replaced_context);run_case("test_native_save_enrichment_survives_edits_save_and_recovery",test_native_save_enrichment_survives_edits_save_and_recovery);run_case("test_invalid_completed_save_does_not_replace_live_draft",test_invalid_completed_save_does_not_replace_live_draft);run_case("test_opaque_gesture_changes_freeze_before_empty_semantic_return",test_opaque_gesture_changes_freeze_before_empty_semantic_return);run_case("test_uncaptured_opaque_changes_cannot_save_or_playtest",test_uncaptured_opaque_changes_cannot_save_or_playtest);run_case("test_host_apply_rejects_uncaptured_opaque_changes",test_host_apply_rejects_uncaptured_opaque_changes);run_case("test_host_native_success_without_projection_cannot_commit",test_host_native_success_without_projection_cannot_commit);run_case("test_guest_native_success_without_projection_freezes_only_replica",test_guest_native_success_without_projection_freezes_only_replica);run_case("test_held_native_gesture_is_fenced_by_generation_or_disconnect",test_held_native_gesture_is_fenced_by_generation_or_disconnect);run_case("test_held_move_accepts_disjoint_remote_revision",test_held_move_accepts_disjoint_remote_revision);if(!quick)run_case("test_large_closure_retained_once_and_delta_recovery",test_large_closure_retained_once_and_delta_recovery);std::printf("editor runtime: %u checks passed\n",checks);}
+int main(int argc,char** argv){if(std::getenv("SPORECOOP_FIXTURE_TRACE"))std::setvbuf(stdout,nullptr,_IONBF,0);if(argc==2&&std::string(argv[1])=="--tentative-only"){run_case("test_all_tentative_move_cases",test_all_tentative_move_cases);std::printf("tentative native adoption: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--baseline-readiness-only"){run_case("test_baseline_accepts_owned_restore_before_scene_readiness",test_baseline_accepts_owned_restore_before_scene_readiness);std::printf("baseline scene readiness: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--durable-input-only"){run_case("test_foreign_durable_commit_fences_owned_native_input",test_foreign_durable_commit_fences_owned_native_input);std::printf("foreign durable input: %u checks passed\n",checks);return 0;}if(std::getenv("SPORECOOP_FIXTURE_TRACE"))AddVectoredExceptionHandler(0,fixture_fault_trace);if(argc==2&&std::string(argv[1])=="--tail-only"){run_case("test_host_apply_rejects_uncaptured_opaque_changes",test_host_apply_rejects_uncaptured_opaque_changes);run_case("test_host_native_success_without_projection_cannot_commit",test_host_native_success_without_projection_cannot_commit);run_case("test_guest_native_success_without_projection_freezes_only_replica",test_guest_native_success_without_projection_freezes_only_replica);run_case("test_held_native_gesture_is_fenced_by_generation_or_disconnect",test_held_native_gesture_is_fenced_by_generation_or_disconnect);run_case("test_held_move_accepts_disjoint_remote_revision",test_held_move_accepts_disjoint_remote_revision);std::printf("runtime tail: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--fences-only"){run_case("test_held_native_gesture_is_fenced_by_generation_or_disconnect",test_held_native_gesture_is_fenced_by_generation_or_disconnect);run_case("test_held_move_accepts_disjoint_remote_revision",test_held_move_accepts_disjoint_remote_revision);std::printf("held gesture fences: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--creations-only"){run_case("test_all_creation_runtime_cases",test_all_creation_runtime_cases);std::printf("creation runtime: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--native-flow-only"){run_case("test_all_native_flow_cases",test_all_native_flow_cases);std::printf("native editor flow: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--view-only"){run_case("test_transport_teardown_remote_host_disconnect_order_and_preview_cleanup",test_transport_teardown_remote_host_disconnect_order_and_preview_cleanup);run_case("test_owned_end_keeps_local_view_and_selection",test_owned_end_keeps_local_view_and_selection);run_case("test_bound_preview_cleanup_requires_exact_round_and_native_owner",test_bound_preview_cleanup_requires_exact_round_and_native_owner);run_case("test_preview_restores_latest_independent_selection_before_ack",test_preview_restores_latest_independent_selection_before_ack);run_case("test_preview_local_view_none_selected_and_stale_pin",test_preview_local_view_none_selected_and_stale_pin);run_case("test_preview_native_owner_replacement_never_writes_view",test_preview_native_owner_replacement_never_writes_view);std::printf("local editor view: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--stages-only"){run_case("test_bounded_stage_diagnostics",test_bounded_stage_diagnostics);std::printf("bounded stage runtime: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--act0-only"){run_case("test_all_act_boundaries",test_all_act_boundaries);std::printf("act boundary: %u checks passed\n",checks);return 0;}const bool quick=argc==2&&std::string(argv[1])=="--quick";if(argc>1&&!quick&&std::string(argv[1])!="--teardown-only"&&std::string(argv[1])!="--cancellation-only"&&std::string(argv[1])!="--accounting-only"&&std::string(argv[1])!="--saved-root-only")return 2;if(argc==2&&std::string(argv[1])=="--saved-root-only"){run_case("test_saved_root_diagnostic_distinguishes_native_local_alias",test_saved_root_diagnostic_distinguishes_native_local_alias);std::printf("logical saved-root diagnostic: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--accounting-only"){run_case("test_passive_accounting_does_not_touch_native_or_durable_state",test_passive_accounting_does_not_touch_native_or_durable_state);std::printf("runtime passive accounting: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--cancellation-only"){run_case("test_all_native_cancellations",test_all_native_cancellations);std::printf("native cancellation: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--teardown-only"){run_case("test_all_transport_teardown_cases",test_all_transport_teardown_cases);std::printf("transport teardown: %u checks passed\n",checks);return 0;}run_case("test_all_tentative_move_cases",test_all_tentative_move_cases);run_case("test_baseline_accepts_owned_restore_before_scene_readiness",test_baseline_accepts_owned_restore_before_scene_readiness);run_case("test_foreign_durable_commit_fences_owned_native_input",test_foreign_durable_commit_fences_owned_native_input);run_case("test_all_creation_runtime_cases",test_all_creation_runtime_cases);run_case("test_saved_root_diagnostic_distinguishes_native_local_alias",test_saved_root_diagnostic_distinguishes_native_local_alias);run_case("test_passive_accounting_does_not_touch_native_or_durable_state",test_passive_accounting_does_not_touch_native_or_durable_state);run_case("test_all_act_boundaries",test_all_act_boundaries);run_case("test_all_native_cancellations",test_all_native_cancellations);run_case("test_all_transport_teardown_cases",test_all_transport_teardown_cases);run_case("test_class_owned_placement_companion_transaction",test_class_owned_placement_companion_transaction);run_case("test_unowned_native_gesture_restores_without_freezing",test_unowned_native_gesture_restores_without_freezing);run_case("test_legacy_pending_recovery_mode_overrides_detached_old_context",test_legacy_pending_recovery_mode_overrides_detached_old_context);run_case("test_clone_preserves_companion_and_rejects_compound_property_change",test_clone_preserves_companion_and_rejects_compound_property_change);run_case("test_saved_coverage_requires_guest_native_completion_before_pin",test_saved_coverage_requires_guest_native_completion_before_pin);run_case("test_relative_scale_only_capture_undo_redo_and_recovery",test_relative_scale_only_capture_undo_redo_and_recovery);run_case("test_legacy_recovery_keeps_schema_history_and_scoped_capture",test_legacy_recovery_keeps_schema_history_and_scoped_capture);run_case("test_verify_reopen_read_only_exact_saved_identity",test_verify_reopen_read_only_exact_saved_identity);run_case("test_unsaved_end_does_not_pin_reopen_and_partial_saved_ack_is_not_complete",test_unsaved_end_does_not_pin_reopen_and_partial_saved_ack_is_not_complete);run_case("test_preparation_cancel_preserves_draft_and_is_round_scoped",test_preparation_cancel_preserves_draft_and_is_round_scoped);run_case("test_delayed_lease_grant_gets_observed_idle_grace",test_delayed_lease_grant_gets_observed_idle_grace);run_case("test_begin_ga_batch_and_end_returning",test_begin_ga_batch_and_end_returning);run_case("test_history_entry_rechecks_actual_native_holds",test_history_entry_rechecks_actual_native_holds);run_case("test_preview_return_callbacks_are_scoped_to_one_round",test_preview_return_callbacks_are_scoped_to_one_round);run_case("test_preview_restores_latest_independent_selection_before_ack",test_preview_restores_latest_independent_selection_before_ack);run_case("test_preview_local_view_none_selected_and_stale_pin",test_preview_local_view_none_selected_and_stale_pin);run_case("test_preview_native_owner_replacement_never_writes_view",test_preview_native_owner_replacement_never_writes_view);run_case("test_lease_diagnostic_is_bounded_and_read_only",test_lease_diagnostic_is_bounded_and_read_only);run_case("test_conflicting_native_history_releases_document_ownership",test_conflicting_native_history_releases_document_ownership);run_case("test_guest_end_during_unlaunched_preparation_is_retryable",test_guest_end_during_unlaunched_preparation_is_retryable);run_case("test_drag_preview_bridge_never_authors_remote_state",test_drag_preview_bridge_never_authors_remote_state);run_case("test_saved_resources_then_next_commit",test_saved_resources_then_next_commit);run_case("test_guest_recovery_requires_owned_native_copy",test_guest_recovery_requires_owned_native_copy);run_case("test_pending_undo_keeps_ownership_across_foreign_commit",test_pending_undo_keeps_ownership_across_foreign_commit);run_case("test_pending_artifacts_obey_capacity_and_preserve_durable_base",test_pending_artifacts_obey_capacity_and_preserve_durable_base);run_case("test_missing_authored_captain_blocks_prepare",test_missing_authored_captain_blocks_prepare);run_case("test_uncertain_maintenance_freezes_until_reopen",test_uncertain_maintenance_freezes_until_reopen);run_case("test_end_waits_for_native_settle_and_retires_once",test_end_waits_for_native_settle_and_retires_once);run_case("test_end_does_not_touch_replaced_native_context",test_end_does_not_touch_replaced_native_context);run_case("test_idle_controller_keeps_owned_native_cleanup_isolated",test_idle_controller_keeps_owned_native_cleanup_isolated);run_case("test_delayed_gesture_cannot_restore_another_editor",test_delayed_gesture_cannot_restore_another_editor);run_case("test_host_end_delivers_accepted_structural_checkpoint",test_host_end_delivers_accepted_structural_checkpoint);run_case("test_host_end_does_not_wait_for_departed_replica",test_host_end_does_not_wait_for_departed_replica);run_case("test_host_end_waits_for_applied_same_revision_save",test_host_end_waits_for_applied_same_revision_save);run_case("test_native_frozen_guest_does_not_block_host_close",test_native_frozen_guest_does_not_block_host_close);run_case("test_native_recreation_waits_for_actual_next_frame",test_native_recreation_waits_for_actual_next_frame);run_case("test_held_native_gesture_is_cancelled_by_end",test_held_native_gesture_is_cancelled_by_end);run_case("test_recovery_retires_held_and_delayed_native_captures",test_recovery_retires_held_and_delayed_native_captures);run_case("test_recovery_wait_does_not_restore_replaced_context",test_recovery_wait_does_not_restore_replaced_context);run_case("test_native_save_enrichment_survives_edits_save_and_recovery",test_native_save_enrichment_survives_edits_save_and_recovery);run_case("test_invalid_completed_save_does_not_replace_live_draft",test_invalid_completed_save_does_not_replace_live_draft);run_case("test_opaque_gesture_changes_freeze_before_empty_semantic_return",test_opaque_gesture_changes_freeze_before_empty_semantic_return);run_case("test_uncaptured_opaque_changes_cannot_save_or_playtest",test_uncaptured_opaque_changes_cannot_save_or_playtest);run_case("test_host_apply_rejects_uncaptured_opaque_changes",test_host_apply_rejects_uncaptured_opaque_changes);run_case("test_host_native_success_without_projection_cannot_commit",test_host_native_success_without_projection_cannot_commit);run_case("test_guest_native_success_without_projection_freezes_only_replica",test_guest_native_success_without_projection_freezes_only_replica);run_case("test_held_native_gesture_is_fenced_by_generation_or_disconnect",test_held_native_gesture_is_fenced_by_generation_or_disconnect);run_case("test_held_move_accepts_disjoint_remote_revision",test_held_move_accepts_disjoint_remote_revision);if(!quick)run_case("test_large_closure_retained_once_and_delta_recovery",test_large_closure_retained_once_and_delta_recovery);std::printf("editor runtime: %u checks passed\n",checks);}
