@@ -850,6 +850,7 @@ struct Pending {
 };
 std::deque<Pending> pending;
 bool speech_pending(){return std::any_of(pending.begin(),pending.end(),[](const auto& item){return item.speech!=nullptr;});}
+bool ordinary_capture_pending(){return std::any_of(pending.begin(),pending.end(),[](const auto& item){return !item.speech;});}
 
 void SK_CDECL drain(void*) {
     editor_native::state(); // Retire a replaced native owner before old callbacks.
@@ -879,6 +880,7 @@ void SK_CDECL drain(void*) {
 }
 void SK_THISCALL start(void* self) {
     editor_native::state();
+    if(!applying && active() && ordinary_capture_pending())return;
     bool observe=!applying && !cancellation && active() && self==data(mode()) && *reinterpret_cast<uint8_t*>(a_history+0x20);
     if(observe){
         gesture_owner=self;gesture_entry=nullptr;gesture_generation=generation;
@@ -1055,17 +1057,21 @@ void SK_THISCALL terrain_load(void* self,void* properties){
     original_terrain_load(self,properties);
 }
 void SK_THISCALL terrain_build(void* self,void* properties){
+    bool own_boundary=false;
     if(!applying && active() && properties!=skg::field<void*>(self,0x0C)){
         std::vector<editor::ObjectId> records;for(const auto& [id,row]:act_identity.terrain){(void)row;records.push_back(id);}
         std::vector<uint32_t> fields;for(const auto& [id,type]:editor_native_terrain::planet_properties()){(void)type;fields.push_back(id);}
         if(!C.terrain_gate || !C.terrain_gate(records,fields) || !terrain_begin(self))return;
         terrain_recipe_replacement=true; // F3753C loads this external recipe.
+        own_boundary=*reinterpret_cast<uint8_t*>(a_history+0x20)!=0;
+        if(own_boundary)original_terrain_start(self);
     }
     const auto prior=applying;applying=true;original_terrain_build(self,properties);applying=prior;
     if(self==terraform_mode() && editing()){
         terrain_rebuilding=true;terrain_rebuild_frame=H->frame_index();
         remember_grounding(terrain_before?terrain_before->document:act_identity);
     }
+    if(own_boundary)terrain_commit(self);
 }
 using TerrainValueFn=void(SK_THISCALL*)(void*,uint32_t);
 std::array<TerrainValueFn,18> original_terrain_values{};
@@ -1542,6 +1548,7 @@ bool tool_rejection(size_t reason,uint32_t action,void* context,const State& obs
 }
 uint32_t SK_THISCALL tool_native(void* self,uint32_t action,uint32_t a,uint32_t b){
     const State observed=editor_native::state();
+    if(!applying && active() && ordinary_capture_pending() && action!=0)return 1;
     if(!applying && active() && observed.terraforming){
         if(action==1 || action==6 || action==11){
             void* context=a_context?*reinterpret_cast<void**>(a_context):nullptr;
@@ -2465,14 +2472,14 @@ State state() {
     // editor and preview. Require the successful native shell load instead.
     s.terraforming=display_valid && skg::field<int>(display,0x1C)==2;
     const bool terrain_ready=terrain_settled();if(terrain_ready)terrain_rebuilding=false;
-    s.ready=(!cancellation || cancellation_settling) && (!deferred_local_view || local_view_settling) && terrain_ready && s.editing && display_valid &&
+    s.ready=!ordinary_capture_pending() && (!cancellation || cancellation_settling) && (!deferred_local_view || local_view_settling) && terrain_ready && s.editing && display_valid &&
         (skg::field<int>(display,0x1C)==0 || (s.terraforming && terrain_available)) && skg::readable(container,0x8C) &&
         skg::readable(loading,0x371) && !skg::field<bool>(loading,0x370);
     s.playtesting=s.entry==0 && skg::field<int>(m,0xCC)==2;
     void* context=a_context?*reinterpret_cast<void**>(a_context):nullptr;
     if(s.editing && skg::readable(context,4))s.act=skg::field<uint32_t>(context,0);
     s.selected=selection;
-    s.gesture=!*reinterpret_cast<uint8_t*>(a_history+0x20) || (active() && speech_pending()) || (terrain_pending && !terrain_capturing);
+    s.gesture=!*reinterpret_cast<uint8_t*>(a_history+0x20) || !pending.empty() || (active() && speech_pending()) || (terrain_pending && !terrain_capturing);
     s.history_cursor=*reinterpret_cast<uint32_t*>(a_history+0x14);
     uintptr_t begin=*reinterpret_cast<uintptr_t*>(a_history),end=*reinterpret_cast<uintptr_t*>(a_history+4);
     if(end>=begin && (end-begin)%4==0) s.history_size=uint32_t((end-begin)/4);

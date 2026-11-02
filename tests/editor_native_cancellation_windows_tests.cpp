@@ -317,11 +317,13 @@ void test_crew_input_ownership(){
 }
 std::array<uint8_t,0x1CC> t_terraform;
 unsigned terrain_values_called=0,terrain_starts=0,terrain_commits=0,terrain_rebuilds=0,terrain_gradients=0;
+unsigned terrain_builds=0;
 uint32_t terrain_raw=0;std::array<uint32_t,3> terrain_pointed{};bool terrain_expect_pointer=false;
 std::vector<float> terrain_heights;std::vector<editor::Vec3> terrain_colors;
 void SK_THISCALL t_terrain_start(void* self){CHECK(self==t_terraform.data());++terrain_starts;skg::field<uint8_t>(t_history.data(),0x20)=0;}
 void SK_THISCALL t_terrain_commit(void* self){CHECK(self==t_terraform.data());++terrain_commits;skg::field<uint8_t>(t_history.data(),0x20)=1;}
 void SK_THISCALL t_terrain_rebuild(void* self){CHECK(self==t_terraform.data()&&applying);++terrain_rebuilds;}
+void SK_THISCALL t_terrain_build(void* self,void*){CHECK(self==t_terraform.data()&&applying);++terrain_builds;}
 void SK_THISCALL t_terrain_value(void* self,uint32_t raw){
     CHECK(self==t_terraform.data()&&t_granted);++terrain_values_called;terrain_raw=raw;
     if(terrain_expect_pointer)std::memcpy(terrain_pointed.data(),reinterpret_cast<void*>(uintptr_t(raw)),12);
@@ -334,9 +336,10 @@ void setup_terrain_retry(){
     reset();t_terraform.fill(0);skg::field<void*>(t_mode.data(),0x18)=t_terraform.data();terrain_available=true;
     C.terrain_gate=[](const auto& objects,const auto& fields){CHECK(objects.empty());CHECK(fields.empty()||fields.size()<=7);return t_granted;};
     C.notice=[](const std::string& value){t_failure=value;};
-    original_terrain_start=t_terrain_start;original_terrain_commit=t_terrain_commit;original_terrain_rebuild=t_terrain_rebuild;
+    original_terrain_start=t_terrain_start;original_terrain_commit=t_terrain_commit;original_terrain_rebuild=t_terrain_rebuild;original_terrain_build=t_terrain_build;
     original_terrain_values.fill(t_terrain_value);original_terrain_gradient=t_terrain_gradient;
     terrain_values_called=terrain_starts=terrain_commits=terrain_rebuilds=terrain_gradients=0;
+    terrain_builds=0;
     terrain_pointed={};terrain_raw=0;terrain_expect_pointer=false;terrain_heights.clear();terrain_colors.clear();
     auto& row=act_identity.settings[editor_native_terrain::kPlanetObject];row.object=editor_native_terrain::kPlanetObject;row.kind=editor::SettingsKind::Planet;
     row.properties[0x968C496A]=false;
@@ -393,6 +396,34 @@ void test_terrain_control_retry(){
     CHECK((terrain_colors==std::vector<editor::Vec3>{{1,0,0},{0,1,0}}));
     setup_terrain_retry();h.end=reinterpret_cast<void*>(uintptr_t(h.begin)+3);terrain_gradient(t_terraform.data(),&h,&c);
     CHECK(held_terrain_controls.empty()&&!terrain_gradients);reset();
+}
+void test_preset_history_boundary(){
+    for(bool existing:{false,true}){
+        setup_terrain_retry();C.terrain_gate=[](const auto& records,const auto& fields){CHECK(records.empty());CHECK(fields.empty()||fields.size()==editor_native_terrain::planet_properties().size());return t_granted;};
+        int properties=0;terrain_build(t_terraform.data(),&properties);
+        CHECK(!terrain_recipe_replacement&&!terrain_builds&&!terrain_starts&&!terrain_commits);
+        t_granted=true;pin_terrain_before();if(existing)original_terrain_start(t_terraform.data());
+        terrain_build(t_terraform.data(),&properties);
+        CHECK(terrain_recipe_replacement&&terrain_builds==1&&terrain_starts==1);
+        CHECK(terrain_commits==(existing?0u:1u));
+        if(existing)terrain_commit(t_terraform.data());
+        CHECK(terrain_commits==1&&terrain_pending);
+    }
+    setup_terrain_retry();int properties=0;applying=true;terrain_build(t_terraform.data(),&properties);applying=false;
+    CHECK(terrain_builds==1&&!terrain_starts&&!terrain_commits&&!terrain_recipe_replacement);reset();
+}
+void test_pending_capture_fences(){
+    reset();pending.emplace_back();CHECK(state().gesture&&!state().ready);
+    C.gate=[](const auto&){return true;};
+    CHECK(tool_native(t_tool_pointer,1,0,0)==1&&!t_presses&&!held_tool);
+    start(t_data.data());CHECK(t_allocations.empty()&&skg::field<uint8_t>(t_history.data(),0x20));
+    std::string error;Snapshot empty;LocalView view;
+    CHECK(!restore(empty,error)&&!t_restores);CHECK(!rebaseline(error));CHECK(!capture_view(view,error));
+    editor_native::drain(nullptr);CHECK(pending.empty()&&state().ready&&!state().gesture);
+    pending.emplace_back();pending.back().speech=t_context.data();
+    CHECK(state().ready&&state().gesture); // The same native speech dialog coalesces.
+    editor_native::drain(nullptr);CHECK(pending.empty()&&state().ready&&!state().gesture);
+    reset();
 }
 std::array<uint8_t,0x174> t_flora_ui;
 std::array<uint8_t,0x1C> t_terraform_ui;
@@ -960,6 +991,8 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
     reset();CHECK(t_allocations.empty());
 }
 int main(){
+    test_pending_capture_fences();
+    test_preset_history_boundary();
     test_flora_control_retry();
     test_terrain_control_retry();
     test_crew_input_ownership();
