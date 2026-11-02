@@ -760,3 +760,64 @@ readability check across native callbacks. The new symbol/ABI receipts cover
 the exact entry, returns, native caller, inline globals, vtable slots and
 argument-call sites. Actual visible Undo/Redo acceptance of this design remains
 pending; this static finding does not claim that C15 or C16 passed it.
+
+### C17 rejected Terraform gesture did not restore exact placement orientation
+
+The actual C17 simultaneous BasicTools attempt entered both native histories,
+then rejected without an accepted terrain transaction. Its final state reported
+Ready and unfrozen, but strict native checks diverged. This is not a successful
+rollback. Root-owned passive samples are retained under
+`out/preview9-c17-marker253-{rpm,actor-rpm,spatial-rpm}`. The sampler makes no
+console/native/window call and preserves the exact private process/image/source
+and double-read owner, pool row, path, map and code evidence.
+
+Marker slot 253 has class 1264 and native marker lookup key 253 at marker+228.
+Its position matches the reported canonical placement, but both live marker
+quaternions are `BF16ACF8 BE2E89B6 3E8838CB 3F3E8043`; the committed quaternion
+is `BF16ACF6 BE2E89B5 3E8838CB 3F3E8042`. Thus the reported mismatch exists in
+the live authored marker and is not merely a projection/formatting artifact.
+The sampler deliberately does not read the adapter's logical binding map:
+`marker_id` consults that map before its default `(1<<32)|slot` mapping. The
+matching unchanged roster, native key and exact position support correspondence
+to reported logical placement `4294967549:1`, without claiming passive logical
+binding verification.
+
+The actor lookup is independently verified by `F3D620 -> 645E40`: marker+228 is
+the uint32 key, ScenarioData+B0 is the map, map+4 is its bucket array and map+8
+the bucket count. Lookup uses key modulo count; each chained node has key+0,
+object+4 and next+8, with the end sentinel in buckets[count]. The passive tool
+checks the exact lookup instruction bytes, bounds and cycles, and double-reads
+all interpreted nodes. It never executes the lookup or Cast.
+
+Both actual actors have primary vtable `146A080`; GetType `C03270` returns
+creature `018EB45E`, and Cast is `C02930`. Constructor `C06996` installs spatial
+vtable `1469EC0` at creature+C0. Its verified position getter `6E6560` returns
+spatial+4 and orientation getter `97E7C0` returns spatial+10. Both actual spatial
+quaternions are `BF16ACB6 BE2E8934 3E883921 3F3E7FDC`, distinct from both marker
+and committed values; spatial position also differs slightly from the marker.
+These observations do not establish a copy from current spatial pose into the
+marker. The initial spatial receipt's `scale` label for +20 was unverified and
+must not be interpreted: the helper now labels that word as uninterpreted raw
+data. Marker scale +20 is separately verified and remains exactly 2.
+
+The static rebuild order is `F37A00 -> F37530`, then grounding `F3E250`, marker
+validation `F40040`, and goal validation `F42660`. Grounding calls
+`F3E150 -> F3B6A0`; the reviewed direct marker writes are XYZ +4/+8/+C and byte
+209. Its `EED640` call writes an output descriptor, not marker quaternion data.
+`F3D930` passes marker+10 to spatial orientation setter +3C. Generic setter
+`C88860` copies those four words without arithmetic, and creature setter
+`C0DF10` preserves the input while updating spatial/AnimatedCreature state.
+These reviewed paths do not establish quaternion renormalization. Indeed,
+unit normalization would produce different values from the observed 1-2 ULP
+changes. `F35E10` writes terrain-recipe Transforms, not Adventure marker
+quaternions.
+
+Adapter restore currently validates and parses the owned snapshot, calls native
+`F46400`, selects the local act, optionally loads/rebuilds terrain, then restores
+selection. It records grounding positions and reasserts sound pitch/gain, but
+has no exact quaternion restoration step. The unresolved causal boundary is
+the parsed owned input, native scene reconstruction, optional terrain rebuild,
+selection or subsequent settlement. A future value-only diagnostic should
+compare the exact parsed-copy quaternion against the snapshot document before
+the first native restore, then compare these individual boundaries. No epsilon
+comparison or blanket transform overwrite is justified by these observations.

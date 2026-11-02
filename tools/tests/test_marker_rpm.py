@@ -122,6 +122,8 @@ class MarkerReaderContract(unittest.TestCase):
         reader,unused,unused_address=fixture();result=sample_marker(reader,creature_spatial=True)
         self.assertEqual(result['actor_lookup']['spatial']['rotation']['bits'],['00000000']*3+['3F800000'])
         self.assertEqual(result['actor_lookup']['spatial']['orientation_setter_preferred'],0xC0DF10)
+        self.assertNotIn('scale',result['actor_lookup']['spatial'])
+        self.assertEqual(result['actor_lookup']['spatial']['uninterpreted_word20'],'40000000')
         for at in (0x82000,0xC03270,0x820C0,0x1469EF0,0x97E7C0):
             reader,memory,unused_address=fixture();memory[at]^=1
             with self.subTest(address=at),self.assertRaises((ValueError,KeyError)):sample_marker(reader,creature_spatial=True)

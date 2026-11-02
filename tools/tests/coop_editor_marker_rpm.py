@@ -78,7 +78,7 @@ def actor_headers(reader, data, raw, creature_spatial=False):
             proof.extend(((spatial,spatial_header),(spatial_vtable,spatial_table)))
             result['spatial']=dict(address=spatial,vtable=spatial_vtable,header=spatial_header.hex(),
                 vtable_bytes=spatial_table.hex(),getters=getters,position=floats(spatial_header,4,3),
-                rotation=floats(spatial_header,0x10,4),scale=floats(spatial_header,0x20,1),
+                rotation=floats(spatial_header,0x10,4),uninterpreted_word20=f'{word(spatial_header,0x20):08X}',
                 orientation_setter_preferred=0xC0DF10)
     elif creature_spatial:
         raise ValueError('Creature spatial sampling requires a current actor binding')
