@@ -181,6 +181,11 @@ class PreviewPackageTests(unittest.TestCase):
         loaded.write_bytes(b'# comment\n'*9+loaded.read_bytes())
         self.run_package()
 
+    def test_crlf_translation_preserves_tenth_native_read_boundary(self):
+        loaded = self.source / preview.LOADED_EDITOR_MAP
+        loaded.write_bytes(b'#'+b'x'*4597+b'\r\n'+loaded.read_bytes())
+        self.run_package()
+
     def test_existing_output_is_preserved(self):
         self.output.mkdir()
         marker = self.output / 'keep'

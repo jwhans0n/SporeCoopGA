@@ -2,6 +2,7 @@
 """Package the experimental GOG editor preview without changing the game install."""
 import argparse
 import hashlib
+import io
 import json
 from pathlib import Path
 import re
@@ -44,8 +45,9 @@ def release_identity():
 
 def symbol_build(path):
     # Match SporeKit file_hash_header: ten fgets reads with a 512-byte buffer.
+    # The Windows CRT translates CRLF before applying that buffer bound.
     # Long definition lines consume several reads before a later header.
-    with path.open('rb') as stream:
+    with io.BytesIO(path.read_bytes().replace(b'\r\n', b'\n')) as stream:
         for _ in range(10):
             value = re.search(rb'exe_sha256=([^\r\n ]+)', stream.readline(511))
             if value:
