@@ -33,6 +33,7 @@ uint32_t native_existing_editor=0,submitted_request_editor=0,submitted_editor=0;
 editor::ResourceKey submitted_source;
 bool grant=false,live_scope=true,lease=true,return_ready=false,submit_ok=true,reject=false;
 bool allocation_failure=false;
+std::function<void(char)> request_callback;
 bool returned_cancelled=false;
 editor::ResourceKey returned_saved;
 std::set<void*> allocations;
@@ -122,9 +123,9 @@ bool SK_CDECL submit(void* req){
     submitted_editor=skg::field<uint32_t>(req,0xC);
     ref(req);skg::field<void*>(native_editor.data(),0x1CC)=req;mode=modes::kEditor;return true;
 }
-bool SK_CDECL submit_entry(void* req){return editor_creation::intercept(req,submit);}
-void* SK_CDECL allocate(size_t size,const char*,int,int,int,int){if(allocation_failure)return nullptr;auto* p=std::calloc(1,size);if(p)allocations.insert(p);return p;}
-void* SK_THISCALL ctor(void* p){skg::field<void*>(p,0)=refs_vt.data();skg::field<uint32_t>(p,0xC)=UINT32_MAX;return p;}
+bool SK_CDECL submit_entry(void* req){if(request_callback)request_callback('S');return editor_creation::intercept(req,submit);}
+void* SK_CDECL allocate(size_t size,const char*,int,int,int,int){if(allocation_failure)return nullptr;auto* p=std::calloc(1,size);if(p)allocations.insert(p);if(request_callback)request_callback('A');return p;}
+void* SK_THISCALL ctor(void* p){skg::field<void*>(p,0)=refs_vt.data();skg::field<uint32_t>(p,0xC)=UINT32_MAX;if(request_callback)request_callback('C');return p;}
 uintptr_t sym(const char* name){
     const std::string key=name;
     if(key=="SporeCoop::CreationEditor::NotifyResult")return uintptr_t(native_notify);
@@ -153,7 +154,7 @@ void step(){pump_native_messages();editor_creation::tick();pump();}
 void initialize(){
     pump_native_messages();
     editor_creation::shutdown();tasks.clear();
-    CHECK(allocations.empty());allocation_failure=false;
+    CHECK(allocations.empty());allocation_failure=false;request_callback={};
     request.fill(0);native_editor.fill(0);native_result.fill(0);
     refs_vt={nullptr,reinterpret_cast<void*>(ref),reinterpret_cast<void*>(unref)};
     skg::field<void*>(request.data(),0)=refs_vt.data();skg::field<int>(request.data(),8)=1;
@@ -300,7 +301,70 @@ void test_native_model_admission(){
     CHECK(counters()==calls_before_diagnostic);
     admission_manager=nullptr;admission_callback={};
 }
+void test_ga_new_routes(){
+    std::string error;
+    // Independent stock GA category table: a typo in the production menu must
+    // not pass merely because the request and UI share that same table.
+    const std::array<uint32_t,4> building_ids{0x99E92F05,0x4E3F7777,0x8707BE7D,0x72C49181};
+    const std::array<uint32_t,9> vehicle_ids{0x7D433FAD,0x8F963DCB,0x441CD3E6,
+        0xF670AA43,0x2A5147A9,0x1A4E0708,0x9AD7D4AA,0x1F2A25B6,0x449C040F};
+    const auto buildings=editor_creation::new_variants(0x2399BE55);
+    const auto vehicles=editor_creation::new_variants(0x24682294);
+    CHECK(buildings.size()==building_ids.size()&&vehicles.size()==vehicle_ids.size());
+    for(size_t i=0;i<building_ids.size();++i)CHECK(buildings[i].editor_id==building_ids[i]);
+    for(size_t i=0;i<vehicle_ids.size();++i)CHECK(vehicles[i].editor_id==vehicle_ids[i]);
+    CHECK(editor_creation::new_variants(0x12345678).empty());
+    for(const auto [type,expected]:std::array<std::pair<uint32_t,uint32_t>,4>{{
+        {0x2B978C46,0x465C50BA},{0x2399BE55,0x99E92F05},{0x24682294,0x7D433FAD},{0x476A98C7,0x96B24187}}}){
+        initialize();CHECK(editor_creation::open(type,{},std::nullopt,error));grant=true;step();
+        CHECK(submitted_request_editor==expected&&submitted_editor==expected&&submissions==1);
+        result_key({0x29004321,type,0x40646200},true);return_ready=true;step();CHECK(!editor_creation::active()&&allocations.empty());
+        for(const auto& variant:editor_creation::new_variants(type)){
+            initialize();CHECK(editor_creation::open(type,{},std::nullopt,error,variant.editor_id));
+            CHECK(editor_creation::active()&&!submissions&&allocations.size()==1);
+            CHECK(skg::field<uint32_t>(*allocations.begin(),0xC)==variant.editor_id);
+            editor_creation::cancel_pending();CHECK(!editor_creation::active()&&allocations.empty()&&!submissions);
+            // The genuine GA browser request carries an entirely empty key
+            // and a category-specific editor ID, not a generic family ID.
+            initialize();skg::field<uint32_t>(request.data(),0xC)=variant.editor_id;
+            skg::field<editor::ResourceKey>(request.data(),0x10)={};
+            CHECK(!editor_creation::intercept(request.data(),submit)&&editor_creation::active());
+            CHECK(skg::field<int>(request.data(),8)==2);unref(request.data());grant=true;step();
+            CHECK(submissions==1&&submitted_editor==variant.editor_id&&submitted_source==editor::ResourceKey{});
+            result_key({0x29004321,type,0x40646200},true);return_ready=true;step();
+            CHECK(!editor_creation::active()&&returned_cancelled&&native_imports==0&&skg::field<int>(request.data(),8)==0);
+        }
+    }
+    for(const auto [type,id]:std::array<std::pair<uint32_t,uint32_t>,5>{{
+        {0x24682294,0x99F87089},{0x2399BE55,0xD817CD63},{0x24682294,0x465C50BA},
+        {0x2B978C46,0x7D433FAD},{0x24682294,0x12345678}}}){
+        initialize();CHECK(!editor_creation::open(type,{},std::nullopt,error,id));
+        CHECK(!editor_creation::active()&&allocations.empty()&&!submissions&&!error.empty());
+        skg::field<uint32_t>(request.data(),0xC)=id;skg::field<editor::ResourceKey>(request.data(),0x10)={0,type,0};
+        CHECK(!editor_creation::intercept(request.data(),submit)&&!editor_creation::active());
+        CHECK(skg::field<int>(request.data(),8)==1&&!submissions);
+    }
+    initialize();CHECK(!editor_creation::open(source.type,source,std::nullopt,error,0x465C50BA));
+    CHECK(allocations.empty()&&!editor_creation::active()&&!submissions);
+    // The variant choice belongs to the original full participant context.
+    // Native allocation/constructor/Submit callbacks cannot repin it to a
+    // replacement project, epoch or participant generation.
+    for(char boundary:{'A','C','S'})for(unsigned change=0;change<3;++change){
+        initialize();request_callback=[=](char at){if(at!=boundary)return;
+            if(change==0)++owner.project[0];if(change==1)++owner.epoch;if(change==2)++owner.author.generation;};
+        CHECK(!editor_creation::open(0x24682294,{},std::nullopt,error,0x441CD3E6));
+        CHECK(!editor_creation::active()&&allocations.empty()&&!submissions&&!error.empty());
+    }
+    // Retain input values before Native callbacks can release/change a caller's
+    // source holder. Existing Edit still reaches the native metadata resolver.
+    initialize();auto input=source;const auto original=input;native_existing_editor=0x465C50BA;
+    request_callback=[&](char at){if(at=='C')input={};};
+    CHECK(editor_creation::open(original.type,input,std::nullopt,error));grant=true;step();
+    CHECK(submitted_request_editor==UINT32_MAX&&submitted_source==original&&input==editor::ResourceKey{});
+    result_key(original,true);return_ready=true;step();CHECK(!editor_creation::active()&&allocations.empty());
+}
 int main(){
+    test_ga_new_routes();
     test_native_model_admission();
     initialize();
     CHECK(!editor_creation::intercept(request.data(),submit));unref(request.data());step();step();

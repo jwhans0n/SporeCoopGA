@@ -1200,3 +1200,79 @@ UFOs, plus their copied decoded reference inventories and first automatic native
 model-admission observations, are still required. This adds no compatibility or
 rejection policy. Receipts and exact supported-image disassembly are under
 `out/preview9-creation-closure-audit/`.
+
+## GA New creation variants and the C27 Vehicle rejection
+
+The ordinary GA AssetBrowser New path does not use a generic family editor.
+`64AC40` calls `645C30`, which loads the selected category in `.prop` group
+`CC489C6F` and reads typed Key property `968AE1B0`. At `64AF5F`, the resulting
+instance is stored in the empty-source EditorRequest `+0C`. Existing Edit uses
+the separate category property `968AE1B1`; our existing-source constructor's
+`FFFFFFFF` sentinel still lets native `5A930F..5A931D` resolve the asset subtype.
+
+These are verified installed GA category New IDs, not inferred model masks:
+
+| Family / variant | Editor ID | Example category instance |
+| --- | --- | --- |
+| Creature | `465C50BA` | `D49DE19D` |
+| Building: city hall | `99E92F05` | `484FF0B8` |
+| Building: house | `4E3F7777` | `DDC202B3` |
+| Building: factory | `8707BE7D` | `51FBB249` |
+| Building: entertainment | `72C49181` | `36F60725` |
+| Vehicle: military land | `7D433FAD` | `DF036863` |
+| Vehicle: military water | `8F963DCB` | `DA41D879` |
+| Vehicle: military air | `441CD3E6` | `FA167DA8` |
+| Vehicle: economic land | `F670AA43` | `13D90629` |
+| Vehicle: economic water | `2A5147A9` | `6605EDB3` |
+| Vehicle: economic air | `1A4E0708` | `85E38D82` |
+| Vehicle: cultural land | `9AD7D4AA` | `0222DED4` |
+| Vehicle: cultural water | `1F2A25B6` | `A5A3D5A4` |
+| Vehicle: cultural air | `449C040F` | `AD76C2CD` |
+| Spaceship | `96B24187` | `476A98C7` |
+
+Factory's editor ID is `8707BE7D`; its model subtype `47C10953` maps to it through
+`4333E0`. The nine Vehicle editor configs select part lists `39,3A,38,36,37,35,
+33,34,32` in the table's order. Separate colony Vehicle category IDs also exist;
+this table and the current toolbar expose the nine listed variants. Existing
+asset Edit continues to use native metadata selection rather than this New menu.
+
+C27's first unwarmed automatic Vehicle admission rejected subtype MilitaryLand
+`7D433FAD` with error word `00000020` in both cached and private loads. The custom
+New request had selected generic editor `99F87089`, whose config points to list
+`3B`; no `406B7B3B` records exist in the audited stock packages. `4EF8A0` accepts
+an empty list. Native chooser event `5E0040` writes the chosen model type at
+`5E0085..5E00C0` without rebuilding the palette on that event path. Thus choosing
+MilitaryLand inside this generic editor does not establish its GA part filter.
+
+The retained original `40646200!2912CE77.24682294` and immutable alias
+`40646200!7DD0DFB3.24682294` have identical 1,379-byte BEMs, SHA256
+`6fa638fda8e62c1f6b89aa7cf16922e096a27bb6fa1152df686bffd5b346d7ee`.
+Of their six decoded parts, the body, cockpit and wheel pair are in stock list
+`39`. The paired guns `40646000!4C84B9C6` / `40646000!FE3E47E8` are absent there
+and present in MilitaryAir list `38`. List `39` and its parent were fully decoded;
+they contain no nested `0769EEEE` list that supplies these guns. This is concrete
+incompatible-part evidence, not a missing compiled VCL or alias-BEM mutation.
+
+Validation `4F4532..4F460B` maps the subtype through `4333E0`, loads its editor
+config in group `40600100`, and passes `F5CBE065` to `4EF8A0`. Bit 5 also covers a
+missing list property, so that error alone is not a universal offending-part
+diagnostic. The list builder `4EB290` consumes `053878D0` keys and recursively
+merges `0769EEEE` lists. The reviewed actual failure is corroborated by the exact
+decoded gun pair and list membership; validation masks remain unchanged.
+
+New Building and Vehicle toolbar choices now select explicit verified variants;
+default public New calls select city hall and military land. Creature and
+spaceship defaults remain their verified IDs. New-source interception accepts
+these specialized IDs, rejects unrelated family/unknown IDs, and pins the full
+original project/epoch/participant generation across request construction and
+submission. Existing Edit preserves its native subtype sentinel. Controlled
+actual-i686 lifecycle/UI tests and an unchanged old-source RED default-route
+check are retained under `out/preview9-creation-routes/`. They do not qualify
+running-game palette, Save, remote load, edit or cold reopen for every variant.
+
+Exact supported-image bytes/call slices and package/list receipts are under
+`out/preview9-c27-vehicle-validation-re/`, including
+`native-route-{disassembly.txt,receipt.json}`, `browser-editor-routing.json`,
+`vehicle-routes.json`, and `actual-bem-membership.json`. Property-header matches
+in editor configs containing unsupported Text fields are labeled as such in the
+receipts; the relevant typed keys were not inferred from unqualified byte hits.

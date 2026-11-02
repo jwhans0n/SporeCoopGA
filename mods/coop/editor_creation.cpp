@@ -30,6 +30,8 @@ struct Session {
 std::optional<Session> session;
 std::optional<Result> retained_saved;
 std::optional<editor::ObjectId> opening_target;
+std::optional<editor_native::GestureScope> opening_owner;
+void* opening_request=nullptr;
 std::string status;
 
 void addref(void* object){if(object)skg::vcall<int>(object,1);}
@@ -42,19 +44,11 @@ bool family(uint32_t type){
     }
 }
 uint32_t default_editor(uint32_t type){
-    // Native default selection at 5A909C..5A90F3. Configured specialized
-    // editors retain their original native IDs when entering through a picker.
-    switch(type){
-    case 0x2B978C46:return 0x465C50BA;
-    case 0x2399BE55:return 0xD817CD63;
-    case 0x24682294:return 0x99F87089;
-    case 0x476A98C7:return 0x96B24187;
-    default:return 0;
-    }
+    const auto variants=new_variants(type);return variants.empty()?0:variants.front().editor_id;
 }
 uint32_t editor_family(uint32_t editor_id){
     for(auto type:{0x2B978C46u,0x2399BE55u,0x24682294u,0x476A98C7u})
-        if(default_editor(type)==editor_id)return type;
+        for(const auto& variant:new_variants(type))if(variant.editor_id==editor_id)return type;
     return 0;
 }
 void tell(const std::string& message){status=message;if(C.notice)C.notice(message);}
@@ -156,10 +150,15 @@ bool intercept(void* request,Submit original){
     if(!owner || owner->project==editor::ProjectId{} || !owner->epoch || !owner->author.generation || next_serial==UINT64_MAX){
         tell("Creation entry requires a current shared adventure");return false;
     }
+    if(opening_owner && (request!=opening_request || *owner!=*opening_owner)){
+        tell("The creation request changed its shared adventure before entry");return false;
+    }
     Request input{skg::field<uint32_t>(request,0xC),skg::field<editor::ResourceKey>(request,0x10),opening_target};
     const auto type=family(input.source.type)?input.source.type:
         input.source.instance?0:editor_family(input.editor_id);
-    if(!family(type)){tell("This editor cannot produce a supported adventure creation");return false;}
+    if(!family(type) || (!input.source.instance && editor_family(input.editor_id)!=type)){
+        tell("This editor cannot produce the selected adventure creation variant");return false;
+    }
     if(!input.source.instance)input.source.type=type;
     original_submit=original;
     addref(request);
@@ -169,29 +168,38 @@ bool intercept(void* request,Submit original){
     // ownership arrives even when the native caller releases its reference.
     return false;
 }
-bool open(uint32_t resource_type,const editor::ResourceKey& source,std::optional<editor::ObjectId> target,std::string& error){
-    const auto owner=C.scope?C.scope():std::nullopt;
-    if(!supported || session || !owner || !owner->epoch || !owner->author.generation ||
-       !family(resource_type) || (source.instance && (source.type!=resource_type || !source.group))){
+bool open(uint32_t resource_type,const editor::ResourceKey& supplied_source,std::optional<editor::ObjectId> target,std::string& error,uint32_t editor_id){
+    const auto source=supplied_source;
+    if(!source.instance && !editor_id)editor_id=default_editor(resource_type);
+    const auto scope_callback=C.scope;const auto* host=H;
+    const auto owner=scope_callback?scope_callback():std::nullopt;
+    if(!supported || session || opening_owner || !owner || !owner->epoch || !owner->author.generation ||
+       !family(resource_type) || (source.instance && (source.type!=resource_type || !source.group || editor_id)) ||
+       (!source.instance && editor_family(editor_id)!=resource_type)){
         error="This creation editor is unavailable during the current transition";return false;
     }
-    const auto allocation=H->sym("SporeCoop::CreationEditor::Allocate"),ctor=H->sym("SporeCoop::CreationEditor::RequestCtor"),submit=H->sym("Editors::EditorRequest::Submit");
+    const auto allocation=host->sym("SporeCoop::CreationEditor::Allocate"),ctor=host->sym("SporeCoop::CreationEditor::RequestCtor"),submit=host->sym("Editors::EditorRequest::Submit");
     if(!allocation || !ctor || !submit){error="Verified native creation entry is unavailable";return false;}
     void* request=skg::cdecl_call<void*>(allocation,size_t(0x9C),"CoopCreationRequest",0,0,0,0);
     if(!request){error="Native creation request allocation failed";return false;}
     request=skg::thiscall<void*>(ctor,request);addref(request);
+    struct Reference {void* value;~Reference(){release(value);}} reference{request};
+    if(!supported || H!=host || session || !scope_callback || scope_callback()!=owner){
+        error="The creation request changed its shared adventure before entry";return false;
+    }
     // Existing content must keep RequestCtor's FFFFFFFF sentinel. Native
     // Submit 5A930F..5A931D resolves its installed metadata subtype through
     // 5A9040 -> GetEditorForAssetType, preserving air/water and other variants.
-    // New content has no subtype yet and uses the verified family default.
-    if(!source.instance)skg::field<uint32_t>(request,0xC)=default_editor(resource_type);
+    // New uses the specialized GA category choice, just as AssetBrowser's
+    // 645C30 -> 64AF5F route does, including its native part-list constraints.
+    if(!source.instance)skg::field<uint32_t>(request,0xC)=editor_id;
     skg::field<editor::ResourceKey>(request,0x10)=source;
     skg::field<bool>(request,0x20)=!source.instance;
-    opening_target=target;
+    struct Opening {~Opening(){opening_target.reset();opening_owner.reset();opening_request=nullptr;}} opening;
+    opening_target=target;opening_owner=owner;opening_request=request;
     skg::cdecl_call<bool>(submit,request); // Existing hook supplies its trampoline.
-    opening_target.reset();
-    const bool accepted=session && session->native_request==request;
-    release(request);
+    const bool accepted=session && session->native_request==request && session->scope.project==owner->project &&
+        session->scope.epoch==owner->epoch && session->scope.author==owner->author;
     if(!accepted){error=status.empty()?"The creation request was rejected":status;return false;}
     error.clear();return true;
 }

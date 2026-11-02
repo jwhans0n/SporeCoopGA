@@ -26,6 +26,7 @@ editor_native::State native_state;
 bool creation=false,lobby=false;
 unsigned created=0,edited=0;
 uint32_t created_type=0;
+uint32_t created_editor=0;
 const editor::ObjectId selected{(2ull<<32)|7,1};
 Node* node(sui::Win value){return static_cast<Node*>(value);}
 Node* make(Node* parent,uint32_t id){
@@ -46,7 +47,7 @@ bool shown(sui::Win window){
 }
 namespace coop_editor {
 View view(){return ::view;}
-void create_asset(uint32_t type){++created;created_type=type;}
+void create_asset(uint32_t type,uint32_t editor_id){++created;created_type=type;created_editor=editor_id;}
 void edit_asset(editor::ObjectId id){CHECK(id==selected);++edited;}
 }
 namespace editor_native {State state(){return native_state;}}
@@ -74,6 +75,7 @@ void set_ids(Win w,uint32_t control,uint32_t command){node(w)->id=control;node(w
 void set_drawable(Win,void*){}
 void set_fill_color(Win,uint32_t){}
 void set_font(Win w,uint32_t value){node(w)->font=value;}
+void set_caption(Win,const std::string&){}
 void set_caption_padding(Win,float){}
 void set_area(Win w,const Rect& value){node(w)->area=value;}
 void add_child(Win owner,Win child){CHECK(!parent(child));node(child)->parent=node(owner);node(owner)->children.push_back(child);}
@@ -155,6 +157,37 @@ int main(){
     sui::set_visible(options_body,true);click(panel.choices[0]);CHECK(created==1&&!editor_creation_ui::want_menu);
     step();CHECK(!shown(panel.root));sui::set_visible(options,false);step();CHECK(shown(panel.root));
     auto unrelated_options=make(main_node,0x064C23F8);step();CHECK(shown(panel.root));sui::set_visible(unrelated_options,false);
+    // Family choices do not enter an unconstrained generic Vehicle/Building
+    // editor. Each native GA variant is an explicit, locally guarded action.
+    for(size_t family_index:{size_t(1),size_t(2)}){
+        const auto type=editor_creation_ui::types[family_index];const auto variants=editor_creation::new_variants(type);
+        CHECK(variants.size()==(family_index==1?4u:9u));
+        for(size_t i=0;i<variants.size();++i){
+            const auto count=created;click(panel.new_button);step();click(panel.choices[family_index]);step();
+            CHECK(created==count&&editor_creation_ui::want_menu&&editor_creation_ui::variant_type==type);
+            CHECK(shown(panel.back)&&!shown(panel.choices[family_index])&&shown(panel.variants[i]));
+            CHECK(node(panel.root)->area.y2<=768&&node(panel.root)->area.y1>=0);
+            for(size_t n=variants.size();n<panel.variants.size();++n)CHECK(!shown(panel.variants[n]));
+            click(panel.variants[i]);CHECK(created==count+1&&created_type==type&&created_editor==variants[i].editor_id);
+            CHECK(!editor_creation_ui::want_menu&&!editor_creation_ui::variant_type);
+        }
+    }
+    click(panel.new_button);step();click(panel.choices[2]);step();click(panel.back);step();
+    CHECK(editor_creation_ui::want_menu&&!editor_creation_ui::variant_type&&shown(panel.choices[2])&&!shown(panel.back));
+    click(panel.new_button);step();
+    // Hidden/stale variant handlers cannot reuse a choice against another
+    // project or during a Native modal/readiness hold.
+    for(unsigned reason=0;reason<5;++reason){
+        click(panel.new_button);step();click(panel.choices[2]);step();const auto count=created;
+        const auto identity=view.prompt_identity;
+        if(reason==0)view.can_save=false;
+        if(reason==1)view.prompt_identity="retired cohort";
+        if(reason==2)creation=true;
+        if(reason==3)sui::set_visible(live_owner,true);
+        if(reason==4){click(panel.back);step();}
+        click(panel.variants[0]);CHECK(created==count&&!editor_creation_ui::want_menu);
+        view.can_save=true;view.prompt_identity=identity;creation=false;sui::set_visible(live_owner,false);step();
+    }
     // Existing transition guards remain effective independently of picker IDs.
     creation=true;step();CHECK(!shown(panel.root));creation=false;
     lobby=true;step();CHECK(!shown(panel.root));lobby=false;step();CHECK(shown(panel.root));
