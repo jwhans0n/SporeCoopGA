@@ -85,6 +85,52 @@ static void rejected(){
     Property out;CHECK(!native_property(0x02A907B7,property,out,error));
     for(size_t n=0;n<source.size()-p.tail.size();++n){auto short_bytes=source;short_bytes.resize(n);CHECK(!decode(short_bytes,p,error));}
 }
+static void cleared_key_array_placeholder(){
+    Properties base;std::string error;CHECK(decode(baseline(),base,error));
+    const Property cleared{0,0,{0,0,0,0,0xD8,0x29,0,0,0xAC,0xAD,0xBB,1,6,0xCE,0x14,0}};
+    base.fields[0x040539D4]=cleared;
+    const auto encoded=[&](const Properties& p){std::vector<uint8_t> b;CHECK(encode(p,b,error));return b;};
+    const auto before=encoded(base);
+    for(size_t at=0;at<16;++at){auto changed=base;changed.fields.at(0x040539D4).value[at]^=1;
+        auto bytes=encoded(changed);CHECK(bytes!=before);CHECK(normalize_supported(bytes,before,error)&&bytes==before);}
+    // None payload bytes have no meaning only for this exact cleared property.
+    // Its presence and type/flags, typed key arrays, all other unknown fields
+    // and the complete adventure tail remain part of the strict opaque check.
+    for(unsigned reason=0;reason<9;++reason){auto old=base,changed=base;
+        if(reason==0)changed.fields.erase(0x040539D4);
+        if(reason==1)old.fields.erase(0x040539D4);
+        if(reason==2)changed.fields.at(0x040539D4).type=0x20;
+        if(reason==3)changed.fields.at(0x040539D4).flags=2;
+        if(reason==4){old.fields.at(0x040539D4).flags=2;changed.fields.at(0x040539D4).flags=2;changed.fields.at(0x040539D4).value[8]^=1;}
+        if(reason==5){old.fields.erase(0x040539D4);changed.fields.erase(0x040539D4);old.fields[0x040539D5]=cleared;
+            changed.fields[0x040539D5]=cleared;changed.fields.at(0x040539D5).value[8]^=1;}
+        if(reason==6){Property keys{0x20,0x9C,{}};u32(keys.value,1);u32(keys.value,12);keys.value.resize(20,0);
+            old.fields[0x040539D4]=keys;changed.fields[0x040539D4]=keys;changed.fields.at(0x040539D4).value[8]^=1;}
+        if(reason==7)changed.tail.back()^=1;
+        if(reason==8)changed.fields.at(0xFFFFFFFF).value[0]^=1;
+        const auto original=encoded(old);auto bytes=encoded(changed);CHECK(bytes!=original);
+        CHECK(normalize_supported(bytes,original,error)&&bytes!=original);
+    }
+    for(size_t length:{size_t(0),size_t(15),size_t(17)}){auto changed=base;changed.fields.at(0x040539D4).value.resize(length);
+        auto bytes=encoded(changed);const bool okay=normalize_supported(bytes,before,error);CHECK(!okay||bytes!=before);}
+    CHECK(!planet_properties().contains(0x040539D4)&&!recipe_property(0x040539D4));
+    editor::Document projected;CHECK(project(before,{},projected,error));
+    CHECK(!projected.settings_schema.contains(0x040539D4)&&!projected.settings.at(kPlanetObject).properties.contains(0x040539D4));
+}
+static void captured_placeholder(const char* path){
+    std::ifstream file(path,std::ios::binary);CHECK(bool(file));
+    const std::vector<uint8_t> source((std::istreambuf_iterator<char>(file)),{});
+    Properties p;std::string error;CHECK(source.size()==60654&&decode(source,p,error));
+    auto at=p.fields.find(0x040539D4);CHECK(at!=p.fields.end());if(at==p.fields.end())return;
+    CHECK(at->second.type==0&&at->second.flags==0&&at->second.value.size()==16);
+    for(const auto offset:{size_t(21624),size_t(21632)}){
+        CHECK(offset<source.size());if(offset>=source.size())continue;
+        auto changed=source;changed[offset]^=1;Properties altered;CHECK(decode(changed,altered,error));
+        CHECK(altered.fields.at(0x040539D4).value!=at->second.value&&altered.tail==p.tail);
+        CHECK(normalize_supported(changed,source,error)&&changed==source);
+    }
+    std::printf("Captured Town None placeholder: exact60654 bytes restored after offsets21624/21632 changed\n");
+}
 static void transform_counters(){
     const auto source=baseline();editor::Document d;std::string error;CHECK(project(source,{},d,error));
     for(auto row:{stroke(100,1,13),stroke(101,2,13),stroke(102,3,23,editor::TerrainKind::Model),stroke(103,4,23,editor::TerrainKind::Model)})
@@ -305,8 +351,9 @@ static void captured_import_chain(const char* authored_path,const char* rendered
     CHECK(material::from_bytes(normalized,result,error)&&result==input);
     std::printf("Captured native import chain: %zu effects/%zu models, exact original payloads restored\n",input.rows[0].size(),input.rows[1].size());
 }
-int main(int argc,char** argv){roundtrip();rejected();transform_counters();materialization();import_counter_chaining();
+int main(int argc,char** argv){roundtrip();rejected();cleared_key_array_placeholder();transform_counters();materialization();import_counter_chaining();
     if(argc==5&&std::string(argv[1])=="--import-counter-fixture")captured_import_chain(argv[2],argv[3],argv[4]);
+    else if(argc==3&&std::string(argv[1])=="--none-placeholder-fixture")captured_placeholder(argv[2]);
     else {if(argc>1)captured(argv[1]);if(argc>2)captured_append(argv[1],argv[2]);}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;
 }

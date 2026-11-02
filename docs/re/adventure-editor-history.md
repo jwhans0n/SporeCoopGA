@@ -821,3 +821,58 @@ selection or subsequent settlement. A future value-only diagnostic should
 compare the exact parsed-copy quaternion against the snapshot document before
 the first native restore, then compare these individual boundaries. No epsilon
 comparison or blanket transform overwrite is justified by these observations.
+
+### C18 Terraform opaque rejection: cleared None property union bytes
+
+The actual C18 fresh Town simultaneous attempt again rejected without a terrain
+transaction. Its owned opaque comparison reported first differences at native
+offset 21624 (host) and 21632 (guest), with equal 60,654-byte image lengths. The
+expanded diagnostic decoded both 1,229,480-byte adventure DBPF bodies and found
+them byte-identical. This establishes a difference outside that body; it does
+not establish successful Terraform or rollback pose acceptance.
+
+The retained native Town artifact
+`out/preview9-c8-four-town-bootstrap-inspection/host-durable-native.bin` maps both
+offsets into property `040539D4`, type 0, flags 0. Its header starts at 21616 and
+its sixteen value bytes occupy 21624 through 21639. The actual baseline bytes
+are `00000000 D8290000 ACADBB01 06CE1400`. Thus the two reported positions are
+value offsets 0 and 8, not recipe, property metadata or DBPF bytes.
+
+Exact native producer and consumer inspection distinguishes semantic presence
+from the unused union payload:
+
+* Terraform `F37530` first loads its property list, then clears `040539D4`.
+  At `F37544..F3754D` it zeros EAX/EDX and only the stack Property's flags/type
+  WORDs. It passes this default Property to list vtable +14 at `F37561`; the
+  sixteen-byte inline union is not initialized. Upstream `Property`'s default
+  constructor similarly initializes only flags 0 and `PropertyType::None` 0.
+* PropertyList setter `6A2E20` calls assignment `542B80` for the existing
+  entry. `542BCD..542BE0` copies all sixteen inline bytes; subsequent stores
+  copy type and flags. These copies do not turn the unused union into authored
+  data.
+* Generic Property Write `693360` with flags 0/type 0 takes its default branch
+  at `6933BF..6933C7`, then writes sixteen raw bytes at `69357C..693586`.
+  Generic Read `694410` takes the matching default branch at
+  `6944B2..6944B9` and reads sixteen raw bytes at `694789..694793`.
+* The exact executable has only two direct literal references to this property
+  ID: that writer and reader `FA6FE8`. The latter calls typed GetArrayKey
+  `6A0AE0` at `FA6FEE`. The getter requires type `20` at `6A0B01` and array
+  flag `10` at `6A0B0C`; None 0/flags 0 rejects before its union is read.
+  Generic property presence can still matter. This audit does not permit
+  removing a None property, changing its type/flags, or masking key-array data.
+
+The approved comparison correction is limited to `normalize_supported`:
+when BOTH images contain exactly `040539D4` with type 0, flags 0 and sixteen
+value bytes, copy the before value bytes into the changed private comparison.
+The before image remains unchanged. Presence/type/flags, differently shaped
+values, typed key arrays, every other unknown property and the complete tail
+retain their strict comparison. The field is not added to editable planet
+schema or recipe properties. Exact native instruction receipts are enforced
+by `verify_editor_dc04.py`; this adds no callable native ABI or live mutation.
+
+Strict Linux and actual-i686 codec runs each pass 426 checks, including the
+retained 60,654-byte Town artifact with independent mutations at both observed
+offsets and exact full-image restoration. Negatives retain differences for
+absence, type, flags, length, another None property, typed key-array contents,
+an unrelated unknown field and the DBPF tail. Running-game Terraform acceptance
+and exact settled rollback remain separate pending checks.

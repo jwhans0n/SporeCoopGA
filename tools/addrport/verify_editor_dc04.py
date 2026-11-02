@@ -345,6 +345,20 @@ def verify(pe):
                           (0xED8474,'80b8c804000001'),(0xED84CD,'83b8b804000005'),(0xED84D6,'8b80c4040000')]:
         if pe.read(site,len(bytes.fromhex(encoded)))!=bytes.fromhex(encoded):
             raise ValueError('Active cast behavior reference selector mismatch '+hex(site))
+    # Terraform deliberately clears obsolete key array040539D4 with a default
+    # None Property. Only flags/type are initialized; copying/serializing the
+    # sixteen unused union bytes retains stack data. Its typed consumer rejects
+    # None before reading payload. Presence/type/flags remain semantic fences.
+    for site, encoded in [(0xF37544,'33c033d2668944242266895424208b118b52148d4424105068d4390504ffd2'),
+                          (0x542BCD,'8b0189028b41048942048b41088942088b490c894a0c'),
+                          (0xFA6FE8,'68d439050450e8ed9a6fff83c41084c0'),
+                          (0x6A0B01,'668379122075400fb74110a8107438'),
+                          (0x6933BF,'0fb74f124983f9120f87a7010000'),
+                          (0x69357C,'8b168b42386a10578bceffd0'),
+                          (0x6944B2,'0fb70b4983f9120f87c6020000'),
+                          (0x694789,'8b078b50306a10558bcfffd2')]:
+        if pe.read(site,len(bytes.fromhex(encoded)))!=bytes.fromhex(encoded):
+            raise ValueError('Terraform cleared-None property receipt mismatch '+hex(site))
     for name, address, prefix, returns, note, calls, checks in ENTRIES:
         if not pe.in_text(address) or pe.read(address,len(bytes.fromhex(prefix))) != bytes.fromhex(prefix):
             raise ValueError(name + ': entry mismatch')

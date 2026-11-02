@@ -218,6 +218,15 @@ inline bool merge(const std::vector<uint8_t>& base,const editor::Document& docum
 }
 inline bool normalize_supported(std::vector<uint8_t>& changed,const std::vector<uint8_t>& before,std::string& error){
     Properties left,right;if(!decode(before,left,error) || !decode(changed,right,error))return false;
+    // F37530 clears this obsolete key-array property with a default Property:
+    // only its type/flags are initialized. Native Write still emits all sixteen
+    // unused union bytes. Preserve presence and every semantic shape exactly;
+    // normalize only the unused bytes when BOTH images contain that None value.
+    constexpr uint32_t cleared_keys=0x040539D4;
+    const auto a=left.fields.find(cleared_keys),b=right.fields.find(cleared_keys);
+    const auto empty=[](const Property& p){return p.type==0 && p.flags==0 && p.value.size()==16;};
+    if(a!=left.fields.end() && b!=right.fields.end() && empty(a->second) && empty(b->second))
+        b->second.value=a->second.value;
     for(auto i=right.fields.begin();i!=right.fields.end();)if(recipe_property(i->first) || planet_properties().contains(i->first))i=right.fields.erase(i);else ++i;
     for(const auto& [id,value]:left.fields)if(recipe_property(id) || planet_properties().contains(id))right.fields[id]=value;
     return encode(right,changed,error);
