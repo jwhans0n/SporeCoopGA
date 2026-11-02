@@ -106,8 +106,10 @@ controls use their affected field scopes. Native terrain rebuilds must settle
 before a participant reports its visible scene ready; placement grounding is
 preserved as part of that application. Native coverage of every terraform tool,
 cross-act editing and Save/reopen is still pending.
-A quick planet/flora value change completed before ownership arrives may require
-a retry; retained replay of every such control is not implemented yet.
+Quick planet/flora values are retained while ownership is requested, with copied
+gradients and current native controls resolved again on replay. Escape, focus
+loss, stale fields and replaced contexts cancel pending input. Actual native
+coverage of these quick-control paths remains pending.
 
 The shared editor's **New asset** menu offers Creature, Building, Vehicle,
 Spaceship, Plant and Cell routes. **Edit asset** targets the displayed cast class

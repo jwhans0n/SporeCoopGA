@@ -86,6 +86,19 @@ were retained for the corrected candidate. Receipt:
 `out/preview9-c2-retire/result.json`. Native sharing must succeed before any
 commit-performance or crew/terrain acceptance result can be collected.
 
+Candidate 3 (`e92986c136975e4223242faeade831bd4219df70c7105a9879ce1715f73a6748`)
+passes owned-process, viewport, availability and zero-fault preflight in
+`out/preview9-commit-c3-preflight.json`. Its Adventure Town startup no longer
+reports the immediate camera-restore error, but fails structured-reference
+validation. The exact post-failure inspection is
+`owner=21474836494:1 property=1128354644 reference=8589935701:1`, corresponding
+to class settings 14, the CAST property and target class 1109. Receipt:
+`out/preview9-commit-diagnostic-c3/initial-host-inspection.json`. That inspection
+was collected after startup failed; it is not an untouched original baseline.
+The fixture again timed out before any benchmark gesture. The paused scene was
+retained for read-only native investigation. The tool now captures its original
+baseline before title input/hosting; 12 offline tests pass after this follow-up.
+
 ## Required native acceptance
 
 Actual two- and four-player candidate runs remain pending for crew edits,
@@ -96,10 +109,11 @@ Cover ownership conflicts, stale callbacks, disconnects, retry, Undo/Redo, late
 join, recovery and native Save/reopen. Verify Solo and Test Together after edits
 and retain existing captain, teleporter, gameplay and result regressions.
 
-Known input limit: a quick planet/flora value change completed before its lease
-grant can require retry. Continuous flora drags begin history at the first
-accepted value; complete deferred replay of these controls is not implemented.
-This is not covered by the retained first-press placement-drag result.
+Early candidates could require retry for a quick planet/flora value completed
+before its lease grant. Follow-up `2f1abaa` implements copied deferred values,
+bounded gradients and current-control replay with context/ownership cancellation.
+Native pre-grant UI coverage remains pending; the earlier placement-drag result
+does not establish it.
 
 The release-stall report still needs measured real native gestures on the
 configured large adventure, 30 gestures per author with two and four players.
