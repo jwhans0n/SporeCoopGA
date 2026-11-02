@@ -167,7 +167,7 @@ $(B)/host/editor_stage_metrics_tests.exe: tests/editor_stage_metrics_tests.cpp m
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_stage_metrics_tests.cpp -o $@
 
-$(B)/host/editor_native_cancellation_tests.exe: tests/editor_native_cancellation_windows_tests.cpp mods/coop/editor_native.cpp mods/coop/editor_native.h mods/coop/editor_native_authoring.h mods/coop/editor_native_scale.h mods/coop/editor_native_bindings.h mods/coop/editor_native_tools.h mods/coop/net/dbpf.cpp mods/coop/net/editor_document.cpp $(ADVENTURE_ABI_HEADERS)
+$(B)/host/editor_native_cancellation_tests.exe: tests/editor_native_cancellation_windows_tests.cpp tests/editor_native_act_cache_fixture.h mods/coop/editor_native.cpp mods/coop/editor_native.h mods/coop/editor_native_authoring.h mods/coop/editor_native_act_cache.h mods/coop/editor_native_scale.h mods/coop/editor_native_bindings.h mods/coop/editor_native_tools.h mods/coop/net/dbpf.cpp mods/coop/net/editor_document.cpp $(ADVENTURE_ABI_HEADERS)
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/editor_native_cancellation_windows_tests.cpp mods/coop/net/dbpf.cpp mods/coop/net/editor_document.cpp -o $@
 
