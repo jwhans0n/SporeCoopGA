@@ -12,6 +12,7 @@ void test_owned_crew_asset_versions(){
     a_alloc=uintptr_t(act_cache_allocate);a_copy=uintptr_t(crew_asset_copy_resource);a_copy_acts=uintptr_t(act_cache_copy_acts);
     a_copy_crew=uintptr_t(act_cache_copy_crew);a_copy_marker_rows=uintptr_t(t_pose_copy_rows);a_insert_marker=uintptr_t(t_pose_insert);a_write=uintptr_t(act_cache_write);a_read=uintptr_t(act_cache_read);
     t_resource_vt[1]=reinterpret_cast<void*>(act_cache_release);act_cache_alloc_failures=0;act_cache_resolve_failure=act_cache_fail_fingerprint_write=false;
+    act_cache_omit_external_source=true;
     C.authoring_tracked=[] {return true;};t_rows[t_live.data()].clear();rows_for(t_live.data());
     auto& live=act_cache_rows[t_live.data()];live.acts.resize(0x534);live.goals.resize(1);live.crew.resize(3*0x38);
     const editor::ResourceKey original{0x29058782,0x2B978C46,0x40626200},other{0x12345678,0x2B978C46,0x40626200};
@@ -29,6 +30,7 @@ void test_owned_crew_asset_versions(){
     base.document.revision=42;base.document.act_revision=11;base.document.next_id+=19;base.document.next_terrain_order=27;
     for(auto& [id,row]:base.document.settings){(void)id;row.revision=37;row.field_revisions[{editor::Field::Property,kCrewRosterProperty}]=29;}
     CHECK(validate(base,base.document,error));
+    {Owned parsed(parse(base.bytes,error));CHECK(parsed.p&&skg::field<editor::ResourceKey>(parsed.p,8)==editor::ResourceKey{}&&base.source.instance);}
     const auto scene=t_live;const auto owner=t_data;const auto history=t_history;const auto context=t_context;const auto selection_before=selection;
     const auto live_rows=live.crew;const auto before_restores=t_restores;const auto generation_before=generation;
     auto unchanged_scene=[&]{CHECK(t_live==scene&&t_data==owner&&t_history==history&&t_context==context&&selection==selection_before&&live.crew==live_rows&&t_restores==before_restores&&generation==generation_before&&pending.empty()&&t_allocations.empty());};
@@ -38,7 +40,7 @@ void test_owned_crew_asset_versions(){
     auto expected=base.document;expected.settings.at(kCrewObject).properties.at(kCrewRosterProperty)=output.document.settings.at(kCrewObject).properties.at(kCrewRosterProperty);
     CHECK(output.document==expected&&output.source==base.source&&output.bindings==base.bindings&&output.metadata==base.metadata&&output.act==base.act);
     CHECK(crew_assets(output.document,keys,error)&&keys==std::vector<editor::ResourceKey>({version,other,original}));
-    {Owned parsed(parse(output.bytes,error));CHECK(parsed.p);Rows rows;CHECK(editor_native::rows(parsed.p,0x178,0x38,3,rows));
+    {Owned parsed(parse(output.bytes,error));CHECK(parsed.p&&skg::field<editor::ResourceKey>(parsed.p,8)==editor::ResourceKey{});Rows rows;CHECK(editor_native::rows(parsed.p,0x178,0x38,3,rows));
      CHECK(skg::field<int32_t>(parsed.p,0x238)==3&&rows.end-rows.begin==3*0x38);
      CHECK(std::memcmp(rows.begin+0x18,live_rows.data()+0x18,0x20)==0);
      CHECK(std::memcmp(rows.begin+0x38,live_rows.data()+0x38,2*0x38)==0);
@@ -101,6 +103,6 @@ void test_owned_crew_asset_versions(){
     editor::Document legacy;keys={version};CHECK(crew_assets(legacy,keys,error)&&keys.empty());
     legacy.settings_schema[kCrewRosterProperty]=authoring_property_schema().at(kCrewRosterProperty);
     CHECK(!crew_assets(legacy,keys,error));unchanged_scene();
-    act_cache_rows.clear();a_alloc=old_alloc;a_copy=old_copy;a_copy_acts=old_acts;a_copy_crew=old_crew;a_copy_marker_rows=old_rows;a_insert_marker=old_insert;a_write=old_write;a_read=old_read;H=old_host;reset();
+    act_cache_omit_external_source=false;act_cache_rows.clear();a_alloc=old_alloc;a_copy=old_copy;a_copy_acts=old_acts;a_copy_crew=old_crew;a_copy_marker_rows=old_rows;a_insert_marker=old_insert;a_write=old_write;a_read=old_read;H=old_host;reset();
 }
 } // namespace

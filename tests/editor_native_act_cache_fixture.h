@@ -7,6 +7,7 @@ struct ActCacheRows {
 std::map<void*,ActCacheRows> act_cache_rows;
 unsigned act_cache_reads=0,act_cache_copies=0,act_cache_alloc_failures=0;
 bool act_cache_fail_fingerprint_write=false,act_cache_resolve_failure=false;
+bool act_cache_omit_external_source=false;
 editor::ResourceKey act_cache_resolved{17,19,23};
 void act_cache_bind(void* resource,ActCacheRows& storage){
     skg::field<void*>(resource,0x23C)=storage.acts.data();
@@ -56,8 +57,9 @@ bool SK_THISCALL act_cache_write(void* resource,Stream* stream){
     if(act_cache_fail_fingerprint_write&&count==2)return false;
     const std::array<uint32_t,3> prefix{0xB523D4F9,17,0};
     const std::array<uint32_t,4> header{0x41435431,count,crew_count,skg::field<uint32_t>(resource,0x238)};
+    const auto source=act_cache_omit_external_source?editor::ResourceKey{}:skg::field<editor::ResourceKey>(resource,8);
     if(!write(stream,prefix.data(),sizeof prefix)||!write(stream,header.data(),sizeof header)||
-       !write(stream,skg::ptr_add<void>(resource,8),sizeof(editor::ResourceKey))||
+       !write(stream,&source,sizeof source)||
        !write(stream,skg::ptr_add<void>(resource,0x130),0x46)||!write(stream,crew.begin,crew_count*0x38))return false;
     for(uint32_t i=0;i<count;++i){
         auto* act=acts.begin+i*0x534;Rows goals;CHECK(rows(act,0x84,0x188,3,goals));
@@ -73,6 +75,7 @@ bool SK_THISCALL act_cache_read(void* resource,Stream* stream){
        read(stream,header.data(),sizeof header)!=sizeof header||header[0]!=0x41435431||header[1]>8||header[2]>3||
        read(stream,skg::ptr_add<void>(resource,8),sizeof(editor::ResourceKey))!=sizeof(editor::ResourceKey)||
        read(stream,skg::ptr_add<void>(resource,0x130),0x46)!=0x46)return false;
+    if(act_cache_omit_external_source)skg::field<editor::ResourceKey>(resource,8)={};
     auto& storage=act_cache_rows[resource];storage.crew.resize(header[2]*0x38);
     if(read(stream,storage.crew.data(),uint32_t(storage.crew.size()))!=int(storage.crew.size()))return false;
     storage.acts.resize(header[1]*0x534);storage.goals.resize(header[1]);

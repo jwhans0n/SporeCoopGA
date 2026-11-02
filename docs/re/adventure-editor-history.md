@@ -404,3 +404,30 @@ the hidden/clipped `Choose A Crew Member` caption is not a reliable wait target.
 The C9/C10 empty-slot point `(998,489)` is measured at 1024x768 only and must
 still hit both native `03D982FF` and `03D98298` before clicking. Capacity-plus
 remains `0774B060` and the Crew lock checkbox is `07C4B4A0`.
+
+The C11 custom Crew Add crossed the runtime project-provenance check but was
+rejected by the native helper with `The adventure crew version changed an
+unrelated native identity`. All four restored revision/durable 1 with matching
+native checks and zero faults; the rejected Add produced no history item.
+Evidence is in `out/preview9-c11-crew-add/rejection-all-four.json`.
+
+The ScenarioResource source key is external envelope provenance, not a field
+of its authored serialization. Constructor `F2E670` zeros resource offsets
+`+8/+C/+10` at `F2E685..F2E68B`. Read `F2FC40` and Write `F25E00` serialize
+metadata from `+18`; their core helpers `F2F6D0` and `F25700` use descriptor
+`15AF500`. Its initializer `138C850..138D54B` constructs 34 entries of 0x3C
+bytes through `15AFCBC`. Their field offsets are `150,170,174,15C,16C,175,178,
+238,2BF4,23C,2C10,B8,F4,7C,78,2C2C,2C0C,68,130,2C50,2C54,2C30,2C3C,2C4C,
+2C94,2CA0,54,58,2C6C,2C80,50,5C,60,64`, with no source-key field. Static
+receipt: `out/editor-creation-re/scenario-descriptor-138C850.txt`.
+
+The Crew owned-edit callback now hydrates only its detached copy's `+8` key
+from the already validated base snapshot, matching the existing prepare path.
+The generic owned-edit helper and the exact output source/act/bindings/metadata
+guard remain unchanged. A controlled native Read/Write fixture that omits the
+source key reproduces the C11 error before this correction. After correction,
+the serialized output still omits the key, its snapshot retains the checked
+envelope key, and all live scene/history/selection state remains untouched.
+The full actual-i686 native fixture passes 12,472 checks, the supported ABI
+verifier passes 91 entries, and RE lint reports no supported-build problems.
+Actual cross-profile Crew Add acceptance remains pending in the next candidate.

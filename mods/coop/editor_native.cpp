@@ -3842,6 +3842,10 @@ bool remap_crew_assets(const Snapshot& base,const std::vector<CrewAssetRemap>& e
         for(const auto& edit:edits){auto* row=current.begin+edit.slot*0x38;
             skg::field<editor::ResourceKey>(row,0)=edit.replacement;skg::field<uint32_t>(row,0xC)=0;skg::field<uint64_t>(row,0x10)=UINT64_MAX;
         }
+        // Native Read/Write omit the external ScenarioResource key at +8.
+        // Rehydrate this owned copy from the validated envelope, as prepare
+        // does, so the exact identity guard below still checks its provenance.
+        skg::field<editor::ResourceKey>(owned,8)=base.source;
         return true;
     },result,error))return false;
     // Revisions, allocation counters, stable IDs and every unrelated typed
