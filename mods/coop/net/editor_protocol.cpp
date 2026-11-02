@@ -50,7 +50,7 @@ template<class T> constexpr unsigned maximum() {
     if constexpr(std::is_same_v<T,ValueKind>) return unsigned(ValueKind::Structured);
     if constexpr(std::is_same_v<T,Field>) return 3;
     if constexpr(std::is_same_v<T,CheckKind>) return 2;
-    if constexpr(std::is_same_v<T,ScopeKind>) return unsigned(ScopeKind::Content);
+    if constexpr(std::is_same_v<T,ScopeKind>) return unsigned(ScopeKind::Authoring);
     if constexpr(std::is_same_v<T,SettingsKind>) return unsigned(SettingsKind::Planet);
     if constexpr(std::is_same_v<T,TerrainKind>) return unsigned(TerrainKind::Model);
     if constexpr(std::is_same_v<T,MutationKind>) return unsigned(MutationKind::DeleteTerrain);
@@ -60,7 +60,7 @@ template<class T> constexpr unsigned maximum() {
     if constexpr(std::is_same_v<T,LeaseAction>) return 2;
     if constexpr(std::is_same_v<T,ControlKind>) return 6;
     if constexpr(std::is_same_v<T,PresencePhase>) return unsigned(PresencePhase::Creating);
-    if constexpr(std::is_same_v<T,CommandKind>) return unsigned(CommandKind::ReturnSolo);
+    if constexpr(std::is_same_v<T,CommandKind>) return unsigned(CommandKind::ExportQueued);
     if constexpr(std::is_same_v<T,PlaytestMode>)return unsigned(PlaytestMode::Solo);
     return 0;
 }
@@ -242,7 +242,7 @@ void validate_payload(const Message& m) {
     std::visit([&](const auto& p){
         using T=std::decay_t<decltype(p)>;
         if constexpr(std::is_same_v<T,Command>) need(p.serial && peer(p.actor) && p.revision==m.context.revision &&
-            unsigned(p.kind)<=unsigned(CommandKind::ReturnSolo) &&
+            unsigned(p.kind)<=unsigned(CommandKind::ExportQueued) &&
             (!p.accepted || p.kind==CommandKind::ReplyPlaytest || p.kind==CommandKind::ReplySolo || p.kind==CommandKind::FinishExport || p.kind==CommandKind::EndExport),"invalid native editor command");
         if constexpr(std::is_same_v<T,Offer>) need(p.schema==kSchema && !p.name.empty() && p.name.size()<=256 && peer(p.assigned) && p.assigned.slot!=0 && peer(p.host) && p.host.slot==0,"unsupported offer");
         if constexpr(std::is_same_v<T,TransferBegin>) need(unsigned(p.kind)<=unsigned(TransferKind::Assets) && p.serial && p.total && p.total<=transfer_limit(p.kind) && hash(p.hash),"invalid transfer header");

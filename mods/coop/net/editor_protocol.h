@@ -89,7 +89,7 @@ struct Control { ControlKind kind{}; uint64_t serial = 0; Revision revision = 0;
 // These are lifecycle commands, never authored document operations.
 enum class CommandKind : uint8_t {
     RequestPlaytest, ReplyPlaytest, RequestExport, HoldExport, ExportHeld,
-    BeginExport, FinishExport, EndExport, ExitEditor, RequestSolo, ReplySolo, ReturnSolo
+    BeginExport, FinishExport, EndExport, ExitEditor, RequestSolo, ReplySolo, ReturnSolo, ExportQueued
 };
 struct Command {
     CommandKind kind{};

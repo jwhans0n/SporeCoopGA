@@ -370,6 +370,7 @@ namespace adventure_assets {bool register_records(const std::vector<dbpf::Record
     return true;}std::string status(){return "fixture registered=0";}}
 namespace adventure_collect {
 bool unused_snapshot_key(const dbpf::Key&){return true;}
+bool validate_uploaded_records(const dbpf::Key&,const std::vector<dbpf::Record>&,std::string&){return true;}
 Presentation presentation(const dbpf::Key&){return {"Native draft","Fixture",{}};}
 bool collect_snapshot(const dbpf::Key& key,const std::vector<uint8_t>& bytes,std::vector<dbpf::Record>& records,std::string&){records={{key,bytes}};
     size_t left=dependency_bytes;uint32_t id=500;
@@ -1919,7 +1920,8 @@ static void test_pending_native_cancellation_disables_actions_without_freezing()
     CHECK(!runtime_host::view().can_save&&!runtime_host::view().can_undo&&!runtime_host::view().can_redo&&!runtime_host::view().can_playtest);
     native[0].state.ready=true;side=0;auto ticket=cancellation_ticket(0,1,1);std::string error;
     CHECK(native[0].callbacks.cancelled(ticket,error));runtime_host::refresh();
-    CHECK(runtime_host::view().can_save&&runtime_host::view().can_undo&&runtime_host::view().can_playtest);
+    CHECK(runtime_host::view().can_save&&runtime_host::view().can_undo);
+    CHECK(spin([]{side=0;runtime_host::refresh();return runtime_host::view().can_playtest;}));
     CHECK(!runtime_host::frozen&&runtime_host::controller->state()==canonical&&runtime_host::sequence==sequence);
 }
 static void test_all_native_cancellations() {
@@ -2057,7 +2059,7 @@ static void test_roster_history_uses_one_authoring_hold(){
             if(!held.empty())CHECK(runtime_guest::controller->release_leases(held,error));
             CHECK(spin([]{return runtime_guest::controller->view().local_leases.empty();}));
             side=1;runtime_guest::undo_redo(redo);
-            CHECK(runtime_guest::requested_scopes==(std::vector<editor::Scope>{{editor::ScopeKind::Document,{},{}}}));
+            CHECK(runtime_guest::requested_scopes==(std::vector<editor::Scope>{{editor::ScopeKind::Authoring,{},{}}}));
             const auto revision=redo?3u:2u;
             CHECK(spin([&]{return runtime_host::controller->state().document.revision==revision && runtime_guest::controller->state().document.revision==revision && !runtime_guest::awaiting_operation;},true,15000));
             CHECK(runtime_host::controller->state().document==runtime_guest::controller->state().document);
@@ -2471,7 +2473,7 @@ static void test_creation_guest_entry_waits_for_host_echo(){
 static void test_creations_return_independently_to_latest_act_and_view(){
     seed_creation_settings=true;Party party(0,0xA5,false,false,false,3,1);seed_creation_settings=false;
     native[0].state.selected={placement};native[0].focus_on_selection=true;const auto view=native[0].view;
-    auto host=creation_request(0,0x2B978C46);creation_enter(host);
+    auto host=creation_request(0,0x2B978C46,class_id);creation_enter(host);
     native[1].state.selected={editor_native::kCaptainObject};const auto guest_view=native[1].view;
     auto guest=creation_request(1,0x2399BE55);creation_enter(guest);
     const auto host_restores=native[0].restores;const auto host_scene=native[0].snapshot.bytes;

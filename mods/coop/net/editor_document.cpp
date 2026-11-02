@@ -413,10 +413,13 @@ bool valid(const Document& d, const Limits& l, std::string& error)
     for(const auto& [id,c]:d.class_settings)for(const auto& [property,v]:c.properties){
         (void)id;(void)property;
         if(auto* data=std::get_if<StructuredValue>(&v))for(auto ref:data->references)
-            if(!d.placements.contains(ref) && !d.class_settings.contains(ref) && !d.classes.contains(ref) && !d.acts.contains(ref))
-                return bad("A structured class-property reference is missing.");
+            if(!known(ref)){
+                const auto detail="A structured class-property reference is missing: owner="+std::to_string(id.id)+":"+std::to_string(id.generation)+
+                    " property="+std::to_string(property)+" reference="+std::to_string(ref.id)+":"+std::to_string(ref.generation);
+                return bad(detail.c_str());
+            }
         if(auto* ref=std::get_if<ObjectId>(&v);ref && identity(*ref) &&
-           !d.placements.contains(*ref) && !d.class_settings.contains(*ref) && !d.classes.contains(*ref) && !d.acts.contains(*ref))
+           !known(*ref))
             return bad("A class-property reference is missing.");
         if(auto* ref=std::get_if<ObjectId>(&v);ref && identity(*ref) && ids.at(ref->id)!=*ref)
             return bad("A class-property reference has an old generation.");
@@ -498,9 +501,9 @@ bool Coordinator::clock(Time now)
 }
 bool Coordinator::scope_valid(const Scope& s) const
 {
-    if (s.kind > ScopeKind::Content) return false;
+    if (s.kind > ScopeKind::Authoring) return false;
     const auto& d = state_.document;
-    if (s.kind == ScopeKind::Document || s.kind == ScopeKind::Structure) return s.object == ObjectId{} && s.field == FieldKey{};
+    if (s.kind == ScopeKind::Document || s.kind == ScopeKind::Structure || s.kind==ScopeKind::Authoring) return s.object == ObjectId{} && s.field == FieldKey{};
     if (!identity(s.object)) return false;
     if(s.kind==ScopeKind::Terrain)return s.field==FieldKey{} && retained_terrain(state_,s.object);
     if(s.kind==ScopeKind::Content)return s.field==FieldKey{} && d.class_schema.contains(kClassAssetResourceProperty) &&
@@ -518,6 +521,7 @@ bool Coordinator::scope_valid(const Scope& s) const
 bool Coordinator::covers(const Scope& a, const Scope& b) const
 {
     if (a.kind == ScopeKind::Document || a == b) return true;
+    if(a.kind==ScopeKind::Authoring)return is_authoring_scope(b);
     if(a.kind==ScopeKind::Content && b.kind==ScopeKind::Field && b.field==FieldKey{Field::Property,kClassAssetResourceProperty}){
         auto settings=state_.document.class_settings.find(b.object);return settings!=state_.document.class_settings.end() && settings->second.class_id==a.object;
     }
@@ -665,7 +669,7 @@ bool references(const Document& d)
     for(const auto& [id,c]:d.class_settings)for(const auto& [property,v]:c.properties){
         (void)id;(void)property;
         if(auto* ref=std::get_if<ObjectId>(&v);ref && identity(*ref) &&
-           !d.placements.contains(*ref) && !d.class_settings.contains(*ref) && !d.classes.contains(*ref) && !d.acts.contains(*ref))return false;
+           !known(*ref))return false;
     }
     return true;
 }
@@ -938,7 +942,7 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
                 if(m.kind==MutationKind::AppendTerrain){
                     if(!m.terrain || m.target!=ObjectId{} || m.expected || m.terrain->object!=ObjectId{} || m.terrain->order || m.terrain->revision)
                         return reject(Code::Invalid,"A terrain append cannot choose its identity, order or revision.");
-                    if(std::any_of(leases_.begin(),leases_.end(),[&](const auto& lease){return lease.scope.kind==ScopeKind::Document && lease.owner!=r.operation.author;}))
+                    if(std::any_of(leases_.begin(),leases_.end(),[&](const auto& lease){return (lease.scope.kind==ScopeKind::Document || lease.scope.kind==ScopeKind::Authoring) && lease.owner!=r.operation.author;}))
                         return reject(Code::Conflict,"The shared document is held for a global operation.");
                     if(next_id>=UINT64_MAX-1 || next_terrain_order>=UINT64_MAX-1)return reject(Code::Limit,"The terrain identity or order allocator is exhausted.");
                     auto row=*m.terrain;row.object={next_id++,1};row.order=next_terrain_order++;
@@ -963,7 +967,7 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
             if(m.kind==MutationKind::SetActs){
                 if(!m.act_roster || patch.acts || state_.document.act_order.empty() || m.target!=ObjectId{} || m.initial!=Placement{} || m.field!=FieldKey{} || m.value || m.clone_pose || m.class_initial)
                     return reject(Code::Invalid,"Invalid act roster operation.");
-                const auto code=leased(r,{ScopeKind::Document,{},{}},now);
+                const auto code=leased(r,{ScopeKind::Authoring,{},{}},now);
                 if(code!=Code::Accepted)return reject(code,"Changing the act roster requires the shared authoring hold.");
                 for(const auto& row:*m.act_roster)if(!state_.document.acts.contains(row.act_id)){
                     if(next_id>=UINT64_MAX-2 || row.act_id!=ObjectId{next_id,1} || row.object!=ObjectId{next_id+1,1} || row.revision || !row.field_revisions.empty())
@@ -1073,7 +1077,7 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
         const auto& g = state_.history[*gesture_index];
         patch = r.intent == Intent::Undo ? g.undo : g.redo;
         if(patch.acts){
-            const auto code=leased(r,{ScopeKind::Document,{},{}},now);
+            const auto code=leased(r,{ScopeKind::Authoring,{},{}},now);
             if(code!=Code::Accepted)return reject(code,"Act roster Undo/Redo requires the shared authoring hold.");
         }
         patch.dependencies.insert(patch.dependencies.end(), r.dependencies.begin(), r.dependencies.end());

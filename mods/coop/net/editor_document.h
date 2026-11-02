@@ -154,13 +154,19 @@ struct Check {
     bool operator==(const Check&) const = default;
 };
 // Structure serializes native allocation without locking unrelated cast settings.
-enum class ScopeKind : uint8_t { Document, Class, Act, Placement, Field, Structure, Settings, Terrain, Content };
+enum class ScopeKind : uint8_t { Document, Class, Act, Placement, Field, Structure, Settings, Terrain, Content, Authoring };
 struct Scope {
     ScopeKind kind = ScopeKind::Document;
     ObjectId object;
     FieldKey field;
     auto operator<=>(const Scope&) const = default;
 };
+// Roster changes cover the adventure's authored fields while a separate content
+// editor may retain its immutable source version and Content capability.
+inline bool is_authoring_scope(const Scope& scope){
+    return scope.kind<=ScopeKind::Authoring && scope.kind!=ScopeKind::Document && scope.kind!=ScopeKind::Content &&
+        !(scope.kind==ScopeKind::Field && scope.field==FieldKey{Field::Property,kClassAssetResourceProperty});
+}
 struct Lease {
     Scope scope;
     Peer owner;

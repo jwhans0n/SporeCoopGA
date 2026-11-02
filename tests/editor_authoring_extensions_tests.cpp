@@ -29,9 +29,9 @@ static void owned(Coordinator& c,Request& q,const std::vector<Scope>& scopes){
     auto l=c.acquire(q.operation.author,scopes,100,30000);CHECK(l.accepted());
     for(const auto& lease:l.leases)q.leases.push_back({lease.scope,lease.token});
 }
-static void wire_roundtrip(const State& state){
+static void wire_roundtrip(const State& state,uint8_t version=5){
     std::string error;std::vector<uint8_t> bytes;State decoded;
-    CHECK(wire::encode_state(state,bytes,error));CHECK(bytes.size()>28 && bytes[24]==5);
+    CHECK(wire::encode_state(state,bytes,error));CHECK(bytes.size()>28 && bytes[24]==version);
     CHECK(wire::decode_state(bytes,decoded,error));CHECK(decoded==state);
     auto prior=decoded;bytes.pop_back();CHECK(!wire::decode_state(bytes,decoded,error));CHECK(decoded==prior);
 }
@@ -142,4 +142,57 @@ static void presence(){
     CHECK(wire::read(r,decoded,guest,false,error));CHECK(std::get<wire::Presence>(decoded.payload)==p);
     p.scene_revision=5;CHECK(!wire::write({ctx,p},encoded,error));p.scene_revision=3;p.creation_serial=0;CHECK(!wire::write({ctx,p},encoded,error));
 }
-int main(){terrain_concurrency();terrain_negatives();mixed_allocation_replay();singleton_and_assets();staged_durability();presence();std::cout<<checks<<" authoring extension checks passed\n";}
+static void authoring_hold_keeps_content_independent(){
+    auto s=initial();auto& d=s.document;d.next_id=1000;d.acts.insert({2,1});d.act_order={{1,1},{2,1}};d.classes={{20,1}};
+    const FieldKey source{Field::Property,kClassAssetResourceProperty},behavior{Field::Property,5},position{Field::Position,0};
+    d.class_schema={{kClassAssetResourceProperty,{ValueKind::Resource,0,0,0,true,false}},{5,{ValueKind::Boolean,0,0,0,true,false}}};
+    d.settings_schema={{42,{ValueKind::Boolean,0,0,0,true,false}}};
+    for(unsigned i=1;i<=2;++i){AuthoringSettings row;row.object={10+i,1};row.act_id={i,1};row.properties[42]=true;d.settings[row.object]=row;}
+    ClassActSettings cast;cast.object={30,1};cast.class_id={20,1};cast.act_id={1,1};cast.properties={{kClassAssetResourceProperty,ResourceKey{7,8,9}},{5,true}};d.class_settings[cast.object]=cast;
+    Placement placed;placed.object={40,1};placed.class_id=cast.class_id;placed.act_id=cast.act_id;d.placements[placed.object]=placed;
+    std::string error;Coordinator c;CHECK(c.reset(s,9,error));CHECK(c.connect(host));CHECK(c.connect(guest));const Peer observer{2,1};CHECK(c.connect(observer));
+    const Scope content{ScopeKind::Content,cast.class_id,{}},authoring{ScopeKind::Authoring,{},{}};
+    auto own_content=c.acquire(host,{content},100,30000);CHECK(own_content.accepted());
+    auto hold=c.acquire(guest,{authoring},100,30000);CHECK(hold.accepted());
+    CHECK(c.acquire(observer,{{ScopeKind::Placement,placed.object,{}}},100,30000).code==Code::Conflict);
+    CHECK(c.acquire(observer,{{ScopeKind::Field,placed.object,position}},100,30000).code==Code::Conflict);
+    CHECK(c.acquire(observer,{{ScopeKind::Field,cast.object,behavior}},100,30000).code==Code::Conflict);
+    CHECK(c.acquire(observer,{{ScopeKind::Document,{},{}}},100,30000).code==Code::Conflict);
+    CHECK(c.acquire(observer,{{ScopeKind::Authoring,{1,1},{}}},100,30000).code==Code::Invalid);
+    auto fenced=c.submit(request(c.state(),observer,1,{append()}),100);CHECK(fenced.code==Code::Conflict);
+    Mutation roster;roster.kind=MutationKind::SetActs;roster.act_roster=std::vector<AuthoringSettings>{d.settings.at({12,1}),d.settings.at({11,1})};
+    auto q=request(c.state(),guest,1,{roster});q.leases={{authoring,hold.leases.front().token}};auto changed=c.submit(q,100);CHECK(changed.accepted());CHECK(apply_committed(s,changed,error));
+    CHECK(s.document.act_order==std::vector<ObjectId>({{2,1},{1,1}}));
+    Mutation replace;replace.target=cast.object;replace.field=source;replace.value=ResourceKey{70,8,9};
+    q=request(c.state(),guest,2,{replace});q.leases={{authoring,hold.leases.front().token}};CHECK(!c.submit(q,100).accepted());
+    CHECK(value(c.state().document,cast.object,source)==Value{ResourceKey{7,8,9}});
+    q=request(c.state(),host,1,{replace});q.leases={{content,own_content.leases.front().token}};changed=c.submit(q,100);CHECK(changed.accepted());CHECK(apply_committed(s,changed,error));
+    for(auto [intent,sequence]:{std::pair{Intent::Undo,3ull},std::pair{Intent::Redo,4ull}}){
+        q=request(c.state(),guest,sequence,{},intent);q.leases={{authoring,hold.leases.front().token}};changed=c.submit(q,100);CHECK(changed.accepted());CHECK(apply_committed(s,changed,error));
+        CHECK(value(c.state().document,cast.object,source)==Value{ResourceKey{70,8,9}});
+    }
+    replace.field=behavior;replace.value=false;q=request(c.state(),guest,5,{replace});q.leases={{authoring,hold.leases.front().token}};changed=c.submit(q,100);CHECK(changed.accepted());CHECK(apply_committed(s,changed,error));CHECK(s.document==c.state().document && s.history==c.state().history);
+    CHECK(is_authoring_scope({ScopeKind::Placement,placed.object,{}}));CHECK(!is_authoring_scope(content));CHECK(!is_authoring_scope({ScopeKind::Document,{},{}}));CHECK(!is_authoring_scope({ScopeKind::Field,cast.object,source}));
+    wire::LeaseRequest lease;lease.action=wire::LeaseAction::Acquire;lease.serial=1;lease.ttl=30000;lease.scopes={authoring};
+    wire::Context ctx{s.document.project,s.document.epoch,s.document.revision};net::Writer encoded;CHECK(wire::write({ctx,lease},encoded,error));
+    net::Reader input(encoded.data.data(),encoded.data.size());wire::Message decoded;CHECK(wire::read(input,decoded,guest,false,error));
+    const auto& decoded_lease=std::get<wire::LeaseRequest>(decoded.payload);CHECK(decoded_lease.action==lease.action && decoded_lease.serial==lease.serial && decoded_lease.ttl==lease.ttl && decoded_lease.scopes==lease.scopes && decoded_lease.tokens==lease.tokens);
+    CHECK(c.release(guest,{{authoring,hold.leases.front().token}}));
+    CHECK(c.submit(request(c.state(),observer,2,{append()}),100).accepted());
+}
+static void class_references_authoring_settings(){
+    auto s=initial();auto& d=s.document;d.next_id=1000;d.classes={{20,1}};
+    const ObjectId captain{80,1};d.settings_schema={{42,{ValueKind::Boolean,0,0,0,true,false}}};
+    AuthoringSettings row;row.object=captain;row.kind=SettingsKind::Captain;row.properties[42]=true;d.settings[captain]=row;
+    d.class_schema={{50,{ValueKind::Structured,0,0,0,true,false}},{51,{ValueKind::Reference,0,0,0,true,false}}};
+    ClassActSettings cast;cast.object={30,1};cast.class_id={20,1};cast.act_id={1,1};cast.properties={{50,StructuredValue{1,{1,2},{captain}}},{51,captain}};d.class_settings[cast.object]=cast;
+    std::string error;CHECK(valid(d,Limits{},error));wire_roundtrip(s,3);
+    auto missing=d;missing.settings.clear();CHECK(!valid(missing,Limits{},error));
+    CHECK(error.size()<256 && error.find("owner=30:1 property=50 reference=80:1")!=std::string::npos);
+    auto stale=d;std::get<StructuredValue>(stale.class_settings.at(cast.object).properties.at(50)).references={{captain.id,2}};CHECK(!valid(stale,Limits{},error));
+    Coordinator c;CHECK(c.reset(s,9,error));CHECK(c.connect(host));
+    Mutation m;m.target=cast.object;m.field={Field::Property,50};m.value=StructuredValue{1,{3,4},{captain}};
+    auto q=request(c.state(),host,1,{m});owned(c,q,{{ScopeKind::Class,cast.class_id,{}}});auto changed=c.submit(q,100);CHECK(changed.accepted());CHECK(apply_committed(s,changed,error));CHECK(s==c.state());
+    m.expected=1;m.value=StructuredValue{1,{3,4},{{999,1}}};q=request(c.state(),host,2,{m});owned(c,q,{{ScopeKind::Class,cast.class_id,{}}});CHECK(!c.submit(q,100).accepted());CHECK(c.state().document==s.document);
+}
+int main(){terrain_concurrency();terrain_negatives();mixed_allocation_replay();singleton_and_assets();staged_durability();presence();authoring_hold_keeps_content_independent();class_references_authoring_settings();std::cout<<checks<<" authoring extension checks passed\n";}
