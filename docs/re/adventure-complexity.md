@@ -1,8 +1,10 @@
 # Adventure complexity gates (GOG 2024, 2026-11-02)
 
 These are static receipts for the exact dc04 executable and its reviewed LAA
-variant. `tools/addrport/verify_editor_complexity_dc04.py` verifies the dedicated
-symbol map, instruction bytes, branch destinations, native callers and constants.
+variant. `tools/addrport/verify_editor_complexity_dc04.py` verifies the complexity
+namespace in `data/symbols/overrides_editor_dc04aee5.sym`, instruction bytes,
+branch destinations, native callers and constants. The deployed SporeKit loader
+uses its established override list and ignores newly named standalone maps.
 No legacy mod package was installed or copied into a game.
 
 `F3E7B0` is thiscall(ScenarioData), returns a float in x87 ST0 and has a plain

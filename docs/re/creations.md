@@ -401,6 +401,12 @@ fixtures are not evidence of running-game entry, editing, remote reopening,
 baking or return success. Each family and simultaneous participants still need
 the private native integration checks recorded by the delivery report.
 
+Creation symbols are included in the established
+`data/symbols/overrides_editor_dc04aee5.sym`. The deployed SporeKit loader's
+override list does not discover a newly named standalone symbol map. Both the
+normal native deployment path and the dedicated static verifier must use the
+established map; an ignored sidecar leaves creation entry unavailable.
+
 The local native cast toolbar exposes New asset (control C00F0301), Edit asset
 (C00F0302), and six family choices C00F0310..C00F0315 in the order above.
 `editor_creation_ui` creates and updates this retained native window outside

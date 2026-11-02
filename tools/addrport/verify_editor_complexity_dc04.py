@@ -58,8 +58,10 @@ def verify(pe, symbol_map=None):
         for line in Path(symbol_map).read_text(encoding='utf-8').splitlines():
             match = re.fullmatch(r'SporeCoop::EditorComplexity::(\w+)=0x([0-9A-Fa-f]{8}) ; verified .+', line)
             if match:
+                if match[1] in actual:
+                    raise ValueError('Duplicate complexity symbol line')
                 actual[match[1]] = int(match[2], 16)
-            elif line.strip() and not line.startswith(('#', ';')):
+            elif line.startswith('SporeCoop::EditorComplexity::'):
                 raise ValueError('Unreviewed complexity symbol line')
         if actual != SYMBOLS:
             raise ValueError('Complexity symbol map differs from its verified receipts')
