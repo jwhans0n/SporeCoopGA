@@ -574,6 +574,89 @@ void test_pending_capture_fences(){
     editor_native::drain(nullptr);CHECK(pending.empty()&&state().ready&&!state().gesture);
     reset();
 }
+std::vector<uint8_t> t_fingerprint_rows,t_fingerprint_acts;
+unsigned t_fingerprint_copies=0,t_fingerprint_writes=0;
+void* SK_THISCALL t_copy_fingerprint_rows(void* destination,const uintptr_t* source){
+    CHECK(source[2]==source[1]&&source[1]-source[0]==0x27E8);
+    ++t_fingerprint_copies;
+    t_fingerprint_rows.assign(reinterpret_cast<const uint8_t*>(source[0]),reinterpret_cast<const uint8_t*>(source[1]));
+    const auto* acts=skg::field<const uint8_t*>(t_fingerprint_rows.data(),0x78);
+    const auto* end=skg::field<const uint8_t*>(t_fingerprint_rows.data(),0x7C);
+    CHECK(end-acts==0x4E0);t_fingerprint_acts.assign(acts,end);
+    skg::field<void*>(t_fingerprint_rows.data(),0x78)=t_fingerprint_acts.data();
+    skg::field<void*>(t_fingerprint_rows.data(),0x7C)=t_fingerprint_acts.data()+t_fingerprint_acts.size();
+    skg::field<void*>(t_fingerprint_rows.data(),0x80)=t_fingerprint_acts.data()+t_fingerprint_acts.size();
+    skg::field<void*>(destination,0)=t_fingerprint_rows.data();
+    skg::field<void*>(destination,4)=t_fingerprint_rows.data()+t_fingerprint_rows.size();
+    return destination;
+}
+bool SK_THISCALL t_write_fingerprint(void* self,Stream* stream){
+    ++t_fingerprint_writes;
+    CHECK(skg::field<void*>(self,0x2BF4)==t_fingerprint_rows.data());
+    CHECK(skg::field<float>(self,0x2C48)==1.f&&skg::field<uint64_t>(self,0x68)==0);
+    auto stable=t_fingerprint_rows;std::memset(stable.data()+0x78,0,12);
+    return write(stream,&skg::field<uint32_t>(self,0x2C0C),4)&&
+        write(stream,stable.data(),uint32_t(stable.size()))&&
+        write(stream,t_fingerprint_acts.data(),uint32_t(t_fingerprint_acts.size()));
+}
+void test_full_roster_fingerprint(){
+    reset();const auto prior_copy=a_copy_class_rows,prior_write=a_write;
+    a_copy_class_rows=uintptr_t(t_copy_fingerprint_rows);a_write=uintptr_t(t_write_fingerprint);
+    std::array<uint8_t,0x27E8> row{};std::array<uint8_t,0x4E0> acts{};
+    skg::field<uint32_t>(row.data(),0)=7;skg::field<editor::ResourceKey>(row.data(),8)={1,2,3};
+    skg::field<void*>(row.data(),0x78)=acts.data();skg::field<void*>(row.data(),0x7C)=acts.data()+acts.size();
+    skg::field<void*>(row.data(),0x80)=acts.data()+acts.size();
+    skg::field<uint32_t>(t_live.data(),0x2C0C)=8;
+    Rows rows{row.data(),row.data()+row.size()};std::string error;
+    t_fingerprint_copies=t_fingerprint_writes=0;
+    editor_native_cache::Key first,again,changed;
+    CHECK(class_roster_fingerprint(t_live.data(),rows,first,error));
+    CHECK(t_fingerprint_copies==1&&t_fingerprint_writes==1&&t_allocations.empty());
+    CHECK((first.assets.size()==3&&first.assets.front()==editor::ResourceKey{1,2,3}));
+    CHECK(class_roster_fingerprint(t_live.data(),rows,again,error)&&again==first);
+    // A nested in-place edit has the same source addresses and native IDs.
+    acts[0x4B0]=1;CHECK(class_roster_fingerprint(t_live.data(),rows,changed,error)&&changed.bytes!=first.bytes);
+    acts[0x4B0]=0;changed={};row[0x600]=0x5A;
+    CHECK(class_roster_fingerprint(t_live.data(),rows,changed,error)&&changed.bytes!=first.bytes);
+    row[0x600]=0;changed={};++skg::field<uint32_t>(t_live.data(),0x2C0C);
+    CHECK(class_roster_fingerprint(t_live.data(),rows,changed,error)&&changed.bytes!=first.bytes);
+    t_alloc_fail=true;changed={};CHECK(!class_roster_fingerprint(t_live.data(),rows,changed,error)&&t_allocations.empty());
+    t_alloc_fail=false;t_fingerprint_rows.clear();t_fingerprint_acts.clear();a_copy_class_rows=prior_copy;a_write=prior_write;reset();
+}
+void test_exact_class_projection_cache(){
+    editor_native_cache::ClassesCache cache;
+    editor_native_cache::Key key;key.context=cache.context();key.source={1,2,3};key.project[0]=7;key.epoch=4;
+    key.anchor={12,1};key.acts=2;key.next_class=8;key.authoring=true;key.act_order={{12,1},{13,1}};
+    key.assets={{1,2,3}};
+    key.schema=cast_property_schema();key.bytes={1,2,3,4};
+    editor_native_cache::Classes classes;editor::ClassActSettings row;row.object={55,1};row.class_id={7,1};row.act_id=key.anchor;
+    editor::StructuredValue block;block.format=kCastBlockFormat;block.bytes={0xAA,0xBB};block.references={{8,1}};
+    row.properties[kCastBlockProperty]=block;row.properties[editor::kClassAssetResourceProperty]=editor::ResourceKey{1,2,3};
+    classes.emplace(row.object,row);CHECK(!cache.get(key));cache.put(key,classes);
+    auto found=cache.get(key);CHECK(found&&*found==classes&&cache.stats().entries==1&&cache.stats().bytes>key.bytes.size());
+    classes.begin()->second.properties[kCastBlockProperty]=editor::StructuredValue{};
+    CHECK(std::get<editor::StructuredValue>(found->at(row.object).properties.at(kCastBlockProperty))==block);
+    for(unsigned change=0;change<13;++change){
+        auto different=key;
+        if(change==0)++different.context;if(change==1)++different.source.instance;if(change==2)++different.project[0];
+        if(change==3)++different.epoch;if(change==4)++different.anchor.id;if(change==5)++different.acts;
+        if(change==6)++different.next_class;if(change==7)different.authoring=false;
+        if(change==8)std::reverse(different.act_order.begin(),different.act_order.end());
+        if(change==9)different.schema.clear();if(change==10)different.bytes.back()^=1;if(change==11)different.bytes.push_back(0);
+        if(change==12)++different.assets.front().instance;
+        CHECK(!cache.get(different));
+    }
+    CHECK(cache.get(key)==found);const auto old_context=key.context;cache.clear();
+    CHECK(cache.context()!=old_context&&!cache.get(key)&&!cache.stats().entries&&!cache.stats().bytes);
+    cache.put(key,*found);CHECK(!cache.stats().entries); // A worker with the retired context cannot publish a cache entry.
+    key.context=cache.context();cache.put(key,*found);CHECK(cache.get(key)&&cache.stats().entries==1);
+    // Keep at most eight exact versions, evicting the least recently used.
+    for(unsigned i=0;i<12;++i){auto version=key;version.bytes.push_back(uint8_t(i));cache.put(std::move(version),*found);}
+    CHECK(cache.stats().entries==8&&cache.stats().bytes<=32u<<20);CHECK(!cache.get(key));
+    auto oversized=key;oversized.bytes.resize((32u<<20)+1);const auto entries=cache.stats().entries;
+    cache.put(std::move(oversized),*found);CHECK(cache.stats().entries==entries);
+    CHECK(std::get<editor::StructuredValue>(found->at(row.object).properties.at(kCastBlockProperty))==block);
+}
 std::array<uint8_t,0x174> t_flora_ui;
 std::array<uint8_t,0x1C> t_terraform_ui;
 std::array<void*,13> t_flora_slider_vtable;
@@ -1147,6 +1230,7 @@ int main(){
     test_cold_native_terrain_initialization();
     test_terrain_pending_grab();
     test_terrain_preset_retry();
+    test_full_roster_fingerprint();test_exact_class_projection_cache();
     test_crew_input_ownership();
     test_captain_and_act_input_ownership();
     test_async_captain_asset_keeps_value_and_rechecks_identity();

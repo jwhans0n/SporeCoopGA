@@ -18,6 +18,8 @@
 namespace editor_native {
 
 inline constexpr uint32_t kPlacementLimit = 4096;
+struct ProjectionCacheStats {size_t bytes=0,entries=0;uint64_t hits=0,misses=0;};
+ProjectionCacheStats projection_cache_stats();
 
 struct Binding {
     editor::ObjectId object;

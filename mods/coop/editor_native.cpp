@@ -3,6 +3,7 @@
 #include "editor_native_tools.h"
 #include "editor_native_complexity.h"
 #include "editor_native_pose.h"
+#include "editor_native_projection_cache.h"
 #include "net/dbpf.h"
 
 #include <algorithm>
@@ -62,6 +63,7 @@ struct ValidatedSnapshot {
 };
 std::optional<ValidatedSnapshot> validated_snapshot;
 unsigned validation_depth=0;
+editor_native_cache::ClassesCache class_projection_cache;
 [[maybe_unused]] uint64_t validation_hits=0;
 void* observed_mode;
 void* observed_data;
@@ -517,6 +519,27 @@ bool class_primary_asset(void* native,editor::ResourceKey& key,std::string& erro
     }
     return true;
 }
+bool class_roster_fingerprint(void* resource,const Rows& classes,editor_native_cache::Key& key,std::string& error){
+    // Server IDs are resolver hints rather than immutable resource identities.
+    // Witness all three resolved keys even on a hit, so dependency admission or
+    // another native registration cannot silently change the cached result.
+    for(auto row=classes.begin;row!=classes.end;row+=0x27E8)for(auto offset:{0u,0x28u,0x50u}){
+        editor::ResourceKey asset;if(!class_primary_asset(row+8+offset,asset,error))return false;
+        key.assets.push_back(asset);
+    }
+    Owned fragment(construct());if(!fragment.p){error="Cannot allocate the owned cast fingerprint";return false;}
+    std::memset(skg::ptr_add<void>(fragment.p,0x68),0,0x10);
+    std::memset(skg::ptr_add<void>(fragment.p,0x2C30),0,0x20);
+    skg::field<float>(fragment.p,0x2C48)=1.f;
+    const std::array<uintptr_t,3> slice{uintptr_t(classes.begin),uintptr_t(classes.end),uintptr_t(classes.end)};
+    // CopyClassRows owns every nested act/rule/dialog allocation. One exact
+    // native Write witnesses the complete roster, including opaque fields and
+    // in-place edits whose native pointers and collaboration revision did not
+    // change. No native address or partial layout digest grants a cache hit.
+    skg::thiscall<void*>(a_copy_class_rows,skg::ptr_add<void>(fragment.p,0x2BF4),slice.data());
+    skg::field<uint32_t>(fragment.p,0x2C0C)=skg::field<uint32_t>(resource,0x2C0C);
+    return serialize(fragment.p,key.bytes,error);
+}
 bool assign_class_primary(void* native,const editor::ClassActSettings& settings,std::string& error){
     const auto field=settings.properties.find(editor::kClassAssetResourceProperty);
     const auto* key=field==settings.properties.end()?nullptr:std::get_if<editor::ResourceKey>(&field->second);
@@ -608,15 +631,31 @@ bool projection(void* r, Snapshot& out, std::string& error,
         out.document.next_class=skg::field<uint32_t>(r,0x2C0C);
         out.document.next_id=std::max<uint64_t>(out.document.next_id,6ull<<32);
         for(auto row=classes.begin;row!=classes.end;row+=0x27E8){
-            const auto index=skg::field<uint32_t>(row,0);
             Rows companions;
             if(!rows(row+8,0x70,0x4E0,8,companions) || uint32_t((companions.end-companions.begin)/0x4E0)!=count){error="A native class has a different act roster";return false;}
-            editor::ClassActSettings settings;
-            settings.object={(5ull<<32)|index,1};settings.class_id={(2ull<<32)|index,1};settings.act_id=anchor;
-            editor::StructuredValue value;if(!class_block(row,value,error))return false;
-            editor::ResourceKey primary;if(!class_primary_asset(row+8,primary,error))return false;
-            settings.properties[kCastBlockProperty]=std::move(value);settings.properties[editor::kClassAssetResourceProperty]=primary;
-            out.document.class_settings.emplace(settings.object,std::move(settings));
+        }
+        editor_native_cache::Key key;key.context=class_projection_cache.context();key.source=skg::field<editor::ResourceKey>(r,8);
+        key.project=logical.project;key.epoch=logical.epoch;
+        key.anchor=anchor;key.acts=count;key.next_class=out.document.next_class;key.authoring=tracks_authoring();
+        key.act_order=logical.act_order;key.schema=out.document.class_schema;
+        std::string cache_error;
+        const bool fingerprinted=class_roster_fingerprint(r,classes,key,cache_error);
+        // Fingerprinting is optional. A failed extra allocation or Write must
+        // still take the original checked per-class projection path.
+        if(auto cached=fingerprinted?class_projection_cache.get(key):std::shared_ptr<const editor_native_cache::Classes>{})out.document.class_settings=*cached;
+        else{
+            for(auto row=classes.begin;row!=classes.end;row+=0x27E8){
+                const auto index=skg::field<uint32_t>(row,0);
+                Rows companions;
+                if(!rows(row+8,0x70,0x4E0,8,companions) || uint32_t((companions.end-companions.begin)/0x4E0)!=count){error="A native class has a different act roster";return false;}
+                editor::ClassActSettings settings;
+                settings.object={(5ull<<32)|index,1};settings.class_id={(2ull<<32)|index,1};settings.act_id=anchor;
+                editor::StructuredValue value;if(!class_block(row,value,error))return false;
+                editor::ResourceKey primary;if(!class_primary_asset(row+8,primary,error))return false;
+                settings.properties[kCastBlockProperty]=std::move(value);settings.properties[editor::kClassAssetResourceProperty]=primary;
+                out.document.class_settings.emplace(settings.object,std::move(settings));
+            }
+            if(fingerprinted)class_projection_cache.put(std::move(key),out.document.class_settings);
         }
     }
     out.bindings.clear();
@@ -2536,6 +2575,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
 }
 
 void shutdown() {
+    class_projection_cache.clear();
     std::string bounds_error;
     if(!complexity_bounds.set(false,bounds_error) && H && H->log)H->log(M,SK_ERROR,"%s",bounds_error.c_str());
     complexity_available=false;
@@ -2575,6 +2615,7 @@ State state() {
     const bool scenario=game::mode_id()==modes::kScenario;
     void* m = mode(); void* d = data(m);
     if (m != observed_mode || d != observed_data || scenario!=observed_scenario) {
+        class_projection_cache.clear();
         observed_mode = m; observed_data = d; observed_scenario=scenario; ++generation;
         bindings.clear();incarnations.clear();selection.clear();act_identity={};
         terrain_before.reset();terrain_pending=terrain_capturing=terrain_rebuilding=terrain_recipe_replacement=false;terrain_grounding.clear();materialized_terrain.reset();
@@ -2621,6 +2662,7 @@ void bind(const std::vector<Binding>& value) {
 }
 void bind_acts(const editor::Document& document){
     act_identity={};act_identity.act_order=document.act_order;
+    act_identity.project=document.project;act_identity.epoch=document.epoch;
     act_identity.next_id=document.next_id;
     act_identity.next_terrain_order=document.next_terrain_order;
     act_identity.terrain=document.terrain;
@@ -4057,12 +4099,16 @@ std::string authoring_status(){
     return result;
 }
 
+ProjectionCacheStats projection_cache_stats(){
+    const auto stats=class_projection_cache.stats();return {stats.bytes,stats.entries,stats.hits,stats.misses};
+}
 std::string status() {
-    auto s=state(); char b[384];
-    snprintf(b,sizeof b,"editor_native available=%u editing=%u ready=%u playtesting=%u entry=%u act=%u generation=%llu gesture=%u history=%u/%u captures=%llu restores=%llu rejected=%llu cancellation=%u cancellation_serial=%llu ordinary_cancellations=%llu",
+    auto s=state();const auto cache=projection_cache_stats();char b[640];
+    snprintf(b,sizeof b,"editor_native available=%u editing=%u ready=%u playtesting=%u entry=%u act=%u generation=%llu gesture=%u history=%u/%u captures=%llu restores=%llu rejected=%llu cancellation=%u cancellation_serial=%llu ordinary_cancellations=%llu class_cache_bytes=%zu class_cache_entries=%zu class_cache_hits=%llu class_cache_misses=%llu",
         s.available,s.editing,s.ready,s.playtesting,s.entry,s.act,(unsigned long long)s.generation,s.gesture,
         s.history_cursor,s.history_size,(unsigned long long)captures,(unsigned long long)restores,(unsigned long long)rejected,
-        unsigned(cancellation.has_value()),(unsigned long long)cancellation_counter,(unsigned long long)ordinary_cancellations);
+        unsigned(cancellation.has_value()),(unsigned long long)cancellation_counter,(unsigned long long)ordinary_cancellations,
+        cache.bytes,cache.entries,(unsigned long long)cache.hits,(unsigned long long)cache.misses);
     return b;
 }
 } // namespace editor_native
