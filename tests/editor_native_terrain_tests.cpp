@@ -293,4 +293,20 @@ static void import_counter_chaining(){
     witness.clear();for(unsigned round=0;round<5;++round){auto out=proxy(many);CHECK(witness.observe(many,out,error));CHECK(witness.owned_bytes()<(64u<<20));many=imported(out,uint16_t(round+17));}
     auto oversized=many;oversized.rows[0].push_back(oversized.rows[0][0]);CHECK(!witness.observe(oversized,proxy(oversized),error));
 }
-int main(int argc,char** argv){roundtrip();rejected();transform_counters();materialization();import_counter_chaining();if(argc>1)captured(argv[1]);if(argc>2)captured_append(argv[1],argv[2]);std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+static void captured_import_chain(const char* authored_path,const char* rendered_path,const char* repeated_path){
+    const auto read=[](const char* path){std::ifstream file(path,std::ios::binary);CHECK(bool(file));return std::vector<uint8_t>((std::istreambuf_iterator<char>(file)),{});};
+    const auto authored=read(authored_path),first=read(rendered_path),second=read(repeated_path);
+    namespace material=editor_native_terrain_materialization;material::Recipe input,output,again;std::string error;
+    CHECK(material::from_bytes(authored,input,error)&&material::from_bytes(first,output,error)&&material::from_bytes(second,again,error));
+    material::Materialization witness;CHECK(witness.observe(input,output,error));
+    auto imported=output;for(auto& kind:imported.rows)for(auto& row:kind){row.bytes[14]=1;row.bytes[15]=0;}
+    const bool observed=witness.observe(imported,again,error);CHECK(observed);if(!observed){std::printf("Captured import rejection: %s\n",error.c_str());return;}
+    auto normalized=second;CHECK(witness.normalize(normalized,error));material::Recipe result;
+    CHECK(material::from_bytes(normalized,result,error)&&result==input);
+    std::printf("Captured native import chain: %zu effects/%zu models, exact original payloads restored\n",input.rows[0].size(),input.rows[1].size());
+}
+int main(int argc,char** argv){roundtrip();rejected();transform_counters();materialization();import_counter_chaining();
+    if(argc==5&&std::string(argv[1])=="--import-counter-fixture")captured_import_chain(argv[2],argv[3],argv[4]);
+    else {if(argc>1)captured(argv[1]);if(argc>2)captured_append(argv[1],argv[2]);}
+    std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;
+}

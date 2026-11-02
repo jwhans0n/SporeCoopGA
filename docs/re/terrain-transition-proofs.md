@@ -70,7 +70,7 @@ requiring the existing recovery safeguards and cannot publish a partial proof.
 
 ## Evidence and limits
 
-The production-adapter i686 fixture currently passes 14,451 focused terrain
+The production-adapter i686 fixture passes 14,466 focused terrain
 checks, including exact Save source rotation, saved/live raw mismatch, malformed
 receipts, stale owners, changed project/epoch/participant/native generation,
 callback denial/exception, callback-side owner replacement, one-use retirement,
@@ -127,5 +127,25 @@ counter reset/wrap, current and retained map chaining, distinct-source ambiguity
 fresh/edited/append collisions and five generations of 8,192 effect records.
 The production Native wrapper fixture additionally resets both effect/model
 counters between actual hooked materializations and checks exact authored XYZ
-restoration. Running-game C15 causation and the repaired append remain pending
-fresh before/after PropertyList samples and a new installed candidate.
+restoration. Combined strict Native validation passes 30,839 checks, including
+248 current-layout history-toolbar checks, against 51 exact inputs with no
+source drift (`out/preview9-phase2-toolbar-receipt.json`).
+
+Fresh retained C15 PropertyList samples now distinguish the actual boundaries.
+Before the stroke, both peers' property Transform arrays equal the earlier
+canonical bytes exactly. Live vectors differ in 27 effect and 92 model rows:
+only counter 1-to-2 and verified derived XYZ, with 14 effect/28 model rows
+containing numeric differences. After the host's attempted append, its
+PropertyList and live vectors agree, with 181 effects/102 models. The same 42
+old numeric rows change again while counters remain 2-to-2, consistent with
+the verified import reset followed by `F35E10`. The observer's vectors remain
+unchanged. Full exact comparison is retained at
+`out/preview9-c15-terrain-properties-after/pre-post-comparison.json`.
+
+The pure helper replays those retained Transform samples, the explicit verified
+import counter reset, and canonical companion columns, restoring every original
+180 effect/102 model payload exactly. The reconstruction keeps the canonical
+keys/scalars and substitutes only the actual sampled Transform arrays; it is
+not a captured complete native gesture. Its deterministic corpus is under
+`out/preview9-c15-terrain-import-corpus`. A repaired running-game append still
+requires a newly installed candidate; C15 remains a retained rejection.
