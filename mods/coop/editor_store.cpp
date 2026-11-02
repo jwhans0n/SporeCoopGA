@@ -60,6 +60,31 @@ void identity(net::Reader& r,Snapshot& s){need(r.raw(s.project.data(),s.project.
 void semantics(net::Writer& w,const Snapshot& s){blob(w,s.document);blob(w,s.id_mapping);blob(w,s.manifest);w.u32(uint32_t(s.metadata.size()));if(!s.metadata.empty())w.raw(s.metadata.data(),s.metadata.size());}
 void semantics(net::Reader& r,Snapshot& s){blob(r,s.document,kDocumentBytes);blob(r,s.id_mapping,kMappingBytes);blob(r,s.manifest,kManifestBytes);
     const size_t n=r.u32();need(r.ok()&&n<=kMetadataBytes&&n<=r.left(),"invalid metadata length");s.metadata.assign(reinterpret_cast<const char*>(r.cur()),n);r.skip(n);}
+// Journal unchanged prefixes and suffixes once. History commonly grows by a
+// small entry while almost all previously accepted bytes remain identical.
+// Each delta is checked against the previous frame's digest before decoding.
+template<class Bytes> void delta(net::Writer& w,const Bytes& base,const Bytes& next){
+    if(base==next){w.u8(0);return;}
+    size_t prefix=0,suffix=0;
+    while(prefix<base.size()&&prefix<next.size()&&base[prefix]==next[prefix])++prefix;
+    while(suffix<base.size()-prefix&&suffix<next.size()-prefix&&base[base.size()-1-suffix]==next[next.size()-1-suffix])++suffix;
+    const auto middle=next.size()-prefix-suffix;
+    if(middle+12<next.size()+4){
+        w.u8(2);w.u32(uint32_t(prefix));w.u32(uint32_t(suffix));w.u32(uint32_t(middle));
+        if(middle)w.raw(next.data()+prefix,middle);
+    }else{w.u8(1);w.u32(uint32_t(next.size()));if(!next.empty())w.raw(next.data(),next.size());}
+}
+template<class Bytes> void delta(net::Reader& r,const Bytes& base,Bytes& next,size_t limit){
+    const auto kind=r.u8();need(r.ok()&&kind<=2,"invalid journal delta kind");
+    if(!kind){next=base;return;}
+    const size_t prefix=kind==2?r.u32():0,suffix=kind==2?r.u32():0,n=r.u32();
+    need(r.ok()&&prefix<=base.size()&&suffix<=base.size()-prefix&&prefix<=limit&&suffix<=limit-prefix&&
+         n<=limit-prefix-suffix&&n<=r.left(),"invalid journal delta range");
+    Bytes staged;staged.reserve(prefix+n+suffix);
+    staged.insert(staged.end(),base.begin(),base.begin()+prefix);
+    staged.insert(staged.end(),r.cur(),r.cur()+n);r.skip(n);
+    staged.insert(staged.end(),base.end()-suffix,base.end());next=std::move(staged);
+}
 std::string state_hash(const Snapshot& s,const std::string& native_hash){net::Writer w;identity(w,s);digest(w,native_hash);semantics(w,s);return upd::sha256_hex(w.data);}
 std::vector<uint8_t> frame(uint8_t type,const std::vector<uint8_t>& payload){need(payload.size()<=kFrameLimit,"project frame exceeds limit");net::Writer w;w.u32(kMagic);w.u32(kFormat);w.u8(type);w.u32(uint32_t(payload.size()));digest(w,upd::sha256_hex(payload));if(!payload.empty())w.raw(payload.data(),payload.size());return std::move(w.data);}
 struct Parsed {uint8_t type;std::vector<uint8_t> payload;size_t next;};
@@ -176,15 +201,22 @@ bool Store::open(const fs::path& root,const Project& project,std::string& error)
         const auto checkpoint_revision=recovered.revision;native_hash_=upd::sha256_hex(recovered.native_snapshot);digest_=state_hash(recovered,native_hash_);
         auto bytes=present(directory_/"journal.bin")?read_file(directory_/"journal.bin",kJournalBytes+kFrameLimit):std::vector<uint8_t>{};size_t offset=0;
         while(offset<bytes.size()){
-            Parsed entry;if(!parse_frame(bytes,offset,entry))break;need(entry.type==2,"invalid journal frame type");net::Reader r(entry.payload.data(),entry.payload.size());
-            const auto previous=digest(r);Snapshot next;identity(r,next);const auto changed=r.u8();need(changed<=1,"invalid native snapshot flag");const auto native_hash=digest(r);
-            if(changed)blob(r,next.native_snapshot,kNativeBytes);semantics(r,next);need(r.ok()&&!r.left(),"invalid journal payload");valid(next,false);
+            Parsed entry;if(!parse_frame(bytes,offset,entry))break;need(entry.type==2||entry.type==3,"invalid journal frame type");net::Reader r(entry.payload.data(),entry.payload.size());
+            const auto previous=digest(r);Snapshot next;identity(r,next);
             need(next.project==project,"journal belongs to another project");
-            if(next.revision>checkpoint_revision){need(next.epoch==recovered.epoch&&next.revision==recovered.revision+1&&previous==digest_,"journal revision/epoch chain mismatch");
-                if(changed){need(!next.native_snapshot.empty()&&upd::sha256_hex(next.native_snapshot)==native_hash,"native snapshot hash mismatch");recovered.native_snapshot=std::move(next.native_snapshot);native_hash_=native_hash;}
-                else need(native_hash==native_hash_,"journal native dependency mismatch");
-                recovered.epoch=next.epoch;recovered.revision=next.revision;recovered.schema=next.schema;recovered.document=std::move(next.document);recovered.id_mapping=std::move(next.id_mapping);recovered.manifest=std::move(next.manifest);recovered.metadata=std::move(next.metadata);digest_=state_hash(recovered,native_hash_);
+            if(next.revision<=checkpoint_revision){offset=entry.next;continue;}
+            need(next.epoch==recovered.epoch&&next.revision==recovered.revision+1&&previous==digest_,"journal revision/epoch chain mismatch");
+            if(entry.type==2){
+                const auto changed=r.u8();need(changed<=1,"invalid native snapshot flag");const auto native_hash=digest(r);
+                if(changed)blob(r,next.native_snapshot,kNativeBytes);else next.native_snapshot=recovered.native_snapshot;
+                semantics(r,next);need(upd::sha256_hex(next.native_snapshot)==native_hash,"native snapshot hash mismatch");
+            }else{
+                delta(r,recovered.native_snapshot,next.native_snapshot,kNativeBytes);delta(r,recovered.document,next.document,kDocumentBytes);
+                delta(r,recovered.id_mapping,next.id_mapping,kMappingBytes);delta(r,recovered.manifest,next.manifest,kManifestBytes);
+                delta(r,recovered.metadata,next.metadata,kMetadataBytes);
             }
+            need(r.ok()&&!r.left(),"invalid journal payload");valid(next,true);
+            native_hash_=upd::sha256_hex(next.native_snapshot);digest_=state_hash(next,native_hash_);recovered=std::move(next);
             offset=entry.next;
         }
         snapshot_=std::move(recovered);journal_bytes_=snapshot_.revision==checkpoint_revision?0:offset;
@@ -198,8 +230,11 @@ bool Store::commit(const Snapshot& candidate,std::string& error){
         auto hash=changed?upd::sha256_hex(candidate.native_snapshot):native_hash_;
         Snapshot staged=candidate;
         auto state_digest=state_hash(staged,hash);
-        net::Writer w;digest(w,digest_);identity(w,candidate);w.u8(changed?1:0);digest(w,hash);if(changed)blob(w,candidate.native_snapshot);semantics(w,candidate);
-        auto bytes=frame(2,w.data);
+        net::Writer w;digest(w,digest_);identity(w,candidate);
+        delta(w,snapshot_.native_snapshot,changed?candidate.native_snapshot:snapshot_.native_snapshot);
+        delta(w,snapshot_.document,candidate.document);delta(w,snapshot_.id_mapping,candidate.id_mapping);
+        delta(w,snapshot_.manifest,candidate.manifest);delta(w,snapshot_.metadata,candidate.metadata);
+        auto bytes=frame(3,w.data);
         if(journal_bytes_>=kJournalBytes || bytes.size()>kJournalBytes-journal_bytes_){Snapshot full=candidate;if(full.native_snapshot.empty())full.native_snapshot=snapshot_.native_snapshot;
             healthy_=save_checkpoint(full,error);return healthy_;}
         if(!write_file(directory_/"journal.bin",bytes,true,error)){healthy_=false;return false;}

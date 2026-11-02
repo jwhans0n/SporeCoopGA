@@ -102,4 +102,23 @@ static void replica_adoption(){
     fs::create_directory(dir/"checkpoint.tmp");auto later=new_session;later.revision=40;CHECK(!store.adopt_checkpoint(later,error));CHECK(!store.healthy());store.close();fs::remove(dir/"checkpoint.tmp");
     CHECK(store.open(t.root,s.project,error));CHECK(store.snapshot()==new_session);CHECK(store.commit(next(new_session),error));
 }
-int main(){codec();lifecycle();every_torn_tail();corruption_and_compaction();output_failures();replica_adoption();std::cout<<"editor store: "<<checks<<" checks passed\n";}
+static void sparse_journal(){
+    Temp t;Store store;std::string error;auto s=sample();
+    s.native_snapshot.resize(2u<<20,61);s.document.resize(1u<<20,83);s.id_mapping.resize(65536,47);
+    CHECK(store.create(t.root,s,error));const auto dir=store.directory();
+    for(unsigned i=0;i<30;++i){
+        auto candidate=store.snapshot();++candidate.revision;
+        candidate.native_snapshot[16384+i]=uint8_t(i);candidate.document.push_back(uint8_t(i));
+        CHECK(store.commit(candidate,error));s=std::move(candidate);
+    }
+    // Thirty sparse gestures must not write thirty full native/history copies.
+    CHECK(fs::file_size(dir/"journal.bin")<16384);
+    store.close();CHECK(store.open(t.root,s.project,error));CHECK(store.snapshot()==s);
+    auto reduced=s;++reduced.revision;reduced.document.resize(128);reduced.native_snapshot.clear();
+    CHECK(store.commit(reduced,error));reduced.native_snapshot=s.native_snapshot;
+    store.close();CHECK(store.open(t.root,s.project,error));CHECK(store.snapshot()==reduced);
+    const auto journal=load(dir/"journal.bin");CHECK(store.checkpoint(reduced,error));store.close();
+    put(dir/"journal.bin",journal);CHECK(store.open(t.root,s.project,error));CHECK(store.snapshot()==reduced);
+    CHECK(fs::file_size(dir/"journal.bin")==0);
+}
+int main(){codec();lifecycle();every_torn_tail();corruption_and_compaction();output_failures();replica_adoption();sparse_journal();std::cout<<"editor store: "<<checks<<" checks passed\n";}
