@@ -87,11 +87,13 @@ struct RejectionRestore {
     editor::ObjectId act;
     uint64_t serial=0,transport=0,generation=0,started=0,scene_frame=0;
     editor::Revision scene_revision=0;
-    bool view_restored=false,failed=false;
+    bool view_restored=false,failed=false,verified=false;
     std::string reason;
+    std::optional<editor::OperationId> continuation;
 };
 std::optional<RejectionRestore> rejection_restore;
 uint64_t rejection_serial=0;
+bool rejection_servicing=false;
 bool detached_scene() { return local_creation.has_value() || rejection_restore.has_value(); }
 std::optional<editor_native::Snapshot> reopen_saved;
 std::optional<bool> projection_override;
@@ -255,6 +257,7 @@ std::unique_ptr<DurableCommit> durable_commit;
 struct Pending { editor::Request request; editor_native::Gesture gesture; uint64_t reverted_frame = 0; bool submitted = false; std::vector<uint8_t> assets={}; bool tentative=false; };
 std::optional<Pending> pending;
 std::optional<editor::OperationId> awaiting_operation;
+void submit_pending_gesture();
 struct RollbackFence {
     uint64_t generation=0;
     editor::ResourceKey source;
@@ -1512,6 +1515,8 @@ editor_native::GestureScope current_projection_scope() {
 }
 bool rejection_context(const RejectionRestore& pin){
     return rejection_restore && rejection_restore->serial==pin.serial && !rejection_restore->failed &&
+        (!pin.continuation || (pending && !pending->submitted && !pending->tentative &&
+            pending->request.operation==*pin.continuation && awaiting_operation==pin.continuation)) &&
         !closing && !recovery && !transport_teardown && !frozen && controller && native_attached && C.session &&
         C.session->connected() && observed_transport==pin.transport && C.session->transport_generation()==pin.transport &&
         current_projection_scope()==pin.scope && native_generation==pin.generation;
@@ -1546,8 +1551,14 @@ bool rejected_recovery_owner(const RejectionRestore& pin,std::string& error){
 void fail_rejection_restore(const RejectionRestore& pin,const std::string& error,bool expired=false){
     if(!rejection_restore || rejection_restore->serial!=pin.serial)return;
     rejection_restore->failed=true;frozen=true;
+    if(pin.continuation && pending && pending->request.operation==*pin.continuation){pending.reset();awaiting_operation.reset();}
     if(expired)native_identity_lost=true;
     tell("Recover the committed draft: "+pin.reason+"; canonical restoration failed: "+error);
+}
+bool rejection_wait_durable(const RejectionRestore& pin){
+    if(!durable_commit)return false;
+    if(rejection_restore && rejection_restore->serial==pin.serial)rejection_restore->verified=false;
+    return true;
 }
 bool begin_rejection_restore(const std::string& reason,editor_native::SceneOwner expected_owner,std::string& error){
     if(rejection_restore){error="Another rejected edit is already restoring its committed scene";return false;}
@@ -1586,14 +1597,17 @@ bool begin_rejection_restore(const std::string& reason,editor_native::SceneOwner
     tell("The edit was rejected; verifying the committed native scene: "+reason);return true;
 }
 void service_rejection_restore(){
-    if(!rejection_restore || rejection_restore->failed || durable_commit)return;
+    if(!rejection_restore || rejection_restore->failed || durable_commit || rejection_servicing)return;
+    struct Servicing {Servicing(){rejection_servicing=true;}~Servicing(){rejection_servicing=false;}} servicing;
     auto pin=*rejection_restore;std::string error;
     if(!rejection_identity(pin,error)){fail_rejection_restore(pin,error,true);return;}
+    if(rejection_wait_durable(pin))return;
     if(now_ms()-pin.started>180000){fail_rejection_restore(pin,"Native restoration did not settle before its deadline");return;}
     const auto native=editor_native::state();
     if(!native.ready || native.gesture || editor_native_save::busy() || H->frame_index()<=pin.scene_frame)return;
     const auto scene=editor_native::creation_scene_state(pin.owner);
     if(!rejection_identity(pin,error)){fail_rejection_restore(pin,error,true);return;}
+    if(rejection_wait_durable(pin))return;
     if(!scene.settled())return;
     auto snapshot=current_native;snapshot.document=controller->state().document;
     const auto revision=snapshot.document.revision;
@@ -1604,32 +1618,38 @@ void service_rejection_restore(){
         snapshot.act=act!=snapshot.document.act_order.end()?uint32_t(act-snapshot.document.act_order.begin()):
             std::min<uint32_t>(native.act,uint32_t(snapshot.document.acts.size()-1));
         if(!rejection_identity(pin,error)){fail_rejection_restore(pin,error,true);return;}
+        if(rejection_wait_durable(pin))return;
         if(!register_native_records(resources.root,resources.bundle.records,error)){
             fail_rejection_restore(pin,error);return;
         }
         if(!rejection_identity(pin,error)){fail_rejection_restore(pin,error,true);return;}
+        if(rejection_wait_durable(pin))return;
         if(controller->state().document.revision!=revision)return;
-        const auto current=[pin,revision]{return rejection_context(pin) && controller->state().document.revision==revision;};
+        const auto current=[pin,revision]{return !durable_commit && rejection_context(pin) && controller->state().document.revision==revision;};
         const bool restored=editor_native::restore_fenced(snapshot,pin.generation,pin.owner,pin.scope,current,error);
         std::string identity_error;
         if(!rejection_identity(pin,identity_error)){fail_rejection_restore(pin,identity_error,true);return;}
+        if(rejection_wait_durable(pin))return;
         if(controller->state().document.revision!=revision)return;
         if(!restored){fail_rejection_restore(pin,error);return;}
-        pin.scene_revision=revision;pin.scene_frame=H->frame_index();pin.view_restored=false;
+        pin.scene_revision=revision;pin.scene_frame=H->frame_index();pin.view_restored=false;pin.verified=false;
         rejection_restore=pin;return;
     }
     if(!pin.view_restored){
         if(!rejection_identity(pin,error)){fail_rejection_restore(pin,error,true);return;}
+        if(rejection_wait_durable(pin))return;
         if(pin.selected && (snapshot.document.placements.contains(*pin.selected) ||
             (*pin.selected==editor_native::kCaptainObject && snapshot.document.settings.contains(*pin.selected)))){
             if(!editor_native::select_placement(*pin.selected,error)){fail_rejection_restore(pin,error);return;}
             if(!rejection_identity(pin,error)){fail_rejection_restore(pin,error,true);return;}
+            if(rejection_wait_durable(pin))return;
         }
         if(controller->state().document.revision!=revision)return;
-        const auto current=[pin,revision]{return rejection_context(pin) && controller->state().document.revision==revision;};
+        const auto current=[pin,revision]{return !durable_commit && rejection_context(pin) && controller->state().document.revision==revision;};
         const bool view=editor_native::restore_view_fenced(pin.view,pin.generation,pin.owner,pin.scope,current,error);
         std::string identity_error;
         if(!rejection_identity(pin,identity_error)){fail_rejection_restore(pin,identity_error,true);return;}
+        if(rejection_wait_durable(pin))return;
         if(controller->state().document.revision!=revision)return;
         if(!view){fail_rejection_restore(pin,error);return;}
         pin.view_restored=true;pin.scene_frame=H->frame_index();rejection_restore=pin;return;
@@ -1641,10 +1661,17 @@ void service_rejection_restore(){
         editor_native::validate(observed,snapshot.document,error) && supported_between(snapshot,observed,error);
     std::string identity_error;
     if(!rejection_identity(pin,identity_error)){fail_rejection_restore(pin,identity_error,true);return;}
+    if(rejection_wait_durable(pin))return;
     if(controller->state().document.revision!=revision)return;
     if(!okay){fail_rejection_restore(pin,error.empty()?"The settled native scene differs from the committed draft":error);return;}
-    rendered_revision=revision;rejection_restore.reset();last_presence_value.reset();
-    tell("The edit was rejected and the committed draft restored: "+pin.reason);
+    rendered_revision=revision;last_presence_value.reset();
+    if(pin.continuation){
+        rejection_restore->verified=true;
+        // Submit in this same checked drain. The submission preflight closes
+        // the copied owner/head again before releasing the local hold.
+        submit_pending_gesture();return;
+    }
+    rejection_restore.reset();tell("The edit was rejected and the committed draft restored: "+pin.reason);
 }
 bool terrain_runtime_current(const editor_native::TerrainTransitionKey& key,uint64_t transport,editor::Revision revision,
                              bool allow_close=false,bool allow_recovery=false) {
@@ -2031,13 +2058,18 @@ void captured(editor_native::Gesture gesture) {
         frozen=true;native_identity_lost=true;tell("The captured gesture could not pin its native editor: "+error);return;
     }
     std::string identity_error;
-    auto captured_identity=[&]{
+    auto captured_identity=[&](bool ready=true,editor_native::SceneResumeState* observed=nullptr){
         identity_error.clear();
         auto context=[&]{return controller && C.session && C.session->connected() && !closing && !recovery && !transport_teardown &&
             observed_transport==captured_transport && C.session->transport_generation()==captured_transport &&
             controller->view().context.project==captured_context.project && controller->view().context.epoch==captured_context.epoch &&
             controller->view().local==captured_author && controller->state().document.revision==captured_revision;};
         if(!context() || editor_native::state().generation!=gesture.generation)return false;
+        if(!ready){
+            const auto scene=editor_native::creation_scene_state(captured_owner);
+            if(observed)*observed=scene;
+            return scene.available && scene.owner && scene.generation==gesture.generation && context();
+        }
         editor_native::SceneOwner current;
         return editor_native::capture_scene_owner(current,identity_error) && current==captured_owner && context() &&
             editor_native::state().generation==gesture.generation;
@@ -2218,31 +2250,65 @@ void captured(editor_native::Gesture gesture) {
     const bool tentative=!editing_cast && assets.empty() && std::all_of(r.mutations.begin(),r.mutations.end(),[&](const auto& mutation){
         return mutation.kind==editor::MutationKind::Set && doc.placements.contains(mutation.target);
     });
+    std::optional<RejectionRestore> inverse_hold;
     if(tentative){
         if(!editor_native::validate(gesture.before,doc,error)){log_capture_rejection("gesture-before-canonical",gesture,error);reject_captured();return;}
     }else{
         if(!captured_identity()){reject_captured();return;}
+        if(!H->frame_index || rejection_serial==UINT64_MAX){
+            error="Native gesture submission requires a restoration frame and serial";reject_captured();return;
+        }
+        RejectionRestore pin;pin.scope=current_projection_scope();pin.owner=captured_owner;pin.generation=gesture.generation;
+        pin.transport=captured_transport;pin.serial=++rejection_serial;pin.started=now_ms();pin.scene_revision=captured_revision;
+        pin.reason="The native gesture's inverse";pin.continuation=r.operation;
+        const auto native=editor_native::state();pin.act=logical_act(native.act);
+        if(!native.selected.empty())pin.selected=native.selected.front();
+        if(!editor_native::capture_view(pin.view,error) || !captured_identity()){reject_captured();return;}
         // Structural gestures still retire native temporary objects before the
         // canonical allocation can recreate their slots on a later frame.
         stage_stamp(doc.project,r.operation,doc.revision,editor_stage_metrics::Stage::InverseBegin);
         const bool restored=editor_native::apply(doc,revert,&current_native,error);
         stage_stamp(doc.project,r.operation,doc.revision,editor_stage_metrics::Stage::InverseEnd,restored?1:2);
         if(!restored){frozen=true;tell("The native gesture could not return to committed state: "+error);return;}
+        // Restore can legitimately queue terrain and local-view work. Its raw
+        // owner must remain exact, while readiness waits for a later frame.
+        editor_native::SceneResumeState restored_scene;
+        if(!captured_identity(false,&restored_scene)){
+            frozen=true;native_identity_lost=true;tell("The native inverse's original scene identity expired; the current scene was left intact");return;
+        }
+        const bool terrain=std::any_of(r.mutations.begin(),r.mutations.end(),[](const auto& mutation){
+            return mutation.kind==editor::MutationKind::AppendTerrain || mutation.kind==editor::MutationKind::SetTerrain ||
+                mutation.kind==editor::MutationKind::DeleteTerrain;
+        });
+        if(terrain || !restored_scene.settled()){pin.scene_frame=H->frame_index();inverse_hold=std::move(pin);}
     }
-    if(!captured_identity()){reject_captured();return;}
+    if(!inverse_hold && !captured_identity()){reject_captured();return;}
     if (!H->frame_index) { frozen = true; tell("Native gesture submission requires the game frame counter"); return; }
-    if(!complexity_authorized()){error=complexity_conflict();reject_captured();return;}
+    if(!inverse_hold && !complexity_authorized()){error=complexity_conflict();reject_captured();return;}
     pending = Pending{r, std::move(gesture), H->frame_index(), false};
     pending->assets=std::move(assets);
     pending->tentative=tentative;
     awaiting_operation = r.operation;
-    status = tentative?"Submitting the placement gesture":"Waiting for the next game frame before submitting the placement gesture";
+    if(inverse_hold){rejection_restore=std::move(inverse_hold);last_presence_value.reset();
+        status="Waiting for the native inverse to settle before submitting the edit";}
+    else status = tentative?"Submitting the placement gesture":"Waiting for the next game frame before submitting the placement gesture";
 }
 void submit_pending_gesture() {
+    static bool submitting=false;
+    if(submitting)return;
+    struct Submitting {bool& flag;Submitting(bool& value):flag(value){flag=true;}~Submitting(){flag=false;}} submitting_scope(submitting);
     if (!pending || pending->submitted) return;
+    std::optional<RejectionRestore> continuation;
+    if(rejection_restore && rejection_restore->continuation==pending->request.operation){
+        if(!rejection_restore->verified)return;
+        continuation=*rejection_restore;
+    }
+    const auto captured_operation=pending->request.operation;
+    const auto native = editor_native::state();
+    if(!controller || !pending || pending->request.operation!=captured_operation)return;
+    if(continuation && rejection_wait_durable(*continuation))return;
     const auto& r = pending->request;
     const auto& v = controller->view();
-    const auto native = editor_native::state();
     std::string error;
     const bool changed_generation = r.project!=v.context.project || r.operation.author!=v.local ||
         r.operation.epoch != v.context.epoch || pending->gesture.generation != native_generation || native.generation != native_generation;
@@ -2250,6 +2316,10 @@ void submit_pending_gesture() {
     if (closing || ending || frozen || recovery || !C.session || !C.session->connected() || v.phase != Phase::Ready ||
         r.project != v.context.project || r.operation.author != v.local || r.operation.author.slot != C.session->my_id() ||
         r.base_revision > controller->state().document.revision || changed_generation) {
+        if(continuation){
+            if(closing || ending || recovery)return;
+            fail_rejection_restore(*continuation,"The held inverse's submission context expired",true);return;
+        }
         if((closing || ending) && pending->tentative && !changed_generation)return;
         if(changed_generation && pending->tentative)native_identity_lost=true;
         if(pending->tentative && !changed_generation && !closing && !ending && !restore_tentative(error)){
@@ -2263,6 +2333,20 @@ void submit_pending_gesture() {
     // update. Recreating the same slot in this outside-frame pump is too early.
     // Repeated callbacks within one rendered frame must not advance this gate.
     if (!native.ready || native.gesture || !H->frame_index || (!pending->tentative && H->frame_index() <= pending->reverted_frame)) return;
+    if(continuation){
+        const auto pin=*continuation;
+        const auto scene=editor_native::creation_scene_state(pin.owner);
+        if(!rejection_identity(pin,error)){fail_rejection_restore(pin,error,true);return;}
+        if(rejection_wait_durable(pin))return;
+        if(!scene.settled())return;
+        if(controller->state().document.revision!=pin.scene_revision){rejection_restore->verified=false;return;}
+    }
+    if(!complexity_authorized()){
+        if(continuation)rejection_restore.reset();
+        pending.reset();awaiting_operation.reset();tell(complexity_conflict());return;
+    }
+    if(continuation && rejection_wait_durable(*continuation))return;
+    if(continuation)rejection_restore.reset();
     auto request = r;
     pending->submitted = true;
     const auto operation=request.operation;
@@ -3829,6 +3913,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     if(controller || durable_commit)return false;
     frozen=beginning=closing=gc_due=recovery_available=scanned_recovery=native_identity_lost=false;
     rejection_restore.reset();
+    rejection_servicing=false;
     recovery.reset();prepared_native.reset();incoming_resources.reset();pending_saved.reset();
     last_presence_value.reset();preview_active=false;
     last_renew=last_presence=last_request=last_lease_use=last_preview=0;
