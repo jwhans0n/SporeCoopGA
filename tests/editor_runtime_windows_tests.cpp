@@ -71,6 +71,9 @@ struct Native {
     editor_native::Snapshot snapshot;
     editor_native::Ctx callbacks;
     editor_native::LocalView view;
+    editor_native::SceneOwner scene_owner;
+    bool scene_owner_available=true,scene_enter_pending=false,scene_transitioning=false;
+    uint32_t scene_initialization=4;
     bool view_ready=true,refuse_view_restore=false,preview_owned=true,refuse_creation_resume=false;
     unsigned view_captures=0,view_restores=0,creation_resumes=0;
     editor_native_save::Ctx save_callbacks;
@@ -93,6 +96,7 @@ struct Native {
     unsigned selections=0,enters=0,registrations=0;
     unsigned validations=0,opaque_checks=0,changed_pose_checks=0;
     std::optional<std::vector<uint8_t>> persisted_bytes;
+    std::vector<dbpf::Record> registered_adventures;
 };
 std::array<Native,2> native;
 bool seed_cast_settings=false;
@@ -193,6 +197,7 @@ struct Party {
             n.state.available=true;n.state.editing=p==0 || guest_draft;n.state.ready=n.state.editing;n.state.generation=1;
             n.view.target={500,float(p),0};n.view.rotation={0,0,0,1};n.view.orbit={float(p),.6f,123};
             n.snapshot.source={original_key.instance,original_key.type,original_key.group};n.snapshot.captain=avatar_key;
+            n.scene_owner={uintptr_t(0x1000u+p),uintptr_t(0x2000u+p),uintptr_t(0x3000u+p),n.snapshot.source};
             if(unsaved && !p)n.snapshot.source={};
             n.snapshot.document=seed();
             for(uint32_t act=1;act<acts;++act)n.snapshot.document.acts.insert({(3ull<<32)|act,1});
@@ -331,12 +336,23 @@ bool capture_view(LocalView& value,std::string& error){CHECK(!dispatching);auto&
 bool restore_view(const LocalView& value,uint64_t generation,std::string& error){CHECK(!dispatching);auto& n=native[side];
     if(!n.state.ready||n.state.gesture||!n.view_ready||n.state.generation!=generation||n.refuse_view_restore){error="Injected local camera restore failed";return false;}
     ++n.view_restores;n.view=value;return true;}
-bool resume_creation_scene_camera(const GestureScope& scope,uint64_t serial,uint64_t generation,std::string& error){
+bool capture_scene_owner(SceneOwner& owner,std::string& error){
+    CHECK(!dispatching);const auto& n=native[side];
+    if(!n.scene_owner_available||!n.state.editing){error="Injected native scene owner unavailable";return false;}
+    owner=n.scene_owner;owner.source=n.snapshot.source;return true;
+}
+SceneResumeState creation_scene_state(const SceneOwner& owner){
+    CHECK(!dispatching);const auto& n=native[side];auto live=n.scene_owner;live.source=n.snapshot.source;
+    return {n.state.generation,n.scene_initialization,n.scene_owner_available&&n.state.editing,live==owner,
+        n.state.ready,n.scene_enter_pending,n.scene_transitioning,n.state.world_visible};
+}
+bool resume_creation_scene_camera(const GestureScope& scope,uint64_t serial,uint64_t generation,const SceneOwner& owner,std::string& error){
     CHECK(!dispatching);auto& n=native[side];
-    if(!serial||!generation||n.state.generation!=generation||!n.callbacks.creation_return_current||!n.callbacks.creation_return_current(scope,serial)){
+    if(!serial||!generation||n.state.generation!=generation||!creation_scene_state(owner).settled()||
+       !n.callbacks.creation_return_current||!n.callbacks.creation_return_current(scope,serial)){
         error="Injected stale creation camera return";return false;
     }
-    ++n.creation_resumes;
+    ++n.creation_resumes;n.snapshot_steps.push_back('K');
     if(n.refuse_creation_resume){error="Injected creation camera resume failure";return false;}
     n.view_ready=true;return true;
 }
@@ -385,7 +401,15 @@ bool apply(const editor::Document& doc,const editor::Change& change,const Snapsh
     if(n.silently_refuse_apply)return true;
     n.snapshot.document=doc;if(n.partially_apply&&!n.snapshot.document.placements.empty())n.snapshot.document.placements.begin()->second.position.x+=1;
     n.snapshot.bytes=body(n.snapshot.document,artifact&&!artifact->bytes.empty()?artifact->bytes.front():n.snapshot.bytes.empty()?0xA5:n.snapshot.bytes.front());bind_native(n);return true;}
-bool enter(const editor::ResourceKey& key,std::string&){auto& n=native[side];++n.enters;n.state.editing=n.state.ready=true;n.state.gesture=n.enter_with_gesture;n.save_busy=n.enter_with_save;n.snapshot.source=key;return true;}
+bool enter(const editor::ResourceKey& key,std::string& error){auto& n=native[side];++n.enters;n.state.editing=n.state.ready=true;n.state.gesture=n.enter_with_gesture;n.save_busy=n.enter_with_save;n.snapshot.source=key;
+    const auto record=std::find_if(n.registered_adventures.begin(),n.registered_adventures.end(),[&](const auto& row){return row.key==dbpf::Key{key.instance,key.type,key.group};});
+    if(record!=n.registered_adventures.end()){
+        editor::State parsed;
+        if(record->data.empty()||!ew::decode_state(std::vector<uint8_t>(record->data.begin()+1,record->data.end()),parsed,error))return false;
+        n.snapshot.bytes=record->data;n.snapshot.document=std::move(parsed.document);bind_native(n);
+    }
+    return true;
+}
 bool select_placement(editor::ObjectId id,std::string&){CHECK(!dispatching);auto& n=native[side];if(!n.state.ready||n.state.gesture||
     (!n.snapshot.document.placements.contains(id) && !(id==kCaptainObject && n.snapshot.document.settings.contains(id))))return false;
     n.state.selected={id};if(n.focus_on_selection)n.view.target[0]+=20;++n.selections;return true;}
@@ -415,6 +439,10 @@ bool complete_exit(std::string&){CHECK(!dispatching);if(!native[side].deferred_n
 bool restore_identity(editor::ResourceKey source,editor_native::Snapshot::Dirty dirty,std::string&){CHECK(!dispatching);native[side].snapshot.source=source;native[side].snapshot.local_dirty=dirty;return true;}
 }
 namespace adventure_assets {bool register_records(const std::vector<dbpf::Record>& records,std::string&){CHECK(!dispatching);++native[side].registrations;
+    for(const auto& row:records)if(row.key.type==original_key.type){
+        auto& saved=native[side].registered_adventures;auto found=std::find_if(saved.begin(),saved.end(),[&](const auto& old){return old.key==row.key;});
+        if(found==saved.end())saved.push_back(row);else *found=row;
+    }
     if(creation_content_enabled){for(const auto& row:records)if(row.key.type==0x1A99B06B){
         auto& saved=creation_records[side];auto found=std::find_if(saved.begin(),saved.end(),[&](const auto& old){return old.key==row.key;});
         if(found==saved.end())saved.push_back(row);else CHECK(found->data==row.data);
@@ -3367,6 +3395,164 @@ static void test_creation_host_resource_collision_restores_without_partial_cast(
     CHECK(creation_active[0] && native[0].snapshot.bytes==host_scene);
     upload_collision[0]=false;creation_return(host);creation_content_enabled=false;
 }
+static void test_recovery_cannot_discard_live_creation_design(){
+    for(bool existing:{false,true}){
+        seed_creation_settings=true;Party party;seed_creation_settings=false;
+        const auto view=native[0].view;
+        auto value=creation_request(0,0x2B978C46,existing?std::optional<editor::ObjectId>{class_id}:std::nullopt);
+        creation_enter(value);side=0;
+        auto& context=editor_creation::fixture_contexts[0];const auto live=native[0].snapshot;
+        const auto generation=native[0].state.generation,epoch=runtime_host::controller->state().document.epoch;
+        const auto restores=native[0].restores,applies=native[0].apply_calls,rebaselines=native[0].rebaselines,resumes=native[0].creation_resumes;
+        const auto unchanged=[&]{
+            CHECK(creation_active[0]&&runtime_host::local_creation&&runtime_host::local_creation->scope==value.scope);
+            CHECK(context.current(value.scope)&&!runtime_host::recovery&&!runtime_host::frozen);
+            CHECK(runtime_host::controller->state().document.epoch==epoch&&native[0].state.generation==generation);
+            CHECK(!native[0].state.editing&&!native[0].state.ready&&native[0].snapshot.bytes==live.bytes);
+            CHECK(native[0].snapshot.source==live.source&&native[0].snapshot.bindings==live.bindings);
+            CHECK(native[0].restores==restores&&native[0].apply_calls==applies&&native[0].rebaselines==rebaselines&&native[0].creation_resumes==resumes);
+            if(existing)CHECK(context.lease_valid(value.scope,class_id));
+        };
+        runtime_host::recover();same_frame_drain(0);unchanged();
+        CHECK(runtime_host::controller->state().document.revision==0);
+        for(unsigned i=0;i<3;++i)step();unchanged();
+        // The recovery button must not discard a live local design, and that
+        // protection must not hold unrelated authoring by the other player.
+        creation_field(1,placement,{editor::Field::Position,0},editor::Vec3{9,8,7},{editor::ScopeKind::Placement,placement,{}});
+        side=0;runtime_host::recover();same_frame_drain(0);unchanged();
+        CHECK(runtime_host::controller->state().document.revision==1&&runtime_host::store.durable_revision()==1);
+        creation_return(value);
+        CHECK(native[0].view==view&&native[0].state.ready&&native[0].snapshot.document.placements.at(placement).position==editor::Vec3{9,8,7});
+        CHECK(runtime_host::controller->state().document.epoch==epoch&&runtime_host::controller->state().history.size()==1);
+    }
+}
+static void test_creation_return_waits_for_native_resume_before_camera(){
+    for(unsigned author=0;author<2;++author){
+        seed_creation_settings=true;Party party;seed_creation_settings=false;
+        native[author].state.selected={placement};const auto view=native[author].view;
+        auto value=creation_request(author,0x2B978C46);creation_enter(value);
+        auto& n=native[author];auto& context=editor_creation::fixture_contexts[author];
+        n.state.editing=n.state.ready=true;n.view_ready=false;n.snapshot_steps.clear();
+        const auto restores=n.restores,resumes=n.creation_resumes,captures=n.draft_capture_attempts,views=n.view_restores;
+        const editor_creation::Result result{value.request,{},true};std::string error;
+        const auto blocked=[&]{
+            side=int(author);error.clear();CHECK(!context.returned(value.scope,result,error)&&error.empty());
+            CHECK(n.restores==restores&&n.creation_resumes==resumes&&n.draft_capture_attempts==captures&&n.view_restores==views);
+        };
+        n.state.ready=false;blocked();n.state.ready=true;
+        n.scene_initialization=3;blocked();n.scene_initialization=4;
+        n.scene_enter_pending=true;blocked();n.scene_enter_pending=false;
+        n.scene_transitioning=true;blocked();n.scene_transitioning=false;
+        n.state.world_visible=false;blocked();n.state.world_visible=true;
+        n.scene_owner_available=false;blocked();n.scene_owner_available=true;
+        n.defer_readiness_on_restore=true;
+        side=int(author);CHECK(!context.returned(value.scope,result,error)&&error.empty());
+        CHECK(n.snapshot_steps==std::vector<char>{'C','K','R'});
+        CHECK(n.creation_resumes==resumes+1&&n.draft_capture_attempts==captures+1&&n.restores==restores+1);
+        CHECK(!n.state.ready&&n.view_restores==views);
+        // Native Restore can initiate another terrain load. No camera view or
+        // materialized acknowledgement may escape until this second hold ends.
+        CHECK(!context.returned(value.scope,result,error)&&error.empty());
+        n.state.ready=true;n.scene_enter_pending=true;++game_frame;
+        CHECK(!context.returned(value.scope,result,error)&&error.empty());
+        n.scene_enter_pending=false;n.state.world_visible=false;
+        CHECK(!context.returned(value.scope,result,error)&&error.empty());
+        CHECK(n.view_restores==views&&n.creation_resumes==resumes+1);
+        n.state.world_visible=true;
+        CHECK(context.returned(value.scope,result,error)&&error.empty());
+        CHECK(n.view==view&&n.view_restores==views+1&&n.state.selected==std::vector<editor::ObjectId>{placement});
+        creation_active[author]=false;context.finished(value.scope,true,{});
+        CHECK(spin([&]{return author?!runtime_guest::local_creation:!runtime_host::local_creation;}));
+        CHECK(!runtime_host::frozen&&!runtime_guest::frozen);
+        CHECK(runtime_host::controller->state().document.revision==0&&runtime_host::controller->state().history.empty());
+    }
+}
+static void test_creation_return_rejects_replaced_scene_before_writes(){
+    for(unsigned author=0;author<2;++author)for(unsigned replacement=0;replacement<9;++replacement){
+        seed_creation_settings=true;Party party;seed_creation_settings=false;
+        auto value=creation_request(author,0x2B978C46);creation_enter(value);
+        auto& n=native[author];auto& context=editor_creation::fixture_contexts[author];
+        n.state.editing=n.state.ready=true;
+        const editor_creation::Result result{value.request,{},true};std::string error;side=int(author);
+        if(replacement>=5){
+            CHECK(!context.returned(value.scope,result,error)&&error.empty());
+            if(replacement==5)++n.state.generation;
+            else if(replacement==6)++n.scene_owner.resource;
+            else if(replacement==7){
+                n.snapshot.document.placements.at(placement).position={99,98,97};
+                n.snapshot.bytes=body(n.snapshot.document);
+            }else ++n.snapshot.source.instance;
+            ++game_frame;
+        }else if(replacement==0)++n.scene_owner.mode;
+        else if(replacement==1)++n.scene_owner.data;
+        else if(replacement==2)++n.scene_owner.resource;
+        else if(replacement==3)++n.snapshot.source.instance;
+        else{
+            n.snapshot.document.placements.at(placement).position={99,98,97};
+            n.snapshot.bytes=body(n.snapshot.document);
+        }
+        const auto scene=n.snapshot;const auto owner=n.scene_owner;
+        const auto restores=n.restores,applies=n.apply_calls,resumes=n.creation_resumes,views=n.view_restores;
+        CHECK(!context.returned(value.scope,result,error)&&!error.empty());
+        CHECK(n.restores==restores&&n.apply_calls==applies&&n.creation_resumes==resumes&&n.view_restores==views);
+        CHECK(n.snapshot.bytes==scene.bytes&&n.snapshot.source==scene.source&&n.snapshot.bindings==scene.bindings&&n.scene_owner==owner);
+        CHECK((author?runtime_guest::controller->state():runtime_host::controller->state()).document.revision==0);
+        CHECK(!(author?runtime_guest::local_creation->materialized:runtime_host::local_creation->materialized));
+        // Finish the module without manufacturing a successful return. A
+        // generation change also prevents ordinary teardown touching this scene.
+        creation_active[author]=false;++n.state.generation;context.finished(value.scope,false,error);
+        if(author)runtime_guest::end();else runtime_host::end();
+        CHECK(spin([&]{return author?(!runtime_guest::closing&&runtime_guest::controller->view().phase==es::Phase::Idle):
+            (!runtime_host::closing&&runtime_host::controller->view().phase==es::Phase::Idle);}));
+        CHECK(n.restores==restores&&n.apply_calls==applies&&n.creation_resumes==resumes&&n.view_restores==views);
+    }
+}
+static void test_failed_creation_return_retires_on_end_or_leave(){
+    for(unsigned author=0;author<2;++author)for(bool leave:{false,true}){
+        seed_creation_settings=true;creation_content_enabled=true;Party party;seed_creation_settings=false;
+        auto value=creation_request(author,0x2B978C46);creation_enter(value);
+        auto& n=native[author];n.refuse_creation_resume=true;
+        auto& context=editor_creation::fixture_contexts[author];std::string failure;
+        const editor::ResourceKey saved{0x29001000u+author,value.request.source.type,0x408A0000};
+        const editor_creation::Result result{value.request,saved,false};
+        CHECK(spin([&]{side=int(author);failure.clear();const bool okay=context.returned(value.scope,result,failure);CHECK(!okay);return !failure.empty();}));
+        CHECK(failure.find("Injected creation camera resume failure")!=std::string::npos);
+        CHECK(spin([]{return runtime_host::controller->state().document.revision==1&&runtime_guest::controller->state().document.revision==1&&
+            runtime_host::store.durable_revision()==1&&runtime_guest::store.durable_revision()==1;}));
+        CHECK(runtime_host::store.durable_revision()==1&&runtime_guest::store.durable_revision()==1);
+        CHECK(runtime_host::controller->state().document.classes.size()==2&&!creation_records[author].empty());
+        side=int(author);creation_active[author]=false;context.finished(value.scope,false,failure);
+        CHECK(author?runtime_guest::local_creation.has_value():runtime_host::local_creation.has_value());
+        const auto checkpoint=author?runtime_guest::store.snapshot():runtime_host::store.snapshot();
+        if(leave){
+            if(author)runtime_guest::session_ended();else runtime_host::session_ended();
+            sessions[author].leave("Leave after failed native creation return");
+        }else{if(author)runtime_guest::end();else runtime_host::end();}
+        CHECK(spin([&]{return author?(!runtime_guest::closing&&runtime_guest::controller->view().phase==es::Phase::Idle):
+            (!runtime_host::closing&&runtime_host::controller->view().phase==es::Phase::Idle);}));
+        CHECK(author?!runtime_guest::local_creation:!runtime_host::local_creation);
+        CHECK(author?!runtime_guest::frozen:!runtime_host::frozen);
+        const auto restores=n.restores,applies=n.apply_calls,rebaselines=n.rebaselines,resumes=n.creation_resumes;
+        const auto returned=n.snapshot.bytes;
+        for(unsigned i=0;i<12;++i)step();
+        CHECK(author?!runtime_guest::local_creation&&!runtime_guest::frozen:!runtime_host::local_creation&&!runtime_host::frozen);
+        CHECK(n.restores==restores&&n.apply_calls==applies&&n.rebaselines==rebaselines&&n.creation_resumes==resumes);
+        CHECK(n.snapshot.bytes==returned);
+        editor_store::Store reopened;std::string error;
+        CHECK(reopened.open(author?runtime_guest::project_root:runtime_host::project_root,checkpoint.project,error));
+        CHECK(reopened.snapshot()==checkpoint);
+        CHECK(!creation_records[author].empty());creation_content_enabled=false;
+    }
+}
+static void test_all_creation_lifecycle_cases(){
+    const auto run=[](const char* name,void (*test)()){
+        if(std::getenv("SPORECOOP_FIXTURE_TRACE"))std::printf("CREATION lifecycle %s\n",name);test();
+    };
+    run("live Recover",test_recovery_cannot_discard_live_creation_design);
+    run("native resume holds",test_creation_return_waits_for_native_resume_before_camera);
+    run("replaced owner",test_creation_return_rejects_replaced_scene_before_writes);
+    run("failed return End/Leave",test_failed_creation_return_retires_on_end_or_leave);
+}
 static void test_all_creation_runtime_cases(){
     test_creation_guest_entry_waits_for_host_echo();
     test_creations_return_independently_to_latest_act_and_view();
@@ -3375,6 +3561,7 @@ static void test_all_creation_runtime_cases(){
     test_creation_stale_pending_source_and_lost_content_lease();
     test_creation_save_and_play_holds_wait_for_local_return();
     test_creation_host_resource_collision_restores_without_partial_cast();
+    test_all_creation_lifecycle_cases();
 }
 
 static void run_case(const char* name,void (*run)()){
@@ -3395,4 +3582,4 @@ static LONG CALLBACK fixture_fault_trace(EXCEPTION_POINTERS* fault){
     }
     std::fflush(stdout);return EXCEPTION_CONTINUE_SEARCH;
 }
-int main(int argc,char** argv){if(std::getenv("SPORECOOP_FIXTURE_TRACE"))std::setvbuf(stdout,nullptr,_IONBF,0);if(argc==2&&std::string(argv[1])=="--native-byte-guards-only"){run_case("test_all_native_byte_guard_cases",test_all_native_byte_guard_cases);std::printf("native byte guards: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--tentative-lifecycle-only"){run_case("test_all_tentative_lifecycle_cases",test_all_tentative_lifecycle_cases);std::printf("tentative lifecycle: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--tentative-only"){run_case("test_all_tentative_move_cases",test_all_tentative_move_cases);std::printf("tentative native adoption: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--baseline-readiness-only"){run_case("test_baseline_accepts_owned_restore_before_scene_readiness",test_baseline_accepts_owned_restore_before_scene_readiness);std::printf("baseline scene readiness: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--durable-input-only"){run_case("test_foreign_durable_commit_fences_owned_native_input",test_foreign_durable_commit_fences_owned_native_input);std::printf("foreign durable input: %u checks passed\n",checks);return 0;}if(std::getenv("SPORECOOP_FIXTURE_TRACE"))AddVectoredExceptionHandler(0,fixture_fault_trace);if(argc==2&&std::string(argv[1])=="--tail-only"){run_case("test_host_apply_rejects_uncaptured_opaque_changes",test_host_apply_rejects_uncaptured_opaque_changes);run_case("test_host_native_success_without_projection_cannot_commit",test_host_native_success_without_projection_cannot_commit);run_case("test_guest_native_success_without_projection_freezes_only_replica",test_guest_native_success_without_projection_freezes_only_replica);run_case("test_held_native_gesture_is_fenced_by_generation_or_disconnect",test_held_native_gesture_is_fenced_by_generation_or_disconnect);run_case("test_held_move_accepts_disjoint_remote_revision",test_held_move_accepts_disjoint_remote_revision);std::printf("runtime tail: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--fences-only"){run_case("test_held_native_gesture_is_fenced_by_generation_or_disconnect",test_held_native_gesture_is_fenced_by_generation_or_disconnect);run_case("test_held_move_accepts_disjoint_remote_revision",test_held_move_accepts_disjoint_remote_revision);std::printf("held gesture fences: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--creations-only"){run_case("test_all_creation_runtime_cases",test_all_creation_runtime_cases);std::printf("creation runtime: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--native-flow-only"){run_case("test_all_native_flow_cases",test_all_native_flow_cases);std::printf("native editor flow: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--view-only"){run_case("test_transport_teardown_remote_host_disconnect_order_and_preview_cleanup",test_transport_teardown_remote_host_disconnect_order_and_preview_cleanup);run_case("test_owned_end_keeps_local_view_and_selection",test_owned_end_keeps_local_view_and_selection);run_case("test_bound_preview_cleanup_requires_exact_round_and_native_owner",test_bound_preview_cleanup_requires_exact_round_and_native_owner);run_case("test_preview_restores_latest_independent_selection_before_ack",test_preview_restores_latest_independent_selection_before_ack);run_case("test_preview_local_view_none_selected_and_stale_pin",test_preview_local_view_none_selected_and_stale_pin);run_case("test_preview_native_owner_replacement_never_writes_view",test_preview_native_owner_replacement_never_writes_view);std::printf("local editor view: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--stages-only"){run_case("test_bounded_stage_diagnostics",test_bounded_stage_diagnostics);std::printf("bounded stage runtime: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--act0-only"){run_case("test_all_act_boundaries",test_all_act_boundaries);std::printf("act boundary: %u checks passed\n",checks);return 0;}const bool quick=argc==2&&std::string(argv[1])=="--quick";if(argc>1&&!quick&&std::string(argv[1])!="--teardown-only"&&std::string(argv[1])!="--cancellation-only"&&std::string(argv[1])!="--accounting-only"&&std::string(argv[1])!="--saved-root-only")return 2;if(argc==2&&std::string(argv[1])=="--saved-root-only"){run_case("test_saved_root_diagnostic_distinguishes_native_local_alias",test_saved_root_diagnostic_distinguishes_native_local_alias);std::printf("logical saved-root diagnostic: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--accounting-only"){run_case("test_passive_accounting_does_not_touch_native_or_durable_state",test_passive_accounting_does_not_touch_native_or_durable_state);std::printf("runtime passive accounting: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--cancellation-only"){run_case("test_all_native_cancellations",test_all_native_cancellations);std::printf("native cancellation: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--teardown-only"){run_case("test_all_transport_teardown_cases",test_all_transport_teardown_cases);std::printf("transport teardown: %u checks passed\n",checks);return 0;}run_case("test_all_tentative_move_cases",test_all_tentative_move_cases);run_case("test_baseline_accepts_owned_restore_before_scene_readiness",test_baseline_accepts_owned_restore_before_scene_readiness);run_case("test_foreign_durable_commit_fences_owned_native_input",test_foreign_durable_commit_fences_owned_native_input);run_case("test_all_creation_runtime_cases",test_all_creation_runtime_cases);run_case("test_saved_root_diagnostic_distinguishes_native_local_alias",test_saved_root_diagnostic_distinguishes_native_local_alias);run_case("test_passive_accounting_does_not_touch_native_or_durable_state",test_passive_accounting_does_not_touch_native_or_durable_state);run_case("test_all_act_boundaries",test_all_act_boundaries);run_case("test_all_native_cancellations",test_all_native_cancellations);run_case("test_all_transport_teardown_cases",test_all_transport_teardown_cases);run_case("test_class_owned_placement_companion_transaction",test_class_owned_placement_companion_transaction);run_case("test_unowned_native_gesture_restores_without_freezing",test_unowned_native_gesture_restores_without_freezing);run_case("test_legacy_pending_recovery_mode_overrides_detached_old_context",test_legacy_pending_recovery_mode_overrides_detached_old_context);run_case("test_clone_preserves_companion_and_rejects_compound_property_change",test_clone_preserves_companion_and_rejects_compound_property_change);run_case("test_saved_coverage_requires_guest_native_completion_before_pin",test_saved_coverage_requires_guest_native_completion_before_pin);run_case("test_relative_scale_only_capture_undo_redo_and_recovery",test_relative_scale_only_capture_undo_redo_and_recovery);run_case("test_legacy_recovery_keeps_schema_history_and_scoped_capture",test_legacy_recovery_keeps_schema_history_and_scoped_capture);run_case("test_verify_reopen_read_only_exact_saved_identity",test_verify_reopen_read_only_exact_saved_identity);run_case("test_unsaved_end_does_not_pin_reopen_and_partial_saved_ack_is_not_complete",test_unsaved_end_does_not_pin_reopen_and_partial_saved_ack_is_not_complete);run_case("test_preparation_cancel_preserves_draft_and_is_round_scoped",test_preparation_cancel_preserves_draft_and_is_round_scoped);run_case("test_delayed_lease_grant_gets_observed_idle_grace",test_delayed_lease_grant_gets_observed_idle_grace);run_case("test_begin_ga_batch_and_end_returning",test_begin_ga_batch_and_end_returning);run_case("test_history_entry_rechecks_actual_native_holds",test_history_entry_rechecks_actual_native_holds);run_case("test_preview_return_callbacks_are_scoped_to_one_round",test_preview_return_callbacks_are_scoped_to_one_round);run_case("test_preview_restores_latest_independent_selection_before_ack",test_preview_restores_latest_independent_selection_before_ack);run_case("test_preview_local_view_none_selected_and_stale_pin",test_preview_local_view_none_selected_and_stale_pin);run_case("test_preview_native_owner_replacement_never_writes_view",test_preview_native_owner_replacement_never_writes_view);run_case("test_lease_diagnostic_is_bounded_and_read_only",test_lease_diagnostic_is_bounded_and_read_only);run_case("test_conflicting_native_history_releases_document_ownership",test_conflicting_native_history_releases_document_ownership);run_case("test_guest_end_during_unlaunched_preparation_is_retryable",test_guest_end_during_unlaunched_preparation_is_retryable);run_case("test_drag_preview_bridge_never_authors_remote_state",test_drag_preview_bridge_never_authors_remote_state);run_case("test_saved_resources_then_next_commit",test_saved_resources_then_next_commit);run_case("test_guest_recovery_requires_owned_native_copy",test_guest_recovery_requires_owned_native_copy);run_case("test_pending_undo_keeps_ownership_across_foreign_commit",test_pending_undo_keeps_ownership_across_foreign_commit);run_case("test_pending_artifacts_obey_capacity_and_preserve_durable_base",test_pending_artifacts_obey_capacity_and_preserve_durable_base);run_case("test_missing_authored_captain_blocks_prepare",test_missing_authored_captain_blocks_prepare);run_case("test_uncertain_maintenance_freezes_until_reopen",test_uncertain_maintenance_freezes_until_reopen);run_case("test_end_waits_for_native_settle_and_retires_once",test_end_waits_for_native_settle_and_retires_once);run_case("test_end_does_not_touch_replaced_native_context",test_end_does_not_touch_replaced_native_context);run_case("test_idle_controller_keeps_owned_native_cleanup_isolated",test_idle_controller_keeps_owned_native_cleanup_isolated);run_case("test_delayed_gesture_cannot_restore_another_editor",test_delayed_gesture_cannot_restore_another_editor);run_case("test_host_end_delivers_accepted_structural_checkpoint",test_host_end_delivers_accepted_structural_checkpoint);run_case("test_host_end_does_not_wait_for_departed_replica",test_host_end_does_not_wait_for_departed_replica);run_case("test_host_end_waits_for_applied_same_revision_save",test_host_end_waits_for_applied_same_revision_save);run_case("test_native_frozen_guest_does_not_block_host_close",test_native_frozen_guest_does_not_block_host_close);run_case("test_native_recreation_waits_for_actual_next_frame",test_native_recreation_waits_for_actual_next_frame);run_case("test_held_native_gesture_is_cancelled_by_end",test_held_native_gesture_is_cancelled_by_end);run_case("test_recovery_retires_held_and_delayed_native_captures",test_recovery_retires_held_and_delayed_native_captures);run_case("test_recovery_wait_does_not_restore_replaced_context",test_recovery_wait_does_not_restore_replaced_context);run_case("test_native_save_enrichment_survives_edits_save_and_recovery",test_native_save_enrichment_survives_edits_save_and_recovery);run_case("test_invalid_completed_save_does_not_replace_live_draft",test_invalid_completed_save_does_not_replace_live_draft);run_case("test_opaque_gesture_changes_freeze_before_empty_semantic_return",test_opaque_gesture_changes_freeze_before_empty_semantic_return);run_case("test_uncaptured_opaque_changes_cannot_save_or_playtest",test_uncaptured_opaque_changes_cannot_save_or_playtest);run_case("test_host_apply_rejects_uncaptured_opaque_changes",test_host_apply_rejects_uncaptured_opaque_changes);run_case("test_host_native_success_without_projection_cannot_commit",test_host_native_success_without_projection_cannot_commit);run_case("test_guest_native_success_without_projection_freezes_only_replica",test_guest_native_success_without_projection_freezes_only_replica);run_case("test_held_native_gesture_is_fenced_by_generation_or_disconnect",test_held_native_gesture_is_fenced_by_generation_or_disconnect);run_case("test_held_move_accepts_disjoint_remote_revision",test_held_move_accepts_disjoint_remote_revision);if(!quick)run_case("test_large_closure_retained_once_and_delta_recovery",test_large_closure_retained_once_and_delta_recovery);std::printf("editor runtime: %u checks passed\n",checks);}
+int main(int argc,char** argv){if(std::getenv("SPORECOOP_FIXTURE_TRACE"))std::setvbuf(stdout,nullptr,_IONBF,0);if(argc==2&&std::string(argv[1])=="--creation-lifecycle-only"){run_case("test_all_creation_lifecycle_cases",test_all_creation_lifecycle_cases);std::printf("creation lifecycle: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--native-byte-guards-only"){run_case("test_all_native_byte_guard_cases",test_all_native_byte_guard_cases);std::printf("native byte guards: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--tentative-lifecycle-only"){run_case("test_all_tentative_lifecycle_cases",test_all_tentative_lifecycle_cases);std::printf("tentative lifecycle: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--tentative-only"){run_case("test_all_tentative_move_cases",test_all_tentative_move_cases);std::printf("tentative native adoption: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--baseline-readiness-only"){run_case("test_baseline_accepts_owned_restore_before_scene_readiness",test_baseline_accepts_owned_restore_before_scene_readiness);std::printf("baseline scene readiness: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--durable-input-only"){run_case("test_foreign_durable_commit_fences_owned_native_input",test_foreign_durable_commit_fences_owned_native_input);std::printf("foreign durable input: %u checks passed\n",checks);return 0;}if(std::getenv("SPORECOOP_FIXTURE_TRACE"))AddVectoredExceptionHandler(0,fixture_fault_trace);if(argc==2&&std::string(argv[1])=="--tail-only"){run_case("test_host_apply_rejects_uncaptured_opaque_changes",test_host_apply_rejects_uncaptured_opaque_changes);run_case("test_host_native_success_without_projection_cannot_commit",test_host_native_success_without_projection_cannot_commit);run_case("test_guest_native_success_without_projection_freezes_only_replica",test_guest_native_success_without_projection_freezes_only_replica);run_case("test_held_native_gesture_is_fenced_by_generation_or_disconnect",test_held_native_gesture_is_fenced_by_generation_or_disconnect);run_case("test_held_move_accepts_disjoint_remote_revision",test_held_move_accepts_disjoint_remote_revision);std::printf("runtime tail: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--fences-only"){run_case("test_held_native_gesture_is_fenced_by_generation_or_disconnect",test_held_native_gesture_is_fenced_by_generation_or_disconnect);run_case("test_held_move_accepts_disjoint_remote_revision",test_held_move_accepts_disjoint_remote_revision);std::printf("held gesture fences: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--creations-only"){run_case("test_all_creation_runtime_cases",test_all_creation_runtime_cases);std::printf("creation runtime: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--native-flow-only"){run_case("test_all_native_flow_cases",test_all_native_flow_cases);std::printf("native editor flow: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--view-only"){run_case("test_transport_teardown_remote_host_disconnect_order_and_preview_cleanup",test_transport_teardown_remote_host_disconnect_order_and_preview_cleanup);run_case("test_owned_end_keeps_local_view_and_selection",test_owned_end_keeps_local_view_and_selection);run_case("test_bound_preview_cleanup_requires_exact_round_and_native_owner",test_bound_preview_cleanup_requires_exact_round_and_native_owner);run_case("test_preview_restores_latest_independent_selection_before_ack",test_preview_restores_latest_independent_selection_before_ack);run_case("test_preview_local_view_none_selected_and_stale_pin",test_preview_local_view_none_selected_and_stale_pin);run_case("test_preview_native_owner_replacement_never_writes_view",test_preview_native_owner_replacement_never_writes_view);std::printf("local editor view: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--stages-only"){run_case("test_bounded_stage_diagnostics",test_bounded_stage_diagnostics);std::printf("bounded stage runtime: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--act0-only"){run_case("test_all_act_boundaries",test_all_act_boundaries);std::printf("act boundary: %u checks passed\n",checks);return 0;}const bool quick=argc==2&&std::string(argv[1])=="--quick";if(argc>1&&!quick&&std::string(argv[1])!="--teardown-only"&&std::string(argv[1])!="--cancellation-only"&&std::string(argv[1])!="--accounting-only"&&std::string(argv[1])!="--saved-root-only")return 2;if(argc==2&&std::string(argv[1])=="--saved-root-only"){run_case("test_saved_root_diagnostic_distinguishes_native_local_alias",test_saved_root_diagnostic_distinguishes_native_local_alias);std::printf("logical saved-root diagnostic: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--accounting-only"){run_case("test_passive_accounting_does_not_touch_native_or_durable_state",test_passive_accounting_does_not_touch_native_or_durable_state);std::printf("runtime passive accounting: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--cancellation-only"){run_case("test_all_native_cancellations",test_all_native_cancellations);std::printf("native cancellation: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--teardown-only"){run_case("test_all_transport_teardown_cases",test_all_transport_teardown_cases);std::printf("transport teardown: %u checks passed\n",checks);return 0;}run_case("test_all_tentative_move_cases",test_all_tentative_move_cases);run_case("test_baseline_accepts_owned_restore_before_scene_readiness",test_baseline_accepts_owned_restore_before_scene_readiness);run_case("test_foreign_durable_commit_fences_owned_native_input",test_foreign_durable_commit_fences_owned_native_input);run_case("test_all_creation_runtime_cases",test_all_creation_runtime_cases);run_case("test_saved_root_diagnostic_distinguishes_native_local_alias",test_saved_root_diagnostic_distinguishes_native_local_alias);run_case("test_passive_accounting_does_not_touch_native_or_durable_state",test_passive_accounting_does_not_touch_native_or_durable_state);run_case("test_all_act_boundaries",test_all_act_boundaries);run_case("test_all_native_cancellations",test_all_native_cancellations);run_case("test_all_transport_teardown_cases",test_all_transport_teardown_cases);run_case("test_class_owned_placement_companion_transaction",test_class_owned_placement_companion_transaction);run_case("test_unowned_native_gesture_restores_without_freezing",test_unowned_native_gesture_restores_without_freezing);run_case("test_legacy_pending_recovery_mode_overrides_detached_old_context",test_legacy_pending_recovery_mode_overrides_detached_old_context);run_case("test_clone_preserves_companion_and_rejects_compound_property_change",test_clone_preserves_companion_and_rejects_compound_property_change);run_case("test_saved_coverage_requires_guest_native_completion_before_pin",test_saved_coverage_requires_guest_native_completion_before_pin);run_case("test_relative_scale_only_capture_undo_redo_and_recovery",test_relative_scale_only_capture_undo_redo_and_recovery);run_case("test_legacy_recovery_keeps_schema_history_and_scoped_capture",test_legacy_recovery_keeps_schema_history_and_scoped_capture);run_case("test_verify_reopen_read_only_exact_saved_identity",test_verify_reopen_read_only_exact_saved_identity);run_case("test_unsaved_end_does_not_pin_reopen_and_partial_saved_ack_is_not_complete",test_unsaved_end_does_not_pin_reopen_and_partial_saved_ack_is_not_complete);run_case("test_preparation_cancel_preserves_draft_and_is_round_scoped",test_preparation_cancel_preserves_draft_and_is_round_scoped);run_case("test_delayed_lease_grant_gets_observed_idle_grace",test_delayed_lease_grant_gets_observed_idle_grace);run_case("test_begin_ga_batch_and_end_returning",test_begin_ga_batch_and_end_returning);run_case("test_history_entry_rechecks_actual_native_holds",test_history_entry_rechecks_actual_native_holds);run_case("test_preview_return_callbacks_are_scoped_to_one_round",test_preview_return_callbacks_are_scoped_to_one_round);run_case("test_preview_restores_latest_independent_selection_before_ack",test_preview_restores_latest_independent_selection_before_ack);run_case("test_preview_local_view_none_selected_and_stale_pin",test_preview_local_view_none_selected_and_stale_pin);run_case("test_preview_native_owner_replacement_never_writes_view",test_preview_native_owner_replacement_never_writes_view);run_case("test_lease_diagnostic_is_bounded_and_read_only",test_lease_diagnostic_is_bounded_and_read_only);run_case("test_conflicting_native_history_releases_document_ownership",test_conflicting_native_history_releases_document_ownership);run_case("test_guest_end_during_unlaunched_preparation_is_retryable",test_guest_end_during_unlaunched_preparation_is_retryable);run_case("test_drag_preview_bridge_never_authors_remote_state",test_drag_preview_bridge_never_authors_remote_state);run_case("test_saved_resources_then_next_commit",test_saved_resources_then_next_commit);run_case("test_guest_recovery_requires_owned_native_copy",test_guest_recovery_requires_owned_native_copy);run_case("test_pending_undo_keeps_ownership_across_foreign_commit",test_pending_undo_keeps_ownership_across_foreign_commit);run_case("test_pending_artifacts_obey_capacity_and_preserve_durable_base",test_pending_artifacts_obey_capacity_and_preserve_durable_base);run_case("test_missing_authored_captain_blocks_prepare",test_missing_authored_captain_blocks_prepare);run_case("test_uncertain_maintenance_freezes_until_reopen",test_uncertain_maintenance_freezes_until_reopen);run_case("test_end_waits_for_native_settle_and_retires_once",test_end_waits_for_native_settle_and_retires_once);run_case("test_end_does_not_touch_replaced_native_context",test_end_does_not_touch_replaced_native_context);run_case("test_idle_controller_keeps_owned_native_cleanup_isolated",test_idle_controller_keeps_owned_native_cleanup_isolated);run_case("test_delayed_gesture_cannot_restore_another_editor",test_delayed_gesture_cannot_restore_another_editor);run_case("test_host_end_delivers_accepted_structural_checkpoint",test_host_end_delivers_accepted_structural_checkpoint);run_case("test_host_end_does_not_wait_for_departed_replica",test_host_end_does_not_wait_for_departed_replica);run_case("test_host_end_waits_for_applied_same_revision_save",test_host_end_waits_for_applied_same_revision_save);run_case("test_native_frozen_guest_does_not_block_host_close",test_native_frozen_guest_does_not_block_host_close);run_case("test_native_recreation_waits_for_actual_next_frame",test_native_recreation_waits_for_actual_next_frame);run_case("test_held_native_gesture_is_cancelled_by_end",test_held_native_gesture_is_cancelled_by_end);run_case("test_recovery_retires_held_and_delayed_native_captures",test_recovery_retires_held_and_delayed_native_captures);run_case("test_recovery_wait_does_not_restore_replaced_context",test_recovery_wait_does_not_restore_replaced_context);run_case("test_native_save_enrichment_survives_edits_save_and_recovery",test_native_save_enrichment_survives_edits_save_and_recovery);run_case("test_invalid_completed_save_does_not_replace_live_draft",test_invalid_completed_save_does_not_replace_live_draft);run_case("test_opaque_gesture_changes_freeze_before_empty_semantic_return",test_opaque_gesture_changes_freeze_before_empty_semantic_return);run_case("test_uncaptured_opaque_changes_cannot_save_or_playtest",test_uncaptured_opaque_changes_cannot_save_or_playtest);run_case("test_host_apply_rejects_uncaptured_opaque_changes",test_host_apply_rejects_uncaptured_opaque_changes);run_case("test_host_native_success_without_projection_cannot_commit",test_host_native_success_without_projection_cannot_commit);run_case("test_guest_native_success_without_projection_freezes_only_replica",test_guest_native_success_without_projection_freezes_only_replica);run_case("test_held_native_gesture_is_fenced_by_generation_or_disconnect",test_held_native_gesture_is_fenced_by_generation_or_disconnect);run_case("test_held_move_accepts_disjoint_remote_revision",test_held_move_accepts_disjoint_remote_revision);if(!quick)run_case("test_large_closure_retained_once_and_delta_recovery",test_large_closure_retained_once_and_delta_recovery);std::printf("editor runtime: %u checks passed\n",checks);}
