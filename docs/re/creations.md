@@ -1011,3 +1011,7 @@ class allocation rejects cached load failure, missing editable model or
 nonzero native errors. The original and alias still require native diagnostic
 comparison to distinguish loading from model validation; no byte remap,
 post-restore primary rewrite or validation bypass is justified yet.
+These loads can populate the native resource cache or warm dependencies.
+The diagnostic runs the cached path first and the private path second; a
+later repeated probe is not independent cold-load evidence. It does not
+allocate a cast entry or mutate the authored adventure.

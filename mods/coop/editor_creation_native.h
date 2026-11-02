@@ -21,8 +21,9 @@ struct ModelAdmission {
     ModelLoad cached,private_copy;
 };
 // Outside Present only. Uses the same cached load and exact model-validation
-// mask as native Scenario restoration. The private path is diagnostic only;
-// its success never substitutes for a failed cached path.
+// mask as native Scenario restoration. Loads can warm native caches and
+// dependencies; the diagnostic is ordered cached first, private second. The
+// private path never substitutes for a failed cached path.
 bool inspect_model(editor::ResourceKey,const ModelFence&,ModelAdmission&,std::string&);
 bool model_admitted(const ModelAdmission&,std::string&);
 bool validate_model(editor::ResourceKey,const ModelFence&,std::string&);
