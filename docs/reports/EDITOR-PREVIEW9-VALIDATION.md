@@ -446,6 +446,18 @@ separate navigation-harness error: the ordinary bottom-left Login menu control
 was mistaken for an active registration dialog. Its bounded visible-menu guard
 now has 28 offline checks. Neither failed attempt counts as a benchmark.
 
+Candidate 9 fixes the temporary entry Snapshot in `c4ece38` and consistently
+hydrates native snapshot producers. Its strict native fixture passes 10,447
+checks, including Adventure Town's actual nonzero Captain, entry validation
+from Galaxy, unchanged scene/history and retained forged-key/lock rejection.
+ABI verification remains 91 entries. DLL
+`4c69fc31744c9b75a3e8779199cabb38a9bf89530a8318fbe1f940d8dfa58aa4`
+has before/after build-input and private installation receipts. All four
+participants then joined the same revision-0 native Town document, with zero
+faults and correct visible bottom title captions. This establishes corrected
+entry and title refresh; the candidate 9 gesture measurements and expanded
+feature acceptance remain pending.
+
 ## Required native acceptance
 
 Actual two- and four-player candidate runs remain pending for crew edits,
