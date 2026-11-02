@@ -46,6 +46,11 @@ template<class T> struct Optional : std::false_type {};
 template<class T> struct Optional<std::optional<T>> : std::true_type {};
 template<class T> struct Variant : std::false_type {};
 template<class... T> struct Variant<std::variant<T...>> : std::true_type {};
+template<class T> constexpr size_t container_limit(){
+    if constexpr(std::is_same_v<T,std::vector<Mutation>> || std::is_same_v<T,std::vector<TerrainEdit>>)return 2*Limits{}.terrain_records+Limits{}.mutations;
+    if constexpr(std::is_same_v<T,std::vector<ObjectId>>)return Limits{}.terrain_records+Limits{}.mutations;
+    return 16384;
+}
 template<class T> constexpr unsigned maximum() {
     if constexpr(std::is_same_v<T,ValueKind>) return unsigned(ValueKind::Structured);
     if constexpr(std::is_same_v<T,Field>) return 3;
@@ -134,7 +139,7 @@ struct Encode {
         else if constexpr(Optional<T>::value) { one(bool(v)); if(v) one(*v); }
         else if constexpr(Variant<T>::value) { w.u8(uint8_t(v.index())); std::visit([&](const auto& x){one(x);},v); }
         else if constexpr(Seq<T>::value || Set<T>::value || Map<T>::value) {
-            need(v.size()<=16384,"container exceeds bound"); w.u32(uint32_t(v.size()));
+            need(v.size()<=container_limit<T>(),"container exceeds bound"); w.u32(uint32_t(v.size()));
             for(const auto& x:v) {
                 if constexpr(Map<T>::value) { one(x.first); one(x.second); }
                 else one(x);
@@ -169,7 +174,7 @@ struct Decode {
         else if constexpr(Optional<T>::value) { bool present=false; one(present); if(present) {v.emplace();one(*v);}else v.reset(); }
         else if constexpr(Variant<T>::value) variant(v,r.u8());
         else if constexpr(Seq<T>::value || Set<T>::value || Map<T>::value) {
-            const size_t n=r.u32(); need(r.ok() && n<=16384,"container exceeds bound");
+            const size_t n=r.u32(); need(r.ok() && n<=container_limit<T>(),"container exceeds bound");
             claim(n*(sizeof(typename T::value_type)+16)); v.clear();
             for(size_t i=0;i<n;++i) {
                 if constexpr(Map<T>::value) {
@@ -195,9 +200,7 @@ void validate(const State& s) {
 void validate(const Request& q) {
     Limits limits;
     need(project(q.project) && q.epoch && operation(q.operation) && q.operation.epoch==q.epoch,"invalid request scope");
-    const bool roster=std::count_if(q.mutations.begin(),q.mutations.end(),[](const auto& m){return m.kind==MutationKind::SetActs;})==1 &&
-        std::all_of(q.mutations.begin(),q.mutations.end(),[](const auto& m){return m.kind==MutationKind::SetActs || m.kind==MutationKind::Set;});
-    need(q.summary.size()<=limits.summary_bytes && q.mutations.size()<=(roster?limits.classes+1:limits.mutations) &&
+    need(q.summary.size()<=limits.summary_bytes && mutation_count_valid(q.mutations,limits) &&
          q.dependencies.size()<=limits.dependencies && q.leases.size()<=limits.leases,"request exceeds limit");
     need(q.intent==Intent::Forward ? !q.mutations.empty() : q.mutations.empty(),"invalid history request shape");
 }
@@ -206,7 +209,8 @@ void validate(const Decision& d) {
     if(d.change) {
         const auto& c=*d.change;
         need(operation(c.operation) && operation(c.gesture) && d.revision==c.revision &&
-            c.summary.size()<=256 && c.allocated.size()<=64 && c.clone_sources.size()<=c.allocated.size(),"invalid committed change");
+            c.summary.size()<=256 && allocation_count_valid(c,Limits{}) && patch_count_valid(c.patch,Limits{}) &&
+            patch_count_valid(c.inverse,Limits{}) && c.clone_sources.size()<=c.allocated.size(),"invalid committed change");
         need(c.intent==Intent::Forward || c.clone_sources.empty(),"history operation contains new clone identities");
         for(const auto& [allocated,source]:c.clone_sources)
             need(allocated.id && allocated.generation && source.id && source.generation && allocated!=source &&

@@ -299,6 +299,11 @@ struct Limits {
     size_t structured_bytes = 256u << 10;
     size_t terrain_records = 16384;
 };
+// Large native terrain recipes remain one gesture. Other editor mutations keep
+// their ordinary bound; only terrain records with bounded Set companions widen.
+bool mutation_count_valid(const std::vector<Mutation>&,const Limits&);
+bool patch_count_valid(const Patch&,const Limits&);
+bool allocation_count_valid(const Change&,const Limits&);
 struct Hooks {
     // No callbacks run for rejected/duplicate requests. apply may partially fail;
     // rollback must restore before, otherwise the coordinator freezes. Persistence

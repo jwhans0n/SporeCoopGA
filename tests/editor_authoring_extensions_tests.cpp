@@ -195,4 +195,51 @@ static void class_references_authoring_settings(){
     auto q=request(c.state(),host,1,{m});owned(c,q,{{ScopeKind::Class,cast.class_id,{}}});auto changed=c.submit(q,100);CHECK(changed.accepted());CHECK(apply_committed(s,changed,error));CHECK(s==c.state());
     m.expected=1;m.value=StructuredValue{1,{3,4},{{999,1}}};q=request(c.state(),host,2,{m});owned(c,q,{{ScopeKind::Class,cast.class_id,{}}});CHECK(!c.submit(q,100).accepted());CHECK(c.state().document==s.document);
 }
-int main(){terrain_concurrency();terrain_negatives();mixed_allocation_replay();singleton_and_assets();staged_durability();presence();authoring_hold_keeps_content_independent();class_references_authoring_settings();std::cout<<checks<<" authoring extension checks passed\n";}
+static Decision terrain_commit(Coordinator& coordinator,State& replica,Request operation){
+    std::string error;std::vector<uint8_t> encoded;Request decoded;
+    CHECK(wire::encode_request(operation,encoded,error));CHECK(encoded.size()<wire::kOperationBytes);
+    CHECK(wire::decode_request(encoded,decoded,error));CHECK(decoded==operation);
+    auto accepted=coordinator.submit(decoded,100);if(!accepted.accepted())std::cerr<<accepted.reason<<"\n";CHECK(accepted.accepted());
+    Decision transferred;CHECK(wire::encode_decision(accepted,encoded,error));CHECK(encoded.size()<wire::kOperationBytes);
+    CHECK(wire::decode_decision(encoded,transferred,error));CHECK(transferred==accepted);
+    CHECK(apply_committed(replica,transferred,error));CHECK(replica==coordinator.state());return accepted;
+}
+static void large_terrain_stroke_and_recipe_replacement(){
+    auto s=initial();const ObjectId planet{10,1};const FieldKey water{Field::Property,7};
+    s.document.settings_schema={{7,{ValueKind::Number,0,1,0,true,false}}};
+    AuthoringSettings settings;settings.kind=SettingsKind::Planet;settings.object=planet;settings.properties[7]=.1f;s.document.settings[planet]=settings;
+    std::string error;Coordinator coordinator;CHECK(coordinator.reset(s,9,error));CHECK(coordinator.connect(host));CHECK(coordinator.connect(guest));
+    std::vector<Mutation> stroke(100);for(size_t i=0;i<stroke.size();++i)stroke[i]=append(float(i));
+    auto first=terrain_commit(coordinator,s,request(s,host,1,stroke));CHECK(first.change->allocated.size()==100 && s.history.size()==1);
+    auto foreign=terrain_commit(coordinator,s,request(s,guest,1,{append(700),append(701)}));CHECK(foreign.change->allocated.size()==2);
+    const auto original=terrain_recipe(s.document);std::vector<Mutation> replacement;
+    for(const auto& row:original){Mutation remove;remove.kind=MutationKind::DeleteTerrain;remove.target=row.object;remove.expected=row.revision;replacement.push_back(remove);}
+    for(unsigned i=0;i<300;++i)replacement.push_back(append(float(i+1000)));
+    Mutation companion;companion.target=planet;companion.field=water;companion.value=.6f;replacement.push_back(companion);
+    auto q=request(s,host,2,replacement);owned(coordinator,q,{{ScopeKind::Authoring,{},{}}});
+    const auto tokens=q.leases;auto changed=terrain_commit(coordinator,s,q);CHECK(changed.change->allocated.size()==300 && s.document.terrain.size()==300 && s.history.size()==3);
+    CHECK(coordinator.release(host,tokens));
+    auto later=terrain_commit(coordinator,s,request(s,guest,2,{append(9000),append(9001)}));
+    for(auto [intent,sequence,count]:{std::tuple{Intent::Undo,3ull,size_t(104)},std::tuple{Intent::Redo,4ull,size_t(302)}}){
+        q=request(s,host,sequence,{},intent);owned(coordinator,q,{{ScopeKind::Authoring,{},{}}});terrain_commit(coordinator,s,q);
+        CHECK(s.document.terrain.size()==count);for(auto id:later.change->allocated)CHECK(s.document.terrain.contains(id));
+        CHECK(value(s.document,planet,water)==Value{intent==Intent::Undo?.1f:.6f});CHECK(coordinator.release(host,q.leases));
+    }
+    wire_roundtrip(s);Coordinator recovered;CHECK(recovered.reset(s,10,error));CHECK(recovered.state().history==s.history);
+    // The larger envelope is reserved for native terrain recipes. Ordinary
+    // placement/field operations and mixed structural gestures retain 64.
+    std::vector<Mutation> fields(65,companion);q=request(s,host,5,fields);std::vector<uint8_t> bytes;
+    CHECK(!wire::encode_request(q,bytes,error));CHECK(!coordinator.submit(q,100).accepted());
+    std::vector<Mutation> mixed(65,append());mixed.back().kind=MutationKind::Create;CHECK(!mutation_count_valid(mixed,Limits{}));
+    fields.assign(65,companion);fields.push_back(append());CHECK(!mutation_count_valid(fields,Limits{}));
+    Limits small;small.terrain_records=3;small.mutations=2;std::vector<Mutation> overflow(7,append());CHECK(!mutation_count_valid(overflow,small));
+    auto forged=*changed.change;forged.allocated.resize(301);CHECK(!allocation_count_valid(forged,Limits{.terrain_records=300}));
+    forged=*changed.change;forged.patch.objects.push_back({});CHECK(!allocation_count_valid(forged,Limits{}));CHECK(!patch_count_valid(forged.patch,Limits{}));
+    Change mixed_allocations;mixed_allocations.patch.terrain.resize(32);mixed_allocations.patch.classes.resize(32);mixed_allocations.allocated.resize(96);
+    for(auto& row:mixed_allocations.patch.terrain)row.after=stamp();
+    CHECK(patch_count_valid(mixed_allocations.patch,Limits{}) && allocation_count_valid(mixed_allocations,Limits{}));
+    mixed_allocations.allocated.push_back({});CHECK(!allocation_count_valid(mixed_allocations,Limits{}));
+    overflow.assign(2*Limits{}.terrain_records+1,append());q=request(s,host,6,std::move(overflow));CHECK(!wire::encode_request(q,bytes,error));
+    auto huge=append();huge.terrain->payload.bytes.resize(Limits{}.structured_bytes,1);q=request(s,host,7,std::vector<Mutation>(33,huge));CHECK(!wire::encode_request(q,bytes,error));
+}
+int main(){terrain_concurrency();terrain_negatives();mixed_allocation_replay();singleton_and_assets();staged_durability();presence();authoring_hold_keeps_content_independent();class_references_authoring_settings();large_terrain_stroke_and_recipe_replacement();std::cout<<checks<<" authoring extension checks passed\n";}

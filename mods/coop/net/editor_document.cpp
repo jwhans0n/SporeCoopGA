@@ -210,7 +210,7 @@ bool patch_shape(const Patch& p, const Document& d, const Limits& l)
     if(p.acts && (!p.objects.empty() || !p.classes.empty() || !p.terrain.empty() || std::any_of(p.fields.begin(),p.fields.end(),[&](const auto& field){
         return !d.class_settings.contains(field.object) && !(d.tombstones.contains(field.object) && field.field.field==Field::Property && d.class_schema.contains(field.field.property));
     })))return false;
-    if (p.objects.size() + p.fields.size() + p.classes.size() + p.terrain.size() > (p.acts?l.classes:l.mutations) || p.dependencies.size() > l.dependencies) return false;
+    if (!patch_count_valid(p,l) || p.dependencies.size() > l.dependencies) return false;
     std::set<ObjectId> objects;
     std::set<std::pair<ObjectId, FieldKey>> fields;
     for(const auto& e:p.terrain){
@@ -249,6 +249,37 @@ Decision failure(Code code, const std::string& reason, Revision revision)
 }
 
 } // namespace
+
+bool mutation_count_valid(const std::vector<Mutation>& mutations,const Limits& limits){
+    if(mutations.size()<=limits.mutations)return true;
+    size_t terrain=0,companions=0,rosters=0;
+    for(const auto& mutation:mutations){
+        switch(mutation.kind){
+        case MutationKind::AppendTerrain:case MutationKind::SetTerrain:case MutationKind::DeleteTerrain:++terrain;break;
+        case MutationKind::Set:++companions;break;
+        case MutationKind::SetActs:++rosters;break;
+        default:return false;
+        }
+    }
+    if(rosters)return rosters==1 && !terrain && companions<=limits.classes;
+    return terrain && companions<=limits.mutations &&
+        (terrain<=limits.terrain_records || terrain-limits.terrain_records<=limits.terrain_records);
+}
+bool patch_count_valid(const Patch& patch,const Limits& limits){
+    if(patch.acts)return patch.objects.empty() && patch.classes.empty() && patch.terrain.empty() && patch.fields.size()<=limits.classes;
+    const auto ordinary=patch.objects.size()+patch.classes.size()+patch.fields.size();
+    if(ordinary<=limits.mutations && patch.terrain.size()<=limits.mutations-ordinary)return true;
+    return patch.objects.empty() && patch.classes.empty() && !patch.terrain.empty() && patch.fields.size()<=limits.mutations &&
+        (patch.terrain.size()<=limits.terrain_records || patch.terrain.size()-limits.terrain_records<=limits.terrain_records);
+}
+bool allocation_count_valid(const Change& change,const Limits& limits){
+    if(!patch_count_valid(change.patch,limits))return false;
+    if(change.allocated.size()<=limits.mutations)return true;
+    if(change.patch.terrain.empty() || change.patch.acts)return false;
+    if(change.patch.objects.empty() && change.patch.classes.empty())return change.allocated.size()<=limits.terrain_records;
+    const auto terrain=size_t(std::count_if(change.patch.terrain.begin(),change.patch.terrain.end(),[](const auto& row){return !row.before && bool(row.after);}));
+    return terrain<=limits.terrain_records && change.allocated.size()-limits.mutations<=terrain;
+}
 
 std::optional<Value> value(const Placement& p, FieldKey field)
 {
@@ -468,7 +499,7 @@ bool Coordinator::reset(State state, uint64_t epoch, std::string& error)
         if (decision.change) {
             const auto& c = *decision.change;
             if (c.operation != id || !identity(c.gesture) || c.intent > Intent::Redo || c.revision != decision.revision || c.summary.size() > limits_.summary_bytes ||
-                !patch_shape(c.patch, state.document, limits_) || !patch_shape(c.inverse, state.document, limits_) || c.allocated.size() > limits_.mutations) { error = "Invalid remembered transaction."; return false; }
+                !patch_shape(c.patch, state.document, limits_) || !patch_shape(c.inverse, state.document, limits_) || !allocation_count_valid(c,limits_)) { error = "Invalid remembered transaction."; return false; }
             if ((!c.clone_sources.empty() && c.intent != Intent::Forward) || c.clone_sources.size() > c.allocated.size()) { error = "Invalid clone provenance."; return false; }
             for (const auto& [target, source] : c.clone_sources)
                 if (!identity(source) || target == source || std::find(c.allocated.begin(), c.allocated.end(), target) == c.allocated.end() ||
@@ -921,9 +952,7 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
     if (!clock(now)) return reject(Code::Invalid, "Host monotonic time moved backwards.");
     if (r.base_revision > revision) return reject(Code::StaleRevision, "The operation expects a future document revision.");
     if (revision >= UINT64_MAX - 1) return reject(Code::Limit, "The document revision space is exhausted.");
-    const bool roster_request=std::count_if(r.mutations.begin(),r.mutations.end(),[](const auto& m){return m.kind==MutationKind::SetActs;})==1 &&
-        std::all_of(r.mutations.begin(),r.mutations.end(),[](const auto& m){return m.kind==MutationKind::SetActs || m.kind==MutationKind::Set;});
-    if (r.intent > Intent::Redo || r.summary.size() > limits_.summary_bytes || !utf8(r.summary) || r.mutations.size() > (roster_request?limits_.classes+1:limits_.mutations) ||
+    if (r.intent > Intent::Redo || r.summary.size() > limits_.summary_bytes || !utf8(r.summary) || !mutation_count_valid(r.mutations,limits_) ||
         r.dependencies.size() > limits_.dependencies || r.leases.size() > limits_.leases) return reject(Code::Invalid, "Invalid gesture envelope or configured bound.");
     std::set<Scope> supplied;
     for (const auto& l : r.leases) if (!l.token || !scope_valid(l.scope) || !supplied.insert(l.scope).second) return reject(Code::Invalid, "Invalid or duplicate lease token.");

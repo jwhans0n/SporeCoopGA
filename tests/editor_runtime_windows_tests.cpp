@@ -831,6 +831,7 @@ static void test_native_recreation_waits_for_actual_next_frame() {
     CHECK(native[0].structural_applies==applies&&runtime_host::controller->state().document.revision==0);
     side=0;CHECK(!native[0].callbacks.structure_gate(1024));
     ++game_frame;same_frame_drain(0);
+    CHECK(spin([]{return runtime_host::controller->state().document.revision==1&&!runtime_host::pending&&!runtime_host::awaiting_operation;},false));
     CHECK(runtime_host::controller->state().document.revision==1&&!runtime_host::pending&&!runtime_host::awaiting_operation);
     CHECK(native[0].structural_applies==applies+1&&native[0].structural_frame>frame);
     CHECK(native[0].state.selected.size()==1&&native[0].state.selected.front()!=placement);
