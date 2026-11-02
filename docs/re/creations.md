@@ -870,3 +870,30 @@ in candidate 10. All four processes returned normally through co-op Leave,
 native Cancel and Quit/discard to Galaxy with zero faults; the private runner
 remained under its owner's control. This is safe failure evidence, not native
 acceptance of the corrected toolbar or four-family workflows.
+
+Candidate 11 subsequently accepted the corrected toolbar on all four players.
+Ordinary New entered four independent editors with actual native model types
+BuildingCityHall, AnimalCreature, VehicleMilitaryLand and UFO. Each Cancel
+returned only that participant. A guest Crew capacity edit committed while the
+host stayed in Building, and the host's subsequent Building Save retained that
+newer revision. Native Building Done explicitly rejected fewer than three
+accepted parts with `You need at least 3 parts to Save`; a valid three-part
+BuildingHouse then saved and returned, adding one cast class and one history
+item. This supplies a concrete native validation explanation for the earlier
+one-part candidate 7 probe, whose own masks were not captured. No native
+validation was bypassed or changed. Full evidence and remaining limits are in
+the candidate 11 section of `docs/reports/EDITOR-PREVIEW9-VALIDATION.md`.
+
+The native resource's external source key is not part of its serialized body.
+Constructor `F2E670` zeros `+8/+C/+10` at `F2E685..F2E68B`. Read `F2FC40`
+and Write `F25E00` serialize metadata from `+18`, and their core paths
+`F2F6D0`/`F25700` use reflection descriptor `15AF500`. Initializer
+`138C850..138D54B` fills 34 entries through `15AFCBC`; the listed resource
+field offsets start at `50` and do not include the external key. The receipt
+is `out/editor-creation-re/scenario-descriptor-138C850.txt`. Candidate 11's
+returned native captures independently confirm the distinction: all four have
+identical 60,739-byte bodies with SHA-256
+`f9aa43060c7d8034eb195a8e39e377c84067c3048bd4be7c20d6febc17d2d739`,
+while the host source is `408A0000!BF0CE0D0.366A930D` and the guest sources
+are `408A0000!40C7A6C1.366A930D`. An owned parse must retain verified source
+provenance separately; a zero parsed header is not evidence of a source change.

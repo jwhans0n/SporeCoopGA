@@ -679,3 +679,55 @@ different authoritative BEM bodies sharing one original key, distinct
 immutable versions with unchanged model bytes, and atomic missing/invalid-BEM
 rejection. Receipt:
 `out/editor-preview9-creation-routing/lifecycle-crew-collision.log`.
+
+## Candidate 11 independent creation editors and Building Save
+
+On candidate `2cd5ba3b81f38026a7d7a40624939a592cd2345e72313e81ce8418445f937431`,
+the corrected toolbar was visible on all four native Adventure Editors. Ordinary
+New actions independently entered Building on host 95, Creature on guest 96,
+Vehicle on 97 and Spaceship on 98, without changing revision 1, cast or history.
+A bounded ReadProcessMemory-only sample verified each owned native request and
+the actual model subtypes BuildingCityHall, AnimalCreature, VehicleMilitaryLand
+and UFO. The initial sampler rejected its DLL module-list assumption before
+sampling: SporeKit's payload was absent from both native loader enumerations.
+The corrected test pins the exact installed candidate and owner-controlled
+launch, requires the private executable module and verifies native editor
+identity; its optional DLL roster witness is explicitly qualified. The original
+failed receipt is retained. Native entry evidence is in
+`out/preview9-creation-probe-c11/independence/` and `independence-resumed/`.
+
+Guest 96 explicitly Cancelled and returned with settled native camera and UI
+while all three others remained in their creation editors. Participants 98 and
+97 subsequently Cancelled independently while host 95 remained in Building.
+Guarded movement attempts selected an occluding wall instead of LeadActor; no
+movement was delivered, and canonical revision remained 1. These are input
+calibration failures, not successful placement edits or ownership failures.
+The guest then used the verified native Crew capacity-plus control while the
+host remained in Building. That produced one `Edit adventure crew` history
+item, revision 2/durable 2, identical canonical hashes on all four controllers
+and zero faults. Receipt:
+`out/preview9-creation-probe-c11/guest-target/guest-capacity-host-away.json`.
+
+Building Done displayed the native error `You need at least 3 parts to Save`.
+The sampler confirmed the explicitly selected BuildingHouse subtype was allowed,
+the early owner flag was zero and the computed finish state was 2 with blocking
+errors. Some attempted part drags were not accepted; visible construction and
+the actual native Done result were required. After three accepted stacked body
+parts and the name `Preview9BuildingProbeC11`, normal Done saved and returned.
+The canonical cast grew from 118 to 119 classes, placements stayed at 419, and
+exactly one `Create adventure asset` item advanced revision 2 to 3/durable 3.
+All four strict native checks returned
+`4956f918068f4cec43edce06ff147c3c8a6f9df1ca7931b7cc3a69cb4b1e4e7e`.
+Their native resource bytes were identical, while each retained its local source
+identity. The newer guest Crew change survived the host's return. All four
+reported zero faults and visible creation toolbars. Masks, screenshots and
+the full final receipt are in `out/preview9-creation-probe-c11/building/`,
+including `building-save-returned.json`.
+
+All four then left co-op and returned through ordinary native Cancel and
+Quit/discard to Galaxy, phase 0 with zero faults. The runner was not stopped by
+the feature probe. See `out/preview9-creation-probe-c11/retirement/`. This proves
+four-family entry and independent Cancel, authoring while the host designs,
+and this valid native Building Save. Vehicle/Spaceship Save, remote creation
+Edit, complete adventure Save/reopen and the Crew custom-content import fix
+remain separate pending acceptance.
