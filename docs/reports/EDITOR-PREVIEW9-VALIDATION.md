@@ -330,6 +330,73 @@ Receipts: `out/preview9-commit-c7-preflight.json` and
 `out/preview9-c7-bootstrap/result.json`. This startup is not feature or timing
 acceptance. The personal shortcut and installed preview 8 remain unchanged.
 
+### Candidate 7 native movement timing: 60 gestures, limits failed
+
+The same candidate 7 pair subsequently measures 30 ordinary placement gestures
+per author in the private Adventure Town scene, with 419 placements, 119 cast
+classes and five acts. One earlier native creature Save accounts for the extra
+class. A first timing attempt hit an occluding wall instead of the requested Lead
+Actor; that attempt provides no timing acceptance result. Three resulting wall
+edits remain in this private diagnostic scene and are recorded separately.
+
+The corrected fixture first uses the native Lead Actor card's Locate action,
+then verifies the actual selected placement and a granted placement lease after
+mouse-down, before sending movement. Both warm-ups and every measured gesture
+must move placement `4294967303:1`, preserve the other bounded placement poses,
+advance exactly one canonical revision and converge natively on both players.
+A wrong target cancels with Escape and release before movement, checks the
+unchanged revision and stops the run. Offline fixture coverage passes 26 tests.
+
+The measurement gate opens at 05:03:06 local on 2026-11-02 with the exact candidate
+hash. All other agents pause builds, fixtures, copying, hashing, game diagnostics
+and input during the window. Direct LAN transport belongs to the games; the
+fixture's exit does not disconnect them. All 60 valid samples complete, but the
+LAN timing gate **fails**:
+
+| Metric | Host 95 | Guest 96 |
+| --- | ---: | ---: |
+| Own submit to confirmation p95 | 261.88 ms | 704.06 ms |
+| Own release to confirmation p95 | 526.34 ms | 946.55 ms |
+| Commit-window maximum frame gap p95, 60 windows each | 459.52 ms | 275.74 ms |
+| Worst individual window's native frame-gap p95 | 54.32 ms | 187.71 ms |
+| Largest frame gap | 547.19 ms | 315.97 ms |
+| Own capture p95 | 93.25 ms | 81.72 ms |
+| Own supported-change validation p95 | 150.20 ms | 144.57 ms |
+| Own inverse preparation p95 | 0.0004 ms | 0.0004 ms |
+| Own apply work p95 | 158.21 ms | 152.07 ms |
+| Own persistence preparation/completion p95 | 106.90 ms | 103.57 ms |
+| Own durable interval p95 | 51.84 ms | 52.59 ms |
+
+The inverse interval is effectively eliminated, and own confirmation delays
+improve from candidate 6. The frame limits still fail on both players, including
+an isolated host gap larger than candidate 6. For guest-authored operations,
+host request receipt to decision queue p95 is 284.90 ms. Host remote apply-work
+p95 is 202.63 ms, while observer remote apply-work p95 is 195.91 ms for host
+gestures. In the retained median examples the actual native pose write takes
+about one millisecond, or is skipped for tentative adoption; most apply-work
+time precedes it. Capture, supported-change validation and accepted-image work
+remain measured costs. These intervals do not establish the cost of individual
+unmeasured native calls. Direct-LAN request/decode scheduling in the median guest
+example also contributes about 82 and 88 ms respectively; physical network
+latency is not measured separately.
+
+Final read-only proof finds both games ready and unfrozen at committed/durable
+revision 66, with zero native faults, no active gesture and the same strict
+convergence hash
+`16ee0673da985a94f6c60388944f1f5bac5e964019bacf6cc62103e39488094d`.
+Both canonical histories contain exactly 66 applied items, no Redo entries and
+author counts 34 host / 32 guest: one prior asset creation, three retained
+calibration edits, two correct warm-ups and 60 measured gestures. The connected
+scene remains available after the failed gate.
+
+Raw samples, every participant's QPC events and frame measurements, warm-up
+history, aggregate stage timings and representative timelines are under
+`out/preview9-commit-diagnostic-c7-r2`. Final independent public native proof is
+`out/preview9-c7-r2-final-native-proof/receipt.json`. No four-player, WAN,
+asset-transfer contention, Motel of Melora or release performance pass is
+claimed. Limits remain 200 ms LAN confirmation and 100 ms p95 / 250 ms maximum
+frame gaps.
+
 ## Required native acceptance
 
 Actual two- and four-player candidate runs remain pending for crew edits,
