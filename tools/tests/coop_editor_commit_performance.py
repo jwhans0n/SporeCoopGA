@@ -250,6 +250,24 @@ def settled_revision(party,revision):
                row.get('revision')==revision and row.get('durable')==revision for row in rows)
 
 
+def await_measurement_gate(party):
+    gate=party.args.measurement_gate
+    if gate is None:return
+    ready=gate.with_name(gate.name+'.ready')
+    ready.write_text(json.dumps(dict(candidate_sha256=party.args.expected_dll_sha256,
+        instances=party.args.instances,stage='warmup-complete'),indent=2)+'\n',encoding='utf-8')
+    party.result['measurement_gate']=dict(ready=str(ready),waiting=True)
+    party.write()
+    while time.monotonic()<party.deadline:
+        if gate.is_file():
+            if gate.read_text(encoding='utf-8').strip()!=party.args.expected_dll_sha256:
+                raise FixtureError('Measurement gate does not identify this exact candidate')
+            party.result['measurement_gate']['waiting']=False
+            party.write();return
+        time.sleep(.25)
+    raise FixtureError('The bounded commit fixture expired before measurement was released')
+
+
 def measure(party,author,object_id,index):
     before_revision=status(party.host)['revision'];before=party.objects(author)
     source=party.body(author,object_id);target=(source[0]+(party.args.drag_pixels if index%2==0 else -party.args.drag_pixels),source[1])
@@ -325,6 +343,7 @@ def run(args):
             for author in party.all_games:
                 party.gesture(author,'warm-owned-native-move',lambda g=author:party.slow_drag(g,party.body(g,chosen),(party.body(g,chosen)[0]+args.drag_pixels,party.body(g,chosen)[1])))
             party.result['configuration']=configs;party.result['fixture_object']=chosen
+            await_measurement_gate(party)
             for name in args.profiles:
                 profile,budget=PROFILES[name]
                 for proxy in proxies.values():proxy.configure(profile)
@@ -379,6 +398,8 @@ def parser():
     p.add_argument('--minimum-placements',type=int,default=400);p.add_argument('--diagnostic',action='store_true')
     p.add_argument('--p95-frame-ms',type=float,default=100);p.add_argument('--max-frame-ms',type=float,default=250)
     p.add_argument('--body-offset-y',type=int,default=28);p.add_argument('--drag-pixels',type=int,default=8)
+    p.add_argument('--measurement-gate',type=Path,
+                   help='After warmup write PATH.ready and wait for PATH containing the exact candidate hash')
     p.add_argument('--world-left',type=int,default=356);p.add_argument('--seconds',type=int,default=1800)
     p.add_argument('--timeout',type=int,default=120);p.add_argument('--port',type=int,default=59093)
     p.add_argument('--title',default='Private Native Commit Performance')
@@ -398,6 +419,11 @@ def main():
     if args.object and not re.fullmatch(r'[1-9][0-9]{0,19}:[1-9][0-9]{0,9}',args.object):p.error('Object must be one stable native logical ID:generation')
     args.output=args.output.resolve()
     if (ROOT/'out').resolve() not in args.output.parents:p.error('Output must remain under this worktree out directory')
+    if args.measurement_gate is not None:
+        args.measurement_gate=args.measurement_gate.resolve()
+        if ((ROOT/'out').resolve() not in args.measurement_gate.parents or not args.measurement_gate.parent.is_dir() or
+                args.measurement_gate.exists() or args.measurement_gate.with_name(args.measurement_gate.name+'.ready').exists()):
+            p.error('Measurement gate requires a new path below an existing worktree out directory')
     args.host,args.guest=args.instances[:2];args.stage='commit-performance';args.fixture='existing';args.roundtrip_cycles=0
     args.resume_result=None;args.onboard_host=False;args.history_input='hotkeys'
     return run(args)

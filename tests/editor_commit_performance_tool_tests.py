@@ -2,8 +2,10 @@
 import copy
 from pathlib import Path
 import sys
+import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools/tests'))
 import coop_editor_commit_performance as perf
@@ -84,6 +86,27 @@ def gestures(samples=30):
 
 
 class AcceptanceContracts(unittest.TestCase):
+    def test_measurement_gate_fences_exact_candidate_before_samples(self):
+        with tempfile.TemporaryDirectory() as directory:
+            gate=Path(directory)/'measure-go';hash_value='a'*64
+            owner=SimpleNamespace(args=SimpleNamespace(measurement_gate=gate,
+                expected_dll_sha256=hash_value,instances=[95,96]),result={},deadline=100,write=lambda:None)
+            def release(unused):gate.write_text(hash_value+'\n',encoding='utf-8')
+            with mock.patch.object(perf.time,'monotonic',return_value=1),mock.patch.object(perf.time,'sleep',side_effect=release):
+                perf.await_measurement_gate(owner)
+            self.assertFalse(owner.result['measurement_gate']['waiting'])
+            self.assertTrue(gate.with_name(gate.name+'.ready').is_file())
+            gate.write_text('b'*64,encoding='utf-8')
+            with mock.patch.object(perf.time,'monotonic',return_value=1),self.assertRaisesRegex(perf.FixtureError,'exact candidate'):
+                perf.await_measurement_gate(owner)
+
+    def test_measurement_gate_cannot_outlive_runner_deadline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            owner=SimpleNamespace(args=SimpleNamespace(measurement_gate=Path(directory)/'measure-go',
+                expected_dll_sha256='a'*64,instances=[95,96]),result={},deadline=100,write=lambda:None)
+            with mock.patch.object(perf.time,'monotonic',return_value=101),self.assertRaisesRegex(perf.FixtureError,'expired'):
+                perf.await_measurement_gate(owner)
+
     def test_original_native_baseline_is_recorded_before_hosting(self):
         calls=[];writes=[]
         inspection='placements=1 classes=1 acts=1\nnative_sha256='+'a'*64
