@@ -39,6 +39,31 @@ DeferredLocalView pin(const LocalView& view){
     void* m=mode();void* d=data(m);void* r=resource(d);
     return {view,value_scope(),generation,m,d,r,skg::field<editor::ResourceKey>(r,8)};
 }
+void test_deferred_camera_reentry_is_not_settled(){
+    creation_camera_fixture();v_active=v_named;
+    std::string error;SceneOwner owner;LocalView view;
+    CHECK(capture_scene_owner(owner,error)&&capture_view(view,error));
+    const auto expected_generation=generation;
+    C.projection_scope=[] {return t_scope;};C.gesture_scope=[] {return GestureScope{};};
+    deferred_local_view=pin(view);
+    auto scene=creation_scene_state(owner);
+    CHECK(scene.available&&scene.owner&&!scene.ready&&!scene.settled()&&scene.generation==expected_generation);
+    const auto reads=t_reads,writes=t_writes;unsigned reentries=0;
+    v_gets=v_looks=v_sets=0;
+    v_callback=[&](unsigned stage){
+        if(stage!=0)return;
+        ++reentries;CHECK(local_view_settling&&deferred_local_view&&state().ready);
+        const auto nested=creation_scene_state(owner);
+        CHECK(nested.available&&nested.owner&&!nested.ready&&!nested.settled()&&nested.generation==expected_generation);
+        CHECK(C.gesture_scope()==GestureScope{}&&!v_looks&&!v_sets);
+    };
+    ++t_frame;drain_local_view(nullptr);
+    CHECK(reentries==1&&!deferred_local_view&&!local_view_settling&&v_looks==1&&v_sets==1);
+    v_callback={};scene=creation_scene_state(owner);
+    CHECK(scene.settled()&&scene.generation==expected_generation&&C.gesture_scope()==GestureScope{});
+    CHECK(t_reads==reads&&t_writes==writes);
+    reset();
+}
 std::vector<std::string> rotation_logs;
 void log_rotation(SkMod*,int level,const char* format,...){
     CHECK(level==SK_DEBUG);char line[1024];va_list args;va_start(args,format);
@@ -149,7 +174,7 @@ void test_fenced_view(){
 }
 static void test_native_view_fences(){
     view_fence_fixture::test_settled_scene_owner();view_fence_fixture::test_fenced_view();view_fence_fixture::test_quaternion_diagnostics();
-    view_fence_fixture::test_settings_diagnostics();
+    view_fence_fixture::test_settings_diagnostics();view_fence_fixture::test_deferred_camera_reentry_is_not_settled();
 }
 
 namespace restore_fence_fixture {

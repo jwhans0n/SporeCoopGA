@@ -3939,7 +3939,9 @@ bool capture_scene_owner(SceneOwner& owner,std::string& error){
 SceneResumeState creation_scene_state(const SceneOwner& owner){
     const auto native=state();SceneResumeState result;
     result.generation=native.generation;result.world_visible=native.world_visible;
-    result.ready=native.editing&&native.ready&&!native.playtesting&&!native.gesture&&!applying;
+    // state() permits its own deferred camera drain to run while settling.
+    // A reentrant caller must wait until that drain has returned as well.
+    result.ready=native.editing&&native.ready&&!native.playtesting&&!native.gesture&&!applying&&!local_view_settling;
     void* current_mode=mode();void* current_data=data(current_mode);void* current_resource=resource(current_data);
     const auto current_source=skg::readable(current_resource,kResourceSize)?skg::field<editor::ResourceKey>(current_resource,8):editor::ResourceKey{};
     // Compare opaque identities before reading only the freshly resolved owner.
