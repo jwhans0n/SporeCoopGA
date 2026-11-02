@@ -14,7 +14,7 @@ import time
 
 from coop_adventure import FixtureError
 from coop_adventure_editor import EditorPair,status
-from coop_editor_creations import assets,input_steps,validate_steps,verify_viewport
+from coop_editor_creations import input_steps,validate_steps,verify_viewport
 from coop_editor_crew_terrain import TerrainConsole,native_planet,RECIPE_FIELDS
 from coop_editor_party import Ownership,PublicGame,parse_context,parse_history
 
@@ -26,6 +26,15 @@ class TerrainPartyConsole(TerrainConsole):
             from sporectl import Console
             return Console.call(self,line)
         return super().call(line)
+
+
+def canonical_header(text):
+    # Town has more cast rows than a bounded public console response. Terrain
+    # convergence needs the canonical whole-document digest, not every row.
+    # A truncated row list must not invalidate its complete, checked header.
+    match=re.match(r'^revision=(\d+) durable=(\d+) canonicaldocumenthash=([0-9a-f]{64})\n',text)
+    if not match:raise FixtureError('Missing canonical terrain document header')
+    return dict(revision=int(match[1]),durable=int(match[2]),hash=match[3])
 
 
 def load_recipe(path,instances,mode):
@@ -68,7 +77,7 @@ def run(args):
         if context and any(parse_context(row['text'])!=context for row in rows):raise FixtureError('The Terraform context changed')
         if any(row.get('revision',0)>revision for row in rows):raise FixtureError('Unexpected duplicate Terraform transaction')
         if not all(row.get('phase')==4 for row in rows):return False
-        states=[assets(game.call('coop.editor assets')) for game in games]
+        states=[canonical_header(game.call('coop.editor assets')) for game in games]
         if not all(state['revision']==state['durable']==revision for state in states) or len({state['hash'] for state in states})!=1:return False
         if live and not all(row.get('ready') and not row.get('gesture') for row in rows):return False
         if not live and (designing()!=creation_serial or not all(row.get('ready') and not row.get('gesture') for game,row in zip(games,rows) if game!=host)):return False
@@ -91,7 +100,7 @@ def run(args):
             x=round(source[0]+(target[0]-source[0])*index/steps);y=round(source[1]+(target[1]-source[1])*index/steps)
             game.call(f'move {x} {y}');game.call('wait.frames 2 15000')
     def start(row):
-        game=by_id[row['instance']];x,y=row['source'];game.call(f'move {x} {y}');game.call(f'button {x} {y} down');held[game.instance]=row['target']
+        game=by_id[row['instance']];x,y=row['source'];game.call(f'move {x} {y}');game.call('wait.frames 5 15000');game.call(f'button {x} {y} down');held[game.instance]=row['target']
         game.call('wait.frames 3 15000')
     def release(row):
         game=by_id[row['instance']];x,y=row['target'];game.call(f'button {x} {y} up');held.pop(game.instance,None);game.call('wait.frames 7 15000')
