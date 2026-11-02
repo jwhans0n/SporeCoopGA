@@ -10,13 +10,71 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import re
+import struct
 import time
 
 from coop_adventure import FixtureError
 from coop_adventure_editor import EditorPair,status
 from coop_editor_creations import input_steps,validate_steps,verify_viewport
-from coop_editor_crew_terrain import TerrainConsole,native_planet,RECIPE_FIELDS
-from coop_editor_party import Ownership,PublicGame,parse_context,parse_history
+from coop_editor_crew_terrain import TerrainConsole,native_planet
+from coop_editor_party import Ownership,PublicGame,parse_context,parse_history,parse_identity
+
+EFFECT_COLUMNS=((0x02A907B5,0x20,12),(0x02A907B6,0x38,56),(0x03A23F97,0xD,4),
+                (0x03DD8E59,0xA,4),(0x03DD8E5A,0xD,4),(0x7A6AA70B,0xD,4))
+MODEL_COLUMNS=((0x03A90C57,0x20,12),(0x03A90C5F,0x38,56))
+
+
+def recipe_records(fields,columns):
+    """Exact ordered primitive records for the measured BasicTools append case."""
+    decoded=[];count=None
+    for ident,kind,width in columns:
+        field=fields.get(ident)
+        if not isinstance(field,(tuple,list)) or len(field)!=3 or field[:2] not in ((kind,0x9C),[kind,0x9C]):
+            raise FixtureError('BasicTools fixture requires every verified native recipe column')
+        try:raw=bytes.fromhex(field[2])
+        except (ValueError,TypeError):raise FixtureError('Malformed native recipe bytes') from None
+        if len(raw)<8:raise FixtureError('Truncated native recipe column')
+        rows,stride=struct.unpack('>II',raw[:8])
+        if rows>8192 or stride!=width or len(raw)!=8+rows*width or count is not None and rows!=count:
+            raise FixtureError('Unsupported native recipe column shape')
+        count=rows;decoded.append(raw[8:])
+    return [b''.join(data[n*width:(n+1)*width] for data,(_,_,width) in zip(decoded,columns)) for n in range(count or 0)]
+
+
+def effect_planet(baseline,records):
+    """Replace only the six exact effect columns in an owned planet value map."""
+    if len(records)>8192 or any(not isinstance(row,bytes) or len(row)!=84 for row in records):
+        raise FixtureError('Unsupported BasicTools effect record shape')
+    recipe_records(baseline,EFFECT_COLUMNS);result=dict(baseline);offset=0
+    for ident,kind,width in EFFECT_COLUMNS:
+        value=struct.pack('>II',len(records),width)+b''.join(row[offset:offset+width] for row in records)
+        result[ident]=type(baseline[ident])((kind,0x9C,value.hex()));offset+=width
+    return result
+
+
+def appended_effects(before,after,count):
+    """Refuse general terrain edits; this calibration proves distinct appends."""
+    old=recipe_records(before,EFFECT_COLUMNS);new=recipe_records(after,EFFECT_COLUMNS)
+    if count not in (1,2) or len(new)!=len(old)+count or new[:len(old)]!=old:
+        raise FixtureError('BasicTools strokes must append exactly one effect each without changing prior effects')
+    if recipe_records(before,MODEL_COLUMNS)!=recipe_records(after,MODEL_COLUMNS):
+        raise FixtureError('BasicTools strokes changed an unrelated model recipe')
+    added=new[len(old):]
+    if len(set(added))!=count:raise FixtureError('BasicTools strokes did not produce distinct effect records')
+    if effect_planet(before,new)!=after:raise FixtureError('BasicTools strokes changed unrelated planet fields')
+    return old,added
+
+
+def checked_history(text):
+    header=re.match(r'^local=(\d+):(\d+) count=(\d+)\n',text);rows=parse_history(text)
+    if not header or int(header[3])!=len(rows):raise FixtureError('Complete canonical Terraform history is required')
+    return rows
+
+
+def require_capabilities(instances,rows,pinned):
+    actual={instance:parse_identity(row['text'])[1] for instance,row in zip(instances,rows)}
+    if len(rows)!=len(instances) or actual!=pinned:
+        raise FixtureError('A pinned Terraform participant generation changed')
 
 
 class TerrainPartyConsole(TerrainConsole):
@@ -66,7 +124,7 @@ def run(args):
     for game in games:game.console=TerrainPartyConsole(game.instance,deadline)
     by_id={game.instance:game for game in games};host=games[0];observer=next(g for g in games if g!=host)
     result=dict(passed=False,complete_acceptance=False,mode=args.mode,recipe=recipe,checks=[])
-    held={};creation_serial=None;context=None
+    held={};creation_serial=None;context=None;capabilities={}
     def write():(args.output/'result.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
     def designing():
         match=re.search(r'creation_editor active=1 phase=1 serial=(\d+) stale=0 entered=1\b',host.call('coop.editor creations'))
@@ -75,6 +133,7 @@ def run(args):
         rows=[status(game) for game in games]
         if any(row.get('frozen') for row in rows):raise FixtureError('Terraform froze a participant')
         if context and any(parse_context(row['text'])!=context for row in rows):raise FixtureError('The Terraform context changed')
+        if capabilities:require_capabilities([game.instance for game in games],rows,capabilities)
         if any(row.get('revision',0)>revision for row in rows):raise FixtureError('Unexpected duplicate Terraform transaction')
         if not all(row.get('phase')==4 for row in rows):return False
         states=[canonical_header(game.call('coop.editor assets')) for game in games]
@@ -105,12 +164,19 @@ def run(args):
     def release(row):
         game=by_id[row['instance']];x,y=row['target'];game.call(f'button {x} {y} up');held.pop(game.instance,None);game.call('wait.frames 7 15000')
     try:
-        result['windows']=verify_viewport(owner,games,recipe['viewport']);context=parse_context(status(host)['text']);revision=status(host)['revision']
+        result['windows']=verify_viewport(owner,games,recipe['viewport']);initial=[status(game) for game in games]
+        context=parse_context(initial[0]['text']);revision=initial[0]['revision']
+        capabilities={game.instance:parse_identity(row['text'])[1] for game,row in zip(games,initial)}
+        if len(set(capabilities.values()))!=len(games):raise FixtureError('Terraform participants require distinct capabilities')
+        result['capabilities']={str(instance):list(capability) for instance,capability in capabilities.items()}
         host.wait('ready durable Terraform baseline',lambda:canonical(revision));record('baseline')
         for row in recipe['strokes']:
             input_steps(by_id[row['instance']],recipe['setup'],'Terraform')
             if status(host)['revision']!=revision:raise FixtureError('Terraform navigation changed authored data')
-        before=native_planet(observer);history=len(parse_history(host.call('coop.editor history')))
+        before=native_planet(observer);history=len(checked_history(host.call('coop.editor history')))
+        # Reject unsupported recipes before any press, including absent/mixed
+        # columns. The fixed BasicTools case requires ordinary effect appends.
+        recipe_records(before['fields'],EFFECT_COLUMNS);recipe_records(before['fields'],MODEL_COLUMNS)
         if args.mode=='host-away':
             host.call('coop.uistate 0');host.click_control(0x07104130);host.click_control(0xC00F0301);host.click_control(0xC00F0310)
             creation_serial=host.wait('host local Creature Editor',designing)
@@ -127,23 +193,27 @@ def run(args):
         result['held_histories']=states;write()
         with ThreadPoolExecutor(max_workers=len(recipe['strokes'])) as pool:list(pool.map(release,recipe['strokes']))
         revision+=len(recipe['strokes']);host.wait('ordered durable Terraform strokes',lambda:canonical(revision,creation_serial is None))
-        after=native_planet(observer);changed={key for key in before['fields'].keys()|after['fields'].keys() if before['fields'].get(key)!=after['fields'].get(key)}
-        if not changed&RECIPE_FIELDS:raise FixtureError('The native strokes did not change a terrain recipe')
-        after_history=parse_history(host.call('coop.editor history'))
+        after=native_planet(observer);old_effects,added=appended_effects(before['fields'],after['fields'],len(recipe['strokes']))
+        after_history=checked_history(host.call('coop.editor history'))
         if len(after_history)!=history+len(recipe['strokes']) or any(row[-1]!='Terraform adventure' for row in after_history[history:]):raise FixtureError('Expected exactly one Terraform Undo item per author')
-        expected_authors={by_id[row['instance']].player_id() for row in recipe['strokes']}
-        if {row[0] for row in after_history[history:]}!=expected_authors:raise FixtureError('Terrain history authors differ from pressed native inputs')
+        expected_authors={capabilities[row['instance']] for row in recipe['strokes']}
+        if {row[:2] for row in after_history[history:]}!=expected_authors or any(row[3]!=context[1] for row in after_history[history:]):
+            raise FixtureError('Terrain history authors or generations differ from pressed native inputs')
+        accepted={entry[:2]:payload for entry,payload in zip(after_history[history:],added)}
+        result['accepted_effects']=[dict(author=list(entry[:2]),history_revision=entry[4],payload=payload.hex()) for entry,payload in zip(after_history[history:],added)]
         record('strokes-committed')
         def history_key(game,key):
             nonlocal revision
             EditorPair.hotkey(game,key);revision+=1;host.wait('author-owned Terraform history',lambda:canonical(revision,creation_serial is None))
-            if len(parse_history(host.call('coop.editor history')))!=len(after_history):raise FixtureError('Undo/Redo duplicated history')
+            if len(checked_history(host.call('coop.editor history')))!=len(after_history):raise FixtureError('Undo/Redo duplicated history')
             return native_planet(observer)['fields']
         first=by_id[recipe['strokes'][0]['instance']]
         middle=history_key(first,'z')
         if args.mode=='simultaneous':
             second=by_id[recipe['strokes'][1]['instance']]
-            if middle==before['fields'] or middle==after['fields']:raise FixtureError('Own Undo failed to retain a distinct foreign stroke')
+            foreign=accepted[capabilities[second.instance]]
+            if middle!=effect_planet(before['fields'],old_effects+[foreign]):
+                raise FixtureError('Own Undo changed the exact accepted foreign effect or unrelated planet fields')
             if history_key(second,'z')!=before['fields']:raise FixtureError('Both author Undos did not restore the baseline')
             if history_key(second,'y')!=middle:raise FixtureError('Foreign Redo changed the retained recipe')
             if history_key(first,'y')!=after['fields']:raise FixtureError('Both Redos did not restore exact native recipe order')
@@ -177,11 +247,64 @@ def run(args):
         owner.close()
 
 
+def self_test():
+    checks=0
+    def check(value):
+        nonlocal checks
+        checks+=1
+        if not value:raise AssertionError('Terraform driver self-test failed')
+    def rejects(action):
+        try:action()
+        except FixtureError:check(True)
+        else:check(False)
+    old=bytes(range(84));first=bytes([91])*84;second=bytes([172])*84;model=bytes(range(68))
+    baseline={0xFFFFFFFF:(0xA,0,'12345678')}
+    for columns,records in ((EFFECT_COLUMNS,[old]),(MODEL_COLUMNS,[model])):
+        offset=0
+        for ident,kind,width in columns:
+            raw=struct.pack('>II',len(records),width)+b''.join(row[offset:offset+width] for row in records)
+            baseline[ident]=(kind,0x9C,raw.hex());offset+=width
+    after=effect_planet(baseline,[old,first,second])
+    check(appended_effects(baseline,after,2)==([old],[first,second]))
+    middle=effect_planet(baseline,[old,second]);check(recipe_records(middle,EFFECT_COLUMNS)==[old,second])
+    check(effect_planet(baseline,[old])==baseline)
+    check(effect_planet(middle,[old,first,second])==after)
+    rejects(lambda:appended_effects(baseline,effect_planet(baseline,[first,old,second]),2))
+    rejects(lambda:appended_effects(baseline,effect_planet(baseline,[old,first,first]),2))
+    rejects(lambda:appended_effects(baseline,after,1))
+    changed=dict(after);changed[0xFFFFFFFF]=(0xA,0,'87654321');rejects(lambda:appended_effects(baseline,changed,2))
+    changed=dict(after);key=MODEL_COLUMNS[0][0];changed[key]=(*changed[key][:2],changed[key][2][:-2]+'FF');rejects(lambda:appended_effects(baseline,changed,2))
+    for mode in range(7):
+        malformed=dict(after);key,kind,width=EFFECT_COLUMNS[mode%len(EFFECT_COLUMNS)]
+        field=malformed[key]
+        if mode==0:del malformed[key]
+        elif mode==1:malformed[key]=(kind,0x80,field[2])
+        elif mode==2:malformed[key]=(kind,0x9C,'not hex')
+        elif mode==3:malformed[key]=(kind,0x9C,field[2][:-2])
+        elif mode==4:malformed[key]=(kind,0x9C,(struct.pack('>II',3,width+1)+bytes.fromhex(field[2])[8:]).hex())
+        elif mode==5:malformed[key]=(kind,0x9C,(struct.pack('>II',8193,width)+bytes.fromhex(field[2])[8:]).hex())
+        elif mode==6:malformed[key]=(kind,0x9C,(struct.pack('>II',2,width)+bytes.fromhex(field[2])[8:]).hex())
+        rejects(lambda:recipe_records(malformed,EFFECT_COLUMNS))
+    text=lambda slot,generation:f'project={"ad"*16} capability={slot}:{generation}'
+    pinned={95:(0,1),96:(1,3)};rows=[{'text':text(0,1)},{'text':text(1,3)}]
+    require_capabilities([95,96],rows,pinned);check(True)
+    rejects(lambda:require_capabilities([95,96],[rows[0],{'text':text(1,4)}],pinned))
+    rejects(lambda:require_capabilities([95,96],[rows[0],{'text':text(2,3)}],pinned))
+    rejects(lambda:require_capabilities([95,96],rows[:1],pinned))
+    history='local=0:1 count=2\nauthor=0:1 sequence=1 epoch=9 revision=1 applied=1 redo=0 Terraform adventure\nauthor=1:3 sequence=1 epoch=9 revision=2 applied=1 redo=0 Terraform adventure\n'
+    entries=checked_history(history);check({row[:2] for row in entries}==set(pinned.values()))
+    check({row[:2] for row in entries}!={(0,1),(1,4)})
+    rejects(lambda:checked_history(history.replace('count=2','count=3')))
+    rejects(lambda:checked_history(history.split('author=1:3')[0]))
+    print(json.dumps(dict(self_test=True,checks=checks,native_calls=False)))
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--execute',action='store_true')
     parser.add_argument('--metadata',type=Path);parser.add_argument('--instances',type=int,nargs='+',default=[95,96,97,98]);parser.add_argument('--dll-sha256')
     parser.add_argument('--recipe',type=Path);parser.add_argument('--mode',choices=['simultaneous','host-away'],default='simultaneous');parser.add_argument('--output',type=Path)
-    parser.add_argument('--timeout',type=int,default=120);parser.add_argument('--deadline',type=int,default=1800);args=parser.parse_args()
+    parser.add_argument('--timeout',type=int,default=120);parser.add_argument('--deadline',type=int,default=1800);parser.add_argument('--self-test',action='store_true');args=parser.parse_args()
+    if args.self_test:self_test();return
     if not args.execute:print(json.dumps(dict(prepared=True,launches_games=False,measured_recipe_required=True,modes=['simultaneous','host-away'])));return
     if not args.metadata or not args.output or not args.recipe or len(args.instances) not in (2,4) or len(set(args.instances))!=len(args.instances) or not re.fullmatch('[0-9a-f]{64}',args.dll_sha256 or '') or not 30<=args.timeout<=300 or not 120<=args.deadline<=3600:parser.error('Exact private metadata/hash, measured recipe and bounded2/4-player arguments required')
     run(args)
