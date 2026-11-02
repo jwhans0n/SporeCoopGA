@@ -468,6 +468,43 @@ bool assign_crew(void* resource,const editor::AuthoringSettings& settings,std::s
     skg::thiscall<void*>(a_copy_crew,skg::ptr_add<void>(resource,0x178),skg::ptr_add<void>(fragment.p,0x178));
     skg::field<int32_t>(resource,0x238)=int32_t(*capacity);return true;
 }
+bool crew_primary_asset(void* row,editor::ResourceKey& key,std::string& error){
+    key=skg::field<editor::ResourceKey>(row,0);const auto server=skg::field<uint64_t>(row,0x10);
+    if(server && server!=UINT64_MAX){
+        const auto resolve=H&&H->sym?H->sym("Simulator::Scenario::ResolveLocalServerAsset"):0;
+        if(!resolve || !skg::cdecl_call<bool>(resolve,server,&key) || !key.instance){error="An adventure crew asset is unavailable";return false;}
+    }
+    return true;
+}
+bool canonical_crew(const editor::Document& document,Owned& fragment,Rows& crew,std::string& error){
+    const auto found=document.settings.find(kCrewObject);
+    if(!supported || !a_copy_crew || found==document.settings.end()){
+        error="The canonical adventure crew roster is unavailable";return false;
+    }
+    const auto& settings=found->second;const auto roster=settings.properties.find(kCrewRosterProperty),capacity=settings.properties.find(kCrewCapacityProperty);
+    const auto schema=authoring_property_schema();
+    for(auto property:{kCrewRosterProperty,kCrewCapacityProperty}){
+        auto advertised=document.settings_schema.find(property);
+        if(advertised==document.settings_schema.end() || advertised->second!=schema.at(property)){
+            error="The advertised adventure crew schema is invalid";return false;
+        }
+    }
+    const auto* block=roster==settings.properties.end()?nullptr:std::get_if<editor::StructuredValue>(&roster->second);
+    const auto* count=capacity==settings.properties.end()?nullptr:std::get_if<int64_t>(&capacity->second);
+    if(settings.object!=kCrewObject || settings.kind!=editor::SettingsKind::Crew || settings.act_id!=editor::ObjectId{} || settings.properties.size()!=2 ||
+       !block || block->format!=kCrewRosterFormat || !block->references.empty() || block->bytes.empty() || block->bytes.size()>editor::Limits{}.structured_bytes ||
+       !count || *count<0 || *count>3){error="The canonical adventure crew settings are invalid";return false;}
+    fragment.p=parse(block->bytes,error);
+    if(!fragment.p || !rows(fragment.p,0x178,0x38,3,crew) || (crew.end-crew.begin)/0x38>*count){
+        if(error.empty())error="The canonical adventure crew exceeds its capacity";return false;
+    }
+    editor::Document projected,identity;if(!project_authoring(fragment.p,projected,error,identity))return false;
+    auto canonical=projected.settings.find(kCrewObject);
+    if(canonical==projected.settings.end() || canonical->second.properties.at(kCrewRosterProperty)!=editor::Value{*block}){
+        error="The adventure crew subtree is not canonical";return false;
+    }
+    return true;
+}
 editor::ObjectId marker_id(uint32_t key,const std::map<uint32_t,editor::ObjectId>* supplied=nullptr) {
     const auto& source=supplied?*supplied:bindings;
     auto it = source.find(key);
@@ -3757,6 +3794,66 @@ bool edit_owned_snapshot(const Snapshot& base,const std::function<bool(void*,std
     if(!hydrate_native_captain(owned.p,result,error))return false;
     std::vector<Binding> compact;if(!serialized_bindings(result.bindings,compact,error))return false;
     result.bindings=std::move(compact);out=std::move(result);error.clear();return true;
+}
+
+bool crew_assets(const editor::Document& document,std::vector<editor::ResourceKey>& out,std::string& error){
+    if(!document.settings.contains(kCrewObject)){
+        if(document.settings_schema.contains(kCrewRosterProperty) || document.settings_schema.contains(kCrewCapacityProperty)){
+            error="The advertised adventure crew roster is missing";return false;
+        }
+        out.clear();error.clear();return true;
+    }
+    Owned fragment;Rows crew;if(!canonical_crew(document,fragment,crew,error))return false;
+    std::vector<editor::ResourceKey> keys;
+    for(auto row=crew.begin;row!=crew.end;row+=0x38){
+        editor::ResourceKey key;if(!crew_primary_asset(row,key,error))return false;keys.push_back(key);
+    }
+    out=std::move(keys);error.clear();return true;
+}
+bool remap_crew_assets(const Snapshot& base,const std::vector<CrewAssetRemap>& edits,Snapshot& out,std::string& error){
+    if(!supported || edits.size()>3){error="The adventure crew remap exceeds its allowed slots";return false;}
+    if(!validate(base,base.document,error))return false;
+    if(edits.empty()){out=base;error.clear();return true;}
+    Owned fragment;Rows crew;if(!canonical_crew(base.document,fragment,crew,error))return false;
+    const auto count=size_t((crew.end-crew.begin)/0x38);std::set<uint32_t> slots;
+    for(const auto& edit:edits){
+        if(edit.slot>=count || !slots.insert(edit.slot).second || !edit.expected.instance || !edit.expected.type || !edit.expected.group ||
+           !edit.replacement.instance || edit.replacement.type!=edit.expected.type || edit.replacement.group!=edit.expected.group ||
+           skg::field<editor::ResourceKey>(crew.begin+edit.slot*0x38,0)!=edit.expected){
+            error="The adventure crew asset slot changed before versioning";return false;
+        }
+        auto* row=crew.begin+edit.slot*0x38;skg::field<editor::ResourceKey>(row,0)=edit.replacement;
+        skg::field<uint32_t>(row,0xC)=0;skg::field<uint64_t>(row,0x10)=UINT64_MAX;
+    }
+    auto wanted=base.document;auto& block=std::get<editor::StructuredValue>(wanted.settings.at(kCrewObject).properties.at(kCrewRosterProperty));
+    if(!serialize(fragment.p,block.bytes,error))return false;
+    Snapshot result;
+    if(!edit_owned_snapshot(base,[&](void* owned,std::string& reason){
+        Rows current;if(!rows(owned,0x178,0x38,3,current) || size_t((current.end-current.begin)/0x38)!=count){
+            reason="The native adventure crew roster changed before versioning";return false;
+        }
+        // Preflight every slot before the first owned write. Duplicate assets
+        // in other slots retain their original keys, locks and opaque bytes.
+        for(const auto& edit:edits){
+            editor::ResourceKey actual;
+            if(!crew_primary_asset(current.begin+edit.slot*0x38,actual,reason))return false;
+            if(actual!=edit.expected){reason="The native adventure crew asset slot changed before versioning";return false;}
+        }
+        for(const auto& edit:edits){auto* row=current.begin+edit.slot*0x38;
+            skg::field<editor::ResourceKey>(row,0)=edit.replacement;skg::field<uint32_t>(row,0xC)=0;skg::field<uint64_t>(row,0x10)=UINT64_MAX;
+        }
+        return true;
+    },result,error))return false;
+    // Revisions, allocation counters, stable IDs and every unrelated typed
+    // value come from the caller's draft, not a fresh native projection.
+    result.document=std::move(wanted);result.captain=base.captain;result.captain_locked=base.captain_locked;
+    if(result.source!=base.source || result.act!=base.act || result.bindings!=base.bindings || result.metadata!=base.metadata){
+        error="The adventure crew version changed an unrelated native identity";return false;
+    }
+    if(!validate(result,result.document,error))return false;
+    Gesture checked;checked.before=base;checked.after=result;
+    if(!supported_changes(checked,error))return false;
+    out=std::move(result);error.clear();return true;
 }
 
 bool apply_prepared(const Snapshot& prepared,const editor::Change& change,std::string& error){

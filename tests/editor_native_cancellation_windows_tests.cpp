@@ -1492,7 +1492,9 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
     reset();CHECK(t_allocations.empty());
 }
 #include "editor_native_act_cache_fixture.h"
+#include "editor_native_crew_assets_fixture.h"
 int main(){
+    test_owned_crew_asset_versions();
     test_act_projection_production_cache();test_act_projection_cache_bounds();
     test_entry_hydrates_nonzero_captain_before_scene_entry();
     test_metadata_caption_notification();

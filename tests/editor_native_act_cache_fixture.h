@@ -54,8 +54,11 @@ bool SK_THISCALL act_cache_write(void* resource,Stream* stream){
     Rows acts,crew;CHECK(rows(resource,0x23C,0x534,8,acts)&&rows(resource,0x178,0x38,3,crew));
     const uint32_t count=uint32_t((acts.end-acts.begin)/0x534),crew_count=uint32_t((crew.end-crew.begin)/0x38);
     if(act_cache_fail_fingerprint_write&&count==2)return false;
+    const std::array<uint32_t,3> prefix{0xB523D4F9,17,0};
     const std::array<uint32_t,4> header{0x41435431,count,crew_count,skg::field<uint32_t>(resource,0x238)};
-    if(!write(stream,header.data(),sizeof header)||!write(stream,crew.begin,crew_count*0x38))return false;
+    if(!write(stream,prefix.data(),sizeof prefix)||!write(stream,header.data(),sizeof header)||
+       !write(stream,skg::ptr_add<void>(resource,8),sizeof(editor::ResourceKey))||
+       !write(stream,skg::ptr_add<void>(resource,0x130),0x46)||!write(stream,crew.begin,crew_count*0x38))return false;
     for(uint32_t i=0;i<count;++i){
         auto* act=acts.begin+i*0x534;Rows goals;CHECK(rows(act,0x84,0x188,3,goals));
         std::array<uint8_t,0x534> stable;std::memcpy(stable.data(),act,stable.size());std::memset(stable.data()+0x84,0,12);
@@ -65,8 +68,11 @@ bool SK_THISCALL act_cache_write(void* resource,Stream* stream){
     return true;
 }
 bool SK_THISCALL act_cache_read(void* resource,Stream* stream){
-    ++act_cache_reads;std::array<uint32_t,4> header{};
-    if(read(stream,header.data(),sizeof header)!=sizeof header||header[0]!=0x41435431||header[1]>8||header[2]>3)return false;
+    ++act_cache_reads;std::array<uint32_t,3> prefix{};std::array<uint32_t,4> header{};
+    if(read(stream,prefix.data(),sizeof prefix)!=sizeof prefix||prefix!=std::array<uint32_t,3>{0xB523D4F9,17,0}||
+       read(stream,header.data(),sizeof header)!=sizeof header||header[0]!=0x41435431||header[1]>8||header[2]>3||
+       read(stream,skg::ptr_add<void>(resource,8),sizeof(editor::ResourceKey))!=sizeof(editor::ResourceKey)||
+       read(stream,skg::ptr_add<void>(resource,0x130),0x46)!=0x46)return false;
     auto& storage=act_cache_rows[resource];storage.crew.resize(header[2]*0x38);
     if(read(stream,storage.crew.data(),uint32_t(storage.crew.size()))!=int(storage.crew.size()))return false;
     storage.acts.resize(header[1]*0x534);storage.goals.resize(header[1]);

@@ -341,3 +341,39 @@ remaps, locks and capacity, resolver failure, optional fingerprint allocation
 and Write failure, bounded eviction, and value lifetime after native resource
 destruction. Native fixture and ABI validation establish implementation
 behavior; performance improvement remains a separate next-candidate measurement.
+
+## Crew picker identity collisions across native profiles
+
+The C9 ordinary Crew Add test selected Spice Crawler at
+`40626200!29058782.2B978C46`. Two observers rejected the uploaded closure at
+`40626200!29058782.02D5C9AF`; the host and the observer cloned from the same
+profile advanced. There were no native faults. The first reported difference
+was a generated Species summary, but the read-only authoritative-model audit
+also found different valid BEM records under that owner: 2,425 bytes on profile
+95 and 7,199 bytes on profile 96. Evidence is retained in
+`out/preview9-c9-crew-failure-probe/offline-source-records.json`. Omitting only
+the summary, or weakening the same-key/different-bytes guard, cannot fix this.
+
+The selected owner closure must pass existing immutable project-version
+allocation before canonical submission. This requires no new cast entry.
+Native `crew_assets` privately parses and canonical-validates the bounded Crew
+fragment and returns ordered keys, retaining duplicate slots. Legacy drafts
+without an advertised Crew schema return no keys; malformed advertised rosters
+reject. `remap_crew_assets` accepts at most three unique slot edits with checked
+expected keys and replacement identities of the same type/group. It changes
+only the selected row's primary ResourceKey and canonical local machine/server
+hints. All other bytes in the native 0x38-byte records, unchanged duplicate
+slots, order, count and capacity remain intact.
+
+Both canonical Crew fragments and main scenario snapshots are independently
+owned. Main rows are checked again through verified server-key resolution
+before mutation. The result retains every unrelated Document value, stable ID,
+revision and allocation counter; full parsed validation and the existing opaque
+change guard run before it becomes an output. Success and failure leave live
+native scene/history/selection state untouched. Runtime must validate the
+original captured native delta before this sanctioned identity rewrite, stage
+the versioned dependencies, and retain the unchanged content-conflict guard.
+Focused actual-i686 tests cover duplicate slots, opaque record bytes, stale
+reorder/removal targets, server-backed hints, malformed and missing rosters,
+capacity and atomic failure. Running-game cross-profile acceptance remains a
+separate next-candidate check.

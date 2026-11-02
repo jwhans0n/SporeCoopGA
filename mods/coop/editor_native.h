@@ -209,6 +209,17 @@ bool prepare(const Snapshot& base, const editor::Document&, const editor::Change
 // The result is reprojected with base's explicit schemas and stable bindings.
 bool edit_owned_snapshot(const Snapshot&, const std::function<bool(void*,std::string&)>&,
                          Snapshot& out, std::string& error);
+// Ordered canonical Crew references, including duplicate slots. Legacy drafts
+// without Crew support return an empty list; malformed advertised rows reject.
+bool crew_assets(const editor::Document&,std::vector<editor::ResourceKey>&,std::string& error);
+struct CrewAssetRemap {
+    uint32_t slot=0;
+    editor::ResourceKey expected,replacement;
+};
+// Sanctioned immutable-version rewrite in an owned snapshot only. Each checked
+// slot changes its primary key and local hints; all other row bytes, roster
+// order/capacity, draft revisions and unrelated authored values are preserved.
+bool remap_crew_assets(const Snapshot&,const std::vector<CrewAssetRemap>&,Snapshot&,std::string& error);
 // Materialize precisely the already validated canonical bytes. A pose-only
 // patch updates existing actors without serializing the whole adventure again.
 bool apply_prepared(const Snapshot&, const editor::Change&, std::string& error);
