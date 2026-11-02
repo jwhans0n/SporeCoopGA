@@ -112,6 +112,23 @@ identifies an inactive-reference metadata rejection; the post-failure restore
 count does not establish that restoration changed the data. A rebuilt native
 sharing attempt is still required.
 
+Candidate 4 (`53a1c9bc234b2c7c1161e65e5f57bb19f7838c2a51de2e3a88aef0a8fe29df59`)
+passes its owned-process, hidden/muted, viewport, adapter and zero-fault preflight
+in `out/preview9-commit-c4-preflight.json`. Its original Adventure Town projection
+now succeeds before title input or hosting: 419 placements, 118 classes and five
+acts, native SHA256
+`76d3ac97f983da930f414c26ee0f0236ac5bb096c1653f2bb85b06a40bc5016e`.
+The host reaches shared revision 0, but the guest terminates with `0xC0000005`
+during initial native entry: `Simulator::cPlanetModel::IsInWater+0x57`, IP
+`008AE587`, reading null with ECX zero. The guest had registered the two-resource,
+60,846-byte baseline 32 ms earlier; its last reported editor state was Joining,
+not yet editing or ready. The runner then retires the host. No warm-up or measured
+gesture ran. Input logs, crash text, report archive, actual Windows minidump and
+hashed evidence receipt are retained under `out/preview9-commit-diagnostic-c4`.
+The transition failure remains a native acceptance blocker. The performance
+tool's optional exact-candidate gate now pauses after warm-up until compilers are
+quiescent; 14 offline tests pass in `out/preview9-commit-tool-gate-selftest.log`.
+
 ## Required native acceptance
 
 Actual two- and four-player candidate runs remain pending for crew edits,
