@@ -1698,3 +1698,77 @@ completed exit 0 before another deployment
 (`out/preview9-c24-terrain-retirement/result.json`). The personal preview 8
 installation, shortcut, exact 4 GB executable, and rollback remain untouched.
 C24 is not an accepted release.
+
+### C26 terrain continuation and color controls; C27 checked Redo
+
+The guarded C25 diagnostic build was not deployed: review found a nested
+native callback could begin a foreign durable commit before its canonical
+revision was published. C26 retains the original immutable request and lease
+tokens during asynchronous inverse settlement, waits for that publication,
+then coalesces the latest canonical scene before checking and submitting the
+original guarded gesture. It uses raw owner identity only while busy;
+`capture_scene_owner` retains its ready-only contract. Native view readiness
+also excludes deferred camera settlement without blocking its internal drain.
+The candidate continues renewing its existing leases while waiting.
+
+Strict optimized i686 Native passes 61,729 checks, including 3,179 focused
+view checks, with 45 inputs unchanged (`out/preview9-c25-native-receipt.json`).
+C26 Runtime passes 67,495 full checks and focused inverse 6,008, identity
+2,044 and rejection 9,657 with 76 inputs unchanged
+(`out/preview9-c26-runtime-receipt.json`). The const-State validator removes
+the unnecessary whole-State copy in wire validation while preserving the
+Coordinator reset semantics. Its Linux/i686 document, protocol, project and
+Session fixtures, byte-identical old-wire cases and allocation-failure probe
+are retained in `out/preview9-const-state-proposal/receipt.json`.
+
+Private C26 DLL
+`7c2ba00e8a54f71daefa653e6cef016399036038fdbf57ca5a3470ec5e39d803`
+(91,467,264 bytes) has 191 unchanged production inputs. Its fresh two-player
+Town test accepts both distinct Basic Tools strokes, one durable transaction
+and history item per author, after both native histories are held before
+either release. Host Undo preserves the exact guest record; guest Undo
+restores the exact baseline. Guest Redo then fails ownership without a
+freeze: both participants remain ready at revision/durable 4, faults 0 and
+strict digest `32eaca69586bb8b2fdc37c9e167b6004cec4226c0ee72599b96c9786f9674530`.
+This is a failed full history sequence, retained in
+`out/preview9-c26-terrain-simultaneous/result.json` and
+`out/preview9-c26-terrain-failure-full/result.json`.
+
+All four normally visible Color controls pass on C26: host atmosphere,
+guest water, host cliff and guest beach. Each ordinary palette selection
+produces exactly one canonical history item, changes its intended color
+field, and passes Undo, Redo and final Undo against exact planet field maps.
+Both participants strictly converge with faults 0. Evidence:
+`out/preview9-c26-{atmosphere,water,cliff,beach}-color/result.json`.
+The serialized override checkbox is natively hidden; it was not enabled or
+counted as a tested public control. These passes do not cover gradients,
+environment, flora or the rest of Terraform.
+
+C27 fixes the actual Redo failure by acquiring a Terrain scope for every
+terrain history entry, including an absent record being restored. Core
+admission is unchanged: only the exact retained history identity can be
+leased, and a foreign lease still denies the operation. Strict optimized
+Runtime passes 67,796 full checks and 6,257 focused history/inverse checks;
+O0 focus passes 6,252 with 76 inputs unchanged. The fixture first retry raced
+an earlier asynchronous denial; the retained failure precedes a fixture
+change that waits for that denial before retrying. There is no production
+throttle change. Receipts: `out/preview9-c27-runtime-receipt.json` and
+`out/preview9-absent-terrain-core/receipt.json`.
+
+Private C27 DLL
+`e2efa52b0db07668e45f0b70455185f2eaa215fbf7c54cada3527b9edf868299`
+(91,468,800 bytes) has 191 unchanged production inputs. Its fresh two-player
+Town sequence now passes: both held histories, two accepted strokes, both
+author Undos, both Redos restoring exact record identities, payloads and
+order, and final own Undos restoring the baseline at revision/durable 8.
+Both participants strictly converge with faults 0. Evidence:
+`out/preview9-c27-two-town-bootstrap/`,
+`out/preview9-c27-terrain-calibrate/`, and
+`out/preview9-c27-terrain-simultaneous/result.json`.
+
+C26 returned normally to Galaxy with faults 0 and runner exit 0 before the
+private C27 deployment. Prior candidate DLLs and failure evidence remain
+retained. The personal preview 8 installation, shortcut, exact 4 GB executable
+and rollback payload are unchanged. C27 is not an accepted release: final
+performance targets, expanded creation and Terraform acceptance, complexity
+boundaries and lab smoke remain open.
