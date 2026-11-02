@@ -1068,13 +1068,40 @@ cached/private outcomes, subtype, exact mask/error words, scope and native
 generation. A matching local creation also contributes its serial; a canonical
 host operation is labeled `canonical` with serial zero. `observed=0` means
 inspection did not complete, so its default outcome fields are not evidence of
-a native load. This log adds no ResourceManager lookup. On successful calls,
-the optional `error` text can retain an earlier caller error; `accepted`,
-`observed` and the native outcome words determine the result of this
-observation, not that text. The passive creations status also reports
+a native load. This log adds no ResourceManager lookup. In C17, successful
+calls could log an earlier caller error; C18 clears that log field on accepted
+observations. `accepted`, `observed` and the native outcome words determine the
+result. The passive creations status also reports
 `last_saved=GROUP!INSTANCE.TYPE`, from retained module
 state; it can refer to an earlier creation and does not probe the model.
 Strict actual-i686 creation tests pass 935 checks, including exact load/release
 counts and preservation of the first logged result after later observations.
 The next live Vehicle attempt must retain that first automatic log before any
 manual `coop.editor model` diagnostic, because both paths can warm the cache.
+
+### C17 rejection-reason loss and C18 correction
+
+The actual simultaneous Terraform attempt on both C17 peers rejected before
+Session submission. `decoded=0 size=0/0` described the optional decoded
+DBPF diagnostic, not the native snapshots: both snapshots had serialized and
+the strict normalized comparison found unequal nonempty bytes. A retained
+Town body is 1,237,014 bytes, exceeding that diagnostic's 1 MiB cap. This log
+does not establish an empty transfer or an ownership failure.
+
+Runtime then lost the actual unsupported-change reason: `reject_captured`
+saved it, but its fresh identity proof reused the same error string, and real
+`capture_scene_owner` clears that string on success. C18 uses a separate
+identity error and restores the original reason before ordinary rollback.
+Failed identity proof still leaves the replacement scene intact and includes
+both errors when available. The Runtime double now clears the error on
+successful owner capture, matching the real adapter. Tests retain all prior
+identity-expiry cases and add explicit owner-query failures for both roles.
+Creation admission logging separately passes 936 strict actual-i686 checks,
+including a successful result following a rejected result with a stale caller
+error. Subsequent strict native checks reported divergence on both peers even
+though readiness was true and the Runtime was not frozen: marker 253 retained
+a different quaternion after rollback. Native Restore validates its owned
+input before scene reconstruction; its successful return alone does not prove
+the later live scene. These fixes improve evidence and preserve the original
+reason; the unsupported Terraform difference and settled rollback verification
+still need actual native diagnosis. No quaternion tolerance was widened.

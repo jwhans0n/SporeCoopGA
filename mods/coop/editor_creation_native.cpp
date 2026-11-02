@@ -260,7 +260,7 @@ bool validate_model(editor::ResourceKey key,const ModelFence& fence,std::string&
             static_cast<unsigned long>(GetCurrentProcessId()),static_cast<unsigned long long>(model_observation),
             local?"creation":"canonical",static_cast<unsigned long long>(local?creation->serial:0),
             static_cast<unsigned long long>(fence.scope.epoch),unsigned(fence.scope.author.slot),unsigned(fence.scope.author.generation),
-            static_cast<unsigned long long>(fence.generation),unsigned(observed),unsigned(accepted),model_admission_status(result).c_str(),error.substr(0,192).c_str());
+            static_cast<unsigned long long>(fence.generation),unsigned(observed),unsigned(accepted),model_admission_status(result).c_str(),accepted?"":error.substr(0,192).c_str());
     }
     if(!observed)return false;
     if(accepted)return true;

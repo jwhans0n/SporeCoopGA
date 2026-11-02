@@ -1731,14 +1731,16 @@ void captured(editor_native::Gesture gesture) {
     if(!editor_native::capture_scene_owner(captured_owner,error) || captured_owner.source!=gesture.after.source){
         frozen=true;native_identity_lost=true;tell("The captured gesture could not pin its native editor: "+error);return;
     }
+    std::string identity_error;
     auto captured_identity=[&]{
+        identity_error.clear();
         auto context=[&]{return controller && C.session && C.session->connected() && !closing && !recovery && !transport_teardown &&
             observed_transport==captured_transport && C.session->transport_generation()==captured_transport &&
             controller->view().context.project==captured_context.project && controller->view().context.epoch==captured_context.epoch &&
             controller->view().local==captured_author && controller->state().document.revision==captured_revision;};
         if(!context() || editor_native::state().generation!=gesture.generation)return false;
         editor_native::SceneOwner current;
-        return editor_native::capture_scene_owner(current,error) && current==captured_owner && context() &&
+        return editor_native::capture_scene_owner(current,identity_error) && current==captured_owner && context() &&
             editor_native::state().generation==gesture.generation;
     };
     auto reject_captured=[&]{
@@ -1746,8 +1748,9 @@ void captured(editor_native::Gesture gesture) {
         if(!captured_identity()){
             frozen=true;native_identity_lost=true;
             tell("The captured gesture's native editor identity expired; the current scene was left intact: "+reason+
-                (error!=reason?"; "+error:std::string{}));return;
+                (!identity_error.empty() && identity_error!=reason?"; "+identity_error:std::string{}));return;
         }
+        error=reason;
         stop_unsupported(error);
     };
     const auto supported_begin=stage_qpc();

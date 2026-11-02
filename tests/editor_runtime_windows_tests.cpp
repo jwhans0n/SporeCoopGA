@@ -421,7 +421,7 @@ bool restore_view(const LocalView& value,uint64_t generation,std::string& error)
 bool capture_scene_owner(SceneOwner& owner,std::string& error){
     CHECK(!dispatching);const auto& n=native[side];
     if(!n.scene_owner_available||!n.state.editing){error="Injected native scene owner unavailable";return false;}
-    owner=n.scene_owner;owner.source=n.snapshot.source;return true;
+    owner=n.scene_owner;owner.source=n.snapshot.source;error.clear();return true;
 }
 struct CreationTerrainProof {
     GestureScope scope;

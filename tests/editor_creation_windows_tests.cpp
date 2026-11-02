@@ -262,6 +262,7 @@ void test_native_model_admission(){
     CHECK(admission_loads[0]==1&&admission_loads[1]==1&&admission_releases[0]==0&&admission_releases[1]==1);
     reset_admission();CHECK(editor_creation_native::validate_model(alias,fence,error));
     CHECK(admission_logs.size()==2 && admission_logs.back().find("observed=1 accepted=1")!=std::string::npos);
+    CHECK(admission_logs.back().ends_with(" error="));
     CHECK(admission_logs.back().find("cached=1/1/1 subtype=7D433FAD errors=00000000,00000000,00000000,00000000 private=1/1/1")!=std::string::npos);
     CHECK(admission_loads[0]==1&&admission_loads[1]==1&&admission_releases[0]==1&&admission_releases[1]==1);
     const auto first=admission_logs.front();reset_admission();admission_errors[0][3]=0x80000000;
