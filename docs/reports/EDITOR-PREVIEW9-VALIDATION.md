@@ -1221,3 +1221,43 @@ expired scopes. The visible toolbar result and screenshots are retained in
 `out/preview9-c17-crew-capacity-toolbar/result.json`. This is a functional
 two-player pass; the unchanged frame/confirmation timing gates, terrain and
 four-player acceptance remain pending.
+
+## Candidate 17 simultaneous terrain rejection and inexact restoration
+
+After the successful Crew control check, both participants independently located
+Lead Actor 7, opened BasicTools and held a measured Raise Round Terrain stroke
+before either release. Both native histories reported an active gesture while
+the shared revision stayed 3. Fresh screenshots and hit trees were reviewed in
+`out/preview9-c17-terrain-calibrate/`; the failed simultaneous workflow is
+`out/preview9-c17-terrain-simultaneous/result.json`.
+
+Both strokes were rejected before Session submission. Capture, projection and
+terrain identity checks reached the final strict unsupported-change comparison;
+the earlier ambiguous-counter error was not the failing stage in this run.
+The optional diagnostic printed `decoded=0 size=0/0`. These are diagnostic
+extraction buffers, not the serialized snapshot lengths. Retained Town native
+data contains a valid decoded DBPF body larger than that diagnostic's 1 MiB cap.
+The actual unsupported difference still needs a bounded larger diagnostic.
+
+The rejection message lost its detail because a successful scene-owner query
+cleared the shared error string. Candidate 18 preserves the original reason and
+raises only the diagnostic extraction cap to 4 MiB. Its fixtures retain strict
+comparison rules; this does not enable the rejected terrain operation.
+
+The final games were responsive, Ready, gesture-free, and still at durable
+revision 3, with 180 effects and 102 terrain models. However, **both strict
+native checks diverged after restoration**. The log identified placement
+4294967549: its position, scale and property counts matched, while quaternion
+components differed by one or two float ULPs. Expected bits were
+`BF16ACF6/BE2E89B5/3E8838CB/3F3E8042`; observed bits were
+`BF16ACF8/BE2E89B6/3E8838CB/3F3E8043`. Passive inspection of native slot 253
+found the same observed bits in live marker memory. The helper does not decode
+the adapter's logical binding map; that limitation is retained in its receipt.
+
+Evidence is `out/preview9-c17-terrain-failure-full/result.json`,
+`out/preview9-c17-terrain-properties-after/result.json` and
+`out/preview9-c17-marker253-rpm/result.json`. These results do not establish
+which native call changed the quaternion. No tolerance or additional supported
+field is justified yet. Restoration needs a settled strict verification before
+local editing is released; Ready flags alone are insufficient. Candidate 17
+therefore fails terrain and restoration acceptance and remains private.
