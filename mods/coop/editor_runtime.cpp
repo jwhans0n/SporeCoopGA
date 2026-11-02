@@ -169,6 +169,7 @@ std::map<editor::ObjectId, editor::ClassActSettings> guarded_settings;
 std::map<editor::ObjectId, editor::AuthoringSettings> guarded_authoring;
 std::map<editor::ObjectId, editor::TerrainRecord> guarded_terrain;
 std::map<editor::OperationId,editor_project::Resources> cast_uploads;
+std::map<editor::OperationId,std::string> cast_upload_errors;
 std::string status, resource_hash;
 editor::ResourceKey source_creation;
 uint64_t automatic_generation=0, automatic_transport=0;
@@ -760,11 +761,11 @@ bool stop_unsupported(std::string& error) {
     return false;
 }
 bool native_integrity(const editor_native::Snapshot& snapshot, const editor::Document& document, std::string& error) {
-    // This exact owned resource was already validated when accepted. Native
-    // capture has not changed any bytes, so projecting it again adds no check.
+    // Validate against the supplied projection even when native bytes match:
+    // captain metadata and the logical wanted document are separate inputs.
+    if (!editor_native::validate(snapshot, document, error)) return false;
     if (current_native.act == snapshot.act && current_native.bindings == snapshot.bindings &&
         current_native.bytes == snapshot.bytes) return true;
-    if (!editor_native::validate(snapshot, document, error)) return false;
     return supported_between(current_native, snapshot, error);
 }
 bool check_native_integrity(std::string& error) {
@@ -955,7 +956,12 @@ bool apply(const editor::Document& before, const editor::Document& after, const 
     if(cast_change(change)){
         auto uploaded=cast_uploads.find(change.operation);
         const auto* content=host() && uploaded!=cast_uploads.end()?&uploaded->second:incoming_resources?&*incoming_resources:nullptr;
-        if(host() && change.intent==editor::Intent::Forward && !content){error="The cast operation has no validated dependency upload";return false;}
+        if(host() && change.intent==editor::Intent::Forward && !content){
+            auto rejected=cast_upload_errors.find(change.operation);
+            if(rejected!=cast_upload_errors.end()){error=std::move(rejected->second);cast_upload_errors.erase(rejected);}
+            else error="The cast operation has no validated dependency upload";
+            return false;
+        }
         if(content){
             auto merged=resources;if(!merge_dependencies(merged,*content,error))return false;
             std::vector<dbpf::Record> added;
@@ -1865,7 +1871,7 @@ void close_session(bool preserve_offer = false) {
         } else if (H) H->log(M, SK_INFO, "Saved-draft reopen proof was not pinned: %s", error.c_str());
     }
     if (!keep_offer) controller->end(); pending.reset(); awaiting_operation.reset(); requested_scopes.clear(); guarded_placements.clear(); incoming_resources.reset();
-    guarded_settings.clear();guarded_authoring.clear();cast_uploads.clear();solo_preview.reset();solo_ready_scope.reset();pending_solo_return.reset();pending_solo_request=0;
+    guarded_settings.clear();guarded_authoring.clear();cast_uploads.clear();cast_upload_errors.clear();solo_preview.reset();solo_ready_scope.reset();pending_solo_return.reset();pending_solo_request=0;
     recovery.reset(); beginning = false; frozen = false; save_publication_pending = false;
     end_after_return = false; disconnected_return = false; pending_saved.reset();
     pending_preview_return.reset();
@@ -2747,7 +2753,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     waiting_history.reset();
     H = host_api; M = mod; C = std::move(context); reopen_saved.reset(); projection_override.reset();
     solo_preview.reset();solo_ready_scope.reset();pending_solo_return.reset();pending_solo_request=0;
-    guarded_settings.clear();guarded_authoring.clear();cast_uploads.clear();extended_projection_override.reset();cast_projection_override.reset();authoring_projection_override.reset();test_menu.reset();
+    guarded_settings.clear();guarded_authoring.clear();cast_uploads.clear();cast_upload_errors.clear();extended_projection_override.reset();cast_projection_override.reset();authoring_projection_override.reset();test_menu.reset();
     automatic_generation=automatic_transport=retained_editor_generation=native_exit_generation=0;follow_failed=false;
     native_exit_requested=native_exit_confirmed=exit_after_save=exit_broadcast=remote_exit=handoff=handoff_saving=false;
     exit_after_return=false;
@@ -2780,14 +2786,18 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     callbacks.assets = [](editor::OperationId operation,const std::vector<uint8_t>& bytes,std::string& error){
         if(!controller || operation.epoch!=controller->view().context.epoch)return false;
         if(controller->state().decisions.contains(operation))return true;
+        // One retained result per current author, fenced by the full operation.
+        // Its ordered Request receives the original admission failure.
+        std::erase_if(cast_upload_errors,[&](const auto& item){return item.first.author==operation.author;});
+        auto rejected=[&]{cast_upload_errors.emplace(operation,error.empty()?"The asset dependency upload was rejected":error.substr(0,256));return false;};
         editor_project::Resources content;
-        if(!editor_project::decode_resources(bytes,content,error))return false;
-        if(!adventure_collect::validate_uploaded_records(content.root,content.bundle.records,error))return false;
-        auto merged=resources;if(!merge_dependencies(merged,content,error))return false;
+        if(!editor_project::decode_resources(bytes,content,error))return rejected();
+        if(!adventure_collect::validate_uploaded_records(content.root,content.bundle.records,error))return rejected();
+        auto merged=resources;if(!merge_dependencies(merged,content,error))return rejected();
         std::erase_if(cast_uploads,[&](const auto& item){return item.first.author==operation.author;});
         uint64_t staged=content.bundle.bytes;
         for(const auto& [id,value]:cast_uploads){(void)id;staged+=value.bundle.bytes;}
-        if(cast_uploads.size()>=4 || staged>editor::wire::kResourceBytes){error="The cast dependency staging queue is full";return false;}
+        if(cast_uploads.size()>=4 || staged>editor::wire::kResourceBytes){error="The cast dependency staging queue is full";return rejected();}
         cast_uploads.emplace(operation,std::move(content));return true;
     };
     callbacks.apply_committed = apply; callbacks.rollback_committed = rollback; callbacks.persist_guest = persist;
@@ -3106,6 +3116,9 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
             if(planet==document.settings.end() || !document.settings_schema.contains(field))return false;
             scopes.push_back({editor::ScopeKind::Field,editor_native_terrain::kPlanetObject,{editor::Field::Property,field}});
         }
+        // Native recipe loads can replace more records than one lease packet.
+        // This temporary authored-data hold still excludes asset Content leases.
+        if(scopes.size()>200)scopes={{editor::ScopeKind::Authoring,{},{}}};
         if(!scopes.empty() && !lease(scopes))return false;
         for(auto id:records)guarded_terrain.try_emplace(id,document.terrain.at(id));
         if(!fields.empty())guarded_authoring.try_emplace(planet->first,planet->second);
@@ -3205,7 +3218,7 @@ void shutdown() {
     // Failure can require native rollback, so retire native adapters last.
     if(controller){controller->end();controller.reset();}
     editor_creation::shutdown();local_creation.reset();prepared_native.reset();rendered_revision=0;
-    waiting_history.reset();authoring_projection_override.reset();test_menu.reset();guarded_settings.clear();guarded_authoring.clear();cast_uploads.clear();
+    waiting_history.reset();authoring_projection_override.reset();test_menu.reset();guarded_settings.clear();guarded_authoring.clear();cast_uploads.clear();cast_upload_errors.clear();
     solo_preview.reset();solo_ready_scope.reset();pending_solo_return.reset();pending_solo_request=0;
     native_playtesting=return_started=disconnected_return=end_after_return=false;return_error.clear();settled_cancellation.reset();
     transport_teardown.reset();deferred_offer.reset();observed_transport=retired_transport=0;reopen_saved.reset();projection_override.reset();
