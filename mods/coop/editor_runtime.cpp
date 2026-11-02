@@ -25,6 +25,7 @@
 #include "editor_stage_metrics.h"
 #include "editor_reopen_identity.h"
 #include "editor_project.h"
+#include "editor_placement_diagnostic.h"
 #include "editor_session.h"
 #include "editor_store.h"
 #include "game.h"
@@ -1380,6 +1381,33 @@ bool same_authored(const editor::Placement& a, const editor::Placement& b) {
     return a.class_id == b.class_id && a.act_id == b.act_id && a.protected_object == b.protected_object &&
         a.position == b.position && a.rotation == b.rotation && a.scale == b.scale && a.properties == b.properties;
 }
+void log_unowned_placement_changes(const editor_native::Gesture& gesture) noexcept {
+    try{
+    if(!H || !H->log)return;
+    const auto& before=gesture.before.document;const auto& after=gesture.after.document;
+    const auto old_planet=before.settings.find(editor_native_terrain::kPlanetObject),new_planet=after.settings.find(editor_native_terrain::kPlanetObject);
+    const bool planet_delta=(old_planet==before.settings.end())!=(new_planet==after.settings.end()) ||
+        (old_planet!=before.settings.end() && new_planet!=after.settings.end() && old_planet->second.properties!=new_planet->second.properties);
+    const bool terrain_delta=before.terrain!=after.terrain || planet_delta;
+    const auto marker=[](const editor_native::Snapshot& snapshot,editor::ObjectId id){
+        const auto found=std::find_if(snapshot.bindings.begin(),snapshot.bindings.end(),[&](const auto& binding){return binding.object==id;});
+        return found==snapshot.bindings.end()?std::string("missing"):std::to_string(found->marker);
+    };
+    auto left=before.placements.begin(),right=after.placements.begin();unsigned placements=0;
+    while(placements<8 && (left!=before.placements.end() || right!=after.placements.end())){
+        const auto id=left==before.placements.end()?right->first:right==after.placements.end()?left->first:std::min(left->first,right->first);
+        const editor::Placement* a=nullptr;const editor::Placement* b=nullptr;
+        if(left!=before.placements.end() && left->first==id){a=&left->second;++left;}
+        if(right!=after.placements.end() && right->first==id){b=&right->second;++right;}
+        const auto differences=editor_placement_diagnostic::describe(a,b);if(differences.empty())continue;
+        ++placements;const auto old_marker=marker(gesture.before,id),new_marker=marker(gesture.after,id);
+        for(const auto& field:differences)H->log(M,SK_DEBUG,
+            "Shared editor unowned placement diagnostic: generation=%llu terrain_delta=%u object=%llu:%u before_snapshot_marker=%s after_snapshot_marker=%s field=%s before=%s after=%s",
+            static_cast<unsigned long long>(gesture.generation),unsigned(terrain_delta),static_cast<unsigned long long>(id.id),id.generation,
+            old_marker.c_str(),new_marker.c_str(),field.field.c_str(),field.before.c_str(),field.after.c_str());
+    }
+    }catch(...){ } // Optional evidence must not replace the original rejection.
+}
 editor_native::GestureScope current_gesture_scope(bool retained_import=false) {
     if (!controller || !native_attached || rejection_restore || closing || recovery || transport_teardown || !C.session ||
         !C.session->connected() || C.session->transport_generation() != observed_transport) return {};
@@ -2046,6 +2074,7 @@ void captured(editor_native::Gesture gesture) {
         if (prior != gesture.before.document.placements.end() && next != gesture.after.document.placements.end() && same_authored(prior->second, next->second)) continue;
         auto guard = guarded_placements.find(id);
         if (prior == gesture.before.document.placements.end() || guard == guarded_placements.end()) {
+            log_unowned_placement_changes(gesture);
             error="The native gesture has no current placement ownership";reject_captured();return;
         }
         if (next == gesture.after.document.placements.end()) {

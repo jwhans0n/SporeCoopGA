@@ -1145,3 +1145,17 @@ then requires strict publication and authenticated guest rejoin. The strict
 actual-i686 runs pass 7,465 focused restoration checks, 1,508 captured-identity
 checks and 40,689 full Runtime checks, with 71 pinned inputs unchanged in
 `out/preview9-c20-runtime-receipt.json`.
+
+The subsequent C20 owned-placement diagnostic logs at most eight changed
+placements and eight fields per placement at the existing ownership rejection.
+It prints exact float/identifier words and bounded windows beginning at the
+first changed text/structured byte or reference. Marker numbers are explicitly
+the snapshots' serialized bindings. `terrain_delta` means the owned documents
+differ in recipe or Planet settings; it is not a native gesture-origin claim.
+The logger reads no native state, preserves the original rejection, and cannot
+turn a difference into ownership or normalization permission. Strict actual-i686
+coverage pins known quaternion words, bounds, immutable inputs, zero native
+reads/writes and logger-exception containment. The current full Runtime suite
+passes 40,926 checks, with 7,540 focused and 1,508 captured-identity checks;
+72 inputs remain unchanged in
+`out/preview9-c20-placement-runtime-receipt.json`.

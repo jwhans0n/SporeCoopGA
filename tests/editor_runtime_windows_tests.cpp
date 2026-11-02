@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
@@ -170,7 +171,14 @@ void bind_native(Native& n) {
     n.snapshot.bindings.clear();uint32_t marker=0;
     for (const auto& [id,p]:n.snapshot.document.placements) { (void)p;n.snapshot.bindings.push_back({id,marker++}); }
 }
-void no_log(SkMod*,int,const char*,...) {}
+bool retain_fixture_logs=false,throw_fixture_log=false;
+std::vector<std::string> fixture_logs;
+void no_log(SkMod*,int,const char* format,...) {
+    if(throw_fixture_log)throw std::runtime_error("Injected diagnostic logger failure");
+    if(!retain_fixture_logs)return;
+    char buffer[1024];va_list values;va_start(values,format);std::vsnprintf(buffer,sizeof buffer,format,values);va_end(values);
+    fixture_logs.emplace_back(buffer);
+}
 uintptr_t no_sym(const char*) { return 0; }
 double now_seconds() { return double(clock_ms)/1000; }
 uint64_t frame_index() { return game_frame; }

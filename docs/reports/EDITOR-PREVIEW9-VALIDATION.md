@@ -1366,6 +1366,29 @@ The full suite also retains large-closure Save/recovery, cached join, creation
 editor, playtest-return, cancellation and teardown coverage.
 
 These are controlled Runtime tests with native doubles. The real adapter has
-separate native callback-fence fixtures, and actual C19 terrain/restoration
-acceptance is still pending. The failed actual C18 evidence above remains
-unchanged; no quaternion tolerance or authored-field comparison was loosened.
+separate native callback-fence fixtures. The actual C19 attempt above failed;
+these controlled successes do not establish native acceptance. The failed
+actual C18 evidence also remains unchanged; no quaternion tolerance or
+authored-field comparison was loosened.
+
+### C20 controlled recovery and owned placement diagnostics
+
+The latest strict actual-i686 Runtime suite passes 40,926 checks, with 7,540
+focused restoration/diagnostic checks and 1,508 captured-identity checks.
+All 72 pinned inputs remain unchanged in
+`out/preview9-c20-placement-runtime-receipt.json`. The preceding recovery-only
+checkpoint and its 40,689 full checks remain separately recorded in
+`out/preview9-c20-runtime-receipt.json`.
+
+The failed hold's exact original owner can recover from published Frozen
+state while retaining every source, generation, project, epoch, participant
+and transport check. A real UDP case keeps both old checkpoints while the
+new recovery scene is unready, then requires strict publication and guest
+rejoin. Replacement-owner cases still perform no recovery writes.
+
+At the existing placement ownership rejection, bounded diagnostics now show
+actual changed owned fields, raw value words, serialized snapshot marker IDs
+and semantic `terrain_delta`. They add no native reads, permission bypass or
+normalization. The original error survives a failing logger. Actual C19
+terrain and restoration failure above remains valid; actual C20 acceptance
+still needs the next frozen native payload and focused reproduction.

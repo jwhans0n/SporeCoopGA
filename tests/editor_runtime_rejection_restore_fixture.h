@@ -244,7 +244,50 @@ static void test_rejection_scene_fenced_restore_never_writes_a_replacement(){
         CHECK((author?runtime_guest::store.snapshot():runtime_host::store.snapshot())==checkpoint);
     }
 }
+static void test_rejection_placement_diagnostic_is_bounded_and_owned(){
+    Party party;side=0;auto& n=native[0];
+    editor_native::Gesture gesture;gesture.generation=n.state.generation;gesture.before=n.snapshot;gesture.after=gesture.before;
+    for(unsigned i=1;i<11;++i){
+        const editor::ObjectId id{placement.id+i,1};auto row=gesture.before.document.placements.at(placement);row.object=id;
+        gesture.before.document.placements.emplace(id,row);gesture.after.document.placements.emplace(id,row);
+        gesture.before.bindings.push_back({id,i+10});gesture.after.bindings.push_back({id,i+20});
+    }
+    for(auto& [id,row]:gesture.after.document.placements){(void)id;row.rotation={.6f,0,0,.8f};}
+    auto& changed=gesture.after.document.placements.at(placement);changed.position={-.25f,2,3};changed.scale=2;
+    editor::TerrainRecord terrain;terrain.object={123,1};gesture.after.document.terrain.emplace(terrain.object,terrain);
+    const auto before=gesture.before,after=gesture.after,live=n.snapshot;
+    const auto captures=n.capture_calls,drafts=n.draft_capture_attempts,restores=n.restores,views=n.view_restores,applies=n.apply_calls;
+    fixture_logs.clear();retain_fixture_logs=true;runtime_host::log_unowned_placement_changes(gesture);retain_fixture_logs=false;
+    CHECK(fixture_logs.size()==10); // Three fields on the first placement, one on each of seven more.
+    std::set<std::string> owners;
+    for(const auto& line:fixture_logs){
+        CHECK(line.size()<1024&&line.find("terrain_delta=1")!=std::string::npos);
+        const auto start=line.find("object=");const auto end=line.find(' ',start);owners.insert(line.substr(start,end-start));
+    }
+    CHECK(owners.size()==8);
+    CHECK(fixture_logs[0].find("field=position before=vec3:")!=std::string::npos&&fixture_logs[0].find("after=vec3:BE800000,40000000,40400000")!=std::string::npos);
+    CHECK(fixture_logs[1].find("field=rotation before=quat:00000000,00000000,00000000,3F800000 after=quat:3F19999A,00000000,00000000,3F4CCCCD")!=std::string::npos);
+    CHECK(fixture_logs[3].find("before_snapshot_marker=11 after_snapshot_marker=21")!=std::string::npos);
+    CHECK(gesture.before.document==before.document&&gesture.after.document==after.document&&gesture.before.bytes==before.bytes&&gesture.after.bytes==after.bytes);
+    CHECK(n.snapshot.bytes==live.bytes&&n.snapshot.document==live.document&&n.capture_calls==captures&&n.draft_capture_attempts==drafts&&n.restores==restores&&n.view_restores==views&&n.apply_calls==applies);
+    auto a=before.document.placements.at(placement),b=a;
+    for(uint32_t key=0;key<30;++key)b.properties.emplace(0x100+key,float(key));
+    CHECK(editor_placement_diagnostic::describe(&a,&b).size()==8);
+    editor::StructuredValue old_block{0x1234,std::vector<uint8_t>(100),{}},new_block=old_block;new_block.bytes[73]=0xAB;
+    a.properties={{0xF00D,old_block}};b=a;b.properties.at(0xF00D)=new_block;
+    const auto opaque=editor_placement_diagnostic::describe(&a,&b);CHECK(opaque.size()==1);
+    CHECK(opaque[0].after.find("at=73,bits=AB")!=std::string::npos&&opaque[0].before.find("at=73,bits=00")!=std::string::npos);
+    old_block.references.resize(1000,{1,1});new_block=old_block;new_block.references.back()={9,2};
+    a.properties.at(0xF00D)=old_block;b.properties.at(0xF00D)=new_block;
+    const auto references=editor_placement_diagnostic::describe(&a,&b);CHECK(references.size()==1&&references[0].after.find("ref_at=999,0000000000000009:00000002")!=std::string::npos);
+    CHECK(references[0].after.size()<256);
+    gesture.after.document.terrain.clear();fixture_logs.clear();retain_fixture_logs=true;runtime_host::log_unowned_placement_changes(gesture);retain_fixture_logs=false;
+    CHECK(!fixture_logs.empty()&&fixture_logs[0].find("terrain_delta=0")!=std::string::npos);fixture_logs.clear();
+    throw_fixture_log=true;runtime_host::log_unowned_placement_changes(gesture);throw_fixture_log=false;
+    CHECK(n.snapshot.document==live.document&&n.capture_calls==captures&&n.restores==restores);
+}
 static void test_all_rejection_restore_cases(){
+    test_rejection_placement_diagnostic_is_bounded_and_owned();
     test_rejection_scene_waits_for_later_frame_and_local_controls();
     test_rejection_scene_preserves_independent_act_and_view();
     test_rejection_scene_accepts_foreign_commits_and_coalesces_latest();
