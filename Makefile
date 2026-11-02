@@ -204,7 +204,7 @@ $(B)/host/editor_stage_metrics_tests.exe: tests/editor_stage_metrics_tests.cpp m
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_stage_metrics_tests.cpp -o $@
 
-$(B)/host/editor_native_cancellation_tests.exe: tests/editor_native_cancellation_windows_tests.cpp tests/editor_native_act_cache_fixture.h tests/editor_native_crew_assets_fixture.h tests/editor_native_recent_fixture.h tests/editor_native_pose_capture_fixture.h tests/editor_native_terrain_materialization_fixture.h tests/editor_native_terrain_transition_fixture.h tests/editor_native_history_toolbar_fixture.h tests/editor_native_diagnostic_fixture.h tests/editor_native_view_fence_fixture.h mods/coop/editor_native_terrain_transition_impl.h mods/coop/editor_native.cpp mods/coop/editor_native.h mods/coop/editor_native_authoring.h mods/coop/editor_native_act_cache.h mods/coop/editor_native_scale.h mods/coop/editor_native_bindings.h mods/coop/editor_native_tools.h mods/coop/net/dbpf.cpp mods/coop/net/editor_document.cpp $(ADVENTURE_ABI_HEADERS)
+$(B)/host/editor_native_cancellation_tests.exe: tests/editor_native_cancellation_windows_tests.cpp tests/editor_native_act_cache_fixture.h tests/editor_native_crew_assets_fixture.h tests/editor_native_recent_fixture.h tests/editor_native_pose_capture_fixture.h tests/editor_native_terrain_materialization_fixture.h tests/editor_native_terrain_transition_fixture.h tests/editor_native_history_toolbar_fixture.h tests/editor_native_diagnostic_fixture.h tests/editor_native_view_fence_fixture.h tests/editor_native_complexity_fixture.h mods/coop/editor_native_terrain_transition_impl.h mods/coop/editor_native.cpp mods/coop/editor_native.h mods/coop/editor_native_authoring.h mods/coop/editor_native_act_cache.h mods/coop/editor_native_scale.h mods/coop/editor_native_bindings.h mods/coop/editor_native_tools.h mods/coop/net/dbpf.cpp mods/coop/net/editor_document.cpp $(ADVENTURE_ABI_HEADERS)
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/editor_native_cancellation_windows_tests.cpp mods/coop/net/dbpf.cpp mods/coop/net/editor_document.cpp -o $@
 
@@ -232,13 +232,13 @@ $(B)/host/editor_document_tests.exe: $(EDITOR_CORE_SRC) tests/editor_document_te
 $(B)/host/editor_store_tests.exe: mods/coop/editor_store.cpp $(EDITOR_DELTA_SRC) tests/editor_store_tests.cpp
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $^ -o $@
-$(B)/host/editor_protocol_tests.exe: $(EDITOR_WIRE_SRC) tests/editor_protocol_tests.cpp mods/coop/net/editor_document.h mods/coop/net/editor_protocol.h
+$(B)/host/editor_protocol_tests.exe: $(EDITOR_WIRE_SRC) tests/editor_protocol_tests.cpp mods/coop/net/editor_document.h mods/coop/net/editor_protocol.h mods/coop/net/editor_complexity.h
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $(filter %.cpp,$^) -o $@
 $(B)/host/editor_project_tests.exe: $(EDITOR_PROJECT_SRC) tests/editor_project_tests.cpp
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $^ -o $@
-$(B)/host/editor_session_tests.exe: $(EDITOR_SESSION_SRC) tests/editor_session_tests.cpp mods/coop/net/editor_document.h mods/coop/net/editor_protocol.h mods/coop/editor_session.h
+$(B)/host/editor_session_tests.exe: $(EDITOR_SESSION_SRC) tests/editor_session_tests.cpp tests/editor_complexity_session_fixture.h mods/coop/net/editor_document.h mods/coop/net/editor_protocol.h mods/coop/net/editor_complexity.h mods/coop/editor_session.h
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $(filter %.cpp,$^) -o $@ -lws2_32
 $(B)/host/session_transport_tests.exe: $(SESSION_TRANSPORT_SRC) tests/session_transport_tests.cpp mods/coop/net/session.h
@@ -250,7 +250,7 @@ $(B)/host/editor_native_save_tests.exe: tests/editor_native_save_windows_tests.c
 $(B)/host/adventure_editor_preview_tests.exe: tests/adventure_editor_preview_windows_tests.cpp mods/coop/adventure_native.cpp mods/coop/adventure_native.h mods/coop/editor_native.h mods/coop/editor_native_scale.h $(ADVENTURE_ABI_HEADERS) mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/adventure_editor_preview_windows_tests.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp -o $@ -lws2_32
-$(B)/host/editor_runtime_windows_tests.exe: $(EDITOR_RUNTIME_FIXTURE_SRC) tests/editor_runtime_model_admission_fixture.h tests/editor_runtime_projection_scope_fixture.h tests/editor_runtime_terrain_transition_fixture.h tests/editor_runtime_capture_identity_fixture.h tests/editor_runtime_rejection_restore_fixture.h tests/editor_runtime_persistence_fixture.h mods/coop/editor_runtime.cpp mods/coop/editor_runtime.h mods/coop/editor_metrics.h mods/coop/editor_native.h mods/coop/editor_native_authoring.h mods/coop/editor_native_scale.h mods/coop/editor_reopen_identity.h mods/coop/editor_native_bindings.h mods/coop/editor_native_save.h mods/coop/adventure_native.h mods/coop/editor_store.h mods/coop/editor_project.h mods/coop/editor_placement_diagnostic.h mods/coop/editor_session.h $(wildcard mods/coop/net/editor_*.h) $(ADVENTURE_ABI_HEADERS)
+$(B)/host/editor_runtime_windows_tests.exe: $(EDITOR_RUNTIME_FIXTURE_SRC) tests/editor_runtime_model_admission_fixture.h tests/editor_runtime_projection_scope_fixture.h tests/editor_runtime_terrain_transition_fixture.h tests/editor_runtime_capture_identity_fixture.h tests/editor_runtime_rejection_restore_fixture.h tests/editor_runtime_persistence_fixture.h tests/editor_runtime_complexity_fixture.h mods/coop/editor_runtime.cpp mods/coop/editor_runtime.h mods/coop/editor_metrics.h mods/coop/editor_native.h mods/coop/editor_native_authoring.h mods/coop/editor_native_scale.h mods/coop/editor_reopen_identity.h mods/coop/editor_native_bindings.h mods/coop/editor_native_save.h mods/coop/adventure_native.h mods/coop/editor_store.h mods/coop/editor_project.h mods/coop/editor_placement_diagnostic.h mods/coop/editor_session.h $(wildcard mods/coop/net/editor_*.h) $(ADVENTURE_ABI_HEADERS)
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(EDITOR_RUNTIME_FIXTURE_SRC) -o $@ -lws2_32
 $(B)/host/package_admission_tests.exe: $(PACKAGE_ADMISSION_SRC) tests/package_admission_tests.cpp mods/coop/package_admission.h

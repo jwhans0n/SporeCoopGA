@@ -292,6 +292,9 @@ std::deque<Action> actions;
 struct OpenCreation {uint32_t type=0;std::optional<editor::ObjectId> target;};
 std::deque<OpenCreation> creation_actions;
 std::optional<bool> complexity_request;
+std::optional<editor::ComplexityCapability> complexity_sample;
+bool complexity_publication_failed=false;
+std::string complexity_local_error;
 struct WaitingHistory {
     editor_native::GestureScope scope;
     uint64_t generation=0,started=0;
@@ -1327,8 +1330,54 @@ bool rollback(const editor::Document&, const editor::Document&, const editor::Ch
     if(restored && before_apply_valid && pending && pending->request.operation==change.operation)pending->tentative=false;
     return restored;
 }
-bool lease(const std::vector<editor::Scope>& scopes) {
+bool complexity_proven(){
+    return controller && complexity_sample && complexity_sample->available && !complexity_publication_failed && controller->view().complexity_ready;
+}
+bool complexity_current(const editor::ComplexityCapability& value){
+    if(!complexity_proven() || !C.session || !C.session->connected() || transport_teardown ||
+        C.session->transport_generation()!=observed_transport || observed_transport<=retired_transport)return false;
+    const auto& view=controller->view();const auto member=view.members.find(view.local.slot);
+    return view.context.project!=editor::ProjectId{}&&view.context.epoch&&view.local.generation&&view.local.slot==C.session->my_id()&&
+        member!=view.members.end()&&member->second.peer==view.local&&value==*complexity_sample;
+}
+bool complexity_authorized(bool required=false){
+    if(!required&&(!controller||!editor::extended_complexity(controller->state().document)))return true;
+    if(!complexity_sample||!complexity_current(*complexity_sample))return false;
+    try{
+        // Authorization observes globals again without publishing, changing the
+        // owned consensus sample, or borrowing a Native scene pointer.
+        editor::ComplexityCapability value;std::string error;
+        return editor_native::complexity_capability(value,error)&&editor::valid_complexity(value)&&complexity_current(value);
+    }catch(...){return false;}
+}
+bool complexity_held(){
+    return controller && editor::extended_complexity(controller->state().document) && !complexity_proven();
+}
+std::string complexity_conflict(){
+    if(!complexity_local_error.empty())return complexity_local_error;
+    if(controller&&!controller->view().complexity_error.empty())return controller->view().complexity_error;
+    return "Extended Complexity is waiting for identical current native tuning proofs from every participant.";
+}
+void refresh_complexity_capability(){
+    editor::ComplexityCapability value;std::string error;
+    const bool available=editor_native::complexity_capability(value,error);
+    if(!editor::valid_complexity(value) || available!=value.available){
+        value={};value.reason=editor::ComplexityReason::Changed;
+        error="The native complexity proof changed while it was being sampled.";
+    }
+    complexity_sample=value;complexity_local_error=error.substr(0,512);
+    // start() has staged a new recovery epoch, but its checkpoint is not yet
+    // durable. The setter can publish immediately, so retain this local sample
+    // until the checked checkpoint exists.
+    if(!controller || (recovery&&recovery->controller_started))return;
+    complexity_publication_failed=!controller->set_complexity_capability(value,error);
+    if(complexity_publication_failed)complexity_local_error=error.substr(0,512);
+}
+bool lease(const std::vector<editor::Scope>& scopes,bool disabling_complexity=false) {
     if (!controller || rejection_restore || frozen || closing || recovery || durable_commit || awaiting_operation || controller->view().phase != Phase::Ready) return false;
+    const bool disable_field=disabling_complexity && scopes.size()==1 && scopes.front()==editor::Scope{editor::ScopeKind::Field,editor_native::kProjectObject,
+        {editor::Field::Property,editor_native::kExtendedComplexityProperty}};
+    if(!disable_field&&!complexity_authorized())return false;
     const auto& held = controller->view().local_leases;
     const auto local = controller->view().local;
     uint64_t time = now_ms();
@@ -1414,11 +1463,37 @@ void log_unowned_placement_changes(const editor_native::Gesture& gesture) noexce
     }
     }catch(...){ } // Optional evidence must not replace the original rejection.
 }
+void log_capture_rejection(const char* stage,const editor_native::Gesture& gesture,const std::string& reason) noexcept {
+    try{
+        if(!H||!H->log)return;
+        struct Record {const char* comparison;editor::ObjectId object;editor_placement_diagnostic::Difference field;};
+        std::vector<Record> records;records.reserve(16);const auto detail=reason.substr(0,512);
+        const auto compare=[&](const char* label,const editor_native::Snapshot& before,const editor_native::Snapshot& after){
+            auto left=before.document.placements.begin(),right=after.document.placements.begin();unsigned fields=0;
+            while(fields<8 && (left!=before.document.placements.end() || right!=after.document.placements.end())){
+                const auto id=left==before.document.placements.end()?right->first:right==after.document.placements.end()?left->first:std::min(left->first,right->first);
+                const editor::Placement* a=nullptr;const editor::Placement* b=nullptr;
+                if(left!=before.document.placements.end()&&left->first==id){a=&left->second;++left;}
+                if(right!=after.document.placements.end()&&right->first==id){b=&right->second;++right;}
+                for(auto field:editor_placement_diagnostic::describe(a,b)){
+                    if(fields==8)break;
+                    ++fields;records.push_back({label,id,std::move(field)});
+                }
+            }
+        };
+        compare("canonical-before",current_native,gesture.before);compare("before-after",gesture.before,gesture.after);
+        H->log(M,SK_DEBUG,"Shared editor capture rejection stage=%s generation=%llu reason=%s",stage,
+            static_cast<unsigned long long>(gesture.generation),detail.c_str());
+        for(const auto& record:records)H->log(M,SK_DEBUG,
+            "Shared editor capture rejection value stage=%s comparison=%s object=%llu:%u field=%s before=%s after=%s",stage,record.comparison,
+            static_cast<unsigned long long>(record.object.id),record.object.generation,record.field.field.c_str(),record.field.before.c_str(),record.field.after.c_str());
+    }catch(...){ } // No diagnostic failure may change rejection or ownership.
+}
 editor_native::GestureScope current_gesture_scope(bool retained_import=false) {
     if (!controller || !native_attached || rejection_restore || closing || recovery || transport_teardown || !C.session ||
         !C.session->connected() || C.session->transport_generation() != observed_transport) return {};
     const auto& view = controller->view();
-    if(view.phase!=Phase::Ready || exporting || pending_export_request || native_exit_requested || save_publication_pending ||
+    if(view.phase!=Phase::Ready || !complexity_authorized() || exporting || pending_export_request || native_exit_requested || save_publication_pending ||
        (!retained_import && awaiting_operation))return {};
     return {view.context.project, view.context.epoch, view.local};
 }
@@ -1707,6 +1782,7 @@ bool creation_lease(const editor_creation::Scope& scope,editor::ObjectId target)
 editor_creation::PrepareResult prepare_creation(const editor_creation::Scope& scope,editor_creation::Request& input,std::string& error){
     using Result=editor_creation::PrepareResult;
     if(!creation_current(scope)){error="The creation request belongs to an expired shared adventure";return Result::Reject;}
+    if(!local_creation&&!complexity_authorized()){error=complexity_conflict();return Result::Reject;}
     if(local_creation){
         if(local_creation->scope!=scope){error="Another local creation is already active";return Result::Reject;}
         const auto member=controller->view().members.find(scope.author.slot);
@@ -1856,7 +1932,8 @@ bool return_creation(const editor_creation::Scope& scope,const editor_creation::
     if(!creation_current(scope)){error="The creation was saved locally; its shared adventure session expired";return false;}
     if(!result.cancelled && !saved.submitted){
         if(durable_commit || pending || awaiting_operation || exporting || pending_export_request)return false;
-        if(result.request.target && !creation_lease(scope,*result.request.target)){saved.error="The asset content lease expired; the saved creation remains available locally";}
+        if(!complexity_authorized()){saved.error=complexity_conflict();}
+        else if(result.request.target && !creation_lease(scope,*result.request.target)){saved.error="The asset content lease expired; the saved creation remains available locally";}
         else if(!result.request.target && !lease({{editor::ScopeKind::Structure,{},{}}}))return false;
         if(saved.error.empty()){
             editor::ResourceKey version;std::vector<dbpf::Record> records;
@@ -1891,6 +1968,7 @@ bool return_creation(const editor_creation::Scope& scope,const editor_creation::
                     operation.mutations.push_back(std::move(mutation));
                 }
                 if(operation.mutations.size()!=1)saved.error="The saved creation did not produce exactly one cast content change";
+                else if(!complexity_authorized()){saved.error=complexity_conflict();}
                 else if(controller->upload_assets(operation.operation,assets,saved.error) && controller->submit(operation,saved.error)){
                     saved.operation=operation.operation;saved.submitted=true;awaiting_operation=operation.operation;return false;
                 }
@@ -1975,7 +2053,13 @@ void captured(editor_native::Gesture gesture) {
         stop_unsupported(error,captured_owner);
     };
     const auto supported_begin=stage_qpc();
-    if (!supported_between(current_native, gesture.before, error) || !editor_native::supported_changes(gesture, error)) {
+    if(!complexity_authorized()){error=complexity_conflict();reject_captured();return;}
+    if (!supported_between(current_native, gesture.before, error)) {
+        log_capture_rejection(same_native_authored(current_native,gesture.before)?"current-before-typed":"current-before-supported",gesture,error);
+        reject_captured(); return;
+    }
+    if(!editor_native::supported_changes(gesture,error)){
+        log_capture_rejection("gesture-supported",gesture,error);
         reject_captured(); return;
     }
     // First prove the actual native gesture. Project-owned creation identities
@@ -2135,7 +2219,7 @@ void captured(editor_native::Gesture gesture) {
         return mutation.kind==editor::MutationKind::Set && doc.placements.contains(mutation.target);
     });
     if(tentative){
-        if(!editor_native::validate(gesture.before,doc,error)){reject_captured();return;}
+        if(!editor_native::validate(gesture.before,doc,error)){log_capture_rejection("gesture-before-canonical",gesture,error);reject_captured();return;}
     }else{
         if(!captured_identity()){reject_captured();return;}
         // Structural gestures still retire native temporary objects before the
@@ -2147,6 +2231,7 @@ void captured(editor_native::Gesture gesture) {
     }
     if(!captured_identity()){reject_captured();return;}
     if (!H->frame_index) { frozen = true; tell("Native gesture submission requires the game frame counter"); return; }
+    if(!complexity_authorized()){error=complexity_conflict();reject_captured();return;}
     pending = Pending{r, std::move(gesture), H->frame_index(), false};
     pending->assets=std::move(assets);
     pending->tentative=tentative;
@@ -2232,10 +2317,13 @@ void refresh() {
         const auto name=C.session?C.session->name_of(v.playtest_tester.slot):"A collaborator";
         next.status=name+" is testing solo. Shared editing is paused";next.waiting=true;
     }
-    bool editing = native.ready && next.active && !detached_scene() && !durable_commit && !closing && !recovery && !exporting && !pending_export_request && !native_exit_requested && v.phase == Phase::Ready && !next.frozen && !awaiting_operation && !native.gesture && !editor_native_save::busy();
+    const bool editable_scene = native.ready && next.active && !detached_scene() && !durable_commit && !closing && !recovery && !exporting && !pending_export_request && !native_exit_requested && v.phase == Phase::Ready && !next.frozen && !awaiting_operation && !native.gesture && !editor_native_save::busy();
+    const bool editing=editable_scene&&!complexity_held();
     const auto complexity=editor::value(doc,editor_native::kProjectObject,{editor::Field::Property,editor_native::kExtendedComplexityProperty});
-    next.can_complexity=editing && complexity.has_value() && !complexity_request && editor_native::extended_complexity_available();
     if(complexity)if(auto flag=std::get_if<bool>(&*complexity))next.extended_complexity=*flag;
+    next.can_complexity=editable_scene && complexity.has_value() && !complexity_request &&
+        (next.extended_complexity || (complexity_proven()&&editor_native::extended_complexity_available()));
+    if(complexity_held()&&!next.frozen&&!recovery&&!closing){next.status=complexity_conflict();next.waiting=true;next.world_hints=false;}
     next.can_move_act_left=editing && native.act>0 && !doc.act_order.empty();
     next.can_move_act_right=editing && native.act+1<doc.act_order.size();
     for (const auto& gesture : controller->state().history) if (gesture.operation.author == v.local) {
@@ -2449,9 +2537,13 @@ void saved_native(editor::ResourceKey key,const editor_native_save::SaveOperatio
 void start_saved() {
     reopen_saved.reset();
     beginning = false;
+    refresh_complexity_capability();
     std::string error;
     editor_native::Snapshot native;
     if (!editor_native::capture_draft(native, error)) { tell(error); return; }
+    if(editor::extended_complexity(native.document)&&(!complexity_sample||!complexity_sample->available||complexity_publication_failed)){
+        tell(complexity_conflict());return;
+    }
     if (!supported_act(native.act, error)) { tell(error); return; }
     bool tracked = false;
     if (!editor_native::relative_scale_mode(native.document, tracked, error) || !tracked) {
@@ -2843,6 +2935,10 @@ void service_transport_teardown() {
 }
 void finish_recovery() {
     if (closing || !recovery) return;
+    refresh_complexity_capability();
+    if(editor::extended_complexity(recovery->state.document)&&(!complexity_sample||!complexity_sample->available||complexity_publication_failed)){
+        status=complexity_conflict();return;
+    }
     const auto context = editor_native::state();
     if (!context.ready) return;
     std::string act_error;
@@ -2959,6 +3055,7 @@ void finish_recovery() {
     current_native=std::move(recovery->native);rendered_revision=current_native.document.revision;
     native_generation=recovery->native_generation;native_attached=true;native_identity_lost=false;frozen=false;
     recovery.reset();
+    refresh_complexity_capability();
     tell("Recovered the last durable draft in a new editing session");
 }
 bool current_preview_return(const PreviewReturnScope& request) {
@@ -3000,6 +3097,9 @@ void end_export(bool success) {
 }
 void request_export(const Command& requested) {
     const auto& view=controller->view();
+    if(!complexity_authorized()){
+        auto reply=requested;reply.kind=CommandKind::EndExport;reply.accepted=false;send_command(reply,requested.actor.slot);tell(complexity_conflict());return;
+    }
     if(host() && local_creation && !exporting && !native_exit_requested){
         queued_exports.insert_or_assign(requested.actor,requested);
         auto reply=requested;reply.kind=CommandKind::ExportQueued;send_command(reply,requested.actor.slot);
@@ -3086,7 +3186,7 @@ void receive_command(uint8_t from,const Command& value) {
             if(creation_sessions_active()){queued_solo=value;tell("Solo testing is queued until creation editors finish or cancel");return;}
             auto reply=value;reply.kind=CommandKind::ReplySolo;
             std::string error;
-            reply.accepted=!test_request && !exporting && !native_exit_requested && cached.can_playtest && check_native_integrity(error) &&
+            reply.accepted=complexity_authorized() && !test_request && !exporting && !native_exit_requested && cached.can_playtest && check_native_integrity(error) &&
                 controller->prepare_playtest(error,editor::wire::PlaytestMode::Solo,value.actor);
             send_command(reply,from);if(!error.empty())tell(error);return;
         }
@@ -3167,6 +3267,7 @@ void service_export() {
         tell(result?"Local copy saved; shared editing resumed":"Local copy saving was cancelled or failed; the shared draft is preserved");return;
     }
     if(host()) {
+        if(!complexity_authorized()&&!exporting->started){end_export(false);return;}
         const auto& members=controller->view().members;
         for(uint8_t slot=0;slot<4;++slot)if((exporting->participants>>slot)&1) {
             auto it=members.find(slot);
@@ -3192,6 +3293,7 @@ void service_export() {
     }
     if(exporting && exporting->started && !exporting->finished && !export_before && exporting->command.actor==controller->view().local && idle_native()) {
         std::string error;editor_native::Snapshot before;
+        if(!complexity_authorized()){tell(complexity_conflict());finish_export(false);return;}
         if(exporting->rejected || !export_terrain){tell("The local copy has no verified held terrain receipt");finish_export(false);return;}
         auto terrain=*export_terrain;auto expected=current_native;expected.document=controller->state().document;
         if(!refresh_terrain_hold(terrain,expected,false,false,error)){
@@ -3254,6 +3356,14 @@ void execute(Action action) {
     if (closing && action != Action::End) return;
     if(rejection_restore && action!=Action::End && action!=Action::Recover){
         tell("Wait for the rejected edit's native restoration to be verified");return;
+    }
+    // These actions can be queued while their toolbar's previous-frame state
+    // was still enabled. Use the current cohort proof at execution as well.
+    if(!complexity_authorized() && (action==Action::Undo || action==Action::Redo || action==Action::Save || action==Action::SaveExit ||
+        action==Action::Solo || action==Action::ChooseTest || action==Action::MenuSolo || action==Action::MenuTogether ||
+        action==Action::Ready || action==Action::ApproveTest ||
+        (action==Action::Playtest && !(controller->view().phase==Phase::Preparing&&cached.ready)))){
+        tell(complexity_conflict());return;
     }
     if(controller->view().phase==Phase::Ready && creation_sessions_active() &&
        (action==Action::Solo || action==Action::ChooseTest || action==Action::Playtest || action==Action::ApproveTest)){
@@ -3497,6 +3607,7 @@ void SK_CDECL drain(void*) {
     } send_pending;
     try {
         observe_transport();
+        refresh_complexity_capability();
         // The single in-flight commit owns Store until the worker has joined.
         // Transport and keepalives continue, while scene replacement, Save and
         // recovery maintenance wait for a known durable outcome.
@@ -3508,7 +3619,7 @@ void SK_CDECL drain(void*) {
         if(!(recovery&&recovery->controller_started))controller->tick(now_ms());
         if(durable_commit){refresh();return;}
         service_rejection_restore();
-        if(!creation_actions.empty() && !editor_creation::active() && !detached_scene() && !durable_commit && controller->view().phase==Phase::Ready){
+        if(!creation_actions.empty() && !complexity_held() && !editor_creation::active() && !detached_scene() && !durable_commit && controller->view().phase==Phase::Ready){
             const auto action=creation_actions.front();creation_actions.pop_front();
             editor::ResourceKey source{0,action.type,0};std::string error;
             if(action.target){
@@ -3528,14 +3639,14 @@ void SK_CDECL drain(void*) {
         }
         observe_lease_grants();
         if(complexity_request && controller->view().phase==Phase::Ready && !pending && !awaiting_operation && !durable_commit && !detached_scene() && !frozen && !closing){
-            if(*complexity_request && !editor_native::extended_complexity_available()){
-                complexity_request.reset();tell("Extended Complexity is unavailable because native tuning conflicts with an installed override");
+            if(*complexity_request && (!complexity_authorized(true) || !editor_native::extended_complexity_available())){
+                complexity_request.reset();tell(complexity_conflict());
             }
         }
         if(complexity_request && controller->view().phase==Phase::Ready && !pending && !awaiting_operation && !durable_commit && !detached_scene() && !frozen && !closing){
             const editor::FieldKey field{editor::Field::Property,editor_native::kExtendedComplexityProperty};
             const auto& doc=controller->state().document;
-            if(doc.settings.contains(editor_native::kProjectObject) && lease({{editor::ScopeKind::Field,editor_native::kProjectObject,field}})){
+            if(doc.settings.contains(editor_native::kProjectObject) && lease({{editor::ScopeKind::Field,editor_native::kProjectObject,field}},!*complexity_request)){
                 std::string error;
                 if(check_native_integrity(error)){
                     auto operation=request(editor::Intent::Forward);operation.summary="Change adventure complexity budget";
@@ -3653,8 +3764,8 @@ void SK_CDECL drain(void*) {
             if (!native.selected.empty() && (controller->state().document.placements.contains(native.selected.front()) ||
                 (native.selected.front()==editor_native::kCaptainObject && controller->state().document.settings.contains(editor_native::kCaptainObject))))presence.selected=native.selected.front();
             presence.act = logical_act(native.act); presence.editing = native.gesture;
-            presence.pending = awaiting_operation.has_value() || rejection_restore.has_value();
-            presence.scene_revision=rendered_revision;presence.scene_ready=!detached_scene() && native.ready && !native.gesture && !durable_commit && !(pending && pending->tentative);
+            presence.pending = awaiting_operation.has_value() || rejection_restore.has_value() || complexity_held();
+            presence.scene_revision=rendered_revision;presence.scene_ready=complexity_authorized() && !detached_scene() && native.ready && !native.gesture && !durable_commit && !(pending && pending->tentative);
             if(local_creation){presence.creating_asset=true;presence.creation_serial=local_creation->scope.serial;
                 presence.creation_target=local_creation->request.target.value_or(editor::ObjectId{});
                 presence.act=controller->state().document.acts.contains(local_creation->authored_act)?local_creation->authored_act:logical_act(0);presence.selected={};presence.editing=false;}
@@ -3740,6 +3851,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     if (!C.session) return false;
     observed_transport = C.session->transport_generation(); retired_transport = 0; transport_teardown.reset(); deferred_offer.reset(); settled_cancellation.reset();
     queued_exports.clear();queued_solo.reset();deferred_test.reset();creation_actions.clear();complexity_request.reset();
+    complexity_sample.reset();complexity_publication_failed=false;complexity_local_error.clear();
     editor_session::Callbacks callbacks;
     callbacks.command=receive_command;
     callbacks.lease_denied=[](const auto& scopes){waiting_history.reset();waiting_acts.reset();editor_native::deny_input(scopes);};
@@ -3756,7 +3868,9 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
             (!detached_scene() && (native.generation!=native_generation || editor_native_save::busy() || !native.ready || native.gesture))) {
             error="The canonical draft is not currently editable";return false;
         }
+         if(editor::extended_complexity(after)&&!complexity_authorized(true)){error=complexity_conflict();return false;}
         if(cast_change(change) && !admit_class_models(before,after,change,error))return false;
+         if(editor::extended_complexity(after)&&!complexity_authorized(true)){error=complexity_conflict();return false;}
         span.okay=true;return true;
     };
     callbacks.host_hooks.apply = apply; callbacks.host_hooks.rollback = rollback; callbacks.host_hooks.persist = persist;
@@ -3786,7 +3900,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     };
     callbacks.rendered_revision=[]()->std::optional<editor::Revision>{
         const auto native=editor_native::state();
-        if(detached_scene() || durable_commit || (pending && pending->tentative) || !native.ready || native.gesture || native.generation!=native_generation)return {};
+        if(!complexity_authorized() || detached_scene() || durable_commit || (pending && pending->tentative) || !native.ready || native.gesture || native.generation!=native_generation)return {};
         return rendered_revision;
     };
     callbacks.prepare_join = [](editor::wire::Join& join,std::string& error) {
@@ -3826,11 +3940,12 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         }
         incoming_resources = std::move(content); incoming_context = scope; return true;
     };
-    callbacks.baseline_ready = [](const editor::State&) {
+    callbacks.baseline_ready = [](const editor::State& state) {
         const auto native=editor_native::state();
-        return native.ready && !native.gesture && !editor_native_save::busy();
+        return (!editor::extended_complexity(state.document)||complexity_authorized(true)) && native.ready && !native.gesture && !editor_native_save::busy();
     };
     callbacks.apply_baseline = [](const editor::State& state, std::string& error) {
+        if(editor::extended_complexity(state.document)&&!complexity_authorized(true)){error=complexity_conflict();return false;}
         ProjectionScope projection(state.document);
         reopen_saved.reset();
         if (!incoming_resources || incoming_context.project != state.document.project || incoming_context.epoch != state.document.epoch || incoming_context.revision != state.document.revision) {
@@ -4003,6 +4118,11 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     };
     native.gesture_scope = [] { return current_gesture_scope(); };
     native.projection_scope = [] { return current_projection_scope(); };
+    native.complexity_current=[](const editor::ComplexityCapability& value){return complexity_current(value);};
+    native.canonical_revision=[]()->std::optional<editor::Revision>{
+        if(!current_projection_scope().epoch)return {};
+        return controller->state().document.revision;
+    };
     native.creation_return_current=[](const editor_native::GestureScope& scope,uint64_t serial){
         return local_creation && !local_creation->materialized && local_creation->scope.serial==serial &&
             local_creation->scope.project==scope.project && local_creation->scope.epoch==scope.epoch && local_creation->scope.author==scope.author &&
@@ -4012,7 +4132,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     native.cancelled = cancelled_gesture;
     native.gesture = captured;
     native.history = [](bool redo) { action(redo ? Action::Redo : Action::Undo); };
-    native.history_available = [](bool redo) { return !rejection_restore && (redo ? cached.can_redo : cached.can_undo); };
+    native.history_available = [](bool redo) { return !rejection_restore && !complexity_held() && (redo ? cached.can_redo : cached.can_undo); };
     native.failure = [](const std::string& error) { if (!transport_teardown) { frozen = true; tell(error); } };
     native.notice = [](const std::string& message) { if (!transport_teardown) tell(message); };
     native.gate = [](const std::vector<editor::ObjectId>& selection) {
@@ -4107,7 +4227,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     };
     native.settings_gate=authoring_gate;
     native.terrain_gate=[](const std::vector<editor::ObjectId>& records,const std::vector<uint32_t>& fields){
-        if(!controller || controller->view().phase!=Phase::Ready || detached_scene() || closing || exporting || pending_export_request || native_exit_requested || pending || awaiting_operation || durable_commit || frozen || recovery)return false;
+        if(!controller || controller->view().phase!=Phase::Ready || !complexity_authorized() || detached_scene() || closing || exporting || pending_export_request || native_exit_requested || pending || awaiting_operation || durable_commit || frozen || recovery)return false;
         const auto native=editor_native::state();if(!native.ready || native.generation!=native_generation)return false;
         const auto& document=controller->state().document;std::vector<editor::Scope> scopes;
         for(auto id:records){if(!document.terrain.contains(id))return false;scopes.push_back({editor::ScopeKind::Terrain,id,{}});}
@@ -4126,10 +4246,10 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     };
     native.act_action=edit_acts;
     native.navigation_allowed=[] {
-        return controller && controller->view().phase==Phase::Ready && !detached_scene() && !durable_commit && !closing && !recovery && !pending && !awaiting_operation &&
+        return controller && controller->view().phase==Phase::Ready && complexity_authorized() && !detached_scene() && !durable_commit && !closing && !recovery && !pending && !awaiting_operation &&
             !exporting && !pending_export_request && !native_exit_requested && !editor_native_save::busy() && !editor_native::state().gesture;
     };
-    native.transaction_pending = [] { return rejection_restore.has_value() || pending.has_value() || awaiting_operation.has_value() || bool(durable_commit); };
+    native.transaction_pending = [] { return complexity_held() || rejection_restore.has_value() || pending.has_value() || awaiting_operation.has_value() || bool(durable_commit); };
     native.object_revision = [](editor::ObjectId object)->std::optional<editor::Revision> {
         if(!controller)return std::nullopt;
         const auto& placements=controller->state().document.placements;
@@ -4144,6 +4264,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     editor_native_save::Ctx saving;
     saving.shared_active = [] { return session_active() || recovery.has_value() || beginning || closing || native_attached || handoff; };
     saving.preparing=[](const editor_native_save::SaveOperation& operation,std::string& error){
+        if(!recovery&&!handoff&&!complexity_authorized()){error=complexity_conflict();return false;}
         auto* hold=export_before&&export_terrain?&*export_terrain:save_terrain?&*save_terrain:
             recovery&&recovery->terrain?&*recovery->terrain:nullptr;
         if(!hold){
@@ -4193,6 +4314,9 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     editor_native_save::init(H, M, std::move(saving));
     editor_creation::Ctx creation;
     creation.scope=[]()->std::optional<editor_native::GestureScope>{
+        // Retain interception while held, so prepare_creation can reject a
+        // native New/Edit request instead of passing it through as unshared.
+        if(!complexity_authorized()){const auto value=current_projection_scope();return value.epoch?std::optional(value):std::nullopt;}
         const auto value=current_gesture_scope(true);return value.epoch?std::optional(value):std::nullopt;
     };
     creation.prepare=prepare_creation;creation.current=creation_current;creation.lease_valid=creation_lease;creation.returned=return_creation;
@@ -4253,6 +4377,7 @@ void shutdown() {
     native_playtesting=return_started=disconnected_return=end_after_return=false;return_error.clear();settled_cancellation.reset();
     transport_teardown.reset();deferred_offer.reset();observed_transport=retired_transport=0;reopen_saved.reset();projection_override.reset();
     store.close();adventure_native::clear_editor_preview();editor_native_save::shutdown();editor_native::shutdown();actions.clear();creation_actions.clear();complexity_request.reset();queued_exports.clear();queued_solo.reset();deferred_test.reset();
+    complexity_sample.reset();complexity_publication_failed=false;complexity_local_error.clear();
     pending_preview_return.reset();pending_preparation_cancel.reset();preview_selection.reset();observed_lease_grants.clear();
     queued=false;closing=native_attached=close_restored=close_preserve_offer=false;H=nullptr;
 }
@@ -4281,7 +4406,7 @@ void approve_playtest(bool approve) {action(approve?Action::ApproveTest:Action::
 void choose_test(int choice){action(choice==0?Action::MenuSolo:choice==1?Action::MenuTogether:Action::MenuDismiss);}
 void edit_acts(int value){
     if(value==-1){waiting_acts.reset();return;}
-    if(!controller || detached_scene() || value<0 || value>3 || !cached.can_save)return;
+    if(!controller || !complexity_authorized() || detached_scene() || value<0 || value>3 || !cached.can_save)return;
     waiting_acts=WaitingActs{TestMenu{current_gesture_scope(),native_generation,controller->state().document.revision,editor_native::state().act},value,now_ms()};schedule();
 }
 void create_asset(uint32_t type){if(!detached_scene() && creation_actions.size()<8){creation_actions.push_back({type,{}});schedule();}}
@@ -4289,6 +4414,27 @@ void edit_asset(editor::ObjectId class_id){if(!detached_scene() && creation_acti
 void set_extended_complexity(bool value){complexity_request=value;schedule();}
 void resolve_join(int choice) {action(choice==0?Action::HandoffSave:choice==1?Action::HandoffDiscard:Action::HandoffCancel);}
 std::string debug(const std::vector<std::string>& args) {
+    if(args.size()==1&&args[0]=="complexity"){
+        if(!controller)return "complexity context_current=0 unavailable=no-controller";
+        const auto& view=controller->view();const auto& doc=controller->state().document;
+        const auto member=view.members.find(view.local.slot);
+        const bool peer=member!=view.members.end()&&member->second.peer==view.local;
+        const bool current=C.session&&C.session->connected()&&C.session->transport_generation()==observed_transport&&
+            observed_transport>retired_transport&&view.local.generation&&view.local.slot==C.session->my_id()&&peer&&
+            view.context.project==doc.project&&view.context.epoch==doc.epoch&&view.context.revision==doc.revision;
+        const auto value=complexity_sample.value_or(editor::ComplexityCapability{});
+        const auto claim=peer?member->second.complexity_serial:0;
+        char prefix[512];snprintf(prefix,sizeof prefix,
+            "complexity context_current=%u project=%s epoch=%llu peer=%u:%u transport=%llu ready=%u extended=%u policy=%08X formula=%08X available=%u reason=%u claim_serial=%llu words=",
+            unsigned(current),editor_store::project_name(view.context.project).c_str(),static_cast<unsigned long long>(view.context.epoch),
+            unsigned(view.local.slot),view.local.generation,static_cast<unsigned long long>(observed_transport),unsigned(current&&complexity_proven()),
+            unsigned(editor::extended_complexity(doc)),value.policy,value.formula,unsigned(value.available),unsigned(value.reason),static_cast<unsigned long long>(claim));
+        std::string result=prefix;
+        for(size_t i=0;i<value.words.size();++i){if(i)result+=',';result+=editor_placement_diagnostic::hex(value.words[i],8);}
+        auto error=complexity_proven()?std::string{}:complexity_conflict().substr(0,256);
+        for(char& c:error)if(c=='\r'||c=='\n'||c=='\t')c=' ';
+        return result+" error="+error;
+    }
     if(args.size()==1 && args[0]=="creations")return editor_creation::diagnostic();
     if(!args.empty() && args[0]=="model"){
         const std::string usage="Use coop.editor model GROUP!INSTANCE.TYPE (eight hex digits each)";
