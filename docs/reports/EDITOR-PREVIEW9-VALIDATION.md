@@ -1310,6 +1310,43 @@ acceptance or delivery. The personal executable and preview 8 DLL still match
 their original hashes; all 19 retained rollback payload hashes were verified
 in `out/preview9-delivery/c18-personal-unchanged.json`.
 
+## Candidate 19 native terrain and restoration result
+
+The private diagnostic DLL
+`663dbb8dce28bb1ae6c2ea3c44934c4ba3f5bb894d346a2987ac4da46c6916e6`
+built with all 187 production inputs unchanged. Fresh two-player Town bootstrap
+passed at revision 0 with strict convergence and zero faults. Both measured
+BasicTools strokes opened native histories before either release.
+
+The placeholder rejection no longer occurred. Both gestures instead reached
+the placement ownership guard and were rejected for missing placement
+ownership, before Session submission. No shared transaction or history item
+was created. The original gesture's exact changed placement fields still need
+a bounded diagnostic; rollback orientation logs alone do not identify that
+original delta. The placement ownership guard remains intact.
+
+The new native checkpoints narrow the restoration orientation drift: there
+were no mismatches after parsing, native restoration or act selection. The
+first mismatches appeared after the subsequent terrain load/rebuild sequence,
+on markers 253, 265 and 293. Marker 253 again changed from canonical
+`BF16ACF6/BE2E89B5/3E8838CB/3F3E8042` to
+`BF16ACF8/BE2E89B6/3E8838CB/3F3E8043`. This identifies the load/rebuild boundary;
+it does not yet isolate an instruction within that sequence.
+
+The new restoration hold correctly refused to report success. Its settled
+verification found differing native act/captain settings, froze the recoverable
+draft at durable revision 0, and notified the guest. Both participants retained
+zero native faults. This passes the failure-detection behavior for this attempt,
+while terrain commits and successful restoration remain failed acceptance.
+
+Evidence: `out/preview9-candidate19-build-receipt.json`,
+`out/preview9-c19-two-town-bootstrap/`, `out/preview9-c19-terrain-calibrate/`,
+`out/preview9-c19-terrain-simultaneous/result.json` and
+`out/preview9-c19-terrain-failure-full/result.json`. Both games left the party
+and returned normally to Galaxy with zero faults before their owned runner
+exited successfully (`out/preview9-c19-terrain-retirement/result.json`). No
+personal payload or shortcut was changed.
+
 ### C19 controlled rejection-restoration hold
 
 Strict actual-i686 Runtime fixtures pass 40,609 full-suite checks, 7,312 focused
