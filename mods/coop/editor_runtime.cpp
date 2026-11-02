@@ -752,7 +752,14 @@ bool cast_change(const editor::Change& change){
         (field.object==editor_native::kCrewObject && field.field==editor::FieldKey{editor::Field::Property,editor_native::kCrewRosterProperty}) ||
         (field.object==editor_native::kCaptainObject && field.field==editor::FieldKey{editor::Field::Property,editor_native::kCaptainAssetProperty});});
 }
+bool same_native_authored(const editor_native::Snapshot& before,const editor_native::Snapshot& after){
+    return before.act==after.act && before.bindings==after.bindings && before.bytes==after.bytes &&
+        before.captain==after.captain && before.captain_locked==after.captain_locked && before.metadata==after.metadata;
+}
 bool supported_between(const editor_native::Snapshot& before, const editor_native::Snapshot& after, std::string& error) {
+    // Equal owned bytes and authored sidecars cannot hide an opaque mutation.
+    // Still verify their typed projection against the caller's expected draft.
+    if(same_native_authored(before,after))return editor_native::validate(after,before.document,error);
     editor_native::Gesture check; check.generation = native_generation; check.before = before; check.after = after;
     return editor_native::supported_changes(check, error);
 }
@@ -773,8 +780,7 @@ bool native_integrity(const editor_native::Snapshot& snapshot, const editor::Doc
     // Validate against the supplied projection even when native bytes match:
     // captain metadata and the logical wanted document are separate inputs.
     if (!editor_native::validate(snapshot, document, error)) return false;
-    if (current_native.act == snapshot.act && current_native.bindings == snapshot.bindings &&
-        current_native.bytes == snapshot.bytes) return true;
+    if (same_native_authored(current_native,snapshot)) return true;
     return supported_between(current_native, snapshot, error);
 }
 bool check_native_integrity(std::string& error) {
@@ -959,7 +965,7 @@ bool tentative_integrity(const editor_native::Snapshot& live,const editor::Docum
         error="The tentative gesture's native identity changed";return false;
     }
     if(!editor_native::validate(live,document,error))return false;
-    if(live.act==pending->gesture.after.act && live.bytes==pending->gesture.after.bytes)return true;
+    if(same_native_authored(pending->gesture.after,live))return true;
     return supported_between(pending->gesture.after,live,error);
 }
 bool restore_tentative(std::string& error) {
