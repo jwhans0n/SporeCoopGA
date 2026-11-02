@@ -242,6 +242,7 @@ void test_creation_terrain_ticket(){
     tmc_properties.clear();act_cache_rows.clear();a_write=old_write;a_read=old_read;a_copy_acts=old_acts;a_copy_crew=old_crew;
     a_layout_shown=old_shown;a_scenario_initialization=old_init;a_get_simulator_mode_manager=old_modes;H=old_host;reset();
 }
+#include "editor_native_terrain_transition_fixture.h"
 void test_terrain_materialization_read_scope(){
     std::string error;
     for(unsigned reason=0;reason<12;++reason){
@@ -308,6 +309,6 @@ void test_terrain_materialization_hooks(){
     const auto prior_fence=fence_queued;fence_queued=true;
     editor_native::tick();drain();CHECK(t_failed==1);editor_native::tick();drain();CHECK(t_failed==1);fence_queued=prior_fence;
     tmf_setup();terrain_materialize(t_terraform.data());CHECK(terrain_materialization_error.empty()&&state().ready);
-    reset();test_terrain_preview_update();test_creation_terrain_ticket();
+    reset();test_terrain_preview_update();test_creation_terrain_ticket();test_terrain_transition_receipts();
 }
 } // namespace
