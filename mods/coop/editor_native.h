@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "net/editor_document.h"
+#include "net/editor_complexity.h"
 #include "editor_native_scale.h"
 #include "editor_native_cast.h"
 #include "editor_native_authoring.h"
@@ -125,6 +126,9 @@ struct Ctx {
     // transitions. This grants no input/lease/native mutation permission;
     // authoring still uses gesture_scope and its existing input holds.
     std::function<GestureScope()> projection_scope;
+    // Pure cached cohort comparison for an ALREADY captured local capability.
+    // Never call native getters from here; this grants no mutation permission.
+    std::function<bool(const editor::ComplexityCapability&)> complexity_current;
     // The runtime owns the creation session nonce and authorizes only its
     // current, not-yet-materialized return. Called synchronously outside frame.
     std::function<bool(const GestureScope&,uint64_t serial)> creation_return_current;
@@ -150,6 +154,9 @@ struct Ctx {
     // Native mutation input must be held until this exact selection has leases.
     std::function<bool(const std::vector<editor::ObjectId>&)> gate;
     std::function<std::optional<editor::Revision>(editor::ObjectId)> object_revision;
+    // Whole canonical head for restoring an independently owned full artifact.
+    // Placement revisions alone cannot detect a disjoint terrain commit.
+    std::function<std::optional<editor::Revision>()> canonical_revision;
     std::function<bool(uint32_t)> structure_gate; // Existing native class ID.
     std::function<bool(uint32_t)> class_gate;
     std::function<bool(editor::ObjectId)> settings_gate;
@@ -171,6 +178,9 @@ void tick(); // Queues native UI fences outside Present.
 State state();
 bool terraform_navigation_allowed(); // Ordinary local Build/Terraform browsing.
 bool extended_complexity_available();
+// Scene-independent, read-only evidence. False still fills a valid unavailable
+// value (zero tuning words plus reason) for authenticated peer publication.
+bool complexity_capability(editor::ComplexityCapability&,std::string& error);
 editor::ResourceKey avatar();
 bool avatar_locked();
 // Local browsing only. Does not create a shared authored transaction.

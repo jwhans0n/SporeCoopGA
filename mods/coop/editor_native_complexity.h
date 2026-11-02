@@ -42,5 +42,9 @@ public:
         enabled=desired;return true;
     }
     bool active()const{return enabled;}
+    bool valid()const{
+        const auto expected=enabled?kExtendedPlacements:kNativePlacements;
+        return matches(sites[0],expected,0)&&matches(sites[1],expected,1);
+    }
 };
 } // namespace editor_native_complexity

@@ -1,6 +1,13 @@
 // Production native adapter, actual i686 ABI, controlled exact-layout objects.
 // This proves hook routing and ownership; it is not a running-game result.
+#include <windows.h>
+static SHORT native_fixture_escape_state=0;
+static SHORT WINAPI native_fixture_key_state(int key){return key==VK_ESCAPE?native_fixture_escape_state:0;}
+// Native input policy is tested with exact controlled keyboard values. A real
+// user's Escape press must not nondeterministically cancel a headless double.
+#define GetKeyState native_fixture_key_state
 #include "../mods/coop/editor_native.cpp"
+#undef GetKeyState
 #include <cstdlib>
 #include <cstdio>
 
@@ -56,7 +63,7 @@ void* t_text=t_text_vt.data();
 uint32_t t_text_id=0;
 unsigned t_card_calls=0;
 unsigned t_palette_calls=0;
-editor::Revision t_revision=0;
+editor::Revision t_revision=0,t_canonical_revision=0;
 unsigned t_restores=0,t_original_undo=0,t_own_undo=0,t_settled=0,t_failed=0;
 unsigned t_object_lookups=0,t_writes=0,t_reads=0,t_transforms=0;
 GestureScope t_scope;
@@ -193,6 +200,7 @@ void native_cancel(void* entry=nullptr){
 }
 void begin(){start(t_data.data());CHECK(!t_allocations.empty());CHECK(gesture_serial!=0);}
 void reset(){
+    native_fixture_escape_state=0;
     clear_terrain_capture_rotations();
     act_projection_cache.clear();
     clear_terrain_materialization();
@@ -217,7 +225,7 @@ void reset(){
     t_active=true;t_callback_fail=t_alloc_fail=t_restore_fail=false;
     t_audio_drift=false;
     t_retired_actor=false;
-    t_frame=10;t_game_mode_id=modes::kScenario;t_time=1;t_presses=t_finishes=t_ticks=t_steps=0;t_granted=false;t_revision=0;
+    t_frame=10;t_game_mode_id=modes::kScenario;t_time=1;t_presses=t_finishes=t_ticks=t_steps=0;t_granted=false;t_revision=t_canonical_revision=0;
     t_restores=t_original_undo=t_own_undo=t_settled=t_failed=0;t_failure.clear();t_seen={};
     t_scope={};t_scope.project[0]=0xAD;t_scope.epoch=9;t_scope.author={1,3};
     a_mode=uintptr_t(&t_mode_pointer);a_context=uintptr_t(&t_context_pointer);a_loading=uintptr_t(&t_loading_pointer);
@@ -248,6 +256,7 @@ void reset(){
     C.extended_poses_tracked=[] {return false;};C.cast_tracked=[] {return false;};C.authoring_tracked=[]{return false;};
     C.gate=[](const auto&){return t_granted;};
     C.object_revision=[](editor::ObjectId)->std::optional<editor::Revision>{return t_revision;};
+    C.canonical_revision=[]()->std::optional<editor::Revision>{return t_canonical_revision;};
     C.history=[](bool redo){CHECK(!redo);++t_own_undo;};C.failure=[](const std::string& error){++t_failed;t_failure=error;};
     C.cancelled=[](const CancellationTicket& ticket,std::string& error){
         CHECK(state().ready);CHECK(!state().gesture);CHECK(ticket.scope==t_scope);CHECK(ticket.generation==state().generation);
@@ -1508,7 +1517,11 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
 #include "editor_native_terrain_materialization_fixture.h"
 #include "editor_native_diagnostic_fixture.h"
 #include "editor_native_view_fence_fixture.h"
+#include "editor_native_complexity_fixture.h"
 int main(int argc,char** argv){
+    if(argc==2&&std::string(argv[1])=="--complexity-only"){
+        test_native_complexity_capability();std::printf("native complexity capability: %u checks passed\n",checks);return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--terrain-rotation-capture-only"){
         test_terrain_rotation_capture();std::printf("native terrain rotation capture: %u checks passed\n",checks);return 0;
     }
@@ -1539,6 +1552,7 @@ int main(int argc,char** argv){
     if(argc==2&&std::string(argv[1])=="--recent-only"){
         test_recent_native_proofs();std::printf("native recent proofs: %u checks passed\n",checks);return 0;
     }
+    test_native_complexity_capability();
     test_native_view_fences();
     test_native_restore_fences();
     test_terrain_rotation_restore();

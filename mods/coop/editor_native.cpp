@@ -2,6 +2,7 @@
 #include "editor_native_bindings.h"
 #include "editor_native_tools.h"
 #include "editor_native_complexity.h"
+#include "editor_native_complexity_ratio.h"
 #include "editor_native_pose.h"
 #include "editor_native_projection_cache.h"
 #include "editor_native_act_cache.h"
@@ -193,6 +194,13 @@ std::optional<DeferredLocalView> deferred_local_view;
 bool local_view_queued=false,local_view_settling=false;
 editor_native_complexity::Bounds complexity_bounds;
 bool complexity_available=false;
+uintptr_t a_complexity_ratio,a_complexity_count,a_complexity_weights,a_complexity_max,a_complexity_create,a_complexity_clone;
+std::array<uint8_t,editor_native_complexity::kFormulaCode.size()> complexity_installed_code{};
+constexpr auto complexity_count_code=editor_native_complexity::detail::unhex(
+    "8b4c2404568b74240c33c03bf17426908bd181c138020000894c24088b12c1ea1ef6c201750a8b11c1ea1ff6c20175e0403bf175db5ec3");
+bool complexity_code_pinned=false;
+uint64_t complexity_conflicts=0;
+std::string complexity_conflict;
 void* mode();
 void* terraform_mode(){return skg::readable(mode(),0x1C)?skg::field<void*>(mode(),0x18):nullptr;}
 bool terrain_settled(){
@@ -220,13 +228,50 @@ bool extended_complexity(){
 }
 using ComplexityFn=float(SK_THISCALL*)(void*,const uint32_t*);
 ComplexityFn original_complexity;
-float SK_THISCALL complexity_ratio(void* self,const uint32_t* counts){
-    const auto ratio=original_complexity(self,counts);
-    return complexity_available && self==data(mode()) && extended_complexity()?ratio*0.25f:ratio;
+bool read_complexity_capability(editor::ComplexityCapability& out,std::string& error){
+    out={};
+    const auto reject=[&](editor::ComplexityReason reason,const char* message){out={};out.reason=reason;error=message;return false;};
+    if(!complexity_available || !complexity_code_pinned)
+        return reject(editor::ComplexityReason::Unavailable,"The exact native Extended Complexity adapter is unavailable");
+    // No native calls or callbacks occur inside this bounded global read. The
+    // same proof remains available while the host owns a creation editor.
+    skg::ReadOnlyMemoryScope memory;
+    const auto code_current=[&]{
+        return a_complexity_ratio && a_complexity_count && a_complexity_create && a_complexity_clone &&
+            skg::readable(reinterpret_cast<void*>(a_complexity_ratio),complexity_installed_code.size()) &&
+            skg::readable(reinterpret_cast<void*>(a_complexity_count),complexity_count_code.size()) &&
+            skg::readable(reinterpret_cast<void*>(a_complexity_create),11) && skg::readable(reinterpret_cast<void*>(a_complexity_clone),11) &&
+            !std::memcmp(reinterpret_cast<void*>(a_complexity_ratio),complexity_installed_code.data(),complexity_installed_code.size()) &&
+            !std::memcmp(reinterpret_cast<void*>(a_complexity_count),complexity_count_code.data(),complexity_count_code.size()) && complexity_bounds.valid();
+    };
+    if(!code_current())return reject(editor::ComplexityReason::CodeConflict,"Native complexity code or placement bounds conflict with another patch");
+    if(!a_complexity_weights || !a_complexity_max || !skg::readable(reinterpret_cast<void*>(a_complexity_weights),11*16+4) ||
+       !skg::readable(reinterpret_cast<void*>(a_complexity_max),4))
+        return reject(editor::ComplexityReason::Unavailable,"Native complexity tuning is unavailable");
+    editor::ComplexityCapability value;value.available=true;value.reason=editor::ComplexityReason::None;
+    const auto read_words=[&]{
+        std::array<uint32_t,13> words{};
+        for(size_t i=0;i<12;++i)std::memcpy(&words[i],reinterpret_cast<void*>(a_complexity_weights+16*i),4);
+        std::memcpy(&words[12],reinterpret_cast<void*>(a_complexity_max),4);return words;
+    };
+    value.words=read_words();
+    if(!editor::valid_complexity(value))return reject(editor::ComplexityReason::InvalidTuning,"Native complexity tuning is invalid");
+    if(!code_current() || read_words()!=value.words)
+        return reject(editor::ComplexityReason::Changed,"Native complexity evidence changed during capture");
+    out=value;error.clear();return true;
 }
+float SK_THISCALL complexity_ratio(void* self,const uint32_t* counts);
 bool update_complexity(std::string& error){
     const bool requested=extended_complexity();
-    if(requested && !complexity_available){error="The exact native Extended Complexity adapter is unavailable";return false;}
+    if(requested){
+        editor::ComplexityCapability evidence;
+        if(!read_complexity_capability(evidence,error)){
+            if(evidence.reason==editor::ComplexityReason::CodeConflict){++complexity_conflicts;complexity_conflict=error;return false;}
+            // Runtime publishes/holds invalid or mismatching tuning. Keep the
+            // disable operation possible; never enable new bounds on no proof.
+            error.clear();return true;
+        }
+    }
     return complexity_bounds.set(requested,error);
 }
 bool native_slot(void* object,unsigned slot){
@@ -967,6 +1012,105 @@ void* marker_for_id(void* r, editor::ObjectId id) {
         if(live_slot(p) && marker_id(slot_index(map,p))==id)return p+4;
     return nullptr;
 }
+
+struct ComplexityPool {
+    uintptr_t begin=0,end=0,capacity=0,first=0;
+    uint32_t initial=0;
+    std::vector<uint32_t> headers;
+    std::optional<uint32_t> sentinel;
+    bool operator==(const ComplexityPool&)const=default;
+};
+bool complexity_pool(void* resource,ComplexityPool& out,uint32_t& live){
+    Rows rows;if(!editor_native::rows(resource,0x2C10,0x238,kPlacementLimit,rows))return false;
+    ComplexityPool value;value.begin=uintptr_t(rows.begin);value.end=uintptr_t(rows.end);
+    value.capacity=skg::field<uintptr_t>(resource,0x2C18);value.initial=skg::field<uint32_t>(resource,0x2C24);
+    const auto size=size_t((value.end-value.begin)/0x238);
+    if(value.capacity<value.end || (value.capacity-value.begin)%0x238)return false;
+    if(value.initial<0x3FFFFFFFu){if(value.initial>size)return false;value.first=value.begin+size_t(value.initial)*0x238;}
+    else value.first=value.end;
+    value.headers.reserve(size);
+    for(size_t i=0;i<size;++i)value.headers.push_back(skg::field<uint32_t>(reinterpret_cast<void*>(value.begin+i*0x238),0));
+    if(value.capacity-value.end>=4 && skg::readable(reinterpret_cast<void*>(value.end),4))
+        value.sentinel=skg::field<uint32_t>(reinterpret_cast<void*>(value.end),0);
+    // Mirror the verified iterator, including its bit30 shortcut and next-row
+    // bit31 test. Occupied-marker count is not a naive pool-slot bit count.
+    size_t index=size_t((value.first-value.begin)/0x238),steps=0;live=0;
+    while(index<size){
+        for(;;){
+            if(index>=size || ++steps>size+1)return false;
+            const auto old=value.headers[index++];if(old&0x40000000u)break;
+            const auto next=index<size?std::optional<uint32_t>{value.headers[index]}:value.sentinel;
+            if(!next)return false;if(!(*next&0x80000000u))break;
+        }
+        ++live;if(index>size)return false;
+    }
+    out=std::move(value);return true;
+}
+float SK_THISCALL complexity_ratio(void* self,const uint32_t* counts){
+    // Every ordinary/native-default query keeps the original result exactly.
+    auto* m=mode();auto* owner=data(m);
+    if(self!=owner || !editor::extended_complexity(act_identity) || !skg::readable(m,0xDC) ||
+       skg::field<int>(m,0xCC)!=1 || skg::field<int>(m,0xD0)!=0)return original_complexity(self,counts);
+    const auto fail=[&](const char* message)noexcept{
+        ++complexity_conflicts;
+        try{complexity_conflict=message;}catch(...){complexity_conflict.clear();}
+        return 1.0f;
+    };
+    try{
+        const auto active_callback=C.active;
+        const auto projection=C.projection_scope?C.projection_scope:C.gesture_scope;
+        const auto cohort=C.complexity_current;
+        // Pin the actual caller before game-mode/active/read-scope callbacks;
+        // none may authorize old counts against a newly sampled resource.
+        const auto native_generation=generation;auto* r=resource(owner);
+        if(!skg::readable(r,kResourceSize) || !skg::readable(counts,12*sizeof(uint32_t)))
+            return fail("Extended complexity query lost its original resource or counts");
+        std::array<uint32_t,12> values{};std::memcpy(values.data(),counts,sizeof values);
+        const auto source=skg::field<editor::ResourceKey>(r,8);
+        const auto raw_current=[&]{
+            skg::ReadOnlyMemoryScope memory;
+            return generation==native_generation && mode()==m && data(m)==owner && resource(owner)==r &&
+                skg::readable(m,0xDC) && skg::field<int>(m,0xCC)==1 && skg::field<int>(m,0xD0)==0 &&
+                skg::readable(r,kResourceSize) && skg::field<editor::ResourceKey>(r,8)==source;
+        };
+        const bool editor_ready=editing();
+        if(!raw_current())return fail("Extended complexity query changed its original editor");
+        const bool shared=editor_ready && active_callback && active_callback();
+        if(!raw_current())return fail("Extended complexity query changed its original editor");
+        if(!shared)return original_complexity(self,counts);
+        const auto scope=projection?projection():GestureScope{};
+        if(!raw_current() || !valid_scope(scope) || !skg::readable(counts,12*sizeof(uint32_t)))
+            return fail("Extended complexity query lost its original editor");
+        const auto current=[&]{
+            if(!projection || projection()!=scope || generation!=native_generation || !editor::extended_complexity(act_identity))return false;
+            return raw_current();
+        };
+        editor::ComplexityCapability before,after;std::string error;
+        ComplexityPool pool;uint32_t counted=0;
+        if(!read_complexity_capability(before,error) || !current() || !complexity_pool(r,pool,counted))return fail("Extended complexity evidence is unavailable or conflicting");
+        const auto unchanged=[&]{
+            // Cohort and scope callbacks precede the final callback-free input
+            // closure. Neither may mutate a count/tuning value already sampled
+            // and have that old sample accepted after returning.
+            if(!current() || !cohort || !cohort(before) || !current())return false;
+            if(!skg::readable(counts,sizeof values) || std::memcmp(values.data(),counts,sizeof values))return false;
+            ComplexityPool now;uint32_t number=0;
+            return complexity_pool(r,now,number) && pool==now && counted==number &&
+                read_complexity_capability(after,error) && before==after && raw_current();
+        };
+        if(!unchanged())return fail("Extended complexity has no matching current participant tuning proof");
+        const auto native_count=skg::cdecl_call<uint32_t>(a_complexity_count,reinterpret_cast<void*>(pool.first),reinterpret_cast<void*>(pool.end));
+        if(native_count!=counted || !unchanged())return fail("Native complexity pool changed during counting");
+        const auto ratio=original_complexity(self,counts);
+        if(!unchanged())return fail("Native complexity inputs changed during the original query");
+        editor_native_complexity::Tuning tuning;
+        for(size_t i=0;i<12;++i)tuning.weights[i]=std::bit_cast<float>(before.words[i]);
+        tuning.maximum=std::bit_cast<float>(before.words[12]);float extended=1;
+        if(!editor_native_complexity::extended_ratio(ratio,values,counted,tuning,extended))
+            return fail("Native complexity formula no longer matches its verified inputs");
+        complexity_conflict.clear();return extended;
+    }catch(...){return fail("Extended complexity query failed its owned evidence checks");}
+}
 void refresh_selection() {
     selection.clear();selected_class=0;
     void* context=a_context?*reinterpret_cast<void**>(a_context):nullptr;
@@ -1105,6 +1249,12 @@ bool projection(void* r, Snapshot& out, std::string& error,
         std::vector<uint8_t> serialized;
         if(!native_bytes){if(!serialize(r,serialized,error))return false;native_bytes=&serialized;}
         if(!editor_native_terrain::project(*native_bytes,logical,out.document,error,allow_recipe_replacement))return false;
+        // Native projections carry authored values and stable identities, not
+        // session revisions. Terrain identity matching preserves its logical
+        // IDs/order, but must not copy a canonical record revision into this
+        // fresh revision-zero document. Runtime supplies its guarded canonical
+        // record revision separately when constructing a terrain mutation.
+        for(auto& [id,record]:out.document.terrain){(void)id;record.revision=0;}
         return true;
     }
     // Goals name classes, including classes with no instances. Matching
@@ -1318,7 +1468,6 @@ struct TerrainCaptureRotations {
 };
 bool begin_terrain_capture_rotations(const Snapshot& before,std::string& error){
     clear_terrain_capture_rotations();
-    if(before.document.placements.empty())return true;
     if(terrain_rotation_serial==UINT64_MAX){error="The native terrain rotation ticket sequence is exhausted";return false;}
     try{
         auto ticket=std::make_shared<TerrainCaptureRotations>();ticket->serial=terrain_rotation_serial;
@@ -1399,7 +1548,7 @@ bool capture_resource(void* r, uint32_t act, Snapshot& out, std::string& error,
                       const std::map<uint32_t,editor::ObjectId>* supplied=nullptr,const editor::Document* identity=nullptr,
                       bool boundary_owned=false) {
     const bool materialized_input=boundary_owned || r==resource(data(mode()));
-    const auto rotations=materialized_input?terrain_capture_rotations:nullptr;
+    const auto rotations=materialized_input && terrain_capture_rotations && terrain_capture_rotations->values.size()?terrain_capture_rotations:nullptr;
     try{
     if(materialized_input && !terrain_capture_rotation_error.empty()){error=terrain_capture_rotation_error;return false;}
     void* original=r;std::vector<uint8_t> original_bytes;
@@ -4107,8 +4256,23 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
         install("SporeCoop::Editor::PaletteMessage",(void*)palette_message,(void**)&original_palette_message) &&
         install("SporeCoop::Editor::ApplySpeech",(void*)speech_apply,(void**)&original_speech_apply) &&
         install("SporeCoop::Editor::ApplyBehaviors",(void*)behavior_apply,(void**)&original_behavior_apply);
-    complexity_available=supported && complexity_bounds.initialize(H->sym("SporeCoop::EditorComplexity::CreateMarkerLimit"),H->sym("SporeCoop::EditorComplexity::CloneMarkerLimit")) &&
-        install("SporeCoop::EditorComplexity::WeightedRatio",(void*)complexity_ratio,(void**)&original_complexity);
+    a_complexity_ratio=H->sym("SporeCoop::EditorComplexity::WeightedRatio");
+    a_complexity_count=H->sym("SporeCoop::EditorComplexity::CountLiveMarkers");
+    a_complexity_weights=H->sym("SporeCoop::EditorComplexity::TuningWeights");
+    a_complexity_max=H->sym("SporeCoop::EditorComplexity::TuningMaximum");
+    a_complexity_create=H->sym("SporeCoop::EditorComplexity::CreateMarkerLimit");
+    a_complexity_clone=H->sym("SporeCoop::EditorComplexity::CloneMarkerLimit");
+    complexity_code_pinned=false;complexity_available=false;complexity_conflict.clear();complexity_conflicts=0;
+    if(supported && skg::readable(reinterpret_cast<void*>(a_complexity_ratio),complexity_installed_code.size()) &&
+       editor_native_complexity::formula_matches({reinterpret_cast<const uint8_t*>(a_complexity_ratio),complexity_installed_code.size()},a_complexity_ratio) &&
+       skg::readable(reinterpret_cast<void*>(a_complexity_count),complexity_count_code.size()) &&
+       !std::memcmp(reinterpret_cast<void*>(a_complexity_count),complexity_count_code.data(),complexity_count_code.size()) &&
+       skg::readable(reinterpret_cast<void*>(a_complexity_create),11) && skg::readable(reinterpret_cast<void*>(a_complexity_clone),11) &&
+       complexity_bounds.initialize(a_complexity_create,a_complexity_clone) &&
+       install("SporeCoop::EditorComplexity::WeightedRatio",(void*)complexity_ratio,(void**)&original_complexity)){
+        std::memcpy(complexity_installed_code.data(),reinterpret_cast<void*>(a_complexity_ratio),complexity_installed_code.size());
+        complexity_code_pinned=complexity_available=true;
+    }
     terrain_available=supported && a_terrain_load && a_copy_terrain_properties && a_terrain_rebuild && a_terrain_materialize && a_terrain_selection && a_terrain_loaded && a_terrain_vtable && a_terraform_ui_vtable && a_flora_ui_vtable &&
         install("SporeCoop::Editor::TerraformInitializeResource",(void*)terrain_resource_init,(void**)&original_terrain_resource_init) &&
         install("SporeCoop::Editor::TerraformActivate",(void*)terrain_activate,(void**)&original_terrain_activate) &&
@@ -4149,7 +4313,7 @@ void shutdown() {
     act_projection_cache.clear();
     std::string bounds_error;
     if(!complexity_bounds.set(false,bounds_error) && H && H->log)H->log(M,SK_ERROR,"%s",bounds_error.c_str());
-    complexity_available=false;
+    complexity_available=complexity_code_pinned=false;
     update_previews({});
     for(auto& [peer,actor]:preview_actors){(void)peer;clear_preview_actor(actor);}preview_actors.clear();
     ++generation;
@@ -4233,7 +4397,8 @@ bool terraform_navigation_allowed(){
     const auto current=state();return terrain_available && active() && current.ready && !current.gesture &&
         C.navigation_allowed && C.navigation_allowed() && C.terrain_gate && C.terrain_gate({},{});
 }
-bool extended_complexity_available(){return supported && complexity_available;}
+bool complexity_capability(editor::ComplexityCapability& out,std::string& error){return read_complexity_capability(out,error);}
+bool extended_complexity_available(){editor::ComplexityCapability value;std::string error;return read_complexity_capability(value,error);}
 
 void bind(const std::vector<Binding>& value) {
     bindings.clear();
@@ -5619,6 +5784,62 @@ bool apply_prepared(const Snapshot& prepared,const editor::Change& change,std::s
 }
 
 bool apply(const editor::Document& document,const editor::Change& change,const Snapshot* artifact,std::string& error) {
+    // Runtime supplies its independently canonical owned artifact for a terrain
+    // inverse. Pin the original scene before InspectorView or snapshot getters;
+    // a normalized typed pose must not let the generic field loop skip LIVE
+    // grounding, nor can a terrain-only inverse leave the changed recipe live.
+    const auto terrain_inverse=terrain_capture_rotations;
+    if(terrain_inverse && artifact && artifact->document==document){
+        try{
+        const Snapshot canonical=*artifact;
+        const auto dependencies=C.validate_dependencies;
+        const auto canonical_head=C.canonical_revision;const auto expected_head=canonical.document.revision;
+        const auto native_generation=generation;
+        void* m=mode();void* d=data(m);void* r=resource(d);
+        if(!skg::readable(r,kResourceSize)){error="The canonical terrain inverse lost its original native scene";return false;}
+        const SceneOwner owner{uintptr_t(m),uintptr_t(d),uintptr_t(r),skg::field<editor::ResourceKey>(r,8)};
+        const auto projection=C.projection_scope?C.projection_scope:C.gesture_scope;
+        const auto authorizing=C.gesture_scope;const auto revisions=C.object_revision;
+        const auto scope=projection?projection():GestureScope{};const auto author=authorizing?authorizing():GestureScope{};
+        const auto rows=terrain_inverse->canonical;
+        const auto context=[native_generation,scope,author,projection,authorizing,revisions,rows,canonical_head,expected_head]{
+            try{
+                if(generation!=native_generation || !valid_scope(scope) || !valid_scope(author) || !projection ||
+                   projection()!=scope || (authorizing && authorizing()!=author) || !canonical_head ||
+                   canonical_head()!=std::optional<editor::Revision>{expected_head})return false;
+                for(const auto& row:rows){const auto revision=revisions?revisions(row.object):std::nullopt;
+                    if(!revision || *revision!=row.revision)return false;}
+                return generation==native_generation && projection()==scope && (!authorizing || authorizing()==author) &&
+                    canonical_head()==std::optional<editor::Revision>{expected_head};
+            }catch(...){return false;}
+        };
+        const auto target=[&]{
+            if(canonical.document.project!=scope.project || canonical.document.epoch!=scope.epoch || canonical.document.placements.size()!=rows.size())return false;
+            for(const auto& row:rows){auto wanted=canonical.document.placements.find(row.object);
+                if(wanted==canonical.document.placements.end() || uint32_t(wanted->second.class_id.id)!=row.class_index ||
+                   wanted->second.revision!=row.revision || !editor_native_terrain_rotations::exact(wanted->second.rotation,row.q))return false;}
+            return true;
+        };
+        if(!context() || !target() || !terrain_capture_rotations_current(terrain_inverse,error) ||
+           terrain_inverse->generation!=native_generation || uintptr_t(terrain_inverse->mode)!=owner.mode ||
+           uintptr_t(terrain_inverse->data)!=owner.data || uintptr_t(terrain_inverse->resource)!=owner.resource || terrain_inverse->source!=owner.source){
+            if(error.empty())error="The canonical terrain inverse has no current owned authority";return false;
+        }
+        const auto expired=[&]{if(error.empty())error="The canonical terrain inverse lost its original owned authority";return false;};
+        if(!validate(canonical,canonical.document,error))return false;
+        if(!context() || !terrain_capture_rotations_current(terrain_inverse,error))return expired();
+        if(dependencies){
+            if(!dependencies(canonical,error)){
+                if(error.empty())error="The canonical terrain inverse dependencies were rejected";return false;
+            }
+            if(!context() || !terrain_capture_rotations_current(terrain_inverse,error))return expired();
+        }
+        // The restore deliberately retires the q ticket. Its copied current
+        // predicate therefore fences context/revisions independently of that
+        // retired serial, while restore_fenced pins fresh owner/source values.
+        return restore_fenced(canonical,native_generation,owner,scope,context,error);
+        }catch(...){error="The canonical terrain inverse could not retain its owned restoration proof";return false;}
+    }
     InspectorView inspector;
     if(document.placements.size()>kPlacementLimit){error="Native editor placement limit exceeded";return false;}
     bool tracked=false;if(!relative_scale_mode(document,tracked,error))return false;
@@ -6197,6 +6418,8 @@ std::string status() {
         (unsigned long long)pose_roundtrip_hits,(unsigned long long)pose_roundtrip_fallbacks,
         unsigned(resume.available),resume.initialization,unsigned(resume.enter_pending),unsigned(resume.transitioning),unsigned(resume.world_visible));
     std::string result=b;const auto work=work_stats();char detail[1024];
+    editor::ComplexityCapability complexity;std::string complexity_error;
+    read_complexity_capability(complexity,complexity_error);
     snprintf(detail,sizeof detail," native_work_frequency=%llu native_read_calls=%llu native_read_ticks=%llu native_write_calls=%llu native_write_ticks=%llu native_projection_calls=%llu native_projection_ticks=%llu native_resolution_calls=%llu native_resolution_ticks=%llu native_supported_calls=%llu native_supported_ticks=%llu parsed_image_hits=%llu parsed_image_misses=%llu parsed_image_entries=%zu parsed_image_bytes=%zu parsed_image_owners=%zu parsed_image_owner_bytes=%zu parsed_image_peak_owners=%zu parsed_image_peak_bytes=%zu pose_capture_hits=%llu pose_capture_fallbacks=%llu",
         (unsigned long long)work.frequency,(unsigned long long)work.reads.calls,(unsigned long long)work.reads.ticks,
         (unsigned long long)work.writes.calls,(unsigned long long)work.writes.ticks,
@@ -6212,6 +6435,10 @@ std::string status() {
         " history_ui_undo="+std::to_string(history_ui_undo)+
         " history_ui_redo="+std::to_string(history_ui_redo)+
         " history_ui_changes="+std::to_string(history_ui_changes)+
-        " history_ui_expired="+std::to_string(history_ui_expired);
+        " history_ui_expired="+std::to_string(history_ui_expired)+
+        " complexity_available="+std::to_string(unsigned(complexity.available))+
+        " complexity_reason="+std::to_string(unsigned(complexity.reason))+
+        " complexity_conflicts="+std::to_string(complexity_conflicts)+
+        " complexity_conflict="+complexity_conflict.substr(0,512);
 }
 } // namespace editor_native

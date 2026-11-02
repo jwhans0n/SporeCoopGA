@@ -545,11 +545,22 @@ void test_presets(){
             if(stage==1&&reason==3)++act_identity.settings.at(editor_native_terrain::kPlanetObject).revision;
             if(stage==1&&reason==4)++skg::field<uint32_t>(t_context.data(),0);
         };
-        continue_input(nullptr);CHECK(!held_terrain_preset&&gets==1);
+        continue_input(nullptr);
+        if(held_terrain_preset || gets!=1)std::fprintf(stderr,
+            "parent preset wait: reason=%u held=%u gets=%u resolves=%u ready=%u gesture=%u escape=%04X physical_escape=%04X failure=%s\n",
+            reason,unsigned(held_terrain_preset.has_value()),gets,resolves,unsigned(state().ready),unsigned(state().gesture),
+            unsigned(uint16_t(native_fixture_escape_state)),unsigned(uint16_t(::GetKeyState(VK_ESCAPE))),t_failure.c_str());
+        CHECK(!held_terrain_preset&&gets==1);
         if(!reason)CHECK(terrain_builds==1&&terrain_starts==1&&terrain_commits==1&&terrain_pending);
         else CHECK(!terrain_starts&&!terrain_builds&&!terrain_commits&&!t_failure.empty());
         CHECK(t_allocations.empty()&&skg::field<int>(parent.data(),4)==1);
     }
+    callback={};setup_preset_retry();gets=resolves=0;
+    terrain_build(t_terraform.data(),source.data());CHECK(held_terrain_preset);
+    t_granted=true;pin_terrain_before();native_fixture_escape_state=SHORT(0x8000);
+    continue_input(nullptr);
+    CHECK(!held_terrain_preset&&!gets&&!resolves&&!terrain_starts&&!terrain_builds&&!terrain_commits);
+    CHECK(t_allocations.empty());native_fixture_escape_state=0;
     callback={};t_preset_payloads.clear();
 }
 }
@@ -568,7 +579,7 @@ void SK_THISCALL rebuild(void* self){
 void SK_THISCALL export_terrain(void*){}
 uintptr_t symbol(const char* name){CHECK(std::string(name)=="SporeCoop::Editor::CaptureTerrain");return uintptr_t(export_terrain);}
 struct Routes {
-    RecentRoutes recent;
+    restore_fence_fixture::Routes restore;
     uintptr_t copy=a_copy,loaded=a_terrain_loaded,vtable=a_terrain_vtable,apply=a_apply_marker;
     HistoryFn rebuild_route=original_terrain_rebuild,start_route=original_terrain_start,commit_route=original_terrain_commit;
     ~Routes(){
@@ -578,7 +589,7 @@ struct Routes {
     }
 };
 Snapshot setup(bool hole=false,bool pin=true){
-    auto before=recent_pose_setup();C.projection_scope=[]{return t_scope;};
+    SceneOwner scene;auto before=restore_fence_fixture::setup(scene);C.projection_scope=[]{return t_scope;};C.gesture_scope=[]{return t_scope;};
     t_terraform.fill(0);v_terrain.fill(0);skg::field<void*>(t_mode.data(),0x18)=t_terraform.data();
     skg::field<void*>(t_terraform.data(),0x0C)=v_terrain.data();skg::field<void*>(t_terraform.data(),0x190)=v_terrain.data();
     a_terrain_vtable=0x12345678;skg::field<uintptr_t>(v_terrain.data(),0)=a_terrain_vtable;
@@ -678,11 +689,73 @@ void test(){
     input_pose=true;start(t_data.data());input_pose=false;CHECK(!terrain_capture_rotations);
     skg::field<uint8_t>(t_history.data(),0x20)=1;
     CHECK(capture_resource(t_live.data(),before.act,after,error));CHECK(after.document.placements.begin()->second.rotation==rendered);
+    // The full canonical inverse must not adopt a replacement scene from a
+    // dependency callback, or mutate the rendered image on private allocation
+    // failure. These exercise the inverse dispatcher, not only restore_fenced.
+    for(unsigned reason=0;reason<16;++reason){
+        before=setup();terrain_rebuild(t_terraform.data());const auto changed=t_rows[t_live.data()];
+        terrain_before.reset();terrain_rebuilding=terrain_pending=false;++t_frame;
+        bool fired=false,allowed=true,allocated=false,authorizing=true;
+        C.gesture_scope=[&]{return authorizing?t_scope:GestureScope{};};
+        restore_fence_fixture::callback=[&](unsigned stage){if(stage==22)allocated=true;};
+        C.validate_dependencies=[&](const Snapshot&,std::string& failure){
+            fired=true;
+            if(reason<10)restore_fence_fixture::expire(reason,allowed);
+            if(reason==10)authorizing=false;
+            if(reason==11)++t_revision;
+            if(reason==12){failure="controlled inverse dependency rejection";return false;}
+            if(reason==13)throw 7;
+            if(reason==14)restore_fence_fixture::fail_allocation=true;
+            if(reason==15)++t_canonical_revision; // Disjoint terrain head; placement revisions stay unchanged.
+            return true;
+        };
+        const bool accepted=editor_native::apply(before.document,editor::Change{},&before,error);
+        if(accepted || !fired || error.empty())std::fprintf(stderr,"inverse expiry: reason=%u accepted=%u fired=%u error=%s\n",reason,unsigned(accepted),unsigned(fired),error.c_str());
+        CHECK(!accepted&&fired&&!error.empty());
+        CHECK(!restore_fence_fixture::writes&&!restore_fence_fixture::acts&&!restore_fence_fixture::selections);
+        CHECK(t_rows[t_live.data()]==changed&&t_allocations.empty()&&restore_fence_fixture::entries.empty());
+        CHECK(!applying);
+        if(reason==14)CHECK(allocated);
+    }
+    for(unsigned stage:{21u,0u,22u}){
+        before=setup();terrain_rebuild(t_terraform.data());const auto changed=t_rows[t_live.data()];
+        terrain_before.reset();terrain_rebuilding=terrain_pending=false;++t_frame;
+        projected_snapshots.clear();projected_snapshot_bytes=0;parsed_images.clear();parsed_image_bytes=0;
+        bool fired=false;
+        restore_fence_fixture::callback=[&](unsigned at){if(at==stage&&!fired){fired=true;++t_canonical_revision;}};
+        CHECK(!editor_native::apply(before.document,editor::Change{},&before,error)&&fired&&!error.empty());
+        CHECK(t_revision==0&&!restore_fence_fixture::writes&&!restore_fence_fixture::acts&&!restore_fence_fixture::selections);
+        CHECK(t_rows[t_live.data()]==changed&&t_allocations.empty()&&restore_fence_fixture::entries.empty()&&!applying);
+    }
+    // Dependency authority is copied before the first read-identity callback.
+    // Clearing its live registration, even from its own invocation, cannot
+    // silently skip the originally required check or destroy its active body.
+    for(bool clear_before:{false,true}){
+        before=setup();terrain_rebuild(t_terraform.data());bool called=false;
+        terrain_before.reset();terrain_rebuilding=terrain_pending=false;++t_frame;
+        auto proof=std::make_shared<const int>(17);
+        C.validate_dependencies=[proof,&called](const Snapshot&,std::string&){
+            C.validate_dependencies={};CHECK(proof&&*proof==17);called=true;return true;
+        };
+        if(clear_before)C.projection_scope=[] {C.validate_dependencies={};return t_scope;};
+        const bool applied=editor_native::apply(before.document,editor::Change{},&before,error);
+        if(!applied || !called)std::fprintf(stderr,"inverse dependency copy: clear_before=%u called=%u error=%s\n",unsigned(clear_before),unsigned(called),error.c_str());
+        CHECK(applied&&called);
+        Snapshot verified;CHECK(capture(verified,error)&&validate(verified,before.document,error));
+    }
     // Real Start/Commit/deferred capture delivers one normalized owned gesture,
     // keeps raw derived memory untouched, then retires its table at delivery.
-    before=setup(false,false);C.gesture=[&](Gesture gesture){
+    before=setup(false,false);LocalView inverse_view;CHECK(capture_view(inverse_view,error));
+    const auto inverse_selection=state().selected;C.gesture=[&](Gesture gesture){
         ++delivered;CHECK(terrain_capture_rotations&&gesture.before.document.placements==gesture.after.document.placements);
         CHECK(supported_changes(gesture,error));
+        // This is Runtime's real non-tentative inverse route. A normalized
+        // typed before image must not let it skip derived LIVE rotations and
+        // then retire the only proof while reporting canonical restoration.
+        CHECK(editor_native::apply(before.document,editor::Change{},&before,error));
+        Snapshot inverse;CHECK(capture(inverse,error)&&validate(inverse,before.document,error));
+        LocalView restored_view;CHECK(capture_view(restored_view,error)&&same_view(inverse_view,restored_view));
+        CHECK(state().selected==inverse_selection);
     };
     terrain_start(t_terraform.data());CHECK(terrain_before&&terrain_capture_rotations&&terrain_starts==1);
     terrain_commit(t_terraform.data());CHECK(terrain_pending&&rebuilds==1&&terrain_commits==1);

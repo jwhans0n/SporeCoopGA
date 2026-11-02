@@ -243,6 +243,116 @@ void test_creation_terrain_ticket(){
     a_layout_shown=old_shown;a_scenario_initialization=old_init;a_get_simulator_mode_manager=old_modes;H=old_host;reset();
 }
 #include "editor_native_terrain_transition_fixture.h"
+void* SK_THISCALL tmc_inverse_copy(void* destination,const void* source){
+    t_copy(destination,source);act_cache_rows[destination]=act_cache_rows.at(const_cast<void*>(source));
+    act_cache_bind(destination,act_cache_rows.at(destination));tmc_properties[destination]=tmc_properties.at(const_cast<void*>(source));
+    return destination;
+}
+std::function<void()> tmc_inverse_read_callback;
+bool SK_THISCALL tmc_inverse_read(void* resource,Stream* stream){
+    const bool okay=tmc_read(resource,stream);if(tmc_inverse_read_callback)tmc_inverse_read_callback();return okay;
+}
+void test_empty_placement_terrain_inverse(){
+    struct Routes {
+        uintptr_t writer=a_write,reader=a_read,copy=a_copy,acts=a_copy_acts,crew=a_copy_crew,marker_rows=a_copy_marker_rows,insert=a_insert_marker;
+        uintptr_t allocate=a_alloc,entry=a_entry,restore=a_restore,loaded=a_terrain_loaded,vtable=a_terrain_vtable;
+        uintptr_t shown=a_layout_shown,init=a_scenario_initialization,modes=a_get_simulator_mode_manager;
+        TerrainLoadFn load=original_terrain_load;HistoryFn rebuild=original_terrain_rebuild;
+        TerrainAppendEffectFn append=original_terrain_append_effect;SelectActFn select=original_select_act;
+        const SkHost* host=H;
+        ~Routes(){
+            tmc_inverse_read_callback={};CHECK(t_allocations.empty());tmc_properties.clear();act_cache_rows.clear();reset();
+            a_write=writer;a_read=reader;a_copy=copy;a_copy_acts=acts;a_copy_crew=crew;a_copy_marker_rows=marker_rows;a_insert_marker=insert;
+            a_alloc=allocate;a_entry=entry;a_restore=restore;a_terrain_loaded=loaded;a_terrain_vtable=vtable;
+            a_layout_shown=shown;a_scenario_initialization=init;a_get_simulator_mode_manager=modes;
+            original_terrain_load=load;original_terrain_rebuild=rebuild;original_terrain_append_effect=append;original_select_act=select;H=host;
+        }
+    } routes;
+    for(unsigned rejection=0;rejection<10;++rejection){
+        view_fixture();auto canonical=tmc_setup();std::string error;canonical.metadata.reset();
+        tmc_inverse_read_callback={};canonical.document.revision=1;t_canonical_revision=1;
+        for(auto& [id,row]:canonical.document.terrain){(void)id;row.revision=1;}
+        bind_acts(canonical.document);
+        LocalView camera;CHECK(capture_view(camera,error));
+        CHECK(canonical.document.placements.empty()&&canonical.bindings.empty()&&canonical.document.terrain.size()==2);
+        const auto baseline=tmf_columns;const auto canonical_document=canonical.document;
+        C.projection_scope=[] {return t_scope;};C.terrain_gate=[](const auto&,const auto&){return true;};
+        Snapshot untouched_a,untouched_b;CHECK(capture_draft(untouched_a,error)&&capture_draft(untouched_b,error));
+        CHECK(untouched_a.document.revision==0&&untouched_a.document.terrain==untouched_b.document.terrain);
+        for(const auto& [id,row]:untouched_a.document.terrain){(void)id;CHECK(row.revision==0);}
+        // Runtime adds the authenticated project/epoch before wire encoding.
+        // The native projection must already satisfy its revision constraints.
+        auto encoded_input=untouched_a.document;encoded_input.project=t_scope.project;encoded_input.epoch=t_scope.epoch;
+        CHECK(editor::valid(encoded_input,editor::Limits{},error));
+        CHECK(canonical.document.revision==1&&canonical.document.terrain==canonical_document.terrain);
+        unsigned dependency_calls=0;
+        C.validate_dependencies=[&,rejection](const Snapshot&,std::string& e){
+            ++dependency_calls;
+            if(rejection==1){e="controlled empty-roster dependency rejection";return false;}
+            if(rejection==2)++skg::field<editor::ResourceKey>(t_live.data(),8).instance;
+            if(rejection==3)C.projection_scope=[] {return GestureScope{};};
+            if(rejection==5)++t_canonical_revision;
+            return true;
+        };
+        a_copy=uintptr_t(tmc_inverse_copy);a_copy_marker_rows=uintptr_t(t_pose_copy_rows);a_insert_marker=uintptr_t(t_pose_insert);
+        ttt_restore_bind();original_terrain_load=ttt_load;original_terrain_rebuild=ttt_rebuild;
+        original_terrain_append_effect=tmf_append_effect;
+        v_terrain.fill(0);a_terrain_vtable=0x24681357;skg::field<uintptr_t>(v_terrain.data(),0)=a_terrain_vtable;
+        skg::field<void*>(t_terraform.data(),0x190)=v_terrain.data();a_terrain_loaded=uintptr_t(v_terrain_loaded);
+        skg::field<void*>(t_context.data(),4)=nullptr;t_granted=true;unsigned deliveries=0;
+        C.gesture=[&](Gesture gesture){
+            ++deliveries;CHECK(terrain_capture_rotations&&terrain_capture_rotations->canonical.empty());
+            CHECK(gesture.before.document.placements.empty()&&gesture.after.document.placements.empty());
+            CHECK(gesture.before.document.terrain.size()==2&&gesture.after.document.terrain.size()==3);
+            for(const auto& [id,row]:gesture.before.document.terrain){
+                CHECK(row.revision==0&&gesture.after.document.terrain.at(id)==row);
+            }
+            const bool supported=supported_changes(gesture,error);
+            if(!supported)std::fprintf(stderr,"empty placement terrain support: %s\n",error.c_str());CHECK(supported);
+            const auto changed=tmf_columns;
+            const auto camera_before=v_camera;const auto selected=skg::field<void*>(t_context.data(),4);
+            if(rejection==4)t_alloc_fail=true;
+            if(rejection==6)++t_canonical_revision;
+            if(rejection==7)C.canonical_revision={};
+            if(rejection==8)C.canonical_revision=[]()->std::optional<editor::Revision>{throw 7;};
+            bool read_expired=false;
+            if(rejection==9){
+                projected_snapshots.clear();parsed_images.clear();projected_snapshot_bytes=parsed_image_bytes=0;
+                a_read=uintptr_t(tmc_inverse_read);tmc_inverse_read_callback=[&]{if(!read_expired){read_expired=true;++t_canonical_revision;}};
+            }
+            const auto inverse=editor_native::apply(canonical_document,editor::Change{},&canonical,error);
+            tmc_inverse_read_callback={};
+            if(rejection){
+                CHECK(!inverse&&!error.empty());
+                if(rejection==1)CHECK(error.find("dependency rejection")!=std::string::npos);
+                if(rejection==5)CHECK(dependency_calls==1&&t_canonical_revision==2);
+                if(rejection>=6&&rejection<=8)CHECK(!dependency_calls);
+                if(rejection==9)CHECK(read_expired&&!dependency_calls);
+                CHECK(!t_restores&&tmf_columns==changed&&v_camera==camera_before&&skg::field<void*>(t_context.data(),4)==selected);return;
+            }
+            if(!inverse)std::fprintf(stderr,"empty placement terrain inverse: %s\n",error.c_str());CHECK(inverse);
+            CHECK(t_restores==1&&!terrain_capture_rotations&&tmf_columns[0][0]==baseline[0][0]);
+            CHECK(tmf_columns[1][0]==baseline[1][0]&&tmf_columns[0][0].size()==12);
+        };
+        terrain_start(t_terraform.data());CHECK(terrain_starts==1&&terrain_before&&terrain_capture_rotations);
+        CHECK(terrain_capture_rotations->canonical.empty());
+        const auto transform=tmf_columns[0][1];terrain_append_effect(t_terraform.data(),456,0,transform.data(),0,0,0);
+        CHECK(tmf_columns[0][0].size()==24&&terrain_authored_rows[0]==std::set<size_t>{1});
+        terrain_commit(t_terraform.data());CHECK(terrain_commits==1&&terrain_pending);
+        ++t_frame;drain_terrain(nullptr);CHECK(deliveries==1&&!terrain_pending&&!terrain_before&&!t_failed&&t_allocations.empty());
+        if(!rejection){
+            ++t_frame;drain_local_view(nullptr);Snapshot verified;CHECK(capture_draft(verified,error));
+            const bool valid=validate(verified,canonical_document,error);
+            if(!valid)std::fprintf(stderr,"empty placement restored draft: %s\n",error.c_str());CHECK(valid);
+            auto native_terrain=canonical_document.terrain;for(auto& [id,row]:native_terrain){(void)id;row.revision=0;}
+            CHECK(verified.document.placements.empty()&&verified.document.terrain==native_terrain);
+            CHECK(verified.bindings.empty()&&terrain_starts==1&&terrain_commits==1&&t_restores==1);
+            LocalView current_camera;CHECK(capture_view(current_camera,error)&&same_view(camera,current_camera));
+            CHECK(skg::field<void*>(t_context.data(),4)==nullptr);
+        }
+        CHECK(canonical.document.revision==1&&canonical.document.terrain==canonical_document.terrain);
+    }
+}
 void test_terrain_materialization_read_scope(){
     std::string error;
     for(unsigned reason=0;reason<12;++reason){
@@ -276,6 +386,7 @@ void test_terrain_materialization_read_scope(){
     reset();
 }
 void test_terrain_materialization_hooks(){
+    test_empty_placement_terrain_inverse();
     test_terrain_materialization_read_scope();
     tmf_setup();const auto before=tmf_bytes();const auto resource_before=t_live;std::string error;
     terrain_materialize(t_terraform.data());CHECK(tmf_calls==1&&terrain_materialization_error.empty()&&!terrain_materialization.empty());
