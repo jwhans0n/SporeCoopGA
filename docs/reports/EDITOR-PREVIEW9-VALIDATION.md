@@ -1261,3 +1261,34 @@ which native call changed the quaternion. No tolerance or additional supported
 field is justified yet. Restoration needs a settled strict verification before
 local editing is released; Ready flags alone are insufficient. Candidate 17
 therefore fails terrain and restoration acceptance and remains private.
+
+## Candidate 18 focused terrain reproduction
+
+Candidate 18 (`236d4f9526deea31ec1c0de443a2964e2e84f730edf3f26541a7dc6055bc6d6a`)
+passed fresh two-player Town bootstrap at revision 0, with no preceding Crew
+changes. Both measured BasicTools histories again opened before either stroke
+was released, and both strokes were rejected before Session submission. The
+preserved rejection identifies normalized offsets 21624 and 21632. The larger
+diagnostic successfully decoded both 1,229,480-byte DBPF bodies and found them
+byte-identical. The differing bytes are outside that body, within property
+`040539D4` in the native PropertyList prefix.
+
+Native writer and reader analysis establishes that this exact property's
+type-None, flags-zero, 16-byte placeholder payload is uninitialized storage;
+the typed key-array reader rejects it before reading that payload. Candidate 19
+preserves the before-image payload only when both properties have that exact
+shape. Presence, type, flags, typed arrays, other properties and the DBPF body
+remain strictly checked. Controlled artifact regressions do not establish an
+actual successful terrain commit.
+
+Both Candidate 18 games remained responsive at durable revision 0 with no
+history item and zero native faults, but both strict native checks again
+reported placement divergence after rejection restoration. Candidate 18 remains
+a failed terrain/restoration candidate. The additional Candidate 19 restoration
+hold must prove the settled live scene before releasing local editing.
+
+Evidence: `out/preview9-c18-two-town-bootstrap/`,
+`out/preview9-c18-terrain-calibrate/`,
+`out/preview9-c18-terrain-simultaneous/result.json`, and
+`out/preview9-c18-terrain-failure-full/result.json`. The private games and payload
+are separate from the unchanged personal preview 8 installation.
