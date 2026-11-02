@@ -29,11 +29,19 @@
 
 namespace editor_native {
 struct CreationTerrainProof {
+    struct Placement {
+        Binding live;
+        uint32_t class_index=0,native_key=0;
+        editor::Revision revision=0;
+        editor::Vec3 rendered,authored;
+        bool grounded=false;
+    };
     GestureScope scope;uint64_t serial=0,generation=0;
     SceneOwner owner;uintptr_t tool=0;
     Snapshot entry;
     editor_native_terrain_materialization::Recipe rendered;
     editor_native_terrain_materialization::Materialization materialization;
+    std::vector<Placement> placements;
     size_t owned_bytes=0;
     mutable bool retired=false;
 };
@@ -3829,6 +3837,84 @@ bool same_view(const LocalView& a,const LocalView& b) {
     for(unsigned i=0;i<4;++i){positive&=close_enough(a.rotation[i],b.rotation[i]);negative&=close_enough(a.rotation[i],-b.rotation[i]);}
     return (positive||negative)&&a.settings==b.settings;
 }
+bool exact_grounding_position(const editor::Vec3& a,const editor::Vec3& b){
+    return !std::memcmp(&a,&b,sizeof a);
+}
+bool creation_terrain_raw_owner(const SceneOwner& owner,uint64_t expected_generation,uintptr_t tool){
+    skg::ReadOnlyMemoryScope memory;
+    auto* m=mode();auto* d=data(m);auto* r=resource(d);
+    return supported && generation==expected_generation && uintptr_t(m)==owner.mode && uintptr_t(d)==owner.data &&
+        uintptr_t(r)==owner.resource && uintptr_t(terraform_mode())==tool && skg::readable(r,kResourceSize) &&
+        skg::field<editor::ResourceKey>(r,8)==owner.source;
+}
+editor::Document act_binding_identity(const editor::Document& document){
+    editor::Document result;result.act_order=document.act_order;
+    result.project=document.project;result.epoch=document.epoch;result.next_id=document.next_id;
+    result.next_terrain_order=document.next_terrain_order;result.terrain=document.terrain;
+    for(const auto& [id,row]:document.settings)if(row.kind==editor::SettingsKind::Act){
+        auto& bound=result.settings[id];bound.object=id;bound.act_id=row.act_id;
+    }else if(row.kind==editor::SettingsKind::Project || row.kind==editor::SettingsKind::Planet)result.settings[id]=row;
+    return result;
+}
+bool creation_terrain_placements(const Snapshot& entry,std::vector<CreationTerrainProof::Placement>& out,std::string& error){
+    Rows markers;if(!rows(resource(data(mode())),0x2C10,0x238,kPlacementLimit,markers)){
+        error="The creation entry placement roster is unavailable";return false;
+    }
+    std::vector<CreationTerrainProof::Placement> captured;captured.reserve(entry.document.placements.size());
+    std::vector<Binding> live,compact;
+    for(auto* raw=markers.begin;raw!=markers.end;raw+=0x238)if(live_slot(raw)){
+        const auto slot=slot_index(markers,raw);const auto id=marker_id(slot);auto found=entry.document.placements.find(id);
+        auto* marker=raw+4;
+        if(found==entry.document.placements.end() || uint32_t(found->second.class_id.id)!=skg::field<uint32_t>(marker,0)){
+            error="The creation entry placement identity differs from its committed snapshot";return false;
+        }
+        CreationTerrainProof::Placement row;row.live={id,slot};row.class_index=skg::field<uint32_t>(marker,0);
+        row.native_key=skg::field<uint32_t>(marker,0x228);row.revision=found->second.revision;
+        row.rendered=skg::field<editor::Vec3>(marker,4);row.authored=found->second.position;
+        if(!std::isfinite(row.rendered.x)||!std::isfinite(row.rendered.y)||!std::isfinite(row.rendered.z)){
+            error="The creation entry placement position is invalid";return false;
+        }
+        if(!exact_grounding_position(row.rendered,row.authored)){
+            const auto prior=terrain_grounding.find(id);
+            if(prior==terrain_grounding.end() || !exact_grounding_position(prior->second.native,row.rendered) ||
+               !exact_grounding_position(prior->second.authored,row.authored)){
+                error="The creation entry placement has no exact retained grounding proof";return false;
+            }
+            row.grounded=true;
+        }
+        live.push_back(row.live);captured.push_back(row);
+    }
+    if(captured.size()!=entry.document.placements.size() || !serialized_bindings(live,compact,error) || compact!=entry.bindings){
+        error="The creation entry placement bindings differ from its committed snapshot";return false;
+    }
+    out=std::move(captured);return true;
+}
+bool creation_terrain_placements_current(const CreationTerrainProof& proof,bool entry_boundary,std::string& error){
+    Rows markers;if(!rows(resource(data(mode())),0x2C10,0x238,kPlacementLimit,markers)){
+        error="The creation return placement roster is unavailable";return false;
+    }
+    size_t count=0;for(auto* raw=markers.begin;raw!=markers.end;raw+=0x238)if(live_slot(raw))++count;
+    if(count!=proof.placements.size()){error="The creation return placement roster changed";return false;}
+    for(const auto& row:proof.placements){
+        auto found=proof.entry.document.placements.find(row.live.object);
+        auto* marker=marker_for_key(resource(data(mode())),row.live.marker);
+        if(found==proof.entry.document.placements.end() || found->second.revision!=row.revision ||
+           uint32_t(found->second.class_id.id)!=row.class_index || !exact_grounding_position(found->second.position,row.authored) ||
+           !marker || skg::field<uint32_t>(marker,0)!=row.class_index || skg::field<uint32_t>(marker,0x228)!=row.native_key ||
+           !exact_grounding_position(skg::field<editor::Vec3>(marker,4),row.rendered) ||
+           (entry_boundary && marker_id(row.live.marker)!=row.live.object)){
+            error="The creation return lost an exact original placement grounding witness";return false;
+        }
+        if(entry_boundary && row.grounded){
+            auto prior=terrain_grounding.find(row.live.object);
+            if(prior==terrain_grounding.end() || !exact_grounding_position(prior->second.native,row.rendered) ||
+               !exact_grounding_position(prior->second.authored,row.authored)){
+                error="The creation entry grounding proof changed while being retained";return false;
+            }
+        }
+    }
+    return true;
+}
 }
 
 bool capture_view(LocalView& view, std::string& error) {
@@ -3841,17 +3927,33 @@ bool capture_view(LocalView& view, std::string& error) {
     view=captured;return true;
 }
 
-bool capture_creation_terrain(const GestureScope& scope,uint64_t serial,const SceneOwner& owner,const Snapshot& entry,
+bool capture_creation_terrain(const GestureScope& expected_scope,uint64_t serial,const SceneOwner& expected_owner,const Snapshot& entry_snapshot,
                               CreationTerrainTicket& out,std::string& error){
     try{
+        constexpr size_t limit=64u<<20;size_t charged=sizeof(CreationTerrainProof);
+        const auto charge=[&](size_t bytes){if(bytes>limit-charged)return false;charged+=bytes;return true;};
+        if(!charge(entry_snapshot.bytes.size()) || !charge(editor::bytes(entry_snapshot.document)) ||
+           !charge(entry_snapshot.bindings.size()*sizeof(Binding))){
+            error="The creation's retained terrain proof exceeds 64 MiB";return false;
+        }
+        if(entry_snapshot.metadata)for(const auto& text:entry_snapshot.metadata->text)if(!charge(text.size()*sizeof(char16_t))){
+            error="The creation's retained terrain proof exceeds 64 MiB";return false;
+        }
+        // A Native callback may retire Runtime's LocalCreation. Retain every
+        // referenced input before invoking one, and publish only after its
+        // copied operation callback still confirms the original entry.
+        const auto scope=expected_scope;const auto owner=expected_owner;const auto entry=entry_snapshot;
+        const auto authorizing=C.gesture_scope,projection=C.projection_scope?C.projection_scope:C.gesture_scope;
+        const auto creation_current=C.creation_return_current;
         const auto native=state();const auto current=materialization_owner(terraform_mode());
         const auto authorized=[&]{
             SceneOwner actual;
             return valid_scope(scope) && serial && current && current->scope==scope && native.ready && !native.gesture &&
-                current->generation==native.generation && C.gesture_scope && C.gesture_scope()==scope &&
-                C.creation_return_current && C.creation_return_current(scope,serial) &&
+                current->generation==native.generation && authorizing && authorizing()==scope &&
+                creation_current && creation_current(scope,serial) &&
                 capture_scene_owner(actual,error) && actual==owner && state().generation==native.generation &&
-                materialization_owner(terraform_mode())==current;
+                materialization_owner(terraform_mode())==current && projection && projection()==scope &&
+                authorizing()==scope && creation_current(scope,serial) && creation_terrain_raw_owner(owner,native.generation,current->tool);
         };
         if(!authorized()){error="The creation cannot retain its current native terrain owner";return false;}
         if(!validate(entry,entry.document,error))return false;
@@ -3859,18 +3961,15 @@ bool capture_creation_terrain(const GestureScope& scope,uint64_t serial,const Sc
            (!terrain_materialization.empty() && terrain_materialization_owner!=current)){
             error="The creation's native terrain materialization proof is unavailable";return false;
         }
+        std::vector<CreationTerrainProof::Placement> placements;
+        if(!creation_terrain_placements(entry,placements,error))return false;
         editor_native_terrain_materialization::Recipe rendered,canonical;
         if(!materialization_recipe(terraform_mode(),rendered,error) ||
            !editor_native_terrain_materialization::from_bytes(entry.bytes,canonical,error))return false;
         auto normalized=rendered;terrain_materialization.normalize_recipe(normalized);
         if(normalized!=canonical){error="The creation's native terrain does not match its committed entry recipe";return false;}
-        constexpr size_t limit=64u<<20;size_t charged=sizeof(CreationTerrainProof);
-        const auto charge=[&](size_t bytes){if(bytes>limit-charged)return false;charged+=bytes;return true;};
-        if(!charge(entry.bytes.size()) || !charge(editor::bytes(entry.document)) ||
-           !charge(entry.bindings.size()*sizeof(Binding)) || !charge(terrain_materialization.owned_bytes())){
-            error="The creation's retained terrain proof exceeds 64 MiB";return false;
-        }
-        if(entry.metadata)for(const auto& text:entry.metadata->text)if(!charge(text.size()*sizeof(char16_t))){
+        if(!charge(terrain_materialization.owned_bytes()) ||
+           !charge(placements.capacity()*sizeof(CreationTerrainProof::Placement))){
             error="The creation's retained terrain proof exceeds 64 MiB";return false;
         }
         for(const auto& kind:rendered.rows)for(const auto& row:kind)
@@ -3880,25 +3979,38 @@ bool capture_creation_terrain(const GestureScope& scope,uint64_t serial,const Sc
         auto proof=std::make_shared<CreationTerrainProof>();
         proof->scope=scope;proof->serial=serial;proof->generation=native.generation;proof->owner=owner;proof->tool=current->tool;
         proof->entry=entry;proof->rendered=std::move(rendered);proof->materialization=terrain_materialization;proof->owned_bytes=charged;
+        proof->placements=std::move(placements);
         if(!authorized()){error="The native terrain owner changed while retaining the creation entry";return false;}
         editor_native_terrain_materialization::Recipe settled;
         if(!materialization_recipe(terraform_mode(),settled,error))return false;
         if(settled!=proof->rendered){error="The native terrain recipe changed while retaining the creation entry";return false;}
+        if(!creation_terrain_raw_owner(owner,native.generation,proof->tool) || !creation_terrain_placements_current(*proof,true,error)){
+            if(error.empty())error="The native scene changed while retaining its creation grounding proof";return false;
+        }
         out=std::move(proof);error.clear();return true;
     }catch(const std::bad_alloc&){error="Cannot allocate the owned creation terrain proof";return false;}
+    catch(...){error="The owned creation terrain proof callback failed";return false;}
 }
-bool resume_creation_terrain(const CreationTerrainTicket& ticket,const GestureScope& scope,uint64_t serial,const SceneOwner& owner,
-                             const Snapshot& entry,uint64_t returned_generation,std::string& error){
+bool resume_creation_terrain(const CreationTerrainTicket& supplied_ticket,const GestureScope& expected_scope,uint64_t serial,const SceneOwner& expected_owner,
+                             const Snapshot& entry_snapshot,uint64_t returned_generation,std::string& error){
+    const auto ticket=supplied_ticket;
     if(!ticket || ticket->retired){error="The creation terrain return ticket is unavailable or retired";return false;}
     ticket->retired=true; // One attempt only. Runtime records success before any later return retry.
     try{
+        if(!same_projection_image(ticket->entry,entry_snapshot) || ticket->entry.document!=entry_snapshot.document){
+            error="The creation terrain return no longer owns its exact native entry";return false;
+        }
+        const auto scope=expected_scope;const auto owner=expected_owner;const auto entry=entry_snapshot;
+        const auto authorizing=C.gesture_scope,projection=C.projection_scope?C.projection_scope:C.gesture_scope;
+        const auto creation_current=C.creation_return_current;
         const auto authorized=[&]{
             const auto native=creation_scene_state(owner);const auto current=materialization_owner(terraform_mode());
             return valid_scope(scope) && serial && returned_generation && ticket->scope==scope && ticket->serial==serial &&
                 ticket->owner==owner && native.settled() && native.generation==returned_generation &&
                 returned_generation>=ticket->generation && current && current->scope==scope && current->generation==returned_generation &&
-                current->tool==ticket->tool && C.gesture_scope && C.gesture_scope()==scope &&
-                C.creation_return_current && C.creation_return_current(scope,serial);
+                current->tool==ticket->tool && authorizing && authorizing()==scope &&
+                creation_current && creation_current(scope,serial) && projection && projection()==scope &&
+                authorizing()==scope && creation_current(scope,serial) && creation_terrain_raw_owner(owner,returned_generation,ticket->tool);
         };
         if(!authorized() || !same_projection_image(ticket->entry,entry) || ticket->entry.document!=entry.document){
             error="The creation terrain return no longer owns its exact native entry";return false;
@@ -3906,16 +4018,31 @@ bool resume_creation_terrain(const CreationTerrainTicket& ticket,const GestureSc
         editor_native_terrain_materialization::Recipe actual;
         if(!materialization_recipe(terraform_mode(),actual,error))return false;
         if(actual!=ticket->rendered){error="The native terrain recipe changed while the creation editor was open";return false;}
+        if(!creation_terrain_placements_current(*ticket,false,error))return false;
         auto restored=ticket->materialization;
+        auto logical=act_binding_identity(entry.document);
+        std::map<uint32_t,editor::ObjectId> rebound;std::map<editor::ObjectId,Grounding> grounded;
+        for(const auto& row:ticket->placements){
+            rebound.emplace(row.live.marker,row.live.object);
+            if(row.grounded)grounded.emplace(row.live.object,Grounding{row.rendered,row.authored});
+        }
         if(!authorized()){error="The native terrain owner changed while resuming the creation";return false;}
         editor_native_terrain_materialization::Recipe settled;
         if(!materialization_recipe(terraform_mode(),settled,error))return false;
         if(settled!=ticket->rendered){error="The native terrain recipe changed while resuming the creation";return false;}
-        terrain_materialization=std::move(restored);terrain_materialization_owner=materialization_owner(terraform_mode());
+        if(!creation_terrain_raw_owner(owner,returned_generation,ticket->tool) || !creation_terrain_placements_current(*ticket,false,error)){
+            if(error.empty())error="The native scene changed while resuming its creation grounding proof";return false;
+        }
+        // Only previously witnessed values and logical identities cross this
+        // one-use return. No live marker, pose or terrain property is written.
+        terrain_materialization=std::move(restored);
+        terrain_materialization_owner=TerrainMaterializationOwner{scope,returned_generation,owner.mode,owner.data,owner.resource,ticket->tool,owner.source};
+        terrain_grounding.swap(grounded);bindings.swap(rebound);act_identity=std::move(logical);
         terrain_materialization_error.clear();terrain_materialization_error_reported=false;
         for(auto& rows:terrain_authored_rows)rows.clear();
         error.clear();return true;
     }catch(const std::bad_alloc&){error="Cannot restore the owned creation terrain proof";return false;}
+    catch(...){error="The owned creation terrain return callback failed";return false;}
 }
 #include "editor_native_terrain_transition_impl.h"
 
@@ -4408,14 +4535,7 @@ void bind(const std::vector<Binding>& value) {
     selection.clear();
 }
 void bind_acts(const editor::Document& document){
-    act_identity={};act_identity.act_order=document.act_order;
-    act_identity.project=document.project;act_identity.epoch=document.epoch;
-    act_identity.next_id=document.next_id;
-    act_identity.next_terrain_order=document.next_terrain_order;
-    act_identity.terrain=document.terrain;
-    for(const auto& [id,row]:document.settings)if(row.kind==editor::SettingsKind::Act){
-        auto& bound=act_identity.settings[id];bound.object=id;bound.act_id=row.act_id;
-    }else if(row.kind==editor::SettingsKind::Project || row.kind==editor::SettingsKind::Planet)act_identity.settings[id]=row;
+    act_identity=act_binding_identity(document);
 }
 bool edit_acts(int action,const editor::Document& document,std::string& error){
     auto native=state();

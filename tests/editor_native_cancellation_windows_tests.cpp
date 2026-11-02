@@ -1519,6 +1519,9 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
 #include "editor_native_view_fence_fixture.h"
 #include "editor_native_complexity_fixture.h"
 int main(int argc,char** argv){
+    if(argc==2&&std::string(argv[1])=="--creation-grounding-only"){
+        test_creation_grounding_return();std::printf("native creation grounding return: %u checks passed\n",checks);return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--complexity-only"){
         test_native_complexity_capability();std::printf("native complexity capability: %u checks passed\n",checks);return 0;
     }

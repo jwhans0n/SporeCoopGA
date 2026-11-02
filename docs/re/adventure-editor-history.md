@@ -1095,3 +1095,58 @@ zero source drift, and all seven before/after wire fixtures byte-identical on
 Linux and actual i686 Windows. Document/protocol/project suites passed
 3,054/9,218/5,683 checks on each platform; the real-UDP/fake-native Session
 suites passed 29,312 checks on Linux and 22,514 on Windows.
+
+### Creation return retains exact placement grounding and logical identity
+
+C27's actual host-away run accepted guest terrain/history through revision 12
+while the host remained in Creature. The first return failure preceded another
+canonical restore: object `4294967302` had raw XYZ
+`(-459.84436,116.277344,187.374207)` against entry XYZ
+`(-459.844482,116.277374,187.374252)`, with identical rotation, scale and
+properties. The entry snapshot remained revision 8; validating it before
+materializing the latest revision was intentional. Evidence is retained in
+`out/preview9-c27-terrain-host-away/result.json` and
+`out/preview9-c27-terrain-failure-full/result.json`.
+
+The native mode-generation transition cleared `terrain_grounding`, live
+bindings and `act_identity`. The existing creation ticket retained the exact
+terrain materialization map but omitted the placement grounding map. Its
+initial return capture consequently exposed rendered XYZ instead of the
+previously witnessed authored XYZ. Retrying after Runtime froze then lost the
+read scope and recipe materialization witness, producing later recipe errors;
+those later errors do not replace the first placement failure as causal
+evidence. Cleared act/terrain identity was also an unpinned input: projection
+uses it to retain logical IDs and exact prior terrain payload/counters.
+
+The one-use ticket now owns the full original live placement roster: raw slot,
+logical object/revision, native key/class, and exact rendered/authored XYZ. A
+differing pair is retained only from an already existing exact grounding
+witness. Capture checks that the live roster compacts to the entry snapshot's
+dense bindings. Return checks the same owner, source, tool, generation,
+operation scope/serial and exact entry image/document, then verifies every
+returned raw row and XYZ before reattaching the saved grounding, raw bindings
+and minimal entry act/terrain identity. No live marker or terrain value is
+written; unknown returned changes remain subject to the ordinary strict entry
+capture/validation. No approximate XYZ or inferred latest-document mapping is
+introduced.
+
+All callback inputs and operation predicates are copied before Native getters.
+The entry size is checked before copying, the retained proof remains bounded
+to 64 MiB, and publication follows a final callback-free owner/roster check.
+An expired or failed attempt consumes its ticket without publishing maps.
+The controlled regression uses sparse slots 1/3, dense serialized slots 0/1,
+nondefault object/act/terrain IDs and a real mode excursion. It validates the
+returned draft against the entry without a manual identity rebind, and rejects
+row reuse, unknown XYZ, stale identities and reentrant caller retirement.
+Actual host-away return acceptance for this change remains a separate native
+candidate gate.
+
+The actual-i686 strict O2 receipt is
+`out/preview9-creation-grounding-native-receipt.json`: 46 compiler/Make inputs,
+zero drift, grounding 6,564, materialization 24,534 and full Native 68,285
+checks passed. The original C27 adapter from `b34450c` fails the same new
+public-API regression at the first restored raw-binding assertion; its
+expected-failure receipt is
+`out/preview9-creation-grounding-red/receipt.json`. The passing current case
+continues through strict draft capture and entry validation. These receipts
+prove controlled adapter behavior, not live host-away acceptance or timing.
