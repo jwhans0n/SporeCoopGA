@@ -400,3 +400,27 @@ replacement and checked immutable record transformations. These controlled
 fixtures are not evidence of running-game entry, editing, remote reopening,
 baking or return success. Each family and simultaneous participants still need
 the private native integration checks recorded by the delivery report.
+
+The local native cast toolbar exposes New asset (control C00F0301), Edit asset
+(C00F0302), and six family choices C00F0310..C00F0315 in the order above.
+`editor_creation_ui` creates and updates this retained native window outside
+Present and calls only queued public creation actions. Edit resolves the shown
+native class inspector, then the selected placement, while excluding the
+captain. Selection does not acquire the asset's content lease. The coordinator
+validates the chosen logical class and acquires that separate lease before
+native entry. The toolbar hides during native pickers, creation sessions and
+testing; its callbacks are fenced by the local prompt identity.
+
+`tools/tests/coop_editor_creations.py` drives the ordinary toolbar and bounded
+native mouse/key recipes against two or four already-owned hidden/muted private
+lab processes. It checks all six families from host and guest, one admission
+and Undo/Redo, all participants designing simultaneously, guest return while
+the host stays away, another participant's content replacement concurrent with
+behavior editing, cancellation and final live scene convergence. Recipes must
+contain measured normal construction/save/select input for the private seeds
+and exact client viewport. The fixture rejects arbitrary console/native calls,
+unowned windows, candidate hash mismatches and truncated asset diagnostics.
+Its self-test and Python compilation pass; no running-game result or measured
+recipe is claimed by those checks. The production i686 lifecycle fixture now
+passes 211 checks, including unchanged Done, both logical and companion resource
+identity collisions, and the host ABI's zero-success hook registration.

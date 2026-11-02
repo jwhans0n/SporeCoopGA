@@ -143,7 +143,7 @@ bool init(const SkHost* host,SkMod* mod){
     H=host;auto setter=H?H->sym("SporeCoop::CreationEditor::SetClassAsset"):0;
     supported=H && skg::supported_gog2024(H->exe_sha256()) && setter &&
         H->sym("SporeCoop::CreationEditor::GetClass") && H->sym("SporeCoop::CreationEditor::AssetModelType") &&
-        H->hook_create(mod,reinterpret_cast<void*>(setter),reinterpret_cast<void*>(assign),reinterpret_cast<void**>(&original_assign));
+        H->hook_create(mod,reinterpret_cast<void*>(setter),reinterpret_cast<void*>(assign),reinterpret_cast<void**>(&original_assign))==0;
     return supported;
 }
 void shutdown(){supported=false;detached_owner=nullptr;detached_assign_failed=false;H=nullptr;}
@@ -155,6 +155,26 @@ bool resource_reserved(const editor::ResourceKey& key){
     if(!skg::readable(manager,sizeof(void*)))return true;
     dbpf::Key requested{key.instance,key.type,key.group},resolved{};
     return skg::vcall<void*>(manager,0x30/4,&requested,&resolved,static_cast<void*>(nullptr))!=nullptr;
+}
+std::optional<editor::ObjectId> selected_cast(){
+    if(!H || !supported)return std::nullopt;
+    const auto pointer=H->sym("App::cScenarioMode::ptr");
+    auto* mode=pointer && skg::readable(reinterpret_cast<void*>(pointer),sizeof(void*))?*reinterpret_cast<void**>(pointer):nullptr;
+    if(!skg::readable(mode,0xD4) || skg::field<int>(mode,0xCC)!=1 || skg::field<uint32_t>(mode,0xD0)!=0)return std::nullopt;
+    auto* data=skg::field<void*>(mode,0x74);auto* display=skg::field<void*>(mode,0x14);
+    auto* script=skg::readable(display,0x1C)?skg::field<void*>(display,0x18):nullptr;
+    auto* settings=skg::readable(script,0x1C)?skg::field<void*>(script,0x18):nullptr;
+    auto* layout=skg::readable(settings,0x24)?skg::field<void*>(settings,0x10):nullptr;
+    const auto shown=H->sym("SporeCoop::Editor::LayoutShown");
+    if(shown && skg::readable(layout,0x18) && skg::thiscall<bool>(shown,layout))
+        return editor::ObjectId{(2ull<<32)|skg::field<uint32_t>(settings,0x20),1};
+    const auto context_pointer=H->sym("SporeCoop::Editor::Context"),marker_for=H->sym("Simulator::cScenarioData::GetMarkerForObject");
+    auto* context=context_pointer && skg::readable(reinterpret_cast<void*>(context_pointer),sizeof(void*))?*reinterpret_cast<void**>(context_pointer):nullptr;
+    auto* actor=skg::readable(context,8)?skg::field<void*>(context,4):nullptr;
+    if(!actor || !marker_for || !skg::readable(data,0x90))return std::nullopt;
+    auto* marker=skg::thiscall<void*>(marker_for,data,actor);
+    if(!skg::readable(marker,4) || marker==skg::field<void*>(data,0x8C))return std::nullopt;
+    return editor::ObjectId{(2ull<<32)|skg::field<uint32_t>(marker,0),1};
 }
 std::optional<editor::ObjectId> resolve_cast_asset(const editor::Document& document,const editor::ResourceKey& key){
     std::optional<editor::ObjectId> found;
@@ -221,6 +241,7 @@ bool immutable_version(const editor::ProjectId& project,const editor::ResourceKe
     for(uint32_t attempt=0;attempt<4096;++attempt){
         const auto instance=0x7D000000u|((seed+attempt*0x9E3779B9u)&0x00FFFFFFu);
         bool collision=instance==source.instance;
+        if(!collision && reserved)collision=reserved({instance,source.type,source.group});
         if(!collision && reserved)for(const auto& row:canonical)
             if(owner_record(row.key,source) && reserved({instance,row.key.type,row.key.group})){collision=true;break;}
         if(collision)continue;

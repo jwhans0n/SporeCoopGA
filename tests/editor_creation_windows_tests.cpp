@@ -24,6 +24,7 @@ double now=1;
 unsigned submissions=0,native_returns=0,native_imports=0,finished=0,returned=0,live_class_writes=0;
 bool grant=false,live_scope=true,lease=true,return_ready=false,submit_ok=true,reject=false;
 bool allocation_failure=false;
+bool returned_cancelled=false;
 std::set<void*> allocations;
 editor_native::GestureScope owner;
 std::vector<dbpf::Record> collected;
@@ -71,7 +72,7 @@ int hook(SkMod*,void* address,void* detour,void** original){
     if(address==reinterpret_cast<void*>(native_notify))notify_hook=reinterpret_cast<editor_creation::Notify>(detour);
     else if(address==reinterpret_cast<void*>(native_assign))assign_hook=reinterpret_cast<editor_creation_native::Assign>(detour);
     else CHECK(false);
-    return 1;
+    return 0;
 }
 void queue(SkTaskFn fn,void* data){tasks.push_back({fn,data});}
 void pump(){auto work=std::move(tasks);tasks.clear();for(auto [fn,data]:work)fn(data);}
@@ -83,7 +84,7 @@ void initialize(){
     refs_vt={nullptr,reinterpret_cast<void*>(ref),reinterpret_cast<void*>(unref)};
     skg::field<void*>(request.data(),0)=refs_vt.data();skg::field<int>(request.data(),8)=1;
     skg::field<uint32_t>(request.data(),0xC)=0x465C50BA;skg::field<editor::ResourceKey>(request.data(),0x10)=source;
-    grant=false;live_scope=lease=true;return_ready=reject=false;submit_ok=true;mode=modes::kScenario;now=1;
+    grant=false;live_scope=lease=true;return_ready=reject=returned_cancelled=false;submit_ok=true;mode=modes::kScenario;now=1;
     submissions=native_returns=native_imports=finished=returned=live_class_writes=0;
     owner={};owner.project[0]=9;owner.epoch=12;owner.author={1,3};
     static SkHost host{};host.sym=sym;host.hook_create=hook;host.time_seconds=[](){return now;};host.run_outside_frame=queue;
@@ -93,14 +94,14 @@ void initialize(){
     context.current=[](const auto& scope){return live_scope && scope.project==owner.project && scope.epoch==owner.epoch && scope.author==owner.author;};
     context.prepare=[](const auto&,auto& input,std::string& error){input.target=editor::ObjectId{(2ull<<32)|7,1};if(reject){error="denied";return editor_creation::PrepareResult::Reject;}return grant?editor_creation::PrepareResult::Ready:editor_creation::PrepareResult::Wait;};
     context.lease_valid=[](const auto&,auto){return lease;};
-    context.returned=[](const auto&,const auto&,std::string&){++returned;return return_ready;};
+    context.returned=[](const auto&,const auto& result,std::string&){++returned;returned_cancelled=result.cancelled;return return_ready;};
     context.finished=[](const auto&,bool,const std::string&){++finished;};
     CHECK(editor_creation::init(&host,nullptr,std::move(context)));
 }
 void start(){CHECK(!editor_creation::intercept(request.data(),submit));unref(request.data());grant=true;step();CHECK(submissions==1 && editor_creation::designing());}
-void result(bool cancel=false){
+void result(bool cancel=false,bool unchanged=false){
     native_result.fill(0);skg::field<void*>(native_result.data(),0)=refs_vt.data();skg::field<int>(native_result.data(),8)=1;
-    skg::field<editor::ResourceKey>(native_result.data(),0x18)={0x29004321,source.type,source.group};
+    skg::field<editor::ResourceKey>(native_result.data(),0x18)=unchanged?source:editor::ResourceKey{0x29004321,source.type,source.group};
     skg::field<bool>(native_result.data(),0x44)=cancel;
     notify_hook(native_editor.data(),native_result.data());
 }
@@ -108,6 +109,7 @@ std::vector<uint8_t> model(){return {0xD3,0x7E,0x65,0x48,1,2,3,4,5,6,7,8};}
 std::vector<uint8_t> metadata(){std::vector<uint8_t> data(0x24);editor_creation_native::putbe(data.data(),13);editor_creation_native::putbe(data.data()+0xC,source.type);editor_creation_native::putbe(data.data()+0x10,source.group);editor_creation_native::putbe(data.data()+0x14,source.instance);data[0x20]=0xAA;return data;}
 }
 namespace game {uint32_t mode_id(){return mode;}}
+namespace editor_creation_ui {void init(const SkHost*){}void tick(){}void shutdown(){}}
 namespace adventure_collect {bool collect_creation(const dbpf::Key&,std::vector<dbpf::Record>& records,std::string&){records=collected;return true;}}
 namespace editor_native {
 bool edit_owned_snapshot(const Snapshot& base,const std::function<bool(void*,std::string&)>& edit,Snapshot& out,std::string& error){
@@ -144,6 +146,7 @@ int main(){
     step();CHECK(editor_creation::active() && returned==1);
     return_ready=true;step();CHECK(!editor_creation::active() && finished==1 && skg::field<int>(request.data(),8)==0);
     initialize();start();result(true);return_ready=true;step();CHECK(!editor_creation::active() && native_imports==0);
+    initialize();start();result(false,true);return_ready=true;step();CHECK(!editor_creation::active() && returned_cancelled && native_imports==0);
     initialize();CHECK(!editor_creation::intercept(request.data(),submit));unref(request.data());live_scope=false;step();CHECK(!editor_creation::active() && submissions==0);
     initialize();CHECK(!editor_creation::intercept(request.data(),submit));unref(request.data());reject=true;step();CHECK(!editor_creation::active() && submissions==0);
     initialize();CHECK(!editor_creation::intercept(request.data(),submit));unref(request.data());editor_creation::cancel_pending();CHECK(!editor_creation::active() && submissions==0);
@@ -176,6 +179,7 @@ int main(){
     }
     CHECK(editor_creation_native::immutable_version(project,source,records,{},second,again,error) && version==second);
     CHECK(editor_creation_native::immutable_version(project,source,records,[&](const auto& key){return key.instance==version.instance;},second,again,error) && second!=version);
+    CHECK(editor_creation_native::immutable_version(project,source,records,[&](const auto& key){return key.instance==version.instance && key.type==source.type;},second,again,error) && second!=version);
     CHECK(!editor_creation_native::immutable_version(project,source,records,[](const auto&){return true;},second,again,error));
     records[1].data[0]=99;CHECK(!editor_creation_native::immutable_version(project,source,records,{},second,again,error));
     // Only typed owner ResourceKeys change; ordinary numeric words and external

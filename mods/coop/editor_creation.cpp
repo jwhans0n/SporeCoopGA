@@ -1,5 +1,6 @@
 #include "editor_creation.h"
 #include "editor_creation_native.h"
+#include "editor_creation_ui.h"
 #include "game.h"
 #include "modes.h"
 #include "sporekit_game.hpp"
@@ -79,6 +80,9 @@ void SK_THISCALL notify(void* editor,void* result){
            completed.saved.type!=session->request.source.type)){
             completed.cancelled=true;status="The native editor returned an unsupported creation";
         }
+        // Done without a native content change returns the original source.
+        // Restore the adventure view without allocating a new shared version.
+        if(!completed.cancelled && completed.saved==session->request.source)completed.cancelled=true;
         session->result=completed;session->phase=Phase::Returning;
         if(!completed.cancelled)retained_saved=completed;
     }
@@ -142,12 +146,13 @@ bool init(const SkHost* host,SkMod* mod,Ctx context){
     auto address=H?H->sym("SporeCoop::CreationEditor::NotifyResult"):0;
     supported=H && skg::supported_gog2024(H->exe_sha256()) && address &&
         H->sym("SporeCoop::CreationEditor::RequestCtor") && H->sym("SporeCoop::CreationEditor::Allocate") &&
-        H->hook_create(M,reinterpret_cast<void*>(address),reinterpret_cast<void*>(notify),reinterpret_cast<void**>(&original_notify));
+        H->hook_create(M,reinterpret_cast<void*>(address),reinterpret_cast<void*>(notify),reinterpret_cast<void**>(&original_notify))==0;
     if(supported)supported=editor_creation_native::init(H,M);
+    if(supported)editor_creation_ui::init(H);
     return supported;
 }
-void shutdown(){if(session){release(session->native_request);session.reset();}editor_creation_native::shutdown();C={};H=nullptr;M=nullptr;supported=queued=false;original_submit=nullptr;}
-void tick(){if(H && session && !queued){queued=true;H->run_outside_frame(drain,nullptr);}}
+void shutdown(){editor_creation_ui::shutdown();if(session){release(session->native_request);session.reset();}editor_creation_native::shutdown();C={};H=nullptr;M=nullptr;supported=queued=false;original_submit=nullptr;}
+void tick(){if(H)editor_creation_ui::tick();if(H && session && !queued){queued=true;H->run_outside_frame(drain,nullptr);}}
 bool intercept(void* request,Submit original){
     if(!supported || !original || !skg::readable(request,0x9C)){tell("Native creation editor support is unavailable");return false;}
     if(session){tell("Finish or cancel your current creation before opening another editor");return false;}
@@ -169,7 +174,9 @@ bool intercept(void* request,Submit original){
     return false;
 }
 bool open(uint32_t resource_type,const editor::ResourceKey& source,std::optional<editor::ObjectId> target,std::string& error){
-    if(!supported || session || !family(resource_type) || (source.instance && source.type!=resource_type)){
+    const auto owner=C.scope?C.scope():std::nullopt;
+    if(!supported || session || !owner || !owner->epoch || !owner->author.generation ||
+       !family(resource_type) || (source.instance && (source.type!=resource_type || !source.group))){
         error="This creation editor is unavailable during the current transition";return false;
     }
     const auto allocation=H->sym("SporeCoop::CreationEditor::Allocate"),ctor=H->sym("SporeCoop::CreationEditor::RequestCtor"),submit=H->sym("Editors::EditorRequest::Submit");
