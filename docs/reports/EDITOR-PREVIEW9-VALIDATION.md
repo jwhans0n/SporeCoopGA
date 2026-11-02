@@ -565,3 +565,39 @@ hash checks and rollback delivery remain separate pending steps. Sustained and
 overnight acceptance is reserved for a release window. Historical preview
 results in the [native-flow report](EDITOR-NATIVE-FLOW-VALIDATION.md) retain their
 original binaries and limits; they are not relabelled as preview 9 passes.
+
+## Candidate 9 Crew selection failure
+
+After the four-player movement run, ordinary native Crew capacity changed to
+one and converged on all four participants. Host selection of the existing
+custom creature `Spice Crawler` then failed dependency admission on guests 96
+and 98 at 06:40:43.481 and 06:40:43.443 respectively. Host 95 and its
+profile-derived observer 97 reached canonical revision 2; the two other
+participants retained revision 1 and froze for explicit baseline recovery.
+All four reported zero native faults. Public status and exact conflict logs
+are retained in `out/preview9-c9-crew-failure-probe/`.
+
+The first rejected key was summary
+`40626200!29058782.02D5C9AF`, but this was not merely a derived-cache mismatch.
+A read-only, header-stable sample of both profiles' Pollination package indices
+and target records found different authoritative BEM bodies under
+`40626200!29058782.1A99B06B`: profile 95 has 2,425 bytes, SHA-256
+`2e6c4652624f1dda801fc6768e9d92860e4d682a0a26034834cf4c37e9e7849d`;
+profile 96 has 7,199 bytes, SHA-256
+`7b160a50a6700080833a2a900353cf622bc1295a68d1cd6d0e72c127ed071f5e`.
+Metadata, PNG and derived creature-data records also differ. Full offsets,
+hashes and comparison evidence are in `offline-source-records.json` in that
+directory. The installed-byte conflict guard correctly prevented shadowing a
+different local creation; simply omitting generated summaries is insufficient.
+
+The follow-up versions newly selected custom Crew assets into immutable
+project keys and rewrites only checked Crew references in an owned snapshot,
+preserving the original ownership, flags, lock, order and pose. Original
+gesture validation and resource-conflict rejection remain required. Native
+candidate 10 Crew Add/Replace, observers, Undo/Redo, recovery and Save/reopen
+acceptance remain pending; this failure does not establish those workflows.
+The creation helper fixture now passes 489 strict i686 checks, including two
+different authoritative BEM bodies sharing one original key, distinct
+immutable versions with unchanged model bytes, and atomic missing/invalid-BEM
+rejection. Receipt:
+`out/editor-preview9-creation-routing/lifecycle-crew-collision.log`.

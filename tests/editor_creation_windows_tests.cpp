@@ -252,6 +252,29 @@ int main(){
         else {CHECK(row.key.instance==version.instance);if(row.key.type==0x030BDEE3){CHECK(editor_creation_native::be32(row.data.data()+0x14)==version.instance);CHECK(row.data[0x20]==0xAA);}else CHECK(row.data==model());}
     }
     CHECK(editor_creation_native::immutable_version(project,source,records,{},second,again,error) && version==second);
+    // Private profiles may reuse the same local source key for different
+    // authoritative BEM bodies (actual Crew failure29058782). Equal metadata
+    // and cache bytes must not collapse those creations to the same version.
+    const auto first_version=version;const auto first_records=remapped;
+    auto other_body=records;other_body[0].data.back()^=0x5A;other_body[0].data.push_back(0x42);
+    const auto original_body=other_body[0].data;
+    CHECK(editor_creation_native::immutable_version(project,source,other_body,{},second,again,error));
+    CHECK(second!=first_version && second.instance!=source.instance && same_records(remapped,first_records));
+    auto other_model=std::find_if(again.begin(),again.end(),[](const auto& row){return row.key.type==0x1A99B06B&&row.key.instance!=99;});
+    CHECK(other_model!=again.end()&&other_model->key.instance==second.instance&&other_model->data==original_body);
+    CHECK(records[0].data==model()&&other_body[0].data==original_body);
+    // Missing, invalid and unavailable authoritative models reject atomically;
+    // a summary or valid dependency BEM cannot stand in for the selected body.
+    const auto previous_records=again;const auto previous_version=second;
+    auto no_body=records;no_body.erase(no_body.begin());
+    CHECK(!editor_creation_native::immutable_version(project,source,no_body,{},second,again,error));
+    CHECK(second==previous_version&&same_records(again,previous_records));
+    auto bad_body=records;bad_body[0].data[0]=0;
+    CHECK(!editor_creation_native::immutable_version(project,source,bad_body,{},second,again,error));
+    CHECK(second==previous_version&&same_records(again,previous_records));
+    collected.clear();
+    CHECK(!editor_creation_native::collect_version(project,source,{},second,again,error));
+    CHECK(second==previous_version&&same_records(again,previous_records));
     CHECK(editor_creation_native::immutable_version(project,source,records,[&](const auto& key){return key.instance==version.instance;},second,again,error) && second!=version);
     CHECK(editor_creation_native::immutable_version(project,source,records,[&](const auto& key){return key.instance==version.instance && key.type==source.type;},second,again,error) && second!=version);
     CHECK(!editor_creation_native::immutable_version(project,source,records,[](const auto&){return true;},second,again,error));
