@@ -6,7 +6,7 @@
 #include <variant>
 
 namespace editor::wire {
-constexpr uint32_t kSchema = 1;
+constexpr uint32_t kSchema = 2; // Protocol23 authoring capabilities.
 constexpr size_t kPacketBytes = 1100, kChunkBytes = 900;
 constexpr size_t kStateBytes = 64u << 20, kOperationBytes = 8u << 20;
 constexpr size_t kResourceBytes = 128u << 20, kJoinBytes = 256u << 10;
@@ -46,7 +46,7 @@ struct TransferEnd { uint64_t serial = 0; };
 enum class LeaseAction : uint8_t { Acquire, Renew, Release };
 struct LeaseRequest { LeaseAction action{}; uint64_t serial = 0; Time ttl = 0; std::vector<Scope> scopes; std::vector<LeaseToken> tokens; };
 struct LeaseReply { uint64_t serial = 0; LeaseResult result; };
-enum class PresencePhase : uint8_t { Ready, Syncing, Preparing, Playing, Returning, Frozen, Disconnected, Offered };
+enum class PresencePhase : uint8_t { Ready, Syncing, Preparing, Playing, Returning, Frozen, Disconnected, Offered, Creating };
 inline constexpr uint8_t kOwnSelection = 1, kOwnDocument = 2;
 struct Presence {
     ObjectId selected; ObjectId act; bool editing = false; Peer author;
@@ -57,6 +57,11 @@ struct Presence {
     LeaseToken preview_lease = {}; // Host-derived current selection capability identity.
     // Host-derived display summaries, never usable capabilities.
     std::vector<Scope> owned_scopes = {};
+    uint64_t creation_serial = 0;
+    bool creating_asset = false;
+    ObjectId creation_target = {}; // Zero for a new creation, class settings otherwise.
+    Revision scene_revision = 0;
+    bool scene_ready = true;
     bool operator==(const Presence&) const = default;
 };
 // Noncanonical hint for an already committed placement. The host verifies the

@@ -1,4 +1,5 @@
 #include "editor_document.h"
+#include "editor_terrain.h"
 
 #include <algorithm>
 #include <cmath>
@@ -11,11 +12,21 @@ namespace {
 bool identity(ObjectId id) { return id.id && id.generation; }
 bool identity(Peer p) { return p.slot < 4 && p.generation; }
 bool identity(OperationId op) { return identity(op.author) && op.sequence && op.epoch; }
+bool terrain_shape(const TerrainRecord& row,const Limits& limits){
+    return identity(row.object) && row.kind<=TerrainKind::Model && row.order &&
+        row.payload.bytes.size()<=limits.structured_bytes && valid_terrain_payload(row.kind,row.payload);
+}
 const Placement* retained_placement(const State& state,ObjectId id){
     auto found=state.document.placements.find(id);
     if(found!=state.document.placements.end())return &found->second;
     for(auto g=state.history.rbegin();g!=state.history.rend();++g)for(const auto* patch:{&g->undo,&g->redo})
         for(const auto& e:patch->objects)if(e.object==id){if(e.after)return &*e.after;if(e.before)return &*e.before;}
+    return nullptr;
+}
+const TerrainRecord* retained_terrain(const State& state,ObjectId id){
+    auto found=state.document.terrain.find(id);if(found!=state.document.terrain.end())return &found->second;
+    for(auto g=state.history.rbegin();g!=state.history.rend();++g)for(const auto* patch:{&g->undo,&g->redo})
+        for(const auto& e:patch->terrain)if(e.object==id){if(e.after)return &*e.after;if(e.before)return &*e.before;}
     return nullptr;
 }
 bool project(const ProjectId& id) { return std::any_of(id.begin(), id.end(), [](auto v) { return v != 0; }); }
@@ -102,7 +113,7 @@ bool placement_shape(const Placement& p, const Document& d, const Limits& limits
 }
 bool field_value(FieldKey k, const std::optional<Value>& v, const Document& d, const Limits& limits, ObjectId object = {})
 {
-    if (!field_key(k)) return false;
+    if (!field_key(k) || d.terrain.contains(object)) return false;
     if(d.settings.contains(object) || (d.tombstones.contains(object) && k.field==Field::Property && d.settings_schema.contains(k.property))){
         if(k.field!=Field::Property)return false;
         auto spec=d.settings_schema.find(k.property);
@@ -142,15 +153,18 @@ Revision absent_revision(const Document& d, ObjectId id)
     auto it = d.tombstones.find(id); return it == d.tombstones.end() ? 0 : it->second;
 }
 bool editable(const Document& d, ObjectId id) {
-    return d.placements.contains(id) || d.class_settings.contains(id) || d.settings.contains(id);
+    return d.placements.contains(id) || d.class_settings.contains(id) || d.settings.contains(id) || d.terrain.contains(id);
 }
 Scope field_scope(const Document& d,ObjectId id,FieldKey field){
-    if(d.settings.contains(id))return {ScopeKind::Settings,id,{}};
+    if(auto s=d.settings.find(id);s!=d.settings.end())return s->second.kind==SettingsKind::Project || s->second.kind==SettingsKind::Planet?
+        Scope{ScopeKind::Field,id,field}:Scope{ScopeKind::Settings,id,{}};
     auto c=d.class_settings.find(id);
+    if(c!=d.class_settings.end() && field==FieldKey{Field::Property,kClassAssetResourceProperty})return {ScopeKind::Content,c->second.class_id,{}};
     return c==d.class_settings.end()?Scope{ScopeKind::Field,id,field}:
         Scope{ScopeKind::Class,c->second.class_id,{}};
 }
 Revision object_revision(const Document& d, ObjectId id) {
+    auto t=d.terrain.find(id);if(t!=d.terrain.end())return t->second.revision;
     auto s=d.settings.find(id);if(s!=d.settings.end())return s->second.revision;
     auto p=d.placements.find(id);
     if(p!=d.placements.end())return p->second.revision;
@@ -174,7 +188,7 @@ bool check(const Document& d, const Check& c)
     if (c.kind == CheckKind::Absent) return !editable(d,c.object) && !d.classes.contains(c.object) && !d.acts.contains(c.object) && absent_revision(d, c.object) == c.expected;
     if (!editable(d,c.object)) return false;
     if (c.kind == CheckKind::Object) return object_revision(d,c.object) == c.expected;
-    return c.kind == CheckKind::Field && field_key(c.field) &&
+    return !d.terrain.contains(c.object) && c.kind == CheckKind::Field && field_key(c.field) &&
         ((!d.class_settings.contains(c.object) && !d.settings.contains(c.object)) || c.field.field==Field::Property) && field_revision(d,c.object,c.field) == c.expected;
 }
 bool patch_shape(const Patch& p, const Document& d, const Limits& l)
@@ -193,12 +207,17 @@ bool patch_shape(const Patch& p, const Document& d, const Limits& l)
             }
         }
     }
-    if(p.acts && (!p.objects.empty() || !p.classes.empty() || std::any_of(p.fields.begin(),p.fields.end(),[&](const auto& field){
+    if(p.acts && (!p.objects.empty() || !p.classes.empty() || !p.terrain.empty() || std::any_of(p.fields.begin(),p.fields.end(),[&](const auto& field){
         return !d.class_settings.contains(field.object) && !(d.tombstones.contains(field.object) && field.field.field==Field::Property && d.class_schema.contains(field.field.property));
     })))return false;
-    if (p.objects.size() + p.fields.size() + p.classes.size() > (p.acts?l.classes:l.mutations) || p.dependencies.size() > l.dependencies) return false;
+    if (p.objects.size() + p.fields.size() + p.classes.size() + p.terrain.size() > (p.acts?l.classes:l.mutations) || p.dependencies.size() > l.dependencies) return false;
     std::set<ObjectId> objects;
     std::set<std::pair<ObjectId, FieldKey>> fields;
+    for(const auto& e:p.terrain){
+        if(!identity(e.object) || (!e.before && !e.after) || !objects.insert(e.object).second || e.expected>d.revision || e.restored_revision>d.revision)return false;
+        for(const auto* item:{&e.before,&e.after})if(*item && ((**item).object!=e.object || !terrain_shape(**item,l) || (**item).revision>d.revision))return false;
+        if(e.before && e.after && (e.before->order!=e.after->order || e.before->kind!=e.after->kind))return false;
+    }
     for(const auto& e:p.classes){
         if(!identity(e.object) || bool(e.before)==bool(e.after) || !objects.insert(e.object).second || e.expected>d.revision)return false;
         for(const auto* item:{&e.before,&e.after})if(*item){
@@ -249,6 +268,11 @@ std::vector<AuthoringSettings> act_roster(const Document& d){
     }
     return result;
 }
+std::vector<TerrainRecord> terrain_recipe(const Document& d){
+    std::vector<TerrainRecord> result;result.reserve(d.terrain.size());
+    for(const auto& [id,row]:d.terrain){(void)id;result.push_back(row);}
+    std::sort(result.begin(),result.end(),[](const auto& a,const auto& b){return a.order<b.order;});return result;
+}
 Revision field_revision(const Placement& p, FieldKey field)
 {
     auto it = p.field_revisions.find(field); return it == p.field_revisions.end() ? 0 : it->second;
@@ -279,6 +303,7 @@ Revision field_revision(const Document& d,ObjectId id,FieldKey field) {
 size_t bytes(const Document& d)
 {
     size_t n = 128 + (d.classes.size() + d.acts.size() + d.tombstones.size()) * 48 + d.schema.size() * 64 + d.external_references.size() * 32 + d.act_order.size()*16;
+    for(const auto& [id,row]:d.terrain){(void)id;n+=160+row.payload.bytes.size()+row.payload.references.size()*16;}
     for (const auto& [id, p] : d.placements) { (void)id; n += placement_bytes(p); }
     n += (d.class_schema.size()+d.settings_schema.size())*64;
     for(const auto& [id,s]:d.settings){
@@ -294,6 +319,7 @@ size_t bytes(const Document& d)
 size_t bytes(const Patch& p)
 {
     size_t n = 32 + p.dependencies.size() * 48;
+    for(const auto& e:p.terrain){n+=64;for(const auto* row:{&e.before,&e.after})if(*row)n+=160+(**row).payload.bytes.size()+(**row).payload.references.size()*16;}
     if(p.acts)for(const auto* list:{&p.acts->before,&p.acts->after})for(const auto& row:*list){
         n+=160+row.field_revisions.size()*32;for(const auto& [key,v]:row.properties){(void)key;n+=16+value_bytes(v);}
     }
@@ -313,7 +339,7 @@ bool valid(const Document& d, const Limits& l, std::string& error)
     if (!project(d.project) || !d.epoch || !d.next_id || d.next_id == UINT64_MAX || d.revision == UINT64_MAX) return bad("Invalid project identity, epoch, revision or ID allocator.");
     if (d.placements.size() > l.placements || d.classes.size() > l.classes || d.acts.size() > l.acts ||
         d.tombstones.size() > l.tombstones || d.schema.size() > l.properties * 8 || d.class_schema.size()>l.properties*8 ||
-        d.class_settings.size()>l.classes*l.acts || d.settings.size()>l.acts+1 || d.settings_schema.size()>l.properties*8 ||
+        d.class_settings.size()>l.classes*l.acts || d.settings.size()>l.acts+4 || d.settings_schema.size()>l.properties*8 || d.terrain.size()>l.terrain_records || !d.next_terrain_order || d.next_terrain_order==UINT64_MAX ||
         d.external_references.size() > l.dependencies * 16 || bytes(d) > l.document_bytes) return bad("Document exceeds a configured bound.");
     // A new native adventure has acts before its first cast member is added.
     // Placements/settings still require their parent class below.
@@ -352,7 +378,7 @@ bool valid(const Document& d, const Limits& l, std::string& error)
             return bad("Invalid authoring settings schema.");
     std::set<std::pair<SettingsKind,ObjectId>> setting_owners;
     for(const auto& [id,s]:d.settings){
-        if(!add(id) || id!=s.object || s.kind>SettingsKind::Captain || s.revision>d.revision ||
+        if(!add(id) || id!=s.object || s.kind>SettingsKind::Planet || s.revision>d.revision ||
            s.properties.size()>l.properties || s.field_revisions.size()>d.settings_schema.size() ||
            (s.kind==SettingsKind::Act?!d.acts.contains(s.act_id):s.act_id!=ObjectId{}) ||
            !setting_owners.emplace(s.kind,s.act_id).second)return bad("Invalid authoring settings owner or revision.");
@@ -364,6 +390,10 @@ bool valid(const Document& d, const Limits& l, std::string& error)
             if(key.field!=Field::Property || !d.settings_schema.contains(key.property) || revision>s.revision)
                 return bad("Invalid authoring property revision.");
     }
+    std::set<uint64_t> terrain_order;
+    for(const auto& [id,row]:d.terrain)
+        if(!add(id) || row.object!=id || !terrain_shape(row,l) || row.order>=d.next_terrain_order || !terrain_order.insert(row.order).second || row.revision>d.revision)
+            return bad("Invalid terrain record, order or revision.");
     for (const auto& [id, p] : d.placements) {
         if (!add(id) || id != p.object || !d.classes.contains(p.class_id) || !placement_shape(p, d, l, true)) return bad("Invalid placement, field value or revision.");
         for (const auto& [property, v] : p.properties) {
@@ -411,7 +441,7 @@ Coordinator::Coordinator(Limits limits) : limits_(limits) {}
 
 bool Coordinator::reset(State state, uint64_t epoch, std::string& error)
 {
-    if (busy_ || !epoch || (ready_ && state.document.project == state_.document.project && epoch == state_.document.epoch)) { error = "Recovery requires a fresh epoch nonce."; return false; }
+    if (applying() || !epoch || (ready_ && state.document.project == state_.document.project && epoch == state_.document.epoch)) { error = "Recovery requires a fresh epoch nonce and no prepared transaction."; return false; }
     if (epoch != state.document.epoch) state.retired_sequences.clear();
     state.document.epoch = epoch;
     if (!valid(state.document, limits_, error)) return false;
@@ -423,8 +453,8 @@ bool Coordinator::reset(State state, uint64_t epoch, std::string& error)
         if (!identity(g.operation) || !g.original_revision || g.original_revision > state.document.revision ||
             g.transition_revision < g.original_revision || g.transition_revision > state.document.revision ||
             !seen.insert(g.operation).second || g.summary.size() > limits_.summary_bytes || !utf8(g.summary) || (g.applied && g.redo_available) ||
-            (g.applied && g.undo.objects.empty() && g.undo.fields.empty() && g.undo.classes.empty() && !g.undo.acts) ||
-            (g.redo_available && g.redo.objects.empty() && g.redo.fields.empty() && g.redo.classes.empty() && !g.redo.acts) ||
+            (g.applied && g.undo.objects.empty() && g.undo.fields.empty() && g.undo.classes.empty() && g.undo.terrain.empty() && !g.undo.acts) ||
+            (g.redo_available && g.redo.objects.empty() && g.redo.fields.empty() && g.redo.classes.empty() && g.redo.terrain.empty() && !g.redo.acts) ||
             !patch_shape(g.undo, state.document, limits_) || !patch_shape(g.redo, state.document, limits_)) { error = "Invalid original-gesture history."; return false; }
     }
     seen.clear();
@@ -451,7 +481,7 @@ bool Coordinator::reset(State state, uint64_t epoch, std::string& error)
 bool Coordinator::peer(Peer p) const { return identity(p) && connected_[p.slot] && generations_[p.slot] == p.generation; }
 bool Coordinator::connect(Peer p)
 {
-    if (!ready_ || busy_ || !identity(p) || p.generation < generations_[p.slot] || (p.generation == generations_[p.slot] && !connected_[p.slot])) return false;
+    if (!ready_ || applying() || !identity(p) || p.generation < generations_[p.slot] || (p.generation == generations_[p.slot] && !connected_[p.slot])) return false;
     if (p.generation > generations_[p.slot]) {
         std::erase_if(leases_, [&](const Lease& l) { return l.owner.slot == p.slot; }); generations_[p.slot] = p.generation;
     }
@@ -459,7 +489,7 @@ bool Coordinator::connect(Peer p)
 }
 void Coordinator::disconnect(Peer p)
 {
-    if (!busy_ && peer(p)) { connected_[p.slot] = false; std::erase_if(leases_, [&](const Lease& l) { return l.owner == p; }); }
+    if (!applying() && peer(p)) { connected_[p.slot] = false; std::erase_if(leases_, [&](const Lease& l) { return l.owner == p; }); }
 }
 bool Coordinator::clock(Time now)
 {
@@ -468,10 +498,13 @@ bool Coordinator::clock(Time now)
 }
 bool Coordinator::scope_valid(const Scope& s) const
 {
-    if (s.kind > ScopeKind::Settings) return false;
+    if (s.kind > ScopeKind::Content) return false;
     const auto& d = state_.document;
     if (s.kind == ScopeKind::Document || s.kind == ScopeKind::Structure) return s.object == ObjectId{} && s.field == FieldKey{};
     if (!identity(s.object)) return false;
+    if(s.kind==ScopeKind::Terrain)return s.field==FieldKey{} && retained_terrain(state_,s.object);
+    if(s.kind==ScopeKind::Content)return s.field==FieldKey{} && d.class_schema.contains(kClassAssetResourceProperty) &&
+        (d.classes.contains(s.object) || ((s.object.id>>32)==2 && d.tombstones.contains(s.object)));
     if (s.kind == ScopeKind::Class) return s.field == FieldKey{} && (d.classes.contains(s.object) ||
         ((s.object.id>>32)==2 && d.tombstones.contains(s.object)));
     if (s.kind == ScopeKind::Act) return s.field == FieldKey{} && d.acts.contains(s.object);
@@ -479,12 +512,15 @@ bool Coordinator::scope_valid(const Scope& s) const
         s.kind==ScopeKind::Field && s.field.field==Field::Property && d.settings_schema.contains(s.field.property);
     if(d.class_settings.contains(s.object))return s.kind==ScopeKind::Field &&
         s.field.field==Field::Property && d.class_schema.contains(s.field.property);
-    if (!d.placements.contains(s.object) && !d.tombstones.contains(s.object)) return false;
+    if ((!d.placements.contains(s.object) && !d.tombstones.contains(s.object)) || retained_terrain(state_,s.object)) return false;
     return s.kind == ScopeKind::Placement ? s.field == FieldKey{} : field_key(s.field) && (s.field.field != Field::Property || d.schema.contains(s.field.property));
 }
 bool Coordinator::covers(const Scope& a, const Scope& b) const
 {
     if (a.kind == ScopeKind::Document || a == b) return true;
+    if(a.kind==ScopeKind::Content && b.kind==ScopeKind::Field && b.field==FieldKey{Field::Property,kClassAssetResourceProperty}){
+        auto settings=state_.document.class_settings.find(b.object);return settings!=state_.document.class_settings.end() && settings->second.class_id==a.object;
+    }
     if(a.kind==ScopeKind::Settings && b.kind==ScopeKind::Field && a.object==b.object)return true;
     if(a.kind==ScopeKind::Act && (b.kind==ScopeKind::Settings || b.kind==ScopeKind::Field)){
         auto s=state_.document.settings.find(b.object);
@@ -493,7 +529,7 @@ bool Coordinator::covers(const Scope& a, const Scope& b) const
     if (a.kind == ScopeKind::Placement && b.kind == ScopeKind::Field && a.object == b.object) return true;
     if ((a.kind == ScopeKind::Class || a.kind == ScopeKind::Act) && (b.kind == ScopeKind::Placement || b.kind == ScopeKind::Field)) {
         auto settings=state_.document.class_settings.find(b.object);
-        if(settings!=state_.document.class_settings.end())return b.kind==ScopeKind::Field &&
+        if(settings!=state_.document.class_settings.end())return b.kind==ScopeKind::Field && b.field!=FieldKey{Field::Property,kClassAssetResourceProperty} &&
             (a.kind==ScopeKind::Class?settings->second.class_id:settings->second.act_id)==a.object;
         auto* placement=retained_placement(state_,b.object);
         return placement && (a.kind == ScopeKind::Class ? placement->class_id : placement->act_id) == a.object;
@@ -519,7 +555,7 @@ bool Coordinator::overlaps(const Scope& a, const Scope& b) const
 LeaseResult Coordinator::acquire(Peer p, const std::vector<Scope>& scopes, Time now, Time ttl)
 {
     auto bad = [](Code code, const char* reason) { return LeaseResult{code, reason, {}}; };
-    if (busy_) return bad(Code::Busy, "A transaction is being applied.");
+    if (applying()) return bad(Code::Busy, "A transaction is being applied or awaiting durability.");
     if (frozen_) return bad(Code::Frozen, "Native state requires checkpoint recovery.");
     if (!peer(p)) return bad(Code::StalePeer, "The peer capability is no longer connected.");
     if (!clock(now) || !ttl || ttl > limits_.max_lease_ms || now > UINT64_MAX - ttl || scopes.empty() || scopes.size() > limits_.leases) return bad(Code::Invalid, "Invalid lease request or monotonic time.");
@@ -541,7 +577,7 @@ LeaseResult Coordinator::acquire(Peer p, const std::vector<Scope>& scopes, Time 
 }
 LeaseResult Coordinator::renew(Peer p, const std::vector<LeaseToken>& tokens, Time now, Time ttl)
 {
-    if (busy_) return {Code::Busy, "A transaction is being applied.", {}};
+    if (applying()) return {Code::Busy, "A transaction is being applied or awaiting durability.", {}};
     if (!peer(p)) return {Code::StalePeer, "The peer capability is no longer connected.", {}};
     if (frozen_) return {Code::Frozen, "Native state requires checkpoint recovery.", {}};
     if (!clock(now) || !ttl || ttl > limits_.max_lease_ms || now > UINT64_MAX - ttl || tokens.empty() || tokens.size() > limits_.leases) return {Code::Invalid, "Invalid renewal request.", {}};
@@ -558,7 +594,7 @@ LeaseResult Coordinator::renew(Peer p, const std::vector<LeaseToken>& tokens, Ti
 }
 bool Coordinator::release(Peer p, const std::vector<LeaseToken>& tokens)
 {
-    if (busy_ || !peer(p) || tokens.empty() || tokens.size() > limits_.leases) return false;
+    if (applying() || !peer(p) || tokens.empty() || tokens.size() > limits_.leases) return false;
     std::set<Scope> unique;
     for (const auto& token : tokens) {
         if (!unique.insert(token.scope).second || std::none_of(leases_.begin(), leases_.end(), [&](const Lease& l) { return l.owner == p && l.scope == token.scope && l.token == token.token; })) return false;
@@ -641,7 +677,21 @@ Code apply_patch(const Document& before, const Patch& input, const Limits& limit
 {
     auto bad = [&](Code code, const char* why) { error = why; return code; };
     if (!patch_shape(input, before, limits)) return bad(Code::Invalid, "Malformed or oversized semantic patch.");
-    if (input.objects.empty() && input.fields.empty() && input.classes.empty() && !input.acts) return bad(Code::Invalid, "An empty gesture is not an edit.");
+    if (input.objects.empty() && input.fields.empty() && input.classes.empty() && input.terrain.empty() && !input.acts) return bad(Code::Invalid, "An empty gesture is not an edit.");
+    for(const auto& e:input.terrain){
+        auto found=before.terrain.find(e.object);
+        if(e.before){
+            if(found==before.terrain.end() || found->second!=*e.before || found->second.revision!=e.expected)
+                return bad(Code::Conflict,"The terrain record changed or disappeared.");
+            if(e.after && e.after->payload==e.before->payload)return bad(Code::Invalid,"An unchanged terrain record is not a gesture.");
+        }else{
+            if(found!=before.terrain.end() || absent_revision(before,e.object)!=e.expected ||
+               (!before.tombstones.contains(e.object) && e.object.id<before.next_id))
+                return bad(Code::Conflict,"The terrain identity is no longer absent.");
+            for(const auto& [id,row]:before.terrain)if(id!=e.object && row.order==e.after->order)
+                return bad(Code::Conflict,"The terrain recipe order is already occupied.");
+        }
+    }
     if(input.acts){
         const auto current=act_roster(before);const auto& expected=input.acts->before;
         if(before.act_order.empty() || input.acts->expected!=before.act_revision || expected.size()!=current.size())
@@ -685,6 +735,15 @@ Code apply_patch(const Document& before, const Patch& input, const Limits& limit
     }
     after = before; after.revision++;
     canonical = input; inverse = {};
+    for(auto& e:canonical.terrain){
+        if(e.after){
+            e.after->revision=after.revision;after.terrain[e.object]=*e.after;after.tombstones.erase(e.object);
+            if(e.object.id>=UINT64_MAX-1 || e.after->order>=UINT64_MAX-1)return bad(Code::Limit,"Terrain identities or order are exhausted.");
+            after.next_id=std::max(after.next_id,e.object.id+1);
+            after.next_terrain_order=std::max(after.next_terrain_order,e.after->order+1);
+        }else{after.terrain.erase(e.object);after.tombstones[e.object]=after.revision;}
+        inverse.terrain.push_back({e.object,e.after,e.before,after.revision,e.expected});
+    }
     if(canonical.acts){
         auto& roster=*canonical.acts;std::set<ObjectId> surviving;
         roster.before=act_roster(before);
@@ -791,6 +850,14 @@ void refresh_history(State& state, const Change& change, const Patch& requested)
     for (auto& g : state.history) {
         if (g.operation == change.gesture || g.operation.author != change.operation.author) continue;
         for (Patch* patch : {&g.undo, &g.redo}) {
+            for(auto& e:patch->terrain){
+                auto live=state.document.terrain.find(e.object);
+                if(!e.before || live==state.document.terrain.end())continue;
+                auto expected=*e.before,current=live->second;expected.revision=current.revision=0;
+                if(expected!=current)continue;
+                for(const auto& restored:requested.terrain)
+                    if(restored.object==e.object && restored.after && e.expected==restored.restored_revision){e.expected=live->second.revision;e.before=live->second;}
+            }
             if(patch->acts && requested.acts && patch->acts->expected==requested.acts->restored_revision){
                 auto expected=patch->acts->before,current=act_roster(state.document);
                 for(auto* rows:{&expected,&current})for(auto& row:*rows){row.revision=0;row.field_revisions.clear();row.properties.clear();}
@@ -838,7 +905,7 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
         if (retain && identity(r.operation) && r.operation.epoch == state_.document.epoch && peer(r.operation.author)) remember(state_, r.operation, d);
         return d;
     };
-    if (busy_) return reject(Code::Busy, "A native/durable transaction is already being applied.", false);
+    if (applying()) return reject(Code::Busy, "A native/durable transaction is already being applied.", false);
     if (!ready_ || r.project != state_.document.project) return reject(Code::StaleProject, "This operation belongs to a different project.", false);
     if (r.epoch != state_.document.epoch || r.operation.epoch != r.epoch) return reject(Code::StaleEpoch, "This operation belongs to a different session epoch.", false);
     if (!peer(r.operation.author)) return reject(Code::StalePeer, "The peer capability expired or was replaced.", false);
@@ -862,8 +929,37 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
         if (r.mutations.empty()) return reject(Code::Invalid, "A forward gesture requires mutations.");
         uint64_t next_id = state_.document.next_id;
         uint32_t next_class=state_.document.next_class;
+        uint64_t next_terrain_order=state_.document.next_terrain_order;
         for (const auto& m : r.mutations) {
-            if (m.kind > MutationKind::SetActs) return reject(Code::Invalid, "Unknown mutation kind.");
+            if (m.kind > MutationKind::DeleteTerrain) return reject(Code::Invalid, "Unknown mutation kind.");
+            if(m.kind==MutationKind::AppendTerrain || m.kind==MutationKind::SetTerrain || m.kind==MutationKind::DeleteTerrain){
+                if(m.initial!=Placement{} || m.field!=FieldKey{} || m.value || m.clone_pose || m.class_initial || m.act_roster)
+                    return reject(Code::Invalid,"Terrain operations cannot contain unrelated authoring data.");
+                if(m.kind==MutationKind::AppendTerrain){
+                    if(!m.terrain || m.target!=ObjectId{} || m.expected || m.terrain->object!=ObjectId{} || m.terrain->order || m.terrain->revision)
+                        return reject(Code::Invalid,"A terrain append cannot choose its identity, order or revision.");
+                    if(std::any_of(leases_.begin(),leases_.end(),[&](const auto& lease){return lease.scope.kind==ScopeKind::Document && lease.owner!=r.operation.author;}))
+                        return reject(Code::Conflict,"The shared document is held for a global operation.");
+                    if(next_id>=UINT64_MAX-1 || next_terrain_order>=UINT64_MAX-1)return reject(Code::Limit,"The terrain identity or order allocator is exhausted.");
+                    auto row=*m.terrain;row.object={next_id++,1};row.order=next_terrain_order++;
+                    patch.terrain.push_back({row.object,std::nullopt,row,0});allocated.push_back(row.object);
+                }else{
+                    const auto owned=leased(r,{ScopeKind::Terrain,m.target,{}},now);
+                    if(owned!=Code::Accepted)return reject(owned,"Changing an existing terrain record requires its ownership.");
+                    auto found=state_.document.terrain.find(m.target);
+                    if(found==state_.document.terrain.end())return reject(Code::MissingObject,"The terrain record is missing.");
+                    if(m.kind==MutationKind::DeleteTerrain){
+                        if(m.terrain)return reject(Code::Invalid,"Terrain deletion cannot contain replacement data.");
+                        patch.terrain.push_back({m.target,found->second,std::nullopt,m.expected});
+                    }else{
+                        if(!m.terrain || m.terrain->object!=m.target || m.terrain->order!=found->second.order || m.terrain->revision!=m.expected)
+                            return reject(Code::Invalid,"Terrain replacement must retain its identity, order and expected revision.");
+                        patch.terrain.push_back({m.target,found->second,m.terrain,m.expected});
+                    }
+                }
+                continue;
+            }
+            if(m.terrain)return reject(Code::Invalid,"Only terrain operations may supply a terrain record.");
             if(m.kind==MutationKind::SetActs){
                 if(!m.act_roster || patch.acts || state_.document.act_order.empty() || m.target!=ObjectId{} || m.initial!=Placement{} || m.field!=FieldKey{} || m.value || m.clone_pose || m.class_initial)
                     return reject(Code::Invalid,"Invalid act roster operation.");
@@ -899,6 +995,10 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
                     if(m.class_initial)return reject(Code::Invalid,"Cast removal cannot supply class data.");
                     const auto owned=leased(r,{ScopeKind::Class,m.target,{}},now);
                     if(owned!=Code::Accepted)return reject(owned,"Removing cast requires ownership of that class.");
+                    if(state_.document.class_schema.contains(kClassAssetResourceProperty)){
+                        const auto content=leased(r,{ScopeKind::Content,m.target,{}},now);
+                        if(content!=Code::Accepted)return reject(content,"Removing cast requires ownership of its asset content.");
+                    }
                     auto found=std::find_if(state_.document.class_settings.begin(),state_.document.class_settings.end(),[&](const auto& row){return row.second.class_id==m.target;});
                     if(found==state_.document.class_settings.end())return reject(Code::MissingObject,"The cast class is missing.");
                     patch.classes.push_back({m.target,found->second,std::nullopt,m.expected});
@@ -985,12 +1085,20 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
             auto code = leased(r, field_scope(state_.document,e.object,e.field), now);
             if (code != Code::Accepted) return reject(code, "Undo/Redo requires its edited-field lease.");
         }
+        for(const auto& e:patch.terrain){
+            auto code=leased(r,{ScopeKind::Terrain,e.object,{}},now);
+            if(code!=Code::Accepted)return reject(code,"Terrain Undo/Redo requires ownership of the affected record.");
+        }
         if(!patch.classes.empty()){
             const auto code=leased(r,{ScopeKind::Structure,{},{}},now);
             if(code!=Code::Accepted)return reject(code,"Cast Undo/Redo requires structure ownership.");
             for(const auto& entry:patch.classes)if(entry.before){
                 const auto owned=leased(r,{ScopeKind::Class,entry.object,{}},now);
                 if(owned!=Code::Accepted)return reject(owned,"Cast Undo/Redo requires ownership of the affected class.");
+                if(state_.document.class_schema.contains(kClassAssetResourceProperty)){
+                    const auto content=leased(r,{ScopeKind::Content,entry.object,{}},now);
+                    if(content!=Code::Accepted)return reject(content,"Cast Undo/Redo requires ownership of its asset content.");
+                }
             }
         }
     }
@@ -1044,6 +1152,10 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
             applied = true;
             if (!hooks.apply(state_.document, candidate.document, change, error)) return native_failure(Code::NativeFailed, error.empty() ? "Native application failed." : error);
         }
+        if(preparing_){
+            auto prepared=std::make_unique<Prepared>();prepared->state=std::move(candidate);prepared->decision=accepted;
+            prepared->rollback=hooks.rollback;prepared->applied=applied;prepared_=std::move(prepared);return accepted;
+        }
         persisting = true;
         if (hooks.persist && !hooks.persist(candidate, change, error)) return native_failure(Code::PersistenceFailed, error.empty() ? "The durable commit could not be flushed." : error);
     } catch (...) {
@@ -1059,6 +1171,7 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
     // Deleting a placement invalidates outstanding field/placement capabilities;
     // Undo restoration must explicitly reacquire one, even for the original author.
     std::erase_if(leases_, [&](const Lease& lease) {
+        if(lease.scope.kind==ScopeKind::Terrain)return !state_.document.terrain.contains(lease.scope.object);
         if(lease.scope.kind==ScopeKind::Act)return !state_.document.acts.contains(lease.scope.object);
         if(lease.scope.kind==ScopeKind::Settings)return !state_.document.settings.contains(lease.scope.object);
         return (lease.scope.kind == ScopeKind::Placement || lease.scope.kind == ScopeKind::Field) &&
@@ -1066,6 +1179,38 @@ Decision Coordinator::submit(const Request& r, Time now, const Hooks& hooks)
             !(lease.scope.kind==ScopeKind::Field && (state_.document.class_settings.contains(lease.scope.object) || state_.document.settings.contains(lease.scope.object)));
     });
     return accepted;
+}
+
+bool Coordinator::prepare(const Request& request,Time now,const Hooks& hooks,Decision& candidate,std::string& error){
+    if(preparing_ || applying()){candidate=failure(Code::Busy,"A transaction is already prepared.",state_.document.revision);error=candidate.reason;return false;}
+    struct Guard {bool& flag;explicit Guard(bool& value):flag(value){flag=true;}~Guard(){flag=false;}} guard(preparing_);
+    candidate=submit(request,now,hooks);error=candidate.reason;return candidate.accepted();
+}
+const State* Coordinator::prepared_state()const{return prepared_?&prepared_->state:nullptr;}
+const Change* Coordinator::prepared_change()const{return prepared_ && prepared_->decision.change?&*prepared_->decision.change:nullptr;}
+Decision Coordinator::finish_prepared(bool durable,bool ambiguous,std::string error){
+    if(busy_ || !prepared_)return failure(Code::Invalid,"No prepared transaction is awaiting durability.",state_.document.revision);
+    struct Guard {bool& flag;explicit Guard(bool& value):flag(value){flag=true;}~Guard(){flag=false;}} guard(busy_);
+    auto pending=std::move(prepared_);const auto& change=*pending->decision.change;
+    if(durable && !ambiguous){
+        state_=std::move(pending->state);
+        std::erase_if(leases_,[&](const auto& lease){
+            if(lease.scope.kind==ScopeKind::Act)return !state_.document.acts.contains(lease.scope.object);
+            if(lease.scope.kind==ScopeKind::Settings)return !state_.document.settings.contains(lease.scope.object);
+            if(lease.scope.kind==ScopeKind::Terrain)return !state_.document.terrain.contains(lease.scope.object);
+            return (lease.scope.kind==ScopeKind::Placement || lease.scope.kind==ScopeKind::Field) && !editable(state_.document,lease.scope.object);
+        });
+        return pending->decision;
+    }
+    bool restored=!pending->applied;
+    if(pending->applied){
+        std::string why;try{restored=pending->rollback && pending->rollback(state_.document,pending->state.document,change,why);}catch(...){restored=false;}
+        if(!restored && !why.empty())error+="; rollback: "+why;
+    }
+    if(ambiguous || !restored)frozen_=true;
+    auto rejected=failure(frozen_?Code::Frozen:Code::PersistenceFailed,error.empty()?
+        (frozen_?"Prepared commit durability or restoration is uncertain; recover a checkpoint.":"The prepared commit was not durably accepted."):error,state_.document.revision);
+    remember(state_,change.operation,rejected);return rejected;
 }
 
 bool apply_committed(State& state, const Decision& decision, std::string& error, const Hooks& hooks, Limits limits)
@@ -1088,6 +1233,19 @@ bool apply_committed(State& state, const Decision& decision, std::string& error,
     request.intent = change.intent; request.summary = change.summary;
     request.leases.push_back({lease.leases[0].scope, lease.leases[0].token});
     if (change.intent == Intent::Forward) {
+        std::map<size_t,size_t> allocation_rank;
+        auto rank=[&](ObjectId id){
+            auto found=std::find(change.allocated.begin(),change.allocated.end(),id);
+            if(found!=change.allocated.end())allocation_rank.emplace(request.mutations.size(),size_t(found-change.allocated.begin()));
+        };
+        for(const auto& e:change.patch.terrain){
+            Mutation m;m.target=e.object;m.expected=e.expected;
+            if(!e.before && e.after){m.kind=MutationKind::AppendTerrain;m.target={};m.expected=0;m.terrain=*e.after;m.terrain->object={};m.terrain->order=0;m.terrain->revision=0;rank(e.object);}
+            else if(e.before && e.after){m.kind=MutationKind::SetTerrain;m.terrain=*e.after;m.terrain->revision=e.expected;}
+            else if(e.before){m.kind=MutationKind::DeleteTerrain;}
+            else return bad("A canonical terrain patch is malformed.");
+            request.mutations.push_back(std::move(m));
+        }
         if(change.patch.acts){
             Mutation m;m.kind=MutationKind::SetActs;m.expected=change.patch.acts->expected;m.act_roster=change.patch.acts->after;
             for(auto& row:*m.act_roster){
@@ -1099,7 +1257,7 @@ bool apply_committed(State& state, const Decision& decision, std::string& error,
         }
         for(const auto& e:change.patch.classes){
             Mutation m;
-            if(e.after && !e.before){m.kind=MutationKind::CreateClass;m.class_initial=*e.after;m.class_initial->revision=0;m.class_initial->field_revisions.clear();}
+            if(e.after && !e.before){m.kind=MutationKind::CreateClass;m.class_initial=*e.after;m.class_initial->revision=0;m.class_initial->field_revisions.clear();rank(e.object);}
             else if(e.before && !e.after){m.kind=MutationKind::DeleteClass;m.target=e.object;m.expected=e.expected;}
             else return bad("A canonical cast patch is malformed.");
             request.mutations.push_back(std::move(m));
@@ -1107,6 +1265,7 @@ bool apply_committed(State& state, const Decision& decision, std::string& error,
         for (const auto& e : change.patch.objects) {
             Mutation m;
             if (e.after && !e.before) {
+                rank(e.object);
                 if (auto source = change.clone_sources.find(e.object); source != change.clone_sources.end()) {
                     auto original = state.document.placements.find(source->second);
                     if (original == state.document.placements.end()) return bad("The canonical clone source is unavailable.");
@@ -1124,6 +1283,31 @@ bool apply_committed(State& state, const Decision& decision, std::string& error,
             Mutation m; m.target = e.object; m.field = e.field; m.value = e.after; m.expected = e.expected;
             request.mutations.push_back(std::move(m));
         }
+        // Canonical patch categories preserve their own order. Interleave their
+        // allocations in the host's original order so a mixed placement/terrain
+        // gesture allocates the exact same stable identities on every replica.
+        std::array<std::deque<size_t>,5> groups;
+        for(size_t i=0;i<request.mutations.size();++i){
+            const auto kind=request.mutations[i].kind;
+            const size_t group=kind>=MutationKind::AppendTerrain?0:kind==MutationKind::SetActs?1:
+                (kind==MutationKind::CreateClass || kind==MutationKind::DeleteClass)?2:kind==MutationKind::Set?4:3;
+            groups[group].push_back(i);
+        }
+        std::vector<Mutation> ordered;ordered.reserve(request.mutations.size());
+        while(ordered.size()<request.mutations.size()){
+            size_t selected=groups.size(),first_rank=SIZE_MAX;
+            for(size_t group=0;group<groups.size();++group)for(auto index:groups[group]){
+                auto found=allocation_rank.find(index);if(found==allocation_rank.end())continue;
+                if(found->second<first_rank){first_rank=found->second;selected=group;}break;
+            }
+            if(selected==groups.size()){
+                for(auto& group:groups)while(!group.empty()){ordered.push_back(std::move(request.mutations[group.front()]));group.pop_front();}
+            }else while(!groups[selected].empty()){
+                const auto index=groups[selected].front();groups[selected].pop_front();ordered.push_back(std::move(request.mutations[index]));
+                if(allocation_rank.contains(index))break;
+            }
+        }
+        request.mutations=std::move(ordered);
         if (change.patch.dependencies.size() < change.clone_sources.size()) return bad("The clone source dependency prefix is missing.");
         request.dependencies.assign(change.patch.dependencies.begin() + change.clone_sources.size(), change.patch.dependencies.end());
     } else {

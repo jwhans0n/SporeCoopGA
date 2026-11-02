@@ -8,6 +8,7 @@
 #include <deque>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -51,6 +52,7 @@ struct ResourceKey {
     uint32_t instance = 0, type = 0, group = 0;
     auto operator<=>(const ResourceKey&) const = default;
 };
+inline constexpr uint32_t kClassAssetResourceProperty=0x43524101;
 struct StructuredValue {
     uint32_t format = 0;
     std::vector<uint8_t> bytes;
@@ -97,7 +99,7 @@ struct ClassActSettings {
     std::map<FieldKey, Revision> field_revisions;
     bool operator==(const ClassActSettings&) const = default;
 };
-enum class SettingsKind : uint8_t { Act, Captain };
+enum class SettingsKind : uint8_t { Act, Captain, Crew, Project, Planet };
 struct AuthoringSettings {
     ObjectId object, act_id; // Captain settings are adventure-wide: zero act.
     SettingsKind kind = SettingsKind::Act;
@@ -105,6 +107,17 @@ struct AuthoringSettings {
     Revision revision = 0;
     std::map<FieldKey, Revision> field_revisions;
     bool operator==(const AuthoringSettings&) const = default;
+};
+enum class TerrainKind : uint8_t { Effect, Model };
+// Verified native primitive bytes, not process pointers or reconstructed poses.
+// order is assigned once by the host and retained through checked Undo/Redo.
+struct TerrainRecord {
+    ObjectId object;
+    TerrainKind kind = TerrainKind::Effect;
+    StructuredValue payload;
+    uint64_t order = 0;
+    Revision revision = 0;
+    bool operator==(const TerrainRecord&) const = default;
 };
 struct Document {
     ProjectId project{};
@@ -123,12 +136,15 @@ struct Document {
     std::map<ObjectId, AuthoringSettings> settings;
     std::vector<ObjectId> act_order;
     Revision act_revision=0;
+    std::map<ObjectId, TerrainRecord> terrain;
+    uint64_t next_terrain_order = 1;
     // This is only a supported semantic projection. Opaque native data stays owned
     // by the native adapter/store and is never reconstructed from this structure.
     bool operator==(const Document&) const = default;
 };
 
 std::vector<AuthoringSettings> act_roster(const Document&);
+std::vector<TerrainRecord> terrain_recipe(const Document&);
 enum class CheckKind : uint8_t { Object, Field, Absent };
 struct Check {
     ObjectId object;
@@ -138,7 +154,7 @@ struct Check {
     bool operator==(const Check&) const = default;
 };
 // Structure serializes native allocation without locking unrelated cast settings.
-enum class ScopeKind : uint8_t { Document, Class, Act, Placement, Field, Structure, Settings };
+enum class ScopeKind : uint8_t { Document, Class, Act, Placement, Field, Structure, Settings, Terrain, Content };
 struct Scope {
     ScopeKind kind = ScopeKind::Document;
     ObjectId object;
@@ -154,7 +170,7 @@ struct Lease {
 };
 struct LeaseToken { Scope scope; uint64_t token = 0; bool operator==(const LeaseToken&) const = default; };
 
-enum class MutationKind : uint8_t { Create, Clone, Delete, Set, CreateClass, DeleteClass, SetActs };
+enum class MutationKind : uint8_t { Create, Clone, Delete, Set, CreateClass, DeleteClass, SetActs, AppendTerrain, SetTerrain, DeleteTerrain };
 struct Mutation {
     MutationKind kind = MutationKind::Set;
     ObjectId target; // Clone: source. Create: zero; host allocates the new ID.
@@ -165,6 +181,7 @@ struct Mutation {
     std::optional<Pose> clone_pose; // Clone only: final Ctrl-drag pose, one gesture.
     std::optional<ClassActSettings> class_initial={}; // CreateClass only.
     std::optional<std::vector<AuthoringSettings>> act_roster={}; // SetActs only, in native order.
+    std::optional<TerrainRecord> terrain={}; // Append: zero identity/order/revision. Set: same identity/order.
     bool operator==(const Mutation&) const = default;
 };
 enum class Intent : uint8_t { Forward, Undo, Redo };
@@ -207,12 +224,20 @@ struct ActRosterEdit {
     Revision restored_revision=0;
     bool operator==(const ActRosterEdit&) const=default;
 };
+struct TerrainEdit {
+    ObjectId object;
+    std::optional<TerrainRecord> before, after;
+    Revision expected = 0;
+    Revision restored_revision = 0;
+    bool operator==(const TerrainEdit&) const = default;
+};
 struct Patch {
     std::vector<ObjectEdit> objects;
     std::vector<FieldEdit> fields;
     std::vector<Check> dependencies;
     std::vector<ClassEdit> classes={};
     std::optional<ActRosterEdit> acts={};
+    std::vector<TerrainEdit> terrain={};
     bool operator==(const Patch&) const = default;
 };
 struct Change {
@@ -266,6 +291,7 @@ struct Limits {
     size_t document_bytes = 32u << 20, summary_bytes = 256, text_bytes = 1024;
     Time max_lease_ms = 30000;
     size_t structured_bytes = 256u << 10;
+    size_t terrain_records = 16384;
 };
 struct Hooks {
     // No callbacks run for rejected/duplicate requests. apply may partially fail;
@@ -313,10 +339,18 @@ public:
     LeaseResult renew(Peer, const std::vector<LeaseToken>&, Time now, Time ttl);
     bool release(Peer, const std::vector<LeaseToken>&);
     Decision submit(const Request&, Time now, const Hooks& hooks = {});
+    // Prepare validates/applies one candidate without durable acceptance. A
+    // duplicate can succeed with no prepared_state because it is already durable.
+    // While prepared, mutations/leases are blocked. Finish only after the worker
+    // reports a durable outcome; no native pointers may cross to that worker.
+    bool prepare(const Request&, Time now, const Hooks&, Decision& candidate, std::string& error);
+    const State* prepared_state() const;
+    const Change* prepared_change() const;
+    Decision finish_prepared(bool durable, bool ambiguous = false, std::string error = {});
     const State& state() const { return state_; }
     const std::vector<Lease>& leases() const { return leases_; }
     bool frozen() const { return frozen_; }
-    bool applying() const { return busy_; }
+    bool applying() const { return busy_ || bool(prepared_); }
     const Limits& limits() const { return limits_; }
 
 private:
@@ -328,6 +362,9 @@ private:
     uint64_t next_token_ = 1;
     Time last_time_ = 0;
     bool ready_ = false, frozen_ = false, busy_ = false;
+    struct Prepared { State state; Decision decision; Hooks::Native rollback; bool applied=false; };
+    std::unique_ptr<Prepared> prepared_;
+    bool preparing_ = false;
     bool peer(Peer) const;
     bool clock(Time);
     bool scope_valid(const Scope&) const;

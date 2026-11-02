@@ -50,15 +50,16 @@ template<class T> constexpr unsigned maximum() {
     if constexpr(std::is_same_v<T,ValueKind>) return unsigned(ValueKind::Structured);
     if constexpr(std::is_same_v<T,Field>) return 3;
     if constexpr(std::is_same_v<T,CheckKind>) return 2;
-    if constexpr(std::is_same_v<T,ScopeKind>) return unsigned(ScopeKind::Settings);
-    if constexpr(std::is_same_v<T,SettingsKind>) return unsigned(SettingsKind::Captain);
-    if constexpr(std::is_same_v<T,MutationKind>) return unsigned(MutationKind::SetActs);
+    if constexpr(std::is_same_v<T,ScopeKind>) return unsigned(ScopeKind::Content);
+    if constexpr(std::is_same_v<T,SettingsKind>) return unsigned(SettingsKind::Planet);
+    if constexpr(std::is_same_v<T,TerrainKind>) return unsigned(TerrainKind::Model);
+    if constexpr(std::is_same_v<T,MutationKind>) return unsigned(MutationKind::DeleteTerrain);
     if constexpr(std::is_same_v<T,Intent>) return 2;
     if constexpr(std::is_same_v<T,Code>) return unsigned(Code::Busy);
     if constexpr(std::is_same_v<T,TransferKind>) return unsigned(TransferKind::Assets);
     if constexpr(std::is_same_v<T,LeaseAction>) return 2;
     if constexpr(std::is_same_v<T,ControlKind>) return 6;
-    if constexpr(std::is_same_v<T,PresencePhase>) return 7;
+    if constexpr(std::is_same_v<T,PresencePhase>) return unsigned(PresencePhase::Creating);
     if constexpr(std::is_same_v<T,CommandKind>) return unsigned(CommandKind::ReturnSolo);
     if constexpr(std::is_same_v<T,PlaytestMode>)return unsigned(PlaytestMode::Solo);
     return 0;
@@ -78,18 +79,20 @@ FIELDS(Placement,v.object,v.class_id,v.act_id,v.protected_object,v.position,v.ro
 FIELDS(Reference,v.owner,v.target)
 FIELDS(ClassActSettings,v.object,v.class_id,v.act_id,v.properties,v.revision,v.field_revisions)
 FIELDS(AuthoringSettings,v.object,v.act_id,v.kind,v.properties,v.revision,v.field_revisions)
+FIELDS(TerrainRecord,v.object,v.kind,v.payload,v.order,v.revision)
 FIELDS(Document,v.project,v.epoch,v.revision,v.next_id,v.classes,v.acts,v.schema,v.placements,v.tombstones,v.external_references)
 FIELDS(Check,v.object,v.kind,v.field,v.expected)
 FIELDS(Scope,v.kind,v.object,v.field)
 FIELDS(Lease,v.scope,v.owner,v.token,v.expires)
 FIELDS(LeaseToken,v.scope,v.token)
-template<class A> void fields(A& a,Mutation& v){a(v.kind,v.target,v.initial,v.field,v.value,v.expected,v.clone_pose,v.class_initial);if(a.roster_extended)a(v.act_roster);}
+template<class A> void fields(A& a,Mutation& v){a(v.kind,v.target,v.initial,v.field,v.value,v.expected,v.clone_pose,v.class_initial);if(a.roster_extended)a(v.act_roster);if(a.planet_extended)a(v.terrain);}
 FIELDS(Request,v.project,v.epoch,v.operation,v.base_revision,v.intent,v.summary,v.mutations,v.dependencies,v.leases)
 FIELDS(ObjectEdit,v.object,v.before,v.after,v.expected)
 FIELDS(FieldEdit,v.object,v.field,v.before,v.after,v.expected,v.restored_revision,v.restored_object_revision)
 FIELDS(ClassEdit,v.object,v.before,v.after,v.expected)
 FIELDS(ActRosterEdit,v.before,v.after,v.expected,v.restored_revision)
-template<class A> void fields(A& a,Patch& v){a(v.objects,v.fields,v.dependencies);if(a.extended)a(v.classes);if(a.roster_extended)a(v.acts);}
+FIELDS(TerrainEdit,v.object,v.before,v.after,v.expected,v.restored_revision)
+template<class A> void fields(A& a,Patch& v){a(v.objects,v.fields,v.dependencies);if(a.extended)a(v.classes);if(a.roster_extended)a(v.acts);if(a.planet_extended)a(v.terrain);}
 FIELDS(Change,v.operation,v.gesture,v.intent,v.revision,v.summary,v.patch,v.inverse,v.allocated,v.clone_sources)
 FIELDS(Decision,v.code,v.reason,v.revision,v.change)
 FIELDS(Gesture,v.operation,v.original_revision,v.transition_revision,v.summary,v.applied,v.redo_available,v.undo,v.redo)
@@ -104,7 +107,7 @@ FIELDS(TransferEnd,v.serial)
 FIELDS(LeaseRequest,v.action,v.serial,v.ttl,v.scopes,v.tokens)
 FIELDS(LeaseResult,v.code,v.reason,v.leases)
 FIELDS(LeaseReply,v.serial,v.result)
-FIELDS(Presence,v.selected,v.act,v.editing,v.author,v.pending,v.ownership,v.phase,v.preview_lease,v.owned_scopes)
+FIELDS(Presence,v.selected,v.act,v.editing,v.author,v.pending,v.ownership,v.phase,v.preview_lease,v.owned_scopes,v.creation_serial,v.creating_asset,v.creation_target,v.scene_revision,v.scene_ready)
 FIELDS(TransformPreview,v.author,v.serial,v.active,v.object,v.act,v.pose,v.lease,v.class_id,v.creating,v.destination)
 FIELDS(Coverage,v.durable_revision,v.state_hash)
 FIELDS(Saved,v.saved_revision,v.resource,v.serial)
@@ -114,7 +117,7 @@ FIELDS(Control,v.kind,v.serial,v.revision,v.ready,v.ready_mask,v.participant_mas
 FIELDS(Command,v.kind,v.serial,v.revision,v.actor,v.accepted)
 #undef FIELDS
 struct Encode {
-    net::Writer w; size_t limit; bool extended=true,roster_extended=true;
+    net::Writer w; size_t limit; bool extended=true,roster_extended=true,planet_extended=true;
     template<class... T> void operator()(const T&... v) { (one(v),...); }
     template<class T> void one(const T& v) {
         if constexpr(std::is_same_v<T,bool>) w.u8(v?1:0);
@@ -141,7 +144,7 @@ struct Encode {
     }
 };
 struct Decode {
-    net::Reader r; size_t budget; bool extended=true,roster_extended=true;
+    net::Reader r; size_t budget; bool extended=true,roster_extended=true,planet_extended=true;
     explicit Decode(const std::vector<uint8_t>& bytes):r(bytes.data(),bytes.size()),budget(std::min(kStateBytes*2,bytes.size()*8+(1u<<20))) {}
     void claim(size_t n) { need(n<=budget,"allocation budget exceeded"); budget-=n; }
     template<class... T> void operator()(T&... v) { (one(v),...); }
@@ -255,7 +258,9 @@ void validate_payload(const Message& m) {
         if constexpr(std::is_same_v<T,Saved>) need(p.serial && p.saved_revision<=m.context.revision && p.resource.instance && p.resource.type,"invalid native save");
         if constexpr(std::is_same_v<T,SavedApplied>) need(p.saved.serial && p.saved.saved_revision<=m.context.revision && p.saved.resource.instance && p.saved.resource.type,"invalid applied native save");
         if constexpr(std::is_same_v<T,Leave>) need(p.reason<=3,"invalid leave reason");
-        if constexpr(std::is_same_v<T,Presence>) need(peer(p.author) && p.ownership<=3 && p.owned_scopes.size()<=32 && unsigned(p.phase)<=unsigned(PresencePhase::Offered) &&
+        if constexpr(std::is_same_v<T,Presence>) need(peer(p.author) && p.ownership<=3 && p.owned_scopes.size()<=32 && unsigned(p.phase)<=unsigned(PresencePhase::Creating) &&
+            p.scene_revision<=m.context.revision && p.creating_asset==bool(p.creation_serial) &&
+            ((!p.creation_target.id && !p.creation_target.generation) || (p.creation_target.id && p.creation_target.generation && p.creating_asset)) &&
             ((p.ownership&kOwnSelection) ? (p.selected.id&&p.selected.generation&&p.preview_lease.token&&
                 (p.preview_lease.scope.kind==ScopeKind::Document || ((p.preview_lease.scope.kind==ScopeKind::Placement || p.preview_lease.scope.kind==ScopeKind::Settings)&&p.preview_lease.scope.object==p.selected))) :
                 p.preview_lease==LeaseToken{}),"invalid presence authority");
@@ -314,17 +319,20 @@ bool encode_state(const State& s,std::vector<uint8_t>& b,std::string& error) {
         validate(s);Encode e{{},kStateBytes};
         const bool current=s.document.next_class || std::any_of(s.document.class_schema.begin(),s.document.class_schema.end(),[](const auto& row){return row.second.kind==ValueKind::Structured;});
         const bool authoring=!s.document.settings_schema.empty() || !s.document.settings.empty();
-        const bool roster=!s.document.act_order.empty();e.roster_extended=roster;
-        e.extended=current || authoring;
-        if(current || !s.document.class_schema.empty() || !s.document.class_settings.empty() || authoring){
+        const bool planet=!s.document.terrain.empty() || s.document.next_terrain_order!=1 ||
+            std::any_of(s.document.settings.begin(),s.document.settings.end(),[](const auto& row){return row.second.kind>=SettingsKind::Crew;});
+        const bool roster=!s.document.act_order.empty();e.roster_extended=roster || planet;e.planet_extended=planet;
+        e.extended=current || authoring || planet;
+        if(current || !s.document.class_schema.empty() || !s.document.class_settings.empty() || authoring || planet){
             // A legacy state starts with a 16-byte project and nonzero epoch.
             // Zero at byte16 makes this wrapper unambiguous for every valid
             // legacy project identity, including one matching our magic bytes.
-            e(kClassSettingsState,kClassSettingsState,uint64_t(0),uint32_t(roster?4:authoring?3:current?2:1),s,
+            e(kClassSettingsState,kClassSettingsState,uint64_t(0),uint32_t(planet?5:roster?4:authoring?3:current?2:1),s,
                 s.document.class_schema,s.document.class_settings);
-            if(current || authoring)e(s.document.next_class);
-            if(authoring)e(s.document.settings_schema,s.document.settings);
-            if(roster)e(s.document.act_order,s.document.act_revision);
+            if(current || authoring || planet)e(s.document.next_class);
+            if(authoring || planet)e(s.document.settings_schema,s.document.settings);
+            if(roster || planet)e(s.document.act_order,s.document.act_revision);
+            if(planet)e(s.document.terrain,s.document.next_terrain_order);
         }else e.one(s);
         b=std::move(e.w.data);error.clear();return true;
     } catch(const std::exception& e){error=e.what();return false;}
@@ -335,13 +343,15 @@ bool decode_state(const std::vector<uint8_t>& b,State& s,std::string& error) {
         uint64_t prefix[3]{};if(b.size()>=sizeof prefix)std::memcpy(prefix,b.data(),sizeof prefix);
         if(prefix[0]==kClassSettingsState && prefix[1]==kClassSettingsState && !prefix[2]){
             uint64_t first=0,second=0,reserved=0;uint32_t version=0;d(first,second,reserved,version);
-            need(version>=1 && version<=4,"unsupported authoring-settings checkpoint extension");d.extended=version>=2;d.roster_extended=version>=4;d.one(result);
+            need(version>=1 && version<=5,"unsupported authoring-settings checkpoint extension");d.extended=version>=2;d.roster_extended=version>=4;d.planet_extended=version>=5;d.one(result);
             d(result.document.class_schema,result.document.class_settings);
             if(version>=2)d(result.document.next_class);
             if(version>=3)d(result.document.settings_schema,result.document.settings);
             if(version>=4)d(result.document.act_order,result.document.act_revision);
-            need(!result.document.class_schema.empty() || !result.document.class_settings.empty() || result.document.next_class || !result.document.settings_schema.empty(),"noncanonical empty class-settings extension");
-        }else {d.extended=d.roster_extended=false;d.one(result);}
+            if(version>=5)d(result.document.terrain,result.document.next_terrain_order);
+            need(!result.document.class_schema.empty() || !result.document.class_settings.empty() || result.document.next_class || !result.document.settings_schema.empty() || !result.document.settings.empty() || !result.document.terrain.empty() || result.document.next_terrain_order!=1,"noncanonical empty class-settings extension");
+            if(version<5)for(const auto& [id,row]:result.document.settings){(void)id;need(row.kind<=SettingsKind::Captain,"new settings in legacy checkpoint");}
+        }else {d.extended=d.roster_extended=d.planet_extended=false;d.one(result);}
         need(d.r.ok() && !d.r.left(),"trailing bytes");validate(result);s=std::move(result);error.clear();return true;
     } catch(const std::exception& e){error=e.what();return false;}
 }
