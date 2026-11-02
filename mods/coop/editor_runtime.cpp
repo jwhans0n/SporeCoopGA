@@ -62,6 +62,7 @@ struct LocalCreation {
     editor_native::LocalView view;
     editor_native::SceneOwner scene_owner;
     editor_native::Snapshot entry_native;
+    editor_native::CreationTerrainTicket terrain_ticket;
     std::optional<editor::ObjectId> selected;
     editor::ObjectId authored_act;
     uint32_t act=0;
@@ -74,7 +75,7 @@ struct LocalCreation {
     std::optional<editor::Revision> scene_revision;
     uint64_t scene_frame=0;
     uint64_t resume_started=0;
-    bool entered_adventure=false,camera_resumed=false;
+    bool entered_adventure=false,camera_resumed=false,terrain_resumed=false;
 };
 std::optional<LocalCreation> local_creation;
 bool detached_scene() { return local_creation.has_value(); }
@@ -812,6 +813,63 @@ bool cast_change(const editor::Change& change){
         (field.object==editor_native::kCrewObject && field.field==editor::FieldKey{editor::Field::Property,editor_native::kCrewRosterProperty}) ||
         (field.object==editor_native::kCaptainObject && field.field==editor::FieldKey{editor::Field::Property,editor_native::kCaptainAssetProperty});});
 }
+editor_creation_native::ModelFence model_fence(const editor_native::GestureScope& scope,uint64_t generation,
+                                               editor::Revision revision,uint64_t transport){
+    return {scope,generation,[revision,transport](const auto& expected,uint64_t expected_generation){
+        if(!controller || !native_attached || !C.session || !C.session->connected() || closing || frozen || recovery ||
+           transport_teardown || exporting || native_exit_requested || save_publication_pending ||
+           C.session->transport_generation()!=transport || observed_transport!=transport)return false;
+        const auto& view=controller->view();const auto& document=controller->state().document;
+        const auto member=view.members.find(expected.author.slot);
+        return view.phase==Phase::Ready && view.context.project==expected.project && view.context.epoch==expected.epoch &&
+            document.project==expected.project && document.epoch==expected.epoch && document.revision==revision &&
+            member!=view.members.end() && member->second.peer==expected.author && member->second.phase==Phase::Ready &&
+            editor_native::state().generation==expected_generation;
+    }};
+}
+bool admit_class_models(const editor::Document& before,const editor::Document& after,const editor::Change& change,std::string& error){
+    std::set<editor::ResourceKey> keys;
+    std::set<std::pair<editor::ObjectId,editor::ResourceKey>> prior_assets;
+    for(const auto& [id,settings]:before.class_settings){
+        (void)id;const auto asset=settings.properties.find(editor::kClassAssetResourceProperty);
+        if(asset!=settings.properties.end())if(const auto* key=std::get_if<editor::ResourceKey>(&asset->second))prior_assets.emplace(settings.class_id,*key);
+    }
+    for(const auto& [id,settings]:after.class_settings){
+        (void)id;
+        const auto asset=settings.properties.find(editor::kClassAssetResourceProperty);
+        if(asset==settings.properties.end())continue;
+        // Act roster edits add class/act rows while keeping the same class-wide
+        // model. Only new classes or changed content require fresh admission.
+        const auto* key=std::get_if<editor::ResourceKey>(&asset->second);
+        if(!key){error="A changed cast model has an invalid primary reference";return false;}
+        if(prior_assets.contains({settings.class_id,*key}))continue;
+        switch(key->type){
+        case 0x2B978C46:case 0x2399BE55:case 0x24682294:case 0x476A98C7:keys.insert(*key);break;
+        case 0x438F6347:case 0x3D97A8E4:error="This direct creation family is not supported by native Adventure assets";return false;
+        default:break;
+        }
+    }
+    if(keys.empty())return true;
+    if(!controller || !C.session){error="Model admission has no current shared authority";return false;}
+    const auto fence=model_fence({before.project,before.epoch,change.operation.author},editor_native::state().generation,
+                                 before.revision,C.session->transport_generation());
+    const auto current=[&]{return fence.current && fence.current(fence.scope,fence.generation);};
+    if(!current()){error="The cast model admission belongs to an expired shared context";return false;}
+    // Uploaded bytes have passed conflict/dependency admission, but remain
+    // outside the canonical resource until this whole candidate is durable.
+    // Registration is independent of the host's currently loaded editor.
+    if(const auto uploaded=cast_uploads.find(change.operation);uploaded!=cast_uploads.end()){
+        auto merged=resources;if(!merge_dependencies(merged,uploaded->second,error))return false;
+        std::vector<dbpf::Record> added;
+        for(const auto& record:merged.bundle.records)if(record.key!=merged.root &&
+            std::none_of(resources.bundle.records.begin(),resources.bundle.records.end(),[&](const auto& old){return old.key==record.key;}))added.push_back(record);
+        if(!register_native_records(uploaded->second.root,added,error))return false;
+    }
+    if(!current()){error="The shared context changed during model dependency registration";return false;}
+    for(const auto& key:keys)if(!editor_creation_native::validate_model(key,fence,error))return false;
+    if(!current()){error="The shared context changed during native model admission";return false;}
+    return true;
+}
 bool same_native_authored(const editor_native::Snapshot& before,const editor_native::Snapshot& after){
     return before.act==after.act && before.bindings==after.bindings && before.bytes==after.bytes &&
         before.captain==after.captain && before.captain_locked==after.captain_locked && before.metadata==after.metadata;
@@ -1261,6 +1319,19 @@ editor_native::GestureScope current_gesture_scope(bool retained_import=false) {
        (!retained_import && awaiting_operation))return {};
     return {view.context.project, view.context.epoch, view.local};
 }
+editor_native::GestureScope current_projection_scope() {
+    // An immutable read proof can outlive the local edit request or an owned
+    // playtest hold. It never grants permission to start or mutate a gesture.
+    if (!controller || !native_attached || closing || frozen || recovery || transport_teardown || !C.session ||
+        !C.session->connected() || C.session->transport_generation() != observed_transport ||
+        exporting || pending_export_request || native_exit_requested || save_publication_pending) return {};
+    const auto& view=controller->view();
+    if(view.phase!=Phase::Ready && view.phase!=Phase::Preparing && view.phase!=Phase::Playing && view.phase!=Phase::Returning)return {};
+    const auto& document=controller->state().document;
+    if(view.context.project==editor::ProjectId{} || !view.context.epoch || !view.local.generation ||
+       view.local.slot!=C.session->my_id() || view.context.project!=document.project || view.context.epoch!=document.epoch)return {};
+    return {view.context.project,view.context.epoch,view.local};
+}
 bool creation_current(const editor_creation::Scope& scope){
     if(!controller || !C.session || !C.session->connected() || closing || frozen || recovery || transport_teardown)return false;
     const auto& view=controller->view();
@@ -1324,7 +1395,13 @@ editor_creation::PrepareResult prepare_creation(const editor_creation::Scope& sc
     if(!native.selected.empty())saved.selected=native.selected.front();
     if(input.target)for(const auto& [id,settings]:controller->state().document.class_settings)if(settings.class_id==*input.target)
         saved.content_revision=editor::field_revision(controller->state().document,id,{editor::Field::Property,editor::kClassAssetResourceProperty});
-    local_creation=std::move(saved);status="Confirming your local creation session with the host";
+    local_creation=std::move(saved);
+    const editor_native::GestureScope native_scope{scope.project,scope.epoch,scope.author};
+    if(!editor_native::capture_creation_terrain(native_scope,scope.serial,local_creation->scene_owner,
+           local_creation->entry_native,local_creation->terrain_ticket,error)){
+        local_creation.reset();return Result::Reject;
+    }
+    status="Confirming your local creation session with the host";
     editor::wire::Presence presence;presence.act=local_creation->authored_act;presence.creating_asset=true;presence.creation_serial=scope.serial;
     presence.creation_target=input.target.value_or(editor::ObjectId{});presence.scene_revision=rendered_revision;presence.scene_ready=false;
     if(!controller->set_presence(presence,error)){local_creation.reset();return Result::Reject;}
@@ -1368,6 +1445,14 @@ bool materialize_creation_return(std::string& error){
             return false;
         }
         if(!scene.owner && !local_creation->entered_adventure){error="The creation returned to a different native adventure owner";return false;}
+        const editor_native::GestureScope scope{local_creation->scope.project,local_creation->scope.epoch,local_creation->scope.author};
+        if(!local_creation->entered_adventure && !local_creation->terrain_resumed){
+            if(!editor_native::resume_creation_terrain(local_creation->terrain_ticket,scope,local_creation->scope.serial,
+                   local_creation->scene_owner,local_creation->entry_native,native.generation,error))return false;
+            // This ticket is one-use. A later transient capture/camera retry
+            // must retain the successful transfer rather than consume it again.
+            local_creation->terrain_resumed=true;
+        }
         editor_native::Snapshot loaded;
         ProjectionScope projection(local_creation->entry_native.document);
         if(!editor_native::capture_draft(loaded,error))return false;
@@ -1378,7 +1463,6 @@ bool materialize_creation_return(std::string& error){
             return false;
         }
         if(local_creation->entered_adventure && !editor_native::capture_scene_owner(local_creation->scene_owner,error))return false;
-        const editor_native::GestureScope scope{local_creation->scope.project,local_creation->scope.epoch,local_creation->scope.author};
         if(!editor_native::resume_creation_scene_camera(scope,local_creation->scope.serial,native.generation,local_creation->scene_owner,error))return false;
         local_creation->camera_resumed=true;local_creation->returned_generation=native.generation;
     }
@@ -1421,8 +1505,15 @@ bool return_creation(const editor_creation::Scope& scope,const editor_creation::
                 return editor_creation_native::resource_reserved(key) || std::any_of(resources.bundle.records.begin(),resources.bundle.records.end(),[&](const auto& row){return row.key==native_key;});
             };
             editor_native::Snapshot changed;std::vector<uint8_t> assets;
+            const editor_native::GestureScope model_scope{scope.project,scope.epoch,scope.author};
+            const editor_creation_native::ModelFence model_fence{model_scope,editor_native::state().generation,
+                [scope](const editor_native::GestureScope& expected,uint64_t generation){
+                    return expected==editor_native::GestureScope{scope.project,scope.epoch,scope.author} &&
+                        creation_current(scope) && editor_native::state().generation==generation;
+                }};
             if(!editor_creation_native::collect_version(scope.project,result.saved,reserved,version,records,saved.error) ||
                !register_native_records(resources.root,records,saved.error) ||
+               !editor_creation_native::validate_model(version,model_fence,saved.error) ||
                !editor_creation_native::prepare_cast_save(current_native,version,result.request.target,changed,saved.error) ||
                !collect_cast_assets(changed,assets,saved.error)){}
             else{
@@ -3057,13 +3148,15 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         const auto stage=point==P::HostRequestReceived?S::HostRequestReceived:point==P::HostDecisionQueued?S::HostDecisionQueued:S::DecisionDecoded;
         stage_stamp(project,operation,revision,stage);
     };
-    callbacks.host_hooks.validate = [](const auto&, const auto& after, const auto& change, std::string& error) {
+    callbacks.host_hooks.validate = [](const auto& before, const auto& after, const auto& change, std::string& error) {
         StageScope span(after,change.operation,editor_stage_metrics::Stage::ValidateBegin,editor_stage_metrics::Stage::ValidateEnd);
         auto native = editor_native::state();
         if (closing || frozen || recovery || exporting || native_exit_requested || save_publication_pending ||
             (!detached_scene() && (native.generation!=native_generation || editor_native_save::busy() || !native.ready || native.gesture))) {
             error="The canonical draft is not currently editable";return false;
-        }span.okay=true;return true;
+        }
+        if(cast_change(change) && !admit_class_models(before,after,change,error))return false;
+        span.okay=true;return true;
     };
     callbacks.host_hooks.apply = apply; callbacks.host_hooks.rollback = rollback; callbacks.host_hooks.persist = persist;
     callbacks.begin_persist=begin_persist;callbacks.poll_persist=poll_persist;callbacks.settle_persist=settle_persist;
@@ -3308,6 +3401,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         return !native_attached || !current_native.document.settings_schema.empty();
     };
     native.gesture_scope = [] { return current_gesture_scope(); };
+    native.projection_scope = [] { return current_projection_scope(); };
     native.creation_return_current=[](const editor_native::GestureScope& scope,uint64_t serial){
         return local_creation && !local_creation->materialized && local_creation->scope.serial==serial &&
             local_creation->scope.project==scope.project && local_creation->scope.epoch==scope.epoch && local_creation->scope.author==scope.author &&
@@ -3567,6 +3661,26 @@ void set_extended_complexity(bool value){complexity_request=value;schedule();}
 void resolve_join(int choice) {action(choice==0?Action::HandoffSave:choice==1?Action::HandoffDiscard:Action::HandoffCancel);}
 std::string debug(const std::vector<std::string>& args) {
     if(args.size()==1 && args[0]=="creations")return editor_creation::diagnostic();
+    if(!args.empty() && args[0]=="model"){
+        const std::string usage="Use coop.editor model GROUP!INSTANCE.TYPE (eight hex digits each)";
+        if(args.size()!=2 || args[1].size()!=26 || args[1][8]!='!' || args[1][17]!='.')return usage;
+        auto hex=[](const std::string& text,uint32_t& value){
+            value=0;for(const char c:text){unsigned digit;
+                if(c>='0'&&c<='9')digit=unsigned(c-'0');else if(c>='a'&&c<='f')digit=unsigned(c-'a'+10);
+                else if(c>='A'&&c<='F')digit=unsigned(c-'A'+10);else return false;
+                value=(value<<4)|digit;
+            }return true;
+        };
+        editor::ResourceKey key;
+        if(!hex(args[1].substr(0,8),key.group) || !hex(args[1].substr(9,8),key.instance) || !hex(args[1].substr(18,8),key.type))return usage;
+        if(!controller || !C.session)return "Model admission unavailable: no shared context";
+        const auto scope=editor_native::GestureScope{controller->view().context.project,controller->view().context.epoch,controller->view().local};
+        const auto fence=model_fence(scope,editor_native::state().generation,controller->state().document.revision,C.session->transport_generation());
+        if(!fence.current(fence.scope,fence.generation))return "Model admission unavailable: shared context is not settled";
+        editor_creation_native::ModelAdmission result;std::string error;
+        const bool inspected=editor_creation_native::inspect_model(key,fence,result,error);
+        return editor_creation_native::model_admission_status(result)+(inspected?"":" error="+error.substr(0,256));
+    }
     if((args.size()==1 && args[0]=="assets") || (args.size()==2 && args[0]=="asset")){
         if(!controller)return "Shared assets unavailable";
         std::optional<editor::ObjectId> only;
