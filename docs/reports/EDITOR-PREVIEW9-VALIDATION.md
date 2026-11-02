@@ -147,7 +147,11 @@ diverges; both report zero faults. No retirement input or warm-up/measurement wa
 issued after this check. Native normalization/restoration remains an acceptance
 blocker. Exact outputs and log snapshots are retained in
 `out/preview9-commit-diagnostic-c5/native-baseline-check.json` and
-`baseline-artifacts.json`.
+`baseline-artifacts.json`. The failed phase-4 scene was not retained after the
+helper timed out: closing its UDP proxy automatically ended the guest session.
+Crew's later read-only inspection found phase 0, generation 4 and two restores;
+the second teardown restore had repaired the quaternion. That later state does
+not establish the raw quaternion in the original failed joined scene.
 
 The c5 fixture also exposed a separate tool error: it waited for an explicit
 offer after automatic native joining. Commit `76cd86e` handles explicit offers
@@ -156,6 +160,13 @@ project/epoch identity before and after convergence. The next payload exposes
 its epoch in public status. Sixteen offline tests pass in
 `out/preview9-commit-tool-auto-join-selftest.log`. The original timed-out fixture
 receipt is retained and is not counted as a native convergence or timing pass.
+LAN-only bootstrap now uses direct game-owned transport so helper cleanup cannot
+end the retained party. Ready/durable native divergence stops the fixture at its
+first failed check; WAN profiles still require owned impairment proxies. The
+next reproduction must retain the same project, epoch, native generation and
+restore count through the bounded raw-marker evidence collection. Nineteen
+offline routing, join, divergence and timing tests pass in
+`out/preview9-commit-tool-direct-lan-selftest.log`.
 
 ## Required native acceptance
 

@@ -328,6 +328,8 @@ class EditorParty(EditorPair):
                 return False
             projects = [parse_identity(state['text'])[0] for state in states]
             checks = [game.call('coop.editor check').strip() for game in games]
+            if any(check.startswith('DIVERGED') for check in checks):
+                raise FixtureError('Ready native baseline diverged: '+repr(checks))
             return checks[0] if len(set(projects)) == len(set(checks)) == 1 and checks[0].startswith('CONVERGED ') else False
         count = {2:'two',3:'three',4:'four'}.get(len(games),str(len(games)))
         return self.host.wait(count + '-player native/durable canonical convergence', ready)

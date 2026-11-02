@@ -86,6 +86,41 @@ def gestures(samples=30):
 
 
 class AcceptanceContracts(unittest.TestCase):
+    def test_ready_native_divergence_stops_without_repolling(self):
+        calls=[];games=[]
+        for instance,check in enumerate(('CONVERGED fixture','DIVERGED: quaternion differs')):
+            game=SimpleNamespace(instance=instance,state=dict(phase=4,ready=1,gesture=0,revision=0,durable=0,
+                text='project='+PROJECT+' epoch=17 capability='+str(instance)+':1'))
+            game.call=lambda line,instance=instance,check=check:(calls.append((instance,line)),check)[1]
+            games.append(game)
+        host=SimpleNamespace(wait=lambda label,predicate:predicate())
+        owner=SimpleNamespace(active_games=games,host=host)
+        with mock.patch.object(perf.party_module,'status',side_effect=lambda g:g.state),self.assertRaisesRegex(perf.FixtureError,'quaternion differs'):
+            perf.party_module.EditorParty.converge(owner)
+        self.assertEqual(calls,[(0,'coop.editor check'),(1,'coop.editor check')])
+
+    def test_direct_lan_transport_survives_helper_cleanup(self):
+        args=SimpleNamespace(setup='bootstrap',profiles=['lan'],instances=[95,96],port=59093)
+        self.assertFalse(perf.uses_owned_proxy(args))
+        self.assertEqual(perf.route_owned_join('coop.join 127.0.0.1:59093 Guest',96,args,{}),
+                         'coop.join 127.0.0.1:59093 Guest')
+        self.assertEqual(perf.route_owned_join('coop.editor check',95,args,{}),'coop.editor check')
+        for instance,line in ((95,'coop.join 127.0.0.1:59093 Guest'),
+                              (97,'coop.join 127.0.0.1:59093 Guest'),
+                              (96,'coop.join 127.0.0.1:59094 Guest')):
+            with self.assertRaises(perf.FixtureError):perf.route_owned_join(line,instance,args,{})
+        with self.assertRaises(perf.FixtureError):
+            perf.route_owned_join('coop.join 127.0.0.1:59093 Guest',96,args,{96:SimpleNamespace(port=60000)})
+        args.setup='attach'
+        with self.assertRaises(perf.FixtureError):perf.route_owned_join('coop.join 127.0.0.1:59093 Guest',96,args,{})
+
+    def test_wan_bootstrap_requires_its_owned_proxy(self):
+        args=SimpleNamespace(setup='bootstrap',profiles=['lan','wan'],instances=[95,96],port=59093)
+        self.assertTrue(perf.uses_owned_proxy(args))
+        with self.assertRaises(perf.FixtureError):perf.route_owned_join('coop.join 127.0.0.1:59093 Guest',96,args,{})
+        self.assertEqual(perf.route_owned_join('coop.join 127.0.0.1:59093 Guest',96,args,{96:SimpleNamespace(port=60000)}),
+                         'coop.join 127.0.0.1:60000 Guest')
+
     def test_baseline_join_accepts_automatic_progress_and_keeps_offer_action(self):
         context='project='+PROJECT+' epoch=17 capability=0:1'
         for phases in ((4,4),(4,2,1,3)):

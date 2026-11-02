@@ -2,8 +2,9 @@
 """Measure actual native release/commit stalls in owned Windows editor games.
 
 Attaches to an existing two/four-player private editor by default. --setup
-bootstrap opens a private adventure through ordinary UI and connects through
-owned loopback impairment proxies. Never launches games, deploys a DLL, changes
+bootstrap opens a private adventure through ordinary UI. LAN-only runs connect
+directly through game-owned transport; WAN runs use owned impairment proxies.
+Never launches games, deploys a DLL, changes
 frame caps, writes memory, or accesses personal profiles. Offline contract tests
 can import the parsers without opening a console connection.
 """
@@ -175,6 +176,24 @@ def summarize(gestures, instances, samples, budget, p95_frame_ms=100, max_frame_
                 passed=all(row['passed'] for row in authors.values()) and all(row['passed'] for row in frames.values()))
 
 
+def uses_owned_proxy(args):
+    return args.setup=='bootstrap' and args.profiles!=['lan']
+
+
+def route_owned_join(command,instance,args,proxies):
+    words=command.split()
+    if words[:1]!=['coop.join']:return command
+    if (args.setup!='bootstrap' or instance not in args.instances[1:] or len(words)<2 or
+            words[1]!=f'127.0.0.1:{args.port}'):
+        raise FixtureError('A join does not belong to this owned fixture party')
+    if uses_owned_proxy(args):
+        if instance not in proxies:raise FixtureError('The owned impairment proxy is unavailable')
+        words[1]=f'127.0.0.1:{proxies[instance].port}'
+    elif proxies:
+        raise FixtureError('A direct LAN fixture must not own impairment proxies')
+    return ' '.join(words)
+
+
 class CommitParty(party_module.EditorParty):
     def __init__(self, args, proxies):
         self.args=args;self.output=args.output;self.output.mkdir(parents=True,exist_ok=False)
@@ -200,12 +219,7 @@ class CommitParty(party_module.EditorParty):
                 if self.instance==args.instances[0] and name==args.adventure:
                     self.adventure_selected_by_native_browser=True
             def call(self,command,required=True):
-                words=command.split()
-                if words[:1]==['coop.join']:
-                    if self.instance not in proxies or words[1]!=f'127.0.0.1:{args.port}':
-                        raise FixtureError('A join does not belong to this owned impairment proxy')
-                    words[1]=f'127.0.0.1:{proxies[self.instance].port}';command=' '.join(words)
-                return super().call(command,required)
+                return super().call(route_owned_join(command,self.instance,args,proxies),required)
         self.all_games=[MeasuredGame(i,self.output,args.timeout,self.deadline) for i in args.instances]
         for game in self.all_games:game.console=MeasuredConsole(game.instance,self.deadline)
         self.games=self.all_games;self.active_games=list(self.games);self.host,self.guest=self.games[:2]
@@ -214,6 +228,7 @@ class CommitParty(party_module.EditorParty):
                          candidate_sha256=args.expected_dll_sha256,instances=args.instances,requested_adventure=args.adventure,
                          adventure_selected_by_native_browser=False,
                          setup=args.setup,checks=[],gates={},profiles=[],
+                         helper_closes_party_transport_on_exit=bool(proxies),
                          processes={str(i):self.records[i]['pid'] for i in args.instances},
                          method='Actual input release, exact operation-keyed QPC stages and primed Present frame windows. No native inspection inside measured windows.',
                          bulk_asset_contention_pass=False)
@@ -310,7 +325,7 @@ def run(args):
     party=None;proxies={};completed=False
     try:
         with ExitStack() as stack:
-            if args.setup=='bootstrap':
+            if uses_owned_proxy(args):
                 proxies={i:stack.enter_context(EditorProxy(args.port,seed=0xBEEF1234+n*101)) for n,i in enumerate(args.instances[1:])}
             party=CommitParty(args,proxies)
             if args.setup=='bootstrap':
