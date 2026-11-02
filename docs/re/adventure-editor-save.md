@@ -277,6 +277,87 @@ directly into the active adventure is unnecessary. Normal gesture capture keeps
 its existing behavior. Native two-game terrain appearance still needs checking;
 matching hashes alone do not establish the same environment.
 
+### Explicit terrain proof across Save, local export and recovery
+
+The live resource key changes at `F44EEF..F44F19`, before the owned scenario
+copy receives `CaptureTerrain` at `F45201`. A materialization witness pinned to
+the previous local source must not be reused under the new source implicitly.
+Likewise, shared local-copy holds deliberately disable ordinary read identity,
+and native history rebaselining changes the native generation. Recovery also
+changes the logical epoch. These are separate transitions from input ownership.
+
+`editor_native_save::SaveOperation` now pins module generation, a monotonic
+operation serial, native generation, the actual numeric scene owner, original
+local source and copy mode. Its original source may differ from the canonical
+transport key. `preparing` runs before native Begin or copy-dirty changes; a
+rejection starts no native save. `saved_operation` runs only after the exact
+owned pipeline, normal confirmation dismissal and independent persisted-record
+readback. Native Begin may finish the pipeline synchronously. The pending
+identity therefore compares immutable fields while treating its completed
+`after` source separately. An already observed pipeline cannot replace its
+result through another pipeline call.
+
+The strict Win32 Save fixture exercises synchronous success and failure,
+completion exactly once, replaced module/source/generation/owner, nested Save,
+and expiration during the second native CanSave call. No replacement UI or
+owner is written to restore an expired owner's metadata. The focused module
+fixture passed 628 checks in
+`out/editor-preview9-terrain-transition-save.log`; this is controlled adapter
+evidence, not native Save/reopen acceptance after a Terraform stroke.
+
+Runtime uses bounded, value-owned `TerrainTransitionTicket` receipts. They retain
+the complete entry snapshot, raw recipe and exact authored-to-materialized
+witness, with a combined 64 MiB bound. Save normalization changes only owned
+saved bytes, requires exact live and stored recipe witnesses and the exact
+completed Save serial/source, and validates the canonical document before a
+replacement checkpoint. Metadata and captain sidecars come from the actual
+completed native state, including changes made in the native Save As dialog.
+
+Exports retain each participant's actual working source, dirty state and view.
+The authoritative held revision is checked independently of the earlier Save
+request. A stale recipe requires a separately checked `ExportRebuild` from owned
+canonical data, or rejection of the export. Normalization never guesses a newer
+authored recipe from current rendered bytes. Restoration waits for native
+terrain readiness and strict readback before reopening editing.
+
+Recovery stages its new controller while its authoring hold remains active.
+The old controller's recovery-specific teardown sends the existing authenticated
+`Leave{3}` once, preserving each guest's Frozen old context and durable draft.
+Ordinary End continues to send `Leave{0}`. The new private controller is not
+frozen by the old local failure flag while recovery owns its explicit hold.
+Editor-controller ticks are withheld during that private stage, so queued joins
+cannot publish a new epoch or baseline before the replacement checkpoint.
+Session transport and keepalives continue. A distinct `RecoveryBootstrap`
+brackets verified canonical Load and `F35E10` under a synchronous read-only
+identity when the old map is unavailable. Its prepared witness remains private
+until native terrain/collision readiness, strict validation and accepted context
+attachment. This boundary grants no input permission. A failed proof or
+materialization preserves the previous checkpoint.
+
+Controlled real-UDP coverage verifies that a frozen guest denies edits, rejects
+an inconsistent host capability envelope, retains its old document on host
+loss, and accepts the replacement baseline only through the normal authenticated
+Offer and readiness path. No wire format or authentication rule changes.
+
+The final strict i686 runtime suite passed 31,831 checks, including the 24 MiB
+dependency-closure, cached late-join and recovery case. Focused fixtures passed
+1,122 transition checks and 1,055
+existing recovery checks. Captured-rejection identity coverage passed 1,334
+checks; delayed cancellation ownership is covered by the transition cases.
+Real UDP session suites passed 21,485 checks on
+Win32 and 29,937 on Linux, including 78 focused recovery checks on each. Logs
+are under `out/editor-preview9-transition-final-*` and
+`out/editor-preview9-transition-session-linux-*`. These use controlled native
+adapters; the independent native transition fixture tests actual adapter paths.
+The source, executable and log hashes are recorded in
+`out/preview9-transition-final-receipt.json` (62 compiler dependencies and no
+critical-input drift).
+
+These runtime paths require the focused lifecycle fixtures and a fresh native
+Save/reopen reproduction before delivery. In particular, exact exporter/copy
+counter differences must be proved at their native boundary; the transition
+does not add a tolerance or accept unknown raw recipe differences.
+
 ### Private working keys must retain the native creation group
 
 `F44A90` compares the supplied key's **group**, at key `+8`, against the native

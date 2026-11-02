@@ -190,9 +190,24 @@ struct ExportBarrier {
     Command command;
     uint8_t participants=0, held=0;
     bool acknowledged=false, started=false, finished=false;
+    bool rejected=false;
+    bool ending=false,result=false;
 };
 std::optional<ExportBarrier> exporting;
 std::optional<editor_native::Snapshot> export_before;
+struct TerrainHold {
+    editor_native::TerrainTransitionKey key;
+    editor_native::TerrainTransitionTicket ticket;
+    editor_native::Snapshot entry;
+    uint64_t transport=0;
+    editor::Revision revision=0;
+    std::optional<editor_native_save::SaveOperation> save;
+    bool materializing=false,resumed=false,scene_restored=false,identity_restored=false,save_checked=false;
+};
+std::optional<TerrainHold> save_terrain,export_terrain,close_terrain;
+std::optional<bool> export_return_result;
+uint64_t terrain_transition_serial=0;
+bool save_cancelling=false;
 uint64_t export_generation=0, command_serial=0;
 std::array<uint64_t,4> seen_commands{};
 std::array<editor::Peer,4> seen_command_peers{};
@@ -242,6 +257,9 @@ struct Recovery {
     bool restored = false, needs_copy = false, saving = false;
     std::optional<editor::ResourceKey> saved_key;
     uint64_t native_generation = 0;
+    std::optional<TerrainHold> terrain;
+    bool epoch_prepared=false,controller_started=false;
+    editor_store::Snapshot staged;
 };
 std::optional<Recovery> recovery;
 enum class Action { Begin, Undo, Redo, Save, Playtest, Solo, Ready, Unready, Recover, End, Return, CancelPreparation, NativeExit, SaveExit, ApproveTest, DeclineTest, HandoffSave, HandoffDiscard, HandoffCancel, ChooseTest, MenuSolo, MenuTogether, MenuDismiss };
@@ -320,6 +338,7 @@ void retire_transport(bool explicit_stop) {
     adventure_messages.clear(); adventure_message_bytes = 0;
     beginning = false; recovery.reset(); pending_saved.reset(); incoming_resources.reset();
     exporting.reset();test_request.reset();pending_export_request=pending_test_request=0;
+    save_terrain.reset();export_terrain.reset();close_terrain.reset();export_return_result.reset();save_cancelling=false;
     native_exit_requested=native_exit_confirmed=exit_after_save=exit_broadcast=remote_exit=handoff=handoff_saving=false;
     exit_after_return=false;
     save_publication_pending = false; end_after_return = false;
@@ -1332,6 +1351,127 @@ editor_native::GestureScope current_projection_scope() {
        view.local.slot!=C.session->my_id() || view.context.project!=document.project || view.context.epoch!=document.epoch)return {};
     return {view.context.project,view.context.epoch,view.local};
 }
+bool terrain_runtime_current(const editor_native::TerrainTransitionKey& key,uint64_t transport,editor::Revision revision,
+                             bool allow_close=false,bool allow_recovery=false) {
+    if(!controller || !C.session || !C.session->connected() || transport_teardown ||
+       C.session->transport_generation()!=transport || observed_transport!=transport ||
+       (closing&&!allow_close) || (recovery&&!allow_recovery) || (frozen&&!allow_recovery))return false;
+    const auto& view=controller->view();const auto& document=controller->state().document;
+    return view.phase==Phase::Ready && view.context.project==key.scope.project && view.context.epoch==key.scope.epoch &&
+        view.local==key.scope.author && view.local.slot==C.session->my_id() && view.local.generation &&
+        document.project==key.scope.project && document.epoch==key.scope.epoch && document.revision==revision;
+}
+editor_native::TerrainTransitionCurrent terrain_fence(const TerrainHold& hold,bool allow_close=false,bool allow_recovery=false) {
+    const auto key=hold.key;const auto transport=hold.transport;const auto revision=hold.revision;
+    return [=]{return terrain_runtime_current(key,transport,revision,allow_close,allow_recovery);};
+}
+bool terrain_scene_current(const TerrainHold& hold,std::string& error) {
+    const auto native=editor_native::state();editor_native::SceneOwner actual;
+    if(native.generation!=hold.key.generation || !native.editing || native.playtesting || native.gesture ||
+       !editor_native::capture_scene_owner(actual,error) || editor_native::state().generation!=hold.key.generation ||
+       actual.mode!=hold.key.owner.mode || actual.data!=hold.key.owner.data || actual.resource!=hold.key.owner.resource){
+        error="The native scene owned by this terrain transition was replaced";return false;
+    }
+    // A native Save wizard may rotate the source in this same owned resource.
+    // Its numeric owner and generation must remain pinned before restoring it.
+    return true;
+}
+bool capture_terrain_hold(TerrainHold& out,std::string& error) {
+    const auto scope=current_projection_scope();
+    if(!scope.epoch || terrain_transition_serial==UINT64_MAX){error="The adventure terrain transition cannot be pinned";return false;}
+    TerrainHold hold;hold.key.scope=scope;hold.key.serial=++terrain_transition_serial;
+    hold.key.generation=editor_native::state().generation;hold.transport=observed_transport;
+    hold.revision=controller->state().document.revision;hold.entry=current_native;hold.entry.document=controller->state().document;
+    if(!editor_native::capture_scene_owner(hold.key.owner,error) ||
+       !editor_native::capture_terrain_transition(hold.key,hold.entry,terrain_fence(hold),hold.ticket,error))return false;
+    editor_native::TerrainTransitionTicket refreshed;editor_native::Snapshot observed;
+    if(!editor_native::refresh_terrain_transition(hold.ticket,hold.key,hold.entry,terrain_fence(hold),refreshed,observed,error))return false;
+    hold.ticket=std::move(refreshed);hold.entry=std::move(observed);hold.entry.document=controller->state().document;
+    out=std::move(hold);return true;
+}
+// A queued export can hold a newer revision than its original request. Only an
+// exact witnessed read or an explicit canonical Load/materialize can refresh it.
+bool refresh_terrain_hold(TerrainHold& hold,const editor_native::Snapshot& expected,bool allow_close,bool allow_recovery,std::string& error) {
+    if(hold.materializing && !editor_native::state().ready){error.clear();return false;}
+    hold.revision=expected.document.revision;
+    const auto fence=terrain_fence(hold,allow_close,allow_recovery);
+    editor_native::TerrainTransitionTicket refreshed;editor_native::Snapshot observed;
+    if(editor_native::refresh_terrain_transition(hold.ticket,hold.key,expected,fence,refreshed,observed,error)){
+        hold.ticket=std::move(refreshed);hold.entry=std::move(observed);hold.materializing=false;return true;
+    }
+    if(hold.materializing || !fence())return false;
+    editor_native::TerrainTransitionReceipt receipt;
+    receipt.kind=allow_recovery?editor_native::TerrainTransitionKind::Recovery:editor_native::TerrainTransitionKind::ExportRebuild;
+    receipt.before=receipt.after=hold.key;
+    if(!editor_native::restore_terrain_transition(hold.ticket,receipt,expected,fence,refreshed,error))return false;
+    hold.ticket=std::move(refreshed);hold.entry=expected;hold.materializing=true;
+    if(!editor_native::state().ready){error.clear();return false;}
+    if(!editor_native::refresh_terrain_transition(hold.ticket,hold.key,expected,fence,refreshed,observed,error))return false;
+    hold.ticket=std::move(refreshed);hold.entry=std::move(observed);hold.materializing=false;return true;
+}
+bool resume_terrain_hold(TerrainHold& hold,editor_native::TerrainTransitionReceipt receipt,
+                         const editor_native::Snapshot& expected,bool allow_close,bool allow_recovery,std::string& error,
+                         editor_native::Snapshot* observed=nullptr) {
+    if(hold.resumed)return true;
+    hold.key=receipt.after;hold.revision=expected.document.revision;
+    if(!editor_native::resume_terrain_transition(hold.ticket,receipt,expected,terrain_fence(hold,allow_close,allow_recovery),error,observed))return false;
+    hold.resumed=true;return true;
+}
+bool finish_export_terrain(std::string& error) {
+    if(!export_terrain)return true;
+    auto terrain=*export_terrain;
+    auto expected=current_native;expected.document=controller->state().document;
+    if(!terrain.resumed){
+        if(!refresh_terrain_hold(terrain,expected,false,false,error)){
+            if(export_terrain && export_terrain->key.serial==terrain.key.serial)*export_terrain=std::move(terrain);
+            return false;
+        }
+        editor_native::TerrainTransitionReceipt receipt;
+        receipt.kind=editor_native::TerrainTransitionKind::Export;receipt.before=receipt.after=terrain.key;
+        receipt.after.generation=terrain.key.generation;
+        if(!editor_native::capture_scene_owner(receipt.after.owner,error) ||
+           !resume_terrain_hold(terrain,receipt,expected,false,false,error))return false;
+    }
+    export_terrain.reset();return true;
+}
+void service_cancelled_save() {
+    if(!save_cancelling || !save_terrain || !controller || transport_teardown)return;
+    auto terrain=*save_terrain;std::string error;
+    if(!terrain_runtime_current(terrain.key,terrain.transport,terrain.revision)){
+        frozen=true;save_cancelling=false;tell("The cancelled Save belongs to an expired editing context");return;
+    }
+    if(!terrain_scene_current(terrain,error)){
+        frozen=true;save_cancelling=false;tell(error);return;
+    }
+    if(!editor_native::state().ready)return;
+    if(!terrain.scene_restored){
+        if(!editor_native::restore(terrain.entry,error)){
+            frozen=true;save_cancelling=false;tell("The cancelled Save could not restore its working draft: "+error);return;
+        }
+        terrain.scene_restored=true;save_terrain=terrain;
+        if(!editor_native::state().ready)return;
+    }
+    if(!terrain.identity_restored){
+        if(!terrain_scene_current(terrain,error) ||
+           !editor_native_save::restore_identity(terrain.key.owner.source,terrain.entry.local_dirty.value_or(editor_native::Snapshot::Dirty{}),error)){
+            frozen=true;save_cancelling=false;tell("The cancelled Save could not restore its native identity: "+error);return;
+        }
+        terrain.identity_restored=true;save_terrain=terrain;
+    }
+    if(!refresh_terrain_hold(terrain,terrain.entry,false,false,error)){
+        save_terrain=std::move(terrain);
+        if(error.empty())return;
+        frozen=true;save_cancelling=false;tell("The cancelled Save terrain restoration stopped: "+error);return;
+    }
+    editor_native::TerrainTransitionReceipt receipt;
+    receipt.kind=editor_native::TerrainTransitionKind::Export;receipt.before=receipt.after=terrain.key;
+    receipt.after.generation=terrain.key.generation;
+    if(!editor_native::capture_scene_owner(receipt.after.owner,error) ||
+       !resume_terrain_hold(terrain,receipt,terrain.entry,false,false,error)){
+        frozen=true;save_cancelling=false;tell("The cancelled Save terrain restoration stopped: "+error);return;
+    }
+    save_terrain.reset();save_cancelling=false;save_publication_pending=false;
+}
 bool creation_current(const editor_creation::Scope& scope){
     if(!controller || !C.session || !C.session->connected() || closing || frozen || recovery || transport_teardown)return false;
     const auto& view=controller->view();
@@ -1585,9 +1725,34 @@ void captured(editor_native::Gesture gesture) {
     editor_native::ValidationScope validation_scope;
     const auto& doc = controller->state().document;
     std::string error;
+    const auto captured_context=controller->view().context;const auto captured_author=controller->view().local;
+    const auto captured_revision=doc.revision,captured_transport=observed_transport;
+    editor_native::SceneOwner captured_owner;
+    if(!editor_native::capture_scene_owner(captured_owner,error) || captured_owner.source!=gesture.after.source){
+        frozen=true;native_identity_lost=true;tell("The captured gesture could not pin its native editor: "+error);return;
+    }
+    auto captured_identity=[&]{
+        auto context=[&]{return controller && C.session && C.session->connected() && !closing && !recovery && !transport_teardown &&
+            observed_transport==captured_transport && C.session->transport_generation()==captured_transport &&
+            controller->view().context.project==captured_context.project && controller->view().context.epoch==captured_context.epoch &&
+            controller->view().local==captured_author && controller->state().document.revision==captured_revision;};
+        if(!context() || editor_native::state().generation!=gesture.generation)return false;
+        editor_native::SceneOwner current;
+        return editor_native::capture_scene_owner(current,error) && current==captured_owner && context() &&
+            editor_native::state().generation==gesture.generation;
+    };
+    auto reject_captured=[&]{
+        const auto reason=error;
+        if(!captured_identity()){
+            frozen=true;native_identity_lost=true;
+            tell("The captured gesture's native editor identity expired; the current scene was left intact: "+reason+
+                (error!=reason?"; "+error:std::string{}));return;
+        }
+        stop_unsupported(error);
+    };
     const auto supported_begin=stage_qpc();
     if (!supported_between(current_native, gesture.before, error) || !editor_native::supported_changes(gesture, error)) {
-        stop_unsupported(error); return;
+        reject_captured(); return;
     }
     // First prove the actual native gesture. Project-owned creation identities
     // are then a separate allowlisted transformation of its owned after copy.
@@ -1598,12 +1763,12 @@ void captured(editor_native::Gesture gesture) {
        gesture.generation!=editor_native::state().generation){
         frozen=true;native_identity_lost=true;tell("The crew gesture's shared editor context expired. The current native scene was left intact.");return;
     }
-    if(!canonicalized){stop_unsupported(error);return;}
+    if(!canonicalized){reject_captured();return;}
     const auto supported_end=stage_qpc();
     const bool roster=gesture.after.document.act_order!=doc.act_order;
     if (gesture.before.document.classes != doc.classes || gesture.before.document.acts != doc.acts ||
         gesture.before.document.act_order!=doc.act_order) {
-        error="The native gesture changed an unsupported act or started from a stale cast roster";stop_unsupported(error);
+        error="The native gesture changed an unsupported act or started from a stale cast roster";reject_captured();
         return;
     }
     auto r = request(editor::Intent::Forward); r.summary = "Edit placement";
@@ -1616,7 +1781,7 @@ void captured(editor_native::Gesture gesture) {
         stage_metrics.record(doc.project,r.operation,doc.revision,S::SupportedEnd,supported_end,1);
     }
     if(roster){
-        if(!lease({{editor::ScopeKind::Authoring,{},{}}})){error="The act roster has no shared authoring hold";stop_unsupported(error);return;}
+        if(!lease({{editor::ScopeKind::Authoring,{},{}}})){error="The act roster has no shared authoring hold";reject_captured();return;}
         editor::Mutation mutation;mutation.kind=editor::MutationKind::SetActs;mutation.expected=doc.act_revision;
         mutation.act_roster=editor::act_roster(gesture.after.document);
         for(auto& row:*mutation.act_roster){
@@ -1631,11 +1796,11 @@ void captured(editor_native::Gesture gesture) {
         if(roster && settings.kind==editor::SettingsKind::Act)continue;
         auto prior=gesture.before.document.settings.find(id),next=gesture.after.document.settings.find(id);
         if(prior==gesture.before.document.settings.end() || next==gesture.after.document.settings.end()){
-            error="The authored settings roster changed during a gesture";stop_unsupported(error);return;
+            error="The authored settings roster changed during a gesture";reject_captured();return;
         }
         if(prior->second.properties==next->second.properties)continue;
         auto guard=guarded_authoring.find(id);
-        if(guard==guarded_authoring.end()){error="The authored settings gesture has no current ownership";stop_unsupported(error);return;}
+        if(guard==guarded_authoring.end()){error="The authored settings gesture has no current ownership";reject_captured();return;}
         std::set<uint32_t> keys;
         for(const auto& [key,v]:prior->second.properties){(void)v;keys.insert(key);}
         for(const auto& [key,v]:next->second.properties){(void)v;keys.insert(key);}
@@ -1655,7 +1820,7 @@ void captured(editor_native::Gesture gesture) {
         auto next=gesture.after.document.terrain.find(id);
         if(next!=gesture.after.document.terrain.end() && next->second==record)continue;
         auto owned=guarded_terrain.find(id);
-        if(owned==guarded_terrain.end()){error="The changed terrain stamp has no record ownership";stop_unsupported(error);return;}
+        if(owned==guarded_terrain.end()){error="The changed terrain stamp has no record ownership";reject_captured();return;}
         editor::Mutation mutation;mutation.target=id;mutation.expected=owned->second.revision;
         if(next==gesture.after.document.terrain.end())mutation.kind=editor::MutationKind::DeleteTerrain;
         else{mutation.kind=editor::MutationKind::SetTerrain;mutation.terrain=next->second;}
@@ -1670,7 +1835,7 @@ void captured(editor_native::Gesture gesture) {
         auto next=gesture.after.document.class_settings.find(id);
         if(next!=gesture.after.document.class_settings.end() && next->second.properties==settings.properties)continue;
         auto guard=guarded_settings.find(id);
-        if(guard==guarded_settings.end()){error="The cast gesture has no class ownership";stop_unsupported(error);return;}
+        if(guard==guarded_settings.end()){error="The cast gesture has no class ownership";reject_captured();return;}
         if(next==gesture.after.document.class_settings.end()){
             editor::Mutation mutation;mutation.kind=editor::MutationKind::DeleteClass;mutation.target=settings.class_id;mutation.expected=guard->second.revision;
             r.mutations.push_back(std::move(mutation));
@@ -1691,7 +1856,7 @@ void captured(editor_native::Gesture gesture) {
         if (prior != gesture.before.document.placements.end() && next != gesture.after.document.placements.end() && same_authored(prior->second, next->second)) continue;
         auto guard = guarded_placements.find(id);
         if (prior == gesture.before.document.placements.end() || guard == guarded_placements.end()) {
-            error="The native gesture has no current placement ownership";stop_unsupported(error);return;
+            error="The native gesture has no current placement ownership";reject_captured();return;
         }
         if (next == gesture.after.document.placements.end()) {
             editor::Mutation m; m.kind = editor::MutationKind::Delete; m.target = id; m.expected = guard->second.revision;
@@ -1726,7 +1891,7 @@ void captured(editor_native::Gesture gesture) {
             if (source == guarded_placements.end()) { frozen = true; tell("The native clone source has no editing ownership. Recover the draft."); return; }
             if (placement.properties != source->second.properties) {
                 error = "Cloning and changing a placement property in one gesture is unsupported; repeat Clone and Scale separately";
-                stop_unsupported(error); return;
+                reject_captured(); return;
             }
             m.kind = editor::MutationKind::Clone; m.target = *gesture.clone_source; m.initial = {};
             m.expected = source->second.revision;
@@ -1739,14 +1904,15 @@ void captured(editor_native::Gesture gesture) {
     std::vector<uint8_t> assets;
     if(editing_cast){
         if(r.summary=="Edit placement" || r.summary=="Create placement" || r.summary=="Delete placement")r.summary="Edit cast";
-        if(!collect_cast_assets(gesture.after,assets,error)){stop_unsupported(error);return;}
+        if(!collect_cast_assets(gesture.after,assets,error)){reject_captured();return;}
     }
     const bool tentative=!editing_cast && assets.empty() && std::all_of(r.mutations.begin(),r.mutations.end(),[&](const auto& mutation){
         return mutation.kind==editor::MutationKind::Set && doc.placements.contains(mutation.target);
     });
     if(tentative){
-        if(!editor_native::validate(gesture.before,doc,error)){stop_unsupported(error);return;}
+        if(!editor_native::validate(gesture.before,doc,error)){reject_captured();return;}
     }else{
+        if(!captured_identity()){reject_captured();return;}
         // Structural gestures still retire native temporary objects before the
         // canonical allocation can recreate their slots on a later frame.
         stage_stamp(doc.project,r.operation,doc.revision,editor_stage_metrics::Stage::InverseBegin);
@@ -1754,6 +1920,7 @@ void captured(editor_native::Gesture gesture) {
         stage_stamp(doc.project,r.operation,doc.revision,editor_stage_metrics::Stage::InverseEnd,restored?1:2);
         if(!restored){frozen=true;tell("The native gesture could not return to committed state: "+error);return;}
     }
+    if(!captured_identity()){reject_captured();return;}
     if (!H->frame_index) { frozen = true; tell("Native gesture submission requires the game frame counter"); return; }
     pending = Pending{r, std::move(gesture), H->frame_index(), false};
     pending->assets=std::move(assets);
@@ -1986,7 +2153,8 @@ bool create_store(const editor::State& state, const editor_native::Snapshot& nat
     resource_hash = std::move(hash); project_id = state.document.project; recovery_available = true;
     return true;
 }
-bool checkpoint_resources(editor_project::Resources content, editor_native::Snapshot native, std::string& error) {
+bool checkpoint_resources(editor_project::Resources content, editor_native::Snapshot native, std::string& error,
+                          const std::function<bool(const editor_native::Snapshot&,std::string&)>& restored={}) {
     if(!restore_tentative(error))return false;
     auto local_dirty = native.local_dirty;
     if (!editor_project::native_snapshot(content, controller->state().document, native, error)) return false;
@@ -1995,6 +2163,7 @@ bool checkpoint_resources(editor_project::Resources content, editor_native::Snap
     // Install those exact bytes on the saving host as well as its guests before
     // another gesture captures the working resource.
     if (!editor_native::restore(native, error)) return false;
+    if(restored && !restored(native,error))return false;
     std::vector<uint8_t> envelope, delta;
     if (!editor_project::encode_resources(content, envelope, error) || !root_delta(content, delta, error)) return false;
     editor_store::Snapshot saved;
@@ -2007,17 +2176,35 @@ bool checkpoint_resources(editor_project::Resources content, editor_native::Snap
     current_native = std::move(native); resources = std::move(content);
     return true;
 }
-void saved_native(editor::ResourceKey key) {
+void saved_native(editor::ResourceKey key,const editor_native_save::SaveOperation* operation=nullptr) {
     if (!host() || !session_active()) return;
     std::string error;
     editor_native::Snapshot native;
     auto content = resources;
     const dbpf::Key root{key.instance, key.type, key.group};
     std::vector<dbpf::Record> records;
+    std::optional<TerrainHold> terrain=save_terrain;
+    if(terrain){
+        if(!operation || !terrain->save || *terrain->save!=*operation || operation->after!=key ||
+           !terrain_fence(*terrain)()) {frozen=true;tell("The native Save terrain receipt expired before publication");return;}
+        // The native Save As wizard may update title/tags. Its completed live
+        // sidecars must be observed; the ticket owns the terrain proof even if
+        // this ordinary capture retires the old source's global map.
+    }
     if (!editor_native::capture(native, error)) { frozen = true; tell(error); return; }
     save_publication_pending = true; native_copy_owned = true;
     native.source = key;
-    if (!editor_native_save::read_saved(key, native.bytes, error) ||
+    if (!editor_native_save::read_saved(key, native.bytes, error)) { frozen = true; tell(error); return; }
+    editor_native::TerrainTransitionReceipt receipt;
+    if(terrain){
+        receipt.kind=editor_native::TerrainTransitionKind::Save;receipt.before=receipt.after=terrain->key;
+        receipt.after.owner.source=key;receipt.save_generation=operation->module_generation;receipt.save_serial=operation->serial;
+        auto current=*terrain;current.key=receipt.after;
+        if(!editor_native::normalize_saved_terrain(terrain->ticket,receipt,terrain->entry,native,terrain_fence(current),error)){
+            frozen=true;tell("The native Save completed locally; sharing its terrain proof stopped: "+error);return;
+        }
+    }
+    if (
         !editor_native::normalize_saved_grounding(native,controller->state().document,error) ||
         !editor_native::validate(native, controller->state().document, error)) { frozen = true; tell(error); return; }
     if (!adventure_collect::collect_snapshot(root, native.bytes, records, error)) { frozen = true; tell(error); return; }
@@ -2025,10 +2212,13 @@ void saved_native(editor::ResourceKey key) {
     if (normalized == records.end()) { frozen = true; tell("The saved editor root is missing"); return; }
     native.source = key; native.bytes = std::move(normalized->data);
     if (!replace_root(content, native, error) ||
-        !checkpoint_resources(std::move(content), std::move(native), error) ||
+        !checkpoint_resources(std::move(content), std::move(native), error,[&](const auto& restored,std::string& reason){
+            return !terrain || resume_terrain_hold(*terrain,receipt,restored,false,false,reason);
+        }) ||
         !controller->publish_saved({controller->state().document.revision, key}, error)) {
         frozen = true; tell("The native save completed, but sharing its recovery checkpoint stopped: " + error); return;
     }
+    save_terrain.reset();
     tell("The shared adventure draft was saved by Spore");
 }
 void start_saved() {
@@ -2157,7 +2347,11 @@ void close_session(bool preserve_offer = false) {
     pending_preparation_cancel.reset();
     preview_selection.reset();
     observed_lease_grants.clear();
-    if (!closing) { reopen_saved.reset(); closing = true; close_restored = false; close_preserve_offer = preserve_offer; }
+    if (!closing) {
+        reopen_saved.reset();close_terrain.reset();
+        if(current_projection_scope().epoch){TerrainHold terrain;std::string error;if(capture_terrain_hold(terrain,error))close_terrain=std::move(terrain);}
+        closing = true; close_restored = false; close_preserve_offer = preserve_offer;
+    }
     close_preserve_offer = !transport_teardown && (close_preserve_offer || preserve_offer || controller->view().phase == Phase::Offered);
     // An accepted edit remains owned until active replicas have applied and
     // durably covered it. Keep pumping the controller and party transport while
@@ -2199,6 +2393,16 @@ void close_session(bool preserve_offer = false) {
         // Rebaselining retires callbacks in the same native editor. Remember
         // that generation so its preserved durable draft can be recovered here.
         native_generation = editor_native::state().generation;
+        if(close_terrain&&!close_terrain->resumed){
+            auto terrain=*close_terrain;editor_native::TerrainTransitionReceipt receipt;
+            receipt.kind=editor_native::TerrainTransitionKind::Export;receipt.before=receipt.after=terrain.key;
+            receipt.after.generation=native_generation;editor_native::Snapshot observed;
+            if(!editor_native::capture_scene_owner(receipt.after.owner,error) ||
+               !resume_terrain_hold(terrain,receipt,current_native,true,false,error,&observed)){
+                frozen=true;tell("Ending shared editing is waiting for terrain provenance: "+error);return;
+            }
+            terrain.entry=std::move(observed);close_terrain=std::move(terrain);
+        }
     }
     const bool keep_offer = !transport_teardown && close_preserve_offer && C.session && C.session->connected();
     if(owned_context && editor_native::state().editing)retained_editor_generation=editor_native::state().generation;
@@ -2210,7 +2414,8 @@ void close_session(bool preserve_offer = false) {
         controller->view().saved && controller->view().saved->resource == current_native.source && controller->settled()) {
         editor_native::Snapshot observed;
         std::string error;
-        if (editor_native::capture(observed, error) && observed.source == current_native.source &&
+        const bool captured=close_terrain&&close_terrain->resumed?(observed=close_terrain->entry,true):editor_native::capture(observed,error);
+        if (captured && observed.source == current_native.source &&
             editor_native::validate(observed, current_native.document, error) && supported_between(current_native, observed, error)) {
             // Native resource envelopes omit projected captain metadata. Retain
             // the verified live metadata and canonical logical namespace in the
@@ -2222,6 +2427,7 @@ void close_session(bool preserve_offer = false) {
     local_creation.reset();
     guarded_settings.clear();guarded_authoring.clear();cast_uploads.clear();cast_upload_errors.clear();solo_preview.reset();solo_ready_scope.reset();pending_solo_return.reset();pending_solo_request=0;
     recovery.reset(); beginning = false; frozen = false; save_publication_pending = false;
+    save_terrain.reset();export_terrain.reset();close_terrain.reset();export_return_result.reset();save_cancelling=false;
     end_after_return = false; disconnected_return = false; pending_saved.reset();
     pending_preview_return.reset();
     adventure_messages.clear(); adventure_message_bytes = 0;
@@ -2451,24 +2657,78 @@ void finish_recovery() {
         recovery->native = std::move(native); resources = std::move(content); native_copy_owned = true;
         recovery->saved_key.reset(); recovery->saving = recovery->needs_copy = false;
     }
-    // Recovery creates a new logical epoch in this same native editor. Retire
-    // queued captures and old native history before that epoch becomes active.
-    if (!editor_native::rebaseline(error)) { status = "Waiting to retire native captures before recovery: " + error; return; }
-    native_generation = editor_native::state().generation;
-    auto work = std::move(*recovery); recovery.reset();
-    controller->end(); frozen = false; pending.reset(); awaiting_operation.reset(); guarded_placements.clear();
-    std::random_device random; work.state.document.epoch = (uint64_t(random()) << 32) | random();
-    if (!work.state.document.epoch) work.state.document.epoch = 1;
-    work.state.retired_sequences.clear(); sequence = 0;
-    work.native.document = work.state.document;
-    editor_store::Snapshot saved;
-    if (!editor_project::store_snapshot(work.state, work.native, work.title, saved, error)) { frozen = true; tell(error); return; }
-    saved.manifest = manifest(resource_hash, history_artifacts);
-    if (!store.checkpoint(saved, error) || !controller->start(std::move(work.state), std::move(work.envelope), work.title, error, work.resume)) { frozen = true; tell(error); return; }
-    local_capability = controller->view().local; saved.manifest = manifest(resource_hash, history_artifacts);
-    if (!store.checkpoint(saved, error)) { frozen = true; tell(error); return; }
-    current_native = std::move(work.native);rendered_revision=current_native.document.revision; native_generation = editor_native::state().generation;
-    native_attached = true; native_identity_lost=false;
+    // Keep the previous checkpoint while the new epoch is materializing. A
+    // successfully started controller is still held by recovery until its exact
+    // native scene has passed the transition's independent strict readback.
+    if(!recovery->epoch_prepared){
+        if (!editor_native::rebaseline(error)) { status = "Waiting to retire native captures before recovery: " + error; return; }
+        recovery->native_generation=editor_native::state().generation;native_generation=recovery->native_generation;
+        controller->end_for_recovery();pending.reset();awaiting_operation.reset();guarded_placements.clear();
+        std::random_device random;recovery->state.document.epoch=(uint64_t(random())<<32)|random();
+        if(!recovery->state.document.epoch)recovery->state.document.epoch=1;
+        recovery->state.retired_sequences.clear();sequence=0;recovery->native.document=recovery->state.document;
+        if(!editor_project::store_snapshot(recovery->state,recovery->native,recovery->title,recovery->staged,error)){
+            frozen=true;tell(error);return;
+        }
+        recovery->epoch_prepared=true;
+    }
+    if(!recovery->controller_started){
+        if(!controller->start(recovery->state,recovery->envelope,recovery->title,error,recovery->resume)){
+            frozen=true;tell(error);return;
+        }
+        local_capability=controller->view().local;recovery->controller_started=true;
+    }
+    TerrainHold terrain;
+    if(recovery->terrain)terrain=*recovery->terrain;
+    editor_native::TerrainTransitionKey target;
+    target.scope={controller->view().context.project,controller->view().context.epoch,controller->view().local};
+    target.serial=terrain.key.serial;
+    if(!target.serial){
+        if(terrain_transition_serial==UINT64_MAX){frozen=true;tell("Recovery terrain identity is exhausted");return;}
+        target.serial=++terrain_transition_serial;
+    }
+    target.generation=recovery->native_generation;
+    if(!context.world_visible || !editor_native::capture_scene_owner(target.owner,error))return;
+    const auto transport=observed_transport;const auto revision=recovery->state.document.revision;
+    const auto current=[=]{return terrain_runtime_current(target,transport,revision,false,true);};
+    bool transferred=terrain.resumed;
+    if(transferred && terrain.key!=target){frozen=true;tell("The recovered native terrain owner changed before checkpoint publication");return;}
+    if(terrain.ticket&&!terrain.materializing&&!terrain.resumed){
+        editor_native::TerrainTransitionReceipt receipt;
+        receipt.kind=editor_native::TerrainTransitionKind::Recovery;receipt.before=terrain.key;receipt.after=target;
+        terrain.key=target;terrain.transport=transport;terrain.revision=revision;
+        transferred=editor_native::resume_terrain_transition(terrain.ticket,receipt,recovery->native,current,error);
+        terrain.resumed=transferred;
+    }
+    if(!transferred){
+        if(!terrain.materializing){
+            // A lost or diverged old map cannot prove the current raw recipe.
+            // Bootstrap from the verified canonical snapshot under a distinct
+            // explicit recovery boundary, with no inferred old authored values.
+            editor_native::TerrainTransitionReceipt receipt;
+            receipt.kind=editor_native::TerrainTransitionKind::RecoveryBootstrap;receipt.before=receipt.after=target;
+            editor_native::TerrainTransitionTicket prepared;
+            if(!editor_native::restore_terrain_transition({},receipt,recovery->native,current,prepared,error)){
+                frozen=true;tell("The prior recovery checkpoint was retained: "+error);return;
+            }
+            terrain.key=target;terrain.ticket=std::move(prepared);terrain.entry=recovery->native;
+            terrain.transport=transport;terrain.revision=revision;terrain.materializing=true;recovery->terrain=std::move(terrain);
+            status="Waiting for the recovered terrain and collision scene";return;
+        }
+        editor_native::TerrainTransitionReceipt receipt;
+        receipt.kind=editor_native::TerrainTransitionKind::Recovery;receipt.before=terrain.key;receipt.after=target;
+        if(!editor_native::resume_terrain_transition(terrain.ticket,receipt,recovery->native,current,error)){
+            frozen=true;tell("The prior recovery checkpoint was retained: "+error);return;
+        }
+        terrain.resumed=true;terrain.materializing=false;
+    }
+    recovery->terrain=std::move(terrain);
+    if(!current()){frozen=true;tell("The prior recovery checkpoint was retained because its new editing context expired");return;}
+    recovery->staged.manifest=manifest(resource_hash,history_artifacts);
+    if(!store.checkpoint(recovery->staged,error)){frozen=true;tell(error);return;}
+    current_native=std::move(recovery->native);rendered_revision=current_native.document.revision;
+    native_generation=recovery->native_generation;native_attached=true;native_identity_lost=false;frozen=false;
+    recovery.reset();
     tell("Recovered the last durable draft in a new editing session");
 }
 bool current_preview_return(const PreviewReturnScope& request) {
@@ -2498,6 +2758,12 @@ Command command(CommandKind kind,editor::Peer actor,uint64_t serial=0,bool accep
 }
 void end_export(bool success) {
     if(!exporting)return;
+    exporting->ending=true;exporting->result=success;
+    std::string error;
+    if(!finish_export_terrain(error)){
+        if(error.empty())return;
+        frozen=true;success=false;tell("The export hold could not restore its terrain proof: "+error);
+    }
     auto end=exporting->command;end.kind=CommandKind::EndExport;end.accepted=success;
     send_command(end);last_host_command=std::max(last_host_command,end.serial);exporting.reset();
     tell(success?"Local copy saved; shared editing resumed":"Local copy saving stopped; the shared draft is preserved");
@@ -2515,19 +2781,57 @@ void request_export(const Command& requested) {
     }
     ExportBarrier barrier;barrier.command=command(CommandKind::HoldExport,requested.actor);
     for(const auto& [slot,member]:view.members){(void)member;barrier.participants|=uint8_t(1u<<slot);}
+    TerrainHold terrain;std::string error;
+    if(!capture_terrain_hold(terrain,error)){
+        auto reply=requested;reply.kind=CommandKind::EndExport;reply.accepted=false;send_command(reply,requested.actor.slot);tell(error);return;
+    }
+    export_terrain=std::move(terrain);
     exporting=barrier;send_command(barrier.command);
     tell("Saving a collaborator's local copy; authoring is held briefly");
 }
 void finish_export(bool saved) {
+    export_return_result=saved;
     std::string error;
     if(export_before) {
-        const auto before=std::move(*export_before);export_before.reset();
-        if(editor_native::state().generation!=export_generation || !editor_native::restore(before,error) ||
-            !editor_native_save::restore_identity(before.source,before.local_dirty.value_or(editor_native::Snapshot::Dirty{}),error) ||
-            !check_native_integrity(error)) {
+        const auto before=*export_before;
+        if(saved && export_terrain && export_terrain->save && !export_terrain->save_checked){
+            auto terrain=*export_terrain;const auto operation=*terrain.save;
+            editor_native::TerrainTransitionReceipt receipt;
+            receipt.kind=editor_native::TerrainTransitionKind::Save;receipt.before=receipt.after=terrain.key;
+            receipt.after.owner.source=operation.after;receipt.save_generation=operation.module_generation;receipt.save_serial=operation.serial;
+            editor_native::Snapshot copy;auto completed=terrain;completed.key=receipt.after;
+            if(!editor_native::capture(copy,error) || !editor_native_save::read_saved(operation.after,copy.bytes,error) ||
+               !editor_native::normalize_saved_terrain(terrain.ticket,receipt,before,copy,terrain_fence(completed),error) ||
+               !editor_native::normalize_saved_grounding(copy,before.document,error)){
+                saved=false;tell("The local native copy was retained; terrain validation stopped: "+error);
+            }
+            if(export_terrain)export_terrain->save_checked=true;
+            export_return_result=saved;
+        }
+        const auto source=export_terrain?export_terrain->key.owner.source:before.source;
+        bool restored=editor_native::state().generation==export_generation &&
+            (!export_terrain || terrain_scene_current(*export_terrain,error));
+        if(restored && (!export_terrain || !export_terrain->scene_restored)){
+            if(!editor_native::state().ready)return;
+            restored=editor_native::restore(before,error);
+            if(restored&&export_terrain)export_terrain->scene_restored=true;
+        }
+        if(restored&&!editor_native::state().ready)return;
+        if(restored && (!export_terrain || !export_terrain->identity_restored)){
+            restored=(!export_terrain || terrain_scene_current(*export_terrain,error)) &&
+                editor_native_save::restore_identity(source,before.local_dirty.value_or(editor_native::Snapshot::Dirty{}),error);
+            if(restored&&export_terrain)export_terrain->identity_restored=true;
+        }
+        if(restored&&!finish_export_terrain(error)){
+            if(error.empty())return;
+            restored=false;
+        }
+        if(!restored) {
             frozen=true;tell("The local copy operation could not restore the shared working draft: "+error);saved=false;
         }
+        export_before.reset();
     }
+    export_return_result.reset();
     if(!saved)exit_after_save=false;
     if(exporting) {
         auto done=exporting->command;done.kind=CommandKind::FinishExport;done.actor=controller->view().local;done.accepted=saved;
@@ -2567,12 +2871,15 @@ void receive_command(uint8_t from,const Command& value) {
         }
         if(!exporting || value.serial!=exporting->command.serial || value.revision!=exporting->command.revision)return;
         if(value.kind==CommandKind::ExportHeld)exporting->held|=uint8_t(1u<<from);
+        if(value.kind==CommandKind::FinishExport && !value.accepted && !exporting->started){end_export(false);return;}
         if(value.kind==CommandKind::FinishExport && value.actor==exporting->command.actor && exporting->started)end_export(value.accepted);
         return;
     }
     if(from)return;
     if(value.kind==CommandKind::ExportQueued){
-        if(value.actor==view.local && value.serial==pending_export_request){pending_export_request=0;tell("Save is queued until the host returns. You can continue editing");}return;
+        if(value.actor==view.local && value.serial==pending_export_request){
+            std::string error;if(!finish_export_terrain(error)){frozen=true;tell(error);}
+            pending_export_request=0;tell("Save is queued until the host returns. You can continue editing");}return;
     }
     if(value.kind==CommandKind::ReplySolo){
         if(value.actor!=view.local || value.serial!=pending_solo_request)return;
@@ -2584,7 +2891,12 @@ void receive_command(uint8_t from,const Command& value) {
     }
     if(value.kind==CommandKind::HoldExport) {
         if(value.serial<=last_host_command || exporting || native_exit_requested)return;
-        last_host_command=value.serial;ExportBarrier barrier;barrier.command=value;exporting=barrier;
+        ExportBarrier barrier;barrier.command=value;
+        if(!local_creation && !export_terrain){
+            TerrainHold terrain;std::string error;
+            if(!capture_terrain_hold(terrain,error)){barrier.rejected=true;tell(error);}else export_terrain=std::move(terrain);
+        }
+        last_host_command=value.serial;exporting=barrier;
         pending_export_request=0;tell("Saving a collaborator's local copy; authoring is held briefly");return;
     }
     if(value.kind==CommandKind::ExitEditor) {
@@ -2592,17 +2904,17 @@ void receive_command(uint8_t from,const Command& value) {
         last_host_command=value.serial;remote_exit=true;native_exit_requested=native_exit_confirmed=true;return;
     }
     if(value.kind==CommandKind::EndExport && !exporting && pending_export_request==value.serial && value.actor==view.local) {
+        std::string error;if(!finish_export_terrain(error)){frozen=true;tell(error);}
         pending_export_request=0;exit_after_save=false;tell("The host is busy; try saving your local copy again shortly");return;
     }
     if(!exporting || value.serial!=exporting->command.serial || value.actor!=exporting->command.actor)return;
     if(value.kind==CommandKind::BeginExport)exporting->started=true;
     if(value.kind==CommandKind::EndExport) {
-        exporting.reset();pending_export_request=0;
-        if(exit_after_save) {if(value.accepted)native_exit_requested=native_exit_confirmed=true;else exit_after_save=false;}
-        tell(value.accepted?"Local copy saved; shared editing resumed":"Local copy saving was cancelled or failed; the shared draft is preserved");
+        exporting->ending=true;exporting->result=value.accepted;
     }
 }
 void service_export() {
+    if(export_return_result){finish_export(*export_return_result);return;}
     if(!exporting && host() && !local_creation && idle_native() && controller->settled()){
         for(auto it=queued_exports.begin();it!=queued_exports.end();){
             auto member=controller->view().members.find(it->first.slot);
@@ -2612,6 +2924,18 @@ void service_export() {
         }
     }
     if(!exporting)return;
+    if(exporting->ending){
+        const auto result=exporting->result;
+        if(host()){end_export(result);return;}
+        std::string error;
+        if(!finish_export_terrain(error)){
+            if(error.empty())return;
+            frozen=true;tell("The export terrain restoration stopped: "+error);
+        }
+        exporting.reset();pending_export_request=0;
+        if(exit_after_save){if(result&&!frozen)native_exit_requested=native_exit_confirmed=true;else exit_after_save=false;}
+        tell(result?"Local copy saved; shared editing resumed":"Local copy saving was cancelled or failed; the shared draft is preserved");return;
+    }
     if(host()) {
         const auto& members=controller->view().members;
         for(uint8_t slot=0;slot<4;++slot)if((exporting->participants>>slot)&1) {
@@ -2620,17 +2944,30 @@ void service_export() {
         }
     }
     if(!exporting->acknowledged && (idle_native() || (local_creation && !durable_commit && !awaiting_operation))) {
+        if(export_terrain&&!local_creation&&!exporting->rejected){
+            auto terrain=*export_terrain;auto expected=current_native;expected.document=controller->state().document;std::string error;
+            if(!refresh_terrain_hold(terrain,expected,false,false,error)){
+                if(export_terrain&&export_terrain->key.serial==terrain.key.serial)*export_terrain=std::move(terrain);
+                if(error.empty())return;
+                exporting->rejected=true;tell("The export revision could not be pinned: "+error);
+            }else export_terrain=std::move(terrain);
+        }
         exporting->acknowledged=true;
-        if(host())exporting->held|=1;
-        else {auto held=exporting->command;held.kind=CommandKind::ExportHeld;held.actor=controller->view().local;send_command(held);}
+        if(host()){if(exporting->rejected){end_export(false);return;}exporting->held|=1;}
+        else {auto held=exporting->command;held.kind=exporting->rejected?CommandKind::FinishExport:CommandKind::ExportHeld;
+            held.actor=controller->view().local;held.accepted=false;send_command(held);}
     }
     if(host() && !exporting->started && exporting->held==exporting->participants && controller->settled()) {
         exporting->started=true;auto begin=exporting->command;begin.kind=CommandKind::BeginExport;send_command(begin);
     }
     if(exporting && exporting->started && !exporting->finished && !export_before && exporting->command.actor==controller->view().local && idle_native()) {
         std::string error;editor_native::Snapshot before;
-        if(!editor_native::capture(before,error)){tell(error);finish_export(false);return;}
-        before.document=controller->state().document;export_generation=native_generation;export_before=std::move(before);
+        if(exporting->rejected || !export_terrain){tell("The local copy has no verified held terrain receipt");finish_export(false);return;}
+        auto terrain=*export_terrain;auto expected=current_native;expected.document=controller->state().document;
+        if(!refresh_terrain_hold(terrain,expected,false,false,error)){
+            export_terrain=std::move(terrain);if(error.empty())return;tell(error);finish_export(false);return;
+        }
+        before=terrain.entry;export_terrain=std::move(terrain);export_generation=native_generation;export_before=std::move(before);
         if(!editor_native_save::save_as(error)){tell(error);finish_export(false);}
     }
 }
@@ -2714,15 +3051,22 @@ void execute(Action action) {
         const auto native = editor_native::state();
         if(!host()) {
             if(cached.can_save && !exporting && !pending_export_request) {
+                TerrainHold terrain;if(!capture_terrain_hold(terrain,error)){tell(error);break;}
                 auto request=command(CommandKind::RequestExport,controller->view().local);
-                if(send_command(request))pending_export_request=request.serial;
+                export_terrain=std::move(terrain);
+                if(send_command(request))pending_export_request=request.serial;else export_terrain.reset();
             }
             break;
         }
         test_request.reset();
         if (cached.can_save && controller->view().phase == Phase::Ready && !frozen && !recovery &&
             native.ready && !native.gesture && native.generation == native_generation && !editor_native_save::busy() &&
-            check_native_integrity(error) && !(native_copy_owned ? editor_native_save::save(error) : editor_native_save::save_as(error))) tell(error);
+            check_native_integrity(error)){
+            TerrainHold terrain;
+            if(!capture_terrain_hold(terrain,error)){tell(error);break;}
+            save_terrain=std::move(terrain);
+            if(!(native_copy_owned ? editor_native_save::save(error) : editor_native_save::save_as(error))){save_terrain.reset();tell(error);}
+        }
         break;
     }
     case Action::Solo:
@@ -2878,7 +3222,11 @@ void execute(Action action) {
         if(!editor_native::validate_entry(native.bytes,native.act,error)){tell(error);break;}
         if (!editor_native::state().editing && !editor_native::enter(native.source, error)) { tell(error); break; }
         native_copy_owned = owned;
-        recovery = Recovery{std::move(recovered), std::move(native), std::move(envelope), checkpoint.metadata, resume, false, !owned, false, std::nullopt};
+        std::optional<TerrainHold> retained;
+        if(current_projection_scope().epoch){TerrainHold terrain;std::string proof_error;if(capture_terrain_hold(terrain,proof_error))retained=std::move(terrain);}
+        recovery = Recovery{std::move(recovered), std::move(native), std::move(envelope), checkpoint.metadata, resume,
+            false,!owned,false,std::nullopt,0,std::nullopt,false,false,{}};
+        recovery->terrain=std::move(retained);
         status = "Loading the durable adventure draft"; finish_recovery(); break;
     }
     }
@@ -2907,7 +3255,9 @@ void SK_CDECL drain(void*) {
         if(durable_commit){controller->tick(now_ms());if(durable_commit){refresh();return;}}
         if (transport_teardown) { service_transport_teardown(); refresh(); return; }
         submit_pending_gesture();
-        controller->tick(now_ms());
+        // start() stages joined players locally. Do not publish the new epoch,
+        // baseline, or claimed durability before the recovery checkpoint exists.
+        if(!(recovery&&recovery->controller_started))controller->tick(now_ms());
         if(durable_commit){refresh();return;}
         if(!creation_actions.empty() && !editor_creation::active() && !local_creation && !durable_commit && controller->view().phase==Phase::Ready){
             const auto action=creation_actions.front();creation_actions.pop_front();
@@ -3030,7 +3380,7 @@ void SK_CDECL drain(void*) {
         if (returning && current_preview_return(*returning)) execute(Action::Return);
         auto solo_return=std::move(pending_solo_return);pending_solo_return.reset();
         if(solo_return && controller->view().playtest_mode==editor::wire::PlaytestMode::Solo && same_preview_context(*solo_return))execute(Action::Return);
-        service_export();service_native_exit();service_automatic_follow();
+        service_cancelled_save();service_export();service_native_exit();service_automatic_follow();
         if(exit_after_return && controller->view().phase==Phase::Ready && !adventure_native::editor_preview()) {
             exit_after_return=false;execute(Action::NativeExit);
         }
@@ -3084,7 +3434,7 @@ void SK_CDECL drain(void*) {
     // A local native failure must be visible to the host. Otherwise a connected
     // frozen replica can keep sending transport keepalives without ever covering
     // the accepted edit that a graceful host close is waiting to deliver.
-    if (frozen && session_active() && controller->view().phase != Phase::Frozen) {
+    if (frozen && !recovery && session_active() && controller->view().phase != Phase::Frozen) {
         controller->freeze_local(status); refresh();
     }
 }
@@ -3133,6 +3483,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     native_exit_requested=native_exit_confirmed=exit_after_save=exit_broadcast=remote_exit=handoff=handoff_saving=false;
     exit_after_return=false;
     exporting.reset();export_before.reset();test_request.reset();pending_export_request=pending_test_request=0;
+    save_terrain.reset();export_terrain.reset();close_terrain.reset();export_return_result.reset();save_cancelling=false;terrain_transition_serial=0;
     command_serial=last_host_command=export_generation=handoff_prompt_serial=0;seen_commands={};seen_command_peers={};source_creation={};
     native_playtesting=return_started=disconnected_return=end_after_return=false;return_error.clear();
     preview_selection.reset();pending_preview_return.reset();pending_preparation_cancel.reset();
@@ -3542,17 +3893,44 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     bool available = editor_native::init(H, M, std::move(native));
     editor_native_save::Ctx saving;
     saving.shared_active = [] { return session_active() || recovery.has_value() || beginning || closing || native_attached || handoff; };
-    saving.saved = [](editor::ResourceKey key) {
+    saving.preparing=[](const editor_native_save::SaveOperation& operation,std::string& error){
+        auto* hold=export_before&&export_terrain?&*export_terrain:save_terrain?&*save_terrain:
+            recovery&&recovery->terrain?&*recovery->terrain:nullptr;
+        if(!hold){
+            if(session_active()&&!handoff&&!beginning){error="The native Save has no current terrain transition receipt";return false;}
+            return true;
+        }
+        if(!operation.module_generation || !operation.serial || operation.after!=editor::ResourceKey{} ||
+           operation.owner!=hold->key.owner || operation.before!=hold->key.owner.source ||
+           operation.native_generation!=hold->key.generation || !terrain_fence(*hold,false,recovery.has_value())()){
+            error="The native Save does not match its held terrain transition";return false;
+        }
+        hold->save=operation;return true;
+    };
+    auto completed_save=[](editor::ResourceKey key,const editor_native_save::SaveOperation* operation) {
+        if(operation){
+            auto* hold=export_before&&export_terrain?&*export_terrain:save_terrain?&*save_terrain:
+                recovery&&recovery->terrain?&*recovery->terrain:nullptr;
+            if(hold){
+                auto prepared=*operation;prepared.after={};
+                if(!hold->save || *hold->save!=prepared || operation->after!=key){
+                    frozen=true;tell("The completed native Save does not match its terrain operation receipt");return;
+                }
+                hold->save=*operation;
+            }
+        }
         if(export_before){finish_export(true);return;}
         if(handoff && handoff_saving){handoff_saving=false;native_exit_requested=native_exit_confirmed=true;return;}
         if (transport_teardown || (native_attached && editor_native::state().generation != native_generation)) return;
         if (recovery && recovery->saving) { recovery->saved_key = key; return; }
         if (beginning) { start_saved(); return; }
-        saved_native(key);
+        saved_native(key,operation);
         if(exit_after_save && !frozen)native_exit_requested=native_exit_confirmed=true;
     };
-    saving.cancelled = [] { if(export_before)finish_export(false);if(handoff)++handoff_prompt_serial;handoff_saving=false;exit_after_save=false; if (transport_teardown) return; beginning = false; if (recovery && recovery->saving) { recovery.reset(); frozen = true; } status = "Native save cancelled; the draft is preserved"; };
-    saving.error = [](const std::string& error) { if(export_before)finish_export(false);if(handoff)++handoff_prompt_serial;handoff_saving=false;exit_after_save=false; if (transport_teardown) return; beginning = false; if (recovery && recovery->saving) { recovery.reset(); frozen = true; } tell(error); };
+    saving.saved=[completed_save](editor::ResourceKey key){completed_save(key,nullptr);};
+    saving.saved_operation=[completed_save](const editor_native_save::SaveOperation& operation){completed_save(operation.after,&operation);};
+    saving.cancelled = [] { if(export_before)finish_export(false);else if(save_terrain){save_cancelling=true;save_publication_pending=true;}if(handoff)++handoff_prompt_serial;handoff_saving=false;exit_after_save=false; if (transport_teardown) return; beginning = false; if (recovery && recovery->saving) { recovery.reset(); frozen = true; } status = "Native save cancelled; the draft is preserved"; };
+    saving.error = [](const std::string& error) { if(export_before)finish_export(false);else if(save_terrain){save_cancelling=true;save_publication_pending=true;}if(handoff)++handoff_prompt_serial;handoff_saving=false;exit_after_save=false; if (transport_teardown) return; beginning = false; if (recovery && recovery->saving) { recovery.reset(); frozen = true; } tell(error); };
     saving.owned_preview = []{return adventure_native::editor_preview() || solo_preview.has_value();};
     saving.return_requested = [] { action(Action::Return); };
     saving.request = [](editor_native_save::Request request) {
@@ -3617,6 +3995,7 @@ void shutdown() {
     // Failure can require native rollback, so retire native adapters last.
     if(controller){controller->end();controller.reset();}
     pending.reset();awaiting_operation.reset();waiting_acts.reset();rollback_fence.reset();before_apply_valid=false;
+    save_terrain.reset();export_terrain.reset();close_terrain.reset();export_return_result.reset();save_cancelling=false;
     guarded_placements.clear();guarded_terrain.clear();requested_scopes.clear();lease_use.clear();
     editor_creation::shutdown();local_creation.reset();prepared_native.reset();rendered_revision=0;
     waiting_history.reset();authoring_projection_override.reset();test_menu.reset();guarded_settings.clear();guarded_authoring.clear();cast_uploads.clear();cast_upload_errors.clear();
