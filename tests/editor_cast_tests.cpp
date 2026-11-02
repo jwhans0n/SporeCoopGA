@@ -76,6 +76,28 @@ static void referenced_import_undo(){
         editor_native::behavior_class_reference(refs,type,value);
     CHECK(refs==std::set<ObjectId>{{(2ull<<32)|1024,1}});
 }
+static void active_behavior_reference_metadata(){
+    // Adventure Town class14 keeps target1109 in all five standard pickup
+    // slots while custom behavior is enabled. Preserve those authored bytes;
+    // only references from the active native behavior may constrain editing.
+    auto state=seed();auto& d=state.document;d.classes.insert(cast);d.class_settings.emplace(settings,initial());
+    auto& subtree=std::get<StructuredValue>(d.class_settings.at(settings).properties.at(block.property));
+    subtree.bytes={0x55,0x04,0,0,1,3,1,3};const auto authored=subtree.bytes;
+    std::set<ObjectId> refs;std::string error;
+    editor_native::standard_behavior_class_references(refs,true,3,3,5,1109,1109,1109);
+    subtree.references.assign(refs.begin(),refs.end());CHECK(refs.empty());CHECK(valid(d,{},error));CHECK(subtree.bytes==authored);
+    editor_native::standard_behavior_class_references(refs,false,1,1,3,1109,1109,1109);
+    CHECK(refs.empty());
+    for(unsigned selected=0;selected<3;++selected){
+        refs.clear();editor_native::standard_behavior_class_references(refs,false,selected==0?3:1,selected==1?3:1,selected==2?5:3,1109,1109,1109);
+        CHECK(refs==std::set<ObjectId>{{(2ull<<32)|1109,1}});
+        subtree.references.assign(refs.begin(),refs.end());CHECK(!valid(d,{},error));CHECK(subtree.bytes==authored);
+    }
+    refs.clear();editor_native::standard_behavior_class_references(refs,true,3,3,5,1109,1109,1109);
+    editor_native::behavior_class_reference(refs,2,1109);subtree.references.assign(refs.begin(),refs.end());
+    CHECK(!valid(d,{},error)); // An active custom rule still cannot dangle.
+    d.classes.insert({(2ull<<32)|1109,1});CHECK(valid(d,{},error));CHECK(subtree.bytes==authored);
+}
 static void independent_act_and_captain_settings(){
     using namespace editor_native;
     auto baseline=seed();auto& d=baseline.document;d.next_id=9ull<<32;d.classes.insert(cast);
@@ -201,6 +223,7 @@ static void placement_history_after_act_deletion(){
     std::vector<uint8_t> bytes;State recovered;CHECK(wire::encode_state(core.state(),bytes,error));CHECK(wire::decode_state(bytes,recovered,error));CHECK(recovered==core.state());
 }
 int main(){
+    active_behavior_reference_metadata();
     placement_history_after_act_deletion();
     ordered_act_roster();
     independent_act_and_captain_settings();

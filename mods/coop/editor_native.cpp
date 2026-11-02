@@ -454,7 +454,7 @@ struct MarkerAudio {
         skg::field<float>(marker,0x1E0)=pitch;skg::field<float>(marker,0x1E4)=gain;
     }
 };
-bool class_block(uint8_t* row,editor::StructuredValue& block,std::string& error){
+bool class_block(uint8_t* row,editor::StructuredValue& block,std::string& error,std::vector<editor::ObjectId>* legacy_references=nullptr){
     Owned fragment(construct());if(!fragment.p){error="Cannot allocate the owned cast subtree";return false;}
     // F2E670 leaves screenshot types 68..74 uninitialized. They and the local
     // camera belong to the wrapper, never the authored class subtree.
@@ -490,16 +490,23 @@ bool class_block(uint8_t* row,editor::StructuredValue& block,std::string& error)
     Rows acts;
     auto* normalized_class=skg::field<uint8_t*>(normalized.p,0x2BF4)+8;
     if(!rows(normalized_class,0x70,0x4E0,8,acts)){error="Invalid native cast act collection";return false;}
-    std::set<editor::ObjectId> references;
+    std::set<editor::ObjectId> references,legacy;
     for(auto act=acts.begin;act!=acts.end;act+=0x4E0){
-        for(auto offset:{0x4BCu,0x4C0u,0x4C4u})behavior_class_reference(references,2,skg::field<int32_t>(act,offset));
+        const bool custom=skg::field<uint8_t>(act,0x4C8)==1;
+        standard_behavior_class_references(references,custom,skg::field<int32_t>(act,0x4B0),skg::field<int32_t>(act,0x4B4),
+            skg::field<int32_t>(act,0x4B8),skg::field<int32_t>(act,0x4BC),skg::field<int32_t>(act,0x4C0),skg::field<int32_t>(act,0x4C4));
+        if(legacy_references)for(auto offset:{0x4BCu,0x4C0u,0x4C4u})behavior_class_reference(legacy,2,skg::field<int32_t>(act,offset));
         Rows rules;
         if(!rows(act,0x4CC,0x20,1024,rules)){error="Invalid native behavior rule collection";return false;}
-        for(auto rule=rules.begin;rule!=rules.end;rule+=0x20)
-            for(auto offset:{4u,0x10u,0x18u})
-                behavior_class_reference(references,skg::field<int32_t>(rule,offset),skg::field<int32_t>(rule,offset+4));
+        if(custom || legacy_references)for(auto rule=rules.begin;rule!=rules.end;rule+=0x20)
+            for(auto offset:{4u,0x10u,0x18u}){
+                const auto type=skg::field<int32_t>(rule,offset),value=skg::field<int32_t>(rule,offset+4);
+                if(custom)behavior_class_reference(references,type,value);
+                if(legacy_references)behavior_class_reference(legacy,type,value);
+            }
     }
     block.references.assign(references.begin(),references.end());
+    if(legacy_references)legacy_references->assign(legacy.begin(),legacy.end());
     return true;
 }
 bool class_primary_asset(void* native,editor::ResourceKey& key,std::string& error){
@@ -2585,7 +2592,7 @@ bool expand_snapshot(const Snapshot& input,bool relative,Snapshot& out,std::stri
 bool canonicalize_cast_state(editor::State& state,std::string& error){
     // Recovery may predate machine-hint normalization. Upgrade every retained
     // precondition together, without changing revisions or retiring history.
-    struct Normalized {editor::StructuredValue block;editor::ResourceKey primary;};
+    struct Normalized {editor::StructuredValue block;editor::ResourceKey primary;std::vector<editor::ObjectId> legacy_references;};
     std::map<std::vector<uint8_t>,Normalized> cache;
     auto value=[&](editor::Value& v,editor::ResourceKey* primary=nullptr){
         auto* block=std::get_if<editor::StructuredValue>(&v);
@@ -2595,10 +2602,10 @@ bool canonicalize_cast_state(editor::State& state,std::string& error){
             Owned owned(parse(block->bytes,error));Rows classes;
             if(!owned.p || !rows(owned.p,0x2BF4,0x27E8,1,classes) || classes.end-classes.begin!=0x27E8){error="Invalid recovery cast fragment";return false;}
             Normalized normalized;
-            if(!class_primary_asset(classes.begin+8,normalized.primary,error) || !class_block(classes.begin,normalized.block,error))return false;
+            if(!class_primary_asset(classes.begin+8,normalized.primary,error) || !class_block(classes.begin,normalized.block,error,&normalized.legacy_references))return false;
             found=cache.emplace(block->bytes,std::move(normalized)).first;
         }
-        if(found->second.block.references!=block->references){error="Recovery cast normalization changed its references";return false;}
+        if(found->second.block.references!=block->references && found->second.legacy_references!=block->references){error="Recovery cast normalization changed its references";return false;}
         if(primary)*primary=found->second.primary;
         *block=found->second.block;return true;
     };

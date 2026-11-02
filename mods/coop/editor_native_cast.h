@@ -25,6 +25,16 @@ inline void behavior_class_reference(std::set<editor::ObjectId>& references,int3
     // carries an emote, so neither may be mistaken for a cast identity.
     if(type==2 && value>=0)references.insert({(2ull<<32)|uint32_t(value),1});
 }
+inline void standard_behavior_class_references(std::set<editor::ObjectId>& references,bool custom,
+    int32_t pickup,int32_t give,int32_t movement,int32_t pickup_target,int32_t give_target,int32_t track_target){
+    // ED8390/ED8400/ED8470 choose custom rules instead when custom4C8 is
+    // enabled. Standard target slots retain stale values when their selector
+    // is inactive; their bytes remain authored but they are not live links.
+    if(custom)return;
+    if(pickup==3)behavior_class_reference(references,2,pickup_target);
+    if(give==3)behavior_class_reference(references,2,give_target);
+    if(movement==5)behavior_class_reference(references,2,track_target);
+}
 inline const std::map<uint32_t,editor::PropertySpec>& cast_property_schema(){
     static const std::map<uint32_t,editor::PropertySpec> schema{
         {kCastBlockProperty,{editor::ValueKind::Structured,0,0,0,false,false}},

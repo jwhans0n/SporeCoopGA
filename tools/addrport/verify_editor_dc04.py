@@ -271,6 +271,14 @@ def verify(pe):
                           (0xF34393,'e808925dff'),(0xF343A5,'e856f653ff')]:
         if pe.read(site,len(bytes.fromhex(encoded)))!=bytes.fromhex(encoded):
             raise ValueError('Deferred Terraform control layout mismatch '+hex(site))
+    # Native active reference selectors explicitly choose custom rules, or the
+    # matching standard pickup/give/track selector. Retained inactive targets
+    # are authored bytes but cannot block loading a valid native adventure.
+    for site, encoded in [(0xED8394,'80b8c804000001'),(0xED83ED,'83b8b004000003'),(0xED83F6,'8b80bc040000'),
+                          (0xED8404,'80b8c804000001'),(0xED845D,'83b8b404000003'),(0xED8466,'8b80c0040000'),
+                          (0xED8474,'80b8c804000001'),(0xED84CD,'83b8b804000005'),(0xED84D6,'8b80c4040000')]:
+        if pe.read(site,len(bytes.fromhex(encoded)))!=bytes.fromhex(encoded):
+            raise ValueError('Active cast behavior reference selector mismatch '+hex(site))
     for name, address, prefix, returns, note, calls, checks in ENTRIES:
         if not pe.in_text(address) or pe.read(address,len(bytes.fromhex(prefix))) != bytes.fromhex(prefix):
             raise ValueError(name + ': entry mismatch')
