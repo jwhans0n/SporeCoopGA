@@ -235,4 +235,62 @@ static void materialization(){
     witness.clear();CHECK(witness.observe(input,output,error));material::Recipe none;
     CHECK(witness.observe(none,none,error));normalized=after;CHECK(witness.normalize(normalized,error));CHECK(normalized==before);
 }
-int main(int argc,char** argv){roundtrip();rejected();transform_counters();materialization();if(argc>1)captured(argv[1]);if(argc>2)captured_append(argv[1],argv[2]);std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+static void import_counter_chaining(){
+    namespace material=editor_native_terrain_materialization;
+    const auto base=baseline();editor::Document d;std::string error;CHECK(project(base,{},d,error));
+    for(auto row:{stroke(100,1,13),stroke(101,2,17),stroke(102,3,23,editor::TerrainKind::Model)})d.terrain.emplace(row.object,std::move(row));
+    d.next_terrain_order=4;std::vector<uint8_t> authored;CHECK(merge(base,d,authored,error));
+    material::Recipe input;CHECK(material::from_bytes(authored,input,error));
+    const auto proxy=[](material::Recipe rows){
+        for(auto& kind:rows.rows)for(auto& row:kind){
+            auto& b=row.bytes;b[12]|=4;const auto count=uint16_t(material::counter(b)+1);b[14]=uint8_t(count);b[15]=uint8_t(count>>8);
+            real(b,16,std::nextafter(editor::terrain_float(b,16),1000.f));
+        }
+        return rows;
+    };
+    const auto imported=[](material::Recipe rows,uint16_t count){for(auto& kind:rows.rows)for(auto& row:kind){row.bytes[14]=uint8_t(count);row.bytes[15]=uint8_t(count>>8);}return rows;};
+    const auto encode_rows=[&](const material::Recipe& rows){auto document=d;size_t indices[2]{};
+        for(auto& [id,row]:document.terrain){(void)id;row.payload=rows.rows[size_t(row.kind)].at(indices[size_t(row.kind)]++);}
+        std::vector<uint8_t> bytes;CHECK(merge(base,document,bytes,error));return bytes;};
+    material::Materialization witness;const auto first=proxy(input);CHECK(witness.observe(input,first,error));
+    auto reload=imported(first,1);auto raw_reload=encode_rows(reload),unchanged=raw_reload;
+    CHECK(witness.normalize(raw_reload,error)&&raw_reload==unchanged); // normalize never ignores counters.
+    auto second=proxy(reload);CHECK(witness.observe(reload,second,error));auto normalized=encode_rows(second);
+    CHECK(witness.normalize(normalized,error)&&normalized==authored);
+    // The index includes both current and retained maps, and every candidate
+    // agrees on its exact original payload across repeated native imports.
+    auto old_reload=imported(first,9),old_after=proxy(old_reload);
+    CHECK(witness.observe(old_reload,old_after,error));normalized=encode_rows(old_after);CHECK(witness.normalize(normalized,error)&&normalized==authored);
+    auto later=imported(old_after,0xFFFF),later_after=proxy(later);
+    CHECK(witness.observe(later,later_after,error));normalized=encode_rows(later_after);CHECK(witness.normalize(normalized,error)&&normalized==authored);
+    // Real key/flag/matrix/scalar changes are never counter aliases.
+    for(size_t offset:{size_t(0),size_t(12),size_t(32),size_t(68),size_t(72),size_t(76),size_t(80)}){
+        witness.clear();CHECK(witness.observe(input,first,error));auto changed=imported(first,7);
+        changed.rows[0][0].bytes[offset]^=offset==12?2:1;auto after=proxy(changed);
+        CHECK(witness.observe(changed,after,error));normalized=encode_rows(after);CHECK(witness.normalize(normalized,error));
+        auto wanted=d;wanted.terrain.at({100,1}).payload=changed.rows[0][0];std::vector<uint8_t> expected;CHECK(merge(base,wanted,expected,error));CHECK(normalized==expected);
+    }
+    // Geometrically identical rendered rows can have different FULL authored
+    // sources. A reset counter cannot choose one, even if an exact key exists.
+    material::Recipe collision=input;collision.rows[0][1]=collision.rows[0][0];real(collision.rows[0][1].bytes,16,17);collision.rows[0][1].bytes[14]=2;
+    auto output=proxy(collision);real(output.rows[0][0].bytes,16,21);real(output.rows[0][1].bytes,16,21);
+    witness.clear();CHECK(witness.observe(collision,output,error));auto ambiguous=imported(output,2),ambiguous_after=proxy(ambiguous);
+    const auto retained_bytes=witness.owned_bytes();CHECK(!witness.observe(ambiguous,ambiguous_after,error)&&error.find("ambiguous")!=std::string::npos);
+    CHECK(witness.owned_bytes()==retained_bytes);
+    // Actual Update/Append provenance skips chaining entirely, including an
+    // input that is an old rendered output with only its counter reset.
+    witness.clear();CHECK(witness.observe(input,first,error));material::AuthoredRows fresh;fresh[0].insert(0);
+    reload=imported(first,7);second=proxy(reload);CHECK(witness.observe(reload,second,error,fresh));normalized=encode_rows(second);CHECK(witness.normalize(normalized,error));
+    auto wanted=d;wanted.terrain.at({100,1}).payload=reload.rows[0][0];std::vector<uint8_t> expected;CHECK(merge(base,wanted,expected,error));CHECK(normalized==expected);
+    witness.clear();CHECK(witness.observe(input,first,error));auto appended=imported(first,1);appended.rows[0].push_back(appended.rows[0][0]);
+    auto appended_after=proxy(appended);fresh={};fresh[0].insert(appended.rows[0].size()-1);
+    CHECK(witness.observe(appended,appended_after,error)); // no native edit mark would borrow both old sources
+    witness.clear();CHECK(witness.observe(input,first,error));
+    CHECK(!witness.observe(appended,appended_after,error,fresh)); // fresh row must not borrow the old source
+    // At the native bound the lookup remains one ordered index, not a scan of
+    // all prior rows per input. All retained generations stay explicitly bound.
+    material::Recipe many;for(size_t n=0;n<kRecipeLimit;++n){auto row=stroke(100+n,1,13).payload;little(row.bytes,0,uint32_t(n+1));many.rows[0].push_back(std::move(row));}
+    witness.clear();for(unsigned round=0;round<5;++round){auto out=proxy(many);CHECK(witness.observe(many,out,error));CHECK(witness.owned_bytes()<(64u<<20));many=imported(out,uint16_t(round+17));}
+    auto oversized=many;oversized.rows[0].push_back(oversized.rows[0][0]);CHECK(!witness.observe(oversized,proxy(oversized),error));
+}
+int main(int argc,char** argv){roundtrip();rejected();transform_counters();materialization();import_counter_chaining();if(argc>1)captured(argv[1]);if(argc>2)captured_append(argv[1],argv[2]);std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

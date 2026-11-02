@@ -83,14 +83,49 @@ recovery or full-tab acceptance. Exact raw equality is deliberately conservative
 if native Save or asynchronous rebuilding changes a retained row, ordinary
 transfer rejects. A fresh explicitly fenced canonical rebuild is required.
 
+## Native import counters and materialization chaining
+
 The first actual C15 append failure is retained in
 `out/preview9-c15-terrain-comparison.json`. Its baseline has no duplicate record
 identity groups. Ten old rows contain verified derived XYZ differences and
 bookkeeping counters; the active raw vectors contain one new effect per author.
 The frozen public inspect serializes the committed working resource, whereas
 `capture_draft` exports the active Terraform property list into an owned parsed
-copy. Those are different read boundaries. Transform assignment `537E10`
-increments a destination counter rather than copying the source WORD, but the
-actual property-export call chain still requires confirmation before any
-copy-boundary normalization is added. No XYZ tolerance or guessed identity
-matching is authorized by that observation.
+copy. Those are different read boundaries.
+
+The verified counter-changing copy is the rebuild import, not export:
+`F37530 -> F37390` at `F37645`, then `F37390` tail-jumps `F36750` at `F37522`.
+That loader clears the native Transform vector length, obtains effect property
+`02A907B6` through `F366B0` at `F36D02`, and obtains model property `03A90C5F`
+through the same helper at `F3704A`. The helper grows destination rows through
+`F365D0`, then calls `F33870` at `F36731`. Each 56-byte copy invokes Transform
+assignment `537E10` at `F33886`. Assignment compares flags and numeric fields,
+increments the destination WORD+2 on change, copies flags/XYZ/scale/matrix, and
+does not copy the source counter. These calls precede `F35E10` at `F37858`.
+The exact call and byte receipts are checked by `verify_editor_dc04.py`.
+
+By contrast, native export `F32BB0` passes the live Transform array pointer to
+Property constructor `93DCF0`. Default property operation 2 copies type `38`
+with memcpy at `940AF4..940AFE`; Property Write `693360` writes each configured
+56-byte Transform directly through its stream at `693783..693794`. Neither
+reviewed route invokes Transform assignment or computes new XYZ.
+
+The candidate materialization helper therefore permits counter-only lookup
+solely while chaining a subsequent verified `F35E10` input to retained rendered
+outputs. It requires every other byte of the complete record to match exactly.
+Every current/retained matching key must resolve to the same full authored
+payload; different sources reject as ambiguous. Native-marked fresh/edited rows
+skip chaining, even if their geometry coincides with an older output. Output
+normalization still requires an exact complete rendered payload. Record identity
+projection, flags, XYZ, matrix, scale, keys and scalar validation remain strict.
+
+The synchronous lookup builds one ordered index over owned values. It retains
+no native pointers, is bounded to 16 MiB, and charges its size with existing
+owned maps against 64 MiB. Existing 32 MiB rendered-payload retention remains.
+Windows i686 and Linux pure fixtures each pass 318 checks, including imported
+counter reset/wrap, current and retained map chaining, distinct-source ambiguity,
+fresh/edited/append collisions and five generations of 8,192 effect records.
+The production Native wrapper fixture additionally resets both effect/model
+counters between actual hooked materializations and checks exact authored XYZ
+restoration. Running-game C15 causation and the repaired append remain pending
+fresh before/after PropertyList samples and a new installed candidate.

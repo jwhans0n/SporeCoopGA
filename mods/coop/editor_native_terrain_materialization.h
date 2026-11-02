@@ -99,6 +99,30 @@ public:
         erase(rendered);for(auto& row:previous)erase(row);
     }
     bool observe(const Recipe& before,const Recipe& after,std::string& error,const AuthoredRows& fresh={}){
+        // Verified F36750 -> F366B0 -> F33870 imports each Transform through
+        // 537E10 before F35E10. That assignment retains/increments the new
+        // destination's counter instead of copying source WORD+2. Chain only
+        // exact other bytes through every retained candidate; never infer XYZ.
+        // This index borrows only our owned values for this synchronous call.
+        struct ImportSource {const editor::StructuredValue* value=nullptr;bool ambiguous=false;};
+        std::array<std::map<std::vector<uint8_t>,ImportSource>,2> imports;
+        constexpr size_t index_limit=16u<<20,combined_limit=64u<<20;
+        size_t index_bytes=sizeof(imports);const size_t retained_owned=owned_bytes();
+        const auto import_key=[](std::vector<uint8_t> bytes){if(bytes.size()>=16)bytes[14]=bytes[15]=0;return bytes;};
+        const auto include=[&](const auto& maps){
+            for(size_t k=0;k<2;++k)for(const auto& [key,value]:maps[k]){
+                auto normalized=import_key(key);auto found=imports[k].find(normalized);
+                if(found!=imports[k].end()){if(*found->second.value!=value)found->second.ambiguous=true;continue;}
+                const size_t charge=128+sizeof(ImportSource)+normalized.capacity();
+                if(charge>index_limit-index_bytes || retained_owned>combined_limit-index_bytes-charge)return false;
+                index_bytes+=charge;imports[k].emplace(std::move(normalized),ImportSource{&value,false});
+            }
+            return true;
+        };
+        if(retained_owned>combined_limit || !include(rendered)){
+            error="Native terrain import witnesses exceed their bound";return false;
+        }
+        for(const auto& maps:previous)if(!include(maps)){error="Native terrain import witnesses exceed their bound";return false;}
         decltype(rendered) next;
         for(auto kind:{editor::TerrainKind::Effect,editor::TerrainKind::Model}){
             const auto k=index(kind);const auto& a=before.rows[k];const auto& b=after.rows[k];
@@ -109,7 +133,15 @@ public:
                 if(!proxy_output(kind,a[n],b[n])){
                     error="A native terrain materialization changed an unaudited recipe field";return false;
                 }
-                const auto* old=fresh[k].contains(n)?nullptr:authored(k,a[n].bytes);const auto& source=old?*old:a[n];
+                const editor::StructuredValue* old=nullptr;
+                if(!fresh[k].contains(n)){
+                    const auto found=imports[k].find(import_key(a[n].bytes));
+                    if(found!=imports[k].end()){
+                        if(found->second.ambiguous){error="Native terrain import counters have ambiguous authored provenance";return false;}
+                        old=found->second.value;
+                    }
+                }
+                const auto& source=old?*old:a[n];
                 const auto* earlier=authored(k,b[n].bytes);
                 auto [at,inserted]=next[k].emplace(b[n].bytes,source);
                 if((!inserted && at->second!=source) || (earlier && *earlier!=source)){

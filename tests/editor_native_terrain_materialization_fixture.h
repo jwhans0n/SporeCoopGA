@@ -282,6 +282,15 @@ void test_terrain_materialization_hooks(){
     const auto rendered=tmf_bytes();CHECK(rendered!=before);auto normalized=rendered;
     CHECK(normalize_materialized_terrain(normalized,error)&&normalized==before);CHECK(tmf_bytes()==rendered&&t_live==resource_before);
     terrain_materialize(t_terraform.data());auto twice=tmf_bytes();CHECK(normalize_materialized_terrain(twice,error)&&twice==before);
+    // Native F36750 imports exact geometry using destination-owned Transform
+    // counters. The real F35E10 wrapper must chain its original authored XYZ
+    // through that reset for effects and models without rewriting live bytes.
+    for(auto& columns:tmf_columns)for(size_t n=0;n<columns[1].size();n+=56)
+        skg::field<uint16_t>(columns[1].data()+n,2)=0;
+    tmf_bind();const auto imported=tmf_bytes();normalized=imported;
+    CHECK(normalize_materialized_terrain(normalized,error)&&normalized==imported);
+    terrain_materialize(t_terraform.data());const auto import_output=tmf_bytes();normalized=import_output;
+    CHECK(normalize_materialized_terrain(normalized,error)&&normalized==before&&tmf_bytes()==import_output);
     CHECK(authored_terrain_append(t_terraform.data(),editor::TerrainKind::Effect));CHECK(terrain_authored_rows[0]==std::set<size_t>{1});
     // The selected descriptor marks its exact native kind/index as genuinely
     // authored before a move, independently of other proxy bookkeeping.
