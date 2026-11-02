@@ -78,6 +78,9 @@ struct Native {
     bool active=false,cleanup=false,return_ready=true,save_busy=false,rebaseline_ready=true;
     bool silently_refuse_apply=false,partially_apply=false,refuse_restore=false;
     bool defer_readiness_on_restore=false;
+    bool refuse_draft_capture=false,enter_with_gesture=false,enter_with_save=false;
+    unsigned draft_capture_attempts=0;
+    std::vector<char> snapshot_steps;
     unsigned unready_apply_attempts=0;
     bool bump_generation_on_stop=false,preserve_live_resource_key_on_restore=true,deferred_native_exit=false;
     bool focus_on_selection=false;
@@ -173,7 +176,7 @@ void simulate_host_saved(editor::ResourceKey key) {
 }
 struct Party {
     fs::path directory;
-    Party(size_t immutable_bytes=0,uint8_t initial_saved_opaque=0xA5,bool unsaved=false,bool automatic=false,bool guest_draft=false,uint32_t acts=1,uint32_t host_act=0,bool deferred_guest_scene=false) {
+    Party(size_t immutable_bytes=0,uint8_t initial_saved_opaque=0xA5,bool unsaved=false,bool automatic=false,bool guest_draft=false,uint32_t acts=1,uint32_t host_act=0,bool deferred_guest_scene=false,unsigned guest_baseline_gate=0) {
         dependency_bytes=immutable_bytes;
         clock_ms=10000;game_frame=1;dispatching=false;
         directory=fs::temp_directory_path()/("sporecoop-editor-runtime-tests-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(net::now_ms()));
@@ -182,6 +185,9 @@ struct Party {
             upload_collision[p]=false;
             side=int(p);native[p]={};auto& n=native[p];
             n.defer_readiness_on_restore=p && deferred_guest_scene;
+            n.refuse_draft_capture=p && guest_baseline_gate==1;
+            n.enter_with_gesture=p && guest_baseline_gate==2;
+            n.enter_with_save=p && guest_baseline_gate==3;
             n.state.available=true;n.state.editing=p==0 || guest_draft;n.state.ready=n.state.editing;n.state.generation=1;
             n.view.target={500,float(p),0};n.view.rotation={0,0,0,1};n.view.orbit={float(p),.6f,123};
             n.snapshot.source={original_key.instance,original_key.type,original_key.group};n.snapshot.captain=avatar_key;
@@ -234,6 +240,10 @@ struct Party {
             CHECK(spin([] {return runtime_guest::controller->view().phase==es::Phase::Offered;}));
             side=1;CHECK(runtime_guest::controller->accept_offer(error));
         }
+        if(guest_baseline_gate){
+            CHECK(spin([&]{return runtime_guest::controller->view().phase==(guest_baseline_gate==1?es::Phase::Frozen:es::Phase::Syncing) &&
+                runtime_guest::incoming_resources.has_value();}));return;
+        }
         CHECK(spin([] {return runtime_guest::controller->view().phase==es::Phase::Ready&&
             runtime_host::controller->view().members.at(1).phase==es::Phase::Ready&&!runtime_host::save_publication_pending;},true,90000));
         CHECK(runtime_host::store.healthy()&&runtime_guest::store.healthy());
@@ -261,7 +271,12 @@ bool apply_prepared(const Snapshot& prepared,const editor::Change& change,std::s
     return validate(native[side].snapshot,prepared.document,error);
 }
 bool canonicalize_cast_state(editor::State&,std::string&){return true;}
-bool capture_draft(Snapshot& value,std::string& error){return capture(value,error);}
+bool capture_draft(Snapshot& value,std::string& error){
+    auto& n=native[side];++n.draft_capture_attempts;
+    if(n.refuse_draft_capture){n.snapshot_steps.push_back('F');error="Injected owned terrain capture failed";return false;}
+    if(!capture(value,error))return false;
+    n.snapshot_steps.push_back('C');return true;
+}
 bool expand_snapshot(const Snapshot& input,bool,Snapshot& out,std::string& error){
     // This double's owned bytes already contain its complete semantic model.
     // It does not model additional native fields or establish native migration.
@@ -334,6 +349,7 @@ bool supported_changes(const Gesture& gesture,std::string& error){CHECK(!dispatc
 }
 bool restore(const Snapshot& value,std::string& error){CHECK(!dispatching);CHECK(native[side].state.ready);
     if(native[side].refuse_restore){error="Injected native restore failure";return false;}
+    native[side].snapshot_steps.push_back('R');
     if(native[side].callbacks.relative_scale_tracked)CHECK(native[side].callbacks.relative_scale_tracked()==!value.document.schema.empty());const auto live_key=native[side].snapshot.source;native[side].snapshot=value;native[side].state.act=value.act;if(native[side].preserve_live_resource_key_on_restore)native[side].snapshot.source=live_key;native[side].snapshot.captain=avatar_key;++native[side].restores;
     if(native[side].defer_readiness_on_restore)native[side].state.ready=false;return true;}
 bool rebaseline(std::string& error){CHECK(!dispatching);auto& n=native[side];if(!n.rebaseline_ready||n.state.gesture){error="Injected native capture pending";return false;}
@@ -345,7 +361,7 @@ bool apply(const editor::Document& doc,const editor::Change& change,const Snapsh
     if(n.silently_refuse_apply)return true;
     n.snapshot.document=doc;if(n.partially_apply&&!n.snapshot.document.placements.empty())n.snapshot.document.placements.begin()->second.position.x+=1;
     n.snapshot.bytes=body(n.snapshot.document,artifact&&!artifact->bytes.empty()?artifact->bytes.front():n.snapshot.bytes.empty()?0xA5:n.snapshot.bytes.front());bind_native(n);return true;}
-bool enter(const editor::ResourceKey& key,std::string&){auto& n=native[side];++n.enters;n.state.editing=n.state.ready=true;n.snapshot.source=key;return true;}
+bool enter(const editor::ResourceKey& key,std::string&){auto& n=native[side];++n.enters;n.state.editing=n.state.ready=true;n.state.gesture=n.enter_with_gesture;n.save_busy=n.enter_with_save;n.snapshot.source=key;return true;}
 bool select_placement(editor::ObjectId id,std::string&){CHECK(!dispatching);auto& n=native[side];if(!n.state.ready||n.state.gesture||
     (!n.snapshot.document.placements.contains(id) && !(id==kCaptainObject && n.snapshot.document.settings.contains(id))))return false;
     n.state.selected={id};if(n.focus_on_selection)n.view.target[0]+=20;++n.selections;return true;}
@@ -2388,13 +2404,62 @@ static void test_cast_property_undo_then_remove_refreshes_ownership_snapshot(){
     CHECK(runtime_host::controller->state().document.classes.empty()&&runtime_guest::controller->state().document.placements.empty());
     CHECK(!runtime_host::frozen&&!runtime_guest::frozen);
 }
+static void test_baseline_priming_waits_for_native_holds(){
+    // These are local load-history and Save holds before the first baseline
+    // restore. Readiness alone cannot make its verified terrain capture safe.
+    for(unsigned gate:{2u,3u}){
+        const auto retained=runtime_guest::current_native.bytes;
+        Party party(0,0xA5,false,false,false,1,0,false,gate);
+        const auto host_checkpoint=runtime_host::store.snapshot();
+        const auto live=native[1].snapshot.bytes;
+        CHECK(native[1].state.ready && native[1].enters==1);
+        for(unsigned frame=0;frame<8;++frame){
+            step();CHECK(runtime_guest::controller->view().phase==es::Phase::Syncing);
+            CHECK(!native[1].draft_capture_attempts && native[1].snapshot_steps.empty() && !native[1].restores);
+            CHECK(!runtime_guest::store.healthy() && !runtime_guest::native_attached && runtime_guest::current_native.bytes==retained);
+            CHECK(native[1].snapshot.bytes==live && runtime_host::store.snapshot()==host_checkpoint);
+            side=0;runtime_host::refresh();CHECK(!runtime_host::view().can_playtest);
+        }
+        native[1].state.gesture=false;native[1].save_busy=false;
+        CHECK(spin([]{return runtime_guest::controller->view().phase==es::Phase::Ready &&
+            runtime_host::controller->view().members.at(1).phase==es::Phase::Ready;}));
+        CHECK(native[1].draft_capture_attempts==1 && native[1].snapshot_steps==std::vector<char>{'C','R'} && native[1].restores==1);
+        CHECK(runtime_guest::store.healthy() && runtime_guest::native_attached && !runtime_guest::frozen);
+        CHECK(runtime_guest::controller->state()==runtime_host::controller->state());
+        CHECK(runtime_host::store.snapshot()==host_checkpoint);
+    }
+}
+static void test_baseline_failed_priming_keeps_unapplied_draft(){
+    const auto retained=runtime_guest::current_native.bytes;
+    Party party(0,0xA5,false,false,false,1,0,false,1);
+    const auto host_checkpoint=runtime_host::store.snapshot();
+    const auto host_native=runtime_host::current_native.bytes,guest_live=native[1].snapshot.bytes;
+    CHECK(native[1].state.editing && native[1].state.ready && native[1].enters==1);
+    CHECK(native[1].draft_capture_attempts==1 && native[1].snapshot_steps==std::vector<char>{'F'} && !native[1].restores);
+    CHECK(runtime_guest::controller->view().phase==es::Phase::Frozen);
+    CHECK(runtime_guest::controller->view().error=="Injected owned terrain capture failed");
+    CHECK(!runtime_guest::store.healthy() && !runtime_guest::native_attached && runtime_guest::current_native.bytes==retained);
+    CHECK(runtime_guest::incoming_resources.has_value());
+    for(unsigned frame=0;frame<8;++frame){
+        step();CHECK(runtime_guest::controller->view().phase==es::Phase::Frozen);
+        CHECK(native[1].snapshot.bytes==guest_live && native[1].draft_capture_attempts==1 && !native[1].restores);
+        CHECK(!runtime_guest::store.healthy() && !runtime_guest::native_attached);
+        CHECK(runtime_guest::current_native.bytes==retained);
+        CHECK(runtime_host::store.snapshot()==host_checkpoint && runtime_host::current_native.bytes==host_native && !runtime_host::frozen);
+        side=1;runtime_guest::refresh();CHECK(runtime_guest::view().frozen && !runtime_guest::view().can_save && !runtime_guest::view().can_playtest);
+        CHECK(!native[1].callbacks.gate({placement}));
+    }
+}
 static void test_baseline_accepts_owned_restore_before_scene_readiness(){
+    test_baseline_priming_waits_for_native_holds();
+    test_baseline_failed_priming_keeps_unapplied_draft();
     Party party(0,0xA5,false,false,false,1,0,true);
     CHECK(runtime_guest::controller->view().phase==es::Phase::Ready && !runtime_guest::frozen);
     CHECK(runtime_guest::store.healthy() && runtime_guest::store.durable_revision()==0);
     CHECK(runtime_guest::controller->state()==runtime_host::controller->state());
     const auto saved=runtime_guest::store.snapshot();const auto canonical=runtime_guest::current_native.bytes;
     CHECK(native[1].state.editing && !native[1].state.ready && native[1].restores==1 && !native[1].unready_apply_attempts);
+    CHECK(native[1].draft_capture_attempts==1 && native[1].snapshot_steps==std::vector<char>{'C','R'});
     for(unsigned frame=0;frame<8;++frame){
         step();CHECK(runtime_guest::controller->view().phase==es::Phase::Ready && !runtime_guest::frozen);
         CHECK(!runtime_guest::controller->view().members.at(1).presence.scene_ready);
