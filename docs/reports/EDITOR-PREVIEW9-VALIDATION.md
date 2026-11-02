@@ -1436,3 +1436,45 @@ and semantic `terrain_delta`. They add no native reads, permission bypass or
 normalization. The original error survives a failing logger. Actual C19
 terrain and restoration failure above remains valid; actual C20 acceptance
 still needs the next frozen native payload and focused reproduction.
+
+### C21 owned terrain-parent hydration and actual rejection recovery
+
+Parent hydration is committed in `c2d340e`. Strict actual-i686 fixtures pass
+54,041 checks, including 8,445 parent checks, 8,688 restore-fence checks,
+14,472 terrain-materialization checks and 1,293 rotation-restoration checks.
+All 43 compiler inputs remain unchanged in
+`out/preview9-c21-native-parent-receipt.json`. The three owned-input paths
+resolve the serialized native parent before any live restoration, explicit
+terrain Load, or deferred-preset history/Build mutation. Export remains strict;
+the helper neither supplies missing exported fields nor edits authored data.
+
+The private C21 production DLL is
+`a10103c03f20c05aa9fa74c92ea4bf451695458f4a31fa7051a32c3bd585b558`
+(90,415,104 bytes), built with all 188 production inputs unchanged. Receipts:
+`out/preview9-candidate21-source.json`,
+`out/preview9-candidate21-build-receipt.json` and
+`out/preview9-candidate21-deployment/receipt.json`.
+The source includes Native `76b76be66e8627af0305b96a1ffe80689b276ed96dc8525a2563897fff055455`
+and Runtime `bc9aafb7bb7e766e616a2ba127ba4fd1d29ed61ccfdff78e77ae3906a3ac6908`.
+The private exact 4 GB executable is retained; personal preview 8 is unchanged.
+
+Both fresh hidden/muted participants loaded Adventure Town through its native
+browser, joined at revision/durable 0 with history 0 and no faults, then used
+freshly inspected Raise Round Terrain cards and clear-ground targets. Both
+native histories were held before either release. The known incidental
+placement-rotation changes still rejected each stroke, as expected before the
+separate provenance fix. Both scenes then restored and remained Ready in phase
+4, with revision/durable 0, history 0 and zero faults. Their semantic planet
+fields match their pre-press values, and both strict checks report
+`CONVERGED 0cd414c54a81ceabdb461eaa36f721398a6557963018ad99f697af5d0b1d1f8d`.
+This exercises the final active-tool-cache comparison that failed in C20.
+
+Evidence: `out/preview9-c21-two-town-bootstrap/result.json`,
+`out/preview9-c21-terrain-calibrate/` and
+`out/preview9-c21-rejected-terrain-recovery-r2/result.json`.
+The first recovery helper reached Ready but refused its own diagnostic `log`
+command; that incomplete fixture result is retained at
+`out/preview9-c21-rejected-terrain-recovery/result.json`. A second fresh pair of
+strokes used the corrected bounded diagnostic allowlist and passed. No failed
+artifact was rewritten. This is rejection-recovery acceptance only; it does
+not establish simultaneous Terraform transaction acceptance or timing targets.
