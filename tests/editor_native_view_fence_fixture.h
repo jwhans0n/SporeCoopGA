@@ -126,3 +126,166 @@ void test_fenced_view(){
 static void test_native_view_fences(){
     view_fence_fixture::test_settled_scene_owner();view_fence_fixture::test_fenced_view();view_fence_fixture::test_quaternion_diagnostics();
 }
+
+namespace restore_fence_fixture {
+std::function<void(unsigned)> callback;
+std::set<void*> entries;
+std::array<void*,8> entry_vtable;
+std::array<uint8_t,0x1C> script;
+std::array<uint8_t,0x24> settings;
+std::array<uint8_t,0x18> inspector_layout;
+unsigned writes=0,acts=0,inspector_opens=0,selections=0,entry_destroys=0;
+unsigned text_writes=0,caption_writes=0;
+bool inspector_visible=false,fail_allocation=false;
+void event(unsigned stage){if(callback)callback(stage);}
+int SK_THISCALL addref_entry(void* entry){return ++skg::field<int>(entry,8);}
+int SK_THISCALL release_entry(void* entry){
+    const auto refs=--skg::field<int>(entry,8);CHECK(refs>=0);
+    if(!refs){CHECK(entries.erase(entry)==1);t_release(skg::field<void*>(entry,0x10));
+        t_release(skg::field<void*>(entry,0x14));std::free(entry);++entry_destroys;}
+    return refs;
+}
+void* SK_CDECL allocate(size_t size,const char* name,int a,int b,int c,int d){
+    if(size!=0x18)return t_allocate(size,name,a,b,c,d);
+    event(22);if(fail_allocation)return nullptr;
+    auto* entry=std::calloc(1,size);CHECK(entry);entries.insert(entry);return entry;
+}
+void* SK_THISCALL construct_entry(void* entry,void* owner,void* before,void* after){
+    CHECK(entries.contains(entry)&&owner==t_data.data());
+    skg::field<void*>(entry,0)=entry_vtable.data();skg::field<void*>(entry,0xC)=owner;
+    skg::field<void*>(entry,0x10)=before;skg::field<void*>(entry,0x14)=after;t_addref(before);t_addref(after);
+    event(23);return entry;
+}
+void SK_THISCALL restore_entry(void* entry,void* image){
+    CHECK(entries.contains(entry)&&skg::field<void*>(entry,0xC)==t_data.data());
+    ++writes;t_copy(t_live.data(),image);skg::field<void*>(t_context.data(),4)=nullptr;
+    inspector_visible=false;event(24);
+}
+void SK_CDECL select_act(uint32_t act){++acts;skg::field<uint32_t>(t_context.data(),0)=act;event(25);}
+void SK_THISCALL select(void* tools,void* actor){++selections;t_select(tools,actor);event(26);}
+bool SK_THISCALL shown(void* layout){
+    CHECK(layout==t_layout.data()||layout==inspector_layout.data());
+    event(layout==inspector_layout.data()?20:11);
+    return layout==t_layout.data()||inspector_visible;
+}
+void SK_THISCALL open_inspector(void* self,uint32_t asset){
+    CHECK(self==settings.data()&&asset==1024);++inspector_opens;inspector_visible=true;
+}
+bool SK_THISCALL read_image(void* image,Stream* stream){const bool okay=t_pose_read(image,stream);event(21);return okay;}
+void* SK_THISCALL assign_text(void* header,const char16_t* first,const char16_t* last){
+    CHECK(first==last);skg::field<void*>(header,0)=nullptr;skg::field<void*>(header,4)=nullptr;
+    ++text_writes;event(27);return header;
+}
+uintptr_t symbol(const char* name){
+    CHECK(std::string(name)=="SporeCoop::Editor::AssignMetadataText");event(30);return uintptr_t(assign_text);
+}
+void* SK_CDECL get_messages(){event(28);return &v_messages;}
+void SK_THISCALL send_caption(void* self,uint32_t message,void* packet,void*){
+    CHECK(self==&v_messages&&message==0x7AA519DC&&skg::field<void*>(packet,0)==t_data.data()+4);
+    ++caption_writes;event(29);
+}
+struct Routes {
+    RecentRoutes recent;
+    uintptr_t allocator=a_alloc,entry=a_entry,restore=a_restore,shown_route=a_layout_shown,inspector=a_inspector_open;
+    uintptr_t message_manager=a_metadata_message_manager,message_send=a_metadata_message_send;
+    SelectActFn act=original_select_act;SelectFn select_route=original_select;
+    ~Routes(){
+        callback={};v_callback={};CHECK(entries.empty());reset();
+        a_alloc=allocator;a_entry=entry;a_restore=restore;a_layout_shown=shown_route;a_inspector_open=inspector;
+        a_metadata_message_manager=message_manager;a_metadata_message_send=message_send;
+        original_select_act=act;original_select=select_route;
+    }
+};
+Snapshot setup(SceneOwner& owner){
+    CHECK(entries.empty());callback={};view_fixture();auto snapshot=recent_pose_setup();snapshot.metadata.reset();
+    C.projection_scope=[] {return t_scope;};C.gesture_scope=[] {return GestureScope{};};
+    script.fill(0);settings.fill(0);inspector_layout.fill(0);
+    skg::field<void*>(t_display.data(),0x18)=script.data();skg::field<void*>(script.data(),0x18)=settings.data();
+    skg::field<void*>(settings.data(),0x10)=inspector_layout.data();skg::field<uint32_t>(settings.data(),0x20)=1024;
+    inspector_visible=true;writes=acts=inspector_opens=selections=entry_destroys=text_writes=caption_writes=0;fail_allocation=false;
+    entry_vtable.fill(nullptr);entry_vtable[0]=reinterpret_cast<void*>(addref_entry);entry_vtable[1]=reinterpret_cast<void*>(release_entry);
+    a_alloc=uintptr_t(allocate);a_entry=uintptr_t(construct_entry);a_restore=uintptr_t(restore_entry);
+    a_layout_shown=uintptr_t(shown);a_inspector_open=uintptr_t(open_inspector);a_read=uintptr_t(read_image);
+    original_select_act=select_act;original_select=select;
+    v_callback=[](unsigned stage){event(stage);};
+    std::string error;CHECK(capture_scene_owner(owner,error));v_gets=v_looks=v_sets=0;
+    return snapshot;
+}
+void metadata(Snapshot& snapshot){
+    snapshot.metadata=Snapshot::Metadata{};
+    static SkHost host;host=*H;host.sym=symbol;H=&host;
+    v_message_vt.fill(nullptr);v_messages=v_message_vt.data();v_message_vt[0x14/4]=reinterpret_cast<void*>(send_caption);
+    a_metadata_message_manager=uintptr_t(get_messages);a_metadata_message_send=uintptr_t(send_caption);
+}
+void expire(unsigned reason,bool& allowed){
+    if(reason==0)++generation;
+    if(reason==1)++t_scope.project[0];
+    if(reason==2)++t_scope.epoch;
+    if(reason==3)++t_scope.author.slot;
+    if(reason==4)++t_scope.author.generation;
+    if(reason==5)C.projection_scope=[] {return GestureScope{};};
+    if(reason==6)t_mode_pointer=nullptr;
+    if(reason==7)skg::field<void*>(t_mode.data(),0x74)=t_other_data.data();
+    if(reason==8)skg::field<void*>(t_data.data(),0x10)=t_other_data.data();
+    if(reason==9)++skg::field<editor::ResourceKey>(t_live.data(),8).instance;
+    if(reason==10)allowed=false;
+    if(reason==11)C.projection_scope=[] {throw 7;return GestureScope{};};
+}
+void test(){
+    Routes routes;std::string error;SceneOwner owner;
+    auto snapshot=setup(owner);const auto unchanged=t_rows[t_live.data()];
+    CHECK(restore_fenced(snapshot,generation,owner,t_scope,[]{return true;},error));
+    CHECK(writes==1&&acts==1&&selections==1&&inspector_opens==1&&entry_destroys==1);
+    CHECK(v_looks==1&&v_sets==1&&entries.empty()&&t_allocations.empty()&&t_rows[t_live.data()]==unchanged&&!applying);
+    // Internal getter and private-allocation callbacks must never re-pin a new
+    // source/owner, even when its native generation and data address survive.
+    for(unsigned stage:{0u,1u,2u,3u,4u,5u,6u,11u,20u,21u,22u,23u})for(unsigned reason=0;reason<12;++reason){
+        snapshot=setup(owner);const auto before=t_rows[t_live.data()];const auto expected=generation;const auto scope=t_scope;
+        bool fired=false,allowed=true;callback=[&](unsigned at){if(at==stage&&!fired){fired=true;expire(reason,allowed);}};
+        bool accepted=false;
+        try{accepted=restore_fenced(snapshot,expected,owner,scope,[&]{return allowed;},error);}
+        catch(...){std::printf("restore callback escaped: stage=%u reason=%u\n",stage,reason);std::fflush(stdout);throw;}
+        CHECK(!accepted&&fired&&!error.empty());
+        CHECK(!writes&&!acts&&!selections&&!inspector_opens&&!v_looks&&!v_sets);
+        CHECK(entries.empty()&&t_allocations.empty()&&t_rows[t_live.data()]==before&&!applying);
+    }
+    // A mutation that expires the pin may finish its own original Native call;
+    // no later act, selection, inspector, or camera mutation may follow it.
+    for(unsigned stage:{24u,25u,26u})for(unsigned reason=0;reason<12;++reason){
+        snapshot=setup(owner);const auto expected=generation;const auto scope=t_scope;bool fired=false,allowed=true;
+        callback=[&](unsigned at){if(at==stage&&!fired){fired=true;expire(reason,allowed);}};
+        CHECK(!restore_fenced(snapshot,expected,owner,scope,[&]{return allowed;},error)&&fired&&!error.empty());
+        CHECK(writes==1&&acts==(stage>=25?1u:0u)&&selections==(stage>=26?1u:0u));
+        CHECK(!inspector_opens&&!v_looks&&!v_sets&&entries.empty()&&t_allocations.empty()&&!applying);
+    }
+    snapshot=setup(owner);fail_allocation=true;
+    CHECK(!restore_fenced(snapshot,generation,owner,t_scope,[]{return true;},error));
+    CHECK(!writes&&entries.empty()&&t_allocations.empty()&&!applying);
+    snapshot=setup(owner);CHECK(!restore_fenced(snapshot,generation,owner,t_scope,{},error)&&!v_gets&&!writes);
+    snapshot=setup(owner);CHECK(!restore_fenced(snapshot,generation,owner,{},[]{return true;},error)&&!v_gets&&!writes);
+    snapshot=setup(owner);CHECK(!restore_fenced(snapshot,generation,owner,t_scope,[]{throw 7;return true;},error)&&!v_gets&&!writes);
+    // A callback can also throw after NativeRead has allocated its private
+    // image. The overload must release it and keep its explicit error boundary.
+    snapshot=setup(owner);bool threw=false;
+    callback=[&](unsigned stage){if(stage==21){threw=true;throw 7;}};
+    CHECK(!restore_fenced(snapshot,generation,owner,t_scope,[]{return true;},error)&&threw);
+    CHECK(!writes&&entries.empty()&&t_allocations.empty()&&!applying&&error.find("callback")!=std::string::npos);
+    snapshot=setup(owner);metadata(snapshot);
+    CHECK(restore_fenced(snapshot,generation,owner,t_scope,[]{return true;},error)&&text_writes==3&&caption_writes==1&&writes==1);
+    for(unsigned stage:{27u,28u,29u,30u})for(unsigned reason=0;reason<11;++reason){
+        snapshot=setup(owner);metadata(snapshot);const auto expected=generation;const auto scope=t_scope;bool fired=false,allowed=true;
+        callback=[&](unsigned at){if(at==stage&&!fired){fired=true;expire(reason,allowed);}};
+        CHECK(!restore_fenced(snapshot,expected,owner,scope,[&]{return allowed;},error)&&fired&&!error.empty());
+        CHECK(text_writes==(stage==30?0u:stage==27?1u:3u)&&writes==(stage>=28&&stage!=30?1u:0u));
+        CHECK(caption_writes==(stage==29?1u:0u)&&entries.empty()&&t_allocations.empty()&&!applying);
+        CHECK(!inspector_opens&&!v_looks&&!v_sets);
+    }
+    // The caller may destroy its optional snapshot inside a Native getter.
+    snapshot=setup(owner);std::optional<Snapshot> held=snapshot;bool retired=false;
+    callback=[&](unsigned stage){if(stage==0&&!retired){held->bytes.clear();held->document={};held.reset();retired=true;}};
+    CHECK(restore_fenced(*held,generation,owner,t_scope,[]{return true;},error)&&retired&&!held&&writes==1);
+    CHECK(entries.empty()&&t_allocations.empty()&&!applying);
+    callback={};v_callback={};
+}
+}
+static void test_native_restore_fences(){restore_fence_fixture::test();}

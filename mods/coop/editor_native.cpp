@@ -2773,17 +2773,26 @@ bool inspector_shown(void* settings){
 struct InspectorView {
     void* owner=data(mode());
     std::optional<uint32_t> asset;
-    InspectorView(){
+    std::function<bool()> current;
+    explicit InspectorView(std::function<bool()> guard={}):current(std::move(guard)){
+        if(current && !current())return;
         void* settings=inspector_settings();
-        if(a_inspector_open && inspector_shown(settings))asset=skg::field<uint32_t>(settings,0x20);
+        const bool shown=a_inspector_open && inspector_shown(settings);
+        if(current && !current())return;
+        if(shown)asset=skg::field<uint32_t>(settings,0x20);
     }
     ~InspectorView(){
+        if(current && !current())return;
         if(!asset || !editing() || owner!=data(mode()))return;
+        if(current && !current())return;
         Rows classes;if(!rows(resource(owner),0x2BF4,0x27E8,1024,classes))return;
         bool exists=false;for(auto row=classes.begin;row!=classes.end;row+=0x27E8)if(skg::field<uint32_t>(row,0)==*asset){exists=true;break;}
         if(!exists)return;
         void* settings=inspector_settings();
-        if(!skg::readable(settings,0x24) || (inspector_shown(settings)&&skg::field<uint32_t>(settings,0x20)==*asset))return;
+        if(!skg::readable(settings,0x24))return;
+        const bool shown=inspector_shown(settings);
+        if(current && !current())return;
+        if(shown && skg::field<uint32_t>(settings,0x20)==*asset)return;
         const bool prior=applying;applying=true;
         skg::thiscall<void>(a_inspector_open,settings,*asset);
         applying=prior;
@@ -3517,7 +3526,7 @@ bool resume_creation_scene_camera(const GestureScope& scope,uint64_t serial,uint
 }
 
 bool notify_metadata_caption(const SceneOwner& owner,uint64_t expected_generation,const GestureScope& scope,
-                             const Snapshot::Metadata& metadata,std::string& error){
+                             const Snapshot::Metadata& metadata,std::string& error,const std::function<bool()>* required_current=nullptr){
     const auto pinned_scope=scope;
     const auto current_owner=[&]()->void*{
         const auto native=state();void* current_mode=mode();void* current_data=data(current_mode);
@@ -3526,6 +3535,7 @@ bool notify_metadata_caption(const SceneOwner& owner,uint64_t expected_generatio
            !owner.mode || !owner.data || !owner.resource || uintptr_t(current_mode)!=owner.mode || uintptr_t(current_data)!=owner.data ||
            uintptr_t(current_resource)!=owner.resource || !skg::readable(current_resource,kResourceSize) ||
            skg::field<editor::ResourceKey>(current_resource,8)!=owner.source || (C.gesture_scope && C.gesture_scope()!=pinned_scope))return nullptr;
+        if(required_current && !(*required_current)())return nullptr;
         return current_data;
     };
     auto* current=current_owner();Snapshot::Metadata actual;
@@ -3534,6 +3544,7 @@ bool notify_metadata_caption(const SceneOwner& owner,uint64_t expected_generatio
     }
     if(!a_metadata_message_manager || !a_metadata_message_send){error="The verified native name notification is unavailable";return false;}
     auto* manager=skg::cdecl_call<void*>(a_metadata_message_manager);
+    if(required_current && !(*required_current)()){error="The native caption's restoration context expired";return false;}
     if(!view_slot(manager,0x14/4) || uintptr_t(skg::vtable(manager)[0x14/4])!=a_metadata_message_send){
         error="The verified synchronous native name notification is unavailable";return false;
     }
@@ -4558,32 +4569,55 @@ void log_restore_quaternions(const Snapshot& snapshot,void* candidate,const char
     }
 }
 
-bool restore(const Snapshot& snapshot, std::string& error) {
-    InspectorView inspector;
+struct RestoreFence {
+    uint64_t generation=0;SceneOwner owner;GestureScope scope;std::function<bool()> current;
+    bool checked()const{
+        try{
+            if(!supported || !valid_scope(scope) || !current || !current() || value_scope()!=scope)return false;
+            void* m=mode();void* d=data(m);void* r=resource(d);
+            return editor_native::generation==generation && uintptr_t(m)==owner.mode && uintptr_t(d)==owner.data &&
+                uintptr_t(r)==owner.resource && skg::readable(m,0xDC) && skg::field<int>(m,0xCC)==1 &&
+                skg::field<int>(m,0xD0)==0 && skg::readable(r,kResourceSize) && skg::field<editor::ResourceKey>(r,8)==owner.source;
+        }catch(...){return false;}
+    }
+};
+bool restore_impl(const Snapshot& snapshot,const RestoreFence* fence,std::string& error){
+    std::function<bool()> current;if(fence)current=[fence]{return fence->checked();};
+    const auto* required=fence?&current:nullptr;
+    auto checked=[&]{if(!fence || fence->checked())return true;error="The native restoration's pinned editor expired";return false;};
+    if(!checked())return false;
+    InspectorView inspector(current);
+    if(!checked())return false;
     // Scene reconstruction also installs the snapshot camera. That camera
     // belongs to the saved draft, while each participant's live browsing
     // camera belongs to that participant, including during remote commits.
     std::optional<LocalView> local_view;
     std::string view_error;
-    if(void* camera=view_camera(view_error)){
-        LocalView current;read_view(camera,current);
-        if(finite_view(current))local_view=current;
+    if(void* camera=view_camera(view_error,required)){
+        LocalView captured;read_view(camera,captured,required);
+        if(finite_view(captured))local_view=captured;
     }
+    if(!checked())return false;
     auto s=state();
+    if(!checked())return false;
     if (!s.ready || s.gesture || applying) { error="Native Adventure Editor cannot restore during this transition"; return false; }
     SceneOwner metadata_owner;
     const auto metadata_scope=C.gesture_scope?C.gesture_scope():GestureScope{};
     if(snapshot.metadata && !capture_scene_owner(metadata_owner,error))return false;
+    if(!checked())return false;
     const bool rebuild_terrain=snapshot.document.settings.contains(editor_native_terrain::kPlanetObject) &&
         !same_terrain(materialized_terrain?*materialized_terrain:act_identity,snapshot.document);
     if(rebuild_terrain && (!terrain_available || !skg::readable(terraform_mode(),0x1CC))){error="Native terrain regeneration is unavailable";return false;}
     if(!validate(snapshot,snapshot.document,error))return false;
+    if(!checked())return false;
     Owned copy(parse(snapshot.bytes,error));
     if (!copy.p) return false;
+    if(!checked())return false;
     // Camera state belongs to this editor. Native Undo's full copy includes it.
     // Preserve the native local resource camera before that copy is applied.
     void* live=resource(data(mode()));
     refresh_selection();
+    if(!checked())return false;
     auto selected=selection;
     uint32_t local_act=std::min<uint32_t>(s.act,uint32_t(snapshot.document.acts.size()-1));
     if(s.act<act_identity.act_order.size() && !snapshot.document.act_order.empty()){
@@ -4594,9 +4628,15 @@ bool restore(const Snapshot& snapshot, std::string& error) {
     memcpy(skg::ptr_add<void>(copy.p,0x2C30),skg::ptr_add<void>(live,0x2C30),0x20);
     void* memory=skg::cdecl_call<void*>(a_alloc,size_t(0x18),"CoopEditorRestore",0,0,0,0);
     if(!memory){error="Native editor history allocation failed";return false;}
-    Owned entry(skg::thiscall<void*>(a_entry,memory,data(mode()),copy.p,copy.p));
+    // Complete the private entry owner even if allocation ran callbacks. Its
+    // verified constructor stores this pointer and AddRefs only our snapshots.
+    void* entry_owner=fence?reinterpret_cast<void*>(fence->owner.data):data(mode());
+    Owned entry(skg::thiscall<void*>(a_entry,memory,entry_owner,copy.p,copy.p));
+    addref(entry.p); // Own cleanup before any later callback can expire the scene.
+    if(!checked())return false;
     if(snapshot.metadata) {
         const auto assign=H->sym("SporeCoop::Editor::AssignMetadataText");
+        if(!checked())return false;
         if(!assign){error="The native metadata text adapter is unavailable";return false;}
         for(size_t i=0;i<snapshot.metadata->text.size();++i) {
             const auto& text=snapshot.metadata->text[i];
@@ -4604,24 +4644,37 @@ bool restore(const Snapshot& snapshot, std::string& error) {
         }
         for(size_t i=0;i<snapshot.metadata->text.size();++i) {
             const auto& text=snapshot.metadata->text[i];
+            if(!checked())return false;
             skg::thiscall<void>(assign,skg::ptr_add<void>(data(mode()),0x4C+16*i),text.data(),text.data()+text.size());
+            if(!checked())return false;
         }
         skg::field<uint32_t>(data(mode()),0x7C)=snapshot.metadata->genre;
     }
-    addref(entry.p);
+    if(!checked())return false;
+    struct Applying {bool prior=applying;~Applying(){applying=prior;}} restore_applying;
     applying=true;
     // RestoreHistorySnapshot rebuilds through the current native act. Clamp
     // before its copy when deletion removed the old last act.
-    if(s.act>=snapshot.document.acts.size())original_select_act(uint32_t(snapshot.document.acts.size()-1));
+    if(s.act>=snapshot.document.acts.size()){
+        original_select_act(uint32_t(snapshot.document.acts.size()-1));if(!checked())return false;
+    }
     log_restore_quaternions(snapshot,copy.p,"parsed-before-restore");
+    if(!checked())return false;
     skg::thiscall<void>(a_restore,entry.p,copy.p);
+    if(!checked())return false;
     log_restore_quaternions(snapshot,resource(data(mode())),"after-restore");
+    if(!checked())return false;
     original_select_act(local_act);
+    if(!checked())return false;
     log_restore_quaternions(snapshot,resource(data(mode())),"after-act-selection");
+    if(!checked())return false;
     if(rebuild_terrain){
         original_terrain_load(terraform_mode(),skg::ptr_add<void>(copy.p,0x18));
+        if(!checked())return false;
         terrain_rebuild(terraform_mode());
+        if(!checked())return false;
         log_restore_quaternions(snapshot,resource(data(mode())),"after-terrain-rebuild");
+        if(!checked())return false;
     }
     if(snapshot.local_dirty){
         skg::field<uint32_t>(data(mode()),0x80)=snapshot.local_dirty->saved_revision;
@@ -4636,14 +4689,19 @@ bool restore(const Snapshot& snapshot, std::string& error) {
     bind(snapshot.bindings);
     bind_acts(snapshot.document);
     remember_terrain(snapshot.document);remember_grounding(snapshot.document);
+    if(!checked())return false;
     if(!selected.empty()){
         void* selected_marker=marker_for_id(resource(data(mode())),selected.front());
         void* object=selected_marker?skg::thiscall<void*>(a_object,data(mode()),selected_marker):nullptr;
+        if(!checked())return false;
         void* tools=*reinterpret_cast<void**>(a_tools);
         if(tools)original_select(tools,object);
+        if(!checked())return false;
     }
     refresh_selection();
+    if(!checked())return false;
     log_restore_quaternions(snapshot,resource(data(mode())),"after-placement-selection");
+    if(!checked())return false;
     // The native scene/selection rebuild reconstructs sound controls. Its
     // serialized source must remain the committed value rather than acquiring
     // another round-trip error on every restoration.
@@ -4654,7 +4712,8 @@ bool restore(const Snapshot& snapshot, std::string& error) {
             if(found!=placement.properties.end())if(const auto* value=std::get_if<float>(&found->second))skg::field<float>(marker,offset)=*value;
         }
     }
-    if(snapshot.metadata && !notify_metadata_caption(metadata_owner,s.generation,metadata_scope,*snapshot.metadata,error))return false;
+    if(snapshot.metadata && !notify_metadata_caption(metadata_owner,s.generation,metadata_scope,*snapshot.metadata,error,required))return false;
+    if(!checked())return false;
     ++restores;
     if(local_view){
         if(terrain_rebuilding){
@@ -4664,9 +4723,24 @@ bool restore(const Snapshot& snapshot, std::string& error) {
             deferred_local_view=DeferredLocalView{*local_view,read_scope,generation,current_mode,current_data,current_resource,
                 skg::field<editor::ResourceKey>(current_resource,8)};
             error.clear();
+        }else if(fence){
+            if(!restore_view_fenced(*local_view,fence->generation,fence->owner,fence->scope,fence->current,error))return false;
         }else if(!restore_view(*local_view,generation,error))return false;
     }
-    return true;
+    return checked();
+}
+bool restore(const Snapshot& snapshot,std::string& error){return restore_impl(snapshot,nullptr,error);}
+bool restore_fenced(const Snapshot& snapshot,uint64_t expected_generation,SceneOwner owner,GestureScope scope,
+                    std::function<bool()> current,std::string& error){
+    try{
+        const auto copied_snapshot=snapshot;
+        const RestoreFence fence{expected_generation,owner,scope,std::move(current)};
+        return restore_impl(copied_snapshot,&fence,error);
+    }catch(const std::bad_alloc&){
+        error="The pinned native restoration could not allocate its owned state";return false;
+    }catch(...){
+        error="The pinned native restoration failed during a callback";return false;
+    }
 }
 
 bool rebaseline(std::string& error){

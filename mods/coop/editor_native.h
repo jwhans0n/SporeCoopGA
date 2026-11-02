@@ -209,6 +209,8 @@ bool restore_view(const LocalView&, uint64_t expected_generation, std::string& e
 // callbacks. The copied callback must inspect only owned Runtime state.
 bool restore_view_fenced(const LocalView&,uint64_t expected_generation,SceneOwner owner,GestureScope scope,
                          std::function<bool()> current,std::string& error);
+bool restore_fenced(const Snapshot&,uint64_t expected_generation,SceneOwner owner,GestureScope scope,
+                    std::function<bool()> current,std::string& error);
 bool capture_scene_owner(SceneOwner&,std::string& error);
 SceneResumeState creation_scene_state(const SceneOwner&);
 bool resume_creation_scene_camera(const GestureScope&,uint64_t serial,uint64_t expected_generation,const SceneOwner&,std::string& error);

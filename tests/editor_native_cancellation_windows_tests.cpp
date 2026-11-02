@@ -1508,6 +1508,9 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
 #include "editor_native_diagnostic_fixture.h"
 #include "editor_native_view_fence_fixture.h"
 int main(int argc,char** argv){
+    if(argc==2&&std::string(argv[1])=="--restore-fence-only"){
+        test_native_restore_fences();std::printf("native restore fences: %u checks passed\n",checks);return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--view-fence-only"){
         test_native_view_fences();std::printf("native view fences: %u checks passed\n",checks);return 0;
     }
@@ -1527,6 +1530,7 @@ int main(int argc,char** argv){
         test_recent_native_proofs();std::printf("native recent proofs: %u checks passed\n",checks);return 0;
     }
     test_native_view_fences();
+    test_native_restore_fences();
     test_native_payload_diagnostics();
     test_history_toolbar_current_layout();
     test_recent_native_proofs();
