@@ -624,3 +624,107 @@ SetMode `B1E350` and cleared at `B5F199` through the native App post-mode-change
 only `04715068` while a world save is busy and does not suppress that route.
 No direct pause-counter, pending-flag or initialization-state writes are a
 verified substitute for completing these native transitions.
+
+## Preview 9 candidate 7 native creation receipts
+
+Candidate 7 (`ab5fba723390806add3a1feb61c383225c6a91dd8fd116e05f4a070cf23369a4`)
+completed the first host Creature Save and guest unchanged Creature Cancel in
+the owned hidden two-player Adventure Town lab. A normal mouth placement and
+unique local name produced exactly one `Create adventure asset` history item,
+revision 1 and 118 to 119 native classes on both peers. The new immutable class
+1342 used `40626200!7D98D399.2B978C46`; all original primary class keys remained
+unchanged. Both strict native checks returned
+`56faca4149d09dbbb23a7160c3f8a6ee75d3cc6d522c061d2598691d343f9954`,
+and both processes reported zero faults. The guest's subsequent unchanged New
+Creature Cancel preserved revision 1 and that single history item. Receipts
+are under `out/preview9-creation-probe-c7/`.
+
+The host Save return was also sampled through ordinary deferred Scenario
+initialization. Scenario mode and the retained shell appeared first with
+initialization zero, pending OnEnter and an invisible world. Canonical restore
+did not advance until initialization four, pending clear and world visible.
+The first immediate screenshot still showed one black frame; a later settled
+screenshot showed the world and native toolbar, with registered Adventure
+Editor camera `00EBB801` active. These observations establish the settled
+first workflow, not screenshot readiness in the same native return frame.
+
+A separate bounded independence probe began at revision 66 after the native
+movement measurements. The host entered New Building and remained there while
+the guest entered New Creature, explicitly Cancelled and independently
+returned to the Adventure Editor. No draft or history change occurred during
+those entries and Cancel. The guest then used ordinary cast-card Locate to
+select placement `4294967303:1`, verified its Placement lease before moving,
+and completed a 12-pixel native drag. Both canonical controllers durably
+accepted revision 67 while the host remained in the Building editor. The host
+explicitly Cancelled and returned to revision 67; both strict native checks
+returned `8af8bf51e3710141f012a53d6960545651a1f84b993ff9a13b11918e0d812327`.
+History gained only the guest's `Edit placement`, no cast entry. Settled
+screenshots show the world and toolbar on both participants, independent
+selection and zero faults. The receipt is
+`out/preview9-creation-independence-c7/independent-edit-return-result.json`.
+The public asset diagnostic truncated mid-row in this 119-class adventure;
+the initial parser refused it before input. The completed Cancel proof uses
+the full canonical document hash, exact revision/history and strict native
+projection rather than treating a partial cast listing as complete.
+
+An optional subsequent host New Building probe placed one native body shape
+and named it. Its first normal Done click dismissed the open metadata popup;
+a second normal Done click with that popup closed also did not produce a
+result or return within its 60-second bound. The Building editor remained
+active, revision 67 and fault count zero, without an error dialog. Its native
+Type Chooser remained visible, and this probe did not select a building
+subtype. Native validation, required creation setup and shared gating remain
+to be distinguished. The failed scene and both bounded receipts were retained
+before the owned runner reached its lifetime bound. This is not Building Save
+acceptance or evidence that generic shared-save gating caused the failure.
+Vehicle and the other creation-family workflows, changed Cancel, remote Edit,
+four-player creation and complete native Save/reopen remain unverified.
+
+## Native title refresh and captain transport
+
+The guest's `Name Your Adventure` caption was already visible before its first
+creation entry. Both owned initial checkpoints carry the title `Adventure
+Town`, the same description, empty tags and genre `3027271567`. A later
+bounded ReadProcessMemory-only sample of the exact two owned candidate 7 PIDs
+confirmed all three live ScenarioData strings and genre also match. The
+sample read 318 bytes per process in 2.2 ms, checked stable mode/data/resource
+pointers, recorded source identities, and made no game calls or writes. Its receipt is
+`out/preview9-creation-probe-c7/live-metadata-readonly.json`. The visible
+caption is stale UI; metadata was not lost in transport or overwritten in
+the sampled native ScenarioData. No live helper pointer was guessed.
+
+The exact refresh route is distinct from raw metadata assignment. `F3CC00`
+operates on the `INameableEntity` subobject at ScenarioData `+4`; its equality
+branch returns before notification when the title already matches. After
+assigning the title it sends synchronous `7AA519DC`. Its 20-byte stack packet
+starts at the caller's `ESP+0C`: owner at `+0`, UTF-16 text pointer at `+8` and
+an explicit zero DWORD at `+10`. The reviewed receivers do not use `+4` or
+`+C`. Generic Editor handler `592F12` checks the owner against its bound
+nameable before using the text. The native name helper listener `5BFC33`
+likewise checks the exact bound owner, then calls `5BFA50`, which updates
+display `D0E6D04B` and editable caption `C7CEB1BD`. Scenario helper setup
+`EDB3C0 -> EDB3EE` binds the current ScenarioData `+4` through `5BFE40`.
+`ED5550` rebuilds crew thumbnails and does not refresh this title.
+
+The existing named `App::IMessageManager::Get` is `67DC80`,
+`cdecl()->void*`, reading the supported image's global `15FD890`. Its vtable
+`01427AC0`, installed at `884B17`, maps `+14` to `MessageSend=8854A0`:
+`thiscall(manager,id,payload,singleRecipient)`, `ret0C`. Dispatch invokes
+recipients inline at `8855A0` or `88568A`, drains its temporary recipient
+references and returns at `8856F9`. It does not enqueue the stack packet.
+This proves the lifetime of an owned zero-initialized 20-byte notification
+and null-terminated owned title during that call. A scoped caption adapter
+must preserve dirty flags and verify its exact SceneOwner before and after
+dispatch; calling SetName with already assigned text would simply early-out.
+
+Snapshot captain sidecars have a separate transport issue: resource envelopes
+and checkpoints contain the typed Captain settings rather than duplicate
+captain fields in their native identity mapping. `native_snapshot` and
+`load_snapshot` now hydrate the asset and locked flag from that authoritative
+row. The portable helper accepts an intentionally empty nullable captain,
+rejects malformed advertised identities atomically and defers legacy rows to
+verified native expansion. It does not derive metadata from Project settings,
+which contain no title/description/tags/genre fields. The strict i686 project
+fixture passes 5,683 checks, including full/delta/cached-join transfer,
+checkpoint hydration, nullable captain, rejection and legacy preservation;
+receipt `out/editor-preview9-captain/project-hydration.log`.
