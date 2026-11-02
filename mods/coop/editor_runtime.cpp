@@ -3608,6 +3608,7 @@ std::string debug(const std::vector<std::string>& args) {
         " saved_source_root=" + std::string(saved_source_root) +
         " phase=" + std::to_string(controller ? uint8_t(controller->view().phase) : 0) +
         " project=" + (controller ? editor_store::project_name(controller->view().context.project) : "") +
+        " epoch=" + std::to_string(controller ? controller->view().context.epoch : 0) +
         " capability=" + std::to_string(controller ? controller->view().local.slot : 255) + ":" + std::to_string(controller ? controller->view().local.generation : 0) +
         " automatic="+std::to_string(C.automatic_follow)+" exporting="+std::to_string(exporting.has_value())+
         " exiting="+std::to_string(native_exit_requested)+" join_prompt="+std::to_string(cached.join_prompt)+
