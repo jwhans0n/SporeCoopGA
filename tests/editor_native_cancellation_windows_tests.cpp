@@ -412,6 +412,64 @@ void test_preset_history_boundary(){
     setup_terrain_retry();int properties=0;applying=true;terrain_build(t_terraform.data(),&properties);applying=false;
     CHECK(terrain_builds==1&&!terrain_starts&&!terrain_commits&&!terrain_recipe_replacement);reset();
 }
+unsigned terrain_initializations=0,terrain_initial_loads=0,terrain_initial_models=0,terrain_initial_effects=0;
+bool terrain_initial_default=false;
+void SK_THISCALL t_initial_terrain_load(void* self,void*){
+    CHECK(self==t_terraform.data()&&applying);++terrain_initial_loads;
+}
+void SK_THISCALL t_initial_terrain_value(void* self,uint32_t){
+    CHECK(self==t_terraform.data()&&applying&&!t_granted);++terrain_values_called;
+}
+void SK_THISCALL t_initial_terrain_model(void* self,const editor::ResourceKey*,const void*){
+    CHECK(self==t_terraform.data()&&applying&&!t_granted);++terrain_initial_models;
+}
+void SK_THISCALL t_initial_terrain_effect(void* self,uint32_t,uint32_t,const void*,uint32_t,uint32_t,uint32_t){
+    CHECK(self==t_terraform.data()&&applying&&!t_granted);++terrain_initial_effects;
+}
+void SK_THISCALL t_initial_terrain_build(void* self,void* properties){
+    CHECK(applying);++terrain_builds;terrain_load(self,properties);
+    // Native initialization reaches the same setters and append paths as UI
+    // authoring. None may request a lease or queue a deferred user action.
+    terrain_value<0>(self,0);terrain_value<1>(self,0);terrain_value<2>(self,0);terrain_value<3>(self,0);
+    terrain_value<4>(self,0);terrain_value<5>(self,0);terrain_value<6>(self,0);terrain_value<7>(self,0);
+    terrain_value<8>(self,0);terrain_value<9>(self,0);terrain_value<10>(self,0);terrain_value<11>(self,0);
+    terrain_value<12>(self,0);terrain_value<13>(self,0);terrain_value<14>(self,0);
+    terrain_value<15>(self,0);terrain_value<16>(self,0);terrain_value<17>(self,0);
+    terrain_append_model(self,nullptr,nullptr);terrain_append_effect(self,0,0,nullptr,0,0,0);
+}
+void SK_THISCALL t_initial_terrain_resource(void* resource){
+    CHECK(resource==t_live.data()&&applying);++terrain_initializations;
+    terrain_build(t_terraform.data(),static_cast<uint8_t*>(resource)+0x18);
+}
+void SK_THISCALL t_initial_terrain_activate(void* self,const editor::ResourceKey*){
+    CHECK(self==t_terraform.data()&&applying);++terrain_initializations;
+    if(terrain_initial_default){int properties=0;terrain_build(self,&properties);}
+    else terrain_resource_init(t_live.data());
+    CHECK(applying); // A nested resource boundary retains the outer scope.
+}
+void test_cold_native_terrain_initialization(){
+    for(unsigned route=0;route<3;++route)for(bool already_applying:{false,true}){
+        setup_terrain_retry();CHECK(active()&&editing()&&!t_granted);
+        // Joining has a live editor resource but cannot issue authoring leases.
+        // The old Build guard rejected this exact state before native grounding.
+        C.terrain_gate=[](const auto&,const auto&){CHECK(false);return false;};
+        C.gesture_scope=[]{CHECK(false);return GestureScope{};};
+        original_terrain_load=t_initial_terrain_load;original_terrain_build=t_initial_terrain_build;
+        original_terrain_values.fill(t_initial_terrain_value);
+        original_terrain_append_model=t_initial_terrain_model;original_terrain_append_effect=t_initial_terrain_effect;
+        original_terrain_resource_init=t_initial_terrain_resource;original_terrain_activate=t_initial_terrain_activate;
+        terrain_initializations=terrain_initial_loads=terrain_initial_models=terrain_initial_effects=0;
+        terrain_initial_default=route==2;applying=already_applying;
+        if(route==0)terrain_resource_init(t_live.data());else terrain_activate(t_terraform.data(),nullptr);
+        CHECK(applying==already_applying&&terrain_initial_loads==1&&terrain_builds==1&&terrain_values_called==18);
+        CHECK(terrain_initial_models==1&&terrain_initial_effects==1&&terrain_initializations==(route==1?2u:1u));
+        CHECK(!terrain_before&&!terrain_pending&&!terrain_recipe_replacement&&held_terrain_controls.empty());
+        CHECK(pending.empty()&&!gesture_before_resource&&!terrain_starts&&!terrain_commits);
+        CHECK(!t_restores&&!t_failed&&t_allocations.empty());applying=false;
+    }
+    // Ordinary external presets still pass the existing ownership/history gate.
+    test_preset_history_boundary();reset();
+}
 void test_pending_capture_fences(){
     reset();pending.emplace_back();CHECK(state().gesture&&!state().ready);
     C.gate=[](const auto&){return true;};
@@ -995,6 +1053,7 @@ int main(){
     test_preset_history_boundary();
     test_flora_control_retry();
     test_terrain_control_retry();
+    test_cold_native_terrain_initialization();
     test_crew_input_ownership();
     test_captain_and_act_input_ownership();
     test_async_captain_asset_keeps_value_and_rechecks_identity();

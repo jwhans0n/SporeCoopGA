@@ -10,6 +10,13 @@ from pe import PE
 
 SHA = 'dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37'
 ENTRIES = [
+    ('TerraformInitializeResource',0xF261B0,'a1a47a6c01578b781885ff741a',[(0xF261D8,0)],
+     'thiscall(ScenarioResource),plain ret; native load and Terraform activation build the planet before actor grounding',
+     [(0xF46502,0xF261B0),(0xF37F22,0xF261B0),(0xF261D1,0xF37530)],[]),
+    ('TerraformActivate',0xF37DC0,'83ec0c5355568bf1c6868c01000001',[(0xF37FE3,4)],
+     'thiscall(TerraformMode,const ResourceKey*),ret4; native scene activation initializes resource or default planet before ScenarioData',
+     [(0xEF1DEE,0xF37DC0),(0xF37F3A,0xF379C0)],
+     [(0xEF1DD6,'897e18'),(0xEF1E77,'c786cc00000001000000'),(0xEF1ED0,'897e74'),(0xEF1F19,'e8b2450500')]),
     ('TerraformBuildProperties',0xF37530,'83ec1c8b4424205657508bf1',[(0xF378CF,4)],
      'thiscall(TerraformMode,const PropertyList*),ret4; loads properties before native vectors/terrain/environment/flora rebuild',
      [(0xF3753C,0xF32A90),(0xF37A20,0xF37530)],[]),

@@ -1056,6 +1056,30 @@ void SK_THISCALL terrain_load(void* self,void* properties){
     }
     original_terrain_load(self,properties);
 }
+using TerrainResourceInitFn=void(SK_THISCALL*)(void*);
+using TerrainActivateFn=void(SK_THISCALL*)(void*,const editor::ResourceKey*);
+TerrainResourceInitFn original_terrain_resource_init;
+TerrainActivateFn original_terrain_activate;
+struct NativeTerrainInitialization {
+    bool prior=applying;
+    NativeTerrainInitialization(){applying=true;}
+    ~NativeTerrainInitialization(){applying=prior;}
+};
+void SK_THISCALL terrain_resource_init(void* self){
+    // F46502 runs after ScenarioMode+CC and ScenarioData+74 are installed,
+    // while the joining editor still has no authoring leases. Its F261D1
+    // Build call initializes the native planet before actor grounding. Keep
+    // the whole verified native boundary, including nested setters, outside
+    // authoring capture and ownership checks.
+    NativeTerrainInitialization initialization;
+    original_terrain_resource_init(self);
+}
+void SK_THISCALL terrain_activate(void* self,const editor::ResourceKey* key){
+    // EF1DEE creates the Terraform scene. Its empty-key fallback builds the
+    // default planet directly, rather than passing through F261B0.
+    NativeTerrainInitialization initialization;
+    original_terrain_activate(self,key);
+}
 void SK_THISCALL terrain_build(void* self,void* properties){
     bool own_boundary=false;
     if(!applying && active() && properties!=skg::field<void*>(self,0x0C)){
@@ -2384,6 +2408,8 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     complexity_available=supported && complexity_bounds.initialize(H->sym("SporeCoop::EditorComplexity::CreateMarkerLimit"),H->sym("SporeCoop::EditorComplexity::CloneMarkerLimit")) &&
         install("SporeCoop::EditorComplexity::WeightedRatio",(void*)complexity_ratio,(void**)&original_complexity);
     terrain_available=supported && a_terrain_load && a_terrain_rebuild && a_terrain_selection && a_terrain_loaded && a_terrain_vtable && a_terraform_ui_vtable && a_flora_ui_vtable &&
+        install("SporeCoop::Editor::TerraformInitializeResource",(void*)terrain_resource_init,(void**)&original_terrain_resource_init) &&
+        install("SporeCoop::Editor::TerraformActivate",(void*)terrain_activate,(void**)&original_terrain_activate) &&
         install("SporeCoop::Editor::TerraformStartHistory",(void*)terrain_start,(void**)&original_terrain_start) &&
         install("SporeCoop::Editor::TerraformCommitHistory",(void*)terrain_commit,(void**)&original_terrain_commit) &&
         install("SporeCoop::Editor::TerraformDiscardHistory",(void*)terrain_discard,(void**)&original_terrain_discard) &&
