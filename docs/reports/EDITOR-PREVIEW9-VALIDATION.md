@@ -1347,6 +1347,50 @@ and returned normally to Galaxy with zero faults before their owned runner
 exited successfully (`out/preview9-c19-terrain-retirement/result.json`). No
 personal payload or shortcut was changed.
 
+## Candidate 20 exact rollback and remaining terrain-cache failure
+
+The diagnostic DLL
+`66e4a786d9d3143d00a275a4952c2fb9179a7b4e1a8bd4fe4e217d43ed4a348c`
+built with 188 unchanged production inputs. The current strict fixtures passed
+45,572 Native checks and 40,926 Runtime checks; their exact input receipts are
+`out/preview9-c20-native-rotation-receipt.json` and
+`out/preview9-c20-placement-runtime-receipt.json`.
+
+Initial bootstrap was interrupted by the native offline/registration message
+before shared editing. After that message cleared, the retained second attempt
+passed two-player Town bootstrap at revision 0, with zero faults. Evidence is
+`out/preview9-c20-two-town-bootstrap/`, `out/preview9-c20-startup-popup-r2/` and
+`out/preview9-c20-two-town-bootstrap-r2/`; the failed attempt is not a terrain
+or performance measurement.
+
+The measured simultaneous strokes again reached the unchanged placement
+ownership rejection. Bounded owned-value diagnostics now identify the original
+delta: only rotations on markers 188, 253, 265 and 293 changed, with identical
+before/after bits on both roles. The proposed next change requires exact native
+rebuild provenance; this result does not justify general rotation tolerance or
+removing placement ownership.
+
+The restore-only quaternion repair succeeded for this attempt. Both ordinary
+native checks returned
+`CONVERGED b387680e07950034d14613b3d99d5dee27c89e7433464348831e451004febd52`.
+However, the stricter active-tool draft capture still failed and correctly kept
+the recovery hold. Its diagnostic identifies Planet object `47244640256:1`,
+missing property `00B2CCCB`, rather than a Captain field. This property is the
+native PropertyList parent reference. The serialized resource retained it, but
+the freshly parsed terrain-load input had no resolved runtime parent; native
+TerrainLoad consequently cleared that parent in its tool cache. Ordinary
+resource convergence does not establish active-tool readiness.
+
+Both participants remained at durable revision 0, history count 0 and zero
+faults. No terrain transaction was accepted. Evidence is
+`out/preview9-c20-terrain-calibrate/`,
+`out/preview9-c20-terrain-simultaneous/result.json` and
+`out/preview9-c20-terrain-failure-full/result.json`. Both games subsequently
+returned normally to Galaxy with zero faults, and the owned runner exited 0
+(`out/preview9-c20-terrain-retirement/result.json`). Personal preview 8 remains
+unchanged. Native parent hydration and gesture provenance are the next scoped
+fixes; full Terraform, Save/reopen and timing acceptance remain pending.
+
 ### C19 controlled rejection-restoration hold
 
 Strict actual-i686 Runtime fixtures pass 40,609 full-suite checks, 7,312 focused
