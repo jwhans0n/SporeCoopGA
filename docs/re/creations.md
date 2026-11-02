@@ -1015,3 +1015,66 @@ These loads can populate the native resource cache or warm dependencies.
 The diagnostic runs the cached path first and the private path second; a
 later repeated probe is not independent cold-load evidence. It does not
 allocate a cast entry or mutate the authored adventure.
+
+## dc04 immutable Vehicle identity audit and diagnostic limits
+
+This audit uses the supported GOG 2024 executable, with only its LAA bit changed
+in the installed image (SHA-256 `47f60c4d...9199ab`). The older 2016 section's
+negative raw-byte self-key search is historical evidence, not a complete BEM
+reference-format proof. Do not infer arbitrary creation remapping support from
+that search or from the family-loop fixture's synthetic 12-byte model.
+
+The retained C14 alias `40646200!7D3EB486.24682294` was extracted from the
+guest's owned recovery dependency bundle without opening a game or changing a
+profile. Its BEM is native version 5, with six `0x1D8`-byte part rows and no
+secondary rows. Replaying the actual bounded decoder (`4BFF30 -> 4BF7E0`)
+consumes all 1,379 bytes and produces a `0x80`-byte header plus 2,832 part bytes.
+Each compressed block has a little-endian length bounded by `0x800`; `FE,n`
+repeats the previous byte, and `FE,0` emits literal `FE`. The expanded 2,960
+bytes have SHA-256 `484545498c27b673dd5653e2a08d3e90d15bf3aa793fe4d3de9f975b76ff5b02`
+and native subtype `7D433FAD`. Neither raw nor expanded data contains the
+original, alias or substitute instance, source group, or VCL type in either
+byte order. This excludes those literal identities in this particular model.
+The alias's version-13 pollen own key is correctly rewritten at `0C` as
+big-endian `{type,group,instance}`. Evidence and the offline decoder are in
+`out/preview9-c14-vehicle-store/immutable-alias-audit.json` and `alias-audit.py`.
+
+Factory disassembly independently explains external self identity. The
+supported-type table is `4BC750`, compatibility check `4BC7D0`, and BEM dispatch
+`4BCA80 -> 4BCC10 -> 4BFF30`. After decoding, `4BC9E1..4BCA1F` obtains the
+record's key, replaces its type with the requested model family and assigns
+ResourceObject `+08..13`. BEM Read fills model content starting at `+18`, not
+that external key. Supported native BEM versions are 3 through 5, with at most
+1,024 parts and 128 secondary rows. Exact bytes/call targets are retained in
+`out/preview9-c14-vehicle-store/factory-native-receipts.json`. This verifies the
+external identity path, not every field in every part or private companion.
+
+The current immutable versioner deliberately leaves BEM bytes unchanged,
+rewrites audited pollen/typed-property owner references, sanitizes owner PNGs,
+and rejects unknown owned companion record types and unsupported property
+encodings. It removes known generated model/species cache records. Other
+dependency keys stay unchanged. It does not yet decode all BEM part fields to
+prove the closure or rewrite arbitrary private rigblock/texture companions.
+A negative compressed-byte scan cannot establish that broader property, and
+native Adventure model admission establishes load/interface/mask eligibility
+rather than complete format-reference coverage. Actual Creature and Building
+saves are case-specific evidence; the failed C14 Vehicle and unverified UFO
+Save do not justify an all-family completion claim. Unknown companion formats
+remain a strict rejection boundary; no broad byte-scanning rewrite is approved.
+
+`validate_model` now logs each already-observed admission, including successful
+ones, with PID, monotonic process-local observation number, requested key,
+cached/private outcomes, subtype, exact mask/error words, scope and native
+generation. A matching local creation also contributes its serial; a canonical
+host operation is labeled `canonical` with serial zero. `observed=0` means
+inspection did not complete, so its default outcome fields are not evidence of
+a native load. This log adds no ResourceManager lookup. On successful calls,
+the optional `error` text can retain an earlier caller error; `accepted`,
+`observed` and the native outcome words determine the result of this
+observation, not that text. The passive creations status also reports
+`last_saved=GROUP!INSTANCE.TYPE`, from retained module
+state; it can refer to an earlier creation and does not probe the model.
+Strict actual-i686 creation tests pass 935 checks, including exact load/release
+counts and preservation of the first logged result after later observations.
+The next live Vehicle attempt must retain that first automatic log before any
+manual `coop.editor model` diagnostic, because both paths can warm the cache.

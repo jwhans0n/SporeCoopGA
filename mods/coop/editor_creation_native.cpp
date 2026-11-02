@@ -1,4 +1,5 @@
 #include "editor_creation_native.h"
+#include "editor_creation.h"
 #include "editor_native_cast.h"
 #include "editor_creation_png.h"
 #include "adventure_collect.h"
@@ -20,6 +21,7 @@ SkMod* M;
 bool supported=false;
 void* detached_owner=nullptr;
 bool detached_assign_failed=false;
+uint64_t model_observation=0;
 using Assign=void(SK_THISCALL*)(void*,uint32_t,const editor::ResourceKey*);
 Assign original_assign=nullptr;
 void SK_THISCALL assign(void* owner,uint32_t index,const editor::ResourceKey* key){
@@ -243,9 +245,25 @@ std::string model_admission_status(const ModelAdmission& result){
 }
 bool validate_model(editor::ResourceKey key,const ModelFence& fence,std::string& error){
     ModelAdmission result;
-    if(!inspect_model(key,fence,result,error))return false;
-    if(model_admitted(result,error))return true;
-    if(H->log)H->log(M,SK_ERROR,"Creation model admission rejected: %s",model_admission_status(result).c_str());
+    const bool observed=inspect_model(key,fence,result,error);
+    const bool accepted=observed && model_admitted(result,error);
+    // Report this already-completed observation. Re-probing later can load a
+    // warmed cache and cannot reconstruct the first cached/private outcomes.
+    // These creation accessors copy module state; they make no native calls.
+    const auto creation=editor_creation::scope();
+    const bool local=creation && creation->project==fence.scope.project && creation->epoch==fence.scope.epoch && creation->author==fence.scope.author;
+    if(H && H->log){
+        if(model_observation!=UINT64_MAX)++model_observation;
+        result.key=key;
+        H->log(M,accepted?SK_INFO:SK_ERROR,
+            "Creation model admission observed: pid=%lu observation=%llu caller=validate_model caller_mode=%s serial=%llu epoch=%llu author=%u:%u native_generation=%llu observed=%u accepted=%u %s error=%s",
+            static_cast<unsigned long>(GetCurrentProcessId()),static_cast<unsigned long long>(model_observation),
+            local?"creation":"canonical",static_cast<unsigned long long>(local?creation->serial:0),
+            static_cast<unsigned long long>(fence.scope.epoch),unsigned(fence.scope.author.slot),unsigned(fence.scope.author.generation),
+            static_cast<unsigned long long>(fence.generation),unsigned(observed),unsigned(accepted),model_admission_status(result).c_str(),error.substr(0,192).c_str());
+    }
+    if(!observed)return false;
+    if(accepted)return true;
     char detail[192];std::snprintf(detail,sizeof(detail),"; key=%08X!%08X.%08X cached=%u/%u/%u errors=%08X,%08X,%08X,%08X private=%u/%u/%u",
         key.group,key.instance,key.type,unsigned(result.cached.loaded),unsigned(result.cached.object),unsigned(result.cached.model),
         result.cached.errors[0],result.cached.errors[1],result.cached.errors[2],result.cached.errors[3],

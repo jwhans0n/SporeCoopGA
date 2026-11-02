@@ -4,6 +4,7 @@
 #include "../mods/coop/editor_creation_native.cpp"
 #include "../mods/coop/editor_creation_png.cpp"
 #include <cstdio>
+#include <cstdarg>
 #include <cstdlib>
 #include <deque>
 #include <set>
@@ -37,6 +38,12 @@ editor::ResourceKey returned_saved;
 std::set<void*> allocations;
 editor_native::GestureScope owner;
 std::vector<dbpf::Record> collected;
+std::vector<std::string> admission_logs;
+void admission_log(SkMod*,int,const char* format,...){
+    std::array<char,1024> text{};va_list args;va_start(args,format);
+    const auto size=std::vsnprintf(text.data(),text.size(),format,args);va_end(args);
+    CHECK(size>=0 && size<int(text.size()));admission_logs.emplace_back(text.data());
+}
 editor::ResourceKey source{0x29001234,0x2B978C46,0x40626200};
 std::array<void*,8> admission_manager_vt{};
 std::array<void*,4> admission_model_vt{};
@@ -157,7 +164,7 @@ void initialize(){
     owned_edits=native_class_imports=creation_collections=0;
     native_existing_editor=submitted_request_editor=submitted_editor=0;submitted_source={};
     owner={};owner.project[0]=9;owner.epoch=12;owner.author={1,3};
-    static SkHost host{};host.sym=sym;host.hook_create=hook;host.time_seconds=[](){return now;};host.run_outside_frame=queue;
+    static SkHost host{};host.sym=sym;host.hook_create=hook;host.time_seconds=[](){return now;};host.run_outside_frame=queue;host.log=admission_log;
     host.exe_sha256=[](){return "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37";};
     editor_creation::Ctx context;
     context.scope=[](){return std::optional<editor_native::GestureScope>{owner};};
@@ -247,10 +254,20 @@ void test_native_model_admission(){
         CHECK(admission_releases[0]==admission_loads[0]&&admission_releases[1]==admission_loads[1]);
         CHECK(!native_class_imports&&!owned_edits&&!live_class_writes);
     }
-    reset_admission();admission_loaded[0]=admission_object[0]=false;
+    reset_admission();admission_logs.clear();admission_loaded[0]=admission_object[0]=false;
     CHECK(!editor_creation_native::validate_model(alias,fence,error)&&error.size()<256);
     CHECK(error.find("cached=0/0/0")!=std::string::npos&&error.find("private=1/1/1")!=std::string::npos);
+    CHECK(admission_logs.size()==1 && admission_logs.back().find("observed=1 accepted=0 key=40646200!7D3EB486.24682294")!=std::string::npos);
+    CHECK(admission_logs.back().find("caller_mode=canonical serial=0")!=std::string::npos);
+    CHECK(admission_loads[0]==1&&admission_loads[1]==1&&admission_releases[0]==0&&admission_releases[1]==1);
     reset_admission();CHECK(editor_creation_native::validate_model(alias,fence,error));
+    CHECK(admission_logs.size()==2 && admission_logs.back().find("observed=1 accepted=1")!=std::string::npos);
+    CHECK(admission_logs.back().find("cached=1/1/1 subtype=7D433FAD errors=00000000,00000000,00000000,00000000 private=1/1/1")!=std::string::npos);
+    CHECK(admission_loads[0]==1&&admission_loads[1]==1&&admission_releases[0]==1&&admission_releases[1]==1);
+    const auto first=admission_logs.front();reset_admission();admission_errors[0][3]=0x80000000;
+    CHECK(!editor_creation_native::validate_model(alias,fence,error));
+    CHECK(admission_logs.size()==3&&admission_logs.front()==first);
+    CHECK(admission_logs.back().find("errors=00000000,00000000,00000000,80000000")!=std::string::npos);
     reset_admission();admission_rekey=true;editor_creation_native::ModelAdmission rekeyed;rekeyed.key={1,2,3};
     CHECK(!editor_creation_native::inspect_model(alias,fence,rekeyed,error)&&rekeyed.key==editor::ResourceKey({1,2,3}));
     CHECK(admission_releases[0]==1&&admission_loads[1]==0&&admission_validates[0]==0);
@@ -265,6 +282,21 @@ void test_native_model_admission(){
     reset_admission();
     const auto calls=admission_loads[0];auto stale=fence;++stale.scope.author.generation;
     editor_creation_native::ModelAdmission value;CHECK(!editor_creation_native::inspect_model(alias,stale,value,error)&&admission_loads[0]==calls);
+    CHECK(!editor_creation_native::validate_model(alias,stale,error)&&admission_loads[0]==calls);
+    CHECK(admission_logs.back().find("observed=0 accepted=0 key=40646200!7D3EB486.24682294")!=std::string::npos);
+    // These module-state diagnostics perform no native model lookup.
+    reset_admission();start();result();
+    const auto serial=editor_creation::scope()->serial;
+    CHECK(editor_creation_native::validate_model(alias,fence,error));
+    CHECK(admission_logs.back().find("caller_mode=creation serial="+std::to_string(serial))!=std::string::npos);
+    const auto counters=[] {return std::array<unsigned,4>{admission_loads[0],admission_loads[1],admission_releases[0],admission_releases[1]};};
+    const auto calls_before_diagnostic=counters();
+    const auto diagnostic=editor_creation::diagnostic();
+    CHECK(diagnostic.find("phase=2")!=std::string::npos&&diagnostic.find("last_saved=40626200!29004321.2B978C46")!=std::string::npos);
+    CHECK(counters()==calls_before_diagnostic);
+    pump_native_messages();return_ready=true;step();CHECK(!editor_creation::active());
+    CHECK(editor_creation::diagnostic().find("last_saved=40626200!29004321.2B978C46")!=std::string::npos);
+    CHECK(counters()==calls_before_diagnostic);
     admission_manager=nullptr;admission_callback={};
 }
 int main(){

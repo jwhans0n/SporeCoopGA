@@ -4,6 +4,7 @@
 #include "game.h"
 #include "modes.h"
 #include "sporekit_game.hpp"
+#include <cstdio>
 #include <utility>
 
 namespace editor_creation {
@@ -201,8 +202,11 @@ std::optional<Scope> scope(){return session?std::optional<Scope>{session->scope}
 std::optional<Result> last_saved(){return retained_saved;}
 void cancel_pending(){if(session && session->phase==Phase::Preparing)finish(false,"Creation editor entry cancelled");}
 std::string diagnostic(){
-    if(!session)return std::string("creation_editor active=0 available=")+(supported?"1":"0")+" status="+status;
+    char identity[64];
+    if(retained_saved)std::snprintf(identity,sizeof(identity)," last_saved=%08X!%08X.%08X",retained_saved->saved.group,retained_saved->saved.instance,retained_saved->saved.type);
+    else std::snprintf(identity,sizeof(identity)," last_saved=none");
+    if(!session)return std::string("creation_editor active=0 available=")+(supported?"1":"0")+identity+" status="+status;
     return "creation_editor active=1 phase="+std::to_string(int(session->phase))+" serial="+std::to_string(session->scope.serial)+
-        " stale="+std::to_string(session->stale)+" entered="+std::to_string(session->entered)+" status="+status;
+        " stale="+std::to_string(session->stale)+" entered="+std::to_string(session->entered)+identity+" status="+status;
 }
 } // namespace editor_creation
