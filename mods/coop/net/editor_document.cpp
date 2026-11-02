@@ -714,6 +714,8 @@ bool references(const Document& d)
 
 // Produces actual canonical before/after data and an inverse whose preconditions
 // refer to the newly committed field/tombstone revisions. No live state is edited.
+// The sole caller supplies after from its complete independent State copy.
+// Validation below must finish before mutating that already-copied document.
 Code apply_patch(const Document& before, const Patch& input, const Limits& limits,
                  Document& after, Patch& canonical, Patch& inverse, std::string& error)
 {
@@ -775,7 +777,7 @@ Code apply_patch(const Document& before, const Patch& input, const Limits& limit
         if (field_revision(before,e.object,e.field) != e.expected || value(before,e.object,e.field) != e.before) return bad(Code::Conflict, "The edited field changed; no older action was selected.");
         if (e.before == e.after) return bad(Code::Invalid, "A no-op field change is not a gesture.");
     }
-    after = before; after.revision++;
+    after.revision++;
     canonical = input; inverse = {};
     for(auto& e:canonical.terrain){
         if(e.after){

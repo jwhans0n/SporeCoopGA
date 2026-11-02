@@ -11,8 +11,11 @@
 
 // Validation may allocate small identity sets, but must not copy large values.
 static bool forbid_large_state_allocation;
+static bool count_untouched_blob_copies;
+static unsigned untouched_blob_copies;
 void* operator new(std::size_t n) {
     if (forbid_large_state_allocation && n >= 4096) throw std::bad_alloc();
+    if (count_untouched_blob_copies && n == 65536) ++untouched_blob_copies;
     if (void* p = std::malloc(n ? n : 1)) return p;
     throw std::bad_alloc();
 }
@@ -520,6 +523,24 @@ static void test_class_settings(){
 }
 
 
+static void test_untouched_large_value_is_copied_once()
+{
+    auto s=seed();s.document.schema[106]={ValueKind::Structured};
+    StructuredValue opaque;opaque.format=1;opaque.bytes.assign(65536,0x6d);
+    s.document.placements.at(b).properties[106]=opaque;
+    Fixture f({},s);const auto prior=f.doc().placements.at(b);
+    auto q=f.request(0);q.leases=f.grant(0);q.mutations={f.set(a,pos,Vec3{30,40,50})};
+    untouched_blob_copies=0;count_untouched_blob_copies=true;
+    const auto accepted=f.core.submit(q,f.now);
+    count_untouched_blob_copies=false;
+    CHECK(accepted.accepted());
+    CHECK(f.doc().placements.at(a).position==(Vec3{30,40,50}));
+    CHECK(f.doc().placements.at(b)==prior);
+    // One independent candidate owns the unchanged blob; applying its checked
+    // patch must not recopy the complete document into that same candidate.
+    CHECK(untouched_blob_copies==1);
+}
+
 static void test_absent_terrain_history_ownership()
 {
     Fixture f;
@@ -674,7 +695,7 @@ int main()
         auto invalid=blank.document;invalid.placements.emplace(a,seed().document.placements.at(a));
         CHECK(!valid(invalid,{},error));invalid=blank.document;invalid.acts.clear();CHECK(!valid(invalid,{},error));
     }
-    test_absent_terrain_history_ownership(); test_const_state_validation(); test_validation(); test_create_clone_delete(); test_clone_final_pose(); test_concurrent_fields_and_batches(); test_reference_integrity(); test_leases();
+    test_untouched_large_value_is_copied_once(); test_absent_terrain_history_ownership(); test_const_state_validation(); test_validation(); test_create_clone_delete(); test_clone_final_pose(); test_concurrent_fields_and_batches(); test_reference_integrity(); test_leases();
     test_undo_chronology_and_conflict(); test_own_multistep_and_structural_history(); test_redo_and_author_isolation(); test_dedup_retention_and_epoch(); test_hooks_and_atomicity(); test_four_author_adversity(); test_replica_and_nonce_recovery();
     test_class_settings();
     std::printf("editor_document: %d checks, %d failures\n", checks, failures);
