@@ -1641,3 +1641,60 @@ executable, and all 19 retained rollback payload hashes were checked again in
 updated by these candidate checks. Actual terrain acceptance, performance
 targets, remaining creation-editor saves, full Terraform controls, complexity
 boundaries, and lab smoke remain open.
+
+### C24 controlled gates pass; actual inverse needs asynchronous settlement
+
+Native commit `bef0fdc` and Runtime commit `ee9b35c` build private C24 DLL
+`37a9c1858080bcb1a41350a9b24d571d2e4dd06d778913c3d2ff53099a1227e3`
+(91,901,952 bytes), with all 191 production inputs unchanged. Strict optimized
+i686 Native passes 61,684 full checks and focused rotation 3,294,
+materialization 17,981, complexity 871, with 45 compiler/Make inputs unchanged.
+Strict optimized Runtime passes 61,380 full checks and focused complexity
+1,209, captured identity 2,044, rejection restoration 9,652, with 75 inputs
+unchanged. O0 Runtime passes 70,742 checks. The repaired test callback no
+longer crashes the optimized disconnect sequence. Receipts:
+`out/preview9-candidate24-build-receipt.json`,
+`out/preview9-c24-native-receipt.json`, and
+`out/preview9-c24-runtime-complexity-receipt.json`.
+
+The complete portable `make test` run also passes, including 9,218 protocol,
+5,683 project, 29,850 Session/UDP checks, package checks, and native-symbol
+lint with zero supported-build problems. All 191 production inputs remain
+unchanged across that run. Evidence:
+`out/preview9-c24-portable-receipt.json` and
+`out/preview9-c24-portable-tests.log`. These are controlled checks, not game
+or timing acceptance.
+
+Only the private installation received C24. Both participants loaded Town,
+strictly converged at revision 0 with history 0 and faults 0, and showed the
+correct native adventure title. Root inspected both fresh camera/brush/ground
+screenshots before the measured Basic Tools reproduction. One initial recipe
+preflight failed reading a UTF-8 BOM before any game connection; the corrected
+fresh recipe is UTF-8 without a BOM and retains the original preflight log.
+
+The actual simultaneous attempt still fails. Both native histories were held
+before release. The new full canonical inverse restores the recipe and
+rotations, but Runtime immediately calls its ready-only scene-owner capture
+while native terrain and deferred local view reconstruction are still pending.
+It reports the original scene identity expired and freezes both participants
+before any transaction is accepted. Both retained states are revision 0,
+durable 0, history 0, faults 0, and strict digest
+`2cd5d2916840513914c4ded027e276f398d1b9f1949003ee7457ece84bd564e3`.
+This improves the inverse itself but is not simultaneous Terrain acceptance.
+Evidence: `out/preview9-c24-two-town-bootstrap/`,
+`out/preview9-c24-terrain-calibrate/`,
+`out/preview9-c24-terrain-simultaneous/result.json`, and
+`out/preview9-c24-terrain-failure-full/result.json`.
+
+The next repair must separate exact raw owner identity from asynchronous
+readiness, retain one owned unsent gesture, and wait for a later actual frame
+and strict baseline proof. An unrelated new canonical head must coalesce
+through checked restoration without discarding the original guarded stroke.
+Replacing a scene must still reject without stale writes. The ready-only
+`capture_scene_owner` contract must remain unchanged.
+
+Both games returned normally to Galaxy with faults 0, then runner 64266
+completed exit 0 before another deployment
+(`out/preview9-c24-terrain-retirement/result.json`). The personal preview 8
+installation, shortcut, exact 4 GB executable, and rollback remain untouched.
+C24 is not an accepted release.
