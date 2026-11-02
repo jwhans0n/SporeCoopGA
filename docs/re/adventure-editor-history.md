@@ -931,3 +931,117 @@ changed parents remain authored data. The new named symbol receipts cover the
 getter, resolver, native caller, Load/export callers, reference lifetime and
 positive-count Read behavior. Controlled and running-game validation of the
 correction remain required.
+
+### C24 detached terrain generation and host-away canonical merge audit
+
+This is a read-only audit of the supported GOG image SHA-256
+`dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`,
+using `out/4gb/exe-roundtrip/original.bak`. Exact instruction-range hashes and
+disassembly are retained in `out/preview9-detached-terrain-re/receipt.json`.
+No game, UI or native function was called. No isolated recipe-to-height-map
+generation route was established. In particular, a privately allocated sphere
+does not make the reviewed native Generate routine isolated.
+
+* `cTerrainSphere::Generate F9B860` is a thiscall with five stack words,
+  ending in `ret14` at `F9B9C8/F9B9DC`. Their complete semantic types are not
+  asserted here. Before generation, `F9B867` calls `GetTerrainEditor F48A30`,
+  whose entire body returns global `[016C8EB0]`. The borrowed editor is then
+  passed to `F67A10` with the sphere as its argument at `F9B871`.
+  `F67A10` is `thiscall(editor, sphere)`, `ret4`: it AddRefs a different
+  nonnull sphere, replaces editor+74, and Releases the prior nonnull sphere.
+  Generate then resets that same editor through `F67D50`. Thus even its
+  initial lifetime operations change a globally retained active object.
+* Terraform recipe build `F37390` obtains global PlanetModel through
+  `B3D450` (`mov eax,[0167EAF8]; ret`). Its first-load branch calls `B8D9F0`
+  on that model. Its existing-sphere branch calls Generate at `F37498`.
+  `BuildProperties F37530`, `thiscall(tool, properties)`, `ret4`, combines
+  property loading with this build, global model state, environment/flora,
+  proxies and UI work. The other two direct Generate call sites found at
+  `F9336F` and `FAAD86` call this same global-registering entry; they do not
+  bypass its editor+74 update.
+* `Rebuild F37A00`, `thiscall(tool)` with no stack arguments, reads global
+  ScenarioMode `[016C7AA4]` and stores its ScenarioData in tool+198. Its
+  dirty path calls `F37530`, then grounding `F3E250`, placement validation
+  `F40040` and goal validation `F42660`. This is live scene reconstruction.
+* Grounding `F3E150 -> F3B6A0` is not detached height evaluation.
+  `F3B6A0` consumes a marker, native grounding context and raw flag (`ret0C`),
+  calls descriptor builder `EED640` and query `EEC1D0`, and writes marker
+  XYZ and byte209. `EED640` immediately reads the global ScenarioMode and
+  its ScenarioData pointer at mode+74. `EEC1D0` returns caller-owned Vec3
+  output storage, but its
+  `EEC010` height/collision query uses global PlanetModel and collision
+  object `[0167ECD0]`. `F3E150` subsequently calls `F3D930`, applying the
+  marker to live actors. An output buffer is not a detached scene context.
+* `PlanetModel::GetHeightAt B7F0C0` is
+  `thiscall(model, const Vec3*) -> float ST0`, `ret4`. Its active-terrain
+  branch obtains the sphere's borrowed map set through virtual+0C, then
+  calls `TerrainMapSet::GetHeight F92760`. The latter is an instance sample
+  with the same argument/return ABI; it samples existing map storage and
+  combines base radius+34 with sample times amplitude+38. This does not
+  establish an independently constructible, generated map set, nor its
+  recipe/environment/collision dependencies and lifetime. It cannot justify
+  generating or grounding a different adventure while a creator owns the
+  current global terrain state.
+
+The current shared-editor path deliberately avoids those global operations
+while a participant is away. The relevant C24 source call graph is:
+
+```
+Runtime detached_scene = local_creation || rejection_restore
+  check_native_integrity -> validate(current_native, canonical document)
+  apply -> before_apply = current_native
+        -> prepare(before_apply, accepted document, change, owned artifact)
+             -> owned ScenarioResource Read/copy/marker assignment/Write
+             -> terrain::merge(owned bytes, canonical recipe/settings)
+             -> validate(prepared, canonical document)
+             -> supported_changes(base, prepared)
+        -> prepared_native (skip apply_prepared while detached)
+  persist/poll -> durable current_native (do not advance rendered_revision)
+```
+
+In `editor_runtime.cpp`, the detached branch of `apply` also skips resident
+resource registration; a terrain change allocates no placement and therefore
+does not enter its local-author new-placement selection tail.
+`editor_native::prepare` explicitly has no capture/state/restore call. Its
+general path parses owned ScenarioResources, assigns typed fields on private
+storage, serializes, merges the canonical terrain columns in bytes, and checks
+typed projection plus the opaque supported-change comparison. The pure
+`editor_native_terrain::merge` decodes the property prefix, changes the known
+planet fields/ordered recipe columns, and encodes it while retaining the tail.
+Neither this route nor its validation/comparison code dispatches TerrainLoad,
+Rebuild, Generate, live grounding or ApplyMarkerState. Native resource
+Read/copy/Write and fresh asset resolution still execute on the game thread;
+this is resource validation, not a detached renderer or collision proof.
+
+Presence keeps `scene_ready=false` while detached and retains the prior
+rendered revision. On normal creation return, `materialize_creation_return`
+requires the original owner, complete native initialization/world readiness,
+and the one-use entry terrain ticket before checking the loaded entry draft.
+It then registers dependencies and restores the **latest** durable canonical
+snapshot. Only here does native terrain Load/Rebuild operate on the returned
+Adventure scene. It waits for exact owner settlement and a later actual frame,
+strictly captures/validates the latest document, then restores local
+selection/view before marking the rendered revision/materialization complete.
+A changing canonical head causes another latest-snapshot restore. Replacement
+owners, expired session context or failed validation do not authorize readiness.
+
+Consequently no new detached height API is needed to merge a guest's canonical
+terrain recipe while the host remains in a creator. That merge must not claim
+the absent host scene has been generated, grounded or collision-validated.
+Native reconstruction/validation and its readiness checks are deferred to the
+actual return. Strict document convergence alone is not an independent visual
+or collision test.
+
+The existing `coop_editor_terrain_parallel.py --mode host-away` is structured
+for this distinction: hold the same host creation serial while the guest
+authors a checked stroke, require all-peer canonical/durable revision+hash
+agreement and one correctly authored Terraform history item, and require
+strict native convergence only on participants still in Adventure. Exercise
+guest Undo/Redo with exact recipe order/payloads and unrelated planet fields
+unchanged while that host serial remains designing. After ordinary creator
+Cancel, require all scenes ready, exact native convergence and zero faults;
+also inspect the returned terrain/grounded actors and preserved local
+selection/camera. A host `coop.editor check` collected while in the creator is
+explicitly inapplicable, not an acceptance result. A current successful native
+host-away stroke, history and return run remains required; this static audit
+does not provide that acceptance or a performance pass.
