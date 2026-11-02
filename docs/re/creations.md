@@ -1026,8 +1026,8 @@ that search or from the family-loop fixture's synthetic 12-byte model.
 
 The retained C14 alias `40646200!7D3EB486.24682294` was extracted from the
 guest's owned recovery dependency bundle without opening a game or changing a
-profile. Its BEM is native version 5, with six `0x1D8`-byte part rows and no
-secondary rows. Replaying the actual bounded decoder (`4BFF30 -> 4BF7E0`)
+profile. Its BEM is native version 5, with six `0x1D8`-byte part rows and the
+header word at `0C` zero. Replaying the actual bounded decoder (`4BFF30 -> 4BF7E0`)
 consumes all 1,379 bytes and produces a `0x80`-byte header plus 2,832 part bytes.
 Each compressed block has a little-endian length bounded by `0x800`; `FE,n`
 repeats the previous byte, and `FE,0` emits literal `FE`. The expanded 2,960
@@ -1045,7 +1045,8 @@ supported-type table is `4BC750`, compatibility check `4BC7D0`, and BEM dispatch
 record's key, replaces its type with the requested model family and assigns
 ResourceObject `+08..13`. BEM Read fills model content starting at `+18`, not
 that external key. Supported native BEM versions are 3 through 5, with at most
-1,024 parts and 128 secondary rows. Exact bytes/call targets are retained in
+1,024 parts and another header word bounded by 128. The ordinary writer sets
+that word to zero; the reader consumes no secondary stream for it. Exact bytes/call targets are retained in
 `out/preview9-c14-vehicle-store/factory-native-receipts.json`. This verifies the
 external identity path, not every field in every part or private companion.
 
@@ -1159,3 +1160,43 @@ reads/writes and logger-exception containment. The current full Runtime suite
 passes 40,926 checks, with 7,540 focused and 1,508 captured-identity checks;
 72 inputs remain unchanged in
 `out/preview9-c20-placement-runtime-receipt.json`.
+
+## Ordinary BEM writer and retained C14 dependency audit
+
+The supported executable's BEM writer `4C0060` writes version 5, the part count,
+and zero at serialized header `0C` (`4C00B4`). It writes exactly `0x80` property
+bytes from resource `+18`, then `partCount * 0x1D8` part bytes from its `+98`
+vector through the bounded RLE codec. Reader `4BFF30` consumes those two streams;
+its bound on header `0C` does not imply a secondary-row payload. External model
+identity remains the separately assigned ResourceObject key. Creature, Building,
+Vehicle (including native land/air/water subtypes) and UFO share this BEM path;
+there is no separate per-family internal-reference remapper.
+
+`EditorModel::Load 4AE8D0` reads the part vector with stride `1D8`, constructs
+rigblocks, and copies each part's first two words into rigblock group/instance
+fields (`4AF2FB`, `4AF30D`). Native part-list validation `4EF8A0` likewise
+compares these two words. This corroborates the SDK part layout; a complete
+semantic audit of every property, paint and private-reference consumer is still
+pending. The ordinary BEM is parametric model input, not an included baked mesh.
+
+For the real C14 MilitaryLand Save, the six decoded group/instance pairs are
+`40646000!AB10C9B6`, `40646000!B900B150`, `40646000!32ACB870`,
+`40646000!DD99C1E6`, `40646000!4C84B9C6`, and `40646000!FE3E47E8`.
+All six have type `5CAA5E28` records in stock `Spore_Game.package`. The only
+active paint IDs, `F5967F30` and `010B5B15`, have stock `406A0200` property
+records there. This was a bounded read-only header/index lookup with stable
+double reads, not a native ResourceManager resolution probe. Higher-priority
+overrides were not evaluated. Source and alias BEM bytes remain identical, and
+neither original nor alias contains a compiled VCL. This artifact therefore
+does not demonstrate a missing private dependency or justify blaming removal
+of a compiled VCL for the earlier failure.
+
+The fixed owner-companion Collector and typed-property remapper do not alone
+prove arbitrary dependency closure. No ordinary native-produced saved artifact
+with an unadmitted private dependency or unsafe same-key overwrite was found in
+this audit. Existing installed-record conflict checks remain applicable. Real
+missing-family Save/load/edit/cold-reopen runs, especially air/water Vehicles and
+UFOs, plus their copied decoded reference inventories and first automatic native
+model-admission observations, are still required. This adds no compatibility or
+rejection policy. Receipts and exact supported-image disassembly are under
+`out/preview9-creation-closure-audit/`.
