@@ -19,7 +19,7 @@ import time
 
 import coop_editor_party as party_module
 from coop_adventure import FixtureError
-from coop_adventure_editor import EditorPair, status
+from coop_adventure_editor import EditorPair, status, retry_grant
 from coop_editor_performance import configuration, editor_uncovered, source_fence, values
 from editor_network_proxy import EditorProxy, Profile
 
@@ -283,7 +283,7 @@ def await_measurement_gate(party):
     raise FixtureError('The bounded commit fixture expired before measurement was released')
 
 
-def handoff_native_selection(party,author):
+def handoff_native_selection(party,author,object_id=None):
     """Release another author's visible selection before an unmeasured handoff."""
     revision=status(party.host)['revision'];deselected=[]
     for observer in party.all_games:
@@ -301,8 +301,56 @@ def handoff_native_selection(party,author):
         if status(party.host)['revision']!=revision:
             raise FixtureError('Native author handoff changed the committed draft')
         deselected.append(observer.instance)
-    party.result.setdefault('native_author_handoffs',[]).append(dict(author=author.instance,deselected=deselected,revision=revision))
+    locate=getattr(getattr(party,'args',None),'native_locate_card',None)
+    if locate:
+        if not object_id:raise FixtureError('Native Locate requires one exact fixture object')
+        author.call(f'move {locate[0]} {locate[1]}');author.call(f'click {locate[0]} {locate[1]} right');author.call('wait.frames 120 15000')
+        author.wait('exact placement selected by ordinary native Locate',lambda:status(author).get('selection')==object_id)
+        if status(party.host)['revision']!=revision:raise FixtureError('Native Locate changed the committed draft')
+    party.result.setdefault('native_author_handoffs',[]).append(dict(author=author.instance,deselected=deselected,revision=revision,
+        **(dict(native_locate_card=locate,object=object_id) if locate else {})))
     party.write()
+
+
+def begin_checked_drag(party,author,object_id,source,revision):
+    author.call(f'move {source[0]} {source[1]}');author.call('wait.frames 5 15000')
+    author.call(f'button {source[0]} {source[1]} down');author.call('wait.frames 8 15000');time.sleep(.12)
+    observed=None
+    try:
+        def owned():
+            nonlocal observed
+            observed=status(author)
+            if observed.get('frozen'):raise FixtureError('Native target acquisition froze the editor')
+            if observed.get('selection') not in (None,object_id):
+                raise FixtureError('Native mouse-down selected another placement: '+str(observed.get('selection')))
+            return observed.get('selection')==object_id and retry_grant(author.call('coop.editor leases'),object_id)
+        author.wait('exact native target and ownership before movement',owned,timeout=3)
+    except Exception:
+        # No placement movement was issued. Cancel the native press instead of
+        # releasing a possible capture against an unintended object.
+        author.call('key esc');author.call(f'button {source[0]} {source[1]} up');author.call('wait.frames 8 15000')
+        proof=party.converge(revision)
+        party.result.setdefault('native_target_rejections',[]).append(dict(instance=author.instance,
+            expected=object_id,observed=observed,revision=revision,after_cancel_convergence=proof))
+        party.write();raise
+
+
+def assert_target_moved(before,after,object_id):
+    if object_id not in after or before.get(object_id,{}).get('position')==after[object_id]['position']:
+        raise FixtureError('The gesture did not move the actual authored placement')
+    for object_key,placement in before.items():
+        if object_key!=object_id and object_key in after and any(placement.get(k)!=after[object_key].get(k) for k in ('position','rotation','scale','relative_scale')):
+            raise FixtureError('A native move changed another placement')
+
+
+def checked_warm_drag(party,author,object_id):
+    source=party.body(author,object_id);target=(source[0]+party.args.drag_pixels,source[1])
+    begin_checked_drag(party,author,object_id,source,status(party.host)['revision'])
+    try:
+        for fraction in (.35,.7,1.):
+            author.call(f'move {round(source[0]+(target[0]-source[0])*fraction)} {source[1]}')
+            author.call('wait.frames 6 15000');time.sleep(.06)
+    finally:author.call(f'button {target[0]} {target[1]} up')
 
 
 def measure(party,author,object_id,index):
@@ -310,8 +358,7 @@ def measure(party,author,object_id,index):
     source=party.body(author,object_id);target=(source[0]+(party.args.drag_pixels if index%2==0 else -party.args.drag_pixels),source[1])
     held=False;recording=[]
     try:
-        author.call(f'move {source[0]} {source[1]}');author.call('wait.frames 5 15000')
-        author.call(f'button {source[0]} {source[1]} down');held=True;author.call('wait.frames 8 15000');time.sleep(.12)
+        begin_checked_drag(party,author,object_id,source,before_revision);held=True
         for fraction in (.35,.7,1.):
             author.call(f'move {round(source[0]+(target[0]-source[0])*fraction)} {source[1]}')
             author.call('wait.frames 6 15000');time.sleep(.06)
@@ -330,11 +377,7 @@ def measure(party,author,object_id,index):
         correlation=correlate(captures,author.instance,before_revision+1)
         party.converge(before_revision+1)
         after=party.objects(author)
-        if object_id not in after or before.get(object_id,{}).get('position')==after[object_id]['position']:
-            raise FixtureError('The gesture did not move the actual authored placement')
-        for object_key,placement in before.items():
-            if object_key!=object_id and object_key in after and any(placement.get(k)!=after[object_key].get(k) for k in ('position','rotation','scale','relative_scale')):
-                raise FixtureError('A measured native move changed another placement')
+        assert_target_moved(before,after,object_id)
         result=dict(author_instance=author.instance,object=object_id,correlation=correlation,frames=frames,captures=captures,frame_source_fences=sources)
         return result
     finally:
@@ -375,11 +418,14 @@ def run(args):
             for game in party.all_games:candidates&={key for key,row in party.objects(game).items() if row.get('screen') is not None}
             chosen=args.object or (sorted(candidates)[0] if candidates else None)
             if not chosen or any(chosen not in party.objects(g) for g in party.all_games):raise FixtureError('Choose one stable visible placement with --object')
+            party.result['native_input']=dict(body_offset_y=args.body_offset_y,drag_pixels=args.drag_pixels,native_locate_card=args.native_locate_card)
             # Warm through the existing checked native gesture path; warm-up and
             # ownership retries are excluded from the30 measured releases.
             for author in party.all_games:
-                handoff_native_selection(party,author)
-                party.gesture(author,'warm-owned-native-move',lambda g=author:party.slow_drag(g,party.body(g,chosen),(party.body(g,chosen)[0]+args.drag_pixels,party.body(g,chosen)[1])))
+                handoff_native_selection(party,author,chosen)
+                before=party.objects(author)
+                party.gesture(author,'warm-owned-native-move',lambda g=author:checked_warm_drag(party,g,chosen))
+                assert_target_moved(before,party.objects(author),chosen)
             party.result['configuration']=configs;party.result['fixture_object']=chosen
             await_measurement_gate(party)
             for name in args.profiles:
@@ -387,7 +433,7 @@ def run(args):
                 for proxy in proxies.values():proxy.configure(profile)
                 party.converge();rows=[];before={str(i):proxy.snapshot() for i,proxy in proxies.items()}
                 for author in party.all_games:
-                    handoff_native_selection(party,author)
+                    handoff_native_selection(party,author,chosen)
                     for index in range(args.samples):
                         row=measure(party,author,chosen,index);rows.append(row)
                         party.result['active_profile']=dict(name=name,gestures=rows);party.write()
@@ -437,6 +483,8 @@ def parser():
     p.add_argument('--minimum-placements',type=int,default=400);p.add_argument('--diagnostic',action='store_true')
     p.add_argument('--p95-frame-ms',type=float,default=100);p.add_argument('--max-frame-ms',type=float,default=250)
     p.add_argument('--body-offset-y',type=int,default=28);p.add_argument('--drag-pixels',type=int,default=8)
+    p.add_argument('--native-locate-card',nargs=2,type=int,metavar=('X','Y'),
+                   help='Optional visible cast card for normal right-click Locate before each author group')
     p.add_argument('--measurement-gate',type=Path,
                    help='After warmup write PATH.ready and wait for PATH containing the exact candidate hash')
     p.add_argument('--world-left',type=int,default=356);p.add_argument('--seconds',type=int,default=1800)
@@ -456,6 +504,8 @@ def main():
     if args.expected_native_sha256 and not re.fullmatch('[0-9a-f]{64}',args.expected_native_sha256):p.error('Expected initial native hash must be exact SHA256')
     if any(not re.fullmatch(r'[^\r\n]{1,256}',value) for value in (args.adventure,args.title)):p.error('Adventure/title must be bounded one-line labels')
     if args.object and not re.fullmatch(r'[1-9][0-9]{0,19}:[1-9][0-9]{0,9}',args.object):p.error('Object must be one stable native logical ID:generation')
+    if args.native_locate_card and (not args.object or not 0<=args.native_locate_card[0]<args.world_left or not 70<=args.native_locate_card[1]<1000):
+        p.error('Native Locate requires --object and a bounded visible cast-card point to the left of the world viewport')
     args.output=args.output.resolve()
     if (ROOT/'out').resolve() not in args.output.parents:p.error('Output must remain under this worktree out directory')
     if args.measurement_gate is not None:

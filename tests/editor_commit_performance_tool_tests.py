@@ -39,6 +39,41 @@ def page(value):
 
 
 class StageContracts(unittest.TestCase):
+    def test_drag_requires_exact_native_selection_and_live_lease_before_movement(self):
+        calls=[]
+        lease='local=0:1 phase=4 revision=7\nmember peer=0:1 phase=4 pending=0\nlease scope=Placement object=4:1 token=11 remaining_ms=9000\n'
+        author=SimpleNamespace(instance=95,state=dict(selection='4:1',frozen=0),
+            call=lambda command:(calls.append(command),lease if command=='coop.editor leases' else '')[1],
+            wait=lambda label,predicate,timeout:self.assertTrue(predicate()))
+        owner=SimpleNamespace(result={},converge=mock.Mock(),write=mock.Mock())
+        with mock.patch.object(perf,'status',side_effect=lambda game:game.state),mock.patch.object(perf.time,'sleep'):
+            perf.begin_checked_drag(owner,author,'4:1',(500,365),7)
+        self.assertEqual(calls,['move 500 365','wait.frames 5 15000','button 500 365 down','wait.frames 8 15000','coop.editor leases'])
+        owner.converge.assert_not_called()
+
+    def test_wrong_mouse_down_target_is_cancelled_without_any_placement_movement(self):
+        calls=[];proofs=[];writes=[]
+        author=SimpleNamespace(instance=95,state=dict(selection='5:1',frozen=0))
+        author.call=lambda command:calls.append(command)
+        author.wait=lambda label,predicate,timeout:predicate()
+        owner=SimpleNamespace(result={},converge=lambda revision:(proofs.append(revision),'CONVERGED unchanged')[1],write=lambda:writes.append(True))
+        with mock.patch.object(perf,'status',side_effect=lambda game:game.state),mock.patch.object(perf.time,'sleep'),self.assertRaisesRegex(perf.FixtureError,'another placement'):
+            perf.begin_checked_drag(owner,author,'4:1',(500,365),7)
+        self.assertEqual(calls,['move 500 365','wait.frames 5 15000','button 500 365 down','wait.frames 8 15000','key esc','button 500 365 up','wait.frames 8 15000'])
+        self.assertEqual(proofs,[7]);self.assertEqual(writes,[True])
+        self.assertEqual(owner.result['native_target_rejections'][0]['observed']['selection'],'5:1')
+
+    def test_warmup_rejects_wrong_or_additional_changed_placements(self):
+        before={'4:1':dict(position=(1,2,3),rotation=(0,0,0,1),scale=1),
+            '5:1':dict(position=(4,5,6),rotation=(0,0,0,1),scale=1)}
+        with self.assertRaisesRegex(perf.FixtureError,'did not move'):
+            perf.assert_target_moved(before,copy.deepcopy(before),'4:1')
+        after=copy.deepcopy(before);after['4:1']['position']=(2,2,3)
+        perf.assert_target_moved(before,after,'4:1')
+        after['5:1']['scale']=2
+        with self.assertRaisesRegex(perf.FixtureError,'another placement'):
+            perf.assert_target_moved(before,after,'4:1')
+
     def test_author_handoff_uses_normal_deselection_without_a_transaction(self):
         calls=[];writes=[]
         author=SimpleNamespace(instance=95,state=dict(revision=7,selection='4:1'))
@@ -54,6 +89,20 @@ class StageContracts(unittest.TestCase):
         self.assertEqual(calls,['key esc','wait.frames 8 15000','coop.editor leases'])
         self.assertEqual(owner.result['native_author_handoffs'],[dict(author=95,deselected=[96],revision=7)])
         self.assertEqual(writes,[True]);self.assertEqual(author.state['selection'],'4:1')
+
+    def test_native_locate_is_explicit_unmeasured_input_and_checks_selected_object(self):
+        calls=[]
+        author=SimpleNamespace(instance=95,state=dict(revision=7,selection=None))
+        def call(command):
+            calls.append(command)
+            if command=='click 88 170 right':author.state['selection']='4:1'
+        author.call=call;author.wait=lambda label,predicate:self.assertTrue(predicate())
+        owner=SimpleNamespace(host=author,all_games=[author],result={},args=SimpleNamespace(native_locate_card=[88,170]),write=lambda:None)
+        with mock.patch.object(perf,'status',side_effect=lambda game:game.state):
+            perf.handoff_native_selection(owner,author,'4:1')
+        self.assertEqual(calls,['move 88 170','click 88 170 right','wait.frames 120 15000'])
+        self.assertEqual(owner.result['native_author_handoffs'][0]['native_locate_card'],[88,170])
+        self.assertEqual(author.state['revision'],7)
 
     def test_author_handoff_does_not_open_menu_for_an_unselected_observer(self):
         author=SimpleNamespace(instance=95,state=dict(revision=7))
