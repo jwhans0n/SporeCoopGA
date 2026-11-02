@@ -39,6 +39,45 @@ def page(value):
 
 
 class StageContracts(unittest.TestCase):
+    def test_author_handoff_uses_normal_deselection_without_a_transaction(self):
+        calls=[];writes=[]
+        author=SimpleNamespace(instance=95,state=dict(revision=7,selection='4:1'))
+        observer=SimpleNamespace(instance=96,state=dict(revision=7,selection='4:1',gesture=0,frozen=0))
+        def call(command):
+            calls.append(command)
+            if command=='key esc':observer.state['selection']=None
+            return 'local=1:1 phase=4 revision=7\n'
+        observer.call=call;observer.wait=lambda label,predicate:self.assertTrue(predicate())
+        owner=SimpleNamespace(host=author,all_games=[author,observer],result={},write=lambda:writes.append(True))
+        with mock.patch.object(perf,'status',side_effect=lambda game:game.state):
+            perf.handoff_native_selection(owner,author)
+        self.assertEqual(calls,['key esc','wait.frames 8 15000','coop.editor leases'])
+        self.assertEqual(owner.result['native_author_handoffs'],[dict(author=95,deselected=[96],revision=7)])
+        self.assertEqual(writes,[True]);self.assertEqual(author.state['selection'],'4:1')
+
+    def test_author_handoff_does_not_open_menu_for_an_unselected_observer(self):
+        author=SimpleNamespace(instance=95,state=dict(revision=7))
+        observer=SimpleNamespace(instance=96,state=dict(revision=7,selection=None),call=mock.Mock())
+        owner=SimpleNamespace(host=author,all_games=[author,observer],result={},write=lambda:None)
+        with mock.patch.object(perf,'status',side_effect=lambda game:game.state):
+            perf.handoff_native_selection(owner,author)
+        observer.call.assert_not_called()
+        observer.state['gesture']=1
+        with mock.patch.object(perf,'status',side_effect=lambda game:game.state),self.assertRaisesRegex(perf.FixtureError,'unsettled'):
+            perf.handoff_native_selection(owner,author)
+        observer.call.assert_not_called()
+
+    def test_author_handoff_cannot_hide_a_revision_change(self):
+        author=SimpleNamespace(instance=95,state=dict(revision=7))
+        observer=SimpleNamespace(instance=96,state=dict(selection='4:1'))
+        def call(command):
+            if command=='key esc':observer.state['selection']=None;author.state['revision']=8
+            return ''
+        observer.call=call;observer.wait=lambda label,predicate:self.assertTrue(predicate())
+        owner=SimpleNamespace(host=author,all_games=[author,observer],result={},write=lambda:None)
+        with mock.patch.object(perf,'status',side_effect=lambda game:game.state),self.assertRaisesRegex(perf.FixtureError,'changed the committed'):
+            perf.handoff_native_selection(owner,author)
+
     def test_exact_qpc_stage_identity(self):
         value=capture();self.assertEqual(perf.stage_page(page(value)),value)
         captures={'2':value,'3':copy.deepcopy(value)};captures['3']['header']['pid']=1003

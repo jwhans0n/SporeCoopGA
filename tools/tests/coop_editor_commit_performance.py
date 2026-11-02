@@ -283,6 +283,28 @@ def await_measurement_gate(party):
     raise FixtureError('The bounded commit fixture expired before measurement was released')
 
 
+def handoff_native_selection(party,author):
+    """Release another author's visible selection before an unmeasured handoff."""
+    revision=status(party.host)['revision'];deselected=[]
+    for observer in party.all_games:
+        if observer is author:continue
+        before=status(observer)
+        if before.get('frozen') or before.get('gesture'):
+            raise FixtureError('An observer has an unsettled native operation at the author handoff')
+        if before.get('selection') is None:continue
+        observer.call('key esc');observer.call('wait.frames 8 15000')
+        def released():
+            current=status(observer)
+            return (current.get('selection') is None and not current.get('gesture') and
+                    not any(line.startswith('lease ') for line in observer.call('coop.editor leases').splitlines()))
+        observer.wait('ordinary native deselection and lease release',released)
+        if status(party.host)['revision']!=revision:
+            raise FixtureError('Native author handoff changed the committed draft')
+        deselected.append(observer.instance)
+    party.result.setdefault('native_author_handoffs',[]).append(dict(author=author.instance,deselected=deselected,revision=revision))
+    party.write()
+
+
 def measure(party,author,object_id,index):
     before_revision=status(party.host)['revision'];before=party.objects(author)
     source=party.body(author,object_id);target=(source[0]+(party.args.drag_pixels if index%2==0 else -party.args.drag_pixels),source[1])
@@ -356,6 +378,7 @@ def run(args):
             # Warm through the existing checked native gesture path; warm-up and
             # ownership retries are excluded from the30 measured releases.
             for author in party.all_games:
+                handoff_native_selection(party,author)
                 party.gesture(author,'warm-owned-native-move',lambda g=author:party.slow_drag(g,party.body(g,chosen),(party.body(g,chosen)[0]+args.drag_pixels,party.body(g,chosen)[1])))
             party.result['configuration']=configs;party.result['fixture_object']=chosen
             await_measurement_gate(party)
@@ -364,6 +387,7 @@ def run(args):
                 for proxy in proxies.values():proxy.configure(profile)
                 party.converge();rows=[];before={str(i):proxy.snapshot() for i,proxy in proxies.items()}
                 for author in party.all_games:
+                    handoff_native_selection(party,author)
                     for index in range(args.samples):
                         row=measure(party,author,chosen,index);rows.append(row)
                         party.result['active_profile']=dict(name=name,gestures=rows);party.write()
