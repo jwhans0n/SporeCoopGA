@@ -126,7 +126,11 @@ $(B)/host/editor_cast_tests.exe: tests/editor_cast_tests.cpp mods/coop/editor_na
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(EDITOR_WIRE_SRC) tests/editor_cast_tests.cpp -o $@
 
 test-editor-windows: $(B)/host/editor_stage_metrics_tests.exe
-test-editor-windows: $(B)/host/editor_authoring_extensions_tests.exe $(B)/host/editor_creation_tests.exe
+test-editor-windows: $(B)/host/editor_authoring_extensions_tests.exe $(B)/host/editor_creation_tests.exe $(B)/host/editor_creation_ui_tests.exe
+
+$(B)/host/editor_creation_ui_tests.exe: tests/editor_creation_ui_windows_tests.cpp mods/coop/editor_creation_ui.cpp mods/coop/editor_creation_ui.h mods/coop/editor_creation.h mods/coop/editor_runtime.h mods/coop/coop_ui.h mods/coop/sui.h $(ADVENTURE_ABI_HEADERS)
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-unused-function -static -Imods/coop -Isdk/include tests/editor_creation_ui_windows_tests.cpp -o $@
 test-editor-windows: $(B)/host/editor_native_pose_tests.exe
 test-editor-windows: $(B)/host/editor_native_terrain_tests.exe $(B)/host/editor_native_complexity_tests.exe
 test-editor-windows: $(B)/host/adventure_collect_tests.exe
