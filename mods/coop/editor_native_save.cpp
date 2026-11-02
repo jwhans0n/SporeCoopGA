@@ -21,6 +21,7 @@ bool return_notified=false;
 bool owned_native=false;
 struct NativeScope{bool before=owned_native;NativeScope(){owned_native=true;}~NativeScope(){owned_native=before;}};
 uint64_t generation=1;
+uint64_t operation_serial=0;
 constexpr uint32_t kAdventure=0x366A930D,kScenarioClass=0xE742574A;
 using Key=editor::ResourceKey;
 struct Pending {
@@ -29,9 +30,14 @@ struct Pending {
     void* ui=nullptr;
     void* resource=nullptr;
     Key before,after;
+    SaveOperation operation;
     bool copy=false,executed=false,success=false,copy_dirty=false,previous_metadata_dirty=false;
 };
 std::optional<Pending> pending;
+bool same_operation(const SaveOperation& a,const SaveOperation& b){
+    return a.module_generation==b.module_generation && a.serial==b.serial && a.native_generation==b.native_generation &&
+        a.owner==b.owner && a.before==b.before && a.copy==b.copy;
+}
 using Pipeline=bool(SK_THISCALL*)(void*);
 Pipeline original_pipeline;
 using Return=void(SK_THISCALL*)(void*);
@@ -89,13 +95,18 @@ void SK_THISCALL continue_native(void* self) {
 }
 
 void* mode(){return a_mode?*reinterpret_cast<void**>(a_mode):nullptr;}
-bool current(const Pending& p){
-    return editor_native::state().ready && mode()==p.mode && skg::readable(p.mode,0xDC) &&
+bool owns_pending(const Pending& p){
+    const auto native=editor_native::state();
+    return native.ready && (!p.operation.serial || (p.operation.module_generation==generation &&
+        p.operation.native_generation==native.generation)) && mode()==p.mode && skg::readable(p.mode,0xDC) &&
         skg::field<int>(p.mode,0xCC)==1 && skg::field<int>(p.mode,0xD0)==0 &&
         skg::field<void*>(p.mode,0x74)==p.data && skg::field<void*>(p.mode,0x14)==p.ui &&
         skg::readable(p.data,0x128) && skg::field<void*>(p.data,0x10)==p.resource &&
         skg::readable(p.resource,0x2CB0) && skg::readable(p.ui,0x98) &&
         skg::field<uintptr_t>(p.ui,0)==a_vtable;
+}
+bool current(const Pending& p){
+    return owns_pending(p) && skg::field<Key>(p.resource,8)==(p.executed?p.after:p.before);
 }
 bool ready(Pending& p,std::string& error){
     p.mode=mode();
@@ -103,12 +114,13 @@ bool ready(Pending& p,std::string& error){
        skg::field<int>(p.mode,0xD0)!=0){error="The native Adventure Editor is not active";return false;}
     p.ui=skg::field<void*>(p.mode,0x14);p.data=skg::field<void*>(p.mode,0x74);
     p.resource=skg::readable(p.data,0x128)?skg::field<void*>(p.data,0x10):nullptr;
+    if(skg::readable(p.resource,0x14))p.before=skg::field<Key>(p.resource,8);
     if(!current(p)){error="The native editor resource or save UI is unavailable";return false;}
     const auto state=editor_native::state();
     if(pending || state.gesture || skg::field<uint32_t>(p.data,0x18) ||
        skg::field<uint32_t>(p.ui,0x48) || skg::field<uint32_t>(p.ui,0x54) ||
        skg::field<uint32_t>(p.ui,0x58)) {error="Finish the current native gesture or dialog first";return false;}
-    p.before=skg::field<Key>(p.resource,8);error.clear();return true;
+    error.clear();return true;
 }
 
 // Bypass the parsed-resource cache and independently read the installed native
@@ -146,11 +158,15 @@ bool persisted(const Key& key,std::string& error,std::vector<uint8_t>* output=nu
     return true;
 }
 bool SK_THISCALL pipeline(void* self){
-    const bool watching=pending && pending->data==self && current(*pending);
+    const bool watching=pending && !pending->executed && pending->data==self && current(*pending);
+    const auto serial=watching?pending->operation.serial:0;
+    const auto epoch=generation;
     const bool success=original_pipeline(self);
-    if(watching && pending && pending->data==self && current(*pending)){
+    if(watching && epoch==generation && pending && pending->operation.serial==serial &&
+       pending->data==self && owns_pending(*pending)){
         pending->executed=true;pending->success=success;
         pending->after=skg::field<Key>(pending->resource,8);
+        pending->operation.after=pending->after;
     }
     return success;
 }
@@ -162,11 +178,13 @@ void SK_THISCALL return_native(void* self){
     return_notified=false;original_return(self);
 }
 void fail(const std::string& error){
+    const auto epoch=generation;const auto operation=pending?pending->operation:SaveOperation{};
     if(pending && pending->copy_dirty && current(*pending))skg::field<bool>(pending->data,0x85)=pending->previous_metadata_dirty;
     if(pending && current(*pending) && skg::field<uint32_t>(pending->ui,0x58)==2){
         skg::field<uint32_t>(pending->ui,0x58)=0;
         skg::thiscall<void>(a_hold,pending->ui,true);
     }
+    if(epoch!=generation || (pending && !same_operation(pending->operation,operation)))return;
     pending.reset();if(C.error)C.error(error);
 }
 void poll(){
@@ -195,36 +213,75 @@ void poll(){
     // the player to dismiss it normally; never accept or close foreign dialogs.
     if(skg::field<uint32_t>(pending->data,0x18) || skg::field<uint32_t>(pending->ui,0x48) ||
        skg::field<uint32_t>(pending->ui,0x54) || skg::field<uint32_t>(pending->ui,0x58))return;
-    std::string error;
-    if(!persisted(pending->after,error)){fail(error);return;}
-    const auto saved=pending->after;pending.reset();if(C.saved)C.saved(saved);
+    std::string error;const auto expected=pending->operation;const auto saved_key=pending->after;
+    const bool readback=persisted(saved_key,error);
+    if(generation!=expected.module_generation)return;
+    if(!pending || !same_operation(pending->operation,expected) || pending->operation.after!=expected.after || !current(*pending)){
+        if(pending && same_operation(pending->operation,expected))pending.reset();
+        if(C.cancelled)C.cancelled();return;
+    }
+    if(!readback){fail(error);return;}
+    const auto operation=pending->operation;const auto saved=pending->after;pending.reset();
+    if(C.saved_operation)C.saved_operation(operation);else if(C.saved)C.saved(saved);
 }
 bool begin(bool copy,std::string& error){
     Pending p;if(!ready(p,error))return false;
+    if(operation_serial==UINT64_MAX){error="Native adventure save operation identity is exhausted";return false;}
+    const auto native=editor_native::state();
+    p.copy=copy;
+    p.operation={generation,++operation_serial,native.generation,
+        {reinterpret_cast<uintptr_t>(p.mode),reinterpret_cast<uintptr_t>(p.data),reinterpret_cast<uintptr_t>(p.resource),p.before},
+        p.before,{},copy};
+    // Publish busy before calling user code, so a nested request cannot replace
+    // this operation. A callback may still retire/reinitialize the module.
+    pending=p;
+    if(C.preparing && !C.preparing(p.operation,error)){
+        if(pending && same_operation(pending->operation,p.operation))pending.reset();
+        return false;
+    }
+    if(!pending || !same_operation(pending->operation,p.operation) || !current(*pending)){
+        if(pending && same_operation(pending->operation,p.operation))pending.reset();
+        error="The native adventure save context changed during preparation";return false;
+    }
     uint32_t reason=0;
-    if(!skg::thiscall<bool>(a_can_save,p.data,&reason)){
+    const bool allowed=skg::thiscall<bool>(a_can_save,p.data,&reason);
+    if(!pending || !same_operation(pending->operation,p.operation) || !current(p)){
+        if(pending && same_operation(pending->operation,p.operation))pending.reset();
+        error="The native adventure save context changed while checking its eligibility";return false;
+    }
+    if(!allowed){
         // An explicit local copy is a new metadata publication even when its
         // placements match the source. Retain all other native eligibility gates.
         if(copy && reason==5) {
             p.previous_metadata_dirty=skg::field<bool>(p.data,0x85);p.copy_dirty=true;
             skg::field<bool>(p.data,0x85)=true;
-            if(!skg::thiscall<bool>(a_can_save,p.data,&reason)) {
-                skg::field<bool>(p.data,0x85)=p.previous_metadata_dirty;
-                error="Native adventure save is unavailable (reason "+std::to_string(reason)+")";return false;
+            const bool copy_allowed=skg::thiscall<bool>(a_can_save,p.data,&reason);
+            if(!pending || !same_operation(pending->operation,p.operation) || !current(p)){
+                if(pending && same_operation(pending->operation,p.operation))pending.reset();
+                error="The native adventure save context changed while checking its copy eligibility";return false;
             }
-        } else {error="Native adventure save is unavailable (reason "+std::to_string(reason)+")";return false;}
+            if(!copy_allowed) {
+                skg::field<bool>(p.data,0x85)=p.previous_metadata_dirty;
+                pending.reset();error="Native adventure save is unavailable (reason "+std::to_string(reason)+")";return false;
+            }
+        } else {pending.reset();error="Native adventure save is unavailable (reason "+std::to_string(reason)+")";return false;}
     }
-    p.copy=copy;pending=p;
+    if(!current(p)){
+        pending.reset();error="The native adventure save context changed while checking its eligibility";return false;
+    }
+    pending=p;
     // Mode2 is the ordinary Save command that remains in the editor. Mode3 is
     // Save+Exit and would destroy the collaboration's active native context.
     skg::field<uint32_t>(p.ui,0x58)=2;
     { NativeScope ownership; skg::thiscall<void>(a_begin_save,p.ui,!copy); }
-    if(!pending || !current(*pending) || skg::field<uint32_t>(p.data,0x18)==0){
-        if(pending && current(*pending) && skg::field<uint32_t>(p.ui,0x58)==2){
+    if(!pending || !same_operation(pending->operation,p.operation) || !current(*pending) ||
+       (!pending->executed && skg::field<uint32_t>(p.data,0x18)==0)){
+        const bool owned=pending && same_operation(pending->operation,p.operation) && current(*pending);
+        if(owned && skg::field<uint32_t>(p.ui,0x58)==2){
             skg::field<uint32_t>(p.ui,0x58)=0;skg::thiscall<void>(a_hold,p.ui,true);
         }
-        if(pending && pending->copy_dirty && current(*pending))skg::field<bool>(pending->data,0x85)=pending->previous_metadata_dirty;
-        pending.reset();error="Native adventure save did not start";return false;
+        if(owned && pending->copy_dirty)skg::field<bool>(p.data,0x85)=p.previous_metadata_dirty;
+        if(pending && same_operation(pending->operation,p.operation))pending.reset();error="Native adventure save did not start";return false;
     }
     error.clear();return true;
 }

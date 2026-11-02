@@ -8,12 +8,27 @@
 
 namespace editor_native_save {
 enum class Request { Exit, Save, SaveExit, Play, Build };
+// Owned values identifying this module's exact native Pending operation. The
+// scene source names the pre-save local working resource, which can differ
+// from the canonical transport key. after is set only after native completion.
+struct SaveOperation {
+    uint64_t module_generation=0,serial=0,native_generation=0;
+    editor_native::SceneOwner owner;
+    editor::ResourceKey before,after;
+    bool copy=false;
+    bool operator==(const SaveOperation&) const = default;
+};
 struct Ctx {
     // Owns the shared draft, first Save As wizard and recovery native context.
     std::function<bool()> shared_active;
     // Called only for this module's pending native operation. The saved resource
     // has passed native completion and an independent persisted-record readback.
     std::function<void(editor::ResourceKey)> saved;
+    // Runs before native input/dirty state changes. Failure does not begin a
+    // save. Completion replaces saved(key) when provided, after owned native
+    // success, normal confirmation dismissal and independent record readback.
+    std::function<bool(const SaveOperation&,std::string&)> preparing;
+    std::function<void(const SaveOperation&)> saved_operation;
     std::function<void()> cancelled;
     std::function<void(const std::string&)> error;
     // Direct native Done/hammer returns are group requests during owned co-op
