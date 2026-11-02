@@ -269,6 +269,67 @@ synchronous fixture did not cover this boundary. The fix and scoped camera
 activation still require an actual native Done/Cancel rerun that also verifies
 the Adventure Editor controls and visible scene have returned.
 
+### Post-c6 commit and creation-return hardening
+
+The c6 timing failure led to three checked optimizations, rather than a change
+to the acceptance limits. Commit `cd6b153` caches immutable cast projections
+under an exact native whole-roster serialization fingerprint, including schema,
+context, act ordering and resolved asset witnesses. The cache retains at most
+eight versions and 32 MiB. Commit `d8483af` retains an owned placement gesture's
+native result until acceptance instead of applying its inverse and then the
+same accepted result. Foreign commits first restore the checked canonical
+state, and persistence rejection still restores that state. Commit `a6ea123`
+reuses equal native bytes only when act, bindings, captain, captain lock and
+metadata sidecars also match; typed projection validation remains mandatory.
+These are implementation changes, not measured native performance passes.
+
+The lifecycle follow-up `4b417f1` restores tentative input before same-revision
+Save checkpointing, fences End/Leave against source and binding replacement,
+withdraws scene readiness during native gestures and preserves restoration
+failure diagnostics. Its frozen runtime SHA256
+`4442dcdcd782f28487424a7df6f1904fa9291e063ecf298c189d3356a8531c46`
+passes 1,803 lifecycle, 3,950 adoption and 25,760 full runtime checks. Exact
+compiled inputs and executable hashes are in
+`out/editor-preview9-adoption/lifecycle-stable-receipt.json`.
+
+The exact-byte follow-up runtime SHA256
+`e5bff61b02cfd57321f4fd659d7fb9e25302d196141202618ffb3acd5c3f0c78`
+passes 989 byte/sidecar, 717 tail, 4,952 adoption and 26,980 full runtime checks.
+The driver reports source-header drift because the next creation API header was
+edited after this executable was compiled; its runtime source, test source and
+executable hashes remained unchanged. Results apply to the recorded compiled
+header, not the later API. Receipts and that qualification are in
+`out/editor-preview9-adoption/byte-guards-evidence.json`.
+
+Commit `08c9283` fixes owned creation-result suppression for Spore's queued
+message delivery. The native result remains cancelled for its posted lifetime;
+the module separately retains the immutable actual saved key and cancellation
+result. Its Win32 fixture now models retained queued results and delayed mode
+return, passing 308 checks in
+`out/editor-preview9-creation/creation-posted-result.log`.
+
+Native return commits `9ec2a10` and `efe6976` add a value-only mode/data/resource
+owner witness and read-only initialization, pending-entry, transition and UI
+readiness checks. The guarded paired camera activation verifies both the active
+registered camera and Simulator's cached orbit interface. It does not substitute
+for completing ordinary native resume. The exact native fixture passes 9,933
+checks (`out/editor_native_creation_resume.exe`), and the GOG ABI verifier passes
+90 entries (`out/editor-creation-resume-abi.json`). Live Save/Cancel acceptance
+is recorded separately from these controlled native substitutes.
+
+Candidate 7 DLL
+`ab5fba723390806add3a1feb61c383225c6a91dd8fd116e05f4a070cf23369a4`
+is frozen in `out/preview9-candidate7-source.json` and installed only in the
+private lab copy. Its owned hidden/muted pair passes startup preflight with
+2,907 symbols, the exact LAA executable and zero faults. Adventure Town's
+unchanged original native baseline is again
+`76d3ac97f983da930f414c26ee0f0236ac5bb096c1653f2bb85b06a40bc5016e`.
+Both players reach revision 0, durable revision 0 and matching convergence
+hashes with initialization 4, entry pending 0, transition 0 and world visible 1.
+Receipts: `out/preview9-commit-c7-preflight.json` and
+`out/preview9-c7-bootstrap/result.json`. This startup is not feature or timing
+acceptance. The personal shortcut and installed preview 8 remain unchanged.
+
 ## Required native acceptance
 
 Actual two- and four-player candidate runs remain pending for crew edits,
