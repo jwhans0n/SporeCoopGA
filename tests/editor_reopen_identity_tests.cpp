@@ -79,9 +79,11 @@ int main() {
     bad=observed; bad.document.tombstones[{88,1}]=1; fails(saved,bad);
     bad=saved; bad.bindings[0].marker=7; fails(bad,observed);
     bad=saved; bad.source={}; fails(bad,observed);
-    auto maximum=fixture(false,1024), max_saved=fixture(true,1024);
+    auto maximum=fixture(false,editor_native::kPlacementLimit),
+         max_saved=fixture(true,editor_native::kPlacementLimit);
     CHECK(remap_reopened(max_saved,maximum,out,error)); CHECK(out.document==max_saved.document);
-    auto too_many=fixture(false,1025), too_saved=fixture(true,1025);
+    auto too_many=fixture(false,editor_native::kPlacementLimit+1),
+         too_saved=fixture(true,editor_native::kPlacementLimit+1);
     CHECK(!remap_reopened(too_saved,too_many,out,error));
     auto empty=fixture(false,0), empty_saved=fixture(true,0);
     CHECK(remap_reopened(empty_saved,empty,out,error)); CHECK(out.bindings.empty());
