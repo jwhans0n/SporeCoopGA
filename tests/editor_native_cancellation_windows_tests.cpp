@@ -734,6 +734,71 @@ static void test_large_transform_without_roster_work(){
     CHECK(!editor_native::apply(wanted,error));CHECK(rows==expected&&t_transforms==1&&t_reads==0);
     reset();CHECK(t_allocations.empty());
 }
+static std::array<uint8_t,0x27E8> t_pose_class;
+static std::array<uint8_t,0x534> t_pose_act;
+static unsigned t_pose_row_copies=0,t_pose_inserts=0;
+static bool SK_THISCALL t_pose_write(void* r,editor_native::Stream* stream){
+    ++t_writes;const auto& rows=t_rows[r];
+    const std::array<uint32_t,3> header{0x50534531,uint32_t(rows.size()/0x238),skg::field<uint32_t>(r,0x2C4C)};
+    return editor_native::write(stream,header.data(),sizeof header) && editor_native::write(stream,rows.data(),uint32_t(rows.size()));
+}
+static bool SK_THISCALL t_pose_read(void* r,editor_native::Stream* stream){
+    ++t_reads;std::array<uint32_t,3> header{};
+    if(editor_native::read(stream,header.data(),sizeof header)!=sizeof header || header[0]!=0x50534531 ||
+       header[1]>editor_native::kPlacementLimit || stream->bytes.size()-stream->position!=header[1]*0x238)return false;
+    auto& rows=t_rows[r];rows.resize(header[1]*0x238);
+    if(editor_native::read(stream,rows.data(),uint32_t(rows.size()))!=int(rows.size()))return false;
+    rows_for(r);skg::field<uint32_t>(r,0x2C4C)=header[2];
+    skg::field<void*>(r,0x2BF4)=t_pose_class.data();skg::field<void*>(r,0x2BF8)=t_pose_class.data()+t_pose_class.size();
+    skg::field<void*>(r,0x23C)=t_pose_act.data();skg::field<void*>(r,0x240)=t_pose_act.data()+t_pose_act.size();return true;
+}
+static void* SK_THISCALL t_pose_copy_rows(void* destination,void* source){
+    ++t_pose_row_copies;auto* owner=static_cast<uint8_t*>(destination)-0x2C10;
+    const auto first=skg::field<uint8_t*>(source,0),last=skg::field<uint8_t*>(source,4);
+    t_rows[owner].assign(first,last);rows_for(owner);return destination;
+}
+static uint32_t SK_THISCALL t_pose_insert(void* destination,void* marker){
+    ++t_pose_inserts;auto* owner=static_cast<uint8_t*>(destination)-0x2C10;auto& rows=t_rows[owner];
+    const auto index=uint32_t(rows.size()/0x238);const auto* first=static_cast<uint8_t*>(marker)-4;
+    rows.insert(rows.end(),first,first+0x238);rows_for(owner);return index;
+}
+static void test_exact_validation_cache_and_owned_pose_prepare(){
+    using namespace editor_native;
+    reset();const auto old_write=a_write,old_read=a_read,old_copy=a_copy_marker_rows,old_insert=a_insert_marker;
+    t_pose_class.fill(0);t_pose_act.fill(0);skg::field<uint32_t>(t_pose_class.data(),0)=1024;
+    skg::field<void*>(t_live.data(),0x2BF4)=t_pose_class.data();skg::field<void*>(t_live.data(),0x2BF8)=t_pose_class.data()+t_pose_class.size();
+    skg::field<void*>(t_live.data(),0x23C)=t_pose_act.data();skg::field<void*>(t_live.data(),0x240)=t_pose_act.data()+t_pose_act.size();
+    skg::field<uint32_t>(t_live.data(),0x2C4C)=0xDEADBEEF;
+    auto& raw=t_rows[t_live.data()];
+    for(unsigned i=0;i<2;++i){auto* marker=raw.data()+i*0x238+4;skg::field<uint32_t>(marker,0)=1024;
+        skg::field<editor::Vec3>(marker,4)={float(i),0,0};skg::field<editor::Rotation>(marker,0x10)={0,0,0,1};
+        skg::field<float>(marker,0x20)=1;skg::field<float>(marker,0x24)=.5f;skg::field<uint32_t>(marker,0x100)=77+i;}
+    a_write=uintptr_t(t_pose_write);a_read=uintptr_t(t_pose_read);a_copy_marker_rows=uintptr_t(t_pose_copy_rows);a_insert_marker=uintptr_t(t_pose_insert);
+    Snapshot base;std::string error;CHECK(capture(base,error));base.document.project[0]=1;base.document.epoch=9;
+    const auto live_before=raw;const auto hits=validation_hits;t_reads=0;t_pose_row_copies=t_pose_inserts=0;
+    {
+        ValidationScope scope;CHECK(validate(base,base.document,error));CHECK(t_reads==1);
+        CHECK(validate(base,base.document,error));CHECK(t_reads==1 && validation_hits==hits+1);
+        const auto id=base.document.placements.begin()->first;auto next=base.document;next.revision=1;
+        auto& p=next.placements.at(id);p.position={4,5,6};p.revision=1;p.field_revisions[{editor::Field::Position,0}]=1;
+        editor::Change change;change.revision=1;change.patch.fields.push_back({id,{editor::Field::Position,0},base.document.placements.at(id).position,p.position,0});
+        Snapshot prepared;CHECK(prepare(base,next,change,nullptr,prepared,error));CHECK(prepared.document==next);
+        CHECK(raw==live_before && t_pose_row_copies==2 && t_pose_inserts==4); // Only opaque comparison rebuilds rows.
+        auto unsupported=prepared;unsupported.bytes[12+4+0x100]^=1;Gesture invalid;invalid.before=base;invalid.after=unsupported;
+        CHECK(!supported_changes(invalid,error)); // Pose optimization cannot admit an unrelated opaque marker mutation.
+        CHECK(prepare(base,next,change,nullptr,prepared,error));CHECK(raw==live_before);
+        auto forged=base;forged.bytes[0]^=1;CHECK(!validate(forged,base.document,error));CHECK(!prepare(forged,next,change,nullptr,prepared,error));
+        forged=base;forged.bindings[0].marker=9999;CHECK(!validate(forged,base.document,error));
+        forged=base;forged.act=1;CHECK(!validate(forged,base.document,error));
+        auto wrong=base.document;wrong.placements.at(id).position.x=99;CHECK(!validate(base,wrong,error));
+        const auto reads=t_reads;CHECK(validate(base,base.document,error));CHECK(t_reads==reads+1);
+        ++generation;CHECK(validate(base,base.document,error));CHECK(t_reads==reads+2);
+        {ValidationScope nested;CHECK(validate(base,base.document,error));CHECK(t_reads==reads+2);}
+    }
+    CHECK(!validated_snapshot && !validation_depth);const auto reads=t_reads;CHECK(validate(base,base.document,error));CHECK(t_reads==reads+1);
+    a_write=old_write;a_read=old_read;a_copy_marker_rows=old_copy;a_insert_marker=old_insert;
+    reset();CHECK(t_allocations.empty());
+}
 int main(){
     test_crew_input_ownership();
     test_captain_and_act_input_ownership();
@@ -777,6 +842,7 @@ int main(){
     test_coalesced_speech();
     test_pose_refresh_preserves_authored_audio();
     test_large_transform_without_roster_work();
+    test_exact_validation_cache_and_owned_pose_prepare();
     test_local_view();
     using namespace editor_native;
     // Ordinary editing keeps the native entry-level Undo behavior intact.

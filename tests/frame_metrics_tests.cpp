@@ -18,6 +18,7 @@ int main() {
     check(result.recording && result.samples == 100 && result.invalid == 0);
     check(near(result.median_ms, 50.5));
     check(near(result.p95_ms, 95));
+    check(near(result.max_ms, 100));
     check(near(result.seconds, 5.05));
     check(near(result.mean_fps, 100 / 5.05));
     check(near(result.median_fps, 1000 / 50.5));
@@ -37,6 +38,10 @@ int main() {
     frames.start(); check(frames.summary().samples == 0 && frames.summary().invalid == 0);
     frames.sample(9); frames.sample(9.033);
     check(frames.summary().samples == 1 && near(frames.summary().median_ms, 33));
+    frames.start();frames.sample(0);
+    for(size_t i=1;i<=100;++i)frames.sample(double(i)*.010);
+    frames.sample(1.8);result=frames.summary();
+    check(near(result.p95_ms,10) && near(result.max_ms,800)); // One commit freeze must remain visible.
     std::printf("frame metrics: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

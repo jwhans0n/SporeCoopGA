@@ -31,8 +31,8 @@ class Profile:
 
 
 def messages(data):
-    """Validate the complete protocol-16 frame before inspecting its messages."""
-    if len(data) < 31 or data[:4] != b'SPCO' or struct.unpack_from('<H', data, 4)[0] != 16:
+    """Validate the unchanged reviewed protocol16..23 transport envelope."""
+    if len(data) < 31 or data[:4] != b'SPCO' or not 16 <= struct.unpack_from('<H', data, 4)[0] <= 23:
         return []
     connection = struct.unpack_from('<I', data, 6)[0]
     offset, result = 31, []

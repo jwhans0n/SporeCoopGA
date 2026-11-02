@@ -21,6 +21,7 @@ public:
         double median_fps = 0;
         double median_ms = 0;
         double p95_ms = 0;
+        double max_ms = 0;
     };
 
     void start() { count_ = invalid_ = 0; previous_ = 0; primed_ = false; recording_ = true; }
@@ -44,6 +45,7 @@ public:
         for (size_t i = 0; i < count_; ++i) result.seconds += sorted[i] / 1000;
         result.median_ms = count_ % 2 ? sorted[count_ / 2] : (sorted[count_ / 2 - 1] + sorted[count_ / 2]) / 2;
         result.p95_ms = sorted[(count_ * 95 + 99) / 100 - 1];
+        result.max_ms = sorted[count_ - 1];
         result.median_fps = 1000 / result.median_ms;
         result.mean_fps = count_ / result.seconds;
         return result;

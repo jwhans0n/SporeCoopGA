@@ -26,6 +26,13 @@ class ProxyTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 Profile(**kwargs)
 
+    def test_reviewed_current_transport_versions(self):
+        for version in range(16,24):
+            value=packet()[:4]+struct.pack('<H',version)+packet()[6:]
+            self.assertEqual(messages(value),[(1234,53,7,b'x')])
+        for version in (0,15,24,65535):
+            self.assertEqual(messages(packet()[:4]+struct.pack('<H',version)+packet()[6:]),[])
+
     def test_real_loopback_loss_duplicates_and_source_retransmissions(self):
         with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as host, socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as guest:
             host.bind(('127.0.0.1',0));host.settimeout(2)
