@@ -974,3 +974,61 @@ itself reuse an existing projection. Separating a pinned local scene identity
 from the canonical envelope remains a reviewed follow-up, not part of this
 patch. The new capture work still needs measured two/four-player validation;
 the failed candidate 14 timing budgets have not been waived.
+
+## Candidate 15 measured commits and terrain append failure
+
+Candidate DLL `fd3626b573bfc8c389d3694881916e39c6406e7db4854ed155e6b652c4a0fabd`
+was built with 186 binary inputs unchanged and installed only into the private
+lab. The combined strict Win32 runtime suite passed 31,106 checks, including
+635 focused model-admission checks and 141 read-scope checks. Receipts are
+`out/preview9-candidate15-{source,tests}.json` and
+`out/preview9-candidate15-deployment/receipt.json`. These checks complement the
+native and creation receipts above; they do not establish release acceptance.
+
+A fresh two-player Maxis Adventure Town run performed two warmups and thirty
+ordinary native drags per author. All sixty measured operations completed;
+both participants reached durable revision 62 with 62 history items, exactly
+31 per author, matching strict native checks and zero faults. The measurement
+window excluded builds, tests, payload copies and diagnostic native captures.
+The LAN timing gate still **failed**:
+
+| Metric, milliseconds | Host | Guest |
+| --- | ---: | ---: |
+| Submit-to-confirmation p95 | 160.7572 | 412.2521 |
+| Per-window maximum frame gap p95 | 270.6827 | 187.8091 |
+| Maximum frame gap | 271.7981 | 223.3531 |
+| Gesture capture p95 | 95.4468 | 92.7747 |
+| Supported-change check p95 | 71.3120 | 65.0489 |
+| Author apply prelude p95 | 54.1166 | 51.3425 |
+
+The immutable pose path was used for every measured author operation, with no
+fallback. Parsed owners were zero at external callback boundaries; the peak
+was two owners and 121,308 serialized input bytes. Inclusive QPC counters show
+ten native Writes per author operation, compared with two Reads and one
+projection. Observers performed six or seven Writes. Repeated serialization
+therefore remains a measured cost; the counters do not establish that resource
+aliasing or Reads dominate it. Timing/correctness evidence is retained in
+`out/preview9-commit-diagnostic-c15-two-town-fresh/`,
+`out/preview9-c15-two-analysis.json` and
+`out/preview9-c15-two-final-proof/`. Four-player and WAN timing remain pending.
+
+The subsequent simultaneous Basic Tools test freshly verified both 1024x768
+viewports, the enabled `073933B8` palette card, clear visible rock at both drop
+points, and an open native history on each participant before either release.
+Both native recipes appended one distinct effect, from 180 to 181, while model
+counts remained 102. Submission then failed with
+`A native terrain gesture changed an ambiguous record identity`; no terrain
+transaction was accepted and editing froze behind the recovery safeguard.
+This is a **failed** simultaneous-terrain check, not an accepted rejection test.
+
+Read-only process snapshots retain the actual live recipes. The frozen native
+byte diagnostic instead returned the committed 180/102 recipe, so those two
+sources must not be confused. The baseline has no duplicate record identities.
+Old raw rows show additional derived position differences in three effects and
+seven models beyond counter changes. This finding requires an exact native
+materialization-witness fix; no float tolerance or guessed identity is allowed.
+Evidence is in `out/preview9-c15-terrain-{calibrate,simultaneous,failure-full,rpm}/`
+and `out/preview9-c15-terrain-comparison.json`. Both private games returned to
+Galaxy through ordinary Leave and native discard, with zero faults, before a
+fresh Crew-only draft was opened. The personal installation, shortcut, 4 GB
+executable and preview 8 rollback remain unchanged.
