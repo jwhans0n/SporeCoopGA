@@ -2,7 +2,7 @@
 import struct
 import unittest
 
-from coop_editor_terrain_properties_rpm import bounded_vector, property_rows, transform_property
+from coop_editor_terrain_properties_rpm import MODE_PTR, bounded_vector, property_rows, sample, transform_property
 
 
 def header(count):
@@ -16,6 +16,53 @@ def entry(ident=0x02A907B6, pointer=0x20000, stride=56, count=2, flags=0x9C, kin
 
 
 class TerrainPropertiesContract(unittest.TestCase):
+    def fixture(self):
+        memory = {}
+        def add(address, value):
+            for n, byte in enumerate(value): memory[address+n] = byte
+        def pointer(address, value): add(address, struct.pack('<I', value))
+        pointer(MODE_PTR,0x10000); mode=bytearray(0xDC)
+        struct.pack_into('<I',mode,0x18,0x30000); struct.pack_into('<I',mode,0x74,0x20000)
+        struct.pack_into('<I',mode,0xCC,1); add(0x10000,mode); pointer(0x20010,0x80000)
+        resource=bytearray(0x18); struct.pack_into('<III',resource,8,123,0x366A930D,0x408A0000); add(0x80000,resource)
+        tool=bytearray(0x1CC); struct.pack_into('<I',tool,0xC,0x40000)
+        struct.pack_into('<III',tool,0x28,0x72000,0x72038,0x72038)
+        struct.pack_into('<III',tool,0xB4,0x73000,0x73038,0x73038); add(0x30000,tool)
+        prop=bytearray(header(2)); struct.pack_into('<I',prop,0,0x50000)
+        struct.pack_into('<III',prop,0x18,0x60000,0x60030,0x60030); add(0x40000,prop)
+        pointer(0x50014,0x6A2E20); add(0x60000,entry(pointer=0x70000,count=1)+entry(ident=0x03A90C5F,pointer=0x71000,count=1))
+        transform=bytes.fromhex('07000100')+bytes(52); add(0x70000,transform); add(0x71000,transform)
+        live=bytes.fromhex('07000200')+bytes(52); add(0x72000,live); add(0x73000,transform)
+        class FakeReader:
+            base=0x400000; calls=0; bytes=0
+            def read(self,address,size):
+                self.calls+=1;self.bytes+=size
+                return bytes(memory[address+n] for n in range(size))
+            def pointer(self,address):return struct.unpack('<I',self.read(address,4))[0]
+        return FakeReader(),memory
+
+    def test_complete_passive_sample_and_exact_counter_difference(self):
+        reader,unused=self.fixture();result=sample(reader)
+        self.assertEqual(result['source'],[123,0x366A930D,0x408A0000])
+        self.assertFalse(result['arrays']['effects']['exact_equal'])
+        self.assertEqual(result['arrays']['effects']['counters'],[1])
+        self.assertEqual(result['arrays']['effects']['live_counters'],[2])
+        self.assertTrue(result['arrays']['models']['exact_equal'])
+
+    def test_sample_rejects_owner_payload_and_implementation_drift(self):
+        for address in [0x80008,0x70002,0x3000C,0x40034]:
+            reader,memory=self.fixture();original=reader.read;seen=0
+            def changing(at,size):
+                nonlocal seen
+                if at<=address<at+size:
+                    seen+=1
+                    if seen==2:memory[address]^=1
+                return original(at,size)
+            reader.read=changing
+            with self.subTest(address=address),self.assertRaises(ValueError):sample(reader)
+        reader,memory=self.fixture();memory[0x50014]^=1
+        with self.assertRaises(ValueError):sample(reader)
+
     def test_sorted_exact_properties(self):
         first = entry(); second = entry(ident=0x03A90C5F)
         rows = property_rows(header(2), first+second)
