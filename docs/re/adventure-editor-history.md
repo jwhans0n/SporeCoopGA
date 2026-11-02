@@ -595,3 +595,49 @@ exactly one append and one native history item, denied ownership, changed
 selection/owner/generation/scope and malformed descriptors. Focused fixtures
 pass 476 checks; the full Native fixture passes 13,899. Running-game acceptance
 of this fix remains pending.
+
+### Retaining exact terrain provenance during a local creation editor
+
+The C14 guest Vehicle Save reached durable revision 70, then failed the strict
+creation-entry terrain check before any canonical restoration. The guest's
+restore counter stayed 41 while capture advanced from 383 to 384. Read-only
+sampling in `out/preview9-c14-vehicle-failure-rpm/result.json` proves that every
+live recipe column still equals that participant's pre-creation revision-62
+sample in `out/preview9-c14-terrain-rpm/result.json`: 180 effects and 102 models,
+with no new terrain mutation. Mode departure/return changed native generation
+and correctly retired the active materialization map, while the native tool
+retained its already rendered recipe.
+
+Both copied project journals independently recover revision 70 and identical
+60,799-byte native payloads, SHA256
+`afc5475620bd8cab886f6bbd0b8fe3fe6b4ef2960351b9b5063870129d7ee668`.
+Compared with those authored bytes, both live recipes differ only in the
+previously audited counter/XYZ Transform output: 27 effects and 92 models.
+Keys and scalar columns are exact. The offline extractor used the production
+frame/delta readers without opening a Store or repairing either original or
+copied journal. Artifacts and the complete per-record comparison are under
+`out/preview9-c14-vehicle-store`.
+
+The participant-local creation ticket now owns an exact copy of the previously
+verified materialization map, rendered recipe and entry snapshot. It never
+owns native objects; retained mode/data/resource/tool addresses are compared
+only against freshly verified owners. Capture requires the current authorized
+project/epoch/participant/creation serial and native scene, validates the entry,
+and proves that the existing exact map normalizes the raw recipe to that entry.
+Combined owned values, including vector capacity and conservative map storage,
+are bounded to 64 MiB before copying. Allocation or budget failure rejects
+entry without changing the adventure.
+
+On ordinary return, the ticket is attempted once, after native initialization
+settles. The same mode/data/resource/source/tool, scope, serial, exact entry
+bytes/bindings/metadata/document identities and explicitly supplied current
+generation must match. The complete current raw recipe must equal the saved
+rendered recipe exactly. Changed counters or numeric values reject; no new
+normalization is inferred. The runtime records successful terrain resume
+before later camera/scene retries, and retains the original strict entry and
+final canonical validation. Entering a new adventure scene uses fresh native
+materialization from verified canonical bytes, without transferring the token.
+Actual-i686 fixtures cover successful generation retirement/reattachment and
+strict draft capture, one-use rejection, stale owners/tickets/schema/acts,
+changed raw data, incomplete resume, allocation failure and the combined bound.
+Running-game acceptance of this creation-return fix remains pending.

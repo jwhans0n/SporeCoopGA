@@ -130,6 +130,118 @@ void test_terrain_preview_update(){
     terrain_remove(t_terraform.data(),t_actors[0].data());CHECK(!tmf_removes&&terrain_authored_rows[0].empty());
     reset();
 }
+std::map<void*,editor_native_terrain::Properties> tmc_properties;
+int SK_THISCALL tmc_release(void* resource){
+    if(skg::field<int>(resource,4)==1&&t_allocations.contains(resource))tmc_properties.erase(resource);
+    return act_cache_release(resource);
+}
+bool SK_THISCALL tmc_write(void* resource,Stream* stream){
+    Stream body;if(!act_cache_write(resource,&body))return false;
+    auto p=tmc_properties.contains(resource)?tmc_properties.at(resource):editor_native_terrain::Properties{};
+    p.header={0xF9,0xD4,0x23,0xB5,17,0,0,0};p.tail=std::move(body.bytes);
+    std::vector<uint8_t> encoded;std::string error;
+    CHECK(editor_native_terrain::encode(p,encoded,error));return write(stream,encoded.data(),uint32_t(encoded.size()));
+}
+bool SK_THISCALL tmc_read(void* resource,Stream* stream){
+    editor_native_terrain::Properties p;std::string error;
+    if(!editor_native_terrain::decode(stream->bytes,p,error))return false;
+    Stream body;body.bytes=std::move(p.tail);
+    if(!act_cache_read(resource,&body))return false;
+    p.tail.clear();tmc_properties[resource]=std::move(p);stream->position=uint32_t(stream->bytes.size());return true;
+}
+void SK_THISCALL tmc_export(void* resource){
+    editor_native_terrain::Properties p;std::string error;
+    CHECK(editor_native_terrain::decode(tmf_bytes(),p,error));p.tail.clear();tmc_properties[resource]=std::move(p);
+}
+uintptr_t tmc_symbol(const char* name){
+    CHECK(std::string(name)=="SporeCoop::Editor::CaptureTerrain");return uintptr_t(tmc_export);
+}
+Snapshot tmc_setup(){
+    tmf_setup();tmc_properties.clear();act_cache_rows.clear();
+    t_rows[t_live.data()].clear();rows_for(t_live.data());
+    auto& live=act_cache_rows[t_live.data()];live.acts.resize(2*0x534);live.goals.resize(2);act_cache_bind(t_live.data(),live);
+    skg::field<float>(t_live.data(),0x16C)=1;skg::field<editor::Rotation>(t_live.data(),0x15C)={0,0,0,1};
+    skg::field<editor::ResourceKey>(t_live.data(),8)={101,103,107};
+    a_copy_acts=uintptr_t(act_cache_copy_acts);a_copy_crew=uintptr_t(act_cache_copy_crew);
+    a_write=uintptr_t(tmc_write);a_read=uintptr_t(tmc_read);t_resource_vt[1]=reinterpret_cast<void*>(tmc_release);
+    C.authoring_tracked=[]{return true;};C.creation_return_current=[](const auto& scope,uint64_t serial){return scope==t_scope&&serial==7;};
+    static SkHost host;host=*H;host.sym=tmc_symbol;H=&host;
+    v_simulator_modes.fill(0);v_initialization=4;v_world_visible=true;v_modes_missing=false;
+    a_get_simulator_mode_manager=uintptr_t(v_get_simulator_modes);a_scenario_initialization=uintptr_t(&v_initialization);a_layout_shown=uintptr_t(v_world_shown);
+    skg::field<void*>(t_terraform.data(),0x0C)=v_terrain.data();
+    tmc_export(t_live.data());Snapshot entry;std::string error;CHECK(capture(entry,error));
+    entry.document.project=t_scope.project;entry.document.epoch=t_scope.epoch;
+    CHECK(validate(entry,entry.document,error));bind_acts(entry.document);
+    terrain_materialize(t_terraform.data());CHECK(!terrain_materialization.empty()&&terrain_materialization_error.empty());
+    return entry;
+}
+void tmc_excursion(){
+    t_game_mode_id=modes::kEditor;CHECK(!state().editing&&terrain_materialization.empty());
+    t_game_mode_id=modes::kScenario;CHECK(state().ready&&terrain_materialization.empty());
+}
+void test_creation_terrain_ticket(){
+    const auto old_write=a_write,old_read=a_read,old_acts=a_copy_acts,old_crew=a_copy_crew,old_shown=a_layout_shown;
+    const auto old_init=a_scenario_initialization,old_modes=a_get_simulator_mode_manager;const auto* old_host=H;
+    std::string error;auto entry=tmc_setup();SceneOwner scene;CHECK(capture_scene_owner(scene,error));
+    const auto raw=tmf_columns;const auto live=t_live;const auto data_before=t_data;const auto history=t_history;
+    CreationTerrainTicket ticket;CHECK(capture_creation_terrain(t_scope,7,scene,entry,ticket,error));
+    CHECK(ticket&&!ticket->retired&&ticket->owned_bytes<=(64u<<20));
+    CHECK(tmf_columns==raw&&t_live==live&&t_data==data_before&&t_history==history&&t_allocations.empty());
+    const auto original_generation=generation;tmc_excursion();CHECK(generation>original_generation);
+    auto rendered=tmf_bytes();CHECK(normalize_materialized_terrain(rendered,error)&&rendered==tmf_bytes()); // No inference after retirement.
+    CHECK(resume_creation_terrain(ticket,t_scope,7,scene,entry,generation,error)&&ticket->retired);
+    auto normalized=tmf_bytes();CHECK(normalize_materialized_terrain(normalized,error));tmf::Recipe expected,actual;
+    CHECK(tmf::from_bytes(entry.bytes,expected,error)&&tmf::from_bytes(normalized,actual,error)&&actual==expected);
+    CHECK(!resume_creation_terrain(ticket,t_scope,7,scene,entry,generation,error));
+    bind_acts(entry.document);Snapshot returned;const bool captured_return=capture_draft(returned,error);
+    if(!captured_return)std::printf("creation terrain return capture: %s\n",error.c_str());CHECK(captured_return);
+    const bool valid_return=validate(returned,entry.document,error);
+    if(!valid_return)std::printf("creation terrain return validation: %s\n",error.c_str());CHECK(valid_return);
+    CHECK(tmf_columns==raw&&t_live==live&&t_data==data_before&&t_history==history&&!t_restores&&t_allocations.empty());
+    for(unsigned reason=0;reason<23;++reason){
+        entry=tmc_setup();CHECK(capture_scene_owner(scene,error));ticket.reset();CHECK(capture_creation_terrain(t_scope,7,scene,entry,ticket,error));tmc_excursion();
+        auto scope=t_scope;auto owner=scene;auto key=entry;uint64_t serial=7,native_generation=generation;
+        if(reason==0)++scope.epoch;if(reason==1)++scope.author.generation;if(reason==2)++serial;if(reason==3)++native_generation;
+        if(reason==4)++owner.source.instance;if(reason==5)owner.resource=1;if(reason==6)owner.mode=1;if(reason==7)owner.data=1;
+        if(reason==8)key.bytes.back()^=1;if(reason==9)std::reverse(key.document.act_order.begin(),key.document.act_order.end());
+        if(reason==10)key.document.settings_schema.begin()->second.optional^=true;
+        if(reason==11)++key.source.instance;if(reason==12)key.captain_locked=!key.captain_locked;
+        if(reason==13)key.metadata->text[0]=u"another entry";
+        if(reason==14)key.document.terrain.begin()->second.order++;
+        if(reason==15)tmf_columns[0][1][4]^=1;if(reason==16)tmf_columns[1][1][2]++;
+        if(reason==17)v_initialization=3;if(reason==18)v_world_visible=false;
+        if(reason==19)skg::field<bool>(t_mode.data(),0xDC)=true;
+        if(reason==20)skg::field<bool>(v_simulator_modes.data(),0x28)=true;
+        if(reason==21)C.creation_return_current={};
+        if(reason==22)skg::field<void*>(t_mode.data(),0x18)=nullptr;
+        const auto untouched=tmf_columns;const auto resource=t_live;
+        CHECK(!resume_creation_terrain(ticket,scope,serial,owner,key,native_generation,error)&&ticket->retired&&!error.empty());
+        CHECK(tmf_columns==untouched&&t_live==resource&&!t_restores&&t_allocations.empty());
+        CHECK(!resume_creation_terrain(ticket,t_scope,7,scene,entry,generation,error));
+    }
+    for(unsigned reason=0;reason<5;++reason){
+        entry=tmc_setup();CHECK(capture_scene_owner(scene,error));CreationTerrainTicket unchanged;
+        if(reason==0)C.creation_return_current={};if(reason==1)++scene.source.instance;
+        if(reason==2)entry.bytes[0]^=1;
+        if(reason==3)tmf_columns[0][1][4]^=1;
+        if(reason==4){projected_snapshots.clear();parsed_images.clear();projected_snapshot_bytes=parsed_image_bytes=0;t_alloc_fail=true;}
+        const auto untouched=tmf_columns;const auto resource=t_live;
+        CHECK(!capture_creation_terrain(t_scope,7,scene,entry,unchanged,error)&&!unchanged);
+        CHECK(tmf_columns==untouched&&t_live==resource&&!t_restores&&t_allocations.empty());
+    }
+    // Native validation does not account for portable historical identities.
+    // An oversized owned sidecar must still be rejected before copying the
+    // ticket, preserving the scene and its existing exact materialization.
+    entry=tmc_setup();
+    for(size_t n=0;n<(64u<<20)/48+1;++n)entry.document.tombstones.emplace(editor::ObjectId{500000000+n,1},1);
+    CHECK(editor::bytes(entry.document)>(64u<<20)&&validate(entry,entry.document,error));
+    CHECK(capture_scene_owner(scene,error));ticket.reset();
+    const auto before_resource=t_live;const auto witness_bytes=terrain_materialization.owned_bytes();
+    CHECK(!capture_creation_terrain(t_scope,7,scene,entry,ticket,error)&&!ticket&&error.find("64 MiB")!=std::string::npos);
+    CHECK(t_live==before_resource&&terrain_materialization.owned_bytes()==witness_bytes&&!t_restores&&t_allocations.empty());
+    tmc_properties.clear();act_cache_rows.clear();a_write=old_write;a_read=old_read;a_copy_acts=old_acts;a_copy_crew=old_crew;
+    a_layout_shown=old_shown;a_scenario_initialization=old_init;a_get_simulator_mode_manager=old_modes;H=old_host;reset();
+}
 void test_terrain_materialization_hooks(){
     tmf_setup();const auto before=tmf_bytes();const auto resource_before=t_live;std::string error;
     terrain_materialize(t_terraform.data());CHECK(tmf_calls==1&&terrain_materialization_error.empty()&&!terrain_materialization.empty());
@@ -163,6 +275,6 @@ void test_terrain_materialization_hooks(){
     const auto prior_fence=fence_queued;fence_queued=true;
     editor_native::tick();drain();CHECK(t_failed==1);editor_native::tick();drain();CHECK(t_failed==1);fence_queued=prior_fence;
     tmf_setup();terrain_materialize(t_terraform.data());CHECK(terrain_materialization_error.empty()&&state().ready);
-    reset();test_terrain_preview_update();
+    reset();test_terrain_preview_update();test_creation_terrain_ticket();
 }
 } // namespace

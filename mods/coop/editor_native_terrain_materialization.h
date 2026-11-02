@@ -75,6 +75,20 @@ public:
     void clear(){for(auto& kind:rendered)kind.clear();previous.clear();}
     bool empty()const{return rendered[0].empty()&&rendered[1].empty()&&std::all_of(previous.begin(),previous.end(),[](const auto& row){return row[0].empty()&&row[1].empty();});}
     size_t bytes()const{size_t total=cost(rendered);for(const auto& row:previous)total+=cost(row);return total;}
+    size_t owned_bytes()const{
+        size_t total=bytes()+sizeof(*this);
+        const auto charge=[&](const auto& maps){for(const auto& kind:maps){
+            total+=sizeof(kind)+kind.size()*128;
+            for(const auto& [key,value]:kind)total+=key.capacity()-key.size()+value.bytes.capacity()-value.bytes.size()+value.references.capacity()*sizeof(editor::ObjectId);
+        }};
+        charge(rendered);for(const auto& maps:previous)charge(maps);return total;
+    }
+    // For an owned suspension receipt only. Every replacement still requires
+    // an exact complete rendered payload already present in this witness.
+    void normalize_recipe(Recipe& recipe)const{
+        for(size_t kind=0;kind<2;++kind)for(auto& row:recipe.rows[kind])
+            if(const auto* source=authored(kind,row.bytes))row=*source;
+    }
     void forget(editor::TerrainKind kind,const editor::StructuredValue& value){
         if(kind>editor::TerrainKind::Model)return;
         auto erase=[&](auto& maps){for(auto at=maps[index(kind)].begin();at!=maps[index(kind)].end();){
