@@ -2,6 +2,7 @@
 // Controlled native objects prove ownership/routing, not running-game support.
 #include "../mods/coop/editor_creation.cpp"
 #include "../mods/coop/editor_creation_native.cpp"
+#include "../mods/coop/editor_creation_png.cpp"
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
@@ -252,6 +253,43 @@ int main(){
         else {CHECK(row.key.instance==version.instance);if(row.key.type==0x030BDEE3){CHECK(editor_creation_native::be32(row.data.data()+0x14)==version.instance);CHECK(row.data[0x20]==0xAA);}else CHECK(row.data==model());}
     }
     CHECK(editor_creation_native::immutable_version(project,source,records,{},second,again,error) && version==second);
+    // Preserve a usable image under the exact key native Crew requests,
+    // without retaining its old importable metadata. Both owner variants are
+    // sanitized; a +1-only source gains the model-group presentation record.
+    std::vector<uint8_t> pixels(8*8*4,255),plain_png;
+    for(size_t i=0;i<pixels.size();i+=4){pixels[i]=uint8_t(i);pixels[i+1]=105;pixels[i+2]=63;}
+    CHECK(editor_creation_png::from_rgba(8,8,pixels,plain_png,error));
+    auto carrier_png=plain_png;carrier_png.resize(carrier_png.size()-12);
+    const std::array<uint8_t,24> old_name{'S','o','u','r','c','e',0,'o','l','d','-','o','w','n','e','r','-','m','e','t','a','d','a','t'};
+    editor_creation_png::chunk(carrier_png,"tEXt",old_name);editor_creation_png::chunk(carrier_png,"IEND",{});
+    carrier_png.insert(carrier_png.end(),{0xD3,0x7E,0x65,0x48}); // old trailing carrier is discarded too
+    auto imaged=records;imaged.push_back({{source.instance,0x2F7D0004,source.group},carrier_png});
+    imaged.push_back({{source.instance,0x2F7D0004,source.group+1},carrier_png});
+    imaged.push_back({{99,0x2F7D0004,source.group},{9,8,7}});
+    const auto original_imaged=imaged;editor::ResourceKey image_version;std::vector<dbpf::Record> image_records;
+    CHECK(editor_creation_native::immutable_version(project,source,imaged,{},image_version,image_records,error));
+    unsigned images=0;
+    for(const auto& row:image_records){
+        if(row.key.type==0x2F7D0004 && row.key.instance==image_version.instance){++images;CHECK(row.data==plain_png);}
+        if(row.key.type==0x2F7D0004 && row.key.instance==99)CHECK(row.data==std::vector<uint8_t>({9,8,7}));
+        if(row.key.type==0x1A99B06B && row.key.instance==image_version.instance)CHECK(row.data==model());
+    }
+    CHECK(images==2 && same_records(imaged,original_imaged));
+    auto secondary_only=records;secondary_only.push_back({{source.instance,0x2F7D0004,source.group+1},carrier_png});
+    CHECK(editor_creation_native::immutable_version(project,source,secondary_only,{},image_version,image_records,error));
+    CHECK(std::count_if(image_records.begin(),image_records.end(),[&](const auto& row){return row.key.instance==image_version.instance && row.key.type==0x2F7D0004 && row.data==plain_png;})==2);
+    const auto previous_image_version=image_version;const auto previous_image_records=image_records;
+    secondary_only.back().data[0]=0;
+    CHECK(!editor_creation_native::immutable_version(project,source,secondary_only,{},image_version,image_records,error));
+    CHECK(image_version==previous_image_version && same_records(image_records,previous_image_records));
+    // WIC itself accepts a bad Adler checksum. Repair PNG CRC after corrupting
+    // Adler so only strict compressed-stream validation can reject this input.
+    auto broken_png=plain_png;const auto idat_size=editor_creation_native::be32(broken_png.data()+33);
+    broken_png[40+idat_size]^=1;
+    editor_creation_native::putbe(broken_png.data()+41+idat_size,editor_creation_png::crc(std::span<const uint8_t>(broken_png).subspan(37,idat_size+4)));
+    secondary_only.back().data=std::move(broken_png);
+    CHECK(!editor_creation_native::immutable_version(project,source,secondary_only,{},image_version,image_records,error));
+    CHECK(image_version==previous_image_version && same_records(image_records,previous_image_records));
     // Private profiles may reuse the same local source key for different
     // authoritative BEM bodies (actual Crew failure29058782). Equal metadata
     // and cache bytes must not collapse those creations to the same version.

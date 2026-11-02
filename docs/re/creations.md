@@ -897,3 +897,48 @@ identical 60,739-byte bodies with SHA-256
 while the host source is `408A0000!BF0CE0D0.366A930D` and the guest sources
 are `408A0000!40C7A6C1.366A930D`. An owned parse must retain verified source
 provenance separately; a zero parsed header is not evidence of a source change.
+
+Candidate 12's immutable Crew alias had no usable thumbnail. Native Crew
+`ED568C..ED56B6` requests PNG type `2F7D0004` in the selected model's own
+group. The retained alias records contain metadata and the editable BEM but
+no PNG, while the original Spice Crawler has a 26,339-byte model-group PNG
+and no `group + 1` image. Both host and guest therefore show the same blank
+card. Restoring that original PNG unchanged would retain its old importable
+creation payload. Receipts are
+`out/preview9-c12-crew-thumbnail-offline/aliased-records.json` and
+`source-header-analysis.json` in the same directory.
+
+Immutable versioning now sanitizes every source-owned model-group or
+`group + 1` PNG before allocating its identity, retaining the model-group
+presentation key and synthesizing it from a sanitized `+1` image only when
+necessary. Unrelated dependency images and authoritative BEM bytes remain
+unchanged. The bounded decoder accepts native 8-bit RGB/RGBA PNGs, including
+Adam7 and RGB transparency. It validates chunk bounds and CRCs, removes
+ancillary and trailing data, then uses WIC solely to decode pixels. The
+fixed encoder clears each channel's three native carrier bits and emits only
+RGBA8 IHDR, filter-zero rows, zlib STORED blocks and IEND, with deterministic
+Adler32 and PNG CRCs. Both audited native carrier-header probes must reject
+the sanitized pixels before output is accepted; their precise native
+algorithm and source-image positive oracle are recorded in
+`docs/re/adventure-editor-history.md`.
+
+Independent testing found that WIC reports success for truncated Deflate,
+invalid zlib headers, bad Adler checksums and extra compressed-stream data;
+direct frame decoding also accepts these inputs. Consequently the codec first
+validates RFC 1950/1951 structure, Huffman trees, backreferences, advertised
+window, exact output length, stream end and Adler checksum, plus PNG pass
+lengths and filter bytes. Decode or validation failure leaves the existing
+alias/output unchanged. The WIC counterexample receipt is
+`out/preview9-c12-crew-thumbnail-offline/wic-deflate-diagnostic.txt`.
+
+The creation/versioning i686 fixture passes 502 checks. Independent carrier
+and Deflate fixtures pass 32 and 346 checks respectively on Linux and i686.
+The actual i686 WIC fixture passes 2,234,201 checks, including stored, fixed
+and dynamic streams, genuine Adam7, malformed inputs, deterministic output,
+atomic failure and the real compressed Spice Crawler PNG. Its 65,737-byte
+sanitized image matches every independently decoded source RGBA channel
+masked with `F8`; both native embedded-header variants reject. Receipt:
+`out/preview9-c12-crew-thumbnail-offline/independent-codec-receipt.json`.
+These checks establish codec and immutable-record behavior. A native Crew
+card screenshot using the next candidate remains required for presentation
+acceptance.
