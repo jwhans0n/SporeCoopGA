@@ -196,6 +196,7 @@ void reset(){
     held_tool.reset();held_import.reset();held_creation.reset();held_class_removal.reset();held_captain_asset.reset();held_crew_action.reset();
     for(auto item:pending){release(item.entry);release(item.before);}pending.clear();
     if(gesture_before_resource){release(gesture_before_resource);gesture_before_resource=nullptr;}
+    gesture_before_metadata.reset();gesture_metadata_error.clear();
     for(auto held:gesture_actors)release(held.object);
     gesture_actors.clear();gesture_before_bindings.clear();
     CHECK(t_allocations.empty());t_rows.clear();t_tasks.clear();
@@ -837,8 +838,11 @@ void test_coalesced_speech(){
     speech_apply();CHECK(pending.empty()&&value(t_live.data(),0)==1&&!state().gesture);
     t_granted=true;
     for(unsigned i=0;i<128;++i){
+        skg::field<uint32_t>(t_data.data(),0x7C)=i+1;
         speech_apply();CHECK(pending.size()==1&&t_allocations.size()==1&&state().gesture);
         CHECK(value(pending.front().before,0)==1&&pending.front().speech==ui.data());
+        CHECK(pending.front().before_metadata&&pending.front().before_metadata->genre==1);
+        CHECK(pending.front().after_metadata&&pending.front().after_metadata->genre==i+1);
     }
     CHECK(value(t_live.data(),0)==129&&!t_failed);
     editor_native::drain(nullptr);CHECK(pending.size()==1&&state().gesture);
@@ -1282,6 +1286,33 @@ static uint32_t SK_THISCALL t_pose_insert(void* destination,void* marker){
     const auto index=uint32_t(rows.size()/0x238);const auto* first=static_cast<uint8_t*>(marker)-4;
     rows.insert(rows.end(),first,first+0x238);rows_for(owner);return index;
 }
+bool t_captain_resolve_failure=false;
+bool SK_CDECL t_resolve_captain(uint64_t server,editor::ResourceKey* key){
+    CHECK(server==17);if(t_captain_resolve_failure)return false;*key={7,9,11};return true;
+}
+uintptr_t t_captain_symbol(const char* name){
+    CHECK(std::string(name)=="Simulator::Scenario::ResolveLocalServerAsset");return uintptr_t(t_resolve_captain);
+}
+void test_resolved_captain_sidecars(){
+    reset();const auto* previous=H;SkHost host=*H;host.sym=t_captain_symbol;H=&host;t_captain_resolve_failure=false;
+    skg::field<editor::ResourceKey>(t_live.data(),0x130)={1,2,3};skg::field<uint64_t>(t_live.data(),0x140)=17;
+    skg::field<bool>(t_live.data(),0x175)=true;
+    Snapshot snapshot;snapshot.captain={7,9,11};snapshot.captain_locked=true;
+    editor::AuthoringSettings captain;captain.object=kCaptainObject;captain.kind=editor::SettingsKind::Captain;
+    captain.properties={{kCaptainAssetProperty,snapshot.captain},{kCaptainLockedProperty,true}};
+    snapshot.document.settings.emplace(kCaptainObject,captain);std::string error;
+    const auto untouched=t_live;
+    CHECK(captain_sidecar_matches(t_live.data(),snapshot,snapshot.document,error));
+    snapshot.captain={1,2,3};CHECK(!captain_sidecar_matches(t_live.data(),snapshot,snapshot.document,error));
+    snapshot.captain={7,9,11};snapshot.captain_locked=false;CHECK(!captain_sidecar_matches(t_live.data(),snapshot,snapshot.document,error));
+    snapshot.captain_locked=true;t_captain_resolve_failure=true;CHECK(!captain_sidecar_matches(t_live.data(),snapshot,snapshot.document,error));
+    t_captain_resolve_failure=false;host.sym=nullptr;CHECK(!captain_sidecar_matches(t_live.data(),snapshot,snapshot.document,error));
+    // Older non-Captain projections retain the raw sidecar and never invent a
+    // dependency resolution that their schema could not have asserted.
+    snapshot.document={};snapshot.captain={1,2,3};CHECK(captain_sidecar_matches(t_live.data(),snapshot,snapshot.document,error));
+    snapshot.captain={};snapshot.captain_locked=false;CHECK(captain_sidecar_matches(t_live.data(),snapshot,snapshot.document,error));
+    CHECK(t_live==untouched);H=previous;reset();
+}
 static void test_exact_validation_cache_and_owned_pose_prepare(){
     using namespace editor_native;
     reset();const auto old_write=a_write,old_read=a_read,old_copy=a_copy_marker_rows,old_insert=a_insert_marker;
@@ -1308,6 +1339,9 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
         CHECK(!supported_changes(invalid,error)); // Pose optimization cannot admit an unrelated opaque marker mutation.
         CHECK(prepare(base,next,change,nullptr,prepared,error));CHECK(raw==live_before);
         auto forged=base;forged.bytes[0]^=1;CHECK(!validate(forged,base.document,error));CHECK(!prepare(forged,next,change,nullptr,prepared,error));
+        forged=base;forged.captain={7,9,11};CHECK(!validate(forged,base.document,error));
+        forged=base;forged.captain_locked=true;CHECK(!validate(forged,base.document,error));
+        forged=base;forged.metadata->text[0]=std::u16string(1,u'\0');CHECK(!validate(forged,base.document,error));
         forged=base;forged.bindings[0].marker=9999;CHECK(!validate(forged,base.document,error));
         forged=base;forged.act=1;CHECK(!validate(forged,base.document,error));
         auto wrong=base.document;wrong.placements.at(id).position.x=99;CHECK(!validate(base,wrong,error));
@@ -1316,10 +1350,45 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
         {ValidationScope nested;CHECK(validate(base,base.document,error));CHECK(t_reads==reads+2);}
     }
     CHECK(!validated_snapshot && !validation_depth);const auto reads=t_reads;CHECK(validate(base,base.document,error));CHECK(t_reads==reads+1);
+    // A copied Snapshot cannot smuggle an unsupported metadata edit behind an
+    // otherwise equal native byte stream or a successful validation cache hit.
+    Gesture metadata_change;metadata_change.before=base;metadata_change.after=base;
+    metadata_change.after.metadata->genre=7;CHECK(!supported_changes(metadata_change,error));
+    metadata_change.after.metadata=base.metadata;metadata_change.after.metadata->text[1]=u"unowned description";
+    CHECK(!supported_changes(metadata_change,error));
+    metadata_change.after.metadata=base.metadata;metadata_change.before.metadata.reset();
+    CHECK(supported_changes(metadata_change,error)); // Explicit unknown legacy metadata.
+    metadata_change.before=base;metadata_change.after=base;metadata_change.after.captain={1,2,3};
+    CHECK(!supported_changes(metadata_change,error));
+    metadata_change.after=base;metadata_change.after.captain_locked=true;CHECK(!supported_changes(metadata_change,error));
+    // Native Start/Commit keep immutable metadata values from their own actual
+    // boundaries. Later owner strings, text edits or callbacks cannot rewrite
+    // either witness, and the drain never fills both from the current owner.
+    std::u16string before_name=u"before",after_name=u"after";
+    auto point_name=[&](std::u16string& name){skg::field<void*>(t_data.data(),0x4C)=name.data();skg::field<void*>(t_data.data(),0x50)=name.data()+name.size();};
+    point_name(before_name);skg::field<uint32_t>(t_data.data(),0x7C)=3;
+    start(t_data.data());CHECK(gesture_before_metadata&&gesture_before_metadata->text[0]==u"before");
+    before_name[0]=u'!';point_name(after_name);skg::field<uint32_t>(t_data.data(),0x7C)=4;
+    skg::field<void*>(t_entry.data(),0x14)=t_live.data();commit(t_data.data());
+    CHECK(pending.size()==1&&pending.front().before_metadata->genre==3&&pending.front().after_metadata->genre==4);
+    after_name[0]=u'!';skg::field<uint32_t>(t_data.data(),0x7C)=9;
+    std::optional<Gesture> captured;C.gesture=[&](Gesture gesture){captured=std::move(gesture);};editor_native::drain(nullptr);
+    CHECK(captured&&captured->before.metadata->text[0]==u"before"&&captured->after.metadata->text[0]==u"after");
+    CHECK(captured->before.metadata->genre==3&&captured->after.metadata->genre==4&&!supported_changes(*captured,error));
+    CHECK(!pending.size()&&!gesture_before_metadata&&gesture_metadata_error.empty());
+    for(unsigned kind=0;kind<4;++kind){
+        std::array<char16_t,2> invalid{u'a',u'\0'};
+        skg::field<void*>(t_data.data(),0x4C)=invalid.data();skg::field<void*>(t_data.data(),0x50)=invalid.data()+invalid.size();
+        if(kind==1)skg::field<uintptr_t>(t_data.data(),0x50)=uintptr_t(invalid.data())-2;
+        if(kind==2)skg::field<uintptr_t>(t_data.data(),0x50)=uintptr_t(invalid.data())+1;
+        if(kind==3)skg::field<uintptr_t>(t_data.data(),0x50)=uintptr_t(invalid.data())+8194;
+        Snapshot::Metadata unchanged;unchanged.genre=77;CHECK(!capture_metadata(t_data.data(),unchanged,error)&&unchanged.genre==77);
+    }
     a_write=old_write;a_read=old_read;a_copy_marker_rows=old_copy;a_insert_marker=old_insert;
     reset();CHECK(t_allocations.empty());
 }
 int main(){
+    test_resolved_captain_sidecars();
     test_pending_capture_fences();
     test_preset_history_boundary();
     test_flora_control_retry();

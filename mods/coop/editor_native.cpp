@@ -60,6 +60,9 @@ struct ValidatedSnapshot {
     std::vector<uint8_t> bytes;
     std::vector<Binding> bindings;
     editor::Document document;
+    editor::ResourceKey source,captain;
+    bool captain_locked=false;
+    std::optional<Snapshot::Metadata> metadata;
     uint64_t generation=0;
     uint32_t act=0;
 };
@@ -724,6 +727,45 @@ bool projection(void* r, Snapshot& out, std::string& error,
     }
     return true;
 }
+bool valid_metadata(const std::optional<Snapshot::Metadata>& metadata,std::string& error){
+    if(metadata)for(const auto& text:metadata->text)if(text.size()>4096 || text.find(u'\0')!=std::u16string::npos){
+        error="The native adventure metadata text is invalid or oversized";return false;
+    }
+    return true;
+}
+bool captain_sidecar_matches(void* resource,const Snapshot& snapshot,const editor::Document& document,std::string& error){
+    // Old projections without Captain settings have no asserted sidecar when
+    // both values are their original defaults. Expansion hydrates them from
+    // the owned resource before adopting the current authoring schema.
+    const bool typed=document.settings.contains(kCaptainObject);
+    const bool known=typed || snapshot.captain.instance || snapshot.captain.type || snapshot.captain.group || snapshot.captain_locked;
+    auto actual=skg::field<editor::ResourceKey>(resource,0x130);
+    const auto server=skg::field<uint64_t>(resource,0x140);
+    if(known && typed && server && server!=UINT64_MAX){
+        const auto resolve=H&&H->sym?H->sym("Simulator::Scenario::ResolveLocalServerAsset"):0;
+        if(!resolve || !skg::cdecl_call<bool>(resolve,server,&actual)){
+            error="The authored captain dependency is unavailable";return false;
+        }
+    }
+    if(known && (snapshot.captain!=actual || snapshot.captain_locked!=skg::field<bool>(resource,0x175))){
+        error="The native captain identity differs from its authored sidecar";return false;
+    }
+    return true;
+}
+bool capture_metadata(void* owner,Snapshot::Metadata& metadata,std::string& error){
+    if(!skg::readable(owner,0x80)){error="The native adventure metadata owner is unavailable";return false;}
+    Snapshot::Metadata captured;captured.genre=skg::field<uint32_t>(owner,0x7C);
+    for(size_t i=0;i<captured.text.size();++i){
+        const auto offset=0x4C+16*i;
+        const auto begin=skg::field<uintptr_t>(owner,offset),end=skg::field<uintptr_t>(owner,offset+4);
+        if(end<begin || (end-begin)%2 || end-begin>8192 || (end!=begin && !skg::readable(reinterpret_cast<void*>(begin),end-begin))){
+            error="The native adventure metadata is unavailable or oversized";return false;
+        }
+        if(end!=begin)captured.text[i].assign(reinterpret_cast<const char16_t*>(begin),(end-begin)/2);
+    }
+    if(!valid_metadata(captured,error))return false;
+    metadata=std::move(captured);return true;
+}
 bool capture_resource(void* r, uint32_t act, Snapshot& out, std::string& error,
                       const std::map<uint32_t,editor::ObjectId>* supplied=nullptr,const editor::Document* identity=nullptr) {
     Owned authored;
@@ -744,6 +786,7 @@ bool capture_resource(void* r, uint32_t act, Snapshot& out, std::string& error,
     out.captain=skg::field<editor::ResourceKey>(r,0x130);
     out.captain_locked=skg::field<bool>(r,0x175);
     if (!serialize(r,out.bytes,error) || !projection(r, out, error,supplied,std::nullopt,std::nullopt,std::nullopt,std::nullopt,identity,&out.bytes,terrain_recipe_replacement&&terrain_capturing)) return false;
+    if(!captain_identity(out.document,out.captain,out.captain_locked,error))return false;
     // Write omits free native pool slots. Read inserts its marker sequence into
     // a fresh pool, so artifact bindings describe serialized order, not live holes.
     std::vector<Binding> compact;
@@ -779,6 +822,8 @@ HistoryQueryFn original_has_undo,original_has_redo;
 struct HeldActor { editor::ObjectId id; void* object; };
 std::vector<HeldActor> gesture_actors;
 void* gesture_before_resource;
+std::optional<Snapshot::Metadata> gesture_before_metadata;
+std::string gesture_metadata_error;
 std::map<uint32_t,editor::ObjectId> gesture_before_bindings;
 void* gesture_owner;
 void* gesture_entry;
@@ -902,6 +947,8 @@ struct Pending {
     std::map<uint32_t,editor::ObjectId> before_bindings,after_bindings;
     GestureScope scope;
     void* speech=nullptr;
+    std::optional<Snapshot::Metadata> before_metadata,after_metadata;
+    std::string metadata_error;
 };
 std::deque<Pending> pending;
 bool speech_pending(){return std::any_of(pending.begin(),pending.end(),[](const auto& item){return item.speech!=nullptr;});}
@@ -925,8 +972,11 @@ void SK_CDECL drain(void*) {
         gesture.clone_source = item.clone_source;
         std::string error;
         if(C.gesture_capture)C.gesture_capture(true);
-        bool ok=capture_resource(before.p,item.act,gesture.before,error,&item.before_bindings);
+        bool ok=item.metadata_error.empty() && item.before_metadata && item.after_metadata;
+        if(!ok)error=item.metadata_error.empty()?"The native gesture lost its authored metadata witnesses":item.metadata_error;
+        ok=ok&&capture_resource(before.p,item.act,gesture.before,error,&item.before_bindings);
         ok=ok&&capture_resource(skg::field<void*>(entry.p,0x14),item.act,gesture.after,error,&item.after_bindings);
+        if(ok){gesture.before.metadata=item.before_metadata;gesture.after.metadata=item.after_metadata;}
         if(C.gesture_capture)C.gesture_capture(false);
         if(ok){
             if (C.gesture) C.gesture(std::move(gesture));
@@ -943,6 +993,9 @@ void SK_THISCALL start(void* self) {
         gesture_serial=gesture_counter==UINT64_MAX?0:++gesture_counter;
         gesture_clone=input_clone;
         gesture_cast=input_cast;
+        gesture_before_metadata.reset();gesture_metadata_error.clear();
+        Snapshot::Metadata metadata;
+        if(capture_metadata(self,metadata,gesture_metadata_error))gesture_before_metadata=std::move(metadata);
         release(gesture_before_resource);
         gesture_before_resource=construct();
         if(gesture_before_resource)skg::thiscall<void*>(a_copy,gesture_before_resource,resource(self));
@@ -1491,6 +1544,7 @@ void cancel_current_entry(void* self){
     }
     cancellation=std::move(item);
     release(gesture_before_resource);gesture_before_resource=nullptr;
+    gesture_before_metadata.reset();gesture_metadata_error.clear();
     for(auto actor:gesture_actors)release(actor.object);
     gesture_actors.clear();gesture_before_bindings.clear();
     // A synchronous host dispatcher still cannot settle inside the native
@@ -2185,17 +2239,25 @@ void SK_THISCALL commit(void* self) {
         }
     }
     void* before=observe?std::exchange(gesture_before_resource,nullptr):nullptr;
+    auto before_metadata=observe?std::exchange(gesture_before_metadata,std::nullopt):std::optional<Snapshot::Metadata>{};
+    std::string metadata_error=observe?std::exchange(gesture_metadata_error,{}):std::string{};
     original_commit(self);
     for(auto actor:gesture_actors)release(actor.object);
     gesture_actors.clear();
     if (!entry) {release(before);return;}
+    std::optional<Snapshot::Metadata> after_metadata;Snapshot::Metadata metadata;std::string after_error;
+    if(capture_metadata(self,metadata,after_error))after_metadata=std::move(metadata);
+    else if(metadata_error.empty())metadata_error=std::move(after_error);
     void* speech=input_speech && a_speech_ui?*reinterpret_cast<void**>(a_speech_ui):nullptr;
     if(before && speech && !pending.empty()){
         auto& previous=pending.back();
         if(previous.speech==speech && previous.owner==self && previous.generation==generation && previous.scope==gesture_scope_pin){
             // Native speech commits every character. Retain the first owned
             // before and the latest owned after until this dialog closes.
-            release(previous.entry);release(before);previous.entry=entry;previous.after_bindings=bindings;return;
+            release(previous.entry);release(before);previous.entry=entry;previous.after_bindings=bindings;
+            previous.after_metadata=std::move(after_metadata);
+            if(previous.metadata_error.empty())previous.metadata_error=std::move(metadata_error);
+            return;
         }
     }
     if (!before || pending.size() >= 8) {
@@ -2204,7 +2266,8 @@ void SK_THISCALL commit(void* self) {
         return;
     }
     uint32_t act = skg::cdecl_call<uint32_t>(a_act);
-    pending.push_back({entry,before,self,generation,act,gesture_clone,gesture_before_bindings,bindings,gesture_scope_pin,speech});
+    pending.push_back({entry,before,self,generation,act,gesture_clone,gesture_before_bindings,bindings,gesture_scope_pin,speech,
+        std::move(before_metadata),std::move(after_metadata),std::move(metadata_error)});
     if (!queued) { queued = true; H->run_outside_frame(drain, nullptr); }
 }
 void SK_THISCALL undo_native(void* self) {
@@ -2679,6 +2742,7 @@ void shutdown() {
     gesture_owner=gesture_entry=nullptr;gesture_generation=gesture_serial=0;gesture_scope_pin={};
     for (auto item : pending){release(item.entry);release(item.before);}
     release(gesture_before_resource);gesture_before_resource=nullptr;
+    gesture_before_metadata.reset();gesture_metadata_error.clear();
     pending.clear();
     for(auto actor:gesture_actors)release(actor.object);
     gesture_actors.clear();gesture_before_bindings.clear();
@@ -2708,6 +2772,7 @@ State state() {
         bindings.clear();incarnations.clear();selection.clear();act_identity={};
         terrain_before.reset();terrain_pending=terrain_capturing=terrain_rebuilding=terrain_recipe_replacement=false;terrain_grounding.clear();materialized_terrain.reset();
         deferred_local_view.reset();held_terrain_controls.clear();held_terrain_preset.reset();held_tool.reset();
+        gesture_before_metadata.reset();gesture_metadata_error.clear();
     }
     s.generation = generation;
     if (!supported || !scenario || !skg::readable(m, 0xDC)) return s;
@@ -2807,15 +2872,7 @@ bool capture(Snapshot& out, std::string& error) {
     void* owner=data(mode());
     if(!capture_resource(resource(owner),s.act,out,error))return false;
     out.local_dirty=Snapshot::Dirty{skg::field<uint32_t>(owner,0x80),skg::field<bool>(owner,0x84),skg::field<bool>(owner,0x85)};
-    Snapshot::Metadata metadata;metadata.genre=skg::field<uint32_t>(owner,0x7C);
-    for(size_t i=0;i<metadata.text.size();++i) {
-        const auto offset=0x4C+16*i;
-        const auto begin=skg::field<uintptr_t>(owner,offset),end=skg::field<uintptr_t>(owner,offset+4);
-        if(end<begin || (end-begin)%2 || end-begin>8192 || (end!=begin && !skg::readable(reinterpret_cast<void*>(begin),end-begin))) {
-            error="The native adventure metadata is unavailable or oversized";return false;
-        }
-        if(end!=begin)metadata.text[i].assign(reinterpret_cast<const char16_t*>(begin),(end-begin)/2);
-    }
+    Snapshot::Metadata metadata;if(!capture_metadata(owner,metadata,error))return false;
     out.metadata=std::move(metadata);
     return true;
 }
@@ -2847,6 +2904,8 @@ bool expand_snapshot(const Snapshot& input,bool relative,Snapshot& out,std::stri
     for(const auto& binding:input.bindings)if(!supplied.emplace(binding.marker,binding.object).second){error="Duplicate legacy placement binding";return false;}
     auto expanded=input;
     if(!projection(copy.p,expanded,error,&supplied,relative,true,true,true,&input.document,&input.bytes))return false;
+    expanded.captain=skg::field<editor::ResourceKey>(copy.p,0x130);expanded.captain_locked=skg::field<bool>(copy.p,0x175);
+    if(!captain_identity(expanded.document,expanded.captain,expanded.captain_locked,error))return false;
     out=std::move(expanded);return true;
 }
 bool canonicalize_cast_state(editor::State& state,std::string& error){
@@ -2916,6 +2975,12 @@ bool validate_entry(const std::vector<uint8_t>& bytes,uint32_t act,std::string& 
 
 bool supported_changes(const Gesture& gesture,std::string& error){
     if(!supported || !a_copy_marker_rows || !a_insert_marker){error="Native authored-change validation is unavailable";return false;}
+    if(!valid_metadata(gesture.before.metadata,error) || !valid_metadata(gesture.after.metadata,error))return false;
+    // Missing metadata is explicitly unknown for legacy recovery. New native
+    // gestures always retain both exact boundary witnesses and cannot use it.
+    if(gesture.before.metadata && gesture.after.metadata && gesture.before.metadata!=gesture.after.metadata){
+        error="Shared editing rejected an unsupported adventure metadata change";return false;
+    }
     bool tracked=false;
     if(gesture.before.document.schema!=gesture.after.document.schema ||
        !relative_scale_mode(gesture.after.document,tracked,error)){
@@ -2923,6 +2988,8 @@ bool supported_changes(const Gesture& gesture,std::string& error){
     }
     Owned before(parse(gesture.before.bytes,error));if(!before.p)return false;
     Owned after(parse(gesture.after.bytes,error));if(!after.p)return false;
+    if(!captain_sidecar_matches(before.p,gesture.before,gesture.before.document,error) ||
+       !captain_sidecar_matches(after.p,gesture.after,gesture.after.document,error))return false;
     const bool roster=gesture.before.document.act_order!=gesture.after.document.act_order;
     auto same_marker_act=[&](void* a,void* b){
         if(std::memcmp(a,b,0x1C) || skg::field<uint32_t>(a,0x30)!=skg::field<uint32_t>(b,0x30))return false;
@@ -3148,6 +3215,8 @@ bool validate(const Snapshot& snapshot,const editor::Document& document,std::str
     if(!supported){error="Native editor validation is unavailable";return false;}
     if(validation_depth && validated_snapshot && validated_snapshot->generation==generation &&
        validated_snapshot->act==snapshot.act && validated_snapshot->bindings==snapshot.bindings &&
+       validated_snapshot->source==snapshot.source && validated_snapshot->captain==snapshot.captain &&
+       validated_snapshot->captain_locked==snapshot.captain_locked && validated_snapshot->metadata==snapshot.metadata &&
        validated_snapshot->bytes==snapshot.bytes && validated_snapshot->document==document){
         ++validation_hits;error.clear();return true;
     }
@@ -3155,7 +3224,9 @@ bool validate(const Snapshot& snapshot,const editor::Document& document,std::str
         error="Native editor placement limit exceeded";return false;
     }
     bool tracked=false;if(!relative_scale_mode(document,tracked,error))return false;
+    if(!valid_metadata(snapshot.metadata,error))return false;
     Owned copy(parse(snapshot.bytes,error));if(!copy.p)return false;
+    if(!captain_sidecar_matches(copy.p,snapshot,document,error))return false;
     std::map<uint32_t,editor::ObjectId> supplied;
     std::set<editor::ObjectId> ids;
     for(const auto& b:snapshot.bindings){
@@ -3242,7 +3313,7 @@ bool validate(const Snapshot& snapshot,const editor::Document& document,std::str
     if(validation_depth && snapshot.bytes.size()+editor::bytes(document)<=(16u<<20)){
         // Caching is optional. A cache allocation failure cannot turn a fully
         // checked snapshot into a failure or retain a partially built key.
-        try{validated_snapshot=ValidatedSnapshot{snapshot.bytes,snapshot.bindings,document,generation,snapshot.act};}
+        try{validated_snapshot=ValidatedSnapshot{snapshot.bytes,snapshot.bindings,document,snapshot.source,snapshot.captain,snapshot.captain_locked,snapshot.metadata,generation,snapshot.act};}
         catch(const std::bad_alloc&){validated_snapshot.reset();}
     }
     error.clear();return true;
@@ -3596,6 +3667,7 @@ bool edit_owned_snapshot(const Snapshot& base,const std::function<bool(void*,std
                    !base.document.class_schema.empty(),!base.document.settings_schema.empty(),&base.document,&result.bytes))return false;
     result.source=skg::field<editor::ResourceKey>(owned.p,8);result.captain=skg::field<editor::ResourceKey>(owned.p,0x130);
     result.captain_locked=skg::field<bool>(owned.p,0x175);
+    if(!captain_identity(result.document,result.captain,result.captain_locked,error))return false;
     std::vector<Binding> compact;if(!serialized_bindings(result.bindings,compact,error))return false;
     result.bindings=std::move(compact);out=std::move(result);error.clear();return true;
 }

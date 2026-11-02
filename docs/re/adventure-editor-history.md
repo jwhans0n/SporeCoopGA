@@ -221,3 +221,35 @@ camera validation, native refusal, registry replacement during activation, and
 a false-positive activation that fails to update the cached orbit. Running-game
 creation Save/Cancel return acceptance remains required after deployment of
 this candidate.
+
+## Immutable gesture metadata witnesses
+
+The ordinary deferred history drain obtains its before and after resources from
+native history entries through `capture_resource`. This resource has no owning
+ScenarioData name, description, tags or genre, so the former drain silently
+left `Snapshot.metadata` absent. Public `capture` separately populated that
+sidecar from ScenarioData. Consequently, a release-time snapshot and the
+otherwise identical committed snapshot always missed runtime's exact authored
+comparison and unnecessarily ran opaque normalization. This finding identifies
+extra work; it is not a measured performance acceptance result.
+
+Native Start now copies bounded UTF-16 metadata at the actual before boundary.
+Native Commit independently copies the actual after values after its original
+native finalizer. Pending history retains these values alongside its existing
+project/epoch/participant, native generation and owner fences. Speech coalescing
+keeps the first before and the latest after. The drain attaches both witnesses
+without reading the current strings. A failed boundary read rejects the capture;
+it cannot replace both witnesses with the later metadata and hide a mutation.
+
+The real opaque-change guard rejects differing known metadata. Absent optional
+metadata remains explicitly unknown for older recovery snapshots, rather than
+being treated as equal to a current value. New queued native gestures require
+both witnesses. Validation and opaque comparison also check asserted captain
+identity/lock sidecars against the privately parsed resource. Projections older
+than Captain tracking retain their default unknown values until native expansion
+hydrates them; typed current Captain settings always assert an identity. Exact
+validation-cache keys include source, captain, lock and metadata as well as bytes,
+bindings, target document, act and native generation. Local dirty flags remain
+local rollback state. Focused i686 fixtures cover immutable before/after strings,
+coalesced metadata, malformed strings, known metadata changes and forged captain
+sidecars; the private game benchmark remains the performance gate.
