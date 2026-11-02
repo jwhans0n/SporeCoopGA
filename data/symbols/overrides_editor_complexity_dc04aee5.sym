@@ -1,7 +1,0 @@
-; Exact GOG 2024 and reviewed LAA variant only. See docs/re/adventure-complexity.md.
-SporeCoop::EditorComplexity::Measure=0x00F3E7B0 ; verified static: thiscall(ScenarioData)->floatST0,plain ret; rebuilds live actor/resource category counts then computes current native complexity ratio
-SporeCoop::EditorComplexity::WeightedRatio=0x00F3DB80 ; verified static: thiscall(ScenarioData,const uint32 counts12*)->floatST0,ret4; max(weighted counts divided by MaxComplexity, live marker count plus one divided by1024)
-SporeCoop::EditorComplexity::CanPlace=0x00F3EB30 ; verified static: thiscall(ScenarioData,uint32 unusedClassID)->boolEAX,ret4; native Measure ratio must be strictly below1
-SporeCoop::EditorComplexity::CreateMarkerLimit=0x00F44267 ; verified static: cmp eax,1024 then jae F44449 before owning marker insertion; five-byte instruction and six-byte branch
-SporeCoop::EditorComplexity::CloneMarkerLimit=0x00F444DE ; verified static: cmp eax,1024 then jae F44586 before owning marker insertion; five-byte instruction and six-byte branch
-SporeCoop::EditorComplexity::ClassLimit=0x00F46326 ; verified static: cmp eax,1024 then jge F463E9 before class import; class bound remains1024

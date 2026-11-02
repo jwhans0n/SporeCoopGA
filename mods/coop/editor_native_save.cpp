@@ -67,6 +67,10 @@ void SK_THISCALL display_native(void* self,int action){
         skg::field<void*>(m,0x14)==self && skg::readable(self,0x98) &&
         skg::field<uintptr_t>(self,0)==a_vtable && (skg::field<int>(self,0x1C)==-1 || skg::field<int>(self,0x1C)==0);
     if(shared() && !owned_native && !initial_build) {
+        if(owns_ui(self) && (action==2 || (action==0 && skg::field<int>(self,0x1C)==2)) &&
+           editor_native::terraform_navigation_allowed()){
+            original_display(self,action);return;
+        }
         if(owns_ui(self) && C.request && (action==0 || action==1))
             C.request(action==1 ? Request::Play : Request::Build);
         return;

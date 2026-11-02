@@ -32,6 +32,7 @@ uint32_t t_offset=0;
 bool t_replaced=false;
 bool t_owned_preview=false;
 bool t_shared=false,t_editor_active=true;
+bool t_terrain_allowed=false;
 unsigned t_command_calls=0,t_display_calls=0;
 unsigned t_set_captain_calls=0;
 unsigned t_return_requests=0;
@@ -72,7 +73,7 @@ void SK_THISCALL t_cinematic_end(void* self){CHECK(self==t_cinematic.data());t_o
     if(t_end_replaces)t_mode_pointer=nullptr;
 }
 void SK_THISCALL t_return_display(void* self,int mode){CHECK(self==t_ui.data());CHECK(mode==0);t_order.push_back(2);}
-void SK_THISCALL t_display(void* self,int mode){CHECK(self==t_ui.data());CHECK(mode==0||mode==1);CHECK(!t_shared||mode==0||editor_native_save::owned_native);++t_display_calls;if(mode==1)skg::field<int>(t_mode.data(),0xCC)=2;}
+void SK_THISCALL t_display(void* self,int mode){CHECK(self==t_ui.data());CHECK(mode==0||mode==1||mode==2);CHECK(!t_shared||mode==0||t_terrain_allowed||editor_native_save::owned_native);++t_display_calls;if(mode==1)skg::field<int>(t_mode.data(),0xCC)=2;}
 void SK_THISCALL t_command(void* self,int action){CHECK(self==t_ui.data());++t_command_calls;
     if(editor_native_save::exiting)skg::field<uint32_t>(self,0x58)=uint32_t(action);}
 void SK_THISCALL t_continue(void* self){CHECK(self==t_ui.data());++t_exit_calls;skg::field<uint32_t>(self,0x58)=0;}
@@ -104,6 +105,7 @@ void t_outside(SkTaskFn fn,void* user){t_tasks.emplace_back(fn,user);}
 void drain(){auto tasks=std::move(t_tasks);t_tasks.clear();for(auto [fn,user]:tasks)fn(user);}
 void poll(){editor_native_save::tick();drain();}
 void reset(){
+    t_terrain_allowed=false;
     t_cinematic.fill(0);t_end_replaces=t_end_held=false;
     editor_native_save::shutdown();drain();t_mode.fill(0);t_data.fill(0);t_ui.fill(0);t_resource.fill(0);t_parsed.fill(0);t_play.fill(0);t_order.clear();
     t_mode_pointer=t_mode.data();t_rm_pointer=&t_manager;t_gate=t_native_success=t_readback=true;t_truncate=t_gesture=t_no_start=t_unchanged=false;
@@ -125,7 +127,7 @@ void reset(){
     CHECK(editor_native_save::init(&host,nullptr,std::move(ctx)));CHECK(editor_native_save::available());
 }
 }
-namespace editor_native {State state(){State s;s.gesture=t_gesture;
+namespace editor_native {bool terraform_navigation_allowed(){return t_terrain_allowed&&!t_gesture&&t_editor_active;}State state(){State s;s.gesture=t_gesture;
     s.editing=t_editor_active&&skg::field<int>(t_mode.data(),0xCC)==1&&skg::field<int>(t_mode.data(),0xD0)==0;
     s.ready=s.editing;s.playtesting=t_editor_active&&skg::field<int>(t_mode.data(),0xCC)==2&&skg::field<int>(t_mode.data(),0xD0)==0;return s;}}
 int main(){
@@ -189,6 +191,13 @@ int main(){
     skg::field<int>(t_ui.data(),0x20)=1;t_display_detour(t_ui.data(),0);CHECK(t_display_calls==3);
     skg::field<int>(t_ui.data(),0x1C)=1;skg::field<int>(t_ui.data(),0x20)=0;t_display_detour(t_ui.data(),0);CHECK(t_display_calls==3);
     skg::field<int>(t_ui.data(),0x1C)=2;t_display_detour(t_ui.data(),0);CHECK(t_display_calls==3);
+    // Terraform and its local Build return do not start a playtest or replace
+    // the shared draft. Every transition still obeys the authoring hold gate.
+    reset();t_shared=true;t_terrain_allowed=true;
+    t_display_detour(t_ui.data(),2);CHECK(t_display_calls==1&&t_requests.empty());
+    skg::field<int>(t_ui.data(),0x1C)=2;t_display_detour(t_ui.data(),0);CHECK(t_display_calls==2&&t_requests.empty());
+    t_gesture=true;t_display_detour(t_ui.data(),2);CHECK(t_display_calls==2);
+    t_terrain_allowed=false;t_gesture=false;t_display_detour(t_ui.data(),2);CHECK(t_display_calls==2);
     reset();std::vector<uint8_t> saved_bytes{0x37};CHECK(editor_native_save::read_saved(t_before,saved_bytes,error));
     CHECK(saved_bytes==std::vector<uint8_t>(512,0xA5));CHECK(t_closed==1&&t_released==1);
     saved_bytes={0x37};t_readback=false;CHECK(!editor_native_save::read_saved(t_before,saved_bytes,error));CHECK(saved_bytes==std::vector<uint8_t>{0x37});

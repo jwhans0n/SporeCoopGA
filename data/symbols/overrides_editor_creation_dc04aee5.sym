@@ -1,7 +1,0 @@
-; Independent native creation editor requests and result lifecycle, GOG 2024.
-SporeCoop::CreationEditor::NotifyResult=0x0057A710 ; verified dc04 static: thiscall(cEditor*,EditorResult*),ret4 57A955; posts30C11C7 then E11332 native return and releases editor+1CC/+4BC; result key+18,cancel+44; native cast palette ED4289..ED42C1 ignores cancelled result
-SporeCoop::CreationEditor::RequestCtor=0x005A9140 ; verified dc04 static: thiscall(EditorRequest*),plain ret5A921A; initializes9C bytes,primary vt13F6FEC,+C editorID,+10 source key,+1C return mode,+20 new asset flag
-SporeCoop::CreationEditor::Allocate=0x00F47240 ; verified dc04 static: cdecl(size_t,const char*,int,int,int,int),native request allocation5A9590..5A95B4 uses9C bytes then RequestCtor
-SporeCoop::CreationEditor::SetClassAsset=0x00F43990 ; verified dc04 static: thiscall(ScenarioData*,uint32 classIndex,const ResourceKey*),ret8 F43A82; F3E740 gets class,primarykey0,typecache18,then defaults and F42470 live actor refresh; detached import intercepts only exact owned temporary ScenarioData
-SporeCoop::CreationEditor::GetClass=0x00F3E740 ; verified dc04 static: thiscall(ScenarioData*,uint32 classIndex)->classData or null,ret4 F3E78D/F3E795; only reads owner10 and owned class map2BF4
-SporeCoop::CreationEditor::AssetModelType=0x00EECAC0 ; verified dc04 static: cdecl(const ResourceKey*)->uint32 native model subtype; F43A01 passes key,addesp4; reads asset metadata through resource manager,does not create scene actors

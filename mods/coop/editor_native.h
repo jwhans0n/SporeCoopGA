@@ -17,7 +17,7 @@
 
 namespace editor_native {
 
-inline constexpr uint32_t kPlacementLimit = 1024;
+inline constexpr uint32_t kPlacementLimit = 4096;
 
 struct Binding {
     editor::ObjectId object;
@@ -48,6 +48,7 @@ struct Snapshot {
 
 struct State {
     bool available = false, editing = false, ready = false, playtesting = false, gesture = false;
+    bool terraforming = false;
     uint32_t entry = 0, act = 0;
     uint64_t generation = 0;
     uint32_t history_size = 0, history_cursor = 0;
@@ -98,6 +99,7 @@ struct Ctx {
     // Native release boundary before its after-snapshot serialization. The
     // runtime stamps this immediately so expensive native Commit work is timed.
     std::function<void()> gesture_released;
+    std::function<void(bool)> gesture_capture; // Deferred native snapshot begin/end.
     std::function<void(bool)> history; // false Undo, true Redo.
     // Cached chronological availability; native toolbar queries perform no work.
     std::function<bool(bool)> history_available;
@@ -115,6 +117,9 @@ struct Ctx {
     std::function<bool(uint32_t)> structure_gate; // Existing native class ID.
     std::function<bool(uint32_t)> class_gate;
     std::function<bool(editor::ObjectId)> settings_gate;
+    // New terrain strokes take no exclusive lease. Existing records and
+    // planet controls have independent checked scopes supplied before mutation.
+    std::function<bool(const std::vector<editor::ObjectId>&,const std::vector<uint32_t>&)> terrain_gate;
     std::function<bool()> navigation_allowed;
     std::function<void(int)> act_action;
     std::function<bool(uint32_t)> remove_class_gate;
@@ -128,6 +133,8 @@ bool init(const SkHost*, SkMod*, Ctx);
 void shutdown();
 void tick(); // Queues native UI fences outside Present.
 State state();
+bool terraform_navigation_allowed(); // Ordinary local Build/Terraform browsing.
+bool extended_complexity_available();
 editor::ResourceKey avatar();
 bool avatar_locked();
 // Local browsing only. Does not create a shared authored transaction.
@@ -157,7 +164,18 @@ bool capture_view(LocalView&, std::string& error);
 bool restore_view(const LocalView&, uint64_t expected_generation, std::string& error);
 // Reject unsupported authored changes after private normalization of known poses.
 bool supported_changes(const Gesture&, std::string& error);
+// Reuse an exact immutable validation result only in one synchronous operation.
+struct ValidationScope {
+    ValidationScope();
+    ~ValidationScope();
+    ValidationScope(const ValidationScope&)=delete;
+    ValidationScope& operator=(const ValidationScope&)=delete;
+};
 bool validate(const Snapshot&, const editor::Document&, std::string& error);
+// A verified native Save grounds marker XYZ along their existing radial ray.
+// Normalize only that derived radial displacement in an owned readback copy;
+// every authored direction, elevation, rotation, property and recipe must match.
+bool normalize_saved_grounding(Snapshot&,const editor::Document&,std::string& error);
 bool restore(const Snapshot&, std::string& error);
 // Resource-only canonical merge. Does not inspect or mutate the active scene,
 // selection, native history, camera, or current native placement mappings.

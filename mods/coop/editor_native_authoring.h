@@ -1,6 +1,7 @@
 // Verified native act/captain projection. Serialized subtrees remain owned.
 #pragma once
 #include "net/editor_document.h"
+#include "editor_native_terrain.h"
 
 namespace editor_native {
 inline constexpr uint32_t kActBlockProperty=0x41435453, kActBlockFormat=0x31544341;
@@ -11,10 +12,12 @@ inline constexpr uint32_t kCaptainInvulnerableProperty=0x43415007;
 inline constexpr editor::ObjectId kCaptainObject{8ull<<32,1};
 inline constexpr uint32_t kCrewRosterProperty=0x43524501,kCrewCapacityProperty=0x43524502,kCrewRosterFormat=0x31575243;
 inline constexpr editor::ObjectId kCrewObject{10ull<<32,1};
+inline constexpr editor::ObjectId kProjectObject{12ull<<32,1};
+inline constexpr uint32_t kExtendedComplexityProperty=0x434F4D50;
 inline constexpr editor::ObjectId act_settings_id(uint32_t act){return {(7ull<<32)|act,1};}
 inline const std::map<uint32_t,editor::PropertySpec>& authoring_property_schema(){
     using K=editor::ValueKind;
-    static const std::map<uint32_t,editor::PropertySpec> schema{
+    static const auto schema=[] {std::map<uint32_t,editor::PropertySpec> result{
         {kActBlockProperty,{K::Structured,0,0,0,true,false}},
         {kCaptainAssetProperty,{K::Resource,0,0,0,true,true}},
         {kCaptainLockedProperty,{K::Boolean,0,0,0,true,false}},
@@ -24,8 +27,11 @@ inline const std::map<uint32_t,editor::PropertySpec>& authoring_property_schema(
         {kCaptainHealthProperty,{K::Number,0,1e6,0,true,false}},
         {kCaptainInvulnerableProperty,{K::Boolean,0,0,0,true,false}},
         {kCrewRosterProperty,{K::Structured,0,0,0,true,false}},
-        {kCrewCapacityProperty,{K::Integer,0,3,0,true,false}}
-    };
+        {kCrewCapacityProperty,{K::Integer,0,3,0,true,false}},
+        {kExtendedComplexityProperty,{K::Boolean,0,0,0,true,false}}
+    };for(const auto& [id,type]:editor_native_terrain::planet_properties()){
+        (void)type;result[id]={K::Structured,0,0,0,true,false};
+    }return result;}();
     return schema;
 }
 } // namespace editor_native
