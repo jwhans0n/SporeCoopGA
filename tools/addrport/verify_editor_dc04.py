@@ -10,6 +10,9 @@ from pe import PE
 
 SHA = 'dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37'
 ENTRIES = [
+    ('CopyTerrainProperties',0xDFCA20,'5355568bf1578b7c24148b4708',[(0xDFCA89,4)],
+     'thiscall(PropertyList destination,const PropertyList* source)->destination,ret4; owning map and parent copy used by native resource deep copy',
+     [(0xDFFA29,0xDFCA20),(0xDFCA4B,0x6A1E80)],[(0xDFFA19,'8d4d18'),(0xDFFA23,'8d4b18'),(0xDFCA6C,'895e30')]),
     ('TerraformInitializeResource',0xF261B0,'a1a47a6c01578b781885ff741a',[(0xF261D8,0)],
      'thiscall(ScenarioResource),plain ret; native load and Terraform activation build the planet before actor grounding',
      [(0xF46502,0xF261B0),(0xF37F22,0xF261B0),(0xF261D1,0xF37530)],[]),

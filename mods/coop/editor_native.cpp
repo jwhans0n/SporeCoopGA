@@ -83,7 +83,7 @@ bool input_speech=false;
 uint32_t script_events=0;
 constexpr uint32_t kResourceSize = 0x2CB0, kLimit = 32u << 20;
 uintptr_t a_copy_crew;
-uintptr_t a_terrain_load,a_terrain_rebuild,a_terrain_selection,a_terrain_loaded,a_terrain_vtable;
+uintptr_t a_terrain_load,a_terrain_rebuild,a_terrain_selection,a_terrain_loaded,a_terrain_vtable,a_copy_terrain_properties;
 uintptr_t a_terraform_ui_vtable,a_flora_ui_vtable;
 bool terrain_available=false,terrain_pending=false,terrain_capturing=false,terrain_queued=false;
 bool terrain_recipe_replacement=false;
@@ -789,8 +789,22 @@ struct HeldTool {
     double started=0;
     uint32_t modifiers=0;
     bool native_started=false,focused=false;
+    bool terrain=false;
+    uint32_t act=0;
+    uintptr_t actor=0;
 };
 std::optional<HeldTool> held_tool;
+struct HeldTerrainPreset {
+    GestureScope scope;uint64_t generation=0;uint32_t act=0;double started=0;bool focused=false;
+    void* owner=nullptr;
+    std::vector<uint8_t> bytes;
+    std::map<editor::ObjectId,editor::TerrainRecord> records;
+    editor::AuthoringSettings planet;
+};
+std::optional<HeldTerrainPreset> held_terrain_preset;
+void hold_terrain_preset(void*);
+void continue_terrain_preset();
+bool real_focus();
 struct HeldCreation {
     GestureScope scope;
     uint64_t generation;
@@ -1051,7 +1065,10 @@ void SK_THISCALL terrain_load(void* self,void* properties){
         if(terrain_pending)return;
         std::vector<editor::ObjectId> records;for(const auto& [id,row]:act_identity.terrain){(void)row;records.push_back(id);}
         std::vector<uint32_t> fields;for(const auto& [id,type]:editor_native_terrain::planet_properties()){(void)type;fields.push_back(id);}
-        if(!C.terrain_gate || !C.terrain_gate(records,fields) || !terrain_begin(self))return;
+        if(!C.terrain_gate || !C.terrain_gate(records,fields) || !terrain_begin(self)){
+            hold_terrain_preset(properties);return;
+        }
+        held_terrain_preset.reset();
         terrain_recipe_replacement=true;
     }
     original_terrain_load(self,properties);
@@ -1085,7 +1102,10 @@ void SK_THISCALL terrain_build(void* self,void* properties){
     if(!applying && active() && properties!=skg::field<void*>(self,0x0C)){
         std::vector<editor::ObjectId> records;for(const auto& [id,row]:act_identity.terrain){(void)row;records.push_back(id);}
         std::vector<uint32_t> fields;for(const auto& [id,type]:editor_native_terrain::planet_properties()){(void)type;fields.push_back(id);}
-        if(!C.terrain_gate || !C.terrain_gate(records,fields) || !terrain_begin(self))return;
+        if(!C.terrain_gate || !C.terrain_gate(records,fields) || !terrain_begin(self)){
+            hold_terrain_preset(properties);return;
+        }
+        held_terrain_preset.reset();
         terrain_recipe_replacement=true; // F3753C loads this external recipe.
         own_boundary=*reinterpret_cast<uint8_t*>(a_history+0x20)!=0;
         if(own_boundary)original_terrain_start(self);
@@ -1096,6 +1116,56 @@ void SK_THISCALL terrain_build(void* self,void* properties){
         remember_grounding(terrain_before?terrain_before->document:act_identity);
     }
     if(own_boundary)terrain_commit(self);
+}
+void hold_terrain_preset(void* properties){
+    const auto scope=C.gesture_scope?C.gesture_scope():GestureScope{};
+    const auto current=state();
+    const auto planet=act_identity.settings.find(editor_native_terrain::kPlanetObject);
+    if(!valid_scope(scope) || !a_copy_terrain_properties ||
+       !skg::readable(properties,0x38) || planet==act_identity.settings.end())return;
+    try{
+        // DFFA29 uses this exact owning PropertyList assignment. Freeze it as
+        // bytes before the picker/native caller releases its borrowed payload.
+        Owned copy(construct());std::string error;
+        if(!copy.p){if(C.notice)C.notice("The pending planet preset could not allocate its owned copy.");return;}
+        skg::thiscall<void*>(a_copy_terrain_properties,skg::ptr_add<void>(copy.p,0x18),properties);
+        std::vector<uint8_t> bytes;editor::Document checked;
+        if(!serialize(copy.p,bytes,error) || !editor_native_terrain::project(bytes,{},checked,error)){
+            if(C.notice)C.notice(error.empty()?"The pending planet preset is invalid.":error);return;
+        }
+        HeldTerrainPreset item{scope,current.generation,current.act,H->time_seconds(),real_focus(),data(mode()),
+            std::move(bytes),act_identity.terrain,planet->second};
+        if(held_terrain_preset && held_terrain_preset->scope==item.scope &&
+           held_terrain_preset->generation==item.generation && held_terrain_preset->act==item.act){
+            item.records=held_terrain_preset->records;item.planet=held_terrain_preset->planet;
+        }
+        held_terrain_preset=std::move(item);
+    }catch(const std::bad_alloc&){if(C.notice)C.notice("The pending planet preset exceeded available memory; retry after editing settles.");}
+}
+void continue_terrain_preset(){
+    if(!held_terrain_preset)return;
+    const auto observed=state();if(!held_terrain_preset)return;
+    const auto scope=C.gesture_scope?C.gesture_scope():GestureScope{};
+    const auto& item=*held_terrain_preset;
+    const auto planet=act_identity.settings.find(editor_native_terrain::kPlanetObject);
+    if(!active() || item.scope!=scope || item.generation!=generation || item.act!=observed.act ||
+       item.owner!=data(mode()) || H->time_seconds()-item.started>2 || (GetKeyState(VK_ESCAPE)&0x8000) ||
+       (item.focused && !real_focus())){held_terrain_preset.reset();return;}
+    if(item.records!=act_identity.terrain || planet==act_identity.settings.end() || planet->second!=item.planet){
+        held_terrain_preset.reset();if(C.notice)C.notice("The planet changed while preset ownership was pending; select the preset again.");return;
+    }
+    if(applying || !observed.ready || !pending.empty() || queued || gesture_before_resource ||
+       (observed.gesture && !terrain_before) || (C.transaction_pending && C.transaction_pending()) || !C.terrain_gate)return;
+    std::vector<editor::ObjectId> records;for(const auto& [id,row]:item.records){(void)row;records.push_back(id);}
+    std::vector<uint32_t> fields;for(const auto& [id,type]:editor_native_terrain::planet_properties()){(void)type;fields.push_back(id);}
+    if(!C.terrain_gate(records,fields))return;
+    auto accepted=std::move(*held_terrain_preset);held_terrain_preset.reset();std::string error;
+    Owned copy(parse(accepted.bytes,error));
+    if(!copy.p){if(C.notice)C.notice(error);return;}
+    auto* tool=terraform_mode();if(!terrain_begin(tool))return;
+    if(*reinterpret_cast<uint8_t*>(a_history+0x20))original_terrain_start(tool);
+    terrain_build(tool,skg::ptr_add<void>(copy.p,0x18));
+    terrain_commit(tool);
 }
 using TerrainValueFn=void(SK_THISCALL*)(void*,uint32_t);
 std::array<TerrainValueFn,18> original_terrain_values{};
@@ -1393,7 +1463,7 @@ void SK_THISCALL select_native(void* self,void* object){
     if(held_tool && skg::readable(context,8) && skg::field<void*>(context,4)!=object)finish_held_input();
     original_select(self,object);
     if(!applying && editing())refresh_selection();
-    if(held_tool && (selection.empty() || selection.front()!=held_tool->object))finish_held_input();
+    if(held_tool && !held_tool->terrain && (selection.empty() || selection.front()!=held_tool->object))finish_held_input();
     if(!applying && active() && !selection.empty() && C.gate)C.gate(selection);
 }
 bool real_focus(){
@@ -1404,13 +1474,16 @@ bool real_focus(){
 void finish_held_input(){
     if(!held_tool)return;
     const auto item=*held_tool;held_tool.reset();
+    const auto observed=state();
     if(item.native_started && active() && !cancellation && item.generation==generation &&
-       item.manager==*reinterpret_cast<void**>(a_tools) && state().gesture)
+       (!item.terrain || (observed.terraforming && observed.act==item.act)) &&
+       item.manager==*reinterpret_cast<void**>(a_tools) && observed.gesture)
         original_tool(item.manager,0,0,0);
 }
 void deny_held_input(const std::vector<editor::Scope>& scopes){
     for(const auto& scope:scopes){
-        if(held_tool && (scope.kind==editor::ScopeKind::Document || scope.object==held_tool->object))finish_held_input();
+        if(held_tool && (scope.kind==editor::ScopeKind::Document || scope.object==held_tool->object ||
+           (held_tool->terrain && scope.kind==editor::ScopeKind::Authoring)))finish_held_input();
         if(scope.kind==editor::ScopeKind::Document){
             if(held_import)H->log(M,SK_DEBUG,"Cast queue denied: keys=%u",unsigned(held_import->size()));
             held_import.reset();
@@ -1419,12 +1492,16 @@ void deny_held_input(const std::vector<editor::Scope>& scopes){
         if(held_captain_asset && (scope.kind==editor::ScopeKind::Document || scope.object==kCaptainObject))held_captain_asset.reset();
         if(held_crew_action && (scope.kind==editor::ScopeKind::Document || scope.object==kCrewObject))held_crew_action.reset();
         if(scope.kind==editor::ScopeKind::Document || scope.kind==editor::ScopeKind::Authoring || scope.object==editor_native_terrain::kPlanetObject){
+            if(held_terrain_preset){held_terrain_preset.reset();if(C.notice)C.notice("The pending planet preset was cancelled because its terrain or settings are owned by another player.");}
             for(auto item=held_terrain_controls.begin();item!=held_terrain_controls.end();){
                 if(scope.kind!=editor::ScopeKind::Field || item->guards.contains(scope.field.property)){
                     if(C.notice)C.notice("A pending terrain control was cancelled because its property is owned by another player.");
                     item=held_terrain_controls.erase(item);
                 }else ++item;
             }
+        }
+        if(held_terrain_preset && scope.kind==editor::ScopeKind::Terrain && held_terrain_preset->records.contains(scope.object)){
+            held_terrain_preset.reset();if(C.notice)C.notice("The pending planet preset was cancelled because a terrain stamp is owned by another player.");
         }
         if(held_creation && (scope.kind==editor::ScopeKind::Document || scope.object==editor::ObjectId{(2ull<<32)|held_creation->class_index,1}))held_creation.reset();
     }
@@ -1447,6 +1524,7 @@ void SK_THISCALL apply_marker_state(void* self,void* marker,uint32_t flags){
 }
 void SK_CDECL continue_input(void*){
     input_queued=false;
+    continue_terrain_preset();
     continue_terrain_control();
     if(held_creation){
         const auto item=*held_creation;
@@ -1524,20 +1602,25 @@ void SK_CDECL continue_input(void*){
         }
     }
     if(!held_tool)return;
-    const auto observed=state();
     const auto item=*held_tool;
-    refresh_selection();
+    const auto observed=state();if(!held_tool)return;
+    if(!item.terrain)refresh_selection();
     const auto revision=C.object_revision?C.object_revision(item.object):std::nullopt;
     const auto current_scope=C.gesture_scope?C.gesture_scope():GestureScope{};
     void* context=a_context?*reinterpret_cast<void**>(a_context):nullptr;
+    const auto actor=skg::readable(context,8)?skg::field<void*>(context,4):nullptr;
+    const auto descriptor=item.terrain && actor && a_terrain_selection?skg::thiscall<void*>(a_terrain_selection,terraform_mode(),actor):nullptr;
+    const bool same_selection=item.terrain?
+        observed.terraforming && observed.act==item.act && uintptr_t(actor)==item.actor && terrain_record(descriptor)==item.object:
+        selection==std::vector<editor::ObjectId>{item.object};
     if(!active() || applying || !observed.ready || (!item.native_started && observed.gesture) || item.generation!=generation ||
-       item.scope!=current_scope || !revision || *revision!=item.revision || selection!=std::vector<editor::ObjectId>{item.object} ||
+       item.scope!=current_scope || !revision || *revision!=item.revision || !same_selection ||
        item.manager!=*reinterpret_cast<void**>(a_tools) || !skg::readable(context,0x2C) ||
        skg::field<uintptr_t>(context,0x10)!=item.auxiliary || (GetKeyState(VK_ESCAPE)&0x8000) ||
        (item.focused && !real_focus()) || H->time_seconds()-item.started>2){
         finish_held_input();return;
     }
-    if(!C.gate || !C.gate(selection))return;
+    if(item.terrain?(!C.terrain_gate || !C.terrain_gate({item.object},{})):(!C.gate || !C.gate(selection)))return;
     held_tool.reset();
     // ToolAction tests this native input latch before starting a drag. A quick
     // release may have cleared it while the ownership grant was in flight.
@@ -1573,11 +1656,29 @@ bool tool_rejection(size_t reason,uint32_t action,void* context,const State& obs
 uint32_t SK_THISCALL tool_native(void* self,uint32_t action,uint32_t a,uint32_t b){
     const State observed=editor_native::state();
     if(!applying && active() && ordinary_capture_pending() && action!=0)return 1;
+    if(!applying && active() && held_tool){
+        if(action==0){held_tool->released=true;return 1;}
+        if(action==1)return 1;
+        finish_held_input();
+    }
     if(!applying && active() && observed.terraforming){
         if(action==1 || action==6 || action==11){
             void* context=a_context?*reinterpret_cast<void**>(a_context):nullptr;
             void* actor=skg::readable(context,8)?skg::field<void*>(context,4):nullptr;
-            if(!terrain_gate_record(actor))return 1;
+            if(!terrain_gate_record(actor)){
+                const auto descriptor=actor && a_terrain_selection?skg::thiscall<void*>(a_terrain_selection,terraform_mode(),actor):nullptr;
+                const auto object=terrain_record(descriptor);
+                const auto revision=object && C.object_revision?C.object_revision(*object):std::nullopt;
+                const auto scope=C.gesture_scope?C.gesture_scope():GestureScope{};
+                if(action==1 && observed.ready && !observed.gesture && object && revision && valid_scope(scope) &&
+                   a_tool_tick && original_tick_tools && self==*reinterpret_cast<void**>(a_tools) && skg::readable(context,0x2C)){
+                    held_tool=HeldTool{scope,generation,*object,*revision,self,action,a,b,skg::field<uintptr_t>(context,0x10),false,
+                        H->time_seconds(),skg::field<uint32_t>(mode(),0x40),true,real_focus(),true,observed.act,uintptr_t(actor)};
+                    original_tool(self,action,a,b);
+                    if(held_tool)original_tick_tools(self);
+                }
+                return 1;
+            }
         }
         return original_tool(self,action,a,b);
     }
@@ -1587,11 +1688,6 @@ uint32_t SK_THISCALL tool_native(void* self,uint32_t action,uint32_t a,uint32_t 
         if(action==0){held_creation->released=true;return 1;}
         if(action==1)return 1;
         held_creation.reset();
-    }
-    if(!applying && active() && held_tool){
-        if(action==0){held_tool->released=true;return 1;}
-        if(action==1)return 1;
-        finish_held_input();
     }
     if(!applying && active() && (action==1 || action==6 || action==11)){
         if(cancellation){++rejected;return 1;}
@@ -2340,6 +2436,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     a_copy_acts=H->sym("SporeCoop::Editor::CopyActs");a_copy_act=H->sym("SporeCoop::Editor::CopyAct");
     a_copy_crew=H->sym("SporeCoop::Editor::CopyCrewRows");
     a_terrain_load=H->sym("SporeCoop::Editor::TerraformLoadProperties");
+    a_copy_terrain_properties=H->sym("SporeCoop::Editor::CopyTerrainProperties");
     a_terrain_rebuild=H->sym("SporeCoop::Editor::TerraformRebuild");
     a_terrain_selection=H->sym("SporeCoop::Editor::TerraformSelection");
     a_terrain_loaded=H->sym("SporeCoop::Editor::TerrainLoaded");
@@ -2407,7 +2504,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
         install("SporeCoop::Editor::ApplyBehaviors",(void*)behavior_apply,(void**)&original_behavior_apply);
     complexity_available=supported && complexity_bounds.initialize(H->sym("SporeCoop::EditorComplexity::CreateMarkerLimit"),H->sym("SporeCoop::EditorComplexity::CloneMarkerLimit")) &&
         install("SporeCoop::EditorComplexity::WeightedRatio",(void*)complexity_ratio,(void**)&original_complexity);
-    terrain_available=supported && a_terrain_load && a_terrain_rebuild && a_terrain_selection && a_terrain_loaded && a_terrain_vtable && a_terraform_ui_vtable && a_flora_ui_vtable &&
+    terrain_available=supported && a_terrain_load && a_copy_terrain_properties && a_terrain_rebuild && a_terrain_selection && a_terrain_loaded && a_terrain_vtable && a_terraform_ui_vtable && a_flora_ui_vtable &&
         install("SporeCoop::Editor::TerraformInitializeResource",(void*)terrain_resource_init,(void**)&original_terrain_resource_init) &&
         install("SporeCoop::Editor::TerraformActivate",(void*)terrain_activate,(void**)&original_terrain_activate) &&
         install("SporeCoop::Editor::TerraformStartHistory",(void*)terrain_start,(void**)&original_terrain_start) &&
@@ -2447,7 +2544,7 @@ void shutdown() {
     ++generation;
     input_speech=false;
     terrain_before.reset();terrain_pending=terrain_queued=terrain_capturing=terrain_rebuilding=terrain_recipe_replacement=false;terrain_grounding.clear();materialized_terrain.reset();terrain_available=false;
-    held_tool.reset();held_creation.reset();held_class_removal.reset();held_captain_asset.reset();held_crew_action.reset();held_terrain_controls.clear();input_queued=false;
+    held_tool.reset();held_creation.reset();held_class_removal.reset();held_captain_asset.reset();held_crew_action.reset();held_terrain_controls.clear();held_terrain_preset.reset();input_queued=false;
     deferred_local_view.reset();local_view_queued=local_view_settling=false;
     held_import.reset();
     cancellation.reset();cancellation_queued=cancellation_settling=false;
@@ -2465,7 +2562,7 @@ void tick(){
     if(!H)return;
     if(terrain_pending && !terrain_queued){terrain_queued=true;H->run_outside_frame(drain_terrain,nullptr);}
     if(!pending.empty() && !queued){queued=true;H->run_outside_frame(drain,nullptr);}
-    if((held_tool || held_import || held_creation || held_class_removal || held_captain_asset || held_crew_action || !held_terrain_controls.empty()) && !input_queued){input_queued=true;H->run_outside_frame(continue_input,nullptr);}
+    if((held_tool || held_import || held_creation || held_class_removal || held_captain_asset || held_crew_action || held_terrain_preset || !held_terrain_controls.empty()) && !input_queued){input_queued=true;H->run_outside_frame(continue_input,nullptr);}
     if(cancellation && !cancellation_queued){cancellation_queued=true;H->run_outside_frame(drain_cancellation,nullptr);}
     if(fence_queued)return;
     double now=H->time_seconds();
@@ -2481,7 +2578,7 @@ State state() {
         observed_mode = m; observed_data = d; observed_scenario=scenario; ++generation;
         bindings.clear();incarnations.clear();selection.clear();act_identity={};
         terrain_before.reset();terrain_pending=terrain_capturing=terrain_rebuilding=terrain_recipe_replacement=false;terrain_grounding.clear();materialized_terrain.reset();
-        deferred_local_view.reset();held_terrain_controls.clear();
+        deferred_local_view.reset();held_terrain_controls.clear();held_terrain_preset.reset();held_tool.reset();
     }
     s.generation = generation;
     if (!supported || !scenario || !skg::readable(m, 0xDC)) return s;

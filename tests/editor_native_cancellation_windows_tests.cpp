@@ -189,6 +189,7 @@ void native_cancel(void* entry=nullptr){
 }
 void begin(){start(t_data.data());CHECK(!t_allocations.empty());CHECK(gesture_serial!=0);}
 void reset(){
+    held_terrain_preset.reset();a_copy_terrain_properties=0;
     held_terrain_controls.clear();terrain_before.reset();terrain_pending=terrain_rebuilding=terrain_capturing=terrain_recipe_replacement=false;terrain_available=false;
     deferred_local_view.reset();local_view_queued=local_view_settling=false;
     held_tool.reset();held_import.reset();held_creation.reset();held_class_removal.reset();held_captain_asset.reset();held_crew_action.reset();
@@ -469,6 +470,96 @@ void test_cold_native_terrain_initialization(){
     }
     // Ordinary external presets still pass the existing ownership/history gate.
     test_preset_history_boundary();reset();
+}
+std::array<uint8_t,16> t_terrain_descriptor;
+std::array<uint8_t,0x69> t_terrain_definition;
+void* SK_THISCALL t_terrain_selected(void* self,void* actor){
+    CHECK(self==t_terraform.data());return actor==t_actors[0].data()?t_terrain_descriptor.data():nullptr;
+}
+uint32_t SK_THISCALL t_terrain_grab(void* manager,uint32_t action,uint32_t,uint32_t){
+    CHECK(manager==t_tool_pointer);
+    if(action==1){++t_presses;terrain_start(t_terraform.data());}
+    else if(!action){++t_finishes;terrain_commit(t_terraform.data());}
+    return 1;
+}
+void setup_terrain_grab(){
+    setup_terrain_retry();t_terrain_descriptor.fill(0);t_terrain_definition.fill(0);
+    skg::field<uint32_t>(t_display.data(),0x1C)=2;
+    skg::field<void*>(t_terrain_descriptor.data(),0)=t_actors[0].data();
+    skg::field<void*>(t_terrain_descriptor.data(),4)=t_terrain_definition.data();
+    editor::TerrainRecord row;row.object={55,1};row.kind=editor::TerrainKind::Effect;row.order=1;row.revision=t_revision;
+    act_identity.terrain.emplace(row.object,row);pin_terrain_before();
+    a_terrain_selection=uintptr_t(t_terrain_selected);original_tool=t_terrain_grab;
+    C.terrain_gate=[](const auto& records,const auto& fields){CHECK(fields.empty());CHECK(records.empty()||records==std::vector<editor::ObjectId>({{55,1}}));return t_granted;};
+}
+void test_terrain_pending_grab(){
+    for(bool quick_release:{false,true}){
+        setup_terrain_grab();CHECK(state().terraforming&&state().ready&&!state().gesture);
+        CHECK(tool_native(t_tool_pointer,1,17,23)==1&&held_tool&&held_tool->terrain);
+        CHECK(t_presses==1&&t_ticks==1&&!t_steps&&terrain_starts==1&&!terrain_commits);
+        tick_tools(t_tool_pointer);ground_step(nullptr);vertical_step(nullptr);radial_step(nullptr);auxiliary_step(nullptr);
+        CHECK(t_ticks==1&&!t_steps&&value(t_live.data(),0)==1);
+        if(quick_release)CHECK(tool_native(t_tool_pointer,0,0,0)==1&&held_tool->released);
+        continue_input(nullptr);CHECK(held_tool&&!t_steps);
+        t_granted=true;continue_input(nullptr);CHECK(!held_tool&&t_presses==1&&t_steps==1&&t_ticks==2);
+        if(!quick_release)tool_native(t_tool_pointer,0,0,0);
+        CHECK(t_finishes==1&&terrain_starts==1&&terrain_commits==1&&terrain_pending);
+    }
+    for(unsigned reason=0;reason<9;++reason){
+        setup_terrain_grab();tool_native(t_tool_pointer,1,0,0);CHECK(held_tool);
+        if(reason==0)++t_revision;if(reason==1)++t_scope.epoch;if(reason==2)++generation;
+        if(reason==3)++skg::field<uint32_t>(t_context.data(),0);if(reason==4)skg::field<void*>(t_context.data(),4)=t_actors[1].data();
+        if(reason==5)skg::field<uintptr_t>(t_context.data(),0x10)=123;
+        if(reason==6)t_time+=3;if(reason==7)held_tool->focused=true;
+        if(reason==8)deny_input({{editor::ScopeKind::Authoring,{},{}}});
+        continue_input(nullptr);CHECK(!held_tool&&!t_steps&&value(t_live.data(),0)==1);
+    }
+    reset();
+}
+std::map<void*,std::vector<uint8_t>> t_preset_payloads;
+unsigned t_preset_copies=0;
+void* SK_THISCALL t_copy_preset_properties(void* destination,const void* source){
+    ++t_preset_copies;editor_native_terrain::Properties p;p.header={0xF9,0xD4,0x23,0xB5,17,0,0,0};
+    p.fields[0x8E390196]={1,0,{*static_cast<const uint8_t*>(source)}};std::string error;
+    CHECK(editor_native_terrain::encode(p,t_preset_payloads[static_cast<uint8_t*>(destination)-0x18],error));return destination;
+}
+bool SK_THISCALL t_write_preset_resource(void* self,Stream* stream){
+    const auto& bytes=t_preset_payloads.at(self);return write(stream,bytes.data(),uint32_t(bytes.size()));
+}
+uint32_t SK_THISCALL t_read_preset_resource(void* self,Stream* stream){
+    t_preset_payloads[self]=stream->bytes;stream->position=uint32_t(stream->bytes.size());return stream->position;
+}
+void SK_THISCALL t_build_preset_resource(void* self,void* properties){
+    CHECK(self==t_terraform.data()&&applying&&t_granted);++terrain_builds;
+    editor_native_terrain::Properties p;std::string error;
+    CHECK(editor_native_terrain::decode(t_preset_payloads.at(static_cast<uint8_t*>(properties)-0x18),p,error));
+    CHECK(p.fields.at(0x8E390196).value==std::vector<uint8_t>{1});
+}
+void setup_preset_retry(){
+    setup_terrain_retry();t_preset_payloads.clear();t_preset_copies=0;
+    a_copy_terrain_properties=uintptr_t(t_copy_preset_properties);a_write=uintptr_t(t_write_preset_resource);a_read=uintptr_t(t_read_preset_resource);
+    original_terrain_build=t_build_preset_resource;
+    C.terrain_gate=[](const auto& records,const auto& fields){CHECK(records.empty());CHECK(fields.empty()||fields.size()==editor_native_terrain::planet_properties().size());return t_granted;};
+}
+void test_terrain_preset_retry(){
+    setup_preset_retry();std::array<uint8_t,0x38> source{};source[0]=1;
+    terrain_build(t_terraform.data(),source.data());CHECK(held_terrain_preset&&t_preset_copies==1&&!terrain_builds&&!terrain_starts&&!terrain_commits);
+    source[0]=0;continue_input(nullptr);CHECK(held_terrain_preset&&!terrain_builds);
+    t_granted=true;pin_terrain_before();continue_input(nullptr);
+    CHECK(!held_terrain_preset&&terrain_builds==1&&terrain_starts==1&&terrain_commits==1&&terrain_pending&&t_allocations.empty());
+    for(unsigned reason=0;reason<8;++reason){
+        setup_preset_retry();source[0]=1;terrain_build(t_terraform.data(),source.data());CHECK(held_terrain_preset);
+        if(reason==0)++t_scope.epoch;if(reason==1)++generation;if(reason==2)t_time+=3;
+        if(reason==3)held_terrain_preset->focused=true;
+        if(reason==4)++act_identity.settings.at(editor_native_terrain::kPlanetObject).revision;
+        if(reason==5)act_identity.terrain.emplace(editor::ObjectId{55,1},editor::TerrainRecord{});
+        if(reason==6)deny_input({{editor::ScopeKind::Authoring,{},{}}});
+        if(reason==7)++held_terrain_preset->act;
+        t_granted=true;continue_input(nullptr);CHECK(!held_terrain_preset&&!terrain_builds&&!terrain_starts&&t_allocations.empty());
+    }
+    setup_preset_retry();source[0]=2;terrain_build(t_terraform.data(),source.data());CHECK(!held_terrain_preset&&!terrain_builds&&!t_failure.empty());
+    setup_preset_retry();source[0]=1;t_alloc_fail=true;terrain_build(t_terraform.data(),source.data());CHECK(!held_terrain_preset&&!terrain_builds&&t_allocations.empty());
+    t_alloc_fail=false;t_preset_payloads.clear();reset();
 }
 void test_pending_capture_fences(){
     reset();pending.emplace_back();CHECK(state().gesture&&!state().ready);
@@ -1054,6 +1145,8 @@ int main(){
     test_flora_control_retry();
     test_terrain_control_retry();
     test_cold_native_terrain_initialization();
+    test_terrain_pending_grab();
+    test_terrain_preset_retry();
     test_crew_input_ownership();
     test_captain_and_act_input_ownership();
     test_async_captain_asset_keeps_value_and_rechecks_identity();
