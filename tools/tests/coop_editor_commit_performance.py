@@ -22,6 +22,7 @@ from coop_adventure import FixtureError
 from coop_adventure_editor import EditorPair, status, retry_grant
 from coop_editor_performance import configuration, editor_uncovered, source_fence, values
 from editor_network_proxy import EditorProxy, Profile
+from uifind import find
 
 ROOT = Path(__file__).resolve().parents[2]
 PROFILES = {
@@ -194,6 +195,15 @@ def route_owned_join(command,instance,args,proxies):
     return ' '.join(words)
 
 
+def menu_login_button_only(game):
+    # Reused offline profiles have a bottom-left Login menu button. It is not
+    # the registration dialog whose close control the onboarding helper uses.
+    if not game.menu() or not game.caption('Create') or game.caption("If you don't register"):
+        return False
+    visible=[(x,y) for x,y,shown in find(game.console,'Login') if shown]
+    return bool(visible) and all(0<=x<300 and 720<=y<768 for x,y in visible)
+
+
 class CommitParty(party_module.EditorParty):
     def __init__(self, args, proxies):
         self.args=args;self.output=args.output;self.output.mkdir(parents=True,exist_ok=False)
@@ -209,6 +219,12 @@ class CommitParty(party_module.EditorParty):
                     return party_module.Console.call(self,line)
                 return super().call(line)
         class MeasuredGame(party_module.PublicGame):
+            def dismiss_registration(self):
+                if menu_login_button_only(self):
+                    owner.result.setdefault('native_navigation_guards',[]).append(dict(
+                        instance=self.instance,reason='Visible Create menu with only its bottom-left Login button'))
+                    owner.write();return
+                return super().dismiss_registration()
             def wait(self,description,predicate,timeout=None):
                 result=super().wait(description,predicate,timeout)
                 if description=='native editor shell ready' and self.instance==args.instances[0]:

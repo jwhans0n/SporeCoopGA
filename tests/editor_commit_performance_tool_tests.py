@@ -162,18 +162,44 @@ class StageContracts(unittest.TestCase):
         with self.assertRaises(perf.FixtureError):perf.correlate(values,2,5)
 
 
-def gestures(samples=30):
+def gestures(samples=30,instances=(2,3)):
     rows=[]
-    for instance in (2,3):
+    for slot,instance in enumerate(instances):
         for index in range(samples):
-            correlation=perf.correlate({'2':capture(instance-2),'3':capture(instance-2)},instance,5)
+            correlation=perf.correlate({str(i):capture(slot) for i in instances},instance,5)
             correlation['sequence']=index+1
-            frames={str(i):dict(p95_ms=20,max_ms=30) for i in (2,3)}
+            frames={str(i):dict(p95_ms=20,max_ms=30) for i in instances}
             rows.append(dict(author_instance=instance,correlation=correlation,frames=frames))
     return rows
 
 
 class AcceptanceContracts(unittest.TestCase):
+    def test_bottom_menu_login_is_not_a_registration_dialog(self):
+        game=SimpleNamespace(menu=lambda:True,caption=lambda text:text=='Create',console=object())
+        with mock.patch.object(perf,'find',return_value=[(114,752,True),(600,180,False)]):
+            self.assertTrue(perf.menu_login_button_only(game))
+        for points in ([],[(114,752,False)],[(114,752,True),(600,180,True)],[(114,180,True)]):
+            with self.subTest(points=points),mock.patch.object(perf,'find',return_value=points):
+                self.assertFalse(perf.menu_login_button_only(game))
+        for captions in (set(),{'Create',"If you don't register"}):
+            game.caption=lambda text:text in captions
+            with mock.patch.object(perf,'find',return_value=[(114,752,True)]):
+                self.assertFalse(perf.menu_login_button_only(game))
+        game.menu=lambda:False
+        game.caption=lambda text:text=='Create'
+        with mock.patch.object(perf,'find',return_value=[(114,752,True)]):
+            self.assertFalse(perf.menu_login_button_only(game))
+
+    def test_four_authors_require120_unique_operations_and_full_frame_windows(self):
+        instances=(95,96,97,98);rows=gestures(instances=instances)
+        summary=perf.summarize(rows,instances,30,200)
+        self.assertTrue(summary['passed'])
+        self.assertEqual(len(rows),120)
+        self.assertEqual({i:v['samples'] for i,v in summary['authors'].items()},{str(i):30 for i in instances})
+        self.assertEqual({i:v['windows'] for i,v in summary['frames'].items()},{str(i):120 for i in instances})
+        for invalid in (rows[:-1],rows[:-1]+[rows[0]]):
+            with self.assertRaises(perf.FixtureError):perf.summarize(invalid,instances,30,200)
+
     def test_ready_native_divergence_stops_without_repolling(self):
         calls=[];games=[]
         for instance,check in enumerate(('CONVERGED fixture','DIVERGED: quaternion differs')):
