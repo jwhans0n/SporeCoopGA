@@ -86,7 +86,7 @@ class Reader:
         # required by the passive liveness wait; WAIT_FAILED is never "exited".
         self.handle = k.OpenProcess(0x00101010, False, pid)
         if not self.handle: raise C.WinError(C.get_last_error())
-        self.calls = self.bytes = 0; self.started = time.monotonic()
+        self.calls = self.bytes = 0; self.started = time.monotonic(); self.call_limit = 1000
         try:
             name = C.create_unicode_buffer(32768); length = W.DWORD(len(name))
             if not k.QueryFullProcessImageNameW(self.handle, 0, name, C.byref(length)):
@@ -99,7 +99,8 @@ class Reader:
                 self.base = None
                 for unused in range(512):
                     if not found: break
-                    if Path(entry.szExePath).resolve() == exe.resolve(): self.base = entry.modBaseAddr; break
+                    if Path(entry.szExePath).resolve() == exe.resolve():
+                        self.base = entry.modBaseAddr; self.image_size = entry.modBaseSize; break
                     found = k.Module32NextW(snapshot, C.byref(entry))
                 if self.base is None: raise ValueError('Private executable module is absent')
             finally: k.CloseHandle(snapshot)
@@ -112,7 +113,7 @@ class Reader:
     def read(self, address, size):
         self.calls += 1; self.bytes += size
         if (not 0 < size <= 1 << 20 or not 0x10000 <= address <= 0x100000000-size
-                or self.calls > 1000 or self.bytes > 4 << 20 or time.monotonic()-self.started > 5):
+                or self.calls > self.call_limit or self.bytes > 4 << 20 or time.monotonic()-self.started > 5):
             raise ValueError('Passive native read budget exceeded')
         wait = self.kernel.WaitForSingleObject(self.handle, 0)
         if wait == 0xFFFFFFFF: raise C.WinError(C.get_last_error())
