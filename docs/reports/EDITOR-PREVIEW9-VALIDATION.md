@@ -456,7 +456,67 @@ has before/after build-input and private installation receipts. All four
 participants then joined the same revision-0 native Town document, with zero
 faults and correct visible bottom title captions. This establishes corrected
 entry and title refresh; the candidate 9 gesture measurements and expanded
-feature acceptance remain pending.
+feature acceptance were separate gates.
+
+## Candidate 9: four-player native commit measurements
+
+The same candidate 9 DLL completed 120 checked native movement gestures in
+Adventure Town: 30 per author, four participants, 419 placements, 118 classes
+and five acts. All used Act 1 and the same Lead Actor placement. Before each
+measured movement, the harness verified the exact native selection and granted
+ownership; every release advanced the canonical revision once. Four preceding
+warm-ups established one matching history item per author. The native title
+caption read Adventure Town on all four participants before those warm-ups.
+
+The direct-LAN measurement gate opened at 06:03:48.350 local after other agents
+stopped builds, tests, copies and game diagnostics. Profile impairment was zero;
+this was neither a WAN test nor a concurrent bulk-transfer test. Raw operation
+QPC events, frame windows, screenshots, aggregates and representative timelines
+are under `out/preview9-commit-diagnostic-c9-four-town`.
+
+| Participant | Own submit-to-confirm p95 | Own release-to-confirm p95 | Commit-window largest frame gap p95 | Largest frame gap |
+| --- | ---: | ---: | ---: | ---: |
+| 95, host | 183.505 ms | 382.422 ms | 277.625 ms | 323.366 ms |
+| 96 | 627.925 ms | 810.351 ms | 235.484 ms | 276.284 ms |
+| 97 | 691.634 ms | 889.626 ms | 280.410 ms | 281.683 ms |
+| 98 | 621.117 ms | 847.365 ms | 277.794 ms | 283.072 ms |
+
+The host passes the 200 ms LAN confirmation threshold. Guests and all frame-gap
+gates fail the unchanged limits. The tool exits 1 for those budgets after
+retaining all 120 valid samples; this is a correctness pass and a performance
+failure, not complete acceptance.
+
+Own capture p95 is 80.7-90.5 ms, supported-change validation 97.3-130.2 ms and
+tentative adoption 72.1-88.3 ms. Inverse and author-side native reapplication
+remain skipped. Observer apply-work p95 is 206.5-229.5 ms, although the actual
+native pose write takes about 1.0-1.6 ms. Total persistence p95 of 71.2-109.7 ms
+includes worker preparation, durable storage and main-thread completion polls;
+it does not measure only main-thread copying. The durable interval is about
+48.8-51.9 ms p95 and includes the completion poll's scheduling delay.
+
+Representative guest timelines contain approximately 96-100 ms from local
+submit to host request processing and 87-90 ms from host decision queueing to
+guest decode. Existing stages span application queues, UDP send/receive and
+outside-frame dispatch, so they do not identify physical network latency.
+The source audit finds that outside-frame editor pumping occurs after the
+frame's network send pass, while initial reliable data is immediately eligible
+for sending; the 100 ms retry floor applies only to retransmission. A bounded
+send-only pump is being tested separately. Candidate 9 timings are retained
+without attributing the whole delay to that scheduling gap.
+
+All four finish Ready and unfrozen at committed/durable revision 124, with no
+active native gesture and zero native faults. Strict native checks converge to
+`e52db6cd412e42cead533ffd43daa170bee33d0573b12dfe4d4c2335152bea71`.
+Final public proof is
+`out/preview9-c9-four-town-final-proof/receipt.json`. The console truncates its
+long history output; independently stat-fenced copies of all four durable
+stores were therefore opened through the repository Store and wire readers
+outside the games. Each checked recovery contains exactly 124 applied history
+items, no Redo entries, and 31 per author: one warm-up plus 30 measured moves.
+That full proof is `durable-history-proof.json` in the same directory.
+
+No Motel of Melora, WAN, transfer-contention or release performance pass is
+claimed. Feature-specific native acceptance remains separate.
 
 ## Required native acceptance
 
