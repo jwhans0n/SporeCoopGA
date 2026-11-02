@@ -3,6 +3,11 @@
 namespace {
 std::function<void(void*)> pose_capture_read_callback;
 bool pose_capture_resolve_failure=false;
+unsigned pose_proof_copy_calls=0;
+void* SK_THISCALL pose_proof_normalizing_copy(void* destination,const void* source){
+    ++pose_proof_copy_calls;t_copy(destination,source);
+    skg::field<uint32_t>(t_rows[destination].data()+4,0x100)=78;return destination;
+}
 bool SK_CDECL pose_capture_resolve(uint64_t server,editor::ResourceKey* key){
     CHECK(server==17);*key=recent_resolved;++recent_resolves;
     if(recent_resolve_callback)recent_resolve_callback(recent_resolves,*key);
@@ -199,15 +204,23 @@ void test_pose_capture_dense_bindings_and_companions(){
     rows_for(t_live.data());bindings.clear();incarnations.clear();a_write=uintptr_t(pose_capture_compact_write);
     CHECK(capture(before,error));CHECK(before.bindings.size()==2&&before.bindings[0].marker==0&&before.bindings[1].marker==1);
     const std::map<uint32_t,editor::ObjectId> supplied{{0,before.bindings[0].object},{2,before.bindings[1].object}};
+    Owned sparse_before(construct());CHECK(sparse_before.p);t_copy(sparse_before.p,t_live.data());
     CHECK(before.bindings[1].object.id==((1ull<<32)|2));pose_capture_move(2);
     {
         ValidationScope outer;Snapshot after;PoseCaptureProof proof;
         CHECK(capture_pose_resource(t_live.data(),before.act,before,supplied,*before.metadata,after,proof,error)==RecentMatches::Match);
         CHECK(after.bindings==before.bindings&&after.document.placements.at(before.bindings[1].object).position.y==3);
         CHECK(after.document.placements.at(before.bindings[0].object)==before.document.placements.at(before.bindings[0].object));
+        remember_projection(after,proof.assets,proof.scope,proof.generation);
+        Gesture checked;checked.generation=generation;checked.before=before;checked.after=after;
+        SerializedBeforeScope serialized(sparse_before.p,supplied,before);
+        const auto hits=opaque_pose_hits;CHECK(supported_changes(checked,error)&&opaque_pose_hits==hits+1);
     }
+    release(std::exchange(sparse_before.p,nullptr));
     CHECK(t_allocations.empty()&&!parsed_owner_count);
     before=pose_capture_extended_setup();const auto all_before=t_rows[t_live.data()];
+    const auto extended_bindings=pose_capture_bindings(before);
+    Owned extended_before(construct());CHECK(extended_before.p);t_copy(extended_before.p,t_live.data());
     auto* first=t_rows[t_live.data()].data()+4;auto* second=t_rows[t_live.data()].data()+0x238+4;
     skg::field<editor::Vec3>(first,4)={1,2,3};skg::field<editor::Rotation>(first,0x10)={.5f,.5f,.5f,.5f};
     skg::field<float>(first,0x20)=2;skg::field<float>(first,0x24)=.75f;skg::field<float>(first,0x220)=4;
@@ -225,8 +238,13 @@ void test_pose_capture_dense_bindings_and_companions(){
         CHECK((std::get<editor::Vec3>(destination.at(kDestinationPositionProperty))==editor::Vec3{4,5,6}));
         CHECK((std::get<editor::Rotation>(destination.at(kDestinationRotationProperty))==editor::Rotation{0,.6f,0,.8f}));
         CHECK(std::get<float>(destination.at(kDestinationScaleProperty))==3);
-        Gesture checked;checked.before=before;checked.after=after;CHECK(supported_changes(checked,error));
+        remember_projection(after,proof.assets,proof.scope,proof.generation);
+        Gesture checked;checked.generation=generation;checked.before=before;checked.after=after;
+        SerializedBeforeScope serialized(extended_before.p,extended_bindings,before);
+        const auto hits=opaque_pose_hits,writes=work_stats().writes.calls;
+        CHECK(supported_changes(checked,error)&&opaque_pose_hits==hits+1&&work_stats().writes.calls==writes+1);
     }
+    release(std::exchange(extended_before.p,nullptr));
     CHECK(t_allocations.empty()&&!parsed_owner_count&&t_rows[t_live.data()]!=all_before&&!t_restores);
     for(auto offset:{0x24u,0x220u,0x1E0u,0x1E4u,0x1E8u,0x1F4u,0x204u}){
         before=pose_capture_extended_setup();pose_capture_move();a_read=uintptr_t(pose_capture_read);
@@ -401,14 +419,124 @@ void test_pose_capture_projection_identity_survives_input_hold(){
     }
     pose_capture_read_callback={};C.projection_scope={};CHECK(t_allocations.empty()&&!parsed_owner_count);
 }
+void test_supported_pose_serialized_before_owner(){
+    RecentRoutes routes;std::string error;
+    for(unsigned scenario=0;scenario<6;++scenario){
+        if(std::getenv("SPORECOOP_FIXTURE_TRACE")){std::printf("serialized_before_owner scenario=%u\n",scenario);std::fflush(stdout);}
+        const auto before=pose_capture_setup();const auto bindings=pose_capture_bindings(before);
+        Owned original(construct());CHECK(original.p);t_copy(original.p,t_live.data());
+        pose_capture_move();if(scenario==1)skg::field<uint32_t>(t_rows[t_live.data()].data()+4,0x100)=78;
+        if(scenario==5)skg::field<uint32_t>(t_live.data(),0x2C4C)=42; // Native local-camera normalization remains supported.
+        Snapshot after;PoseCaptureProof proof;Gesture gesture;gesture.generation=generation;gesture.before=before;
+        {
+            ValidationScope images;
+            CHECK(capture_pose_resource(t_live.data(),before.act,before,bindings,*before.metadata,after,proof,error)==RecentMatches::Match);
+            remember_projection(after,proof.assets,proof.scope,proof.generation);gesture.after=after;
+            if(scenario==2)gesture.after.metadata->genre^=1;
+            if(scenario==3)gesture.after.bindings.front().object.generation^=1;
+            if(scenario==4)gesture.after.document.placements.begin()->second.properties[0xC0012345]=editor::StructuredValue{7,{8},{}};
+            CHECK(supported_pose_image(gesture,error)==RecentMatches::Different); // Typed images alone grant no opaque proof.
+            const auto hits=opaque_pose_hits,fallbacks=opaque_pose_fallbacks;
+            const auto writes=work_stats().writes.calls;const auto copies=t_pose_row_copies,inserts=t_pose_inserts;
+            {
+                SerializedBeforeScope serialized(original.p,bindings,before);
+                if(scenario==0){
+                    CHECK(supported_changes(gesture,error));
+                    CHECK(opaque_pose_hits==hits+1&&opaque_pose_fallbacks==fallbacks);
+                    CHECK(work_stats().writes.calls==writes+1&&t_pose_row_copies==copies&&t_pose_inserts==inserts);
+                }else{
+                    CHECK(supported_pose_image(gesture,error)==RecentMatches::Different&&opaque_pose_hits==hits);
+                    if(scenario==1)CHECK(!supported_changes(gesture,error)&&opaque_pose_fallbacks==fallbacks+1);
+                    if(scenario==5)CHECK(supported_changes(gesture,error)&&opaque_pose_fallbacks==fallbacks+1);
+                }
+            }
+            CHECK(!serialized_before_witness&&!t_restores);
+        }
+        release(std::exchange(original.p,nullptr));CHECK(t_allocations.empty()&&!parsed_owner_count);
+    }
+}
+void test_supported_pose_history_normalization_and_expiration(){
+    RecentRoutes routes;std::string error;
+    // A fresh NativeRead of BEFORE can normalize an unknown field to the very
+    // unauthorized delta in AFTER. Only the original serialized native owner
+    // may seed the forward comparison. Test the real Start/Commit/drain route.
+    for(unsigned scenario=0;scenario<14;++scenario){
+        const auto before=pose_capture_setup();a_read=uintptr_t(pose_capture_read);
+        unsigned seen=0;const auto hits=opaque_pose_hits;
+        C.gesture=[&](Gesture gesture){
+            ++seen;CHECK(serialized_before_witness&&serialized_before_witness->resource);
+            const auto original_rows=t_rows[serialized_before_witness->resource];
+            const auto writes=work_stats().writes.calls;
+            if(scenario==0){
+                const auto copier=a_copy;pose_proof_copy_calls=0;a_copy=uintptr_t(pose_proof_normalizing_copy);t_alloc_fail=true;
+                CHECK(supported_changes(gesture,error)&&opaque_pose_hits==hits+1);
+                CHECK(work_stats().writes.calls==writes+1&&!pose_proof_copy_calls);a_copy=copier;t_alloc_fail=false;
+            }else if(scenario<=2){
+                // Force the new Read boundary after the original native Write
+                // witness, instead of accidentally borrowing an older parse.
+                parsed_images.clear();parsed_image_bytes=0;
+                pose_capture_read_callback=[&](void* resource){skg::field<uint32_t>(t_rows[resource].data()+4,0x100)=scenario==1?78u:77u;};
+                ReadImage normalized_before;
+                if(scenario==1){
+                    CHECK(read_image(gesture.before,normalized_before,error));
+                    CHECK(skg::field<uint32_t>(t_rows[normalized_before.p].data()+4,0x100)==78&&validate(gesture.before,gesture.before.document,error));
+                }
+                CHECK(supported_pose_image(gesture,error)==RecentMatches::Different&&opaque_pose_hits==hits);
+                CHECK(skg::field<uint32_t>(t_rows[serialized_before_witness->resource].data()+4,0x100)==77);
+            }else if(scenario<=8){
+                recent_write_callback=[&](void*,unsigned){
+                    if(scenario==3)++generation;
+                    if(scenario==4)++t_scope.epoch;
+                    if(scenario==5)skg::field<void*>(t_mode.data(),0x74)=t_other_data.data();
+                    if(scenario==6)skg::field<void*>(t_data.data(),0x10)=nullptr;
+                    if(scenario==7)++skg::field<editor::ResourceKey>(t_live.data(),8).instance;
+                    if(scenario==8)++t_scope.author.generation;
+                };
+                CHECK(supported_pose_image(gesture,error)==RecentMatches::Error&&!error.empty()&&opaque_pose_hits==hits);
+                recent_write_callback={};
+            }else if(scenario==9){
+                unsigned nested=0;recent_write_callback=[&](void*,unsigned){
+                    if(nested++)return;
+                    CHECK(serialized_before_witness->busy);
+                    CHECK(supported_pose_image(gesture,error)==RecentMatches::Different);
+                    CHECK(supported_changes(gesture,error)); // Separate immutable parses, never the temporarily posed owner.
+                };
+                CHECK(supported_changes(gesture,error)&&opaque_pose_hits==hits+1&&nested>=3);recent_write_callback={};
+            }else if(scenario==13){
+                recent_write_callback=[&](void*,unsigned){editor_native::shutdown();};
+                CHECK(supported_pose_image(gesture,error)==RecentMatches::Error&&opaque_pose_hits==hits);recent_write_callback={};
+            }else{
+                if(scenario==11)recent_fail_write=recent_all_writes+1;
+                else recent_write_callback=[&](void*,unsigned){if(scenario==12)++generation;throw std::runtime_error("injected native Write failure");};
+                CHECK(supported_pose_image(gesture,error)==(scenario==12?RecentMatches::Error:RecentMatches::Different));
+                CHECK(opaque_pose_hits==hits);recent_write_callback={};recent_fail_write=0;
+            }
+            CHECK(!serialized_before_witness->busy&&t_rows[serialized_before_witness->resource]==original_rows);
+            std::vector<uint8_t> restored;CHECK(serialize(serialized_before_witness->resource,restored,error)&&restored==gesture.before.bytes);
+        };
+        {ScopedPoseInput input;start(t_data.data());}pose_capture_move();
+        if(scenario==1||scenario==2)skg::field<uint32_t>(t_rows[t_live.data()].data()+4,0x100)=78;
+        Owned after(construct());CHECK(after.p);t_copy(after.p,t_live.data());skg::field<void*>(t_entry.data(),0x14)=after.p;
+        commit(t_data.data());CHECK(pending.size()==1&&pending.front().pose_candidate);
+        ::drain();CHECK(seen==1&&!serialized_before_witness&&!t_restores);
+        pose_capture_read_callback={};recent_write_callback={};release(std::exchange(after.p,nullptr));
+        CHECK(t_allocations.empty()&&!parsed_owner_count&&!parsed_owner_bytes&&!validation_depth);
+    }
+}
 void test_pose_capture_proofs(){
-    test_pose_capture_owned_read_lifetime();
-    test_pose_capture_serialized_projection_and_reuse();
-    test_pose_capture_normalization_and_identity_rejection();
-    test_pose_capture_dense_bindings_and_companions();
-    test_pose_capture_captain_and_resolution_closure();
-    test_pose_capture_history_scope();
-    test_pose_capture_failed_callback_cannot_fallback_into_replacement();
-    test_pose_capture_projection_identity_survives_input_hold();
+    if(std::getenv("SPORECOOP_FIXTURE_TRACE"))std::setvbuf(stdout,nullptr,_IONBF,0);
+    auto run=[](const char* name,void(*test)()){
+        if(std::getenv("SPORECOOP_FIXTURE_TRACE")){std::printf("CASE %s\n",name);std::fflush(stdout);}test();
+    };
+    run("owned_read_lifetime",test_pose_capture_owned_read_lifetime);
+    run("serialized_projection_and_reuse",test_pose_capture_serialized_projection_and_reuse);
+    run("normalization_and_identity_rejection",test_pose_capture_normalization_and_identity_rejection);
+    run("dense_bindings_and_companions",test_pose_capture_dense_bindings_and_companions);
+    run("captain_and_resolution_closure",test_pose_capture_captain_and_resolution_closure);
+    run("history_scope",test_pose_capture_history_scope);
+    run("failed_callback_cannot_fallback",test_pose_capture_failed_callback_cannot_fallback_into_replacement);
+    run("projection_identity_input_hold",test_pose_capture_projection_identity_survives_input_hold);
+    run("serialized_before_owner",test_supported_pose_serialized_before_owner);
+    run("history_normalization_and_expiration",test_supported_pose_history_normalization_and_expiration);
 }
 }

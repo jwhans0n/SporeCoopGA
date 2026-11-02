@@ -219,6 +219,31 @@ bool capture_creation_terrain(const GestureScope&,uint64_t serial,const SceneOwn
                               CreationTerrainTicket&,std::string& error);
 bool resume_creation_terrain(const CreationTerrainTicket&,const GestureScope&,uint64_t serial,const SceneOwner&,
                              const Snapshot& entry,uint64_t returned_generation,std::string& error);
+// Explicit value-proof receipts for native Save/export and recovery. These
+// fences never grant mutation leases or permit an input gesture.
+enum class TerrainTransitionKind {Save,Export,Recovery,RecoveryBootstrap,ExportRebuild};
+struct TerrainTransitionKey {
+    GestureScope scope;uint64_t serial=0,generation=0;SceneOwner owner;
+    bool operator==(const TerrainTransitionKey&)const=default;
+};
+struct TerrainTransitionReceipt {
+    TerrainTransitionKind kind=TerrainTransitionKind::Save;
+    TerrainTransitionKey before,after;
+    uint64_t save_generation=0,save_serial=0;
+};
+using TerrainTransitionCurrent=std::function<bool()>;
+struct TerrainTransitionProof;
+using TerrainTransitionTicket=std::shared_ptr<const TerrainTransitionProof>;
+bool capture_terrain_transition(const TerrainTransitionKey&,const Snapshot&,const TerrainTransitionCurrent&,
+                                TerrainTransitionTicket&,std::string& error);
+bool refresh_terrain_transition(const TerrainTransitionTicket&,const TerrainTransitionKey&,const Snapshot& expected,
+                                const TerrainTransitionCurrent&,TerrainTransitionTicket&,Snapshot& observed,std::string& error);
+bool normalize_saved_terrain(const TerrainTransitionTicket&,const TerrainTransitionReceipt&,const Snapshot& expected,
+                             Snapshot& saved,const TerrainTransitionCurrent&,std::string& error);
+bool resume_terrain_transition(const TerrainTransitionTicket&,const TerrainTransitionReceipt&,const Snapshot& expected,
+                               const TerrainTransitionCurrent&,std::string& error,Snapshot* observed=nullptr);
+bool restore_terrain_transition(const TerrainTransitionTicket&,const TerrainTransitionReceipt&,const Snapshot& expected,
+                                const TerrainTransitionCurrent&,TerrainTransitionTicket& prepared,std::string& error);
 // Reject unsupported authored changes after private normalization of known poses.
 bool supported_changes(const Gesture&, std::string& error);
 // Bound synchronous validation work. Any retained projection proof owns only

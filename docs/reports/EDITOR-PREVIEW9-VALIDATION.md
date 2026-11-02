@@ -1072,3 +1072,57 @@ while the canonical author-owned Redo path is verified. Receipts are
 toolbar refresh uses the first layout lookup, which warrants a scoped owned
 layout audit; a cached duplicate is not yet established from these diagnostics
 alone. No global UI sweep or relaxation of history ownership is justified.
+
+## Exact before-history pose proof and owned toolbar refresh
+
+Candidate 15's measured serialization cost motivated a narrower supported-change
+proof for existing-placement movement. During the synchronous native gesture
+callback, the drain already owns an independent before-history resource whose
+serialization produced the exact before image. The new optional proof borrows
+that owner only within this callback, changes the checked pose and seven known
+companions, and requires one native Write to reproduce the actual after bytes
+exactly. It neither constructs another native copy nor trusts NativeRead to
+preserve unknown authored bytes. A scope guard restores every changed primitive,
+the legacy relative scale and exact flag bits before the callback returns,
+including after exceptions, nested validation, context replacement or shutdown.
+There are no retained native pointers or cross-frame owner lifetimes.
+
+Fresh resolver, Captain, metadata, roster, binding, source, scene-owner,
+generation and shared-context checks remain required. Missing evidence or any
+non-pose difference uses the existing full comparison; an expired identity
+cannot fall back against a replacement scene. The generic prepare path and
+durable-before-confirmation behavior are unchanged. As with the existing native
+capture path, this relies on NativeWrite's synchronous snapshot contract;
+arbitrary opaque mutation after its stream emission is not a newly established
+guarantee.
+
+The actual adapter fixtures cover unknown marker-act changes, both directions
+of NativeRead normalization, all seven companions, sparse bindings, camera-only
+fallback, resolver/context expiry, nested generic validation, allocation denial,
+Write failure/exception and shutdown during Write. Every temporary pose branch
+checks the original private resource's exact bytes afterward. The focused
+success case requires precisely one Write and no native Copy or allocation.
+
+The toolbar audit verified offline that `810650` searches the current
+`display+24` UILayout's owning object list through `8102A0`, returning the first
+matching window. `GetContainerWindow` instead returns a shared parent layer.
+The refresh now collects all Undo/Redo matches only from that exact owned list
+and its checked child links, with de-duplication, cycle detection and bounded
+work. It samples the two history-availability values once and rechecks the
+active session, generation, source, scope, mode, data, display and layout before
+writing. It stops after any expiry. An unrelated same-ID window is untouched.
+The passive `history_ui_*` status fields report completion and collection counts.
+This is a controlled fix for the reported lookup weakness; the actual toolbar
+path still requires a fresh native check.
+
+The final strict actual-i686 build passed 248 toolbar checks, 2,720 focused pose
+checks, 14,466 terrain materialization checks and 30,839 complete adapter checks.
+All 51 compile inputs were unchanged across the build and runs. The executable
+hash, inputs and logs are recorded in `out/preview9-phase2-toolbar-receipt.json`.
+The prior pre-toolbar checkpoint is retained in `out/preview9-phase2-receipt.json`.
+The tests also corrected a fixture-only failure-exit teardown problem: a failing
+CHECK now flushes its assertion and exits the isolated process without running
+unrelated static double registries. The retained ASan diagnostic is
+`out/editor-preview9-phase2-asan.log`; it does not establish a production heap
+fault. No measured candidate 16 timing result is claimed. Candidate 15's failed
+frame and guest-confirmation budgets remain release gates.

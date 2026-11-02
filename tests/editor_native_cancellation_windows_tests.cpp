@@ -5,7 +5,10 @@
 #include <cstdio>
 
 static unsigned checks;
-#define CHECK(x) do {++checks;if(!(x)){std::printf("FAIL %d: %s\n",__LINE__,#x);std::exit(1);}} while(0)
+// A failed check may leave scoped native doubles alive. Do not run unrelated
+// static destructors (whose double registry can already be destroyed) on that
+// failure path; flush the assertion and let the OS retire this isolated process.
+#define CHECK(x) do {++checks;if(!(x)){std::printf("FAIL %d: %s\n",__LINE__,#x);std::fflush(stdout);std::_Exit(1);}} while(0)
 namespace {
 using namespace editor_native;
 std::array<uint8_t,0xE0> t_mode;
@@ -997,12 +1000,13 @@ void test_async_captain_asset_keeps_value_and_rechecks_identity(){
 }
 }
 namespace game { uint32_t mode_id(){return t_game_mode_id;} void destroy_creature(void* actor){CHECK(actor==t_ghost_actor.data()||actor==t_ghost_exit.data());++t_ghosts_destroyed;skg::field<bool>(actor,0x20)=true;t_release(actor);} }
+#include "editor_native_history_toolbar_fixture.h"
 namespace sui {
 Win find(Win root,uint32_t){return root==t_flora_root?t_flora_found:nullptr;}
-void set_enabled(Win,bool){CHECK(false);} void release(Win){CHECK(false);} void add_ref(Win){CHECK(false);}
-uint32_t control_id(Win w){if(w==&t_flora_slider)return 0x072BFDFD;CHECK(w==&t_card_id||w==&t_text);return w==&t_text?t_text_id:t_card_id;} uint32_t flags(Win){CHECK(false);return 0;}
-std::vector<Win> children(Win){CHECK(false);return {};}
-Win parent(Win){CHECK(false);return nullptr;}bool visible(Win){CHECK(false);return false;}
+void set_enabled(Win w,bool value){if(history_ui_fixture::active){history_ui_fixture::enabled(w,value);return;}CHECK(false);} void release(Win){CHECK(false);} void add_ref(Win){CHECK(false);}
+uint32_t control_id(Win w){if(history_ui_fixture::active)return history_ui_fixture::id(w);if(w==&t_flora_slider)return 0x072BFDFD;CHECK(w==&t_card_id||w==&t_text);return w==&t_text?t_text_id:t_card_id;} uint32_t flags(Win w){if(history_ui_fixture::active)return history_ui_fixture::flags(w);CHECK(false);return 0;}
+std::vector<Win> children(Win w){if(history_ui_fixture::active)return history_ui_fixture::children(w);CHECK(false);return {};}
+Win parent(Win w){if(history_ui_fixture::active)return history_ui_fixture::parent(w);CHECK(false);return nullptr;}bool visible(Win w){if(history_ui_fixture::active)return history_ui_fixture::visible(w);CHECK(false);return false;}
 }
 namespace {
 std::array<uint8_t,0x318> v_camera,v_replacement;
@@ -1498,6 +1502,9 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
 #include "editor_native_pose_capture_fixture.h"
 #include "editor_native_terrain_materialization_fixture.h"
 int main(int argc,char** argv){
+    if(argc==2&&std::string(argv[1])=="--history-toolbar-only"){
+        test_history_toolbar_current_layout();std::printf("native history toolbar: %u checks passed\n",checks);return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--pose-capture-only"){
         test_pose_capture_proofs();std::printf("native pose capture proofs: %u checks passed\n",checks);return 0;
     }
@@ -1507,6 +1514,7 @@ int main(int argc,char** argv){
     if(argc==2&&std::string(argv[1])=="--recent-only"){
         test_recent_native_proofs();std::printf("native recent proofs: %u checks passed\n",checks);return 0;
     }
+    test_history_toolbar_current_layout();
     test_recent_native_proofs();
     test_pose_capture_proofs();
     test_terrain_materialization_hooks();
