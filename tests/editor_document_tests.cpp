@@ -1,5 +1,6 @@
 // Portable transaction tests. No game, renderer, profile or network required.
 #include "net/editor_document.h"
+#include "net/editor_terrain.h"
 
 #include <cmath>
 #include <cstdio>
@@ -519,6 +520,71 @@ static void test_class_settings(){
 }
 
 
+static void test_absent_terrain_history_ownership()
+{
+    Fixture f;
+    Mutation append;append.kind=MutationKind::AppendTerrain;append.terrain=TerrainRecord{};
+    auto& payload=append.terrain->payload;payload.format=kTerrainRecordFormat;
+    payload.bytes.resize(kTerrainEffectBytes);payload.bytes[0]=1;
+    payload.bytes[30]=0x80;payload.bytes[31]=0x3f; // Native transform scale1.
+    const auto added=f.forward(0,{append});CHECK(added.accepted() && added.change);
+    if(!added.change)return;
+    const auto id=added.change->allocated.front();
+    const auto original=f.doc().terrain.at(id);
+    const Scope scope{ScopeKind::Terrain,id,{}};
+    const auto old=f.grant(0,{scope});
+    auto undo=f.request(0,Intent::Undo);undo.leases=old;
+    CHECK(f.core.submit(undo,f.now).accepted());
+    CHECK(!f.doc().terrain.contains(id));
+    CHECK(f.core.leases().empty()); // Deletion retires even the author's token.
+
+    auto reject=[&](Request request,Code code){
+        const auto document=f.doc();const auto history=f.core.state().history;
+        CHECK(f.core.submit(request,f.now).code==code);
+        CHECK(f.doc()==document && f.core.state().history==history);
+    };
+    reject(f.request(0,Intent::Redo),Code::LeaseRequired);
+    auto stale=f.request(0,Intent::Redo);stale.leases=old;
+    reject(stale,Code::LeaseExpired);
+
+    // An absent historical row is leaseable only by its retained full identity.
+    for(const Scope invalid:{Scope{ScopeKind::Terrain,{id.id,id.generation+1},{}},
+                             Scope{ScopeKind::Terrain,{id.id+100,1},{}},
+                             Scope{ScopeKind::Terrain,id,{Field::Property,100}},
+                             Scope{ScopeKind::Placement,id,{}}}){
+        const auto leases=f.core.leases();
+        CHECK(f.core.acquire(f.peers[0],{invalid},f.now,1000).code==Code::Invalid);
+        CHECK(f.core.leases()==leases);
+        auto forged=f.request(0,Intent::Redo);forged.leases={{invalid,old.front().token}};
+        reject(forged,Code::Invalid);
+    }
+    auto wrong=f.request(0,Intent::Redo);wrong.project[0]^=1;reject(wrong,Code::StaleProject);
+    wrong=f.request(0,Intent::Redo);++wrong.epoch;++wrong.operation.epoch;reject(wrong,Code::StaleEpoch);
+    wrong=f.request(0,Intent::Redo);++wrong.operation.author.generation;reject(wrong,Code::StalePeer);
+
+    const auto foreign=f.grant(1,{scope});
+    CHECK(f.core.acquire(f.peers[0],{scope},f.now,1000).code==Code::Conflict);
+    auto borrowed=f.request(0,Intent::Redo);borrowed.leases=foreign;
+    reject(borrowed,Code::LeaseExpired);f.release_all(1);
+    CHECK(f.forward(1,{f.set(b,pos,Vec3{90,80,70})}).accepted());
+    const auto foreign_placement=f.doc().placements.at(b);
+
+    const auto fresh=f.grant(0,{scope});CHECK(fresh.front().token!=old.front().token);
+    // The retained lease cannot turn an arbitrary forward Set into restoration.
+    Mutation set;set.kind=MutationKind::SetTerrain;set.target=id;
+    set.expected=original.revision;set.terrain=original;
+    auto forward=f.request(0);forward.leases=fresh;forward.mutations={set};
+    reject(forward,Code::MissingObject);
+    auto redo=f.request(0,Intent::Redo);redo.leases=fresh;
+    CHECK(f.core.submit(redo,f.now).accepted());
+    const auto& restored=f.doc().terrain.at(id);
+    CHECK(restored.object==original.object && restored.order==original.order &&
+          restored.kind==original.kind && restored.payload==original.payload);
+    CHECK(restored.revision==f.doc().revision && restored.revision>original.revision);
+    CHECK(f.doc().placements.at(b)==foreign_placement);
+    std::string error;CHECK(valid(f.core.state(),{},error));
+}
+
 static void test_const_state_validation()
 {
     Fixture f;
@@ -608,7 +674,7 @@ int main()
         auto invalid=blank.document;invalid.placements.emplace(a,seed().document.placements.at(a));
         CHECK(!valid(invalid,{},error));invalid=blank.document;invalid.acts.clear();CHECK(!valid(invalid,{},error));
     }
-    test_const_state_validation(); test_validation(); test_create_clone_delete(); test_clone_final_pose(); test_concurrent_fields_and_batches(); test_reference_integrity(); test_leases();
+    test_absent_terrain_history_ownership(); test_const_state_validation(); test_validation(); test_create_clone_delete(); test_clone_final_pose(); test_concurrent_fields_and_batches(); test_reference_integrity(); test_leases();
     test_undo_chronology_and_conflict(); test_own_multistep_and_structural_history(); test_redo_and_author_isolation(); test_dedup_retention_and_epoch(); test_hooks_and_atomicity(); test_four_author_adversity(); test_replica_and_nonce_recovery();
     test_class_settings();
     std::printf("editor_document: %d checks, %d failures\n", checks, failures);
