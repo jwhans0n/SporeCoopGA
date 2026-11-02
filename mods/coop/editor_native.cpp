@@ -1375,6 +1375,7 @@ void SK_CDECL behavior_apply(){
 void SK_THISCALL commit(void* self) {
     bool observe = !applying && active() && self == data(mode()) &&
         !*reinterpret_cast<uint8_t*>(a_history + 0x20);
+    if(observe && C.gesture_released)C.gesture_released();
     void* entry = observe ? *reinterpret_cast<void**>(a_history + 0x24) : nullptr;
     addref(entry);
     if(entry){
@@ -2375,6 +2376,195 @@ bool rebaseline(std::string& error){
 
 bool apply(const editor::Document& document, std::string& error) {
     return apply(document,editor::Change{},nullptr,error);
+}
+
+bool prepare(const Snapshot& base,const editor::Document& document,const editor::Change& change,
+             const Snapshot* artifact,Snapshot& out,std::string& error){
+    if(!supported || document.placements.size()>kPlacementLimit || document.acts.empty()){
+        error="The detached native editor resource is unavailable or exceeds its limits";return false;
+    }
+    bool tracked=false;if(!relative_scale_mode(document,tracked,error))return false;
+    // No capture/state/restore calls belong here: the host may currently own a
+    // creature/building editor and have no Adventure Editor scene at all.
+    if(!validate(base,base.document,error))return false;
+    Owned merged(parse(base.bytes,error)),source(artifact?parse(artifact->bytes,error):nullptr),retained(construct());
+    if(!merged.p || !retained.p || (artifact && !source.p))return false;
+    const bool roster=base.document.act_order!=document.act_order;
+    if(roster){
+        if(!source.p || !artifact || artifact->document.act_order!=document.act_order){
+            error="Changing the detached act roster requires its matching owned artifact";return false;
+        }
+        Rows acts;if(!rows(source.p,0x23C,0x534,8,acts) || size_t((acts.end-acts.begin)/0x534)!=document.act_order.size()){
+            error="The detached act artifact has a different native roster";return false;
+        }
+        skg::thiscall<void*>(a_copy_acts,skg::ptr_add<void>(merged.p,0x23C),skg::ptr_add<void>(source.p,0x23C));
+    }else if(base.document.acts!=document.acts){error="An act changed without an ordered roster transaction";return false;}
+    Rows acts;if(!rows(merged.p,0x23C,0x534,8,acts)){error="The detached native acts are invalid";return false;}
+    if(document.settings_schema!=base.document.settings_schema){error="The detached authoring schema changed";return false;}
+    for(const auto& [id,settings]:document.settings){
+        if(settings.kind==editor::SettingsKind::Act){
+            auto i=std::find(document.act_order.begin(),document.act_order.end(),settings.act_id);
+            if(i==document.act_order.end()){error="A detached act settings owner is missing";return false;}
+            const auto field=settings.properties.find(kActBlockProperty);
+            const auto* block=field==settings.properties.end()?nullptr:std::get_if<editor::StructuredValue>(&field->second);
+            if(!block || settings.properties.size()!=1 || block->format!=kActBlockFormat || block->bytes.size()>editor::Limits{}.structured_bytes){
+                error="The detached act subtree is invalid";return false;
+            }
+            Owned fragment(parse(block->bytes,error));Rows one;
+            if(!fragment.p || !rows(fragment.p,0x23C,0x534,1,one) || one.end-one.begin!=0x534)return false;
+            editor::StructuredValue checked;if(!act_block(one.begin,checked,error) || checked!=*block){error="The detached act subtree is not canonical";return false;}
+            skg::thiscall<void*>(a_copy_act,acts.begin+(i-document.act_order.begin())*0x534,one.begin);
+        }else if(settings.kind==editor::SettingsKind::Captain){
+            if(id!=kCaptainObject || settings.properties.size()!=7){error="The detached captain settings are invalid";return false;}
+            const auto& p=settings.properties;
+            auto field=p.find(kCaptainAssetProperty);
+            const auto* key=field==p.end()?nullptr:std::get_if<editor::ResourceKey>(&field->second);
+            if(!key){error="The detached captain asset is missing";return false;}
+            skg::field<editor::ResourceKey>(merged.p,0x130)=*key;
+            skg::field<uint32_t>(merged.p,0x13C)=0;skg::field<uint64_t>(merged.p,0x140)=UINT64_MAX;
+            auto assign=[&]<class T>(uint32_t property,uint32_t offset){
+                auto i=p.find(property);const auto* value=i==p.end()?nullptr:std::get_if<T>(&i->second);
+                if(!value)return false;skg::field<T>(merged.p,offset)=*value;return true;
+            };
+            if(!assign.template operator()<editor::Vec3>(kCaptainPositionProperty,0x150) ||
+               !assign.template operator()<editor::Rotation>(kCaptainRotationProperty,0x15C) ||
+               !assign.template operator()<float>(kCaptainScaleProperty,0x16C) ||
+               !assign.template operator()<float>(kCaptainHealthProperty,0x170) ||
+               !assign.template operator()<bool>(kCaptainInvulnerableProperty,0x174) ||
+               !assign.template operator()<bool>(kCaptainLockedProperty,0x175)){
+                error="A detached captain field is missing or has the wrong type";return false;
+            }
+        }
+    }
+    if(!document.class_schema.empty()){
+        if(!cast_schema(document,error))return false;
+        Owned empty(construct());if(!empty.p){error="Cannot allocate detached cast storage";return false;}
+        skg::thiscall<void*>(a_copy_class_rows,skg::ptr_add<void>(merged.p,0x2BF4),skg::ptr_add<void>(empty.p,0x2BF4));
+        for(const auto& [id,settings]:document.class_settings){
+            (void)id;auto field=settings.properties.find(kCastBlockProperty);
+            const auto* block=field==settings.properties.end()?nullptr:std::get_if<editor::StructuredValue>(&field->second);
+            if(!block || block->format!=kCastBlockFormat || block->bytes.size()>editor::Limits{}.structured_bytes){error="Invalid detached cast subtree";return false;}
+            Owned fragment(parse(block->bytes,error));Rows one;
+            if(!fragment.p || !rows(fragment.p,0x2BF4,0x27E8,1,one) || one.end-one.begin!=0x27E8 ||
+               settings.class_id!=editor::ObjectId{(2ull<<32)|skg::field<uint32_t>(one.begin,0),1}){
+                error="The detached cast subtree changed its identity";return false;
+            }
+            editor::StructuredValue checked;if(!class_block(one.begin,checked,error) || checked!=*block){error="The detached cast subtree is not canonical";return false;}
+            auto index=uint32_t(settings.class_id.id);
+            void* target=skg::thiscall<void*>(a_insert_class,skg::ptr_add<void>(merged.p,0x2BF4),&index);
+            if(!target){error="Cannot allocate the detached cast class";return false;}
+            skg::thiscall<void*>(a_copy_class,target,one.begin+8);
+        }
+        skg::field<uint32_t>(merged.p,0x2C0C)=document.next_class;
+    }else if(base.document.classes!=document.classes){error="The detached cast roster requires typed settings";return false;}
+    auto lookup=[&](void* resource,const Snapshot& snapshot,editor::ObjectId id)->void*{
+        for(const auto& binding:snapshot.bindings)if(binding.object==id)return marker_for_key(resource,binding.marker);
+        return nullptr;
+    };
+    std::vector<Binding> next;
+    for(const auto& [id,to]:document.placements){
+        const auto prior=base.document.placements.find(id);
+        if(prior!=base.document.placements.end() && prior->second.class_id!=to.class_id){error="A detached placement changed its class";return false;}
+        void* original=prior==base.document.placements.end()?nullptr:lookup(merged.p,base,id);
+        if(!original && artifact)original=lookup(source.p,*artifact,id);
+        if(!original){
+            auto clone=change.clone_sources.find(id);
+            if(clone!=change.clone_sources.end())original=lookup(merged.p,base,clone->second);
+        }
+        if(!original || skg::field<uint32_t>(original,0)!=uint32_t(to.class_id.id)){
+            error="The detached placement has no matching owned native marker artifact";return false;
+        }
+        const auto index=skg::thiscall<uint32_t>(a_insert_marker,skg::ptr_add<void>(retained.p,0x2C10),original);
+        void* marker=marker_for_key(retained.p,index);
+        if(!marker){error="Cannot allocate the detached native placement";return false;}
+        if(roster){
+            void* companion=artifact?lookup(source.p,*artifact,id):nullptr;
+            if(!companion){error="The detached act transaction lost a placement companion";return false;}
+            skg::thiscall<void*>(a_copy_marker_acts,skg::ptr_add<void>(marker,0x28),skg::ptr_add<void>(companion,0x28));
+        }else if(artifact && prior==base.document.placements.end() && artifact->document.act_order!=document.act_order){
+            error="The restored placement has a stale act roster";return false;
+        }
+        float relative=0;if(!relative_scale_value(to,tracked,relative,error))return false;
+        skg::field<editor::Vec3>(marker,4)=to.position;skg::field<editor::Rotation>(marker,0x10)=to.rotation;
+        const auto old_scale=skg::field<float>(marker,0x20);
+        if(tracked)skg::field<float>(marker,0x24)=relative;
+        else if(old_scale>0)skg::field<float>(marker,0x24)*=to.scale/old_scale;
+        skg::field<float>(marker,0x20)=to.scale;
+        auto assign=[&]<class T>(uint32_t property,uint32_t offset){
+            auto i=to.properties.find(property);if(i==to.properties.end())return true;
+            const auto* value=std::get_if<T>(&i->second);if(!value)return false;
+            skg::field<T>(marker,offset)=*value;return true;
+        };
+        if(!assign.template operator()<float>(kElevationProperty,0x220) ||
+           !assign.template operator()<float>(kSoundPitchProperty,0x1E0) ||
+           !assign.template operator()<float>(kSoundGainProperty,0x1E4) ||
+           !assign.template operator()<editor::Vec3>(kDestinationPositionProperty,0x1E8) ||
+           !assign.template operator()<editor::Rotation>(kDestinationRotationProperty,0x1F4) ||
+           !assign.template operator()<float>(kDestinationScaleProperty,0x204)){
+            error="A detached placement field has the wrong type";return false;
+        }
+        next.push_back({id,index});
+    }
+    skg::thiscall<void*>(a_copy_marker_rows,skg::ptr_add<void>(merged.p,0x2C10),skg::ptr_add<void>(retained.p,0x2C10));
+    skg::field<uint32_t>(merged.p,0x2C24)=skg::field<uint32_t>(retained.p,0x2C24);
+    skg::field<uint32_t>(merged.p,0x2C28)=skg::field<uint32_t>(retained.p,0x2C28);
+    Snapshot prepared=base;prepared.document=document;prepared.bindings=std::move(next);
+    prepared.act=std::min<uint32_t>(base.act,uint32_t(document.acts.size()-1));
+    prepared.captain=skg::field<editor::ResourceKey>(merged.p,0x130);prepared.captain_locked=skg::field<bool>(merged.p,0x175);
+    if(!serialize(merged.p,prepared.bytes,error) || !validate(prepared,document,error))return false;
+    // A detached transform must pass the same opaque-field guard as an active
+    // native gesture. Revisions and local metadata never authorize extra bytes.
+    Gesture checked;checked.before=base;checked.after=prepared;
+    if(!supported_changes(checked,error))return false;
+    out=std::move(prepared);error.clear();return true;
+}
+
+bool edit_owned_snapshot(const Snapshot& base,const std::function<bool(void*,std::string&)>& edit,
+                         Snapshot& out,std::string& error){
+    if(!supported || !edit || !validate(base,base.document,error))return false;
+    Owned owned(parse(base.bytes,error));if(!owned.p || !edit(owned.p,error))return false;
+    bool relative=false;if(!relative_scale_mode(base.document,relative,error))return false;
+    std::map<uint32_t,editor::ObjectId> supplied;
+    for(const auto& b:base.bindings)if(!supplied.emplace(b.marker,b.object).second){error="The owned snapshot has duplicate marker bindings";return false;}
+    Snapshot result=base;
+    if(!projection(owned.p,result,error,&supplied,relative,base.document.schema.contains(kElevationProperty),
+                   !base.document.class_schema.empty(),!base.document.settings_schema.empty(),&base.document) ||
+       !serialize(owned.p,result.bytes,error))return false;
+    result.source=skg::field<editor::ResourceKey>(owned.p,8);result.captain=skg::field<editor::ResourceKey>(owned.p,0x130);
+    result.captain_locked=skg::field<bool>(owned.p,0x175);
+    std::vector<Binding> compact;if(!serialized_bindings(result.bindings,compact,error))return false;
+    result.bindings=std::move(compact);out=std::move(result);error.clear();return true;
+}
+
+bool apply_prepared(const Snapshot& prepared,const editor::Change& change,std::string& error){
+    const auto current=state();
+    if(!current.ready || current.gesture || applying){error="The native editor is not ready to apply its canonical resource";return false;}
+    const auto& patch=change.patch;
+    const bool poses=!patch.fields.empty() && patch.objects.empty() && patch.classes.empty() && !patch.acts &&
+        patch.terrain.empty() && std::all_of(patch.fields.begin(),patch.fields.end(),[&](const auto& f){return prepared.document.placements.contains(f.object);});
+    if(!poses)return restore(prepared,error);
+    std::set<editor::ObjectId> targets;for(const auto& f:patch.fields)targets.insert(f.object);
+    void* owner=data(mode());
+    // Preflight every stable binding before the first scene write. No native
+    // indices or pointers from prepare's owned clone escape into this path.
+    for(auto id:targets)if(!marker_for_id(resource(owner),id)){error="A canonical pose target is no longer bound";return false;}
+    applying=true;
+    for(auto id:targets){
+        const auto& p=prepared.document.placements.at(id);void* marker=marker_for_id(resource(owner),id);
+        skg::field<editor::Vec3>(marker,4)=p.position;skg::field<editor::Rotation>(marker,0x10)=p.rotation;
+        const auto previous=skg::field<float>(marker,0x20);
+        if(auto f=p.properties.find(kRelativeScaleProperty);f!=p.properties.end())skg::field<float>(marker,0x24)=std::get<float>(f->second);
+        else if(previous>0)skg::field<float>(marker,0x24)*=p.scale/previous;
+        skg::field<float>(marker,0x20)=p.scale;
+        auto assign=[&]<class T>(uint32_t property,uint32_t offset){auto f=p.properties.find(property);if(f!=p.properties.end())skg::field<T>(marker,offset)=std::get<T>(f->second);};
+        assign.template operator()<float>(kElevationProperty,0x220);assign.template operator()<float>(kSoundPitchProperty,0x1E0);
+        assign.template operator()<float>(kSoundGainProperty,0x1E4);assign.template operator()<editor::Vec3>(kDestinationPositionProperty,0x1E8);
+        assign.template operator()<editor::Rotation>(kDestinationRotationProperty,0x1F4);assign.template operator()<float>(kDestinationScaleProperty,0x204);
+        skg::thiscall<void>(a_apply_marker,owner,marker,false);
+        if(p.properties.contains(kDestinationPositionProperty))render_destination(skg::thiscall<void*>(a_object,owner,marker),
+            {std::get<editor::Vec3>(p.properties.at(kDestinationPositionProperty)),std::get<editor::Rotation>(p.properties.at(kDestinationRotationProperty)),std::get<float>(p.properties.at(kDestinationScaleProperty))});
+    }
+    skg::field<bool>(owner,0x84)=true;applying=false;refresh_selection();++restores;error.clear();return true;
 }
 
 bool apply(const editor::Document& document,const editor::Change& change,const Snapshot* artifact,std::string& error) {

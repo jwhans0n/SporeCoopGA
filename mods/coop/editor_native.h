@@ -95,6 +95,9 @@ struct Ctx {
     // Called outside Present after the finalizer and actual frame advance.
     std::function<bool(const CancellationTicket&, std::string&)> cancelled;
     std::function<void(Gesture)> gesture;
+    // Native release boundary before its after-snapshot serialization. The
+    // runtime stamps this immediately so expensive native Commit work is timed.
+    std::function<void()> gesture_released;
     std::function<void(bool)> history; // false Undo, true Redo.
     // Cached chronological availability; native toolbar queries perform no work.
     std::function<bool(bool)> history_available;
@@ -156,6 +159,20 @@ bool restore_view(const LocalView&, uint64_t expected_generation, std::string& e
 bool supported_changes(const Gesture&, std::string& error);
 bool validate(const Snapshot&, const editor::Document&, std::string& error);
 bool restore(const Snapshot&, std::string& error);
+// Resource-only canonical merge. Does not inspect or mutate the active scene,
+// selection, native history, camera, or current native placement mappings.
+// Structural additions require their owned native artifact; all retained fields
+// are merged into base so unrelated accepted changes cannot be overwritten.
+bool prepare(const Snapshot& base, const editor::Document&, const editor::Change&,
+             const Snapshot* artifact, Snapshot& out, std::string& error);
+// Reviewed native authoring helpers may mutate this independently owned
+// ScenarioResource synchronously. Never retain the pointer or call scene APIs.
+// The result is reprojected with base's explicit schemas and stable bindings.
+bool edit_owned_snapshot(const Snapshot&, const std::function<bool(void*,std::string&)>&,
+                         Snapshot& out, std::string& error);
+// Materialize precisely the already validated canonical bytes. A pose-only
+// patch updates existing actors without serializing the whole adventure again.
+bool apply_prepared(const Snapshot&, const editor::Change&, std::string& error);
 // Retire native-only history after the canonical draft has settled/restored.
 bool rebaseline(std::string& error);
 // Preserves opaque fields and the local camera. Unsupported structural changes
