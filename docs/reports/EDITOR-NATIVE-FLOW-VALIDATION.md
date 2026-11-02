@@ -1,9 +1,10 @@
 # Automatic editor sharing and native controls
 
-The preview 3, 4 and 5 evidence is retained below. Preview 6 implementation and
-current native validation appear at the end of this report.
+The preview 3 through 8 evidence is retained below. Current preview 9 checks and
+remaining native acceptance appear in the
+[separate report](EDITOR-PREVIEW9-VALIDATION.md).
 
-Current development candidate: preview **6**, protocol **21**, branch
+Current development candidate: preview **9**, protocol **23**, branch
 `feat/ga-editor-multi-act`. See the appended native matrix for the exact candidate
 hashes and test limitations. Earlier installation statements describe their
 individual validation runs.

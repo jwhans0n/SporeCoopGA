@@ -7,9 +7,12 @@ implemented against the stages below. See the
 remaining acceptance gates. This plan follows the published
 [v0.7.4.0 release](https://github.com/jwhans0n/SporeCoopGA/releases/tag/v0.7.4.0).
 That release supports co-op adventure play, not shared adventure editing. This
-release remains unchanged. The placement preview uses protocol 16. Further
-class-property development uses protocol 17; the installed placement preview and
-the published protocol 15 release are separate from that development branch.
+release remains unchanged. The current development candidate is editor preview 9,
+protocol 23. It extends the original placement plan with crew editing, ordered
+terraforming, independent asset editors and optional extended complexity.
+See the [current validation report](reports/EDITOR-PREVIEW9-VALIDATION.md) for
+the completed checks and pending native acceptance. Earlier protocol 16/17
+milestones and the published protocol 15 gameplay release retain their history.
 
 The goal is for a party to create and edit one adventure together in native Spore
 editor windows, playtest a committed draft together, and return to that draft.
@@ -30,7 +33,7 @@ their own verification and runtime acceptance.
 | History | Automatic gesture transactions and ordinary own-action Undo/Redo in v1; shared activity/history UI and selective operations are later work. No manual commits required. |
 | Saving | Host creates a new native local draft with Save As. Original adventure remains intact. Guests persist verified recovery checkpoints/journals and report their durable revision. |
 | Playtest | Party confirms an immutable committed snapshot; editing stops until everyone returns. |
-| Initial exclusions | Terrain sculpting, nested creation editors, automatic EA publication, mixed builds, and editing while others playtest. |
+| Original v1 exclusions | Terrain sculpting and nested creation editors were deferred from the placement milestone. Preview 9 investigates both; automatic EA publication, mixed builds and editing while others playtest remain excluded. |
 | Later editors | Reuse the collaboration core through separate verified native editor adapters. |
 
 The first usable placement preview completes stages 0-4, including four-player
@@ -38,7 +41,7 @@ hardening for every advertised feature. It covers opening/joining a project, pre
 creation/duplication/deletion and transforms, supported property editing, checked
 Undo, saving, recovery, and party playtest. Stage 5 adds acts, objectives,
 conversations, and global settings as their native transactions become verified.
-Terrain remains a separate expansion. A restricted placement preview must say
+Terrain is a separate preview 9 expansion with its own acceptance gates. A restricted placement preview must say
 which authoring controls remain unavailable; it must not be presented as complete
 Adventure Editor support.
 The host enters through normal native creation/opening UI, starts a new adventure

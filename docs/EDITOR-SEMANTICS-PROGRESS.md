@@ -5,7 +5,28 @@ The automatic native-flow preview is described in the
 [validation report](reports/EDITOR-NATIVE-FLOW-VALIDATION.md). It extends the
 placement preview with native cast properties and separate solo/group testing.
 
-## Current preview 6 checkpoint
+## Current preview 9 candidate
+
+Preview 9 / protocol 23 on `feat/ga-editor-multi-act` adds separate Crew and
+project settings, an ordered terraform recipe with checked per-record history,
+independent native asset-editor sessions, and immutable class-content replacement
+under a Content lease. Extended complexity is optional, with a candidate
+4,096-placement bound and the existing 1,024-class limit. Publication compatibility
+has not been established.
+
+Canonical, durable and rendered revisions are tracked separately. Staged
+transactions keep acceptance behind owned asynchronous persistence; sparse native
+journals and exact operation-scoped validation reuse reduce repeated work without
+removing opaque-change checks. The actual release-stall performance budget has
+not yet been measured on this candidate.
+
+The full portable repository suite passes. Controlled fixtures and native entry
+recipes have narrower evidence than actual two/four-player acceptance. See the
+[preview 9 validation report](reports/EDITOR-PREVIEW9-VALIDATION.md) for completed
+checks, failed attempts and pending native/lab gates. No main merge,
+personal-installation update or publication is implied by these checks.
+
+## Historical preview 6 checkpoint
 
 Preview 6 / protocol 21 on `feat/ga-editor-multi-act` adds independent act browsing,
 per-act names/descriptions/timers/goals, captain ownership and replacement, stable
@@ -89,7 +110,7 @@ checkpoint no longer requires an immediate native Save As.
 The native-flow report records focused test evidence and remaining limits.
 Sustained stress, FPS and memory gates remain in the overnight playbook.
 
-## Active scope
+## Earlier expansion checklist
 
 Continue Stage 5 in small native-verified slices:
 
@@ -106,12 +127,13 @@ implemented. Initial work extends the collaboration model beyond placement-only
 fields; class/act settings must not be falsely represented as independent copies
 of placement properties.
 
-## Explicitly later
+## Remaining exclusions
 
-Terrain, nested creation editors, independent act editing, shared history browsing
-and selective Undo, and playtesting while other participants keep editing remain
-separate later goals. Shared-act coordination is in scope; independent acts are
-not. Preserve these exclusions while enabling each additional supported control.
+Shared history browsing, selective Undo, automatic publication and playtesting
+while other participants keep editing remain separate goals. Independent acts
+are implemented in the earlier preview; terrain and independent asset editors
+are preview 9 candidate capabilities awaiting native acceptance. This does not
+provide simultaneous coauthoring inside a Creature, Building or other asset editor.
 
 ## Development cadence
 

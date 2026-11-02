@@ -1,8 +1,9 @@
 # SporeCoopGA Documentation
 
 SporeCoopGA focuses on playing Galactic Adventures together. Shared Adventure
-Editor placement support is under validation. Broader adventure semantics and
-other Spore editors follow in the [roadmap](../README.md#roadmap).
+Editor authoring support is under validation. Preview 9's crew, terrain and
+independent asset-editor additions have pending native acceptance; other
+milestones follow in the [roadmap](../README.md#roadmap).
 
 ## Galactic Adventures
 
@@ -18,10 +19,11 @@ other Spore editors follow in the [roadmap](../README.md#roadmap).
 - [Known issues](known-issues.md): recorded limitations and open problems.
 - [Shared Adventure Editor development guide](MULTIPLAYER-ADVENTURE-EDITOR.md): placement collaboration under validation, native controls, saving and recovery. Separate from the published gameplay release.
 - [Shared editor validation report](reports/EDITOR-IMPLEMENTATION-VALIDATION.md): automated evidence, isolated native runs and outstanding acceptance gates.
+- [Editor preview 9 validation](reports/EDITOR-PREVIEW9-VALIDATION.md): protocol 23 authoring additions, completed portable checks and pending native/lab acceptance.
 - [Shared editor testing playbook](EDITOR-TESTING-PLAYBOOK.md): focused development checks, integration checkpoints and opt-in overnight release acceptance.
 - [Automatic editor sharing validation](reports/EDITOR-NATIVE-FLOW-VALIDATION.md): native editing, cast settings/imports, solo and group testing, with preview 3 evidence retained alongside preview 4 results.
 - [Shared authoring progress](EDITOR-SEMANTICS-PROGRESS.md): class properties, templates, shared acts, objectives and conversations; [first development checkpoint](reports/EDITOR-SEMANTICS-VALIDATION.md).
-- [Multiplayer Adventure Editor implementation plan](MULTIPLAYER-ADVENTURE-EDITOR-PLAN.md): acceptance stages and Undo rules; later shared history, independent acts and playtesting while editing.
+- [Multiplayer Adventure Editor implementation plan](MULTIPLAYER-ADVENTURE-EDITOR-PLAN.md): acceptance stages and Undo rules; later shared history and playtesting while editing.
 
 The first published GA release **[`0.7.4.0`](https://github.com/jwhans0n/SporeCoopGA/releases/tag/v0.7.4.0)**
 uses protocol 15 and remains experimental. It retains preview 12 gameplay,

@@ -12,12 +12,12 @@ playing while others continue editing remain later milestones in the
 
 ## Compatibility and scope
 
-Every participant needs `0.7.5.0-ga-editor-preview.8`, protocol 22, Galactic Adventures
+Every participant needs `0.7.5.0-ga-editor-preview.9`, protocol 23, Galactic Adventures
 and the exact GOG executable with SHA-256
 `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
 Older gameplay and editor previews receive an explicit version mismatch.
 
-The local 4 GB update also accepts the exact Large Address Aware variant,
+The preview also accepts the exact Large Address Aware variant,
 SHA-256 `47f60c4db38fda1f15c5a3525617e171b0a98d728d99d645b035aa794a9199ab`.
 This changes one PE header bit, with no game code, data, wire or save changes.
 It permits up to 4 GB of address space per instance on 64-bit Windows. The
@@ -28,10 +28,14 @@ all game sessions first. Unknown executable images and conflicting backups are
 refused. This raises the address-space ceiling, without guaranteeing every
 large adventure or native allocation will fit.
 
-This preview adds retained first-press dragging, sound pose companions,
+This preview retains first-press dragging, sound pose companions,
 independent teleporter endpoints, the native multi-axis ball, cast properties
 and cast imports. See the [authoring progress](EDITOR-SEMANTICS-PROGRESS.md)
 and the [native-flow validation report](reports/EDITOR-NATIVE-FLOW-VALIDATION.md).
+Preview 9 adds crew transactions, ordered terrain changes, optional extended
+complexity and independent native asset-editor sessions. These additions are
+development capabilities: their two/four-player native acceptance is pending in
+the [preview 9 report](reports/EDITOR-PREVIEW9-VALIDATION.md).
 
 Cast/placement allocation is separate from individual asset ownership.
 Property changes hold their asset, while other players can edit,
@@ -83,10 +87,51 @@ Co-op lobby also has **Move act left / Move act right** for the current act.
 Roster changes briefly require the shared authoring hold and preserve stable act
 identities, behavior columns and patrol paths. Other players keep viewing their
 current act; deleting that act selects a surviving neighbor. Spore supports one
-to eight acts. Adventure-wide settings, terrain authoring and nested creation
-editors remain held. Unsupported auxiliary manipulators remain blocked.
+to eight acts. Unimplemented adventure-wide settings and auxiliary manipulators
+remain blocked.
 Existing checkpoints are upgraded from verified owned native snapshots without
 replacing the prior durable checkpoint early.
+
+## Crew, terrain and asset creation
+
+Crew controls use a separate adventure-wide ownership scope. Either role can
+change the roster and native capacity without reserving unrelated act or cast
+properties. Crew, captain and act settings retain their distinct native meanings.
+
+Terraforming is represented by an ordered recipe with stable record identities.
+The host orders concurrent new strokes; appending a stroke does not take a
+planet-wide lock. Changing an existing stamp checks its ownership and revision.
+Each completed stroke has one transaction and one checked Undo item. Planet
+controls use their affected field scopes. Native terrain rebuilds must settle
+before a participant reports its visible scene ready; placement grounding is
+preserved as part of that application. Native coverage of every terraform tool,
+cross-act editing and Save/reopen is still pending.
+A quick planet/flora value change completed before ownership arrives may require
+a retry; retained replay of every such control is not implemented yet.
+
+The shared editor's **New asset** menu offers Creature, Building, Vehicle,
+Spaceship, Plant and Cell routes. **Edit asset** targets the displayed cast class
+or selected placement. A participant can enter its native asset editor while
+others remain in the adventure or enter their own editors. Local Done/Cancel
+returns that participant independently, including while the host is away.
+This is the candidate lifecycle; actual entry, save/bake and independent return
+need the native checks listed in the preview 9 report.
+
+Saving an asset produces immutable content for validation and transfer. Replacing
+a class's source asset uses its own Content lease and preserves current cast
+properties, behaviors and acts. Failed distribution leaves the committed class
+intact and retains the local saved creation for retry. Once replacement commits,
+another player can acquire that class's Content lease and edit the asset.
+Creating or editing an asset does not publish it to EA.
+
+The Co-op lobby's **Complexity: Native / Extended** control is a shared project
+option. Extended mode supports the candidate 4,096-placement bound; the native
+1,024-class bound remains. It scales the existing native complexity ratio by
+one quarter, preserving its weights. It changes checked in-process authoring bounds and
+does not patch saved adventures or install a third-party complexity mod.
+Publication eligibility and compatibility with other code patches are not
+established; conflicting native patches are rejected. Extra address space does
+not remove native allocation or performance limits.
 
 ## Start and join
 
@@ -134,6 +179,13 @@ latest still-applied original action. If another edit makes its inverse unsafe,
 Undo changes neither the draft nor the history cursor and explains the conflict.
 It never silently skips to an older action. **Redo** follows the same validation.
 Native history buttons and shortcuts route through this policy.
+
+Canonical acceptance, local durable storage and visible scene readiness are
+tracked separately. Owned serialization and journal writes can run in a worker;
+native editor calls stay outside the render frame. A candidate transaction is
+not accepted until its durability result is known. Creation-editor participants
+can keep a newer durable draft while their adventure scene is detached, then
+materialize it on return. Solo/group testing waits for every required scene.
 
 History is bounded to 128 gestures and 8 MiB of semantic history data. The
 private artifact store has a 384 MiB budget, including retained native before/after
@@ -291,9 +343,18 @@ asset-contention performance, the large-editor FPS gate or sustained memory
 retention. Those remain separate acceptance tests in the
 [validation report](reports/EDITOR-IMPLEMENTATION-VALIDATION.md).
 
+The [commit-performance harness](../tools/tests/coop_editor_commit_performance.py)
+adds release-to-capture, validation, inverse, durability, confirmation and scene
+readiness stages plus frame p95 and maximum values for real native gestures.
+It defaults to 30 gestures per author on two/four-player fixtures. Its self-tests
+pass; no new native latency or frame-budget acceptance is claimed. The shaped
+2 Mbit/s profile alone does not establish concurrent bulk-transfer performance.
+
 ## Validation
 
-The [validation report](reports/EDITOR-IMPLEMENTATION-VALIDATION.md) separates
+The [preview 9 report](reports/EDITOR-PREVIEW9-VALIDATION.md) records current
+checks and pending native/lab gates. The historical
+[validation report](reports/EDITOR-IMPLEMENTATION-VALIDATION.md) separates
 portable and controlled-native fixtures from actual game-process observations.
 
 Portable core, wire, durable-store, project-envelope and controller tests run
