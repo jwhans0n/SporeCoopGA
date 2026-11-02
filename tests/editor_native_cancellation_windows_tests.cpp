@@ -188,7 +188,7 @@ void native_cancel(void* entry=nullptr){
 }
 void begin(){start(t_data.data());CHECK(!t_allocations.empty());CHECK(gesture_serial!=0);}
 void reset(){
-    held_tool.reset();held_import.reset();held_creation.reset();held_class_removal.reset();held_captain_asset.reset();
+    held_tool.reset();held_import.reset();held_creation.reset();held_class_removal.reset();held_captain_asset.reset();held_crew_action.reset();
     for(auto item:pending){release(item.entry);release(item.before);}pending.clear();
     if(gesture_before_resource){release(gesture_before_resource);gesture_before_resource=nullptr;}
     for(auto held:gesture_actors)release(held.object);
@@ -275,6 +275,40 @@ void test_pending_press(){
         t_granted=true;continue_input(nullptr);
         CHECK(!held_tool&&!t_steps&&value(t_live.data(),0)==1);
         CHECK(t_finishes==(kind==3?0u:1u));
+    }
+    reset();
+}
+unsigned crew_calls=0;editor::ResourceKey crew_key;int32_t crew_index;bool crew_value;
+int32_t SK_THISCALL t_crew_add(void*,const editor::ResourceKey* key){++crew_calls;crew_key=*key;return 0;}
+void SK_THISCALL t_crew_replace(void*,int32_t index,const editor::ResourceKey* key){++crew_calls;crew_index=index;crew_key=*key;}
+void SK_THISCALL t_crew_index(void*,int32_t index){++crew_calls;crew_index=index;}
+void SK_THISCALL t_crew_lock(void*,int32_t index,bool value){++crew_calls;crew_index=index;crew_value=value;}
+void test_crew_input_ownership(){
+    for(unsigned action=0;action<5;++action){
+        reset();crew_calls=0;crew_key={};crew_index=-1;crew_value=false;
+        original_crew_add=t_crew_add;original_crew_replace=t_crew_replace;original_crew_remove=original_crew_capacity=t_crew_index;original_crew_lock=t_crew_lock;
+        C.authoring_tracked=[]{return true;};C.settings_gate=[](editor::ObjectId id){CHECK(id==kCrewObject);return t_granted;};
+        editor::ResourceKey key{17,19,23};
+        switch(action){
+        case 0:CHECK(crew_add(t_data.data(),&key)==-1);break;
+        case 1:crew_replace(t_data.data(),1,&key);break;
+        case 2:crew_remove(t_data.data(),1);break;
+        case 3:crew_lock(t_data.data(),1,true);break;
+        case 4:crew_capacity(t_data.data(),2);break;
+        }
+        CHECK(!crew_calls&&held_crew_action);key={};continue_input(nullptr);CHECK(!crew_calls&&held_crew_action);
+        t_granted=true;continue_input(nullptr);CHECK(crew_calls==1&&!held_crew_action);
+        if(action<2)CHECK((crew_key==editor::ResourceKey{17,19,23}));
+        if(action>0)CHECK(crew_index==(action==4?2:1));
+        if(action==3)CHECK(crew_value);
+    }
+    for(unsigned reason=0;reason<6;++reason){
+        reset();crew_calls=0;C.authoring_tracked=[]{return true;};C.settings_gate=[](editor::ObjectId){return t_granted;};
+        original_crew_add=t_crew_add;const editor::ResourceKey key{17,19,23};crew_add(t_data.data(),&key);CHECK(held_crew_action);
+        if(reason==0)++t_revision;if(reason==1)++t_scope.epoch;if(reason==2)++generation;
+        if(reason==3)t_time+=3;if(reason==4)++t_scope.author.generation;
+        if(reason==5)deny_input({{editor::ScopeKind::Settings,kCrewObject,{}}});
+        t_granted=true;continue_input(nullptr);CHECK(!crew_calls&&!held_crew_action);
     }
     reset();
 }
@@ -701,6 +735,7 @@ static void test_large_transform_without_roster_work(){
     reset();CHECK(t_allocations.empty());
 }
 int main(){
+    test_crew_input_ownership();
     test_captain_and_act_input_ownership();
     test_async_captain_asset_keeps_value_and_rechecks_identity();
     test_independent_inspector_survives_scene_refresh();

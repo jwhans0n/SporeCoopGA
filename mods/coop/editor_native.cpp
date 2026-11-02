@@ -70,6 +70,7 @@ bool input_cast=false,gesture_cast=false;
 bool input_speech=false;
 uint32_t script_events=0;
 constexpr uint32_t kResourceSize = 0x2CB0, kLimit = 32u << 20;
+uintptr_t a_copy_crew;
 
 void* mode() { return a_mode ? *reinterpret_cast<void**>(a_mode) : nullptr; }
 void* data(void* m) { return skg::readable(m, 0xDC) ? skg::field<void*>(m, 0x74) : nullptr; }
@@ -313,7 +314,32 @@ bool project_authoring(void* r,editor::Document& document,std::string& error,con
         {kCaptainPositionProperty,skg::field<editor::Vec3>(r,0x150)},{kCaptainRotationProperty,skg::field<editor::Rotation>(r,0x15C)},
         {kCaptainScaleProperty,skg::field<float>(r,0x16C)},{kCaptainHealthProperty,skg::field<float>(r,0x170)},
         {kCaptainInvulnerableProperty,skg::field<bool>(r,0x174)}};
-    document.settings.emplace(captain.object,std::move(captain));return true;
+    document.settings.emplace(captain.object,std::move(captain));
+    if(a_copy_crew){
+        Rows crew;if(!rows(r,0x178,0x38,3,crew)){error="The native adventure crew roster is invalid";return false;}
+        const auto capacity=skg::field<int32_t>(r,0x238);
+        if(capacity<0 || capacity>3 || (crew.end-crew.begin)/0x38>capacity){error="The native adventure crew exceeds its allowed capacity";return false;}
+        Owned fragment(construct());if(!fragment.p){error="Cannot allocate the owned adventure crew subtree";return false;}
+        normalize_fragment(fragment.p);
+        skg::thiscall<void*>(a_copy_crew,skg::ptr_add<void>(fragment.p,0x178),skg::ptr_add<void>(r,0x178));
+        skg::field<int32_t>(fragment.p,0x238)=3;
+        Rows copied;if(!rows(fragment.p,0x178,0x38,3,copied))return false;
+        for(auto row=copied.begin;row!=copied.end;row+=0x38){
+            const auto server=skg::field<uint64_t>(row,0x10);
+            if(server && server!=UINT64_MAX){
+                const auto resolve=H->sym("Simulator::Scenario::ResolveLocalServerAsset");editor::ResourceKey key;
+                if(!resolve || !skg::cdecl_call<bool>(resolve,server,&key) || !key.instance){error="An adventure crew asset is unavailable";return false;}
+                skg::field<editor::ResourceKey>(row,0)=key;
+            }
+            skg::field<uint32_t>(row,0xC)=0;skg::field<uint64_t>(row,0x10)=UINT64_MAX;
+        }
+        editor::StructuredValue block;block.format=kCrewRosterFormat;
+        if(!serialize(fragment.p,block.bytes,error))return false;
+        editor::AuthoringSettings settings;settings.object=kCrewObject;settings.kind=editor::SettingsKind::Crew;
+        settings.properties={{kCrewRosterProperty,std::move(block)},{kCrewCapacityProperty,int64_t(capacity)}};
+        document.settings.emplace(settings.object,std::move(settings));document.next_id=std::max<uint64_t>(document.next_id,11ull<<32);
+    }
+    return true;
 }
 bool owned_class_gate(void* target){
     if(!tracks_cast() || !C.class_gate)return false;
@@ -321,6 +347,23 @@ bool owned_class_gate(void* target){
     for(auto row=classes.begin;row!=classes.end;row+=0x27E8)
         if(row+8==target)return C.class_gate(skg::field<uint32_t>(row,0));
     return false;
+}
+bool assign_crew(void* resource,const editor::AuthoringSettings& settings,std::string& error){
+    const auto roster=settings.properties.find(kCrewRosterProperty),count=settings.properties.find(kCrewCapacityProperty);
+    const auto* block=roster==settings.properties.end()?nullptr:std::get_if<editor::StructuredValue>(&roster->second);
+    const auto* capacity=count==settings.properties.end()?nullptr:std::get_if<int64_t>(&count->second);
+    if(!a_copy_crew || settings.object!=kCrewObject || settings.kind!=editor::SettingsKind::Crew || settings.properties.size()!=2 ||
+       !block || block->format!=kCrewRosterFormat || !block->references.empty() || block->bytes.size()>editor::Limits{}.structured_bytes ||
+       !capacity || *capacity<0 || *capacity>3){error="The canonical adventure crew settings are invalid";return false;}
+    Owned fragment(parse(block->bytes,error));Rows rows;
+    if(!fragment.p || !editor_native::rows(fragment.p,0x178,0x38,3,rows) || (rows.end-rows.begin)/0x38>*capacity){error="The adventure crew exceeds its canonical capacity";return false;}
+    editor::Document projected,identity;if(!project_authoring(fragment.p,projected,error,identity))return false;
+    const auto canonical=projected.settings.find(kCrewObject);
+    if(canonical==projected.settings.end() || canonical->second.properties.at(kCrewRosterProperty)!=editor::Value{*block}){
+        error="The adventure crew subtree is not canonical";return false;
+    }
+    skg::thiscall<void*>(a_copy_crew,skg::ptr_add<void>(resource,0x178),skg::ptr_add<void>(fragment.p,0x178));
+    skg::field<int32_t>(resource,0x238)=int32_t(*capacity);return true;
 }
 editor::ObjectId marker_id(uint32_t key,const std::map<uint32_t,editor::ObjectId>* supplied=nullptr) {
     const auto& source=supplied?*supplied:bindings;
@@ -376,7 +419,7 @@ bool class_block(uint8_t* row,editor::StructuredValue& block,std::string& error)
             skg::field<editor::ResourceKey>(copied,offset)=key;server=UINT64_MAX;
         }
     }
-    canonical_cast_asset_hints(copied);
+    canonical_cast_asset_hints(copied);canonical_cast_primary_asset(copied);
     block.format=kCastBlockFormat;
     if(!serialize(fragment.p,block.bytes,error))return false;
     // Native Read normalizes deprecated fields. Hash the owned read/write
@@ -401,6 +444,20 @@ bool class_block(uint8_t* row,editor::StructuredValue& block,std::string& error)
     }
     block.references.assign(references.begin(),references.end());
     return true;
+}
+bool class_primary_asset(void* native,editor::ResourceKey& key,std::string& error){
+    key=skg::field<editor::ResourceKey>(native,0);const auto server=skg::field<uint64_t>(native,0x10);
+    if(server && server!=UINT64_MAX){
+        const auto resolve=H->sym("Simulator::Scenario::ResolveLocalServerAsset");
+        if(!resolve || !skg::cdecl_call<bool>(resolve,server,&key) || !key.instance){error="The primary cast dependency is unavailable";return false;}
+    }
+    return true;
+}
+bool assign_class_primary(void* native,const editor::ClassActSettings& settings,std::string& error){
+    const auto field=settings.properties.find(editor::kClassAssetResourceProperty);
+    const auto* key=field==settings.properties.end()?nullptr:std::get_if<editor::ResourceKey>(&field->second);
+    if(!key || !key->instance || !key->type){error="The primary cast resource key is missing";return false;}
+    skg::field<editor::ResourceKey>(native,0)=*key;skg::field<uint32_t>(native,0xC)=0;skg::field<uint64_t>(native,0x10)=UINT64_MAX;return true;
 }
 void* marker_for_key(void* r, uint32_t key) {
     Rows map;
@@ -464,7 +521,7 @@ bool projection(void* r, Snapshot& out, std::string& error,
         if(!project_authoring(r,out.document,error,logical))return false;
     }else for(uint32_t i=0;i<count;++i)out.document.acts.insert({(3ull<<32)|i,1});
     const auto anchor=tracks_authoring()?*out.document.acts.begin():editor::ObjectId{(3ull<<32)|out.act,1};
-    out.document.next_id = 4ull << 32;
+    out.document.next_id = std::max<uint64_t>(out.document.next_id,4ull << 32);
     if(tracks_authoring())for(auto id:out.document.act_order)out.document.next_id=std::max(out.document.next_id,id.id+2);
     if(extended)out.document.schema=tracked?placement_property_schema():legacy_extended_schema();
     else if(tracked)out.document.schema=relative_scale_schema();
@@ -481,7 +538,8 @@ bool projection(void* r, Snapshot& out, std::string& error,
             editor::ClassActSettings settings;
             settings.object={(5ull<<32)|index,1};settings.class_id={(2ull<<32)|index,1};settings.act_id=anchor;
             editor::StructuredValue value;if(!class_block(row,value,error))return false;
-            settings.properties[kCastBlockProperty]=std::move(value);
+            editor::ResourceKey primary;if(!class_primary_asset(row+8,primary,error))return false;
+            settings.properties[kCastBlockProperty]=std::move(value);settings.properties[editor::kClassAssetResourceProperty]=primary;
             out.document.class_settings.emplace(settings.object,std::move(settings));
         }
     }
@@ -659,6 +717,10 @@ struct HeldCaptainAsset {
     double started;
 };
 std::optional<HeldCaptainAsset> held_captain_asset;
+enum class CrewAction : uint8_t { Add, Replace, Remove, Lock, Capacity };
+struct HeldCrewAction { GestureScope scope;uint64_t generation;editor::Revision revision;CrewAction action;int32_t index;editor::ResourceKey key;bool value;double started; };
+std::optional<HeldCrewAction> held_crew_action;
+void run_crew_action(CrewAction,int32_t,const editor::ResourceKey&,bool);
 GestureScope import_scope;
 uint64_t import_generation=0;
 double import_started=0;
@@ -861,6 +923,7 @@ void deny_held_input(const std::vector<editor::Scope>& scopes){
         }
         if(held_class_removal && (scope.kind==editor::ScopeKind::Document || scope.object==editor::ObjectId{(2ull<<32)|held_class_removal->index,1}))held_class_removal.reset();
         if(held_captain_asset && (scope.kind==editor::ScopeKind::Document || scope.object==kCaptainObject))held_captain_asset.reset();
+        if(held_crew_action && (scope.kind==editor::ScopeKind::Document || scope.object==kCrewObject))held_crew_action.reset();
         if(held_creation && (scope.kind==editor::ScopeKind::Document || scope.object==editor::ObjectId{(2ull<<32)|held_creation->class_index,1}))held_creation.reset();
     }
 }
@@ -945,6 +1008,16 @@ void SK_CDECL continue_input(void*){
         else if(pending.empty() && !queued && !gesture_before_resource && !state().gesture &&
                 !(C.transaction_pending && C.transaction_pending()) && C.settings_gate && C.settings_gate(kCaptainObject)){
             held_captain_asset.reset();start(data(mode()));captain_asset(data(mode()),&item.key);commit(data(mode()));
+        }
+    }
+    if(held_crew_action){
+        const auto item=*held_crew_action;
+        const auto scope=C.gesture_scope?C.gesture_scope():GestureScope{};
+        const auto revision=C.object_revision?C.object_revision(kCrewObject):std::nullopt;
+        if(!valid_scope(scope) || scope!=item.scope || item.generation!=generation || !revision || *revision!=item.revision ||
+           H->time_seconds()-item.started>2 || (GetKeyState(VK_ESCAPE)&0x8000))held_crew_action.reset();
+        else if(C.settings_gate && C.settings_gate(kCrewObject)){
+            held_crew_action.reset();start(data(mode()));run_crew_action(item.action,item.index,item.key,item.value);commit(data(mode()));
         }
     }
     if(!held_tool)return;
@@ -1320,6 +1393,43 @@ bool SK_THISCALL class_input(void* self,void* window,void* message){
 ScriptInputFn original_captain_input;
 using CaptainAssetFn=void(SK_THISCALL*)(void*,const editor::ResourceKey*);
 CaptainAssetFn original_captain_asset;
+using CrewAddFn=int32_t(SK_THISCALL*)(void*,const editor::ResourceKey*);
+using CrewReplaceFn=void(SK_THISCALL*)(void*,int32_t,const editor::ResourceKey*);
+using CrewIndexFn=void(SK_THISCALL*)(void*,int32_t);
+using CrewLockFn=void(SK_THISCALL*)(void*,int32_t,bool);
+CrewAddFn original_crew_add;CrewReplaceFn original_crew_replace;
+CrewIndexFn original_crew_remove,original_crew_capacity;CrewLockFn original_crew_lock;
+bool crew_gate(void* self,CrewAction action,int32_t index,const editor::ResourceKey& key={},bool value=false){
+    if(applying || !active())return true;
+    if(self!=data(mode()) || !tracks_authoring() || !C.settings_gate)return false;
+    if(C.settings_gate(kCrewObject))return true;
+    const auto scope=C.gesture_scope?C.gesture_scope():GestureScope{};
+    const auto revision=C.object_revision?C.object_revision(kCrewObject):std::nullopt;
+    if(valid_scope(scope) && revision)held_crew_action=HeldCrewAction{scope,generation,*revision,action,index,key,value,H->time_seconds()};
+    return false;
+}
+int32_t SK_THISCALL crew_add(void* self,const editor::ResourceKey* key){
+    return key && crew_gate(self,CrewAction::Add,-1,*key)?original_crew_add(self,key):-1;
+}
+void SK_THISCALL crew_replace(void* self,int32_t index,const editor::ResourceKey* key){
+    if(key && crew_gate(self,CrewAction::Replace,index,*key))original_crew_replace(self,index,key);
+}
+void SK_THISCALL crew_remove(void* self,int32_t index){if(crew_gate(self,CrewAction::Remove,index))original_crew_remove(self,index);}
+void SK_THISCALL crew_capacity(void* self,int32_t count){if(count>=0 && count<=3 && crew_gate(self,CrewAction::Capacity,count))original_crew_capacity(self,count);}
+void SK_THISCALL crew_lock(void* self,int32_t index,bool value){if(crew_gate(self,CrewAction::Lock,index,{},value))original_crew_lock(self,index,value);}
+void run_crew_action(CrewAction action,int32_t index,const editor::ResourceKey& key,bool value){
+    void* owner=data(mode());
+    switch(action){
+    case CrewAction::Add:original_crew_add(owner,&key);break;
+    case CrewAction::Replace:original_crew_replace(owner,index,&key);break;
+    case CrewAction::Remove:original_crew_remove(owner,index);break;
+    case CrewAction::Lock:original_crew_lock(owner,index,value);break;
+    case CrewAction::Capacity:original_crew_capacity(owner,index);break;
+    }
+    const auto refresh=H->sym?H->sym("SporeCoop::Editor::RefreshDisplay"):0;
+    void* display=skg::readable(mode(),0x18)?skg::field<void*>(mode(),0x14):nullptr;
+    if(refresh && display)skg::thiscall<void>(refresh,display);
+}
 bool SK_THISCALL captain_input(void* self,void* window,void* message){
     const auto type=skg::readable(message,0x10)?skg::field<uint32_t>(message,8):0;
     const auto control=skg::readable(message,0x10)?skg::field<uint32_t>(message,0xC):0;
@@ -1692,6 +1802,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     a_inspector_open=H->sym("SporeCoop::Editor::OpenClassInspector");
     a_layout_shown=H->sym("SporeCoop::Editor::LayoutShown");
     a_copy_acts=H->sym("SporeCoop::Editor::CopyActs");a_copy_act=H->sym("SporeCoop::Editor::CopyAct");
+    a_copy_crew=H->sym("SporeCoop::Editor::CopyCrewRows");
     a_copy_class_acts=H->sym("SporeCoop::Editor::CopyClassActs");a_copy_marker_acts=H->sym("SporeCoop::Editor::CopyMarkerActs");
     a_insert_act=H->sym("SporeCoop::Editor::InsertAct");a_insert_class_act=H->sym("SporeCoop::Editor::InsertClassAct");a_insert_marker_act=H->sym("SporeCoop::Editor::InsertMarkerAct");
     a_add_act=H->sym("SporeCoop::Editor::AddAct");a_delete_act=H->sym("SporeCoop::Editor::DeleteAct");
@@ -1720,6 +1831,11 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
         install("SporeCoop::Editor::SelectAct",(void*)select_act_native,(void**)&original_select_act) &&
         install("SporeCoop::Editor::CaptainInput",(void*)captain_input,(void**)&original_captain_input) &&
         install("SporeCoop::Editor::SetCaptainAsset",(void*)captain_asset,(void**)&original_captain_asset) &&
+        install("SporeCoop::Editor::AddCrew",(void*)crew_add,(void**)&original_crew_add) &&
+        install("SporeCoop::Editor::ReplaceCrew",(void*)crew_replace,(void**)&original_crew_replace) &&
+        install("SporeCoop::Editor::RemoveCrew",(void*)crew_remove,(void**)&original_crew_remove) &&
+        install("SporeCoop::Editor::LockCrew",(void*)crew_lock,(void**)&original_crew_lock) &&
+        install("SporeCoop::Editor::SetCrewCapacity",(void*)crew_capacity,(void**)&original_crew_capacity) &&
         install("SporeCoop::Editor::CommitHistory", (void*)commit, (void**)&original_commit) &&
         install("SporeCoop::Editor::UndoHistoryEntry", (void*)undo_native, (void**)&original_undo) &&
         install("SporeCoop::Editor::RedoHistoryEntry", (void*)redo_native, (void**)&original_redo) &&
@@ -1754,7 +1870,7 @@ void shutdown() {
     for(auto& [peer,actor]:preview_actors){(void)peer;clear_preview_actor(actor);}preview_actors.clear();
     ++generation;
     input_speech=false;
-    held_tool.reset();held_creation.reset();held_class_removal.reset();held_captain_asset.reset();input_queued=false;
+    held_tool.reset();held_creation.reset();held_class_removal.reset();held_captain_asset.reset();held_crew_action.reset();input_queued=false;
     held_import.reset();
     cancellation.reset();cancellation_queued=cancellation_settling=false;
     gesture_owner=gesture_entry=nullptr;gesture_generation=gesture_serial=0;gesture_scope_pin={};
@@ -1769,7 +1885,7 @@ void shutdown() {
 void tick(){
     if(!H)return;
     if(!pending.empty() && !queued){queued=true;H->run_outside_frame(drain,nullptr);}
-    if((held_tool || held_import || held_creation || held_class_removal || held_captain_asset) && !input_queued){input_queued=true;H->run_outside_frame(continue_input,nullptr);}
+    if((held_tool || held_import || held_creation || held_class_removal || held_captain_asset || held_crew_action) && !input_queued){input_queued=true;H->run_outside_frame(continue_input,nullptr);}
     if(cancellation && !cancellation_queued){cancellation_queued=true;H->run_outside_frame(drain_cancellation,nullptr);}
     if(fence_queued)return;
     double now=H->time_seconds();
@@ -1913,34 +2029,56 @@ bool expand_snapshot(const Snapshot& input,bool relative,Snapshot& out,std::stri
 bool canonicalize_cast_state(editor::State& state,std::string& error){
     // Recovery may predate machine-hint normalization. Upgrade every retained
     // precondition together, without changing revisions or retiring history.
-    std::map<std::vector<uint8_t>,editor::StructuredValue> cache;
-    auto value=[&](editor::Value& v){
+    struct Normalized {editor::StructuredValue block;editor::ResourceKey primary;};
+    std::map<std::vector<uint8_t>,Normalized> cache;
+    auto value=[&](editor::Value& v,editor::ResourceKey* primary=nullptr){
         auto* block=std::get_if<editor::StructuredValue>(&v);
         if(!block || block->format!=kCastBlockFormat){error="Invalid recovery cast block";return false;}
         auto found=cache.find(block->bytes);
         if(found==cache.end()){
             Owned owned(parse(block->bytes,error));Rows classes;
             if(!owned.p || !rows(owned.p,0x2BF4,0x27E8,1,classes) || classes.end-classes.begin!=0x27E8){error="Invalid recovery cast fragment";return false;}
-            editor::StructuredValue normalized;
-            if(!class_block(classes.begin,normalized,error))return false;
+            Normalized normalized;
+            if(!class_primary_asset(classes.begin+8,normalized.primary,error) || !class_block(classes.begin,normalized.block,error))return false;
             found=cache.emplace(block->bytes,std::move(normalized)).first;
         }
-        if(found->second.references!=block->references){error="Recovery cast normalization changed its references";return false;}
-        *block=found->second;return true;
+        if(found->second.block.references!=block->references){error="Recovery cast normalization changed its references";return false;}
+        if(primary)*primary=found->second.primary;
+        *block=found->second.block;return true;
     };
     auto settings=[&](editor::ClassActSettings& settings){
         auto found=settings.properties.find(kCastBlockProperty);
-        return found==settings.properties.end() || value(found->second);
+        if(found==settings.properties.end())return true;
+        editor::ResourceKey primary;if(!value(found->second,&primary))return false;
+        auto asset=settings.properties.find(editor::kClassAssetResourceProperty);
+        if(asset==settings.properties.end()){
+            if(!primary.instance || !primary.type){error="A legacy cast subtree has no primary asset";return false;}
+            settings.properties[editor::kClassAssetResourceProperty]=primary;
+            auto revision=settings.field_revisions.find({editor::Field::Property,kCastBlockProperty});
+            if(revision!=settings.field_revisions.end())settings.field_revisions[{editor::Field::Property,editor::kClassAssetResourceProperty}]=revision->second;
+        }else if(primary.instance && asset->second!=editor::Value{primary}){error="Recovery cast content disagrees with its primary resource property";return false;}
+        return true;
     };
     auto patch=[&](editor::Patch& patch){
         for(auto& c:patch.classes)for(auto* side:{&c.before,&c.after})if(*side && !settings(**side))return false;
-        for(auto& f:patch.fields)if(f.field==editor::FieldKey{editor::Field::Property,kCastBlockProperty})
-            for(auto* side:{&f.before,&f.after})if(*side && !value(**side))return false;
+        std::vector<editor::FieldEdit> fields;
+        for(auto f:patch.fields){
+            if(f.field!=editor::FieldKey{editor::Field::Property,kCastBlockProperty}){fields.push_back(std::move(f));continue;}
+            editor::ResourceKey before,after;
+            if((f.before && !value(*f.before,&before)) || (f.after && !value(*f.after,&after)))return false;
+            if(before.instance && after.instance && before!=after){
+                auto content=f;content.field={editor::Field::Property,editor::kClassAssetResourceProperty};content.before=before;content.after=after;
+                fields.push_back(std::move(content));
+            }
+            if(f.before!=f.after)fields.push_back(std::move(f));
+        }
+        patch.fields=std::move(fields);
         return true;
     };
     for(auto& [id,c]:state.document.class_settings){(void)id;if(!settings(c))return false;}
     for(auto& h:state.history)if(!patch(h.undo) || !patch(h.redo))return false;
     for(auto& [id,d]:state.decisions){(void)id;if(d.change && (!patch(d.change->patch) || !patch(d.change->inverse)))return false;}
+    if(!state.document.class_schema.empty())state.document.class_schema=cast_property_schema();
     return true;
 }
 bool validate_entry(const std::vector<uint8_t>& bytes,uint32_t act,std::string& error) {
@@ -1981,6 +2119,11 @@ bool supported_changes(const Gesture& gesture,std::string& error){
         // Normalize only these supported fields on private comparison copies.
         skg::thiscall<void*>(a_copy_acts,skg::ptr_add<void>(compared_after.p,0x23C),skg::ptr_add<void>(compared_before.p,0x23C));
         std::memcpy(skg::ptr_add<void>(compared_after.p,0x130),skg::ptr_add<void>(compared_before.p,0x130),0x46);
+        if(gesture.after.document.settings.contains(kCrewObject)){
+            if(!a_copy_crew){error="The verified crew assignment is unavailable";return false;}
+            skg::thiscall<void*>(a_copy_crew,skg::ptr_add<void>(compared_after.p,0x178),skg::ptr_add<void>(compared_before.p,0x178));
+            skg::field<int32_t>(compared_after.p,0x238)=skg::field<int32_t>(compared_before.p,0x238);
+        }
     }
     if(!gesture.after.document.class_schema.empty()){
         if(gesture.before.document.class_schema!=gesture.after.document.class_schema || !cast_schema(gesture.after.document,error))return false;
@@ -2414,6 +2557,8 @@ bool prepare(const Snapshot& base,const editor::Document& document,const editor:
             if(!fragment.p || !rows(fragment.p,0x23C,0x534,1,one) || one.end-one.begin!=0x534)return false;
             editor::StructuredValue checked;if(!act_block(one.begin,checked,error) || checked!=*block){error="The detached act subtree is not canonical";return false;}
             skg::thiscall<void*>(a_copy_act,acts.begin+(i-document.act_order.begin())*0x534,one.begin);
+        }else if(settings.kind==editor::SettingsKind::Crew){
+            if(!assign_crew(merged.p,settings,error))return false;
         }else if(settings.kind==editor::SettingsKind::Captain){
             if(id!=kCaptainObject || settings.properties.size()!=7){error="The detached captain settings are invalid";return false;}
             const auto& p=settings.properties;
@@ -2454,6 +2599,7 @@ bool prepare(const Snapshot& base,const editor::Document& document,const editor:
             void* target=skg::thiscall<void*>(a_insert_class,skg::ptr_add<void>(merged.p,0x2BF4),&index);
             if(!target){error="Cannot allocate the detached cast class";return false;}
             skg::thiscall<void*>(a_copy_class,target,one.begin+8);
+            if(!assign_class_primary(target,settings,error))return false;
         }
         skg::field<uint32_t>(merged.p,0x2C0C)=document.next_class;
     }else if(base.document.classes!=document.classes){error="The detached cast roster requires typed settings";return false;}
@@ -2522,7 +2668,9 @@ bool prepare(const Snapshot& base,const editor::Document& document,const editor:
 bool edit_owned_snapshot(const Snapshot& base,const std::function<bool(void*,std::string&)>& edit,
                          Snapshot& out,std::string& error){
     if(!supported || !edit || !validate(base,base.document,error))return false;
-    Owned owned(parse(base.bytes,error));if(!owned.p || !edit(owned.p,error))return false;
+    Owned owned(parse(base.bytes,error));if(!owned.p)return false;
+    {struct ScopedApply{bool prior=applying;ScopedApply(){applying=true;}~ScopedApply(){applying=prior;}} scope;
+     if(!edit(owned.p,error))return false;}
     bool relative=false;if(!relative_scale_mode(base.document,relative,error))return false;
     std::map<uint32_t,editor::ObjectId> supplied;
     for(const auto& b:base.bindings)if(!supplied.emplace(b.marker,b.object).second){error="The owned snapshot has duplicate marker bindings";return false;}
@@ -2603,6 +2751,7 @@ bool apply(const editor::Document& document,const editor::Change& change,const S
             for(;target!=classes.end;target+=0x27E8)if(skg::field<uint32_t>(target,0)==uint32_t(settings.class_id.id))break;
             if(target==classes.end){error="The act roster changed its cast identities";return false;}
             skg::thiscall<void*>(a_copy_class,target+8,from.begin+8);
+            if(!assign_class_primary(target+8,settings,error))return false;
         }
         for(const auto& binding:snapshot.bindings){
             auto match=std::find_if(artifact->bindings.begin(),artifact->bindings.end(),[&](const auto& b){return b.object==binding.object;});
@@ -2651,6 +2800,8 @@ bool apply(const editor::Document& document,const editor::Change& change,const S
                 editor::StructuredValue checked;if(!act_block(source.begin,checked,error))return false;
                 if(checked!=*block){error="The native act subtree or its references are not canonical";return false;}
                 skg::thiscall<void*>(a_copy_act,acts.begin+index*0x534,source.begin);
+            }else if(settings.kind==editor::SettingsKind::Crew){
+                if(!assign_crew(merged.p,settings,error))return false;
             }else{
                 if(id!=kCaptainObject || settings.properties.size()!=7){error="Invalid native captain settings";return false;}
                 const auto& p=settings.properties;
@@ -2699,6 +2850,7 @@ bool apply(const editor::Document& document,const editor::Change& change,const S
             void* target=skg::thiscall<void*>(a_insert_class,skg::ptr_add<void>(merged.p,0x2BF4),&index);
             if(!target){error="Cannot allocate the canonical cast class";return false;}
             skg::thiscall<void*>(a_copy_class,target,classes.begin+8);
+            if(!assign_class_primary(target,settings,error))return false;
         }
         skg::field<uint32_t>(merged.p,0x2C0C)=document.next_class;
         auto prepared=snapshot;

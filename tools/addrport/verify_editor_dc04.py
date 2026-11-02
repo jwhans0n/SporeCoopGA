@@ -10,6 +10,22 @@ from pe import PE
 
 SHA = 'dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37'
 ENTRIES = [
+    ('CopyCrewRows',0xDFB6F0,'558b6c2408568bf13bee',[(0xDFB819,4)],
+     'thiscall(destination native crew vector,const source vector*)->destination,ret4; owns primitive38 rows and allocator metadata',
+     [(0xDFFBF4,0xDFB6F0)],[]),
+    ('AddCrew',0xF40980,'83ec38535556578bf9',[(0xF40A3C,4),(0xF40A48,4)],
+     'thiscall(ScenarioData,const ResourceKey*)->int index or minus1,ret4; capacity238 and native178 rows, optional captain-scene refresh',
+     [(0xED6BEC,0xF40980),(0xED6D05,0xF40980)],[]),
+    ('ReplaceCrew',0xF3BB80,'55568b74240c578bf9',[(0xF3BC20,8)],
+     'thiscall(ScenarioData,int index,const ResourceKey*),ret8; bounded178 row, optional captain-scene refresh',
+     [(0xED6BDC,0xF3BB80),(0xED6CF0,0xF3BB80)],[]),
+    ('RemoveCrew',0xF3E6B0,'53568b74240c8bd957',[(0xF3E731,4)],
+     'thiscall(ScenarioData,int index),ret4 or native erase tailFF14B0; bounded178 row, optional scene cleanup',
+     [(0xED6E0F,0xF3E6B0)],[]),
+    ('LockCrew',0xF3BC30,'568b7110578b7c240c',[(0xF3BC79,8)],
+     'thiscall(ScenarioData,int index,bool locked),ret8; bounded178 row byte20, no scene writes',[],[]),
+    ('SetCrewCapacity',0xF3BB60,'8b4110568b74240889b038020000',[(0xF3BB77,4)],
+     'thiscall(ScenarioData,int count),ret4; resource238 and posse manager18',[(0xED6E2A,0xF3BB60)],[]),
     ('MarkerCtor',0xF2A960,'8bc1c700ffffffff',[(0xF2AAC9,0)],
      'thiscall(storage234)->marker,ret; initializes owning inline marker-act vector28/2C/30 and detached placement IDFFFFFFFF at228',
      [(0xF44276,0xF2A960)],[(0xF2A9DF,'89503c'),(0xF2A9E5,'894828')]),

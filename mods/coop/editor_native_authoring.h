@@ -9,6 +9,8 @@ inline constexpr uint32_t kCaptainPositionProperty=0x43415003, kCaptainRotationP
 inline constexpr uint32_t kCaptainScaleProperty=0x43415005, kCaptainHealthProperty=0x43415006;
 inline constexpr uint32_t kCaptainInvulnerableProperty=0x43415007;
 inline constexpr editor::ObjectId kCaptainObject{8ull<<32,1};
+inline constexpr uint32_t kCrewRosterProperty=0x43524501,kCrewCapacityProperty=0x43524502,kCrewRosterFormat=0x31575243;
+inline constexpr editor::ObjectId kCrewObject{10ull<<32,1};
 inline constexpr editor::ObjectId act_settings_id(uint32_t act){return {(7ull<<32)|act,1};}
 inline const std::map<uint32_t,editor::PropertySpec>& authoring_property_schema(){
     using K=editor::ValueKind;
@@ -20,7 +22,9 @@ inline const std::map<uint32_t,editor::PropertySpec>& authoring_property_schema(
         {kCaptainRotationProperty,{K::Rotation,0,0,0,true,false}},
         {kCaptainScaleProperty,{K::Number,0.000001,1000,0,true,false}},
         {kCaptainHealthProperty,{K::Number,0,1e6,0,true,false}},
-        {kCaptainInvulnerableProperty,{K::Boolean,0,0,0,true,false}}
+        {kCaptainInvulnerableProperty,{K::Boolean,0,0,0,true,false}},
+        {kCrewRosterProperty,{K::Structured,0,0,0,true,false}},
+        {kCrewCapacityProperty,{K::Integer,0,3,0,true,false}}
     };
     return schema;
 }
