@@ -123,3 +123,43 @@ all thirteen mismatched words, missing proofs, late join, fresh recovery epochs,
 stale participant generations/acknowledgements, bounded-queue retry, the exact
 disable exception and queued playtest expiry. These are deterministic transport
 and policy checks, not a running-game complexity boundary or publication result.
+
+### Offline private boundary inputs
+
+`tools/tests/coop_editor_complexity_fixture.py` accepts only explicitly hashed
+copied inputs under OUT and writes a new OUT directory. It never opens a process
+or profile. Its bounded parser recognizes the retained native PropertyList/DBPF
+envelope and the embedded01A80D26 ClassSerializer. The placement vector is
+07102E6C, class vector072A9B58 and act vector07102E6A. Marker attribute076CA8D3
+must contain exactly the root's act count. Every selected marker must have a
+present class and finite supported pose fields.
+
+Native ReadMarkerRows F2F050 reads the count, reserves with F2E0D0, then invokes
+the verified constructor F2A960, ReadMarker F2D680 and InsertMarker F2EBC0 for
+each row. This reader does not impose the editor's1024 Create/Clone checks.
+WriteMarkerRows F28B80 writes the iterator count and marker descriptor15AEFD0.
+The retained serialized marker record contains no runtime pool index; native
+insertion assigns those indices. The offline helper therefore appends exact
+copies of one separately reviewed low-weight stock-prop marker, retains every
+existing marker and all other root attributes, and updates only the checked
+list count, list size and enclosing length/index metadata. It does not edit
+marker references or invent a native layout.
+
+An optional carrier must be a copied genuine native Save package whose exact
+408A0000 adventure root already equals the supplied native bytes. Replacement
+appends the new payload and a copied index, retaining every unrelated raw
+record and the original package bytes except its active index offsets. Unknown
+formats, malformed references/counts, overlapping records, hash mismatches,
+existing outputs and count4097 reject before output is created. The tool does
+not install its output. A caller must close all involved private profiles and
+use a new private profile copy before installing a reviewed carrier.
+
+Windows and Linux contract tests cover the boundary sizes through4096,
+compressed/uncompressed DBPF input, all reviewed constant-index shapes,
+unrelated compressed metadata retention, malformed inputs and filesystem
+guards. An in-memory retained Town419-row root was expanded to4095 and4096
+with exact other-attribute/marker retention. That proves the offline splice,
+not native parsing, UI eligibility, stock-prop selection, cold reopen or
+publication. Those remain required running-game checks. Runner profile setup
+does not overwrite EditorSaves, but its viewport preference must be overridden
+to the currently measured OptionScreenSize11 before a future private launch.
