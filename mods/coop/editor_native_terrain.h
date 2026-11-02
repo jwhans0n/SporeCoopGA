@@ -109,6 +109,16 @@ inline bool array(const Properties& p,uint32_t id,uint16_t type,uint32_t width,s
     count=be32(v.value.data());if(count>kRecipeLimit || v.value.size()!=8+count*width){error="Native terrain recipe column exceeds its bounds";return false;}
     bytes.assign(v.value.begin()+8,v.value.end());return true;
 }
+inline std::vector<uint8_t> identity_bytes(const editor::StructuredValue& payload){
+    auto bytes=payload.bytes;
+    // Native Transform::operator= (537E10) increments its destination WORD+2
+    // when flags or geometric values change; PreTransformBy does likewise.
+    // ToMatrix4 never reads that counter. A rebuild can therefore change it on
+    // otherwise identical old stamps. Keep native payloads intact, but exclude
+    // only this bookkeeping word from record matching.
+    if(bytes.size()>=16)bytes[14]=bytes[15]=0;
+    return bytes;
+}
 inline bool project(const std::vector<uint8_t>& bytes,const editor::Document& identity,editor::Document& document,std::string& error,bool allow_recipe_replacement=false){
     Properties p;if(!decode(bytes,p,error))return false;
     document.terrain.clear();document.settings.erase(kPlanetObject);
@@ -138,17 +148,22 @@ inline bool project(const std::vector<uint8_t>& bytes,const editor::Document& id
             // and Transform are native primitive bytes and retain their order.
             if(kind==editor::TerrainKind::Effect)for(size_t c=68;c<84;c+=4)std::reverse(payload.bytes.begin()+c,payload.bytes.begin()+c+4);
             if(!editor::valid_terrain_payload(kind,payload)){error="The native terrain recipe contains an invalid transform or scalar";return false;}
-            present.insert(payload.bytes);incoming.push_back(std::move(payload));
+            present.insert(identity_bytes(payload));incoming.push_back(std::move(payload));
         }
         std::vector<const editor::TerrainRecord*> previous;std::map<std::vector<uint8_t>,std::deque<const editor::TerrainRecord*>> matches;
-        for(const auto& v:old)if(v.kind==kind){previous.push_back(&v);matches[v.payload.bytes].push_back(&v);}
+        for(const auto& v:old)if(v.kind==kind){previous.push_back(&v);matches[identity_bytes(v.payload)].push_back(&v);}
+        uint64_t last_order=0;
         for(size_t i=0;i<incoming.size();++i){
             editor::TerrainRecord row;row.kind=kind;row.payload=std::move(incoming[i]);
-            auto exact=matches.find(row.payload.bytes);
+            auto exact=matches.find(identity_bytes(row.payload));
             if(exact!=matches.end() && !exact->second.empty()){
                 const auto* prior=exact->second.front();exact->second.pop_front();row.object=prior->object;row.order=prior->order;row.revision=prior->revision;
+                // Counter-only native updates are not authored edits. Preserve
+                // the exact committed payload, including each duplicate's own
+                // counter, so an append needs no leases on unrelated stamps.
+                row.payload=prior->payload;
             }else {
-                if(incoming.size()!=previous.size() && std::any_of(previous.begin(),previous.end(),[&](const auto* old){return !present.contains(old->payload.bytes);})){
+                if(incoming.size()!=previous.size() && std::any_of(previous.begin(),previous.end(),[&](const auto* old){return !present.contains(identity_bytes(old->payload));})){
                     if(allow_recipe_replacement){
                         // Only a verified whole-recipe Load boundary may opt in.
                         // All old records are checked deletions, all incoming
@@ -160,10 +175,19 @@ inline bool project(const std::vector<uint8_t>& bytes,const editor::Document& id
                     }
                     error="A native terrain gesture changed an ambiguous record identity";return false;
                 }
-                if(i<previous.size() && !used.contains(previous[i]->object) && !present.contains(previous[i]->payload.bytes)){
+                if(i<previous.size() && !used.contains(previous[i]->object) && !present.contains(identity_bytes(previous[i]->payload))){
                     row.object=previous[i]->object;row.order=previous[i]->order;row.revision=previous[i]->revision;
                 }
                 else {if(temporary==UINT64_MAX || order==UINT64_MAX){error="The terrain identity allocator is exhausted";return false;}row.object={temporary++,1};row.order=order++;}}
+            if(row.order<=last_order){
+                if(allow_recipe_replacement){
+                    editor::Document replacement;replacement.next_id=std::max(identity.next_id,document.next_id);
+                    replacement.next_terrain_order=identity.next_terrain_order;
+                    return project(bytes,replacement,document,error,false);
+                }
+                error="A native terrain gesture reordered committed recipe records";return false;
+            }
+            last_order=row.order;
             used.insert(row.object);document.terrain.emplace(row.object,std::move(row));
         }
     }

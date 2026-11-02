@@ -1495,11 +1495,16 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
 #include "editor_native_act_cache_fixture.h"
 #include "editor_native_crew_assets_fixture.h"
 #include "editor_native_recent_fixture.h"
+#include "editor_native_terrain_materialization_fixture.h"
 int main(int argc,char** argv){
+    if(argc==2&&std::string(argv[1])=="--terrain-materialization-only"){
+        test_terrain_materialization_hooks();std::printf("native terrain materialization: %u checks passed\n",checks);return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--recent-only"){
         test_recent_native_proofs();std::printf("native recent proofs: %u checks passed\n",checks);return 0;
     }
     test_recent_native_proofs();
+    test_terrain_materialization_hooks();
     test_owned_crew_asset_versions();
     test_act_projection_production_cache();test_act_projection_cache_bounds();
     test_entry_hydrates_nonzero_captain_before_scene_entry();

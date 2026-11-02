@@ -1,5 +1,6 @@
 // Native planet-prefix regressions, independent of the live Adventure scene.
 #include "editor_native_terrain.h"
+#include "editor_native_terrain_materialization.h"
 #include <cstdio>
 #include <fstream>
 #include <iterator>
@@ -84,6 +85,51 @@ static void rejected(){
     Property out;CHECK(!native_property(0x02A907B7,property,out,error));
     for(size_t n=0;n<source.size()-p.tail.size();++n){auto short_bytes=source;short_bytes.resize(n);CHECK(!decode(short_bytes,p,error));}
 }
+static void transform_counters(){
+    const auto source=baseline();editor::Document d;std::string error;CHECK(project(source,{},d,error));
+    for(auto row:{stroke(100,1,13),stroke(101,2,13),stroke(102,3,23,editor::TerrainKind::Model),stroke(103,4,23,editor::TerrainKind::Model)})
+        d.terrain.emplace(row.object,std::move(row));
+    // Equal authored stamps can have independent native assignment counters.
+    d.terrain.at({101,1}).payload.bytes[14]=0xFE;d.terrain.at({101,1}).payload.bytes[15]=0xFF;
+    d.terrain.at({103,1}).payload.bytes[14]=42;d.next_terrain_order=5;
+    std::vector<uint8_t> before;CHECK(merge(source,d,before,error));
+    auto changed=d;
+    for(auto& [id,row]:changed.terrain){(void)id;row.payload.bytes[14]=0;row.payload.bytes[15]=0;}
+    std::vector<uint8_t> bytes;CHECK(merge(source,changed,bytes,error));const auto untouched=bytes;
+    editor::Document actual;CHECK(project(bytes,d,actual,error));CHECK(actual.terrain==d.terrain);CHECK(bytes==untouched);
+    // The actual native failure changed old effect AND model counters while
+    // appending an effect. Two concurrent-style appends keep every old ID,
+    // payload/revision/order, and each new record's native counter bytes.
+    auto first=stroke(104,5,31),second=stroke(105,6,33);first.payload.bytes[14]=7;second.payload.bytes[14]=9;
+    changed.terrain.emplace(first.object,first);changed.terrain.emplace(second.object,second);changed.next_terrain_order=7;
+    CHECK(merge(source,changed,bytes,error));CHECK(project(bytes,d,actual,error));CHECK(actual.terrain.size()==6);
+    for(const auto& [id,row]:d.terrain)CHECK(actual.terrain.at(id)==row);
+    const auto ordered=editor::terrain_recipe(actual);CHECK(ordered[4].payload==first.payload&&ordered[5].payload==second.payload);
+    CHECK(ordered[4].order==5&&ordered[5].order==6);CHECK(actual.next_terrain_order==7);
+    editor::Document again;CHECK(project(bytes,actual,again,error));CHECK(again.terrain==actual.terrain);
+    std::vector<uint8_t> canonical;CHECK(merge(bytes,actual,canonical,error));CHECK(project(canonical,actual,again,error));CHECK(again.terrain==actual.terrain);
+    // Numeric values, activation flags, resource keys and effect scalars remain
+    // exact authored identity. A count change cannot conceal any such edit.
+    for(size_t offset:{size_t(0),size_t(12),size_t(16),size_t(32),size_t(68),size_t(72),size_t(76),size_t(80)}){
+        auto bad=changed;bad.terrain.at({100,1}).payload.bytes[offset]^=1;
+        CHECK(merge(source,bad,bytes,error));CHECK(!project(bytes,d,again,error));
+    }
+    // Distinct old stamps arriving in a different native order must never be
+    // silently sorted back to committed order. Only checked whole-recipe Load
+    // can assign fresh identities for that replacement.
+    auto unique=d;real(unique.terrain.at({101,1}).payload.bytes,16,17);
+    auto reordered=unique;std::swap(reordered.terrain.at({100,1}).payload,reordered.terrain.at({101,1}).payload);
+    CHECK(merge(source,reordered,bytes,error));CHECK(!project(bytes,unique,again,error));
+    CHECK(project(bytes,unique,again,error,true));CHECK(again.terrain.size()==unique.terrain.size());
+    for(const auto& [id,row]:unique.terrain){(void)row;CHECK(!again.terrain.contains(id));}
+    const auto replaced=editor::terrain_recipe(again);CHECK(replaced[0].payload==reordered.terrain.at({100,1}).payload);
+    CHECK(replaced[1].payload==reordered.terrain.at({101,1}).payload);
+    // Removing a distinct stamp preserves remaining immutable order even when
+    // a native assignment counter changed on the survivor.
+    auto erased=unique;erased.terrain.erase({100,1});erased.terrain.at({101,1}).payload.bytes[14]=11;
+    CHECK(merge(source,erased,bytes,error));CHECK(project(bytes,unique,again,error));CHECK(again.terrain.size()==3);
+    CHECK(again.terrain.at({101,1})==unique.terrain.at({101,1}));CHECK(!again.terrain.contains({100,1}));
+}
 static void captured(const char* path){
     std::ifstream in(path,std::ios::binary);CHECK(bool(in));if(!in)return;
     const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),{});Properties p;std::string error;
@@ -106,4 +152,87 @@ static void captured(const char* path){
     }
     std::printf("Captured native fixture: %zu recipe records, %zu properties, %zu preserved adventure bytes\n",d.terrain.size(),p.fields.size(),p.tail.size());
 }
-int main(int argc,char** argv){roundtrip();rejected();if(argc>1)captured(argv[1]);std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+static void captured_append(const char* before_path,const char* after_path){
+    auto read=[](const char* path){std::ifstream in(path,std::ios::binary);CHECK(bool(in));return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)),{});};
+    const auto before=read(before_path),after=read(after_path),unchanged=after;std::string error;editor::Document d,result;
+    namespace material=editor_native_terrain_materialization;
+    material::Recipe input,output;CHECK(material::from_bytes(before,input,error));CHECK(material::from_bytes(after,output,error));
+    // Retained actual native evidence has one new effect and unchanged models.
+    // The 282 old rows independently prove the audited proxy transition; the
+    // newly authored record is deliberately absent from this old-row witness.
+    CHECK(output.rows[0].size()==input.rows[0].size()+1);output.rows[0].pop_back();
+    material::Materialization witness;CHECK(witness.observe(input,output,error));auto normalized=after;
+    CHECK(witness.normalize(normalized,error));CHECK(after==unchanged);
+    CHECK(project(before,{},d,error));const auto projected=project(normalized,d,result,error);CHECK(projected);
+    if(!projected){std::printf("Captured append rejection: %s\n",error.c_str());return;}
+    CHECK(result.terrain.size()==d.terrain.size()+1);CHECK(after==unchanged);
+    for(const auto& [id,row]:d.terrain)CHECK(result.terrain.at(id)==row);
+    const auto recipe=editor::terrain_recipe(result);CHECK(recipe.back().kind==editor::TerrainKind::Effect);
+    editor::Document stable;CHECK(project(normalized,result,stable,error));CHECK(stable.terrain==result.terrain);
+    std::printf("Captured native append: %zu -> %zu records, all committed payloads preserved\n",d.terrain.size(),result.terrain.size());
+}
+static void materialization(){
+    namespace material=editor_native_terrain_materialization;
+    const auto source=baseline();editor::Document d;std::string error;CHECK(project(source,{},d,error));
+    for(auto row:{stroke(100,1,13),stroke(101,2,17),stroke(102,3,23,editor::TerrainKind::Model)})d.terrain.emplace(row.object,std::move(row));
+    d.next_terrain_order=4;std::vector<uint8_t> before;CHECK(merge(source,d,before,error));
+    auto input_doc=d,rendered=d;
+    for(auto& [id,row]:rendered.terrain){(void)id;row.payload.bytes[14]++;real(row.payload.bytes,16,std::nextafter(editor::terrain_float(row.payload.bytes,16),1000.f));}
+    std::vector<uint8_t> after;CHECK(merge(source,rendered,after,error));material::Recipe input,output;
+    CHECK(material::from_bytes(before,input,error));CHECK(material::from_bytes(after,output,error));
+    material::Materialization witness;CHECK(witness.observe(input,output,error));CHECK(witness.bytes()>0);
+    auto normalized=after;CHECK(witness.normalize(normalized,error));CHECK(normalized==before);CHECK(after!=before);
+    // A second rebuild is chained by exact prior rendered bytes, never epsilon.
+    auto twice=rendered;for(auto& [id,row]:twice.terrain){(void)id;row.payload.bytes[14]++;real(row.payload.bytes,16,std::nextafter(editor::terrain_float(row.payload.bytes,16),1000.f));}
+    std::vector<uint8_t> second;CHECK(merge(source,twice,second,error));material::Recipe twice_recipe;CHECK(material::from_bytes(second,twice_recipe,error));
+    CHECK(witness.observe(output,twice_recipe,error));normalized=second;CHECK(witness.normalize(normalized,error));CHECK(normalized==before);
+    normalized=after;CHECK(witness.normalize(normalized,error));CHECK(normalized==before); // deferred before-history copy
+    // Actual author changes have no exact previous rendered witness. Their
+    // genuine new input survives normalization while untouched rows chain.
+    auto edited=twice;real(edited.terrain.at({100,1}).payload.bytes,16,100);
+    auto edited_output=edited;for(auto& [id,row]:edited_output.terrain){(void)id;row.payload.bytes[14]++;real(row.payload.bytes,16,std::nextafter(editor::terrain_float(row.payload.bytes,16),1000.f));}
+    std::vector<uint8_t> edited_bytes,edited_output_bytes;CHECK(merge(source,edited,edited_bytes,error));CHECK(merge(source,edited_output,edited_output_bytes,error));
+    material::Recipe edited_input,edited_after;CHECK(material::from_bytes(edited_bytes,edited_input,error));CHECK(material::from_bytes(edited_output_bytes,edited_after,error));
+    CHECK(witness.observe(edited_input,edited_after,error));normalized=edited_output_bytes;CHECK(witness.normalize(normalized,error));
+    auto wanted=d;wanted.terrain.at({100,1})=edited.terrain.at({100,1});std::vector<uint8_t> wanted_bytes;CHECK(merge(source,wanted,wanted_bytes,error));CHECK(normalized==wanted_bytes);
+    // No unaudited mutation can establish provenance. Failures retain the old
+    // witness atomically, and a later valid rebuild can retry.
+    for(size_t offset:{size_t(0),size_t(12),size_t(28),size_t(32),size_t(64),size_t(68),size_t(72),size_t(76),size_t(80)}){
+        auto bad=edited_after;bad.rows[0][0].bytes[offset]^=1;CHECK(!witness.observe(edited_input,bad,error));
+        normalized=edited_output_bytes;CHECK(witness.normalize(normalized,error));CHECK(normalized==wanted_bytes);
+    }
+    auto bad=edited_after;bad.rows[0][0].bytes[14]++;CHECK(!witness.observe(edited_input,bad,error));
+    bad=edited_after;bad.rows[0].pop_back();CHECK(!witness.observe(edited_input,bad,error));
+    bad=edited_input;bad.rows[0][0].references.push_back({1,1});CHECK(!witness.observe(bad,edited_after,error));
+    // Equal rendered rows with different authored geometry are ambiguous and
+    // cannot be normalized by guessing their index or resource identity.
+    auto collision_in=input,collision_out=output;collision_out.rows[0][1]=collision_out.rows[0][0];
+    CHECK(!witness.observe(collision_in,collision_out,error));
+    collision_in.rows[0][1]=collision_in.rows[0][0];CHECK(witness.observe(collision_in,collision_out,error));
+    // An actual new/edited row can exactly equal a previous rendered payload.
+    // Native Append/Update provenance explicitly forbids borrowing that row's
+    // old authored geometry. Ambiguous output aliasing fails closed.
+    witness.clear();CHECK(witness.observe(input,output,error));
+    auto fresh_input=output,fresh_output=twice_recipe;material::AuthoredRows fresh;fresh[0].insert(0);
+    CHECK(witness.observe(fresh_input,fresh_output,error,fresh));normalized=second;CHECK(witness.normalize(normalized,error));
+    auto fresh_wanted=d;fresh_wanted.terrain.at({100,1})=rendered.terrain.at({100,1});CHECK(merge(source,fresh_wanted,wanted_bytes,error));CHECK(normalized==wanted_bytes);
+    witness.clear();CHECK(witness.observe(input,output,error));
+    auto appended_input=output,appended_output=twice_recipe;
+    appended_input.rows[0].push_back(output.rows[0][0]);appended_output.rows[0].push_back(twice_recipe.rows[0][0]);
+    fresh={};fresh[0].insert(appended_input.rows[0].size()-1);CHECK(!witness.observe(appended_input,appended_output,error,fresh));
+    witness.forget(editor::TerrainKind::Effect,input.rows[0][0]);
+    CHECK(witness.observe(fresh_input,fresh_output,error,fresh)); // forgotten actual input remains new authored data
+    // A payload that merely resembles a known rendered output stays untouched.
+    witness.clear();CHECK(witness.empty()&&witness.bytes()==0);CHECK(witness.observe(input,output,error));
+    auto unrelated=rendered;real(unrelated.terrain.at({100,1}).payload.bytes,16,99);std::vector<uint8_t> other;CHECK(merge(source,unrelated,other,error));
+    const auto original=other;CHECK(witness.normalize(other,error));editor::Document projected;CHECK(project(other,d,projected,error));
+    CHECK(editor::terrain_float(projected.terrain.at({100,1}).payload.bytes,16)==99);CHECK(other!=before&&original!=before);
+    auto truncated=after;truncated.resize(12);const auto retained=truncated;CHECK(!witness.normalize(truncated,error));CHECK(truncated==retained);
+    material::Columns columns;columns[0].resize(13);material::Recipe sentinel=input;CHECK(!material::from_columns(editor::TerrainKind::Effect,columns,sentinel,error));CHECK(sentinel==input);
+    columns[0].resize(12);CHECK(!material::from_columns(editor::TerrainKind::Effect,columns,sentinel,error));CHECK(sentinel==input);
+    // Deleting the final recipe row still leaves a deferred owned before-copy
+    // that needs its exact prior materialization proof.
+    witness.clear();CHECK(witness.observe(input,output,error));material::Recipe none;
+    CHECK(witness.observe(none,none,error));normalized=after;CHECK(witness.normalize(normalized,error));CHECK(normalized==before);
+}
+int main(int argc,char** argv){roundtrip();rejected();transform_counters();materialization();if(argc>1)captured(argv[1]);if(argc>2)captured_append(argv[1],argv[2]);std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

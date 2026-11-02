@@ -508,3 +508,58 @@ PNG and independently decoded RGBA comparison. Sanitized output is 65,737
 bytes, each channel differs by at most 7/255, and neither native header variant
 matches. This establishes the codec and recorded image behavior. Visible Crew
 rendering through a newly delivered alias remains a separate native UI check.
+
+### Terraform proxy materialization, exact authored provenance
+
+The first actual C12 Raise Round Terrain card drag reached native history, but
+release rejected an ambiguous recipe identity. The frozen read-only capture in
+`out/preview9-c12-terrain-rpm/result.json` contains 181 host effects versus 180
+observer effects and the same 102 models. All prior keys and effect scalars are
+exact. Twenty-seven old effect transforms and 92 model transforms increment
+their native WORD at Transform+2; three old effects and seven models also change
+translation by one to three float ULPs. Counter-only identity normalization is
+therefore insufficient; accepting approximate positions would hide real edits.
+
+Verified native `F35E10`, now named `TerraformMaterialize`, reconstructs editor
+proxy nouns from the recipe. `F37530` calls it at `F37858`; rebuild's validation
+path calls it at `F37CC6`. It consumes no stack arguments and returns through
+`F3621E` or the final proxy Release tail at `F36215`. Its effect path calls
+`F325B0` at `F3603B`: noun slot+2C supplies position, then `F32603..1A` copies
+XYZ into Transform+4/+8/+C, ORs flag4 and increments WORD+2. The model path
+performs the same writes inline at `F36164..79`. `F33C10` only reads its input
+Transform: position and matrix are copied to stack arguments before native
+proxy setters. These receipts are checked by `verify_editor_dc04.py`.
+
+Transform assignment `537E10` independently compares flags, offset, scale and
+rotation, increments WORD+2 at `537E83..91`, then copies actual geometric data.
+`PreTransformBy40CCB0` increments that word too; `ToMatrix4` ignores it. Record
+identity matching may exclude only that counter and retain the complete old
+committed payload for an otherwise exact match. Ordinary projection now rejects
+reordering distinct committed stamps; checked whole-recipe Load can allocate a
+replacement sequence. No numeric tolerance is introduced.
+
+The owned materialization witness brackets the verified proxy boundary and
+accepts only unchanged rows or exactly the audited XYZ/flag4/counter increment.
+Exact prior rendered payloads can chain back to authored input. Verified native
+Append and Update mark fresh row indices, so new or genuinely edited input
+cannot borrow another stamp's old authored coordinate. Ambiguous output aliases
+reject. External preset Load and native scene/owner/project/epoch/participant
+changes retire the witness. At most four bounded primitive-byte maps survive,
+including before-history copies; no native pointers are retained as owned data.
+
+Only an exact rendered payload match can replace transform bytes in a privately
+serialized snapshot. Live vectors, native save buffers, unknown planet fields
+and the adventure DBPF body remain unchanged. Persisted snapshots contain the
+authored recipe itself, so recovery never depends on this temporary witness.
+Unaudited output fails through the existing deferred synchronization failure
+path before further native authoring. Running-game acceptance of this adapter
+is still required. Strict portable and actual-i686 terrain fixtures each pass
+559 checks, including the retained 282-to-283-record evidence and independent
+negative cases for real field changes, duplicate provenance, stale order and
+two appends.
+The production adapter's actual-i686 fixture additionally passes 163 focused
+checks for the verified hook boundary, exact owned normalization, fresh-row
+marking, stale owner/scope/source/generation rejection and deferred failure.
+The complete native fixture passes 13,586 checks with these additions. A final
+row deletion retains its before-history witness even when the current recipe
+is empty; C13's initial helper lacked that case, and C14 includes its regression.
