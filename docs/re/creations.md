@@ -357,13 +357,15 @@ are editor ID0C, source ResourceKey10, return mode1C and new-asset flag20.
 VCL99F87089, UFO96B24187, FLR1C7ECA95 and CLL3615A30B.
 
 `57A710` is thiscall(editor, result), ret4. Its result key is18 and cancellation
-flag44. It broadcasts30C11C7, emits the normal E11332 return, then releases
-editor1CC request and4BC result. Native cast palette `ED4289..ED42C1` checks
-result44 before importing. The creation adapter matches its owned request,
-pins the result, copies the real completion, temporarily marks only this result
-cancelled during the native notifier, then restores44 and releases the pin.
-Thus native return/cleanup remains native and the shared coordinator owns the
-asset transaction. Unrelated results retain their normal behavior.
+flag44. It posts30C11C7 and the normal E11332 return, then releases editor1CC
+request and4BC result. Native cast palette `ED4289..ED42C1` checks result44
+before importing. The creation adapter matches its exact owned request and
+copies the real key and cancellation flag into an owned immutable completion.
+It pins the native result across the original notifier, marks that result
+cancelled and leaves it cancelled for its entire queued lifetime. The posted
+message holds its own reference. Native return/cleanup remains native and the
+shared coordinator receives the original completion for admission. Unrelated
+requests and their native result flags are untouched.
 
 Native class import `F462F0` owns constructor/copy/insertion, class allocation and
 default act behaviors, but calls `F43990` to assign its primary asset. That
@@ -428,7 +430,7 @@ and exact client viewport. The fixture rejects arbitrary console/native calls,
 unowned windows, candidate hash mismatches and truncated asset diagnostics.
 Its self-test and Python compilation pass; no running-game result or measured
 recipe is claimed by those checks. The production i686 lifecycle fixture now
-passes 211 checks, including same-key Save routing, both logical and companion resource
+passes 308 checks, including same-key Save routing, both logical and companion resource
 identity collisions, and the host ABI's zero-success hook registration.
 
 Uploaded creation closures are checked against the host's effective native
@@ -559,3 +561,32 @@ then restore the pinned local view/selection before acknowledging return.
 Controlled fixtures should cover a missing orbit, changed context/generation,
 duplicate service, delayed readiness and both Done and Cancel. Actual native
 Done/Cancel and independent return must still establish scene acceptance.
+
+The result-listener lifetime audit found a separate defect in candidate 6.
+`57A737` and `57A85B` use MessageManager vtable `+18`, which is MessagePost
+`885980`, rather than synchronous MessageSend `8854A0` at `+14`. The verified
+vtable is `01427AC0`, installed by `884B17`. MessagePost retains the result at
+`8859A5` when the manager's reference-ownership option `+C4` is enabled, then
+enqueues it through `8859FA`. Restoring result `+44` immediately after the
+original notifier returns lets queued cast listeners observe an uncancelled
+result and bypass shared admission. The old synchronous fixture concealed
+that defect. This does not establish that the defect caused the observed
+black viewport; the toolbar's new request has no native cast callback context.
+
+The corrected hook copies the true completion before mutation and never restores
+the native result's cancellation flag. Complete `57A710..57A960` inspection
+shows no read of `result+44`, including its later return-message and cleanup
+branches. The reviewed Adventure import/callback listeners use that flag to
+skip their asset mutation. Generic Simulator listener `B367D3` instead resolves
+the result context and sends `3047CB34` without inspecting cancellation; no
+camera activation was found in that reviewed branch. These findings preserve
+the separate requirement to verify actual native UI and scene return.
+
+The lifecycle fixture now models a retained queued result and a separately
+queued mode return. Its 308 checks include listener dispatch after the hook,
+waiting for the native mode return, queued delivery after module shutdown,
+balanced result/request references, original saved-key/cancellation delivery,
+same-key saves and an unrelated request while a shared creation session is
+active. The strict i686 build and executable pass; the receipt is
+`out/editor-preview9-creation/creation-posted-result.log`. This is controlled
+message-lifetime evidence, not a running-game Done/Cancel acceptance result.

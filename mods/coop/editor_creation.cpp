@@ -83,14 +83,14 @@ void SK_THISCALL notify(void* editor,void* result){
         session->result=completed;session->phase=Phase::Returning;
         if(!completed.cancelled)retained_saved=completed;
     }
-    // ED4289..ED42C1 checks +44 before importing. Suppress that uncoordinated
-    // import only for our result, retaining the native return event and cleanup.
-    // Pin the result because NotifyResult releases the editor's own reference.
+    // NotifyResult posts 030C11C7 through IMessageManager+18 (MessagePost), so
+    // ED4289..ED42C1 reads +44 after this hook returns. Keep this exact owned
+    // native result cancelled for its entire posted lifetime. The copied Result
+    // above retains the real completion for coordinated admission and return.
+    // Pin across NotifyResult's release; the posted message owns its own ref.
     addref(result);
-    const bool cancelled=skg::field<bool>(result,0x44);
     skg::field<bool>(result,0x44)=true;
     original_notify(editor,result);
-    skg::field<bool>(result,0x44)=cancelled;
     release(result);
 }
 void service(){

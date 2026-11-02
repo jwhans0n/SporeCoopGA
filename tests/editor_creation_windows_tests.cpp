@@ -17,14 +17,18 @@ std::array<uint8_t,0x48> native_result{};
 std::array<uint8_t,0x2CB0> owned_resource{};
 std::vector<uint8_t> owned_classes;
 std::deque<std::pair<SkTaskFn,void*>> tasks;
+struct NativeMessage { bool result;void* object; };
+std::deque<NativeMessage> native_messages;
 editor_creation::Notify notify_hook=nullptr;
 editor_creation_native::Assign assign_hook=nullptr;
 uint32_t mode=modes::kScenario;
 double now=1;
 unsigned submissions=0,native_returns=0,native_imports=0,finished=0,returned=0,live_class_writes=0;
+unsigned native_result_deliveries=0,native_mode_returns=0;
 bool grant=false,live_scope=true,lease=true,return_ready=false,submit_ok=true,reject=false;
 bool allocation_failure=false;
 bool returned_cancelled=false;
+editor::ResourceKey returned_saved;
 std::set<void*> allocations;
 editor_native::GestureScope owner;
 std::vector<dbpf::Record> collected;
@@ -32,10 +36,23 @@ editor::ResourceKey source{0x29001234,0x2B978C46,0x40626200};
 int SK_THISCALL ref(void* p){return ++skg::field<int>(p,8);}
 int SK_THISCALL unref(void* p){auto n=--skg::field<int>(p,8);CHECK(n>=0);if(!n && allocations.erase(p))std::free(p);return n;}
 void SK_THISCALL native_notify(void* e,void* r){
-    ++native_returns;if(!skg::field<bool>(r,0x44))++native_imports;
+    // Actual 57A737 and 57A85B call IMessageManager+18, MessagePost. Retain the
+    // result until its listener runs after NotifyResult has released the editor
+    // references. NotifyResult itself never inspects the cancellation byte.
+    ++native_returns;ref(r);native_messages.push_back({true,r});
+    native_messages.push_back({false,nullptr});
     auto* req=skg::field<void*>(e,0x1CC);skg::field<void*>(e,0x1CC)=nullptr;
-    if(req)unref(req);unref(r);mode=modes::kScenario;
+    if(req)unref(req);unref(r);
 }
+void pump_native_message(){
+    CHECK(!native_messages.empty());auto message=native_messages.front();native_messages.pop_front();
+    if(message.result){
+        CHECK(skg::field<int>(message.object,8)>0);++native_result_deliveries;
+        if(!skg::field<bool>(message.object,0x44))++native_imports;
+        unref(message.object);
+    }else{++native_mode_returns;mode=modes::kScenario;}
+}
+void pump_native_messages(){while(!native_messages.empty())pump_native_message();}
 void SK_THISCALL native_assign(void*,uint32_t,const editor::ResourceKey*){++live_class_writes;}
 void row_pointers(){skg::field<void*>(owned_resource.data(),0x2BF4)=owned_classes.data();skg::field<void*>(owned_resource.data(),0x2BF8)=owned_classes.data()+owned_classes.size();}
 uint8_t* SK_THISCALL get_class(void* owner,uint32_t index){
@@ -76,8 +93,9 @@ int hook(SkMod*,void* address,void* detour,void** original){
 }
 void queue(SkTaskFn fn,void* data){tasks.push_back({fn,data});}
 void pump(){auto work=std::move(tasks);tasks.clear();for(auto [fn,data]:work)fn(data);}
-void step(){editor_creation::tick();pump();}
+void step(){pump_native_messages();editor_creation::tick();pump();}
 void initialize(){
+    pump_native_messages();
     editor_creation::shutdown();tasks.clear();
     CHECK(allocations.empty());allocation_failure=false;
     request.fill(0);native_editor.fill(0);native_result.fill(0);
@@ -86,6 +104,7 @@ void initialize(){
     skg::field<uint32_t>(request.data(),0xC)=0x465C50BA;skg::field<editor::ResourceKey>(request.data(),0x10)=source;
     grant=false;live_scope=lease=true;return_ready=reject=returned_cancelled=false;submit_ok=true;mode=modes::kScenario;now=1;
     submissions=native_returns=native_imports=finished=returned=live_class_writes=0;
+    native_result_deliveries=native_mode_returns=0;returned_saved={};
     owner={};owner.project[0]=9;owner.epoch=12;owner.author={1,3};
     static SkHost host{};host.sym=sym;host.hook_create=hook;host.time_seconds=[](){return now;};host.run_outside_frame=queue;
     host.exe_sha256=[](){return "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37";};
@@ -94,7 +113,7 @@ void initialize(){
     context.current=[](const auto& scope){return live_scope && scope.project==owner.project && scope.epoch==owner.epoch && scope.author==owner.author;};
     context.prepare=[](const auto&,auto& input,std::string& error){input.target=editor::ObjectId{(2ull<<32)|7,1};if(reject){error="denied";return editor_creation::PrepareResult::Reject;}return grant?editor_creation::PrepareResult::Ready:editor_creation::PrepareResult::Wait;};
     context.lease_valid=[](const auto&,auto){return lease;};
-    context.returned=[](const auto&,const auto& result,std::string&){++returned;returned_cancelled=result.cancelled;return return_ready;};
+    context.returned=[](const auto&,const auto& result,std::string&){++returned;returned_cancelled=result.cancelled;returned_saved=result.saved;return return_ready;};
     context.finished=[](const auto&,bool,const std::string&){++finished;};
     CHECK(editor_creation::init(&host,nullptr,std::move(context)));
 }
@@ -141,11 +160,17 @@ int main(){
     grant=true;step();CHECK(submissions==1 && editor_creation::designing());step();CHECK(submissions==1);
     CHECK(!editor_creation::intercept(request.data(),submit));CHECK(submissions==1);
     result();CHECK(native_returns==1 && native_imports==0);
-    CHECK(!skg::field<bool>(native_result.data(),0x44) && skg::field<int>(native_result.data(),8)==0);
+    CHECK(skg::field<bool>(native_result.data(),0x44) && skg::field<int>(native_result.data(),8)==1);
+    CHECK(native_messages.size()==2 && native_result_deliveries==0 && mode==modes::kEditor && returned==0);
     CHECK(editor_creation::last_saved()->saved.instance==0x29004321);
+    CHECK(!editor_creation::last_saved()->cancelled);
+    pump_native_message();CHECK(native_imports==0 && native_result_deliveries==1 && skg::field<int>(native_result.data(),8)==0);
+    editor_creation::tick();pump();CHECK(returned==0 && editor_creation::active());
+    CHECK(mode==modes::kEditor && native_mode_returns==0);
     step();CHECK(editor_creation::active() && returned==1);
+    CHECK(native_mode_returns==1 && !returned_cancelled && returned_saved.instance==0x29004321);
     return_ready=true;step();CHECK(!editor_creation::active() && finished==1 && skg::field<int>(request.data(),8)==0);
-    initialize();start();result(true);return_ready=true;step();CHECK(!editor_creation::active() && native_imports==0);
+    initialize();start();result(true);return_ready=true;step();CHECK(!editor_creation::active() && native_imports==0 && returned_cancelled);
     // A family may save changed bytes under its existing native key. Identity
     // equality cannot prove an unchanged Done; the coordinator compares content.
     initialize();start();result(false,true);return_ready=true;step();CHECK(!editor_creation::active() && !returned_cancelled && native_imports==0);
@@ -156,10 +181,33 @@ int main(){
     initialize();start();live_scope=false;result();step();CHECK(!editor_creation::active() && returned==0);
     initialize();CHECK(!editor_creation::intercept(request.data(),submit));unref(request.data());now=32;step();CHECK(!editor_creation::active());
     initialize();submit_ok=false;grant=true;CHECK(!editor_creation::intercept(request.data(),submit));unref(request.data());step();CHECK(!editor_creation::active() && skg::field<int>(request.data(),8)==0);
+    // A posted result can outlive the module's session or scene. Its own native
+    // reference remains valid and cancelled; the real saved result is owned.
+    initialize();start();result();editor_creation::shutdown();
+    CHECK(skg::field<int>(request.data(),8)==0 && skg::field<int>(native_result.data(),8)==1);
+    CHECK(native_result_deliveries==0 && native_messages.size()==2);
+    CHECK(editor_creation::last_saved()->saved.instance==0x29004321 && !editor_creation::last_saved()->cancelled);
+    pump_native_messages();CHECK(native_imports==0 && native_result_deliveries==1 && native_mode_returns==1);
+    CHECK(skg::field<int>(native_result.data(),8)==0);
     initialize();
     // Unrelated native results are delivered with their real cancellation bit.
     skg::field<void*>(native_result.data(),0)=refs_vt.data();skg::field<int>(native_result.data(),8)=1;
-    notify_hook(native_editor.data(),native_result.data());CHECK(native_imports==1);
+    notify_hook(native_editor.data(),native_result.data());CHECK(native_imports==0 && !skg::field<bool>(native_result.data(),0x44));
+    pump_native_messages();CHECK(native_imports==1 && skg::field<int>(native_result.data(),8)==0);
+    // An active owned session must not capture or cancel another request's
+    // result. Its queued listeners retain the native import behavior.
+    initialize();start();
+    std::array<uint8_t,0x1D0> other_editor{};std::array<uint8_t,0x9C> other_request{};
+    std::array<uint8_t,0x48> other_result{};
+    skg::field<void*>(other_request.data(),0)=refs_vt.data();skg::field<int>(other_request.data(),8)=1;
+    skg::field<void*>(other_editor.data(),0x1CC)=other_request.data();
+    skg::field<void*>(other_result.data(),0)=refs_vt.data();skg::field<int>(other_result.data(),8)=1;
+    notify_hook(other_editor.data(),other_result.data());
+    CHECK(!skg::field<bool>(other_result.data(),0x44) && editor_creation::active());
+    CHECK(skg::field<void*>(native_editor.data(),0x1CC)==request.data());
+    CHECK(skg::field<int>(other_request.data(),8)==0 && skg::field<int>(other_result.data(),8)==1);
+    pump_native_messages();CHECK(native_imports==1 && skg::field<int>(other_result.data(),8)==0);
+    result();return_ready=true;step();CHECK(!editor_creation::active() && native_imports==1 && !returned_cancelled);
     editor_native::Snapshot base,out;editor::ObjectId cls{(2ull<<32)|7,1},settings{(5ull<<32)|7,1};
     base.document.classes.insert(cls);base.document.next_class=8;
     base.document.class_settings[settings]={settings,cls,{},{{editor::kClassAssetResourceProperty,source}}};

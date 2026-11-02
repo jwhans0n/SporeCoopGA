@@ -256,6 +256,19 @@ further scoped implementation and an actual Done/Cancel rerun; no generic
 camera-selection repair is claimed here. Details are in
 [the creation RE notes](../re/creations.md#9-native-creation-return-failure-candidate-6-2026-11-02).
 
+The subsequent native message audit found a separate result-suppression defect:
+NotifyResult posts its listeners through MessagePost. Candidate 6 restored the
+native cancellation byte before those listeners ran. The corrected hook keeps
+only its exact owned native result cancelled for the full queued lifetime and
+retains the real saved completion separately for the coordinator. A strict
+i686 lifecycle fixture with retained queued messages passes 308 checks,
+including delayed listeners, native mode-return ordering, shutdown, balanced
+references and unrelated requests. Receipt:
+`out/editor-preview9-creation/creation-posted-result.log`. The earlier
+synchronous fixture did not cover this boundary. The fix and scoped camera
+activation still require an actual native Done/Cancel rerun that also verifies
+the Adventure Editor controls and visible scene have returned.
+
 ## Required native acceptance
 
 Actual two- and four-player candidate runs remain pending for crew edits,
