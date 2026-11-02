@@ -32,6 +32,39 @@ PROFILES = {
 }
 EVENT = re.compile(r'^event=(\d+) stage=([a-z_]+) qpc=(\d+) project=([0-9a-f]{32}) '
                    r'author=(\d+):(\d+) sequence=(\d+) operation_epoch=(\d+) revision=(\d+) success=([012])$')
+NATIVE_SPANS = ('read', 'write', 'projection', 'resolution', 'supported')
+NATIVE_COUNTS = ('parsed_image_hits', 'parsed_image_misses', 'pose_capture_hits', 'pose_capture_fallbacks')
+
+
+def native_work_sample(text):
+    """Optional development counters, sampled outside the measured window."""
+    row = values(text)
+    keys = {'native_work_frequency', *NATIVE_COUNTS}
+    keys.update(f'native_{name}_{field}' for name in NATIVE_SPANS for field in ('calls', 'ticks'))
+    present = keys & row.keys()
+    if not present:
+        return None
+    if present != keys or any(type(row[key]) is not int or not 0 <= row[key] < 2**64 for key in keys) or not row['native_work_frequency']:
+        raise FixtureError('Partial or invalid native work counters')
+    return {key: row[key] for key in keys}
+
+
+def native_work_delta(before, after):
+    if before is None and after is None:
+        return None
+    if before is None or after is None or before.keys() != after.keys() or before['native_work_frequency'] != after['native_work_frequency']:
+        raise FixtureError('Native work counter availability or clock changed')
+    frequency = after['native_work_frequency']
+    if any(after[key] < before[key] for key in before):
+        raise FixtureError('Native work counters reset during the gesture')
+    spans = {}
+    for name in NATIVE_SPANS:
+        calls = after[f'native_{name}_calls'] - before[f'native_{name}_calls']
+        ticks = after[f'native_{name}_ticks'] - before[f'native_{name}_ticks']
+        spans[name] = dict(calls=calls, ticks=ticks, inclusive_ms=ticks * 1000 / frequency)
+    return dict(frequency=frequency, spans=spans,
+                counts={key: after[key] - before[key] for key in NATIVE_COUNTS},
+                scope='Release through durable settlement; nested spans overlap and must not be summed.')
 
 
 def percentile(samples, fraction=.95):
@@ -378,6 +411,7 @@ def measure(party,author,object_id,index):
         for fraction in (.35,.7,1.):
             author.call(f'move {round(source[0]+(target[0]-source[0])*fraction)} {source[1]}')
             author.call('wait.frames 6 15000');time.sleep(.06)
+        work_before={str(game.instance):native_work_sample(game.call('coop.editor status')) for game in party.all_games}
         source_before={str(game.instance):game.call('log 2000') for game in party.all_games}
         for game in party.all_games:
             game.call('coop.editor stages reset');game.call('coop.frame_metrics start');recording.append(game)
@@ -388,13 +422,16 @@ def measure(party,author,object_id,index):
         party.host.wait('one durably accepted native release',lambda:settled_revision(party,before_revision+1))
         frames={str(game.instance):frame_sample(game.call('coop.frame_metrics stop')) for game in party.all_games}
         recording.clear()
+        work_after={str(game.instance):native_work_sample(game.call('coop.editor status')) for game in party.all_games}
+        native_work={str(game.instance):native_work_delta(work_before[str(game.instance)],work_after[str(game.instance)]) for game in party.all_games}
         sources={str(game.instance):source_fence(source_before[str(game.instance)],game.call('log 2000')) for game in party.all_games}
         captures={str(game.instance):read_stages(game,party.records[game.instance]['pid']) for game in party.all_games}
         correlation=correlate(captures,author.instance,before_revision+1)
         party.converge(before_revision+1)
         after=party.objects(author)
         assert_target_moved(before,after,object_id)
-        result=dict(author_instance=author.instance,object=object_id,correlation=correlation,frames=frames,captures=captures,frame_source_fences=sources)
+        result=dict(author_instance=author.instance,object=object_id,correlation=correlation,frames=frames,captures=captures,
+                    frame_source_fences=sources,native_work=native_work)
         return result
     finally:
         if held:author.call(f'button {target[0]} {target[1]} up',required=False)

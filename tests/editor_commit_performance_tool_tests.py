@@ -39,6 +39,35 @@ def page(value):
 
 
 class StageContracts(unittest.TestCase):
+    def test_native_work_reports_inclusive_counter_deltas_without_guessing_costs(self):
+        before={'native_work_frequency':1000,**{key:2 for key in perf.NATIVE_COUNTS}}
+        for name in perf.NATIVE_SPANS:
+            before[f'native_{name}_calls']=4;before[f'native_{name}_ticks']=50
+        after={key:value+3 if key!='native_work_frequency' else value for key,value in before.items()}
+        after['native_projection_ticks']=90
+        encode=lambda row:'editor_native '+ ' '.join(f'{key}={value}' for key,value in row.items())
+        result=perf.native_work_delta(perf.native_work_sample(encode(before)),perf.native_work_sample(encode(after)))
+        self.assertEqual(result['spans']['projection'],dict(calls=3,ticks=40,inclusive_ms=40))
+        self.assertEqual(result['spans']['read']['inclusive_ms'],3)
+        self.assertEqual(result['counts']['pose_capture_hits'],3)
+        self.assertIn('must not be summed',result['scope'])
+
+    def test_native_work_old_payloads_are_explicitly_unavailable(self):
+        self.assertIsNone(perf.native_work_sample('editor_native available=1 captures=5'))
+        self.assertIsNone(perf.native_work_delta(None,None))
+        with self.assertRaises(perf.FixtureError):perf.native_work_sample('native_work_frequency=1000')
+        with self.assertRaises(perf.FixtureError):perf.native_work_delta(None,{'native_work_frequency':1000})
+
+    def test_native_work_rejects_partial_reset_invalid_and_changed_clocks(self):
+        sample={'native_work_frequency':1000,**{key:2 for key in perf.NATIVE_COUNTS}}
+        for name in perf.NATIVE_SPANS:
+            sample[f'native_{name}_calls']=4;sample[f'native_{name}_ticks']=50
+        for key,value in [('native_work_frequency',0),('native_read_calls',-1),('native_read_ticks',2**64)]:
+            bad={**sample,key:value}
+            with self.assertRaises(perf.FixtureError):perf.native_work_sample(' '.join(f'{k}={v}' for k,v in bad.items()))
+        for key,value in [('native_work_frequency',2000),('native_read_calls',3),('native_read_ticks',49)]:
+            with self.assertRaises(perf.FixtureError):perf.native_work_delta(sample,{**sample,key:value})
+
     def test_drag_requires_exact_native_selection_and_live_lease_before_movement(self):
         calls=[]
         lease='local=0:1 phase=4 revision=7\nmember peer=0:1 phase=4 pending=0\nlease scope=Placement object=4:1 token=11 remaining_ms=9000\n'
