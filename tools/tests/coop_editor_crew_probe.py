@@ -76,7 +76,13 @@ def run(args):
             record('add')
         if args.stage=='lock':
             author.call(f'move {args.slot[0]} {args.slot[1]}');author.call('wait.frames 8 15000')
-            author.click_control(0x07C4B4A0);revision+=1;host.wait('all-participant Crew lock',lambda:settled(revision))
+            x,y=args.lock_point;hits=author.call(f'coop.ui at {x} {y}')
+            result['crew_lock_hit']=hits;write()
+            if not all(control+' ' in hits for control in ('064A90A0','03D98304','07C4B4A0')):
+                raise FixtureError('The measured lock point is outside the owning Crew card')
+            # Captain and Crew reuse the lock ID. The owning Crew point is
+            # measured independently; global first-match lookup is unsafe.
+            author.click(x,y);revision+=1;host.wait('all-participant Crew lock',lambda:settled(revision))
             history=parse_history(host.call('coop.editor history'))
             if len(history)!=before+1 or history[-1][-1]!='Edit adventure crew' or history[-1][0]!=author.player_id():raise FixtureError('Crew lock history is not one author-owned item')
             record('lock')
@@ -102,7 +108,8 @@ def main():
     parser.add_argument('--instances',type=int,nargs='+',default=[95,96,97,98]);parser.add_argument('--author',type=int,default=95)
     parser.add_argument('--dll-sha256');parser.add_argument('--output',type=Path);parser.add_argument('--revision',type=int)
     parser.add_argument('--stage',choices=['probe','capacity','add','capacity-add','lock','history'],default='probe')
-    parser.add_argument('--slot',type=int,nargs=2,default=[998,489]);parser.add_argument('--timeout',type=int,default=90);parser.add_argument('--deadline',type=int,default=900)
+    parser.add_argument('--slot',type=int,nargs=2,default=[998,489]);parser.add_argument('--lock-point',type=int,nargs=2,default=[977,466])
+    parser.add_argument('--timeout',type=int,default=90);parser.add_argument('--deadline',type=int,default=900)
     args=parser.parse_args()
     if not args.execute:
         print(json.dumps(dict(prepared=True,launches_games=False,viewport=[1024,768],stages=parser._option_string_actions['--stage'].choices)));return
@@ -110,6 +117,7 @@ def main():
             len(args.instances) not in (2,4) or len(set(args.instances))!=len(args.instances) or args.author not in args.instances or
             not all(0<=value<limit for value,limit in zip(args.slot,[1024,768])) or not 30<=args.timeout<=300 or not 60<=args.deadline<=1800):
         parser.error('Exact owned metadata/hash, author, baseline revision and bounded2/4-player arguments required')
+    if not all(0<=value<limit for value,limit in zip(args.lock_point,[1024,768])):parser.error('Measured Crew lock point must remain inside1024x768')
     run(args)
 
 
