@@ -2869,7 +2869,10 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
             !editor_project::native_snapshot(*incoming_resources, state.document, native, error) ||
             !register_native_records(incoming_resources->root,incoming_resources->bundle.records, error)) return false;
         if (!editor_native::state().editing && !editor_native::enter(native.source, error)) return false;
-        if (!editor_native::restore(native, error) || !editor_native::apply(state.document, error)) return false;
+        // restore installs and validates this exact document. A terrain rebuild
+        // can still be loading after it returns; scene readiness is acknowledged
+        // separately rather than applying the same document a second time.
+        if (!editor_native::restore(native, error)) return false;
         std::vector<uint8_t> envelope;
         if (!editor_project::encode_resources(*incoming_resources, envelope, error)) return false;
         store.close();
