@@ -43,7 +43,7 @@ class NeedMore(Exception):
 
 
 def planet_prefix(data):
-    """Decode only the verified property prefix, never the adventure DBPF body."""
+    """Decode verified prefix semantics; native_planet retains its raw-byte SHA."""
     def take(at, count):
         if at+count > len(data):
             raise NeedMore()
@@ -84,6 +84,11 @@ def planet_prefix(data):
         value = bytearray(data[begin:at])
         if not flags & 0x80 and kind in (0x20, 0x31, 0x32) and len(value) == 16:
             value[12:16] = bytes(4)
+        # BuildProperties inserts this cleared None placeholder with an unused
+        # inline union. Only its 16 payload bytes are nonsemantic; presence,
+        # type and flags still participate in every planet comparison.
+        if ident == 0x040539D4 and kind == 0 and flags == 0 and len(value) == 16:
+            value[:] = bytes(16)
         result[ident] = (kind, flags, value.hex())
     return result, at
 
@@ -116,6 +121,8 @@ def native_planet(game):
         try:
             fields, end = planet_prefix(data)
             return dict(fields=fields, prefix_bytes=end,
+                        # Hash the untouched native prefix, including unused
+                        # placeholder bytes, rather than the semantic fields.
                         prefix_sha256=hashlib.sha256(data[:end]).hexdigest())
         except NeedMore:
             if not count or len(data) == size:
@@ -408,6 +415,36 @@ def self_test(root):
         changed=[(1,author,sequence,epoch,revision,applied,redo,'Terraform adventure')]
         rejects(lambda rows=changed:require_new_history([],rows,(1,7),context,10))
     rejects(lambda:require_new_history(entries,entries,(1,7),context,10))
+    def prefix(rows):
+        return (struct.pack('<II',0xB523D4F9,17)+struct.pack('>I',len(rows))+
+                b''.join(struct.pack('>IHH',ident,kind,flags)+value for ident,kind,flags,value in rows))
+    placeholder=0x040539D4;payload=bytes(range(16));changed=bytes(reversed(payload))
+    original=prefix([(placeholder,0,0,payload)]);fresh=prefix([(placeholder,0,0,changed)])
+    first,first_end=planet_prefix(original);second,second_end=planet_prefix(fresh)
+    check(first==second=={placeholder:(0,0,bytes(16).hex())})
+    check(first_end==second_end==36 and original[20:]==payload and fresh[20:]==changed)
+    check(planet_prefix(prefix([]))[0]!=first) # Presence remains semantic.
+    for ident,kind,flags,value,next_value in [
+            (placeholder,0,1,payload,changed), # A different None flag is strict.
+            (placeholder+1,0,0,payload,changed), # No other None field is masked.
+            (placeholder,0x20,0,payload,changed), # A typed scalar key is strict.
+            (placeholder,0x20,0x80,struct.pack('>II',1,12)+payload[:12],struct.pack('>II',1,12)+changed[:12])]:
+        left=planet_prefix(prefix([(ident,kind,flags,value)]))[0]
+        right=planet_prefix(prefix([(ident,kind,flags,next_value)]))[0]
+        check(left!=right)
+    check(planet_prefix(prefix([(placeholder,0,1,payload)]))[0]!=first)
+    check(planet_prefix(prefix([(placeholder,0x20,0,payload)]))[0]!=first)
+    rejects(lambda:planet_prefix(original[:-1]),NeedMore)
+    class PrefixGame:
+        def __init__(self,native):self.native=native
+        def call(self,command):
+            check(command=='coop.editor inspect bytes 0 2048')
+            return (f'NATIVE_BYTES size={len(self.native)} offset=0 count={len(self.native)} '
+                    f'sha256={hashlib.sha256(self.native).hexdigest()}\nhex={self.native.hex()}\n')
+    left=native_planet(PrefixGame(original));right=native_planet(PrefixGame(fresh))
+    check(left['fields']==right['fields'] and left['prefix_sha256']!=right['prefix_sha256'])
+    check(left['prefix_sha256']==hashlib.sha256(original).hexdigest() and
+          right['prefix_sha256']==hashlib.sha256(fresh).hexdigest())
     data = (root/'out/editor-terrain-root.bin').read_bytes()
     fields, end = planet_prefix(data)
     assert len(fields) == 30 and end == 14262
