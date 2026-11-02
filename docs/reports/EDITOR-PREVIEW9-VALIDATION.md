@@ -12,8 +12,9 @@ not completed native acceptance, a main merge or a public release.
 - Host-ordered terrain records have stable identities, checked replacement and
   deletion, and one Undo item per stroke. Concurrent appends do not take a global
   planet lease. Native application preserves terrain-derived placement grounding.
-- Asset-editor sessions are local to each participant. The six implemented entry
-  families are Creature, Building, Vehicle, Spaceship, Plant and Cell. Saved
+- Asset-editor sessions are local to each participant. The four verified
+  adventure-compatible entry families are Creature, Building, Vehicle and
+  Spaceship, with native subtype resolution. Direct Plant and Cell entry rejects. Saved
   creations use dependency validation and immutable content replacement under a
   separate Content lease, preserving current cast properties.
 - Canonical, durable and rendered scene revisions are distinct. A detached
@@ -517,6 +518,49 @@ That full proof is `durable-history-proof.json` in the same directory.
 
 No Motel of Melora, WAN, transfer-contention or release performance pass is
 claimed. Feature-specific native acceptance remains separate.
+
+## Candidate 10: frozen source, affected checks and bootstrap
+
+Candidate 10 DLL is
+`5caceb0a81e216653e23a8a2771b726790572adc51ad5e3189a0c91b3b25561f`.
+`out/preview9-candidate10-source.json` pins 187 build inputs and the payload;
+the affected-check reconciliation confirms that all current inputs still match.
+The full portable repository command
+`make -j4 B=out/preview9-final-portable HOSTCXX=clang++ test` exits 0, with
+matching critical source hashes in `out/preview9-final-portable-receipt.json`.
+The log includes document 2,898, protocol 8,946, binary delta 6,410, project
+5,683, store 2,015, UDP/controller 30,094, transport 3,898 and accounting 3,425
+checks. RE lint reports 400 symbols used, 3,024 known and zero supported-build
+problems. Unsupported frozen-build notices remain informational.
+
+The exact current runtime/executable receipt preserves the full 30,616-check
+Win32 pass, including the 24 MiB closure case. The focused Crew integration
+passes 1,555 checks again. The native adapter fixture passes 12,458 checks again;
+its source/header/helper/executable hashes match its recorded pass and candidate
+inputs. Independently rebuilt strict Win32 creation and creation-UI fixtures
+pass 489 and 60 checks. The earlier broad network suite remains green against
+the unchanged transport implementation. Commands, logs, executable hashes and
+source comparisons are consolidated in
+`out/preview9-c10-affected-checks/receipt.json`. These are controlled fixtures;
+their native scene substitutes do not establish live feature acceptance.
+
+Four owned, hidden and muted native processes then bootstrap Adventure Town
+under the exact candidate 10 DLL. All four show the correct native title,
+Ready at committed/durable revision 0, empty canonical history and zero native
+faults. Strict checks converge to
+`5864aafbd5d182c4b465bf6244a0affce68da731525ba847f9846a3f2bf4277b`.
+The bootstrap-only driver performs no warm-up or measured gesture and preserves
+the direct party for subsequent feature checks. Its result and caption evidence
+are under `out/preview9-c10-four-town-bootstrap`. This establishes current native
+entry and baseline convergence; candidate 10 commit timing and broader native
+feature acceptance remain separate gates.
+
+The diagnostic archive at `out/preview9-candidate10-package` has SHA-256
+`120e8cd9df669cd637ef892b944134d856c16eb6f12b2c2a8151a5e0bc6687a8`.
+Its `SHA256.json` pins this candidate DLL, protocol 23 and both supported
+executable identities, and retains `complete_release_acceptance: false`.
+That archive contains the report snapshot from before this appendix and must
+be regenerated for a final delivery. No personal installation was changed.
 
 ## Required native acceptance
 
