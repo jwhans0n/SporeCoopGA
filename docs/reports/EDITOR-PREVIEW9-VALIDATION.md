@@ -1292,3 +1292,20 @@ Evidence: `out/preview9-c18-two-town-bootstrap/`,
 `out/preview9-c18-terrain-simultaneous/result.json`, and
 `out/preview9-c18-terrain-failure-full/result.json`. The private games and payload
 are separate from the unchanged personal preview 8 installation.
+
+## Current portable regression run
+
+`make -j4 B=out/editor-preview9-c19-portable HOSTCXX=clang++ test` exited 0.
+`out/preview9-c19-portable-tests.log` includes document 2,898, protocol 8,946,
+project 5,683, cast 393, authoring extensions 328, terrain 414, binary delta
+6,410, store 2,015, UDP/controller 29,322 and accounting 3,425 checks. Tool,
+transport, package and supported-build RE checks also pass; RE lint reports
+405 used symbols, 3,031 known and zero supported-build problems.
+
+This run covers the portable code and exact-shape placeholder handling. It
+does not compile the Windows Runtime/Native adapters, which were receiving
+additional callback-fence changes independently. Their separate affected
+Win32 results and a frozen production build are required before native
+acceptance or delivery. The personal executable and preview 8 DLL still match
+their original hashes; all 19 retained rollback payload hashes were verified
+in `out/preview9-delivery/c18-personal-unchanged.json`.
