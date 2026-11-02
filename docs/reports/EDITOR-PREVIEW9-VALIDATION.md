@@ -427,7 +427,24 @@ verified build receipt (`out/preview9-current-full-test-receipt.json`). The
 Project fixture passes 5,683 checks. The real native adapter fixture passes
 10,394 checks, and exact ABI verification passes 91 entries. These substitute
 native APIs and do not establish real terrain, creation or timing acceptance.
-The four-player candidate 8 native run is still in progress.
+The four-player candidate 8 native run rejected a legitimate Captain before
+guest native entry. The first guest log at 05:48:37.177 reports
+`The native captain identity differs from its authored sidecar`; guest capture
+and restore counters both remain zero. `validate_entry` privately projected the
+parsed resource's typed Captain but left its temporary Snapshot sidecars at
+their empty defaults before invoking the new strict guard. This is a native
+initialization regression, not evidence of a corrupt transported document.
+The host's durable revision-0 checkpoint independently contains the expected
+Captain key, source bytes and metadata.
+
+No warm-up or performance gesture occurred. All four fault counts remained zero;
+the ordinary retirement script returned all four to Galaxy before the owning
+runner retired its children. Failure receipts are under
+`out/preview9-c8-four-town-bootstrap-inspection` and
+`out/preview9-c8-retire/result.json`. The earlier registration timeout was a
+separate navigation-harness error: the ordinary bottom-left Login menu control
+was mistaken for an active registration dialog. Its bounded visible-menu guard
+now has 28 offline checks. Neither failed attempt counts as a benchmark.
 
 ## Required native acceptance
 
