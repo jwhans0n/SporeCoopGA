@@ -731,3 +731,44 @@ four-family entry and independent Cancel, authoring while the host designs,
 and this valid native Building Save. Vehicle/Spaceship Save, remote creation
 Edit, complete adventure Save/reopen and the Crew custom-content import fix
 remain separate pending acceptance.
+
+## Candidate 12 Crew, movement timing and first terrain placement
+
+Candidate `13410f7065550c9a7b525f3a99c11893d57bce01110fbd4da32b00e639a3b8a1`
+passed the four-player native Crew capacity, custom Add, host Undo/Redo and
+guest lock/Undo/Redo checks. The original conflicting creature was assigned an
+immutable project key. All four participants converged durably through revision
+7, with exactly three applied Crew history items and zero native faults. Receipts
+are in `out/preview9-c12-crew-add/`, `crew-history-host/`, `crew-lock-guest/` and
+`crew-history-guest/` with the same `preview9-c12-` prefix. The visible Crew card
+portrait was blank, so complete Crew acceptance failed. Offline native inspection
+identified the missing owner-group PNG in the immutable dependency closure.
+The subsequent sanitizer and its independent tests are documented in the
+creation RE notes; a new native candidate must verify the visible portrait.
+
+A clean two-process, two-player Adventure Town run completed two warmups and
+30 measured moves per author. Every move converged, both durable revisions
+reached 62, and the complete native history contained 31 moves per author with
+zero faults. Host submit-to-confirmation p95 was 165.56 ms, within the 200 ms LAN
+target; guest p95 was 518.41 ms and failed. The per-gesture maximum frame-gap
+p95 was 275.99 ms on the host and 233.61 ms on the guest; observed maxima were
+317.02 ms and 234.42 ms. The frame-gap acceptance target therefore failed.
+Capture p95 was about 80 ms, supported-change validation 100-105 ms and remote
+application 195-198 ms, although the native pose write itself remained below
+1.7 ms. No compile, test, deployment or unrelated game calls ran in the measured
+window. Raw results are in
+`out/preview9-commit-diagnostic-c12-two-town-fresh/result.json`; exact native and
+durable history proof is in `out/preview9-c12-two-final-proof/result.json`.
+This is direct LAN evidence only, not WAN or four-player acceptance.
+
+After timing ended, normal navigation opened Terraform and selected Basic
+Tools. A ground-only press did not start a native stroke or change the draft.
+Dragging the verified `Raise Round Terrain` card into clear terrain did start
+native history. On release, the host rejected an ambiguous terrain record
+identity and both participants froze for explicit baseline recovery at unchanged
+canonical/durable revision 62. Neither process reported a native fault. Read-only
+inspection retained the host's 181 effect records and the observer's original
+180, including every transform and companion column. The failure is retained in
+`out/preview9-c12-terrain-card-drag/` and
+`out/preview9-c12-terrain-rpm/result.json`. Simultaneous terrain and Terraform
+Undo/Redo remain unaccepted until this native discrepancy is resolved and rerun.

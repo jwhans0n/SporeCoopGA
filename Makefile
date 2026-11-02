@@ -50,7 +50,7 @@ $(B)/sporekit.dll: $(KIT_OBJ) $(MH_OBJ)
 	$(CXX) $(LDDLL) -o $@ $^ -lws2_32 -luser32 -lshell32 -ld3d9 -Wl,--out-implib,$(B)/libsporekit.a
 
 $(B)/coop.dll: $(COOP_OBJ)
-	$(CXX) $(LDDLL) -o $@ $^ -lws2_32 -luser32 -liphlpapi -lwinhttp -lshell32
+	$(CXX) $(LDDLL) -o $@ $^ -lws2_32 -luser32 -liphlpapi -lwinhttp -lshell32 -lole32
 
 # SporeCoopSetup.exe: install / update / uninstall (installer/, updater/)
 WINDRES := $(LLVM_MINGW)/bin/i686-w64-mingw32-windres
@@ -90,6 +90,10 @@ test-editor:
 	$(B)/host/editor_stage_metrics_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include $(EDITOR_WIRE_SRC) tests/editor_authoring_extensions_tests.cpp -o $(B)/host/editor_authoring_extensions_tests
 	$(B)/host/editor_authoring_extensions_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror tests/editor_creation_png_carrier_tests.cpp -o $(B)/host/editor_creation_png_carrier_tests
+	$(B)/host/editor_creation_png_carrier_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror tests/editor_creation_zlib_tests.cpp -o $(B)/host/editor_creation_zlib_tests
+	$(B)/host/editor_creation_zlib_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include tests/editor_native_bindings_tests.cpp -o $(B)/host/editor_native_bindings_tests
 	$(B)/host/editor_native_bindings_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(EDITOR_CORE_SRC) tests/editor_native_pose_tests.cpp -o $(B)/host/editor_native_pose_tests
@@ -127,6 +131,19 @@ $(B)/host/editor_cast_tests.exe: tests/editor_cast_tests.cpp mods/coop/editor_na
 
 test-editor-windows: $(B)/host/editor_stage_metrics_tests.exe
 test-editor-windows: $(B)/host/editor_authoring_extensions_tests.exe $(B)/host/editor_creation_tests.exe $(B)/host/editor_creation_ui_tests.exe
+test-editor-windows: $(B)/host/editor_creation_png_carrier_tests.exe $(B)/host/editor_creation_png_tests.exe $(B)/host/editor_creation_zlib_tests.exe
+
+$(B)/host/editor_creation_zlib_tests.exe: tests/editor_creation_zlib_tests.cpp mods/coop/editor_creation_zlib.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static tests/editor_creation_zlib_tests.cpp -o $@
+
+$(B)/host/editor_creation_png_carrier_tests.exe: tests/editor_creation_png_carrier_tests.cpp mods/coop/editor_creation_png_carrier.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static tests/editor_creation_png_carrier_tests.cpp -o $@
+
+$(B)/host/editor_creation_png_tests.exe: tests/editor_creation_png_windows_tests.cpp mods/coop/editor_creation_png.cpp mods/coop/editor_creation_png.h mods/coop/editor_creation_png_carrier.h mods/coop/editor_creation_zlib.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_creation_png_windows_tests.cpp mods/coop/editor_creation_png.cpp -lole32 -o $@
 
 $(B)/host/editor_creation_ui_tests.exe: tests/editor_creation_ui_windows_tests.cpp mods/coop/editor_creation_ui.cpp mods/coop/editor_creation_ui.h mods/coop/editor_creation.h mods/coop/editor_runtime.h mods/coop/coop_ui.h mods/coop/sui.h $(ADVENTURE_ABI_HEADERS)
 	@mkdir -p $(B)/host
@@ -157,9 +174,9 @@ $(B)/host/editor_authoring_extensions_tests.exe: $(EDITOR_WIRE_SRC) tests/editor
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(EDITOR_WIRE_SRC) tests/editor_authoring_extensions_tests.cpp -o $@
 
-$(B)/host/editor_creation_tests.exe: tests/editor_creation_windows_tests.cpp mods/coop/editor_creation.cpp mods/coop/editor_creation.h mods/coop/editor_creation_ui.h mods/coop/editor_creation_native.cpp mods/coop/editor_creation_native.h mods/coop/net/adventure_assets.cpp mods/coop/net/dbpf.cpp updater/sha256.cpp
+$(B)/host/editor_creation_tests.exe: tests/editor_creation_windows_tests.cpp mods/coop/editor_creation.cpp mods/coop/editor_creation.h mods/coop/editor_creation_ui.h mods/coop/editor_creation_native.cpp mods/coop/editor_creation_native.h mods/coop/editor_creation_png.cpp mods/coop/editor_creation_png.h mods/coop/editor_creation_png_carrier.h mods/coop/editor_creation_zlib.h mods/coop/net/adventure_assets.cpp mods/coop/net/dbpf.cpp updater/sha256.cpp
 	@mkdir -p $(B)/host
-	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-missing-field-initializers -static -Imods/coop -Isdk/include tests/editor_creation_windows_tests.cpp mods/coop/net/adventure_assets.cpp mods/coop/net/dbpf.cpp updater/sha256.cpp -luser32 -o $@
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-missing-field-initializers -static -Imods/coop -Isdk/include tests/editor_creation_windows_tests.cpp mods/coop/net/adventure_assets.cpp mods/coop/net/dbpf.cpp updater/sha256.cpp -luser32 -lole32 -o $@
 
 test-editor-windows: $(B)/host/editor_accounting_tests.exe
 
