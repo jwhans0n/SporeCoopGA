@@ -2718,6 +2718,19 @@ void execute(Action action) {
 void SK_CDECL drain(void*) {
     queued = false;
     if (!controller) return;
+    // Controller work runs after the frame's receive/send pass. Publish its
+    // queued messages immediately without another receive pass or callbacks.
+    // The captured transport cannot send through a restarted Session.
+    struct SendPending {
+        net::Session* session = C.session;
+        uint64_t transport = session ? session->transport_generation() : 0;
+        ~SendPending() {
+            try {
+                if (C.session == session && session && transport == observed_transport && transport > retired_transport)
+                    session->flush_pending(transport);
+            } catch (...) { /* Transport allocation failure retries on update(). */ }
+        }
+    } send_pending;
     try {
         observe_transport();
         // The single in-flight commit owns Store until the worker has joined.

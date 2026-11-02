@@ -507,15 +507,25 @@ void Session::flush(uint32_t now)
 {
     std::vector<uint8_t> pkt;
     for (auto& p : peers_) {
-        // the reliable bulk (world transfer) is paced by the ack window: all of it per flush on a short
+        // the reliable bulk (world transfer) is paced by the ack window: all of it per update on a short
         // round trip (LAN), a third on the internet; unreliable messages are stale by the next frame,
         // so they all go out (up to 64 more packets): a cell pool snapshot is one ~900-byte chunk per
         // 14 cells and used to push the player state queued after it past the limit
-        int burst = p->conn.rtt_ms < 40.f ? (int)kAckWindow : (int)kAckWindow / 3;
-        for (int i = 0; (i < burst || (i < burst + 64 && p->conn.unreliable_queued() > 0)) && p->conn.build_packet(now, pkt); i++)
+        if (!p->send_burst) p->send_burst = p->conn.rtt_ms < 40.f ? unsigned(kAckWindow) : unsigned(kAckWindow) / 3;
+        while ((p->send_packets < p->send_burst ||
+                (p->send_packets < p->send_burst + 64 && p->conn.unreliable_queued() > 0)) && p->conn.build_packet(now, pkt)) {
+            ++p->send_packets;
             if (sock_.send_to(p->conn.remote, pkt.data(), pkt.size())) p->conn.stats.bytes_sent += pkt.size();
+        }
         p->conn.drop_unreliable();
     }
+}
+
+bool Session::flush_pending(uint64_t expected_transport)
+{
+    if (role_ == Role::None || transport_generation_ != expected_transport) return false;
+    flush(now_ms());
+    return true;
 }
 
 void Session::update()
@@ -523,6 +533,7 @@ void Session::update()
     const auto update_transport = transport_generation_;
     if (role_ == Role::None)
         return;
+    for (auto& p : peers_) { p->send_packets = 0; p->send_burst = 0; }
     uint32_t now = now_ms();
     uint8_t buf[2048];
     for (int i = 0; i < 256; i++) {

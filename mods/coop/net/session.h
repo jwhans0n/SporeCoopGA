@@ -19,6 +19,8 @@ struct Peer {
     bool accepted = false;
     bool bye = false; // said goodbye: dropped in update()
     Connection conn;
+    // Extra send-only pumps share this update's existing bounded allowance.
+    unsigned send_packets = 0, send_burst = 0;
 };
 
 class Session {
@@ -43,6 +45,10 @@ public:
     bool join(const std::string& addr, const std::string& name, std::string& err);
     void leave(const char* why = "left");
     void update(); // call every frame: receive, timeouts, send
+    // Main-thread send only, with a fresh monotonic timestamp. Never receives
+    // or invokes callbacks, and cannot flush a replaced transport. Shares the
+    // most recent update's packet allowance rather than starting another one.
+    bool flush_pending(uint64_t expected_transport);
 
     void send_state(PlayerState st);              // own state
     void send_chat(const std::string& text);
