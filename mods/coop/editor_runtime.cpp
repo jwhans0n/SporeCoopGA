@@ -218,9 +218,16 @@ struct DurableCommit {
     bool flushing=false,hosting=false;
 };
 std::unique_ptr<DurableCommit> durable_commit;
-struct Pending { editor::Request request; editor_native::Gesture gesture; uint64_t reverted_frame = 0; bool submitted = false; std::vector<uint8_t> assets={}; };
+struct Pending { editor::Request request; editor_native::Gesture gesture; uint64_t reverted_frame = 0; bool submitted = false; std::vector<uint8_t> assets={}; bool tentative=false; };
 std::optional<Pending> pending;
 std::optional<editor::OperationId> awaiting_operation;
+struct RollbackFence {
+    uint64_t generation=0;
+    editor::ResourceKey source;
+    std::vector<editor_native::Binding> bindings;
+    bool exact_bindings=false;
+};
+std::optional<RollbackFence> rollback_fence;
 struct Recovery {
     editor::State state;
     editor_native::Snapshot native;
@@ -946,17 +953,81 @@ editor_session::Durability settle_persist(std::string& error){
     }
     error="The durable operation disappeared during teardown";return editor_session::Durability::Uncertain;
 }
+bool tentative_integrity(const editor_native::Snapshot& live,const editor::Document& document,std::string& error) {
+    if(!pending || live.source!=pending->gesture.after.source || live.bindings!=pending->gesture.after.bindings){
+        error="The tentative gesture's native identity changed";return false;
+    }
+    if(!editor_native::validate(live,document,error))return false;
+    if(live.act==pending->gesture.after.act && live.bytes==pending->gesture.after.bytes)return true;
+    return supported_between(pending->gesture.after,live,error);
+}
+bool restore_tentative(std::string& error) {
+    if(!pending || !pending->tentative)return true;
+    const auto native=editor_native::state();
+    if(!controller || detached_scene() || native.generation!=native_generation ||
+       pending->request.project!=controller->view().context.project ||
+       pending->request.operation.epoch!=controller->view().context.epoch ||
+       pending->request.operation.author!=controller->view().local ||
+       pending->gesture.generation!=native_generation || !native.ready || native.gesture){
+        error="The tentative gesture no longer has its ready native editor";return false;
+    }
+    editor_native::Snapshot live;
+    if(!editor_native::capture(live,error) || !tentative_integrity(live,pending->gesture.after.document,error) ||
+       !editor_native::validate(current_native,controller->state().document,error)){
+        if(error.empty())error="The tentative gesture's native identity changed";
+        return false;
+    }
+    stage_stamp(controller->state().document.project,pending->request.operation,controller->state().document.revision,editor_stage_metrics::Stage::InverseBegin);
+    const bool restored=editor_native::apply(controller->state().document,{},&current_native,error);
+    stage_stamp(controller->state().document.project,pending->request.operation,controller->state().document.revision,editor_stage_metrics::Stage::InverseEnd,restored?1:2);
+    if(restored)pending->tentative=false;
+    return restored;
+}
 bool apply(const editor::Document& before, const editor::Document& after, const editor::Change& change, std::string& error) {
     editor_native::ValidationScope validation_scope;
     StageScope work(after,change.operation,editor_stage_metrics::Stage::ApplyWorkBegin,editor_stage_metrics::Stage::ApplyWorkEnd);
     before_apply_valid = false;
+    rollback_fence.reset();
     prepared_native.reset();
     if (frozen) {error="The canonical editor is frozen";return false;}
+    const bool adopt=pending && pending->tentative && pending->request.operation==change.operation &&
+        change.intent==editor::Intent::Forward && pending->request.project==after.project &&
+        pending->request.operation.author==controller->view().local && pending->request.project==controller->view().context.project &&
+        pending->request.operation.epoch==controller->view().context.epoch &&
+        pending->request.operation.epoch==after.epoch && pending->request.base_revision==before.revision &&
+        pending->gesture.generation==native_generation && !detached_scene() && !structural(change);
+    if(pending && pending->tentative && !adopt && !restore_tentative(error)){
+        frozen=true;tell("Recover the committed draft: "+error);return false;
+    }
+    if(adopt){
+        const auto native=editor_native::state();
+        if(native.generation!=native_generation || !native.ready || native.gesture){
+            error="The accepted gesture no longer has its ready native editor";return false;
+        }
+        editor_native::Snapshot live;
+        if(!editor_native::capture(live,error) || !tentative_integrity(live,after,error)){
+            if(error.empty())error="The accepted gesture's native identity changed";
+            return false;
+        }
+        before_apply=current_native;before_apply.document=before;
+        rollback_fence=RollbackFence{native.generation,live.source,live.bindings,true};
+        before_apply_valid=true;
+        // No native mutation is needed: this is the same owned, checked gesture
+        // accepted by the coordinator. Persistence still owns confirmation.
+        stage_stamp(after.project,change.operation,after.revision,editor_stage_metrics::Stage::InverseBegin);
+        stage_stamp(after.project,change.operation,after.revision,editor_stage_metrics::Stage::InverseEnd,1);
+        stage_stamp(after.project,change.operation,after.revision,editor_stage_metrics::Stage::NativeApplyBegin);
+        stage_stamp(after.project,change.operation,after.revision,editor_stage_metrics::Stage::NativeApplyEnd,1);
+        live.document=after;prepared_native=std::move(live);pending->tentative=false;
+        stage_stamp(after.project,change.operation,after.revision,editor_stage_metrics::Stage::SceneReady,1);
+        work.okay=true;return true;
+    }
     if(detached_scene())before_apply=current_native;
     else{
         if(editor_native::state().generation!=native_generation){error="The native editor belongs to a different context";return false;}
         if(!editor_native::capture(before_apply,error))return false;
         if(!native_integrity(before_apply,before,error))return stop_unsupported(error);
+        rollback_fence=RollbackFence{native_generation,before_apply.source,before_apply.bindings,false};
     }
     before_apply_valid = true;
     before_apply.document = before;
@@ -1022,9 +1093,23 @@ bool apply(const editor::Document& before, const editor::Document& after, const 
     }
     work.okay=true;return true;
 }
-bool rollback(const editor::Document&, const editor::Document&, const editor::Change&, std::string& error) {
+bool rollback(const editor::Document&, const editor::Document&, const editor::Change& change, std::string& error) {
     prepared_native.reset();
-    return detached_scene() || !before_apply_valid || editor_native::restore(before_apply, error);
+    bool restored=detached_scene() || !before_apply_valid;
+    if(!restored){
+        const auto native=editor_native::state();
+        if(!rollback_fence || native.generation!=rollback_fence->generation || !native.ready || native.gesture){
+            error="The failed operation no longer owns its ready native editor";return false;
+        }
+        editor_native::Snapshot live;
+        if(!editor_native::capture(live,error))return false;
+        if(live.source!=rollback_fence->source || (rollback_fence->exact_bindings && live.bindings!=rollback_fence->bindings)){
+            error="The failed operation's native resource identity changed";return false;
+        }
+        restored=editor_native::restore(before_apply,error);
+    }
+    if(restored && before_apply_valid && pending && pending->request.operation==change.operation)pending->tentative=false;
+    return restored;
 }
 bool lease(const std::vector<editor::Scope>& scopes) {
     if (!controller || frozen || closing || recovery || durable_commit || awaiting_operation || controller->view().phase != Phase::Ready) return false;
@@ -1431,30 +1516,41 @@ void captured(editor_native::Gesture gesture) {
         if(r.summary=="Edit placement" || r.summary=="Create placement" || r.summary=="Delete placement")r.summary="Edit cast";
         if(!collect_cast_assets(gesture.after,assets,error)){stop_unsupported(error);return;}
     }
-    // The native gesture supplies the transaction, not an extra committed apply.
-    // Restore the latest canonical placement state before requesting acceptance.
-    stage_stamp(doc.project,r.operation,doc.revision,editor_stage_metrics::Stage::InverseBegin);
-    const bool restored=editor_native::apply(doc,revert,&current_native,error);
-    stage_stamp(doc.project,r.operation,doc.revision,editor_stage_metrics::Stage::InverseEnd,restored?1:2);
-    if (!restored) {
-        frozen = true; tell("The native gesture could not return to committed state: " + error); return;
+    const bool tentative=!editing_cast && assets.empty() && std::all_of(r.mutations.begin(),r.mutations.end(),[&](const auto& mutation){
+        return mutation.kind==editor::MutationKind::Set && doc.placements.contains(mutation.target);
+    });
+    if(tentative){
+        if(!editor_native::validate(gesture.before,doc,error)){stop_unsupported(error);return;}
+    }else{
+        // Structural gestures still retire native temporary objects before the
+        // canonical allocation can recreate their slots on a later frame.
+        stage_stamp(doc.project,r.operation,doc.revision,editor_stage_metrics::Stage::InverseBegin);
+        const bool restored=editor_native::apply(doc,revert,&current_native,error);
+        stage_stamp(doc.project,r.operation,doc.revision,editor_stage_metrics::Stage::InverseEnd,restored?1:2);
+        if(!restored){frozen=true;tell("The native gesture could not return to committed state: "+error);return;}
     }
     if (!H->frame_index) { frozen = true; tell("Native gesture submission requires the game frame counter"); return; }
     pending = Pending{r, std::move(gesture), H->frame_index(), false};
     pending->assets=std::move(assets);
+    pending->tentative=tentative;
     awaiting_operation = r.operation;
-    status = "Waiting for the next game frame before submitting the placement gesture";
+    status = tentative?"Submitting the placement gesture":"Waiting for the next game frame before submitting the placement gesture";
 }
 void submit_pending_gesture() {
     if (!pending || pending->submitted) return;
     const auto& r = pending->request;
     const auto& v = controller->view();
     const auto native = editor_native::state();
-    const bool changed_generation = r.operation.epoch != v.context.epoch || pending->gesture.generation != native_generation || native.generation != native_generation;
+    std::string error;
+    const bool changed_generation = r.project!=v.context.project || r.operation.author!=v.local ||
+        r.operation.epoch != v.context.epoch || pending->gesture.generation != native_generation || native.generation != native_generation;
     const bool ending = std::any_of(actions.begin(), actions.end(), [](auto action) { return action == Action::End || action == Action::Recover; });
     if (closing || ending || frozen || recovery || !C.session || !C.session->connected() || v.phase != Phase::Ready ||
         r.project != v.context.project || r.operation.author != v.local || r.operation.author.slot != C.session->my_id() ||
         r.base_revision > controller->state().document.revision || changed_generation) {
+        if(pending->tentative && !changed_generation && !closing && !ending && !restore_tentative(error)){
+            frozen=true;tell("Recover the committed draft: "+error);
+        }
         pending.reset(); awaiting_operation.reset();
         if (changed_generation && !closing && !ending) { frozen = true; tell("A held gesture expired with its editor context; no operation was submitted"); }
         return;
@@ -1462,17 +1558,21 @@ void submit_pending_gesture() {
     // Native inverse deletion queues noun retirement until the ordinary game
     // update. Recreating the same slot in this outside-frame pump is too early.
     // Repeated callbacks within one rendered frame must not advance this gate.
-    if (!native.ready || native.gesture || !H->frame_index || H->frame_index() <= pending->reverted_frame) return;
+    if (!native.ready || native.gesture || !H->frame_index || (!pending->tentative && H->frame_index() <= pending->reverted_frame)) return;
     auto request = r;
     pending->submitted = true;
-    std::string error;
     const auto operation=request.operation;
     stage_stamp(controller->state().document.project,operation,controller->state().document.revision,editor_stage_metrics::Stage::LocalSubmit);
     confirmation_metrics.begin(operation,H->time_seconds());
     if(!pending->assets.empty() && !controller->upload_assets(operation,pending->assets,error)){
         confirmation_metrics.cancel(operation);pending.reset();awaiting_operation.reset();tell(error);return;
     }
-    if (!controller->submit(std::move(request), error)) { confirmation_metrics.cancel(operation);pending.reset(); awaiting_operation.reset(); tell(error); }
+    if (!controller->submit(std::move(request), error)) {
+        confirmation_metrics.cancel(operation);
+        std::string restoration;
+        if(!restore_tentative(restoration)){frozen=true;error+="; recover the committed draft: "+restoration;}
+        pending.reset();awaiting_operation.reset();tell(error);
+    }
     else status = "Waiting for the host to commit the placement gesture";
 }
 void refresh() {
@@ -2759,6 +2859,15 @@ void action(Action value) {
 } // namespace
 
 bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
+    if(controller || durable_commit)return false;
+    frozen=beginning=closing=gc_due=recovery_available=scanned_recovery=false;
+    recovery.reset();prepared_native.reset();incoming_resources.reset();pending_saved.reset();
+    last_presence_value.reset();preview_active=false;
+    last_renew=last_presence=last_request=last_lease_use=last_preview=0;
+    native_release_qpc=native_capture_begin_qpc=native_capture_end_qpc=0;
+    observed_lease_context={};observed_lease_peer={};observed_lease_grants.clear();
+    pending.reset();awaiting_operation.reset();waiting_acts.reset();rollback_fence.reset();before_apply_valid=false;
+    guarded_placements.clear();guarded_terrain.clear();requested_scopes.clear();lease_use.clear();
     waiting_history.reset();
     H = host_api; M = mod; C = std::move(context); reopen_saved.reset(); projection_override.reset();
     solo_preview.reset();solo_ready_scope.reset();pending_solo_return.reset();pending_solo_request=0;
@@ -2817,7 +2926,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     };
     callbacks.rendered_revision=[]()->std::optional<editor::Revision>{
         const auto native=editor_native::state();
-        if(detached_scene() || durable_commit || !native.ready || native.generation!=native_generation)return {};
+        if(detached_scene() || durable_commit || (pending && pending->tentative) || !native.ready || native.generation!=native_generation)return {};
         return rendered_revision;
     };
     callbacks.prepare_join = [](editor::wire::Join& join,std::string& error) {
@@ -2903,6 +3012,10 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
             if(!decision.accepted())local_creation->error=decision.reason;
         }
         if (own) {
+            std::string restoration;
+            if(!decision.accepted() && !restore_tentative(restoration)){
+                frozen=true;tell("Recover the committed draft: "+restoration);
+            }
             pending.reset();awaiting_operation.reset();requested_scopes.clear();
             guarded_placements.clear();guarded_settings.clear();guarded_authoring.clear();
         }
@@ -3237,6 +3350,8 @@ void shutdown() {
     // Settle while the exact controller, creation scope and Store still exist.
     // Failure can require native rollback, so retire native adapters last.
     if(controller){controller->end();controller.reset();}
+    pending.reset();awaiting_operation.reset();waiting_acts.reset();rollback_fence.reset();before_apply_valid=false;
+    guarded_placements.clear();guarded_terrain.clear();requested_scopes.clear();lease_use.clear();
     editor_creation::shutdown();local_creation.reset();prepared_native.reset();rendered_revision=0;
     waiting_history.reset();authoring_projection_override.reset();test_menu.reset();guarded_settings.clear();guarded_authoring.clear();cast_uploads.clear();cast_upload_errors.clear();
     solo_preview.reset();solo_ready_scope.reset();pending_solo_return.reset();pending_solo_request=0;
