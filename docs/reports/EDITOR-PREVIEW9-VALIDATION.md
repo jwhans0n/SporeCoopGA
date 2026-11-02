@@ -1528,3 +1528,62 @@ Evidence: `out/preview9-c21-fresh-movement-bootstrap/`,
 `out/preview9-c21-fresh-movement-failure/`. Both games returned normally to
 Galaxy with no faults, then the owned runner exited 0 before C22 deployment
 (`out/preview9-c21-fresh-movement-retirement/result.json`).
+
+### C22 exact rotation capture advances, but actual terrain inverse fails
+
+The q-capture checkpoint `8e3b2fa` passes 55,775 strict actual-i686 Native
+checks, including 1,465 focused capture checks, with 59 inputs unchanged
+(`out/preview9-c22-native-q-receipt.json`). It brackets verified Rebuild calls
+with bounded exact placement/source/revision witnesses. An owned native copy
+must serialize identically before normalizing witnessed rotation values, and
+both original and normalized bytes close again after projection. No quaternion
+tolerance, placement permission, or unrelated authored field was relaxed.
+
+Private C22 DLL
+`b8f506627177d9e306246daa1db9781c03d4d43a4d9d183161ecd2605365f92c`
+(91,568,640 bytes) built with all 191 inputs unchanged. It includes the guest
+unused-envelope optimization, whose preceding strict Runtime suite passed
+1,306 focused and 42,086 full checks, and frozen syntax-checked capability
+wire/session scaffolding. Runtime capability publication was not integrated in
+this checkpoint; this actual test used the native complexity default. Receipts:
+`out/preview9-candidate22-source.json`,
+`out/preview9-candidate22-build-receipt.json`,
+`out/preview9-candidate22-deployment/receipt.json` and
+`out/preview9-c22-replica-persistence-receipt.json`.
+
+Both fresh participants loaded Town and strictly converged at revision 0 with
+zero history/faults. Root reviewed both fresh camera/card/ground screenshots.
+The driver held both native stroke histories before releasing either. The
+attempt failed: host 95 accepted its own sequence 1 as one Terraform item at
+durable revision 1, while guest 96 remained at revision 0 and froze for explicit
+baseline recovery. The original unowned-placement rejection did not occur.
+The first reported validation error instead compared marker 188's derived
+rotation against the committed rotation. Host checked restoration subsequently
+finished Ready at revision 1; this does not establish party convergence.
+
+Final strict checks are host
+`f403866dd805b21d397a596c01476141ccc5fe4b6a721b679bf8c8cebb8bfaaf`
+and guest baseline
+`b56f1117aa55f00fc650d9ceb03062e7055ebb917d11f239fc73cfc32fefe96e`.
+Both report zero native faults. Host inspection also reports an invalid terrain
+record/order/revision, requiring a separate projection-revision audit. The
+guest's restoration hold expired after the shared recovery requirement; its
+retained recovery state was not discarded.
+
+Evidence: `out/preview9-c22-two-town-bootstrap/`,
+`out/preview9-c22-terrain-calibrate/`,
+`out/preview9-c22-terrain-simultaneous/result.json` and
+`out/preview9-c22-terrain-failure-full/result.json`. Both games returned normally
+to Galaxy with no faults and runner 77086 exited 0 before any subsequent
+deployment (`out/preview9-c22-terrain-retirement/result.json`).
+
+Follow-up controlled reproduction finds the actual generic inverse route
+differs from the previously tested all-targets prepared application. Generic
+apply can compare normalized fields as unchanged, retire the rotation ticket,
+and leave derived live rotations; it also has no terrain-roster inverse branch.
+The new regression reproduces generic apply returning success followed by
+strict validation failure (`out/preview9-c22-q-inverse-o0-focused.log`). The
+planned repair uses checked restoration only from an independently canonical
+artifact whose complete document matches the requested inverse target, with
+the original scene/scope/generation fences. Actual acceptance remains pending,
+including the zero-placement terrain case. Personal preview 8 remains installed.
