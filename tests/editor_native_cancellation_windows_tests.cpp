@@ -193,6 +193,7 @@ void native_cancel(void* entry=nullptr){
 }
 void begin(){start(t_data.data());CHECK(!t_allocations.empty());CHECK(gesture_serial!=0);}
 void reset(){
+    clear_terrain_capture_rotations();
     act_projection_cache.clear();
     clear_terrain_materialization();
     held_terrain_preset.reset();a_copy_terrain_properties=0;
@@ -1508,6 +1509,9 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
 #include "editor_native_diagnostic_fixture.h"
 #include "editor_native_view_fence_fixture.h"
 int main(int argc,char** argv){
+    if(argc==2&&std::string(argv[1])=="--terrain-rotation-capture-only"){
+        test_terrain_rotation_capture();std::printf("native terrain rotation capture: %u checks passed\n",checks);return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--terrain-parent-only"){
         test_terrain_parent_load();std::printf("native terrain parents: %u checks passed\n",checks);return 0;
     }
@@ -1538,6 +1542,7 @@ int main(int argc,char** argv){
     test_native_view_fences();
     test_native_restore_fences();
     test_terrain_rotation_restore();
+    test_terrain_rotation_capture();
     test_terrain_parent_load();
     test_native_payload_diagnostics();
     test_history_toolbar_current_layout();

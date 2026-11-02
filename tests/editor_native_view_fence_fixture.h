@@ -554,3 +554,148 @@ void test_presets(){
 }
 }
 static void test_terrain_parent_load(){terrain_parent_fixture::test();terrain_parent_fixture::test_presets();}
+
+namespace terrain_rotation_capture_fixture {
+unsigned rebuilds=0,delivered=0;
+std::function<void()> rebuild_callback;
+void SK_THISCALL apply(void* owner,void*,uint32_t flags){CHECK(owner==t_data.data()&&!flags&&applying);}
+void SK_THISCALL rebuild(void* self){
+    CHECK(self==t_terraform.data()&&applying);++rebuilds;
+    Rows markers;CHECK(rows(t_live.data(),0x2C10,0x238,kPlacementLimit,markers));
+    for(auto p=markers.begin;p!=markers.end;p+=0x238)if(live_slot(p))skg::field<uint32_t>(p,0x14)^=1;
+    if(rebuild_callback)rebuild_callback();
+}
+void SK_THISCALL export_terrain(void*){}
+uintptr_t symbol(const char* name){CHECK(std::string(name)=="SporeCoop::Editor::CaptureTerrain");return uintptr_t(export_terrain);}
+struct Routes {
+    RecentRoutes recent;
+    uintptr_t copy=a_copy,loaded=a_terrain_loaded,vtable=a_terrain_vtable,apply=a_apply_marker;
+    HistoryFn rebuild_route=original_terrain_rebuild,start_route=original_terrain_start,commit_route=original_terrain_commit;
+    ~Routes(){
+        rebuild_callback={};input_pose=false;reset();
+        a_copy=copy;a_terrain_loaded=loaded;a_terrain_vtable=vtable;a_apply_marker=apply;
+        original_terrain_rebuild=rebuild_route;original_terrain_start=start_route;original_terrain_commit=commit_route;
+    }
+};
+Snapshot setup(bool hole=false,bool pin=true){
+    auto before=recent_pose_setup();C.projection_scope=[]{return t_scope;};
+    t_terraform.fill(0);v_terrain.fill(0);skg::field<void*>(t_mode.data(),0x18)=t_terraform.data();
+    skg::field<void*>(t_terraform.data(),0x0C)=v_terrain.data();skg::field<void*>(t_terraform.data(),0x190)=v_terrain.data();
+    a_terrain_vtable=0x12345678;skg::field<uintptr_t>(v_terrain.data(),0)=a_terrain_vtable;
+    a_terrain_loaded=uintptr_t(v_terrain_loaded);terrain_available=true;
+    a_apply_marker=uintptr_t(apply);
+    original_terrain_rebuild=rebuild;original_terrain_start=t_terrain_start;original_terrain_commit=t_terrain_commit;
+    C.terrain_gate=[](const auto&,const auto&){return true;};
+    static SkHost host;host=*H;host.sym=symbol;H=&host;
+    if(hole){
+        const auto second=before.bindings[1].object;auto& raw=t_rows[t_live.data()];raw.resize(3*0x238);
+        std::memcpy(raw.data()+2*0x238,raw.data()+0x238,0x238);std::memset(raw.data()+0x238,0,0x238);
+        skg::field<uint32_t>(raw.data()+0x238,0)=0x80000000;rows_for(t_live.data());
+        bindings.erase(1);bindings[2]=second;a_write=uintptr_t(pose_capture_compact_write);
+        std::string error;CHECK(capture(before,error));
+    }
+    before.document.project=t_scope.project;before.document.epoch=t_scope.epoch;
+    rebuilds=delivered=0;rebuild_callback={};recent_live_writes=recent_all_writes=0;
+    terrain_starts=terrain_commits=0;
+    if(pin){
+        std::string error;CHECK(begin_terrain_capture_rotations(before,error));
+        terrain_before=before;terrain_scope=t_scope;terrain_generation=generation;terrain_owner=t_data.data();
+    }
+    return before;
+}
+void test(){
+    Routes routes;std::string error;
+    for(bool hole:{false,true}){
+        auto before=setup(hole);const auto original=t_rows[t_live.data()];
+        terrain_rebuild(t_terraform.data());CHECK(rebuilds==1&&terrain_capture_rotations&&terrain_capture_rotations->values.size()==2);
+        const auto rendered=t_rows[t_live.data()];Snapshot after;
+        CHECK(capture_resource(t_live.data(),before.act,after,error));after.metadata=before.metadata;
+        CHECK(after.document.placements==before.document.placements&&after.bindings==before.bindings);
+        CHECK(t_rows[t_live.data()]==rendered&&rendered!=original&&!t_restores&&t_allocations.empty());
+        Gesture checked;checked.before=before;checked.after=after;CHECK(supported_changes(checked,error));
+        // A repeated exact rebuild chains its previous rendered value back to
+        // the same authored q, without numerical tolerances or live q writes.
+        terrain_rebuild(t_terraform.data());CHECK(rebuilds==2&&terrain_capture_rotation_error.empty());
+        CHECK(capture_resource(t_live.data(),before.act,after,error)&&after.document.placements==before.document.placements);
+        CHECK(t_rows[t_live.data()]==original);
+    }
+    // A native discard may already restore exact authored bits. Those bits
+    // need no normalization and must never become a third derived mapping.
+    auto discarded=setup();terrain_rebuild(t_terraform.data());
+    for(const auto& row:terrain_capture_rotations->canonical)
+        skg::field<editor::Rotation>(marker_for_key(t_live.data(),row.slot),0x10)=row.q;
+    Snapshot unchanged;CHECK(capture_resource(t_live.data(),discarded.act,unchanged,error));
+    CHECK(unchanged.document.placements==discarded.document.placements);
+    // The very last read-identity callback can change a previously sampled q.
+    // The final callback-free primitive closure must refuse that stale sample.
+    setup();terrain_rebuild(t_terraform.data());auto proof=terrain_capture_rotations;unsigned scope_reads=0;
+    C.projection_scope=[&]{if(++scope_reads==4)skg::field<uint32_t>(t_rows[t_live.data()].data()+4,0x10)^=4;return t_scope;};
+    std::vector<TerrainCaptureRotations::Row> refused;
+    CHECK(!proof->collect(refused,true,error)&&scope_reads==4&&!error.empty());
+    for(unsigned reason=0;reason<2;++reason){
+        setup();const auto held=t_rows[t_live.data()];unsigned queries=0;
+        C.gesture_scope=[&]{if(++queries==2){if(reason)skg::field<uint32_t>(t_rows[t_live.data()].data()+4,0x10)^=4;else ++t_scope.epoch;}return t_scope;};
+        terrain_rebuild(t_terraform.data());CHECK(!rebuilds&&!terrain_capture_rotation_error.empty());
+        if(!reason)CHECK(t_rows[t_live.data()]==held);
+    }
+    // An unknown companion remains byte-visible to the strict opaque guard.
+    auto before=setup();terrain_rebuild(t_terraform.data());t_rows[t_live.data()][4+0x100]^=1;
+    Snapshot after;CHECK(capture_resource(t_live.data(),before.act,after,error));after.metadata=before.metadata;
+    Gesture unknown;unknown.before=before;unknown.after=after;CHECK(!supported_changes(unknown,error));
+    // Copy is not assumed to preserve unknown fields. Its entire unmodified
+    // serialized result must equal the independently written original first.
+    before=setup();terrain_rebuild(t_terraform.data());const auto raw=t_rows[t_live.data()];
+    a_copy=uintptr_t(pose_proof_normalizing_copy);CHECK(!capture_resource(t_live.data(),before.act,after,error));
+    CHECK(error.find("unknown authored bytes")!=std::string::npos&&t_rows[t_live.data()]==raw&&t_allocations.empty());a_copy=routes.copy;
+    // Source/context/revision/binding expiry during each existing Write can
+    // never fall through to a new scene or produce a normalized after image.
+    for(unsigned stage=1;stage<=5;++stage)for(unsigned reason=0;reason<14;++reason){
+        before=setup();terrain_rebuild(t_terraform.data());const auto held=t_rows[t_live.data()];bool fired=false,allowed=true;
+        recent_write_callback=[&](void*,unsigned){if(fired||recent_all_writes!=stage)return;fired=true;
+            if(reason<12)restore_fence_fixture::expire(reason,allowed);
+            if(reason==10)skg::field<void*>(t_mode.data(),0x18)=t_other_data.data();
+            if(reason==12)++t_revision;
+            if(reason==13)skg::field<uint32_t>(t_rows[t_live.data()].data()+4,0)=1025;
+        };
+        CHECK(!capture_resource(t_live.data(),before.act,after,error)&&fired&&!error.empty());
+        CHECK(!t_restores&&t_allocations.empty());
+        if(reason!=13)CHECK(t_rows[t_live.data()]==held);
+        recent_write_callback={};
+    }
+    for(unsigned reason=0;reason<5;++reason){
+        before=setup();terrain_rebuild(t_terraform.data());
+        if(reason==0)skg::field<uint32_t>(t_rows[t_live.data()].data()+4,0x10)^=4;
+        if(reason==1)++t_revision;
+        if(reason==2)bindings[0].generation++;
+        if(reason==3)++t_scope.epoch;
+        if(reason==4)skg::field<editor::ResourceKey>(t_live.data(),8).instance++;
+        const auto held=t_rows[t_live.data()];CHECK(!capture_resource(t_live.data(),before.act,after,error)&&!error.empty());
+        CHECK(t_rows[t_live.data()]==held&&t_allocations.empty());
+    }
+    // Even a genuine later authored q equal to an old rendered result is not
+    // normalized once an observed ordinary pose boundary retires the ticket.
+    before=setup();terrain_rebuild(t_terraform.data());const auto rendered=skg::field<editor::Rotation>(t_rows[t_live.data()].data()+4,0x10);
+    input_pose=true;start(t_data.data());input_pose=false;CHECK(!terrain_capture_rotations);
+    skg::field<uint8_t>(t_history.data(),0x20)=1;
+    CHECK(capture_resource(t_live.data(),before.act,after,error));CHECK(after.document.placements.begin()->second.rotation==rendered);
+    // Real Start/Commit/deferred capture delivers one normalized owned gesture,
+    // keeps raw derived memory untouched, then retires its table at delivery.
+    before=setup(false,false);C.gesture=[&](Gesture gesture){
+        ++delivered;CHECK(terrain_capture_rotations&&gesture.before.document.placements==gesture.after.document.placements);
+        CHECK(supported_changes(gesture,error));
+    };
+    terrain_start(t_terraform.data());CHECK(terrain_before&&terrain_capture_rotations&&terrain_starts==1);
+    terrain_commit(t_terraform.data());CHECK(terrain_pending&&rebuilds==1&&terrain_commits==1);
+    ++t_frame;drain_terrain(nullptr);
+    CHECK(delivered==1&&!terrain_capture_rotations&&!terrain_before&&!terrain_pending&&!t_failed&&t_allocations.empty());
+    // A later canonical pose application writes the authored q normally; it
+    // cannot inherit a retired table or silently discard an actual user edit.
+    editor::Change change;
+    for(const auto& binding:before.bindings)change.patch.fields.push_back({binding.object,{editor::Field::Rotation,0},
+        skg::field<editor::Rotation>(marker_for_id(t_live.data(),binding.object),0x10),before.document.placements.at(binding.object).rotation});
+    CHECK(apply_prepared(before,change,error)&&!terrain_capture_rotations);
+    Snapshot accepted;CHECK(capture(accepted,error)&&validate(accepted,before.document,error));
+    rebuild_callback={};
+}
+}
+static void test_terrain_rotation_capture(){terrain_rotation_capture_fixture::test();}

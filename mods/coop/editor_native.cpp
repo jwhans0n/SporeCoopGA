@@ -6,6 +6,7 @@
 #include "editor_native_projection_cache.h"
 #include "editor_native_act_cache.h"
 #include "editor_native_terrain_materialization.h"
+#include "editor_native_terrain_rotations.h"
 #include "net/dbpf.h"
 
 #include <algorithm>
@@ -74,6 +75,7 @@ uint64_t generation = 1, captures = 0, restores = 0, rejected = 0;
 unsigned validation_depth=0;
 WorkStats native_work;
 GestureScope value_scope(){return C.projection_scope?C.projection_scope():C.gesture_scope?C.gesture_scope():GestureScope{};}
+bool valid_scope(const GestureScope&);
 uint64_t work_clock(){LARGE_INTEGER value{};return QueryPerformanceCounter(&value)&&value.QuadPart>0?uint64_t(value.QuadPart):0;}
 struct WorkTimer {
     WorkSpan& span;uint64_t begin=work_clock();
@@ -153,6 +155,15 @@ std::optional<Snapshot> terrain_before;
 GestureScope terrain_scope;uint64_t terrain_generation=0;void* terrain_owner=nullptr;
 struct Grounding {editor::Vec3 native,authored;};
 std::map<editor::ObjectId,Grounding> terrain_grounding;
+struct TerrainCaptureRotations;
+std::shared_ptr<const TerrainCaptureRotations> terrain_capture_rotations;
+uint64_t terrain_rotation_serial=0;
+std::string terrain_capture_rotation_error;
+void clear_terrain_capture_rotations(){
+    terrain_capture_rotations.reset();
+    if(terrain_rotation_serial!=UINT64_MAX)++terrain_rotation_serial;
+    terrain_capture_rotation_error.clear();
+}
 std::optional<editor::Document> materialized_terrain;
 editor_native_terrain_materialization::Materialization terrain_materialization;
 editor_native_terrain_materialization::AuthoredRows terrain_authored_rows;
@@ -1232,14 +1243,184 @@ RecentMatches reuse_resource_projection(void* resource,Snapshot& out,const std::
     out.captain=proof->image.captain;out.captain_locked=proof->image.captain_locked;
     ++projected_snapshot_hits;error.clear();return RecentMatches::Match;
 }
+// This ticket exists only between a checked native terrain-before boundary and
+// its synchronous gesture delivery. It owns values, never native resources.
+// A later authored rotation cannot borrow an earlier grounding result.
+struct TerrainCaptureRotations {
+    using Row=editor_native_terrain_rotations::Row;
+    uint64_t serial=0,generation=0;
+    GestureScope scope;
+    void* mode=nullptr;void* data=nullptr;void* resource=nullptr;void* tool=nullptr;
+    void* context=nullptr;uint32_t act=0;
+    editor::ResourceKey source;
+    uintptr_t first=0,last=0;
+    std::vector<Row> canonical,rendered;
+    editor_native_terrain_rotations::Witness values;
+    bool raw_current()const{
+        try{
+            if(serial!=terrain_rotation_serial || editor_native::generation!=generation)return false;
+            // Cache only scalar probes, never an identity/native callback.
+            skg::ReadOnlyMemoryScope memory;
+            auto* m=editor_native::mode();auto* d=editor_native::data(m);auto* r=editor_native::resource(d);
+            auto* c=a_context?*reinterpret_cast<void**>(a_context):nullptr;
+            Rows markers;
+            return m==mode && d==data && r==resource && terraform_mode()==tool && c==context &&
+                skg::readable(c,4) && skg::field<uint32_t>(c,0)==act && skg::readable(m,0xDC) &&
+                skg::field<int>(m,0xCC)==1 && skg::field<int>(m,0xD0)==0 && skg::readable(r,kResourceSize) &&
+                skg::field<editor::ResourceKey>(r,8)==source && rows(r,0x2C10,0x238,kPlacementLimit,markers) &&
+                uintptr_t(markers.begin)==first && uintptr_t(markers.end)==last && editor_native::generation==generation;
+        }catch(...){return false;}
+    }
+    bool current()const{
+        try{return valid_scope(scope) && value_scope()==scope && raw_current();}catch(...){return false;}
+    }
+    bool raw_rows(std::span<const Row> expected)const{
+        skg::ReadOnlyMemoryScope memory;
+        if(!raw_current())return false;
+        Rows markers;if(!rows(resource,0x2C10,0x238,kPlacementLimit,markers))return false;
+        size_t count=0;
+        for(auto p=markers.begin;p!=markers.end;p+=0x238)if(live_slot(p)){
+            if(count>=expected.size())return false;
+            const auto& row=expected[count++];const auto slot=slot_index(markers,p);
+            if(row.object!=marker_id(slot) || row.slot!=slot || row.class_index!=skg::field<uint32_t>(p,4) ||
+               !editor_native_terrain_rotations::exact(row.q,skg::field<editor::Rotation>(p,0x14)))return false;
+        }
+        return count==expected.size() && raw_current();
+    }
+    bool collect(std::vector<Row>& out,bool same_rendered,std::string& error)const{
+        try{
+        const auto expired=[&]{error="The native terrain rotation ticket lost its editor or placement identity";return false;};
+        if(!current() || !C.object_revision)return expired();
+        Rows markers;if(!rows(resource,0x2C10,0x238,kPlacementLimit,markers))return expired();
+        out.clear();out.reserve(canonical.size());
+        for(auto p=markers.begin;p!=markers.end;p+=0x238)if(live_slot(p)){
+            const auto slot=slot_index(markers,p);const auto object=marker_id(slot);
+            if(out.size()>=canonical.size())return expired();
+            const auto& row=canonical[out.size()];if(row.object!=object)return expired();
+            const auto revision=C.object_revision(object);
+            if(!current() || !revision || *revision!=row.revision || row.slot!=slot ||
+               skg::field<uint32_t>(p,4)!=row.class_index)return expired();
+            const auto q=skg::field<editor::Rotation>(p,0x14);
+            if(!editor_native_terrain_rotations::finite(q))return expired();
+            if(same_rendered){
+                if(out.size()>=rendered.size() || !editor_native_terrain_rotations::identity(rendered[out.size()],row) ||
+                   (!editor_native_terrain_rotations::exact(rendered[out.size()].q,q) &&
+                    !editor_native_terrain_rotations::exact(row.q,q)))return expired();
+            }
+            out.push_back({object,slot,row.class_index,*revision,q});
+        }
+        // No callbacks follow this final primitive closure: even the last
+        // identity query must not make an earlier q sample look current.
+        if(out.size()!=canonical.size() || !current() || !raw_rows(out))return expired();
+        return true;
+        }catch(...){error="The native terrain rotation identity callback failed";return false;}
+    }
+};
+bool begin_terrain_capture_rotations(const Snapshot& before,std::string& error){
+    clear_terrain_capture_rotations();
+    if(before.document.placements.empty())return true;
+    if(terrain_rotation_serial==UINT64_MAX){error="The native terrain rotation ticket sequence is exhausted";return false;}
+    try{
+        auto ticket=std::make_shared<TerrainCaptureRotations>();ticket->serial=terrain_rotation_serial;
+        ticket->generation=generation;ticket->scope=value_scope();ticket->mode=mode();ticket->data=data(ticket->mode);
+        ticket->resource=resource(ticket->data);ticket->tool=terraform_mode();
+        ticket->context=a_context?*reinterpret_cast<void**>(a_context):nullptr;
+        if(!skg::readable(ticket->resource,kResourceSize) || !skg::readable(ticket->context,4) || !C.object_revision){
+            error="The native terrain rotation before-image is unavailable";return false;
+        }
+        ticket->act=skg::field<uint32_t>(ticket->context,0);ticket->source=skg::field<editor::ResourceKey>(ticket->resource,8);
+        Rows markers;if(!rows(ticket->resource,0x2C10,0x238,kPlacementLimit,markers))return false;
+        ticket->first=uintptr_t(markers.begin);ticket->last=uintptr_t(markers.end);
+        if(!ticket->current())return false;
+        ticket->canonical.reserve(before.document.placements.size());
+        for(auto p=markers.begin;p!=markers.end;p+=0x238)if(live_slot(p)){
+            const auto slot=slot_index(markers,p);const auto object=marker_id(slot);
+            auto wanted=before.document.placements.find(object);
+            if(wanted==before.document.placements.end() || uint32_t(wanted->second.class_id.id)!=skg::field<uint32_t>(p,4)){
+                error="The native terrain rotation before-image has different placement bindings";return false;
+            }
+            const auto revision=C.object_revision(object);
+            if(!ticket->current() || !revision){error="The native terrain rotation before-image expired";return false;}
+            ticket->canonical.push_back({object,slot,uint32_t(wanted->second.class_id.id),*revision,wanted->second.rotation});
+        }
+        if(ticket->canonical.size()!=before.document.placements.size() ||
+           !ticket->collect(ticket->rendered,false,error) || !ticket->values.observe(ticket->rendered,ticket->rendered,ticket->canonical,error))return false;
+        std::vector<TerrainCaptureRotations::Row> settled;
+        if(!ticket->collect(settled,true,error))return false;
+        terrain_capture_rotations=std::move(ticket);return true;
+    }catch(const std::bad_alloc&){error="Cannot allocate bounded native terrain rotation witnesses";return false;}
+    catch(...){error="The native terrain rotation before-image callback failed";return false;}
+}
+bool finish_terrain_capture_rebuild(const std::shared_ptr<const TerrainCaptureRotations>& before,
+                                  const std::vector<TerrainCaptureRotations::Row>& original,std::string& error){
+    if(!before || terrain_capture_rotations!=before || !before->current()){
+        error="The native terrain rotation rebuild ticket expired";return false;
+    }
+    try{
+        auto next=std::make_shared<TerrainCaptureRotations>(*before);
+        if(!before->collect(next->rendered,false,error) ||
+           !next->values.observe(original,next->rendered,next->canonical,error))return false;
+        std::vector<TerrainCaptureRotations::Row> settled;
+        if(!next->collect(settled,true,error) || terrain_capture_rotations!=before || !next->raw_current())return false;
+        terrain_capture_rotations=std::move(next);return true;
+    }catch(const std::bad_alloc&){error="Cannot retain bounded native terrain rotation witnesses";return false;}
+}
+bool terrain_capture_rotations_current(const std::shared_ptr<const TerrainCaptureRotations>& proof,std::string& error){
+    if(!proof || terrain_capture_rotations!=proof || !proof->current()){
+        error="The native terrain rotation capture ticket expired";return false;
+    }
+    std::vector<TerrainCaptureRotations::Row> rows;
+    return proof->collect(rows,true,error);
+}
+bool normalize_terrain_capture_rotations(void* copied,const std::shared_ptr<const TerrainCaptureRotations>& proof,
+        const std::map<uint32_t,editor::ObjectId>* supplied,std::string& error){
+    if(!terrain_capture_rotations_current(proof,error))return false;
+    if(!skg::readable(copied,kResourceSize) || skg::field<editor::ResourceKey>(copied,8)!=proof->source){
+        error="The owned terrain rotation copy changed its native source";return false;
+    }
+    Rows markers;if(!rows(copied,0x2C10,0x238,kPlacementLimit,markers))return false;
+    size_t count=0;
+    for(auto p=markers.begin;p!=markers.end;p+=0x238)if(live_slot(p)){
+        const auto slot=slot_index(markers,p);const auto object=marker_id(slot,supplied);
+        if(count>=proof->canonical.size()){error="The owned terrain rotation copy added a placement";return false;}
+        const auto& wanted=proof->canonical[count++];
+        if(wanted.object!=object || wanted.slot!=slot || wanted.class_index!=skg::field<uint32_t>(p,4)){
+            error="The owned terrain rotation copy changed its placement bindings";return false;
+        }
+        auto actual=wanted;actual.q=skg::field<editor::Rotation>(p,0x14);editor::Rotation authored;
+        const auto result=proof->values.normalize(actual,wanted,authored);
+        if(result==editor_native_terrain_rotations::Result::Stale){error="The owned terrain rotation copy has stale authored provenance";return false;}
+        if(result==editor_native_terrain_rotations::Result::Match)skg::field<editor::Rotation>(p,0x14)=authored;
+    }
+    if(count!=proof->canonical.size() || !terrain_capture_rotations_current(proof,error))return false;
+    return true;
+}
 bool capture_resource(void* r, uint32_t act, Snapshot& out, std::string& error,
                       const std::map<uint32_t,editor::ObjectId>* supplied=nullptr,const editor::Document* identity=nullptr,
                       bool boundary_owned=false) {
     const bool materialized_input=boundary_owned || r==resource(data(mode()));
+    const auto rotations=materialized_input?terrain_capture_rotations:nullptr;
+    try{
+    if(materialized_input && !terrain_capture_rotation_error.empty()){error=terrain_capture_rotation_error;return false;}
+    void* original=r;std::vector<uint8_t> original_bytes;
     Owned authored;
-    if(!terrain_grounding.empty()){
+    if(rotations){
+        if(!skg::readable(r,kResourceSize) || skg::field<editor::ResourceKey>(r,8)!=rotations->source){
+            error="The original terrain rotation image changed its native source";return false;
+        }
+        if(!terrain_capture_rotations_current(rotations,error) || !serialize(r,original_bytes,error) ||
+           !terrain_capture_rotations_current(rotations,error))return false;
+    }
+    if(rotations || !terrain_grounding.empty()){
         authored.p=construct();if(!authored.p){error="Cannot allocate an owned grounding snapshot";return false;}
         skg::thiscall<void*>(a_copy,authored.p,r);r=authored.p;
+        if(rotations){
+            std::vector<uint8_t> copied;
+            if(!terrain_capture_rotations_current(rotations,error) || !serialize(r,copied,error) ||
+               !terrain_capture_rotations_current(rotations,error))return false;
+            if(copied!=original_bytes){error="The owned terrain rotation copy changed unknown authored bytes";return false;}
+            if(!normalize_terrain_capture_rotations(r,rotations,supplied,error))return false;
+        }
         Rows markers;if(!rows(r,0x2C10,0x238,kPlacementLimit,markers)){error="Grounded native markers are unavailable";return false;}
         for(auto p=markers.begin;p!=markers.end;p+=0x238)if(live_slot(p)){
             const auto index=slot_index(markers,p);auto logical=marker_id(index);
@@ -1252,9 +1433,24 @@ bool capture_resource(void* r, uint32_t act, Snapshot& out, std::string& error,
     out = {}; out.act = act;
     out.source = skg::field<editor::ResourceKey>(r, 8);
     if (!serialize(r,out.bytes,error))return false;
+    if(rotations && !terrain_capture_rotations_current(rotations,error))return false;
     if(materialized_input && !normalize_materialized_terrain(out.bytes,error))return false;
+    const auto rotation_closure=[&]{
+        if(!rotations)return true;
+        std::vector<uint8_t> settled;
+        if(!terrain_capture_rotations_current(rotations,error) || !serialize(original,settled,error) ||
+           !terrain_capture_rotations_current(rotations,error))return false;
+        if(settled!=original_bytes){error="The original terrain rotation image changed during owned capture";return false;}
+        if(!serialize(r,settled,error) || !terrain_capture_rotations_current(rotations,error) ||
+           !normalize_materialized_terrain(settled,error))return false;
+        if(skg::field<editor::ResourceKey>(original,8)!=rotations->source || skg::field<editor::ResourceKey>(r,8)!=rotations->source){
+            error="The native terrain rotation image source changed during owned capture";return false;
+        }
+        if(settled!=out.bytes){error="The owned terrain rotation projection changed its authored bytes";return false;}
+        return terrain_capture_rotations_current(rotations,error);
+    };
     const auto reused=reuse_resource_projection(r,out,supplied,identity,error);
-    if(reused==RecentMatches::Match){++captures;return true;}
+    if(reused==RecentMatches::Match){if(!rotation_closure())return false;++captures;return true;}
     if(reused==RecentMatches::Error)return false;
     error.clear();
     if (!projection(r, out, error,supplied,std::nullopt,std::nullopt,std::nullopt,std::nullopt,identity,&out.bytes,terrain_recipe_replacement&&terrain_capturing)) return false;
@@ -1264,7 +1460,12 @@ bool capture_resource(void* r, uint32_t act, Snapshot& out, std::string& error,
     std::vector<Binding> compact;
     if(!serialized_bindings(out.bindings,compact,error))return false;
     out.bindings=std::move(compact);
+    if(!rotation_closure())return false;
     ++captures; return true;
+    }catch(...){
+        if(!rotations)throw;
+        error="The owned native terrain rotation capture callback failed";return false;
+    }
 }
 
 struct PoseCaptureProof {
@@ -1731,6 +1932,9 @@ void SK_THISCALL start(void* self) {
     if(!applying && active() && ordinary_capture_pending())return;
     bool observe=!applying && !cancellation && active() && self==data(mode()) && *reinterpret_cast<uint8_t*>(a_history+0x20);
     if(observe){
+        // A real authored pose boundary must never inherit a previous native
+        // grounding result, including a rotation equal to its old rendered q.
+        if(input_pose)clear_terrain_capture_rotations();
         gesture_owner=self;gesture_entry=nullptr;gesture_generation=generation;
         gesture_scope_pin=C.gesture_scope?C.gesture_scope():GestureScope{};
         gesture_serial=gesture_counter==UINT64_MAX?0:++gesture_counter;
@@ -1909,6 +2113,11 @@ bool terrain_begin(void* self){
     if(!valid_scope(scope))return false;
     Snapshot before;std::string error;
     if(!capture_draft(before,error)){if(C.notice)C.notice(error);return false;}
+    if(!begin_terrain_capture_rotations(before,error)){
+        clear_terrain_capture_rotations();
+        if(C.notice)C.notice(error.empty()?"The native terrain rotation before-image expired":error);
+        return false;
+    }
     terrain_before=std::move(before);terrain_scope=scope;terrain_generation=generation;terrain_owner=data(mode());
     return true;
 }
@@ -1928,7 +2137,26 @@ void SK_THISCALL terrain_start(void* self){
     original_terrain_start(self);
 }
 void SK_THISCALL terrain_rebuild(void* self){
-    const auto prior=applying;applying=true;original_terrain_rebuild(self);applying=prior;
+    const auto rotations=terrain_capture_rotations;
+    std::vector<TerrainCaptureRotations::Row> before;std::string rotation_error;
+    if(rotations && self==rotations->tool &&
+       (!terrain_before || terrain_owner!=rotations->data || terrain_generation!=rotations->generation ||
+        (C.gesture_scope && C.gesture_scope()!=terrain_scope) ||
+        !terrain_capture_rotations_current(rotations,rotation_error) || !rotations->collect(before,true,rotation_error))){
+        terrain_capture_rotation_error=rotation_error.empty()?"The native terrain rotation rebuild lost its original gesture":rotation_error;
+        return;
+    }
+    if(rotations && self==rotations->tool){
+        bool authorized=false;
+        try{authorized=!C.gesture_scope || C.gesture_scope()==terrain_scope;}catch(...){authorized=false;}
+        if(!authorized || terrain_capture_rotations!=rotations || !rotations->raw_rows(before)){
+            terrain_capture_rotation_error="The native terrain rebuild lost its original authorizing gesture";return;
+        }
+    }
+    struct Applying {bool prior=applying;~Applying(){applying=prior;}} scope;
+    applying=true;original_terrain_rebuild(self);applying=scope.prior;
+    if(rotations && self==rotations->tool && !finish_terrain_capture_rebuild(rotations,before,rotation_error))
+        terrain_capture_rotation_error=rotation_error.empty()?"The native terrain rotation rebuild lost its exact provenance":rotation_error;
     if(self==terraform_mode() && editing()){
         terrain_rebuilding=true;terrain_rebuild_frame=H->frame_index();
         if(terrain_before)remember_grounding(terrain_before->document);
@@ -1969,9 +2197,10 @@ void SK_CDECL drain_terrain(void*){
     terrain_queued=false;state();
     if(!terrain_pending || !terrain_before)return;
     if(!active() || terrain_generation!=generation || terrain_owner!=data(mode()) ||
-       (C.gesture_scope && terrain_scope!=C.gesture_scope())){terrain_pending=false;terrain_before.reset();terrain_recipe_replacement=false;return;}
+       (C.gesture_scope && terrain_scope!=C.gesture_scope())){terrain_pending=false;terrain_before.reset();terrain_recipe_replacement=false;clear_terrain_capture_rotations();return;}
     if(!terrain_settled() || !*reinterpret_cast<uint8_t*>(a_history+0x20))return;
     terrain_capturing=true;
+    struct RotationEnd {uint64_t serial=terrain_rotation_serial;~RotationEnd(){if(serial==terrain_rotation_serial)clear_terrain_capture_rotations();}} rotation_end;
     if(C.gesture_capture)C.gesture_capture(true);
     Gesture gesture;gesture.before=*terrain_before;gesture.generation=generation;std::string error;
     const bool okay=capture_draft(gesture.after,error);
@@ -3913,6 +4142,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
 }
 
 void shutdown() {
+    clear_terrain_capture_rotations();
     if(terrain_read_identity)terrain_read_identity->invalid=true;
     projected_snapshots.clear();projected_snapshot_bytes=0;
     class_projection_cache.clear();
@@ -3959,6 +4189,7 @@ State state() {
     const bool scenario=game::mode_id()==modes::kScenario;
     void* m = mode(); void* d = data(m);
     if (m != observed_mode || d != observed_data || scenario!=observed_scenario) {
+        clear_terrain_capture_rotations();
         if(terrain_read_identity)terrain_read_identity->invalid=true;
         projected_snapshots.clear();projected_snapshot_bytes=0;
         class_projection_cache.clear();
@@ -4845,6 +5076,7 @@ bool restore_impl(const Snapshot& snapshot,const RestoreFence* fence,std::string
     const auto* required=fence?&current:nullptr;
     auto checked=[&]{if(!fence || fence->checked())return true;error="The native restoration's pinned editor expired";return false;};
     if(!checked())return false;
+    clear_terrain_capture_rotations();
     InspectorView inspector(current);
     if(!checked())return false;
     // Scene reconstruction also installs the snapshot camera. That camera
@@ -5013,6 +5245,7 @@ bool restore_fenced(const Snapshot& snapshot,uint64_t expected_generation,SceneO
 }
 
 bool rebaseline(std::string& error){
+    clear_terrain_capture_rotations();
     const auto current=state();
     if(!current.ready || current.gesture || applying || !pending.empty()){
         error="Wait for the native editor gesture and pending captures to settle";return false;
@@ -5356,6 +5589,7 @@ bool remap_crew_assets(const Snapshot& base,const std::vector<CrewAssetRemap>& e
 bool apply_prepared(const Snapshot& prepared,const editor::Change& change,std::string& error){
     const auto current=state();
     if(!current.ready || current.gesture || applying){error="The native editor is not ready to apply its canonical resource";return false;}
+    clear_terrain_capture_rotations();
     const auto& patch=change.patch;
     const bool poses=!patch.fields.empty() && patch.objects.empty() && patch.classes.empty() && !patch.acts &&
         patch.terrain.empty() && std::all_of(patch.fields.begin(),patch.fields.end(),[&](const auto& f){return prepared.document.placements.contains(f.object);});
@@ -5390,6 +5624,7 @@ bool apply(const editor::Document& document,const editor::Change& change,const S
     bool tracked=false;if(!relative_scale_mode(document,tracked,error))return false;
     Snapshot snapshot;
     if (!capture(snapshot,error)) return false;
+    clear_terrain_capture_rotations();
     if(snapshot.document.act_order!=document.act_order && !document.act_order.empty()){
         if(!artifact || artifact->bytes.empty()){error="Changing acts requires its verified native artifact";return false;}
         Owned merged(parse(snapshot.bytes,error)),source(parse(artifact->bytes,error));
