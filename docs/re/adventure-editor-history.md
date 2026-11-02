@@ -431,3 +431,30 @@ envelope key, and all live scene/history/selection state remains untouched.
 The full actual-i686 native fixture passes 12,472 checks, the supported ABI
 verifier passes 91 entries, and RE lint reports no supported-build problems.
 Actual cross-profile Crew Add acceptance remains pending in the next candidate.
+
+The C12 four-player native follow-up passed the custom Add under DLL
+`13410f7065550c9a7b525f3a99c11893d57bce01110fbd4da32b00e639a3b8a1`.
+Capacity-plus and the unique Spice Crawler picker selection reached revision 2
+with two author-owned Crew history entries. Host Add Undo/Redo reached revision
+4; guest 96 Crew lock and its Undo/Redo reached revision 7, retaining exactly
+three history entries. All four passed strict native convergence and reported
+zero faults at each stage. Evidence is retained in
+`out/preview9-c12-crew-add/result.json`, `crew-history-host/result.json`,
+`crew-lock-guest/result.json` and `crew-history-guest/result.json` under the same
+`out/preview9-c12-` prefix.
+
+The native padlock control ID is reused. Before the guest lock click, its
+measured point `(977,466)` at 1024x768 was checked against the actual Crew card
+`03D98304` and header `064A90A0`, with lock `07C4B4A0`. The Captain lock was
+separately visible near `(1008,719)`. The resulting history label was
+`Edit adventure crew` under the guest author. Read-only hit and screenshot
+evidence is in `out/preview9-c12-crew-lock-calibration`. The Crew card interior
+appeared blue/blank in that screenshot, so these results establish canonical
+content admission and history, not visible thumbnail/model rendering. Crew
+replacement/removal and that visual follow-up remain separate acceptance work.
+
+All four then used Shared End, party Leave and ordinary native Cancel/Exit with
+Quit discard to return to Galaxy, with zero faults. No Terraform, new class or
+creation-editor changes were made during this core Crew check, and no runner
+stop request was written by the fixture. Retirement evidence is retained in
+`out/preview9-c12-crew-retire/result.json`.
