@@ -190,6 +190,7 @@ void native_cancel(void* entry=nullptr){
 }
 void begin(){start(t_data.data());CHECK(!t_allocations.empty());CHECK(gesture_serial!=0);}
 void reset(){
+    act_projection_cache.clear();
     held_terrain_preset.reset();a_copy_terrain_properties=0;
     held_terrain_controls.clear();terrain_before.reset();terrain_pending=terrain_rebuilding=terrain_capturing=terrain_recipe_replacement=false;terrain_available=false;
     deferred_local_view.reset();local_view_queued=local_view_settling=false;
@@ -1490,7 +1491,9 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
     a_write=old_write;a_read=old_read;a_copy_marker_rows=old_copy;a_insert_marker=old_insert;
     reset();CHECK(t_allocations.empty());
 }
+#include "editor_native_act_cache_fixture.h"
 int main(){
+    test_act_projection_production_cache();test_act_projection_cache_bounds();
     test_entry_hydrates_nonzero_captain_before_scene_entry();
     test_metadata_caption_notification();
     test_resolved_captain_sidecars();

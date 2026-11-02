@@ -303,3 +303,41 @@ failure with the checkpoint's nonzero captain, then exercises `validate_entry`
 success while the active game mode is Galaxy, before any native entry or restore.
 Forged supplied captain keys and lock flags still reject. Native running-game
 baseline admission remains the next candidate's acceptance check.
+
+## Exact act-roster projection cache
+
+The C9 four-player Adventure Town run completed 120 valid edits with strict
+per-operation convergence, but guest confirmation and frame timing still missed
+their budgets. Each authoring projection previously built one owning resource
+fragment per act, performed NativeWrite/NativeRead, normalized native goal
+validation flags, then wrote the canonical ActBlock. Town has five acts, so
+unchanged act properties repeated this work during placement-only commits.
+
+ActBlock projection depends only on that act's complete authored bytes, fixed
+fragment defaults, and the verified native Read/Write routines. Its reference
+metadata comes from enabled goals' raw class IDs. It neither resolves server
+assets nor filters references through the current class roster. Captain and
+crew projection have independent server-resolution dependencies and remain
+fresh on every call, including cache hits.
+
+The adapter now takes one owning CopyActs (`DFF620`) of the entire ordered act
+array into a detached native resource and serializes it once. Exact fingerprint
+bytes, source, native cache context, project/epoch, ordered stable act/settings
+identities, and authoring schema key immutable ActBlock values produced by the
+existing checked per-act path. Every hit still reconstructs act order, settings
+identities and next_id. No native pointer, native allocation, revision-only
+proof, or partial layout digest survives in the cache. Owning copy, NativeWrite,
+canonical Read and destruction remain on the game thread outside rendering.
+The cache retains at most eight versions and 32 MiB; status reports separate
+act_cache byte/entry/hit/miss counters. Scene replacement and shutdown retire its
+context. Failed optional allocation or fingerprint serialization falls back to
+the unchanged per-act path.
+
+Actual-i686 production adapter fixtures exercise cache hits with no per-act
+NativeRead, nested goal/reference and opaque-byte changes, roster creation,
+deletion and reordering, stable identity/source/project/epoch/context changes,
+and unrelated placement edits. They also verify fresh captain/crew server
+remaps, locks and capacity, resolver failure, optional fingerprint allocation
+and Write failure, bounded eviction, and value lifetime after native resource
+destruction. Native fixture and ABI validation establish implementation
+behavior; performance improvement remains a separate next-candidate measurement.

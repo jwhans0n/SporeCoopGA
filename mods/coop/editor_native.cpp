@@ -4,6 +4,7 @@
 #include "editor_native_complexity.h"
 #include "editor_native_pose.h"
 #include "editor_native_projection_cache.h"
+#include "editor_native_act_cache.h"
 #include "net/dbpf.h"
 
 #include <algorithm>
@@ -70,6 +71,7 @@ struct ValidatedSnapshot {
 std::optional<ValidatedSnapshot> validated_snapshot;
 unsigned validation_depth=0;
 editor_native_cache::ClassesCache class_projection_cache;
+editor_native_act_cache::Cache act_projection_cache;
 [[maybe_unused]] uint64_t validation_hits=0;
 void* observed_mode;
 void* observed_data;
@@ -349,25 +351,61 @@ bool act_block(uint8_t* act,editor::StructuredValue& block,std::string& error){
     if(block.bytes.size()>editor::Limits{}.structured_bytes){error="The act subtree exceeds its transaction limit";return false;}
     return true;
 }
+bool act_roster_fingerprint(const Rows& acts,editor_native_act_cache::Key& key,std::string& error){
+    Owned fragment(construct());if(!fragment.p){error="Cannot allocate the owned act fingerprint";return false;}
+    normalize_fragment(fragment.p);
+    const std::array<uintptr_t,3> slice{uintptr_t(acts.begin),uintptr_t(acts.end),uintptr_t(acts.end)};
+    // CopyActs owns every nested text/goal allocation. Native Write witnesses
+    // the entire ordered roster, including opaque and in-place changes. Goal
+    // reference metadata is derived only from these bytes by act_block; it
+    // does not resolve server assets or consult the current class roster.
+    skg::thiscall<void*>(a_copy_acts,skg::ptr_add<void>(fragment.p,0x23C),slice.data());
+    return serialize(fragment.p,key.bytes,error);
+}
 bool project_authoring(void* r,editor::Document& document,std::string& error,const editor::Document& identity){
     document.settings_schema=authoring_property_schema();
     document.next_id=std::max<uint64_t>(document.next_id,9ull<<32);
     Rows acts;if(!rows(r,0x23C,0x534,8,acts)){error="Invalid authored act collection";return false;}
+    std::vector<editor_native_act_cache::Identity> identities;
     uint32_t index=0;
     for(auto act=acts.begin;act!=acts.end;act+=0x534,++index){
-        editor::AuthoringSettings settings;settings.object=act_settings_id(index);settings.act_id={(3ull<<32)|index,1};
+        editor_native_act_cache::Identity entry{{(3ull<<32)|index,1},act_settings_id(index)};
         if(!identity.act_order.empty()){
             if(index>=identity.act_order.size()){error="The native act has no stable identity";return false;}
-            settings.act_id=identity.act_order[index];
-            auto found=std::find_if(identity.settings.begin(),identity.settings.end(),[&](const auto& row){return row.second.kind==editor::SettingsKind::Act && row.second.act_id==settings.act_id;});
+            entry.act=identity.act_order[index];
+            auto found=std::find_if(identity.settings.begin(),identity.settings.end(),[&](const auto& row){return row.second.kind==editor::SettingsKind::Act && row.second.act_id==entry.act;});
             if(found==identity.settings.end()){error="The act settings identity is missing";return false;}
-            settings.object=found->first;
+            entry.settings=found->first;
         }
+        identities.push_back(entry);
+    }
+    std::optional<editor_native_act_cache::Key> cache_key;
+    std::shared_ptr<const editor_native_act_cache::Acts> cached;
+    // This extra owning fingerprint is an optimization. Its allocation or
+    // serialization failure must fall back to the original per-act checks.
+    if(!identities.empty())try{
+        editor_native_act_cache::Key key;key.context=act_projection_cache.context();
+        key.project=identity.project;key.epoch=identity.epoch;key.source=skg::field<editor::ResourceKey>(r,8);
+        key.identities=identities;key.schema=document.settings_schema;
+        std::string fingerprint_error;
+        if(act_roster_fingerprint(acts,key,fingerprint_error)){
+            cached=act_projection_cache.get(key);cache_key=std::move(key);
+        }
+    }catch(const std::bad_alloc&){cache_key.reset();cached.reset();}
+    editor_native_act_cache::Acts fresh;
+    for(size_t i=0;i<identities.size();++i){
+        editor::AuthoringSettings settings;settings.object=identities[i].settings;settings.act_id=identities[i].act;
         document.act_order.push_back(settings.act_id);document.acts.insert(settings.act_id);
         document.next_id=std::max(document.next_id,std::max(settings.object.id,settings.act_id.id)+1);
-        editor::StructuredValue block;if(!act_block(act,block,error))return false;
+        editor::StructuredValue block;
+        if(cached)block=(*cached)[i];
+        else{
+            if(!act_block(acts.begin+i*0x534,block,error))return false;
+            if(cache_key)try{fresh.push_back(block);}catch(const std::bad_alloc&){cache_key.reset();fresh.clear();}
+        }
         settings.properties[kActBlockProperty]=std::move(block);document.settings.emplace(settings.object,std::move(settings));
     }
+    if(!cached && cache_key)act_projection_cache.put(std::move(*cache_key),fresh);
     editor::AuthoringSettings captain;captain.object=kCaptainObject;captain.kind=editor::SettingsKind::Captain;
     auto key=skg::field<editor::ResourceKey>(r,0x130);
     const auto server=skg::field<uint64_t>(r,0x140);
@@ -2771,6 +2809,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
 
 void shutdown() {
     class_projection_cache.clear();
+    act_projection_cache.clear();
     std::string bounds_error;
     if(!complexity_bounds.set(false,bounds_error) && H && H->log)H->log(M,SK_ERROR,"%s",bounds_error.c_str());
     complexity_available=false;
@@ -2812,6 +2851,7 @@ State state() {
     void* m = mode(); void* d = data(m);
     if (m != observed_mode || d != observed_data || scenario!=observed_scenario) {
         class_projection_cache.clear();
+        act_projection_cache.clear();
         observed_mode = m; observed_data = d; observed_scenario=scenario; ++generation;
         bindings.clear();incarnations.clear();selection.clear();act_identity={};
         terrain_before.reset();terrain_pending=terrain_capturing=terrain_rebuilding=terrain_recipe_replacement=false;terrain_grounding.clear();materialized_terrain.reset();
@@ -4310,12 +4350,13 @@ ProjectionCacheStats projection_cache_stats(){
     const auto stats=class_projection_cache.stats();return {stats.bytes,stats.entries,stats.hits,stats.misses};
 }
 std::string status() {
-    auto s=state();const auto resume=creation_scene_state({});const auto cache=projection_cache_stats();char b[768];
-    snprintf(b,sizeof b,"editor_native available=%u editing=%u ready=%u playtesting=%u entry=%u act=%u generation=%llu gesture=%u history=%u/%u captures=%llu restores=%llu rejected=%llu cancellation=%u cancellation_serial=%llu ordinary_cancellations=%llu class_cache_bytes=%zu class_cache_entries=%zu class_cache_hits=%llu class_cache_misses=%llu resume_available=%u resume_initialization=%u resume_enter_pending=%u resume_transitioning=%u world_visible=%u",
+    auto s=state();const auto resume=creation_scene_state({});const auto cache=projection_cache_stats();const auto acts=act_projection_cache.stats();char b[1024];
+    snprintf(b,sizeof b,"editor_native available=%u editing=%u ready=%u playtesting=%u entry=%u act=%u generation=%llu gesture=%u history=%u/%u captures=%llu restores=%llu rejected=%llu cancellation=%u cancellation_serial=%llu ordinary_cancellations=%llu class_cache_bytes=%zu class_cache_entries=%zu class_cache_hits=%llu class_cache_misses=%llu act_cache_bytes=%zu act_cache_entries=%zu act_cache_hits=%llu act_cache_misses=%llu resume_available=%u resume_initialization=%u resume_enter_pending=%u resume_transitioning=%u world_visible=%u",
         s.available,s.editing,s.ready,s.playtesting,s.entry,s.act,(unsigned long long)s.generation,s.gesture,
         s.history_cursor,s.history_size,(unsigned long long)captures,(unsigned long long)restores,(unsigned long long)rejected,
         unsigned(cancellation.has_value()),(unsigned long long)cancellation_counter,(unsigned long long)ordinary_cancellations,
         cache.bytes,cache.entries,(unsigned long long)cache.hits,(unsigned long long)cache.misses,
+        acts.bytes,acts.entries,(unsigned long long)acts.hits,(unsigned long long)acts.misses,
         unsigned(resume.available),resume.initialization,unsigned(resume.enter_pending),unsigned(resume.transitioning),unsigned(resume.world_visible));
     return b;
 }
