@@ -680,6 +680,32 @@ acceptance or evidence that generic shared-save gating caused the failure.
 Vehicle and the other creation-family workflows, changed Cancel, remote Edit,
 four-player creation and complete native Save/reopen remain unverified.
 
+The supported-image Done dispatch is command `102 -> 5DFDF6 -> 5DFB80`.
+Before invoking `5DF4B0`, it reads EditorUI `+5C` (Editor), Editor `+7C`
+(resource), resource `+C` (another owner), then byte `+44`. If that byte is
+nonzero and window `03F67620` is visible, it returns without attempting Save.
+The tested flag is `Window::GetFlags`, vtable `+28`, bit one: visibility, not
+checkbox selection. The resource-owner byte's higher-level meaning is not
+established. Otherwise native `GetFinishState=57AAA0` can reject through its
+blocking-error UI without producing NotifyResult. In this supported image,
+`57A960` masks request `+24..30` by the complement of globals
+`15DA7EC..15DA7F8`; `57A9E0` similarly masks `15DAA40..15DAA4C` and excludes
+the current error tuple. These globals differ from older image notes above.
+No native error tuple or early-gate window was sampled before candidate 7
+ended, so those branches remain alternatives rather than the observed cause.
+
+Subtype choice is also explicit native state. The chooser is populated from
+the Editor's allowed-type vector `+334/+338` and initialized to list index
+zero. Selection event `9A1552D3` for `503517B0` retrieves the selected type at
+`5E0085..5E00B5`, then stores it in Editor `+98` model `+58` at `5E00C0`.
+`GetNameForAssetType=4BBA50` and its UTF-16 literals identify
+`99E92F05` as BuildingCityHall, `4E3F7777` as BuildingHouse and `BDD15F3D` as
+BuildingFarm. Land-vehicle choices include `7D433FAD` MilitaryLand,
+`F670AA43` EconomicLand, `9AD7D4AA` CulturalLand and `BC1041E6` ColonyLand.
+The generic ground-vehicle editor's actual allowed list and initial model
+type must be observed; selecting list index zero during initialization alone
+does not prove whether the model received that type.
+
 ## Native title refresh and captain transport
 
 The guest's `Name Your Adventure` caption was already visible before its first
