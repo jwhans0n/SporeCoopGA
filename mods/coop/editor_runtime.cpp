@@ -2857,7 +2857,10 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         }
         incoming_resources = std::move(content); incoming_context = scope; return true;
     };
-    callbacks.baseline_ready = [](const editor::State&) { return editor_native::state().ready; };
+    callbacks.baseline_ready = [](const editor::State&) {
+        const auto native=editor_native::state();
+        return native.ready && !native.gesture && !editor_native_save::busy();
+    };
     callbacks.apply_baseline = [](const editor::State& state, std::string& error) {
         ProjectionScope projection(state.document);
         reopen_saved.reset();
@@ -2869,6 +2872,11 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
             !editor_project::native_snapshot(*incoming_resources, state.document, native, error) ||
             !register_native_records(incoming_resources->root,incoming_resources->bundle.records, error)) return false;
         if (!editor_native::state().editing && !editor_native::enter(native.source, error)) return false;
+        // Baseline readiness proves the native entry finished. Verify the loaded
+        // planet before restoring so an identical recipe keeps its existing
+        // terrain and collision instead of scheduling a second regeneration.
+        editor_native::Snapshot loaded;
+        if (!editor_native::capture_draft(loaded, error)) return false;
         // restore installs and validates this exact document. A terrain rebuild
         // can still be loading after it returns; scene readiness is acknowledged
         // separately rather than applying the same document a second time.
