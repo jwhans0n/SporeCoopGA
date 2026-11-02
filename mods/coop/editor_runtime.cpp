@@ -60,6 +60,8 @@ struct LocalCreation {
     editor_creation::Scope scope;
     editor_creation::Request request;
     editor_native::LocalView view;
+    editor_native::SceneOwner scene_owner;
+    editor_native::Snapshot entry_native;
     std::optional<editor::ObjectId> selected;
     editor::ObjectId authored_act;
     uint32_t act=0;
@@ -71,6 +73,8 @@ struct LocalCreation {
     std::string error;
     std::optional<editor::Revision> scene_revision;
     uint64_t scene_frame=0;
+    uint64_t resume_started=0;
+    bool entered_adventure=false,camera_resumed=false;
 };
 std::optional<LocalCreation> local_creation;
 bool detached_scene() { return local_creation.has_value(); }
@@ -1248,7 +1252,8 @@ editor_creation::PrepareResult prepare_creation(const editor_creation::Scope& sc
     }
     if(!check_native_integrity(error))return Result::Reject;
     LocalCreation saved;saved.scope=scope;saved.request=input;saved.act=native.act;saved.authored_act=logical_act(native.act);saved.entry_generation=native_generation;
-    if(!editor_native::capture_view(saved.view,error))return Result::Reject;
+    if(!editor_native::capture_view(saved.view,error) || !editor_native::capture_scene_owner(saved.scene_owner,error))return Result::Reject;
+    saved.entry_native=current_native;
     if(!native.selected.empty())saved.selected=native.selected.front();
     if(input.target)for(const auto& [id,settings]:controller->state().document.class_settings)if(settings.class_id==*input.target)
         saved.content_revision=editor::field_revision(controller->state().document,id,{editor::Field::Property,editor::kClassAssetResourceProperty});
@@ -1267,15 +1272,49 @@ bool materialize_creation_return(std::string& error){
        controller->state().document.project!=local_creation->scope.project || controller->state().document.epoch!=local_creation->scope.epoch){
         error="The creation is saved locally. Reopen the retained adventure recovery checkpoint to continue";return false;
     }
+    if(!local_creation->resume_started)local_creation->resume_started=now_ms();
+    if(now_ms()-local_creation->resume_started>180000){
+        error="The native adventure resume did not finish; the saved creation and committed draft are retained";return false;
+    }
     auto native=editor_native::state();
     if(!native.editing){
         if(!local_creation->returned_generation){
+            local_creation->entry_native=current_native;
             if(!register_native_records(resources.root,resources.bundle.records,error) || !editor_native::enter(current_native.source,error))return false;
-            local_creation->returned_generation=UINT64_MAX;
+            local_creation->returned_generation=UINT64_MAX;local_creation->entered_adventure=true;
+        }else if(local_creation->returned_generation!=UINT64_MAX){
+            error="The creation return's native adventure scene was replaced";
         }
         return false;
     }
     if(!native.ready || native.gesture)return false;
+    if(local_creation->returned_generation && local_creation->returned_generation!=UINT64_MAX && native.generation!=local_creation->returned_generation){
+        error="The creation return scene was replaced before restoration completed";return false;
+    }
+    if(!local_creation->camera_resumed){
+        auto scene=editor_native::creation_scene_state(local_creation->scene_owner);
+        // Native OnEnter restarts initialization before resuming its toolbar,
+        // history and world. Resource readiness alone does not prove return.
+        if(!scene.available || !scene.ready || scene.initialization!=4 || scene.enter_pending || scene.transitioning || !scene.world_visible){
+            status="Returning to the adventure; waiting for native scene initialization (state "+std::to_string(scene.initialization)+
+                ", entry "+std::to_string(scene.enter_pending)+", transition "+std::to_string(scene.transitioning)+", toolbar "+std::to_string(scene.world_visible)+")";
+            return false;
+        }
+        if(!scene.owner && !local_creation->entered_adventure){error="The creation returned to a different native adventure owner";return false;}
+        editor_native::Snapshot loaded;
+        ProjectionScope projection(local_creation->entry_native.document);
+        if(!editor_native::capture_draft(loaded,error))return false;
+        loaded.bindings=local_creation->entry_native.bindings;
+        if((local_creation->entered_adventure && loaded.source!=local_creation->entry_native.source) ||
+           !editor_native::validate(loaded,local_creation->entry_native.document,error)){
+            if(error.empty())error="The returned native adventure differs from its owned entry snapshot";
+            return false;
+        }
+        if(local_creation->entered_adventure && !editor_native::capture_scene_owner(local_creation->scene_owner,error))return false;
+        const editor_native::GestureScope scope{local_creation->scope.project,local_creation->scope.epoch,local_creation->scope.author};
+        if(!editor_native::resume_creation_scene_camera(scope,local_creation->scope.serial,native.generation,local_creation->scene_owner,error))return false;
+        local_creation->camera_resumed=true;local_creation->returned_generation=native.generation;
+    }
     if(!local_creation->scene_revision || *local_creation->scene_revision!=controller->state().document.revision){
         auto snapshot=current_native;
         const auto& order=controller->state().document.act_order;
@@ -1287,8 +1326,12 @@ bool materialize_creation_return(std::string& error){
         local_creation->scene_revision=controller->state().document.revision;local_creation->scene_frame=H->frame_index?H->frame_index():0;
         status="Restoring adventure revision "+std::to_string(*local_creation->scene_revision)+"; waiting for native scene readiness";return false;
     }
-    if(native.generation!=local_creation->returned_generation){error="The creation return scene was replaced before restoration completed";return false;}
+    const auto resumed=editor_native::creation_scene_state(local_creation->scene_owner);
+    if(!resumed.owner){error="The creation return's native adventure owner changed during restoration";return false;}
+    if(!resumed.settled())return false;
     if(H->frame_index && H->frame_index()<=local_creation->scene_frame)return false;
+    editor_native::Snapshot verified;
+    if(!editor_native::capture(verified,error) || !editor_native::validate(verified,controller->state().document,error))return false;
     if(local_creation->selected && (controller->state().document.placements.contains(*local_creation->selected) ||
        (*local_creation->selected==editor_native::kCaptainObject && controller->state().document.settings.contains(editor_native::kCaptainObject))) &&
        !editor_native::select_placement(*local_creation->selected,error))return false;
@@ -2005,6 +2048,7 @@ void close_session(bool preserve_offer = false) {
         } else if (H) H->log(M, SK_INFO, "Saved-draft reopen proof was not pinned: %s", error.c_str());
     }
     if (!keep_offer) controller->end(); pending.reset(); awaiting_operation.reset(); requested_scopes.clear(); guarded_placements.clear(); incoming_resources.reset();
+    local_creation.reset();
     guarded_settings.clear();guarded_authoring.clear();cast_uploads.clear();cast_upload_errors.clear();solo_preview.reset();solo_ready_scope.reset();pending_solo_return.reset();pending_solo_request=0;
     recovery.reset(); beginning = false; frozen = false; save_publication_pending = false;
     end_after_return = false; disconnected_return = false; pending_saved.reset();
@@ -2642,6 +2686,7 @@ void execute(Action action) {
             tell("The host returns the party to the adventure draft");
         break;
     case Action::Recover: {
+        if(editor_creation::active()){tell("Finish or cancel the current creation before recovering an adventure draft");break;}
         reopen_saved.reset();
         if (!host() || !recovery_available) break;
         if(native_identity_lost){tell("Return to Galaxy before recovering this draft into a different native editor");break;}
@@ -3170,6 +3215,11 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         return !native_attached || !current_native.document.settings_schema.empty();
     };
     native.gesture_scope = [] { return current_gesture_scope(); };
+    native.creation_return_current=[](const editor_native::GestureScope& scope,uint64_t serial){
+        return local_creation && !local_creation->materialized && local_creation->scope.serial==serial &&
+            local_creation->scope.project==scope.project && local_creation->scope.epoch==scope.epoch && local_creation->scope.author==scope.author &&
+            creation_current(local_creation->scope);
+    };
     native.import_scope = [] { return current_gesture_scope(true); };
     native.cancelled = cancelled_gesture;
     native.gesture = captured;
