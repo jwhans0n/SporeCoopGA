@@ -79,8 +79,10 @@ PACKAGE_ADMISSION_WINDOWS_SRC := $(PACKAGE_ADMISSION_SRC) mods/coop/package_admi
 ADVENTURE_ASSETS_NATIVE_FIXTURE_SRC := $(PACKAGE_ADMISSION_WINDOWS_SRC) tests/adventure_assets_native_windows_tests.cpp mods/coop/net/adventure_assets.cpp mods/coop/net/dbpf.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp updater/sha256.cpp
 ADVENTURE_ABI_HEADERS := sdk/include/sporekit.h sdk/include/sporekit_game.hpp sdk/include/sporekit_build.hpp mods/coop/game.h mods/coop/net/protocol.h
 .PHONY: test-editor test-editor-windows
-test-editor:
+test-editor: $(B)/host/editor_native_terrain_rotations_tests $(B)/host/editor_native_complexity_ratio_tests
 	@mkdir -p $(B)/host
+	$(B)/host/editor_native_terrain_rotations_tests
+	$(B)/host/editor_native_complexity_ratio_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include $(EDITOR_WIRE_SRC) tests/editor_cast_tests.cpp -o $(B)/host/editor_cast_tests
 	$(B)/host/editor_cast_tests
 	@mkdir -p $(B)/host
@@ -166,6 +168,20 @@ $(B)/host/editor_native_complexity_tests.exe: tests/editor_native_complexity_win
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/editor_native_complexity_windows_tests.cpp -o $@
 
+test-editor-windows: $(B)/host/editor_native_terrain_rotations_tests.exe $(B)/host/editor_native_complexity_ratio_tests.exe
+$(B)/host/editor_native_terrain_rotations_tests: tests/editor_native_terrain_rotations_tests.cpp mods/coop/editor_native_terrain_rotations.h
+	@mkdir -p $(B)/host
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop tests/editor_native_terrain_rotations_tests.cpp -o $@
+$(B)/host/editor_native_complexity_ratio_tests: tests/editor_native_complexity_ratio_tests.cpp mods/coop/editor_native_complexity_ratio.h
+	@mkdir -p $(B)/host
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop tests/editor_native_complexity_ratio_tests.cpp -o $@
+$(B)/host/editor_native_terrain_rotations_tests.exe: tests/editor_native_terrain_rotations_tests.cpp mods/coop/editor_native_terrain_rotations.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_native_terrain_rotations_tests.cpp -o $@
+$(B)/host/editor_native_complexity_ratio_tests.exe: tests/editor_native_complexity_ratio_tests.cpp mods/coop/editor_native_complexity_ratio.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_native_complexity_ratio_tests.cpp -o $@
+
 $(B)/host/editor_native_pose_tests.exe: $(EDITOR_CORE_SRC) tests/editor_native_pose_tests.cpp mods/coop/editor_native_pose.h
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $(EDITOR_CORE_SRC) tests/editor_native_pose_tests.cpp -o $@
@@ -234,7 +250,7 @@ $(B)/host/editor_native_save_tests.exe: tests/editor_native_save_windows_tests.c
 $(B)/host/adventure_editor_preview_tests.exe: tests/adventure_editor_preview_windows_tests.cpp mods/coop/adventure_native.cpp mods/coop/adventure_native.h mods/coop/editor_native.h mods/coop/editor_native_scale.h $(ADVENTURE_ABI_HEADERS) mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/adventure_editor_preview_windows_tests.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp -o $@ -lws2_32
-$(B)/host/editor_runtime_windows_tests.exe: $(EDITOR_RUNTIME_FIXTURE_SRC) tests/editor_runtime_model_admission_fixture.h tests/editor_runtime_projection_scope_fixture.h tests/editor_runtime_terrain_transition_fixture.h tests/editor_runtime_capture_identity_fixture.h tests/editor_runtime_rejection_restore_fixture.h mods/coop/editor_runtime.cpp mods/coop/editor_runtime.h mods/coop/editor_metrics.h mods/coop/editor_native.h mods/coop/editor_native_authoring.h mods/coop/editor_native_scale.h mods/coop/editor_reopen_identity.h mods/coop/editor_native_bindings.h mods/coop/editor_native_save.h mods/coop/adventure_native.h mods/coop/editor_store.h mods/coop/editor_project.h mods/coop/editor_placement_diagnostic.h mods/coop/editor_session.h $(wildcard mods/coop/net/editor_*.h) $(ADVENTURE_ABI_HEADERS)
+$(B)/host/editor_runtime_windows_tests.exe: $(EDITOR_RUNTIME_FIXTURE_SRC) tests/editor_runtime_model_admission_fixture.h tests/editor_runtime_projection_scope_fixture.h tests/editor_runtime_terrain_transition_fixture.h tests/editor_runtime_capture_identity_fixture.h tests/editor_runtime_rejection_restore_fixture.h tests/editor_runtime_persistence_fixture.h mods/coop/editor_runtime.cpp mods/coop/editor_runtime.h mods/coop/editor_metrics.h mods/coop/editor_native.h mods/coop/editor_native_authoring.h mods/coop/editor_native_scale.h mods/coop/editor_reopen_identity.h mods/coop/editor_native_bindings.h mods/coop/editor_native_save.h mods/coop/adventure_native.h mods/coop/editor_store.h mods/coop/editor_project.h mods/coop/editor_placement_diagnostic.h mods/coop/editor_session.h $(wildcard mods/coop/net/editor_*.h) $(ADVENTURE_ABI_HEADERS)
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(EDITOR_RUNTIME_FIXTURE_SRC) -o $@ -lws2_32
 $(B)/host/package_admission_tests.exe: $(PACKAGE_ADMISSION_SRC) tests/package_admission_tests.cpp mods/coop/package_admission.h

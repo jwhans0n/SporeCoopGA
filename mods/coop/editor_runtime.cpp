@@ -1012,11 +1012,16 @@ bool persist(const editor::State& state, const editor::Change& change, std::stri
         if(extra && !merge_dependencies(next_resources,*extra,error))return false;
     }
     std::vector<uint8_t> envelope, delta;
-    if (!replace_root(next_resources, after, error) || !editor_project::encode_resources(next_resources, envelope, error) ||
-        (structural(change) && !root_delta(next_resources, delta, error))) return false;
+    if (!replace_root(next_resources, after, error)) return false;
+    const bool dependencies_added=next_resources.bundle.records.size()!=resources.bundle.records.size();
+    // Replicas retain native/state bytes directly. A full transfer envelope is
+    // needed locally only when a new immutable dependency artifact is written.
+    // The host also needs it for future joins; outgoing deltas are host-only.
+    if (((host() || dependencies_added) && !editor_project::encode_resources(next_resources, envelope, error)) ||
+        (host() && structural(change) && !root_delta(next_resources, delta, error))) return false;
     auto next_hash=resource_hash;
-    if(next_resources.bundle.records.size()!=resources.bundle.records.size() && (!reserve_artifacts({&envelope},error) || !put_blob(envelope,next_hash,error)))return false;
-    if(cast_change(change)){
+    if(dependencies_added && (!reserve_artifacts({&envelope},error) || !put_blob(envelope,next_hash,error)))return false;
+    if(host() && cast_change(change)){
         ResourceKeys retained;for(const auto& row:resources.bundle.records)retained.insert(row.key);
         if(!changed_resources(next_resources,retained,delta,error))return false;
     }
@@ -1064,11 +1069,12 @@ bool begin_persist_owned(const editor::State& state,const editor::Change& change
     job->task=std::async(std::launch::async,[job,old_record_count,capability,copy_owned,provenance]{
         try{
             if(!remember_artifacts(job->state,job->change,job->before?*job->before:job->native,job->native,job->archive,job->error))return false;
-            if(!replace_root(job->resources,job->native,job->error) ||
-               !editor_project::encode_resources(job->resources,job->envelope,job->error) ||
-               (structural(job->change)&&!root_delta(job->resources,job->delta,job->error)))return false;
-            if(job->resources.bundle.records.size()!=old_record_count && !put_blob(job->envelope,job->hash,job->error))return false;
-            if(cast_change(job->change) && !changed_resources(job->resources,job->retained_keys,job->delta,job->error))return false;
+            if(!replace_root(job->resources,job->native,job->error))return false;
+            const bool dependencies_added=job->resources.bundle.records.size()!=old_record_count;
+            if(((job->hosting || dependencies_added) && !editor_project::encode_resources(job->resources,job->envelope,job->error)) ||
+               (job->hosting && structural(job->change)&&!root_delta(job->resources,job->delta,job->error)))return false;
+            if(dependencies_added && !put_blob(job->envelope,job->hash,job->error))return false;
+            if(job->hosting && cast_change(job->change) && !changed_resources(job->resources,job->retained_keys,job->delta,job->error))return false;
             if(!editor_project::store_snapshot(job->state,job->native,job->title,job->saved,job->error))return false;
             net::Writer w;w.u32(0x33484445);w.str8(job->hash);w.u8(capability.slot);w.u32(capability.generation);w.u8(copy_owned);
             w.u32(provenance.instance);w.u32(provenance.type);w.u32(provenance.group);w.u32(uint32_t(job->archive.size()));
