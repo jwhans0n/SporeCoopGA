@@ -5,6 +5,14 @@
 namespace editor_native {
 inline constexpr uint32_t kCastBlockProperty=0x43415354;
 inline constexpr uint32_t kCastBlockFormat=0x31415343;
+inline void canonical_cast_primary_asset(uint8_t* class_data){
+    // Content has its own ResourceKey property and Content lease. Keeping it
+    // out of the behavior block lets either field preserve the other's edits.
+    const editor::ResourceKey empty{};
+    std::memcpy(class_data,&empty,sizeof empty);
+    const uint32_t machine=0;std::memcpy(class_data+0xC,&machine,sizeof machine);
+    const uint64_t local=UINT64_MAX;std::memcpy(class_data+0x10,&local,sizeof local);
+}
 inline void canonical_cast_asset_hints(uint8_t* class_data){
     // 138A250: asset+0C is mMachineId (attribute 62B74271), populated by
     // native Save. Installed local keys and transferred bytes own our lookup.
@@ -18,7 +26,10 @@ inline void behavior_class_reference(std::set<editor::ObjectId>& references,int3
     if(type==2 && value>=0)references.insert({(2ull<<32)|uint32_t(value),1});
 }
 inline const std::map<uint32_t,editor::PropertySpec>& cast_property_schema(){
-    static const std::map<uint32_t,editor::PropertySpec> schema{{kCastBlockProperty,{editor::ValueKind::Structured,0,0,0,false,false}}};
+    static const std::map<uint32_t,editor::PropertySpec> schema{
+        {kCastBlockProperty,{editor::ValueKind::Structured,0,0,0,false,false}},
+        {editor::kClassAssetResourceProperty,{editor::ValueKind::Resource,0,0,0,false,false}}
+    };
     return schema;
 }
 inline bool cast_schema(const editor::Document& document,std::string& error){

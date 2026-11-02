@@ -1,7 +1,7 @@
 // SporeCoop mod: creature-stage co-op ("pack" mode). See docs/03-gameplay.md.
 // the release version (tools/package.sh names the zip after it)
 #ifndef COOP_VERSION
-#define COOP_VERSION "0.7.5.0-ga-editor-preview.8"
+#define COOP_VERSION "0.7.5.0-ga-editor-preview.9"
 #endif
 
 #include <winsock2.h>
@@ -22,6 +22,7 @@
 
 #include "coop_ui.h"
 #include "editor_runtime.h"
+#include "editor_creation.h"
 #include "frame_metrics.h"
 #include "driver.h"
 #include "game.h"
@@ -718,10 +719,8 @@ int SK_THISCALL h_SimMsg(void* self, uint32_t id, void* data)
 
 bool SK_CDECL h_Submit(void* req)
 {
-    if (coop_editor::authoring()) {
-        feed("Nested creation editors are read-only during shared adventure editing.");
-        return false;
-    }
+    if (coop_editor::authoring() || editor_creation::active())
+        return editor_creation::intercept(req, o_Submit);
     uint32_t mode = game::mode_id();
     if (!g_vote_bypass && req && stage_mode(mode) && g_sess.connected() && g_sess.players().size() > 1) {
         if (g_sess.role() == net::Role::Host) {
@@ -969,7 +968,7 @@ void keepalive_task(void*)
     g_sess.update();
     coop_editor::tick(H->time_seconds());
     adventure::tick(H->time_seconds());
-    if (g_sess.role() == net::Role::Host && !coop_editor::authoring())
+    if (g_sess.role() == net::Role::Host && !coop_editor::authoring() && !editor_creation::active())
         world::tick(g_sess);
 }
 
@@ -1083,7 +1082,7 @@ void on_frame(void*, int, void*)
     g_last_frame = now;
     diag_tick(now);
     notify::tick(now);
-    creations::tick(now);
+    if (!coop_editor::authoring() && !editor_creation::active()) creations::tick(now);
     g_sess.update();
     coop_editor::tick(now);
     adventure::tick(now);
@@ -1093,7 +1092,7 @@ void on_frame(void*, int, void*)
     submit_tick(now);
     coop_ui::tick();
     menu_tick(now);
-    if (coop_editor::authoring()) {
+    if (coop_editor::authoring() || editor_creation::active()) {
         // Native editable creatures still dispatch Update. NPC replication is
         // suspended here, so its ordinary per-frame collector drain is skipped.
         game::discard_creature_updates();

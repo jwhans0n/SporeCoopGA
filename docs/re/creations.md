@@ -346,3 +346,57 @@ blocking errors still stop "done". Not done: native evolution data of the reques
 0x64AA168`, `+0x94` = object from `0xF67D40()+0x10E8`, `+0x70` vector of 4 values from
 `+0x10FC..+0x1108`, flags +0x34..+0x3D, see 0xD42F2C) is not filled by the mod's request; done and
 cancel work without it.
+
+## 8. Independent Adventure Editor creation sessions (GOG 2024, 2026-11-02)
+
+Static receipts in `tools/addrport/verify_editor_creation_dc04.py` verify the
+original dc04 image and its reviewed LAA variant. Native request constructor
+`5A9140` owns 9C bytes and primary interface references at vtable04/08. Fields
+are editor ID0C, source ResourceKey10, return mode1C and new-asset flag20.
+`5A909C..5A90F3` selects default editors for CRT465C50BA, BLDD817CD63,
+VCL99F87089, UFO96B24187, FLR1C7ECA95 and CLL3615A30B.
+
+`57A710` is thiscall(editor, result), ret4. Its result key is18 and cancellation
+flag44. It broadcasts30C11C7, emits the normal E11332 return, then releases
+editor1CC request and4BC result. Native cast palette `ED4289..ED42C1` checks
+result44 before importing. The creation adapter matches its owned request,
+pins the result, copies the real completion, temporarily marks only this result
+cancelled during the native notifier, then restores44 and releases the pin.
+Thus native return/cleanup remains native and the shared coordinator owns the
+asset transaction. Unrelated results retain their normal behavior.
+
+Native class import `F462F0` owns constructor/copy/insertion, class allocation and
+default act behaviors, but calls `F43990` to assign its primary asset. That
+setter also touches species/actors and finishes with live refresh `F42470`.
+Calling it on a fake ScenarioData containing only10 is unsafe. Detached import
+therefore intercepts F43990 only for the exact scoped owned temporary parent,
+assigning its primary key and verified model-type cache18. `F3E740` is
+thiscall(parent, classIndex), ret4, and reads only parent10 and the owned map.
+Model type `EECAC0` is cdecl(key), plain ret, using installed asset metadata.
+Every other F43990 call stays native. The owning import still supplies default
+act data and vectors; no scene pointer is fabricated.
+
+Content has a separate ResourceKey property43524101. Behavior fragments clear
+only their primary key, machine hint0C and local server hint10 on owned copies;
+the native adapter restores current content after copying a behavior subtree.
+Content replacement preserves class behavior, positions and every other key.
+
+Project-owned versions retain BEM bytes and remap resource index keys. The
+existing BEM self-key and factory findings in section1 apply; an unexpected
+complete self key in BEM is rejected. Pollen v13 own key at0C is rewritten in
+BE(type, group, instance) order while ancestry stays original. Standard property
+streams remap only declared ResourceKey payloads, never numeric words or blind
+byte matches. Unrelated dependency keys/bytes remain unchanged. Native derived
+species/summary caches, source-format XML and the model-group PNG (which embeds
+old metadata in pixels) are omitted; native loading/baking regenerates them.
+The plain group+1 thumbnail is retained. Unsupported owner companions and
+unknown metadata/property formats fail before canonical admission.
+
+`tests/editor_creation_windows_tests.cpp` exercises production hooks under the
+real i686 ABI: intrusive request/result lifetime, delayed ownership and single
+replay, ordinary Done/Cancel, stale scopes and leases, all six default request
+families, failed allocation, detached import scene suppression, content-only
+replacement and checked immutable record transformations. These controlled
+fixtures are not evidence of running-game entry, editing, remote reopening,
+baking or return success. Each family and simultaneous participants still need
+the private native integration checks recorded by the delivery report.
