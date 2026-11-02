@@ -15,7 +15,7 @@ import re
 import time
 
 from coop_adventure import FixtureError, LINE, match_groups
-from coop_adventure_editor import status
+from coop_adventure_editor import EditorPair, status
 from coop_editor_party import Ownership, PublicConsole, PublicGame, parse_history
 from sporectl import quote
 
@@ -98,7 +98,7 @@ def validate_steps(steps):
         if not isinstance(step, dict) or len(step) != 1:
             raise ValueError('Each recipe action has exactly one key')
         action, value = next(iter(step.items()))
-        if action in ('click', 'drag'):
+        if action in ('click', 'drag', 'slow_drag'):
             if not isinstance(value, list) or len(value) != (2 if action == 'click' else 4) or any(type(v) is not int or not 0 <= v <= 4095 for v in value):
                 raise ValueError('Bounded native input coordinates required')
         elif action == 'control':
@@ -135,7 +135,7 @@ def recipes(path):
             continue
         for step in steps:
             action, value = next(iter(step.items()))
-            if action in ('click', 'drag') and any(value[i] >= viewport[i % 2] for i in range(len(value))):
+            if action in ('click', 'drag', 'slow_drag') and any(value[i] >= viewport[i % 2] for i in range(len(value))):
                 raise ValueError('Native recipe input must remain inside its measured viewport')
     return data
 
@@ -151,6 +151,10 @@ def input_steps(game, steps, name):
             game.click(*value)
         elif action == 'drag':
             game.call('drag ' + ' '.join(map(str, value)))
+        elif action == 'slow_drag':
+            # Part palettes need native hover/hold time. Preserve ordinary
+            # drag recipes, with an explicit calibrated option for creation.
+            EditorPair.slow_drag(game, value[:2], value[2:])
         elif action == 'frames':
             game.call(f'wait.frames {value} 30000')
         elif action == 'press':
@@ -353,7 +357,7 @@ def self_test():
         pass
     else:
         raise AssertionError('Truncated canonical asset diagnostic accepted')
-    validate_steps([{'click': [10, 20]}, {'control': 'C00F0301'}, {'text': '{name}'}, {'key': 'ctrl down'}])
+    validate_steps([{'click': [10, 20]}, {'slow_drag': [10, 20, 30, 40]}, {'control': 'C00F0301'}, {'text': '{name}'}, {'key': 'ctrl down'}])
     for invalid in ([{'call': 'Editor::Save'}], [{'mem.write': '00'}], [{'click': [-1, 2]}], [{'frames': 99999}], [{'key': 'esc\ncall foo'}]):
         try:
             validate_steps(invalid)
