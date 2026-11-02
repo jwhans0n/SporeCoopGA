@@ -444,9 +444,10 @@ does not allocate a host remapping or mount the proposed package.
 
 `tests/adventure_collect_windows_tests.cpp` exercises that production collector
 under the i686 ABI with controlled ResourceManager, database, record and stream
-vtables. Its 88 checks pass for equal bytes, changed bytes, missing resources,
+vtables. Its 101 checks pass for equal bytes, changed bytes, missing resources,
 typed aliases, failed open/read/seek, oversized records, exact-root exemption,
-duplicate keys, unavailable manager and balanced record close/release. The
+duplicate keys, unavailable manager and balanced record close/release. Other
+adventure resources do not inherit the mutable root exemption. The
 controlled fixture does not establish running-game package collision behavior.
 
 Act roster edits use a separate Authoring lease. It covers authored adventure
@@ -454,7 +455,8 @@ fields while excluding Content and the primary content ResourceKey field;
 Document remains a complete hold. The portable authoring extension fixture
 passes 222 checks, including roster Undo/Redo concurrent with another player's
 asset Content lease and preservation of the later immutable content version.
-Production runtime UDP and durable-store creation fixtures pass 1350 checks,
+Production runtime UDP and durable-store creation fixtures pass 1505 checks,
 including independent guest return and act reordering while the host edits an
-existing asset. These tests use controlled native scenes rather than game
+existing asset, and safe guest return after host resource collision rejection
+without a partial cast entry or history item. These tests use controlled native scenes rather than game
 processes. Native all-family, two-player and four-player acceptance is pending.

@@ -12,15 +12,15 @@ struct Object{void** vtable;};Object rm{rm_vt.data()},database{db_vt.data()},rec
 void* rm_pointer=&rm;
 const dbpf::Key root{7,0x366A930D,0x408A0000},asset{8,0x1A99B06B,0x40626200};
 std::vector<uint8_t> installed{1,2,3,4};
-dbpf::Key resolved=asset;
+dbpf::Key lookup_key=asset,resolved=asset;
 bool present=true,fail_open=false,fail_read=false,fail_seek=false,oversized=false;
 size_t offset=0;
 void* SK_THISCALL find(void* self,const dbpf::Key* key,dbpf::Key* real,void* zero){
-    CHECK(self==&rm && !zero);++finds;if(!present || *key!=asset)return nullptr;*real=resolved;return &database;
+    CHECK(self==&rm && !zero);++finds;if(!present || *key!=lookup_key)return nullptr;*real=resolved;return &database;
 }
 const wchar_t* SK_THISCALL location(void* self){CHECK(self==&database);return L"D:\\private-fixture\\Spore_Content.package";}
 bool SK_THISCALL open_record(void* self,const dbpf::Key* key,void** out,int access,int creation,bool lazy,void* zero){
-    CHECK(self==&database && *key==asset && access==1 && creation==6 && lazy && !zero);++opens;
+    CHECK(self==&database && *key==resolved && access==1 && creation==6 && lazy && !zero);++opens;
     if(fail_open)return false;
     *out=&record;offset=0;return true;
 }
@@ -50,6 +50,10 @@ int main(){
         *failure=true;const auto before=closes;CHECK(!adventure_collect::validate_uploaded_records(root,records,error));CHECK(closes==before+1 && releases==closes);*failure=false;
     }
     const auto before=finds;CHECK(adventure_collect::validate_uploaded_records(root,{{root,{1,2,3}}},error));CHECK(finds==before);
+    lookup_key=resolved={root.instance+1,root.type,root.group};
+    CHECK(!adventure_collect::validate_uploaded_records(root,{{lookup_key,{9,8}}},error)); // Other adventures are immutable dependencies.
+    CHECK(error.find("conflicts")!=std::string::npos);
+    lookup_key=resolved=asset;
     CHECK(!adventure_collect::validate_uploaded_records(asset,records,error));
     records.push_back(records.back());CHECK(!adventure_collect::validate_uploaded_records(root,records,error));
     rm_pointer=nullptr;CHECK(!adventure_collect::validate_uploaded_records(root,{},error));

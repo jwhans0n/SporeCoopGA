@@ -92,6 +92,7 @@ bool seed_creation_settings=false;
 std::array<bool,2> creation_active{};
 std::array<std::vector<dbpf::Record>,2> creation_records;
 bool creation_content_enabled=false;
+std::array<bool,2> upload_collision{};
 uint32_t creation_version=1;
 editor::Document seed() {
     editor::Document d;d.project[0]=1;d.epoch=7;d.next_id=5ull<<32;
@@ -172,6 +173,7 @@ struct Party {
         directory=fs::temp_directory_path()/("sporecoop-editor-runtime-tests-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(net::now_ms()));
         CHECK(!fs::exists(directory));CHECK(fs::create_directories(directory));
         for(unsigned p=0;p<2;++p) {
+            upload_collision[p]=false;
             side=int(p);native[p]={};auto& n=native[p];
             n.state.available=true;n.state.editing=p==0 || guest_draft;n.state.ready=n.state.editing;n.state.generation=1;
             n.view.target={500,float(p),0};n.view.rotation={0,0,0,1};n.view.orbit={float(p),.6f,123};
@@ -370,7 +372,10 @@ namespace adventure_assets {bool register_records(const std::vector<dbpf::Record
     return true;}std::string status(){return "fixture registered=0";}}
 namespace adventure_collect {
 bool unused_snapshot_key(const dbpf::Key&){return true;}
-bool validate_uploaded_records(const dbpf::Key&,const std::vector<dbpf::Record>&,std::string&){return true;}
+bool validate_uploaded_records(const dbpf::Key&,const std::vector<dbpf::Record>&,std::string& error){
+    if(!upload_collision[side])return true;
+    error="An uploaded asset conflicts with an installed resource: fixture";return false;
+}
 Presentation presentation(const dbpf::Key&){return {"Native draft","Fixture",{}};}
 bool collect_snapshot(const dbpf::Key& key,const std::vector<uint8_t>& bytes,std::vector<dbpf::Record>& records,std::string&){records={{key,bytes}};
     size_t left=dependency_bytes;uint32_t id=500;
@@ -570,6 +575,7 @@ static void test_pending_undo_keeps_ownership_across_foreign_commit() {
     CHECK(spin([]{return runtime_host::controller->state().document.revision==2;},false));
     for(unsigned i=0;i<12;++i)step(false);
     CHECK(runtime_guest::controller->state().document.revision==1);run_tasks(1);
+    CHECK(spin([]{return runtime_guest::controller->state().document.revision>=2;}));
     CHECK(runtime_guest::controller->state().document.revision==2);
     CHECK(runtime_guest::awaiting_operation==awaiting&&!runtime_guest::controller->view().local_leases.empty());
     CHECK(spin([]{return runtime_guest::controller->state().document.revision==3&&!runtime_guest::awaiting_operation;}));
@@ -2591,6 +2597,20 @@ static void test_creation_save_and_play_holds_wait_for_local_return(){
         CHECK(runtime_host::controller->state().document.revision==0 && runtime_host::controller->state().history.empty());
     }
 }
+static void test_creation_host_resource_collision_restores_without_partial_cast(){
+    seed_creation_settings=true;creation_content_enabled=true;Party party;seed_creation_settings=false;
+    auto host=creation_request(0,0x2B978C46);creation_enter(host);
+    auto guest=creation_request(1,0x2399BE55);creation_enter(guest);
+    const auto before=runtime_host::controller->state();const auto host_scene=native[0].snapshot.bytes;
+    upload_collision[0]=true;std::string error;creation_return(guest,false,&error);
+    CHECK(error.find("validated dependency upload")!=std::string::npos || error.find("conflicts with an installed resource")!=std::string::npos);
+    CHECK(runtime_host::controller->state().document==before.document && runtime_guest::controller->state().document==before.document);
+    CHECK(runtime_host::controller->state().history==before.history && runtime_guest::controller->state().history==before.history);
+    CHECK(runtime_host::store.durable_revision()==0 && runtime_guest::store.durable_revision()==0);
+    CHECK(!creation_records[1].empty() && native[1].state.ready);
+    CHECK(creation_active[0] && native[0].snapshot.bytes==host_scene);
+    upload_collision[0]=false;creation_return(host);creation_content_enabled=false;
+}
 static void test_all_creation_runtime_cases(){
     test_creation_guest_entry_waits_for_host_echo();
     test_creations_return_independently_to_latest_act_and_view();
@@ -2598,6 +2618,7 @@ static void test_all_creation_runtime_cases(){
     test_creation_parallel_saves_allocate_canonical_content();
     test_creation_stale_pending_source_and_lost_content_lease();
     test_creation_save_and_play_holds_wait_for_local_return();
+    test_creation_host_resource_collision_restores_without_partial_cast();
 }
 
 int main(int argc,char** argv){if(argc==2&&std::string(argv[1])=="--creations-only"){test_all_creation_runtime_cases();std::printf("creation runtime: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--native-flow-only"){test_all_native_flow_cases();std::printf("native editor flow: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--view-only"){test_transport_teardown_remote_host_disconnect_order_and_preview_cleanup();test_owned_end_keeps_local_view_and_selection();test_bound_preview_cleanup_requires_exact_round_and_native_owner();test_preview_restores_latest_independent_selection_before_ack();test_preview_local_view_none_selected_and_stale_pin();test_preview_native_owner_replacement_never_writes_view();std::printf("local editor view: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--stages-only"){test_bounded_stage_diagnostics();std::printf("bounded stage runtime: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--act0-only"){test_all_act_boundaries();std::printf("act boundary: %u checks passed\n",checks);return 0;}const bool quick=argc==2&&std::string(argv[1])=="--quick";if(argc>1&&!quick&&std::string(argv[1])!="--teardown-only"&&std::string(argv[1])!="--cancellation-only"&&std::string(argv[1])!="--accounting-only"&&std::string(argv[1])!="--saved-root-only")return 2;if(argc==2&&std::string(argv[1])=="--saved-root-only"){test_saved_root_diagnostic_distinguishes_native_local_alias();std::printf("logical saved-root diagnostic: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--accounting-only"){test_passive_accounting_does_not_touch_native_or_durable_state();std::printf("runtime passive accounting: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--cancellation-only"){test_all_native_cancellations();std::printf("native cancellation: %u checks passed\n",checks);return 0;}if(argc==2&&std::string(argv[1])=="--teardown-only"){test_all_transport_teardown_cases();std::printf("transport teardown: %u checks passed\n",checks);return 0;}test_all_creation_runtime_cases();test_saved_root_diagnostic_distinguishes_native_local_alias();test_passive_accounting_does_not_touch_native_or_durable_state();test_all_act_boundaries();test_all_native_cancellations();test_all_transport_teardown_cases();test_class_owned_placement_companion_transaction();test_unowned_native_gesture_restores_without_freezing();test_legacy_pending_recovery_mode_overrides_detached_old_context();test_clone_preserves_companion_and_rejects_compound_property_change();test_saved_coverage_requires_guest_native_completion_before_pin();test_relative_scale_only_capture_undo_redo_and_recovery();test_legacy_recovery_keeps_schema_history_and_scoped_capture();test_verify_reopen_read_only_exact_saved_identity();test_unsaved_end_does_not_pin_reopen_and_partial_saved_ack_is_not_complete();test_preparation_cancel_preserves_draft_and_is_round_scoped();test_delayed_lease_grant_gets_observed_idle_grace();test_begin_ga_batch_and_end_returning();test_history_entry_rechecks_actual_native_holds();test_preview_return_callbacks_are_scoped_to_one_round();test_preview_restores_latest_independent_selection_before_ack();test_preview_local_view_none_selected_and_stale_pin();test_preview_native_owner_replacement_never_writes_view();test_lease_diagnostic_is_bounded_and_read_only();test_conflicting_native_history_releases_document_ownership();test_guest_end_during_unlaunched_preparation_is_retryable();test_drag_preview_bridge_never_authors_remote_state();test_saved_resources_then_next_commit();test_guest_recovery_requires_owned_native_copy();test_pending_undo_keeps_ownership_across_foreign_commit();test_pending_artifacts_obey_capacity_and_preserve_durable_base();test_missing_authored_captain_blocks_prepare();test_uncertain_maintenance_freezes_until_reopen();test_end_waits_for_native_settle_and_retires_once();test_end_does_not_touch_replaced_native_context();test_idle_controller_keeps_owned_native_cleanup_isolated();test_delayed_gesture_cannot_restore_another_editor();test_host_end_delivers_accepted_structural_checkpoint();test_host_end_does_not_wait_for_departed_replica();test_host_end_waits_for_applied_same_revision_save();test_native_frozen_guest_does_not_block_host_close();test_native_recreation_waits_for_actual_next_frame();test_held_native_gesture_is_cancelled_by_end();test_recovery_retires_held_and_delayed_native_captures();test_recovery_wait_does_not_restore_replaced_context();test_native_save_enrichment_survives_edits_save_and_recovery();test_invalid_completed_save_does_not_replace_live_draft();test_opaque_gesture_changes_freeze_before_empty_semantic_return();test_uncaptured_opaque_changes_cannot_save_or_playtest();test_host_apply_rejects_uncaptured_opaque_changes();test_host_native_success_without_projection_cannot_commit();test_guest_native_success_without_projection_freezes_only_replica();test_held_native_gesture_is_fenced_by_generation_or_disconnect();test_held_move_accepts_disjoint_remote_revision();if(!quick)test_large_closure_retained_once_and_delta_recovery();std::printf("editor runtime: %u checks passed\n",checks);}
