@@ -1791,3 +1791,70 @@ must retain the first terminal failure without further automatic native work.
 Evidence: `out/preview9-c27-terrain-host-away/result.json`,
 `out/preview9-c27-terrain-failure-full/result.json`, and its full host log.
 Both games returned normally to Galaxy with faults 0 before runner exit 0.
+
+### C28 controlled return repair and four-player creation evidence
+
+Native `e436457` extends the existing bounded, one-use creation return ticket
+with its witnessed grounding and full raw binding roster. Sparse live slots
+remain distinct from compact serialized marker keys. Capture and return check
+the exact original owner, scope, serial, entry document, class/marker identities
+and witnessed XYZ before reattaching logical act/terrain identities and the
+prior normalization map. There is no epsilon, latest-document inference or
+marker mutation. Input size preflight precedes copying, and callbacks cannot
+publish a ticket after retiring its operation.
+
+The new regression fails against the genuine old C27 source at the missing
+raw-binding assertion. The fixed strict optimized i686 fixture passes 6,564
+focused grounding, 24,534 materialization and 68,285 full checks, with 46 inputs
+unchanged. It covers sparse slots 1/3, compact keys 0/1, nondefault object IDs,
+two acts and terrain identities, strict post-return capture, changed positions
+and identities, missing witnesses and callback retirement. Evidence:
+`out/preview9-creation-grounding-native-receipt.json` and
+`out/preview9-creation-grounding-red/receipt.json`.
+
+Runtime `e0be9e9` retains the first terminal return error, ticket, entry image
+and committed checkpoint, then stops automatic native return work. Empty-error
+readiness waits still progress. Strict optimized i686 passes 5,647 lifecycle
+and 8,061 creation checks with 76 inputs unchanged
+(`out/preview9-c28-runtime-receipt.json`). The fixture preserves the existing
+bounded Controller freeze notification echo; it asserts no subsequent native
+capture, validation, registration, restoration, camera or selection work.
+
+Core `057c7bc` removes the redundant private `apply_patch` Document assignment:
+its sole caller already owns an exact copy. Revision, guards and admission are
+unchanged. The untouched 64 KiB allocation regression fails on the old code
+and passes with one copy on the fix. Strict Linux document/Session checks pass
+3,119/29,932; i686 passes 3,119/22,685 with 22 inputs unchanged. Evidence:
+`out/preview9-const-state-copy/receipt.json`. This is copy-count evidence, not a
+measured frame-time improvement.
+
+These changes build private C28 DLL
+`efe00db7b05ffe565bd75243d42276f577177a914ff65031fb9c2f4996104089`
+(91,561,984 bytes), with all 191 production inputs unchanged
+(`out/preview9-candidate28-build-receipt.json`). The exact DLL is retained in
+`out/preview9-candidate28-preserved/`; actual return acceptance remains pending.
+
+The separate C27 four-player run passes simultaneous entry into Creature,
+Building, Vehicle and Spaceship editors. Each guest independently cancels and
+returns while the host remains in Creature; the host then returns last. Every
+participant retains revision/durable 0, unchanged history, strict native
+convergence and faults 0. Entry screenshots can precede first rendering; the
+later all-four-designing screenshots show the actual editor families. Evidence:
+`out/preview9-c27-four-independent-creation-cancel/result.json`. This verifies
+entry and cancellation, not completed saves or all editor variants. Earlier
+bootstrap helper failures (pair/four mismatch, captain onboarding and ambiguous
+Maxis author versus sidebar caption) remain retained; the successful run uses
+the observed sidebar control and normal native onboarding.
+
+The C27 guest Vehicle completes normal native construction and naming, with
+finish mask 0, changed model and metadata, no pending save and a single Done
+click. It saves locally but fails shared admission. The first automatic cached
+and private validators both report subtype `7D433FAD`, error bit `00000020`,
+against Adventure mask `0FF647FF`. No manual model query preceded this evidence.
+All four return ready at revision/durable 0, history unchanged and faults 0;
+no partial cast entry is admitted. Source and alias BEM bytes are identical.
+The bit can mean a missing part list or a part outside the subtype's list; it
+does not establish a missing compiled VCL dependency. The exact Native Save,
+alias package and first admission logs are retained under
+`out/preview9-c27-four-vehicle-finish/`. This remains failed save acceptance
+pending the native request/palette and effective part-list investigation.
