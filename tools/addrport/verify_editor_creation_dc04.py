@@ -23,6 +23,15 @@ RECEIPTS = [
     (0x57A83C, '8b8ecc0100008b511c'),
     (0xED42A1, '807e44000f856d030000'),
     (0x5A9140, '5333db568bf1c74604b8b83e01895e08'), (0x5A921A, 'c3'),
+    # Native subtype routing is selected by the ctor's unresolved editor ID.
+    (0x5A915D, 'c7460cffffffff'),
+    (0x5A930F, '837f0cff750b8d4710e823fdffff89470c'),
+    (0x5A9074, '8b018b500c68f809c603ffd285c074148b401850'),
+    # Direct unknown source families use a fixed placeholder, not that source.
+    (0xEEC99C, '81fa04b1b1000f85ef000000'),
+    (0xEEDFA3, '3d942268240f85fe010000'),
+    (0xEEE19A, '3dc7986a470f848b0000003d010000f07427'),
+    (0xEEE1AC, '68e4888c01e84af2c4ff8bc8e8332ac3ff558bf06aff6822f050078bcee84217d8ff'),
     (0xF43990, '8b44240481ece00400005557508be9e8'), (0xF43A82, 'c20800'),
     (0xF3E740, '53568b71100fb686082c00008b96f42b'), (0xF3E78D, 'c20400'),
     (0xEECAC0, '51535683cbffc744240800000000e8bd'), (0xEECBC6, 'c3'),
@@ -30,7 +39,8 @@ RECEIPTS = [
 ]
 CALLS = [(0xF46389, 0xF43990), (0xF43A6B, 0xF42470),
          (0xF43A01, 0xEECAC0), (0x5A95B4, 0x5A9140),
-         (0x57C1CB, 0x57A710), (0x58628F, 0x577650)]
+         (0x57C1CB, 0x57A710), (0x58628F, 0x577650),
+         (0x5A9318, 0x5A9040), (0x5A9088, 0x4333E0)]
 
 
 def verify(pe, symbol_map=None):

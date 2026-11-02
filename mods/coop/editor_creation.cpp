@@ -36,7 +36,7 @@ void release(void* object){if(object)skg::vcall<int>(object,2);}
 bool family(uint32_t type){
     switch(type){
     case 0x2B978C46:case 0x2399BE55:case 0x24682294:
-    case 0x476A98C7:case 0x438F6347:case 0x3D97A8E4:return true;
+    case 0x476A98C7:return true;
     default:return false;
     }
 }
@@ -48,13 +48,11 @@ uint32_t default_editor(uint32_t type){
     case 0x2399BE55:return 0xD817CD63;
     case 0x24682294:return 0x99F87089;
     case 0x476A98C7:return 0x96B24187;
-    case 0x438F6347:return 0x1C7ECA95;
-    case 0x3D97A8E4:return 0x3615A30B;
     default:return 0;
     }
 }
 uint32_t editor_family(uint32_t editor_id){
-    for(auto type:{0x2B978C46u,0x2399BE55u,0x24682294u,0x476A98C7u,0x438F6347u,0x3D97A8E4u})
+    for(auto type:{0x2B978C46u,0x2399BE55u,0x24682294u,0x476A98C7u})
         if(default_editor(type)==editor_id)return type;
     return 0;
 }
@@ -181,7 +179,11 @@ bool open(uint32_t resource_type,const editor::ResourceKey& source,std::optional
     void* request=skg::cdecl_call<void*>(allocation,size_t(0x9C),"CoopCreationRequest",0,0,0,0);
     if(!request){error="Native creation request allocation failed";return false;}
     request=skg::thiscall<void*>(ctor,request);addref(request);
-    skg::field<uint32_t>(request,0xC)=default_editor(resource_type);
+    // Existing content must keep RequestCtor's FFFFFFFF sentinel. Native
+    // Submit 5A930F..5A931D resolves its installed metadata subtype through
+    // 5A9040 -> GetEditorForAssetType, preserving air/water and other variants.
+    // New content has no subtype yet and uses the verified family default.
+    if(!source.instance)skg::field<uint32_t>(request,0xC)=default_editor(resource_type);
     skg::field<editor::ResourceKey>(request,0x10)=source;
     skg::field<bool>(request,0x20)=!source.instance;
     opening_target=target;

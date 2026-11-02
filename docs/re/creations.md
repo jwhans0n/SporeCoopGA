@@ -396,8 +396,8 @@ unknown metadata/property formats fail before canonical admission.
 
 `tests/editor_creation_windows_tests.cpp` exercises production hooks under the
 real i686 ABI: intrusive request/result lifetime, delayed ownership and single
-replay, ordinary Done/Cancel, stale scopes and leases, all six default request
-families, failed allocation, detached import scene suppression, content-only
+replay, ordinary Done/Cancel, stale scopes and leases, the four supported
+Adventure creation families, failed allocation, detached import scene suppression, content-only
 replacement and checked immutable record transformations. These controlled
 fixtures are not evidence of running-game entry, editing, remote reopening,
 baking or return success. Each family and simultaneous participants still need
@@ -410,7 +410,9 @@ normal native deployment path and the dedicated static verifier must use the
 established map; an ignored sidecar leaves creation entry unavailable.
 
 The local native cast toolbar exposes New asset (control C00F0301), Edit asset
-(C00F0302), and six family choices C00F0310..C00F0315 in the order above.
+(C00F0302), and four family choices C00F0310..C00F0313: creature, building,
+vehicle and spaceship. The existence of native plant and cell editors does not
+make those resource types Adventure cast-compatible; see the factory audit below.
 `editor_creation_ui` creates and updates this retained native window outside
 Present and calls only queued public creation actions. Edit resolves the shown
 native class inspector, then the selected placement, while excluding the
@@ -421,7 +423,7 @@ testing; its callbacks are fenced by the local prompt identity.
 
 `tools/tests/coop_editor_creations.py` drives the ordinary toolbar and bounded
 native mouse/key recipes against two or four already-owned hidden/muted private
-lab processes. It checks all six families from host and guest, one admission
+lab processes. It checks all four compatible families from host and guest, one admission
 and Undo/Redo, all participants designing simultaneously, guest return while
 the host stays away, another participant's content replacement concurrent with
 behavior editing, cancellation and final live scene convergence. Recipes must
@@ -430,8 +432,10 @@ and exact client viewport. The fixture rejects arbitrary console/native calls,
 unowned windows, candidate hash mismatches and truncated asset diagnostics.
 Its self-test and Python compilation pass; no running-game result or measured
 recipe is claimed by those checks. The production i686 lifecycle fixture now
-passes 308 checks, including same-key Save routing, both logical and companion resource
-identity collisions, and the host ABI's zero-success hook registration.
+passes 479 checks, including same-key Save routing, both logical and companion resource
+identity collisions, native existing-asset subtype routing, unsupported-family
+rejection and the host ABI's zero-success hook registration. The earlier
+308-check result predates the Adventure factory audit.
 
 Uploaded creation closures are checked against the host's effective native
 ResourceManager before package registration. This uses the collector's existing
@@ -754,3 +758,67 @@ which contain no title/description/tags/genre fields. The strict i686 project
 fixture passes 5,683 checks, including full/delta/cached-join transfer,
 checkpoint hydration, nullable captain, rejection and legacy preservation;
 receipt `out/editor-preview9-captain/project-hydration.log`.
+
+## Adventure-compatible creation families and native Edit routing
+
+Native default-editor selection `5A909C..5A90F3` recognizes six resource
+families, but that switch does not establish Adventure actor compatibility.
+`EECAC0` reads the installed model subtype from resource metadata
+`0670DA17` or `03C609F8`; it does not test whether ScenarioData can construct
+that resource as an actor. Likewise `ImportClass F462F0` and its primary-asset
+setter `F43990` allocate class data without providing that guarantee.
+
+The decisive factory is `cScenarioData::CreateObjectInstance EEDD40`. It first
+normalizes the key through `EEC980`, which transforms only a native prop of
+type `00B1B104`; direct creation keys pass unchanged. The factory has explicit
+branches for CRT `2B978C46` (`EEE0B9`), BLD `2399BE55` (`EEE074`), VCL
+`24682294` (`EEDFAE`) and UFO `476A98C7` (`EEE230`). Direct FLR `438F6347`
+and CLL `3D97A8E4` reach the default `EEE1AC`, which constructs object type
+`018C88E4` and loads fixed model `0750F022`, group `FFFFFFFF`, instead of the
+supplied creation. `GetObjectType EECD40` also classifies those direct types
+as its default `867A9EE9`, but classification alone was not used as the
+compatibility proof. In particular, pseudo-type `F0000001` is a powerup and
+has its own valid factory branch; it must not be confused with creature type.
+
+The shared creation toolbar and owned admission helpers therefore accept the
+four compatible creation families. They reject direct plant/cell entry,
+completion, detached class creation and immutable version collection before
+changing the pending session or output. Reading existing documents and the
+normal native prop-normalization path are unchanged. Supporting plants or
+cells as actual Adventure assets would require a separately verified
+conversion or factory implementation; native editor availability is not such
+a conversion.
+
+Existing Edit must retain the request constructor's `+0C = FFFFFFFF` sentinel
+(`5A915D`). Native `EditorRequest::Submit 5A92C0` checks that sentinel at
+`5A930F`, passes the exact source key in EAX to internal resolver `5A9040`,
+and stores its result at `5A931D`. The resolver loads the source through the
+ResourceManager, queries model interface `03C609F8`, reads subtype `+18` and
+calls named `GetEditorForAssetType 4333E0`. Only when that metadata is
+unavailable does it fall back to the source family's default editor.
+No adapter call to the internal EAX-register function is needed.
+
+The verified subtype map includes military Water `8F963DCB` and Air
+`441CD3E6`, economic Water `2A5147A9` and Air `1A4E0708`, cultural Water
+`1F2A25B6` and Air `449C040F`, and colony Water `C15695DA` and Air
+`2090A11B`; each maps to its corresponding specialized editor. Forcing every
+VCL into the default ground editor `99F87089` bypasses this native choice.
+The explicit New routes still use the four native family defaults because
+new content has no saved subtype. Intercepted picker requests keep the exact
+editor ID selected by the native picker.
+
+The i686 lifecycle fixture passes 479 checks. It delays ownership before
+submitting each existing water/air variant, asserts the unresolved sentinel
+and source key reach the original Submit trampoline, exercises the native
+resolver's controlled result and completes a logical same-family Save. It
+also checks specialized picker IDs remain unchanged, direct plant/cell entry
+does not allocate or create a session, and rejected import/collection/remap
+does not alter the existing output. These controlled objects exercise the
+production adapter contract; they do not prove actual native air/water Save
+or remote Edit. Receipt: `out/editor-preview9-creation-routing/lifecycle.log`.
+The dedicated static verifier now checks the constructor sentinel, native
+Submit/resolver callers, prop-only normalization and factory fallback bytes;
+`out/editor-preview9-creation-routing/abi.json` records six named creation
+symbols, eight native callers and the exact reviewed image hash. The UI passes
+strict i686 syntax checking and the four-family integration tool self-test
+passes. Actual Building, Vehicle and Spaceship workflows remain pending.

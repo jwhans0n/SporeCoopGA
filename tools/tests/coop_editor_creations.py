@@ -19,8 +19,8 @@ from coop_adventure_editor import status
 from coop_editor_party import Ownership, PublicConsole, PublicGame, parse_history
 from sporectl import quote
 
-FAMILIES = ('creature', 'building', 'vehicle', 'spaceship', 'plant', 'cell')
-TYPES = (0x2B978C46, 0x2399BE55, 0x24682294, 0x476A98C7, 0x438F6347, 0x3D97A8E4)
+FAMILIES = ('creature', 'building', 'vehicle', 'spaceship')
+TYPES = (0x2B978C46, 0x2399BE55, 0x24682294, 0x476A98C7)
 NEW, EDIT, CHOICE = 0xC00F0301, 0xC00F0302, 0xC00F0310
 ASSET = re.compile(r'^asset class=(\d+:\d+) settings=(\d+:\d+) key=([0-9A-Fa-f]{8})!([0-9A-Fa-f]{8})\.([0-9A-Fa-f]{8}) content_revision=(\d+) behavior_sha256=([0-9a-f]{64})$')
 
@@ -119,7 +119,7 @@ def validate_steps(steps):
 def recipes(path):
     data = json.loads(path.read_text(encoding='utf-8-sig'))
     if data.get('schema') != 1 or set(data.get('families', {})) != set(FAMILIES):
-        raise ValueError('Recipe schema1 requires all six native editor families')
+        raise ValueError('Recipe schema1 requires the four Adventure-compatible creation families')
     viewport = data.get('viewport')
     if not isinstance(viewport, list) or len(viewport) != 2 or any(type(n) is not int or not 640 <= n <= 4096 for n in viewport):
         raise ValueError('Recipe must identify its measured native viewport')
@@ -333,7 +333,7 @@ def run(args):
             raise FixtureError('Returned native adventure scenes do not match the committed draft')
         result['passed'] = True
         result['workflow_passed'] = True
-        print(f'PASS: {len(games)} participants, six creation families and independent native returns', flush=True)
+        print(f'PASS: {len(games)} participants, four Adventure-compatible creation families and independent native returns', flush=True)
     except Exception as error:
         result['error'] = repr(error)
         raise

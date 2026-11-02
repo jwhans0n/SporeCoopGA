@@ -14,14 +14,14 @@ const SkHost* H;
 bool queued=false,want_menu=false;
 struct Panel {
     sui::Win root=nullptr,main=nullptr,new_button=nullptr,edit_button=nullptr;
-    std::array<sui::Win,6> choices{};
+    std::array<sui::Win,4> choices{};
     std::vector<std::pair<sui::Win,void*>> handlers;
     std::string identity;
     std::optional<editor::ObjectId> target;
 } panel;
 constexpr uint32_t kRoot=0xC00F0300,kNew=0xC00F0301,kEdit=0xC00F0302,kChoice=0xC00F0310;
-constexpr std::array<uint32_t,6> types{0x2B978C46,0x2399BE55,0x24682294,0x476A98C7,0x438F6347,0x3D97A8E4};
-constexpr std::array<const char*,6> labels{"New creature","New building","New vehicle","New spaceship","New plant","New cell"};
+constexpr std::array<uint32_t,4> types{0x2B978C46,0x2399BE55,0x24682294,0x476A98C7};
+constexpr std::array<const char*,4> labels{"New creature","New building","New vehicle","New spaceship"};
 void clear(){
     want_menu=false;
     for(auto [window,handler]:panel.handlers)sui::remove_handler(window,handler);
@@ -87,8 +87,9 @@ void SK_CDECL update(void*){
     sui::set_enabled(panel.edit_button,view.can_save && panel.target.has_value());
     if(!view.can_save)want_menu=false;
     int width=0,height=0;H->screen_size(&width,&height);
-    const float x=12,y=std::clamp(98.f,4.f,std::max(4.f,height-250.f));
-    sui::set_area(panel.root,{x,y,x+244,y+(want_menu?246.f:38.f)});
+    constexpr float menu_height=40.f+34.f*types.size();
+    const float x=12,y=std::clamp(98.f,4.f,std::max(4.f,height-menu_height-4.f));
+    sui::set_area(panel.root,{x,y,x+244,y+(want_menu?menu_height:38.f)});
     for(auto b:panel.choices)sui::set_visible(b,want_menu);
     sui::set_visible(panel.root,true);sui::bring_to_front(panel.main,panel.root);
 }

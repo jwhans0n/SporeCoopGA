@@ -25,6 +25,9 @@ uint32_t mode=modes::kScenario;
 double now=1;
 unsigned submissions=0,native_returns=0,native_imports=0,finished=0,returned=0,live_class_writes=0;
 unsigned native_result_deliveries=0,native_mode_returns=0;
+unsigned owned_edits=0,native_class_imports=0,creation_collections=0;
+uint32_t native_existing_editor=0,submitted_request_editor=0,submitted_editor=0;
+editor::ResourceKey submitted_source;
 bool grant=false,live_scope=true,lease=true,return_ready=false,submit_ok=true,reject=false;
 bool allocation_failure=false;
 bool returned_cancelled=false;
@@ -62,16 +65,30 @@ uint8_t* SK_THISCALL get_class(void* owner,uint32_t index){
 }
 uint32_t SK_CDECL model_type(const editor::ResourceKey* key){CHECK(key && key->instance);return 7;}
 uint32_t SK_THISCALL native_import(void* owner,const editor::ResourceKey* key){
+    ++native_class_imports;
     CHECK(skg::field<void*>(owner,0x10)==owned_resource.data());
     auto index=skg::field<uint32_t>(owned_resource.data(),0x2C0C)++;
     const auto at=owned_classes.size();owned_classes.resize(at+0x27E8);row_pointers();
     skg::field<uint32_t>(owned_classes.data()+at,0)=index;
     assign_hook(owner,index,key);return index;
 }
-bool SK_CDECL submit(void* req){++submissions;if(!submit_ok)return false;ref(req);skg::field<void*>(native_editor.data(),0x1CC)=req;mode=modes::kEditor;return true;}
+bool SK_CDECL submit(void* req){
+    ++submissions;if(!submit_ok)return false;
+    submitted_request_editor=skg::field<uint32_t>(req,0xC);
+    submitted_source=skg::field<editor::ResourceKey>(req,0x10);
+    // Native Submit5A930F only calls its subtype resolver for FFFFFFFF.
+    // Controlled metadata supplies the editor variant; the adapter must defer
+    // to that native decision rather than replacing it with its family default.
+    if(submitted_request_editor==UINT32_MAX){
+        CHECK(submitted_source.instance && native_existing_editor);
+        skg::field<uint32_t>(req,0xC)=native_existing_editor;
+    }
+    submitted_editor=skg::field<uint32_t>(req,0xC);
+    ref(req);skg::field<void*>(native_editor.data(),0x1CC)=req;mode=modes::kEditor;return true;
+}
 bool SK_CDECL submit_entry(void* req){return editor_creation::intercept(req,submit);}
 void* SK_CDECL allocate(size_t size,const char*,int,int,int,int){if(allocation_failure)return nullptr;auto* p=std::calloc(1,size);if(p)allocations.insert(p);return p;}
-void* SK_THISCALL ctor(void* p){skg::field<void*>(p,0)=refs_vt.data();return p;}
+void* SK_THISCALL ctor(void* p){skg::field<void*>(p,0)=refs_vt.data();skg::field<uint32_t>(p,0xC)=UINT32_MAX;return p;}
 uintptr_t sym(const char* name){
     const std::string key=name;
     if(key=="SporeCoop::CreationEditor::NotifyResult")return uintptr_t(native_notify);
@@ -105,6 +122,8 @@ void initialize(){
     grant=false;live_scope=lease=true;return_ready=reject=returned_cancelled=false;submit_ok=true;mode=modes::kScenario;now=1;
     submissions=native_returns=native_imports=finished=returned=live_class_writes=0;
     native_result_deliveries=native_mode_returns=0;returned_saved={};
+    owned_edits=native_class_imports=creation_collections=0;
+    native_existing_editor=submitted_request_editor=submitted_editor=0;submitted_source={};
     owner={};owner.project[0]=9;owner.epoch=12;owner.author={1,3};
     static SkHost host{};host.sym=sym;host.hook_create=hook;host.time_seconds=[](){return now;};host.run_outside_frame=queue;
     host.exe_sha256=[](){return "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37";};
@@ -118,20 +137,25 @@ void initialize(){
     CHECK(editor_creation::init(&host,nullptr,std::move(context)));
 }
 void start(){CHECK(!editor_creation::intercept(request.data(),submit));unref(request.data());grant=true;step();CHECK(submissions==1 && editor_creation::designing());}
-void result(bool cancel=false,bool unchanged=false){
+void result_key(editor::ResourceKey saved,bool cancel=false){
     native_result.fill(0);skg::field<void*>(native_result.data(),0)=refs_vt.data();skg::field<int>(native_result.data(),8)=1;
-    skg::field<editor::ResourceKey>(native_result.data(),0x18)=unchanged?source:editor::ResourceKey{0x29004321,source.type,source.group};
+    skg::field<editor::ResourceKey>(native_result.data(),0x18)=saved;
     skg::field<bool>(native_result.data(),0x44)=cancel;
     notify_hook(native_editor.data(),native_result.data());
 }
+void result(bool cancel=false,bool unchanged=false){result_key(unchanged?source:editor::ResourceKey{0x29004321,source.type,source.group},cancel);}
 std::vector<uint8_t> model(){return {0xD3,0x7E,0x65,0x48,1,2,3,4,5,6,7,8};}
+bool same_records(const std::vector<dbpf::Record>& a,const std::vector<dbpf::Record>& b){
+    return a.size()==b.size() && std::equal(a.begin(),a.end(),b.begin(),[](const auto& x,const auto& y){return x.key==y.key && x.data==y.data;});
+}
 std::vector<uint8_t> metadata(){std::vector<uint8_t> data(0x24);editor_creation_native::putbe(data.data(),13);editor_creation_native::putbe(data.data()+0xC,source.type);editor_creation_native::putbe(data.data()+0x10,source.group);editor_creation_native::putbe(data.data()+0x14,source.instance);data[0x20]=0xAA;return data;}
 }
 namespace game {uint32_t mode_id(){return mode;}}
 namespace editor_creation_ui {void init(const SkHost*){}void tick(){}void shutdown(){}}
-namespace adventure_collect {bool collect_creation(const dbpf::Key&,std::vector<dbpf::Record>& records,std::string&){records=collected;return true;}}
+namespace adventure_collect {bool collect_creation(const dbpf::Key&,std::vector<dbpf::Record>& records,std::string&){++creation_collections;records=collected;return true;}}
 namespace editor_native {
 bool edit_owned_snapshot(const Snapshot& base,const std::function<bool(void*,std::string&)>& edit,Snapshot& out,std::string& error){
+    ++owned_edits;
     owned_resource.fill(0);owned_classes.clear();
     for(const auto& [id,settings]:base.document.class_settings){
         (void)id;const auto at=owned_classes.size();owned_classes.resize(at+0x27E8);
@@ -245,12 +269,13 @@ int main(){
     CHECK(editor_creation_native::le32(prop->data.data()+12)==version.instance);
     CHECK(editor_creation_native::le32(prop->data.data()+36)==source.instance);
     records.back().data.pop_back();CHECK(!editor_creation_native::immutable_version(project,source,records,{},version,remapped,error));
-    // Every editor family uses the verified request constructor and its native
-    // default editor, with failed allocation leaving no pending request.
-    for(auto type:{0x2B978C46u,0x2399BE55u,0x24682294u,0x476A98C7u,0x438F6347u,0x3D97A8E4u}){
+    // Every Adventure-compatible family uses the verified request constructor
+    // and native default for New, with failed allocation leaving no request.
+    for(auto type:{0x2B978C46u,0x2399BE55u,0x24682294u,0x476A98C7u}){
         initialize();allocation_failure=true;CHECK(!editor_creation::open(type,{},std::nullopt,error));CHECK(!editor_creation::active() && allocations.empty());
         allocation_failure=false;CHECK(editor_creation::open(type,{},std::nullopt,error));CHECK(editor_creation::active() && allocations.size()==1);
         grant=true;step();CHECK(submissions==1 && mode==modes::kEditor);
+        CHECK(submitted_request_editor==editor_creation::default_editor(type));
         native_result.fill(0);skg::field<void*>(native_result.data(),0)=refs_vt.data();skg::field<int>(native_result.data(),8)=1;
         skg::field<editor::ResourceKey>(native_result.data(),0x18)={0x29004321,type,source.group};
         notify_hook(native_editor.data(),native_result.data());return_ready=true;step();CHECK(!editor_creation::active() && allocations.empty() && native_imports==0);
@@ -259,6 +284,55 @@ int main(){
         CHECK(editor_creation_native::immutable_version(project,family_source,family_records,{},version,remapped,error));
         CHECK(version.type==type && remapped[0].data==model());
     }
+    // Existing air/water and specialized content retains the ctor sentinel
+    // until ownership arrives. The native resolver then chooses its metadata
+    // variant, and a real logical Save is still admitted under the same family.
+    for(auto variant:{0x8F963DCBu,0x441CD3E6u,0x2A5147A9u,0x1A4E0708u,
+                     0x1F2A25B6u,0x449C040Fu,0xC15695DAu,0x2090A11Bu}){
+        initialize();native_existing_editor=variant;
+        const editor::ResourceKey vehicle{source.instance,0x24682294,0x40646200};
+        CHECK(editor_creation::open(vehicle.type,vehicle,cls,error));
+        CHECK(editor_creation::active() && !editor_creation::designing() && submissions==0);
+        CHECK(skg::field<uint32_t>(*allocations.begin(),0xC)==UINT32_MAX);
+        CHECK(skg::field<editor::ResourceKey>(*allocations.begin(),0x10)==vehicle);
+        step();CHECK(submissions==0);grant=true;step();
+        CHECK(submitted_request_editor==UINT32_MAX && submitted_editor==variant && submitted_source==vehicle);
+        auto changed=vehicle;changed.instance=0x29004321;
+        result_key(changed);return_ready=true;step();
+        CHECK(!editor_creation::active() && !returned_cancelled && returned_saved==changed && native_imports==0);
+    }
+    // Native picker requests already contain the correct specialized editor.
+    // Keep that exact choice even if the metadata resolver would choose another.
+    initialize();native_existing_editor=0x441CD3E6;
+    skg::field<uint32_t>(request.data(),0xC)=0x8F963DCB;
+    const editor::ResourceKey picker_vehicle{source.instance,0x24682294,0x40646200};
+    skg::field<editor::ResourceKey>(request.data(),0x10)=picker_vehicle;
+    start();CHECK(submitted_request_editor==0x8F963DCB && submitted_editor==0x8F963DCB && submitted_source==picker_vehicle);
+    result_key(picker_vehicle);return_ready=true;step();CHECK(!returned_cancelled && returned_saved==picker_vehicle);
+    // Plant/Cell have native editors but EEDD40 uses a fixed placeholder for
+    // those direct source types. Refuse them before entry, detached import,
+    // dependency collection or immutable remapping, leaving existing drafts and
+    // output values untouched. Legacy document reading is outside this gate.
+    for(auto type:{0x438F6347u,0x3D97A8E4u}){
+        initialize();
+        CHECK(!editor_creation::open(type,{},std::nullopt,error));
+        CHECK(!editor_creation::active() && allocations.empty() && submissions==0 && returned==0 && finished==0);
+        const editor::ResourceKey unsupported{source.instance,type,source.group};
+        skg::field<editor::ResourceKey>(request.data(),0x10)=unsupported;
+        CHECK(!editor_creation::intercept(request.data(),submit));
+        CHECK(!editor_creation::active() && skg::field<int>(request.data(),8)==1 && submissions==0);
+        const auto previous_out=out.document.class_settings;
+        CHECK(!editor_creation_native::prepare_cast_save(base,unsupported,std::nullopt,out,error));
+        CHECK(owned_edits==0 && native_class_imports==0 && out.document.class_settings==previous_out);
+        const auto previous_version=version;const auto previous_records=remapped;
+        CHECK(!editor_creation_native::immutable_version(project,unsupported,records,{},version,remapped,error));
+        CHECK(version==previous_version && same_records(remapped,previous_records));
+        CHECK(!editor_creation_native::collect_version(project,unsupported,{},version,remapped,error));
+        CHECK(creation_collections==0 && version==previous_version && same_records(remapped,previous_records));
+    }
+    // A mismatched unsupported result cannot become a shared saved creation.
+    initialize();start();result_key({0x29004321,0x438F6347,source.group});return_ready=true;step();
+    CHECK(returned_cancelled && !editor_creation::active() && native_imports==0 && owned_edits==0);
     editor_creation::shutdown();CHECK(!editor_creation::available());
     std::printf("editor creation Windows checks: %u passed\n",checks);
 }

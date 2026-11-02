@@ -42,7 +42,7 @@ bool rows(void* resource,uint8_t*& begin,uint8_t*& end,std::string& error){
     begin=reinterpret_cast<uint8_t*>(a);end=reinterpret_cast<uint8_t*>(b);return true;
 }
 bool family(uint32_t type){
-    switch(type){case 0x2B978C46:case 0x2399BE55:case 0x24682294:case 0x476A98C7:case 0x438F6347:case 0x3D97A8E4:return true;default:return false;}
+    switch(type){case 0x2B978C46:case 0x2399BE55:case 0x24682294:case 0x476A98C7:return true;default:return false;}
 }
 uint32_t be32(const uint8_t* p){return uint32_t(p[0])<<24|uint32_t(p[1])<<16|uint32_t(p[2])<<8|p[3];}
 uint16_t be16(const uint8_t* p){return uint16_t(p[0])<<8|p[1];}
@@ -253,6 +253,9 @@ bool immutable_version(const editor::ProjectId& project,const editor::ResourceKe
 }
 bool collect_version(const editor::ProjectId& project,const editor::ResourceKey& source,const std::function<bool(const editor::ResourceKey&)>& reserved,
                      editor::ResourceKey& version,std::vector<dbpf::Record>& records,std::string& error){
+    if(!family(source.type)){
+        error="The saved creation cannot be used by the shared adventure";return false;
+    }
     std::vector<dbpf::Record> original;
     return adventure_collect::collect_creation({source.instance,source.type,source.group},original,error) &&
         immutable_version(project,source,original,reserved,version,records,error);
