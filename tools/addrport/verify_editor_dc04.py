@@ -262,6 +262,15 @@ def verify(pe):
         raw=bytes.fromhex(encoded)
         if pe.read(site,len(raw))!=raw:
             raise ValueError('Native editor current-camera field mismatch '+hex(site))
+    # Deferred Terraform controls use copied primitive values and re-resolve the
+    # live FloraUI/card through the verified display ownership chain.
+    for site, encoded in [(0xED5FAC,'897e28'),(0xEE9090,'c70650ab4801'),
+                          (0xEE8A3D,'897e18'),(0xEE7CC5,'c70698ab4801'),
+                          (0xEE8C92,'8b8b68010000'),(0xEE917C,'8b4918'),
+                          (0x50D5C5,'8b41042b02'),(0x473A24,'8b41042b02'),
+                          (0xF34393,'e808925dff'),(0xF343A5,'e856f653ff')]:
+        if pe.read(site,len(bytes.fromhex(encoded)))!=bytes.fromhex(encoded):
+            raise ValueError('Deferred Terraform control layout mismatch '+hex(site))
     for name, address, prefix, returns, note, calls, checks in ENTRIES:
         if not pe.in_text(address) or pe.read(address,len(bytes.fromhex(prefix))) != bytes.fromhex(prefix):
             raise ValueError(name + ': entry mismatch')
@@ -318,7 +327,10 @@ def verify(pe):
     # Read returns byte count in EAX, unlike the bool-AL Write slot.
     if pe.read(0xF2FD9F,0x11) != bytes.fromhex('8b168b523050578bceffd28b4c24103bc1'):
         raise ValueError('ScenarioResource::Read IStream count ABI mismatch')
-    return [{'name':'SporeCoop::Editor::'+n,'address':a,'note':s}
+    return [dict(name='SporeCoop::Editor::TerraformUIVTable',address=0x148AB50,
+                 note='primary TerraformUI vtable; native display28 owns it, current FloraUI at18'),
+            dict(name='SporeCoop::Editor::FloraUIVTable',address=0x148AB98,
+                 note='primary FloraUI vtable; rootIWindow168 and IWinProc8; re-resolve current card before deferred mutation')] + [{'name':'SporeCoop::Editor::'+n,'address':a,'note':s}
             for n,a,p,r,s,c,k in ENTRIES] + [dict(name='SporeCoop::Editor::History',address=0x16065D8,
             note='global cScenarioEditHistory object; vector0,cursor14,notEditing20,ownedEntry24; not callable'),
             dict(name='SporeCoop::Editor::HistoryEntryVTable',address=0x148D26C,
