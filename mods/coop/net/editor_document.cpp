@@ -471,25 +471,21 @@ bool valid(const Document& d, const Limits& l, std::string& error)
     error.clear(); return true;
 }
 
-Coordinator::Coordinator(Limits limits) : limits_(limits) {}
-
-bool Coordinator::reset(State state, uint64_t epoch, std::string& error)
+bool valid(const State& state, const Limits& limits, std::string& error)
 {
-    if (applying() || !epoch || (ready_ && state.document.project == state_.document.project && epoch == state_.document.epoch)) { error = "Recovery requires a fresh epoch nonce and no prepared transaction."; return false; }
-    if (epoch != state.document.epoch) state.retired_sequences.clear();
-    state.document.epoch = epoch;
-    if (!valid(state.document, limits_, error)) return false;
-    if (state.history.size() > limits_.history || history_bytes(state) > limits_.history_bytes ||
-        state.decisions.size() > limits_.decisions || decisions_bytes(state) > limits_.decision_bytes || state.decision_order.size() != state.decisions.size() ||
+    if (!state.document.epoch) { error = "Recovery requires a fresh epoch nonce and no prepared transaction."; return false; }
+    if (!valid(state.document, limits, error)) return false;
+    if (state.history.size() > limits.history || history_bytes(state) > limits.history_bytes ||
+        state.decisions.size() > limits.decisions || decisions_bytes(state) > limits.decision_bytes || state.decision_order.size() != state.decisions.size() ||
         state.retired_sequences.size() > 4096 || state.history_truncated.size() > 4096) { error = "Recovery state exceeds a configured bound."; return false; }
     std::set<OperationId> seen;
     for (const auto& g : state.history) {
         if (!identity(g.operation) || !g.original_revision || g.original_revision > state.document.revision ||
             g.transition_revision < g.original_revision || g.transition_revision > state.document.revision ||
-            !seen.insert(g.operation).second || g.summary.size() > limits_.summary_bytes || !utf8(g.summary) || (g.applied && g.redo_available) ||
+            !seen.insert(g.operation).second || g.summary.size() > limits.summary_bytes || !utf8(g.summary) || (g.applied && g.redo_available) ||
             (g.applied && g.undo.objects.empty() && g.undo.fields.empty() && g.undo.classes.empty() && g.undo.terrain.empty() && !g.undo.acts) ||
             (g.redo_available && g.redo.objects.empty() && g.redo.fields.empty() && g.redo.classes.empty() && g.redo.terrain.empty() && !g.redo.acts) ||
-            !patch_shape(g.undo, state.document, limits_) || !patch_shape(g.redo, state.document, limits_)) { error = "Invalid original-gesture history."; return false; }
+            !patch_shape(g.undo, state.document, limits) || !patch_shape(g.redo, state.document, limits)) { error = "Invalid original-gesture history."; return false; }
     }
     seen.clear();
     for (auto id : state.decision_order) if (!seen.insert(id).second || !state.decisions.contains(id)) { error = "Invalid decision ordering."; return false; }
@@ -498,8 +494,8 @@ bool Coordinator::reset(State state, uint64_t epoch, std::string& error)
             (decision.accepted() != bool(decision.change))) { error = "Invalid remembered decision."; return false; }
         if (decision.change) {
             const auto& c = *decision.change;
-            if (c.operation != id || !identity(c.gesture) || c.intent > Intent::Redo || c.revision != decision.revision || c.summary.size() > limits_.summary_bytes ||
-                !patch_shape(c.patch, state.document, limits_) || !patch_shape(c.inverse, state.document, limits_) || !allocation_count_valid(c,limits_)) { error = "Invalid remembered transaction."; return false; }
+            if (c.operation != id || !identity(c.gesture) || c.intent > Intent::Redo || c.revision != decision.revision || c.summary.size() > limits.summary_bytes ||
+                !patch_shape(c.patch, state.document, limits) || !patch_shape(c.inverse, state.document, limits) || !allocation_count_valid(c,limits)) { error = "Invalid remembered transaction."; return false; }
             if ((!c.clone_sources.empty() && c.intent != Intent::Forward) || c.clone_sources.size() > c.allocated.size()) { error = "Invalid clone provenance."; return false; }
             for (const auto& [target, source] : c.clone_sources)
                 if (!identity(source) || target == source || std::find(c.allocated.begin(), c.allocated.end(), target) == c.allocated.end() ||
@@ -508,6 +504,17 @@ bool Coordinator::reset(State state, uint64_t epoch, std::string& error)
     }
     for (const auto& [p, sequence] : state.retired_sequences) if (!identity(p) || !sequence) { error = "Invalid operation retirement fence."; return false; }
     for (auto p : state.history_truncated) if (!identity(p)) { error = "Invalid history-retention author."; return false; }
+    error.clear(); return true;
+}
+
+Coordinator::Coordinator(Limits limits) : limits_(limits) {}
+
+bool Coordinator::reset(State state, uint64_t epoch, std::string& error)
+{
+    if (applying() || !epoch || (ready_ && state.document.project == state_.document.project && epoch == state_.document.epoch)) { error = "Recovery requires a fresh epoch nonce and no prepared transaction."; return false; }
+    if (epoch != state.document.epoch) state.retired_sequences.clear();
+    state.document.epoch = epoch;
+    if (!valid(state, limits_, error)) return false;
     state_ = std::move(state); generations_ = {}; connected_ = {}; leases_.clear(); next_token_ = 1; last_time_ = 0;
     frozen_ = false; ready_ = true; error.clear(); return true;
 }

@@ -5,6 +5,21 @@
 #include <cstdio>
 #include <limits>
 #include <stdexcept>
+#include <cstdlib>
+#include <new>
+
+// Validation may allocate small identity sets, but must not copy large values.
+static bool forbid_large_state_allocation;
+void* operator new(std::size_t n) {
+    if (forbid_large_state_allocation && n >= 4096) throw std::bad_alloc();
+    if (void* p = std::malloc(n ? n : 1)) return p;
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t n) { return ::operator new(n); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 
 using namespace editor;
 
@@ -503,6 +518,87 @@ static void test_class_settings(){
     CHECK(rollback.doc()==original && restored==1 && rollback.core.state().history.empty());
 }
 
+
+static void test_const_state_validation()
+{
+    Fixture f;
+    CHECK(f.forward(0,{f.set(a,pos,Vec3{30,40,50})}).accepted());
+    const auto original=f.core.state();
+    std::string error;
+    CHECK(valid(original,{},error) && error.empty());
+    CHECK(f.core.state()==original);
+    auto reject=[&](const State& bad,const char* expected,Limits limits=Limits{}) {
+        const auto before=bad;
+        CHECK(!valid(bad,limits,error) && error==expected);
+        CHECK(bad==before);
+        Coordinator restored(limits);
+        CHECK(!restored.reset(bad,bad.document.epoch,error) && error==expected);
+        CHECK(bad==before && restored.state()==State{});
+    };
+    constexpr auto recovery="Recovery requires a fresh epoch nonce and no prepared transaction.";
+    constexpr auto bound="Recovery state exceeds a configured bound.";
+    constexpr auto history="Invalid original-gesture history.";
+    constexpr auto decision="Invalid remembered decision.";
+    constexpr auto transaction="Invalid remembered transaction.";
+    auto bad=original;bad.document.epoch=0;reject(bad,recovery);
+    bad=original;bad.document.placements.at(a).scale=0;reject(bad,"Invalid placement, field value or revision.");
+    for(unsigned i=0;i<4;++i){Limits limits;if(i==0)limits.history=0;if(i==1)limits.history_bytes=1;if(i==2)limits.decisions=0;if(i==3)limits.decision_bytes=1;reject(original,bound,limits);}
+    bad=original;bad.decision_order.clear();reject(bad,bound);
+    bad=original;for(unsigned i=0;i<4097;++i)bad.retired_sequences[{0,i+1}]=1;reject(bad,bound);
+    bad=original;for(unsigned i=0;i<4097;++i)bad.history_truncated.insert({0,i+1});reject(bad,bound);
+    bad=original;bad.history.front().operation.author={};reject(bad,history);
+    bad=original;bad.history.front().original_revision=0;reject(bad,history);
+    bad=original;bad.history.front().transition_revision=original.document.revision+1;reject(bad,history);
+    bad=original;bad.history.push_back(bad.history.front());reject(bad,history);
+    bad=original;bad.history.front().summary.assign(257,'x');reject(bad,history);
+    bad=original;bad.history.front().summary=std::string("\xc0\xaf");reject(bad,history);
+    bad=original;bad.history.front().redo_available=true;reject(bad,history);
+    bad=original;bad.history.front().undo={};reject(bad,history);
+    bad=original;bad.history.front().undo.fields.front().expected=original.document.revision+1;reject(bad,history);
+    bad=original;bad.history.front().applied=false;bad.history.front().redo_available=true;bad.history.front().redo={};reject(bad,history);
+    bad=original;bad.decision_order.front().sequence++;reject(bad,"Invalid decision ordering.");
+    bad=original;bad.decisions.begin()->second.code=Code(255);reject(bad,decision);
+    bad=original;bad.decisions.begin()->second.reason.assign(257,'x');reject(bad,decision);
+    bad=original;bad.decisions.begin()->second.revision++;reject(bad,decision);
+    bad=original;bad.decisions.begin()->second.change.reset();reject(bad,decision);
+    bad=original;bad.decisions.begin()->second.change->operation.sequence++;reject(bad,transaction);
+    bad=original;bad.decisions.begin()->second.change->gesture={};reject(bad,transaction);
+    bad=original;bad.decisions.begin()->second.change->intent=Intent(255);reject(bad,transaction);
+    bad=original;bad.decisions.begin()->second.change->revision++;reject(bad,transaction);
+    bad=original;bad.decisions.begin()->second.change->summary.assign(257,'x');reject(bad,transaction);
+    bad=original;bad.decisions.begin()->second.change->patch.fields.front().expected=original.document.revision+1;reject(bad,transaction);
+    bad=original;bad.decisions.begin()->second.change->clone_sources[{100,1}]=a;reject(bad,"Invalid clone provenance.");
+    bad=original;bad.decisions.begin()->second.change->allocated.push_back({100,1});bad.decisions.begin()->second.change->clone_sources[{100,1}]=a;reject(bad,"Clone provenance does not name an allocated placement.");
+    bad=original;bad.retired_sequences[Peer{}]=1;reject(bad,"Invalid operation retirement fence.");
+    bad=original;bad.retired_sequences[{2,1}]=0;reject(bad,"Invalid operation retirement fence.");
+    bad=original;bad.history_truncated.insert(Peer{});reject(bad,"Invalid history-retention author.");
+
+    // Recovery still discards old retirement fences before checking a new epoch.
+    bad=original;bad.retired_sequences[Peer{}]=0;
+    const auto prior=bad;
+    Coordinator recovered;
+    CHECK(recovered.reset(bad,2,error));
+    CHECK(bad==prior && recovered.state().retired_sequences.empty());
+    CHECK(recovered.state().document.epoch==2 && recovered.state().history==bad.history);
+    CHECK(recovered.state().decisions==bad.decisions && recovered.state().decision_order==bad.decision_order);
+    CHECK(!recovered.reset(bad,2,error) && error==recovery);
+
+    // A large valid retained value must be read in place, without a blob copy.
+    auto large=seed();large.document.revision=1;
+    large.document.schema[106]={ValueKind::Structured};
+    StructuredValue payload;payload.format=1;payload.bytes.assign(65536,0x6d);
+    Gesture gesture;gesture.operation={{0,1},1,1};gesture.original_revision=gesture.transition_revision=1;
+    gesture.undo.fields.push_back({a,{Field::Property,106},Value(payload),{},1,0,0});
+    large.history.push_back(std::move(gesture));
+    const auto unchanged=large;
+    bool accepted=false,allocation_failed=false;
+    error.reserve(256);
+    forbid_large_state_allocation=true;
+    try{accepted=valid(large,{},error);}catch(const std::bad_alloc&){allocation_failed=true;}
+    forbid_large_state_allocation=false;
+    CHECK(accepted && !allocation_failed && error.empty() && large==unchanged);
+}
+
 int main()
 {
     {
@@ -512,7 +608,7 @@ int main()
         auto invalid=blank.document;invalid.placements.emplace(a,seed().document.placements.at(a));
         CHECK(!valid(invalid,{},error));invalid=blank.document;invalid.acts.clear();CHECK(!valid(invalid,{},error));
     }
-    test_validation(); test_create_clone_delete(); test_clone_final_pose(); test_concurrent_fields_and_batches(); test_reference_integrity(); test_leases();
+    test_const_state_validation(); test_validation(); test_create_clone_delete(); test_clone_final_pose(); test_concurrent_fields_and_batches(); test_reference_integrity(); test_leases();
     test_undo_chronology_and_conflict(); test_own_multistep_and_structural_history(); test_redo_and_author_isolation(); test_dedup_retention_and_epoch(); test_hooks_and_atomicity(); test_four_author_adversity(); test_replica_and_nonce_recovery();
     test_class_settings();
     std::printf("editor_document: %d checks, %d failures\n", checks, failures);

@@ -322,6 +322,8 @@ struct LeaseResult {
 };
 
 bool valid(const Document&, const Limits&, std::string& error);
+// Checks durable history/decisions without copying or normalizing the input.
+bool valid(const State&, const Limits&, std::string& error);
 size_t bytes(const Document&);
 size_t bytes(const Patch&);
 size_t bytes(const State&);

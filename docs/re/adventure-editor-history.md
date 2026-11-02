@@ -1045,3 +1045,53 @@ selection/camera. A host `coop.editor check` collected while in the creator is
 explicitly inapplicable, not an acceptance result. A current successful native
 host-away stroke, history and return run remains required; this static audit
 does not provide that acceptance or a performance pass.
+
+### Durable-state encoding without an import copy
+
+The wire state validator previously constructed a temporary `Coordinator` and
+called `reset(State, epoch)`. The by-value import copied the entire document,
+retained gesture patches and remembered decisions solely to check them, then
+destroyed the copy. This occurred in both state encoding and decoding. Session
+coverage also encodes a document-only State after each durable acceptance; its
+validation incurred another document copy on the game thread.
+
+`valid(const State&, const Limits&, error)` now shares the exact durable import
+checks with `Coordinator::reset` and reads retained values in place. Reset still
+owns its input, rejects a missing/freshness-conflicting epoch or prepared
+transaction, clears old operation-retirement fences when changing epoch, then
+validates the normalized owned state before publication. History operation
+epochs are retained as before. Wire validation explicitly finishes validation
+before reading its error text, avoiding function-argument evaluation order when
+selecting the rejection reason. The serializer, format versions, bounds and
+durability ordering are unchanged.
+
+This removes a validation copy, not the remaining transactional state copies.
+Replica replay still stages and recomputes the canonical decision and inverse;
+the persistence worker still owns its complete input. Resource root replacement
+and envelope construction currently copy and hash retained dependencies more
+than once. Reusing their digests would require private immutable, byte-verified
+record provenance; public mutable bundle keys/counts are insufficient proof.
+
+The journal already uses format 3 checked deltas for native bytes, semantic
+state, bindings, manifest and metadata. It selects unchanged, prefix/suffix or
+bounded binary patches and checks the previous state digest during recovery.
+The sparse-journal regression covers thirty changes to a 2 MiB native image and
+1 MiB semantic state with less than 16 KiB of journal output. A missing journal
+delta implementation was therefore disproven. Normal journal encoding, full
+semantic-state hashing and flushing occur on the owned commit worker; they must
+not be attributed to rendering-thread work merely because they affect durable
+confirmation latency.
+
+The const-validation regression retains a 64 KiB structured history value while
+refusing allocations of at least 4 KiB, and checks malformed history, decisions,
+clone provenance and retirement fences without modifying input. Exact wire
+fixtures captured before the change cover legacy encoding, extension versions
+1 through 5 and 128 retained gestures/decisions. These are deterministic source
+and codec checks; actual commit/frame latency still needs a fresh native run.
+
+The strict O2 receipt is
+`out/preview9-const-state-proposal/receipt.json`: 40 actual compiler inputs,
+zero source drift, and all seven before/after wire fixtures byte-identical on
+Linux and actual i686 Windows. Document/protocol/project suites passed
+3,054/9,218/5,683 checks on each platform; the real-UDP/fake-native Session
+suites passed 29,312 checks on Linux and 22,514 on Windows.

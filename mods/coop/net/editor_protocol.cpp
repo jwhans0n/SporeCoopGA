@@ -198,10 +198,9 @@ struct Decode {
 };
 void validate(const State& s) {
     Limits limits; std::string error;
-    // Use the coordinator's recovery gate so persisted/baseline history receives
-    // exactly the same semantic and memory checks as a resumed host document.
-    Coordinator verifier(limits);
-    need(verifier.reset(s,s.document.epoch,error),error.empty()?"invalid durable state":error.c_str());
+    // Share the exact recovery-state checks without copying retained history.
+    const bool okay=editor::valid(s,limits,error);
+    need(okay,error.empty()?"invalid durable state":error.c_str());
 }
 void validate(const Request& q) {
     Limits limits;
