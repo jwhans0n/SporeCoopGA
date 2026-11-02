@@ -1422,6 +1422,9 @@ void captured(editor_native::Gesture gesture) {
         frozen = true; tell("A delayed gesture belongs to a different native editor. The current editor was left intact."); return;
     }
     if (awaiting_operation) { frozen = true; tell("Another native gesture arrived before the pending operation settled; recover the committed draft"); return; }
+    // Both the initial integrity proof and tentative setup validate the same
+    // owned before image. Keep its exact proof only for this synchronous call.
+    editor_native::ValidationScope validation_scope;
     const auto& doc = controller->state().document;
     std::string error;
     const auto supported_begin=stage_qpc();
