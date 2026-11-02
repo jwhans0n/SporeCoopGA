@@ -657,8 +657,10 @@ struct MarkerAudio {
     uint64_t generation_pin=0;
     uint32_t slot=0,class_index=0;
     float pitch=0,gain=0;
-    MarkerAudio(void* candidate_owner,void* marker){
-        if(!active() || !tracks_extended_poses() || candidate_owner!=data(mode()))return;
+    std::function<bool()> current;
+    bool current_owner()const{try{return !current || current();}catch(...){return false;}}
+    MarkerAudio(void* candidate_owner,void* marker,std::function<bool()> guard={}):current(std::move(guard)){
+        if(!current_owner() || !active() || !tracks_extended_poses() || candidate_owner!=data(mode()) || !current_owner())return;
         auto* r=resource(candidate_owner);Rows map;
         if(!rows(r,0x2C10,0x238,kPlacementLimit,map))return;
         const auto begin=reinterpret_cast<uintptr_t>(map.begin),end=reinterpret_cast<uintptr_t>(map.end),p=reinterpret_cast<uintptr_t>(marker);
@@ -667,10 +669,11 @@ struct MarkerAudio {
         class_index=skg::field<uint32_t>(marker,0);pitch=skg::field<float>(marker,0x1E0);gain=skg::field<float>(marker,0x1E4);
     }
     ~MarkerAudio(){
-        if(!owner || owner!=data(mode()) || resource(owner)!=resource_pin || generation!=generation_pin)return;
+        if(!current_owner() || !owner || owner!=data(mode()) || resource(owner)!=resource_pin || generation!=generation_pin)return;
         Rows map;if(!rows(resource_pin,0x2C10,0x238,kPlacementLimit,map) || slot>=uint32_t((map.end-map.begin)/0x238))return;
         auto* marker=map.begin+slot*0x238+4;
         if(!live_slot(marker-4) || skg::field<uint32_t>(marker,0)!=class_index)return;
+        if(!current_owner())return;
         // Pose and selection refreshes reconstruct sound controls. Keep the
         // authored source values, including a genuine setter's new values.
         skg::field<float>(marker,0x1E0)=pitch;skg::field<float>(marker,0x1E4)=gain;
@@ -4392,6 +4395,32 @@ bool supported_changes(const Gesture& gesture,std::string& error){
     error.clear();return true;
 }
 
+std::array<uint32_t,4> diagnostic_value_words(const editor::Value* value){
+    std::array<uint32_t,4> words{};if(!value)return words;
+    if(const auto* v=std::get_if<editor::Vec3>(value))std::memcpy(words.data(),v,sizeof *v);
+    else if(const auto* v=std::get_if<editor::Rotation>(value))std::memcpy(words.data(),v,sizeof *v);
+    else if(const auto* v=std::get_if<float>(value))std::memcpy(words.data(),v,sizeof *v);
+    else if(const auto* v=std::get_if<bool>(value))words[0]=*v;
+    else if(const auto* v=std::get_if<int64_t>(value)){const auto bits=uint64_t(*v);words[0]=uint32_t(bits);words[1]=uint32_t(bits>>32);}
+    else if(const auto* v=std::get_if<editor::ObjectId>(value)){words[0]=uint32_t(v->id);words[1]=uint32_t(v->id>>32);words[2]=v->generation;}
+    else if(const auto* v=std::get_if<editor::ResourceKey>(value)){words[0]=v->instance;words[1]=v->type;words[2]=v->group;}
+    else if(const auto* v=std::get_if<editor::StructuredValue>(value)){words[0]=v->format;words[1]=uint32_t(v->bytes.size());words[2]=uint32_t(v->references.size());}
+    else if(const auto* v=std::get_if<std::string>(value))words[0]=uint32_t(v->size());
+    return words;
+}
+void log_setting_value(const char* stage,editor::ObjectId object,uint32_t property,const editor::Value* actual,const editor::Value* wanted){
+    if(!H || !H->log)return;
+    const auto a=diagnostic_value_words(actual),b=diagnostic_value_words(wanted);
+    H->log(M,SK_DEBUG,"Native settings mismatch: stage=%s object=%llu:%u property=%08X types=%d/%d actual=%08X,%08X,%08X,%08X canonical=%08X,%08X,%08X,%08X",
+        stage,static_cast<unsigned long long>(object.id),object.generation,property,actual?int(actual->index()):-1,wanted?int(wanted->index()):-1,
+        a[0],a[1],a[2],a[3],b[0],b[1],b[2],b[3]);
+    const auto* sa=actual?std::get_if<editor::StructuredValue>(actual):nullptr;
+    const auto* sb=wanted?std::get_if<editor::StructuredValue>(wanted):nullptr;
+    if(sa && sb){size_t first=0;while(first<std::min(sa->bytes.size(),sb->bytes.size()) && sa->bytes[first]==sb->bytes[first])++first;
+        H->log(M,SK_DEBUG,"Native settings fragment mismatch: stage=%s object=%llu:%u property=%08X first=%zu sizes=%zu/%zu bytes=%02X/%02X",
+            stage,static_cast<unsigned long long>(object.id),object.generation,property,first,sa->bytes.size(),sb->bytes.size(),
+            first<sa->bytes.size()?sa->bytes[first]:0,first<sb->bytes.size()?sb->bytes[first]:0);}
+}
 bool validate_projection(const Snapshot& projected,const Snapshot& snapshot,const editor::Document& document,std::string& error){
     if(projected.document.terrain.size()!=document.terrain.size()){error="The native terrain recipe differs from its canonical roster";return false;}
     for(const auto& [id,row]:document.terrain){
@@ -4406,6 +4435,14 @@ bool validate_projection(const Snapshot& projected,const Snapshot& snapshot,cons
     for(const auto& [id,settings]:projected.document.settings){
         auto found=document.settings.find(id);
         if(found==document.settings.end() || settings.kind!=found->second.kind || settings.act_id!=found->second.act_id || settings.properties!=found->second.properties){
+            unsigned logged=0;
+            for(const auto& [property,value]:settings.properties){
+                const editor::Value* wanted=nullptr;
+                if(found!=document.settings.end()){auto field=found->second.properties.find(property);if(field!=found->second.properties.end())wanted=&field->second;}
+                if(!wanted || value!=*wanted){log_setting_value("validation",id,property,&value,wanted);if(++logged==8)break;}
+            }
+            if(found!=document.settings.end() && logged<8)for(const auto& [property,value]:found->second.properties)
+                if(!settings.properties.contains(property)){log_setting_value("validation",id,property,nullptr,&value);if(++logged==8)break;}
             error="Native act/captain settings differ from the committed draft";return false;
         }
     }
@@ -4567,6 +4604,15 @@ void log_restore_quaternions(const Snapshot& snapshot,void* candidate,const char
             a[0],a[1],a[2],a[3],b[0],b[1],b[2],b[3]);
         if(++logged==8)break;
     }
+    const auto captain=snapshot.document.settings.find(kCaptainObject);
+    if(captain!=snapshot.document.settings.end()){
+        const std::array<std::pair<uint32_t,editor::Value>,3> fields{{
+            {kCaptainPositionProperty,skg::field<editor::Vec3>(candidate,0x150)},
+            {kCaptainRotationProperty,skg::field<editor::Rotation>(candidate,0x15C)},
+            {kCaptainScaleProperty,skg::field<float>(candidate,0x16C)}}};
+        for(const auto& [property,actual]:fields){auto wanted=captain->second.properties.find(property);
+            if(wanted!=captain->second.properties.end() && actual!=wanted->second)log_setting_value(stage,kCaptainObject,property,&actual,&wanted->second);}
+    }
 }
 
 struct RestoreFence {
@@ -4581,6 +4627,101 @@ struct RestoreFence {
         }catch(...){return false;}
     }
 };
+struct TerrainRotationOwner {
+    uint64_t generation=0;
+    void* mode=nullptr;void* data=nullptr;void* resource=nullptr;void* tool=nullptr;
+    editor::ResourceKey source;GestureScope scope;
+    uintptr_t first=0,last=0;
+    std::function<bool()> required;
+    bool current()const{
+        try{
+            if(!supported || (required && !required()) || value_scope()!=scope || editor_native::generation!=generation)return false;
+            auto* m=editor_native::mode();auto* d=editor_native::data(m);auto* r=editor_native::resource(d);
+            Rows markers;
+            return m==mode && d==data && r==resource && terraform_mode()==tool &&
+                skg::readable(m,0xDC) && skg::field<int>(m,0xCC)==1 && skg::field<int>(m,0xD0)==0 &&
+                skg::readable(r,kResourceSize) && skg::field<editor::ResourceKey>(r,8)==source &&
+                rows(r,0x2C10,0x238,kPlacementLimit,markers) && uintptr_t(markers.begin)==first && uintptr_t(markers.end)==last &&
+                editor_native::generation==generation;
+        }catch(...){return false;}
+    }
+};
+struct TerrainRotation {
+    Binding binding;uint32_t class_index=0;editor::Rotation canonical,observed;
+};
+bool pin_terrain_rotations(const Snapshot& snapshot,const RestoreFence* fence,TerrainRotationOwner& owner,
+                           std::vector<TerrainRotation>& rotations,std::string& error){
+    owner.generation=generation;owner.mode=mode();owner.data=data(owner.mode);owner.resource=resource(owner.data);
+    owner.tool=terraform_mode();owner.scope=value_scope();if(fence)owner.required=fence->current;
+    Rows markers;
+    if(!skg::readable(owner.resource,kResourceSize) || !rows(owner.resource,0x2C10,0x238,kPlacementLimit,markers)){
+        error="Native terrain restoration lost its placement map";return false;
+    }
+    owner.source=skg::field<editor::ResourceKey>(owner.resource,8);owner.first=uintptr_t(markers.begin);owner.last=uintptr_t(markers.end);
+    if(!owner.current()){error="Native terrain restoration lost its editor identity";return false;}
+    try{
+        rotations.reserve(snapshot.bindings.size());
+        for(const auto& binding:snapshot.bindings){
+            auto wanted=snapshot.document.placements.find(binding.object);
+            auto* marker=marker_for_key(owner.resource,binding.marker);
+            if(wanted==snapshot.document.placements.end() || !marker || skg::field<uint32_t>(marker,0)!=uint32_t(wanted->second.class_id.id)){
+                error="Native terrain restoration lost a canonical placement binding";return false;
+            }
+            const auto q=skg::field<editor::Rotation>(marker,0x10);
+            if(q==wanted->second.rotation)rotations.push_back({binding,uint32_t(wanted->second.class_id.id),q,q});
+        }
+    }catch(const std::bad_alloc&){error="Native terrain rotation witnesses could not be allocated";return false;}
+    if(!owner.current()){error="Native terrain rotation capture lost its editor identity";return false;}
+    return true;
+}
+bool restore_terrain_rotations(const TerrainRotationOwner& owner,std::vector<TerrainRotation>& rotations,std::string& error){
+    const auto current=[owner]{return owner.current();};
+    const auto expired=[&]{error="Native terrain rotation restoration lost its editor or placement identity";return false;};
+    if(!applying){error="Native terrain rotations may only be refreshed during owned restoration";return false;}
+    const auto marker_for=[&](const TerrainRotation& rotation)->void*{
+        if(!current())return nullptr;
+        auto* marker=marker_for_key(owner.resource,rotation.binding.marker);
+        return marker && skg::field<uint32_t>(marker,0)==rotation.class_index?marker:nullptr;
+    };
+    // Record the exact post-rebuild values before invoking any actor callback.
+    // An initially mismatched rotation is never authorized for this repair.
+    for(auto& rotation:rotations){
+        auto* marker=marker_for(rotation);if(!marker)return expired();
+        rotation.observed=skg::field<editor::Rotation>(marker,0x10);
+    }
+    for(const auto& rotation:rotations){
+        if(rotation.observed==rotation.canonical)continue;
+        if(!original_apply_marker || !a_object)return expired();
+        auto* marker=marker_for(rotation);if(!marker)return expired();
+        auto* object=skg::thiscall<void*>(a_object,owner.data,marker);
+        if(!current())return expired();
+        if(!object){error="Native terrain rotation restoration has no placed object";return false;}
+        auto* spatial=native_cast(object,0x01186577);
+        if(!current())return expired();
+        if(!spatial){error="Native terrain rotation restoration has no spatial component";return false;}
+        marker=marker_for(rotation);
+        if(!marker || skg::field<editor::Rotation>(marker,0x10)!=rotation.observed)return expired();
+        {
+            // The existing ApplyMarkerState wrapper only preserves audio.
+            // Use the same verified trampoline with a stronger private guard,
+            // so its cleanup cannot write after a same-wrapper source change.
+            MarkerAudio audio(owner.data,marker,current);
+            if(!current())return expired();
+            marker=marker_for(rotation);
+            if(!marker || skg::field<editor::Rotation>(marker,0x10)!=rotation.observed)return expired();
+            skg::field<editor::Rotation>(marker,0x10)=rotation.canonical;
+            original_apply_marker(owner.data,marker,false);
+            if(!current())return expired();
+        }
+        marker=marker_for(rotation);
+        if(!marker || skg::field<editor::Rotation>(marker,0x10)!=rotation.canonical){
+            error="Native terrain rotation refresh changed its canonical quaternion";return false;
+        }
+    }
+    for(const auto& rotation:rotations){auto* marker=marker_for(rotation);
+        if(!marker || skg::field<editor::Rotation>(marker,0x10)!=rotation.canonical)return expired();}
+    return current()?true:expired();
+}
 bool restore_impl(const Snapshot& snapshot,const RestoreFence* fence,std::string& error){
     std::function<bool()> current;if(fence)current=[fence]{return fence->checked();};
     const auto* required=fence?&current:nullptr;
@@ -4669,11 +4810,16 @@ bool restore_impl(const Snapshot& snapshot,const RestoreFence* fence,std::string
     log_restore_quaternions(snapshot,resource(data(mode())),"after-act-selection");
     if(!checked())return false;
     if(rebuild_terrain){
+        TerrainRotationOwner rotation_owner;std::vector<TerrainRotation> rotations;
+        if(!pin_terrain_rotations(snapshot,fence,rotation_owner,rotations,error) || !checked())return false;
         original_terrain_load(terraform_mode(),skg::ptr_add<void>(copy.p,0x18));
-        if(!checked())return false;
+        if(!checked() || !rotation_owner.current()){error="Native terrain loading changed its restoration identity";return false;}
         terrain_rebuild(terraform_mode());
-        if(!checked())return false;
+        if(!checked() || !rotation_owner.current()){error="Native terrain rebuilding changed its restoration identity";return false;}
         log_restore_quaternions(snapshot,resource(data(mode())),"after-terrain-rebuild");
+        if(!checked())return false;
+        if(!restore_terrain_rotations(rotation_owner,rotations,error) || !checked())return false;
+        log_restore_quaternions(snapshot,resource(data(mode())),"after-terrain-rotation-refresh");
         if(!checked())return false;
     }
     if(snapshot.local_dirty){

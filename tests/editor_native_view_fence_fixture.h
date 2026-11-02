@@ -65,6 +65,30 @@ void test_quaternion_diagnostics(){
     CHECK(t_reads==reads&&t_writes==writes&&marker_rows==changed);
     H=previous;reset();
 }
+void test_settings_diagnostics(){
+    reset();Snapshot snapshot;editor::AuthoringSettings captain;
+    captain.object=kCaptainObject;captain.kind=editor::SettingsKind::Captain;
+    captain.properties[kCaptainPositionProperty]=editor::Vec3{0,1,0};
+    captain.properties[kCaptainRotationProperty]=editor::Rotation{0,0,0,1};
+    captain.properties[kCaptainScaleProperty]=1.f;
+    snapshot.document.settings.emplace(captain.object,captain);
+    const auto* previous=H;SkHost host=*H;host.log=log_rotation;H=&host;rotation_logs.clear();
+    const auto raw=t_live;const auto before=t_rows[t_live.data()];const auto reads=t_reads,writes=t_writes;
+    log_restore_quaternions(snapshot,t_live.data(),"after-terrain-rebuild");
+    CHECK(rotation_logs.size()==3);
+    CHECK(rotation_logs[0].find("stage=after-terrain-rebuild object=")!=std::string::npos);
+    CHECK(rotation_logs[1].find("canonical=00000000,00000000,00000000,3F800000")!=std::string::npos);
+    Snapshot projected=snapshot;projected.document.settings.at(kCaptainObject).properties[kCaptainRotationProperty]=editor::Rotation{0,0,0,0};
+    rotation_logs.clear();std::string error;
+    CHECK(!validate_projection(projected,snapshot,snapshot.document,error)&&rotation_logs.size()==1);
+    CHECK(rotation_logs[0].find("stage=validation object=")!=std::string::npos&&rotation_logs[0].find("3F800000")!=std::string::npos);
+    projected.document.settings.at(kCaptainObject).properties.clear();snapshot.document.settings.at(kCaptainObject).properties.clear();
+    for(uint32_t i=0;i<20;++i){projected.document.settings.at(kCaptainObject).properties[i]=float(i);
+        snapshot.document.settings.at(kCaptainObject).properties[i]=float(i+1);}
+    rotation_logs.clear();CHECK(!validate_projection(projected,snapshot,snapshot.document,error)&&rotation_logs.size()==8);
+    CHECK(t_live==raw&&t_rows[t_live.data()]==before&&t_reads==reads&&t_writes==writes);
+    H=previous;reset();
+}
 void test_fenced_view(){
     std::string error;LocalView pinned;SceneOwner owner;
     auto setup=[&]{
@@ -125,6 +149,7 @@ void test_fenced_view(){
 }
 static void test_native_view_fences(){
     view_fence_fixture::test_settled_scene_owner();view_fence_fixture::test_fenced_view();view_fence_fixture::test_quaternion_diagnostics();
+    view_fence_fixture::test_settings_diagnostics();
 }
 
 namespace restore_fence_fixture {
@@ -289,3 +314,76 @@ void test(){
 }
 }
 static void test_native_restore_fences(){restore_fence_fixture::test();}
+
+namespace terrain_rotation_fixture {
+unsigned refreshes=0;bool missing_object=false,missing_spatial=false,repeat_drift=false;
+std::function<void(unsigned)> callback;
+void event(unsigned stage){if(callback)callback(stage);}
+void* SK_THISCALL object(void* owner,void* marker){auto* result=t_object(owner,marker);event(0);return missing_object?nullptr:result;}
+void* SK_THISCALL cast(void* actor,uint32_t type){auto* result=t_cast(actor,type);event(1);return missing_spatial?nullptr:result;}
+void SK_THISCALL apply(void* owner,void* marker,uint32_t flags){
+    CHECK(owner==t_data.data()&&!flags&&applying);++refreshes;
+    const auto first=t_rows[t_live.data()].data()+4;const unsigned index=marker==first?0:1;
+    CHECK(marker==first+index*0x238);
+    t_model_rotation(t_models[index].data(),&skg::field<editor::Rotation>(marker,0x10));
+    skg::field<float>(marker,0x1E0)+=1;skg::field<float>(marker,0x1E4)+=2;
+    if(repeat_drift)skg::field<uint32_t>(marker,0x10)^=1;
+    event(2);
+}
+struct Routes {
+    restore_fence_fixture::Routes restore;
+    uintptr_t getter=a_object;ApplyMarkerFn apply_route=original_apply_marker;
+    ~Routes(){callback={};a_object=getter;original_apply_marker=apply_route;applying=false;}
+};
+Snapshot setup(SceneOwner& scene){
+    auto snapshot=restore_fence_fixture::setup(scene);
+    t_actor_vt[3]=reinterpret_cast<void*>(cast);a_object=uintptr_t(object);original_apply_marker=apply;
+    C.extended_poses_tracked=[] {return true;};
+    refreshes=0;missing_object=missing_spatial=repeat_drift=false;callback={};
+    for(unsigned i=0;i<2;++i){auto* marker=t_rows[t_live.data()].data()+i*0x238+4;
+        skg::field<float>(marker,0x1E0)=.8f;skg::field<float>(marker,0x1E4)=.4f;}
+    return snapshot;
+}
+void drift(){for(unsigned i=0;i<2;++i)skg::field<uint32_t>(t_rows[t_live.data()].data()+i*0x238+4,0x10)^=1;}
+void test(){
+    Routes routes;SceneOwner scene;std::string error;TerrainRotationOwner pin;std::vector<TerrainRotation> rotations;
+    auto snapshot=setup(scene);RestoreFence fence{generation,scene,t_scope,[]{return true;}};
+    CHECK(pin_terrain_rotations(snapshot,&fence,pin,rotations,error)&&rotations.size()==2);
+    const auto before=t_rows[t_live.data()];drift();applying=true;
+    CHECK(restore_terrain_rotations(pin,rotations,error)&&refreshes==2&&t_rows[t_live.data()]==before);
+    for(unsigned i=0;i<2;++i)CHECK(skg::field<editor::Rotation>(t_models[i].data(),0x10)==snapshot.document.placements.at(snapshot.bindings[i].object).rotation);
+    applying=false;
+    // Never adopt a rotation that already differed before the rebuild.
+    snapshot=setup(scene);rotations.clear();drift();const auto mismatched=t_rows[t_live.data()];
+    CHECK(pin_terrain_rotations(snapshot,nullptr,pin,rotations,error)&&rotations.empty());
+    applying=true;CHECK(restore_terrain_rotations(pin,rotations,error)&&!refreshes&&t_rows[t_live.data()]==mismatched);applying=false;
+    for(unsigned stage=0;stage<3;++stage)for(unsigned reason=0;reason<14;++reason){
+        snapshot=setup(scene);rotations.clear();bool allowed=true,fired=false;
+        fence={generation,scene,t_scope,[&]{return allowed;}};
+        CHECK(pin_terrain_rotations(snapshot,&fence,pin,rotations,error));drift();const auto changed=t_rows[t_live.data()];
+        callback=[&](unsigned at){if(at!=stage||fired)return;fired=true;
+            if(reason<12)restore_fence_fixture::expire(reason,allowed);
+            if(reason==12)skg::field<uint32_t>(t_rows[t_live.data()].data()+4,0)=1025;
+            if(reason==13){auto replacement=t_rows[t_live.data()];t_rows[t_live.data()].swap(replacement);rows_for(t_live.data());}
+        };
+        applying=true;CHECK(!restore_terrain_rotations(pin,rotations,error)&&fired&&!error.empty());applying=false;
+        CHECK(refreshes==(stage==2?1u:0u));
+        if(stage<2)CHECK(skg::field<uint32_t>(t_rows[t_live.data()].data()+4,0x10)==skg::field<uint32_t>(const_cast<uint8_t*>(changed.data())+4,0x10));
+        // A sound object's Native refresh may dirty its source audio, but the
+        // adapter must not write it back after source/read identity expired.
+        if(stage==2&&reason<12){CHECK(skg::field<float>(t_rows[t_live.data()].data()+4,0x1E0)==1.8f);
+            CHECK(skg::field<float>(t_rows[t_live.data()].data()+4,0x1E4)==2.4f);}
+    }
+    for(unsigned reason=0;reason<3;++reason){
+        snapshot=setup(scene);rotations.clear();CHECK(pin_terrain_rotations(snapshot,nullptr,pin,rotations,error));drift();
+        const auto changed=t_rows[t_live.data()];missing_object=reason==0;missing_spatial=reason==1;repeat_drift=reason==2;
+        applying=true;CHECK(!restore_terrain_rotations(pin,rotations,error)&&!error.empty());applying=false;
+        CHECK(refreshes==(reason==2?1u:0u));
+        if(reason<2)CHECK(t_rows[t_live.data()]==changed);
+    }
+    snapshot=setup(scene);rotations.clear();CHECK(pin_terrain_rotations(snapshot,nullptr,pin,rotations,error));drift();
+    CHECK(!restore_terrain_rotations(pin,rotations,error)&&!refreshes&&!error.empty());
+    callback={};
+}
+}
+static void test_terrain_rotation_restore(){terrain_rotation_fixture::test();}
