@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <deque>
 #include <set>
+#include <stdexcept>
 
 static unsigned checks=0;
 #define CHECK(x) do {++checks;if(!(x)){std::printf("FAIL %d: %s\n",__LINE__,#x);std::exit(1);}} while(0)
@@ -37,6 +38,33 @@ std::set<void*> allocations;
 editor_native::GestureScope owner;
 std::vector<dbpf::Record> collected;
 editor::ResourceKey source{0x29001234,0x2B978C46,0x40626200};
+std::array<void*,8> admission_manager_vt{};
+std::array<void*,4> admission_model_vt{};
+void* admission_manager=nullptr;
+std::array<uint8_t,0xAC> admission_models[2];
+std::array<uint32_t,4> admission_mask{1,2,4,8};
+std::array<std::array<uint32_t,4>,2> admission_errors{};
+bool admission_loaded[2]{true,true},admission_object[2]{true,true},admission_cast[2]{true,true};
+unsigned admission_loads[2]{},admission_releases[2]{},admission_validates[2]{};
+uint64_t admission_generation=7;
+std::function<void(char)> admission_callback;
+bool admission_rekey=false;
+struct AdmissionMask {uint32_t words[4];};
+unsigned admission_index(void* p){CHECK(p==admission_models[0].data() || p==admission_models[1].data());return p==admission_models[1].data();}
+int SK_THISCALL admission_release(void* p){const auto n=admission_index(p);++admission_releases[n];CHECK(skg::field<int>(p,8)==1);skg::field<int>(p,8)=0;if(admission_callback)admission_callback('R');return 0;}
+void* SK_THISCALL admission_query(void* p,uint32_t type){CHECK(type==0x03C609F8);const auto n=admission_index(p);if(admission_callback)admission_callback('Q');return admission_cast[n]?p:nullptr;}
+bool admission_get(unsigned n,const editor::ResourceKey* key,void** out,void* a,void* b,void* c,void* d){
+    CHECK(key&&key->instance&&key->type&&key->group&&!a&&!b&&!c&&!d);++admission_loads[n];
+    if(admission_object[n]){*out=admission_models[n].data();CHECK(!skg::field<int>(*out,8));skg::field<int>(*out,8)=1;}else *out=nullptr;
+    if(admission_rekey)const_cast<editor::ResourceKey*>(key)->instance^=1;
+    if(admission_callback)admission_callback(n?'P':'L');return admission_loaded[n];
+}
+bool SK_THISCALL admission_cached(void*,const editor::ResourceKey* key,void** out,void* a,void* b,void* c,void* d){return admission_get(0,key,out,a,b,c,d);}
+bool SK_THISCALL admission_private(void*,const editor::ResourceKey* key,void** out,void* a,void* b,void* c,void* d){return admission_get(1,key,out,a,b,c,d);}
+uint32_t* SK_THISCALL admission_validate(void* p,uint32_t* out,AdmissionMask mask,bool first){
+    const auto n=admission_index(p);CHECK(first&&std::equal(admission_mask.begin(),admission_mask.end(),mask.words));++admission_validates[n];
+    std::copy(admission_errors[n].begin(),admission_errors[n].end(),out);if(admission_callback)admission_callback('V');return out;
+}
 int SK_THISCALL ref(void* p){return ++skg::field<int>(p,8);}
 int SK_THISCALL unref(void* p){auto n=--skg::field<int>(p,8);CHECK(n>=0);if(!n && allocations.erase(p))std::free(p);return n;}
 void SK_THISCALL native_notify(void* e,void* r){
@@ -100,6 +128,9 @@ uintptr_t sym(const char* name){
     if(key=="SporeCoop::CreationEditor::RequestCtor")return uintptr_t(ctor);
     if(key=="SporeCoop::CreationEditor::Allocate")return uintptr_t(allocate);
     if(key=="Editors::EditorRequest::Submit")return uintptr_t(submit_entry);
+    if(key=="Resource::ResourceManager_ptr")return uintptr_t(&admission_manager);
+    if(key=="SporeCoop::CreationEditor::ValidateModel")return uintptr_t(admission_validate);
+    if(key=="SporeCoop::CreationEditor::AdventureValidationMask")return uintptr_t(admission_mask.data());
     return 0;
 }
 int hook(SkMod*,void* address,void* detour,void** original){
@@ -155,6 +186,7 @@ namespace game {uint32_t mode_id(){return mode;}}
 namespace editor_creation_ui {void init(const SkHost*){}void tick(){}void shutdown(){}}
 namespace adventure_collect {bool collect_creation(const dbpf::Key&,std::vector<dbpf::Record>& records,std::string&){++creation_collections;records=collected;return true;}}
 namespace editor_native {
+State state(){State result;result.generation=admission_generation;return result;}
 bool edit_owned_snapshot(const Snapshot& base,const std::function<bool(void*,std::string&)>& edit,Snapshot& out,std::string& error){
     ++owned_edits;
     owned_resource.fill(0);owned_classes.clear();
@@ -177,7 +209,66 @@ bool edit_owned_snapshot(const Snapshot& base,const std::function<bool(void*,std
     return true;
 }
 }
+void test_native_model_admission(){
+    initialize();
+    admission_manager_vt={};admission_manager_vt[3]=reinterpret_cast<void*>(admission_cached);admission_manager_vt[7]=reinterpret_cast<void*>(admission_private);
+    void* manager_vtable=admission_manager_vt.data();admission_manager=&manager_vtable;
+    admission_model_vt={nullptr,reinterpret_cast<void*>(admission_release),nullptr,reinterpret_cast<void*>(admission_query)};
+    const auto reset_admission=[](){
+        live_scope=true;admission_generation=7;admission_callback={};admission_mask={1,2,4,8};admission_errors={};admission_rekey=false;
+        for(unsigned n=0;n<2;++n){admission_loaded[n]=admission_object[n]=admission_cast[n]=true;
+            admission_loads[n]=admission_releases[n]=admission_validates[n]=0;admission_models[n].fill(0);
+            skg::field<void*>(admission_models[n].data(),0)=admission_model_vt.data();skg::field<uint32_t>(admission_models[n].data(),0x18)=0x7D433FAD;
+        }
+    };
+    const editor_creation_native::ModelFence fence{owner,7,[](const editor_native::GestureScope& scope,uint64_t generation){return live_scope&&scope==owner&&generation==admission_generation;}};
+    const editor::ResourceKey alias{0x7D3EB486,0x24682294,0x40646200};std::string error;
+    for(unsigned reason=0;reason<6;++reason){
+        reset_admission();
+        if(reason==1)admission_loaded[0]=admission_object[0]=false;
+        if(reason==2)admission_cast[0]=false;
+        if(reason==3)admission_errors[0][3]=0x80000000;
+        if(reason==4)admission_loaded[1]=admission_object[1]=false;
+        if(reason==5)admission_loaded[0]=false; // Failed native load may still transfer an acquired ref.
+        editor_creation_native::ModelAdmission value;CHECK(editor_creation_native::inspect_model(alias,fence,value,error));
+        CHECK(value.key==alias&&value.mask==admission_mask&&value.cached.loaded==admission_loaded[0]&&value.private_copy.loaded==admission_loaded[1]);
+        CHECK(editor_creation_native::model_admitted(value,error)==(reason==0||reason==4));
+        CHECK(admission_releases[0]==unsigned(admission_object[0])&&admission_releases[1]==unsigned(admission_object[1]));
+        CHECK(!skg::field<int>(admission_models[0].data(),8)&&!skg::field<int>(admission_models[1].data(),8));
+        CHECK(editor_creation_native::model_admission_status(value).size()<384);
+        CHECK(!native_class_imports&&!owned_edits&&!live_class_writes); // Read-only diagnostics never allocate a cast.
+    }
+    for(char point:{'L','P','Q','V','R'})for(unsigned reason=0;reason<3;++reason){
+        reset_admission();editor_creation_native::ModelAdmission value;value.key={1,2,3};
+        admission_callback=[point,reason](char event){if(event!=point)return;
+            if(reason==0)live_scope=false;else if(reason==1)++admission_generation;else admission_mask[3]^=1;};
+        CHECK(!editor_creation_native::inspect_model(alias,fence,value,error));
+        CHECK(value.key==editor::ResourceKey({1,2,3})&&!error.empty());
+        CHECK(admission_releases[0]==admission_loads[0]&&admission_releases[1]==admission_loads[1]);
+        CHECK(!native_class_imports&&!owned_edits&&!live_class_writes);
+    }
+    reset_admission();admission_loaded[0]=admission_object[0]=false;
+    CHECK(!editor_creation_native::validate_model(alias,fence,error)&&error.size()<256);
+    CHECK(error.find("cached=0/0/0")!=std::string::npos&&error.find("private=1/1/1")!=std::string::npos);
+    reset_admission();CHECK(editor_creation_native::validate_model(alias,fence,error));
+    reset_admission();admission_rekey=true;editor_creation_native::ModelAdmission rekeyed;rekeyed.key={1,2,3};
+    CHECK(!editor_creation_native::inspect_model(alias,fence,rekeyed,error)&&rekeyed.key==editor::ResourceKey({1,2,3}));
+    CHECK(admission_releases[0]==1&&admission_loads[1]==0&&admission_validates[0]==0);
+    for(char point:{'L','P','Q','V'}){
+        reset_admission();admission_callback=[point](char event){if(event==point)throw std::runtime_error("injected native callback");};
+        editor_creation_native::ModelAdmission unchanged;unchanged.key={1,2,3};bool caught=false;
+        try{(void)editor_creation_native::inspect_model(alias,fence,unchanged,error);}catch(const std::runtime_error&){caught=true;}
+        CHECK(caught&&unchanged.key==editor::ResourceKey({1,2,3}));
+        CHECK(admission_releases[0]==admission_loads[0]&&admission_releases[1]==admission_loads[1]);
+        admission_callback={};
+    }
+    reset_admission();
+    const auto calls=admission_loads[0];auto stale=fence;++stale.scope.author.generation;
+    editor_creation_native::ModelAdmission value;CHECK(!editor_creation_native::inspect_model(alias,stale,value,error)&&admission_loads[0]==calls);
+    admission_manager=nullptr;admission_callback={};
+}
 int main(){
+    test_native_model_admission();
     initialize();
     CHECK(!editor_creation::intercept(request.data(),submit));unref(request.data());step();step();
     CHECK(submissions==0 && editor_creation::active() && !editor_creation::designing());

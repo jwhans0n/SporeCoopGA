@@ -16,6 +16,7 @@ HASHES = {
 SYMBOLS = {
     'NotifyResult': 0x57A710, 'RequestCtor': 0x5A9140, 'Allocate': 0xF47240,
     'SetClassAsset': 0xF43990, 'GetClass': 0xF3E740, 'AssetModelType': 0xEECAC0,
+    'ValidateModel': 0x4BB170, 'AdventureValidationMask': 0x15DAB18,
 }
 RECEIPTS = [
     (0x57A710, '5356578b7c241033db8bf13b'),
@@ -36,11 +37,22 @@ RECEIPTS = [
     (0xF3E740, '53568b71100fb686082c00008b96f42b'), (0xF3E78D, 'c20400'),
     (0xEECAC0, '51535683cbffc744240800000000e8bd'), (0xEECBC6, 'c3'),
     (0xF47240, '8b4424188b4c24148b542408508b4424'),
+    (0x4BB170, '558bec51894dfc0fb645'), (0x4BB1AE, 'c21800'),
+    (0xF3C24C, '68f809c603ffd2'),
+    (0xF3C257, '8b0d18ab5d016a0183ec108bd4890a8b0d1cab5d01'),
+    (0xF3C26C, '894a048b0d20ab5d01894a088b0d24ab5d01894a0c'),
+    (0xF46427, '50e8d395ebff8b4e0ce88bd9ffff'),
+    (0xF43DF0, '8d6fb0558bcee8d583ffff'),
+    (0xF43B24, '8d4c241851578bcbe85ffeffff'),
+    (0x4F3E00, '558bec81ece4010000c745b000'),
 ]
 CALLS = [(0xF46389, 0xF43990), (0xF43A6B, 0xF42470),
          (0xF43A01, 0xEECAC0), (0x5A95B4, 0x5A9140),
          (0x57C1CB, 0x57A710), (0x58628F, 0x577650),
-         (0x5A9318, 0x5A9040), (0x5A9088, 0x4333E0)]
+         (0x5A9318, 0x5A9040), (0x5A9088, 0x4333E0),
+         (0xF3C288, 0x4BB170), (0x4BB1A0, 0x4F3E00),
+         (0xF46430, 0xF43DC0), (0xF43DF6, 0xF3C1D0),
+         (0xF43B2C, 0xF43990)]
 
 
 def verify(pe, symbol_map=None):

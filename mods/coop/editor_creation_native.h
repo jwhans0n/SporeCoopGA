@@ -5,6 +5,28 @@
 #include <optional>
 
 namespace editor_creation_native {
+struct ModelFence {
+    editor_native::GestureScope scope;
+    uint64_t generation=0;
+    std::function<bool(const editor_native::GestureScope&,uint64_t)> current;
+};
+struct ModelLoad {
+    bool loaded=false,object=false,model=false;
+    uint32_t subtype=UINT32_MAX;
+    std::array<uint32_t,4> errors{};
+};
+struct ModelAdmission {
+    editor::ResourceKey key;
+    std::array<uint32_t,4> mask{};
+    ModelLoad cached,private_copy;
+};
+// Outside Present only. Uses the same cached load and exact model-validation
+// mask as native Scenario restoration. The private path is diagnostic only;
+// its success never substitutes for a failed cached path.
+bool inspect_model(editor::ResourceKey,const ModelFence&,ModelAdmission&,std::string&);
+bool model_admitted(const ModelAdmission&,std::string&);
+bool validate_model(editor::ResourceKey,const ModelFence&,std::string&);
+std::string model_admission_status(const ModelAdmission&);
 bool init(const SkHost*,SkMod*);
 void shutdown();
 // Effective native lookup, including the BEM type aliases. Missing lookup

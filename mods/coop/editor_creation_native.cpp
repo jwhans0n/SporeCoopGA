@@ -10,10 +10,13 @@
 #include <cstring>
 #include <tuple>
 #include <set>
+#include <cstdio>
+#include <utility>
 
 namespace editor_creation_native {
 namespace {
 const SkHost* H;
+SkMod* M;
 bool supported=false;
 void* detached_owner=nullptr;
 bool detached_assign_failed=false;
@@ -154,14 +157,109 @@ bool remap_owner(std::vector<dbpf::Record>& records,const editor::ResourceKey& s
     return true;
 }
 }
+bool inspect_model(editor::ResourceKey key,const ModelFence& fence,ModelAdmission& out,std::string& error){
+    error.clear();
+    if(!supported || !key.instance || !key.group || !family(key.type) || !fence.generation || !fence.current ||
+       !fence.scope.epoch || !fence.scope.author.generation || fence.scope.author.slot>=4 || fence.scope.project==editor::ProjectId{}){
+        error="The creation model inspection has no current owned context";return false;
+    }
+    const auto manager_address=H->sym("Resource::ResourceManager_ptr");
+    const auto validation=H->sym("SporeCoop::CreationEditor::ValidateModel");
+    const auto mask_address=H->sym("SporeCoop::CreationEditor::AdventureValidationMask");
+    auto* manager=manager_address && skg::readable(reinterpret_cast<void*>(manager_address),sizeof(void*))?
+        *reinterpret_cast<void**>(manager_address):nullptr;
+    if(!validation || !mask_address || !skg::readable(reinterpret_cast<void*>(mask_address),16) || !skg::readable(manager,sizeof(void*)) ||
+       !skg::readable(skg::vtable(manager),0x20) || !skg::vtable(manager)[0x0C/4] || !skg::vtable(manager)[0x1C/4]){
+        error="The verified native creation model inspection is unavailable";return false;
+    }
+    const auto requested=key;
+    ModelAdmission result;result.key=key;std::memcpy(result.mask.data(),reinterpret_cast<void*>(mask_address),16);
+    const auto current=[&]{
+        return fence.current(fence.scope,fence.generation) && editor_native::state().generation==fence.generation && key==requested &&
+            skg::readable(reinterpret_cast<void*>(manager_address),sizeof(void*)) && *reinterpret_cast<void**>(manager_address)==manager &&
+            skg::readable(reinterpret_cast<void*>(mask_address),16) && !std::memcmp(result.mask.data(),reinterpret_cast<void*>(mask_address),16);
+    };
+    if(!current()){error="The creation model inspection context expired";return false;}
+    struct Mask {uint32_t words[4];};Mask mask{};std::copy(result.mask.begin(),result.mask.end(),mask.words);
+    struct ResourceRef {
+        void* object=nullptr;
+        ~ResourceRef(){close();}
+        void close(){if(object){auto* value=std::exchange(object,nullptr);
+            if(skg::readable(value,sizeof(void*)) && skg::readable(skg::vtable(value),8) && skg::vtable(value)[0x04/4])skg::vcall<int>(value,0x04/4);}}
+    };
+    for(auto slot:{0x0Cu,0x1Cu}){
+        auto& load=slot==0x0C?result.cached:result.private_copy;
+        ResourceRef reference;
+        load.loaded=skg::vcall<bool>(manager,slot/4,&key,&reference.object,static_cast<void*>(nullptr),static_cast<void*>(nullptr),static_cast<void*>(nullptr),static_cast<void*>(nullptr));
+        void* object=reference.object;
+        load.object=object!=nullptr;
+        if(object && (!skg::readable(object,sizeof(void*)) || !skg::readable(skg::vtable(object),8) || !skg::vtable(object)[0x04/4])){
+            error="The native creation model returned an invalid resource reference";return false;
+        }
+        bool okay=current();
+        if(object){
+            if(!skg::readable(object,sizeof(void*)) || !skg::readable(skg::vtable(object),0x10) || !skg::vtable(object)[0x0C/4]){
+                // Native owns the ResourceObject reference. An unreadable
+                // vtable cannot be called or passed on as a valid result.
+                error="The native creation model returned an invalid resource object";return false;
+            }
+            if(okay && load.loaded){
+                void* model=skg::vcall<void*>(object,0x0C/4,uint32_t(0x03C609F8));okay=current();
+                load.model=model!=nullptr;
+                if(okay && model){
+                    if(!skg::readable(model,0x1C)){okay=false;error="The native creation model is truncated";}
+                    else{
+                        load.subtype=skg::field<uint32_t>(model,0x18);
+                        const auto returned=skg::thiscall<uint32_t*>(validation,model,load.errors.data(),mask,true);
+                        okay=current();
+                        if(returned!=load.errors.data()){okay=false;error="The native creation validation returned a different output";}
+                    }
+                }
+            }
+            reference.close();
+            okay=current()&&okay;
+        }
+        if(!okay){if(error.empty())error="The creation model inspection context changed during a native callback";return false;}
+    }
+    out=std::move(result);error.clear();return true;
+}
+bool model_admitted(const ModelAdmission& result,std::string& error){
+    if(!result.cached.loaded || !result.cached.object){error="The shared creation could not be loaded through the native Adventure resource path";return false;}
+    if(!result.cached.model){error="The shared creation did not produce its editable native model";return false;}
+    if(std::any_of(result.cached.errors.begin(),result.cached.errors.end(),[](uint32_t word){return word!=0;})){
+        error="The shared creation failed native Adventure model validation";return false;
+    }
+    error.clear();return true;
+}
+std::string model_admission_status(const ModelAdmission& result){
+    char text[384];
+    std::snprintf(text,sizeof(text),"key=%08X!%08X.%08X mask=%08X,%08X,%08X,%08X cached=%u/%u/%u subtype=%08X errors=%08X,%08X,%08X,%08X private=%u/%u/%u subtype=%08X errors=%08X,%08X,%08X,%08X",
+        result.key.group,result.key.instance,result.key.type,result.mask[0],result.mask[1],result.mask[2],result.mask[3],
+        unsigned(result.cached.loaded),unsigned(result.cached.object),unsigned(result.cached.model),result.cached.subtype,
+        result.cached.errors[0],result.cached.errors[1],result.cached.errors[2],result.cached.errors[3],
+        unsigned(result.private_copy.loaded),unsigned(result.private_copy.object),unsigned(result.private_copy.model),result.private_copy.subtype,
+        result.private_copy.errors[0],result.private_copy.errors[1],result.private_copy.errors[2],result.private_copy.errors[3]);
+    return text;
+}
+bool validate_model(editor::ResourceKey key,const ModelFence& fence,std::string& error){
+    ModelAdmission result;
+    if(!inspect_model(key,fence,result,error))return false;
+    if(model_admitted(result,error))return true;
+    if(H->log)H->log(M,SK_ERROR,"Creation model admission rejected: %s",model_admission_status(result).c_str());
+    char detail[192];std::snprintf(detail,sizeof(detail),"; key=%08X!%08X.%08X cached=%u/%u/%u errors=%08X,%08X,%08X,%08X private=%u/%u/%u",
+        key.group,key.instance,key.type,unsigned(result.cached.loaded),unsigned(result.cached.object),unsigned(result.cached.model),
+        result.cached.errors[0],result.cached.errors[1],result.cached.errors[2],result.cached.errors[3],
+        unsigned(result.private_copy.loaded),unsigned(result.private_copy.object),unsigned(result.private_copy.model));
+    error+=detail;return false;
+}
 bool init(const SkHost* host,SkMod* mod){
-    H=host;auto setter=H?H->sym("SporeCoop::CreationEditor::SetClassAsset"):0;
+    H=host;M=mod;auto setter=H?H->sym("SporeCoop::CreationEditor::SetClassAsset"):0;
     supported=H && skg::supported_gog2024(H->exe_sha256()) && setter &&
         H->sym("SporeCoop::CreationEditor::GetClass") && H->sym("SporeCoop::CreationEditor::AssetModelType") &&
         H->hook_create(mod,reinterpret_cast<void*>(setter),reinterpret_cast<void*>(assign),reinterpret_cast<void**>(&original_assign))==0;
     return supported;
 }
-void shutdown(){supported=false;detached_owner=nullptr;detached_assign_failed=false;H=nullptr;}
+void shutdown(){supported=false;detached_owner=nullptr;detached_assign_failed=false;H=nullptr;M=nullptr;}
 bool resource_reserved(const editor::ResourceKey& key){
     if(!H || !key.instance || !key.type || !key.group)return true;
     const auto address=H->sym("Resource::ResourceManager_ptr");

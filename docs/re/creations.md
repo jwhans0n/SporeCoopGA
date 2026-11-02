@@ -942,3 +942,72 @@ masked with `F8`; both native embedded-header variants reject. Receipt:
 These checks establish codec and immutable-record behavior. A native Crew
 card screenshot using the next candidate remains required for presentation
 acceptance.
+
+### C14 Vehicle Save, return provenance and native model admission
+
+The private two-player C14 Vehicle probe created a Military Land vehicle using
+normal UI at 1024 by 768: body `(58,114)->(650,420)`, cockpit tab `(87,42)`
+then part `(60,114)->(650,355)`, locomotion tab `(123,42)` then mirrored wheels
+`(140,302)->(570,408)`, weapon tab `(236,42)` then part
+`(60,114)->(665,300)`. These were slow drags. Clicking `(500,741)` opened the
+name popup; the probe entered `Preview9VehicleProbeC14` and confirmed at
+`(850,600)`. Native subtype, changed-model and finish-state checks passed
+before Done. The save reached canonical and durable revision 70 from 69.
+This establishes a native Save, not complete creation-return acceptance.
+
+The guest then failed before its first canonical restore: captures advanced
+383 to 384 while restores stayed 41, and retry captures 385/386 still left
+restores at 41. `materialize_creation_return` first captures the returned
+entry scene and checks it against its owned entry snapshot. The native scene
+transition increments the generation and retires active terrain
+materialization provenance. Offline comparison found the same 27 effect and
+92 model derived transforms as before creation; only native position round
+trips and Transform revision counters differed from the authored recipe.
+The retained canonical stores on both peers recover exactly to revision 70.
+Evidence is under `out/preview9-c14-vehicle-{save,store,failure-rpm}`.
+
+The return fix carries an immutable, bounded terrain proof owned by the exact
+creation session. Reattachment requires the original mode/data/resource,
+source and Terraform tool, complete copied scope and serial, exact entry
+snapshot identity, settled native resume and unchanged raw recipe. It is
+one-use; runtime records successful transfer before any later capture or
+camera retry. A newly entered adventure does not reuse it. Entry validation,
+latest canonical restoration and final validation remain required. This is
+controlled fixture coverage until another native Vehicle return is tested.
+
+A separate host failure affected the new class 1342. Its canonical primary
+was `40646200!7D3EB486.24682294`, while read-only native memory contained
+`40646200!067256EA.24682294`, with local-server hint `FFFFFFFFFFFFFFFF`.
+The 739-byte behavior block was exactly equal, and its references were empty.
+The latter key is a native substitute, not the saved source. Closed-profile
+inventory identifies the actual saved source as `40646200!2912711D`:
+its 1,379-byte BEM is byte-identical to the alias BEM with SHA-256
+`6fa638fda8e62c1f6b89aa7cf16922e096a27bb6fa1152df686bffd5b346d7ee`.
+Neither the source nor alias has a compiled VCL record; both have BEM,
+pollen metadata and two PNGs. Removing a compiled VCL is therefore not a
+demonstrated closure loss in this case. The inventory and bounded class
+memory receipt are `out/preview9-c14-vehicle-store/vehicle-closure-inventory.json`
+and `out/preview9-c14-vehicle-class-rpm/result.json`.
+
+Static restoration explains how the substitution can occur, without proving
+which branch failed in the live case. `F46400` copies the resource then calls
+`F43DC0` at `F46430`. That helper checks each primary through `F3C1D0`.
+The check uses App ResourceManager cached GetResource slot `0C`, queries
+editor-model interface `03C609F8`, and applies the native 128-bit Adventure
+mask stored at `15DAB18..24`. A missing load or nonzero validation result can
+trigger `F43A90 -> F430A0 -> F43990` and substitute another asset.
+`EECAC0` subtype success alone is insufficient because it can read subtype
+from metadata interface `0670DA17` before trying the editable model.
+
+The bounded model-admission adapter reports cached and private loads,
+interface availability, subtype, the exact mask and all four result words.
+Its verified validation wrapper `4BB170` is
+`thiscall(cEditorResource*, uint32 output[4], uint32 mask[4] by value, bool)`;
+it returns the output pointer and uses `ret 18`. Native `F3C288` passes true.
+The adapter retains and releases each acquired ResourceObject once, fences
+scope/generation/manager/mask after callbacks, and never publishes pointers.
+Private-load success does not replace a failed cached path. Admission before
+class allocation rejects cached load failure, missing editable model or
+nonzero native errors. The original and alias still require native diagnostic
+comparison to distinguish loading from model validation; no byte remap,
+post-restore primary rewrite or validation bypass is justified yet.
