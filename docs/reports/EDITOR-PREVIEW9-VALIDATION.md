@@ -1126,3 +1126,38 @@ unrelated static double registries. The retained ASan diagnostic is
 `out/editor-preview9-phase2-asan.log`; it does not establish a production heap
 fault. No measured candidate 16 timing result is claimed. Candidate 15's failed
 frame and guest-confirmation budgets remain release gates.
+
+## Candidate 16 actual shared-editor startup hang
+
+Candidate 16 built successfully from 187 unchanged production inputs. Its DLL
+is `39fa1c4380a232104596ac205f838b9688297d6fecf18cdaef4c5cdea77882d1`
+(89,907,200 bytes). The exact private installation retained the supported 4 GB
+executable unchanged. Build and deployment receipts are
+`out/preview9-candidate16-{source,build-receipt}.json` and
+`out/preview9-candidate16-deployment/receipt.json`.
+
+The fresh two-player Town bootstrap reached matching revision-zero native
+documents, then both games stopped presenting frames. The screenshot request
+timed out before any gesture or timing sample. Both watchdog reports recorded
+zero native faults. The reports are `report-20261102-115918-i95.txt` and
+`report-20261102-115936-i96.txt` in the private installation's logs; their report
+archives are retained. The failed workflow is
+`out/preview9-c16-two-town-bootstrap/result.json`.
+
+Three bounded main-thread samples per process found active CPU use and stacks
+through VirtualQuery, native history-toolbar collection and its current-owner
+checks. The sample helper temporarily suspended and resumed each owned thread
+with balanced counts, without changing thread context or memory. Evidence is
+`out/preview9-c16-thread-samples/result.json`. A separate passive read verified
+stable mode, display, layout, resource, source and owning object list: each
+participant's list contained exactly one non-null object, with no duplicates
+(`out/preview9-c16-toolbar-owned-rpm/result.json`). This rules out a large owning
+root list in this reproduction; it does not establish the full child topology
+or the precise source of the repeated work.
+
+The controlled fixtures did not reproduce this native startup failure.
+Candidate 16 therefore fails actual acceptance. No candidate 16 terrain,
+toolbar, performance or creation-save pass is claimed, and it has not been
+installed into the personal game or desktop shortcut. The next toolbar fix
+must bound elapsed work as well as object counts and retain fresh ownership
+checks around native callbacks.
