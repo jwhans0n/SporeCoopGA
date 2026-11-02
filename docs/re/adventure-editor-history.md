@@ -641,3 +641,122 @@ Actual-i686 fixtures cover successful generation retirement/reattachment and
 strict draft capture, one-use rejection, stale owners/tickets/schema/acts,
 changed raw data, incomplete resume, allocation failure and the combined bound.
 Running-game acceptance of this creation-return fix remains pending.
+
+### C16 current-layout history toolbar traversal stall
+
+C16 DLL SHA256
+`39fa1c4380a232104596ac205f838b9688297d6fecf18cdaef4c5cdea77882d1`
+stalled both private native editors immediately after shared revision 0. This
+is a failed native bootstrap, despite the preceding deterministic toolbar
+fixture passing. Owned thread samples show advancing stacks in the new toolbar
+collector/current-owner guard and approximately one CPU core per process;
+`VirtualQuery` appears in the sampled active path. The evidence establishes
+expensive continuing work, not a proven deadlock. No authored gesture was run.
+
+The passive reader pins the exact runner PID, executable/module, candidate DLL,
+private profile arguments and hidden HWNDs. It sends no console commands, calls
+no native functions and performs no game/profile/audio mutation. Mode, display,
+layout, owning list and source identities, plus each inspected raw blob, are
+double-read. Actual passive artifacts are under
+`out/preview9-c16-toolbar-owned-rpm`, `out/preview9-c16-toolbar-cast-rpm` and
+`out/preview9-c16-toolbar-topology-rpm`; CPU samples are under
+`out/preview9-c16-thread-samples`.
+
+Verified current-layout ownership and IWindow offsets are:
+
+* Scenario singleton `16C7AA4`, mode+14 display, display+24 UILayout,
+  UILayout+14 owning object, owning object+64/+68 pointer-vector begin/end.
+* Both actual root objects use Cast thunk `7F3290`: `sub ecx,4` then jump to
+  `95F8C0`. Its `EEEE8218` branch adds 4 and returns. The net result is the
+  original owning pointer, already an IWindow interface; no speculative root
+  adjustment is needed for these exact observed objects.
+* IWindow GetParent `95F930` reads +34 and returns stored primary parent+4,
+  or null. GetControlID `A02C70` reads +7C directly. Both actual root and
+  descendant vtable slots match these verified getters.
+* The verified `sui::children` intrusive anchor is IWindow+38; each node's
+  first word is its next pointer, and its window interface is node-4. The
+  passive reader interprets only that next link. It retains other link words
+  without assigning unverified semantics. Node, edge and cycle bounds precede
+  each further read; it does not call Cast or a native child/window getter.
+* The actual Undo/Redo button vtable is `1441270`. Slot +28 is GetFlags
+  `641760`, which reads IWindow+28. Visible/enabled bits are 1/2.
+
+Both actual current-layout trees have exactly one owned root, 429 windows and
+428 edges. Each passive traversal completes without a cycle, duplicate parent
+or unverified getter. Each tree contains exactly one Undo `B006EF6E` and one
+Redo `F006EFA5`, both under parent control `0578EC50`; the observed ancestor
+chain includes `0476A9B8` and root `FFFFFFFF`. There are no duplicate history
+button IDs in these current-layout trees. Each button and every observed
+ancestor is locally visible. Both button flags are 1, meaning disabled, which
+is expected at revision 0 and does not establish the earlier post-edit button
+failure.
+
+The inventory rules out an actual child cycle, thousands of owning roots or
+duplicate history buttons as the C16 stall mechanism. The collector repeatedly
+performs full owner/logical checks around hundreds of native window callbacks.
+Any proposed memory-probe reuse must end before native callbacks and recheck
+identity afterward; a cached readability result cannot authorize a changed
+scene. A repair still requires fresh native bootstrap and actual history-button
+acceptance. The retained C16 failure must not be relabeled as a successful run.
+
+The source audit also identified a self-sustaining scheduling mechanism, rather
+than an unbounded child walk. The 100 ms keepalive worker in `coop.cpp` queues
+`keepalive_task`; that task clears its queued flag before calling
+`coop_editor::tick`, which reaches native `tick`. The old native fence timestamp
+was recorded at scheduling time. If one fence takes more than its 200 ms
+interval, a keepalive queued during that work can schedule another fence in the
+same bounded 256-task outside-frame pump. Repeated costly fences can therefore
+keep that pump busy across many intervals. This mechanism follows from the
+verified source ordering; the passive topology and sampled advancing stacks are
+the actual C16 observations. Completion-time throttling and an in-progress
+guard need deterministic queue coverage and new native acceptance. Neither a
+synthetic repair test nor the static mechanism makes C16 a passing run.
+
+### Native toolbar availability bypasses HasUndo and HasRedo
+
+Exact GOG 2024 disassembly identifies why hooking the native availability
+functions alone cannot keep the visible history buttons current. Scenario
+display Update `ED6440..ED661B` is `thiscall(display*, uint32 elapsedMilliseconds)`
+with `ret 4`. Its sole direct native caller is `EF31F7`, inside Scenario virtual
+Update `EF2EF0` (vtable slot address `148B014`). The caller passes mode+14 as
+`this` and elapsed milliseconds computed from float delta time at
+`EF2FE8..EF3010`. Display+24 is the UILayout used by its native button lookups.
+This call chain is not proof that the updater runs outside rendering; an added
+post-original UI lookup or enable operation would require a separate safe phase.
+
+The native updater does not call `HasUndo ED4750` or `HasRedo ED47C0`. It inlines
+reads of the same `cScenarioEditHistory 16065D8` used by those functions:
+
+* Undo `ED6587..ED659E` requires byte `16065F8` (history+20) and cursor
+  `16065EC` (history+14) greater than zero.
+* Redo `ED65C1..ED65E6` requires that byte and cursor smaller than
+  `(end 16065DC - begin 16065D8) / 4`.
+* Native FindLayoutWindow `810650` receives current display+24 and recursive
+  control IDs `B006EF6E` / `F006EFA5` at `ED65AC` / `ED65F6`.
+* The already-existing window-vtable +7C calls pass mask 2 and the computed
+  value at `ED65BF` / `ED6609`. Their exact return sites are `ED65C1` /
+  `ED660B`. In the observed C16 buttons, vtable `1441270` slot +7C is
+  `964560`, `thiscall(IWindow*, uint32 mask, bool enabled)`, `ret 8`.
+  Its original base call `9616B0` reads the bool byte and changes flags at
+  IWindow+28 before its existing button refresh. The same vtable's control-ID
+  slot +1C is `A02C70`, which reads IWindow+7C directly.
+
+The shortcut/message paths do call `HasUndo` at `EDA4D4` and `HasRedo` at
+`EDA528`; both explicitly set ECX to `16065D8` first. Therefore a different
+history-owner pointer is not the cause established by this audit. The concrete
+gap is the toolbar's inline native reads bypassing the co-op availability hooks.
+Likewise, the retained C16 current layout contains one actual button of each
+ID, so a cached duplicate-button lookup is not established for that scene.
+
+The approved narrow adapter design scopes the existing display update and
+changes only the arguments of its two existing SetFlag calls. It requires the
+exact return site, mask 2, matching raw control ID and fresh pinned
+mode/data/resource/source/display/layout/generation/logical scope. It obtains
+the current pure chronological-availability value at the override, after
+rechecking callbacks, and leaves unrelated native calls unchanged. Nested
+scope storage must restore correctly. It adds no UI lookup, window operation,
+cursor write or allocation to the native update and must not reuse a cached
+readability check across native callbacks. The new symbol/ABI receipts cover
+the exact entry, returns, native caller, inline globals, vtable slots and
+argument-call sites. Actual visible Undo/Redo acceptance of this design remains
+pending; this static finding does not claim that C15 or C16 passed it.
