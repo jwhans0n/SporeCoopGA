@@ -42,6 +42,7 @@ Ctx C;
 uintptr_t a_mode, a_history, a_act, a_ctor, a_read, a_write, a_copy, a_entry, a_restore, a_alloc;
 uintptr_t a_context, a_tools, a_marker, a_object, a_clone_marker, a_create_marker, a_delete_marker, a_apply_marker;
 uintptr_t a_loading, a_layout_find, a_display_vtable, a_erase_history, a_discard_history, a_copy_marker_rows, a_insert_marker;
+uintptr_t a_history_undo_return,a_history_redo_return;
 uintptr_t a_entry_vtable;
 uintptr_t a_tool_tick;
 uintptr_t a_copy_class_rows,a_copy_class,a_insert_class;
@@ -66,8 +67,7 @@ double last_legacy_scale_notice=-10;
 double last_clone_scale_notice=-10;
 std::array<uint64_t,8> tool_rejection_counts{};
 std::map<sui::Win,uint32_t> fenced_windows;
-size_t history_ui_roots=0,history_ui_visited=0,history_ui_undo=0,history_ui_redo=0;
-bool history_ui_complete=false;
+uint64_t history_ui_updates=0,history_ui_undo=0,history_ui_redo=0,history_ui_changes=0,history_ui_expired=0;
 uint64_t fenced_generation=0;
 uint64_t generation = 1, captures = 0, restores = 0, rejected = 0;
 unsigned validation_depth=0;
@@ -3130,101 +3130,93 @@ void disable_properties(sui::Win root){
         pending_windows.insert(pending_windows.end(),descendants.begin(),descendants.end());
     }
 }
-struct HistoryToolbar {
-    std::vector<sui::Win> undo,redo;
-    size_t roots=0,visited=0;
+using UpdateDisplay=void(SK_THISCALL*)(void*,uint32_t);
+using SetHistoryButtonFlags=void(SK_THISCALL*)(void*,uint32_t,bool);
+UpdateDisplay original_update_display;
+SetHistoryButtonFlags original_history_button_flags;
+struct HistoryDisplayPin {
+    uint64_t generation=0;
+    GestureScope scope;
+    void* mode=nullptr;void* data=nullptr;void* resource=nullptr;void* display=nullptr;void* layout=nullptr;void* layout_owner=nullptr;
+    editor::ResourceKey source;
 };
-bool collect_history_toolbar(void* layout,const std::function<bool()>& current,HistoryToolbar& out){
-    // 810650 delegates through UILayout+14 to 8102A0. The latter searches
-    // this exact owning object's +64/+68 list, Cast(EEEE8218), then children.
-    // GetContainerWindow instead returns the shared parent layer.
+thread_local const HistoryDisplayPin* history_display_scope=nullptr;
+bool history_display_current(const HistoryDisplayPin& pin){
+    // These Runtime callbacks read cached policy only. Never retain a memory
+    // query cache across them or call any native UI getter from this hook.
     try{
-        if(!current() || !skg::readable(layout,0x18))return false;
-        auto* owner=skg::field<void*>(layout,0x14);
-        Rows objects;if(!skg::readable(owner,0x6C) || !rows(owner,0x64,4,4096,objects))return false;
-        std::vector<void*> owned;
-        for(auto at=objects.begin;at!=objects.end;at+=4)owned.push_back(skg::field<void*>(at,0));
-        struct Visit {sui::Win window=nullptr,parent=nullptr;bool child=false,exit=false;};
-        std::vector<Visit> pending_windows;
-        std::set<sui::Win> roots;
-        for(auto object:owned){
-            if(!current())return false;
-            auto* window=native_cast(object,0xEEEE8218);
-            if(!current())return false;
-            if(window && roots.insert(window).second)pending_windows.push_back({window,nullptr,false,false});
-        }
-        HistoryToolbar result;result.roots=roots.size();
-        std::map<sui::Win,uint8_t> colors;
-        while(!pending_windows.empty()){
-            if(!current())return false;
-            auto visit=pending_windows.back();pending_windows.pop_back();
-            if(visit.exit){colors[visit.window]=2;continue;}
-            if(!skg::readable(visit.window,0x40) || !native_slot(visit.window,0x7C/4))return false;
-            if(visit.child){
-                auto parent=sui::parent(visit.window);
-                if(!current() || parent!=visit.parent)return false;
-            }
-            auto found=colors.find(visit.window);
-            if(found!=colors.end()){
-                if(found->second==1)return false; // A cycle cannot authorize a partial toolbar update.
-                continue;
-            }
-            if(colors.size()>=4096)return false;
-            colors.emplace(visit.window,1);++result.visited;
-            const auto id=sui::control_id(visit.window);
-            if(!current())return false;
-            if(id==0xB006EF6E)result.undo.push_back(visit.window);
-            if(id==0xF006EFA5)result.redo.push_back(visit.window);
-            auto children=sui::children(visit.window);
-            if(!current() || children.size()>4096 || pending_windows.size()+children.size()+1>4096)return false;
-            pending_windows.push_back({visit.window,nullptr,false,true});
-            for(auto child:children){
-                if(!child)return false;
-                pending_windows.push_back({child,visit.window,true,false});
-            }
-        }
-        // A native Cast/window callback may replace this layout's owned list
-        // without replacing the layout allocation itself.
-        Rows settled;
-        if(!current() || !skg::readable(layout,0x18) || skg::field<void*>(layout,0x14)!=owner ||
-           !skg::readable(owner,0x6C) || !rows(owner,0x64,4,4096,settled) ||
-           settled.begin!=objects.begin || settled.end!=objects.end)return false;
-        size_t index=0;
-        for(auto at=settled.begin;at!=settled.end;at+=4)if(skg::field<void*>(at,0)!=owned[index++])return false;
-        out=std::move(result);return true;
-    }catch(const std::bad_alloc&){return false;}
+        if(!supported || applying || generation!=pin.generation || !valid_scope(pin.scope) ||
+           !C.active || !C.active() || generation!=pin.generation || value_scope()!=pin.scope ||
+           generation!=pin.generation)return false;
+        skg::ReadOnlyMemoryScope memory;
+        return mode()==pin.mode && skg::readable(pin.mode,0xDC) &&
+            skg::field<int>(pin.mode,0xCC)==1 && skg::field<int>(pin.mode,0xD0)==0 &&
+            data(pin.mode)==pin.data && resource(pin.data)==pin.resource &&
+            skg::readable(pin.resource,kResourceSize) && skg::field<editor::ResourceKey>(pin.resource,8)==pin.source &&
+            skg::field<void*>(pin.mode,0x14)==pin.display && skg::readable(pin.display,0x28) &&
+            skg::field<void*>(pin.display,0x24)==pin.layout && skg::readable(pin.layout,0x18) &&
+            skg::field<void*>(pin.layout,0x14)==pin.layout_owner && skg::readable(pin.layout_owner,0x6C);
+    }catch(...){return false;}
 }
-bool refresh_history_toolbar(void* layout){
-    history_ui_complete=false;
-    history_ui_roots=history_ui_visited=history_ui_undo=history_ui_redo=0;
-    const auto pinned_generation=generation;const auto scope=value_scope();
-    auto* pinned_mode=mode();auto* pinned_data=data(pinned_mode);
-    auto* display=skg::readable(pinned_mode,0x18)?skg::field<void*>(pinned_mode,0x14):nullptr;
-    auto* live=resource(pinned_data);
-    const auto source=skg::readable(live,kResourceSize)?skg::field<editor::ResourceKey>(live,8):editor::ResourceKey{};
-    auto current=[&]{
-        return valid_scope(scope) && active() && !applying && generation==pinned_generation && value_scope()==scope && generation==pinned_generation &&
-            mode()==pinned_mode && data(pinned_mode)==pinned_data && resource(pinned_data)==live &&
-            skg::readable(live,kResourceSize) && skg::field<editor::ResourceKey>(live,8)==source &&
-            skg::readable(pinned_mode,0x18) && skg::field<void*>(pinned_mode,0x14)==display &&
-            skg::readable(display,0x28) && skg::field<void*>(display,0x24)==layout;
-    };
-    if(!C.history_available || !current())return false;
-    const bool undo=C.history_available(false);if(!current())return false;
-    const bool redo=C.history_available(true);if(!current())return false;
-    HistoryToolbar buttons;if(!collect_history_toolbar(layout,current,buttons) || !current())return false;
-    for(auto [windows,available]:{std::pair{&buttons.undo,undo},std::pair{&buttons.redo,redo}})
-        for(auto window:*windows){
-            if(!current())return false;
-            sui::set_enabled(window,!cancellation && available);
+bool capture_history_display(void* self,HistoryDisplayPin& pin){
+    try{
+        pin.generation=generation;pin.scope=value_scope();pin.mode=mode();
+        {
+            skg::ReadOnlyMemoryScope memory;
+            pin.data=data(pin.mode);pin.resource=resource(pin.data);pin.display=self;
+            if(!skg::readable(self,0x28) || !skg::readable(pin.resource,kResourceSize))return false;
+            pin.layout=skg::field<void*>(self,0x24);pin.source=skg::field<editor::ResourceKey>(pin.resource,8);
+            if(!skg::readable(pin.layout,0x18))return false;
+            pin.layout_owner=skg::field<void*>(pin.layout,0x14);
         }
-    if(!current())return false;
-    history_ui_roots=buttons.roots;history_ui_visited=buttons.visited;
-    history_ui_undo=buttons.undo.size();history_ui_redo=buttons.redo.size();history_ui_complete=true;
-    return true;
+        return history_display_current(pin);
+    }catch(...){return false;}
+}
+void SK_THISCALL update_display(void* self,uint32_t elapsed){
+    // Clear an outer pin even for a nested unrelated display. A nested native
+    // updater can never borrow another display's history authority.
+    struct Scope {
+        const HistoryDisplayPin* previous=history_display_scope;
+        Scope(){history_display_scope=nullptr;}
+        ~Scope(){history_display_scope=previous;}
+    } scope;
+    HistoryDisplayPin pin;
+    if(capture_history_display(self,pin)){history_display_scope=&pin;++history_ui_updates;}
+    original_update_display(self,elapsed);
+}
+void set_history_button_flags_at(void* window,uint32_t flags,bool value,uintptr_t caller){
+    const auto* pin=history_display_scope;
+    const bool undo=a_history_undo_return && caller==a_history_undo_return;
+    const bool redo=a_history_redo_return && caller==a_history_redo_return;
+    if(pin && flags==sui::kFlagEnabled && (undo || redo)){
+        const auto id=undo?0xB006EF6Eu:0xF006EFA5u;
+        auto current_window=[&]{
+            return history_display_scope==pin && history_display_current(*pin) && history_display_scope==pin &&
+                skg::readable(window,0x80) && skg::field<uint32_t>(window,0x7C)==id;
+        };
+        try{
+            if(current_window() && C.history_available){
+                const bool shared=C.history_available(redo);
+                if(current_window()){
+                    const bool enabled=!cancellation && shared;
+                    if(enabled!=value)++history_ui_changes;
+                    value=enabled;if(undo)++history_ui_undo;else ++history_ui_redo;
+                }else ++history_ui_expired;
+            }else ++history_ui_expired;
+        }catch(...){++history_ui_expired;}
+    }
+    // This is the game's existing call, with only its enabled argument changed.
+    // No extra window lookup, setter, allocation or native cursor write occurs.
+    original_history_button_flags(window,flags,value);
+}
+void SK_THISCALL history_button_flags(void* window,uint32_t flags,bool value){
+    set_history_button_flags_at(window,flags,value,reinterpret_cast<uintptr_t>(__builtin_return_address(0)));
 }
 void SK_CDECL fence_ui(void*){
-    fence_queued=false;
+    struct Completion {
+        Completion(){fence_queued=true;}
+        ~Completion(){if(H && H->time_seconds)last_fence=H->time_seconds();fence_queued=false;}
+    } completion;
     state();
     std::string complexity_error;
     if(!update_complexity(complexity_error)){if(C.failure)C.failure(complexity_error);return;}
@@ -3239,12 +3231,6 @@ void SK_CDECL fence_ui(void*){
         if(id==0x07104132 && terrain_available && tracks_authoring())continue;
         // Global trees retain cached browser/editor duplicates of these IDs.
         disable_owned(skg::thiscall<sui::Win>(a_layout_find,main_layout,id,true));
-    }
-    if(!applying && skg::readable(main_layout,0x18) && C.history_available){
-        // The shared history also contains private roster gestures and recovered
-        // operations without a native cursor entry. Refresh the owned toolbar
-        // from that same availability used by the native command getters.
-        if(!refresh_history_toolbar(main_layout))return;
     }
     if(!tracks_authoring() && skg::readable(main_layout,0x18))for(uint32_t id:{0x07466E50u,0x07108388u})
         disable_owned(skg::thiscall<sui::Win>(a_layout_find,main_layout,id,true));
@@ -3623,6 +3609,8 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     a_select_act=H->sym("SporeCoop::Editor::SelectAct");
     a_loading=H->sym("SporeCoop::Editor::LoadingScreen");
     a_layout_find=H->sym("SporeCoop::Editor::FindLayoutWindow");
+    a_history_undo_return=H->sym("SporeCoop::Editor::UndoButtonFlagReturn");
+    a_history_redo_return=H->sym("SporeCoop::Editor::RedoButtonFlagReturn");
     a_display_vtable=H->sym("SporeCoop::Editor::DisplayVtable");
     a_erase_history=H->sym("SporeCoop::Editor::EraseHistoryRange");
     a_discard_history=H->sym("SporeCoop::Editor::DiscardHistoryEntry");
@@ -3646,7 +3634,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     a_view_set_orbit=H->sym("SporeCoop::Editor::SetOrbitScalarsInstant");
     a_view_lookat=H->sym("SporeCoop::SimCamera_LookAt");
     supported = a_copy_acts && a_copy_act && a_select_act && a_inspector_open && a_layout_shown && a_preview_factory && a_mode && a_history && a_act && a_ctor && a_read && a_write && a_copy && a_entry && a_entry_vtable && a_restore && a_alloc &&
-        a_context && a_tools && a_marker && a_object && a_clone_marker && a_create_marker && a_delete_marker && a_apply_marker && a_loading && a_layout_find && a_erase_history && a_discard_history && a_copy_marker_rows && a_insert_marker && a_copy_class_rows && a_copy_class && a_insert_class && a_speech_ui && a_behavior_data;
+        a_context && a_tools && a_marker && a_object && a_clone_marker && a_create_marker && a_delete_marker && a_apply_marker && a_loading && a_layout_find && a_erase_history && a_discard_history && a_copy_marker_rows && a_insert_marker && a_copy_class_rows && a_copy_class && a_insert_class && a_speech_ui && a_behavior_data && a_history_undo_return && a_history_redo_return;
     if (!supported) return false;
     supported = install("SporeCoop::Editor::StartHistory", (void*)start, (void**)&original_start) &&
         install("SporeCoop::Editor::SelectAct",(void*)select_act_native,(void**)&original_select_act) &&
@@ -3677,6 +3665,8 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
         install("SporeCoop::Editor::RedoHistory",(void*)history_redo,(void**)&original_history_redo) &&
         install("SporeCoop::Editor::HasUndo",(void*)has_undo,(void**)&original_has_undo) &&
         install("SporeCoop::Editor::HasRedo",(void*)has_redo,(void**)&original_has_redo) &&
+        install("SporeCoop::Editor::UpdateDisplay",(void*)update_display,(void**)&original_update_display) &&
+        install("SporeCoop::Editor::SetHistoryButtonFlags",(void*)history_button_flags,(void**)&original_history_button_flags) &&
         install("SporeCoop::Editor::ScriptInput",(void*)script_input,(void**)&original_script_input) &&
         install("SporeCoop::Editor::ClassInput",(void*)class_input,(void**)&original_class_input) &&
         install("SporeCoop::Editor::CastCardAction",(void*)card_action,(void**)&original_card_action) &&
@@ -5533,10 +5523,10 @@ std::string status() {
         (unsigned long long)work.pose_captures,(unsigned long long)work.pose_fallbacks);
     return result+detail+" opaque_pose_hits="+std::to_string(opaque_pose_hits)+
         " opaque_pose_fallbacks="+std::to_string(opaque_pose_fallbacks)+
-        " history_ui_complete="+std::to_string(history_ui_complete)+
-        " history_ui_roots="+std::to_string(history_ui_roots)+
-        " history_ui_visited="+std::to_string(history_ui_visited)+
+        " history_ui_updates="+std::to_string(history_ui_updates)+
         " history_ui_undo="+std::to_string(history_ui_undo)+
-        " history_ui_redo="+std::to_string(history_ui_redo);
+        " history_ui_redo="+std::to_string(history_ui_redo)+
+        " history_ui_changes="+std::to_string(history_ui_changes)+
+        " history_ui_expired="+std::to_string(history_ui_expired);
 }
 } // namespace editor_native

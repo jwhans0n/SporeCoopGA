@@ -1161,3 +1161,63 @@ toolbar, performance or creation-save pass is claimed, and it has not been
 installed into the personal game or desktop shortcut. The next toolbar fix
 must bound elapsed work as well as object counts and retain fresh ownership
 checks around native callbacks.
+
+## Candidate 17 existing-call toolbar correction
+
+The completed passive native inventory found 429 windows and 428 child edges
+on each participant, with no cycles or errors and exactly one Undo and one Redo
+in the current layout. Their parent is `0578EC50`. Thus the global duplicate
+reported by `where` did not establish a duplicate within the current layout.
+The topology and exact interface evidence are retained in
+`out/preview9-c16-toolbar-{cast,topology}-rpm/result.json`.
+
+Native analysis then identified the actual history-availability mismatch:
+`UpdateDisplay ED6440` inlines the native history cursor checks before setting
+both button flags. It bypasses the hooked HasUndo/HasRedo functions and can
+overwrite an outside-frame flag refresh. There is no proven outside-render
+boundary for this updater. The recurring full-tree collector was removed,
+including its additional UI calls; no timed partial traversal is shipped.
+
+The replacement scopes the original updater and changes only the enabled
+argument of its two existing `964560` SetFlag calls, at exact returns
+`ED65C1` and `ED660B`, for flag 2 and the matching window control ID. It uses
+fresh cached shared-history availability and pending-cancellation state.
+Project, epoch, participant, generation, mode, data, resource, source, display,
+layout and layout-owner checks fence the read-only callbacks. Nested updaters
+restore their prior stack scope. Every other call retains its original argument
+and forwards exactly once. The hook adds no window lookup, UI getter, setter,
+allocation or native history-cursor mutation. Its memory-query cache ends before
+every callback. The 96-entry native ABI receipt is
+`out/preview9-c17-toolbar-abi.json`.
+
+The queue audit also found a concrete feedback route: a frame stall enables the
+100 ms keepalive task, which calls the editor tick; a slow fence can leave its
+queue-time 200 ms interval already expired when that keepalive runs. The kit
+drains up to 256 outside-frame tasks including newly queued work. The fence now
+retains its queued flag through the whole callback and timestamps completion,
+preventing both reentrant duplication and immediate keepalive replenishment.
+A deterministic controlled regression advances the clock during the callback
+and verifies that the queue drains before the next eligible fence.
+
+The final strict actual-i686 fixture passed 368 focused toolbar checks and
+30,959 complete native checks, with all 41 compiler and Make inputs unchanged.
+Coverage includes the inline-empty-native-history/shared-Redo case, wrong
+callsite, mask and control ID, unavailable authority, cancellation changes,
+layout-owner and other identity replacements, nested callbacks, exceptions,
+exact native-call forwarding and zero added UI/layout calls. Evidence is in
+`out/preview9-c17-fixture-receipt.json`. Candidate 17's second production build
+passed its 187-input integrity check (`out/preview9-candidate17-build-receipt.json`);
+the earlier attempted build was retained undeployed after detecting the final
+layout-owner fence change.
+
+The exact candidate then passed private two-player Adventure Town startup with
+both games responsive at revision 0, matching strict native checks and zero
+faults. A guest changed crew capacity and used the visible native toolbar for
+Undo and Redo. Both participants finished Ready at revision 3, durable revision
+3, with one correctly attributed crew history item, matching native bytes and
+strict check `89665d601d29e45c3007d262427c13e72f88b6d4595148e156b9c998c19c7419`.
+The native history-update and Undo/Redo override counters advanced with zero
+expired scopes. The visible toolbar result and screenshots are retained in
+`out/preview9-c17-crew-capacity-toolbar/result.json`. This is a functional
+two-player pass; the unchanged frame/confirmation timing gates, terrain and
+four-player acceptance remain pending.
