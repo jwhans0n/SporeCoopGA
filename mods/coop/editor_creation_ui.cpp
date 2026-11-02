@@ -22,6 +22,27 @@ struct Panel {
 constexpr uint32_t kRoot=0xC00F0300,kNew=0xC00F0301,kEdit=0xC00F0302,kChoice=0xC00F0310;
 constexpr std::array<uint32_t,4> types{0x2B978C46,0x2399BE55,0x24682294,0x476A98C7};
 constexpr std::array<const char*,4> labels{"New creature","New building","New vehicle","New spaceship"};
+bool native_picker_visible(sui::Win main){
+    // Search the current owning visible tree. A cached hidden Sporepedia with
+    // the same ID must not hide a later visible picker, or mask its presence.
+    // Native child lists are bounded by sui::children; this traversal also
+    // bounds depth, total work and stack size, failing closed on overflow.
+    struct Entry {sui::Win window;unsigned depth;};
+    constexpr size_t limit=4096;
+    std::vector<Entry> stack{{main,0}};size_t visited=0;
+    while(!stack.empty()){
+        const auto [window,depth]=stack.back();stack.pop_back();
+        if(!window || window==panel.root || !sui::visible(window))continue;
+        if(++visited>limit || depth>=64)return true;
+        if(sui::control_id(window)==0x53C6DC80)return true;
+        for(auto child:sui::children(window)){
+            if(sui::parent(child)!=window)continue;
+            if(stack.size()>=limit)return true;
+            stack.push_back({child,depth+1});
+        }
+    }
+    return false;
+}
 void clear(){
     want_menu=false;
     for(auto [window,handler]:panel.handlers)sui::remove_handler(window,handler);
@@ -31,7 +52,9 @@ void clear(){
 }
 bool current(){
     const auto view=coop_editor::view();
-    return panel.root && view.active && !view.frozen && view.native_editing && view.prompt_identity==panel.identity && !editor_creation::active();
+    return panel.root && sui::visible(panel.root) && panel.main==sui::main_window() &&
+        view.active && !view.frozen && view.native_editing && view.prompt_identity==panel.identity &&
+        !editor_creation::active() && !native_picker_visible(panel.main);
 }
 void handler(sui::Win window,std::function<bool(sui::Win,const sui::Msg&)> callback){
     if(auto value=sui::add_handler(window,std::move(callback)))panel.handlers.push_back({window,value});
@@ -44,8 +67,9 @@ bool build(const coop_editor::View& view){
     auto like=sui::find(root,0x0519E168),text=sui::find(root,0x0451D381);
     if(!like || !text){clear();return false;}
     const auto font=sui::font(text);
-    for(auto id:{0x0451D381u,0x0519E168u,0x06555818u,0x065D20A8u,0x0519D9B8u,0x0451A4C0u,0xFFFFFFF2u})
-        if(auto w=sui::find(root,id))sui::set_visible(w,false);
+    // Keep the native style sources alive, but hide every original subtree,
+    // including decorative logos and future template additions.
+    for(auto child:sui::children(root))sui::set_visible(child,false);
     sui::set_ids(root,kRoot,0);sui::set_drawable(root,nullptr);sui::set_fill_color(root,0xE5202834);
     panel.new_button=sui::button_like(root,like,{4,4,120,34},"New asset");
     panel.edit_button=sui::button_like(root,like,{124,4,240,34},"Edit asset");
@@ -78,7 +102,8 @@ void SK_CDECL update(void*){
     queued=false;if(!H)return;
     const auto view=coop_editor::view();const auto native=editor_native::state();
     const bool visible=view.active && view.native_editing && native.ready && native.world_visible &&
-        !view.frozen && !view.playtesting && !view.exporting && !editor_creation::active() && !coop_ui::is_open();
+        !view.frozen && !view.playtesting && !view.exporting && !editor_creation::active() && !coop_ui::is_open() &&
+        !native_picker_visible(sui::main_window());
     if(panel.root && (panel.main!=sui::main_window() || panel.identity!=view.prompt_identity))clear();
     if(!visible){want_menu=false;if(panel.root)sui::set_visible(panel.root,false);return;}
     if(!panel.root && !build(view))return;
