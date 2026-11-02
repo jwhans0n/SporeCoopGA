@@ -150,3 +150,57 @@ revision two, `applied=false`, and `redo_available=true`. Decision sequence two
 was accepted Undo, not a second forward Delete. A further Undo correctly had no
 eligible applied original gesture; Redo was the expected next history action.
 This audit does not invalidate the separate native stale-before-snapshot finding.
+
+## Native creation return camera boundary, GOG 2024
+
+The private preview 9 C6 creation probe returned the host to Scenario with
+`editing=1`, `ready=1`, and no native faults, but the active App camera remained
+`A50C91D5` (`Editors::EditorCamera`, registry index 29). The registered Adventure
+Editor camera `00EBB801` still existed at index 40. The read-only receipt is
+`out/preview9-creation-probe/camera-native-readonly.json`. This is an observed
+camera ownership failure, not evidence that the saved creation was lost.
+
+The native mode-return message `00E11332` is handled at `7D827B` by passing the
+message's `+08` mode ID to `cGameModeManager::SetActiveMode` (`7D8CF0`). Its
+`SwitchToIndex` (`7D8670`) calls the old mode's `+1C` OnExit and the new mode's
+`+18` OnEnter. It has no generic camera restoration. Scenario OnEnter
+`EF24C0` sets mode `+DC=1`; the first ordinary Scenario update consumes that
+flag at `EF2F3C` and invokes editor resume `EF0990` at `EF2FB2`. The orbit-camera
+accesses in that resume function get and reset the registered camera, rather
+than selecting it as App's active camera. The adapter's history restoration
+does not directly clear mode `+DC` or the native Scenario initialization state.
+
+The narrow native camera ownership boundary is `B5CEF0`,
+`thiscall(SimulatorSystem*, uint32 cameraID) -> bool`, `ret4`. Native edit-world
+camera setup `EFDDC0` passes `00EBB801` at `EFDDD0`. The boundary obtains App's
+camera manager through game-mode-manager slot `+50`, invokes camera-manager
+slot `+34` (`7C6750`, SetActiveCameraByID), then obtains the actual active camera
+through slot `+38` and casts it to orbit interface `011966ED`. It stores that
+interface in singleton camera state `+0C`. `B3D320` returns the singleton storage
+address `0167EAC0`; `B3D330` returns its word-zero SimulatorSystem pointer. The
+cached orbit pointer is therefore not `SimulatorSystem*+0C`.
+
+The Boolean return is explicit: `B5CF44..B5CF50` tests the orbit result, writes
+the cache, uses `SETNE CL`, copies `CL` to `AL`, and returns. The null-active path
+at `B5CF53..B5CF61` writes a null cached orbit and returns false. Failure to find
+the requested ID can leave the old App camera active, so a true native return
+alone is insufficient. The adapter prevalidates the registered `00EBB801` orbit
+object, calls this paired boundary, and then verifies both exact active-camera
+identity and cached orbit identity. No raw camera-manager fields are written.
+
+The adapter requires the exact project, epoch, participant generation, creation
+session serial, and returned native generation. Runtime authorizes only its
+current, not yet materialized creation return, and all native access occurs in
+the outside-frame drain. Non-Scenario, playtest, unready, active-gesture, replaced
+scope, missing camera, or missing owner rejects before activation. The broader
+`EFDDC0` setup also focuses the authored captain and loads its camera bookmark;
+the adapter does not call it. The runtime restores its separately pinned local
+camera and selection and waits for scene acknowledgement afterward.
+
+The static verifier pins the paired function's entry, three return paths,
+native caller, manager slots, cache store, and exact singleton getters. Focused
+i686 fixtures cover rejected scope/context/session/generation, inactive named
+camera validation, native refusal, registry replacement during activation, and
+a false-positive activation that fails to update the cached orbit. Running-game
+creation Save/Cancel return acceptance remains required after deployment of
+this candidate.

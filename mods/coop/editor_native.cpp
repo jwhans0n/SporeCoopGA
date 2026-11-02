@@ -43,6 +43,7 @@ uintptr_t a_copy_class_acts,a_copy_marker_acts,a_insert_act,a_insert_class_act,a
 editor::Document act_identity;
 std::optional<bool> authoring_override;
 uintptr_t a_view_manager, a_view_target, a_view_orbit, a_view_set_orbit, a_view_lookat;
+uintptr_t a_get_simulator_system,a_get_simulator_camera_state,a_activate_simulator_camera;
 bool supported, applying, queued;
 bool fence_queued;
 double last_fence;
@@ -2398,6 +2399,55 @@ bool capture_view(LocalView& view, std::string& error) {
     view=captured;return true;
 }
 
+bool resume_creation_scene_camera(const GestureScope& scope,uint64_t serial,uint64_t expected_generation,std::string& error){
+    // E11332 resumes the game mode, but its manager does not restore the camera.
+    // Native edit-world setup calls B5CEF0 with EBB801: this switches the App
+    // camera AND updates Simulator's cached orbit interface. A bare App switch
+    // leaves that second owner stale. The complete setup also focuses captain,
+    // so use only this verified paired boundary and preserve the caller's view.
+    const auto owned=[&]{
+        const auto native=state();
+        return valid_scope(scope) && serial && expected_generation && active() &&
+            native.editing && native.ready && !native.playtesting && !native.gesture && !applying &&
+            native.generation==expected_generation && C.gesture_scope && C.gesture_scope()==scope &&
+            C.creation_return_current && C.creation_return_current(scope,serial);
+    };
+    if(!owned()){error="The creation return no longer owns its ready Adventure Editor camera";return false;}
+    if(!a_get_simulator_system || !a_get_simulator_camera_state || !a_activate_simulator_camera || !a_view_manager){
+        error="The verified creation-return camera adapter is unavailable";return false;
+    }
+    void* manager=skg::cdecl_call<void*>(a_view_manager);
+    if(!view_slot(manager,0x50/4)){error="The native game mode camera manager is unavailable";return false;}
+    void* cameras=skg::vcall<void*>(manager,0x50/4);
+    if(!view_slot(cameras,0x34/4) || !view_slot(cameras,0x38/4) || !view_slot(cameras,0x40/4)){
+        error="The native creation-return camera registry is unavailable";return false;
+    }
+    void* named=skg::vcall<void*>(cameras,0x40/4,uint32_t(0x00EBB801));
+    if(!view_slot(named,0x0C/4)){error="The registered Adventure Editor camera is unavailable";return false;}
+    void* orbit=skg::vcall<void*>(named,0x0C/4,uint32_t(0x011966ED));
+    if(!skg::readable(orbit,0x318)){error="The registered Adventure Editor orbit camera is unavailable";return false;}
+    void* simulator=skg::cdecl_call<void*>(a_get_simulator_system);
+    void* camera_state=skg::cdecl_call<void*>(a_get_simulator_camera_state);
+    if(!skg::readable(simulator,0x10) || !skg::readable(camera_state,0x10) ||
+       skg::field<void*>(camera_state,0)!=simulator || !owned()){
+        error="The creation return's native scene changed before camera activation";return false;
+    }
+    if(!skg::thiscall<bool>(a_activate_simulator_camera,simulator,uint32_t(0x00EBB801))){
+        error="The native creation return could not activate its Adventure Editor camera";return false;
+    }
+    if(!owned() || skg::cdecl_call<void*>(a_get_simulator_system)!=simulator ||
+       skg::cdecl_call<void*>(a_get_simulator_camera_state)!=camera_state ||
+       skg::field<void*>(camera_state,0)!=simulator || skg::field<void*>(camera_state,0xC)!=orbit ||
+       skg::cdecl_call<void*>(a_view_manager)!=manager ||
+       skg::vcall<void*>(manager,0x50/4)!=cameras ||
+       skg::vcall<void*>(cameras,0x40/4,uint32_t(0x00EBB801))!=named ||
+       skg::vcall<void*>(cameras,0x38/4)!=named || view_camera(error)!=orbit){
+        if(error.empty())error="The creation return's Adventure Editor camera did not become active";
+        return false;
+    }
+    error.clear();return true;
+}
+
 bool restore_view(const LocalView& view, uint64_t expected_generation, std::string& error) {
     const auto native=state();
     if (!native.ready || native.gesture || applying || native.generation!=expected_generation) {
@@ -2499,6 +2549,9 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     a_behavior_data=H->sym("SporeCoop::Editor::BehaviorData");
     a_insert_marker=H->sym("SporeCoop::Editor::InsertMarker");
     a_view_manager=H->sym("App::IGameModeManager::Get");
+    a_get_simulator_system=H->sym("SporeCoop::Editor::GetSimulatorSystem");
+    a_get_simulator_camera_state=H->sym("SporeCoop::Editor::GetSimulatorCameraState");
+    a_activate_simulator_camera=H->sym("SporeCoop::Editor::ActivateSimulatorCamera");
     a_view_target=H->sym("SporeCoop::Editor::CurrentOrbitTarget");
     a_view_orbit=H->sym("SporeCoop::Editor::CurrentOrbitScalars");
     a_view_set_orbit=H->sym("SporeCoop::Editor::SetOrbitScalarsInstant");

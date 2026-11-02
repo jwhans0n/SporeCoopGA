@@ -41,6 +41,7 @@ std::array<uint8_t,16> t_tool;
 void* t_tool_pointer=t_tool.data();
 bool t_active=true,t_restore_fail=false,t_callback_fail=false,t_alloc_fail=false;
 uint64_t t_frame=10;
+uint32_t t_game_mode_id=modes::kScenario;
 double t_time=1;
 unsigned t_presses=0,t_finishes=0,t_ticks=0,t_steps=0;
 bool t_granted=false;
@@ -209,7 +210,7 @@ void reset(){
     t_active=true;t_callback_fail=t_alloc_fail=t_restore_fail=false;
     t_audio_drift=false;
     t_retired_actor=false;
-    t_frame=10;t_time=1;t_presses=t_finishes=t_ticks=t_steps=0;t_granted=false;t_revision=0;
+    t_frame=10;t_game_mode_id=modes::kScenario;t_time=1;t_presses=t_finishes=t_ticks=t_steps=0;t_granted=false;t_revision=0;
     t_restores=t_original_undo=t_own_undo=t_settled=t_failed=0;t_failure.clear();t_seen={};
     t_scope={};t_scope.project[0]=0xAD;t_scope.epoch=9;t_scope.author={1,3};
     a_mode=uintptr_t(&t_mode_pointer);a_context=uintptr_t(&t_context_pointer);a_loading=uintptr_t(&t_loading_pointer);
@@ -989,7 +990,7 @@ void test_async_captain_asset_keeps_value_and_rechecks_identity(){
     }
 }
 }
-namespace game { uint32_t mode_id(){return modes::kScenario;} void destroy_creature(void* actor){CHECK(actor==t_ghost_actor.data()||actor==t_ghost_exit.data());++t_ghosts_destroyed;skg::field<bool>(actor,0x20)=true;t_release(actor);} }
+namespace game { uint32_t mode_id(){return t_game_mode_id;} void destroy_creature(void* actor){CHECK(actor==t_ghost_actor.data()||actor==t_ghost_exit.data());++t_ghosts_destroyed;skg::field<bool>(actor,0x20)=true;t_release(actor);} }
 namespace sui {
 Win find(Win root,uint32_t){return root==t_flora_root?t_flora_found:nullptr;}
 void set_enabled(Win,bool){CHECK(false);} void release(Win){CHECK(false);} void add_ref(Win){CHECK(false);}
@@ -1012,7 +1013,7 @@ void* SK_CDECL v_get_manager(){++v_gets;return &v_manager;}
 void* SK_THISCALL v_get_cameras(void* self){CHECK(self==&v_manager);return &v_cameras;}
 void* SK_THISCALL v_get_active(void* self){CHECK(self==&v_cameras);return v_active;}
 void* SK_THISCALL v_get_named(void* self,uint32_t id){CHECK(self==&v_cameras);CHECK(id==0x00EBB801);return v_named;}
-void* SK_THISCALL v_get_cast(void* self,uint32_t id){CHECK(self==v_active);CHECK(id==0x011966ED);return v_cast?self:nullptr;}
+void* SK_THISCALL v_get_cast(void* self,uint32_t id){CHECK(self==v_active||self==v_named);CHECK(id==0x011966ED);return v_cast?self:nullptr;}
 const float* SK_THISCALL v_target(void* self){
     static std::array<float,3> target;
     for(unsigned i=0;i<3;++i)target[i]=skg::field<float>(self,0x54+4*i)*skg::field<float>(self,0x28);
@@ -1053,6 +1054,66 @@ void view_fixture(){
     skg::field<float>(v_camera.data(),0x310)=.1f;skg::field<float>(v_camera.data(),0x314)=10000;
     a_view_manager=uintptr_t(v_get_manager);a_view_target=uintptr_t(v_target);a_view_orbit=uintptr_t(v_orbit);
     a_view_set_orbit=uintptr_t(v_set);a_view_lookat=uintptr_t(v_look);
+}
+std::array<uint8_t,0x10> v_simulator,v_simulator_camera_state;
+unsigned v_activations=0;
+bool v_activation_refuse=false,v_activation_replace=false,v_activation_expire=false,v_activation_stale_cache=false,v_simulator_missing=false;
+void* SK_CDECL v_get_simulator(){return v_simulator_missing?nullptr:v_simulator.data();}
+void* SK_CDECL v_get_simulator_camera_state(){return v_simulator_camera_state.data();}
+bool SK_THISCALL v_activate_id(void* self,uint32_t id){
+    CHECK(self==&v_cameras&&id==0x00EBB801);if(!v_activation_refuse)v_active=v_named;return true;
+}
+bool SK_THISCALL v_activate_simulator(void* self,uint32_t id){
+    CHECK(self==v_simulator.data()&&id==0x00EBB801);++v_activations;
+    skg::vcall<bool>(&v_cameras,0x34/4,id);
+    if(v_active!=v_named)return false;
+    if(!v_activation_stale_cache)skg::field<void*>(v_simulator_camera_state.data(),0xC)=skg::vcall<void*>(v_active,0xC/4,uint32_t(0x011966ED));
+    if(v_activation_replace)v_named=v_replacement.data();
+    if(v_activation_expire)++generation;
+    return v_activation_stale_cache||skg::field<void*>(v_simulator_camera_state.data(),0xC)!=nullptr;
+}
+void creation_camera_fixture(){
+    view_fixture();v_simulator.fill(0);v_simulator_camera_state.fill(0);v_activations=0;
+    skg::field<void*>(v_simulator_camera_state.data(),0)=v_simulator.data();
+    v_activation_refuse=v_activation_replace=v_activation_expire=v_activation_stale_cache=v_simulator_missing=false;
+    v_active=v_replacement.data(); // The departed creation editor's camera.
+    a_get_simulator_system=uintptr_t(v_get_simulator);a_activate_simulator_camera=uintptr_t(v_activate_simulator);
+    a_get_simulator_camera_state=uintptr_t(v_get_simulator_camera_state);
+    v_cameras_vt[0x34/4]=reinterpret_cast<void*>(v_activate_id);
+    C.creation_return_current=[](const GestureScope& scope,uint64_t serial){return scope==t_scope&&serial==7;};
+}
+void test_creation_scene_camera_resume(){
+    creation_camera_fixture();std::string error;
+    const auto owner=t_data;const auto resource=t_live;const auto history=t_history;const auto camera=v_camera;
+    const auto selected=state().selected;const auto expected=state().generation;
+    CHECK(resume_creation_scene_camera(t_scope,7,expected,error));
+    CHECK(v_activations==1&&v_active==v_camera.data()&&skg::field<void*>(v_simulator_camera_state.data(),0xC)==v_camera.data());
+    CHECK(!v_looks&&!v_sets&&v_camera==camera&&t_data==owner&&t_live==resource&&t_history==history&&state().selected==selected);
+    // An already-active App camera still refreshes Simulator's cached owner.
+    skg::field<void*>(v_simulator_camera_state.data(),0xC)=nullptr;
+    CHECK(resume_creation_scene_camera(t_scope,7,expected,error)&&v_activations==2&&skg::field<void*>(v_simulator_camera_state.data(),0xC)==v_camera.data());
+    for(unsigned kind=0;kind<18;++kind){
+        creation_camera_fixture();auto scope=t_scope;uint64_t serial=7,native=state().generation;
+        if(kind==0)scope.project[0]^=1;if(kind==1)++scope.epoch;if(kind==2)++scope.author.generation;
+        if(kind==3)++serial;if(kind==4)++native;if(kind==5)scope={};
+        if(kind==6)t_game_mode_id=modes::kEditor;if(kind==7)skg::field<int>(t_mode.data(),0xCC)=2;
+        if(kind==8)skg::field<uint8_t>(t_history.data(),0x20)=0;
+        if(kind==9)C.creation_return_current={};if(kind==10)t_active=false;
+        if(kind==11)a_activate_simulator_camera=0;if(kind==12)a_get_simulator_system=0;
+        if(kind==13)v_named=nullptr;if(kind==14)v_cast=false;if(kind==15)v_simulator_missing=true;
+        if(kind==16)a_get_simulator_camera_state=0;if(kind==17)skg::field<void*>(v_simulator_camera_state.data(),0)=nullptr;
+        const auto untouched=v_active;
+        CHECK(!resume_creation_scene_camera(scope,serial,native,error)&&!error.empty());
+        CHECK(!v_activations&&v_active==untouched&&!v_looks&&!v_sets);
+    }
+    for(unsigned kind=0;kind<4;++kind){
+        creation_camera_fixture();const auto native=state().generation;
+        if(kind==0)v_activation_refuse=true;if(kind==1)v_activation_replace=true;if(kind==2)v_activation_expire=true;
+        if(kind==3)v_activation_stale_cache=true;
+        CHECK(!resume_creation_scene_camera(t_scope,7,native,error)&&!error.empty());
+        CHECK(v_activations==1&&!v_looks&&!v_sets);
+    }
+    reset();
 }
 std::array<uint8_t,0x100> v_terrain;
 bool SK_THISCALL v_terrain_loaded(void* self){CHECK(self==v_terrain.data());return skg::field<void*>(self,0xFC)==nullptr;}
@@ -1274,7 +1335,7 @@ int main(){
     test_pose_refresh_preserves_authored_audio();
     test_large_transform_without_roster_work();
     test_exact_validation_cache_and_owned_pose_prepare();
-    test_local_view();
+    test_creation_scene_camera_resume();test_local_view();
     using namespace editor_native;
     // Ordinary editing keeps the native entry-level Undo behavior intact.
     reset();t_active=false;undo_native(t_entry.data());CHECK(t_original_undo==1&&!t_own_undo&&!cancellation);

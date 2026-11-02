@@ -10,6 +10,19 @@ from pe import PE
 
 SHA = 'dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37'
 ENTRIES = [
+    ('GetSimulatorCameraState',0xB3D320,'b8c0ea6701',[(0xB3D325,0)],
+     'cdecl()->singleton storage; word0 is SimulatorSystem pointer,wordC is cached active orbit interface',
+     [(0xB5CF10,0xB3D320)],[(0xB3D330,'a1c0ea6701'),(0xB5CF46,'89460c'),(0xB5CF57,'89460c')]),
+    ('GetSimulatorSystem',0xB3D330,'a1c0ea6701',[(0xB3D335,0)],
+     'cdecl()->SimulatorSystem,plain ret; exact singleton used by native Scenario camera setup',
+     [(0xEFDDC9,0xB3D330),(0xB5CF10,0xB3D320)],[]),
+    ('ActivateSimulatorCamera',0xB5CEF0,'535632dbe8d70db2ff',[(0xB5CF50,4),(0xB5CF61,4),(0xB5CF68,4)],
+     'thiscall(SimulatorSystem,uint32 cameraID)->bool,ret4; paired App camera activation and Simulator cached orbit interface refresh, no captain focus',
+     [(0xEFDDD0,0xB5CEF0),(0xB5CEF4,0x67DCD0),(0xB5CF10,0xB3D320)],
+     [(0xEFDDC4,'6801b8eb00'),(0xB5CEFD,'8b4250'),(0xB5CF08,'8b5234'),
+      (0xB5CF2D,'8b4238'),(0xB5CF3D,'68ed661901'),(0xB5CF46,'89460c'),
+      (0x141074C,'50677c00'),(0xB5CF44,'85c089460c0f95c15e8ac15bc20400'),
+      (0xB5CF53,'33c085c089460c0f95c15e8ac15bc20400'),(0xB5CF64,'5e8ac35bc20400')]),
     ('CopyTerrainProperties',0xDFCA20,'5355568bf1578b7c24148b4708',[(0xDFCA89,4)],
      'thiscall(PropertyList destination,const PropertyList* source)->destination,ret4; owning map and parent copy used by native resource deep copy',
      [(0xDFFA29,0xDFCA20),(0xDFCA4B,0x6A1E80)],[(0xDFFA19,'8d4d18'),(0xDFFA23,'8d4b18'),(0xDFCA6C,'895e30')]),

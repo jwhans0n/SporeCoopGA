@@ -94,6 +94,9 @@ struct Ctx {
     std::function<bool()> active;
     // Cached logical identity, captured before an owned native gesture starts.
     std::function<GestureScope()> gesture_scope;
+    // The runtime owns the creation session nonce and authorizes only its
+    // current, not-yet-materialized return. Called synchronously outside frame.
+    std::function<bool(const GestureScope&,uint64_t serial)> creation_return_current;
     // Native validation cancelled the current entry, not the user's history.
     // Called outside Present after the finalizer and actual frame advance.
     std::function<bool(const CancellationTicket&, std::string&)> cancelled;
@@ -164,6 +167,7 @@ bool validate_entry(const std::vector<uint8_t>&, uint32_t act, std::string& erro
 // closed when that camera or its exact current context is unavailable.
 bool capture_view(LocalView&, std::string& error);
 bool restore_view(const LocalView&, uint64_t expected_generation, std::string& error);
+bool resume_creation_scene_camera(const GestureScope&,uint64_t serial,uint64_t expected_generation,std::string& error);
 // Reject unsupported authored changes after private normalization of known poses.
 bool supported_changes(const Gesture&, std::string& error);
 // Reuse an exact immutable validation result only in one synchronous operation.

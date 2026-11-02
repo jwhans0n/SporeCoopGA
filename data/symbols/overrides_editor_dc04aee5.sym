@@ -1,5 +1,8 @@
 # SporeKit verified native Adventure Editor overrides for GOG 2024.
 # exe_sha256=dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37
+SporeCoop::Editor::GetSimulatorSystem=0x00B3D330 ; verified dc04 static: cdecl(),mov eax,[167EAC0],plain ret B3D335; native Scenario camera owner getter
+SporeCoop::Editor::GetSimulatorCameraState=0x00B3D320 ; verified dc04 static: cdecl(),mov eax,167EAC0,plain ret B3D325; singleton storage+00 is SimulatorSystem pointer,+0C receives active orbit interface from B5CF46/57
+SporeCoop::Editor::ActivateSimulatorCamera=0x00B5CEF0 ; verified dc04 static: thiscall(SimulatorSystem*,uint32 cameraID)->bool,ret4 B5CF50/61/68; App CameraManager slot34 activates registered ID then cached Simulator orbit+0C is refreshed from active camera Cast11966ED; native EFDdd0 passes EBB801, no focus/bookmark calls
 SporeCoop::CreationEditor::NotifyResult=0x0057A710 ; verified dc04 static: thiscall(cEditor*,EditorResult*),ret4 57A955; posts30C11C7 then E11332 native return and releases editor+1CC/+4BC; result key+18,cancel+44; native cast palette ED4289..ED42C1 ignores cancelled result
 SporeCoop::CreationEditor::RequestCtor=0x005A9140 ; verified dc04 static: thiscall(EditorRequest*),plain ret5A921A; initializes9C bytes,primary vt13F6FEC,+C editorID,+10 source key,+1C return mode,+20 new asset flag
 SporeCoop::CreationEditor::Allocate=0x00F47240 ; verified dc04 static: cdecl(size_t,const char*,int,int,int,int),native request allocation5A9590..5A95B4 uses9C bytes then RequestCtor
