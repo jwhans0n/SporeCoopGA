@@ -87,11 +87,48 @@ static void test_simultaneous_inverse_appends_rebase_without_losing_foreign(){
         std::set<uint32_t> instances;for(const auto& [id,row]:accepted.terrain){(void)id;instances.insert(editor::terrain_word(row.payload.bytes,0));}
         CHECK(instances==std::set<uint32_t>{101,202});
         CHECK(runtime_host::controller->state().history.size()==2&&!runtime_host::frozen&&!runtime_guest::frozen);
+        auto* owner=second?runtime_guest::controller.get():runtime_host::controller.get();
+        auto* other=first?runtime_guest::controller.get():runtime_host::controller.get();
+        const auto restored=std::find_if(accepted.terrain.begin(),accepted.terrain.end(),[&](const auto& entry){
+            return editor::terrain_word(entry.second.payload.bytes,0)==(second?202u:101u);});
+        CHECK(restored!=accepted.terrain.end());const auto original_record=restored->second;
+        const editor::Scope terrain_scope{editor::ScopeKind::Terrain,restored->first,{}};
+        side=int(second);CHECK(owner->request_leases({terrain_scope},15000,error));
+        auto owned_token=[&]{for(const auto& held:owner->view().local_leases)if(held.scope==terrain_scope)return held.token;return uint64_t{};};
+        CHECK(spin([&]{return owned_token()!=0;}));const auto old_token=owned_token();
         side=int(second);if(second)runtime_guest::undo();else runtime_host::undo();
         CHECK(spin([]{return runtime_host::store.durable_revision()==3&&runtime_guest::store.durable_revision()==3&&
             !runtime_host::durable_commit&&!runtime_guest::durable_commit&&runtime_host::controller->settled();}));
         const auto& remaining=runtime_host::controller->state().document.terrain;CHECK(remaining.size()==1);
         CHECK(editor::terrain_word(remaining.begin()->second.payload.bytes,0)==(first?202u:101u));
+        CHECK(runtime_host::controller->state().document==runtime_guest::controller->state().document);
+        CHECK(spin([&]{return owned_token()==0;})); // Deletion retires the old capability.
+        const auto undone=owner->state().document;const auto checkpoint=second?runtime_guest::store.snapshot():runtime_host::store.snapshot();
+        side=int(first);CHECK(other->request_leases({terrain_scope},15000,error));
+        auto foreign_token=[&]{for(const auto& held:other->view().local_leases)if(held.scope==terrain_scope)return held.token;return uint64_t{};};
+        CHECK(spin([&]{return foreign_token()!=0;}));
+        side=int(second);if(second)runtime_guest::redo();else runtime_host::redo();
+        CHECK(spin([&]{return owner->view().error.find("overlapping")!=std::string::npos &&
+            (second?!runtime_guest::waiting_history:!runtime_host::waiting_history);}));
+        CHECK(owner->state().document==undone&&(second?runtime_guest::store.snapshot():runtime_host::store.snapshot())==checkpoint);
+        CHECK(owner->state().history.back().redo_available&&!runtime_host::frozen&&!runtime_guest::frozen);
+        side=int(first);CHECK(other->release_leases({{terrain_scope,foreign_token()}},error));
+        CHECK(spin([&]{return foreign_token()==0;}));
+        clock_ms+=2100;step(); // A new UI retry follows the completed denial and request throttle.
+        uint64_t new_token=0;
+        waiting.apply_callback=[&,owner,terrain_scope]{
+            for(const auto& held:owner->view().local_leases)if(held.scope==terrain_scope)new_token=held.token;
+        };
+        side=int(second);if(second)runtime_guest::redo();else runtime_host::redo();
+        CHECK(spin([]{return runtime_host::store.durable_revision()==4&&runtime_guest::store.durable_revision()==4&&
+            !runtime_host::durable_commit&&!runtime_guest::durable_commit&&runtime_host::controller->settled();}));
+        waiting.apply_callback={};CHECK(new_token&&new_token!=old_token);
+        const auto& redone=owner->state().document.terrain;CHECK(redone.size()==2&&redone.contains(original_record.object));
+        const auto& current=redone.at(original_record.object);
+        CHECK(current.payload==original_record.payload&&current.kind==original_record.kind&&current.order==original_record.order);
+        for(const auto& [id,row]:accepted.terrain)if(id!=original_record.object){
+            CHECK(redone.at(id).payload==row.payload&&redone.at(id).order==row.order);
+        }
         CHECK(runtime_host::controller->state().document==runtime_guest::controller->state().document);
     }
 }

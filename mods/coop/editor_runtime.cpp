@@ -2727,7 +2727,7 @@ void undo_redo(bool redo,std::optional<editor::OperationId> pinned={}) {
         for(const auto& entry:patch.classes)if(entry.before){scopes.push_back({editor::ScopeKind::Class,entry.object,{}});
             if(state.document.class_schema.contains(editor::kClassAssetResourceProperty))scopes.push_back({editor::ScopeKind::Content,entry.object,{}});}
     }
-    for(const auto& entry:patch.terrain)if(entry.before)scopes.push_back({editor::ScopeKind::Terrain,entry.object,{}});
+    for(const auto& entry:patch.terrain)scopes.push_back({editor::ScopeKind::Terrain,entry.object,{}});
     }
     std::sort(scopes.begin(),scopes.end());scopes.erase(std::unique(scopes.begin(),scopes.end()),scopes.end());
     if (!lease(scopes)) {
