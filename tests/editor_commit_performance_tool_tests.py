@@ -40,10 +40,10 @@ def page(value):
 
 class StageContracts(unittest.TestCase):
     def test_native_work_reports_inclusive_counter_deltas_without_guessing_costs(self):
-        before={'native_work_frequency':1000,**{key:2 for key in perf.NATIVE_COUNTS}}
+        before={'native_work_frequency':1000,**{key:2 for key in perf.NATIVE_COUNTS},**{key:0 for key in perf.NATIVE_OWNERS}}
         for name in perf.NATIVE_SPANS:
             before[f'native_{name}_calls']=4;before[f'native_{name}_ticks']=50
-        after={key:value+3 if key!='native_work_frequency' else value for key,value in before.items()}
+        after={key:value+3 if key!='native_work_frequency' and key not in perf.NATIVE_OWNERS else value for key,value in before.items()}
         after['native_projection_ticks']=90
         encode=lambda row:'editor_native '+ ' '.join(f'{key}={value}' for key,value in row.items())
         result=perf.native_work_delta(perf.native_work_sample(encode(before)),perf.native_work_sample(encode(after)))
@@ -59,7 +59,7 @@ class StageContracts(unittest.TestCase):
         with self.assertRaises(perf.FixtureError):perf.native_work_delta(None,{'native_work_frequency':1000})
 
     def test_native_work_rejects_partial_reset_invalid_and_changed_clocks(self):
-        sample={'native_work_frequency':1000,**{key:2 for key in perf.NATIVE_COUNTS}}
+        sample={'native_work_frequency':1000,**{key:2 for key in perf.NATIVE_COUNTS},**{key:0 for key in perf.NATIVE_OWNERS}}
         for name in perf.NATIVE_SPANS:
             sample[f'native_{name}_calls']=4;sample[f'native_{name}_ticks']=50
         for key,value in [('native_work_frequency',0),('native_read_calls',-1),('native_read_ticks',2**64)]:
@@ -67,6 +67,12 @@ class StageContracts(unittest.TestCase):
             with self.assertRaises(perf.FixtureError):perf.native_work_sample(' '.join(f'{k}={v}' for k,v in bad.items()))
         for key,value in [('native_work_frequency',2000),('native_read_calls',3),('native_read_ticks',49)]:
             with self.assertRaises(perf.FixtureError):perf.native_work_delta(sample,{**sample,key:value})
+        for key in perf.NATIVE_OWNERS[:4]:
+            bad={**sample,key:1}
+            with self.assertRaisesRegex(perf.FixtureError,'escaped'):perf.native_work_sample(' '.join(f'{k}={v}' for k,v in bad.items()))
+        for key,value in [('parsed_image_peak_owners',3),('parsed_image_peak_bytes',(16<<20)+1)]:
+            bad={**sample,key:value}
+            with self.assertRaisesRegex(perf.FixtureError,'bound'):perf.native_work_sample(' '.join(f'{k}={v}' for k,v in bad.items()))
 
     def test_drag_requires_exact_native_selection_and_live_lease_before_movement(self):
         calls=[]

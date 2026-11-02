@@ -34,18 +34,22 @@ EVENT = re.compile(r'^event=(\d+) stage=([a-z_]+) qpc=(\d+) project=([0-9a-f]{32
                    r'author=(\d+):(\d+) sequence=(\d+) operation_epoch=(\d+) revision=(\d+) success=([012])$')
 NATIVE_SPANS = ('read', 'write', 'projection', 'resolution', 'supported')
 NATIVE_COUNTS = ('parsed_image_hits', 'parsed_image_misses', 'pose_capture_hits', 'pose_capture_fallbacks')
+NATIVE_OWNERS = ('parsed_image_entries', 'parsed_image_bytes', 'parsed_image_owners',
+                 'parsed_image_owner_bytes', 'parsed_image_peak_owners', 'parsed_image_peak_bytes')
 
 
 def native_work_sample(text):
     """Optional development counters, sampled outside the measured window."""
     row = values(text)
-    keys = {'native_work_frequency', *NATIVE_COUNTS}
+    keys = {'native_work_frequency', *NATIVE_COUNTS, *NATIVE_OWNERS}
     keys.update(f'native_{name}_{field}' for name in NATIVE_SPANS for field in ('calls', 'ticks'))
     present = keys & row.keys()
     if not present:
         return None
     if present != keys or any(type(row[key]) is not int or not 0 <= row[key] < 2**64 for key in keys) or not row['native_work_frequency']:
         raise FixtureError('Partial or invalid native work counters')
+    if any(row[key] for key in NATIVE_OWNERS[:4]) or row['parsed_image_peak_owners'] > 2 or row['parsed_image_peak_bytes'] > 16 << 20:
+        raise FixtureError('Native parsed owners escaped their callback or exceeded their bound')
     return {key: row[key] for key in keys}
 
 
@@ -55,7 +59,7 @@ def native_work_delta(before, after):
     if before is None or after is None or before.keys() != after.keys() or before['native_work_frequency'] != after['native_work_frequency']:
         raise FixtureError('Native work counter availability or clock changed')
     frequency = after['native_work_frequency']
-    if any(after[key] < before[key] for key in before):
+    if any(after[key] < before[key] for key in before if key not in NATIVE_OWNERS):
         raise FixtureError('Native work counters reset during the gesture')
     spans = {}
     for name in NATIVE_SPANS:
@@ -64,6 +68,7 @@ def native_work_delta(before, after):
         spans[name] = dict(calls=calls, ticks=ticks, inclusive_ms=ticks * 1000 / frequency)
     return dict(frequency=frequency, spans=spans,
                 counts={key: after[key] - before[key] for key in NATIVE_COUNTS},
+                ownership={key: after[key] for key in NATIVE_OWNERS},
                 scope='Release through durable settlement; nested spans overlap and must not be summed.')
 
 
