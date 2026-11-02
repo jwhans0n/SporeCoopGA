@@ -77,6 +77,11 @@ def require_capabilities(instances,rows,pinned):
         raise FixtureError('A pinned Terraform participant generation changed')
 
 
+def require_source_card(hits):
+    if not re.search(r'(?<![0-9a-f])(?:0x)?073933b8(?![0-9a-f])',hits,re.I):
+        raise FixtureError('The measured BasicTools card073933B8 is not visible at the stroke source')
+
+
 class TerrainPartyConsole(TerrainConsole):
     def call(self,line):
         if line in ('coop.editor assets','coop.editor creations'):
@@ -159,7 +164,9 @@ def run(args):
             x=round(source[0]+(target[0]-source[0])*index/steps);y=round(source[1]+(target[1]-source[1])*index/steps)
             game.call(f'move {x} {y}');game.call('wait.frames 2 15000')
     def start(row):
-        game=by_id[row['instance']];x,y=row['source'];game.call(f'move {x} {y}');game.call('wait.frames 5 15000');game.call(f'button {x} {y} down');held[game.instance]=row['target']
+        game=by_id[row['instance']];x,y=row['source'];game.call(f'move {x} {y}');game.call('wait.frames 5 15000')
+        hits=game.call(f'coop.ui at {x} {y}');result.setdefault('source_hits',{}).setdefault(str(game.instance),[]).append(hits);write();require_source_card(hits)
+        game.call(f'button {x} {y} down');held[game.instance]=row['target']
         game.call('wait.frames 3 15000')
     def release(row):
         game=by_id[row['instance']];x,y=row['target'];game.call(f'button {x} {y} up');held.pop(game.instance,None);game.call('wait.frames 7 15000')
@@ -183,6 +190,12 @@ def run(args):
             if status(host).get('editing'):raise FixtureError('The host did not leave its native Adventure scene')
             record('host-away-before-stroke')
         owner.verify_windows()
+        # Palette category buttons toggle. A repeated setup click can hide the
+        # measured card and expose world geometry at the same coordinate. Check
+        # every author before pressing either button, then recheck in start().
+        for row in recipe['strokes']:
+            game=by_id[row['instance']];x,y=row['source'];hits=game.call(f'coop.ui at {x} {y}')
+            result.setdefault('source_hits',{}).setdefault(str(game.instance),[]).append(hits);write();require_source_card(hits)
         # All presses and native histories start before either release. This is
         # stronger than merely sending two drag commands at nearby wall times.
         for row in recipe['strokes']:start(row)
@@ -296,6 +309,10 @@ def self_test():
     check({row[:2] for row in entries}!={(0,1),(1,4)})
     rejects(lambda:checked_history(history.replace('count=2','count=3')))
     rejects(lambda:checked_history(history.split('author=1:3')[0]))
+    require_source_card('073933B8 card\n72DF4CEE owner');check(True)
+    require_source_card('id=0x073933b8 native card');check(True)
+    rejects(lambda:require_source_card('07108388 scene\n00000004 category'))
+    rejects(lambda:require_source_card('1073933B8 unrelated ID'))
     print(json.dumps(dict(self_test=True,checks=checks,native_calls=False)))
 
 
