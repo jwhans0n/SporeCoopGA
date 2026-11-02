@@ -43,7 +43,8 @@ simultaneously, and this change does not add automatic publication.
 | Win32 controlled fixtures | Initial batch `out/preview9-win32-fixtures.json`: 25 of 26 executables passed. This includes native cancellation/terrain/cache 8,016, creation lifecycle 211, complexity bounds 32 and native Save 444 checks. The reopen executable still used the old 1,025-placement failure expectation; its rebuilt replacement passes 150 checks in `out/preview9-reopen-win32.log`. These fixtures substitute native game APIs. A final batch for subsequent source changes remains required. |
 | Cross build | `out/preview9-build.log` records the co-op DLL and editor fixture cross build. The final candidate is not frozen by this report; incremental build logs and exact payload hashes must accompany native acceptance. |
 | Hidden Windows render probe | `out/preview9-hidden-probe.log` reports a working hidden-window D3D adapter, three successful presentations and unchanged input desktop. It establishes fixture capability only, not game launch or authoring acceptance. |
-| Initial private native startup | `out/preview9-two-runner.log` records two private processes loading the exact LAA executable and SporeKit; its loaded-map list omits the separate creation/complexity maps. Inspection of `sporekit/symbols.cpp` found discovery requires the executable header within ten 512-byte `fgets` reads. The separate maps lacked a usable header. Merging their symbols into a correctly headed map still needs a fresh candidate startup check; startup is not feature acceptance. |
+| Initial private native startup | `out/preview9-two-runner.log` records two private processes loading the exact LAA executable and SporeKit; its loaded-map list omits the separate creation/complexity maps. Inspection of `sporekit/symbols.cpp` found discovery requires the executable header within ten 512-byte `fgets` reads. The separate maps lacked a usable header. Corrected-map startup is recorded below; neither startup alone establishes feature acceptance. |
+| Corrected-map private startup | Diagnostic candidate `46cf1229e39cc88f1221a3048c67e2bdf1a15df3787820e4c49c2ef40bad39b1`: `out/preview9-commit-c2-preflight.json` verifies owned PIDs/listeners, hidden and muted windows, both exact LAA images, preview 9, 2,897 symbols, 1024x768 viewports, zero faults and `creation_editor available=1`. This establishes adapter availability, not native creation entry. |
 | Native signature verification | `out/editor-creation-re/verified-creation.json` verifies six symbols/six callers; `verified-complexity.json` verifies six symbols/twelve callers on the exact LAA executable. Static signatures do not establish live editor or publication behavior. |
 | Package self-test | `py -3 tests/editor_preview_package_tests.py` and WSL `python3 tests/editor_preview_package_tests.py` pass 16 tests using temporary synthetic binaries and documents. Manifest, pack version, hashes, archive contents, standalone links, allowlisted executable variants, actual source identity, symbol-header discovery (including CRT CRLF handling) and rejection guards are covered. Receipts: `out/preview9-package-selftest.log` and `out/preview9-package-selftest-wsl.log`. `tools/package_editor_preview.py --help` passes. No real candidate archive was created or installed during this check. |
 
@@ -56,6 +57,34 @@ Original personal saves, installations and launchers are not altered by these
 packaging self-tests.
 Receipts apply to their respective compiled snapshots. Later source changes
 require the final affected checks again before a candidate is frozen.
+
+### Native diagnostic failures retained
+
+The first c2 commit-diagnostic bootstrap timed out at the Adventure Town browser
+card because fresh profiles had not completed captain onboarding; the native
+Welcome authoring buttons were disabled. Both private profiles then completed
+ordinary native onboarding, saved their private captains and returned normally
+to Galaxy with zero faults. Receipts: `out/preview9-c2-onboarding/result.json`
+and `out/preview9-commit-diagnostic-c2/result.json`.
+
+The retry selected Adventure Town through the ordinary native picker, but shared
+startup failed before a durable baseline: the host reported that its native
+context was not ready to restore the local view. A subsequent read-only
+projection inspection reported a missing structured class-property reference.
+Both games still reported zero faults. The original result, input logs,
+screenshots and full failure snapshot are under
+`out/preview9-commit-diagnostic-c2-r2`, including
+`sharing-failure-evidence.json`. No warm-up or measured performance gesture ran.
+The initial tool's browser-selection receipt was based on requested setup;
+the tool now records successful native card selection separately, including
+when later startup fails. The original failed receipts are retained unchanged.
+
+Both processes left the party and returned normally to Galaxy before their
+owning runner received its cooperative stop request. Their recorded exit code 1
+is runner cleanup, not an observed native crash. The onboarded private profiles
+were retained for the corrected candidate. Receipt:
+`out/preview9-c2-retire/result.json`. Native sharing must succeed before any
+commit-performance or crew/terrain acceptance result can be collected.
 
 ## Required native acceptance
 

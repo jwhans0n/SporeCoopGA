@@ -189,6 +189,10 @@ class CommitParty(party_module.EditorParty):
                     return party_module.Console.call(self,line)
                 return super().call(line)
         class MeasuredGame(party_module.PublicGame):
+            def choose_card(self,name):
+                super().choose_card(name)
+                if self.instance==args.instances[0] and name==args.adventure:
+                    self.adventure_selected_by_native_browser=True
             def call(self,command,required=True):
                 words=command.split()
                 if words[:1]==['coop.join']:
@@ -202,7 +206,7 @@ class CommitParty(party_module.EditorParty):
         self.created={};self.completed_cycles=0;self.compact_records=True
         self.result=dict(schema=1,passed=False,complete_acceptance=False,stage='commit-performance',
                          candidate_sha256=args.expected_dll_sha256,instances=args.instances,requested_adventure=args.adventure,
-                         adventure_selected_by_native_browser=args.setup=='bootstrap',
+                         adventure_selected_by_native_browser=False,
                          setup=args.setup,checks=[],gates={},profiles=[],
                          processes={str(i):self.records[i]['pid'] for i in args.instances},
                          method='Actual input release, exact operation-keyed QPC stages and primed Present frame windows. No native inspection inside measured windows.',
@@ -282,6 +286,7 @@ def run(args):
                     raise FixtureError('Ordinary bootstrap coordinates require1024x768; attach supports other configured viewports')
                 if len(args.instances)==4:party.bootstrap()
                 else:EditorPair.bootstrap(party)
+                party.result['adventure_selected_by_native_browser']=bool(getattr(party.host,'adventure_selected_by_native_browser',False))
                 party.join()
             else:party.converge()
             configs={str(g.instance):configuration(g) for g in party.all_games}
@@ -333,7 +338,9 @@ def run(args):
         return 0
     except Exception as error:
         if party:
-            party.result.update(passed=False,error=str(error));party.write()
+            party.result.update(passed=False,error=str(error),
+                adventure_selected_by_native_browser=bool(getattr(party.host,'adventure_selected_by_native_browser',False)))
+            party.write()
         else:
             args.output.mkdir(parents=True,exist_ok=True);(args.output/'result.json').write_text(json.dumps(dict(passed=False,error=str(error)),indent=2)+'\n',encoding='utf-8')
         print(str(error));return 1
@@ -347,7 +354,9 @@ def parser():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--execute',action='store_true');p.add_argument('--metadata',type=Path,required=True)
     p.add_argument('--instances',nargs='+',type=int,required=True);p.add_argument('--expected-dll-sha256',required=True)
-    p.add_argument('--output',type=Path,required=True);p.add_argument('--setup',choices=('attach','bootstrap'),default='attach')
+    p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--setup',choices=('attach','bootstrap'),default='attach',
+                   help='Bootstrap opens an existing adventure after native captain onboarding; attach uses a ready shared editor')
     p.add_argument('--adventure',default='Motel of Melora (\'22 Edition)');p.add_argument('--object')
     p.add_argument('--expected-native-sha256',help='Optional exact initial native fixture hash, especially for attach')
     p.add_argument('--profiles',nargs='+',choices=tuple(PROFILES),default=['lan']);p.add_argument('--samples',type=int,default=30)
