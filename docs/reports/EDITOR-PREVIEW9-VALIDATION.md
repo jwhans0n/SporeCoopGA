@@ -834,3 +834,81 @@ under `out/editor-preview9-recent-creation/`. These are controlled fixtures,
 not a running-game performance pass. Actual candidate 13 measurements,
 terrain regeneration/recovery and the remaining creation acceptance checks
 are still required before release.
+
+## Candidate 14 native validation and remaining failures
+
+Candidate `c7ac5660040ee00bda9d3a245cb01bab483dfce7f537014264e939a1d04a057a`
+completed the portable repository tests with its 186 binary input fingerprints
+unchanged. The final Windows run passed 19 fixture executables and six native
+ABI verifiers. Native adapter checks numbered 13,586, including 1,205 focused
+projection checks and 163 materialization checks. The independent PNG decoder
+passed 2,234,201 checks against the retained custom creature image. Receipts are
+`out/preview9-c14-portable-receipt.json` and
+`out/preview9-c14-win32/receipt.json`. These results precede the later temporary
+terrain-preview Update fix and do not establish that fix's game acceptance.
+The ABI verifiers used a private, never-executed original-byte copy derived
+from the exact supported LAA executable; installed executables stayed unchanged.
+
+A clean LAN run completed two warmups and 30 movements per author on two
+hidden, muted Adventure Town processes. All 60 measured movements converged;
+both durable revisions reached 62, with 31 movement history items per author
+and zero faults. Host submit-to-confirmation p95 was 185.23 ms, within the
+200 ms target; guest p95 was 471.65 ms and failed. Maximum frame-gap p95 was
+270.51 ms on the host and 187.57 ms on the guest, with observed maxima of
+272.78 ms and 188.80 ms. Both p95 frame targets and the host maximum failed.
+Capture p95 was 62.12/65.55 ms and supported-change validation was
+74.82/79.35 ms. Native pose application stayed below 1.6 ms, so the retained
+profile still identifies validation and scheduling overhead. No compilers,
+tests, deployment, hash sweeps or unrelated game calls ran during measurement.
+The complete fixture is
+`out/preview9-commit-diagnostic-c14-two-town-fresh/result.json`; final exact
+native, durable and history evidence is
+`out/preview9-c14-two-final-proof/result.json`. Four-player, WAN, transfer and
+Motel timing remain pending for the final candidate.
+
+The custom Spice Crawler Crew portrait now renders on both participants.
+Host capacity/Add/Undo/Redo and guest lock/Undo/Redo converged through durable
+revision 69 with three Crew history items, preserving the earlier placement
+history and reporting zero faults. Receipts are
+`out/preview9-c14-crew-add/`, `crew-guest-portrait/`,
+`crew-history-host/`, `crew-lock-guest/` and `crew-history-guest/`, each with
+the `preview9-c14-` prefix. Replacement/removal, other slots, recovery and
+Save/reopen are separate pending checks.
+
+A terrain fixture initially clicked an already-selected hammer and thereby
+closed the native Basic Tools palette. Its subsequent source was a world
+object, not a terrain card, and neither gesture began. That failed calibration
+is retained in `out/preview9-c14-terrain-simultaneous/`. After restoring and
+verifying the palette, a single real Raise Round Terrain drag opened native
+history but produced no appended row or synchronized edit. Both scenes stayed
+at revision 62 with 180 effects and 102 models and no faults. The retained
+evidence is `out/preview9-c14-terrain-card-drag/` and
+`out/preview9-c14-terrain-rpm/result.json`. Native inspection identified a
+new preview proxy rejected before the native append routine could allocate its
+recipe index. The narrow follow-up preserves strict existing-row Update/Remove
+bounds and passes 476 focused and 13,899 complete native checks. See
+`out/preview9-c14-terrain-preview-receipt.json`; running-game acceptance is
+pending.
+
+Guest 96 then entered the native Vehicle editor independently, placed a body,
+cockpit, paired wheels and weapon, and named the creation
+`Preview9VehicleProbeC14`. Read-only native sampling verified the allowed
+VehicleMilitaryLand subtype, changed model/metadata and finish state zero before
+ordinary Done. Saving admitted one new class at durable revision 70, but return
+failed its terrain consistency check before applying that revision to the
+guest's scene. The creation remains saved locally. The guest froze for explicit
+recovery, while the host retained revision 70 and reported that a participant
+needed recovery. The host's strict native check additionally reported different
+cast properties. Neither process faulted. This is a failed complete Vehicle
+workflow, not a successful creation-return result.
+
+The staged construction and save evidence is under
+`out/preview9-c14-vehicle-*`. Raw native recipes before and after the failure
+are retained separately; all columns and counts are byte-identical for each
+participant. Both private checkpoint/journal sets were copied without modifying
+their live sources into `out/preview9-c14-vehicle-store/`, with hashes and stable
+double-read verification. The scene, generations, history, native checks and
+fault counters are in `out/preview9-c14-vehicle-failure-full/result.json`.
+Creation-return materialization and the host cast discrepancy must be fixed and
+rerun before release. No personal preview payload or 4 GB executable was
+replaced, and no main merge was performed.
