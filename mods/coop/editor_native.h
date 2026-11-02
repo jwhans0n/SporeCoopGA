@@ -167,6 +167,13 @@ bool edit_acts(int action, const editor::Document&, std::string& error);
 // Normal local native selection, outside Present; never changes authored bytes.
 bool select_placement(editor::ObjectId, std::string& error);
 bool capture(Snapshot&, std::string& error);
+// Freshly serialize the ready live scene and compare it with an already
+// validated owned image. Different requests the ordinary full capture path;
+// Error fences an expired identity or invalid expected image. No native owner
+// or parsed pointer survives this synchronous call.
+enum class RecentMatches {Match,Different,Error};
+RecentMatches recent_matches(const Snapshot&,const editor::Document&,uint64_t expected_generation,
+                             Snapshot& out,std::string& error);
 // Initial unsaved baseline: export the active native planet properties into an
 // owned resource copy, as native Save does, without publishing a creation.
 bool capture_draft(Snapshot&, std::string& error);
@@ -185,7 +192,8 @@ SceneResumeState creation_scene_state(const SceneOwner&);
 bool resume_creation_scene_camera(const GestureScope&,uint64_t serial,uint64_t expected_generation,const SceneOwner&,std::string& error);
 // Reject unsupported authored changes after private normalization of known poses.
 bool supported_changes(const Gesture&, std::string& error);
-// Reuse an exact immutable validation result only in one synchronous operation.
+// Bound synchronous validation work. Any retained projection proof owns only
+// immutable bytes/values and rechecks generation, scope and asset resolution.
 struct ValidationScope {
     ValidationScope();
     ~ValidationScope();

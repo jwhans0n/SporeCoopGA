@@ -790,3 +790,47 @@ into the recipe during terrain regeneration. Approximate coordinate matching is
 not accepted as an identity fix. Follow-up validation must prove the exact
 owned input/output relationship, preserve real authored changes and cover
 recovery as well as new terrain placement.
+
+## Candidate 13 immutable native projection proofs
+
+The next frozen source removes repeated native parsing and projection when an
+exact owned image has already passed native Read and typed validation. The
+bounded cache retains copied bytes and values, with generation, project/epoch,
+participant, source, binding, captain and metadata fences. It rechecks asset
+resolution and logical act/settings identities. An audit rejects a resolver
+that changes a server ID during projection, including a change that later
+reverts. No native pointer is retained between operations.
+
+Live reuse performs fresh native Write witnesses and post-Write placement,
+companion, captain and metadata checks. A mismatch takes full capture; expired
+ownership aborts. Placement-only preparation reverses its supported primitive
+writes in the actual serialized after image and requires exact recovery of the
+validated base bytes. Otherwise it keeps the full opaque-field comparison.
+Durable storage still precedes confirmation, and the timing budgets are
+unchanged. The one-row `coop.editor asset <class-id:generation>` diagnostic
+avoids the truncated complete cast listing without accessing native objects.
+
+The first complete runtime run found a real Save-alias regression: after a
+native Save, the guest may retain its local editor resource while the canonical
+save root changes. Treating that mismatch as lost ownership froze the replica.
+It now requests full capture and never borrows a proof for a different source.
+The focused same-revision Save test passes 120 checks, including a subsequent
+accepted movement while the guest keeps its native alias. Tentative source and
+binding replacement still reject without writing to a replacement scene.
+
+Current strict i686 controlled results are 1,205 focused native proof checks,
+13,423 complete native adapter checks, 4,922 tentative/runtime guard checks and
+29,632 complete runtime checks. These include both author roles, final-Write and
+resolver callback mutations, reordered logical act identities, rejected durable
+work, intervening edits, Undo/Redo, teardown and recovery. All existing runtime
+cases ran; fewer fake capture/validation calls change the instrumented check
+count. The retained 24 MiB dependency stress sent 97,213 host and 20,334 guest
+bytes for 20 structural edits plus Save, with cached rejoin at 27,076/754 bytes.
+
+`out/preview9-recent-proof-receipt.json` records source, executable and log
+hashes. Its critical source hashes match the candidate 13 input fingerprint.
+Runtime logs are under `out/preview9-recent-runtime-`; native proof logs are
+under `out/editor-preview9-recent-creation/`. These are controlled fixtures,
+not a running-game performance pass. Actual candidate 13 measurements,
+terrain regeneration/recovery and the remaining creation acceptance checks
+are still required before release.

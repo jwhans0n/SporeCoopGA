@@ -843,13 +843,24 @@ bool native_integrity(const editor_native::Snapshot& snapshot, const editor::Doc
     if (same_native_authored(current_native,snapshot)) return true;
     return supported_between(current_native, snapshot, error);
 }
+bool capture_recent(const editor_native::Snapshot& expected,const editor::Document& wanted,
+                    editor_native::Snapshot& out,std::string& error){
+    const auto matched=editor_native::recent_matches(expected,wanted,native_generation,out,error);
+    if(matched==editor_native::RecentMatches::Match)return true;
+    if(matched==editor_native::RecentMatches::Error){
+        native_identity_lost=true;frozen=true;
+        tell("Recover the committed draft: "+error);return false;
+    }
+    return editor_native::capture(out,error);
+}
 bool check_native_integrity(std::string& error) {
     if(detached_scene())return editor_native::validate(current_native,controller->state().document,error);
     if (editor_native::state().generation != native_generation) {
         frozen = true; error = "The native editor belongs to a different context"; tell(error); return false;
     }
     editor_native::Snapshot snapshot;
-    if (!editor_native::capture(snapshot, error) || !native_integrity(snapshot, controller->state().document, error)) return stop_unsupported(error);
+    if (!capture_recent(current_native,controller->state().document,snapshot,error))return false;
+    if (!native_integrity(snapshot, controller->state().document, error)) return stop_unsupported(error);
     return true;
 }
 bool remember_artifacts(const editor::State& state, const editor::Change& change, const editor_native::Snapshot& before,const editor_native::Snapshot& after,
@@ -1074,7 +1085,7 @@ bool apply(const editor::Document& before, const editor::Document& after, const 
             error="The accepted gesture no longer has its ready native editor";return false;
         }
         editor_native::Snapshot live;
-        if(!editor_native::capture(live,error) || !tentative_integrity(live,after,error)){
+        if(!capture_recent(pending->gesture.after,after,live,error) || !tentative_integrity(live,after,error)){
             if(error.empty())error="The accepted gesture's native identity changed";
             return false;
         }
@@ -1094,7 +1105,7 @@ bool apply(const editor::Document& before, const editor::Document& after, const 
     if(detached_scene())before_apply=current_native;
     else{
         if(editor_native::state().generation!=native_generation){error="The native editor belongs to a different context";return false;}
-        if(!editor_native::capture(before_apply,error))return false;
+        if(!capture_recent(current_native,before,before_apply,error))return false;
         if(!native_integrity(before_apply,before,error))return stop_unsupported(error);
         rollback_fence=RollbackFence{native_generation,before_apply.source,before_apply.bindings,false};
     }
@@ -3556,12 +3567,31 @@ void set_extended_complexity(bool value){complexity_request=value;schedule();}
 void resolve_join(int choice) {action(choice==0?Action::HandoffSave:choice==1?Action::HandoffDiscard:Action::HandoffCancel);}
 std::string debug(const std::vector<std::string>& args) {
     if(args.size()==1 && args[0]=="creations")return editor_creation::diagnostic();
-    if(args.size()==1 && args[0]=="assets"){
+    if((args.size()==1 && args[0]=="assets") || (args.size()==2 && args[0]=="asset")){
         if(!controller)return "Shared assets unavailable";
+        std::optional<editor::ObjectId> only;
+        if(args[0]=="asset"){
+            const auto& text=args[1];const auto separator=text.find(':');
+            auto decimal=[](const std::string& digits,uint64_t maximum,uint64_t& out){
+                if(digits.empty())return false;out=0;
+                for(const auto digit:digits){
+                    if(digit<'0'||digit>'9'||out>(maximum-uint64_t(digit-'0'))/10)return false;
+                    out=out*10+uint64_t(digit-'0');
+                }
+                return out!=0;
+            };
+            uint64_t id=0,generation=0;
+            if(text.size()>32 || separator==std::string::npos ||
+               !decimal(text.substr(0,separator),UINT64_MAX,id) || !decimal(text.substr(separator+1),UINT32_MAX,generation))
+                return "Use coop.editor asset <class-id:generation>";
+            only=editor::ObjectId{id,uint32_t(generation)};
+        }
         const auto& doc=controller->state().document;std::string hash,error;
         if(!editor_session::document_hash(doc,hash,error))return "Shared assets unavailable: "+error;
         std::string result="revision="+std::to_string(doc.revision)+" durable="+std::to_string(controller->view().locally_durable)+" canonicaldocumenthash="+hash+"\n";
+        bool found=false;
         for(const auto& [id,row]:doc.class_settings){
+            if(only && row.class_id!=*only)continue;
             const auto content=editor::value(doc,id,{editor::Field::Property,editor::kClassAssetResourceProperty});
             const auto* key=content?std::get_if<editor::ResourceKey>(&*content):nullptr;if(!key)continue;
             auto block=row.properties.find(editor_native::kCastBlockProperty);
@@ -3571,7 +3601,10 @@ std::string debug(const std::vector<std::string>& args) {
                 static_cast<unsigned long long>(editor::field_revision(doc,id,{editor::Field::Property,editor::kClassAssetResourceProperty})));
             const auto line=std::string(text)+upd::sha256_hex(behavior->bytes)+"\n";
             if(result.size()+line.size()>12u*1024){result+="truncated=1\n";break;}result+=line;
+            found=true;
+            if(only)break;
         }
+        if(only && !found)result+="asset_not_found=1\n";
         return result;
     }
     if(durable_commit && args.size()==1 && args[0]=="accounting")return "commit_worker=1 phase="+std::string(durable_commit->flushing?"flush":"encode")+
