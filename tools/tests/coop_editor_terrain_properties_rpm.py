@@ -180,7 +180,7 @@ def sample(reader):
     return result
 
 
-def execute(args):
+def execute(args, sampler=None):
     if os.name != 'nt' or not args.execute: raise ValueError('Explicit --execute on Windows is required')
     metadata = json.loads(args.metadata.read_text(encoding='utf-8-sig'))
     installation = Path(metadata['installation']).resolve()
@@ -211,11 +211,13 @@ def execute(args):
         result['windows_before'] = hidden_windows(pids)
         for record in records:
             reader = Reader(record['pid'], exe)
-            try: result['rows'].append(dict(instance=record['instance'], pid=record['pid'], profile=record['profile'], **sample(reader)))
+            try: result['rows'].append(dict(instance=record['instance'], pid=record['pid'], profile=record['profile'], **(sampler or sample)(reader)))
             finally: reader.close()
         result['windows_after'] = hidden_windows(pids); result['passed'] = True
     finally: (args.output/'result.json').write_text(json.dumps(result, indent=2)+'\n', encoding='utf-8')
-    print(json.dumps(dict(passed=True, output=str(args.output), arrays=[dict(instance=row['instance'], arrays={k:dict(count=v['count'], live_count=v['live_count'], exact_equal=v['exact_equal']) for k, v in row['arrays'].items()}) for row in result['rows']])))
+    print(json.dumps(dict(passed=True, output=str(args.output), rows=[dict(instance=row['instance'],
+        **({'arrays':{k:dict(count=v['count'], live_count=v['live_count'], exact_equal=v['exact_equal']) for k,v in row['arrays'].items()}}
+           if 'arrays' in row else {'owned_object_count':row.get('owned_object_count')})) for row in result['rows']])))
 
 
 def main():
