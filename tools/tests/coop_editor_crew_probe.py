@@ -16,6 +16,7 @@ from coop_adventure_editor import EditorPair, status
 from coop_editor_creations import verify_viewport
 from coop_editor_crew_terrain import semantic
 from coop_editor_party import Ownership, PublicGame, parse_context, parse_history, parse_identity
+from sporectl import quote
 
 
 def checked_history(text):
@@ -114,11 +115,27 @@ def run(args):
                 result['crew_header']=author.call('coop.ui where 064A90A0');write()
                 require_crew_hit(hits,'replace',result['crew_header'])
             elif '03D982FF ' not in hits or '03D98298 ' not in hits:raise FixtureError('The measured native Crew slot is absent')
-            author.click(x,y);author.wait('native Creature picker',lambda:author.control(0x53C6DC80))
+            author.click(x,y);author.wait('visible native Creature picker',lambda:
+                "B44EC3DB " in (hit:=author.call('coop.ui at 500 40')) and "'Choose one or more Creatures'" in hit)
             # The visible native title is "Choose one or more Creatures".
             # A hidden "Choose A Crew Member" caption is not a readiness test.
             search=args.search or 'Spice';card=args.card or 'Spice Crawler'
-            author.click(916,115);author.call('text '+search);author.call('key enter');author.call('wait.frames 30 30000')
+            # Posted Ctrl+A is interpreted as text by this native search box.
+            # Use its freshly measured clear button instead of a modifier.
+            search_hit=author.call('coop.ui at 916 115');result['search_field_hit']=search_hit
+            field=re.search(r"^D4935A8F 836 106 991 127 enabled=1 - '(.*)'$",search_hit,re.M)
+            if not field:raise FixtureError('The measured native search field is unavailable')
+            if field[1]:
+                clear_hit=author.call('coop.ui at 1007 115');result['search_clear_hit']=clear_hit;write()
+                if 'B4935A77 999 108 1015 124 enabled=1' not in clear_hit:
+                    raise FixtureError('The measured native search clear button is unavailable')
+                author.click(1007,115)
+            author.click(916,115)
+            author.call('text '+quote(search));author.call('wait.frames 30 30000')
+            # Search updates while typing. Enter can accept the already
+            # selected current Crew member and close this native picker.
+            if "'Choose one or more Creatures'" not in author.call('coop.ui at 500 40'):
+                raise FixtureError('The native Creature picker closed during search')
             author.shot('crew-search');result['search']=author.call('coop.ui findall "'+search+'"',required=False);write()
             author.choose_card(card);revision+=1
             host.wait('all-participant immutable Crew admission',lambda:settled(revision))
