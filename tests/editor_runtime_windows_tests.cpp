@@ -110,6 +110,7 @@ std::array<bool,2> upload_collision{};
 uint32_t creation_version=1;
 bool seed_crew_settings=false,crew_content_enabled=false,crew_version_failure=false,crew_admission_failure=false,crew_remap_failure=false;
 unsigned crew_collections=0,crew_versions=0;
+std::function<void()> crew_collection_callback;
 constexpr editor::ResourceKey crew_source{0x29058782,0x2B978C46,0x40626200},crew_stock{0x100,0x2B978C46,0x40626200};
 constexpr editor::ResourceKey crew_stock_other{0x101,0x2B978C46,0x40626200};
 std::array<std::vector<dbpf::Record>,2> crew_records;
@@ -303,7 +304,14 @@ bool remap_crew_assets(const Snapshot& input,const std::vector<CrewAssetRemap>& 
         net::Writer key;key.u32(edit.replacement.instance);key.u32(edit.replacement.type);key.u32(edit.replacement.group);
         std::copy(key.data.begin(),key.data.end(),roster.bytes.begin()+4+56*edit.slot);
     }
-    out.bytes=body(out.document,input.bytes.front());return true;
+    // The fake byte codec embeds wire identity; real native bytes do not. Keep
+    // that transport-only envelope valid when projection metadata is absent.
+    auto encoded=out.document;
+    if(encoded.project==editor::ProjectId{}){
+        editor::State original;if(!ew::decode_state(std::vector<uint8_t>(input.bytes.begin()+1,input.bytes.end()),original,error))return false;
+        encoded.project=original.document.project;encoded.epoch=original.document.epoch;encoded.revision=original.document.revision;
+    }
+    out.bytes=body(encoded,input.bytes.front());return true;
 }
 void bind(const std::vector<Binding>& bindings){native[side].snapshot.bindings=bindings;}
 bool prepare(const Snapshot& base,const editor::Document& document,const editor::Change&,const Snapshot* artifact,Snapshot& out,std::string&){
@@ -514,7 +522,8 @@ bool collect_creation(const dbpf::Key& key,std::vector<dbpf::Record>& records,st
     if(!crew_content_enabled){error="Crew creation fixture is not configured";return false;}
     if(key==dbpf::Key{crew_stock.instance,crew_stock.type,crew_stock.group} || key==dbpf::Key{crew_stock_other.instance,crew_stock_other.type,crew_stock_other.group})return true;
     for(const auto& row:crew_records[side])if(row.key.instance==key.instance&&row.key.group==key.group)records.push_back(row);
-    if(records.empty()){error="Missing fixture crew content";return false;}return true;
+    if(records.empty()){error="Missing fixture crew content";return false;}
+    auto callback=std::move(crew_collection_callback);crew_collection_callback={};if(callback)callback();return true;
 }
 bool collect_snapshot(const dbpf::Key& key,const std::vector<uint8_t>& bytes,std::vector<dbpf::Record>& records,std::string& error){records={{key,bytes}};
     size_t left=dependency_bytes;uint32_t id=500;
@@ -542,6 +551,7 @@ bool immutable_version(const editor::ProjectId& project,const editor::ResourceKe
     CHECK(!dispatching);++crew_versions;
     if(crew_version_failure){error="Injected immutable crew version failure";return false;}
     CHECK(project!=editor::ProjectId{});CHECK(!original.empty());
+    CHECK(project==(side?runtime_guest::controller->view().context.project:runtime_host::controller->view().context.project));
     CHECK(std::any_of(original.begin(),original.end(),[&](const auto& row){return row.key==dbpf::Key{source.instance,0x1A99B06B,source.group};}));
     version={0x7D000000u|creation_version++,source.type,source.group};CHECK(!reserved(version));records.clear();
     for(auto row:original)if(row.key.type!=0x02D5C9AF){if(row.key.instance==source.instance)row.key.instance=version.instance;records.push_back(std::move(row));}
@@ -1508,12 +1518,16 @@ struct CrewObserver {
         std::printf("third peer phase%u: %s\n",unsigned(controller->view().phase),controller->view().error.c_str());return false;
     }
 };
-static void fixture_crew_change(unsigned author,const std::vector<editor::ResourceKey>& assets,uint8_t flags=0x5A,bool opaque_change=false){
+static void fixture_crew_change(unsigned author,const std::vector<editor::ResourceKey>& assets,uint8_t flags=0x5A,bool opaque_change=false,bool native_projection=false){
     side=int(author);CHECK(!native[author].callbacks.settings_gate(editor_native::kCrewObject));
     CHECK(spin([&]{side=int(author);return native[author].callbacks.settings_gate(editor_native::kCrewObject);}));
     side=int(author);editor_native::Gesture gesture;gesture.generation=native[author].state.generation;gesture.before=native[author].snapshot;gesture.after=gesture.before;
     gesture.after.document.settings.at(editor_native::kCrewObject).properties[editor_native::kCrewRosterProperty]=fixture_crew_roster(assets,flags);
     gesture.after.bytes=body(gesture.after.document,opaque_change?0xB7:gesture.before.bytes.front());native[author].snapshot=gesture.after;
+    if(native_projection){
+        for(auto* snapshot:{&gesture.before,&gesture.after}){snapshot->document.project={};snapshot->document.epoch=0;snapshot->document.revision=0;}
+        CHECK(gesture.before.document.project==editor::ProjectId{}&&gesture.after.document.project==editor::ProjectId{});
+    }
     if(author)runtime_guest::captured(std::move(gesture));else runtime_host::captured(std::move(gesture));
 }
 static void fixture_crew_capacity(unsigned author,int64_t capacity){
@@ -1531,7 +1545,9 @@ static void test_crew_versions_colliding_local_creatures_once(){
         Party party;seed_creation_settings=seed_crew_settings=false;CrewObserver observer;
         const auto before=runtime_host::controller->state();const auto originals=crew_records;
         side=int(author);std::string error;CHECK(!adventure_collect::validate_uploaded_records(original_key,originals[1-author],error));
-        fixture_crew_change(author,{crew_source,crew_source},0x34);
+        // Native projection deliberately omits coordinator identity/revisions.
+        // Both roles must version against the active canonical context instead.
+        fixture_crew_change(author,{crew_source,crew_source},0x34,false,true);
         CHECK(observer.spin_until([]{return runtime_host::controller->state().document.revision==1&&runtime_guest::controller->state().document.revision==1&&
             !runtime_host::awaiting_operation&&!runtime_guest::awaiting_operation&&!runtime_host::durable_commit&&!runtime_guest::durable_commit;}));
         CHECK(observer.spin_until([&]{return observer.controller->state().document.revision==1;}));
@@ -1614,6 +1630,31 @@ static void test_crew_stock_locks_capacity_and_reorder_keep_native_keys(){
     crew_content_enabled=false;
 }
 static void test_all_crew_asset_version_cases(){
+    for(unsigned author=0;author<2;++author){
+        seed_creation_settings=seed_crew_settings=crew_content_enabled=true;crew_collections=crew_versions=0;
+        for(unsigned p=0;p<2;++p)crew_records[p]={{{crew_source.instance,0x1A99B06B,crew_source.group},{0xD3,0x7E,0x65,0x48,uint8_t(p)}}};
+        Party party;seed_creation_settings=seed_crew_settings=false;const auto committed=runtime_host::controller->state();
+        const auto applies=native[author].apply_calls,restores=native[author].restores;
+        std::optional<editor_native::Snapshot> replacement;
+        crew_collection_callback=[&]{++native[author].state.generation;native[author].snapshot.source.instance=777;replacement=native[author].snapshot;};
+        fixture_crew_change(author,{crew_source},0x5A,false,true);
+        CHECK(replacement.has_value());CHECK(author?runtime_guest::frozen:runtime_host::frozen);
+        CHECK(native[author].apply_calls==applies&&native[author].restores==restores);
+        CHECK(native[author].snapshot.source==replacement->source&&native[author].snapshot.bytes==replacement->bytes);
+        CHECK(runtime_host::controller->state()==committed&&runtime_guest::controller->state()==committed);
+        CHECK(!runtime_host::pending&&!runtime_guest::pending);
+        crew_content_enabled=false;
+    }
+    for(unsigned author=0;author<2;++author){
+        seed_creation_settings=seed_crew_settings=crew_content_enabled=true;crew_collections=crew_versions=0;
+        Party party;seed_creation_settings=seed_crew_settings=false;
+        editor_native::Gesture gesture;gesture.before=native[author].snapshot;gesture.after=gesture.before;
+        gesture.after.document.settings.at(editor_native::kCrewObject).properties[editor_native::kCrewRosterProperty]=fixture_crew_roster({crew_source});
+        sessions[author].leave("Crew authority retired");side=int(author);std::string error;
+        CHECK(!(author?runtime_guest::canonicalize_crew_assets(gesture,error):runtime_host::canonicalize_crew_assets(gesture,error)));
+        CHECK(error.find("authority")!=std::string::npos&&crew_collections==0&&crew_versions==0);
+        crew_content_enabled=false;
+    }
     for(unsigned author=0;author<2;++author){
         seed_creation_settings=seed_crew_settings=crew_content_enabled=true;crew_collections=crew_versions=0;
         for(unsigned p=0;p<2;++p)crew_records[p]={{{crew_source.instance,0x1A99B06B,crew_source.group},{0xD3,0x7E,0x65,0x48,uint8_t(p)}}};

@@ -602,6 +602,16 @@ bool canonicalize_crew_assets(editor_native::Gesture& gesture,std::string& error
     const editor::FieldKey field{editor::Field::Property,editor_native::kCrewRosterProperty};
     if(editor::value(gesture.before.document,editor_native::kCrewObject,field)==
        editor::value(gesture.after.document,editor_native::kCrewObject,field))return true;
+    if(!controller || !C.session || !C.session->connected()){
+        error="Crew content versioning has no active shared authority";return false;
+    }
+    const auto context=controller->view().context;
+    const auto author=controller->view().local;
+    if(context.project==editor::ProjectId{} || !context.epoch || controller->view().phase!=Phase::Ready ||
+       context.project!=controller->state().document.project || context.epoch!=controller->state().document.epoch ||
+       !author.generation || author.slot!=C.session->my_id() || C.session->transport_generation()!=observed_transport){
+        error="Crew content versioning has no current canonical context";return false;
+    }
     std::vector<editor::ResourceKey> before,after;
     if(!editor_native::crew_assets(gesture.before.document,before,error) ||
        !editor_native::crew_assets(gesture.after.document,after,error))return false;
@@ -623,7 +633,8 @@ bool canonicalize_crew_assets(editor_native::Gesture& gesture,std::string& error
         std::vector<dbpf::Record> source,records;editor::ResourceKey version;
         if(!adventure_collect::collect_creation({key.instance,key.type,key.group},source,error))return false;
         if(source.empty())continue; // Verified stock resources stay native.
-        if(!editor_creation_native::immutable_version(gesture.after.document.project,key,source,reserved,version,records,error))return false;
+        // Native projections carry authored values, not the session identity.
+        if(!editor_creation_native::immutable_version(context.project,key,source,reserved,version,records,error))return false;
         for(auto& record:records){
             auto prior=std::find_if(admitted.begin(),admitted.end(),[&](const auto& row){return row.key==record.key;});
             if(prior!=admitted.end()){
@@ -1478,7 +1489,14 @@ void captured(editor_native::Gesture gesture) {
     }
     // First prove the actual native gesture. Project-owned creation identities
     // are then a separate allowlisted transformation of its owned after copy.
-    if(!canonicalize_crew_assets(gesture,error)){stop_unsupported(error);return;}
+    const auto version_context=controller->view().context;const auto version_author=controller->view().local;
+    const bool canonicalized=canonicalize_crew_assets(gesture,error);
+    if(!controller || controller->view().context.project!=version_context.project || controller->view().context.epoch!=version_context.epoch ||
+       controller->view().local!=version_author || !C.session || C.session->transport_generation()!=observed_transport ||
+       gesture.generation!=editor_native::state().generation){
+        frozen=true;native_identity_lost=true;tell("The crew gesture's shared editor context expired. The current native scene was left intact.");return;
+    }
+    if(!canonicalized){stop_unsupported(error);return;}
     const auto supported_end=stage_qpc();
     const bool roster=gesture.after.document.act_order!=doc.act_order;
     if (gesture.before.document.classes != doc.classes || gesture.before.document.acts != doc.acts ||
