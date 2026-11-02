@@ -458,3 +458,53 @@ Quit discard to return to Galaxy, with zero faults. No Terraform, new class or
 creation-editor changes were made during this core Crew check, and no runner
 stop request was written by the fixture. Retirement evidence is retained in
 `out/preview9-c12-crew-retire/result.json`.
+
+## Immutable creation thumbnails and native pixel carriers
+
+The C12 blank Crew card is a missing presentation resource. Both the host after
+Add and the guest after lock show an empty blue interior, including hover.
+Native Crew refresh `ED5550` obtains the Crew key at `ED568C`, changes only its
+type to PNG `2F7D0004` at `ED56B6`, and invokes card vtable90 `E21E30`. That
+function forwards the exact owner-group image key to `807CA0`/`806320` and the
+image pool. The missing-image path at `833F34` constructs an empty image. The
+actual delivered alias `40626200!7D824BB6` contains metadata (656 bytes) and
+BEM (2,425 bytes), with no PNG in either owner group or group+1. Receipt:
+`out/preview9-c12-crew-thumbnail-offline/aliased-records.json`.
+
+The selected original PNG is 128x128 RGBA8, 26,339 bytes, SHA256
+`e846add23bd3d4b3ce9f1e3bae6ca4a57e6213532a976ad32bea0acafdcf7632`.
+Its record was read from the closed private source profile, without changing
+profile files. Reproducing `PngEncoder` header decoding establishes top-down
+BGRA byte order: the native header is `16 0D 45 02 34 09 00 00`, meaning magic
+`02450D16` and payload length 2,356. Other channel or vertical permutations do
+not match. The alternate native hash mask yields `16 B5 0E E3 BB B0 94 2F`.
+Evidence is in `source-header-analysis.json` under the same output directory.
+
+`68E600` initializes bit-plane limit8; `68EB40` decodes RGB24/RGBA32 pixels
+without changing that limit. The pixel carrier at `68DDB0`/`68DFC0` uses masks
+1, 2 and4, an LFSR polynomial selected from `1403688` by the highest set bit
+of decoded byte count, and FNV seed `811C9DC5`. It XORs each carrier bit with
+FNV bit15, so clearing low bits does not imply an all-zero decoded header.
+`68E660` tests the first little-endian word against `02450D16`, then retries
+from reset state with hash mask `~1` instead of `~7`. The private portable
+carrier witness reproduces both paths and fails closed when it cannot obtain
+both complete headers. PNG ancillary and trailing data must also be discarded
+because native `68E990` supports a separate non-pixel data path.
+
+The independent codec fixture checks real Windows WIC decoding, deterministic
+core-only RGBA8 output, all pixel upper-five bits and alpha, both native header
+rejections, RGB/tRNS and Adam7, stored-DEFLATE block boundaries, PNG CRC and
+Adler32, bounded formats and atomic rejection. Direct WIC and its format
+converter both returned success for valid-CRC PNGs with invalid DEFLATE, bad
+or missing Adler32, invalid zlib headers, and trailing compressed junk. Strict
+bounded RFC1950/1951 validation before WIC is therefore required; the fixture
+retains all these counterexamples. Diagnostic receipt:
+`out/preview9-c12-crew-thumbnail-offline/wic-deflate-diagnostic.txt`.
+
+Strict Linux and actual-i686 carrier fixtures pass 32 checks each; independent
+stored/fixed/dynamic DEFLATE corpus fixtures pass 346 checks on each platform.
+The actual-i686 WIC fixture passes 2,234,201 checks including the selected native
+PNG and independently decoded RGBA comparison. Sanitized output is 65,737
+bytes, each channel differs by at most 7/255, and neither native header variant
+matches. This establishes the codec and recorded image behavior. Visible Crew
+rendering through a newly delivered alias remains a separate native UI check.
