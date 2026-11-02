@@ -82,7 +82,9 @@ class Reader:
         k.Module32FirstW.argtypes = (W.HANDLE, C.POINTER(Module)); k.Module32FirstW.restype = W.BOOL
         k.Module32NextW.argtypes = (W.HANDLE, C.POINTER(Module)); k.Module32NextW.restype = W.BOOL
         k.CloseHandle.argtypes = (W.HANDLE,); k.CloseHandle.restype = W.BOOL
-        self.handle = k.OpenProcess(0x1010, False, pid)
+        # READ_VM | QUERY_LIMITED_INFORMATION | SYNCHRONIZE. The last right is
+        # required by the passive liveness wait; WAIT_FAILED is never "exited".
+        self.handle = k.OpenProcess(0x00101010, False, pid)
         if not self.handle: raise C.WinError(C.get_last_error())
         self.calls = self.bytes = 0; self.started = time.monotonic()
         try:
@@ -112,7 +114,9 @@ class Reader:
         if (not 0 < size <= 1 << 20 or not 0x10000 <= address <= 0x100000000-size
                 or self.calls > 1000 or self.bytes > 4 << 20 or time.monotonic()-self.started > 5):
             raise ValueError('Passive native read budget exceeded')
-        if self.kernel.WaitForSingleObject(self.handle, 0) != 258: raise ValueError('Owned process exited')
+        wait = self.kernel.WaitForSingleObject(self.handle, 0)
+        if wait == 0xFFFFFFFF: raise C.WinError(C.get_last_error())
+        if wait != 258: raise ValueError('Owned process exited (wait result '+str(wait)+')')
         buffer = C.create_string_buffer(size); received = C.c_size_t()
         if not self.kernel.ReadProcessMemory(self.handle, address, buffer, size, C.byref(received)) or received.value != size:
             raise C.WinError(C.get_last_error())
