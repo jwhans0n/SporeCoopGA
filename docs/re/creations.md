@@ -453,10 +453,31 @@ controlled fixture does not establish running-game package collision behavior.
 Act roster edits use a separate Authoring lease. It covers authored adventure
 fields while excluding Content and the primary content ResourceKey field;
 Document remains a complete hold. The portable authoring extension fixture
-passes 222 checks, including roster Undo/Redo concurrent with another player's
+passes 328 checks, including roster Undo/Redo concurrent with another player's
 asset Content lease and preservation of the later immutable content version.
-Production runtime UDP and durable-store creation fixtures pass 1505 checks,
+Production runtime UDP and durable-store creation fixtures pass 1522 checks,
 including independent guest return and act reordering while the host edits an
 existing asset, and safe guest return after host resource collision rejection
-without a partial cast entry or history item. These tests use controlled native scenes rather than game
+without a partial cast entry or history item. The guest receives the host's
+specific installed-resource conflict reason. These tests use controlled native scenes rather than game
 processes. Native all-family, two-player and four-player acceptance is pending.
+
+Terrain request bounds preserve a complete native stroke or preset as one
+gesture. Requests containing only append/set/delete terrain operations and at
+most 64 Set companions may contain up to twice the configured terrain-record
+bound, enough to remove an old recipe and append its replacement. Ordinary and
+mixed structural requests remain bounded to 64 mutations. Pure terrain allocation
+is bounded by the record limit; a small mixed gesture gains only its actual
+terrain append identities in addition to the existing 64 ordinary identities.
+The 8 MiB operation and retained-history limits remain unchanged. The portable
+fixture covers a 100-record stroke, checked 102-record to 300-record replacement
+with a planet-field companion, per-author Undo/Redo preserving later foreign
+appends, canonical replay and wire/checkpoint roundtrips, overflow and 8 MiB
+rejection. The selective wire container bounds do not widen placement edits.
+
+The combined i686 runtime quick fixture passes 11696 checks with current
+creation and scene-return callbacks. `SPORECOOP_FIXTURE_TRACE=1` prints and
+flushes the current main case to aid diagnosis of native test process faults.
+Receipts are under `out/editor-preview9-creation/` and the collector receipt is
+`out/editor-creation-re/adventure-collector-validation.log`. These controlled
+tests do not replace the pending game-process acceptance checks.
