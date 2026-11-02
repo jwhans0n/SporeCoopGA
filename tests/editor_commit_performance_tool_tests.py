@@ -86,6 +86,45 @@ def gestures(samples=30):
 
 
 class AcceptanceContracts(unittest.TestCase):
+    def test_baseline_join_accepts_automatic_progress_and_keeps_offer_action(self):
+        context='project='+PROJECT+' epoch=17 capability=0:1'
+        for phases in ((4,4),(4,2,1,3)):
+            calls=[];recorded=[]
+            games=[]
+            for instance,phase in enumerate(phases):
+                game=SimpleNamespace(instance=instance,state=dict(phase=phase,text=context))
+                game.wait=lambda label,predicate:predicate()
+                game.call=lambda line,i=instance:calls.append((i,line))
+                games.append(game)
+            owner=SimpleNamespace(host=games[0],all_games=games,result={'gates':{}},
+                converge=lambda:'CONVERGED fixture',record=recorded.append)
+            with mock.patch.object(perf.party_module,'status',side_effect=lambda g:g.state):
+                perf.party_module.EditorParty.join(owner)
+            self.assertEqual(calls,[(i,'coop.editor join') for i,phase in enumerate(phases) if phase==1])
+            self.assertTrue(owner.result['gates'][('two' if len(phases)==2 else 'four')+'_native_baselines'])
+            self.assertEqual(len(recorded),1)
+
+    def test_baseline_join_rejects_stale_project_epoch_and_replacement(self):
+        context='project='+PROJECT+' epoch=17 capability=0:1'
+        for stale in ('project='+'02'+'00'*15+' epoch=17','project='+PROJECT+' epoch=18',
+                      'project='+PROJECT,'project='+PROJECT+' epoch=0'):
+            calls=[]
+            host=SimpleNamespace(state=dict(phase=4,text=context))
+            guest=SimpleNamespace(state=dict(phase=4,text=stale),
+                wait=lambda label,predicate:predicate(),call=calls.append)
+            owner=SimpleNamespace(host=host,all_games=[host,guest],result={'gates':{}},
+                converge=lambda:None,record=lambda _:None)
+            with mock.patch.object(perf.party_module,'status',side_effect=lambda g:g.state),self.assertRaises(perf.FixtureError):
+                perf.party_module.EditorParty.join(owner)
+            self.assertEqual(calls,[])
+        host=SimpleNamespace(state=dict(phase=4,text=context))
+        guest=SimpleNamespace(state=dict(phase=2,text=context),wait=lambda label,predicate:predicate(),call=lambda _:None)
+        def replace_context():guest.state['text']=context.replace('epoch=17','epoch=19')
+        owner=SimpleNamespace(host=host,all_games=[host,guest],result={'gates':{}},
+            converge=replace_context,record=lambda _:None)
+        with mock.patch.object(perf.party_module,'status',side_effect=lambda g:g.state),self.assertRaisesRegex(perf.FixtureError,'context changed'):
+            perf.party_module.EditorParty.join(owner)
+
     def test_measurement_gate_fences_exact_candidate_before_samples(self):
         with tempfile.TemporaryDirectory() as directory:
             gate=Path(directory)/'measure-go';hash_value='a'*64

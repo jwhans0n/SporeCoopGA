@@ -112,6 +112,14 @@ def parse_identity(text):
     return project.group(1), tuple(map(int, capability.groups()))
 
 
+def parse_context(text):
+    project=re.search(r'\bproject=([a-fA-F0-9]{32})\b',text)
+    epoch=re.search(r'\bepoch=([0-9]{1,20})\b',text)
+    if not project or not int(project[1],16) or not epoch or not 0<int(epoch[1])<1<<64:
+        raise FixtureError('Current project/epoch missing from native editor status: '+text)
+    return project[1].lower(),int(epoch[1])
+
+
 def parse_history(text):
     entries = []
     for line in text.splitlines():
@@ -357,10 +365,21 @@ class EditorParty(EditorPair):
         self.record('four-player-offers')
 
     def join(self):
+        host_state=status(self.host)
+        if host_state.get('phase')!=4:raise FixtureError('The owned host has no active shared editor')
+        context=parse_context(host_state['text'])
         for game in self.all_games[1:]:
-            game.wait('explicit shared-editor offer', lambda g=game: status(g).get('phase') == 1)
-            game.call('coop.editor join')
+            def offered_or_joining(g=game):
+                state=status(g)
+                if state.get('phase') not in (1,2,3,4):return False
+                if parse_context(state['text'])!=context:
+                    raise FixtureError('A participant belongs to another shared-editor project or epoch')
+                return state
+            state=game.wait('shared-editor offer or automatic native join',offered_or_joining)
+            if state['phase']==1:game.call('coop.editor join')
         self.result['initial_hash'] = self.converge()
+        if any(parse_context(status(game)['text'])!=context for game in self.all_games):
+            raise FixtureError('Shared-editor context changed while joining native baselines')
         count = {2:'two',3:'three',4:'four'}.get(len(self.all_games),str(len(self.all_games)))
         self.result['gates'][count + '_native_baselines'] = True
         self.record(count + '-player-baseline')
