@@ -1032,3 +1032,43 @@ and `out/preview9-c15-terrain-comparison.json`. Both private games returned to
 Galaxy through ordinary Leave and native discard, with zero faults, before a
 fresh Crew-only draft was opened. The personal installation, shortcut, 4 GB
 executable and preview 8 rollback remain unchanged.
+
+## Candidate 15 two-player Crew controls and visible Redo failure
+
+A fresh private Town draft, separate from the failed terrain session, exercised
+host capacity, custom Spice Crawler addition, replacement with Spoffit, and
+removal. Guest checks exercised replacement with Ms Spoffit, stock addition,
+removal, lock and permitted crew size. Author-owned Undo/Redo preserved matching
+strict native checks on both participants; the draft reached durable revision
+24 with zero faults. Evidence is retained under `out/preview9-c15-crew-`:
+`add`, `replace-host`, `history-native`, `replace-guest-native-picker`,
+`remove-host`, `add-guest`, `redo-focused`, `remove-guest-hover-native`,
+`add-guest-final`, `lock-guest` and `capacity-guest`. This is two-player control
+coverage; four-player, concurrent unrelated edits and Save/reopen remain pending.
+
+The driver needed corrections supported by live hit trees and screenshots:
+Crew's title is a sibling above its card body, native search retains text and
+does not honor the fixture's posted Ctrl+A, multi-word text requires quoting,
+and Enter can accept the current selection instead of merely filtering. The
+fixture now pins the title/card rectangles, verifies the actual picker title at
+its screen position, uses the measured native search-clear button when needed,
+and selects the card after filtering without Enter. Twenty-five offline guard
+checks pass on Windows and Linux. Failed pre-correction runs remain retained.
+
+Host removal followed by Undo/Redo correctly ends with the member removed.
+The resulting generic blue placeholder has no Remove button. Independent
+read-only native roster inspection confirmed zero members on both participants
+at revision 11 (`out/preview9-c15-crew-rpm/`); this was not missing asset content.
+
+One actual toolbar defect remains. After guest Add and toolbar Undo reached
+revision 13, the global `where F006EFA5` diagnostic reported an enabled Redo
+button, while `at 685 751` reported the visible button disabled. Runtime history
+still advertised Redo available. The first toolbar Redo did not run; a guarded
+retry stopped before sending input because the visible button was disabled.
+Returning focus to clear Adventure viewport and sending native Ctrl+Y restored
+the exact shared Crew at revision 14. The toolbar path is therefore **failed**,
+while the canonical author-owned Redo path is verified. Receipts are
+`out/preview9-c15-crew-{add-guest,redo-retry,redo-focused}/`. The current native
+toolbar refresh uses the first layout lookup, which warrants a scoped owned
+layout audit; a cached duplicate is not yet established from these diagnostics
+alone. No global UI sweep or relaxation of history ownership is justified.
