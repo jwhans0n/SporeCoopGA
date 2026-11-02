@@ -590,3 +590,37 @@ same-key saves and an unrelated request while a shared creation session is
 active. The strict i686 build and executable pass; the receipt is
 `out/editor-preview9-creation/creation-posted-result.log`. This is controlled
 message-lifetime evidence, not a running-game Done/Cancel acceptance result.
+
+The ordinary Scenario resume also owns more than its direct orbit-camera
+getter calls. `EF0990` unconditionally calls edit-world setup `EFF670` at
+`EF09A3`. Complete `EFF670..F0008D` inspection shows no early return before
+`F0007A -> EFDDC0`, so a completed ordinary resume performs paired Adventure
+Editor camera activation. The later resume calls `EDA030` and `ED6910` restore
+the native UI; `ED6910` sets display `+94` and re-enters the retained display
+mode through `ED6620`. For the Build view used by candidate 6, the shared Save
+adapter explicitly permits this idempotent Build transition. The reviewed
+mod hooks do not intercept Scenario OnEnter `EF24C0`, OnExit `EF1580`, frame
+update `EF2EF0` or editor resume `EF0990`. The co-op gameplay update hook is
+the separate play-mode function `F1F960`.
+
+OnEnter marks mode `+DC`, pauses reason `04BF38A7`, and resets the native
+initialization state `15ACC34` to zero through `EF1BC0`. Scenario frame update
+first requires Simulator mode-manager `+28` clear, advances that initialization
+through states zero to four, then clears `+DC` at `EF2F3C`, releases that pause
+reason at `EF2F4F` and calls `EF0990(false)` at `EF2FB2`. The retained shell
+alone can satisfy the adapter's earlier readiness predicate before this native
+sequence finishes. Canonical capture/restore must wait for ordinary resume
+and visible native UI rather than treating Scenario mode and that shell as
+complete return. The missing candidate 6 state values were not captured, so
+premature restoration remains an inferred cause, not a proven crash signature.
+
+The Simulator request wrapper does not supply a missing late release for that
+OnEnter pause. Its separate transition reason `04BF38A6` is paused at
+`B1DEBE`; completion handler `B1DF60` calls raw Submit at `B1DFC8`, then releases
+that reason at `B1DFF1` before posted creation entry is dispatched. Direct Submit
+never acquires that wrapper reason. Simulator mode-manager `+28` is set by
+SetMode `B1E350` and cleared at `B5F199` through the native App post-mode-change
+`0212D3E7` route `B637A4 -> B5F180`. The mod's Simulator-message hook delays
+only `04715068` while a world save is busy and does not suppress that route.
+No direct pause-counter, pending-flag or initialization-state writes are a
+verified substitute for completing these native transitions.
