@@ -143,6 +143,7 @@ def run(args):
             if semantic(host)==before_semantic:raise FixtureError('Crew selection had no authored effect')
             record('replace' if args.stage=='replace' else 'add')
         if args.stage=='remove':
+            author.call(f'move {args.member_point[0]} {args.member_point[1]}');author.call('wait.frames 8 15000')
             x,y=args.remove_point;hits=author.call(f'coop.ui at {x} {y}');result['crew_remove_hit']=hits;write()
             result['crew_header']=author.call('coop.ui where 064A90A0');write()
             require_crew_hit(hits,'remove',result['crew_header']);author.click(x,y);revision+=1
@@ -167,6 +168,13 @@ def run(args):
             if not own or own[-1][-1]!='Edit adventure crew':
                 raise FixtureError('The pinned author has no applied Crew history item')
             for key in ('z','y'):
+                if args.history_focus:
+                    x,y=args.history_focus;hit=author.call(f'coop.ui at {x} {y}')
+                    result.setdefault('history_focus_hits',[]).append(hit);write()
+                    if not hit.startswith('07625680 ') or len(hit.strip().splitlines())!=1:
+                        raise FixtureError('The measured history focus point is not clear Adventure viewport')
+                    author.click(x,y)
+                    if status(author)['revision']!=revision:raise FixtureError('History focus changed authored data')
                 if args.history_input=='toolbar':author.click_control(0xB006EF6E if key=='z' else 0xF006EFA5)
                 else:EditorPair.hotkey(author,key)
                 revision+=1;host.wait('author-owned native Crew history',lambda:settled(revision))
@@ -228,6 +236,7 @@ def main():
     parser.add_argument('--member-point',type=int,nargs=2,default=[998,489]);parser.add_argument('--remove-point',type=int,nargs=2)
     parser.add_argument('--search');parser.add_argument('--card');parser.add_argument('--verify-history',action='store_true')
     parser.add_argument('--history-input',choices=['hotkeys','toolbar'],default='hotkeys')
+    parser.add_argument('--history-focus',type=int,nargs=2,help='Measured clear Adventure viewport point to leave picker text focus')
     parser.add_argument('--timeout',type=int,default=90);parser.add_argument('--deadline',type=int,default=900)
     args=parser.parse_args()
     if args.self_test:self_test();return
@@ -243,6 +252,8 @@ def main():
     if any(not all(0<=value<limit for value,limit in zip(point,[1024,768])) for point in [args.member_point]+([args.remove_point] if args.remove_point else [])):
         parser.error('Measured Crew points must remain inside1024x768')
     if args.stage=='remove' and not args.remove_point:parser.error('Removal requires an explicitly measured --remove-point')
+    if args.history_focus and not all(0<=value<limit for value,limit in zip(args.history_focus,[1024,768])):
+        parser.error('Measured history focus must remain inside1024x768')
     if args.stage=='replace' and not(args.search and args.card):parser.error('Replacement requires an explicit alternate --search and --card')
     if any(value is not None and (not 1<=len(value)<=96 or any(char in value for char in '\r\n"')) for value in [args.search,args.card]):
         parser.error('Crew picker text must be bounded, nonempty and one line without quotes')
