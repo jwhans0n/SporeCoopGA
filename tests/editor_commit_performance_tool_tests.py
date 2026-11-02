@@ -2,6 +2,7 @@
 import copy
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 import unittest
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools/tests'))
@@ -83,6 +84,28 @@ def gestures(samples=30):
 
 
 class AcceptanceContracts(unittest.TestCase):
+    def test_original_native_baseline_is_recorded_before_hosting(self):
+        calls=[];writes=[]
+        inspection='placements=1 classes=1 acts=1\nnative_sha256='+'a'*64
+        owner=SimpleNamespace(result={},write=lambda:writes.append(True))
+        game=SimpleNamespace(instance=95,call=lambda command:(calls.append(command),inspection)[1])
+        perf.CommitParty.capture_original_baseline(owner,game)
+        self.assertEqual(calls,['coop.editor inspect'])
+        self.assertEqual(writes,[True])
+        self.assertEqual(owner.result['original_native_baseline'],dict(instance=95,
+            before_hosting=True,before_title_input=True,inspection=inspection))
+
+    def test_failed_original_projection_is_retained_without_authoring_input(self):
+        calls=[];writes=[]
+        error='Native projection inspection failed: owner=21474836494:1 reference=8589935701:1'
+        owner=SimpleNamespace(result={},write=lambda:writes.append(True))
+        game=SimpleNamespace(instance=95,call=lambda command:(calls.append(command),error)[1])
+        with self.assertRaisesRegex(perf.FixtureError,'21474836494:1'):
+            perf.CommitParty.capture_original_baseline(owner,game)
+        self.assertEqual(calls,['coop.editor inspect'])
+        self.assertEqual(writes,[True])
+        self.assertEqual(owner.result['original_native_baseline']['inspection'],error)
+
     def test_all_authors_and_observers_contribute(self):
         result=perf.summarize(gestures(),[2,3],30,200)
         self.assertTrue(result['passed']);self.assertEqual(result['frames']['2']['windows'],60)

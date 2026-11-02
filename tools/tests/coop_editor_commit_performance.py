@@ -178,6 +178,7 @@ def summarize(gestures, instances, samples, budget, p95_frame_ms=100, max_frame_
 class CommitParty(party_module.EditorParty):
     def __init__(self, args, proxies):
         self.args=args;self.output=args.output;self.output.mkdir(parents=True,exist_ok=False)
+        owner=self
         self.ownership=party_module.Ownership(args.metadata,args.instances,args.expected_dll_sha256)
         self.records=self.ownership.records;self.deadline=time.monotonic()+args.seconds
         class MeasuredConsole(party_module.PublicConsole):
@@ -189,6 +190,11 @@ class CommitParty(party_module.EditorParty):
                     return party_module.Console.call(self,line)
                 return super().call(line)
         class MeasuredGame(party_module.PublicGame):
+            def wait(self,description,predicate,timeout=None):
+                result=super().wait(description,predicate,timeout)
+                if description=='native editor shell ready' and self.instance==args.instances[0]:
+                    owner.capture_original_baseline(self)
+                return result
             def choose_card(self,name):
                 super().choose_card(name)
                 if self.instance==args.instances[0] and name==args.adventure:
@@ -212,6 +218,14 @@ class CommitParty(party_module.EditorParty):
                          method='Actual input release, exact operation-keyed QPC stages and primed Present frame windows. No native inspection inside measured windows.',
                          bulk_asset_contention_pass=False)
         for game in self.games:self.verify(game)
+
+    def capture_original_baseline(self,game):
+        inspection=game.call('coop.editor inspect')
+        self.result['original_native_baseline']=dict(instance=game.instance,
+            before_hosting=True,before_title_input=True,inspection=inspection)
+        self.write()
+        if not inspection.startswith('placements=') or not re.search(r'\bnative_sha256=[0-9a-f]{64}\b',inspection):
+            raise FixtureError('Original native baseline failed before hosting: '+inspection)
 
     def record(self,label):
         self.ownership.verify_windows()
@@ -284,6 +298,8 @@ def run(args):
             if args.setup=='bootstrap':
                 if any(values(game.call('coop.frame_metrics config')).get(k)!=v for game in party.all_games for k,v in (('screen_width',1024),('screen_height',768))):
                     raise FixtureError('Ordinary bootstrap coordinates require1024x768; attach supports other configured viewports')
+                native=status(party.host)
+                if native.get('editing') and native.get('ready'):party.capture_original_baseline(party.host)
                 if len(args.instances)==4:party.bootstrap()
                 else:EditorPair.bootstrap(party)
                 party.result['adventure_selected_by_native_browser']=bool(getattr(party.host,'adventure_selected_by_native_browser',False))
