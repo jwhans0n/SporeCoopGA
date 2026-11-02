@@ -58,6 +58,7 @@ uintptr_t a_view_manager, a_view_target, a_view_orbit, a_view_set_orbit, a_view_
 uintptr_t a_get_simulator_system,a_get_simulator_camera_state,a_activate_simulator_camera;
 uintptr_t a_scenario_initialization,a_get_simulator_mode_manager;
 uintptr_t a_metadata_message_manager,a_metadata_message_send;
+uintptr_t a_property_manager_get,a_resolve_property_parents;
 bool supported, applying, queued;
 bool fence_queued;
 double last_fence;
@@ -360,6 +361,91 @@ bool serialize(void* p, std::vector<uint8_t>& bytes, std::string& error) {
         error = "Native editor snapshot serialization failed"; return false;
     }
     bytes = std::move(stream.bytes); return true;
+}
+bool prepare_terrain_load_input(void* owned,const std::vector<uint8_t>& serialized,
+                                std::function<bool()> required_current,std::string& error){
+    // Native F261B0 resolves the parsed PropertyList's parent before Build.
+    // Our private Read has the saved parent key but no runtime parent pointer.
+    // Resolve only that asserted key; never invent an absent exported field.
+    constexpr uint32_t parent_property=0x00B2CCCB,prop_type=0x00B1B104;
+    const auto pinned_generation=generation;
+    auto* pinned_mode=mode();auto* pinned_data=data(pinned_mode);auto* pinned_resource=resource(pinned_data);
+    if(!skg::readable(pinned_resource,kResourceSize) || !skg::readable(owned,kResourceSize)){
+        error="The owned native terrain load has no current scene";return false;
+    }
+    const auto source=skg::field<editor::ResourceKey>(pinned_resource,8);const auto scope=value_scope();
+    const auto current=[=]{
+        try{return required_current && required_current() && value_scope()==scope && generation==pinned_generation &&
+            mode()==pinned_mode && data(pinned_mode)==pinned_data && resource(pinned_data)==pinned_resource &&
+            skg::readable(pinned_resource,kResourceSize) && skg::field<editor::ResourceKey>(pinned_resource,8)==source &&
+            generation==pinned_generation;}catch(...){return false;}
+    };
+    const auto expired=[&]{error="The owned terrain parent resolution lost its scene or read identity";return false;};
+    if(!current())return expired();
+    editor_native_terrain::Properties expected;
+    if(!editor_native_terrain::decode(serialized,expected,error))return false;
+    auto* properties=skg::ptr_add<void>(owned,0x18);
+    auto* parent=skg::field<void*>(properties,0x30);
+    const auto asserted=expected.fields.find(parent_property);
+    if(asserted==expected.fields.end()){
+        if(parent){error="A parent-less native terrain input acquired a runtime parent";return false;}
+        return current()?true:expired();
+    }
+    const auto& value=asserted->second;
+    if(value.type!=0x20 || value.flags || value.value.size()!=16){error="The native terrain parent key has an unsupported shape";return false;}
+    const editor::ResourceKey key{editor::terrain_word(value.value,0),editor::terrain_word(value.value,4),editor::terrain_word(value.value,8)};
+    if(!key.instance || key.type!=prop_type){error="The native terrain parent is not a complete property resource key";return false;}
+    auto resolved_key=key;if(!resolved_key.group)resolved_key.group=skg::field<uint32_t>(properties,0x10);
+    const auto matches=[&](void* candidate){return skg::readable(candidate,0x34) && skg::field<editor::ResourceKey>(candidate,8)==resolved_key;};
+    if(parent && !matches(parent)){error="The owned terrain input retained a different runtime parent";return false;}
+    if(!parent && (!a_property_manager_get || !a_resolve_property_parents)){error="The verified native terrain parent resolver is unavailable";return false;}
+    std::vector<uint8_t> before_bytes;
+    if(!serialize(owned,before_bytes,error))return false;
+    if(!current())return expired();
+    editor_native_terrain::Properties before;
+    if(!editor_native_terrain::decode(before_bytes,before,error))return false;
+    const auto before_parent=before.fields.find(parent_property);
+    if(before_parent==before.fields.end() || editor_native_terrain::property_value(before_parent->second)!=editor_native_terrain::property_value(value)){
+        error="The parsed native terrain input changed its asserted parent";return false;
+    }
+    if(parent){
+        if(!current())return expired();
+        if(skg::field<void*>(properties,0x30)!=parent || !matches(parent)){
+            error="The owned terrain input changed its resolved parent during serialization";return false;
+        }
+        error.clear();return true;
+    }
+    auto* manager=skg::cdecl_call<void*>(a_property_manager_get);
+    if(!current())return expired();
+    if(!manager || !skg::readable(manager,sizeof(void*))){error="The native property manager is unavailable";return false;}
+    if(skg::field<void*>(properties,0x30)){error="The owned terrain parent changed before its resolver call";return false;}
+    skg::thiscall<void>(a_resolve_property_parents,manager,properties);
+    if(!current())return expired();
+    parent=skg::field<void*>(properties,0x30);
+    if(!matches(parent)){error="The native terrain parent could not be resolved to its asserted resource";return false;}
+    std::vector<uint8_t> after_bytes;
+    if(!serialize(owned,after_bytes,error))return false;
+    if(!current())return expired();
+    editor_native_terrain::Properties after;
+    if(!editor_native_terrain::decode(after_bytes,after,error))return false;
+    auto after_parent=after.fields.find(parent_property);
+    if(after_parent==after.fields.end() || editor_native_terrain::property_value(after_parent->second)!=editor_native_terrain::property_value(value)){
+        error="Resolving the native terrain parent changed its saved key or presence";return false;
+    }
+    // The scalar key's fourth word is verified unused storage. All other
+    // property metadata/payloads and every byte of the DBPF body stay exact.
+    auto before_compared=before_parent->second,after_compared=after_parent->second;
+    std::fill(before_compared.value.begin()+12,before_compared.value.end(),0);
+    std::fill(after_compared.value.begin()+12,after_compared.value.end(),0);
+    before.fields[parent_property]=std::move(before_compared);after.fields[parent_property]=std::move(after_compared);
+    if(before.header!=after.header || before.fields!=after.fields || before.tail!=after.tail){
+        error="Native parent resolution changed an unrelated owned scenario field";return false;
+    }
+    if(!current())return expired();
+    if(skg::field<void*>(properties,0x30)!=parent || !matches(parent)){
+        error="The resolved native terrain parent changed during verification";return false;
+    }
+    error.clear();return true;
 }
 
 // These owners exist only inside the outer synchronous ValidationScope. No
@@ -2039,11 +2125,41 @@ void continue_terrain_preset(){
     std::vector<uint32_t> fields;for(const auto& [id,type]:editor_native_terrain::planet_properties()){(void)type;fields.push_back(id);}
     if(!C.terrain_gate(records,fields))return;
     auto accepted=std::move(*held_terrain_preset);held_terrain_preset.reset();std::string error;
+    auto* pinned_mode=mode();auto* pinned_resource=resource(accepted.owner);auto* pinned_tool=terraform_mode();
+    auto* pinned_context=a_context?*reinterpret_cast<void**>(a_context):nullptr;
+    const auto pinned_read_scope=value_scope();
+    if(!skg::readable(pinned_resource,kResourceSize)){if(C.notice)C.notice("The pending planet preset lost its native source");return;}
+    const auto pinned_source=skg::field<editor::ResourceKey>(pinned_resource,8);
+    struct PresetGuard {std::map<editor::ObjectId,editor::TerrainRecord> records;editor::AuthoringSettings planet;};
+    std::shared_ptr<const PresetGuard> guard;
+    try{guard=std::make_shared<const PresetGuard>(PresetGuard{std::move(accepted.records),std::move(accepted.planet)});}
+    catch(const std::bad_alloc&){if(C.notice)C.notice("The pending planet preset could not retain its checked state");return;}
+    const auto current=[guard,pinned_mode,pinned_resource,pinned_tool,pinned_context,pinned_read_scope,pinned_source,
+                        owner=accepted.owner,expected_act=accepted.act,expected_generation=accepted.generation,expected_scope=accepted.scope]{
+        try{
+            const auto planet=act_identity.settings.find(editor_native_terrain::kPlanetObject);
+            return generation==expected_generation && C.gesture_scope && C.gesture_scope()==expected_scope &&
+                value_scope()==pinned_read_scope && mode()==pinned_mode && data(pinned_mode)==owner &&
+                resource(owner)==pinned_resource && terraform_mode()==pinned_tool && skg::readable(pinned_resource,kResourceSize) &&
+                a_context && *reinterpret_cast<void**>(a_context)==pinned_context && skg::readable(pinned_context,4) &&
+                skg::field<uint32_t>(pinned_context,0)==expected_act &&
+                skg::field<editor::ResourceKey>(pinned_resource,8)==pinned_source &&
+                act_identity.terrain==guard->records && planet!=act_identity.settings.end() && planet->second==guard->planet &&
+                generation==expected_generation;
+        }catch(...){return false;}
+    };
+    const auto expired=[&]{if(C.notice)C.notice("The checked planet preset changed before native loading");};
+    if(!current()){expired();return;}
     Owned copy(parse(accepted.bytes,error));
     if(!copy.p){if(C.notice)C.notice(error);return;}
+    if(!prepare_terrain_load_input(copy.p,accepted.bytes,current,error)) {if(C.notice)C.notice(error);return;}
+    if(!current()){expired();return;}
     auto* tool=terraform_mode();if(!terrain_begin(tool))return;
+    if(!current()){expired();return;}
     if(*reinterpret_cast<uint8_t*>(a_history+0x20))original_terrain_start(tool);
+    if(!current()){expired();return;}
     terrain_build(tool,skg::ptr_add<void>(copy.p,0x18));
+    if(!current()){expired();return;}
     terrain_commit(tool);
 }
 using TerrainValueFn=void(SK_THISCALL*)(void*,uint32_t);
@@ -3716,6 +3832,8 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     a_get_simulator_mode_manager=H->sym("SporeCoop::Editor::GetSimulatorModeManager");
     a_metadata_message_manager=H->sym("App::IMessageManager::Get");
     a_metadata_message_send=H->sym("SporeCoop::Editor::SendMetadataNameChanged");
+    a_property_manager_get=H->sym("SporeCoop::Editor::PropertyManagerGet");
+    a_resolve_property_parents=H->sym("SporeCoop::Editor::ResolvePropertyParents");
     a_view_target=H->sym("SporeCoop::Editor::CurrentOrbitTarget");
     a_view_orbit=H->sym("SporeCoop::Editor::CurrentOrbitScalars");
     a_view_set_orbit=H->sym("SporeCoop::Editor::SetOrbitScalarsInstant");
@@ -4754,6 +4872,11 @@ bool restore_impl(const Snapshot& snapshot,const RestoreFence* fence,std::string
     Owned copy(parse(snapshot.bytes,error));
     if (!copy.p) return false;
     if(!checked())return false;
+    if(rebuild_terrain){
+        std::function<bool()> parent_current=[]{return true;};
+        if(fence)parent_current=[pin=*fence]{return pin.checked();};
+        if(!prepare_terrain_load_input(copy.p,snapshot.bytes,std::move(parent_current),error) || !checked())return false;
+    }
     // Camera state belongs to this editor. Native Undo's full copy includes it.
     // Preserve the native local resource camera before that copy is applied.
     void* live=resource(data(mode()));

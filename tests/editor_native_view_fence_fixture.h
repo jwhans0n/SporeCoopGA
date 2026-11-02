@@ -387,3 +387,170 @@ void test(){
 }
 }
 static void test_terrain_rotation_restore(){terrain_rotation_fixture::test();}
+
+namespace terrain_parent_fixture {
+constexpr uint32_t property_id=0x00B2CCCB;
+const editor::ResourceKey key{0x73CC30A0,0x00B1B104,0x4284A100};
+std::array<uint8_t,0x34> parent,wrong_parent;
+std::array<uint8_t,8> manager;
+unsigned gets=0,resolves=0,writes=0;bool fail_manager=false,fail_resolve=false,wrong=false,unknown=false,reserved=false,changed_key=false,removed_key=false;
+std::function<void(unsigned)> callback;
+void event(unsigned stage){if(callback)callback(stage);}
+void* SK_CDECL get(){++gets;event(0);return fail_manager?nullptr:manager.data();}
+void SK_THISCALL resolve(void* self,void* properties){
+    CHECK(self==manager.data());++resolves;
+    auto* resource=static_cast<uint8_t*>(properties)-0x18;
+    if(!fail_resolve){auto* chosen=wrong?wrong_parent.data():parent.data();
+        skg::field<void*>(properties,0x30)=chosen;++skg::field<int>(chosen,4);}
+    if(unknown)tmc_properties.at(resource).fields[0xFFFFFFFF].value[0]^=1;
+    if(reserved)tmc_properties.at(resource).fields[property_id].value[12]^=1;
+    if(changed_key)tmc_properties.at(resource).fields[property_id].value[0]^=1;
+    if(removed_key)tmc_properties.at(resource).fields.erase(property_id);
+    event(1);
+}
+bool SK_THISCALL write_resource(void* resource,Stream* stream){const auto count=++writes;const bool okay=tmc_write(resource,stream);event(count==1?2:3);return okay;}
+int SK_THISCALL release_resource(void* resource){
+    if(skg::field<int>(resource,4)==1 && t_allocations.contains(resource)){
+        auto* p=skg::field<void*>(resource,0x48);if(p==parent.data()||p==wrong_parent.data())CHECK(--skg::field<int>(p,4)>=1);
+    }
+    return tmc_release(resource);
+}
+struct Routes {
+    uintptr_t reader=a_read,writer=a_write,acts=a_copy_acts,crew=a_copy_crew,manager_route=a_property_manager_get,resolver=a_resolve_property_parents;
+    uintptr_t property_copy=a_copy_terrain_properties;TerrainLoadFn build_route=original_terrain_build;
+    uintptr_t shown=a_layout_shown,init=a_scenario_initialization,modes=a_get_simulator_mode_manager;
+    ~Routes(){callback={};CHECK(t_allocations.empty());tmc_properties.clear();act_cache_rows.clear();reset();
+        a_read=reader;a_write=writer;a_copy_acts=acts;a_copy_crew=crew;a_property_manager_get=manager_route;a_resolve_property_parents=resolver;
+        a_copy_terrain_properties=property_copy;original_terrain_build=build_route;
+        a_layout_shown=shown;a_scenario_initialization=init;a_get_simulator_mode_manager=modes;}
+};
+Snapshot setup(){
+    CHECK(t_allocations.empty());callback={};auto snapshot=tmc_setup();
+    parent.fill(0);wrong_parent.fill(0);manager.fill(0);
+    skg::field<editor::ResourceKey>(parent.data(),8)=key;skg::field<int>(parent.data(),4)=1;
+    skg::field<editor::ResourceKey>(wrong_parent.data(),8)=key;skg::field<editor::ResourceKey>(wrong_parent.data(),8).instance++;
+    skg::field<int>(wrong_parent.data(),4)=1;
+    editor_native_terrain::Property p{0x20,0,std::vector<uint8_t>(16)};std::memcpy(p.value.data(),&key,sizeof key);
+    tmc_properties[t_live.data()].fields[property_id]=p;
+    std::string error;CHECK(serialize(t_live.data(),snapshot.bytes,error));
+    C.projection_scope=[] {return t_scope;};C.gesture_scope=[] {return GestureScope{};};
+    a_property_manager_get=uintptr_t(get);a_resolve_property_parents=uintptr_t(resolve);a_write=uintptr_t(write_resource);
+    t_resource_vt[1]=reinterpret_cast<void*>(release_resource);
+    gets=resolves=writes=0;fail_manager=fail_resolve=wrong=unknown=reserved=changed_key=removed_key=false;
+    return snapshot;
+}
+void test(){
+    Routes routes;std::string error;auto snapshot=setup();
+    {
+        Owned parsed(parse(snapshot.bytes,error));CHECK(parsed.p&&!skg::field<void*>(parsed.p,0x48));
+        // Model the verified F32A90 CopyFrom+SetParent and F33A50 export:
+        // a null runtime parent removes the saved key despite its root presence.
+        auto tool=tmc_properties.at(parsed.p);if(!skg::field<void*>(parsed.p,0x48))tool.fields.erase(property_id);
+        CHECK(!tool.fields.contains(property_id)&&tmc_properties.at(parsed.p).fields.contains(property_id));
+        CHECK(prepare_terrain_load_input(parsed.p,snapshot.bytes,[]{return true;},error));
+        CHECK(gets==1&&resolves==1&&skg::field<void*>(parsed.p,0x48)==parent.data()&&skg::field<int>(parent.data(),4)==2);
+        tool=tmc_properties.at(parsed.p);if(!skg::field<void*>(parsed.p,0x48))tool.fields.erase(property_id);
+        CHECK(tool.fields.contains(property_id));const auto before_gets=gets,before_resolves=resolves;
+        CHECK(prepare_terrain_load_input(parsed.p,snapshot.bytes,[]{return true;},error));
+        CHECK(gets==before_gets&&resolves==before_resolves);
+    }
+    CHECK(skg::field<int>(parent.data(),4)==1&&t_allocations.empty());
+    // Even a previously resolved child must close over its CURRENT parent
+    // pointer after the serializer callback, rather than using a cached value.
+    for(unsigned reason=0;reason<2;++reason){
+        snapshot=setup();{
+            Owned parsed(parse(snapshot.bytes,error));CHECK(prepare_terrain_load_input(parsed.p,snapshot.bytes,[]{return true;},error));
+            writes=0;bool fired=false;
+            callback=[&](unsigned stage){if(stage!=2||fired)return;fired=true;
+                CHECK(skg::field<void*>(parsed.p,0x48)==parent.data());--skg::field<int>(parent.data(),4);
+                skg::field<void*>(parsed.p,0x48)=reason?wrong_parent.data():nullptr;
+                if(reason)++skg::field<int>(wrong_parent.data(),4);
+            };
+            CHECK(!prepare_terrain_load_input(parsed.p,snapshot.bytes,[]{return true;},error)&&fired&&!error.empty());
+        }
+        CHECK(skg::field<int>(parent.data(),4)==1&&skg::field<int>(wrong_parent.data(),4)==1&&t_allocations.empty());
+    }
+    for(unsigned reason=0;reason<10;++reason){
+        snapshot=setup();{
+            Owned parsed(parse(snapshot.bytes,error));CHECK(parsed.p);
+            if(reason==0)fail_manager=true;if(reason==1)fail_resolve=true;if(reason==2)wrong=true;if(reason==3)unknown=true;
+            if(reason==4)a_property_manager_get=0;if(reason==5)a_resolve_property_parents=0;
+            if(reason==6){skg::field<void*>(parsed.p,0x48)=wrong_parent.data();++skg::field<int>(wrong_parent.data(),4);}
+            if(reason==7)tmc_properties.at(parsed.p).fields.erase(property_id);
+            if(reason==8)changed_key=true;if(reason==9)removed_key=true;
+            CHECK(!prepare_terrain_load_input(parsed.p,snapshot.bytes,[]{return true;},error)&&!error.empty());
+        }
+        CHECK(skg::field<int>(parent.data(),4)==1&&skg::field<int>(wrong_parent.data(),4)==1&&t_allocations.empty());
+    }
+    for(unsigned stage=0;stage<4;++stage)for(unsigned reason=0;reason<12;++reason){
+        snapshot=setup();{
+            Owned parsed(parse(snapshot.bytes,error));CHECK(parsed.p);bool allowed=true,fired=false;
+            callback=[&](unsigned at){if(at==stage&&!fired){fired=true;restore_fence_fixture::expire(reason,allowed);}};
+            CHECK(!prepare_terrain_load_input(parsed.p,snapshot.bytes,[&]{return allowed;},error)&&fired&&!error.empty());
+            CHECK(resolves==(stage==1||stage==3?1u:0u));
+        }
+        CHECK(skg::field<int>(parent.data(),4)==1&&t_allocations.empty());
+    }
+    snapshot=setup();{
+        Owned parsed(parse(snapshot.bytes,error));reserved=true;
+        CHECK(prepare_terrain_load_input(parsed.p,snapshot.bytes,[]{return true;},error));
+        CHECK(tmc_properties.at(parsed.p).fields.at(property_id).value[12]==1);
+    }
+    snapshot=setup();{
+        auto fields=tmc_properties.at(t_live.data());fields.fields.erase(property_id);tmc_properties[t_live.data()]=fields;
+        CHECK(serialize(t_live.data(),snapshot.bytes,error));Owned parsed(parse(snapshot.bytes,error));gets=resolves=0;
+        CHECK(prepare_terrain_load_input(parsed.p,snapshot.bytes,[]{return true;},error)&&!gets&&!resolves&&!skg::field<void*>(parsed.p,0x48));
+        skg::field<void*>(parsed.p,0x48)=parent.data();++skg::field<int>(parent.data(),4);
+        CHECK(!prepare_terrain_load_input(parsed.p,snapshot.bytes,[]{return true;},error)&&!gets&&!resolves);
+    }
+    for(unsigned reason=0;reason<3;++reason){
+        snapshot=setup();auto& property=tmc_properties.at(t_live.data()).fields[property_id];
+        if(reason==0)property.flags=1;if(reason==1)property.type=0x31;
+        if(reason==2)std::fill_n(property.value.begin(),4,0);
+        CHECK(serialize(t_live.data(),snapshot.bytes,error));Owned parsed(parse(snapshot.bytes,error));CHECK(parsed.p);gets=resolves=0;
+        CHECK(!prepare_terrain_load_input(parsed.p,snapshot.bytes,[]{return true;},error)&&!gets&&!resolves&&!error.empty());
+    }
+    callback={};CHECK(t_allocations.empty()&&skg::field<int>(parent.data(),4)==1);
+}
+void* SK_THISCALL preset_copy(void* destination,const void* source){
+    t_copy_preset_properties(destination,source);
+    auto& bytes=t_preset_payloads.at(static_cast<uint8_t*>(destination)-0x18);
+    editor_native_terrain::Properties properties;std::string error;CHECK(editor_native_terrain::decode(bytes,properties,error));
+    editor_native_terrain::Property p{0x20,0,std::vector<uint8_t>(16)};std::memcpy(p.value.data(),&key,sizeof key);
+    properties.fields[property_id]=std::move(p);CHECK(editor_native_terrain::encode(properties,bytes,error));return destination;
+}
+int SK_THISCALL preset_release(void* resource){
+    if(skg::field<int>(resource,4)==1&&t_allocations.contains(resource)){
+        auto* p=skg::field<void*>(resource,0x48);if(p==parent.data())CHECK(--skg::field<int>(p,4)>=1);
+        t_preset_payloads.erase(resource);
+    }
+    return t_release(resource);
+}
+void SK_THISCALL preset_build(void* tool,void* properties){
+    CHECK(skg::field<void*>(properties,0x30)==parent.data());t_build_preset_resource(tool,properties);
+}
+void test_presets(){
+    Routes routes;std::array<uint8_t,0x38> source{};source[0]=1;
+    for(unsigned reason=0;reason<5;++reason){
+        callback={};setup_preset_retry();parent.fill(0);skg::field<editor::ResourceKey>(parent.data(),8)=key;skg::field<int>(parent.data(),4)=1;
+        a_copy_terrain_properties=uintptr_t(preset_copy);original_terrain_build=preset_build;
+        a_property_manager_get=uintptr_t(get);a_resolve_property_parents=uintptr_t(resolve);t_resource_vt[1]=reinterpret_cast<void*>(preset_release);
+        fail_manager=fail_resolve=wrong=unknown=reserved=changed_key=removed_key=false;gets=resolves=0;
+        terrain_build(t_terraform.data(),source.data());CHECK(held_terrain_preset&&!terrain_starts&&!terrain_builds);
+        t_granted=true;pin_terrain_before();
+        callback=[&](unsigned stage){
+            CHECK(!terrain_starts&&!terrain_builds);
+            if(stage==1&&reason==1)++t_scope.epoch;
+            if(stage==0&&reason==2)++skg::field<editor::ResourceKey>(t_live.data(),8).instance;
+            if(stage==1&&reason==3)++act_identity.settings.at(editor_native_terrain::kPlanetObject).revision;
+            if(stage==1&&reason==4)++skg::field<uint32_t>(t_context.data(),0);
+        };
+        continue_input(nullptr);CHECK(!held_terrain_preset&&gets==1);
+        if(!reason)CHECK(terrain_builds==1&&terrain_starts==1&&terrain_commits==1&&terrain_pending);
+        else CHECK(!terrain_starts&&!terrain_builds&&!terrain_commits&&!t_failure.empty());
+        CHECK(t_allocations.empty()&&skg::field<int>(parent.data(),4)==1);
+    }
+    callback={};t_preset_payloads.clear();
+}
+}
+static void test_terrain_parent_load(){terrain_parent_fixture::test();terrain_parent_fixture::test_presets();}

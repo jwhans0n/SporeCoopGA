@@ -191,6 +191,8 @@ bool restore_terrain_transition(const TerrainTransitionTicket& ticket,const Terr
            !original_terrain_load || !original_terrain_rebuild || !original_terrain_materialize){error="The canonical terrain recovery boundary is unavailable";return false;}
         if(!validate(expected,expected.document,error))return false;
         Owned native(parse(expected.bytes,error));if(!native.p)return false;
+        const auto parent_current=[after=receipt.after,tool,current]{return transition_current(after,tool,current,false);};
+        if(!prepare_terrain_load_input(native.p,expected.bytes,parent_current,error))return false;
         TransitionRead read(receipt.after,tool,current,nullptr);
         struct PrivateValues {~PrivateValues(){clear_terrain_materialization();}} private_values;
         if(!restore(expected,error))return false;
