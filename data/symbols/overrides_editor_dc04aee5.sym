@@ -1,5 +1,7 @@
 # SporeKit verified native Adventure Editor overrides for GOG 2024.
 # exe_sha256=dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37
+SporeCoop::Editor::PropertyManagerGet=0x0067DDF0 ; verified static: cdecl()->borrowed IPropManager,plain ret67DDF5,mov eax,[15FD8A8]; nativeF261C2 obtains it before resolving owned resource parent metadata
+SporeCoop::Editor::ResolvePropertyParents=0x006A3DE0 ; verified static: void thiscall(IPropManager,PropertyList*),ret4 6A3EDE/6A3F00; parent00B2CCCB lookup through manager vt2C(instance,group,owning out) then SetParent6A1710 retains parent30; no Boolean success contract, verify exact parent key and required dependency after callbacks
 SporeCoop::Editor::SendMetadataNameChanged=0x008854A0 ; verified dc04 static: generic IMessageManager MessageSend, thiscall(manager,uint32 id,void*packet,void*singleRecipient),ret0C 8854D2/8856F9; vtable1427AC0 slot14; F3CC59..71 sends7AA519DC with stack20 packet nameable0 and UTF16text8; inline dispatch8855A0/88568A, no queued payload
 SporeCoop::Editor::GetSimulatorModeManager=0x00B3D420 ; verified dc04 static: cdecl(),mov eax,[167EAEC],plain ret B3D425; Scenario Update EF2EF6 reads transition flag28 before resume
 SporeCoop::Editor::ScenarioInitializationState=0x015ACC34 ; verified dc04 static: data word; Scenario OnEnter EF2548 resets initializerEF1BC0, Update EF2F05 requires4 before consuming modeDC and editor resumeEF0990

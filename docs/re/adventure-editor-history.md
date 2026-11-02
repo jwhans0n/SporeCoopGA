@@ -876,3 +876,58 @@ offsets and exact full-image restoration. Negatives retain differences for
 absence, type, flags, length, another None property, typed key-array contents,
 an unrelated unknown field and the DBPF tail. Running-game Terraform acceptance
 and exact settled rollback remain separate pending checks.
+
+### C20 terrain export parent hydration boundary
+
+The C20 private attempt identifies only quaternion placement changes on markers
+188, 253, 265 and 293. Its restore-only quaternion refresh subsequently produces
+exact ordinary native convergence on both peers. The remaining held-restoration
+diagnostic identifies Planet property `00B2CCCB` as absent from `capture_draft`,
+while ordinary resource capture retains it. Captain settings are unchanged.
+Evidence is `out/preview9-c20-terrain-failure-full/result.json`; these results do
+not yet establish a successful Terraform transaction or release of the hold.
+
+`00B2CCCB` is PropertyList's serialized parent key. `SetParent 6A1710` retains
+runtime parent `+30` with AddRef/Release at `6A1738..6A1752`. With a nonnull
+parent, it creates a scalar ResourceKey from that parent's ResourceObject `+8`
+and sets `00B2CCCB` at `6A176E..6A178C`. With a null parent, it removes that
+property at `6A17BC..6A17C8`. Its presence and key are inheritance semantics,
+not ignored export padding.
+
+`PropertyList::Read 6A2F60` loads an inline runtime parent only for a count with
+the high bit set (`6A2F86..6A2FE3`). Ordinary positive-count input reads its
+property rows and returns at `6A306A` without resolving a parent merely because
+the key is present. The retained C20 stream has positive count `00000024`.
+Consequently, an owned fresh parse can contain the parent key while its runtime
+`+30` remains null.
+
+Native resource initialization handles this distinction. Getter `67DDF0` is
+`cdecl() -> borrowed IPropManager*`, implemented as
+`mov eax,[015FD8A8]; ret`. At `F261C2..F261C9`, initialization obtains this
+manager and calls `6A3DE0(manager, resource+18)` before building the terrain.
+`6A3DE0` is `void thiscall(IPropManager*, PropertyList*)`, with `ret4` at
+`6A3EDE/6A3F00`; EAX or AL is not a success contract. It reads the asserted
+parent key, uses the child's external group only for a zero key group, and
+looks up the `.prop` parent through manager slot `+2C`. That lookup's temporary
+output is owning. On Boolean success, `SetParent` takes the child's retained
+reference, then the resolver releases its temporary at `6A3EC3..6A3ECC`.
+Lookup failure leaves the prior runtime parent unchanged. The caller must
+verify the resulting parent identity and required dependency, rather than
+testing the resolver's incidental return register.
+
+`TerraformLoadProperties F32A90` copies source properties, then explicitly
+calls `SetParent(toolProperties, sourceProperties.parent)` at `F32ABF`.
+`CaptureTerrain F27C00 -> F33A50` refreshes and copies the active tool's property
+map, then repeats that parent assignment for the destination at `F33A77`.
+Passing an unhydrated owned parse to the Load boundary can therefore remove
+the key from the tool and later from an otherwise valid owned draft export.
+Ordinary resource capture still describes the untouched serialized parent.
+
+The approved correction is limited to resolving and checking the owned Load
+input's asserted parent before any live restoration write, with the existing
+owner/source/generation/scope fences retained across callbacks. No exported
+absence is silently replaced, no parentless input acquires an old parent, and
+changed parents remain authored data. The new named symbol receipts cover the
+getter, resolver, native caller, Load/export callers, reference lifetime and
+positive-count Read behavior. Controlled and running-game validation of the
+correction remain required.

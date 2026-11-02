@@ -10,6 +10,19 @@ from pe import PE
 
 SHA = 'dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37'
 ENTRIES = [
+    ('PropertyManagerGet',0x67DDF0,'a1a8d85f01',[(0x67DDF5,0)],
+     'cdecl()->borrowed IPropManager,plain ret; native terrain resource initialization resolves serialized parent metadata before Load',
+     [(0xF261C2,0x67DDF0)],[]),
+    ('ResolvePropertyParents',0x6A3DE0,'64a1000000006aff6888472101506489',[(0x6A3EDE,4),(0x6A3F00,4)],
+     'void thiscall(IPropManager,PropertyList*),ret4; resolves parent00B2CCCB through manager GetPropertyList and retains runtime parent30; caller verifies exact key and dependency success',
+     [(0xF261C9,0x6A3DE0),(0x6A3EB2,0x6A1710),(0xF32ABF,0x6A1710),(0xF33A77,0x6A1710)],
+     [(0x6A3E0D,'68cbccb2008bceffd2'),(0x6A3E23,'68cbccb2008bceffd2'),
+      (0x6A3E72,'3b5108750e81790c04b1b10075053b4110746b'),
+      (0x6A3E90,'8d4c24285150528b552c8bcfc744242c00000000ffd25d'),
+      (0x6A3EA7,'84c0740c8b442424508bcee859d8ffff'),(0x6A3EC3,'85c974298b118b4204ffd0'),
+      (0x6A1738,'85ff74088b078b108bcfffd2897e3085db74098b038b50048bcbffd2'),
+      (0x6A17BC,'8b068b501868cbccb2008bceffd2'),
+      (0x6A2F86,'84db745f85c0795b'),(0x6A2FD1,'8b4c241c8b108b522c56518b4c241c518bc8ffd2')]),
     ('SendMetadataNameChanged',0x8854A0,'81ec2c0a0000538bd98b8c243c0a0000',[(0x8854D2,12),(0x8856F9,12)],
      'generic MessageSend,thiscall(manager,id,payload,singleRecipient),retC; synchronous native7AA519DC caption notification, owned20-byte packet/nameable0/title8/zero10',
      [(0xF3CC59,0x67DC80),(0xEDB3EE,0x5BFE40)],
