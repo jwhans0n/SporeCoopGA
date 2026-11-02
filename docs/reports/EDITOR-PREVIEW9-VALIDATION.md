@@ -1772,3 +1772,22 @@ retained. The personal preview 8 installation, shortcut, exact 4 GB executable
 and rollback payload are unchanged. C27 is not an accepted release: final
 performance targets, expanded creation and Terraform acceptance, complexity
 boundaries and lab smoke remain open.
+
+The subsequent C27 host-away case accepts a guest Basic Tools stroke and its
+Undo, Redo and final Undo while the host remains in the native Creature
+Editor. Canonical/durable revision reaches 12 without returning the host or
+changing the guest's unrelated planet fields. The normal host cancellation
+then fails restoration and freezes the recoverable draft. The first retained
+failure is an exact XYZ mismatch for placement `4294967302`: actual
+`-459.84436,116.277344,187.374207` versus authored
+`-459.844482,116.277374,187.374252`, with identical rotation, scale and
+property count. This precedes the later recipe mismatch shown in the status.
+The creation-mode excursion clears the grounding provenance used to project
+the pinned entry image. Automatic retries after the first freeze then lose
+their projection scope and repeatedly report the secondary recipe error.
+Neither error is waived as harmless rounding. Native return must retain and
+reverify its original witnessed grounding and binding identities; Runtime
+must retain the first terminal failure without further automatic native work.
+Evidence: `out/preview9-c27-terrain-host-away/result.json`,
+`out/preview9-c27-terrain-failure-full/result.json`, and its full host log.
+Both games returned normally to Galaxy with faults 0 before runner exit 0.
