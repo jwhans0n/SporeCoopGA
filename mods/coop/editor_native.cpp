@@ -4063,6 +4063,34 @@ bool validate_entry(const std::vector<uint8_t>& bytes,uint32_t act,std::string& 
     return validate(projected,projected.document,error);
 }
 
+bool diagnostic_payload(const std::vector<uint8_t>& input,std::vector<uint8_t>& output){
+    static constexpr uint8_t magic[]={'D','B','P','F'};
+    constexpr uint32_t diagnostic_limit=4u<<20;
+    auto cursor=input.begin();
+    for(unsigned attempt=0;attempt<4;++attempt){
+        cursor=std::search(cursor,input.end(),std::begin(magic),std::end(magic));
+        if(cursor==input.end())return false;
+        dbpf::Package package;
+        if(package.load(std::vector<uint8_t>(cursor,input.end()))){
+            const auto* entry=package.find({0x01897C18,0x01897C18,0x01897C18});
+            if(entry && entry->size<=diagnostic_limit && entry->usize<=diagnostic_limit){
+                bool bounded=true;
+                if(entry->refpack){
+                    const auto* packed=std::to_address(cursor)+entry->offset;
+                    const size_t header=entry->size && (packed[0]&0x80)?6:5;
+                    bounded=entry->size>=header;
+                    uint32_t declared=0;
+                    if(bounded)for(size_t i=2;i<header;++i)declared=(declared<<8)|packed[i];
+                    bounded=bounded && declared<=diagnostic_limit;
+                }
+                if(bounded && package.read(*entry,output))return output.size()<=diagnostic_limit;
+            }
+        }
+        ++cursor;
+    }
+    return false;
+}
+
 bool supported_changes(const Gesture& gesture,std::string& error){
     ValidationScope scope;
     WorkTimer timer(native_work.supported);
@@ -4236,33 +4264,6 @@ bool supported_changes(const Gesture& gesture,std::string& error){
         // Diagnostic only: native serialization ends in a compressed DBPF.
         // Compare its decoded body rather than mistaking its byte length for
         // the authored field that actually changed. No native calls are added.
-        auto payload=[](const std::vector<uint8_t>& input,std::vector<uint8_t>& output){
-            static constexpr uint8_t magic[]={'D','B','P','F'};
-            auto cursor=input.begin();
-            for(unsigned attempt=0;attempt<4;++attempt){
-                cursor=std::search(cursor,input.end(),std::begin(magic),std::end(magic));
-                if(cursor==input.end())return false;
-                dbpf::Package package;
-                if(package.load(std::vector<uint8_t>(cursor,input.end()))){
-                    const auto* entry=package.find({0x01897C18,0x01897C18,0x01897C18});
-                    constexpr uint32_t diagnostic_limit=1u<<20;
-                    if(entry && entry->size<=diagnostic_limit && entry->usize<=diagnostic_limit){
-                        bool bounded=true;
-                        if(entry->refpack){
-                            const auto* packed=std::to_address(cursor)+entry->offset;
-                            const size_t header=entry->size && (packed[0]&0x80)?6:5;
-                            bounded=entry->size>=header;
-                            uint32_t declared=0;
-                            if(bounded)for(size_t i=2;i<header;++i)declared=(declared<<8)|packed[i];
-                            bounded=bounded && declared<=diagnostic_limit;
-                        }
-                        if(bounded && package.read(*entry,output))return output.size()<=diagnostic_limit;
-                    }
-                }
-                ++cursor;
-            }
-            return false;
-        };
         if(H){
             unsigned logged=0;
             for(const auto& [id,to]:gesture.after.document.placements){
@@ -4281,7 +4282,7 @@ bool supported_changes(const Gesture& gesture,std::string& error){
                 if(++logged==8)break;
             }
             std::vector<uint8_t> decoded_before,decoded_after;
-            const bool decoded=payload(left,decoded_before) && payload(right,decoded_after);
+            const bool decoded=diagnostic_payload(left,decoded_before) && diagnostic_payload(right,decoded_after);
             std::string differences;
             if(decoded){
                 unsigned recorded=0;
@@ -4301,6 +4302,7 @@ bool supported_changes(const Gesture& gesture,std::string& error){
             offset,unsigned(left[offset]),unsigned(right[offset]),left.size(),right.size());
         else snprintf(detail,sizeof detail," (normalized length differs at %zu; sizes %zu/%zu)",offset,left.size(),right.size());
         error=std::string("Shared editing rejected an unsupported avatar, template, act, global or placement property change")+detail;
+        if(H)H->log(M,SK_INFO,"%s",error.c_str());
         return false;
     }
     error.clear();return true;

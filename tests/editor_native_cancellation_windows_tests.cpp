@@ -1501,7 +1501,11 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
 #include "editor_native_recent_fixture.h"
 #include "editor_native_pose_capture_fixture.h"
 #include "editor_native_terrain_materialization_fixture.h"
+#include "editor_native_diagnostic_fixture.h"
 int main(int argc,char** argv){
+    if(argc==2&&std::string(argv[1])=="--diagnostic-only"){
+        test_native_payload_diagnostics();std::printf("native payload diagnostics: %u checks passed\n",checks);return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--history-toolbar-only"){
         test_history_toolbar_current_layout();std::printf("native history toolbar: %u checks passed\n",checks);return 0;
     }
@@ -1514,6 +1518,7 @@ int main(int argc,char** argv){
     if(argc==2&&std::string(argv[1])=="--recent-only"){
         test_recent_native_proofs();std::printf("native recent proofs: %u checks passed\n",checks);return 0;
     }
+    test_native_payload_diagnostics();
     test_history_toolbar_current_layout();
     test_recent_native_proofs();
     test_pose_capture_proofs();
