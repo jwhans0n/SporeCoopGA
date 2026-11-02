@@ -491,3 +491,71 @@ runs, and no running-game safety conclusion is inferred from that absence.
 Receipts are under `out/editor-preview9-creation/` and the collector receipt is
 `out/editor-creation-re/adventure-collector-validation.log`. These controlled
 tests do not replace the pending game-process acceptance checks.
+
+## 9. Native creation return failure, candidate 6 (2026-11-02)
+
+The actual hidden/muted private pair 95/96 used DLL SHA-256
+`82afd4a885c30b381d0198dc3e9bf4956c1a6cccde20e5e672d37da23403a94a`,
+PIDs 12316/52476 and the supported LAA executable. Both participants began at
+committed/durable revision 62 with zero native faults. Ordinary host input on
+New asset `C00F0301`, then New creature `C00F0310`, entered native mode
+`00DBDBA1`. A native mouth drag, the name `Preview9CreationProbeC6` and the
+green Done button saved the local creature. The host advanced once to
+committed/durable revision 63. Adventure return then failed with
+`Waiting for the active native Adventure Editor camera`; the host froze and
+displayed a black viewport. The guest froze at revision 62 with an explicit
+host-baseline-recovery notice. Both processes still reported zero native
+faults. This is a failed workflow, not native creation acceptance.
+
+Receipts are `out/preview9-creation-probe/result.json`, `commands.json` and the
+`95-creature-*.png` screenshots. No recovery, Undo, native memory write or
+direct native-function invocation was used after that failure. A later
+read-only receipt, `camera-native-readonly.json`, confirmed that both games
+were in Scenario mode and native Adventure Editor readiness was true. Host
+camera manager `+A8` was index 29, ID `A50C91D5`; its preferred vtable
+`013F69E8` resolves to `Editors::EditorCamera` methods. The Adventure Editor
+orbit camera `00EBB801` was present at index 40 with preferred vtable
+`0145CF20`, but was not active. The guest's active camera was that index 40.
+The host therefore retained the creation-editor camera despite mode return.
+
+Static cancellation findings remain narrower than a proof about all listeners.
+`57A710..57A960` does not inspect result `+44`; it emits result `030C11C7`,
+then return message `00E11332` using request `+1C`. Request constructor
+`5A9140` and Submit `5A92C0` obtain that mode through the native manager.
+Additional Adventure UI result listeners at `EDCD70`, `ED6B97`, `ED4289`
+and `EE3660` were inspected: their reviewed cancellation branches control
+asset callbacks/imports or follow-up validation, not camera activation.
+This does not establish that every result listener is cancellation-independent.
+
+The reviewed new-class import route is `ED4289 -> ED4640/ED4650 -> ED3A30`;
+its new branch calls `F462F0 -> F43990 -> F42470`. The last function only
+recreates already-placed actors belonging to the target class; a freshly
+allocated class has none. `ED37B0` builds/selects the cast card. The subsequent
+`07A12A49` notification reaches tutorial-state helpers at `EFC361`.
+No `EFDDC0/B5CEF0` activation call was found along that reviewed new-class
+route. Existing-class replacement can refresh actors and retains a broader
+side-effect path. Re-enabling the uncoordinated importer is therefore not a
+verified remedy for the observed new-creation return.
+
+Native browser `64B379..64B387` clears request `+39` for Scenario return.
+Tracing its consumer `58FB8D -> 5DCDC0` shows an editor UI visibility control,
+not a camera-resume operation. The Simulator request wrapper `B1DE20`
+optionally pauses token `04BF38A6` and runs UI transition `0462C656` before
+raw Submit; its reviewed `B1DAA0/B1DB10` helpers change UI visibility, while
+the direct branch at `B1DED4` submits immediately. Neither is a verified fix
+for the observed camera failure.
+
+Native edit-world setup at `F0007A` calls `EFDDC0`, which selects `00EBB801`
+through `B5CEF0`, then applies the resource camera bookmark and may focus the
+authored captain. `B5CEF0` is `thiscall(SimulatorSystem*, uint32 cameraID)`,
+`ret4`; it selects the App camera and refreshes the Simulator camera
+controller's cached orbit pointer. A bare App `SetActiveCamera` omits that
+second step. These are static activation receipts, not a completed creation
+return fix or proof that camera selection alone restores the whole scene.
+The proposed scoped boundary must check the exact creation scope/serial,
+native generation and settled Scenario return, validate the existing orbit
+camera before activation, verify the active object and controller afterward,
+then restore the pinned local view/selection before acknowledging return.
+Controlled fixtures should cover a missing orbit, changed context/generation,
+duplicate service, delayed readiness and both Done and Cancel. Actual native
+Done/Cancel and independent return must still establish scene acceptance.

@@ -222,6 +222,40 @@ under `out/preview9-commit-diagnostic-c6-r2`, including `measured-summary.json`,
 it does not pass performance acceptance or establish four-player, WAN,
 concurrent asset-transfer or feature-UI acceptance.
 
+## Candidate 6 creation UI probe: return failed
+
+After the measured run, the same owned hidden/muted candidate 6 pair remained
+at revision 62. The normal visible New asset / New creature controls opened
+the native creature editor. Native mouth placement, naming
+`Preview9CreationProbeC6` and green Done saved the local creation; the host
+advanced once to committed/durable revision 63. Return then froze with
+`Waiting for the active native Adventure Editor camera`. Its viewport was
+black. The guest remained at committed/durable revision 62 and froze with the
+host-baseline-recovery notice. Both native fault counters remained zero.
+
+The read-only camera receipt confirms the host still selected native creation
+camera `A50C91D5` at index 29, while the existing Adventure Editor orbit camera
+`00EBB801` was index 40. The guest remained on index 40. Both games reported
+Scenario mode and native readiness. Native readiness alone did not establish
+that the returning scene's intended camera had resumed.
+
+Evidence is under `out/preview9-creation-probe`, including `result.json`,
+`commands.json`, `camera-native-readonly.json` and the native screenshots.
+Inputs stopped at failure. No recovery, Undo, memory write or direct native
+function call was used to repair or conceal it. This probe establishes visible
+toolbar and creature-editor entry, and exposes a blocking return failure.
+It does not pass creation workflow, cancellation, remote editing, immutable
+distribution or independent-return acceptance.
+
+Static `NotifyResult` code does not read the cancellation flag, but that fact
+alone does not prove all result listeners are independent of it. Reviewed
+Adventure result listeners use cancellation to guard asset changes. The
+browser's Scenario-specific request field `39` controls editor UI visibility,
+not camera resume. Native activation/cached-camera synchronization requires
+further scoped implementation and an actual Done/Cancel rerun; no generic
+camera-selection repair is claimed here. Details are in
+[the creation RE notes](../re/creations.md#9-native-creation-return-failure-candidate-6-2026-11-02).
+
 ## Required native acceptance
 
 Actual two- and four-player candidate runs remain pending for crew edits,
