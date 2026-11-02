@@ -146,7 +146,9 @@ int main(){
     step();CHECK(editor_creation::active() && returned==1);
     return_ready=true;step();CHECK(!editor_creation::active() && finished==1 && skg::field<int>(request.data(),8)==0);
     initialize();start();result(true);return_ready=true;step();CHECK(!editor_creation::active() && native_imports==0);
-    initialize();start();result(false,true);return_ready=true;step();CHECK(!editor_creation::active() && returned_cancelled && native_imports==0);
+    // A family may save changed bytes under its existing native key. Identity
+    // equality cannot prove an unchanged Done; the coordinator compares content.
+    initialize();start();result(false,true);return_ready=true;step();CHECK(!editor_creation::active() && !returned_cancelled && native_imports==0);
     initialize();CHECK(!editor_creation::intercept(request.data(),submit));unref(request.data());live_scope=false;step();CHECK(!editor_creation::active() && submissions==0);
     initialize();CHECK(!editor_creation::intercept(request.data(),submit));unref(request.data());reject=true;step();CHECK(!editor_creation::active() && submissions==0);
     initialize();CHECK(!editor_creation::intercept(request.data(),submit));unref(request.data());editor_creation::cancel_pending();CHECK(!editor_creation::active() && submissions==0);

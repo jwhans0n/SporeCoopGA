@@ -80,9 +80,6 @@ void SK_THISCALL notify(void* editor,void* result){
            completed.saved.type!=session->request.source.type)){
             completed.cancelled=true;status="The native editor returned an unsupported creation";
         }
-        // Done without a native content change returns the original source.
-        // Restore the adventure view without allocating a new shared version.
-        if(!completed.cancelled && completed.saved==session->request.source)completed.cancelled=true;
         session->result=completed;session->phase=Phase::Returning;
         if(!completed.cancelled)retained_saved=completed;
     }

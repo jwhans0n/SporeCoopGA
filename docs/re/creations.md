@@ -422,5 +422,5 @@ and exact client viewport. The fixture rejects arbitrary console/native calls,
 unowned windows, candidate hash mismatches and truncated asset diagnostics.
 Its self-test and Python compilation pass; no running-game result or measured
 recipe is claimed by those checks. The production i686 lifecycle fixture now
-passes 211 checks, including unchanged Done, both logical and companion resource
+passes 211 checks, including same-key Save routing, both logical and companion resource
 identity collisions, and the host ABI's zero-success hook registration.
