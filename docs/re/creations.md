@@ -842,9 +842,31 @@ toolbar action. No game calls, I/O or native state changes occur inside
 Present.
 
 `tests/editor_creation_ui_windows_tests.cpp` runs the production UI against
-controlled native window objects and passes 60 strict i686 checks. It covers
+controlled native window objects and passes 64 strict i686 checks. It covers
 unknown decorative template children, a hidden cached picker preceding a
 visible duplicate, ancestor visibility, stale child ownership, queued clicks,
 four family choices and bounded/context cleanup. Receipt:
-`out/editor-preview9-creation-routing/ui.log`. This proves the adapter's window
-behavior; actual candidate 10 screenshot acceptance remains required.
+`out/editor-preview9-creation-routing/ui-c11.log`. This proves the adapter's
+window behavior; actual candidate 11 screenshot acceptance remains required.
+
+Candidate 10 removed the decorative logo, but its creation toolbar was absent
+before any creation input. A bounded ReadProcessMemory-only replay of the
+verified native Flags, ControlID and Parent getters identified the first guard
+branch: visible root `53C6DC80`, depth 2, after 381 visible nodes. Neither the
+depth nor total-node safeguard caused the rejection. The closed picker retains
+this visible root and empty scaffold, while its header `53C5B392`, card frame
+`53C5B391` and sidebar `53C5B390` have flags `12` (hidden). In the candidate 9
+open Crew picker, these same owning frames have flags `13` (visible).
+
+The guard now requires one of these visible frames on a visible owning path
+inside a `53C6DC80` subtree. A persistent empty root, hidden cached content or
+an unrelated frame outside the picker does not hide the toolbar. The fixture
+covers these states and all three observed active frames, including a visible
+duplicate picker after a hidden cached instance. Receipts:
+`out/preview9-creation-probe-c10/toolbar-guard-first-branch.json`,
+`toolbar-picker-closed-tree.txt` in the same directory, and
+`out/preview9-c9-crew-add-open/tree.txt`. No creation entry or Save was attempted
+in candidate 10. All four processes returned normally through co-op Leave,
+native Cancel and Quit/discard to Galaxy with zero faults; the private runner
+remained under its owner's control. This is safe failure evidence, not native
+acceptance of the corrected toolbar or four-family workflows.
