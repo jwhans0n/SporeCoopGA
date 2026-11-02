@@ -10,6 +10,13 @@ from pe import PE
 
 SHA = 'dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37'
 ENTRIES = [
+    ('SendMetadataNameChanged',0x8854A0,'81ec2c0a0000538bd98b8c243c0a0000',[(0x8854D2,12),(0x8856F9,12)],
+     'generic MessageSend,thiscall(manager,id,payload,singleRecipient),retC; synchronous native7AA519DC caption notification, owned20-byte packet/nameable0/title8/zero10',
+     [(0xF3CC59,0x67DC80),(0xEDB3EE,0x5BFE40)],
+     [(0x67DC80,'a190d85f01c3'),(0x884B17,'c706c07a4201'),(0x1427AD4,'a0548800'),
+      (0xF3CC49,'c744241c000000008944240c894c2414'),(0xF3CC60,'8b52146a008d4c24105168dc19a57a8bc8ffd2'),
+      (0x8855A0,'ffd0'),(0x88568A,'ffd2'),(0x592F19,'8b083b8e880000000f85d6f0ffff8b7808'),
+      (0x5BFC33,'3ddc19a57a75218b4424188b083b4e1875168b5008528d4efce8fffdffff')]),
     ('GetSimulatorModeManager',0xB3D420,'a1ecea6701',[(0xB3D425,0)],
      'cdecl()->SimulatorGameModeManager,plain ret; Scenario Update rejects transition flag28 before initialization and pending OnEnter resume',
      [(0xEF2EF6,0xB3D420),(0xEF2548,0xEF1BC0),(0xEF2FB2,0xEF0990),(0xEF09A3,0xEFF670),(0xF0007A,0xEFDDC0)],

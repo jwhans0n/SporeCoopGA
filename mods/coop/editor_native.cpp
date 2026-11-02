@@ -45,6 +45,7 @@ std::optional<bool> authoring_override;
 uintptr_t a_view_manager, a_view_target, a_view_orbit, a_view_set_orbit, a_view_lookat;
 uintptr_t a_get_simulator_system,a_get_simulator_camera_state,a_activate_simulator_camera;
 uintptr_t a_scenario_initialization,a_get_simulator_mode_manager;
+uintptr_t a_metadata_message_manager,a_metadata_message_send;
 bool supported, applying, queued;
 bool fence_queued;
 double last_fence;
@@ -2544,6 +2545,44 @@ bool resume_creation_scene_camera(const GestureScope& scope,uint64_t serial,uint
     error.clear();return true;
 }
 
+bool notify_metadata_caption(const SceneOwner& owner,uint64_t expected_generation,const GestureScope& scope,
+                             const Snapshot::Metadata& metadata,std::string& error){
+    const auto pinned_scope=scope;
+    const auto current_owner=[&]()->void*{
+        const auto native=state();void* current_mode=mode();void* current_data=data(current_mode);
+        void* current_resource=resource(current_data);
+        if(!expected_generation || native.generation!=expected_generation || !native.editing || native.playtesting || native.gesture || applying ||
+           !owner.mode || !owner.data || !owner.resource || uintptr_t(current_mode)!=owner.mode || uintptr_t(current_data)!=owner.data ||
+           uintptr_t(current_resource)!=owner.resource || !skg::readable(current_resource,kResourceSize) ||
+           skg::field<editor::ResourceKey>(current_resource,8)!=owner.source || (C.gesture_scope && C.gesture_scope()!=pinned_scope))return nullptr;
+        return current_data;
+    };
+    auto* current=current_owner();Snapshot::Metadata actual;
+    if(!current || !capture_metadata(current,actual,error) || actual!=metadata){
+        if(error.empty())error="The restored adventure metadata no longer owns its native caption";return false;
+    }
+    if(!a_metadata_message_manager || !a_metadata_message_send){error="The verified native name notification is unavailable";return false;}
+    auto* manager=skg::cdecl_call<void*>(a_metadata_message_manager);
+    if(!view_slot(manager,0x14/4) || uintptr_t(skg::vtable(manager)[0x14/4])!=a_metadata_message_send){
+        error="The verified synchronous native name notification is unavailable";return false;
+    }
+    const Snapshot::Dirty dirty{skg::field<uint32_t>(current,0x80),skg::field<bool>(current,0x84),skg::field<bool>(current,0x85)};
+    // F3CC00 sends this stack packet through MessageSend (+14), not MessagePost
+    // (+18). Both reviewed listeners consume nameable+0 and UTF16 text+8 inline;
+    // no pointer survives the call. Avoid SetName, which skips equal names and
+    // changes the separate native imported flag even for a caption refresh.
+    std::array<uint8_t,20> packet{};
+    skg::field<void*>(packet.data(),0)=skg::ptr_add<void>(current,4);
+    skg::field<const char16_t*>(packet.data(),8)=metadata.text[0].c_str();
+    skg::thiscall<void>(a_metadata_message_send,manager,uint32_t(0x7AA519DC),packet.data(),static_cast<void*>(nullptr));
+    current=current_owner();if(!current){error="The native adventure scene changed during its name notification";return false;}
+    skg::field<uint32_t>(current,0x80)=dirty.saved_revision;skg::field<bool>(current,0x84)=dirty.dirty;skg::field<bool>(current,0x85)=dirty.imported;
+    if(!capture_metadata(current,actual,error) || actual!=metadata){
+        if(error.empty())error="The restored adventure metadata changed during its name notification";return false;
+    }
+    error.clear();return true;
+}
+
 bool restore_view(const LocalView& view, uint64_t expected_generation, std::string& error) {
     const auto native=state();
     if (!native.ready || native.gesture || applying || native.generation!=expected_generation) {
@@ -2650,6 +2689,8 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     a_activate_simulator_camera=H->sym("SporeCoop::Editor::ActivateSimulatorCamera");
     a_scenario_initialization=H->sym("SporeCoop::Editor::ScenarioInitializationState");
     a_get_simulator_mode_manager=H->sym("SporeCoop::Editor::GetSimulatorModeManager");
+    a_metadata_message_manager=H->sym("App::IMessageManager::Get");
+    a_metadata_message_send=H->sym("SporeCoop::Editor::SendMetadataNameChanged");
     a_view_target=H->sym("SporeCoop::Editor::CurrentOrbitTarget");
     a_view_orbit=H->sym("SporeCoop::Editor::CurrentOrbitScalars");
     a_view_set_orbit=H->sym("SporeCoop::Editor::SetOrbitScalarsInstant");
@@ -3352,6 +3393,9 @@ bool restore(const Snapshot& snapshot, std::string& error) {
     }
     auto s=state();
     if (!s.ready || s.gesture || applying) { error="Native Adventure Editor cannot restore during this transition"; return false; }
+    SceneOwner metadata_owner;
+    const auto metadata_scope=C.gesture_scope?C.gesture_scope():GestureScope{};
+    if(snapshot.metadata && !capture_scene_owner(metadata_owner,error))return false;
     const bool rebuild_terrain=snapshot.document.settings.contains(editor_native_terrain::kPlanetObject) &&
         !same_terrain(materialized_terrain?*materialized_terrain:act_identity,snapshot.document);
     if(rebuild_terrain && (!terrain_available || !skg::readable(terraform_mode(),0x1CC))){error="Native terrain regeneration is unavailable";return false;}
@@ -3427,6 +3471,7 @@ bool restore(const Snapshot& snapshot, std::string& error) {
             if(found!=placement.properties.end())if(const auto* value=std::get_if<float>(&found->second))skg::field<float>(marker,offset)=*value;
         }
     }
+    if(snapshot.metadata && !notify_metadata_caption(metadata_owner,s.generation,metadata_scope,*snapshot.metadata,error))return false;
     ++restores;
     if(local_view){
         if(terrain_rebuilding){

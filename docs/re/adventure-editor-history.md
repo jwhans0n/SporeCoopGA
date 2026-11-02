@@ -253,3 +253,27 @@ bindings, target document, act and native generation. Local dirty flags remain
 local rollback state. Focused i686 fixtures cover immutable before/after strings,
 coalesced metadata, malformed strings, known metadata changes and forged captain
 sidecars; the private game benchmark remains the performance gate.
+
+## Metadata caption refresh without an authored mutation
+
+Restoring ScenarioData metadata through the lower owning string assignment
+updates the native value but skips the title binding's NameChanged event. The
+ordinary `SetName` (`F3CC00`) cannot repair an already equal title: it returns
+early, and its other path also marks ScenarioData's imported flag. Native
+`7AA519DC` is instead sent synchronously through IMessageManager slot `+14`
+(`8854A0`, MessageSend), using a 20-byte packet with ScenarioData's `+4`
+nameable interface at packet `+0`, null-terminated UTF-16 text at `+8`, and
+zero at `+10`. Both reviewed title receivers consume these fields inline;
+`MessagePost` at slot `+18` is unsuitable for this temporary packet. Full native
+sender, receiver and lifetime receipts are in the creations RE notes and the
+exact-image editor ABI verifier.
+
+After metadata and native resource restoration, the adapter sends this bounded
+notification for its pinned mode/data/resource/source owner, native generation,
+and logical scope. It resolves and checks that owner again after the synchronous
+call, preserves saved revision/dirty/imported flags, and confirms the metadata
+still matches. It sends no authored transaction, history item, or resource
+change. Focused actual-i686 adapter fixtures check the precise packet and
+synchronous copy, unchanged draft/history/selection/view, dirty preservation,
+missing dispatcher, and owner/generation/scope changes during notification.
+Native visible-title acceptance remains a separate running-game check.

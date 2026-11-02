@@ -1155,6 +1155,55 @@ void test_creation_scene_camera_resume(){
     a_get_simulator_mode_manager=a_scenario_initialization=a_layout_shown=0;
     reset();
 }
+std::array<void*,6> v_message_vt;
+void** v_messages=v_message_vt.data();
+unsigned v_name_notices=0;
+unsigned v_name_mutation=0;
+std::u16string v_caption;
+void* SK_CDECL v_get_messages(){return &v_messages;}
+void SK_THISCALL v_name_notice(void* self,uint32_t id,void* packet,void* recipient){
+    CHECK(self==&v_messages&&id==0x7AA519DC&&!recipient);++v_name_notices;
+    CHECK(skg::field<void*>(packet,0)==t_data.data()+4);
+    CHECK(!skg::field<uint32_t>(packet,4)&&!skg::field<uint32_t>(packet,0xC)&&!skg::field<uint32_t>(packet,0x10));
+    const auto* title=skg::field<const char16_t*>(packet,8);CHECK(title);v_caption=title;
+    // A notification is display-only. Preserve these independently owned dirty
+    // flags even if another synchronous listener marks the native owner.
+    skg::field<uint32_t>(t_data.data(),0x80)=999;skg::field<bool>(t_data.data(),0x84)=false;skg::field<bool>(t_data.data(),0x85)=true;
+    if(v_name_mutation==1)++generation;
+    if(v_name_mutation==2)++t_scope.epoch;
+    if(v_name_mutation==3)skg::field<void*>(t_mode.data(),0x74)=t_other_data.data();
+    if(v_name_mutation==4)++skg::field<editor::ResourceKey>(t_live.data(),8).instance;
+    if(v_name_mutation==5)++skg::field<uint32_t>(t_data.data(),0x7C);
+}
+void test_metadata_caption_notification(){
+    std::u16string title=u"Private native adventure";std::string error;
+    auto setup=[&]{
+        view_fixture();v_message_vt.fill(nullptr);v_messages=v_message_vt.data();v_message_vt[0x14/4]=reinterpret_cast<void*>(v_name_notice);
+        a_metadata_message_manager=uintptr_t(v_get_messages);a_metadata_message_send=uintptr_t(v_name_notice);
+        skg::field<void*>(t_data.data(),0x4C)=title.data();skg::field<void*>(t_data.data(),0x50)=title.data()+title.size();
+        skg::field<uint32_t>(t_data.data(),0x80)=42;skg::field<bool>(t_data.data(),0x84)=true;skg::field<bool>(t_data.data(),0x85)=false;
+        v_name_notices=v_name_mutation=0;v_caption.clear();
+    };
+    setup();SceneOwner owner;Snapshot::Metadata metadata;
+    CHECK(capture_scene_owner(owner,error)&&capture_metadata(t_data.data(),metadata,error));const auto expected=state().generation;
+    const auto data_before=t_data;const auto resource_before=t_live;const auto history_before=t_history;const auto rows_before=t_rows[t_live.data()];
+    CHECK(notify_metadata_caption(owner,expected,t_scope,metadata,error));
+    CHECK(v_name_notices==1&&v_caption==title&&t_data==data_before&&t_live==resource_before&&t_history==history_before&&t_rows[t_live.data()]==rows_before);
+    CHECK(!pending.size()&&!t_steps&&!t_restores&&!v_looks&&!v_sets);
+    for(unsigned reason=0;reason<10;++reason){
+        setup();CHECK(capture_scene_owner(owner,error)&&capture_metadata(t_data.data(),metadata,error));auto native=state().generation;auto scope=t_scope;
+        if(reason==0)owner.data=1;if(reason==1)owner.resource=1;if(reason==2)owner.mode=1;
+        if(reason==3)++native;if(reason==4)++scope.epoch;if(reason==5)t_game_mode_id=modes::kEditor;
+        if(reason==6)a_metadata_message_manager=0;if(reason==7)a_metadata_message_send=0;
+        if(reason==8)v_message_vt[0x14/4]=nullptr;if(reason==9)metadata.text[0]=u"uncommitted title";
+        CHECK(!notify_metadata_caption(owner,native,scope,metadata,error)&&!error.empty()&&!v_name_notices);
+    }
+    for(unsigned reason=1;reason<=5;++reason){
+        setup();CHECK(capture_scene_owner(owner,error)&&capture_metadata(t_data.data(),metadata,error));const auto native=state().generation;v_name_mutation=reason;
+        CHECK(!notify_metadata_caption(owner,native,t_scope,metadata,error)&&!error.empty()&&v_name_notices==1);
+    }
+    a_metadata_message_manager=a_metadata_message_send=0;reset();
+}
 std::array<uint8_t,0x100> v_terrain;
 bool SK_THISCALL v_terrain_loaded(void* self){CHECK(self==v_terrain.data());return skg::field<void*>(self,0xFC)==nullptr;}
 void test_local_view(){
@@ -1388,6 +1437,7 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
     reset();CHECK(t_allocations.empty());
 }
 int main(){
+    test_metadata_caption_notification();
     test_resolved_captain_sidecars();
     test_pending_capture_fences();
     test_preset_history_boundary();
