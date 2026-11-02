@@ -1335,6 +1335,60 @@ static uint32_t SK_THISCALL t_pose_insert(void* destination,void* marker){
     const auto index=uint32_t(rows.size()/0x238);const auto* first=static_cast<uint8_t*>(marker)-4;
     rows.insert(rows.end(),first,first+0x238);rows_for(owner);return index;
 }
+std::array<uint8_t,0x34> t_entry_marker_act;
+void* SK_THISCALL t_entry_copy_acts(void* destination,const uintptr_t* source){
+    CHECK(source[1]-source[0]==0x534);std::memcpy(destination,source,12);return destination;
+}
+bool SK_THISCALL t_entry_write(void* r,editor_native::Stream* stream){
+    const std::array<uint32_t,3> prefix{0xB523D4F9,17,0};
+    const auto& rows=t_rows[r];const std::array<uint32_t,3> header{0x454E5431,uint32_t(rows.size()/0x238),skg::field<uint32_t>(r,0x2C4C)};
+    return editor_native::write(stream,prefix.data(),sizeof prefix) && editor_native::write(stream,header.data(),sizeof header) &&
+        editor_native::write(stream,skg::ptr_add<void>(r,0x130),0x46) && editor_native::write(stream,rows.data(),uint32_t(rows.size()));
+}
+bool SK_THISCALL t_entry_read(void* r,editor_native::Stream* stream){
+    std::array<uint32_t,3> prefix{},header{};
+    if(editor_native::read(stream,prefix.data(),sizeof prefix)!=sizeof prefix || prefix!=std::array<uint32_t,3>{0xB523D4F9,17,0} ||
+       editor_native::read(stream,header.data(),sizeof header)!=sizeof header || header[0]!=0x454E5431 || header[1]>editor_native::kPlacementLimit ||
+       editor_native::read(stream,skg::ptr_add<void>(r,0x130),0x46)!=0x46 || stream->bytes.size()-stream->position!=header[1]*0x238)return false;
+    auto& rows=t_rows[r];rows.resize(header[1]*0x238);
+    if(editor_native::read(stream,rows.data(),uint32_t(rows.size()))!=int(rows.size()))return false;
+    rows_for(r);skg::field<uint32_t>(r,0x2C4C)=header[2];
+    skg::field<void*>(r,0x2BF4)=t_pose_class.data();skg::field<void*>(r,0x2BF8)=t_pose_class.data()+t_pose_class.size();
+    skg::field<void*>(r,0x23C)=t_pose_act.data();skg::field<void*>(r,0x240)=t_pose_act.data()+t_pose_act.size();return true;
+}
+void test_entry_hydrates_nonzero_captain_before_scene_entry(){
+    reset();const auto old_read=a_read,old_write=a_write,old_acts=a_copy_acts,old_crew=a_copy_crew;
+    a_read=uintptr_t(t_entry_read);a_write=uintptr_t(t_entry_write);a_copy_acts=uintptr_t(t_entry_copy_acts);a_copy_crew=0;
+    C.authoring_tracked=[]{return true;};t_pose_class.fill(0);t_pose_act.fill(0);t_entry_marker_act.fill(0);
+    skg::field<uint32_t>(t_pose_class.data(),0)=1024;
+    skg::field<void*>(t_live.data(),0x2BF4)=t_pose_class.data();skg::field<void*>(t_live.data(),0x2BF8)=t_pose_class.data()+t_pose_class.size();
+    skg::field<void*>(t_live.data(),0x23C)=t_pose_act.data();skg::field<void*>(t_live.data(),0x240)=t_pose_act.data()+t_pose_act.size();
+    // Exact nonzero Adventure Town identity from the retained c8 rev0
+    // checkpoint. The controlled stream exercises the production adapter's
+    // typed projection/recursive validation before any Scenario scene exists.
+    const editor::ResourceKey town{132681735,731352134,1080189440};
+    skg::field<editor::ResourceKey>(t_live.data(),0x130)=town;skg::field<uint64_t>(t_live.data(),0x140)=UINT64_MAX;
+    skg::field<float>(t_live.data(),0x16C)=3;skg::field<float>(t_live.data(),0x170)=.9f;
+    for(auto* p=t_rows[t_live.data()].data();p<t_rows[t_live.data()].data()+t_rows[t_live.data()].size();p+=0x238){
+        auto* marker=p+4;skg::field<uint32_t>(marker,0)=1024;skg::field<editor::Rotation>(marker,0x10)={0,0,0,1};
+        skg::field<float>(marker,0x20)=1;skg::field<float>(marker,0x24)=.5f;
+        skg::field<void*>(marker,0x28)=t_entry_marker_act.data();skg::field<void*>(marker,0x2C)=t_entry_marker_act.data()+t_entry_marker_act.size();
+    }
+    std::vector<uint8_t> bytes;std::string error;CHECK(serialize(t_live.data(),bytes,error));
+    const auto original=t_live;const auto original_rows=t_rows[t_live.data()];t_game_mode_id=modes::kMenu;
+    Owned parsed(parse(bytes,error));CHECK(parsed.p);Snapshot fresh;fresh.act=0;editor::Document identity;
+    CHECK(projection(parsed.p,fresh,error,nullptr,std::nullopt,std::nullopt,std::nullopt,std::nullopt,&identity));fresh.bytes=bytes;
+    CHECK(fresh.document.settings.contains(kCaptainObject)&&fresh.captain==editor::ResourceKey{});
+    CHECK(!validate(fresh,fresh.document,error)&&error.find("authored sidecar")!=std::string::npos); // Original c8 regression.
+    CHECK(validate_entry(bytes,0,error)); // Entry itself now hydrates its own proof.
+    CHECK(hydrate_native_captain(parsed.p,fresh,error)&&fresh.captain==town&&!fresh.captain_locked);
+    CHECK(validate(fresh,fresh.document,error));
+    auto malformed=fresh;malformed.captain.instance^=1;CHECK(!validate(malformed,fresh.document,error));
+    malformed=fresh;malformed.captain_locked=true;CHECK(!validate(malformed,fresh.document,error));
+    CHECK(t_game_mode_id==modes::kMenu&&!t_restores&&pending.empty()&&t_live==original&&t_rows[t_live.data()]==original_rows);
+    release(std::exchange(parsed.p,nullptr)); // Release explicitly before fixture reset.
+    a_read=old_read;a_write=old_write;a_copy_acts=old_acts;a_copy_crew=old_crew;reset();
+}
 bool t_captain_resolve_failure=false;
 bool SK_CDECL t_resolve_captain(uint64_t server,editor::ResourceKey* key){
     CHECK(server==17);if(t_captain_resolve_failure)return false;*key={7,9,11};return true;
@@ -1437,6 +1491,7 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
     reset();CHECK(t_allocations.empty());
 }
 int main(){
+    test_entry_hydrates_nonzero_captain_before_scene_entry();
     test_metadata_caption_notification();
     test_resolved_captain_sidecars();
     test_pending_capture_fences();

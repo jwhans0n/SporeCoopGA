@@ -277,3 +277,29 @@ change. Focused actual-i686 adapter fixtures check the precise packet and
 synchronous copy, unchanged draft/history/selection/view, dirty preservation,
 missing dispatcher, and owner/generation/scope changes during notification.
 Native visible-title acceptance remains a separate running-game check.
+
+## C8 pre-entry captain-sidecar regression
+
+The first C8 guest rejected an Adventure Town baseline with `The native captain
+identity differs from its authored sidecar` before native entry, with capture
+and restore counters both zero and no native faults. Its source evidence is
+`out/preview9-c8-four-town-bootstrap-inspection/bootstrap-failure-current.json`.
+The retained host revision-zero checkpoint independently asserts captain
+`40626200!07E89007.2B978C46`, unlocked; the extracted native resource has SHA-256
+`4eaa187acb73b601c08804c3bd9856abffc548f11a56483902e33ebf4da9a79e`.
+
+`validate_entry` privately parsed the resource and built a fresh typed projection
+before recursive validation, but left that temporary Snapshot's captain sidecars
+at their zero defaults. The new strict assertion therefore rejected its own
+otherwise valid projection. This constructor omission did not establish a bad
+resource transfer or a native scene mutation. Entry validation now hydrates its
+own captain identity from the verified projection, retaining raw legacy values
+only where no typed Captain row exists. The same internal hydration helper is
+used consistently by capture, expansion, owned edits and both prepared-snapshot
+paths; supplied snapshots still receive the strict independent native check.
+
+A focused actual-i686 adapter regression reproduces the original unhydrated
+failure with the checkpoint's nonzero captain, then exercises `validate_entry`
+success while the active game mode is Galaxy, before any native entry or restore.
+Forged supplied captain keys and lock flags still reject. Native running-game
+baseline admission remains the next candidate's acceptance check.

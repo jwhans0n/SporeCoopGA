@@ -734,6 +734,11 @@ bool valid_metadata(const std::optional<Snapshot::Metadata>& metadata,std::strin
     }
     return true;
 }
+bool hydrate_native_captain(void* resource,Snapshot& snapshot,std::string& error){
+    auto key=skg::field<editor::ResourceKey>(resource,0x130);auto locked=skg::field<bool>(resource,0x175);
+    if(!captain_identity(snapshot.document,key,locked,error))return false;
+    snapshot.captain=key;snapshot.captain_locked=locked;return true;
+}
 bool captain_sidecar_matches(void* resource,const Snapshot& snapshot,const editor::Document& document,std::string& error){
     // Old projections without Captain settings have no asserted sidecar when
     // both values are their original defaults. Expansion hydrates them from
@@ -784,10 +789,8 @@ bool capture_resource(void* r, uint32_t act, Snapshot& out, std::string& error,
     }
     out = {}; out.act = act;
     out.source = skg::field<editor::ResourceKey>(r, 8);
-    out.captain=skg::field<editor::ResourceKey>(r,0x130);
-    out.captain_locked=skg::field<bool>(r,0x175);
     if (!serialize(r,out.bytes,error) || !projection(r, out, error,supplied,std::nullopt,std::nullopt,std::nullopt,std::nullopt,identity,&out.bytes,terrain_recipe_replacement&&terrain_capturing)) return false;
-    if(!captain_identity(out.document,out.captain,out.captain_locked,error))return false;
+    if(!hydrate_native_captain(r,out,error))return false;
     // Write omits free native pool slots. Read inserts its marker sequence into
     // a fresh pool, so artifact bindings describe serialized order, not live holes.
     std::vector<Binding> compact;
@@ -2945,8 +2948,7 @@ bool expand_snapshot(const Snapshot& input,bool relative,Snapshot& out,std::stri
     for(const auto& binding:input.bindings)if(!supplied.emplace(binding.marker,binding.object).second){error="Duplicate legacy placement binding";return false;}
     auto expanded=input;
     if(!projection(copy.p,expanded,error,&supplied,relative,true,true,true,&input.document,&input.bytes))return false;
-    expanded.captain=skg::field<editor::ResourceKey>(copy.p,0x130);expanded.captain_locked=skg::field<bool>(copy.p,0x175);
-    if(!captain_identity(expanded.document,expanded.captain,expanded.captain_locked,error))return false;
+    if(!hydrate_native_captain(copy.p,expanded,error))return false;
     out=std::move(expanded);return true;
 }
 bool canonicalize_cast_state(editor::State& state,std::string& error){
@@ -3010,6 +3012,7 @@ bool validate_entry(const std::vector<uint8_t>& bytes,uint32_t act,std::string& 
     Snapshot projected;projected.act=act;
     const editor::Document fresh;
     if(!projection(copy.p,projected,error,nullptr,std::nullopt,std::nullopt,std::nullopt,std::nullopt,&fresh))return false;
+    if(!hydrate_native_captain(copy.p,projected,error))return false;
     projected.bytes=bytes;
     return validate(projected,projected.document,error);
 }
@@ -3687,7 +3690,7 @@ bool prepare(const Snapshot& base,const editor::Document& document,const editor:
     skg::field<uint32_t>(merged.p,0x2C28)=skg::field<uint32_t>(retained.p,0x2C28);
     Snapshot prepared=base;prepared.document=document;prepared.bindings=std::move(next);
     prepared.act=std::min<uint32_t>(base.act,uint32_t(document.acts.size()-1));
-    prepared.captain=skg::field<editor::ResourceKey>(merged.p,0x130);prepared.captain_locked=skg::field<bool>(merged.p,0x175);
+    if(!hydrate_native_captain(merged.p,prepared,error))return false;
     if(!serialize(merged.p,prepared.bytes,error))return false;
     if(document.settings.contains(editor_native_terrain::kPlanetObject) && !editor_native_terrain::merge(prepared.bytes,document,prepared.bytes,error))return false;
     if(!validate(prepared,document,error))return false;
@@ -3710,9 +3713,8 @@ bool edit_owned_snapshot(const Snapshot& base,const std::function<bool(void*,std
     Snapshot result=base;
     if(!serialize(owned.p,result.bytes,error) || !projection(owned.p,result,error,&supplied,relative,base.document.schema.contains(kElevationProperty),
                    !base.document.class_schema.empty(),!base.document.settings_schema.empty(),&base.document,&result.bytes))return false;
-    result.source=skg::field<editor::ResourceKey>(owned.p,8);result.captain=skg::field<editor::ResourceKey>(owned.p,0x130);
-    result.captain_locked=skg::field<bool>(owned.p,0x175);
-    if(!captain_identity(result.document,result.captain,result.captain_locked,error))return false;
+    result.source=skg::field<editor::ResourceKey>(owned.p,8);
+    if(!hydrate_native_captain(owned.p,result,error))return false;
     std::vector<Binding> compact;if(!serialized_bindings(result.bindings,compact,error))return false;
     result.bindings=std::move(compact);out=std::move(result);error.clear();return true;
 }
@@ -3854,7 +3856,7 @@ bool apply(const editor::Document& document,const editor::Change& change,const S
             }
         }
         auto prepared=snapshot;prepared.document.settings_schema=document.settings_schema;prepared.document.settings=document.settings;
-        prepared.captain=skg::field<editor::ResourceKey>(merged.p,0x130);prepared.captain_locked=skg::field<bool>(merged.p,0x175);
+        if(!hydrate_native_captain(merged.p,prepared,error))return false;
         if(!serialize(merged.p,prepared.bytes,error) || !validate(prepared,prepared.document,error) ||
            (C.validate_dependencies && !C.validate_dependencies(prepared,error)) || !restore(prepared,error) || !capture(snapshot,error))return false;
     }
