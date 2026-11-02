@@ -377,3 +377,30 @@ Focused actual-i686 tests cover duplicate slots, opaque record bytes, stale
 reorder/removal targets, server-backed hints, malformed and missing rosters,
 capacity and atomic failure. Running-game cross-profile acceptance remains a
 separate next-candidate check.
+
+The C10 four-player native follow-up confirmed one capacity-plus transaction
+and one Crew history item at revision 1, with exact native convergence and no
+faults. The unique Spice Crawler card was then selected and accepted through
+the ordinary picker. Before canonical submission, the runtime rejected it with
+`A verified local creation is required for shared content versioning` and
+restored the committed draft. All four stayed ready at revision/durable 1 with
+matching native checks and zero faults. Evidence is in
+`out/preview9-c10-crew-capacity/result.json` and
+`out/preview9-c10-crew-select/rejection-all-four.json`.
+
+Native snapshot projection intentionally resets its Document and projects
+authored values/identities without populating the session project UUID. The
+runtime versioning call passed that zero native-projection UUID to
+immutable_version, rather than the current fenced canonical context. This is
+an input-provenance failure before version allocation, distinct from the C9
+cross-profile model conflict. The rejected C10 after-image was not persisted,
+so the retained unique card/UI evidence does not constitute a new raw selected
+ResourceKey capture. The narrow runtime correction and its next native
+acceptance are tracked separately.
+
+For ordinary Crew picker automation, use the visible Sporepedia control
+`53C6DC80` as readiness. C10's visible header was `Choose one or more Creatures`;
+the hidden/clipped `Choose A Crew Member` caption is not a reliable wait target.
+The C9/C10 empty-slot point `(998,489)` is measured at 1024x768 only and must
+still hit both native `03D982FF` and `03D98298` before clicking. Capacity-plus
+remains `0774B060` and the Crew lock checkbox is `07C4B4A0`.
