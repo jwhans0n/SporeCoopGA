@@ -58,7 +58,7 @@ def run(args):
     deadline=time.monotonic()+args.deadline
     games=[PublicGame(i,args.output,args.timeout,deadline) for i in args.instances]
     host=games[0];author=next(game for game in games if game.instance==args.author)
-    result=dict(passed=False,stage=args.stage,author=args.author,candidate=args.dll_sha256,checks=[])
+    result=dict(passed=False,stage=args.stage,author=args.author,candidate=args.dll_sha256,history_input=args.history_input,checks=[])
     context=None;before_messages={};capabilities={}
     def write():
         (args.output/'result.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
@@ -150,7 +150,9 @@ def run(args):
             if not own or own[-1][-1]!='Edit adventure crew':
                 raise FixtureError('The pinned author has no applied Crew history item')
             for key in ('z','y'):
-                EditorPair.hotkey(author,key);revision+=1;host.wait('author-owned native Crew history',lambda:settled(revision))
+                if args.history_input=='toolbar':author.click_control(0xB006EF6E if key=='z' else 0xF006EFA5)
+                else:EditorPair.hotkey(author,key)
+                revision+=1;host.wait('author-owned native Crew history',lambda:settled(revision))
                 if len(checked_history(host.call('coop.editor history')))!=len(expected_history):raise FixtureError('Undo/Redo created a duplicate history entry')
                 if key=='z' and semantic(host)==expected_semantic:raise FixtureError('Crew Undo had no authored effect')
                 record('history-'+key)
@@ -208,6 +210,7 @@ def main():
     parser.add_argument('--slot',type=int,nargs=2,default=[998,489]);parser.add_argument('--lock-point',type=int,nargs=2,default=[977,466])
     parser.add_argument('--member-point',type=int,nargs=2,default=[998,489]);parser.add_argument('--remove-point',type=int,nargs=2)
     parser.add_argument('--search');parser.add_argument('--card');parser.add_argument('--verify-history',action='store_true')
+    parser.add_argument('--history-input',choices=['hotkeys','toolbar'],default='hotkeys')
     parser.add_argument('--timeout',type=int,default=90);parser.add_argument('--deadline',type=int,default=900)
     args=parser.parse_args()
     if args.self_test:self_test();return
