@@ -1513,10 +1513,25 @@ void SK_THISCALL terrain_remove(void* self,void* actor){
 }
 void SK_THISCALL terrain_update(void* self,bool final){
     if(!applying && active()){
-        void* descriptor=skg::readable(self,0x1B4)?skg::field<void*>(self,0x1B0):nullptr;
-        void* actor=skg::readable(descriptor,4)?skg::field<void*>(descriptor,0):nullptr;
+        if(self!=terraform_mode() || !skg::readable(self,0x1B9))return;
+        void* descriptor=skg::field<void*>(self,0x1B0);
+        if(!skg::readable(descriptor,16))return;
+        void* actor=skg::field<void*>(descriptor,0);
+        void* definition=skg::field<void*>(descriptor,4);
+        const auto index=skg::field<uint32_t>(descriptor,8);
+        const bool preview=skg::field<bool>(self,0x1B8);
         if(!terrain_gate_record(actor) || !terrain_begin(self))return;
-        if(!authored_terrain_record(descriptor))return;
+        if(!active() || self!=terraform_mode() || skg::field<void*>(self,0x1B0)!=descriptor ||
+           !skg::readable(descriptor,16) || skg::field<void*>(descriptor,0)!=actor ||
+           skg::field<void*>(descriptor,4)!=definition || skg::field<uint32_t>(descriptor,8)!=index ||
+           skg::field<bool>(self,0x1B8)!=preview)return;
+        if(preview){
+            // F381D0's new-proxy branch appends through F37150/F37240 before
+            // there is a recipe row at descriptor+8. The append hooks mark
+            // the allocated index; never mark a coincident existing index.
+            if(!actor || !skg::readable(actor,4) || !skg::readable(definition,0x69) ||
+               !a_terrain_selection || skg::thiscall<void*>(a_terrain_selection,self,actor)!=descriptor)return;
+        }else if(!authored_terrain_record(descriptor))return;
     }
     original_terrain_update(self,final);
 }

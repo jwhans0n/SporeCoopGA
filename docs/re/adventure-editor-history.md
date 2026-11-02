@@ -563,3 +563,35 @@ marking, stale owner/scope/source/generation rejection and deferred failure.
 The complete native fixture passes 13,586 checks with these additions. A final
 row deletion retains its before-history witness even when the current recipe
 is empty; C13's initial helper lacked that case, and C14 includes its regression.
+
+### Terraform new-proxy Update precedes recipe allocation
+
+The actual C14 Raise Round Terrain card drag opened native history while held,
+but release produced no transaction, no failure and no changed recipe columns.
+Both peers remained at revision 62 with exact convergence. Evidence is in
+`out/preview9-c14-terrain-card-drag/result.json` and
+`out/preview9-c14-terrain-rpm/result.json`. The authored-row guard introduced
+for materialization incorrectly required an already allocated recipe index.
+
+Verified `TerraformUpdate F381D0` reads the selected proxy descriptor at mode+1B0.
+Its branch at `F38229` tests mode+1B8: true means a new proxy, and descriptor+8
+is not used to update an existing row. Definition+68 selects model append
+`F382A3 -> F37150 -> F37225 -> F35890` or effect append
+`F382D3 -> F37240 -> F37328 -> F35910`. Preview creation passes the current
+recipe count into `F33C10` at `F36488`, inserts the descriptor into mode+19C's
+16-byte proxy vector at `F36538` or `F36545`, and sets mode+1B8 at `F3654E`.
+It immediately resolves that new actor through `TerraformSelection F32630`
+at `F36571`. That lookup scans the proxy vector by descriptor+0 actor identity.
+Thus a valid new proxy can be resolved before its recipe row exists.
+
+Only the new-proxy Update route bypasses the existing-row bound. The adapter
+pins current mode, descriptor, actor, definition, index and preview flag across
+the existing ownership/history gate, then verifies the actor resolves back to
+the same descriptor. Native Append marks the actual allocated row. Ordinary
+Update and Remove retain their original strict index bounds. No existing row
+is marked merely because a preview index coincides with it. Actual-i686 hook
+fixtures cover both native kinds, coincident/count/sentinel preview indices,
+exactly one append and one native history item, denied ownership, changed
+selection/owner/generation/scope and malformed descriptors. Focused fixtures
+pass 476 checks; the full Native fixture passes 13,899. Running-game acceptance
+of this fix remains pending.

@@ -42,6 +42,94 @@ void tmf_setup(){
     }
     tmf_bind();CHECK(state().ready);
 }
+unsigned tmf_updates=0,tmf_appends=0,tmf_removes=0;
+void tmf_append(editor::TerrainKind kind,const editor::ResourceKey& key,const void* transform){
+    auto& columns=tmf_columns[size_t(kind)];std::array<uint8_t,56> owned_transform;
+    std::memcpy(owned_transform.data(),transform,owned_transform.size());
+    const auto* key_bytes=reinterpret_cast<const uint8_t*>(&key);
+    columns[0].insert(columns[0].end(),key_bytes,key_bytes+12);
+    columns[1].insert(columns[1].end(),owned_transform.begin(),owned_transform.end());
+    if(kind==editor::TerrainKind::Effect)for(size_t c=2;c<6;++c){
+        const std::array<uint8_t,4> value{0,0,0x80,0x3F};columns[c].insert(columns[c].end(),value.begin(),value.end());
+    }
+    ++tmf_appends;tmf_bind();
+}
+void SK_THISCALL tmf_append_model(void* self,const editor::ResourceKey* key,const void* transform){
+    CHECK(self==t_terraform.data());tmf_append(editor::TerrainKind::Model,*key,transform);
+}
+void SK_THISCALL tmf_append_effect(void* self,uint32_t,uint32_t,const void* transform,uint32_t,uint32_t,uint32_t){
+    CHECK(self==t_terraform.data());tmf_append(editor::TerrainKind::Effect,{456,0,789},transform);
+}
+void SK_THISCALL tmf_update(void* self,bool){
+    CHECK(self==t_terraform.data());++tmf_updates;
+    if(!skg::field<bool>(self,0x1B8))return;
+    const auto kind=t_terrain_definition[0x68]?editor::TerrainKind::Model:editor::TerrainKind::Effect;
+    const editor::ResourceKey key{456,19,789};const auto* transform=tmf_columns[size_t(kind)][1].data();
+    if(kind==editor::TerrainKind::Model)terrain_append_model(self,&key,transform);
+    else terrain_append_effect(self,456,0,transform,0,0,0);
+    skg::field<uint32_t>(t_terrain_descriptor.data(),8)=1;
+    skg::field<bool>(self,0x1B8)=false;
+}
+void SK_THISCALL tmf_remove(void* self,void*){CHECK(self==t_terraform.data());++tmf_removes;}
+void tmf_preview_setup(editor::TerrainKind kind,uint32_t index){
+    tmf_setup();tmf_updates=tmf_appends=tmf_removes=0;t_granted=true;
+    t_terrain_descriptor.fill(0);t_terrain_definition.fill(0);t_terrain_definition[0x68]=kind==editor::TerrainKind::Model;
+    skg::field<void*>(t_terrain_descriptor.data(),0)=t_actors[0].data();
+    skg::field<void*>(t_terrain_descriptor.data(),4)=t_terrain_definition.data();
+    skg::field<uint32_t>(t_terrain_descriptor.data(),8)=index;
+    skg::field<void*>(t_terraform.data(),0x1B0)=t_terrain_descriptor.data();skg::field<bool>(t_terraform.data(),0x1B8)=true;
+    a_terrain_selection=uintptr_t(t_terrain_selected);original_terrain_update=tmf_update;
+    original_terrain_append_model=tmf_append_model;original_terrain_append_effect=tmf_append_effect;original_terrain_remove=tmf_remove;
+    pin_terrain_before();
+}
+void test_terrain_preview_update(){
+    for(auto kind:{editor::TerrainKind::Effect,editor::TerrainKind::Model})for(auto index:{0u,1u,UINT32_MAX}){
+        tmf_preview_setup(kind,index);const auto before=tmf_columns;const auto draft=t_live;
+        terrain_start(t_terraform.data());CHECK(terrain_starts==1&&!terrain_commits);
+        terrain_update(t_terraform.data(),false);
+        CHECK(tmf_updates==1&&tmf_appends==1&&tmf_columns[size_t(kind)][0].size()==24);
+        CHECK(terrain_authored_rows[size_t(kind)]==std::set<size_t>{1});
+        CHECK(terrain_authored_rows[1-size_t(kind)].empty());
+        CHECK(std::equal(before[size_t(kind)][0].begin(),before[size_t(kind)][0].end(),tmf_columns[size_t(kind)][0].begin()));
+        CHECK(tmf_columns[1-size_t(kind)]==before[1-size_t(kind)]&&t_live==draft&&pending.empty());
+        // A subsequent native Update acts on the allocated row, without a
+        // second append or a second history item.
+        C.terrain_gate=[](const auto&,const auto& fields){CHECK(fields.empty());return true;};
+        editor::TerrainRecord first;first.object={55,1};first.kind=kind;first.order=1;
+        editor::TerrainRecord added=first;added.object={56,1};added.order=2;
+        terrain_before->document.terrain.emplace(first.object,first);terrain_before->document.terrain.emplace(added.object,added);
+        terrain_update(t_terraform.data(),true);CHECK(tmf_updates==2&&tmf_appends==1&&terrain_starts==1&&!terrain_commits);
+        terrain_commit(t_terraform.data());CHECK(terrain_commits==1&&terrain_pending&&tmf_appends==1);
+    }
+    for(unsigned reason=0;reason<15;++reason){
+        tmf_preview_setup(editor::TerrainKind::Effect,UINT32_MAX);const auto before=tmf_columns;
+        void* self=t_terraform.data();std::array<uint8_t,0x1CC> wrong_mode{};
+        if(reason==0)t_granted=false;
+        if(reason==1)self=wrong_mode.data();
+        if(reason==2)skg::field<void*>(t_terrain_descriptor.data(),0)=nullptr;
+        if(reason==3)skg::field<void*>(t_terrain_descriptor.data(),0)=t_actors[1].data();
+        if(reason==4)skg::field<void*>(t_terrain_descriptor.data(),4)=nullptr;
+        if(reason==5)skg::field<bool>(t_terraform.data(),0x1B8)=false;
+        if(reason==6)++generation;
+        if(reason==7)++t_scope.epoch;
+        if(reason==8){skg::field<void*>(t_other_data.data(),0x10)=t_live.data();skg::field<void*>(t_mode.data(),0x74)=t_other_data.data();}
+        if(reason==9)C.terrain_gate=[](const auto&,const auto&){skg::field<void*>(t_terraform.data(),0x1B0)=nullptr;return true;};
+        if(reason==10)a_terrain_selection=0;
+        if(reason==11){skg::field<void*>(wrong_mode.data(),0)=t_actors[0].data();skg::field<void*>(wrong_mode.data(),4)=t_terrain_definition.data();
+            skg::field<void*>(t_terraform.data(),0x1B0)=wrong_mode.data();}
+        if(reason==12)C.terrain_gate=[](const auto&,const auto&){skg::field<bool>(t_terraform.data(),0x1B8)=false;return true;};
+        if(reason==13)C.terrain_gate=[](const auto&,const auto&){skg::field<uint32_t>(t_terrain_descriptor.data(),8)=0;return true;};
+        if(reason==14)C.terrain_gate=[](const auto&,const auto&){skg::field<void*>(t_terrain_descriptor.data(),4)=nullptr;return true;};
+        terrain_update(self,true);
+        if(tmf_updates||tmf_appends||tmf_columns!=before)std::fprintf(stderr,"terrain preview rejection case %u mutated\n",reason);
+        CHECK(!tmf_updates&&!tmf_appends&&tmf_columns==before&&terrain_authored_rows[0].empty()&&terrain_authored_rows[1].empty());
+        CHECK(!terrain_starts&&!terrain_commits&&!terrain_pending&&!t_failed);
+    }
+    // A preview flag never relaxes Remove's requirement for a real row.
+    tmf_preview_setup(editor::TerrainKind::Effect,UINT32_MAX);
+    terrain_remove(t_terraform.data(),t_actors[0].data());CHECK(!tmf_removes&&terrain_authored_rows[0].empty());
+    reset();
+}
 void test_terrain_materialization_hooks(){
     tmf_setup();const auto before=tmf_bytes();const auto resource_before=t_live;std::string error;
     terrain_materialize(t_terraform.data());CHECK(tmf_calls==1&&terrain_materialization_error.empty()&&!terrain_materialization.empty());
@@ -75,6 +163,6 @@ void test_terrain_materialization_hooks(){
     const auto prior_fence=fence_queued;fence_queued=true;
     editor_native::tick();drain();CHECK(t_failed==1);editor_native::tick();drain();CHECK(t_failed==1);fence_queued=prior_fence;
     tmf_setup();terrain_materialize(t_terraform.data());CHECK(terrain_materialization_error.empty()&&state().ready);
-    reset();
+    reset();test_terrain_preview_update();
 }
 } // namespace
