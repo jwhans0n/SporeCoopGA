@@ -206,12 +206,14 @@ struct DurableCommit {
     editor::State state;
     editor::Change change;
     editor_native::Snapshot native;
+    std::optional<editor_native::Snapshot> before;
     editor_project::Resources resources;
     std::map<editor::OperationId,Artifact> archive;
     std::string hash,error,title,maintenance_error;
     std::vector<uint8_t> envelope,delta;
     ResourceKeys retained_keys;
     editor_store::Snapshot saved;
+    std::optional<editor_session::PreparedResources> publication;
     std::future<bool> task;
     bool flushing=false,hosting=false;
 };
@@ -777,11 +779,11 @@ bool check_native_integrity(std::string& error) {
     if (!editor_native::capture(snapshot, error) || !native_integrity(snapshot, controller->state().document, error)) return stop_unsupported(error);
     return true;
 }
-bool remember_artifacts(const editor::State& state, const editor::Change& change, const editor_native::Snapshot& after,
+bool remember_artifacts(const editor::State& state, const editor::Change& change, const editor_native::Snapshot& before,const editor_native::Snapshot& after,
                         std::map<editor::OperationId, Artifact>& archive, std::string& error) {
     if (structural(change) && change.intent == editor::Intent::Forward) {
         std::vector<std::vector<uint8_t>> bytes(2); Artifact entry;
-        if (!artifact_bytes(before_apply, bytes[0], error) || !artifact_bytes(after, bytes[1], error) ||
+        if (!artifact_bytes(before, bytes[0], error) || !artifact_bytes(after, bytes[1], error) ||
             !reserve_artifacts({&bytes[0], &bytes[1]}, error) || !put_blob(bytes[0], entry.before, error) || !put_blob(bytes[1], entry.after, error)) return false;
         archive[change.gesture] = std::move(entry);
     }
@@ -797,7 +799,7 @@ bool persist(const editor::State& state, const editor::Change& change, std::stri
     after.document = state.document;
     after.source = {resources.root.instance, resources.root.type, resources.root.group};
     auto archive = history_artifacts;
-    if (!remember_artifacts(state, change, after, archive, error)) return false;
+    if (!remember_artifacts(state, change, before_apply,after, archive, error)) return false;
     auto next_resources = resources;
     if(cast_change(change)){
         auto uploaded=cast_uploads.find(change.operation);
@@ -837,13 +839,14 @@ bool persist(const editor::State& state, const editor::Change& change, std::stri
 }
 bool begin_persist_owned(const editor::State& state,const editor::Change& change,std::string& error){
     if(durable_commit || !prepared_native || prepared_native->document!=state.document){error="The canonical commit is not ready for durable preparation";return false;}
+    stage_stamp(state.document.project,change.operation,state.document.revision,editor_stage_metrics::Stage::PersistWorkBegin);
     auto work=std::make_unique<DurableCommit>();work->state=state;work->change=change;
     work->native=*prepared_native;work->native.source={resources.root.instance,resources.root.type,resources.root.group};
     work->resources=resources;work->archive=history_artifacts;work->hash=resource_hash;work->title=controller->view().name;
     for(const auto& row:resources.bundle.records)work->retained_keys.insert(row.key);
     // Native objects have already been serialized and released on the game
     // thread. Only owned containers are handed to the worker below.
-    if(!remember_artifacts(state,change,work->native,work->archive,error))return false;
+    if(structural(change) && change.intent==editor::Intent::Forward)work->before=before_apply;
     if(cast_change(change)){
         auto uploaded=cast_uploads.find(change.operation);
         const auto* extra=host()&&uploaded!=cast_uploads.end()?&uploaded->second:incoming_resources?&*incoming_resources:nullptr;
@@ -855,6 +858,7 @@ bool begin_persist_owned(const editor::State& state,const editor::Change& change
     auto* job=work.get();
     job->task=std::async(std::launch::async,[job,old_record_count,capability,copy_owned,provenance]{
         try{
+            if(!remember_artifacts(job->state,job->change,job->before?*job->before:job->native,job->native,job->archive,job->error))return false;
             if(!replace_root(job->resources,job->native,job->error) ||
                !editor_project::encode_resources(job->resources,job->envelope,job->error) ||
                (structural(job->change)&&!root_delta(job->resources,job->delta,job->error)))return false;
@@ -864,10 +868,14 @@ bool begin_persist_owned(const editor::State& state,const editor::Change& change
             net::Writer w;w.u32(0x33484445);w.str8(job->hash);w.u8(capability.slot);w.u32(capability.generation);w.u8(copy_owned);
             w.u32(provenance.instance);w.u32(provenance.type);w.u32(provenance.group);w.u32(uint32_t(job->archive.size()));
             for(const auto& [operation,artifact]:job->archive){w.u8(operation.author.slot);w.u32(operation.author.generation);u64(w,operation.sequence);u64(w,operation.epoch);w.str8(artifact.before);w.str8(artifact.after);}
-            job->saved.manifest=std::move(w.data);return true;
+            job->saved.manifest=std::move(w.data);
+            if(job->hosting){
+                job->publication=editor_session::prepare_resources(std::move(job->envelope),std::move(job->delta),structural(job->change)||cast_change(job->change),job->error);
+                if(!job->publication)return false;
+            }
+            return true;
         }catch(const std::exception& e){job->error=e.what();return false;}
     });
-    stage_stamp(state.document.project,change.operation,state.document.revision,editor_stage_metrics::Stage::PersistWorkBegin);
     durable_commit=std::move(work);return true;
 }
 bool begin_persist(const editor::State& state,const editor::Change& change,std::string& error){
@@ -892,8 +900,7 @@ editor_session::Durability poll_persist_owned(std::string& error){
            controller->view().context.epoch!=job.state.document.epoch){error="The prepared commit's participant context expired";durable_commit.reset();return Result::Rejected;}
         // Allocate and validate publication before the irreversible durable
         // append. update_resources only stages bytes until finish_prepared.
-        if(job.hosting&&!controller->update_resources(std::move(job.envelope),job.state.document.revision,error,
-            structural(job.change)||cast_change(job.change),std::move(job.delta))){durable_commit.reset();return Result::Rejected;}
+        if(job.hosting&&(!job.publication || !controller->update_resources(std::move(*job.publication),job.state.document.revision,error))){durable_commit.reset();return Result::Rejected;}
         job.flushing=true;auto* work=&job;
         stage_stamp(job.state.document.project,job.change.operation,job.state.document.revision,editor_stage_metrics::Stage::DurableBegin);
         job.task=std::async(std::launch::async,[work]{
@@ -1020,7 +1027,7 @@ bool rollback(const editor::Document&, const editor::Document&, const editor::Ch
     return detached_scene() || !before_apply_valid || editor_native::restore(before_apply, error);
 }
 bool lease(const std::vector<editor::Scope>& scopes) {
-    if (!controller || frozen || closing || recovery || awaiting_operation || controller->view().phase != Phase::Ready) return false;
+    if (!controller || frozen || closing || recovery || durable_commit || awaiting_operation || controller->view().phase != Phase::Ready) return false;
     const auto& held = controller->view().local_leases;
     const auto local = controller->view().local;
     uint64_t time = now_ms();
@@ -1250,7 +1257,7 @@ bool cancelled_gesture(const editor_native::CancellationTicket& ticket, std::str
     if (!ticket.gesture || !ticket.serial) { error = "The native cancellation ticket is incomplete"; return false; }
     if (settled_cancellation && settled_cancellation->scope == ticket.scope && settled_cancellation->generation == ticket.generation &&
         (ticket.serial <= settled_cancellation->serial || ticket.gesture <= settled_cancellation->gesture)) return true;
-    if (pending || awaiting_operation || !native.ready || native.gesture || editor_native_save::busy()) {
+    if (durable_commit || pending || awaiting_operation || !native.ready || native.gesture || editor_native_save::busy()) {
         error = "The cancelled native gesture could not settle while another operation is pending"; return false;
     }
     if (!editor_native::validate(current_native, controller->state().document, error) ||
@@ -1271,6 +1278,7 @@ void captured(editor_native::Gesture gesture) {
     const auto released=std::exchange(native_release_qpc,0);
     const auto capture_begin=std::exchange(native_capture_begin_qpc,0),capture_end=std::exchange(native_capture_end_qpc,0);
     if (!controller || !session_active() || frozen || closing || recovery) return;
+    if(durable_commit){frozen=true;tell("A native gesture bypassed the durable commit hold. Recover the committed draft");return;}
     if (gesture.generation != native_generation || editor_native::state().generation != native_generation) {
         frozen = true; tell("A delayed gesture belongs to a different native editor. The current editor was left intact."); return;
     }
@@ -2543,6 +2551,7 @@ void SK_CDECL drain(void*) {
         if (transport_teardown) { service_transport_teardown(); refresh(); return; }
         submit_pending_gesture();
         controller->tick(now_ms());
+        if(durable_commit){refresh();return;}
         if(!creation_actions.empty() && !editor_creation::active() && !local_creation && !durable_commit && controller->view().phase==Phase::Ready){
             const auto action=creation_actions.front();creation_actions.pop_front();
             editor::ResourceKey source{0,action.type,0};std::string error;
@@ -3129,7 +3138,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         return controller && controller->view().phase==Phase::Ready && !local_creation && !durable_commit && !closing && !recovery && !pending && !awaiting_operation &&
             !exporting && !pending_export_request && !native_exit_requested && !editor_native_save::busy() && !editor_native::state().gesture;
     };
-    native.transaction_pending = [] { return pending.has_value() || awaiting_operation.has_value(); };
+    native.transaction_pending = [] { return pending.has_value() || awaiting_operation.has_value() || bool(durable_commit); };
     native.object_revision = [](editor::ObjectId object)->std::optional<editor::Revision> {
         if(!controller)return std::nullopt;
         const auto& placements=controller->state().document.placements;
