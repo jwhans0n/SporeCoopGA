@@ -3421,7 +3421,13 @@ bool capture_scene_owner(SceneOwner& owner,std::string& error){
         error="The native Adventure Editor cannot pin its current scene owner";return false;
     }
     const SceneOwner captured{uintptr_t(current_mode),uintptr_t(current_data),uintptr_t(current_resource),skg::field<editor::ResourceKey>(current_resource,8)};
-    if(state().generation!=native.generation){error="The native Adventure Editor changed while pinning its scene owner";return false;}
+    const auto settled=state();
+    void* final_mode=mode();void* final_data=data(final_mode);void* final_resource=resource(final_data);
+    if(settled.generation!=native.generation || generation!=native.generation || uintptr_t(final_mode)!=captured.mode ||
+       uintptr_t(final_data)!=captured.data || uintptr_t(final_resource)!=captured.resource ||
+       !skg::readable(final_resource,kResourceSize) || skg::field<editor::ResourceKey>(final_resource,8)!=captured.source){
+        error="The native Adventure Editor changed while pinning its scene owner";return false;
+    }
     owner=captured;error.clear();return true;
 }
 SceneResumeState creation_scene_state(const SceneOwner& owner){
@@ -3429,14 +3435,30 @@ SceneResumeState creation_scene_state(const SceneOwner& owner){
     result.generation=native.generation;result.world_visible=native.world_visible;
     result.ready=native.editing&&native.ready&&!native.playtesting&&!native.gesture&&!applying;
     void* current_mode=mode();void* current_data=data(current_mode);void* current_resource=resource(current_data);
+    const auto current_source=skg::readable(current_resource,kResourceSize)?skg::field<editor::ResourceKey>(current_resource,8):editor::ResourceKey{};
     // Compare opaque identities before reading only the freshly resolved owner.
     result.owner=owner.mode && owner.data && owner.resource && uintptr_t(current_mode)==owner.mode &&
         uintptr_t(current_data)==owner.data && uintptr_t(current_resource)==owner.resource &&
         skg::readable(current_resource,kResourceSize) && skg::field<editor::ResourceKey>(current_resource,8)==owner.source;
+    const auto settled_owner=[&]{
+        // The getters below can run callbacks. Their initial owner comparison
+        // cannot authorize a result after those callbacks replace this scene.
+        void* final_mode=mode();void* final_data=data(final_mode);void* final_resource=resource(final_data);
+        const bool same_current=generation==native.generation && final_mode==current_mode && final_data==current_data &&
+            final_resource==current_resource && skg::readable(final_resource,kResourceSize) &&
+            skg::field<editor::ResourceKey>(final_resource,8)==current_source;
+        result.owner=result.owner && same_current;
+        if(!same_current)result.ready=false;
+        return same_current;
+    };
     if(game::mode_id()!=modes::kScenario || !skg::readable(current_mode,0xDD) ||
-       !a_scenario_initialization || !skg::readable(reinterpret_cast<void*>(a_scenario_initialization),4) || !a_get_simulator_mode_manager)return result;
+       !a_scenario_initialization || !skg::readable(reinterpret_cast<void*>(a_scenario_initialization),4) || !a_get_simulator_mode_manager){
+        settled_owner();return result;
+    }
     void* simulator_modes=skg::cdecl_call<void*>(a_get_simulator_mode_manager);
-    if(!skg::readable(simulator_modes,0x29))return result;
+    // No further native calls follow: use only fresh primitive probes before
+    // reading the proven current mode's fields or publishing its owner flag.
+    if(!settled_owner() || !skg::readable(simulator_modes,0x29))return result;
     result.available=true;
     result.initialization=*reinterpret_cast<const uint32_t*>(a_scenario_initialization);
     result.enter_pending=skg::field<bool>(current_mode,0xDC);

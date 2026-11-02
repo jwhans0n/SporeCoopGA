@@ -1,5 +1,40 @@
 #include <cstdarg>
 namespace view_fence_fixture {
+void test_settled_scene_owner(){
+    std::string error;SceneOwner owner;
+    creation_camera_fixture();CHECK(capture_scene_owner(owner,error));
+    auto scene=creation_scene_state(owner);CHECK(scene.settled()&&!v_looks&&!v_sets);
+    for(unsigned reason=0;reason<5;++reason){
+        creation_camera_fixture();CHECK(capture_scene_owner(owner,error));
+        const auto generation_before=generation;bool fired=false;
+        v_callback=[&](unsigned stage){if(stage!=10)return;fired=true;
+            if(reason==0)++generation;
+            if(reason==1)t_mode_pointer=nullptr;
+            if(reason==2)skg::field<void*>(t_mode.data(),0x74)=t_other_data.data();
+            if(reason==3)skg::field<void*>(t_data.data(),0x10)=t_other_data.data();
+            if(reason==4)++skg::field<editor::ResourceKey>(t_live.data(),8).instance;
+        };
+        scene=creation_scene_state(owner);
+        CHECK(fired&&!scene.owner&&!scene.ready&&!scene.settled()&&scene.generation==generation_before);
+        CHECK(!v_looks&&!v_sets);
+    }
+    // capture_scene_owner must leave its caller's pin unchanged when its final
+    // state getter replaces the resource without changing native generation.
+    for(unsigned reason=0;reason<5;++reason){
+        creation_camera_fixture();unsigned callbacks=0;
+        SceneOwner untouched{1,2,3,{4,5,6}},captured=untouched;
+        v_callback=[&](unsigned stage){if(stage!=11 || ++callbacks!=2)return;
+            if(reason==0)++generation;
+            if(reason==1)t_mode_pointer=nullptr;
+            if(reason==2)skg::field<void*>(t_mode.data(),0x74)=t_other_data.data();
+            if(reason==3)skg::field<void*>(t_data.data(),0x10)=t_other_data.data();
+            if(reason==4)++skg::field<editor::ResourceKey>(t_live.data(),8).instance;
+        };
+        CHECK(!capture_scene_owner(captured,error)&&callbacks==2&&captured==untouched&&!error.empty());
+        CHECK(!v_looks&&!v_sets);
+    }
+    v_callback={};reset();
+}
 DeferredLocalView pin(const LocalView& view){
     void* m=mode();void* d=data(m);void* r=resource(d);
     return {view,value_scope(),generation,m,d,r,skg::field<editor::ResourceKey>(r,8)};
@@ -88,4 +123,6 @@ void test_fenced_view(){
     v_callback={};reset();
 }
 }
-static void test_native_view_fences(){view_fence_fixture::test_fenced_view();view_fence_fixture::test_quaternion_diagnostics();}
+static void test_native_view_fences(){
+    view_fence_fixture::test_settled_scene_owner();view_fence_fixture::test_fenced_view();view_fence_fixture::test_quaternion_diagnostics();
+}

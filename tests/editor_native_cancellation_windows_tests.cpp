@@ -1073,8 +1073,8 @@ std::array<uint8_t,0x10> v_simulator,v_simulator_camera_state;
 std::array<uint8_t,0x30> v_simulator_modes;
 uint32_t v_initialization=4;
 bool v_world_visible=true,v_modes_missing=false;
-void* SK_CDECL v_get_simulator_modes(){return v_modes_missing?nullptr:v_simulator_modes.data();}
-bool SK_THISCALL v_world_shown(void* self){CHECK(self==t_layout.data());return v_world_visible;}
+void* SK_CDECL v_get_simulator_modes(){if(v_callback)v_callback(10);return v_modes_missing?nullptr:v_simulator_modes.data();}
+bool SK_THISCALL v_world_shown(void* self){CHECK(self==t_layout.data());if(v_callback)v_callback(11);return v_world_visible;}
 unsigned v_activations=0;
 bool v_activation_refuse=false,v_activation_replace=false,v_activation_expire=false,v_activation_stale_cache=false,v_simulator_missing=false;
 void* SK_CDECL v_get_simulator(){return v_simulator_missing?nullptr:v_simulator.data();}
