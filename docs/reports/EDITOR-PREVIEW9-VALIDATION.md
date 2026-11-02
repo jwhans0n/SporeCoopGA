@@ -1478,3 +1478,53 @@ command; that incomplete fixture result is retained at
 strokes used the corrected bounded diagnostic allowlist and passed. No failed
 artifact was rewritten. This is rejection-recovery acceptance only; it does
 not establish simultaneous Terraform transaction acceptance or timing targets.
+
+### C21 movement timing after terrain rejection and fresh-scene follow-up
+
+With compilers and other fixtures paused, both roles completed 30 measured
+ordinary movement releases in Adventure Town after the rejected terrain
+workflow above. Two warmups plus 60 measured releases produced durable revision
+62, history count 62, no faults and strict native convergence on
+`98e8df2ead0eb96c06a97a8c732b7aeb2e2cb9228721051d7f9ad9392ed7094b`.
+Both subsequently returned normally to Galaxy. Evidence:
+`out/preview9-commit-diagnostic-c21-two-town-r2/result.json`,
+`out/preview9-c21-two-analysis.json`,
+`out/preview9-c21-movement-final-proof/result.json` and
+`out/preview9-c21-movement-retirement/result.json`.
+
+| C21 post-terrain metric | Host 95 | Guest 96 |
+| --- | ---: | ---: |
+| Submit-to-confirmation p95, ms | 150.3827 | 474.0727 |
+| Release-to-confirmation p95, ms | 344.7559 | 667.3927 |
+| Capture p95, ms | 78.0423 | 74.8518 |
+| Supported-change validation p95, ms | 108.2777 | 108.6537 |
+| Author apply prelude p95, ms | 35.6246 | 35.5112 |
+| Measured frame-window maximum p95, ms | 273.9731 | 228.3983 |
+| Absolute measured frame maximum, ms | 278.4468 | 231.9393 |
+
+The LAN guest-confirmation target and both frame p95 targets fail; the host also
+exceeds the 250 ms maximum. Author releases use 11 native Writes, two Reads and
+two projections, with zero pose-capture attempts. Source inspection explains
+this as the deliberate fast-path exclusion when `terrain_grounding` is
+nonempty following terrain restoration. These results are not a fresh-scene
+comparison of the pose optimization. The first attached timing helper omitted
+the Build-tab precondition and timed out during Locate without starting a
+measured gesture; that setup failure remains in
+`out/preview9-commit-diagnostic-c21-two-town/result.json`.
+
+A normal native reload then started a new project without any Terraform input.
+Its warmups and four host samples completed, using the intended pose/opaque
+proof path (one pose-capture hit, nine Writes and one projection per author
+release). The next ordinary-input attempt invoked ToolAction 11 and was
+correctly blocked by structural ownership. The helper timed out waiting for a
+movement transaction. Both participants remained Ready, unfrozen, at durable
+revision 6 with zero faults and strict convergence on
+`672451c9466777ef28324372c21bc4017535a61dbae882405f673f86fdb41672`.
+This is an incomplete fresh performance run, not a passing timing result or a
+durability failure. The exact input cause remains unverified; the native clone
+affordance and physical modifier state require a better fixture guard.
+Evidence: `out/preview9-c21-fresh-movement-bootstrap/`,
+`out/preview9-commit-diagnostic-c21-two-town-fresh/result.json` and
+`out/preview9-c21-fresh-movement-failure/`. Both games returned normally to
+Galaxy with no faults, then the owned runner exited 0 before C22 deployment
+(`out/preview9-c21-fresh-movement-retirement/result.json`).
