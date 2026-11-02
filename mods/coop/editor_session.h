@@ -174,6 +174,10 @@ public:
     bool update_resources(PreparedResources, editor::Revision target, std::string& error);
     bool accept_offer(std::string& error);
     void end(); // Authoring session only; leaves the party transport connected.
+    // Host recovery retires the old authoring epoch while its guests keep the
+    // recoverable draft frozen. It sends the existing authenticated Leave{3},
+    // never an ordinary Leave{0} that would reopen private native input.
+    void end_for_recovery();
     // Outside-frame failure notification; keeps the last document for recovery
     // and tells the party this editor replica cannot acknowledge further work.
     void freeze_local(const std::string& reason);
@@ -217,6 +221,7 @@ public:
     const View& view() const;
 
 private:
+    void end_session(bool recovery);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

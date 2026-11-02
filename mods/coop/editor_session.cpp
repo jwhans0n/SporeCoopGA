@@ -1249,6 +1249,16 @@ bool Controller::accept_offer(std::string& error)
 
 void Controller::end()
 {
+    end_session(false);
+}
+
+void Controller::end_for_recovery()
+{
+    end_session(true);
+}
+
+void Controller::end_session(bool recovery)
+{
     auto& i = *impl_;
     if(i.pending_commit){
         std::string error;auto result=Durability::Uncertain;
@@ -1259,7 +1269,8 @@ void Controller::end()
     }
     if (i.active() && i.view.context.epoch) {
         net::Writer packet; std::string ignored;
-        if (w::write({i.view.context, w::Leave{0}}, packet, ignored)) {
+        const uint8_t reason = recovery && i.hosting ? 3 : 0;
+        if (w::write({i.view.context, w::Leave{reason}}, packet, ignored)) {
             if (i.hosting) for (const auto& [id, member] : i.view.members) { (void)member; if (id) i.session.send_reliable_to(id, i.config.message_type, i.address(id, packet)); }
             else i.session.send_reliable_to(0, i.config.message_type, i.address(0, packet));
         }
