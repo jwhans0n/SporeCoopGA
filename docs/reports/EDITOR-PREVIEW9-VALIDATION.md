@@ -1587,3 +1587,57 @@ planned repair uses checked restoration only from an independently canonical
 artifact whose complete document matches the requested inverse target, with
 the original scene/scope/generation fences. Actual acceptance remains pending,
 including the zero-placement terrain case. Personal preview 8 remains installed.
+
+### C23 controlled checks, retained failures, and C24 follow-up
+
+Private C23 built successfully as
+`35411cc3e3cdccfbf2f4f54677a74ba78bef0ba029c10e9db1134876fa48c541`
+(91,841,024 bytes), with all 191 production inputs unchanged. It was not
+deployed. Build and source receipts are
+`out/preview9-candidate23-build-receipt.json` and
+`out/preview9-candidate23-source.json`; neither establishes release acceptance.
+
+Controlled Native tests reproduce the real generic terrain inverse, including
+its independently canonical artifact, rather than substituting prepared pose
+application. Restoration now covers the terrain recipe and derived placement
+rotations together. Projected native terrain rows use revision zero to match
+their projected document; canonical row revisions and checked history remain
+unchanged. Focused strict checks pass for rotation inverse (3,028), terrain
+materialization (16,312), and complexity (648).
+
+The first optimized Native full run failed the existing held-preset assertion
+`!held_terrain_preset && gets == 1`. The unchanged executable subsequently
+passed its full run (59,511 checks), parent-focused run (8,445), and O0 full
+triage (59,511). The initial failure remains in
+`out/preview9-c23-native-full.log`; its cause is not established by those
+reruns. The fixture previously sampled real operating-system Escape state.
+C24 isolates that fixture input and adds an explicit Escape-down cancellation
+case. This is not evidence that physical input caused the original failure.
+
+Strict C23 Runtime focused runs pass complexity (988), captured identity
+(2,044), and rejection restoration (9,652). Its full run faults later during a
+disconnect case. Inspection identifies a fixture callback capturing two local
+stack values that remained registered after their lifetimes ended. The
+subsequent fixture repair restores that callback before returning and clears
+callback storage between fixture parties; it does not change production
+transport code. The failed exact executable, logs, 75 unchanged inputs, and
+failure status are retained in
+`out/preview9-c23-runtime-complexity-receipt.json` and
+`out/preview9-c23-runtime-preserved/`.
+
+C24 also closes two reviewed callback edges before actual testing: it copies
+the required dependency validator before inverse callbacks, and checks the
+whole canonical revision throughout restoration so a disjoint accepted terrain
+edit cannot be overwritten by a stale artifact. Extended Complexity must
+compare a fresh local tuning capability with its last authenticated cohort
+sample at authorization; its native ratio callback compares an already
+captured capability without recursively invoking native getters. Native
+default forwarding remains unchanged. These changes still require final
+strict fixture receipts and actual two/four-player checks.
+
+The personal preview 8 payload, shortcut bytes and resolution, exact 4 GB
+executable, and all 19 retained rollback payload hashes were checked again in
+`out/preview9-delivery/c23-personal-unchanged.json`. No personal payload was
+updated by these candidate checks. Actual terrain acceptance, performance
+targets, remaining creation-editor saves, full Terraform controls, complexity
+boundaries, and lab smoke remain open.
