@@ -1478,7 +1478,7 @@ static void test_creation_preview_is_ephemeral_and_owned(){
 int main(int argc,char** argv)
 {
     if(argc==2&&std::string(argv[1])=="--complexity"){
-        CHECK(net::net_init());test_complexity_cohort(2);test_complexity_cohort(4);test_complexity_join_and_recovery();test_complexity_old_ack();test_complexity_queue_retry_and_stale_context();test_complexity_disable_is_not_a_general_bypass();
+        CHECK(net::net_init());test_complexity_cohort(2);test_complexity_cohort(4);test_complexity_join_and_recovery();test_complexity_old_ack();test_complexity_queue_retry_and_stale_context();test_complexity_disable_is_not_a_general_bypass();test_complexity_history_rechecks_the_resulting_budget();
         std::printf("editor complexity UDP: %d checks, %d failures\n",checks,failures);return failures?1:0;
     }
     if(argc==2&&std::string(argv[1])=="--recovery"){
@@ -1494,7 +1494,7 @@ int main(int argc,char** argv)
         std::printf("editor preview transport: %d checks, %d failures\n",checks,failures);return failures?1:0;
     }
     const bool focused=argc==2&&std::string(argv[1])=="--tombstones";
-    if(argc==1){CHECK(net::net_init());test_complexity_cohort(2);test_complexity_cohort(4);test_complexity_join_and_recovery();test_complexity_old_ack();test_complexity_queue_retry_and_stale_context();test_complexity_disable_is_not_a_general_bypass();}
+    if(argc==1){CHECK(net::net_init());test_complexity_cohort(2);test_complexity_cohort(4);test_complexity_join_and_recovery();test_complexity_old_ack();test_complexity_queue_retry_and_stale_context();test_complexity_disable_is_not_a_general_bypass();test_complexity_history_rechecks_the_resulting_budget();}
     const bool classes=argc==2&&std::string(argv[1])=="--class-settings";
     if(argc>1&&!focused&&!classes)return 2;
     CHECK(net::net_init());if(!focused&&!classes){test_recovery_teardown_holds_guests_until_authenticated_reoffer();test_recovery_hold_survives_host_loss();test_creation_preview_is_ephemeral_and_owned();test_asynchronous_durable_acceptance();test_asynchronous_failure_restores_before_acceptance();test_project_and_planet_field_leases_survive_refresh();test_worker_prepared_resource_publication();}

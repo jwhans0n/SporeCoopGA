@@ -123,6 +123,11 @@ all thirteen mismatched words, missing proofs, late join, fresh recovery epochs,
 stale participant generations/acknowledgements, bounded-queue retry, the exact
 disable exception and queued playtest expiry. These are deterministic transport
 and policy checks, not a running-game complexity boundary or publication result.
+The resulting budget is checked for Undo and Redo as well: a conflicted
+true-to-false singleton can restore native behavior, but undoing a disable or
+redoing an enable cannot reactivate Extended without current consensus. Those
+rejections leave the canonical revision, native commit count and durable
+persist count unchanged.
 
 ### Offline private boundary inputs
 

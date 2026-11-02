@@ -120,3 +120,32 @@ static void test_complexity_disable_is_not_a_general_bypass(){
     CHECK(!p.controllers[1]->ready_playtest(true,e));CHECK(p.controllers[1]->ready_playtest(false,e));
     CHECK(p.controllers[0]->cancel_playtest(e));CHECK(p.spin([&]{return p.controllers[1]->view().phase==es::Phase::Ready;}));
 }
+static void test_complexity_history_rechecks_the_resulting_budget(){
+    Party p(2);std::string e;const auto proof=complexity_proof();
+    for(unsigned n=0;n<2;++n)CHECK(p.controllers[n]->set_complexity_capability(proof,e));
+    p.start(complexity_seed());p.accept();CHECK(p.spin([&]{return complexity_ready(p);}));
+    const FieldKey enabled{Field::Property,kComplexityProperty};
+    const auto token=p.grant(0,{ScopeKind::Field,kComplexityProjectObject,enabled});
+    CHECK(p.controllers[0]->submit(p.edit(0,kComplexityProjectObject,enabled,true,token),e));CHECK(p.revision(1));
+    auto history=[&](Intent intent,bool accepted,Revision revision){
+        Request request;request.intent=intent;request.base_revision=p.controllers[0]->state().document.revision;request.leases=token;
+        const auto decisions=p.native[0].decisions,commits=p.native[0].commits,persists=p.native[0].persists;
+        CHECK(p.controllers[0]->submit(request,e));
+        if(accepted)CHECK(p.revision(revision));
+        else{
+            CHECK(p.spin([&]{return p.native[0].decisions>decisions;}));
+            CHECK(p.native[0].commits==commits&&p.native[0].persists==persists);
+            CHECK(p.controllers[0]->state().document.revision==revision);
+        }
+    };
+    CHECK(p.controllers[1]->set_complexity_capability({},e));CHECK(p.spin([&]{return !p.controllers[0]->view().complexity_ready;}));
+    // The only escape is a resulting singleton false, including history.
+    history(Intent::Undo,true,2);CHECK(!extended_complexity(p.controllers[0]->state().document));
+    history(Intent::Redo,false,2);CHECK(!extended_complexity(p.controllers[0]->state().document));
+    CHECK(p.controllers[1]->set_complexity_capability(proof,e));CHECK(p.spin([&]{return complexity_ready(p);}));
+    history(Intent::Redo,true,3);CHECK(extended_complexity(p.controllers[0]->state().document));
+    CHECK(p.controllers[0]->submit(p.edit(0,kComplexityProjectObject,enabled,false,token),e));CHECK(p.revision(4));
+    CHECK(p.controllers[1]->set_complexity_capability({},e));CHECK(p.spin([&]{return !p.controllers[0]->view().complexity_ready;}));
+    history(Intent::Undo,false,4);CHECK(!extended_complexity(p.controllers[0]->state().document));
+    for(unsigned n=0;n<2;++n)CHECK(p.controllers[n]->view().phase==es::Phase::Ready&&p.controllers[n]->state().document.revision==4);
+}
