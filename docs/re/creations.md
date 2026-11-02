@@ -475,9 +475,19 @@ with a planet-field companion, per-author Undo/Redo preserving later foreign
 appends, canonical replay and wire/checkpoint roundtrips, overflow and 8 MiB
 rejection. The selective wire container bounds do not widen placement edits.
 
-The combined i686 runtime quick fixture passes 11696 checks with current
-creation and scene-return callbacks. `SPORECOOP_FIXTURE_TRACE=1` prints and
-flushes the current main case to aid diagnosis of native test process faults.
+The combined i686 runtime quick fixture passes 11696 checks and the complete
+fixture passes 20655 checks with current creation and scene-return callbacks.
+With a retained 24 MiB dependency closure, 20 structural edits and Save send
+123659 host bytes and 51348 guest bytes while retained object storage grows
+42798 bytes. Cached rejoin sends 33733 host bytes and 754 guest bytes.
+The closure fixture reacquires ownership for each separate placement gesture;
+an expired idle lease cannot stand in for a new gesture's ownership.
+`SPORECOOP_FIXTURE_TRACE=1` prints and flushes the current case, held-gesture
+subcase, and fault PC/frame offsets to aid diagnosis of test process faults.
+The focused tail fixture passes 703 checks in ten consecutive runs after the
+complete run. An earlier intermittent access violation was observed during
+the generation/disconnect fence case; it was not reproduced in these later
+runs, and no running-game safety conclusion is inferred from that absence.
 Receipts are under `out/editor-preview9-creation/` and the collector receipt is
 `out/editor-creation-re/adventure-collector-validation.log`. These controlled
 tests do not replace the pending game-process acceptance checks.
