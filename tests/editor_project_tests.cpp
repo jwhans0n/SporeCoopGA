@@ -330,6 +330,69 @@ static void test_join_cache(const editor_native::Snapshot& native) {
         else CHECK(result.bundle.bytes <= net::adventure_content::kMaxBytes && result.base_root && !root_bytes(result).empty());
     }
 }
+static void test_captain_identity_transport(const ep::Resources& resources,const editor::Document& legacy){
+    auto document=legacy;
+    document.settings_schema=editor_native::authoring_property_schema();
+    document.next_id=std::max(document.next_id,editor_native::kCaptainObject.id+1);
+    editor::AuthoringSettings captain;captain.object=editor_native::kCaptainObject;captain.kind=editor::SettingsKind::Captain;
+    const editor::ResourceKey key{0x81234567,0x2B978C46,0x40626200};
+    captain.properties={{editor_native::kCaptainAssetProperty,key},{editor_native::kCaptainLockedProperty,true}};
+    document.settings.emplace(captain.object,captain);
+    std::string error;editor_native::Snapshot hydrated;
+    CHECK(ep::native_snapshot(resources,document,hydrated,error));
+    CHECK(hydrated.captain==key && hydrated.captain_locked);
+    CHECK(hydrated.document==document && hydrated.metadata==resources.metadata);
+    CHECK(hydrated.bytes==root_bytes(resources) && hydrated.bindings==resources.bindings);
+    // Captain identity comes from the typed document in every envelope form;
+    // native name/description/tags and genre remain owned mapping metadata.
+    for(unsigned format=0;format<3;++format){
+        std::vector<uint8_t> bytes;ep::Resources decoded;
+        if(format==0){CHECK(ep::encode_resources(resources,bytes,error));CHECK(ep::decode_resources(bytes,decoded,error));}
+        else if(format==1){CHECK(ep::encode_delta_resources(resources,bytes,error));CHECK(ep::decode_resources(bytes,decoded,error,resources.base_root));}
+        else{ep::JoinInventory inventory;CHECK(ep::make_inventory(resources,inventory,error));CHECK(ep::encode_join_resources(resources,inventory,bytes,error));CHECK(ep::decode_join_resources(bytes,resources,decoded,error));}
+        editor_native::Snapshot transported;CHECK(ep::native_snapshot(decoded,document,transported,error));
+        CHECK(transported.captain==key && transported.captain_locked);
+        CHECK(transported.metadata==resources.metadata && transported.bytes==hydrated.bytes);
+    }
+    editor::State state;state.document=document;editor_store::Snapshot stored;
+    CHECK(ep::store_snapshot(state,hydrated,"owned metadata sentinel",stored,error));
+    editor::State restored;editor_native::Snapshot reopened;
+    CHECK(ep::load_snapshot(stored,restored,reopened,error));
+    CHECK(restored==state && reopened.captain==key && reopened.captain_locked);
+    CHECK(reopened.metadata==hydrated.metadata && reopened.bytes==hydrated.bytes && reopened.source==hydrated.source);
+    // An intentionally missing authored captain remains missing for the
+    // existing playtest gate; hydration must not invent a resource identity.
+    auto nullable=document;nullable.settings.at(captain.object).properties[editor_native::kCaptainAssetProperty]=editor::ResourceKey{};
+    nullable.settings.at(captain.object).properties[editor_native::kCaptainLockedProperty]=false;
+    CHECK(ep::native_snapshot(resources,nullable,reopened,error));
+    CHECK(reopened.captain==editor::ResourceKey{} && !reopened.captain_locked && reopened.metadata==resources.metadata);
+    for(unsigned malformed=0;malformed<8;++malformed){
+        auto broken=document;auto& row=broken.settings.at(captain.object);
+        switch(malformed){
+        case 0:broken.settings.erase(captain.object);break;
+        case 1:row.object.id+=1;break;
+        case 2:row.kind=editor::SettingsKind::Crew;break;
+        case 3:row.act_id={3,1};break;
+        case 4:row.properties.erase(editor_native::kCaptainAssetProperty);break;
+        case 5:row.properties.erase(editor_native::kCaptainLockedProperty);break;
+        case 6:row.properties[editor_native::kCaptainLockedProperty]=int64_t(1);break;
+        default:row.properties[editor_native::kCaptainAssetProperty]=editor::ResourceKey{1,0,0};break;
+        }
+        auto unchanged=hydrated;CHECK(!ep::native_snapshot(resources,broken,unchanged,error));
+        CHECK(unchanged.captain==key && unchanged.captain_locked && unchanged.document==document && unchanged.metadata==hydrated.metadata && unchanged.bytes==hydrated.bytes);
+    }
+    // Missing modern identity is independently rejected after checkpoint
+    // decoding, before either caller-owned output is replaced.
+    auto broken=state;broken.document.settings.erase(captain.object);
+    CHECK(ep::store_snapshot(broken,hydrated,"retained checkpoint",stored,error));
+    restored=state;reopened=hydrated;
+    CHECK(!ep::load_snapshot(stored,restored,reopened,error));
+    CHECK(restored==state && reopened.captain==key && reopened.captain_locked && reopened.document==document && reopened.metadata==hydrated.metadata);
+    editor::ResourceKey retained=key;bool locked=true;
+    CHECK(editor_native::captain_identity(legacy,retained,locked,error));CHECK(retained==key && locked);
+    CHECK(ep::native_snapshot(resources,legacy,reopened,error));
+    CHECK(reopened.captain==editor::ResourceKey{} && !reopened.captain_locked && reopened.metadata==resources.metadata);
+}
 int main() {
     std::string error;
     editor_native::Snapshot native;
@@ -414,6 +477,7 @@ int main() {
     }
     CHECK(ep::native_snapshot(imported, doc, decoded, error));
     CHECK(decoded.bytes == native.bytes);
+    test_captain_identity_transport(imported,doc);
     auto broken = doc; broken.placements.erase(native.bindings[0].object);
     CHECK(!ep::native_snapshot(imported, broken, decoded, error));
     editor_store::Snapshot stored;

@@ -15,6 +15,29 @@ inline constexpr editor::ObjectId kCrewObject{10ull<<32,1};
 inline constexpr editor::ObjectId kProjectObject{12ull<<32,1};
 inline constexpr uint32_t kExtendedComplexityProperty=0x434F4D50;
 inline constexpr editor::ObjectId act_settings_id(uint32_t act){return {(7ull<<32)|act,1};}
+// Resource/checkpoint envelopes carry the authoritative typed document rather
+// than duplicating its captain identity. Legacy documents acquire this row only
+// after verified native expansion; leave their existing sidecars untouched.
+inline bool captain_identity(const editor::Document& document,editor::ResourceKey& asset,bool& locked,std::string& error){
+    const auto found=document.settings.find(kCaptainObject);
+    if(found==document.settings.end()){
+        if(document.settings_schema.contains(kCaptainAssetProperty) || document.settings_schema.contains(kCaptainLockedProperty)){
+            error="The authored captain settings are missing";return false;
+        }
+        error.clear();return true;
+    }
+    const auto& row=found->second;
+    if(row.object!=kCaptainObject || row.kind!=editor::SettingsKind::Captain || row.act_id!=editor::ObjectId{}){
+        error="The authored captain identity is invalid";return false;
+    }
+    const auto key=row.properties.find(kCaptainAssetProperty),lock=row.properties.find(kCaptainLockedProperty);
+    const auto* value=key==row.properties.end()?nullptr:std::get_if<editor::ResourceKey>(&key->second);
+    const auto* flag=lock==row.properties.end()?nullptr:std::get_if<bool>(&lock->second);
+    if(!value || !flag || ((!value->instance || !value->type) && *value!=editor::ResourceKey{})){
+        error="The authored captain properties are invalid";return false;
+    }
+    asset=*value;locked=*flag;error.clear();return true;
+}
 inline const std::map<uint32_t,editor::PropertySpec>& authoring_property_schema(){
     using K=editor::ValueKind;
     static const auto schema=[] {std::map<uint32_t,editor::PropertySpec> result{

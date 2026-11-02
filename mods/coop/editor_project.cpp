@@ -460,6 +460,7 @@ bool native_snapshot(const Resources& resources, const editor::Document& doc, ed
     for (const auto& b : candidate.bindings) if (!doc.placements.contains(b.object)) { error = "Editor resource contains an unknown placement identity"; return false; }
     for (const auto& record : resources.bundle.records) if (record.key == resources.root) candidate.bytes = record.data;
     if (candidate.bytes.empty()) { error = "Editor root record is missing"; return false; }
+    if(!editor_native::captain_identity(doc,candidate.captain,candidate.captain_locked,error))return false;
     out = std::move(candidate); return true;
 }
 bool store_snapshot(const editor::State& state, const editor_native::Snapshot& native, const std::string& metadata,
@@ -485,6 +486,7 @@ bool load_snapshot(const editor_store::Snapshot& stored, editor::State& state, e
         }
     }
     snapshot.document = candidate.document; snapshot.bytes = stored.native_snapshot;
+    if(!editor_native::captain_identity(snapshot.document,snapshot.captain,snapshot.captain_locked,error))return false;
     state = std::move(candidate); native = std::move(snapshot); return true;
 }
 } // namespace editor_project
