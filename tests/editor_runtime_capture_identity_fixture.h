@@ -34,6 +34,7 @@ static void test_captured_rejection_never_restores_a_replacement(){
         if(replaced==10){
             // Ordinary recoverable rejection still restores the committed pose.
             CHECK(n.restores==restores+1&&n.snapshot.document==canonical.document);
+            CHECK(spin([&]{return author?!runtime_guest::rejection_restore:!runtime_host::rejection_restore;}));
             CHECK(author?!runtime_guest::frozen&&!runtime_guest::native_identity_lost:!runtime_host::frozen&&!runtime_host::native_identity_lost);
             CHECK(status=="The edit was rejected and the committed draft restored: Injected unsupported callback failure");
         }else{

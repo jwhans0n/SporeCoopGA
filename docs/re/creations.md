@@ -1105,3 +1105,33 @@ input before scene reconstruction; its successful return alone does not prove
 the later live scene. These fixes improve evidence and preserve the original
 reason; the unsupported Terraform difference and settled rollback verification
 still need actual native diagnosis. No quaternion tolerance was widened.
+
+### C19 checked rejection restoration
+
+A rejected edit now detaches only its local scene while canonical validation,
+history and durability continue. Scene readiness and a successful native
+Restore are prerequisites. The Runtime restores that player's act, selection
+and view, waits a further game frame, then captures and strictly compares the
+settled live scene with the latest committed document and native image. Local
+input, Save, Test, history controls and scene-ready acknowledgements stay
+blocked until that comparison succeeds. A failed comparison freezes the
+recoverable draft; it never recursively starts another restoration.
+
+The original scene owner, source, native generation, project, epoch, participant
+generation and transport are copied before the failed operation's callbacks.
+Rejection cannot authorize a replacement owner observed afterwards. The
+initial and coalesced restores use the explicit fenced native API, as does the
+local view restoration. Read-only projection identity stays valid during this
+hold; authorizing gesture identity is empty. This is not the deferred persistent
+SceneAnchor design and does not identify replacements that predate the entire
+integrity operation.
+
+The controlled actual-i686 Runtime fixture uses two real UDP controllers.
+Both roles accept a foreign placement edit and then a structural addition
+while their native scene is held unready; canonical state, history and both
+durable checkpoints advance, followed by one materialization of the latest
+revision. It also covers a later-frame proof, independent acts and views,
+selection/view callbacks that alter authored pose or opaque bytes, failed
+captures/restores, and identity expiry during readiness, begin, restore and
+recovery callbacks. These tests exercise orchestration with native doubles;
+the actual C19 two-player terrain/restoration acceptance remains pending.

@@ -1309,3 +1309,26 @@ Win32 results and a frozen production build are required before native
 acceptance or delivery. The personal executable and preview 8 DLL still match
 their original hashes; all 19 retained rollback payload hashes were verified
 in `out/preview9-delivery/c18-personal-unchanged.json`.
+
+### C19 controlled rejection-restoration hold
+
+Strict actual-i686 Runtime fixtures pass 40,609 full-suite checks, 7,312 focused
+restoration checks and 1,508 captured-identity checks. All 71 pinned compiler
+inputs remain unchanged; receipt `out/preview9-c19-runtime-receipt.json` retains
+the source hashes, executable and build/test log hashes, including the two
+initial O0 findings and their corrected regression cases.
+
+Rejected edits now hold only their local scene while canonical validation,
+history and durability continue. Two real UDP controllers verify foreign
+placement and structural commits from either role while the other scene stays
+unready, then one restoration of the latest revision. Local input, Save, Test
+and scene-ready reporting resume only after view/selection restoration, a
+later frame and strict typed/opaque live-scene comparison. Failed comparison
+freezes the recoverable draft; expiry cannot authorize a replacement scene.
+The full suite also retains large-closure Save/recovery, cached join, creation
+editor, playtest-return, cancellation and teardown coverage.
+
+These are controlled Runtime tests with native doubles. The real adapter has
+separate native callback-fence fixtures, and actual C19 terrain/restoration
+acceptance is still pending. The failed actual C18 evidence above remains
+unchanged; no quaternion tolerance or authored-field comparison was loosened.
