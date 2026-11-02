@@ -822,3 +822,29 @@ Submit/resolver callers, prop-only normalization and factory fallback bytes;
 symbols, eight native callers and the exact reviewed image hash. The UI passes
 strict i686 syntax checking and the four-family integration tool self-test
 passes. Actual Building, Vehicle and Spaceship workflows remain pending.
+
+Candidate 9 exposed a separate toolbar rendering bug: the account-layout
+template retained unnamed decorative children, including a Spore logo, and
+the toolbar remained in front of the native Crew Sporepedia picker. The
+retained owning tree in `out/preview9-c9-crew-add-open/tree.txt` shows the
+creation toolbar directly under MainWindow and the visible picker
+`53C6DC80` under native layer `05B598F9`. Relying on cached runtime editing
+state or the first global ID match does not identify that visible instance.
+
+The creation UI now hides every original direct child subtree of its retained
+layout before creating its own controls, keeping the hidden style sources
+alive. Its outside-frame update searches the current visible owning window
+tree for the picker, skipping hidden ancestors and non-owning child links.
+The traversal bounds total nodes, depth and stack size and hides the toolbar
+when those bounds are exceeded. Queued click handlers repeat the live picker
+check, so a picker that opens before the next update cannot accept a stale
+toolbar action. No game calls, I/O or native state changes occur inside
+Present.
+
+`tests/editor_creation_ui_windows_tests.cpp` runs the production UI against
+controlled native window objects and passes 60 strict i686 checks. It covers
+unknown decorative template children, a hidden cached picker preceding a
+visible duplicate, ancestor visibility, stale child ownership, queued clicks,
+four family choices and bounded/context cleanup. Receipt:
+`out/editor-preview9-creation-routing/ui.log`. This proves the adapter's window
+behavior; actual candidate 10 screenshot acceptance remains required.
