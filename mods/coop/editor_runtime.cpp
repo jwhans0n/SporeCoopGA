@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <deque>
 #include <filesystem>
@@ -5393,6 +5394,44 @@ void edit_asset(editor::ObjectId class_id){if(!detached_scene() && creation_acti
 void set_extended_complexity(bool value){complexity_request=value;schedule();}
 void resolve_join(int choice) {action(choice==0?Action::HandoffSave:choice==1?Action::HandoffDiscard:Action::HandoffCancel);}
 std::string debug(const std::vector<std::string>& args) {
+    if(args.size()==2 && args[0]=="complexity" && (args[1]=="sample" || args[1]=="observation")){
+        if(!controller || !native_attached || frozen || closing || recovery || durable_commit ||
+           controller->view().phase!=Phase::Ready)return "complexity_observation state=unavailable error=No settled shared editor";
+        const auto* pinned=controller.get();const auto scope=current_projection_scope();
+        const auto revision=controller->state().document.revision,transport=observed_transport;
+        const auto current=[&]{return controller.get()==pinned && C.session && C.session->connected() &&
+            C.session->transport_generation()==transport && observed_transport==transport &&
+            current_projection_scope()==scope && controller->state().document.revision==revision;};
+        std::string error;
+        if(args[1]=="sample"){
+            const auto serial=editor_native::sample_complexity(scope,revision,error);
+            if(!current())return "complexity_observation state=expired error=Shared context changed";
+            return "complexity_observation state="+std::string(serial?"pending":"unavailable")+" serial="+std::to_string(serial)+
+                " revision="+std::to_string(revision)+" error="+error;
+        }
+        editor_native::ComplexityObservation value;
+        const auto state=editor_native::complexity_observation(scope,revision,value,error);
+        if(!current())return "complexity_observation state=expired error=Shared context changed";
+        static constexpr const char* labels[]={"disarmed","pending","ready","expired"};
+        std::string result="complexity_observation state="+std::string(labels[size_t(state)])+" revision="+std::to_string(revision);
+        if(state==editor_native::ComplexityObservationState::Ready){
+            char fields[768];snprintf(fields,sizeof fields,
+                " serial=%llu frame=%llu qpc=%llu generation=%llu markers=%u extended=%u weighted=%.9g native_marker=%.9g extended_marker=%.9g original=%.9g effective=%.9g weighted_headroom=%.9g effective_headroom=%.9g",
+                (unsigned long long)value.serial,(unsigned long long)value.frame,(unsigned long long)value.qpc,(unsigned long long)value.generation,
+                value.markers,unsigned(value.extended),double(value.weighted),double(value.native_marker),double(value.extended_marker),
+                double(value.original),double(value.effective),double((value.extended?4.f:1.f)-value.weighted),double(1.f-value.effective));
+            result+=fields;
+            for(const auto& [name,number]:{std::pair{"weighted",value.weighted},std::pair{"native_marker",value.native_marker},
+                std::pair{"extended_marker",value.extended_marker},std::pair{"original",value.original},std::pair{"effective",value.effective},
+                std::pair{"weighted_headroom",(value.extended?4.f:1.f)-value.weighted},std::pair{"effective_headroom",1.f-value.effective}})
+                result+=" "+std::string(name)+"_bits="+editor_placement_diagnostic::hex(std::bit_cast<uint32_t>(number),8);
+            result+=" counts=";
+            for(size_t i=0;i<value.counts.size();++i){if(i)result+=',';result+=std::to_string(value.counts[i]);}
+            result+=" words=";
+            for(size_t i=0;i<value.tuning.size();++i){if(i)result+=',';result+=editor_placement_diagnostic::hex(value.tuning[i],8);}
+        }
+        return result+" error="+error;
+    }
     if(args.size()==1&&args[0]=="complexity"){
         if(!controller)return "complexity context_current=0 unavailable=no-controller";
         const auto& view=controller->view();const auto& doc=controller->state().document;

@@ -168,3 +168,31 @@ not native parsing, UI eligibility, stock-prop selection, cold reopen or
 publication. Those remain required running-game checks. Runner profile setup
 does not overwrite EditorSaves, but its viewport preference must be overridden
 to the currently measured OptionScreenSize11 before a future private launch.
+
+### Passive one-shot observation
+
+`coop.editor complexity sample` arms a diagnostic for the next natural idle
+WeightedRatio call. `coop.editor complexity observation` returns Pending until
+that call occurs, then exposes its twelve input counts, thirteen exact tuning
+words, live marker count, original/effective ratios and raw float words. The
+sample includes a serial, game frame, QPC and native generation. It does not
+invoke Measure, construct a projection, change tuning or grant admission.
+An unarmed hook retains the existing single original call and result.
+
+The observation owns values only. Scene/source, project/epoch, revision,
+gesture, pool roster, class/native key, tuning and code identity must remain
+exact through the original call and readback. A later interaction expires the
+sample; before/after clone observations therefore require separate arms and
+new serials. Missing natural queries remain Pending. Count indices are not
+published as category names because their individual meanings are not yet
+verified. A candidate is not a low-cost prop until ordinary native before/after
+clone evidence establishes its count and ratio delta.
+
+Controlled validation passed 1,199 native complexity assertions in the shared
+strict i686 executable, 442 standalone ratio checks on both Linux and i686,
+and the Runtime consumer/fake API syntax check. The superseding shared fixture
+also passed Flora 990 and the full native corpus 140,147, with 59 compiled
+inputs unchanged. Exact receipts are retained under
+`out/editor-preview9-complexity-observation` and
+`out/editor-preview9-flora-layout`. These prove diagnostic composition and
+retirement, not running-game complexity boundaries or publication acceptance.

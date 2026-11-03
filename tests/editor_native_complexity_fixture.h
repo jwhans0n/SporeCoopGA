@@ -191,6 +191,86 @@ void test_native_complexity_capability(){
     CHECK(skg::field<uint32_t>(cx_create.data(),1)==1024&&skg::field<uint32_t>(cx_clone.data(),1)==1024);
     cx_setup();cx_maximum=0;CHECK(update_complexity(error)&&!complexity_bounds.active());
     cx_setup();cx_formula[0]^=1;CHECK(!update_complexity(error)&&!complexity_bounds.active()&&!error.empty());
+    // Diagnostic sampling is disarmed by default, observes one already-natural
+    // query, and never calls Measure/Read/Write or authoring policy callbacks.
+    const auto previous_thread=native_owner_thread;
+    const auto diagnostic_setup=[&](bool extended=false){
+        complexity_observed={};cx_setup(3);native_owner_thread=GetCurrentThreadId();
+        act_identity.project=t_scope.project;act_identity.epoch=t_scope.epoch;
+        act_identity.settings[kProjectObject].properties[kExtendedComplexityProperty]=extended;
+    };
+    diagnostic_setup();ComplexityObservation sample;sample.serial=0xCD;
+    CHECK(complexity_observation(t_scope,0,sample,error)==ComplexityObservationState::Disarmed&&sample.serial==0xCD);
+    cx_counts[0]=2;const auto diagnostic_work=work_stats();
+    C.active=[]()->bool{CHECK(false);return false;};C.projection_scope=[]()->GestureScope{CHECK(false);return {};};
+    C.complexity_current=[](const auto&)->bool{CHECK(false);return false;};
+    const auto first_sample=sample_complexity(t_scope,0,error);CHECK(first_sample&&cx_original_calls==0);
+    CHECK(complexity_observation(t_scope,0,sample,error)==ComplexityObservationState::Pending&&sample.serial==0xCD);
+    CHECK(complexity_ratio(t_data.data(),cx_counts.data())==.2f&&cx_original_calls==1);
+    CHECK(complexity_observation(t_scope,0,sample,error)==ComplexityObservationState::Ready&&sample.serial==first_sample);
+    CHECK(sample.counts==cx_counts&&sample.markers==3&&sample.frame==t_frame&&sample.qpc&&sample.generation==generation&&!sample.extended);
+    CHECK(sample.weighted==.2f&&sample.original==.2f&&sample.effective==.2f&&sample.tuning[0]==0x3F800000&&sample.tuning[12]==0x41200000);
+    cx_counts[0]=3;CHECK(complexity_ratio(t_data.data(),cx_counts.data())==.3f&&cx_original_calls==2);
+    CHECK(complexity_observation(t_scope,0,sample,error)==ComplexityObservationState::Ready&&sample.serial==first_sample&&sample.counts[0]==2);
+    CHECK(work_stats().reads.calls==diagnostic_work.reads.calls&&work_stats().writes.calls==diagnostic_work.writes.calls);
+    const auto next_sample=sample_complexity(t_scope,0,error);CHECK(next_sample>first_sample);
+    CHECK(complexity_ratio(t_data.data(),cx_counts.data())==.3f&&cx_original_calls==3);
+    CHECK(complexity_observation(t_scope,0,sample,error)==ComplexityObservationState::Ready&&sample.serial==next_sample&&sample.counts[0]==3);
+    uint64_t rearmed=0;cx_callback=[&]{rearmed=sample_complexity(t_scope,0,error);};
+    CHECK(sample_complexity(t_scope,0,error));CHECK(complexity_ratio(t_data.data(),cx_counts.data())==.3f&&rearmed);
+    CHECK(complexity_observed.state==ComplexityObservationState::Pending&&complexity_observed.serial==rearmed);
+    CHECK(complexity_ratio(t_data.data(),cx_counts.data())==.3f);
+    CHECK(complexity_observation(t_scope,0,sample,error)==ComplexityObservationState::Ready&&sample.serial==rearmed);
+    auto old_scope=t_scope;++old_scope.author.generation;
+    CHECK(complexity_observation(old_scope,0,sample,error)==ComplexityObservationState::Expired);
+    CHECK(complexity_observation(t_scope,0,sample,error)==ComplexityObservationState::Ready&&sample.serial==rearmed);
+    diagnostic_setup(true);cx_counts[0]=4;CHECK(sample_complexity(t_scope,1,error));
+    CHECK(complexity_ratio(t_data.data(),cx_counts.data())==.1f&&cx_original_calls==1);
+    CHECK(complexity_observation(t_scope,1,sample,error)==ComplexityObservationState::Ready&&sample.extended&&sample.original==.4f&&sample.effective==.1f);
+    diagnostic_setup();CHECK(sample_complexity(t_scope,0,error));
+    CHECK(complexity_ratio(t_other_data.data(),cx_counts.data())==4.f/1024&&cx_original_calls==1);
+    CHECK(complexity_observed.state==ComplexityObservationState::Pending);
+    CHECK(complexity_ratio(t_data.data(),cx_counts.data())==4.f/1024&&cx_original_calls==2);
+    CHECK(complexity_observation(t_scope,0,sample,error)==ComplexityObservationState::Ready);
+    diagnostic_setup();cx_override=.625f;CHECK(sample_complexity(t_scope,0,error));
+    CHECK(complexity_ratio(t_data.data(),cx_counts.data())==.625f&&cx_original_calls==1);
+    CHECK(complexity_observation(t_scope,0,sample,error)==ComplexityObservationState::Expired);
+    for(unsigned mutation=0;mutation<13;++mutation){
+        diagnostic_setup();cx_counts[0]=1;CHECK(sample_complexity(t_scope,2,error));bool fired=false;
+        const auto frame_source=H->frame_index;
+        cx_callback=[&]{fired=true;
+            if(mutation==0)++generation;if(mutation==1)++skg::field<editor::ResourceKey>(t_live.data(),8).instance;
+            if(mutation==2)++cx_counts[1];if(mutation==3)cx_maximum=11;
+            if(mutation==4)skg::field<uint32_t>(t_rows[t_live.data()].data(),0)=0;
+            if(mutation==5)++skg::field<uint32_t>(t_rows[t_live.data()].data()+4,0);
+            if(mutation==6)++skg::field<uint32_t>(t_rows[t_live.data()].data()+4,0x228);
+            if(mutation==7){auto copy=t_rows[t_live.data()];t_rows[t_live.data()].swap(copy);rows_for(t_live.data());}
+            if(mutation==8)original_complexity=nullptr;if(mutation==9)++gesture_counter;
+            if(mutation==10)const_cast<SkHost*>(H)->frame_index=nullptr;
+            if(mutation==11)++act_identity.epoch;if(mutation==12)cx_formula[1]^=1;
+        };
+        CHECK(complexity_ratio(t_data.data(),cx_counts.data())==.1f&&fired&&cx_original_calls==1);
+        sample.serial=0xCD;CHECK(complexity_observation(t_scope,2,sample,error)==ComplexityObservationState::Expired&&sample.serial==0xCD);
+        const_cast<SkHost*>(H)->frame_index=frame_source;
+    }
+    for(unsigned stale=0;stale<9;++stale){
+        diagnostic_setup();CHECK(sample_complexity(t_scope,4,error));
+        CHECK(complexity_ratio(t_data.data(),cx_counts.data())==4.f/1024&&cx_original_calls==1);
+        auto scope=t_scope;auto revision=editor::Revision(4);
+        if(stale==0)++generation;if(stale==1)++skg::field<editor::ResourceKey>(t_live.data(),8).instance;
+        if(stale==2)++gesture_counter;if(stale==3)++scope.author.generation;if(stale==4)++revision;
+        if(stale==5)++skg::field<uint32_t>(t_rows[t_live.data()].data()+4,0x228);
+        if(stale==6)cx_maximum=11;if(stale==7)++act_identity.epoch;
+        if(stale==8)t_game_mode_id=modes::kEditor;
+        sample.serial=0xCD;CHECK(complexity_observation(scope,revision,sample,error)==ComplexityObservationState::Expired&&sample.serial==0xCD&&cx_original_calls==1);
+    }
+    diagnostic_setup();skg::field<uint8_t>(t_history.data(),0x20)=0;
+    CHECK(!sample_complexity(t_scope,0,error)&&cx_original_calls==0);
+    skg::field<uint8_t>(t_history.data(),0x20)=1;CHECK(sample_complexity(t_scope,0,error));
+    skg::field<uint8_t>(t_history.data(),0x20)=0;CHECK(complexity_ratio(t_data.data(),cx_counts.data())==4.f/1024&&cx_original_calls==1);
+    CHECK(complexity_observed.state==ComplexityObservationState::Pending);
+    CHECK(complexity_observation(t_scope,0,sample,error)==ComplexityObservationState::Expired);
+    complexity_observed={};native_owner_thread=previous_thread;
     complexity_bounds={};complexity_available=complexity_code_pinned=false;
     a_complexity_ratio=a_complexity_count=a_complexity_weights=a_complexity_max=a_complexity_create=a_complexity_clone=0;
     original_complexity=nullptr;CHECK(VirtualFree(cx_count_memory,0,MEM_RELEASE));cx_count_memory=nullptr;reset();

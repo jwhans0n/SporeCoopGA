@@ -1116,11 +1116,14 @@ bool complexity_pool(void* resource,ComplexityPool& out,uint32_t& live){
     }
     out=std::move(value);return true;
 }
+#include "editor_native_complexity_observation_impl.h"
 float SK_THISCALL complexity_ratio(void* self,const uint32_t* counts){
+    ComplexityDiagnosticCapture observation(self,counts);
+    const auto passthrough=[&]{const auto value=original_complexity(self,counts);observation.finish(value,value,false);return value;};
     // Every ordinary/native-default query keeps the original result exactly.
     auto* m=mode();auto* owner=data(m);
     if(self!=owner || !editor::extended_complexity(act_identity) || !skg::readable(m,0xDC) ||
-       skg::field<int>(m,0xCC)!=1 || skg::field<int>(m,0xD0)!=0)return original_complexity(self,counts);
+       skg::field<int>(m,0xCC)!=1 || skg::field<int>(m,0xD0)!=0)return passthrough();
     const auto fail=[&](const char* message)noexcept{
         ++complexity_conflicts;
         try{complexity_conflict=message;}catch(...){complexity_conflict.clear();}
@@ -1147,7 +1150,7 @@ float SK_THISCALL complexity_ratio(void* self,const uint32_t* counts){
         if(!raw_current())return fail("Extended complexity query changed its original editor");
         const bool shared=editor_ready && active_callback && active_callback();
         if(!raw_current())return fail("Extended complexity query changed its original editor");
-        if(!shared)return original_complexity(self,counts);
+        if(!shared)return passthrough();
         const auto scope=projection?projection():GestureScope{};
         if(!raw_current() || !valid_scope(scope) || !skg::readable(counts,12*sizeof(uint32_t)))
             return fail("Extended complexity query lost its original editor");
@@ -1178,7 +1181,7 @@ float SK_THISCALL complexity_ratio(void* self,const uint32_t* counts){
         tuning.maximum=std::bit_cast<float>(before.words[12]);float extended=1;
         if(!editor_native_complexity::extended_ratio(ratio,values,counted,tuning,extended))
             return fail("Native complexity formula no longer matches its verified inputs");
-        complexity_conflict.clear();return extended;
+        complexity_conflict.clear();observation.finish(ratio,extended,true);return extended;
     }catch(...){return fail("Extended complexity query failed its owned evidence checks");}
 }
 void refresh_selection() {
@@ -5095,6 +5098,46 @@ bool terraform_navigation_allowed(){
 }
 bool complexity_capability(editor::ComplexityCapability& out,std::string& error){return read_complexity_capability(out,error);}
 bool extended_complexity_available(){editor::ComplexityCapability value;std::string error;return read_complexity_capability(value,error);}
+uint64_t sample_complexity(const GestureScope& scope,editor::Revision revision,std::string& error){
+    if(!native_owner_thread || GetCurrentThreadId()!=native_owner_thread){error="Complexity samples belong to the game thread";return 0;}
+    complexity_observed.state=ComplexityObservationState::Expired;
+    try{
+        if(!valid_scope(scope) || !supported || !H || !H->frame_index || !original_complexity || !editing() || !environment_interaction_idle()){
+            error="A settled native editor and read context are required";return 0;
+        }
+        ComplexityObservationPin pin;pin.host=H;pin.frame_source=H->frame_index;pin.scope=scope;pin.revision=revision;
+        pin.generation=generation;pin.gesture=gesture_counter;pin.original=original_complexity;
+        auto* m=mode();auto* d=data(m);auto* r=resource(d);
+        if(!skg::readable(r,kResourceSize)){error="The native complexity owner is unavailable";return 0;}
+        pin.owner={uintptr_t(m),uintptr_t(d),uintptr_t(r),skg::field<editor::ResourceKey>(r,8)};
+        editor::ComplexityCapability tuning;
+        if(!complexity_observation_owner(pin) || !read_complexity_capability(tuning,error) || !complexity_observation_owner(pin)){
+            if(error.empty())error="The native complexity context expired";return 0;
+        }
+        if(complexity_observation_serial==UINT64_MAX){error="The complexity sample serial is exhausted";return 0;}
+        pin.serial=++complexity_observation_serial;pin.state=ComplexityObservationState::Pending;
+        complexity_observed=std::move(pin);error.clear();return complexity_observation_serial;
+    }catch(...){error="The complexity sample could not retain its bounded values";return 0;}
+}
+ComplexityObservationState complexity_observation(const GestureScope& scope,editor::Revision revision,ComplexityObservation& out,std::string& error){
+    using State=ComplexityObservationState;
+    if(!native_owner_thread || GetCurrentThreadId()!=native_owner_thread){error="Complexity samples belong to the game thread";return State::Expired;}
+    auto& pin=complexity_observed;
+    if(pin.state==State::Disarmed){error.clear();return pin.state;}
+    const auto expired=[&]{pin.state=State::Expired;error="The observed complexity scene, gesture or tuning expired";return pin.state;};
+    try{
+        if(scope!=pin.scope || revision!=pin.revision){error="The complexity sample belongs to another read context";return State::Expired;}
+        if(pin.state==State::Expired || !editing() ||
+           !complexity_observation_owner(pin) || !environment_interaction_idle())return expired();
+        editor::ComplexityCapability tuning;
+        if(!read_complexity_capability(tuning,error) || !complexity_observation_owner(pin))return expired();
+        if(pin.state==State::Pending){error.clear();return pin.state;}
+        ComplexityPool pool;uint32_t count=0;std::vector<std::array<uint32_t,2>> identities;
+        if(tuning.words!=pin.observation.tuning || !complexity_observation_rows(reinterpret_cast<void*>(pin.owner.resource),pool,count,identities) ||
+           pool!=pin.pool || count!=pin.observation.markers || identities!=pin.identities || !complexity_observation_owner(pin))return expired();
+        out=pin.observation;error.clear();return State::Ready;
+    }catch(...){return expired();}
+}
 
 void bind(const std::vector<Binding>& value) {
     bindings.clear();

@@ -217,6 +217,18 @@ bool extended_complexity_available();
 // Scene-independent, read-only evidence. False still fills a valid unavailable
 // value (zero tuning words plus reason) for authenticated peer publication.
 bool complexity_capability(editor::ComplexityCapability&,std::string& error);
+// Diagnostic only: one natural ratio query, no Measure call or admission proof.
+enum class ComplexityObservationState {Disarmed,Pending,Ready,Expired};
+struct ComplexityObservation {
+    uint64_t serial=0,frame=0,qpc=0,generation=0;
+    uint32_t markers=0;
+    std::array<uint32_t,12> counts{};
+    std::array<uint32_t,13> tuning{};
+    float weighted=0,native_marker=0,extended_marker=0,original=0,effective=0;
+    bool extended=false;
+};
+uint64_t sample_complexity(const GestureScope&,editor::Revision,std::string& error);
+ComplexityObservationState complexity_observation(const GestureScope&,editor::Revision,ComplexityObservation&,std::string& error);
 editor::ResourceKey avatar();
 bool avatar_locked();
 // Local browsing only. Does not create a shared authored transaction.

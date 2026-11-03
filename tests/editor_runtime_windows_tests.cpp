@@ -487,6 +487,8 @@ bool expand_snapshot(const Snapshot& input,bool,Snapshot& out,std::string& error
 }
 uint32_t creation_group(){return 0x408A0000;}
 bool extended_complexity_available(){return true;}
+uint64_t sample_complexity(const GestureScope&,editor::Revision,std::string& error){error="Controlled complexity observation is unavailable";return 0;}
+ComplexityObservationState complexity_observation(const GestureScope&,editor::Revision,ComplexityObservation&,std::string& error){error="Controlled complexity observation is unavailable";return ComplexityObservationState::Disarmed;}
 bool complexity_capability(editor::ComplexityCapability& out,std::string& error){
     CHECK(!dispatching);auto& n=native[side];++n.complexity_samples;out=n.complexity;
     if(!out.available){error="Injected unavailable global complexity proof";return false;}
