@@ -531,6 +531,20 @@ $(B)/host/task_pump_metrics_tests.exe: tests/task_pump_metrics_tests.cpp sporeki
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static $< -o $@
 
+.PHONY: test-outside-tasks test-outside-tasks-windows
+test-outside-tasks: $(B)/host/outside_tasks_tests
+	$<
+test-outside-tasks-windows: $(B)/host/outside_tasks_tests.exe $(B)/host/outside_tasks_windows_tests.exe
+$(B)/host/outside_tasks_tests: tests/outside_tasks_tests.cpp sporekit/outside_tasks.h
+	@mkdir -p $(dir $@)
+	$(HOSTCXX) -std=c++20 -O2 -Wall -Wextra -Werror -pthread $< -o $@
+$(B)/host/outside_tasks_tests.exe: tests/outside_tasks_tests.cpp sporekit/outside_tasks.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static $< -o $@
+$(B)/host/outside_tasks_windows_tests.exe: tests/outside_tasks_windows_tests.cpp sporekit/console.cpp sporekit/outside_tasks.h sporekit/task_pump_metrics.h sporekit/core.h sdk/include/sporekit.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-missing-field-initializers -static -ffunction-sections -fdata-sections $< -Wl,--gc-sections -lws2_32 -luser32 -o $@
+
 # Preview 6 verified interaction adapters (the tests include their implementation).
 INTERACTION_TEST_NET := mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp
 .PHONY: test-explosives-windows test-pickups-windows

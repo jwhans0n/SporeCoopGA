@@ -9,11 +9,11 @@ struct Ticket { uint64_t generation=0,frame=0,begin=0; };
 struct Record {
     uint64_t frame=0,begin=0,end=0,queue_left=0;
     uint32_t processed=0;
-    bool cap_reached=false;
+    bool cap_reached=false,budget_reached=false;
 };
 struct Snapshot {
     bool armed=false;
-    uint64_t generation=0,frequency=0,calls=0,processed=0,cap_hits=0,deferred=0;
+    uint64_t generation=0,frequency=0,calls=0,processed=0,cap_hits=0,deferred=0,budget_hits=0;
     Record peak;
     std::array<Record,16> recent{};
     uint32_t count=0,next=0;
@@ -43,12 +43,12 @@ public:
         if(!armed())return;
         std::lock_guard lock(mutex_);if(value_.armed)++value_.deferred;
     }
-    void finish(Ticket ticket,uint64_t end,uint32_t processed,bool cap,uint64_t left){
+    void finish(Ticket ticket,uint64_t end,uint32_t processed,bool cap,uint64_t left,bool budget=false){
         if(!ticket.generation || !armed())return;
         std::lock_guard lock(mutex_);
         if(!value_.armed || ticket.generation!=value_.generation || end<ticket.begin)return;
-        const Record record{ticket.frame,ticket.begin,end,left,processed,cap};
-        ++value_.calls;value_.processed+=processed;value_.cap_hits+=cap;
+        const Record record{ticket.frame,ticket.begin,end,left,processed,cap,budget};
+        ++value_.calls;value_.processed+=processed;value_.cap_hits+=cap;value_.budget_hits+=budget;
         if(value_.calls==1 || end-ticket.begin>value_.peak.end-value_.peak.begin)value_.peak=record;
         value_.recent[value_.next]=record;value_.next=(value_.next+1)%value_.recent.size();
         if(value_.count<value_.recent.size())++value_.count;

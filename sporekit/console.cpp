@@ -7,6 +7,7 @@
 
 #include "core.h"
 #include "task_pump_metrics.h"
+#include "outside_tasks.h"
 
 #include <deque>
 #include <map>
@@ -37,7 +38,7 @@ void run_on_main(std::function<void()> fn)
 
 // tasks that must not run inside IDirect3DDevice9::Present (DXVK holds its locks there):
 // anything that may create D3D resources, e.g. Spore UI windows (fonts, textures)
-static std::deque<std::function<void()>> g_out_tasks;
+static outside_tasks::Queue g_out_tasks;
 static task_pump_metrics::Recorder g_outside_metrics;
 
 task_pump_metrics::Snapshot outside_pump_metrics(const std::string& action)
@@ -52,10 +53,7 @@ task_pump_metrics::Snapshot outside_pump_metrics(const std::string& action)
 
 void run_outside_frame(std::function<void()> fn)
 {
-    {
-        std::lock_guard<std::mutex> lk(g_task_mu);
-        g_out_tasks.push_back(std::move(fn));
-    }
+    g_out_tasks.push(std::move(fn));
     if (HWND w = (HWND)game_window())
         PostMessageW(w, WM_SK_PUMP_OUT, 0, 0);
 }
@@ -73,29 +71,22 @@ void pump_outside_tasks()
         LARGE_INTEGER begin{};QueryPerformanceCounter(&begin);
         measured=g_outside_metrics.begin(frame_index(),uint64_t(begin.QuadPart));
     }
-    uint32_t processed=0;bool cap_reached=false;
+    outside_tasks::Result result;
     struct Measure {
-        task_pump_metrics::Ticket ticket;uint32_t& processed;bool& cap;
+        task_pump_metrics::Ticket ticket;outside_tasks::Result& result;
         ~Measure(){
+            const auto left=g_out_tasks.size();
+            if(left)if(HWND window=(HWND)game_window())PostMessageW(window,WM_SK_PUMP_OUT,0,0);
             if(!ticket.generation)return;
-            LARGE_INTEGER end{};QueryPerformanceCounter(&end);size_t left=0;
-            {std::lock_guard lock(g_task_mu);left=g_out_tasks.size();}
-            g_outside_metrics.finish(ticket,uint64_t(end.QuadPart),processed,cap,left);
+            LARGE_INTEGER end{};QueryPerformanceCounter(&end);
+            g_outside_metrics.finish(ticket,uint64_t(end.QuadPart),result.processed,result.cap_reached,left,result.budget_reached);
         }
-    } measure{measured,processed,cap_reached};
-    for (int guard = 0; guard < 256; guard++) {
-        std::function<void()> fn;
-        {
-            std::lock_guard<std::mutex> lk(g_task_mu);
-            if (g_out_tasks.empty())
-                return;
-            fn = std::move(g_out_tasks.front());
-            g_out_tasks.pop_front();
-        }
-        ++processed;
-        fn();
-    }
-    cap_reached=true;
+    } measure{measured,result};
+    static const uint64_t budget=[] {
+        LARGE_INTEGER frequency{};QueryPerformanceFrequency(&frequency);
+        return uint64_t(frequency.QuadPart)/125; // 8 ms, checked between callbacks.
+    }();
+    outside_tasks::pump(g_out_tasks,result,[]{LARGE_INTEGER now{};QueryPerformanceCounter(&now);return uint64_t(now.QuadPart);},budget);
 }
 
 struct DelayedTask {

@@ -1909,3 +1909,40 @@ unchanged. Controlled host/i686 tests cover ring eviction with retained peak,
 restart/stop retirement, concurrent snapshots, bad clocks, editor/generic
 classification and resets preserving an existing pulse reservation. Actual
 cap starvation or fallback classification still requires the armed Native run.
+
+C48's armed actual capture confirmed one outside pump containing184 callbacks
+on frame3217, QPC17764370664086 through17764375864190 at10 MHz:520.0104 ms,
+with no256-cap hit and an empty queue on return. The corresponding frame maximum
+was558.62 ms. Idle pumps peaked at10 callbacks/10.59 ms with ordinary frames near
+46 ms. Editor reserve/dispatch counts were746 versus6 generic during the5.71 s
+capture interval. Thus a live stream can delay Present substantially before the
+old count limit; absence of cap hits did not rule out this scheduling cause.
+Evidence: `out/preview9-c48-pump-probe/diagnostic.json`.
+
+The SDK pump now snapshots the last queued sequence and executes only through
+that FIFO boundary, with the existing256-callback cap and an8 ms elapsed budget
+checked after each callback and its retained-function cleanup. At least one
+callback can run; a single long callback is never interrupted. Newly posted
+pulse/drain work stays queued for a later pump. A nested pump may consume old
+entries, so a sequence fence prevents the outer pump from accidentally replacing
+those entries with newer work. Nested callbacks retain their existing ability
+to pump independently; no new arbitrary-callback quiescence guarantee is made.
+
+All queue operations own their `std::function` values under a mutex, and invoke
+them with no queue mutex held. Queued module/payload retention is unchanged.
+Remaining work receives another normal outside-pump window message, including
+after a throwing callback. In-Present deferral and command marshalling remain
+intact. Only WndProc calls `pump_outside_tasks` in production. The diagnostic
+adds `budget_hits` and per-row `budget_reached` alongside its existing cap fields.
+This bounds an individual pump; a single callback and Windows message dispatch
+can still affect frame time, so actual frame-budget acceptance remains pending.
+
+Controlled pure/i686 cases exercise sustained self-requeueing, a pulse/drain
+feedback stream, finite FIFO batches, budget overrun by one indivisible callback,
+the256 cap, nested consumption, concurrent producer arrival, retained payload
+cleanup and exceptions. An i686 fixture includes the actual SDK console/pump,
+with controlled clocks and passive window/frame endpoints, and checks Present
+deferral, asynchronous command replies and command removal while queued. The
+exact retained C48 pump fails its first new-work deferral assertion. Focused
+receipts and the old-source executable are retained under
+`out/editor-preview9-outside-batch/`; no game or deployment is part of this test.

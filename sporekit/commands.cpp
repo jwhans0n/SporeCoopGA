@@ -629,12 +629,12 @@ void register_builtin_commands()
             outf(out,"usage: outside.metrics start|stop|status");return 1;
         }
         const auto value=outside_pump_metrics(argv[1]);
-        outf(out,"armed=%u generation=%llu frequency=%llu calls=%llu processed=%llu cap_hits=%llu deferred=%llu samples=%u\n",
+        outf(out,"armed=%u generation=%llu frequency=%llu calls=%llu processed=%llu cap_hits=%llu deferred=%llu budget_hits=%llu samples=%u\n",
             unsigned(value.armed),(unsigned long long)value.generation,(unsigned long long)value.frequency,
-            (unsigned long long)value.calls,(unsigned long long)value.processed,(unsigned long long)value.cap_hits,(unsigned long long)value.deferred,value.count);
+            (unsigned long long)value.calls,(unsigned long long)value.processed,(unsigned long long)value.cap_hits,(unsigned long long)value.deferred,(unsigned long long)value.budget_hits,value.count);
         const auto row=[&](const char* label,const task_pump_metrics::Record& r){
-            outf(out,"%s frame=%llu processed=%u cap_reached=%u queue_left=%llu begin=%llu end=%llu duration_ticks=%llu\n",label,
-                (unsigned long long)r.frame,r.processed,unsigned(r.cap_reached),(unsigned long long)r.queue_left,
+            outf(out,"%s frame=%llu processed=%u cap_reached=%u budget_reached=%u queue_left=%llu begin=%llu end=%llu duration_ticks=%llu\n",label,
+                (unsigned long long)r.frame,r.processed,unsigned(r.cap_reached),unsigned(r.budget_reached),(unsigned long long)r.queue_left,
                 (unsigned long long)r.begin,(unsigned long long)r.end,(unsigned long long)(r.end-r.begin));
         };
         if(value.calls)row("peak",value.peak);
