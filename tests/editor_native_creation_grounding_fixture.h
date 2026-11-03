@@ -184,3 +184,133 @@ void test_creation_grounding_return(){
         if(returning)CHECK(retained->retired&&bindings.empty()&&terrain_grounding.empty()&&act_identity.act_order.empty());
     }
 }
+// These hooks run only inside owned fixture Read/Write/Release. They exercise
+// the real adapter's callback boundary without adding any game call.
+std::function<void(void*)> tsg_after_read,tsg_after_write,tsg_after_release;
+bool SK_THISCALL tsg_read(void* resource,Stream* stream){
+    const bool result=tcg_read(resource,stream);if(result&&tsg_after_read)tsg_after_read(resource);return result;
+}
+bool SK_THISCALL tsg_write(void* resource,Stream* stream){
+    const bool result=tcg_write(resource,stream);if(result&&tsg_after_write)tsg_after_write(resource);return result;
+}
+int SK_THISCALL tsg_release(void* resource){
+    const bool final=skg::field<int>(resource,4)==1&&t_allocations.contains(resource);
+    const auto result=tcg_release(resource);if(final&&tsg_after_release)tsg_after_release(resource);return result;
+}
+struct SavedGroundingCase {
+    Snapshot entry,saved;TerrainTransitionKey key;TerrainTransitionReceipt receipt;TerrainTransitionTicket ticket;
+    bool allowed=true;
+};
+void tsg_setup(SavedGroundingCase& test){
+    tsg_after_read={};tsg_after_write={};tsg_after_release={};test={};
+    test.entry=tcg_setup();test.entry.source={101,0x366A930D,0x408A0000};
+    skg::field<editor::ResourceKey>(t_live.data(),8)=test.entry.source;
+    CHECK(terrain_materialization_owner);terrain_materialization_owner->source=test.entry.source;
+    std::string error;SceneOwner scene;CHECK(capture_scene_owner(scene,error));
+    test.key={t_scope,41,generation,scene};const auto current=[&]{return test.allowed;};
+    const bool retained=capture_terrain_transition(test.key,test.entry,current,test.ticket,error);
+    if(!retained)std::fprintf(stderr,"saved grounding ticket capture: %s\n",error.c_str());CHECK(retained);
+    C.gesture_scope=[] {return GestureScope{};};C.projection_scope=[] {return GestureScope{};};
+    TerrainTransitionTicket refreshed;Snapshot observed;
+    CHECK(refresh_terrain_transition(test.ticket,test.key,test.entry,current,refreshed,observed,error));test.ticket=refreshed;
+    test.receipt={TerrainTransitionKind::Save,test.key,test.key,3,5};
+    ++test.receipt.after.owner.source.instance;skg::field<editor::ResourceKey>(t_live.data(),8)=test.receipt.after.owner.source;
+    test.saved=test.entry;test.saved.source=test.receipt.after.owner.source;
+    Owned persisted(construct());CHECK(persisted.p);tcg_copy(persisted.p,t_live.data());tmc_export(persisted.p);
+    CHECK(serialize(persisted.p,test.saved.bytes,error));
+}
+void tsg_change_saved(SavedGroundingCase& test,const std::function<void(void*)>& change){
+    std::string error;Owned persisted(parse(test.saved.bytes,error));CHECK(persisted.p);change(persisted.p);
+    CHECK(serialize(persisted.p,test.saved.bytes,error));
+}
+void test_saved_grounding_transition(){
+    struct Routes {
+        uintptr_t writer=a_write,reader=a_read,copier=a_copy,acts=a_copy_acts,crew=a_copy_crew,shown=a_layout_shown;
+        uintptr_t initialization=a_scenario_initialization,modes=a_get_simulator_mode_manager;const SkHost* host=H;
+        ~Routes(){CHECK(t_allocations.empty());tsg_after_read={};tsg_after_write={};tsg_after_release={};
+            tcg_rows.clear();tmc_properties.clear();act_cache_rows.clear();
+            a_write=writer;a_read=reader;a_copy=copier;a_copy_acts=acts;a_copy_crew=crew;a_layout_shown=shown;
+            a_scenario_initialization=initialization;a_get_simulator_mode_manager=modes;H=host;reset();}
+    } routes;
+    SavedGroundingCase test;tsg_setup(test);std::string error;
+    const auto current=[&]{return test.allowed;};
+    const auto raw=t_rows.at(t_live.data());const auto columns=tmf_columns;
+    // The actual C28 boundary: persisted bytes contain the exact old rendered
+    // XYZ, while the canonical snapshot and ordinary capture contain authored
+    // XYZ. This assertion reaches the old production defect before the fix.
+    CHECK(!validate(test.saved,test.entry.document,error));
+    error.clear();const bool normalized=normalize_saved_terrain(test.ticket,test.receipt,test.entry,test.saved,current,error);
+    if(!normalized)std::fprintf(stderr,"saved grounding normalization: %s\n",error.c_str());
+    CHECK(normalized);CHECK(validate(test.saved,test.entry.document,error));
+    CHECK(test.saved.source==test.receipt.after.owner.source&&test.saved.document==test.entry.document);
+    CHECK(t_rows.at(t_live.data())==raw&&tmf_columns==columns&&!t_restores&&t_allocations.empty());
+    CHECK(test.ticket->owned_bytes>=sizeof(TerrainTransitionProof)+2*sizeof(CreationTerrainProof::Placement));
+    CHECK(resume_terrain_transition(test.ticket,test.receipt,test.entry,current,error)&&test.ticket->retired);
+    CHECK(!resume_terrain_transition(test.ticket,test.receipt,test.entry,current,error));
+    // Identity and exact-bit negatives, including sparse live versus dense
+    // persisted slots. Failure must leave the caller's saved image untouched.
+    for(unsigned reason=0;reason<34;++reason){
+        tsg_setup(test);unsigned callback_calls=0;bool injected=false;
+        const auto edit=[&](const std::function<void(void*)>& fn){tsg_change_saved(test,fn);};
+        if(reason==0)edit([](void* p){auto* m=marker_for_key(p,0);auto& z=skg::field<editor::Vec3>(m,4).z;z=std::nextafter(z,100.f);});
+        if(reason==1)edit([](void* p){++skg::field<uint32_t>(marker_for_key(p,0),0x228);});
+        if(reason==2)edit([](void* p){++skg::field<uint32_t>(marker_for_key(p,0),0);});
+        if(reason==3)edit([](void* p){auto& raw=t_rows.at(p);std::swap_ranges(raw.begin(),raw.begin()+0x238,raw.begin()+0x238);tcg_bind(p);});
+        if(reason==4)skg::field<editor::Vec3>(marker_for_key(t_live.data(),1),4).x=99;
+        if(reason==5)++skg::field<uint32_t>(marker_for_key(t_live.data(),1),0x228);
+        if(reason==6)++skg::field<uint32_t>(marker_for_key(t_live.data(),1),0);
+        if(reason==7)++bindings.at(1).generation;
+        if(reason==8)++test.entry.document.placements.begin()->second.revision;
+        if(reason==9)test.entry.document.settings_schema.begin()->second.optional^=true;
+        if(reason==10)++test.entry.bindings[0].marker;
+        if(reason==11)++test.entry.source.instance;
+        if(reason==12)++generation;
+        if(reason==13)++test.receipt.after.scope.epoch;
+        if(reason==14)++test.receipt.after.scope.author.generation;
+        if(reason==15)++test.receipt.before.serial;
+        if(reason==16)test.receipt.save_serial=0;
+        if(reason==17)++test.saved.source.instance;
+        if(reason==18)++skg::field<editor::ResourceKey>(t_live.data(),8).instance;
+        if(reason==19)skg::field<void*>(t_mode.data(),0x74)=t_other_data.data();
+        if(reason==20)skg::field<void*>(t_mode.data(),0x18)=nullptr;
+        a_read=uintptr_t(tsg_read);a_write=uintptr_t(tsg_write);t_resource_vt[1]=reinterpret_cast<void*>(tsg_release);
+        if(reason==21)tsg_after_read=[&](void* p){if(!injected){injected=true;skg::field<uint8_t>(marker_for_key(p,0),0x100)^=1;}};
+        if(reason==22)tsg_after_read=[&](void* p){if(!injected){injected=true;skg::field<editor::Vec3>(marker_for_key(p,0),4)=test.entry.document.placements.begin()->second.position;}};
+        if(reason==23)tsg_after_write=[&](void* p){if(++callback_calls==2){injected=true;skg::field<uint8_t>(marker_for_key(p,0),0x100)^=1;}};
+        if(reason==24)tsg_after_write=[&](void*){if(!injected){injected=true;++skg::field<editor::ResourceKey>(t_live.data(),8).instance;}};
+        if(reason==25)tsg_after_read=[&](void*){if(!injected){injected=true;++generation;}};
+        if(reason==26)tsg_after_release=[&](void*){if(!injected){injected=true;test.allowed=false;}};
+        if(reason==27)tsg_after_write=[&](void*){if(++callback_calls==2){injected=true;throw 7;}};
+        if(reason==28)tsg_after_read=[&](void*){if(!injected){injected=true;test.ticket->retired=true;}};
+        if(reason==29)edit([](void* p){skg::field<editor::Rotation>(marker_for_key(p,0),0x10).x=0.25f;});
+        if(reason==30)edit([](void* p){skg::field<float>(marker_for_key(p,0),0x24)=2;});
+        if(reason==31)edit([](void* p){skg::field<editor::Vec3>(marker_for_key(p,1),4).z=99;});
+        TerrainTransitionCurrent fence=current;
+        if(reason==32)fence=[]()->bool{throw 11;};
+        if(reason==33)fence=[&]{++t_scope.epoch;return false;};
+        const auto original=test.saved;const auto live_rows=t_rows.at(t_live.data());const auto retained_columns=tmf_columns;
+        error.clear();const bool accepted=normalize_saved_terrain(test.ticket,test.receipt,test.entry,test.saved,fence,error);
+        if(accepted)std::fprintf(stderr,"saved grounding unexpected acceptance reason=%u\n",reason);
+        CHECK(!accepted&&!error.empty());
+        CHECK(same_projection_image(test.saved,original)&&test.saved.document==original.document);
+        CHECK(t_rows.at(t_live.data())==live_rows&&tmf_columns==retained_columns&&!t_restores&&t_allocations.empty());
+        CHECK(!test.ticket->normalizing);
+        if(reason>=21&&reason<=28)CHECK(injected);
+    }
+    // A retained exact witness does not consult a new global grounding map.
+    tsg_setup(test);terrain_grounding.clear();CHECK(normalize_saved_terrain(test.ticket,test.receipt,test.entry,test.saved,current,error));
+    CHECK(validate(test.saved,test.entry.document,error)&&t_allocations.empty());
+    // Native callback reentry cannot consume the same private proof midway
+    // through its temporary XYZ overlay, but the original invocation can finish.
+    tsg_setup(test);bool nested=false;a_write=uintptr_t(tsg_write);
+    tsg_after_write=[&](void*){if(nested)return;nested=true;auto image=test.saved;std::string rejected;
+        CHECK(!normalize_saved_terrain(test.ticket,test.receipt,test.entry,image,current,rejected));CHECK(!rejected.empty());};
+    CHECK(normalize_saved_terrain(test.ticket,test.receipt,test.entry,test.saved,current,error)&&nested&&!test.ticket->normalizing);
+    tsg_after_write={};
+    // Caller-owned holders may disappear at the first callback. The function
+    // retains value copies and returns without publishing into retired storage.
+    auto holder=std::make_shared<SavedGroundingCase>();tsg_setup(*holder);bool held=true;
+    const auto retained=holder->ticket;const TerrainTransitionCurrent retiring=[&]{holder.reset();held=false;return false;};
+    CHECK(!normalize_saved_terrain(holder->ticket,holder->receipt,holder->entry,holder->saved,retiring,error));
+    CHECK(!holder&&!held&&!retained->normalizing&&!t_restores&&t_allocations.empty());
+}

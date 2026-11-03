@@ -430,6 +430,6 @@ void test_terrain_materialization_hooks(){
     const auto prior_fence=fence_queued;fence_queued=true;
     editor_native::tick();drain();CHECK(t_failed==1);editor_native::tick();drain();CHECK(t_failed==1);fence_queued=prior_fence;
     tmf_setup();terrain_materialize(t_terraform.data());CHECK(terrain_materialization_error.empty()&&state().ready);
-    reset();test_terrain_preview_update();test_creation_terrain_ticket();test_creation_grounding_return();test_terrain_transition_receipts();
+    reset();test_terrain_preview_update();test_creation_terrain_ticket();test_creation_grounding_return();test_saved_grounding_transition();test_terrain_transition_receipts();
 }
 } // namespace

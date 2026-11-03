@@ -4,8 +4,11 @@ struct TerrainTransitionProof {
     Snapshot entry;
     editor_native_terrain_materialization::Recipe rendered;
     editor_native_terrain_materialization::Materialization materialization;
+    // Exact pre-transition live slots and rendered/authored XYZ. A recovery
+    // preparation has no such readback until its settled refresh captures it.
+    std::optional<std::vector<CreationTerrainProof::Placement>> placements;
     size_t owned_bytes=0;
-    mutable bool retired=false;
+    mutable bool retired=false,normalizing=false;
     mutable std::optional<TerrainTransitionReceipt> saved;
 };
 namespace {
@@ -72,10 +75,30 @@ bool transition_recipe_matches(const editor_native_terrain_materialization::Reci
     if(normalized!=canonical){error="The retained native terrain recipe does not match the expected authored recipe";return false;}
     return true;
 }
+bool transition_placements_current(const TerrainTransitionProof& proof,std::string& error){
+    if(!proof.placements){error="The native terrain transition has no retained placement roster";return false;}
+    skg::ReadOnlyMemoryScope memory;
+    auto* r=resource(data(mode()));Rows markers;
+    if(!rows(r,0x2C10,0x238,kPlacementLimit,markers)){
+        error="The native terrain transition placement roster is unavailable";return false;
+    }
+    size_t count=0;for(auto* raw=markers.begin;raw!=markers.end;raw+=0x238)if(live_slot(raw))++count;
+    if(count!=proof.placements->size()){error="The native terrain transition placement roster changed";return false;}
+    for(const auto& row:*proof.placements){
+        const auto found=proof.entry.document.placements.find(row.live.object);auto* marker=marker_for_key(r,row.live.marker);
+        if(found==proof.entry.document.placements.end() || found->second.revision!=row.revision ||
+           uint32_t(found->second.class_id.id)!=row.class_index || !exact_grounding_position(found->second.position,row.authored) ||
+           marker_id(row.live.marker)!=row.live.object || !marker || skg::field<uint32_t>(marker,0)!=row.class_index ||
+           skg::field<uint32_t>(marker,0x228)!=row.native_key || !exact_grounding_position(skg::field<editor::Vec3>(marker,4),row.rendered)){
+            error="The native terrain transition lost an exact placement grounding witness";return false;
+        }
+    }
+    return true;
+}
 bool make_transition_ticket(const TerrainTransitionKey& key,uintptr_t tool,const Snapshot& entry,
                             const editor_native_terrain_materialization::Recipe& raw,
                             const editor_native_terrain_materialization::Materialization& values,
-                            TerrainTransitionTicket& out,std::string& error){
+                            TerrainTransitionTicket& out,std::string& error,bool retain_placements=false){
     constexpr size_t limit=64u<<20;size_t charged=sizeof(TerrainTransitionProof);
     const auto charge=[&](size_t bytes){if(bytes>limit-charged)return false;charged+=bytes;return true;};
     if(!charge(entry.bytes.size()) || !charge(editor::bytes(entry.document)) || !charge(entry.bindings.size()*sizeof(Binding)) ||
@@ -86,8 +109,16 @@ bool make_transition_ticket(const TerrainTransitionKey& key,uintptr_t tool,const
     for(const auto& kind:raw.rows)for(const auto& row:kind)if(!charge(sizeof(row)+row.bytes.capacity()+row.references.capacity()*sizeof(editor::ObjectId))){
         error="The owned native terrain transition exceeds 64 MiB";return false;
     }
+    std::optional<std::vector<CreationTerrainProof::Placement>> placements;
+    if(retain_placements){
+        placements.emplace();if(!creation_terrain_placements(entry,*placements,error))return false;
+        if(!charge(placements->capacity()*sizeof(CreationTerrainProof::Placement))){
+            error="The owned native terrain transition exceeds 64 MiB";return false;
+        }
+    }
     auto result=std::make_shared<TerrainTransitionProof>();result->key=key;result->tool=tool;result->entry=entry;
-    result->rendered=raw;result->materialization=values;result->owned_bytes=charged;out=std::move(result);return true;
+    result->rendered=raw;result->materialization=values;result->placements=std::move(placements);
+    result->owned_bytes=charged;out=std::move(result);return true;
 }
 bool transition_observe(const TerrainTransitionKey& key,uintptr_t tool,const Snapshot& expected,
                         const editor_native_terrain_materialization::Recipe& raw,
@@ -105,6 +136,74 @@ bool transition_observe(const TerrainTransitionKey& key,uintptr_t tool,const Sna
     }
     observed=std::move(candidate);return true;
 }
+bool normalize_transition_grounding(const TerrainTransitionProof& proof,Snapshot& image,
+                                    const std::function<bool()>& current,std::string& error){
+    if(!proof.placements){error="The native Save has no retained placement grounding roster";return false;}
+    if(image.bindings!=proof.entry.bindings){error="The native Save placement bindings changed";return false;}
+    if(std::none_of(proof.placements->begin(),proof.placements->end(),[](const auto& row){return row.grounded;}))return true;
+    Owned owned(parse(image.bytes,error));if(!owned.p)return false;
+    if(!current()){error="The native Save grounding owner expired during Read";return false;}
+    std::vector<uint8_t> roundtrip;
+    if(!serialize(owned.p,roundtrip,error))return false;
+    if(!current() || roundtrip!=image.bytes){error="The native Save grounding Read changed its exact serialized image";return false;}
+    struct Position {uint32_t dense=0,class_index=0,native_key=0;editor::Vec3 original,authored;};
+    std::vector<Position> positions;positions.reserve(proof.placements->size());
+    std::map<editor::ObjectId,uint32_t> dense;
+    for(const auto& binding:image.bindings)if(!dense.emplace(binding.object,binding.marker).second){
+        error="The native Save has duplicate placement bindings";return false;
+    }
+    Rows markers;if(!rows(owned.p,0x2C10,0x238,kPlacementLimit,markers)){
+        error="The persisted native Save placement roster is unavailable";return false;
+    }
+    size_t count=0;for(auto* raw=markers.begin;raw!=markers.end;raw+=0x238)if(live_slot(raw))++count;
+    if(count!=proof.placements->size()){error="The persisted native Save placement roster changed";return false;}
+    for(const auto& row:*proof.placements){
+        const auto binding=dense.find(row.live.object);auto* marker=binding==dense.end()?nullptr:marker_for_key(owned.p,binding->second);
+        if(!marker || skg::field<uint32_t>(marker,0)!=row.class_index || skg::field<uint32_t>(marker,0x228)!=row.native_key){
+            error="The persisted native Save placement identity changed";return false;
+        }
+        const auto actual=skg::field<editor::Vec3>(marker,4);
+        if(!exact_grounding_position(actual,row.authored) && (!row.grounded || !exact_grounding_position(actual,row.rendered))){
+            error="The persisted native Save position has no exact retained grounding witness";return false;
+        }
+        positions.push_back({binding->second,row.class_index,row.native_key,actual,row.authored});
+    }
+    const auto unchanged=[&]{
+        Rows actual;if(!rows(owned.p,0x2C10,0x238,kPlacementLimit,actual))return false;
+        size_t count=0;for(auto* raw=actual.begin;raw!=actual.end;raw+=0x238)if(live_slot(raw))++count;
+        if(count!=positions.size())return false;
+        for(const auto& row:positions){auto* marker=marker_for_key(owned.p,row.dense);
+            if(!marker || skg::field<uint32_t>(marker,0)!=row.class_index || skg::field<uint32_t>(marker,0x228)!=row.native_key ||
+               !exact_grounding_position(skg::field<editor::Vec3>(marker,4),row.original))return false;
+        }
+        return true;
+    };
+    // Only this private parsed owner is touched. Construct cleanup before the
+    // first primitive write, including exceptional NativeWrite exits.
+    struct RestorePositions {
+        void* resource;const std::vector<Position>& positions;bool active=true;
+        void restore() noexcept {if(!active)return;active=false;for(const auto& row:positions)
+            if(!exact_grounding_position(row.original,row.authored))
+                if(auto* marker=marker_for_key(resource,row.dense))skg::field<editor::Vec3>(marker,4)=row.original;}
+        ~RestorePositions(){restore();}
+    } restore{owned.p,positions};
+    for(const auto& row:positions)if(!exact_grounding_position(row.original,row.authored))
+        skg::field<editor::Vec3>(marker_for_key(owned.p,row.dense),4)=row.authored;
+    std::vector<uint8_t> normalized;
+    if(!serialize(owned.p,normalized,error))return false;
+    if(!current()){error="The native Save grounding owner expired during Write";return false;}
+    restore.restore();
+    if(!unchanged()){error="The native Save grounding Write changed its placement roster";return false;}
+    if(!serialize(owned.p,roundtrip,error))return false;
+    if(!current() || roundtrip!=image.bytes || !unchanged()){
+        error="The native Save grounding Write changed an unwitnessed field";return false;
+    }
+    // Release is another native callback. Retire the private owner before the
+    // final live/source/context closure and before publishing any new bytes.
+    release(std::exchange(owned.p,nullptr));
+    if(!current()){error="The native Save grounding owner expired during Release";return false;}
+    image.bytes=std::move(normalized);return true;
+}
 }
 bool capture_terrain_transition(const TerrainTransitionKey& key,const Snapshot& entry,const TerrainTransitionCurrent& current,
                                 TerrainTransitionTicket& out,std::string& error){
@@ -121,8 +220,9 @@ bool capture_terrain_transition(const TerrainTransitionKey& key,const Snapshot& 
         editor_native_terrain_materialization::Recipe raw;
         if(!materialization_recipe(terraform_mode(),raw,error) || !transition_recipe_matches(raw,terrain_materialization,entry,error))return false;
         TerrainTransitionTicket result;
-        if(!make_transition_ticket(key,tool,entry,raw,terrain_materialization,result,error))return false;
+        if(!make_transition_ticket(key,tool,entry,raw,terrain_materialization,result,error,true))return false;
         Snapshot verified;if(!transition_observe(key,tool,entry,raw,terrain_materialization,current,verified,error))return false;
+        if(!transition_placements_current(*result,error))return false;
         out=std::move(result);error.clear();return true;
     }catch(...){error="Cannot retain the owned native terrain transition";return false;}
 }
@@ -133,27 +233,41 @@ bool refresh_terrain_transition(const TerrainTransitionTicket& ticket,const Terr
         if(!validate(expected,expected.document,error) || !transition_recipe_matches(ticket->rendered,ticket->materialization,expected,error))return false;
         Snapshot verified;if(!transition_observe(key,ticket->tool,expected,ticket->rendered,ticket->materialization,current,verified,error))return false;
         TerrainTransitionTicket result;
-        if(!make_transition_ticket(key,ticket->tool,expected,ticket->rendered,ticket->materialization,result,error))return false;
+        if(!make_transition_ticket(key,ticket->tool,expected,ticket->rendered,ticket->materialization,result,error,true))return false;
         if(!transition_current(key,ticket->tool,current)){error="The native terrain refresh context expired";return false;}
+        if(!transition_placements_current(*result,error))return false;
         ticket->retired=true;refreshed=std::move(result);observed=std::move(verified);error.clear();return true;
     }catch(...){error="Cannot refresh the owned native terrain transition";return false;}
 }
-bool normalize_saved_terrain(const TerrainTransitionTicket& ticket,const TerrainTransitionReceipt& receipt,const Snapshot& expected,
-                             Snapshot& saved,const TerrainTransitionCurrent& current,std::string& error){
+bool normalize_saved_terrain(const TerrainTransitionTicket& supplied_ticket,const TerrainTransitionReceipt& supplied_receipt,const Snapshot& expected_snapshot,
+                             Snapshot& saved,const TerrainTransitionCurrent& supplied_current,std::string& error){
     try{
+        // Runtime's Save hold may be retired by any callback below. Keep all
+        // value inputs alive independently and publish only through its fence.
+        const auto ticket=supplied_ticket;const auto receipt=supplied_receipt;const auto expected=expected_snapshot;
+        const auto current=supplied_current;Snapshot candidate=saved;
         if(receipt.kind!=TerrainTransitionKind::Save || terrain_read_identity){error="The native terrain readback has no Save-only receipt";return false;}
         if(!transition_receipt(ticket,receipt,false,error))return false;
-        if(!transition_current(receipt.after,ticket->tool,current)){error="The completed native Save no longer owns this terrain scene";return false;}
+        if(ticket->normalizing){error="The native Save terrain readback is already in progress";return false;}
+        struct Busy {const TerrainTransitionProof& proof;~Busy(){proof.normalizing=false;}} busy{*ticket};ticket->normalizing=true;
+        const auto retained=[&]{return !ticket->retired && transition_current(receipt.after,ticket->tool,current) &&
+            !ticket->retired && transition_placements_current(*ticket,error);};
+        if(!retained()){error="The completed native Save no longer owns this terrain scene";return false;}
+        if(ticket->entry.document!=expected.document || ticket->entry.source!=expected.source || ticket->entry.act!=expected.act ||
+           ticket->entry.bindings!=expected.bindings || ticket->entry.captain!=expected.captain ||
+           ticket->entry.captain_locked!=expected.captain_locked || ticket->entry.metadata!=expected.metadata){
+            error="The native Save grounding proof no longer matches its exact committed entry";return false;
+        }
         editor_native_terrain_materialization::Recipe live,stored;
-        if(!materialization_recipe(terraform_mode(),live,error) || !editor_native_terrain_materialization::from_bytes(saved.bytes,stored,error))return false;
-        if(live!=ticket->rendered || stored!=ticket->rendered || saved.source!=receipt.after.owner.source){
+        if(!materialization_recipe(terraform_mode(),live,error) || !editor_native_terrain_materialization::from_bytes(candidate.bytes,stored,error))return false;
+        if(live!=ticket->rendered || stored!=ticket->rendered || candidate.source!=receipt.after.owner.source){
             error="The native Save changed its retained terrain recipe or source";return false;
         }
         if(!transition_recipe_matches(live,ticket->materialization,expected,error))return false;
-        Snapshot candidate=saved;
-        if(!ticket->materialization.normalize(candidate.bytes,error) || !validate(candidate,expected.document,error))return false;
+        if(!ticket->materialization.normalize(candidate.bytes,error) || !normalize_transition_grounding(*ticket,candidate,retained,error) ||
+           !validate(candidate,expected.document,error))return false;
         candidate.document=expected.document;
-        if(!transition_current(receipt.after,ticket->tool,current) || !materialization_recipe(terraform_mode(),live,error) || live!=ticket->rendered){
+        if(!retained() || !materialization_recipe(terraform_mode(),live,error) || live!=ticket->rendered){
             error="The native Save terrain owner changed during readback";return false;
         }
         ticket->saved=receipt;saved=std::move(candidate);error.clear();return true;

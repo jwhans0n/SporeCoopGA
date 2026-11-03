@@ -1553,6 +1553,9 @@ int main(int argc,char** argv){
     if(argc==2&&std::string(argv[1])=="--pose-capture-only"){
         test_pose_capture_proofs();std::printf("native pose capture proofs: %u checks passed\n",checks);return 0;
     }
+    if(argc==2&&std::string(argv[1])=="--save-grounding-only"){
+        test_saved_grounding_transition();std::printf("native saved grounding: %u checks passed\n",checks);return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--terrain-materialization-only"){
         test_terrain_materialization_hooks();std::printf("native terrain materialization: %u checks passed\n",checks);return 0;
     }

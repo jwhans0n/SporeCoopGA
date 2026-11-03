@@ -1194,3 +1194,58 @@ and full Native 70,295 checks pass with zero drift across 47 compiler/Make
 inputs. Independent source review found no additional lifetime or seal bypass.
 This is controlled adapter evidence; live staged scheduling and the required
 two/four-participant frame and confirmation budgets remain separate gates.
+
+### Save readback retains exact placement grounding provenance
+
+C28's first genuine Town Save completed its native confirmation and persisted
+record read, then sharing stopped in `normalize_saved_terrain`. The first
+placement mismatch was object `4294967302`: persisted XYZ
+`(-459.84436, 116.277344, 187.374207)` versus canonical authored XYZ
+`(-459.844482, 116.277374, 187.374252)`. Rotation, scale and typed placement
+properties matched. Both ordinary live checks subsequently converged. Evidence
+is retained in `out/preview9-c28-save-failure-full/result.json` and the genuine
+saved carrier rooted at `408A0000!2912D504.366A930D`.
+
+The transition token already retained exact rendered-to-authored terrain recipe
+values, but did not retain the corresponding placement grounding rows. Runtime
+substitutes the independently persisted image before calling the transition
+normalizer. Its full typed validation therefore rejected the raw rendered XYZ
+before reaching the separate later grounding step. An owning serialized fixture
+with sparse live slots 1/3 and dense persisted slots 0/1 reproduces that precise
+failure on the pre-fix implementation; its immutable executable, failed log and
+source fingerprints are in `out/preview9-save-grounding-red/receipt.json`.
+
+Settled transition capture/refresh now retains the complete bounded placement
+roster: full logical binding, raw slot, native key/class, row revision, and exact
+authored/rendered XYZ. A differing XYZ requires the preexisting exact grounding
+map at capture; no map is inferred from a later document. Prepared recovery
+tokens acquire this proof only through their settled refresh. The combined
+token remains limited to 64 MiB. Native Save checks the original entry document,
+schema and sidecars, rotated source receipt, owner, generation, read context,
+operation serial and complete unchanged raw live roster before using it.
+
+Only an independently owned persisted resource is normalized. Its initial
+Read/Write must reproduce every input byte. Each persisted dense binding must
+resolve to the retained native key/class, and its XYZ must be either the exact
+retained rendered value or the exact authored value. Only the former is changed
+to the latter. A guard restores the private XYZ on every exceptional exit; a
+second serialization after restoration must reproduce the complete original
+image, including unknown fields. The private owner is released before the final
+owner/source/context and raw-roster checks, and the existing full typed
+validation still precedes publication. Reentrant use of the same token is
+refused. No live marker, recipe, actor or UI field is written; no numeric
+tolerance or latest-document inference is introduced. Public signatures and the
+standalone legacy grounding helper are unchanged.
+
+Controlled negatives cover unknown XYZ, binding/class/native-key reuse,
+revision/schema/source/context expiry, Read normalization, opaque Write mutation,
+Native callback exceptions, Release expiry, nested proof reuse and retirement of
+caller-owned holders. Live Save acceptance and performance remain separate
+checks against the next privately deployed candidate.
+
+The fresh actual-i686 strict O2 receipt is
+`out/preview9-save-grounding-native-receipt.json`: Save grounding 17,403,
+materialization 41,937, staged capture 1,662 and full Native 87,701 checks pass
+with zero drift across all 47 compiler/Make inputs. The earlier pre-fix RED is
+kept separately; an independent read-only review found no additional ownership
+or byte-closure gap in the private persisted-image normalization.
