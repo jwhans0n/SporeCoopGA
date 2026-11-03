@@ -1530,3 +1530,40 @@ stale author/other serial, and post-dispatch click failure. The source receipt
 is `out/preview9-c44-edit-confirm-source/receipt.json`. These tests are fake
 game/owner/read-only-reader contracts; the actual shared Edit result above
 remains Root's independently measured Native evidence.
+
+### C44 changed-design Cancel confirmation
+
+Cancel on the host's changed unsaved New Creature shows a separate two-button
+discard question. Its exact text is `Exiting will cause your changes to be
+lost. Are you sure you want to exit?` in body `01510D08`, owned by modal
+`06318E78` under overlay `05B598F7`. Frame `05822D40` contains only the visible,
+enabled Cancel `05107B17` and Quit `05107B1A` captions. The measured Quit center
+is `(737,450)` at 1024x768. The original request remains `714121376`, New true,
+source words `[0,2B978C46,0]`, save state 6, pending command `0x103` (259), and
+confirmation flag zero. Evidence is retained in
+`out/preview9-c44-return-diagnostic/result.json` and
+`out/preview9-c44-held-host-confirm-return/before-quit-native.json`.
+
+The staged Cancel tool now recognizes exactly that complete modal subtree. It
+closes the original request, full pre-Cancel source, family, serial,
+project/epoch, participant generations and any held other editors. A dedicated
+read-only `--exit-confirmation` sample closes the command and confirmation fields
+across the read, also for New requests. Native save state must be 0 or 6 and
+command must be exactly 259. The modal must remain identical in a second query,
+followed by a final identity sample. Initial Cancel and confirmation Quit are
+each recorded before input. An uncertain click failure cannot replay either
+action. An absent prompt retains the ordinary return wait, and invalid designs
+can still be discarded without satisfying Save validation.
+
+Controlled contracts cover one Quit, absent/delayed prompts, malformed or wrong
+dialogs, wrong command/state/request/source, late source/serial expiry,
+project/participant/other-editor expiry, stale reader receipts, both input
+failure boundaries and terminal replay refusal. Canonical baseline and history
+checks are unchanged; this does not add permission to resume against an
+intervening canonical edit. The source-only Windows/Linux receipt is
+`out/preview9-c44-cancel-source/receipt.json`.
+
+Root's separate measured continuation discards that held host draft after the
+guest admission at revision 24. Both Adventure scenes return with 122 classes,
+419 placements and 5 acts, strict convergence and zero faults; history stays
+unchanged. Evidence: `out/preview9-c44-held-host-confirm-return/result.json`.

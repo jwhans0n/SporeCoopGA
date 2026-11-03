@@ -72,7 +72,7 @@ class Module(C.Structure):
         ('GlblcntUsage',W.DWORD),('ProccntUsage',W.DWORD),('modBaseAddr',C.c_void_p),
         ('modBaseSize',W.DWORD),('hModule',W.HMODULE),('szModule',W.WCHAR*256),('szExePath',W.WCHAR*260)]
 
-def native_sample(kernel,handle,image,base,family,edit_source=None,observe_other=False):
+def native_sample(kernel,handle,image,base,family,edit_source=None,observe_other=False,exit_confirmation=False):
     reads=0;total=0;started=time.perf_counter()
     def read(address,count):
         nonlocal reads,total
@@ -104,8 +104,9 @@ def native_sample(kernel,handle,image,base,family,edit_source=None,observe_other
         raise ValueError('Native Edit request/source changed')
     model=u32(head,0x98);resource=u32(head,0x7C);config=u32(head,0x24);ui=u32(head,0x78)
     if word(ui+0x5C)!=editor:raise ValueError('Creation UI belongs to another native editor')
-    edit_pending=read(ui+0xCC,4)if edit_source is not None else None
-    edit_confirmation=read(ui+0xEC,1)if edit_source is not None else None
+    check_pending=edit_source is not None or exit_confirmation
+    edit_pending=read(ui+0xCC,4)if check_pending else None
+    edit_confirmation=read(ui+0xEC,1)if check_pending else None
     model_type=word(model+0x58);early_owner=word(resource+0xC);early_flag=read(early_owner+0x44,1)[0]
     allowed_begin,allowed_end=struct.unpack_from('<II',head,0x334)
     if allowed_end<allowed_begin or (allowed_end-allowed_begin)%4 or allowed_end-allowed_begin>256:
@@ -150,7 +151,7 @@ def native_sample(kernel,handle,image,base,family,edit_source=None,observe_other
         read(request,0x34)!=request_bytes[:0x34] or word(editor+0x98)!=model or word(editor+0x7C)!=resource or
         word(editor+0x78)!=ui or word(ui+0x5C)!=editor or word(model+0x58)!=model_type or
         read(editor+0x48,32)!=head[0x48:0x68] or read(editor+0x38C,4)!=head[0x38C:0x390] or
-        edit_source is not None and(read(ui+0xCC,4)!=edit_pending or read(ui+0xEC,1)!=edit_confirmation)):
+        check_pending and(read(ui+0xCC,4)!=edit_pending or read(ui+0xEC,1)!=edit_confirmation)):
         raise ValueError('Creation owner/validation changed during the bounded sample')
     return dict(mode_manager=manager,active_index=active,mode_id=mode_id,editor=editor,request=request,
         request_editor_id=u32(request_bytes,0xC),source_key=list(struct.unpack_from('<III',request_bytes,0x10)),
@@ -162,8 +163,8 @@ def native_sample(kernel,handle,image,base,family,edit_source=None,observe_other
         request_current_raw=list(raw_errors),excluded_errors=list(excluded),error_catalog=list(catalog),
         current_masked=current,external_masked=external,changed_4B3_4B4=list(head[0x4B3:0x4B5]),
         finish_state_if_debug_disabled=finish_without_debug,debug_property='not sampled; computed finish state is conditional',
-        save_phase_38C=u32(head,0x38C),ui=ui,ui_pending_command_cc=u32(edit_pending)if edit_source is not None else word(ui+0xCC),
-        ui_confirmation_flag_ec=edit_confirmation[0]if edit_source is not None else read(ui+0xEC,1)[0],layout_roots=roots,widgets=widgets,
+        save_phase_38C=u32(head,0x38C),ui=ui,ui_pending_command_cc=u32(edit_pending)if check_pending else word(ui+0xCC),
+        ui_confirmation_flag_ec=edit_confirmation[0]if check_pending else read(ui+0xEC,1)[0],layout_roots=roots,widgets=widgets,
         window_nodes=len(visited),unknown_window_getters=unknown[:16],container_window_traversal_complete=not unknown,
         widget_scope='Verified container descendants only; absence does not prove native UILayout::FindWindowByID absence',
         read_calls=reads,read_bytes=total,elapsed_ms=(time.perf_counter()-started)*1000)
@@ -182,6 +183,7 @@ def main():
     parser.add_argument('--output',type=Path)
     parser.add_argument('--observe-other-editors',action='store_true',help='Read-only context pins; not an authoring or Save proof')
     parser.add_argument('--edit-source',help='Exact existing GROUP!INSTANCE.TYPE; Edit preserves the constructor FFFFFFFF sentinel')
+    parser.add_argument('--exit-confirmation',action='store_true',help='Close the author pending-command/confirmation fields across the read-only sample')
     args=parser.parse_args()
     if not args.execute:
         print(json.dumps(dict(prepared=True,read_only=True,no_console=True,no_native_calls=True,profiles=EDITORS),indent=2));return
@@ -189,6 +191,7 @@ def main():
     output=args.output.resolve()
     if not output.is_relative_to((ROOT/'out').resolve()) or output.exists():parser.error('A new OUT receipt is required')
     edit_source=None
+    if args.exit_confirmation and(args.observe_other_editors or len(args.participant)!=1):parser.error('Exit confirmation needs one exact author participant')
     if args.edit_source and args.observe_other_editors:parser.error('Author Edit proof and other-editor observer modes are separate')
     if args.edit_source:
         if len(args.participant)!=1:parser.error('One exact Edit participant required')
@@ -218,7 +221,7 @@ def main():
     kernel.Module32FirstW.argtypes=(W.HANDLE,C.POINTER(Module));kernel.Module32FirstW.restype=W.BOOL
     kernel.Module32NextW.argtypes=(W.HANDLE,C.POINTER(Module));kernel.Module32NextW.restype=W.BOOL
     kernel.CloseHandle.argtypes=(W.HANDLE,)
-    result=dict(candidate_sha256=args.candidate,time=time.time(),read_only=True,no_console=True,no_native_calls=True,observer_only=args.observe_other_editors,rows=[])
+    result=dict(candidate_sha256=args.candidate,time=time.time(),read_only=True,no_console=True,no_native_calls=True,observer_only=args.observe_other_editors,exit_confirmation=args.exit_confirmation,rows=[])
     for instance,pid,family in participants:
         handle=kernel.OpenProcess(0x1010,False,pid)
         if not handle:raise C.WinError(C.get_last_error())
@@ -235,7 +238,7 @@ def main():
                     found[Path(module.szExePath).resolve()]=module.modBaseAddr
                     ok=kernel.Module32NextW(modules,C.byref(module))
                 if exe not in found:raise ValueError('Expected private executable is not loaded')
-                row=native_sample(kernel,handle,image,found[exe],family,edit_source,args.observe_other_editors)
+                row=native_sample(kernel,handle,image,found[exe],family,edit_source,args.observe_other_editors,args.exit_confirmation)
                 result['rows'].append(dict(instance=instance,pid=pid,expected_family=family,image_base=found[exe],
                     dll_base=found.get(dll),dll_module_witness='optional: SporeKit may map payload outside the loader module list; candidate hash pins installed payload, owner pins this launch',**row))
             finally:kernel.CloseHandle(modules)

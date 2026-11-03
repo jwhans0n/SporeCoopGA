@@ -31,8 +31,8 @@ PROFILES={
 DONE,CANCEL=0x058A3350,0x90439D7C
 SAVE_NEW=0x05107B1A
 
-def edit_save_new_modal(tree):
-    """Recognize only the complete measured Edit-exit overlay, even if later UI is truncated."""
+def _creation_exit_modal(tree,discard=False):
+    """Recognize only the two measured exit questions; later UI may be truncated."""
     if not tree or len(tree)>8192:raise FixtureError('Edit confirmation tree exceeds its diagnostic bound')
     lines=tree.splitlines();starts=[i for i,line in enumerate(lines)if 'id=0x05B598F7 'in line]
     if len(starts)!=1:raise FixtureError('Edit confirmation overlay is missing or ambiguous')
@@ -58,21 +58,41 @@ def edit_save_new_modal(tree):
             raise FixtureError('Edit confirmation control identity changed')
         return node
     body=exact(0x01510D08,parent=modal)
-    names=re.fullmatch(r'Save "([^"\r\n]{1,128})" as a new creation or replace "([^"\r\n]{1,128})" before exiting\?',body['caption'])
-    if not names:raise FixtureError('Edit confirmation body is not the measured Save New/Replace question')
+    names=None
+    if discard:
+        if body['caption']!='Exiting will cause your changes to be lost. Are you sure you want to exit?':raise FixtureError('Cancel body is not the measured discard question')
+        choices=((0x05107B17,'Cancel'),(SAVE_NEW,'Quit'))
+    else:
+        names=re.fullmatch(r'Save "([^"\r\n]{1,128})" as a new creation or replace "([^"\r\n]{1,128})" before exiting\?',body['caption'])
+        if not names:raise FixtureError('Edit confirmation body is not the measured Save New/Replace question')
+        choices=((0x05107B17,"Don't Save"),(0x05107B18,'Cancel'),(0x05107B19,'Replace'),(SAVE_NEW,'Save New'))
     frame=exact(0x05822D40,'',modal)
-    buttons=[exact(ident,caption,frame)for ident,caption in ((0x05107B17,"Don't Save"),(0x05107B18,'Cancel'),(0x05107B19,'Replace'),(SAVE_NEW,'Save New'))]
+    buttons=[exact(ident,caption,frame)for ident,caption in choices]
     if {node['address']for node in visible if node['caption']}!={node['address']for node in [body,*buttons]}:raise FixtureError('Edit confirmation has unexpected visible text')
     target=buttons[-1];x,y=target['origin'];rect=target['rect'];point=(x+(rect[2]-rect[0])//2,y+(rect[3]-rect[1])//2)
     fx,fy=frame['origin'];fr=frame['rect']
     if any(node['rect'][2]<=node['rect'][0]or node['rect'][3]<=node['rect'][1]for node in buttons)or not(0<=point[0]<1024 and 0<=point[1]<768 and fx<=point[0]<fx+fr[2]-fr[0]and fy<=point[1]<fy+fr[3]-fr[1]):raise FixtureError('Edit Save New target lies outside the measured dialog')
-    return dict(identity=[_startup_identity(node)for node in nodes],point=point,new_name=names[1],old_name=names[2])
+    result=dict(identity=[_startup_identity(node)for node in nodes],point=point)
+    if names:result.update(new_name=names[1],old_name=names[2])
+    return result
+
+def edit_save_new_modal(tree):return _creation_exit_modal(tree)
+
+def cancel_quit_modal(tree):return _creation_exit_modal(tree,discard=True)
 
 def edit_confirmation_errors(row,profile,source,request):
     if not source:return ['Save New confirmation is allowed only for Edit']
     errors=finish_errors(dict(row,ui_pending_command_cc=0),profile,source)
     if row.get('request')!=request:errors.append('Edit confirmation request changed')
     if row.get('ui_pending_command_cc')!=0x102 or row.get('ui_confirmation_flag_ec')!=0:errors.append('Edit confirmation command/state changed')
+    return errors
+
+def cancel_confirmation_errors(row,profile,source,request,original_source):
+    errors=request_errors(row,profile,source)
+    if row.get('request')!=request:errors.append('Cancel confirmation request changed')
+    if not isinstance(original_source,list)or len(original_source)!=3 or any(type(word)is not int or not 0<=word<=0xFFFFFFFF for word in original_source)or row.get('source_key')!=original_source:errors.append('Cancel confirmation source changed')
+    if row.get('save_phase_38C')not in(0,6)or row.get('ui_pending_command_cc')!=0x103 or row.get('ui_confirmation_flag_ec')!=0:errors.append('Cancel confirmation command/state changed')
+    if not any(row.get('changed_4B3_4B4',[])):errors.append('Cancel confirmation has no original modified design')
     return errors
 
 def creation_serial(text):
@@ -144,8 +164,8 @@ def resume_errors(previous,current):
         if previous.get(key)!=current.get(key):errors.append('changed '+key)
     if bool(previous.get('allow_other_editors',False))!=bool(current.get('allow_other_editors',False)) or previous.get('other_editor_profiles',[])!=current.get('other_editor_profiles',[]):errors.append('changed other editor declaration')
     if previous.get('other_editor_conflict'):errors.append('previous other-editor scope expired')
-    if previous.get('save_dispatched') or previous.get('passed')and previous.get('stage')in('finish','cancel'):
-        errors.append('workflow is terminal or Save was already dispatched')
+    if previous.get('save_dispatched')or previous.get('cancel_dispatched')or previous.get('quit_dispatched') or previous.get('passed')and previous.get('stage')in('finish','cancel'):
+        errors.append('workflow is terminal or exit input was already dispatched')
     if not previous.get('context') or not previous.get('serial') or not previous.get('native_request'):
         errors.append('previous stage has no complete creation identity')
     return errors
@@ -290,17 +310,19 @@ def run(args):
         return 'creation_editor active=0'in author.call('coop.editor creations')and s.get('ready')and all(
             re.search(r'\b'+k+'='+str(v)+r'\b',s['text'])for k,v in(
                 ('resume_initialization',4),('resume_enter_pending',0),('resume_transitioning',0),('world_visible',1)))
-    def sample(label):
+    def sample(label,exit_confirmation=False):
         path=args.output/(label+'-native.json')
         guard()
         command=[sys.executable,str(ROOT/'tools/tests/coop_editor_creation_validation.py'),'--execute','--metadata',str(args.metadata),
             '--candidate',args.candidate,'--participant',f'{args.author}:{processes[args.author]["pid"]}:{args.profile}','--output',str(path)]
         if result.get('target_source'):
             group,instance,kind=result['target_source'];command.extend(['--edit-source',f'{group:08X}!{instance:08X}.{kind:08X}'])
+        if exit_confirmation:command.append('--exit-confirmation')
         done=subprocess.run(command,cwd=ROOT,capture_output=True,text=True,timeout=20)
         (args.output/(label+'-sample.txt')).write_text(done.stdout+done.stderr)
         if done.returncode:raise FixtureError('Native read-only validation failed: '+done.stderr)
         receipt=json.loads(path.read_text());rows=receipt['rows']
+        if exit_confirmation and receipt.get('exit_confirmation')is not True:raise FixtureError('Cancel reader has no command/state coherence receipt')
         if receipt.get('observer_only')or len(rows)!=1 or rows[0].get('instance')!=args.author:raise FixtureError('Author receipt belongs to a different observer/participant')
         row=rows[0]
         if previous and previous.get('native_request')!=row['request']:raise FixtureError('Native creation request changed; do not replay input')
@@ -324,6 +346,23 @@ def run(args):
         if errors:raise FixtureError('Edit Save New dispatch identity expired: '+', '.join(errors))
         result['confirmation']=fresh;result['confirmation_dispatched']=True;write()
         author.click(*fresh['point'])
+        return returned()
+    def cancel_return_or_confirm():
+        if returned():return True
+        if result.get('quit_dispatched')or not designing():return False
+        guard();modal=cancel_quit_modal(author.call('coop.ui tree 7'))
+        if modal is None:return False
+        sample_others('other-editors-before-quit')
+        row=sample('cancel-confirmation',exit_confirmation=True)
+        errors=cancel_confirmation_errors(row,args.profile,result.get('target_source'),result['native_request'],result['before-action'].get('source_key'))
+        result['quit_preflight_errors']=errors;write()
+        if errors:raise FixtureError('Cancel Quit preflight rejected: '+', '.join(errors))
+        guard();fresh=cancel_quit_modal(author.call('coop.ui tree 7'))
+        if fresh is None or fresh['identity']!=modal['identity']:raise FixtureError('Cancel discard modal changed before dispatch')
+        row=sample('cancel-confirmation-dispatch',exit_confirmation=True)
+        errors=cancel_confirmation_errors(row,args.profile,result.get('target_source'),result['native_request'],result['before-action'].get('source_key'))
+        if errors:raise FixtureError('Cancel Quit dispatch identity expired: '+', '.join(errors))
+        result['quit_confirmation']=fresh;result['quit_dispatched']=True;write();author.click(*fresh['point'])
         return returned()
     def record(label):
         owner.verify_windows()
@@ -417,7 +456,10 @@ def run(args):
                 result['strict_native_checks']=checks
                 result['scene_proofs']=[dict(instance=g.instance,native='not_applicable_other_creation_editor'if g.instance not in {row.instance for row in live}else 'converged')for g in games]
             elif args.stage=='cancel':
-                author.click_control(0x90439D7C);author.wait('ordinary Cancel returns',returned)
+                row=result['before-action']
+                if row.get('save_phase_38C')not in(0,6)or row.get('ui_pending_command_cc')!=0:raise FixtureError('Cancel preflight found a pending native command/Save')
+                sample_others('other-editors-before-cancel');guard();result['cancel_dispatched']=True;write();author.click_control(CANCEL)
+                author.wait('ordinary Cancel returns',cancel_return_or_confirm)
                 if canonical()!=baseline['canonical']or history_rows(host.call('coop.editor history'))!=baseline['history']:raise FixtureError('Cancel changed authored state/history')
         if args.stage not in ('finish',)and canonical()!=baseline['canonical']:raise FixtureError('Unsaved local stage changed canonical state')
         sample_others('other-editors-end');record('after');result['passed']=True;write()
@@ -449,7 +491,7 @@ def self_test():
     assert not resume_errors(previous,current);checks+=1
     for key in current:
         bad=dict(current);bad[key]=None;assert resume_errors(previous,bad);checks+=1
-    for changes in (dict(save_dispatched=True),dict(stage='finish'),dict(serial=0),dict(native_request=0)):
+    for changes in (dict(save_dispatched=True),dict(cancel_dispatched=True),dict(quit_dispatched=True),dict(stage='finish'),dict(serial=0),dict(native_request=0)):
         bad=dict(previous,**changes);assert resume_errors(bad,current);checks+=1
     steps,digest=steps_file(ROOT/'tools/tests/fixtures/editor_creation/creature-mouth-c7.json','creature');assert len(steps)==4 and len(digest)==64;checks+=1
     with TemporaryDirectory()as directory:
@@ -508,8 +550,8 @@ def self_test():
         try:other_editor_profiles(bad)
         except FixtureError:checks+=1
         else:raise AssertionError('Invalid other editor declaration accepted')
-    from coop_editor_creation_save_contracts import workflow_contracts,confirmation_contracts
-    checks+=confirmation_contracts(sys.modules[__name__])+workflow_contracts(sys.modules[__name__])
+    from coop_editor_creation_save_contracts import workflow_contracts,confirmation_contracts,cancel_contracts
+    checks+=confirmation_contracts(sys.modules[__name__])+cancel_contracts(sys.modules[__name__])+workflow_contracts(sys.modules[__name__])
     print(f'staged creation Save: {checks} offline checks passed')
 
 def main():
