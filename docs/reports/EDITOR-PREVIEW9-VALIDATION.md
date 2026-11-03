@@ -6,8 +6,10 @@ executable and its exact 4 GB LAA variant remain supported. Older protocol
 clients are explicitly rejected. This report records development evidence,
 not completed native acceptance, a main merge or a public release.
 
-Latest private native build is C37, SHA-256
-`a39f38a869fceb540fe856b6accbf4d1d33017a518fb81da150cee3bd94767ed`.
+Latest private native build is C38, SHA-256
+`6828c809c51fee6e08788a7a84999501a944c957fee40ea2fc8fed0f603fe012`.
+C38 verifies all five Crew control families from all four participants and
+independent four-player creation-editor entry and cancellation.
 C35 closes the new-vehicle Native Save/cold-reopen dependency reproduction.
 C36 retains that cold-open result and improves a short two-player timing probe:
 guest submission-to-confirmation is 159 ms and frame gaps are about 139 ms.
@@ -2787,3 +2789,87 @@ System CPU sampling was attempted with the uniquely named WPR instance
 unavailable and provides no native hot-function evidence. Existing QPC stages
 still identify observer validation/private preparation as the remaining frame
 cost. No full 30-per-author benchmark is repeated after the failed short probe.
+
+### C38 bounded diagnostics and four-player Crew coverage
+
+C38 adds read-only canonical asset pagination. Each reply contains at most 24
+rows and identifies project, epoch, canonical revision, durable revision and
+document hash. The creation fixture accepts the assembled listing only when
+every page has the same identity and every row is present exactly once. The
+legacy unpaged listing explicitly reports truncation. Focused checks pass 2,677
+cases on Linux and i686 plus 28 paging contracts on each platform. Receipts:
+`out/preview9-assets-pages-receipt.json` and
+`out/preview9-assets-pages-postcommit.json`.
+
+The 96,364,544-byte DLL retains Kit 0.3.6 and the exact supported LAA executable.
+Two fresh private games cold-open the C35 Saved adventure and share the same
+419 placements, 119 classes, five acts and authored semantic hash. Both native
+asset listings retrieve all 119 classes in five bounded pages, without changing
+revision or history. Evidence: `out/preview9-c38-cold-shared-r2/result.json` and
+`out/preview9-c38-assets-native-proof/result.json`.
+
+The initial launch used a stale resolution-list index and selected 800x600.
+The cold-open fixture stopped before browser input. Normal native Options
+identified the current 1024x768@60 index as 11, followed by normal retirement
+and restart. Resolution indices depend on the current monitor mode list; native
+fixtures must verify actual viewport dimensions before input. No native fault
+occurred. The subsequent two-player run returned normally to Galaxy before
+cooperative runner shutdown.
+
+Four private games then open stock Adventure Town with 419 placements, 118
+classes and five acts. All four simultaneously enter different native editors:
+Creature, City hall, Military land and Spaceship. Each guest cancels and returns
+independently while the host remains designing. Host cancellation returns last.
+All four retain revision/history zero, strict convergence and zero faults.
+This verifies entry/cancellation and independent return, not creation saving.
+Evidence: `out/preview9-c38-four-independent-creation-cancel/result.json`.
+
+All four participants separately exercise Crew capacity, add, replacement,
+lock and removal through native controls. Every case creates one transaction
+and one history item, then verifies Undo, Redo and Undo again against the exact
+previous Crew subtree while all four scenes converge. Capacity runs through
+revision 16; retained setup selects capacity and an Ace roster member.
+Add finishes at revision 33, replacement at 50, lock at 66 and removal at 82.
+All cases retain zero native faults. Replacement uses Aepox and restores Ace.
+Evidence: `out/preview9-c38-four-crew-capacity/result.json`,
+`out/preview9-c38-four-crew-add-r2/result.json`,
+`out/preview9-c38-four-crew-replace/result.json` and
+`out/preview9-c38-four-crew-lock-remove/result.json`.
+
+The initial Crew add fixture searched for an unavailable stock card and left
+the picker open without committing. Normal cancellation restored revision 17.
+The fixture now selects native Name sorting before searching for a measured
+available stock asset. This is a fixture correction; it does not change product
+admission or Crew behavior.
+
+C37 also verifies native water changes from host and guest with checked
+Undo/Redo, ending at revision 18 with strict convergence and zero faults:
+`out/preview9-c37-two-water/result.json`. Its later environment fixture did not
+execute because the bounded runner lease had expired. Runner termination is
+recorded separately from a native crash; the last revision was already durable.
+This provides no acceptance evidence for other Terraform control families.
+
+C38 runs the measured Basic Tools raise-terrain recipe with four participants.
+Host and guest both hold their native strokes before either release; the draft
+does not advance during either tentative stroke. Releases create exactly two
+ordered effects and one history item per author. Per-author Undo preserves the
+other accepted effect byte-for-byte; Redo restores native recipe order. Cleanup
+returns the exact baseline planet fields at revision 90. All four participants
+remain strictly converged with zero faults. A second check leaves the host in
+the Creature Editor while the guest commits, undoes, redoes and undoes a stroke.
+Host cancellation materializes the latest revision 94 and all four scenes agree.
+Evidence: `out/preview9-c38-four-terrain-simultaneous/result.json` and
+`out/preview9-c38-four-terrain-host-away/result.json`. These measured controls
+do not establish acceptance for the full Terraform tab.
+
+The two remaining guests repeat the overlapping-stroke check as authors 97/98,
+with host and first guest observing. Both held histories, exact per-author
+Undo/Redo and unchanged unrelated planet fields pass. All four converge at
+canonical/durable revision 102 with zero faults. Evidence:
+`out/preview9-c38-four-terrain-guests/result.json`. Thus each of the four roles
+authors the measured Basic Tools effect in this batch.
+
+The four-player batch leaves the party and returns every native editor normally
+to Galaxy with zero faults before cooperative runner shutdown. The runner exits
+0 within its lease. Evidence: `out/preview9-c38-four-retirement/result.json` and
+`out/windows-lab/preview9-c30-four/processes.json`.
