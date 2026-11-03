@@ -1913,3 +1913,57 @@ Vehicle default fails the new regression. Evidence:
 `out/preview9-creation-routes/ACCEPTANCE.md`. Actual specialized-palette native
 save acceptance remains pending; the invalid generic-palette creation was
 not admitted or advertised as successful.
+
+### C28 Save checkpoint failure and retained native carrier
+
+The passive, stable double-read at revision 14 finds native Context+0C and
+ToolManager+5 both zero on both peers, with no external mouse/modifier held
+at those samples. This rules out only those two busy fields at sampling time.
+A monitored native Redo then passes at revision/durable 15 with no external
+input observed. Native Undo times out while an external left mouse press
+overlaps the attempted dispatch; another native Undo reaches revision/durable
+16, also with external mouse activity during its window. Both remain ready,
+strictly converged and fault-free. Ordinary-input qualification remains open.
+Evidence: `out/preview9-c28-history-busy-rpm/`,
+`out/preview9-c28-temperature-native-retry/`, and
+`out/preview9-c28-temperature-native-undo-retry2/`.
+
+The subsequent ordinary native Save really persists Town locally, but the
+shared post-Save terrain proof freezes the recoverable party at committed
+revision/durable 16. The first mismatch is placement `4294967302`, with the
+same witnessed rendered/authored XYZ pair from the creation-return failure:
+`-459.84436,116.277344,187.374207` versus
+`-459.844482,116.277374,187.374252`. Rotation, scale and property count match.
+Ordinary native checks after this failure still converge on both peers.
+`normalize_saved_terrain()` validates the raw persisted image before the
+existing saved-grounding normalization. The transition ticket must carry
+and verify its original exact grounding provenance before this validation;
+no tolerance or later-document inference is justified.
+
+The first Save-driver attempt stops before clicking because its at-point
+guard incorrectly requires a caption container whose rectangle excludes the
+protruding confirmation button. Fresh screenshot and tree/where/at evidence
+establish the real saved dialog. A resumed driver acknowledges that same
+dialog, without issuing a second Save, then retains the real checkpoint
+failure. Evidence: `out/preview9-c28-native-save-carrier/`,
+`out/preview9-c28-native-save-carrier-r2/`, and
+`out/preview9-c28-save-failure-full/`.
+
+Read-only stable acquisition retains the genuine 53-record Native Save DBPF
+containing root `408A0000!2912D504.366A930D`, SHA-256
+`2cf6183dd727ca09a284d762779293a8ae9157c33f9253b8886024e910d7ba41`.
+Its persisted 419-placement/118-class/5-act root is 60,668 bytes, SHA-256
+`aa74e1af6e895cb28f0e5758c5983cd7e175e91249203a7400ce60fa805326c7`.
+The source remains identical after normal return to Galaxy and runner closure.
+This proves local persistence only; shared SavedApplied remains failed.
+Evidence: `out/preview9-c28-saved-local-carrier/`.
+
+Offline checked replacements now prepare 1,025/4,095/4,096-placement DBPF
+carriers from that exact genuine source, preserving all other records. They
+remain unmounted and do not establish native complexity eligibility, cold
+reopen or publication. Evidence:
+`out/preview9-complexity-genuine-town/receipt.json`.
+
+Both C28 games return normally to Galaxy with faults 0 before the runner ends
+with exit 0; child exit codes are 1 from runner teardown. The personal preview
+8 installation, exact 4 GB executable and shortcut remain untouched.
