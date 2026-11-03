@@ -1567,3 +1567,72 @@ Root's separate measured continuation discards that held host draft after the
 guest admission at revision 24. Both Adventure scenes return with 122 classes,
 419 placements and 5 acts, strict convergence and zero faults; history stays
 unchanged. Evidence: `out/preview9-c44-held-host-confirm-return/result.json`.
+
+### C46 immutable creation persistence and minimal UFO Save
+
+Native adventure Save with the new Creature versions originally rejects generated
+record `40626200!7D8C23AC.0F43029A` because its immutable alias intentionally
+retains the BEM body rather than generated owner caches. The missing-only Saved
+receipt correction now passes the actual revision-24 Save, including exact
+SavedApplied 2/2, unchanged history and a retained original native DBPF. Evidence:
+`out/preview9-c45-creatures-native-save/result.json`,
+`out/preview9-c46-creatures-native-save/result.json` and
+`out/editor-preview9-saved-cache/receipt.json`.
+
+A fresh native reopen selects exact source `408A0000!2913EE8A.366A930D` with all
+122 classes, 419 placements and five acts. Its complete projection fingerprint
+differs from the pre-close fingerprint. Independent comparison of both owned
+native images identifies only four `ScenarioAsset.machine` fields
+(`62B74271` inside primary asset `07114976`, classes 1342 through 1345), changing
+`5523CA25` to zero. Their raw resource keys, model IDs and server `UINT64_MAX`
+values stay identical. All other 1,259,068 decoded bytes match, including every
+marker pose, act, Captain and Crew. Planet semantics match; the outer changes
+are the unused fourth scalar-key word and embedded compressed-container length.
+This exact observed transition is recorded separately from literal fingerprint
+equality; no general reference validation is broadened. Both participants then
+share the reopened scene and strictly converge with zero faults. Evidence:
+`out/preview9-c46-cold-comparison/comparison.json` and
+`out/preview9-c46-cold-shared-continuation/result.json`. The initial literal
+fingerprint assertion remains retained as a failed tool expectation.
+
+New UFO uses request `96B24187`, model `98E03C0D` and asset family `476A98C7`.
+The measured 1024x768 setup starts with an empty Body palette. One held body drag
+and naming leave native blocker 4. A cockpit alone does not clear it. Adding the
+measured propulsion part clears blocker 4, leaves nonblocking mask `00000800`,
+and gives native finish state zero. The successful source uses:
+
+- Body `(58,114)` to `(700,400)`.
+- Name at `(500,741)` through ordinary text input.
+- Cockpit category `(86,40)`, first cockpit `(58,114)` to hull `(675,345)`.
+- Flight category `(236,40)`, propulsion `(58,238)` to hull `(800,370)`.
+
+The host's ordinary Save adds class `8589935938:1` at revision 1; the guest
+independently replays the retained 15-step recipe and adds `8589935939:1` at
+revision 2. Each admission adds exactly one cast entry and one history item,
+preserves every previous row and returns both scenes with strict agreement and
+zero faults. Counts progress from 122 to 124 classes, with 419 placements and
+five acts retained. Native request, subtype, source, allowed types, idle state,
+changed flags and zero blockers are checked before each Done. Evidence:
+`out/preview9-c46-host-spaceship-save/result.json` and
+`out/preview9-c46-guest-spaceship-save/result.json`. The repeatable recipe is
+`tools/tests/fixtures/editor_creation/spaceship-minimal-c46.json`; another setup
+still requires its current viewport and palette to match before using it.
+
+New House uses request/model `4E3F7777` and asset family `2399BE55`. The body
+must drop on the visible construction floor `(650,580)`: dropping it at
+`(700,450)` above that floor retains no part or budget change. The successful
+body clears `00020000` but leaves blocker 4. Door category `(198,40)` and its
+first part `(58,114)` to wall `(680,555)` retain blocker 4; Roof category
+`(102,40)` and first roof `(58,114)` to exposed top `(620,493)` clear all
+blockers. This measures the complete three-part native design rather than
+assuming a drag succeeded.
+
+Host Save adds `8589935940:1` at revision 3. The guest repeats the retained
+15-step recipe and saves `8589935941:1` at revision 4. Both saves have native
+finish zero, one cast/history admission each, matching returned Native checks
+and zero faults. The complete 126-class draft then completes native adventure
+Save with SavedApplied 2/2 and exact original DBPF retention. Evidence:
+`out/preview9-c46-host-house-save/result.json`,
+`out/preview9-c46-guest-house-save/result.json`, and
+`out/preview9-c46-all-new-models-native-save/result.json`.
+The recipe is `tools/tests/fixtures/editor_creation/building-house-minimal-c46.json`.

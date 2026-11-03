@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "profile": "spaceship",
+  "viewport": [1024, 768],
+  "evidence": "Actual C46 New UFO stages out/preview9-c46-host-spaceship-{enter,hull,name,cockpit-tab,cockpit,engine-tab,engine,save}/result.json. Held hull and cockpit placement alone leave native blocker4; propulsion clears it. Native finish0 before Done; one cast entry and history item, two returned strict scenes, zero faults. Requires fresh viewport/palette validation for another native setup.",
+  "steps": [
+    {"slow_drag": [58, 114, 700, 400]},
+    {"frames": 30},
+    {"click": [500, 741]},
+    {"frames": 20},
+    {"text": "{name}"},
+    {"click": [850, 600]},
+    {"frames": 30},
+    {"click": [86, 40]},
+    {"frames": 30},
+    {"slow_drag": [58, 114, 675, 345]},
+    {"frames": 30},
+    {"click": [236, 40]},
+    {"frames": 30},
+    {"slow_drag": [58, 238, 800, 370]},
+    {"frames": 30}
+  ]
+}

@@ -6,14 +6,16 @@ executable and its exact 4 GB LAA variant remain supported. Older protocol
 clients are explicitly rejected. This report records development evidence,
 not completed native acceptance, a main merge or a public release.
 
-Latest private native build is C44, SHA-256
-`8963c8e7e6b542df146620fb55f7d06b7e12210895c4a0c4221287bd1a88a83f`.
+Latest private native build is C46, SHA-256
+`d7720fe553f106424e241605f16f4b9a7fa95e352016830d6bf434e7cc0e13be`.
 Cold recovery now passes the original revision-22 draft in both games.
 Host editing and replacing a guest-created Creature also passes.
 Guest New Creature Save while the host designs another Creature passes; the
 host's later discard returns to the latest revision without a history change.
-Native adventure Save then completes but its shared dependency receipt rejects
-an unadmitted custom record. This is an open delivery blocker, not a Save pass.
+C46 fixes the generated-cache dependency rejection: Native adventure Save and
+shared cold reopen now pass the revision-24 Creature draft. Exact cold comparison
+identifies four local asset machine-ID resets; every other decoded field matches.
+New UFO Save also passes independently from both roles.
 C38 verifies all five Crew control families from all four participants and
 independent four-player creation-editor entry and cancellation.
 C35 closes the new-vehicle Native Save/cold-reopen dependency reproduction.
@@ -3163,3 +3165,90 @@ closed probe reads only the exact native `Spore/EditorSaves.package` established
 by the C35 carrier. No profile writes, conversions or enlarged bounds are used.
 Evidence: `out/preview9-c44-frozen-retirement/result.json` and
 `out/preview9-c44-save-diagnostic/closed-final-r2/receipt.json`.
+
+### C45/C46 generated owner caches and actual cold reopen
+
+Diagnostic-only C45 preserves validation and names the rejected record:
+`40626200!7D8C23AC.0F43029A missing admitted record`. A fresh recovery of revision
+24 passes all 122 classes before one ordinary Native Save reproduces that exact
+failure. Both games retire normally with zero faults and runner exit 0. The
+original DBPF and recovery files remain retained. Evidence:
+`out/preview9-c45-recover-creatures-r24/result.json`,
+`out/preview9-c45-creatures-native-save/result.json`,
+`out/preview9-c45-frozen-retirement/result.json`, and
+`out/preview9-c45-save-diagnostic/closed-final/receipt.json`.
+
+Commit `db00f52` aligns Saved dependency collection with the immutable alias
+producer's existing generated-cache omissions. A missing primary/Summary/
+`0F43029A` record can be omitted only for the exact selected private immutable
+owner with a matching selected and admitted BEM body. Every admitted record
+still requires byte equality; unknown or foreign records, malformed sidecars,
+missing/changed bodies and conflicting retained companions reject. Both Windows
+and Linux pass 145 codec cases/21,232 checks; affected Native gate passes 17,718
+and Linux real-filesystem storage passes 24 cases/15,015 checks. The exact
+pre-fix source fails the new generated-cache case. Source/input receipts:
+`out/editor-preview9-saved-cache/receipt.json` and `postcommit.json`.
+
+C46 freezes 250 production inputs without drift, producing a 96,595,456-byte
+DLL with unchanged Kit. Actual recovery again reaches revision 24 and strict
+122-class agreement. One Native Save now succeeds with SavedApplied 2/2,
+unchanged collaboration history and unchanged authored projection. Exact saved
+source is `408A0000!2913EE8A.366A930D`. The original 5,656,694-byte DBPF has
+SHA-256 `06a67d4b42c3373ea5ed098cb0f22e63a381b236d4139f52de0ad1daa4bc0748`;
+its 60,918-byte raw root has SHA-256
+`b70a1968f457c56bc932892b7fcca6da5bbf17044f8424f4e3a14f1ae7504dea`.
+Evidence: `out/preview9-c46-recover-creatures-r24/result.json` and
+`out/preview9-c46-creatures-native-save/result.json`.
+
+The carrier acquisition now reads only the verified native
+`Spore/EditorSaves.package`, excluding growing CAS and graphics caches from the
+candidate inventory. The focused acquisition check uses the genuine retained
+DBPF plus 70 unrelated cached packages, a foreign key and a missing exact native
+container; all three cases pass. It does not raise file-size or inventory bounds.
+Evidence: `out/preview9-native-save-carrier-focused-check/receipt.json`.
+
+After normal retirement and runner exit 0, fresh games reopen the exact Saved
+source without recovery. The first literal projection-fingerprint assertion
+fails and remains retained. Independent complete decoding finds exactly 16
+changed bytes: the four new local primary assets' machine fields become zero
+from `5523CA25`. Their resource keys, model IDs and all-ones server values are
+identical. Every other decoded field is byte-identical across 1,259,068 bytes,
+including all marker poses, acts, Captain and Crew. Planet semantics match; the
+outer changes are the unused scalar-key word and correct compressed-container
+length. No production comparator or reference validation is relaxed. A bounded
+continuation verifies those exact inputs/transitions before hosting the cold
+file; both participants strictly converge at a new revision-0 context, with
+122 classes, 419 placements, five acts and zero faults. Evidence:
+`out/preview9-c46-cold-shared/result.json`,
+`out/preview9-c46-cold-comparison/comparison.json`, and
+`out/preview9-c46-cold-shared-continuation/result.json`.
+
+The host then constructs and saves a native UFO, adding class `8589935938:1` at
+revision 1. The guest repeats the retained complete 15-step construction and
+saves class `8589935939:1` at revision 2. Body and cockpit alone retain blocker 4;
+the measured propulsion part clears it and gives native finish zero. Both saves
+preserve existing cast rows and add one class/Undo item each, with strict Native
+agreement and zero faults on both returned participants. Counts become 124
+classes, 419 placements and five acts. Evidence:
+`out/preview9-c46-host-spaceship-save/result.json`,
+`out/preview9-c46-guest-spaceship-save/result.json`, and
+`tools/tests/fixtures/editor_creation/spaceship-minimal-c46.json`.
+
+Host and guest next construct native Houses, including Body, Door and Roof.
+The first host body drop above the construction floor retains no part or budget
+change and is excluded from the regression recipe. Correct floor placement plus
+Door and Roof clear all native blockers. The host adds class `8589935940:1` at
+revision 3; the guest independently replays the complete 15-step recipe and adds
+`8589935941:1` at revision 4. Both returned participants strictly agree with zero
+faults; all prior cast rows and 419 placements/five acts remain unchanged.
+Native adventure Save of all 126 classes then passes SavedApplied 2/2, unchanged
+history/semantics and original DBPF acquisition. Exact source is
+`408A0000!2913EF53.366A930D`, DBPF SHA-256
+`05afdc26325320be77d4bea631a1bdf8ecaf5f8943bfcf46f4d2ca6031fc7544`;
+raw saved-root SHA-256 is
+`ddbbd9a9ed0a08056ad7b69d8ee57c19d34863291daabf649011d0037923d757`.
+This later 126-class file has not yet been cold-reopened. Evidence:
+`out/preview9-c46-host-house-save/result.json`,
+`out/preview9-c46-guest-house-save/result.json`,
+`out/preview9-c46-all-new-models-native-save/result.json`, and
+`tools/tests/fixtures/editor_creation/building-house-minimal-c46.json`.
