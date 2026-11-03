@@ -1615,3 +1615,26 @@ host-away foreign edits, retained adopted gestures, rollback and absent
 sidecars. RED uses the real pre-fix Runtime source archived before these two
 lines, not a manufactured mutant. Receipts are under
 `out/editor-preview9-c47-native-dirty`; actual C47 Save qualification is separate.
+
+### Offline exact Saved/cold projection comparator
+
+`tools/tests/coop_editor_saved_projection.py` compares two owned byte values
+with the bounded native DBPF/ClassSerializer decoder. It permits only the
+observed class-asset machine transition `5523CA25` to zero for an unchanged
+private `7D` instance in one of the four editor families, identical slot/key,
+model and maximum server sentinel. Unchanged machine values remain literal.
+Other machine IDs require fresh qualification; no general reference mask or
+production validator policy is introduced.
+
+Every other decoded byte, including pose/Acts/Captain/Crew and unknown fields,
+must match. Prefix comparison permits only the unused fourth word of an exact
+type20/flags0 scalar ResourceKey and the independently checked embedded DBPF
+length. None payloads, vector padding and all other prefix bytes remain exact.
+DBPF header/index unknown bytes also remain exact after the actual packed-size
+and index-position bookkeeping is checked. Unsupported layouts reject.
+
+The CLI requires explicitly hashed copied OUT inputs and never overwrites a
+report. `compare(saved,cold)` returns a compact report or raises ValueError.
+Focused tests use the genuine C46 pair plus controlled decoded/prefix mutations;
+the latter are not claimed as newly generated genuine NativeWrite artifacts.
+This comparator grants no Native admission, cache or projection authority.
