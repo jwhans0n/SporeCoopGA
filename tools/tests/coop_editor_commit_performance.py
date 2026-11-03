@@ -641,6 +641,12 @@ def run(args):
             party.close()
 
 
+def sample_count_valid(samples, diagnostic):
+    # Short native probes are useful during iteration, but never qualify the
+    # thirty-gesture-per-author acceptance gate.
+    return (1 if diagnostic else 30) <= samples <= 100
+
+
 def parser():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--execute',action='store_true');p.add_argument('--metadata',type=Path,required=True)
@@ -651,7 +657,8 @@ def parser():
     p.add_argument('--adventure',default='Motel of Melora (\'22 Edition)');p.add_argument('--object')
     p.add_argument('--expected-native-sha256',help='Optional exact initial native fixture hash, especially for attach')
     p.add_argument('--profiles',nargs='+',choices=tuple(PROFILES),default=['lan']);p.add_argument('--samples',type=int,default=30)
-    p.add_argument('--minimum-placements',type=int,default=400);p.add_argument('--diagnostic',action='store_true')
+    p.add_argument('--minimum-placements',type=int,default=400)
+    p.add_argument('--diagnostic',action='store_true',help='Development probe only; permits1..100 samples and never passes release acceptance')
     p.add_argument('--p95-frame-ms',type=float,default=100);p.add_argument('--max-frame-ms',type=float,default=250)
     p.add_argument('--body-offset-y',type=int,default=28);p.add_argument('--drag-pixels',type=int,default=8)
     p.add_argument('--native-locate-card',nargs=2,type=int,metavar=('X','Y'),
@@ -668,7 +675,7 @@ def main():
     p=parser();args=p.parse_args()
     if not args.execute or os.name!='nt':p.error('Requires --execute and already-owned Windows lab processes')
     if len(args.instances) not in (2,4) or len(set(args.instances))!=len(args.instances) or any(not 2<=i<=100 for i in args.instances):p.error('Two/four distinct private instances2..100 required')
-    if not re.fullmatch('[0-9a-f]{64}',args.expected_dll_sha256) or not 30<=args.samples<=100 or not 60<=args.seconds<=3500 or not 1<=args.timeout<=300 or not 1<=args.port<=65535:p.error('Exact candidate hash and bounded test settings required')
+    if not re.fullmatch('[0-9a-f]{64}',args.expected_dll_sha256) or not sample_count_valid(args.samples,args.diagnostic) or not 60<=args.seconds<=3500 or not 1<=args.timeout<=300 or not 1<=args.port<=65535:p.error('Exact candidate hash and bounded test settings required;1..29 samples require --diagnostic')
     if not 1<=args.minimum_placements<=4096 or not 0<args.p95_frame_ms<=args.max_frame_ms<=1000 or not -200<=args.body_offset_y<=200 or not 1<=args.drag_pixels<=40 or not 0<=args.world_left<=2000:p.error('Invalid placement, body or frame bounds')
     if args.setup=='attach' and args.profiles!=['lan']:p.error('WAN profiles require --setup bootstrap and owned impairment proxies')
     if len(set(args.profiles))!=len(args.profiles):p.error('Each network profile may be measured only once per receipt')

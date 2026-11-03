@@ -58,6 +58,16 @@ def native_text(counters):
 
 
 class StageContracts(unittest.TestCase):
+    def test_short_native_probes_require_diagnostic_mode(self):
+        for samples in (1,3,29):
+            self.assertTrue(perf.sample_count_valid(samples, True))
+            self.assertFalse(perf.sample_count_valid(samples, False))
+        for diagnostic in (False,True):
+            for samples in (30,100):
+                self.assertTrue(perf.sample_count_valid(samples, diagnostic))
+            for samples in (-1,0,101):
+                self.assertFalse(perf.sample_count_valid(samples, diagnostic))
+
     def test_command_log_retry_preserves_previous_complete_artifact(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'95-commands.json';path.write_text('["previous"]\n')
