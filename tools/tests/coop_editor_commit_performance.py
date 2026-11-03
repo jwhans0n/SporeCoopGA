@@ -34,6 +34,8 @@ PROFILES = {
 EVENT = re.compile(r'^event=(\d+) stage=([a-z_]+) qpc=(\d+) project=([0-9a-f]{32}) '
                    r'author=(\d+):(\d+) sequence=(\d+) operation_epoch=(\d+) revision=(\d+) success=([012])$')
 NATIVE_SPANS = ('read', 'write', 'projection', 'resolution', 'supported')
+NATIVE_OPTIONAL_SPANS = ('snapshot_copy',)
+NATIVE_OPTIONAL_KEYS = {f'native_{name}_{field}' for name in NATIVE_OPTIONAL_SPANS for field in ('calls', 'ticks')}
 NATIVE_COUNTS = ('parsed_image_hits', 'parsed_image_misses', 'pose_capture_hits', 'pose_capture_fallbacks')
 NATIVE_OWNERS = ('parsed_image_entries', 'parsed_image_bytes', 'parsed_image_owners',
                  'parsed_image_owner_bytes', 'parsed_image_peak_owners', 'parsed_image_peak_bytes')
@@ -102,7 +104,7 @@ def hold_command_artifacts(games):
 def native_work_sample(text):
     """Optional development counters, sampled outside the measured window."""
     row = values(text)
-    known = NATIVE_WORK_KEYS | NATIVE_CAPTURE_KEYS
+    known = NATIVE_WORK_KEYS | NATIVE_CAPTURE_KEYS | NATIVE_OPTIONAL_KEYS
     names = re.findall(r'\b([a-z_][a-z0-9_]*)=', text)
     present = known & set(names)
     if not present:
@@ -114,7 +116,12 @@ def native_work_sample(text):
 
 def checked_native_work(row):
     capture = NATIVE_CAPTURE_KEYS & row.keys()
-    keys = NATIVE_WORK_KEYS | capture
+    optional = NATIVE_OPTIONAL_KEYS & row.keys()
+    for name in NATIVE_OPTIONAL_SPANS:
+        pair = {f'native_{name}_{field}' for field in ('calls', 'ticks')}
+        if pair & optional and not pair <= optional:
+            raise FixtureError('Partial optional native work counters: ' + name)
+    keys = NATIVE_WORK_KEYS | capture | optional
     if (not NATIVE_WORK_KEYS <= row.keys() or (capture and capture != NATIVE_CAPTURE_KEYS) or
             any(type(row[key]) is not int or not 0 <= row[key] < 2**64 for key in keys) or
             not row['native_work_frequency']):
@@ -141,7 +148,7 @@ def native_work_delta(before, after):
     if any(after[key] < before[key] for key in before if key not in NATIVE_OWNERS):
         raise FixtureError('Native work counters reset during the gesture')
     spans = {}
-    for name in NATIVE_SPANS:
+    for name in NATIVE_SPANS + tuple(name for name in NATIVE_OPTIONAL_SPANS if f'native_{name}_calls' in before):
         calls = after[f'native_{name}_calls'] - before[f'native_{name}_calls']
         ticks = after[f'native_{name}_ticks'] - before[f'native_{name}_ticks']
         spans[name] = dict(calls=calls, ticks=ticks, inclusive_ms=ticks * 1000 / frequency)

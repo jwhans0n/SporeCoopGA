@@ -58,6 +58,18 @@ def native_text(counters):
 
 
 class StageContracts(unittest.TestCase):
+    def test_optional_native_copy_span_preserves_older_payloads(self):
+        legacy=perf.native_work_sample(native_text(native_counters()))
+        self.assertNotIn('snapshot_copy',perf.native_work_delta(legacy,legacy)['spans'])
+        before={**legacy,'native_snapshot_copy_calls':2,'native_snapshot_copy_ticks':50}
+        after={**before,'native_snapshot_copy_calls':3,'native_snapshot_copy_ticks':75}
+        result=perf.native_work_delta(perf.native_work_sample(native_text(before)),perf.native_work_sample(native_text(after)))
+        self.assertEqual(result['spans']['snapshot_copy'],dict(calls=1,ticks=25,inclusive_ms=25))
+        for partial in ({'native_snapshot_copy_calls':2},{'native_snapshot_copy_ticks':50}):
+            with self.assertRaises(perf.FixtureError):perf.native_work_sample(native_text({**legacy,**partial}))
+        with self.assertRaises(perf.FixtureError):perf.native_work_delta(legacy,before)
+        with self.assertRaises(perf.FixtureError):perf.native_work_sample(native_text(before)+' native_snapshot_copy_calls=2')
+
     def test_short_native_probes_require_diagnostic_mode(self):
         for samples in (1,3,29):
             self.assertTrue(perf.sample_count_valid(samples, True))
