@@ -408,7 +408,7 @@ static int c_mod_op(void* user, int argc, const char* const* argv, SkOut* o)
     std::string err;
     int op = (int)(intptr_t)user;
     bool ok = op == 0 ? mod_reload(argv[1], err) : op == 1 ? mod_load(argv[1], err) : mod_unload(argv[1], err);
-    outf(o, ok ? "ok" : "error: %s", err.c_str());
+    outf(o, ok ? "ok: %s" : "error: %s", err.c_str());
     return ok ? 0 : 1;
 }
 
@@ -644,9 +644,9 @@ void register_builtin_commands()
     command_add(k, "drag", "drag <x1> <y1> <x2> <y2> [left|right] - press, move, release", c_drag, nullptr, A);
     command_add(k, "wheel", "wheel <x> <y> <notches> - mouse wheel (+ zooms in)", c_wheel, nullptr, A);
     command_add(k, "mods", "list mods", c_mods, nullptr, M);
-    command_add(k, "mod.reload", "mod.reload <name> - hot reload", c_mod_op, (void*)0, M);
-    command_add(k, "mod.load", "mod.load <name>", c_mod_op, (void*)1, M);
-    command_add(k, "mod.unload", "mod.unload <name>", c_mod_op, (void*)2, M);
+    command_add(k, "mod.reload", "mod.reload <name> - queue hot reload", c_mod_op, (void*)0, SK_CMD_OUTSIDE_FRAME);
+    command_add(k, "mod.load", "mod.load <name> - queue load", c_mod_op, (void*)1, SK_CMD_OUTSIDE_FRAME);
+    command_add(k, "mod.unload", "mod.unload <name> - queue unload", c_mod_op, (void*)2, SK_CMD_OUTSIDE_FRAME);
     command_add(k, "hooks", "list installed hooks", c_hooks, nullptr, A);
     command_add(k, "game.mode", "active game mode", c_mode, nullptr, M);
     command_add(k, "stack", "stack [depth] - main thread stack (works when hung)", c_stack, nullptr, A);

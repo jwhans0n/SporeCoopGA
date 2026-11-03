@@ -39,14 +39,22 @@ def main():
         info = console.call('info')
         if not info.get('ok') or f"pid={child['pid']}" not in info.get('out', '') or EXPECTED_EXE not in info['out']:
             raise RuntimeError('console identity does not match the lab child')
+        loaded_pattern = r'task-lifetime loaded cookie=(\d+) module=([0-9A-Fa-f]+)'
+        previous = set(re.findall(loaded_pattern, console.call('log 100').get('out', '')))
         evidence['load'] = console.call('mod.load task_lifetime')
         if not evidence['load'].get('ok'):
             raise RuntimeError('fixture load failed')
         loaded = True
-        log = console.call('log 100')
-        matches = re.findall(r'task-lifetime loaded cookie=(\d+) module=([0-9A-Fa-f]+)', log.get('out', ''))
-        if not log.get('ok') or not matches:
-            raise RuntimeError('fixture did not report its module and payload cookie')
+        # Kit 0.3.5 acknowledges a value-only request before executing it.
+        deadline = time.monotonic() + 10
+        while True:
+            log = console.call('log 100')
+            matches = [item for item in re.findall(loaded_pattern, log.get('out', '')) if item not in previous]
+            if log.get('ok') and matches:
+                break
+            if time.monotonic() >= deadline:
+                raise RuntimeError('fixture did not report its module and payload cookie')
+            time.sleep(0.05)
         cookie, module = matches[-1]
         evidence.update(cookie=int(cookie), module=int(module, 16))
         evidence['unload'] = console.call('mod.unload task_lifetime')

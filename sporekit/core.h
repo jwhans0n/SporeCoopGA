@@ -12,7 +12,7 @@
 
 #include "../sdk/include/sporekit.h"
 
-#define SK_VERSION "0.3.4"
+#define SK_VERSION "0.3.5"
 
 // ---- SkMod (opaque for mods) ----
 struct SkMod {
@@ -134,6 +134,8 @@ bool cheat_exec(const char* line);
 
 // mods.cpp
 void mods_load_all();
+// Interactive calls accept bounded, value-only FIFO requests. True means queued,
+// not completed; status names the request. Execution is main-thread/outside Present.
 bool mod_reload(const std::string& name, std::string& err);
 bool mod_unload(const std::string& name, std::string& err);
 bool mod_load(const std::string& name, std::string& err);
