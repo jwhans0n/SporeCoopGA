@@ -8,6 +8,16 @@ import threading
 import time
 
 
+def adventure_message_type(packet):
+    """GA's top-level ID changed when protocol 24 retained upstream nest/parts IDs."""
+    if len(packet) < 31 or packet[:4] != b'SPCO':
+        return None
+    version = struct.unpack_from('<H', packet, 4)[0]
+    if not 7 <= version <= 24:
+        return None
+    return 61 if version == 24 else 52
+
+
 class NetworkProxy:
     def __init__(self, listen, target, loss=0, jitter=0, seed=7):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -44,6 +54,7 @@ class NetworkProxy:
 
     def _record(self, direction, data):
         counts = Counter({direction+'_bytes': len(data), direction+'_packets': 1})
+        adventure_kind = adventure_message_type(data)
         if len(data) >= 31 and data[:4] == b'SPCO':
             offset = 31
             for _ in range(data[30]):
@@ -54,14 +65,14 @@ class NetworkProxy:
                 if offset+size > len(data):
                     break
                 category = 'players' if kind == 6 else 'other'
-                if kind == 52 and size:
+                if kind == adventure_kind and size:
                     sub = data[offset]
                     category = ('assets' if 64 <= sub <= 71 else 'captains' if sub >= 192 else
                                 'actors' if sub == 128 else 'static' if sub == 136 else
                                 'actor_animations' if sub == 139 else 'world')
                 counts[direction+'_'+category+'_payload_bytes'] += size
                 counts[direction+'_'+category+'_messages'] += 1
-                if kind == 52 and size >= 15 and data[offset] == 128:
+                if kind == adventure_kind and size >= 15 and data[offset] == 128:
                     actors = data[offset+14]
                     if size == 15+54*actors:
                         counts[direction+'_actor_records'] += actors

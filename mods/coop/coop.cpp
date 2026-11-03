@@ -5367,12 +5367,6 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
     H->command_add(M, "coop.status", "session, players and puppets", c_status, nullptr, MT);
     adventure_progress::init(H, M);
     H->command_add(M, "coop.adventure", "adventure status, difficulty, readiness and cancellation", c_adventure, nullptr, SK_CMD_OUTSIDE_FRAME);
-    H->command_add(M, "coop.editor", "shared Adventure Editor status and actions", [](void*, int argc, const char* const* argv, SkOut* out) {
-        std::vector<std::string> args;
-        for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
-        SAY("%s", coop_editor::debug(args).c_str());
-        return 0;
-    }, nullptr, SK_CMD_OUTSIDE_FRAME);
     H->command_add(M, "coop.frame_metrics", "coop.frame_metrics start|stop|status|config - bounded presented-frame test samples", [](void*, int argc, const char* const* argv, SkOut* out) {
         if (argc > 1 && std::string(argv[1]) == "config") {
             const uintptr_t address = H->sym("App::FrameLimit_ptr");
@@ -5479,8 +5473,15 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
                        return 0;
                    },
                    nullptr, MT);
-    H->command_add(M, "coop.editor", "coop.editor - tests (BUG-0368): the open editor's request and the parts its palette shows locked",
-                   [](void*, int, const char* const*, SkOut* out) {
+    H->command_add(M, "coop.editor", "coop.editor <status|action> - shared Adventure Editor; without arguments: native creation request/parts (BUG-0368)",
+                   [](void*, int argc, const char* const* argv, SkOut* out) {
+                       // Keep upstream's no-argument diagnostic and shared authoring
+                       // actions in one registration, so neither replaces the other.
+                       if (argc > 1) {
+                           const std::vector<std::string> args(argv + 1, argv + argc);
+                           SAY("%s", coop_editor::debug(args).c_str());
+                           return 0;
+                       }
                        // the editor game mode: the mode manager's list (+0x14..+0x18, entries of 0x18 bytes
                        // {mode, id, name}) holds it under id 0xDBDBA1 (0x57F3E0); its request at +0x1CC
                        // (OnEnter reads +0x94 there and gives it to the palette)
@@ -5517,7 +5518,7 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
                            locked, g_own_editor_items_set, avail, avail_hash);
                        return 0;
                    },
-                   nullptr, MT);
+                   nullptr, SK_CMD_OUTSIDE_FRAME);
     H->command_add(M, "coop.parts", "coop.parts [unlock <n>|find <level>|keys|states] - the collected creature parts as the trace's parts= field counts them; "
                    "unlock <n>: unlock n locked ones in this game only (tests: a player's unlock the other games miss); "
                    "find <level>: the game's own 'a part was found' (a skeleton's reward, BUG-0401); keys: the unlocked unlockable keys; states: every item state (BUG-0441)",

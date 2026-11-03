@@ -191,8 +191,10 @@ struct Party {
             };
             cb.error = [&, p](const std::string&) { CHECK(!dispatching); native[p].errors++; };
             controllers[p] = std::make_unique<es::Controller>(sessions[p], cb, config);
-            sessions[p].cb.custom = [&, p, message_type = config.message_type](uint8_t type, uint8_t from, net::Reader& r) {
-                if (type != message_type) return;
+            sessions[p].cb.custom = [&, p](uint8_t type, uint8_t from, net::Reader& r) {
+                // Match the production dispatcher independently of Config's
+                // sender default, so a wire-ID migration cannot hide here.
+                if (type != net::MSG_EDITOR) return;
                 net::Reader copy(r.cur(), r.left()); Peer sender{copy.u8(), copy.u32()}; copy.u32(); w::Message message; std::string error;
                 if (w::read(copy, message, sender, from == 0, error)) {
                     if(auto* value=std::get_if<w::ComplexityState>(&message.payload))wire_complexity_states[p].push_back(*value);
@@ -386,7 +388,7 @@ static void test_two_player_and_real_udp()
     request.operation = {p.controllers[1]->view().local, 1, request.epoch}; request.mutations.front().value = Vec3{999, 0, 0};
     net::Writer retry; auto request_context = p.controllers[1]->view().context; request_context.revision = request.base_revision;
     CHECK(w::write({request_context, request}, retry, error)); const auto prior_decisions = p.native[1].decisions, prior_wire = p.native[1].wire_decisions;
-    CHECK(p.sessions[1].send_reliable_to(0, 53, addressed(p.controllers[1]->view().local, p.controllers[0]->view().local, retry)));
+    CHECK(p.sessions[1].send_reliable_to(0, net::MSG_EDITOR, addressed(p.controllers[1]->view().local, p.controllers[0]->view().local, retry)));
     CHECK(p.spin([&] { return p.native[1].wire_decisions > prior_wire; }));
     CHECK(p.native[1].decisions == prior_decisions);
     CHECK(p.native[1].commits == 2 && p.controllers[0]->view().locally_durable == 2);
@@ -478,10 +480,10 @@ static void test_four_players_and_controls()
     CHECK(p.controllers[0]->view().playtest_round == round + 1);
     auto ctx = p.controllers[0]->view().context; net::Writer stale;
     CHECK(w::write({ctx, w::Control{w::ControlKind::GuestReadyPlaytest, round, ctx.revision, true, 0}}, stale, error));
-    CHECK(p.sessions[1].send_reliable_to(0, 53, addressed(p.controllers[1]->view().local, p.controllers[0]->view().local, stale))); for (int i = 0; i < 20; ++i) p.step();
+    CHECK(p.sessions[1].send_reliable_to(0, net::MSG_EDITOR, addressed(p.controllers[1]->view().local, p.controllers[0]->view().local, stale))); for (int i = 0; i < 20; ++i) p.step();
     CHECK(!p.controllers[0]->view().members.at(1).ready);
     net::Writer old_returned; CHECK(w::write({ctx, w::Control{w::ControlKind::GuestEditorReturned, round, ctx.revision, false, 0}}, old_returned, error));
-    CHECK(p.sessions[1].send_reliable_to(0, 53, addressed(p.controllers[1]->view().local, p.controllers[0]->view().local, old_returned)));
+    CHECK(p.sessions[1].send_reliable_to(0, net::MSG_EDITOR, addressed(p.controllers[1]->view().local, p.controllers[0]->view().local, old_returned)));
     for (int i = 0; i < 20; ++i) p.step(); CHECK(p.controllers[0]->view().phase == es::Phase::Preparing);
     CHECK(p.controllers[0]->cancel_playtest(error)); CHECK(p.spin([&] { return p.controllers[1]->view().phase == es::Phase::Ready; }));
     CHECK(p.controllers[0]->prepare_playtest(error));
@@ -676,13 +678,13 @@ static void test_saved_install_readiness_keeps_order(unsigned players)
     const auto saved_notice = *p.controllers[0]->view().saved;
     const auto before_duplicate = p.native[1].saved_checks;
     net::Writer packet; CHECK(w::write({p.controllers[0]->view().context, saved_notice}, packet, error));
-    CHECK(p.sessions[0].send_reliable_to(1, 53, addressed(p.controllers[0]->view().local, p.controllers[1]->view().local, packet)));
+    CHECK(p.sessions[0].send_reliable_to(1, net::MSG_EDITOR, addressed(p.controllers[0]->view().local, p.controllers[1]->view().local, packet)));
     for (unsigned i = 0; i < 20; ++i) p.step();
     CHECK(p.native[1].saved == 1 && p.native[1].saved_checks == before_duplicate);
     auto stale = p.controllers[0]->view().context; ++stale.epoch;
     auto future_notice = saved_notice; ++future_notice.serial;
     net::Writer stale_packet; CHECK(w::write({stale, future_notice}, stale_packet, error));
-    CHECK(p.sessions[0].send_reliable_to(1, 53, addressed(p.controllers[0]->view().local, p.controllers[1]->view().local, stale_packet)));
+    CHECK(p.sessions[0].send_reliable_to(1, net::MSG_EDITOR, addressed(p.controllers[0]->view().local, p.controllers[1]->view().local, stale_packet)));
     for (unsigned i = 0; i < 20; ++i) p.step();
     CHECK(p.native[1].saved_checks == before_duplicate && p.native[1].saved == 1);
     CHECK(p.controllers[1]->state().document == p.controllers[0]->state().document);
@@ -720,7 +722,7 @@ static void test_prepare_rejection_never_crosses_an_ordered_barrier(bool resourc
     const auto context = p.controllers[0]->view().context;
     const auto send = [&](w::Payload payload) {
         net::Writer packet; CHECK(w::write({context, std::move(payload)}, packet, error));
-        CHECK(p.sessions[0].send_reliable_to(1, 53, addressed(p.controllers[0]->view().local, p.controllers[1]->view().local, packet)));
+        CHECK(p.sessions[0].send_reliable_to(1, net::MSG_EDITOR, addressed(p.controllers[0]->view().local, p.controllers[1]->view().local, packet)));
     };
     // Authenticated wire fault-order probe: even an unexpected barrier behind
     // Prepare must retain FIFO. This does not claim a normal host Save is
@@ -1046,7 +1048,7 @@ static void test_same_revision_saved_needs_explicit_applied_ack()
     auto context = p.controllers[0]->view().context;
     auto send = [&](w::Context scope, w::Saved saved, Peer source, Peer target) {
         net::Writer packet; CHECK(w::write({scope, w::SavedApplied{saved}}, packet, error));
-        CHECK(p.sessions[1].send_reliable_to(0, 53, addressed(source, target, packet)));
+        CHECK(p.sessions[1].send_reliable_to(0, net::MSG_EDITOR, addressed(source, target, packet)));
         CHECK(p.spin([&] { return p.sessions[1].pending_to(0) == 0; })); CHECK(!p.controllers[0]->settled());
     };
     const auto source = p.controllers[1]->view().local, target = p.controllers[0]->view().local;
@@ -1136,8 +1138,8 @@ static void test_deferred_baseline_and_fail_closed()
     // Delayed old-incarnation traffic must not freeze the replacement either way.
     net::Writer old_leave; auto ctx = p.controllers[0]->view().context; CHECK(w::write({ctx, w::Leave{3}}, old_leave, error));
     const auto host = p.controllers[0]->view().local;
-    CHECK(p.sessions[1].send_reliable_to(0, 53, addressed(previous_guest, host, old_leave)));
-    CHECK(p.sessions[0].send_reliable_to(1, 53, addressed(host, previous_guest, old_leave)));
+    CHECK(p.sessions[1].send_reliable_to(0, net::MSG_EDITOR, addressed(previous_guest, host, old_leave)));
+    CHECK(p.sessions[0].send_reliable_to(1, net::MSG_EDITOR, addressed(host, previous_guest, old_leave)));
     for (int i = 0; i < 30; ++i) p.step();
     CHECK(p.controllers[1]->view().phase == es::Phase::Ready && p.controllers[0]->view().members.at(1).phase == es::Phase::Ready);
 }
@@ -1161,7 +1163,7 @@ static void test_recovery_teardown_holds_guests_until_authenticated_reoffer()
     net::Writer forged;const Peer replacement{local.slot,local.generation+1};
     CHECK(w::write({{next.document.project,next.document.epoch,next.document.revision},
         w::Offer{w::kSchema,"forged recovery",replacement,{0,host.generation+1}}},forged,error));
-    CHECK(p.sessions[0].send_reliable_to(1,53,addressed(host,replacement,forged)));
+    CHECK(p.sessions[0].send_reliable_to(1,net::MSG_EDITOR,addressed(host,replacement,forged)));
     for(unsigned i=0;i<15;++i)p.step();
     CHECK(p.controllers[1]->view().phase==es::Phase::Frozen&&p.controllers[1]->view().context==context);
     CHECK(p.controllers[1]->state()==committed);

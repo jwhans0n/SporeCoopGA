@@ -1946,3 +1946,25 @@ deferral, asynchronous command replies and command removal while queued. The
 exact retained C48 pump fails its first new-work deferral assertion. Focused
 receipts and the old-source executable are retained under
 `out/editor-preview9-outside-batch/`; no game or deployment is part of this test.
+
+### Upstream 0.7.3.6 integration and native Terraform follow-up (2026-11-03)
+
+Upstream reserves top-level NEST/PARTS IDs 52/53. The uninstalled integration
+uses protocol 24 with ADVENTURE/EDITOR IDs 61/62; installed C49 remains protocol
+23. C52 native joining exposes the Controller Config's stale literal 53 despite
+the dispatcher using the new enum. Use `net::MSG_EDITOR` for the default and
+receive independently through the production dispatch constant in the fixture.
+C53 native automatic host/guest entry passes the exact 129-class saved file.
+
+The upstream bare `coop.editor` creation-request/parts diagnostic and named
+shared-editor actions must have one registration. Duplicate command names
+silently replace the earlier handler. The combined handler retains upstream
+no-argument output and executes both paths outside Present.
+
+On C53, both authors pass native Hazards (`899EB157`, field `8E390196`),
+day/night lock (`074261F8`) and time (`073BEC90`, both field `0B208B41`).
+Checked native-toolbar Undo/Redo restores only the expected field; each action
+creates one synchronized history item. Fresh Environment source hits and
+screenshots are retained with `out/preview9-c53-two-hazards/` and
+`out/preview9-c53-two-clock/`. Six actions plus their history sequences settle at
+revision 24 with strict peer convergence. This does not qualify other controls.

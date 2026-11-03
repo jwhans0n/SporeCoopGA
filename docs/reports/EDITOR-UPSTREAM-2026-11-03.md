@@ -96,6 +96,59 @@ assertion. The original failed log is preserved alongside the passing rerun.
 
 ## Continuing coverage
 
+The merge is committed as `5df22f6`; upstream `cf22e60` is an ancestor, with both
+histories retained. A later native probe finds two integration gaps that the
+initial compile checks cannot establish:
+
+- C51 registers `coop.editor` twice. The incoming bare creation-request
+  diagnostic replaces named shared-editor actions. C52 composes both into one
+  outside-frame registration: no arguments retain upstream's diagnostic, named
+  arguments route to shared authoring. No other literal command registration
+  duplicates remain in the static audit.
+- C52 cold-opens and exactly compares all 129 saved classes, and the host starts
+  shared editing, but the guest never receives its offer. Controller Config
+  retains literal message ID 53 while the dispatcher uses 62. C53 defaults to
+  `net::MSG_EDITOR`; the real-UDP fixture now receives through the independent
+  production constant instead of echoing Config's sender value. The focused
+  suite passes 32,809 checks. Old native failure artifacts remain retained.
+
+C53 builds with 316 retained inputs and zero drift. Its co-op DLL SHA-256 is
+`e846164154f3da8c4eb5e70721552b15e169f4342379a7637380f8a9f1dc9cd0`;
+Kit remains the C51 hash. Fresh private processes cold-open the exact saved
+129-class/419-placement/five-act adventure, pass the complete qualified native
+comparison, and automatically join with matching strict projections and zero
+faults. This verifies the merged protocol-24 editor entry/join path, not every
+upstream gameplay feature. Evidence:
+`out/preview9-c51-cold-baseline/`, `out/preview9-c52-cold-baseline/`,
+`out/preview9-c53-cold-baseline/result.json`, and
+`out/preview9-upstream-integration/editor-session-canonical-dispatch-tests.log`.
+
+Versioned GA traffic audit tools and pickup injection now select top-level IDs
+from reviewed header versions. Their eight GA/pickup and seven editor-proxy
+tests pass on Windows and Linux. The benchmark receiver independently uses
+`net::MSG_EDITOR` and passes syntax checking with the required SDK include path;
+no benchmark or performance acceptance is run. Evidence:
+`out/preview9-upstream-message-tools/receipt-final.json` and
+`out/preview9-upstream-integration/benchmark-wire-syntax-r2.log`.
+
+Fresh native Terraform calibration preserves the shared revision. Host and
+guest each complete Hazards toggle/Undo/Redo/Undo, reaching revision 8 with
+exactly two history entries and only `8E390196` changed per action. Both then
+complete day/night lock and time-of-day drag with the same history sequence,
+reaching revision 24; only `0B208B41` changes. Every checkpoint strictly
+converges, restores prior fields and remains fault-free. These are three
+control families from two authors, not complete Terraform or four-author
+coverage. Receipts: `out/preview9-c53-two-hazards/result.json` and
+`out/preview9-c53-two-clock/result.json`; calibration/recipes are retained beside
+those outputs.
+
+The earlier offline large-count carriers are not suitable for a count-only
+boundary claim: their selected marker/class resolves to teleporter resource
+`D87454E6!90C48D09.00B1B104`. The preparation rejects these carriers for execution
+and retains their original hashes. New boundary fixtures require an ordinary
+static asset and measured effective weighted headroom. No native 1,025/4,096
+or publication acceptance is inferred from generated counts.
+
 Existing four-player Crew and Basic Tools concurrency evidence remains recorded
 in the preview-9 report. The next terrain checks start with host/guest Hazards
 history, then environment subtypes, selected-stamp transforms, Flora and the

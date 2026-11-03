@@ -25,7 +25,7 @@ from coop_adventure_preparation import menu
 from adventure_memory import AdventureMemory
 from adventure_interaction_fixture import (OUTPUT as FIXTURE_OUTPUT, FIXTURES,
     Native, fixture_key, inspect_fixture, register_fixtures, tune_fixture)
-from adventure_network_proxy import NetworkProxy
+from adventure_network_proxy import NetworkProxy, adventure_message_type
 
 
 def require(value, message):
@@ -37,8 +37,24 @@ def distance(a, b):
     return math.sqrt(sum((x-y)**2 for x, y in zip(a, b)))
 
 
+def pickup_transport_version(header):
+    if len(header) != 31 or header[:4] != b'SPCO':
+        return None
+    version = struct.unpack_from('<H', header, 4)[0]
+    return version if 10 <= version <= 24 else None
+
+
+def adventure_injection_packet(header, payload):
+    require(pickup_transport_version(header) is not None,
+            'pickup network fixture requires a reviewed protocol10..24 header')
+    kind = adventure_message_type(header)
+    header = bytearray(header)
+    header[30] = 1
+    return bytes(header)+struct.pack('<BBH', kind, 0, len(payload))+payload
+
+
 class CaptureProxy(NetworkProxy):
-    """Record real protocol10 state for narrowly scoped private-lab faults."""
+    """Record the exact 95-byte protocol10..24 state for private-lab faults."""
     def __init__(self, listen, target):
         super().__init__(listen, target)
         self.states = {}
@@ -48,8 +64,8 @@ class CaptureProxy(NetworkProxy):
         super()._record(direction, data)
         if direction != 'up' or len(data)<31 or data[:4] != b'SPCO':
             return
-        if struct.unpack_from('<H', data, 4)[0] != 10:
-            self.error = 'pickup network fixture requires protocol10'
+        if pickup_transport_version(data[:31]) is None:
+            self.error = 'pickup network fixture requires a reviewed protocol10..24 header'
             return
         offset = 31
         for _ in range(data[30]):
@@ -88,6 +104,13 @@ class CaptureProxy(NetworkProxy):
         require(current, 'no recorded native UDP state is available for the lab fault')
         header = bytearray(current['header']);header[30] = 1
         packet = bytes(header)+struct.pack('<BBH', kind, 0, len(payload))+payload
+        self.socket.sendto(packet, self.target)
+        return len(packet)
+
+    def inject_adventure(self, player, payload):
+        current = self.state(player)
+        require(current, 'no recorded native UDP state is available for the lab fault')
+        packet = adventure_injection_packet(current['header'], payload)
         self.socket.sendto(packet, self.target)
         return len(packet)
 
@@ -336,7 +359,7 @@ class Suite:
         # Its sender identity is still supplied by Session, not by this payload.
         payload = struct.pack('<BQQBBBII', 152, self.host.adventure()['run'], 0x7FFFFFFFFFFFFFFF,
             self.memories[0].goals()['act'], 0, FIXTURES[kind][2], marker, host_item['incarnation'])
-        proxy.inject(player, 52, payload)
+        proxy.inject_adventure(player, payload)
         time.sleep(.6)
         require(counters(self.host)['grants'] == before['grants'] and actor(self.host, marker, FIXTURES[kind][2]),
                 'forged guest network ownership claimed the host captain')

@@ -67,8 +67,13 @@ class Proxy {
     uint32_t random_;
     unsigned random(unsigned n) { random_ ^= random_ << 13; random_ ^= random_ >> 17; random_ ^= random_ << 5; return random_ % n; }
     void messages(const std::vector<uint8_t>& bytes, unsigned direction, bool delivered, double now) {
-        if (!net::Connection::looks_valid(bytes.data(), bytes.size())) return;
-        net::Reader r(bytes.data(), bytes.size()); r.u32(); r.u16(); const auto conn = r.u32(); r.skip(20); const auto count = r.u8();
+        if (bytes.size() < 31) return;
+        net::Reader r(bytes.data(), bytes.size());
+        if (r.u32() != net::kMagic) return;
+        const auto version = r.u16();
+        if (version < 16 || version > net::kProtoVersion) return;
+        const uint8_t editor_type = version >= 24 ? net::MSG_EDITOR : uint8_t{53};
+        const auto conn = r.u32(); r.skip(20); const auto count = r.u8();
         for (unsigned i = 0; i < count && r.ok(); ++i) {
             const auto type = r.u8(), flags = r.u8(); const auto size = r.u16(); const auto rel = flags & 1 ? r.u16() : 0;
             if (r.left() < size) return;
@@ -76,7 +81,7 @@ class Proxy {
                 auto& t = traffic[direction]; ++t.reliable_messages;
                 if (!seen_[direction].insert({conn, uint16_t(rel)}).second) { ++t.retransmitted_messages; t.retransmitted_message_bytes += size + 6; }
             }
-            if (type == 53 && size > 9) {
+            if (type == editor_type && size > 9) {
                 net::Reader payload(r.cur(), size); Peer sender{payload.u8(), payload.u32()}; payload.u32();
                 w::Message m; std::string error;
                 if (w::read(payload, m, sender, direction == 0, error)) {
@@ -170,7 +175,7 @@ public:
             };
             c.error = [&](const std::string& e) { errors.push_back(e); };
             controllers[p] = std::make_unique<es::Controller>(sessions[p], c, config);
-            sessions[p].cb.custom = [&, p](uint8_t type, uint8_t from, net::Reader& r) { if (type == 53) controllers[p]->on_message(from, r); };
+            sessions[p].cb.custom = [&, p](uint8_t type, uint8_t from, net::Reader& r) { if (type == net::MSG_EDITOR) controllers[p]->on_message(from, r); };
             sessions[p].cb.player_join = [&, p](const net::PlayerInfo& q) { controllers[p]->on_join(q.id); };
             sessions[p].cb.player_leave = [&, p](uint8_t id, uint8_t) { controllers[p]->on_leave(id); };
         }

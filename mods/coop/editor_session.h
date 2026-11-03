@@ -71,7 +71,7 @@ struct Accounting {
     size_t receiving = 0, receiver_data_size = 0, receiver_data_capacity = 0, receiver_chunk_capacity = 0;
 };
 struct Config {
-    uint8_t message_type = 53;
+    uint8_t message_type = net::MSG_EDITOR;
     size_t inbound_packets = 512, inbound_bytes = 1u << 20;
     size_t outbound_packets = 256, outbound_bytes = 4u << 20;
     size_t transfer_bytes = 224u << 20, catchup_decisions = 256;

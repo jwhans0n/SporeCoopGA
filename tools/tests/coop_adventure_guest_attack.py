@@ -18,7 +18,7 @@ import time
 
 from adventure_control_fixture import local_avatar, teleport
 from adventure_interaction_fixture import Native, _verify_game
-from adventure_network_proxy import NetworkProxy
+from adventure_network_proxy import NetworkProxy, adventure_message_type
 from coop_adventure import FixtureError, Game, verify_lab
 from coop_adventure_combat_movement import CREATURE, MINE, MineMemory, TITLE, actors, check
 from coop_adventure_lobby import click_named, lobby, playing
@@ -27,7 +27,7 @@ from coop_adventure_preparation import menu
 
 def messages(packet):
     """Bounded SPCO message decoder; never treats truncated bytes as a hit."""
-    if len(packet) < 31 or packet[:4] != b'SPCO':
+    if adventure_message_type(packet) is None:
         return
     offset = 31
     for _ in range(packet[30]):
@@ -50,8 +50,9 @@ class HitAudit(NetworkProxy):
         super()._record(direction, data)
         if direction != 'up':
             return
+        adventure_kind = adventure_message_type(data)
         for kind, reliable, payload in messages(data):
-            if kind != 52 or not reliable or not payload:
+            if kind != adventure_kind or not reliable or not payload:
                 continue
             if payload[0] == 130 and len(payload) == 33:
                 run, event, marker, incarnation, damage, damage_type = struct.unpack_from('<QQIIfI', payload, 1)
