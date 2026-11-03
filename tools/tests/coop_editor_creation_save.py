@@ -88,7 +88,7 @@ def other_request_errors(row,profile):
         if row.get('request_editor_id')!=expected['editor_id']:errors.append('other New editor profile changed')
     elif row.get('new_asset')is False:
         source=row.get('source_key',[])
-        if row.get('request_editor_id')!=0xFFFFFFFF or len(source)!=3 or not source[0]or source[1]!=TYPES[FAMILIES.index(expected['family'])]:errors.append('other Edit source/family changed')
+        if row.get('request_editor_id')not in(0xFFFFFFFF,expected['editor_id']) or len(source)!=3 or not source[0]or source[1]!=TYPES[FAMILIES.index(expected['family'])]:errors.append('other Edit source/family changed')
     else:errors.append('other request mode is missing')
     if row.get('save_phase_38C')!=0 or row.get('ui_pending_command_cc')!=0:errors.append('other editor Save/transition is pending')
     return errors
@@ -122,7 +122,8 @@ def history_rows(text):return [list(row)for row in parse_history(text)]
 
 def request_errors(row,profile,source=None):
     expected=PROFILES[profile];errors=[]
-    if row.get('request_editor_id')!=(0xFFFFFFFF if source else expected['editor_id']) or row.get('model_type')!=expected['model_type'] or row.get('model_type_name')!=expected['model_name']:
+    allowed=(0xFFFFFFFF,expected['editor_id'])if source else(expected['editor_id'],)
+    if row.get('request_editor_id')not in allowed or row.get('model_type')!=expected['model_type'] or row.get('model_type_name')!=expected['model_name']:
         errors.append('wrong exact native request/model subtype')
     if source:
         if row.get('new_asset')is not False or row.get('source_key')!=[source[1],source[2],source[0]]:errors.append('Edit request/source changed')
@@ -396,7 +397,9 @@ def self_test():
     source=[0x40626200,0x7D000001,TYPES[0]];config=PROFILES['creature']
     edit=dict(request_editor_id=0xFFFFFFFF,model_type=config['model_type'],model_type_name=config['model_name'],allowed_types=[dict(type=config['model_type'])],new_asset=False,source_key=[source[1],source[2],source[0]],changed_4B3_4B4=[1,0],finish_state_if_debug_disabled=0,save_phase_38C=0,ui_pending_command_cc=0,widgets={'058A3350':[dict(visible=True)]})
     assert not finish_errors(edit,'creature',source);checks+=1
-    for key,value in [('request_editor_id',config['editor_id']),('new_asset',True),('source_key',[source[0],source[1],source[2]])]:
+    resolved=dict(edit,request_editor_id=config['editor_id'])
+    assert not finish_errors(resolved,'creature',source);checks+=1
+    for key,value in [('request_editor_id',PROFILES['building-house']['editor_id']),('new_asset',True),('source_key',[source[0],source[1],source[2]])]:
         bad=dict(edit);bad[key]=value;assert finish_errors(bad,'creature',source);checks+=1
     old=dict(revision=22,rows={'1:1':dict(key=source,settings='10:1',behavior='a'*64,content_revision=20),'2:1':dict(key=source,settings='11:1',behavior='b'*64,content_revision=18)})
     after=json.loads(json.dumps(old));after['revision']=23;after['rows']['1:1']['key'][1]+=1;after['rows']['1:1']['content_revision']=23
@@ -425,6 +428,8 @@ def self_test():
         bad=dict(held);bad[key]=value;assert other_request_errors(bad,'creature');checks+=1
     held=dict(edit,source_key=[source[1],source[2],0],changed_4B3_4B4=[0,0],finish_state_if_debug_disabled=4)
     assert not other_request_errors(held,'creature');checks+=1
+    assert not other_request_errors(dict(held,request_editor_id=config['editor_id']),'creature');checks+=1
+    assert other_request_errors(dict(held,request_editor_id=PROFILES['building-house']['editor_id']),'creature');checks+=1
     held['source_key']=[0,source[2],0];assert other_request_errors(held,'creature');checks+=1
     from types import SimpleNamespace
     declared=SimpleNamespace(instances=[95,96,97,98],author=96,allow_other_editors=True,other_editor=['98:spaceship','95:creature'])

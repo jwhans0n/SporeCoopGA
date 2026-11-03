@@ -1461,3 +1461,35 @@ equality, without an extra group veto. The staged self-test is included in
 Make's existing Python editor-tool block. New evidence is kept separately in
 `out/preview9-creation-hostaway-source/`, preserving the earlier 108-check
 receipt unchanged.
+
+
+### C44 observed resolved Edit request
+
+After cold recovery at revision 22, the host opens the guest-created Creature
+from cast page 3. Two ordinary held button taps at the card open its native
+property panel; the New/Edit toolbar then enables Edit. A single card click
+only selects it. Palette sheet opens the replacement picker, and dice is the
+separately blocked randomization action; neither is the property route.
+
+The active Creature Edit request is already resolved: +0C is `465C50BA`, +1C is
+Scenario return mode `01654C10`, +20 is false, reference count is 2, and its exact
+source is `40626200!7DEA8A37.2B978C46`. The generic `FFFFFFFF` request ID is an
+entry representation, not a required value after native resolution. The reader
+and stage guards therefore accept generic or this exact family ID for Edit,
+while still requiring the same owner, model subtype, false New flag and complete
+source key. Another family is rejected. Windows/Linux staged contracts pass 165.
+Evidence: `out/preview9-c44-edit-request-diagnostic/output.txt` and
+`out/preview9-c44-host-edit-guest-enter-r3/result.json`.
+
+Editing the creature name leads to the ordinary Done confirmation offering
+Replace or Save New. Root chooses Save New once, without another Done, preserving
+the prior native resource. Canonical admission replaces only class8589935936:1
+at revision 23. Its immutable key changes; settings and behavior stay equal,
+all unrelated classes stay equal, class/placement/act counts stay121/419/5,
+and exactly one `Replace shared asset content` item is added. Both returned
+scenes strictly converge with zero faults. Evidence:
+`out/preview9-c44-host-edit-guest-confirm/result.json` and
+`out/preview9-c44-shared-edit-final-proof/result.json`. The initial confirmation
+post-check compared JSON lists with parser tuples; its retained failure is a
+fixture representation error, independently corrected by read-only inspection.
+No second confirmation or Save was issued.

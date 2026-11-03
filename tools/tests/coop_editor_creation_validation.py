@@ -98,7 +98,7 @@ def native_sample(kernel,handle,image,base,family,edit_source=None,observe_other
         raise ValueError('Active mode is not the verified cEditor interface')
     head=read(editor,0x4B6);request=u32(head,0x1CC);request_bytes=read(request,0x9C)
     if (u32(request_bytes)!=relocated(0x13F6FEC) or u32(request_bytes,4)!=relocated(0x13F6FE8) or
-        not 0<u32(request_bytes,8)<1000000 or u32(request_bytes,0xC)not in ((EDITORS[family],0xFFFFFFFF)if observe_other else (0xFFFFFFFF if edit_source is not None else EDITORS[family],)) or
+        not 0<u32(request_bytes,8)<1000000 or u32(request_bytes,0xC)not in ((EDITORS[family],0xFFFFFFFF)if observe_other or edit_source is not None else (EDITORS[family],)) or
         u32(request_bytes,0x1C)!=0x01654C10):raise ValueError('Native creation request owner/family changed')
     if edit_source is not None and (bool(request_bytes[0x20]) or list(struct.unpack_from('<III',request_bytes,0x10))!=edit_source):
         raise ValueError('Native Edit request/source changed')
