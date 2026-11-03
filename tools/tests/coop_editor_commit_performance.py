@@ -9,7 +9,8 @@ frame caps, writes memory, or accesses personal profiles. Offline contract tests
 can import the parsers without opening a console connection.
 """
 import argparse
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
+import errno
 import json
 import math
 import os
@@ -36,27 +37,105 @@ NATIVE_SPANS = ('read', 'write', 'projection', 'resolution', 'supported')
 NATIVE_COUNTS = ('parsed_image_hits', 'parsed_image_misses', 'pose_capture_hits', 'pose_capture_fallbacks')
 NATIVE_OWNERS = ('parsed_image_entries', 'parsed_image_bytes', 'parsed_image_owners',
                  'parsed_image_owner_bytes', 'parsed_image_peak_owners', 'parsed_image_peak_bytes')
+NATIVE_CAPTURE_PHASES = ('before', 'after_bytes', 'after_projection', 'canonical', 'opaque', 'delivery')
+NATIVE_CAPTURE_FIELDS = ('calls', 'ticks', 'begin', 'end', 'frame')
+NATIVE_CAPTURE_KEYS = {f'native_capture_{phase}_{field}'
+                       for phase in NATIVE_CAPTURE_PHASES for field in NATIVE_CAPTURE_FIELDS}
+NATIVE_WORK_KEYS = {'native_work_frequency', *NATIVE_COUNTS, *NATIVE_OWNERS}
+NATIVE_WORK_KEYS.update(f'native_{name}_{field}' for name in NATIVE_SPANS for field in ('calls', 'ticks'))
+
+
+def write_command_artifact(path, events, replace=os.replace, pause=time.sleep):
+    """Keep the previous complete log if a diagnostic reader holds the file."""
+    temporary = path.with_name(path.name + '.' + str(time.time_ns()) + '.pending')
+    temporary.write_text(json.dumps(events, indent=2) + '\n', encoding='utf-8')
+    for attempt in range(5):
+        try:
+            replace(temporary, path)
+            return
+        except OSError as error:
+            if error.errno not in (errno.EACCES, errno.EPERM, errno.EINVAL) or attempt == 4:
+                # Retain both the old complete log and new pending artifact.
+                raise
+            pause(.05)
+
+
+@contextmanager
+def hold_command_artifacts(games):
+    """No fixture log serialization or file writes while native input is held."""
+    games = tuple(games)
+    if any(getattr(game, 'hold_command_artifact', False) for game in games):
+        raise FixtureError('Nested measured command-artifact hold')
+    for game in games:
+        game.hold_command_artifact = True
+    primary = None
+    try:
+        yield
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        for game in games:
+            game.hold_command_artifact = False
+        # measure's own finally has already released input/stopped captures.
+        failures = []
+        for game in games:
+            try:
+                game.save_log()
+            except BaseException as error:
+                failures.append((game, error))
+        if failures:
+            # Preserve an earlier Native failure and still try every observer.
+            # The pending-file writer retains the complete uninstalled logs.
+            raised = primary if primary is not None else failures[0][1]
+            details = [dict(instance=getattr(game, 'instance', None),
+                            type=type(error).__name__, error=str(error))
+                       for game, error in failures]
+            raised.command_artifact_errors = details
+            if hasattr(raised, 'add_note'):
+                for detail in details:
+                    raised.add_note('Command artifact flush failed: ' + str(detail))
+            if primary is None:
+                raise raised
 
 
 def native_work_sample(text):
     """Optional development counters, sampled outside the measured window."""
     row = values(text)
-    keys = {'native_work_frequency', *NATIVE_COUNTS, *NATIVE_OWNERS}
-    keys.update(f'native_{name}_{field}' for name in NATIVE_SPANS for field in ('calls', 'ticks'))
-    present = keys & row.keys()
+    known = NATIVE_WORK_KEYS | NATIVE_CAPTURE_KEYS
+    names = re.findall(r'\b([a-z_][a-z0-9_]*)=', text)
+    present = known & set(names)
     if not present:
         return None
-    if present != keys or any(type(row[key]) is not int or not 0 <= row[key] < 2**64 for key in keys) or not row['native_work_frequency']:
+    if any(names.count(key) != 1 for key in present) or not present <= row.keys():
+        raise FixtureError('Duplicate or invalid native work counters')
+    return checked_native_work({key: row[key] for key in present})
+
+
+def checked_native_work(row):
+    capture = NATIVE_CAPTURE_KEYS & row.keys()
+    keys = NATIVE_WORK_KEYS | capture
+    if (not NATIVE_WORK_KEYS <= row.keys() or (capture and capture != NATIVE_CAPTURE_KEYS) or
+            any(type(row[key]) is not int or not 0 <= row[key] < 2**64 for key in keys) or
+            not row['native_work_frequency']):
         raise FixtureError('Partial or invalid native work counters')
     if any(row[key] for key in NATIVE_OWNERS[:4]) or row['parsed_image_peak_owners'] > 2 or row['parsed_image_peak_bytes'] > 16 << 20:
         raise FixtureError('Native parsed owners escaped their callback or exceeded their bound')
+    for phase in NATIVE_CAPTURE_PHASES if capture else ():
+        calls, ticks, begin, end, frame = (row[f'native_capture_{phase}_{field}'] for field in NATIVE_CAPTURE_FIELDS)
+        if ((not calls and (ticks or begin or end or frame)) or
+                (calls and (not begin or end < begin or ticks < end - begin))):
+            raise FixtureError('Invalid native capture phase clock or unused counter: ' + phase)
     return {key: row[key] for key in keys}
 
 
 def native_work_delta(before, after):
     if before is None and after is None:
         return None
-    if before is None or after is None or before.keys() != after.keys() or before['native_work_frequency'] != after['native_work_frequency']:
+    if before is None or after is None:
+        raise FixtureError('Native work counter availability or clock changed')
+    before, after = checked_native_work(before), checked_native_work(after)
+    if before.keys() != after.keys() or before['native_work_frequency'] != after['native_work_frequency']:
         raise FixtureError('Native work counter availability or clock changed')
     frequency = after['native_work_frequency']
     if any(after[key] < before[key] for key in before if key not in NATIVE_OWNERS):
@@ -66,7 +145,31 @@ def native_work_delta(before, after):
         calls = after[f'native_{name}_calls'] - before[f'native_{name}_calls']
         ticks = after[f'native_{name}_ticks'] - before[f'native_{name}_ticks']
         spans[name] = dict(calls=calls, ticks=ticks, inclusive_ms=ticks * 1000 / frequency)
-    return dict(frequency=frequency, spans=spans,
+    staged = None
+    if NATIVE_CAPTURE_KEYS <= before.keys():
+        phases = {}
+        for phase in NATIVE_CAPTURE_PHASES:
+            prefix = f'native_capture_{phase}_'
+            calls = after[prefix+'calls'] - before[prefix+'calls']
+            ticks = after[prefix+'ticks'] - before[prefix+'ticks']
+            begin, end, frame = (after[prefix+field] for field in ('begin', 'end', 'frame'))
+            if not calls:
+                if any(after[prefix+field] != before[prefix+field] for field in NATIVE_CAPTURE_FIELDS):
+                    raise FixtureError('Native capture phase changed without a completed call: ' + phase)
+            elif begin < before[prefix+'end'] or ticks < end - begin:
+                raise FixtureError('Native capture phase cumulative clock or ordering changed: ' + phase)
+            phases[phase] = dict(calls=calls, ticks=ticks, inclusive_ms=ticks * 1000 / frequency,
+                                 last=dict(begin=begin, end=end, frame=frame,
+                                           elapsed_ms=(end-begin) * 1000 / frequency))
+        ordered = all(row['calls'] == 1 for row in phases.values())
+        if ordered:
+            last = [phases[phase]['last'] for phase in NATIVE_CAPTURE_PHASES]
+            if any(a['end'] > b['begin'] or a['frame'] >= b['frame'] for a, b in zip(last, last[1:])):
+                raise FixtureError('Native six-phase capture order or frame progression changed')
+        staged = dict(clock='win32_qpc', phases=phases, single_pipeline_order_checked=ordered,
+                      scope='Cumulative phase deltas and last intervals; retries or partial advances do not identify one pipeline. '
+                            'Phase durations include nested native work spans; the groups must not be summed.')
+    return dict(frequency=frequency, spans=spans, staged_capture=staged,
                 counts={key: after[key] - before[key] for key in NATIVE_COUNTS},
                 ownership={key: after[key] for key in NATIVE_OWNERS},
                 scope='Release through durable settlement; nested spans overlap and must not be summed.')
@@ -257,6 +360,9 @@ class CommitParty(party_module.EditorParty):
                     return party_module.Console.call(self,line)
                 return super().call(line)
         class MeasuredGame(party_module.PublicGame):
+            def save_log(self):
+                if not getattr(self, 'hold_command_artifact', False):
+                    write_command_artifact(self.output / f'{self.instance}-commands.json', self.events)
             def dismiss_registration(self):
                 if menu_login_button_only(self):
                     owner.result.setdefault('native_navigation_guards',[]).append(dict(
@@ -408,6 +514,11 @@ def checked_warm_drag(party,author,object_id):
 
 
 def measure(party,author,object_id,index):
+    with hold_command_artifacts(party.all_games):
+        return measure_without_artifact_io(party,author,object_id,index)
+
+
+def measure_without_artifact_io(party,author,object_id,index):
     before_revision=status(party.host)['revision'];before=party.objects(author)
     source=party.body(author,object_id);target=(source[0]+(party.args.drag_pixels if index%2==0 else -party.args.drag_pixels),source[1])
     held=False;recording=[]
@@ -518,6 +629,8 @@ def run(args):
         if party:
             party.result.update(passed=False,error=str(error),
                 adventure_selected_by_native_browser=bool(getattr(party.host,'adventure_selected_by_native_browser',False)))
+            if getattr(error, 'command_artifact_errors', None):
+                party.result['command_artifact_errors'] = error.command_artifact_errors
             party.write()
         else:
             args.output.mkdir(parents=True,exist_ok=True);(args.output/'result.json').write_text(json.dumps(dict(passed=False,error=str(error)),indent=2)+'\n',encoding='utf-8')

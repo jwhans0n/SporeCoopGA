@@ -1,5 +1,8 @@
 """Offline contracts for release-stall acceptance; no processes or consoles."""
 import copy
+import errno
+import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -38,7 +41,101 @@ def page(value):
     return text
 
 
+def native_counters(staged=False, used=False):
+    result={'native_work_frequency':1000,**{key:2 for key in perf.NATIVE_COUNTS},
+            **{key:0 for key in perf.NATIVE_OWNERS}}
+    for name in perf.NATIVE_SPANS:
+        result[f'native_{name}_calls']=4;result[f'native_{name}_ticks']=50
+    if staged:
+        for index,phase in enumerate(perf.NATIVE_CAPTURE_PHASES):
+            fields=dict(calls=1,ticks=10,begin=100+20*index,end=110+20*index,frame=20+index) if used else dict.fromkeys(perf.NATIVE_CAPTURE_FIELDS,0)
+            result.update({f'native_capture_{phase}_{key}':value for key,value in fields.items()})
+    return result
+
+
+def native_text(counters):
+    return 'editor_native '+' '.join(f'{key}={value}' for key,value in counters.items())
+
+
 class StageContracts(unittest.TestCase):
+    def test_command_log_retry_preserves_previous_complete_artifact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'95-commands.json';path.write_text('["previous"]\n')
+            events=[dict(command='info',out='Native save: \u2603')];attempts=[]
+            def replace(temporary,target):
+                attempts.append(True)
+                self.assertEqual(path.read_text(),'["previous"]\n')
+                self.assertEqual(json.loads(temporary.read_text(encoding='utf-8')),events)
+                if len(attempts)<3:raise OSError(errno.EINVAL,'reader temporarily holds the artifact')
+                os.replace(temporary,target)
+            pause=mock.Mock();perf.write_command_artifact(path,events,replace,pause)
+            self.assertEqual(json.loads(path.read_text(encoding='utf-8')),events)
+            self.assertEqual(len(attempts),3);self.assertEqual(pause.call_count,2)
+            self.assertEqual(list(Path(directory).glob('*.pending')),[])
+
+    def test_permanent_artifact_failure_retains_old_and_new_logs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'95-commands.json';path.write_text('["previous"]\n')
+            events=[dict(command='coop.editor status',out='revision=51')]
+            replace=mock.Mock(side_effect=PermissionError(errno.EACCES,'reader holds the artifact'))
+            with self.assertRaises(PermissionError):
+                perf.write_command_artifact(path,events,replace,lambda unused:None)
+            self.assertEqual(replace.call_count,5)
+            self.assertEqual(path.read_text(),'["previous"]\n')
+            pending=list(Path(directory).glob('*.pending'));self.assertEqual(len(pending),1)
+            self.assertEqual(json.loads(pending[0].read_text(encoding='utf-8')),events)
+
+    def test_measure_flushes_artifacts_only_after_native_cleanup_even_on_failure(self):
+        native={'held':False,'recording':False};flushed=[]
+        def flush():
+            self.assertFalse(native['held']);self.assertFalse(native['recording'])
+            self.assertTrue(all(not g.hold_command_artifact for g in games));flushed.append(True)
+        games=[SimpleNamespace(save_log=flush)for unused in range(2)]
+        def body(*unused):
+            self.assertTrue(all(g.hold_command_artifact for g in games))
+            native.update(held=True,recording=True)
+            try:raise perf.FixtureError('native capture failed')
+            finally:native.update(held=False,recording=False)
+        with mock.patch.object(perf,'measure_without_artifact_io',side_effect=body):
+            with self.assertRaisesRegex(perf.FixtureError,'native capture failed'):
+                perf.measure(SimpleNamespace(all_games=games),games[0],'4:1',0)
+        self.assertEqual(len(flushed),2)
+
+    def test_artifact_flush_failure_cannot_mask_native_error_or_skip_observers(self):
+        calls=[];native_error=perf.FixtureError('actual Native failure')
+        games=[SimpleNamespace(instance=i) for i in (95,96,97,98)]
+        def flush(game):
+            self.assertTrue(all(not g.hold_command_artifact for g in games));calls.append(game.instance)
+            if game.instance in (95,97):raise PermissionError(errno.EACCES,'artifact reader')
+        for game in games:game.save_log=lambda g=game:flush(g)
+        with self.assertRaises(perf.FixtureError) as caught:
+            with perf.hold_command_artifacts(games):raise native_error
+        self.assertIs(caught.exception,native_error);self.assertEqual(calls,[95,96,97,98])
+        self.assertEqual([row['instance'] for row in native_error.command_artifact_errors],[95,97])
+        self.assertTrue(all(row['type']=='PermissionError' for row in native_error.command_artifact_errors))
+
+    def test_successful_measurement_still_reports_flush_failure_after_every_observer(self):
+        calls=[];failure=OSError(errno.EINVAL,'artifact replacement failed')
+        games=[SimpleNamespace(instance=i) for i in (95,96)]
+        def flush(game):
+            calls.append(game.instance)
+            if game.instance==95:raise failure
+        for game in games:game.save_log=lambda g=game:flush(g)
+        with self.assertRaises(OSError) as caught:
+            with perf.hold_command_artifacts(iter(games)):
+                self.assertTrue(all(g.hold_command_artifact for g in games))
+        self.assertIs(caught.exception,failure);self.assertEqual(calls,[95,96])
+        self.assertFalse(any(g.hold_command_artifact for g in games))
+        self.assertEqual(failure.command_artifact_errors[0]['instance'],95)
+
+    def test_nested_artifact_hold_cannot_clear_outer_flags(self):
+        game=SimpleNamespace(instance=95,save_log=mock.Mock())
+        with perf.hold_command_artifacts([game]):
+            with self.assertRaisesRegex(perf.FixtureError,'Nested'):
+                with perf.hold_command_artifacts([game]):self.fail('nested hold entered')
+            self.assertTrue(game.hold_command_artifact);game.save_log.assert_not_called()
+        self.assertFalse(game.hold_command_artifact);game.save_log.assert_called_once()
+
     def test_native_work_reports_inclusive_counter_deltas_without_guessing_costs(self):
         before={'native_work_frequency':1000,**{key:2 for key in perf.NATIVE_COUNTS},**{key:0 for key in perf.NATIVE_OWNERS}}
         for name in perf.NATIVE_SPANS:
@@ -57,6 +154,88 @@ class StageContracts(unittest.TestCase):
         self.assertIsNone(perf.native_work_delta(None,None))
         with self.assertRaises(perf.FixtureError):perf.native_work_sample('native_work_frequency=1000')
         with self.assertRaises(perf.FixtureError):perf.native_work_delta(None,{'native_work_frequency':1000})
+        with self.assertRaises(perf.FixtureError):perf.native_work_delta({}, {})
+        sample=perf.native_work_sample(native_text(native_counters()))
+        self.assertIsNone(perf.native_work_delta(sample,sample)['staged_capture'])
+
+    def test_six_native_capture_phases_report_exact_intervals_and_inclusive_groups(self):
+        before=perf.native_work_sample(native_text(native_counters(staged=True)))
+        after=perf.native_work_sample(native_text(native_counters(staged=True,used=True)))
+        result=perf.native_work_delta(before,after)['staged_capture']
+        self.assertEqual(result['clock'],'win32_qpc');self.assertTrue(result['single_pipeline_order_checked'])
+        self.assertEqual(tuple(result['phases']),perf.NATIVE_CAPTURE_PHASES)
+        self.assertEqual(result['phases']['before'],dict(calls=1,ticks=10,inclusive_ms=10,
+            last=dict(begin=100,end=110,frame=20,elapsed_ms=10)))
+        self.assertEqual(result['phases']['delivery']['last']['frame'],25)
+        self.assertIn('must not be summed',result['scope'])
+
+    def test_native_capture_group_is_optional_but_never_partial_or_duplicate(self):
+        complete=native_counters(staged=True,used=True)
+        for missing in perf.NATIVE_CAPTURE_KEYS:
+            with self.subTest(missing=missing),self.assertRaises(perf.FixtureError):
+                perf.native_work_sample(native_text({key:value for key,value in complete.items() if key!=missing}))
+        for key in ('native_capture_opaque_ticks','native_work_frequency'):
+            with self.subTest(duplicate=key),self.assertRaises(perf.FixtureError):
+                perf.native_work_sample(native_text(complete)+f' {key}=1')
+        for value in ('NaN','1.5','-1',str(2**64)):
+            invalid=native_text(complete).replace('native_capture_before_ticks=10','native_capture_before_ticks='+value)
+            with self.subTest(value=value),self.assertRaises(perf.FixtureError):perf.native_work_sample(invalid)
+        with self.assertRaises(perf.FixtureError):
+            perf.native_work_sample('native_capture_before_calls=1')
+
+    def test_native_capture_clocks_and_unused_rows_are_checked(self):
+        sample=native_counters(staged=True,used=True)
+        for field,value in (('begin',0),('end',99),('ticks',9),('calls',0)):
+            with self.subTest(field=field),self.assertRaises(perf.FixtureError):
+                perf.native_work_sample(native_text({**sample,'native_capture_before_'+field:value}))
+        unused=native_counters(staged=True)
+        for field in ('ticks','begin','end','frame'):
+            with self.subTest(unused=field),self.assertRaises(perf.FixtureError):
+                perf.native_work_sample(native_text({**unused,'native_capture_before_'+field:1}))
+
+    def test_native_capture_availability_and_cumulative_resets_are_rejected(self):
+        before=native_counters(staged=True,used=True)
+        with self.assertRaises(perf.FixtureError):perf.native_work_delta(native_counters(),before)
+        after=copy.deepcopy(before)
+        for index,phase in enumerate(perf.NATIVE_CAPTURE_PHASES):
+            after.update({f'native_capture_{phase}_{key}':value for key,value in
+                          dict(calls=2,ticks=20,begin=300+20*index,end=310+20*index,frame=40+index).items()})
+        for field,value in (('calls',0),('ticks',9),('begin',99),('end',109),('frame',19)):
+            with self.subTest(field=field),self.assertRaises(perf.FixtureError):
+                perf.native_work_delta(before,{**after,'native_capture_before_'+field:value})
+        for change in ({'native_capture_before_ticks':15},
+                       {'native_capture_before_begin':105,'native_capture_before_end':115}):
+            with self.subTest(change=change),self.assertRaises(perf.FixtureError):
+                perf.native_work_delta(before,{**after,**change})
+        unchanged=perf.native_work_delta(before,before)['staged_capture']
+        self.assertFalse(unchanged['single_pipeline_order_checked'])
+        self.assertTrue(all(not row['calls'] and not row['ticks'] for row in unchanged['phases'].values()))
+
+    def test_native_capture_last_record_cannot_change_without_a_call(self):
+        before=native_counters(staged=True,used=True)
+        for field,value in (('ticks',11),('begin',101),('end',111),('frame',21)):
+            with self.subTest(field=field),self.assertRaises(perf.FixtureError):
+                perf.native_work_delta(before,{**before,'native_capture_before_'+field:value})
+
+    def test_complete_native_pipeline_rejects_qpc_overlap_and_same_frame(self):
+        before=native_counters(staged=True);after=native_counters(staged=True,used=True)
+        for change in ({'native_capture_before_end':125,'native_capture_before_ticks':25},
+                       {'native_capture_after_bytes_frame':20}):
+            with self.subTest(change=change),self.assertRaises(perf.FixtureError):
+                perf.native_work_delta(before,{**after,**change})
+
+    def test_retries_and_partial_native_advance_do_not_invent_one_pipeline(self):
+        before=native_counters(staged=True);after=native_counters(staged=True,used=True)
+        after['native_capture_before_calls']=2;after['native_capture_before_ticks']=20
+        result=perf.native_work_delta(before,after)['staged_capture']
+        self.assertFalse(result['single_pipeline_order_checked'])
+        self.assertEqual(result['phases']['before']['calls'],2)
+        partial=copy.deepcopy(before)
+        for field in perf.NATIVE_CAPTURE_FIELDS:
+            key='native_capture_before_'+field;partial[key]=after[key]
+        result=perf.native_work_delta(before,partial)['staged_capture']
+        self.assertFalse(result['single_pipeline_order_checked'])
+        self.assertEqual(result['phases']['delivery']['calls'],0)
 
     def test_native_work_rejects_partial_reset_invalid_and_changed_clocks(self):
         sample={'native_work_frequency':1000,**{key:2 for key in perf.NATIVE_COUNTS},**{key:0 for key in perf.NATIVE_OWNERS}}

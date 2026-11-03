@@ -1183,3 +1183,27 @@ Space or movement input. Native result state and a Saved choice do not establish
 durable captain progress: separately read the original captain's XP before and
 after a successful forced exit, exercise a mandatory level reward, and recheck
 the properties after restarting the isolated profile when claiming persistence.
+
+### Shared-editor release measurement artifacts
+
+`tools/tests/coop_editor_commit_performance.py` retains command events in memory
+through input release, metric shutdown and durable settlement. It flushes every
+participant afterward through a same-directory pending file and atomic replace;
+bounded replacement retries preserve the previous complete log. A permanent
+artifact error leaves the pending log intact and fails the run. If Native work
+already failed, that original error stays primary and all flush errors are
+reported in `command_artifact_errors`. An artifact I/O error alone does not prove
+a Native failure or a particular filesystem-sharing cause.
+
+Optional Native diagnostics require all six capture phases and every
+`calls/ticks/begin/end/frame` field, or none. The parser checks unsigned bounds,
+stable QPC frequency, cumulative counters and last intervals. It checks strict
+QPC/frame ordering for a complete single six-phase advance; retries and partial
+advances do not identify one operation. Phase timings include nested Native work
+spans, so these diagnostic groups must not be summed or treated as a budget pass.
+The ordinary correlated operation, durability, exact-target and frame checks
+remain required. Run the offline contracts on either Python platform with:
+
+```bash
+python3 tests/editor_commit_performance_tool_tests.py
+```
