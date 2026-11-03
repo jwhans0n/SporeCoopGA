@@ -79,6 +79,7 @@ struct Config {
 };
 enum class TracePoint : uint8_t { HostRequestReceived, HostDecisionQueued, DecisionDecoded };
 enum class Durability : uint8_t { Pending, Durable, Rejected, Uncertain };
+enum class NativePreparation : uint8_t { Fallback, Pending, Ready, Error };
 struct Callbacks {
     editor::Hooks host_hooks;
     // Optional outside-frame numeric diagnostics. Does not affect wire or policy.
@@ -122,6 +123,13 @@ struct Callbacks {
     std::function<bool(editor::OperationId,const std::vector<uint8_t>&,std::string&)> assets;
     std::function<bool(const editor::State&, std::string&)> apply_baseline;
     editor::Hooks::Native apply_committed, rollback_committed;
+    // Optional experiment: private Native proof only. Ready never means that
+    // the live scene or semantic head was applied. The original apply callback
+    // runs afterward, before any persistence worker can start.
+    std::function<bool()> native_prepare_enabled;
+    std::function<NativePreparation(const editor::Document&,const editor::Document&,const editor::Change&,std::string&)> begin_native_prepare;
+    std::function<NativePreparation(std::string&)> poll_native_prepare;
+    std::function<void()> cancel_native_prepare;
     std::function<bool(const editor::State&, const editor::Change&, std::string&)> persist_guest;
     // Owned-byte work only. Native application has completed, but the semantic
     // state and decision remain unaccepted until poll_persist reports Durable.

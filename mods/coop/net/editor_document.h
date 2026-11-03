@@ -359,6 +359,10 @@ public:
     bool prepare(const Request&, Time now, const Hooks&, Decision& candidate, std::string& error);
     const State* prepared_state() const;
     const Change* prepared_change() const;
+    // Optional staged adapters prepare semantics without an apply hook, then
+    // enter the real live apply once its independent Native proof is ready.
+    // Marks application before invoking the callback, preserving partial-failure rollback.
+    bool apply_prepared_native(const Hooks::Native&,std::string& error);
     Decision finish_prepared(bool durable, bool ambiguous = false, std::string error = {});
     const State& state() const { return state_; }
     const std::vector<Lease>& leases() const { return leases_; }

@@ -130,6 +130,7 @@ struct Controller::Impl {
     struct PendingCommit {
         uint8_t from=0; Decision decision; std::optional<State> replica;
         std::optional<Durability> completion={};std::string completion_error={};
+        bool native_pending=false,native_applied=true,native_staged=false;
     };
     std::optional<PendingCommit> pending_commit;
     bool completion_failed=false;
@@ -147,6 +148,8 @@ struct Controller::Impl {
     uint64_t serial = 0, lease_serial = 0, operation_sequence = 0, round = 0;
     Time now = 0;
     bool hosting = false, ticking = false, coverage_pending = false;
+    bool applying_prepared_native=false;
+    std::optional<bool> end_after_native;
     std::optional<ComplexityCapability> local_complexity;
     bool complexity_claim_pending=false;
     uint64_t complexity_claim_serial=0,complexity_state_serial=0;
@@ -719,6 +722,22 @@ struct Controller::Impl {
     void finish_host_decision(uint8_t,const Decision&,Revision);
     void poll_commit(bool failures=true);
     void finish_commit(Durability,std::string);
+    bool native_prepare_enabled()const {
+        try{return callbacks.native_prepare_enabled && callbacks.begin_native_prepare && callbacks.poll_native_prepare && callbacks.cancel_native_prepare && callbacks.native_prepare_enabled();}
+        catch(...){return false;}
+    }
+    bool native_prepare_enabled(const Request& request)const {
+        return native_prepare_enabled() && request.intent==Intent::Forward && !request.mutations.empty() &&
+            std::all_of(request.mutations.begin(),request.mutations.end(),[&](const auto& row){return row.kind==MutationKind::Set &&
+                state().document.placements.contains(row.target) && !row.field.property && (row.field.field==Field::Position || row.field.field==Field::Rotation);});
+    }
+    bool native_prepare_enabled(const Change& change)const {
+        return native_prepare_enabled() && change.intent==Intent::Forward && change.patch.objects.empty() && change.patch.classes.empty() &&
+            !change.patch.acts && change.patch.terrain.empty() && !change.patch.fields.empty() &&
+            std::all_of(change.patch.fields.begin(),change.patch.fields.end(),[&](const auto& row){return state().document.placements.contains(row.object) &&
+                !row.field.property && (row.field.field==Field::Position || row.field.field==Field::Rotation);});
+    }
+    void start_prepared_commit(NativePreparation,std::string);
 };
 
 void Controller::Impl::host_request(uint8_t from, const Request& request)
@@ -755,7 +774,17 @@ void Controller::Impl::host_request(uint8_t from, const Request& request)
     Decision decision;
     if(callbacks.begin_persist && callbacks.poll_persist && callbacks.settle_persist){
         std::string error;
-        if(coordinator.prepare(request,now,hooks,decision,error) && coordinator.prepared_state()){
+        const bool stage_native=native_prepare_enabled(request);
+        auto prepare_hooks=hooks;if(stage_native)prepare_hooks.apply={};
+        if(coordinator.prepare(request,now,prepare_hooks,decision,error) && coordinator.prepared_state()){
+            if(stage_native){
+                pending_commit=PendingCommit{from,decision,{}};
+                pending_commit->native_pending=true;pending_commit->native_applied=false;pending_commit->native_staged=true;
+                auto result=NativePreparation::Error;
+                try{result=callbacks.begin_native_prepare(coordinator.state().document,coordinator.prepared_state()->document,*coordinator.prepared_change(),error);}
+                catch(const std::exception& e){error=e.what();}catch(...){error="Starting native commit preparation failed";}
+                start_prepared_commit(result,std::move(error));return;
+            }
             bool started=false;
             try{started=callbacks.begin_persist(*coordinator.prepared_state(),*coordinator.prepared_change(),error);}
             catch(const std::exception& e){error=e.what();}catch(...){error="Starting durable persistence failed";}
@@ -804,6 +833,14 @@ void Controller::Impl::finish_host_decision(uint8_t from,const Decision& decisio
 void Controller::Impl::poll_commit(bool failures)
 {
     if(!pending_commit)return;
+    if(pending_commit->native_pending){
+        // Worker-completion-only pumps never run Native callbacks.
+        if(!failures)return;
+        std::string error;auto result=NativePreparation::Error;
+        try{result=callbacks.poll_native_prepare(error);}
+        catch(const std::exception& e){error=e.what();}catch(...){error="Polling native commit preparation failed";}
+        start_prepared_commit(result,std::move(error));return;
+    }
     std::string error;auto result=Durability::Uncertain;
     if(pending_commit->completion){
         if(!failures)return;
@@ -818,9 +855,45 @@ void Controller::Impl::poll_commit(bool failures)
     }
     finish_commit(result,std::move(error));
 }
+void Controller::Impl::start_prepared_commit(NativePreparation result,std::string error)
+{
+    if(!pending_commit || !pending_commit->native_pending || result==NativePreparation::Pending)return;
+    if(result==NativePreparation::Error){
+        try{callbacks.cancel_native_prepare();}catch(...){ }
+        if(pending_commit)finish_commit(Durability::Rejected,error.empty()?"Native commit preparation failed":std::move(error));return;
+    }
+    if(result==NativePreparation::Fallback)error.clear();
+    bool applied=false;
+    pending_commit->native_applied=true;
+    applying_prepared_native=true;
+    try{
+        if(hosting)applied=coordinator.apply_prepared_native(callbacks.host_hooks.apply,error);
+        else if(pending_commit->replica){const auto callback=callbacks.apply_committed;applied=callback(replica.document,pending_commit->replica->document,*pending_commit->decision.change,error);}
+    }catch(const std::exception& e){error=e.what();}catch(...){error="Prepared native commit application failed";}
+    applying_prepared_native=false;
+    if(!pending_commit)return;
+    if(end_after_native)return; // Tick exit settles rollback after Core's busy guard has returned.
+    if(!applied){
+        try{callbacks.cancel_native_prepare();}catch(...){ }
+        if(pending_commit)finish_commit(Durability::Rejected,error.empty()?"Native commit application failed":std::move(error));return;
+    }
+    pending_commit->native_pending=false;
+    bool started=false;
+    try{
+        const auto& state=hosting?*coordinator.prepared_state():*pending_commit->replica;
+        started=callbacks.begin_persist(state,*pending_commit->decision.change,error);
+    }catch(const std::exception& e){error=e.what();}catch(...){error="Starting prepared commit persistence failed";}
+    if(!started){
+        try{callbacks.cancel_native_prepare();}catch(...){ }
+        if(pending_commit)finish_commit(Durability::Rejected,error.empty()?"Prepared commit persistence could not start":std::move(error));
+    }
+}
 void Controller::Impl::finish_commit(Durability result,std::string error)
 {
     auto pending=std::move(*pending_commit);pending_commit.reset();
+    const bool previous_native=applying_prepared_native;
+    if(pending.native_staged && result!=Durability::Durable)applying_prepared_native=true;
+    struct NativeGuard {bool& flag;bool previous;~NativeGuard(){flag=previous;}} native_guard{applying_prepared_native,previous_native};
     if(hosting){
         const auto previous=context().revision;
         const auto decision=coordinator.finish_prepared(result==Durability::Durable,result==Durability::Uncertain,error);
@@ -831,7 +904,7 @@ void Controller::Impl::finish_commit(Durability result,std::string error)
         if(callbacks.decision)callbacks.decision(pending.decision);
     }else{
         std::string restoration;
-        if(callbacks.rollback_committed && pending.replica &&
+        if(pending.native_applied && callbacks.rollback_committed && pending.replica &&
            !callbacks.rollback_committed(replica.document,pending.replica->document,*pending.decision.change,restoration))
             error+="; committed scene restoration failed: "+restoration;
         freeze(0,error.empty()?"The replica could not durably accept the edit.":error);
@@ -1207,7 +1280,17 @@ void Controller::Impl::message(uint8_t from, w::Message message)
             if (!hooks.apply) { freeze(0, "Native committed-edit application is unavailable."); return; }
             if(asynchronous){
                 State candidate=replica;
-                if(!editor::apply_committed(candidate,*decision,error,hooks)){freeze(0,error);return;}
+                const bool stage_native=native_prepare_enabled(*decision->change);
+                auto prepare_hooks=hooks;if(stage_native)prepare_hooks.apply={};
+                if(!editor::apply_committed(candidate,*decision,error,prepare_hooks)){freeze(0,error);return;}
+                if(stage_native){
+                    pending_commit=PendingCommit{0,*decision,std::move(candidate)};
+                    pending_commit->native_pending=true;pending_commit->native_applied=false;pending_commit->native_staged=true;
+                    auto result=NativePreparation::Error;
+                    try{result=callbacks.begin_native_prepare(replica.document,pending_commit->replica->document,*decision->change,error);}
+                    catch(const std::exception& e){error=e.what();}catch(...){error="Starting replica native preparation failed";}
+                    start_prepared_commit(result,std::move(error));return;
+                }
                 bool started=false;
                 try{started=callbacks.begin_persist(candidate,*decision->change,error);}
                 catch(const std::exception& e){error=e.what();}catch(...){error="Starting replica persistence failed";}
@@ -1418,7 +1501,16 @@ void Controller::end_for_recovery()
 void Controller::end_session(bool recovery)
 {
     auto& i = *impl_;
+    if(i.applying_prepared_native){
+        i.end_after_native=recovery;
+        try{const auto cancel=i.callbacks.cancel_native_prepare;if(cancel)cancel();}catch(...){ }
+        return;
+    }
     if(i.pending_commit){
+        if(i.pending_commit->native_pending){
+            try{i.callbacks.cancel_native_prepare();}catch(...){ }
+            if(i.pending_commit)i.finish_commit(Durability::Rejected,"Native commit preparation was cancelled by teardown");
+        }else{
         std::string error;auto result=Durability::Uncertain;
         if(i.pending_commit->completion){result=*i.pending_commit->completion;error=std::move(i.pending_commit->completion_error);}
         else{
@@ -1427,6 +1519,7 @@ void Controller::end_session(bool recovery)
         }
         if(result==Durability::Pending){result=Durability::Uncertain;error="The persistence worker did not settle before teardown";}
         i.finish_commit(result,std::move(error));
+        }
     }
     i.completion_failed=false;
     if (i.active() && i.view.context.epoch) {
@@ -1442,7 +1535,7 @@ void Controller::end_session(bool recovery)
     i.resources.reset(); i.resources_hash.clear(); i.baseline_cache.reset(); i.staged.reset(); i.pending_baseline.reset(); i.pending_control.reset(); i.returning_control.reset(); i.returned.clear(); i.local_returned = false; i.deferred.clear(); i.deferred_bytes = 0; i.held_requests.clear(); i.held_request_bytes = 0;
     i.input_bytes = i.output_bytes = i.local_bytes = 0; i.coverage_pending = false; i.view = {};
     i.reset_complexity_context();
-    i.hosting = false;
+    i.hosting = false;i.end_after_native.reset();
 }
 
 void Controller::on_message(uint8_t from, net::Reader& reader)
@@ -1479,6 +1572,13 @@ void Controller::tick(Time now)
     if (now < i.now) { i.freeze(0, "Editor controller monotonic clock moved backwards."); return; }
     i.now = now; i.ticking = true;
     struct Guard { bool& ticking; ~Guard() { ticking = false; } } guard{i.ticking};
+    const auto finish_native_end=[this,&i]{
+        if(i.end_after_native && !i.applying_prepared_native){
+            const bool recovery=*i.end_after_native;i.end_after_native.reset();
+            try{end_session(recovery);}catch(...){i.completion_failed=true;}
+        }
+    };
+    struct NativeEnd {const decltype(finish_native_end)& finish;~NativeEnd(){finish();}} native_end{finish_native_end};
     if(i.completion_failed){i.completion_failed=false;i.freeze(0,"Completing the durable editor publication failed.");return;}
     for (auto from : i.overflow) i.freeze(from, "Editor inbound queue exceeded a configured bound."); i.overflow.clear();
     try {

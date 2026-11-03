@@ -349,6 +349,9 @@ struct RollbackFence {
     editor::ResourceKey source;
     std::vector<editor_native::Binding> bindings;
     bool exact_bindings=false;
+    std::optional<editor_native::SceneOwner> owner={};
+    editor_native::GestureScope scope={};
+    std::function<bool()> current={};
 };
 std::optional<RollbackFence> rollback_fence;
 struct Recovery {
@@ -1024,6 +1027,26 @@ struct IntegrityOwner {
     editor_native::GestureScope scope;
     uint64_t transport=0,generation=0;
 };
+struct NativePosePreparation {
+    IntegrityOwner identity;
+    editor_native::PosePrepareTicket ticket;
+    editor_native::Snapshot base;
+    editor::Document before,after;
+    editor::Change change;
+    editor::ResourceKey canonical_source;
+    std::shared_ptr<const SceneAliasReceipt> alias;
+    std::shared_ptr<const std::vector<uint8_t>> root;
+    std::vector<dbpf::Record> dependencies;
+    std::string resource_hash;
+    uintptr_t controller_identity=0,session_identity=0;
+    uint64_t domain=0,frame=0,started=0;
+    std::optional<editor_native::Snapshot> prepared;
+};
+std::shared_ptr<NativePosePreparation> native_pose_prepare;
+bool pose_prepare_experiment=false;
+const char* pose_prepare_route="disabled";
+bool native_pose_context(const std::shared_ptr<NativePosePreparation>&,bool published=true,bool restoring=false);
+void cancel_native_pose();
 bool integrity_owner_current(const IntegrityOwner& pin,std::string& error){
     const auto current=[&]{return controller && C.session && C.session->connected() && !frozen && !closing && !recovery && !transport_teardown &&
         native_generation==pin.generation && observed_transport==pin.transport && C.session->transport_generation()==pin.transport &&
@@ -1237,7 +1260,7 @@ bool begin_persist_owned(const editor::State& state,const editor::Change& change
         const bool okay=execute();job->encoding.end=stage_qpc();
         post_durable_wake(wake,enqueue);return okay;
     }).share();
-    durable_commit=std::move(work);return true;
+    durable_commit=std::move(work);native_pose_prepare.reset();return true;
 }
 bool begin_persist(const editor::State& state,const editor::Change& change,std::string& error){
     try{return begin_persist_owned(state,change,error);}
@@ -1299,6 +1322,7 @@ editor_session::Durability poll_persist_owned(std::string& error){
     stage_stamp(job.state.document.project,job.change.operation,job.state.document.revision,editor_stage_metrics::Stage::DurableEnd,1);
     current_native=std::move(job.native);resources=std::move(job.resources);resource_hash=std::move(job.hash);
     history_artifacts=std::move(job.archive);cast_uploads.erase(job.change.operation);incoming_resources.reset();prepared_native.reset();
+    if(rollback_fence && rollback_fence->owner)rollback_fence.reset();
     if(!detached_scene())rendered_revision=job.state.document.revision;
     gc_due=false;
     if(!job.maintenance_error.empty()){frozen=true;tell("Editor recovery maintenance stopped: "+job.maintenance_error);}
@@ -1365,12 +1389,14 @@ bool restore_tentative(std::string& error) {
     return restored;
 }
 bool apply(const editor::Document& before, const editor::Document& after, const editor::Change& change, std::string& error) {
+    auto staged_pose=native_pose_prepare;
     if(staged_capture && H->frame_index)canonical_work_frame=H->frame_index();
     editor_native::ValidationScope validation_scope;
     StageScope work(after,change.operation,editor_stage_metrics::Stage::ApplyWorkBegin,editor_stage_metrics::Stage::ApplyWorkEnd);
     before_apply_valid = false;
     rollback_fence.reset();
     prepared_native.reset();
+    if(staged_pose && (!staged_pose->prepared || staged_pose->before!=before || staged_pose->after!=after || staged_pose->change!=change || !native_pose_context(staged_pose))){error="The staged native commit proof expired";return false;}
     if (frozen) {error="The canonical editor is frozen";return false;}
     const bool adopt=pending && pending->tentative && pending->request.operation==change.operation &&
         change.intent==editor::Intent::Forward && pending->request.project==after.project &&
@@ -1408,6 +1434,7 @@ bool apply(const editor::Document& before, const editor::Document& after, const 
     if(detached_scene())before_apply=current_native;
     else{
         IntegrityOwner owner;if(!capture_integrity_owner(owner,error))return false;
+        if(staged_pose && owner.owner!=staged_pose->identity.owner){error="The staged native commit no longer owns its original scene";return false;}
         if(editor_native::state().generation!=native_generation){error="The native editor belongs to a different context";return false;}
         if(!capture_recent(current_native,before,before_apply,error))return false;
         std::string identity_error;if(!integrity_owner_current(owner,identity_error)){error=std::move(identity_error);return false;}
@@ -1417,7 +1444,15 @@ bool apply(const editor::Document& before, const editor::Document& after, const 
             error=std::move(identity_error);tell("Recover the committed draft: "+error);return false;
         }
         if(!okay)return stop_unsupported(error,owner.owner);
+        if(staged_pose){
+            if(!native_pose_context(staged_pose)){error="The staged native commit context changed";return false;}
+            if(!same_native_authored(staged_pose->base,before_apply)){cancel_native_pose();staged_pose.reset();pose_prepare_route="live-baseline-fallback";}
+        }
         rollback_fence=RollbackFence{native_generation,before_apply.source,before_apply.bindings,false};
+        if(staged_pose){
+            rollback_fence->owner=staged_pose->identity.owner;rollback_fence->scope=staged_pose->identity.scope;
+            rollback_fence->current=[staged_pose]{return native_pose_context(staged_pose,false,true);};
+        }
     }
     before_apply_valid = true;
     before_apply.document = before;
@@ -1466,13 +1501,18 @@ bool apply(const editor::Document& before, const editor::Document& after, const 
         }
     }
     editor_native::Snapshot prepared;
-    { StageScope preparing(after,change.operation,editor_stage_metrics::Stage::NativePrepareBegin,editor_stage_metrics::Stage::NativePrepareEnd);
+    if(staged_pose){prepared=std::move(*staged_pose->prepared);prepared.local_dirty=before_apply.local_dirty;}
+    else { StageScope preparing(after,change.operation,editor_stage_metrics::Stage::NativePrepareBegin,editor_stage_metrics::Stage::NativePrepareEnd);
       if(!editor_native::prepare(before_apply,after,change,source,prepared,error))return false;preparing.okay=true; }
     if(prepared.local_dirty)prepared.local_dirty->dirty=true;
     bool applied=detached_scene();
     { StageScope native(after,change.operation,editor_stage_metrics::Stage::NativeApplyBegin,editor_stage_metrics::Stage::NativeApplyEnd);
-      if(!applied)applied=editor_native::apply_prepared(prepared,change,error);native.okay=applied; }
+      if(!applied)applied=staged_pose?editor_native::apply_prepared_checked(prepared,change,staged_pose->identity.generation,staged_pose->identity.owner,[staged_pose]{return native_pose_context(staged_pose);},error):editor_native::apply_prepared(prepared,change,error);native.okay=applied; }
     if(!applied)return false;
+    if(staged_pose){
+        if(!native_pose_context(staged_pose) || !integrity_owner_current(staged_pose->identity,error))return false;
+        pose_prepare_route="applied";
+    }
     if(!detached_scene() && editor_native::state().ready)stage_stamp(after.project,change.operation,after.revision,editor_stage_metrics::Stage::SceneReady,1);
     prepared_native=std::move(prepared);
     if (pending && pending->request.operation == change.operation && !change.allocated.empty() && after.placements.contains(change.allocated.front())) {
@@ -1500,7 +1540,8 @@ bool rollback(const editor::Document&, const editor::Document&, const editor::Ch
             native_identity_lost=true;
             error="The failed operation's native resource identity changed";return false;
         }
-        restored=editor_native::restore(before_apply,error);
+        if(rollback_fence->owner)restored=editor_native::restore_fenced(before_apply,rollback_fence->generation,*rollback_fence->owner,rollback_fence->scope,rollback_fence->current,error);
+        else restored=editor_native::restore(before_apply,error);
     }
     if(restored && before_apply_valid && pending && pending->request.operation==change.operation)pending->tentative=false;
     return restored;
@@ -1665,7 +1706,7 @@ void log_capture_rejection(const char* stage,const editor_native::Gesture& gestu
     }catch(...){ } // No diagnostic failure may change rejection or ownership.
 }
 editor_native::GestureScope current_gesture_scope(bool retained_import=false) {
-    if (!controller || !native_attached || staged_capture || rejection_restore || closing || recovery || transport_teardown || !C.session ||
+    if (!controller || !native_attached || native_pose_prepare || staged_capture || rejection_restore || closing || recovery || transport_teardown || !C.session ||
         !C.session->connected() || C.session->transport_generation() != observed_transport) return {};
     const auto& view = controller->view();
     if(view.phase!=Phase::Ready || !complexity_authorized() || exporting || pending_export_request || native_exit_requested || save_publication_pending ||
@@ -1970,6 +2011,79 @@ void decline_staged_export(const std::shared_ptr<StagedCapture>& pin){
     auto reply=*pin->rejected_export;reply.kind=editor::wire::CommandKind::FinishExport;
     reply.actor=pin->ticket.scope.author;reply.accepted=false;
     std::string error;pin->export_negative_sent=controller->send_command(reply,error,0);
+}
+bool native_pose_context(const std::shared_ptr<NativePosePreparation>& pin,bool published,bool restoring){
+    if(!pin || (restoring?(native_pose_prepare && native_pose_prepare!=pin):(published?native_pose_prepare!=pin:bool(native_pose_prepare))) || !controller ||
+       reinterpret_cast<uintptr_t>(controller.get())!=pin->controller_identity || !C.session ||
+       reinterpret_cast<uintptr_t>(C.session)!=pin->session_identity || durable_runtime_domain!=pin->domain ||
+       !native_attached || frozen || closing || recovery || transport_teardown || detached_scene() ||
+       (!restoring && durable_commit) || exporting || pending_export_request || native_exit_requested || save_publication_pending ||
+       !C.session->connected() || observed_transport!=pin->identity.transport ||
+       C.session->transport_generation()!=pin->identity.transport || native_generation!=pin->identity.generation ||
+       current_projection_scope()!=pin->identity.scope || controller->view().phase!=Phase::Ready ||
+       controller->state().document!=pin->before || current_native.document!=pin->before ||
+       current_native.source!=pin->canonical_source || !same_native_authored(pin->base,current_native) ||
+       resources.base_root!=pin->root || resources.bundle.hash!=pin->resource_hash ||
+       (!restoring && now_ms()-pin->started>5000) ||
+       !dependencies_current(pin->dependencies) || (pin->alias && !scene_alias_current(pin->alias)))return false;
+    const auto& a=pin->base.local_dirty;const auto& b=current_native.local_dirty;
+    return a.has_value()==b.has_value() && (!a || std::tie(a->saved_revision,a->dirty,a->imported)==std::tie(b->saved_revision,b->dirty,b->imported));
+}
+void cancel_native_pose(){
+    const auto pin=std::exchange(native_pose_prepare,{});
+    if(pin && pin->ticket.serial)editor_native::cancel_pose_prepare(pin->ticket);
+}
+editor_session::NativePreparation begin_native_pose(const editor::Document& before,const editor::Document& after,const editor::Change& change,std::string& error){
+    using Result=editor_session::NativePreparation;using Native=editor_native::PosePrepareResult;
+    const bool pose=!change.patch.fields.empty() && change.patch.objects.empty() && change.patch.classes.empty() && !change.patch.acts && change.patch.terrain.empty() &&
+        std::all_of(change.patch.fields.begin(),change.patch.fields.end(),[&](const auto& row){return before.placements.contains(row.object) &&
+            (row.field.field==editor::Field::Position || row.field.field==editor::Field::Rotation || row.field.field==editor::Field::Scale);});
+    pose_prepare_route=!pose_prepare_experiment?"disabled":!pose?"not-pose":native_pose_prepare?"busy":detached_scene()?"detached":!native_attached?"not-attached":
+        (pending && pending->tentative)?"adopt":!H || !H->frame_index?"no-frame":current_native.document!=before?"snapshot-shape":"checking";
+    if(std::string_view(pose_prepare_route)!="checking")return Result::Fallback;
+    constexpr size_t limit=64u<<20;
+    const size_t charge=capture_snapshot_charge(current_native)+editor::bytes(after)+editor::bytes(change.patch)+editor::bytes(change.inverse);
+    if(charge>limit){pose_prepare_route="budget";return Result::Fallback;}
+    auto pin=std::make_shared<NativePosePreparation>();pin->base=current_native;pin->before=before;pin->after=after;pin->change=change;
+    pin->canonical_source=current_native.source;pin->root=resources.base_root;pin->resource_hash=resources.bundle.hash;
+    pin->controller_identity=reinterpret_cast<uintptr_t>(controller.get());pin->session_identity=reinterpret_cast<uintptr_t>(C.session);pin->domain=durable_runtime_domain;pin->frame=H->frame_index();pin->started=now_ms();
+    size_t charged=charge;
+    for(const auto& record:resources.bundle.records)if(record.key!=resources.root){
+        if(record.data.size()>limit-charged){pose_prepare_route="budget";return Result::Fallback;}
+        charged+=record.data.size();pin->dependencies.push_back(record);
+    }
+    if(!capture_integrity_owner(pin->identity,error))return Result::Error;
+    if(pin->identity.owner.source!=pin->base.source){
+        pin->alias=scene_alias;
+        if(!scene_alias_current(pin->alias) || pin->alias->owner!=pin->identity.owner){pose_prepare_route="alias-unavailable";return Result::Fallback;}
+        pin->base.source=pin->identity.owner.source;
+    }
+    if(!native_pose_context(pin,false)){error="The native commit preparation context expired";return Result::Error;}
+    native_pose_prepare=pin;
+    stage_stamp(after.project,change.operation,after.revision,editor_stage_metrics::Stage::NativePrepareBegin);
+    const auto result=editor_native::begin_pose_prepare(pin->base,pin->after,pin->change,[pin]{return native_pose_context(pin);},pin->ticket,error);
+    if(result==Native::Pending && native_pose_context(pin)){pose_prepare_route="pending";return Result::Pending;}
+    cancel_native_pose();
+    if(result==Native::Fallback){pose_prepare_route="native-fallback";error.clear();return Result::Fallback;}
+    if(error.empty())error="The native pose preparation did not retain an exact pending proof";
+    pose_prepare_route="error";return Result::Error;
+}
+editor_session::NativePreparation poll_native_pose(std::string& error){
+    using Result=editor_session::NativePreparation;using Native=editor_native::PosePrepareResult;
+    const auto pin=native_pose_prepare;
+    if(!native_pose_context(pin)){cancel_native_pose();error="The pending native pose commit context expired";return Result::Error;}
+    if(H->frame_index()<=pin->frame)return Result::Pending;
+    editor_native::Snapshot prepared;
+    const auto result=editor_native::finish_pose_prepare(pin->ticket,prepared,error);
+    if(result==Native::Pending)return Result::Pending;
+    if(result==Native::Ready && native_pose_context(pin) && prepared.document==pin->after && prepared.source==pin->base.source){
+        pin->ticket={};
+        pin->prepared=std::move(prepared);
+        pose_prepare_route="ready";
+        stage_stamp(pin->after.project,pin->change.operation,pin->after.revision,editor_stage_metrics::Stage::NativePrepareEnd,1);
+        return Result::Ready;
+    }
+    cancel_native_pose();if(error.empty())error="The completed native pose commit proof expired";return Result::Error;
 }
 bool rejection_context(const RejectionRestore& pin){
     return rejection_restore && rejection_restore->serial==pin.serial && !rejection_restore->failed &&
@@ -3077,7 +3191,7 @@ void refresh() {
         const auto name=C.session?C.session->name_of(v.playtest_tester.slot):"A collaborator";
         next.status=name+" is testing solo. Shared editing is paused";next.waiting=true;
     }
-    const bool editable_scene = native.ready && next.active && !detached_scene() && !durable_commit && !closing && !recovery && !exporting && !pending_export_request && !native_exit_requested && v.phase == Phase::Ready && !next.frozen && !awaiting_operation && !native.gesture && !editor_native_save::busy();
+    const bool editable_scene = native.ready && next.active && !native_pose_prepare && !detached_scene() && !durable_commit && !closing && !recovery && !exporting && !pending_export_request && !native_exit_requested && v.phase == Phase::Ready && !next.frozen && !awaiting_operation && !native.gesture && !editor_native_save::busy();
     const bool editing=editable_scene&&!complexity_held();
     const auto complexity=editor::value(doc,editor_native::kProjectObject,{editor::Field::Property,editor_native::kExtendedComplexityProperty});
     if(complexity)if(auto flag=std::get_if<bool>(&*complexity))next.extended_complexity=*flag;
@@ -3871,7 +3985,7 @@ bool current_preparation_cancel(const PreviewReturnScope& request, bool queued =
 }
 uint64_t last_host_command=0;
 bool idle_native() {
-    if(staged_capture)return false;
+    if(staged_capture || native_pose_prepare)return false;
     const auto n=editor_native::state();
     return !rejection_restore && n.ready && !n.gesture && n.generation==native_generation && !pending && !awaiting_operation &&
         !editor_native_save::busy() && !save_publication_pending && !pending_saved;
@@ -4439,7 +4553,7 @@ void SK_CDECL drain(void*) {
         // start() stages joined players locally. Do not publish the new epoch,
         // baseline, or claimed durability before the recovery checkpoint exists.
         if(!(recovery&&recovery->controller_started))controller->tick(now_ms());
-        if(durable_commit){pump_staged_capture();refresh();return;}
+        if(durable_commit || native_pose_prepare){pump_staged_capture();refresh();return;}
         service_rejection_restore();
         if(!creation_actions.empty() && !complexity_held() && !editor_creation::active() && !detached_scene() && !durable_commit && controller->view().phase==Phase::Ready){
             const auto action=creation_actions.front();creation_actions.pop_front();
@@ -4649,8 +4763,11 @@ void action(Action value) {
 } // namespace
 
 bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
-    if(controller || durable_commit || durable_runtime_domain==UINT64_MAX)return false;
+    if(controller || durable_commit || native_pose_prepare || durable_runtime_domain==UINT64_MAX)return false;
     ++durable_runtime_domain;
+    char pose_option[2]{};
+    pose_prepare_experiment=GetEnvironmentVariableA("SPORECOOP_EDITOR_TWO_FRAME_POSE",pose_option,sizeof(pose_option))==1 && pose_option[0]=='1';
+    pose_prepare_route=pose_prepare_experiment?"not-enrolled":"disabled";
     frozen=beginning=closing=gc_due=recovery_available=scanned_recovery=native_identity_lost=false;
     rejection_restore.reset();staged_capture.reset();retire_scene_alias();scene_alias_servicing=false;staged_capture_servicing=false;canonical_work_frame=UINT64_MAX;
     rejection_servicing=false;
@@ -4701,6 +4818,8 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     };
     callbacks.host_hooks.apply = apply; callbacks.host_hooks.rollback = rollback; callbacks.host_hooks.persist = persist;
     callbacks.begin_persist=begin_persist;callbacks.poll_persist=poll_persist;callbacks.settle_persist=settle_persist;
+    callbacks.native_prepare_enabled=[] {return pose_prepare_experiment;};
+    callbacks.begin_native_prepare=begin_native_pose;callbacks.poll_native_prepare=poll_native_pose;callbacks.cancel_native_prepare=cancel_native_pose;
     callbacks.assets = [](editor::OperationId operation,const std::vector<uint8_t>& bytes,std::string& error){
         if(!controller || operation.epoch!=controller->view().context.epoch)return false;
         if(controller->state().decisions.contains(operation))return true;
@@ -5084,7 +5203,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         return controller && controller->view().phase==Phase::Ready && complexity_authorized() && !detached_scene() && !durable_commit && !closing && !recovery && !pending && !awaiting_operation &&
             !exporting && !pending_export_request && !native_exit_requested && !editor_native_save::busy() && !editor_native::state().gesture;
     };
-    native.transaction_pending = [] { return bool(staged_capture) || complexity_held() || rejection_restore.has_value() || pending.has_value() || awaiting_operation.has_value() || bool(durable_commit); };
+    native.transaction_pending = [] { return bool(native_pose_prepare) || bool(staged_capture) || complexity_held() || rejection_restore.has_value() || pending.has_value() || awaiting_operation.has_value() || bool(durable_commit); };
     native.object_revision = [](editor::ObjectId object)->std::optional<editor::Revision> {
         if(!controller)return std::nullopt;
         const auto& placements=controller->state().document.placements;
@@ -5209,6 +5328,7 @@ void shutdown() {
     // Settle while the exact controller, creation scope and Store still exist.
     // Failure can require native rollback, so retire native adapters last.
     if(controller){controller->end();controller.reset();}
+    cancel_native_pose();
     pending.reset();awaiting_operation.reset();waiting_acts.reset();rollback_fence.reset();before_apply_valid=false;
     save_terrain.reset();export_terrain.reset();close_terrain.reset();export_return_result.reset();save_cancelling=false;
     guarded_placements.clear();guarded_terrain.clear();requested_scopes.clear();lease_use.clear();
@@ -5650,6 +5770,7 @@ std::string debug(const std::vector<std::string>& args) {
         "\nselection=" + cached.selection + " previews=" + std::to_string(cached.previews.size()) +
         " highlights="+std::to_string(cached.selections.size())+" asset_locks="+std::to_string(cached.locks.size())+
         " lease_idle_ms="+std::to_string(now_ms()>=last_lease_use?now_ms()-last_lease_use:0)+
+        "\npose_prepare_experiment="+std::to_string(pose_prepare_experiment)+" native_pending="+std::to_string(bool(native_pose_prepare))+" pose_prepare_route="+pose_prepare_route+
         "\n" + editor_native::status() + "\n" + adventure_assets::status()+"\n"+editor_saved_native::status();
 }
 } // namespace coop_editor

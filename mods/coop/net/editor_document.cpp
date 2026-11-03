@@ -1230,6 +1230,15 @@ bool Coordinator::prepare(const Request& request,Time now,const Hooks& hooks,Dec
 }
 const State* Coordinator::prepared_state()const{return prepared_?&prepared_->state:nullptr;}
 const Change* Coordinator::prepared_change()const{return prepared_ && prepared_->decision.change?&*prepared_->decision.change:nullptr;}
+bool Coordinator::apply_prepared_native(const Hooks::Native& apply,std::string& error){
+    const auto callback=apply;
+    if(busy_ || !prepared_ || prepared_->applied || !callback){error="No unapplied prepared transaction owns native application";return false;}
+    struct Guard {bool& flag;explicit Guard(bool& value):flag(value){flag=true;}~Guard(){flag=false;}} guard(busy_);
+    prepared_->applied=true;
+    try{return callback(state_.document,prepared_->state.document,*prepared_->decision.change,error);}
+    catch(const std::exception& e){error=e.what();}catch(...){error="Prepared native application threw";}
+    return false;
+}
 Decision Coordinator::finish_prepared(bool durable,bool ambiguous,std::string error){
     if(busy_ || !prepared_)return failure(Code::Invalid,"No prepared transaction is awaiting durability.",state_.document.revision);
     struct Guard {bool& flag;explicit Guard(bool& value):flag(value){flag=true;}~Guard(){flag=false;}} guard(busy_);
