@@ -30,13 +30,14 @@ GALAXY = (ROOT_WINDOW
     + window(3, 0x2300, 0x010F33E0, (56, 210, 315, 245), flags=0x13)
     + window(4, 0x2400, 0x048102CA, (21, 524, 92, 564))
     + window(5, 0x2500, 0x04810F47, (20, 6, 53, 31), 'Login', flags=0x13))
-# Confirmation is a synthetic contract for the distinctive registration warning,
-# not a claim of a newly measured native control ID or rectangle.
+# Exact warning IDs, sibling order and rectangles from C31 four-player startup.
 CONFIRMATION = (ROOT_WINDOW + MODAL_LAYER
-    + window(2, 0x3100, 0x06318E78, (250, 300, 774, 470), flags=0x43)
-    + window(3, 0x3200, 0x01510D08, (20, 20, 480, 60), "If you don't register, online features are unavailable.")
-    + window(3, 0x3300, 1, (400, 110, 450, 150), 'OK'))
-NETWORK = CONFIRMATION.replace("If you don't register, online features are unavailable.", 'Network play disabled')
+    + window(2, 0x3100, 0x065CF488, (238, 304, 785, 464), flags=0x43)
+    + window(3, 0x3200, 0x01510D08, (20, 20, 480, 60), adventure._REGISTRATION_WARNING)
+    + window(3, 0x3300, 0xFFFFFFF1, (464, 105, 527, 142), 'OK')
+    + window(3, 0x3400, 0xFFFFFFF2, (377, 105, 464, 142), 'Cancel'))
+STACK = CONFIRMATION + REGISTRATION[len(ROOT_WINDOW + MODAL_LAYER):]
+NETWORK = CONFIRMATION.replace(adventure._REGISTRATION_WARNING, 'Network play disabled')
 
 
 class FakeGame(adventure.Game):
@@ -45,11 +46,9 @@ class FakeGame(adventure.Game):
         self.commands, self.clicks = [], []
         self.instance = 96
 
-    def call(self, command, required=True):
-        self.commands.append(command)
-        if command == 'coop.ui tree 12':
-            return next(self.trees)
-        raise AssertionError('unexpected command: ' + command)
+    def registration_snapshot(self):
+        self.commands.append('snapshot')
+        return next(self.trees)
 
     def caption(self, value):
         return (110, 752) if value == 'Login' else None
@@ -72,6 +71,29 @@ class FakeGame(adventure.Game):
         raise adventure.FixtureError('bounded fake wait expired: ' + description)
 
 
+class ScopedGame(FakeGame):
+    registration_snapshot = adventure.Game.registration_snapshot
+
+    def __init__(self, tree, on_call=None):
+        super().__init__([])
+        self.tree, self.on_call = tree, on_call
+
+    def call(self, command, required=True):
+        self.commands.append(command)
+        if self.on_call:
+            self.on_call(self, command)
+        nodes = adventure._startup_tree(self.tree)
+        parts = command.split()
+        if parts == ['coop.ui', 'tree', '1']:
+            root = nodes[0]
+        elif len(parts) == 5 and parts[:4] == ['coop.ui', 'tree', '1', 'visible']:
+            root = next(node for node in nodes if node['address'] == int(parts[4], 16))
+        else:
+            raise AssertionError('unexpected command: ' + command)
+        selected = [node for node in nodes if node['visible'] and (node is root or node['parent'] is root)]
+        return '\n'.join('  ' * (node['depth'] - root['depth']) + node['line'] for node in selected)
+
+
 class RegistrationContracts(unittest.TestCase):
     def run_game(self, trees):
         game = FakeGame(trees)
@@ -87,11 +109,21 @@ class RegistrationContracts(unittest.TestCase):
         self.assertIsNone(adventure.registration_action(GALAXY))
         game = self.run_game([GALAXY])
         self.assertEqual(game.clicks, [])
-        self.assertEqual(game.commands, ['coop.ui tree 12'])
+        self.assertEqual(game.commands, ['snapshot'])
 
     def test_login_remains_after_registration_and_confirmation_close(self):
         game = self.run_game([REGISTRATION, REGISTRATION, CONFIRMATION, CONFIRMATION, GALAXY])
-        self.assertEqual(game.clicks, [(868, 159), (675, 430)])
+        self.assertEqual(game.clicks, [(868, 159), (733, 427)])
+
+    def test_actual_warning_above_registration_is_the_only_allowed_stack(self):
+        self.assertEqual(adventure.registration_action(STACK)[::2], ('confirmation', (733, 427)))
+        game = self.run_game([STACK, STACK, GALAXY])
+        self.assertEqual(game.clicks, [(733, 427)])
+        reversed_stack = REGISTRATION + CONFIRMATION[len(ROOT_WINDOW + MODAL_LAYER):]
+        for tree in (reversed_stack, STACK + NETWORK[len(ROOT_WINDOW + MODAL_LAYER):],
+                     REGISTRATION + NETWORK[len(ROOT_WINDOW + MODAL_LAYER):]):
+            with self.assertRaises(adventure.FixtureError):
+                adventure.registration_action(tree)
 
     def test_registration_can_close_without_confirmation(self):
         self.assertEqual(self.run_game([REGISTRATION, REGISTRATION, GALAXY]).clicks, [(868, 159)])
@@ -143,16 +175,20 @@ class RegistrationContracts(unittest.TestCase):
 
     def test_confirmation_only_uses_enabled_ok_in_same_visible_modal(self):
         foreign_ok = CONFIRMATION.replace(
-            window(3, 0x3300, 1, (400, 110, 450, 150), 'OK'),
-            window(1, 0x3300, 1, (400, 110, 450, 150), 'OK'))
-        disabled = CONFIRMATION.replace('fl=0x3 [400', 'fl=0x1 [400')
-        for tree in (foreign_ok, disabled, CONFIRMATION + window(3, 0x3400, 2, (1, 1, 20, 20), 'OK')):
+            window(3, 0x3300, 0xFFFFFFF1, (464, 105, 527, 142), 'OK'),
+            window(1, 0x3300, 0xFFFFFFF1, (464, 105, 527, 142), 'OK'))
+        disabled = CONFIRMATION.replace('fl=0x3 [464', 'fl=0x1 [464')
+        for tree in (foreign_ok, disabled,
+                     CONFIRMATION + window(3, 0x3500, 0xFFFFFFF1, (1, 1, 20, 20), 'OK'),
+                     CONFIRMATION.replace("'Cancel'", "'Other'")):
             with self.assertRaises(adventure.FixtureError):
                 adventure.registration_action(tree)
 
     def test_quoted_warning_caption_is_not_misparsed(self):
-        tree = CONFIRMATION.replace('online features are unavailable.', "click 'OK' to continue.")
+        tree = CONFIRMATION + window(3, 0x3500, 9, (20, 80, 40, 90), "Don't prompt me again")
         self.assertEqual(adventure.registration_action(tree)[0], 'confirmation')
+        with self.assertRaises(adventure.FixtureError):
+            adventure.registration_action(CONFIRMATION.replace('Quit registration?', 'Quit something else?'))
 
     def test_missing_malformed_truncated_or_duplicate_ancestry_is_rejected(self):
         for tree in ('', 'x', REGISTRATION[1:], REGISTRATION.replace('    Window 00001200', '        Window 00001200'),
@@ -166,6 +202,57 @@ class RegistrationContracts(unittest.TestCase):
             with self.assertRaisesRegex(adventure.FixtureError, 'did not settle'):
                 game.dismiss_registration()
         self.assertEqual(len(game.clicks), 16)
+
+    def test_scoped_snapshot_preserves_full_ancestry_without_deep_tree_cap(self):
+        # Native embedded registration browser can exhaust the whole-tree cap;
+        # none of its descendants is needed to identify the direct close button.
+        deep = ''.join(window(4, 0x5000 + i, i, (0, 0, 30, 30), 'x' * 30) for i in range(100))
+        tree = STACK.replace(window(3, 0x1300, 0x0451A4C0, (24, 70, 732, 401), flags=0x403),
+                             window(3, 0x1300, 0x0451A4C0, (24, 70, 732, 401), flags=0x403) + deep)
+        self.assertGreater(len(tree), 8192)
+        game = ScopedGame(tree)
+        snapshot = game.registration_snapshot()
+        self.assertEqual(adventure.registration_action(snapshot)[::2], ('confirmation', (733, 427)))
+        self.assertEqual(game.commands, ['coop.ui tree 1', 'coop.ui tree 1 visible 00001100',
+            'coop.ui tree 1 visible 00003100', 'coop.ui tree 1 visible 00001200',
+            'coop.ui tree 1', 'coop.ui tree 1 visible 00001100'])
+        self.assertLess(len(snapshot), 8192)
+
+    def test_scoped_snapshot_rechecks_main_overlay_and_modal_identity(self):
+        for at, before, after in ((3, 'id=0x065CF488', 'id=0x065CF489'),
+                                  (5, '[0 0 1024 768]', '[1 0 1025 768]'),
+                                  (6, '00001200', '00001201')):
+            def mutate(game, command):
+                if len(game.commands) == at:
+                    game.tree = game.tree.replace(before, after)
+            with self.subTest(at=at):
+                self.assertIsNone(ScopedGame(STACK, mutate).registration_snapshot())
+
+    def test_scoped_snapshot_rejects_truncated_and_unknown_overlay(self):
+        class Truncated(ScopedGame):
+            def call(self, command, required=True):
+                result = super().call(command, required)
+                return result[:80] if len(self.commands) == 2 else result
+        with self.assertRaises(adventure.FixtureError):
+            Truncated(STACK).registration_snapshot()
+        class Capped(ScopedGame):
+            def call(self, command, required=True):
+                result = super().call(command, required)
+                return result + ' ' * (8191 - len(result)) if len(self.commands) == 2 else result
+        with self.assertRaises(adventure.FixtureError):
+            Capped(STACK).registration_snapshot()
+        unknown = STACK.replace('id=0x065CF488', 'id=0x06318E78')
+        with self.assertRaises(adventure.FixtureError):
+            adventure.registration_action(ScopedGame(unknown).registration_snapshot())
+        nonmodal = ROOT_WINDOW + MODAL_LAYER + window(2, 0x8000, 5, (0, 0, 20, 20))
+        with self.assertRaises(adventure.FixtureError):
+            ScopedGame(nonmodal).registration_snapshot()
+
+    def test_scoped_snapshot_ignores_hidden_cached_modals_and_checks_offsets(self):
+        hidden = REGISTRATION.replace('fl=0x43 ', 'fl=0x42 ')
+        self.assertIsNone(adventure.registration_action(ScopedGame(hidden).registration_snapshot()))
+        moved = STACK.replace('[0 0 1024 768]', '[7 9 1031 777]', 1)
+        self.assertEqual(adventure.registration_action(ScopedGame(moved).registration_snapshot())[2], (740, 436))
 
 
 if __name__ == '__main__':

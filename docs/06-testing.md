@@ -1211,19 +1211,28 @@ python3 tests/editor_commit_performance_tool_tests.py
 ### Galaxy registration dismissal
 
 `Game.dismiss_registration` in `tools/tests/coop_adventure.py` identifies the
-visible registration modal and its own close control from `coop.ui tree 12`.
+visible registration modal and its own close control through bounded depth-one
+snapshots of the main window, overlay and individual modal roots. Scoped
+`coop.ui tree 1 visible <address>` queries avoid the console's 8191-character
+output cap; the helper reconstructs every ancestor before computing coordinates
+and rechecks the main layers and ordered modal headers after the scoped queries.
 The modal Login `0519E168` differs from the persistent Galaxy footer Login
 `04810F47` (under `048102CA/010F33E0/2EDD95CA`). The latter is not a dialog and
 must remain visible after dismissal. A second snapshot must retain the same
-dialog/control before a click. Confirmation uses only an enabled OK in the modal
-containing the registration warning. Hidden cached dialogs are ignored;
+dialog/control before a click. Native warning `065CF488` may remain above its
+registration base `FFFFFFFF` as siblings under overlay `05B598F7`. Only that
+ordered two-modal stack is accepted: the exact registration warning, enabled
+`FFFFFFF1` OK and `FFFFFFF2` Cancel must belong to the warning itself. The helper
+clicks OK without changing the optional checkbox. Hidden cached dialogs are ignored;
 unrelated visible popups, including Network play disabled, stop the fixture with
 an explicit error for the operator instead of receiving a guessed close click.
 
 Retained native registration trees establish the registration IDs and close
 rectangle; C30's startup screenshot establishes the unrelated popup above the
-footer Login. The offline confirmation cases exercise ownership policy without
-claiming a newly measured control ID. Run the parser and interaction contracts
+footer Login. C31's capped startup tree establishes the warning/base sibling
+stack and warning controls. Offline tests replay those headers and check deep
+browser truncation, modal replacement and unknown overlays; they do not establish
+new live UI acceptance. Run the parser and interaction contracts
 without a game or console connection:
 
 ```bash

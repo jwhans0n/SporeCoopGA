@@ -36,16 +36,12 @@ _STARTUP_WINDOW = re.compile(
     r"cmd=0x([0-9A-Fa-f]{8}) fl=0x([0-9A-Fa-f]+) "
     r"\[(-?\d+) (-?\d+) (-?\d+) (-?\d+)\] drw=[0-9A-Fa-f]+ "
     r"vt=[0-9A-Fa-f]+ font=[0-9A-Fa-f]{8} '(.*)'$")
+_REGISTRATION_WARNING = ("If you don't register and play online, many features of Spore will be unavailable.  "
+                         "Quit registration?")
 
 
-def registration_action(tree):
-    """Return a dialog-owned (kind, identity, centre), or None for a clear menu.
-
-    These are native UI dump identities, never addresses used for native calls.
-    The registration Login is 0519E168 under its modal; the Galaxy footer Login
-    is 04810F47 under 2EDD95CA and is not a registration prompt.
-    """
-    if not tree or len(tree) >= 60000:
+def _startup_tree(tree, root_id=0xFFFFFFF0, limit=60000):
+    if not tree or len(tree) >= limit:
         raise FixtureError('incomplete startup UI tree')
     nodes, stack, addresses = [], [], set()
     for line in tree.splitlines():
@@ -64,50 +60,68 @@ def registration_action(tree):
         parent = stack[depth - 1] if depth else None
         rect = tuple(int(match[i]) for i in range(6, 10))
         node = dict(address=address, ident=ident, command=command, flags=flags,
-                    rect=rect, caption=match[10], parent=parent)
+                    rect=rect, caption=match[10], parent=parent, line=line.lstrip(), depth=depth)
         node['visible'] = bool(flags & 1) and (parent is None or parent['visible'])
         node['origin'] = (rect[0] + (parent['origin'][0] if parent else 0),
                           rect[1] + (parent['origin'][1] if parent else 0))
         stack[depth:] = [node]
         nodes.append(node)
-    if not nodes or nodes[0]['ident'] != 0xFFFFFFF0 or sum(n['parent'] is None for n in nodes) != 1:
+    if not nodes or (root_id is not None and nodes[0]['ident'] != root_id) or sum(n['parent'] is None for n in nodes) != 1:
         raise FixtureError('startup UI root unavailable')
+    return nodes
+
+
+def _startup_identity(node):
+    return tuple(node[key] for key in ('address', 'ident', 'command', 'flags', 'rect', 'caption'))
+
+
+def registration_action(tree):
+    """Return an exactly owned native registration action, or None.
+
+    The persistent Galaxy Login (04810F47) is not a dialog. Native registration
+    (FFFFFFFF) remains visible behind its quit warning (065CF488).
+    """
+    nodes = _startup_tree(tree)
     visible = [node for node in nodes if node['visible']]
     modals = [node for node in visible if node['flags'] & 0x40]
     if not modals:
         if any(node['ident'] == 0x0519E168 or "If you don't register" in node['caption'] for node in visible):
             raise FixtureError('registration controls have no verified modal owner')
         return None
-    if len(modals) != 1:
+    if len(modals) > 2:
         raise FixtureError('ambiguous startup native modals')
-    modal = modals[0]
-    if modal['parent'] is None or modal['parent']['ident'] != 0x05B598F7:
+    if any(modal['parent'] is None or modal['parent']['ident'] != 0x05B598F7 for modal in modals):
         raise FixtureError('unrecognized startup modal ancestry')
+    if len({_startup_identity(modal['parent']) for modal in modals}) != 1:
+        raise FixtureError('startup modals do not share their verified overlay')
 
-    def owned(node):
-        while node is not None:
-            if node is modal:
-                return True
-            node = node['parent']
-        return False
-
-    contents = [node for node in visible if owned(node)]
-    direct = [node for node in contents if node['parent'] is modal]
-    if any("If you don't register" in node['caption'] for node in contents):
-        targets = [node for node in contents if node['caption'] == 'OK' and node['flags'] & 2]
-        kind = 'confirmation'
-    elif (modal['ident'] == 0xFFFFFFFF
-          and sum(node['ident'] == 0x0519E168 and node['caption'] == 'Login' for node in direct) == 1
-          and sum(node['ident'] == 0x0451A4C0 for node in direct) == 1):
-        targets = [node for node in direct if node['ident'] == 0xFFFFFFF2
-                   and node['command'] == 3 and node['flags'] & 2]
-        kind = 'registration'
-    else:
-        captions = ', '.join(node['caption'][:80] for node in contents if node['caption'])[:240]
-        raise FixtureError('startup blocked by unrelated native modal: ' + (captions or f"{modal['ident']:08X}"))
-    if len(targets) != 1:
-        raise FixtureError('registration dialog has no unique enabled dismissal control')
-    target = targets[0]
+    actions = []
+    for modal in modals:
+        direct = [node for node in visible if node['parent'] is modal]
+        warning = sum(node['caption'] == _REGISTRATION_WARNING for node in direct) == 1
+        if modal['ident'] == 0x065CF488 and warning:
+            targets = [node for node in direct if node['ident'] == 0xFFFFFFF1
+                       and node['command'] == 0 and node['caption'] == 'OK' and node['flags'] & 2]
+            cancels = [node for node in direct if node['ident'] == 0xFFFFFFF2
+                       and node['command'] == 0 and node['caption'] == 'Cancel' and node['flags'] & 2]
+            if len(cancels) != 1:
+                raise FixtureError('registration warning has no unique native Cancel control')
+            kind = 'confirmation'
+        elif (modal['ident'] == 0xFFFFFFFF and not warning
+              and sum(node['ident'] == 0x0519E168 and node['caption'] == 'Login' for node in direct) == 1
+              and sum(node['ident'] == 0x0451A4C0 for node in direct) == 1):
+            targets = [node for node in direct if node['ident'] == 0xFFFFFFF2
+                       and node['command'] == 3 and node['flags'] & 2]
+            kind = 'registration'
+        else:
+            captions = ', '.join(node['caption'][:80] for node in direct if node['caption'])[:240]
+            raise FixtureError('startup blocked by unrelated native modal: ' + (captions or f"{modal['ident']:08X}"))
+        if len(targets) != 1:
+            raise FixtureError('registration dialog has no unique enabled dismissal control')
+        actions.append((kind, modal, targets[0]))
+    if len(actions) == 2 and [action[0] for action in actions] != ['confirmation', 'registration']:
+        raise FixtureError('unrecognized registration modal stack')
+    kind, modal, target = actions[0]
     left, top = target['origin']
     x1, y1, x2, y2 = target['rect']
     point = (left + (x2 - x1) // 2, top + (y2 - y1) // 2)
@@ -116,8 +130,7 @@ def registration_action(tree):
     if x2 <= x1 or y2 <= y1 or not (mx <= point[0] < mx + mr[2] - mr[0]
                                     and my <= point[1] < my + mr[3] - mr[1]):
         raise FixtureError('registration dismissal lies outside its dialog')
-    identity = tuple((node['address'], node['ident'], node['command'], node['flags'], node['rect'])
-                     for node in (modal, target))
+    identity = tuple(_startup_identity(node) for node in (nodes[0], modal['parent'], *modals, target))
     return kind, identity, point
 
 
@@ -231,6 +244,55 @@ class Game:
     def menu(self):
         return 'GalaxyGameEntry' in self.call('game.mode')
 
+    def registration_snapshot(self):
+        # A whole startup tree can exceed the console's 8191-character output
+        # cap. Fetch only the main layers, their modal headers, and each modal's
+        # direct controls. Keep every ancestor so local rectangles remain local.
+        def shallow(command, root_id):
+            nodes = _startup_tree(self.call(command), root_id, limit=8191)
+            if any(node['depth'] > 1 for node in nodes):
+                raise FixtureError('startup scoped tree exceeded requested depth')
+            return nodes
+
+        main = shallow('coop.ui tree 1', 0xFFFFFFF0)
+        overlays = [node for node in main if node['parent'] is main[0]
+                    and node['ident'] == 0x05B598F7 and node['visible']]
+        if len(overlays) > 1:
+            raise FixtureError('ambiguous startup overlay')
+        if not overlays:
+            return '\n'.join('  ' * node['depth'] + node['line'] for node in main)
+        overlay = overlays[0]
+        overlay_command = f"coop.ui tree 1 visible {overlay['address']:08X}"
+        scoped = shallow(overlay_command, 0x05B598F7)
+        if _startup_identity(scoped[0]) != _startup_identity(overlay):
+            return None  # A native transition replaced the layer during capture.
+        modals = scoped[1:]
+        if len(modals) > 2:
+            raise FixtureError('ambiguous startup native modals')
+        if any(not node['flags'] & 0x40 for node in modals):
+            raise FixtureError('unrecognized startup overlay child')
+        expanded = []
+        for modal in modals:
+            nodes = shallow(f"coop.ui tree 1 visible {modal['address']:08X}", None)
+            if _startup_identity(nodes[0]) != _startup_identity(modal):
+                return None
+            expanded.extend('  ' * (node['depth'] + 2) + node['line'] for node in nodes)
+
+        # Recheck ownership and the complete ordered modal stack after all
+        # scoped queries. The caller takes another complete snapshot before input.
+        closed_main = shallow('coop.ui tree 1', 0xFFFFFFF0)
+        if tuple(map(_startup_identity, closed_main)) != tuple(map(_startup_identity, main)):
+            return None
+        closed_overlay = shallow(overlay_command, 0x05B598F7)
+        if tuple(map(_startup_identity, closed_overlay)) != tuple(map(_startup_identity, scoped)):
+            return None
+        lines = []
+        for node in main:
+            lines.append('  ' * node['depth'] + node['line'])
+            if node is overlay:
+                lines.extend(expanded)
+        return '\n'.join(lines)
+
     def dismiss_registration(self):
         # Closing registration and accepting its confirmation only affects the
         # isolated lab profile; no online account is created or contacted here.
@@ -240,12 +302,16 @@ class Game:
             if self.caption('letterbox_top'):
                 self.call('key esc')  # native opening movie
                 time.sleep(.5)
-            action = registration_action(self.call('coop.ui tree 12'))
+            snapshot = self.registration_snapshot()
+            if snapshot is None:
+                return False
+            action = registration_action(snapshot)
             if action:
                 if time.monotonic() >= next_click:
                     # A second snapshot must retain this exact dialog/control.
                     # Never reuse the old fixed close coordinate over a popup.
-                    if registration_action(self.call('coop.ui tree 12')) == action:
+                    checked = self.registration_snapshot()
+                    if checked is not None and registration_action(checked) == action:
                         if attempts >= 16:
                             raise FixtureError('registration dismissal did not settle')
                         self.click(*action[2])
