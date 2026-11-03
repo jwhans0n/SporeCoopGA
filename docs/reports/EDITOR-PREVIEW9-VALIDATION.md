@@ -2196,3 +2196,42 @@ Both C30 games return normally to Galaxy with faults 0 before runner exit 0.
 The personal preview 8 payload, its 19-file rollback, exact 4 GB executable
 and shortcut remain unchanged; rechecked at
 `out/preview9-delivery/c30-prebuild-personal-unchanged.json`.
+
+### C31 actual shared native Save and isolated Environment refresh
+
+The retained Save-only C31 DLL above passes a new two-player native Town
+session. Both roles complete Temperature edit/Undo/Redo/Undo at revisions
+0 through 8, then Water at 8 through 16. Every action commits once, both
+native scenes converge strictly, and both fault counters remain zero.
+Evidence: `out/preview9-c31-two-temperature/result.json` and
+`out/preview9-c31-two-water/result.json`.
+
+A separate quiet capture after Temperature and before Water or Save waits
+30 real frames. Both Environment tools' C8/CC/D0 values match the canonical
+Planet bytes, and both actual Temperature sliders show 2 in [0,4]. This
+checks Temperature refresh independently of the later controls and Save.
+The passive observation uses no memory writes or direct native function
+calls: `out/preview9-c31-temperature-only-settled-r8/result.json`.
+
+One ordinary native Save and its owned success confirmation now complete
+shared publication. Revision/durable/saved revision remain 16, SavedApplied
+is 2/2, both participants are ready and unfrozen, and history is unchanged.
+The logical saved source is `408A0000!2912F36C.366A930D` on both. The guest's
+separate local native source alias is accepted only through the existing
+exact typed and opaque proofs. No recovery action or seeded movement is
+needed. Evidence: `out/preview9-c31-native-save-carrier/result.json`.
+
+The genuine saved private EditorSaves.package is retained after two stable
+full reads and another source-stability check: 3,116,086 bytes, 74 records,
+SHA-256 `3443cc6a509094dce8066e54b04f34ae141edd65d410d61d069955761aae2619`.
+Its exact persisted root is 60,654 bytes with 419 markers, SHA-256
+`b71e27dca80b17fe4495a587c2acdda7429d598910f5b9545e99b19c9e9ef1be`.
+Both retained files are in the Save evidence directory. This establishes
+shared Save acceptance for this scene; cold native reopen is still pending.
+
+Both games return normally to Galaxy with faults zero before runner exit
+zero. Child teardown exit codes are 1, consistent with previous normal
+native shutdowns. Evidence: `out/preview9-c31-retirement/result.json`.
+This Save-only change does not resolve the C30 observer frame stalls or
+guest LAN confirmation target. Four-player coverage and the remaining
+feature, performance, smoke and delivery gates remain open.
