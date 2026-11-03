@@ -42,8 +42,11 @@ struct FakeNative {
     bool ready = true, authoring = true, controls_ready = true, fail_import = false, fail_apply = false, fail_persist = false;
     bool preparing = true, throw_prepare = false;
     int prepare_checks = 0;
+    bool installing_saved = true, throw_saved = false;
+    int saved_checks = 0;
+    std::vector<std::pair<char, Revision>> installations;
     int imports = 0, baselines = 0, commits = 0, persists = 0, controls = 0, decisions = 0, errors = 0;
-    int presence = 0, saved = 0, wire_decisions = 0;
+    int presence = 0, saved = 0, wire_decisions = 0, wire_rejections = 0;
     Code last_decision = Code::Invalid;
     std::vector<Revision> imported;
     std::vector<std::vector<uint8_t>> imported_payloads;
@@ -123,6 +126,7 @@ struct Party {
             };
             cb.apply_resources = [&, p](const std::vector<uint8_t>& bytes, const w::Context& context, std::string& error) {
                 CHECK(ticking && !dispatching && !bytes.empty()); auto& f = native[p]; f.imports++; f.imported.push_back(context.revision); f.imported_payloads.push_back(bytes);
+                f.installations.emplace_back('R', context.revision);
                 if (f.fail_import) { error = "Injected native import failure"; return false; } f.staged = context.revision; return true;
             };
             cb.baseline_ready = [&, p](const State&) { CHECK(ticking && !dispatching); return native[p].ready; };
@@ -132,11 +136,17 @@ struct Party {
                 if (native[p].throw_prepare) throw std::runtime_error("Injected prepare readiness failure");
                 return native[p].preparing;
             };
+            cb.saved_ready = [&, p] {
+                CHECK(ticking && !dispatching); ++native[p].saved_checks;
+                if (native[p].throw_saved) throw std::runtime_error("Injected saved installation readiness failure");
+                return native[p].installing_saved;
+            };
             cb.apply_baseline = [&, p](const State& s, std::string&) { CHECK(ticking && !dispatching && native[p].staged == s.document.revision); native[p].document = s.document; native[p].baselines++; return true; };
             cb.apply_committed = [&, p](const Document& before, const Document& after, const Change& change, std::string& error) {
                 CHECK(ticking && !dispatching && native[p].document == before);
                 if (!change.patch.objects.empty()) CHECK(native[p].staged == change.revision);
                 if (native[p].fail_apply) { error = "Injected native application failure"; return false; }
+                native[p].installations.emplace_back('C', change.revision);
                 native[p].document = after; native[p].commits++; return true;
             };
             cb.rollback_committed = [&, p](const Document& before, const Document&, const Change&, std::string&) { native[p].document = before; return true; };
@@ -176,6 +186,7 @@ struct Party {
             cb.presence = [&, p](Peer, const w::Presence&) { CHECK(ticking && !dispatching); native[p].presence++; };
             cb.saved = [&, p](const w::Saved& saved) {
                 CHECK(ticking && !dispatching); native[p].saved++;
+                native[p].installations.emplace_back('S', saved.saved_revision);
                 if (p && auto_ack_saved) { std::string error; CHECK(controllers[p]->acknowledge_saved(saved, error)); }
             };
             cb.error = [&, p](const std::string&) { CHECK(!dispatching); native[p].errors++; };
@@ -187,6 +198,7 @@ struct Party {
                     if(auto* value=std::get_if<w::ComplexityState>(&message.payload))wire_complexity_states[p].push_back(*value);
                     if (auto* leave = std::get_if<w::Leave>(&message.payload)) wire_leaves[p].push_back(leave->reason);
                     if (auto* decision = std::get_if<Decision>(&message.payload); decision && decision->accepted()) ++native[p].wire_decisions;
+                    if (auto* decision = std::get_if<Decision>(&message.payload); decision && !decision->accepted()) ++native[p].wire_rejections;
                     if (auto* request = std::get_if<w::LeaseRequest>(&message.payload)) wire_lease_requests[from].push_back(*request);
                     if (auto* reply = std::get_if<w::LeaseReply>(&message.payload)) {
                         wire_lease_replies[p].push_back(*reply);
@@ -507,6 +519,11 @@ static void test_prepare_readiness_defers_guest_and_delivers_rejection(unsigned 
     CHECK(p.native[1].controls == 0);
     CHECK(p.controllers[1]->view().local_leases.size() == 1);
     CHECK(p.controllers[1]->view().local_leases.front().token == guest_tokens.front().token);
+    // The host's legitimate ready-mask progress repeats the immutable Prepare.
+    // Those copies must not hide a later rejection needed for rollback.
+    CHECK(p.controllers[0]->ready_playtest(true, error));
+    CHECK(p.spin([&] { return p.controllers[0]->view().members.at(0).ready; }));
+    for (unsigned i = 0; i < 8; ++i) p.step();
     // This submission represents a gesture already queued under the old local
     // lease. The host has revoked it and rejects it; its Decision must reach
     // rollback even while the earlier Prepare remains held.
@@ -563,6 +580,120 @@ static void test_saved_snapshot_waits_for_native_gesture()
     p.native[1].authoring = true; CHECK(p.revision(1));
     CHECK(p.native[1].saved == 1 && p.controllers[1]->view().saved->resource.instance == 0x9911);
     CHECK(p.native[1].commits == 1 && p.native[1].errors == 0);
+}
+
+static void test_saved_install_readiness_keeps_order(unsigned players)
+{
+    Party p(players); p.start(); p.accept(); std::string error;
+    p.native[1].installing_saved = false;
+    auto lease = p.grant(0, {ScopeKind::Placement, object_b, {}});
+    CHECK(p.controllers[0]->submit(p.edit(0, object_b, position, Vec3{121, 122, 123}, lease), error));
+    CHECK(p.revision(1)); p.release(0, lease);
+    CHECK(p.native[1].commits == 1 && p.native[1].saved_checks == 0);
+    // A native Save stages its new root before announcing Saved. That staging
+    // is value-only; installing the checkpoint must wait for the local scene.
+    CHECK(p.controllers[0]->update_resources(resource(1, 13000), 1, error, true));
+    CHECK(p.controllers[0]->publish_saved({1, {0x9911, 0x366A930D, 0}}, error));
+    CHECK(p.spin([&] { return p.native[1].saved_checks > 0; }));
+    CHECK(p.controllers[1]->view().phase == es::Phase::Ready && !p.controllers[1]->view().saved);
+    CHECK(p.native[1].saved == 0 && p.native[1].imports == 2);
+    // A previously staged guest gesture can be accepted after the Save. The
+    // guest keeps its pending settlement, but neither that Decision nor its
+    // target resource may overtake checkpoint installation.
+    lease = p.grant(1);
+    Mutation clone; clone.kind = MutationKind::Clone; clone.target = object_a;
+    Request request; request.base_revision = 1; request.summary = "Accepted after held Saved"; request.leases = lease; request.mutations = {clone};
+    const auto decisions = p.native[1].decisions, wire = p.native[1].wire_decisions;
+    CHECK(p.controllers[1]->submit(request, error));
+    CHECK(p.spin([&] { return p.controllers[0]->state().document.revision == 2 && p.native[1].wire_decisions > wire; }));
+    for (unsigned i = 0; i < 12; ++i) p.step();
+    CHECK(p.controllers[1]->state().document.revision == 1 && p.controllers[1]->view().locally_durable == 1);
+    CHECK(p.native[1].imports == 2 && p.native[1].commits == 1 && p.native[1].decisions == decisions);
+    p.native[1].throw_saved = true;
+    const auto checked = p.native[1].saved_checks;
+    CHECK(p.spin([&] { return p.native[1].saved_checks > checked; }));
+    CHECK(p.controllers[1]->view().phase == es::Phase::Ready && p.native[1].errors == 0 && p.native[1].saved == 0);
+    // Strict local restoration can complete independently of the still-pending
+    // operation. Only then does Saved run, followed by its ordered resources
+    // and the accepted guest Decision.
+    p.native[1].throw_saved = false; p.native[1].installing_saved = true;
+    CHECK(p.revision(2));
+    CHECK(p.native[1].saved == 1 && p.native[1].imports == 3 && p.native[1].commits == 2);
+    CHECK(p.native[1].decisions == decisions + 1 && p.native[1].last_decision == Code::Accepted);
+    const auto& events = p.native[1].installations;
+    const auto saved = std::find(events.begin(), events.end(), std::pair{'S', Revision{1}});
+    const auto imported = std::find(events.begin(), events.end(), std::pair{'R', Revision{2}});
+    const auto applied = std::find(events.begin(), events.end(), std::pair{'C', Revision{2}});
+    CHECK(saved != events.end() && imported != events.end() && applied != events.end());
+    CHECK(saved < imported && imported < applied);
+    const auto saved_notice = *p.controllers[0]->view().saved;
+    const auto before_duplicate = p.native[1].saved_checks;
+    net::Writer packet; CHECK(w::write({p.controllers[0]->view().context, saved_notice}, packet, error));
+    CHECK(p.sessions[0].send_reliable_to(1, 53, addressed(p.controllers[0]->view().local, p.controllers[1]->view().local, packet)));
+    for (unsigned i = 0; i < 20; ++i) p.step();
+    CHECK(p.native[1].saved == 1 && p.native[1].saved_checks == before_duplicate);
+    auto stale = p.controllers[0]->view().context; ++stale.epoch;
+    auto future_notice = saved_notice; ++future_notice.serial;
+    net::Writer stale_packet; CHECK(w::write({stale, future_notice}, stale_packet, error));
+    CHECK(p.sessions[0].send_reliable_to(1, 53, addressed(p.controllers[0]->view().local, p.controllers[1]->view().local, stale_packet)));
+    for (unsigned i = 0; i < 20; ++i) p.step();
+    CHECK(p.native[1].saved_checks == before_duplicate && p.native[1].saved == 1);
+    CHECK(p.controllers[1]->state().document == p.controllers[0]->state().document);
+    p.release(1, lease);
+}
+
+static void test_saved_install_waits_for_accepted_durability()
+{
+    Party p(2, {}, false, true); p.start(); p.accept(); std::string error;
+    p.hold_durability[0] = false; p.native[1].installing_saved = false;
+    const auto lease = p.grant(1, {ScopeKind::Placement, object_a, {}});
+    CHECK(p.controllers[1]->submit(p.edit(1, object_a, position, Vec3{221, 222, 223}, lease), error));
+    CHECK(p.spin([&] { return p.durability_pending[1]; }));
+    CHECK(p.controllers[0]->state().document.revision == 1 && p.controllers[1]->state().document.revision == 0);
+    CHECK(p.controllers[0]->publish_saved({1, {0x9922, 0x366A930D, 0}}, error));
+    for (unsigned i = 0; i < 20; ++i) p.step();
+    CHECK(p.durability_pending[1] && p.native[1].decisions == 0);
+    CHECK(p.native[1].saved_checks == 0 && p.native[1].saved == 0);
+    p.hold_durability[1] = false;
+    CHECK(p.spin([&] { return p.controllers[1]->state().document.revision == 1 && p.native[1].saved_checks > 0; }));
+    CHECK(p.native[1].decisions == 1 && p.native[1].last_decision == Code::Accepted);
+    CHECK(p.controllers[1]->view().locally_durable == 1 && p.native[1].saved == 0);
+    p.native[1].installing_saved = true;
+    CHECK(p.spin([&] { return p.native[1].saved == 1; }));
+    CHECK(p.controllers[1]->view().phase == es::Phase::Ready && p.native[1].errors == 0);
+    CHECK(p.controllers[1]->state().document == p.controllers[0]->state().document);
+}
+
+static void test_prepare_rejection_never_crosses_an_ordered_barrier(bool resource_barrier)
+{
+    Party p(2); p.start(); p.accept(); p.auto_ack_saved = false; std::string error;
+    p.native[1].preparing = false;
+    CHECK(p.controllers[0]->prepare_playtest(error));
+    CHECK(p.spin([&] { return p.native[1].prepare_checks > 0; }));
+    const auto context = p.controllers[0]->view().context;
+    const auto send = [&](w::Payload payload) {
+        net::Writer packet; CHECK(w::write({context, std::move(payload)}, packet, error));
+        CHECK(p.sessions[0].send_reliable_to(1, 53, addressed(p.controllers[0]->view().local, p.controllers[1]->view().local, packet)));
+    };
+    // Authenticated wire fault-order probe: even an unexpected barrier behind
+    // Prepare must retain FIFO. This does not claim a normal host Save is
+    // permitted after the host has entered Preparing.
+    if (resource_barrier) {
+        const auto bytes = resource(0, 96); constexpr uint64_t serial = 0xD001;
+        send(w::TransferBegin{w::TransferKind::Resources, serial, uint32_t(bytes.size()), upd::sha256_hex(bytes)});
+        send(w::TransferChunk{serial, 0, bytes}); send(w::TransferEnd{serial});
+    } else send(w::Saved{0, {0x9933, 0x366A930D, 0}, 0xD002});
+    send(Decision{Code::LeaseExpired, "Rejected after an ordered barrier", 0, {}});
+    CHECK(p.spin([&] { return p.native[1].wire_rejections == 1; }));
+    for (unsigned i = 0; i < 12; ++i) p.step();
+    CHECK(p.controllers[1]->view().phase == es::Phase::Ready && p.native[1].controls == 0);
+    CHECK(p.native[1].decisions == 0 && p.native[1].saved == 0 && p.native[1].imports == 1);
+    p.native[1].preparing = true;
+    CHECK(p.spin([&] { return p.native[1].decisions == 1; }));
+    CHECK(p.controllers[1]->view().phase == es::Phase::Preparing);
+    CHECK(p.native[1].imports == (resource_barrier ? 2 : 1));
+    CHECK(p.native[1].saved == (resource_barrier ? 0 : 1));
+    CHECK(p.native[1].errors == 0 && p.controllers[1]->state().document == p.controllers[0]->state().document);
 }
 
 static void test_delete_revokes_lease_before_native_decision(unsigned author)
@@ -1581,6 +1712,11 @@ static void test_creation_preview_is_ephemeral_and_owned(){
 #include "editor_complexity_session_fixture.h"
 int main(int argc,char** argv)
 {
+    if(argc==2&&std::string(argv[1])=="--saved-readiness"){
+        CHECK(net::net_init());test_saved_install_readiness_keeps_order(2);test_saved_install_readiness_keeps_order(4);
+        test_saved_install_waits_for_accepted_durability();test_prepare_rejection_never_crosses_an_ordered_barrier(false);test_prepare_rejection_never_crosses_an_ordered_barrier(true);
+        std::printf("editor saved installation readiness: %d checks, %d failures\n",checks,failures);return failures?1:0;
+    }
     if(argc==2&&std::string(argv[1])=="--prepare-readiness"){
         CHECK(net::net_init());test_prepare_readiness_declines_host_before_revocation();
         test_prepare_readiness_defers_guest_and_delivers_rejection(2);test_prepare_readiness_defers_guest_and_delivers_rejection(4);
@@ -1603,7 +1739,7 @@ int main(int argc,char** argv)
         std::printf("editor preview transport: %d checks, %d failures\n",checks,failures);return failures?1:0;
     }
     const bool focused=argc==2&&std::string(argv[1])=="--tombstones";
-    if(argc==1){CHECK(net::net_init());test_prepare_readiness_declines_host_before_revocation();test_prepare_readiness_defers_guest_and_delivers_rejection(2);test_prepare_readiness_defers_guest_and_delivers_rejection(4);test_complexity_cohort(2);test_complexity_cohort(4);test_complexity_join_and_recovery();test_complexity_old_ack();test_complexity_queue_retry_and_stale_context();test_complexity_disable_is_not_a_general_bypass();test_complexity_history_rechecks_the_resulting_budget();}
+    if(argc==1){CHECK(net::net_init());test_saved_install_readiness_keeps_order(2);test_saved_install_readiness_keeps_order(4);test_saved_install_waits_for_accepted_durability();test_prepare_rejection_never_crosses_an_ordered_barrier(false);test_prepare_rejection_never_crosses_an_ordered_barrier(true);test_prepare_readiness_declines_host_before_revocation();test_prepare_readiness_defers_guest_and_delivers_rejection(2);test_prepare_readiness_defers_guest_and_delivers_rejection(4);test_complexity_cohort(2);test_complexity_cohort(4);test_complexity_join_and_recovery();test_complexity_old_ack();test_complexity_queue_retry_and_stale_context();test_complexity_disable_is_not_a_general_bypass();test_complexity_history_rechecks_the_resulting_budget();}
     const bool classes=argc==2&&std::string(argv[1])=="--class-settings";
     if(argc>1&&!focused&&!classes)return 2;
     CHECK(net::net_init());if(!focused&&!classes){test_recovery_teardown_holds_guests_until_authenticated_reoffer();test_recovery_hold_survives_host_loss();test_creation_preview_is_ephemeral_and_owned();test_asynchronous_durable_acceptance();test_asynchronous_failure_restores_before_acceptance();test_project_and_planet_field_leases_survive_refresh();test_worker_prepared_resource_publication();}

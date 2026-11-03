@@ -105,6 +105,11 @@ struct Callbacks {
     // or declines a host Prepare before lease revocation; Decisions use only
     // authoring_ready. Exceptions also defer/decline. Missing keeps old behavior.
     std::function<bool()> prepare_ready;
+    // Installing a host's saved native checkpoint may require checked local
+    // gesture restoration. False/throw defers that Saved notice in FIFO order;
+    // the adapter must not wait for a Decision ordered after the notice.
+    // Decisions continue to use authoring_ready, not this installation gate.
+    std::function<bool()> saved_ready;
     // A missing revision means the local native scene is away or rebuilding.
     // Default adapters materialize synchronously with canonical acceptance.
     std::function<std::optional<editor::Revision>()> rendered_revision;

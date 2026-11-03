@@ -158,6 +158,16 @@ struct Controller::Impl {
         try { return authoring_ready() && (!callbacks.prepare_ready || callbacks.prepare_ready()); }
         catch (...) { return false; }
     }
+    bool saved_ready(const w::Saved& saved) const {
+        try {
+            if (!authoring_ready()) return false;
+            // Ignored/duplicate notices cannot install a checkpoint. Preserve
+            // their existing identity checks without cancelling a local pose.
+            if (saved.saved_revision > state().document.revision ||
+                (view.saved && saved.serial <= view.saved->serial)) return true;
+            return !callbacks.saved_ready || callbacks.saved_ready();
+        } catch (...) { return false; }
+    }
     static bool complexity_member(const Member& member){
         return member.peer.slot==0||member.phase==Phase::Joining||member.phase==Phase::Syncing||member.phase==Phase::Ready||
             member.phase==Phase::Preparing||member.phase==Phase::Playing||member.phase==Phase::Returning;
@@ -1072,17 +1082,22 @@ void Controller::Impl::service_deferred()
         if (const auto* decision = std::get_if<Decision>(&next.action); decision && decision->accepted() &&
             !replica.decisions.contains(decision->change->operation) && !authoring_ready()) return;
         if (std::holds_alternative<DeferredResource>(next.action) && view.phase == Phase::Ready && !authoring_ready()) return;
-        if (std::holds_alternative<w::Saved>(next.action) && !authoring_ready()) return;
+        if (const auto* saved = std::get_if<w::Saved>(&next.action); saved && !saved_ready(*saved)) return;
         auto eligible = deferred.begin();
         if (const auto* command = std::get_if<w::Control>(&next.action); command && command->kind == w::ControlKind::HostPreparePlaytest && view.phase == Phase::Ready && !prepare_ready()) {
-            // The host may already have rejected a submitted local gesture
-            // after starting this round. Deliver that rejection so rollback
-            // can settle; never reorder an accepted change or its resources.
-            eligible = std::find_if(std::next(deferred.begin()), deferred.end(), [](const Deferred& item) {
-                const auto* decision = std::get_if<Decision>(&item.action);
-                return decision && !decision->accepted();
+            // Progress copies of this same Prepare cannot block the later
+            // rejection needed for rollback. Stop at every other ordered
+            // barrier, including Saved and resources; never skip across it.
+            eligible = std::find_if(std::next(deferred.begin()), deferred.end(), [&](const Deferred& item) {
+                const auto* repeated = std::get_if<w::Control>(&item.action);
+                return item.context != next.context || !repeated || repeated->kind != command->kind ||
+                    repeated->serial != command->serial || repeated->revision != command->revision ||
+                    repeated->ready != command->ready || repeated->participant_mask != command->participant_mask ||
+                    repeated->mode != command->mode || repeated->tester != command->tester || repeated->start_act != command->start_act;
             });
             if (eligible == deferred.end()) return;
+            const auto* rejection = std::get_if<Decision>(&eligible->action);
+            if (eligible->context != next.context || !rejection || rejection->accepted()) return;
         }
         auto item = std::move(*eligible); deferred.erase(eligible); deferred_bytes -= item.cost;
         if (auto* resource = std::get_if<DeferredResource>(&item.action)) {
@@ -1154,7 +1169,7 @@ void Controller::Impl::message(uint8_t from, w::Message message)
     if (!hosting && !draining_deferred && !pending_baseline && deferred.empty()) {
         if (auto* decision = std::get_if<Decision>(&message.payload); decision && decision->accepted() && !replica.decisions.contains(decision->change->operation)) wait_for_authoring = !authoring_ready();
         if (auto* command = std::get_if<w::Control>(&message.payload); command && command->kind == w::ControlKind::HostPreparePlaytest && view.phase == Phase::Ready) wait_for_authoring = !prepare_ready();
-        if (std::holds_alternative<w::Saved>(message.payload)) wait_for_authoring = !authoring_ready();
+        if (const auto* saved = std::get_if<w::Saved>(&message.payload)) wait_for_authoring = !saved_ready(*saved);
     }
     if (!hosting && !draining_deferred && (pending_baseline || !deferred.empty() || wait_for_authoring) && (std::holds_alternative<Decision>(message.payload) || std::holds_alternative<w::Saved>(message.payload) || std::holds_alternative<w::Control>(message.payload))) {
         size_t cost = 128; if (auto* d = std::get_if<Decision>(&message.payload)) { std::vector<uint8_t> encoded; if (!w::encode_decision(*d, encoded, error)) { freeze(0, error); return; } cost = encoded.size(); }
