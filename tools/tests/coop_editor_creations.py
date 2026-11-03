@@ -243,6 +243,10 @@ def run(args):
 
     def open_new(game, family):
         game.call('coop.uistate 0');game.click_control(NEW);game.click_control(CHOICE+FAMILIES.index(family))
+        # These families expose native subtypes before entry. The default
+        # recipes use City hall / Military land, the first measured variants.
+        if family in ('building', 'vehicle'):
+            game.click_control(0xC00F0340)
         game.wait('local native '+family+' editor', lambda: designing(game))
 
     def returned(game):
