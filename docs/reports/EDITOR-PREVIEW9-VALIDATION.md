@@ -2259,7 +2259,7 @@ entry/cancellation coverage, not completed asset-save acceptance:
 `out/preview9-c30-four-independent-creation-cancel/result.json`.
 
 Host Crew capacity commits once at revision 1 and converges on all four.
-Adding a stock crew member stops without an edit because this profile's
+Adding the previously measured custom crew member stops without an edit because this profile's
 native picker finds no Spice Crawler card for the measured query. Ordinary
 Escape closes it, with revision/history unchanged and zero faults. This
 does not establish Crew Add coverage. Evidence:
@@ -2323,3 +2323,103 @@ compilation, with zero drift. DLL SHA-256 is
 retires. This is not a performance or release-acceptance claim:
 `out/preview9-candidate32-build-receipt.json` and
 `out/preview9-candidate32-deployment/receipt.json`.
+
+### C32 native performance and portable regression results
+
+The private two-player Town benchmark completes all 60 real movement
+gestures, 30 per author, through revision 62. The reduced Native preparation
+path is used: observers perform two Reads and no projection. Functional
+convergence passes, but performance acceptance fails. Host and guest own
+confirmation p95 are 143.929 and 422.755 ms. Observer commit-window frame-gap
+p95 are 140.677 and 188.690 ms, above the 100 ms target; own-author windows
+are 96.126 and 97.764 ms. Maximum observed frame gaps remain below 250 ms.
+Full release-to-confirmation p95 are 615.869 and 894.650 ms; those include
+the separate staged gesture capture and must not be presented as commit
+confirmation. The driver exits at its budget assertion before its final
+configuration checks. Subsequent Crew baselines independently confirm both
+scenes healthy at revision 62. Evidence:
+`out/preview9-commit-diagnostic-c32-two-town-fresh/result.json` and
+`out/preview9-c32-full-performance-analysis.json`.
+
+Marker mutation itself takes about 1 ms; most observer apply time precedes
+it. Counterfactual timing also shows that eliminating Native apply alone
+cannot satisfy guest LAN confirmation. Worker completion scheduling remains
+a separate bottleneck; faster acknowledgement without durable completion
+is not an acceptable substitute. Scene-ready, durable and author-confirmed
+timestamps remain distinct. Evidence:
+`out/preview9-c32-critical-path-counterfactual.json` and
+`out/preview9-c32-all-peer-completion-analysis.json`.
+
+The complete portable repository target passes on the frozen C32 source:
+`make -j2 test B=out/editor-preview9-c32-portable HOSTCXX=clang++`, exit 0,
+341.565 seconds, 36 executable hashes retained. All 192 production and 539
+monitored inputs remain unchanged. This includes Session UDP adversity,
+Python contracts and RE lint; it does not replace Native or lab smoke.
+Evidence: `out/editor-preview9-c32-portable/receipt.json`.
+
+### C32 Crew controls from both roles
+
+Both roles now complete Add, Replace, Remove, Lock and Capacity using real
+native controls and observed Maxis assets. Every history cycle checks exact
+S0 after Undo, S1 after Redo and S0 after a final Undo, without growing the
+history entry count. Host changes coexist with the guest's unrelated
+placement selection/lease. The sequence advances revision 62 through 105,
+with strict native convergence and zero faults on both participants.
+
+Evidence is split across
+`out/preview9-c32-two-crew-enable/result.json`,
+`out/preview9-c32-two-crew-choose-ace/result.json`,
+`out/preview9-c32-two-crew-replace95/result.json`,
+`out/preview9-c32-two-crew-matrix/result.json` and
+`out/preview9-c32-two-crew-add96-aepox/result.json`.
+The matrix artifact itself reports failure because its last guest Add
+queries Ace, absent from that guest's catalog. That attempt makes no edit;
+ordinary Escape closes it before the separate Aepox Add succeeds. The
+composite control coverage must not be described as a passing matrix file.
+
+The prior four-player missing Spice Crawler seed is also a fixture catalog
+issue: it is a custom creation, not a stock asset. The fresh native profile
+has one My Creations entry instead of the older profile's 1,349. This does
+not establish a picker filtering regression or four-author Crew coverage.
+Evidence: `out/preview9-c31-four-crew-seed-audit.json`.
+
+### C32 native vehicle creation and shared Save failure
+
+The host designs and names a valid Military Land vehicle using its native
+specialized route `7D433FAD`. Body, cockpit, wheels and weapons are placed
+through native input; the native finish validation mask reaches zero.
+One Done action bakes and admits the saved asset, producing exactly one
+Create adventure asset history item at revision 106. Both peers grow from
+118 to 119 classes, retaining 419 placements and five acts. Ordinary Undo
+and Redo at revisions 107 and 108 remove and restore that class with exact
+convergence and no extra history item. Evidence:
+`out/preview9-c32-host-vehicle-save/result.json` and
+`out/preview9-c32-vehicle-class-history/result.json`.
+
+The initial entry probe incorrectly expects a generic Vehicle request.
+It stops after the correct native editor has already opened. A retained
+read-only specialized-request proof establishes the actual Military Land
+request before further input; entry is not replayed. This is a tool failure,
+not a failed native route. Evidence:
+`out/preview9-c32-host-vehicle-enter/verified-specialized-route.json`.
+
+Subsequent ordinary adventure Save exposes a product failure. Spore saves
+locally and rotates the source to `408A0000!2912FB0B.366A930D`, but sharing
+the terrain proof stops with "A native asset resolution witness is
+unavailable". Both peers freeze at durable revision 108 with zero native
+faults; shared SavedApplied coverage is not achieved. No retry or recovery
+is issued. Evidence:
+`out/preview9-c32-vehicle-native-save-carrier/result.json` and
+`out/preview9-c32-save-failure-diagnostic/result.json`.
+
+Both games return normally to Galaxy with zero faults before runner exit
+zero. The closed private Stores, dependency packages and genuine saved
+DBPF are retained with repeated stable reads. The package is 3,733,324
+bytes, 85 records, SHA-256
+`cfecf0115c7525efe394792e94f9e73493b5e3d3ee44f3a0a08d15dcad4aea45`;
+the 60,756-byte root has 419 markers, SHA-256
+`0fe8688354ffe5d755f9368335c2797166ce58f53cbe8c8668c2f7f0dc6c7087`.
+This proves local persistence only; the shared Save defect and cold reopen
+remain open. Evidence: `out/preview9-c32-retirement/result.json` and
+`out/preview9-c32-closed-retention/receipt.json`. Personal preview 8 and its
+4 GB executable remain unchanged. No release installation or merge occurs.
