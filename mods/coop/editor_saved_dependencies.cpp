@@ -73,13 +73,40 @@ bool make(const Domain& domain,Key saved,std::span<const uint8_t> genuine_raw,co
         need(collected.size()<=kMaxRecords && admitted.size()<=kMaxRecords,"Admission inventory bound");
         std::map<Key,const Bytes*,Less> canonical,selected;uint64_t admitted_bytes=0,collected_bytes=0;
         for(const auto& row:admitted){need(full(row.key) && canonical.emplace(row.key,&row.data).second && row.data.size()<=kMaxRecordBytes && row.data.size()<=kMaxPayloadBytes-admitted_bytes,"Immutable admission list duplicate/budget");admitted_bytes+=row.data.size();}
-        Receipt candidate;candidate.domain=domain;candidate.inventory=inventory;
         for(const auto& row:collected){
-            need(full(row.key) && selected.emplace(row.key,&row.data).second && row.data.size()<=kMaxRecordBytes && row.data.size()<=kMaxPayloadBytes-collected_bytes,"Collected list duplicate/budget");collected_bytes+=row.data.size();
+            need(full(row.key) && selected.emplace(row.key,&row.data).second && row.data.size()<=kMaxRecordBytes && row.data.size()<=kMaxPayloadBytes-collected_bytes,"Collected list duplicate/budget");collected_bytes+=row.data.size();}
+        Receipt candidate;candidate.domain=domain;candidate.inventory=inventory;
+        const auto regenerated=[&](const Reference& ref,Key cache){
+            const bool editable=ref.effective.type==0x2B978C46 || ref.effective.type==0x2399BE55 ||
+                ref.effective.type==0x24682294 || ref.effective.type==0x476A98C7;
+            if(ref.origin!=Origin::Immutable || (ref.effective.instance&0xFF000000u)!=0x7D000000u || !editable ||
+               cache.instance!=ref.effective.instance || cache.group!=ref.effective.group ||
+               (cache.type!=ref.effective.type && cache.type!=0x02D5C9AF && cache.type!=0x0F43029A) ||
+               std::find(ref.records.begin(),ref.records.end(),cache)==ref.records.end())return false;
+            for(size_t i=0;i<ref.records.size();++i)if(!full(ref.records[i]) || !companion(ref.records[i],ref.effective) ||
+                (i && !(order(ref.records[i-1])<order(ref.records[i]))))return false;
+            const Key body{ref.effective.instance,0x1A99B06B,ref.effective.group};
+            const auto prior=canonical.find(body),now=selected.find(body);
+            return std::find(ref.records.begin(),ref.records.end(),body)!=ref.records.end() && prior!=canonical.end() && now!=selected.end() &&
+                *prior->second==*now->second && prior->second->size()>=4 && (*prior->second)[0]==0xD3 &&
+                (*prior->second)[1]==0x7E && (*prior->second)[2]==0x65 && (*prior->second)[3]==0x48;
+        };
+        for(const auto& row:collected){
             if(row.key==saved || root_companion(row.key,saved))continue;
             need(row.key.type!=kScenario,"Foreign/old transport scenario root is not a dependency");
             const auto prior=canonical.find(row.key);
-            if(prior==canonical.end())throw std::runtime_error("Selected custom dependency was not admitted immutably: "+key_text(row.key)+" missing admitted record");
+            if(prior==canonical.end()){
+                // The immutable alias producer removes precisely these owner
+                // caches. Native loading may regenerate them from the retained
+                // BEM; they are not new immutable dependencies. Never apply this
+                // exception to an admitted record, a foreign owner or no body.
+                bool omitted=false;
+                for(auto& ref:candidate.inventory.references)if(!row.data.empty() && regenerated(ref,row.key)){
+                    std::erase(ref.records,row.key);omitted=true;
+                }
+                if(omitted)continue;
+                throw std::runtime_error("Selected custom dependency was not admitted immutably: "+key_text(row.key)+" missing admitted record");
+            }
             if(*prior->second!=row.data)throw std::runtime_error("Selected custom dependency was not admitted immutably: "+key_text(row.key)+" different bytes");
             candidate.records.push_back(row);}
         std::sort(candidate.records.begin(),candidate.records.end(),[](const auto& a,const auto& b){return order(a.key)<order(b.key);});

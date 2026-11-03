@@ -1536,3 +1536,52 @@ controlled fixture passes17718, including pending-state cleanup, pointer ABA,
 parent/key drift, selected-roster mismatch, nested unload and OS/SDK retention
 failure. These are fixture results, not live cold-reopen acceptance. The next
 gate is actual two-player import, native Save, process restart and file reopen.
+
+## Regenerated owner caches versus immutable Saved dependencies (C45)
+
+C44's native Save completed locally at revision24 after Creature creation and
+content replacement, then stopped before sharing its recovery checkpoint. A
+diagnostic-only C45 replay identified the exact missing record:
+`40626200!7D8C23AC.0F43029A`. Both recovered peers were strictly converged before
+Save. This was a missing admission, not a changed admitted payload. Evidence:
+`out/preview9-c45-creatures-native-save/95-commands.json`.
+
+The producer/consumer mismatch is explicit in source. The immutable creation
+producer `immutable_version` requires an editable BEM and mints private instances
+in7Dxxxxxx; `remap_owner` removes its own family-primary,02D5C9AF and0F43029A
+regeneration caches. Native loading can recreate those records. The Saved
+collector later observes every currently available companion, including a newly
+generated cache that was intentionally absent from the immutable bundle. Treating
+every observed record as a new immutable dependency rejected this supported
+body-backed alias.
+
+The value-only receipt producer now omits a missing cache solely when it belongs
+to an observed immutable7D alias in the four supported editable families, has the
+exact effective owner group and instance, and is one of those three regeneration
+types. The complete original reference companion list must remain valid and
+ordered. Its exact BEM key must appear in that list and in both the selected and
+admitted maps, with identical bytes and the verified D37E6548 BEM header. The
+omitted record is also removed from that reference's dependency sidecar; no raw
+Saved reference, class roster, server, machine or model field changes. The normal
+final receipt validation still checks the full body and companion closure.
+
+An admitted record always takes the existing exact-byte comparison before this
+exception. Even an admitted regeneration cache with one changed byte rejects.
+Missing or changed BEMs, metadata/pixels, foreign owners or groups, unknown types,
+nonprivate sources, unsupported families and malformed companion lists reject
+atomically. The omitted cache is never mounted or published as immutable data.
+No Native producer, scene, catalog, cache record or source key is rewritten.
+
+Controlled codec tests retain the genuine119-class raw Saved image and exact
+four-record admitted package. Missing caches collapse to the identical golden
+receipt, and cold encode/decode preserves that receipt. Tests also retain the
+old producer's genuine failing executable and cover admitted-cache mutation,
+body expiry and foreign-cache boundaries. Focused artifacts are under
+`out/editor-preview9-saved-cache/`.
+
+Actual C46 Native Save passed the exact recovered revision24 scenario that
+failed in C45, producing `408A0000!2913EE8A.366A930D`. Both participants reported
+SavedApplied2/2 and settled readiness, with unchanged history and authored
+semantics, strict Native agreement and zero faults. The original Saved carrier
+was retained. Evidence: `out/preview9-c46-creatures-native-save/result.json`.
+Fresh-process cold reopen remains a separate gate.

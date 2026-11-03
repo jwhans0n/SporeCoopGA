@@ -100,6 +100,73 @@ static void family_cases(const Fixture& f){
         check(!make(f.domain,inventory.saved,f.raw,inventory,selected,f.admitted,output,error) && encoded(output)==f.golden,"metadata/images without primary or BEM body reject");++cases;
     }
 }
+static void regenerated_cache_cases(const Fixture& f){
+    auto first=std::find_if(f.inventory.references.begin(),f.inventory.references.end(),[](const auto& ref){return ref.origin==Origin::Immutable;});
+    check(first!=f.inventory.references.end(),"retained private alias reference");const Key asset=first->effective,body{asset.instance,0x1A99B06B,asset.group};
+    const auto body_row=std::find_if(f.admitted.begin(),f.admitted.end(),[&](const auto& row){return row.key==body;});
+    check(body_row!=f.admitted.end() && body_row->data.size()>=4 && (asset.instance>>24)==0x7D,"retained admitted private BEM");
+    const auto add=[&](Inventory& inventory,std::vector<Record>& selected,Key cache){
+        selected.push_back({cache,Bytes{0x31,0x45,0x99}});
+        for(auto& ref:inventory.references)if(ref.origin==Origin::Immutable && ref.effective==asset){
+            ref.records.push_back(cache);std::sort(ref.records.begin(),ref.records.end(),Less{});
+        }
+    };
+    for(uint32_t type:{0x0F43029Au,0x02D5C9AFu,asset.type}){
+        auto inventory=f.inventory;auto selected=f.selected;const Key cache{asset.instance,type,asset.group};add(inventory,selected,cache);
+        Receipt output;std::string error;
+        check(make(f.domain,inventory.saved,f.raw,inventory,selected,f.admitted,output,error),"missing regenerated owner cache with exact admitted BEM: "+error);
+        check(encoded(output)==f.golden,"cache omission preserves genuine raw roster and exact admitted closure");
+        Receipt cold;check(decode(encoded(output),f.domain,cold,error) && encoded(cold)==f.golden,"regenerated-cache omission has identical cold receipt");++cases;
+        auto admitted=f.admitted;admitted.push_back(selected.back());
+        check(make(f.domain,inventory.saved,f.raw,inventory,selected,admitted,output,error) && output.records.size()==f.admitted.size()+1,"admitted cache remains exact dependency");++cases;
+        for(bool mutate_selected:{false,true}){
+            auto changed_selected=selected,changed_admitted=admitted;
+            (mutate_selected?changed_selected.back():changed_admitted.back()).data.back()^=1;
+            Receipt retained=f.receipt;
+            check(!make(f.domain,inventory.saved,f.raw,inventory,changed_selected,changed_admitted,retained,error) &&
+                error.find("different bytes")!=std::string::npos && encoded(retained)==f.golden,"admitted owner cache mutation is never omitted");++cases;
+        }
+    }
+    for(unsigned reason=0;reason<18;++reason){
+        auto inventory=f.inventory;auto selected=f.selected,admitted=f.admitted;
+        Key cache{asset.instance,0x0F43029A,asset.group};
+        if(reason==5)++cache.instance;
+        if(reason==6)++cache.group;
+        if(reason==7)cache.type=0xDEADBEEF;
+        if(reason==8)cache.type=0x030BDEE3; // Retained pollen is never a regenerated cache.
+        if(reason==9)cache.type=0x2F7D0004; // Retained pixels are never a regenerated cache.
+        if(reason==8 || reason==9){
+            for(auto* records:{&selected,&admitted})std::erase_if(*records,[&](const auto& row){return row.key==cache;});
+            for(auto& ref:inventory.references)std::erase(ref.records,cache);
+        }
+        add(inventory,selected,cache);
+        if(reason==0)std::erase_if(selected,[&](const auto& row){return row.key==body;});
+        if(reason==1)std::erase_if(admitted,[&](const auto& row){return row.key==body;});
+        if(reason==2)for(auto& row:selected)if(row.key==body)row.data.back()^=1;
+        if(reason==3)for(auto& row:admitted)if(row.key==body)row.data.back()^=1;
+        if(reason==4)for(auto& ref:inventory.references)std::erase(ref.records,body);
+        if(reason==10)for(auto* records:{&selected,&admitted})for(auto& row:*records)if(row.key==body)row.data[0]=0;
+        if(reason==11)selected.back().data.clear();
+        if(reason==12)for(auto& ref:inventory.references)std::erase(ref.records,cache);
+        if(reason==13){ // Same body is insufficient outside the private alias namespace.
+            const auto instance=0x2913E324u;
+            for(auto& ref:inventory.references)if(ref.origin==Origin::Immutable && ref.effective==asset){
+                ref.raw.instance=ref.effective.instance=instance;for(auto& key:ref.records)key.instance=instance;
+            }
+            for(auto* records:{&selected,&admitted})for(auto& row:*records)if(row.key.instance==asset.instance)row.key.instance=instance;
+        }
+        if(reason==14 || reason==15)for(auto& ref:inventory.references)if(ref.origin==Origin::Immutable && ref.effective==asset)
+            ref.raw.type=ref.effective.type=reason==14?0x438F6347:0x3D97A8E4;
+        if(reason==16)for(auto& ref:inventory.references)if(ref.origin==Origin::Immutable && ref.effective==asset){
+            ref.records.push_back(cache);std::sort(ref.records.begin(),ref.records.end(),Less{});
+        }
+        if(reason==17)for(auto& ref:inventory.references)if(ref.origin==Origin::Immutable && ref.effective==asset)
+            std::swap(ref.records.front(),ref.records.back());
+        Receipt retained=f.receipt;std::string error;
+        check(!make(f.domain,inventory.saved,f.raw,inventory,selected,admitted,retained,error) && !error.empty() &&
+            encoded(retained)==f.golden,"unproved/mutated/foreign regenerated cache rejects atomically reason="+std::to_string(reason));++cases;
+    }
+}
 static void collision_cases(const Fixture& f){
     std::vector<Resident> observations;for(const auto& row:f.receipt.records)observations.push_back({row.key,{},Installed::Missing,{}});
     uint32_t payload=0;for(const auto& row:f.receipt.records)payload+=uint32_t(row.data.size());CollisionPlan output;std::string error;
@@ -152,6 +219,6 @@ static void allocation_cases(const Fixture& f){for(int n=0;n<8;++n){
     check(!read && !error.empty() && encoded(output)==old,"decode allocation failure atomic");++cases;
 }}
 }
-int main(){using namespace saved_dependency_test;try{const auto f=fixture();codec_cases(f);family_cases(f);collision_cases(f);zero_group_cases(f);allocation_cases(f);
+int main(){using namespace saved_dependency_test;try{const auto f=fixture();codec_cases(f);family_cases(f);regenerated_cache_cases(f);collision_cases(f);zero_group_cases(f);allocation_cases(f);
     std::cout<<"PASS Saved dependency codec checks="<<checks<<" cases="<<cases<<" actual_classes=119 raw_slots=358 records=4 native_issuer=not_minted\n";return 0;
 }catch(const std::exception& e){std::cerr<<"FAIL checks="<<checks<<" cases="<<cases<<": "<<e.what()<<'\n';return 1;}}
