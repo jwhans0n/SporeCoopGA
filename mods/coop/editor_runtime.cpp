@@ -1400,6 +1400,7 @@ bool apply(const editor::Document& before, const editor::Document& after, const 
         stage_stamp(after.project,change.operation,after.revision,editor_stage_metrics::Stage::InverseEnd,1);
         stage_stamp(after.project,change.operation,after.revision,editor_stage_metrics::Stage::NativeApplyBegin);
         stage_stamp(after.project,change.operation,after.revision,editor_stage_metrics::Stage::NativeApplyEnd,1);
+        if(live.local_dirty)live.local_dirty->dirty=true;
         live.document=after;prepared_native=std::move(live);pending->tentative=false;
         stage_stamp(after.project,change.operation,after.revision,editor_stage_metrics::Stage::SceneReady,1);
         work.okay=true;return true;
@@ -1467,6 +1468,7 @@ bool apply(const editor::Document& before, const editor::Document& after, const 
     editor_native::Snapshot prepared;
     { StageScope preparing(after,change.operation,editor_stage_metrics::Stage::NativePrepareBegin,editor_stage_metrics::Stage::NativePrepareEnd);
       if(!editor_native::prepare(before_apply,after,change,source,prepared,error))return false;preparing.okay=true; }
+    if(prepared.local_dirty)prepared.local_dirty->dirty=true;
     bool applied=detached_scene();
     { StageScope native(after,change.operation,editor_stage_metrics::Stage::NativeApplyBegin,editor_stage_metrics::Stage::NativeApplyEnd);
       if(!applied)applied=editor_native::apply_prepared(prepared,change,error);native.okay=applied; }

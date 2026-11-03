@@ -1585,3 +1585,33 @@ SavedApplied2/2 and settled readiness, with unchanged history and authored
 semantics, strict Native agreement and zero faults. The original Saved carrier
 was retained. Evidence: `out/preview9-c46-creatures-native-save/result.json`.
 Fresh-process cold reopen remains a separate gate.
+
+### C46 clean sidecar restored after accepted creation changes
+
+C46 saved revision4 and received both SavedApplied acknowledgements, then
+accepted new Military Land cast entries at revisions5 and6. The final normal
+Save rejected reason5 before a dialog or Native write, with both peers still
+converged and fault-free. The frozen source retained the completed Save's clean
+`Snapshot::local_dirty` through detached preparation/persistence. Creation
+return restored that captured false value to `data+84`; canonical cast commits
+had not appended a native history entry to make the history counter dirty.
+Evidence is retained in `out/preview9-c46-final-save-observe` and the C46 frozen
+production source, independently of the later staged-pose experiment.
+
+Runtime now marks only `local_dirty->dirty=true` on the prepared value for an
+applied canonical Change, including the adopted-live retention branch. Its
+captured `saved_revision` (+80) and metadata flag (+85) are preserved. Rollback's
+independent before snapshot is untouched. A Cancel with no intervening change
+therefore remains clean, while a foreign accepted change during creation makes
+the restored latest draft dirty. Missing optional sidecars stay missing; the
+existing Native restore behavior marks those authored inputs dirty without
+inventing saved-counter or metadata values. Ordinary Save retains CanSave and
+the unchanged reason5 gate; it is not converted to Save As.
+
+The focused actual-i686 regression uses real Runtime/Session/UDP/Store paths,
+an opt-in model of the verified history/+84/+85 dirty predicate and real
+creation-return orchestration. It covers both admission authors, clean Cancel,
+host-away foreign edits, retained adopted gestures, rollback and absent
+sidecars. RED uses the real pre-fix Runtime source archived before these two
+lines, not a manufactured mutant. Receipts are under
+`out/editor-preview9-c47-native-dirty`; actual C47 Save qualification is separate.
