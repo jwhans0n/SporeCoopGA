@@ -1858,3 +1858,58 @@ does not establish a missing compiled VCL dependency. The exact Native Save,
 alias package and first admission logs are retained under
 `out/preview9-c27-four-vehicle-finish/`. This remains failed save acceptance
 pending the native request/palette and effective part-list investigation.
+
+### C28 actual terrain return and native input qualification
+
+The private C28 host-away sequence now completes: the host remains in the
+native Creature Editor while the guest submits a Basic Tools stroke and uses
+the native toolbar to Undo, Redo and Undo it. The host then cancels normally
+and returns at the latest revision/durable 12. Both participants strictly
+converge, remain ready and unfrozen, and report faults 0. This closes the
+reported witnessed-grounding return failure without relaxing coordinate or
+recipe validation. Evidence: `out/preview9-c28-terrain-host-away/result.json`.
+
+The two-author terrain history also passes through native toolbar buttons:
+guest Redo 5, host Redo 6, host Undo 7 and guest Undo 8 reproduce exact recipe
+record identities, payloads and host commit order, then restore the baseline.
+Evidence: `out/preview9-c28-native-button-history/result.json`.
+
+These are functional results, not qualified ordinary-input or timing results.
+The external input observer records physical Shift activity during both the
+original simultaneous keyboard-history attempt and the host-away sequence.
+SporeKit combines physical key state with synthetic input. The original
+keyboard Redo timed out; its contaminated evidence is retained and is not
+reclassified as a successful ordinary gesture. The later native toolbar
+sequence succeeds. The source of the physical activity is not established.
+
+The native temperature slider accepts exactly one planet-settings transaction
+at revision 13. Its subsequent native toolbar Undo does not dispatch, even
+after normal Escape clears selection. The same public Runtime Undo succeeds
+immediately at revision/durable 14 and restores the committed temperature;
+both participants strictly converge with faults 0. This isolates the pending
+failure to native input/command dispatch rather than Core history. Native
+dispatch also checks physical/injected mouse state and separate tool/context
+interaction fields, which are not established by the current selection
+status. No native guard is bypassed or raw state cleared. Evidence remains in
+`out/preview9-c28-two-temperature/`,
+`out/preview9-c28-temperature-history-clear-selection/`, and
+`out/preview9-c28-temperature-public-undo-diagnostic/`.
+
+### Specialized native creation requests
+
+The failed C27 Vehicle used unconstrained generic editor `99F87089`, but the
+native adventure browser requests a specialized editor selected by its asset
+category. Its two rejected gun parts belong to Military Air's part list 38,
+while the saved Military Land subtype requires list 39. Both are genuine
+installed native lists; this is not a missing compiled configuration resource.
+
+Change `368762b` routes New Building through four verified variants and New
+Vehicle through nine. The default routes are City Hall and Military Land;
+existing Edit retains the native saved-model subtype resolver. Creature and
+Spaceship routes remain direct. Strict optimized i686 routing/UI fixtures
+pass 1,446/204 checks with 40/27 unchanged inputs, and the previous generic
+Vehicle default fails the new regression. Evidence:
+`out/preview9-creation-routes/receipt.json` and
+`out/preview9-creation-routes/ACCEPTANCE.md`. Actual specialized-palette native
+save acceptance remains pending; the invalid generic-palette creation was
+not admitted or advertised as successful.
