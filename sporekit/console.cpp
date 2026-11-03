@@ -6,6 +6,7 @@
 #include <ws2tcpip.h>
 
 #include "core.h"
+#include "task_pump_metrics.h"
 
 #include <deque>
 #include <map>
@@ -37,6 +38,17 @@ void run_on_main(std::function<void()> fn)
 // tasks that must not run inside IDirect3DDevice9::Present (DXVK holds its locks there):
 // anything that may create D3D resources, e.g. Spore UI windows (fonts, textures)
 static std::deque<std::function<void()>> g_out_tasks;
+static task_pump_metrics::Recorder g_outside_metrics;
+
+task_pump_metrics::Snapshot outside_pump_metrics(const std::string& action)
+{
+    if(action=="start"){
+        LARGE_INTEGER frequency{};QueryPerformanceFrequency(&frequency);
+        return g_outside_metrics.start(uint64_t(frequency.QuadPart));
+    }
+    if(action=="stop")return g_outside_metrics.stop();
+    return g_outside_metrics.snapshot();
+}
 
 void run_outside_frame(std::function<void()> fn)
 {
@@ -51,10 +63,26 @@ void run_outside_frame(std::function<void()> fn)
 void pump_outside_tasks()
 {
     if (in_frame()) { // called from a message dispatched inside Present: try again later
+        g_outside_metrics.defer();
         if (HWND w = (HWND)game_window())
             PostMessageW(w, WM_SK_PUMP_OUT, 0, 0);
         return;
     }
+    task_pump_metrics::Ticket measured;
+    if(g_outside_metrics.armed()){
+        LARGE_INTEGER begin{};QueryPerformanceCounter(&begin);
+        measured=g_outside_metrics.begin(frame_index(),uint64_t(begin.QuadPart));
+    }
+    uint32_t processed=0;bool cap_reached=false;
+    struct Measure {
+        task_pump_metrics::Ticket ticket;uint32_t& processed;bool& cap;
+        ~Measure(){
+            if(!ticket.generation)return;
+            LARGE_INTEGER end{};QueryPerformanceCounter(&end);size_t left=0;
+            {std::lock_guard lock(g_task_mu);left=g_out_tasks.size();}
+            g_outside_metrics.finish(ticket,uint64_t(end.QuadPart),processed,cap,left);
+        }
+    } measure{measured,processed,cap_reached};
     for (int guard = 0; guard < 256; guard++) {
         std::function<void()> fn;
         {
@@ -64,8 +92,10 @@ void pump_outside_tasks()
             fn = std::move(g_out_tasks.front());
             g_out_tasks.pop_front();
         }
+        ++processed;
         fn();
     }
+    cap_reached=true;
 }
 
 struct DelayedTask {

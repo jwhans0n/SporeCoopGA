@@ -520,6 +520,17 @@ $(B)/host/sporekit_refpack_memo_tests.exe: tests/sporekit_refpack_memo_windows_t
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Isdk/include tests/sporekit_refpack_memo_windows_tests.cpp mods/coop/net/dbpf.cpp updater/sha256.cpp -o $@
 
+.PHONY: test-task-pump-metrics test-task-pump-metrics-windows
+test-task-pump-metrics: $(B)/host/task_pump_metrics_tests
+	$<
+test-task-pump-metrics-windows: $(B)/host/task_pump_metrics_tests.exe
+$(B)/host/task_pump_metrics_tests: tests/task_pump_metrics_tests.cpp sporekit/task_pump_metrics.h mods/coop/editor_service_pulse.h
+	@mkdir -p $(dir $@)
+	$(HOSTCXX) -std=c++20 -O2 -Wall -Wextra -Werror -pthread $< -o $@
+$(B)/host/task_pump_metrics_tests.exe: tests/task_pump_metrics_tests.cpp sporekit/task_pump_metrics.h mods/coop/editor_service_pulse.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static $< -o $@
+
 # Preview 6 verified interaction adapters (the tests include their implementation).
 INTERACTION_TEST_NET := mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp
 .PHONY: test-explosives-windows test-pickups-windows

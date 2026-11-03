@@ -1,6 +1,7 @@
 // Built-in devkit console commands.
 #include "core.h"
 #include "refpack_memo.h"
+#include "task_pump_metrics.h"
 
 #include <cstdio>
 
@@ -623,6 +624,23 @@ void register_builtin_commands()
                 },
                 nullptr, A);
     command_add(k, "frame", "frame counter and fps", c_frame, nullptr, A);
+    command_add(k, "outside.metrics", "outside.metrics start|stop|status - passive bounded task-pump samples", [](void*,int argc,const char* const* argv,SkOut* out){
+        if(argc!=2 || (strcmp(argv[1],"start") && strcmp(argv[1],"stop") && strcmp(argv[1],"status"))){
+            outf(out,"usage: outside.metrics start|stop|status");return 1;
+        }
+        const auto value=outside_pump_metrics(argv[1]);
+        outf(out,"armed=%u generation=%llu frequency=%llu calls=%llu processed=%llu cap_hits=%llu deferred=%llu samples=%u\n",
+            unsigned(value.armed),(unsigned long long)value.generation,(unsigned long long)value.frequency,
+            (unsigned long long)value.calls,(unsigned long long)value.processed,(unsigned long long)value.cap_hits,(unsigned long long)value.deferred,value.count);
+        const auto row=[&](const char* label,const task_pump_metrics::Record& r){
+            outf(out,"%s frame=%llu processed=%u cap_reached=%u queue_left=%llu begin=%llu end=%llu duration_ticks=%llu\n",label,
+                (unsigned long long)r.frame,r.processed,unsigned(r.cap_reached),(unsigned long long)r.queue_left,
+                (unsigned long long)r.begin,(unsigned long long)r.end,(unsigned long long)(r.end-r.begin));
+        };
+        if(value.calls)row("peak",value.peak);
+        for(uint32_t i=0;i<value.count;++i)row("recent",value.recent[(value.next+value.recent.size()-value.count+i)%value.recent.size()]);
+        return 0;
+    },nullptr,A);
     command_add(k, "wait.frames", "wait.frames <n> [timeout_ms]", c_wait_frames, nullptr, A);
     command_add(k, "log", "log [n] - last log lines", c_log, nullptr, A);
     command_add(k, "sym", "sym <name|addr> - resolve", c_sym, nullptr, A);

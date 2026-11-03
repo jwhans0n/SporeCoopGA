@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <mutex>
 #include <optional>
+#include <string_view>
 
 namespace editor_service_pulse {
 using Clock = std::chrono::steady_clock;
@@ -22,6 +23,12 @@ struct Observation {
     bool operator==(const Observation&) const = default;
 };
 struct Ticket { Observation observation; uint64_t serial = 0; bool editor = false; };
+enum class Metric {Dispatch,Stale,Busy,Update,Tick};
+struct Metrics {
+    bool armed=false;
+    uint64_t generation=0,editor_reserves=0,generic_reserves=0;
+    std::array<uint64_t,5> editor{},generic{};
+};
 
 // A task owns its Run until completion. Retirement is checked before its caller
 // touches module globals. The reservation remains held throughout callbacks.
@@ -31,6 +38,8 @@ class Run {
     Observation observation_;
     Time frame_{}, last_editor_{}, last_generic_{};
     uint64_t serial_ = 0, queued_ = 0, version_ = 0;
+    std::atomic<bool> metrics_armed_{false};
+    Metrics metrics_;
 public:
     std::atomic<bool> alive{true};
     void publish(const Observation& value, std::optional<Time> frame = {}) {
@@ -52,7 +61,22 @@ public:
         out = {observation_, ++serial_, editor};
         queued_ = out.serial;
         if (editor) last_editor_ = now; else last_generic_ = now;
+        if(metrics_.armed){if(editor)++metrics_.editor_reserves;else ++metrics_.generic_reserves;}
         return true;
+    }
+    Metrics metrics(const char* action="status"){
+        std::lock_guard lock(mutex_);
+        if(std::string_view(action)=="start"){
+            const auto generation=metrics_.generation+1;metrics_={};metrics_.generation=generation;metrics_.armed=true;
+            metrics_armed_.store(true,std::memory_order_relaxed);
+        }else if(std::string_view(action)=="stop"){
+            metrics_.armed=false;metrics_armed_.store(false,std::memory_order_relaxed);
+        }
+        return metrics_;
+    }
+    void metric(Metric event,bool editor){
+        if(!metrics_armed_.load(std::memory_order_relaxed))return;
+        std::lock_guard lock(mutex_);if(metrics_.armed)++(editor?metrics_.editor:metrics_.generic)[size_t(event)];
     }
     bool current(const Ticket& ticket, const Observation& fresh, Time now) const {
         std::lock_guard lock(mutex_);

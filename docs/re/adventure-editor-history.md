@@ -1864,3 +1864,48 @@ the actual source and the caller's borrowed owner value; the independent copy
 rejects it. Focused source/EXE receipts are retained at
 `out/editor-preview9-saved-cache/native-stage-o2-receipt.json`. Actual Native
 frame and confirmation targets remain unqualified until a quiet A/B run.
+
+## Armed outside-pump and service-pulse diagnostic (C47)
+
+C47's default-off warmup capture showed actual SDK frames11582 through11586
+about550 ms apart. Its Before/AfterBytes/AfterProjection/Canonical/Opaque bodies
+took about12/24/36/5/37 ms. The six-phase capture correctly waits for a strictly
+later actual frame, so frequent outside-frame ticks cannot advance it on their
+own. The pulse scheduler, scope/idle checks and Native busy predicate matched
+the retained C46 sources. No new two-frame preparation ticket was active.
+
+An existing scheduling risk remains unproven: `pump_outside_tasks` consumes
+newly arriving tasks until its256-call limit. The5 ms pulse releases its owned
+reservation after scheduling Runtime drain, before that queued drain runs.
+Repeated pulses/drains might keep the same pump nonempty and postpone Present.
+The old status counters could not distinguish this from a missing eligible
+editor observation and the normal500 ms no-frame fallback.
+
+The diagnostic adds no scheduling or eligibility change. Kit command
+`outside.metrics start|stop|status` records only an explicitly armed interval:
+completed pump count, processed calls,256-limit hits, in-Present deferrals,
+the longest completed pump and16 recent completed rows. Each row contains only
+SDK frame ID, processed count, cap flag, queue length after the pump and QPC
+begin/end/duration. A cap flag means all256 iterations ran; queue-left tells
+whether work still remained. Nested pump durations are inclusive. Start clears
+old startup/load samples; restart retires any older in-flight measurement.
+Stop freezes completed rows and excludes an unfinished interval. No task
+function, command text, process argument or Native address is recorded.
+
+`coop.pulse_metrics start|stop|status` separately arms/resets editor/generic
+reserve, dispatch, stale/busy skip, Session-update and editor-tick counters.
+The counter locks protect diagnostic values only. They do not change a queued
+reservation, frame age,5 ms/100 ms intervals, callback order or transport scope.
+A reservation already present at Start may dispatch inside the measured window,
+so reserve and dispatch totals need not match at its boundary.
+
+For one capture, arm the pulse first and the SDK pump second, perform one
+ordinary gesture and wait for settled Ready, then stop the SDK recorder before
+the pulse recorder. `outside.metrics` is a Kit-owned any-thread diagnostic;
+the co-op command is marshalled outside-frame. Output is bounded below the
+8192-byte console reply cap. Both are passive and initially disarmed; SDK ABI,
+wire format, Native calls, the existing256 loop and capture frame rules remain
+unchanged. Controlled host/i686 tests cover ring eviction with retained peak,
+restart/stop retirement, concurrent snapshots, bad clocks, editor/generic
+classification and resets preserving an existing pulse reservation. Actual
+cap starvation or fallback classification still requires the armed Native run.

@@ -111,6 +111,8 @@ std::vector<std::pair<std::string, std::string>> commands_list();
 
 // commands.cpp
 void register_builtin_commands();
+namespace task_pump_metrics {struct Snapshot;}
+task_pump_metrics::Snapshot outside_pump_metrics(const std::string& action);
 
 // d3d9hook.cpp
 bool d3d9_install();

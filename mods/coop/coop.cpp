@@ -975,27 +975,32 @@ void keepalive_task(void* value)
 {
     const std::unique_ptr<KeepaliveTask> task(static_cast<KeepaliveTask*>(value));
     const auto run=task->run;
+    run->metric(editor_service_pulse::Metric::Dispatch,task->ticket.editor);
     struct Complete {std::shared_ptr<PulseRun> run;uint64_t serial;~Complete(){run->complete(serial);}} complete{run,task->ticket.serial};
     // Do not consult H, Session, or a replacement module/run for a retired task.
-    if(!run->alive.load())return;
-    if(g_keepalive_run!=run)return;
+    if(!run->alive.load()){run->metric(editor_service_pulse::Metric::Stale,task->ticket.editor);return;}
+    if(g_keepalive_run!=run){run->metric(editor_service_pulse::Metric::Stale,task->ticket.editor);return;}
     struct Publish {std::shared_ptr<PulseRun> run;~Publish(){if(run->alive.load() && g_keepalive_run==run)keepalive_publish();}} publish{run};
     editor_service_pulse::ServiceGuard service(g_service_busy);
-    if(!service.entered || !run->current(task->ticket,keepalive_observation(),editor_service_pulse::Clock::now()))return;
-    if(g_sess.role()==net::Role::None)return;
-    if(task->ticket.editor && !coop_editor::service_pulse_idle())return;
+    if(!service.entered){run->metric(editor_service_pulse::Metric::Busy,task->ticket.editor);return;}
+    if(!run->current(task->ticket,keepalive_observation(),editor_service_pulse::Clock::now())){run->metric(editor_service_pulse::Metric::Stale,task->ticket.editor);return;}
+    if(g_sess.role()==net::Role::None){run->metric(editor_service_pulse::Metric::Stale,task->ticket.editor);return;}
+    if(task->ticket.editor && !coop_editor::service_pulse_idle()){run->metric(editor_service_pulse::Metric::Busy,true);return;}
     const auto transport=g_sess.transport_generation();
+    run->metric(editor_service_pulse::Metric::Update,task->ticket.editor);
     g_sess.update();
     if(!run->alive.load() || g_keepalive_run!=run || g_sess.transport_generation()!=transport)return;
     if(task->ticket.editor){
-        if(coop_editor::service_pulse_scope()!=task->ticket.observation.editor || !coop_editor::service_pulse_idle())return;
+        if(coop_editor::service_pulse_scope()!=task->ticket.observation.editor || !coop_editor::service_pulse_idle()){run->metric(editor_service_pulse::Metric::Stale,true);return;}
+        run->metric(editor_service_pulse::Metric::Tick,true);
         coop_editor::tick(H->time_seconds());
         return;
     }
     // Preserve the original modal/no-frame fallback, including non-editor play.
     // A Native stack may pump messages; receive/send can continue, but a new
     // editor drain waits until that Native stack has released its final owners.
-    if(coop_editor::service_pulse_idle())coop_editor::tick(H->time_seconds());
+    if(coop_editor::service_pulse_idle()){run->metric(editor_service_pulse::Metric::Tick,false);coop_editor::tick(H->time_seconds());}
+    else run->metric(editor_service_pulse::Metric::Busy,false);
     if(!run->alive.load() || g_sess.transport_generation()!=transport)return;
     adventure::tick(H->time_seconds());
     if(!run->alive.load() || g_sess.transport_generation()!=transport)return;
@@ -2994,6 +2999,19 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
             sample.mean_fps, sample.median_fps, sample.median_ms, sample.p95_ms, sample.max_ms);
         return 0;
     }, nullptr, SK_CMD_OUTSIDE_FRAME);
+    H->command_add(M, "coop.pulse_metrics", "coop.pulse_metrics start|stop|status - passive editor/generic service counters", [](void*,int argc,const char* const* argv,SkOut* out){
+        if(argc!=2 || (std::strcmp(argv[1],"start") && std::strcmp(argv[1],"stop") && std::strcmp(argv[1],"status"))){
+            SAY("usage: coop.pulse_metrics start|stop|status");return 1;
+        }
+        const auto run=g_keepalive_run;
+        if(!run){SAY("Service pulse is unavailable");return 1;}
+        const auto value=run->metrics(argv[1]);
+        SAY("armed=%u generation=%llu editor_reserves=%llu generic_reserves=%llu editor_dispatch=%llu generic_dispatch=%llu editor_stale=%llu generic_stale=%llu editor_busy=%llu generic_busy=%llu editor_update=%llu generic_update=%llu editor_tick=%llu generic_tick=%llu",
+            unsigned(value.armed),(unsigned long long)value.generation,(unsigned long long)value.editor_reserves,(unsigned long long)value.generic_reserves,
+            (unsigned long long)value.editor[0],(unsigned long long)value.generic[0],(unsigned long long)value.editor[1],(unsigned long long)value.generic[1],
+            (unsigned long long)value.editor[2],(unsigned long long)value.generic[2],(unsigned long long)value.editor[3],(unsigned long long)value.generic[3],
+            (unsigned long long)value.editor[4],(unsigned long long)value.generic[4]);return 0;
+    },nullptr,SK_CMD_OUTSIDE_FRAME);
     H->command_add(M, "coop.name", "coop.name <nick>", c_name, nullptr, MT);
     H->command_add(M, "coop.say", "coop.say <text> - chat", c_say, nullptr, MT);
     H->command_add(M, "coop.avatar", "print local avatar state", c_avatar, nullptr, MT);
