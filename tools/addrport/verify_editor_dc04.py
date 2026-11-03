@@ -95,6 +95,21 @@ ENTRIES = [
      [(0xF383FA,0xF32A90)],[(0xF38404,'e9f7f5ffff')]),
     ('TerraformSetWaterLevel',0xF320E0,'83ec08568bf1e825f00e0085',[(0xF32190,4)],
      'thiscall(TerraformMode,float),ret4; normalizes water range into WTA C8 and refreshes water contacts',[(0xF0CF2B,0xF320E0)],[]),
+    ('TerraformCompleteWater',0xF335B0,'568bf18b8e9001000085c97405',[(0xF42858,0)],
+     'thiscall(TerraformMode),no stack arguments; EAX ignored by Environment caller, tail F42660; Water completion before native Commit is distinct from Rebuild',
+     [(0xF3ACDA,0xF335B0),(0xF3ACE1,0xF34400),(0xF3AD66,0xF320E0),
+      (0xF335BD,0xFA92A0),(0xF335D2,0xF3E250),(0xF335DE,0xB87F10),(0xF335E9,0xF40040)],
+     [(0xF335C2,'a1a47a6c018b48746a00898e98010000'),(0xF335F5,'e966f00000'),
+      (0xF3AABB,'3d4947a407'),(0xF3ACAD,'8b470c3d383c180774123dd8421807740b3de8f82f07')]),
+    ('RefreshEnvironmentUI',0xF3AF60,'a1a47a6c0183ec0c538b5818',[(0xF3AA9C,0)],
+     'thiscall(EnvironmentUI),no stack arguments; tail F3A8D0; current tool ScenarioMode18, owned rootC, SetValue(value,false) for water/atmosphere/temperature sliders',
+     [(0xEE9175,0xF3AF60),(0xF3B13B,0xF3AF60),(0xEE8995,0xF3A310),
+      (0xF3B119,0xF3A3E0),(0xF3B0BD,0xF3A000)],
+     [(0xF3A321,'c700acd14801c7400890d1480189480c'),(0xEE89BB,'897e14'),
+      (0xEE9172,'8b4914'),(0xF3AF77,'8b4e0c'),(0xF3B125,'e9a6f7ffff'),
+      (0xF3B008,'68e8f82f07'),(0xF3B07D,'68d8421807'),(0xF3B0D8,'68383c1807'),
+      (0xF3B025,'8b106a008bc88b421c57ffd0'),(0xF3B09A,'8b106a008bc88b421c57ffd0'),
+      (0xF3B0F5,'8b106a008bc88b421c57ffd0')]),
     ('TerraformSetWaterType',0xF31BC0,'8b4424048d50ff83fa0e7715',[(0xF31BE1,4)],
      'thiscall(TerraformMode,int),ret4 or state tail FBAF20; bounded1..15 writes EC',[(0xF0D047,0xF31BC0)],[]),
     ('TerraformSetAtmosphereType',0xF31BF0,'8b4424048d50ff83fa0e7715',[(0xF31C11,4)],
@@ -350,6 +365,16 @@ def verify(pe):
                           (0xF34393,'e808925dff'),(0xF343A5,'e856f653ff')]:
         if pe.read(site,len(bytes.fromhex(encoded)))!=bytes.fromhex(encoded):
             raise ValueError('Deferred Terraform control layout mismatch '+hex(site))
+    # Native ISlider is a secondary interface at WinSlider+20C. Its SetValue
+    # consumes both value and notify; queued Flora replay supplies false and
+    # invokes the copied native input event explicitly after this UI update.
+    for site, encoded in [(0x985A35,'c7860c020000a84c4401'),
+                          (0x983A70,'8b4424043da0a8000f'),
+                          (0x983B31,'807c242800'),(0x983B80,'c20800')]:
+        if pe.read(site,len(bytes.fromhex(encoded)))!=bytes.fromhex(encoded):
+            raise ValueError('Native slider SetValue(value,notify) ABI mismatch '+hex(site))
+    if pe.u32(0x1444CA8+0x1C)!=0x983B10:
+        raise ValueError('Native ISlider SetValue slot mismatch')
     # Native active reference selectors explicitly choose custom rules, or the
     # matching standard pickup/give/track selector. Retained inactive targets
     # are authored bytes but cannot block loading a valid native adventure.
@@ -430,6 +455,8 @@ def verify(pe):
         raise ValueError('ScenarioResource::Read IStream count ABI mismatch')
     return [dict(name='SporeCoop::Editor::TerraformUIVTable',address=0x148AB50,
                  note='primary TerraformUI vtable; native display28 owns it, current FloraUI at18'),
+            dict(name='SporeCoop::Editor::EnvironmentUIVTable',address=0x148D1AC,
+                 note='primary EnvironmentUI vtable; ctorF3A321, TerraformUI14 owns it, rootIWindowC and IWinProc8'),
             dict(name='SporeCoop::Editor::FloraUIVTable',address=0x148AB98,
                  note='primary FloraUI vtable; rootIWindow168 and IWinProc8; re-resolve current card before deferred mutation')] + [{'name':'SporeCoop::Editor::'+n,'address':a,'note':s}
             for n,a,p,r,s,c,k in ENTRIES] + [dict(name='SporeCoop::Editor::History',address=0x16065D8,

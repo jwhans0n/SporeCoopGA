@@ -1249,3 +1249,55 @@ materialization 41,937, staged capture 1,662 and full Native 87,701 checks pass
 with zero drift across all 47 compiler/Make inputs. The earlier pre-fix RED is
 kept separately; an independent read-only review found no additional ownership
 or byte-closure gap in the private persisted-image normalization.
+
+### Water completion and native Environment refresh boundaries
+
+The ordinary Water slider `072FF8E8` has a completion boundary separate from
+`TerraformRebuild`. Environment handler `F3AAA0` handles its live
+`EF00A884` change through `F320E0` at `F3AD66`. For a changed-value completion
+`07A44749`, it calls `F335B0` at `F3ACDA`, then commits at `F3ACE1`.
+`F335B0` is a no-stack-argument thiscall on TerraformMode. It completes the
+terrain object at `+190`, refreshes ScenarioData through `F3E250(data,false)`,
+updates water contacts through `B87F10` and validation through `F40040`, then
+tail-calls `F42660`; the tail returns with plain `ret` at `F42858`.
+The Environment caller ignores EAX. A raw executable relative-reference scan
+finds only this direct caller; it does not exclude indirect calls.
+
+C28i's first ordinary Water drag reached this path before the existing
+`F37A00` q/XYZ observer. Capture then rejected an unwitnessed placement change
+before delivering a gesture for Runtime's inverse. The retained failure is
+`out/preview9-c28i-water-failure-full/result.json`; this is evidence for the
+missing completion observation, not a successful Water acceptance test.
+The new wrapper observes exact raw q/XYZ immediately after the original
+completion and before callbacks, and requires the same values again before
+publishing owned provenance. No numeric tolerance or Placement lease bypass
+is justified by this trace. Reviewed `F40040/F3FF30/F3FE10/F3B880(false)`
+direct stores affect validation companions, not marker q; global side effects
+of `FB7BC0/B87F10` are not a general setter-independence proof.
+
+EnvironmentUI constructor `F3A310` installs primary vtable `148D1AC` at
+`F3A321`, IWinProc vtable `148D190` at `+8`, and root IWindow at `+C`.
+TerraformUI allocates it at `EE8995` and retains it at `+14` (`EE89BB`);
+Scenario display owns TerraformUI at `+28`. Native category-3 refresh
+`EE9175` and show-true `F3B13B` call `F3AF60` with this exact owner.
+It takes no stack arguments and tail-calls `F3A8D0`, which returns at
+`F3AA9C`. It reads Water, Atmosphere and Temperature from the current tool and
+refreshes controls `072FF8E8`, `071842D8` and `07183C38`, respectively.
+Its reviewed tail updates checkbox, color, dirty and caption UI paths.
+
+All three slider updates pass `SetValue(value,false)`. WinSlider constructor
+`985A35` installs ISlider at `+20C`, vtable `1444CA8`; Cast `983A70` returns
+that interface for `0F00A8A0`. Slot `+1C` is `983B10`, which reads the notify
+argument at entry ESP+8 (body ESP+28), emits `EF00A884` only when nonzero, and
+returns `ret8` at `983B80`. Deferred Flora density replay must supply both
+arguments and use false because it explicitly replays the native input event
+after updating the owned slider. Its controlled tests cover one event, density
+endpoints and stale owner/layout/window rejection; live Flora acceptance is
+separate.
+
+Exact executable bytes, disassembly and the ABI verifier report are retained in
+`out/preview9-water-boundary/`. The symbol map and
+`tools/addrport/verify_editor_dc04.py` pin these boundaries to supported
+executable SHA `dc04aee5...dd5e59a37`. This proof permits an owner-fenced,
+later-frame Environment refresh outside rendering; it does not authorize a
+refresh inside Present or bypass Native input/history gates.
