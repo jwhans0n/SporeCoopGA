@@ -78,49 +78,70 @@ PACKAGE_ADMISSION_SRC := mods/coop/package_admission.cpp
 PACKAGE_ADMISSION_WINDOWS_SRC := $(PACKAGE_ADMISSION_SRC) mods/coop/package_admission_windows.cpp
 ADVENTURE_ASSETS_NATIVE_FIXTURE_SRC := $(PACKAGE_ADMISSION_WINDOWS_SRC) tests/adventure_assets_native_windows_tests.cpp mods/coop/net/adventure_assets.cpp mods/coop/net/dbpf.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp updater/sha256.cpp
 ADVENTURE_ABI_HEADERS := sdk/include/sporekit.h sdk/include/sporekit_game.hpp sdk/include/sporekit_build.hpp mods/coop/game.h mods/coop/net/protocol.h
-.PHONY: test-editor test-editor-windows
-test-editor: $(B)/host/editor_native_terrain_rotations_tests $(B)/host/editor_native_complexity_ratio_tests
-	@mkdir -p $(B)/host
+.PHONY: test-editor test-editor-windows editor-portable-deps-missing
+# The former inline portable builds are independent binaries. Capture all
+# translation units in one stdout dependency pass; multi-input -MMD/-MF would
+# overwrite earlier units' headers. Publish .d only after compilation succeeds.
+define editor_portable_compile
+@mkdir -p $(dir $@)
+@set -eu; dep="$@.d.tmp"; \
+trap 'rm -f "$$dep" "$@"' 0 1 2 3 15; \
+$(HOSTCXX) $(1) -MM -MP -MT "$@" $(2) > "$$dep"; \
+$(HOSTCXX) $(1) $(2) -o "$@"; \
+mv -f "$$dep" "$@.d"; \
+trap - 0 1 2 3 15
+endef
+define editor_portable_binary
+$(B)/host/$(1): $(3) Makefile
+	$$(call editor_portable_compile,$(2),$(3))
+endef
+EDITOR_INLINE_TEST_NAMES := editor_cast_tests editor_metrics_tests editor_stage_metrics_tests editor_authoring_extensions_tests editor_creation_png_carrier_tests editor_creation_zlib_tests editor_native_bindings_tests editor_native_pose_tests editor_native_terrain_tests editor_native_scale_tests editor_reopen_identity_tests editor_binary_delta_tests editor_document_tests editor_store_tests editor_protocol_tests editor_project_tests editor_session_tests editor_accounting_tests session_transport_tests
+EDITOR_INLINE_TEST_BINS := $(addprefix $(B)/host/,$(EDITOR_INLINE_TEST_NAMES))
+$(eval $(call editor_portable_binary,editor_cast_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include,$(EDITOR_WIRE_SRC) tests/editor_cast_tests.cpp))
+$(eval $(call editor_portable_binary,editor_metrics_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop,tests/editor_metrics_tests.cpp))
+$(eval $(call editor_portable_binary,editor_stage_metrics_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop,tests/editor_stage_metrics_tests.cpp))
+$(eval $(call editor_portable_binary,editor_authoring_extensions_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include,$(EDITOR_WIRE_SRC) tests/editor_authoring_extensions_tests.cpp))
+$(eval $(call editor_portable_binary,editor_creation_png_carrier_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror,tests/editor_creation_png_carrier_tests.cpp))
+$(eval $(call editor_portable_binary,editor_creation_zlib_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror,tests/editor_creation_zlib_tests.cpp))
+$(eval $(call editor_portable_binary,editor_native_bindings_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include,tests/editor_native_bindings_tests.cpp))
+$(eval $(call editor_portable_binary,editor_native_pose_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop,$(EDITOR_CORE_SRC) tests/editor_native_pose_tests.cpp))
+$(eval $(call editor_portable_binary,editor_native_terrain_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop,$(EDITOR_CORE_SRC) tests/editor_native_terrain_tests.cpp))
+$(eval $(call editor_portable_binary,editor_native_scale_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include,$(EDITOR_WIRE_SRC) tests/editor_native_scale_tests.cpp))
+$(eval $(call editor_portable_binary,editor_reopen_identity_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include,tests/editor_reopen_identity_tests.cpp))
+$(eval $(call editor_portable_binary,editor_binary_delta_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop,$(EDITOR_DELTA_SRC) tests/editor_binary_delta_tests.cpp))
+$(eval $(call editor_portable_binary,editor_document_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include,$(EDITOR_CORE_SRC) tests/editor_document_tests.cpp))
+$(eval $(call editor_portable_binary,editor_store_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop,mods/coop/editor_store.cpp $(EDITOR_DELTA_SRC) tests/editor_store_tests.cpp))
+$(eval $(call editor_portable_binary,editor_protocol_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop,$(EDITOR_WIRE_SRC) tests/editor_protocol_tests.cpp))
+$(eval $(call editor_portable_binary,editor_project_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include,$(EDITOR_PROJECT_SRC) tests/editor_project_tests.cpp))
+$(eval $(call editor_portable_binary,editor_session_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop,$(EDITOR_SESSION_SRC) tests/editor_session_tests.cpp))
+$(eval $(call editor_portable_binary,editor_accounting_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop,$(EDITOR_SESSION_SRC) tests/editor_accounting_tests.cpp))
+$(eval $(call editor_portable_binary,session_transport_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop,$(SESSION_TRANSPORT_SRC) tests/session_transport_tests.cpp))
+# Existing binaries from the old recipe need a first dependency-producing
+# rebuild too. This phony prerequisite disappears once the .d is present.
+editor-portable-deps-missing:
+$(foreach binary,$(EDITOR_INLINE_TEST_BINS),$(eval $(binary): $(if $(wildcard $(binary).d),,editor-portable-deps-missing)))
+-include $(wildcard $(EDITOR_INLINE_TEST_BINS:=.d))
+test-editor: $(B)/host/editor_native_terrain_rotations_tests $(B)/host/editor_native_complexity_ratio_tests $(EDITOR_INLINE_TEST_BINS) test-editor-pulse
 	$(B)/host/editor_native_terrain_rotations_tests
 	$(B)/host/editor_native_complexity_ratio_tests
-	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include $(EDITOR_WIRE_SRC) tests/editor_cast_tests.cpp -o $(B)/host/editor_cast_tests
 	$(B)/host/editor_cast_tests
-	@mkdir -p $(B)/host
-	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop tests/editor_metrics_tests.cpp -o $(B)/host/editor_metrics_tests
 	$(B)/host/editor_metrics_tests
-	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop tests/editor_stage_metrics_tests.cpp -o $(B)/host/editor_stage_metrics_tests
 	$(B)/host/editor_stage_metrics_tests
-	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include $(EDITOR_WIRE_SRC) tests/editor_authoring_extensions_tests.cpp -o $(B)/host/editor_authoring_extensions_tests
 	$(B)/host/editor_authoring_extensions_tests
-	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror tests/editor_creation_png_carrier_tests.cpp -o $(B)/host/editor_creation_png_carrier_tests
 	$(B)/host/editor_creation_png_carrier_tests
-	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror tests/editor_creation_zlib_tests.cpp -o $(B)/host/editor_creation_zlib_tests
 	$(B)/host/editor_creation_zlib_tests
-	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include tests/editor_native_bindings_tests.cpp -o $(B)/host/editor_native_bindings_tests
 	$(B)/host/editor_native_bindings_tests
-	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(EDITOR_CORE_SRC) tests/editor_native_pose_tests.cpp -o $(B)/host/editor_native_pose_tests
 	$(B)/host/editor_native_pose_tests
-	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(EDITOR_CORE_SRC) tests/editor_native_terrain_tests.cpp -o $(B)/host/editor_native_terrain_tests
 	$(B)/host/editor_native_terrain_tests
-	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include $(EDITOR_WIRE_SRC) tests/editor_native_scale_tests.cpp -o $(B)/host/editor_native_scale_tests
 	$(B)/host/editor_native_scale_tests
-	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include tests/editor_reopen_identity_tests.cpp -o $(B)/host/editor_reopen_identity_tests
 	$(B)/host/editor_reopen_identity_tests
-	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(EDITOR_DELTA_SRC) tests/editor_binary_delta_tests.cpp -o $(B)/host/editor_binary_delta_tests
 	$(B)/host/editor_binary_delta_tests
-	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include $(EDITOR_CORE_SRC) tests/editor_document_tests.cpp -o $(B)/host/editor_document_tests
 	$(B)/host/editor_document_tests
-	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop mods/coop/editor_store.cpp $(EDITOR_DELTA_SRC) tests/editor_store_tests.cpp -o $(B)/host/editor_store_tests
 	$(B)/host/editor_store_tests
-	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(EDITOR_WIRE_SRC) tests/editor_protocol_tests.cpp -o $(B)/host/editor_protocol_tests
 	$(B)/host/editor_protocol_tests
-	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include $(EDITOR_PROJECT_SRC) tests/editor_project_tests.cpp -o $(B)/host/editor_project_tests
 	$(B)/host/editor_project_tests
-	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(EDITOR_SESSION_SRC) tests/editor_session_tests.cpp -o $(B)/host/editor_session_tests
 	$(B)/host/editor_session_tests
-	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(EDITOR_SESSION_SRC) tests/editor_accounting_tests.cpp -o $(B)/host/editor_accounting_tests
 	$(B)/host/editor_accounting_tests
-	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(SESSION_TRANSPORT_SRC) tests/session_transport_tests.cpp -o $(B)/host/session_transport_tests
 	$(B)/host/session_transport_tests
 
 test-editor-windows: $(B)/host/package_admission_tests.exe $(B)/host/package_admission_windows_tests.exe $(B)/host/frame_metrics_tests.exe $(B)/host/editor_metrics_tests.exe $(B)/host/editor_native_bindings_tests.exe $(B)/host/editor_native_scale_tests.exe $(B)/host/editor_reopen_identity_tests.exe $(B)/host/editor_binary_delta_tests.exe $(B)/host/editor_document_tests.exe $(B)/host/editor_store_tests.exe $(B)/host/editor_protocol_tests.exe $(B)/host/editor_project_tests.exe $(B)/host/editor_session_tests.exe $(B)/host/session_transport_tests.exe $(B)/host/editor_native_save_tests.exe $(B)/host/adventure_editor_preview_tests.exe $(B)/host/editor_runtime_windows_tests.exe $(B)/host/adventure_assets_native_tests.exe

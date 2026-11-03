@@ -1238,3 +1238,27 @@ without a game or console connection:
 ```bash
 python3 tests/adventure_registration_tool_tests.py
 ```
+
+### Incremental portable editor tests
+
+Run `make -j2 test-editor B=out/editor-tests HOSTCXX=clang++` from the repository
+root. The former 19 inline compile/run pairs are independent binary targets,
+so make can schedule their builds and skip unchanged compilations. Every test
+still runs on each invocation, including the existing pure pulse target.
+
+Each converted binary captures all translation units' transitive user headers
+with one `-MM -MP -MT` stdout pass. Its dependency file is installed atomically
+after successful compilation; a failed pass preserves the previous complete
+dependency file and cannot leave a stale binary eligible for testing. Existing
+binaries without dependency files rebuild once. The Makefile is also a normal
+prerequisite so edits to in-file flags/source lists rebuild these targets.
+Compiler flags and source order are unchanged. Use a separate `B` for concurrent
+builds and a fresh one when changing command-line compiler/flags;
+object/toolchain caching is outside this change.
+
+To exercise a shared-header rebuild without editing source or its timestamp,
+use `make -j2 -W mods/coop/net/connection.h test-editor B=out/editor-tests`.
+The bounded build/command/count regression receipt is retained under
+`out/editor-preview9-make-incremental/`; it compares the old command expansion,
+checks unchanged reruns, exact affected binaries and dependency-write failure.
+These checks do not establish a measured wall-clock speedup.
