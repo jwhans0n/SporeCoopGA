@@ -1,4 +1,5 @@
 #include "editor_saved_dependencies_fixture.h"
+#include <cstdio>
 #include <cstdlib>
 #include <new>
 #include <type_traits>
@@ -36,6 +37,15 @@ static void codec_cases(const Fixture& f){
     bad("custom bytes absent from admission",[](auto&,auto&,auto& a){a.pop_back();});
     bad("same admitted key different bytes",[](auto&,auto&,auto& a){a.front().data.back()^=1;});
     bad("same selected key different bytes",[](auto&,auto& s,auto&){s.front().data.back()^=1;});
+    for(bool changed:{false,true}){
+        auto admitted=f.admitted;auto selected=f.selected;const auto key=admitted.front().key;
+        if(changed)admitted.front().data.back()^=1;else admitted.erase(admitted.begin());
+        Receipt retained=f.receipt;
+        check(!make(f.domain,f.inventory.saved,f.raw,f.inventory,selected,admitted,retained,error),"admission diagnostic remains rejecting");
+        char label[32];std::snprintf(label,sizeof label,"%08X!%08X.%08X",key.group,key.instance,key.type);
+        check(error.find(label)!=std::string::npos && error.find(changed?"different bytes":"missing admitted record")!=std::string::npos &&
+            encoded(retained)==f.golden,"exact key and missing/different diagnostic without payload disclosure or publication");++cases;
+    }
     bad("duplicate selected record",[](auto&,auto& s,auto&){s.push_back(s.front());});
     bad("duplicate admitted record",[](auto&,auto&,auto& a){a.push_back(a.front());});
     bad("old transport root retained",[](auto&,auto& s,auto& a){Record old{{0xE303AC15,kScenario,0x408A0000},Bytes{1,2}};s.push_back(old);a.push_back(old);});

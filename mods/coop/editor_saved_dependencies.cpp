@@ -1,6 +1,7 @@
 #include "editor_saved_dependencies.h"
 #include "../../updater/sha256.h"
 #include <algorithm>
+#include <cstdio>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -15,6 +16,7 @@ bool full(Key k){return k.instance && k.type;}
 bool empty(Key k){return k==Key{};}
 bool hash(const std::string& s){return s.size()==64 && std::all_of(s.begin(),s.end(),[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');}) && s!=std::string(64,'0');}
 std::string digest(std::span<const uint8_t> b){return upd::sha256_hex(b.data(),b.size());}
+std::string key_text(Key key){char text[32];std::snprintf(text,sizeof text,"%08X!%08X.%08X",key.group,key.instance,key.type);return text;}
 bool family(uint32_t type){return type==0x2B978C46 || type==0x2399BE55 || type==0x24682294 || type==0x476A98C7 || type==0x438F6347 || type==0x3D97A8E4;}
 bool companion(Key k,Key asset){
     if(k.instance!=asset.instance)return false;
@@ -76,7 +78,10 @@ bool make(const Domain& domain,Key saved,std::span<const uint8_t> genuine_raw,co
             need(full(row.key) && selected.emplace(row.key,&row.data).second && row.data.size()<=kMaxRecordBytes && row.data.size()<=kMaxPayloadBytes-collected_bytes,"Collected list duplicate/budget");collected_bytes+=row.data.size();
             if(row.key==saved || root_companion(row.key,saved))continue;
             need(row.key.type!=kScenario,"Foreign/old transport scenario root is not a dependency");
-            const auto prior=canonical.find(row.key);need(prior!=canonical.end() && *prior->second==row.data,"Selected custom dependency was not admitted immutably");candidate.records.push_back(row);}
+            const auto prior=canonical.find(row.key);
+            if(prior==canonical.end())throw std::runtime_error("Selected custom dependency was not admitted immutably: "+key_text(row.key)+" missing admitted record");
+            if(*prior->second!=row.data)throw std::runtime_error("Selected custom dependency was not admitted immutably: "+key_text(row.key)+" different bytes");
+            candidate.records.push_back(row);}
         std::sort(candidate.records.begin(),candidate.records.end(),[](const auto& a,const auto& b){return order(a.key)<order(b.key);});
         validate(candidate);out=std::move(candidate);error.clear();return true;
     }catch(const std::exception& e){error=e.what();return false;}
