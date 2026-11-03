@@ -165,6 +165,13 @@ def require_source_controls(hits,controls):
         raise FixtureError('The measured native drag source or its owning control is absent')
 
 
+def require_planet_change(changed,expected,recipe_change):
+    if changed-RECIPE_FIELDS != expected:
+        raise FixtureError('The native control changed planet fields outside its exact measured set')
+    if bool(changed&RECIPE_FIELDS) != recipe_change:
+        raise FixtureError('The native recipe change did not match its measured control family')
+
+
 def guarded_input_steps(game,case,phase,label,record_guard):
     guards={row['step']:row for row in case.get('source_guards',[]) if row['phase']==phase}
     for index,step in enumerate(case.get(phase,[])):
@@ -214,8 +221,9 @@ def validate_recipe(data):
                 raise ValueError('Distinct measured native source/owner control IDs are required')
             guard['controls']=[value.upper() for value in controls];seen.add((phase,step))
         fields = case.get('planet_fields', [])
-        if not isinstance(fields, list) or any(not isinstance(v, str) or not re.fullmatch('[0-9a-fA-F]{8}', v) for v in fields):
-            raise ValueError('Expected planet fields must be eight-digit hexadecimal IDs')
+        if (not isinstance(fields,list) or any(not isinstance(v,str) or not re.fullmatch('[0-9a-fA-F]{8}',v) or int(v,16) not in PLANET_FIELDS for v in fields) or
+                len({value.upper() for value in fields})!=len(fields)):
+            raise ValueError('Expected planet fields must be distinct supported eight-digit IDs')
         if type(case.get('recipe_change', False)) is not bool:
             raise ValueError('recipe_change must be Boolean')
         if case['family'].startswith('crew_') and (fields or case.get('recipe_change')):
@@ -317,10 +325,7 @@ def run(args):
                 if crew and (changed or after_history[-1][-1] != 'Edit adventure crew'):
                     raise FixtureError('The Crew UI case changed another authoring family')
                 if not crew:
-                    if changed-(PLANET_FIELDS|RECIPE_FIELDS) or expected and not expected <= changed:
-                        raise FixtureError('The native control did not change its expected planet fields')
-                    if bool(changed&RECIPE_FIELDS) != bool(case.get('recipe_change', False)):
-                        raise FixtureError('The native recipe change did not match its measured control family')
+                    require_planet_change(changed,expected,bool(case.get('recipe_change',False)))
                     if after_history[-1][-1] not in ('Edit planet settings', 'Terraform adventure'):
                         raise FixtureError('The Terraform input committed an unrelated authoring family')
                 record(label+'-committed')
@@ -392,6 +397,16 @@ def self_test(root):
     rejects(lambda:require_source_controls('08D0F4FB 0 0 1024 768 enabled=1\n',['073933B8']))
     rejects(lambda:require_source_controls(hits.replace('073933B8','1073933B8'),['073933B8']))
     rejects(lambda:require_source_controls(hits.replace('enabled=1','enabled=0'),['073933B8']))
+    require_planet_change({0x03A23F98},{0x03A23F98},False);check(True)
+    require_planet_change({0x02A907B5,0x02A907B6},set(),True);check(True)
+    require_planet_change({0x03A23F98,0x02A907B5},{0x03A23F98},True);check(True)
+    rejects(lambda:require_planet_change({0x03A23F98,0x8E390196},{0x03A23F98},False))
+    rejects(lambda:require_planet_change({0x03A23F98,0x02A907B5},{0x03A23F98},False))
+    rejects(lambda:require_planet_change({0x03A23F98},{0x03A23F98},True))
+    rejects(lambda:require_planet_change({0xDEADBEEF},{0x03A23F98},False))
+    for fields in (['03A23F98','03a23f98'],['DEADBEEF'],['02A907B5']):
+        invalid=copy.deepcopy(sample);invalid['cases'][0]['planet_fields']=fields
+        rejects(lambda:validate_recipe(invalid),ValueError)
     class FakeGame:
         def __init__(self,response):self.response=response;self.calls=[]
         def call(self,command):self.calls.append(command);return self.response

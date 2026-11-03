@@ -16,7 +16,7 @@ import time
 from coop_adventure import FixtureError
 from coop_adventure_editor import EditorPair,status
 from coop_editor_creations import input_steps,validate_steps,verify_viewport
-from coop_editor_crew_terrain import TerrainConsole,native_planet
+from coop_editor_crew_terrain import TerrainConsole,native_planet,require_source_controls
 from coop_editor_party import Ownership,PublicGame,parse_context,parse_history,parse_identity
 
 EFFECT_COLUMNS=((0x02A907B5,0x20,12),(0x02A907B6,0x38,56),(0x03A23F97,0xD,4),
@@ -78,8 +78,9 @@ def require_capabilities(instances,rows,pinned):
 
 
 def require_source_card(hits):
-    if not re.search(r'(?<![0-9a-f])(?:0x)?073933b8(?![0-9a-f])',hits,re.I):
-        raise FixtureError('The measured BasicTools card073933B8 is not visible at the stroke source')
+    try:require_source_controls(hits,['073933B8'])
+    except FixtureError:
+        raise FixtureError('The measured BasicTools card073933B8 is not enabled at the stroke source') from None
 
 
 class TerrainPartyConsole(TerrainConsole):
@@ -309,10 +310,13 @@ def self_test():
     check({row[:2] for row in entries}!={(0,1),(1,4)})
     rejects(lambda:checked_history(history.replace('count=2','count=3')))
     rejects(lambda:checked_history(history.split('author=1:3')[0]))
-    require_source_card('073933B8 card\n72DF4CEE owner');check(True)
-    require_source_card('id=0x073933b8 native card');check(True)
+    require_source_card('073933B8 728 128 798 197 enabled=1 Window card\n');check(True)
+    require_source_card('073933b8 728 128 798 197 enabled=1 Window card\n');check(True)
     rejects(lambda:require_source_card('07108388 scene\n00000004 category'))
     rejects(lambda:require_source_card('1073933B8 unrelated ID'))
+    rejects(lambda:require_source_card('073933B8 728 128 798 197 enabled=0 Window card\n'))
+    rejects(lambda:require_source_card("08D0F4FB 0 0 1024 768 enabled=1 Window '073933B8'\n"))
+    rejects(lambda:require_source_card('id=0x073933b8 native card'))
     print(json.dumps(dict(self_test=True,checks=checks,native_calls=False)))
 
 
