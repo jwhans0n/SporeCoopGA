@@ -134,6 +134,9 @@ def run(args):
                 "B44EC3DB " in (hit:=author.call('coop.ui at 500 40')) and "'Choose one or more Creatures'" in hit)
             # The visible native title is "Choose one or more Creatures".
             # A hidden "Choose A Crew Member" caption is not a readiness test.
+            # A retained sort can exclude stock cards lacking that metadata.
+            # Select the measured native Name sort before the bounded search.
+            author.click_control(0x4543C5EC)
             search=args.search or 'Spice';card=args.card or 'Spice Crawler'
             # Posted Ctrl+A is interpreted as text by this native search box.
             # Use its freshly measured clear button instead of a modifier.
