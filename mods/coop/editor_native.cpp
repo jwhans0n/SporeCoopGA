@@ -64,6 +64,7 @@ uintptr_t a_mode, a_history, a_act, a_ctor, a_read, a_write, a_copy, a_entry, a_
 uintptr_t a_context, a_tools, a_marker, a_object, a_clone_marker, a_create_marker, a_delete_marker, a_apply_marker;
 uintptr_t a_loading, a_layout_find, a_display_vtable, a_erase_history, a_discard_history, a_copy_marker_rows, a_insert_marker;
 uintptr_t a_history_undo_return,a_history_redo_return;
+uintptr_t a_environment_ui_refresh,a_environment_ui_vtable;
 uintptr_t a_entry_vtable;
 uintptr_t a_tool_tick;
 uintptr_t a_copy_class_rows,a_copy_class,a_insert_class;
@@ -1448,6 +1449,7 @@ struct TerrainCaptureRotations {
     editor::ResourceKey source;
     uintptr_t first=0,last=0;
     std::vector<Row> canonical,rendered;
+    std::vector<uint32_t> native_keys;
     editor_native_terrain_rotations::Witness values;
     bool raw_current()const{
         try{
@@ -1473,12 +1475,13 @@ struct TerrainCaptureRotations {
         Rows markers;if(!rows(resource,0x2C10,0x238,kPlacementLimit,markers))return false;
         size_t count=0;
         for(auto p=markers.begin;p!=markers.end;p+=0x238)if(live_slot(p)){
-            if(count>=expected.size())return false;
-            const auto& row=expected[count++];const auto slot=slot_index(markers,p);
+            if(count>=expected.size() || count>=native_keys.size())return false;
+            const auto key=native_keys[count];const auto& row=expected[count++];const auto slot=slot_index(markers,p);
             if(row.object!=marker_id(slot) || row.slot!=slot || row.class_index!=skg::field<uint32_t>(p,4) ||
+               key!=skg::field<uint32_t>(p,0x22C) ||
                !editor_native_terrain_rotations::exact(row.q,skg::field<editor::Rotation>(p,0x14)))return false;
         }
-        return count==expected.size() && raw_current();
+        return count==expected.size() && count==native_keys.size() && raw_current();
     }
     bool collect(std::vector<Row>& out,bool same_rendered,std::string& error)const{
         try{
@@ -1488,11 +1491,11 @@ struct TerrainCaptureRotations {
         out.clear();out.reserve(canonical.size());
         for(auto p=markers.begin;p!=markers.end;p+=0x238)if(live_slot(p)){
             const auto slot=slot_index(markers,p);const auto object=marker_id(slot);
-            if(out.size()>=canonical.size())return expired();
+            if(out.size()>=canonical.size() || out.size()>=native_keys.size())return expired();
             const auto& row=canonical[out.size()];if(row.object!=object)return expired();
             const auto revision=C.object_revision(object);
             if(!current() || !revision || *revision!=row.revision || row.slot!=slot ||
-               skg::field<uint32_t>(p,4)!=row.class_index)return expired();
+               skg::field<uint32_t>(p,4)!=row.class_index || skg::field<uint32_t>(p,0x22C)!=native_keys[out.size()])return expired();
             const auto q=skg::field<editor::Rotation>(p,0x14);
             if(!editor_native_terrain_rotations::finite(q))return expired();
             if(same_rendered){
@@ -1525,6 +1528,7 @@ bool begin_terrain_capture_rotations(const Snapshot& before,std::string& error){
         ticket->first=uintptr_t(markers.begin);ticket->last=uintptr_t(markers.end);
         if(!ticket->current())return false;
         ticket->canonical.reserve(before.document.placements.size());
+        ticket->native_keys.reserve(before.document.placements.size());
         for(auto p=markers.begin;p!=markers.end;p+=0x238)if(live_slot(p)){
             const auto slot=slot_index(markers,p);const auto object=marker_id(slot);
             auto wanted=before.document.placements.find(object);
@@ -1534,6 +1538,7 @@ bool begin_terrain_capture_rotations(const Snapshot& before,std::string& error){
             const auto revision=C.object_revision(object);
             if(!ticket->current() || !revision){error="The native terrain rotation before-image expired";return false;}
             ticket->canonical.push_back({object,slot,uint32_t(wanted->second.class_id.id),*revision,wanted->second.rotation});
+            ticket->native_keys.push_back(skg::field<uint32_t>(p,0x22C));
         }
         if(ticket->canonical.size()!=before.document.placements.size() ||
            !ticket->collect(ticket->rendered,false,error) || !ticket->values.observe(ticket->rendered,ticket->rendered,ticket->canonical,error))return false;
@@ -1953,6 +1958,7 @@ RecentMatches capture_pose_resource(void* r,uint32_t act,const Snapshot& before,
 using HistoryFn = void(SK_THISCALL*)(void*);
 HistoryFn original_start, original_commit, original_undo, original_redo;
 HistoryFn original_terrain_start,original_terrain_commit,original_terrain_rebuild,original_terrain_discard,original_terrain_undo,original_terrain_materialize;
+HistoryFn original_terrain_complete_water;
 using TerrainLoadFn=void(SK_THISCALL*)(void*,void*);
 using TerrainRemoveFn=void(SK_THISCALL*)(void*,void*);
 using TerrainUpdateFn=void(SK_THISCALL*)(void*,bool);
@@ -2543,6 +2549,66 @@ void remember_grounding(const editor::Document& document){
         if(actual!=row.position)terrain_grounding.emplace(id,Grounding{actual,row.position});
     }
 }
+bool creation_terrain_placements(const Snapshot&,std::vector<CreationTerrainProof::Placement>&,std::string&);
+bool creation_terrain_placements_current(const CreationTerrainProof&,bool,std::string&);
+bool exact_grounding_position(const editor::Vec3&,const editor::Vec3&);
+void SK_THISCALL terrain_complete_water(void* self){
+    if(applying){original_terrain_complete_water(self);return;}
+    try{
+        const auto rotations=terrain_capture_rotations;const auto authorizing=C.gesture_scope;
+        if(!active()){
+            if(rotations || terrain_before){terrain_capture_rotation_error="The native Water completion lost its original shared gesture";return;}
+            original_terrain_complete_water(self);return;
+        }
+        std::string error;std::vector<TerrainCaptureRotations::Row> before;
+        const auto authorized=[&]{return rotations && terrain_capture_rotations && terrain_before && !terrain_pending &&
+            self==terraform_mode() && terrain_owner==rotations->data && terrain_generation==rotations->generation &&
+            terrain_scope==rotations->scope && authorizing && authorizing()==terrain_scope;};
+        if(!authorized() || !terrain_capture_rotations_current(rotations,error) || !rotations->collect(before,true,error)){
+            terrain_capture_rotation_error=error.empty()?"The native Water completion has no current owned gesture":error;return;
+        }
+        // Water's native completion grounds through F335B0, before F34400's
+        // later F37A00 rebuild. Retain exact input XYZ as well as q; an unrelated
+        // preexisting position change cannot acquire a grounding map here.
+        CreationTerrainProof grounding;grounding.entry=*terrain_before;
+        if(!creation_terrain_placements(grounding.entry,grounding.placements,error) || !authorized() ||
+           !rotations->raw_rows(before) || !creation_terrain_placements_current(grounding,true,error)){
+            terrain_capture_rotation_error=error.empty()?"The native Water grounding before-image expired":error;return;
+        }
+        struct Applying {bool prior=applying;Applying(){applying=true;}~Applying(){applying=prior;}};
+        {Applying guard;original_terrain_complete_water(self);}
+        // Sample the native result before invoking ANY policy/identity
+        // callback. A callback's subsequent pose write is not native grounding.
+        if(!rotations->raw_current()){
+            terrain_capture_rotation_error="The native Water completion replaced its original scene";return;
+        }
+        auto after=before;
+        std::map<editor::ObjectId,Grounding> mapped;
+        for(size_t i=0;i<grounding.placements.size();++i){auto& row=grounding.placements[i];
+            auto* marker=marker_for_key(rotations->resource,row.live.marker);
+            if(!marker || marker_id(row.live.marker)!=row.live.object || skg::field<uint32_t>(marker,0)!=row.class_index ||
+               skg::field<uint32_t>(marker,0x228)!=row.native_key){
+                terrain_capture_rotation_error="The native Water grounding changed a placement binding";return;
+            }
+            after[i].q=skg::field<editor::Rotation>(marker,0x10);
+            row.rendered=skg::field<editor::Vec3>(marker,4);row.grounded=false;
+            if(!editor_native_terrain_rotations::finite(after[i].q) ||
+               !std::isfinite(row.rendered.x)||!std::isfinite(row.rendered.y)||!std::isfinite(row.rendered.z)){
+                terrain_capture_rotation_error="The native Water grounding returned an invalid position";return;
+            }
+            if(!exact_grounding_position(row.rendered,row.authored))mapped.emplace(row.live.object,Grounding{row.rendered,row.authored});
+        }
+        if(!rotations->raw_rows(after) || !authorized() || !finish_terrain_capture_rebuild(rotations,before,error)){
+            terrain_capture_rotation_error=error.empty()?"The native Water grounding owner expired":error;return;
+        }
+        const auto settled=terrain_capture_rotations;
+        if(!terrain_capture_rotations_current(settled,error) || !authorized() ||
+           !creation_terrain_placements_current(grounding,true,error) || !settled->raw_rows(after)){
+            terrain_capture_rotation_error=error.empty()?"The native Water grounding changed before its value proof closed":error;return;
+        }
+        terrain_grounding.swap(mapped); // Values only; no live pose is written.
+    }catch(...){terrain_capture_rotation_error="The native Water grounding callback or allocation failed";}
+}
 bool same_terrain(const editor::Document& left,const editor::Document& right){
     const auto a=editor::terrain_recipe(left),b=editor::terrain_recipe(right);
     if(a.size()!=b.size())return false;
@@ -3028,7 +3094,7 @@ bool replay_flora_control(const HeldTerrainControl& item){
         if(maximum<=0 || !std::isfinite(density) || density<0 || density>1 || !terrain_begin(terraform_mode()))return false;
         original_terrain_start(terraform_mode());
         const auto prior=applying;applying=true;
-        skg::vcall<void>(slider,0x1C/4,int32_t(std::lround(double(density)*maximum)));
+        skg::vcall<void>(slider,0x1C/4,int32_t(std::lround(double(density)*maximum)),false);
         sui::Msg message{card,0,int32_t(0xEF00A884),0x072BFDFD,0,0,0};
         original_flora_input(static_cast<uint8_t*>(ui)+8,card,&message);applying=prior;
         terrain_commit(terraform_mode());
@@ -4161,6 +4227,90 @@ bool creation_terrain_raw_owner(const SceneOwner& owner,uint64_t expected_genera
         uintptr_t(r)==owner.resource && uintptr_t(terraform_mode())==tool && skg::readable(r,kResourceSize) &&
         skg::field<editor::ResourceKey>(r,8)==owner.source;
 }
+struct EnvironmentRefresh {
+    SceneOwner owner;GestureScope scope;
+    uint64_t generation=0,serial=0,frame=0,gesture=0,terrain=0;
+    uintptr_t tool=0;double started=0;
+};
+struct EnvironmentUiOwner {
+    void* display=nullptr;void* layout=nullptr;void* terraform=nullptr;void* environment=nullptr;void* root=nullptr;
+    bool operator==(const EnvironmentUiOwner&)const=default;
+};
+std::optional<EnvironmentRefresh> environment_refresh;
+uint64_t environment_refresh_serial=0,environment_ui_updates=0,environment_ui_expired=0;
+bool environment_refresh_queued=false,environment_refresh_servicing=false;
+void clear_environment_refresh(){environment_refresh.reset();}
+bool environment_interaction_idle(){
+    return !applying && !gesture_before_resource && pending.empty() && !staged_pose && !terrain_before && !terrain_pending &&
+        held_terrain_controls.empty() && !held_terrain_preset && !held_tool && !cancellation &&
+        skg::readable(reinterpret_cast<void*>(a_history),0x21) && *reinterpret_cast<uint8_t*>(a_history+0x20)!=0;
+}
+bool environment_refresh_current(const EnvironmentRefresh& pin,bool published=true){
+    try{
+        const auto retained=[&]{return !published || (pin.serial && environment_refresh && environment_refresh->serial==pin.serial);};
+        // Never cache memory probes across these native/policy callbacks.
+        if(!retained() || !supported || !active() || !retained() || value_scope()!=pin.scope || !retained())return false;
+        return retained() && valid_scope(pin.scope) && generation==pin.generation && gesture_counter==pin.gesture &&
+            terrain_rotation_serial==pin.terrain && environment_interaction_idle() &&
+            creation_terrain_raw_owner(pin.owner,pin.generation,pin.tool);
+    }catch(...){return false;}
+}
+bool current_environment_ui(EnvironmentUiOwner& out){
+    skg::ReadOnlyMemoryScope memory;
+    auto* m=mode();auto* display=skg::readable(m,0x18)?skg::field<void*>(m,0x14):nullptr;
+    if(!a_environment_ui_refresh || !a_environment_ui_vtable || !a_terraform_ui_vtable ||
+       !skg::readable(display,0x2C) || (a_display_vtable&&skg::field<uintptr_t>(display,0)!=a_display_vtable) ||
+       skg::field<uint32_t>(display,0x1C)!=2)return false;
+    auto* terraform=skg::field<void*>(display,0x28);auto* layout=skg::field<void*>(display,0x24);
+    if(!skg::readable(terraform,0x2C) || skg::field<uintptr_t>(terraform,0)!=a_terraform_ui_vtable ||
+       skg::field<uint32_t>(terraform,0x28)!=3 || !skg::readable(layout,0x18))return false;
+    auto* environment=skg::field<void*>(terraform,0x14);
+    if(!skg::readable(environment,0x40) || skg::field<uintptr_t>(environment,0)!=a_environment_ui_vtable)return false;
+    auto* root=skg::field<void*>(environment,0x0C);if(!skg::readable(root,0x80))return false;
+    out={display,layout,terraform,environment,root};return true;
+}
+void request_environment_refresh(){
+    if(!a_environment_ui_refresh || !a_environment_ui_vtable || !H || !H->frame_index || !H->time_seconds ||
+       environment_refresh_serial==UINT64_MAX)return;
+    try{
+        EnvironmentRefresh pin;pin.generation=generation;pin.frame=H->frame_index();pin.started=H->time_seconds();
+        pin.gesture=gesture_counter;pin.terrain=terrain_rotation_serial;pin.tool=uintptr_t(terraform_mode());
+        auto* m=mode();auto* d=data(m);auto* r=resource(d);if(!skg::readable(r,kResourceSize))return;
+        pin.owner={uintptr_t(m),uintptr_t(d),uintptr_t(r),skg::field<editor::ResourceKey>(r,8)};pin.scope=value_scope();
+        if(!environment_refresh_current(pin,false))return;
+        pin.serial=++environment_refresh_serial;environment_refresh=pin;
+    }catch(...){ } // Optional UI synchronization never changes authored state.
+}
+void SK_CDECL drain_environment_refresh(void*){
+    if(environment_refresh_servicing)return;
+    struct Completion {
+        Completion(){environment_refresh_queued=environment_refresh_servicing=true;}
+        ~Completion(){environment_refresh_queued=environment_refresh_servicing=false;}
+    } completion;
+    if(!environment_refresh)return;
+    const auto pin=*environment_refresh;
+    const auto drop=[&]{if(environment_refresh&&environment_refresh->serial==pin.serial)environment_refresh.reset();};
+    try{
+        if(!H || !H->frame_index || !H->time_seconds || H->time_seconds()-pin.started>3 || !environment_refresh_current(pin)){
+            drop();++environment_ui_expired;return;
+        }
+        if(H->frame_index()<=pin.frame)return;
+        const auto native=state();
+        if(!environment_refresh_current(pin)){drop();++environment_ui_expired;return;}
+        if(!native.ready || native.gesture || !terrain_settled() || deferred_local_view || local_view_settling)return;
+        EnvironmentUiOwner owner,checked;
+        if(!current_environment_ui(owner)){drop();return;} // Preserve current browsing.
+        if(!environment_refresh_current(pin) || !current_environment_ui(checked) || checked!=owner){
+            drop();++environment_ui_expired;return;
+        }
+        // Native F3AF60 uses ISlider::SetValue(value,false), then updates its
+        // existing captions/flags. It sends no authoring setter notification.
+        skg::thiscall<void>(a_environment_ui_refresh,owner.environment);
+        if(environment_refresh_current(pin) && current_environment_ui(checked) && checked==owner)++environment_ui_updates;
+        else ++environment_ui_expired;
+        drop();
+    }catch(...){drop();++environment_ui_expired;}
+}
 editor::Document act_binding_identity(const editor::Document& document){
     editor::Document result;result.act_order=document.act_order;
     result.project=document.project;result.epoch=document.epoch;result.next_id=document.next_id;
@@ -4587,6 +4737,7 @@ void SK_CDECL drain_local_view(void*){
 }
 
 bool init(const SkHost* host, SkMod* mod, Ctx context) {
+    clear_environment_refresh();
     script_events=0;
     input_speech=false;
     H = host; M = mod; C = std::move(context);
@@ -4627,6 +4778,8 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     a_terrain_loaded=H->sym("SporeCoop::Editor::TerrainLoaded");
     a_terrain_vtable=H->sym("SporeCoop::Editor::TerrainVTable");
     a_terraform_ui_vtable=H->sym("SporeCoop::Editor::TerraformUIVTable");
+    a_environment_ui_refresh=H->sym("SporeCoop::Editor::RefreshEnvironmentUI");
+    a_environment_ui_vtable=H->sym("SporeCoop::Editor::EnvironmentUIVTable");
     a_flora_ui_vtable=H->sym("SporeCoop::Editor::FloraUIVTable");
     a_copy_class_acts=H->sym("SporeCoop::Editor::CopyClassActs");a_copy_marker_acts=H->sym("SporeCoop::Editor::CopyMarkerActs");
     a_insert_act=H->sym("SporeCoop::Editor::InsertAct");a_insert_class_act=H->sym("SporeCoop::Editor::InsertClassAct");a_insert_marker_act=H->sym("SporeCoop::Editor::InsertMarkerAct");
@@ -4717,7 +4870,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
         std::memcpy(complexity_installed_code.data(),reinterpret_cast<void*>(a_complexity_ratio),complexity_installed_code.size());
         complexity_code_pinned=complexity_available=true;
     }
-    terrain_available=supported && a_terrain_load && a_copy_terrain_properties && a_terrain_rebuild && a_terrain_materialize && a_terrain_selection && a_terrain_loaded && a_terrain_vtable && a_terraform_ui_vtable && a_flora_ui_vtable &&
+    terrain_available=supported && a_terrain_load && a_copy_terrain_properties && a_terrain_rebuild && a_terrain_materialize && a_terrain_selection && a_terrain_loaded && a_terrain_vtable && a_terraform_ui_vtable && a_flora_ui_vtable && a_environment_ui_refresh && a_environment_ui_vtable &&
         install("SporeCoop::Editor::TerraformInitializeResource",(void*)terrain_resource_init,(void**)&original_terrain_resource_init) &&
         install("SporeCoop::Editor::TerraformActivate",(void*)terrain_activate,(void**)&original_terrain_activate) &&
         install("SporeCoop::Editor::TerraformStartHistory",(void*)terrain_start,(void**)&original_terrain_start) &&
@@ -4727,6 +4880,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
         install("SporeCoop::Editor::TerraformLoadProperties",(void*)terrain_load,(void**)&original_terrain_load) &&
         install("SporeCoop::Editor::TerraformBuildProperties",(void*)terrain_build,(void**)&original_terrain_build) &&
         install("SporeCoop::Editor::TerraformRebuild",(void*)terrain_rebuild,(void**)&original_terrain_rebuild) &&
+        install("SporeCoop::Editor::TerraformCompleteWater",(void*)terrain_complete_water,(void**)&original_terrain_complete_water) &&
         install("SporeCoop::Editor::TerraformMaterialize",(void*)terrain_materialize,(void**)&original_terrain_materialize) &&
         install("SporeCoop::Editor::TerraformRemoveObject",(void*)terrain_remove,(void**)&original_terrain_remove) &&
         install("SporeCoop::Editor::TerraformUpdateObject",(void*)terrain_update,(void**)&original_terrain_update) &&
@@ -4750,6 +4904,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
 }
 
 void shutdown() {
+    clear_environment_refresh();
     staged_pose.reset();
     clear_terrain_capture_rotations();
     if(terrain_read_identity)terrain_read_identity->invalid=true;
@@ -4782,6 +4937,9 @@ void shutdown() {
 void tick(){
     if(deferred_local_view && !local_view_queued){local_view_queued=true;H->run_outside_frame(drain_local_view,nullptr);}
     if(!H)return;
+    if(environment_refresh && !environment_refresh_queued && !environment_refresh_servicing){
+        environment_refresh_queued=true;H->run_outside_frame(drain_environment_refresh,nullptr);
+    }
     if(terrain_pending && !terrain_queued){terrain_queued=true;H->run_outside_frame(drain_terrain,nullptr);}
     if(!terrain_materialization_error.empty() && !terrain_materialization_error_queued && !terrain_materialization_error_reported){terrain_materialization_error_queued=true;H->run_outside_frame(materialization_failure,nullptr);}
     if(!pending.empty() && !queued){queued=true;H->run_outside_frame(drain,nullptr);}
@@ -4810,7 +4968,7 @@ State state() {
         bindings.clear();incarnations.clear();selection.clear();act_identity={};
         terrain_before.reset();terrain_pending=terrain_capturing=terrain_rebuilding=terrain_recipe_replacement=false;terrain_grounding.clear();materialized_terrain.reset();
         clear_terrain_materialization();
-        deferred_local_view.reset();held_terrain_controls.clear();held_terrain_preset.reset();held_tool.reset();
+        deferred_local_view.reset();clear_environment_refresh();held_terrain_controls.clear();held_terrain_preset.reset();held_tool.reset();
         gesture_before_metadata.reset();gesture_metadata_error.clear();
     }
     s.generation = generation;
@@ -5837,6 +5995,8 @@ bool restore_impl(const Snapshot& snapshot,const RestoreFence* fence,std::string
             if(!restore_view_fenced(*local_view,fence->generation,fence->owner,fence->scope,fence->current,error))return false;
         }else if(!restore_view(*local_view,generation,error))return false;
     }
+    if(!checked())return false;
+    if(rebuild_terrain)request_environment_refresh();
     return checked();
 }
 bool restore(const Snapshot& snapshot,std::string& error){return restore_impl(snapshot,nullptr,error);}
@@ -6888,6 +7048,8 @@ std::string status() {
         " history_ui_redo="+std::to_string(history_ui_redo)+
         " history_ui_changes="+std::to_string(history_ui_changes)+
         " history_ui_expired="+std::to_string(history_ui_expired)+
+        " environment_ui_updates="+std::to_string(environment_ui_updates)+
+        " environment_ui_expired="+std::to_string(environment_ui_expired)+
         " complexity_available="+std::to_string(unsigned(complexity.available))+
         " complexity_reason="+std::to_string(unsigned(complexity.reason))+
         " complexity_conflicts="+std::to_string(complexity_conflicts)+

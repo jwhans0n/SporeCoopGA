@@ -201,20 +201,35 @@ struct SavedGroundingCase {
     Snapshot entry,saved;TerrainTransitionKey key;TerrainTransitionReceipt receipt;TerrainTransitionTicket ticket;
     bool allowed=true;
 };
-void tsg_setup(SavedGroundingCase& test){
+void tsg_setup(SavedGroundingCase& test,bool alias=false,bool unsaved=false,bool refresh=true){
     tsg_after_read={};tsg_after_write={};tsg_after_release={};test={};
     test.entry=tcg_setup();test.entry.source={101,0x366A930D,0x408A0000};
     skg::field<editor::ResourceKey>(t_live.data(),8)=test.entry.source;
-    CHECK(terrain_materialization_owner);terrain_materialization_owner->source=test.entry.source;
+    if(alias){
+        skg::field<editor::ResourceKey>(t_live.data(),8)=unsaved?editor::ResourceKey{}:editor::ResourceKey{0xBF0CE0D0,0x366A930D,0x408A0000};
+        test.entry.source.instance=0xC6A75465;
+        test.entry.document.revision=59;test.entry.document.placements.begin()->second.revision=51;
+    }
+    // The fixture embeds external keys in its envelope (the native stream may
+    // omit them). Keep that asserted serialized key consistent with its source.
+    {std::string error;Owned canonical(parse(test.entry.bytes,error));CHECK(canonical.p);
+        skg::field<editor::ResourceKey>(canonical.p,8)=test.entry.source;
+        CHECK(serialize(canonical.p,test.entry.bytes,error));}
+    CHECK(terrain_materialization_owner);terrain_materialization_owner->source=skg::field<editor::ResourceKey>(t_live.data(),8);
     std::string error;SceneOwner scene;CHECK(capture_scene_owner(scene,error));
     test.key={t_scope,41,generation,scene};const auto current=[&]{return test.allowed;};
     const bool retained=capture_terrain_transition(test.key,test.entry,current,test.ticket,error);
     if(!retained)std::fprintf(stderr,"saved grounding ticket capture: %s\n",error.c_str());CHECK(retained);
     C.gesture_scope=[] {return GestureScope{};};C.projection_scope=[] {return GestureScope{};};
     TerrainTransitionTicket refreshed;Snapshot observed;
-    CHECK(refresh_terrain_transition(test.ticket,test.key,test.entry,current,refreshed,observed,error));test.ticket=refreshed;
+    if(refresh){
+        CHECK(refresh_terrain_transition(test.ticket,test.key,test.entry,current,refreshed,observed,error));test.ticket=refreshed;
+        test.entry=std::move(observed); // Runtime retains this checked actual image.
+    }
     test.receipt={TerrainTransitionKind::Save,test.key,test.key,3,5};
-    ++test.receipt.after.owner.source.instance;skg::field<editor::ResourceKey>(t_live.data(),8)=test.receipt.after.owner.source;
+    if(alias)test.receipt.after.owner.source={0x2912E312,0x366A930D,0x408A0000};
+    else ++test.receipt.after.owner.source.instance;
+    skg::field<editor::ResourceKey>(t_live.data(),8)=test.receipt.after.owner.source;
     test.saved=test.entry;test.saved.source=test.receipt.after.owner.source;
     Owned persisted(construct());CHECK(persisted.p);tcg_copy(persisted.p,t_live.data());tmc_export(persisted.p);
     CHECK(serialize(persisted.p,test.saved.bytes,error));
@@ -247,6 +262,104 @@ void test_saved_grounding_transition(){
     CHECK(test.ticket->owned_bytes>=sizeof(TerrainTransitionProof)+2*sizeof(CreationTerrainProof::Placement));
     CHECK(resume_terrain_transition(test.ticket,test.receipt,test.entry,current,error)&&test.ticket->retired);
     CHECK(!resume_terrain_transition(test.ticket,test.receipt,test.entry,current,error));
+    // C29's actual source pair, with nonzero document/placement revisions:
+    // canonical transport C6A75465, independently pinned live BF0CE0D0.
+    tsg_setup(test,true);CHECK(test.entry.source.instance==0xBF0CE0D0&&test.entry.document.revision==59);
+    CHECK(same_projection_image(test.ticket->entry,test.entry)&&test.ticket->entry.document==test.entry.document);
+    const bool alias_normalized=normalize_saved_terrain(test.ticket,test.receipt,test.entry,test.saved,current,error);
+    if(!alias_normalized)std::fprintf(stderr,"saved grounding alias handoff: %s\n",error.c_str());
+    CHECK(alias_normalized&&validate(test.saved,test.entry.document,error));
+    CHECK(test.saved.source.instance==0x2912E312&&test.entry.document.placements.begin()->second.revision==51);
+    // First SaveAs retains a genuinely unsaved owner independently of the
+    // already-owned nonzero canonical transport key.
+    tsg_setup(test,true,true);CHECK(test.key.owner.source==editor::ResourceKey{}&&test.entry.source==editor::ResourceKey{});
+    CHECK(same_projection_image(test.ticket->entry,test.entry)&&normalize_saved_terrain(test.ticket,test.receipt,test.entry,test.saved,current,error));
+    CHECK(validate(test.saved,test.entry.document,error)&&test.saved.source.instance==0x2912E312);
+    // Initial capture has no observed-image output: its supplied input stays
+    // the exact caller/ticket pair even when their verified live source aliases.
+    tsg_setup(test,true,false,false);CHECK(test.entry.source.instance==0xC6A75465);
+    CHECK(same_projection_image(test.ticket->entry,test.entry)&&normalize_saved_terrain(test.ticket,test.receipt,test.entry,test.saved,current,error));
+    CHECK(validate(test.saved,test.entry.document,error)&&test.saved.source.instance==0x2912E312);
+    // The retained image has one exact domain. A transport alias, a new Save
+    // key, another namespace/revision, or an opaque byte cannot replace it.
+    for(unsigned reason=0;reason<15;++reason){
+        tsg_setup(test,true);
+        if(reason==0)test.entry.source.instance=0xC6A75465;
+        if(reason==1)test.entry.source=test.receipt.after.owner.source;
+        if(reason==2)++test.entry.source.type;
+        if(reason==3)++test.entry.source.group;
+        if(reason==4)++test.entry.document.revision;
+        if(reason==5)++test.entry.document.placements.begin()->second.revision;
+        if(reason==6)++test.entry.document.epoch;
+        if(reason==7)++test.entry.document.project[0];
+        if(reason==8){auto row=test.entry.document.placements.extract(test.entry.document.placements.begin());
+            ++row.key().generation;row.mapped().object=row.key();test.entry.document.placements.insert(std::move(row));}
+        if(reason==9)++test.entry.bindings[0].object.generation;
+        if(reason==10)test.entry.bytes.back()^=1;
+        if(reason==11)++test.entry.act;
+        if(reason==12)++test.entry.captain.instance;
+        if(reason==13)test.entry.captain_locked=!test.entry.captain_locked;
+        if(reason==14){test.entry.metadata.emplace();test.entry.metadata->genre=7;}
+        const auto original=test.saved;const auto live_rows=t_rows.at(t_live.data());const auto columns=tmf_columns;
+        CHECK(!normalize_saved_terrain(test.ticket,test.receipt,test.entry,test.saved,current,error));
+        CHECK(error.find("fields=")!=std::string::npos);
+        CHECK(same_projection_image(test.saved,original)&&test.saved.document==original.document);
+        CHECK(t_rows.at(t_live.data())==live_rows&&tmf_columns==columns&&!t_restores&&t_allocations.empty());
+    }
+    // Refresh must retain its original roster across callbacks and keep all
+    // input holders alive until final context closure, before publishing both
+    // matching output values. It cannot adopt a new same-owner native key.
+    for(unsigned reason=0;reason<5;++reason){
+        tsg_setup(test,true);skg::field<editor::ResourceKey>(t_live.data(),8)=test.key.owner.source;
+        auto holder=std::make_shared<SavedGroundingCase>(test);const auto retained=holder->ticket;
+        TerrainTransitionTicket refreshed;Snapshot observed;bool injected=false;
+        a_write=uintptr_t(tsg_write);
+        tsg_after_write=[&](void*){if(injected)return;injected=true;
+            if(reason==0)++skg::field<uint32_t>(marker_for_key(t_live.data(),1),0x228);
+            if(reason==1)++skg::field<editor::ResourceKey>(t_live.data(),8).instance;
+            if(reason==2)++generation;
+            if(reason==3)retained->retired=true;
+            if(reason==4){holder.reset();test.allowed=false;}
+        };
+        const auto closure=[&]{return test.allowed;};
+        CHECK(!refresh_terrain_transition(holder->ticket,holder->key,holder->entry,closure,refreshed,observed,error));
+        CHECK(injected&&!refreshed&&observed.bytes.empty()&&!t_restores&&t_allocations.empty());
+        if(reason==4)CHECK(!holder);
+        tsg_after_write={};
+    }
+    // A same-owner untracked mutation before strict readback cannot become a
+    // shared observed entry merely because its typed projection still agrees.
+    // Exercise both initial capture and held refresh, before either can hand
+    // the new values to Runtime.
+    for(bool capturing:{false,true})for(unsigned reason=0;reason<5;++reason){
+        tsg_setup(test,true);skg::field<editor::ResourceKey>(t_live.data(),8)=test.key.owner.source;
+        if(capturing){
+            C.gesture_scope=[] {return t_scope;};C.projection_scope=[] {return t_scope;};
+            terrain_materialization=test.ticket->materialization;
+            terrain_materialization_owner=TerrainMaterializationOwner{test.key.scope,test.key.generation,test.key.owner.mode,
+                test.key.owner.data,test.key.owner.resource,test.ticket->tool,test.key.owner.source};
+        }
+        bool injected=false;const auto changed=[&]{if(!injected){injected=true;
+            if(reason==0)skg::field<uint8_t>(marker_for_key(t_live.data(),1),0x100)^=1;
+            if(reason==1)skg::field<uint8_t>(marker_for_key(t_live.data(),3),0x101)^=1;
+            if(reason==3)++test.entry.source.group;
+            if(reason==4)++test.entry.source.type;
+        }return true;};
+        // Input ownership is copied before callbacks. Mutating the caller's
+        // sidecar cannot repin the private key; domain negatives below instead
+        // pass a forged value before entry.
+        TerrainTransitionTicket result;Snapshot observed;
+        if(reason==2){a_read=uintptr_t(tsg_read);tsg_after_read=[&](void* p){if(injected)return;
+            injected=true;skg::field<uint8_t>(marker_for_key(p,0),0x100)^=1;};}
+        if(reason>=3){changed();injected=false;}
+        const auto mutate=reason<2?TerrainTransitionCurrent(changed):TerrainTransitionCurrent([] {return true;});
+        const bool accepted=capturing?capture_terrain_transition(test.key,test.entry,mutate,result,error):
+            refresh_terrain_transition(test.ticket,test.key,test.entry,mutate,result,observed,error);
+        if(accepted)std::fprintf(stderr,"observation unexpected acceptance capture=%u reason=%u\n",unsigned(capturing),reason);
+        CHECK(!accepted&&!result&&observed.bytes.empty()&&!t_restores&&t_allocations.empty());
+        if(reason<3)CHECK(injected);
+        tsg_after_read={};
+    }
     // Identity and exact-bit negatives, including sparse live versus dense
     // persisted slots. Failure must leave the caller's saved image untouched.
     for(unsigned reason=0;reason<34;++reason){

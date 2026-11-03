@@ -1301,3 +1301,73 @@ Exact executable bytes, disassembly and the ABI verifier report are retained in
 executable SHA `dc04aee5...dd5e59a37`. This proof permits an owner-fenced,
 later-frame Environment refresh outside rendering; it does not authorize a
 refresh inside Present or bypass Native input/history gates.
+
+### Save refresh retains the exact observed entry
+
+C29's Native Save completed locally at revision 59, then the shared terrain
+readback stopped at the exact committed-entry guard. Both live checks still
+converged. The retained diagnostic is
+`out/preview9-c29-save-failure-full/result.json`; this is a handoff failure,
+not evidence that Native Save changed a placement. The canonical transport
+root was `408A0000!C6A75465.366A930D`, while the independently pinned host
+scene used `408A0000!BF0CE0D0.366A930D`. The refreshed ticket copied its
+supplied canonical entry, while Runtime retained the returned strictly
+observed live entry. Their source sidecars therefore differed before Save's
+new root `408A0000!2912E312.366A930D` was compared.
+
+The adapter now gives the refreshed ticket and Runtime the same strict
+observed Snapshot. Initial capture has no observed output and preserves its
+caller's supplied image after proving the readback relationship; only refresh
+replaces that image with its paired output. It retains the original full
+placement roster before
+callbacks, checks the original owner/source/generation/read identity and
+that roster again, and keeps the 64 MiB owned-value bound. The subsequent
+Save guard compares exact bytes, source, bindings, act, Captain, metadata and
+the full revision-bearing Document. A transport alias or a later Save key
+cannot substitute for that entry. Failure details contain a bounded field
+mask, revision pair and root instance pair, without authored text.
+
+Observation itself is not permission to adopt an opaque edit. Before the
+handoff, independent private Read owners must reproduce both the supplied
+entry and observed bytes exactly. Only the known external resource key and
+local camera primitives are overlaid on the private original. Its Write must
+reproduce the observed image, using the existing verified Planet comparison
+normalization; unknown bytes remain exact. Cleanup restores those primitives
+and reproduces both original serializations, then releases both native owners
+before the final context/roster closure. No live pose, recipe or UI field is
+written. Callback retirement, source/domain/revision changes and untracked
+placement bytes cannot publish a replacement ticket.
+
+A genuinely unsaved live owner may have an entirely empty source while its
+canonical transport root is already nonzero. Only that existing first-SaveAs
+case permits different source type/group domains; the observed empty key must
+still equal the independently pinned live owner. Nonempty unrelated domains
+remain rejected. Direct capture-to-Save and empty-source fixtures cover these
+two API contracts separately from Runtime's usual capture/refresh pair.
+
+The additional unknown-byte handoff RED is retained under
+`out/preview9-save-observation-red/receipt.json`. It uses an OUT-only source
+copy excluding only the observation closure and accepts an untracked
+marker `+100` mutation before failing the controlled negative. The fixed
+actual-i686 strict suite passes 35,934 Save, 1,269 Water, 1,137 Environment,
+62,479 materialization, 1,662 staged and 110,764 full checks, with zero drift
+across all 49 compiler/Make inputs. Its final receipt is
+`out/preview9-c30-native-receipt.json`; the preceding strict receipt is
+explicitly superseded by this observation-closure run.
+
+The original source-alias failure is retained with its executable and hashes
+in `out/preview9-save-alias-red/receipt.json`. Controlled coverage uses document
+revision 59, placement revision 51, sparse live slots and dense persisted
+bindings, plus exact namespace/source/byte and callback-expiry negatives.
+These fixtures are adapter evidence only; Root's next real Native Save remains
+the acceptance test.
+
+The Water observer now brackets the separately verified completion boundary,
+samples q/XYZ before any policy callback, and refuses any later unknown row or
+companion delta. Deferred Environment refresh runs on a later outside-frame
+callback after terrain/view settlement, for the same current category-3 owner.
+It retires on new local interaction, scope/source/generation expiry, queued
+serial replacement or UI-owner change. Flora density replay supplies the
+verified `SetValue(value,false)` ABI and then sends its one existing native
+input event. Real Water forward/history behavior and visible refreshed slider
+values still require the next private-game checkpoint.

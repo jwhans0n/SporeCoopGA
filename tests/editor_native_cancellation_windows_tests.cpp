@@ -200,6 +200,7 @@ void native_cancel(void* entry=nullptr){
 }
 void begin(){start(t_data.data());CHECK(!t_allocations.empty());CHECK(gesture_serial!=0);}
 void reset(){
+    clear_environment_refresh();environment_refresh_queued=environment_refresh_servicing=false;
     native_fixture_escape_state=0;
     clear_terrain_capture_rotations();
     act_projection_cache.clear();
@@ -680,11 +681,14 @@ std::array<void*,13> t_flora_slider_vtable;
 void* t_flora_slider=t_flora_slider_vtable.data();
 void* t_flora_found=nullptr;void* t_flora_root=nullptr;
 unsigned t_flora_calls=0;int32_t t_flora_value=0,t_flora_maximum=100;
+unsigned t_flora_set_calls=0;bool t_flora_notify=true;
 editor::ResourceKey t_flora_key;
 void* SK_THISCALL t_flora_cast(void* self,uint32_t type){CHECK(self==&t_flora_slider&&type==0x0F00A8A0);return self;}
 int32_t SK_THISCALL t_flora_get(void*){return t_flora_value;}
 int32_t SK_THISCALL t_flora_max(void*){return t_flora_maximum;}
-void SK_THISCALL t_flora_set(void*,int32_t value){t_flora_value=value;}
+// Verified native ISlider::SetValue consumes TWO stack arguments (ret8).
+// A queued replay must suppress its automatic event before the explicit one.
+void SK_THISCALL t_flora_set(void* self,int32_t value,bool notify){CHECK(self==&t_flora_slider);++t_flora_set_calls;t_flora_value=value;t_flora_notify=notify;}
 void SK_THISCALL t_flora_remove(void* self,void* card){CHECK(self==t_flora_ui.data()&&card==&t_card_id&&t_granted);++t_flora_calls;}
 void SK_THISCALL t_flora_add(void* self,void* card,const editor::ResourceKey* key){t_flora_remove(self,card);t_flora_key=*key;}
 bool SK_THISCALL t_flora_input(void* self,void* window,void* raw){
@@ -693,7 +697,7 @@ bool SK_THISCALL t_flora_input(void* self,void* window,void* raw){
     ++t_flora_calls;return true;
 }
 void setup_flora_retry(){
-    setup_terrain_retry();t_flora_ui.fill(0);t_terraform_ui.fill(0);t_flora_calls=0;t_flora_key={};
+    setup_terrain_retry();t_flora_ui.fill(0);t_terraform_ui.fill(0);t_flora_calls=0;t_flora_key={};t_flora_set_calls=0;t_flora_notify=true;
     a_terraform_ui_vtable=0x11223344;a_flora_ui_vtable=0x55667788;
     skg::field<uintptr_t>(t_terraform_ui.data(),0)=a_terraform_ui_vtable;
     skg::field<void*>(t_terraform_ui.data(),0x18)=t_flora_ui.data();
@@ -724,6 +728,27 @@ void test_flora_control_retry(){
     CHECK(!flora_input(t_flora_ui.data()+8,&t_flora_slider,&message));CHECK(held_terrain_controls.size()==1&&!t_flora_calls);
     message={};t_flora_value=0;t_granted=true;pin_terrain_before();continue_terrain_control();
     CHECK(held_terrain_controls.empty()&&t_flora_calls==1&&t_flora_value==72&&terrain_starts==1&&terrain_commits==1);
+    CHECK(t_flora_set_calls==1&&!t_flora_notify);
+    for(const int32_t density:{0,100}){
+        setup_flora_retry();t_flora_found=&t_flora_slider;t_flora_value=density;t_flora_maximum=100;
+        sui::Msg changed{&t_flora_slider,0,int32_t(0xEF00A884),0x072BFDFD,0,0,0};
+        CHECK(!flora_input(t_flora_ui.data()+8,&t_flora_slider,&changed));
+        CHECK(held_terrain_controls.size()==1&&!t_flora_set_calls&&!t_flora_calls);
+        t_flora_value=50;t_granted=true;pin_terrain_before();continue_terrain_control();
+        CHECK(t_flora_set_calls==1&&!t_flora_notify&&t_flora_value==density);
+        CHECK(t_flora_calls==1&&terrain_starts==1&&terrain_commits==1);
+    }
+    for(unsigned reason=0;reason<4;++reason){
+        setup_flora_retry();t_flora_found=&t_flora_slider;t_flora_value=50;t_flora_maximum=100;
+        sui::Msg changed{&t_flora_slider,0,int32_t(0xEF00A884),0x072BFDFD,0,0,0};
+        CHECK(!flora_input(t_flora_ui.data()+8,&t_flora_slider,&changed));
+        if(reason==0)skg::field<void*>(t_flora_ui.data(),0x168)=&t_card_id;
+        if(reason==1)t_flora_found=nullptr;
+        if(reason==2)skg::field<void*>(t_terraform_ui.data(),0x18)=nullptr;
+        if(reason==3)t_flora_maximum=0;
+        t_granted=true;continue_terrain_control();
+        CHECK(held_terrain_controls.empty()&&!t_flora_set_calls&&!t_flora_calls&&!terrain_starts&&!terrain_commits);
+    }
     t_flora_found=t_flora_root=nullptr;reset();
 }
 void test_render_only_collaboration(){
@@ -1518,8 +1543,16 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
 #include "editor_native_terrain_materialization_fixture.h"
 #include "editor_native_diagnostic_fixture.h"
 #include "editor_native_view_fence_fixture.h"
+#include "editor_native_water_fixture.h"
+#include "editor_native_environment_fixture.h"
 #include "editor_native_complexity_fixture.h"
 int main(int argc,char** argv){
+    if(argc==2&&std::string(argv[1])=="--environment-only"){
+        test_native_environment_refresh();std::printf("native Environment refresh: %u checks passed\n",checks);return 0;
+    }
+    if(argc==2&&std::string(argv[1])=="--water-only"){
+        test_native_water_completion();std::printf("native Water completion: %u checks passed\n",checks);return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--staged-capture-only"){
         test_staged_native_capture();std::printf("native staged capture: %u checks passed\n",checks);return 0;
     }
@@ -1567,6 +1600,8 @@ int main(int argc,char** argv){
     test_native_restore_fences();
     test_terrain_rotation_restore();
     test_terrain_rotation_capture();
+    test_native_water_completion();
+    test_native_environment_refresh();
     test_terrain_parent_load();
     test_native_payload_diagnostics();
     test_history_toolbar_current_layout();

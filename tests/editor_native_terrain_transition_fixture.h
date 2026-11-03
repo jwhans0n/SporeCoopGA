@@ -47,6 +47,8 @@ std::vector<uint8_t> ttt_saved_bytes(const Snapshot& image){
 Snapshot ttt_setup(TerrainTransitionKey& key){
     auto entry=tmc_setup();ttt_allowed=true;ttt_held=false;ttt_release_change=ttt_change_after_load=false;
     const editor::ResourceKey source{101,0x366A930D,0x408A0000};skg::field<editor::ResourceKey>(t_live.data(),8)=source;entry.source=source;
+    {std::string error;Owned canonical(parse(entry.bytes,error));CHECK(canonical.p);
+        skg::field<editor::ResourceKey>(canonical.p,8)=source;CHECK(serialize(canonical.p,entry.bytes,error));}
     ttt_columns(entry);clear_terrain_materialization();terrain_materialize(t_terraform.data());CHECK(!terrain_materialization.empty());
     SceneOwner owner;std::string error;CHECK(capture_scene_owner(owner,error));key={t_scope,11,state().generation,owner};
     C.projection_scope=[] {return ttt_held?GestureScope{}:t_scope;};
@@ -66,7 +68,7 @@ void test_terrain_transition_receipts(){
     TerrainTransitionTicket refreshed;Snapshot observed;
     CHECK(refresh_terrain_transition(ticket,key,entry,current,refreshed,observed,error)&&ticket->retired&&!refreshed->retired);
     CHECK(observed.document==entry.document&&tmf_columns==raw&&!terrain_read_identity);
-    ticket=refreshed;
+    ticket=refreshed;entry=observed; // Same exact strict handoff retained by Runtime.
     auto receipt=TerrainTransitionReceipt{TerrainTransitionKind::Save,key,key,3,5};
     receipt.after.owner.source.instance=202;skg::field<editor::ResourceKey>(t_live.data(),8)=receipt.after.owner.source;
     Snapshot saved=entry;saved.bytes=ttt_saved_bytes(entry);saved.source=receipt.after.owner.source;
@@ -81,6 +83,7 @@ void test_terrain_transition_receipts(){
     tmf::Recipe a,b;CHECK(tmf::from_bytes(normalized,a,error)&&tmf::from_bytes(entry.bytes,b,error)&&a==b);
     for(unsigned reason=0;reason<20;++reason){
         entry=ttt_setup(key);ticket.reset();CHECK(capture_terrain_transition(key,entry,current,ticket,error));ttt_held=true;
+        CHECK(refresh_terrain_transition(ticket,key,entry,current,refreshed,observed,error));ticket=refreshed;entry=observed;
         receipt={TerrainTransitionKind::Save,key,key,3,5};receipt.after.owner.source.instance=202;
         skg::field<editor::ResourceKey>(t_live.data(),8)=receipt.after.owner.source;
         saved=entry;saved.bytes=ttt_saved_bytes(entry);saved.source=receipt.after.owner.source;

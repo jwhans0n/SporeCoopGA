@@ -95,15 +95,21 @@ bool transition_placements_current(const TerrainTransitionProof& proof,std::stri
     }
     return true;
 }
+bool transition_entry_charge(const Snapshot& entry,size_t& charged){
+    constexpr size_t limit=64u<<20;charged=0;
+    const auto charge=[&](size_t bytes){if(bytes>limit-charged)return false;charged+=bytes;return true;};
+    if(!charge(entry.bytes.size()) || !charge(editor::bytes(entry.document)) || !charge(entry.bindings.size()*sizeof(Binding)))return false;
+    if(entry.metadata)for(const auto& text:entry.metadata->text)if(!charge(text.size()*sizeof(char16_t)))return false;
+    return true;
+}
 bool make_transition_ticket(const TerrainTransitionKey& key,uintptr_t tool,const Snapshot& entry,
                             const editor_native_terrain_materialization::Recipe& raw,
                             const editor_native_terrain_materialization::Materialization& values,
-                            TerrainTransitionTicket& out,std::string& error,bool retain_placements=false){
+                            std::shared_ptr<TerrainTransitionProof>& out,std::string& error,bool retain_placements=false){
     constexpr size_t limit=64u<<20;size_t charged=sizeof(TerrainTransitionProof);
     const auto charge=[&](size_t bytes){if(bytes>limit-charged)return false;charged+=bytes;return true;};
-    if(!charge(entry.bytes.size()) || !charge(editor::bytes(entry.document)) || !charge(entry.bindings.size()*sizeof(Binding)) ||
-       !charge(values.owned_bytes())){error="The owned native terrain transition exceeds 64 MiB";return false;}
-    if(entry.metadata)for(const auto& text:entry.metadata->text)if(!charge(text.size()*sizeof(char16_t))){
+    size_t entry_bytes=0;
+    if(!transition_entry_charge(entry,entry_bytes) || !charge(entry_bytes) || !charge(values.owned_bytes())){
         error="The owned native terrain transition exceeds 64 MiB";return false;
     }
     for(const auto& kind:raw.rows)for(const auto& row:kind)if(!charge(sizeof(row)+row.bytes.capacity()+row.references.capacity()*sizeof(editor::ObjectId))){
@@ -119,6 +125,77 @@ bool make_transition_ticket(const TerrainTransitionKey& key,uintptr_t tool,const
     auto result=std::make_shared<TerrainTransitionProof>();result->key=key;result->tool=tool;result->entry=entry;
     result->rendered=raw;result->materialization=values;result->placements=std::move(placements);
     result->owned_bytes=charged;out=std::move(result);return true;
+}
+bool transition_observation_matches(const Snapshot& expected,const Snapshot& observed,const TerrainTransitionCurrent& current,std::string& error){
+    const bool same_domain=expected.source.type==observed.source.type && expected.source.group==observed.source.group;
+    // An unsaved live Scenario has no external key; Runtime may already own a
+    // transport root. The observed key is independently pinned by SceneOwner.
+    const bool unsaved_alias=observed.source==editor::ResourceKey{} && expected.source.instance &&
+        expected.source.type==0x366A930D && expected.source.group;
+    if(expected.document!=observed.document || expected.bindings!=observed.bindings || expected.captain!=observed.captain ||
+       expected.captain_locked!=observed.captain_locked || expected.metadata!=observed.metadata ||
+       (!same_domain&&!unsaved_alias)){
+        error="The native terrain observation changed its asserted entry domain";return false;
+    }
+    Owned original(parse(expected.bytes,error));if(!original.p || !current())return false;
+    Owned actual(parse(observed.bytes,error));if(!actual.p || !current())return false;
+    std::vector<uint8_t> roundtrip;
+    if(!serialize(original.p,roundtrip,error) || !current() || roundtrip!=expected.bytes){
+        error="The native terrain entry Read changed its exact image";return false;
+    }
+    if(!serialize(actual.p,roundtrip,error) || !current() || roundtrip!=observed.bytes){
+        error="The native terrain observation Read changed its exact image";return false;
+    }
+    const auto source=skg::field<editor::ResourceKey>(original.p,8);
+    const auto actual_source=skg::field<editor::ResourceKey>(actual.p,8);
+    if((source!=editor::ResourceKey{} && source!=expected.source) ||
+       (actual_source!=editor::ResourceKey{} && actual_source!=observed.source)){
+        error="The native terrain observation has an unrelated embedded source";return false;
+    }
+    // Only the external root key and existing local camera bytes can differ
+    // from the independently supplied entry. No Native Copy can launder an
+    // unknown change into the new observed-image ticket.
+    struct Restore {
+        void* resource;editor::ResourceKey source;std::array<uint8_t,0x20> camera;bool active=true;
+        explicit Restore(void* value):resource(value),source(skg::field<editor::ResourceKey>(value,8)){
+            std::memcpy(camera.data(),skg::ptr_add<void>(value,0x2C30),camera.size());
+        }
+        void restore()noexcept{if(!active)return;active=false;skg::field<editor::ResourceKey>(resource,8)=source;
+            std::memcpy(skg::ptr_add<void>(resource,0x2C30),camera.data(),camera.size());}
+        ~Restore(){restore();}
+    } restore{original.p};
+    skg::field<editor::ResourceKey>(original.p,8)=actual_source;
+    std::memcpy(skg::ptr_add<void>(original.p,0x2C30),skg::ptr_add<void>(actual.p,0x2C30),0x20);
+    std::vector<uint8_t> forward;
+    if(!serialize(original.p,forward,error) || !current())return false;
+    auto compared=observed.bytes;
+    if(observed.document.settings.contains(editor_native_terrain::kPlanetObject) &&
+       !editor_native_terrain::normalize_supported(compared,forward,error))return false;
+    if(compared!=forward){error="The native terrain observation changed an opaque entry field";return false;}
+    restore.restore();
+    if(!serialize(original.p,roundtrip,error) || !current() || roundtrip!=expected.bytes){
+        error="The native terrain observation Write changed its original image";return false;
+    }
+    if(!serialize(actual.p,roundtrip,error) || !current() || roundtrip!=observed.bytes){
+        error="The native terrain observation Write changed its observed image";return false;
+    }
+    release(std::exchange(original.p,nullptr));release(std::exchange(actual.p,nullptr));
+    if(!current()){error="The native terrain observation owner expired during Release";return false;}
+    return true;
+}
+bool retain_transition_observation(TerrainTransitionProof& proof,const Snapshot& observed,std::string& error){
+    // Runtime retains this exact checked readback, including its independently
+    // pinned live source. A canonical transport envelope may have another key.
+    // Do not replace the pre-callback roster with a fresh, unproved roster.
+    size_t old_bytes=0,new_bytes=0;constexpr size_t limit=64u<<20;
+    if(observed.source!=proof.key.owner.source || observed.document!=proof.entry.document){
+        error="The native terrain readback changed its retained source or document";return false;
+    }
+    if(!transition_entry_charge(proof.entry,old_bytes) || !transition_entry_charge(observed,new_bytes) ||
+       old_bytes>proof.owned_bytes || new_bytes>limit-(proof.owned_bytes-old_bytes)){
+        error="The owned native terrain transition exceeds 64 MiB";return false;
+    }
+    proof.entry=observed;proof.owned_bytes=proof.owned_bytes-old_bytes+new_bytes;return true;
 }
 bool transition_observe(const TerrainTransitionKey& key,uintptr_t tool,const Snapshot& expected,
                         const editor_native_terrain_materialization::Recipe& raw,
@@ -205,9 +282,10 @@ bool normalize_transition_grounding(const TerrainTransitionProof& proof,Snapshot
     image.bytes=std::move(normalized);return true;
 }
 }
-bool capture_terrain_transition(const TerrainTransitionKey& key,const Snapshot& entry,const TerrainTransitionCurrent& current,
+bool capture_terrain_transition(const TerrainTransitionKey& supplied_key,const Snapshot& supplied_entry,const TerrainTransitionCurrent& supplied_current,
                                 TerrainTransitionTicket& out,std::string& error){
     try{
+        const auto key=supplied_key;const auto entry=supplied_entry;const auto current=supplied_current;
         const auto tool=uintptr_t(terraform_mode());
         if(terrain_read_identity || !transition_current(key,tool,current) || value_scope()!=key.scope){
             error="The native terrain transition cannot retain this current owner";return false;
@@ -219,23 +297,32 @@ bool capture_terrain_transition(const TerrainTransitionKey& key,const Snapshot& 
         }
         editor_native_terrain_materialization::Recipe raw;
         if(!materialization_recipe(terraform_mode(),raw,error) || !transition_recipe_matches(raw,terrain_materialization,entry,error))return false;
-        TerrainTransitionTicket result;
+        std::shared_ptr<TerrainTransitionProof> result;
         if(!make_transition_ticket(key,tool,entry,raw,terrain_materialization,result,error,true))return false;
-        Snapshot verified;if(!transition_observe(key,tool,entry,raw,terrain_materialization,current,verified,error))return false;
+        Snapshot verified;if(!transition_observe(key,tool,entry,result->rendered,result->materialization,current,verified,error))return false;
+        const auto closure=[&]{return transition_current(key,tool,current)&&transition_placements_current(*result,error);};
+        if(!transition_observation_matches(entry,verified,closure,error))return false;
+        if(!transition_current(key,tool,current)){error="The native terrain capture context expired";return false;}
+        // Capture has no observed-image output. Retain the caller's asserted
+        // image; refresh alone replaces it with its paired observed output.
         if(!transition_placements_current(*result,error))return false;
         out=std::move(result);error.clear();return true;
     }catch(...){error="Cannot retain the owned native terrain transition";return false;}
 }
-bool refresh_terrain_transition(const TerrainTransitionTicket& ticket,const TerrainTransitionKey& key,const Snapshot& expected,
-                                const TerrainTransitionCurrent& current,TerrainTransitionTicket& refreshed,Snapshot& observed,std::string& error){
+bool refresh_terrain_transition(const TerrainTransitionTicket& supplied_ticket,const TerrainTransitionKey& supplied_key,const Snapshot& supplied_expected,
+                                const TerrainTransitionCurrent& supplied_current,TerrainTransitionTicket& refreshed,Snapshot& observed,std::string& error){
     try{
+        const auto ticket=supplied_ticket;const auto key=supplied_key;const auto expected=supplied_expected;const auto current=supplied_current;
         if(!ticket || ticket->retired || key!=ticket->key || terrain_read_identity){error="The native terrain refresh has no exact retained owner";return false;}
         if(!validate(expected,expected.document,error) || !transition_recipe_matches(ticket->rendered,ticket->materialization,expected,error))return false;
-        Snapshot verified;if(!transition_observe(key,ticket->tool,expected,ticket->rendered,ticket->materialization,current,verified,error))return false;
-        TerrainTransitionTicket result;
+        std::shared_ptr<TerrainTransitionProof> result;
         if(!make_transition_ticket(key,ticket->tool,expected,ticket->rendered,ticket->materialization,result,error,true))return false;
-        if(!transition_current(key,ticket->tool,current)){error="The native terrain refresh context expired";return false;}
-        if(!transition_placements_current(*result,error))return false;
+        Snapshot verified;if(!transition_observe(key,ticket->tool,expected,result->rendered,result->materialization,current,verified,error))return false;
+        const auto closure=[&]{return !ticket->retired && transition_current(key,ticket->tool,current)&&
+            !ticket->retired && transition_placements_current(*result,error);};
+        if(!transition_observation_matches(expected,verified,closure,error))return false;
+        if(!transition_current(key,ticket->tool,current) || ticket->retired){error="The native terrain refresh context expired";return false;}
+        if(!transition_placements_current(*result,error) || !retain_transition_observation(*result,verified,error))return false;
         ticket->retired=true;refreshed=std::move(result);observed=std::move(verified);error.clear();return true;
     }catch(...){error="Cannot refresh the owned native terrain transition";return false;}
 }
@@ -253,10 +340,16 @@ bool normalize_saved_terrain(const TerrainTransitionTicket& supplied_ticket,cons
         const auto retained=[&]{return !ticket->retired && transition_current(receipt.after,ticket->tool,current) &&
             !ticket->retired && transition_placements_current(*ticket,error);};
         if(!retained()){error="The completed native Save no longer owns this terrain scene";return false;}
-        if(ticket->entry.document!=expected.document || ticket->entry.source!=expected.source || ticket->entry.act!=expected.act ||
-           ticket->entry.bindings!=expected.bindings || ticket->entry.captain!=expected.captain ||
-           ticket->entry.captain_locked!=expected.captain_locked || ticket->entry.metadata!=expected.metadata){
-            error="The native Save grounding proof no longer matches its exact committed entry";return false;
+        if(ticket->entry.document!=expected.document || !same_projection_image(ticket->entry,expected)){
+            const auto& retained=ticket->entry;
+            const unsigned fields=unsigned(retained.document!=expected.document) |
+                (unsigned(retained.source!=expected.source)<<1) | (unsigned(retained.bytes!=expected.bytes)<<2) |
+                (unsigned(retained.bindings!=expected.bindings)<<3) | (unsigned(retained.act!=expected.act)<<4) |
+                (unsigned(retained.captain!=expected.captain || retained.captain_locked!=expected.captain_locked)<<5) |
+                (unsigned(retained.metadata!=expected.metadata)<<6);
+            error="The native Save grounding proof no longer matches its exact committed entry (fields="+std::to_string(fields)+
+                ", revision="+std::to_string(retained.document.revision)+"/"+std::to_string(expected.document.revision)+
+                ", source="+std::to_string(retained.source.instance)+"/"+std::to_string(expected.source.instance)+")";return false;
         }
         editor_native_terrain_materialization::Recipe live,stored;
         if(!materialization_recipe(terraform_mode(),live,error) || !editor_native_terrain_materialization::from_bytes(candidate.bytes,stored,error))return false;
@@ -326,7 +419,7 @@ bool restore_terrain_transition(const TerrainTransitionTicket& ticket,const Terr
         }
         editor_native_terrain_materialization::Recipe raw;
         if(!materialization_recipe(terraform_mode(),raw,error) || !transition_recipe_matches(raw,terrain_materialization,expected,error))return false;
-        TerrainTransitionTicket result;
+        std::shared_ptr<TerrainTransitionProof> result;
         if(!make_transition_ticket(receipt.after,tool,expected,raw,terrain_materialization,result,error))return false;
         // Retire the last native allocation before publishing a value token;
         // its Release callback is part of this synchronous ownership fence.

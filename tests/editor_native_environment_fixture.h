@@ -1,0 +1,115 @@
+// Deferred outside-frame invocation of the separately byte-verified native
+// Environment refresh. This fixture checks scheduling/identity, not real SUI.
+namespace environment_refresh_fixture {
+std::array<uint8_t,0x40> terraform,environment;
+std::array<uint8_t,0x80> root,other_root;
+unsigned calls=0;bool outside=false;
+std::array<int32_t,3> thumbs{};
+std::function<void()> callback;
+void SK_THISCALL refresh(void* self){
+    CHECK(outside&&self==environment.data());++calls;
+    // The native ABI receipt separately proves all three calls use false.
+    thumbs={int32_t(std::lround(skg::field<float>(t_terraform.data(),0xC8)*100)),
+        int32_t(std::lround(skg::field<float>(t_terraform.data(),0xCC)*100)),
+        int32_t(std::lround(skg::field<float>(t_terraform.data(),0xD0)*100))};
+    const auto notify=callback;if(notify)notify();
+}
+struct Routes {
+    terrain_rotation_capture_fixture::Routes rotation;
+    uintptr_t ui=a_terraform_ui_vtable,environment_vt=a_environment_ui_vtable,function=a_environment_ui_refresh;
+    bool fence=fence_queued;
+    ~Routes(){callback={};staged_pose.reset();clear_environment_refresh();
+        environment_refresh_queued=environment_refresh_servicing=false;
+        a_terraform_ui_vtable=ui;a_environment_ui_vtable=environment_vt;a_environment_ui_refresh=function;fence_queued=fence;}
+};
+void setup(){
+    callback={};outside=false;calls=0;thumbs={99,99,99};
+    terrain_rotation_capture_fixture::setup(false,false);
+    terraform.fill(0);environment.fill(0);root.fill(0);other_root.fill(0);
+    a_environment_ui_refresh=uintptr_t(refresh);a_environment_ui_vtable=0x12345679;a_terraform_ui_vtable=0x1234567A;
+    skg::field<uint32_t>(t_display.data(),0x1C)=2;skg::field<void*>(t_display.data(),0x28)=terraform.data();
+    skg::field<uintptr_t>(terraform.data(),0)=a_terraform_ui_vtable;skg::field<uint32_t>(terraform.data(),0x28)=3;
+    skg::field<void*>(terraform.data(),0x14)=environment.data();skg::field<uintptr_t>(environment.data(),0)=a_environment_ui_vtable;
+    skg::field<void*>(environment.data(),0x0C)=root.data();
+    skg::field<float>(t_terraform.data(),0xC8)=.2f;skg::field<float>(t_terraform.data(),0xCC)=.3f;skg::field<float>(t_terraform.data(),0xD0)=.4f;
+    fence_queued=true;clear_environment_refresh();environment_refresh_queued=environment_refresh_servicing=false;
+}
+void run(){const auto prior=outside;outside=true;drain_environment_refresh(nullptr);outside=prior;}
+void test(){
+    Routes routes;setup();const auto rows=t_rows.at(t_live.data());const auto native=t_live;const auto data_before=t_data;
+    const auto updates=environment_ui_updates;
+    request_environment_refresh();CHECK(environment_refresh);run();CHECK(!calls&&environment_refresh);
+    ++t_frame;run();CHECK(calls==1&&!environment_refresh&&environment_ui_updates==updates+1);
+    CHECK((thumbs==std::array<int32_t,3>{20,30,40}));
+    CHECK(t_rows.at(t_live.data())==rows&&t_live==native&&t_data==data_before&&!t_restores&&!applying);
+    CHECK(!environment_refresh_queued&&!environment_refresh_servicing);
+    // Scheduling remains outside-frame and does not repeatedly enqueue during
+    // a reentrant native refresh. Completion clears its queue flag on all exits.
+    setup();request_environment_refresh();++t_frame;
+    callback=[] {editor_native::tick();drain_environment_refresh(nullptr);};
+    editor_native::tick();CHECK(t_tasks.size()==1);outside=true;drain();outside=false;
+    CHECK(calls==1&&t_tasks.empty()&&!environment_refresh&&!environment_refresh_queued&&!environment_refresh_servicing);
+    for(unsigned reason=0;reason<24;++reason){
+        setup();request_environment_refresh();CHECK(environment_refresh);++t_frame;bool allowed=true;
+        if(reason<12)restore_fence_fixture::expire(reason,allowed);
+        if(reason==10)C.active=[] {return false;};
+        if(reason==12)++gesture_counter;
+        if(reason==13)++terrain_rotation_serial;
+        if(reason==14)terrain_pending=true;
+        if(reason==15)held_terrain_controls.emplace_back();
+        if(reason==16)staged_pose=std::make_shared<StagedPose>();
+        if(reason==17)skg::field<uint8_t>(t_history.data(),0x20)=0;
+        if(reason==18)skg::field<uintptr_t>(terraform.data(),0)=0;
+        if(reason==19)skg::field<uintptr_t>(environment.data(),0)=0;
+        if(reason==20)skg::field<uint32_t>(terraform.data(),0x28)=2;
+        if(reason==21)skg::field<void*>(environment.data(),0x0C)=nullptr;
+        if(reason==22)t_time+=4;
+        if(reason==23)C.active=[]()->bool {throw 7;};
+        run();CHECK(!calls&&!environment_refresh&&!environment_refresh_queued&&!environment_refresh_servicing);
+        CHECK((thumbs==std::array<int32_t,3>{99,99,99}));
+        staged_pose.reset();
+    }
+    // A Native readiness getter can expire the owner before the first UI call.
+    for(unsigned reason=0;reason<12;++reason){
+        setup();request_environment_refresh();++t_frame;bool fired=false,allowed=true;
+        restore_fence_fixture::callback=[&](unsigned stage){if(stage==11&&!fired){fired=true;
+            restore_fence_fixture::expire(reason,allowed);if(reason==10)C.active=[] {return false;};}};
+        run();CHECK(fired&&!calls&&!environment_refresh);
+    }
+    // Capture the current UI owner, then replace its root or retire/replace the
+    // queued serial from the LAST policy callback before the native call.
+    for(unsigned reason=0;reason<3;++reason){
+        setup();request_environment_refresh();++t_frame;unsigned checks=0;bool fired=false;uint64_t replacement=0;
+        C.projection_scope=[&]{if(++checks==3){fired=true;
+            if(reason==0)skg::field<void*>(environment.data(),0x0C)=other_root.data();
+            if(reason==1)clear_environment_refresh();
+            if(reason==2){auto newer=*environment_refresh;replacement=++newer.serial;environment_refresh=newer;}
+        }return t_scope;};
+        run();CHECK(fired&&!calls);
+        if(reason==2)CHECK(environment_refresh&&environment_refresh->serial==replacement);
+        else CHECK(!environment_refresh);
+    }
+    // Read identity remains valid while authorizing input is empty. No gesture
+    // permission is consulted or granted by this passive UI refresh.
+    setup();C.gesture_scope=[] {return GestureScope{};};request_environment_refresh();++t_frame;run();CHECK(calls==1);
+    // Wait for genuine native terrain/view settlement; it is neither a fresh
+    // input gesture nor permission to replay a stale UI owner.
+    setup();request_environment_refresh();terrain_rebuilding=true;terrain_rebuild_frame=t_frame;
+    ++t_frame;skg::field<void*>(v_terrain.data(),0xFC)=other_root.data();
+    run();CHECK(!calls&&environment_refresh);skg::field<void*>(v_terrain.data(),0xFC)=nullptr;run();CHECK(calls==1&&!environment_refresh);
+    // Original function exceptions or owner replacement cause no second UI
+    // call and cannot leave a permanently held queue/reentry flag.
+    for(bool throwing:{false,true}){
+        setup();request_environment_refresh();++t_frame;
+        callback=[&]{if(throwing)throw 9;++skg::field<editor::ResourceKey>(t_live.data(),8).instance;};
+        run();CHECK(calls==1&&!environment_refresh&&!environment_refresh_queued&&!environment_refresh_servicing);
+    }
+    // A reentrant newer canonical refresh survives retirement of the old one,
+    // then reads latest native tool values on a genuinely later frame.
+    setup();request_environment_refresh();++t_frame;
+    callback=[] {callback={};skg::field<float>(t_terraform.data(),0xCC)=.7f;request_environment_refresh();};
+    run();CHECK(calls==1&&environment_refresh);++t_frame;run();CHECK(calls==2&&thumbs[1]==70&&!environment_refresh);
+    setup();C.projection_scope=[] {return GestureScope{};};request_environment_refresh();CHECK(!environment_refresh&&!calls);
+}
+}
+static void test_native_environment_refresh(){environment_refresh_fixture::test();}
