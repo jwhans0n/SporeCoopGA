@@ -6,8 +6,8 @@ executable and its exact 4 GB LAA variant remain supported. Older protocol
 clients are explicitly rejected. This report records development evidence,
 not completed native acceptance, a main merge or a public release.
 
-Latest private native build is C38, SHA-256
-`6828c809c51fee6e08788a7a84999501a944c957fee40ea2fc8fed0f603fe012`.
+Latest private native build is C39, SHA-256
+`ff081a59e7a509a198116d4200f9450175e06d9c804af3cdf912f39246c44e10`.
 C38 verifies all five Crew control families from all four participants and
 independent four-player creation-editor entry and cancellation.
 C35 closes the new-vehicle Native Save/cold-reopen dependency reproduction.
@@ -2873,3 +2873,95 @@ The four-player batch leaves the party and returns every native editor normally
 to Galaxy with zero faults before cooperative runner shutdown. The runner exits
 0 within its lease. Evidence: `out/preview9-c38-four-retirement/result.json` and
 `out/windows-lab/preview9-c30-four/processes.json`.
+
+
+### C39 serialization timings and creation-save calibration
+
+C39 retains 249 production inputs without drift. Its co-op DLL is 96,400,896
+bytes; Kit SHA-256 is
+`2b3b894921d05483e1893be44dc7345fd781cff5d0e91638d9b7f1502fc54046`
+(7,501,824 bytes). Kit still reports version 0.3.6; exact payload hashes identify
+this candidate. The optional exact-byte RefPack memo now retains up to eight
+streams within the same 32 MiB staging-inclusive limit. Actual-i686 extracted
+original/memo checks pass 104 cases, including LRU and byte-budget eviction,
+allocation failure, contention, reentry and unchanged original output. Evidence:
+`out/editor-preview9-refpack-working-set/receipt.json`. This is no relaxation of
+Native ownership, unsupported-change detection or durable confirmation.
+
+Seven passive QPC/frame spans distinguish the existing two integrity Writes,
+BASE Read, producer Write, AFTER Read, fixed-point Write and inverse Write.
+They add no Native calls or authority. All status fields fit the bounded console
+reply on the retained real baselines. Source/production receipt:
+`out/preview9-candidate39-build-receipt.json`.
+
+Fresh private processes 46192/39952 cold-open the exact C35 Saved source with
+419 placements, 119 classes, five acts and the same authored semantic hash,
+then share at revision zero without a warning or recovery action. Both memo
+instances are verified with no failures or bypasses. Evidence:
+`out/preview9-c39-cold-shared/result.json`.
+
+The first two-warm-up/six-edit timing probe overlaps a focused Native-fixture
+compiler. Its functional records are retained, but `qualification.json`
+explicitly disqualifies its performance. The replacement runs after compilation
+is stopped. Host/guest submission-to-confirmation maxima are 51.3873/171.1228 ms;
+release-to-confirmation maxima are 526.604/685.964 ms. Worst commit-window frame
+gaps are 106.6277/142.0186 ms, still above 100 ms. The larger cache does not close
+the frame budget. No full 30-per-author run is repeated. Both games independently
+prove strict convergence at canonical/durable revision 16 with zero faults.
+Evidence: `out/preview9-c39-commit-probe-two-town-r2/summary.json`, full result
+SHA-256 `d3a1f59ed19ce4851b1991c8c1955adb45513b0983ba7c52516774dda2d4629e`,
+and `out/preview9-c39-commit-final-proof/result.json`.
+
+On the guest observer, BASE/AFTER Reads each cost about 8.2-8.7 ms, the producer
+Write about 20.1-21.1 ms and the remaining measured Writes about 8.8-10.2 ms each.
+These are individual inclusive call spans, not disjoint end-to-end accounting.
+The host observer uses the existing recent-proof path, so the two specifically
+instrumented integrity call sites record zero there. Frame acceptance remains
+open; the extra timings locate work rather than claiming a speedup.
+
+The promoted staged creation fixture preserves process/profile/project/epoch,
+participant generations, creation serial and Native request identity between
+stages. A workflow-head digest rejects stale or replayed checkpoints. Ordinary
+Done is attempted only after fresh Native zero-blocker validation. These checks
+remain fixture controls, not a different product Save path.
+
+The historical C7 instantaneous Creature drag recipe executes but leaves C39
+Mouthless with no changed flags or name. No Done is clicked. A fresh visible
+card/body/name calibration and ordinary held drag instead attach the mouth and
+name the creature; Native finish state becomes zero with changed flags 1/1.
+The host then saves normally, adding exactly one immutable class and one
+history item at revision 17. Existing cast entries, 419 placements and five acts
+are preserved; both returned scenes strictly converge with zero faults.
+Evidence: `out/preview9-c39-host-creature-design/result.json`,
+`out/preview9-c39-host-creature-design-r2/result.json` and
+`out/preview9-c39-host-creature-save/result.json`. This closes the host Creature
+save path only; other family/role and replacement checks remain separate.
+
+
+The same freshly calibrated Creature recipe passes native guest Save, adding
+one class/history item at revision 18 and preserving all prior cast entries.
+Both scenes strictly converge with zero faults:
+`out/preview9-c39-guest-creature-save/result.json`. Guest Undo/Redo removes and
+restores only that class at revisions 19/20. The initial history fixture wrongly
+required an unchanged content revision on Redo; the product correctly advances
+it to 20 while restoring the same immutable key, behavior and settings. The
+original failed fixture remains retained. Read-only validation of both original
+participant logs proves the corrected expectation without repeating inputs:
+`out/preview9-c39-creature-history-audit/result.json`. Host Undo/Redo then passes
+at revisions 21/22, preserving the guest class byte-for-byte:
+`out/preview9-c39-creature-author-history-r2/result.json`.
+
+A later diagnostic mistake interrupts the batch before shared-asset replacement
+is exercised. Root supplies control ID `05D17546` as the window-pointer argument
+of `coop.ui tree 3 visible 05D17546`. The existing command passes it directly to
+`dump()`, which calls `sui::visible` on the invalid candidate. The host exits
+with access violation `0xC0000005` at co-op RVA `0x2F2964`, ECX `05D17546`, reading
+`8CB605F9`. Symbolization resolves `sui.cpp:180` via `flags()`/`visible()`, reached
+from `c_ui` at line 645. This is an invalid diagnostic invocation, not a native
+creation, paging or gameplay reproduction. The runner terminates the guest
+with code 1 after observing host exit. The previous observed revision 22 was
+durable on both peers; both exact private recovery directories are copied after
+process closure (12 files, 5,467,262 bytes). No personal installation/profile is
+used. Crash/dump/log and recovery evidence:
+`out/preview9-c39-ui-root-crash/receipt.json` and `recovery/receipt.json`.
+Explicit-root membership validation is required before further scoped UI reads.
