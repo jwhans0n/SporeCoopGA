@@ -28,6 +28,17 @@
 #include "sui.h"
 
 namespace editor_native {
+namespace {struct ProjectedSnapshot;}
+struct PoseSupportProof {
+    struct Asset {uint64_t server=0;editor::ResourceKey key;bool operator==(const Asset&)const=default;};
+    CaptureTicket ticket;
+    Snapshot before,after;
+    std::vector<Asset> before_assets,after_assets;
+    std::shared_ptr<const ProjectedSnapshot> before_projection,after_projection;
+    uintptr_t context=0;
+    std::function<CaptureState(const CaptureTicket&)> current;
+    mutable bool busy=false;
+};
 struct CreationTerrainProof {
     struct Placement {
         Binding live;
@@ -91,7 +102,7 @@ struct WorkTimer {
     explicit WorkTimer(WorkSpan& value):span(value){++span.calls;}
     ~WorkTimer(){const auto end=work_clock();if(begin&&end>=begin)span.ticks+=end-begin;}
 };
-struct ResolvedAssetWitness {uint64_t server=0;editor::ResourceKey key;bool operator==(const ResolvedAssetWitness&)const=default;};
+using ResolvedAssetWitness=PoseSupportProof::Asset;
 struct ProjectedSnapshot {
     Snapshot image;
     GestureScope scope;
@@ -100,6 +111,16 @@ struct ProjectedSnapshot {
     size_t cost=0;
 };
 std::deque<std::shared_ptr<const ProjectedSnapshot>> projected_snapshots;
+const std::array<std::shared_ptr<const ProjectedSnapshot>,2>* borrowed_projections=nullptr;
+struct ProjectionBorrow {
+    std::array<std::shared_ptr<const ProjectedSnapshot>,2> values;
+    const std::array<std::shared_ptr<const ProjectedSnapshot>,2>* previous=borrowed_projections;
+    ProjectionBorrow(std::shared_ptr<const ProjectedSnapshot> before,std::shared_ptr<const ProjectedSnapshot> after):
+        values{std::move(before),std::move(after)}{borrowed_projections=&values;}
+    ProjectionBorrow(const ProjectionBorrow&)=delete;
+    ProjectionBorrow& operator=(const ProjectionBorrow&)=delete;
+    ~ProjectionBorrow(){borrowed_projections=previous;}
+};
 size_t projected_snapshot_bytes=0;
 uint64_t projected_snapshot_hits=0,projected_snapshot_misses=0;
 uint64_t recent_match_hits=0,recent_match_different=0,recent_match_errors=0,pose_roundtrip_hits=0,pose_roundtrip_fallbacks=0;
@@ -964,7 +985,11 @@ void remember_projection(const Snapshot& image,const std::vector<ResolvedAssetWi
 std::shared_ptr<const ProjectedSnapshot> projected_snapshot(const Snapshot& image,std::string& error){
     const auto scope=value_scope();
     std::shared_ptr<const ProjectedSnapshot> retained;
-    for(auto at=projected_snapshots.rbegin();at!=projected_snapshots.rend();++at){
+    if(borrowed_projections)for(const auto& candidate:*borrowed_projections)
+        if(candidate && candidate->generation==generation && candidate->scope==scope && same_projection_image(candidate->image,image)){
+            retained=candidate;break;
+        }
+    if(!retained)for(auto at=projected_snapshots.rbegin();at!=projected_snapshots.rend();++at){
         if((*at)->generation==generation && (*at)->scope==scope && same_projection_image((*at)->image,image)){
             retained=*at;break;
         }
@@ -976,6 +1001,16 @@ std::shared_ptr<const ProjectedSnapshot> projected_snapshot(const Snapshot& imag
         ++projected_snapshot_hits;error.clear();return retained;
     }
     ++projected_snapshot_misses;return {};
+}
+void retain_projection(const std::shared_ptr<const ProjectedSnapshot>& proof){
+    if(!proof || proof->generation!=generation || proof->cost>(32u<<20))return;
+    try{
+        for(const auto& existing:projected_snapshots)if(existing==proof)return;
+        while(!projected_snapshots.empty() && (projected_snapshots.size()>=4 || projected_snapshot_bytes>(32u<<20)-proof->cost)){
+            projected_snapshot_bytes-=projected_snapshots.front()->cost;projected_snapshots.pop_front();
+        }
+        projected_snapshots.push_back(proof);projected_snapshot_bytes+=proof->cost;
+    }catch(const std::bad_alloc&){} // Only value-cache reuse is optional.
 }
 bool class_roster_fingerprint(void* resource,const Rows& classes,editor_native_cache::Key& key,std::string& error){
     // Server IDs are resolver hints rather than immutable resource identities.
@@ -1681,6 +1716,44 @@ bool only_existing_pose_fields(const editor::Document& before,const editor::Docu
     }
     return changed && expected==after;
 }
+bool capture_raw_owner(const CaptureTicket& ticket){
+    skg::ReadOnlyMemoryScope memory;
+    auto* m=mode();auto* d=data(m);auto* r=resource(d);
+    auto* context=a_context&&skg::readable(reinterpret_cast<void*>(a_context),sizeof(void*))?*reinterpret_cast<void**>(a_context):nullptr;
+    return supported && generation==ticket.generation && skg::readable(context,4) && skg::field<uint32_t>(context,0)==ticket.act &&
+        uintptr_t(m)==ticket.owner.mode && uintptr_t(d)==ticket.owner.data &&
+        uintptr_t(r)==ticket.owner.resource && skg::readable(r,kResourceSize) &&
+        skg::field<editor::ResourceKey>(r,8)==ticket.owner.source;
+}
+uintptr_t capture_native_context(){
+    return a_context&&skg::readable(reinterpret_cast<void*>(a_context),sizeof(uintptr_t))?
+        *reinterpret_cast<uintptr_t*>(a_context):0;
+}
+RecentMatches sealed_pose_support(const Gesture& gesture,std::string& error){
+    const auto proof=gesture.capture_proof;
+    if(!proof)return RecentMatches::Different;
+    if(proof->busy){error="The staged pose proof is already being checked";return RecentMatches::Error;}
+    struct Checking {const PoseSupportProof& proof;Checking(const PoseSupportProof& value):proof(value){proof.busy=true;}~Checking(){proof.busy=false;}} checking(*proof);
+    if(!gesture.capture || *gesture.capture!=proof->ticket || gesture.generation!=proof->ticket.generation || gesture.clone_source ||
+       !same_projection_image(gesture.before,proof->before) || !same_projection_image(gesture.after,proof->after) ||
+       gesture.before.document!=proof->before.document || gesture.after.document!=proof->after.document){
+        error="The staged pose proof does not match its exact captured images";return RecentMatches::Error;
+    }
+    const auto current=[&]{
+        return active() && proof->current && proof->current(proof->ticket)==CaptureState::Ready && value_scope()==proof->ticket.scope &&
+            capture_native_context()==proof->context && capture_raw_owner(proof->ticket);
+    };
+    try{
+        ScopedResolutionAudit resolution;
+        if(!current() || !current_asset_witnesses(proof->before_assets) || !current() ||
+           !current_asset_witnesses(proof->after_assets) || !current() || resolution.audit.failed){
+            error="The staged pose proof belongs to an expired or waiting native context";return RecentMatches::Error;
+        }
+        retain_projection(proof->before_projection);retain_projection(proof->after_projection);
+        if(!current()){error="The staged pose proof context expired while retaining its values";return RecentMatches::Error;}
+        return RecentMatches::Match;
+    }catch(...){error="The staged pose proof callback failed";return RecentMatches::Error;}
+}
 bool direct_pose_fields(void* resource,const std::map<uint32_t,editor::ObjectId>& supplied,const Snapshot& image){
     Rows markers;if(!rows(resource,0x2C10,0x238,kPlacementLimit,markers))return false;
     size_t count=0;
@@ -1812,7 +1885,8 @@ RecentMatches supported_pose_image(const Gesture& gesture,std::string& error){
 }
 RecentMatches capture_pose_resource(void* r,uint32_t act,const Snapshot& before,
                                    const std::map<uint32_t,editor::ObjectId>& supplied,
-                                   const Snapshot::Metadata& metadata,Snapshot& out,PoseCaptureProof& proof,std::string& error){
+                                   const Snapshot::Metadata& metadata,Snapshot& out,PoseCaptureProof& proof,std::string& error,
+                                   const Snapshot* captured_image=nullptr,const std::vector<editor::ResourceKey>* captured_assets=nullptr){
     const auto scope=C.gesture_scope?C.gesture_scope():GestureScope{};const auto pinned_generation=generation;
     const auto projection_scope=value_scope();
     auto* pinned_mode=mode();auto* pinned_data=data(pinned_mode);auto* pinned_live=resource(pinned_data);
@@ -1832,6 +1906,7 @@ RecentMatches capture_pose_resource(void* r,uint32_t act,const Snapshot& before,
     ScopedResolutionAudit resolution_proof;
     std::vector<editor::ResourceKey> original_assets,parsed_assets,settled_assets;
     if(!resolved_asset_values(r,before.document,original_assets,error))return different();
+    if(captured_assets && original_assets!=*captured_assets){error="The captured AFTER asset identities changed between frames";return RecentMatches::Error;}
     Rows markers;std::vector<Binding> bindings;
     if(!rows(r,0x2C10,0x238,kPlacementLimit,markers))return different();
     for(auto marker=markers.begin;marker!=markers.end;marker+=0x238)if(live_slot(marker)){
@@ -1840,7 +1915,11 @@ RecentMatches capture_pose_resource(void* r,uint32_t act,const Snapshot& before,
         bindings.push_back({found->second,index});
     }
     if(!serialized_bindings(bindings,image.bindings,error) || image.bindings!=before.bindings)return different();
-    if(!serialize(r,image.bytes,error) || !normalize_materialized_terrain(image.bytes,error))return different();
+    if(captured_image){
+        if(captured_image->act!=act || captured_image->source!=image.source || captured_image->bindings!=image.bindings ||
+           captured_image->metadata!=image.metadata){error="The staged AFTER byte image lost its original identity";return RecentMatches::Error;}
+        image.bytes=captured_image->bytes;
+    }else if(!serialize(r,image.bytes,error) || !normalize_materialized_terrain(image.bytes,error))return different();
     if(!current()){error="The pose capture context changed during serialization";return RecentMatches::Error;}
     ReadImage parsed;if(!read_image(image,parsed,error))return different();
     std::vector<ResolvedAssetWitness> before_assets,after_assets;
@@ -1898,6 +1977,7 @@ HistoryQueryFn original_has_undo,original_has_redo;
 struct HeldActor { editor::ObjectId id; void* object; };
 std::vector<HeldActor> gesture_actors;
 void* gesture_before_resource;
+SceneOwner gesture_scene_owner;
 std::optional<Snapshot::Metadata> gesture_before_metadata;
 std::string gesture_metadata_error;
 std::map<uint32_t,editor::ObjectId> gesture_before_bindings;
@@ -2026,10 +2106,112 @@ struct Pending {
     std::optional<Snapshot::Metadata> before_metadata,after_metadata;
     std::string metadata_error;
     bool pose_candidate=false;
+    uint64_t serial=0;
+    SceneOwner owner_pin;
 };
 std::deque<Pending> pending;
+struct StagedPose {
+    enum class Phase {Before,AfterBytes,AfterProjection,Canonical,Opaque,Delivery};
+    CaptureTicket ticket;
+    Pending boundary;
+    void* entry=nullptr;void* before=nullptr;void* after=nullptr;
+    Gesture image;
+    std::vector<editor::ResourceKey> after_assets;
+    Phase phase=Phase::Before;
+    uint64_t frame=0;
+    uintptr_t context=0;
+    bool invalid=false;
+    std::shared_ptr<const ProjectedSnapshot> before_projection,after_projection;
+    std::function<CaptureState(const CaptureTicket&)> current;
+    std::function<bool(const CaptureTicket&,const Snapshot&,std::string&)> canonical;
+    std::function<void(const CaptureTicket&,const std::string&)> failed;
+    std::function<void(Gesture)> deliver;
+    void release_resources(){release(std::exchange(entry,nullptr));release(std::exchange(before,nullptr));release(std::exchange(after,nullptr));}
+    ~StagedPose(){release_resources();}
+};
+std::shared_ptr<StagedPose> staged_pose;
+bool capture_servicing=false;
+std::array<uint64_t,6> capture_last_begin{},capture_last_end{},capture_last_frame{};
+struct CaptureTiming {
+    size_t phase;WorkTimer timer;
+    CaptureTiming(size_t index,uint64_t frame):phase(index),timer(native_work.staged[index]){
+        capture_last_begin[phase]=timer.begin;capture_last_frame[phase]=frame;
+    }
+    ~CaptureTiming(){capture_last_end[phase]=work_clock();}
+};
+size_t capture_value_bytes(const Snapshot& image){
+    size_t bytes=sizeof(image)+image.bytes.size()+editor::bytes(image.document)+image.bindings.size()*sizeof(Binding);
+    if(image.metadata)for(const auto& text:image.metadata->text)bytes+=text.size()*sizeof(char16_t);
+    return bytes;
+}
+bool bounded_capture(const StagedPose& stage){
+    constexpr size_t limit=64u<<20;size_t charged=sizeof(stage);
+    const auto charge=[&](size_t bytes){if(bytes>limit-charged)return false;charged+=bytes;return true;};
+    for(const auto* metadata:{&stage.boundary.before_metadata,&stage.boundary.after_metadata})
+        if(*metadata)for(const auto& text:(**metadata).text)if(!charge(text.size()*sizeof(char16_t)))return false;
+    if(!charge((stage.boundary.before_bindings.size()+stage.boundary.after_bindings.size())*64u))return false;
+    if(!charge(stage.after_assets.capacity()*sizeof(editor::ResourceKey)))return false;
+    return charge(capture_value_bytes(stage.image.before)) && charge(capture_value_bytes(stage.image.after)) &&
+        (!stage.before_projection || charge(stage.before_projection->cost)) &&
+        (!stage.after_projection || charge(stage.after_projection->cost)) &&
+        (!stage.image.capture_proof || (charge(capture_value_bytes(stage.image.capture_proof->before)) &&
+            charge(capture_value_bytes(stage.image.capture_proof->after)) &&
+            charge((stage.image.capture_proof->before_assets.capacity()+stage.image.capture_proof->after_assets.capacity())*sizeof(ResolvedAssetWitness))));
+}
+CaptureState staged_capture_current(const std::shared_ptr<StagedPose>& stage){
+    try{
+        if(staged_pose!=stage || stage->invalid || !capture_raw_owner(stage->ticket) || !stage->current || !active() ||
+           (stage->entry && skg::field<void*>(stage->entry,0x14)!=stage->after))return CaptureState::Retired;
+        const auto disposition=stage->current(stage->ticket);
+        if(staged_pose!=stage || stage->invalid || value_scope()!=stage->ticket.scope ||
+           capture_native_context()!=stage->context || !capture_raw_owner(stage->ticket) ||
+           (stage->entry && skg::field<void*>(stage->entry,0x14)!=stage->after))return CaptureState::Retired;
+        return disposition;
+    }catch(...){return CaptureState::Retired;}
+}
+void fail_staged_capture(const std::shared_ptr<StagedPose>& stage,const std::string& reason){
+    const auto ticket=stage->ticket;const auto failed=stage->failed;
+    if(staged_pose==stage)staged_pose.reset();
+    stage->release_resources();stage->before_projection.reset();stage->after_projection.reset();stage->image={};
+    if(failed)failed(ticket,reason.substr(0,512));
+}
+bool enroll_staged_capture(const Pending& boundary,Owned& entry,Owned& before,std::string& error){
+    if(!boundary.pose_candidate || boundary.clone_source || boundary.speech || !boundary.serial || !terrain_grounding.empty() ||
+       terrain_capturing || terrain_capture_rotations || !boundary.metadata_error.empty() || !boundary.before_metadata ||
+       boundary.before_metadata!=boundary.after_metadata || boundary.before_bindings!=boundary.after_bindings ||
+       !C.capture_begin || !C.capture_current || !C.capture_before || !C.capture_failed || !H || !H->frame_index)return false;
+    auto stage=std::make_shared<StagedPose>();stage->boundary=boundary;
+    stage->ticket={boundary.scope,{},boundary.generation,boundary.serial,boundary.act};
+    auto* m=mode();auto* d=data(m);auto* r=resource(d);
+    if(d!=boundary.owner || !valid_scope(boundary.scope) || !skg::readable(r,kResourceSize))return false;
+    stage->ticket.owner=boundary.owner_pin;
+    const SceneOwner actual{uintptr_t(m),uintptr_t(d),uintptr_t(r),skg::field<editor::ResourceKey>(r,8)};
+    if(!boundary.owner_pin.resource)return false;
+    if(actual!=boundary.owner_pin){error="The native pose release no longer owns its original scene";return false;}
+    stage->context=capture_native_context();stage->frame=H->frame_index();
+    if(!stage->context)return false;
+    stage->current=C.capture_current;stage->canonical=C.capture_before;stage->failed=C.capture_failed;stage->deliver=C.gesture;
+    const auto begin=C.capture_begin;
+    if(staged_pose){error="Another native pose capture is already held";return false;}
+    auto* after=skg::field<void*>(entry.p,0x14);
+    if(!skg::readable(after,kResourceSize)){error="The original pose AFTER resource is unavailable";return false;}
+    addref(after);stage->after=after;
+    bool accepted=false;
+    try{accepted=begin(stage->ticket,error);}
+    catch(...){error="The native pose capture begin callback failed";}
+    if(!accepted && error.empty())return false; // No Runtime hold was published.
+    stage->entry=std::exchange(entry.p,nullptr);stage->before=std::exchange(before.p,nullptr);
+    stage->boundary.entry=stage->boundary.before=nullptr;
+    stage->image.generation=boundary.generation;stage->image.capture=stage->ticket;
+    staged_pose=stage;
+    if(!accepted){fail_staged_capture(stage,error);return true;}
+    if(staged_capture_current(stage)==CaptureState::Retired){
+        error="The native pose capture expired while establishing its hold";fail_staged_capture(stage,error);
+    }
+    return true;
+}
 bool speech_pending(){return std::any_of(pending.begin(),pending.end(),[](const auto& item){return item.speech!=nullptr;});}
-bool ordinary_capture_pending(){return std::any_of(pending.begin(),pending.end(),[](const auto& item){return !item.speech;});}
+bool ordinary_capture_pending(){return staged_pose || std::any_of(pending.begin(),pending.end(),[](const auto& item){return !item.speech;});}
 
 void SK_CDECL drain(void*) {
     editor_native::state(); // Retire a replaced native owner before old callbacks.
@@ -2044,6 +2226,10 @@ void SK_CDECL drain(void*) {
         Owned entry(item.entry),before(item.before);
         if (!active() || applying || item.owner != data(mode()) || item.generation != generation ||
             (C.gesture_scope && item.scope!=C.gesture_scope())) continue;
+        std::string staging_error;
+        try{if(enroll_staged_capture(item,entry,before,staging_error))continue;}
+        catch(...){staging_error="Cannot retain the native pose capture stage";}
+        if(!staging_error.empty()){if(C.failure)C.failure(staging_error);continue;}
         ValidationScope image_scope;
         Gesture gesture;
         gesture.generation = generation;
@@ -2084,11 +2270,139 @@ void SK_CDECL drain(void*) {
         } else if (C.failure) C.failure(error);
     }
 }
+bool advance_staged_capture(const std::shared_ptr<StagedPose>& stage,std::string& error){
+    ValidationScope image_scope;
+    ProjectionBorrow retained(stage->before_projection,stage->after_projection);
+    auto& image=stage->image;const auto& boundary=stage->boundary;
+    switch(stage->phase){
+    case StagedPose::Phase::Before:
+        if(!capture_resource(stage->before,boundary.act,image.before,error,&boundary.before_bindings))return false;
+        image.before.metadata=boundary.before_metadata;
+        stage->before_projection=projected_snapshot(image.before,error);error.clear();return true;
+    case StagedPose::Phase::AfterBytes:{
+        auto* after=stage->after;
+        Snapshot captured;captured.act=boundary.act;captured.source=skg::field<editor::ResourceKey>(after,8);captured.metadata=boundary.after_metadata;
+        std::vector<Binding> live;for(const auto& [slot,id]:boundary.after_bindings)live.push_back({id,slot});
+        if(!serialized_bindings(live,captured.bindings,error) || !resolved_asset_values(after,image.before.document,stage->after_assets,error) ||
+           !serialize(after,captured.bytes,error))return false;
+        image.after=std::move(captured);return true;
+    }
+    case StagedPose::Phase::AfterProjection:{
+        auto* after=stage->after;PoseCaptureProof proof;
+        const auto captured_bytes=image.after;
+        const auto captured=capture_pose_resource(after,boundary.act,image.before,boundary.after_bindings,
+            *boundary.after_metadata,image.after,proof,error,&captured_bytes,&stage->after_assets);
+        if(captured==RecentMatches::Error)return false;
+        if(captured==RecentMatches::Different){
+            ++native_work.pose_fallbacks;error.clear();
+            std::vector<uint8_t> settled;
+            if(!serialize(after,settled,error) || settled!=captured_bytes.bytes){
+                if(error.empty())error="The retained native AFTER changed between capture frames";return false;
+            }
+            if(!capture_resource(after,boundary.act,image.after,error,&boundary.after_bindings))return false;
+            image.after.metadata=boundary.after_metadata;
+            if(!validate(image.after,image.after.document,error))return false;
+        }else{
+            Snapshot::Metadata settled;
+            if(!capture_metadata(boundary.owner,settled,error) || settled!=*boundary.after_metadata){
+                if(error.empty())error="The staged pose lost its exact native metadata";return false;
+            }
+            if(staged_capture_current(stage)!=CaptureState::Ready){error.clear();return false;}
+            remember_projection(image.after,proof.assets,proof.scope,proof.generation);++native_work.pose_captures;++captures;
+        }
+        stage->after_projection=projected_snapshot(image.after,error);error.clear();return true;
+    }
+    case StagedPose::Phase::Canonical:
+        if(!stage->canonical(stage->ticket,image.before,error))return false;
+        stage->before_projection=projected_snapshot(image.before,error);error.clear();return true;
+    case StagedPose::Phase::Opaque:{
+        if(!only_existing_pose_fields(image.before.document,image.after.document)){
+            // Classification is optional. Ambiguous/no-op images retain the
+            // complete ordinary guard and receive no reusable pose seal.
+            return supported_changes(image,error);
+        }
+        // Strong ownership across frames is not an immutable-byte witness.
+        // Re-serialize the independently owned BEFORE before temporarily
+        // applying any pose primitive to it on this synchronous stack.
+        std::vector<uint8_t> original;
+        if(!serialize(stage->before,original,error))return false;
+        if(staged_capture_current(stage)!=CaptureState::Ready){error.clear();return false;}
+        if(original!=image.before.bytes || skg::field<editor::ResourceKey>(stage->before,8)!=image.before.source){
+            error="The retained native BEFORE changed between capture frames";return false;
+        }
+        RecentMatches supported_pose;
+        {
+            SerializedBeforeScope serialized_before(stage->before,boundary.before_bindings,image.before);
+            WorkTimer timer(native_work.supported);supported_pose=supported_pose_image(image,error);
+        }
+        if(supported_pose==RecentMatches::Error)return false;
+        if(supported_pose==RecentMatches::Different){++opaque_pose_fallbacks;error.clear();return supported_changes(image,error);}
+        ++opaque_pose_hits;
+        const auto before=projected_snapshot(image.before,error),after=projected_snapshot(image.after,error);
+        if(!before || !after){error.clear();return true;} // Optional cache allocation may opt out of reuse.
+        auto proof=std::make_shared<PoseSupportProof>();proof->ticket=stage->ticket;
+        proof->before=image.before;proof->after=image.after;
+        proof->before_assets=before->assets;proof->after_assets=after->assets;
+        proof->before_projection=before;proof->after_projection=after;
+        proof->context=stage->context;proof->current=stage->current;image.capture_proof=std::move(proof);
+        return true;
+    }
+    case StagedPose::Phase::Delivery:break;
+    }
+    error="The native pose capture reached an invalid phase";return false;
+}
+void service_staged_capture(){
+    if(capture_servicing || !staged_pose || !H || !H->frame_index)return;
+    struct Servicing {Servicing(){capture_servicing=true;}~Servicing(){capture_servicing=false;}} servicing;
+    const auto stage=staged_pose;
+    try{
+        state(); // Expire a replaced owner before touching its retained values.
+        const auto disposition=staged_capture_current(stage);
+        if(disposition==CaptureState::Retired){fail_staged_capture(stage,"The native pose capture owner or context expired");return;}
+        const auto frame=H->frame_index();
+        if(disposition==CaptureState::Wait || frame<=stage->frame)return;
+        stage->frame=frame;
+        CaptureTiming phase_timer(size_t(stage->phase),frame);
+        if(stage->phase==StagedPose::Phase::Delivery){
+            auto image=std::move(stage->image);const auto deliver=stage->deliver;
+            staged_pose.reset();stage->release_resources();
+            ProjectionBorrow retained(stage->before_projection,stage->after_projection);
+            stage->before_projection.reset();stage->after_projection.reset();
+            if(deliver)deliver(std::move(image));return;
+        }
+        std::string error;const bool advanced=advance_staged_capture(stage,error);
+        const auto settled=staged_capture_current(stage);
+        if(settled==CaptureState::Retired){fail_staged_capture(stage,"The native pose capture expired during a Native callback");return;}
+        if(settled==CaptureState::Wait){stage->image.capture_proof.reset();return;}
+        if(!advanced){if(!error.empty())fail_staged_capture(stage,error);return;}
+        if(!bounded_capture(*stage)){fail_staged_capture(stage,"The native pose capture values exceed 64 MiB");return;}
+        switch(stage->phase){
+        case StagedPose::Phase::Before:stage->phase=StagedPose::Phase::AfterBytes;break;
+        case StagedPose::Phase::AfterBytes:stage->phase=StagedPose::Phase::AfterProjection;break;
+        case StagedPose::Phase::AfterProjection:stage->phase=StagedPose::Phase::Canonical;break;
+        case StagedPose::Phase::Canonical:stage->phase=StagedPose::Phase::Opaque;break;
+        case StagedPose::Phase::Opaque:
+            stage->phase=StagedPose::Phase::Delivery;
+            // Parsed owners and the stack before witness have already died at
+            // advance's return. Only sealed values survive to the later frame.
+            stage->release_resources();
+            if(staged_capture_current(stage)==CaptureState::Retired)
+                fail_staged_capture(stage,"The native pose capture expired while retiring its owned history images");
+            break;
+        case StagedPose::Phase::Delivery:break;
+        }
+    }catch(...){
+        try{fail_staged_capture(stage,"The staged native pose capture callback or allocation failed");}
+        catch(...){stage->release_resources();if(staged_pose==stage)staged_pose.reset();}
+    }
+}
 void SK_THISCALL start(void* self) {
     editor_native::state();
     if(!applying && active() && ordinary_capture_pending())return;
     bool observe=!applying && !cancellation && active() && self==data(mode()) && *reinterpret_cast<uint8_t*>(a_history+0x20);
     if(observe){
+        auto* m=mode();auto* d=data(m);auto* r=resource(d);
+        gesture_scene_owner={uintptr_t(m),uintptr_t(d),uintptr_t(r),skg::readable(r,kResourceSize)?skg::field<editor::ResourceKey>(r,8):editor::ResourceKey{}};
         // A real authored pose boundary must never inherit a previous native
         // grounding result, including a rotation equal to its old rendered q.
         if(input_pose)clear_terrain_capture_rotations();
@@ -3565,7 +3879,7 @@ void SK_THISCALL commit(void* self) {
     }
     uint32_t act = skg::cdecl_call<uint32_t>(a_act);
     pending.push_back({entry,before,self,generation,act,gesture_clone,gesture_before_bindings,bindings,gesture_scope_pin,speech,
-        std::move(before_metadata),std::move(after_metadata),std::move(metadata_error),gesture_pose&&!gesture_cast&&!speech&&!gesture_clone});
+        std::move(before_metadata),std::move(after_metadata),std::move(metadata_error),gesture_pose&&!gesture_cast&&!speech&&!gesture_clone,gesture_serial,gesture_scene_owner});
     if (!queued) { queued = true; H->run_outside_frame(drain, nullptr); }
 }
 void SK_THISCALL undo_native(void* self) {
@@ -3917,6 +4231,7 @@ bool creation_terrain_placements_current(const CreationTerrainProof& proof,bool 
 }
 }
 
+void service_capture(){service_staged_capture();}
 bool capture_view(LocalView& view, std::string& error) {
     const auto native=state();
     if (!native.ready || native.gesture || applying) {error="The native editor is not ready to capture its local view";return false;}
@@ -4435,6 +4750,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
 }
 
 void shutdown() {
+    staged_pose.reset();
     clear_terrain_capture_rotations();
     if(terrain_read_identity)terrain_read_identity->invalid=true;
     projected_snapshots.clear();projected_snapshot_bytes=0;
@@ -4453,7 +4769,7 @@ void shutdown() {
     deferred_local_view.reset();local_view_queued=local_view_settling=false;
     held_import.reset();
     cancellation.reset();cancellation_queued=cancellation_settling=false;
-    gesture_owner=gesture_entry=nullptr;gesture_generation=gesture_serial=0;gesture_scope_pin={};
+    gesture_owner=gesture_entry=nullptr;gesture_generation=gesture_serial=0;gesture_scope_pin={};gesture_scene_owner={};
     for (auto item : pending){release(item.entry);release(item.before);}
     release(gesture_before_resource);gesture_before_resource=nullptr;
     gesture_before_metadata.reset();gesture_metadata_error.clear();
@@ -4482,6 +4798,9 @@ State state() {
     const bool scenario=game::mode_id()==modes::kScenario;
     void* m = mode(); void* d = data(m);
     if (m != observed_mode || d != observed_data || scenario!=observed_scenario) {
+        // Retire only the value identity here. Native owning refs are released
+        // by the next outside-frame service, never by a render-time state read.
+        if(staged_pose)staged_pose->invalid=true;
         clear_terrain_capture_rotations();
         if(terrain_read_identity)terrain_read_identity->invalid=true;
         projected_snapshots.clear();projected_snapshot_bytes=0;
@@ -4516,7 +4835,7 @@ State state() {
     void* context=a_context?*reinterpret_cast<void**>(a_context):nullptr;
     if(s.editing && skg::readable(context,4))s.act=skg::field<uint32_t>(context,0);
     s.selected=selection;
-    s.gesture=!*reinterpret_cast<uint8_t*>(a_history+0x20) || !pending.empty() || (active() && speech_pending()) || (terrain_pending && !terrain_capturing);
+    s.gesture=!*reinterpret_cast<uint8_t*>(a_history+0x20) || !pending.empty() || bool(staged_pose) || (active() && speech_pending()) || (terrain_pending && !terrain_capturing);
     s.history_cursor=*reinterpret_cast<uint32_t*>(a_history+0x14);
     uintptr_t begin=*reinterpret_cast<uintptr_t*>(a_history),end=*reinterpret_cast<uintptr_t*>(a_history+4);
     if(end>=begin && (end-begin)%4==0) s.history_size=uint32_t((end-begin)/4);
@@ -4829,6 +5148,9 @@ bool supported_changes(const Gesture& gesture,std::string& error){
        !relative_scale_mode(gesture.after.document,tracked,error)){
         error="Native placement-property schema changed during a gesture";return false;
     }
+    const auto sealed=sealed_pose_support(gesture,error);
+    if(sealed==RecentMatches::Match){++opaque_pose_hits;return true;}
+    if(sealed==RecentMatches::Error)return false;
     const auto pose=supported_pose_image(gesture,error);
     if(pose==RecentMatches::Match){++opaque_pose_hits;return true;}
     if(pose==RecentMatches::Error)return false;
@@ -6551,7 +6873,15 @@ std::string status() {
         (unsigned long long)work.parsed_hits,(unsigned long long)work.parsed_misses,work.parsed_entries,work.parsed_bytes,
         work.parsed_owners,work.parsed_owner_bytes,work.parsed_peak_owners,work.parsed_peak_bytes,
         (unsigned long long)work.pose_captures,(unsigned long long)work.pose_fallbacks);
-    return result+detail+" opaque_pose_hits="+std::to_string(opaque_pose_hits)+
+    result+=detail;
+    constexpr std::array<const char*,6> phase_names{"before","after_bytes","after_projection","canonical","opaque","delivery"};
+    for(size_t i=0;i<phase_names.size();++i){
+        const auto prefix=" native_capture_"+std::string(phase_names[i]);
+        result+=prefix+"_calls="+std::to_string(work.staged[i].calls)+prefix+"_ticks="+std::to_string(work.staged[i].ticks)+
+            prefix+"_begin="+std::to_string(capture_last_begin[i])+prefix+"_end="+std::to_string(capture_last_end[i])+
+            prefix+"_frame="+std::to_string(capture_last_frame[i]);
+    }
+    return result+" opaque_pose_hits="+std::to_string(opaque_pose_hits)+
         " opaque_pose_fallbacks="+std::to_string(opaque_pose_fallbacks)+
         " history_ui_updates="+std::to_string(history_ui_updates)+
         " history_ui_undo="+std::to_string(history_ui_undo)+

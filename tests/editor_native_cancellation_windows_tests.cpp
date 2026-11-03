@@ -1514,11 +1514,15 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
 #include "editor_native_crew_assets_fixture.h"
 #include "editor_native_recent_fixture.h"
 #include "editor_native_pose_capture_fixture.h"
+#include "editor_native_staged_capture_fixture.h"
 #include "editor_native_terrain_materialization_fixture.h"
 #include "editor_native_diagnostic_fixture.h"
 #include "editor_native_view_fence_fixture.h"
 #include "editor_native_complexity_fixture.h"
 int main(int argc,char** argv){
+    if(argc==2&&std::string(argv[1])=="--staged-capture-only"){
+        test_staged_native_capture();std::printf("native staged capture: %u checks passed\n",checks);return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--creation-grounding-only"){
         test_creation_grounding_return();std::printf("native creation grounding return: %u checks passed\n",checks);return 0;
     }
@@ -1565,6 +1569,7 @@ int main(int argc,char** argv){
     test_history_toolbar_current_layout();
     test_recent_native_proofs();
     test_pose_capture_proofs();
+    test_staged_native_capture();
     test_terrain_materialization_hooks();
     test_owned_crew_asset_versions();
     test_act_projection_production_cache();test_act_projection_cache_bounds();

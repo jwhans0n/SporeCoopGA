@@ -1150,3 +1150,47 @@ expected-failure receipt is
 `out/preview9-creation-grounding-red/receipt.json`. The passing current case
 continues through strict draft capture and entry validation. These receipts
 prove controlled adapter behavior, not live host-away acceptance or timing.
+
+### Ordinary pose capture uses separate outside-frame proof phases
+
+The optional ordinary-pose route retains one operation, with its original
+history entry and independently referenced BEFORE and AFTER resources. It
+advances only from Runtime's outside-frame drain tail, after canonical work,
+and requires a strictly greater actual frame for each phase: BEFORE capture,
+AFTER byte capture, full AFTER Read/typed projection, canonical BEFORE proof,
+opaque forward proof, and value-only delivery. A foreign durable commit can
+pause progress; it cannot change the retained request's original base or CAS
+guards. The authorizing gesture scope stays empty while held. A separate read
+identity pins project/epoch/peer, generation, actual mode/data/resource/source,
+native context/act and operation serial.
+
+The full AFTER typed projection remains mandatory. Its immutable value proof
+and the validated BEFORE value proof can be borrowed on a later synchronous
+stack, with fresh resolver witnesses and exact image/schema/identity checks.
+No parsed resource, ReadImage or ValidationScope survives a drain, and no native
+pointer is transferred to Runtime. Before the opaque phase temporarily
+overlays known pose primitives on the original private BEFORE, a fresh Write
+must reproduce its captured bytes. The existing RAII forward comparison then
+requires one Write to reproduce the entire AFTER image, and restores every
+temporary primitive on all exits. A genuine sealed result permits reuse of
+that completed support proof; ambiguous supported changes retain the full
+ordinary guard. Runtime still performs an independent fresh live after-image
+proof before request/adoption. The seal never certifies current live bytes.
+
+Every callback boundary closes the original owner/source/read identity, and
+entry-child replacement retires the operation rather than repinning it.
+Owning native references are released before failure or later delivery; only
+bounded owned values survive. Grounded post-terrain gestures continue through
+the generic path because a raw BEFORE owner is not automatically a canonical
+grounding proof. Six cumulative `native_capture_*_{calls,ticks}` spans and last
+`begin/end/frame` values expose the actual phases; these inclusive timings do
+not establish a frame or confirmation budget pass. The controlled regression
+also covers reentry, NativeWrite failure/RAII restoration, Wait retries,
+resolver ABA, unknown bytes, cache eviction, and zero-Read/Write sealed reuse.
+
+The strict actual-i686 O2 receipt is
+`out/preview9-staged-capture-native-receipt.json`: staged 1,662, pose 2,720,
+and full Native 70,295 checks pass with zero drift across 47 compiler/Make
+inputs. Independent source review found no additional lifetime or seal bypass.
+This is controlled adapter evidence; live staged scheduling and the required
+two/four-participant frame and confirmation budgets remain separate gates.

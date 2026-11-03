@@ -28,6 +28,9 @@ struct WorkSpan {uint64_t calls=0,ticks=0;};
 struct WorkStats {
     uint64_t frequency=0;
     WorkSpan reads,writes,projections,resolutions,supported;
+    // Before, AFTER bytes, AFTER typed projection, canonical-before proof,
+    // opaque forward proof, and later delivery. Inclusive local CPU spans.
+    std::array<WorkSpan,6> staged;
     uint64_t parsed_hits=0,parsed_misses=0,pose_captures=0,pose_fallbacks=0;
     size_t parsed_entries=0,parsed_bytes=0;
     // Retained owners include borrowed entries no longer indexed in the cache;
@@ -99,17 +102,29 @@ struct SceneResumeState {
     bool settled() const {return available&&owner&&ready&&initialization==4&&!enter_pending&&!transitioning&&world_visible;}
 };
 
-struct Gesture {
-    Snapshot before, after;
-    uint64_t generation = 0;
-    std::optional<editor::ObjectId> clone_source;
-};
-
 struct GestureScope {
     editor::ProjectId project{};
     uint64_t epoch = 0;
     editor::Peer author;
     bool operator==(const GestureScope&) const = default;
+};
+struct CaptureTicket {
+    GestureScope scope;
+    SceneOwner owner;
+    uint64_t generation=0,gesture=0;
+    uint32_t act=0;
+    bool operator==(const CaptureTicket&) const = default;
+};
+enum class CaptureState {Wait,Ready,Retired};
+struct PoseSupportProof;
+struct Gesture {
+    Snapshot before, after;
+    uint64_t generation = 0;
+    std::optional<editor::ObjectId> clone_source;
+    std::optional<CaptureTicket> capture;
+    // Opaque, owned values sealed only by the native producer after both the
+    // genuine typed projection and exact opaque comparison have completed.
+    std::shared_ptr<const PoseSupportProof> capture_proof;
 };
 struct CancellationTicket {
     GestureScope scope;
@@ -136,6 +151,16 @@ struct Ctx {
     // Called outside Present after the finalizer and actual frame advance.
     std::function<bool(const CancellationTicket&, std::string&)> cancelled;
     std::function<void(Gesture)> gesture;
+    // Optional ordinary-pose staging. Runtime holds local input/detaches the
+    // local scene; these callbacks grant read identity, never new input scope.
+    // False+empty begin opts out without publishing a hold. Each Native phase
+    // requires a strictly later game frame. No parsed owner crosses a drain.
+    std::function<bool(const CaptureTicket&,std::string&)> capture_begin;
+    std::function<CaptureState(const CaptureTicket&)> capture_current;
+    std::function<bool(const CaptureTicket&,const Snapshot&,std::string&)> capture_before;
+    // Called only after Native retires its staged owners/state, so an exact
+    // original-owner restoration can use the ordinary readiness contract.
+    std::function<void(const CaptureTicket&,const std::string&)> capture_failed;
     // Native release boundary before its after-snapshot serialization. The
     // runtime stamps this immediately so expensive native Commit work is timed.
     std::function<void()> gesture_released;
@@ -175,6 +200,9 @@ struct Ctx {
 bool init(const SkHost*, SkMod*, Ctx);
 void shutdown();
 void tick(); // Queues native UI fences outside Present.
+// Outside-frame Runtime tail only, after canonical work. Advances at most one
+// staged capture phase, and only on a strictly later actual game frame.
+void service_capture();
 State state();
 bool terraform_navigation_allowed(); // Ordinary local Build/Terraform browsing.
 bool extended_complexity_available();
