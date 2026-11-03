@@ -2423,3 +2423,66 @@ This proves local persistence only; the shared Save defect and cold reopen
 remain open. Evidence: `out/preview9-c32-retirement/result.json` and
 `out/preview9-c32-closed-retention/receipt.json`. Personal preview 8 and its
 4 GB executable remain unchanged. No release installation or merge occurs.
+
+### C33 durable completion scheduling and native measurement
+
+Commit `08d56bd` adds game-thread completion polling when owned Encode/Flush
+workers finish. Workers carry immutable wake identities and owned bytes;
+publication and resource-capacity validation still precede durable Flush.
+Callbacks check the exact job, phase, project/epoch, transport, participant,
+native generation, source and attachment. Early or stale notifications fall
+back to normal polling. Failure and uncertain outcomes remain on the ordinary
+rollback path. Completion polling cannot drain inbound/control/native work.
+The worker destructor joins before any owned input or result is destroyed.
+
+Strict actual-i686 O2 passes Runtime 114,743 full and 2,225 focused, Session
+23,766 full and 480 focused, and metrics 132 checks. All 80 pinned inputs and
+three executable hashes match after commit. The genuine C32 regression fails
+the new outside-frame completion assertion while retaining successful normal
+tick polling. Evidence: `out/preview9-c33-completion-receipt.json`,
+`out/preview9-c33-completion-postcommit.json`,
+`out/preview9-c33-completion-c32-red-receipt.json` and
+`out/preview9-c33-completion-independent-review.json`.
+
+The guarded production build retains 192 inputs with zero drift. DLL is
+93,087,744 bytes, SHA-256
+`e4a946256980a200729faa1694385ec9cefd0e10ee6d36c5f971ef4cff35e63b`.
+It is deployed only into the closed private installation. The first native
+bootstrap stops on a transient Connecting modal without an authoring edit.
+It clears normally; a fresh bootstrap reaches revision/history zero and zero
+faults. Evidence: `out/preview9-candidate33-build-receipt.json`,
+`out/preview9-candidate33-deployment/receipt.json`,
+`out/preview9-c33-startup-inspect/result.json` and
+`out/preview9-c33-two-town-bootstrap-r2/result.json`.
+
+All 60 movement gestures complete, 30 per author, reaching revision 62.
+Host confirmation p95 improves from 143.929 to 98.366 ms and guest from
+422.755 to 289.014 ms. Maximum confirmations are 100.199 and 291.164 ms.
+Own-author frame-window p95 are 96.898 and 95.791 ms. Observer frame-window
+p95 remain 141.415 and 187.153 ms, with maxima 142.487 and 187.309 ms.
+Guest confirmation and observer p95 therefore still fail acceptance.
+
+New stage samples separate observer Native preparation, p95 90.007/85.972
+ms, from live-integrity work before it, 26.628/53.404 ms, and marker mutation,
+1.206/1.365 ms. Actual Encode is about 1-2 ms and Flush about 5-10 ms; most
+completion observation is prompt, with occasional frame-sized waits. The
+trace alone cannot distinguish an early-future wake from dispatch/context
+fallback. Even subtracting the entire measured host preparation interval
+leaves an optimistic guest confirmation p95 of 204.142 ms. This is not enough
+margin for the target and does not justify weakening opaque validation.
+Evidence: `out/preview9-commit-diagnostic-c33-two-town-fresh/result.json` and
+`out/preview9-c33-full-performance-analysis.json`.
+
+After the budget assertion, independent native checks confirm both peers
+healthy, strict-converged and durable at revision 62 with zero faults.
+The idle Store checkpoint/journal/object bytes are retained before leaving;
+the first read attempt stops on the intentionally exclusive project.lock.
+A corrected read excludes that transient lock. Both games then return
+normally to Galaxy, fault-free, and the runner exits zero. Closed source
+reads prove all six Store files byte-identical to the idle copies. These
+owned files preserve genuine consecutive movement images for a future
+exact-output optimization oracle. Evidence:
+`out/preview9-c33-idle-retention-r2/receipt.json`,
+`out/preview9-c33-retirement/result.json` and
+`out/preview9-c33-closed-retention/receipt.json`. No personal installation or
+release-acceptance claim follows from this intermediate build.
