@@ -1207,3 +1207,25 @@ remain required. Run the offline contracts on either Python platform with:
 ```bash
 python3 tests/editor_commit_performance_tool_tests.py
 ```
+
+### Galaxy registration dismissal
+
+`Game.dismiss_registration` in `tools/tests/coop_adventure.py` identifies the
+visible registration modal and its own close control from `coop.ui tree 12`.
+The modal Login `0519E168` differs from the persistent Galaxy footer Login
+`04810F47` (under `048102CA/010F33E0/2EDD95CA`). The latter is not a dialog and
+must remain visible after dismissal. A second snapshot must retain the same
+dialog/control before a click. Confirmation uses only an enabled OK in the modal
+containing the registration warning. Hidden cached dialogs are ignored;
+unrelated visible popups, including Network play disabled, stop the fixture with
+an explicit error for the operator instead of receiving a guessed close click.
+
+Retained native registration trees establish the registration IDs and close
+rectangle; C30's startup screenshot establishes the unrelated popup above the
+footer Login. The offline confirmation cases exercise ownership policy without
+claiming a newly measured control ID. Run the parser and interaction contracts
+without a game or console connection:
+
+```bash
+python3 tests/adventure_registration_tool_tests.py
+```

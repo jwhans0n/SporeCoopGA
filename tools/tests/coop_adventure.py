@@ -31,6 +31,96 @@ class FixtureError(RuntimeError):
     pass
 
 
+_STARTUP_WINDOW = re.compile(
+    r"^( *)(?:- |Window )([0-9A-Fa-f]+) id=0x([0-9A-Fa-f]{8}) "
+    r"cmd=0x([0-9A-Fa-f]{8}) fl=0x([0-9A-Fa-f]+) "
+    r"\[(-?\d+) (-?\d+) (-?\d+) (-?\d+)\] drw=[0-9A-Fa-f]+ "
+    r"vt=[0-9A-Fa-f]+ font=[0-9A-Fa-f]{8} '(.*)'$")
+
+
+def registration_action(tree):
+    """Return a dialog-owned (kind, identity, centre), or None for a clear menu.
+
+    These are native UI dump identities, never addresses used for native calls.
+    The registration Login is 0519E168 under its modal; the Galaxy footer Login
+    is 04810F47 under 2EDD95CA and is not a registration prompt.
+    """
+    if not tree or len(tree) >= 60000:
+        raise FixtureError('incomplete startup UI tree')
+    nodes, stack, addresses = [], [], set()
+    for line in tree.splitlines():
+        if not line.strip():
+            continue
+        match = _STARTUP_WINDOW.fullmatch(line)
+        if not match or len(match[1]) % 2:
+            raise FixtureError('malformed startup UI tree')
+        depth = len(match[1]) // 2
+        if depth > len(stack) or len(nodes) >= 4096:
+            raise FixtureError('incomplete startup UI ancestry')
+        address, ident, command, flags = (int(match[i], 16) for i in range(2, 6))
+        if not address or address in addresses:
+            raise FixtureError('duplicate startup UI identity')
+        addresses.add(address)
+        parent = stack[depth - 1] if depth else None
+        rect = tuple(int(match[i]) for i in range(6, 10))
+        node = dict(address=address, ident=ident, command=command, flags=flags,
+                    rect=rect, caption=match[10], parent=parent)
+        node['visible'] = bool(flags & 1) and (parent is None or parent['visible'])
+        node['origin'] = (rect[0] + (parent['origin'][0] if parent else 0),
+                          rect[1] + (parent['origin'][1] if parent else 0))
+        stack[depth:] = [node]
+        nodes.append(node)
+    if not nodes or nodes[0]['ident'] != 0xFFFFFFF0 or sum(n['parent'] is None for n in nodes) != 1:
+        raise FixtureError('startup UI root unavailable')
+    visible = [node for node in nodes if node['visible']]
+    modals = [node for node in visible if node['flags'] & 0x40]
+    if not modals:
+        if any(node['ident'] == 0x0519E168 or "If you don't register" in node['caption'] for node in visible):
+            raise FixtureError('registration controls have no verified modal owner')
+        return None
+    if len(modals) != 1:
+        raise FixtureError('ambiguous startup native modals')
+    modal = modals[0]
+    if modal['parent'] is None or modal['parent']['ident'] != 0x05B598F7:
+        raise FixtureError('unrecognized startup modal ancestry')
+
+    def owned(node):
+        while node is not None:
+            if node is modal:
+                return True
+            node = node['parent']
+        return False
+
+    contents = [node for node in visible if owned(node)]
+    direct = [node for node in contents if node['parent'] is modal]
+    if any("If you don't register" in node['caption'] for node in contents):
+        targets = [node for node in contents if node['caption'] == 'OK' and node['flags'] & 2]
+        kind = 'confirmation'
+    elif (modal['ident'] == 0xFFFFFFFF
+          and sum(node['ident'] == 0x0519E168 and node['caption'] == 'Login' for node in direct) == 1
+          and sum(node['ident'] == 0x0451A4C0 for node in direct) == 1):
+        targets = [node for node in direct if node['ident'] == 0xFFFFFFF2
+                   and node['command'] == 3 and node['flags'] & 2]
+        kind = 'registration'
+    else:
+        captions = ', '.join(node['caption'][:80] for node in contents if node['caption'])[:240]
+        raise FixtureError('startup blocked by unrelated native modal: ' + (captions or f"{modal['ident']:08X}"))
+    if len(targets) != 1:
+        raise FixtureError('registration dialog has no unique enabled dismissal control')
+    target = targets[0]
+    left, top = target['origin']
+    x1, y1, x2, y2 = target['rect']
+    point = (left + (x2 - x1) // 2, top + (y2 - y1) // 2)
+    mx, my = modal['origin']
+    mr = modal['rect']
+    if x2 <= x1 or y2 <= y1 or not (mx <= point[0] < mx + mr[2] - mr[0]
+                                    and my <= point[1] < my + mr[3] - mr[1]):
+        raise FixtureError('registration dismissal lies outside its dialog')
+    identity = tuple((node['address'], node['ident'], node['command'], node['flags'], node['rect'])
+                     for node in (modal, target))
+    return kind, identity, point
+
+
 class Game:
     def __init__(self, instance, output, timeout=120):
         self.instance = instance
@@ -144,16 +234,24 @@ class Game:
     def dismiss_registration(self):
         # Closing registration and accepting its confirmation only affects the
         # isolated lab profile; no online account is created or contacted here.
+        next_click, attempts = 0., 0
         def ready():
+            nonlocal next_click, attempts
             if self.caption('letterbox_top'):
                 self.call('key esc')  # native opening movie
                 time.sleep(.5)
-            if self.caption('Login'):
-                self.modal_click(868, 159)
-                self.wait('registration closes or asks for confirmation',
-                          lambda: self.caption("If you don't register") or not self.caption('Login'))
-            if self.caption("If you don't register"):
-                self.press('OK')
+            action = registration_action(self.call('coop.ui tree 12'))
+            if action:
+                if time.monotonic() >= next_click:
+                    # A second snapshot must retain this exact dialog/control.
+                    # Never reuse the old fixed close coordinate over a popup.
+                    if registration_action(self.call('coop.ui tree 12')) == action:
+                        if attempts >= 16:
+                            raise FixtureError('registration dismissal did not settle')
+                        self.click(*action[2])
+                        attempts += 1
+                        next_click = time.monotonic() + .75
+                return False
             return self.menu() and (self.control(0x070D74E7) or self.caption('Welcome to Spore Galactic Adventures'))
         self.wait('galaxy menu controls', ready)
 
