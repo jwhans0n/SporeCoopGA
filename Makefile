@@ -158,7 +158,7 @@ $(B)/host/adventure_collect_tests.exe: tests/adventure_collect_windows_tests.cpp
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-unused-function -static -Imods/coop -Isdk/include tests/adventure_collect_windows_tests.cpp mods/coop/adventure_music.cpp mods/coop/net/dbpf.cpp -o $@
 
-$(B)/host/editor_native_cancellation_tests.exe: $(wildcard mods/coop/editor_native*.h) mods/coop/net/editor_terrain.h
+$(B)/host/editor_native_cancellation_tests.exe: $(wildcard mods/coop/editor_native*.h) mods/coop/net/editor_terrain.h tests/editor_native_pose_prepare_fixture.h mods/coop/editor_native_pose_prepare_impl.h
 
 $(B)/host/editor_native_terrain_tests.exe: $(EDITOR_CORE_SRC) tests/editor_native_terrain_tests.cpp mods/coop/editor_native_terrain.h mods/coop/editor_native_terrain_materialization.h mods/coop/net/editor_terrain.h
 	@mkdir -p $(B)/host

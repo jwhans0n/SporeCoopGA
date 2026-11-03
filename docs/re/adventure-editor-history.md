@@ -1410,3 +1410,72 @@ The fixed actual-i686 strict run passes 37,317 Save, 63,862 materialization,
 private-key mutation at Read and each Write phase. All 49 compiler/Make inputs
 remain unchanged in `out/preview9-save-key-native-receipt.json`. The real Save
 acceptance test remains separate from this controlled fixture evidence.
+The subsequent C31 private two-player run passed normal Native Save after both
+roles' Temperature and Water edit/history sequences at revision 16, with
+SavedApplied 2/2 and the genuine carrier retained. Its independent result is
+`out/preview9-c31-native-save-carrier/result.json`.
+
+### C32 private pose preparation reuses an exact typed base proof
+
+C30's 60 ordinary movements completed durably and converged, but observer
+frame time still exceeded the requested budget. Its author-side seal remained
+effective: Runtime's measured supported scope was about 1.5 ms at p95, while
+Native's aggregate supported counter included both the earlier forward proof
+and the later seal check. Those differently scoped counters did not establish
+a seal-reuse regression. The separate observer preparation route still read
+its prepared image twice and projected the complete Act/Crew/Class subtrees.
+
+The narrow C32 route retains independent bounded input values before any
+callback. It requires the genuine private projection proof for the exact base
+bytes, source, bindings and sidecars, with fresh context and asset witnesses.
+It then owns one new NativeRead of the prepared AFTER image. Writing that
+unmodified owner must reproduce every AFTER byte before any reversal. Its
+complete raw marker roster supplies position, quaternion, scale and the seven
+existing supported companions to an independently derived typed projection.
+Only the previously recorded primitive writes and existing derived flag mask
+`0x16` are reversed; a second Write must reproduce every validated BASE byte.
+Unknown fields and unrelated subtree bytes are never reconstructed or omitted.
+
+Eligibility requires stable presence and type for all seven known properties;
+an extra property, removal or partial destination triplet retains the full
+existing route. The version field must be 17, marker deprecated-distance
+vectors must be empty (`+20C==+210`), and every ClassAct must have neither a
+meaningful external legacy LocalizedString (`+470` and `+46C` both nonzero)
+nor inline legacy text (`+45C!=+460`). This follows `F2CF60..F2CFA5`; a static
+empty-text pointer is permitted. Any noncanonical Read/Write result falls back
+to the existing full typed and opaque checks. Context or resolver expiry is a
+rejection rather than authority to repin a replacement.
+
+Temporary reversal holds values and slot/class/key identities, not marker
+pointers across callbacks. Cleanup re-resolves only the exact retained pool.
+Both private AFTER and producer owners finish Release before a reusable proof
+or caller output can be published. A failed copied-input allocation rejects
+rather than borrowing inputs a callback could retire. Nested preparation uses
+separate owners and the full fallback while the private proof is busy. The
+existing value-scope accessor now copies its callback before invocation, so
+self-reset cannot destroy captured storage during that invocation; fresh scope
+equality remains mandatory afterward.
+
+The genuine retained C30 executable succeeds on the owning controlled pose
+case with 3 Reads, 1 projection and 4 Writes, then fails the new work assertion.
+The new route succeeds with 2 Reads, 0 projections and 3 Writes. This fixture
+advertises Act/Crew authoring and owns class bytes without a typed cast schema;
+it does not manufacture a third class fingerprint saving. The minimal pose
+codec's Write count instead changes from 2 to 3, so that codec alone would not
+demonstrate reduced Write work. Exact old-source binaries and input hashes are
+retained in `out/preview9-c32-pose-prepare-red-receipt.json`.
+
+Controlled negatives cover all four owning subtree taints, unknown/presence/type
+changes, legacy fallback, context and resolver expiry, final producer Release,
+row-buffer replacement, reverse-Write exception and nested preparation, plus
+callback self-reset and bounded allocation failure. The initial fixture AV was
+its taint callback inspecting a marker-less fragment during full projection;
+the fixed callback checks the roster and still requires its real AFTER taint
+to fire. The retained diagnostic is `out/preview9-c32-fixture-debug.json`.
+The C++ value-copy `bad_alloc` branch was reviewed to fail closed; allocation
+injection covers the native allocator, not a global C++ allocator replacement.
+Actual-i686 strict O2 passes 6,300 focused, 37,317 Save, 1,269 Water, 1,137
+Environment, 63,862 materialization, 1,662 staged and 118,668 full checks.
+All 51 compiler/Make inputs have zero drift in
+`out/preview9-pose-prepare-native-receipt.json`. Controlled work counts are not
+running-game frame times, and no final latency acceptance is claimed.

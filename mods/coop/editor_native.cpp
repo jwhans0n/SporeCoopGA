@@ -95,7 +95,7 @@ uint64_t fenced_generation=0;
 uint64_t generation = 1, captures = 0, restores = 0, rejected = 0;
 unsigned validation_depth=0;
 WorkStats native_work;
-GestureScope value_scope(){return C.projection_scope?C.projection_scope():C.gesture_scope?C.gesture_scope():GestureScope{};}
+GestureScope value_scope(){const auto callback=C.projection_scope?C.projection_scope:C.gesture_scope;return callback?callback():GestureScope{};}
 bool valid_scope(const GestureScope&);
 uint64_t work_clock(){LARGE_INTEGER value{};return QueryPerformanceCounter(&value)&&value.QuadPart>0?uint64_t(value.QuadPart):0;}
 struct WorkTimer {
@@ -6047,28 +6047,35 @@ bool apply(const editor::Document& document, std::string& error) {
     return apply(document,editor::Change{},nullptr,error);
 }
 
-bool prepare(const Snapshot& base,const editor::Document& document,const editor::Change& change,
-             const Snapshot* artifact,Snapshot& out,std::string& error){
+namespace {
+#include "editor_native_pose_prepare_impl.h"
+}
+static bool prepare_impl(const Snapshot& base,const editor::Document& document,const editor::Change& change,
+             const Snapshot* artifact,Snapshot& out,std::string& error,const PreparedPoseContext* pin=nullptr){
     if(!supported || document.placements.size()>kPlacementLimit || document.acts.empty()){
         error="The detached native editor resource is unavailable or exceeds its limits";return false;
     }
     bool tracked=false;if(!relative_scale_mode(document,tracked,error))return false;
     // No capture/state/restore calls belong here: the host may currently own a
     // creature/building editor and have no Adventure Editor scene at all.
+    if(pin&&!pin->current()){error="The prepared pose input belongs to an expired native context";return false;}
     if(!validate(base,base.document,error))return false;
+    if(pin&&!pin->current()){error="The prepared pose input changed during base validation";return false;}
     std::set<editor::ObjectId> pose_targets;
     if(exact_pose_change(base.document,document,change,pose_targets)){
         editor::Limits limits;limits.placements=kPlacementLimit;
         if(!editor::valid(document,limits,error))return false;
+        std::optional<PreparedPoseContext> context;
+        std::shared_ptr<const ProjectedSnapshot> base_projection;
+        if(pin){
+            try{
+                context=*pin;base_projection=projected_snapshot(base,error);
+                if(!context->current()){error="The prepared pose input belongs to an expired native context";return false;}
+            }catch(...){error="The prepared pose input context callback failed";return false;}
+        }
         Owned posed(parse(base.bytes,error));if(!posed.p)return false;
-        struct OriginalPose {
-            uint32_t marker=0;
-            std::array<uint8_t,0x24> transform{};
-            std::array<uint8_t,0x28> companions{};
-            uint32_t elevation=0,flags=0;
-            bool relative=false,pitch=false,gain=false,destination=false,height=false;
-        };
-        std::vector<OriginalPose> originals;
+        if(context&&!context->current()){error="The prepared pose input changed during NativeRead";return false;}
+        std::vector<PreparedPoseOriginal> originals;
         for(auto id:pose_targets){
             auto binding=std::find_if(base.bindings.begin(),base.bindings.end(),[&](const auto& b){return b.object==id;});
             auto* marker=binding==base.bindings.end()?nullptr:marker_for_key(posed.p,binding->marker);
@@ -6076,7 +6083,7 @@ bool prepare(const Snapshot& base,const editor::Document& document,const editor:
             if(!marker || skg::field<uint32_t>(marker,0)!=uint32_t(p.class_id.id) || !relative_scale_value(p,tracked,relative,error)){
                 error="The owned pose target has no verified native marker";return false;
             }
-            OriginalPose original;original.marker=binding->marker;
+            PreparedPoseOriginal original;original.marker=binding->marker;
             std::memcpy(original.transform.data(),skg::ptr_add<void>(marker,4),original.transform.size());
             std::memcpy(original.companions.data(),skg::ptr_add<void>(marker,0x1E0),original.companions.size());
             original.elevation=skg::field<uint32_t>(marker,0x220);original.flags=skg::field<uint32_t>(marker,0x224);
@@ -6104,7 +6111,17 @@ bool prepare(const Snapshot& base,const editor::Document& document,const editor:
             }
         }
         Snapshot prepared=base;prepared.document=document;
-        if(!serialize(posed.p,prepared.bytes,error) || !validate(prepared,document,error))return false;
+        if(!serialize(posed.p,prepared.bytes,error))return false;
+        if(context){
+            const auto derived=prepared_pose_projection(*context,base_projection,base,prepared,posed,originals,error);
+            if(derived==RecentMatches::Error)return false;
+            if(derived==RecentMatches::Match){++pose_roundtrip_hits;out=std::move(prepared);error.clear();return true;}
+            // Failed private owners have now finished their Release callbacks.
+            // A fallback must not repin a replacement value context.
+            if(!context->current()){error="The prepared pose context expired during private cleanup";return false;}
+            error.clear();
+        }
+        if(!validate(prepared,document,error))return false;
         // Inspect the actual serialized after image, not the mutable producer.
         // Reversing only the verified primitive writes must recover every byte
         // of the validated base. This retains the opaque-field proof without
@@ -6271,6 +6288,46 @@ bool prepare(const Snapshot& base,const editor::Document& document,const editor:
     Gesture checked;checked.before=base;checked.after=prepared;
     if(!supported_changes(checked,error))return false;
     out=std::move(prepared);error.clear();return true;
+}
+
+bool prepare(const Snapshot& base,const editor::Document& document,const editor::Change& change,
+             const Snapshot* artifact,Snapshot& out,std::string& error){
+    // A callback may retire the caller's pending canonical inputs. The narrow
+    // pose path uses independent values before its first Native validation;
+    // private preparation acquires no live-scene or authoring permission.
+    struct Inputs {Snapshot base;editor::Document document;editor::Change change;};
+    std::set<editor::ObjectId> targets;
+    const auto& patch=change.patch;
+    const bool candidate=!patch.fields.empty() && patch.objects.empty() && patch.classes.empty() && !patch.acts && patch.terrain.empty() &&
+                         prepared_pose_fields(base.document,document,change);
+    if(!candidate)return prepare_impl(base,document,change,artifact,out,error);
+    try{
+        editor::Limits limits;limits.placements=kPlacementLimit;
+        if(base.bytes.empty() || base.bytes.size()>kLimit || base.bindings.size()>kPlacementLimit ||
+           editor::bytes(base.document)>limits.document_bytes || editor::bytes(document)>limits.document_bytes ||
+           editor::bytes(change.patch)>limits.document_bytes || editor::bytes(change.inverse)>limits.document_bytes ||
+           change.summary.size()>limits.summary_bytes || change.allocated.size()>kPlacementLimit || change.clone_sources.size()>kPlacementLimit){
+            error="The detached native preparation inputs exceed their owned value bounds";return false;
+        }
+        if(base.metadata)for(const auto& text:base.metadata->text)if(text.size()>4096){error="Invalid native metadata text";return false;}
+        if(exact_pose_change(base.document,document,change,targets)){
+            auto retained=std::make_unique<Inputs>(Inputs{base,document,change});
+            ScopedResolutionAudit resolution;
+            PreparedPoseContext pin;
+            Snapshot candidate;
+            if(!prepare_impl(retained->base,retained->document,retained->change,nullptr,candidate,error,&pin))return false;
+            // All private producer/fallback owners have finished their Release
+            // callbacks before the caller can observe the result.
+            if(!pin.current()){error="The prepared pose context expired during private cleanup";return false;}
+            auto closure=projected_snapshot(candidate,error);
+            if(resolution.audit.failed){error="The prepared pose asset resolution changed during preparation";return false;}
+            if(!closure && !validate(candidate,retained->document,error))return false;
+            if(!pin.current() || resolution.audit.failed){error="The prepared pose context expired during final projection closure";return false;}
+            out=std::move(candidate);error.clear();return true;
+        }
+    }catch(const std::bad_alloc&){error="The prepared pose inputs could not be retained independently";return false;}
+    catch(...){error="The prepared pose input context callback failed";return false;}
+    return prepare_impl(base,document,change,artifact,out,error);
 }
 
 bool edit_owned_snapshot(const Snapshot& base,const std::function<bool(void*,std::string&)>& edit,

@@ -1546,7 +1546,11 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
 #include "editor_native_water_fixture.h"
 #include "editor_native_environment_fixture.h"
 #include "editor_native_complexity_fixture.h"
+#include "editor_native_pose_prepare_fixture.h"
 int main(int argc,char** argv){
+    if(argc==2&&std::string(argv[1])=="--pose-prepare-only"){
+        test_native_pose_prepare_projection();std::printf("native pose prepare: %u checks passed\n",checks);return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--environment-only"){
         test_native_environment_refresh();std::printf("native Environment refresh: %u checks passed\n",checks);return 0;
     }
@@ -1607,6 +1611,7 @@ int main(int argc,char** argv){
     test_history_toolbar_current_layout();
     test_recent_native_proofs();
     test_pose_capture_proofs();
+    test_native_pose_prepare_projection();
     test_staged_native_capture();
     test_terrain_materialization_hooks();
     test_owned_crew_asset_versions();
