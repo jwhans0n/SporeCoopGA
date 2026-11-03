@@ -148,6 +148,10 @@ bool remap_owner(std::vector<dbpf::Record>& records,const editor::ResourceKey& s
                be32(bytes.data()+0x10)!=source.group || be32(bytes.data()+0x14)!=source.instance){
                 error="Unknown native creation metadata identity format";return false;
             }
+            // Its own online ID at04 is a different identity. Native Save
+            // otherwise replaces this private alias with that server-only ID
+            // (F2AAD0 -> metadata getter5507A0), erasing the local instance.
+            std::fill(bytes.begin()+4,bytes.begin()+0xC,0xFF);
             putbe(bytes.data()+0x14,instance);
         }else if(it->key.type==0x00B1B104){
             if(!remap_properties(bytes,owns,instance,error))return false;

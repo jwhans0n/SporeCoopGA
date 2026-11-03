@@ -363,7 +363,102 @@ void test_ga_new_routes(){
     CHECK(submitted_request_editor==UINT32_MAX&&submitted_source==original&&input==editor::ResourceKey{});
     result_key(original,true);return_ready=true;step();CHECK(!editor_creation::active()&&allocations.empty());
 }
-int main(){
+
+// Exact C32 admitted alias pollen: class1342 later became an unresolved
+// server-only reference during ordinary native Adventure Save. Kept separately
+// from synthetic model fixtures so the inherited online identity is real.
+static std::vector<uint8_t> c32_alias_pollen(){
+    static constexpr std::array<uint8_t,193> bytes{{
+        0x00,0x00,0x00,0x0D,0x00,0x00,0x00,0x74,0xAD,0x64,0x45,0xF8,0x24,0x68,0x22,0x94,
+        0x40,0x64,0x62,0x00,0x7D,0xAA,0x8C,0x24,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+        0x00,0x00,0x00,0x00,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+        0xFF,0xFF,0xFF,0xFF,0x00,0x00,0x00,0x0E,0xE2,0x7C,0x97,0x06,0x00,0x00,0x00,0x0E,
+        0xE2,0x7C,0x97,0x06,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x74,0x77,0x8A,0x76,0x25,
+        0x00,0x00,0x00,0x0B,0x70,0x00,0x65,0x00,0x6C,0x00,0x69,0x00,0x63,0x00,0x61,0x00,
+        0x6E,0x00,0x74,0x00,0x68,0x00,0x6F,0x00,0x72,0x00,0x00,0x00,0x00,0x16,0x50,0x00,
+        0x72,0x00,0x65,0x00,0x76,0x00,0x69,0x00,0x65,0x00,0x77,0x00,0x39,0x00,0x56,0x00,
+        0x65,0x00,0x68,0x00,0x69,0x00,0x63,0x00,0x6C,0x00,0x65,0x00,0x43,0x00,0x33,0x00,
+        0x32,0x00,0x48,0x00,0x6F,0x00,0x73,0x00,0x74,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+        0x00,0x01,0x00,0x00,0x00,0x0B,0x70,0x65,0x6C,0x69,0x63,0x61,0x6E,0x74,0x68,0x6F,
+        0x72,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xFF,0xFF,0xFF,0xFF,0x00,0x00,0x00,
+        0x00,
+    }};
+    return {bytes.begin(),bytes.end()};
+}
+static void test_immutable_alias_has_its_own_local_metadata_identity(){
+    editor::ProjectId project{};project[0]=0x71;std::string error;
+    const editor::ResourceKey actual{0x7DAA8C24,0x24682294,0x40646200};
+    const auto retained=c32_alias_pollen();
+    CHECK(editor_creation_native::be32(retained.data())==13);
+    CHECK((std::array<uint8_t,8>{0,0,0,0x74,0xAD,0x64,0x45,0xF8}==
+        std::array<uint8_t,8>{retained[4],retained[5],retained[6],retained[7],retained[8],retained[9],retained[10],retained[11]}));
+    editor::ResourceKey version;std::vector<dbpf::Record> remapped;
+    std::vector<dbpf::Record> records{{{actual.instance,0x1A99B06B,actual.group},model()},
+        {{actual.instance,0x030BDEE3,actual.group},retained}};
+    const auto original=records;
+    CHECK(editor_creation_native::immutable_version(project,actual,records,{},version,remapped,error));
+    const auto pollen=std::find_if(remapped.begin(),remapped.end(),[](const auto& row){return row.key.type==0x030BDEE3;});
+    CHECK(pollen!=remapped.end()&&pollen->data.size()==retained.size());
+    CHECK(std::all_of(pollen->data.begin()+4,pollen->data.begin()+12,[](uint8_t value){return value==0xFF;}));
+    auto expected=retained;std::fill(expected.begin()+4,expected.begin()+12,0xFF);
+    editor_creation_native::putbe(expected.data()+0x14,version.instance);
+    CHECK(pollen->data==expected&&same_records(records,original)&&version!=actual);
+    // A previously admitted alias is immutable. Reserving it forces a fresh
+    // key; the retained old bytes and the source are never overwritten.
+    const auto old_version=version;const auto old_records=remapped;
+    CHECK(editor_creation_native::immutable_version(project,actual,records,[&](const auto& key){return key.instance==old_version.instance;},version,remapped,error));
+    CHECK(version!=old_version&&same_records(records,original));
+    const auto retained_old=std::find_if(old_records.begin(),old_records.end(),[](const auto& row){return row.key.type==0x030BDEE3;});
+    CHECK(retained_old!=old_records.end()&&retained_old->key.instance==old_version.instance&&retained_old->data==expected);
+    // The metadata format is common to every reviewed New variant. Only the
+    // owner online ID and owner self instance change; all parent/foreign bytes
+    // and both sentinels retain their exact representation.
+    for(const auto family:std::array<editor::ResourceKey,4>{{
+        {actual.instance,0x2B978C46,0x40626200},{actual.instance,0x2399BE55,0x40636200},
+        actual,{actual.instance,0x476A98C7,0x40656200}}}){
+        for(const auto& variant:editor_creation::new_variants(family.type))for(bool sentinel:{false,true}){
+            CHECK(variant.editor_id!=0);auto metadata=retained;
+            editor_creation_native::putbe(metadata.data()+0xC,family.type);
+            editor_creation_native::putbe(metadata.data()+0x10,family.group);
+            if(sentinel)std::fill(metadata.begin()+4,metadata.begin()+12,0xFF);
+            // Parent key and a later foreign online identity are preserved.
+            for(size_t i=0;i<12;++i)metadata[0x18+i]=uint8_t(0x80+i);
+            for(size_t i=0;i<8;++i)metadata[0x24+i]=uint8_t(0x40+i);
+            auto foreign=metadata;foreign[4]^=0x5A;
+            records={{{family.instance,0x1A99B06B,family.group},model()},
+                {{family.instance,0x030BDEE3,family.group},metadata},
+                {{family.instance+1,0x030BDEE3,family.group},foreign},
+                {{family.instance,0x030BDEE3,family.group+0x10000},foreign}};
+            const auto before=records;
+            CHECK(editor_creation_native::immutable_version(project,family,records,{},version,remapped,error));
+            CHECK(same_records(records,before)&&remapped.size()==records.size());
+            auto exact=metadata;std::fill(exact.begin()+4,exact.begin()+12,0xFF);editor_creation_native::putbe(exact.data()+0x14,version.instance);
+            unsigned owners=0,foreign_records=0;
+            for(const auto& row:remapped){
+                if(row.key.type==0x030BDEE3&&row.key.instance==version.instance){CHECK(row.data==exact);++owners;}
+                else if(row.key.type==0x030BDEE3){CHECK(row.data==foreign);++foreign_records;}
+                else CHECK(row.data==model());
+            }
+            CHECK(owners==1&&foreign_records==2);
+        }
+    }
+    // Existing strict format/identity/duplicate gates still reject atomically.
+    records=original;const auto unchanged_version=version;const auto unchanged_records=remapped;
+    auto reject=[&](const std::vector<dbpf::Record>& bad){const auto input=bad;error.clear();
+        CHECK(!editor_creation_native::immutable_version(project,actual,bad,{},version,remapped,error));
+        CHECK(!error.empty()&&version==unchanged_version&&same_records(remapped,unchanged_records)&&same_records(bad,input));};
+    for(size_t size=0;size<0x18;++size){auto bad=records;bad[1].data.resize(size);reject(bad);}
+    for(uint32_t format:{0u,12u,14u,UINT32_MAX}){auto bad=records;editor_creation_native::putbe(bad[1].data.data(),format);reject(bad);}
+    for(size_t field:{size_t(0xC),size_t(0x10),size_t(0x14)}){auto bad=records;bad[1].data[field]^=1;reject(bad);}
+    auto duplicate=records;duplicate.push_back(records[1]);duplicate.back().data[4]^=1;reject(duplicate);
+    duplicate=records;duplicate.push_back(records[1]);reject(duplicate);
+    CHECK(!editor_creation_native::immutable_version(project,actual,records,[](const auto&){return true;},version,remapped,error));
+    CHECK(version==unchanged_version&&same_records(remapped,unchanged_records));
+}
+int main(int argc,char** argv){
+    if(argc==2&&std::string(argv[1])=="--alias-identity-only"){test_immutable_alias_has_its_own_local_metadata_identity();std::printf("immutable alias metadata: %u checks passed\n",checks);return 0;}
+    if(argc!=1)return 2;
+    test_immutable_alias_has_its_own_local_metadata_identity();
     test_ga_new_routes();
     test_native_model_admission();
     initialize();

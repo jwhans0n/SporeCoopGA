@@ -1276,3 +1276,38 @@ Exact supported-image bytes/call slices and package/list receipts are under
 `vehicle-routes.json`, and `actual-bem-membership.json`. Property-header matches
 in editor configs containing unsupported Text fields are labeled as such in the
 receipts; the relevant typed keys were not inferred from unqualified byte hits.
+
+## Immutable alias online identity and native Adventure Save
+
+C32's new military-land Vehicle passed model admission, class creation and
+Undo/Redo through revision108. Its later ordinary Adventure Save produced a
+server-only primary reference that local validation could not resolve. The
+retained canonical class1342 used `40646200!7DAA8C24.24682294`, with a local-server
+sentinel of `FFFFFFFFFFFFFFFF`. The genuine saved class instead had instance0
+and server ID `00000074AD6445F8`. Those twelve bytes were the complete decoded
+body difference; every other byte of the 1,236,877-byte body matched.
+
+The exact ID came from the alias's 193-byte version13 pollen metadata. Its
+serialized own online ID at4..11 was still `00000074AD6445F8`, although its self
+key at0C had been remapped correctly. This field is independent of later
+ancestry keys and IDs. Native pollen writer54B7B0 writes version13 followed by
+metadata object18/1C as a big-endian uint64 (`54B835..54B84D`). Reader54C780 reads
+that next uint64 directly into object18 (`54C86A..54C872`); getter5507A0 returns
+its address. Ordinary Adventure Save calls F2B1E0 atF451FA on its private copied
+ScenarioResource. That helper enumerates references and calls F2AAD0, which
+loads pollen metadata, reads this getter, clears the local instance atF2ABE0
+and copies a nonsentinel online ID into the reference's server field at
+F2ABEB..F2ABF3. This reproduces the exact observed identity change without a
+missing-model or relaxed-resolution assumption.
+
+New immutable aliases now set only their own pollen online ID toUINT64_MAX,
+inside the existing exact version13/self-key gate, before remapping the self
+instance. Parent identities, foreign metadata, dependency records and input
+bytes remain unchanged. Already admitted aliases remain immutable; a reserved
+old alias requires a new identity. Native witness, model admission and Save
+validation remain strict. Controlled tests retain the actual 193-byte input,
+the old-source failure, all four creation families and their fifteen reviewed
+New routes, foreign/tail equality, collision reminting and atomic malformed
+input rejection. Evidence is under `out/preview9-c32-save-witness-audit/` and
+`out/preview9-c34-alias-online-*.json`; running-game Save/reopen of the corrected
+new aliases remains a separate acceptance gate.
