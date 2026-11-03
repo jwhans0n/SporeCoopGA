@@ -250,6 +250,9 @@ bool restore_view_fenced(const LocalView&,uint64_t expected_generation,SceneOwne
 bool restore_fenced(const Snapshot&,uint64_t expected_generation,SceneOwner owner,GestureScope scope,
                     std::function<bool()> current,std::string& error);
 bool capture_scene_owner(SceneOwner&,std::string& error);
+// An already-owned Save/cancel may rotate its key and rebuild this same scene.
+// Readiness is separate; no restore is authorized until the caller checks it.
+bool saved_scene_current(SceneOwner,uint64_t expected_generation);
 SceneResumeState creation_scene_state(const SceneOwner&);
 bool resume_creation_scene_camera(const GestureScope&,uint64_t serial,uint64_t expected_generation,const SceneOwner&,std::string& error);
 // One participant-local creation only. This opaque token owns exact primitive

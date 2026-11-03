@@ -1,5 +1,6 @@
 #include "adventure_collect.h"
 #include "adventure_music.h"
+#include "../../updater/sha256.h"
 
 #include <windows.h>
 
@@ -57,26 +58,28 @@ bool unused_snapshot_key(const Key& key)
         !find_record({key.instance,kProp,0x408AE500},real);
 }
 
-static bool vanilla(void* database)
+static bool vanilla(void* database,uint32_t* stock_index=nullptr)
 {
     const wchar_t* location = database ? skg::vcall<const wchar_t*>(database, 0x28 / 4) : nullptr;
     if (!location) return false;
-    std::wstring path;
+    std::wstring path;bool complete=false;
     for (size_t i = 0; i < 1000; ++i) {
         if (!skg::readable(location + i, 2)) return false;
-        if (!location[i]) break;
+        if (!location[i]) {complete=true;break;}
         wchar_t c = location[i];
         path += c >= L'A' && c <= L'Z' ? c + (L'a' - L'A') : c;
     }
+    if(!complete)return false;
     auto slash = path.find_last_of(L"\\/");
     std::wstring filename = path.substr(slash == std::wstring::npos ? 0 : slash + 1);
-    static const std::set<std::wstring> names = {
-        L"spore_game.package", L"spore_content.package", L"spore_graphics.package", L"spore_audio1.package",
-        L"spore_audio2.package", L"patchdata.package", L"spore_pack_03.package", L"spore_ep1_data.package",
-        L"spore_ep1_content_01.package", L"spore_ep1_content_02.package", L"spore_ep1_locale_01.package",
-        L"spore_ep1_locale_02.package", L"boosterpack_01.package"
-    };
-    return names.count(filename) != 0;
+    for(uint32_t i=0;i<editor_saved_dependencies::kStockDatabases.size();++i){
+        const auto name=editor_saved_dependencies::kStockDatabases[i];
+        if(filename==std::wstring(name.begin(),name.end())){
+            if(stock_index)*stock_index=i;
+            return true;
+        }
+    }
+    return false;
 }
 
 static bool extract(const Key& key, dbpf::Record& out, bool& built_in, std::string& error, bool include_vanilla = false)
@@ -547,6 +550,110 @@ bool collect_snapshot(const Key& key, const std::vector<uint8_t>& native_bytes,
     if (!ok) return false;
     publish_records(collector, records);
     return true;
+}
+
+static bool reference_roster(uint8_t* scenario,editor_saved_dependencies::Inventory& observed,std::string& error){
+    namespace saved=editor_saved_dependencies;
+    auto asset=[&](uint8_t* ref,saved::Kind kind,uint32_t index,uint32_t slot){
+        if(!skg::readable(ref,0x20)){error="The Saved reference is truncated";return false;}
+        saved::Reference row;row.kind=kind;row.index=index;row.slot=slot;
+        std::memcpy(&row.raw,ref,sizeof row.raw);std::memcpy(&row.machine,ref+0xC,4);
+        std::memcpy(&row.server,ref+0x10,8);std::memcpy(&row.model,ref+0x18,4);
+        observed.references.push_back(std::move(row));return true;
+    };
+    Collector walker{{},{},0,false,error};
+    if(!asset(scenario+0x130,saved::Kind::Captain,0,0) ||
+       !walker.vector(scenario,0x178,0x38,32,[&](uint8_t* ref){
+           return asset(ref,saved::Kind::Crew,observed.crew_count++,0);
+       }) || !walker.vector(scenario,0x2BF4,0x27E8,1024,[&](uint8_t* ref){
+           const auto index=skg::field<uint32_t>(ref,0);observed.classes.push_back(index);
+           for(uint32_t slot=0;slot<3;++slot)if(!asset(ref+8+slot*0x28,saved::Kind::Class,index,slot))return false;
+           return true;
+       }))return false;
+    std::sort(observed.classes.begin(),observed.classes.end());
+    if(std::adjacent_find(observed.classes.begin(),observed.classes.end())!=observed.classes.end()){
+        error="The Saved reference class roster has duplicate identities";return false;
+    }
+    std::sort(observed.references.begin(),observed.references.end(),[](const auto& a,const auto& b){
+        return std::tuple{a.kind,a.index,a.slot}<std::tuple{b.kind,b.index,b.slot};
+    });
+    return true;
+}
+
+bool selected_saved_references(void* root,editor_saved_dependencies::Inventory& output,std::string& error){
+    if(!g_supported || !skg::readable(root,0x2CB0)){error="The owned selected Saved root is unavailable";return false;}
+    try{
+        editor_saved_dependencies::Inventory observed;observed.saved=skg::field<Key>(root,8);
+        if(!observed.saved.instance || observed.saved.type!=kAdventure ||
+           !reference_roster(static_cast<uint8_t*>(root),observed,error))return false;
+        output=std::move(observed);error.clear();return true;
+    }catch(const std::bad_alloc&){error="Cannot allocate the selected Saved reference inventory";return false;}
+}
+
+bool saved_references(const Key& key,const std::vector<uint8_t>& raw,
+                      editor_saved_dependencies::Inventory& output,std::string& error)
+{
+    namespace saved=editor_saved_dependencies;
+    error.clear();
+    if(!g_supported || !manager() || !a_Read || !a_New || !a_ScenarioCtor ||
+       !key.instance || key.type!=kAdventure || raw.empty() || raw.size()>content::kMaxRecordBytes){
+        error="Saved reference inspection is unavailable or the exact image is invalid";return false;
+    }
+    try{
+        const auto image=raw;
+        void* allocation=skg::cdecl_call<void*>(a_New,uint32_t(0x2CB0),"CoopSavedReferences",0,0,0,0);
+        if(!allocation){error="Cannot allocate the private Saved reference image";return false;}
+        void* object=skg::thiscall<void*>(a_ScenarioCtor,allocation);
+        skg::vcall<int>(object,0);
+        auto release=[](void* p){if(p)skg::vcall<int>(p,1);};
+        std::unique_ptr<void,decltype(release)> owner(object,release);
+        WriteStream stream{stream_vtable,image,0,1,false,true};
+        if(!skg::readable(object,0x2CB0) || !skg::thiscall<bool>(a_Read,object,&stream) ||
+           stream.failed || stream.position!=image.size()){
+            error="Cannot read the complete genuine Saved reference image";return false;
+        }
+        saved::Inventory observed;observed.saved=key;observed.raw_size=uint32_t(image.size());
+        observed.raw_hash=upd::sha256_hex(image.data(),image.size());
+        if(!reference_roster(static_cast<uint8_t*>(object),observed,error))return false;
+        output=std::move(observed);return true;
+    }catch(const std::bad_alloc&){error="Cannot allocate the Saved reference inventory";return false;}
+}
+
+bool saved_dependencies(const Key& key,const std::vector<uint8_t>& raw,
+                        editor_saved_dependencies::Inventory& output,std::vector<dbpf::Record>& records,std::string& error)
+{
+    namespace saved=editor_saved_dependencies;
+    saved::Inventory observed;
+    if(!saved_references(key,raw,observed,error))return false;
+    try{
+        Collector combined{{},{},0,false,error};
+        for(auto& ref:observed.references){
+            if(ref.raw==Key{} && (!ref.server || ref.server==UINT64_MAX))continue;
+            ref.effective=ref.raw;
+            if(ref.server && ref.server!=UINT64_MAX &&
+               (!a_Resolve || !skg::cdecl_call<bool>(a_Resolve,ref.server,&ref.effective))){
+                error="A Saved dependency server reference is unavailable";return false;
+            }
+            if(!ref.effective.instance || !ref.effective.type){error="A Saved dependency has no effective identity";return false;}
+            Key real;auto* database=find_record(ref.effective,real);
+            if(!database){error="A Saved dependency is unavailable: "+key_text(ref.effective);return false;}
+            if(vanilla(database,&ref.stock_database)){ref.origin=saved::Origin::Stock;continue;}
+            ref.origin=saved::Origin::Immutable;
+            Collector closure{{},{},0,false,error};
+            if(!closure.creation(ref.effective))return false;
+            for(const auto& [dependency,record]:closure.found){
+                ref.records.push_back(dependency);
+                const auto prior=combined.found.find(dependency);
+                if(prior!=combined.found.end() && prior->second.data!=record.data){
+                    error="A Saved dependency changed while collecting its closure";return false;
+                }
+                if(prior==combined.found.end() && !combined.put(record))return false;
+            }
+        }
+        std::vector<dbpf::Record> selected;selected.reserve(combined.found.size());
+        for(auto& [unused,record]:combined.found)selected.push_back(std::move(record));
+        output=std::move(observed);records=std::move(selected);error.clear();return true;
+    }catch(const std::bad_alloc&){error="Cannot allocate the Saved dependency closure";return false;}
 }
 
 } // namespace adventure_collect

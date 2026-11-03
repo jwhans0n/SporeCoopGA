@@ -29,6 +29,7 @@
 #include "adventure_native.h"
 #include "editor_native.h"
 #include "editor_native_save.h"
+#include "editor_saved_native.h"
 #include "editor_project.h"
 #include "editor_session.h"
 #include "editor_store.h"
@@ -518,6 +519,11 @@ bool capture_scene_owner(SceneOwner& owner,std::string& error){
     if(!n.scene_owner_available||!n.state.editing||!n.state.ready||n.state.gesture||n.state.playtesting){error="Injected native scene owner unavailable";return false;}
     owner=n.scene_owner;owner.source=n.snapshot.source;error.clear();return true;
 }
+bool saved_scene_current(SceneOwner owner,uint64_t generation){
+    CHECK(!dispatching);const auto observed=state();const auto& n=native[side];
+    return n.scene_owner_available && observed.editing && !observed.playtesting && !observed.gesture && n.state.generation==generation &&
+        n.scene_owner.mode==owner.mode && n.scene_owner.data==owner.data && n.scene_owner.resource==owner.resource;
+}
 struct CreationTerrainProof {
     GestureScope scope;
     uint64_t serial=0;
@@ -819,6 +825,18 @@ namespace adventure_assets {bool register_records(const std::vector<dbpf::Record
         if(found==saved.end())saved.push_back(row);else CHECK(found->data==row.data);
     }}
     return true;}std::string status(){return "fixture registered=0";}}
+namespace editor_saved_native {
+bool init(const SkHost*,SkMod*){return true;}
+void shutdown(){}
+bool persist(dbpf::Key,const std::vector<uint8_t>& raw,const std::vector<dbpf::Record>&,
+             const std::function<bool()>& current,std::string& error){
+    CHECK(!dispatching && !raw.empty());
+    CHECK(raw==native[side].persisted_bytes.value_or(native[side].snapshot.bytes));
+    if(!current()){error="The controlled Saved operation expired";return false;}
+    return true;
+}
+std::string status(){return "saved_dependencies controlled=1";}
+}
 namespace adventure_collect {
 bool unused_snapshot_key(const dbpf::Key&){return true;}
 bool validate_uploaded_records(const dbpf::Key&,const std::vector<dbpf::Record>& records,std::string& error){
@@ -3848,6 +3866,29 @@ static void test_foreign_durable_commit_fences_owned_native_input(){
         }
     }
 }
+static void test_saved_dependency_fence_closes_native_getters(){
+    for(unsigned author=0;author<2;++author)for(unsigned change=0;change<5;++change){
+        Party party;side=int(author);auto& scene=native[author];
+        const auto before=author?runtime_guest::store.snapshot():runtime_host::store.snapshot();
+        const auto raw=scene.snapshot.bytes;const auto key=scene.snapshot.source;
+        const auto admitted=author?runtime_guest::resources.bundle.records:runtime_host::resources.bundle.records;
+        const auto generation=scene.state.generation;const auto owner=scene.scene_owner;unsigned calls=0;
+        scene.scene_status_callback=[&,author,change]{
+            ++calls;
+            if(change==0){if(author)++runtime_guest::durable_runtime_domain;else ++runtime_host::durable_runtime_domain;}
+            if(change==1)scene.snapshot.source.instance^=0x100;
+            if(change==2)scene.scene_owner.resource^=0x10000;
+            if(change==3)++scene.state.generation;
+            if(change==4){if(author)runtime_guest::controller.reset();else runtime_host::controller.reset();}
+        };
+        std::string error;
+        CHECK(!(author?runtime_guest::persist_saved_dependencies(key,raw,admitted,error):
+                       runtime_host::persist_saved_dependencies(key,raw,admitted,error)));
+        scene.scene_status_callback={};CHECK(calls==1 && !error.empty());
+        if(change==0 || change==4)CHECK(scene.state.generation==generation && scene.scene_owner==owner);
+        CHECK((author?runtime_guest::store.snapshot():runtime_host::store.snapshot())==before);
+    }
+}
 static void test_all_native_flow_cases() {
     {
         Party party;side=0;const auto requests=runtime_host::controller->accounting().pending_leases;
@@ -3861,6 +3902,7 @@ static void test_all_native_flow_cases() {
     test_native_solo_play_holds_and_restores_without_coop();test_solo_tester_disconnect_releases_party_hold();
     test_automatic_unsaved_start_and_native_host_save();
     test_native_guest_export_isolation_and_cancel();
+    test_saved_dependency_fence_closes_native_getters();
     test_native_guest_playtest_request_requires_host_and_all_ready();
     test_automatic_handoff_preserves_local_draft_on_cancel();
     test_automatic_handoff_discard_then_join();

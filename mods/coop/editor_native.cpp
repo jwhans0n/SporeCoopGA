@@ -4528,6 +4528,17 @@ bool capture_scene_owner(SceneOwner& owner,std::string& error){
     }
     owner=captured;error.clear();return true;
 }
+bool saved_scene_current(SceneOwner owner,uint64_t expected_generation){
+    const auto native=state();
+    if(native.generation!=expected_generation || generation!=expected_generation ||
+       !native.editing || native.playtesting || native.gesture)return false;
+    // Resolve after the only callback-bearing getter. These final raw owner
+    // reads do not require readiness or dereference the retained addresses.
+    void* current_mode=mode();void* current_data=data(current_mode);void* current_resource=resource(current_data);
+    return owner.mode && owner.data && owner.resource && uintptr_t(current_mode)==owner.mode &&
+        uintptr_t(current_data)==owner.data && uintptr_t(current_resource)==owner.resource &&
+        skg::readable(current_resource,kResourceSize) && generation==expected_generation;
+}
 SceneResumeState creation_scene_state(const SceneOwner& owner){
     const auto native=state();SceneResumeState result;
     result.generation=native.generation;result.world_visible=native.world_visible;

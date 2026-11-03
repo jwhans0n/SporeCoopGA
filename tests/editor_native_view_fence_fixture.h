@@ -4,6 +4,21 @@ void test_settled_scene_owner(){
     std::string error;SceneOwner owner;
     creation_camera_fixture();CHECK(capture_scene_owner(owner,error));
     auto scene=creation_scene_state(owner);CHECK(scene.settled()&&!v_looks&&!v_sets);
+    CHECK(saved_scene_current(owner,generation));
+    skg::field<bool>(t_loading.data(),0x370)=true;
+    CHECK(!state().ready && saved_scene_current(owner,generation));
+    ++skg::field<editor::ResourceKey>(t_live.data(),8).instance;
+    CHECK(saved_scene_current(owner,generation)); // Owned Save As key rotation.
+    for(unsigned reason=0;reason<4;++reason){
+        creation_camera_fixture();CHECK(capture_scene_owner(owner,error));const auto expected=generation;
+        v_callback=[&](unsigned stage){if(stage!=11)return;
+            if(reason==0)++generation;
+            if(reason==1)t_mode_pointer=nullptr;
+            if(reason==2)skg::field<void*>(t_mode.data(),0x74)=t_other_data.data();
+            if(reason==3)skg::field<void*>(t_data.data(),0x10)=t_other_data.data();
+        };
+        CHECK(!saved_scene_current(owner,expected));v_callback={};
+    }
     for(unsigned reason=0;reason<5;++reason){
         creation_camera_fixture();CHECK(capture_scene_owner(owner,error));
         const auto generation_before=generation;bool fired=false;

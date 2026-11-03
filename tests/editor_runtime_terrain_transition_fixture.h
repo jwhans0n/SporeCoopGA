@@ -125,6 +125,19 @@ static void test_transition_recovery_failure_retains_previous_checkpoint(){
     CHECK(runtime_guest::controller->view().phase==es::Phase::Frozen&&runtime_guest::controller->state().document==guest_document);
     CHECK(runtime_guest::store.snapshot()==guest_checkpoint&&!runtime_guest::view().can_save);
 }
+static void test_transition_scene_probe_closes_logical_owner(){
+    for(unsigned author=0;author<2;++author){
+        Party party;side=int(author);runtime_host::TerrainHold host_hold;runtime_guest::TerrainHold guest_hold;
+        std::string error;
+        CHECK(author?runtime_guest::capture_terrain_hold(guest_hold,error):runtime_host::capture_terrain_hold(host_hold,error));
+        const auto before=native[author].restores;unsigned calls=0;
+        native[author].state_callback=[&,author]{++calls;
+            if(author)runtime_guest::controller->end_for_recovery();else runtime_host::controller->end_for_recovery();
+        };
+        CHECK(!(author?runtime_guest::terrain_scene_current(guest_hold,error):runtime_host::terrain_scene_current(host_hold,error)));
+        native[author].state_callback={};CHECK(calls==1 && native[author].restores==before && !error.empty());
+    }
+}
 static void test_all_terrain_transition_runtime_cases(){
     test_transition_capture_rejects_before_native_save();
     test_transition_host_save_and_next_foreign_edit();
@@ -132,6 +145,7 @@ static void test_all_terrain_transition_runtime_cases(){
     test_transition_stale_save_operation_cannot_publish();
     test_transition_cancelled_save_waits_for_scene_and_rebuild();
     test_transition_guest_export_cancel_preserves_all_authored_state();
+    test_transition_scene_probe_closes_logical_owner();
     test_transition_cancel_never_restores_replacement_scene();
     test_transition_recovery_bootstrap_keeps_prior_checkpoint_until_ready();
     test_transition_recovery_failure_retains_previous_checkpoint();

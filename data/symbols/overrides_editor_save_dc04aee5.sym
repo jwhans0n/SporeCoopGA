@@ -2,6 +2,12 @@
 # exe_sha256=dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37
 SporeCoop::Editor::AssignMetadataText=0x00423690 ; verified thiscall(string16*,const char16_t* begin,const char16_t* end)->string16*, ret8 at423733; native name setterF3CC39 calls it on data+4C; owned bounded metadata only, outside frame
 # evidence=tools/addrport/verify_editor_save_dc04.py; docs/re/adventure-editor-save.md
+SporeCoop::Editor::LoadControllerCtor=0x00EC4B60 ; verified thiscall(loader*)->loader*, plain ret EC4C09; parent EF22B8 allocates A8 then owns AddRef at ScenarioMode+1C; cold Saved dependency gate lifetime only
+SporeCoop::Editor::LoadControllerDtor=0x00EC4930 ; verified thiscall(loader*), plain ret EC4A01; primary deleting destructor EC4C10 calls this before freeing; invalidates weak cold-load tickets
+SporeCoop::Editor::LoadControllerStart=0x00EC5940 ; verified thiscall(loader*,ScenarioResource*,bool UIvariant,bool checkOnly)->bool, ret0C EC59FA; owns root+18 and genuine state1 phase0 before EC59F1 advance
+SporeCoop::Editor::LoadControllerAdvance=0x00EC52F0 ; verified thiscall(loader*,bool checkOnly)->bool, ret4 EC561D/EC5659; original phase2 availability/model checks retained after outside-frame admission
+SporeCoop::Editor::LoadControllerReset=0x00EC4F20 ; verified thiscall(loader*,bool notify,uint32 reason), ret8 EC50AC; normal cancel EC56DE pushes reason0 notify1, releases root and clears pending state
+SporeCoop::Editor::LoadControllerIdle=0x00EC51A0 ; verified thiscall(loader*), plain ret EC52BD; idle timeout can open modal7/8, suppressed only during an owned queued phase0 admission
 SporeCoop::Editor::DisplayVtable=0x01489DFC ; verified static: UI base primary vtable initialized ED5130, allocated98 at EF2154 and owned at ScenarioMode+14
 SporeCoop::Editor::CanSave=0x00F41110 ; verified static: thiscall(data,uint32 reasonOut), bool AL, ret4; native pending/editor/avatar/dirty eligibility gate
 SporeCoop::Editor::BeginSaveCopy=0x00ED7390 ; verified static: thiscall(UIbase,bool replaceOriginal), ret4; native eligibility, input hold and tail F3D760; false preserves original through data+1C=true

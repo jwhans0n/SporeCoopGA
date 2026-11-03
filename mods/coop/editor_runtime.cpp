@@ -19,6 +19,7 @@
 #include "adventure_native.h"
 #include "editor_native.h"
 #include "editor_native_save.h"
+#include "editor_saved_native.h"
 #include "editor_creation.h"
 #include "editor_creation_native.h"
 #include "editor_metrics.h"
@@ -2139,10 +2140,9 @@ editor_native::TerrainTransitionCurrent terrain_fence(const TerrainHold& hold,bo
     return [=]{return terrain_runtime_current(key,transport,revision,allow_close,allow_recovery);};
 }
 bool terrain_scene_current(const TerrainHold& hold,std::string& error) {
-    const auto native=editor_native::state();editor_native::SceneOwner actual;
-    if(native.generation!=hold.key.generation || !native.editing || native.playtesting || native.gesture ||
-       !editor_native::capture_scene_owner(actual,error) || editor_native::state().generation!=hold.key.generation ||
-       actual.mode!=hold.key.owner.mode || actual.data!=hold.key.owner.data || actual.resource!=hold.key.owner.resource){
+    const auto key=hold.key;const auto transport=hold.transport;const auto revision=hold.revision;
+    const auto current=[&]{return terrain_runtime_current(key,transport,revision,true,true);};
+    if(!current() || !editor_native::saved_scene_current(key.owner,key.generation) || !current()){
         error="The native scene owned by this terrain transition was replaced";return false;
     }
     // A native Save wizard may rotate the source in this same owned resource.
@@ -3246,6 +3246,26 @@ bool checkpoint_resources(editor_project::Resources content, editor_native::Snap
     queue_scene_alias_attachment(alias_owner);
     return true;
 }
+bool persist_saved_dependencies(editor::ResourceKey key,const std::vector<uint8_t>& raw,
+                                const std::vector<dbpf::Record>& admitted,std::string& error){
+    if(!controller){error="The Saved dependency operation has no current draft";return false;}
+    const auto runtime=durable_runtime_domain;
+    const auto context=controller->view().context;const auto author=controller->view().local;
+    const auto revision=controller->state().document.revision;
+    const auto generation=editor_native::state().generation;
+    editor_native::SceneOwner owner;
+    if(!editor_native::capture_scene_owner(owner,error))return false;
+    const auto current=[=]{
+        const auto logical=[&]{return H && durable_runtime_domain==runtime && controller && controller->view().context==context &&
+            controller->view().local==author && controller->state().document.revision==revision;};
+        if(!logical())return false;
+        // This producer closes owner+generation AFTER all Native getters; a
+        // final plain state() would reopen a same-generation owner gap.
+        const auto native=editor_native::creation_scene_state(owner);
+        return logical() && native.owner && native.generation==generation;
+    };
+    return editor_saved_native::persist({key.instance,key.type,key.group},raw,admitted,current,error);
+}
 void saved_native(editor::ResourceKey key,const editor_native_save::SaveOperation* operation=nullptr) {
     if (!host() || !session_active()) return;
     std::string error;
@@ -3265,6 +3285,7 @@ void saved_native(editor::ResourceKey key,const editor_native_save::SaveOperatio
     save_publication_pending = true; native_copy_owned = true;
     native.source = key;
     if (!editor_native_save::read_saved(key, native.bytes, error)) { frozen = true; tell(error); return; }
+    const auto genuine_saved=native.bytes;
     editor_native::TerrainTransitionReceipt receipt;
     if(terrain){
         receipt.kind=editor_native::TerrainTransitionKind::Save;receipt.before=receipt.after=terrain->key;
@@ -3281,7 +3302,8 @@ void saved_native(editor::ResourceKey key,const editor_native_save::SaveOperatio
     auto normalized = std::find_if(records.begin(), records.end(), [&](const auto& record) { return record.key == root; });
     if (normalized == records.end()) { frozen = true; tell("The saved editor root is missing"); return; }
     native.source = key; native.bytes = std::move(normalized->data);
-    if (!replace_root(content, native, error) ||
+    if (!persist_saved_dependencies(key,genuine_saved,content.bundle.records,error) ||
+        !replace_root(content, native, error) ||
         !checkpoint_resources(std::move(content), std::move(native), error,[&](const auto& restored,std::string& reason){
             return !terrain || resume_terrain_hold(*terrain,receipt,restored,false,false,reason);
         }) ||
@@ -3729,14 +3751,16 @@ void finish_recovery() {
         std::vector<dbpf::Record> records;
         if (!editor_native::capture(native, error)) { recovery.reset(); frozen = true; tell(error); return; }
         native.source = key;
-        if (!editor_native_save::read_saved(key, native.bytes, error) ||
-            !editor_native::normalize_saved_grounding(native,recovery->state.document,error) ||
+        if (!editor_native_save::read_saved(key, native.bytes, error)) { recovery.reset(); frozen = true; tell(error); return; }
+        const auto genuine_saved=native.bytes;
+        if (!editor_native::normalize_saved_grounding(native,recovery->state.document,error) ||
             !editor_native::validate(native, recovery->state.document, error)) { recovery.reset(); frozen = true; tell(error); return; }
         if (!adventure_collect::collect_snapshot(root, native.bytes, records, error)) { recovery.reset(); frozen = true; tell(error); return; }
         auto normalized = std::find_if(records.begin(), records.end(), [&](const auto& record) { return record.key == root; });
         if (normalized == records.end()) { recovery.reset(); frozen = true; tell("The recovered editor root is missing"); return; }
         native.source = key; native.bytes = std::move(normalized->data);
-        if (!replace_root(content, native, error) ||
+        if (!persist_saved_dependencies(key,genuine_saved,content.bundle.records,error) ||
+            !replace_root(content, native, error) ||
             !editor_project::encode_resources(content, recovery->envelope, error) ||
             !editor_project::native_snapshot(content, recovery->state.document, native, error) ||
             !editor_native::restore(native, error)) {
@@ -3894,9 +3918,14 @@ void finish_export(bool saved) {
             receipt.kind=editor_native::TerrainTransitionKind::Save;receipt.before=receipt.after=terrain.key;
             receipt.after.owner.source=operation.after;receipt.save_generation=operation.module_generation;receipt.save_serial=operation.serial;
             editor_native::Snapshot copy;auto completed=terrain;completed.key=receipt.after;
-            if(!editor_native::capture(copy,error) || !editor_native_save::read_saved(operation.after,copy.bytes,error) ||
-               !editor_native::normalize_saved_terrain(terrain.ticket,receipt,before,copy,terrain_fence(completed),error) ||
-               !editor_native::normalize_saved_grounding(copy,before.document,error)){
+            std::vector<uint8_t> genuine_saved;
+            bool checked=editor_native::capture(copy,error) && editor_native_save::read_saved(operation.after,copy.bytes,error);
+            if(checked)genuine_saved=copy.bytes;
+            checked=checked && editor_native::normalize_saved_terrain(terrain.ticket,receipt,before,copy,terrain_fence(completed),error) &&
+                editor_native::normalize_saved_grounding(copy,before.document,error) &&
+                editor_native::validate(copy,before.document,error);
+            const auto admitted=resources.bundle.records;
+            if(!checked || !persist_saved_dependencies(operation.after,genuine_saved,admitted,error)){
                 saved=false;tell("The local native copy was retained; terrain validation stopped: "+error);
             }
             if(export_terrain)export_terrain->save_checked=true;
@@ -5102,6 +5131,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     saving.exit_confirmed=[] {native_exit_confirmed=true;schedule();};
     saving.exit_cancelled=[] {if(handoff)++handoff_prompt_serial;native_exit_requested=native_exit_confirmed=exit_after_save=false;schedule();};
     editor_native_save::init(H, M, std::move(saving));
+    if(!editor_saved_native::init(H,M))H->log(M,SK_WARN,"Saved dependency restoration requires SporeKit 0.3.5 and verified loader symbols");
     editor_creation::Ctx creation;
     creation.scope=[]()->std::optional<editor_native::GestureScope>{
         // Retain interception while held, so prepare_creation can reject a
@@ -5156,6 +5186,7 @@ void session_ended() {
 }
 void mode_changed(uint32_t, uint32_t) { schedule(); }
 void shutdown() {
+    editor_saved_native::shutdown();
     // Retire notifications before joining workers. Enqueued callbacks may run
     // after this runtime and its Controller have been replaced.
     if(durable_runtime_domain!=UINT64_MAX)++durable_runtime_domain;
@@ -5617,6 +5648,6 @@ std::string debug(const std::vector<std::string>& args) {
         "\nselection=" + cached.selection + " previews=" + std::to_string(cached.previews.size()) +
         " highlights="+std::to_string(cached.selections.size())+" asset_locks="+std::to_string(cached.locks.size())+
         " lease_idle_ms="+std::to_string(now_ms()>=last_lease_use?now_ms()-last_lease_use:0)+
-        "\n" + editor_native::status() + "\n" + adventure_assets::status();
+        "\n" + editor_native::status() + "\n" + adventure_assets::status()+"\n"+editor_saved_native::status();
 }
 } // namespace coop_editor

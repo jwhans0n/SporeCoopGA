@@ -3,6 +3,7 @@
 
 #include <cstdio>
 #include <memory>
+#include <stdexcept>
 
 namespace sk {
 
@@ -85,9 +86,10 @@ static std::function<void()> retained_task(SkTaskFn fn, void* user)
     // callback and its payload cleanup; generation checks remain the mod's job.
     HMODULE module = nullptr;
     std::shared_ptr<void> keep_alive;
-    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-                          reinterpret_cast<LPCWSTR>(fn), &module))
-        keep_alive = std::shared_ptr<void>(module, [](void* held) { FreeLibrary(static_cast<HMODULE>(held)); });
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                           reinterpret_cast<LPCWSTR>(fn), &module))
+        throw std::runtime_error("Cannot retain the queued task callback module");
+    keep_alive = std::shared_ptr<void>(module, [](void* held) { FreeLibrary(static_cast<HMODULE>(held)); });
     return [fn, user, keep_alive = std::move(keep_alive)] {
         (void)keep_alive;
         fn(user);

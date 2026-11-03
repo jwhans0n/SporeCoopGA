@@ -1475,3 +1475,64 @@ after existing stable-ID remapping. Marker0 changed from
 normalization, but a detached native baseline was not measured here. The exact
 semantic-hash assertion failed and is retained; no serialization mask or
 authored-position rounding was added to hide the difference.
+
+## Preview 9 C35: exact Saved dependencies before native preflight
+
+C34's missing-local-key warning is not evidence of a ban. The retained alias
+BEM/pollen/PNG bytes exist, but no cold process registers their package. The
+new adapter uses an immutable per-Saved-image receipt, not a directory-wide
+historical cache mount. The receipt binds the genuine persisted bytes BEFORE
+terrain/grounding/collector normalization, executable/profile identity, all
+Captain/Crew and three per-class raw references (including unused classes),
+actual stock database observations and the selected admitted dependency bytes.
+Native Save, recovery Save copies and collaborator exports publish this file
+only after their existing Saved semantic/terrain checks and before confirmation.
+The native save itself and the prior receipt remain intact on publication error.
+
+The exact supported executable's asset descriptor initialization at 138A39A
+sets property 62B74273, readers/writers 572810/572840, and offset 18 at
+138A3DE. This independently confirms native model+18 alongside key+0,
+machine+C and server+10. Complete raw roster reads use the existing owned
+ScenarioResource constructor/Read/Release and bounded pool strides. A stock
+database basename requires a genuine bounded NUL-terminated location. Group0
+keys retain the existing ResourceKey policy. Custom closures preserve the
+existing Collector contract: primary-or-BEM body, optional fixed companions,
+same-key/different-bytes rejection and the existing admission ledger.
+
+Native EC5940 establishes an owned root at loader+18 and real state1/phase0
+before its EC59F1 call to EC52F0. Only this non-checkOnly boundary is deferred.
+Ctor EC4B60, destructor EC4930 and reset EC4F20 fence weak tickets by module,
+lifetime and request; forward work also freshly reacquires ScenarioMode+1C,
+the exact selected root and key. Outside Present, the callback retains the
+controller and root, rechecks between AddRefs, compares the actual selected
+root's complete raw roster against the Saved record, then admits only that
+receipt's dependencies. It rechecks installed provenance/bytes, the disk image
+and selected roster before resuming the original EC52F0. All original native
+availability, server and model predicates remain unchanged.
+
+Native idle EC51A0 is suppressed only while this adapter owns phase0. Reset,
+destruction, replacement, timeout and unload cannot abandon that state for the
+native timeout's modal7 OK continuation. Cleanup can cancel the lifetime-proved
+old controller after active-parent/key retirement; forward admission cannot.
+SporeKit0.3.5 fences lifecycle execution to main/outsidePresent. Every direct
+loader detour also retains its callback DLL across nested pumps. Its release
+passes through an SDK task with a second module reference, so the last release
+occurs in Kit after the callback returns. SDK task retention failure rejects
+enqueue; release-enqueue failure conservatively retains the OS reference.
+
+The focused C35 run also reproduces an earlier export-cancel/rebuild failure
+in the exact retained C33 binary: terrain_scene_current used a ready-only owner
+pin while polling an already-restored, temporarily unready scene. The new
+saved_scene_current producer closes raw numeric ownership/generation after its
+getter without claiming readiness. Save As key rotation remains allowed in this
+owned return path; actual restoration still waits for readiness. Runtime closes
+its project/epoch/participant/revision/transport predicate before and after this
+probe. Admission and ordinary owner captures retain exact key checks.
+
+Controlled checks pass: native owner3226, collector202, runtime native
+flow11128, recovery2026, saved-root158 and alias241, with223 pinned inputs and
+zero drift in out/preview9-c35-root-focused-r2/receipt.json. The gate's separate
+controlled fixture passes17718, including pending-state cleanup, pointer ABA,
+parent/key drift, selected-roster mismatch, nested unload and OS/SDK retention
+failure. These are fixture results, not live cold-reopen acceptance. The next
+gate is actual two-player import, native Save, process restart and file reopen.
