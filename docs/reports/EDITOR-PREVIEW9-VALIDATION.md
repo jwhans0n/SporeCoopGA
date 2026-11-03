@@ -6,15 +6,19 @@ executable and its exact 4 GB LAA variant remain supported. Older protocol
 clients are explicitly rejected. This report records development evidence,
 not completed native acceptance, a main merge or a public release.
 
-Latest private native build is C42, SHA-256
-`d5d27c289200adef06fe27e3dec9cc0a466137ad0549f1468a332840e0f2755f`.
-Cold recovery remains blocked on a measured rotation materialization mismatch;
-the previous durable checkpoint is preserved.
+Latest private native build is C44, SHA-256
+`8963c8e7e6b542df146620fb55f7d06b7e12210895c4a0c4221287bd1a88a83f`.
+Cold recovery now passes the original revision-22 draft in both games.
+Host editing and replacing a guest-created Creature also passes.
+Guest New Creature Save while the host designs another Creature passes; the
+host's later discard returns to the latest revision without a history change.
+Native adventure Save then completes but its shared dependency receipt rejects
+an unadmitted custom record. This is an open delivery blocker, not a Save pass.
 C38 verifies all five Crew control families from all four participants and
 independent four-player creation-editor entry and cancellation.
 C35 closes the new-vehicle Native Save/cold-reopen dependency reproduction.
-C36 retains that cold-open result and improves a short two-player timing probe:
-guest submission-to-confirmation is 159 ms and frame gaps are about 139 ms.
+C39's quiet short two-player timing probe measures host/guest maximum
+submission-to-confirmation at 51/171 ms and commit-window frame gaps at 107/142 ms.
 The six-edit probe is diagnostic only, and frame gaps still exceed 100 ms.
 Full performance acceptance and the remaining feature matrix are open.
 Personal preview 8 and its 4 GB executable remain unchanged.
@@ -3049,3 +3053,113 @@ Log SHA-256 is
 Evidence: `out/preview9-c42-portable-after-fixtures.log` and its `.receipt.json`.
 Native/Runtime recovery source work continued separately, so this is not a
 complete frozen Native acceptance or a lab-smoke result.
+
+
+### C44 actual recovery and shared Creature replacement
+
+C43 is retained but never deployed; a final raw owner/roster closure is added
+after Native Load and before Rebuild. C44 retains all 250 production inputs
+without drift, with a 96,569,856-byte co-op DLL and unchanged C39 Kit. The
+canonical rebuild now pins the existing rotation owner, immediately samples
+derived XYZ/quaternions before policy callbacks and uses the existing guarded
+native rotation repair. It restores only the independently canonical artifact;
+no persistent gesture rotation authority or float tolerance is introduced.
+
+Final strict actual-i686 Native checks pass materialization 73,241, rotation
+1,293 and rotation-capture 3,294. Runtime passes terrain transitions 2,661 and
+recovery lifecycle 2,026. All 115 combined pinned inputs and postcommit hashes
+remain unchanged. Exact C42 sources reproduce the second quaternion failure
+under the new fixture; the corrected source passes that same case and the
+post-sample third-quaternion, XYZ and expired-owner negatives. Evidence:
+`out/editor-preview9-cold-recovery/receipt.json`, `postcommit.json` and
+`c42-red-receipt.json`.
+
+Fresh private processes 57676/60028 recover the original C39 project and its
+unchanged checkpoint/journal at revision 22. Host becomes ready and unfrozen;
+guest joins and materializes the same 419 placements, 121 classes and five acts.
+All class resource keys, content revisions, settings IDs and behavior hashes
+match the exact pre-crash asset rows. Both independent Native checks agree,
+with zero faults. Recovery intentionally creates a new epoch, so its context
+hash differs from the previous session. No manual profile repair or replacement
+is used. Evidence: `out/preview9-c44-recover-creations/result.json`.
+
+The host then opens the guest-created Creature's native property panel via two
+ordinary held card taps and uses Edit. Its active Edit request already contains
+the resolved Creature family ID465C50BA, false New flag and exact guest source
+key. The initial fixture assumed genericFFFFFFFF and is retained as a tool
+failure; the source sampler now accepts only generic or the exact resolved
+family while preserving full source/model/owner checks. Windows/Linux contracts
+pass 165. Normal cancellation of that first entry preserves revision22; a fresh
+measured entry validates and changes the creature name. Native finish is zero.
+
+Done presents the normal Replace/Save New confirmation. Root selects Save New
+once to preserve the prior native content. Canonical admission replaces only
+class8589935936:1 at revision23, assigning a new immutable key and preserving its
+settings/behavior plus every unrelated row. Class/placement/act counts remain
+121/419/5; exactly one `Replace shared asset content` history item is added.
+Both returned Native scenes strictly converge with zero faults. The first
+post-confirmation assertion mixes JSON lists and parser tuples; a separate
+read-only normalized comparison proves the actual result without repeating Save.
+Evidence: `out/preview9-c44-host-edit-guest-enter-r3/result.json`,
+`out/preview9-c44-host-edit-guest-confirm/result.json` and
+`out/preview9-c44-shared-edit-final-proof/result.json`.
+
+### C44 guest save with a designing host and Native Save rejection
+
+The host starts a separate New Creature session (serial 3), adds a mouth and
+names its unsaved design `Preview9C44HeldHostDraft`. The native save state remains
+6, with no pending command. Supported-image inspection verifies states 0 and 6
+are idle; 1 through 5 process a save. The creation fixture now accepts exactly
+0/6 while preserving request, source, model, session and command fences. Its
+final source also handles only the measured four-button Edit Save New dialog,
+with one-shot dispatch and a fresh identity closure. Windows and Linux each pass
+438 contracts plus 28 pager checks. No production input changes in that tool
+commit. Evidence: `out/preview9-c44-edit-confirm-source-final/receipt.json` and
+`postcommit.json` (commit `70758da`).
+
+The guest independently creates and saves `Preview9C44GuestHostAway`. Its native
+Done returns to the adventure while the host remains in the same serial-3
+design/request. Exactly class `8589935937:1` and one `Create adventure asset`
+history item are added at revision 24. Both canonical copies are durable and
+equal, with 122 classes, 419 placements and five acts. Only the guest's active
+adventure is claimed as strictly rendered; the host's Native proof is explicitly
+not applicable while designing. Evidence:
+`out/preview9-c44-guest-hostaway-save/result.json`.
+
+The host then cancels its unsaved design. The first owner-run return probe waits
+without handling the ordinary discard dialog and times out. A fresh read-only
+capture identifies the exact native two-button confirmation, not a product
+return failure. The original failed probe remains retained. A separate bounded
+continuation pins project/epoch, serial 3, the original Native request, idle save
+state and pending Cancel command, then confirms Quit once. Both games return
+ready at revision 24, with identical 122-class asset rows, matching strict Native
+checks, unchanged history and zero faults. Evidence:
+`out/preview9-c44-held-host-return/result.json`,
+`out/preview9-c44-return-diagnostic/result.json`, and
+`out/preview9-c44-held-host-confirm-return/result.json`.
+
+One ordinary adventure Save then completes its native success dialog. Sharing
+the new recovery checkpoint freezes the host with
+`Selected custom dependency was not admitted immutably`. The guest retains the
+committed revision-24 scene and strict convergence; both fault counters stay
+zero. The host's saved source is `408A0000!2913E324.366A930D`; its independent
+check detects the changed native save bytes. This is an actual unresolved
+dependency-admission failure, not a completed Save or cold-reopen check. No
+second Save is issued. Evidence:
+`out/preview9-c44-creatures-native-save/result.json` and
+`out/preview9-c44-save-diagnostic/result.json`.
+
+Explicit End and normal native discard return both private games to Galaxy with
+zero faults before the bounded runner stops (runner exit 0). After process
+closure, both recovery directories and the original 5,293,292-byte host
+`EditorSaves.package` are retained with two identical reads. The DBPF has 121
+records and one exact saved-root match. Package SHA-256 is
+`65935d32232541c7fce5012f1d5af8ee2aa86863bb0d69944b104044a104524f`;
+raw saved-root SHA-256 is
+`7183cc0ff46f66dbc0390db15affffe45b25c29ae8ee4a1726515fda5aeb2ebe`.
+Initial artifact probes stop on the live project lock, the old global
+64-package inventory bound and a graphics-cache size bound; the successful
+closed probe reads only the exact native `Spore/EditorSaves.package` established
+by the C35 carrier. No profile writes, conversions or enlarged bounds are used.
+Evidence: `out/preview9-c44-frozen-retirement/result.json` and
+`out/preview9-c44-save-diagnostic/closed-final-r2/receipt.json`.
