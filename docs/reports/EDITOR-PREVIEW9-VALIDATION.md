@@ -2087,3 +2087,112 @@ Child teardown exits remain 1. No C29 payload is installed into the personal
 installation. Water, native UI refresh, completed specialized creation saves,
 four-player acceptance, complexity boundaries, performance and official lab
 smoke remain open.
+
+### C30 complete two-player measurement and native environment checks
+
+Private C30 is SHA-256
+`57ca6c3aabd6447c2be3dc86332e21a67759adc3d270f2915329484ac2e68a24`,
+92,716,032 bytes, built with 191 unchanged production inputs. All actual
+inputs and the DLL were retained before later changes. Native commit
+`1f81342` passes 110,764 full strict i686 checks; Runtime commit `5ef0078`
+passes 112,931. Their 49/77 inputs remain unchanged after commit. Evidence:
+`out/preview9-c30-native-receipt.json`,
+`out/preview9-c30-runtime-alias-receipt.json` and
+`out/preview9-c30-independent-review/receipt.json`.
+
+The initial bootstrap fails before authoring because the registration helper
+mistakes Galaxy's footer Login for a registration modal. A guarded retry
+starts Town normally, at revision/history 0 with strict convergence and faults
+0. This is retained as a tooling failure, not a mod or authoring transaction.
+The helper correction `aed5b8b` subsequently verifies modal ownership and
+passes 59 contracts on both Windows and Linux, with 16 unchanged inputs.
+Evidence: `out/preview9-c30-two-town-bootstrap-r2/result.json` and
+`out/preview9-registration-helper/receipt.json`.
+
+The full LAN run completes all 60 actual movements, 30 per author, with all
+six capture phases advancing exactly once for every gesture. This confirms
+the host alias receipt works in-game. The two warmups plus 60 measurements
+end at revision/durable 62, strictly converged and fault-free. There is no
+artifact I/O interruption in this run. It still fails performance acceptance.
+
+| Metric | Host author | Guest author |
+| --- | ---: | ---: |
+| Submit-to-confirm p95 | 142.5932 ms | 472.9155 ms |
+| Release-to-confirm p95 | 708.8913 ms | 987.5341 ms |
+| Own-author window maximum frame-gap p95 | 98.8059 ms | 97.4792 ms |
+| Own application p95 | 64.1857 ms | 65.0088 ms |
+
+The own-author frame p95 meets the target. Observing the other author's commit
+still stalls: participant 95/96 combined-window maximum frame-gap p95 are
+186.8505/234.1123 ms, with maxima 188.5133/276.7046 ms. Guest confirmation
+also exceeds 200 ms LAN. Source data and the separate author/observer timing
+distributions are retained at
+`out/preview9-commit-diagnostic-c30-two-town-fresh/result.json` and
+`out/preview9-c30-runtime-metric-analysis.json`.
+
+Native aggregate supported-work p95 is 40.3725/39.7124 ms and includes two
+calls, including the earlier producer proof. The comparable Runtime
+SupportedBegin-to-End p95 is only 1.5241/1.4475 ms. Comparing the aggregate
+counter to C29's Runtime span would falsely imply a seal reuse regression;
+no such defect was found. Each gesture still uses 12 Native Writes, two Reads
+and one projection. Observer preparation is the next measured optimization
+target; no improvement is claimed before a new actual benchmark.
+
+Both roles' Temperature edit/Undo/Redo/Undo pass at revisions 62 through 70.
+Both roles' Water sequences also pass, ending at 78 with one transaction per
+action, strict convergence and faults 0. This closes the actual C28i Water
+freeze. Evidence: `out/preview9-c30-two-temperature/result.json` and
+`out/preview9-c30-two-water/result.json`.
+
+The C30 Temperature-restored screenshots match the initial slider position.
+Root initially misread the screenshot; a pixel comparison and independent
+review corrected that finding. The gold-pixel peak is x853 in the baseline,
+both restored images and the later settled capture; the genuinely stale C28i
+image peaks at x901. A passive double sample at revision 78 also finds both
+tools' C8/CC/D0 bytes exactly equal canonical Planet `03A23F98`:
+`0000003f295c0f3f3d0ad73e`, or 0.5/0.5600000024/0.4199999869.
+The checked actual ISlider values are Temperature 2 in [0,4], Atmosphere 42
+in [0,100] and Water 37 in [0,100]. No additional Environment source change
+is justified. Evidence:
+`out/preview9-c30-environment-passive-r78/result.json` and
+`out/preview9-c30-environment-ui-passive-r78-r2/result.json`.
+
+### C30 persisted marker-key failure and Save-only correction
+
+Normal native Save completes locally at revision 78, then shared publication
+fails with "The persisted native Save placement identity changed". The host
+retains the recoverable frozen draft; the guest retains the same committed
+semantic state. Evidence: `out/preview9-c30-native-save-carrier/result.json`
+and `out/preview9-c30-save-failure-full/result.json`. This remains a live Save
+failure even though the earlier source-handoff guard now passes.
+
+Native inspection identifies two distinct key domains. Live marker+228 is an
+editor lookup identity. The native descriptor omits that word from Write;
+the constructor initializes it to FFFFFFFF, and Read/pool insertion preserve
+that sentinel. Comparing a parsed persisted marker to the original live key
+is therefore invalid. Controlled fixtures previously serialized the extra
+word and concealed this difference. Exact native evidence is retained at
+`out/preview9-c31-eligibility/receipt.json`.
+
+Correction `4ed0810` requires the native constructor sentinel on the private
+persisted owner and retains it through every subsequent checked callback and
+cleanup. Live key fences remain exact. Class/dense bindings, witnessed XYZ,
+unknown bytes, serialized roundtrips and source/context/Release checks remain
+mandatory. A Native-faithful writer/reader makes the exact old C30 fail the
+new regression; `out/preview9-save-key-red/receipt.json`. The optimized fixed
+suite passes 112,147 full checks, including 37,317 Save checks, with 49 inputs
+unchanged before and after commit;
+`out/preview9-save-key-native-receipt.json`.
+
+The resulting private Save-only candidate C31 is SHA-256
+`97a33497c264f4202ab691aaf596a81ab06e3d3e197afe3c4a72a69b68f83401`,
+with 191 unchanged retained production inputs. Actual Save acceptance is still
+pending. The genuine C30 local Save for root
+`408A0000!2912ECD1.366A930D` is retained separately; it is not advertised as a
+successful shared checkpoint:
+`out/preview9-c30-saved-local-carrier/receipt.json`.
+
+Both C30 games return normally to Galaxy with faults 0 before runner exit 0.
+The personal preview 8 payload, its 19-file rollback, exact 4 GB executable
+and shortcut remain unchanged; rechecked at
+`out/preview9-delivery/c30-prebuild-personal-unchanged.json`.
