@@ -6,14 +6,14 @@ executable and its exact 4 GB LAA variant remain supported. Older protocol
 clients are explicitly rejected. This report records development evidence,
 not completed native acceptance, a main merge or a public release.
 
-Latest private native build is C35, SHA-256
-`01da699d558caaa58d91fdb5005463232901e420b67736e8a4216f52a8b76903`.
-Its two-player new vehicle creation and shared native Save pass. After both
-processes close, native file opening now restores the exact Saved dependencies
-and passes with the same source, 419 placements, 119 classes, authored semantic
-hash and zero faults, without Recover or accepting asset replacement. Observer
-frame budgets, guest confirmation and the remaining feature matrix are still
-open. Personal preview 8 and its 4 GB executable remain unchanged.
+Latest private native build is C36, SHA-256
+`32eb5857e085d10b574f813dc25645b750d2a50e10a496c392fa79a8bc529125`.
+C35 closes the new-vehicle Native Save/cold-reopen dependency reproduction.
+C36 retains that cold-open result and improves a short two-player timing probe:
+guest submission-to-confirmation is 159 ms and frame gaps are about 139 ms.
+The six-edit probe is diagnostic only, and frame gaps still exceed 100 ms.
+Full performance acceptance and the remaining feature matrix are open.
+Personal preview 8 and its 4 GB executable remain unchanged.
 
 ## Candidate changes
 
@@ -2664,3 +2664,61 @@ Evidence: `out/preview9-c35-commit-baseline-two-town/summary.json`,
 `eaabcf50c4be12ff71555d6f96f1b755469ceca469370494730c66122b57a859`);
 `out/preview9-c35-commit-final-proof/result.json`. Successful functional
 convergence is recorded separately from the failed performance acceptance.
+
+### C36 bounded compression reuse and editor service
+
+Commits 4b2e07c and 74b7be4 retain every Native Write and opaque-state check.
+Kit 0.3.6 optionally reuses exact original-compressor output for complete,
+identical input under the verified Native caller/profile. Two owned entries
+and staging remain within 32 MiB. The new shared-editor service uses one
+run-owned queued ticket at five-millisecond intervals, with passive project,
+epoch, participant and transport identity. Native busy scopes span final owner
+releases; Runtime drains reject nested entry and retry pending work afterward.
+The existing greater-than-500-ms modal transport fallback remains, while editor
+Native work waits for those scopes to exit.
+
+Strict actual-i686 compression and inherited lifecycle tests pass 73 and 2,610
+checks, with 21 unchanged inputs. Pulse tests pass Linux/i686 138 each, Native
+busy/final Release 28, real-UDP Runtime pulse/reentry 144, Native staged 1,662,
+Native view 3,226, Runtime worker wakes 2,285 and Runtime staged 8,790. All 164
+pinned pulse inputs remain unchanged through postcommit. The old staged fixture
+waited for prohibited nested durability; its corrected contract retains both
+operation IDs once each, both unrelated edits and durable revision 2 after the
+outer callback returns. Earlier fixture-only declaration/vtable setup failures
+are retained separately; they were not game crashes. Evidence:
+`out/editor-preview9-refpack-memo/receipt.json`,
+`out/preview9-editor-pulse-receipt.json` and
+`out/preview9-editor-pulse-native-fixture-setup-failure.json`.
+
+The production build and postcommit check retain all 247 inputs without drift.
+Co-op DLL is 96,236,032 bytes; Kit is 7,497,216 bytes, SHA-256
+`c42d792ab743f273a6554825faef55a8bfea43c51461585ef8d77fa91e4c4ab6`.
+Only the private installation is updated; its previous payload and INI are
+retained. Compression is enabled explicitly there. Fresh processes 58956/13636
+cold-open the exact C35 Saved source `408A0000!29132851.366A930D`, preserve
+authored semantic hash, 419 placements, 119 classes and five acts, then join a
+new shared draft at revision 0. Both report verified memo enablement, matching
+strict draft state and zero faults. Evidence:
+`out/preview9-candidate36-postcommit.json`,
+`out/preview9-candidate36-deployment/receipt.json` and
+`out/preview9-c36-cold-shared/result.json`.
+
+The iteration tool now permits one to 29 samples only with `--diagnostic`;
+acceptance still requires at least 30 gestures per author. Its 45 offline tests
+pass. C36 runs two warm-ups and three movements per author. All six measured
+edits complete; final independent checking finds canonical/durable revision 8,
+equal strict convergence, unchanged counts and zero faults on both players.
+Memo counters report zero failures, contention and bypass, with two retained
+entries totaling 2,548,912 bytes per process after the check.
+
+This short probe fails the frame budget. Submission-to-confirmation maximum
+(also p95 for three samples) is 48.3296 ms host and 159.3712 ms guest. Frame-gap
+maximum across six windows is 139.6224/139.2381 ms, above the 100-ms p95 target
+and below the separate 250-ms maximum. Release-to-confirmation maximum is
+567.9037/677.8263 ms. These are development observations, not a statistically
+qualified comparison with C35's 30-per-author baseline. The same authored Saved
+fixture is reused in a new session; the full benchmark is deferred until the
+remaining frame work is reduced. Evidence:
+`out/preview9-c36-commit-probe-two-town/summary.json`, full result SHA-256
+`f1f7ad230060879b71a5fce685ab8dcf179c50d958e7296fd78222294c70cedf`, and
+`out/preview9-c36-commit-final-proof/result.json`.
