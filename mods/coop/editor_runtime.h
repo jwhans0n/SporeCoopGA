@@ -9,6 +9,7 @@
 #include "net/session.h"
 #include "net/editor_document.h"
 #include "sporekit.h"
+#include "editor_service_pulse.h"
 
 namespace coop_editor {
 
@@ -61,6 +62,9 @@ struct Ctx {
 
 bool init(const SkHost*, SkMod*, Ctx);
 void tick(double now); // Scheduling and immutable view reads are safe inside Present.
+// Main-thread passive scheduling identity; these functions invoke no callbacks.
+std::optional<editor_service_pulse::Scope> service_pulse_scope();
+bool service_pulse_idle();
 void on_message(uint8_t from, net::Reader&);
 void on_adventure_message(uint8_t from, net::Reader&); // Ordered behind editor ownership.
 void on_join(uint8_t);

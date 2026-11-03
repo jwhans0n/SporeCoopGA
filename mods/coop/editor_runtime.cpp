@@ -165,6 +165,7 @@ editor::wire::Context incoming_context;
 fs::path project_root, project_directory;
 View cached;
 bool queued, frozen, beginning, closing, gc_due, recovery_available, scanned_recovery;
+bool runtime_draining=false;
 bool native_playtesting, return_started, end_after_return, disconnected_return;
 bool save_publication_pending, before_apply_valid, native_copy_owned;
 bool native_attached, close_restored, close_preserve_offer, native_identity_lost;
@@ -4397,7 +4398,10 @@ void execute(Action action) {
 }
 void SK_CDECL drain(void*) {
     queued = false;
-    if (!controller) return;
+    // A nested message pump consumes its queued task but cannot reenter the
+    // Controller or Native work. The next frame/pulse retries without reposting.
+    if (runtime_draining || editor_native::service_busy() || !controller) return;
+    editor_service_pulse::ServiceGuard draining(runtime_draining);
     // Controller work runs after the frame's receive/send pass. Publish its
     // queued messages immediately without another receive pass or callbacks.
     // The captured transport cannot send through a restarted Session.
@@ -4605,7 +4609,7 @@ void SK_CDECL drain(void*) {
         controller->freeze_local(status); refresh();
     }
 }
-void schedule() { if (H && controller && !queued) { queued = true; H->run_outside_frame(drain, nullptr); } }
+void schedule() { if (H && controller && !queued && !runtime_draining) { queued = true; H->run_outside_frame(drain, nullptr); } }
 void request_preview_return(const PreviewReturnScope& request) {
     if (current_preview_return(request)) { pending_preview_return = request; schedule(); }
 }
@@ -5206,6 +5210,24 @@ void shutdown() {
     pending_preview_return.reset();pending_preparation_cancel.reset();preview_selection.reset();observed_lease_grants.clear();
     queued=false;closing=native_attached=close_restored=close_preserve_offer=false;H=nullptr;
 }
+std::optional<editor_service_pulse::Scope> service_pulse_scope() {
+    if (!H || !controller || !C.session || !C.session->connected() || !native_attached ||
+        frozen || closing || recovery || transport_teardown || exporting || pending_export_request ||
+        native_exit_requested || save_publication_pending || observed_transport <= retired_transport ||
+        C.session->transport_generation()!=observed_transport) return std::nullopt;
+    const auto& view=controller->view();const auto& doc=controller->state().document;
+    if(view.phase!=Phase::Ready || view.context.project!=doc.project || view.context.epoch!=doc.epoch ||
+        !view.local.generation || view.local.slot!=C.session->my_id())return std::nullopt;
+    const auto member=view.members.find(view.local.slot);
+    if(member==view.members.end() || member->second.peer!=view.local)return std::nullopt;
+    editor_service_pulse::Scope result;
+    result.words={durable_runtime_domain,observed_transport,uintptr_t(controller.get()),uintptr_t(C.session),
+        doc.epoch,0,0,uint64_t(view.local.slot)|(uint64_t(view.local.generation)<<8),native_generation,
+        current_native.source.group,current_native.source.instance,current_native.source.type,uint64_t(C.session->role())};
+    for(size_t i=0;i<doc.project.size();++i)result.words[5+i/8]|=uint64_t(doc.project[i])<<((i%8)*8);
+    return result;
+}
+bool service_pulse_idle(){return !runtime_draining && !editor_native::service_busy();}
 bool active() { return cached.active; }
 bool authoring() {
     if (!controller || (controller->view().phase == Phase::Playing && native_playtesting && controller->view().playtest_mode==editor::wire::PlaytestMode::Together)) return false;

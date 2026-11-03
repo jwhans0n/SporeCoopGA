@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <deque>
 #include <map>
+#include <memory>
 #include <string>
 
 #include "coop_ui.h"
@@ -956,41 +957,74 @@ void lobby_tick(double now)
 // Network keepalive without frames: a modal game dialog (e.g. "game saved") can stop the frames
 // while the window still pumps messages; the session and the world transfer then keep running
 // from the window procedure, so guests do not time out.
-std::atomic<double> g_last_frame{0};
-std::atomic<bool> g_keepalive_run{false}, g_keepalive_queued{false};
+using PulseRun=editor_service_pulse::Run;
+using PulseTicket=editor_service_pulse::Ticket;
+std::shared_ptr<PulseRun> g_keepalive_run;
 std::thread g_keepalive;
+bool g_service_busy=false;
+struct KeepaliveTask {std::shared_ptr<PulseRun> run;PulseTicket ticket;};
 
-void keepalive_task(void*)
+editor_service_pulse::Observation keepalive_observation(){
+    return {g_sess.transport_generation(),g_sess.role()!=net::Role::None,coop_editor::service_pulse_scope()};
+}
+void keepalive_publish(std::optional<editor_service_pulse::Time> frame={}){
+    const auto run=g_keepalive_run;
+    if(run && run->alive.load())run->publish(keepalive_observation(),frame);
+}
+void keepalive_task(void* value)
 {
-    g_keepalive_queued = false;
-    if (H->time_seconds() - g_last_frame < 0.5 || g_sess.role() == net::Role::None)
-        return;
+    const std::unique_ptr<KeepaliveTask> task(static_cast<KeepaliveTask*>(value));
+    const auto run=task->run;
+    struct Complete {std::shared_ptr<PulseRun> run;uint64_t serial;~Complete(){run->complete(serial);}} complete{run,task->ticket.serial};
+    // Do not consult H, Session, or a replacement module/run for a retired task.
+    if(!run->alive.load())return;
+    if(g_keepalive_run!=run)return;
+    struct Publish {std::shared_ptr<PulseRun> run;~Publish(){if(run->alive.load() && g_keepalive_run==run)keepalive_publish();}} publish{run};
+    editor_service_pulse::ServiceGuard service(g_service_busy);
+    if(!service.entered || !run->current(task->ticket,keepalive_observation(),editor_service_pulse::Clock::now()))return;
+    if(g_sess.role()==net::Role::None)return;
+    if(task->ticket.editor && !coop_editor::service_pulse_idle())return;
+    const auto transport=g_sess.transport_generation();
     g_sess.update();
-    coop_editor::tick(H->time_seconds());
+    if(!run->alive.load() || g_keepalive_run!=run || g_sess.transport_generation()!=transport)return;
+    if(task->ticket.editor){
+        if(coop_editor::service_pulse_scope()!=task->ticket.observation.editor || !coop_editor::service_pulse_idle())return;
+        coop_editor::tick(H->time_seconds());
+        return;
+    }
+    // Preserve the original modal/no-frame fallback, including non-editor play.
+    // A Native stack may pump messages; receive/send can continue, but a new
+    // editor drain waits until that Native stack has released its final owners.
+    if(coop_editor::service_pulse_idle())coop_editor::tick(H->time_seconds());
+    if(!run->alive.load() || g_sess.transport_generation()!=transport)return;
     adventure::tick(H->time_seconds());
-    if (g_sess.role() == net::Role::Host && !coop_editor::authoring() && !editor_creation::active())
-        world::tick(g_sess);
+    if(!run->alive.load() || g_sess.transport_generation()!=transport)return;
+    if(g_sess.role()==net::Role::Host && !coop_editor::authoring() && !editor_creation::active())world::tick(g_sess);
 }
 
 void keepalive_start()
 {
-    g_keepalive_run = true;
-    g_keepalive = std::thread([] {
-        while (g_keepalive_run) {
-            Sleep(100);
-            if (!g_keepalive_queued && H->time_seconds() - g_last_frame > 0.5 && g_last_frame > 0) {
-                g_keepalive_queued = true;
-                H->run_outside_frame(keepalive_task, nullptr);
-            }
+    const auto run=std::make_shared<PulseRun>();g_keepalive_run=run;
+    const auto enqueue=H->run_outside_frame;
+    // Only owned passive values and the immutable SDK dispatcher cross threads.
+    g_keepalive=std::thread([run,enqueue] {
+        while(run->alive.load()){
+            run->wait();
+            PulseTicket ticket;
+            if(!run->reserve(editor_service_pulse::Clock::now(),ticket))continue;
+            try{
+                auto task=std::make_unique<KeepaliveTask>(KeepaliveTask{run,ticket});
+                enqueue(keepalive_task,task.get());(void)task.release();
+            }catch(...){run->complete(ticket.serial);}
         }
     });
 }
-
+void keepalive_retire(){if(g_keepalive_run)g_keepalive_run->retire();}
 void keepalive_stop()
 {
-    g_keepalive_run = false;
-    if (g_keepalive.joinable())
-        g_keepalive.join();
+    keepalive_retire();
+    if(g_keepalive.joinable())g_keepalive.join();
+    g_keepalive_run.reset();
 }
 
 void menu_tick(double now);
@@ -1079,7 +1113,10 @@ void on_frame(void*, int, void*)
 {
     double now = H->time_seconds();
     g_frame_samples.sample(now);
-    g_last_frame = now;
+    keepalive_publish(editor_service_pulse::Clock::now());
+    editor_service_pulse::ServiceGuard service(g_service_busy);
+    if(!service.entered)return;
+    struct Publish {std::shared_ptr<PulseRun> run;~Publish(){if(run && run->alive.load() && g_keepalive_run==run)keepalive_publish();}} publish{g_keepalive_run};
     diag_tick(now);
     notify::tick(now);
     if (!coop_editor::authoring() && !editor_creation::active()) creations::tick(now);
@@ -2763,6 +2800,7 @@ int c_adventure(void*, int argc, const char* const* argv, SkOut* out)
 
 void on_unload()
 {
+    keepalive_retire();
     coop_editor::shutdown();
     adventure::reset();
     adventure_assets::shutdown();

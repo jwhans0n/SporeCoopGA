@@ -38,6 +38,8 @@ struct WorkStats {
     size_t parsed_owners=0,parsed_owner_bytes=0,parsed_peak_owners=0,parsed_peak_bytes=0;
 };
 WorkStats work_stats();
+// Main-thread passive call-stack state. No Native getters or ownership proof.
+bool service_busy();
 
 struct Binding {
     editor::ObjectId object;

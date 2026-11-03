@@ -68,7 +68,7 @@ static void test_staged_pose_keeps_foreign_canonical_and_renews_original_lease()
         CHECK(!runtime_host::frozen&&!runtime_guest::frozen);
     }
 }
-static void test_staged_pose_waits_if_c_validation_starts_foreign_durability(){
+static void test_staged_pose_defers_nested_foreign_drain_during_c_validation(){
     for(unsigned observer=0;observer<2;++observer){
         seed_unrelated_placement=true;Party party;seed_unrelated_placement=false;
         const unsigned author=1-observer;grant_tentative_placement(author,unrelated_placement);
@@ -79,16 +79,26 @@ static void test_staged_pose_waits_if_c_validation_starts_foreign_durability(){
         move.expected=editor::field_revision(foreign->state().document,move.target,move.field);request.mutations={move};
         bool injected=false;n.staged_supported_callback=[&]{
             n.staged_supported_callback={};injected=true;side=int(author);std::string error;CHECK(foreign->submit(request,error));
-            CHECK(spin([&]{return observer?bool(runtime_guest::durable_commit):bool(runtime_host::durable_commit);}));
+            // A Native callback may pump messages and the other process, but
+            // cannot reenter this process's outer Runtime drain. The foreign
+            // request stays queued until that callback has returned.
+            for(unsigned i=0;i<4;++i)step();
+            CHECK(observer?runtime_guest::runtime_draining:runtime_host::runtime_draining);
+            CHECK(!(observer?bool(runtime_guest::durable_commit):bool(runtime_host::durable_commit)));
             CHECK((observer?runtime_guest::controller:runtime_host::controller)->state().document.revision==0);
             side=int(observer);
         };
         CHECK(spin([&]{return injected;}));
-        CHECK(staged_held(observer)&&!(observer?runtime_guest::pending.has_value():runtime_host::pending.has_value()));
-        CHECK((observer?runtime_guest::staged_capture->failure:runtime_host::staged_capture->failure).empty());
+        CHECK(staged_held(observer) || (observer?runtime_guest::pending.has_value():runtime_host::pending.has_value()) ||
+            (observer?runtime_guest::awaiting_operation.has_value():runtime_host::awaiting_operation.has_value()));
         CHECK(spin([]{return staged_settled(2);}));
-        CHECK(runtime_host::controller->state().history.back().operation==operation);
-        for(const auto& live:native)CHECK(live.snapshot.document.placements.at(unrelated_placement).position==editor::Vec3{11,12,13});
+        const auto& history=runtime_host::controller->state().history;
+        CHECK(std::count_if(history.begin(),history.end(),[&](const auto& row){return row.operation==operation;})==1);
+        CHECK(std::count_if(history.begin(),history.end(),[&](const auto& row){return row.operation==request.operation;})==1);
+        for(const auto& live:native){
+            CHECK(live.snapshot.document.placements.at(unrelated_placement).position==editor::Vec3{11,12,13});
+            CHECK(live.snapshot.document.placements.at(placement).position==editor::Vec3{3,2,1});
+        }
         CHECK(!runtime_host::frozen&&!runtime_guest::frozen);
     }
 }
@@ -331,7 +341,7 @@ static void test_all_staged_capture_cases(){
     }
     test_staged_pose_uses_distinct_frames_and_one_owned_request();
     test_staged_pose_keeps_foreign_canonical_and_renews_original_lease();
-    test_staged_pose_waits_if_c_validation_starts_foreign_durability();
+    test_staged_pose_defers_nested_foreign_drain_during_c_validation();
     test_staged_pose_unknown_after_mutation_restores_latest_without_commit();
     test_staged_pose_identity_expiry_never_writes_replacement();
     test_staged_pose_dependency_and_ticket_identity_are_immutable();

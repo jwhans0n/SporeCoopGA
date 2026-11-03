@@ -94,6 +94,11 @@ uint64_t history_ui_updates=0,history_ui_undo=0,history_ui_redo=0,history_ui_cha
 uint64_t fenced_generation=0;
 uint64_t generation = 1, captures = 0, restores = 0, rejected = 0;
 unsigned validation_depth=0;
+unsigned service_depth=0;
+struct ServiceScope {
+    ServiceScope(){++service_depth;}
+    ~ServiceScope(){--service_depth;}
+};
 WorkStats native_work;
 GestureScope value_scope(){const auto callback=C.projection_scope?C.projection_scope:C.gesture_scope;return callback?callback():GestureScope{};}
 bool valid_scope(const GestureScope&);
@@ -2220,6 +2225,7 @@ bool speech_pending(){return std::any_of(pending.begin(),pending.end(),[](const 
 bool ordinary_capture_pending(){return staged_pose || std::any_of(pending.begin(),pending.end(),[](const auto& item){return !item.speech;});}
 
 void SK_CDECL drain(void*) {
+    ServiceScope service_scope;
     editor_native::state(); // Retire a replaced native owner before old callbacks.
     queued = false;
     auto work = std::move(pending);
@@ -2731,6 +2737,7 @@ void SK_THISCALL terrain_undo(void* self){
     original_terrain_undo(self);
 }
 void SK_CDECL drain_terrain(void*){
+    ServiceScope service_scope;
     terrain_queued=false;state();
     if(!terrain_pending || !terrain_before)return;
     if(!active() || terrain_generation!=generation || terrain_owner!=data(mode()) ||
@@ -3141,6 +3148,7 @@ bool cancellation_current(const PendingCancellation& item){
         scope==item.ticket.scope;
 }
 void SK_CDECL drain_cancellation(void*){
+    ServiceScope service_scope;
     cancellation_queued=false;
     if(!H || !cancellation)return;
     const auto observed=editor_native::state();
@@ -4282,6 +4290,7 @@ void request_environment_refresh(){
     }catch(...){ } // Optional UI synchronization never changes authored state.
 }
 void SK_CDECL drain_environment_refresh(void*){
+    ServiceScope service_scope;
     if(environment_refresh_servicing)return;
     struct Completion {
         Completion(){environment_refresh_queued=environment_refresh_servicing=true;}
@@ -4383,6 +4392,7 @@ bool creation_terrain_placements_current(const CreationTerrainProof& proof,bool 
 
 void service_capture(){service_staged_capture();}
 bool capture_view(LocalView& view, std::string& error) {
+    ServiceScope service_scope;
     const auto native=state();
     if (!native.ready || native.gesture || applying) {error="The native editor is not ready to capture its local view";return false;}
     void* camera=view_camera(error);if(!camera)return false;
@@ -4394,6 +4404,7 @@ bool capture_view(LocalView& view, std::string& error) {
 
 bool capture_creation_terrain(const GestureScope& expected_scope,uint64_t serial,const SceneOwner& expected_owner,const Snapshot& entry_snapshot,
                               CreationTerrainTicket& out,std::string& error){
+    ServiceScope service_scope;
     try{
         constexpr size_t limit=64u<<20;size_t charged=sizeof(CreationTerrainProof);
         const auto charge=[&](size_t bytes){if(bytes>limit-charged)return false;charged+=bytes;return true;};
@@ -4512,6 +4523,7 @@ bool resume_creation_terrain(const CreationTerrainTicket& supplied_ticket,const 
 #include "editor_native_terrain_transition_impl.h"
 
 bool capture_scene_owner(SceneOwner& owner,std::string& error){
+    ServiceScope service_scope;
     const auto native=state();
     void* current_mode=mode();void* current_data=data(current_mode);void* current_resource=resource(current_data);
     if(!native.editing || !native.ready || native.playtesting || native.gesture || applying ||
@@ -4540,6 +4552,7 @@ bool saved_scene_current(SceneOwner owner,uint64_t expected_generation){
         skg::readable(current_resource,kResourceSize) && generation==expected_generation;
 }
 SceneResumeState creation_scene_state(const SceneOwner& owner){
+    ServiceScope service_scope;
     const auto native=state();SceneResumeState result;
     result.generation=native.generation;result.world_visible=native.world_visible;
     // state() permits its own deferred camera drain to run while settling.
@@ -4680,6 +4693,7 @@ bool deferred_view_current(const DeferredLocalView& item,const std::function<boo
 }
 bool restore_view_impl(const LocalView& view,uint64_t expected_generation,const DeferredLocalView* pin,
                        const std::function<bool()>* required_current,std::string& error){
+    ServiceScope service_scope;
     auto current_identity=[&]{
         try{return generation==expected_generation && (!pin || deferred_view_current(*pin,required_current));}
         catch(...){return false;}
@@ -4733,6 +4747,7 @@ bool restore_view_fenced(const LocalView& view,uint64_t expected_generation,Scen
     return restore_view_impl(copied_view,expected_generation,&pin,&current,error);
 }
 void SK_CDECL drain_local_view(void*){
+    ServiceScope service_scope;
     local_view_queued=false;if(!deferred_local_view)return;
     const auto item=*deferred_local_view;
     const auto native=state();
@@ -4963,6 +4978,7 @@ void tick(){
 }
 
 State state() {
+    ServiceScope service_scope;
     State s; s.available = supported;
     const bool scenario=game::mode_id()==modes::kScenario;
     void* m = mode(); void* d = data(m);
@@ -5067,7 +5083,11 @@ bool avatar_locked(){
     return supported && skg::readable(r,kResourceSize) && skg::field<bool>(r,0x175);
 }
 
+bool service_busy(){
+    return service_depth || applying || capture_servicing || local_view_settling || environment_refresh_servicing;
+}
 bool capture(Snapshot& out, std::string& error) {
+    ServiceScope service_scope;
     auto s=state();
     if (!s.ready || s.gesture || applying) { error="Native Adventure Editor is not ready for a snapshot"; return false; }
     refresh_selection();
@@ -5088,6 +5108,7 @@ bool capture(Snapshot& out, std::string& error) {
 }
 RecentMatches recent_matches(const Snapshot& expected,const editor::Document& document,uint64_t expected_generation,
                              Snapshot& out,std::string& error){
+    ServiceScope service_scope;
     auto matched=[](RecentMatches result){
         if(result==RecentMatches::Match)++recent_match_hits;
         else if(result==RecentMatches::Different)++recent_match_different;
@@ -5178,6 +5199,7 @@ RecentMatches recent_matches(const Snapshot& expected,const editor::Document& do
     out=std::move(snapshot);++captures;error.clear();return matched(RecentMatches::Match);
 }
 bool capture_draft(Snapshot& out,std::string& error) {
+    ServiceScope service_scope;
     Snapshot draft;if(!capture(draft,error))return false;
     const auto export_terrain=H->sym("SporeCoop::Editor::CaptureTerrain");
     void* m=mode();void* terrain=skg::readable(m,0x1C)?skg::field<void*>(m,0x18):nullptr;
@@ -5635,11 +5657,13 @@ bool validate_projection(const Snapshot& projected,const Snapshot& snapshot,cons
 }
 
 ValidationScope::ValidationScope(){
+    ++service_depth;
     if(!validation_depth){parsed_images.clear();parsed_image_bytes=0;}
     ++validation_depth;
 }
 ValidationScope::~ValidationScope(){
     if(validation_depth&&--validation_depth==0){parsed_images.clear();parsed_image_bytes=0;}
+    --service_depth;
 }
 bool validate(const Snapshot& snapshot,const editor::Document& document,std::string& error){
     ValidationScope scope;
@@ -5850,6 +5874,7 @@ bool restore_terrain_rotations(const TerrainRotationOwner& owner,std::vector<Ter
     return current()?true:expired();
 }
 bool restore_impl(const Snapshot& snapshot,const RestoreFence* fence,std::string& error){
+    ServiceScope service_scope;
     std::function<bool()> current;if(fence)current=[fence]{return fence->checked();};
     const auto* required=fence?&current:nullptr;
     auto checked=[&]{if(!fence || fence->checked())return true;error="The native restoration's pinned editor expired";return false;};
@@ -6055,6 +6080,7 @@ bool rebaseline(std::string& error){
 }
 
 bool apply(const editor::Document& document, std::string& error) {
+    ServiceScope service_scope;
     return apply(document,editor::Change{},nullptr,error);
 }
 
@@ -6303,6 +6329,7 @@ static bool prepare_impl(const Snapshot& base,const editor::Document& document,c
 
 bool prepare(const Snapshot& base,const editor::Document& document,const editor::Change& change,
              const Snapshot* artifact,Snapshot& out,std::string& error){
+    ServiceScope service_scope;
     // A callback may retire the caller's pending canonical inputs. The narrow
     // pose path uses independent values before its first Native validation;
     // private preparation acquires no live-scene or authoring permission.
@@ -6424,6 +6451,7 @@ bool remap_crew_assets(const Snapshot& base,const std::vector<CrewAssetRemap>& e
 }
 
 bool apply_prepared(const Snapshot& prepared,const editor::Change& change,std::string& error){
+    ServiceScope service_scope;
     const auto current=state();
     if(!current.ready || current.gesture || applying){error="The native editor is not ready to apply its canonical resource";return false;}
     clear_terrain_capture_rotations();
@@ -6456,6 +6484,7 @@ bool apply_prepared(const Snapshot& prepared,const editor::Change& change,std::s
 }
 
 bool apply(const editor::Document& document,const editor::Change& change,const Snapshot* artifact,std::string& error) {
+    ServiceScope service_scope;
     // Runtime supplies its independently canonical owned artifact for a terrain
     // inverse. Pin the original scene before InspectorView or snapshot getters;
     // a normalized typed pose must not let the generic field loop skip LIVE
