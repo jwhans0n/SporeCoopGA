@@ -142,6 +142,8 @@ void mods_shutdown();
 extern SkHost g_host;
 
 // input.cpp
+bool input_install_hooks(); // freeze policy; eagerly install isolated input before game initialization
+std::string input_info();
 bool input_key(int vk, const char* mode);
 bool input_text(const std::string& utf8);
 bool input_click(int x, int y, int button);
@@ -161,6 +163,7 @@ bool png_write_rgb(const std::wstring& path, int w, int h, const uint8_t* rgb);
 
 // instance.cpp
 void instance_install();
+const std::wstring& profile_name();
 
 // probe.cpp
 std::string probe_add(uintptr_t addr);
@@ -215,6 +218,7 @@ void exceptions_clear();
 
 // focus.cpp
 void focus_install_hooks();
+bool invisible_mode();
 void focus_attach_window(void* hwnd);
 bool background_mode();
 void set_background_mode(bool on);

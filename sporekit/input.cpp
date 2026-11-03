@@ -1,12 +1,20 @@
 // Input injection for automated tests: window messages + virtual key state
 // (GetAsyncKeyState/GetKeyState overrides, since the game polls some keys).
 #include "core.h"
+#include "input_policy.h"
 
 #include <atomic>
+#include <cstdio>
+#include <cstring>
+#include <mutex>
 
 namespace sk {
 
 static std::atomic<uint8_t> g_vkdown[256];
+static InputPolicy g_input_policy;
+static bool g_input_policy_frozen = false, g_input_hooks_attempted = false;
+static std::atomic<unsigned> g_input_hooks_installed{0};
+static std::mutex g_input_hooks_mutex;
 
 typedef SHORT(WINAPI* GetAsyncKeyState_t)(int);
 typedef SHORT(WINAPI* GetKeyState_t)(int);
@@ -15,7 +23,9 @@ static GetKeyState_t o_GetKeyState;
 
 static SHORT WINAPI h_GetAsyncKeyState(int vk)
 {
-    SHORT r = o_GetAsyncKeyState(vk);
+    if (g_input_policy.exclusive && vk >= 0 && vk < 256)
+        return g_vkdown[vk] ? (SHORT)0x8001 : 0;
+    SHORT r = o_GetAsyncKeyState ? o_GetAsyncKeyState(vk) : 0;
     if (vk >= 0 && vk < 256 && g_vkdown[vk])
         r |= (SHORT)0x8001;
     return r;
@@ -23,23 +33,50 @@ static SHORT WINAPI h_GetAsyncKeyState(int vk)
 
 static SHORT WINAPI h_GetKeyState(int vk)
 {
-    SHORT r = o_GetKeyState(vk);
+    if (g_input_policy.exclusive && vk >= 0 && vk < 256)
+        return g_vkdown[vk] ? (SHORT)0x8000 : 0;
+    SHORT r = o_GetKeyState ? o_GetKeyState(vk) : 0;
     if (vk >= 0 && vk < 256 && g_vkdown[vk])
         r |= (SHORT)0x8000;
     return r;
 }
 
-static void ensure_hooks()
+static bool ensure_hooks()
 {
-    static bool done = false;
-    if (done)
-        return;
-    done = true;
+    std::lock_guard<std::mutex> lock(g_input_hooks_mutex);
+    if (g_input_hooks_attempted)
+        return g_input_hooks_installed == 2;
+    g_input_hooks_attempted = true;
     HMODULE u = GetModuleHandleW(L"user32.dll");
-    hook_create(&g_kit_mod, (void*)GetProcAddress(u, "GetAsyncKeyState"), (void*)h_GetAsyncKeyState,
-                (void**)&o_GetAsyncKeyState);
-    hook_create(&g_kit_mod, (void*)GetProcAddress(u, "GetKeyState"), (void*)h_GetKeyState,
-                (void**)&o_GetKeyState);
+    if (!u) return false;
+    void* async = (void*)GetProcAddress(u, "GetAsyncKeyState");
+    void* key = (void*)GetProcAddress(u, "GetKeyState");
+    if (async && hook_create(&g_kit_mod, async, (void*)h_GetAsyncKeyState,
+                             (void**)&o_GetAsyncKeyState) == 0 && o_GetAsyncKeyState) ++g_input_hooks_installed;
+    if (key && hook_create(&g_kit_mod, key, (void*)h_GetKeyState,
+                           (void**)&o_GetKeyState) == 0 && o_GetKeyState) ++g_input_hooks_installed;
+    return g_input_hooks_installed == 2;
+}
+
+bool input_install_hooks()
+{
+    if (!g_input_policy_frozen) {
+        g_input_policy = select_input_policy(GetCommandLineW(), invisible_mode(), profile_name(), instance_id());
+        g_input_policy_frozen = true;
+    }
+    const bool ready = !g_input_policy.exclusive || ensure_hooks();
+    SKLOG(SK_INFO, "%s", input_info().c_str());
+    return ready;
+}
+
+std::string input_info()
+{
+    char line[192];
+    snprintf(line, sizeof line, "input policy=%s requested=%u hooks=%u/2 reason=%s",
+             g_input_policy.exclusive ? "exclusive-virtual" : "os-or-virtual",
+             unsigned(g_input_policy.requested), g_input_hooks_installed.load(),
+             input_policy_reason(g_input_policy.reason));
+    return line;
 }
 
 static LPARAM key_lparam(int vk, bool up)

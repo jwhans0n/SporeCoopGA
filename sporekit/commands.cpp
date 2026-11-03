@@ -71,6 +71,7 @@ static int c_info(void*, int, const char* const*, SkOut* o)
 {
     uint32_t mode = game_mode_id();
     outf(o, "sporekit %s instance=%d pid=%lu\n", SK_VERSION, instance_id(), GetCurrentProcessId());
+    outf(o, "%s\n", input_info().c_str());
     outf(o, "exe sha256=%s base=0x%08X\n", exe_sha256().c_str(), (unsigned)image_base());
     outf(o, "symbols=%u files=%s\n", (unsigned)symbols_count(), symbols_file_name());
     if (symbols_count() && symbols_build() != exe_sha256())

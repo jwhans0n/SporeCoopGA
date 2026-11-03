@@ -190,6 +190,8 @@ static LRESULT CALLBACK h_WndProc(HWND w, UINT m, WPARAM wp, LPARAM lp)
     return CallWindowProcW(o_WndProc, w, m, wp, lp);
 }
 
+bool invisible_mode() { return g_invisible; }
+
 void focus_install_hooks()
 {
     // default: on for automated test runs (profile/instance switches), off for normal play

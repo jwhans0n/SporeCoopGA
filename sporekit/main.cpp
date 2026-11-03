@@ -300,6 +300,10 @@ extern "C" __declspec(dllexport) int __cdecl sporekit_boot(HMODULE loader)
     watchdog_mark("instance");
     instance_install();
     focus_install_hooks();
+    if (!input_install_hooks()) {
+        SKLOG(SK_ERROR, "exclusive test input hooks could not be installed; stopping before game initialization");
+        ExitProcess(75);
+    }
     watchdog_mark("d3d9");
     d3d9_install();
     if (!late)
