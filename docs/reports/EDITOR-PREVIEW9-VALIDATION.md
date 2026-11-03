@@ -3252,3 +3252,51 @@ This later 126-class file has not yet been cold-reopened. Evidence:
 `out/preview9-c46-guest-house-save/result.json`,
 `out/preview9-c46-all-new-models-native-save/result.json`, and
 `tools/tests/fixtures/editor_creation/building-house-minimal-c46.json`.
+
+The explicit Military Land route also passes from both roles. The guest's
+measured body/cockpit/paired-wheel design reaches native finish zero and adds
+class `8589935942:1` at revision 5. The host replays the retained 17 steps and
+adds `8589935943:1` at revision 6. Both saves preserve every prior cast row,
+create one history item each and return strict scenes with zero faults. The
+draft now has 128 classes, 419 placements and five acts. Evidence:
+`out/preview9-c46-guest-vehicle-save/result.json`,
+`out/preview9-c46-host-vehicle-save/result.json`, and
+`tools/tests/fixtures/editor_creation/vehicle-military-land-minimal-c46.json`.
+
+Saving this later draft after the earlier Native Save does not open a success
+dialog. The original fixture times out; a fresh diagnostic records the actual
+reason: `Native adventure save is unavailable (reason 5)`. Both canonical and
+Native scenes remain strictly equal at durable revision 6, with zero faults;
+native coverage stays at revision 4. Creation admission/return carries the old
+clean native dirty sidecar across accepted class changes. This is a separate
+open native dirty-state bug, not another dependency or corruption failure. No
+second Save is issued. Evidence:
+`out/preview9-c46-four-families-native-save/result.json` and
+`out/preview9-c46-final-save-observe/result.json`.
+
+Test Together then uses explicit readiness from both participants, with no
+preview before the final confirmation. Both games enter one nonzero adventure
+run, reach natural native simulation state 3, advance their clocks and retain
+live reciprocal captain puppets. Each author moves through ordinary W input;
+both participants observe positions within the existing one-metre puppet error
+bound. Host Return restores revision 6 and all 128 cast rows with unchanged
+history, matching strict Native checks and zero faults. This proves shared
+native simulation/movement and return; it does not qualify every objective or
+interaction. The first driver hits a Python conditional-variable error after
+releasing the host movement key; its measured continuation completes both
+movements and returns normally, then hits an incorrectly assumed artifact
+field. Both failed tool receipts remain. A separate read-only final check
+verifies the recorded movement evidence and the actual restored canonical/hash
+and history without relaunching the test. Evidence:
+`out/preview9-c46-group-after-creations/result.json`,
+`out/preview9-c46-group-after-creations-resume/result.json`, and
+`out/preview9-c46-group-final-proof/result.json`.
+
+Both games subsequently return normally to Galaxy with zero faults and the
+runner exits 0 before its lease expires. The latest durable project is
+`f8df82ea8c71c31574fd6a062a79030f`, revision 6. Both closed recovery directories
+(ten files each) and the original native package are preserved with identical
+double reads; its exact Saved root is still the previously verified revision-4
+root, while the newer two vehicle admissions remain in durable recovery.
+Evidence: `out/preview9-c46-final-retirement/result.json` and
+`out/preview9-c46-final-closed-preserved/receipt.json`.

@@ -566,7 +566,7 @@ def main():
     args=p.parse_args()
     if args.self_test:self_test();return
     if not args.execute:
-        print(json.dumps(dict(prepared=True,profiles=PROFILES,stages=['enter','steps','inspect','finish','cancel'],normal_input_only=True,requires_explicit_ui_handoff=True,creature_recipe='tools/tests/fixtures/editor_creation/creature-held-c39.json',historical_creature_recipe='tools/tests/fixtures/editor_creation/creature-mouth-c7.json',building_house_recipe='tools/tests/fixtures/editor_creation/building-house-minimal-c46.json',spaceship_recipe='tools/tests/fixtures/editor_creation/spaceship-minimal-c46.json'),indent=2));return
+        print(json.dumps(dict(prepared=True,profiles=PROFILES,stages=['enter','steps','inspect','finish','cancel'],normal_input_only=True,requires_explicit_ui_handoff=True,creature_recipe='tools/tests/fixtures/editor_creation/creature-held-c39.json',historical_creature_recipe='tools/tests/fixtures/editor_creation/creature-mouth-c7.json',building_house_recipe='tools/tests/fixtures/editor_creation/building-house-minimal-c46.json',vehicle_recipe='tools/tests/fixtures/editor_creation/vehicle-military-land-minimal-c46.json',spaceship_recipe='tools/tests/fixtures/editor_creation/spaceship-minimal-c46.json'),indent=2));return
     if (not args.metadata or not args.output or len(args.instances)not in(2,4)or len(set(args.instances))!=len(args.instances)or args.author not in args.instances or
         not re.fullmatch('[0-9a-f]{64}',args.candidate or'')or not args.profile or not args.stage or args.stage=='steps'and not args.steps or
         not re.fullmatch('[A-Za-z0-9 _-]{1,64}',args.name)):

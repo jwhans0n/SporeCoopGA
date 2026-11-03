@@ -1636,3 +1636,34 @@ Save with SavedApplied 2/2 and exact original DBPF retention. Evidence:
 `out/preview9-c46-guest-house-save/result.json`, and
 `out/preview9-c46-all-new-models-native-save/result.json`.
 The recipe is `tools/tests/fixtures/editor_creation/building-house-minimal-c46.json`.
+
+New Military Land uses explicit request/model `7D433FAD` with the verified
+Military Land palette. The guest's measured sequence places a body `(58,114)`
+to platform `(650,550)`, names it, selects Cockpit `(114,40)` and drags
+`(58,114)` to `(650,480)`, then selects Wheels `(169,40)` and drags tire
+`(58,304)` to hull side `(558,533)`. The resulting paired wheels clear all
+native blockers with the retained body/cockpit. Weapon category `(225,40)` is
+visited in the exact retained sequence, but no weapon part is added or needed
+for native finish zero in this case.
+
+Guest Save adds `8589935942:1` at revision 5; the host repeats the complete
+17-step recipe and saves `8589935943:1` at revision 6. Both admissions preserve
+every prior row and produce exactly one cast/history addition, with strict
+Native agreement and zero faults on both returned participants. Counts become
+128 classes, 419 placements and five acts. Evidence:
+`out/preview9-c46-guest-vehicle-save/result.json`,
+`out/preview9-c46-host-vehicle-save/result.json`, and
+`tools/tests/fixtures/editor_creation/vehicle-military-land-minimal-c46.json`.
+
+The second ordinary adventure Save after the earlier successful revision-4
+Native Save does not start: native eligibility returns reason 5. Both scenes
+remain strict and healthy at durable revision 6, while native coverage remains
+revision 4. Source inspection shows later creation admission copies the clean
+`Snapshot::Dirty` from the saved entry, and return restores native data `+84`
+false despite the accepted class changes. Native Save correctly preserves its
+no-change rejection. The failed Save and clean-state diagnostic are retained at
+`out/preview9-c46-four-families-native-save/result.json` and
+`out/preview9-c46-final-save-observe/result.json`. The correction must dirty the
+accepted prepared sidecar, preserve the saved-history counter and metadata bit,
+and leave rejected/cancelled changes clean. This case is open until its focused
+and actual next-build regressions pass.
