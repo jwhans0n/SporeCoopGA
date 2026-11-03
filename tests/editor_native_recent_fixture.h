@@ -62,8 +62,13 @@ Snapshot recent_act_setup(bool resolve_captain){
 void test_recent_native_exact_and_fences(){
     RecentRoutes restore;std::string error;
     auto base=recent_pose_setup();const auto original=t_rows[t_live.data()];const auto reads=t_reads;
-    const auto hit_before=projected_snapshot_hits;Snapshot matched;
+    const auto hit_before=projected_snapshot_hits;Snapshot matched;const auto work_before=work_stats();
     CHECK(recent_matches(base,base.document,generation,matched,error)==RecentMatches::Match);
+    const auto work_after=work_stats();
+    for(size_t i=0;i<size_t(WorkStep::BaseRead);++i){const auto& step=work_after.steps[i];const auto& prior=work_before.steps[i];
+        CHECK(step.work.calls==prior.work.calls+1&&step.begin>0&&step.end>=step.begin&&step.frame==t_frame);
+        CHECK(step.work.ticks-prior.work.ticks>=step.end-step.begin);}
+    CHECK(work_after.writes.calls==work_before.writes.calls+2&&work_after.reads.calls==work_before.reads.calls);
     CHECK(matched.bytes==base.bytes&&matched.document==base.document&&matched.bindings==base.bindings);
     CHECK(recent_live_writes==2&&t_reads==reads&&projected_snapshot_hits>hit_before);
     CHECK(t_rows[t_live.data()]==original&&!t_restores&&pending.empty());

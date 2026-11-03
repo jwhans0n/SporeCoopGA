@@ -1681,3 +1681,51 @@ The standalone allocation-count fixture retains the previous constructors and
 proves that the discarded base document/image copies disappear while all nine
 Snapshot fields and independent storage remain equal. Focused receipts belong
 under `out/editor-preview9-snapshot-values/`; no running-game speedup is claimed.
+
+### Passive integrity and pose-proof call-site clocks (C39)
+
+The six C37 observer samples already reused complete canonical projections:
+zero projection/resolver calls and zero parsed-image cache hits/misses. Their
+remaining two independent Reads took 15.50-16.04 ms total; four or five Writes
+took 45.44-58.47 ms total. These are inclusive counter deltas, not disjoint
+durations to add. The existing typed value proof cannot stand in for a current
+live-byte witness or the mutable BASE and genuine AFTER Native owners.
+
+`WorkStats.steps` now passively labels the existing call sites:
+`integrity_write`, `integrity_closure_write`, `prepare_base_read`,
+`prepare_producer_write`, `prepare_after_read`, `prepare_fixedpoint_write`, and
+`prepare_inverse_write`. Each exports `native_<step>_{calls,ticks,begin,end,frame}`.
+Calls/ticks are cumulative; begin/end are the last completed QPC interval and
+frame is the passive SDK frame counter at that invocation. The timestamps can
+be correlated with the existing operation recorder; they are not authority or
+a promise that all seven last intervals belong to one operation. Retried or
+nested calls remain inclusive. Failed calls are timed too.
+
+Only the existing parse/serialize expressions are wrapped. Their Native calls,
+short-circuit order, byte comparisons, callbacks, normalization, ownership and
+publication remain unchanged. SDK frame-counter exceptions are ignored by the
+diagnostic. Timing excludes the following materialization normalization and
+freshness callbacks, making those residual costs visible rather than silently
+attributing them to serialization. There is no passive per-stage memo API;
+this checkpoint does not execute a Kit diagnostic command or extend its ABI.
+
+The performance parser accepts legacy receipts without this entire optional
+group. Present groups must be complete with valid unsigned counters/clocks;
+availability changes, resets, partial/duplicate fields and uncompleted interval
+changes reject. The report keeps same-frame step intervals without imposing
+the six-stage author-capture frame progression. Focused Native tests retain
+two integrity Writes and the modern preparation's two Reads/three Writes/zero
+projections, and check completed clocks and passive frame-counter failure.
+Receipts belong under `out/editor-preview9-proof-steps/`. No new game timing or
+budget acceptance is established by this instrumentation.
+
+The performance driver now inventories known compiler/linker/build-tool process
+names and PIDs before input and after every measured operation, outside frame
+recording. Windows uses only Get-Process Id/ProcessName; each currently running
+WSL distribution uses ps pid/comm. It never reads process arguments, paths or
+environments. An unavailable, partial or malformed query fails closed. Active
+tools or unavailable inventory stamp the exact author/sample window as
+contaminated and reject its timing. Post-window checks preserve an existing
+Native error rather than masking it. These pre/post snapshots cannot observe a
+job wholly between queries and do not constitute continuous CPU-quiescence
+monitoring. Both snapshots and that limitation remain explicit in the artifact.

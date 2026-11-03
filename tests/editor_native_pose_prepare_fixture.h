@@ -77,10 +77,27 @@ void test_pose_prepare_modern_cached_base_avoids_projection(){
         CHECK(finished.reads.calls==stats.reads.calls+2);
         CHECK(finished.writes.calls==stats.writes.calls+3);
         CHECK(finished.snapshot_copies.calls==stats.snapshot_copies.calls+2);
+        for(size_t i=0;i<size_t(WorkStep::Count);++i){
+            const auto& step=finished.steps[i];const auto& prior=stats.steps[i];
+            const auto calls=i<size_t(WorkStep::BaseRead)?0u:1u;
+            CHECK(step.work.calls==prior.work.calls+calls);
+            if(calls){CHECK(step.begin>0&&step.end>=step.begin&&step.frame==t_frame);
+                CHECK(step.work.ticks-prior.work.ticks>=step.end-step.begin);}
+        }
         CHECK(validate(prepared,target,error));
         CHECK(t_rows[t_live.data()]==live&&skg::field<editor::ResourceKey>(t_live.data(),8)==source&&!t_restores&&!t_transforms);
         CHECK(t_allocations.empty());
     }
+    // Passive instrumentation must not turn a diagnostic SDK failure into a
+    // proof/application error or make a single additional Native call.
+    PosePrepareRoutes routes;pose_prepare_setup();const auto stats=work_stats();
+    auto& controlled_host=*const_cast<SkHost*>(H);
+    const auto callback=controlled_host.frame_index;controlled_host.frame_index=[]()->uint64_t{throw std::bad_alloc();};
+    {StepTiming diagnostic(WorkStep::BaseRead);}
+    controlled_host.frame_index=callback;const auto finished=work_stats();
+    CHECK(finished.reads.calls==stats.reads.calls&&finished.writes.calls==stats.writes.calls&&finished.projections.calls==stats.projections.calls);
+    CHECK(finished.steps[size_t(WorkStep::BaseRead)].work.calls==stats.steps[size_t(WorkStep::BaseRead)].work.calls+1);
+    CHECK(finished.steps[size_t(WorkStep::BaseRead)].frame==0);
 }
 void test_pose_prepare_unsupported_fields_keep_full_semantics(){
     for(unsigned reason=0;reason<4;++reason){

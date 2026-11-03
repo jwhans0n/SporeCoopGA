@@ -16,6 +16,7 @@ import math
 import os
 from pathlib import Path
 import re
+import subprocess
 import time
 
 import coop_editor_party as party_module
@@ -43,8 +44,90 @@ NATIVE_CAPTURE_PHASES = ('before', 'after_bytes', 'after_projection', 'canonical
 NATIVE_CAPTURE_FIELDS = ('calls', 'ticks', 'begin', 'end', 'frame')
 NATIVE_CAPTURE_KEYS = {f'native_capture_{phase}_{field}'
                        for phase in NATIVE_CAPTURE_PHASES for field in NATIVE_CAPTURE_FIELDS}
+NATIVE_PROOF_STEPS = ('integrity_write', 'integrity_closure_write', 'prepare_base_read',
+                      'prepare_producer_write', 'prepare_after_read', 'prepare_fixedpoint_write',
+                      'prepare_inverse_write')
+NATIVE_PROOF_KEYS = {f'native_{step}_{field}' for step in NATIVE_PROOF_STEPS for field in NATIVE_CAPTURE_FIELDS}
 NATIVE_WORK_KEYS = {'native_work_frequency', *NATIVE_COUNTS, *NATIVE_OWNERS}
 NATIVE_WORK_KEYS.update(f'native_{name}_{field}' for name in NATIVE_SPANS for field in ('calls', 'ticks'))
+
+# Names only: never query command lines, executable paths or environments.
+BUILD_PROCESS = re.compile(r'(?:(?:[a-z0-9_]+-)+)?(?:clang(?:\+\+|-cl)?(?:-\d+)?|gcc(?:-\d+)?|g\+\+(?:-\d+)?|'
+                           r'cc1(?:plus)?|cc|c\+\+|cl|c1xx|c2|link|lld(?:-link)?|ld(?:\.(?:lld|bfd|gold))?|gold|collect2|'
+                           r'lto-wrapper|lto1|rustc|cargo|ninja|make|mingw32-make|msbuild|cmake|llvm-ar|ar|ranlib)\Z')
+
+
+def compiler_processes(run=None):
+    """Fail-closed Windows + all running WSL inventory, PID/name only."""
+    run = run or subprocess.run
+    def query(argv, source):
+        try:
+            result = run(argv, capture_output=True, timeout=8, check=False)
+            if result.returncode:
+                raise FixtureError('Compiler inventory unavailable: ' + source)
+            raw = result.stdout
+            return raw.decode('utf-16' if raw.startswith((b'\xff\xfe', b'\xfe\xff')) or b'\x00' in raw else 'utf-8-sig')
+        except FixtureError:
+            raise
+        except Exception:
+            # Raw tool errors can contain arguments or other private output.
+            raise FixtureError('Compiler inventory unavailable: ' + source) from None
+    script = ("$ErrorActionPreference='Stop';[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);"
+              'ConvertTo-Json -InputObject @(Get-Process | Select-Object Id,ProcessName) -Compress')
+    try:
+        windows = json.loads(query(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script], 'windows'))
+        if not isinstance(windows, list) or not windows or len(windows) > 65536:
+            raise ValueError()
+        rows = []
+        for item in windows:
+            if not isinstance(item, dict) or set(item) != {'Id', 'ProcessName'}:
+                raise ValueError()
+            rows.append(('windows', item['Id'], item['ProcessName']))
+        names = query(['wsl.exe', '--list', '--running', '--quiet'], 'wsl inventory').splitlines()
+        names = [name.strip() for name in names if name.strip()]
+        if len(names) > 8 or len(names) != len(set(names)) or any(len(name) > 128 or any(ord(c) < 32 for c in name) for name in names):
+            raise ValueError()
+        for index, name in enumerate(names):
+            source = 'wsl:' + str(index)
+            text = query(['wsl.exe', '--distribution', name, '--exec', 'ps', '-e', '-o', 'pid=', '-o', 'comm='], source)
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            if not lines or len(lines) > 65536:
+                raise ValueError()
+            for line in lines:
+                match = re.fullmatch(r'([0-9]+)\s+(\S+)', line)
+                if not match:
+                    raise ValueError()
+                rows.append((source, int(match[1]), match[2]))
+        found = [];seen = set()
+        for source, pid, name in rows:
+            if type(pid) is not int or not 0 <= pid < 2**32 or (source != 'windows' and not pid) or not isinstance(name, str) or not name or len(name) > 255 or any(ord(c) < 32 for c in name) or (source,pid) in seen:
+                raise ValueError()
+            seen.add((source,pid))
+            normalized = name.lower().removesuffix('.exe')
+            # Linux comm can truncate a target-prefixed tool name at 15 bytes.
+            truncated_cross_tool = len(normalized) == 15 and normalized.startswith(('i686-w64-mingw', 'x86_64-w64-ming', 'aarch64-w64-min'))
+            if BUILD_PROCESS.fullmatch(normalized) or truncated_cross_tool:
+                found.append(dict(source=source, pid=pid, name=name))
+        return found
+    except FixtureError:
+        raise
+    except Exception:
+        raise FixtureError('Compiler inventory was incomplete or invalid') from None
+
+
+def require_compiler_quiet(party, phase, window):
+    proof = dict(phase=phase, window=window, checked_at=time.time(), passed=False,
+                 scope='Pre/post process snapshots outside frame recording; jobs wholly between snapshots are not observed.')
+    try:
+        active = compiler_processes()
+        proof.update(passed=not active, processes=active[:64], active_count=len(active))
+    except FixtureError as error:
+        proof.update(unavailable=True, error=str(error))
+    party.result.setdefault('compiler_quiescence', []).append(proof)
+    if not proof['passed']:
+        party.result.setdefault('contaminated_windows', []).append(proof)
+        raise FixtureError('Measured window rejected: compiler/linker active or inventory unavailable')
+    return proof
 
 
 def write_command_artifact(path, events, replace=os.replace, pause=time.sleep):
@@ -104,7 +187,7 @@ def hold_command_artifacts(games):
 def native_work_sample(text):
     """Optional development counters, sampled outside the measured window."""
     row = values(text)
-    known = NATIVE_WORK_KEYS | NATIVE_CAPTURE_KEYS | NATIVE_OPTIONAL_KEYS
+    known = NATIVE_WORK_KEYS | NATIVE_CAPTURE_KEYS | NATIVE_OPTIONAL_KEYS | NATIVE_PROOF_KEYS
     names = re.findall(r'\b([a-z_][a-z0-9_]*)=', text)
     present = known & set(names)
     if not present:
@@ -116,13 +199,15 @@ def native_work_sample(text):
 
 def checked_native_work(row):
     capture = NATIVE_CAPTURE_KEYS & row.keys()
+    proof = NATIVE_PROOF_KEYS & row.keys()
     optional = NATIVE_OPTIONAL_KEYS & row.keys()
     for name in NATIVE_OPTIONAL_SPANS:
         pair = {f'native_{name}_{field}' for field in ('calls', 'ticks')}
         if pair & optional and not pair <= optional:
             raise FixtureError('Partial optional native work counters: ' + name)
-    keys = NATIVE_WORK_KEYS | capture | optional
+    keys = NATIVE_WORK_KEYS | capture | optional | proof
     if (not NATIVE_WORK_KEYS <= row.keys() or (capture and capture != NATIVE_CAPTURE_KEYS) or
+            (proof and proof != NATIVE_PROOF_KEYS) or
             any(type(row[key]) is not int or not 0 <= row[key] < 2**64 for key in keys) or
             not row['native_work_frequency']):
         raise FixtureError('Partial or invalid native work counters')
@@ -133,6 +218,11 @@ def checked_native_work(row):
         if ((not calls and (ticks or begin or end or frame)) or
                 (calls and (not begin or end < begin or ticks < end - begin))):
             raise FixtureError('Invalid native capture phase clock or unused counter: ' + phase)
+    for step in NATIVE_PROOF_STEPS if proof else ():
+        calls, ticks, begin, end, frame = (row[f'native_{step}_{field}'] for field in NATIVE_CAPTURE_FIELDS)
+        if ((not calls and (ticks or begin or end or frame)) or
+                (calls and (not begin or end < begin or ticks < end - begin))):
+            raise FixtureError('Invalid native proof step clock or unused counter: ' + step)
     return {key: row[key] for key in keys}
 
 
@@ -176,7 +266,23 @@ def native_work_delta(before, after):
         staged = dict(clock='win32_qpc', phases=phases, single_pipeline_order_checked=ordered,
                       scope='Cumulative phase deltas and last intervals; retries or partial advances do not identify one pipeline. '
                             'Phase durations include nested native work spans; the groups must not be summed.')
-    return dict(frequency=frequency, spans=spans, staged_capture=staged,
+    proof_steps = None
+    if NATIVE_PROOF_KEYS <= before.keys():
+        proof_steps = {}
+        for step in NATIVE_PROOF_STEPS:
+            prefix = f'native_{step}_'
+            calls = after[prefix+'calls'] - before[prefix+'calls']
+            ticks = after[prefix+'ticks'] - before[prefix+'ticks']
+            begin, end, frame = (after[prefix+field] for field in ('begin', 'end', 'frame'))
+            if not calls:
+                if any(after[prefix+field] != before[prefix+field] for field in NATIVE_CAPTURE_FIELDS):
+                    raise FixtureError('Native proof step changed without a completed call: ' + step)
+            elif begin < before[prefix+'end'] or ticks < end - begin:
+                raise FixtureError('Native proof step cumulative clock or ordering changed: ' + step)
+            proof_steps[step] = dict(calls=calls, ticks=ticks, inclusive_ms=ticks * 1000 / frequency,
+                                    last=dict(begin=begin, end=end, frame=frame,
+                                              elapsed_ms=(end-begin) * 1000 / frequency))
+    return dict(frequency=frequency, spans=spans, staged_capture=staged, proof_steps=proof_steps,
                 counts={key: after[key] - before[key] for key in NATIVE_COUNTS},
                 ownership={key: after[key] for key in NATIVE_OWNERS},
                 scope='Release through durable settlement; nested spans overlap and must not be summed.')
@@ -521,8 +627,19 @@ def checked_warm_drag(party,author,object_id):
 
 
 def measure(party,author,object_id,index):
+    window = dict(author=author.instance, sample=index, object=object_id)
+    require_compiler_quiet(party, 'before', window)
     with hold_command_artifacts(party.all_games):
-        return measure_without_artifact_io(party,author,object_id,index)
+        try:
+            result = measure_without_artifact_io(party,author,object_id,index)
+        except BaseException as original:
+            try:
+                require_compiler_quiet(party, 'after', window)
+            except FixtureError as diagnostic:
+                original.compiler_quiescence_error = str(diagnostic)
+            raise
+        require_compiler_quiet(party, 'after', window)
+        return result
 
 
 def measure_without_artifact_io(party,author,object_id,index):

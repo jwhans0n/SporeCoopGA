@@ -25,10 +25,15 @@ ProjectionCacheStats projection_cache_stats();
 // Inclusive game-thread CPU spans. These local diagnostics never enter a draft
 // or packet; nested Read/Write/projection work is intentionally counted twice.
 struct WorkSpan {uint64_t calls=0,ticks=0;};
+enum class WorkStep : size_t {IntegrityWrite,IntegrityClosureWrite,BaseRead,ProducerWrite,AfterRead,FixedpointWrite,InverseWrite,Count};
+struct WorkStepSpan {WorkSpan work;uint64_t begin=0,end=0,frame=0;};
 struct WorkStats {
     uint64_t frequency=0;
     WorkSpan reads,writes,projections,resolutions,supported;
     WorkSpan snapshot_copies; // CPU-only owned value construction, no Native calls.
+    // Last completed QPC interval/frame correlates cumulative call-site work
+    // with the existing operation recorder; it grants no continuation authority.
+    std::array<WorkStepSpan,size_t(WorkStep::Count)> steps;
     // Before, AFTER bytes, AFTER typed projection, canonical-before proof,
     // opaque forward proof, and later delivery. Inclusive local CPU spans.
     std::array<WorkSpan,6> staged;

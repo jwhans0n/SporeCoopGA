@@ -41,7 +41,7 @@ def page(value):
     return text
 
 
-def native_counters(staged=False, used=False):
+def native_counters(staged=False, used=False, proof=False):
     result={'native_work_frequency':1000,**{key:2 for key in perf.NATIVE_COUNTS},
             **{key:0 for key in perf.NATIVE_OWNERS}}
     for name in perf.NATIVE_SPANS:
@@ -50,6 +50,10 @@ def native_counters(staged=False, used=False):
         for index,phase in enumerate(perf.NATIVE_CAPTURE_PHASES):
             fields=dict(calls=1,ticks=10,begin=100+20*index,end=110+20*index,frame=20+index) if used else dict.fromkeys(perf.NATIVE_CAPTURE_FIELDS,0)
             result.update({f'native_capture_{phase}_{key}':value for key,value in fields.items()})
+    if proof:
+        for index,step in enumerate(perf.NATIVE_PROOF_STEPS):
+            fields=dict(calls=1,ticks=10,begin=100+20*index,end=110+20*index,frame=20) if used else dict.fromkeys(perf.NATIVE_CAPTURE_FIELDS,0)
+            result.update({f'native_{step}_{key}':value for key,value in fields.items()})
     return result
 
 
@@ -58,6 +62,118 @@ def native_text(counters):
 
 
 class StageContracts(unittest.TestCase):
+    def test_compiler_inventory_checks_windows_and_each_running_wsl_without_arguments(self):
+        answers=[json.dumps([dict(Id=7,ProcessName='Clang.exe'),dict(Id=8,ProcessName='sporeapp')]).encode(),
+                 'Ubuntu\r\nOther\r\n'.encode('utf-16'),b'1 init\n23 i686-w64-mingw3\n24 ld.lld\n',b'1 init\n35 clang-21\n']
+        commands=[]
+        def run(argv,**kwargs):
+            commands.append(argv);self.assertEqual(kwargs,dict(capture_output=True,timeout=8,check=False))
+            return SimpleNamespace(returncode=0,stdout=answers.pop(0))
+        rows=perf.compiler_processes(run)
+        self.assertEqual([(r['source'],r['pid'],r['name'])for r in rows],
+                         [('windows',7,'Clang.exe'),('wsl:0',23,'i686-w64-mingw3'),('wsl:0',24,'ld.lld'),('wsl:1',35,'clang-21')])
+        self.assertTrue(all(set(r)=={'source','pid','name'}for r in rows))
+        self.assertIn('Select-Object Id,ProcessName',commands[0][-1]);self.assertNotIn('CommandLine',commands[0][-1])
+        self.assertEqual(commands[2][-7:],['--exec','ps','-e','-o','pid=','-o','comm='])
+        self.assertEqual(commands[3][2],'Other');self.assertEqual(answers,[])
+
+    def test_compiler_inventory_empty_wsl_and_noncompiler_names_are_quiet(self):
+        answers=[json.dumps([dict(Id=0,ProcessName='Idle'),dict(Id=5,ProcessName='powershell')]).encode(),b'']
+        self.assertEqual(perf.compiler_processes(lambda *a,**k:SimpleNamespace(returncode=0,stdout=answers.pop(0))),[])
+        for name in ('clang-cl.exe','g++','cc1plus','lld-link','x86_64-w64-mingw32-clang++','mingw32-make','MSBuild.exe'):
+            self.assertIsNotNone(perf.BUILD_PROCESS.fullmatch(name.lower().removesuffix('.exe')))
+        for name in ('sporeapp','clangd','make-notes','collect2-private'):
+            self.assertIsNone(perf.BUILD_PROCESS.fullmatch(name))
+
+    def test_compiler_inventory_query_failures_are_closed_and_redacted(self):
+        for failure in (OSError('private argument'),perf.subprocess.TimeoutExpired('private command',8)):
+            with self.subTest(failure=type(failure).__name__),self.assertRaises(perf.FixtureError)as caught:
+                perf.compiler_processes(mock.Mock(side_effect=failure))
+            self.assertNotIn('private',str(caught.exception))
+        for stdout in (b'not json',b'[]',b'{"Id":1,"ProcessName":"clang"}',b'[{"Id":true,"ProcessName":"clang"}]'):
+            with self.subTest(stdout=stdout),self.assertRaises(perf.FixtureError):
+                perf.compiler_processes(lambda *a,**k:SimpleNamespace(returncode=0,stdout=stdout))
+        with self.assertRaises(perf.FixtureError)as caught:
+            perf.compiler_processes(lambda *a,**k:SimpleNamespace(returncode=1,stdout=b'private error',stderr=b'private arguments'))
+        self.assertNotIn('private',str(caught.exception))
+        valid=json.dumps([dict(Id=1,ProcessName='powershell')]).encode()
+        for names,processes in ((b'Ubuntu\nUbuntu\n',b''),(b'Ubuntu\n',b'1 init\n1 clang\n'),(b'Ubuntu\n',b'invalid row'),(b'Ubuntu\n',b'')):
+            answers=[valid,names,processes]
+            with self.subTest(names=names,processes=processes),self.assertRaises(perf.FixtureError):
+                perf.compiler_processes(lambda *a,**k:SimpleNamespace(returncode=0,stdout=answers.pop(0)))
+
+    def test_compiler_gate_blocks_input_and_stamps_post_window_contamination(self):
+        game=SimpleNamespace(instance=95,save_log=mock.Mock());party=SimpleNamespace(all_games=[game],result={})
+        active=[dict(source='wsl:0',pid=31,name='clang')];body=mock.Mock(return_value={'completed':True})
+        with mock.patch.object(perf,'compiler_processes',return_value=active),mock.patch.object(perf,'measure_without_artifact_io',body):
+            with self.assertRaises(perf.FixtureError):perf.measure(party,game,'4:1',0)
+        body.assert_not_called();self.assertEqual(party.result['contaminated_windows'][0]['phase'],'before')
+        party.result={}
+        with mock.patch.object(perf,'compiler_processes',side_effect=[[],active]),mock.patch.object(perf,'measure_without_artifact_io',body):
+            with self.assertRaises(perf.FixtureError):perf.measure(party,game,'4:1',1)
+        self.assertEqual(party.result['contaminated_windows'][0]['phase'],'after')
+        self.assertEqual(body.call_count,1);self.assertFalse(game.hold_command_artifact);game.save_log.assert_called_once()
+        party.result={}
+        with mock.patch.object(perf,'compiler_processes',return_value=[]),mock.patch.object(perf,'measure_without_artifact_io',body):
+            self.assertEqual(perf.measure(party,game,'4:1',2),{'completed':True})
+        self.assertEqual([p['phase']for p in party.result['compiler_quiescence']],['before','after'])
+        self.assertTrue(all(p['passed']for p in party.result['compiler_quiescence']))
+
+    def test_compiler_gate_queries_only_outside_measurement_and_keeps_native_failure(self):
+        game=SimpleNamespace(instance=95,save_log=mock.Mock());party=SimpleNamespace(all_games=[game],result={})
+        recording=False;error=perf.FixtureError('actual Native error');queries=[]
+        def query():
+            self.assertFalse(recording);queries.append(True)
+            if len(queries)>1:raise perf.FixtureError('inventory unavailable')
+            return []
+        def body(*unused):
+            nonlocal recording
+            recording=True
+            try:raise error
+            finally:recording=False
+        with mock.patch.object(perf,'compiler_processes',side_effect=query),mock.patch.object(perf,'measure_without_artifact_io',side_effect=body):
+            with self.assertRaises(perf.FixtureError)as caught:perf.measure(party,game,'4:1',0)
+        self.assertIs(caught.exception,error);self.assertTrue(error.compiler_quiescence_error)
+        self.assertTrue(party.result['contaminated_windows'][0]['unavailable']);self.assertEqual(len(queries),2)
+
+    def test_optional_native_proof_steps_accept_legacy_and_same_frame(self):
+        legacy=perf.native_work_sample(native_text(native_counters()))
+        self.assertIsNone(perf.native_work_delta(legacy,legacy)['proof_steps'])
+        before=perf.native_work_sample(native_text(native_counters(proof=True)))
+        after=perf.native_work_sample(native_text(native_counters(proof=True,used=True)))
+        result=perf.native_work_delta(before,after)['proof_steps']
+        self.assertEqual(tuple(result),perf.NATIVE_PROOF_STEPS)
+        for index,step in enumerate(perf.NATIVE_PROOF_STEPS):
+            self.assertEqual(result[step],dict(calls=1,ticks=10,inclusive_ms=10,
+                last=dict(begin=100+20*index,end=110+20*index,frame=20,elapsed_ms=10)))
+        with self.assertRaises(perf.FixtureError):perf.native_work_delta(legacy,after)
+
+    def test_native_proof_step_partial_duplicate_and_invalid_clocks_reject(self):
+        row=native_counters(proof=True,used=True)
+        for key in perf.NATIVE_PROOF_KEYS:
+            with self.subTest(missing=key),self.assertRaises(perf.FixtureError):
+                perf.native_work_sample(native_text({k:v for k,v in row.items() if k!=key}))
+        with self.assertRaises(perf.FixtureError):
+            perf.native_work_sample(native_text(row)+' native_prepare_inverse_write_calls=1')
+        for field,value in (('calls',0),('ticks',9),('begin',0),('end',99),('frame',-1)):
+            with self.subTest(field=field),self.assertRaises(perf.FixtureError):
+                perf.native_work_sample(native_text({**row,'native_integrity_write_'+field:value}))
+        unused=native_counters(proof=True)
+        with self.assertRaises(perf.FixtureError):
+            perf.native_work_sample(native_text({**unused,'native_prepare_base_read_frame':1}))
+
+    def test_native_proof_step_retries_and_reset_clocks(self):
+        before=native_counters(proof=True,used=True);after=copy.deepcopy(before)
+        after.update({f'native_prepare_base_read_{k}':v for k,v in
+                      dict(calls=3,ticks=50,begin=500,end=520,frame=21).items()})
+        result=perf.native_work_delta(before,after)['proof_steps']['prepare_base_read']
+        self.assertEqual((result['calls'],result['ticks'],result['last']['frame']),(2,40,21))
+        for field,value in (('calls',0),('ticks',9),('begin',100),('end',110),('frame',19)):
+            with self.subTest(field=field),self.assertRaises(perf.FixtureError):
+                perf.native_work_delta(before,{**after,'native_prepare_base_read_'+field:value})
+        with self.assertRaises(perf.FixtureError):
+            perf.native_work_delta(before,{**before,'native_prepare_base_read_frame':21})
+
     def test_optional_native_copy_span_preserves_older_payloads(self):
         legacy=perf.native_work_sample(native_text(native_counters()))
         self.assertNotIn('snapshot_copy',perf.native_work_delta(legacy,legacy)['spans'])
@@ -112,13 +228,13 @@ class StageContracts(unittest.TestCase):
         def flush():
             self.assertFalse(native['held']);self.assertFalse(native['recording'])
             self.assertTrue(all(not g.hold_command_artifact for g in games));flushed.append(True)
-        games=[SimpleNamespace(save_log=flush)for unused in range(2)]
+        games=[SimpleNamespace(instance=95+unused,save_log=flush)for unused in range(2)]
         def body(*unused):
             self.assertTrue(all(g.hold_command_artifact for g in games))
             native.update(held=True,recording=True)
             try:raise perf.FixtureError('native capture failed')
             finally:native.update(held=False,recording=False)
-        with mock.patch.object(perf,'measure_without_artifact_io',side_effect=body):
+        with mock.patch.object(perf,'measure_without_artifact_io',side_effect=body),mock.patch.object(perf,'require_compiler_quiet'):
             with self.assertRaisesRegex(perf.FixtureError,'native capture failed'):
                 perf.measure(SimpleNamespace(all_games=games),games[0],'4:1',0)
         self.assertEqual(len(flushed),2)

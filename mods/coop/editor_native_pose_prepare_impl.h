@@ -87,11 +87,11 @@ RecentMatches prepared_pose_projection(const PreparedPoseContext& context,const 
         for(const auto& binding:base.bindings)if(!supplied.emplace(binding.marker,binding.object).second)return different();
         std::vector<editor::ResourceKey> before_assets,after_assets;
         if(!resolved_asset_values(producer.p,base.document,before_assets,error) || !context.current())return different();
-        Owned after(parse(prepared.bytes,error));if(!after.p)return different();
+        Owned after(step_parse(WorkStep::AfterRead,prepared.bytes,error));if(!after.p)return different();
         if(!context.current())return expired();
         if(!prepared_pose_modern(after.p,prepared))return different();
         std::vector<uint8_t> serialized;
-        if(!serialize(after.p,serialized,error) || !context.current())return different();
+        if(!step_serialize(WorkStep::FixedpointWrite,after.p,serialized,error) || !context.current())return different();
         if(serialized!=prepared.bytes)return different(); // No Read normalization can seed a projection.
         if(!captain_sidecar_matches(after.p,prepared,prepared.document,error) || !context.current() ||
            !resolved_asset_values(after.p,prepared.document,after_assets,error) || !context.current() || before_assets!=after_assets)return different();
@@ -157,7 +157,7 @@ RecentMatches prepared_pose_projection(const PreparedPoseContext& context,const 
             if(original.height)skg::field<uint32_t>(marker,0x220)=original.elevation;
             skg::field<uint32_t>(marker,0x224)=(flags&~0x16u)|(original.flags&0x16u);
         }
-        if(!serialize(after.p,serialized,error) || !context.current() || !restore.current())return different();
+        if(!step_serialize(WorkStep::InverseWrite,after.p,serialized,error) || !context.current() || !restore.current())return different();
         if(serialized!=base.bytes)return different();
         if(!current_asset_witnesses(assets) || !context.current() || !restore.current() || resolution.audit.failed)return different();
         // The restoration guard must run before Release callbacks, and Release

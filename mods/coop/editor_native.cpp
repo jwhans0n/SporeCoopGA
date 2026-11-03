@@ -109,6 +109,15 @@ struct WorkTimer {
     explicit WorkTimer(WorkSpan& value):span(value){++span.calls;}
     ~WorkTimer(){const auto end=work_clock();if(begin&&end>=begin)span.ticks+=end-begin;}
 };
+struct StepTiming {
+    WorkStepSpan& value;WorkTimer timer;uint64_t frame=0;
+    explicit StepTiming(WorkStep step):value(native_work.steps[size_t(step)]),timer(value.work){
+        // SDK frame_index is a passive counter, not a Native getter. Diagnostic
+        // failure must never change application or proof behavior.
+        try{const auto callback=H?H->frame_index:nullptr;if(callback)frame=callback();}catch(...){}
+    }
+    ~StepTiming(){value.begin=timer.begin;value.end=work_clock();value.frame=frame;}
+};
 using ResolvedAssetWitness=PoseSupportProof::Asset;
 struct ProjectedSnapshot {
     Snapshot image;
@@ -453,6 +462,12 @@ bool serialize(void* p, std::vector<uint8_t>& bytes, std::string& error) {
         error = "Native editor snapshot serialization failed"; return false;
     }
     bytes = std::move(stream.bytes); return true;
+}
+void* step_parse(WorkStep step,const std::vector<uint8_t>& bytes,std::string& error){
+    StepTiming timer(step);return parse(bytes,error);
+}
+bool step_serialize(WorkStep step,void* resource,std::vector<uint8_t>& bytes,std::string& error){
+    StepTiming timer(step);return serialize(resource,bytes,error);
 }
 bool prepare_terrain_load_input(void* owned,const std::vector<uint8_t>& serialized,
                                 std::function<bool()> required_current,std::string& error){
@@ -5148,7 +5163,7 @@ RecentMatches recent_matches(const Snapshot& expected,const editor::Document& do
     if(!serialized_bindings(actual,compact,error))return matched(RecentMatches::Error);
     if(compact!=expected.bindings){error="The native snapshot match placement identities changed";return matched(RecentMatches::Error);}
     std::vector<uint8_t> bytes;
-    if(!serialize(live,bytes,error) || !normalize_materialized_terrain(bytes,error))return matched(RecentMatches::Error);
+    if(!step_serialize(WorkStep::IntegrityWrite,live,bytes,error) || !normalize_materialized_terrain(bytes,error))return matched(RecentMatches::Error);
     if(!current_owner()){error="The native snapshot match owner expired during serialization";return matched(RecentMatches::Error);}
     // Native callbacks during Write must not make the borrowed projection
     // describe an earlier live scene. Recheck the actual serialized state and
@@ -5160,7 +5175,7 @@ RecentMatches recent_matches(const Snapshot& expected,const editor::Document& do
     std::array<uint8_t,0x46> captain_before{};
     std::memcpy(captain_before.data(),skg::ptr_add<void>(live,0x130),captain_before.size());
     std::vector<uint8_t> settled_bytes;
-    if(!serialize(live,settled_bytes,error) || !normalize_materialized_terrain(settled_bytes,error))return matched(RecentMatches::Error);
+    if(!step_serialize(WorkStep::IntegrityClosureWrite,live,settled_bytes,error) || !normalize_materialized_terrain(settled_bytes,error))return matched(RecentMatches::Error);
     if(!current_owner()){error="The native snapshot match owner changed during verification";return matched(RecentMatches::Error);}
     Snapshot::Metadata metadata;
     if(!capture_metadata(reinterpret_cast<void*>(owner.data),metadata,error))return matched(RecentMatches::Error);
@@ -6111,7 +6126,7 @@ static bool prepare_impl(const Snapshot& base,const editor::Document& document,c
                 if(!context->current()){error="The prepared pose input belongs to an expired native context";return false;}
             }catch(...){error="The prepared pose input context callback failed";return false;}
         }
-        Owned posed(parse(base.bytes,error));if(!posed.p)return false;
+        Owned posed(step_parse(WorkStep::BaseRead,base.bytes,error));if(!posed.p)return false;
         if(context&&!context->current()){error="The prepared pose input changed during NativeRead";return false;}
         std::vector<PreparedPoseOriginal> originals;
         for(auto id:pose_targets){
@@ -6150,7 +6165,7 @@ static bool prepare_impl(const Snapshot& base,const editor::Document& document,c
         }
         Snapshot prepared;
         {WorkTimer copy(native_work.snapshot_copies);prepared=snapshot_values::with_document(base,document);}
-        if(!serialize(posed.p,prepared.bytes,error))return false;
+        if(!step_serialize(WorkStep::ProducerWrite,posed.p,prepared.bytes,error))return false;
         if(context){
             const auto derived=prepared_pose_projection(*context,base_projection,base,prepared,posed,originals,error);
             if(derived==RecentMatches::Error)return false;
@@ -6166,7 +6181,7 @@ static bool prepare_impl(const Snapshot& base,const editor::Document& document,c
         // of the validated base. This retains the opaque-field proof without
         // cloning all class/act rows and rebuilding every unrelated marker.
         bool exact=false;std::string roundtrip_error;
-        Owned roundtrip(parse(prepared.bytes,roundtrip_error));
+        Owned roundtrip(step_parse(WorkStep::AfterRead,prepared.bytes,roundtrip_error));
         if(roundtrip.p){
             bool restored=true;
             for(const auto& original:originals){
@@ -6180,7 +6195,7 @@ static bool prepare_impl(const Snapshot& base,const editor::Document& document,c
                 auto& flags=skg::field<uint32_t>(marker,0x224);flags=(flags&~0x16u)|(original.flags&0x16u);
             }
             std::vector<uint8_t> restored_bytes;
-            exact=restored && serialize(roundtrip.p,restored_bytes,roundtrip_error) && restored_bytes==base.bytes;
+            exact=restored && step_serialize(WorkStep::InverseWrite,roundtrip.p,restored_bytes,roundtrip_error) && restored_bytes==base.bytes;
         }
         if(exact)++pose_roundtrip_hits;
         else{
@@ -7137,6 +7152,12 @@ std::string status() {
     snprintf(detail,sizeof detail," native_snapshot_copy_calls=%llu native_snapshot_copy_ticks=%llu",
         (unsigned long long)work.snapshot_copies.calls,(unsigned long long)work.snapshot_copies.ticks);
     result+=detail;
+    constexpr std::array<const char*,size_t(WorkStep::Count)> step_names{"integrity_write","integrity_closure_write","prepare_base_read","prepare_producer_write","prepare_after_read","prepare_fixedpoint_write","prepare_inverse_write"};
+    for(size_t i=0;i<step_names.size();++i){
+        const auto prefix=" native_"+std::string(step_names[i]);const auto& step=work.steps[i];
+        result+=prefix+"_calls="+std::to_string(step.work.calls)+prefix+"_ticks="+std::to_string(step.work.ticks)+
+            prefix+"_begin="+std::to_string(step.begin)+prefix+"_end="+std::to_string(step.end)+prefix+"_frame="+std::to_string(step.frame);
+    }
     for(size_t i=0;i<phase_names.size();++i){
         const auto prefix=" native_capture_"+std::string(phase_names[i]);
         result+=prefix+"_calls="+std::to_string(work.staged[i].calls)+prefix+"_ticks="+std::to_string(work.staged[i].ticks)+
