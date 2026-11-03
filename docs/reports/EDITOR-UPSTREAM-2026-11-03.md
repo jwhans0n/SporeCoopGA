@@ -156,3 +156,38 @@ remaining visible Terraform controls. Recipes require fresh native calibration.
 Complexity checks must establish actual native 1,025/4,096/overflow behavior and
 Save/reopen, separately from generated offline carriers and portable bounds.
 Publication eligibility remains unverified.
+
+## Flora replay correction and retained recovery
+
+C53's first density edit and Undo pass, but the repeated deferred edit crashes
+the host before a new transaction. The retained minidump resolves to
+`sui::find` calling an IWindow slot on FloraUI's `+168` UILayout. Native code
+uses UILayout::FindWindow for this member. Commit `2d47865` resolves the verified
+container window and fences layout, window, control, act, scope and field
+revisions across deferred replay. The exact C53 source fails the new poisoned
+layout regression; the fix passes 990 focused checks and 140,147 full native
+fixture checks with zero drift across 59 inputs. Evidence is retained under
+`out/editor-preview9-flora-layout/`, including the original failed fixture
+settlement probe and superseding corrected fixture.
+
+C54 builds from 317 retained inputs with zero drift. Its co-op DLL is
+`24b4ecab882f5d4daa6a79e99920920bcab14bf3bd78f8d4d9a9854a6e148c45`;
+Kit remains `f03635d08960b6f3ffc0676bc195f0dfbae1f339f67b2fbb0f51b7a380c8be58`.
+Only the private installation changes. Recovery restores the crashed project's
+durable revision 26, all 129 cast rows, 419 placements, five acts, the complete
+planet fields and all seven history rows (with only the transport epoch allowed
+to change). Both participants then perform density edit/Undo/Redo/Undo twice,
+reaching revision 42. Each edit changes only `073137BB`, creates one history
+item, converges strictly and restores the prior fields without faults.
+Evidence: `out/preview9-c53-flora-crash-preserved/`,
+`out/preview9-c54-recover-flora-r26-r3/result.json`,
+`out/preview9-c54-two-flora-density/result.json` and
+`out/preview9-c54-two-flora-density-repeat/result.json`. Earlier recovery helper
+attempts retain their failures: a fixture command allowlist omitted asset pages,
+then an in-memory integer-key dictionary was compared to JSON string keys.
+The successful follow-up only observes the already recovered draft; it does not
+repeat Recovery or relax authored-field/history comparisons.
+
+The user's installed C49 protocol-23 payload is still unchanged. A separate
+Flora-only backport is being built and verified against that exact baseline;
+the merged protocol-24 payload is not installed over running personal games.
