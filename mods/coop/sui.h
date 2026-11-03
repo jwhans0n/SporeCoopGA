@@ -43,6 +43,9 @@ void register_commands();
 
 // ---- reading ----
 Win main_window();
+// UILayout* is not IWindow*. Resolve its current container before window traversal.
+// Returns nullptr if the layout/backing header or current window is unavailable.
+Win layout_container(void* layout);
 std::vector<Win> children(Win w);
 Win parent(Win w);
 const char* type_name(Win w); // GetComponentName

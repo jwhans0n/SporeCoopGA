@@ -361,6 +361,8 @@ def verify(pe):
     for site, encoded in [(0xED5FAC,'897e28'),(0xEE9090,'c70650ab4801'),
                           (0xEE8A3D,'897e18'),(0xEE7CC5,'c70698ab4801'),
                           (0xEE8C92,'8b8b68010000'),(0xEE917C,'8b4918'),
+                          (0xEE8C98,'6a01'),(0xEE8C9C,'68fdfd2b07'),(0xEE8CA5,'e8a67992ff'),
+                          (0x810610,'8b411485c074078b8088000000c333c0c3'),(0x141837C,'701c8100'),
                           (0x50D5C5,'8b41042b02'),(0x473A24,'8b41042b02'),
                           (0xF34393,'e808925dff'),(0xF343A5,'e856f653ff')]:
         if pe.read(site,len(bytes.fromhex(encoded)))!=bytes.fromhex(encoded):
@@ -458,7 +460,7 @@ def verify(pe):
             dict(name='SporeCoop::Editor::EnvironmentUIVTable',address=0x148D1AC,
                  note='primary EnvironmentUI vtable; ctorF3A321, TerraformUI14 owns it, rootIWindowC and IWinProc8'),
             dict(name='SporeCoop::Editor::FloraUIVTable',address=0x148AB98,
-                 note='primary FloraUI vtable; rootIWindow168 and IWinProc8; re-resolve current card before deferred mutation')] + [{'name':'SporeCoop::Editor::'+n,'address':a,'note':s}
+                 note='primary FloraUI vtable; UILayout pointer168 and IWinProc8; resolve GetContainerWindow810610 before current-card traversal')] + [{'name':'SporeCoop::Editor::'+n,'address':a,'note':s}
             for n,a,p,r,s,c,k in ENTRIES] + [dict(name='SporeCoop::Editor::History',address=0x16065D8,
             note='global cScenarioEditHistory object; vector0,cursor14,notEditing20,ownedEntry24; not callable'),
             dict(name='SporeCoop::Editor::HistoryEntryVTable',address=0x148D26C,

@@ -1946,3 +1946,43 @@ deferral, asynchronous command replies and command removal while queued. The
 exact retained C48 pump fails its first new-work deferral assertion. Focused
 receipts and the old-source executable are retained under
 `out/editor-preview9-outside-batch/`; no game or deployment is part of this test.
+
+## Flora replay resolves UILayout before IWindow traversal (2026-11-03)
+<a id="editor-flora-layout-container"></a>
+
+CORRECTION (2026-11-03): the earlier `FloraUIVTable` symbol comment called
+FloraUI `+168` a root IWindow. It is a **UILayout pointer**. Original dc04
+`EE8C92` loads it into ECX; `EE8C98/EE8C9C` push true and control072BFDFD,
+then `EE8CA5` calls UILayout::FindWindow810650. The installed C49 and C53
+deferred replay incorrectly passed this UILayout directly to `sui::find`,
+which begins with IWindow::GetControlID at vtable slot1C. UILayout vtable
+1418360 has811C70 in that slot, not a window getter.
+
+C53's normal Density edit committed R24 to25 and Undo reached26. Repeating
+the full-family fixture crashed the host before the slider setter: the exact
+stack resolves to `sui::find` from `replay_flora_control`, with Native
+UILayout::Delete+75 faulting on read19. Loaded game base00130000 gives bias
+-2D0000; the observed vtable01148360 is preferred1418360. Crash, closed
+profiles and R26 draft are preserved in
+`out/preview9-c53-flora-crash-preserved/receipt.json`. This does not implicate
+the separately verified ISlider::SetValue(value,false) ABI.
+
+The existing verified GetContainerWindow810610 is thiscall(UILayout), plain
+ret, with no allocation or callbacks in its body: read layout+14, return null
+if absent, otherwise read backing+88. The narrow Sui helper checks both
+headers before that getter and closes backing/window identity afterward.
+Deferred Flora controls retain only the original root pointer value beside
+the existing UI/layout/scope/generation/field guards. Replay first checks the
+current owner, resolves the current IWindow, and refuses a replaced container
+before window traversal. It checks current context/root again before touching
+the returned card and before authored replay. No IWindow method is called on
+the UILayout, and no UI/scene mutation is permitted while ownership waits.
+
+The controlled regression gives UILayout, backing and IWindow distinct
+storage, poisons the layout's window-getter slot, and requires repeated
+Density replay without that dispatch. It also covers layout/root replacement,
+ownership loss, cancellation and scope/generation/field expiry during getters.
+This is a regression contract; native replay acceptance remains a separate
+Root-run check. Static executable bytes, bounded disassembly and the source
+hash are retained under `out/preview9-c53-flora-layout/`; no Native call was
+used for that proof.

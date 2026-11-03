@@ -677,15 +677,30 @@ void test_exact_class_projection_cache(){
 }
 std::array<uint8_t,0x174> t_flora_ui;
 std::array<uint8_t,0x1C> t_terraform_ui;
+std::array<uint8_t,0x18> t_flora_layout;
+std::array<uint8_t,0x8C> t_flora_container;
+std::array<uint8_t,0x40> t_flora_window;
+std::array<void*,8> t_flora_layout_vtable;
 std::array<void*,13> t_flora_slider_vtable;
 void* t_flora_slider=t_flora_slider_vtable.data();
 void* t_flora_found=nullptr;void* t_flora_root=nullptr;
 unsigned t_flora_calls=0;int32_t t_flora_value=0,t_flora_maximum=100;
 unsigned t_flora_set_calls=0;bool t_flora_notify=true;
+unsigned t_flora_layout_gets=0,t_flora_wrong_interface=0;
+std::function<void()> t_flora_on_container,t_flora_on_find,t_flora_on_max;
 editor::ResourceKey t_flora_key;
+uint32_t SK_THISCALL t_flora_layout_poison(void* self){
+    ++t_flora_wrong_interface;
+    CHECK(self!=t_flora_layout.data()); // UILayout slot1C is not IWindow::GetControlID.
+    return 0;
+}
 void* SK_THISCALL t_flora_cast(void* self,uint32_t type){CHECK(self==&t_flora_slider&&type==0x0F00A8A0);return self;}
 int32_t SK_THISCALL t_flora_get(void*){return t_flora_value;}
-int32_t SK_THISCALL t_flora_max(void*){return t_flora_maximum;}
+int32_t SK_THISCALL t_flora_max(void*){
+    const auto value=t_flora_maximum;
+    if(t_flora_on_max){auto callback=std::move(t_flora_on_max);callback();}
+    return value;
+}
 // Verified native ISlider::SetValue consumes TWO stack arguments (ret8).
 // A queued replay must suppress its automatic event before the explicit one.
 void SK_THISCALL t_flora_set(void* self,int32_t value,bool notify){CHECK(self==&t_flora_slider);++t_flora_set_calls;t_flora_value=value;t_flora_notify=notify;}
@@ -698,12 +713,21 @@ bool SK_THISCALL t_flora_input(void* self,void* window,void* raw){
 }
 void setup_flora_retry(){
     setup_terrain_retry();t_flora_ui.fill(0);t_terraform_ui.fill(0);t_flora_calls=0;t_flora_key={};t_flora_set_calls=0;t_flora_notify=true;
+    t_flora_layout.fill(0);t_flora_container.fill(0);t_flora_window.fill(0);t_flora_layout_vtable.fill(nullptr);
+    t_flora_layout_gets=t_flora_wrong_interface=0;
+    t_flora_on_container={};t_flora_on_find={};t_flora_on_max={};
     a_terraform_ui_vtable=0x11223344;a_flora_ui_vtable=0x55667788;
     skg::field<uintptr_t>(t_terraform_ui.data(),0)=a_terraform_ui_vtable;
     skg::field<void*>(t_terraform_ui.data(),0x18)=t_flora_ui.data();
     skg::field<void*>(t_display.data(),0x28)=t_terraform_ui.data();
     skg::field<uintptr_t>(t_flora_ui.data(),0)=a_flora_ui_vtable;
-    t_flora_root=&t_flora_key;skg::field<void*>(t_flora_ui.data(),0x168)=t_flora_root;
+    // The real Flora field owns a UILayout, whose backing+88 names a DISTINCT IWindow.
+    // The old fake made layout==window and concealed the actual C53 bad-interface call.
+    t_flora_root=t_flora_window.data();skg::field<void*>(t_flora_ui.data(),0x168)=t_flora_layout.data();
+    skg::field<void*>(t_flora_layout.data(),0)=t_flora_layout_vtable.data();
+    t_flora_layout_vtable[0x1C/4]=(void*)t_flora_layout_poison;
+    skg::field<void*>(t_flora_layout.data(),0x14)=t_flora_container.data();
+    skg::field<void*>(t_flora_container.data(),0x88)=t_flora_root;
     t_flora_found=&t_card_id;t_card_id=0x072C2823;
     original_flora_remove=t_flora_remove;original_flora_add=t_flora_add;original_flora_input=t_flora_input;
     t_flora_slider_vtable.fill(nullptr);t_flora_slider_vtable[3]=(void*)t_flora_cast;
@@ -713,6 +737,7 @@ void test_flora_control_retry(){
     setup_flora_retry();editor::ResourceKey key{7,11,13};flora_add(t_flora_ui.data(),&t_card_id,&key);key={};
     CHECK(held_terrain_controls.size()==1&&!t_flora_calls);t_granted=true;continue_terrain_control();
     CHECK(held_terrain_controls.empty()&&t_flora_calls==1&&(t_flora_key==editor::ResourceKey{7,11,13}));
+    CHECK(t_flora_layout_gets>=3&&!t_flora_wrong_interface);
     setup_flora_retry();flora_remove(t_flora_ui.data(),&t_card_id);CHECK(held_terrain_controls.size()==1&&!t_flora_calls);
     t_granted=true;continue_terrain_control();CHECK(t_flora_calls==1&&held_terrain_controls.empty());
     for(unsigned reason=0;reason<4;++reason){
@@ -738,6 +763,57 @@ void test_flora_control_retry(){
         CHECK(t_flora_set_calls==1&&!t_flora_notify&&t_flora_value==density);
         CHECK(t_flora_calls==1&&terrain_starts==1&&terrain_commits==1);
     }
+    // Match the actual sequence: first Density replay, native commit/settlement,
+    // then a fresh same-panel hold after Undo. Neither replay can inspect UILayout as IWindow.
+    setup_flora_retry();t_flora_found=&t_flora_slider;t_flora_value=30;t_flora_maximum=100;
+    sui::Msg first{&t_flora_slider,0,int32_t(0xEF00A884),0x072BFDFD,0,0,0};
+    CHECK(!flora_input(t_flora_ui.data()+8,&t_flora_slider,&first));
+    CHECK(held_terrain_controls.size()==1&&!t_flora_calls&&!t_flora_set_calls&&!terrain_starts);
+    t_granted=true;pin_terrain_before();continue_terrain_control();CHECK(t_flora_calls==1&&!t_flora_wrong_interface);
+    terrain_before.reset();terrain_pending=terrain_rebuilding=false;skg::field<uint8_t>(t_history.data(),0x20)=1;
+    t_granted=false;t_flora_value=60;
+    CHECK(!flora_input(t_flora_ui.data()+8,&t_flora_slider,&first));CHECK(held_terrain_controls.size()==1&&t_flora_calls==1);
+    t_granted=true;pin_terrain_before();continue_terrain_control();
+    CHECK(held_terrain_controls.empty()&&t_flora_calls==2&&t_flora_set_calls==2&&!t_flora_wrong_interface);
+    // Lost ownership and explicit cancellation perform no authored/UI mutation.
+    for(bool cancel:{false,true}){
+        setup_flora_retry();t_flora_found=&t_flora_slider;t_flora_value=40;t_flora_maximum=100;
+        sui::Msg changed{&t_flora_slider,0,int32_t(0xEF00A884),0x072BFDFD,0,0,0};
+        CHECK(!flora_input(t_flora_ui.data()+8,&t_flora_slider,&changed));
+        if(cancel)deny_held_input({{editor::ScopeKind::Field,editor_native_terrain::kPlanetObject,{editor::Field::Property,0x073137BB}}});
+        continue_terrain_control();CHECK(!t_flora_set_calls&&!t_flora_calls&&!terrain_starts&&!terrain_commits);
+        CHECK(cancel?held_terrain_controls.empty():held_terrain_controls.size()==1);
+    }
+    // Existing generation/scope/field guards survive root resolution and every getter.
+    for(unsigned boundary=0;boundary<3;++boundary)for(unsigned reason=0;reason<10;++reason){
+        setup_flora_retry();t_flora_found=&t_flora_slider;t_flora_value=50;t_flora_maximum=100;
+        sui::Msg changed{&t_flora_slider,0,int32_t(0xEF00A884),0x072BFDFD,0,0,0};
+        CHECK(!flora_input(t_flora_ui.data()+8,&t_flora_slider,&changed));
+        auto expire=[reason](){
+            if(reason==0)++generation;
+            if(reason==1)++t_scope.epoch;
+            if(reason==2)++t_scope.author.generation;
+            if(reason==3)++act_identity.settings.at(editor_native_terrain::kPlanetObject).field_revisions[{editor::Field::Property,0x073137BB}];
+            if(reason==4)skg::field<void*>(t_flora_container.data(),0x88)=t_flora_ui.data();
+            if(reason==5)skg::field<void*>(t_flora_ui.data(),0x168)=t_flora_window.data();
+            if(reason==6)t_granted=false;
+            if(reason==7)skg::field<void*>(t_terraform_ui.data(),0x18)=nullptr;
+            if(reason==8)native_fixture_escape_state=SHORT(0x8000);
+            if(reason==9)t_time+=3;
+        };
+        if(boundary==0)t_flora_on_container=expire;
+        if(boundary==1)t_flora_on_find=expire;
+        if(boundary==2)t_flora_on_max=expire;
+        t_granted=true;pin_terrain_before();continue_terrain_control();
+        CHECK(!t_flora_set_calls&&!t_flora_calls&&!terrain_starts&&!terrain_commits&&!t_flora_wrong_interface);
+        CHECK(held_terrain_controls.empty());
+    }
+    setup_flora_retry();t_flora_found=&t_flora_slider;t_flora_value=50;t_flora_maximum=100;
+    sui::Msg stale{&t_flora_slider,0,int32_t(0xEF00A884),0x072BFDFD,0,0,0};
+    CHECK(!flora_input(t_flora_ui.data()+8,&t_flora_slider,&stale));
+    t_flora_on_find=[](){++generation;t_flora_found=reinterpret_cast<void*>(0x19);};
+    t_granted=true;pin_terrain_before();continue_terrain_control();
+    CHECK(held_terrain_controls.empty()&&!t_flora_set_calls&&!t_flora_calls&&!terrain_starts&&!terrain_commits);
     for(unsigned reason=0;reason<4;++reason){
         setup_flora_retry();t_flora_found=&t_flora_slider;t_flora_value=50;t_flora_maximum=100;
         sui::Msg changed{&t_flora_slider,0,int32_t(0xEF00A884),0x072BFDFD,0,0,0};
@@ -1037,7 +1113,19 @@ void test_async_captain_asset_keeps_value_and_rechecks_identity(){
 namespace game { uint32_t mode_id(){return t_game_mode_id;} void destroy_creature(void* actor){CHECK(actor==t_ghost_actor.data()||actor==t_ghost_exit.data());++t_ghosts_destroyed;skg::field<bool>(actor,0x20)=true;t_release(actor);} }
 #include "editor_native_history_toolbar_fixture.h"
 namespace sui {
-Win find(Win root,uint32_t){return root==t_flora_root?t_flora_found:nullptr;}
+Win layout_container(void* layout){
+    ++t_flora_layout_gets;
+    void* backing=skg::readable(layout,0x18)?skg::field<void*>(layout,0x14):nullptr;
+    Win root=skg::readable(backing,0x8C)?skg::field<Win>(backing,0x88):nullptr;
+    if(t_flora_on_container){auto callback=std::move(t_flora_on_container);callback();}
+    return root;
+}
+Win find(Win root,uint32_t){
+    if(root==t_flora_layout.data()){skg::vcall<uint32_t>(root,0x1C/4);return nullptr;}
+    CHECK(root==t_flora_root);
+    if(t_flora_on_find){auto callback=std::move(t_flora_on_find);callback();}
+    return t_flora_found;
+}
 void set_enabled(Win w,bool value){if(history_ui_fixture::active){history_ui_fixture::enabled(w,value);return;}CHECK(false);} void release(Win){CHECK(false);} void add_ref(Win){CHECK(false);}
 uint32_t control_id(Win w){if(history_ui_fixture::active)return history_ui_fixture::id(w);if(w==&t_flora_slider)return 0x072BFDFD;CHECK(w==&t_card_id||w==&t_text);return w==&t_text?t_text_id:t_card_id;} uint32_t flags(Win w){if(history_ui_fixture::active)return history_ui_fixture::flags(w);CHECK(false);return 0;}
 std::vector<Win> children(Win w){if(history_ui_fixture::active)return history_ui_fixture::children(w);CHECK(false);return {};}
@@ -1591,6 +1679,9 @@ int main(int argc,char** argv){
     }
     if(argc==2&&std::string(argv[1])=="--diagnostic-only"){
         test_native_payload_diagnostics();std::printf("native payload diagnostics: %u checks passed\n",checks);return 0;
+    }
+    if(argc==2&&std::string(argv[1])=="--flora-controls-only"){
+        test_flora_control_retry();std::printf("native flora controls: %u checks passed\n",checks);return 0;
     }
     if(argc==2&&std::string(argv[1])=="--history-toolbar-only"){
         test_history_toolbar_current_layout();std::printf("native history toolbar: %u checks passed\n",checks);return 0;

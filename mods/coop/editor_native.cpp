@@ -2979,7 +2979,7 @@ struct HeldTerrainControl {
     std::array<uint32_t,3> pointed{};
     std::vector<float> elevations;
     std::vector<editor::Vec3> colors;
-    uint32_t control=0;uintptr_t ui=0,layout=0;
+    uint32_t control=0;uintptr_t ui=0,layout=0,root=0;
     std::map<uint32_t,std::pair<editor::Revision,std::optional<editor::Value>>> guards;
 };
 std::deque<HeldTerrainControl> held_terrain_controls;
@@ -3095,6 +3095,8 @@ bool hold_flora_control(uint32_t index,void* self,void* card,const editor::Resou
     if(self!=current_flora_ui() || !card)return false;
     HeldTerrainControl item;item.index=index;item.control=sui::control_id(card);item.ui=reinterpret_cast<uintptr_t>(self);
     item.layout=skg::field<uintptr_t>(self,0x168);
+    item.root=reinterpret_cast<uintptr_t>(sui::layout_container(reinterpret_cast<void*>(item.layout)));
+    if(!item.root)return false;
     if(index!=21 && (item.control<0x072C2820 || item.control>0x072C2828))return false;
     if(key)std::memcpy(item.pointed.data(),key,12);
     if(index==21){
@@ -3105,22 +3107,58 @@ bool hold_flora_control(uint32_t index,void* self,void* card,const editor::Resou
         if(maximum<=0 || value<0 || value>maximum)return false;
         const float density=float(value)/float(maximum);std::memcpy(&item.raw,&density,4);
     }
+    if(self!=current_flora_ui() || skg::field<uintptr_t>(self,0x168)!=item.layout ||
+       reinterpret_cast<uintptr_t>(sui::layout_container(reinterpret_cast<void*>(item.layout)))!=item.root)return false;
     hold_terrain_control(std::move(item),{0x04E13CB7,0x073154E0,0x073137BB,0x072BEC91});return true;
 }
 bool replay_flora_control(const HeldTerrainControl& item){
     void* ui=current_flora_ui();
     void* layout=ui?skg::field<void*>(ui,0x168):nullptr;
-    void* card=layout?sui::find(layout,item.control):nullptr;
-    if(!ui || reinterpret_cast<uintptr_t>(ui)!=item.ui || reinterpret_cast<uintptr_t>(layout)!=item.layout || !card){
+    auto replaced=[&](){
         if(C.notice)C.notice("The pending flora control was replaced; retry it in the current Terraform panel.");return false;
-    }
+    };
+    const auto active_current=C.active;
+    const auto scope_current=C.gesture_scope;
+    const auto gate_current=C.terrain_gate;
+    auto current=[&](){
+        if(!H || H->time_seconds()-item.started>2 || (GetKeyState(VK_ESCAPE)&0x8000) ||
+           (item.focused && !real_focus()) || !editing() || !active_current || !scope_current || !gate_current || !active_current() ||
+           !gate_current({},{0x04E13CB7,0x073154E0,0x073137BB,0x072BEC91}))return false;
+        const auto scope=scope_current();
+        void* context=a_context?*reinterpret_cast<void**>(a_context):nullptr;
+        if(scope!=item.scope || item.generation!=generation || !skg::readable(context,4) ||
+           skg::field<uint32_t>(context,0)!=item.act || !ui || current_flora_ui()!=ui ||
+           reinterpret_cast<uintptr_t>(ui)!=item.ui || skg::field<void*>(ui,0x168)!=layout ||
+           reinterpret_cast<uintptr_t>(layout)!=item.layout)return false;
+        for(const auto& [property,guard]:item.guards)
+            if(guard.first!=editor::field_revision(act_identity,editor_native_terrain::kPlanetObject,{editor::Field::Property,property}) ||
+               guard.second!=planet_value(property))return false;
+        return true;
+    };
+    if(!current())return replaced();
+    // FloraUI+168 owns UILayout*, not IWindow*. Native EE8CA5 uses
+    // UILayout::FindWindow; resolve its current IWindow container first.
+    void* root=sui::layout_container(layout);
+    auto root_current=[&](){
+        void* backing=skg::readable(layout,0x18)?skg::field<void*>(layout,0x14):nullptr;
+        return skg::readable(backing,0x8C) && skg::field<void*>(backing,0x88)==root;
+    };
+    if(!root || reinterpret_cast<uintptr_t>(root)!=item.root || !current() || !root_current())return replaced();
+    void* card=sui::find(root,item.control);
+    auto control_current=[&](){
+        // Find can observe a replaced panel. Close context/root before touching
+        // its returned card, then close them again after every native getter.
+        return card && current() && root_current() && sui::layout_container(layout)==root &&
+            current() && root_current() && sui::control_id(card)==item.control && current() && root_current();
+    };
+    if(!control_current())return replaced();
     if(item.index==19)original_flora_remove(ui,card);
     else if(item.index==20){editor::ResourceKey key;std::memcpy(&key,item.pointed.data(),12);original_flora_add(ui,card,&key);}
     else if(item.index==21){
         void* slider=native_slot(card,3)?skg::vcall<void*>(card,3,0x0F00A8A0):nullptr;
         if(!native_slot(slider,0x30/4))return false;
         const auto maximum=skg::vcall<int32_t>(slider,0x30/4);float density;std::memcpy(&density,&item.raw,4);
-        if(maximum<=0 || !std::isfinite(density) || density<0 || density>1 || !terrain_begin(terraform_mode()))return false;
+        if(maximum<=0 || !std::isfinite(density) || density<0 || density>1 || !control_current() || !terrain_begin(terraform_mode()))return false;
         original_terrain_start(terraform_mode());
         const auto prior=applying;applying=true;
         skg::vcall<void>(slider,0x1C/4,int32_t(std::lround(double(density)*maximum)),false);
