@@ -1967,3 +1967,123 @@ reopen or publication. Evidence:
 Both C28 games return normally to Galaxy with faults 0 before the runner ends
 with exit 0; child exit codes are 1 from runner teardown. The personal preview
 8 installation, exact 4 GB executable and shortcut remain untouched.
+
+### Isolated input, environment controls and Water failure
+
+Change `c2a2629` adds an explicitly requested, immutable private-lab input
+policy. It requires an invisible game, an exact installed `winlab_*` profile
+and an instance of at least 2. Both input hooks must install before game
+initialization. Native key polling then reads the fixture's virtual key state;
+ordinary personal launches retain their existing input policy. The pure
+Windows/Linux contracts pass 55 checks each and the actual i686 input-hook
+fixture passes 463 checks, with 45 unchanged inputs. Evidence:
+`out/preview9-exclusive-input/receipt.json`.
+
+The C28i and C29 actual games report `exclusive-virtual requested=1 hooks=2/2`
+on both participants. External keyboard activity therefore no longer
+disqualifies these Native gesture windows. The private installation receipt
+retains the previous Kit and confirms the unchanged game executable;
+`out/preview9-exclusive-kit-deployment/receipt.json`. The personal shortcut
+and its payload are unchanged.
+
+With isolated input, native Temperature and Atmosphere sliders each pass a
+host edit/Undo/Redo/Undo and a guest edit/Undo/Redo/Undo. All 16 transactions
+converge strictly with one changed planet field, unchanged unrelated data and
+faults 0. Evidence: `out/preview9-c28i-two-temperature/result.json` and
+`out/preview9-c28i-two-atmosphere/result.json`. The native inspector is stale:
+after Temperature Undo, its thumb remains at 897 instead of baseline 859,
+including after category navigation. Canonical values are correct; this is
+an actual UI refresh failure, retained under
+`out/preview9-c28i-environment-refresh-probe/`.
+
+Water is an actual failure. A native drag from `(839,574)` to `(859,574)`
+freezes the host before a transaction at revision 16 with "The native terrain
+rotation ticket lost its editor or placement identity". Placement
+`4294967296` has legitimately grounded XYZ
+`-490.638794,112.002136,96.5438004` instead of committed
+`-485.206055,110.761955,95.4747925`; its quaternion, scale and properties
+match. The guest retains the baseline. Evidence:
+`out/preview9-c28i-two-water.measured.json` and
+`out/preview9-c28i-water-failure-full/result.json`.
+
+Read-only native inspection verifies a separate Water grounding boundary at
+`F335B0`, called by the Environment completion path before commit. It bypasses
+the existing terrain rebuild hook. Environment refresh is separately verified
+at `F3AF60`, including native non-notifying slider updates; Flora's slider
+SetValue ABI takes both value and notification arguments. Symbols and proof
+are committed in `a2a2482`, with all 101 verifier symbols matching the combined
+map and RE lint passing. Evidence:
+`out/preview9-water-boundary/final-receipt.json`. These signatures alone do
+not establish successful live Water, refresh or Flora acceptance.
+
+### C29 commit staging and remaining performance failure
+
+Private candidate C29 is SHA-256
+`9a1809fa987a68b52993ab72f7438d3e301498e748b8a43b0dc7951529e46e44`.
+Its successful build has 191 unchanged production inputs. The actual DLL
+and all 191 input files are retained under
+`out/preview9-candidate29-preserved/`, independent of subsequent source edits.
+The Native Save grounding fixture passes 17,403 focused checks, and its full
+i686 suite passes 87,701; Runtime staging/transition fixtures pass 8,213 focused
+and 97,224 full checks. Their exact receipts are
+`out/preview9-save-grounding-native-receipt.json` and
+`out/preview9-c29-runtime-receipt.json`. Session Saved readiness and FIFO
+fixtures also pass; `out/preview9-saved-readiness-final/receipt.json`.
+
+The two-player Town benchmark is incomplete and fails acceptance. It retains
+30 host and 19 guest movement samples, then command-artifact writing fails
+with Windows `EINVAL`. The cause is unproven. All 49 completed transactions
+remain durable and strictly converged, without a native fault or extra commit.
+Evidence: `out/preview9-commit-diagnostic-c29-two-town-fresh/result.json` and
+`out/preview9-c29-after-io-probe/result.json`. This is not a completed
+30-per-author benchmark.
+
+The host does not enter staged capture in any measured sample. Its partial
+submit-to-confirm p95 is 182.1 ms, release-to-confirm p95 is 344.9 ms, and
+author-window maximum frame-gap p95/max are 273.9/275.1 ms. The guest enters
+all six capture phases on consecutive frames for each of its 19 samples.
+Its corresponding submit/release p95 are 516.3/1,071.5 ms, and author-window
+maximum frame-gap p95/max are 134.9/134.9 ms. The observing host has
+230.7 ms frame-gap p95/max and remote application p95 156.9 ms. These partial
+results fail the frame and LAN confirmation targets; phase staging is not
+reported as a performance acceptance pass.
+
+Read-only checkpoint comparison identifies a concrete reason for the host
+opt-out: both canonical documents use source instance `C6A75465`, while the
+actual host scene uses `BF0CE0D0`. The guest scene uses `C6A75465`. The native
+and state checkpoint bytes match across peers; the resource identity remains
+meaningful and cannot be ignored. Evidence:
+`out/preview9-c29-canonical-root/receipt.json`. A future explicit attachment
+receipt must prove this exact relationship before staged capture can use it.
+
+Change `5471bcf` moves command-artifact flushing outside held-input and
+measured frame windows, preserves the original Native error if flushing also
+fails, and adds bounded atomic-write retries. It also adds checked optional
+six-phase timing parsing with explicit unavailable values, rather than
+silently treating missing measurements as zero. Windows and Linux contracts
+pass 44 checks each with unchanged inputs;
+`out/preview9-commit-artifacts/receipt.json`. These are tooling checks, not
+new Native performance measurements.
+
+### C29 Save identity failure
+
+Both roles again pass the Temperature edit/Undo/Redo/Undo sequence, ending at
+revision/durable 59 with strict convergence and faults 0;
+`out/preview9-c29-two-temperature/result.json`. Normal native Save then
+persists locally but fails the exact shared entry guard: "The native Save
+grounding proof no longer matches its exact committed entry". Both post-failure
+native checks still strictly converge on the same semantic hash. Evidence:
+`out/preview9-c29-native-save-carrier/result.json` and
+`out/preview9-c29-save-failure-full/result.json`.
+
+The refreshed transition returns a strictly observed snapshot with the actual
+host source, while its retained ticket still contains the canonical source.
+The checked handoff must retain that same observed snapshot; weakening the
+source guard would conceal a separate identity change. This remains failed
+live shared Save acceptance until the corrected build is exercised.
+
+Both C29 games return normally to Galaxy with faults 0 before runner exit 0.
+Child teardown exits remain 1. No C29 payload is installed into the personal
+installation. Water, native UI refresh, completed specialized creation saves,
+four-player acceptance, complexity boundaries, performance and official lab
+smoke remain open.
