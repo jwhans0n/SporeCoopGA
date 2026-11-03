@@ -7,6 +7,8 @@ struct TerrainTransitionProof {
     // Exact pre-transition live slots and rendered/authored XYZ. A recovery
     // preparation has no such readback until its settled refresh captures it.
     std::optional<std::vector<CreationTerrainProof::Placement>> placements;
+    bool canonical_grounding=false; // Issued only around explicit canonical Load/Rebuild.
+    std::optional<Snapshot::Metadata> grounding_metadata;
     size_t owned_bytes=0;
     mutable bool retired=false,normalizing=false;
     mutable std::optional<TerrainTransitionReceipt> saved;
@@ -28,7 +30,8 @@ bool transition_current(const TerrainTransitionKey& key,uintptr_t tool,const Ter
 struct TransitionRead {
     TerrainReadIdentity identity;TerrainReadIdentity* previous=nullptr;
     TransitionRead(const TerrainTransitionKey& key,uintptr_t tool,const TerrainTransitionCurrent& current,
-                   const editor_native_terrain_materialization::Materialization* values):identity{&key,tool,&current,values,false},previous(terrain_read_identity){
+                   const editor_native_terrain_materialization::Materialization* values,
+                   const std::map<editor::ObjectId,Grounding>* grounding=nullptr):identity{&key,tool,&current,values,false,grounding},previous(terrain_read_identity){
         terrain_read_identity=&identity;
     }
     ~TransitionRead(){terrain_read_identity=previous;}
@@ -89,7 +92,8 @@ bool transition_placements_current(const TerrainTransitionProof& proof,std::stri
         if(found==proof.entry.document.placements.end() || found->second.revision!=row.revision ||
            uint32_t(found->second.class_id.id)!=row.class_index || !exact_grounding_position(found->second.position,row.authored) ||
            marker_id(row.live.marker)!=row.live.object || !marker || skg::field<uint32_t>(marker,0)!=row.class_index ||
-           skg::field<uint32_t>(marker,0x228)!=row.native_key || !exact_grounding_position(skg::field<editor::Vec3>(marker,4),row.rendered)){
+           skg::field<uint32_t>(marker,0x228)!=row.native_key || !exact_grounding_position(skg::field<editor::Vec3>(marker,4),row.rendered) ||
+           (proof.canonical_grounding&&!editor_native_terrain_rotations::exact(skg::field<editor::Rotation>(marker,0x10),found->second.rotation))){
             error="The native terrain transition lost an exact placement grounding witness";return false;
         }
     }
@@ -200,9 +204,10 @@ bool retain_transition_observation(TerrainTransitionProof& proof,const Snapshot&
 bool transition_observe(const TerrainTransitionKey& key,uintptr_t tool,const Snapshot& expected,
                         const editor_native_terrain_materialization::Recipe& raw,
                         const editor_native_terrain_materialization::Materialization& values,
-                        const TerrainTransitionCurrent& current,Snapshot& observed,std::string& error){
+                        const TerrainTransitionCurrent& current,Snapshot& observed,std::string& error,
+                        const std::map<editor::ObjectId,Grounding>* grounding=nullptr){
     if(!transition_current(key,tool,current)){error="The native terrain transition owner is unavailable";return false;}
-    TransitionRead read(key,tool,current,&values);
+    TransitionRead read(key,tool,current,&values,grounding);
     editor_native_terrain_materialization::Recipe actual;
     if(!materialization_recipe(terraform_mode(),actual,error) || actual!=raw){error="The native terrain recipe changed during its owned transition";return false;}
     Snapshot candidate;
@@ -380,12 +385,35 @@ bool resume_terrain_transition(const TerrainTransitionTicket& ticket,const Terra
            ticket->saved->save_generation!=receipt.save_generation || ticket->saved->save_serial!=receipt.save_serial ||
            ticket->saved->after!=receipt.after))){error="The native terrain transfer has no completed Save receipt";return false;}
         if(!validate(expected,expected.document,error) || !transition_recipe_matches(ticket->rendered,ticket->materialization,expected,error))return false;
-        Snapshot verified;if(!transition_observe(receipt.after,ticket->tool,expected,ticket->rendered,ticket->materialization,current,verified,error))return false;
+        std::map<editor::ObjectId,Grounding> grounding;
+        if(ticket->canonical_grounding){
+            if(!same_projection_image(ticket->entry,expected) || ticket->entry.document!=expected.document){
+                error="The canonical terrain grounding target changed its exact prepared artifact";return false;
+            }
+            if(!transition_placements_current(*ticket,error))return false;
+            for(const auto& row:*ticket->placements)if(!exact_grounding_position(row.rendered,row.authored))
+                grounding.emplace(row.live.object,Grounding{row.rendered,row.authored});
+        }
+        Snapshot verified;if(!transition_observe(receipt.after,ticket->tool,expected,ticket->rendered,ticket->materialization,current,verified,error,
+                                                ticket->canonical_grounding?&grounding:nullptr))return false;
+        if(ticket->canonical_grounding){
+            auto asserted=expected;
+            // Missing legacy metadata asserts no new text. Preserve the exact
+            // pre-Load owner values rather than rejecting or ignoring them.
+            if(!asserted.metadata)asserted.metadata=ticket->grounding_metadata;
+            if(!transition_observation_matches(asserted,verified,current,error))return false;
+        }
         auto values=ticket->materialization;
         if(!transition_current(receipt.after,ticket->tool,current)){error="The native terrain transfer context expired";return false;}
+        if(ticket->canonical_grounding){
+            Snapshot::Metadata metadata;
+            if(!transition_placements_current(*ticket,error) || !capture_metadata(reinterpret_cast<void*>(receipt.after.owner.data),metadata,error))return false;
+            if(!ticket->grounding_metadata || metadata!=*ticket->grounding_metadata){error="The canonical terrain grounding changed its original metadata";return false;}
+        }
         TerrainMaterializationOwner owner{receipt.after.scope,receipt.after.generation,receipt.after.owner.mode,receipt.after.owner.data,
             receipt.after.owner.resource,ticket->tool,receipt.after.owner.source};
         terrain_materialization=std::move(values);terrain_materialization_owner=owner;
+        if(ticket->canonical_grounding)terrain_grounding.swap(grounding);
         terrain_materialization_error.clear();terrain_materialization_error_reported=false;
         for(auto& rows:terrain_authored_rows)rows.clear();if(observed)*observed=std::move(verified);error.clear();return true;
     }catch(...){error="Cannot resume the owned native terrain transition";return false;}
@@ -397,22 +425,35 @@ bool restore_terrain_transition(const TerrainTransitionTicket& ticket,const Terr
     if(!accepted || (receipt.kind!=TerrainTransitionKind::Recovery && receipt.kind!=TerrainTransitionKind::RecoveryBootstrap &&
        receipt.kind!=TerrainTransitionKind::ExportRebuild))return false;
     try{
+        // Native callbacks may retire the Runtime's recovery holder. Retain the
+        // exact independently canonical artifact before the first callback.
+        size_t entry_bytes=0;if(!transition_entry_charge(expected,entry_bytes)){error="The canonical terrain recovery exceeds 64 MiB";return false;}
+        const Snapshot canonical=expected;
         const auto tool=uintptr_t(terraform_mode());
         if(terrain_read_identity || !transition_current(receipt.after,tool,current) || !terrain_available ||
            !original_terrain_load || !original_terrain_rebuild || !original_terrain_materialize){error="The canonical terrain recovery boundary is unavailable";return false;}
-        if(!validate(expected,expected.document,error))return false;
-        Owned native(parse(expected.bytes,error));if(!native.p)return false;
+        if(!validate(canonical,canonical.document,error))return false;
+        Owned native(parse(canonical.bytes,error));if(!native.p)return false;
         const auto parent_current=[after=receipt.after,tool,current]{return transition_current(after,tool,current,false);};
-        if(!prepare_terrain_load_input(native.p,expected.bytes,parent_current,error))return false;
+        if(!prepare_terrain_load_input(native.p,canonical.bytes,parent_current,error))return false;
         TransitionRead read(receipt.after,tool,current,nullptr);
         struct PrivateValues {~PrivateValues(){clear_terrain_materialization();}} private_values;
-        if(!restore(expected,error))return false;
+        if(!restore(canonical,error))return false;
         if(read.identity.invalid || !transition_current(receipt.after,tool,current,false)){
             error="The canonical terrain owner changed before its explicit Load boundary";return false;
         }
         clear_terrain_materialization();
+        CreationTerrainProof grounding;grounding.entry=canonical;
+        if(!creation_terrain_placements(canonical,grounding.placements,error))return false;
+        std::optional<Snapshot::Metadata> grounding_metadata;
+        if(!grounding.placements.empty()){
+            grounding_metadata.emplace();
+            if(!capture_metadata(reinterpret_cast<void*>(receipt.after.owner.data),*grounding_metadata,error))return false;
+            if(canonical.metadata&&*canonical.metadata!=*grounding_metadata){error="The canonical terrain restoration changed its asserted metadata";return false;}
+        }
+        if(!transition_current(receipt.after,tool,current,false) || !creation_terrain_placements_current(grounding,true,error))return false;
         struct Applying {bool previous=applying;Applying(){applying=true;}~Applying(){applying=previous;}} guard;
-        original_terrain_load(terraform_mode(),skg::ptr_add<void>(native.p,0x18));terrain_rebuild(terraform_mode());
+        if(!rebuild_canonical_transition(canonical,receipt.after,tool,current,skg::ptr_add<void>(native.p,0x18),grounding,error))return false;
         applying=guard.previous;
         if(read.identity.invalid || !transition_current(receipt.after,tool,current,false)){
             error="The canonical terrain recovery owner changed during materialization";return false;
@@ -422,15 +463,22 @@ bool restore_terrain_transition(const TerrainTransitionTicket& ticket,const Terr
             error="The canonical terrain recovery produced no exact materialization proof";return false;
         }
         editor_native_terrain_materialization::Recipe raw;
-        if(!materialization_recipe(terraform_mode(),raw,error) || !transition_recipe_matches(raw,terrain_materialization,expected,error))return false;
+        if(!materialization_recipe(terraform_mode(),raw,error) || !transition_recipe_matches(raw,terrain_materialization,canonical,error))return false;
         std::shared_ptr<TerrainTransitionProof> result;
-        if(!make_transition_ticket(receipt.after,tool,expected,raw,terrain_materialization,result,error))return false;
+        if(!make_transition_ticket(receipt.after,tool,canonical,raw,terrain_materialization,result,error))return false;
+        auto placement_bytes=grounding.placements.capacity()*sizeof(CreationTerrainProof::Placement);
+        if(grounding_metadata){placement_bytes+=sizeof(Snapshot::Metadata);for(const auto& text:grounding_metadata->text)placement_bytes+=text.capacity()*sizeof(char16_t);}
+        if(placement_bytes>(64u<<20)-result->owned_bytes){error="The canonical terrain grounding exceeds 64 MiB";return false;}
+        result->owned_bytes+=placement_bytes;result->canonical_grounding=!grounding.placements.empty();
+        result->placements=std::move(grounding.placements);result->grounding_metadata=std::move(grounding_metadata);
         // Retire the last native allocation before publishing a value token;
         // its Release callback is part of this synchronous ownership fence.
         release(std::exchange(native.p,nullptr));
         editor_native_terrain_materialization::Recipe settled;
         if(read.identity.invalid || !transition_current(receipt.after,tool,current,false) ||
-           !materialization_recipe(terraform_mode(),settled,error) || settled!=raw){error="The canonical terrain recovery receipt expired";return false;}
+           !materialization_recipe(terraform_mode(),settled,error) || settled!=raw || !transition_placements_current(*result,error)){
+            if(error.empty())error="The canonical terrain recovery receipt expired";return false;
+        }
         // The fresh values become readable only through the prepared token.
         // Runtime waits for actual readiness and accepted controller attachment
         // before the strict resume readback publishes their new owner.

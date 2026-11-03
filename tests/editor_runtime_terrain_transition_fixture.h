@@ -121,9 +121,31 @@ static void test_transition_recovery_failure_retains_previous_checkpoint(){
     CHECK(spin([]{return runtime_host::recovery&&runtime_host::recovery->controller_started&&runtime_host::frozen;}));
     CHECK(runtime_host::store.snapshot()==checkpoint&&!runtime_host::view().can_save);
     CHECK(runtime_host::recovery&&native[0].transition_rebuilds>=1&&native[0].transition_resumes==0);
+    const auto attempts=native[0].transition_rebuilds;const auto first=runtime_host::view().status;
     for(unsigned i=0;i<8;++i)step();
+    CHECK(native[0].transition_rebuilds==attempts&&runtime_host::view().status==first);
+    runtime_host::status="background diagnostic";runtime_host::refresh();CHECK(runtime_host::view().status==first);
     CHECK(runtime_guest::controller->view().phase==es::Phase::Frozen&&runtime_guest::controller->state().document==guest_document);
     CHECK(runtime_guest::store.snapshot()==guest_checkpoint&&!runtime_guest::view().can_save);
+    side=0;runtime_host::end();CHECK(spin([]{return !runtime_host::recovery&&!runtime_host::closing;}));
+}
+static void test_transition_failed_recovery_resume_is_terminal_until_explicit_retry(){
+    Party party;const auto checkpoint=runtime_host::store.snapshot();side=0;
+    native[0].transition_defer_ready=true;runtime_host::frozen=true;runtime_host::recover();
+    CHECK(spin([]{return runtime_host::recovery&&runtime_host::recovery->terrain&&runtime_host::recovery->terrain->materializing;}));
+    const auto resumes=native[0].transition_resumes;
+    native[0].refuse_transition_resume=true;native[0].transition_defer_ready=false;native[0].state.ready=true;
+    CHECK(spin([&]{return native[0].transition_resumes>resumes;}));
+    CHECK(runtime_host::recovery&&runtime_host::frozen&&runtime_host::store.snapshot()==checkpoint);
+    const auto held=runtime_host::recovery->terrain->ticket;const auto image=runtime_host::recovery->native.bytes;
+    const auto first=runtime_host::view().status;const auto attempts=native[0].transition_resumes;
+    for(unsigned i=0;i<12;++i)step();
+    CHECK(runtime_host::recovery&&runtime_host::recovery->terrain->ticket==held&&runtime_host::recovery->native.bytes==image);
+    CHECK(native[0].transition_resumes==attempts&&runtime_host::view().status==first&&runtime_host::store.snapshot()==checkpoint);
+    runtime_host::status="later invalid receipt";runtime_host::refresh();CHECK(runtime_host::view().status==first);
+    native[0].refuse_transition_resume=false;runtime_host::recover();
+    CHECK(spin([]{return !runtime_host::recovery&&!runtime_host::frozen;}));
+    CHECK(native[0].transition_resumes>attempts&&runtime_host::store.snapshot().epoch!=checkpoint.epoch);
 }
 static void test_transition_scene_probe_closes_logical_owner(){
     for(unsigned author=0;author<2;++author){
@@ -149,4 +171,5 @@ static void test_all_terrain_transition_runtime_cases(){
     test_transition_cancel_never_restores_replacement_scene();
     test_transition_recovery_bootstrap_keeps_prior_checkpoint_until_ready();
     test_transition_recovery_failure_retains_previous_checkpoint();
+    test_transition_failed_recovery_resume_is_terminal_until_explicit_retry();
 }

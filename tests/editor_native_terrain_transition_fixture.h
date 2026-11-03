@@ -54,6 +54,140 @@ Snapshot ttt_setup(TerrainTransitionKey& key){
     C.projection_scope=[] {return ttt_held?GestureScope{}:t_scope;};
     return entry;
 }
+unsigned tcr_action=0;
+unsigned tcr_rotation_refreshes=0;
+bool tcr_explicit_load=false,tcr_sample_ready=false,tcr_tainted=false;
+uint64_t tcr_restore_count=0;
+editor::Rotation tcr_rotation(bool rendered){
+    const std::array<uint32_t,4> bits=rendered?std::array<uint32_t,4>{0xBF16ACF8,0xBE2E89B6,0x3E8838CB,0x3F3E8043}:
+        std::array<uint32_t,4>{0xBF16ACF6,0xBE2E89B5,0x3E8838CB,0x3F3E8042};
+    editor::Rotation value;std::memcpy(&value,bits.data(),sizeof(value));return value;
+}
+void SK_THISCALL tcr_apply(void* owner,void* marker,uint32_t flags){
+    CHECK(owner==t_data.data()&&!flags&&applying);++tcr_rotation_refreshes;
+    const auto first=t_rows.at(t_live.data()).data()+4;const unsigned index=marker==first?0:1;
+    CHECK(marker==first+index*0x238);
+    t_model_rotation(t_models[index].data(),&skg::field<editor::Rotation>(marker,0x10));
+    if(tcr_sample_ready&&!tcr_tainted&&tcr_action>=18){
+        tcr_tainted=true;
+        if(tcr_action==18)skg::field<uint32_t>(marker,0x10)^=1;
+        if(tcr_action==19)skg::field<float>(first,4)=std::nextafter(skg::field<float>(first,4),0.f);
+        if(tcr_action==20)++generation;
+    }
+}
+void SK_THISCALL tcr_restore(void* entry,void* before){
+    CHECK(skg::field<void*>(entry,0xC)==t_data.data());++t_restores;tcg_copy(t_live.data(),before);
+    auto* marker=t_rows.at(t_live.data()).data()+4;
+    skg::field<float>(marker,4)=std::nextafter(skg::field<float>(marker,4),0.f);
+    release(entry);
+}
+void SK_THISCALL tcr_load(void* self,void* properties){
+    ttt_load(self,properties);tcr_explicit_load=restores>tcr_restore_count;
+    if(tcr_explicit_load&&tcr_action==21){tcr_tainted=true;++generation;}
+}
+void SK_THISCALL tcr_rebuild(void* self){
+    ttt_rebuild(self);if(!tcr_explicit_load)return;
+    auto& raw=t_rows.at(t_live.data());auto* marker=raw.data()+4;
+    // Exact real C40 pair: the extra rebuild changes the already grounded XYZ
+    // after restore() retained its first derived sample.
+    skg::field<editor::Vec3>(marker,4)={-459.84436f,116.277344f,187.374207f};
+    // Exact object253 C42 q drift from the second canonical Load/Rebuild.
+    skg::field<editor::Rotation>(raw.data()+0x238+4,0x10)=tcr_rotation(true);
+    if(tcr_action==1)++skg::field<uint32_t>(marker,0x100);
+    if(tcr_action==3)skg::field<float>(marker,0x20)=2;
+    if(tcr_action==4)skg::field<float>(marker,0x1E0)=.75f;
+    if(tcr_action==5)++skg::field<uint32_t>(marker,0x228);
+    if(tcr_action==6)++skg::field<editor::ResourceKey>(t_live.data(),8).instance;
+    if(tcr_action==7)++generation;
+    if(tcr_action==8)skg::field<float>(marker,4)=std::numeric_limits<float>::quiet_NaN();
+    if(tcr_action==10)std::swap(bindings.begin()->second,std::next(bindings.begin())->second);
+    if(tcr_action==11)skg::field<uint32_t>(raw.data()+0x238,0)=0x80000000;
+    if(tcr_action==12)++skg::field<uint32_t>(marker,0);
+    tcr_sample_ready=true;
+}
+void SK_THISCALL tcr_export(void* resource){
+    tmc_export(resource);
+    if(tcr_sample_ready&&tcr_action==14)tmc_properties.at(resource).fields[0x12345678]={0xA,0,{1,2,3,4}};
+}
+uintptr_t tcr_symbol(const char* name){
+    return std::string(name)=="SporeCoop::Editor::CaptureTerrain"?uintptr_t(tcr_export):tmc_symbol(name);
+}
+int SK_THISCALL tcr_release(void* resource){
+    const bool final=t_allocations.contains(resource)&&skg::field<int>(resource,4)==1;
+    const auto result=tcg_release(resource);
+    if(final&&tcr_sample_ready&&tcr_action==13&&!tcr_tainted){
+        tcr_tainted=true;auto* marker=t_rows.at(t_live.data()).data()+4;
+        skg::field<float>(marker,4)=std::nextafter(skg::field<float>(marker,4),0.f);
+    }
+    return result;
+}
+Snapshot tcr_setup(TerrainTransitionKey& key){
+    tcr_explicit_load=tcr_sample_ready=tcr_tainted=false;tcr_rotation_refreshes=0;tcr_restore_count=restores;
+    auto entry=tcg_setup();ttt_allowed=true;ttt_held=true;
+    terrain_grounding.clear();auto* marker=t_rows.at(t_live.data()).data()+0x238+4;
+    skg::field<editor::Vec3>(marker,4)={-459.844482f,116.277374f,187.374252f};
+    skg::field<editor::Rotation>(t_rows.at(t_live.data()).data()+3*0x238+4,0x10)=tcr_rotation(false);
+    const editor::ResourceKey local{0xBF9B39CD,0x366A930D,0x408A0000};
+    skg::field<editor::ResourceKey>(t_live.data(),8)=local;entry.source=local;
+    std::string error;CHECK(capture_draft(entry,error));entry.document.project=t_scope.project;entry.document.epoch=t_scope.epoch;
+    for(const auto& [id,row]:entry.document.terrain){(void)row;entry.document.next_id=std::max(entry.document.next_id,id.id+1);}
+    entry.metadata.reset();CHECK(validate(entry,entry.document,error));CHECK(editor::valid(entry.document,editor::Limits{},error));ttt_columns(entry);clear_terrain_materialization();
+    SceneOwner owner;CHECK(capture_scene_owner(owner,error));key={t_scope,77,generation,owner};
+    C.projection_scope=[] {return ttt_held?GestureScope{}:t_scope;};
+    static SkHost host;host=*H;host.sym=tcr_symbol;H=&host;
+    original_terrain_load=tcr_load;original_terrain_rebuild=tcr_rebuild;ttt_restore_bind();a_restore=uintptr_t(tcr_restore);
+    a_object=uintptr_t(t_object);t_actor_vt[3]=reinterpret_cast<void*>(t_cast);original_apply_marker=tcr_apply;
+    t_resource_vt[1]=reinterpret_cast<void*>(tcr_release);return entry;
+}
+void test_cold_recovery_grounding_bootstrap(){
+    struct Routes {
+        uintptr_t writer=a_write,reader=a_read,copier=a_copy,acts=a_copy_acts,crew=a_copy_crew,shown=a_layout_shown;
+        uintptr_t initialization=a_scenario_initialization,modes=a_get_simulator_mode_manager,allocator=a_alloc,entry=a_entry,restore=a_restore,object=a_object;
+        const SkHost* host=H;decltype(original_terrain_load) load=original_terrain_load;decltype(original_terrain_rebuild) rebuild=original_terrain_rebuild;
+        decltype(original_select_act) select=original_select_act;
+        ApplyMarkerFn apply_route=original_apply_marker;void* cast_route=t_actor_vt[3];
+        ~Routes(){CHECK(t_allocations.empty());tcg_rows.clear();tmc_properties.clear();act_cache_rows.clear();
+            a_write=writer;a_read=reader;a_copy=copier;a_copy_acts=acts;a_copy_crew=crew;a_layout_shown=shown;
+            a_scenario_initialization=initialization;a_get_simulator_mode_manager=modes;a_alloc=allocator;a_entry=entry;a_restore=restore;
+            a_object=object;original_apply_marker=apply_route;t_actor_vt[3]=cast_route;
+            original_terrain_load=load;original_terrain_rebuild=rebuild;original_select_act=select;H=host;reset();}
+    } routes;
+    for(unsigned action=0;action<22;++action){
+        std::printf("cold recovery grounding action=%u\n",action);std::fflush(stdout);
+        tcr_action=action;TerrainTransitionKey key;auto entry=tcr_setup(key);const auto camera=v_camera;
+        const auto current=[&]{
+            if(tcr_sample_ready&&!tcr_tainted&&(action==2||action==9||action==15)){
+                tcr_tainted=true;if(action==15)++t_scope.epoch;
+                else if(action==2)skg::field<uint32_t>(t_rows.at(t_live.data()).data()+0x238+4,0x10)^=2;
+                else{auto* marker=t_rows.at(t_live.data()).data()+4;skg::field<float>(marker,4)=std::nextafter(skg::field<float>(marker,4),0.f);}
+            }
+            return ttt_allowed&&t_scope==key.scope;
+        };
+        TerrainTransitionTicket prepared;std::string error;
+        TerrainTransitionReceipt receipt{TerrainTransitionKind::RecoveryBootstrap,key,key,0,0};
+        const bool restored=restore_terrain_transition({},receipt,entry,current,prepared,error);
+        if(action==21){CHECK(!restored&&!prepared&&tcr_explicit_load&&tcr_tainted&&!tcr_sample_ready&&!error.empty());continue;}
+        CHECK(tcr_explicit_load&&tcr_sample_ready);
+        if(action==2||action==9||action==13||action==15||action>=18)CHECK(tcr_tainted);
+        if(!restored){CHECK(action!=0&&!prepared&&!error.empty());continue;}
+        CHECK(prepared&&prepared->owned_bytes<=(64u<<20)&&tcr_explicit_load&&tcr_sample_ready);
+        terrain_rebuilding=false;receipt.kind=TerrainTransitionKind::Recovery;
+        if(action==16)entry.bytes.back()^=1;
+        if(action==17)++entry.document.placements.begin()->second.revision;
+        const auto transforms=t_transforms;Snapshot observed;
+        const bool resumed=resume_terrain_transition(prepared,receipt,entry,current,error,&observed);
+        if(action){if(resumed||error.empty())std::printf("cold recovery unexpected result action=%u resumed=%u error=%s\n",action,unsigned(resumed),error.c_str());CHECK(!resumed&&prepared->retired&&!error.empty());continue;}
+        if(!resumed)std::printf("cold recovery grounding failed: %s\n",error.c_str());
+        CHECK(resumed&&prepared->retired&&observed.document==entry.document);
+        CHECK(tcr_rotation_refreshes==1&&editor_native_terrain_rotations::exact(skg::field<editor::Rotation>(t_rows.at(t_live.data()).data()+0x238+4,0x10),tcr_rotation(false)));
+        CHECK(editor_native_terrain_rotations::exact(skg::field<editor::Rotation>(t_models[1].data(),0x10),tcr_rotation(false)));
+        ttt_held=false; // Runtime releases its recovery hold after publication.
+        Snapshot strict;CHECK(capture_draft(strict,error)&&validate(strict,entry.document,error));
+        CHECK(strict.bindings==entry.bindings&&terrain_grounding.size()==1&&t_transforms==transforms&&v_camera==camera);
+        CHECK((skg::field<editor::Vec3>(t_rows.at(t_live.data()).data()+4,4)==editor::Vec3{-459.84436f,116.277344f,187.374207f}));
+        CHECK(!resume_terrain_transition(prepared,receipt,entry,current,error));
+    }
+}
 void test_terrain_transition_receipts(){
     const auto old_write=a_write,old_read=a_read,old_acts=a_copy_acts,old_crew=a_copy_crew,old_shown=a_layout_shown;
     const auto old_init=a_scenario_initialization,old_modes=a_get_simulator_mode_manager;const auto* old_host=H;
@@ -128,7 +262,9 @@ void test_terrain_transition_receipts(){
     CHECK(restore_terrain_transition(ticket,receipt,entry,current,rebuilt,error)&&ticket->retired&&rebuilt&&!rebuilt->retired);
     CHECK(terrain_materialization.empty()&&!terrain_read_identity);terrain_rebuilding=false;
     receipt={TerrainTransitionKind::Export,key,key,0,0};
-    CHECK(resume_terrain_transition(rebuilt,receipt,entry,current,error)&&rebuilt->retired&&!terrain_materialization.empty());
+    const bool rebuilt_resumed=resume_terrain_transition(rebuilt,receipt,entry,current,error);
+    if(!rebuilt_resumed)std::printf("rebuilt transition diagnostic: %s\n",error.c_str());
+    CHECK(rebuilt_resumed&&rebuilt->retired&&!terrain_materialization.empty());
     for(unsigned reason=0;reason<6;++reason){
         entry=ttt_setup(key);ticket.reset();CHECK(capture_terrain_transition(key,entry,current,ticket,error));ttt_held=true;
         receipt={TerrainTransitionKind::ExportRebuild,key,key,0,0};
@@ -183,4 +319,5 @@ void test_terrain_transition_receipts(){
     a_layout_shown=old_shown;a_scenario_initialization=old_init;a_get_simulator_mode_manager=old_modes;H=old_host;
     original_terrain_load=old_load;original_terrain_rebuild=old_rebuild;
     a_alloc=old_alloc;a_entry=old_entry;a_restore=old_restore;original_select_act=old_select;reset();
+    test_cold_recovery_grounding_bootstrap();
 }

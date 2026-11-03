@@ -1754,3 +1754,52 @@ Default-main tree commands retain their existing behavior.
 unrelated control IDs never reaching the inspector, nested roots, exact bounds,
 cycles, duplicate children, read/allocation failure and getter-time retirement.
 These are offline value-graph checks; actual UI qualification is separate.
+
+## Cold recovery's second canonical terrain boundary (C40/C42)
+
+Cold RecoveryBootstrap restores the independently retained canonical Snapshot,
+then explicitly loads and rebuilds its terrain again before attaching the new
+controller. The first restoration's grounding witness does not authorize the
+second rebuild's output. C40 first failed object4294967302 with authored XYZ
+`-459.844482,116.277374,187.374252` versus rendered
+`-459.84436,116.277344,187.374207`. C42's exact XYZ receipt passed that row and
+exposed object4294967549 quaternion drift at the same second boundary:
+canonical words `BF16ACF6 BE2E89B5 3E8838CB 3F3E8042`, rendered
+`BF16ACF8 BE2E89B6 3E8838CB 3F3E8043`. Its XYZ, scale and properties matched.
+The original R22 checkpoint and journals remained unchanged after both failed
+recoveries and ordinary closure.
+
+The second boundary now pins the existing TerrainRotationOwner from the full
+canonical binding roster and requires every initial quaternion to match the
+canonical artifact bit for bit. After Native Load, raw owner/roster checks run
+before Rebuild. Immediately after Rebuild, before policy callbacks, it samples
+finite XYZ and quaternion values under the same pool, class, native key and
+logical binding fences. The existing guarded ApplyMarkerState rotation repair
+accepts only that exact sampled quaternion and restores the canonical value;
+a third value, changed XYZ or expired owner rejects. Its audio guard and spatial
+component checks remain intact. No gesture rotation ticket survives this call.
+
+The one-use transition token owns the exact Snapshot, full placement witnesses
+and bounded pre-Load metadata. Settled resume normalizes only witnessed XYZ in
+an owned readback copy, requires canonical live quaternion words, and performs
+the existing full typed and opaque image comparison before publishing grounding
+and materialization. Missing legacy Snapshot metadata retains the exact original
+owner metadata. Unknown fields, changed properties, roster, keys, revisions,
+source or context cannot become a new canonical witness. No live XYZ is written.
+
+A failed recovery attempt now retains its first reason and held resources until
+explicit Recover, End or teardown. Later frames do not reuse its retired ticket
+or overwrite the useful mismatch with an invalid/expired error. Controlled
+Native cases reproduce both actual XYZ and quaternion pairs and reject policy,
+Native Apply and final Release mutations; Runtime cases prove no retry across
+frames and explicit retry without replacing the prior checkpoint. Focused
+receipts and the exact C42-source quaternion RED are retained under
+`out/editor-preview9-cold-recovery/`.
+
+Actual C44 recovery passed directly from those unchanged C39 R22 checkpoints:
+both participants were Ready, revision/durable22 and unfrozen, with121 classes,
+419 placements and5 acts. Every retained asset key, setting, behavior and content
+revision matched the old R22 document; both strict Native checks agreed in the
+new epoch and both fault counters were zero. The document hash changes with its
+new namespace, so old/new hash equality is not the recovery criterion. Evidence:
+`out/preview9-c44-recover-creations/result.json`.

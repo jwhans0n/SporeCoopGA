@@ -363,6 +363,8 @@ struct Recovery {
     std::optional<TerrainHold> terrain;
     bool epoch_prepared=false,controller_started=false;
     editor_store::Snapshot staged;
+    bool failed=false;
+    std::string failure{};
 };
 std::optional<Recovery> recovery;
 enum class Action { Begin, Undo, Redo, Save, Playtest, Solo, Ready, Unready, Recover, End, Return, CancelPreparation, NativeExit, SaveExit, ApproveTest, DeclineTest, HandoffSave, HandoffDiscard, HandoffCancel, ChooseTest, MenuSolo, MenuTogether, MenuDismiss };
@@ -3198,6 +3200,7 @@ void refresh() {
         next.players.push_back(std::move(player));
         if (slot == v.local.slot) next.ready = member.ready;
     }
+    if(recovery&&recovery->failed&&!closing)next.status=recovery->failure;
     cached = std::move(next);
 }
 bool create_store(const editor::State& state, const editor_native::Snapshot& native, const std::vector<uint8_t>& envelope, const std::string& title, std::string& error) {
@@ -3719,8 +3722,14 @@ void service_transport_teardown() {
         }
     }
 }
+void fail_recovery(std::string reason){
+    frozen=true;
+    if(!recovery){tell(reason);return;}
+    if(recovery->failed)return;
+    recovery->failure=std::move(reason);recovery->failed=true;tell(recovery->failure);
+}
 void finish_recovery() {
-    if (closing || !recovery) return;
+    if (closing || !recovery || recovery->failed) return;
     refresh_complexity_capability();
     if(editor::extended_complexity(recovery->state.document)&&(!complexity_sample||!complexity_sample->available||complexity_publication_failed)){
         status=complexity_conflict();return;
@@ -3782,13 +3791,13 @@ void finish_recovery() {
         if(!recovery->state.document.epoch)recovery->state.document.epoch=1;
         recovery->state.retired_sequences.clear();sequence=0;recovery->native.document=recovery->state.document;
         if(!editor_project::store_snapshot(recovery->state,recovery->native,recovery->title,recovery->staged,error)){
-            frozen=true;tell(error);return;
+            fail_recovery(error);return;
         }
         recovery->epoch_prepared=true;
     }
     if(!recovery->controller_started){
         if(!controller->start(recovery->state,recovery->envelope,recovery->title,error,recovery->resume)){
-            frozen=true;tell(error);return;
+            fail_recovery(error);return;
         }
         local_capability=controller->view().local;recovery->controller_started=true;
     }
@@ -3798,7 +3807,7 @@ void finish_recovery() {
     target.scope={controller->view().context.project,controller->view().context.epoch,controller->view().local};
     target.serial=terrain.key.serial;
     if(!target.serial){
-        if(terrain_transition_serial==UINT64_MAX){frozen=true;tell("Recovery terrain identity is exhausted");return;}
+        if(terrain_transition_serial==UINT64_MAX){fail_recovery("Recovery terrain identity is exhausted");return;}
         target.serial=++terrain_transition_serial;
     }
     target.generation=recovery->native_generation;
@@ -3806,7 +3815,7 @@ void finish_recovery() {
     const auto transport=observed_transport;const auto revision=recovery->state.document.revision;
     const auto current=[=]{return terrain_runtime_current(target,transport,revision,false,true);};
     bool transferred=terrain.resumed;
-    if(transferred && terrain.key!=target){frozen=true;tell("The recovered native terrain owner changed before checkpoint publication");return;}
+    if(transferred && terrain.key!=target){fail_recovery("The recovered native terrain owner changed before checkpoint publication");return;}
     if(terrain.ticket&&!terrain.materializing&&!terrain.resumed){
         editor_native::TerrainTransitionReceipt receipt;
         receipt.kind=editor_native::TerrainTransitionKind::Recovery;receipt.before=terrain.key;receipt.after=target;
@@ -3823,7 +3832,7 @@ void finish_recovery() {
             receipt.kind=editor_native::TerrainTransitionKind::RecoveryBootstrap;receipt.before=receipt.after=target;
             editor_native::TerrainTransitionTicket prepared;
             if(!editor_native::restore_terrain_transition({},receipt,recovery->native,current,prepared,error)){
-                frozen=true;tell("The prior recovery checkpoint was retained: "+error);return;
+                fail_recovery("The prior recovery checkpoint was retained: "+error);return;
             }
             terrain.key=target;terrain.ticket=std::move(prepared);terrain.entry=recovery->native;
             terrain.transport=transport;terrain.revision=revision;terrain.materializing=true;recovery->terrain=std::move(terrain);
@@ -3832,14 +3841,14 @@ void finish_recovery() {
         editor_native::TerrainTransitionReceipt receipt;
         receipt.kind=editor_native::TerrainTransitionKind::Recovery;receipt.before=terrain.key;receipt.after=target;
         if(!editor_native::resume_terrain_transition(terrain.ticket,receipt,recovery->native,current,error)){
-            frozen=true;tell("The prior recovery checkpoint was retained: "+error);return;
+            fail_recovery("The prior recovery checkpoint was retained: "+error);return;
         }
         terrain.resumed=true;terrain.materializing=false;
     }
     recovery->terrain=std::move(terrain);
-    if(!current()){frozen=true;tell("The prior recovery checkpoint was retained because its new editing context expired");return;}
+    if(!current()){fail_recovery("The prior recovery checkpoint was retained because its new editing context expired");return;}
     recovery->staged.manifest=manifest(resource_hash,history_artifacts);
-    if(!store.checkpoint(recovery->staged,error)){frozen=true;tell(error);return;}
+    if(!store.checkpoint(recovery->staged,error)){fail_recovery(error);return;}
     current_native=std::move(recovery->native);rendered_revision=current_native.document.revision;
     native_generation=recovery->native_generation;native_attached=true;native_identity_lost=false;frozen=false;
     recovery.reset();
