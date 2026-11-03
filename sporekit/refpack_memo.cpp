@@ -24,7 +24,9 @@ struct Entry {
     uint32_t size=0,mask=0,encoded=0;uint64_t age=0;
     size_t bytes()const{return size_t(size)+encoded;}
 };
-std::array<Entry,2> memo_entries;
+// A native write can alternate multiple nested byte streams. Retain their
+// exact results together rather than evicting each level on every write.
+std::array<Entry,8> memo_entries;
 std::mutex memo_mutex;
 size_t memo_bytes=0;uint64_t memo_age=0;
 thread_local bool memo_busy=false;
@@ -75,9 +77,12 @@ uint32_t memo_raw(void* out,const void* in,uint32_t n,uint32_t mask,uint32_t* ha
     auto evict=[](Entry& entry){memo_bytes-=entry.bytes();entry={};};
     // Reserve the complete worst-case staging budget before allocating. No
     // in-flight shared entries escape the lock; contention never waits on RAW.
-    while(memo_bytes+size_t(n)+size_t(bound)+sizeof(memo_entries)>budget || (memo_entries[0].input && memo_entries[1].input)){
-        auto& victim=!memo_entries[0].input?memo_entries[1]:!memo_entries[1].input?memo_entries[0]:
-            memo_entries[0].age<memo_entries[1].age?memo_entries[0]:memo_entries[1];evict(victim);
+    auto free_entry=[]()->Entry*{for(auto& entry:memo_entries)if(!entry.input)return &entry;return nullptr;};
+    while(memo_bytes+size_t(n)+size_t(bound)+sizeof(memo_entries)>budget || !free_entry()){
+        Entry* victim=nullptr;
+        for(auto& entry:memo_entries)if(entry.input && (!victim || entry.age<victim->age))victim=&entry;
+        if(!victim)return invoke(out,in,n,mask,hash,links);
+        evict(*victim);
     }
     bool called=false,completed=false;uint32_t result=0;
     try{
@@ -85,7 +90,7 @@ uint32_t memo_raw(void* out,const void* in,uint32_t n,uint32_t mask,uint32_t* ha
         called=true;result=invoke(out,in,n,mask,hash,links);completed=true;
         if(!result || result>bound || std::memcmp(input.get(),in,n) || !code_profile(true))return result;
         auto output=std::make_unique<uint8_t[]>(result);std::memcpy(output.get(),out,result);
-        auto& entry=!memo_entries[0].input?memo_entries[0]:memo_entries[1];
+        auto& entry=*free_entry();
         entry={std::move(input),std::move(output),n,mask,result,++memo_age};memo_bytes+=entry.bytes();return result;
     }catch(...){if(called && !completed)throw;++memo_failures;if(completed)return result;}
     return invoke(out,in,n,mask,hash,links);
@@ -107,11 +112,12 @@ void refpack_memo_init(){
 }
 std::string refpack_memo_info(){
     std::unique_lock<std::mutex> lock(memo_mutex,std::try_to_lock);
+    size_t entries=0;if(lock.owns_lock())for(const auto& entry:memo_entries)entries+=bool(entry.input);
     return "refpack_memo enabled="+std::to_string(memo_enabled.load())+" reason="+memo_reason.load()+
         " hits="+std::to_string(memo_hits.load())+" misses="+std::to_string(memo_misses.load())+
         " native_calls="+std::to_string(memo_calls.load())+" bypass="+std::to_string(memo_bypass.load())+
         " contention="+std::to_string(memo_contention.load())+" failures="+std::to_string(memo_failures.load())+
-        " entries="+(lock.owns_lock()?std::to_string(unsigned(bool(memo_entries[0].input))+unsigned(bool(memo_entries[1].input))):"busy")+
+        " entries="+(lock.owns_lock()?std::to_string(entries):"busy")+
         " bytes="+(lock.owns_lock()?std::to_string(memo_bytes):"busy");
 }
 }

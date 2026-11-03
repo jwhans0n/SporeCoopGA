@@ -91,7 +91,7 @@ compression threshold, complete NativeWrite and all opaque guards still run.
 
 Only the actual original RAW result seeds an entry. Its complete input, mask,
 token output and returned length are owned values; pointer identity or a digest
-alone never matches. Two entries plus worst-case staging are bounded to 32 MiB.
+alone never matches. Entries plus worst-case staging are bounded to 32 MiB.
 A try-lock covers lookup, the pure original miss and publication. Contending
 threads and TLS reentry immediately call the original. Failed cache allocation
 also retains the original result, and original exceptions propagate. Diagnostics
@@ -108,3 +108,15 @@ The actual-i686 fixture executes the extracted original RAW against the retained
 genuine C33 compressed oracle, then exercises the production memo and fallback
 paths. This is compression reuse, not a Native snapshot producer or fixed-point
 token. Actual performance and hit rate require a separate native A/B run.
+
+C36/C37 used two entries. Their identical six-edit diagnostic sessions ended
+with host hits/misses 682/685 and guest 802/791, with no bypasses or failures.
+The next candidate retains up to eight exact byte results under the same 32 MiB
+limit, including the full worst-case in-flight allocation. A miss evicts the
+least recently used occupied slot until both a free slot and the byte budget
+are available. No Native owner, field proof or change authority is cached.
+The extracted-original i686 fixture now passes 104 checks, covering an
+eight-stream working set, refreshed-entry eviction, large-input byte-budget
+eviction before reaching capacity, allocation failure, contention and exact
+oracle output. This does not establish a game-frame improvement. Receipt:
+`out/editor-preview9-refpack-working-set/receipt.json`.

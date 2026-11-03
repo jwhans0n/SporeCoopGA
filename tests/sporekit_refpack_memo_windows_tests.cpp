@@ -132,8 +132,25 @@ int main(){try{
     try{a.call();}catch(const std::runtime_error&){propagated=true;}
     check(propagated && !sk::memo_busy && sk::memo_failures==0,"original exception propagates with guards unwound");
     original_throws=false;check(a.call()==first,"later call succeeds after original exception");
-    reset();initialized();for(unsigned i=0;i<5;++i){auto data=input;data[i]^=uint8_t(i+1);Buffers value(std::move(data));value.call();
-        check(unsigned(bool(sk::memo_entries[0].input))+unsigned(bool(sk::memo_entries[1].input))<=2 && sk::memo_bytes+sizeof(sk::memo_entries)<=sk::budget,"two-entry eviction bound");}
+    reset();initialized();
+    std::vector<Buffers> working;
+    for(unsigned i=0;i<sk::memo_entries.size();++i){auto data=input;data[i]^=uint8_t(i+1);working.emplace_back(std::move(data));
+        working.back().call();check(sk::memo_bytes+sizeof(sk::memo_entries)<=sk::budget,"entry staging budget");}
+    const auto seeded=native_calls.load();
+    for(auto& value:working)check(value.call()>0 && native_calls==seeded,"nested write working set retains exact results");
+    // Refresh the oldest slot, then require eviction of the next oldest only.
+    working[0].call();auto extra=input;extra[20]^=0x5A;Buffers newest(std::move(extra));newest.call();
+    const auto after_insert=native_calls.load();
+    check(working[0].call()>0 && native_calls==after_insert,"recently used entry retained");
+    check(working[2].call()>0 && native_calls==after_insert,"unrelated resident retained");
+    check(working[1].call()>0 && native_calls==after_insert+1,"oldest full entry evicted");
+    check(newest.call()>0 && native_calls==after_insert+1,"new entry retained");
+    reset();initialized();override_result=true;
+    for(unsigned i=0;i<6;++i){Buffers value(std::vector<uint8_t>(6000000,uint8_t(i)));
+        check(value.call()==7,"large owned staging returns native result");
+        check(sk::memo_bytes+sizeof(sk::memo_entries)<=sk::budget,"byte budget evicts before entry capacity");}
+    size_t occupied=0;for(const auto& entry:sk::memo_entries)occupied+=bool(entry.input);
+    check(occupied<sk::memo_entries.size() && occupied>0,"byte budget limits large working set");override_result=false;
     reset();opt_in=false;sk::refpack_memo_init();check(!installs && !sk::memo_enabled,"INI opt-out untouched");
     reset();unsupported=true;sk::refpack_memo_init();check(!installs,"unknown executable untouched");
     reset();image[700]^=1;sk::refpack_memo_init();check(!installs,"foreign RAW code rejected");
