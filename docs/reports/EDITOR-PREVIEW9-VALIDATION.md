@@ -2965,3 +2965,43 @@ process closure (12 files, 5,467,262 bytes). No personal installation/profile is
 used. Crash/dump/log and recovery evidence:
 `out/preview9-c39-ui-root-crash/receipt.json` and `recovery/receipt.json`.
 Explicit-root membership validation is required before further scoped UI reads.
+
+
+### C40 inspector fix and cold-recovery grounding failure
+
+C40 SHA-256 is
+`c6792dfa3692164b88bdf795fc545ad2186609283b369f1498dcde50ab7a5a62`
+(96,499,200 bytes); Kit is unchanged from C39. All 250 retained production
+inputs remain unchanged through build. Explicit diagnostic roots now require
+strict parsing and two bounded membership walks from the current native main
+window, without dereferencing the supplied candidate. Linux and actual-i686
+fixtures each pass 134 checks; the affected Sui object builds. Evidence:
+`out/editor-preview9-c40-sui-root/receipt.json`.
+
+Private processes 22536/43896 verify the exact formerly crashing command is
+rejected, null is rejected before inspection, and both a fresh main pointer and
+a fresh child pointer remain inspectable. The native fault count stays zero and
+the document revision stays 22. Evidence:
+`out/preview9-c40-ui-root-regression/result.json` and
+`out/preview9-c40-ui-root-positive/result.json`.
+
+Cold recovery of the preserved C39 draft reaches revision 22 and 121 classes,
+but independent placement validation freezes publication. Placement 4294967302
+has raw XYZ `-459.84436,116.277344,187.374207` instead of committed
+`-459.844482,116.277374,187.374252`; quaternion, scale and property count match.
+This is the exact previously observed C28 grounding pair. The cold transition
+performs an explicit terrain Load/Rebuild after canonical restore; the existing
+grounding observation precedes that additional rebuild. No tolerance or changed
+committed position is accepted. Subsequent automatic retries consume the failed
+one-shot transition and obscure the first mismatch with an expired-ticket error.
+Evidence: `out/preview9-c40-recover-creations/result.json` and
+`out/preview9-c40-recovery-failure-diagnostic/closed-evidence/`.
+
+Both players' checkpoint and journal bytes remain identical to the preserved
+C39 files, verified twice while running and again after closure. Explicit End
+retires the failed attempt; the host discards the private native scene and both
+games return normally to Galaxy with zero faults. The runner exits 0. Evidence:
+`out/preview9-c40-recovery-failure-diagnostic/checkpoint-preservation.json`,
+`closed-evidence/receipt.json`, and
+`out/preview9-c40-frozen-retirement/result.json`. Shared replacement and later
+family saves are deferred until cold recovery passes.
