@@ -2235,3 +2235,91 @@ native shutdowns. Evidence: `out/preview9-c31-retirement/result.json`.
 This Save-only change does not resolve the C30 observer frame stalls or
 guest LAN confirmation target. Four-player coverage and the remaining
 feature, performance, smoke and delivery gates remain open.
+
+### C31 four-player creation cancellation, Environment and shared Save
+
+Four fresh private profiles receive only the closed C27 profiles' native
+Spore subtree; no shared project store is copied. Their C31 DLL and isolated
+input kit are verified before launch. Two bootstrap attempts stop before
+authoring: the first invokes a pair-only helper with four games, and the
+second encounters a truncated startup UI tree after registration opens its
+quit warning. Both are retained tool failures. Correction `d86f9da` uses
+bounded, ownership-checked modal snapshots, recognizes the exact native
+warning over registration, and rejects unknown dialogs. Windows and Linux
+each pass 64 helper contracts with zero input drift.
+
+The corrected four-player bootstrap reaches revision/history zero with
+matching native scenes and zero faults:
+`out/preview9-c31-four-town-bootstrap-r3/result.json`. All four then enter
+different native creation editors, including the corrected Building and
+Vehicle subtype routes. Every guest cancels and returns independently
+while the host remains in Creature Editor; the host returns last. All four
+retain identical revision/history zero and no cast entry is added. This is
+entry/cancellation coverage, not completed asset-save acceptance:
+`out/preview9-c30-four-independent-creation-cancel/result.json`.
+
+Host Crew capacity commits once at revision 1 and converges on all four.
+Adding a stock crew member stops without an edit because this profile's
+native picker finds no Spice Crawler card for the measured query. Ordinary
+Escape closes it, with revision/history unchanged and zero faults. This
+does not establish Crew Add coverage. Evidence:
+`out/preview9-c31-four-crew-enable/result.json`,
+`out/preview9-c31-four-crew-seed/result.json`,
+`out/preview9-c31-four-crew-picker-diagnostic/95-after.png` and
+`out/preview9-c31-four-picker-cancel/result.json`.
+
+Host and first guest each complete Temperature and Water edit/Undo/Redo/Undo
+with all four participants checked after every action. Temperature advances
+revision 1 to 9 and Water 9 to 17; each action produces exactly one revision,
+all native states converge and every fault counter stays zero. The other
+two participants are observers in these particular sequences, not authors.
+Evidence: `out/preview9-c31-four-temperature/result.json` and
+`out/preview9-c31-four-water/result.json`.
+
+One native Save now completes SavedApplied 4/4 at revision 17 without a
+semantic or history change. All logical sources are
+`408A0000!2912F682.366A930D`; guests retain checked local aliases. The exact
+saved native package is retained: 618,750 bytes, 12 records, SHA-256
+`29063630af1b680abd6f663be10f45aa510aba17bd3095555e766377208864b0`.
+The persisted root has 419 markers and 60,655 bytes, SHA-256
+`14a14c8e35844e64971cc5a6945b60f626cdd2bef4bdeb0e0a35acd0be47d721`.
+Evidence: `out/preview9-c31-four-native-save-carrier/result.json`.
+All four normally return to Galaxy, fault-free, before runner exit zero:
+`out/preview9-c31-four-retirement/result.json`. Cold reopen remains pending.
+
+### C32 observer preparation work reduction, pending native timing
+
+Commit `7d9b346` adds a private, synchronous pose-preparation proof. It
+retains the full BASE validation and genuine cached projection. It only
+uses the reduced path for checked transforms and the seven verified native
+companion fields. A unique AFTER owner must write back byte-identically;
+reversing only recorded primitives must then reproduce the complete BASE
+bytes. Native owners retire before value-proof publication. Context, source,
+scope, generation, bindings, resolver, captain and unsupported-data checks
+remain mandatory; uncertain shapes use the conservative path.
+
+The genuine old owning fixture succeeds with three Reads, one projection
+and four Writes, then fails the new work-count regression. The fixed fixture
+uses two Reads, no projection and three Writes with populated Act/Crew and
+opaque class data. Strict actual-i686 checks pass 6,300 focused and 118,668
+full, including the unchanged Save, Water, Environment and materialization
+regressions. All 51 compiler/Make inputs remain unchanged after commit.
+An independent source review closes the callback/Release and row-lifetime
+findings. Evidence: `out/preview9-c32-pose-prepare-red-receipt.json`,
+`out/preview9-pose-prepare-native-receipt.json`,
+`out/preview9-pose-prepare-native-postcommit.json` and
+`out/preview9-c32-independent-review/receipt.json`.
+
+Offline inspection of the genuine C31 Town Save verifies version 17, empty
+legacy text in all 590 ClassActs and empty deprecated distances in all 419
+markers. These conditions do not force conservative fallback; actual memory,
+cache availability and timing still require in-game observation:
+`out/preview9-c32-town-eligibility.json`.
+
+The guarded C32 production build retains all 192 actual inputs before
+compilation, with zero drift. DLL SHA-256 is
+`7bdd6e56c73c4639a4268d8b52a83577f6a7a8f9fa9aa526accd78ea3aa245c5`,
+93,058,560 bytes. It is installed only into the closed private lab after C31
+retires. This is not a performance or release-acceptance claim:
+`out/preview9-candidate32-build-receipt.json` and
+`out/preview9-candidate32-deployment/receipt.json`.
