@@ -92,7 +92,7 @@ void end();
 void approve_playtest(bool);
 void choose_test(int choice); // 0 solo, 1 together, 2 dismiss.
 void edit_acts(int action); // 0 add, 1 delete, 2 left, 3 right.
-void create_asset(uint32_t resource_type);
+void create_asset(uint32_t resource_type,uint32_t editor_id=0);
 void edit_asset(editor::ObjectId class_id);
 void set_extended_complexity(bool);
 void resolve_join(int choice); // 0 Save, 1 Discard, 2 Cancel.

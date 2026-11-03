@@ -24,8 +24,8 @@ static void test_rejection_scene_waits_for_later_frame_and_local_controls(){
         CHECK(n.callbacks.transaction_pending()&&!n.callbacks.gate({placement})&&!n.callbacks.terrain_gate({},{}));
         CHECK(!n.callbacks.navigation_allowed()&&!n.callbacks.history_available(true));
         const auto saves=n.save_calls+n.save_as_calls,enters=n.enters;
-        if(author){runtime_guest::save();runtime_guest::playtest();runtime_guest::create_asset(0x2B978C46);}
-        else{runtime_host::save();runtime_host::playtest();runtime_host::create_asset(0x2B978C46);}
+        if(author){runtime_guest::save();runtime_guest::playtest();runtime_guest::create_asset(0x2B978C46,0);}
+        else{runtime_host::save();runtime_host::playtest();runtime_host::create_asset(0x2B978C46,0);}
         for(unsigned i=0;i<4;++i)step();
         CHECK(rejection_held(author)&&controller->state()==canonical);
         CHECK(n.save_calls+n.save_as_calls==saves&&n.enters==enters&&n.view_restores==views);

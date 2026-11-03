@@ -95,7 +95,27 @@ struct RejectionRestore {
 std::optional<RejectionRestore> rejection_restore;
 uint64_t rejection_serial=0;
 bool rejection_servicing=false;
-bool detached_scene() { return local_creation.has_value() || rejection_restore.has_value(); }
+struct StagedCapture {
+    editor_native::CaptureTicket ticket;
+    editor_native::Snapshot canonical;
+    std::optional<editor_native::Snapshot> before;
+    std::optional<editor_native::Gesture> completed;
+    std::map<editor::ObjectId,editor::Placement> guards;
+    std::vector<editor::LeaseToken> leases;
+    editor::Request request;
+    std::vector<dbpf::Record> dependencies;
+    std::optional<editor::wire::Command> rejected_export;
+    bool export_negative_sent=false;
+    std::optional<editor::OperationId> cancel_pending;
+    bool preserve_submitted=false;
+    size_t charged=0,before_charge=0;
+    uint64_t transport=0,started=0,last_attempt_frame=UINT64_MAX;
+    std::string failure;
+};
+std::shared_ptr<StagedCapture> staged_capture;
+bool staged_capture_servicing=false;
+uint64_t canonical_work_frame=UINT64_MAX;
+bool detached_scene() { return local_creation.has_value() || rejection_restore.has_value() || bool(staged_capture); }
 std::optional<editor_native::Snapshot> reopen_saved;
 std::optional<bool> projection_override;
 std::optional<bool> extended_projection_override,cast_projection_override;
@@ -255,10 +275,11 @@ struct DurableCommit {
     bool flushing=false,hosting=false;
 };
 std::unique_ptr<DurableCommit> durable_commit;
-struct Pending { editor::Request request; editor_native::Gesture gesture; uint64_t reverted_frame = 0; bool submitted = false; std::vector<uint8_t> assets={}; bool tentative=false; };
+struct Pending { editor::Request request; editor_native::Gesture gesture; uint64_t reverted_frame = 0; bool submitted = false; std::vector<uint8_t> assets={}; bool tentative=false,staged=false,barrier_cancel=false; std::shared_ptr<StagedCapture> capture_owner={}; };
 std::optional<Pending> pending;
 std::optional<editor::OperationId> awaiting_operation;
 void submit_pending_gesture();
+void schedule();
 struct RollbackFence {
     uint64_t generation=0;
     editor::ResourceKey source;
@@ -293,7 +314,7 @@ std::optional<TestMenu> test_menu;
 struct WaitingActs { TestMenu identity;int action=0;uint64_t started=0; };
 std::optional<WaitingActs> waiting_acts;
 std::deque<Action> actions;
-struct OpenCreation {uint32_t type=0;std::optional<editor::ObjectId> target;};
+struct OpenCreation {uint32_t type=0;std::optional<editor::ObjectId> target;uint32_t editor_id=0;};
 std::deque<OpenCreation> creation_actions;
 std::optional<bool> complexity_request;
 std::optional<editor::ComplexityCapability> complexity_sample;
@@ -1198,6 +1219,7 @@ bool restore_tentative(std::string& error) {
     return restored;
 }
 bool apply(const editor::Document& before, const editor::Document& after, const editor::Change& change, std::string& error) {
+    if(staged_capture && H->frame_index)canonical_work_frame=H->frame_index();
     editor_native::ValidationScope validation_scope;
     StageScope work(after,change.operation,editor_stage_metrics::Stage::ApplyWorkBegin,editor_stage_metrics::Stage::ApplyWorkEnd);
     before_apply_valid = false;
@@ -1378,7 +1400,7 @@ void refresh_complexity_capability(){
     if(complexity_publication_failed)complexity_local_error=error.substr(0,512);
 }
 bool lease(const std::vector<editor::Scope>& scopes,bool disabling_complexity=false) {
-    if (!controller || rejection_restore || frozen || closing || recovery || durable_commit || awaiting_operation || controller->view().phase != Phase::Ready) return false;
+    if (!controller || staged_capture || rejection_restore || frozen || closing || recovery || durable_commit || awaiting_operation || controller->view().phase != Phase::Ready) return false;
     const bool disable_field=disabling_complexity && scopes.size()==1 && scopes.front()==editor::Scope{editor::ScopeKind::Field,editor_native::kProjectObject,
         {editor::Field::Property,editor_native::kExtendedComplexityProperty}};
     if(!disable_field&&!complexity_authorized())return false;
@@ -1494,7 +1516,7 @@ void log_capture_rejection(const char* stage,const editor_native::Gesture& gestu
     }catch(...){ } // No diagnostic failure may change rejection or ownership.
 }
 editor_native::GestureScope current_gesture_scope(bool retained_import=false) {
-    if (!controller || !native_attached || rejection_restore || closing || recovery || transport_teardown || !C.session ||
+    if (!controller || !native_attached || staged_capture || rejection_restore || closing || recovery || transport_teardown || !C.session ||
         !C.session->connected() || C.session->transport_generation() != observed_transport) return {};
     const auto& view = controller->view();
     if(view.phase!=Phase::Ready || !complexity_authorized() || exporting || pending_export_request || native_exit_requested || save_publication_pending ||
@@ -1513,6 +1535,113 @@ editor_native::GestureScope current_projection_scope() {
     if(view.context.project==editor::ProjectId{} || !view.context.epoch || !view.local.generation ||
        view.local.slot!=C.session->my_id() || view.context.project!=document.project || view.context.epoch!=document.epoch)return {};
     return {view.context.project,view.context.epoch,view.local};
+}
+bool capture_dependencies_current(const StagedCapture& pin){
+    for(const auto& expected:pin.dependencies){
+        const auto found=std::find_if(resources.bundle.records.begin(),resources.bundle.records.end(),
+            [&](const auto& record){return record.key==expected.key;});
+        if(found==resources.bundle.records.end() || found->data!=expected.data)return false;
+    }
+    return true;
+}
+bool capture_context_current(const std::shared_ptr<StagedCapture>& pin,bool ending=false){
+    if(!pin || staged_capture!=pin || !controller || !native_attached ||
+       (!ending&&closing) || frozen || recovery || transport_teardown || local_creation || rejection_restore ||
+       exporting || pending_export_request || native_exit_requested || save_publication_pending ||
+       !C.session || !C.session->connected() || observed_transport!=pin->transport ||
+       C.session->transport_generation()!=pin->transport || native_generation!=pin->ticket.generation ||
+       current_native.source!=pin->canonical.source ||
+       (!ending&&current_projection_scope()!=pin->ticket.scope))return false;
+    const auto& view=controller->view();const auto& ticket=pin->ticket;const auto member=view.members.find(ticket.scope.author.slot);
+    if(view.phase!=Phase::Ready || view.context.project!=ticket.scope.project || view.context.epoch!=ticket.scope.epoch ||
+       view.local!=ticket.scope.author || member==view.members.end() ||
+       member->second.peer!=view.local || controller->state().document.revision<pin->canonical.document.revision ||
+       !capture_dependencies_current(*pin))return false;
+    return true;
+}
+editor_native::CaptureState capture_current(const editor_native::CaptureTicket& ticket){
+    using State=editor_native::CaptureState;
+    const auto pin=staged_capture;
+    if(!pin || pin->ticket!=ticket || !pin->failure.empty() || !capture_context_current(pin) ||
+       now_ms()-pin->started>180000 || complexity_held())return State::Retired;
+    return durable_commit || pin->rejected_export?State::Wait:State::Ready;
+}
+size_t capture_snapshot_charge(const editor_native::Snapshot& image){
+    size_t result=image.bytes.size()+editor::bytes(image.document)+image.bindings.size()*sizeof(editor_native::Binding);
+    if(image.metadata){result+=sizeof(*image.metadata);for(const auto& text:image.metadata->text)result+=text.size()*sizeof(char16_t);}
+    return result;
+}
+bool capture_begin(const editor_native::CaptureTicket& ticket,std::string& error){
+    error.clear();
+    try {
+    // Aliased/legacy scenes retain the existing generic capture policy. This
+    // optional optimization cannot introduce new source authority.
+    if(!controller || staged_capture || detached_scene() || pending || awaiting_operation || durable_commit ||
+       !H->frame_index || !ticket.gesture || !ticket.owner.mode || !ticket.owner.data || !ticket.owner.resource ||
+       ticket.generation!=native_generation || ticket.scope!=current_gesture_scope() ||
+       ticket.owner.source!=current_native.source || ticket.act!=current_native.act)return false;
+    constexpr size_t limit=64u<<20;
+    size_t charged=capture_snapshot_charge(current_native)+editor::bytes(current_native.document);
+    if(charged>limit)return false;
+    auto pin=std::make_shared<StagedCapture>();pin->ticket=ticket;pin->transport=observed_transport;
+    pin->started=now_ms();pin->canonical=current_native;pin->canonical.document=controller->state().document;
+    pin->guards=guarded_placements;
+    for(const auto& held:controller->view().local_leases)if(held.owner==ticket.scope.author && held.expires>now_ms())
+        pin->leases.push_back({held.scope,held.token});
+    for(const auto& record:resources.bundle.records)if(record.key!=resources.root){
+        if(record.data.size()>limit-charged)return false;
+        charged+=record.data.size();pin->dependencies.push_back(record);
+    }
+    if(ticket.scope!=current_gesture_scope() || !controller || !native_attached || staged_capture || detached_scene() ||
+       pending || awaiting_operation || durable_commit || closing || frozen || recovery || transport_teardown ||
+       exporting || pending_export_request || native_exit_requested || save_publication_pending || !C.session || !C.session->connected() ||
+       observed_transport!=pin->transport || C.session->transport_generation()!=pin->transport || native_generation!=ticket.generation ||
+       controller->view().phase!=Phase::Ready || controller->view().context.project!=ticket.scope.project ||
+       controller->view().context.epoch!=ticket.scope.epoch || controller->view().local!=ticket.scope.author ||
+       current_native.source!=pin->canonical.source || controller->state().document!=pin->canonical.document ||
+       !capture_dependencies_current(*pin))return false;
+    pin->charged=charged;pin->request=request(editor::Intent::Forward);pin->request.leases=pin->leases;
+    status="Checking the owned placement gesture across game frames";
+    staged_capture=std::move(pin);last_presence_value.reset();
+    const auto released=std::exchange(native_release_qpc,0);native_capture_begin_qpc=native_capture_end_qpc=0;
+    try{if(stage_metrics.recording()){
+        const auto& held=*staged_capture;using S=editor_stage_metrics::Stage;
+        if(released)stage_metrics.record(held.canonical.document.project,held.request.operation,held.canonical.document.revision,S::GestureRelease,released);
+        stage_metrics.record(held.canonical.document.project,held.request.operation,held.canonical.document.revision,S::CaptureBegin,stage_qpc());
+    }}catch(...){ } // Optional diagnostics cannot retire a successfully published hold.
+    return true;
+    }catch(...){error.clear();return false;} // No hold was published; retain the ordinary capture path.
+}
+bool capture_before(const editor_native::CaptureTicket& ticket,const editor_native::Snapshot& before,std::string& error){
+    using State=editor_native::CaptureState;
+    const auto pin=staged_capture;const auto current=capture_current(ticket);
+    if(current==State::Wait){error.clear();return false;}
+    if(!pin || current!=State::Ready){error="The staged gesture's original context expired";return false;}
+    const auto head=controller->state().document.revision;
+    ProjectionScope projection(pin->canonical.document);
+    const bool okay=before.source==ticket.owner.source && supported_between(pin->canonical,before,error) &&
+        editor_native::validate(before,pin->canonical.document,error);
+    const auto settled=capture_current(ticket);
+    if(settled==State::Wait || (settled==State::Ready && controller->state().document.revision!=head)){
+        error.clear();return false;
+    }
+    if(settled!=State::Ready){error="The staged gesture's original context expired during baseline validation";return false;}
+    if(!okay){if(error.empty())error="The staged gesture started from a different native baseline";return false;}
+    const auto charge=capture_snapshot_charge(before);
+    if(charge>(64u<<20)-(pin->charged-pin->before_charge)){error="The staged baseline exceeds its owned proof limit";return false;}
+    pin->before=before;pin->charged=pin->charged-pin->before_charge+charge;pin->before_charge=charge;
+    error.clear();return true;
+}
+void capture_failed(const editor_native::CaptureTicket& ticket,const std::string& error){
+    const auto pin=staged_capture;if(!pin || pin->ticket!=ticket)return;
+    if(pin->failure.empty())pin->failure=error.empty()?"The staged native gesture lost its original proof":error;
+    schedule();
+}
+void decline_staged_export(const std::shared_ptr<StagedCapture>& pin){
+    if(!pin || !pin->rejected_export || pin->export_negative_sent || !capture_context_current(pin))return;
+    auto reply=*pin->rejected_export;reply.kind=editor::wire::CommandKind::FinishExport;
+    reply.actor=pin->ticket.scope.author;reply.accepted=false;
+    std::string error;pin->export_negative_sent=controller->send_command(reply,error,0);
 }
 bool rejection_context(const RejectionRestore& pin){
     return rejection_restore && rejection_restore->serial==pin.serial && !rejection_restore->failed &&
@@ -1810,6 +1939,7 @@ bool creation_lease(const editor_creation::Scope& scope,editor::ObjectId target)
 editor_creation::PrepareResult prepare_creation(const editor_creation::Scope& scope,editor_creation::Request& input,std::string& error){
     using Result=editor_creation::PrepareResult;
     if(!creation_current(scope)){error="The creation request belongs to an expired shared adventure";return Result::Reject;}
+    if(staged_capture){error="Wait for the held placement gesture to finish";return Result::Reject;}
     if(!local_creation&&!complexity_authorized()){error=complexity_conflict();return Result::Reject;}
     if(local_creation){
         if(local_creation->scope!=scope){error="Another local creation is already active";return Result::Reject;}
@@ -2044,7 +2174,215 @@ bool cancelled_gesture(const editor_native::CancellationTicket& ticket, std::str
     tell("Spore cancelled the invalid placement gesture. The latest committed draft is restored.");
     return true;
 }
+bool staged_capture_identity(const std::shared_ptr<StagedCapture>& pin,std::string& error,bool ending=false){
+    if(!capture_context_current(pin,ending)){error="The staged gesture's original shared context expired";return false;}
+    const auto scene=editor_native::creation_scene_state(pin->ticket.owner);
+    if(!scene.available || !scene.owner || scene.generation!=pin->ticket.generation || !capture_context_current(pin,ending)){
+        error="The staged gesture's original native owner changed";return false;
+    }
+    return true;
+}
+void freeze_staged_capture(const std::shared_ptr<StagedCapture>& pin,const std::string& reason,bool expired){
+    if(staged_capture!=pin)return;
+    RejectionRestore retained;retained.scope=pin->ticket.scope;retained.owner=pin->ticket.owner;
+    retained.generation=pin->ticket.generation;retained.transport=pin->transport;retained.started=pin->started;
+    retained.reason=reason;retained.failed=true;
+    if(rejection_serial!=UINT64_MAX)retained.serial=++rejection_serial;
+    rejection_restore=std::move(retained);staged_capture.reset();frozen=true;
+    if(expired)native_identity_lost=true;
+    tell("Recover the committed draft: "+reason);
+}
+bool staged_request(const StagedCapture& pin,const editor_native::Gesture& gesture,editor::Request& out,std::string& error){
+    const auto& before=gesture.before.document;const auto& after=gesture.after.document;
+    if(gesture.clone_source || gesture.before.source!=gesture.after.source || gesture.before.bindings!=gesture.after.bindings ||
+       gesture.before.act!=gesture.after.act || gesture.before.captain!=gesture.after.captain ||
+       gesture.before.captain_locked!=gesture.after.captain_locked || gesture.before.metadata!=gesture.after.metadata ||
+       before.schema!=after.schema || before.class_schema!=after.class_schema || before.settings_schema!=after.settings_schema ||
+       before.placements.size()!=after.placements.size() || before.classes!=after.classes ||
+       before.acts!=after.acts || before.act_order!=after.act_order || before.class_settings!=after.class_settings ||
+       before.settings!=after.settings || before.terrain!=after.terrain){error="A staged pose changed a non-placement subtree";return false;}
+    out=pin.request;out.summary="Edit placement";
+    for(const auto& [id,prior]:before.placements){
+        const auto next=after.placements.find(id);
+        if(next==after.placements.end() || !pin.canonical.document.placements.contains(id)){
+            error="A staged pose changed its placement roster";return false;
+        }
+        if(same_authored(prior,next->second))continue;
+        const auto guard=pin.guards.find(id);
+        if(guard==pin.guards.end() || prior.class_id!=next->second.class_id || prior.act_id!=next->second.act_id ||
+           prior.protected_object!=next->second.protected_object){error="The staged pose has no original placement ownership";return false;}
+        for(auto field:{editor::Field::Position,editor::Field::Rotation,editor::Field::Scale}){
+            const editor::FieldKey key{field,0};const auto wanted=editor::value(next->second,key);
+            if(editor::value(prior,key)==wanted)continue;
+            editor::Mutation mutation;mutation.target=id;mutation.field=key;mutation.value=wanted;
+            mutation.expected=editor::field_revision(guard->second,key);out.mutations.push_back(std::move(mutation));
+        }
+        std::set<uint32_t> properties;for(const auto& [key,value]:prior.properties){(void)value;properties.insert(key);}
+        for(const auto& [key,value]:next->second.properties){(void)value;properties.insert(key);}
+        for(auto property:properties){
+            const editor::FieldKey key{editor::Field::Property,property};const auto wanted=editor::value(next->second,key);
+            if(editor::value(prior,key)==wanted)continue;
+            if(property!=editor_native::kRelativeScaleProperty && property!=editor_native::kElevationProperty &&
+               property!=editor_native::kSoundPitchProperty && property!=editor_native::kSoundGainProperty &&
+               property!=editor_native::kDestinationPositionProperty && property!=editor_native::kDestinationRotationProperty &&
+               property!=editor_native::kDestinationScaleProperty){error="A staged pose changed an unsupported placement property";return false;}
+            editor::Mutation mutation;mutation.target=id;mutation.field=key;mutation.value=wanted;
+            mutation.expected=editor::field_revision(guard->second,key);out.mutations.push_back(std::move(mutation));
+        }
+    }
+    if(out.mutations.empty()){error="The staged pose has no authored placement change";return false;}
+    return true;
+}
+void service_staged_capture(){
+    using State=editor_native::CaptureState;
+    const auto pin=staged_capture;
+    if(!pin || staged_capture_servicing || !H->frame_index)return;
+    const auto frame=H->frame_index();
+    if(pin->last_attempt_frame==frame || canonical_work_frame==frame)return;
+    struct Servicing {Servicing(){staged_capture_servicing=true;}~Servicing(){staged_capture_servicing=false;}} servicing;
+    std::string error;
+    if(closing || transport_teardown){
+        if(!staged_capture_identity(pin,error,true))native_identity_lost=true;
+        staged_capture.reset();return;
+    }
+    if(!capture_context_current(pin)){
+        freeze_staged_capture(pin,"The staged gesture's original context expired; its native scene was left intact",true);return;
+    }
+    if(durable_commit)return;
+    if(pin->rejected_export && pin->failure.empty()){decline_staged_export(pin);return;}
+    if(!staged_capture_identity(pin,error)){freeze_staged_capture(pin,error,true);return;}
+    if(durable_commit)return;
+    if(now_ms()-pin->started>180000 && pin->failure.empty())pin->failure="The staged gesture did not finish before its deadline";
+    if(!pin->failure.empty()){
+        pin->last_attempt_frame=frame;
+        const auto native=editor_native::state();
+        if(!staged_capture_identity(pin,error)){freeze_staged_capture(pin,error,true);return;}
+        if(durable_commit || !native.ready || native.gesture)return;
+        error=pin->failure;stop_unsupported(error,pin->ticket.owner);
+        if(pin->cancel_pending && pending && pending->request.operation==*pin->cancel_pending){
+            if(pin->preserve_submitted && pending->submitted){
+                // Saved precedes a later Decision in the authenticated FIFO.
+                // Retire only its local Native image; keep the submitted
+                // request identity until its accepted/rejected Decision.
+                pending->capture_owner.reset();pending->staged=false;
+            }else{pending.reset();awaiting_operation.reset();}
+        }
+        staged_capture.reset();return;
+    }
+    if(!pin->completed)return;
+    pin->last_attempt_frame=frame;
+    const auto head=controller->state().document.revision;
+    auto stable=[&]{return capture_current(pin->ticket)==State::Ready && controller->state().document.revision==head;};
+    auto wait=[&]{return capture_current(pin->ticket)==State::Wait || (capture_current(pin->ticket)==State::Ready &&
+        controller->state().document.revision!=head);};
+    auto& gesture=*pin->completed;
+    if(!pin->before || !same_native_authored(*pin->before,gesture.before) ||
+       pin->before->source!=gesture.before.source || pin->before->document!=gesture.before.document){
+        pin->failure="The staged gesture has no exact owned baseline receipt";return;
+    }
+    ProjectionScope projection(pin->canonical.document);
+    if(!complexity_authorized()){pin->failure=complexity_conflict();return;}
+    stage_stamp(pin->canonical.document.project,pin->request.operation,pin->canonical.document.revision,editor_stage_metrics::Stage::SupportedBegin);
+    const bool supported=editor_native::supported_changes(gesture,error);
+    stage_stamp(pin->canonical.document.project,pin->request.operation,pin->canonical.document.revision,editor_stage_metrics::Stage::SupportedEnd,supported?1:2);
+    if(wait())return;
+    if(!staged_capture_identity(pin,error)){freeze_staged_capture(pin,error,true);return;}
+    if(wait())return;
+    if(!stable())return;
+    if(!supported){pin->failure=error.empty()?"The staged gesture lost its exact native support receipt":error;return;}
+    editor::Request request;
+    if(!staged_request(*pin,gesture,request,error)){pin->failure=std::move(error);return;}
+    for(const auto& token:pin->leases)if(!std::any_of(controller->view().local_leases.begin(),controller->view().local_leases.end(),[&](const auto& held){
+        return held.owner==pin->ticket.scope.author && held.scope==token.scope && held.token==token.token && held.expires>now_ms();
+    })){pin->failure="The staged gesture's original editing lease expired";return;}
+    editor_native::Snapshot live;
+    const bool witnessed=capture_recent(gesture.after,gesture.after.document,live,error) &&
+        editor_native::validate(live,gesture.after.document,error) && supported_between(gesture.after,live,error);
+    if(wait())return;
+    if(!staged_capture_identity(pin,error)){freeze_staged_capture(pin,error,true);return;}
+    if(wait() || !stable())return;
+    if(!witnessed){pin->failure=error.empty()?"The staged gesture's native after-image changed before submission":error;return;}
+    std::optional<RejectionRestore> continuation;
+    if(head!=pin->canonical.document.revision){
+        if(rejection_serial==UINT64_MAX){pin->failure="Native restoration identities are exhausted";return;}
+        RejectionRestore restore;restore.scope=pin->ticket.scope;restore.owner=pin->ticket.owner;restore.generation=pin->ticket.generation;
+        restore.transport=pin->transport;restore.started=pin->started;restore.serial=++rejection_serial;
+        restore.reason="The staged pose's latest canonical baseline";restore.continuation=request.operation;
+        restore.scene_revision=pin->canonical.document.revision;restore.scene_frame=frame;
+        const auto native=editor_native::state();restore.act=logical_act(native.act);
+        if(!native.selected.empty())restore.selected=native.selected.front();
+        const bool view=editor_native::capture_view(restore.view,error);
+        if(wait())return;
+        if(!staged_capture_identity(pin,error)){freeze_staged_capture(pin,error,true);return;}
+        if(wait() || !stable())return;
+        if(!view){pin->failure=error.empty()?"The staged pose could not retain its local view":error;return;}
+        continuation=std::move(restore);
+    }
+    if(!stable())return;
+    pending=Pending{std::move(request),std::move(gesture),frame,false};pending->tentative=!continuation;pending->staged=true;pending->capture_owner=pin;
+    awaiting_operation=pending->request.operation;
+    if(continuation)rejection_restore=std::move(continuation);
+    staged_capture.reset();guarded_placements.clear();guarded_settings.clear();guarded_authoring.clear();guarded_terrain.clear();
+    last_presence_value.reset();
+    status=continuation?"Restoring the latest draft before submitting the held placement gesture":"Submitting the staged placement gesture";
+}
+void receive_staged_capture(editor_native::Gesture gesture){
+    const auto pin=staged_capture;
+    if(!pin || !gesture.capture || pin->ticket!=*gesture.capture)return;
+    if(pin->completed){
+        if(!same_native_authored(pin->completed->after,gesture.after) || pin->completed->after.document!=gesture.after.document)
+            pin->failure="A staged gesture delivered more than one after-image";
+        return;
+    }
+    const auto charge=capture_snapshot_charge(gesture.before)+capture_snapshot_charge(gesture.after);
+    if(charge>(64u<<20)-pin->charged){pin->failure="The staged after-image exceeds its owned proof limit";schedule();return;}
+    pin->charged+=charge;pin->completed=std::move(gesture);
+    stage_stamp(pin->canonical.document.project,pin->request.operation,pin->canonical.document.revision,editor_stage_metrics::Stage::CaptureEnd,1);
+    service_staged_capture();
+}
+void pump_staged_capture(){
+    service_staged_capture();
+    if(!H || !H->frame_index)return;
+    if(!staged_capture || capture_current(staged_capture->ticket)!=editor_native::CaptureState::Ready ||
+       canonical_work_frame!=H->frame_index())editor_native::service_capture();
+}
+bool cancel_capture_for_barrier(const char* reason,bool preserve_submitted){
+    if(staged_capture){
+        capture_failed(staged_capture->ticket,reason);return false;
+    }
+    if(pending && pending->staged){
+        if(rejection_restore && rejection_restore->continuation==pending->request.operation){
+            rejection_restore->continuation.reset();pending.reset();awaiting_operation.reset();return false;
+        }
+        if(pending->capture_owner){
+            staged_capture=pending->capture_owner;staged_capture->cancel_pending=pending->request.operation;
+            staged_capture->preserve_submitted=preserve_submitted;
+            // Its original value-owned context remains the local hold even if
+            // a later rejected Decision retires Pending before rollback runs.
+            pending->barrier_cancel=true;pending->tentative=false;
+            capture_failed(staged_capture->ticket,reason);
+        }
+        return false;
+    }
+    // Generic pending gestures retain checkpoint_resources' existing
+    // restore_tentative path. Only staged Native ownership needs this new
+    // cancellation; Saved must not wait for a later FIFO Decision.
+    return !detached_scene() && (preserve_submitted || (!pending && !awaiting_operation)) && !durable_commit && !closing && !frozen && !recovery &&
+        !exporting && !pending_export_request && !native_exit_requested && !save_publication_pending;
+}
+bool prepare_capture_ready(){
+    // Canonical Decisions retain authoring_ready. Only the Native Test
+    // transition waits for local rollback and pending operations to end.
+    return cancel_capture_for_barrier("The held placement gesture was cancelled before playtest preparation",false);
+}
+bool saved_capture_ready(){
+    // Saved must install before its later Decision/resource delta. Preserve
+    // submitted operations without retaining their tentative Native image.
+    return cancel_capture_for_barrier("The held placement gesture was cancelled before installing the host Save",true);
+}
 void captured(editor_native::Gesture gesture) {
+    if(gesture.capture){receive_staged_capture(std::move(gesture));return;}
+    if(staged_capture){capture_failed(staged_capture->ticket,"Another native gesture bypassed the staged placement hold");return;}
     const auto released=std::exchange(native_release_qpc,0);
     const auto capture_begin=std::exchange(native_capture_begin_qpc,0),capture_end=std::exchange(native_capture_end_qpc,0);
     if (!controller || !session_active() || frozen || closing || recovery) return;
@@ -2302,6 +2640,7 @@ void captured(editor_native::Gesture gesture) {
     else status = tentative?"Submitting the placement gesture":"Waiting for the next game frame before submitting the placement gesture";
 }
 void submit_pending_gesture() {
+    if(pending && pending->barrier_cancel)return;
     static bool submitting=false;
     if(submitting)return;
     struct Submitting {bool& flag;Submitting(bool& value):flag(value){flag=true;}~Submitting(){flag=false;}} submitting_scope(submitting);
@@ -2340,7 +2679,7 @@ void submit_pending_gesture() {
     // Native inverse deletion queues noun retirement until the ordinary game
     // update. Recreating the same slot in this outside-frame pump is too early.
     // Repeated callbacks within one rendered frame must not advance this gate.
-    if (!native.ready || native.gesture || !H->frame_index || (!pending->tentative && H->frame_index() <= pending->reverted_frame)) return;
+    if (!native.ready || native.gesture || !H->frame_index || ((!pending->tentative || pending->staged) && H->frame_index() <= pending->reverted_frame)) return;
     if(continuation){
         const auto pin=*continuation;
         const auto scene=editor_native::creation_scene_state(pin.owner);
@@ -2398,8 +2737,8 @@ void refresh() {
     auto identity=[](editor::ObjectId id) { return id==editor_native::kCaptainObject?std::string("Captain"):"Placement " + std::to_string(id.id) + ":" + std::to_string(id.generation); };
     next.selection = native.selected.empty() ? "No placement selected" : identity(native.selected.front());
     next.frozen = frozen || v.phase == Phase::Frozen;
-    next.world_hints=next.active && !rejection_restore && native.ready && native.world_visible && v.phase==Phase::Ready && !next.frozen && !recovery;
-    next.waiting = rejection_restore.has_value() || closing || recovery.has_value() || awaiting_operation.has_value() || v.phase == Phase::Joining || v.phase == Phase::Syncing || v.phase == Phase::Preparing || v.phase == Phase::Returning;
+    next.world_hints=next.active && !staged_capture && !rejection_restore && native.ready && native.world_visible && v.phase==Phase::Ready && !next.frozen && !recovery;
+    next.waiting = bool(staged_capture) || rejection_restore.has_value() || closing || recovery.has_value() || awaiting_operation.has_value() || v.phase == Phase::Joining || v.phase == Phase::Syncing || v.phase == Phase::Preparing || v.phase == Phase::Returning;
     if (v.phase == Phase::Returning) next.status = "Waiting for every player to return to the committed draft";
     next.confirming = v.phase == Phase::Preparing && v.playtest_mode==editor::wire::PlaytestMode::Together;
     next.can_cancel = v.phase==Phase::Preparing && next.host && !closing && !recovery && !next.frozen;
@@ -2763,9 +3102,10 @@ void close_session(bool preserve_offer = false) {
     observed_lease_grants.clear();
     if (!closing) {
         reopen_saved.reset();close_terrain.reset();
-        if(current_projection_scope().epoch){TerrainHold terrain;std::string error;if(capture_terrain_hold(terrain,error))close_terrain=std::move(terrain);}
+        if(!staged_capture && current_projection_scope().epoch){TerrainHold terrain;std::string error;if(capture_terrain_hold(terrain,error))close_terrain=std::move(terrain);}
         closing = true; close_restored = false; close_preserve_offer = preserve_offer;
     }
+    if(staged_capture){status="Retiring the held native capture before ending shared editing";return;}
     close_preserve_offer = !transport_teardown && (close_preserve_offer || preserve_offer || controller->view().phase == Phase::Offered);
     // An accepted edit remains owned until active replicas have applied and
     // durably covered it. Keep pumping the controller and party transport while
@@ -2838,7 +3178,7 @@ void close_session(bool preserve_offer = false) {
         } else if (H) H->log(M, SK_INFO, "Saved-draft reopen proof was not pinned: %s", error.c_str());
     }
     if (!keep_offer) controller->end(); pending.reset(); awaiting_operation.reset(); requested_scopes.clear(); guarded_placements.clear(); incoming_resources.reset();
-    local_creation.reset();
+    local_creation.reset();staged_capture.reset();
     guarded_settings.clear();guarded_authoring.clear();cast_uploads.clear();cast_upload_errors.clear();solo_preview.reset();solo_ready_scope.reset();pending_solo_return.reset();pending_solo_request=0;
     recovery.reset(); beginning = false; frozen = false; save_publication_pending = false;
     save_terrain.reset();export_terrain.reset();close_terrain.reset();export_return_result.reset();save_cancelling=false;
@@ -3163,6 +3503,7 @@ bool current_preparation_cancel(const PreviewReturnScope& request, bool queued =
 }
 uint64_t last_host_command=0;
 bool idle_native() {
+    if(staged_capture)return false;
     const auto n=editor_native::state();
     return !rejection_restore && n.ready && !n.gesture && n.generation==native_generation && !pending && !awaiting_operation &&
         !editor_native_save::busy() && !save_publication_pending && !pending_saved;
@@ -3313,6 +3654,11 @@ void receive_command(uint8_t from,const Command& value) {
     }
     if(value.kind==CommandKind::HoldExport) {
         if(value.serial<=last_host_command || exporting || native_exit_requested)return;
+        if(staged_capture){
+            last_host_command=value.serial;staged_capture->rejected_export=value;staged_capture->export_negative_sent=false;
+            decline_staged_export(staged_capture);
+            status="Finishing the held placement gesture before saving a local copy";return;
+        }
         ExportBarrier barrier;barrier.command=value;
         if(!local_creation && !export_terrain){
             TerrainHold terrain;std::string error;
@@ -3324,6 +3670,13 @@ void receive_command(uint8_t from,const Command& value) {
     if(value.kind==CommandKind::ExitEditor) {
         if(value.serial<=last_host_command)return;
         last_host_command=value.serial;remote_exit=true;native_exit_requested=native_exit_confirmed=true;return;
+    }
+    if(value.kind==CommandKind::EndExport && staged_capture && staged_capture->rejected_export){
+        const auto& rejected=*staged_capture->rejected_export;
+        if(value.serial==rejected.serial && value.actor==rejected.actor && value.revision==rejected.revision){
+            staged_capture->rejected_export.reset();staged_capture->export_negative_sent=false;
+            status="Checking the held placement gesture after the save hold ended";return;
+        }
     }
     if(value.kind==CommandKind::EndExport && !exporting && pending_export_request==value.serial && value.actor==view.local) {
         std::string error;if(!finish_export_terrain(error)){frozen=true;tell(error);}
@@ -3446,6 +3799,7 @@ void service_native_exit() {
 }
 void execute(Action action) {
     if (closing && action != Action::End) return;
+    if(staged_capture && action!=Action::End){tell("Wait for the held placement gesture to finish");return;}
     if(rejection_restore && action!=Action::End && action!=Action::Recover){
         tell("Wait for the rejected edit's native restoration to be verified");return;
     }
@@ -3703,13 +4057,13 @@ void SK_CDECL drain(void*) {
         // The single in-flight commit owns Store until the worker has joined.
         // Transport and keepalives continue, while scene replacement, Save and
         // recovery maintenance wait for a known durable outcome.
-        if(durable_commit){controller->tick(now_ms());if(durable_commit){refresh();return;}}
-        if (transport_teardown) { service_transport_teardown(); refresh(); return; }
+        if(durable_commit){controller->tick(now_ms());if(durable_commit){pump_staged_capture();refresh();return;}}
+        if (transport_teardown) { pump_staged_capture();service_transport_teardown(); refresh(); return; }
         submit_pending_gesture();
         // start() stages joined players locally. Do not publish the new epoch,
         // baseline, or claimed durability before the recovery checkpoint exists.
         if(!(recovery&&recovery->controller_started))controller->tick(now_ms());
-        if(durable_commit){refresh();return;}
+        if(durable_commit){pump_staged_capture();refresh();return;}
         service_rejection_restore();
         if(!creation_actions.empty() && !complexity_held() && !editor_creation::active() && !detached_scene() && !durable_commit && controller->view().phase==Phase::Ready){
             const auto action=creation_actions.front();creation_actions.pop_front();
@@ -3721,7 +4075,7 @@ void SK_CDECL drain(void*) {
                 }
                 if(!source.instance)error="The selected cast entry has no editable creation content";
             }
-            if(error.empty() && !editor_creation::open(source.type,source,action.target,error) && error.empty())error="The native creation editor is unavailable";
+            if(error.empty() && !editor_creation::open(source.type,source,action.target,error,action.editor_id) && error.empty())error="The native creation editor is unavailable";
             if(!error.empty())tell(error);
         }
         if(local_creation && !local_creation->return_failed && !frozen && !editor_creation::active() && !durable_commit){
@@ -3800,7 +4154,7 @@ void SK_CDECL drain(void*) {
         discover_recovery();
         finish_recovery();
         if (!host() && pending_saved && incoming_resources && controller->view().phase == Phase::Ready &&
-            !closing && !frozen && editor_native::state().ready && !editor_native::state().gesture && !editor_native_save::busy() &&
+            saved_capture_ready() && editor_native::state().ready && !editor_native::state().gesture && !editor_native_save::busy() &&
             incoming_context.revision == controller->state().document.revision &&
             incoming_resources->root == dbpf::Key{pending_saved->resource.instance, pending_saved->resource.type, pending_saved->resource.group}) {
             std::string error;
@@ -3843,7 +4197,7 @@ void SK_CDECL drain(void*) {
                 last_renew = now_ms(); std::vector<editor::LeaseToken> tokens,unused;
                 for (const auto& item : controller->view().local_leases){
                     const auto used=lease_use.find(item.scope);
-                    const bool keep=native.gesture || pending || awaiting_operation ||
+                    const bool keep=staged_capture || native.gesture || pending || awaiting_operation ||
                         (local_creation && local_creation->request.target && item.scope.kind==editor::ScopeKind::Content && item.scope.object==*local_creation->request.target) ||
                         (used!=lease_use.end() && now_ms()-used->second<5000);
                     (keep?tokens:unused).push_back({item.scope,item.token});
@@ -3856,7 +4210,7 @@ void SK_CDECL drain(void*) {
             if (!native.selected.empty() && (controller->state().document.placements.contains(native.selected.front()) ||
                 (native.selected.front()==editor_native::kCaptainObject && controller->state().document.settings.contains(editor_native::kCaptainObject))))presence.selected=native.selected.front();
             presence.act = logical_act(native.act); presence.editing = native.gesture;
-            presence.pending = awaiting_operation.has_value() || rejection_restore.has_value() || complexity_held();
+            presence.pending = bool(staged_capture) || awaiting_operation.has_value() || rejection_restore.has_value() || complexity_held();
             presence.scene_revision=rendered_revision;presence.scene_ready=complexity_authorized() && !detached_scene() && native.ready && !native.gesture && !durable_commit && !(pending && pending->tentative);
             if(local_creation){presence.creating_asset=true;presence.creation_serial=local_creation->scope.serial;
                 presence.creation_target=local_creation->request.target.value_or(editor::ObjectId{});
@@ -3881,6 +4235,7 @@ void SK_CDECL drain(void*) {
             visual_previews.push_back({p.author,p.object,p.act,p.class_id,p.pose,p.creating,p.destination});
         }
         editor_native::update_previews(visual_previews);
+        pump_staged_capture();
         refresh();
     } catch (const std::exception& e) { frozen = true; tell(std::string("Shared editing stopped safely: ") + e.what()); refresh(); }
     // A local native failure must be visible to the host. Otherwise a connected
@@ -3920,7 +4275,7 @@ void action(Action value) {
 bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     if(controller || durable_commit)return false;
     frozen=beginning=closing=gc_due=recovery_available=scanned_recovery=native_identity_lost=false;
-    rejection_restore.reset();
+    rejection_restore.reset();staged_capture.reset();staged_capture_servicing=false;canonical_work_frame=UINT64_MAX;
     rejection_servicing=false;
     recovery.reset();prepared_native.reset();incoming_resources.reset();pending_saved.reset();
     last_presence_value.reset();preview_active=false;
@@ -3955,6 +4310,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         stage_stamp(project,operation,revision,stage);
     };
     callbacks.host_hooks.validate = [](const auto& before, const auto& after, const auto& change, std::string& error) {
+        if(staged_capture && H->frame_index)canonical_work_frame=H->frame_index();
         StageScope span(after,change.operation,editor_stage_metrics::Stage::ValidateBegin,editor_stage_metrics::Stage::ValidateEnd);
         auto native = editor_native::state();
         if (closing || frozen || recovery || exporting || native_exit_requested || save_publication_pending ||
@@ -3991,6 +4347,8 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         return !closing && !frozen && !recovery && !save_publication_pending &&
             (detached_scene() || (native.generation==native_generation && !editor_native_save::busy() && native.ready && !native.gesture));
     };
+    callbacks.prepare_ready=prepare_capture_ready;
+    callbacks.saved_ready=saved_capture_ready;
     callbacks.rendered_revision=[]()->std::optional<editor::Revision>{
         const auto native=editor_native::state();
         if(!complexity_authorized() || detached_scene() || durable_commit || (pending && pending->tentative) || !native.ready || native.gesture || native.generation!=native_generation)return {};
@@ -4102,7 +4460,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     callbacks.saved = [](const editor::wire::Saved& saved) {
         if (host()) { save_publication_pending = false; return; }
         pending_saved = saved;
-        if (incoming_resources && incoming_context.revision == controller->state().document.revision &&
+        if (saved_capture_ready() && incoming_resources && incoming_context.revision == controller->state().document.revision &&
             incoming_resources->root == dbpf::Key{saved.resource.instance, saved.resource.type, saved.resource.group}) {
             std::string error;
             if (!checkpoint_resources(std::move(*incoming_resources), current_native, error) ||
@@ -4224,11 +4582,14 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     native.import_scope = [] { return current_gesture_scope(true); };
     native.cancelled = cancelled_gesture;
     native.gesture = captured;
+    native.capture_begin=capture_begin;native.capture_current=capture_current;
+    native.capture_before=capture_before;native.capture_failed=capture_failed;
     native.history = [](bool redo) { action(redo ? Action::Redo : Action::Undo); };
-    native.history_available = [](bool redo) { return !rejection_restore && !complexity_held() && (redo ? cached.can_redo : cached.can_undo); };
+    native.history_available = [](bool redo) { return !staged_capture && !rejection_restore && !complexity_held() && (redo ? cached.can_redo : cached.can_undo); };
     native.failure = [](const std::string& error) { if (!transport_teardown) { frozen = true; tell(error); } };
     native.notice = [](const std::string& message) { if (!transport_teardown) tell(message); };
     native.gate = [](const std::vector<editor::ObjectId>& selection) {
+        if(staged_capture)return false;
         const auto state = editor_native::state();
         if (closing || local_creation || exporting || pending_export_request || native_exit_requested || !state.ready || state.generation != native_generation) return false;
         // Native selection also observes a cursor-held, unallocated placement.
@@ -4342,7 +4703,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         return controller && controller->view().phase==Phase::Ready && complexity_authorized() && !detached_scene() && !durable_commit && !closing && !recovery && !pending && !awaiting_operation &&
             !exporting && !pending_export_request && !native_exit_requested && !editor_native_save::busy() && !editor_native::state().gesture;
     };
-    native.transaction_pending = [] { return complexity_held() || rejection_restore.has_value() || pending.has_value() || awaiting_operation.has_value() || bool(durable_commit); };
+    native.transaction_pending = [] { return bool(staged_capture) || complexity_held() || rejection_restore.has_value() || pending.has_value() || awaiting_operation.has_value() || bool(durable_commit); };
     native.object_revision = [](editor::ObjectId object)->std::optional<editor::Revision> {
         if(!controller)return std::nullopt;
         const auto& placements=controller->state().document.placements;
@@ -4409,7 +4770,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     creation.scope=[]()->std::optional<editor_native::GestureScope>{
         // Retain interception while held, so prepare_creation can reject a
         // native New/Edit request instead of passing it through as unshared.
-        if(!complexity_authorized()){const auto value=current_projection_scope();return value.epoch?std::optional(value):std::nullopt;}
+        if(staged_capture || !complexity_authorized()){const auto value=current_projection_scope();return value.epoch?std::optional(value):std::nullopt;}
         const auto value=current_gesture_scope(true);return value.epoch?std::optional(value):std::nullopt;
     };
     creation.prepare=prepare_creation;creation.current=creation_current;creation.lease_valid=creation_lease;creation.returned=return_creation;
@@ -4465,7 +4826,7 @@ void shutdown() {
     pending.reset();awaiting_operation.reset();waiting_acts.reset();rollback_fence.reset();before_apply_valid=false;
     save_terrain.reset();export_terrain.reset();close_terrain.reset();export_return_result.reset();save_cancelling=false;
     guarded_placements.clear();guarded_terrain.clear();requested_scopes.clear();lease_use.clear();
-    editor_creation::shutdown();local_creation.reset();rejection_restore.reset();prepared_native.reset();rendered_revision=0;
+    editor_creation::shutdown();local_creation.reset();rejection_restore.reset();staged_capture.reset();prepared_native.reset();rendered_revision=0;
     waiting_history.reset();authoring_projection_override.reset();test_menu.reset();guarded_settings.clear();guarded_authoring.clear();cast_uploads.clear();cast_upload_errors.clear();
     solo_preview.reset();solo_ready_scope.reset();pending_solo_return.reset();pending_solo_request=0;
     native_playtesting=return_started=disconnected_return=end_after_return=false;return_error.clear();settled_cancellation.reset();
@@ -4503,7 +4864,7 @@ void edit_acts(int value){
     if(!controller || !complexity_authorized() || detached_scene() || value<0 || value>3 || !cached.can_save)return;
     waiting_acts=WaitingActs{TestMenu{current_gesture_scope(),native_generation,controller->state().document.revision,editor_native::state().act},value,now_ms()};schedule();
 }
-void create_asset(uint32_t type){if(!detached_scene() && creation_actions.size()<8){creation_actions.push_back({type,{}});schedule();}}
+void create_asset(uint32_t type,uint32_t editor_id){if(!detached_scene() && creation_actions.size()<8){creation_actions.push_back({type,{},editor_id});schedule();}}
 void edit_asset(editor::ObjectId class_id){if(!detached_scene() && creation_actions.size()<8){creation_actions.push_back({0,class_id});schedule();}}
 void set_extended_complexity(bool value){complexity_request=value;schedule();}
 void resolve_join(int choice) {action(choice==0?Action::HandoffSave:choice==1?Action::HandoffDiscard:Action::HandoffCancel);}

@@ -35,8 +35,8 @@ static void test_inverse_waits_for_strict_later_frame_proof(){
         CHECK(n.callbacks.transaction_pending()&&!n.callbacks.gate({placement})&&!n.callbacks.terrain_gate({},{}));
         CHECK(!n.callbacks.navigation_allowed()&&!n.callbacks.history_available(false));
         const auto saves=n.save_calls+n.save_as_calls,enters=n.enters,captures=n.draft_capture_attempts;
-        if(author){runtime_guest::save();runtime_guest::playtest();runtime_guest::create_asset(0x2B978C46);}
-        else{runtime_host::save();runtime_host::playtest();runtime_host::create_asset(0x2B978C46);}
+        if(author){runtime_guest::save();runtime_guest::playtest();runtime_guest::create_asset(0x2B978C46,0);}
+        else{runtime_host::save();runtime_host::playtest();runtime_host::create_asset(0x2B978C46,0);}
         for(unsigned i=0;i<3;++i){submit_inverse(author);service_rejection(author);}
         CHECK(controller->state()==canonical&&(author?runtime_guest::store.snapshot():runtime_host::store.snapshot())==checkpoint);
         CHECK(n.save_calls+n.save_as_calls==saves&&n.enters==enters&&n.draft_capture_attempts==captures);
