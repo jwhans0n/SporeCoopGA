@@ -1311,3 +1311,104 @@ New routes, foreign/tail equality, collision reminting and atomic malformed
 input rejection. Evidence is under `out/preview9-c32-save-witness-audit/` and
 `out/preview9-c34-alias-online-*.json`; running-game Save/reopen of the corrected
 new aliases remains a separate acceptance gate.
+
+
+## Resumable native creation Save probes
+
+`tools/tests/coop_editor_creation_save.py` promotes the retained staged probe
+into an inert-by-default source fixture. It performs one explicit `enter`,
+`steps`, `inspect`, `finish`, or `cancel` stage. Every invocation requires an
+owned candidate/metadata pair, two or four exact participants, an author and
+a new OUT directory. Only Root's UI owner executes it. Each stage preserves
+its result and commands independently, avoiding the overwritten command-log
+problem in the historical Building probe. The OUT checkpoint head rejects
+older/modified parent results; candidate, process pins, project/epoch, peer
+generations, creation serial and Native request must remain unchanged. An
+attempted recipe file is not replayed, and a dispatched Save is one-shot.
+
+The explicit profiles bind separate request and model identities:
+
+| Profile | New request editor ID | Native model type | Toolbar subtype |
+| --- | --- | --- | --- |
+| `creature` | `465C50BA` | `9EA3031A` AnimalCreature | none |
+| `building-house` | `4E3F7777` | `4E3F7777` BuildingHouse | `C00F0341` |
+| `vehicle-military-land` | `7D433FAD` | `7D433FAD` VehicleMilitaryLand | `C00F0340` |
+| `spaceship` | `96B24187` | `98E03C0D` UFO | none |
+
+`coop_editor_creation_validation.py` retains the previously verified bounded
+ReadProcessMemory sampler and ABI checks. Its source promotion changes the
+explicit request-profile table and adds an `--execute`/new-OUT gate, rather
+than introducing Native function calls or new field assumptions. Before Done,
+the stage fixture requires the exact request/model and allowed subtype,
+changed model/metadata, computed finish state zero with debug bypass ignored,
+no save/exit command pending, visible owned editor Done, and no active early
+Done gate. It then rechecks the logical/session guard and performs one ordinary
+Done click. A nonzero finish state stops with the masks and scene preserved.
+Successful return requires one durable revision and history item, unchanged
+old cast rows, one new immutable family-correct class, unchanged placement/act
+counts, matching strict Native checks and zero faults. This is a creation Save
+probe; Adventure Save and cold reopen remain separate acceptance.
+
+The Creature input file `tools/tests/fixtures/editor_creation/creature-mouth-c7.json`
+retains C7's exact mouth drag and naming clicks. Its provenance is historical:
+C7 returned successfully, but C39's replay completed those instantaneous input
+commands without changing the model/name (`changed=[0,0]`, finish state 4,
+Mouthless). Root retained that no-mutation result before calibrating slower
+normal drag, initial focus and naming waits. Thus the file is not a qualified
+current recipe; the fresh zero-blocker preflight remains mandatory.
+
+C11 proves a valid BuildingHouse with three accepted body parts and the name
+`Preview9BuildingProbeC11`. It does not prove CityHall, and the retained final
+command log contains only the last inspections, not the successful part-drag
+sequence. The source fixture therefore permits BuildingHouse calibration from
+an explicit measured steps file, but supplies no invented three-part recipe.
+No valid minimal Spaceship construction/zero-blocker Save recipe is retained.
+The C38 four-player run proves independent entry and Cancel, not those Saves.
+
+A bounded sequence uses the same owned metadata/candidate/instances/author and
+profile on every invocation:
+
+```powershell
+$common = @('--execute', '--metadata', $metadata, '--candidate', $candidate, '--instances', '95', '96', '--author', '95', '--profile', 'creature')
+py -3 tools/tests/coop_editor_creation_save.py @common --stage enter --output out/creation-enter
+py -3 tools/tests/coop_editor_creation_save.py @common --stage steps --state out/creation-enter/result.json --steps out/current-measured-creature-steps.json --name PreviewCreation --output out/creation-design
+py -3 tools/tests/coop_editor_creation_save.py @common --stage inspect --state out/creation-design/result.json --output out/creation-inspected
+py -3 tools/tests/coop_editor_creation_save.py @common --stage finish --state out/creation-inspected/result.json --output out/creation-saved
+```
+
+Use `--profile building-house` for the explicit House entry. Use the latest
+result after an invalid Finish to inspect or apply a different measured input
+file, then repeat the fresh preflight. A previous Save dispatch is terminal and
+must not be retried. Neither fixture launches, deploys, rewrites profiles or
+forces Native acceptance. Offline tests use fake games, owner checks and
+Native receipts; they establish the stage/checkpoint contract, not actual
+Creature/Building/Spaceship Save acceptance.
+
+
+C39 subsequently calibrated and completed Creature creation Save from both
+roles with focus, held drag, naming waits and blur. The exact nine steps are
+retained in `tools/tests/fixtures/editor_creation/creature-held-c39.json`, from
+`out/preview9-c39-creature-slow-design.measured.json`. Host admission reached
+R17 and guest admission R18; each fresh preflight had changed flags `[1,1]`
+and computed finish state zero. Own Undo/Redo preserved the foreign class.
+A comparison in the first history driver incorrectly required an unchanged
+`content_revision`; normal Redo correctly advances that revision, while
+restoring the immutable key/payload. This fixture correction is not a product
+mutation. Evidence: the C39 host/guest creature Save and author-history OUT
+receipts. It remains case-specific evidence, not a general palette guarantee.
+
+The staged fixture also supports `--target-class <full-id:generation>` on
+every stage for an existing immutable class. The UI owner first selects the
+proper native cast card; `enter` clicks only Edit. Baseline class/family/key
+must exist. The read-only sampler uses the existing Request source-key field
+and the verified `FFFFFFFF` constructor sentinel, requires `new_asset=false`,
+and compares the complete source key. The New profile table and default New
+flow remain unchanged. An Edit Save requires one exact `Replace shared asset
+content` history item (the current production label), the same class/placement/
+act roster, unchanged unrelated asset rows, unchanged target behavior/settings,
+a different immutable family-correct key, and target `content_revision` equal
+to the new durable revision. No concurrent behavior case is covered: the
+canonical baseline stays fixed while the local editor is open. For example,
+append `--target-class 8589935936:1` to the same common arguments before the
+`enter`, `steps`, `inspect`, and `finish` commands above. A zero-blocker
+preflight is still required before the one ordinary Done click.

@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "profile": "creature",
+  "viewport": [
+    1024,
+    768
+  ],
+  "evidence": "out/preview9-creation-probe-c7/commands.json entries46,49..51,57,63..65; host-save-result.json passed",
+  "steps": [
+    {
+      "drag": [
+        60,
+        150,
+        700,
+        340
+      ]
+    },
+    {
+      "click": [
+        513,
+        744
+      ]
+    },
+    {
+      "text": "{name}"
+    },
+    {
+      "click": [
+        663,
+        746
+      ]
+    }
+  ],
+  "qualification": "Historical C7 normal-input evidence only. C39 replay completed commands but left changed=[0,0], finish=4 (Mouthless), and Name Your Creature unchanged. Current valid construction/naming requires fresh measured calibration and a zero-blocker finish receipt.",
+  "current_replay_failure_evidence": "out/preview9-c39-host-creature-design/result.json"
+}
