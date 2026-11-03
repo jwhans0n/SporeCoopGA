@@ -1,7 +1,7 @@
 # Shared Adventure Editor preview 9 validation
 
 Development candidate: **`0.7.5.0-ga-editor-preview.9`**, protocol **23**,
-branch `feat/ga-editor-multi-act`, 2026-11-02. The original supported GOG 2024
+branch `feat/ga-editor-multi-act`, updated 2026-11-03. The original supported GOG 2024
 executable and its exact 4 GB LAA variant remain supported. Older protocol
 clients are explicitly rejected. This report records development evidence,
 not completed native acceptance, a main merge or a public release.
@@ -2722,3 +2722,13 @@ remaining frame work is reduced. Evidence:
 `out/preview9-c36-commit-probe-two-town/summary.json`, full result SHA-256
 `f1f7ad230060879b71a5fce685ab8dcf179c50d958e7296fd78222294c70cedf`, and
 `out/preview9-c36-commit-final-proof/result.json`.
+
+The later full portable `make test B=out/editor-preview9-final` exits 0.
+Counts include document 3,119, protocol 9,218, project 5,683, store 2,015,
+Session UDP 31,704 and accounting 3,425. Saved codec/store pass 113/24 cases;
+pose format passes 28 genuine pairs and 113 atomic negatives. The log is retained
+at `out/preview9-c36-repository-tests.log`, SHA-256
+`3f39c6b3b295f3cf9833ef59a16b2aa9c249d17a5c87f0355a89a2785b1b8684`.
+This portable run is separate from the Native fixtures and does not qualify
+later Native snapshot-copy changes. The timing parser's later optional copy
+span update passes 46 offline tests and remains compatible with older counters.
