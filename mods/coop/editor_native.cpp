@@ -94,6 +94,8 @@ std::map<sui::Win,uint32_t> fenced_windows;
 uint64_t history_ui_updates=0,history_ui_undo=0,history_ui_redo=0,history_ui_changes=0,history_ui_expired=0;
 uint64_t fenced_generation=0;
 uint64_t generation = 1, captures = 0, restores = 0, rejected = 0;
+DWORD native_owner_thread=0;
+void clear_staged_pose_prepare();
 unsigned validation_depth=0;
 unsigned service_depth=0;
 struct ServiceScope {
@@ -4783,6 +4785,8 @@ void SK_CDECL drain_local_view(void*){
 }
 
 bool init(const SkHost* host, SkMod* mod, Ctx context) {
+    clear_staged_pose_prepare();
+    native_owner_thread=GetCurrentThreadId();
     clear_environment_refresh();
     script_events=0;
     input_speech=false;
@@ -4950,6 +4954,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
 }
 
 void shutdown() {
+    clear_staged_pose_prepare();
     clear_environment_refresh();
     staged_pose.reset();
     clear_terrain_capture_rotations();
@@ -6168,6 +6173,7 @@ bool apply(const editor::Document& document, std::string& error) {
 
 namespace {
 #include "editor_native_pose_prepare_impl.h"
+#include "editor_native_pose_prepare_staged_impl.h"
 }
 static bool prepare_impl(const Snapshot& base,const editor::Document& document,const editor::Change& change,
              const Snapshot* artifact,Snapshot& out,std::string& error,const PreparedPoseContext* pin=nullptr){
@@ -6451,6 +6457,24 @@ bool prepare(const Snapshot& base,const editor::Document& document,const editor:
     return prepare_impl(base,document,change,artifact,out,error);
 }
 
+PosePrepareResult begin_pose_prepare(const Snapshot& base,const editor::Document& document,const editor::Change& change,
+                                    const std::function<bool()>& current,PosePrepareTicket& ticket,std::string& error){
+    if(!native_owner_thread || GetCurrentThreadId()!=native_owner_thread){error="Staged Native preparation requires its game thread";return PosePrepareResult::Error;}
+    ServiceScope service_scope;
+    try{return staged_pose_begin(base,document,change,current,ticket,error);}
+    catch(...){error="The staged Native preparation inputs could not be retained";return PosePrepareResult::Error;}
+}
+PosePrepareResult finish_pose_prepare(PosePrepareTicket ticket,Snapshot& out,std::string& error){
+    if(!native_owner_thread || GetCurrentThreadId()!=native_owner_thread){error="Staged Native preparation requires its game thread";return PosePrepareResult::Error;}
+    ServiceScope service_scope;
+    return staged_pose_finish(ticket,out,error);
+}
+void cancel_pose_prepare(PosePrepareTicket ticket){
+    if(!native_owner_thread || GetCurrentThreadId()!=native_owner_thread)return;
+    ServiceScope service_scope;
+    if(staged_pose_prepare && staged_pose_prepare->ticket==ticket && GetCurrentThreadId()==native_owner_thread)clear_staged_pose_prepare();
+}
+
 bool edit_owned_snapshot(const Snapshot& base,const std::function<bool(void*,std::string&)>& edit,
                          Snapshot& out,std::string& error){
     if(!supported || !edit || !validate(base,base.document,error))return false;
@@ -6564,6 +6588,92 @@ bool apply_prepared(const Snapshot& prepared,const editor::Change& change,std::s
             {std::get<editor::Vec3>(p.properties.at(kDestinationPositionProperty)),std::get<editor::Rotation>(p.properties.at(kDestinationRotationProperty)),std::get<float>(p.properties.at(kDestinationScaleProperty))});
     }
     skg::field<bool>(owner,0x84)=true;applying=false;refresh_selection();++restores;error.clear();return true;
+}
+
+bool apply_prepared_checked(const Snapshot& prepared,const editor::Change& change,uint64_t expected_generation,
+                            const SceneOwner& pin,const std::function<bool()>& authority,std::string& error){
+    if(!native_owner_thread || GetCurrentThreadId()!=native_owner_thread){error="The staged Native application requires its game thread";return false;}
+    const SceneOwner owned_pin=pin;
+    ServiceScope service_scope;
+    const auto current_callback=authority;const auto apply_marker=original_apply_marker;
+    struct Row {Binding binding;uint32_t kind,key;};std::vector<Row> roster;
+    uintptr_t first=0,last=0;
+    const auto raw=[&]{
+        if(!supported || generation!=expected_generation || !apply_marker || original_apply_marker!=apply_marker || !staged_pose_raw_owner(owned_pin))return false;
+        Rows rows;auto* resource=reinterpret_cast<void*>(owned_pin.resource);
+        if(!editor_native::rows(resource,0x2C10,0x238,kPlacementLimit,rows) ||
+           uintptr_t(rows.begin)!=first || uintptr_t(rows.end)!=last)return false;
+        size_t live=0;for(auto row=rows.begin;row!=rows.end;row+=0x238)live+=live_slot(row);
+        if(live!=roster.size())return false;
+        for(const auto& row:roster){auto* marker=marker_for_key(resource,row.binding.marker);
+            if(!marker || marker_id(row.binding.marker)!=row.binding.object || skg::field<uint32_t>(marker,0)!=row.kind ||
+               skg::field<uint32_t>(marker,0x228)!=row.key)return false;}
+        return true;
+    };
+    const auto checked=[&]{try{return raw() && current_callback && current_callback() && raw();}catch(...){return false;}};
+    const auto expired=[&]{if(error.empty())error="The staged Native application lost its original scene or operation";return false;};
+    try{
+        if(applying || !supported || generation!=expected_generation || !staged_pose_raw_owner(owned_pin) || !current_callback)return expired();
+        const Snapshot owned=prepared;const editor::Change edit=change;
+        const auto& patch=edit.patch;
+        if(patch.fields.empty() || !patch.objects.empty() || !patch.classes.empty() || patch.acts || !patch.terrain.empty())return expired();
+        auto* resource=reinterpret_cast<void*>(owned_pin.resource);Rows markers;
+        if(!rows(resource,0x2C10,0x238,kPlacementLimit,markers))return expired();
+        first=uintptr_t(markers.begin);last=uintptr_t(markers.end);
+        std::set<editor::ObjectId> live_ids;
+        for(auto row=markers.begin;row!=markers.end;row+=0x238)if(live_slot(row)){
+            const auto slot=slot_index(markers,row);const auto id=marker_id(slot);auto* marker=row+4;
+            const auto wanted=owned.document.placements.find(id);
+            if(!live_ids.insert(id).second || wanted==owned.document.placements.end() ||
+               skg::field<uint32_t>(marker,0)!=uint32_t(wanted->second.class_id.id))return expired();
+            roster.push_back({Binding{id,slot},skg::field<uint32_t>(marker,0),skg::field<uint32_t>(marker,0x228)});
+        }
+        if(live_ids.size()!=owned.document.placements.size())return expired();
+        std::set<editor::ObjectId> targets;
+        for(const auto& field:patch.fields){
+            const auto found=owned.document.placements.find(field.object);
+            if((field.field.field!=editor::Field::Position && field.field.field!=editor::Field::Rotation) ||
+               found==owned.document.placements.end() || found->second.properties.contains(kDestinationPositionProperty))return expired();
+            targets.insert(field.object);
+        }
+        if(!checked())return expired();
+        struct Applying {bool previous=applying;Applying(){applying=true;}~Applying(){applying=previous;}} guard;
+        for(auto id:targets){
+            if(!checked())return expired();
+            auto* marker=marker_for_id(reinterpret_cast<void*>(owned_pin.resource),id);
+            if(!marker)return expired();const auto& placement=owned.document.placements.at(id);
+            skg::field<editor::Vec3>(marker,4)=placement.position;skg::field<editor::Rotation>(marker,0x10)=placement.rotation;
+            const auto previous=skg::field<float>(marker,0x20);
+            if(const auto field=placement.properties.find(kRelativeScaleProperty);field!=placement.properties.end())
+                skg::field<float>(marker,0x24)=std::get<float>(field->second);
+            else if(previous>0)skg::field<float>(marker,0x24)*=placement.scale/previous;
+            skg::field<float>(marker,0x20)=placement.scale;
+            const auto assign=[&]<class T>(uint32_t property,uint32_t offset){const auto field=placement.properties.find(property);
+                if(field!=placement.properties.end())skg::field<T>(marker,offset)=std::get<T>(field->second);};
+            assign.template operator()<float>(kElevationProperty,0x220);assign.template operator()<float>(kSoundPitchProperty,0x1E0);
+            assign.template operator()<float>(kSoundGainProperty,0x1E4);
+            // Preserve audio through the same verified trampoline as the
+            // legacy wrapper, with the copied operation/owner cleanup guard.
+            {MarkerAudio audio(reinterpret_cast<void*>(owned_pin.data),marker,checked);
+                if(!checked())return expired();
+                apply_marker(reinterpret_cast<void*>(owned_pin.data),marker,false);
+                if(!checked())return expired();}
+            if(!checked())return expired();
+            marker=marker_for_id(reinterpret_cast<void*>(owned_pin.resource),id);
+            if(!marker || !exact_grounding_position(skg::field<editor::Vec3>(marker,4),placement.position) ||
+               !editor_native_terrain_rotations::exact(skg::field<editor::Rotation>(marker,0x10),placement.rotation) ||
+               std::memcmp(skg::ptr_add<void>(marker,0x20),&placement.scale,sizeof(float)))return expired();
+            const auto same_property=[&](uint32_t property,uint32_t offset){const auto field=placement.properties.find(property);
+                if(field==placement.properties.end())return true;const auto* value=std::get_if<float>(&field->second);
+                return value && !std::memcmp(skg::ptr_add<void>(marker,offset),value,sizeof(float));};
+            if(!same_property(kRelativeScaleProperty,0x24) || !same_property(kElevationProperty,0x220) ||
+               !same_property(kSoundPitchProperty,0x1E0) || !same_property(kSoundGainProperty,0x1E4))return expired();
+        }
+        if(!checked())return expired();
+        skg::field<bool>(reinterpret_cast<void*>(owned_pin.data),0x84)=true;
+        refresh_selection();if(!checked())return expired();
+        ++restores;error.clear();return true;
+    }catch(...){return expired();}
 }
 
 bool apply(const editor::Document& document,const editor::Change& change,const Snapshot* artifact,std::string& error) {
@@ -7230,6 +7340,15 @@ std::string status() {
             prefix+"_begin="+std::to_string(capture_last_begin[i])+prefix+"_end="+std::to_string(capture_last_end[i])+
             prefix+"_frame="+std::to_string(capture_last_frame[i]);
     }
+    constexpr std::array<const char*,11> staged_reasons{"none","unavailable","continuation","grounding","rotation_ticket","shape","destination","projection","legacy_base","legacy_after","read_normalization"};
+    result+=" pose_prepare_started="+std::to_string(staged_pose_starts)+" pose_prepare_ready="+std::to_string(staged_pose_ready)+
+        " pose_prepare_errors="+std::to_string(staged_pose_errors)+" pose_prepare_cancelled="+std::to_string(staged_pose_cancelled)+
+        " pose_prepare_fallbacks="+std::to_string(staged_pose_fallbacks)+" pose_prepare_fallback="+staged_reasons[size_t(staged_pose_last_fallback)]+
+        " pose_prepare_grounding="+std::to_string(terrain_grounding.size())+" pose_prepare_rotation_ticket="+std::to_string(unsigned(bool(terrain_capture_rotations)))+
+        " pose_prepare_pending="+std::to_string(unsigned(bool(staged_pose_prepare)))+
+        " pose_prepare_owner="+std::to_string(unsigned(staged_pose_prepare&&staged_pose_prepare->after.p))+
+        " pose_prepare_serial="+std::to_string(staged_pose_prepare?staged_pose_prepare->ticket.serial:0)+
+        " pose_prepare_frame="+std::to_string(staged_pose_prepare?staged_pose_prepare->frame:0);
     return result+" opaque_pose_hits="+std::to_string(opaque_pose_hits)+
         " opaque_pose_fallbacks="+std::to_string(opaque_pose_fallbacks)+
         " history_ui_updates="+std::to_string(history_ui_updates)+

@@ -1547,8 +1547,13 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
 #include "editor_native_environment_fixture.h"
 #include "editor_native_complexity_fixture.h"
 #include "editor_native_pose_prepare_fixture.h"
+#include "editor_native_pose_prepare_staged_fixture.h"
 #include "editor_native_service_pulse_fixture.h"
 int main(int argc,char** argv){
+    if(argc==2&&std::string(argv[1])=="--pose-prepare-staged-only"){
+        test_two_frame_native_pose_prepare();test_staged_pose_checked_application();std::printf("native staged pose prepare: %u checks passed\n",checks);return 0;
+    }
+    if(argc==1){test_two_frame_native_pose_prepare();test_staged_pose_checked_application();}
     if(argc==2&&std::string(argv[1])=="--service-pulse-only"){service_pulse_fixture::test();std::printf("native service pulse: %u checks passed\n",checks);return 0;}
     if(argc==1)service_pulse_fixture::test();
     if(argc==2&&std::string(argv[1])=="--pose-prepare-only"){

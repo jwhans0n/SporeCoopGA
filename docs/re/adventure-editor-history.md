@@ -1803,3 +1803,64 @@ revision matched the old R22 document; both strict Native checks agreed in the
 new epoch and both fault counters were zero. The document hash changes with its
 new namespace, so old/new hash equality is not the recovery criterion. Evidence:
 `out/preview9-c44-recover-creations/result.json`.
+
+## Default-off two-frame ordinary pose preparation experiment
+
+`SPORECOOP_EDITOR_TWO_FRAME_POSE=1` enables a bounded development experiment;
+the default remains the existing synchronous commit path. Only ordinary forward
+Position/Rotation commits enroll. Terrain, creation, history, Scale, property
+changes, destination-bearing targets, legacy Native profiles and unavailable
+projection provenance retain the existing route. A nonempty grounding ledger
+or a live terrain rotation ticket also opts out: this experiment does not infer
+canonical XYZ or quaternion authority from a previously rendered scene.
+
+The first game-frame phase owns immutable Snapshot/Document/Change values and
+copies its policy callback before any Native callback. It pins the actual raw
+scene owner, source, generation, value context and genuine cached projection
+issuer. It performs the existing BASE Read, private producer Write, genuine
+AFTER Read and exact fixed-point Write. All class/act/crew/unknown bytes remain
+in the produced image. It releases the producer and retains exactly one unique
+private AFTER owner, plus bounded value witnesses, between frames. It retains
+no ParsedImage, ValidationScope, borrowed marker pointer or worker-owned Native
+reference. The combined owned-value preflight is bounded to 64 MiB.
+
+A later actual SDK frame rechecks owner, context, resolver identities, the full
+private slot/class/native-key roster and all retained pose/companion words. It
+then reverses only the allowed known primitives, requires one full Native Write
+to equal the entire original BASE image, restores the private AFTER fields and
+releases that last owner. Every Native Release runs under the same nonreentrant
+service guard. Context and asset witnesses close again after the final Release
+before publishing a value-only prepared Snapshot. A same-frame poll performs
+no Read or Write. The successful proof still totals two Reads, three Writes
+and zero full AFTER projections; this experiment changes their frame placement,
+not their unsupported-byte coverage.
+
+Session exposes an explicit Native-pending phase before persistence. Semantic
+preparation does not report a successful live apply while Native proof is
+pending. Runtime holds new local input while preserving the original read/value
+scope and transport service. After the private proof is Ready, the real apply
+still performs both existing fresh live integrity Writes. It requires the
+original raw scene owner and exact live BASE; an exact-BASE mismatch discards
+the optional seal and uses full existing preparation. The checked apply uses
+copied authority and owner values around every Native callback, including audio
+cleanup. A failed partially applied operation can restore only its original
+fenced owner. Persistence and accepted confirmation begin after actual apply.
+
+Read-only status exposes `pose_prepare_started`, `pose_prepare_ready`, errors,
+cancellations, fallback count/reason, grounding-row count, rotation-ticket
+presence, pending ticket/owner and its starting frame. Existing per-call proof
+spans identify the BASE Read/fixed-point frame and the later inverse frame.
+These fields are diagnostics, not authority. In particular a guest whose join
+populates grounding may take the complete old path; actual route counters must
+establish enrollment before interpreting a timing comparison.
+
+The controlled i686 fixture covers Position and Rotation, sparse live versus
+dense serialized slots, same-frame zero-work polling, exact call counts, all
+Snapshot sidecars, between-frame opaque/class/act/Captain changes, private pool
+replacement, resolver/context/owner expiry, callback-held input retirement,
+wrong tickets, off-thread cancellation refusal, producer/final Release expiry
+and cleanup reentry. Checked-apply cases include a callback that changes both
+the actual source and the caller's borrowed owner value; the independent copy
+rejects it. Focused source/EXE receipts are retained at
+`out/editor-preview9-saved-cache/native-stage-o2-receipt.json`. Actual Native
+frame and confirmation targets remain unqualified until a quiet A/B run.

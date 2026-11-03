@@ -321,6 +321,17 @@ bool restore(const Snapshot&, std::string& error);
 // are merged into base so unrelated accepted changes cannot be overwritten.
 bool prepare(const Snapshot& base, const editor::Document&, const editor::Change&,
              const Snapshot* artifact, Snapshot& out, std::string& error);
+// Experimental two-frame private preparation. Calls and cancellation belong to
+// the game thread outside Present. The value ticket owns no Native pointer;
+// at most one private AFTER resource is retained inside this adapter.
+struct PosePrepareTicket {uint64_t serial=0;bool operator==(const PosePrepareTicket&)const=default;};
+enum class PosePrepareResult {Fallback,Pending,Ready,Error};
+PosePrepareResult begin_pose_prepare(const Snapshot&,const editor::Document&,const editor::Change&,
+                                    const std::function<bool()>& current,PosePrepareTicket&,std::string&);
+PosePrepareResult finish_pose_prepare(PosePrepareTicket,Snapshot&,std::string&);
+void cancel_pose_prepare(PosePrepareTicket);
+bool apply_prepared_checked(const Snapshot&,const editor::Change&,uint64_t generation,const SceneOwner&,
+                            const std::function<bool()>& current,std::string&);
 // Reviewed native authoring helpers may mutate this independently owned
 // ScenarioResource synchronously. Never retain the pointer or call scene APIs.
 // The result is reprojected with base's explicit schemas and stable bindings.
