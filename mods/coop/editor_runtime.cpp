@@ -27,6 +27,7 @@
 #include "editor_reopen_identity.h"
 #include "editor_project.h"
 #include "editor_placement_diagnostic.h"
+#include "editor_asset_diagnostic.h"
 #include "editor_session.h"
 #include "editor_store.h"
 #include "game.h"
@@ -5303,45 +5304,13 @@ std::string debug(const std::vector<std::string>& args) {
         const bool inspected=editor_creation_native::inspect_model(key,fence,result,error);
         return editor_creation_native::model_admission_status(result)+(inspected?"":" error="+error.substr(0,256));
     }
-    if((args.size()==1 && args[0]=="assets") || (args.size()==2 && args[0]=="asset")){
+    if(!args.empty() && (args[0]=="assets" || args[0]=="asset")){
         if(!controller)return "Shared assets unavailable";
-        std::optional<editor::ObjectId> only;
-        if(args[0]=="asset"){
-            const auto& text=args[1];const auto separator=text.find(':');
-            auto decimal=[](const std::string& digits,uint64_t maximum,uint64_t& out){
-                if(digits.empty())return false;out=0;
-                for(const auto digit:digits){
-                    if(digit<'0'||digit>'9'||out>(maximum-uint64_t(digit-'0'))/10)return false;
-                    out=out*10+uint64_t(digit-'0');
-                }
-                return out!=0;
-            };
-            uint64_t id=0,generation=0;
-            if(text.size()>32 || separator==std::string::npos ||
-               !decimal(text.substr(0,separator),UINT64_MAX,id) || !decimal(text.substr(separator+1),UINT32_MAX,generation))
-                return "Use coop.editor asset <class-id:generation>";
-            only=editor::ObjectId{id,uint32_t(generation)};
-        }
+        editor_asset_diagnostic::Query query;
+        if(!editor_asset_diagnostic::query(args,query))return "Use coop.editor assets [first count] (count 1..24), or coop.editor asset <class-id:generation>";
         const auto& doc=controller->state().document;std::string hash,error;
         if(!editor_session::document_hash(doc,hash,error))return "Shared assets unavailable: "+error;
-        std::string result="revision="+std::to_string(doc.revision)+" durable="+std::to_string(controller->view().locally_durable)+" canonicaldocumenthash="+hash+"\n";
-        bool found=false;
-        for(const auto& [id,row]:doc.class_settings){
-            if(only && row.class_id!=*only)continue;
-            const auto content=editor::value(doc,id,{editor::Field::Property,editor::kClassAssetResourceProperty});
-            const auto* key=content?std::get_if<editor::ResourceKey>(&*content):nullptr;if(!key)continue;
-            auto block=row.properties.find(editor_native::kCastBlockProperty);
-            const auto* behavior=block==row.properties.end()?nullptr:std::get_if<editor::StructuredValue>(&block->second);if(!behavior)continue;
-            char text[192];snprintf(text,sizeof text,"asset class=%llu:%u settings=%llu:%u key=%08X!%08X.%08X content_revision=%llu behavior_sha256=",
-                static_cast<unsigned long long>(row.class_id.id),row.class_id.generation,static_cast<unsigned long long>(id.id),id.generation,key->group,key->instance,key->type,
-                static_cast<unsigned long long>(editor::field_revision(doc,id,{editor::Field::Property,editor::kClassAssetResourceProperty})));
-            const auto line=std::string(text)+upd::sha256_hex(behavior->bytes)+"\n";
-            if(result.size()+line.size()>12u*1024){result+="truncated=1\n";break;}result+=line;
-            found=true;
-            if(only)break;
-        }
-        if(only && !found)result+="asset_not_found=1\n";
-        return result;
+        return editor_asset_diagnostic::format(doc,controller->view().locally_durable,hash,query);
     }
     if(durable_commit && args.size()==1 && args[0]=="accounting")return "commit_worker=1 phase="+std::string(durable_commit->flushing?"flush":"encode")+
         " canonical_revision="+std::to_string(controller->state().document.revision)+" prepared_revision="+std::to_string(durable_commit->state.document.revision);

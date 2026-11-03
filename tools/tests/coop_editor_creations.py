@@ -23,11 +23,16 @@ FAMILIES = ('creature', 'building', 'vehicle', 'spaceship')
 TYPES = (0x2B978C46, 0x2399BE55, 0x24682294, 0x476A98C7)
 NEW, EDIT, CHOICE = 0xC00F0301, 0xC00F0302, 0xC00F0310
 ASSET = re.compile(r'^asset class=(\d+:\d+) settings=(\d+:\d+) key=([0-9A-Fa-f]{8})!([0-9A-Fa-f]{8})\.([0-9A-Fa-f]{8}) content_revision=(\d+) behavior_sha256=([0-9a-f]{64})$')
+ASSET_PAGE = re.compile(r'^assets_page project=([0-9a-f]{32}) epoch=(\d+) first=(\d+) count=(\d+) returned=(\d+) next=(\d+) total=(\d+)$', re.M)
+ASSET_PAGE_ROWS, ASSET_MAX_ROWS = 24, 8192
 
 
 def creation_command(line):
     if line in ('coop.editor assets', 'coop.editor creations'):
         return True
+    page = re.fullmatch(r'coop\.editor assets ([0-9]{1,4}) ([0-9]{1,2})', line)
+    if page:
+        return int(page[1]) <= ASSET_MAX_ROWS and 1 <= int(page[2]) <= ASSET_PAGE_ROWS
     if re.fullmatch(r'coop\.editor model [0-9A-Fa-f]{8}![0-9A-Fa-f]{8}\.[0-9A-Fa-f]{8}', line):
         return True
     match = re.fullmatch(r'coop\.editor asset ([0-9]{1,20}):([0-9]{1,10})', line)
@@ -50,6 +55,9 @@ class CreationGame(PublicGame):
         super().__init__(instance, output, timeout, deadline)
         self.console = CreationConsole(instance, deadline)
         self.viewport = viewport
+
+    def asset_text(self):
+        return fetch_assets(self.call)
 
     def choose_card(self, name):
         def point():
@@ -98,6 +106,41 @@ def assets(text):
         rows[found[1]] = dict(settings=found[2], key=tuple(int(found[i], 16) for i in (3, 4, 5)),
                               content_revision=int(found[6]), behavior=found[7])
     return dict(revision=int(header[1]), durable=int(header[2]), hash=header[3], rows=rows)
+
+
+def fetch_assets(call):
+    """Own a complete bounded read-only snapshot; never combine moving pages."""
+    first, expected, combined, seen = 0, None, [], set()
+    for _ in range((ASSET_MAX_ROWS + ASSET_PAGE_ROWS - 1)//ASSET_PAGE_ROWS + 1):
+        text = call(f'coop.editor assets {first} {ASSET_PAGE_ROWS}')
+        snapshot = assets(text)
+        pages = ASSET_PAGE.findall(text)
+        if len(pages) != 1 or len(re.findall(r'^assets_page ', text, re.M)) != 1 or len(re.findall(r'^revision=', text, re.M)) != 1:
+            raise FixtureError('Missing/duplicate canonical asset page identity')
+        project, epoch, offset, count, returned, following, total = pages[0]
+        epoch, offset, count, returned, following, total = map(int, (epoch, offset, count, returned, following, total))
+        if (project == '0'*32 or not 0 < epoch <= 0xFFFFFFFFFFFFFFFF or
+                offset != first or count != ASSET_PAGE_ROWS or not first <= total <= ASSET_MAX_ROWS or
+                returned != min(count, total-first) or following != first+returned or
+                len(snapshot['rows']) != returned):
+            raise FixtureError('Malformed/incomplete canonical asset page')
+        identity = snapshot['revision'], snapshot['durable'], snapshot['hash'], project, epoch, total
+        if expected is None:
+            expected = identity
+            combined = [f'revision={identity[0]} durable={identity[1]} canonicaldocumenthash={identity[2]}',
+                        f'assets_context project={project} epoch={epoch} total={total}']
+        elif identity != expected:
+            raise FixtureError('Canonical asset context/revision changed between pages')
+        if seen.intersection(snapshot['rows']):
+            raise FixtureError('Duplicate canonical asset row across pages')
+        seen.update(snapshot['rows'])
+        combined.extend(line for line in text.splitlines() if line.startswith('asset '))
+        if following == total:
+            if len(seen) != total:
+                raise FixtureError('Incomplete canonical asset inventory')
+            return '\n'.join(combined)+'\n'
+        first = following
+    raise FixtureError('Canonical asset page budget exceeded')
 
 
 def validate_steps(steps):
@@ -220,14 +263,14 @@ def run(args):
             raise FixtureError('Creation workflow froze a participant')
         if any(state.get('phase') != 4 for state in states):
             return False
-        snapshots = [assets(game.call('coop.editor assets')) for game in games]
+        snapshots = [assets(game.asset_text()) for game in games]
         if any(s['revision'] != s['durable'] or revision is not None and s['revision'] != revision for s in snapshots):
             return False
         return snapshots[0] if len({(s['revision'], s['hash']) for s in snapshots}) == 1 and all(s['rows'] == snapshots[0]['rows'] for s in snapshots) else False
 
     def record(label):
         owner.verify_windows()
-        row = dict(label=label, states=[status(g) for g in games], assets=[g.call('coop.editor assets') for g in games],
+        row = dict(label=label, states=[status(g) for g in games], assets=[g.asset_text() for g in games],
                    creations=[g.call('coop.editor creations') for g in games])
         for game in games:
             faults = game.call('exc')
@@ -361,11 +404,61 @@ def run(args):
         owner.close()
 
 
+def paging_contracts():
+    checks = 0
+    def row(index):
+        return f'asset class={8589934593+index}:1 settings={21474836481+index}:1 key=40626200!{0x7d000001+index:08X}.2B978C46 content_revision=6 behavior_sha256='+('b'*64)+'\n'
+    def page(first, total):
+        returned = min(24, total-first)
+        return ('revision=7 durable=7 canonicaldocumenthash='+('a'*64)+'\n'+
+                f'assets_page project={"c"*32} epoch=91 first={first} count=24 returned={returned} next={first+returned} total={total}\n'+
+                ''.join(row(index) for index in range(first, first+returned)))
+    for total in (0, 1, 119, 1024):
+        calls = []
+        def call(command):
+            assert creation_command(command)
+            calls.append(command)
+            return page(int(command.split()[2]), total)
+        complete = assets(fetch_assets(call))
+        assert len(complete['rows']) == total and complete['revision'] == complete['durable'] == 7
+        assert len(calls) == max(1, (total+23)//24)
+        checks += 3
+    faults = [
+        lambda text: text.replace('revision=7', 'revision=8', 1),
+        lambda text: text.replace('durable=7', 'durable=8', 1),
+        lambda text: text.replace('a'*64, 'd'*64, 1),
+        lambda text: text.replace('c'*32, 'd'*32, 1),
+        lambda text: text.replace('epoch=91', 'epoch=92', 1),
+        lambda text: text.replace('total=49', 'total=50', 1),
+        lambda text: text.replace('first=24', 'first=25', 1),
+        lambda text: text.replace('count=24', 'count=25', 1),
+        lambda text: text.replace('returned=24', 'returned=23', 1),
+        lambda text: text.replace('next=48', 'next=47', 1),
+        lambda text: text.replace(row(24), '', 1),
+        lambda text: text.replace(f'class={8589934593+24}:1', 'class=8589934593:1', 1),
+        lambda text: text+'truncated=1\n',
+        lambda text: '\n'.join(line for line in text.splitlines() if not line.startswith('assets_page '))+'\n',
+        lambda text: 'revision=7 durable=7 canonicaldocumenthash='+('a'*64)+'\n'+text,
+        lambda text: text.replace(row(24), row(24)[:80]+'\n', 1),
+    ]
+    for fault in faults:
+        def broken(command):
+            first = int(command.split()[2]); text = page(first, 49)
+            return fault(text) if first else text
+        try:
+            fetch_assets(broken)
+        except FixtureError:
+            checks += 1
+        else:
+            raise AssertionError('Mixed/incomplete asset pages accepted')
+    return checks
+
+
 def self_test():
-    for line in ('coop.editor assets', 'coop.editor creations', 'coop.editor asset 8589935934:1',
+    for line in ('coop.editor assets', 'coop.editor assets 0 24', 'coop.editor assets 8192 1', 'coop.editor creations', 'coop.editor asset 8589935934:1',
                  'coop.editor model 40646200!2912711D.24682294'):
         assert creation_command(line)
-    for line in ('coop.editor asset 0:1', 'coop.editor asset 18446744073709551616:1',
+    for line in ('coop.editor assets 0 0', 'coop.editor assets 0 25', 'coop.editor assets 8193 1', 'coop.editor assets -1 24', 'coop.editor assets 0 24 extra', 'coop.editor assets 0 24\ncoop.editor end', 'coop.editor asset 0:1', 'coop.editor asset 18446744073709551616:1',
                  'coop.editor asset 1:4294967296', 'coop.editor model ../bad',
                  'coop.editor model 40646200!2912711D.2468229G',
                  'coop.editor model 40646200!2912711D.24682294\ncoop.editor end',
@@ -387,7 +480,7 @@ def self_test():
             pass
         else:
             raise AssertionError('Unsafe UI recipe accepted')
-    print('creation integration fixture self-test passed')
+    print(f'creation integration fixture self-test passed ({paging_contracts()} paging contract checks)')
 
 
 def main():

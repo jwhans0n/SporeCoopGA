@@ -332,7 +332,7 @@ $(B)/host/editor_native_save_tests.exe: tests/editor_native_save_windows_tests.c
 $(B)/host/adventure_editor_preview_tests.exe: tests/adventure_editor_preview_windows_tests.cpp mods/coop/adventure_native.cpp mods/coop/adventure_native.h mods/coop/editor_native.h mods/coop/editor_native_scale.h $(ADVENTURE_ABI_HEADERS) mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/adventure_editor_preview_windows_tests.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp -o $@ -lws2_32
-$(B)/host/editor_runtime_windows_tests.exe: $(EDITOR_RUNTIME_FIXTURE_SRC) tests/editor_runtime_service_pulse_fixture.h mods/coop/editor_service_pulse.h tests/editor_runtime_model_admission_fixture.h tests/editor_runtime_projection_scope_fixture.h tests/editor_runtime_terrain_transition_fixture.h tests/editor_runtime_capture_identity_fixture.h tests/editor_runtime_rejection_restore_fixture.h tests/editor_runtime_persistence_fixture.h tests/editor_runtime_complexity_fixture.h tests/editor_runtime_inverse_settlement_fixture.h tests/editor_runtime_staged_capture_fixture.h tests/editor_runtime_scene_alias_fixture.h tests/editor_runtime_completion_wake_fixture.h mods/coop/editor_runtime.cpp mods/coop/editor_runtime.h mods/coop/editor_metrics.h mods/coop/editor_stage_metrics.h mods/coop/editor_native.h mods/coop/editor_native_authoring.h mods/coop/editor_native_scale.h mods/coop/editor_reopen_identity.h mods/coop/editor_native_bindings.h mods/coop/editor_native_save.h mods/coop/adventure_native.h mods/coop/editor_store.h mods/coop/editor_project.h mods/coop/editor_placement_diagnostic.h mods/coop/editor_session.h $(wildcard mods/coop/net/editor_*.h) $(ADVENTURE_ABI_HEADERS)
+$(B)/host/editor_runtime_windows_tests.exe: $(EDITOR_RUNTIME_FIXTURE_SRC) tests/editor_runtime_service_pulse_fixture.h mods/coop/editor_service_pulse.h mods/coop/editor_asset_diagnostic.h tests/editor_runtime_model_admission_fixture.h tests/editor_runtime_projection_scope_fixture.h tests/editor_runtime_terrain_transition_fixture.h tests/editor_runtime_capture_identity_fixture.h tests/editor_runtime_rejection_restore_fixture.h tests/editor_runtime_persistence_fixture.h tests/editor_runtime_complexity_fixture.h tests/editor_runtime_inverse_settlement_fixture.h tests/editor_runtime_staged_capture_fixture.h tests/editor_runtime_scene_alias_fixture.h tests/editor_runtime_completion_wake_fixture.h mods/coop/editor_runtime.cpp mods/coop/editor_runtime.h mods/coop/editor_metrics.h mods/coop/editor_stage_metrics.h mods/coop/editor_native.h mods/coop/editor_native_authoring.h mods/coop/editor_native_scale.h mods/coop/editor_reopen_identity.h mods/coop/editor_native_bindings.h mods/coop/editor_native_save.h mods/coop/adventure_native.h mods/coop/editor_store.h mods/coop/editor_project.h mods/coop/editor_placement_diagnostic.h mods/coop/editor_session.h $(wildcard mods/coop/net/editor_*.h) $(ADVENTURE_ABI_HEADERS)
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(EDITOR_RUNTIME_FIXTURE_SRC) -o $@ -lws2_32
 $(B)/host/package_admission_tests.exe: $(PACKAGE_ADMISSION_SRC) tests/package_admission_tests.cpp mods/coop/package_admission.h
@@ -542,3 +542,18 @@ $(B)/host/editor_service_pulse_tests: tests/editor_service_pulse_tests.cpp mods/
 $(B)/host/editor_service_pulse_tests.exe: tests/editor_service_pulse_tests.cpp mods/coop/editor_service_pulse.h
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $< -o $@
+
+# Read-only canonical asset pages fit the Kit console's fixed 8 KiB response.
+EDITOR_ASSET_DIAGNOSTIC_SRC := tests/editor_asset_diagnostic_tests.cpp $(EDITOR_CORE_SRC) updater/sha256.cpp
+EDITOR_ASSET_DIAGNOSTIC_HEADERS := mods/coop/editor_asset_diagnostic.h mods/coop/editor_native_cast.h mods/coop/net/editor_document.h mods/coop/net/protocol.h updater/sha256.h
+.PHONY: test-editor-assets test-editor-assets-windows
+test-editor: test-editor-assets
+test-editor-assets: $(B)/host/editor_asset_diagnostic_tests
+	$<
+test-editor-assets-windows: $(B)/host/editor_asset_diagnostic_tests.exe
+$(B)/host/editor_asset_diagnostic_tests: $(EDITOR_ASSET_DIAGNOSTIC_SRC) $(EDITOR_ASSET_DIAGNOSTIC_HEADERS) Makefile
+	@mkdir -p $(dir $@)
+	$(HOSTCXX) -std=c++20 -O2 -Wall -Wextra -Werror -Imods/coop $(EDITOR_ASSET_DIAGNOSTIC_SRC) -o $@
+$(B)/host/editor_asset_diagnostic_tests.exe: $(EDITOR_ASSET_DIAGNOSTIC_SRC) $(EDITOR_ASSET_DIAGNOSTIC_HEADERS) Makefile
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $(EDITOR_ASSET_DIAGNOSTIC_SRC) -o $@
