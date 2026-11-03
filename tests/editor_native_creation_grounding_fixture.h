@@ -41,6 +41,9 @@ bool SK_THISCALL tcg_write(void* resource,Stream* stream){
         Rows companions;if(!rows(row+4,0x28,0x34,8,companions))return false;
         std::array<uint8_t,0x238> stable;std::memcpy(stable.data(),row,stable.size());
         skg::field<uint32_t>(stable.data(),0)=0;std::memset(stable.data()+4+0x28,0,12);
+        // Native's reflected stream omits marker+228. This fixture's fixed
+        // envelope reserves those bytes but carries no live actor lookup key.
+        skg::field<uint32_t>(stable.data()+4,0x228)=UINT32_MAX;
         const auto count=uint32_t((companions.end-companions.begin)/0x34);
         if(!write(&body,stable.data(),uint32_t(stable.size()))||!write(&body,&count,4)||
            !write(&body,companions.begin,count*0x34))return false;
@@ -65,6 +68,9 @@ bool SK_THISCALL tcg_read(void* resource,Stream* stream){
         uint32_t count=0;if(read(&body,markers.data()+slot*0x238,0x238)!=0x238||read(&body,&count,4)!=4||count>8)return false;
         auto& companion=storage.companions[slot];companion.resize(count*0x34);
         if(read(&body,companion.data(),uint32_t(companion.size()))!=int(companion.size()))return false;
+        // F2A960 ctor initializes this sentinel; NativeRead never registers a
+        // 228 field, and pool insertion copies the marker without changing it.
+        skg::field<uint32_t>(markers.data()+slot*0x238+4,0x228)=UINT32_MAX;
     }
     if(body.position!=body.bytes.size())return false;
     tcg_bind(resource);properties.tail.clear();tmc_properties[resource]=std::move(properties);
@@ -362,11 +368,10 @@ void test_saved_grounding_transition(){
     }
     // Identity and exact-bit negatives, including sparse live versus dense
     // persisted slots. Failure must leave the caller's saved image untouched.
-    for(unsigned reason=0;reason<34;++reason){
+    for(unsigned reason=0;reason<37;++reason){
         tsg_setup(test);unsigned callback_calls=0;bool injected=false;
         const auto edit=[&](const std::function<void(void*)>& fn){tsg_change_saved(test,fn);};
         if(reason==0)edit([](void* p){auto* m=marker_for_key(p,0);auto& z=skg::field<editor::Vec3>(m,4).z;z=std::nextafter(z,100.f);});
-        if(reason==1)edit([](void* p){++skg::field<uint32_t>(marker_for_key(p,0),0x228);});
         if(reason==2)edit([](void* p){++skg::field<uint32_t>(marker_for_key(p,0),0);});
         if(reason==3)edit([](void* p){auto& raw=t_rows.at(p);std::swap_ranges(raw.begin(),raw.begin()+0x238,raw.begin()+0x238);tcg_bind(p);});
         if(reason==4)skg::field<editor::Vec3>(marker_for_key(t_live.data(),1),4).x=99;
@@ -387,6 +392,7 @@ void test_saved_grounding_transition(){
         if(reason==19)skg::field<void*>(t_mode.data(),0x74)=t_other_data.data();
         if(reason==20)skg::field<void*>(t_mode.data(),0x18)=nullptr;
         a_read=uintptr_t(tsg_read);a_write=uintptr_t(tsg_write);t_resource_vt[1]=reinterpret_cast<void*>(tsg_release);
+        if(reason==1)tsg_after_read=[&](void* p){if(!injected){injected=true;skg::field<uint32_t>(marker_for_key(p,0),0x228)=0;}};
         if(reason==21)tsg_after_read=[&](void* p){if(!injected){injected=true;skg::field<uint8_t>(marker_for_key(p,0),0x100)^=1;}};
         if(reason==22)tsg_after_read=[&](void* p){if(!injected){injected=true;skg::field<editor::Vec3>(marker_for_key(p,0),4)=test.entry.document.placements.begin()->second.position;}};
         if(reason==23)tsg_after_write=[&](void* p){if(++callback_calls==2){injected=true;skg::field<uint8_t>(marker_for_key(p,0),0x100)^=1;}};
@@ -398,6 +404,8 @@ void test_saved_grounding_transition(){
         if(reason==29)edit([](void* p){skg::field<editor::Rotation>(marker_for_key(p,0),0x10).x=0.25f;});
         if(reason==30)edit([](void* p){skg::field<float>(marker_for_key(p,0),0x24)=2;});
         if(reason==31)edit([](void* p){skg::field<editor::Vec3>(marker_for_key(p,1),4).z=99;});
+        if(reason>=34)tsg_after_write=[&](void* p){if(++callback_calls==reason-33){injected=true;
+            skg::field<uint32_t>(marker_for_key(p,0),0x228)=0;}};
         TerrainTransitionCurrent fence=current;
         if(reason==32)fence=[]()->bool{throw 11;};
         if(reason==33)fence=[&]{++t_scope.epoch;return false;};
@@ -408,7 +416,7 @@ void test_saved_grounding_transition(){
         CHECK(same_projection_image(test.saved,original)&&test.saved.document==original.document);
         CHECK(t_rows.at(t_live.data())==live_rows&&tmf_columns==retained_columns&&!t_restores&&t_allocations.empty());
         CHECK(!test.ticket->normalizing);
-        if(reason>=21&&reason<=28)CHECK(injected);
+        if(reason==1 || (reason>=21&&reason<=28) || reason>=34)CHECK(injected);
     }
     // A retained exact witness does not consult a new global grounding map.
     tsg_setup(test);terrain_grounding.clear();CHECK(normalize_saved_terrain(test.ticket,test.receipt,test.entry,test.saved,current,error));

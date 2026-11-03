@@ -1371,3 +1371,42 @@ serial replacement or UI-owner change. Flora density replay supplies the
 verified `SetValue(value,false)` ABI and then sends its one existing native
 input event. Real Water forward/history behavior and visible refreshed slider
 values still require the next private-game checkpoint.
+
+### Persisted marker keys are not live actor lookup keys
+
+C30's normal Save completed locally at revision 78, but sharing stopped at
+`The persisted native Save placement identity changed`. The preceding exact
+source/snapshot handoff guard had passed. The carrier invocation is retained in
+`out/preview9-c30-native-save-carrier/result.json`, with the later full failure
+capture under `out/preview9-c30-save-failure-full/`. This failure did not justify
+ignoring marker identity or mutating the live scene.
+
+Native marker `+228` belongs to the live actor lookup domain. Constructor
+`F2A960` initializes it to `FFFFFFFF` at `F2AAAB`. The full reflected marker
+descriptor initializer `138C040..138C5B6` registers fourteen authored offsets,
+ending at `+28`, and never registers `+228`. Marker Read `F2D680` leaves that
+constructor value intact. Pool insertion `F2EBC0` copies through `DFDFB0`, whose
+`DFE108..DFE10E` copy preserves the value. The actual writer loop
+`F28C10..F28C2C` uses that same descriptor with `marker=row+4` through
+`Write6928C0`; its size pass uses it as well. Thus a fresh persisted NativeRead
+has the constructor sentinel rather than the original live lookup key.
+Exact disassembly is retained in
+`out/preview9-c31-eligibility/marker-key-disassembly.txt` and
+`marker-key-writer-disassembly.txt` in that directory.
+
+The Save adapter keeps every original live slot/object/class/key/revision and
+rendered/authored-position fence. Only its private persisted-image check now
+requires the verified `FFFFFFFF` domain. It records that exact private key and
+requires it unchanged across all temporary position writes and native
+callbacks. Class, dense logical bindings, full serialized roundtrips and
+unknown bytes remain strict; no persisted key is guessed from a live slot or
+accepted as arbitrary. The owning controlled serializer now omits the live key
+on Write and constructs the sentinel on Read. The old C30 executable then
+reproduces the exact identity failure, retained in
+`out/preview9-save-key-red/receipt.json`.
+
+The fixed actual-i686 strict run passes 37,317 Save, 63,862 materialization,
+1,269 Water, 1,137 Environment, 1,662 staged and 112,147 full checks, including
+private-key mutation at Read and each Write phase. All 49 compiler/Make inputs
+remain unchanged in `out/preview9-save-key-native-receipt.json`. The real Save
+acceptance test remains separate from this controlled fixture evidence.

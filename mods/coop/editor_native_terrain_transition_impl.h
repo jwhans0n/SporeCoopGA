@@ -236,14 +236,18 @@ bool normalize_transition_grounding(const TerrainTransitionProof& proof,Snapshot
     if(count!=proof.placements->size()){error="The persisted native Save placement roster changed";return false;}
     for(const auto& row:*proof.placements){
         const auto binding=dense.find(row.live.object);auto* marker=binding==dense.end()?nullptr:marker_for_key(owned.p,binding->second);
-        if(!marker || skg::field<uint32_t>(marker,0)!=row.class_index || skg::field<uint32_t>(marker,0x228)!=row.native_key){
+        // Marker+228 is an actor-lookup key in the original live editor. The
+        // reflected stream omits it; ctor F2A960 leaves FFFFFFFF in a fresh
+        // Read, and pool insertion preserves that sentinel. Keep the live key
+        // fence above, but require this separate exact private-owner domain.
+        if(!marker || skg::field<uint32_t>(marker,0)!=row.class_index || skg::field<uint32_t>(marker,0x228)!=UINT32_MAX){
             error="The persisted native Save placement identity changed";return false;
         }
         const auto actual=skg::field<editor::Vec3>(marker,4);
         if(!exact_grounding_position(actual,row.authored) && (!row.grounded || !exact_grounding_position(actual,row.rendered))){
             error="The persisted native Save position has no exact retained grounding witness";return false;
         }
-        positions.push_back({binding->second,row.class_index,row.native_key,actual,row.authored});
+        positions.push_back({binding->second,row.class_index,UINT32_MAX,actual,row.authored});
     }
     const auto unchanged=[&]{
         Rows actual;if(!rows(owned.p,0x2C10,0x238,kPlacementLimit,actual))return false;
