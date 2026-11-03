@@ -6,8 +6,10 @@ executable and its exact 4 GB LAA variant remain supported. Older protocol
 clients are explicitly rejected. This report records development evidence,
 not completed native acceptance, a main merge or a public release.
 
-Latest private native build is C39, SHA-256
-`ff081a59e7a509a198116d4200f9450175e06d9c804af3cdf912f39246c44e10`.
+Latest private native build is C42, SHA-256
+`d5d27c289200adef06fe27e3dec9cc0a466137ad0549f1468a332840e0f2755f`.
+Cold recovery remains blocked on a measured rotation materialization mismatch;
+the previous durable checkpoint is preserved.
 C38 verifies all five Crew control families from all four participants and
 independent four-player creation-editor entry and cancellation.
 C35 closes the new-vehicle Native Save/cold-reopen dependency reproduction.
@@ -3005,3 +3007,45 @@ games return normally to Galaxy with zero faults. The runner exits 0. Evidence:
 `closed-evidence/receipt.json`, and
 `out/preview9-c40-frozen-retirement/result.json`. Shared replacement and later
 family saves are deferred until cold recovery passes.
+
+
+### C41/C42 cold-recovery continuation
+
+C41 builds with 250 unchanged inputs but is never deployed: its new complete
+comparison initially rejects an intentionally absent legacy metadata section in
+a controlled zero-placement fixture. The immutable qualification receipt marks
+it ineligible. The corrected C42 retains known legacy metadata rather than
+silently omitting its guard. Controlled Native checks pass 71,666 cases and
+Runtime transition checks pass 2,661, including original Native RED, cold resume,
+unrelated mutation rejection and latching the first terminal failure. Final
+optimized fixture/source receipts remain separate from these initial focused
+results. Native source and build receipt:
+`out/preview9-candidate42-build-receipt.json`.
+
+C42's 96,532,992-byte DLL retains the C39 Kit hash. Native recovery of the same
+preserved revision-22 draft gets past the original position mismatch but fails
+at the next different field, placement 4294967549's quaternion. Actual is
+`-0.588576794,-0.170447201,0.266058296,0.744144619`; committed is
+`-0.588576674,-0.170447186,0.266058296,0.744144559`. XYZ is exactly
+`-296.423096,410.628448,130.238693` on both sides, scale is 2 and property counts
+are 4/4. The new failure latch retains the first placement error without
+expired-ticket retry spam. No authored quaternion or tolerance is changed.
+Evidence: `out/preview9-c42-recover-creations/result.json` and
+`out/preview9-c42-recovery-quaternion/result.json`.
+
+Both games again End and return normally to Galaxy with zero faults before the
+runner exits 0. Both original checkpoint/journal pairs remain byte-identical
+after shutdown. Evidence:
+`out/preview9-c42-frozen-retirement/result.json` and
+`out/preview9-c42-recovery-quaternion/closed-evidence/receipt.json`.
+A complete exact rotation receipt across the canonical rebuild is still needed.
+
+
+The later full portable repository run exits 0 with the new Sui and creation
+contracts included. RE lint records 419 used symbols, 3,051 known and zero
+supported-build problems; missing 2016-build symbols remain informational.
+Log SHA-256 is
+`f1a6dfa44cf288534018d69dc363ceb74ec5f6f5d5fade0b348112a2bea7f06b`.
+Evidence: `out/preview9-c42-portable-after-fixtures.log` and its `.receipt.json`.
+Native/Runtime recovery source work continued separately, so this is not a
+complete frozen Native acceptance or a lab-smoke result.
