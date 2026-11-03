@@ -39,7 +39,7 @@ def public_command(line):
         return False
     words = line.split()
     command = words[0]
-    if command in {'info', 'ping', 'exc', 'game.mode', 'coop.status', 'coop.avatar'}:
+    if command in {'info', 'ping', 'exc', 'game.mode', 'coop.status', 'coop.avatar', 'refpack.memo'}:
         return len(words) == 1
     if command == 'coop.frame_metrics':
         return words[1:] == ['config']
