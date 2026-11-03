@@ -100,6 +100,11 @@ struct Callbacks {
     // Native history gestures and asynchronous saves must settle before another
     // semantic edit is applied. Transport/leases/presence continue while held.
     std::function<bool()> authoring_ready;
+    // Playtest preparation may need an explicit local gesture rollback even
+    // when detached canonical edits can proceed. False defers a guest Prepare
+    // or declines a host Prepare before lease revocation; Decisions use only
+    // authoring_ready. Exceptions also defer/decline. Missing keeps old behavior.
+    std::function<bool()> prepare_ready;
     // A missing revision means the local native scene is away or rebuilding.
     // Default adapters materialize synchronously with canonical acceptance.
     std::function<std::optional<editor::Revision>()> rendered_revision;

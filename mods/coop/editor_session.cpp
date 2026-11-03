@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <deque>
 #include <cmath>
+#include <iterator>
 #include <set>
 #include <stdexcept>
 #include <type_traits>
@@ -153,6 +154,10 @@ struct Controller::Impl {
     w::Context context() const { const auto& d = state().document; return {d.project, d.epoch, d.revision}; }
     bool active() const { return view.phase != Phase::Idle && view.phase != Phase::Disconnected; }
     bool authoring_ready() const { return !pending_commit && (!callbacks.authoring_ready || callbacks.authoring_ready()); }
+    bool prepare_ready() const {
+        try { return authoring_ready() && (!callbacks.prepare_ready || callbacks.prepare_ready()); }
+        catch (...) { return false; }
+    }
     static bool complexity_member(const Member& member){
         return member.peer.slot==0||member.phase==Phase::Joining||member.phase==Phase::Syncing||member.phase==Phase::Ready||
             member.phase==Phase::Preparing||member.phase==Phase::Playing||member.phase==Phase::Returning;
@@ -918,7 +923,7 @@ void Controller::Impl::control(uint8_t from, const w::Control& command)
         if (command.kind == w::ControlKind::HostPreparePlaytest) {
             if(!state().document.acts.contains(command.start_act)){report("The requested playtest act is unavailable");return;}
             if(command.mode==w::PlaytestMode::Solo && (!view.members.contains(command.tester.slot) || view.members.at(command.tester.slot).peer!=command.tester)){report("The solo tester is no longer a current collaborator");return;}
-            if (view.phase != Phase::Ready || !held_requests.empty() || !authoring_ready() || command.serial != round + 1 || command.revision != context().revision ||
+            if (view.phase != Phase::Ready || !held_requests.empty() || !prepare_ready() || command.serial != round + 1 || command.revision != context().revision ||
                 std::any_of(view.members.begin(), view.members.end(), [&](const auto& pair) {
                     return pair.second.phase!=Phase::Ready || pair.second.applied_revision!=context().revision ||
                         pair.second.presence.creating_asset || !pair.second.presence.scene_ready || pair.second.presence.scene_revision!=context().revision;
@@ -1068,8 +1073,18 @@ void Controller::Impl::service_deferred()
             !replica.decisions.contains(decision->change->operation) && !authoring_ready()) return;
         if (std::holds_alternative<DeferredResource>(next.action) && view.phase == Phase::Ready && !authoring_ready()) return;
         if (std::holds_alternative<w::Saved>(next.action) && !authoring_ready()) return;
-        if (const auto* command = std::get_if<w::Control>(&next.action); command && command->kind == w::ControlKind::HostPreparePlaytest && view.phase == Phase::Ready && !authoring_ready()) return;
-        auto item = std::move(deferred.front()); deferred.pop_front(); deferred_bytes -= item.cost;
+        auto eligible = deferred.begin();
+        if (const auto* command = std::get_if<w::Control>(&next.action); command && command->kind == w::ControlKind::HostPreparePlaytest && view.phase == Phase::Ready && !prepare_ready()) {
+            // The host may already have rejected a submitted local gesture
+            // after starting this round. Deliver that rejection so rollback
+            // can settle; never reorder an accepted change or its resources.
+            eligible = std::find_if(std::next(deferred.begin()), deferred.end(), [](const Deferred& item) {
+                const auto* decision = std::get_if<Decision>(&item.action);
+                return decision && !decision->accepted();
+            });
+            if (eligible == deferred.end()) return;
+        }
+        auto item = std::move(*eligible); deferred.erase(eligible); deferred_bytes -= item.cost;
         if (auto* resource = std::get_if<DeferredResource>(&item.action)) {
             try {
                 if (item.context.revision < replica.document.revision || item.context.revision > replica.document.revision + 1 ||
@@ -1138,7 +1153,7 @@ void Controller::Impl::message(uint8_t from, w::Message message)
     bool wait_for_authoring = false;
     if (!hosting && !draining_deferred && !pending_baseline && deferred.empty()) {
         if (auto* decision = std::get_if<Decision>(&message.payload); decision && decision->accepted() && !replica.decisions.contains(decision->change->operation)) wait_for_authoring = !authoring_ready();
-        if (auto* command = std::get_if<w::Control>(&message.payload); command && command->kind == w::ControlKind::HostPreparePlaytest && view.phase == Phase::Ready) wait_for_authoring = !authoring_ready();
+        if (auto* command = std::get_if<w::Control>(&message.payload); command && command->kind == w::ControlKind::HostPreparePlaytest && view.phase == Phase::Ready) wait_for_authoring = !prepare_ready();
         if (std::holds_alternative<w::Saved>(message.payload)) wait_for_authoring = !authoring_ready();
     }
     if (!hosting && !draining_deferred && (pending_baseline || !deferred.empty() || wait_for_authoring) && (std::holds_alternative<Decision>(message.payload) || std::holds_alternative<w::Saved>(message.payload) || std::holds_alternative<w::Control>(message.payload))) {

@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <future>
 #include <limits>
+#include <stdexcept>
 #include <thread>
 #include <type_traits>
 
@@ -39,8 +40,11 @@ struct FakeNative {
     Document document;
     Revision staged = 0;
     bool ready = true, authoring = true, controls_ready = true, fail_import = false, fail_apply = false, fail_persist = false;
+    bool preparing = true, throw_prepare = false;
+    int prepare_checks = 0;
     int imports = 0, baselines = 0, commits = 0, persists = 0, controls = 0, decisions = 0, errors = 0;
     int presence = 0, saved = 0, wire_decisions = 0;
+    Code last_decision = Code::Invalid;
     std::vector<Revision> imported;
     std::vector<std::vector<uint8_t>> imported_payloads;
     std::vector<size_t> own_decision_leases;
@@ -123,6 +127,11 @@ struct Party {
             };
             cb.baseline_ready = [&, p](const State&) { CHECK(ticking && !dispatching); return native[p].ready; };
             cb.authoring_ready = [&, p] { CHECK(ticking && !dispatching); return native[p].authoring; };
+            cb.prepare_ready = [&, p] {
+                CHECK(ticking && !dispatching); ++native[p].prepare_checks;
+                if (native[p].throw_prepare) throw std::runtime_error("Injected prepare readiness failure");
+                return native[p].preparing;
+            };
             cb.apply_baseline = [&, p](const State& s, std::string&) { CHECK(ticking && !dispatching && native[p].staged == s.document.revision); native[p].document = s.document; native[p].baselines++; return true; };
             cb.apply_committed = [&, p](const Document& before, const Document& after, const Change& change, std::string& error) {
                 CHECK(ticking && !dispatching && native[p].document == before);
@@ -154,6 +163,7 @@ struct Party {
             cb.control_ready = [&, p](const w::Control&) { CHECK(ticking && !dispatching); return native[p].controls_ready; };
             cb.decision = [&, p](const Decision& decision) {
                 CHECK(ticking && !dispatching); native[p].decisions++;
+                native[p].last_decision = decision.code;
                 if (decision.accepted() && decision.change->operation.author == controllers[p]->view().local) {
                     const auto& leases = controllers[p]->view().local_leases; native[p].own_decision_leases.push_back(leases.size());
                     if (after_own_decision) after_own_decision(p);
@@ -431,6 +441,100 @@ static void test_four_players_and_controls()
     CHECK(p.controllers[3]->view().local.generation > prior_peer.generation);
     CHECK(p.controllers[3]->accept_offer(error));
     CHECK(p.spin([&] { return p.controllers[3]->view().phase == es::Phase::Ready && p.controllers[0]->view().members.at(3).phase == es::Phase::Ready; }));
+}
+
+static void test_prepare_readiness_declines_host_before_revocation()
+{
+    Party p(2); p.start(); p.accept(); std::string error;
+    const auto tokens = p.grant(0, {ScopeKind::Placement, object_a, {}});
+    const auto before = p.controllers[0]->state();
+    CHECK(p.spin([&] { return p.controllers[0]->view().members.at(1).presence.scene_ready; }));
+    for (bool throwing : {false, true}) {
+        p.native[0].preparing = false; p.native[0].throw_prepare = throwing;
+        const auto checked = p.native[0].prepare_checks;
+        CHECK(p.controllers[0]->prepare_playtest(error));
+        CHECK(p.spin([&] { return p.native[0].prepare_checks > checked; }));
+        CHECK(p.controllers[0]->view().phase == es::Phase::Ready);
+        CHECK(p.controllers[1]->view().phase == es::Phase::Ready);
+        if (p.controllers[0]->view().phase != es::Phase::Ready || p.controllers[1]->view().phase != es::Phase::Ready) return;
+        CHECK(p.controllers[0]->view().playtest_round == 0);
+        CHECK(p.controllers[0]->view().local_leases.size() == 1);
+        CHECK(p.controllers[0]->view().local_leases.front().token == tokens.front().token);
+        CHECK(p.native[0].controls == 0 && p.native[1].controls == 0);
+        CHECK(p.controllers[0]->state() == before && p.controllers[1]->state().document == before.document);
+    }
+    // A held Prepare does not hold ordinary canonical admission.
+    CHECK(p.controllers[0]->submit(p.edit(0, object_a, position, Vec3{21, 22, 23}, tokens), error));
+    CHECK(p.revision(1));
+    CHECK(p.controllers[0]->view().phase == es::Phase::Ready);
+    p.native[0].preparing = true; p.native[0].throw_prepare = false;
+    CHECK(p.spin([&] { const auto& member = p.controllers[0]->view().members.at(1); return member.applied_revision == 1 && member.presence.scene_ready && member.presence.scene_revision == 1; }));
+    CHECK(p.controllers[0]->prepare_playtest(error));
+    CHECK(p.spin([&] { return p.controllers[1]->view().phase == es::Phase::Preparing; }));
+    CHECK(p.controllers[0]->view().local_leases.empty());
+    // This hook concerns only entering Preparing, never Cancel/Return.
+    p.native[0].throw_prepare = true; p.native[1].throw_prepare = true;
+    CHECK(p.controllers[0]->cancel_playtest(error));
+    CHECK(p.spin([&] { return p.controllers[0]->view().phase == es::Phase::Ready && p.controllers[1]->view().phase == es::Phase::Ready; }));
+    CHECK(p.controllers[0]->state().document.revision == 1 && p.controllers[1]->state().document.revision == 1);
+}
+
+static void test_prepare_readiness_defers_guest_and_delivers_rejection(unsigned players)
+{
+    Party p(players); p.start(); p.accept(); std::string error;
+    const auto guest_tokens = p.grant(1, {ScopeKind::Placement, object_a, {}});
+    const auto host_tokens = p.grant(0, {ScopeKind::Placement, object_b, {}});
+    p.native[1].preparing = false;
+    // A detached local producer can hold Prepare while foreign canonical
+    // Decisions still apply through the unchanged authoring_ready contract.
+    CHECK(p.controllers[0]->submit(p.edit(0, object_b, position, Vec3{51, 52, 53}, host_tokens), error));
+    CHECK(p.revision(1));
+    CHECK(p.native[1].commits == 1 && p.native[1].prepare_checks == 0);
+    CHECK(p.spin([&] {
+        for (unsigned i = 1; i < players; ++i) {
+            const auto& member = p.controllers[0]->view().members.at(i);
+            if (member.applied_revision != 1 || !member.presence.scene_ready || member.presence.scene_revision != 1) return false;
+        }
+        return true;
+    }));
+    // Published scene-ready presence can lag an independently held local
+    // producer. The host starts, but this guest must not revoke/apply yet.
+    const auto before = p.controllers[0]->state();
+    CHECK(p.controllers[0]->prepare_playtest(error));
+    CHECK(p.spin([&] { return p.controllers[0]->view().phase == es::Phase::Preparing && p.native[1].prepare_checks > 0; }));
+    CHECK(p.controllers[1]->view().phase == es::Phase::Ready);
+    if (p.controllers[1]->view().phase != es::Phase::Ready) return;
+    CHECK(p.native[1].controls == 0);
+    CHECK(p.controllers[1]->view().local_leases.size() == 1);
+    CHECK(p.controllers[1]->view().local_leases.front().token == guest_tokens.front().token);
+    // This submission represents a gesture already queued under the old local
+    // lease. The host has revoked it and rejects it; its Decision must reach
+    // rollback even while the earlier Prepare remains held.
+    const auto decisions = p.native[1].decisions;
+    CHECK(p.controllers[1]->submit(p.edit(1, object_a, position, Vec3{71, 72, 73}, guest_tokens), error));
+    CHECK(p.spin([&] { return p.native[1].decisions > decisions; }));
+    CHECK(p.native[1].last_decision != Code::Accepted);
+    CHECK(p.controllers[1]->view().phase == es::Phase::Ready && p.native[1].controls == 0);
+    CHECK(p.controllers[0]->state().document == before.document && p.controllers[0]->state().history == before.history);
+    CHECK(p.controllers[1]->state().document == before.document && p.controllers[1]->state().history == before.history);
+    // Callback failure is another pending result, not a Frozen replica.
+    p.native[1].throw_prepare = true;
+    const auto checked = p.native[1].prepare_checks;
+    CHECK(p.spin([&] { return p.native[1].prepare_checks > checked; }));
+    CHECK(p.controllers[1]->view().phase == es::Phase::Ready && p.native[1].errors == 0);
+    p.native[1].throw_prepare = false; p.native[1].preparing = true;
+    CHECK(p.spin([&] { for (unsigned i = 0; i < players; ++i) if (p.controllers[i]->view().phase != es::Phase::Preparing) return false; return true; }));
+    CHECK(p.native[1].controls == 1 && p.controllers[1]->view().local_leases.empty());
+    for (unsigned i = 0; i + 1 < players; ++i) CHECK(p.controllers[i]->ready_playtest(true, error));
+    for (unsigned i = 0; i < 12; ++i) p.step();
+    CHECK(p.controllers[0]->view().phase == es::Phase::Preparing);
+    CHECK(p.controllers[players - 1]->ready_playtest(true, error));
+    CHECK(p.spin([&] { for (unsigned i = 0; i < players; ++i) if (p.controllers[i]->view().phase != es::Phase::Playing) return false; return true; }));
+    for (unsigned i = 0; i < players; ++i) {
+        CHECK(p.controllers[i]->state().document == before.document);
+        CHECK(p.controllers[i]->view().playtest_participants == uint8_t((1u << players) - 1));
+        CHECK(p.native[i].errors == 0);
+    }
 }
 
 static void test_large_operation_transfer()
@@ -1477,6 +1581,11 @@ static void test_creation_preview_is_ephemeral_and_owned(){
 #include "editor_complexity_session_fixture.h"
 int main(int argc,char** argv)
 {
+    if(argc==2&&std::string(argv[1])=="--prepare-readiness"){
+        CHECK(net::net_init());test_prepare_readiness_declines_host_before_revocation();
+        test_prepare_readiness_defers_guest_and_delivers_rejection(2);test_prepare_readiness_defers_guest_and_delivers_rejection(4);
+        std::printf("editor playtest prepare readiness: %d checks, %d failures\n",checks,failures);return failures?1:0;
+    }
     if(argc==2&&std::string(argv[1])=="--complexity"){
         CHECK(net::net_init());test_complexity_cohort(2);test_complexity_cohort(4);test_complexity_join_and_recovery();test_complexity_old_ack();test_complexity_queue_retry_and_stale_context();test_complexity_disable_is_not_a_general_bypass();test_complexity_history_rechecks_the_resulting_budget();
         std::printf("editor complexity UDP: %d checks, %d failures\n",checks,failures);return failures?1:0;
@@ -1494,7 +1603,7 @@ int main(int argc,char** argv)
         std::printf("editor preview transport: %d checks, %d failures\n",checks,failures);return failures?1:0;
     }
     const bool focused=argc==2&&std::string(argv[1])=="--tombstones";
-    if(argc==1){CHECK(net::net_init());test_complexity_cohort(2);test_complexity_cohort(4);test_complexity_join_and_recovery();test_complexity_old_ack();test_complexity_queue_retry_and_stale_context();test_complexity_disable_is_not_a_general_bypass();test_complexity_history_rechecks_the_resulting_budget();}
+    if(argc==1){CHECK(net::net_init());test_prepare_readiness_declines_host_before_revocation();test_prepare_readiness_defers_guest_and_delivers_rejection(2);test_prepare_readiness_defers_guest_and_delivers_rejection(4);test_complexity_cohort(2);test_complexity_cohort(4);test_complexity_join_and_recovery();test_complexity_old_ack();test_complexity_queue_retry_and_stale_context();test_complexity_disable_is_not_a_general_bypass();test_complexity_history_rechecks_the_resulting_budget();}
     const bool classes=argc==2&&std::string(argv[1])=="--class-settings";
     if(argc>1&&!focused&&!classes)return 2;
     CHECK(net::net_init());if(!focused&&!classes){test_recovery_teardown_holds_guests_until_authenticated_reoffer();test_recovery_hold_survives_host_loss();test_creation_preview_is_ephemeral_and_owned();test_asynchronous_durable_acceptance();test_asynchronous_failure_restores_before_acceptance();test_project_and_planet_field_leases_survive_refresh();test_worker_prepared_resource_publication();}
