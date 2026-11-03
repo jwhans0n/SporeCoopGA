@@ -72,3 +72,39 @@ queue/name limits, dispatch and callback failures, executor guards, shutdown
 cancellation and stale posted work. The focused target is
 `test-mod-lifecycle-windows`; exact source/executable receipts are retained
 under `out/preview9-c35-kit-lifecycle`.
+
+## Kit 0.3.6 RefPack RAW memo
+
+The optional `[sporekit] refpack_memo=1` setting installs a process-lifetime
+Kit-owned hook only for the supported GOG executable and exact RAW/caller code
+profile. `refpack.memo` reports enablement, hits, misses, Native calls, bypasses,
+contention, allocation failures, entry count and retained bytes. Default is off;
+there is no SkHost ABI extension or co-op scope/authority token.
+
+Verified RAW `92C780` is cdecl `(out,input,size,mask,hash,links)->uint32`. It has
+only the two direct callers `92CC1B` and `92CC34` inside `92CB50`. Memo hits
+require the nonnull-output return site `92CC20`; query/foreign calls retain the
+original path. After RAW returns, `92CC3C..45` preserves EAX then frees hash and
+links through `F47220`, without reading their payloads. Therefore hits need not
+reproduce dead scratch contents. Wrapper allocations, frees, RefPack envelope,
+compression threshold, complete NativeWrite and all opaque guards still run.
+
+Only the actual original RAW result seeds an entry. Its complete input, mask,
+token output and returned length are owned values; pointer identity or a digest
+alone never matches. Two entries plus worst-case staging are bounded to 32 MiB.
+A try-lock covers lookup, the pure original miss and publication. Contending
+threads and TLS reentry immediately call the original. Failed cache allocation
+also retains the original result, and original exceptions propagate. Diagnostics
+use try-lock so a native fault cannot make their cache-size query wait forever.
+
+The frozen 974-byte RAW profile has SHA256
+`756224f03f8bc501f0c62d6049cc7f1f56351e606fd35d53b43a01bdde83ec21`;
+the 269-byte caller profile has SHA256
+`08151cec626f3a7692c02f805d0290bd2d32228292875b0231a2e614fc0ae26e`.
+Only the caller's two named allocation-tag operands relocate. The five RAW CRT
+call targets are checked against named memset/memcpy thunks. Unknown profiles
+do not install the optimization; later code drift bypasses cached output.
+The actual-i686 fixture executes the extracted original RAW against the retained
+genuine C33 compressed oracle, then exercises the production memo and fallback
+paths. This is compression reuse, not a Native snapshot producer or fixed-point
+token. Actual performance and hit rate require a separate native A/B run.

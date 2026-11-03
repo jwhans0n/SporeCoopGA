@@ -143,7 +143,7 @@ int main()
     std::printf("old manager: %u checks\n", checks);
     return 0;
 #else
-    CHECK(std::string(SK_VERSION) == "0.3.5"); CHECK(SK_ABI_VERSION == 1);
+    CHECK(std::string(SK_VERSION) == "0.3.6"); CHECK(SK_ABI_VERSION == 1);
     // Outside-frame callers also queue, so SDK self-unload returns before cleanup.
     reset(); load_alpha(); bool returned = false;
     unload_callback = [&] { CHECK(returned); };

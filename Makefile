@@ -484,6 +484,12 @@ $(B)/host/sporekit_mod_lifecycle_tests.exe: tests/sporekit_mod_lifecycle_windows
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static $< -o $@
 
+.PHONY: test-refpack-memo-windows
+test-refpack-memo-windows: $(B)/host/sporekit_refpack_memo_tests.exe
+$(B)/host/sporekit_refpack_memo_tests.exe: tests/sporekit_refpack_memo_windows_tests.cpp sporekit/refpack_memo.cpp sporekit/refpack_memo.h sporekit/refpack_memo_profile.h sporekit/core.h sdk/include/sporekit.h sdk/include/sporekit_game.hpp sdk/include/sporekit_build.hpp mods/coop/net/dbpf.cpp mods/coop/net/dbpf.h updater/sha256.cpp updater/sha256.h tests/fixtures/editor_native_pose/manifest.h tests/fixtures/editor_native_pose/r48.native.bin
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Isdk/include tests/sporekit_refpack_memo_windows_tests.cpp mods/coop/net/dbpf.cpp updater/sha256.cpp -o $@
+
 # Preview 6 verified interaction adapters (the tests include their implementation).
 INTERACTION_TEST_NET := mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp
 .PHONY: test-explosives-windows test-pickups-windows

@@ -1,0 +1,8 @@
+# Supported GOG RefPack RAW memo profile, only opaque compression is memoized.
+# exe_sha256=dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37
+SporeKit::RefPack::Raw=0x0092C780 ; verified cdecl(out,input,uint32 bytes,uint32 mask,uint32* hash,uint32* links)->uint32 raw token bytes, ret92CB4D; only memcpy/memset calls
+SporeKit::RefPack::AllocatingEncoder=0x0092CB50 ; verified cdecl(out,capacity,input,uint32 bytes,bool largeWindow)->uint32 envelope bytes, ret92CC5C; calls RAW92CC1B/34 and frees both scratch buffers without reading them
+SporeKit::RefPack::HashAllocationTag=0x0143E620 ; verified immutable EACompression/HashTable/uint[] string, PUSH92CBA2 for 40000-byte scratch
+SporeKit::RefPack::LinkAllocationTag=0x0143E604 ; verified immutable EACompression/Link/uint[] string, PUSH92CBCA for mask+1 words
+SporeKit::RefPack::MemsetThunk=0x011E077E ; verified MSVCR90 memset import thunk, sole RAW hash initialization call92C7A7
+SporeKit::RefPack::MemcpyThunk=0x011E0784 ; verified MSVCR90 memcpy import thunk, four RAW output-copy calls, no Native owner callbacks

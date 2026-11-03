@@ -1,5 +1,6 @@
 // SporeKit entry point (called by the loader at the exe entry point) and the SkHost table.
 #include "core.h"
+#include "refpack_memo.h"
 
 #include <cstdio>
 #include <memory>
@@ -212,6 +213,7 @@ static void late_boot(uintptr_t caller)
     SKLOG(SK_INFO, "game build: %s", build_name());
     watchdog_mark("mods");
     gamehooks_install();
+    refpack_memo_init();
     mods_load_all();
     watchdog_mark("game");
     SKLOG(SK_INFO, "late boot complete");
@@ -322,6 +324,7 @@ extern "C" __declspec(dllexport) int __cdecl sporekit_boot(HMODULE loader)
     if (late)
         gamehooks_install();
     watchdog_mark("mods");
+    refpack_memo_init();
     mods_load_all();
     watchdog_mark("game");
     SKLOG(SK_INFO, "boot complete");

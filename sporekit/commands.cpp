@@ -1,5 +1,6 @@
 // Built-in devkit console commands.
 #include "core.h"
+#include "refpack_memo.h"
 
 #include <cstdio>
 
@@ -644,6 +645,9 @@ void register_builtin_commands()
     command_add(k, "drag", "drag <x1> <y1> <x2> <y2> [left|right] - press, move, release", c_drag, nullptr, A);
     command_add(k, "wheel", "wheel <x> <y> <notches> - mouse wheel (+ zooms in)", c_wheel, nullptr, A);
     command_add(k, "mods", "list mods", c_mods, nullptr, M);
+    command_add(k, "refpack.memo", "bounded Native RAW memo diagnostics", [](void*, int, const char* const*, SkOut* out) {
+        outf(out, "%s", refpack_memo_info().c_str()); return 0;
+    }, nullptr, A);
     command_add(k, "mod.reload", "mod.reload <name> - queue hot reload", c_mod_op, (void*)0, SK_CMD_OUTSIDE_FRAME);
     command_add(k, "mod.load", "mod.load <name> - queue load", c_mod_op, (void*)1, SK_CMD_OUTSIDE_FRAME);
     command_add(k, "mod.unload", "mod.unload <name> - queue unload", c_mod_op, (void*)2, SK_CMD_OUTSIDE_FRAME);
