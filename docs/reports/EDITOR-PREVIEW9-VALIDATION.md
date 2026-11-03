@@ -6,6 +6,14 @@ executable and its exact 4 GB LAA variant remain supported. Older protocol
 clients are explicitly rejected. This report records development evidence,
 not completed native acceptance, a main merge or a public release.
 
+Latest private native build is C34, SHA-256
+`9d50eb8c823da45f9ffe5bb1c8f50b6c55074355696242d9ab92f38360455e11`.
+Its new vehicle creation, checked Undo/Redo and shared adventure Save pass on
+two players. Fresh-process file opening still stops at Native's missing-local-
+content warning; retained dependencies have no cold registration path. That
+defect, observer frame budgets, guest confirmation and the remaining feature
+matrix are open. Personal preview 8 and its 4 GB executable remain unchanged.
+
 ## Candidate changes
 
 - Crew roster/capacity has a separate settings identity and ownership scope.
@@ -22,9 +30,10 @@ not completed native acceptance, a main merge or a public release.
   scene has rendered it. Shared testing waits for required scene readiness.
 - Staged commits keep acceptance behind persistence completion. Owned encoding,
   hashing and durable writes can run outside the editor thread; sparse journals
-  avoid storing a full unchanged native base per gesture. Pure placement
-  preparation and exact operation-scoped validation reuse retain opaque-change
-  checks. No new measured frame or confirmation budget is claimed yet.
+  avoid storing a full unchanged native base per gesture. Placement preparation
+  reuses exact operation-scoped proofs while retaining opaque-change checks.
+  C33 measured host confirmation improvements; guest confirmation and observer
+  frame budgets still fail acceptance.
 - Optional Extended complexity permits the candidate 4,096-placement bound while
   retaining the native 1,024-class limit. Conflicting patch signatures are
   rejected. Publication eligibility and other complexity mods are unverified.
@@ -2486,3 +2495,83 @@ exact-output optimization oracle. Evidence:
 `out/preview9-c33-retirement/result.json` and
 `out/preview9-c33-closed-retention/receipt.json`. No personal installation or
 release-acceptance claim follows from this intermediate build.
+
+### C34 creation identity correction and shared Save acceptance
+
+The genuine C32 failure is a copied metadata identity. The accepted Vehicle
+alias pollen still carries its source online ID at serialized offset 4.
+Native Save reads this ID, clears the alias instance and emits a server-only
+reference that the local resolver cannot find. The entire decoded difference
+is that four-byte instance and eight-byte server ID; no model corruption is
+established. Native v13 reader/writer, getter and Save conversion call chain
+are independently verified on the supported executable. Evidence:
+`out/preview9-c32-save-witness-audit/receipt.json` and
+`out/preview9-c32-save-witness-independent-native.txt`.
+
+Commit `9d7bd6c` clears only the owned alias pollen's online ID to UINT64_MAX
+after the existing version-13, minimum-24-byte and exact self-key checks.
+The self key is then remapped as before. Foreign/ancestry IDs, old immutable
+aliases and source records remain unchanged. Strict resolution witnesses are
+unchanged. Genuine old-source i686 reproduction fails the new identity check;
+the fix passes 317 focused and 1,763 full checks, with all 35 compiler/Make
+inputs and the executable unchanged after commit. Evidence:
+`out/preview9-c34-alias-online-red-receipt.json`,
+`out/preview9-c34-alias-online-receipt.json` and
+`out/preview9-c34-alias-online-postcommit.json`.
+
+The guarded C34 production build retains all 192 inputs without drift. DLL
+is 93,088,768 bytes, SHA-256
+`9d50eb8c823da45f9ffe5bb1c8f50b6c55074355696242d9ab92f38360455e11`.
+After private-only deployment, a fresh native two-player Town bootstrap
+reaches revision/history zero and zero faults. The host designs a new valid
+Military Land vehicle through the same measured native route. Done admits
+one class and one history item at revision 1; native Undo/Redo at 2/3 remove
+and restore it on both peers. Evidence:
+`out/preview9-c34-host-vehicle-save/result.json` and
+`out/preview9-c34-vehicle-class-history/result.json`.
+
+Ordinary adventure Save now succeeds at revision 3 with SavedApplied 2/2,
+strict convergence, zero faults and unchanged history/semantics. Logical
+source is `408A0000!29130B6D.366A930D`. The retained native package is
+4,357,385 bytes, 96 records, SHA-256
+`b51eed6eb1c400d1129ce9425102bbaffd5d1a88a40570bf08e37855592ddeb1`;
+its 60,745-byte root has 419 markers, SHA-256
+`9e75c45070fbceb8d45a98423ca1609df7a9fd8e1d64e6519c8e99ddac0cddec`.
+Independent decoding verifies class 1342 retains local alias
+`40646200!7DD6BE67.24682294` and UINT64_MAX server ID; both retained Store
+envelopes contain its exact 193-byte pollen with UINT64_MAX own online ID.
+Evidence: `out/preview9-c34-vehicle-native-save-carrier/result.json`,
+`out/preview9-c34-saved-retention/receipt.json` and
+`out/preview9-c34-save-witness-independent-confirmation.json`.
+
+### C34 fresh-process dependency availability failure
+
+Both games return normally to Galaxy and close fault-free. New processes
+open the native My Creations adventure picker without Recover. Selecting
+the newest Adventure Town card stops at "Some creations in this Adventure
+were banned. Some creations will be replaced." No replacement is accepted;
+the editor has not loaded, so the attempted source cannot yet be confirmed
+through the ready-scene key check. Evidence:
+`out/preview9-c34-cold-native-open/result.json` and
+`out/preview9-c34-cold-diagnostic-r2/95-cold-open-stopped.png`.
+
+The generic warning is not evidence of an actual ban. Independent static
+inspection shows a missing local-key ResourceManager resource is sufficient
+for mask 0x800, mapped by stock message data to this warning. Canonical
+alias records are present on disk but no cold initialization enumerates or
+registers retained packages. Warm registration alone therefore does not
+establish persistence acceptance. The closed package inventory and accepted
+Store envelope contain identical alias BEM, metadata and both PNG records;
+neither EditorSaves package embeds those dependencies. All 197 files,
+17,842,767 bytes, are retained after repeated stable reads. Evidence:
+`out/preview9-c34-cold-dependencies-r2/receipt.json` and
+`out/preview9-c34-cold-dependency-audit/receipt.json`.
+
+Normal Cancel returns to Galaxy and the saved package remains byte-for-byte
+identical. Both games again close normally with zero faults and runner exit
+zero. No profile/database repair, recovery or replacement was performed.
+Evidence: `out/preview9-c34-cold-cancel/result.json` and
+`out/preview9-c34-cold-retirement/result.json`. A selected-file dependency
+restoration path before Native's original availability checks remains to
+be implemented and validated; blanket-mounting historical cache packages
+would exceed existing admission limits and is not an acceptable remedy.
