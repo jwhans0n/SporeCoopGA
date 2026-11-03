@@ -2024,3 +2024,71 @@ fixture's settlement was corrected. Its failed executable, log and original
 source remain in the same directory as first-*; no production fix was hidden
 by that test correction. These controlled results do not replace live C54 or
 installed-C49 backport acceptance.
+
+## GroundEffect forest companion ownership and Flora refresh (2026-11-03, feat/ga-editor-multi-act)
+<a id="history-ground-effect-flora-refresh"></a>
+
+BUG-0471: C54's first normal Flowers action at revision42 was rejected with
+`Editing shared properties requires ownership of their settings.` The retained
+failure is `out/preview9-c54-two-flowers/result.json`. Independent read-only
+checks in `out/preview9-c54-flowers-rejected-fields-r2/verification.json` prove
+both participants returned to exact revision42 Planet values and history,
+strictly converged and fault-free. This was an ownership rejection, rather
+than a failed restoration or a reason to widen Core's lease rules.
+
+CORRECTION: the earlier single-field Flowers/GroundCover recipe was incomplete.
+Both native UI routes call `F35160` (`EE81A2`, `EE8233`). That setter writes
+TerraformMode+160, then calls `F34500` at `F3516A`. In addition to selected
+GroundEffect `56B14F05`, `F34500` removes and regenerates forest key array
+`03ABB0AF` (`F34542`, `F345F4`, `F34644`). Its first ResourceKey is
+`57974AC6!00000000.00000000`; a nonzero selected effect supplies the second.
+Both fields therefore require their existing exact Planet Field leases before
+the setter runs. GroundEffect's gate now requests exactly those two fields.
+
+The actual restored native baseline on both peers has GroundEffect `A9D6A81D`.
+Forest type20/flags9C bytes are
+`000000020000000cc64a975700000000000000001da8d6a90000000000000000`.
+The verified emitter substitutes `57e2c074` for `1da8d6a9` when Flowers selects
+`74C0E257`; count, width, first key and zero companion words stay unchanged.
+This expected AFTER is static evidence until a successful running-game action
+retains it. Exact executable-range hashes and disassembly are in
+`out/preview9-c54-ground-effect-re/receipt.json` and `disassembly.txt`.
+
+The new controlled Native gate passes its actual requested scopes to the real
+Coordinator. The unchanged retained C54 source fails with the same Core1083
+error at `decision.accepted()`; the corrected source passes108 focused checks,
+990 prior Flora checks and140,280 full Native checks, with59 inputs unchanged.
+The test requires zero setters before grant, foreign ownership of the forest
+companion blocking the queued first action, value/revision/denial expiry,
+one two-field gesture, and exact Core Undo. RED/GREEN receipts are under
+`out/editor-preview9-ground-effect/`; no Core or Runtime ownership policy changed.
+
+After the rejected action, the native Flowers checkbox could retain its clicked
+state despite restored Planet values. Native `EE8C80`, called by TerraformUI
+category2 at `EE917F`, reads the current density and ground effect and refreshes
+all nine Flora cards, fifteen GroundCover choices and Flowers flags/images.
+Its Density slider uses `SetValue(value,false)`; the card helper `EE8360` only
+updates child flags. The verified alias is `RefreshFloraUI`; GOG2016 remains
+disabled under BUG-0108.
+
+The existing deferred Environment refresh queue also services visible Flora.
+Restoration already schedules that queue after a terrain rebuild, covering
+Undo, checked rejection rollback and remote canonical changes. It waits for
+a later settled frame outside Present, retains the existing scene/source,
+generation, scope, serial and input fences, then independently pins the current
+FloraUI, UILayout, backing object, container IWindow and category. The leaf
+container getter runs without cached memory probes across its call. Policy
+callbacks are followed by a callback-free comparison of the complete UI owner
+before dispatch. A stale queue cannot refresh a replaced widget or replay an
+authored setter. The existing `environment_ui_updates` diagnostic counts either
+supported Terraform panel; no wire or public Native API changed.
+
+The superseding strict actual-i686 executable passes108 GroundEffect,990 prior
+Flora,900 Flora UI refresh,1,137 Environment and141,185 full Native checks.
+All59 compiler/Make inputs are unchanged. The new UI cases cover exact restored
+checkbox/option/nine-card values, later-frame execution, source/generation and
+all UI owner replacements during the container getter, replacement from the
+last policy callback, cancellation/held input, exceptions and reentrant newer
+refresh preservation. `out/editor-preview9-flora-refresh/receipt.json` retains
+the complete source set and logs. The ABI verifier passes102 entries and
+repository symbol/docs lints pass. Running-game C56 acceptance remains pending.

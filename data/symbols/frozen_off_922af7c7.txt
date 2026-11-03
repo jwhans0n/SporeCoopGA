@@ -282,6 +282,7 @@ SporeCoop::Editor::RedoHistory ; shared editor: native snapshot, gesture, histor
 SporeCoop::Editor::RedoHistoryEntry ; shared editor: native snapshot, gesture, history, Terraform and scene integration is unavailable on GOG 2016 (BUG-0108)
 SporeCoop::Editor::RefreshDisplay ; shared editor: native snapshot, gesture, history, Terraform and scene integration is unavailable on GOG 2016 (BUG-0108)
 SporeCoop::Editor::RefreshEnvironmentUI ; shared editor: native snapshot, gesture, history, Terraform and scene integration is unavailable on GOG 2016 (BUG-0108)
+SporeCoop::Editor::RefreshFloraUI ; shared editor: verified native Flora UI refresh and scene integration is unavailable on GOG 2016 (BUG-0108)
 SporeCoop::Editor::RemoveClass ; shared editor: native snapshot, gesture, history, Terraform and scene integration is unavailable on GOG 2016 (BUG-0108)
 SporeCoop::Editor::RemoveCrew ; shared editor: native snapshot, gesture, history, Terraform and scene integration is unavailable on GOG 2016 (BUG-0108)
 SporeCoop::Editor::ReplaceCrew ; shared editor: native snapshot, gesture, history, Terraform and scene integration is unavailable on GOG 2016 (BUG-0108)

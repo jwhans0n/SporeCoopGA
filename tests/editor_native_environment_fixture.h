@@ -113,3 +113,109 @@ void test(){
 }
 }
 static void test_native_environment_refresh(){environment_refresh_fixture::test();}
+
+// The same passive queue must repair Flora after checked rollback, Undo and
+// remote canonical restoration. Distinct UILayout/backing/IWindow objects keep
+// this separate from the native function's byte-verified UI-only behavior.
+namespace flora_refresh_fixture {
+unsigned calls=0;bool checked=false;uint32_t ground=0;
+std::array<editor::ResourceKey,9> authored_cards{},shown_cards{};
+std::function<void()> callback;
+void SK_THISCALL refresh(void* self){
+    CHECK(environment_refresh_fixture::outside&&self==t_flora_ui.data());++calls;
+    const auto effect=skg::field<uint32_t>(t_terraform.data(),0x160);
+    checked=effect==0x74C0E257;ground=effect==0x6A36F1CA?1:7;shown_cards=authored_cards;
+    const auto notify=callback;if(notify)notify();
+}
+struct Routes {
+    environment_refresh_fixture::Routes environment;
+    uintptr_t function=a_flora_ui_refresh,vtable=a_flora_ui_vtable;
+    ~Routes(){a_flora_ui_refresh=function;a_flora_ui_vtable=vtable;t_flora_on_container={};callback={};}
+};
+void setup(){
+    environment_refresh_fixture::setup();calls=0;checked=true;ground=99;callback={};
+    t_flora_ui.fill(0);t_flora_layout.fill(0);t_flora_container.fill(0);t_flora_window.fill(0);
+    t_flora_on_container={};t_flora_layout_gets=0;t_flora_wrong_interface=0;
+    a_flora_ui_refresh=uintptr_t(refresh);a_flora_ui_vtable=0x1234567B;
+    skg::field<uint32_t>(environment_refresh_fixture::terraform.data(),0x28)=2;
+    skg::field<void*>(environment_refresh_fixture::terraform.data(),0x18)=t_flora_ui.data();
+    skg::field<uintptr_t>(t_flora_ui.data(),0)=a_flora_ui_vtable;
+    skg::field<void*>(t_flora_ui.data(),0x168)=t_flora_layout.data();
+    skg::field<void*>(t_flora_layout.data(),0x14)=t_flora_container.data();
+    skg::field<void*>(t_flora_container.data(),0x88)=t_flora_window.data();
+    skg::field<uint32_t>(t_terraform.data(),0x160)=0xA9D6A81D;
+    authored_cards={};authored_cards[0]={11,13,17};authored_cards[1]={19,23,29};shown_cards={};
+}
+void run(){environment_refresh_fixture::run();}
+void test(){
+    Routes routes;setup();const auto data_before=t_data;const auto resource_before=t_live;
+    const auto source=authored_cards;const auto rows=t_rows.at(t_live.data());
+    const auto updates=environment_ui_updates;
+    request_environment_refresh();CHECK(environment_refresh);run();CHECK(!calls&&checked&&environment_refresh);
+    ++t_frame;run();CHECK(calls==1&&!checked&&ground==7&&shown_cards==source&&!environment_refresh);
+    CHECK(t_flora_layout_gets>=2&&!t_flora_wrong_interface&&environment_ui_updates==updates+1);
+    CHECK(t_data==data_before&&t_live==resource_before&&t_rows.at(t_live.data())==rows&&authored_cards==source);
+    // A later restored canonical state updates the checkbox, selected option
+    // and all card images without reopening the tab or applying another edit.
+    skg::field<uint32_t>(t_terraform.data(),0x160)=0x74C0E257;authored_cards[0]={31,37,41};
+    request_environment_refresh();++t_frame;run();CHECK(calls==2&&checked&&shown_cards==authored_cards);
+    skg::field<uint32_t>(t_terraform.data(),0x160)=0xA9D6A81D;authored_cards=source;
+    request_environment_refresh();++t_frame;run();CHECK(calls==3&&!checked&&shown_cards==source);
+    for(unsigned reason=0;reason<12;++reason){
+        setup();request_environment_refresh();CHECK(environment_refresh);++t_frame;bool allowed=true;
+        restore_fence_fixture::expire(reason,allowed);if(reason==10)C.active=[] {return false;};
+        run();CHECK(!calls&&!environment_refresh&&checked&&ground==99);
+    }
+    for(unsigned reason=0;reason<9;++reason){
+        setup();request_environment_refresh();++t_frame;
+        if(reason==0)skg::field<uint32_t>(environment_refresh_fixture::terraform.data(),0x28)=1;
+        if(reason==1)skg::field<void*>(environment_refresh_fixture::terraform.data(),0x18)=nullptr;
+        if(reason==2)skg::field<uintptr_t>(t_flora_ui.data(),0)=0;
+        if(reason==3)skg::field<void*>(t_flora_ui.data(),0x168)=nullptr;
+        if(reason==4)skg::field<void*>(t_flora_layout.data(),0x14)=nullptr;
+        if(reason==5)skg::field<void*>(t_flora_container.data(),0x88)=nullptr;
+        if(reason==6)a_flora_ui_refresh=0;
+        if(reason==7)++gesture_counter;
+        if(reason==8)t_time+=4;
+        run();CHECK(!calls&&!environment_refresh&&checked&&shown_cards!=authored_cards);
+    }
+    // The leaf root getter is an explicit boundary: owner, layout, backing,
+    // source, generation, serial and category expiry must precede UI dispatch.
+    for(unsigned reason=0;reason<8;++reason){
+        setup();request_environment_refresh();++t_frame;bool fired=false;
+        t_flora_on_container=[&]{fired=true;
+            if(reason==0)++generation;
+            if(reason==1)++skg::field<editor::ResourceKey>(t_live.data(),8).instance;
+            if(reason==2)skg::field<void*>(t_flora_ui.data(),0x168)=nullptr;
+            if(reason==3)skg::field<void*>(t_flora_layout.data(),0x14)=nullptr;
+            if(reason==4)skg::field<void*>(t_flora_container.data(),0x88)=nullptr;
+            if(reason==5)clear_environment_refresh();
+            if(reason==6)skg::field<uint32_t>(environment_refresh_fixture::terraform.data(),0x28)=1;
+            if(reason==7)throw 9;
+        };
+        run();CHECK(fired&&!calls&&!environment_refresh&&checked&&!t_flora_wrong_interface);
+    }
+    // The LAST scope callback can replace a widget after both getter calls.
+    // A fresh callback-free owner comparison must still prevent the UI call.
+    for(unsigned reason=0;reason<4;++reason){
+        setup();request_environment_refresh();++t_frame;bool fired=false;
+        C.projection_scope=[&]{if(!fired&&t_flora_layout_gets>=2){fired=true;
+            if(reason==0)skg::field<void*>(t_flora_container.data(),0x88)=environment_refresh_fixture::other_root.data();
+            if(reason==1)skg::field<void*>(t_flora_ui.data(),0x168)=nullptr;
+            if(reason==2)skg::field<uint32_t>(environment_refresh_fixture::terraform.data(),0x28)=1;
+            if(reason==3)clear_environment_refresh();
+        }return t_scope;};
+        run();CHECK(fired&&!calls&&!environment_refresh&&checked);
+    }
+    setup();request_environment_refresh();held_terrain_controls.emplace_back();++t_frame;run();CHECK(!calls&&!environment_refresh);
+    setup();request_environment_refresh();++t_frame;callback=[] {editor_native::tick();drain_environment_refresh(nullptr);};
+    run();CHECK(calls==1&&t_tasks.empty()&&!environment_refresh&&!environment_refresh_queued&&!environment_refresh_servicing);
+    setup();C.gesture_scope=[] {return GestureScope{};};request_environment_refresh();++t_frame;run();CHECK(calls==1&&!checked);
+    // Newer canonical work issued by a native UI callback remains queued for
+    // another frame, rather than being consumed under the old refresh serial.
+    setup();request_environment_refresh();++t_frame;
+    callback=[] {callback={};skg::field<uint32_t>(t_terraform.data(),0x160)=0x74C0E257;request_environment_refresh();};
+    run();CHECK(calls==1&&environment_refresh);++t_frame;run();CHECK(calls==2&&checked&&!environment_refresh);
+}
+}
+static void test_native_flora_refresh(){flora_refresh_fixture::test();}

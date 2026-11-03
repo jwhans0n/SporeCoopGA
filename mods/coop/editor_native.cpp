@@ -65,7 +65,7 @@ uintptr_t a_mode, a_history, a_act, a_ctor, a_read, a_write, a_copy, a_entry, a_
 uintptr_t a_context, a_tools, a_marker, a_object, a_clone_marker, a_create_marker, a_delete_marker, a_apply_marker;
 uintptr_t a_loading, a_layout_find, a_display_vtable, a_erase_history, a_discard_history, a_copy_marker_rows, a_insert_marker;
 uintptr_t a_history_undo_return,a_history_redo_return;
-uintptr_t a_environment_ui_refresh,a_environment_ui_vtable;
+uintptr_t a_environment_ui_refresh,a_environment_ui_vtable,a_flora_ui_refresh;
 uintptr_t a_entry_vtable;
 uintptr_t a_tool_tick;
 uintptr_t a_copy_class_rows,a_copy_class,a_insert_class;
@@ -2971,7 +2971,7 @@ const std::array<std::vector<uint32_t>,18>& terrain_value_fields(){
         {0x03A23F98},
         {0x0536250D,0x968C496A,0x968C496B,0xB6929C94,0xB6929C95,0xB6929C92,0xB6929C93},
         {0x0536250C,0x968C496A,0x968C496B,0xB6929C94,0xB6929C95,0xB6929C92,0xB6929C93},
-        {0x56B14F05},
+        {0x56B14F05,0x03ABB0AF}, // F35160 -> F34500 also rebuilds the forest key array.
         {0x968C496A,0x968C496B,0xB6929C94,0xB6929C95,0xB6929C92,0xB6929C93},
         {0x0B208B41},{0x0B208B41},{0x48C74C5C,0x03ABB0AF}}};
     return fields;
@@ -4304,7 +4304,8 @@ struct EnvironmentRefresh {
     uintptr_t tool=0;double started=0;
 };
 struct EnvironmentUiOwner {
-    void* display=nullptr;void* layout=nullptr;void* terraform=nullptr;void* environment=nullptr;void* root=nullptr;
+    void* display=nullptr;void* layout=nullptr;void* terraform=nullptr;void* panel=nullptr;void* root=nullptr;
+    void* panel_layout=nullptr;void* backing=nullptr;uint32_t category=0;
     bool operator==(const EnvironmentUiOwner&)const=default;
 };
 std::optional<EnvironmentRefresh> environment_refresh;
@@ -4326,22 +4327,54 @@ bool environment_refresh_current(const EnvironmentRefresh& pin,bool published=tr
             creation_terrain_raw_owner(pin.owner,pin.generation,pin.tool);
     }catch(...){return false;}
 }
-bool current_environment_ui(EnvironmentUiOwner& out){
+bool environment_ui_owner_current(const EnvironmentUiOwner& pin){
     skg::ReadOnlyMemoryScope memory;
     auto* m=mode();auto* display=skg::readable(m,0x18)?skg::field<void*>(m,0x14):nullptr;
-    if(!a_environment_ui_refresh || !a_environment_ui_vtable || !a_terraform_ui_vtable ||
-       !skg::readable(display,0x2C) || (a_display_vtable&&skg::field<uintptr_t>(display,0)!=a_display_vtable) ||
+    if(!a_terraform_ui_vtable || display!=pin.display || !skg::readable(display,0x2C) ||
+       (a_display_vtable&&skg::field<uintptr_t>(display,0)!=a_display_vtable) ||
        skg::field<uint32_t>(display,0x1C)!=2)return false;
     auto* terraform=skg::field<void*>(display,0x28);auto* layout=skg::field<void*>(display,0x24);
-    if(!skg::readable(terraform,0x2C) || skg::field<uintptr_t>(terraform,0)!=a_terraform_ui_vtable ||
-       skg::field<uint32_t>(terraform,0x28)!=3 || !skg::readable(layout,0x18))return false;
-    auto* environment=skg::field<void*>(terraform,0x14);
-    if(!skg::readable(environment,0x40) || skg::field<uintptr_t>(environment,0)!=a_environment_ui_vtable)return false;
-    auto* root=skg::field<void*>(environment,0x0C);if(!skg::readable(root,0x80))return false;
-    out={display,layout,terraform,environment,root};return true;
+    if(terraform!=pin.terraform || layout!=pin.layout || !skg::readable(terraform,0x2C) ||
+       skg::field<uintptr_t>(terraform,0)!=a_terraform_ui_vtable ||
+       skg::field<uint32_t>(terraform,0x28)!=pin.category || !skg::readable(layout,0x18))return false;
+    if(pin.category==3)return a_environment_ui_refresh && a_environment_ui_vtable &&
+        skg::field<void*>(terraform,0x14)==pin.panel && skg::readable(pin.panel,0x40) &&
+        skg::field<uintptr_t>(pin.panel,0)==a_environment_ui_vtable &&
+        skg::field<void*>(pin.panel,0x0C)==pin.root && skg::readable(pin.root,0x80);
+    if(pin.category!=2 || !a_flora_ui_refresh || !a_flora_ui_vtable || skg::field<void*>(terraform,0x18)!=pin.panel ||
+       !skg::readable(pin.panel,0x174) || skg::field<uintptr_t>(pin.panel,0)!=a_flora_ui_vtable ||
+       skg::field<void*>(pin.panel,0x168)!=pin.panel_layout || !skg::readable(pin.panel_layout,0x18) ||
+       skg::field<void*>(pin.panel_layout,0x14)!=pin.backing || !skg::readable(pin.backing,0x8C))return false;
+    return skg::field<void*>(pin.backing,0x88)==pin.root && skg::readable(pin.root,0x40);
+}
+bool current_environment_ui(EnvironmentUiOwner& out){
+    EnvironmentUiOwner pin;
+    {
+        skg::ReadOnlyMemoryScope memory;
+        auto* m=mode();pin.display=skg::readable(m,0x18)?skg::field<void*>(m,0x14):nullptr;
+        if(!skg::readable(pin.display,0x2C))return false;
+        pin.terraform=skg::field<void*>(pin.display,0x28);pin.layout=skg::field<void*>(pin.display,0x24);
+        if(!skg::readable(pin.terraform,0x2C))return false;
+        pin.category=skg::field<uint32_t>(pin.terraform,0x28);
+        if(pin.category==3){
+            pin.panel=skg::field<void*>(pin.terraform,0x14);if(!skg::readable(pin.panel,0x40))return false;
+            pin.root=skg::field<void*>(pin.panel,0x0C);
+        }else if(pin.category==2){
+            pin.panel=skg::field<void*>(pin.terraform,0x18);if(!skg::readable(pin.panel,0x174))return false;
+            pin.panel_layout=skg::field<void*>(pin.panel,0x168);if(!skg::readable(pin.panel_layout,0x18))return false;
+            pin.backing=skg::field<void*>(pin.panel_layout,0x14);if(!skg::readable(pin.backing,0x8C))return false;
+            pin.root=skg::field<void*>(pin.backing,0x88);
+        }else return false;
+    }
+    if(!environment_ui_owner_current(pin))return false;
+    // UILayout is not IWindow. Resolve through the verified leaf getter, with
+    // no cached memory probe scope spanning its controlled callback boundary.
+    if(pin.category==2 && sui::layout_container(pin.panel_layout)!=pin.root)return false;
+    if(!environment_ui_owner_current(pin))return false;
+    out=pin;return true;
 }
 void request_environment_refresh(){
-    if(!a_environment_ui_refresh || !a_environment_ui_vtable || !H || !H->frame_index || !H->time_seconds ||
+    if((!a_environment_ui_refresh && !a_flora_ui_refresh) || !H || !H->frame_index || !H->time_seconds ||
        environment_refresh_serial==UINT64_MAX)return;
     try{
         EnvironmentRefresh pin;pin.generation=generation;pin.frame=H->frame_index();pin.started=H->time_seconds();
@@ -4372,13 +4405,15 @@ void SK_CDECL drain_environment_refresh(void*){
         if(!native.ready || native.gesture || !terrain_settled() || deferred_local_view || local_view_settling)return;
         EnvironmentUiOwner owner,checked;
         if(!current_environment_ui(owner)){drop();return;} // Preserve current browsing.
-        if(!environment_refresh_current(pin) || !current_environment_ui(checked) || checked!=owner){
+        if(!environment_refresh_current(pin) || !current_environment_ui(checked) || checked!=owner ||
+           !environment_refresh_current(pin) || !environment_ui_owner_current(owner)){
             drop();++environment_ui_expired;return;
         }
-        // Native F3AF60 uses ISlider::SetValue(value,false), then updates its
-        // existing captions/flags. It sends no authoring setter notification.
-        skg::thiscall<void>(a_environment_ui_refresh,owner.environment);
-        if(environment_refresh_current(pin) && current_environment_ui(checked) && checked==owner)++environment_ui_updates;
+        // Native F3AF60 and EE8C80 use SetValue(value,false) and existing UI
+        // flags/images. EE8C80 also refreshes all nine Flora cards, GroundCover
+        // and Flowers. Neither route sends an authoring setter notification.
+        skg::thiscall<void>(owner.category==2?a_flora_ui_refresh:a_environment_ui_refresh,owner.panel);
+        if(environment_refresh_current(pin) && environment_ui_owner_current(owner))++environment_ui_updates;
         else ++environment_ui_expired;
         drop();
     }catch(...){drop();++environment_ui_expired;}
@@ -4871,6 +4906,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     a_terraform_ui_vtable=H->sym("SporeCoop::Editor::TerraformUIVTable");
     a_environment_ui_refresh=H->sym("SporeCoop::Editor::RefreshEnvironmentUI");
     a_environment_ui_vtable=H->sym("SporeCoop::Editor::EnvironmentUIVTable");
+    a_flora_ui_refresh=H->sym("SporeCoop::Editor::RefreshFloraUI");
     a_flora_ui_vtable=H->sym("SporeCoop::Editor::FloraUIVTable");
     a_copy_class_acts=H->sym("SporeCoop::Editor::CopyClassActs");a_copy_marker_acts=H->sym("SporeCoop::Editor::CopyMarkerActs");
     a_insert_act=H->sym("SporeCoop::Editor::InsertAct");a_insert_class_act=H->sym("SporeCoop::Editor::InsertClassAct");a_insert_marker_act=H->sym("SporeCoop::Editor::InsertMarkerAct");
@@ -4961,7 +4997,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
         std::memcpy(complexity_installed_code.data(),reinterpret_cast<void*>(a_complexity_ratio),complexity_installed_code.size());
         complexity_code_pinned=complexity_available=true;
     }
-    terrain_available=supported && a_terrain_load && a_copy_terrain_properties && a_terrain_rebuild && a_terrain_materialize && a_terrain_selection && a_terrain_loaded && a_terrain_vtable && a_terraform_ui_vtable && a_flora_ui_vtable && a_environment_ui_refresh && a_environment_ui_vtable &&
+    terrain_available=supported && a_terrain_load && a_copy_terrain_properties && a_terrain_rebuild && a_terrain_materialize && a_terrain_selection && a_terrain_loaded && a_terrain_vtable && a_terraform_ui_vtable && a_flora_ui_vtable && a_environment_ui_refresh && a_environment_ui_vtable && a_flora_ui_refresh &&
         install("SporeCoop::Editor::TerraformInitializeResource",(void*)terrain_resource_init,(void**)&original_terrain_resource_init) &&
         install("SporeCoop::Editor::TerraformActivate",(void*)terrain_activate,(void**)&original_terrain_activate) &&
         install("SporeCoop::Editor::TerraformStartHistory",(void*)terrain_start,(void**)&original_terrain_start) &&
