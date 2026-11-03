@@ -6,8 +6,8 @@ executable and its exact 4 GB LAA variant remain supported. Older protocol
 clients are explicitly rejected. This report records development evidence,
 not completed native acceptance, a main merge or a public release.
 
-Latest private native build is C46, SHA-256
-`d7720fe553f106424e241605f16f4b9a7fa95e352016830d6bf434e7cc0e13be`.
+Latest private native build is C47, SHA-256
+`c98a89afaa7e3ebf7d4e8d38ba1a9cb5df4db62fef0596891084b9ae45888b6a`.
 Cold recovery now passes the original revision-22 draft in both games.
 Host editing and replacing a guest-created Creature also passes.
 Guest New Creature Save while the host designs another Creature passes; the
@@ -16,6 +16,10 @@ C46 fixes the generated-cache dependency rejection: Native adventure Save and
 shared cold reopen now pass the revision-24 Creature draft. Exact cold comparison
 identifies four local asset machine-ID resets; every other decoded field matches.
 New UFO Save also passes independently from both roles.
+C47 also verifies a baseline Save, new creation and subsequent ordinary Save,
+closing the inherited-clean native dirty-state failure. All 129 classes survive
+fresh native cold reopen and shared materialization. The two-frame preparation
+experiment remains default-off and unqualified for performance.
 C38 verifies all five Crew control families from all four participants and
 independent four-player creation-editor entry and cancellation.
 C35 closes the new-vehicle Native Save/cold-reopen dependency reproduction.
@@ -3300,3 +3304,84 @@ double reads; its exact Saved root is still the previously verified revision-4
 root, while the newer two vehicle admissions remain in durable recovery.
 Evidence: `out/preview9-c46-final-retirement/result.json` and
 `out/preview9-c46-final-closed-preserved/receipt.json`.
+
+### C47 dirty-state verification and default-off preparation experiment
+
+Commit `c617dcf` marks only the accepted prepared Native dirty sidecar as dirty,
+including the adopted-live branch. Saved-history counters, metadata/import
+flags and rollback's original sidecar remain unchanged. The strict i686 focus
+passes 2,675 checks, including clean cancellation, rejected durability, foreign
+edits while the host designs, both creation authors and absent optional
+sidecars. Real pre-fix Runtime fails the new post-admission dirty assertion.
+Evidence: `out/editor-preview9-c47-native-dirty/receipt.json` and `postcommit.json`.
+
+Native producer commit `a7591cc` and consumer commit `53183ad` add a separate
+default-off two-frame pose experiment. It retains one private AFTER resource,
+keeps persistence behind explicit Native preparation/application, rechecks live
+integrity and original owner before mutation, and settles teardown after active
+Core callbacks. Source review identifies and fixes borrowed owner identity,
+cached-proof scope/generation and final-Release reentry gaps. Strict actual-i686
+checks pass Native staged/checked application 10,426 and existing synchronous
+poses 6,514; Runtime staged consumer 2,835, dirty 2,675 and legacy Session
+durability 480. This is controlled correctness evidence, not a frame-budget
+claim. Receipts: `out/editor-preview9-saved-cache/native-stage-o2-receipt.json`,
+`native-stage-postcommit.json`, and
+`out/editor-preview9-pose-commit-final/receipt.json` with `postcommit.json`.
+
+C47 retains 251 production inputs without drift and produces a 97,309,696-byte
+DLL; Kit remains unchanged. Fresh private processes 59996/15820 recover the
+latest revision-6, 128-class draft. The initial console probe exceeds its
+25-second socket timeout while Native loading is in progress. A fresh read
+finds recovery completed and healthy. The bounded continuation does not repeat
+Recover; it validates the current project/revision and exact preserved asset
+rows, joins the guest and proves strict agreement and zero faults. Native
+loading calls then use a longer bounded socket timeout. Evidence:
+`out/preview9-c47-recover-all-models-r6/result.json`,
+`out/preview9-c47-status-now/result.json`, and
+`out/preview9-c47-recover-all-models-r6-resume/result.json`.
+
+One baseline adventure Save succeeds at revision 6. The host then repeats the
+verified native UFO recipe and admits one more class at revision 7. The next
+ordinary Save, with an already owned native copy, succeeds with SavedApplied
+2/2 and exact DBPF retention. This is the actual reproduction that closes the
+C46 reason-5 bug rather than relying on recovery's initial Save As. The latest
+129-class saved source is `408A0000!291403C5.366A930D`. Evidence:
+`out/preview9-c47-dirty-baseline-save/result.json`,
+`out/preview9-c47-dirty-ufo-save/result.json`, and
+`out/preview9-c47-dirty-post-creation-save/result.json`.
+
+The full portable repository suite subsequently exits 0 with all 251 production
+inputs unchanged. Log SHA-256 is
+`86112b9d48dc41b87db9029024fee52f7f1bf74796e46d5073dda8d455a248fc`.
+Evidence: `out/preview9-c47-repository-tests.log` and `.receipt.json`.
+
+After normal native retirement and runner exit 0, fresh processes cold-open
+that exact 129-class file. The reusable value-only comparison verifies complete
+decoded, prefix and container-envelope equality except the exact qualified
+local machine-ID reset. Both participants then share and strictly converge at
+a new revision-0 context, retaining 419 placements/five acts and zero faults.
+Both report zero grounding entries and no active rotation ticket. Comparator
+checks include genuine C46/C47 artifacts and eight adversarial tests on Windows
+and Linux; it changes no production validation. Evidence:
+`out/preview9-c47-dirty-retirement/result.json`,
+`out/preview9-c47-cold-baseline/result.json`, and
+`out/preview9-c47-saved-projection-tool/receipt.json` with `postcommit.json`.
+
+The first two short baseline attempts produce no valid timing samples. They
+stop during unmeasured warmup with a misleading placement-visibility error.
+Fresh diagnostics show healthy scenes; the actual failing object response is
+`Native Adventure Editor is not ready for a snapshot`. The legacy three-second
+gesture retry issues another action while staged Native capture still owns
+input. Two host warmup moves eventually commit at revisions 1 and 2. These
+failed fixtures remain retained; their outputs are not performance acceptance.
+Capture's Native phases take about 5-37 ms, but actual frame IDs advance only
+every roughly 550 ms in this reproduction. C47 default-off pulse/idle gates
+match C46. A possible outside-task queue starvation path is under passive
+diagnosis; it is not yet proved or fixed. Evidence:
+`out/preview9-c47-commit-baseline/result.json`,
+`out/preview9-c47-commit-baseline-r2/result.json`, and
+`out/preview9-c47-calibrate-view-r2/result.json`.
+
+The personal installation remains preview 8 and its exact 4 GB executable is
+unchanged. The existing shortcut still resolves to its preview-8 launcher.
+Read-only proof: `out/preview9-c47-personal-unchanged/receipt.json`.
