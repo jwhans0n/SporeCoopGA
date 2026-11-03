@@ -6,8 +6,8 @@ executable and its exact 4 GB LAA variant remain supported. Older protocol
 clients are explicitly rejected. This report records development evidence,
 not completed native acceptance, a main merge or a public release.
 
-Latest private native build is C36, SHA-256
-`32eb5857e085d10b574f813dc25645b750d2a50e10a496c392fa79a8bc529125`.
+Latest private native build is C37, SHA-256
+`a39f38a869fceb540fe856b6accbf4d1d33017a518fb81da150cee3bd94767ed`.
 C35 closes the new-vehicle Native Save/cold-reopen dependency reproduction.
 C36 retains that cold-open result and improves a short two-player timing probe:
 guest submission-to-confirmation is 159 ms and frame gaps are about 139 ms.
@@ -2732,3 +2732,58 @@ at `out/preview9-c36-repository-tests.log`, SHA-256
 This portable run is separate from the Native fixtures and does not qualify
 later Native snapshot-copy changes. The timing parser's later optional copy
 span update passes 46 offline tests and remains compatible with older counters.
+
+### C37 copy-cost measurement and independent creation return
+
+Commits 07ca1b4 and 780236e remove two overwritten Snapshot copies, preserve all
+nine fields explicitly and retain two Native Reads, three Writes and the same
+opaque proof in the positive preparation fixture. Future Snapshot members fail
+the helper's structured-binding compilation until accounted for. Focused i686
+checks pass 6,322 Native cases and 12 value/allocation cases. No authority,
+Native-call or frame fence is removed. Evidence:
+`out/editor-preview9-snapshot-values/receipt.json` and `make-receipt.json`.
+
+The production DLL is 96,255,488 bytes with 248 unchanged retained inputs.
+Kit remains the exact C36 0.3.6 payload. Fresh private processes 42564/51232
+cold-open the C35 Saved adventure, retain authored semantic hash/counts and
+join at revision 0. The next two-warm-up/six-edit diagnostic completes and
+independently converges at canonical/durable revision 8 with zero faults.
+Host/guest submission-to-confirmation maxima are 48.5394/159.1009 ms;
+frame-gap maxima are 141.2133/139.2555 ms. Release-to-confirmation maxima are
+564.7227/671.4781 ms. Frame acceptance still fails. The two observer copy spans
+total only 0.4066-0.5512 ms, so no frame improvement is attributed to this
+allocation cleanup and further copy tuning is not pursued. Evidence:
+`out/preview9-c37-cold-shared/result.json`,
+`out/preview9-c37-commit-probe-two-town/summary.json`, full result SHA-256
+`64d1a0df512c6758b32dac9e74449fbf457286614d55d1d816d0e52e1ce40caf`, and
+`out/preview9-c37-commit-final-proof/result.json`.
+
+A separate functional check enters native City hall on the host and Military
+land on the guest simultaneously. The guest cancels and independently returns,
+then commits checked Undo and Redo at revisions 9/10 while the host remains in
+its creation editor. Host cancellation restores the latest revision 10. Both
+participants return ready with the same strict convergence, no faults, unchanged
+history count, 419 placements, 119 classes, five acts and the restored authored
+semantic hash. Neither unsaved design creates a cast entry. Evidence:
+`out/preview9-c37-two-independent-creation-cancel-r3/result.json`.
+The initial fixture stops before input on a truncated asset diagnostic; the next
+attempt waits at the building subtype menu. Both are retained tool failures,
+not game crashes. The fixture's entry route now selects the measured first
+subtype for Building and Vehicle before waiting for native entry.
+
+The Make checkpoint c8da0ee converts 19 unconditional portable compile commands
+to independent incremental targets, preserving exact flags/source order. All
+26 executables pass, including the existing pulse test. An unchanged rerun
+executes zero compiler or dependency-generation commands; a simulated shared
+header change rebuilds exactly three binaries. Failed dependency generation
+preserves the previous dependency file and forces a clean retry. The Session
+executable is byte-identical to the old build; its UDP polling CHECK count is
+timing-dependent. Production Make recipes remain byte-identical. Receipt:
+`out/editor-preview9-make-incremental/receipt.json`.
+
+System CPU sampling was attempted with the uniquely named WPR instance
+`SporeCoopC37Diagnostic`. WPR rejects profiling-policy enablement with
+`0xc5585011`; subsequent status confirms no recording remains. This sample is
+unavailable and provides no native hot-function evidence. Existing QPC stages
+still identify observer validation/private preparation as the remaining frame
+cost. No full 30-per-author benchmark is repeated after the failed short probe.
