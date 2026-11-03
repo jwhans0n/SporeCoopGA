@@ -1412,3 +1412,52 @@ canonical baseline stays fixed while the local editor is open. For example,
 append `--target-class 8589935936:1` to the same common arguments before the
 `enter`, `steps`, `inspect`, and `finish` commands above. A zero-blocker
 preflight is still required before the one ordinary Done click.
+
+
+### Admission while other participants keep independent editors open
+
+`--allow-other-editors` explicitly permits other participants to remain in
+already-entered creation sessions while the author starts from a ready Native
+Adventure Editor. Every non-ready other participant needs an owned
+`--other-editor INSTANCE:PROFILE` declaration. The default still requires all
+participants to start ready. Repeat the opt-in and declarations on every stage.
+Profiles retain the exact IDs in the table above; unsupported variants stop.
+
+The public creation diagnostic provides phase, serial, stale and entered
+state, but no family/save-phase fields. The tool therefore checks public
+`phase=1 stale=0 entered=1` and unchanged serial at every guard/canonical poll,
+then closes the exact family/model/request and idle Native save/command state
+with the existing read-only sampler before/after stages and before author
+Done. Its separate observer mode can pin another New or Edit session, including
+that Edit's complete original source key. Observer receipts cannot be used as
+the author's Save proof. Other session/source/family/pending-Save expiry
+invalidates the workflow; a later replacement is not adopted. The author still
+requires its own exact request/source and zero-blocker preflight.
+
+All peers must keep the same project/epoch and participant generations, and
+all complete canonical asset rows are compared before and after admission.
+The initial Native roster/check comes from the ready author, rather than an
+away host. Post-admission roster and strict checks cover the live Adventure
+participants; held creators are explicitly marked
+`not_applicable_other_creation_editor`. They must still hold their original
+sessions while their canonical/durable copies advance. Returning those editors
+and proving all Native scenes is a separate Root-owned acceptance step.
+
+For example, a ready guest 96 can enter with three other held editors:
+
+```powershell
+$common = @('--execute', '--metadata', $metadata, '--candidate', $candidate, '--instances', '95', '96', '97', '98', '--author', '96', '--profile', 'building-house', '--allow-other-editors', '--other-editor', '95:creature', '--other-editor', '97:vehicle-military-land', '--other-editor', '98:spaceship')
+py -3 tools/tests/coop_editor_creation_save.py @common --stage enter --output out/guest-enter-host-away
+```
+
+The controlled four-party cases keep all three others in blank/invalid local
+designs, accept one guest admission, verify four matching canonical copies,
+and prohibit Native Adventure inspect/check calls on the away participants.
+They also cover a held Edit session, default rejection, other serial expiry
+during input, and pending Native Save rejection before author Done. These are
+offline contract tests, not an actual host-away Save result. ResourceKey group
+zero remains valid: Edit checks require nonzero instance/type and full source
+equality, without an extra group veto. The staged self-test is included in
+Make's existing Python editor-tool block. New evidence is kept separately in
+`out/preview9-creation-hostaway-source/`, preserving the earlier 108-check
+receipt unchanged.

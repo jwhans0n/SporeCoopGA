@@ -72,7 +72,7 @@ class Module(C.Structure):
         ('GlblcntUsage',W.DWORD),('ProccntUsage',W.DWORD),('modBaseAddr',C.c_void_p),
         ('modBaseSize',W.DWORD),('hModule',W.HMODULE),('szModule',W.WCHAR*256),('szExePath',W.WCHAR*260)]
 
-def native_sample(kernel,handle,image,base,family,edit_source=None):
+def native_sample(kernel,handle,image,base,family,edit_source=None,observe_other=False):
     reads=0;total=0;started=time.perf_counter()
     def read(address,count):
         nonlocal reads,total
@@ -98,7 +98,7 @@ def native_sample(kernel,handle,image,base,family,edit_source=None):
         raise ValueError('Active mode is not the verified cEditor interface')
     head=read(editor,0x4B6);request=u32(head,0x1CC);request_bytes=read(request,0x9C)
     if (u32(request_bytes)!=relocated(0x13F6FEC) or u32(request_bytes,4)!=relocated(0x13F6FE8) or
-        not 0<u32(request_bytes,8)<1000000 or u32(request_bytes,0xC)!=(0xFFFFFFFF if edit_source is not None else EDITORS[family]) or
+        not 0<u32(request_bytes,8)<1000000 or u32(request_bytes,0xC)not in ((EDITORS[family],0xFFFFFFFF)if observe_other else (0xFFFFFFFF if edit_source is not None else EDITORS[family],)) or
         u32(request_bytes,0x1C)!=0x01654C10):raise ValueError('Native creation request owner/family changed')
     if edit_source is not None and (bool(request_bytes[0x20]) or list(struct.unpack_from('<III',request_bytes,0x10))!=edit_source):
         raise ValueError('Native Edit request/source changed')
@@ -165,6 +165,11 @@ def native_sample(kernel,handle,image,base,family,edit_source=None):
         widget_scope='Verified container descendants only; absence does not prove native UILayout::FindWindowByID absence',
         read_calls=reads,read_bytes=total,elapsed_ms=(time.perf_counter()-started)*1000)
 
+def edit_source_key(text):
+    key=re.fullmatch(r'([0-9A-Fa-f]{8})!([0-9A-Fa-f]{8})\.([0-9A-Fa-f]{8})',text)
+    if not key or not int(key[2],16)or not int(key[3],16):raise ValueError('Exact Edit source instance/type required; group0 is valid')
+    return [int(key[2],16),int(key[3],16),int(key[1],16)]
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--execute',action='store_true')
@@ -172,6 +177,7 @@ def main():
     parser.add_argument('--candidate')
     parser.add_argument('--participant',action='append',help='Exact instance:PID:family, repeat for owned editors')
     parser.add_argument('--output',type=Path)
+    parser.add_argument('--observe-other-editors',action='store_true',help='Read-only context pins; not an authoring or Save proof')
     parser.add_argument('--edit-source',help='Exact existing GROUP!INSTANCE.TYPE; Edit preserves the constructor FFFFFFFF sentinel')
     args=parser.parse_args()
     if not args.execute:
@@ -180,10 +186,10 @@ def main():
     output=args.output.resolve()
     if not output.is_relative_to((ROOT/'out').resolve()) or output.exists():parser.error('A new OUT receipt is required')
     edit_source=None
+    if args.edit_source and args.observe_other_editors:parser.error('Author Edit proof and other-editor observer modes are separate')
     if args.edit_source:
-        key=re.fullmatch(r'([0-9A-Fa-f]{8})!([0-9A-Fa-f]{8})\.([0-9A-Fa-f]{8})',args.edit_source)
-        if not key or not all(int(v,16)for v in key.groups()) or len(args.participant)!=1:parser.error('One exact nonzero Edit source/participant required')
-        edit_source=[int(key[2],16),int(key[3],16),int(key[1],16)]
+        if len(args.participant)!=1:parser.error('One exact Edit participant required')
+        edit_source=edit_source_key(args.edit_source)
     verify_named_symbols()
     if not re.fullmatch('[0-9a-f]{64}',args.candidate or ''):raise ValueError('Exact candidate SHA256 required')
     metadata=json.loads(args.metadata.read_text(encoding='utf-8-sig'));installation=Path(metadata['installation']).resolve()
@@ -209,7 +215,7 @@ def main():
     kernel.Module32FirstW.argtypes=(W.HANDLE,C.POINTER(Module));kernel.Module32FirstW.restype=W.BOOL
     kernel.Module32NextW.argtypes=(W.HANDLE,C.POINTER(Module));kernel.Module32NextW.restype=W.BOOL
     kernel.CloseHandle.argtypes=(W.HANDLE,)
-    result=dict(candidate_sha256=args.candidate,time=time.time(),read_only=True,no_console=True,no_native_calls=True,rows=[])
+    result=dict(candidate_sha256=args.candidate,time=time.time(),read_only=True,no_console=True,no_native_calls=True,observer_only=args.observe_other_editors,rows=[])
     for instance,pid,family in participants:
         handle=kernel.OpenProcess(0x1010,False,pid)
         if not handle:raise C.WinError(C.get_last_error())
@@ -226,7 +232,7 @@ def main():
                     found[Path(module.szExePath).resolve()]=module.modBaseAddr
                     ok=kernel.Module32NextW(modules,C.byref(module))
                 if exe not in found:raise ValueError('Expected private executable is not loaded')
-                row=native_sample(kernel,handle,image,found[exe],family,edit_source)
+                row=native_sample(kernel,handle,image,found[exe],family,edit_source,args.observe_other_editors)
                 result['rows'].append(dict(instance=instance,pid=pid,expected_family=family,image_base=found[exe],
                     dll_base=found.get(dll),dll_module_witness='optional: SporeKit may map payload outside the loader module list; candidate hash pins installed payload, owner pins this launch',**row))
             finally:kernel.CloseHandle(modules)

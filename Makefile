@@ -390,6 +390,7 @@ test:
 	python3 tools/tests/coop_editor_lifecycle.py --self-test
 	python3 tools/tests/coop_editor_save.py --self-test
 	python3 tools/tests/coop_editor_creations.py --self-test
+	python3 tools/tests/coop_editor_creation_save.py --self-test
 	python3 tests/editor_preview_package_tests.py
 	python3 tools/tests/editor_native_audit.py --self-test
 	python3 tools/re_lint.py

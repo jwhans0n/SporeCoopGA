@@ -71,10 +71,34 @@ def checkpoint_head(previous,state):
         raise FixtureError('Stale/modified checkpoint; use the last recorded result')
     return path
 
+def other_editor_profiles(args):
+    result=[];seen=set()
+    for value in getattr(args,'other_editor',[]) or []:
+        match=re.fullmatch(r'([0-9]{1,5}):([a-z-]+)',value)
+        if not match or int(match[1])not in args.instances or int(match[1])==args.author or int(match[1])in seen or match[2]not in PROFILES:
+            raise FixtureError('Other editor needs a distinct owned INSTANCE:PROFILE')
+        seen.add(int(match[1]));result.append(dict(instance=int(match[1]),profile=match[2]))
+    if result and not getattr(args,'allow_other_editors',False):raise FixtureError('Other editors require --allow-other-editors')
+    return sorted(result,key=lambda row:row['instance'])
+
+def other_request_errors(row,profile):
+    expected=PROFILES[profile];errors=[]
+    if row.get('model_type')!=expected['model_type']or row.get('model_type_name')!=expected['model_name']:errors.append('other editor family/model changed')
+    if row.get('new_asset')is True:
+        if row.get('request_editor_id')!=expected['editor_id']:errors.append('other New editor profile changed')
+    elif row.get('new_asset')is False:
+        source=row.get('source_key',[])
+        if row.get('request_editor_id')!=0xFFFFFFFF or len(source)!=3 or not source[0]or source[1]!=TYPES[FAMILIES.index(expected['family'])]:errors.append('other Edit source/family changed')
+    else:errors.append('other request mode is missing')
+    if row.get('save_phase_38C')!=0 or row.get('ui_pending_command_cc')!=0:errors.append('other editor Save/transition is pending')
+    return errors
+
 def resume_errors(previous,current):
     errors=[]
     for key in ('candidate','metadata','instances','process_pins','peer_pins','author','profile','target_class'):
         if previous.get(key)!=current.get(key):errors.append('changed '+key)
+    if bool(previous.get('allow_other_editors',False))!=bool(current.get('allow_other_editors',False)) or previous.get('other_editor_profiles',[])!=current.get('other_editor_profiles',[]):errors.append('changed other editor declaration')
+    if previous.get('other_editor_conflict'):errors.append('previous other-editor scope expired')
     if previous.get('save_dispatched') or previous.get('passed')and previous.get('stage')in('finish','cancel'):
         errors.append('workflow is terminal or Save was already dispatched')
     if not previous.get('context') or not previous.get('serial') or not previous.get('native_request'):
@@ -111,7 +135,7 @@ def saved_asset_result(before,current,profile,target=None):
         if set(old)!=set(new) or target not in old or any(new[key]!=row for key,row in old.items()if key!=target):raise FixtureError('Edit changed unrelated classes or class roster')
         prior,row=old[target],new[target]
         if any(row[key]!=prior[key]for key in ('settings','behavior')):raise FixtureError('Edit changed target behavior/settings')
-        if row['key']==prior['key'] or row['key'][2]!=family or row['key'][1]>>24!=0x7D or not row['key'][0] or row['content_revision']!=current['revision'] or row['content_revision']<=prior['content_revision']:
+        if row['key']==prior['key'] or row['key'][2]!=family or row['key'][1]>>24!=0x7D or row['content_revision']!=current['revision'] or row['content_revision']<=prior['content_revision']:
             raise FixtureError('Edit did not publish a new immutable content version/revision')
         return dict(updated_class=target,updated_asset=row,prior_asset=prior)
     added=set(new)-set(old)
@@ -141,6 +165,7 @@ def run(args):
     head=checkpoint_head(previous,args.state)if previous else args.output.resolve()/'checkpoint-head.json'
     metadata=json.loads(args.metadata.read_text(encoding='utf-8-sig'))
     processes={r['instance']:r for r in metadata['processes']}
+    declarations=other_editor_profiles(args)
     owner=Ownership(args.metadata,args.instances,args.candidate)
     deadline=time.monotonic()+240
     games=[CreationGame(i,args.output,60,deadline,[1024,768])for i in args.instances]
@@ -148,7 +173,9 @@ def run(args):
     result=dict(passed=False,complete_acceptance=False,stage=args.stage,candidate=args.candidate,
                 metadata=str(args.metadata.resolve()),instances=args.instances,author=args.author,profile=args.profile,target_class=getattr(args,'target_class',None),family=PROFILES[args.profile]['family'],
                 process_pins=[dict(instance=i,pid=processes[i]['pid'],profile=processes[i]['profile'])for i in args.instances],
-                applied_recipes=list(previous.get('applied_recipes',[]))if previous else [])
+                applied_recipes=list(previous.get('applied_recipes',[]))if previous else [],
+                allow_other_editors=bool(getattr(args,'allow_other_editors',False)),other_editor_profiles=declarations,
+                other_editors=list(previous.get('other_editors',[]))if previous else [])
     context=None
     def write():
         result['workflow_head']=str(head)
@@ -156,7 +183,47 @@ def run(args):
         temporary=path.with_suffix('.tmp');temporary.write_bytes(raw);temporary.replace(path)
         next_head=head.with_suffix('.tmp');next_head.write_text(json.dumps(dict(result=str(path),sha256=hashlib.sha256(raw).hexdigest()))+'\n');next_head.replace(head)
         for g in games:g.save_log()
+    def other_conflict(message):
+        result.setdefault('other_editor_conflict',message);raise FixtureError(message)
+    def other_public_current():
+        if not result['allow_other_editors']:return
+        for pin in result['other_editors']:
+            game=next(g for g in games if g.instance==pin['instance'])
+            try:serial=creation_serial(game.call('coop.editor creations'))
+            except FixtureError:other_conflict('Other participant is no longer designing')
+            if serial!=pin['serial']:other_conflict('Other creation session/serial changed')
+    def sample_others(label):
+        if not result['other_editors']:return
+        other_public_current();path=args.output/(label+'-native.json')
+        command=[sys.executable,str(ROOT/'tools/tests/coop_editor_creation_validation.py'),'--execute','--metadata',str(args.metadata),'--candidate',args.candidate,'--output',str(path),'--observe-other-editors']
+        for pin in result['other_editors']:command.extend(['--participant',f'{pin["instance"]}:{processes[pin["instance"]]["pid"]}:{pin["profile"]}'])
+        done=subprocess.run(command,cwd=ROOT,capture_output=True,text=True,timeout=20)
+        (args.output/(label+'-sample.txt')).write_text(done.stdout+done.stderr)
+        if done.returncode:other_conflict('Other editor read-only validation failed: '+done.stderr)
+        receipt=json.loads(path.read_text());rows=receipt['rows']
+        if receipt.get('observer_only')is not True:other_conflict('Other-editor receipt has no observer boundary')
+        if len(rows)!=len(result['other_editors'])or len({row['instance']for row in rows})!=len(rows):other_conflict('Incomplete other editor receipt')
+        for pin in result['other_editors']:
+            row=next((row for row in rows if row['instance']==pin['instance']),None)
+            if row is None or other_request_errors(row,pin['profile']):other_conflict('Other editor family/request/save state changed')
+            values={key:row.get(key)for key in ('request','request_editor_id','model_type','new_asset','source_key')}
+            if any(key in pin and pin[key]!=value for key,value in values.items()):other_conflict('Other Native creation request/source changed')
+            pin.update(values)
+        other_public_current();result[label]=dict(instances=[row['instance']for row in rows],idle=True);write()
+    def all_assets(revision):
+        snapshots=[asset_snapshot(g)for g in games]
+        if any(row!=snapshots[0]or row['revision']!=revision or row['durable']!=revision for row in snapshots):raise FixtureError('Canonical asset rows differ across participants')
+        result['canonical_asset_peers']=[dict(instance=g.instance,revision=row['revision'],durable=row['durable'],hash=row['hash'],rows=len(row['rows']))for g,row in zip(games,snapshots)]
+        return snapshots[0]
+    def live_adventure():
+        away={pin['instance']for pin in result['other_editors']}
+        live=[g for g in games if g.instance not in away]
+        for game in live:
+            if not status(game).get('ready'):return False
+            if re.search(r'creation_editor active=1\b',game.call('coop.editor creations')):raise FixtureError('Unpinned participant entered another creation editor')
+        return live
     def canonical(revision=None):
+        other_public_current()
         states=[status(g)for g in games]
         if any(s.get('frozen')for s in states):raise FixtureError('Participant frozen; preserve scene')
         if any(s.get('phase')!=4 for s in states):return False
@@ -187,7 +254,9 @@ def run(args):
         done=subprocess.run(command,cwd=ROOT,capture_output=True,text=True,timeout=20)
         (args.output/(label+'-sample.txt')).write_text(done.stdout+done.stderr)
         if done.returncode:raise FixtureError('Native read-only validation failed: '+done.stderr)
-        row=json.loads(path.read_text())['rows'][0]
+        receipt=json.loads(path.read_text());rows=receipt['rows']
+        if receipt.get('observer_only')or len(rows)!=1 or rows[0].get('instance')!=args.author:raise FixtureError('Author receipt belongs to a different observer/participant')
+        row=rows[0]
         if previous and previous.get('native_request')!=row['request']:raise FixtureError('Native creation request changed; do not replay input')
         errors=request_errors(row,args.profile,result.get('target_source'))
         if errors:raise FixtureError(', '.join(errors))
@@ -211,18 +280,29 @@ def run(args):
         else:
             if args.stage!='enter':raise FixtureError('Begin with the explicit enter stage')
             baseline=host.wait('settled canonical baseline',canonical)
-            if not all(status(g).get('ready')for g in games):raise FixtureError('All participants must initially be in their native Adventure Editor')
-            checks=[g.call('coop.editor check').strip()for g in games]
+            if result['allow_other_editors']:
+                if not status(author).get('ready'):raise FixtureError('Author must initially own a ready Adventure Editor')
+                away={g.instance for g in games if not status(g).get('ready')}
+                if away!={row['instance']for row in declarations}:raise FixtureError('Every non-ready other editor needs an explicit profile')
+                result['other_editors']=[dict(row,family=PROFILES[row['profile']]['family'],serial=creation_serial(next(g for g in games if g.instance==row['instance']).call('coop.editor creations')),presence='designing')for row in declarations]
+                reference=author;sample_others('other-editors-initial')
+                initial=live_adventure()
+                if not initial:raise FixtureError('An unpinned Adventure participant is not ready')
+            else:
+                if not all(status(g).get('ready')for g in games):raise FixtureError('All participants must initially be in their native Adventure Editor')
+                reference=host;initial=games
+            checks=[g.call('coop.editor check').strip()for g in initial]
             if not checks[0].startswith('CONVERGED ')or len(set(checks))!=1:raise FixtureError('Initial native scenes differ')
             context=list(parse_context(status(host)['text']));result['context']=context
-            result['baseline']=dict(canonical=baseline,assets=asset_snapshot(host),history=history_rows(host.call('coop.editor history')),
-                native=inspect_row(host.call('coop.editor inspect')))
+            result['baseline']=dict(canonical=baseline,assets=all_assets(baseline['revision'])if result['allow_other_editors']else asset_snapshot(host),history=history_rows(host.call('coop.editor history')),
+                native=inspect_row(reference.call('coop.editor inspect')),native_reference=reference.instance)
         baseline=result['baseline']
         if result['target_class']:
             target=baseline['assets']['rows'].get(result['target_class'])
-            if not target or not all(target['key']) or target['key'][1]>>24!=0x7D or target['key'][2]!=TYPES[FAMILIES.index(PROFILES[args.profile]['family'])]:raise FixtureError('Target immutable class/family is missing from baseline')
+            if not target or not target['key'][1] or not target['key'][2] or target['key'][1]>>24!=0x7D or target['key'][2]!=TYPES[FAMILIES.index(PROFILES[args.profile]['family'])]:raise FixtureError('Target immutable class/family is missing from baseline')
             result['target_source']=target['key']
         if canonical()!=baseline['canonical']:raise FixtureError('Unexpected intervening canonical edit; preserve and review current state')
+        if previous:sample_others('other-editors-start')
         record('before')
         if args.stage=='enter':
             author.call('coop.uistate 0')
@@ -254,7 +334,7 @@ def run(args):
             elif args.stage=='finish':
                 row=result['before-action'];errors=finish_errors(row,args.profile,result.get('target_source'));result['finish_preflight_errors']=errors;write()
                 if errors:raise FixtureError('Done preflight rejected without clicking: '+', '.join(errors))
-                guard();result['save_dispatched']=True;write();author.click_control(DONE)
+                sample_others('other-editors-before-save');guard();result['save_dispatched']=True;write();author.click_control(DONE)
                 try:author.wait('ordinary Save returns independently',returned,timeout=60)
                 except Exception:
                     if designing():sample('failed-done')
@@ -263,18 +343,20 @@ def run(args):
                 history=history_rows(host.call('coop.editor history'))
                 summary='Replace shared asset content' if result['target_class'] else 'Create adventure asset'
                 if len(history)!=len(baseline['history'])+1 or history[:-1]!=baseline['history'] or history[-1][-1]!=summary or history[-1][0:2]!=next(row['peer']for row in result['peer_pins']if row['instance']==args.author) or history[-1][3:7]!=[context[1],baseline['canonical']['revision']+1,1,0]:raise FixtureError('Save did not add one creation Undo item')
-                inspected=[inspect_row(g.call('coop.editor inspect'))for g in games];old=baseline['native']
+                live=author.wait('live Adventure participants settle',live_adventure)if result['allow_other_editors']else games
+                inspected=[inspect_row(g.call('coop.editor inspect'))for g in live];old=baseline['native']
                 if any(r['classes']!=old['classes']+(0 if result['target_class']else 1) or r['placements']!=old['placements']or r['acts']!=old['acts']for r in inspected):raise FixtureError('Save changed an unexpected native roster')
                 result['returned_inspections']=inspected
-                result.update(saved_asset_result(baseline['assets'],asset_snapshot(host),args.profile,result['target_class']))
-                checks=[g.call('coop.editor check').strip()for g in games]
+                result.update(saved_asset_result(baseline['assets'],all_assets(baseline['canonical']['revision']+1)if result['allow_other_editors']else asset_snapshot(host),args.profile,result['target_class']))
+                checks=[g.call('coop.editor check').strip()for g in live]
                 if not checks[0].startswith('CONVERGED ')or len(set(checks))!=1:raise FixtureError('Returned native scenes differ')
                 result['strict_native_checks']=checks
+                result['scene_proofs']=[dict(instance=g.instance,native='not_applicable_other_creation_editor'if g.instance not in {row.instance for row in live}else 'converged')for g in games]
             elif args.stage=='cancel':
                 author.click_control(0x90439D7C);author.wait('ordinary Cancel returns',returned)
                 if canonical()!=baseline['canonical']or history_rows(host.call('coop.editor history'))!=baseline['history']:raise FixtureError('Cancel changed authored state/history')
         if args.stage not in ('finish',)and canonical()!=baseline['canonical']:raise FixtureError('Unsaved local stage changed canonical state')
-        record('after');result['passed']=True;write()
+        sample_others('other-editors-end');record('after');result['passed']=True;write()
     except Exception as error:
         result['error']=repr(error)
         try:record('failure-preserved')
@@ -332,6 +414,26 @@ def self_test():
         try:saved_asset_result(old,bad,'creature','1:1')
         except FixtureError:checks+=1
         else:raise AssertionError('Edit damaged unrelated class state')
+    old_zero=json.loads(json.dumps(old));after_zero=json.loads(json.dumps(after))
+    old_zero['rows']['1:1']['key'][0]=0;after_zero['rows']['1:1']['key'][0]=0
+    assert saved_asset_result(old_zero,after_zero,'creature','1:1')['updated_asset']['key'][0]==0;checks+=1
+    from coop_editor_creation_validation import edit_source_key
+    assert edit_source_key('00000000!7D000001.2B978C46')==[0x7D000001,TYPES[0],0];checks+=1
+    held=dict(edit,new_asset=True,request_editor_id=config['editor_id'],changed_4B3_4B4=[0,0],finish_state_if_debug_disabled=4)
+    assert not other_request_errors(held,'creature');checks+=1
+    for key,value in [('model_type',0),('request_editor_id',0),('save_phase_38C',1),('ui_pending_command_cc',1)]:
+        bad=dict(held);bad[key]=value;assert other_request_errors(bad,'creature');checks+=1
+    held=dict(edit,source_key=[source[1],source[2],0],changed_4B3_4B4=[0,0],finish_state_if_debug_disabled=4)
+    assert not other_request_errors(held,'creature');checks+=1
+    held['source_key']=[0,source[2],0];assert other_request_errors(held,'creature');checks+=1
+    from types import SimpleNamespace
+    declared=SimpleNamespace(instances=[95,96,97,98],author=96,allow_other_editors=True,other_editor=['98:spaceship','95:creature'])
+    assert [row['instance']for row in other_editor_profiles(declared)]==[95,98];checks+=1
+    for values in (['96:creature'],['95:creature','95:spaceship'],['99:creature'],['95:unknown']):
+        bad=SimpleNamespace(**dict(vars(declared),other_editor=values))
+        try:other_editor_profiles(bad)
+        except FixtureError:checks+=1
+        else:raise AssertionError('Invalid other editor declaration accepted')
     from coop_editor_creation_save_contracts import workflow_contracts
     checks+=workflow_contracts(sys.modules[__name__])
     print(f'staged creation Save: {checks} offline checks passed')
@@ -341,6 +443,8 @@ def main():
     p.add_argument('--execute',action='store_true');p.add_argument('--self-test',action='store_true');p.add_argument('--screenshots',action='store_true')
     p.add_argument('--metadata',type=Path);p.add_argument('--candidate');p.add_argument('--instances',nargs='+',type=int,default=[95,96])
     p.add_argument('--author',type=int);p.add_argument('--profile',choices=PROFILES);p.add_argument('--stage',choices=('enter','steps','inspect','finish','cancel'))
+    p.add_argument('--allow-other-editors',action='store_true',help='Explicitly pin other already-designing sessions; author must start ready')
+    p.add_argument('--other-editor',action='append',default=[],help='Owned INSTANCE:PROFILE for every other non-ready participant')
     p.add_argument('--target-class',help='Existing full class-id:generation; UI owner selects its native cast card before enter')
     p.add_argument('--state',type=Path);p.add_argument('--steps',type=Path);p.add_argument('--name',default='Preview9NativeSave');p.add_argument('--output',type=Path)
     args=p.parse_args()
