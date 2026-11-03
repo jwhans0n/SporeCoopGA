@@ -95,9 +95,34 @@ struct RejectionRestore {
 std::optional<RejectionRestore> rejection_restore;
 uint64_t rejection_serial=0;
 bool rejection_servicing=false;
+// Authority for the external working-source/header pair is established only
+// while attaching a checked scene, independently of a later pose release.
+// This is not a cached semantic proof: every staged image is still validated.
+struct SceneAliasReceipt {
+    editor_native::SceneOwner owner;
+    editor_native::GestureScope scope;
+    editor::ResourceKey canonical_source;
+    std::shared_ptr<const std::vector<uint8_t>> base_root;
+    std::vector<dbpf::Record> dependencies;
+    uint64_t generation=0,transport=0,serial=0;
+    editor::Revision revision=0;
+    uint32_t act=0;
+    size_t charged=0;
+};
+struct SceneAliasAttachment : SceneAliasReceipt {
+    editor_native::Snapshot expected;
+    uint64_t frame=0,started=0,last_attempt=UINT64_MAX;
+};
+std::shared_ptr<const SceneAliasReceipt> scene_alias;
+std::shared_ptr<SceneAliasAttachment> scene_alias_attachment;
+uint64_t scene_alias_serial=0;
+bool scene_alias_servicing=false;
+void retire_scene_alias(){scene_alias.reset();scene_alias_attachment.reset();}
 struct StagedCapture {
     editor_native::CaptureTicket ticket;
     editor_native::Snapshot canonical;
+    editor::ResourceKey canonical_source;
+    std::shared_ptr<const SceneAliasReceipt> alias;
     std::optional<editor_native::Snapshot> before;
     std::optional<editor_native::Gesture> completed;
     std::map<editor::ObjectId,editor::Placement> guards;
@@ -1536,13 +1561,27 @@ editor_native::GestureScope current_projection_scope() {
        view.local.slot!=C.session->my_id() || view.context.project!=document.project || view.context.epoch!=document.epoch)return {};
     return {view.context.project,view.context.epoch,view.local};
 }
-bool capture_dependencies_current(const StagedCapture& pin){
-    for(const auto& expected:pin.dependencies){
+bool dependencies_current(const std::vector<dbpf::Record>& dependencies){
+    for(const auto& expected:dependencies){
         const auto found=std::find_if(resources.bundle.records.begin(),resources.bundle.records.end(),
             [&](const auto& record){return record.key==expected.key;});
         if(found==resources.bundle.records.end() || found->data!=expected.data)return false;
     }
     return true;
+}
+bool capture_dependencies_current(const StagedCapture& pin){return dependencies_current(pin.dependencies);}
+bool scene_alias_context(const SceneAliasReceipt& pin){
+    if(!controller || !native_attached || !C.session || !C.session->connected() || closing || frozen || recovery || transport_teardown ||
+       native_generation!=pin.generation || observed_transport!=pin.transport || C.session->transport_generation()!=pin.transport ||
+       current_native.source!=pin.canonical_source || resources.root!=dbpf::Key{pin.canonical_source.instance,pin.canonical_source.type,pin.canonical_source.group} ||
+       resources.base_root!=pin.base_root || current_native.act!=pin.act || !dependencies_current(pin.dependencies))return false;
+    const auto& view=controller->view();const auto& doc=controller->state().document;const auto member=view.members.find(view.local.slot);
+    return view.phase==Phase::Ready && view.context.project==pin.scope.project && view.context.epoch==pin.scope.epoch &&
+        view.local==pin.scope.author && view.local.slot==C.session->my_id() && member!=view.members.end() && member->second.peer==view.local &&
+        doc.project==pin.scope.project && doc.epoch==pin.scope.epoch && doc.revision>=pin.revision;
+}
+bool scene_alias_current(const std::shared_ptr<const SceneAliasReceipt>& pin){
+    return pin && scene_alias==pin && scene_alias_context(*pin);
 }
 bool capture_context_current(const std::shared_ptr<StagedCapture>& pin,bool ending=false){
     if(!pin || staged_capture!=pin || !controller || !native_attached ||
@@ -1550,7 +1589,9 @@ bool capture_context_current(const std::shared_ptr<StagedCapture>& pin,bool endi
        exporting || pending_export_request || native_exit_requested || save_publication_pending ||
        !C.session || !C.session->connected() || observed_transport!=pin->transport ||
        C.session->transport_generation()!=pin->transport || native_generation!=pin->ticket.generation ||
-       current_native.source!=pin->canonical.source ||
+       current_native.source!=pin->canonical_source ||
+       (pin->alias && (!scene_alias_current(pin->alias) || pin->ticket.owner!=pin->alias->owner || pin->canonical.source!=pin->alias->owner.source)) ||
+       (!pin->alias && pin->canonical.source!=pin->canonical_source) ||
        (!ending&&current_projection_scope()!=pin->ticket.scope))return false;
     const auto& view=controller->view();const auto& ticket=pin->ticket;const auto member=view.members.find(ticket.scope.author.slot);
     if(view.phase!=Phase::Ready || view.context.project!=ticket.scope.project || view.context.epoch!=ticket.scope.epoch ||
@@ -1571,20 +1612,182 @@ size_t capture_snapshot_charge(const editor_native::Snapshot& image){
     if(image.metadata){result+=sizeof(*image.metadata);for(const auto& text:image.metadata->text)result+=text.size()*sizeof(char16_t);}
     return result;
 }
+struct SceneAliasResources {
+    dbpf::Key root;
+    uint32_t act=0;
+    std::vector<editor_native::Binding> bindings;
+    std::optional<editor_native::Snapshot::Metadata> metadata;
+    std::string hash;
+    uint32_t bytes=0;
+    const void* records=nullptr;
+    size_t record_count=0;
+    std::shared_ptr<const std::vector<uint8_t>> base_root;
+};
+SceneAliasResources scene_alias_resources(const editor_project::Resources& value){
+    return {value.root,value.act,value.bindings,value.metadata,value.bundle.hash,value.bundle.bytes,
+        value.bundle.records.data(),value.bundle.records.size(),value.base_root};
+}
+bool scene_alias_resources_current(const SceneAliasResources& pin,const editor_project::Resources& value){
+    return pin.root==value.root && pin.act==value.act && pin.bindings==value.bindings && pin.metadata==value.metadata &&
+        pin.hash==value.bundle.hash && pin.bytes==value.bundle.bytes && pin.records==value.bundle.records.data() &&
+        pin.record_count==value.bundle.records.size() && pin.base_root==value.base_root;
+}
+struct SceneAliasOwner {
+    editor_native::SceneOwner owner;uint64_t generation=0;
+    const editor_session::Controller* controller=nullptr;
+    const net::Session* session=nullptr;
+    editor::wire::Context context{};
+    editor::Peer peer{};
+    editor_session::Phase phase=editor_session::Phase::Idle;
+    editor::Revision revision=0;
+    uint64_t transport=0,runtime_generation=0;
+    const void* durable=nullptr;
+    const void* capture=nullptr;
+    std::optional<editor::OperationId> operation;
+    std::optional<editor::OperationId> awaiting;
+    std::optional<editor_creation::Scope> creation;
+    std::optional<uint64_t> rejection;
+    std::optional<Command> export_command,test_command;
+    const void* save_ticket=nullptr;
+    const void* export_ticket=nullptr;
+    const void* close_ticket=nullptr;
+    uint64_t export_request=0,test_request_serial=0;
+    bool save_pending=false,native_exit=false;
+    SceneAliasResources resources;
+    std::optional<SceneAliasResources> incoming;
+    editor::wire::Context incoming_context{};
+    editor::ResourceKey canonical_source;
+    bool attached=false,was_closing=false,was_frozen=false,was_recovering=false;
+    SceneAliasOwner()=default;
+    SceneAliasOwner(editor_native::SceneOwner value,uint64_t gen):owner(value),generation(gen){}
+};
+bool scene_alias_owner_context(const SceneAliasOwner& pin){
+    return controller && controller.get()==pin.controller && C.session==pin.session && C.session && C.session->connected() &&
+        !transport_teardown && C.session->transport_generation()==pin.transport && observed_transport==pin.transport &&
+        native_generation==pin.runtime_generation && native_attached==pin.attached && closing==pin.was_closing && frozen==pin.was_frozen &&
+        recovery.has_value()==pin.was_recovering && durable_commit.get()==pin.durable && staged_capture.get()==pin.capture &&
+        (pending?std::optional{pending->request.operation}:std::nullopt)==pin.operation &&
+        awaiting_operation==pin.awaiting && (local_creation?std::optional{local_creation->scope}:std::nullopt)==pin.creation &&
+        (rejection_restore?std::optional{rejection_restore->serial}:std::nullopt)==pin.rejection &&
+        (exporting?std::optional{exporting->command}:std::nullopt)==pin.export_command && test_request==pin.test_command &&
+        (save_terrain?save_terrain->ticket.get():nullptr)==pin.save_ticket &&
+        (export_terrain?export_terrain->ticket.get():nullptr)==pin.export_ticket && (close_terrain?close_terrain->ticket.get():nullptr)==pin.close_ticket &&
+        pending_export_request==pin.export_request && pending_test_request==pin.test_request_serial &&
+        save_publication_pending==pin.save_pending && native_exit_requested==pin.native_exit &&
+        controller->view().phase==pin.phase && controller->view().context==pin.context && controller->view().local==pin.peer &&
+        controller->state().document.revision==pin.revision && current_native.source==pin.canonical_source &&
+        scene_alias_resources_current(pin.resources,resources) && incoming_resources.has_value()==pin.incoming.has_value() &&
+        (!pin.incoming || (incoming_context==pin.incoming_context && scene_alias_resources_current(*pin.incoming,*incoming_resources)));
+}
+bool scene_alias_owner_current(const SceneAliasOwner& pin,std::string& error){
+    if(!scene_alias_owner_context(pin)){error="The scene attachment's original shared context expired";return false;}
+    const auto scene=editor_native::creation_scene_state(pin.owner);
+    if(!scene_alias_owner_context(pin) || !scene.settled() || scene.generation!=pin.generation){
+        error="The scene attachment's original native owner or readiness changed";return false;
+    }
+    return true;
+}
+std::optional<SceneAliasOwner> pin_scene_alias_owner(){
+    try{
+        if(!controller || !C.session || !C.session->connected())return {};
+        SceneAliasOwner pin;pin.controller=controller.get();pin.session=C.session;pin.transport=observed_transport;
+        pin.context=controller->view().context;pin.peer=controller->view().local;pin.phase=controller->view().phase;
+        pin.revision=controller->state().document.revision;pin.runtime_generation=native_generation;pin.attached=native_attached;
+        pin.was_closing=closing;pin.was_frozen=frozen;pin.was_recovering=recovery.has_value();pin.durable=durable_commit.get();pin.capture=staged_capture.get();
+        pin.resources=scene_alias_resources(resources);pin.canonical_source=current_native.source;
+        if(incoming_resources){pin.incoming=scene_alias_resources(*incoming_resources);pin.incoming_context=incoming_context;}
+        pin.awaiting=awaiting_operation;if(local_creation)pin.creation=local_creation->scope;
+        if(rejection_restore)pin.rejection=rejection_restore->serial;
+        if(exporting)pin.export_command=exporting->command;
+        pin.test_command=test_request;
+        pin.save_ticket=save_terrain?save_terrain->ticket.get():nullptr;pin.export_ticket=export_terrain?export_terrain->ticket.get():nullptr;
+        pin.close_ticket=close_terrain?close_terrain->ticket.get():nullptr;pin.export_request=pending_export_request;pin.test_request_serial=pending_test_request;
+        pin.save_pending=save_publication_pending;pin.native_exit=native_exit_requested;
+        if(pending)pin.operation=pending->request.operation;
+        std::string ignored;if(!editor_native::capture_scene_owner(pin.owner,ignored) || !scene_alias_owner_context(pin))return {};
+        const auto scene=editor_native::creation_scene_state(pin.owner);
+        if(!scene_alias_owner_context(pin) || !scene.settled())return {};
+        pin.generation=scene.generation;return pin;
+    }catch(...){return {};}
+}
+void queue_scene_alias_attachment(const std::optional<SceneAliasOwner>& owner){
+    retire_scene_alias();
+    try{
+        if(!owner || !controller || !H->frame_index || !C.session || !C.session->connected() ||
+           !owner->owner.mode || !owner->owner.data || !owner->owner.resource ||
+           owner->owner.source==current_native.source || scene_alias_serial==UINT64_MAX)return;
+        constexpr size_t limit=64u<<20;
+        size_t charged=capture_snapshot_charge(current_native);
+        if(charged>limit)return;
+        auto pin=std::make_shared<SceneAliasAttachment>();
+        pin->owner=owner->owner;pin->generation=owner->generation;pin->canonical_source=current_native.source;
+        pin->scope={current_native.document.project,current_native.document.epoch,controller->view().local};
+        pin->transport=observed_transport;pin->serial=++scene_alias_serial;pin->revision=current_native.document.revision;
+        pin->act=current_native.act;pin->base_root=resources.base_root;pin->expected=current_native;
+        for(const auto& record:resources.bundle.records)if(record.key!=resources.root){
+            if(record.data.size()>limit-charged)return;
+            charged+=record.data.size();pin->dependencies.push_back(record);
+        }
+        pin->charged=charged-capture_snapshot_charge(current_native);
+        pin->frame=H->frame_index();pin->started=now_ms();scene_alias_attachment=std::move(pin);
+    }catch(...){retire_scene_alias();} // Optional staging authority never changes attachment acceptance.
+}
+void service_scene_alias_attachment(){
+    const auto pin=scene_alias_attachment;
+    if(!pin || scene_alias_servicing || !H || !H->frame_index)return;
+    const auto frame=H->frame_index();
+    if(frame<=pin->frame || frame==pin->last_attempt)return;
+    struct Servicing {Servicing(){scene_alias_servicing=true;}~Servicing(){scene_alias_servicing=false;}} servicing;
+    auto current=[&]{return scene_alias_attachment==pin && scene_alias_context(*pin) && !local_creation && !rejection_restore &&
+        !staged_capture && !pending && !awaiting_operation && !durable_commit && !exporting && !pending_export_request &&
+        !save_publication_pending && !native_exit_requested && current_native.source==pin->expected.source &&
+        current_native.document==pin->expected.document && same_native_authored(current_native,pin->expected);};
+    if(!scene_alias_context(*pin) || now_ms()-pin->started>180000){retire_scene_alias();return;}
+    if(!current())return;
+    pin->last_attempt=frame;
+    try{
+        const auto before=editor_native::creation_scene_state(pin->owner);
+        if(!current())return;
+        if(!before.owner || before.generation!=pin->generation){retire_scene_alias();return;}
+        if(!before.settled())return;
+        ProjectionScope projection(pin->expected.document);
+        auto expected=pin->expected;expected.source=pin->owner.source;
+        editor_native::Snapshot observed;std::string ignored;
+        const bool proven=editor_native::capture_draft(observed,ignored) && observed.source==pin->owner.source &&
+            observed.bindings==expected.bindings && editor_native::validate(observed,expected.document,ignored) &&
+            supported_between(expected,observed,ignored);
+        if(!current())return;
+        const auto after=editor_native::creation_scene_state(pin->owner);
+        if(!current())return;
+        if(!proven || !after.owner || after.generation!=pin->generation){retire_scene_alias();return;}
+        if(!after.settled())return;
+        auto receipt=std::make_shared<SceneAliasReceipt>();
+        receipt->owner=pin->owner;receipt->scope=pin->scope;receipt->generation=pin->generation;
+        receipt->canonical_source=pin->canonical_source;receipt->base_root=pin->base_root;receipt->transport=pin->transport;
+        receipt->serial=pin->serial;receipt->revision=pin->revision;receipt->act=pin->act;receipt->charged=pin->charged;
+        receipt->dependencies=std::move(pin->dependencies);
+        scene_alias=std::move(receipt);scene_alias_attachment.reset();
+    }catch(...){retire_scene_alias();}
+}
 bool capture_begin(const editor_native::CaptureTicket& ticket,std::string& error){
     error.clear();
     try {
-    // Aliased/legacy scenes retain the existing generic capture policy. This
-    // optional optimization cannot introduce new source authority.
+    const auto alias=ticket.owner.source==current_native.source?nullptr:scene_alias;
+    // An external source mismatch needs an independently checked attachment
+    // receipt. The release itself can never authorize a new alias.
     if(!controller || staged_capture || detached_scene() || pending || awaiting_operation || durable_commit ||
        !H->frame_index || !ticket.gesture || !ticket.owner.mode || !ticket.owner.data || !ticket.owner.resource ||
        ticket.generation!=native_generation || ticket.scope!=current_gesture_scope() ||
-       ticket.owner.source!=current_native.source || ticket.act!=current_native.act)return false;
+       (ticket.owner.source!=current_native.source && (!scene_alias_current(alias) || ticket.owner!=alias->owner)) ||
+       ticket.act!=current_native.act)return false;
     constexpr size_t limit=64u<<20;
     size_t charged=capture_snapshot_charge(current_native)+editor::bytes(current_native.document);
+    if(alias){if(alias->charged>limit || charged>limit-alias->charged)return false;charged+=alias->charged;}
     if(charged>limit)return false;
     auto pin=std::make_shared<StagedCapture>();pin->ticket=ticket;pin->transport=observed_transport;
-    pin->started=now_ms();pin->canonical=current_native;pin->canonical.document=controller->state().document;
+    pin->started=now_ms();pin->canonical_source=current_native.source;pin->alias=alias;pin->canonical=current_native;
+    if(alias)pin->canonical.source=alias->owner.source;
+    pin->canonical.document=controller->state().document;
     pin->guards=guarded_placements;
     for(const auto& held:controller->view().local_leases)if(held.owner==ticket.scope.author && held.expires>now_ms())
         pin->leases.push_back({held.scope,held.token});
@@ -1598,7 +1801,8 @@ bool capture_begin(const editor_native::CaptureTicket& ticket,std::string& error
        observed_transport!=pin->transport || C.session->transport_generation()!=pin->transport || native_generation!=ticket.generation ||
        controller->view().phase!=Phase::Ready || controller->view().context.project!=ticket.scope.project ||
        controller->view().context.epoch!=ticket.scope.epoch || controller->view().local!=ticket.scope.author ||
-       current_native.source!=pin->canonical.source || controller->state().document!=pin->canonical.document ||
+       current_native.source!=pin->canonical_source || (alias && (!scene_alias_current(alias) || ticket.owner!=alias->owner)) ||
+       controller->state().document!=pin->canonical.document ||
        !capture_dependencies_current(*pin))return false;
     pin->charged=charged;pin->request=request(editor::Intent::Forward);pin->request.leases=pin->leases;
     status="Checking the owned placement gesture across game frames";
@@ -1989,7 +2193,7 @@ editor_creation::PrepareResult prepare_creation(const editor_creation::Scope& sc
     if(!native.selected.empty())saved.selected=native.selected.front();
     if(input.target)for(const auto& [id,settings]:controller->state().document.class_settings)if(settings.class_id==*input.target)
         saved.content_revision=editor::field_revision(controller->state().document,id,{editor::Field::Property,editor::kClassAssetResourceProperty});
-    local_creation=std::move(saved);
+    retire_scene_alias();local_creation=std::move(saved);
     const editor_native::GestureScope native_scope{scope.project,scope.epoch,scope.author};
     if(!editor_native::capture_creation_terrain(native_scope,scope.serial,local_creation->scene_owner,
            local_creation->entry_native,local_creation->terrain_ticket,error)){
@@ -2083,6 +2287,7 @@ bool materialize_creation_return(std::string& error){
        !editor_native::select_placement(*local_creation->selected,error))return false;
     if(!editor_native::restore_view(local_creation->view,native_generation,error))return false;
     rendered_revision=controller->state().document.revision;local_creation->materialized=true;
+    queue_scene_alias_attachment(SceneAliasOwner{local_creation->scene_owner,native_generation});
     return true;
 }
 void fail_creation_return(const std::string& error){
@@ -2341,6 +2546,7 @@ void receive_staged_capture(editor_native::Gesture gesture){
     service_staged_capture();
 }
 void pump_staged_capture(){
+    service_scene_alias_attachment();
     service_staged_capture();
     if(!H || !H->frame_index)return;
     if(!staged_capture || capture_current(staged_capture->ticket)!=editor_native::CaptureState::Ready ||
@@ -2899,6 +3105,8 @@ bool create_store(const editor::State& state, const editor_native::Snapshot& nat
 }
 bool checkpoint_resources(editor_project::Resources content, editor_native::Snapshot native, std::string& error,
                           const std::function<bool(const editor_native::Snapshot&,std::string&)>& restored={}) {
+    const auto alias_owner=pin_scene_alias_owner();retire_scene_alias();
+    if(!alias_owner){error="The saved scene could not pin its original native attachment";return false;}
     if(!restore_tentative(error))return false;
     auto local_dirty = native.local_dirty;
     if (!editor_project::native_snapshot(content, controller->state().document, native, error)) return false;
@@ -2906,7 +3114,7 @@ bool checkpoint_resources(editor_project::Resources content, editor_native::Snap
     // Save can normalize opaque authoring metadata as well as rotate the key.
     // Install those exact bytes on the saving host as well as its guests before
     // another gesture captures the working resource.
-    if (!editor_native::restore(native, error)) return false;
+    if (!scene_alias_owner_current(*alias_owner,error) || !editor_native::restore(native, error)) return false;
     if(restored && !restored(native,error))return false;
     std::vector<uint8_t> envelope, delta;
     if (!editor_project::encode_resources(content, envelope, error) || !root_delta(content, delta, error)) return false;
@@ -2918,6 +3126,7 @@ bool checkpoint_resources(editor_project::Resources content, editor_native::Snap
         frozen = true; return false;
     }
     current_native = std::move(native); resources = std::move(content);
+    queue_scene_alias_attachment(alias_owner);
     return true;
 }
 void saved_native(editor::ResourceKey key,const editor_native_save::SaveOperation* operation=nullptr) {
@@ -2967,6 +3176,8 @@ void saved_native(editor::ResourceKey key,const editor_native_save::SaveOperatio
 }
 void start_saved() {
     reopen_saved.reset();
+    retire_scene_alias();const auto alias_owner=pin_scene_alias_owner();
+    if(!alias_owner){tell("The current native scene could not be pinned before shared attachment");return;}
     beginning = false;
     refresh_complexity_capability();
     std::string error;
@@ -3023,7 +3234,8 @@ void start_saved() {
         content.base_root = std::make_shared<const std::vector<uint8_t>>(record.data);
     std::vector<uint8_t> envelope;
     if (!editor_project::encode_resources(content, envelope, error) || !editor_project::native_snapshot(content, state.document, native, error) ||
-        !register_native_records(content.root,content.bundle.records, error) || !editor_native::restore(native, error)) { tell(error); return; }
+        !scene_alias_owner_current(*alias_owner,error) || !register_native_records(content.root,content.bundle.records, error) ||
+        !scene_alias_owner_current(*alias_owner,error) || !editor_native::restore(native, error)) { tell(error); return; }
     std::string title = adventure_collect::presentation(collection_key).name;
     if (title.empty()) title = "Shared adventure draft";
     store.close(); history_artifacts.clear(); local_capability = {}; native_copy_owned = false; source_creation=original_source;
@@ -3039,6 +3251,7 @@ void start_saved() {
     save_publication_pending = false;
     tell("Shared editing started. Each player can browse and edit acts independently.");
     if(C.close_panel)C.close_panel();
+    queue_scene_alias_attachment(alias_owner);
 }
 void undo_redo(bool redo,std::optional<editor::OperationId> pinned={}) {
     if (!controller || closing || recovery || controller->view().phase != Phase::Ready || awaiting_operation || frozen ||
@@ -3178,7 +3391,7 @@ void close_session(bool preserve_offer = false) {
         } else if (H) H->log(M, SK_INFO, "Saved-draft reopen proof was not pinned: %s", error.c_str());
     }
     if (!keep_offer) controller->end(); pending.reset(); awaiting_operation.reset(); requested_scopes.clear(); guarded_placements.clear(); incoming_resources.reset();
-    local_creation.reset();staged_capture.reset();
+    local_creation.reset();staged_capture.reset();retire_scene_alias();
     guarded_settings.clear();guarded_authoring.clear();cast_uploads.clear();cast_upload_errors.clear();solo_preview.reset();solo_ready_scope.reset();pending_solo_return.reset();pending_solo_request=0;
     recovery.reset(); beginning = false; frozen = false; save_publication_pending = false;
     save_terrain.reset();export_terrain.reset();close_terrain.reset();export_return_result.reset();save_cancelling=false;
@@ -3487,6 +3700,7 @@ void finish_recovery() {
     current_native=std::move(recovery->native);rendered_revision=current_native.document.revision;
     native_generation=recovery->native_generation;native_attached=true;native_identity_lost=false;frozen=false;
     recovery.reset();
+    queue_scene_alias_attachment(SceneAliasOwner{target.owner,target.generation});
     refresh_complexity_capability();
     tell("Recovered the last durable draft in a new editing session");
 }
@@ -4275,7 +4489,7 @@ void action(Action value) {
 bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     if(controller || durable_commit)return false;
     frozen=beginning=closing=gc_due=recovery_available=scanned_recovery=native_identity_lost=false;
-    rejection_restore.reset();staged_capture.reset();staged_capture_servicing=false;canonical_work_frame=UINT64_MAX;
+    rejection_restore.reset();staged_capture.reset();retire_scene_alias();scene_alias_servicing=false;staged_capture_servicing=false;canonical_work_frame=UINT64_MAX;
     rejection_servicing=false;
     recovery.reset();prepared_native.reset();incoming_resources.reset();pending_saved.reset();
     last_presence_value.reset();preview_active=false;
@@ -4404,9 +4618,12 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         }
         editor_native::Snapshot native;
         if (!supported_act(incoming_resources->act, error) || !supported_native_act(error) ||
-            !editor_project::native_snapshot(*incoming_resources, state.document, native, error) ||
-            !register_native_records(incoming_resources->root,incoming_resources->bundle.records, error)) return false;
+            !editor_project::native_snapshot(*incoming_resources, state.document, native, error)) return false;
         if (!editor_native::state().editing && !editor_native::enter(native.source, error)) return false;
+        const auto alias_owner=pin_scene_alias_owner();
+        if(!alias_owner){error="The joined scene could not pin its original native attachment";return false;}
+        if(!scene_alias_owner_current(*alias_owner,error) || !register_native_records(incoming_resources->root,incoming_resources->bundle.records,error) ||
+           !scene_alias_owner_current(*alias_owner,error))return false;
         // Baseline readiness proves the native entry finished. Verify the loaded
         // planet before restoring so an identical recipe keeps its existing
         // terrain and collision instead of scheduling a second regeneration.
@@ -4415,7 +4632,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         // restore installs and validates this exact document. A terrain rebuild
         // can still be loading after it returns; scene readiness is acknowledged
         // separately rather than applying the same document a second time.
-        if (!editor_native::restore(native, error)) return false;
+        if (!scene_alias_owner_current(*alias_owner,error) || !editor_native::restore(native, error)) return false;
         std::vector<uint8_t> envelope;
         if (!editor_project::encode_resources(*incoming_resources, envelope, error)) return false;
         store.close();
@@ -4426,6 +4643,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         rendered_revision=state.document.revision;
         native_attached = true; native_identity_lost=false;
         history_artifacts.clear(); sequence = 0; frozen = false; native_generation = editor_native::state().generation;
+        queue_scene_alias_attachment(alias_owner);
         tell("Joined the shared placement draft"); return true;
     };
     callbacks.decision = [](const editor::Decision& decision) {
@@ -4730,7 +4948,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
            operation.native_generation!=hold->key.generation || !terrain_fence(*hold,false,recovery.has_value())()){
             error="The native Save does not match its held terrain transition";return false;
         }
-        hold->save=operation;return true;
+        hold->save=operation;retire_scene_alias();return true;
     };
     auto completed_save=[](editor::ResourceKey key,const editor_native_save::SaveOperation* operation) {
         if(operation){
@@ -4826,7 +5044,7 @@ void shutdown() {
     pending.reset();awaiting_operation.reset();waiting_acts.reset();rollback_fence.reset();before_apply_valid=false;
     save_terrain.reset();export_terrain.reset();close_terrain.reset();export_return_result.reset();save_cancelling=false;
     guarded_placements.clear();guarded_terrain.clear();requested_scopes.clear();lease_use.clear();
-    editor_creation::shutdown();local_creation.reset();rejection_restore.reset();staged_capture.reset();prepared_native.reset();rendered_revision=0;
+    editor_creation::shutdown();local_creation.reset();rejection_restore.reset();staged_capture.reset();retire_scene_alias();prepared_native.reset();rendered_revision=0;
     waiting_history.reset();authoring_projection_override.reset();test_menu.reset();guarded_settings.clear();guarded_authoring.clear();cast_uploads.clear();cast_upload_errors.clear();
     solo_preview.reset();solo_ready_scope.reset();pending_solo_return.reset();pending_solo_request=0;
     native_playtesting=return_started=disconnected_return=end_after_return=false;return_error.clear();settled_cancellation.reset();
