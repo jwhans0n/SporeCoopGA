@@ -111,9 +111,12 @@ gradients and current native controls resolved again on replay. Escape, focus
 loss, stale fields and replaced contexts cancel pending input. Actual native
 coverage of these quick-control paths remains pending.
 
-The shared editor's **New asset** menu offers Creature, Building, Vehicle,
-Spaceship, Plant and Cell routes. **Edit asset** targets the displayed cast class
-or selected placement. A participant can enter its native asset editor while
+The shared editor's **New asset** menu offers Creature, Building, Vehicle and
+Spaceship. Building opens a choice of City Hall, House, Entertainment or Factory.
+Vehicle opens a choice of military, economic or cultural land, water or air
+vehicles. These choices select the native editor's matching parts palette.
+**Edit asset** targets the displayed cast class or selected placement and uses
+that saved asset's native subtype. A participant can enter its asset editor while
 others remain in the adventure or enter their own editors. Local Done/Cancel
 returns that participant independently, including while the host is away.
 This is the candidate lifecycle; actual entry, save/bake and independent return
