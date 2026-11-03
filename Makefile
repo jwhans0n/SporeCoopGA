@@ -228,6 +228,13 @@ $(B)/host/editor_saved_dependencies_store_tests.exe: tests/editor_saved_dependen
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_saved_dependencies_store_tests.cpp $(EDITOR_SAVED_DEPENDENCIES_SRC) -o $@
 
+# Real selected-Saved gate and codec, with controlled Native and filesystem endpoints.
+.PHONY: test-editor-saved-native-windows
+test-editor-saved-native-windows: $(B)/host/editor_saved_native_tests.exe
+$(B)/host/editor_saved_native_tests.exe: tests/editor_saved_native_windows_tests.cpp mods/coop/editor_saved_native.cpp mods/coop/editor_saved_native.h mods/coop/editor_saved_dependencies_store.h mods/coop/editor_native_save.h mods/coop/editor_native.h mods/coop/adventure_collect.h mods/coop/adventure_assets.h $(EDITOR_SAVED_DEPENDENCIES_SRC) $(EDITOR_SAVED_DEPENDENCIES_HEADERS) $(ADVENTURE_ABI_HEADERS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-missing-field-initializers -static -Imods/coop -Isdk/include tests/editor_saved_native_windows_tests.cpp $(EDITOR_SAVED_DEPENDENCIES_SRC) -o $@
+
 $(B)/host/editor_native_pose_tests.exe: $(EDITOR_CORE_SRC) tests/editor_native_pose_tests.cpp mods/coop/editor_native_pose.h
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $(EDITOR_CORE_SRC) tests/editor_native_pose_tests.cpp -o $@
