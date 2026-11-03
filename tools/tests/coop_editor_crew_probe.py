@@ -53,13 +53,24 @@ def require_history_item(before,after,capability):
         raise FixtureError('The Crew action did not create exactly one item for the pinned author generation')
 
 
+def require_history_semantic(key,actual,after,before=None):
+    if key=='z':
+        if before is not None:
+            if actual!=before:raise FixtureError('Crew Undo did not restore the exact pre-action semantic state')
+        elif actual==after:raise FixtureError('Crew Undo had no authored effect')
+    elif key=='y':
+        if actual!=after:raise FixtureError('Crew Redo lost authored values')
+    else:raise FixtureError('Unknown native Crew history step')
+
+
 def run(args):
     args.output.mkdir(parents=True, exist_ok=False)
     owner=Ownership(args.metadata,args.instances,args.dll_sha256)
     deadline=time.monotonic()+args.deadline
     games=[PublicGame(i,args.output,args.timeout,deadline) for i in args.instances]
     host=games[0];author=next(game for game in games if game.instance==args.author)
-    result=dict(passed=False,stage=args.stage,author=args.author,candidate=args.dll_sha256,history_input=args.history_input,checks=[])
+    result=dict(passed=False,stage=args.stage,author=args.author,candidate=args.dll_sha256,history_input=args.history_input,
+                restore_after_history=args.restore_after_history,checks=[])
     context=None;before_messages={};capabilities={}
     def write():
         (args.output/'result.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
@@ -92,6 +103,10 @@ def run(args):
         result['capabilities']={str(instance):list(value) for instance,value in capabilities.items()}
         before_messages={game.instance:status(game)['text'].splitlines()[1:2] for game in games}
         record('before');before=checked_history(host.call('coop.editor history'));before_semantic=semantic(host)
+        # Keep this independently of capacity-add's evolving action baseline.
+        # --verify-history permits exactly one native action, so its Undo must
+        # return this exact state rather than merely differ from the result.
+        history_before_semantic=before_semantic if args.verify_history else None
         if args.stage not in ('probe','controls'):author.call('coop.uistate 0')
         revision=args.revision
         if args.stage=='controls':
@@ -164,10 +179,13 @@ def run(args):
             record('lock')
         if args.stage=='history' or args.verify_history:
             expected_semantic=semantic(host);expected_history=checked_history(host.call('coop.editor history'))
+            if history_before_semantic==expected_semantic:raise FixtureError('Crew action had no authored effect')
+            result['history_semantics']=dict(before=history_before_semantic,after=expected_semantic)
             own=[row for row in expected_history if row[:2]==capabilities[author.instance] and row[5]]
             if not own or own[-1][-1]!='Edit adventure crew':
                 raise FixtureError('The pinned author has no applied Crew history item')
-            for key in ('z','y'):
+            steps=('z','y','z') if args.restore_after_history else ('z','y')
+            for index,key in enumerate(steps):
                 if args.history_focus:
                     x,y=args.history_focus;hit=author.call(f'coop.ui at {x} {y}')
                     result.setdefault('history_focus_hits',[]).append(hit);write()
@@ -179,9 +197,12 @@ def run(args):
                 else:EditorPair.hotkey(author,key)
                 revision+=1;host.wait('author-owned native Crew history',lambda:settled(revision))
                 if len(checked_history(host.call('coop.editor history')))!=len(expected_history):raise FixtureError('Undo/Redo created a duplicate history entry')
-                if key=='z' and semantic(host)==expected_semantic:raise FixtureError('Crew Undo had no authored effect')
-                record('history-'+key)
-            if semantic(host)!=expected_semantic:raise FixtureError('Crew Redo lost authored values')
+                require_history_semantic(key,semantic(host),expected_semantic,history_before_semantic)
+                record('history-restore-z' if index==2 else 'history-'+key)
+            final_semantic=semantic(host)
+            if final_semantic!=(history_before_semantic if args.restore_after_history else expected_semantic):
+                raise FixtureError('Crew history did not retain its exact requested final state')
+            result['history_semantics']['final']=final_semantic
         author.shot('after');record('after');result['passed']=True;result['final_revision']=revision
         print(json.dumps(dict(passed=True,stage=args.stage,revision=revision)))
     except Exception as error:
@@ -223,6 +244,11 @@ def self_test():
     rejects(lambda:require_history_item(rows,rows,(1,7)))
     rejects(lambda:require_history_item([],rows+[rows[0]],(1,7)))
     rejects(lambda:require_history_item([],[(1,7,3,8,9,1,0,'Edit captain')],(1,7)))
+    require_history_semantic('z','before','after','before');checks+=1
+    require_history_semantic('y','after','after','before');checks+=1
+    rejects(lambda:require_history_semantic('z','different-but-wrong','after','before'))
+    rejects(lambda:require_history_semantic('z','after','after','before'))
+    rejects(lambda:require_history_semantic('y','before','after','before'))
     print(f'Crew fixture guards: {checks} checks passed')
 
 
@@ -235,15 +261,21 @@ def main():
     parser.add_argument('--slot',type=int,nargs=2,default=[998,489]);parser.add_argument('--lock-point',type=int,nargs=2,default=[977,466])
     parser.add_argument('--member-point',type=int,nargs=2,default=[998,489]);parser.add_argument('--remove-point',type=int,nargs=2)
     parser.add_argument('--search');parser.add_argument('--card');parser.add_argument('--verify-history',action='store_true')
+    parser.add_argument('--restore-after-history',action='store_true',help='With --verify-history, finish with one final Undo to the exact pre-action state')
     parser.add_argument('--history-input',choices=['hotkeys','toolbar'],default='hotkeys')
     parser.add_argument('--history-focus',type=int,nargs=2,help='Measured clear Adventure viewport point to leave picker text focus')
     parser.add_argument('--timeout',type=int,default=90);parser.add_argument('--deadline',type=int,default=900)
     args=parser.parse_args()
+    if args.restore_after_history and not args.verify_history:
+        parser.error('--restore-after-history requires --verify-history')
+    if args.verify_history and args.stage not in ('capacity','add','replace','remove','lock'):
+        parser.error('Combined history verification requires one native Crew action')
     if args.self_test:self_test();return
     if not args.execute:
         print(json.dumps(dict(prepared=True,launches_games=False,viewport=[1024,768],stages=parser._option_string_actions['--stage'].choices,
             replace_requires='Explicit alternate --search/--card; owning filled Crew body hit',remove_requires='Measured --remove-point hitting Crew03D98304/header064A90A0/button04ACFCAF',
-            controls_is_read_only=True)));return
+            controls_is_read_only=True,history_checks='Single-action Undo equals exact pre-action semantic; Redo equals exact post-action semantic',
+            restore_after_history=args.restore_after_history)));return
     if (not args.metadata or not args.output or not re.fullmatch('[0-9a-f]{64}',args.dll_sha256 or '') or args.revision is None or args.revision<0 or
             len(args.instances) not in (2,4) or len(set(args.instances))!=len(args.instances) or args.author not in args.instances or
             not all(0<=value<limit for value,limit in zip(args.slot,[1024,768])) or not 30<=args.timeout<=300 or not 60<=args.deadline<=1800):
@@ -257,8 +289,6 @@ def main():
     if args.stage=='replace' and not(args.search and args.card):parser.error('Replacement requires an explicit alternate --search and --card')
     if any(value is not None and (not 1<=len(value)<=96 or any(char in value for char in '\r\n"')) for value in [args.search,args.card]):
         parser.error('Crew picker text must be bounded, nonempty and one line without quotes')
-    if args.verify_history and args.stage not in ('capacity','add','replace','remove','lock'):
-        parser.error('Combined history verification requires one native Crew action')
     run(args)
 
 
