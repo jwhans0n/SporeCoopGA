@@ -1650,3 +1650,34 @@ C35 completed all 60 movement commits at revision 62 with matching strict state 
 The pulse services the existing Session update and editor scheduling path outside Present at a nominal 5 ms cadence while the main thread publishes an active Ready shared-editor identity. The worker receives only an owned lifecycle, passive snapshot, and copied SDK dispatcher. A single serial reservation remains held until the task returns; retirement precedes editor shutdown. Fresh main-thread transport/runtime/context/source checks reject stale tasks. A nonreentrant main service guard, Runtime drain guard, and passive Native call-stack guard defer nested editor work, including final Native owner Release. No frame index is advanced by a pulse. Local creation and restoration holds can retain detached canonical progress; Native busy work simply waits for another pulse. The original 500 ms no-frame fallback remains, with its 100 ms retry cadence. Unlike the new fast pulse, that legacy fallback may continue transport receive/send during long Native/modal work; it does not schedule editor Native work until the passive idle gate permits it. The zero-Session/Controller nested-call guarantee applies to the new fast Ready-editor pulse. Validation and durable-before-confirmation rules are unchanged.
 
 Controlled proof uses `tests/editor_service_pulse_tests.cpp`, `tests/editor_runtime_service_pulse_fixture.h`, and `tests/editor_native_service_pulse_fixture.h`. Final source/executable hashes and results are retained in `out/preview9-editor-pulse-receipt.json`. No game calls or performance acceptance are part of these tests. The retained prior staged-test timeout expected forbidden nested Runtime durability; its replacement asserts the foreign request stays queued through the outer supported callback, then both distinct operations converge once each with unrelated content/history preserved.
+
+### Snapshot value construction after C36
+
+The six-movement C36 probe retained strict agreement through revision 8 with no
+faults. Observer windows still reached roughly 139 ms; their actual marker apply
+was about 1.1-1.3 ms, while Native preparation and its full serialized witnesses
+remained substantially larger. This is a three-sample-per-author diagnostic, not
+a complete performance acceptance. Evidence:
+`out/preview9-c36-commit-probe-two-town/result.json`.
+
+Two pose-preparation constructions copied values that their following statements
+immediately replaced. `Snapshot prepared=base; prepared.document=document`
+copied both the old document and old serialized bytes before the existing
+NativeWrite supplied new bytes. The derived projection then copied the genuine
+producer Snapshot, including its old byte image, before replacing that image and
+its sidecars. `editor_native_snapshot_values.h` constructs exactly the final
+field domains instead. Its structured bindings enumerate every Snapshot member;
+adding a future member fails compilation until the constructors account for it.
+The derived projection still copies the genuine producer's document and local
+rollback dirty state, rather than adopting the caller's requested document.
+
+Every NativeRead, NativeWrite, resolver/context check, exact opaque comparison,
+private-owner lifetime and callback fence remains in place. The new
+`native_snapshot_copy_calls` and `native_snapshot_copy_ticks` status fields use
+`native_work_frequency` and time only these CPU value constructions. They grant
+no semantic or Native provenance. The focused owning pose fixture requires the
+same two Reads, three Writes and zero projections, plus two value-copy spans.
+The standalone allocation-count fixture retains the previous constructors and
+proves that the discarded base document/image copies disappear while all nine
+Snapshot fields and independent storage remain equal. Focused receipts belong
+under `out/editor-preview9-snapshot-values/`; no running-game speedup is claimed.

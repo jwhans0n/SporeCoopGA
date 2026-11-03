@@ -1,4 +1,5 @@
 #include "editor_native.h"
+#include "editor_native_snapshot_values.h"
 #include "editor_native_bindings.h"
 #include "editor_native_tools.h"
 #include "editor_native_complexity.h"
@@ -6147,7 +6148,8 @@ static bool prepare_impl(const Snapshot& base,const editor::Document& document,c
                 error="The owned pose companion has the wrong type";return false;
             }
         }
-        Snapshot prepared=base;prepared.document=document;
+        Snapshot prepared;
+        {WorkTimer copy(native_work.snapshot_copies);prepared=snapshot_values::with_document(base,document);}
         if(!serialize(posed.p,prepared.bytes,error))return false;
         if(context){
             const auto derived=prepared_pose_projection(*context,base_projection,base,prepared,posed,originals,error);
@@ -7132,6 +7134,9 @@ std::string status() {
         (unsigned long long)work.pose_captures,(unsigned long long)work.pose_fallbacks);
     result+=detail;
     constexpr std::array<const char*,6> phase_names{"before","after_bytes","after_projection","canonical","opaque","delivery"};
+    snprintf(detail,sizeof detail," native_snapshot_copy_calls=%llu native_snapshot_copy_ticks=%llu",
+        (unsigned long long)work.snapshot_copies.calls,(unsigned long long)work.snapshot_copies.ticks);
+    result+=detail;
     for(size_t i=0;i<phase_names.size();++i){
         const auto prefix=" native_capture_"+std::string(phase_names[i]);
         result+=prefix+"_calls="+std::to_string(work.staged[i].calls)+prefix+"_ticks="+std::to_string(work.staged[i].ticks)+

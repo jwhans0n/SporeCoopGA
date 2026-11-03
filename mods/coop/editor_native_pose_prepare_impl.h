@@ -97,8 +97,8 @@ RecentMatches prepared_pose_projection(const PreparedPoseContext& context,const 
            !resolved_asset_values(after.p,prepared.document,after_assets,error) || !context.current() || before_assets!=after_assets)return different();
         std::vector<ResolvedAssetWitness> assets;
         if(!asset_witnesses(after.p,prepared.document,assets,error) || !context.current() || assets!=proof->assets || resolution.audit.failed)return different();
-        Snapshot native=proof->image;native.bytes=prepared.bytes;native.source=prepared.source;native.act=prepared.act;
-        native.bindings=prepared.bindings;native.metadata=prepared.metadata;native.captain=prepared.captain;native.captain_locked=prepared.captain_locked;
+        Snapshot native;
+        {WorkTimer copy(native_work.snapshot_copies);native=snapshot_values::with_image(proof->image,prepared);}
         Rows markers;if(!rows(after.p,0x2C10,0x238,kPlacementLimit,markers))return different();
         size_t live=0;
         for(auto row=markers.begin;row!=markers.end;row+=0x238)if(live_slot(row)){

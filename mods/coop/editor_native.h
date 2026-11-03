@@ -28,6 +28,7 @@ struct WorkSpan {uint64_t calls=0,ticks=0;};
 struct WorkStats {
     uint64_t frequency=0;
     WorkSpan reads,writes,projections,resolutions,supported;
+    WorkSpan snapshot_copies; // CPU-only owned value construction, no Native calls.
     // Before, AFTER bytes, AFTER typed projection, canonical-before proof,
     // opaque forward proof, and later delivery. Inclusive local CPU spans.
     std::array<WorkSpan,6> staged;

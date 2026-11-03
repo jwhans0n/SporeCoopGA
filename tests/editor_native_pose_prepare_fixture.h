@@ -75,6 +75,8 @@ void test_pose_prepare_modern_cached_base_avoids_projection(){
         // in addition to its first independent mutable owner (3 Reads total).
         CHECK(finished.projections.calls==stats.projections.calls);
         CHECK(finished.reads.calls==stats.reads.calls+2);
+        CHECK(finished.writes.calls==stats.writes.calls+3);
+        CHECK(finished.snapshot_copies.calls==stats.snapshot_copies.calls+2);
         CHECK(validate(prepared,target,error));
         CHECK(t_rows[t_live.data()]==live&&skg::field<editor::ResourceKey>(t_live.data(),8)==source&&!t_restores&&!t_transforms);
         CHECK(t_allocations.empty());
@@ -196,6 +198,8 @@ void test_pose_prepare_owning_cached_base_avoids_projection(){
         static_cast<unsigned long long>(finished.writes.calls-stats.writes.calls),error.c_str());
     CHECK(okay&&prepared.document==target&&prepared.source==base.source&&prepared.bindings==base.bindings&&prepared.metadata==base.metadata);
     CHECK(finished.projections.calls==stats.projections.calls&&finished.reads.calls==stats.reads.calls+2);
+    CHECK(finished.writes.calls==stats.writes.calls+3);
+    CHECK(finished.snapshot_copies.calls==stats.snapshot_copies.calls+2);
     CHECK(validate(prepared,target,error));
     CHECK(t_rows.at(t_live.data())==live&&tcg_rows.at(t_live.data()).classes==classes&&act_cache_rows.at(t_live.data()).acts==acts);
     CHECK(!t_restores&&!t_transforms&&t_allocations.empty());
