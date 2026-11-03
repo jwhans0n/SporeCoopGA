@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "game.h"
+#include "modes.h"
 #include "space_ext.h"
 #include "sporekit_game.hpp"
 
@@ -46,8 +47,8 @@ static SkMod* M;
 static uintptr_t a_TakeDamage, a_PlayerUFOGet, a_PlayerEmpire, a_PlayerEmpireID, a_AddMoney;
 
 // cGameDataUFO (docs/re/space.md 0): political id +0x30, combatant +0x508, state +0x53C (2 = dead),
-// hp +0x540, type +0x714 (6 = Defender: the mod's puppets of the partners)
-constexpr uintptr_t kPol = 0x30, kCombat = 0x508, kState = 0x53C, kHp = 0x540, kType = 0x714;
+// hp +0x540 (the puppets: modes::space_puppet_ok)
+constexpr uintptr_t kPol = 0x30, kCombat = 0x508, kState = 0x53C, kHp = 0x540;
 constexpr uint32_t kEnemyPol = 0xFFFFFFFFu; // "no empire": hostile to everybody, like pirates
 
 enum Kind : uint8_t { K_STATE = 50, K_REQ = 51, K_EVENT = 52, K_HIT = 53, K_MONEY = 54, K_MERGE_FIX = 55, K_ASK = 56, K_SET = 57 };
@@ -500,7 +501,7 @@ static void on_hit_msg(uint8_t origin, net::Reader& r)
         for (auto& p : spaceext::ctx().partners())
             if (p.id == origin && mine && p.place == mine) {
                 here = true;
-                if (p.puppet && game::ufo_listed(p.puppet) && game::object_alive(p.puppet) && F<int>(p.puppet, kType) == 6)
+                if (p.puppet && modes::space_puppet_ok(p.puppet)) // (BUG-0111)
                     att = p.puppet;
             }
     if (!here)
@@ -630,8 +631,8 @@ static void puppets_tick()
     uint32_t n = 0;
     for (auto& p : spaceext::ctx().partners()) {
         void* u = p.puppet;
-        if (!u || !game::ufo_listed(u) || !game::object_alive(u) || F<int>(u, kType) != 6)
-            continue; // freed by the game or not spawned yet (docs/re/space.md 9.4)
+        if (!modes::space_puppet_ok(u))
+            continue; // freed by the game, not spawned yet (docs/re/space.md 9.4), or a game ship at its address (BUG-0111)
         bool war = spaceext::rivals() && spaceext::relation(me(), p.id) == Relation::War;
         uint32_t want = war ? kEnemyPol : mine;
         if (F<uint32_t>(u, kPol) != want)

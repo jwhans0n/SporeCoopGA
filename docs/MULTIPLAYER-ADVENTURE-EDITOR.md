@@ -12,7 +12,11 @@ playing while others continue editing remain later milestones in the
 
 ## Compatibility and scope
 
-Every participant needs `0.7.5.0-ga-editor-preview.9`, protocol 23, Galactic Adventures
+The installed C49 testing build uses `0.7.5.0-ga-editor-preview.9`, protocol 23.
+The subsequent upstream 0.7.3.6 integration source uses protocol 24 and has not
+been installed. Its adventure/editor message IDs are 61/62, preserving upstream
+nest/parts IDs 52/53. Protocol 23 and 24 builds explicitly reject each other.
+Every participant needs the same build, Galactic Adventures
 and the exact GOG executable with SHA-256
 `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
 Older gameplay and editor previews receive an explicit version mismatch.

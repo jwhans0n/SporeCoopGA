@@ -44,8 +44,19 @@ constexpr unsigned kRelWindow = 2048;
 
 struct ConnStats {
     uint32_t packets_sent = 0, packets_recv = 0, resends = 0, acked = 0;
-    // Actual UDP payload bytes, including headers and retransmitted messages.
+    uint32_t split = 0;     // reliable messages sent in pieces (bigger than one packet)
+    uint32_t too_big = 0;   // reliable messages refused: above kMaxReliable
+    uint32_t joined = 0;    // reliable messages received in pieces and joined
+    uint32_t frag_lost = 0; // received pieces thrown away (a message above kMaxReliable, or a peer that never split)
+    uint32_t too_big_old = 0; // reliable messages not sent: above one packet for a peer that cannot join pieces
+    // support diagnostics (diag_stats.cpp): datagram bytes both ways, packets lost (an ack kLostAfter
+    // to kAckWindow packets later does not have them) and the round trip
+    // samples since the last take_window()
     uint64_t bytes_sent = 0, bytes_recv = 0;
+    uint32_t lost = 0;
+    float rtt_min = 0, rtt_max = 0, rtt_sum = 0;
+    uint32_t rtt_n = 0;
+    void take_window() { rtt_min = rtt_max = rtt_sum = 0; rtt_n = 0; }
 };
 
 // Logical retained transport containers, excluding allocator/deque/map overhead.
@@ -55,6 +66,10 @@ struct ConnectionAccounting {
     size_t payload_size = 0, payload_capacity = 0;
     bool operator==(const ConnectionAccounting&) const = default;
 };
+constexpr unsigned kLostAfter = 32;
+// largest reliable message (BUG-0034): bigger ones are split into pieces of one packet each and
+// joined by the receiver; this caps what a receiver collects for one message
+constexpr size_t kMaxReliable = 1u << 20;
 
 class Connection {
 public:
@@ -69,6 +84,13 @@ public:
     uint32_t last_recv_ms = 0;
     uint32_t created_ms = 0;
     ConnStats stats;
+    // BUG-0219: the peer joins split reliable messages (its HELLO / WELCOME caps bit CAP_SPLIT). A
+    // 0.7.2 peer read every piece as a whole message (long chat lost, the species table emptied).
+    // false (the safe side) until the handshake says otherwise
+    bool peer_split = false;
+    // the largest reliable message that goes in one packet (no split needed)
+    // (kMaxPacket 1200 - the 31-byte header - type, flags, len, rel_id; checked in connection.cpp)
+    static constexpr size_t kMaxSingle = 1200 - 31 - 6;
 
     void send_reliable(uint8_t type, const Writer& w);
     // first: ahead of what is queued (the player state must not wait behind a big snapshot)
@@ -88,6 +110,7 @@ private:
         uint8_t type;
         uint16_t rel_id;
         std::vector<uint8_t> payload;
+        bool more = false; // a piece of a split message, more pieces follow (wire flag 2)
         uint32_t last_sent = 0;
         int sends = 0;
     };
@@ -96,11 +119,16 @@ private:
         uint32_t time;
         std::vector<uint16_t> rel_ids;
         bool acked = false;
+        bool lost = false; // counted in stats.lost
     };
 
     void ack_packet(SentPkt& p, uint32_t now);
 
+    // BUG-0030: the first packet is seq 1. A peer that has received nothing writes ack 0 (with no ack
+    // bits); with a first packet of seq 0 that "acknowledged" it, and a lost first packet of the host
+    // (the WELCOME) was never resent: the join failed after 10 s. No wire change.
     uint16_t local_seq_ = 0;
+    bool seq_started_ = false;
     uint16_t remote_seq_ = 0;
     AckBits recv_bits_;
     bool have_remote_ = false;
@@ -111,7 +139,16 @@ private:
     uint16_t next_rel_id_ = 0;
     std::deque<OutMsg> rel_out_;
     uint16_t next_rel_expected_ = 0;
-    std::map<uint16_t, std::pair<uint8_t, std::vector<uint8_t>>> rel_in_;
+    struct InMsg {
+        uint8_t type, flags;
+        std::vector<uint8_t> payload;
+    };
+    std::map<uint16_t, InMsg> rel_in_;
+    // pieces of a split reliable message received so far (reliable delivery is in order)
+    std::vector<uint8_t> frag_;
+    uint8_t frag_type_ = 0;
+    bool frag_on_ = false, frag_drop_ = false;
+    void deliver_reliable(uint8_t type, uint8_t flags, const uint8_t* p, size_t len, const Deliver& deliver);
     std::vector<std::pair<uint8_t, std::vector<uint8_t>>> unrel_out_;
 
 public:
@@ -124,7 +161,8 @@ public:
         a.unreliable_out = unrel_out_.size(); a.unreliable_slots_capacity = unrel_out_.capacity();
         for (const auto& packet : sent_) a.sent_id_capacity += packet.rel_ids.capacity() * sizeof(uint16_t);
         for (const auto& message : rel_out_) { a.payload_size += message.payload.size(); a.payload_capacity += message.payload.capacity(); }
-        for (const auto& [serial, message] : rel_in_) { (void)serial; a.payload_size += message.second.size(); a.payload_capacity += message.second.capacity(); }
+        for (const auto& [serial, message] : rel_in_) { (void)serial; a.payload_size += message.payload.size(); a.payload_capacity += message.payload.capacity(); }
+        a.payload_size += frag_.size(); a.payload_capacity += frag_.capacity();
         for (const auto& message : unrel_out_) { a.payload_size += message.second.size(); a.payload_capacity += message.second.capacity(); }
         return a;
     }

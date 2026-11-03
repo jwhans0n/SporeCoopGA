@@ -1,4 +1,6 @@
 #include "social.h"
+#include "fixes.h"
+#include "creations.h"
 
 #include <algorithm>
 #include <cmath>
@@ -7,6 +9,7 @@
 #include <vector>
 
 #include "game.h"
+#include "net/validate.h"
 #include "npc.h"
 #include "sporekit_game.hpp"
 
@@ -206,7 +209,17 @@ static void SK_THISCALL h_RelEvent(void* mgr, int event, void* key, void* creatu
         g_events_dropped++;
         return;
     }
+    // BUG-0021 diagnostics: every species relationship event of the host's game (the Kooks' impressed count
+    // went from 2 back to 1 between two impressions with no Kook killed: coop_creature_social_ally.py)
+    uint32_t* rec = (a_RelRecord && key && mgr) ? thiscall<uint32_t*>(a_RelRecord, (uint8_t*)mgr + 0x20, key) : nullptr;
+    int32_t r0 = rec ? (int32_t)rec[0] : -99;
+    uint32_t i0 = rec ? rec[2] : 0, k0 = rec ? rec[3] : 0;
     o_RelEvent(mgr, event, key, creature);
+    rec = (a_RelRecord && key && mgr) ? thiscall<uint32_t*>(a_RelRecord, (uint8_t*)mgr + 0x20, key) : nullptr;
+    if (rec && ((int32_t)rec[0] != r0 || rec[2] != i0 || rec[3] != k0))
+        H->log(M, SK_INFO, "social: relationship event %d species %08X by %p (npc %d%s): relation %d -> %d, impressed %u -> %u, "
+               "killed %u -> %u", event, *(uint32_t*)key, creature, creature ? npc::host_id(creature) : -1,
+               creature && creature == game::avatar() ? ", the avatar" : "", r0, (int32_t)rec[0], i0, rec[2], k0, rec[3]);
 }
 
 // SpeciesGoal_Update 0xC2EE60 pays the card's DNA (allied: 25 for the Kook, extinct: its hunt
@@ -217,6 +230,17 @@ typedef void(SK_THISCALL* GoalUpdate_t)(void*, uint32_t*, uint32_t*);
 static GoalUpdate_t o_GoalUpdate;
 static void* g_goal = nullptr; // the card being updated
 static uint32_t g_goal_dna_dropped = 0, g_goal_dna_paid = 0;
+// BUG-0205: a guest's goal reward (K_GOAL) that reaches the host while it has no creature (an editor,
+// a load) waits here and is checked and paid when the host's creature is back. false: dropped (tests)
+bool g_goal_owe_fix = true;
+COOP_FIX("core.away_goal", "BUG-0205", g_goal_owe_fix, "creature: a goal reward that reaches a host without a creature is paid later");
+struct OwedGoal {
+    ResourceKey k;
+    int outcome;
+    float dna;
+};
+static std::vector<OwedGoal> g_goal_owed;
+static uint32_t g_goal_owed_paid = 0;
 static std::map<std::pair<uint64_t, int>, bool> g_goal_paid; // host: (species, outcome) paid
 
 static void SK_THISCALL h_GoalUpdate(void* goal, uint32_t* a, uint32_t* b)
@@ -258,10 +282,11 @@ bool goal_dna(float delta)
         g_goal_dna_dropped++;
         return true;
     }
-    net::Writer w; // guest: the host decides
+    net::Writer w; // guest: the host decides (on the host's key of the species)
     w.u8(K_GOAL);
     w.u16(0);
-    w.u32(k.instance); w.u32(k.type); w.u32(k.group);
+    creations::Key hk = creations::host_species({k.instance, k.type, k.group});
+    w.u32(hk.instance); w.u32(hk.type); w.u32(hk.group);
     w.u8((uint8_t)outcome);
     w.f32(delta);
     C.sess->send_reliable_to(0, net::MSG_SOCIAL, w);
@@ -325,6 +350,27 @@ static bool act(int slot)
     return true;
 }
 
+// BUG-0021: in the social stance (GetAbilityMode 0) a guest's key 1 next to the Kook it was impressing (and the click
+// that engages one) sent a hit now and then (coop_creature_social_ally.py: `hits_sent` +1 with the stance 0 before and after the key; the host
+// applied it, the Kook died and the species lost its impressions: (4, 2) -> (1, 0, killed 1), no ally). A player in
+// the social stance cannot attack: such a hit is not sent. `coop.fix social.no_bite off`: sent (0.7.3.3).
+static bool g_no_bite_fix = true;
+COOP_FIX("social.no_bite", "BUG-0021", g_no_bite_fix, "creature: a guest's hit in the social stance is not sent to the host (it killed the creature being impressed)");
+static uint32_t g_social_hits_dropped = 0;
+
+
+bool drop_social_hit(uint16_t proxy_id)
+{
+    // any proxy: the click that engages a Kook sent a hit too (before any social act, lab 20261101-151116 #3).
+    // Test hits (`coop.npc hit`, npc::debug_hit) pass: they are no input of the player
+    if (!g_no_bite_fix || npc::test_hit_now() || !a_AbilityMode || cdecl_call<int>(a_AbilityMode) != 0)
+        return false;
+    if (g_social_hits_dropped++ < 5)
+        H->log(M, SK_INFO, "social: a hit of the avatar on npc %u in the social stance is not sent (engaged %d)", proxy_id,
+               g_engaged);
+    return true;
+}
+
 static void guest_tick(double now)
 {
     if (g_engaged >= 0 && (now - g_engaged_at > kEngageTime || !npc::proxy((uint16_t)g_engaged)))
@@ -332,9 +378,18 @@ static void guest_tick(double now)
     // the stance: GetAbilityMode 0 social, 1 combat
     bool social_stance = a_AbilityMode && cdecl_call<int>(a_AbilityMode) == 0;
     bool on = g_engaged >= 0 && social_stance && !(C.blocked && C.blocked());
+    // BUG-0149: bit 0 of GetAsyncKeyState ("pressed since the last call") also counts a digit typed
+    // in another window: it is taken only while the game was in front since the last poll
+    HWND gw = H->game_window ? (HWND)H->game_window() : nullptr;
+    bool front = !gw || GetForegroundWindow() == gw;
+    static bool s_was_front = true;
+    SHORT mask = front && s_was_front ? 0x8001 : 0x8000;
+    if (!front)
+        on = false;
+    s_was_front = front;
     for (int k = 0; k < 4; k++) {
         SHORT st = GetAsyncKeyState('1' + k); // bit 0: pressed since the last call (a short tap)
-        bool down = (st & 0x8001) != 0;
+        bool down = (st & mask) != 0;
         if (down && !g_keys[k] && on)
             act(k);
         g_keys[k] = down;
@@ -499,6 +554,18 @@ void tick(double now)
 {
     if (!C.sess || !game::in_creature_stage() || !game::avatar())
         return;
+    if (is_host() && !g_goal_owed.empty()) { // BUG-0205: rewards that came while we had no creature
+        auto owed = std::move(g_goal_owed);
+        g_goal_owed.clear();
+        for (auto& o : owed)
+            if (goal_outcome(o.k) == o.outcome && host_goal_pay(o.k, o.outcome)) {
+                game::dna_add_raw(o.dna);
+                g_goal_owed_paid++;
+                if (C.feed)
+                    C.feed(std::string(o.outcome == 6 ? "A species became our ally" : "A goal was reached") +
+                           ": +" + std::to_string((int)(o.dna + 0.5f)) + " DNA");
+            }
+    }
     if (is_host()) {
         static double last = 0;
         if (now - last < 1.0)
@@ -538,6 +605,13 @@ void on_message(uint8_t type, uint8_t from, net::Reader& r)
             s.key[0] = r.u32(); s.key[1] = r.u32(); s.key[2] = r.u32();
             s.relation = (int32_t)r.u32(); s.x = r.u32(); s.impressed = r.u32(); s.killed = r.u32();
             t.push_back(s);
+            // a creation of the host's own: its NPCs have a key of their own here, its nests (from the
+            // save) the host's (creations::local_species): the same record under both
+            creations::Key lk = creations::local_species({s.key[0], s.key[1], s.key[2]});
+            if (lk.instance != s.key[0]) {
+                s.key[0] = lk.instance;
+                t.push_back(s);
+            }
         }
         if (!r.ok())
             return;
@@ -567,7 +641,15 @@ void on_message(uint8_t type, uint8_t from, net::Reader& r)
         k.instance = r.u32(); k.type = r.u32(); k.group = r.u32();
         int outcome = r.u8();
         float dna = r.f32();
-        if (r.ok() && dna > 0 && dna < 10000 && game::avatar() && host_goal_pay(k, outcome)) {
+        // a card pays when its species became allied (6) or extinct (5): the host's own table (the
+        // one every guest follows) must say so too
+        bool sane = r.ok() && std::isfinite(dna) && dna > 0 && dna < 10000 && (outcome == 5 || outcome == 6);
+        if (sane && !game::avatar() && g_goal_owe_fix) {
+            if (g_goal_owed.size() < 64)
+                g_goal_owed.push_back({k, outcome, dna});
+            return;
+        }
+        if (sane && goal_outcome(k) == outcome && game::avatar() && host_goal_pay(k, outcome)) {
             game::dna_add_raw(dna);
             if (C.feed)
                 C.feed(std::string(outcome == 6 ? "A species became our ally" : "A goal was reached") + ": +" +
@@ -608,6 +690,7 @@ void on_session_end()
 {
     g_engaged = -1;
     g_goal_paid.clear();
+    g_goal_owed.clear();
     g_games.clear();
     g_have_table = false;
     g_host_table.clear();
@@ -620,15 +703,15 @@ std::string status()
     if (is_host())
         snprintf(b, sizeof b,
                  "social(host): acts_in=%u impressed=%u refused=%u games=%u species_tx=%u goal_dna_paid=%u "
-                 "goal_dna_dropped=%u\n",
+                 "goal_dna_dropped=%u goal_owed=%u goal_owed_paid=%u\n",
                  g_acts_in, g_impressed, g_refused, (unsigned)g_games.size(), g_table_tx, g_goal_dna_paid,
-                 g_goal_dna_dropped);
+                 g_goal_dna_dropped, (unsigned)g_goal_owed.size(), g_goal_owed_paid);
     else
         snprintf(b, sizeof b,
                  "social(guest): engaged=%d engages=%u acts_sent=%u results_in=%u species_rx=%u species_fixed=%u "
-                 "events_dropped=%u cards_refreshed=%u goal_dna_sent=%u\n",
+                 "events_dropped=%u cards_refreshed=%u goal_dna_sent=%u social_hits_dropped=%u\n",
                  g_engaged, g_engages, g_acts_sent, g_results_in, g_table_rx, g_table_fixed, g_events_dropped,
-                 g_cards_refreshed, g_goal_dna_dropped);
+                 g_cards_refreshed, g_goal_dna_dropped, g_social_hits_dropped);
     return b;
 }
 
@@ -642,6 +725,35 @@ std::string species_dump()
         out += b;
     }
     return out.empty() ? "no species records\n" : out;
+}
+
+// tests (BUG-0205): a guest reports a goal card's reward for species <inst> the way goal_dna does
+bool debug_send_goal(uint32_t inst, int outcome, float dna)
+{
+    if (!C.sess || C.sess->role() != net::Role::Client || !C.sess->connected())
+        return false;
+    net::Writer w;
+    w.u8(K_GOAL);
+    w.u16(0);
+    w.u32(inst); w.u32(0x2B978C46u); w.u32(0x40626200u);
+    w.u8((uint8_t)outcome);
+    w.f32(dna);
+    return C.sess->send_reliable_to(0, net::MSG_SOCIAL, w);
+}
+
+// tests: the host's record of a creature species (as the game's ApplyEvent keeps it), sent on change
+bool debug_set_record(uint32_t inst, int relation, uint32_t impressed)
+{
+    void* mgr = rel_mgr();
+    if (!mgr || !a_RelRecord)
+        return false;
+    ResourceKey k{inst, 0x2B978C46u, 0x40626200u};
+    uint32_t* rec = thiscall<uint32_t*>(a_RelRecord, (uint8_t*)mgr + 0x20, &k);
+    if (!rec)
+        return false;
+    rec[0] = (uint32_t)relation;
+    rec[2] = impressed;
+    return true;
 }
 
 std::string debug_objects(uint32_t lo, uint32_t hi)

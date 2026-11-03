@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "net/protocol.h"
@@ -29,7 +30,38 @@ bool init(const SkHost* host, SkMod* mod); // resolve symbols; false = coop disa
 bool ready();                              // symbols ok
 uint32_t mode_id();
 bool in_creature_stage();
+// BUG-0119: a counter of creature worlds (entering the creature stage, another avatar in it; the
+// editors keep it). Identity of a world where the avatar's address is not enough (pooled objects).
+// Call once per frame at least (coop.cpp on_frame); 0 always with set_world_epoch_fix(false) (tests)
+uint32_t world_epoch();
+void set_world_epoch_fix(bool on);
+// BUG-0217: which world of each stage is open, as counters (stage_epoch.h has the rules: a load,
+// a received world, another stage raise it; an editor visit keeps it). stage_epoch_tick() once per
+// frame at the very top of on_frame, before any message or module tick; stage_epoch(kTribe) etc.
+// read it. stage_epoch(kCreature) counts the same mode routes as world_epoch() without its avatar
+// rule. No fix switch: callers gate their own use (tribe.editor_world, civ.world_epoch).
+void stage_epoch_tick();
+uint32_t stage_epoch(uint32_t stage_mode);
 void* avatar();
+// BUG-0264: the stage is being left for the galaxy menu (the quit message 0x4715068 posted or
+// handled): avatar() returns null until the mode changes (30 s at most). world.leave_avatar.
+struct LeaveStats {
+    unsigned windows = 0;    // stages left
+    unsigned frames = 0;     // frames seen while leaving
+    unsigned raw_gone = 0;   // frames where the avatar field held an object the game no longer lists
+    unsigned used_gone = 0;  // frames where the mod used such an avatar (the crash)
+    unsigned refused = 0;    // avatar() calls answered with null while leaving
+    unsigned bad_vtable = 0; // avatars refused for vtables outside the game
+    unsigned stage_gone = 0; // an unlisted avatar seen outside the window (1 Hz check)
+};
+void stage_leaving(const char* why);
+// the noun manager's avatar field in the creature stage / adventures, without the BUG-0264 checks:
+// only to compare pointers (the save filter runs during the quit's own save), never to dereference
+void* avatar_field();
+void stage_leave_cancel();
+bool leaving_stage();
+const LeaveStats& leave_stats();
+void leave_probe_tick(void* used);
 net::Vec3 position(void* c);
 net::Quat orientation(void* c);
 net::Vec3 velocity(void* c);
@@ -43,8 +75,18 @@ void* species_profile(void* c);
 // without a null check (0xD41A20 -> 0xC046B0, see docs/05-re-notes.md).
 void* avatar_herd();
 void* spawn_creature(const net::Vec3& pos, void* species, void* herd);
+// cGameNounManager::DestroyInstance; a creature (cCreatureAnimal) is kept until the running
+// cinematic is over (it may be one of its actors), destroy_deferred_tick() removes it then
 void destroy_creature(void* c);
+void destroy_deferred_tick(); // once per frame
+void set_destroy_defer(bool on); // tests (off: at once)
+void set_defer_keeps_puppet(bool on); // tests (off: a deferred puppet leaves the puppet list at once, BUG-0066)
+bool destroy_pending(void* c);     // queued by destroy_creature, still there
+std::string destroy_deferred_status();
 void teleport(void* c, const net::Vec3& pos, const net::Quat& rot);
+// BUG-0360: teleport without the teleport mark (+0xB5D, set by vt 0x44 0xC0C040): the locomotion takes
+// the position, the animation's walk gait goes on (with the mark it restarts every frame)
+void place(void* c, const net::Vec3& pos, const net::Quat& rot);
 // cSpatialObject::SetPosition (vtable 0x38): moves without touching locomotion/animation
 void set_position(void* c, const net::Vec3& pos);
 void set_orientation(void* c, const net::Quat& rot);
@@ -54,7 +96,17 @@ void set_speed(void* c, float speed);
 float standard_speed(void* c);
 float scale(void* c);
 float bounding_radius(void* c);
+// the terrain's distance from the planet's centre in the direction of pos (cPlanetModel::GetHeightAt), 0 without a planet
+float ground_radius(const net::Vec3& pos);
 void set_scale(void* c, float s);
+// BUG-0360 (coop.track): the creature's Anim::AnimatedCreature (cCreatureBase +0xB54): where its
+// model is drawn (+0x04) and the id of its current animation (vt 0x58 GetCurrentAnimation, 0 when
+// none). False when the creature has none.
+bool drawn_state(void* c, net::Vec3* drawn, uint32_t* anim);
+// BUG-0360: the walk state the creature's idle animation is chosen by (0xC0C790): the animation's
+// gait state (AnimatedCreature +0x17C -> +0x15B8, two ints: 0 = no gait), the creature's +0x137 and
+// its speed state +0xF98. False when it has no animation.
+bool gait_state(void* c, int* gait, int* gait2, int* moving, int* speed_state);
 
 // Animation events: called for every PlayAnimation/PlayAnimationTo on any creature.
 using AnimListener = void (*)(void* creature, uint32_t anim_id, int block, bool disable_blend, bool to_target);
@@ -94,8 +146,11 @@ struct Key {
 Key species_key(void* c);
 void* species_by_key(const Key& k);
 void* create_herd(const net::Vec3& pos, void* species);
+void* own_herd_for(void* species); // an existing herd like create_herd's of this species, or null
 void* herd_of(void* c);
+bool nest_position(void* c, net::Vec3& out); // the nest of the creature's herd (false: no herd or no nest)
 void herd_quiet(void* herd); // target size 0, disabled: the game spawns no members into it
+void herd_home(void* herd, const net::Vec3& pos); // a nestless herd's home follows its puppet
 constexpr uint32_t kHerdNoun = 0x01BE418E;      // cHerd (runtime: nest herds of the creature stage)
 inline void* herd_species(void* herd) { return *(void**)((uint8_t*)herd + 0xA4); } // cSpeciesProfile*
 inline void* herd_nest(void* herd) { return *(void**)((uint8_t*)herd + 0x160); }    // cNest* (mpNest)
@@ -108,9 +163,19 @@ using DamageFilter = bool (*)(void* creature, float& damage, int type, void* att
 void set_damage_filter(DamageFilter fn);
 void apply_damage(void* c, float damage, int type, void* attacker_creature); // bypasses the filter
 void hit(void* c, float damage, int type, void* attacker_creature);          // goes through the filter
+// the same with a push (knockback impulse, the 4th TakeDamage argument; tests: a charge's throw, BUG-0383)
+void hit_push(void* c, float damage, int type, void* attacker_creature, const net::Vec3& push);
 void set_health(void* c, float hp);
+// A hatchling (age +0xB34 == 0) whose behaviour tree waits for a family member of its nest to greet it
+// (tree 0x9413EDEB): after a respawn or a hatch the greeting NPC makes it grow up (docs/re/creature.md 13).
+constexpr uint32_t kHatchlingTree = 0x9413EDEBu;
+bool hatchling_waiting(void* c);
+// what the greeting does at its end: the creature grows up (0xC04F30(1)), the pack too (0xD52DF0(1))
+bool grow_up(void* c);
 // impressed by a social game (+0xB58 bit 0x80, set by the social success 0xD9BC40; docs/re/creature.md 8)
 inline bool impressed(void* c) { return (*(uint32_t*)((uint8_t*)c + kFlagsOff) & 0x80) != 0; }
+// a member of the player's pack (+0xB58 bit 0x100, set by AddPosseMember 0xB23430; docs/re/creature.md 11)
+inline bool pack_member(void* c) { return (*(uint32_t*)((uint8_t*)c + kFlagsOff) & 0x100) != 0; }
 inline void set_impressed(void* c, bool on)
 {
     uint32_t& f = *(uint32_t*)((uint8_t*)c + kFlagsOff);
@@ -136,6 +201,15 @@ uint32_t noun_id(void* obj);                    // ISimulatorSerializable::GetNo
 void* cast(void* obj, uint32_t type);           // Object::Cast (vt 0x0C)
 bool object_position(void* obj, net::Vec3& out); // via cSpatialObject (TYPE 0x1186577), position +4
 bool object_alive(void* obj);                    // cGameData::mbIsDestroyed (+0x21) not set
+// cGameData::mID (+0x24): `++[counter]` in cGameNounManager::CreateInstance (GOG 2024 0xB20BF0,
+// counter 0x167BE28): unique among the objects CreateInstance made in this process. The pointer
+// must be a cGameData base (offset 0) that ufo_listed / object_alive accepted in this frame;
+// 0 = no object. A pointer whose serial equals one recorded earlier is the same object. Not
+// across machines (the counter is per process) and not across a load: the counter's address is
+// in two static descriptor tables (0x131AD5A, 0x131B076, a serializer's field list?), so a load
+// may set it back; callers that keep an identity across frames also compare
+// spaceext::world_epoch() (docs/re/space.md#space-object-serial).
+uint32_t object_serial(void* obj);
 // a cGameDataUFO pointer is still a live UFO noun (the game may have freed it: never read it before)
 bool ufo_listed(void* u);
 // UFO puppets/mirrors found freed by the game (tests: coop.status "freed_by_game")
@@ -143,10 +217,47 @@ extern uint32_t g_ufos_freed;
 // nearest object of `noun` within max_dist of pos (nullptr if none)
 void* find_object(uint32_t noun, const net::Vec3& pos, float max_dist);
 
+// The NPC AI (NPCTickAI 0xC09570 and the behaviour tree it ticks) notices, hunts, attacks and flees
+// only the creature at cGameNounManager +0x54 (mpAvatar): a partner's puppet was never a target
+// (docs/re/creature.md 14). The picker returns the creature an NPC should treat as the player this
+// tick (a puppet), or null for the avatar; NPCTickAI then runs with mpAvatar swapped to it.
+// During the swap avatar() still returns the real avatar.
+using AiTargetPicker = void* (*)(void* npc);
+void set_ai_target_picker(AiTargetPicker fn);
+uint32_t ai_swaps(); // NPC ticks run with a puppet as the player (diagnostics)
+void swap_guard_tick();          // once per frame: undo an NPC tick's avatar swap a fault left open (BUG-0110)
+void set_swap_guard(bool on);    // tests (off: no undo)
+void debug_swap_fault();         // tests: the next swapped NPC tick returns without its restore
+uint32_t swaps_restored();
+// BUG-0110, the other detours (cell avatar index, selection flag, blank +0xE84, civ capture
+// attribution): a change made around a call into the game is opened with its undo before the call
+// and closed after it; swap_guard_tick undoes what a fault left open. close(mark, own): own = the
+// entries the caller opened from mark on (it restores them itself).
+size_t swap_open(void (*undo)(void* p, uintptr_t v), void* p, uintptr_t v, const char* what);
+size_t swap_depth();
+void swap_close(size_t mark, size_t own = 1);
+void swap_undo_u32(void* p, uintptr_t v);    // *(uint32_t*)p = v
+void swap_undo_u8(void* p, uintptr_t v);     // *(uint8_t*)p = v
+void swap_undo_or32(void* p, uintptr_t v);   // *(uint32_t*)p |= v
+void swap_undo_ptr_if(void* p, uintptr_t v); // *(void**)p = nullptr when it is still (void*)v
+void debug_swap_ledger_fault();              // tests: the next close is skipped, as after an unwind
+uint32_t swap_ledger_restored();
+
+// The death of a creature: its behaviour tree's death node (0xD85B80) calls the creature's Die
+// (vt 0x8C, 0xC08210: mbDead +0xB5E, stops locomotion and effects) and plays the death animation.
+// A puppet / proxy has no AI: a lethal hit left it standing with 0 health. Does both (once).
+void play_death(void* c);
+
 // AI suppression for puppets: NPCTickAI is skipped for registered creatures
 void puppet_register(void* c);
 void puppet_unregister(void* c);
 bool is_puppet(void* c);
 const std::vector<void*>& puppets(); // puppets and NPC proxies (creatures), UFO puppets in space
+
+// `c` is still a live cCreatureAnimal of the world (compares pointers only: safe on a freed one)
+bool creature_listed(void* c);
+// diagnostics (coop.npc herds): every herd, and the creatures of herds without a nest
+std::string herds_dump();
+std::string herd_nulls_status(); // BUG-0256: null herd members taken out before Herd_Update
 
 } // namespace game

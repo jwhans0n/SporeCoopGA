@@ -21,6 +21,7 @@ COOP_SRC := $(wildcard mods/coop/*.cpp) $(wildcard mods/coop/net/*.cpp) $(wildca
 COOP_OBJ := $(patsubst %.cpp,$(B)/obj/%.o,$(COOP_SRC))
 
 .PHONY: all loader sporekit coop res setup clean test test-captains-windows test-lifecycle-windows test-actions-windows test-vehicles-windows test-mirror-windows test-progress-windows test-relationships-windows test-targeting-windows test-social-windows test-blocked-update-windows test-debug-capabilities-windows
+.PHONY: test-win test-asan test-tsan all loader sporekit coop res setup clean test sanitizer-probe
 all: loader sporekit coop res setup
 
 # game resources (icons, ...) for SporeCoop: Data/SporeCoop.package
@@ -34,7 +35,7 @@ loader: $(B)/steam_api.dll
 sporekit: $(B)/sporekit.dll
 coop: $(B)/coop.dll
 
-$(B)/steam_api.dll: loader/loader.c loader/steam_api.def
+$(B)/steam_api.dll: loader/loader.c loader/steam_api.def updater/pending.h
 	@mkdir -p $(B)
 	$(CC) $(CFLAGS) -shared -o $@ loader/loader.c loader/steam_api.def -Wl,--kill-at
 
@@ -62,9 +63,10 @@ $(B)/setup.ico: data/ui/coop_icon.png tools/make_ico.py
 $(B)/obj/installer/setup_rc.o: installer/setup.rc installer/setup.manifest $(B)/setup.ico
 	@mkdir -p $(dir $@)
 	$(WINDRES) -i installer/setup.rc -o $@ --include-dir installer
-$(B)/SporeCoopSetup.exe: installer/setup.cpp updater/winupdate.cpp updater/pack.cpp updater/sha256.cpp $(B)/obj/installer/setup_rc.o mods/coop/coop.cpp
-	$(CXX) $(CXXFLAGS) -DSETUP_VERSION='"$(COOP_VERSION)"' -municode -mwindows -static -o $@ $(filter-out mods/coop/coop.cpp,$^) \
+$(B)/SporeCoopSetup.exe: installer/setup.cpp installer/install.cpp installer/install.h sdk/include/sporekit_build.hpp updater/winupdate.cpp updater/pack.cpp updater/sha256.cpp $(B)/obj/installer/setup_rc.o mods/coop/coop.cpp
+	$(CXX) $(CXXFLAGS) -DSETUP_VERSION='"$(COOP_VERSION)"' -municode -mwindows -static -o $@ $(filter-out %.h %.hpp mods/coop/coop.cpp,$^) \
 		-lwinhttp -lcomctl32 -lshell32 -lole32 -ladvapi32 -luser32 -lgdi32
+
 
 # Portable editor transaction, durability, transport and owned-resource tests.
 EDITOR_CORE_SRC := mods/coop/net/editor_document.cpp
@@ -346,17 +348,34 @@ $(B)/host/package_admission_windows_tests.exe: $(PACKAGE_ADMISSION_WINDOWS_SRC) 
 $(B)/host/adventure_assets_native_tests.exe: $(ADVENTURE_ASSETS_NATIVE_FIXTURE_SRC) mods/coop/adventure_assets.cpp mods/coop/adventure_assets.h mods/coop/package_admission.h mods/coop/package_admission_windows.h $(ADVENTURE_ABI_HEADERS)
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(ADVENTURE_ASSETS_NATIVE_FIXTURE_SRC) -o $@ -lws2_32
+# The sanitizer builds need the compiler's runtimes: one probe (a stamp per HOSTCXX) says what is
+# missing before any test runs (BUG-0252). SKIP_SANITIZERS=1: a local machine skips them on purpose,
+# loudly; refused in CI (GitHub sets CI=true).
+SAN_STAMP := $(B)/host/sanitizer-probe.$(subst /,_,$(HOSTCXX)).ok
+ifeq ($(SKIP_SANITIZERS),1)
+ifneq ($(CI),)
+$(error SKIP_SANITIZERS=1 is not allowed in CI: the sanitizer tests must run there)
+endif
+SAN :=
+TSAN_RUN :=
+else
+SAN := -fsanitize=address,undefined
+TSAN_RUN = $(if $(shell grep -s setarch $(SAN_STAMP)),setarch $(shell uname -m) -R )
+endif
+
+sanitizer-probe:
+ifneq ($(SKIP_SANITIZERS),1)
+	@test -f $(SAN_STAMP) || tools/sanitizer_probe.sh "$(HOSTCXX)" $(B)/host $(SAN_STAMP)
+endif
 
 # native Linux unit tests for portable netcode
-test:
+test: sanitizer-probe
 	@mkdir -p $(B)/host
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Isdk/include tests/native_build_tests.cpp -o $(B)/host/native_build_tests
 	$(B)/host/native_build_tests
 	python3 tests/large_address_aware_tests.py
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(PACKAGE_ADMISSION_SRC) tests/package_admission_tests.cpp -o $(B)/host/package_admission_tests
 	$(B)/host/package_admission_tests
-	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Imods/coop -o $(B)/host/net_tests mods/coop/net/*.cpp updater/pack.cpp updater/sha256.cpp tests/net_tests.cpp
-	$(B)/host/net_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -o $(B)/host/ui_pages_tests tests/ui_pages_tests.cpp
 	$(B)/host/ui_pages_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -o $(B)/host/frame_metrics_tests tests/frame_metrics_tests.cpp
@@ -393,7 +412,76 @@ test:
 	python3 tools/tests/coop_editor_creation_save.py --self-test
 	python3 tests/editor_preview_package_tests.py
 	python3 tools/tests/editor_native_audit.py --self-test
+ifeq ($(SKIP_SANITIZERS),1)
+	@echo "WARNING: SKIP_SANITIZERS=1: the ASan/UBSan/TSan tests are NOT RUN"
+endif
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Imods/coop -o $(B)/host/net_tests mods/coop/net/*.cpp updater/pack.cpp updater/sha256.cpp tests/net_tests.cpp
+	$(B)/host/net_tests
+	python3 tools/tests/fakepeer_check.py $(B)/host/net_tests
+	python3 tools/tests/lab_selftest.py
+	python3 tools/tests/gates_selftest.py
+	python3 tools/tests/walk_selftest.py
+ifneq ($(SKIP_SANITIZERS),1)
+	$(MAKE) --no-print-directory test-asan
+	$(MAKE) --no-print-directory test-tsan
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -fsanitize=address,undefined -fno-omit-frame-pointer -Imods/coop -o $(B)/host/fuzz_decoders mods/coop/net/*.cpp updater/pack.cpp updater/sha256.cpp tests/fuzz_decoders.cpp
+	ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 $(B)/host/fuzz_decoders
+endif
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall $(SAN) -Imods/coop -o $(B)/host/validate_tests tests/validate_tests.cpp
+	$(B)/host/validate_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall $(SAN) -Imods/coop -o $(B)/host/cell_tests tests/cell_tests.cpp
+	$(B)/host/cell_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall $(SAN) -Imods/coop -o $(B)/host/npc_tests tests/npc_tests.cpp
+	$(B)/host/npc_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall $(SAN) -Imods/coop -o $(B)/host/space_tests tests/space_tests.cpp
+	$(B)/host/space_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall $(SAN) -Imods/coop -o $(B)/host/text_tests tests/text_tests.cpp
+	$(B)/host/text_tests
+	@mkdir -p $(B)/host/jpeg
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall $(SAN) -o $(B)/host/jpeg_tests tests/jpeg_tests.cpp sporekit/jpeg.cpp
+	$(B)/host/jpeg_tests $(B)/host/jpeg
+	python3 tools/tests/jpeg_check.py $(B)/host/jpeg
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall $(SAN) -Imods/coop -o $(B)/host/fixes_tests tests/fixes_tests.cpp mods/coop/fixes.cpp
+	$(B)/host/fixes_tests $(wildcard mods/coop/*.cpp mods/coop/*.h mods/coop/net/*.cpp mods/coop/net/*.h updater/*.cpp updater/*.h)
 	python3 tools/re_lint.py
+	python3 tools/docs_lint.py
+	python3 tools/glyph_lint.py
+	python3 tools/tickets.py check
+	python3 tools/tests/tools_selftest.py
+ifeq ($(SKIP_SANITIZERS),1)
+	@echo "WARNING: SANITIZER TESTS NOT RUN (SKIP_SANITIZERS=1)"
+endif
+
+# the same unit tests under AddressSanitizer: a freed object used later fails here (BUG-0029)
+test-asan: sanitizer-probe
+	@mkdir -p $(B)/host
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -fsanitize=address,undefined -fno-omit-frame-pointer -Imods/coop -o $(B)/host/net_tests_asan mods/coop/net/*.cpp updater/pack.cpp updater/sha256.cpp tests/net_tests.cpp
+	ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 $(B)/host/net_tests_asan
+	@# --nofix: every fix test runs to the end and fails (BUG-0214: it used to abort at test_dbbf_wrap)
+	@ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 $(B)/host/net_tests_asan --nofix > $(B)/host/net_tests_nofix.txt 2>&1; \
+	  rc=$$?; tail -n 1 $(B)/host/net_tests_nofix.txt | grep -q '^FAILED (' && [ $$rc = 1 ] \
+	  || { tail -n 20 $(B)/host/net_tests_nofix.txt; echo "net_tests_asan --nofix: expected FAILs to the end (exit $$rc)"; exit 1; }
+	@# the decoder bounds fixes' off side reads out of bounds: ASan must stop it (BUG-0208, BUG-0047)
+	@! ASAN_OPTIONS=detect_leaks=0 $(B)/host/net_tests_asan --old-dbbf > $(B)/host/net_tests_old_dbbf.txt 2>&1 \
+	  && grep -q 'AddressSanitizer' $(B)/host/net_tests_old_dbbf.txt || { echo "net_tests_asan --old-dbbf: ASan did not report"; exit 1; }
+	@! ASAN_OPTIONS=detect_leaks=0 $(B)/host/net_tests_asan --old-refpack > $(B)/host/net_tests_old_refpack.txt 2>&1 \
+	  && grep -q 'AddressSanitizer' $(B)/host/net_tests_old_refpack.txt || { echo "net_tests_asan --old-refpack: ASan did not report"; exit 1; }
+	@echo "net_tests_asan: --nofix ran to the end, --old-dbbf and --old-refpack died under ASan"
+
+# the setup's shared release state under ThreadSanitizer (BUG-0077; `release_tsan --old` must fail)
+test-tsan: sanitizer-probe
+	@mkdir -p $(B)/host
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -fsanitize=thread -o $(B)/host/release_tsan tests/release_tsan.cpp updater/pack.cpp updater/sha256.cpp
+	TSAN_OPTIONS=halt_on_error=1 $(TSAN_RUN)$(B)/host/release_tsan
+	@! TSAN_OPTIONS=halt_on_error=1 $(TSAN_RUN)$(B)/host/release_tsan --old-merge > $(B)/host/release_tsan_old_merge.txt 2>&1 \
+	  || { cat $(B)/host/release_tsan_old_merge.txt; echo "release_tsan --old-merge must fail (BUG-0244)"; exit 1; }
+
+# Windows-side unit tests (file handling of the updater and of received worlds), run under Wine in
+# a lane's bottle by tools/tests/win_unit.py (lab test win_unit)
+test-win: $(B)/win_tests.exe $(B)/SporeCoopSetup.exe
+$(B)/win_tests.exe: tests/win_tests.cpp installer/install.cpp installer/install.h mods/coop/slotfs.cpp mods/coop/slotfs.h updater/winupdate.cpp updater/pending.h updater/pack.cpp updater/sha256.cpp sporekit/inifile.cpp sporekit/inifile.h
+	@mkdir -p $(B)
+	$(CXX) $(CXXFLAGS) -static -o $@ tests/win_tests.cpp installer/install.cpp mods/coop/slotfs.cpp updater/winupdate.cpp updater/pack.cpp updater/sha256.cpp sporekit/inifile.cpp -lwinhttp -lws2_32
 
 # Optional Win32 ABI test with a fake native adapter. Run the .exe on Windows (no game).
 test-captains-windows: $(B)/host/adventure_captains_tests.exe
@@ -460,9 +548,9 @@ $(B)/host/adventure_control_tests.exe: tests/adventure_control_tests.cpp mods/co
 $(B)/obj/tests/native_fixture_rc.o: tests/native_fixture.rc tests/native_fixture.manifest
 	@mkdir -p $(dir $@)
 	$(WINDRES) -i tests/native_fixture.rc -o $@ --include-dir tests
-$(B)/host/adventure_tick_dispatch_tests.exe: tests/adventure_blocked_update_tests.cpp mods/coop/game.cpp $(ADVENTURE_ABI_HEADERS) $(B)/obj/tests/native_fixture_rc.o
+$(B)/host/adventure_tick_dispatch_tests.exe: tests/adventure_blocked_update_tests.cpp mods/coop/game.cpp mods/coop/fixes.cpp $(ADVENTURE_ABI_HEADERS) $(B)/obj/tests/native_fixture_rc.o
 	@mkdir -p $(B)/host
-	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/adventure_blocked_update_tests.cpp $(B)/obj/tests/native_fixture_rc.o -o $@
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/adventure_blocked_update_tests.cpp mods/coop/fixes.cpp $(B)/obj/tests/native_fixture_rc.o -o $@
 
 # Includes actual debug.cpp; discard unrelated command implementations at link time.
 test-debug-capabilities-windows: $(B)/host/adventure_debug_capability_tests.exe

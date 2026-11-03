@@ -4,6 +4,8 @@
 #include "task_pump_metrics.h"
 
 #include <cstdio>
+#include <malloc.h>
+#include <mutex>
 
 #include "../sdk/include/sporekit_game.hpp"
 
@@ -164,6 +166,29 @@ static int c_mem_read(void*, int argc, const char* const* argv, SkOut* o)
             outf(o, " %02X", p[i + j]);
         outf(o, "\n");
     }
+    return 0;
+}
+
+// committed private memory of the process, walked with VirtualQuery (read-only, any thread). Under
+// Wine the `env` line reports the working set, which moves by tens of MB on its own (BUG-0241 test)
+static int c_mem_commit(void*, int, const char* const*, SkOut* o)
+{
+    MEMORY_BASIC_INFORMATION mbi;
+    uintptr_t a = 0;
+    uint64_t priv = 0, all = 0;
+    while (VirtualQuery((void*)a, &mbi, sizeof mbi) == sizeof mbi) {
+        if (mbi.State == MEM_COMMIT) {
+            all += mbi.RegionSize;
+            if (mbi.Type == MEM_PRIVATE)
+                priv += mbi.RegionSize;
+        }
+        uintptr_t next = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+        if (next <= a)
+            break;
+        a = next;
+    }
+    outf(o, "commit_private_kb=%llu commit_kb=%llu\n", (unsigned long long)(priv / 1024),
+         (unsigned long long)(all / 1024));
     return 0;
 }
 
@@ -431,28 +456,33 @@ static int c_mode(void*, int, const char* const*, SkOut* o)
 static int c_stack(void*, int argc, const char* const* argv, SkOut* o)
 {
     int depth = argc > 1 ? atoi(argv[1]) : 24;
-    HANDLE t = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, main_thread_id());
-    if (!t) { outf(o, "OpenThread failed"); return 1; }
-    SuspendThread(t);
-    CONTEXT c{};
-    c.ContextFlags = CONTEXT_FULL;
-    GetThreadContext(t, &c);
-    outf(o, "eip=0x%08lX %s\nesp=0x%08lX ebp=0x%08lX\n", c.Eip, symbols_reverse(c.Eip).c_str(), c.Esp, c.Ebp);
-    // heuristic: scan stack for return addresses into the exe image
-    uintptr_t lo = image_base(), hi = image_base() + 0x1000000;
-    uint32_t* sp = (uint32_t*)c.Esp;
-    int found = 0;
-    for (int i = 0; i < 4096 && found < depth; i++) {
-        if (!skg::readable(sp + i, 4)) break;
-        uint32_t v = sp[i];
-        if (v > lo && v < hi) {
-            std::string r = symbols_reverse(v);
-            outf(o, "  [esp+0x%04X] 0x%08X %s\n", i * 4, v, r.c_str());
-            found++;
+    static ThreadSnap snap; // 16 KB, one console thread
+    static std::mutex mu;
+    std::lock_guard<std::mutex> lk(mu);
+    // formatting allocates: it runs after the resume (BUG-0050), unless kit.fix stackdump 0
+    auto format = [&] {
+        const CONTEXT& c = snap.c;
+        outf(o, "eip=0x%08lX %s\nesp=0x%08lX ebp=0x%08lX\n", c.Eip, symbols_reverse(c.Eip).c_str(), c.Esp, c.Ebp);
+        // heuristic: scan stack for return addresses into the exe image
+        uintptr_t lo = image_base(), hi = image_base() + 0x1000000;
+        int found = 0;
+        for (int i = 0; i < snap.n && found < depth; i++) {
+            uint32_t v = snap.words[i];
+            if (v > lo && v < hi) {
+                std::string r = symbols_reverse(v);
+                outf(o, "  [esp+0x%04X] 0x%08X %s\n", i * 4, v, r.c_str());
+                found++;
+            }
         }
+    };
+    std::string err;
+    bool now = fixed(g_fix_stackdump);
+    if (!thread_snapshot(main_thread_id(), snap, &err, now ? nullptr : call_lambda<decltype(format)>, &format)) {
+        outf(o, "%s", err.c_str());
+        return 1;
     }
-    ResumeThread(t);
-    CloseHandle(t);
+    if (now)
+        format();
     return 0;
 }
 
@@ -512,7 +542,7 @@ static int c_stack_here(void*, int argc, const char* const* argv, SkOut* o)
                 wchar_t name[MAX_PATH] = L"?";
                 GetModuleFileNameW((HMODULE)mbi.AllocationBase, name, MAX_PATH);
                 const wchar_t* b = wcsrchr(name, L'\\');
-                outf(o, "  [%p] 0x%08X %ls+0x%X\n", (void*)p, v, b ? b + 1 : name,
+                outf(o, "  [%p] 0x%08X %s+0x%X\n", (void*)p, v, narrow(b ? b + 1 : name).c_str(),
                      (unsigned)(v - (uintptr_t)mbi.AllocationBase));
                 found++;
             }
@@ -588,20 +618,105 @@ static int c_quit(void*, int, const char* const*, SkOut* o)
     return 0;
 }
 
+// kit.fix [name [0|1]]: the fix switches (tests show with 0 that they still catch the bug)
+static int c_kit_fix(void*, int argc, const char* const* argv, SkOut* o)
+{
+    if (argc < 2) {
+        for (KitFix* f : kit_fixes())
+            outf(o, "%-10s %d  %s\n", f->name, (int)f->on, f->what);
+        return 0;
+    }
+    KitFix* f = kit_fix_find(argv[1]);
+    if (!f) { outf(o, "unknown fix '%s' (kit.fix lists them)", argv[1]); return 1; }
+    if (argc > 2) {
+        InterlockedExchange(&f->on, atoi(argv[2]) ? 1 : 0);
+        SKLOG(SK_WARN, "kit.fix %s %d", f->name, (int)f->on);
+    }
+    outf(o, "%s %d", f->name, (int)f->on);
+    return 0;
+}
+
+// kit.test.stackheap [stack|hangdump] [hold_ms]: the main thread holds the heap locks (as when it is
+// suspended inside malloc) while the console thread runs `stack` / `hangdump` (BUG-0050)
+static int c_test_stackheap(void*, int argc, const char* const* argv, SkOut* o)
+{
+    bool hang = argc > 1 && !strcmp(argv[1], "hangdump");
+    int hold = argc > 2 ? atoi(argv[2]) : 3000;
+    HANDLE held = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    HANDLE heaps[2] = {(HANDLE)_get_heap_handle(), GetProcessHeap()};
+    run_on_main([held, hold, heaps] {
+        for (HANDLE h : heaps)
+            HeapLock(h);
+        SetEvent(held);
+        Sleep(hold); // nothing allocates here: the heaps stay locked until the end
+        for (HANDLE h : heaps)
+            HeapUnlock(h);
+    });
+    if (WaitForSingleObject(held, 30000) != WAIT_OBJECT_0) {
+        outf(o, "the main thread did not take the heap locks");
+        return 1;
+    }
+    // from here until the main thread lets go nothing on this thread may allocate before the suspend
+    DWORD t0 = GetTickCount();
+    std::string answer;
+    if (hang)
+        answer = watchdog_dump_now();
+    else {
+        const char* av[] = {"stack", "8"};
+        Out sub;
+        c_stack(nullptr, 2, av, reinterpret_cast<SkOut*>(&sub));
+        answer = sub.text;
+    }
+    DWORD dt = GetTickCount() - t0;
+    CloseHandle(held);
+    outf(o, "%s answered after %lu ms (heaps held %d ms): %d bytes\n", hang ? "hangdump" : "stack", dt, hold,
+         (int)answer.size());
+    return 0;
+}
+
+static int c_test_fault(void* user, int, const char* const*, SkOut* o)
+{
+    int which = (int)(intptr_t)user;
+    if (which == 0)
+        log_fault_test();
+    else
+        exceptions_fault_test();
+    outf(o, "%s: the thread goes on", which == 0 ? "logfault" : "excfault");
+    return 0;
+}
+
+static int c_test_hookchurn(void*, int argc, const char* const* argv, SkOut* o)
+{
+    std::string r;
+    hooks_churn_test(argc > 1 ? atoi(argv[1]) : 200, argc > 2 ? atoi(argv[2]) : 3, r,
+                     argc > 3 && !strcmp(argv[3], "nogate"));
+    outf(o, "%s", r.c_str());
+    return 0;
+}
+
+static int c_test_hooknew(void*, int argc, const char* const* argv, SkOut* o)
+{
+    std::string r;
+    hooks_new_test(argc > 1 ? atoi(argv[1]) : 200, argc > 2 ? atoi(argv[2]) : 3, r);
+    outf(o, "%s", r.c_str());
+    return 0;
+}
+
 void register_builtin_commands()
 {
     SkMod* k = &g_kit_mod;
     const int A = SK_CMD_ANY_THREAD, M = SK_CMD_MAIN_THREAD;
+    const int W = SK_CMD_ANY_THREAD | SK_CMD_NOT_ON_MAIN; // waits for the main thread (BUG-0065)
     command_add(k, "help", "list commands [filter]", c_help, nullptr, A);
     command_add(k, "ping", "liveness check (any thread)", c_ping, nullptr, A);
     command_add(k, "info", "versions, exe hash, frame, mode, mods", c_info, nullptr, M);
-    command_add(k, "env", "the environment: game build, Windows / Wine, memory, GPU, other hooks, mods",
+    command_add(k, "env", "the environment: game build, Windows / Wine, memory, GPU, other hooks, mods, extra game files",
                 [](void*, int, const char* const*, SkOut* out) {
-                    outf(out, "%s", diag_env().c_str());
+                    outf(out, "%s%s", diag_env().c_str(), mask_paths(diag_files_text()).c_str());
                     return 0;
                 },
                 nullptr, M);
-    command_add(k, "crash.test", "crash.test [thread|main] - make the game crash (tests of the crash report)",
+    command_add(k, "crash.test", "crash.test [thread|main|stackoverflow|oom|faultthread] - make the game crash (tests of the crash report; faultthread: a repaired fault on a worker thread, no crash)",
                 [](void*, int argc, const char* const* argv, SkOut* out) {
                     outf(out, "crashing");
                     diag_crash_test(argc > 1 ? argv[1] : "thread");
@@ -641,7 +756,7 @@ void register_builtin_commands()
         for(uint32_t i=0;i<value.count;++i)row("recent",value.recent[(value.next+value.recent.size()-value.count+i)%value.recent.size()]);
         return 0;
     },nullptr,A);
-    command_add(k, "wait.frames", "wait.frames <n> [timeout_ms]", c_wait_frames, nullptr, A);
+    command_add(k, "wait.frames", "wait.frames <n> [timeout_ms]", c_wait_frames, nullptr, W);
     command_add(k, "log", "log [n] - last log lines", c_log, nullptr, A);
     command_add(k, "sym", "sym <name|addr> - resolve", c_sym, nullptr, A);
     command_add(k, "sym.reload", "reload symbol files from mods/sporekit/symbols", c_sym_reload, nullptr, M);
@@ -649,9 +764,10 @@ void register_builtin_commands()
     command_add(k, "mem.read", "mem.read <addr> [len]", c_mem_read, nullptr, A);
     command_add(k, "mem.write", "mem.write <addr> <hex>", c_mem_write, nullptr, M);
     command_add(k, "mem.ptr", "mem.ptr <addr> [off...] - follow pointers", c_mem_ptr, nullptr, A);
+    command_add(k, "mem.commit", "committed private memory of the game (VirtualQuery walk)", c_mem_commit, nullptr, A);
     command_add(k, "call", "call <addr> <conv> [args] - call game function", c_call, nullptr, M);
     command_add(k, "cheat", "cheat <text> - run a Spore cheat", c_cheat, nullptr, M);
-    command_add(k, "shot", "shot [linux path] - PNG screenshot", c_shot, nullptr, A);
+    command_add(k, "shot", "shot [linux path] - PNG screenshot", c_shot, nullptr, W);
     command_add(k, "key", "key <vk|name> [tap|down|up]", c_key, nullptr, A);
     command_add(k, "text", "text <string> - WM_CHAR input", c_text, nullptr, A);
     command_add(k, "window", "window [x y | test] - game window position (move it)", c_window, nullptr,
@@ -671,10 +787,10 @@ void register_builtin_commands()
     command_add(k, "mod.unload", "mod.unload <name> - queue unload", c_mod_op, (void*)2, SK_CMD_OUTSIDE_FRAME);
     command_add(k, "hooks", "list installed hooks", c_hooks, nullptr, A);
     command_add(k, "game.mode", "active game mode", c_mode, nullptr, M);
-    command_add(k, "stack", "stack [depth] - main thread stack (works when hung)", c_stack, nullptr, A);
+    command_add(k, "stack", "stack [depth] - main thread stack (works when hung)", c_stack, nullptr, W);
     command_add(k, "quit", "terminate the game", c_quit, nullptr, A);
     command_add(k, "exc", "exc [clear] - faults caught by the exception logger", c_exc, nullptr, A);
-    command_add(k, "hangdump", "write the main thread stack (with DLL names) to the log", c_hang, nullptr, A);
+    command_add(k, "hangdump", "write the main thread stack (with DLL names) to the log", c_hang, nullptr, W);
     command_add(k, "probe", "probe <addr|sym> - trace calls without knowing the signature", c_probe, nullptr, M);
     command_add(k, "probe.list", "probe.list [clear] - recorded calls", c_probe_list, nullptr, A);
     command_add(k, "ftrace", "ftrace [substring] - log file opens (with callers) whose path contains it", c_ftrace,
@@ -684,6 +800,17 @@ void register_builtin_commands()
                 nullptr, A);
     command_add(k, "stack.here", "stack.here [n] [all] - main thread call chain, read on the main thread itself",
                 c_stack_here, nullptr, M);
+    command_add(k, "kit.fix", "kit.fix [name [0|1]] - fix switches (tests: 0 = the old behaviour)", c_kit_fix, nullptr, A);
+    command_add(k, "kit.test.stackheap", "kit.test.stackheap [stack|hangdump] [hold_ms] - stack dump while the main thread holds the heap (BUG-0050)",
+                c_test_stackheap, nullptr, A);
+    command_add(k, "kit.test.logfault", "kit.test.logfault - a fault inside the log's lock (BUG-0115)", c_test_fault,
+                (void*)0, M);
+    command_add(k, "kit.test.excfault", "kit.test.excfault - a fault inside the exception logger's lock (BUG-0115)",
+                c_test_fault, (void*)1, M);
+    command_add(k, "kit.test.hookchurn", "kit.test.hookchurn [rounds] [threads] [nogate] - hook / unhook while threads run the hook (BUG-0132; nogate: also while the hook is made, BUG-0202)",
+                c_test_hookchurn, nullptr, M);
+    command_add(k, "kit.test.hooknew", "kit.test.hooknew [rounds] [threads] - make new hooks while threads call the functions; counts detours that ran before their original was set (BUG-0398)",
+                c_test_hooknew, nullptr, M);
     command_add(k, "bg", "bg [on|off] - keep running when the window is unfocused", c_bg, nullptr, A);
     command_add(k, "frames.source", "frames.source [auto|loop] - where frames come from (loop: ignore Present, tests)",
                 c_frames_source, nullptr, A);

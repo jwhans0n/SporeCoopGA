@@ -7,19 +7,35 @@
   lab.py run tribe_play,select         chosen tests (names: tools/tests/suite.py)
   lab.py reload --lane 2               build, deploy and hot-reload coop.dll in the lane's running games
   lab.py run tribe_play --repeat 6 --retry 0   hunt a flaky bug: 6 runs, no retries
-  lab.py kill [--lanes 3]              stop the games of the lanes
+  lab.py coverage [--days 7]           every suite test with its last run (main + worktrees), never-run ones
+  lab.py coverage --commit <rev> --require smoke,full,multi   the release rule (docs/06-testing.md#testing-release-rule)
+  lab.py fixcheck                      "SPORE_FIX_OFF=x fails" claims of suite.py against recorded FAIL runs
+  lab.py gates [out/lab dirs]          the log gates over recorded results, report only (tools/loggates.py)
+  lab.py kill [--lane N ... | --upto N | --lanes 2,3] [--include-lane-1]
+                                       stop the games of lanes 2..10, of lane N, of lanes 2..N or of a list
+                                       (lane 1: only with --include-lane-1, its test games only)
 
 A lane runs one test at a time. Warm tests reuse the lane's running games (SPORE_WARM=1,
 twoinst.start: ~10 s instead of ~40 s); after a failure the lane restarts cold. A test that dies
 without a RESULT line (harness trouble: start, timeout) is retried once cold and marked flaky
-when it passes then. Exclusive tests run at the end, alone. Results: out/lab/<run>/ (one log per
-test, results.json, summary.md).
+when it passes then; a test that printed RESULT: FAIL is a failure, never retried (BUG-0073).
+A test also fails when a game of its lane wrote a crash / hang report while it ran or in the
+seconds after it, a game died right after it, or its log shows a non-zero fault count
+(BUG-0036, BUG-0042; suite.py reports=True for tests that make them on purpose), or when the games'
+own logs written during it break a log gate (tools/loggates.py: sync-check MISMATCH, a hitch over
+2 s in play, address space running low or lost by the minute; suite.py gates= / allow=;
+SPORE_GATES=report: report only, off: none). RESULT: SKIP is
+a skip, not a pass (BUG-0100). A timeout kills the test's whole process group (BUG-0052).
+Exclusive tests run at the end, alone. Results: out/lab/<run>/ (one log per test, results.json,
+summary.md).
 """
 import argparse
 import datetime
 import json
 import os
 import re
+import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -27,22 +43,28 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, 'tools', 'tests'))
+sys.path.insert(0, os.path.join(ROOT, 'tools'))
 import suite  # noqa: E402
+import loggates  # noqa: E402
 
 TIMEOUT = 1800
+AFTER = 5.0  # seconds after a test in which a game of its lane may still crash or die (BUG-0036)
+REPORTS = ('crash-*.txt', 'crash-*.dmp', 'report-*.txt')  # SporeKit's crash / hang reports (sporekit/diag.cpp)
 
 
-def git(*a, cwd=ROOT):
-    return subprocess.run(['git', *a], cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
+def git(*a, cwd=None):
+    return subprocess.run(['git', *a], cwd=cwd or ROOT, capture_output=True, text=True, check=True).stdout.strip()
 
 
 def worktree(branch):
-    """the checkout of a branch: the main one if it is checked out there, else a worktree next to it"""
+    """the checkout of a branch: the main one if it is checked out there, else a worktree next to it.
+    The branch line of a worktree must match exactly: fix/cell is not fix/cell-meat (BUG-0048)"""
     if git('branch', '--show-current') == branch:
         return ROOT
     for block in git('worktree', 'list', '--porcelain').split('\n\n'):
-        if f'branch refs/heads/{branch}' in block:
-            return block.split('\n')[0].split(' ', 1)[1]
+        lines = block.split('\n')
+        if f'branch refs/heads/{branch}' in lines:
+            return lines[0].split(' ', 1)[1]
     path = os.path.join(os.path.dirname(ROOT), 'SporeCoop-wt', branch.replace('/', '-'))
     git('worktree', 'add', path, branch)
     return path
@@ -61,8 +83,10 @@ def build(tree):
         sys.exit('build failed')
 
 
-def ensure_lanes(n):
-    for lane in range(2, n + 1):
+def ensure_lanes(lanes):
+    for lane in lanes:
+        if lane < 2:
+            continue
         print(spore(ROOT, 1, 'lane', 'create', str(lane), check=True).stdout.strip())
 
 
@@ -71,14 +95,45 @@ def lane_game(lane):
     return main if lane == 1 else os.path.join(os.path.dirname(main), 'SPORE-lab', f'lane{lane}')
 
 
-def save_game_logs(lane, logdir, name):
-    """the games' own logs (SporeKit + mods) next to the test log: the next start overwrites them"""
-    import shutil
+def game_logs(lane):
+    """{who: the game log} of a lane's instances (the extra guests of a 4-player test: 20+N, 30+N; BUG-0266)"""
     logs = os.path.join(lane_game(lane), 'SporebinEP1', 'mods', 'logs')
-    for inst, who in ((2 * lane - 1, 'host'), (2 * lane, 'guest')):
-        src = os.path.join(logs, 'sporekit.log' if inst == 1 else f'sporekit.{inst}.log')
-        if os.path.exists(src):
-            shutil.copy(src, os.path.join(logdir, f'{name}.{who}.game.log'))
+    return {who: os.path.join(logs, 'sporekit.log' if inst == 1 else f'sporekit.{inst}.log')
+            for inst, who in ((2 * lane - 1, 'host'), (2 * lane, 'guest'), (20 + lane, 'extra1'), (30 + lane, 'extra2'))}
+
+
+def test_logs(lane, since):
+    """the game logs a test of the lane wrote: host and guest, an extra guest's only when written since
+    the test started (2 s: the kernel's coarse file clock)"""
+    return {who: src for who, src in game_logs(lane).items()
+            if os.path.exists(src) and (who in ('host', 'guest') or os.path.getmtime(src) >= since - 2)}
+
+
+def save_game_logs(lane, logdir, name, since=0.0):
+    """the games' own logs (SporeKit + mods) next to the test log: the next start overwrites them"""
+    for who, src in test_logs(lane, since).items():
+        shutil.copy(src, os.path.join(logdir, f'{name}.{who}.game.log'))
+
+
+GATES_MODE = os.environ.get('SPORE_GATES', 'fail')  # fail | report | off (docs/06-testing.md#testing-log-gates)
+
+
+def log_gates(t, lane, text, marks, since):
+    """(fails, notes, marks) of the log gates over the lines the lane's games wrote during the test:
+    from the offsets taken at its start (a game started again during it: its whole new log)"""
+    cfg = t.get('gates') or {}
+    if GATES_MODE == 'off' or set(loggates.GATES) <= set(cfg.get('off', ())):
+        return [], [], {}
+    logs = test_logs(lane, since)
+    try:
+        fails, notes, _ = loggates.check_logs(logs, cfg, list(t.get('allow') or []) + suite.ALLOW_ALL, text,
+                                              {w: marks.get(w) for w in logs})
+    except Exception as e:  # noqa: BLE001 (a broken gate must not lose the run; it is said)
+        return [], [f'log gates: error {e!r}'], marks
+    if GATES_MODE == 'report':
+        notes = [f'report only (SPORE_GATES=report): {f[len("FAIL lab: "):]}' for f in fails] + notes
+        fails = []
+    return fails, notes, marks
 
 
 def preflight():
@@ -96,32 +151,164 @@ def preflight():
     return False
 
 
+def report_files(lane):
+    """SporeKit's crash and hang reports in the lane's log folder"""
+    import glob
+    logs = os.path.join(lane_game(lane), 'SporebinEP1', 'mods', 'logs')
+    return {p for pat in REPORTS for p in glob.glob(os.path.join(logs, pat))}
+
+
+def test_game_report(lane, path):
+    """does a new report count against the lane's test? Lane 1's folder is also the owner's own
+    install: a report whose `run:` line says instance 1 without a test profile is the owner's Spore
+    (BUG-0249). Without the line (an older SporeKit, a minidump) it counts: fail closed."""
+    if lane != 1:
+        return True
+    if path.endswith('.dmp'):
+        txt = path[:-4] + '.txt'
+        if not os.path.exists(txt):
+            return True
+        path = txt
+    try:
+        text = open(path, errors='replace').read(64 << 10)
+    except OSError:
+        return True
+    m = re.search(r'^run: instance (\d+), profile (set|own)', text, re.M)
+    return not m or m.group(2) == 'set' or int(m.group(1)) > 1
+
+
+def free_lane_lock(lane):
+    """the BUG-0211 lane lock of update_check.py (the same path)"""
+    return os.path.join(os.path.dirname(lane_game(lane)), f'.update_check-lane{lane}.lock')
+
+
+def free_lane_watch(text):
+    """(lane, since) of a uses_free_lane test's `LAB-WATCH lane=N since=T` line, or None"""
+    m = re.search(r'^LAB-WATCH lane=(\d+) since=([\d.]+)', text, re.M)
+    return (int(m.group(1)), float(m.group(2))) if m else None
+
+
+def lane_alive(lane):
+    """{instance: answers its console} for the two games of a lane"""
+    sys.path.insert(0, os.path.join(ROOT, 'tools'))
+    from sporectl import Console
+    alive = {}
+    for inst in (2 * lane - 1, 2 * lane):
+        try:
+            alive[inst] = bool(Console(inst, timeout=5).call('ping')['ok'])
+        except (OSError, ValueError):
+            alive[inst] = False
+    return alive
+
+
+_procs, _procs_lock = set(), threading.Lock()  # process groups of the running tests (Ctrl+C kills them)
+_stopping = threading.Event()  # set by an interrupt: no new test starts (BUG-0250)
+
+
+def kill_group(p):
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def run_cmd(cmd, tree, env, f, timeout):
+    """the test in its own session: a timeout kills its whole process group, not only /bin/sh
+    (dash does not exec the command, the test would go on driving the lane: BUG-0052)"""
+    p = subprocess.Popen(cmd, shell=True, cwd=tree, env=env, stdout=f, stderr=subprocess.STDOUT,
+                         start_new_session=True)
+    with _procs_lock:
+        _procs.add(p)
+        if _stopping.is_set():  # an interrupt came while it started (BUG-0250)
+            kill_group(p)
+    try:
+        return p.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        kill_group(p)
+        p.wait()
+        f.write('\nLAB: TIMEOUT\n')
+        return -9
+    except KeyboardInterrupt:  # Ctrl+C / SIGTERM while this thread waits (the exclusive phase, BUG-0250)
+        kill_group(p)
+        p.wait()
+        raise
+    finally:
+        with _procs_lock:
+            _procs.discard(p)
+
+
+def fault_count(line):
+    m = re.search(r'\bfaults: total faults: (\d+)', line)
+    return int(m.group(1)) if m else 0
+
+
 def run_one(t, lane, tree, logdir, warm, suffix=''):
     preflight()
     env = dict(os.environ, SPORE_LANE=str(lane), SPORE_WARM='1' if warm else '0', PYTHONUNBUFFERED='1')
+    if t.get('monitor') is not None:  # the invariant monitor's settings (tools/tests/monitor.py)
+        env['SPORE_MONITOR'] = t['monitor'] if isinstance(t['monitor'], str) else json.dumps(t['monitor'])
     log = os.path.join(logdir, t['name'] + suffix + '.log')
     t0 = time.time()
+    reports0 = report_files(lane)
+    marks0 = {who: loggates.log_marks(p) for who, p in game_logs(lane).items()}  # where the test's lines begin
     with open(log, 'w') as f:
         f.write(f'# {t["cmd"]}  (lane {lane}, {"warm" if warm else "cold"})\n')
         f.flush()
+        rc = run_cmd(t['cmd'], tree, env, f, t.get('timeout') or TIMEOUT)
+    # a crash after the checks is still a crash (CLAUDE.md 3, BUG-0036): a game that answered at the
+    # end must still answer a few seconds later, and no new crash / hang report may appear
+    alive0 = lane_alive(lane)
+    time.sleep(AFTER if any(alive0.values()) else 1.0)
+    alive1 = lane_alive(lane) if any(alive0.values()) else alive0
+    died = [i for i, up in alive0.items() if up and not alive1.get(i)]
+    new_reports = sorted(p for p in report_files(lane) - reports0 if test_game_report(lane, p))
+    text = open(log, errors='replace').read().split('\n', 1)[-1]  # the test's output, not the '# cmd' line
+    watched = ''
+    # BUG-0249: a test that plays on the free lane outside the run is watched there from the moment
+    # it held the lane's lock (before that, another run may own the lane: no snapshot)
+    w = free_lane_watch(text) if t.get('uses_free_lane') else None
+    if w and w[0] != lane:
+        fl, since = w
+        watched = f' (+{fl})'
+        f0 = {i: up for i, up in lane_alive(fl).items() if i == 2 * fl - 1}
+        if any(f0.values()):
+            time.sleep(AFTER)
+            f1 = lane_alive(fl)
+            died += [i for i, up in f0.items() if up and not f1.get(i)]
+        for p in sorted(report_files(fl)):
+            try:
+                # 2 s: file times come from the kernel's coarse clock, a bit behind time.time()
+                if os.path.getmtime(p) >= since - 2 and test_game_report(fl, p):
+                    new_reports.append(p)
+            except OSError:
+                pass
+    save_game_logs(lane, logdir, t['name'] + suffix, t0)
+    for p in new_reports:  # the next start of the lane may prune them
         try:
-            rc = subprocess.run(t['cmd'], shell=True, cwd=tree, env=env, stdout=f, stderr=subprocess.STDOUT,
-                                timeout=TIMEOUT).returncode
-        except subprocess.TimeoutExpired:
-            rc = -9
-            f.write('\nLAB: TIMEOUT\n')
-    save_game_logs(lane, logdir, t['name'] + suffix)
-    text = open(log, errors='replace').read()
+            shutil.copy(p, os.path.join(logdir, f'{t["name"]}{suffix}.{os.path.basename(p)}'))
+        except OSError:
+            pass
     has_result = 'RESULT:' in text or t['cmd'].startswith('make')
-    ok = rc == 0 and 'RESULT: FAIL' not in text and 'Traceback' not in text and has_result
+    skipped = 'RESULT: SKIP' in text and 'RESULT: FAIL' not in text
+    faults = [l.strip() for l in text.splitlines() if ' faults: ' in l and 'total faults: 0' not in l]
+    lab_fails = []
+    if not t.get('reports'):
+        lab_fails += [f'FAIL lab: instance {i} stopped answering after the test (crash after the checks?)'
+                      for i in died]
+        lab_fails += [f'FAIL lab: new report {os.path.basename(p)}' for p in new_reports]
+        lab_fails += [f'FAIL lab: faults in the log: {l}' for l in faults if fault_count(l) > 0]
+    gate_fails, gate_notes, _ = log_gates(t, lane, text, marks0, t0)
+    lab_fails += gate_fails
+    ok = rc == 0 and 'RESULT: FAIL' not in text and 'Traceback' not in text and has_result and not lab_fails
     # the machine, not the mod: the game did not even start
     env = not ok and ('did not start' in text or "bwrap: Can't find" in text)
     m = re.search(r'\((both games ready|warm reset) in (\d+) s', text)
-    return dict(name=t['name'], lane=lane, ok=ok, rc=rc, env=env, harness=not has_result or 'Traceback' in text,
+    return dict(name=t['name'], lane=lane, watched=watched, ok=ok, rc=rc, env=env, skipped=skipped and ok,
+                harness=(not has_result or 'Traceback' in text) and not lab_fails,
                 seconds=round(time.time() - t0), start=f'{m.group(1)} {m.group(2)} s' if m else '',
-                fails=[l.strip() for l in text.splitlines() if l.strip().startswith('FAIL')][:8],
-                faults=[l.strip() for l in text.splitlines() if ' faults: ' in l and 'total faults: 0' not in l],
-                log=log)
+                fails=(lab_fails + [l.strip() for l in text.splitlines() if l.strip().startswith('FAIL')])[:8],
+                faults=faults, reports=[os.path.basename(p) for p in new_reports], died=died, log=log,
+                gates=gate_fails + gate_notes, log_marks={w: m for w, m in marks0.items() if m})
 
 
 def cmd_run(a):
@@ -133,6 +320,9 @@ def cmd_run(a):
     logdir = os.path.join(ROOT, 'out', 'lab', run_id)
     os.makedirs(logdir, exist_ok=True)
     head = git('log', '-1', '--format=%h %s', cwd=tree)
+    tree_branch = git('branch', '--show-current', cwd=tree) or '(detached)'
+    if a.branch and tree_branch != a.branch:  # never test another branch's tree under this name (BUG-0048)
+        sys.exit(f'lab: the tree {tree} has {tree_branch} checked out, not {a.branch}')
     skip = {int(x) for x in a.skip.split(',') if x.strip()}
     # more than 6 lanes (12 games) on one GPU ended in a full GPU reset that took the desktop down
     # (docs/06-testing.md 6.19): SPORE_MAX_LANES raises the cap on purpose
@@ -141,24 +331,42 @@ def cmd_run(a):
         print(f'lab: {a.lanes} lanes capped to {cap} (GPU load, docs/06-testing.md 6.19; SPORE_MAX_LANES)')
         a.lanes = cap
     a.lane_ids = [n for n in range(1, 11) if n not in skip][:a.lanes]
+    if getattr(a, 'lane', None):  # BUG-0259: an explicit lane list
+        bad = [n for n in a.lane if not 1 <= n <= 10 or n in skip]
+        if bad:
+            sys.exit(f'lab: --lane {bad} is not a lane 1..10 outside --skip')
+        a.lane_ids = sorted(set(a.lane))[:cap]
+        a.lanes = len(a.lane_ids)
     # a lane for tests that take a whole lane of their own outside the run (update_check.py wipes
     # the mod from its lane): neither used by this run nor by other work (--skip); '' = none
-    os.environ['SPORE_FREE_LANE'] = str(next((n for n in range(2, 9) if n not in a.lane_ids and n not in skip), ''))
-    print(f'lab run {run_id}: {len(tests)} tests on {a.lanes} lane(s), tree {tree} ({head})')
+    # BUG-0468: never lane 8 (the owner's) or 1, never a lane whose games answer (other work: another run or
+    # agent), and lanes 9-10 count too; one such test at a time (free_lock below)
+    def _free(n):
+        if n in (1, 8) or n in a.lane_ids or n in skip:
+            return False
+        try:
+            return not any(lane_alive(n).values())
+        except Exception:  # noqa: BLE001
+            return False
+    os.environ['SPORE_FREE_LANE'] = str(next((n for n in range(2, 11) if _free(n)), ''))
+    print(f'lab run {run_id}: {len(tests)} tests on {a.lanes} lane(s), tree {tree} [{tree_branch}] ({head})')
     if not a.no_build:
         build(tree)
-    ensure_lanes(max(a.lane_ids))
+    ensure_lanes(a.lane_ids)
     for lane in a.lane_ids:  # a run starts from clean games
         spore(tree, lane, 'kill')
     parallel = sorted([t for t in tests if not t['exclusive']], key=lambda t: -t['minutes'])
     alone = [t for t in tests if t['exclusive']]
     pending = list(parallel)
     results, lock = [], threading.Lock()
+    stopping = _stopping
+    stopping.clear()
+    free_used = []  # free lanes a uses_free_lane test of this run may have taken
 
     def take(last_fixture):
         """the next test for a lane: one on the save the lane has loaded (warm), else the longest"""
         with lock:
-            if not pending:
+            if not pending or stopping.is_set():
                 return None
             same = [t for t in pending if t['warm'] and last_fixture and t['fixture'] == last_fixture]
             t = same[0] if same else pending[0]
@@ -168,26 +376,44 @@ def cmd_run(a):
     def report(r):
         with lock:
             results.append(r)
-            flag = 'OK  ' if r['ok'] else 'FAIL'
+            flag = 'SKIP' if r.get('skipped') else 'OK  ' if r['ok'] else 'FAIL'
             extra = ' (flaky)' if r.get('flaky') else ''
-            print(f'  {flag} {r["name"]:<15} lane {r["lane"]}  {r["seconds"]:>4} s  {r["start"]}{extra}'
-                  + ''.join(f'\n         {x}' for x in r['fails'] + r['faults']), flush=True)
+            shown = r['fails'] + [x for x in r['faults'] if not any(x in y for y in r['fails'])] + \
+                [x for x in r.get('gates', []) if not x.startswith('FAIL')]
+            print(f'  {flag} {r["name"]:<15} lane {r["lane"]}{r.get("watched", "")}  {r["seconds"]:>4} s  {r["start"]}{extra}'
+                  + ''.join(f'\n         {x}' for x in shown), flush=True)
+
+    free_lock = threading.Lock()  # BUG-0468: two tests on the one free lane at once broke both
 
     def attempt(t, lane, warm_ok):
+        if t.get('uses_free_lane'):
+            with free_lock:
+                return attempt1(t, lane, warm_ok)
+        return attempt1(t, lane, warm_ok)
+
+    def attempt1(t, lane, warm_ok):
+        if t.get('uses_free_lane') and os.environ.get('SPORE_FREE_LANE'):
+            free_used.append(int(os.environ['SPORE_FREE_LANE']))
         r = run_one(t, lane, tree, logdir, t['warm'] and warm_ok and not a.cold)
+        if stopping.is_set():
+            return r, False
         if not r['ok'] or not t['warm']:
             spore(tree, lane, 'kill')  # a clean slate after a failure or a test with its own setup
             warm_ok = False
         else:
             warm_ok = True
         for k in range(2):  # environment trouble (the game did not start): again, not counted as flaky
-            if r['ok'] or not r.get('env'):
+            if r['ok'] or not r.get('env') or stopping.is_set():
                 break
             spore(tree, lane, 'kill')
             time.sleep(5)
+            if stopping.is_set():  # BUG-0250: an interrupt during the pause starts nothing new
+                break
             r = run_one(t, lane, tree, logdir, False, f'.env{k + 1}')
             r['env_retries'] = k + 1
-        if not r['ok'] and a.retry and not r.get('env'):  # once more on a clean lane: passing = flaky
+        # harness trouble only (no RESULT line, a traceback, a timeout): once more on a clean lane, passing
+        # = flaky. A RESULT: FAIL, a crash or a fault is a failure of the run (BUG-0073)
+        if not r['ok'] and a.retry and r['harness'] and not r.get('env') and not stopping.is_set():
             r2 = run_one(t, lane, tree, logdir, False, '.retry')
             r2['flaky'] = r2['ok']
             r2['first'] = r['fails'] or ['no RESULT (harness)']
@@ -205,28 +431,87 @@ def cmd_run(a):
             last = t['fixture']
             report(r)
 
+    def shutdown():
+        """BUG-0250: on Ctrl+C / SIGTERM in any phase: no new test, every test group of ours killed, the
+        games of the run's lanes ended, the free lane only when nobody holds its lock. Idempotent."""
+        if getattr(shutdown, 'done', False):
+            return
+        shutdown.done = True
+        old_int = signal.signal(signal.SIGINT, signal.SIG_IGN)  # a second Ctrl+C must not cut this short
+        try:
+            stopping.set()
+            with _procs_lock:
+                for p in list(_procs):
+                    kill_group(p)
+            print('lab: interrupted: tests stopped, ending the games of lanes ' + ', '.join(map(str, a.lane_ids)),
+                  flush=True)
+            for lane in a.lane_ids:
+                spore(tree, lane, 'kill')
+            for fl in sorted(set(free_used) - set(a.lane_ids)):
+                import fcntl
+                try:
+                    lk = open(free_lane_lock(fl), 'a')
+                except OSError:
+                    continue
+                try:
+                    fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    print(f'lab: free lane {fl} is in use by another run: left alone', flush=True)
+                    lk.close()
+                    continue
+                try:
+                    spore(tree, fl, 'kill')
+                finally:
+                    fcntl.flock(lk, fcntl.LOCK_UN)
+                    lk.close()
+        finally:
+            signal.signal(signal.SIGINT, old_int)
+
+    def on_term(signum, frame):  # SIGTERM (a supervising agent stopping the lab): as Ctrl+C
+        raise KeyboardInterrupt
+    old_term = signal.signal(signal.SIGTERM, on_term) if threading.current_thread() is threading.main_thread() else None
     t0 = time.time()
     threads = [threading.Thread(target=worker, args=(lane,)) for lane in a.lane_ids]
-    for th in threads:
-        th.start()
-        time.sleep(5)  # Bottles sandboxes starting at the same moment can race
-    for th in threads:
-        th.join()
-    if alone:  # the machine alone: no game of another lane may be visible (LAN discovery)
-        for lane in a.lane_ids:
-            spore(tree, lane, 'kill')
-    # exclusive tests run on a lane of this run (never on one --skip reserved for other work); LAN
-    # discovery (the UI test) only sees hosts of lanes 1..5
-    ex_lane = next((n for n in a.lane_ids if n <= 5), None)
-    for t in alone:
-        if ex_lane is None:
-            print(f'  SKIP {t["name"]:15s} exclusive: needs one of lanes 1-5 in this run (lanes {a.lane_ids})', flush=True)
-            continue
-        report(attempt(t, ex_lane, False)[0])
-    for lane in a.lane_ids:
-        spore(tree, lane, 'kill')
+    interrupted = False
+    try:
+        for th in threads:
+            th.start()
+            time.sleep(5)  # Bottles sandboxes starting at the same moment can race
+        for th in threads:
+            th.join()
+        if alone:  # the machine alone: no game of another lane may be visible (LAN discovery)
+            for lane in a.lane_ids:
+                spore(tree, lane, 'kill')
+        # exclusive tests run on a lane of this run (never on one --skip reserved for other work); LAN
+        # discovery (the UI test) only sees hosts of lanes 1..5
+        ex_lane = next((n for n in a.lane_ids if n <= 5), None)
+        for t in alone:
+            if stopping.is_set():
+                break
+            if ex_lane is None:
+                report(dict(name=t['name'], lane=0, ok=True, skipped=True, rc=0, seconds=0, start='', faults=[],
+                            fails=[f'exclusive: needs one of lanes 1-5 in this run (lanes {a.lane_ids})']))
+                continue
+            report(attempt(t, ex_lane, False)[0])
+    except KeyboardInterrupt:  # the tests run in their own sessions: Ctrl+C does not reach them
+        interrupted = True
+        shutdown()
+        for th in threads:
+            if th.is_alive():
+                th.join(timeout=60)
+        raise
+    finally:
+        if old_term is not None:
+            signal.signal(signal.SIGTERM, old_term)
+        if not interrupted:
+            for lane in a.lane_ids:
+                spore(tree, lane, 'kill')
     total = time.time() - t0
     ok = all(r['ok'] for r in results)
+    passed = sum(r['ok'] and not r.get('skipped') for r in results)
+    skipped = sum(bool(r.get('skipped')) for r in results)
+    flaky = sum(bool(r.get('flaky')) for r in results)
+    notes = ''.join([f', {skipped} skipped' if skipped else '', f', {flaky} flaky (harness)' if flaky else ''])
     # flaky history across runs: which tests fail now and then (fix the test or the bug behind it)
     hist_path = os.path.join(ROOT, 'out', 'lab', 'flaky.json')
     try:
@@ -241,20 +526,25 @@ def cmd_run(a):
         if r.get('flaky') or not r['ok']:
             h['last'] = (h['last'] + [f'{run_id}: ' + '; '.join(r.get('first') or r['fails'])[:300]])[-5:]
     json.dump(hist, open(hist_path, 'w'), indent=1)
-    json.dump(dict(run=run_id, tree=tree, head=head, lanes=a.lanes, seconds=round(total), ok=ok, results=results),
+    json.dump(dict(run=run_id, tree=tree, branch=tree_branch, head=head, skipped=skipped, lanes=a.lanes, seconds=round(total), ok=ok, results=results),
               open(os.path.join(logdir, 'results.json'), 'w'), indent=1)
-    lines = [f'# lab run {run_id}', '', f'{head} - {len(results)} tests, {a.lanes} lanes, {total / 60:.1f} min, '
-             + ('**all passed**' if ok else '**FAILED**'), '', '| test | result | lane | s | start |', '|---|---|---|---|---|']
+    lines = [f'# lab run {run_id}', '', f'{tree_branch} {head} - {len(results)} tests, {a.lanes} lanes, '
+             f'{total / 60:.1f} min, ' + (f'**all passed**{notes}' if ok else f'**FAILED**{notes}'), '', '| test | result | lane | s | start |', '|---|---|---|---|---|']
     for r in sorted(results, key=lambda r: (r['ok'], r['name'])):
-        lines.append(f'| {r["name"]} | {"ok" if r["ok"] else "FAIL"}{" (flaky)" if r.get("flaky") else ""} | {r["lane"]} '
+        res = 'skip' if r.get('skipped') else 'ok' if r['ok'] else 'FAIL'
+        lines.append(f'| {r["name"]} | {res}{" (flaky)" if r.get("flaky") else ""} | {r["lane"]} '
                      f'| {r["seconds"]} | {r["start"]} |')
+    gated = [r for r in results if r.get('gates')]
+    if gated:  # docs/06-testing.md#testing-log-gates: what the games' logs said, failed or allowed
+        lines += ['', '## Log gates', ''] + [f'- {r["name"]}: {g}' for r in sorted(gated, key=lambda r: r['name'])
+                                              for g in r['gates']]
     shaky = sorted(((h['flaky'] + h['failed']) / h['runs'], n) for n, h in hist.items() if h['flaky'] + h['failed'])
     if shaky:
         lines += ['', '## Unstable tests (all runs)', ''] + [
             f'- {n}: {hist[n]["flaky"]} flaky, {hist[n]["failed"]} failed in {hist[n]["runs"]} runs; last: '
             f'{hist[n]["last"][-1] if hist[n]["last"] else ""}' for _, n in reversed(shaky)]
     open(os.path.join(logdir, 'summary.md'), 'w').write('\n'.join(lines) + '\n')
-    print(f'{"PASSED" if ok else "FAILED"}: {sum(r["ok"] for r in results)}/{len(results)} in {total / 60:.1f} min '
+    print(f'{"PASSED" if ok else "FAILED"}: {passed}/{len(results)}{notes} in {total / 60:.1f} min '
           f'-> out/lab/{run_id}/summary.md')
     return 0 if ok else 1
 
@@ -277,12 +567,17 @@ def cmd_reload(a):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    # BUG-0259: no prefix matching: `run --lane 2` was taken as `--lanes 2` and ran on lane 1
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+                                 allow_abbrev=False)
     sub = ap.add_subparsers(dest='cmd', required=True)
+    _add = sub.add_parser
+    sub.add_parser = lambda *x, **k: _add(*x, allow_abbrev=False, **k)
     r = sub.add_parser('run')
     r.add_argument('tests', nargs='?', default='smoke', help='smoke | full | nightly | name,name')
     r.add_argument('--lanes', type=int, default=int(os.environ.get('SPORE_LANES', '3')))
     r.add_argument('--skip', default='', help='lanes other work uses, e.g. 3,6: the run takes the next free ones')
+    r.add_argument('--lane', type=int, action='append', help='exactly this lane (repeatable); overrides --lanes')
     r.add_argument('--branch')
     r.add_argument('--cold', action='store_true', help='no warm reuse of running games')
     r.add_argument('--no-build', action='store_true')
@@ -292,9 +587,25 @@ def main():
     ln.add_argument('n', type=int)
     rl = sub.add_parser('reload')
     rl.add_argument('--lane', type=int, action='append', help='lane(s) to reload (default 1)')
-    k = sub.add_parser('kill')
-    k.add_argument('--lanes', type=int, default=5)
+    k = sub.add_parser('kill', help='end the games of lanes 2..10 (lane 1: --include-lane-1, test games only)')
+    k.add_argument('--lanes', default='', help='a list of lanes, e.g. 2,3 (one lane: 3, with the comma)')
+    k.add_argument('--lane', type=int, action='append', help='one lane (repeatable)')
+    k.add_argument('--upto', type=int, help='lanes 2..N')
+    k.add_argument('--include-lane-1', action='store_true',
+                   help='also lane 1 (the real install): its test games only, never the owner\'s own Spore')
+    cv = sub.add_parser('coverage')
+    cv.add_argument('--days', type=float, default=7.0)
+    cv.add_argument('--commit')
+    cv.add_argument('--require', default='smoke,full')
+    sub.add_parser('fixcheck')
+    gt = sub.add_parser('gates')
+    gt.add_argument('dirs', nargs='*')
     a = ap.parse_args()
+    if a.cmd in ('coverage', 'fixcheck'):
+        import labcov
+        return labcov.cmd_coverage(a) if a.cmd == 'coverage' else labcov.cmd_fixcheck(a)
+    if a.cmd == 'gates':
+        return loggates.main(['report', *a.dirs])
     if a.cmd == 'run':
         return cmd_run(a)
     if a.cmd == 'lanes':
@@ -302,8 +613,47 @@ def main():
     if a.cmd == 'reload':
         cmd_reload(a)
     if a.cmd == 'kill':
-        for lane in range(1, a.lanes + 1):
-            spore(ROOT, lane, 'kill')
+        return cmd_kill(a)
+    return 0
+
+
+def kill_lanes(a):
+    """the lanes `lab.py kill` ends, or (None, message, exit code). BUG-0103: lane 1 (the owner's
+    install) only on request. BUG-0253: `--lanes N` meant lanes 1..N up to 0.7.2 and lane N in
+    0.7.3.0; a bare number is refused instead of guessed (parallel runs use other lanes)."""
+    v = a.lanes.strip()
+    if v and ',' not in v:
+        return None, (f'lab kill: "--lanes {v}" is ambiguous (0.7.2: lanes 1..{v}; 0.7.3.0: lane {v}). Use '
+                      f'--lane {v} for one lane, --upto {v} for lanes 2..{v}, or --lanes 2,{v} for a list.'), 2
+    try:
+        lanes = [int(x) for x in v.split(',') if x.strip()] if v else []
+    except ValueError:
+        return None, f'lab kill: --lanes {v}: lane numbers separated by commas', 2
+    lanes += a.lane or []
+    if a.upto is not None:
+        lanes += list(range(2, a.upto + 1)) + ([1] if a.include_lane_1 else [])
+    if not (v or a.lane or a.upto is not None):
+        lanes = list(range(2, 11)) + ([1] if a.include_lane_1 else [])
+    bad = [n for n in lanes if not 1 <= n <= 10]
+    if bad:
+        return None, f'lab kill: lane {bad[0]} is not one of 1..10', 2
+    asked1 = 1 in lanes
+    lanes = sorted(set(n for n in lanes if n != 1 or a.include_lane_1))
+    note = 'lane 1 left out: --include-lane-1 to end its test games' if asked1 and not a.include_lane_1 else ''
+    if not lanes:
+        return None, (note + '; ' if note else '') + 'lab kill: no lane selected', 1
+    return lanes, note, 0
+
+
+def cmd_kill(a):
+    lanes, msg, rc = kill_lanes(a)
+    if msg:
+        print(msg)
+    if lanes is None:
+        return rc
+    print('lab kill: lanes ' + ', '.join(map(str, lanes)))
+    for lane in lanes:  # a lane that does not exist has no processes: nothing happens
+        spore(ROOT, lane, 'kill')
     return 0
 
 

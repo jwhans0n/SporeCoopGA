@@ -34,6 +34,11 @@ Why not the other stages (initially):
 2. The mod checks compatibility (mod version, exe build), receives a **world snapshot**
    from the host (the save folder, a few MB), puts it into the slot
    "Co-op: <host>" and loads it (milestone M1: the guest loads the slot manually).
+   Where it goes (mods/coop/slotfs.cpp): the co-op slot of the same host and planet (its
+   `sporecoop.txt` names both), else a free `Games\GameN`; never the slot the game plays. The
+   files are written into `Spore\Games-sporecoop-tmp` first and moved into place as a whole; a
+   world that could not be written completely is neither kept nor loaded. A load of a received
+   world waits while an editor is open and is dropped when the session ends.
 3. The guest appears next to the host's creature: "<Nick> joined the posse".
 
 **In game**

@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""Cell stage: a knocked-out partner rescues nobody (BUG-0131).
+
+A lethal hit knocks a player out instead of killing it only when a partner is there to revive it.
+A knocked-out cell is held at hp 1 and never flagged dead, so it counted as that partner: two
+players knocked out side by side revived each other, and a lethal hit became a knockout although
+nobody could help.
+
+1. The guest is knocked out (a lethal bite from the host's side).
+2. The host takes a lethal bite itself (`coop.pool selfhit`): its only partner is knocked out, so
+   the game's own death runs (the avatar dying, +0x113), not a knockout (hp held at 1).
+3. On the guest's machine the host is not shown knocked out (no `ko[0]=1`).
+
+SPORE_CELL_FIX=0 switches the fix off on both games (`coop.pool fix rescue 0`): the run that must FAIL.
+"""
+import os
+import re
+import time
+
+from twoinst import Checks, start
+
+
+def num(out, key):
+    m = re.search(r'\b' + key + r'=(-?\d+)', out)
+    return int(m.group(1)) if m else None
+
+
+def pool(con):
+    return con.call('coop.pool')['out']
+
+
+def wait(cond, secs, step=0.25):
+    t0 = time.time()
+    while time.time() - t0 < secs:
+        r = cond()
+        if r:
+            return r
+        time.sleep(step)
+    return None
+
+
+def main():
+    fix = os.environ.get('SPORE_CELL_FIX', '1')
+    host, guest = start('cell')
+    ck = Checks()
+    try:
+        for con in (host, guest):
+            out = con.call(f'coop.pool fix rescue {fix}')['out']
+            ck(f'rescue={fix}' in out, f'fix set to {fix}: {out.strip()}')
+        ck(wait(lambda: (num(pool(guest), 'mirrors') or 0) > 5, 30), 'the guest mirrors the host pool')
+        guest.call('coop.pool tp 30 0')
+        time.sleep(1.5)
+        host.call('coop.pool hurt 1 50')
+        ck(wait(lambda: num(pool(guest), 'downed') == 1, 5), 'the guest is knocked out')
+        ck(wait(lambda: re.search(r'^ko\[1\]=1', pool(host), re.MULTILINE), 3), 'the host sees the guest knocked out')
+        r = host.call('coop.pool selfhit 250')['out']
+        print('  host:', r)
+        time.sleep(1.0)
+        h, g = pool(host), pool(guest)
+        print('  host after:', [l for l in h.splitlines() if 'downed=' in l or l.startswith('ko[')][:2])
+        ck(num(r, 'downed') == 0 and (num(r, 'dying') == 1 or num(r, 'dead') == 1),
+           f'the host\'s lethal hit runs the game\'s death, its only partner is knocked out ({r})')
+        ck(not re.search(r'^ko\[0\]=1', g, re.MULTILINE), 'the guest does not see the host knocked out')
+    finally:
+        for con in (host, guest):
+            con.call('coop.pool fix rescue 1')
+    ck.faults(host=host, guest=guest)
+    return ck.result()
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

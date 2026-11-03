@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # SporeCoop helper: install loader, deploy builds, run/kill the game in Bottles, logs.
 set -euo pipefail
+# env -i, containers, cron: no $USER / $HOME (BUG-0252); not exported (Bottles keeps the session's)
+USER="${USER:-$(id -un 2>/dev/null || echo user)}"
+HOME="${HOME:-$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # test lanes (docs/10-dev-pipeline.md): lane 1 = the real install in the "Games" bottle; lane N>1 =
@@ -89,10 +92,11 @@ prepare_profile() {
     local src="$APPDATA_DIR/Spore/Preferences"
     [[ -f "$dst/login.prop" || ! -f "$src/login.prop" ]] || cp "$src/login.prop" "$dst/"
     [[ -f "$dst/Preferences.prop" ]] || cp "$src/Preferences.prop" "$dst/" 2>/dev/null || touch "$dst/Preferences.prop"
-    python3 - "$dst/Preferences.prop" "$size" <<'PY'
+    # SPORE_TUTORIALS=1: tutorials and hints on, like a player's first game (default off)
+    python3 - "$dst/Preferences.prop" "$size" "${SPORE_TUTORIALS:-0}" <<'PY'
 import sys
-p, size = sys.argv[1], sys.argv[2]
-want = {'OptionFullScreen': '0', 'OptionTutorialsEnabled': '0', 'OptionShowHints': '0',
+p, size, tut = sys.argv[1], sys.argv[2], sys.argv[3]
+want = {'OptionFullScreen': '0', 'OptionTutorialsEnabled': tut, 'OptionShowHints': tut,
         'OptionEdgeScroll': '0', 'OptionScreenSize': size,
         # test runs are silent (only the test profile, the player's own settings stay as they are)
         'AudioMuteAll': 'true', 'AudioMasterVolume': '0.000000'}
@@ -118,15 +122,16 @@ sk_ini_set() {
 }
 
 cmd_run() {
-    local inst=1 profile=""
+    local inst=1 profile="" extra=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -i) inst="$2"; shift 2 ;;
             -p) profile="$2"; shift 2 ;;
+            -x) extra+=("$2"); shift 2 ;;
             *) inst="$1"; shift ;;
         esac
     done
-    local args=()
+    local args=("${extra[@]}")
     [[ "$inst" != "1" ]] && args+=("-sporekit-instance:$inst")
     if [[ -n "$profile" ]]; then
         prepare_profile "$profile"
@@ -163,6 +168,88 @@ cmd_run() {
 # only this lane's game folder matches
 GAME_RE="^[A-Z]:\\\\.*\\\\$(basename "$GAME")\\\\SporebinEP1\\\\SporeApp\\.exe"
 
+# The processes of this lane's games, one "<kind> <pid>" per line (BUG-0025, BUG-0101, BUG-0103):
+#   game     a SporeApp.exe of this lane (its Windows path names the lane's game folder); a half-dead
+#            one (zombie leader + live threads) is found by a live thread's command line
+#   tree     a launch sandbox (bwrap) of this lane's game: its whole tree goes
+#   wrapper  a leftover launch wrapper (bottles-cli run, start.exe) of this lane's game
+#   owner    lane 1 only: a game of the real install started WITHOUT a test argument, i.e. the
+#            owner's own Spore. Never killed; while it runs, no Wine tree of the bottle is killed.
+# Lane 1 is the real install the owner plays from: only games started for tests (a
+# -sporekit-profile: or -sporekit-instance: argument, tools/spore.sh run) are ours there.
+# Lanes N>1 are ours alone: every game of the lane, and anything else that runs in its bottle.
+# $1: only games of that SporeKit instance (1 = no -sporekit-instance argument).
+lane_procs() {
+    python3 - "$(basename "$GAME")" "$BIN/SporeApp.exe" "$BOTTLE" "$LANE" "${1:-}" <<'PY'
+import os, re, sys
+folder, bin_exe, bottle, lane, inst = sys.argv[1:6]
+game_rx = re.compile(r'^[A-Z]:\\.*\\' + re.escape(folder) + r'\\SporebinEP1\\SporeApp\.exe', re.I)
+skip, p = set(), os.getpid()  # this script and the shells that called it
+while p > 1 and p not in skip:
+    skip.add(p)
+    try:
+        p = int(open(f'/proc/{p}/stat').read().rsplit(')', 1)[1].split()[1])
+    except (OSError, IndexError, ValueError):
+        break
+
+
+def argv(pid):
+    """the command line; a zombie leader has none, a live thread of its group still has it"""
+    def read(path):
+        try:
+            return open(path, 'rb').read().decode('utf-8', 'replace').replace('\0', ' ').strip()
+        except OSError:
+            return ''
+    c = read(f'/proc/{pid}/cmdline')
+    try:
+        tasks = os.listdir(f'/proc/{pid}/task') if not c else []
+    except OSError:
+        tasks = []
+    for t in sorted(tasks):
+        c = c or read(f'/proc/{pid}/task/{t}/cmdline')
+    return c
+
+
+def test_game(cmd):
+    return '-sporekit-profile:' in cmd or '-sporekit-instance:' in cmd
+
+
+def of_inst(cmd):
+    if not inst:
+        return True
+    toks = cmd.split()
+    if inst == '1':
+        return not any(t.startswith('-sporekit-instance:') for t in toks)
+    return f'-sporekit-instance:{inst}' in toks
+
+
+for d in sorted(os.listdir('/proc')):
+    if not d.isdigit() or int(d) in skip:
+        continue
+    pid = int(d)
+    cmd = argv(pid)
+    if not cmd:
+        continue
+    try:
+        comm = open(f'/proc/{pid}/comm').read().strip()
+    except OSError:
+        continue
+    ours = lane != '1' or test_game(cmd)
+    if game_rx.match(cmd):
+        if not ours:
+            print('owner', pid)
+        elif of_inst(cmd):
+            print('game', pid)
+    elif inst:
+        continue
+    elif comm == 'bwrap' and (bin_exe in cmd or (lane != '1' and f' -b {bottle} ' in cmd + ' ')):
+        if ours:
+            print('tree', pid)
+    elif bin_exe in cmd and ('bottles-cli run' in cmd or 'start.exe' in cmd) and ours:
+        print('wrapper', pid)
+PY
+}
+
 kill_tree() {
     local c
     for c in $(pgrep -P "$1"); do kill_tree "$c"; done
@@ -170,30 +257,30 @@ kill_tree() {
 }
 
 cmd_kill() {
-    pkill -f "$GAME_RE" || true
+    local procs owner
+    procs=$(lane_procs)
+    for p in $(awk '$1 == "game" {print $2}' <<< "$procs"); do kill "$p" 2>/dev/null || true; done
     sleep 1
     # a deadlocked Wine process can stay half-dead (zombie leader + live threads) and keep its
-    # UDP/TCP sockets bound: SIGKILL the whole thread group
-    pkill -9 -f "$GAME_RE" || true
-    for z in $(ps -eo pid=,stat=,comm= | awk '$2 ~ /Z/ && $3 ~ /SporeApp/ {print $1}'); do
-        kill -9 "$z" 2>/dev/null || true
-    done
-    # launch sandboxes keep a wine services tree alive after the game exits: kill the whole tree
-    local w
-    for w in $(ps -eo pid,comm,args | awk -v bin="$BIN/SporeApp.exe" '$2=="bwrap" && index($0, bin) {print $1}'); do
-        kill_tree "$w"
-    done
-    # a test lane's bottle is ours alone: also whatever else ran in it (the setup in update tests
-    # leaves Wine services behind). The "Games" bottle of lane 1 holds other games: only Spore there.
-    if [[ "$LANE" != 1 ]]; then
-        for w in $(ps -eo pid,comm,args | awk -v b="-b $BOTTLE " '$2=="bwrap" && index($0, b) {print $1}'); do
-            kill_tree "$w"
-        done
+    # UDP/TCP sockets bound: SIGKILL the whole thread group (lane_procs finds it by a live thread)
+    procs=$(lane_procs)
+    for p in $(awk '$1 == "game" {print $2}' <<< "$procs"); do kill -9 "$p" 2>/dev/null || true; done
+    owner=$(awk '$1 == "owner" {printf "%s ", $2}' <<< "$procs")
+    # launch sandboxes keep a wine services tree alive after the game exits: kill the whole tree.
+    # The wineserver of a bottle may sit in any sandbox of it: while the owner's own Spore runs in
+    # the bottle of lane 1, leave the trees alone (a killed wineserver ends every game of the bottle)
+    if [[ -n "$owner" ]]; then
+        echo "the owner's own Spore runs on lane 1 (pid $owner): left alone, and the launch sandboxes too" >&2
+    else
+        for p in $(awk '$1 == "tree" {print $2}' <<< "$procs"); do kill_tree "$p"; done
     fi
-    # leftover launch wrappers (the [x] trick keeps pkill from matching this shell)
-    pkill -f "[b]ottles-cli run -b $BOTTLE -e $BIN/SporeApp.exe" || true
-    pkill -f "[s]tart.exe /exec start /wait /unix $BIN/SporeApp.exe" || true
+    for p in $(awk '$1 == "wrapper" {print $2}' <<< "$procs"); do kill "$p" 2>/dev/null || true; done
     echo "killed"
+}
+
+# the PIDs of this lane's games (of instance $1 when given): what kill would end (no owner's game)
+cmd_pids() {
+    lane_procs "${1:-}" | awk '$1 == "game" {print $2}'
 }
 
 cmd_status() {
@@ -211,6 +298,15 @@ cmd_fixture() {
     local op="${1:-}" name="${2:-creature}" profile="${3:-test}"
     local prefix="$APPDATA_DIR/SporeKit-$profile/Spore"
     [[ "$profile" == "-" ]] && prefix="$APPDATA_DIR/Spore"
+    # "-" is the player's own profile: a fixture may be saved FROM it, never written into it
+    # (restore and slot delete saves first, BUG-0102)
+    if [[ "$profile" == "-" && "$op" != "save" ]]; then
+        echo "fixture $op: never into the player's own profile (\"-\"), only into a test profile" >&2; exit 1
+    fi
+    [[ "$profile" == "-" || "$profile" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "fixture: bad profile name '$profile'" >&2; exit 1; }
+    if [[ "$op" == restore || "$op" == slot ]] && [[ ! -f "$FIXTURES/$name.tgz" ]]; then
+        echo "fixture $op: no fixture $FIXTURES/$name.tgz" >&2; exit 1
+    fi
     mkdir -p "$FIXTURES" "$prefix"
     case "$op" in
         save) tar -C "$prefix" -czf "$FIXTURES/$name.tgz" Games && echo "saved fixture $name" ;;
@@ -226,7 +322,7 @@ cmd_fixture() {
             mv "$tmp/Games/Game0" "$prefix/Games/Game$slot"
             rm -rf "$tmp"
             echo "fixture $name in Game$slot" ;;
-        *) echo "usage: spore.sh fixture save|restore [name] [profile|-] | slot name profile N"; exit 1 ;;
+        *) echo "usage: spore.sh fixture save [name] [profile|-] | restore [name] [profile] | slot name profile N"; exit 1 ;;
     esac
 }
 
@@ -280,8 +376,9 @@ case "${1:-}" in
     deploy) cmd_deploy ;;
     run) shift; cmd_run "$@" ;;
     kill) cmd_kill ;;
+    pids) shift; cmd_pids "${1:-}" ;;
     status) cmd_status ;;
     logs) shift; cmd_logs "${1:-1}" ;;
     fixture) shift; cmd_fixture "$@" ;;
-    *) echo "usage: [SPORE_LANE=N] spore.sh lane create|remove N|install|uninstall|deploy|run [-i inst] [-p profile]|kill|status|logs [inst]|fixture save|restore [name]"; exit 1 ;;
+    *) echo "usage: [SPORE_LANE=N] spore.sh lane create|remove N|install|uninstall|deploy|run [-i inst] [-p profile] [-x game-arg]|kill|pids [inst]|status|logs [inst]|fixture save|restore [name]"; exit 1 ;;
 esac

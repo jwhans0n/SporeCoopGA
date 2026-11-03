@@ -53,6 +53,22 @@ int main(){
         Result first;pump(queue,first,[]{return uint64_t(0);},8);CHECK(first.processed==1&&!calls&&queue.size()==100);
         Result next;pump(queue,next,[]{return uint64_t(0);},8);CHECK(calls==100&&!queue.size());
     }
+    {
+        Queue queue;bool raw_called=false,cleanup_called=false;
+        auto raw=std::make_shared<int>(1),retained=std::make_shared<int>(2);
+        std::weak_ptr<int> raw_weak=raw,retained_weak=retained;
+        queue.push([&,raw]{raw_called=true;},reinterpret_cast<void*>(0x120));
+        queue.push([&,retained]{cleanup_called=true;});raw.reset();retained.reset();
+        CHECK(queue.drop_in(0x100,0x200)==1&&raw_weak.expired()&&!retained_weak.expired()&&queue.size()==1);
+        Result result;pump(queue,result,[]{return uint64_t(0);},8);
+        CHECK(!raw_called&&cleanup_called&&retained_weak.expired()&&!queue.size());
+        // A removed callable's cleanup may post an untagged retained task.
+        struct Cleanup {Queue* queue;~Cleanup(){queue->push([]{});}};
+        auto held=std::make_shared<Cleanup>();held->queue=&queue;
+        queue.push([held]{},reinterpret_cast<void*>(0x150));held.reset();
+        CHECK(queue.drop_in(0x100,0x200)==1&&queue.size()==1);
+        Result cleanup;pump(queue,cleanup,[]{return uint64_t(0);},8);CHECK(!queue.size());
+    }
     // A queued pulse only schedules its drain. Neither can extend the current batch.
     {
         Queue queue;std::vector<int> calls;std::function<void()> pulse,drain;unsigned remaining=20;

@@ -1,6 +1,7 @@
 # Shared Adventure Editor preview 9 validation
 
-Development candidate: **`0.7.5.0-ga-editor-preview.9`**, protocol **23**,
+Installed testing candidate: **`0.7.5.0-ga-editor-preview.9`**, protocol **23**.
+The subsequent uninstalled upstream-integration source uses protocol **24**,
 branch `feat/ga-editor-multi-act`, updated 2026-11-03. The original supported GOG 2024
 executable and its exact 4 GB LAA variant remain supported. Older protocol
 clients are explicitly rejected. This report records development evidence,
@@ -10,6 +11,10 @@ The user-requested testing installation is C49, co-op DLL SHA-256
 `3741ec661fd54588f531cda059d708d5d4971c946a278f58c1a3e165f3a337dc`,
 with Kit `0f25bb7a2943a4e1ce3ad7d44a077ea3e8bd41a230c1130b8f2957b10cf6ecfc`.
 It was installed on 2026-11-03 before deferred release acceptance, as requested.
+After the user launched both personal instances, read-only `info` and `exc`
+queries verified the exact LAA executable, matching loaded maps, active rendered
+frames and zero native faults in each. No navigation or input was issued.
+Receipt: `out/preview9-delivery/personal-startup-readonly.json`.
 Cold recovery now passes the original revision-22 draft in both games.
 Host editing and replacing a guest-created Creature also passes.
 Guest New Creature Save while the host designs another Creature passes; the

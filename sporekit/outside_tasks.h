@@ -10,15 +10,15 @@ namespace sk::outside_tasks {
 // Values stay in FIFO ownership until invocation. A batch's sequence boundary
 // also survives a nested pump consuming some of its original entries.
 class Queue {
-    struct Entry {uint64_t sequence;std::function<void()> task;};
+    struct Entry {uint64_t sequence;std::function<void()> task;const void* code=nullptr;};
     mutable std::mutex mutex_;
     std::deque<Entry> tasks_;
     uint64_t sequence_=0;
 public:
-    void push(std::function<void()> task){
+    void push(std::function<void()> task,const void* code=nullptr){
         std::lock_guard lock(mutex_);
         if(sequence_==UINT64_MAX)throw std::overflow_error("Outside task sequence exhausted");
-        const auto next=sequence_+1;tasks_.push_back({next,std::move(task)});sequence_=next;
+        const auto next=sequence_+1;tasks_.push_back({next,std::move(task),code});sequence_=next;
     }
     uint64_t boundary()const{std::lock_guard lock(mutex_);return tasks_.empty()?0:tasks_.back().sequence;}
     size_t size()const{std::lock_guard lock(mutex_);return tasks_.size();}
@@ -26,6 +26,19 @@ public:
         std::lock_guard lock(mutex_);
         if(tasks_.empty() || tasks_.front().sequence>boundary)return {};
         auto task=std::move(tasks_.front().task);tasks_.pop_front();return task;
+    }
+    size_t drop_in(uintptr_t lo,uintptr_t hi){
+        size_t count=0;
+        for(;;){
+            std::optional<std::function<void()>> retired;
+            {
+                std::lock_guard lock(mutex_);auto found=tasks_.begin();
+                for(;found!=tasks_.end();++found){const auto code=uintptr_t(found->code);if(code>=lo&&code<hi)break;}
+                if(found==tasks_.end())return count;
+                retired=std::move(found->task);tasks_.erase(found);++count;
+            }
+            // Callable cleanup may enqueue work; never run it under mutex_.
+        }
     }
 };
 struct Result {uint32_t processed=0;bool cap_reached=false,budget_reached=false;};

@@ -5,6 +5,11 @@ Editor authoring support is under validation. Preview 9's crew, terrain and
 independent asset-editor additions have pending native acceptance; other
 milestones follow in the [roadmap](../README.md#roadmap).
 
+The installed C49 editor preview 9 uses protocol 23. The upstream-integration
+source is an uninstalled protocol 24 candidate with separate acceptance pending;
+see [protocol scope](04-netcode.md#netcode-protocol-scope). Published GA gameplay
+and inherited upstream test results keep their original version labels.
+
 ## Galactic Adventures
 
 - [Installation](../README.md#installation): get the matching fork build for every player.
@@ -57,6 +62,10 @@ are historical; they do not expand the GA compatibility stated above.
 8. [Interface](08-ui.md): native menus, connection window, lobby and LAN discovery.
 9. [Playing together in all phases](09-coop-design.md): upstream design and engine findings in [re/](re/).
 10. [Development pipeline](10-dev-pipeline.md): test lanes, fixtures, network testing and knowledge rules.
+11. [Rivals: own bases in one world](11-rivals.md): the upstream design for independent nests, tribes, nations and empires, NPC influence, the draft and the Chronicle.
+
+- [Reporting a problem](REPORTING.md): upstream player report and diagnostic guidance.
+- [Contributing](../CONTRIBUTING.md): development and review practices.
 
 The [inherited installation guide](INSTALL.md) records base-stage setup and
 historical GOG 2016/GOG 2024 platform testing. Use the fork installation entry

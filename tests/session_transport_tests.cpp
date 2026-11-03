@@ -221,7 +221,8 @@ int main() {
     net::Session host,guest,blocker;std::string error;
     CHECK(host.transport_generation()==0&&guest.transport_generation()==0);
     host.leave();CHECK(host.transport_generation()==0);
-    CHECK(!guest.join("999.999.999.999:1","invalid",error));
+    // An invalid port fails synchronously even with upstream's async DNS path.
+    CHECK(!guest.join("127.0.0.1:70000","invalid",error));
     CHECK(guest.transport_generation()==0&&guest.role()==net::Role::None);
     CHECK(blocker.host(0,"occupied",error));
     CHECK(!host.host(blocker.port(),"cannot bind",error));
@@ -246,7 +247,7 @@ int main() {
     CHECK(host.host(0,"Host restart",error));const auto active=host.transport_generation();
     CHECK(!host.host(blocker.port(),"failed restart",error));
     CHECK(host.role()==net::Role::None&&host.transport_generation()==active+1);
-    CHECK(!host.join("999.999.999.999:1","failed join",error));CHECK(host.transport_generation()==active+1);
+    CHECK(!host.join("127.0.0.1:70000","failed join",error));CHECK(host.transport_generation()==active+1);
     CHECK(host.host(0,"Mismatch",error));host.build=23;guest.build=24;disconnected=false;
     CHECK(guest.join("127.0.0.1:"+std::to_string(host.port()),"wrong build",error));
     const auto rejected=guest.transport_generation();

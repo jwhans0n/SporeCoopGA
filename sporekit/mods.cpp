@@ -11,6 +11,7 @@ namespace sk {
 
 static std::vector<std::unique_ptr<SkMod>> g_mods;
 static int g_gen = 0;
+static const DWORD kUnloadGraceMs = 50;
 
 enum class ModOperation { Load, Reload, Unload };
 struct ModRequest {
@@ -120,6 +121,7 @@ static bool load_into(SkMod* m, std::string& err)
         hooks_remove_all(m);
         unsubscribe_all(m);
         diag_context_remove(m);
+        diag_headline(m, nullptr);
         commands_remove_all(m);
         ui_winprocs_disable_mod(m);
         FreeLibrary(m->module);
@@ -137,11 +139,24 @@ static bool unload_from(SkMod* m, std::string& err)
         return true;
     if (m->info && m->info->on_unload)
         m->info->on_unload();
-    hooks_remove_all(m);
+    int hooks = hooks_remove_all(m);
     unsubscribe_all(m);
     diag_context_remove(m);
+    diag_headline(m, nullptr);
     commands_remove_all(m);
     ui_winprocs_disable_mod(m);
+    // a game worker thread may still be inside one of the mod's detours (they are no longer entered:
+    // the original bytes are back): give it time to return before the DLL's code is unmapped
+    // (BUG-0132). Not a guarantee for a detour that blocks, only for short ones (RandomInt).
+    if (hooks && fixed(g_fix_hookkeep))
+        Sleep(kUnloadGraceMs);
+    {
+        // tasks the mod queued and that have not run: their code goes with the image (BUG-0060)
+        auto base = (uintptr_t)m->module;
+        auto* nt = (IMAGE_NT_HEADERS*)(base + ((IMAGE_DOS_HEADER*)base)->e_lfanew);
+        if (size_t n = drop_tasks_in(base, base + nt->OptionalHeader.SizeOfImage))
+            logf(m, SK_INFO, "dropped %u queued task(s) of the old image", (unsigned)n);
+    }
     FreeLibrary(m->module);
     m->module = nullptr;
     m->info = nullptr;

@@ -27,8 +27,7 @@ from coop_ui import VK_F9, Ui
 from sporectl import Console
 from twoinst import Checks, wait_up
 
-GAME = os.path.expanduser('~/Games/Modding/SPORE') if lane.LANE == 1 else \
-    os.path.expanduser(f'~/Games/Modding/SPORE-lab/lane{lane.LANE}')
+GAME = lane.game_dir()
 LOGDIR = os.path.join(GAME, 'SporebinEP1', 'mods', 'logs')
 
 
@@ -66,7 +65,7 @@ def main():
     for what, rx in (('Windows / Wine', r'(Wine \S+ on|Windows \d+\.\d+ build)'),
                      ('memory and the large-address flag', r'game address space \d+ of \d+ MB used, large-address flag'),
                      ('the game build', r'game build: (GOG|Steam|the GOG|unknown)'),
-                     ('the versions', r'SporeCoop \d+\.\d+\.\d+ on SporeKit \d+\.\d+\.\d+, game '),
+                     ('the versions', r'SporeCoop \d+(\.\d+)+ on SporeKit \d+(\.\d+)+, game '),
                      ('the GPU and other hooks', r'GPU .*other hooks: ')):
         ck(re.search(rx, log), f'the log has {what}')
 
@@ -85,7 +84,9 @@ def main():
         ck(any(n.startswith('logs/sporekit') for n in names), 'it has the current log')
         ck(any(n.startswith('previous/') for n in names), 'it has the logs of the previous runs')
         ini = [n for n in names if n.startswith('settings/coop.ini')]
-        ck(ini and b'last_address=(hidden in reports)' in z.read(ini[0]), 'coop.ini is in it, the last address hidden')
+        ini_txt = z.read(ini[0]) if ini else b''
+        ck(ini and (b'last_address=(hidden in reports)' in ini_txt or b'last_address=' not in ini_txt) and
+           re.search(rb'last_address=(?!\(hidden)', ini_txt) is None, 'coop.ini is in it, a joined address hidden')
         txt = z.read(next(n for n in names if n.startswith('report-'))).decode('utf-8', 'replace')
         for sec in ('== Environment', '== coop', '== Faults caught before', '== Modules', '== The last log lines'):
             ck(sec in txt, f'the report has "{sec}"')
@@ -96,12 +97,13 @@ def main():
     c.call(f'key {VK_F9}')
     st = ui.wait(lambda s: s['open'] == '1' and s['report']['vis'], 20, 'the co-op window')
     ck(st is not None, 'the co-op window has "Report a problem"')
-    n0 = len(glob.glob(os.path.join(LOGDIR, 'SporeCoop-report-*.zip')))
+    z0 = set(glob.glob(os.path.join(LOGDIR, 'SporeCoop-report-*.zip')))
     time.sleep(1.1)  # a new file name (seconds in it)
     ui.click('report')
     time.sleep(2)
-    n1 = len(glob.glob(os.path.join(LOGDIR, 'SporeCoop-report-*.zip')))
-    ck(n1 > n0, f'"Report a problem" writes the archive ({n0} -> {n1})')
+    z1 = set(glob.glob(os.path.join(LOGDIR, 'SporeCoop-report-*.zip')))
+    # a new name (only the newest 3 archives stay since BUG-0137: the count need not grow)
+    ck(z1 - z0, f'"Report a problem" writes the archive ({[os.path.basename(p) for p in z1 - z0]})')
     st = ui.state()
     print('  status after the click:', st.get('status', ''))
     c.call(f'key {VK_F9}')
@@ -147,7 +149,12 @@ def main():
             ck('== Call chain' in t and '== The last log lines' in t and '== coop' in t,
                'it has the call chain, the co-op state and the log')
             print('  ' + '\n  '.join(t.split('== Exception')[1].splitlines()[:4]))
-        ck(any(p.endswith('.dmp') and os.path.getsize(p) > 10000 for p in new), 'a minidump is written next to it')
+        for _ in range(20):  # the dump file exists before it is written in full
+            if any(p.endswith('.dmp') and os.path.exists(p) and os.path.getsize(p) > 10000 for p in new):
+                break
+            time.sleep(1)
+        ck(any(p.endswith('.dmp') and os.path.exists(p) and os.path.getsize(p) > 10000 for p in new),
+           'a minidump is written next to it')
         # the archive is made by itself, with that crash in it; the next start tells the player
         zips = sorted(glob.glob(os.path.join(LOGDIR, 'SporeCoop-report-*.zip')), key=os.path.getmtime)
         crash_name = os.path.basename(txts[0]) if txts else '?'

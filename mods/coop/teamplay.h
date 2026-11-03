@@ -28,6 +28,10 @@ float on_player_hit(void* target, uint8_t player, float damage);
 float on_own_damage(void* avatar, float damage);
 void tick(void* avatar, double now); // own avatar regen
 std::string status();                // overlay line, "" if nothing
+// the target's object was freed or is another creature now: its hits do not count any more
+void forget_target(void* target);
+void reset(); // a world change or the session end: no target of before is hit again
+size_t hit_targets();
 bool enabled();
 void set_enabled(bool on);
 

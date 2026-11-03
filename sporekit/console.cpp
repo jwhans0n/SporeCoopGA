@@ -9,6 +9,7 @@
 #include "task_pump_metrics.h"
 #include "outside_tasks.h"
 
+#include <algorithm>
 #include <deque>
 #include <map>
 #include <memory>
@@ -18,17 +19,23 @@ namespace sk {
 
 // ---------------- main thread tasks ----------------
 static std::mutex g_task_mu;
-static std::deque<std::function<void()>> g_tasks;
+struct Task {
+    std::function<void()> fn;
+    const void* code = nullptr; // a mod's function (h_run_on_main / h_run_outside_frame), else null
+};
+static std::deque<Task> g_tasks;
 static DWORD g_main_tid = 0;
 
 void set_main_thread() { g_main_tid = GetCurrentThreadId(); }
 DWORD main_thread_id() { return g_main_tid; }
 
-void run_on_main(std::function<void()> fn)
+void run_on_main(std::function<void()> fn) { run_on_main_from(nullptr, std::move(fn)); }
+
+void run_on_main_from(const void* code, std::function<void()> fn)
 {
     {
         std::lock_guard<std::mutex> lk(g_task_mu);
-        g_tasks.push_back(std::move(fn));
+        g_tasks.push_back({std::move(fn), code});
     }
     // also wake the window procedure: works during loading screens / broken frames
     if (GetCurrentThreadId() != g_main_tid)
@@ -51,9 +58,11 @@ task_pump_metrics::Snapshot outside_pump_metrics(const std::string& action)
     return g_outside_metrics.snapshot();
 }
 
-void run_outside_frame(std::function<void()> fn)
+void run_outside_frame(std::function<void()> fn) { run_outside_frame_from(nullptr, std::move(fn)); }
+
+void run_outside_frame_from(const void* code, std::function<void()> fn)
 {
-    g_out_tasks.push(std::move(fn));
+    g_out_tasks.push(std::move(fn),code);
     if (HWND w = (HWND)game_window())
         PostMessageW(w, WM_SK_PUMP_OUT, 0, 0);
 }
@@ -87,6 +96,27 @@ void pump_outside_tasks()
         return uint64_t(frequency.QuadPart)/125; // 8 ms, checked between callbacks.
     }();
     outside_tasks::pump(g_out_tasks,result,[]{LARGE_INTEGER now{};QueryPerformanceCounter(&now);return uint64_t(now.QuadPart);},budget);
+}
+
+// BUG-0060: a hot reload frees the old image of a mod; a task it queued (and the window procedure
+// postponed while a message was dispatched inside Present) would then call into unmapped memory
+size_t drop_tasks_in(uintptr_t lo, uintptr_t hi)
+{
+    size_t n = 0;
+    // Destroy removed callable targets after unlocking, while their image is
+    // still loaded. Their cleanup may itself enqueue another task.
+    for (;;) {
+        std::optional<std::function<void()>> retired;
+        {
+            std::lock_guard<std::mutex> lock(g_task_mu);
+            auto it = std::find_if(g_tasks.begin(),g_tasks.end(),[&](const Task& task) {
+                const auto code = uintptr_t(task.code);return code >= lo && code < hi;
+            });
+            if (it == g_tasks.end()) break;
+            retired = std::move(it->fn);g_tasks.erase(it);++n;
+        }
+    }
+    return n + g_out_tasks.drop_in(lo,hi);
 }
 
 struct DelayedTask {
@@ -123,7 +153,7 @@ void pump_main_tasks()
             std::lock_guard<std::mutex> lk(g_task_mu);
             if (g_tasks.empty())
                 return;
-            fn = std::move(g_tasks.front());
+            fn = std::move(g_tasks.front().fn);
             g_tasks.pop_front();
         }
         fn();
@@ -225,6 +255,13 @@ int command_exec_line(const std::string& line, std::string& out, bool from_main)
             return 1;
         }
         c = it->second;
+    }
+    // on the main thread a command that waits for the next frames (or suspends the main thread)
+    // waits for itself: the game stops (BUG-0065, the cheat console `sk shot`)
+    if ((c.flags & SK_CMD_NOT_ON_MAIN) && GetCurrentThreadId() == main_thread_id() && fixed(g_fix_cheatwait)) {
+        out += "'" + args[0] + "' waits for the game's frames and cannot run on the game's own thread "
+               "(the cheat console): use the devkit console (tools/sporectl.py)";
+        return 1;
     }
     if (from_main || (c.flags & SK_CMD_ANY_THREAD))
         return run_cmd(c, args, out);

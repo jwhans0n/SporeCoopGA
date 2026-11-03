@@ -91,6 +91,9 @@ creations are 0x29xxxxxx keys from **their** EditorSaves.package and are unknown
 (both test profiles contain the same 0x2902xxxx set with *different* history possible). Two
 players can own different creations with the same key ⇒ a receiver must remap the instance
 (e.g. `0x7C000000 | hash(peer, instance) & 0x00FFFFFF`; bem has no self reference ✔).
+The same holds for the host's creations that populate its planet: the guest's game, its
+`creaturedata` in Pollination.package and its baked models answer for the key with the guest's own
+creation, also when the host's records are registered above My Creations (docs/re/creature.md 15).
 
 ### 1.3 Where the game opens My Creations (✔ 0x6B3930…0x6B39DE)
 
@@ -1667,3 +1670,472 @@ no-change rejection. The failed Save and clean-state diagnostic are retained at
 accepted prepared sidecar, preserve the saved-history counter and metadata bit,
 and leave rejected/cancelled changes clean. This case is open until its focused
 and actual next-build regressions pass.
+
+## 8. After an editor: the new creation reaches the others (✔ runtime 2026-10-24, GOG 2024, lane 5)
+
+What an editor leaves behind, seen with two games (`tools/tests/coop_editor_desync.py`):
+
+* Every editor that saves makes a **new key** in My Creations (cell 0x4DA56CA5 premade → 0x29073D26,
+  creature 0x2907406F → 0x29074073). The record is in the game's EditorSaves database at once, but
+  **our copy of `EditorSaves.package` (read from disk every 10 s) lagged**: the first bundle of the
+  new creation went out with **0 records** ("creations: player 0 cell = 29073D26 (0 records)"), the
+  one with records 4 s later. A guest that got the key alone:
+  * Cell: forced the unknown model key into `CreateCellObject` for the host's puppet and **faulted at
+    0xE83EC8** (data 0x9C, from CreateCellObject+0x4B9 → ... → 0xE67A41), then the main thread hung
+    (watchdog after 30 s). Twice of twice on lane 5 with the old code.
+  * Creature: no species for the key, so the host's puppet took the guest's own avatar body until the
+    next bundle.
+  Since then a creation the game finds in the EditorSaves database (`FindRecord` returns that
+  database) is sent only with its records: the mod reads the file again at once and otherwise waits
+  for the next round (`coop.creations` prints `waits_on_disk`). A receiver does not use a bundle
+  without records whose key it does not know (`unusable`).
+* At the **start of the Creature stage** the game is in Creature mode (0x1654C01) with the creature
+  made from the cell (a creation saved already, legless) **before** the first creature editor: the
+  host's world goes to the guests with that creature, the editor request comes from inside the stage
+  (the vote), and the world goes again when the host is back ("evolved the species").
+* A guest **without own creations** plays the host world's species (its own creature = its avatar's
+  key, sent without records: everybody knows the host's creations). The vote opens its own editor on
+  the host's pre-editor creature; cancel keeps the world's species, which after the reload is the
+  host's evolved one.
+* The host's creations are registered under their original key on guests at priority 2000. A newer
+  version under the same key replaces the older package now (two packages at the same priority could
+  keep answering with the old one; not seen, editors make new keys); `world_swaps` counts it.
+* A bundle applied again (the same version after a rejoin) reuses the package registered for it:
+  writing the file again fails while the game has it open, and the creation was then not applied at
+  all.
+* After the player's **own cell editor** the new cell becomes the own one (as creatures since 7):
+  a guest with other cells in My Creations otherwise got its newest older cell back with a level
+  rebuild.
+* **The guest's own editor right after a world load came up without its interface**: at the start
+  of the Creature stage the host's world reaches the guest a few seconds before the vote ends; with
+  a quick "I'm ready" the guest's own editor opened 0.5-5 s after the load: the creature and the
+  background showed, but no palette and no buttons (`coop.ui tree 4`: 2-15 windows instead of 34),
+  cancel did nothing and the guest stayed in it (2 of 2 test runs). After that load the planet showed
+  6-15 s after the avatar appeared (black screen before). The mod now opens the own editor once the
+  avatar has played for 15 s and no cinematic or caption is up (`world::cinematic_playing`,
+  cCinematicManager +0x2C), at most 90 s after the vote. An editor opened by `coop.vote editor` while
+  the host's stage-intro caption ("It is the beginning of a new day...") waited for its check stayed
+  black after cancel too.
+
+## The guest's own editor saves, the avatar keeps the world's species (2026-10-29, fix/w7-legless)
+<a id="creations-own-editor-save"></a>
+
+Seen on lane 8 (GOG 2024, `tools/tests/coop_legless_guest.py`, a fresh guest profile without
+creations, the first creature editor after the Cell stage). BUG-0278.
+
+* ✔ The own editor the vote opens (`open_own_editor`: an `EditorRequest` with the editor id and the
+  avatar's species key only, none of the native evolution data of section 7) is the "edit a
+  creation" editor, not the evolution one: it has a red cross (the host's first creature editor has
+  only the check), "done" after an edit asks "Save 'X' as a new creation or replace 'X' before
+  exiting?" (Don't Save / Cancel / Replace / Save New, at 510/612/830/926, 604 in a 1440x1080
+  window), and the red cross after an edit asks "Exiting will cause your changes to be lost" (Cancel /
+  Quit at 944, 604). "done" without a change leaves at once (GetFinishState 3).
+* ✔ Whatever it saves goes into the guest's My Creations, but **the avatar keeps the species it had**
+  (the world's: the host's legless pre-editor creature); the game does not put the saved creation on
+  the avatar as the evolution editor does.
+* ~ Key of the saved creation: "Save New" kept the key of the creation it edited, the host's
+  (290D780E in My Creations of the guest, the host's pre-editor creature was 290D780E); "Replace"
+  made a new one (290D79C9 for the host's 290D79C6). One run each. The next own editor's "Save New"
+  gave 290D7813 (the host's evolved creature was 290D7812). ? how the game picks the instance.
+* ✔ On a guest a key of the host's world answers with the host's package (priority 2000 above My
+  Creations at 1000): an own creation under such a key is the host's creature in the guest's game.
+* Before the fix (0.7.3.0): the return from the editor took the avatar's key as the own creature
+  (`adopt_after_editor`, choices.ini) when it was not the newest own one: after Replace the host's
+  legless key 290D79C6 was pinned ("back from the editor, own creature 290D79C6"); after Save New the
+  newest own creation was that very key. From then on `apply_own_avatar` put the legless creature on
+  every avatar the host's worlds brought (also after a rejoin and a restart: choices.ini), the host
+  showed the guest with its own old creature, and the co-op window's arrows offered only the guest's
+  My Creations (no way back to the world's species). The guest's own screen and the host's both
+  showed the legless creature after Replace; after Save New only the guest's own screen did (the host
+  got the guest's records under a remapped key).
+* The fix (`creations.pre_editor`): a guest takes over after an editor only the newest own creation
+  that was not in My Creations when the editor opened (read again every 2 s for 30 s; the host keeps
+  the old way: right after its evolution editor its avatar still had the pre-editor key, which is
+  one of its own creations, and a first version of the fix pinned it); a pinned key of the host's world that is not ours is
+  ignored; an own creation under a host key is used under its remapped key (`player_key`, the same
+  records the host shows); the co-op window's arrows include "the world's own" (the host's current
+  creature, sent by key).
+* ? Cancel run (one of one): while the guest's own editor was open the creature it showed got the
+  host's new legs and the DNA dropped by their price (115 -> 65) without any input of the guest, so
+  the red cross asked to confirm (BUG-0283).
+
+## An editor during the avatar's body swap stays black (2026-10-30, fix/w14-creature)
+<a id="creations-editor-after-swap"></a>
+
+BUG-0318. GOG 2024, lane 4, guest at 6.7 fps (`frame.limit 150`).
+
+* ✔ An editor request (`Editors::EditorRequest::Submit`) 0.3 s after `cCreatureAnimal::SetSpecies`
+  on the avatar (creations.cpp `apply_own_avatar`, after a rejoin): the editor's windows exist (as
+  many as in a working editor) but nothing is drawn, for minutes and also after the frame rate goes
+  back up; the red cross, Quit and Esc do nothing. 60 s after the swap, or the swap done at normal
+  frame rate first, or the editor entered at normal frame rate: the editor draws. At 15 fps 3 s
+  after the swap it drew.
+* ~ Inferred: the new body of SetSpecies is built over the following frames and an editor that takes
+  the avatar's creature before that never finishes its setup.
+* ✔ The same right after a load without a swap (the new avatar of the loaded world), 1.2-1.7 s
+  after the load.
+* Fix `creations.editor_after_swap`: editor requests wait until the last swap and the current avatar
+  are 5 s and 300 frames old (`creations::avatar_swap_settling`; coop.cpp `h_Submit` holds the request, `submit_tick`
+  sends it, `own_editor_tick` waits too).
+* CORRECTION (2026-10-30, fix/w13-creature, recorded on fix/w14-creature): the "? Cancel run" bullet
+  of [the own editor save section](#creations-own-editor-save) (the host's legs and a DNA drop in a
+  guest's open editor, BUG-0283) was the test's own edit: `coop_legless_guest.py --guest cancel`
+  added legs and pressed the save dialog's Cancel (BUG-0317).
+
+## Content packs: Creepy & Cute parts and the part ids in a creature model (2026-10-31, fix/w22-reports)
+<a id="creations-content-packs"></a>
+
+* ✔ Creepy & Cute (GOG: `bp1content/BoosterPack_01.package`, Steam: a DLC of its own) holds 119
+  creature parts (rigblock props, type 0x00B1B104, group 0x40626000) that no package of `Data\` or
+  `DataEP1\` has. List: `mods/coop/content_packs.h` (from the game files' index). It holds no premade
+  creatures.
+* ✔ A creature model (`.bem`, type 0x1A99B06B, group 0x40626200 in My Creations) names each part as
+  its group 0x40626000 (bytes `00 60 62 40`) followed by the instance. Byte runs are packed: `FE n`
+  = the byte before, n more times; a 0xFE byte is written `FE 00` (Tiger Horse's part 0x4BF3FE6A is
+  stored `6A FE 00 F3 4B`). `creations::model_parts` reads them (ids with a run inside are skipped).
+  ~ Not every id after the group is a part prop: Kirgle (fixture) names 0x05D58995, which no game
+  package holds, and builds fine: only ids of the pack list count.
+* ✔ runtime (GOG lanes 5/6, `coop_guest_missing_pack.py`): a game without the pack loading a world
+  whose creature has one C&C part faults at **0x441F3B** (FUN_00441910+0x62B, the model bake reads a
+  null property list `this+0xC`, BUG-0341), 0.5 s into the load, from the save reader. Under Wine the
+  fault is caught and the load hangs; on Windows the game crashes. The same creature on a game with
+  the pack: no fault. A creature from My Creations chosen by the host (choices.ini) alone does not
+  crash a guest that has all its parts.
+* The guest decides with one key: `have_creepy_cute()` = the resource manager finds the first part of
+  the list (logged once: `creations: content: Creepy & Cute parts pack present / NOT present`).
+* The world shared by the host does not hold creation records: the guest's game builds the host's
+  creatures from what co-op registers (`world_*`, `own_species_*`, `species_*` packages), so checking
+  the bundles before the world covers the world's creatures.
+* ~ superseded in part (2026-10-31): a creature with pack parts is no longer refused but shown with
+  base parts, see #creations-part-substitutes (the refusal stays for a part without a substitute).
+
+## The own cell's rebuild right after a Cell load (2026-10-31, fix/w22-reports)
+<a id="creations-own-cell-rebuild-timing"></a>
+
+* ✔ runtime (lanes 5/6, `coop_cell_own_load.py`): RebuildLevel asked for (`G+0x51D8 = 1`) by
+  `apply_own_cell` on the first frames after a reload of the host's Cell world leaves the guest's new
+  avatar unable to eat plants it swims into (AvatarEat never runs: 0 of 3 in 2 of 2 runs); the same
+  rebuild 5 s / 150 frames later: 3 of 3 (BUG-0342, `cell.own_rebuild`).
+* ~ After the first load of a join the delay is not enough: 2 of 4 runs did not eat. Unknown why.
+* ✔ `g_cell_set` must be forgotten when `game::stage_epoch(Cell)` changes, or a reload keeps the
+  world's cell (BUG-0349, `creations.cell_reapply`).
+
+## Pack parts shown as base parts on a game without the pack (2026-10-31, fix/w24-parts)
+<a id="creations-part-substitutes"></a>
+
+BUG-0354 (the owner's choice for BUG-0341: substitute instead of refusing). Files read with
+`tools/part_substitutes.py` (the game install, read only); runtime on GOG lanes 8 / 9
+(`coop_guest_missing_pack.py`).
+
+* ✔ A part prop (type 0x00B1B104, group 0x40626000) is a property list (big endian count; each:
+  id u32, type u16, flags u16; keys 16 bytes little endian instance/type/group + pad; arrays: count u32,
+  item size u32). Ids that mark a part's role are a family `0xB00F0FXX` (one per role):
+  **0x0FE9 eye**, **0x0FEC mouth**, **0x0FE2 grasper / arm**, **0x0FEF foot**, 0x0FDF bone / leg,
+  0x0FE5 ear, 0x0FF4 horn, 0x0FF7 mace, 0x0FF2 spike; details have none (names checked against the
+  en-us locale of the base parts, e.g. 0x0FE9: Grumpeye, Optic Orb; 0x0FEC: Whalephant, Leeyotch).
+  The ability levels are int properties `0x??C3E5XX` (1..5; e.g. a mouth's diet is one of them:
+  0xB1C3E5B5 with the herbivore mouths, 0xB1C3E5B6 with the carnivore ones); 0x02166464 is the cost
+  (10 / 25 / 75 / 150 / 250), 0x3C652302 / 0x51FA9DFA / 0x03A289AC small editor ranks. The part's name
+  is a text property 0x8F6FC401 (table 0x325440A2 in Data/Locale/en-us/Text.package for the base
+  parts; the pack's table 0xB90C8C60 is not in that package).
+* ✔ The pack's 119 parts: 12 eyes, 12 mouths, 12 graspers, 12 feet, 71 details. The table
+  `kCreepyCuteSubstitutes` (content_packs.h) gives each a base part of `Spore_Graphics` / `PatchData`
+  (not a cell part) with the same role set, the nearest abilities (each level apart 1, a missing or
+  extra ability 3), the same ranks and cost, and the most properties in common; its id has as many
+  0xFE bytes (a model writes 0xFE as `FE 00`, so the substitute fits in place).
+* The guest rewrites the ids in its copy of the creature's model records (`substitute_parts`, before
+  the records are registered: a player's creature, a species of the host's world, the host's own
+  creation of its world); nothing of the pack is sent and no save file is touched. A part without a
+  substitute, or whose substitute this game lacks (`key_exists`), keeps BUG-0341's refusal.
+* ✔ Runtime (lanes 8 / 9): Carol without the pack loads the host's Creature world whose creature
+  (Tiger Horse with the pack part 0x17A60A7F, substituted by 0x0330D834) she plays with: the model her
+  game reads has 33 parts, none of the pack, the species profile is built, 0 faults; Bob with the pack
+  reads the original part (`coop.creations parts 290229B9`). Log: `creations: player 0's creature
+  'Tiger Horse': 1 Creepy & Cute part(s) shown as similar base game parts`, and once per session the
+  notice "Some Creepy & Cute parts are shown as similar base game parts".
+* Gameplay: the guest's own avatar has its own parts (unchanged); the host's creatures and NPC species
+  are run by the host (its abilities count), the guest only shows them, so a substitute changes their
+  look on that guest, not what they do. ? Not checked: an animation that only the pack part has (the
+  base part's own is played on that guest).
+
+## The guest's own editor and the parts the species has collected (2026-11-01, fix/w30-progress)
+<a id="creations-own-editor-items"></a>
+
+BUG-0368. GOG 2024, Ghidra and lane 10 (`tools/tests/coop_guest_editor_locks.py`).
+
+* ✔ (Ghidra) The creature stage's own evolution request is built in the creature game's message
+  handler 0xD42E50 (message 0x4471C60, only with `this+0xDA` set): `new EditorRequest`, `+0xC`
+  0x465C50BA, `+0x10..+0x18` the avatar's species (0xC0BD60), `+0x90 = 0x64AA168` (the tag the
+  return message 0x30C11C7 carries back at its +0xC: then 0x572620 applies the evolution), **`+0x94` =
+  `cPlayer+0x10E8`** set with the intrusive pointer assignment 0xB5FAB0
+  (`SporeCoop::IntrusivePtr_Assign`), flags +0x34/+0x36/+0x37/+0x38/+0x39/+0x3B = 0 and +0x3C/+0x3D = 1,
+  `+0x70` a vector of the four dwords `cPlayer+0x10FC..+0x1108`; after Submit it posts 0x5D02A72 and
+  sets byte 0x1686AF0. `cPlayer` = `cGameNounManager +0x74` (0xF67D40).
+* ✔ `cPlayer+0x10E8` is the species' collected creature parts, a `Simulator::cCollectableItems`
+  (UnlockPart 0x596DA0 / LockPart 0x596E10 work on it). `IsUnlocked` 0x595110 (fastcall, ECX = items,
+  8-byte key on the stack, ret 8): the item's state (hash map +0x4D04) bit 0; an unlockable item
+  (hash map +0x1490: buckets +0x1490, count +0x1494, node: key +0/+4, next +0x28) without a state is
+  locked; anything else answers `this+0xC`.
+* ✔ (Ghidra) The palette asks 0x5C6820(item, items) "available" = `items == null` or
+  `IsUnlocked(item+0xC, item+0x14)` (0x5C6720 the opposite, "locked"); `cEditor::OnEnter` takes the
+  items from its request (`cEditor+0x1CC`) +0x94. **A request without +0x94 offers every part.**
+* ✔ runtime: the editor game mode is in the mode manager's list (`IGameModeManager::Get()` +0x14 ..
+  +0x18, entries of 0x18 bytes `{mode, id, name string}`) under id 0xDBDBA1 (0x57F3E0 registers it);
+  its vtable 0x13F5800 (+0x18 OnEnter). `IGameModeManager` vt 0x50 is not the active mode (another
+  object on every call).
+* ✔ runtime (lane 10, creature fixture): the guest's own editor (`open_own_editor`) had `+0x94 = 0`:
+  0 of the 312 unlockable parts locked, every part in the palette (the player report). With the
+  fix (`creations.own_editor_items`: the request gets the guest's `cPlayer+0x10E8`, Creature only)
+  258 of 312 are locked, the palette shows the locked silhouettes, "done" without an edit still
+  leaves at once. The guest plays the host's world, so these are the pack's collected parts (the
+  host's save).
+* Not done: the other native fields (+0x90 evolution tag, +0x70, the flags): +0x90 would make the
+  guest's editor apply an evolution to the world's species. The test command `coop.vote editor` on
+  the host builds a bare request too (its palette is unlocked in tests; the real host's editor is the
+  game's own).
+* Updates section 7's "Not done" line: +0x94 is now filled for the own editor (Creature).
+
+## Content packs: Creepy & Cute paints (2026-11-01, fix/w30-progress)
+<a id="creations-paint-substitutes"></a>
+
+BUG-0369. GOG 2024 game files and lane 10 (`tools/tests/coop_guest_pack_paints.py`).
+
+* ✔ A creature model (bem) names its three paint layers (base, coat, detail) by **skin effect ids**:
+  three dwords at byte 26 of the (unpacked) model header, right before the three layer seeds (1234
+  each) and the colours (`EditorModel::Save` 0x4AF780 writes `model+0x8C..+0x94` effects, `+0x98..`
+  seeds, `+0xA4..` colours into the resource's +0x18 block). In the fixtures the ids are written byte
+  by byte (no 0xFE run in the header).
+* ✔ A paint prop (type 0x00B1B104, group 0x406A0200; name 0x00B2CCCA) lists its layers' effects in
+  0xB0E066A7 (an array of three keys, 0 for a layer it does not paint) and default colours in
+  0xB0E066A8. The base game's effect sources are type 0x497767B9, group 0xEA5118B1
+  (Spore_Graphics.package; some, e.g. 0x103691CE, elsewhere).
+* ✔ Creepy & Cute holds 48 paint props (themes, base, coat, detail) whose 36 effects are compiled
+  into the pack's own effect directories (type 0xEA5118B0, groups 0x40604300..02): no base package
+  has them.
+* ✔ runtime (lane 10, both games without the pack, the host's Tiger Horse with the pack's "BP1
+  Dottie" base and coat): the guest showed the host's creature **black** (the layers it cannot find are
+  not painted). The player's "different colour".
+* Fix `creations.paint_substitute` (creations.cpp `substitute_paints`, on a game without the pack
+  only, where the part substitutes run): each pack effect in this game's copy of a creature's model
+  is rewritten in place to the base game effect of the same layer whose paint has the nearest
+  default colour of that layer (content_packs.h `kCreepyCutePaintSubstitutes`, 36 entries from
+  `tools/paint_substitutes.py`; the same number of 0xFE bytes, so it fits). The model's own colours
+  stay: the creature keeps the host's colours on a base game pattern. `coop.creations paints <key>`
+  prints the three effects of the model the game reads and how many are the pack's.
+* ? Not reproduced: "cubes". The black creature above is the only effect seen of a missing paint; the
+  pack parts are substituted since BUG-0354 (10 on the player's guest, logged). Not checked: a pack
+  part whose substitute has another parent block (eye children map to children of other eyes).
+
+## A player's replaced creature in the host's world (2026-11-01, fix/w31-creature-gate)
+<a id="creations-old-species"></a>
+
+* ✔ A player's creature is registered on every machine as `0x7C000000 | fnv(owner, bundle id)`. A new
+  bundle (an editor, `coop.creations next creature`) registers the new key and unregisters the old
+  package at once, on the host and on the owner's own game (BUG-0370).
+* ✔ The host's game keeps the species profile of the old key: `coop.npc spawn <old key>` still makes a
+  creature of it after the drop, and the NPC sync sends such a creature with the old key. Its census
+  row shows no species (the key reads 0).
+* ✔ A creature of it in a herd like a puppet's (no archetype, no nest) is removed by the host's stray
+  pass (npc.strays) within a second; the players' NPC (BUG-0370) stayed, so its herd was not one.
+* Since creations.old_species the host keeps the records of the last 24 player creatures applied and
+  answers a guest's `kAskSpecies` from them (`old_sent=` in `coop.creations`).
+
+## Collected parts: UnlockPart, LockPart, a count for the trace (2026-11-01, feat/w32-monitor-diag)
+<a id="creations-unlock-part"></a>
+
+GOG 2024, objdump of `SporeApp.exe` (dc04aee5) and lane 6.
+* ✔ `cCollectableItems::UnlockPart` 0x596DA0: thiscall(items, key_lo, key_hi, int cost) ret 0xC. False
+  when `IsUnlocked` 0x595110 says so already; a cost != 0 is taken from `this+0x6D70` (false when that
+  goes negative); then the state map entry (`+0x4D00`, find-or-insert 0x595EB0) gets bits 0-1 set and
+  the key is added to the set at `+0x6D80` (0x594B10); returns true.
+* ✔ `LockPart` 0x596E10: thiscall(items, key_lo, key_hi) ret 8: the same entry's bits 0-1 cleared, the
+  key added to the set at `+0x6D80` (0x5945B0); returns true.
+* The trace's `parts=<count>:<hash>` (own line, Creature) counts the unlockable items (the map at
+  `+0x1490`) that `IsUnlocked` answers true for, with an order-free hash of their keys
+  ([06-testing.md#testing-monitor](../06-testing.md#testing-monitor)). Lane 6, creature fixture: 54
+  of 312 on host and guest (the same hash). `coop.parts unlock <n>` unlocks n locked ones with cost 0
+  in that game only (the plant of the monitor's `unlocks` rule).
+
+## How a player gets a creature part, and the party's shared set (2026-11-01, fix/w33-unlocks)
+<a id="creations-part-pickup"></a>
+
+BUG-0401. GOG 2024, Ghidra (out/ghidra-2024) and lane 6 (`tools/tests/coop_parts_shared.py`).
+
+* ✔ (Ghidra) Every unlock in play goes into the cPlayer's collected parts (`cPlayer+0x10E8`), but **not
+  always through UnlockPart 0x596DA0**. The creature stage's finds and rewards:
+  `CreatureStageEventHandler` 0xD47FC0 (a listener of `cCreatureModeStrategy`, its messages) for
+  0xD335362C (a creature's drop after a hit / kill, any attacker; once per creature: `+0xB58 |= 2`),
+  0x49B56D7 (several rewards at once, posted by 0xD3FCA0) and **0x5371F11 (a part found: msg
+  `{creature, 0, level}`, the creature must be the avatar)** call 0xD47E50 (pick a locked part of the
+  level) -> cCollectableItems 0x5976D0 -> **0x597410**, which sets the state (`|= 3`) and appends the key
+  to the list at `+0x6D80` itself; then 0xD3D4A0 shows the UI (goal card `CRG_FirstPartUnlock`, the
+  part pop-up). 0x61B1320 (0xD3B640) marks a category's items state 4 (seen), not unlocked.
+* ✔ (Ghidra) 0x5371F11 is posted by 0xD46BE0, the reward of an interactable (kind +4: 0 health,
+  2 DNA, 3 / 5 messages, 4 death, 6 a part of level `round(+0x14)`), to every listener of the
+  strategy (`+0xBC..+0xC0`, vt 0x18), as `cCreatureModeStrategy::ExecuteAction` does.
+* ✔ (Ghidra) UnlockPart's callers are loads and set-ups: the start from Cell (0xC7A390 over the
+  creature's blocks, 0xDEB720 / 0xE83910), the editor's own items (0x5BF2E0, a new
+  "Editor/cCollectableItems" for some editors), the Cell game (0xE4FAA0), Space scans (0x1058430),
+  `cStarManager::ReadStarsFromSaveDB`, the outfitter UI (0x5EF4F0).
+* ✔ runtime (lane 6, creature fixture): `cCreatureModeStrategy::ExecuteAction(Get(), 0x5371F11,
+  {avatar, 0, 1})` (`coop.parts find 1`) unlocks one part (54 -> 55), on host and guest alike. The
+  trace's `parts=` hash moves with it.
+* So a part sync cannot hook UnlockPart: parts.cpp polls the unlocked unlockable items (the
+  `parts=` census, 1 Hz in Creature) and sends the difference.
+* The co-op rule (docs/07-modes.md 7.1: shared progress like DNA): the party has one set, the union,
+  held by the host's game. `parts.shared` (BUG-0401): a guest sends the parts the host's set lacks
+  (MSG_PARTS kind 2, resent every 3 s, at most 5 times a key), the host unlocks them (UnlockPart,
+  cost 0) and sends its whole set to every guest (kind 0, at once on a change, else every 10 s;
+  kind 1 the news with the finder, a notice "Bob found a new creature part"), a guest that plays the
+  host's world (same world id) unlocks what it lacks, also after a reload. Nothing is locked. The
+  host's world saved at a join holds the union, so a rejoin keeps the guests' finds.
+
+## The Cell twins: creature parts a live Cell -> Creature start adds (2026-11-01, fix/w36-parts-transition)
+<a id="creations-cell-twins"></a>
+
+BUG-0441. GOG 2024, Ghidra (out/ghidra-2024) and lane 9 (`coop_transition_net.py --to creature`,
+`coop.parts keys|states`).
+
+* ✔ (Ghidra) The live start of Creature from Cell, 0xE83910, after 0xC7A390 (the creature's blocks) calls
+  0x598540(0x465C50BA) and then, over the table **0x1485FE8** (12 pairs `{cell instance, creature
+  instance}`, ends at 0x148604C), for each pair: the cell key (type 0x40616000 = DAT 0x150D6D8) and the
+  creature key (type 0x40626000 = DAT 0x150D6DC) through 0x593980; `AddUnlockableItem` 0x598DB0
+  (creature key, all other arguments 0: level -1) into the unlockable map `+0x1490`; 0x596D70 (state
+  = 4, seen); `UnlockPart` (cost 0) when the cell key is unlocked (the cell had that part). Then
+  `sub_594010` 0x5942E0 clears bit 1 (new) of every state.
+* Creature twins (instance, type 0x40626000): 02B3EDDB 7E262CF0 BE830BDE 4908E576 B70894B6 C5744537
+  1610AD94 30E66572 DEF1C7FF 32AC9620 FE534766 3A3C49A5 (cell keys 3824091B 026D3C30 5683C01E
+  2FC35736 BAAFF976 2A889977 12599FD4 7DD30832 35916FD9 64028FE0 2494A726 A1C47665).
+* ✔ runtime (lane 9, `cell` fixture, Cell -> Creature the players' way): the host's map has 324 items
+  (55 unlocked: 49 + the 6 twins of its cell's parts, state 5), the guest that loaded the host's world
+  has 312 in the map (the fixture's 312 too) but **the same 324 item states** (`coop.parts states`
+  identical on both games, the 6 twins state 5 and IsUnlocked). So a load rebuilds the map from the
+  game's data without the twins and keeps their states from the save.
+* ✔ (Ghidra) `IsUnlocked` 0x595110 reads the state map `+0x4D04` first (bit 0), then 0 for an item of
+  the map `+0x1490`, else `+0xC` (1 on both games: an item the game knows nothing about is offered).
+  The palette's check 0x5C6820 is IsUnlocked: a loaded game offers the unlocked twins too, so the
+  guest's editor was right; only a census over `+0x1490` (BUG-0401's first version) counted 6 fewer.
+* The state map: buckets `+0x4D04`, count `+0x4D08`, node `{u32 lo, u32 hi, u8 state, ..., next
+  +0x10}` (as `sub_594010` walks it). In Creature it held only creature parts (type 0x40626000).
+* So parts.cpp's census (`parts.census_states`) goes over the map and the states together (each key
+  once): every game counts what its palette offers, and the locked twins are in the locked list that
+  parts.shared unlocks from.
+* Not a reward of the host only: the guest's game has the host's twins. Not checked: whether a guest's
+  own Cell parts (collected in its game during co-op Cell) should count for the twins; the guest
+  loads the host's world, so the host's cell decides (BUG-0446).
+
+## Unknown parts check (2026-11-02, fix/w38-content)
+<a id="creations-unknown-parts"></a>
+
+BUG-0452. GOG 2024, lanes 4/5 (`tools/tests/coop_unknown_parts.py`), the game files' index.
+
+* ✔ A part key in a model is the group's last three bytes (`60 62 40` for the creature parts group
+  0x40626000, `60 61 40` for the cell group 0x40616000, `60 64 40` for the UFO group 0x40646000) and the
+  instance right after them. The group's least significant byte (`0x00`) is usually written as a byte run
+  (the byte before, repeated), so a scan for the literal four bytes finds only the keys whose `0x00` is
+  literal: the 33-part Tiger Horse model yielded 1 reference, not 33. `model_part_refs` matches the three
+  bytes and reads the instance after them; the slot and parent that follow must be plausible (a small
+  index or -1), which keeps the group bytes that occur in other data out.
+* ✔ The 0.7.3.4 checks only know the Creepy & Cute part and paint lists. A guest without
+  `Data/Spore_Pack_03.package` and a host creation with one part of that pack (`0x75A5D2D4`) faults at
+  `0x00441F3B` (data 0) in the bake, exactly as BUG-0341 (`coop_unknown_parts.py`, FAIL run
+  `out/lab/20261102-122525`).
+* ✔ Every part id of every received creature, cell and UFO model is now checked with `key_exists` (cached
+  per session). An unknown part is shown as a base game detail of the same group and the same number of
+  `0xFE` bytes (`content_packs.h` `kBasePartFallbacks`); the Creepy & Cute table is the first choice. An
+  unknown paint is shown as a base game paint of the same layer and length (`kBasePaintFallbacks`); the
+  base game's 111 skin paint effects are `kBasePaintEffects` (14 of them have no effect record in any
+  package, the game defines them itself).
+* ✔ An id that cannot be replaced refuses the creation: a puppet falls back, an NPC species is not
+  registered, the host's own world creation keeps the world from loading (the message in `world.cpp`).
+  Each unknown id is logged (`creations: ... part <id> unknown here: this game does not have it ...`).
+* ✔ Runtime (lanes 4/5, PASS run `out/lab/20261102-122224`): Carol without Spore_Pack_03 plays the host's
+  Creature world, no fault, logs the unknown part id; the model her game reads has 33 parts, none unknown,
+  the species profile built (`parts 290229B9 n=33 cc=0 unknown=0 species=1 ... substituted=2`).
+* Covered kinds: creature, cell, UFO (the only `Kind` values; the mod has no vehicle or building creation
+  path). Paints are checked for creature models only.
+* ? Not verified: a part of another pack whose kind is not a detail (the kind is in the prop record the
+  guest lacks, so it is shown as a detail, not the same kind); the three paint effect dwords of cell and
+  UFO models; a paint effect that has no base game substitute (the creation is refused, never baked).
+
+## Content check for every model kind (2026-11-02, fix/w39-content-all)
+<a id="creations-content-all-kinds"></a>
+
+BUG-0469, GOG 2024, lanes 4/5-6 (`tools/tests/coop_content_civ.py`, `tools/tests/coop_content_space.py`),
+the game files' index and Ghidra. The rest of BUG-0424 after BUG-0452.
+
+* ✔ `creations::ensure_model(model, kind)` (`mods/coop/creations.cpp`) answers for any model key the mod
+  makes this game build: this game has the key AND every part / paint id the model names (the
+  `model_part_refs` / `part_known` / `paint_known` of BUG-0452). An id this game lacks is shown as a
+  substitute in a copy of the model's records (`content_packs.h` tables, as for a received creation),
+  registered at once **under the model's own key** (see the next bullet); a model with an id that has no
+  substitute, or whose key cannot be shadowed, is refused (the caller uses the game's own default or
+  leaves the object out). Each unknown id is logged once per session:
+  `creations: content: <kind> model <id> part <id> unknown here: this game does not have it`.
+  Switch `content.all_kinds` off: 0.7.3.5, the new call sites pass the key as they get it.
+* ✔ The copy goes under the model's own key, never under a key of the mod's (BUG-0469 review,
+  2026-11-02): the first version registered it under an instance of our own (0x7D......, as a received
+  creation is), and a civ mirror vehicle is created from that key: mirror vehicles are not kept out of
+  saves (BUG-0470), so the guest's save named a model key that no package answers after a restart (or
+  without the mod). The package is written into `SporeCoop\` as before but registered at priority
+  **3000**, above the game's own packages, the host's world packages (2000) and My Creations (1000):
+  `RegisterDatabase` 0x8E1000 keeps the databases in a priority-sorted list (+0x2C) and
+  `FindDatabase` 0x8DE620 walks it highest first, probing `OpenRecord` (no global key index), so the
+  key now answers from our package. `ensure_model` checks that after registering (`FindRecord` 0x8DFC80
+  then the database's `GetLocation` 0xA426C0 = our file) and **refuses** when another package still
+  answers, so the caller never builds a model that would fault and never sees a key of ours.
+  Nothing of the game was found that resolves a model key once and keeps it: the model bake re-reads the
+  parts on every build and the earlier FAIL run faults on every attempt (456 faults in one civ run), and
+  the runtime runs below show the copy in use at once. `coop.fix content.model_key off` keeps the first
+  version (a key of our own) for the lab. Runtime (civ, lane 4 + guest lane 5): the guest's save names
+  the design's own key 0x29030001 and no 0x7D instance, and the save loads in a game restarted without a
+  session with the mirror vehicles (`out/lab/20261102-213135`); with `content.model_key` off the save
+  names 0x7D72C793 instead (`out/lab/20261102-213354`, FAIL).
+* ✔ Model kinds and their keys: creature `crt` 0x2B978C46 / 0x40626200 (parts 0x40626000), cell `cll`
+  0x3D97A8E4 / 0x40616200 (parts 0x40616000), UFO `ufo` 0x476A98C7 / 0x40656200, **vehicle** `vcl`
+  0x24682294 / 0x40646200 and **building** `bld` 0x2399BE55 / 0x40636200.
+* ✔ Vehicles and UFOs name their parts in the *same* group 0x40646000 (`Data/Spore_Content.package`: the
+  4 sampled models of each kind name 13 to 31 part references with `model_part_refs`; the count of literal
+  `60 64 40` bytes is lower, the group's 0x00 is usually a byte run); a vehicle design key
+  {vcl, 0x40646200, X} resolves to a {bem, 0x40646200, X} record (the game's type mapping, as for `crt`).
+  Building models name their parts in 0x40636000 (the base game has 224 parts of that group, none with a
+  0xFE byte: a building part with one would be refused).
+* ✔ The bem header of a vehicle, UFO and building model carries the three paint effect ids at byte 26 as
+  a creature model does: 42 of the 285 vehicle, 32 of the 91 UFO and 17 of the 310 building models of
+  `Data/Spore_Content.package` name a nonzero id there (the others are all 0: no layer painted); those
+  ids are base game skin paints of `kBasePaintEffects` or have an effect record (0x00628C255 of a
+  building model), except the 3 of the next point, so `ensure_model` checks and substitutes paints for
+  these kinds too.
+* ~ 3 paint ids that shipped vehicle, UFO and building models (and 14 shipped creature models) name in
+  their base layer are in no paint prop and in no effect record: 0x791C8201, 0x7A2E9EB3, 0xDCAD3E09.
+  `paint_known` takes them for unknown and shows a base game base paint instead (as 0.7.3.5 does for the
+  creature models): a colour difference, never a refusal (all are base layers without a 0xFE byte, so
+  `kBasePaintFallbacks` has an entry).
+* ✔ A *cell* model's header is not the creature one: of the 44 cell models of `Data/Spore_Content.package`
+  43 name an id at byte 26 that is neither a base game skin paint nor an effect record (19 distinct ids;
+  the ids look like cell paints, which the game defines elsewhere), and the second and third dwords are 0.
+  `paint_known` would take almost every cell model for one with an unknown paint, so cell paints are not
+  checked.
+* ✔ A model that names a part this game does not have faults in the *model bake*, at a different place per
+  kind: the creature bake at 0x00441F3B (BUG-0452) and the vehicle/UFO bake at 0x0046C82A
+  (`SporeCoop::ModelBake_PartProp_Null`, `mov eax,[edx]` where edx is the part's property object, prop
+  0xAFFF3A14). Runtime: the guest of the two tests with `SPORE_FIX_OFF=content.all_kinds` faults 456 and
+  467 times (civ, every frame the mirror is tried) and twice (space, once per mirror) in one run
+  (`out/lab/20261102-202807`).
+* ✔ Call sites (`content.all_kinds`): a civ mirror vehicle (`civ.cpp` `guest_state`: the civ's
+  `GetDesignKey(VehicleDesignId(purpose, loco))`, then `CreateVehicle` with the checked copy's key; a
+  design whose model cannot be built at all is created from a zero key, which the game fills with its own
+  design of that purpose and locomotion: docs/re/civ.md#civ-content-all-kinds), a building of a city on a
+  guest (`civ.cpp` `build_in_city`: `SetBuildingModel` reads the civ's design key itself, so a design
+  whose model names ids this game lacks is left out and logged, nothing can be substituted for it), a
+  host ship's mirror (`squadron.cpp`: the model key AND its parts, a substituted copy, else the local
+  model of a ship of that empire as BUG-0323: docs/re/space.md#space-mirror-content).
+* ✔ Not built by the mod: tribe huts, tools and outfits (a tribe's members are creatures and their
+  outfits are creature parts of the species model, covered by the creature check of BUG-0452), a player's
+  own puppet in Space (its key is the local key of an applied creation, already checked), the host's own
+  vehicles and buildings (the host's game bakes its own designs itself).
+* ? Not verified: the refusal path of a model whose id has no substitute (a part with 2 or more 0xFE
+  bytes cannot be written into a fixture model in place); a paint of a pack in a ship or vehicle model
+  (no pack in this install has ship or vehicle paints: the Creepy & Cute pack has creature parts and
+  paints only); a key whose records are not in a package the mod can read (a baked resource): the model is
+  built as it is and a warning is logged once.

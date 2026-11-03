@@ -1,10 +1,13 @@
 #include "udp.h"
+#include "ipmask.h"
 
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
 #include <cstdio>
+#include <cctype>
 #include <cstring>
+#include <vector>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -20,6 +23,8 @@ typedef int socklen_t;
 #include <unistd.h>
 #define CLOSESOCK ::close
 #endif
+
+#include "fixes.h"
 
 namespace net {
 
@@ -51,15 +56,124 @@ std::string Endpoint::str() const
     return s;
 }
 
+std::string Endpoint::masked() const { return mask_ip(ip, port); }
+
 bool Endpoint::parse(const std::string& s, uint16_t default_port, Endpoint& out)
 {
+    std::string err;
+    return parse(s, default_port, out, err);
+}
+
+// "<non-empty host>:<1 to 5 digits>" (the port's range is checked later)
+static bool host_port(const std::string& t)
+{
+    size_t c = t.rfind(':');
+    if (c == std::string::npos || c == 0 || c + 1 == t.size() || t.size() - c - 1 > 5)
+        return false;
+    for (size_t i = c + 1; i < t.size(); i++)
+        if (!isdigit((unsigned char)t[i]))
+            return false;
+    return true;
+}
+
+std::string Endpoint::clean(const std::string& s)
+{
+    // BUG-0138: copied from a chat: spaces, tabs or a newline around it, or the whole "Friends
+    // connect to" hint with several addresses: the first address
+    auto sep = [](char ch) { return isspace((unsigned char)ch) || ch == ',' || ch == ';'; };
+    if (!g_fix.addr_label) { // the 0.7.3.0 rule: the first word
+        size_t a = 0;
+        while (a < s.size() && isspace((unsigned char)s[a]))
+            a++;
+        size_t b = a;
+        while (b < s.size() && !sep(s[b]))
+            b++;
+        return s.substr(a, b - a);
+    }
+    std::vector<std::string> tokens;
+    for (size_t a = 0; a < s.size();) {
+        while (a < s.size() && sep(s[a]))
+            a++;
+        size_t b = a;
+        while (b < s.size() && !sep(s[b]))
+            b++;
+        if (b > a)
+            tokens.push_back(s.substr(a, b - a));
+        a = b;
+    }
+    if (tokens.empty())
+        return std::string();
+    // BUG-0236: the hint line starts with a label ("Friends connect to: a:47810,  b:47810", any
+    // language) or a chat line wraps it ("Bob: ..."): the first token that looks like host:port
+    for (auto& t : tokens)
+        if (host_port(t))
+            return t;
+    return tokens[0];
+}
+
+bool Endpoint::parse(const std::string& in, uint16_t default_port, Endpoint& out, std::string& err)
+{
+    std::string name;
+    if (parse_numeric(in, default_port, out, err, &name))
+        return true;
+    if (name.empty())
+        return false;
+    // a name resolves on this thread: Session::join looks names up on a worker (BUG-0204)
+    return resolve_name(name, out.ip, err);
+}
+
+bool Endpoint::parse_numeric(const std::string& in, uint16_t default_port, Endpoint& out, std::string& err,
+                             std::string* name)
+{
+    if (name)
+        name->clear();
+    bool check = g_fix.addr_check;
+    std::string s = check ? clean(in) : in;
     std::string host = s;
     uint16_t port = default_port;
     size_t c = s.rfind(':');
     if (c != std::string::npos) {
         host = s.substr(0, c);
-        port = (uint16_t)atoi(s.c_str() + c + 1);
+        if (check) {
+            // BUG-0138: atoi made "1.2.3.4:" port 0 and "1.2.3.4:99999" port 34463, and the player
+            // waited 10 s for a timeout that blamed the host's firewall
+            const char* p = s.c_str() + c + 1;
+            char* e = nullptr;
+            unsigned long v = *p >= '0' && *p <= '9' ? strtoul(p, &e, 10) : 0;
+            if (!e || *e || v < 1 || v > 65535) {
+                err = "the port must be a number from 1 to 65535";
+                return false;
+            }
+            port = (uint16_t)v;
+        } else
+            port = (uint16_t)atoi(s.c_str() + c + 1);
     }
+    if (check && host.empty()) {
+        err = "no host address before the port";
+        return false;
+    }
+    net_init();
+    addrinfo hints{};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    addrinfo* res = nullptr;
+    // a numeric address never waits for a name server
+    hints.ai_flags = AI_NUMERICHOST;
+    if (getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0 || !res) {
+        out.port = port;
+        err = "cannot resolve " + (check ? host : s);
+        if (name)
+            *name = host;
+        return false;
+    }
+    out.ip = reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr.s_addr;
+    out.port = port;
+    freeaddrinfo(res);
+    return true;
+}
+
+static bool system_lookup(const std::string& host, uint32_t& ip)
+{
     net_init();
     addrinfo hints{};
     hints.ai_family = AF_INET;
@@ -67,10 +181,19 @@ bool Endpoint::parse(const std::string& s, uint16_t default_port, Endpoint& out)
     addrinfo* res = nullptr;
     if (getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0 || !res)
         return false;
-    out.ip = reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr.s_addr;
-    out.port = port;
+    ip = reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr.s_addr;
     freeaddrinfo(res);
     return true;
+}
+
+LookupFn g_lookup = system_lookup;
+
+bool Endpoint::resolve_name(const std::string& host, uint32_t& ip, std::string& err)
+{
+    if (g_lookup(host, ip))
+        return true;
+    err = "cannot resolve " + host;
+    return false;
 }
 
 UdpSocket::~UdpSocket() { close(); }

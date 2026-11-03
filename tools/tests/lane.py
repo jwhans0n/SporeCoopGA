@@ -17,8 +17,23 @@ HOST = 2 * LANE - 1   # SporeKit instance numbers: console port 47800 + N - 1
 GUEST = 2 * LANE
 PORT = 47810 + HOST - 1  # the host's co-op port
 BOTTLE = 'Games' if LANE == 1 else f'SporeLab{LANE}'
+
+
+def _user():
+    """$USER, else the password database's name (the name Wine falls back to for drive_c/users), else
+    'user' (a container uid without a passwd entry: imports keep working, a game test fails visibly at
+    its fixture step). BUG-0252: make test ran without $USER into a KeyError."""
+    if os.environ.get('USER'):
+        return os.environ['USER']
+    try:
+        import getpass
+        return getpass.getuser()
+    except (KeyError, OSError, ImportError):
+        return 'user'
+
+
 APPDATA = os.path.expanduser(f'~/.var/app/com.usebottles.bottles/data/bottles/bottles/{BOTTLE}/drive_c/users/'
-                             + os.environ['USER'] + '/AppData/Roaming')
+                             + _user() + '/AppData/Roaming')
 HOST_PROFILE = 'test'
 GUEST_PROFILE = 'inst2' if LANE == 1 else f'inst{GUEST}'
 HOST_DIR = os.path.join(APPDATA, 'SporeKit-' + HOST_PROFILE, 'Spore')
@@ -43,6 +58,31 @@ def run_guest():
         sh('run', '-i', '2')
     else:
         sh('run', '-i', str(GUEST), '-p', GUEST_PROFILE)
+
+
+_MAIN = None
+
+
+def game_dir(n=None):
+    """the game folder of lane n (default: this lane), from any checkout: lane 1 = the folder that
+    holds the main checkout (SPORE/SporeCoop), lane N = SPORE-lab/laneN next to it (tools/spore.sh,
+    lab.lane_game). Found from the git common dir, so a worktree (../SporeCoop-wt/<branch>) gives the
+    same folder as the main checkout (BUG-0068)."""
+    global _MAIN
+    n = LANE if n is None else n
+    if _MAIN is None:
+        common = subprocess.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+                                cwd=ROOT, capture_output=True, text=True).stdout.strip()
+        _MAIN = os.path.dirname(os.path.dirname(common)) if common else os.path.dirname(ROOT)
+    return _MAIN if n == 1 else os.path.join(os.path.dirname(_MAIN), 'SPORE-lab', f'lane{n}')
+
+
+def game_log(inst):
+    """the SporeKit log of a game instance (instance 1: sporekit.log, else sporekit.<inst>.log).
+    Instances 2N-1 and 2N run in lane N, the extra guests 20+N and 30+N too (BUG-0266)."""
+    n = (inst + 1) // 2 if inst <= 20 else inst - 20 if inst <= 30 else inst - 30
+    return os.path.join(game_dir(n), 'SporebinEP1', 'mods', 'logs',
+                        'sporekit.log' if inst == 1 else f'sporekit.{inst}.log')
 
 
 def out_dir(*sub):

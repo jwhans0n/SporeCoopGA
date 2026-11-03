@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 """Creature co-op mechanics on two instances (docs/09-coop-design.md):
-joint hunt bonus, the pack saves a player from a lethal hit, pack regeneration."""
+joint hunt bonus, the pack saves a player from a lethal hit, pack regeneration.
+
+The joint hunt bonus is measured on the NPC's health in the host's game (BUG-0135): a lone hit by
+the guest takes d, the host's hit of the same size right after takes about 1.25 d; the guest's
+mirror shows the same health. The mod's "joint hits" counter is only printed.
+
+  coop_team.py [--seed-nobonus]   --seed-nobonus: `coop.team off` on the host, the bonus check must FAIL
+"""
 import math
 import re
+import sys
 import time
 
 from coop_sync import sample
@@ -18,6 +26,28 @@ def team(con):
 def hp(con):
     m = re.search(r'hp=([\d.]+)/([\d.]+)', con.call('coop.avatar')['out'])
     return (float(m.group(1)), float(m.group(2))) if m else (None, None)
+
+
+def pos(con):
+    m = re.search(r'pos=\(([-\d.]+) ([-\d.]+) ([-\d.]+)\)', con.call('coop.avatar')['out'])
+    return tuple(map(float, m.groups())) if m else None
+
+
+def players_apart(host, guest):
+    a, b = pos(host), pos(guest)
+    return round(sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5, 1) if a and b else None
+
+
+def npc_hp(con, nid):
+    """host: the game's health of NPC nid"""
+    m = re.search(r'#%s \S+ species=\S+ hp=([\d.]+)' % nid, con.call('coop.npc list')['out'])
+    return float(m.group(1)) if m else None
+
+
+def mirror_hp(con, nid):
+    """guest: the game's health of the mirror of NPC nid"""
+    m = re.search(r'#%s species=\S+ spawned hp=([\d.]+)' % nid, con.call('coop.npc list')['out'])
+    return float(m.group(1)) if m else None
 
 
 def main():
@@ -46,16 +76,63 @@ def main():
         ck(clones == 0, f'no NPC clones of the guest\'s creature ({clones})')
     print(' ', host.call('coop.team')['out'].splitlines()[-1])
 
-    # joint hunt: the guest hits, then the host hits the same NPC within 6 s
+    # joint hunt: the guest hits alone (d), then the host hits the same NPC within 6 s (1.25 d), read
+    # on the NPC's health in the host's game, not on our counter (BUG-0135)
+    if '--seed-nobonus' in sys.argv:
+        print('  seed:', host.call('coop.team off')['out'].strip())
     j0, _ = team(host)
-    guest.call(f'coop.npc hit {nid} 0.5')
-    time.sleep(0.5)
-    host.call(f'coop.npc hosthit {nid} 0.5')
-    time.sleep(0.5)
+    print(f'  players {players_apart(host, guest)} m apart before the hunt (guest at {pos(guest)})', flush=True)
+    h0 = npc_hp(host, nid)
+    d = round(max(1.0, min(h0 * 0.3, 40.0)), 2) if h0 else 1.0  # two hits leave it alive
+    guest.call(f'coop.npc hit {nid} {d}')
+    time.sleep(1.0)
+    h1 = npc_hp(host, nid)
+    print(f'  after the guest\'s hit: guest at {pos(guest)}, host at {pos(host)}', flush=True)
+    host.call(f'coop.npc hosthit {nid} {d}')
+    time.sleep(1.0)
+    h2 = npc_hp(host, nid)
     j1, _ = team(host)
-    ck(j1 is not None and j0 is not None and j1 == j0 + 1, f'joint hunt bonus on the host: joint hits {j0} -> {j1}')
+    print(f'  joint hunt: hp {h0} -> {h1} (guest alone) -> {h2} (host, joint); hit {d}; joint hits {j0} -> {j1}')
+    lone = h0 - h1 if h0 is not None and h1 is not None else None
+    joint = h1 - h2 if h1 is not None and h2 is not None else None
+    ck(lone is not None and abs(lone - d) <= 0.1 * d + 0.02,
+       f'a lone hit takes its damage from the NPC in the host\'s game ({lone} of {d})')
+    ratio = joint / lone if lone and joint is not None else None  # (hp is printed with 0.01)
+    ck(ratio is not None and 1.15 <= ratio <= 1.35,
+       f'joint hunt bonus in the host\'s game: the second player\'s hit takes {ratio and round(ratio, 2)}x a lone hit (1.25)')
+    gh = None
+    for _ in range(10):  # the guest's mirror shows the same health
+        gh = mirror_hp(guest, nid)
+        if gh is not None and h2 is not None and abs(gh - h2) <= 0.1:
+            break
+        time.sleep(0.5)
+    ck(gh is not None and h2 is not None and abs(gh - h2) <= 0.1,
+       f'the guest\'s mirror shows the health after the joint hit ({gh} / host {h2})')
+    if '--seed-nobonus' in sys.argv:
+        host.call('coop.team on')
 
     # pack regeneration while the partner is close (an NPC hit would throw the guest away: set hp)
+    print(f'  players {players_apart(host, guest)} m apart before the regen check (guest at {pos(guest)}, '
+          f'host at {pos(host)}, npc {nid}: {[l.strip()[:120] for l in host.call("coop.npc list")["out"].splitlines() if l.strip().startswith("#" + str(nid) + " ")]})', flush=True)
+    # BUG-0330: the guest's avatar was found ~14 m from the host here in 2 of ~40 runs (the regen then
+    # rightly did nothing: "Alice near"); the check is about the regen, so the guest stands next to
+    # the host first and the guest's own status must say "close (regen)"
+    hpos = pos(host)
+    if hpos:
+        guest.call('coop.npc gopos %.2f %.2f %.2f' % (hpos[0] + 1.5, hpos[1], hpos[2]))
+    close = False
+    for _ in range(10):
+        time.sleep(0.5)
+        close = 'close (regen)' in guest.call('coop.team')['out']
+        if close:
+            break
+    ck(close, f'the guest stands next to the host for the regen check ({players_apart(host, guest)} m)')
+    # BUG-0400: the move to host x + 1.5 m is a chord of the planet (0.5 m nearer its centre here): the
+    # guest's creature stood 0.94 m under the terrain for good (the game does not lift a grounded
+    # creature placed under it); gopos now puts it onto the ground
+    m = re.search(r'above=([-\d.]+)', guest.call('coop.avatar')['out'])
+    above = float(m.group(1)) if m else None
+    ck(above is not None and above > -0.3, f"the guest's creature stands on the ground after the move ({above} m)")
     hr0, mx0 = hp(guest)
     guest.call(f'coop.team hp {(mx0 or 10) * 0.6:.1f}')
     time.sleep(0.5)

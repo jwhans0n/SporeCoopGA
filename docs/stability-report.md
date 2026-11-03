@@ -122,7 +122,7 @@ docs/known-issues.md lists them with reproductions. The ones a player can meet:
 ## Running it again
 
 ```
-tools/lab.py run nightly --lanes 8                               # everything, ~35 min on 8 lanes
+tools/lab.py run nightly --lanes 6                               # everything; the lab caps at 6 lanes (GPU load, SPORE_MAX_LANES raises it), ~35 min was on 8
 SPORE_LANE=1 SPORE_LANE_B=8 python3 tools/tests/coop_multi.py --fixture tribe --players 4 --minutes 8
 SPORE_LANE=5 python3 tools/tests/coop_chaos.py --fixture civ_npc --minutes 10 --churn 3
 SPORE_LANE=2 python3 tools/tests/play_cell.py --minutes 10 --seed 8

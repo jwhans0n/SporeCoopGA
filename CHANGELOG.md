@@ -11,8 +11,12 @@
   checked own-action Undo/Redo and bounded durable recovery projects.
 - Integrate verified native snapshots, private Save As, initiating-player solo
   Play and an explicit Test Together action with host approval and group readiness.
-  Editor development uses protocol 23 / preview 9; the published
-  gameplay release remains protocol 15.
+  Installed C49 editor preview 9 uses protocol 23; the published gameplay
+  release remains protocol 15. The uninstalled upstream-integration candidate
+  uses protocol 24 and rejects protocol 23 peers: retain upstream NEST/PARTS
+  message IDs 52/53, move ADVENTURE/EDITOR to 61/62, and retain ACTIVITY54/DIAG60.
+  Source integration does not update the installed preview or extend its
+  native testing and publication claims.
 - Add candidate Crew authoring, ordered concurrent Terraform recipes, optional
   Extended Complexity and independent native creation sessions. Preserve separate
   content leases and immutable shared asset versions while guests continue
@@ -265,6 +269,910 @@ with the original SporeCoop project and its authors credited below and in README
   `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
   Other stages on that executable remain unvalidated. See
   [the preview guide](docs/GALACTIC-ADVENTURES.md) for setup and remaining limits.
+
+## [0.7.3.6] - 2026-11-02
+
+### Fixed
+- Civ and Space: a partner's vehicle, building or ship whose model uses parts or paints from a pack, a
+  mod or another profile's Sporepedia no longer crashes the game that does not have them. Such a model
+  is shown with similar base game parts, a vehicle falls back to one of the game's own designs, and a
+  building whose design cannot be shown is left out (the log names each unknown part once) (BUG-0469).
+
+## [0.7.3.5] - 2026-11-02
+
+### Fixed
+- Creature: a guest whose game lacks a parts pack (for example the Bot Parts pack) no longer crashes
+  when it loads a host world whose creature uses a part of that pack: the part is shown as a similar
+  base game part (the Creepy & Cute parts first), an unknown paint as a base game paint, and an id that
+  cannot be replaced makes the game use its own fallback instead of baking the model. Each unknown id is
+  written to the log (BUG-0452).
+
+## [0.7.3.4] - 2026-11-02
+
+### Added
+- Problem reports: when a player marks a problem (`/bug <text>` in the co-op chat, `coop.bug`, or F9
+  "Report a problem"), the game keeps a screenshot of what that player saw, overlay included (JPEG, at
+  most 1280 px wide, a few hundred KB; the newest 5). The report file includes them under `shots/`
+  and lists each next to its mark; every player of the session keeps its own screenshot of a mark.
+  Crash and hang reports take none of their own moment (not safe there). `[report] screenshot=0` in
+  `mods\coop.ini` turns them off and removes the kept ones (BUG-0442). Needs SporeKit 0.3.6.
+- Creature and Cell: DNA (and the cell's food) that a partner or the pack earned now says where it came
+  from in a short notice: "+9 DNA from Bob's hunt", "+7 DNA shared by Alice's pack", "+10 food (DNA)
+  from Bob's meals"; the game logs write each change with its cause (BUG-0389).
+- Logs: in the Tribe and Civilization stages the 10 s `trace:` line now says how long the player's own
+  pointer has stood still (`ptr_still=`), so a report shows whether the partner's copy of it could have
+  caught up yet (BUG-0416).
+
+### Fixed
+- Tribe: the game could fault in its physics update in every frame (seen once on a guest, GOG 2024) when
+  a physics body had lost its owner, skipping the rest of the physics each frame. Such a body is now left
+  out of the update (BUG-0449).
+- Tribe: a guest's own tribe members (and the host's) could walk 3-9 m inside the ground, or float over it, on
+  the guest's screen when the host walked them up or down a slope in the first half minute after the guest
+  joined (the guest's game is still paused then) or while the guest's game was paused; they stay on the
+  ground now, and new members appear on it (BUG-0444).
+- Creature: after Cell -> Creature the shared creature parts were counted differently in the host's game
+  and the guests': the parts a cell brings into the Creature stage (the creature versions of its Cell
+  parts) counted only for the host, although every guest's editor offered them too. Every game now counts
+  the parts its editor offers, so the party's set agrees after the evolution, a load, a join and a rejoin
+  (BUG-0441).
+- A game told to host before it reached its main menu (a console line during the start) crashed in the
+  host's first time-of-day message: the time of day is now read only once the game has its space player
+  data. Players hosting from the co-op window were not affected: the window first shows in the galaxy
+  menu (BUG-0433).
+- Creature: eggs at the nests of other species could hang in the air on the host: the game lays them
+  where the layer stands and an egg that is not touched has no gravity. The host now puts an egg that
+  hangs over the ground onto it (BUG-0443).
+- Tests: since the busy gate (BUG-0404) an action vote's result and the world share after an evolution can
+  wait for a pause or a cinematic on the host. `vote_net_4p` and `party` read the action's result the instant
+  the vote ended (it ran 0.9-1.8 s later), `vote` read the guest's body at a fixed time after the evolution
+  (its reload came later). The tests wait for them now; the votes and their results were right (BUG-0447).
+- Tests: the lab's hitch gate failed a test on the frame that opens an editor (logged just before the
+  stage change); that frame now counts as the switch, not as a stall in play (BUG-0448).
+- Tests: `editor_desync` failed about every second run in the Cell part after the host's evolution:
+  the guest's mating call was pressed while the guest was still reloading the host's world or its
+  cell was hatching (the game takes no click then). The test now waits like a player; not a bug of
+  the mod (BUG-0411).
+- Tests: `puppet_fight` counted steps of the other player's creature that the observer could not see: out of
+  the view the game puts a creature on the plain terrain instead of on a nest mound, 1 m lower. Only steps on
+  the observer's screen count now; it was not an ability (BUG-0414).
+- Creature: an evolution vote that ended while the host's game played a cinematic (the evolution's own
+  fade-in right after the last editor, a caption) left the host in an editor without its buttons. The
+  vote's editor now waits until the cinematic is over and the game is not paused (the pause menu, the
+  Sporepedia, My Collections); a guest's own editor after a vote waits through a pause instead of being
+  dropped, and an action vote's result waits the same way (BUG-0404).
+- SporeKit: a hook made while the game runs could let a game thread call address 0 (a handled
+  fault, once followed by a frozen game): the hook's original function is now set before the hook is
+  switched on. Seen in test games when the first simulated input was sent (BUG-0398).
+- Creature: the creature parts a player finds (in a skeleton, from a creature, as a reward) are now the
+  whole party's, like DNA: a part the host finds is in every guest's editor too, a part a guest finds
+  is unlocked for the host and the others ("Bob found a new creature part"), and a guest keeps them
+  after a rejoin. Before, each player's game kept its own, and a guest lost its finds at the next
+  world load (BUG-0401). Both players need this version.
+- Tests: the `team` test could leave the guest's creature 0.94 m under the ground (its move next to
+  the host cut through the planet's curve); the test command now puts it onto the ground (BUG-0400).
+- Tribe: right after joining, some of the host's animals could stand up to 1.7 m inside the ground on the
+  other players' screens for up to half a minute; they are always shown on the ground now (BUG-0399).
+- Creature: the host's animals walking downhill no longer keep hopping on the other players' screens
+  (a short fall every few seconds) (BUG-0406).
+- Creature and Tribe: animals of the host now walk and run on the other players' screens with their
+  walk animation, on the host's path: in the Creature stage a moving animal slid over the ground in
+  its standing pose, in the Tribe stage animals moved in small steps and jumps (BUG-0361).
+- Creature: the other player's creature and the host's animals no longer stand still and then jump
+  ahead when they move without walking themselves (carried by an animation): they move along with
+  them (BUG-0394).
+
+- Creature: the eggs at other species' nests are the same on every game: a guest now sees the eggs the
+  host's nests lay (where the host has them, on the ground), and an egg eaten by either player is gone
+  for both. Before, a guest saw none of them (BUG-0384).
+- Tribe: the NPC tribes that form during play (the "a new tribe has appeared" event) were there only for
+  the host: guests never saw them or their members. A guest now gets each of them where the host has it,
+  of the same species, with its members (BUG-0381).
+- Tests: the `creature` test's guest hit could land on a member of the host's family or pack, a hit the
+  host drops on purpose since BUG-0374 ("hits applied 0 -> 0"); it now hits an NPC outside both (BUG-0390).
+- Tests: play_tribe compared the chiefs' line of both games with the host's own counters in it (BUG-0397 still open: other play_tribe checks).
+- Creature: a creature of a partner's earlier creature (before its editor) could be missing on the
+  guest until the next world share: the host could not send its species any more (BUG-0370).
+- Tests: npc_far / npc_pooled walked the host into the sea, where the game's deep water cinematic held
+  it in the air (sync-check "p0 10.7" in every run); they now walk on land and check where the guest
+  draws the host (BUG-0377).
+- Setup: a Spore folder without Galactic Adventures (Steam's base game: `SporeBin`, no
+  `SporebinEP1`) now says "Galactic Adventures is not installed" with what to install, instead of
+  "choose the SPORE folder"; choosing `SporeBin` or `SporebinEP1` takes the folder above it, and the
+  setup also looks in Steam's other library folders (BUG-0391).
+- Setup: on Steam, Galactic Adventures (app 24720) has its own folder `steamapps\common\Spore 24720`
+  next to base Spore's `steamapps\common\Spore`; the setup now finds it first, and when base Spore
+  (or its `SporeBin`) is chosen it says "Galactic Adventures is installed in ...\Spore 24720: using
+  that folder" and installs there, instead of saying Galactic Adventures is not installed (BUG-0391).
+- Setup and in-game update: when GitHub's API refuses (403 / 429: its hourly limit per IP address,
+  hit on VPNs and shared networks) the newest release now comes from the release page, checked
+  against `SHA256SUMS.txt` as before; the setup could not install at all. If GitHub does not answer,
+  the setup says how to install with the release zip and `install.bat` (BUG-0392).
+- Space: in the galactic core's system each player saw the partner's ship 20-30 m above where it
+  really was; partners' ships and the host's ships seen on a guest are now drawn exactly where the
+  mod puts them (BUG-0378; BUG-0190 still open: NPC ships in the core not measured yet).
+- Support sync-check: it no longer reports a difference for a fast Space ship that is only a moment
+  behind (the allowed distance grows with the ship's speed), nor for players in the galaxy view,
+  where nobody's ship is shown (BUG-0378).
+- Civilization: a guest that missed several new cities of other nations (joining, or cities founded
+  at once) now gets all of them and their vehicles within seconds; it used to get one city per
+  15 s, and those nations' vehicles were missing meanwhile (BUG-0380).
+- Civilization: the support sync-check no longer reports a partner's moving pointer as a desync
+  (BUG-0380).
+- Space: when the host's world cannot go out yet because its ship is on a planet (the Space stage
+  saves only off a planet, as right after Civilization), every player is now told that the world
+  follows when the host's ship leaves the planet (BUG-0382).
+- Cell: a knocked-out cell no longer eats the food that floats into it, so it no longer comes back
+  from its respawn bigger than "small again" and the shared food no longer grows while it is out
+  (BUG-0364).
+- Support: the sync self-check no longer reports a Cell food total that reached a guest a moment
+  late, nor the cells at the edge of the 900 a guest is sent in a crowded pool; tests that remove a
+  guest's cells on purpose mark it for the lab (BUG-0379).
+- Tribe: on a guest's screen, tribe members (the host's and the guest's own) no longer stop and go,
+  or jump ahead, when they start or end a walk: they walk smoothly on the host's path, also on a
+  network with jitter (BUG-0365). Plays together with 0.7.x; the guest needs this version, and the
+  host too for the smoothing over a network with jitter.
+- Creature: each player now sees the partner's real health on the partner's creature (it always
+  looked full, hits on the partner did not show) and its real max health (BUG-0373).
+- Creature: the host's pack and family no longer attack and kill a partner (a partner's hit on a
+  pack member made it fight the partner for good); a partner's hits no longer hurt them (BUG-0374).
+- Creature: a player who plays its own creature in the host's world now gets the extra health of
+  every brain upgrade (it stayed at the first level's health, 14 against the host's 44) (BUG-0375).
+- Creature: a guest's own creature editor (after the host's evolution vote) offered every part, also
+  the ones the species has not collected yet; it now locks them as the host's editor does (BUG-0368).
+- Creature: a guest whose game lacks the Creepy & Cute pack saw the host's creature without the
+  layers painted with the pack's paints (black or in other colours); they are now shown as similar
+  base game paints in the host's colours (BUG-0369).
+- Tools: crash_triage.py named the co-op version of an earlier session (from the crash file's
+  summary) instead of the one that crashed (BUG-0372).
+- Creature: the partner's creature no longer keeps "jumping" while it walks downhill: the game took
+  it for falling for a moment again and again and played its fall animation (BUG-0366).
+- Creature: the partner's creature is no longer drawn under the ground: it is now always put on
+  your own game's ground when the partner walks or stands on the ground (BUG-0367).
+
+## [0.7.3.3] - 2026-11-01
+
+### Fixed
+- Creature: the partner's creature no longer moves in steps and teleports while the partner walks:
+  it walks with its walk animation exactly on the partner's path (before it stood or crept between
+  restarted walk orders, fell up to 3.5 m behind and was put in place again; BUG-0360).
+
+## [0.7.3.2] - 2026-11-01
+
+### Fixed
+- Creature: a guest whose own creature has fewer abilities than the world's creature got an error
+  (caught by the game) at every key press, and its ability keys could use the world creature's
+  slots: the ability bar was not built again after the guest's avatar took its own creature
+  (BUG-0358).
+- Space: a player who joined (or rejoined) while the host's ship was landing on a planet could get a
+  world saved on that planet: their game then logged errors at every frame and stalled for seconds
+  at a time. Such a save is now made again once the host's ship is off the planet (BUG-0357).
+- Cell: with four players a guest's game could drop to 3 frames per second at the end of the Cell
+  stage and never get into the Creature stage: a crowd of over 256 cells on its screen made the game
+  lose soft-body particles every frame until its particle pool was full, and the cells that shared
+  the last one were thrown around (BUG-0355).
+- Cell: a guest playing its own cell is no longer a "ghost" after joining or a reload (it swam
+  through everything and could not eat, bite or be hit): the mod took the rebuilt cell for the
+  partner's old puppet (BUG-0342).
+- Creature: a player whose game does not have the Creepy & Cute parts pack can now join a host whose
+  creatures use its parts: on that player's screen those parts are shown as similar parts of the base
+  game (eye for eye, mouth for mouth, the nearest abilities), with a notice; nothing of the pack is
+  shared (BUG-0354, BUG-0341).
+- Cell: a crowd of hundreds of cells next to a player no longer makes that game fault every frame or
+  throw a cell thousands of metres away (the game's pool of cell particles ran full) (BUG-0338).
+- Cell: a player who stays in the pause menu while the other players play no longer corrupts the
+  game's memory (a broken collision state, then a crash or freeze when Cell ends; seen on the way
+  to Creature with four players) (BUG-0348).
+- Creature / Cell: the host keeps its world's species; an own creature or cell chosen in an earlier
+  session (another world) no longer replaces the species the host just evolved (BUG-0344).
+- Cell: after a reload of the world a guest plays its own cell again, as the others see it (BUG-0349).
+- Tools: `crash_triage.py` finds the known ticket of a crash in a relocated `SporeApp.exe` (Windows,
+  Steam) by its address numbered from 0x400000 (BUG-0346).
+- Cell: after the host's world is loaded again (an evolution, "Send my world"), a guest's cell no
+  longer starts alone up to 130 m from the host: it joins the host as after the first load
+  (BUG-0352).
+- Cell: a guest that bites a creature of the host now sees its health ring, as the host does
+  (BUG-0350).
+- Cell: the log names the food, the DNA spent and the editor's DNA budget at every cell editor and
+  stage entry, to explain reports of unexpected DNA (diagnostics, BUG-0351 still open).
+- Tribe: at the arrival and after a rejoin, a player's chief that stands in another one is moved to
+  its own spot round the village; two chiefs that end up in each other later are moved apart
+  (BUG-0340 still open: the chiefs can still start in each other in some runs).
+- Cell: a game with more than 1024 cells in one column of the cell physics (seen on a guest of a
+  four-player game, 0.7.3.1) no longer faults every frame with a half-second hitch each, a stopped
+  simulation and a frozen game after the stage change (BUG-0337).
+- Creature: an animal hit or killed while it runs now shows its health and its death on the other
+  players' screens at once (BUG-0334).
+- Creature: a player who leaves and joins again (or loads) within a minute of being saved by the
+  pack is saved again in the new session; the rescue cooldown no longer carries over (BUG-0330).
+- Tribe: where the village ground is higher or lower for the other players than for the host, the
+  tribe members and animals no longer walk in place or jump around on their screens: they stand on
+  their own ground where the host's stand (BUG-0329).
+- Civilization: a vehicle of another nation standing on a spice node no longer flickers 13 m away
+  on the other players' screens (their game moved it off ground it found invalid), and a fast
+  vehicle is no longer thrown ahead of its place when the host stutters (BUG-0186).
+- Civilization: a building the host's game rebuilt after a siege no longer stays a ruin for the
+  other players (BUG-0324).
+- Creature: animals running on the host are no longer shown metres behind on the other players'
+  screens (their copies hardly walked: each new walk order restarted the walk); a running animal's
+  copy now follows the host's path exactly (BUG-0281).
+- Creature: an editor opened right after a rejoin on a slow PC no longer stays black for good: it
+  opens once the player's creature is built (BUG-0318).
+- Space: a guest's game no longer faults when the host's NPC ships use a ship model the guest does
+  not have (the empires' ships come from each player's own Sporepedia cache); the guest shows such
+  a ship with a model of that empire it has, or not at all (BUG-0323).
+- Space finale: a host who waited at the galactic core and went in first is counted as entering
+  together (a counter the tests read; players saw nothing wrong, BUG-0320).
+- Co-op window: a host whose PC is on the network twice (cable and Wi-Fi) is listed once, not
+  once per address (both hosts need this version; BUG-0210).
+- Creature and Tribe: a partner's creature, an animal or a citizen that cannot keep up by walking
+  no longer falls further behind on a player whose game runs at a low frame rate (the pull towards
+  the host's position was per frame, now per second; BUG-0175).
+- Tribe: leaving the Tribe stage (for example for the galaxy menu before loading another save) no
+  longer faults when the game sends a tribe member it has already cleaned up on one more walk; that
+  fault could leave the next load from the menu unfinished (BUG-0310, BUG-0285).
+- Civilization: a vehicle the host's game moves in one step (not by driving) no longer flies past
+  its place on the other players' screens for a moment (BUG-0186).
+- Cell: a player leaving the Cell stage to load the host's world (after joining or rejoining) no
+  longer has the mod create or move cells while the game is tearing the stage down (a guard after one
+  crash seen in testing, BUG-0308 still open).
+- Cell: a player whose cell was moved far again and again (for example put back after an invalid
+  position) no longer fills its game with leftover background cells; a guest then stopped seeing
+  the host's cells at all. Background cells far from the player are now removed (BUG-0314).
+- Creature: when the host leaves to the main menu, the other players keep the animals they saw
+  around them (their own game runs them now); before, their planet stood empty and the nests
+  brought their members back one at a time (BUG-0180).
+- Creature: a player's game checks every second that the copies of the host's animals are still in
+  its world and makes a lost one again, with a log line saying what happened (diagnostics, BUG-0300
+  still open).
+- Tests: a test reusing running games no longer inherits fixes switched off by the previous test
+  (BUG-0312); `coop_legless_guest.py --guest cancel` clicks the red cross as it says (BUG-0317).
+- Space: a star nobody had visited could still get different planets in the two games (for
+  example 6 and 10), so a partner's planet did not exist on the other side. The game loads the star's
+  species on the way and that load drew from the same random numbers as the planets; it no longer
+  does (BUG-0185). Test: `coop_space_seed_profile.py`.
+- Tribe (and Creature): an animal running in a herd, for example one fleeing a hunt, no longer lags
+  a few metres behind on the other players' screens: a copy pushed off its path by the animal beside
+  it is now put back on it after half a second (BUG-0305).
+- Space: players joining while the host is on a planet no longer end up on that planet when the
+  host leaves it (their ships went back down a few seconds after loading the host's world while the
+  host stayed in the solar system): the world is now saved 2 s after the host is in the system, also
+  when the save would have gone out in the very frame the ship left the planet (BUG-0301, BUG-0287).
+- Tests: a host that fails to start hosting is logged and retried at the start of a test (BUG-0302).
+- Cell with three or four players: the games no longer fault and crash when the players spread
+  out (the game's own collision step holds about 2000 cells; the host kept the area around every
+  player alive and the pools grew past it). The host now fills the other players' areas only while
+  it holds under 1100 cells (1300 for what that player sees), each player gets at most its 900 nearest cells, and the self-check no
+  longer reports the cells around other players as missing (BUG-0295, BUG-0296, BUG-0297,
+  BUG-0298). Test: `coop_cell_4p.py`.
+- Cell: a player whose own cell ends up at an invalid position is put back where it was, and its
+  game no longer fills the world from that position (a crash at the next level-up, BUG-0299).
+- Cell: a player far from the host found no food and no other cells: the host's game kept only
+  the area around its own cell alive. Now it populates and keeps the area around every player, and
+  each player gets the cells around itself, so two players exploring apart can both eat (BUG-0174,
+  BUG-0279).
+- Cell: a cell whose position is invalid is no longer sent to or shown by the other players (a
+  guard after one crash seen in testing, BUG-0292).
+- All modules now use one rule for "is the host's world the one I play", and the host names its
+  world when a player joins, so a guest joining in the host's Civ world no longer misses the first
+  vehicle and city state (BUG-0231).
+- A world share that failed after the host's save ("cannot share the world: ...") is retried up to
+  3 times, 30 s apart; a guest in another world no longer stays there for the whole stage
+  (BUG-0231).
+- Space: a trade or spice gift that comes back after a galaxy reload is paid only into the game it
+  was taken from: kept for that game while another one is loaded, paid when the same game was saved
+  since, dropped when the reloaded game still has it or its save slot was replaced by a received
+  world (BUG-0225, GitHub #159).
+- A rare fault in the game's UI right after a guest loaded a shared world (a destroyed modal window
+  left in the window manager) is caught before the next mouse message (BUG-0270).
+- Tests: `space_rivalry` waits until both ships are on the home planet before its checks (BUG-0262).
+- Tribe: after the host's tribe was wiped out and the host bounced back in time, the other players
+  no longer lose the host's whole tribe for the rest of the session (BUG-0288).
+- Cell: while the host is in the main menu, an editor or a loading screen, a guest now plays on in
+  its own tide pool (the creatures swim, eat and are eaten, new ones appear) instead of a frozen
+  one, and the food it eats meanwhile goes to the shared progress when the host is back; then the
+  host's pool takes over again (BUG-0205, BUG-0151). Test: `coop_cell_away.py`.
+- Creature: a guest far from the host no longer loses the animals around it. The host's game kept
+  its world alive only around its own camera: farther than about 150 m it put the animals back
+  into its pool, also next to a guest, and nest members there appeared and vanished every few
+  seconds. The host now keeps the world alive around every player (BUG-0280).
+- Tribe: the animals where a guest looks, far from the host's village, now live on the host's game
+  and reach the guest (the host kept and sent them only around its own village) (BUG-0280,
+  BUG-0291).
+- Creature: a guest that rejoined and loaded the host's world could fault every frame in the herd
+  update (a herd of the save with an empty member slot); such slots are dropped now (BUG-0256).
+
+### Changed
+- A guest that plays another world of the host's stage (joined from its own game, loaded one of its
+  own saves, or kept its world with `auto_load_world=0`) now plays that world on its own: **DNA it
+  earns there stays in that world and its save** and no longer goes to the host's world; when it
+  then loads the host's world, its DNA becomes the host's total (the DNA earned meanwhile does not
+  join the pack). Its money and tribe food stay its own there too, and a spend made in the shared
+  world just before it left still counts once. Cities founded in such a world by 0.7.3.0 stay in
+  the guest's save (BUG-0231).
+
+### Tests
+- The test monitor no longer reports a crash when a game's console is only busy with another
+  command of the test (BUG-0261); `coop.tribe act` refuses hut and tool actions on a tribe member,
+  which made the host's game fault (BUG-0260); the campaign's coverage finding names the missing
+  objects per kind.
+- Cell: `coop_cell_editor_timed.py` enters the own cell editor right after a real respawn or revive
+  (BUG-0237: the stage is left ~10 s after touching the mate, the invulnerability is over by then,
+  not reproduced); `coop_cell_respawn.py` also checks the death count (BUG-0221, not reproduced).
+- Three and four players per stage in minutes: `tools/tests/party.py` (the helper for every test with
+  more than two players) and `coop_party.py` in the new `multi` suite: two guests joining at once,
+  each guest's game showing the others, shared totals, a vote with four, a leave and rejoin of the
+  last guest, the host in the menu with several guests, a player joining during a vote; and one
+  test per stage for the gameplay between guests: knockouts and revives (Cell), a joint hunt, one
+  NPC impressed by two guests and noticing two partners (Creature), the tribe split and chiefs with
+  four (Tribe), ownership, gifts, trade, roles and two superweapon requests (Civ), two players with
+  the same name, gifts, a spice sale, a contract crew without the host, allies mirrors, rivals and
+  rescue between guests (Space), leaves during another guest's transfer (BUG-0152).
+- civ_reload and civ_sw_vote assert the game's own state (the boost speed, the order a vehicle took,
+  the money a superweapon cost) and fail with their fixes switched off (BUG-0222).
+- The campaign bot answers a captured city's specialty box before a nation's talk under it, and
+  closes a talk that does not take its answer (BUG-0290); `select` waits for the partner to be on
+  the screen (BUG-0272).
+- The Space play bot no longer clicks under the rank badge (it opened the captain screen, which
+  takes no mouse wheel), and the galactic core finale closes a captain screen before zooming out:
+  a guest of the 4-player campaign stayed next to the core (BUG-0303, test `space_captain`). The
+  captain screen's caught fault at 0x5971D4 is the game's own, also without the mod (BUG-0304).
+  `coop_sync_multi.py --fixture tribe` measures the Tribe stage with four players.
+
+## [0.7.3.1] - 2026-10-29
+
+### Added
+- Problem reports: type `/bug <what you see>` in the co-op chat when something goes wrong; every
+  player's log gets a line with the text and the moment, and the chat says "marked for the report".
+- Problem reports: the games of a session share one clock, so the logs of all players line up
+  (`tools/merge_logs.py` merges them into one timeline). The host and the guests compare the shared
+  world every 30 s and log what differs (`sync-check:`, `[coop] sync_check=0` turns it off). The log
+  also has the frame rate and hitches, the game's free memory, the network quality per player, the
+  saves and world transfers with their times, settings that are not the defaults, and a summary
+  line of each session (also at the top of the report). The report lists other mods, extra
+  `.package` files and game files of an unexpected size. Paths of your PC are masked in logs and
+  reports ([support guide](docs/REPORTING.md#reporting-support)).
+- Problem reports: the log now says what each player did and what the mod decided: a state line
+  every 10 s (stage, world, position, partners and their distance, why a partner is hidden, link
+  quality, the food on the screen in Cell, the creature's body and where it came from) and lines
+  for eating, bites, bodies, votes, clicks in the co-op window, knockouts, stage changes, joins and
+  leaves, about 0.5 MB an hour. `[coop] log_detail=0|1|2` in coop.ini (`coop.log detail N` in the
+  console) sets how much. "Report a problem" reminds that the other players should send theirs too.
+- Every game logs the SporeCoop, SporeKit and game versions of the other players when they join
+  (and warns when they differ); `coop.status` lists them. Older versions show as unknown.
+
+### Changed
+- Logs and problem reports no longer contain other players' internet addresses: a public address
+  is shown as a short tag ("public #3F2A"), a home network one by its class ("192.168.x.x").
+
+### Fixed
+- A load from the galaxy menu (a stage jump, a received world) could crash the game in
+  `cStarRecord::GetPlanetRecord` when the stage was left with a game fault that kept the old
+  world's player empire in the menu: the mod now clears it first (BUG-0284).
+- Wine: the game could crash right after leaving a session, while the co-op window looked up the
+  PC's network addresses (the "Friends connect to" line); Wine's network code returned garbage when
+  several games of one Wine prefix asked. The lookup now runs in the background and rarely, does
+  not use that part of Wine at all under Wine, and a fault in it no longer ends the game
+  (BUG-0286).
+- Votes: "I'm ready" in the co-op window did nothing while a caption of the game was on the
+  screen (the brain-upgrade captions at the end of the Creature stage): the vote ran out of time.
+  The window's buttons now work during captions and cinematics (BUG-0273).
+- Stage changes: after the change to Tribe the guests could load a Creature save of the host and
+  stay in Creature, and in Space their ships could go back down to the home planet, until they
+  rejoined. The host's save for them now waits until it has been 2 s in the new stage or place, a
+  save the game did not write is made again, and older files are no longer sent as the new save
+  (BUG-0276, BUG-0287).
+- Creature: when the host's game put away NPCs far from the host's creature, a guest standing
+  near them still saw them for 2 s (again with every respawn of a nest member there). The host
+  now removes such an NPC from the guests at once (BUG-0274).
+- Tests: the four-player sync check no longer calls a whole kind of objects out of sync for one
+  object off among a few, and allows for the guest's designed 0.15 s lag; measured per player, the
+  3rd and 4th player were as close to the host as the 2nd (BUG-0275).
+- Creature: a new guest (no creations of its own) that saved an edit in its own editor at the start
+  of the Creature stage could be stuck with the host's legless creature from the Cell stage, on its
+  own screen (and after "Replace" on the host's too), after every rejoin and restart. Only a
+  creature the guest really made becomes its own now, and the co-op window's arrows can go back to
+  the world's own creature (BUG-0278).
+- Cell: the host's (or a guest's) game could crash while the Cell stage ended and the Creature
+  planet loaded, when the co-op status or the player's position was asked for at that moment. The
+  mod no longer reads the cells the game has already freed, nor anything else of a stage the game
+  left since the last frame (BUG-0271).
+- Creature: a guest's game could fault a second after it started to leave the stage for a world
+  the host shared (all three guests of a 4-player game, right after the host's creature editor).
+  The mod no longer touches the player's creature while the game tears the stage down (BUG-0264).
+- Tribe: after the Creature stage ended the players' way, the host saw no guest in its Tribe world
+  (no partners, "together" never reached) until its next save. The host now stays in its planet's
+  world through the game's temporary save name (BUG-0258).
+- Tribe: after the host visited an editor, the co-op epic creature was no longer tracked: it went
+  into the shared save and the world of every guest, stayed after the session and a second one
+  came later. An editor visit no longer counts as a new world (BUG-0217).
+- Civilization: a single frame without the player's first city could make the host forget every
+  vehicle and city owner (vehicles rebuilt on the guests, captured cities and bought vehicles given
+  to someone else). Only a real world change does that now (BUG-0223).
+- Civilization: with guests in the session only a capture's caption closes itself after 8 s; other
+  cinematics of the host (city purchases, camera cinematics) play to the end again (BUG-0224).
+- Saves no longer keep the empty herds made for a partner's creature after the partner left, and
+  every save builds its own list of co-op objects to leave out (BUG-0255).
+- Windows: a received world that could not replace its old copy (another program had a file of it
+  open) now goes into another save slot instead of being dropped; leftovers of interrupted world
+  writes are tidied, an old world moved aside is put back or kept as a backup (BUG-0254).
+- **A cancelled evolution vote no longer opens every guest's editor**, and a guest who leaves (or
+  loses the host) right after a vote no longer gets its editor opened offline. The Give recipient
+  you picked is forgotten when that player leaves or the session ends (BUG-0234). Needs the new
+  version on the guest.
+- **Shared money or tribe food a guest spends right when another player joins is no longer given
+  back** (it was spent twice: the purchase was made, the money returned, the host never counted it)
+  (BUG-0220).
+- **After an evolution, every waiting guest gets the world when the cinematic is over (at most
+  120 s)**: with two or three guests the waits added up (120 / 240 / 360 s), and a leftover wait
+  could send the world during the cinematic, so a guest got the hatchling creature again (BUG-0232).
+- **Civilization: a guest who plays another world than the host's no longer gets the host's
+  vehicles and cities applied to its own planet** (its own vehicles were taken over or removed and
+  cities founded), and in Tribe and Civ its own tribe or vehicles play on under its own orders
+  until it plays the host's world (BUG-0231, partly: the shared resources and DNA of such a guest are still open). Cities already founded that way stay in the
+  guest's save.
+- **"Host is in an editor / loading: you play on alone" is only shown in Creature, Tribe and Civ**,
+  where the guest really plays on alone; in Cell and Space it is gone. DNA a guest earned while the
+  host was away goes to the pack only when the host plays that stage again, and DNA the host owed
+  is no longer paid into a different world it loads later (BUG-0233). Correction to 0.7.3.0: its
+  BUG-0205 line says a guest plays on with its own creatures while the host edits; that
+  holds for Creature, but Cell is still open (BUG-0205, BUG-0151).
+- **Mixed versions: an older SporeCoop no longer loses long chat lines or gets an emptied species
+  table** (BUG-0219): players tell each other at the join what they support; a long chat line
+  reaches a 0.7.2.x or 0.7.3.0 player cut, a big species table does not reach them, and a
+  notification names the player with the older version. A guest with a 0.7.2 host no longer keeps
+  every Cell meal in memory.
+- **A player who is loading or saving is no longer dropped when somebody with the same name joins**
+  (BUG-0235): a rejoin after a crash is recognised by a token the game keeps until a clean leave,
+  not by the name; such a rejoin now also works in a full 4-player session.
+- **Pasting the co-op window's whole "Friends connect to: ..." line into Join works** (BUG-0236).
+- **In-game update: a failed attempt no longer keeps the downloaded files in memory** (BUG-0241),
+  a pack with two names for one file is refused (BUG-0242), and a second start of the mod or the
+  game's exit no longer interrupts an update between two file moves (BUG-0243).
+- **Settings: a coop.ini saved as UTF-16 BE is no longer destroyed**, and two games on one folder no
+  longer lose a name written at the same time (BUG-0245).
+- **Crash reports name the thread that crashed** (BUG-0248).
+- **Space: a disabled ship is no longer destroyed when you come back from an editor or an
+  adventure**: the 20 s for a repair stand still while you are out of Space, and a load or the
+  galaxy menu ends the disabled state without a death (BUG-0229). A disabled state that ends while
+  you are out of Space (the session ends) no longer leaves your ship invincible (BUG-0228).
+- **Space: spice of the co-op gift that comes back while you are out of Space is no longer lost**:
+  it goes back into your cargo hold once you are in Space again. A gift received in an editor or an
+  adventure is now sent back like one received in the galaxy menu (BUG-0226).
+- **Space: a partner's ship whose invincibility the game clears stays the partner's ship** instead
+  of turning into an armed NPC ship next to a new one; a ship a game mission takes is held still
+  and removed once the mission lets it go (BUG-0218).
+- **Space armada contracts: a wave resumed after the host's return gets tough ships, is not won
+  without a fight, and a raid lost while the host was away fails the contract** (BUG-0227).
+- **Space allies: a galaxy reload is seen even when the new empire object gets the old one's
+  address** (BUG-0225, the allies part; refunds after a galaxy reload are still open).
+- **Cell: a knocked-out partner no longer flickers to "up" when one update is late** (BUG-0238):
+  it stays translucent until its own 10 s run out, is not taken for a helper meanwhile, and its
+  death effect does not play twice.
+- **Cell: a guest's meal while the host is in its editor no longer drops the guest's food later**
+  (BUG-0239): the guest is back at the shared total as soon as the host returns.
+- **Cell: a guest's bite no longer hurts cells the host's own bite cannot** (BUG-0240): rocks,
+  plants and meat are spared, as in the game.
+- **Setup: a failed GitHub check can no longer overwrite the release an install just fetched** (the
+  window said "GitHub not reachable" and the next Install asked again; BUG-0244).
+- **Crash reports name the game instance and whether a test profile was used** (`run:` line, no
+  names or paths), so the test lab no longer counts a crash of your own game against a test
+  (BUG-0249).
+
+## [0.7.3.0] - 2026-10-28
+
+A big bug-fix release. A review of the whole mod and the test lab found about 180 problems; 158 of
+them are fixed here, nearly all with an automated test that fails without its fix: crashes and freezes,
+desyncs between the players in every stage, worlds and saves that could be overwritten or mixed,
+the setup and the in-game update. 0.7.3.0 plays together with 0.7.x, but both players need 0.7.3.0 for
+most of the fixes. Correction (BUG-0219): one wire feature is new, reliable messages bigger than
+one packet are sent in pieces (BUG-0034), which 0.7.2.x cannot join: with a 0.7.2.x player a chat
+line above about 1160 bytes is lost and a Creature species table of 42 or more species can arrive
+empty. The version after 0.7.3.0 sends such messages only to players who can join them. What is still open is listed in
+[docs/known-issues.md](https://github.com/WoodyWizard/SporeCoop/blob/main/docs/known-issues.md).
+
+**GOG 2016 build (`922af7c7`):** fixes that need new game addresses switch themselves off on it
+(see the README); use the GOG 2024 or Steam build for them (BUG-0108). Correction (2026-10-28,
+BUG-0216): two fixes of this release are off on GOG 2016 too: NPC nations no longer spawning
+vehicles on a guest's game (BUG-0188) and keeping our creatures out of saves (BUG-0020); the list is
+[data/symbols/frozen_off_922af7c7.txt](data/symbols/frozen_off_922af7c7.txt).
+
+**Behaviour change (added 2026-10-28, BUG-0216):** a Tribe or Civilization host who stays 4 s in an
+editor or on a loading screen now counts as away: guests play on alone ("... is in an editor: you
+play on alone") until the host is back (BUG-0205).
+
+### Fixed
+- **Joining by host name no longer freezes the game while the name is looked up** (BUG-0204): the
+  name is resolved in the background and the join goes on when the answer comes; an unknown name
+  ends the join with "cannot resolve <name>". Numeric addresses never waited.
+- **Setup: the newest update pack next to the setup is used, and an older version is never
+  installed over a newer one without asking** (BUG-0094): the button says "Install older x.y.z"
+  and asks first; silent mode refuses unless `/downgrade` is given.
+- **Setup: the window cannot be closed while it installs or removes SporeCoop** (BUG-0139), which
+  could leave the game without `steam_api.dll`; clicking Install before the GitHub check has
+  answered can no longer corrupt the setup's memory (BUG-0077).
+- **install.bat keeps your settings on a reinstall** (BUG-0080): `mods\coop.ini` (name, last address,
+  `[update] check=0`) and `mods\sporekit.ini` are only copied when missing.
+- **Docs: GOG 2016 players are told which fixes their build does not get**: the fixes since 0.7.2.2 that need new game addresses switch themselves off on the old GOG 2016 build; the README and these notes now say so (BUG-0108). `INSTALL.md` names the right log line to check an install (BUG-0165).
+- **Creature: a goal card's reward a guest earns while the host is in its editor is no longer
+  lost**; it is paid when the host's creature is back. A guest whose host stays in an editor or on a
+  loading screen plays on with its own creatures, as when the host is in the main menu (BUG-0205).
+  Correction (2026-10-28, BUG-0216): BUG-0205 is still open: the Creature part is not proven in a
+  game test and the Cell part is not done.
+- **A damaged creations package (My Creations) can no longer crash the game while it is read**:
+  a 64-bit index offset could wrap the bounds check (BUG-0208, found by the new decoder fuzzer).
+- **Space: the "Jump to" button of the co-op window jumps to the partner it names** (with 3 or more
+  players a partner in your own system made every press fail), and the notice names that partner
+  (BUG-0072). Flying to a partner in the galaxy view is refused while your ship is disabled
+  (BUG-0063).
+- **Space: galaxy map name tags react only to clicks on the game**: a click in another window over
+  the game no longer starts a trip, and with swapped mouse buttons the primary button works, the
+  secondary one (camera drags) no longer flies the ship (BUG-0090, BUG-0145).
+- **Space: the guest no longer sees defender ships twice** in the host's system, and a game ship
+  can no longer be taken for a partner's ship (BUG-0111).
+- **Space: an armada contract wave goes on with its own raid when the host leaves the colony and
+  comes back**, instead of starting a second raid whose end decided the wave (BUG-0046). A won raid
+  on a partner's colony is no longer taken for an aborted one (BUG-0136).
+- **Space: unvisited stars get the same planets on both games** even when another thread names
+  things during the generation (BUG-0123); `coop.space empire contact` no longer breaks the game's
+  float maths after 8 calls (BUG-0126).
+- **Saves no longer keep the partners' creatures** (BUG-0020): a host save made while a partner
+  played kept the partner's creature and the herd made for it; after a restart it came back as a
+  strange creature of another species (the 0xD48634 crash came from attacking it). They are now left
+  out of every save. Test: `coop_save_hygiene.py` (suite `save_hygiene`).
+- **Cell: a guest's bites follow the game's rules** (BUG-0078): a guest could hurt creatures the
+  host's own bite cannot (species that never attack the player, a creature just bitten or
+  invulnerable), and such species turned on the guest. Test: `coop_cell_guest_bite.py`.
+- **A downed partner no longer rescues you** (BUG-0131): in the Cell stage two knocked-out cells
+  side by side revived each other, and in Space two disabled ships repaired each other (also a
+  partner whose game froze or was loading counted). A lethal hit with nobody able to help is the
+  normal death. Tests: `coop_cell_rescue.py`, `coop_space_helper.py`.
+- **Cell: small display fixes** (BUG-0160): a cell no longer shows squashed for a moment when its
+  rotation is not set yet, a dying creature no longer shows full health on the guest, and the
+  partner arrows never get a broken position. Test: `make test`.
+- **Joining over a lossy link no longer fails when the host's first answer is lost** (BUG-0030):
+  the lost welcome counted as delivered and the join ended with "no answer from host (timeout)"
+  after 10 s (about one join in ten at 10 % loss). Test: `make test`.
+- **Co-op window: the address field and the status line** (BUG-0138, BUG-0104): an address pasted
+  with spaces around it (or the whole "Friends connect to" line) joins the first address; a port
+  that is not a number from 1 to 65535 is refused at once instead of a 10 s timeout. The status
+  no longer says "Connecting to ..." for the whole session: it clears when you are in, shows why
+  a session ended, and button messages go away after a few seconds, so the update line shows
+  again. Test: `coop_ui_status.py` (suite `ui_status`).
+- **Co-op window: more than three games on the network** (BUG-0183): "More >" pages through all
+  of them; the list forgets hosts that stopped answering and holds at most 32 (BUG-0039).
+- **No "player0 (host) is back: your N DNA go to the pack" after a disconnect** while the host was
+  in the main menu (BUG-0085).
+- **A partner no longer freezes when the other PC has been up for 49.7 days** (its millisecond
+  clock wraps, BUG-0053). Test: `make test`.
+- **Creature: a guest that gets the world right after the host evolved no longer stays a
+  hatchling** (BUG-0019): the world went out while the host's evolution cinematic waited for OK,
+  and the guest's creature never grew up nor migrated with the species. The host now sends it once
+  the cinematic is over. Test: `coop_evolve_world.py` (suite `evolve_world`).
+- **Creature: after a reload the guest plays its own creature again** (BUG-0119): the mod told the
+  worlds apart by the avatar's memory address, which the game can reuse; the guest could keep the
+  host's species, or get its creature applied while the world was still loading. Test:
+  `coop_world_reload.py` (suite `world_reload`).
+- **Creature: a guest that rejoins while the host is paused sees the animals around it**
+  (BUG-0125) instead of an empty area until they walked away and back. Test:
+  `coop_npc_rejoin_paused.py` (suite `npc_rejoin_paused`).
+- **Creature: an animal that pushes against a rock on the host no longer stays a few metres off on
+  every guest** (BUG-0169): its copy is put in place after 3 s. Unit test in `make test`.
+- **A fault inside the game during a co-op adjustment no longer leaves the game in the adjusted
+  state** (BUG-0110): the cell stage's player index, a selection flag, a creature's tuning and the
+  Civilization capture attribution are put back on the next frame. Unit test in `make test`.
+- **Creature: social ability keys are ignored while the cheat console is open**, and a digit typed
+  in another window no longer plays one when the game comes back to the front (BUG-0149; correction
+  2026-10-28: it has a game test now, `coop_social_console.py`, FAIL without the fix).
+- **Crash reports in hard cases**: a stack overflow now writes a crash report (before, the game
+  vanished without one), and a crash in a game that ran out of memory still writes the minidump and
+  tells you at the next start where the report is (BUG-0056, BUG-0127). Test: `kit_crash.py`.
+- **Old crash reports are removed**: `mods\logs` keeps the newest 5 crash reports with their
+  dumps, 5 other reports and 3 report archives instead of collecting them for ever (BUG-0137).
+- **Player names in any language**: a Cyrillic or Chinese name survives a restart (it was saved as
+  "????"), and a name typed into `coop.ini` with a normal editor (UTF-8) is read correctly
+  (BUG-0142); names set in the console are capped at 24 characters and cannot change during a
+  session, long texts are never cut inside a character, the creations path in the log keeps its
+  non-Latin letters (BUG-0164). Tests: `win_unit.py`, `make test`.
+- **Chat and notifications**: a Russian or Chinese chat message gets the same room as an English
+  one in the notification panel and never ends in a broken character; chat always looks like chat
+  (a message with "lost" in it is no longer a red alert, a player named "Lost" joining neither),
+  and the co-op window's chat wraps long lines and scrolls back through the last 50 lines with the
+  arrows on its right (BUG-0129).
+- **Name tags and banners with non-Latin text are centred** (Cyrillic names, the arrows of off-screen
+  partners, the Russian contract banner) (BUG-0159).
+- **The co-op window after a resolution change** opens centred on the new screen instead of partly
+  off it, and the overlay's co-op status text is no longer drawn over the co-op window or the
+  notification panels at 1280x720 / 1366x768 (BUG-0113, BUG-0155). Test: `coop_window_layout.py`.
+- **Hot reload of the mod no longer risks crashing a game thread** that was running a re-hooked
+  function at that moment (BUG-0202). Test: `kit_freeze.py` (hookrace).
+- **Host in the main menu (Tribe, Civilization)**: guests now really play on alone: their tribe
+  members and vehicles move and follow their orders until the host is back (before, everything
+  stood still). DNA a guest earns while the host is in an editor, on a loading screen or in the
+  menu now reaches the shared pool, also from goal cards (BUG-0151). Tests: `coop_tribe_away.py`,
+  `coop_civ_away.py`, `coop_dna_away.py`.
+- **Tribe epic creature**: an NPC tribe's villager hitting it no longer counts as a second player
+  (30 food, not 80, for one player alone); the epic no longer leaves a new herd in the world each
+  time and is not written into the host's saves; it ends with the session, and the next session's
+  first epic comes after 8 minutes again (BUG-0146, BUG-0121, BUG-0067). Test: `coop_tribe_epic.py`.
+- **Civilization: vehicles of a player who left** go to a player who is still there (the owner of
+  the nearest city, else the host) instead of staying locked; a captured city never goes to an
+  absent player (BUG-0031). Test: `coop_civ_leave.py`.
+- **Civilization superweapon vote**: a second request during a running vote no longer changes the
+  weapon and target of that vote; its sender is told to ask again later (BUG-0117). Test:
+  `coop_civ_sw_vote.py`.
+- **Civilization capture caption**: with guests in the session the host's caption closes by itself
+  after 8 seconds, so a host who is away from the keyboard no longer stops everybody's game
+  (BUG-0187). Test: `coop_civ_caption.py`.
+- **Civilization city alarms** show symbols the overlay font has ("×" under attack, "†" being
+  converted) instead of an empty box (BUG-0161).
+- **Gifts with 3 or 4 players**: a ">" next to the co-op window's Give button picks which player
+  receives the selected units (`coop.give next` in the console); before, a guest could only give to
+  the host (BUG-0075).
+- **Shared money and food**: money or food changed while out of a session (playing alone,
+  another save) is no longer added to the next host's pool when joining; two players spending at
+  the same moment can no longer push Civilization or Space money below 0, and a guest's money no
+  longer jumps back up for a moment after a purchase (BUG-0049, BUG-0106). Tests: `coop_civ_shared.py`
+  (suite `civ_shared`), unit tests in `make test`.
+- **Civilization roles**: a player who joins under the id of a player who left no longer gets that
+  player's role (and its bonuses) on the host, and guests no longer see the roles of other players
+  swapped after someone rejoined (BUG-0064, BUG-0079).
+- **Civilization: the other nations no longer buy vehicles on a guest's own game** that the next
+  update removed again (BUG-0188). Test: `coop_civ_ai_spawn.py`.
+- **Tribe: a member knocked out on the host lies down on the guest too** instead of standing with
+  its last health (BUG-0173). Test: `coop_tribe_ko.py`.
+- **Civilization: an NPC city founded while a guest joined or loaded** now appears on that guest
+  a few seconds later instead of never (BUG-0120). Test: `coop_civ_city_join.py`.
+- **Long chat lines and big tables no longer stop a player's network traffic** (BUG-0034): a message
+  bigger than one network packet (a chat line of more than ~1100 characters, the species table of
+  a rich planet) is now sent in pieces; before, it and everything reliable after it (damage, DNA,
+  NPCs, chat) never arrived, and the connection flooded the other player with empty packets.
+  Tests: `make test`, `coop_chat_long.py` (suite `chat_long`).
+- **A player who joins under the id of a player who left is shown with their own look**
+  (BUG-0076): the host and the others no longer show the newcomer with the previous player's
+  creature, cell or ship, and do not hand that creation to later joiners. With 3 or more players a
+  leaving player no longer leaves a frozen "ghost" behind on the others (in Space a ghost partner
+  disabled instead of destroyed your ship and could "repair" it, BUG-0109). Tests: `make test`,
+  `coop_creations_rejoin.py` (suite `creations_rejoin`).
+- **Smoother partners, NPCs, ships and vehicles on unstable connections**: after the latency rose
+  (a world sent to a third player, Wi-Fi), partners and NPCs moved in steps for up to a minute; now
+  for about 3 s (BUG-0133). The host's ships and Civilization vehicles no longer jump up to 40 m
+  ahead after a late packet (BUG-0122). Ship, vehicle and tribe member ids are never handed out
+  twice in long sessions (BUG-0154). Tests: `make test`.
+- **Cell: steadier sync on a lossy link**: one lost or late state packet made the guest delete and
+  re-create up to 14 of the host's cells (they blinked, lost their facing, a dying creature died
+  again); a guest's own meal over a level line could be taken back for a moment by an older total
+  from the host (a level down and up again). The food and DNA totals reach a guest that was loading
+  or just joined within 2 s. Tests: `coop_cell_net.py` (suite `cell_net`), `coop_cell_sync.py`
+  (suite `cell_sync`), unit tests `tests/cell_tests.cpp` (BUG-0032, BUG-0051, BUG-0088, BUG-0128).
+- **Cell: knockouts end cleanly**: a partner who left or whose "up again" was missed in an editor
+  no longer stays translucent with a frozen "KO" label; a session ending or the stage changing
+  during or right after a knockout no longer leaves the player's cell invulnerable, translucent or
+  moved. After a small respawn, a level-up gives the cell its normal size instead of up to twice
+  that (BUG-0061, BUG-0070, BUG-0041, BUG-0083).
+- **A received world never overwrites your game**: a guest with `auto_load_world=0` playing its
+  co-op slot had that slot moved away and rewritten when the host shared again (BUG-0035); a new host's
+  world was written over an old co-op slot of another host and mixed with its planets (BUG-0087); a
+  world whose files could not be written (disk full, a file in use) was still loaded (BUG-0105). A
+  received world now goes into its own slot (same host and planet, or a free one), is written into a
+  temporary folder, checked and moved into place as a whole, and is never loaded half-written.
+  Test: `win_unit` (Windows file handling under Wine).
+- **A guest in another world is left alone**: a player who joined from inside its own game (or loaded
+  its own save while connected) got the host's DNA, its own creatures removed and the host's cells,
+  tribe and relations applied, and the game then saved that (BUG-0130). Test: `coop_join_other_world.py`.
+- **World sharing with several players**: one save is made for all guests waiting for the world, not
+  one per guest in the same moment (BUG-0112); a share for a player who already left no longer saves
+  the host's game or holds its editors (BUG-0166); a world load no longer starts inside an editor
+  that opened just before (it waits until the editor is closed; it crashed the game, BUG-0157); after
+  Leave, the old host's world is no longer loaded once the editor closes (BUG-0074). Test:
+  `coop_world_queue.py`.
+- **Updates keep your own files**: SporeCoop's update deleted every `*.old` file in the game folders at
+  each start, also a player's `SporeApp.exe.old` backup (BUG-0114; its own backups are now
+  `*.sporecoop-old`); a file that could not be replaced at the next start was never replaced later
+  (BUG-0150); a pack listing a file twice could lose the original file on rollback (BUG-0089).
+- **Creature: NPCs on the guest match the host's after the game reuses a creature**: when the game
+  built a new NPC in the object of a freed one, guests kept showing the old one (another species,
+  or its corpse dragged along the new creature's path); NPC ids no longer repeat in long sessions
+  (BUG-0044, BUG-0023). Test: `coop_npc_reuse.py` (suite `npc_reuse`).
+- **Creature: a partner's creature removed during a cinematic** no longer shows up for that partner
+  as an extra AI-driven copy of itself (BUG-0066). Test: `coop_cinematic_puppet.py`.
+- **Creature: an error in an NPC's AI next to a partner** can no longer leave the partner's creature
+  as the host's player creature for good (BUG-0110). Test: `coop_npc_swap.py`.
+- **After leaving a session, a guest's own creation is its own again**: the host's creation with the
+  same id kept replacing it until the game was restarted (BUG-0055). Test: `coop_creation_leave.py`.
+- **Joint-hunt bonus**: the hit table no longer grows for the whole session, and a new creature does
+  not inherit the hits of a dead one (BUG-0099). Test: `tests/npc_tests.cpp` (`make test`).
+- **Space: a lost network packet no longer blows up the host's ships on the guest**: with more
+  than 18 NPC ships around, one lost ship-state packet made up to 18 of them explode (with loot)
+  and reappear on the guest (BUG-0037). Test: `coop_space_fleet.py` (suite `space_fleet`).
+- **Space: a guest keeps its own escort ships** (posse) while it is with the host (BUG-0084).
+- **Space: tool charges, spice and offers that come back while you are not in Space** (an editor,
+  the menu, a session end there) are given back once you are in Space again instead of being lost
+  (BUG-0058). Test: `coop_space_trade_refund.py`.
+- **Space allies: after a load the partner's mirror empire is made anew** instead of putting the
+  old galaxy's empire back at its old id, where a real empire of the loaded galaxy could live
+  (BUG-0038). Test: `coop_space_allies_reload.py`.
+- **Space diplomacy no longer shares the allies mirror empire**: a guest could become allied with
+  and contacted by an empire of its own galaxy it never met (BUG-0071). Test:
+  `coop_space_diplo_mirror.py`.
+- **Players with the same name are told apart**: the host adds " 2", " 3" to a name already in the
+  session, so two "Player" guests no longer share one allies mirror, rivals relation or budget
+  (BUG-0141). Test: `make test` (net_tests). A player who rejoins right after a crash keeps its
+  name: its old silent entry is replaced (BUG-0209). Test: `coop_nest_species.py`.
+- **Hardened the handling of network messages from other players** (BUG-0201). Tests: unit tests
+  `tests/validate_tests.cpp` (`make test`), `coop_net_robust.py` (suite `net_robust`).
+- **SporeKit's diagnostics never freeze the game**: `stack`, `hangdump` and the hang watchdog could
+  stop the game for good when the game was allocating memory at that moment; `sk shot`,
+  `sk wait.frames`, `sk stack`, `sk hangdump` in the cheat console froze it (they are now refused
+  there); a fault inside the exception logger or the log froze the game without a crash report.
+  Removing a mod's hooks (quit, hot reload) no longer frees code another thread may still run.
+  Test: `kit_freeze.py` (suite `kit_freeze`, BUG-0050, BUG-0065, BUG-0115, BUG-0132).
+- **Cell: leaving co-op** removes the guest's mirrored cells so they do not remain in its pool.
+- **Leaving co-op cleans up every stage**: after a guest pressed Leave in Space the host's ships it
+  showed stayed in its game and flew on by themselves; starting to host or join while still in a
+  session kept the old players. Every way a session ends (Leave, the host gone, a new host or join,
+  a mod reload) now cleans up the same way. Test: `coop_leave_cleanup.py` (suite `leave_cleanup`).
+- **Space: possible crashes in fights and jumps**: a hit that arrived right after leaving a planet
+  could hand a ship the game had already removed to the game's damage code (BUG-0054), and a star
+  id from the network could make the mod read past the end of the star table (BUG-0092). The
+  "ship disabled" state no longer writes to the ship after Space was left (BUG-0098). Test:
+  `coop_space_stale.py` (suite `space_stale`).
+- **Space: rescue timing**: from the second time a ship was disabled on, a partner repaired it in
+  1.5 s instead of 2 s (BUG-0147). After a failed co-op jump, the player's own zoom-out to the
+  galaxy no longer loses the game's galaxy caption and hints (BUG-0095).
+- **Creature: fewer crashes around a world change**: a partner's animation (or leave) arriving while
+  the guest's world was being reloaded went to the freed creature of the old world, and a guest kept
+  pointers to its own creatures while the host was in the main menu and used them when the host
+  came back. Tests: `coop_anim_teardown.py`, `coop_host_away_kill.py`.
+- **Civilization: a load or a Leave no longer leaves old vehicles and cities behind in the mod**:
+  after the host loaded another save (or left) during a city alarm, the defenders' speed boost could
+  write into vehicles that no longer existed, and the host's and guest's vehicle and city tables
+  kept the old world (new vehicles could inherit old owners). Test: `coop_civ_reload.py` (suite
+  `civ_reload`).
+- **Tribe: a chief that leaves the tribe** no longer gets its size put back through a removed
+  citizen (possible crash), chiefs get their normal size back when the session ends, and no member
+  is added to a tribe that is out while the game-over caption is up. Tests:
+  `coop_tribe_chief_removed.py`, `coop_tribe_gameover.py`. Correction (2026-10-28, BUG-0215): the
+  game-over part is a guard, not a fix: its bug was never reproduced (BUG-0172, its test passes
+  without the guard too).
+- **A host that left right after a guest joined could not leave its stage**: Leave within a few
+  seconds of the save for the guest's world kept that save "in progress" for good, and the game's
+  exit to the menu (and the load of another host's world) never happened (BUG-0140).
+- **Votes from a stage or session that is gone**: an evolution or superweapon vote that was still
+  open when the host left the stage or the session no longer runs later (an editor opening by
+  itself after hosting again, a superweapon on the planet that was left) (BUG-0043).
+- **Crashes**: a guest rejected by the host (other game build, full session) or whose host left
+  used freed memory (BUG-0029); the game could end with an abort ("abort() has been called") when
+  it closed itself without the normal shutdown (BUG-0107); a click right after leaving the galaxy
+  menu could call into the freed "Co-op" item (BUG-0163).
+- **Hot reload of coop.dll** (developers, the lab): the update check thread and tasks queued by the
+  old DLL no longer run into the reloaded one (BUG-0060).
+
+## [0.7.2.4] - 2026-10-25
+
+**GOG 2016 build (`922af7c7`):** the fixes of 0.7.2.4 that need new game addresses are not in it (Alt+Shift+Enter, the hatchling growing up, the pack, the Cell bites, meat and spin): on GOG 2016 they switch themselves off, the rest works. Use the GOG 2024 or Steam build for them (BUG-0108).
+
+More fixes from players' reports (Creature stage, Alt+Shift+Enter). 0.7.2.4 plays together with
+0.7.x (the network protocol did not change); both players need 0.7.2.4 for the fixes on the guest's
+side (the guest's respawn, deaths it sees, the host's species at the nests).
+
+### Fixed
+- **No more crash on Alt+Shift+Enter** (player crash report, 0x7777BE). It is Spore's own "next
+  display adapter" key: on a PC with two or more display adapters (two monitors, or an integrated
+  and a dedicated GPU) the game rebuilt its graphics device on the other one and crashed, also
+  without SporeCoop loaded (a bug of the game). The key now toggles fullscreen like Alt+Enter
+  (players hit it with Shift still held). Test: `coop_alt_enter.py` (suite `alt_enter`).
+- **Creature: a guest grows up again after a death** (player report: "after my death I'm in
+  constant state of growing up from egg ... can't move at all"). A respawn puts the creature back
+  into the nest as a hatchling, and the game waits for a family member of the nest to greet it and
+  make it grow up. A guest has no family of its own (its own NPCs are removed, the host's ones it
+  shows run no AI), so the guest stayed a hatchling for good: half the health, the egg shell on its
+  head on both screens, no control. The guest's hatchling now grows up a few seconds after the
+  respawn (the host's only when its family has not come for 40 s). Test: `coop_creature_respawn.py`
+  (suite `creature_respawn`).
+- **Creature: a creature killed by anybody now dies on the guest's screen too** (player report:
+  "enemies still seen as alive even when dead for quest"). The guest's copy of a host creature had
+  no AI of its own, and in Spore the death itself (falling over, becoming a carcass) is done by the
+  creature's AI: a killed creature stood on with an empty health bar, alive for the guest's game.
+  Test: `coop_creature_kills.py` (suite `creature_kills`).
+- **Creature: creatures notice the partner like the host's own creature** (player report:
+  "aggressive enemies didn't target my friend"). The game's creature AI only ever looks at the
+  player's creature; on the host a creature nearer to a partner now treats that partner as the
+  player (notices, chases, attacks; its hits go to the partner). Host option
+  `npcs_target_partners` (on by default).
+- **Creature: the guest sees the host's species at the host's nests** (player report: at the same
+  nest the host saw its "Woopsies", the guest other creatures and "The Datzu are your allies!").
+  Spore populates a planet with the player's own creations, and creations are numbered per player:
+  a guest who made creatures has other ones under the same numbers, and its game showed those (and
+  their names and standing) instead of the host's. The host now sends its own creations that its
+  world uses, and the guest shows the host's creatures with them, under numbers of their own, with
+  the host's standings. Both players need this version. Test: `coop_nest_species.py` (suite
+  `nest_species`).
+- **Creature: the guest no longer crashes when it reaches the new nest after a migration** (player
+  report: "My friend crashed after I completed migration to a new nest", guest crash at 0xC6AE60).
+  The guest's own game claims the new nest too and plays its cinematic with the creatures of that
+  nest; the mod was removing those creatures (on a guest the host owns the creatures) while the
+  cinematic still placed them. Creatures the mod removes during a cinematic now go when it is over.
+  Test: `coop_migration.py` (suite `migration`).
+
+## [0.7.2.3] - 2026-10-25
+
+**GOG 2016 build (`922af7c7`):** the fixes of 0.7.2.3 that need new game addresses are not in it (Alt+Shift+Enter, the hatchling growing up, the pack, the Cell bites, meat and spin): on GOG 2016 they switch themselves off, the rest works. Use the GOG 2024 or Steam build for them (BUG-0108).
+
+Fixes from players' crash reports and screenshots (Cell and Creature stage). 0.7.2.3 plays
+together with 0.7.x (the network protocol did not change); both players need 0.7.2.3 for the
+species transfer (creatures of species only the host has).
+
+### Fixed
+- **Cell -> Creature: the guest's game no longer faults when the session ends.** A guest that had
+  played the Cell stage together kept the host's cells it showed ("mirrors") after the stage was
+  left; when the session then ended (the host left or its game crashed), it removed them from a
+  cell pool the game had already torn down. The mirrors and the partners' cells are now forgotten
+  once the Cell stage is left, and the cell console commands answer only in the Cell stage. Test:
+  `coop_cell_leave.py` (suite `cell_leave`).
+- **Creature: the guest no longer sees NPCs the host killed standing alive** (player report). After
+  the host's editor or a load the host numbered its creatures anew, and the guest kept the old ones
+  next to the new: a living copy of every creature, which a kill on the host did not touch. The
+  guest now drops them. Test: `coop_creature_desync.py` (suite `creature_desync`).
+- **Creature: the guest sees creatures of species it does not have** (player report: "he doesn't
+  even see my companion"). The host's planet is populated from the host's own creations and
+  Sporepedia downloads too; a guest without them could not build those creatures, also not an
+  ally in the host's pack. The guest now gets them from the host. Both players need this version
+  for it (an older host does not answer, an older guest does not ask).
+- **Creature: no more crash of the host after an evolution, and no copies of the partner's
+  creature left in the world** (player report, host crash at 0xB88BEA). After the editor the
+  partner's old creature stayed on the planet as a wild creature next to the new one, and the
+  herd made for the partner's creature could get its home deep inside the planet: when that
+  creature looked for land around its home the game read past its map and crashed. The old
+  creature is now removed when the players are back, a partner who comes back into the world
+  appears where it is (not between its last position and the planet's centre), and the herd of
+  a partner's creature stays under it. Test: `coop_editor_strays.py` (suite `editor_strays`).
+- **Creature: no crash when you attack or kill the creatures a save brought back** (player report,
+  host crash at 0xD48634, three times). A save made while the partner played kept the partner's
+  creature; loaded again after a restart it was a wild creature ("these guys appeared after I
+  loaded save"), and attacking it crashed the game. Such creatures are now removed when a world
+  loads (also from saves you already have), the game no longer crashes on any creature that lacks
+  that data, and the partner's creature no longer leaves a new herd in the world (and in every
+  save) each time it appears. Test: `coop_creature_e84.py` (suite `creature_e84`).
+
+## [0.7.2.2] - 2026-10-25
+
+**GOG 2016 build (`922af7c7`):** the fixes of 0.7.2.2 that need new game addresses are not in it (Alt+Shift+Enter, the hatchling growing up, the pack, the Cell bites, meat and spin): on GOG 2016 they switch themselves off, the rest works. Use the GOG 2024 or Steam build for them (BUG-0108).
+
+Fixes from a player report (two brothers playing the Cell and the Creature stage). 0.7.2.2 plays
+together with 0.7.x (the network protocol did not change), but the fixes need both players on
+0.7.2.2: host and guest share the work of kills, meat and editors.
+
+### Fixed
+- **Cell: the host's creatures no longer spin on the guest's screen, and the guest can kill them.**
+  A creature now faces the same way for both players (it kept turning on the guest, between the
+  host and the guest), so its mouth and spikes are where they are for the host. The guest's
+  killing bite and bites with a mouth that eats chunks now reach the host (before, the guest could
+  wound a creature but never finish it). Test: `coop_cell_spin.py` (suite `cell_spin`).
+- **Cell: both players see the meat of a kill, and a chunk is eaten once.** When the guest killed a
+  creature, its meat appeared only on the guest's screen for a moment and the host's creature just
+  vanished; now the kill happens on the host with the game's own death and meat, which both see. A
+  creature the host kills also dies on the guest's screen (before it stayed there as if alive). Food
+  from a chunk both eat at the same moment counts once. Test: `coop_cell_meat.py` (suite `cell_meat`).
+- **Joining sends the game the host plays now:** a guest that joined a host who had started a new game
+  could be put into an older game of the host (the host had to delete it). Every game of a galaxy is
+  in the same save folder, and a planet named with letters outside English (for example in Cyrillic)
+  was not found, so another planet of that folder went out. Planet names in any letters now work on
+  both sides, the host always names the planet it plays (saving again if its file is not written
+  yet), and the guest never loads another planet instead.
+- **Editors in the Cell and the Creature stage** (player report): a guest can call a mate in the Cell
+  stage and evolve its own cell (its mate was removed by the pool sync at once); after the host's
+  editor the guest no longer crashes and sees the host's new cell or creature right away (a new
+  creation was sent once without its records: the guest's game faulted building the host's cell, or
+  showed its own body for the host until the next send); the host's mating call starts one vote,
+  not a second one that ran on in the editor; a rejoin applies the creations again (writing their
+  files failed while the game had them open); after the own cell editor the new cell stays the own
+  one; the guest's own creature editor after the vote opens once its world has loaded (opened right
+  after the start-of-Creature world arrived, it came up without parts or buttons and the guest was
+  stuck in it). Test: `coop_editor_desync.py` (suite `editor_desync`).
+- **Crash reports:** the minidump of a crash came out empty on some systems and then the archive was
+  not made; now the report, the archive and the mark for the next start come first, the minidump
+  (of the crashed thread) last, and the archive is made again with it.
 
 ## [0.7.2.1] - 2026-10-24
 

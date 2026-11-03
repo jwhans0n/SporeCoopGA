@@ -27,6 +27,7 @@ struct Partner {
     uint32_t place;   // modes place: StarID | 0x80000000, PlanetID | 0x40000000, 0 = galaxy
     net::Vec3 pos;    // in the place's coordinates
     void* puppet;     // its ship here (same place), may be null
+    bool playing = true; // a state under 3 s old, in the world, not dead: it can rescue (BUG-0131)
 };
 
 struct Ctx {
@@ -56,6 +57,9 @@ std::string travel(uint32_t star); // "" = ok, else why not
 // jump into the system of a StarID (the jump's native sequence; from a planet, a system or the
 // galaxy view); "" = ok, else why not. For space features (space_finale.cpp)
 std::string travel_to_star(uint32_t star);
+// in the galaxy view: teleport next to a star (SpaceTeleportTo) for free, refused while the ship is
+// disabled (space_map: a partner flying in the galaxy view, BUG-0063); "" = ok, else why not
+std::string teleport_in_galaxy(uint32_t star);
 // the cStarRecord of a StarID (starRecord+0x70), nullptr when it is not a star of this galaxy
 // (the game's own GetStarRecord faults then)
 void* star_record(uint32_t id);
@@ -67,7 +71,8 @@ std::vector<syncdbg::Entry> nav_entries();
 std::string status();
 std::string debug(const std::vector<std::string>& args);
 // a raid on one of our colonies changed its state (cMission::SetState hook): 3 started, 5 defended,
-// 6 lost; place = PlanetID | 0x40000000 (space_contracts.cpp: the armada's waves are raids)
-void set_raid_listener(std::function<void(uint32_t place, int state)> fn);
+// 6 lost; place = PlanetID | 0x40000000 (space_contracts.cpp: the armada's waves are raids); the
+// mission tells the raids on one planet apart (BUG-0046)
+void set_raid_listener(std::function<void(void* mission, uint32_t place, int state)> fn);
 
 } // namespace spacecoop

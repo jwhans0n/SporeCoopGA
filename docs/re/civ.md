@@ -613,3 +613,278 @@ Runtime findings (✔ = seen working in the game), with what the co-op code does
   caption was up (meaning **?**).
 * A land vehicle sent onto water or across the sea gets no order (the game ignores the click):
   ~20-30 % of the bots' random move clicks, on host and guest alike.
+
+## Pointer tables across a load and a leave (2026-10-27, fix/w1-tribe-civ)
+<a id="civ-pointer-tables"></a>
+
+* ✔ A host `coop.load` of the same civ save while connected (civ_npc, GOG 2024): coop.cpp sees
+  "no local" (the RTS marker of `modes.cpp rts_local` is null while the world loads), so
+  `civ::on_world_change` runs once per load (`coop.civ tables`: `world_resets=1`). The host is back
+  in Civ about 7 s after the command; the guest stays in its world (same stage: nothing is sent).
+* ✔ Before BUG-0059 nothing in civ reset on a load: `g_alarm_at` (and `g_boost` until its 20 s ran
+  out) kept the old world's pointers, and `on_session_end` did not clear `g_boost` / `g_alarm_at`
+  (after a `coop.leave`: `boost=3 alarm_at=2`, coop_civ_reload.py --nofix).
+* ~ Vehicle addresses after a reload of the same save: 4 of 4 vehicles got other addresses than
+  before (1 try). The inherited-owner case of BUG-0059 needs address reuse: not seen, still possible.
+* The vehicle and building editors also have no co-op adapter (no local): `on_world_change` skips
+  them (`modes::kEdit`, `kEditor`) so the owners survive an editor visit.
+* `HV.pol`: the political id a vehicle had when the host listed it; an entry whose `pol_of(v)`
+  changed is listed anew (a new owner from the nearest player city, a new net id).
+* Test commands: `coop.civ tables` (sizes of every pointer table), `coop.civ fix boost|world 0|1`.
+
+## Shared money and food across sessions and crossing spends (2026-10-28, fix/w2-civ)
+<a id="civ-shared-pool-sessions"></a>
+
+How `mods/coop/shared.cpp` keeps one total (tribe food, civ money, space money), after BUG-0049
+and BUG-0106:
+* The sync state ends with the session (`shared::on_session_end`, also every frame while the
+  role is None or a guest has no WELCOME yet). Before, a guest that left, earned money alone and
+  joined again sent the whole difference as one `MSG_RES_ADD` right after HELLO (reliable order
+  HELLO, RES_ADD, then WELCOME): the host added 40000 at once (seen on lane 7). ✔
+* `MSG_RES_ADD` = u8 id, f64 change, **u32 sequence** (new, trailing). `MSG_RES` = u8 id, f64
+  total, **u8 n, n x (u8 player id, u32 last counted sequence)** (new, trailing). Older peers stop
+  reading before the new fields. The guest shows total + changes the host has not counted + the
+  unsent change (`net::SharedLedger`, unit-tested in `make test`). ✔
+* The host floors a guest's change at 0; `s_civ` / `s_space` clamp to 0..99 999 999 like the
+  game's AddMoney (`mWealth` +0x98 and `cEmpire` +0xD0 are written raw). Two spends of 100 out
+  of 150 sent in the same step ended at -50 on both games before, now at 0 (lane 7). ✔
+* Food: `s_food` floors every bundle at 0; the guest now takes what the game holds after a total
+  as its base, so a floored amount is not reported as an earning on the next tick. (~, by reading)
+* Test switches: `coop.res fix reset|floor 0|1`; roles: `coop.role fix 0|1` (BUG-0064, BUG-0079).
+
+## A guest catches up with the host's city count (2026-10-28, fix/w2-civ)
+<a id="civ-city-catch-up"></a>
+
+* `Simulator::cCivExpansion::Get` / `SpawnNextCity` (GOG 2024 names) are the functions the GOG
+  2016 file calls `cCitySimulator::Get` / `AppearNextCity` (same addresses in GOG 2016: 0xB268A0,
+  0xAE3A80). `tools/tests/new_stage_game.py --npc-cities` used the 2016 names and failed on GOG
+  2024 ("bad address"); it uses the 2024 names now. ✔
+* A founding broadcast (`MSG_CIV_BUILD` kNextCitySite) that reaches a guest while it is about to
+  load the host's world is applied to the old copy (or dropped outside Civ), and the host's save
+  was written before the city: the guest stayed one city behind for the stage (lane 7: host 5,
+  guest 4, `cities_in=1`). ✔
+* Now the guest compares the host's city count (`MSG_CIV_STATE` header) with `all_cities()`; short
+  for 6 s and no founding here for 15 s: it replays `SpawnNextCity(ex, 0, 0)` (the free site with
+  the lowest order, the same one the host took). The new city matched the host's position within
+  60 m (lane 7). Counter `cities_caught_up`; switch `coop.civ fix cities 0`. ✔
+* `call Simulator::cCivExpansion::SpawnNextCity thiscall <ex> 0 0` from the console goes through
+  the co-op hook and broadcasts the founding (instant 0, who 0); instant 1 does not broadcast. ✔
+
+## The other nations' vehicle purchases (2026-10-28, fix/w2-civ)
+<a id="civ-ai-vehicle-spawns"></a>
+
+GOG 2024 addresses. Callers of `cCity::SpawnVehicle` 0xBDDEF0 (Ghidra `callers`): 0xBD72B0,
+0xBDE5F0, 0xBE5890, 0xBE75C0, 0xBF9960, 0xBF9FB0, 0xBFA7A0, 0xBFB160, 0xBFBA70, 0xBFBD30,
+0xCF3350, 0xCF72B0, 0xCFB7C0, 0xD09200 (9 sites), UI::RolloverCivCity::HandleUIMessage.
+* **FUN_00BFBD30** fastcall(civ) = the civilization AI update (called from 0xAE61C0). Player civ:
+  1 in 10 ticks, outside Space, a free vehicle when it has none and less than $1000 (spawn at
+  0xBFBE5C). Other nations: per city FUN_00BE5890 and FUN_00BDE5F0, then FUN_00BF9960,
+  FUN_00BF9FB0, FUN_00BFA7A0(0), FUN_00BFA7A0(1), FUN_00BF8850, FUN_00BFB160, FUN_00BF5DF0, ...;
+  in Space also FUN_00BFBA70 (military spawn, uses the result: `mov ecx,eax` at 0xBFBD1E). ✔
+* **FUN_00BE5890** fastcall(city) = NPC city tick: CreateBuilding growth (blocked on guests
+  since 0f5d5c6) and, when `city+0x760` is 0 and a vehicle slot is left, the city's first vehicle
+  (`SpawnVehicle` at 0xBE5A6B, result ignored, then `city+0x760 = 1`). ✔
+* Result use after the call (disassembly): 0xBE5A6B none; 0xBDEA1C `test eax,eax / jz`;
+  0xBF9F53 none (SpendMoney follows); 0xBFA746, 0xBFB0B1, 0xBFB692 none (budget `civ+0x4B0 -=
+  cost`). These six get null on a guest (BUG-0188, `.sym` `SporeCoop::CivAI_*_SpawnVehicle_Ret`).
+  0xBE7663 is in the city message handler FUN_00BE75C0 (message 0x5416D55; result ignored). ✔
+* Runtime (lane 7, `play_civ.py --seed 9`, 10 min): the guest's game spawned 11 vehicles by
+  itself: 6 x 0xBE5A70 (one per new NPC city), 3 x 0xBF9F58, 2 x 0xBFB0B6. In 4 idle minutes on
+  civ_npc without new cities: none. ✔
+* Diagnostics: `coop.civ spawns` (the guest's spawns by caller, refused ones), switch
+  `coop.civ fix aispawn 0`.
+
+## Leavers' vehicles, superweapon votes, captions, host away (2026-10-28, fix/w3-civ)
+<a id="civ-wave3"></a>
+
+* Co-op (BUG-0031): when the player set changes the host gives every vehicle of an absent owner
+  to the owner of the nearest player city (after the new city split; shared capital: the host);
+  `h_Capture` never picks a vehicle of an absent owner. `coop.civ fix orphans 0`.
+* Co-op (BUG-0117): the superweapon vote captures civ, type and target by value; a request during
+  another vote is refused with a notice to its sender. `coop.civ sw` shows the last request and the
+  type the last guest vote fired. `coop.civ fix sw_vote 0`.
+* ✔ `cCinematicManager::EndCinematic` (0xADFF50, GOG 2024) ends a capture caption cleanly: called
+  8 s into the caption of a capture made through `Capture` (`coop.civ capture <city>`, return 6), the
+  cinematic state +0x2C went to 0, the HUD came back without the caption, the city belonged to the
+  player civ on host and guest, and the vehicles drove again (lane 7). Co-op (BUG-0187): with 2+
+  players the host ends its cinematic after 8 s. `coop.civ movie`, `coop.civ fix caption 0`.
+* ✔ Guest vehicle mirrors get StopMovement + Teleport every frame for 3 s after the last state
+  (`guest_tick`): an order given in that time is cancelled. Co-op (BUG-0151): while the host is in
+  the main menu the guest skips `guest_tick`, runs the vehicles' behaviour trees and keeps its
+  orders local (`SetOrder`, `SetMoveOrder`); a vehicle the guest's game created as a mirror of a
+  bought one drives too (39.7 m in 10 s). The same in Tribe (`DoActionForObjects`,
+  `WalkSelectedTo`). `coop.civ fix away 0`, `coop.tribe fix away 0`.
+
+## SpawnNextCity: one argument order (2026-10-28, fix/w4-tools)
+<a id="civ-spawn-next-city-args"></a>
+
+* CORRECTION (2026-10-28, fix/w4-tools, BUG-0134): `overrides_922af7c7.sym` had two entries for
+  0xAE3A80: `cCitySimulator::AppearNextCity` "thiscall(cs, bool instant, void* who)" (verified at
+  runtime: a non-zero `who` is dereferenced, who=1 crashed) and `cCivExpansion::SpawnNextCity`
+  "likely thiscall(obj, bool)". The runtime-checked order holds: `(ex, bool instant, void* who)`.
+  The co-op detour named them `(who, flag)`, the other way round; it is `(ex, instant, who)` now.
+  No behaviour changed: every caller (the planet tick, the cheat, civ.cpp's replay) passes (0, 0),
+  and the broadcast condition `!instant && !who` is symmetric. The GOG 2024 entry
+  (`overrides_dc04aee5.sym`, 0xAE3AB0) names the arguments too. ✔ by reading
+
+## Civ world changes and cinematics (2026-10-28, fix/w5-world)
+<a id="civ-world-epoch-cinematics"></a>
+
+BUG-0223, BUG-0224. GOG 2024, lane 5.
+
+* ✔ One frame with Civ's local entity null (the anchor built from the player civ's first city;
+  forced with `coop.civ nulllocal 1`) made the host forget every table before the fix: all vehicles
+  got new ids (`next_id` 3 -> 5), the guest's game destroyed and rebuilt every vehicle (new object
+  addresses), the guest's own vehicle lost its owner. Now `civ::world_check` decides from
+  `game::stage_epoch(kCiv)`, leaving Civ for a non-editor mode, and the in-stage signals (another
+  player civilization object, another save name); switch `coop.fix civ.world_epoch`.
+  `host_tick` prunes `g_hv` against the game's vehicle list before it reads a vehicle (`pol`, the
+  orphan loop).
+* ✔ `Simulator::cCivExpansion::SpawnNextCity(ex, 0, 0)` on civ_npc founds a city with no cinematic:
+  +0x2C of the cinematic manager stayed 0 for 25 s.
+* ✔ `cCinematicManager::PlayCinematic` GOG 2024 0xAE08B0 (port, overrides_dc04aee5.sym):
+  `call Simulator::cCinematicManager::PlayCinematic thiscall <cm> s:CVG_PRE_NewCityAppears 1 1 0 0 0`
+  plays a camera cinematic that keeps +0x2C set for more than 30 s (Enter does not end it,
+  `SporeCoop::cCinematicManager_EndCinematic` does). Other names that start in Civ (non-zero id):
+  CVG_UnlockUFO, CVG_UnlockAir, CVG_PlayerCityAttacked; CVG-CamRotate returns 0.
+* ✔ `coop.civ capture <city>`: +0x2C is set within 0.3 s after `Capture` returns. BUG-0224: only a
+  capture (`h_Capture`, host, any nation) arms the 8 s close of BUG-0187; the 8 s count from the
+  arm, the arm ends when the cinematic ends, when none came within 3 s, after the close, at a world
+  change or session end. Switch `coop.fix civ.caption_only`. Not measured: the purchase chain
+  (BuyCity, FinishBuyCity, Capture) and whether +0x2C drops between its cinematics; an NPC capture
+  of an NPC city arms too (accepted: its caption would stop everybody the same way).
+## Superweapon fields and the boost speed on GOG 2024 (2026-10-30, fix/w9-tests)
+<a id="civ-superweapon-2024"></a>
+
+Measured for BUG-0222 (the civ_reload / civ_sw_vote tests read these now):
+* ✔ `cCivilization::FireSuperweapon` GOG 2024 0xBF8BB0 (thiscall civ, int type, const Vector3* target,
+  ret 8): CanUse 0xBF8B40 → the own city that can launch nearest to `target` (equal to the zero vector
+  0x168C514 = the first one) → launch `city 0xBE5D30(type, target)` → unless the free cheat byte
+  0x168BD6C is set: `mWealth (+0x98) -= cost(type)` (0xBF6DF0), +0x4CC = 1 for types 2/5/8. It reads
+  `target` without a null check: a null target crashes when the weapon is usable (the game's own
+  callers always pass one; `coop.civ super <type> [x y z]` passes the zero vector or a place now).
+* ✔ CanUse 0xBF8B40 (thiscall civ, type, ret 4): free cheat → 1; types 2/5/8 only while +0x4CC is 0;
+  `unlocked[type]` at civ +0x484 (bool[12]); affordable 0xBF7870 (`cost <= mWealth +0x98`); no
+  cooldown 0xBF18D0. Runtime: on the `civ` fixture `unlocked[]` is all 0, money 3000; after
+  `mem.write` of `unlocked[3]` / `[9]` / `[1]` and 20000 money the game fired them (money -2000 /
+  -2000 / -16000). A fired type is not usable again within the test's minutes (cooldown): the same
+  type twice in one test fires once.
+* ✔ Costs 0xBF6DF0: types 0, 6, 11 = 4000; 1, 4, 7 = 16000; 2, 5, 8 = 12000 x 1 while fewer than two
+  cities of the planet are not this civ's, else 12000 x (the type number, as decompiled: ~ not checked
+  at runtime); every other type (3, 9, 10) = 2000.
+* ✔ Fired at the zero vector, type 4 crashed the game in `cPlanetModel::GetNearestCity+0x1B7`
+  (0xB897A7, read of 0x8F04CAB0, lab 20261030-001517; via launch 0xBE5D30 → 0xBDC2F0). Types 1, 3
+  and 9 at the zero vector worked. Tests use 1, 3, 9 only.
+* ✔ The alarm boost writes the vehicle's speed +0x218 (x1.5). The game does NOT bring it back by
+  itself: with `coop.fix civ.boost off` the boosted vehicles kept 1.5x for 30 s after `coop.leave`
+  (lab 20261030-002050); with the fix the session end restores them within 2 s. So the speed is a
+  FAIL criterion of BUG-0040, read with `mem.read <vehicle+0x218> 4` (`coop.civ boosts` lists the
+  boosted vehicles and their own speed).
+* ✔ The order list element (v+0xB68) holds the order's place at +4: `coop.civ` prints it as
+  `opos=(x y z)`. A guest's move order that the host executed shows the guest's target there
+  (BUG-0059 with `civ.world off`: lab 20261030-001854).
+
+## A vehicle the host's game puts somewhere: the guest's velocity estimate (2026-10-30, fix/w13-tribe-civ)
+<a id="civ-vehicle-jump-velocity"></a>
+
+BUG-0186 (single vehicle sync outliers of 10-27 m in `play_civ.py --seed 9`):
+* ✔ (lane 7, `play_civ.py --minutes 10 --seed 9`, out/w13/play_civ9_a.log of the branch, not in
+  git) two of the player's vehicles were 16 m off at the same moment, and the guest's `coop.civ`
+  line showed `age=0.0` / `0.2` (fresh states), `pushed` 0.0 / 0.3 (the guest's game did not move
+  them) and `err=27.0` for both: the mirror stood 27 m from the target guest_tick wanted while it was
+  only 16 m from the host's vehicle. The target itself was 11+ m from the host's vehicle with a
+  fresh state, so it came from the velocity estimate (`VelocityEstimate::at`, up to 0.4 s of
+  extrapolation), not from a missing or old state, nor from a push.
+* Inferred: one step of the host's vehicle between two snapshots that the host's game made by
+  putting it somewhere (a step the vehicle cannot drive: tens of m in 0.1 s) became a speed of
+  100+ u/s, and the mirror was put up to 0.4 s of that speed past the vehicle. The earlier
+  hypotheses (an old state, a push out of a building on the guest) are ruled out for this sighting.
+  Which game action puts a vehicle (the `defend` order of the bots came right before) is not known.
+* ✔ unit (tests/net_tests.cpp, test_velocity_jump_cap): a standing vehicle put 20 units further in
+  one snapshot: 15.6 units of overshoot without a cap, 0.0 with it.
+* Fix `civ.vel_cap`: the guest gives each vehicle's estimate a top speed of 2 x its own speed
+  (+0x218) + 10; a step faster than that is taken as a jump (no speed, like the 200-unit jump).
+  `coop.civ` on the guest shows `vel=` (the estimate's speed), `top=` (+0x218) and `jumps=`.
+
+## The guest's game throws a mirror off "invalid" ground (2026-10-30, fix/w14-tribe-civ)
+<a id="civ-mirror-valid-ground"></a>
+
+BUG-0186, the 13-17 m outliers of `play_civ.py` seeds 9 and 11 (always NPC vehicle #2 of nation
+000021CB at its spice node near (-336, 132, 354) of civ_npc):
+* ✔ (runtime probe `coop.civ pushprobe`, lane 7) every frame the guest's game called the mirror's
+  spatial SetPosition (vt 0x38) from 0x00CA75B8 and moved it 13 m to (-345.8, 133.5, 344.0); then
+  guest_tick's Teleport put it back. The caller is **Vehicle_KeepOnValidGround 0xCA7430**
+  thiscall(v): 0xC9EA70(locomotion +0xB1C, pos) tests the planet cell flags under the vehicle
+  (land: none of 0x98000000; sea: none of 0x58000000; air: bit 29 clear); when invalid it searches
+  nearby spots (cCommunityLayout, radius 128) and sets the vehicle on the first valid one.
+  Callers: vehicle updates 0xCA8360, 0xCA84D0 (x2), 0xCA8CB0, 0xCADA20 (spatial-side thunk).
+* ✔ The host's game keeps its own vehicle on that spot (claiming the node); the guest's planet finds
+  it invalid for a land vehicle. ? why the cell flags differ (the node's claim / derrick, or the
+  host vehicle reached it while the ground was valid).
+* ~ superseded (2026-10-30): the guess of fix/w13-tribe-civ (docs/re/civ.md#civ-vehicle-jump-velocity)
+  that the guest's game pushed the mirror because of an order of its own: CORRECTION (2026-10-30,
+  fix/w14-tribe-civ): the mirror had no order (`order=-1`) while it was thrown off; clearing its
+  orders every frame (tried) changed nothing: `coop_civ_mirror_order` with the clearing: 12.9-13.6 m.
+* Fix `civ.mirror_place`: the check is skipped for mirrors on a guest in Civ (the host's vehicle is
+  where it is). Test `coop_civ_mirror_place.py`: off 17.3 m, on 0.8-1.2 m.
+* Also `civ.extrap` (VelocityEstimate::max_ahead 0.15 s for vehicles, was 0.4): a fast air vehicle
+  (25 u/s) whose host hitched was put up to 10 m past the host's (unit test test_velocity_hitch:
+  10.0 -> 3.8 units; a 150 ms late packet costs 0.8 units either way).
+## A guest's catch-up founds every missed city at once (2026-11-01, fix/w31-civ-gate)
+<a id="civ-city-burst"></a>
+
+* ✔ (runtime, lane 9, civ_npc, GOG 2024) `cCivExpansion` (`Simulator::cCivExpansion::Get`) +0xAC =
+  all city sites (10), +0xB0 = sites not founded yet (6 with 4 cities). `SpawnNextCity` lowers +0xB0
+  in the same call; the city appears ~4 s later. A loaded save has the same values as the host's
+  (host and guest 10 / 6 after the guest loaded the host's world). So `+0xAC - +0xB0` = the cities
+  this game founded, appeared or still on their way (the player city included).
+* ✔ The campaign's shortcut `SpawnNextCity(ex, 1, 0)` (instant) is not broadcast by the co-op hook
+  (only `!instant && !who`): the guests got those cities only from the catch-up, one per 15 s
+  (6 s short + 15 s since the last founding). 6 cities took 75 s on a campaign guest; meanwhile
+  every vehicle of those nations was missing there (`CivByPol` gives no civilization, no mirror):
+  sync-check `v: 6 missing on the guest` in every campaign_space (BUG-0380). In the exploration run
+  2 missed cities took 26 s, the guest's vehicles 4 -> 6 only then.
+* Now (`civ.city_burst`): a guest whose founded count is under the host's city count (2 s short)
+  founds the difference in one go; when its founded count already reaches the host's, it waits
+  (a paused game holds the appearance, BUG-0331) and never founds a second time. coop_civ_city_burst:
+  3 missed cities and their vehicles on the guest in 7 s (was more than 30 s).
+* The single-vehicle `v: 1 missing` lines of the campaigns came in the same advance phase (after
+  the shortcut), not from another cause seen in the logs.
+
+## The model check of mirror vehicles and buildings (2026-11-02, fix/w39-content-all)
+<a id="civ-content-all-kinds"></a>
+
+BUG-0469, GOG 2024, Ghidra and lanes 4/5 (`tools/tests/coop_content_civ.py`). The civ paths of
+docs/re/creations.md#creations-content-all-kinds.
+
+* ✔ A mirror vehicle is created from the design key the guest's own copy of that civilization returns:
+  `cCivilization::GetDesignKey(civ, VehicleDesignId(purpose, loco))` -> `CreateVehicle(civ, purpose, loco,
+  key, &pos, 0)` (`civ.cpp` `guest_state`). That design's model is checked with its parts and paints
+  (`creations::ensure_model`, kind vehicle) and the mirror is created from the returned key (the design's
+  own key, whose record a package of ours answers above the game's own, with base game parts if this game
+  lacks some: no key of the mod's reaches the save, BUG-0469 review / BUG-0470). A design whose model
+  cannot be built at all (refused) is
+  created from a **zero key**: `cVehicle::Load` (`Simulator::cVehicle::Load` 0x00CA67C0, 0xCA68E9) builds
+  the design of `VehicleDesignId(purpose, loco)` itself from the object template DB (prop 0x2DC9D1E) for
+  a key instance of 0 or -1 and sets that key, i.e. the game's own design of the same purpose and
+  locomotion. Logged once per design.
+* ✔ A building's model is the design `cCity::SetBuildingModel` (0xBDB940) asks the city's civilization for:
+  a design id per building type (house 0xFF10521 -> 0x4E3F7777, entertainment 0x1A55E4D -> 0x72C49181,
+  factory 0xECADE42 -> 0x47C10953, every other type -> 0x4E3F7777; `civ.cpp` `building_design_id`), then
+  `GetDesignKey(city+0x590, designId)`; a key instance of 0 makes it build the design first
+  (FUN_00bf98c0 -> FUN_00bf9440, the design generator from the object template DB). The mod cannot pass
+  another key here, so on a guest a design whose model names parts or paints this game lacks is left out
+  (the building stays missing on that guest, logged once per design; `build_in_city` returns nothing) and
+  a design that this game has is built as it is. The host builds from its own designs (its own game
+  baked them).
+* ✔ Runtime (lane 4 + guest lane 5, PASS run `out/lab/20261102-202217`): the guest's house design key is
+  `0679F5DE/2399BE55/40636200` (`coop.civ design <city> house`) and its model is complete (`model ok`);
+  with the guest's design forced to a vehicle model that names a part of a pack the guest lacks
+  (`coop.civ fakeveh`, test only) the guest builds a substitute copy and shows the mirror
+  (`coop.creations content`: `substituted=1`, `refused=0`). With `SPORE_FIX_OFF=content.all_kinds` the
+  same guest faults at 0x0046C82A (`out/lab/20261102-202807`).
+* ✔ The guest saves its world after the mirror was built (`coop.save`, the game's SaveGame), its game is
+  restarted without a co-op session and loads that save: the saved mirror vehicles load with no bake
+  fault, the save slot names the design's own key (0x29030001) and no key of the mod's
+  (`out/lab/20261102-213135`; with `coop.fix content.model_key off`, the first version's 0x7D72C793:
+  `out/lab/20261102-213354` FAIL). The mirror vehicles themselves stay in the save, which is BUG-0470.

@@ -9,9 +9,9 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools/tests'))
 from editor_network_proxy import EditorProxy, Profile, messages
 
 
-def packet(reliable=7,payload=b'x',flags=1):
-    header=b'SPCO'+struct.pack('<HIHHQQB',16,1234,1,0,0,0,1)
-    return header+struct.pack('<BBH',53,flags,len(payload))+(struct.pack('<H',reliable) if flags else b'')+payload
+def packet(reliable=7,payload=b'x',flags=1,version=16,kind=53):
+    header=b'SPCO'+struct.pack('<HIHHQQB',version,1234,1,0,0,0,1)
+    return header+struct.pack('<BBH',kind,flags,len(payload))+(struct.pack('<H',reliable) if flags else b'')+payload
 
 
 class ProxyTests(unittest.TestCase):
@@ -27,11 +27,21 @@ class ProxyTests(unittest.TestCase):
                 Profile(**kwargs)
 
     def test_reviewed_current_transport_versions(self):
-        for version in range(16,24):
+        for version in range(16,25):
             value=packet()[:4]+struct.pack('<H',version)+packet()[6:]
             self.assertEqual(messages(value),[(1234,53,7,b'x')])
-        for version in (0,15,24,65535):
+        for version in (0,15,25,65535):
             self.assertEqual(messages(packet()[:4]+struct.pack('<H',version)+packet()[6:]),[])
+
+    def test_editor_accounting_uses_the_versioned_message_id(self):
+        payload=bytearray(43);payload[9]=1;payload[42]=7
+        for version,editor_kind,other_kind in ((23,53,62),(24,62,53)):
+            with EditorProxy(9) as proxy:
+                proxy._record(0,packet(payload=payload,version=version,kind=other_kind))
+                self.assertEqual(proxy.snapshot()['down'].get('editor_messages',0),0)
+                proxy._record(0,packet(payload=payload,version=version,kind=editor_kind,reliable=8))
+                self.assertEqual(proxy.snapshot()['down']['editor_messages'],1)
+                self.assertEqual(proxy.snapshot()['down']['editor_tag_7'],1)
 
     def test_real_loopback_loss_duplicates_and_source_retransmissions(self):
         with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as host, socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as guest:

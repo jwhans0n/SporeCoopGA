@@ -6,6 +6,8 @@
 #include <atomic>
 #include <intrin.h>
 #include <cstdio>
+#include <cstring>
+#include <mutex>
 
 namespace sk {
 
@@ -48,45 +50,91 @@ static DWORD loader_lock_owner()
     return cs ? (DWORD)(uintptr_t)cs->OwningThread : 0;
 }
 
-static void dump_thread_stack(DWORD tid, const char* why)
+// While a thread is suspended nothing may allocate or take a lock it might hold: the heap's (the
+// main thread allocates all the time), the loader's, the log's. Only GetThreadContext, VirtualQuery
+// and copies into the caller's buffer run before the resume; names and text come after (BUG-0050).
+bool thread_snapshot(DWORD tid, ThreadSnap& s, std::string* why, void (*while_suspended)(void*), void* ctx)
 {
-    HANDLE t = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, tid);
-    if (!t)
-        return;
-    SuspendThread(t);
-    CONTEXT c{};
-    c.ContextFlags = CONTEXT_FULL;
-    GetThreadContext(t, &c);
-    std::string out;
-    char b[256];
-    snprintf(b, sizeof b, "WATCHDOG (%s, stage '%s'): thread %lu%s eip=%08lX esp=%08lX\n", why,
-             g_stage.load(), tid, tid == main_thread_id() ? " (main)" : "", c.Eip, c.Esp);
-    out += b;
-    auto describe = [&](uintptr_t a) {
-        uintptr_t base = 0;
-        std::string m = module_of(a, &base);
-        std::string s = symbols_reverse(a);
-        snprintf(b, sizeof b, "%s+0x%X %s", m.c_str(), (unsigned)(a - base), s.c_str());
-        return std::string(b);
-    };
-    out += "  eip " + describe(c.Eip) + "\n";
-    const uint32_t* sp = (const uint32_t*)c.Esp;
-    int found = 0;
-    for (int i = 0; i < 2048 && found < 40; i++) {
-        MEMORY_BASIC_INFORMATION mbi;
-        if (!VirtualQuery(sp + i, &mbi, sizeof mbi) || mbi.State != MEM_COMMIT)
-            break;
-        uint32_t v = sp[i];
-        MEMORY_BASIC_INFORMATION vm;
-        if (VirtualQuery((void*)(uintptr_t)v, &vm, sizeof vm) && vm.State == MEM_COMMIT &&
-            vm.Type == MEM_IMAGE && (vm.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE | PAGE_EXECUTE_READWRITE))) {
-            snprintf(b, sizeof b, "  [esp+%04X] %08X ", i * 4, v);
-            out += b + describe(v) + "\n";
-            found++;
-        }
+    s.n = 0;
+    if (tid == GetCurrentThreadId() && fixed(g_fix_cheatwait)) { // a thread must never suspend itself (BUG-0065)
+        if (why)
+            *why = "cannot read the stack of the calling thread itself (use stack.here)";
+        return false;
     }
+    HANDLE t = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, tid);
+    if (!t) {
+        if (why)
+            *why = "OpenThread failed";
+        return false;
+    }
+    if (SuspendThread(t) == (DWORD)-1) {
+        CloseHandle(t);
+        if (why)
+            *why = "SuspendThread failed";
+        return false;
+    }
+    memset(&s.c, 0, sizeof s.c);
+    s.c.ContextFlags = CONTEXT_FULL;
+    GetThreadContext(t, &s.c);
+    s.esp = s.c.Esp;
+    const uint32_t* sp = (const uint32_t*)s.esp;
+    const int cap = (int)(sizeof s.words / sizeof s.words[0]);
+    while (s.n < cap) {
+        MEMORY_BASIC_INFORMATION mbi;
+        const uint32_t* p = sp + s.n;
+        if (!VirtualQuery(p, &mbi, sizeof mbi) || mbi.State != MEM_COMMIT ||
+            (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) || !mbi.Protect)
+            break;
+        const uint32_t* end = (const uint32_t*)((const uint8_t*)mbi.BaseAddress + mbi.RegionSize);
+        while (p < end && s.n < cap)
+            s.words[s.n++] = *p++;
+    }
+    if (while_suspended)
+        while_suspended(ctx); // kit.fix stackdump 0: the old order (format while the thread is suspended)
     ResumeThread(t);
     CloseHandle(t);
+    return true;
+}
+
+static void dump_thread_stack(DWORD tid, const char* why)
+{
+    static ThreadSnap snap; // 16 KB; the watchdog thread and the console both come here
+    static std::mutex mu;
+    std::lock_guard<std::mutex> lk(mu);
+    std::string out;
+    auto format = [&] {
+        char b[256];
+        snprintf(b, sizeof b, "WATCHDOG (%s, stage '%s'): thread %lu%s eip=%08lX esp=%08lX\n", why,
+                 g_stage.load(), tid, tid == main_thread_id() ? " (main)" : "", snap.c.Eip, snap.c.Esp);
+        out += b;
+        auto describe = [&](uintptr_t a) {
+            uintptr_t base = 0;
+            std::string m = module_of(a, &base);
+            std::string s = symbols_reverse(a);
+            snprintf(b, sizeof b, "%s+0x%X %s", m.c_str(), (unsigned)(a - base), s.c_str());
+            return std::string(b);
+        };
+        out += "  eip " + describe(snap.c.Eip) + "\n";
+        int found = 0;
+        for (int i = 0; i < snap.n && i < 2048 && found < 40; i++) {
+            uint32_t v = snap.words[i];
+            MEMORY_BASIC_INFORMATION vm;
+            if (VirtualQuery((void*)(uintptr_t)v, &vm, sizeof vm) && vm.State == MEM_COMMIT &&
+                vm.Type == MEM_IMAGE && (vm.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE | PAGE_EXECUTE_READWRITE))) {
+                snprintf(b, sizeof b, "  [esp+%04X] %08X ", i * 4, v);
+                out += b + describe(v) + "\n";
+                found++;
+            }
+        }
+    };
+    std::string err;
+    bool now = fixed(g_fix_stackdump);
+    if (!thread_snapshot(tid, snap, &err, now ? nullptr : call_lambda<decltype(format)>, &format)) {
+        logf(&g_kit_mod, SK_ERROR, "WATCHDOG (%s): thread %lu: %s", why, tid, err.c_str());
+        return;
+    }
+    if (now)
+        format();
     logf(&g_kit_mod, SK_ERROR, "%s", out.c_str());
 }
 
@@ -144,6 +192,8 @@ void watchdog_start()
 
 std::string watchdog_dump_now()
 {
+    if (main_thread_id() == GetCurrentThreadId() && fixed(g_fix_cheatwait))
+        return "hangdump cannot run on the main thread itself (use stack.here)";
     dump_main_stack("requested");
     return "dumped to log";
 }

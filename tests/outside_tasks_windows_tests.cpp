@@ -18,6 +18,7 @@ bool in_frame(){return presenting;}
 void* game_window(){return reinterpret_cast<void*>(1);}
 uint64_t frame_index(){return 12;}
 SkMod g_kit_mod;
+KitFix g_fix_cheatwait{"cheatwait","controlled main-thread wait guard",1};
 void logf(SkMod*,int,const char*,...){ }
 std::string json_escape(const std::string& value){return value;}
 }
@@ -67,5 +68,16 @@ int main(){
     const auto cancel_wait=GetTickCount();while(!sk::g_out_tasks.size()&&GetTickCount()-cancel_wait<2000)Sleep(1);
     CHECK(sk::g_out_tasks.size()==1);sk::commands_remove_all(&module);sk::pump_outside_tasks();cancelled.join();
     CHECK(rc==-1&&reply=="command vanished"&&sk::g_out_tasks.size()==0);
+    bool stale=false,cleanup=false;
+    auto raw=std::make_shared<int>(1),retained=std::make_shared<int>(2);
+    std::weak_ptr<int> raw_weak=raw,retained_weak=retained;
+    sk::run_on_main_from(reinterpret_cast<void*>(0x120),[&,raw]{stale=true;});
+    sk::run_outside_frame_from(reinterpret_cast<void*>(0x130),[&,raw]{stale=true;});
+    sk::run_outside_frame([&,retained]{cleanup=true;});raw.reset();retained.reset();
+    CHECK(sk::drop_tasks_in(0x100,0x200)==2&&raw_weak.expired()&&!retained_weak.expired());
+    sk::pump_main_tasks();sk::pump_outside_tasks();CHECK(!stale&&cleanup&&retained_weak.expired());
+    sk::command_add(&module,"fixture.wait","",[](void*,int,const char* const*,SkOut*){return 0;},nullptr,SK_CMD_ANY_THREAD|SK_CMD_NOT_ON_MAIN);
+    std::string waiting;CHECK(sk::command_exec_line("fixture.wait",waiting,true)==1&&waiting.find("cannot run")!=std::string::npos);
+    sk::commands_remove_all(&module);
     std::printf("SDK outside pump: %u checks passed\n",checks);
 }

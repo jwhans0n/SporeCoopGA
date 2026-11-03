@@ -12,9 +12,15 @@ that window, its facing with the host's turn over it. A desync (wrong pose, a st
 object) is far from that whole path. Prints per kind: count, median / 90% / max position error (m)
 and facing error (deg), and the 90% without the window ("raw", the old measure, lag included).
 
-usage: coop_sync.py [stage ...]   (default: cell creature tribe civ space)
+usage: coop_sync.py [--fps N] [stage ...]   (default: cell creature tribe civ space)
+
+--fps N: the guest runs at ~N frames a second (frame.limit 1000/N), a weak PC or four games on
+one PC (BUG-0175: drive::step's pull towards the host's pose was per frame, so a mirror that
+cannot walk trailed 4x as far at 15 fps as at 60; the fix's FAIL/PASS is npc_tests: in game, with
+the game time running, the 0.15 s lag window hides the difference, see the ticket).
 """
 import math
+import os
 import re
 import sys
 import time
@@ -113,6 +119,23 @@ def civ_state(con):
     return cities, veh
 
 
+def round_city(p, c, step=35.0, radius=45.0):
+    """the next point of a drive round city c (planet centre at the origin): the vehicle's offset
+    from the city turned by `step` degrees about the city's up axis, at `radius` m. With a new order
+    every sample (--fps) the old away / back targets reversed the vehicle every sample: the host's
+    vehicle flipped 180 deg within 0.15 s each time and the facing check compared a mid-turn guest
+    pose with a host turn whose direction it cannot know (BUG-0326)"""
+    n = math.sqrt(sum(x * x for x in c)) or 1
+    up = [x / n for x in c]
+    r = [pp - cc for pp, cc in zip(p, c)]
+    r = [x - sum(a * b for a, b in zip(r, up)) * u for x, u in zip(r, up)]  # in the city's ground plane
+    rl = math.sqrt(sum(x * x for x in r)) or 1
+    r = [x / rl * radius for x in r]
+    t = math.radians(step)
+    cr = [up[1] * r[2] - up[2] * r[1], up[2] * r[0] - up[0] * r[2], up[0] * r[1] - up[1] * r[0]]
+    return tuple(cc + x * math.cos(t) + y * math.sin(t) for cc, x, y in zip(c, r, cr))
+
+
 def stir(stage, host, guest, i):
     """keep things moving between rounds"""
     if stage == 'space' and i == 0:
@@ -124,9 +147,12 @@ def stir(stage, host, guest, i):
             if not cities:
                 break
             c = min(cities, key=lambda c: math.dist(c, p))
-            d = math.dist(p, c) or 1
-            k = (d + (40 if i % 2 == 0 else -25)) / d
-            tgt = tuple(cc + (pp - cc) * k for pp, cc in zip(p, c))
+            if FPS:  # BUG-0326: a new order every sample: drive round the city (no 180 deg flips)
+                tgt = round_city(p, c)
+            else:
+                d = math.dist(p, c) or 1
+                k = (d + (40 if i % 2 == 0 else -25)) / d
+                tgt = tuple(cc + (pp - cc) * k for pp, cc in zip(p, c))
             host.call('coop.civ move %d %.1f %.1f %.1f' % ((vid,) + tgt))
     if stage == 'cell':
         host.call('coop.pool goto %d %d' % ([20, 0, -20, 0][i % 4], [0, 20, 0, -20][i % 4]))
@@ -135,14 +161,16 @@ def stir(stage, host, guest, i):
 def measure(stage):
     fx, planet = FIXTURES[stage]
     host, guest = start(fx, planet)
+    if FPS:
+        print('  guest:', guest.call(f'frame.limit {round(1000 / FPS)}')['out'].strip(), flush=True)
     w = wait_running(host, guest)
     print(f'  (game time running {w:.1f} s after the start)' if w is not None
           else '  (a game stayed paused: measuring anyway)', flush=True)
     time.sleep(5)
     pos, rot, raw_pos, raw_rot, keys = {}, {}, {}, {}, {}
     for i in range(16):
-        if i % 4 == 0:
-            stir(stage, host, guest, i // 4)
+        if i % 4 == 0 or (FPS and stage == 'civ'):  # --fps: the vehicles drive all the time (BUG-0175)
+            stir(stage, host, guest, i if FPS and stage == 'civ' else i // 4)
         h0 = sample(host)
         time.sleep(LAG_WINDOW - 0.03)  # a console call takes ~0.03 s: h0 is ~LAG_WINDOW older than g
         h1, g, h2 = sample(host), sample(guest), sample(host)
@@ -164,6 +192,10 @@ def measure(stage):
             if e > 50:  # print the big ones: which object, when, where on both sides
                 print(f'    big: {k} {e:.0f} m at sample {i}: host {h1[k][0]} / {h2[k][0]}, guest {gp}', flush=True)
             rot.setdefault(kind, []).append(a)
+            if os.environ.get('SYNC_VERBOSE') and kind == 'v':  # BUG-0326: how far the host turned meanwhile
+                turn = angle(h0[k][1], h2[k][1]) if k in h0 else -1
+                print(f'    v {k} sample {i}: facing err {a:5.1f} deg, host turned {turn:5.1f} deg over the window, '
+                      f'pos err {e:.2f} m', flush=True)
             raw_rot.setdefault(kind, []).append(angle(gq, hq))
             keys.setdefault(kind, set()).add(k)
         time.sleep(0.4)
@@ -172,8 +204,16 @@ def measure(stage):
     return pos, rot, raw_pos, raw_rot, keys, host, guest
 
 
+FPS = 0
+
+
 def main():
-    stages = sys.argv[1:] or ['cell', 'creature', 'tribe', 'civ', 'space']
+    global FPS
+    args = sys.argv[1:]
+    if args[:1] == ['--fps']:
+        FPS = float(args[1])
+        args = args[2:]
+    stages = args or ['cell', 'creature', 'tribe', 'civ', 'space']
     ck = Checks()
     for st in stages:
         print(f'== {st}', flush=True)
@@ -188,6 +228,8 @@ def main():
                   f' | raw p90 {pct(raw_pos[kind], .9):.2f} m {pct(raw_rot[kind], .9):.1f} deg', flush=True)
             ck(pct(p, .9) <= lp, f'{st}/{KINDS.get(kind, kind)}: 90% within {lp} m')
             ck(pct(r, .9) <= lr, f'{st}/{KINDS.get(kind, kind)}: 90% facing within {lr} deg')
+        if FPS:
+            guest.call('frame.limit auto')
         ck.faults(host=host, guest=guest)
     return ck.result()
 

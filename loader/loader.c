@@ -10,6 +10,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include "../updater/pending.h"
+
 typedef int(__cdecl *SporekitBootFn)(HMODULE loader);
 typedef DWORD(WINAPI *EntryFn)(void *);
 
@@ -33,63 +35,18 @@ static void restore_entry(void)
 
 /* An update could not replace a file the game had open (Data\SporeCoop.package): it left
  * <file>.new and listed the file (relative to the game folder) in mods\sporecoop.pending.
- * Here, before the game opens anything, the new files take their place. */
+ * Here, before the game opens anything, the new files take their place (updater/pending.h:
+ * an entry that still cannot be swapped stays listed for the next start, BUG-0150). */
 static void apply_pending(void)
 {
-    wchar_t root[MAX_PATH], list[MAX_PATH];
+    wchar_t root[MAX_PATH];
     DWORD n = GetModuleFileNameW(g_self, root, MAX_PATH);
     int seps = 0;
     while (n > 0 && seps < 2) /* ...\SPORE\SporebinEP1\steam_api.dll -> ...\SPORE */
         if (root[--n] == L'\\' || root[n] == L'/')
             seps++;
     root[n] = 0;
-    lstrcpyW(list, root);
-    lstrcatW(list, L"\\SporebinEP1\\mods\\sporecoop.pending");
-    HANDLE f = CreateFileW(list, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-    if (f == INVALID_HANDLE_VALUE)
-        return;
-    char buf[4096];
-    DWORD got = 0;
-    ReadFile(f, buf, sizeof buf - 1, &got, NULL);
-    CloseHandle(f);
-    buf[got] = 0;
-    char *line = buf;
-    while (*line) {
-        char *end = line;
-        while (*end && *end != '\n' && *end != '\r')
-            end++;
-        char c = *end;
-        *end = 0;
-        /* plain relative names only (the updater writes them; never "..", drives or roots) */
-        int bad = !*line || line[0] == '/' || line[0] == '\\';
-        for (char *p = line; *p; p++)
-            if (*p == ':' || (p[0] == '.' && p[1] == '.'))
-                bad = 1;
-        if (!bad) {
-            wchar_t target[MAX_PATH * 2], fresh[MAX_PATH * 2], old[MAX_PATH * 2];
-            lstrcpyW(target, root);
-            lstrcatW(target, L"\\");
-            int k = lstrlenW(target);
-            for (char *p = line; *p && k < MAX_PATH * 2 - 8; p++)
-                target[k++] = (wchar_t)(*p == '/' ? '\\' : (unsigned char)*p);
-            target[k] = 0;
-            lstrcpyW(fresh, target);
-            lstrcatW(fresh, L".new");
-            lstrcpyW(old, target);
-            lstrcatW(old, L".old");
-            if (GetFileAttributesW(fresh) != INVALID_FILE_ATTRIBUTES) {
-                MoveFileExW(target, old, MOVEFILE_REPLACE_EXISTING);
-                if (!MoveFileExW(fresh, target, MOVEFILE_REPLACE_EXISTING))
-                    MoveFileExW(old, target, MOVEFILE_REPLACE_EXISTING); /* keep the game working */
-                else
-                    DeleteFileW(old);
-            }
-        }
-        if (!c)
-            break;
-        line = end + 1;
-    }
-    DeleteFileW(list);
+    sc_apply_pending(root, 1);
 }
 
 static void boot_sporekit(void)

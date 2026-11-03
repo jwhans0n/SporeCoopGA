@@ -4,16 +4,23 @@ one game, its own bottle; only TCP console port 47810 + ... is used, not the co-
 lab a lane that is neither in the run nor skipped):
 
   1. the lane gets the game's original files back (no SporeCoop)
-  2. SporeCoopSetup.exe /S installs the current build (pack from tools/package.sh)
-  3. a local server answers like the GitHub API: release 0.5.1 (a build of this tree that calls
-     itself 0.5.1, its pack and SHA256SUMS.txt)
-  4. the game finds the update, coop.update apply installs it, after a restart coop 0.5.1 runs
-     and the replaced files (*.old) are gone
+  2. tools/package.sh stages this tree; SporeCoopSetup.exe /S installs it offline (its own pack,
+     /api: points at a missing page so the setup never fetches the published release)
+  3. a local server answers like the GitHub API: the next version (COOP_VERSION with the last part
+     + 1: a build of this tree that calls itself so, its pack and SHA256SUMS.txt)
+  4. the game finds the update, coop.update apply installs it, after a restart the new coop runs
+     and the replaced files (*.sporecoop-old) are gone
   5. SporeCoopSetup.exe /S /uninstall puts the game's own steam_api.dll back
 
-  python3 tools/tests/update_check.py [--lane 6]
+  python3 tools/tests/update_check.py [--lane 6] [--api403]
+
+--api403 (BUG-0392): the server's API path answers 403 (GitHub's rate limit for shared IPs / VPNs) and
+the game must find the release through the release page's redirect (github.com/<o>/<r>/releases/latest
+-> .../releases/tag/v<new>) and download it from .../releases/download/v<new>/. With
+SPORE_FIX_OFF=update.web_fallback (only the API) it must FAIL.
 """
 import argparse
+import fcntl
 import hashlib
 import http.server
 import json
@@ -28,9 +35,18 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(ROOT, 'tools'))
 from sporectl import Console  # noqa: E402
+import lane as lane_mod  # noqa: E402 (game_dir: the lane's game folder from any checkout)
 
-NEW = '0.5.1'
-PORT = 47999
+# BUG-0211: a fixed '0.5.1' was older than the running version since 0.5.2, so the game rightly
+# offered nothing; the release under test is always the next version of this tree
+NEW = ''
+PORT = 47999  # + lane (two lanes' runs at once)
+
+
+def next_version(v):
+    p = v.split('.')
+    p[-1] = str(int(p[-1]) + 1)
+    return '.'.join(p)
 
 
 def run(*a, **kw):
@@ -63,8 +79,12 @@ def build_new(dist):
     return pack
 
 
-def serve(pack):
-    """a local stand-in for the GitHub API and its downloads"""
+REPO = '/WoodyWizard/SporeCoop/releases'
+
+
+def serve(pack, api403=False):
+    """a local stand-in for the GitHub API and its downloads; api403: the API path refuses, the
+    release page redirects to the tag (BUG-0392)"""
     files = {f'/download/{os.path.basename(pack)}': open(pack, 'rb').read()}
     files['/download/SHA256SUMS.txt'] = (hashlib.sha256(files[f'/download/{os.path.basename(pack)}']).hexdigest()
                                          + f'  {os.path.basename(pack)}\n').encode()
@@ -74,8 +94,26 @@ def serve(pack):
         'assets': [{'name': n[10:], 'browser_download_url': base + n} for n in files if n.startswith('/download/')],
     }).encode()
 
+    # github.com's layout: releases/latest redirects to releases/tag/<tag>, assets by fixed names
+    for n in [n for n in files if n.startswith('/download/')]:
+        files[f'{REPO}/download/v{NEW}/{n[10:]}'] = files[n]
+    redirect = {f'{REPO}/latest': f'{base}{REPO}/tag/v{NEW}'}
+    files[f'{REPO}/tag/v{NEW}'] = b'<html>release</html>'
+    refused = {f'/repos{REPO}/latest'} if api403 else set()
+    if not api403:
+        files[f'/repos{REPO}/latest'] = files['/latest']
+
     class H(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
+            if self.path in refused or self.path in redirect:
+                self.send_response(403 if self.path in refused else 302)
+                if self.path in redirect:
+                    self.send_header('Location', redirect[self.path])
+                body = b'{"message":"API rate limit exceeded"}' if self.path in refused else b''
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             body = files.get(self.path)
             self.send_response(200 if body is not None else 404)
             self.send_header('Content-Length', str(len(body or b'')))
@@ -87,7 +125,7 @@ def serve(pack):
 
     srv = http.server.ThreadingHTTPServer(('127.0.0.1', PORT), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    return base + '/latest'
+    return base + (f'/repos{REPO}/latest' if api403 else '/latest')
 
 
 def wine(bottle, exe, *args):
@@ -108,18 +146,27 @@ def main():
     # the lab gives a lane outside its run (SPORE_FREE_LANE, '' = none free); by hand: lane 6
     free = os.environ.get('SPORE_FREE_LANE')
     ap.add_argument('--lane', type=int, default=int(free) if free else 6)
+    ap.add_argument('--api403', action='store_true', help='the API answers 403: the release page (BUG-0392)')
     a = ap.parse_args()
     if free == '' and '--lane' not in sys.argv:
         print('RESULT: SKIP (no lane outside this lab run is free: this test wipes the mod from its lane)')
         return 0
     assert a.lane > 1, 'never the real install (lane 1)'
+    global NEW, PORT
     lane, ck = a.lane, Checks()
+    PORT += lane
     env = dict(os.environ, SPORE_LANE=str(lane))
     spore = lambda *x: subprocess.run([os.path.join(ROOT, 'tools', 'spore.sh'), *x], env=env,  # noqa: E731
                                       capture_output=True, text=True)
+    # one run per lane at a time, taken before anything touches the lane or out/dist (lab --repeat
+    # ran two copies on the same free lane: one killed and wiped what the other installed, and both
+    # wanted the same server port; BUG-0211)
+    os.makedirs(os.path.dirname(lane_mod.game_dir(lane)), exist_ok=True)
+    lock = open(os.path.join(os.path.dirname(lane_mod.game_dir(lane)), f'.update_check-lane{lane}.lock'), 'w')
+    fcntl.flock(lock, fcntl.LOCK_EX)
     print(spore('lane', 'create', str(lane)).stdout.strip())
     spore('kill')
-    game = os.path.join(os.path.dirname(os.path.dirname(ROOT)), 'SPORE-lab', f'lane{lane}')
+    game = lane_mod.game_dir(lane)  # right from a worktree too (BUG-0068)
     bottle = f'SporeLab{lane}'
     b = os.path.join(game, 'SporebinEP1')
     # 1. the game's own files back
@@ -131,23 +178,32 @@ def main():
     for p in (os.path.join(game, 'Data', 'SporeCoop.package'),):
         if os.path.exists(p):
             os.remove(p)
+    # the lab watches this lane from now on (crash / hang reports, dead games: BUG-0249)
+    print(f'LAB-WATCH lane={lane} since={time.time():.3f}', flush=True)
     ck(b'sporekit-loader' not in open(os.path.join(b, 'steam_api.dll'), 'rb').read(), 'a clean game (its own steam_api.dll)')
     dist = os.path.join(ROOT, 'out', 'dist')
     ver = run('sed', '-n', 's/^#define COOP_VERSION "\\(.*\\)"/\\1/p', os.path.join(ROOT, 'mods/coop/coop.cpp')).strip()
+    NEW = next_version(ver)
+    # the setup and the pack of this tree (out/dist was whatever tools/package.sh made last, and a
+    # missing pack made the setup download the published release: BUG-0211)
+    run(os.path.join(ROOT, 'tools', 'package.sh'))
     cur_pack = os.path.join(dist, f'SporeCoop-{ver}.pack')
     setup = os.path.join(dist, 'SporeCoopSetup.exe')
     new_pack = build_new(dist)
-    api = serve(new_pack)
+    api = serve(new_pack, a.api403)
     log = os.path.join(game, 'setup-test.log')  # inside the bottle's view (Flatpak has its own /tmp)
     if os.path.exists(log):
         os.remove(log)
     # 2. the setup installs the current build (offline: its pack)
     wl = lambda p: 'Z:' + p.replace('/', '\\')  # noqa: E731
-    wine(bottle, setup, '/S', f'/dir:{wl(game)}', f'/pack:{wl(cur_pack)}', f'/log:{wl(log)}')
+    ck(os.path.exists(cur_pack), f'the pack under test exists ({os.path.basename(cur_pack)})')
+    wine(bottle, setup, '/S', f'/dir:{wl(game)}', f'/pack:{wl(cur_pack)}', f'/api:http://127.0.0.1:{PORT}/none',
+         f'/log:{wl(log)}')
     print('  setup:', open(log, errors='replace').read().strip() if os.path.exists(log) else '(no log)')
     ck(b'sporekit-loader' in open(os.path.join(b, 'steam_api.dll'), 'rb').read(), 'the setup installed the loader')
     ck(os.path.exists(os.path.join(b, 'steam_api_orig.dll')), 'and kept the game\'s steam_api.dll')
-    ck(open(os.path.join(b, 'mods', 'sporecoop.version')).read().strip() == ver, f'installed version {ver}')
+    vf = os.path.join(b, 'mods', 'sporecoop.version')
+    ck(os.path.exists(vf) and open(vf).read().strip() == ver, f'installed version {ver}')
     # 3. the game asks our "GitHub"
     ini = os.path.join(b, 'mods', 'coop.ini')
     with open(ini, 'a') as f:
@@ -171,6 +227,15 @@ def main():
 
     c = start_game()
     st = ''
+    if 'update.web_fallback' in os.environ.get('SPORE_FIX_OFF', ''):
+        # the start's check ran with the fix on: let it end, switch the fix off, check again (only the API)
+        for _ in range(40):
+            time.sleep(1)
+            if 'update: checking' not in c.call('coop.update')['out']:
+                break
+        print('  SPORE_FIX_OFF: ' + c.call('coop.fix update.web_fallback off')['out'].strip(), flush=True)
+        c.call('coop.update check')
+        time.sleep(2)
     for _ in range(40):
         st = c.call('coop.update')['out']
         if 'available' in st or 'up to date' in st:
@@ -178,6 +243,8 @@ def main():
         time.sleep(1)
     print(' ', st.strip())
     ck('available' in st and 'latest=' + NEW in st, f'the game finds SporeCoop {NEW}')
+    if a.api403:
+        ck('via=page' in st, 'through the release page (the API answered 403)')
     ui = ''
     for _ in range(30):  # the menu item and the window are built once the galaxy menu is up
         c.call('coop.uistate 1')
@@ -207,9 +274,10 @@ def main():
     mods = c.call('mods')['out']
     print(' ', mods.strip()[:120])
     ck(NEW in mods, f'after the restart coop {NEW} runs')
-    old = [os.path.join(dp, f) for dp, _, fs in os.walk(game) for f in fs if f.endswith('.old')
+    old = [os.path.join(dp, f) for dp, _, fs in os.walk(game) for f in fs if f.endswith(('.old', '.sporecoop-old'))
            and ('SporebinEP1' in dp or 'Data' in dp)]
-    ck(not [o for o in old if not o.endswith('sporekit.dll.old')], f'the replaced files are cleaned up ({old})')
+    ck(not [o for o in old if not o.endswith(('sporekit.dll.old', 'sporekit.dll.sporecoop-old'))],
+       f'the replaced files are cleaned up ({old})')
     st = c.call('coop.update')['out']
     ck('up to date' in st, 'no further update offered')
     spore('kill')

@@ -6,6 +6,8 @@
   <a href="https://github.com/jwhans0n/SporeCoopGA/actions/workflows/build.yml?query=branch%3Amain"><img src="https://github.com/jwhans0n/SporeCoopGA/actions/workflows/build.yml/badge.svg?branch=main" alt="Build"></a>
   <img src="https://img.shields.io/badge/status-experimental%20GA-f0b44a" alt="Experimental Galactic Adventures support">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-74c867" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/players-2%E2%80%934-ff7a5f" alt="2–4 players">
+  <a href="https://discord.gg/7Yre7u4b8x"><img src="https://img.shields.io/badge/Discord-join%20the%20server-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
 # SporeCoopGA
@@ -29,8 +31,17 @@ using protocol **15**. Galactic Adventures support remains **experimental**.
 - [Playing together](#playing-together)
 - [Compatibility and status](#compatibility-and-status)
 - [Roadmap](#roadmap)
+- [Inherited upstream compatibility and testing](#inherited-upstream-compatibility-and-testing)
+- [Community](#community)
 - [Development](#development)
 - [Credits](#credits)
+
+The separately installed shared Adventure Editor preview 9 (C49) uses protocol
+23 and remains under validation. The current upstream-integration source is an
+**uninstalled protocol 24 candidate**, with native acceptance pending. It does
+not update that installed preview or the published protocol 15 gameplay release.
+See the [editor preview 9 report](docs/reports/EDITOR-PREVIEW9-VALIDATION.md) and
+[protocol scope](docs/04-netcode.md#netcode-protocol-scope) for the separate limits.
 
 ## Current GA features
 
@@ -195,6 +206,119 @@ The [editor development guide](docs/MULTIPLAYER-ADVENTURE-EDITOR.md) documents
 preview 4 placement fixes, native cast properties/imports, solo Play and Test
 Together, along with their remaining acceptance gates. Objectives, independent
 act authoring and the later editing milestones remain planned.
+
+## Inherited upstream compatibility and testing
+
+The following is upstream's base-stage evidence and usage guidance, retained
+from 0.7.3.6. It does not enable the fork's exact-file GA adapter on Steam or
+establish Linux GA support. Protocol 7 compatibility statements apply only to
+the upstream release line; the fork's protocols 15, 23 and 24 require matching
+clients as described above. The upstream setup and release links below are for
+the original project, not packages for this fork's GA support.
+
+| Game version | `SporeApp.exe` | Windows 11 | Linux (Wine / Proton) |
+|---|---|---|---|
+| **GOG**, the current download (2024 update) | 24 895 536 bytes, `dc04aee5…` | ✅ 0.6.1: every stage as host + guest; 0.7.1, 0.7.2: with a Steam player | ✅ 0.7.0: the full automated suite (every stage, every Space feature) |
+| **Steam**, Spore + Galactic Adventures (October 2024 update) | 25 066 744 bytes, `3010a413…` | ✅ 0.7.1, 0.7.2: Steam guest + GOG host (Creature), Steam offline ¹ | ✅ 0.7.1: Steam + Proton, offline |
+| **GOG 2016**, the older GOG download | 24 888 320 bytes, `922af7c7…` | ❔ not tested | ✅ up to 0.7.0: SporeCoop was developed on it; the fixes since 0.7.2.2 that need new game addresses are off ² |
+| EA app / Origin, disc | other files | ❌ not supported yet | ❌ not supported yet |
+
+¹ With Steam **online** its overlay can keep the game's frames from the mod (no *Co-op* item,
+[issue #4](https://github.com/WoodyWizard/SporeCoop/issues/4)). Since 0.7.2 the mod then takes its
+frames from the game loop; tested by simulating that case, not yet with the real overlay.
+² 0.7.x is the last version for the GOG 2016 build; from 0.8 only the current GOG build (and Steam,
+which is the same game): update the game through GOG. Since 0.7.2.2 new fixes get game addresses for
+the current build only: on GOG 2016 they switch themselves off (Alt+Shift+Enter, the hatchling growing
+up after a death, the pack, Cell bites, meat and spin, NPC nations' vehicles on a guest's game, our
+creatures kept out of saves); the other fixes work there too. The full list, checked by the build:
+[data/symbols/frozen_off_922af7c7.txt](data/symbols/frozen_off_922af7c7.txt).
+
+**Playing together:** GOG 2024 and Steam players can play together (the same game code). A GOG
+2016 player cannot join a GOG 2024 or Steam host (the host turns away another build). Every player
+needs the same SporeCoop protocol: within upstream's protocol 7 release line,
+every 0.7 version plays with every other, while 0.6.x cannot join 0.7. This does
+not include this fork's differently versioned GA or editor protocols.
+With an older 0.7 version (0.7.2.x, 0.7.3.0) on one side, chat lines above about 1160 bytes arrive
+cut and the Creature species table of a planet with 42 or more species does not reach that player;
+the game names that player in a notification. Update everybody to the latest version.
+
+**Not tested yet:** two PCs over the internet with Windows on 0.7 (the network code is the same
+as on Linux, where it was tested), the EA app and disc versions. Which build you have:
+`SporeCoopSetup.exe` shows it, or see [INSTALL.md, section 2](docs/INSTALL.md#2-check-your-game-build).
+Tried another version? Please tell us in an [issue](https://github.com/WoodyWizard/SporeCoop/issues)
+with `mods\logs\sporekit.log`.
+
+## How to play
+
+**Host**
+
+1. Galaxy menu → **Co-op** → type your name → **Host**.
+2. Load a save or start a new game. The window shows the addresses your friends can use.
+
+**Guest**
+
+1. Galaxy menu → **Co-op** → type your name.
+2. Click the host under *Games on your network*, or type the host's address (e.g. `100.64.12.7` on
+   Tailscale) → **Join**.
+3. The host's world arrives and loads by itself; you appear next to the host with your own creature.
+
+**In game**
+
+| Key / command | What it does |
+|---|---|
+| **F9** | the co-op window: players, stage, ping, readiness, chat, *Send my world*, *Leave* |
+| *I'm ready* | agree to evolve (editor, next stage) |
+| `Ctrl+Shift+C` → `coop status` | session details in the cheat console |
+| `coop say <text>` | chat |
+| `coop ping` | show everybody the place under your mouse (Tribe, Civilization) |
+| `coop give` | give your selected tribe members, vehicles or the opened city to a partner |
+| `coop role 1`…`3` | Civilization role: military, economic, religious |
+
+**Example: two friends over the internet**
+
+```
+Alice (GOG) and Bob (Steam) install Tailscale and the same SporeCoop version.
+Alice: Co-op → "Alice" → Host → loads her Tribe save.
+       The window says: friends connect to 100.64.12.7:47810
+Bob:   Co-op → "Bob" → 100.64.12.7 → Join.
+       Alice's tribe loads; Bob gets his share of the members and his own chief.
+Both:  F9 → I'm ready when the tribe is ready for Civilization.
+```
+
+For inherited Steam setup, Galactic Adventures is app 24720 in
+`steamapps\common\Spore 24720`; base Spore's `steamapps\common\Spore`
+has no `SporebinEP1`. If the setup cannot find the GA folder, select it directly.
+Run upstream setup inside the game's Wine prefix on Linux. A "GitHub not
+reachable" setup error can use the matching release zip's `install.bat`; see
+[troubleshooting](docs/INSTALL.md#9-troubleshooting). Fork GA installation still
+uses this fork's matching packages and verified executable.
+
+Upstream version 0.7 (its newest release is on the [Releases](https://github.com/WoodyWizard/SporeCoop/releases/latest) page): co-op in every stage for up to 4 players, and a Space stage built for playing
+together (the F9 window's **Space** page: partners on the map, allied colonies, trade, contracts,
+shared diplomacy, the galactic core together, rivals mode). Tested automatically on real game
+instances: 50+ scenario tests with real clicks, bots that play every stage through real input for
+hours, 4-player sessions with rejoins, a chaos bot and simulated bad networks
+([stability report](docs/stability-report.md)).
+Known issues: [docs/known-issues.md](docs/known-issues.md). Found a problem? Type `/bug <what you
+see>` in the co-op chat when it happens (it marks that moment in every player's log), then see
+[how to report it](docs/REPORTING.md).
+
+Upstream's remaining roadmap at that checkpoint:
+
+- [ ] easier internet play (no VPN or port forwarding)
+- [ ] tests with the EA app build, and of the Steam build with Steam online (overlay)
+- [ ] four-player tests of the 0.7 Space features, co-op adventures
+- [ ] **Rivals mode**: every player with a base, a species, a tribe, a nation and an empire of its
+  own in the same world, a race through every stage with war, peace and alliances
+  ([design](docs/11-rivals.md))
+
+## Community
+
+Join the **[SporeCoop Discord](https://discord.gg/7Yre7u4b8x)**: find players to evolve with, ask for help with the setup,
+share your worlds and creatures, report problems and suggest ideas. Report this
+fork's GA/editor problems in a [fork issue](https://github.com/jwhans0n/SporeCoopGA/issues).
+Original upstream reports use its [issue templates](https://github.com/WoodyWizard/SporeCoop/issues/new/choose).
+The [reporting guide](docs/REPORTING.md) explains the diagnostic files and `/bug` marker.
 
 ## Development
 

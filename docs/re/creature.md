@@ -59,6 +59,26 @@ Structures of `cCreatureAnimal` and the NPC sync: [05-re-notes.md](../05-re-note
   ? the meaning of tuning +0x32C.
 * ✔ 0xC0B890: `+0xB34 == 1` (age: 1 = adult ~). 0xC04260 `thiscall(victim, 0)` -> float: the DNA a
   kill of this creature is worth.
+* ✔ (2026-10-25, decompiled GOG 2024) The creature read at 0xD48634 is **not taken from a list**: it
+  is `msg+4` of the message, cast with `0xAC8010(obj, 0x18EB45E)` (vt 0x20 noun id == creature).
+  Path: 0x60B4123 (social win, `{avatar, other, 0}`) or 0xD335362C; for 0xD335362C `msg+0` may be
+  any creature (the avatar check at the top is skipped for it). Then: `other+0xB54` and
+  `(other+0xB54)+0x17C` set, `other+0xB58 & 2` clear (the handler sets it afterwards: one event per
+  creature), species pointer `+0xB20` differs from the avatar's, adult (0xC0B8D0), and for
+  0xD335362C the attacker is the avatar (`(+0xC0)->vt 0x58`) or of an allied species (relation 6)
+  with 0xFEB920 and a timer: then `(+0xE84)->+0x32C`. -1 there keeps the event's flag at 1.
+* ✔ Who posts 0xD335362C: **0xC02B40**, the creature's attack (creature vt 0xB8 at .rdata 0x146A138,
+  `thiscall(attacker, target, a3, a4) ret 0xC`, called by the ability code 0xC1E8B0 at 0xC1F67F with
+  `(target, attacker+0xE8C, 0)`): 0xC20390 does the hit, then
+  `cCreatureModeStrategy::ExecuteAction(Get(), 0xD335362C, {attacker, target, 0})`.
+  `App::cCreatureModeStrategy::Get` 0xD38840 = `mov eax,[0x169E294]`; `ExecuteAction` 0xD39360
+  `thiscall(strategy, id, msg*) ret 8` hands the message to every listener (`+0xBC..+0xC0`, vt
+  0x18), the event handler among them, then handles 0x533535DA / 0x45AB96E / 0x60B4123 / 0x60B4124 /
+  0xD335362C / 0xD3353637 itself. Other posters of 0xD335362C: 0xD35190, 0xD3A5A0. The players'
+  stacks (0xC1F681, 0xC02C5D, 0xD3938E) are exactly this path.
+* ✔ `coop.npc attackmsg <id>` (host) posts that message for the host avatar and host NPC `id`
+  (tests); `coop.npc untuned` / `creatures [species]` list creatures with their +0xE84, herd,
+  archetype; `coop.npc archless` the herds without an archetype (ours).
 
 ## 5. What a player meets that tests did not do (play_creature.py)
 
@@ -158,7 +178,7 @@ then queries by a small script in seconds); runtime: `probe`, memory diffs, `cal
   sender) ret 0x10`). The NPC's behaviour tree answers: node 0x341BD4BE (table at 0x15943A0: start
   0xDA43D0 "SocialPropose", tick 0xDA49C0, end 0xD9F810) builds the session (rounds = tuning +0x424,
   +1 when +0xB58 bit 0x1 is set: ~ the alpha, its card reads "Alpha Kook"; the selection guard in
-  coop.cpp treats the same bit as "pack member"), the meter UI (0xE31xxx) and the prompts. The player's ability keys
+  coop.cpp treats the same bit as "pack member" (~ superseded 2026-10-27: mask 0x1 is not the pack, see docs/re/creature.md#creature-selection-gate)), the meter UI (0xE31xxx) and the prompts. The player's ability keys
   answer it; without such a session the keys do nothing (no animation either).
 * ✔ The win: `CreatureSocialSuccess` 0xD9BC40 `thiscall(session, npc, other) ret 8` (called at
   0xDA4A6B when the meter is full): ApplyEvent 3, DNA = `CreatureDnaWorth` 0xC04260(npc, 1) (Kook:
@@ -349,3 +369,1284 @@ over time, and preserves observed 0.05/0.1 m/s speeds instead of falling back
 to full standard speed. Both slow cases, cumulative anchor displacement and
 bounded idle jitter pass alongside the original natural-speed tests. Native
 goal-stop radius and navigation lookahead remain separate integration concerns.
+
+## 10. A herd's land search and its home (host crash 0xB88BEA, 2026-10-25)
+
+Player report (0.7.2.1, GOG 2024, Windows): the host crashed at SporeApp 0xB88BEA reading
+0x18693000 (a page start) inside an NPC's behaviour tree tick. Addresses here are GOG 2024
+(dc04aee5); static analysis in the private Ghidra project, runtime on lane 3.
+
+* ✔ Call chain (the exception report's frame walk): `cCreatureAnimal::Update` 0xC0AF68 ->
+  `NPCTickAI` 0xC09B2E -> `BehaviorTreeTick` 0xD99585 -> `BehaviorTreeTickGeneric` 0xBC953A ->
+  a BT node 0xD7B180 (no static references: a node table entry) -> 0xC6BF60 -> 0xC6B750 ->
+  0xB8BCC0 -> **0xB888C0** (the fault). The other return addresses of the stack scan are stale.
+* ✔ 0xD7B180 (BT node, returns a float score): `herd = creature+0x1674` (getter 0xC046F0), asks
+  the herd's land point (0xC6BF60) and scores 1.0 when the creature can go there.
+* ✔ `cHerd` 0xC6BF60 `fastcall(herd) -> Vector3*`: computes once (flag +0x208) and returns the
+  point at +0x20C. 0xC6B750 `thiscall(herd)`: centre = the nest's position (`+0x160` mpNest, its
+  +0x34 interface vt 0x2C) or, **without a nest, the herd's home +0x34**; radius = +0x108
+  mTerritoryRadius, or 100.0 (0x1582E8C) when it is 0; calls 0xB8BCC0(centre, radius, &out)
+  on the planet model (`cPlanetModel::Get` 0xB3D450). Other callers of 0xC6BF60: 0xCD48F0,
+  0xD818C0; of 0xC6B750: 0xC6CD90 (the herd's flora cache, flag +0x7C, points at +0x68..+0x70).
+* ✔ 0xB8BCC0 `thiscall(planet, const Vector3* centre, float radius, Vector3* out) ret 0xC` =
+  0xB888C0(centre, radius, out, 1.0, 1, 0): the nearest point within `radius` whose cell has the
+  sign bit set (~ land) in the planet's cube map. **0xB888C0** `thiscall(planet, centre, radius,
+  out, step, bool want, uint minRegion) ret 0x18`: the cube map is `planet+0x4C`, 6 faces x 128 x
+  128 dwords (bit 31 the flag, bits 16..25 a region index into the vector +0x50..+0x54); radius
+  capped at 500 (0x14654D4); the face rectangle is `ceil(128 * radius / |centre|)` cells around the
+  centre's cell (0x685410 -> 0x685070 clamps the centre face and spills the rest onto the
+  neighbour faces through 0x684EA0). The spill is only right while it is smaller than a face: for
+  `radius / |centre|` above ~1 (a centre deep inside the planet) the neighbour rectangles start far
+  below row/column 0 and the loop reads before the map (no bounds check).
+* ✔ The crash: centre |c| = 12.3 (direction (0.58, 0.58, 0.58)), radius 100 (the default), so
+  1039 cells; spans on the stack: face 4 0..128 x 0..128, face 1 rows -850..128, face 0 rows
+  -845..128, face 3, face 2 columns -890..128. At face 1 row -233 the read hit an unmapped page
+  53 KB below the map (map at 0x186A0008, a block of its own there). On lane 3 (Wine) the same call
+  with a home 7.3 from the centre (`call 0xC6BF60 thiscall <herd>`) read about 870 KB before the map
+  without a fault (the map sits inside the heap) and returned a land point anyway: the reads past
+  the map happen every time, the fault depends on what lies before it.
+* ✔ Only enabled herds are updated (`cHerd` update 0xC6D960 is called from 0xD45740 only when
+  +0x218 is set, getter 0xC6A1C0); it also runs 0xC6CD90 -> 0xC6B750. Our herds are disabled
+  (`herd_quiet`), so the land point of a herd of ours is computed when an NPC of it runs the BT node
+  above (seen: `land_cached` 1 on a herd whose only member was a left-over puppet), or when the game
+  enables the herd again (seen after the editor: empty herds of ours with `en=1`).
+* ✔ Why a herd of ours had such a home (mod bug, two parts, both seen on lane 3 with
+  `coop.npc herds`):
+  1. `CreateHerd(pos)` stores `pos` as the home (+0x34) and nothing moves it later. The puppet's
+     `pos` came from `SnapshotBuffer::sample`, which blended the first snapshot of a player back in
+     the world with the one before it, sent while the player was out of it (editor, load: position
+     (0,0,0), no PF_IN_WORLD). A puppet made at that moment got a herd home anywhere between the
+     centre and the surface: homes 264, 322, 114, 97, 73, 45, 32 seen (planet radius 505), one or
+     two per evolution.
+  2. When the local player leaves the world (`g_local` null in the editor) `forget_puppets` only
+     unregistered the puppets ("destroyed with the world"), but the creature world stays through the
+     editor: the old puppet stood on as an unregistered creature, an NPC with AI (NPCTickAI no
+     longer skipped it) in its nestless herd, next to the new puppet, mirrored to the guests as an
+     NPC (the players' "these guys look like our species"). Its BT ran the land search around the
+     bad home: the crash.
+* Fix (2026-10-25, fix/creature-ai-crash): the snapshot buffer does not blend across a change of
+  mode, world or PF_IN_WORLD (`net/interp.h`, unit test `test_interp_gap`); puppets the game did
+  not destroy are removed once the player is back in the same world (`coop.cpp` strays,
+  `coop.status` "strays: pending removed"); a puppet's herd keeps its home under the puppet
+  (`game::herd_home`, clears +0x208). Test: `coop_editor_strays.py` (before: homes [322, 73, 97],
+  a left-over puppet per evolution on the host; after: all homes 505, none left over).
+* ? Not done: puppets saved into the host's planet (a save while a partner plays) come back after
+  a load as NPCs in herds we cannot tell from the game's (docs/known-issues.md); their homes are on
+  the surface now. Each puppet spawn still makes a herd (2 per evolution on the host, empty
+  afterwards and saved with the planet).
+
+## 11. The pack, NPC ids across worlds, NPC species only the host has (2026-10-25)
+
+From the player report "after customization ... he doesn't even see my companion ... he can't eat
+the ones I killed since he still sees them alive" (fix/creature-desync, `coop_creature_desync.py`).
+
+* ✔ The pack: `cPosseSimulator_Get` 0xD53980 (cdecl, no args; vtable 0x147B760) and
+  `cPosseSimulator_AddMember` 0xD542E0 `thiscall(posse, creature) ret 4 -> bool` (GOG 2024). The end
+  of a social game with an ally (0xD9F7A0, session flag `+0x1FC & 0x10`: "recruit") calls them.
+  AddMember calls the noun manager's AddPosseMember 0xB23430: creature `+0xB58 |= 0x100` and a
+  push onto `cGameNounManager +0x5C` (mPosseMembers, begin / end / capacity at +0x5C / +0x60 /
+  +0x64; 0xB1F900 returns its address), then audio, a random name if it has none, the "first
+  posse" hint (message 0x533535DA, `CRG_FirstPosse`) and achievements. ✔ runtime: a Kook made a
+  member this way walks to the host and stays with it; it keeps its own (nest) herd, so the guest
+  mirrors it like any NPC (into its nest herd, not the avatar's), also after the host loads a save
+  with it. `coop.npc recruit <id>` (host) does it for tests; `coop.npc list` marks members `pack`.
+* ✔ The host numbers its NPCs per world: when its avatar changes (back from an editor, a load) every
+  NPC gets a new net id. Before 2026-10-25 the old ids were not despawned and the guest kept every
+  old proxy (no timeout): after one host editor the guest showed 40 NPCs for the host's 20, the old
+  ones standing where they were. A kill on the host killed the new copy only: "he still sees them
+  alive". Now the host despawns them (`npc::on_world_change`) and a guest drops a proxy the host
+  sent no state for in 5 s while it sends states for others (`stale_dropped` in `coop.npc`).
+* ✔ NPC species of the host's planet need not exist on the guest: a creature of the host's own My
+  Creations (a test: `coop.npc spawn 29020CC4`, the fixture's "Judge") was "proxy spawn failed
+  (unknown species)" on a guest without it, never shown (the guest's own copy of the NPC, if its
+  world had one, is removed by the update filter). A world load with such a creature did not fault
+  on the guest. ~ Spore populates planets from the player's own creations and Sporepedia downloads
+  (Pollination.package), so a real host's planet has such species and its allies may be of them.
+  Now the guest asks the host (MSG_CREATION kind 4, id = crt instance), the host reads the records
+  (bem / crt XML + pollen metadata) from the file of the database the game finds the key in
+  (`FindRecord` RM vt 0x30, `GetLocation` db vt 0x28: EditorSaves.package DBPF or
+  Pollination.package DBBF, read piece by piece) and sends them (kind 3); the guest registers them
+  under the same key (priority 2000) and the next proxy try builds the NPC (~60 ms on one PC).
+* ? Not checked: a downloaded Sporepedia creature as the species (the test profiles are offline:
+  their Pollination holds 7 imported XML crt), the Tribe stage mirrors (tribe.cpp) of such species.
+
+## 12. Saves keep our creatures (host crash 0xD48634, 2026-10-25)
+
+* ✔ A creature-stage save holds the herds and, with them, their creatures: a host save made while
+  the partner's puppet existed keeps the puppet and its herd (`CreateHerd(.., 0, 0, 0, 0)`:
+  archetype +0x88 = 0, no nest +0x160, not avatar-owned +0x84; target size 0, enabled 0 or 1 as we
+  left them). Every herd of the game has an archetype (137 herds on Scalinus, none without), so
+  "no archetype, no nest, not the avatar's" marks a herd of ours.
+* ✔ Loaded in the same game process (no restart) the puppet did **not** come back (its herds did).
+  Loaded after a restart of the game (the players' "after I loaded save after crash"), it is back
+  as a plain game creature: no tuning (+0xE84 = 0, its herd has no archetype), AI on, flags 0x800,
+  in the last puppet herd, and of **another species** than the partner's (the partner's creation
+  key 0x7C.. is unknown before it joins; runs gave 067CCFEC, 06538DD6, 065CBC7C, 065CBE27, 068058BD,
+  a creature of the planet's species list): "these guys appeared after I loaded save". The host
+  tracks it as an NPC; the first attack on it reaches the handler of section 4 and faults at
+  0xD48634 (`eax=0`, `ecx=esi=` the creature, `edi=-1`, the registers of the players' report).
+* ✔ Each puppet spawn used to make a new herd (`creature_spawn`), never destroyed: a session with
+  rejoins and editors left one per spawn (4 after two rejoins), and every save kept them all.
+* Co-op (fix/creature-e84): the handler's guard (coop.cpp h_StageMsg) also gives the creature of
+  0xD335362C / 0x60B4123 `msg+4` a blank tuning when it has none, whatever it is;
+  `npc.cpp remove_saved_strays` removes, once a second in the creature stage on every machine (also
+  without a session), every creature without tuning in a herd like ours that is not ours (also from
+  saves that hold them already; log line "removed a creature of species .. without tuning");
+  `creature_spawn` reuses a herd like ours of the species (`game::own_herd_for`) instead of a new one.
+  Not done: our creatures are still written into saves (the save is the game's generic
+  `COMSerializer::SaveClassObjects` 0x69FB90 over all objects; no per-object "do not save" flag
+  found), and the empty herds stay (harmless: target 0; ~ superseded (2026-10-28): see [empty puppet herds](#creature-save-strip-empty-herds)). Regression: `coop_creature_e84.py`.
+* ? `+0xB54` of a creature (the handler needs it and its `+0x17C` set).
+* ✗ Real input: in the fixture the host's clicks on the restored creature did not make the avatar
+  walk or attack (WASD did move it; key 1 hit nothing at 3-5 m); the test posts the game's attack
+  message instead (`coop.npc attackmsg`).
+
+## 13. Respawn, the hatchling and its greeting (player report "growing up from egg", 2026-10-25)
+
+Report (the guest "Dexie", GOG 2024, 0.7.2.x): "After my death I'm in constant state of growing up
+from egg and going back into small version and again grow back. Can't move at all." Screenshots: the
+guest's creature with the egg shell on its head on both screens, flower particles, at the nest.
+
+* ✔ The respawn after the death caption's OK is `0xD40FA0` (the caller of `0xC04F30(0)` at 0xD4108A):
+  the same avatar object (the pointer does not change) goes to its herd's nest (`0xC6AE60` herd ->
+  nest position, the herd's home +0x34 without a nest), scale 0.1, flags `+0xB58 |= 0x800`, age 0
+  (`+0xB34`), the same for every pack member (cPosseSimulator list `0xB1F900`), then the cinematic
+  `CRG_Fade_From_Black_Egg`. The hatchling has half the health (Kook test creature 5/10, the guest's
+  Kirgle 8/16) and its behaviour tree (`[creature+0xB4C]+0x1D8`) is `0x9413EDEB`: it waits.
+* ✔ A **family member of the nest** greets it: the BT node `0xD64A30` (table at .data 0x1583EF8,
+  id 0x9413EDEB at 0x1583F00) ticks on that NPC (`[esp+4]`, the tree owner) with the avatar
+  (`GetAvatar`) as the other. States (`[esi]`, jump table 0xD650BC): 0 waits for avatar +0x135 and
+  the avatar's tree 0x9413EDEB, plays 0xF41BB04C on the avatar and 0xB52C67F7 on the NPC; 2 the
+  avatar's scale (vt 0x80(0)); 1 more animations (0x341B7A96 / 0x141B7A5C); 3; 4 abilities and a
+  stimulus 0x10 to the creatures around; 9 when the NPC's animation ends: **avatar vt 0xE8(1)**
+  (`0xC04F30`, `SporeCoop::cCreatureAnimal_GrowTo`) and `cPosseSimulator 0xD53980` -> `0xD52DF0(1)`
+  (the pack grows too); 10 holds while the avatar stays within 5 m of the nest.
+* ✔ `0xC04F30(1)` sets `+0x1688 = 1`; `cCreatureAnimal::Update` runs the grow sequence `0xC04FB0`
+  (state +0x1688: 1 effect 0x3A616FEE/0x715FB4A7 and the target scale, 2 scales up and calls SetAge
+  `0xC22370(1)`, combatant vt 0x2C(1), 3, 4 stops the effect). Then age 1, full health, the avatar's
+  tree changes (0x02DDE8FE on both test creatures) and the player has control again. On the host this
+  took ~13-19 s after the OK (probe: 0xC04F30(1) from 0xD65026 <- 0xD61C39 <- BehaviorTreeTickGeneric).
+* ✔ **A guest has no family**: `npc.cpp update_filter` removes the guest's own NPCs (the host's NPCs
+  are the world), and the host's family members on the guest are proxies, puppets without AI
+  (`h_NPCTickAI`). Nobody greets the guest's hatchling: it stayed age 0, tree 0x9413EDEB, half the
+  health, the egg shell on, W did nothing, for minutes (lane 3, with and without the guest's own
+  creation, by `coop.team die` and by a lethal hit after a pack rescue). ~ The host's puppet of
+  the guest replays the guest's animations, which fits the egg shell the players saw on the guest
+  on the host's screen too (not checked in the test). The host itself always grew up (its own
+  family greets it).
+* ✔ Calling `0xC04F30(avatar, 1)` (`call 0xC04F30 thiscall <avatar> 1`) on the stuck guest grew it
+  up within a second, the tree changed and W moved it again.
+* Co-op (fix/death-loop): `npc.cpp hatch_tick` does what state 9 does (`game::grow_up`: 0xC04F30(1)
+  and 0xD52DF0(1)) when the avatar has been a waiting hatchling for 4 s of simulated time without a
+  cinematic on a guest (NPC sync on, the host present), or 40 s on the host (a greeter that never
+  comes, e.g. a partner's puppet picked from the avatar herd). Log line "the hatchling waited for
+  its family". `coop.avatar` prints `age=` and `hatchling_waiting=`; `coop.npc hatch off` turns it
+  off (tests). Regression: `coop_creature_respawn.py`.
+* ~ The same wait comes at the start of the Creature stage (the first hatch after the Cell stage);
+  not tested on a guest here (the fixture starts adult), the fix covers it the same way.
+* ✗ The jump of the guest's hatchling ~10 s after the OK (5-6 m, a different spot each time, not
+  through `Teleport` 0xC0C040 or `SetPosition` 0xC0DEA0 as far as the probes saw) is not explained;
+  the host's hatchling did not move. Harmless once the hatchling grows.
+* ✔ Seen on the way: a lethal hit right next to the nest after a pack rescue shows the death
+  caption, but `mbDead` (+0xB5E) stays 0 and the health climbs again while the caption waits (the
+  nest heals, the pack regeneration too); the OK respawns it normally.
+
+## 14. Deaths of mirrors, whom the creature AI targets (2026-10-25)
+
+Player report (0.7.2.x, host Windows GOG 2024): "enemies still seen as alive even when dead for
+quest" (a screenshot: a creature standing next to the player with its health bar at 0) and
+"aggressive enemies didn't target my friend". Addresses GOG 2024 (dc04aee5); static analysis in
+the private Ghidra project, runtime on lane 4 (fix/creature-kills, `coop_creature_kills.py`).
+
+### 14.1 How a creature dies
+
+* ✔ `cCombatant::TakeDamage` 0xBFCF10 (this = creature +0x5A8): combatant `+0x34` is the state
+  (2 = dead; the tiny getter 0x8E8230 `mov eax,[ecx+0x34]` is what Ghidra calls
+  `PFIndexModifiable::GetFileCount`), `+0x38` the health, `+0x80` a byte "invulnerable" (no
+  damage), `+0x28` the last attacker. A hit that takes the health below 1.5e-5 sets health 0 and
+  state 2 and posts message 0x1622184; nothing else. `cCreatureAnimal::TakeDamage` 0xC075E0 ->
+  0xC1A520 (creature part: adventure armour, then cCombatant) and, on state 2, the kill credit
+  (section 2), ApplyEvent 0 / 5 (the kill count of the species), 0xD3353639 to the strategy.
+* ✔ The creature itself dies later, in its **behaviour tree**: the death node 0xD85B80 (start
+  function of a BT node, no static references) calls the creature's `Die` = vt 0x8C 0xC08210
+  (cCreatureAnimal vtable 0x146A080: Update is slot 0x60, attack slot 0xB8) and picks the death
+  animation: 0xF14FAA46 by default, 0x54AC179 / 0x60DB981 / 0x779E183 for damage types 5 / 0x11 /
+  0x12, 0x92AA59CE after a fall (> 50), 0x5807346 (- 1 for an epic) when it was dead already; the
+  corpse stays 60 s in the creature stage (15 s in the tribe stage). `probe 0xC08210` on the host
+  for an NPC kill: called from 0xD85BA7 <- `BehaviorTreeTickGeneric` 0xBC9666 (inside NPCTickAI).
+* ✔ `Die` 0xC08210 (thiscall, no args): stops the locomotion (vt 0x84(0,0,0), spatial vt 0xDC),
+  clears the velocity (0xC41EC0 with zero), resets targets (+0xE8C.. = -1), sets **mbDead +0xB5E =
+  1**, clears the stimuli (0xBC9F50(-1)), stops effects (`StopEffectFromPools` 0x2C4BF1C). Other
+  writers of +0xB5E: 0xC070D0 (adventure respawn / reset), 0xC0BAF0 (vt slot, sets 1), SetSpecies
+  0xC03920 (clears), 0xC1FA30.
+* ✔ So a creature without AI (our mirrors on the guest, puppets: NPCTickAI is skipped,
+  `game.cpp h_NPCTickAI`) never dies by damage: a lethal hit leaves it standing at state 2 with 0
+  health, alive for the game (`is_dead` false), the "standing at 0 hp" of the report. On the guest
+  the replayed death of a mirror (npc.cpp, NF_DEAD from the host) did exactly that: `coop.npc
+  creatures <species>` showed the mirror without " DEAD", a screenshot showed it standing with "0"
+  over it (lane 4, 2026-10-25). The host's own NPCs and the kill count were right (the hunt card
+  "Hunt 1 Joobel 2/3" on both). Since then npc.cpp calls `Die` and plays 0xF14FAA46 after the
+  lethal hit (`game::play_death`, `deaths_played=` in the guest's `coop.npc`).
+* ✔ The kill count of the hunt card: a guest's kill pays and counts on the host (the lethal hit is
+  applied as the host avatar's, section 2), the guest gets the table (section 8.1); checked with
+  real input (combat stance, a click, key 1: 11 bites for a 7.5 hp Kook).
+
+### 14.2 Whom the creature AI notices
+
+* ✔ `NPCTickAI` 0xC09570 (thiscall(creature, float dt)) returns at once when `*(+0xB4C)` (the AI
+  block) is null. For a living NPC it takes **the avatar only**: `EDI = cGameNounManager +0x54`
+  (`_Get_54` 0xB1FD00), and decides whether the NPC notices it: by sight (distance within a range
+  from 0xD38A30(1 / 2) and 0xC0E650, inside a view cone cos(0xC0C170 / 2)) or by hearing
+  (0xC0D6C0(npc, avatar, scale, dist): `avatar +0xB80` (a noise radius, 6.0; 0 while sneaking)
+  times the tuning `+0x354` plus the bounding radii). Noticed: 0xC068B0 / 0xC07450 / 0xC07480
+  (the NPC's awareness list `+0x1124`) and **`BT_PostStimulus(0x4000000, 0, 5.0, avatar)`** to the
+  NPC's AI (ai + 8). Then, when the avatar sneaks (`avatar +0xBB1`, set by 0xC1B030 with the sneak
+  ability type 0xD / 0x52), stimulus (0, 8) or 0x100 with the avatar as sender; NPC `+0x101C` =
+  1 / 2 / 0. The behaviour tree reacts to these (attack, flee, look) by its archetype.
+* ✔ No other creature is ever noticed this way: a partner's puppet on the host never got the
+  0x4000000 stimulus (`coop_creature_kills.py` reads the NPC's 8 stimulus slots of 0x38 bytes:
+  masks +0 / +4, value +8, sender +0x2C; the union of masks at ai+8 +0x1C0 / +0x1C4). A noticed
+  stimulus decays out of its slot about 4 s after the last post.
+* ✔ Retaliation is not avatar-only: `TakeDamage` posts 0x400 to the victim and 0x200 / 0x80000 to
+  its herd with **the attacker** as sender, so NPCs a guest hit (the hit is applied with the
+  guest's puppet as the attacker) fight back against the puppet, and their hits reach the guest
+  (`damage_in` on the guest; a 065CB956 nest killed the guest in one test). Epic creatures
+  (archetypes 0xFC811218 / 0x95511253, herds without a nest) attack any creature near them, the
+  puppet too (a spawned epic killed another; a planet epic killed the guest with
+  `coop.npc partners off`).
+* ~ Not found in the `creature` fixture (Scalinus): a non-epic species that attacks the avatar on
+  sight. Standing 3 m from members of 11 archetypes cost the host no health (time of day not
+  controlled); the report's "aggressive enemies" are species with an aggressive archetype on the players' planet.
+  The notice step above is the same for them (it is the only place the AI looks for the player).
+* Co-op (npc.cpp `ai_target`, game.cpp `h_NPCTickAI`): on the host an NPC that is nearer (by 3 m,
+  hysteresis) to a partner's puppet than to the host's avatar, and within 80 m of it, ticks with
+  the puppet as mpAvatar (+0x54 swapped around `NPCTickAI`, the puppet borrows the avatar's tuning
+  +0xE84 if it has none, `game::avatar()` returns the real avatar meanwhile). Not for the pack
+  (+0xB58 & 0x100), the avatar's herd, dead NPCs, partners who are dead or out of the world.
+  `coop.npc`: `partner_targets on_partner partner_picks ai_swaps`; `coop.npc partners on|off`,
+  config `npcs_target_partners`. The NPC's hits on the puppet go to the partner (MSG_DAMAGE).
+* ✗ A spawned epic (`coop.npc epic`, CreateHerd + archetype 0x95511253 or 0xFC811218, also with
+  the planet epics' herd fields group +0x8C = 2, territory +0x108 = 50, personality +0x15C = 9 and
+  the herd enabled) wandered and fought other creatures but never attacked the avatar 6-10 m away
+  (the planet's own epic killed it within 4 s). What else the game sets up for its epics is open.
+* ✗ `cTimeOfDay::SetTimeOfDay` 0xBC3070 takes `thiscall(tod, float, void* out)`; the presets
+  0xBC30E0 `thiscall(tod, int 0..3, void*)` (times 199.68 / 285.12 / 679.68 / 760.32 at
+  0x156CFB8). Called from the console with a null or a short string buffer as `out` it faulted at
+  0xBC2DC8 and the game stopped drawing: needs a real output buffer (a quaternion?).
+
+## 15. Another creation under the same key: the host's nests on the guest (2026-10-25)
+
+From the player report (screenshots of both players at one nest): the host saw blue "Woopsies" and
+"Impress 3 Woopsies to ally 0/3", the guest small creatures of another look and "The Datzu are your
+allies! You can heal at their nest or add them to your pack!" (fix/nest-species,
+`coop_nest_species.py`).
+
+* ✔ Creation ids are per profile and sequential (docs/re/creations.md 1.2: the first own cell was
+  0x290742F6 in both test profiles), and Spore populates a planet with the player's own creations
+  too. A guest that made creatures owns other creations under the keys of the host's: its game
+  resolved the host's species key to **its own creation** (the planet's herds and nests from the
+  received save, the NPC proxies from MSG_NPC_SPAWN, the species card's name), and its species
+  table entry of that key (the host's) went to a nest it saw as its own species. Nothing failed,
+  so the 0.7.2.3 species transfer (asks only for unknown keys) never ran.
+* ✔ **The game's caches go by key**: with the guest's My Creations holding the Kirgle under the
+  Judge's key 29020CC4, the guest still built the Judge there (exp. 2026-10-25, lane 5): its
+  `Pollination.package` held a `creaturedata` 0x0F43029A of 29020CC4 (and its graphics cache a baked
+  model) from earlier sessions in which it had got the host's Judge. So registering the host's
+  records under the host's key (priority 2000, above My Creations) cannot win over a guest that has
+  ever used its own creation of that key: the guest needs a key of its own for it.
+* ✔ `cSpeciesManager` keeps its profiles for the whole process (the map at mgr +4, node value
+  +0xC): after a world load the guest's profiles of the planet's species were the same objects
+  (pointers equal). `GetSpeciesProfile` 0x4DF5C0 (GOG 2024) creates one when the node's value is
+  null; `0x4DF740` (the lookup) reloads a profile whose `+0x53C` (version) is 0 from its
+  `creaturedata` (`LoadCreatureData` via 0x4D4F70). Not used by the fix.
+* ✔ A planet save names its species big-endian `{group 40626200, type 2B978C46, instance}` in the
+  records of herds (01BE418E), creatures (018EB45E), the cPlayer (02C21781), 03572E72 and the
+  self-keyed 01897C18 (Scalinus: 60 species, the planet's list), most records RefPack-compressed;
+  the pack list in 01897C18 names its members' species little-endian `{type, instance, group}`
+  (`00000110`, then one key per member: the avatar's species and a recruited Judge).
+* ✗ **Rewriting the received save to the guest's own key does not work.** With every key of a host
+  creation replaced (big- and little-endian, the changed records appended uncompressed, nothing else
+  different: a byte diff showed exactly those keys) the guest's load **dropped the herd and the
+  creature of that species** (none of them after the load, while the same save with the host's key
+  kept both: `coop.npc creatures`, exp. 2026-10-25), also with the species profile made beforehand,
+  the creation's `creaturedata` in the package and its metadata naming the new key. A pack member of
+  it then left an empty creature (+0xB20 and +0xB28 zero) in the pack vector (`cGameNounManager
+  +0x5C`), and the pack panel faulted building its item (0xD2C361 in 0xD2C2E0, `creature+0xB20
+  ->+0x50C`, then thousands of faults at 0x93B630; `coop_creature_desync.py`). The planet's
+  `stars.db` rewritten the same way made the load fault at once in `cStarRecord::GetPlanetRecord`
+  (0xBBABE2, null star record; `coop_editor_desync.py`). Why the game drops a species only a
+  registered package knows (an unknown key is replaced by a planet species instead, section 12) was
+  not found.
+* Co-op (creations.cpp, MSG_CREATION kind 5): the host finds the species keys in the files it
+  shares (`dbpf::find_keys`) and sends, before the offer, the records (bem, metadata and its
+  creaturedata, from the files the game reads them from) of every one its EditorSaves database
+  answers for; the same before an NPC spawn of one (`creations::host_species_out`). The guest
+  registers each under `0x7D000000 | fnv(bem + metadata) & 0xFFFFFF` (the same creation gets the
+  same key every session, which keeps the caches right), and under the host's key too when it has
+  nothing there. Its NPC proxies of the species use that key (`creations::local_species` on
+  MSG_NPC_SPAWN), go into the herd of the host's key (the save's nest: its archetype tuning), and the
+  host's species table is written under both keys; a goal reward goes back under the host's key.
+  The save keeps the host's key: the guest's own NPCs of it (built as the guest's creature) are
+  removed by the update filter as always, so what the guest sees are the host's creatures, and their
+  cards and relation are the host's. Premades and Sporepedia downloads keep their keys.
+* ? Still the guest's: a card made from the nest itself (the "The Datzu are your allies!" kind: the
+  nest's herd has the species of the host's key, which is the guest's creation there; its relation
+  is the host's record, its name the guest's). Not checked: a real nest (herd with an archetype) of a
+  host creation (the fixture planet has Maxis species only; the test's NPC comes from `coop.npc
+  spawn`), the Tribe and later stages with such species, a downloaded Sporepedia creation under a
+  colliding key (ids from the server: not expected to collide).
+
+## 16. Migration to a new nest, cinematics and their actors (guest crash 0xC6AE60, 2026-10-25)
+
+Player report (0.7.2.3, GOG 2024, Windows): "My friend crashed after I completed migration to a new
+nest". The guest's game: ACCESS_VIOLATION reading 0x160 at 0xC6AE60, `ecx=eax=0`. Addresses GOG
+2024, static analysis in the private Ghidra project, runtime on lane 6 (`coop_migration.py`).
+
+* ✔ 0xC6AE60 `SporeCoop::Herd_NestPosition` (herd in ecx) -> `herd+0x160 ? nest+0x34 vt 0x2C : herd+0x34`,
+  no null check: the herd was null. The caller 0xAD2A20 (ret 0xAD2CAC) is the cinematic code that
+  computes an actor's position from a mode: mode 3 = "relative to the nest of the creature's herd"
+  (`NounCast(actor, 0x18EB45E)` -> `+0x1674` getter 0xC046F0 -> 0xC6AE60). It runs in callbacks the
+  cinematic manager executes for the posted message 0x4470A41 (msg+8 -> {+0xC arg, +0x10 fn},
+  handler 0xAE0DB0 at 0xAE1E02, from `MessageSend` 0x88568C): the players' stack scan and the
+  lane's `exc` give the same chain (0x88568C, 0xADB1E7, 0xAD8FF3, 0xAD37F1, 0xAD46A4, 0xAD91D9,
+  0xAD7296, 0xAE1E04). Actor ids of the crashed cinematic on the stack: 0xEFE76209 (the actor
+  placed with mode 3), 0xF772903D.
+* ✔ Cinematic ids are the FNV-1 hashes of the lower-case names (`coop.status` "cinematic X
+  playing"): CRG_SpeciesMigrate FBB3661D, CRG_ClaimNest 63B7060A, CRG_BrainUpgrade1..4
+  F6A4B1E1..E4, CRG_Fade_From_Black_Egg F4F96E43, CRG_LaidEgg B6A1DBE1, CRG_FirstPartUnlock
+  16339295. Started by hand on a guest (`call Simulator::cCinematicManager::PlayCinematic thiscall
+  <cm> s:<name> 1 1 0 0 0`), only CRG_ClaimNest places actors with mode 3 (actor 0xEFE76209 = each
+  member of the avatar's herd, +0x40..+0x44: the avatar, the family); CRG_SpeciesMigrate uses modes
+  7/8, the brain upgrades and the egg mode 0.
+* ✔ The migration (player properties at cPlayer +0x69C, `SporeCoop::Player_GetProperty` 0xC774E0;
+  cPlayer = noun manager +0x74): the total DNA earned in the stage is cPlayer +0x10F0
+  (AddEvolutionPoints adds to it, the co-op DNA sync too, so both players cross the thresholds
+  together). Back from the editor (`CreatureGame_AfterEditor` 0xD40FA0, message 0x4F60B92) a total
+  above the next threshold of tuning 0x4098097 (last one in property 0x54FB6BF) sets 0x514A219 = 1,
+  empties the avatar herd's brain range (+0x120 = 5, +0x124 = -1) and plays CRG_SpeciesMigrate
+  ("Your species is migrating to a new nest. Follow them ..."). The creature is a hatchling
+  (+0xB34 age 0) until that cinematic ends (age 1). `CreatureGame_NestTick` 0xD41510 (every frame):
+  0x514A219 == 1 and age 1 -> the goal "Migrate to a new nest" (25 DNA), state 2; state 2 and the
+  avatar near the nest of `CreatureGame_NestHerdFor(1)` 0xD40AF0 (nearest herd of the player species
+  with a nest whose brain range holds the level 0x169E370) -> `CreatureGame_JoinNestHerd` 0xD40C70
+  (the avatar moves into that herd, the property goes) and CRG_ClaimNest ("You have claimed this
+  nest"). 250 DNA from 0 gave CRG_BrainUpgrade1 and one migration; 1000 gave CRG_BrainUpgrade4
+  ("Get ready to evolve to the tribal stage").
+* ✔ The guest's game has the same migration when the host's world carries it: a save made after
+  the host confirmed the caption has state 2 and the grown-up creature, so the guest's own game
+  claims the nest when the guest arrives there with the host, and plays CRG_ClaimNest with the new
+  nest herd's members as the family. On the guest those members are its own game's creatures; the
+  update filter (npc.cpp, the host owns the NPCs) removes them in the same frame (DestroyInstance ->
+  0xC083D0 removes the creature from its herd and clears +0x1674), and the placement callbacks of
+  the cinematic run after that: 5 faults at 0xC6AE60 on the lane (`coop_migration.py --without-fix`),
+  a crash on Windows. The host's own claim is fine (its game's creatures stay).
+* ~ The world the host sends right after its editor is saved during CRG_SpeciesMigrate: the guest's
+  creature is then the hatchling (age 0, state 1) and its game never sets the goal or claims (seen 3
+  times on lane 6). The players' guest got a later save (a rejoin, a reload) or the timing differs.
+* Fix (fix/migration-crash): `game::destroy_creature` keeps a creature (noun 0x18EB45E) while a
+  cinematic plays (cCinematicManager +0x2C) and removes it when it is over
+  (`destroy_deferred_tick`, from npc.cpp every frame; not after a world change). `coop.npc` prints
+  "destroys during cinematics: deferred= done_after= pending="; `coop.npc cinedefer off` restores
+  the old behaviour for tests. In the test 19-25 removals per claim waited, all gone afterwards.
+
+## Selection gate of CreatureSelectionUI and the +0xB58 bits (2026-10-27, fix/w1-creature)
+<a id="creature-selection-gate"></a>
+
+* ✔ (BUG-0118, GOG 2024 disassembly of `Simulator::CreatureSelectionUI` 0xB6C970, re-read with
+  objdump 2026-10-27) The read of `(+0xE84)->+0x32C` at 0xB6CA11 runs only when all of these hold:
+  the selected object casts to cCreatureAnimal (vt 0xC, 0xD0036E08), adult (0xC0B8D0: `+0xB34 == 1`),
+  `+0xB58 & 0x2` **clear** (`test al,2; jne skip` at 0xB6C9C9), `+0xB58 & 0x1` **set** (`test al,1;
+  je skip` at 0xB6C9CD), creature vt 0xD0 and vt 0xD4 both false. Then `call 0xC0C300` (`mov
+  eax,[ecx+0xE84]`) and `[eax+0x32C]`. The rest of the function (0xB6CA37..0xB6CB0E) and its direct
+  callees (0xB6BBF0, 0xB678E0, 0xB686E0, 0xB683A0, 0xB67C90, 0xB69110, 0xB687A0, 0xB6A820,
+  0xB69560, 0xC048B0) do not touch +0xE84.
+* So the selection guard in coop.cpp (`h_SelectUI`: hides mask 0x1 for the call when +0xE84 is
+  null) covers exactly the path that reads +0xE84. A set mask 0x2 makes the game skip the read; it
+  is not a second way into it.
+* CORRECTION (2026-10-27, fix/w1-creature): the `.sym` note of 0xB6C970 said "reads +0xB58 test
+  al,2, then call 0xC0C300", which read like a gate on 0x2; 0x2 is the early-out and 0x1 the gate
+  (`overrides_dc04aee5.sym` now says so). The GOG 2016 note "a pack member (+0xB58 bit 1)" (frozen
+  file) means mask 0x1 and is not the pack: the pack is mask 0x100 (AddPosseMember 0xB23430,
+  section 11). The coop.cpp comment called mask 0x1 "pack member"; it now names the mask only. What
+  mask 0x1 means is still ~ the alpha (SocialPropose 0xDA43D0 adds a round for it); mask 0x2 is the
+  bit the stage event handler 0xD47FC0 sets after an event (the 0xD48634 notes above).
+
+## Guest kill list and the frame after a world teardown (2026-10-27, fix/w1-creature)
+<a id="creature-kill-list"></a>
+
+* ✔ (BUG-0082) npc.cpp's update filter runs inside the game's creature update and collects the
+  guest's own NPCs into a kill list; `guest_tick`, later in the same frame, destroys them. Frames
+  that skip `guest_tick` (the host away in the main menu, NPC sync off, another stage) must drop the
+  list: `npc::tick` clears it at the end of every frame. Before, it waited until the host was back
+  (seen: 5 entries held across 2.5 s of the host's absence, `coop_host_away_kill.py --without-fix`).
+* ✔ (BUG-0091) A world teardown (the guest's `coop.menu` / a received world / a load) frees the
+  creature puppets between two frames, and the host's reliable MSG_ANIM queued meanwhile arrive in
+  the first frame after it. `on_frame` handled them before it noticed the avatar change: in 6 rounds
+  of a guest's `coop.menu` with the host sending 10 animations a second, 15 `PlayAnimation` calls
+  went to puppets no longer in the object list (`coop.framefix 0`), without a fault (the memory was
+  still mapped). Now the avatar check runs before `g_sess.update()`; `on_remote_anim` and the
+  remote despawn also check `game::creature_listed` (a walk of the noun manager's object list: too
+  costly for every puppet every frame, fine for events).
+* ✔ A guest's `coop.menu` round (galaxy menu, the host sends its world, the guest is back in the
+  creature stage with the host's puppet) takes 11-12 s on a lane.
+
+## The creature pool, NPC net ids and the AI swap (2026-10-28, fix/w2-creature)
+<a id="creature-pool-ids"></a>
+
+* ✔ `cCreatureAnimal::Create` (GOG 2024 0xC09B40) with its last argument (reuse) set calls
+  0xAD2020(species profile, ...): it walks the creature noun's pool (0xAD0BE0(0x018EB45E): slots of
+  0xC bytes, +4 in-use byte, +8 object) for a free slot whose object has the same species profile
+  (+0xB20) and takes it; without one (only in the creature and tribe stages, mode 0x1654C01 /
+  0x1654C02) it grows the pool. Without reuse it gets a new object of the noun (0xB20BF0). So a
+  recycled creature object is normally of the **same species**: the case the host's NPC ids must
+  catch is a dead NPC whose object is alive again (BUG-0044), besides another species.
+* ~ Negative result: DestroyInstance on a fresh corpse of the host and then up to 8
+  `Create(reuse)` of its species over 8 frames (or 24 `Create` without reuse of another species in
+  the same frame) never returned the freed object (lane 5). When the game lets a freed creature go
+  back to its pool slot was not found; `coop.npc reuse <id>` (tests) makes the dead object alive
+  again instead.
+* ✔ The host's NPC ids (npc.cpp host_tick): an object keeps its id while it is the same species
+  and has not come back from death; otherwise the old id is despawned on every guest and the
+  object gets a new id and spawn. Ids skip ids in use (`npc_ids.h`, BUG-0023).
+* ✔ A creature removed during a cinematic stays in the puppet list until `destroy_deferred_tick`
+  destroys it (BUG-0066): seen without that, the host gave the guest's old puppet an NPC id during
+  CRG_ClaimNest (`coop_cinematic_puppet.py`). Its position is no sign of AI: the old puppet slid
+  0.4 m and 1.4 m with and without the fix (its last velocity).
+* ✔ `h_NPCTickAI` (game.cpp) writes a partner's puppet into `cGameNounManager +0x54` for one NPC
+  tick. If that tick does not return (a fault the game's handler catches), `game::swap_guard_tick`
+  (once per frame, outside every NPC tick) puts the real avatar back and takes the lent +0xE84 off
+  the puppet (BUG-0110; `swaps_restored=` in `coop.npc`). Seen without it (a forced leave,
+  `coop.npc swapfault`): +0x54 stayed the puppet and `ai_swaps` stopped growing.
+
+## How a save writes the world, and keeping our objects out (2026-10-28, fix/w3-cell)
+<a id="creature-save-strip"></a>
+
+GOG 2024 (dc04aee5), static analysis (private Ghidra project, `tools/ghidra/q.sh --build 2024`) and
+lane 4 at runtime. BUG-0020. CORRECTION (2026-10-28, fix/w3-cell): `CreateHerd` is 0x00B23920 in
+GOG 2024; the 0xB238B0 of section 12 / the 05-re-notes table is the GOG 2016 address.
+
+* ✔ `SaveGame` 0xB29000 is synchronous: the file is complete when it returns (no thread, no job).
+  The 1.7-2 s before the "saved" box is the message that asks for the save, handled a frame or more
+  later (wrapper 0xB29600 `(name or NULL, bool) ret 8`, from 0xB2A240 and 0xE033A0; 0xB29960 calls
+  0xB29000 directly). Order: header and noun counts (0xB21170), `SaveDb_OpenTmp` 0x688F90
+  (`<name>.tmp`, a new SerializerDatabase with its own COMSerializer at db+0x1C), the main stream
+  (key 0x1897C18): the persistence manager's attributes, the simulator system (0xB5BF20: every
+  subsystem's Write, among them the noun manager and cGameBehaviorManager), achievements, the cell
+  game (mode 0x1654C00); then `SerializerDatabase::SaveClassObjects` 0x69DEA0 ->
+  `COMSerializer::SaveClassObjects` 0x69FB90, commit, rename .tmp (0x6891E0), stars.db when the
+  bool is set (0xBB4D40).
+* ✔ What is saved: `cGameNounManager::Write` 0xB201D0 writes every noun of its list +0x78 (no filter,
+  no flag, no virtual asked). Every reference goes through `COMSerializer::Write` 0x6A05F0
+  (thiscall(ser, stream, obj) ret 8): the pointer as the id (0 for null), the noun id, and obj is
+  queued (0x6A0110). SaveClassObjects writes every queued object's record (obj vt+0x10) until no new
+  one is queued: the save is the closure of what the roots refer to. ~ A record whose Write returns
+  false is rewound and dropped, the references to it stay (on load: a default object of that type,
+  `COMSerializer::Read` 0x6A06A0).
+* ✔ On load a null reference reads as null; `cGameNounManager::Read` 0xB1FBD0 skips null entries of
+  the noun list. **cGameBehaviorManager** (vtable 0x0145CB68, name at slot +0x10) keeps the objects
+  it updates in a vector at +0x20/+0x24 (our creatures among them); its Read 0xB0E570 keeps null
+  entries, and its update 0xB0EA40 (slot +0x38, from the simulator update 0xB5D0F0) calls vt+0x1C on
+  each without a check: a null entry faulted at 0xB0EC8C every frame (155 faults in 8 s, lane 4).
+* What SporeCoop does (`mods/coop/savestrip.cpp`): a hook on `COMSerializer::Write` writes a null
+  reference for our objects: herds without an archetype, a nest or the avatar's flag (the herds made
+  for puppets and proxies, section 12) and every creature in them. The set is made once per save
+  (a new serializer, or the first reference after 0.5 s) from the live noun list, with each object's
+  Cast(0x179C807) pointer too (what WriteObjectPointer 0x69D950 passes); main thread only. A hook on
+  the behavior manager's Read drops the null entries after a load. `coop.savestrip [0|1]` (status:
+  `last_ours=`, `nulled=`, `behavior_nulls_dropped=`). Measured: a host save with a guest's puppet
+  held 2 objects of ours (the puppet and its herd), 9 references were nulled; after a restart and a
+  load no creature without tuning and no herd without an archetype, no fault.
+* ? Not stripped (a null member in a game herd's member list +0x40/+0x44, whose load is not
+  checked): a puppet in the avatar's herd (the fallback when the partner's creation is unknown) and
+  a guest's proxies in the game's nest herds (only a guest's own save during a session holds them).
+  ? Which other subsystem fields hold a reference to a creature (AI targets): they load as null; no
+  fault seen in the test.
+## World identity, the cheat console and proxy driving (2026-10-28, fix/w3-creature)
+<a id="creature-world-epoch"></a>
+
+* ✔ The avatar's address is no world identity (BUG-0119): the game pools creature objects, so the
+  avatar of a reloaded world may have the old address. `game::world_epoch()` counts creature worlds:
+  +1 when the creature stage is entered (every load and every received world passes the galaxy
+  menu and kLoad; the editors kEdit / kEditor keep it) and when another avatar replaces the avatar
+  inside the stage. Code that remembers "this world" keeps the counter with the avatar (creations'
+  own-creature swap, the guest's first-second proxy wait, the deferred destroys). Seen with a
+  simulated reuse (`coop.creations sameaddr`, `coop_world_reload.py`): without the counter the
+  guest kept the host's species after the load.
+* ✔ A share of the host's world after a reload: the guest's own creature is applied 3.1 s after
+  its avatar appears (the 3 s settle wait of `creations.cpp`), lane 5.
+* ✔ Cheat console (GOG 2024): `AppShortcuts_OnKeyDown` 0x814180 opens it on vk 0x43 with modifiers
+  exactly 3 (shift + ctrl from GetKeyState at 0x848620), and only when `IWindowManager::Get`
+  (0x67CA60, `[0x15FCC4C]`) vt 0x84 returns null; that method returns the manager's +0x82C (a
+  window; on the lane games a full-screen window with control id 0xFFFFFFFF, meaning not found).
+  It then calls `ICheatManager::Get` (0x67DDE0) vt 0x44 with 1 (0x67E730: calls vt 0x20(arg) of
+  every listener in the list at +0x4C). Ctrl+Shift+C does not close it.
+* ~ The console's window, seen once (2026-10-28): container control id 0x014A4606, rect
+  [0 400 800 600], flags 0x47; a text edit 0x014A4608 (the typed text) and an output area
+  0x014A4607. It is not in the UI tree while the console is closed. Injected Ctrl+Shift+C opened it
+  once on a lane game and never again (6 tries, also on a fresh game and with +0x82C cleared);
+  calling vt 0x44(1) directly did not open it either. Why: not found (BUG-0149).
+* ✔ Detours that change game state around a call into the game (NPCTickAI, NoAttack, SelectUI,
+  StageMsg, civ building damage) register their undo in a ledger (`swap_ledger.h`); whatever is
+  still open once per frame is undone (BUG-0110).
+* ~ NPC proxy driving (`drive::step`, BUG-0169): the snap teleport is at 8 m and the stuck
+  teleport needs the host's NPC under 0.3 m/s, so a host NPC that pushes against something (a speed
+  reported, a fixed position) kept its proxy walking towards a spot it could not reach. NPC proxies
+  now also teleport after 3 s more than 2.5 m off without getting 0.5 m closer (then 10 s quiet).
+  Inferred from code, not seen in the game.
+
+## The cheat console's enabled flag (2026-10-28, fix/w4-tests)
+<a id="creature-cheat-console-flag"></a>
+
+* ✔ Why injected Ctrl+Shift+C did not open the console on the lane games (BUG-0149): the key reaches
+  `AppShortcuts_OnKeyDown` 0x814180 with (vk 0x43, modifiers 3), `IWindowManager` +0x82C is null and
+  `cCheatManager` vt 0x44 (0x67E730) is called (probes, lane 5), but 0x67E730 returns at once while
+  the cheat manager's byte +0x64 is 0. It was 0 on a lane game in the creature fixture; after
+  vt 0x4C (0x67E0A0, `func4Ch(1)`, sets +0x64) the same keys opened the console (control 0x014A4606
+  in the UI tree, `coop.social keys` text_up=1). Esc closes it (and may open the pause menu).
+* ~ Who clears it: only two callers of vt 0x4C after `ICheatManager::Get` exist, 0xDEA3D0 (sets 1)
+  and 0xDEB450 (sets 0), in the GalaxyGameEntry UI code (after `GlobalGGEUI::Initialize` 0xDEA1B0).
+  Inferred: the menu disables the console and leaving it the normal way enables it again; the
+  lanes load their save by command (`coop.load`), so it stays off. Not checked which UI event calls
+  which. The earlier note "opened once, never again" (creature-world-epoch) fits: that game had
+  passed the menu.
+* `coop_social_console.py` sets the flag first (`call App::cCheatManager::func4Ch thiscall <mgr> 1`).
+
+## Empty puppet herds and one list per save (2026-10-28, fix/w5-world)
+<a id="creature-save-strip-empty-herds"></a>
+
+BUG-0255. GOG 2024, lane 5. Adds to [the save filter](#creature-save-strip).
+
+* CORRECTION (2026-10-28, fix/w5-world): section 12's "the empty herds stay (harmless: target 0)"
+  is superseded. After the partner left (`coop.leave`), the herd made for its puppet stayed with
+  `members=0` and went into the save (`coop.npc archless` 1 after the load with
+  `coop.fix savestrip.empty_herds off`). Now an own-kind herd (no archetype, nest or avatar flag)
+  with no members is stripped too, but only when its member list (+0x40 / +0x44) is readable and
+  empty, no creature of the save points at it (`herd_of`, every creature counted, the avatar and
+  the pack included) and every creature of the save was readable. The load after it: no fault
+  (8 s of simulator updates), the avatar there.
+* ✔ `coop.save` in Creature: every Write of a save ran in one frame (`coop.savestrip`
+  `max_save_frames=0`); one `coop.save` counted as two serializers (`saves` +2). So the save filter
+  starts a new list at a new serializer or a new frame (`savestrip_rule.h`), not after a 0.5 s
+  pause; switch `coop.fix savestrip.per_save` (its off side can write a game object at a freed
+  puppet's address as null). Not measured: the share save, quit to the menu, a stage change and a
+  Space planet save.
+
+## Leaving the stage for the galaxy menu: the avatar in the window (2026-10-29, fix/w6-avatar)
+<a id="creature-leave-avatar"></a>
+
+BUG-0264. GOG 2024, lanes 4 and 5.
+
+* ✔ The quit message 0x4715068 (docs/re/space.md 8.2) on a guest in the Creature stage, measured
+  per frame (`coop.leaving`, log lines "game: leaving frame ..."): mode_id() reads Creature for
+  0.63-0.71 s after the quit is posted; our frame hook runs 3 times in that window (right after the
+  post, then twice ~10 ms apart after the game's save that blocks ~0.65 s), then the mode changes.
+  In 30+ windows (2 players, also right after the Cell -> Creature change and the host's first
+  editor) the avatar stayed in the noun manager's object list with the game's vtables in every one
+  of those frames.
+* ✔ The campaign's guests (4 players, 20261029-070811 campaign#2) faulted 1.06 s after the post,
+  later than any window measured here: Bob in `game::max_health` (combatant vtable at avatar+0x5A8
+  read 0x01), Carol and Dave in a call into the heap with the same return addresses on the stack
+  (coop+0x8285B after the vcall in max_health, coop+0x88D33 in creature_fill): all three the same
+  path, a freed avatar still in the noun manager's field while the mode read Creature.
+* ? Why the campaign's window was longer and its avatar freed in it: not reproduced (4 games per
+  lane under the load of other lanes; more frames inside the teardown are the guess).
+* The fix (`world.leave_avatar`): `game::avatar()` is null from the quit (posted by the mod, or
+  handled by `Simulator_HandleMessage` for any source) until the mode changes (30 s at most, cleared
+  when a via-menu load is cancelled), and never returns an avatar whose object or combatant vtable
+  is outside the exe. `game::avatar_field()` is the raw field for pointer comparisons (the save
+  filter runs inside the quit's own save, when avatar() is already null).
+* Diagnostic: once a second in a stage the mod checks that the avatar is still listed; a miss logs
+  "game: the avatar ... is no longer in the game's object list" (`stage_gone` in `coop.leaving`).
+
+## The game's input lock drops clicks on the co-op window (2026-10-29, fix/w7-vote)
+<a id="creature-input-lock-clicks"></a>
+
+* ✔ `Simulator::cGameInputManager::Get` (GOG 2024 0xB3D350, `mov eax,[0x167EAD0]; ret`) +0x110 is
+  the input lock: the cinematic start (0xADFEC1) increments it, EndCinematic (0xADFF87) decrements
+  it. While it is above 0 the game drops every click on the UI, our co-op window included (the
+  window is a child of the main window, always in front, and still gets nothing). A caption's own
+  OK button still works. Measured in coop_vote_caption.py: CRG_ClaimNest started by hand on the
+  guest, `input_lock=1` in `coop.uistate`; real clicks on "I'm ready" did not reach the button's
+  handler (lab 20261029-142824).
+* In the four-player campaign the Creature -> Tribe vote started while the guests still had the
+  brain-upgrade captions of AddEvolutionPoints up: their clicks were dropped and the vote ran out
+  of time (BUG-0273). The first vote of the game (Cell -> Creature) came after the captions and
+  ended in 2 s.
+* The mod now takes a click from the window's messages (mouse.h, WM_LBUTTONDOWN) while the lock
+  is held and presses the visible co-op window button under it after 0.5 s, unless the game
+  delivered the click itself meanwhile (`locked_native` in `coop.uistate` counts those; it stayed
+  0). Switch `core.ui_locked_clicks`.
+* CRG_ClaimNest started with PlayCinematic does not end with Enter on the guest; EndCinematic
+  (`call SporeCoop::cCinematicManager_EndCinematic thiscall <mgr>`) ends it and frees the lock.
+## NPCs far from the host's avatar go back to the pool (2026-10-29, fix/w7-npc)
+<a id="creature-npc-pool-cull"></a>
+
+* ✔ The creature stage keeps NPCs only around the player's own avatar. Walking the host 300 m
+  away from the nest (`coop.npc gopos` in 20 steps, lane 4) turned every NPC farther than about
+  150-200 m into a pool object: still in the noun list and `object_alive`, species key and health
+  kept, herd (+0x1674) 00000000, position (0 0 0), no more cCreatureAnimal::Update calls
+  (`coop.npc creatures`). The partners' puppets next to them do not keep them. The cull distance
+  was not measured exactly.
+* ✔ A nest that misses a member spawns it again near the nest (the same pooled object comes back,
+  `Create` with reuse, docs/re/creature.md#creature-pool-ids) and, with the avatar still far, the
+  game pools it again 1-3 s later: a cycle of 3-6 s for as long as the avatar stays away.
+* ✔ Walking back, the pooled family member returned as the same object with its herd and nest set
+  again (flags 0x10) at the nest.
+* ✔ For the NPC sync (BUG-0274): a host NPC that did not update in a frame is now checked at once:
+  not in the noun list (freed) or listed without a herd or at (0 0 0) (pooled) -> despawned on the
+  guests now, not after the 2 s grace. Before, the census caught such an object as
+  `own=npc pos=(0.0 0.0 0.0)` with the guest's proxy still on the surface ("504 m apart"; 2 s per
+  cull, every few seconds with the nest cycle, so two campaign checks 30 s apart could see it).
+* Consequence (BUG-0280, open): a guest far from the host has no NPCs around it.
+
+## The relevance pass and the view centres of all players (2026-10-30, fix/w9-creature)
+<a id="creature-view-centres"></a>
+
+BUG-0280. GOG 2024, disassembly plus runtime on lane 9. Explains [the pool cull](#creature-npc-pool-cull).
+
+* ✔ `SporeCoop::Relevance_Tick` 0xAD2300 (thiscall(mgr, mode, int, dt_ms) ret 0xC, every frame,
+  only caller 0xAD2520 from vtable 0x145A188) pushes **one** sphere `{centre, enter^2, leave^2}`
+  (5 floats, 0x14 bytes) onto the vector `mgr+0x20` (begin) / `+0x24` (end) / `+0x28` (capacity),
+  runs the mode's pass and erases the whole vector again. The centre is
+  `cViewer_GetView(&out, 0, 0, 0)` of the game mode's viewer (IGameModeManager vt 0x50 -> vt 0x1C):
+  the local camera, not the avatar. Radii from 0x1565D5C / 0x1565D60 (100 / 250 in the exe's
+  data); **at runtime the leave radius was 150 m** (`coop.views`: "enter 100 m leave 150 m"), so a
+  tuning value overrides the static one.
+* ✔ `SporeCoop::Relevance_Update` 0xACE4E0 (thiscall(mgr, int, dt_ms) ret 8) is the pass of the
+  Creature stage (mode 0x1654C01) and of the Tribe stage (0x1654C02, after 0xACE420 / 0xAD11E0);
+  other modes run 0xACF400. It returns at once until 5 s (0x1565CE0) have added up. Then: spawn
+  points (noun 0x36BE27E) inside an enter radius spawn their herd; **creatures** of the pool list
+  (+0x135 set, +0xB67 set, not the player's tribe) outside the leave radius of every sphere
+  (`Relevance_OutsideAll` 0xAC8CC0) get vt 0xC8(1): back to the pool (herd 0, position (0 0 0),
+  BUG-0274); herds inside an enter radius (`Relevance_InsideEnter` 0xAC8D30) are enabled (at most 10
+  per pass, 0x1565D04), herds outside every leave radius disabled; a herd whose brain range
+  [+0x120, +0x124] does not hold the player's brain level (0x169E370) is disabled in the Creature
+  stage whatever its distance.
+* ✔ Not every creature goes: with the camera ~200-250 m from the guest, 8 of the 20 NPCs within
+  120 m of the guest were pooled and 12 stayed (lane 9, fix off); the +0xB67 flag decides, not
+  checked which creatures have it.
+* ~ In the headless test games the host's camera does not follow `coop.npc gopos` all the way: the
+  host's sphere stayed ~370 m behind an avatar teleported 600 m away and did not move for 40 s. A
+  test that needs the camera far away has to check the sphere (`coop.views` prints it).
+* The fix (`npc.view_centres`, `mods/coop/view_centres.cpp`): the host keeps a list of **the view
+  centres of all players** (coop.cpp notes a partner's position whenever its puppet is shown in the
+  host's place, any stage; dropped after 3 s, at a leave and at the session end). A hook on
+  Relevance_Update lends the vector a buffer of ours for that one call: the game's spheres first,
+  then one per partner with the radii of the game's first sphere; the game's pointers come back
+  right after the call (the game's allocator never sees our buffer). Bounded cost: one sphere per
+  partner (1-3), the game's own radii and its 10-herds-per-pass limit. Only in the Creature stage
+  for now (`game::in_creature_stage()` in the hook); the Tribe stage runs the same pass and would
+  take the same list (not tested).
+* Rivals (docs/11-rivals.md 11.3.2): every player plays its own nest, possibly far from the host.
+  The host simulates all of them; this list is what keeps each rival's nest, family, spawns and
+  wild herds alive around it. Two things stay to do there: the brain-range filter above uses the
+  host's brain level for every herd (a rival with another brain level needs the herds of its own
+  range near it), and the sphere of a player is its avatar's position (not its camera).
+* `coop.views` (host): the partners' centres, the game's own sphere, how many passes took partners.
+
+## A null herd member after a rejoin: the stray waiting for its destroy (2026-10-30, fix/w9-creature)
+<a id="creature-herd-null-member"></a>
+
+BUG-0256. GOG 2024, lane 9, `coop_rejoin_saved_puppet.py`. Adds to [the save filter](#creature-save-strip-empty-herds).
+
+* ✔ The fault 0x00C0B8D2 is `SporeCoop::Creature_IsAdult` 0xC0B8D0 (`[ecx+0xB34] == 1`, no null
+  check) called from `Herd_Update`+0x61 (0xC6D9C1) with a **null member** of the herd's list
+  (+0x40 / +0x44). The crash reporter's label "cCreatureAnimal::Update+0xAA2" was the nearest
+  older symbol. Destroying a creature (DestroyInstance -> 0xC083D0) takes it out of its herd's list
+  (0xACC940 erases it), so a null there does not come from a destroy in this world: it was loaded.
+* ✔ The chain (host log of the run): the guest leaves during the vote while the host is in its
+  evolution editor; the host's puppet of it is forgotten, not destroyed (the world stays through
+  the editor, coop.cpp `forget_puppets`); back from the editor the host removes it as a left-over
+  puppet ("a puppet left over from before") while the evolution cinematic plays, so the destroy is
+  **deferred** (`game::destroy_creature`); the guest joins again, its new puppet goes into the
+  **same herd** (herds are reused per species), and the share save is written in that window. The
+  save filter stripped the new puppet (a null reference in the herd's list) but kept the herd for
+  the left-over creature (no longer a puppet, not ours by the owner rule): the guest loaded a herd
+  with a null member and faulted every frame (1229 faults in 20 s, fix off).
+* Fix 1 (`savestrip.pending`): a creature waiting for its deferred destroy counts as ours in the
+  save filter (stripped with its herd when nothing else of the game is in it). With it alone the
+  guest's herds had no null member (`coop.npc herdnulls` removed=0, lane 9).
+* Fix 2 (`npc.herd_nulls`): a hook on `Herd_Update` takes null members out of the list before the
+  update (moving the others down changes no reference count). It covers saves already written by
+  older versions and any other way a null gets there; the log line "herd ... null member(s) taken
+  out" names the herd (archetype 0, no nest: one of ours in the runs).
+* Not checked: whether other lists of the game hold a stripped creature as a null (the behavior
+  manager's has its own cleanup, savestrip `h_BhvRead`).
+
+## The view centres in the Tribe stage (2026-10-30, fix/w9-creature)
+<a id="creature-view-centres-tribe"></a>
+
+BUG-0280 (Tribe), BUG-0291. GOG 2024, lane 9, `coop_tribe_far.py`. Extends [the view centres](#creature-view-centres).
+
+* ✔ The Tribe stage (0x1654C02) runs the same `Relevance_Update` pass. With the hook gated to
+  Creature and Tribe (`npc.view_centres_tribe`), a guest's view centre 332 m from the host's camera
+  kept 3 herds of the game enabled with 18 animals near their homes for 40 s; without it the host's
+  game had none there (see the ticket for the runs).
+* ✔ A Tribe partner's view centre is its **pointer** (modes.cpp `rts_fill`: the point of the planet
+  under its mouse, cast from its own camera; it stays where it was while the mouse is off the
+  planet). The mod has no other Tribe position of a guest (no chief, no camera target is sent); the
+  pointer lies on the guest's screen, so it is inside its view. Tests pin it with
+  `coop.npc marker x y z` (`coop.npc marker off` lets the mouse drive it again).
+* ✔ Radii: the exe image has enter 100 (0x1565D5C = 42C80000) and leave 250 (0x1565D60 = 437A0000),
+  but in a running game 0x1565D60 reads 43160000 = **150 m** (`mem.read 0x1565D5C 8` on lane 9,
+  Creature and Tribe): something writes it at startup (a tuning value, not looked up). In Tribe the
+  first sphere of the vector had enter 75 m / leave 112 m (and the vector held 2 spheres at times):
+  the Tribe path pushes a sphere of its own before Relevance_Tick's (not looked up).
+* ✔ BUG-0291 (npc.cpp, `npc.rts_views`): the host sent a Tribe guest only the NPCs within 250 m
+  (`kRtsRelevance`) of the player tribe. Now also those within 110 m (`kRelevance`, as in Creature)
+  of that guest's own view centre (`views::of`), with the same 20 m hysteresis. The guest's update
+  filter still removes its own animals everywhere: what it shows far away is what the host sends.
+* `coop.npc archless all` (any stage): every herd with its enabled flag, members, members in the
+  world and members within 100 m of the home.
+* Rivals: the same two pieces (spheres and the send set) are what a rival's area needs in Tribe.
+
+## Proxies at low frame rates, missing proxies, the host's NPCs after it left (2026-10-30, fix/w13-creature)
+<a id="creature-proxy-guest-side"></a>
+
+BUG-0281, BUG-0300, BUG-0180. GOG 2024, lanes 4 and 5. Extends [the relevance pass](#creature-view-centres).
+
+* ✔ A guest's NPC proxies are never sent to the pool by the guest's own relevance pass: the pass
+  pools only creatures with `+0x135` and `+0xB67` set (0xACE7E4 / 0xACE7F0 in Relevance_Update);
+  every proxy read `+0xB67` = 0 (21 of 21, `mem.read`, lane 4), every host NPC 1. With the guest's
+  camera 305 m from its proxies for 45 s none was pooled and the census matched the host's.
+  (Not the cause of BUG-0300.)
+* ✔ The pool call itself: creature vt 0xC8, `thiscall(c, 1)` (`push 1` at 0xACE88C, ecx = the
+  creature).
+* ✔ Creature-stage proxies of the nest species 065CBE70 hardly walk by themselves: `own=` (their
+  game speed) stayed 0 for most samples and reached 1-3.3 m/s at best while the host's NPC ran at
+  4 m/s (`coop.npc list`); the per-frame nudge (driver.h, 15 % of the way, about half of the nudges
+  undone by the next frame: `nudge=kept/all`) and the `npc.trail` teleports move them. Two NPCs
+  running side by side at 4 m/s (`DASH_FIXTURE=creature coop_tribe_npc_dash.py`, guest at 15 fps):
+  p90 6.2 m off the host's path with `npc.trail` off, 3.1-3.4 m with it (Tribe: 0.7-0.95 m). A
+  nudge scaled by the frame time (the same pull per second at 15 as at 60 fps) was tried and gave
+  3.4 m: not the cause, dropped. Not found why these proxies do not run at the host's speed.
+* ✔ A proxy beside a standing host NPC is not pushed off by the guest's own avatar: guest avatar
+  0.5 / 1.0 / 1.5 / 2.5 m beside three standing NPCs, 6 s each, guest at 15 fps: errors 0.0-0.5 m
+  (only NPCs that walked off meanwhile showed 1-2.5 m for a moment).
+* ✔ The host leaving to its main menu: its world change despawns every NPC at the guests a few
+  seconds before the guest learns `host_away` (so the proxies are gone when the guest's own game
+  takes over); the nests then bring their members back one at a time (0 own NPCs within 70 m for
+  25 s, `coop_away_refill.py`). Fix `npc.away_locals` (BUG-0180):
+  the guest keeps the last non-empty set of proxies it showed (species, place, orientation, only
+  those in a nest herd of its game; every 0.5 s) and, when the host is away (within 15 s of that
+  set), creates a creature of the game for each with `cCreatureAnimal::Create` in the nest herd of
+  that species, as the nest does: 20 made, 11 of 11 within 70 m at once.
+* ~ BUG-0300 (one proxy missing on a guest for 30 s and more, 4-player campaign): the guest's trace
+  counted 20 proxies with states while its census listed 19 creatures as proxies, so the proxy was
+  in its list but its object was no creature of the world (not listed, destroyed, or without a
+  species); not a range edge (three members of the same herd 77-84 m away were there; the host sends
+  within 110 m). Not reproduced in 4 rejoins with 2 players. Diagnostics `npc.proxy_listed`: the
+  guest checks every second (Creature stage) that each proxy's object is a creature of the noun list (logs
+  "is no creature of this world any more" and makes it again) and logs a proxy without a species.
+* ✔ BUG-0118 re-read on the lane 4 exe (2026-10-30): CreatureSelectionUI 0xB6C9C3..0xB6CA11 reads
+  `(+0xE84)->+0x32C` only with `+0xB58` mask 0x2 clear and mask 0x1 set; the guard (mask 0x1) covers it.
+
+## Proxies of running NPCs: why they did not walk (2026-10-30, fix/w14-creature)
+<a id="creature-kinematic-proxies"></a>
+
+BUG-0281. GOG 2024, lane 5. Corrects [the proxy section](#creature-proxy-guest-side) ("not found why").
+
+* ✔ A guest proxy's locomotion works: one `cLocomotiveObject::MoveTo` (creature spatial vt 0xE0)
+  12 m ahead made the 065CBE70 proxy run at 4 m/s at once (`coop.npc pwalk`, test command).
+* ✔ The same MoveTo given again every 0.1 s (drive::step while the target moves on) **restarts the
+  walk**: the proxy stood, stepped back and crept at 1-2 m/s. Writing its position to itself or its
+  orientation every frame did not slow it.
+* ✔ While it walks, `set_position` (vt 0x38) towards the path is undone by the locomotion (14-76 of
+  519-624 nudges kept); `teleport` (vt 0x44) puts it exactly there.
+* ✔ Fix `npc.kinematic` (Creature only): while the host's NPC moves the proxy is teleported onto the
+  interpolated host position every frame and gets the host's velocity (`+0xC0 + 0x1C8`); stills of
+  the guest show running poses. p90 off the host's path at 15 fps 0.31-0.34 m (before 1.84 m with
+  BUG-0175, 3.3-3.5 m without). Standing NPCs keep the driving.
+
+## The pack's rescue cooldown across sessions (2026-10-30, fix/w17-creature)
+<a id="creature-rescue-reset"></a>
+
+BUG-0330. Mod logic, not game RE.
+
+* ✔ The rescue cooldown (`teamplay::g_last_rescue`, 60 s) lived in the guest's process across a leave
+  and join: the next session had no rescue for up to a minute (every warm `team` run, 4 of 4).
+  `team.rescue_reset`: `teamplay::reset()` (session end, world change) makes the rescue ready.
+* ✔ `coop.npc hit <id> <dmg>` on a guest (TakeDamage on the proxy with the guest's avatar as the
+  attacker, no push) does not move the guest's avatar (proxies 14-37 m away, lane 4).
+
+## Running proxies and the NPC's state (2026-10-31, fix/w18-creature)
+<a id="creature-kinematic-sync"></a>
+
+BUG-0334. Corrects [the kinematic proxies](#creature-kinematic-proxies).
+
+* CORRECTION (2026-10-31, fix/w18-creature): the first `npc.kinematic` (BUG-0281) placed a running
+  NPC's proxy and went on to the next proxy, so the code after the driving (health, the death replay,
+  the impressed flag) did not run while the host's NPC moved. Observed: a fleeing NPC after a joint
+  hit kept its old health on the guest (`team`: 4.2 / host 1.95, smoke 20261030-235253 and
+  20261030-231732 #2); in `npc_run_hp` (a dashing NPC hit, then killed): health 6.0 / host 4.0 and no
+  death on the guest within 3 s with `npc.kinematic_sync` off. Fixed: only the driving is skipped.
+
+## NPCs updated at the planet's centre (2026-10-31, fix/w21-creature)
+<a id="creature-npc-at-centre"></a>
+
+BUG-0339. Extends [the pool cull](#creature-npc-pool-cull).
+
+* ✔ The game's pool call on a host NPC (creature vt 0xC8, `thiscall(c, 1)`, test command `coop.npc
+  pool <id>`) moves it to (0 0 0) with herd 0, and it is no longer updated. The host retires it
+  (BUG-0274) and the guest drops its proxy within 1 s (lane 5).
+* ~ In a 4-player campaign (lab 20261031-083425 campaign#2) four host NPCs of one herd sat at (0 0 0)
+  in every census for 30 s and more and were still updated (the sync-check lists only NPCs updated in
+  that frame). The cause was not found. A guest kept their proxies on the surface 511 m away.
+  The host now logs "is updated at the planet's centre" for such an NPC.
+
+## The creature ability bar and the own creature swap (2026-10-31, fix/w27-creature-fault)
+<a id="creature-ability-bar"></a>
+
+* ✔ The HUD's ability bar is a table at `[SporeCoop::AbilityBar_ptr]` (0x169E3EC, 0xD8 bytes,
+  made by 0xD489B0 on the stage start, freed by 0xD48A90): 25 slots of `{int ability index (-1
+  empty), u8}` at `row * 0x28 + col * 8`, `+0xC8` rows (5), `+0xCC` slots per row (creature 5,
+  tribe 3), `+0xD0` / `+0xD4` the first button window ids. The row is the ability's `+0xC`
+  (row type), the column comes from 0xD48FA0 (by the ability's type `+8`).
+* ✔ `SporeCoop::AbilityBar_Rebuild` 0xD49400 (cdecl, no args, no null check of the table) clears
+  the 25 slots and puts each ability index of the avatar (0xD1E610: the creature/captain avatar,
+  the tribe's chief) into its slot, then refreshes the row buttons. Callers: the creature HUD
+  refresh 0xD2C000 (stage start), the message handler 0xB5F7B0. **`cCreatureAnimal::SetSpecies`
+  does not call it**: an avatar that gets another species keeps the old bar.
+* ✔ `SporeCoop::AbilityBar_Ability` 0xD1E830 (cdecl(slot index) -> ability*): an index below the
+  avatar's vt 0xB0 count is the avatar's vt 0xB4(index); a higher one in creature / captain mode
+  reads `cSpeciesManager::Get()->GetSpeciesProfile(sm + 0xA4)->[+0x6D4][index]` without a bound
+  check. `sm + 0xA4` was the loaded world's player species (065CBE70 on the creature fixture, not
+  the guest's own creature).
+* ✔ Every key without a modifier in the creature stage: OnKeyDown 0xD3AFF0 (thiscall(strategy, vk,
+  modifiers)) -> `AbilityBar_OnKey` 0xD4A450(vk) -> `AbilityBar_FindByKey` 0xD4A320(GetAbilityMode,
+  vk, 1), which walks every non-empty slot of the rows of the current stance through 0xD1E830 and
+  reads the ability's `+0xC` / `+0x38` (key) before comparing keys. A slot past the avatar's
+  abilities makes that a read past the species' ability array: garbage there faulted at 0xD4A397
+  (`mov eax,[esi+0xC]`, esi = 0x41900000 = float 18.0) once per key press (BUG-0358). Zero there is
+  skipped, a valid pointer is another species' ability: so the fault depends on the heap.
+* ✔ Measured on lane 6 (creature fixture, the guest's own creatures): world species 065CBE70 has 11
+  abilities (host bar 5 slots, highest index 7); the guest's own creatures 9, 13, 17, 16, 16 (bars
+  of 3 / 7 / 11 / 10 / 10 slots, highest 5 / 9 / 13 / 12 / 12). The bar built for the 17-ability
+  creature and then a swap to the 9-ability one (fix off): 11 slots, 5 past the abilities. On the
+  fixture alone (world bar highest index 7, smallest own creature 9) no slot is past the abilities
+  but the slots map keys to other abilities: why the creature tests never faulted, and why the
+  campaign (a world species evolved in the session, with more abilities) did.
+* Co-op (creations.cpp `bar_tick`, `coop.fix creations.ability_bar`): the bar is built again (outside
+  the frame) when the avatar's abilities change under the same avatar (our SetSpecies) or a slot
+  points past them. `coop.creations bar [rebuild]` prints the bar (`abilities= used= stale=
+  max_index= slots=row.col:index,...`) or has the game build it for the current avatar.
+
+## The partner's puppet: walk gait, teleport vs SetPosition (2026-11-01, fix/w29-puppet-move)
+<a id="creature-puppet-walk"></a>
+
+BUG-0360. GOG 2024, lanes 2-4. Measured with `coop.track` (every frame of the observer's game) and
+`coop_puppet_walk.py` (the walker walks by WASD and clicks). Corrects [the kinematic
+proxies](#creature-kinematic-proxies) on the animation.
+
+* ✔ Where to measure: the mod's frame runs at Present, after the game's update and drawing. A
+  position read after the mod moved the creature is the mod's own write, not what was drawn; the
+  drawn one is the position at the start of the mod's frame (`drive::State::drawn`). The first
+  measurements of this branch read after the write and showed SetPosition "on the path" (0.00 m)
+  while the drawn creature trailed 0.5-1.9 m (p90 up to 5 m).
+* ✔ `Anim::AnimatedCreature` (creature +0xB54): +0x04 is the model's position (SetPosition writes it
+  too). vt 0x58 (GOG 2016 0xA05030, vtable 0x1449640, ret 0x10) `GetCurrentAnimation(u32* id,
+  float*, int*, int*)` writes the current main animation id.
+* ✔ The walk gait: `+0x17C` (anim cid) `+0x15B8` holds two ints, the first 0 when no walk gait runs,
+  1-3 while it walks (a walking avatar: > 0 in 94-97 % of its moving frames, 0 standing).
+  `Creature_ChooseIdleAnim` 0xC0C790 picks idle_walk_lookat (0x4866D8E / 0x4866DAB) from it and the
+  speed state +0xF98 (2 walking, 3 running, 0 standing); otherwise the plain idle 0x2481DE5. The main
+  animation id alone is no walk measure for puppets (a puppet can keep 0x4866DAB standing).
+* ✔ A creature behind the observer's camera is animated rarely: the gait value of a puppet 8-14 m
+  behind the camera stayed 0 for 18 s of walking and turned on when it stood. Judge the gait only on
+  frames where the creature is on the screen (`H->world_to_screen`).
+* ✔ The locomotion keeps its own position: SetPosition (creature spatial vt 0x38, 0xC0DEA0: the model
+  and the animation's position) is undone by the next update while the creature walks (the drawn
+  puppet trailed as if not placed), and StopMovement (vt 0xEC, SetDesiredSpeed(0, 1)) after such a
+  walk put it back up to 3 m in one frame. Teleport (vt 0x44, 0xC0C040: SetPosition, SetOrientation,
+  message 0x17F243B, then +0xB5D = 1) moves the locomotion too.
+* ✔ +0xB5D (set by teleport) restarts the animation's walk gait: a creature teleported every frame has
+  gait 0 in 93-100 % of its moving frames (it slides). Teleport and then +0xB5D = 0
+  (`game::place`) keeps the gait: 99-100 %.
+* ✔ The fix (`creature.puppet_walk`): while the partner moves, the game walks the puppet (its speed by
+  SetDesiredSpeed, a MoveTo 12 m ahead given again only when the direction turns > ~6 degrees, at most
+  every 0.3 s, at least every 1.5 s; given every 0.1 s a MoveTo restarts the walk, BUG-0281) and
+  `game::place` puts it on the interpolated path with the partner's facing every frame. Drawn error
+  p50 0.02 m, p90 0.04-0.07 m; 0 % standing 0.1 s windows; gait 99-100 % on screen. The old driving
+  (MoveTo every 0.1 s + SetPosition pulls + 4 m snap): standing in 8-62 % of the windows, drawn error
+  p50 1.3-1.9 m, snaps of 3.5-4 m.
+* ~ Clearing +0xB5D right after the teleport: no other reader of the byte was found by a byte search
+  (only the constructor writes it); side effects not known.
+* ~ A running NPC's proxy (`npc.kinematic`, teleported every frame) is expected to slide without a
+  walk gait for the same reason (inferred from the puppet measurement, BUG-0361).
+
+## NPC proxies walking on the host's path (2026-11-01, fix/w30-npc-walk)
+<a id="creature-npc-walk"></a>
+
+BUG-0361. GOG 2024, lanes 4-5. Measured with `coop.npctrack` (every frame, every proxy within 40 m of
+the guest's avatar, 150 m of its tribe in Tribe; the host's own NPCs as the reference) and
+`coop_npc_walk.py` (the host's game walks NPCs around the guest with MoveTo at 2-6 m/s, then hits two;
+the creature fixture's NPCs reach 4-4.5 m/s, the tribe fixture's animals 6.5-7.5 m/s).
+
+* ✔ The proxies of moving host NPCs slid: `npc.kinematic` (BUG-0281) teleported them (vt 0x44, with the
+  mark +0xB5D) onto the path every frame. On the path (0 % standing windows, drawn error p50 0.00-0.01 m)
+  but the walk gait was on in 4-6 % of their moving frames on the guest's screen and the main animation
+  stayed the plain idle 0x2481DE5. The host's own NPCs at the same time: gait 94-99 % on its screen.
+  This confirms the inference of [the puppet walk](#creature-puppet-walk) for proxies.
+* ✔ Which part matters (variants, `coop.npctrack variant N`): MoveTo ahead + speed but teleport with
+  the mark: gait 6 %; placed without the mark, no MoveTo (the velocity field written): 68 %; MoveTo
+  ahead + speed + `game::place`: 99-100 % (walk animations 0x4866DAB / 0x4866D8E).
+* ✔ The fix (`npc.walk`, `drive::walk_place` in driver.h, the method of `creature.puppet_walk`): gait
+  96-100 %, 0.6-1.4x the path's speed in 94-99 % of the 0.1 s windows, no jumps; also at 15 and 30 fps
+  and over `SPORE_NET=mobile`.
+* ✔ A host NPC thrown back by a hit (9.4 m/s, slowing down for 1.5 s): placed without the mark, the
+  proxy's own locomotion moved it back each frame by as much as it was placed (it stood, 4.5 m off at
+  the end). `walk_place` notices a growing error (0.75 m, 0.15 s) or a lost place and then moves it
+  by teleports with the mark at the catch-up speed until it is on the path.
+* ✔ At a stop the interpolated target can jump back up to 1 m in one frame (the extrapolation past the
+  newest state corrected by the stop state); the last 0.1 s of a walk is interpolated towards a state
+  with velocity 0. A walked proxy goes on with the path's speed, capped at the speed it walked.
+* ✔ Tribe: the animals' proxies were driven by `drive::step` (no npc.kinematic there): walk gait
+  98 %, but 0.6-1.4x the path in only 72-77 % of the windows, 4-7 % standing, drawn error p50
+  0.27-0.30 m, steps of 0.8-2.3 m. With `npc.walk_tribe` (walk_place at the guest's own ground height,
+  BUG-0329): 85-93 %, 1-3 % standing, error p50 0.01-0.02 m.
+* ✔ A host NPC that reports its speed but moves slower (herd mates pushing, turning): walked at the
+  reported speed the proxy runs ahead between two placings; it is walked at the path's speed
+  (smoothed over 0.2 s, at least 0.5 m/s).
+* ✔ The host's NPC itself jumping (creature_npc_dash's mate put 4.8 m to the side at the dash's start):
+  closed at the catch-up speed the proxy stayed 2-7 m off for 2 s; `walk_place` teleports (with the
+  mark) when it is more than 2.5 m off. Slowing the placing to the path's speed (only the walk should be)
+  made it trail at every start of the dash.
+* ✔ At 15 fps the drawn proxy is one locomotion step (speed x frame time, 0.26 m at 4 m/s) off its
+  target: p50 0.25 m, p90 0.4 m (creature_npc_dash's NPCs, `coop.npctrack`).
+* ~ Tribe herds 50-120 m from the tribe: the game itself moved a proxy 1.3 m in one 31 ms frame
+  (collision with herd mates, inferred); off the screen the game updates far creatures in bursts
+  (gv 0 for 0.6 s, then 1.2 m at once).
+* ? One lab run (1 of 9 with the fix, Creature) had gait 0 on every walked proxy for the whole run
+  (anim 0x2481DE5, +0x137 = 1, speed state 2) and drawn error p50 0.18 m. Its guest ended the menu
+  intro in the stage (`world: cinematic 8915F9BB still playing in a stage`), but playing GGE_Intro on
+  the guest by hand (also while its proxies were made again) did not reproduce it. Cause unknown; the
+  test prints the walked proxies' (anim, gait, +0x137, +0xF98) counts now.
+* ✔ (2026-11-01, fix/w30-tribe-walk) The walk branch of creature_drive is `drive::walk_place` /
+  `drive::walk_end` in driver.h now, shared with the Tribe mirrors
+  ([tribe.md#tribe-mirror-walk](tribe.md#tribe-mirror-walk), BUG-0365); the Creature puppet's driving is
+  unchanged (the same constants, puppet_walk passes). After the merge with BUG-0366 the ground
+  handling (`creature.puppet_ground`) is `drive::on_own_ground` in driver.h and `WalkPlace::ground` for
+  other drivings; creature_drive applies it to the target before it chooses walk or stand, as before.
+
+## Max hit points, the brain level and the players' health (2026-11-01, fix/w30-creature-hp)
+<a id="creature-max-hit-points"></a>
+
+GOG 2024 (dc04aee5), Ghidra 2026-11-01 and runtime on lane 9 (BUG-0373, BUG-0374, BUG-0375).
+
+* ✔ `GetMaxHitPoints` = combatant vt 0x58 of the creature combatant vtable 0x1469E30 =
+  **0xC05D50** (`SporeCoop::cCreatureAnimal_GetMaxHitPoints`, thiscall on creature+0x5A8, float in
+  st0): `BaseMaxHitPoints` x (avatar bit `+0xB58 & 0x200` ? [0x1582E80] = 1.0 : 1) x (age `+0xB34`
+  == 1 ? (`+0xB58 & 1` ? [0x1582F50] = 1.25 : 1) : [0x150C888] = 0.5, the hatchling's half).
+  Adventures: rounded up times a scenario factor.
+* ✔ `BaseMaxHitPoints` = creature vt 0x7C (vtable 0x146A080) = **0xC04170**
+  (`SporeCoop::cCreatureAnimal_BaseMaxHitPoints`): for a creature of **the world's player species**
+  (`+0xB20` == `cSpeciesManager_PlayerSpecies` 0x4DF490, the profile of the key at mgr +0xA4):
+  `CreatureLevelHealth(mpAvatar vt 0xD8())` + species health `+0x56C`. vt 0xD8 (0xC02A60) is the
+  brain level `[0x169E370]` for the avatar or a pack member, 0 for others. `CreatureLevelHealth`
+  0x4D1310 reads floats 0x150C890 + 4 x level (tuning, written by 0x4D24B0): **10 15 25 40 100 100
+  100** for levels 0..6 at runtime. Any other species: herd `+0x1674` -> `+0x154` if > 0, else tuning
+  `+0xE84` -> `+0x340`, else (both ~0) `LevelHealth(0)` + species health, i.e. never the brain level.
+* ✔ The report's numbers follow: the host's creature (species health 0, later 4) had 10 (level 0),
+  15 (level 1), 19 (4 after an editor), 29 (level 2), 44 (level 3). The guest played its own creature
+  (another species in its own game: its `+0xB20` is its creation, the player species stays the
+  host's world species) and kept 10 + 4 = 14 at every level. Lane 9: the guest's Kirgle (species
+  health 6) has 16 at level 0 and still 16 from the game at level 1 (21 with the fix); the host 10 -> 15.
+* ✔ A puppet's max is computed the same way on the observer's machine (its species is the partner's
+  creation, "other species": level 0 + species health), and mods/coop/modes.cpp pinned its health to
+  that max every frame: the partner looked full and never grew. creature_hp.cpp now keeps the
+  partner's reported health and answers the partner's max from GetMaxHitPoints for puppets
+  (`creature.partner_hp`), and gives the own avatar of another species the player species' rule
+  (`creature.own_brain_hp`). The brain-up caption heals to the new max on both.
+* ✔ A won brain level is the same on both machines (the DNA total cPlayer +0x10F0 is synced, each
+  game's NestTick raises `[0x169E370]` and plays CRG_BrainUpgradeN; the caption waits for Enter).
+* ✔ Retaliation of the host's pack: a guest's hit on a host pack member (`+0xB58 & 0x100`) is applied
+  with the guest's puppet as attacker; the victim's AI gets stimulus 0x400 with the puppet as sender
+  and attacks the puppet for good (lane 9: a hit of 0.5, then a hit on the guest every ~1.5 s for
+  minutes, `damage_in` 9 -> 64), every hit forwarded as MSG_DAMAGE. Not triggered: the pack does
+  not attack a puppet on its own (30 s next to it), nor when the host's avatar "attacks" the puppet
+  (`ExecuteAction(0xD335362C, {avatar, puppet})`, 3 times): no stimulus, no damage.
+  `npc.party_peace`: the host drops a partner's hit on its pack or family and never forwards their
+  hits on a puppet.
+* Test helpers: `coop.hp` (own hp/max, level, species vs player species, the game's base without the
+  fix; each puppet's game hp/max and the reported values), `coop.hp pack` (pack members, stimuli
+  naming a partner's puppet), `coop.hp attack <player>` (host: the avatar's attack message on a
+  puppet).
+## The puppet on this game's ground: falls walking downhill, under the ground (2026-11-01, fix/w30-puppet-jump)
+<a id="creature-puppet-ground"></a>
+
+BUG-0366, BUG-0367, BUG-0376. GOG 2024, lanes 6-7, `coop.track` rows with the heights over the
+observer's ground (`hd` drawn, `ht` target: |pos| - `cPlanetModel::GetHeightAt`).
+* ✔ `+0x137` (`coop.track` column `moving`) is 1 while the creature is grounded on the terrain, 0
+  while it falls or stands on an object (a rock: 100 % of the frames on the rocky hill near the
+  fixture's spawn, own avatar and puppet alike). While it is 0 the game plays the fall animation
+  **0x0692E6A9** (the walker's own avatar after `coop.abilities lift 1.5`: 35 % of its frames).
+* ✔ A grounded creature (+0x137 = 1) placed over the terrain is put back on it by the game in the
+  same frame (a puppet placed 1.5 m up: drawn 0.00 m); placed under the terrain it is **not** lifted:
+  the 0.7.3.3 puppet driven 1 m under the ground (`coop.track lift -1`) was drawn at -0.64 to -1.00 m
+  in 1279 frames, walking and standing.
+* ✔ Placed exactly on the ground every frame (0.7.3.3 `game::place` onto the partner's path), a puppet
+  walking DOWNHILL is 2-3 cm over the ground after the game's next step (the walk goes along, not
+  down): +0x137 = 0 for 1-5 frames and the fall animation, again and again (4-7 times in 40 s on a
+  slope, radial speed of the path -0.3 to -1.9 m/s; the walker's own creature 0). On flat ground 0-2.
+  The 0.7.3.2 driving (no placing) 0-1.
+* ✔ Put 5 cm INTO the ground instead (`creature.puppet_ground`, kSink), the game sets the puppet on
+  the terrain (drawn -0.03 to 0.00 m) and it stays grounded: 0 falls in 4 runs on the slope. 15 cm:
+  drawn up to 0.13 m under at times.
+* ✔ The ground is the same on host and guest in the Creature stage: 283 points around both players
+  after a live Cell -> Creature (the players' way in) and on the creature fixture: 0.00 m difference
+  (unlike Tribe villages, [tribe-ground-height](tribe.md#tribe-ground-height)).
+* ✔ The 0.7.3.3 walk with the guest at 30 fps (15 states a second) over a home connection (netem
+  `player`: 45 ms, spikes +250 ms, 30 % loss bursts): puppet on its path (93-98 % matched windows, at
+  most one 0.8 m step), no vertical bounce. The 0.7.3.2 driving under the same: 4 m snaps 5 times in
+  40 s, 20 % standing windows.
+* ✔ `GetHeightAt` is the terrain only: a creature on the rocky hill at (-205, -447, -118) of the
+  fixture reads 1-16 m over it.
+* ✔ The fixture's creatures cannot jump: Space and every ability (`coop.abilities play <i>`, types
+  0xE 0x1D 0x28 0x10 0x25 0x1E 0x31-0x33, 0x11 0xD) leave the height at 0. A jump is simulated by
+  `coop.abilities lift 1.5` (the fall half of a jump, ~0.5 s).
+* ✔ BUG-0376: when the partner leaves the ground (lifted 1.5 m, 24 hops), the 0.7.3.3 puppet stays on
+  the ground in 21-22 of them (grounded, the game puts it down) and falls with the partner in 2-3;
+  the 0.7.3.2 driving teleports it up in 5.
+* ? Why the players' puppet went under the ground: inferred, an extrapolated state (0.25 s at most)
+  of a partner walking or running downhill when its states stall (rtt up to 1.1 s in their log), or
+  any target under the terrain: the game never lifted it.
+* ~ NPC proxies placed every frame (`npc.kinematic`, `drive::step` snaps) probably fall downhill the
+  same way (not measured).
+
+## Deep water: the caption cinematic holds the avatar, a guest holds the puppet on the water (2026-11-01, fix/w31-creature-gate)
+<a id="creature-deep-water"></a>
+
+Observed on lane 6 (GOG 2024, creature fixture Scalinus, BUG-0377):
+* ✔ The fixture planet's water surface is at radius 499.2 m (the start ground ~505 m; 450 m away in
+  some directions the sea floor is 484-497 m). `coop.abilities ground x y z` gives the terrain radius
+  (cPlanetModel::GetHeightAt) in any direction, also far from the camera; it is the floor under water.
+* ✔ An avatar over deep water starts the caption cinematic 5E205931 ("Dangerous creatures lurk in the
+  deep. Don't stray too far from shore!"; `coop.status`: `cinematic 5E205931 playing`, trace
+  `input_lock=1`). While it plays the game does not move the avatar: its velocity stays frozen and a
+  teleport leaves it where it was put, also in the air.
+* ✔ A puppet (any creature of ours) above the water there is put on the water surface by the game's
+  update every frame (drawn at 499.2 m whatever the mod writes); one put under the surface stays
+  there. coop.sync / sync-check read it between frames, so they see where the game draws it.
+* ? Whether the cinematic would end on its own (with the sea monster) was not waited for: the test
+  teleported the avatar every 1.2 s.
+
+## Shared DNA and its causes (2026-11-01, fix/w31-creature-gate)
+<a id="creature-dna-causes"></a>
+
+* ✔ The game's DNA gains all pass `cCreatureGameData::AddEvolutionPoints` (hooked, game.cpp h_AddEvo
+  -> coop.cpp on_dna); `game::dna_add_raw` calls the original and is not seen by the listener.
+* ✔ A guest's lethal hit on a host NPC is applied as the host avatar's (npc.cpp kill credit); the
+  game's DNA for it arrived within 3 s (coop_team.py, coop_dna_notice.py: 0 -> 8.8 after the kill).
+  The ledger counts the host's gains within 2.5 s of a credit as that guest's hunt (~ inferred
+  window: a host kill in the same 2.5 s is counted as the guest's).
+* MSG_DNA (host -> guests) has an optional tail since 0.8: u8 n, then n x {u8 cause (1 host, 2 hunt,
+  3 earned, 4 owed), u8 player, f32 amount}: the gains since the last total. Older guests read the
+  f32 only. Every machine logs `dna: <a> -> <b> cause=<cause>:<player><+amount>[,...]` (`unknown`: an
+  editor's spending, a catch-up, an older host); Cell: `dna: food <a> -> <b> cause=meal:<player>+N`
+  (255 on a guest: the host's total, some partner's meal). mods/coop/dna_ledger.h.
+
+## Eggs at the nests (2026-11-01, fix/w32-nest-eggs)
+<a id="creature-nest-eggs"></a>
+
+BUG-0384 (player report: "in enemy nests eggs are desynced and bugged (flying mid air)"). GOG 2024,
+Ghidra (out/ghidra-2024) and lane 9/10 at runtime (`coop.nest`, creature fixture).
+
+* ✔ Nouns (RegisterNounType calls in 0xB24720): **cEgg 0x2A034CD** (factory 0xB1EEA0, size 0x228,
+  ctor 0xC6A410, vt 0x20 0xC6A500), **cNest 0x52AA6122** (size 0x130), **cFruit 0x2C9CC91**, cFruitGroup
+  0x2E96892. CORRECTION (2026-11-01, fix/w32-nest-eggs) of the BUG-0384 note on fix/w30-npc-walk ("noun
+  0x2C9CC91 ... most likely the eggs"): 0x2C9CC91 is cFruit (`RegisterNounType(0x2C9CC91, 0x2C9CC8E,
+  "cFruit")`, vt 0x20 0xAFF290), a pool of fruit objects of the flora (made by 0xB00180 from the flora
+  update 0xB0B0B0, model from the planet's property 0x463CDA3): fallen and hanging fruit, not eggs. Their
+  host / guest counts differ (each game drops its own fruit); the ones 2-4.6 m over the terrain were at
+  the same places on both games (hanging in trees, ~ inferred, not seen on a screenshot).
+* ✔ cEgg fields (attribute table 0x134CF40): +0x1E8 mState, +0x1EC "changed" (the view replays its
+  effect), +0x1F0 mTimeToHatch (ms), +0x1F4 mpHerd (ref-counted), +0x1F8 mBrokenTimer, +0x218 mpToHatch
+  (a creature that comes out of it), +0x220 mEffectScale; spatial subobject +0x34 (position +0x38).
+  States: 0 in the player's nest before the editor (cHerd::SetEggsInNest 0xC6EFE0), 5 the avatar's
+  family eggs after a hatch (0xC6D290), 6 laid by an NPC, 3 hatched, 4 eaten / broken.
+* ✔ cHerd fields (attribute table 0x134D380, all names): +0x40 mHerd (members), **+0x54 mEggs**
+  (vector of cEgg*), +0x84 mOwnedByAvatar, +0xF4 mTargetHerdSize, +0xFC mbEggStatusChanged, +0x11C
+  mRespawnRate (ms, 240000 at the fixture's nests), +0x12C mEggIndex (the egg's look, 0..9), +0x160
+  mpNest, +0x164 mpHerdMom, **+0x194 mpEggLayer**, +0x198 mbEggsInNest, +0x218 mbEnabled; also
+  mInitialShortfall +0xF8, mFeedingGrounds +0x68, mTerritoryRadius +0x108, mbExtinction +0x190.
+* ✔ How NPC nests get eggs (cHerd::Update 0xC6D960): when members (+0x40 vector, **corpses count**)
+  are fewer than the target, min(shortfall, cap 0x1582F34 = 2 at runtime) minus the eggs there, after
+  mRespawnRate a living member nearest the nest becomes the egg layer (+0x194) with that many eggs to
+  lay (creature +0x1678, setter 0xC02D80). Its behaviour node 0xD6CDB0 plays the lay animation and calls
+  cHerd::LayEgg 0xC6D0B0 at the creature (state 6, **not snapped to the ground**: snap = the avatar bit),
+  registers the egg's collision ("useGameplayPhantom", 0xB48870) and walks away. Runtime: 2 eggs within
+  ~20 s with mRespawnRate 2000 and the target raised by 2 (`coop.nest respawn` / `target`); killing
+  members alone laid nothing for 2 min (the corpses stayed members). Without a living member nothing is
+  laid (a herd whose 3 of 4 were killed stayed so).
+* ✔ Eggs fall and roll after laying (physics): one was laid 0.97 m over the terrain and lay at 0.14 m
+  10 s later. In the nest's bowl an egg lies 0.74-1.2 m over the terrain (the nest model; screenshots
+  show it in the nest, not floating): `over_ground` measures the terrain only.
+* ✔ Hatch: cEgg update 0xC6B1E0 (only from cHerd::Update for the eggs of mEggs) counts +0x1F0 down
+  (150-180 s left right after laying), at 0: state 3, cEgg::SnapToGround 0xC6A2A0 (onto the collision
+  surface: the nest's top at its centre), the to_hatch creature placed there or a new member made
+  (cCreatureAnimal::Create). The herd destroys hatched and eaten eggs ~10 s later.
+* ✔ Eat: the eat node 0xDBD460 (animation 0x2796B30) calls cEgg::SetState(4) 0xC6A810, and when the
+  eater is the avatar and the egg's herd is not its own, changes the relation to that species
+  (0xC230B0 / 0xC90070, not followed). A hard collision (0xD3A450, impulse > 10) breaks an egg too.
+* ✔ Drawing (cEggView, vtable 0x1486678, update 0xE8E5B0): an egg is drawn only while its mpHerd is
+  set and the herd is enabled (+0x218, 0xC6A1C0); a change (+0x1EC) plays the state's effect
+  (state 6: 0xB70973F3, 3: 0x4A9D2F4C, 4: 0x91363BFD, ...) with the scale +0x220 and the herd's
+  mEggIndex +0x12C. An egg with no herd is invisible (first mirror attempt: listed, not drawn).
+* ✔ Co-op (observed, lanes 9/10): the guest's own nest herds have **no members** (the mod removes the
+  guest's NPCs; the proxies live in herds of ours), so no layer and no eggs: with the host's herd laying
+  2 eggs the guest had 0. That is the "desync". Floating on the guest was not reproduced; the eggs that
+  were "in the air" may be eggs in the nest bowl (0.8 m over the terrain), eggs falling after laying, or
+  the guest's own eggs while its game ran its NPCs (host away); not checked.
+* ✔ The fix (`nest.eggs`, mods/coop/nest.cpp): the host sends the eggs of NPC herds (not the avatar
+  family's) within 110 m of each guest at 1 Hz (MSG_NEST 52: serial, position, state, scale, the herd's
+  home +0x34); the guest makes a cEgg (CreateInstance) per host egg, sets its mpHerd to its own herd of
+  the same home (AddRef, **not added to mEggs**: its update never hatches or clears ours), places and
+  snaps it to its own ground, follows the host's state 3 / 4 by SetState and removes it (Release of the
+  herd, DestroyInstance, Release) when the host's egg is gone; savestrip leaves them out of saves. An
+  egg of ours eaten on the guest (state 4) sends MSG_NEST kind 1 and the host calls SetState(4) on its
+  egg (the species' relation change of the host's eat node is not applied for the guest).
+## Walks at 30 fps: one shared walk driver, moves without a speed (2026-11-01, fix/w30-npc-walk)
+<a id="creature-walk-30fps"></a>
+
+BUG-0394 / BUG-0387. GOG 2024, lanes 2-5, `SPORE_FPS=30`, `SPORE_NET=player`.
+
+* ✔ One implementation: `drive::walk_place` / `walk_end` (driver.h) drive the partner's puppet
+  (creature.puppet_walk), the Tribe mirrors (tribe.mirror_walk) and the NPC proxies (npc.walk,
+  npc.walk_tribe). `WalkPlace` options: goal_ahead, turn_dot, min_gap, max_gap, catch_up, own_height,
+  speed_after_goal and max_dt (Tribe), ground (on_own_ground), walk_speed, snap and keep_lost (NPC
+  proxies), variant (tests). `drive::path_update` / `path_velocity` track the remote's interpolated path
+  per frame for every user.
+* ✔ A partner can move without a speed of its own: its creature carried by an animation (B4212A07 after a
+  click on its screen: 3-4.6 m/s for a second with the game's velocity 0 and speed state 0). Its states
+  then say "standing"; the puppet stood (drive::step) while its path went on, fell 2.9 m behind and was put
+  in place (18 % standing windows in that run). `creature.puppet_path`: the puppet walks with
+  `path_velocity` (the path smoothed over 0.2 s from 0.5 m/s, before that this frame's path from 0.8 m/s,
+  never a path jump over 15 m/s) when the state reports no speed. Test lever `coop.track novel 1` (all
+  partner states without their speed): off 39-63 % standing and 4-9 jumps per direction, on 0-1 %.
+* ✔ Right after a join a guest loads for seconds (18 fps on average, single frames of 5.4-5.6 s) and its
+  game did not update the partner's puppet for 7 s: it moved only where it was placed (game speed 0,
+  walk gait 0, idle animation) even on the screen. Later it walks normally. Tests now wait until both
+  games run steadily (`settle`), as a player would only judge after the load.
+* ~ At 21-29 fps (a loaded machine) a 0.1 s window holds 1-3 frames: the drawn puppet's speed over it
+  swung 0.3-2x the path's with the frame times (the game moves a creature by its own frame time) while its
+  drawn error stayed 0.01-0.6 m; over 4 frames 89-98 % matched. Not a step a player sees (inferred); the
+  walk tests' windows span at least 4 frames.
+* ~ The walker of puppet_walk sometimes did not walk: its clicks on the partner's tag (to walk back when
+  12 m away) did nothing after a first walk ended 15-25 m apart; the test now puts the walker next to the
+  observer before its walk (`coop.npc gopos`).
+
+## NPC proxies walking downhill fall (2026-11-01, fix/w33-proxy-ground)
+<a id="creature-npc-ground"></a>
+
+BUG-0406. GOG 2024, lane 7, creature fixture, `coop_npc_walk.py --goto=-195,-465,-45` (suite
+`npc_walk_slope`: both avatars on the slope of [creature-puppet-ground](#creature-puppet-ground), the host's
+game walks 4 NPCs to points 4-12 m around the guest, `coop.npctrack` every frame on both games; the test now
+counts fall starts, +0x137 going 1 -> 0 while the host's NPC moves).
+* ✔ The inference of creature-puppet-ground holds for NPC proxies: walked by `npc.walk` (placed exactly on
+  the host's path every frame) they started to fall 51.1 and 22.7 times per 100 s of walking on the slope;
+  the host's own NPCs walking the same paths 0.9 and 0.8 (out/lab/20261101-142745 npc_walk_slope#1, #2). Their
+  walk gait (98 % on screen) and the path (93 % matched windows) were fine: the falls are single frames.
+* `npc.walk_ground`: the proxies' walk is placed with `WalkPlace::ground` (on_own_ground, 5 cm into the ground)
+  as the partner's puppet (creature.puppet_ground).
+## A creature outside the view stands on the plain terrain, not on a nest mound (2026-11-01, fix/w34-ability-pop)
+<a id="creature-out-of-view-ground"></a>
+
+BUG-0414, BUG-0434. GOG 2024, lane 4, guest at 30 fps over netem `player`, `coop.track` rows (hd / ht: height over
+`cPlanetModel::GetHeightAt` of the drawn puppet / of its target; vis / sx / sy: its screen position).
+* ✔ The fixture's nest at about (-127, -488, -65) (the 065CB8AB herd, NPCs #18-#21) stands on a mound: a creature
+  walks and stands there 0.4-1.03 m over `GetHeightAt` and is grounded (+0x137 = 1), own avatar and puppet alike
+  (`GetHeightAt` is the plain terrain without the mound). The NPCs of that nest stood next to it at -0.05-0.0 m.
+* ✔ A creature of ours (the partner's puppet) **outside the observer's view** is put on the plain terrain by the
+  game: with the host standing on the mound at 1.03 m and the guest's camera turned away (right-drags), the
+  puppet was drawn at 0.00 m in every frame it was off the screen (1503 of 2113 frames of `lod_exp`), at 1.03 m in
+  the frames it was on it; the steps are 1.03 m each way, every time the view swings over it (at 7, 15, 25 and
+  40 m from the observer alike). With the camera still and the puppet in view: no step.
+* ✔ The first frame back in view is still drawn low; the game lifts the creature one update later (26-28 such
+  frames in 70 s of camera turns): a visible one-frame step (BUG-0434).
+* ✔ Writes at the mod's frame (Present) cannot keep it up while it is out of view: a teleport to the target with
+  the teleport mark (the driver's stuck teleport every 1.5 s, `tp` 2 -> 19 in 70 s), the same plus +0x137 = 0,
+  or clearing bit 0x800 of +0xB58 (+0xB59 & 0x08, set in 6 of 6 memory samples off screen and in 0 of 6 on it)
+  each frame: the next update put it on the plain terrain again every time. `or [creature+0xB58], 0x800` is
+  written by about 15 places (0xD2600D, 0xE8CB6A, 0xF10799, ...; 0xE8CB6A is in a behaviour node of the Creature
+  and Adventure modes, not a view test) and tested at 0xC1CFCC in 0xC1CF30 (an ability tick, types 0xD / 0x52):
+  so the bit is not (only) the view state. ? Which update grounds a culled creature on `GetHeightAt`.
+* ✔ `cCreatureAnimal::Update` (0xC0AE30) does not move a puppet: its position before and after the call was the
+  same in every sampled frame (moved 0.00 m, also in the frames of these drops). The game calls it about 15 times
+  a second per creature (dt 31-100 ms; 22 puppets and proxies on a guest: ~300 calls a second), not every frame.
+* ✔ BUG-0414's "pops when it uses an ability" were these steps: every 0.77-1.0 m step of the w33 runs
+  (20261101-142305, 20261101-151044) was out of the observer's view (vis 0 or sx -800..4700) while the fighter
+  stood or walked on the mound (its own hd 0.97 / 1.03), with the test's camera drags (`Watch`). The partner's
+  animations played on the puppet (MSG_ANIM, `coop.track` columns ranims / ranim) are rare in a fight (7 in 50 s)
+  and none came within 0.6 s before a step; 02481DE5 is the animation of a stop (speed state 0), not an ability.
+* ✔ `creature.puppet_ground` (kOverGround 0.5 m) puts a target 0-0.5 m over `GetHeightAt` 5 cm into it: on the
+  lower part of the mound (0.39-0.44 m) the standing puppet stays 0.44 m under the partner (drawn -0.05 m while
+  the partner's own creature is at 0.39-0.44 m; the game does not lift a creature put under its ground), and a
+  partner walking over the 0.5 m line makes the puppet step 0.4-0.5 m (BUG-0435).
+## A cinematic left playing in an editor; the game's busy states (2026-11-01, fix/w34-vote-cinematic)
+<a id="creature-busy-states"></a>
+
+BUG-0404. GOG 2024, lane 5, `tools/tests/coop_vote_cinematic.py`.
+
+* ✔ After every editor the Creature stage plays CRG_Fade_From_Black_Egg (F4F96E43) on both games: ~7 s on
+  the host, ~10 s on the guest (`coop.status` "cinematic F4F96E43 playing", input lock 1), then it ends by
+  itself. The same cinematic started by hand (`call Simulator::cCinematicManager::PlayCinematic thiscall <cm>
+  s:CRG_Fade_From_Black_Egg 1 1 0 0 0`) behaves the same in the stage.
+* ✔ An editor opened while it plays (EditorRequest::Submit from the vote's held request) comes up without
+  its buttons (no top bar, no "done", the letterbox bars stay) and the cinematic never ends in the editor
+  mode: `cinematic F4F96E43 playing` and `input_lock=1` for minutes; Enter and clicks on "done" do nothing.
+  `SporeCoop::cCinematicManager_EndCinematic` called then (in the editor) ends it: the buttons appear at
+  once and "done" works.
+* ✔ `cGameTimeManager` +0x48 bit 0 is the game time standing still in Creature: the pause menu 0x03, the
+  Sporepedia (the 3rd small HUD button bottom left, 84 1054 in the 1440x1080 window) 0x01, My Collections
+  (the 4th, 114 1054) 0x03; 0 again after Esc. The input lock stays 0 for these windows. So "paused" is not
+  only the pause menu's "Resume Game" button (BUG-0331, BUG-0336): the mod reads the flag (`busy: paused` in
+  `coop.status`, `busy=` in the trace line).
+* ✔ Right after a world load (a guest loading the host's share) the pause flag is set for some seconds
+  (`busy=paused` in the guest's trace from the first Creature frame, gone ~10 s later; lab
+  20261101-170147, run 2). An Esc in that window did not open the pause menu (the flag went to 0): tests wait
+  for `busy: -` before they pause a game by hand.
+* ✔ The game sets the pause flag itself, with no window of the player's: on the host at the start of the
+  Creature stage after the Cell stage's editor (~18 s, `busy=paused`, input lock 0), after the first Creature
+  editor (~12 s), and together with a caption cinematic (`cinematic,input_lock,paused` for minutes while the
+  caption waits for OK); lab 20261101-172428 (guest_editor_hold), host trace. So a wait for "paused" also
+  waits for these: the world share does not (busy.h kShareGate), editors and action votes do (a pause alone
+  at most 300 s, a cinematic under it 60 s).
+* ~ The co-op window opened by a vote does not stop the game time (the held editor opened right after the
+  vote with the window just closed; inferred from the passing runs, the flag was not read with the window up).
+
+## Eggs have no gravity while asleep (2026-11-01, fix/w35-egg-kick)
+<a id="creature-egg-gravity"></a>
+
+BUG-0443 (the host's screenshot of the "eggs flying mid air" report). GOG 2024, lane 4, creature fixture,
+`coop.nest lift` / `objs` (over_surface).
+
+* ✔ An NPC egg (state 6) does not fall by itself: moved 2-2.5 m up with SetPosition (`coop.nest lift`, the
+  call cHerd_LayEgg makes with the layer's position), fresh (lifted within 1 s of being laid) or settled,
+  it stayed at that height for 8-10 s and longer (host, nobody within 6 m). A creature that came to it
+  (the partner's puppet put onto the other egg, ~2 m away) woke it: it fell from 2.71 m to 0.82 m over the
+  terrain within 3 s. So the physics moves an egg only while it is awake (right after laying, or touched);
+  asleep it stays where it is, in the air too.
+* ✔ The eggs the game lays settle over the surface: right after laying the physics pushes the egg up out
+  of the layer's body / the mound (0.76 -> 0.93, 1.04 -> 1.29 m over the terrain) and it goes to sleep
+  there. Over the surface (the ray cast below), fix off, 5 nests of the fixture: 0.05/0.47, 0.04/0.05,
+  0.21/0.33, 0.05/0.46, 0.05/0.43 m (2.5 m apart: not one egg on the other). One in two eggs hangs
+  0.3-0.5 m in the air. Inferred: a bigger layer (the player's species) leaves it higher. On the screenshot
+  of the FAIL run an egg 2.4 m up looks like the player's ("a green egg hanging over the slope").
+* ✔ `SporeCoop::cPlanetModel_SurfacePoint` 0xB82AC0 (what cEgg_SnapToGround uses): the terrain point
+  (0xB816F0) and, when the physics manager (0xB3D410) +0x20 is 0, a ray cast (0xB65C10, layer
+  [0x167ECD0]) from the terrain's top down to it; a farther hit (the nest mound, a rock) wins. An egg
+  snapped with cEgg_SnapToGround lies 0.00 m over that point. It hits only collision that is loaded:
+  far from the host's camera the nest mound has none (below).
+* ✔ Far from the host's camera (the host 450 m away, the guest at the nest: the herd kept by the view
+  centres, BUG-0280) the members stand on the bare terrain (0.00 m over `GetHeightAt`; 0.75 m on the
+  mound when the host is near) and lay their eggs there: inside the nest mound, asleep, still there after
+  the host came back (-0.01 m). On the guest their copies (nest.eggs) are snapped onto the guest's
+  surface (on the mound). Not fixed (BUG-0443 fixes eggs over the surface only).
+* ✔ `GetHeightAt` around a nest is the same with the host near or 450 m away and on the guest (25
+  points, 0.00 m): no terrain LOD in it.
+* ✘ The partner's puppet does not launch eggs: the guest's avatar put onto a host egg (the host's puppet
+  placed there) pushed it up 0.14 m (0.95 -> 1.09) and woke the other egg, which fell.
+* ✔ The fix (`nest.egg_ground`, mods/coop/nest.cpp): every 0.5 s the host checks the eggs of NPC herds
+  (state 5 / 6) within 60 m of its avatar; one that did not move for two checks and lies more than 0.3 m
+  over the surface is put onto it with cEgg_SnapToGround (what the game does to the avatar's eggs and to
+  every egg at its hatch).

@@ -4,12 +4,18 @@
 
 #include <cmath>
 #include <cstring>
+#include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
+#include "cell_logic.h"
+#include "creature_hp.h"
 #include "game.h"
 #include "adventure_native.h"
 #include "sporekit.h"
 #include "sporekit_game.hpp"
+#include "fixes.h"
+#include "world_name.h"
 
 extern const SkHost* g_host_for_modes;
 extern SkMod* g_mod_for_modes;
@@ -45,7 +51,14 @@ static void* creature_spawn(const net::PlayerState& s, void* av)
 {
     void* own = g_species_for_player ? g_species_for_player(s.id) : nullptr;
     if (game::mode_id() == kScenario && !own) return nullptr;
-    void* herd = own ? game::create_herd(s.pos, own) : nullptr;
+    // one herd per species, reused (also one a save brought back): a new herd per spawn stayed in
+    // the world after the puppet was gone
+    void* herd = own ? game::own_herd_for(own) : nullptr;
+    if (herd) {
+        game::herd_home(herd, s.pos); // (a reused herd's home may be anywhere)
+        game::herd_quiet(herd);
+    } else if (own)
+        herd = game::create_herd(s.pos, own);
     void* p = own && herd ? game::spawn_creature(s.pos, own, herd)
                           : game::spawn_creature(s.pos, game::species_profile(av), game::avatar_herd());
     if (!p)
@@ -57,22 +70,87 @@ static void* creature_spawn(const net::PlayerState& s, void* av)
     return p;
 }
 
-static void creature_drive(void* p, const net::PlayerState& s, drive::State& ds, double now)
+// BUG-0360: while the partner walked, its puppet was given a MoveTo again every 0.1 s (which restarts the
+// game's walk: the puppet stood or crept) and pulled towards the path with SetPosition (which the
+// locomotion ignores), so it moved in steps, trailed 1-4 m and the 4 m snap teleported it ("the
+// partner teleports, sometimes it walks"). Now, while the partner moves:
+// * the game walks the puppet: the partner's speed (SetDesiredSpeed) and a MoveTo 12 m ahead on its
+//   path, given again only when that direction turns (or every 1.5 s): its walk gait and walk
+//   animation run as on the partner's screen;
+// * game::place puts it on the interpolated path every frame with the partner's facing: a teleport
+//   (the locomotion keeps its own position, SetPosition alone is undone) without the teleport mark
+//   +0xB5D, which restarts the animation's gait (teleported every frame with it, as npc.kinematic
+//   does, the creature slides without a walk gait). An error left from standing is closed at
+//   kCatchUp faster than the partner, not in one frame.
+// Standing, the driving (drive::step) works as before.
+// `coop.fix creature.puppet_walk off`: the driving only (0.7.3.2).
+static bool g_puppet_walk_fix = true;
+COOP_FIX("creature.puppet_walk", "BUG-0360", g_puppet_walk_fix, "creature: the walking partner's creature walks on its path instead of moving in steps and teleporting");
+// BUG-0366 / BUG-0367: the puppet was placed at the partner's own position, taken from the partner's
+// game, every frame (0.7.3.3, creature.puppet_walk). Walking downhill a creature placed exactly on the
+// ground is a few cm over it after the game's next step (its walk goes along, not down): the game
+// takes it as falling (+0x137 = 0) and plays the fall animation 0x0692E6A9 for 1-5 frames, again and
+// again ("constantly jumping"; 4-7 times in 40 s on a slope, the partner's own creature never). A
+// target under this game's ground (an extrapolated state, a ground that differs) was put there.
+// creature.puppet_ground: a target from kUnderGround under to kOverGround over this game's ground
+// (cPlanetModel::GetHeightAt) is put kSink into it (drive::on_own_ground, driver.h: shared with the
+// other drivings as WalkPlace::ground); the game sets a grounded creature on its ground (0-3 cm up) and
+// it stays grounded. A partner higher up (a jump, a rock) is placed where it is.
+static bool g_puppet_ground_fix = true;
+COOP_FIX("creature.puppet_ground", "BUG-0366", g_puppet_ground_fix, "creature: the partner's creature is put on this game's ground (no fall animation walking downhill, never under the ground)");
+
+// BUG-0394: the partner's creature can move without a speed of its own: an animation that carries it
+// (B4212A07 after a click, 3-4.6 m/s for a second with the game's velocity 0 and speed state 0 on the
+// partner's screen). Its states then say "standing", the puppet stood (drive::step) while its path went
+// on, fell 2.9 m behind and was put in place (puppet_walk at 30 fps: 18 % standing windows). With
+// creature.puppet_path the puppet walks with the speed of its path (drive::path_velocity) when the state
+// reports none.
+static bool g_puppet_path_fix = true;
+COOP_FIX("creature.puppet_path", "BUG-0394", g_puppet_path_fix, "creature: the partner's creature also walks where the partner moves without a speed (moves carried by an animation)");
+
+static void creature_drive(void* p, const net::PlayerState& s_in, drive::State& ds, double now)
 {
-    if (game::mode_id() == kScenario && std::isfinite(s.scale) && s.scale > 0 && s.scale <= 10000 &&
-        std::fabs(game::scale(p) - s.scale) > .0001f) game::set_scale(p, s.scale);
-    // a partner's creature: lunges and charges move it faster than a puppet can walk, and attack
-    // animations undo the nudges (~10-20 % of them in fights): it trailed by 5-8 m after a fight
-    // move (play_creature.py 2026-10-23); snap at 4 m instead of 8
-    drive::step(p, s.pos, s.rot, s.vel, ds, now, 0, true, 4.f);
-    if (game::herd_of(p) != game::avatar_herd())
+    const bool scenario = game::mode_id() == kScenario;
+    if (scenario && std::isfinite(s_in.scale) && s_in.scale > 0 && s_in.scale <= 10000 &&
+        std::fabs(game::scale(p) - s_in.scale) > .0001f) game::set_scale(p, s_in.scale);
+    ds.drawn = game::position(p);
+    net::PlayerState s = s_in;
+    if (g_puppet_ground_fix && game::in_creature_stage())
+        s.pos = drive::on_own_ground(s.pos);
+    drive::path_update(ds, s.pos, now);
+    if (g_puppet_path_fix && !scenario && drive::speed(s.vel) <= 0.3f)
+        s.vel = drive::path_velocity(ds);
+    float sp = drive::speed(s.vel);
+    bool walk = g_puppet_walk_fix && game::in_creature_stage() && sp > 0.3f && net::dist(game::position(p), s.pos) < 8.f;
+    if (walk) {
+        drive::walk_place(p, s.pos, s.rot, s.vel, ds, now); // (the shared driver, driver.h)
+    } else {
+        // it stands again: no walk to the goal ahead (a MoveTo to where it stands, not StopMovement: with
+        // the placing by SetPosition, tried first, the stop put it back up to 3 m), the driving takes over
+        drive::walk_end(p, s.pos, ds, now);
+        // a partner's creature: lunges and charges move it faster than a puppet can walk, and attack
+        // animations undo the nudges (~10-20 % of them in fights): it trailed by 5-8 m after a fight
+        // move (play_creature.py 2026-10-23); snap at 4 m instead of 8
+        drive::step(p, s.pos, s.rot, s.vel, ds, now, 0, true, 4.f);
+    }
+    if (game::herd_of(p) != game::avatar_herd()) {
         game::herd_quiet(game::herd_of(p)); // (the game may enable a herd again)
-    float mh = game::max_health(p); // puppets mirror the remote health, never die locally
-    if (mh > 0 && game::mode_id() != kScenario)
-        game::set_health(p, mh);
+        game::herd_home(game::herd_of(p), game::position(p));
+    }
+    // BUG-0373: the partner's health and max health (creature.partner_hp); off: pinned to full
+    // Adventure captain health is applied by its canonical combat controller.
+    if (!scenario && !creature_hp::drive_puppet(p, s.health, s.max_health)) {
+        float mh = game::max_health(p); // puppets mirror the remote health, never die locally
+        if (mh > 0)
+            game::set_health(p, mh);
+    }
 }
 
-static void creature_despawn(void* p) { game::destroy_creature(p); }
+static void creature_despawn(void* p)
+{
+    creature_hp::forget_puppet(p);
+    game::destroy_creature(p);
+}
 
 static float creature_tag(void* p) { return game::bounding_radius(p) * 1.3f + 0.3f; }
 
@@ -148,6 +226,32 @@ static void space_fill(void* u, net::PlayerState& st)
     st.max_health = skg::field<float>(u, kUfoCombat + 0x2C);
 }
 
+bool ufo_ident_fix = true;
+COOP_FIX("drive.nudge_dt", "BUG-0175", drive::g_nudge_dt_fix, "creature, tribe: a mirror's pull to its place is per second, not per frame (low frame rates trailed more)");
+COOP_FIX("drive.own_height", "BUG-0329", drive::g_own_height_fix, "tribe: a member's or animal's mirror is driven at its own ground height, not the host's absolute one");
+COOP_FIX("fleet.type", "BUG-0111", ufo_ident_fix, "space: only our own puppets count as puppets, not any UfoType 6 ship (coop.fleet typefix)");
+// our puppets: the model key they got and (BUG-0218) their object serial (cGameData mID)
+struct UfoIdent {
+    skg::ResourceKey key;
+    uint32_t serial;
+};
+static std::unordered_map<void*, UfoIdent> g_ufo_ident;
+// BUG-0218: the identity is the object serial, not the flags. Our puppet whose invincible byte the
+// game cleared gets it back; our puppet that a game mission took (owner mission +0x800) is retired
+// (held still, never sent or fired, destroyed once the mission lets go). Off: the 0.7.3.0 check
+// (flags in the identity, such a ship forgotten and left in the game as an armed NPC).
+bool puppet_id_fix = true;
+COOP_FIX("fleet.puppet_id", "BUG-0218", puppet_id_fix,
+         "space: a puppet is ours by its object serial; a cleared flag is restored, a mission's ship retired");
+struct Retired {
+    void* u;
+    uint32_t serial;
+};
+static std::vector<Retired> g_retired;
+static std::unordered_set<void*> g_fake_mission; // tests (coop.fleet impostor_mission): as if +0x800 were set
+uint32_t g_puppet_flag_restored, g_puppet_retired, g_retired_destroyed, g_retired_gone, g_retired_left;
+static void* owner_mission(void* u) { return g_fake_mission.count(u) ? u : skg::field<void*>(u, 0x800); }
+
 static void* space_spawn(const net::PlayerState& s, void* local)
 {
     uintptr_t spawn = S("Simulator::SpawnUFO"), empid = S("Simulator::GetPlayerEmpireID"),
@@ -167,11 +271,46 @@ static void* space_spawn(const net::PlayerState& s, void* local)
     if (!u)
         return nullptr;
     skg::field<uint8_t>(u, kUfoCombat + 0x80) = 1; // mbInvincible
+    g_ufo_ident[u] = {skg::field<skg::ResourceKey>(u, 0x780), game::object_serial(u)}; // mDesiredModelKey (BUG-0111), mID (BUG-0218)
     skg::Vector3 p{s.pos.x, s.pos.y, s.pos.z};
     skg::Quaternion q{s.rot.x, s.rot.y, s.rot.z, s.rot.w};
     skg::vcall<void>((uint8_t*)u + kUfoLoco, 0x44 / 4, &p, &q); // Teleport
     (void)local;
     return u;
+}
+
+// BUG-0378: the pin that makes the game's own update draw a ship at `p`. The UFO controller update
+// (0x1062CF0, every frame after our write) moves the ship to mNextPosition + mOffsetFromPosition
+// (+0x740); in a star system at its destination it snaps there (SnapToDestination 0xC37FA0:
+// position = mDestination + offset, mZoomAltitude = |mDestination|); in the galactic core (0x105E270)
+// it keeps the offset at (0, 0, 30 * min(1, r / 400)) m and pulls the next position to its own orbit
+// radius and turns it (up to the whole difference in one frame); on a planet (0x1060E00) a ship at its
+// destination whose mZoomAltitude (+0x768) differs from |mDestination| leaves it and flies. So: the
+// ship is marked pinned for this frame (squadron's hook of the controller update leaves a pinned ship
+// where we put it, no velocity), and mNextPosition = mDestination = p minus the ship's own offset with
+// the zoom altitude their length, as SnapToDestination leaves it (what the controller would draw if
+// it ran). Off: the remote position itself, the controller runs (the partner drawn 20.7-30 m above or
+// off its orbit point in the core, BUG-0378).
+bool puppet_pin_fix = true;
+COOP_FIX("space.puppet_pin", "BUG-0378", puppet_pin_fix,
+         "space: a partner's ship stays where the mod puts it (its controller update skipped, pinned minus its offset): drawn where it is (core: 20-30 m off)");
+// the ships pinned since the last Present (squadron's controller hook leaves them where we put them)
+static std::unordered_set<void*> g_pinned;
+void space_pin_frame() { g_pinned.clear(); }
+bool space_pinned(void* u) { return !g_pinned.empty() && g_pinned.count(u); }
+
+void space_pin(void* u, const float pp[3], bool fix)
+{
+    skg::Vector3 p{pp[0], pp[1], pp[2]}, n = p;
+    if (fix) {
+        g_pinned.insert(u);
+        const auto& o = skg::field<skg::Vector3>(u, 0x740); // mOffsetFromPosition
+        if (std::isfinite(o.x) && std::isfinite(o.y) && std::isfinite(o.z))
+            n = {p.x - o.x, p.y - o.y, p.z - o.z};
+        skg::field<float>(u, 0x768) = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z); // mZoomAltitude
+    }
+    skg::field<skg::Vector3>(u, 0x718) = n; // mNextPosition
+    skg::field<skg::Vector3>(u, 0x750) = n; // mDestination
 }
 
 static void space_drive(void* u, const net::PlayerState& s, drive::State&, double)
@@ -183,10 +322,10 @@ static void space_drive(void* u, const net::PlayerState& s, drive::State&, doubl
     skg::vcall<void>((uint8_t*)u + kUfoLoco, 0x3C / 4, &q); // SetOrientation
     skg::field<skg::Vector3>(u, kUfoLoco + 0x1C8) = {s.vel.x, s.vel.y, s.vel.z};
     // the UFO update steers towards mNextPosition/mDestination: pin them to the remote state
-    skg::field<skg::Vector3>(u, 0x718) = p;    // mNextPosition
+    const float pa[3] = {p.x, p.y, p.z};
+    space_pin(u, pa, puppet_pin_fix);          // mNextPosition, mDestination (BUG-0378)
     skg::field<skg::Vector3>(u, 0x724) = {s.vel.x, s.vel.y, s.vel.z}; // mNextVelocity
     skg::field<skg::Quaternion>(u, 0x730) = q; // mNextOrientation
-    skg::field<skg::Vector3>(u, 0x750) = p;    // mDestination
     skg::field<uint8_t>(u, 0x74C) = 1;         // mbAtDestination
     float mh = skg::field<float>(u, kUfoCombat + 0x2C);
     if (mh > 0)
@@ -197,6 +336,7 @@ static void space_drive(void* u, const net::PlayerState& s, drive::State&, doubl
 // system destroys every NPC UFO, the puppets too) is only forgotten
 static void space_despawn(void* u)
 {
+    g_ufo_ident.erase(u);
     if (game::ufo_listed(u)) {
         game::destroy_creature(u);
     } else {
@@ -208,12 +348,122 @@ static void space_despawn(void* u)
 // the game removes NPC UFOs on its own: driving a freed puppet crashed the host (play_space.py,
 // 2026-10-23: AV in space_drive, vtable overwritten)
 // (a listed pointer may be a new UFO at a reused address: it must still be a Defender, type +0x714)
+// BUG-0111: and it must be the UFO space_spawn made: a game Defender (an empire's or a colony's)
+// allocated at the freed puppet's address is not ours (model key, invincible, no owner mission)
+bool space_puppet_ok(void* u)
+{
+    if (!u || !game::ufo_listed(u) || !game::object_alive(u) || skg::field<int>(u, 0x714) != 6)
+        return false;
+    if (!ufo_ident_fix)
+        return true;
+    auto it = g_ufo_ident.find(u);
+    if (it == g_ufo_ident.end())
+        return false;
+    const skg::ResourceKey& k = skg::field<skg::ResourceKey>(u, 0x780);
+    if (puppet_id_fix) // BUG-0218: the same object (serial), not taken by a game mission
+        return game::object_serial(u) == it->second.serial && !memcmp(&k, &it->second.key, sizeof k) &&
+               !owner_mission(u);
+    return !memcmp(&k, &it->second.key, sizeof k) && skg::field<uint8_t>(u, kUfoCombat + 0x80) == 1 &&
+           !skg::field<void*>(u, 0x800);
+}
+
 static bool space_alive(void* u)
 {
-    if (game::ufo_listed(u) && game::object_alive(u) && skg::field<int>(u, 0x714) == 6)
+    if (space_puppet_ok(u)) {
+        if (puppet_id_fix && ufo_ident_fix && skg::field<uint8_t>(u, kUfoCombat + 0x80) != 1) {
+            // our own puppet lost its invincibility (the game? only the test command is known to do
+            // it): give it back, count it, log the first one
+            skg::field<uint8_t>(u, kUfoCombat + 0x80) = 1;
+            if (!g_puppet_flag_restored++)
+                g_host_for_modes->log(g_mod_for_modes, SK_WARN, "space: a puppet's invincible byte was cleared: restored (mode %08X)",
+                       game::mode_id());
+        }
         return true;
+    }
+    auto it = ufo_ident_fix ? g_ufo_ident.find(u) : g_ufo_ident.end();
+    if (it != g_ufo_ident.end()) {
+        uint32_t serial = it->second.serial;
+        g_ufo_ident.erase(it);
+        if (puppet_id_fix && game::ufo_listed(u) && game::object_alive(u) && game::object_serial(u) == serial &&
+            owner_mission(u)) {
+            // our ship, held by a game mission: never freed while the mission points to it; retired
+            g_retired.push_back({u, serial});
+            g_puppet_retired++;
+            g_host_for_modes->log(g_mod_for_modes, SK_INFO, "space: a game mission took a puppet: retired until the mission lets go");
+        }
+        game::puppet_unregister(u); // (a different serial: another object at the address, forgotten, never destroyed)
+    }
     game::g_ufos_freed++;
     return false;
+}
+
+bool space_retired(void* u)
+{
+    for (auto& r : g_retired)
+        if (r.u == u)
+            return true;
+    return false;
+}
+
+void space_retired_tick()
+{
+    for (size_t i = 0; i < g_retired.size();) {
+        void* u = g_retired[i].u;
+        if (!game::ufo_listed(u) || !game::object_alive(u) || game::object_serial(u) != g_retired[i].serial) {
+            g_retired_gone++; // the game freed it (another object may be at the address now)
+            g_fake_mission.erase(u);
+            g_retired.erase(g_retired.begin() + i);
+            continue;
+        }
+        if (!owner_mission(u)) { // the mission let go: ours to destroy (the deferred path)
+            g_retired_destroyed++;
+            g_retired.erase(g_retired.begin() + i);
+            game::destroy_creature(u);
+            continue;
+        }
+        // held still where it is (its own controller would fly it)
+        skg::Vector3 p = skg::field<skg::Vector3>(u, kUfoLoco + 0x04);
+        skg::field<skg::Vector3>(u, 0x718) = p;
+        skg::field<skg::Vector3>(u, 0x724) = {0, 0, 0};
+        skg::field<skg::Vector3>(u, kUfoLoco + 0x1C8) = {0, 0, 0};
+        skg::field<skg::Vector3>(u, 0x750) = p;
+        i++;
+    }
+}
+
+void space_retired_clear(const char* why)
+{
+    if (!g_retired.empty()) {
+        g_retired_left += (uint32_t)g_retired.size();
+        if (g_host_for_modes)
+            g_host_for_modes->log(g_mod_for_modes, SK_WARN, "space: %u retired puppet(s) still held by a mission at %s: left to the game",
+                   (unsigned)g_retired.size(), why);
+    }
+    g_retired.clear();
+    g_fake_mission.clear();
+}
+
+std::string space_ident_test(void* u, const std::string& what, bool on)
+{
+    auto it = g_ufo_ident.find(u);
+    if (what == "impostor_id") { // another object at the address: the recorded serial no longer matches
+        if (it == g_ufo_ident.end())
+            return "not a puppet";
+        it->second.serial ^= 0x80000000u;
+        return "puppet serial changed";
+    }
+    if (what == "impostor_mission") { // a game mission holds the ship (+0x800 seen as set), or lets go
+        if (on)
+            g_fake_mission.insert(u);
+        else
+            g_fake_mission.erase(u);
+        return on ? "mission set" : "mission cleared";
+    }
+    char b[160];
+    snprintf(b, sizeof b, "flag_restored=%u retired=%u (now %u) retired_destroyed=%u retired_gone=%u retired_left=%u",
+             g_puppet_flag_restored, g_puppet_retired, (unsigned)g_retired.size(), g_retired_destroyed, g_retired_gone,
+             g_retired_left);
+    return b;
 }
 
 static float space_tag(void*) { return 4.f; }
@@ -234,6 +484,110 @@ uint8_t* cell_game()
 // particle arrays of the cell soft bodies: positions at +4, velocities at +0x4654 = 4 + 1500*12
 constexpr uint32_t kCellParticles = 1500;
 
+bool cell_at_fix = true;
+COOP_FIX_UNSAFE("pool.cellat", "BUG-0083", cell_at_fix, "cell: modes::cell_at refuses the slot past the pool's used range");
+
+// BUG-0271: on the way Cell -> Creature the game frees the cell pool's memory (3.7 MB, its own
+// mapping) while mode_id() still reads Cell, and later points +0x1C at junk (docs/re/cell.md 13).
+// Our console commands and the keepalive's network update also run between frames, from the game's
+// message pump inside that teardown (the host's coop.status read a freed puppet there). So a cell
+// is read only from pool memory that is still mapped: VirtualQuery over the whole block, checked
+// once per frame scope of ours (no game code runs inside it) and on every call outside one. The
+// local cell and the puppets go through the same pool check (cell_usable) before cell_fill reads
+// them; coop.cpp's local_now() / puppet_now() do the same for every mode before a command or a
+// network callback reads the entities our last frame found. `coop.fix core.stale_local off`: the old
+// reads (tests).
+bool stale_fix = true;
+COOP_FIX("core.stale_local", "BUG-0271", stale_fix, "core: no cell, local entity or puppet read between frames once the game freed or changed the stage (Cell -> Creature)");
+static int g_scope_depth;
+static uint8_t* g_scope_data;   // the block found mapped in this scope
+static uint32_t g_scope_bytes;
+static CellGoneStats g_gone;
+static uint8_t* g_gone_logged; // the freed block already logged
+
+void cell_scope(bool enter)
+{
+    if (enter) {
+        if (g_scope_depth++ == 0)
+            g_scope_data = nullptr; // the game ran since the last scope: check again
+    } else if (g_scope_depth > 0) {
+        g_scope_depth--;
+    }
+}
+
+// [p, p + n) is committed, readable memory (one or more regions)
+static bool mapped(const uint8_t* p, size_t n)
+{
+    const uint8_t* end = p + n;
+    while (p < end) {
+        MEMORY_BASIC_INFORMATION mi;
+        if (!VirtualQuery(p, &mi, sizeof mi) || mi.State != MEM_COMMIT || (mi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) ||
+            !(mi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ |
+                            PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
+            return false;
+        p = (const uint8_t*)mi.BaseAddress + mi.RegionSize;
+    }
+    return true;
+}
+
+// the cell game's pool block is the game's live memory (with the fix off: always yes)
+static bool pool_mapped(uint8_t* data, uint32_t bytes)
+{
+    if (!stale_fix)
+        return true;
+    if (g_scope_depth > 0 && data == g_scope_data && bytes == g_scope_bytes)
+        return true;
+    g_gone.checks++;
+    if (g_scope_depth == 0)
+        g_gone.outside++;
+    bool ok = mapped(data, bytes);
+    if (ok && g_scope_depth > 0) {
+        g_scope_data = data;
+        g_scope_bytes = bytes;
+    }
+    if (!ok) {
+        g_gone.pool_gone++;
+        if (data != g_gone_logged) {
+            g_gone_logged = data;
+            g_host_for_modes->log(g_mod_for_modes, SK_WARN,
+                                  "cell: the pool block %p (%u bytes) is no longer mapped (mode 0x%08X, %s a frame): no cell read from it",
+                                  data, bytes, game::mode_id(), g_scope_depth ? "inside" : "outside");
+        }
+    }
+    return ok;
+}
+
+// once per frame (diagnostic, whatever the switch): in the Cell stage, is the pool block still
+// mapped? Logs when it goes away while the mode still reads Cell and how long that lasts.
+void cell_probe_tick()
+{
+    static bool gone = false;
+    static double gone_at = 0;
+    uint8_t* g = game::mode_id() == kCell ? cell_game() : nullptr;
+    if (!g) {
+        if (gone)
+            g_host_for_modes->log(g_mod_for_modes, SK_INFO, "cell: the mode left Cell %.3f s after the pool block was freed (%u frames)",
+                                  g_host_for_modes->time_seconds() - gone_at, g_gone.frames_gone);
+        gone = false;
+        return;
+    }
+    uint8_t* data = *(uint8_t**)(g + 0x1C);
+    uint32_t cap = *(uint32_t*)(g + 0x1C + 0x18);
+    bool ok = data && mapped(data, (cap && cap <= 4096 ? cap : 4096) * 0x398);
+    if (!ok) {
+        g_gone.frames_gone++;
+        if (!gone) {
+            gone = true;
+            gone_at = g_host_for_modes->time_seconds();
+            g_gone.windows++;
+            g_host_for_modes->log(g_mod_for_modes, SK_WARN, "cell: frame with the pool block %p unmapped while the mode reads Cell",
+                                  data);
+        }
+    } else if (gone) {
+        gone = false; // a new block (the pool was rebuilt)
+    }
+}
+
 uint8_t* cell_at(uint32_t idx)
 {
     uint8_t* g = cell_game();
@@ -242,7 +596,12 @@ uint8_t* cell_at(uint32_t idx)
         return nullptr;
     uint8_t* data = *(uint8_t**)(g + 0x1C);
     uint32_t size = *(uint32_t*)(g + 0x1C + 0x14);
-    if (!data || size != 0x398 || slot > *(uint32_t*)(g + 0x1C + 0x10))
+    uint32_t cap = *(uint32_t*)(g + 0x1C + 0x18);
+    // live slots are [0, highWater) inside [0, capacity) (docs/re/cell.md 0, BUG-0083)
+    if (!data || size != 0x398 ||
+        !cell_logic::slot_in_pool(slot, *(uint32_t*)(g + 0x1C + 0x10), cap, cell_at_fix))
+        return nullptr;
+    if (!pool_mapped(data, (cap && cap <= 4096 ? cap : 4096) * size))
         return nullptr;
     uint8_t* c = data + (size_t)slot * size;
     return *(uint32_t*)c == idx ? c : nullptr;
@@ -293,9 +652,24 @@ typedef void(__cdecl* SimUpdate_t)(float);
 static SimUpdate_t o_SimUpdate;
 static uint8_t* cell_at_checked(void* cp);
 
+// BUG-0308: a rejoined guest found a corrupt heap when the Cell pool was freed for the world reload
+// (lab 20261030-104149 campaign_short#3). Between the posted quit and the mode change (~0.8 s) the
+// game tears the stage down while mode_id() still reads Cell, and our code went on writing the pool:
+// the guest's state handler created and moved mirrors, the guest / host ticks and the puppet poses
+// wrote cells. With cell.leave_guard none of that runs while game::leaving_stage() (not shown to be
+// the corruption: a guard, like BUG-0292's).
+static bool g_fix_leave_guard = true;
+COOP_FIX("cell.leave_guard", "BUG-0308", g_fix_leave_guard, "cell: no mirror creation and no pool write of ours while the stage is being left (quit posted for a world load or the menu)");
+bool cell_leaving()
+{
+    return g_fix_leave_guard && game::leaving_stage();
+}
+
 static void __cdecl h_SimUpdate(float dt)
 {
     o_SimUpdate(dt);
+    if (cell_leaving())
+        return;
     for (auto it = g_cell_pose.begin(); it != g_cell_pose.end();) {
         uint8_t* c = cell_at_checked(it->first);
         if (!c) {
@@ -315,34 +689,10 @@ static void* cell_local()
     return g ? cell_at(*(uint32_t*)(g + 0x411C)) : nullptr;
 }
 
-void mat_to_quat(const float* m, net::Quat& q) // row-major 3x3
+void mat_to_quat(const float* m, net::Quat& q) // row-major 3x3; unit length, identity for a zero matrix (BUG-0160)
 {
-    float tr = m[0] + m[4] + m[8];
-    if (tr > 0) {
-        float s = std::sqrt(tr + 1.f) * 2;
-        q.w = 0.25f * s;
-        q.x = (m[7] - m[5]) / s;
-        q.y = (m[2] - m[6]) / s;
-        q.z = (m[3] - m[1]) / s;
-    } else if (m[0] > m[4] && m[0] > m[8]) {
-        float s = std::sqrt(1.f + m[0] - m[4] - m[8]) * 2;
-        q.w = (m[7] - m[5]) / s;
-        q.x = 0.25f * s;
-        q.y = (m[1] + m[3]) / s;
-        q.z = (m[2] + m[6]) / s;
-    } else if (m[4] > m[8]) {
-        float s = std::sqrt(1.f + m[4] - m[0] - m[8]) * 2;
-        q.w = (m[2] - m[6]) / s;
-        q.x = (m[1] + m[3]) / s;
-        q.y = 0.25f * s;
-        q.z = (m[5] + m[7]) / s;
-    } else {
-        float s = std::sqrt(1.f + m[8] - m[0] - m[4]) * 2;
-        q.w = (m[3] - m[1]) / s;
-        q.x = (m[2] + m[6]) / s;
-        q.y = (m[5] + m[7]) / s;
-        q.z = 0.25f * s;
-    }
+    cell_logic::Quat r = cell_logic::mat_to_quat(m);
+    q.x = r.x, q.y = r.y, q.z = r.z, q.w = r.w;
 }
 
 void quat_to_mat(const net::Quat& q, float* m)
@@ -354,9 +704,26 @@ void quat_to_mat(const net::Quat& q, float* m)
     m[6] = 2 * (xz - wy);     m[7] = 2 * (yz + wx);     m[8] = 1 - 2 * (xx + yy);
 }
 
+// BUG-0271: the local cell or a puppet is still a live cell of a mapped pool (the caller may hold it
+// from an earlier frame: g_local, a puppet, read by a command between frames)
+bool cell_usable(void* cp)
+{
+    if (!cp)
+        return false;
+    if (!stale_fix)
+        return true;
+    return cp == cell_local() || cell_at_checked(cp);
+}
+
+const CellGoneStats& cell_gone_stats() { return g_gone; }
+
 static void cell_fill(void* cp, net::PlayerState& st)
 {
     uint8_t* c = (uint8_t*)cp;
+    if (!cell_usable(cp)) { // BUG-0271: nothing is read, the state says "not in the world"
+        g_gone.refused++;
+        return;
+    }
     auto* pos = (float*)(c + 0x4C);
     st.flags |= net::PF_IN_WORLD;
     st.pos = {pos[0], pos[1], pos[2]};
@@ -391,7 +758,29 @@ static skg::ResourceKey* __cdecl h_GetModelKey(skg::ResourceKey* ret, void* res)
     return o_GetModelKey(ret, res);
 }
 
-bool cell_is_puppet(void* c) { return g_cell_ids.count(c) != 0; }
+// BUG-0342: a puppet is the cell at its address AND its pool index. Our own cell's level rebuild
+// (RebuildLevel 0xE7FD00, the own cell applied at a load) frees every cell and makes the avatar
+// first, often at the address the partner's puppet had: by the address alone the new avatar was
+// "a puppet", so h_Pair dropped every collision pair of it (no eating, biting or being hit for
+// minutes: the players' "ghost"). `coop.fix cell.puppet_index off`: the address only (0.7.3.1).
+static bool g_fix_puppet_index = true;
+COOP_FIX("cell.puppet_index", "BUG-0342", g_fix_puppet_index, "cell: a puppet is recognised by its address and its pool index (a new avatar at an old puppet's address was taken for the puppet: the ghost)");
+bool cell_is_puppet(void* c)
+{
+    auto it = g_cell_ids.find(c);
+    if (it == g_cell_ids.end())
+        return false;
+    return !g_fix_puppet_index || cell_at(it->second) == (uint8_t*)c;
+}
+
+// The Cell stage was left (an editor, the Creature stage, a load): the pool the puppets lived in is
+// rebuilt or gone. Stale entries could match a new cell at the same address and index in the next
+// pool (h_SimUpdate would then pose an NPC as the partner); coop.cpp forgets the puppets themselves.
+void cell_forget()
+{
+    g_cell_ids.clear();
+    g_cell_pose.clear();
+}
 
 void cell_destroy(uint32_t idx)
 {
@@ -421,12 +810,40 @@ static void ensure_model_hook()
     }
 }
 
+// BUG-0348: the cell broadphase (cCellGame+0x4104, docs/re/cell.md#cell-sap-pending) queues every
+// new cell's endpoints in its pending arrays (AddObject 0xBBB290, no bound check; 2 x capacity
+// entries each) and empties them only in its sweep, inside SimUpdate. A game that does not run
+// SimUpdate (the pause menu) while we create cells (a guest's mirrors churning) wrote past the
+// arrays: heap corruption (found when the Cell pools are freed) and a broken endpoint order (the
+// ~1024 objects left open of BUG-0337). We create no cell while the pending entries are near full.
+// Old (`coop.fix cell.sap_pending off`): no bound.
+static bool g_fix_sap_pending = true;
+COOP_FIX_UNSAFE("cell.sap_pending", "BUG-0348", g_fix_sap_pending, "cell: no cell of ours is created while the broadphase's pending list (emptied only by the running simulation) is near full (it overflowed into the heap while a guest sat in the pause menu)");
+static uint32_t g_sap_held;
+
+uint32_t cell_sap_held() { return g_sap_held; }
+
+bool cell_sap_room()
+{
+    uint8_t* g = cell_game();
+    uint8_t* sap = g ? *(uint8_t**)(g + 0x4104) : nullptr;
+    if (!g_fix_sap_pending || !sap)
+        return true;
+    int cap = *(int*)(sap + 4), pend = *(int*)(sap + 0x2C);
+    // 2 x cap entries per axis; each new cell takes 2; keep room for the game's own (a level change
+    // or loot made by one frame of the game before its sweep)
+    if (cap > 0 && pend + 2 + 512 <= 2 * cap)
+        return true;
+    g_sap_held++;
+    return false;
+}
+
 uint32_t cell_create(const net::Vec3& pos, void* res_ref, int level, const uint32_t key[3], const net::Quat* rot)
 {
     ensure_model_hook();
     uint8_t* g = cell_game();
     uintptr_t create = S("Simulator::Cell::CreateCellObject");
-    if (!g || !res_ref || !create)
+    if (!g || !res_ref || !create || !cell_sap_room())
         return 0;
     skg::Vector3 p{pos.x, pos.y, pos.z};
     skg::Quaternion q{0, 0, 0, 1};
@@ -447,7 +864,7 @@ static void* cell_spawn(const net::PlayerState& s, void* local)
     uint8_t* g = cell_game();
     uint8_t* me = (uint8_t*)local;
     uintptr_t create = S("Simulator::Cell::CreateCellObject");
-    if (!g || !me || !create)
+    if (!g || !me || !create || !cell_sap_room())
         return nullptr;
     skg::Vector3 p{s.pos.x, s.pos.y, s.pos.z};
     void* query = *(void**)(g + 0x40FC);
@@ -472,6 +889,9 @@ static void* cell_spawn(const net::PlayerState& s, void* local)
     uint8_t* c = cell_at(idx);
     if (!c)
         return nullptr;
+    if (g_fix_puppet_index) // BUG-0342: entries of puppets that are gone (a level rebuild freed them)
+        for (auto it = g_cell_ids.begin(); it != g_cell_ids.end();)
+            it = cell_at(it->second) == (uint8_t*)it->first ? std::next(it) : g_cell_ids.erase(it);
     g_cell_ids[c] = idx;
     *(bool*)(c + 0x111) = true; // invulnerable: nobody eats a friend
     *(uint8_t*)(c + 0x354) = 1; // we own the lifetime: not removed outside the local active area
@@ -554,8 +974,24 @@ static float cell_tag(void* cp) { return *(float*)((uint8_t*)cp + 0x58) * 1.2f +
 // cities themselves already exist on every machine.
 struct Marker {
     net::Vec3 pos;
+    net::Vec3 still{};     // BUG-0380: where it last stood still (a move of 0.5 units starts a new one)
+    double moved_at = -1e9; // ... and when it left that point (H->time_seconds)
 };
+static void marker_moved(Marker* m)
+{
+    if (net::dist(m->pos, m->still) > 0.5f) {
+        m->still = m->pos;
+        m->moved_at = g_host_for_modes ? g_host_for_modes->time_seconds() : 0;
+    }
+}
 static Marker g_local_marker;
+static bool g_marker_pinned; // tests (coop.marker): the pointer stays where the test put it
+void test_pin_marker(bool pin, const net::Vec3& p)
+{
+    g_marker_pinned = pin;
+    if (pin)
+        g_local_marker.pos = p;
+}
 
 static void* noun_manager()
 {
@@ -589,8 +1025,22 @@ static bool rts_anchor(net::Vec3& p)
     return false;
 }
 
+// tests (BUG-0223): frames in which Tribe's / Civ's local entity is null, as when the anchor city
+// cannot be read for a moment
+static int g_test_null_frames;
+static bool g_test_null_now;
+void test_null_local(int frames) { g_test_null_frames = frames; }
+void test_tick()
+{
+    g_test_null_now = g_test_null_frames > 0;
+    if (g_test_null_now)
+        g_test_null_frames--;
+}
+
 static void* rts_local()
 {
+    if (g_test_null_now)
+        return nullptr;
     net::Vec3 a;
     return rts_anchor(a) ? &g_local_marker : nullptr;
 }
@@ -636,8 +1086,9 @@ static void rts_fill(void* m, net::PlayerState& st)
 {
     Marker* mk = (Marker*)m;
     net::Vec3 p;
-    if (mk == &g_local_marker && mouse_on_planet(p))
+    if (mk == &g_local_marker && !g_marker_pinned && mouse_on_planet(p))
         mk->pos = p;
+    marker_moved(mk);
     st.flags |= net::PF_IN_WORLD;
     st.pos = mk->pos;
 }
@@ -649,9 +1100,27 @@ static void* rts_spawn(const net::PlayerState& s, void*)
     return m;
 }
 
-static void rts_drive(void* m, const net::PlayerState& s, drive::State&, double) { ((Marker*)m)->pos = s.pos; }
+static void rts_drive(void* m, const net::PlayerState& s, drive::State&, double)
+{
+    ((Marker*)m)->pos = s.pos;
+    marker_moved((Marker*)m);
+}
 static void rts_despawn(void* m) { delete (Marker*)m; }
 static float rts_tag(void*) { return 0.5f; }
+
+bool rts_marker_moving(const Adapter* a, void* e, double within)
+{
+    if (!a || !e || a->fill != rts_fill || !g_host_for_modes)
+        return false;
+    return g_host_for_modes->time_seconds() - ((Marker*)e)->moved_at < within;
+}
+
+double rts_marker_still(const Adapter* a, void* e)
+{
+    if (!a || !e || a->fill != rts_fill || !g_host_for_modes)
+        return -1;
+    return g_host_for_modes->time_seconds() - ((Marker*)e)->moved_at;
+}
 
 static const Adapter kAdapters[] = {
     {"Tribe", kTribe, nullptr, false, rts_local, rts_fill, rts_spawn, rts_drive, rts_despawn, rts_tag},
@@ -696,19 +1165,56 @@ const char* mode_name(uint32_t m)
     }
 }
 
-std::string current_world_name()
+// BUG-0258: after the live Creature -> Tribe change the game's name reads "snapshot.spo" until the
+// next save; the planet before it is still the one played (world_name.h)
+static bool g_snapshot_name_fix = true;
+COOP_FIX("world.snapshot_name", "BUG-0258", g_snapshot_name_fix, "world: a host whose save name reads snapshot.spo after the Tribe intro keeps its planet's place");
+static std::mutex g_world_name_mx;
+static world_name::State g_world_name;
+
+std::string raw_world_name()
 {
     uintptr_t a = g_host_for_modes ? g_host_for_modes->sym("SporeCoop::CurrentGameName") : 0;
     if (!a)
         return {};
     const char16_t* b = skg::field<const char16_t*>((void*)a, 0);
     const char16_t* e = skg::field<const char16_t*>((void*)a, 4);
-    std::string out;
     if (!b || e < b || e - b > 260 || !skg::readable(b, (e - b) * 2))
         return {};
-    for (; b < e; b++)
-        out += *b < 128 ? (char)*b : '_';
+    // UTF-8, the way world.cpp names the files it sends: a player may type any name for a new planet
+    // ("Земля"), and the save file has that name. Non-ASCII letters used to become '_', so the host did
+    // not find the file of the planet it played and sent another one (docs/07-modes.md 7.2).
+    int n = WideCharToMultiByte(CP_UTF8, 0, (const wchar_t*)b, (int)(e - b), nullptr, 0, nullptr, nullptr);
+    std::string out(n > 0 ? n : 0, 0);
+    if (n > 0)
+        WideCharToMultiByte(CP_UTF8, 0, (const wchar_t*)b, (int)(e - b), out.data(), n, nullptr, nullptr);
     return out;
+}
+
+std::string current_world_name()
+{
+    std::string raw = raw_world_name();
+    std::lock_guard<std::mutex> lk(g_world_name_mx);
+    return world_name::effective(g_world_name, raw, g_snapshot_name_fix);
+}
+
+// once per frame: the memory follows the game; every change of the game's own name is logged
+// (BUG-0258: when "snapshot.spo" comes and goes)
+void world_name_tick()
+{
+    static std::string seen;
+    std::string raw = raw_world_name();
+    std::string eff;
+    {
+        std::lock_guard<std::mutex> lk(g_world_name_mx);
+        eff = world_name::effective(g_world_name, raw, g_snapshot_name_fix);
+    }
+    if (raw != seen) {
+        if (g_host_for_modes && g_mod_for_modes)
+            g_host_for_modes->log(g_mod_for_modes, SK_INFO, "world: the game's save name is now '%s' (mode %08X; the place uses '%s')",
+                                  raw.c_str(), game::mode_id(), eff.c_str());
+        seen = raw;
+    }
 }
 
 uint32_t current_place(const Adapter* a)

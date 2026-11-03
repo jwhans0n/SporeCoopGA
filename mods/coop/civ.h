@@ -24,6 +24,7 @@ struct Ctx {
     net::Session* sess = nullptr;
     std::function<void(const std::string&)> feed;
     std::function<void(const std::string&)> notice; // shown to every player
+    std::function<bool()> host_away; // guest: the host left the world (main menu): we play on locally
     std::function<uint8_t(uint8_t player)> role_of;  // 0 none, 1 military, 2 economic, 3 religious
     // host: a vote of all players; `action` runs when it passes (false: another vote is running)
     std::function<bool(const std::string& text, const std::string& done, std::function<void()> action)> vote;
@@ -39,6 +40,12 @@ bool init(const SkHost* host, SkMod* mod, Ctx ctx);
 void tick(double now);
 void on_message(uint8_t type, uint8_t from, net::Reader& r);
 void on_session_end();
+void on_world_change(); // a load: the tables of game pointers are cleared (BUG-0059)
+// BUG-0223: once per frame at the top of on_frame (after game::stage_epoch_tick, before messages):
+// calls on_world_change when the Civ world changed; with civ.world_epoch off it does nothing and
+// coop.cpp's avatar_change_check keeps the old trigger
+void world_check();
+bool world_epoch_fix();
 std::string status();
 std::vector<syncdbg::Entry> sync_entries(); // coop.sync (tests)
 std::string list();

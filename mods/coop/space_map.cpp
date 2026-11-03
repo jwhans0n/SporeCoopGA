@@ -2,6 +2,8 @@
 // and the partners and their colonies on the galaxy map. docs/re/space.md 13.
 #include "space_map.h"
 
+#include "net/utf8.h"
+
 #include <windows.h>
 
 #include <algorithm>
@@ -15,9 +17,12 @@
 
 #include "game.h"
 #include "modes.h"
+#include "mouse.h"
 #include "space_ext.h"
 #include "spacecoop.h"
 #include "sporekit_game.hpp"
+#include "cell_logic.h"
+#include "fixes.h"
 
 using skg::cdecl_call;
 using skg::thiscall;
@@ -379,6 +384,8 @@ static void on_roster(uint8_t origin, net::Reader& rd)
         pd.r.id = origin;
         pd.r.version = version;
     }
+    if (pd.got.count(part))
+        return; // this part again: its colonies are in already
     if (part == 0)
         get_head(rd, pd.r);
     uint8_t n = rd.u8();
@@ -597,13 +604,7 @@ static uint32_t nearest_star(const net::Vec3& at, float max_d = 3.f)
 }
 
 // UTF-8 code points * 9 px (Arial 18 bold, like coop.cpp's text_width)
-static int text_w(const std::string& s)
-{
-    int n = 0;
-    for (unsigned char c : s)
-        n += (c & 0xC0) != 0x80;
-    return n * 9;
-}
+static int text_w(const std::string& s) { return utf8::overlay_width(s); }
 
 static void text(int x, int y, uint32_t argb, const std::string& s)
 {
@@ -729,11 +730,10 @@ static void draw_map()
         }
         float cx = sw / 2.f, cy = sh / 2.f;
         float dx = front ? sc[0] - cx : 0.f, dy = front ? sc[1] - cy : 1.f;
-        float k = std::min(std::fabs(dx) > 1 ? (cx - 90) / std::fabs(dx) : 1e9f,
-                           std::fabs(dy) > 0.5f ? (cy - 60) / std::fabs(dy) : 1e9f);
-        if (!front)
-            k = cy - 60;
-        int ex = (int)(cx + dx * k), ey = (int)(cy + dy * k);
+        float fx, fy;
+        if (!cell_logic::edge_point(cx, cy, dx, dy, 90, 60, 1, 0.5f, fx, fy)) // a NaN position (BUG-0160)
+            continue;
+        int ex = (int)fx, ey = (int)fy;
         const char* arrow = std::fabs(dx) > std::fabs(dy) ? (dx > 0 ? "►" : "◄") : (dy > 0 ? "▼" : "▲");
         std::string s = std::string(arrow) + " " + t;
         int tw = text_w(s);
@@ -793,6 +793,9 @@ static std::string fly_to(uint32_t star, bool pay)
     return "";
 }
 
+static bool g_teleport_fix = true;
+COOP_FIX("map.teleport", "BUG-0063", g_teleport_fix, "space: flying to a partner in the galaxy view is refused, costs nothing");
+
 // to a partner: its star system (the 0.6 jump), or, while it flies in the galaxy view, the star
 // next to its ship (SpaceTeleportTo: instant and free in the galaxy view, docs/re/space.md 7.3)
 static std::string go_to_partner(uint8_t id)
@@ -810,6 +813,14 @@ static std::string go_to_partner(uint8_t id)
     if (!s)
         return "no star near the partner";
     if (context() == 2 && a_Teleport) {
+        // BUG-0063: through spacecoop (refused while disabled, the energy put back);
+        // `coop.space map teleportfix 0`: the old direct call (tests)
+        if (g_teleport_fix) {
+            std::string e = spacecoop::teleport_in_galaxy(s);
+            if (e.empty())
+                g_trips++;
+            return e;
+        }
         void* r = star_record(s);
         if (!r)
             return "no star record";
@@ -829,23 +840,43 @@ static void click_task(void* p)
     delete t;
 }
 
-// a left click on a tag (the virtual cursor of the tests too: SporeKit hooks GetCursorPos and
-// GetAsyncKeyState)
+// a primary click on a tag (the virtual cursor of the tests too: input.click posts the window's
+// WM_LBUTTONDOWN). BUG-0090 / BUG-0145: the click comes from the game window's own messages
+// (mouse.h), so clicks in other windows over the game and the secondary button of a swapped mouse
+// are not taken. `coop.space map clickfix 0` (mouse::g_fix): the old polling of the physical left button (tests).
+static uint32_t g_click_seen;
 static void click_tick()
 {
-    bool down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-    bool edge = down && !g_lmb;
-    g_lmb = down;
-    if (!edge || g_tags.empty())
-        return;
     HWND w = (HWND)H->game_window();
+    mouse::install(w);
+    int x = 0, y = 0;
     POINT pt;
     RECT rc;
-    if (!w || !GetCursorPos(&pt) || !ScreenToClient(w, &pt) || !GetClientRect(w, &rc) || rc.right <= 0 || rc.bottom <= 0)
+    if (mouse::g_fix) {
+        uint32_t n = mouse::clicks();
+        bool edge = n != g_click_seen;
+        g_click_seen = n;
+        g_lmb = false;
+        if (!edge || g_tags.empty() || !w)
+            return;
+        mouse::last_click(x, y);
+        pt = {x, y};
+    } else {
+        bool down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+        bool edge = down && !g_lmb;
+        g_lmb = down;
+        g_click_seen = mouse::clicks();
+        if (!edge || g_tags.empty())
+            return;
+        if (!w || !GetCursorPos(&pt) || !ScreenToClient(w, &pt))
+            return;
+    }
+    if (!GetClientRect(w, &rc) || rc.right <= 0 || rc.bottom <= 0)
         return;
     int sw = 0, sh = 0;
     H->screen_size(&sw, &sh);
-    int x = sw > 0 ? pt.x * sw / rc.right : pt.x, y = sh > 0 ? pt.y * sh / rc.bottom : pt.y;
+    x = sw > 0 ? pt.x * sw / rc.right : pt.x;
+    y = sh > 0 ? pt.y * sh / rc.bottom : pt.y;
     // partners' tags are on top: the last drawn wins
     for (auto it = g_tags.rbegin(); it != g_tags.rend(); ++it)
         if (x >= it->x0 && x <= it->x1 && y >= it->y0 && y <= it->y1) {
@@ -1036,6 +1067,21 @@ static std::string debug(const std::vector<std::string>& a)
     if (a[0] == "fly" && a.size() > 1) { // tests: the colony trip (cost) to a star; "free": no cost
         std::string e = fly_to((uint32_t)strtoul(a[1].c_str(), nullptr, 0), !(a.size() > 2 && a[2] == "free"));
         return e.empty() ? "flying\n" : e + "\n";
+    }
+    if ((a[0] == "clickfix" || a[0] == "teleportfix") && a.size() > 1) { // BUG-0090/0145, BUG-0063 (tests)
+        bool& on = a[0] == "clickfix" ? mouse::g_fix : g_teleport_fix; // clickfix: the menu intro's click too
+        on = a[1] != "0";
+        return a[0] + " " + (on ? "1" : "0") + "\n";
+    }
+    if (a[0] == "postclick" && a.size() > 2) { // tests: only the window message of a primary click, no
+        // button state (a swapped mouse's primary button: the physical right one, WM_LBUTTONDOWN)
+        HWND w = (HWND)H->game_window();
+        if (!w)
+            return "no window\n";
+        LPARAM lp = MAKELPARAM(atoi(a[1].c_str()), atoi(a[2].c_str()));
+        PostMessageW(w, WM_LBUTTONDOWN, MK_LBUTTON, lp);
+        PostMessageW(w, WM_LBUTTONUP, 0, lp);
+        return "posted\n";
     }
     if (a[0] == "go" && a.size() > 1) { // tests: what a click on a partner's tag does
         std::string e = go_to_partner((uint8_t)atoi(a[1].c_str()));

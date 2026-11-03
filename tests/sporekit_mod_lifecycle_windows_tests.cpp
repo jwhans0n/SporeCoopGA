@@ -8,6 +8,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <thread>
+#include <array>
 
 static unsigned checks;
 #define CHECK(x) do { ++checks; if (!(x)) { std::printf("FAIL %d: %s\n", __LINE__, #x); std::exit(1); } } while (0)
@@ -16,12 +17,14 @@ const DWORD main_id = GetCurrentThreadId();
 bool presenting = false, dispatch_failure = false, copy_failure = false, load_failure = false;
 bool missing_export = false, refuse_main = false;
 unsigned loads = 0, unloads = 0, frees = 0;
+unsigned drop_scans=0,grace_calls=0;
+int hook_count=0;
 std::wstring bootstrap = L"alpha,beta";
 std::vector<std::string> events, logs;
 std::deque<std::function<void()>> tasks;
 std::mutex tasks_mu;
 std::function<void()> unload_callback, load_callback;
-struct Module { std::string name; bool loaded = true; };
+struct Module { alignas(IMAGE_NT_HEADERS) std::array<uint8_t,1024> image{};std::string name;bool loaded=true; };
 std::vector<std::unique_ptr<Module>> modules;
 
 void safe() { CHECK(GetCurrentThreadId() == main_id && !presenting); }
@@ -45,14 +48,20 @@ HMODULE WINAPI load_library(LPCWSTR path) {
     const std::wstring text(path); const auto start = text.find_last_of(L'\\') + 1, end = text.find(L".i", start);
     const auto name = text.substr(start, end - start);
     auto module = std::make_unique<Module>(); module->name.assign(name.begin(), name.end());
-    const auto result = reinterpret_cast<HMODULE>(module.get()); modules.push_back(std::move(module)); ++loads;
+    auto* dos=reinterpret_cast<IMAGE_DOS_HEADER*>(module->image.data());dos->e_magic=IMAGE_DOS_SIGNATURE;dos->e_lfanew=0x80;
+    auto* nt=reinterpret_cast<IMAGE_NT_HEADERS*>(module->image.data()+dos->e_lfanew);nt->Signature=IMAGE_NT_SIGNATURE;
+    nt->OptionalHeader.SizeOfImage=DWORD(module->image.size());
+    const auto result = reinterpret_cast<HMODULE>(module->image.data()); modules.push_back(std::move(module)); ++loads;
     return result;
 }
 FARPROC WINAPI get_proc(HMODULE, LPCSTR name) { safe(); CHECK(std::string(name) == "sporekit_mod_main"); return missing_export ? nullptr : std::bit_cast<FARPROC>(&mod_main); }
 BOOL WINAPI free_library(HMODULE handle) {
-    safe(); auto* module = reinterpret_cast<Module*>(handle); CHECK(module->loaded); module->loaded = false; ++frees;
-    events.emplace_back("free:" + module->name); return TRUE;
+    safe();for(auto& module:modules)if(module->image.data()==reinterpret_cast<uint8_t*>(handle)){
+        CHECK(module->loaded);module->loaded=false;++frees;events.emplace_back("free:"+module->name);return TRUE;
+    }
+    CHECK(false);return FALSE;
 }
+void WINAPI grace_sleep(DWORD ms){safe();CHECK(ms==50);++grace_calls;}
 DWORD WINAPI attributes(LPCWSTR path) { safe(); return std::wstring(path).find(L"missing") != std::wstring::npos ? INVALID_FILE_ATTRIBUTES : FILE_ATTRIBUTE_NORMAL; }
 HANDLE WINAPI find_first(LPCWSTR, LPWIN32_FIND_DATAW) { safe(); return INVALID_HANDLE_VALUE; }
 BOOL WINAPI find_next(HANDLE, LPWIN32_FIND_DATAW) { safe(); return FALSE; }
@@ -76,6 +85,7 @@ void run_tasks() {
 #define FindFirstFileW find_first
 #define FindNextFileW find_next
 #define FindClose find_close
+#define Sleep grace_sleep
 #ifdef SK_MODS_OLD_SOURCE
 #include SK_MODS_OLD_SOURCE
 #else
@@ -91,10 +101,12 @@ void run_tasks() {
 #undef FindFirstFileW
 #undef FindNextFileW
 #undef FindClose
+#undef Sleep
 
 namespace sk {
 SkMod g_kit_mod;
 SkHost g_host{};
+KitFix g_fix_hookkeep{"hookkeep","controlled hook-removal grace",1};
 DWORD main_thread_id() { return main_id; }
 bool in_frame() { CHECK(GetCurrentThreadId() == main_id); return presenting; }
 const std::wstring& mods_dirw() { static const std::wstring path = L"controlled\\mods"; return path; }
@@ -110,9 +122,16 @@ void logf(SkMod*, int, const char* format, ...) {
     char message[1024]; va_list args; va_start(args, format); vsnprintf(message, sizeof message, format, args); va_end(args);
     logs.emplace_back(message);
 }
-void hooks_remove_all(SkMod* mod) { safe(); events.emplace_back("hooks:" + mod->name); }
+int hooks_remove_all(SkMod* mod) { safe(); events.emplace_back("hooks:" + mod->name);return hook_count; }
 void unsubscribe_all(SkMod*) { safe(); }
 void diag_context_remove(SkMod*) { safe(); }
+void diag_headline(SkMod*,const char*){safe();}
+size_t drop_tasks_in(uintptr_t lo,uintptr_t hi){
+    safe();for(const auto& module:modules)if(uintptr_t(module->image.data())==lo){
+        CHECK(module->loaded&&hi==lo+module->image.size());++drop_scans;return 0;
+    }
+    CHECK(false);return 0;
+}
 void commands_remove_all(SkMod*) { safe(); }
 void ui_winprocs_disable_mod(SkMod*) { safe(); }
 }
@@ -121,7 +140,8 @@ void ui_winprocs_disable_mod(SkMod*) { safe(); }
 static void reset()
 {
     presenting = dispatch_failure = copy_failure = load_failure = missing_export = refuse_main = false;
-    loads = unloads = frees = 0; bootstrap = L"alpha,beta"; unload_callback = load_callback = {};
+    loads = unloads = frees = drop_scans = grace_calls = 0;hook_count=0;sk::g_fix_hookkeep.on=1;
+    bootstrap = L"alpha,beta"; unload_callback = load_callback = {};
     tasks.clear(); events.clear(); logs.clear(); modules.clear();
     sk::g_mods.clear(); sk::g_gen = 0; sk::g_lifecycle_queue.clear(); sk::g_request_id = 0;
     sk::g_lifecycle_busy = sk::g_lifecycle_scheduled = sk::g_lifecycle_stopping = false;
@@ -144,6 +164,11 @@ int main()
     return 0;
 #else
     CHECK(std::string(SK_VERSION) == "0.3.6"); CHECK(SK_ABI_VERSION == 1);
+    // Upstream unload reads a real fixture PE extent and retains hook grace.
+    reset();load_alpha();hook_count=1;
+    accepted(sk::mod_unload("alpha",status),status);run_tasks();CHECK(drop_scans==1&&grace_calls==1&&frees==1);
+    reset();load_alpha();hook_count=1;sk::g_fix_hookkeep.on=0;
+    accepted(sk::mod_unload("alpha",status),status);run_tasks();CHECK(drop_scans==1&&!grace_calls&&frees==1);
     // Outside-frame callers also queue, so SDK self-unload returns before cleanup.
     reset(); load_alpha(); bool returned = false;
     unload_callback = [&] { CHECK(returned); };

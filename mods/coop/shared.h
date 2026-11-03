@@ -13,10 +13,17 @@
 namespace shared {
 
 void init(const SkHost* host, SkMod* mod);
-void tick(net::Session& s, uint32_t mode, double now);
+// elsewhere: the guest plays another world of the host's stage (coop.cpp guest_elsewhere(),
+// BUG-0231): the totals are held (res.elsewhere), nothing is applied or sent
+void tick(net::Session& s, uint32_t mode, double now, bool elsewhere = false);
 void on_message(net::Session& s, uint8_t type, uint8_t from, net::Reader& r);
-void on_session_change(); // new session / player joined: resend totals
+void on_session_change(); // new session: resend totals
+void on_player_join(net::Role role); // a player joined: the host resends its totals (BUG-0220)
+void on_session_end();    // the sync state ends with the session (BUG-0049)
+void on_player_leave(uint8_t id);
+std::string fix(const std::string& name, int on); // coop.res fix reset|floor [0|1] (tests)
 std::string status();
+std::string brief(); // "food=12 money=300" of this mode (support trace)
 bool debug_add(const std::string& name, double v, std::string& err); // local change, as if earned
 
 } // namespace shared

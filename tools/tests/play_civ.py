@@ -432,7 +432,12 @@ class Bot(Player):
             self.g.bump('move_nosel')
             return 'nothing selected'
         # 30-70 m away from the group, along the ground (tangent), to a random side
-        mid = tuple(sum(my_v[i]['pos'][k] for i in sel) / len(sel) for k in range(3))
+        # (the box may select a vehicle bought after the state was read: use the known ones)
+        known = [i for i in sel if i in my_v]
+        if not known:
+            self.g.bump('move_nosel')
+            return 'nothing known selected'
+        mid = tuple(sum(my_v[i]['pos'][k] for i in known) / len(known) for k in range(3))
         up = norm(mid)
         a = self.rng.uniform(0, 2 * math.pi)
         t1 = norm(tuple(x - y for x, y in zip((1.0, 0.0, 0.0), tuple(up[0] * u for u in up))))
@@ -719,9 +724,21 @@ def audit(game, hc, gc, final=False):
         _, gv, _ = civ_state(gc)
         if set(hv) != set(gv):
             game.problem(f'vehicles differ: host only {sorted(set(hv) - set(gv))}, guest only {sorted(set(gv) - set(hv))}')
-    for i, v in hv.items():
-        if i in gv and gv[i]['owner'] != v['owner']:
-            game.problem(f'vehicle #{i}: owner {v["owner"]} on the host, {gv[i]["owner"]} on the guest')
+    # BUG-0206: a gift changes the owner on the host at once and reaches the guest with the next
+    # snapshot (0.1 s; while the guest's bot is in a city planner, only when it is back): an owner
+    # that differs is looked at again 1.5 s later, like the cities, and is a problem only then
+    differ = [i for i, v in hv.items() if i in gv and gv[i]['owner'] != v['owner']]
+    if differ:
+        game.bump('owner_differs_once')
+        print(f'    {time.strftime("%H:%M:%S")} vehicle owners differ once: '
+              + ', '.join(f'#{i} host {hv[i]["owner"]} guest {gv[i]["owner"]}' for i in differ)
+              + f' | guest mode {gc.call("game.mode")["out"].strip()[:40]}', flush=True)
+        time.sleep(1.5)
+        _, hv2, _ = civ_state(hc)
+        _, gv2, _ = civ_state(gc)
+        for i in differ:
+            if i in hv2 and i in gv2 and gv2[i]['owner'] != hv2[i]['owner']:
+                game.problem(f'vehicle #{i}: owner {hv2[i]["owner"]} on the host, {gv2[i]["owner"]} on the guest')
     # sync error of the vehicles (coop.sync, like coop_sync.py: the closer of two host samples)
     from coop_sync import sample
     for _ in range(3):
@@ -733,6 +750,10 @@ def audit(game, hc, gc, final=False):
                 if e > 10:  # an outlier: which vehicle, where, when
                     game.outliers.append(f'{time.strftime("%H:%M:%S")} {k} {e:.1f} m host {tuple(round(x) for x in h1[k][0])} '
                                          f'guest {tuple(round(x) for x in gp)}')
+                    # what the vehicle does on both machines (BUG-0186: a standing vehicle with an offset)
+                    for nm, con in (('host', hc), ('guest', gc)):
+                        ln = [x.strip() for x in con.call('coop.civ')['out'].splitlines() if f'veh #{k[1:]} ' in x]
+                        print(f'    outlier {k} {e:.1f} m {nm}: {ln[0] if ln else "-"}', flush=True)
     hn = nodes(hc)
     gn = nodes(gc)
     for p, pol in hn:
