@@ -107,6 +107,23 @@ Win main_window()
     return wm ? vcall<Win>(wm, 0x04 / 4) : nullptr;
 }
 
+Win layout_container(void* layout)
+{
+    if (!a_layout_container || !skg::readable(layout, 0x18))
+        return nullptr;
+    void* backing = skg::field<void*>(layout, 0x14);
+    if (!skg::readable(backing, 0x8C))
+        return nullptr;
+    // Verified 810610 is a leaf getter: [layout+14], then [backing+88].
+    // Never dispatch an IWindow virtual method on the UILayout itself.
+    Win root = thiscall<Win>(a_layout_container, layout);
+    if (!skg::readable(layout, 0x18) || !skg::readable(backing, 0x8C) ||
+        skg::field<void*>(layout, 0x14) != backing ||
+        skg::field<Win>(backing, 0x88) != root || !skg::readable(root, 0x40) || !valid(root))
+        return nullptr;
+    return root;
+}
+
 // Window::mChildrenWindows: intrusive list anchor at IWindow+0x38 in this build (ModAPI: +0x3C);
 // a child's list node is at child+4
 std::vector<Win> children(Win w)
