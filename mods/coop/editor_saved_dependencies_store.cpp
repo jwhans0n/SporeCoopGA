@@ -20,7 +20,7 @@ namespace editor_saved_dependencies {
 namespace {
 namespace fs=std::filesystem;
 void need(bool value,const char* message){if(!value)throw std::runtime_error(message);}
-bool full(Key key){return key.instance && key.type && key.group;}
+bool full(Key key){return key.instance && key.type;}
 bool hash(const std::string& text){return text.size()==64 && std::all_of(text.begin(),text.end(),[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');}) && text!=std::string(64,'0');}
 std::string digest(std::span<const uint8_t> bytes){return upd::sha256_hex(bytes.data(),bytes.size());}
 enum class Fault {None,BeforeCreate,PartialWrite,BeforeFlush,BeforeInstall,AfterInstall,BeforeReuseFlush};

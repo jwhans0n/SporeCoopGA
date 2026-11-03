@@ -104,6 +104,32 @@ static void collision_cases(const Fixture& f){
     for(size_t n=0;n<observations.size();++n)observations[n]={f.receipt.records[n].key,f.receipt.records[n].key,Installed::Exact,f.receipt.records[n].data};
     check(inspect_collisions(f.receipt,observations,output,error) && output.missing.empty() && output.payload_bytes==payload,"all exact resident bytes; no ownership or budget granted");++cases;
 }
+static void zero_group_cases(const Fixture& f){
+    auto inventory=f.inventory;size_t stock=inventory.references.size();
+    for(size_t n=0;n<inventory.references.size();++n)if(inventory.references[n].origin==Origin::Stock){stock=n;break;}
+    check(stock<inventory.references.size(),"controlled stock reference exists");
+    inventory.references[stock].raw.group=inventory.references[stock].effective.group=0;
+    Receipt output;std::string error;check(make(f.domain,inventory.saved,f.raw,inventory,f.selected,f.admitted,output,error),"stock group-zero key accepted");
+    Receipt restored;const auto bytes=encoded(output);check(decode(bytes,f.domain,restored,error) && encoded(restored)==bytes && restored.inventory.references[stock].effective.group==0,"stock group-zero exact roundtrip");++cases;
+    const auto reject=[&](auto change){auto changed=inventory;change(changed.references[stock]);Receipt keep=f.receipt;
+        check(!make(f.domain,changed.saved,f.raw,changed,f.selected,f.admitted,keep,error) && !error.empty() && encoded(keep)==f.golden,"group-zero still requires valid local/effective identity");++cases;};
+    reject([](auto& ref){ref.raw.instance=0;});reject([](auto& ref){ref.raw.type=0;});
+    reject([](auto& ref){ref.effective.instance=0;});reject([](auto& ref){ref.effective.type=0;});reject([](auto& ref){ref.effective={};});
+    // A server-backed raw key also retains group zero; its independently
+    // observed effective identity remains mandatory and complete.
+    auto server=inventory;server.references[stock].server=1234;
+    check(make(f.domain,server.saved,f.raw,server,f.selected,f.admitted,output,error) && decode(encoded(output),f.domain,restored,error),"server raw group-zero roundtrip");++cases;
+    auto records=f.admitted;Key asset;
+    for(const auto& ref:inventory.references)if(ref.origin==Origin::Immutable){asset=ref.effective;break;}
+    const auto remap=[&](Key key){if(key.group==asset.group)key.group=0;else if(key.group==asset.group+1)key.group=1;
+        else if(key.type==0x00B1B104 && key.group==((asset.group&0xFFFF0000u)|0xE500u))key.group=0xE500;return key;};
+    for(auto& row:records)row.key=remap(row.key);
+    for(auto& ref:inventory.references)if(ref.origin==Origin::Immutable){ref.raw.group=ref.effective.group=0;for(auto& key:ref.records)key=remap(key);std::sort(ref.records.begin(),ref.records.end(),Less{});}
+    check(make(f.domain,inventory.saved,f.raw,inventory,records,records,output,error),"already-admitted immutable group-zero closure");
+    const auto encoded_zero=encoded(output);check(decode(encoded_zero,f.domain,restored,error) && encoded(restored)==encoded_zero && restored.records.size()==4,"all group-zero companions roundtrip");++cases;
+    for(bool missing_type:{false,true}){auto invalid=records;if(missing_type)invalid[0].key.type=0;else invalid[0].key.instance=0;Receipt keep=f.receipt;
+        check(!make(f.domain,inventory.saved,f.raw,inventory,invalid,invalid,keep,error) && encoded(keep)==f.golden,"group-zero record still requires instance/type");++cases;}
+}
 }
 namespace saved_dependency_test {
 static void allocation_cases(const Fixture& f){for(int n=0;n<8;++n){
@@ -116,6 +142,6 @@ static void allocation_cases(const Fixture& f){for(int n=0;n<8;++n){
     check(!read && !error.empty() && encoded(output)==old,"decode allocation failure atomic");++cases;
 }}
 }
-int main(){using namespace saved_dependency_test;try{const auto f=fixture();codec_cases(f);family_cases(f);collision_cases(f);allocation_cases(f);
+int main(){using namespace saved_dependency_test;try{const auto f=fixture();codec_cases(f);family_cases(f);collision_cases(f);zero_group_cases(f);allocation_cases(f);
     std::cout<<"PASS Saved dependency codec checks="<<checks<<" cases="<<cases<<" actual_classes=119 raw_slots=358 records=4 native_issuer=not_minted\n";return 0;
 }catch(const std::exception& e){std::cerr<<"FAIL checks="<<checks<<" cases="<<cases<<": "<<e.what()<<'\n';return 1;}}

@@ -11,7 +11,7 @@ namespace {
 void need(bool okay,const char* text){if(!okay)throw std::runtime_error(text);}
 auto order(Key k){return std::tuple{k.group,k.type,k.instance};}
 struct Less {bool operator()(Key a,Key b)const{return order(a)<order(b);}};
-bool full(Key k){return k.instance && k.type && k.group;}
+bool full(Key k){return k.instance && k.type;}
 bool empty(Key k){return k==Key{};}
 bool hash(const std::string& s){return s.size()==64 && std::all_of(s.begin(),s.end(),[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');}) && s!=std::string(64,'0');}
 std::string digest(std::span<const uint8_t> b){return upd::sha256_hex(b.data(),b.size());}
@@ -44,7 +44,7 @@ void validate(const Receipt& r){
         need(ref.origin==Origin::Stock || ref.origin==Origin::Immutable,"Unknown reference origin");
         need(full(ref.effective),"Effective reference identity");
         if(ref.server==0 || ref.server==UINT64_MAX)need(full(ref.raw) && ref.raw==ref.effective,"Local raw/effective reference mismatch");
-        else need(ref.raw.type && ref.raw.group,"Server reference raw identity");
+        else need(ref.raw.type,"Server reference raw identity");
         if(ref.origin==Origin::Stock){need(ref.stock_database<13 && ref.records.empty(),"Explicit verified stock omission required");continue;}
         need(ref.stock_database==UINT32_MAX && family(ref.effective.type),"Unsupported immutable asset family");
         need(!ref.records.empty(),"Immutable reference has no closure");bool body=false;

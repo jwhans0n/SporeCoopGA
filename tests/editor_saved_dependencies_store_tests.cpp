@@ -70,11 +70,17 @@ static void path_cases(const Fixture& f,const fs::path& directory){
 #endif
     }
 }
+static void zero_group_cases(const Fixture& f,const fs::path& directory){auto receipt=f.receipt;receipt.inventory.saved.group=0;std::string error;
+    check(publish(directory,receipt,Fault::None,error)==Publication::Published,"Saved group-zero namespace publication");Receipt loaded;
+    check(load(directory,f.domain,receipt.inventory.saved,f.raw,loaded,error) && encoded(loaded)==encoded(receipt),"Saved group-zero exact lookup");++cases;
+    for(bool missing_type:{false,true}){auto invalid=receipt;if(missing_type)invalid.inventory.saved.type=0;else invalid.inventory.saved.instance=0;
+        check(publish(directory,invalid,Fault::None,error)==Publication::NotPublished && !error.empty(),"Saved group-zero still requires instance/Scenario type");++cases;}
+}
 }
 int main(int argc,char** argv){using namespace saved_dependency_test;try{
     check(argc==2,"explicit isolated test parent required");const fs::path parent=argv[1];fs::create_directories(parent);
     const auto stem=std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());fs::path directory;
     for(unsigned n=0;n<100;++n){auto candidate=parent/(stem+"-"+std::to_string(n));if(fs::create_directory(candidate)){directory=candidate/"cache";break;}}
-    check(!directory.empty(),"reserve unique isolated test directory");const auto f=fixture();store_cases(f,directory);unequal_race(f,directory);path_cases(f,directory);
+    check(!directory.empty(),"reserve unique isolated test directory");const auto f=fixture();store_cases(f,directory);unequal_race(f,directory);path_cases(f,directory);zero_group_cases(f,directory);
     std::cout<<"PASS Saved dependency store checks="<<checks<<" cases="<<cases<<" real_fs=1 native_calls=0 directory="<<directory.string()<<'\n';return 0;
 }catch(const std::exception& e){std::cerr<<"FAIL checks="<<checks<<" cases="<<cases<<": "<<e.what()<<'\n';return 1;}}

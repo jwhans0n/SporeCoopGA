@@ -8,6 +8,8 @@
 namespace editor_saved_dependencies {
 using Bytes=std::vector<uint8_t>;
 using Key=dbpf::Key;
+// Match the existing ResourceKey policy: instance/type identify a nonempty key;
+// group zero is a valid namespace, not an empty-resource sentinel.
 using Record=dbpf::Record;
 inline constexpr uint32_t kPolicy=1,kScenario=0x366A930D,kMaxRecords=2048,kMaxRecordBytes=16u<<20,kMaxPayloadBytes=128u<<20;
 inline constexpr uint32_t kMaxReceiptBytes=kMaxPayloadBytes+(4u<<20),kMaxReferences=1+32+1024*3,kMaxCompanions=8;
