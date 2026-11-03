@@ -557,3 +557,17 @@ $(B)/host/editor_asset_diagnostic_tests: $(EDITOR_ASSET_DIAGNOSTIC_SRC) $(EDITOR
 $(B)/host/editor_asset_diagnostic_tests.exe: $(EDITOR_ASSET_DIAGNOSTIC_SRC) $(EDITOR_ASSET_DIAGNOSTIC_HEADERS) Makefile
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $(EDITOR_ASSET_DIAGNOSTIC_SRC) -o $@
+
+# Explicit diagnostic tree roots must belong to the current native window tree.
+.PHONY: test-sui-tree-root test-sui-tree-root-windows
+test-editor: test-sui-tree-root
+test-sui-tree-root: $(B)/host/sui_tree_root_tests
+	$<
+test-sui-tree-root-windows: $(B)/host/sui_tree_root_tests.exe
+test-editor-windows: $(B)/host/sui_tree_root_tests.exe
+$(B)/host/sui_tree_root_tests: tests/sui_tree_root_tests.cpp mods/coop/sui_tree_root.h Makefile
+	@mkdir -p $(dir $@)
+	$(HOSTCXX) -std=c++20 -O2 -g -Wall -Wextra -Werror $< -o $@
+$(B)/host/sui_tree_root_tests.exe: tests/sui_tree_root_tests.cpp mods/coop/sui_tree_root.h Makefile
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static $< -o $@

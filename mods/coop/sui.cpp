@@ -1,4 +1,5 @@
 #include "sui.h"
+#include "sui_tree_root.h"
 
 #include <cctype>
 #include <cstdio>
@@ -506,6 +507,35 @@ void remove_handler(Win w, void* h)
 
 // ---------------- devkit ----------------
 namespace {
+// Read only owning native child references. The command's supplied value is
+// never passed here unless it was reached through the fresh main-window tree.
+bool tree_child_refs(uintptr_t address, uintptr_t image_base, std::vector<uintptr_t>& out)
+{
+    auto window_ok=[image_base](uintptr_t window) {
+        if (!window || !skg::readable(reinterpret_cast<void*>(window),0x40)) return false;
+        uintptr_t vt=0; std::memcpy(&vt,reinterpret_cast<void*>(window),sizeof vt);
+        return vt>image_base && vt-image_base<0x2000000 &&
+            skg::readable(reinterpret_cast<void*>(vt),0x11C);
+    };
+    if (!window_ok(address)) return false;
+    const auto anchor=address+0x38;
+    uintptr_t original=0;
+    std::memcpy(&original,reinterpret_cast<void*>(anchor),sizeof original);
+    auto node=original;
+    std::set<uintptr_t> visited;
+    for (size_t count=0;node!=anchor;++count) {
+        if (!node || node<4 || count>=4096 || !visited.insert(node).second ||
+            !skg::readable(reinterpret_cast<void*>(node),sizeof(uintptr_t)) || !window_ok(node-4)) return false;
+        uintptr_t next=0;
+        std::memcpy(&next,reinterpret_cast<void*>(node),sizeof next);
+        out.push_back(node-4);
+        node=next;
+    }
+    uintptr_t final=0;
+    std::memcpy(&final,reinterpret_cast<void*>(anchor),sizeof final);
+    return original==final;
+}
+
 int c_ui(void*, int argc, const char* const* argv, SkOut* out)
 {
     std::string sub = argc > 1 ? argv[1] : "tree";
@@ -641,7 +671,24 @@ int c_ui(void*, int argc, const char* const* argv, SkOut* out)
     }
     int depth = argc > 2 ? atoi(argv[2]) : 4;
     bool all = argc > 3 && !strcmp(argv[3], "all");
-    Win root = argc > 4 ? (Win)strtoul(argv[4], nullptr, 16) : main_window();
+    Win root=nullptr;
+    if (argc>4) {
+        uint32_t candidate=0;
+        if (argc!=5 || !argv[4] || !sui_tree_root::parse(argv[4],candidate)) {
+            H->out_printf(out,"invalid tree root: expected a nonzero eight-hex-digit window address\n");
+            return 1;
+        }
+        const auto image_base=H->image_base();
+        uintptr_t accepted=0;
+        const auto result=sui_tree_root::resolve(candidate,
+            [] { return reinterpret_cast<uintptr_t>(main_window()); },
+            [image_base](uintptr_t window,std::vector<uintptr_t>& refs) { return tree_child_refs(window,image_base,refs); },accepted);
+        if (result!=sui_tree_root::Result::Found) {
+            H->out_printf(out,"tree root rejected: not in a complete current main-window tree (reason=%u)\n",unsigned(result));
+            return 1;
+        }
+        root=reinterpret_cast<Win>(accepted);
+    } else root=main_window();
     std::string s = dump(root, depth, !all);
     if (s.size() > 60000)
         s.resize(60000);

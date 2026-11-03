@@ -1729,3 +1729,28 @@ contaminated and reject its timing. Post-window checks preserve an existing
 Native error rather than masking it. These pre/post snapshots cannot observe a
 job wholly between queries and do not constitute continuous CPU-quiescence
 monitoring. Both snapshots and that limitation remain explicit in the artifact.
+
+## Diagnostic tree root membership (C39 crash)
+
+The C39 host crash after `coop.ui tree 3 visible 05D17546` was a diagnostic
+input error: `05D17546` was a control ID, not an IWindow address. The previous
+command converted the token with unchecked `strtoul` and passed it directly to
+`dump`, whose first visibility vcall dereferenced it. The retained AV was
+`coop.i95.1.dll+2F2964`, ECX `05D17546`, reading `8CB605F9`.
+
+Explicit tree roots now require exactly eight hex digits (an optional `0x`
+prefix is accepted), a nonzero value and membership in the current main-window
+tree. The candidate is only compared with identities reached from a fresh
+`sui::main_window()` through the existing verified native child references:
+IWindow+38 is the anchor, the first node word is its next link, and IWindow is
+node-4. No meaning is assigned to the other link word. Readability, repeated
+nodes, 4096 nodes per child list, 65536 total windows/edges and unchanged list
+heads are checked. A second fresh main-window getter must return the same main,
+then a second complete traversal must still find the root before dumping it.
+Missing, stale, malformed, cyclic or incomplete trees fail without a dump.
+Default-main tree commands retain their existing behavior.
+
+`test-sui-tree-root` and `test-sui-tree-root-windows` exercise strict parsing,
+unrelated control IDs never reaching the inspector, nested roots, exact bounds,
+cycles, duplicate children, read/allocation failure and getter-time retirement.
+These are offline value-graph checks; actual UI qualification is separate.
