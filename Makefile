@@ -154,9 +154,9 @@ test-editor-windows: $(B)/host/editor_native_pose_tests.exe
 test-editor-windows: $(B)/host/editor_native_terrain_tests.exe $(B)/host/editor_native_complexity_tests.exe
 test-editor-windows: $(B)/host/adventure_collect_tests.exe
 
-$(B)/host/adventure_collect_tests.exe: tests/adventure_collect_windows_tests.cpp mods/coop/adventure_collect.cpp mods/coop/adventure_collect.h mods/coop/adventure_music.cpp mods/coop/adventure_music.h mods/coop/net/dbpf.cpp $(ADVENTURE_ABI_HEADERS)
+$(B)/host/adventure_collect_tests.exe: tests/adventure_collect_windows_tests.cpp mods/coop/adventure_collect.cpp mods/coop/adventure_collect.h mods/coop/editor_saved_dependencies.h mods/coop/adventure_music.cpp mods/coop/adventure_music.h mods/coop/net/dbpf.cpp updater/sha256.cpp $(ADVENTURE_ABI_HEADERS)
 	@mkdir -p $(B)/host
-	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-unused-function -static -Imods/coop -Isdk/include tests/adventure_collect_windows_tests.cpp mods/coop/adventure_music.cpp mods/coop/net/dbpf.cpp -o $@
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-unused-function -static -Imods/coop -Isdk/include tests/adventure_collect_windows_tests.cpp mods/coop/adventure_music.cpp mods/coop/net/dbpf.cpp updater/sha256.cpp -o $@
 
 $(B)/host/editor_native_cancellation_tests.exe: $(wildcard mods/coop/editor_native*.h) mods/coop/net/editor_terrain.h tests/editor_native_pose_prepare_fixture.h mods/coop/editor_native_pose_prepare_impl.h
 
@@ -204,6 +204,29 @@ $(B)/host/editor_native_refpack_tests.exe: tests/editor_native_refpack_tests.cpp
 $(B)/host/editor_native_pose_format_tests.exe: tests/editor_native_pose_format_tests.cpp mods/coop/editor_native_pose_format.h mods/coop/editor_native_refpack.h mods/coop/net/editor_document.h $(EDITOR_POSE_FORMAT_SRC) $(EDITOR_POSE_FORMAT_DATA)
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_native_pose_format_tests.cpp $(EDITOR_POSE_FORMAT_SRC) -o $@
+
+# Saved dependency values and immutable cache IO; no Native/Runtime linkage.
+EDITOR_SAVED_DEPENDENCIES_SRC := mods/coop/editor_saved_dependencies.cpp mods/coop/net/dbpf.cpp updater/sha256.cpp
+EDITOR_SAVED_DEPENDENCIES_DATA := $(wildcard tests/fixtures/editor_saved_dependencies/*)
+EDITOR_SAVED_DEPENDENCIES_HEADERS := mods/coop/editor_saved_dependencies.h tests/editor_saved_dependencies_fixture.h $(EDITOR_SAVED_DEPENDENCIES_DATA)
+.PHONY: test-editor-saved-dependencies
+test-editor-saved-dependencies: $(B)/host/editor_saved_dependencies_tests $(B)/host/editor_saved_dependencies_store_tests
+	$(B)/host/editor_saved_dependencies_tests
+	$(B)/host/editor_saved_dependencies_store_tests $(B)/saved-dependencies-tests
+test-editor: test-editor-saved-dependencies
+test-editor-windows: $(B)/host/editor_saved_dependencies_tests.exe $(B)/host/editor_saved_dependencies_store_tests.exe
+$(B)/host/editor_saved_dependencies_tests: tests/editor_saved_dependencies_tests.cpp $(EDITOR_SAVED_DEPENDENCIES_SRC) $(EDITOR_SAVED_DEPENDENCIES_HEADERS)
+	@mkdir -p $(dir $@)
+	$(HOSTCXX) -std=c++20 -O2 -g -Wall -Wextra -Werror -Imods/coop tests/editor_saved_dependencies_tests.cpp $(EDITOR_SAVED_DEPENDENCIES_SRC) -o $@
+$(B)/host/editor_saved_dependencies_store_tests: tests/editor_saved_dependencies_store_tests.cpp mods/coop/editor_saved_dependencies_store.cpp mods/coop/editor_saved_dependencies_store.h $(EDITOR_SAVED_DEPENDENCIES_SRC) $(EDITOR_SAVED_DEPENDENCIES_HEADERS)
+	@mkdir -p $(dir $@)
+	$(HOSTCXX) -std=c++20 -O2 -g -Wall -Wextra -Werror -pthread -Imods/coop tests/editor_saved_dependencies_store_tests.cpp $(EDITOR_SAVED_DEPENDENCIES_SRC) -o $@
+$(B)/host/editor_saved_dependencies_tests.exe: tests/editor_saved_dependencies_tests.cpp $(EDITOR_SAVED_DEPENDENCIES_SRC) $(EDITOR_SAVED_DEPENDENCIES_HEADERS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_saved_dependencies_tests.cpp $(EDITOR_SAVED_DEPENDENCIES_SRC) -o $@
+$(B)/host/editor_saved_dependencies_store_tests.exe: tests/editor_saved_dependencies_store_tests.cpp mods/coop/editor_saved_dependencies_store.cpp mods/coop/editor_saved_dependencies_store.h $(EDITOR_SAVED_DEPENDENCIES_SRC) $(EDITOR_SAVED_DEPENDENCIES_HEADERS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_saved_dependencies_store_tests.cpp $(EDITOR_SAVED_DEPENDENCIES_SRC) -o $@
 
 $(B)/host/editor_native_pose_tests.exe: $(EDITOR_CORE_SRC) tests/editor_native_pose_tests.cpp mods/coop/editor_native_pose.h
 	@mkdir -p $(B)/host
@@ -446,6 +469,13 @@ $(B)/host/sporekit_input_policy_tests.exe: tests/sporekit_input_policy_tests.cpp
 $(B)/host/sporekit_input_tests.exe: tests/sporekit_input_windows_tests.cpp sporekit/input.cpp sporekit/input_policy.h sporekit/core.h sdk/include/sporekit.h
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static $< -o $@ -luser32
+
+# Actual mod manager with controlled Win32 loader/queue endpoints; no game calls.
+.PHONY: test-mod-lifecycle-windows
+test-mod-lifecycle-windows: $(B)/host/sporekit_mod_lifecycle_tests.exe
+$(B)/host/sporekit_mod_lifecycle_tests.exe: tests/sporekit_mod_lifecycle_windows_tests.cpp sporekit/mods.cpp sporekit/core.h sdk/include/sporekit.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static $< -o $@
 
 # Preview 6 verified interaction adapters (the tests include their implementation).
 INTERACTION_TEST_NET := mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp

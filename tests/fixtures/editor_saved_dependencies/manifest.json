@@ -1,0 +1,25 @@
+{
+  "scope": "Genuine Saved/native+immutable package values; controlled explicit stock observations; no Native authority minted",
+  "files": {
+    "saved.native.bin": {
+      "source": "out/preview9-c34-vehicle-native-save-carrier/persisted-root-9e75c45070fbceb8d45a98423ca1609df7a9fd8e1d64e6519c8e99ddac0cddec.bin",
+      "bytes": 60745,
+      "sha256": "9e75c45070fbceb8d45a98423ca1609df7a9fd8e1d64e6519c8e99ddac0cddec"
+    },
+    "alias.package": {
+      "source": "out/preview9-c34-cold-dependencies-r2/95/SporeCoop/adventure-assets/28ed4dcf39792443eb75a82a041180db38dfb52c47ea43eb24896b0701677d12.package",
+      "bytes": 330076,
+      "sha256": "70df0fa4b0c66079497c4e1cdcf3d18c5dc2f4a7f1b8a5b752fcbc30419a0706"
+    },
+    "receipt.sdr": {
+      "source": "out/preview9-c34-saved-receipt-prototype/store-final-linux/408a0000-29130b6d-366a930d-9e75c45070fbceb8d45a98423ca1609df7a9fd8e1d64e6519c8e99ddac0cddec.sdr",
+      "bytes": 353916,
+      "sha256": "281e13cb409b98a519cb3e87846127027279ae1104b91ba31a330be82fa92f1d"
+    }
+  },
+  "body": 23026,
+  "classes": 119,
+  "raw_slots": 358,
+  "crew": 0,
+  "records": 4
+}

@@ -1588,3 +1588,56 @@ OUT evidence is `out/preview9-c34-pose-format/receipt.json` and the independent
 encoder p95 was 12.252 ms versus extracted raw 11.330 ms; the bounded chunk
 experiment also showed no useful p95 win. These results support no compression
 hook or frame/LAN performance claim.
+
+### Saved-image dependency receipt values and immutable files
+
+`editor_saved_dependencies.{h,cpp}` binds a bounded receipt to the genuine raw
+Saved image before terrain/grounding normalization: exact key, size, SHA-256,
+supported executable/profile domain, Captain, every Crew slot, and all three
+asset references of every class, including unused classes. Raw local key,
+machine, server and model plus independently observed effective identity remain
+separate. Stock database indices use the fixed 13-name table from the existing
+Collector. Absence from the custom set never establishes stock provenance.
+
+Selected custom bytes must equal previously admitted immutable bytes, and every
+retained record must belong to an explicit selected reference. Only the exact
+selected root and the existing Collector's known root companions are dropped.
+Foreign transport roots and unreachable historical records reject. All six
+existing Collector families use its fixed, at-most-eight companion relation;
+unknown families and arbitrary private/transitive edges remain unsupported.
+This does not add editor routes or claim recursive BEM dependency completeness.
+Each closure needs the effective primary record or its BEM body; metadata and
+other known companions remain optional, matching Collector behavior. New alias
+canonicalization has its own separate pollen requirement, not a generic receipt
+restriction on already admitted native source closures.
+
+The deterministic codec checks complete counts, full identities, ordering,
+per-record hashes and whole-frame checksum before atomic output publication.
+Limits are 1024 classes, 32 Crew entries, 3105 references, 2048 records, 16 MiB
+per image/record, 128 MiB payload and 132 MiB receipt. Collision inspection
+reports only exact byte/key observations and missing records. It has no boolean
+that can grant current-module package ownership, reuse or a budget reservation;
+the actual Native ProcessBudget and fresh resource observations remain final.
+
+`editor_saved_dependencies_store.{h,cpp}` addresses exactly
+`<Saved group>-<instance>-<type>-<raw image SHA>.sdr` in an explicit isolated
+cache directory. It never scans old receipts or edits a Native save database.
+Publication fully encodes, exclusively creates and flushes a temporary, then
+installs without replacement. Windows uses MoveFileEx WRITE_THROUGH; POSIX uses
+same-directory link plus directory/ancestor fsync. Equal concurrent publication
+may reuse only exact full bytes with a fresh durability barrier; unequal content
+cannot overwrite an existing receipt. Cleanup owns only successfully created
+temporaries. Visibility followed by a failed durability acknowledgement is
+Uncertain, including reuse. A failed acknowledgement cannot announce readiness.
+Prior receipts remain unchanged. Checksums provide integrity, not authentication
+against an actor able to rewrite the isolated cache and recompute its hashes.
+
+The genuine C34 fixture retains the raw 60,745-byte Saved image, the actual
+four-record Vehicle package and the independently tested prototype receipt.
+Tests decode and compare all 119 classes/358 raw reference slots and all four
+dependency records. Stock tags/profile values are explicitly controlled issuer
+observations; the codec does not mint Native selection, stock, scene or resolver
+authority. OS fault injection is private to the store test translation unit.
+Focused Linux/actual-i686 receipts are retained under
+`out/editor-preview9-saved-dependencies/`; running-game cold-load integration
+is a separate Native issuer/lifetime checkpoint.
