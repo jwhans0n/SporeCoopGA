@@ -6,8 +6,10 @@ executable and its exact 4 GB LAA variant remain supported. Older protocol
 clients are explicitly rejected. This report records development evidence,
 not completed native acceptance, a main merge or a public release.
 
-Latest private native build is C47, SHA-256
-`c98a89afaa7e3ebf7d4e8d38ba1a9cb5df4db62fef0596891084b9ae45888b6a`.
+The user-requested testing installation is C49, co-op DLL SHA-256
+`3741ec661fd54588f531cda059d708d5d4971c946a278f58c1a3e165f3a337dc`,
+with Kit `0f25bb7a2943a4e1ce3ad7d44a077ea3e8bd41a230c1130b8f2957b10cf6ecfc`.
+It was installed on 2026-11-03 before deferred release acceptance, as requested.
 Cold recovery now passes the original revision-22 draft in both games.
 Host editing and replacing a guest-created Creature also passes.
 Guest New Creature Save while the host designs another Creature passes; the
@@ -27,7 +29,43 @@ C39's quiet short two-player timing probe measures host/guest maximum
 submission-to-confirmation at 51/171 ms and commit-window frame gaps at 107/142 ms.
 The six-edit probe is diagnostic only, and frame gaps still exceed 100 ms.
 Full performance acceptance and the remaining feature matrix are open.
-Personal preview 8 and its 4 GB executable remain unchanged.
+The personal shortcut now selects preview 9/protocol 23. The exact 4 GB
+executable, settings and player launchers remain unchanged; preview 8 is backed up.
+
+## Testing handoff and revised priorities (2026-11-03)
+
+The user explicitly requested installation before further work, followed by
+upstream synchronization, then complete Terraform and Extended Complexity
+checks. Broader four-player creation/replacement/failure/recovery tests,
+performance acceptance, final regressions and required release smoke are
+deferred. This authorization permits a testing installation, not a main merge
+or a claim that the deferred checks passed.
+
+C48 armed diagnostics identify one outside-task pump consuming 184 callbacks
+over 520 ms while idle frame medians are about 46 ms. Capture frame maxima reach
+559 ms. Commit `28536e7` bounds each pump by its initial FIFO sequence and an
+8 ms budget checked between callbacks, retaining pending work for another pump.
+Focused host/i686 queue, actual SDK pump, metrics, pulse and lifecycle checks
+pass; the exact C48 console reproduces the new-work-deferral failure. Actual
+frame improvement remains unmeasured. Evidence:
+`out/preview9-c48-pump-probe/diagnostic.json` and
+`out/editor-preview9-outside-batch/{receipt,postcommit}.json`.
+
+C49 retains 253 production inputs with zero drift and builds both DLLs.
+Installation verifies every copied DLL/map, marker version and shortcut target.
+The 24,895,536-byte executable retains SHA-256
+`47f60c4db38fda1f15c5a3525617e171b0a98d728d99d645b035aa794a9199ab`.
+No game was running during installation; no player profile was written. INI
+files, both player launchers, forwarding DLL and data package retain their prior
+hashes. The two-frame pose experiment remains default-off. This direct testing
+handoff does not include a new native startup run or a distribution archive.
+
+Installed build source is `28536e76ab13f12040dbadbd6c89a0163ebf9cc6`.
+Receipts: `out/preview9-candidate49-build-receipt.json` and
+`out/preview9-delivery/preview9-testing-installation.json`.
+Rollback files and their checked restore manifest are at
+`out/preview9-delivery/preview8-rollback-testing-20261103-151411/`;
+the earlier full preview-8 rollback payload is retained as well.
 
 ## Candidate changes
 
