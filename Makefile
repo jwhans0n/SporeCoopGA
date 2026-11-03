@@ -181,6 +181,14 @@ $(B)/host/adventure_collect_tests.exe: tests/adventure_collect_windows_tests.cpp
 
 $(B)/host/editor_native_cancellation_tests.exe: $(wildcard mods/coop/editor_native*.h) mods/coop/net/editor_terrain.h tests/editor_native_pose_prepare_fixture.h mods/coop/editor_native_pose_prepare_impl.h
 
+# CPU-only Snapshot construction and all sidecar copy domains; no Native calls.
+.PHONY: test-editor-snapshot-values-windows
+test-editor-snapshot-values-windows: $(B)/host/editor_native_snapshot_values_tests.exe
+test-editor-windows: $(B)/host/editor_native_snapshot_values_tests.exe
+$(B)/host/editor_native_snapshot_values_tests.exe: tests/editor_native_snapshot_values_tests.cpp mods/coop/editor_native_snapshot_values.h mods/coop/editor_native.h mods/coop/net/editor_document.h mods/coop/net/editor_complexity.h mods/coop/editor_native_scale.h mods/coop/editor_native_cast.h mods/coop/editor_native_authoring.h mods/coop/editor_native_terrain.h mods/coop/net/editor_terrain.h sdk/include/sporekit.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $< -o $@
+
 $(B)/host/editor_native_terrain_tests.exe: $(EDITOR_CORE_SRC) tests/editor_native_terrain_tests.cpp mods/coop/editor_native_terrain.h mods/coop/editor_native_terrain_materialization.h mods/coop/net/editor_terrain.h
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $(EDITOR_CORE_SRC) tests/editor_native_terrain_tests.cpp -o $@
