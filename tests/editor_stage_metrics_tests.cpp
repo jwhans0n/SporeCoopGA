@@ -45,6 +45,18 @@ int main(){
     CHECK(buffer.record(project,op,1,Stage::HostRequestReceived,220));
     CHECK(buffer.record(project,op,1,Stage::GestureRelease,205));
     CHECK(!buffer.clock_error());CHECK(buffer.record(project,op,1,Stage::SceneReady,225));
+    CHECK(buffer.reset(11,10000000,200));const auto capture=buffer.capture_id();
+    allocation_forbidden=true;
+    CHECK(buffer.record(project,op,1,Stage::NativePrepareBegin,220));
+    CHECK(buffer.record(project,op,1,Stage::NativePrepareEnd,230,1));
+    CHECK(buffer.record(project,op,1,Stage::WorkerEncodeBegin,205));
+    CHECK(buffer.record(project,op,1,Stage::WorkerEncodeEnd,215,1));
+    CHECK(buffer.record(project,op,1,Stage::WorkerEncodeObserved,240,1));
+    CHECK(!buffer.clock_error());
+    CHECK(!buffer.record(project,op,1,Stage::WorkerFlushObserved,239,1));
+    CHECK(buffer.clock_error());allocation_forbidden=false;
+    CHECK(buffer.reset(11,10000000,250));CHECK(buffer.capture_id()!=capture);
+    CHECK(!buffer.record(project,op,1,Stage::WorkerFlushBegin,249));CHECK(buffer.clock_error());
     CHECK(buffer.reset(11,10000000,200));
     allocation_forbidden=true;
     for(unsigned i=0;i<8;++i)CHECK(buffer.record(project,op,i,Stage::LocalSubmit,200+i));

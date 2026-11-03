@@ -231,6 +231,10 @@ struct Party {
         for (unsigned p = 0; p < count; ++p) if (tick_enabled[p]) controllers[p]->tick(origins[p] + elapsed); ticking = false;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
+    bool poll_only(unsigned peer){
+        const auto was_ticking=ticking;ticking=true;
+        const auto okay=controllers[peer]->poll_persistence(origins[peer]+uint32_t(net::now_ms()-begun));ticking=was_ticking;return okay;
+    }
     template<class F> bool spin(F predicate, uint32_t timeout = 4000) {
         auto start = net::now_ms(); while (uint32_t(net::now_ms() - start) < timeout) { step(); if (predicate()) return true; } return false;
     }
@@ -294,6 +298,49 @@ static void test_asynchronous_failure_restores_before_acceptance(){
     CHECK(p.spin([&]{return p.native[1].decisions==1;}));
     CHECK(p.controllers[0]->state().document==before);CHECK(p.native[0].document==before);
     CHECK(p.controllers[1]->state().document==before);CHECK(p.native[1].wire_decisions==0);
+}
+static void test_completion_poll_never_drains_queued_controls(){
+    Party p(2,{},false,true);p.start();p.accept();std::string error;
+    CHECK(!p.poll_only(0));
+    const auto tokens=p.grant(1,{ScopeKind::Placement,object_a,{}});
+    CHECK(p.controllers[1]->submit(p.edit(1,object_a,position,Vec3{31,4,5},tokens),error));
+    CHECK(p.spin([&]{return p.durability_pending[0];}));
+    CHECK(p.controllers[0]->prepare_playtest(error));
+    const auto queued=p.controllers[0]->accounting().local_count;
+    CHECK(queued>0);const auto controls=p.native[0].controls;
+    CHECK(p.poll_only(0));CHECK(p.controllers[0]->state().document.revision==0);
+    p.hold_durability[0]=false;CHECK(p.poll_only(0));
+    CHECK(p.controllers[0]->state().document.revision==1);
+    CHECK(p.controllers[0]->view().locally_durable==1);
+    CHECK(p.controllers[0]->accounting().local_count==queued);
+    CHECK(p.controllers[0]->view().phase==es::Phase::Ready&&p.native[0].controls==controls);
+    CHECK(p.spin([&]{return p.durability_pending[1];}));
+    p.after_own_decision=[&](unsigned peer){CHECK(!p.poll_only(peer));};
+    p.hold_durability[1]=false;CHECK(p.poll_only(1));
+    CHECK(p.controllers[1]->state().document.revision==1&&p.controllers[1]->view().locally_durable==1);
+    CHECK(p.native[1].decisions==1);p.after_own_decision={};
+}
+static void test_completion_poll_defers_failure_and_teardown_respects_it(){
+    for(unsigned failed:{0u,1u}){
+        Party p(2,{},false,true);p.start();p.accept();std::string error;
+        const auto before=p.controllers[0]->state().document;
+        const auto tokens=p.grant(1,{ScopeKind::Placement,object_a,{}});
+        CHECK(p.controllers[1]->submit(p.edit(1,object_a,position,Vec3{31,4,5},tokens),error));
+        CHECK(p.spin([&]{return p.durability_pending[0];}));
+        if(failed){p.hold_durability[0]=false;CHECK(p.poll_only(0));CHECK(p.spin([&]{return p.durability_pending[1];}));}
+        p.native[failed].fail_persist=true;p.hold_durability[failed]=false;
+        const auto live=p.native[failed].document;const auto errors=p.native[failed].errors;
+        CHECK(p.poll_only(failed));CHECK(p.poll_only(failed));
+        CHECK(p.native[failed].document==live&&live!=before);
+        CHECK(p.native[failed].errors==errors&&p.controllers[failed]->state().document.revision==0);
+        if(!failed){
+            p.ticking=true;p.controllers[failed]->end();p.ticking=false;
+            CHECK(p.native[failed].document==before);
+        }else{
+            p.step();CHECK(p.controllers[failed]->view().phase==es::Phase::Frozen);
+            CHECK(p.native[failed].document==before);
+        }
+    }
 }
 static void test_project_and_planet_field_leases_survive_refresh(){
     auto state=seed();auto& document=state.document;
@@ -1731,7 +1778,7 @@ int main(int argc,char** argv)
         std::printf("editor recovery transport: %d checks, %d failures\n",checks,failures);return failures?1:0;
     }
     if(argc==2&&std::string(argv[1])=="--durability"){
-        CHECK(net::net_init());test_asynchronous_durable_acceptance();test_asynchronous_failure_restores_before_acceptance();test_project_and_planet_field_leases_survive_refresh();test_worker_prepared_resource_publication();
+        CHECK(net::net_init());test_asynchronous_durable_acceptance();test_asynchronous_failure_restores_before_acceptance();test_completion_poll_never_drains_queued_controls();test_completion_poll_defers_failure_and_teardown_respects_it();test_project_and_planet_field_leases_survive_refresh();test_worker_prepared_resource_publication();
         std::printf("editor async durability: %d checks, %d failures\n",checks,failures);return failures?1:0;
     }
     if(argc==2&&std::string(argv[1])=="--previews"){
@@ -1742,7 +1789,7 @@ int main(int argc,char** argv)
     if(argc==1){CHECK(net::net_init());test_saved_install_readiness_keeps_order(2);test_saved_install_readiness_keeps_order(4);test_saved_install_waits_for_accepted_durability();test_prepare_rejection_never_crosses_an_ordered_barrier(false);test_prepare_rejection_never_crosses_an_ordered_barrier(true);test_prepare_readiness_declines_host_before_revocation();test_prepare_readiness_defers_guest_and_delivers_rejection(2);test_prepare_readiness_defers_guest_and_delivers_rejection(4);test_complexity_cohort(2);test_complexity_cohort(4);test_complexity_join_and_recovery();test_complexity_old_ack();test_complexity_queue_retry_and_stale_context();test_complexity_disable_is_not_a_general_bypass();test_complexity_history_rechecks_the_resulting_budget();}
     const bool classes=argc==2&&std::string(argv[1])=="--class-settings";
     if(argc>1&&!focused&&!classes)return 2;
-    CHECK(net::net_init());if(!focused&&!classes){test_recovery_teardown_holds_guests_until_authenticated_reoffer();test_recovery_hold_survives_host_loss();test_creation_preview_is_ephemeral_and_owned();test_asynchronous_durable_acceptance();test_asynchronous_failure_restores_before_acceptance();test_project_and_planet_field_leases_survive_refresh();test_worker_prepared_resource_publication();}
+    CHECK(net::net_init());if(!focused&&!classes){test_recovery_teardown_holds_guests_until_authenticated_reoffer();test_recovery_hold_survives_host_loss();test_creation_preview_is_ephemeral_and_owned();test_asynchronous_durable_acceptance();test_asynchronous_failure_restores_before_acceptance();test_completion_poll_never_drains_queued_controls();test_completion_poll_defers_failure_and_teardown_respects_it();test_project_and_planet_field_leases_survive_refresh();test_worker_prepared_resource_publication();}
     if(!focused){test_shared_class_properties_udp(2);test_shared_class_properties_udp(4);}
     if(!classes){test_tombstone_regressions(); if(!focused){test_release_quarantines_and_waits_for_reply(); test_host_release_quarantine_survives_view_refresh(); test_distinct_release_tokens_keep_both_quarantined(); test_reordered_lease_requests_cannot_recreate_released_scope(); test_deferred_lease_bounds_and_lifecycle(); test_repeated_release_fences_past_cache_window(); test_large_join_inventory_is_bounded_pinned_and_nonblocking(); test_join_inventory_failures_preserve_party_and_draft(); test_transient_preview_authority_coalescing_and_lifecycle(); test_guest_end_preparing_reoffers_without_freezing_party(); test_two_player_and_real_udp(); test_host_durable_coverage(); test_four_players_and_controls(); test_large_operation_transfer(); test_saved_snapshot_waits_for_native_gesture(); test_delete_revokes_lease_before_native_decision(0); test_delete_revokes_lease_before_native_decision(1); test_accepted_retry_keeps_new_gesture_ownership(0); test_accepted_retry_keeps_new_gesture_ownership(1); test_queued_begin_and_new_roster(); test_native_gesture_transaction_holds(); test_same_controller_host_to_guest(); test_delta_resources_keep_complete_late_join_cache(); test_failed_delta_staging_publishes_nothing(); test_close_waits_for_accepted_structural_commit(); test_settled_waits_for_join_but_excludes_failed_peer(); test_same_revision_saved_needs_explicit_applied_ack(); test_local_freeze_notifies_party_once(); test_deferred_baseline_and_fail_closed(); test_import_and_input_bounds(); test_rehost_authorship_and_document_hash(); test_real_udp_packet_adversity(2); test_real_udp_packet_adversity(4);}}
     std::printf("editor_session UDP/fake-native: %d checks, %d failures\n", checks, failures);

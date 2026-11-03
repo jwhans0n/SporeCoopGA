@@ -284,6 +284,35 @@ struct ResourceKeyLess {
 using ResourceKeys=std::set<dbpf::Key,ResourceKeyLess>;
 bool parse_manifest(const std::vector<uint8_t>&, std::string&, std::map<editor::OperationId, Artifact>&, std::string&, editor::Peer* = nullptr, bool* = nullptr);
 std::map<editor::OperationId, Artifact> history_artifacts;
+enum class DurablePhase : uint8_t { Encode, Flush };
+using DurableEnqueue=void (*)(SkTaskFn,void*);
+struct DurableWake {
+    uint64_t domain=0,serial=0,transport=0,generation=0;
+    uintptr_t controller=0,session=0;
+    editor::wire::Context context;
+    editor::Peer local;
+    editor::OperationId operation;
+    editor::Revision revision=0;
+    editor_native::GestureScope scope;
+    editor::ResourceKey source;
+    DurablePhase phase=DurablePhase::Encode;
+    bool attached=false,detached=false;
+    bool operator==(const DurableWake&) const = default;
+};
+struct DurablePhaseTimes {
+    uint64_t capture=0,begin=0,end=0,observed=0;
+};
+uint64_t durable_runtime_domain=0,durable_job_serial=0;
+bool persist_completion_polling=false;
+void SK_CDECL durable_wake(void*);
+void post_durable_wake(const DurableWake& wake,DurableEnqueue enqueue) noexcept {
+    if(!enqueue)return;
+    try{
+        auto payload=std::make_unique<DurableWake>(wake);
+        enqueue(durable_wake,payload.get());
+        (void)payload.release();
+    }catch(...){ } // A failed enqueue leaves the existing update poll intact.
+}
 struct DurableCommit {
     editor::State state;
     editor::Change change;
@@ -296,8 +325,15 @@ struct DurableCommit {
     ResourceKeys retained_keys;
     editor_store::Snapshot saved;
     std::optional<editor_session::PreparedResources> publication;
-    std::future<bool> task;
+    std::shared_future<bool> task;
+    DurableWake wake;
+    DurableEnqueue enqueue=nullptr;
+    DurablePhaseTimes encoding,flush;
+    bool completion_error=false;
     bool flushing=false,hosting=false;
+    // Join before any owned worker input/result member ends its lifetime,
+    // including failed publication or partially initialized begin paths.
+    ~DurableCommit() noexcept {if(task.valid())task.wait();}
 };
 std::unique_ptr<DurableCommit> durable_commit;
 struct Pending { editor::Request request; editor_native::Gesture gesture; uint64_t reverted_frame = 0; bool submitted = false; std::vector<uint8_t> assets={}; bool tentative=false,staged=false,barrier_cancel=false; std::shared_ptr<StagedCapture> capture_owner={}; };
@@ -1100,6 +1136,50 @@ bool persist(const editor::State& state, const editor::Change& change, std::stri
     incoming_resources.reset(); gc_due = state.document.revision % 16 == 0;
     work.okay=true;return true;
 }
+void observe_durable_phase(DurableCommit& job,bool okay) noexcept {
+    auto& times=job.flushing?job.flush:job.encoding;
+    if(times.observed)return;
+    times.observed=stage_qpc();
+    if(!times.capture || times.capture!=stage_metrics.capture_id() || !stage_metrics.recording() ||
+       !times.begin || times.end<times.begin || times.observed<times.end)return;
+    using Stage=editor_stage_metrics::Stage;
+    const auto record=[&](Stage stage,uint64_t qpc,uint8_t success){
+        stage_metrics.record(job.state.document.project,job.change.operation,job.state.document.revision,stage,qpc,success);
+    };
+    record(job.flushing?Stage::WorkerFlushBegin:Stage::WorkerEncodeBegin,times.begin,0);
+    record(job.flushing?Stage::WorkerFlushEnd:Stage::WorkerEncodeEnd,times.end,okay?1:2);
+    record(job.flushing?Stage::WorkerFlushObserved:Stage::WorkerEncodeObserved,times.observed,okay?1:2);
+}
+bool durable_wake_current(const DurableWake& wake){
+    if(!controller || !durable_commit || wake!=durable_commit->wake || wake.domain!=durable_runtime_domain ||
+       wake.controller!=reinterpret_cast<uintptr_t>(controller.get()) || wake.session!=reinterpret_cast<uintptr_t>(C.session) ||
+       !C.session || !C.session->connected() || transport_teardown || frozen || closing || recovery ||
+       observed_transport!=wake.transport || C.session->transport_generation()!=wake.transport ||
+       wake.transport<=retired_transport || native_generation!=wake.generation || native_attached!=wake.attached ||
+       detached_scene()!=wake.detached || current_native.source!=wake.source || current_projection_scope()!=wake.scope)return false;
+    const auto& view=controller->view();
+    return view.phase==Phase::Ready && view.context==wake.context && view.local==wake.local &&
+        controller->state().document.project==wake.context.project && controller->state().document.epoch==wake.context.epoch &&
+        controller->state().document.revision==wake.context.revision;
+}
+void SK_CDECL durable_wake(void* opaque){
+    // Own the payload even after shutdown, normal polling or a later job has
+    // retired this notification. Never retain the job across its completion.
+    std::unique_ptr<DurableWake> wake(static_cast<DurableWake*>(opaque));
+    if(!wake || persist_completion_polling)return;
+    try{
+        if(!durable_wake_current(*wake))return;
+        auto& job=*durable_commit;
+        // The worker posts before std::async makes its future ready. An early
+        // window dispatch must fall back to update polling, never wait/spin.
+        if(!job.task.valid() || job.task.wait_for(std::chrono::seconds(0))!=std::future_status::ready || !job.task.get())return;
+        struct Poll {Poll(){persist_completion_polling=true;}~Poll(){persist_completion_polling=false;}} polling;
+        auto* session=C.session;const auto transport=wake->transport;
+        controller->poll_persistence(now_ms());
+        if(C.session==session && session && observed_transport==transport && transport>retired_transport &&
+           session->transport_generation()==transport)session->flush_pending(transport);
+    }catch(...){ } // Existing outside-frame update handles every failure path.
+}
 bool begin_persist_owned(const editor::State& state,const editor::Change& change,std::string& error){
     if(durable_commit || !prepared_native || prepared_native->document!=state.document){error="The canonical commit is not ready for durable preparation";return false;}
     stage_stamp(state.document.project,change.operation,state.document.revision,editor_stage_metrics::Stage::PersistWorkBegin);
@@ -1118,9 +1198,18 @@ bool begin_persist_owned(const editor::State& state,const editor::Change& change
     work->hosting=host();const auto old_record_count=resources.bundle.records.size();
     // Manifest inputs cannot depend on a live editor or participant context.
     const auto capability=local_capability;const auto copy_owned=native_copy_owned;const auto provenance=source_creation;
+    const auto serial=durable_job_serial==UINT64_MAX?0:++durable_job_serial;
+    work->wake={durable_runtime_domain,serial,observed_transport,native_generation,
+        reinterpret_cast<uintptr_t>(controller.get()),reinterpret_cast<uintptr_t>(C.session),controller->view().context,
+        controller->view().local,change.operation,state.document.revision,current_projection_scope(),current_native.source,
+        DurablePhase::Encode,native_attached,detached_scene()};
+    work->enqueue=H&&serial?H->run_outside_frame:nullptr;
+    work->encoding.capture=stage_metrics.recording()?stage_metrics.capture_id():0;
+    const auto wake=work->wake;const auto enqueue=work->enqueue;
     auto* job=work.get();
-    job->task=std::async(std::launch::async,[job,old_record_count,capability,copy_owned,provenance]{
-        try{
+    job->task=std::async(std::launch::async,[job,old_record_count,capability,copy_owned,provenance,wake,enqueue]{
+        job->encoding.begin=stage_qpc();
+        const auto execute=[&]{try{
             if(!remember_artifacts(job->state,job->change,job->before?*job->before:job->native,job->native,job->archive,job->error))return false;
             if(!replace_root(job->resources,job->native,job->error))return false;
             const bool dependencies_added=job->resources.bundle.records.size()!=old_record_count;
@@ -1139,7 +1228,10 @@ bool begin_persist_owned(const editor::State& state,const editor::Change& change
             }
             return true;
         }catch(const std::exception& e){job->error=e.what();return false;}
-    });
+         catch(...){job->error="Encoding the durable editor bytes failed";return false;}};
+        const bool okay=execute();job->encoding.end=stage_qpc();
+        post_durable_wake(wake,enqueue);return okay;
+    }).share();
     durable_commit=std::move(work);return true;
 }
 bool begin_persist(const editor::State& state,const editor::Change& change,std::string& error){
@@ -1152,30 +1244,51 @@ editor_session::Durability poll_persist_owned(std::string& error){
     if(!durable_commit){error="No durable operation is pending";return Result::Uncertain;}
     auto& job=*durable_commit;
     if(job.task.wait_for(std::chrono::seconds(0))!=std::future_status::ready)return Result::Pending;
+    if(job.completion_error){
+        if(persist_completion_polling)return Result::Pending;
+        error=job.error;const bool uncertain=job.flushing&&(!store.healthy() || store.durable_revision()>=job.state.document.revision);
+        stage_stamp(job.state.document.project,job.change.operation,job.state.document.revision,editor_stage_metrics::Stage::PersistWorkEnd,2);
+        durable_commit.reset();return uncertain?Result::Uncertain:Result::Rejected;
+    }
     bool okay=false;
     try{okay=job.task.get();}catch(const std::exception& e){job.error=e.what();}
+    observe_durable_phase(job,okay);
     if(!okay){
+        if(persist_completion_polling)return Result::Pending;
         error=job.error;const bool uncertain=job.flushing&&(!store.healthy() || store.durable_revision()>=job.state.document.revision);
         stage_stamp(job.state.document.project,job.change.operation,job.state.document.revision,editor_stage_metrics::Stage::PersistWorkEnd,2);
         durable_commit.reset();return uncertain?Result::Uncertain:Result::Rejected;
     }
     if(!job.flushing){
         if(transport_teardown || !controller || controller->view().context.project!=job.state.document.project ||
-           controller->view().context.epoch!=job.state.document.epoch){error="The prepared commit's participant context expired";durable_commit.reset();return Result::Rejected;}
+           controller->view().context.epoch!=job.state.document.epoch){
+            error="The prepared commit's participant context expired";
+            if(persist_completion_polling){job.completion_error=true;job.error=error;return Result::Pending;}
+            durable_commit.reset();return Result::Rejected;
+        }
         // Allocate and validate publication before the irreversible durable
         // append. update_resources only stages bytes until finish_prepared.
-        if(job.hosting&&(!job.publication || !controller->update_resources(std::move(*job.publication),job.state.document.revision,error))){durable_commit.reset();return Result::Rejected;}
+        if(job.hosting&&(!job.publication || !controller->update_resources(std::move(*job.publication),job.state.document.revision,error))){
+            if(persist_completion_polling){job.completion_error=true;job.error=error;return Result::Pending;}
+            durable_commit.reset();return Result::Rejected;
+        }
         job.flushing=true;auto* work=&job;
+        job.wake.phase=DurablePhase::Flush;job.flush.capture=stage_metrics.recording()?stage_metrics.capture_id():0;
+        const auto wake=job.wake;const auto enqueue=job.enqueue;
         stage_stamp(job.state.document.project,job.change.operation,job.state.document.revision,editor_stage_metrics::Stage::DurableBegin);
-        job.task=std::async(std::launch::async,[work]{
-            try{
+        job.task=std::async(std::launch::async,[work,wake,enqueue]{
+            work->flush.begin=stage_qpc();
+            const auto execute=[&]{try{
                 if(!store.commit(work->saved,work->error))return false;
                 if(work->state.document.revision%16==0 && !garbage_collect(work->maintenance_error)){
                     if(!store.healthy()){work->error=work->maintenance_error;return false;}
                 }
                 return true;
             }catch(const std::exception& e){work->error=e.what();return false;}
-        });
+             catch(...){work->error="Flushing the durable editor bytes failed";return false;}};
+            const bool okay=execute();work->flush.end=stage_qpc();
+            post_durable_wake(wake,enqueue);return okay;
+        }).share();
         return Result::Pending;
     }
     stage_stamp(job.state.document.project,job.change.operation,job.state.document.revision,editor_stage_metrics::Stage::DurableEnd,1);
@@ -1191,6 +1304,9 @@ editor_session::Durability poll_persist(std::string& error){
     try{return poll_persist_owned(error);}
     catch(const std::exception& e){error=e.what();}
     catch(...){error="The durable editor worker failed";}
+    if(persist_completion_polling && durable_commit){
+        durable_commit->completion_error=true;durable_commit->error=error;return editor_session::Durability::Pending;
+    }
     bool uncertain=false;
     if(durable_commit){
         auto& work=*durable_commit;
@@ -1344,7 +1460,8 @@ bool apply(const editor::Document& before, const editor::Document& after, const 
         }
     }
     editor_native::Snapshot prepared;
-    if(!editor_native::prepare(before_apply,after,change,source,prepared,error))return false;
+    { StageScope preparing(after,change.operation,editor_stage_metrics::Stage::NativePrepareBegin,editor_stage_metrics::Stage::NativePrepareEnd);
+      if(!editor_native::prepare(before_apply,after,change,source,prepared,error))return false;preparing.okay=true; }
     bool applied=detached_scene();
     { StageScope native(after,change.operation,editor_stage_metrics::Stage::NativeApplyBegin,editor_stage_metrics::Stage::NativeApplyEnd);
       if(!applied)applied=editor_native::apply_prepared(prepared,change,error);native.okay=applied; }
@@ -4487,7 +4604,8 @@ void action(Action value) {
 } // namespace
 
 bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
-    if(controller || durable_commit)return false;
+    if(controller || durable_commit || durable_runtime_domain==UINT64_MAX)return false;
+    ++durable_runtime_domain;
     frozen=beginning=closing=gc_due=recovery_available=scanned_recovery=native_identity_lost=false;
     rejection_restore.reset();staged_capture.reset();retire_scene_alias();scene_alias_servicing=false;staged_capture_servicing=false;canonical_work_frame=UINT64_MAX;
     rejection_servicing=false;
@@ -5038,6 +5156,9 @@ void session_ended() {
 }
 void mode_changed(uint32_t, uint32_t) { schedule(); }
 void shutdown() {
+    // Retire notifications before joining workers. Enqueued callbacks may run
+    // after this runtime and its Controller have been replaced.
+    if(durable_runtime_domain!=UINT64_MAX)++durable_runtime_domain;
     // Settle while the exact controller, creation scope and Store still exist.
     // Failure can require native rollback, so retire native adapters last.
     if(controller){controller->end();controller.reset();}

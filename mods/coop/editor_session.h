@@ -199,6 +199,9 @@ public:
     void on_join(uint8_t id);
     void on_leave(uint8_t id);
     void tick(editor::Time now);
+    // Outside-frame worker completion only. Never drains inbound/local/control
+    // queues; unsuccessful outcomes wait for tick before native rollback.
+    bool poll_persistence(editor::Time now);
     bool submit(editor::Request, std::string& error);
     bool upload_assets(editor::OperationId,const std::vector<uint8_t>&,std::string& error);
     // Release quarantines local tokens immediately. Overlapping acquisition is

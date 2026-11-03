@@ -1479,3 +1479,53 @@ Environment, 63,862 materialization, 1,662 staged and 118,668 full checks.
 All 51 compiler/Make inputs have zero drift in
 `out/preview9-pose-prepare-native-receipt.json`. Controlled work counts are not
 running-game frame times, and no final latency acceptance is claimed.
+
+### C33 durable-worker completion is independent of frame polling
+
+The complete C32 two-player run accepted all 60 movements, but missed the frame
+and LAN budgets. Separating roles matters: own-author window maxima were
+96.126/97.764 ms at p95; observer windows were 140.677/188.690 ms. Actual marker
+application was about 1 ms, while observer pre-apply work and private resource
+serialization dominated. Even a paired-operation counterfactual removing both
+participants' entire apply intervals leaves guest confirmation at 268.678 ms
+p95. Native serialization changes alone cannot establish the 200 ms budget.
+The exact analysis is retained in `out/preview9-c32-full-performance-analysis.json`
+and `out/preview9-c32-critical-path-counterfactual.json`; inclusive Native work
+spans and staged phases are not summed.
+
+C33 preserves apply-before-durable semantics and both worker barriers:
+owned encoding, game-thread context/publication-capacity validation, then the
+irreversible Store append. Each worker receives an immutable wake ticket and
+copied enqueue function. It records QPC values only in its owned result and
+posts through the existing outside-frame queue. It does not query Controller,
+Native scene or Runtime state. The SDK queue is mutex-protected; its retained
+callback keeps the calling DLL mapped through callback and payload cleanup.
+
+The game-thread callback owns even a stale payload. Exact runtime-domain,
+job/phase, operation/revision, Controller/Session/transport, canonical context
+and passive owner/read-scope values must still match. A zero-time future probe
+denies an early callback without waiting or reposting. Normal update polling
+remains the fallback for early dispatch or allocation/enqueue failure. The
+job destructor joins before any worker input/result member ends its lifetime.
+Shutdown retires its domain before joining workers and clearing adapters.
+
+The completion-only Controller entry does not drain inbound, local, control or
+Saved queues. Successful durability may publish its existing ordered Decision
+and coverage; failures remain held for the ordinary outside-frame drain before
+rollback or error callbacks. The wake does not refresh UI or query Native state.
+Its cached owner context is continuation fencing, not fresh scene authority;
+the original Native application and input hold remain the authorization path.
+
+Worker encode/flush start, end and first-observed QPC values now separate actual
+owned work from scheduler delay. Only worker start/end join the explicit sampled
+timestamp allowlist, and a recorder restart drops an older phase's samples.
+NativePrepare begin/end surrounds only the actual private prepare call. The
+retained C32 public-behavior RED finishes encoding but has no outside task and
+cannot reach Flush without another tick/frame; its exact 192-input baseline is
+in `out/preview9-c33-completion-c32-red-receipt.json`.
+
+The final actual-i686 strict O2 run passes 2,225 completion-focused and 114,743
+full Runtime checks, 480 focused and 23,766 full Session checks, and 132 numeric
+stage checks. All 80 compiler/Make inputs remain unchanged in
+`out/preview9-c33-completion-receipt.json`. This proves the controlled lifecycle,
+queue and durable-byte behavior; running-game frame/LAN budgets remain unproved.

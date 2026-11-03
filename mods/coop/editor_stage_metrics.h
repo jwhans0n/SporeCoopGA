@@ -14,7 +14,9 @@ enum class Stage : uint8_t {
     ApplyWorkBegin, ApplyWorkEnd, NativeApplyBegin, NativeApplyEnd,
     PersistWorkBegin, PersistWorkEnd, DurableBegin, DurableEnd,
     HostDecisionQueued, DecisionDecoded, OwnConfirmed, GestureRelease, SceneReady,
-    CaptureBegin, CaptureEnd, SupportedBegin, SupportedEnd, InverseBegin, InverseEnd
+    CaptureBegin, CaptureEnd, SupportedBegin, SupportedEnd, InverseBegin, InverseEnd,
+    NativePrepareBegin, NativePrepareEnd, WorkerEncodeBegin, WorkerEncodeEnd, WorkerEncodeObserved,
+    WorkerFlushBegin, WorkerFlushEnd, WorkerFlushObserved
 };
 inline const char* name(Stage stage) noexcept {
     switch(stage) {
@@ -41,6 +43,14 @@ inline const char* name(Stage stage) noexcept {
     case Stage::SupportedEnd:return "supported_end";
     case Stage::InverseBegin:return "inverse_begin";
     case Stage::InverseEnd:return "inverse_end";
+    case Stage::NativePrepareBegin:return "native_prepare_begin";
+    case Stage::NativePrepareEnd:return "native_prepare_end";
+    case Stage::WorkerEncodeBegin:return "worker_encode_begin";
+    case Stage::WorkerEncodeEnd:return "worker_encode_end";
+    case Stage::WorkerEncodeObserved:return "worker_encode_observed";
+    case Stage::WorkerFlushBegin:return "worker_flush_begin";
+    case Stage::WorkerFlushEnd:return "worker_flush_end";
+    case Stage::WorkerFlushObserved:return "worker_flush_observed";
     }
     return "invalid";
 }
@@ -66,6 +76,7 @@ public:
     bool recording() const noexcept { return recording_; }
     size_t size() const noexcept { return count_; }
     size_t overflow() const noexcept { return overflow_; }
+    uint64_t capture_id() const noexcept { return capture_; }
     bool clock_error() const noexcept { return clock_error_; }
     const Event* at(size_t index) const noexcept { return index<count_?&events_[index]:nullptr; }
     bool record(editor::ProjectId project,editor::OperationId operation,editor::Revision revision,
@@ -73,12 +84,14 @@ public:
         if(!recording_)return false;
         bool valid_project=false;for(auto b:project)valid_project|=b!=0;
         if(!valid_project || operation.author.slot>=4 || !operation.author.generation ||
-           !operation.sequence || !operation.epoch || unsigned(stage)>unsigned(Stage::InverseEnd) || success>2)return false;
-        // Native release is sampled before capture and acquires its operation
-        // identity only after a valid gesture is projected. It may be appended
-        // later than an unrelated transport stage without moving the clock.
+           !operation.sequence || !operation.epoch || unsigned(stage)>unsigned(Stage::WorkerFlushObserved) || success>2)return false;
+        // Native release/capture and worker start/end are sampled before their
+        // game-thread publication. Only these explicit sampled stages may be
+        // appended behind an unrelated event without moving the clock.
         const bool sampled=stage==Stage::GestureRelease || stage==Stage::CaptureBegin || stage==Stage::CaptureEnd ||
-            stage==Stage::SupportedBegin || stage==Stage::SupportedEnd;
+            stage==Stage::SupportedBegin || stage==Stage::SupportedEnd ||
+            stage==Stage::WorkerEncodeBegin || stage==Stage::WorkerEncodeEnd ||
+            stage==Stage::WorkerFlushBegin || stage==Stage::WorkerFlushEnd;
         if(qpc<started_ || (qpc<last_ && !sampled)){clock_error_=true;recording_=false;return false;}
         if(count_==Capacity){++overflow_;recording_=false;return false;}
         last_=std::max(last_,qpc);events_[count_++]={project,operation,revision,qpc,stage,success};return true;

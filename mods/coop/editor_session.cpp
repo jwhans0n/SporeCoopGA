@@ -127,8 +127,12 @@ struct Controller::Impl {
     Revision baseline_cache_revision = UINT64_MAX;
     std::optional<ResourceStage> staged;
     std::optional<State> pending_baseline;
-    struct PendingCommit { uint8_t from=0; Decision decision; std::optional<State> replica; };
+    struct PendingCommit {
+        uint8_t from=0; Decision decision; std::optional<State> replica;
+        std::optional<Durability> completion={};std::string completion_error={};
+    };
     std::optional<PendingCommit> pending_commit;
+    bool completion_failed=false;
     std::optional<w::Control> pending_control;
     std::optional<w::Control> returning_control;
     std::set<Peer> returned;
@@ -713,7 +717,7 @@ struct Controller::Impl {
     }
     void pump();
     void finish_host_decision(uint8_t,const Decision&,Revision);
-    void poll_commit();
+    void poll_commit(bool failures=true);
     void finish_commit(Durability,std::string);
 };
 
@@ -797,13 +801,21 @@ void Controller::Impl::finish_host_decision(uint8_t from,const Decision& decisio
     if (!from && callbacks.decision) callbacks.decision(decision);
     view.context = context();
 }
-void Controller::Impl::poll_commit()
+void Controller::Impl::poll_commit(bool failures)
 {
     if(!pending_commit)return;
     std::string error;auto result=Durability::Uncertain;
-    try{result=callbacks.poll_persist(error);}
-    catch(const std::exception& e){error=e.what();}catch(...){error="Polling durable persistence failed";}
+    if(pending_commit->completion){
+        if(!failures)return;
+        result=*pending_commit->completion;error=std::move(pending_commit->completion_error);
+    }else{
+        try{result=callbacks.poll_persist(error);}
+        catch(const std::exception& e){error=e.what();}catch(...){error="Polling durable persistence failed";}
+    }
     if(result==Durability::Pending)return;
+    if(!failures && result!=Durability::Durable){
+        pending_commit->completion=result;pending_commit->completion_error=std::move(error);return;
+    }
     finish_commit(result,std::move(error));
 }
 void Controller::Impl::finish_commit(Durability result,std::string error)
@@ -1408,11 +1420,15 @@ void Controller::end_session(bool recovery)
     auto& i = *impl_;
     if(i.pending_commit){
         std::string error;auto result=Durability::Uncertain;
-        try{result=i.callbacks.settle_persist(error);}
-        catch(const std::exception& e){error=e.what();}catch(...){error="Settling durable persistence failed";}
+        if(i.pending_commit->completion){result=*i.pending_commit->completion;error=std::move(i.pending_commit->completion_error);}
+        else{
+            try{result=i.callbacks.settle_persist(error);}
+            catch(const std::exception& e){error=e.what();}catch(...){error="Settling durable persistence failed";}
+        }
         if(result==Durability::Pending){result=Durability::Uncertain;error="The persistence worker did not settle before teardown";}
         i.finish_commit(result,std::move(error));
     }
+    i.completion_failed=false;
     if (i.active() && i.view.context.epoch) {
         net::Writer packet; std::string ignored;
         const uint8_t reason = recovery && i.hosting ? 3 : 0;
@@ -1463,6 +1479,7 @@ void Controller::tick(Time now)
     if (now < i.now) { i.freeze(0, "Editor controller monotonic clock moved backwards."); return; }
     i.now = now; i.ticking = true;
     struct Guard { bool& ticking; ~Guard() { ticking = false; } } guard{i.ticking};
+    if(i.completion_failed){i.completion_failed=false;i.freeze(0,"Completing the durable editor publication failed.");return;}
     for (auto from : i.overflow) i.freeze(from, "Editor inbound queue exceeded a configured bound."); i.overflow.clear();
     try {
         i.poll_commit();
@@ -1547,6 +1564,24 @@ void Controller::tick(Time now)
         i.service_previews();i.pump();
     } catch (const std::exception& error) { i.freeze(0, error.what()); }
     catch (...) { i.freeze(0, "Editor controller callback failed."); }
+}
+
+bool Controller::poll_persistence(Time now)
+{
+    auto& i=*impl_;
+    if(i.ticking || !i.pending_commit || i.completion_failed || now<i.now)return false;
+    i.now=now;i.ticking=true;
+    struct Guard {bool& value;~Guard(){value=false;}} guard{i.ticking};
+    try{
+        i.poll_commit(false);
+        if(i.coverage_pending && i.view.phase==Phase::Ready){
+            i.coverage_pending=false;std::string error;auto ctx=i.context();
+            if(!i.queue(0,{ctx,w::Coverage{i.view.locally_durable,i.hashes.at(ctx.revision)}},true,error)){
+                i.completion_failed=true;return false;
+            }
+        }
+        i.pump();return true;
+    }catch(...){i.completion_failed=true;return false;}
 }
 
 bool Controller::submit(Request request, std::string& error)
