@@ -6,13 +6,14 @@ executable and its exact 4 GB LAA variant remain supported. Older protocol
 clients are explicitly rejected. This report records development evidence,
 not completed native acceptance, a main merge or a public release.
 
-Latest private native build is C34, SHA-256
-`9d50eb8c823da45f9ffe5bb1c8f50b6c55074355696242d9ab92f38360455e11`.
-Its new vehicle creation, checked Undo/Redo and shared adventure Save pass on
-two players. Fresh-process file opening still stops at Native's missing-local-
-content warning; retained dependencies have no cold registration path. That
-defect, observer frame budgets, guest confirmation and the remaining feature
-matrix are open. Personal preview 8 and its 4 GB executable remain unchanged.
+Latest private native build is C35, SHA-256
+`01da699d558caaa58d91fdb5005463232901e420b67736e8a4216f52a8b76903`.
+Its two-player new vehicle creation and shared native Save pass. After both
+processes close, native file opening now restores the exact Saved dependencies
+and passes with the same source, 419 placements, 119 classes, authored semantic
+hash and zero faults, without Recover or accepting asset replacement. Observer
+frame budgets, guest confirmation and the remaining feature matrix are still
+open. Personal preview 8 and its 4 GB executable remain unchanged.
 
 ## Candidate changes
 
@@ -2575,3 +2576,65 @@ Evidence: `out/preview9-c34-cold-cancel/result.json` and
 restoration path before Native's original availability checks remains to
 be implemented and validated; blanket-mounting historical cache packages
 would exceed existing admission limits and is not an acceptable remedy.
+
+### C35 focused cold-Save checkpoint
+
+The next cycle is deliberately limited to dependency persistence. Kit 0.3.5
+queues interactive lifecycle work outside Present; direct loader detours retain
+their DLL return stacks through nested unload. The Saved codec/store and Native
+issuer bind one exact Saved image and complete raw reference roster to only its
+selected admitted content. Group 0 keys and optional creation companions retain
+the existing Collector policy. Runtime publishes the immutable receipt only
+after its Save/terrain checks and before Saved confirmation. Native restores
+that receipt during genuine owned state1/phase0 and then runs every original
+preflight check. No old transport roots or historical directory-wide mounts
+are used. Implementation commits: 6e4f5ea, af16cf1, 25a7555, d110796, d8d9e28.
+
+Focused actual-i686 tests pass: loader gate 17718; Native view/owner 3226;
+collector 202; Runtime native flow 11128; recovery 2026; logical Saved root 158;
+alias capture 241. The codec/store passes 113 codec cases on Linux/i686 and
+24/23 real-filesystem cases. Windows directory symlink creation alone is
+unavailable without its privilege. A preexisting export-cancel/rebuild failure
+also reproduces in the retained C33 executable and is fixed without weakening
+the separate readiness requirement for actual restoration. Evidence:
+`out/preview 9-c35-saved-native/receipt.json`,
+`out/preview 9-c35-root-focused-r2/receipt.json`,
+`out/preview 9-c35-root-focused/c33-terrain-red.json`, and
+`out/editor-preview 9-saved-dependencies-group0/receipt.json`.
+
+The private C35 production DLL is 96,093,184 bytes. All 202 actual production
+inputs remain unchanged during build and after commit. Its retained Kit 0.3.5
+DLL is SHA-256
+`8856145ec32cbf7cbfcc7ce6381fd860e86086439e2becca4454cffd222af8df`.
+Only the isolated installation is updated. Initial startup stops before any
+authoring input because a changed monitor/refresh list maps old mode index 11
+to 1600x1000. Native Settings independently identifies index 2 as 1024x768@60Hz
+on both profiles; normal settings application plus a clean restart restores
+the verified viewport. The private runner now requires that measured index
+explicitly. Both supported executable hashes and physical input isolation are
+unchanged. Two-player bootstrap then passes at revision/history 0 and fault 0.
+
+The host makes a valid new Military Land vehicle through the already measured
+native recipe. Done commits one class and one Create adventure asset history
+item at revision 1. Both scenes converge with 419 placements, 119 classes and
+5 acts. Native adventure Save completes with SavedApplied 2/2, unchanged history
+and authored semantic hash, logical source `408A0000!29132851.366A930D`.
+The host's exact persisted record SHA-256 is
+`d493c1f444ac9056426863479d81def55ddc94b9763d1e620d04b9a988300a80`.
+Its 353,916-byte receipt survives two identical reads, SHA-256
+`8f15a0f3d44e9e66d0d29bd9db15fbb643b733ef176871aa88d8203bb003e6af`.
+Evidence: `out/preview 9-c35-host-vehicle-save/result.json`,
+`out/preview 9-c35-vehicle-native-save-carrier/result.json`, and
+`out/preview 9-c35-saved-dependency-witness/receipt.json`.
+
+Both participants leave normally to Galaxy with zero faults before their runner
+closes. Fresh processes 7124/45508 open the newest exact-title Saved adventure
+through the native My Creations picker. The ready-scene key independently
+matches `408A0000!29132851.366A930D`; 419 placements, 119 classes and 5 acts and
+the complete authored semantic hash match the warm Save. Native reports
+`deferred=1 resumed=1 restored=1 cancelled=0 failed=0`, one registered dependency
+package of 329,860 payload bytes and zero faults. No Recover, memory write,
+manual profile repair or replacement-warning confirmation occurs. Evidence:
+`out/preview 9-c35-save-retirement/result.json` and
+`out/preview 9-c35-cold-native-open/result.json`. This closes the reported C34
+cold dependency reproduction, not the entire preview 9 acceptance matrix.
