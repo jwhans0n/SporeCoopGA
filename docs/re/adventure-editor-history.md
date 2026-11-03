@@ -1529,3 +1529,62 @@ full Runtime checks, 480 focused and 23,766 full Session checks, and 132 numeric
 stage checks. All 80 compiler/Make inputs remain unchanged in
 `out/preview9-c33-completion-receipt.json`. This proves the controlled lifecycle,
 queue and durable-byte behavior; running-game frame/LAN budgets remain unproved.
+
+### Inactive portable v17 pose/container producer
+
+`editor_native_refpack.{h,cpp}` is a scalar, value-only transcription of the
+supported encoder at 92C780. The original 974-byte implementation has only
+five external calls, to verified memcpy/memset thunks. An OUT-only actual-i686
+fixture executed that extracted code with caller-owned bounded buffers and
+guard pages. No extracted machine code or Native ABI call ships in the module.
+The exact match/gain tie order, literal grouping, hash reset and selected
+3FFF/1FFFF link window are retained. Input is bounded to 16,000,000 bytes.
+
+`editor_native_pose_format.{h,cpp}` has no Native caller. It accepts complete
+logical ID/generation, dense serialized slot, class and all ten exact raw
+pose/companion payloads. Only existing position 071147E6 (12 bytes) and optional
+quaternion 071147E7 (16 bytes) change. Scale, seven companions, flags, unknown
+fields, directory order and every prefix byte are preserved. Core finite/range
+and quaternion eligibility checks never normalize or approximate the raw words.
+
+The profile requires both Native version words to be 17. The first precedes
+PropertyList; Write F25FFE..F26006 emits another after PropertyList, then
+F26012..F26020 emits the embedded DBPF length. The memory DBPF is a canonical
+96-byte v3 header, one 01897C18 core record, flags7 index immediately after
+payload, no holes or tail. The bounded five-byte RefPack header and declared
+decoded size are checked before invoking the generic decoder. BASE recompression
+must reproduce every original compressed byte. Complete reverse comparison and
+an independent decode of generated AFTER precede atomic output publication.
+
+Image bytes are limited to 16 MiB, decoded bytes to 16,000,000, markers to 4096,
+edits to 64 and directory entries to 131072. Checked offsets/counts and staged
+buffers bound helper-owned working data below 64 MiB. Larger capabilities and
+unrecognized profiles return Unsupported; malformed input, stale raw words or
+identity and allocation/codec failures return Error. Neither changes output.
+Nonempty deprecated marker distances require fallback. The compressed ratio
+must be strictly below one half: this avoids claiming equivalence near Native's
+x87 0x3F733333 keep threshold. The genuine Town ratio is approximately 3%.
+
+`tests/fixtures/editor_native_pose/` retains 15 exact, deduplicated closed C33
+snapshots and the independently decoded typed targets for all 28 consecutive
+author/observer pairs. Whole AFTER, inverse, Position-only contract negatives
+and four actual compressed-size changes are checked on Linux and actual i686.
+The raw roster also retains unadvertised native destination defaults without
+claiming semantic presence. The encoder's deterministic goldens originate in
+the earlier independently executed Native differential corpus; its test runs
+read-only guarded inputs, including 16,000,000-byte boundaries.
+
+This is format reproduction, not Native admission, semantic projection trust,
+fixed-point token minting or successor induction. A future consumer still needs
+an independently genuine BASE NativeRead/Write fixed point, complete semantic
+schema/presence, supported code/descriptor profile, sidecars and fresh context
+and resolver closure. ClassAct legacy localized-text and marker read postpasses
+remain separate conservative eligibility gates. Live BEFORE/post-apply opaque
+checks remain unchanged. No Native/Runtime/wire/map/hook/cache integration is
+part of this checkpoint.
+
+OUT evidence is `out/preview9-c34-pose-format/receipt.json` and the independent
+`out/preview9-c34-pose-format-review/receipt.json`. The same-process scalar
+encoder p95 was 12.252 ms versus extracted raw 11.330 ms; the bounded chunk
+experiment also showed no useful p95 win. These results support no compression
+hook or frame/LAN performance claim.

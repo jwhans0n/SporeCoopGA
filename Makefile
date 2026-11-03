@@ -182,6 +182,29 @@ $(B)/host/editor_native_complexity_ratio_tests.exe: tests/editor_native_complexi
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_native_complexity_ratio_tests.cpp -o $@
 
+# Inactive portable Native format/codec helpers, no game or Native API linkage.
+EDITOR_REFPACK_SRC := mods/coop/editor_native_refpack.cpp mods/coop/net/dbpf.cpp updater/sha256.cpp
+EDITOR_POSE_FORMAT_SRC := mods/coop/editor_native_pose_format.cpp $(EDITOR_REFPACK_SRC)
+EDITOR_POSE_FORMAT_DATA := $(wildcard tests/fixtures/editor_native_pose/*)
+.PHONY: test-editor-pose-format
+test-editor-pose-format: $(B)/host/editor_native_refpack_tests $(B)/host/editor_native_pose_format_tests
+	$(B)/host/editor_native_refpack_tests
+	$(B)/host/editor_native_pose_format_tests
+test-editor: test-editor-pose-format
+test-editor-windows: $(B)/host/editor_native_refpack_tests.exe $(B)/host/editor_native_pose_format_tests.exe
+$(B)/host/editor_native_refpack_tests: tests/editor_native_refpack_tests.cpp mods/coop/editor_native_refpack.h $(EDITOR_REFPACK_SRC) $(EDITOR_POSE_FORMAT_DATA)
+	@mkdir -p $(B)/host
+	$(HOSTCXX) -std=c++20 -O2 -g -Wall -Wextra -Werror -Imods/coop tests/editor_native_refpack_tests.cpp $(EDITOR_REFPACK_SRC) -o $@
+$(B)/host/editor_native_pose_format_tests: tests/editor_native_pose_format_tests.cpp mods/coop/editor_native_pose_format.h mods/coop/editor_native_refpack.h mods/coop/net/editor_document.h $(EDITOR_POSE_FORMAT_SRC) $(EDITOR_POSE_FORMAT_DATA)
+	@mkdir -p $(B)/host
+	$(HOSTCXX) -std=c++20 -O2 -g -Wall -Wextra -Werror -Imods/coop tests/editor_native_pose_format_tests.cpp $(EDITOR_POSE_FORMAT_SRC) -o $@
+$(B)/host/editor_native_refpack_tests.exe: tests/editor_native_refpack_tests.cpp mods/coop/editor_native_refpack.h $(EDITOR_REFPACK_SRC) $(EDITOR_POSE_FORMAT_DATA)
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_native_refpack_tests.cpp $(EDITOR_REFPACK_SRC) -o $@
+$(B)/host/editor_native_pose_format_tests.exe: tests/editor_native_pose_format_tests.cpp mods/coop/editor_native_pose_format.h mods/coop/editor_native_refpack.h mods/coop/net/editor_document.h $(EDITOR_POSE_FORMAT_SRC) $(EDITOR_POSE_FORMAT_DATA)
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_native_pose_format_tests.cpp $(EDITOR_POSE_FORMAT_SRC) -o $@
+
 $(B)/host/editor_native_pose_tests.exe: $(EDITOR_CORE_SRC) tests/editor_native_pose_tests.cpp mods/coop/editor_native_pose.h
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $(EDITOR_CORE_SRC) tests/editor_native_pose_tests.cpp -o $@
