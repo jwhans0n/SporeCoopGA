@@ -2597,10 +2597,10 @@ alias capture 241. The codec/store passes 113 codec cases on Linux/i686 and
 unavailable without its privilege. A preexisting export-cancel/rebuild failure
 also reproduces in the retained C33 executable and is fixed without weakening
 the separate readiness requirement for actual restoration. Evidence:
-`out/preview 9-c35-saved-native/receipt.json`,
-`out/preview 9-c35-root-focused-r2/receipt.json`,
-`out/preview 9-c35-root-focused/c33-terrain-red.json`, and
-`out/editor-preview 9-saved-dependencies-group0/receipt.json`.
+`out/preview9-c35-saved-native/receipt.json`,
+`out/preview9-c35-root-focused-r2/receipt.json`,
+`out/preview9-c35-root-focused/c33-terrain-red.json`, and
+`out/editor-preview9-saved-dependencies-group0/receipt.json`.
 
 The private C35 production DLL is 96,093,184 bytes. All 202 actual production
 inputs remain unchanged during build and after commit. Its retained Kit 0.3.5
@@ -2623,9 +2623,9 @@ The host's exact persisted record SHA-256 is
 `d493c1f444ac9056426863479d81def55ddc94b9763d1e620d04b9a988300a80`.
 Its 353,916-byte receipt survives two identical reads, SHA-256
 `8f15a0f3d44e9e66d0d29bd9db15fbb643b733ef176871aa88d8203bb003e6af`.
-Evidence: `out/preview 9-c35-host-vehicle-save/result.json`,
-`out/preview 9-c35-vehicle-native-save-carrier/result.json`, and
-`out/preview 9-c35-saved-dependency-witness/receipt.json`.
+Evidence: `out/preview9-c35-host-vehicle-save/result.json`,
+`out/preview9-c35-vehicle-native-save-carrier/result.json`, and
+`out/preview9-c35-saved-dependency-witness/receipt.json`.
 
 Both participants leave normally to Galaxy with zero faults before their runner
 closes. Fresh processes 7124/45508 open the newest exact-title Saved adventure
@@ -2635,6 +2635,32 @@ the complete authored semantic hash match the warm Save. Native reports
 `deferred=1 resumed=1 restored=1 cancelled=0 failed=0`, one registered dependency
 package of 329,860 payload bytes and zero faults. No Recover, memory write,
 manual profile repair or replacement-warning confirmation occurs. Evidence:
-`out/preview 9-c35-save-retirement/result.json` and
-`out/preview 9-c35-cold-native-open/result.json`. This closes the reported C34
+`out/preview9-c35-save-retirement/result.json` and
+`out/preview9-c35-cold-native-open/result.json`. This closes the reported C34
 cold dependency reproduction, not the entire preview 9 acceptance matrix.
+
+### C35 focused commit-latency baseline
+
+The cold-opened adventure is reused directly for timing, with two warm-ups and
+30 actual movement gestures per author. All 60 measured commits complete; a
+final independent read-only check finds both participants ready at canonical
+and durable revision 62, the same strict convergence hash, 419 placements,
+119 classes, five acts and zero faults. This fixture contains one additional
+unused vehicle class compared with C33, so it is not an identical-fixture
+before/after comparison. No broader feature matrix is repeated in this cycle.
+
+The LAN performance gate fails. Host submit-to-confirmation p95 is 67.8128 ms;
+guest is 330.0971 ms against 200 ms. Release-to-confirmation p95 is
+541.3905/801.937 ms. Commit-window frame-gap p95 is 185.8226/187.0712 ms against
+100 ms; maximum is 187.1876/189.672 ms, within the separate 250 ms maximum.
+The observer path remains the principal frame-gap problem. Native work retains
+12 Writes on each author, five on a guest observing the host and four on a host
+observing the guest. Removing an opaque-state serialization check is rejected:
+the existing fixture changes unknown marker bytes after the first emitted
+Write, which the second Write must still detect.
+
+Evidence: `out/preview9-c35-commit-baseline-two-town/summary.json`,
+`native-work-summary.json` and full `result.json` (SHA-256
+`eaabcf50c4be12ff71555d6f96f1b755469ceca469370494730c66122b57a859`);
+`out/preview9-c35-commit-final-proof/result.json`. Successful functional
+convergence is recorded separately from the failed performance acceptance.
