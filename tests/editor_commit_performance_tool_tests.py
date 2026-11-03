@@ -426,6 +426,80 @@ class StageContracts(unittest.TestCase):
         with self.assertRaisesRegex(perf.FixtureError,'another placement'):
             perf.assert_target_moved(before,after,'4:1')
 
+    def warm_drag_fixture(self, outcome='ready', failure_command=None):
+        calls=[];bodies=[];waits=[];clock=[0.]
+        initial=dict(phase=4,revision=7,durable=7,ready=True,gesture=0,frozen=0,selection='4:1',captures=0,rejected=0,text='owned')
+        games=[SimpleNamespace(instance=i,state=copy.deepcopy(initial))for i in (95,96)]
+        host,author=games
+        lease='local=1:1 phase=4 revision=7\nmember peer=1:1 phase=4 pending=0\nlease scope=Placement object=4:1 token=11 remaining_ms=9000\n'
+        injected=perf.FixtureError('controlled input error')
+        def call(command):
+            calls.append(command)
+            if command==failure_command:raise injected
+            if command=='button 520 365 up':
+                host.state.update(ready=False,gesture=1)
+                author.state.update(ready=False,gesture=1)
+            return lease if command=='coop.editor leases'else''
+        author.call=call
+        def body(game, object_id):
+            bodies.append((game.instance,object_id))
+            if not game.state['ready']:raise perf.FixtureError('Native Adventure Editor is not ready for a snapshot')
+            return 500,365
+        def wait(label,predicate,timeout=None):
+            waits.append(label)
+            if label=='exact native target and ownership before movement':
+                self.assertTrue(predicate());return True
+            self.assertEqual(label,'one durably accepted warmup release')
+            released=list(calls)
+            for index in range(8):
+                clock[0]+=.55
+                if index==2:host.state.update(revision=8,durable=8)
+                self.assertFalse(predicate())
+                self.assertEqual(calls,released);self.assertEqual(len(bodies),1)
+            for game in games:game.state.update(phase=4,revision=8,durable=8,ready=True,gesture=0)
+            if outcome=='stale':author.state.update(revision=7,durable=7)
+            if outcome=='frozen':author.state['frozen']=1
+            if outcome=='duplicate':author.state.update(revision=9,durable=9)
+            result=predicate()
+            if not result:raise perf.FixtureError('controlled settlement timeout')
+            self.assertEqual(calls,released);return result
+        host.wait=author.wait=wait
+        party=SimpleNamespace(host=host,all_games=games,args=SimpleNamespace(drag_pixels=20),body=body,
+            verify=mock.Mock(),converge=mock.Mock(),record=mock.Mock(),result={},write=mock.Mock())
+        return party,author,calls,bodies,waits,clock,injected
+
+    def test_warmup_pending_capture_outlives_retry_window_without_reissuing_input(self):
+        party,author,calls,bodies,waits,clock,_=self.warm_drag_fixture()
+        def pause(seconds):clock[0]+=seconds
+        with mock.patch.object(perf,'status',side_effect=lambda game:game.state), \
+             mock.patch.object(perf.party_module,'status',side_effect=lambda game:game.state), \
+             mock.patch.object(perf.time,'monotonic',side_effect=lambda:clock[0]),mock.patch.object(perf.time,'sleep',side_effect=pause):
+            perf.party_module.EditorParty.gesture(party,author,'warm',lambda:perf.checked_warm_drag(party,author,'4:1'))
+        self.assertGreater(clock[0],3)
+        self.assertEqual(bodies,[(96,'4:1')]);self.assertEqual(calls.count('button 500 365 down'),1)
+        self.assertEqual(calls.count('button 520 365 up'),1)
+        self.assertEqual(waits,['exact native target and ownership before movement','one durably accepted warmup release'])
+        party.verify.assert_called_once_with(author);party.converge.assert_called_once_with(8);party.record.assert_called_once_with('warm')
+
+    def test_warmup_pins_original_next_revision_and_refuses_stale_frozen_or_duplicate(self):
+        for outcome,message in (('stale','settlement timeout'),('frozen','froze'),('duplicate','more than one')):
+            with self.subTest(outcome=outcome):
+                party,author,calls,bodies,_,_,_=self.warm_drag_fixture(outcome)
+                with mock.patch.object(perf,'status',side_effect=lambda game:game.state),mock.patch.object(perf.time,'sleep'),self.assertRaisesRegex(perf.FixtureError,message):
+                    perf.checked_warm_drag(party,author,'4:1')
+                self.assertEqual(len(bodies),1);self.assertEqual(calls.count('button 500 365 down'),1)
+                self.assertEqual(calls.count('button 520 365 up'),1)
+
+    def test_warmup_input_error_releases_once_and_does_not_retry_or_wait(self):
+        for command in ('move 507 365','button 520 365 up'):
+            with self.subTest(command=command):
+                party,author,calls,bodies,waits,_,injected=self.warm_drag_fixture(failure_command=command)
+                with mock.patch.object(perf,'status',side_effect=lambda game:game.state),mock.patch.object(perf.time,'sleep'),self.assertRaises(perf.FixtureError)as caught:
+                    perf.checked_warm_drag(party,author,'4:1')
+                self.assertIs(caught.exception,injected);self.assertEqual(len(bodies),1)
+                self.assertEqual(calls.count('button 500 365 down'),1);self.assertEqual(calls.count('button 520 365 up'),1)
+                self.assertEqual(waits,['exact native target and ownership before movement'])
+
     def test_author_handoff_uses_normal_deselection_without_a_transaction(self):
         calls=[];writes=[]
         author=SimpleNamespace(instance=95,state=dict(revision=7,selection='4:1'))

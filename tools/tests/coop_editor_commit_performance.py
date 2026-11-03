@@ -617,13 +617,17 @@ def assert_target_moved(before,after,object_id):
 
 
 def checked_warm_drag(party,author,object_id):
+    revision=status(party.host)['revision']
     source=party.body(author,object_id);target=(source[0]+party.args.drag_pixels,source[1])
-    begin_checked_drag(party,author,object_id,source,status(party.host)['revision'])
+    begin_checked_drag(party,author,object_id,source,revision)
     try:
         for fraction in (.35,.7,1.):
             author.call(f'move {round(source[0]+(target[0]-source[0])*fraction)} {source[1]}')
             author.call('wait.frames 6 15000');time.sleep(.06)
     finally:author.call(f'button {target[0]} {target[1]} up')
+    # A staged capture can outlive EditorParty.gesture's three-second retry
+    # observation. Keep this single release owned until every scene is ready.
+    party.host.wait('one durably accepted warmup release',lambda:settled_revision(party,revision+1))
 
 
 def measure(party,author,object_id,index):
