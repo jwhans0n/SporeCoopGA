@@ -104,6 +104,8 @@ def native_sample(kernel,handle,image,base,family,edit_source=None,observe_other
         raise ValueError('Native Edit request/source changed')
     model=u32(head,0x98);resource=u32(head,0x7C);config=u32(head,0x24);ui=u32(head,0x78)
     if word(ui+0x5C)!=editor:raise ValueError('Creation UI belongs to another native editor')
+    edit_pending=read(ui+0xCC,4)if edit_source is not None else None
+    edit_confirmation=read(ui+0xEC,1)if edit_source is not None else None
     model_type=word(model+0x58);early_owner=word(resource+0xC);early_flag=read(early_owner+0x44,1)[0]
     allowed_begin,allowed_end=struct.unpack_from('<II',head,0x334)
     if allowed_end<allowed_begin or (allowed_end-allowed_begin)%4 or allowed_end-allowed_begin>256:
@@ -147,7 +149,8 @@ def native_sample(kernel,handle,image,base,family,edit_source=None,observe_other
         word(manager+0x28)!=active or read(begin+24*active,24)!=mode_row or word(editor+0x1CC)!=request or
         read(request,0x34)!=request_bytes[:0x34] or word(editor+0x98)!=model or word(editor+0x7C)!=resource or
         word(editor+0x78)!=ui or word(ui+0x5C)!=editor or word(model+0x58)!=model_type or
-        read(editor+0x48,32)!=head[0x48:0x68] or read(editor+0x38C,4)!=head[0x38C:0x390]):
+        read(editor+0x48,32)!=head[0x48:0x68] or read(editor+0x38C,4)!=head[0x38C:0x390] or
+        edit_source is not None and(read(ui+0xCC,4)!=edit_pending or read(ui+0xEC,1)!=edit_confirmation)):
         raise ValueError('Creation owner/validation changed during the bounded sample')
     return dict(mode_manager=manager,active_index=active,mode_id=mode_id,editor=editor,request=request,
         request_editor_id=u32(request_bytes,0xC),source_key=list(struct.unpack_from('<III',request_bytes,0x10)),
@@ -159,8 +162,8 @@ def native_sample(kernel,handle,image,base,family,edit_source=None,observe_other
         request_current_raw=list(raw_errors),excluded_errors=list(excluded),error_catalog=list(catalog),
         current_masked=current,external_masked=external,changed_4B3_4B4=list(head[0x4B3:0x4B5]),
         finish_state_if_debug_disabled=finish_without_debug,debug_property='not sampled; computed finish state is conditional',
-        save_phase_38C=u32(head,0x38C),ui=ui,ui_pending_command_cc=word(ui+0xCC),
-        ui_confirmation_flag_ec=read(ui+0xEC,1)[0],layout_roots=roots,widgets=widgets,
+        save_phase_38C=u32(head,0x38C),ui=ui,ui_pending_command_cc=u32(edit_pending)if edit_source is not None else word(ui+0xCC),
+        ui_confirmation_flag_ec=edit_confirmation[0]if edit_source is not None else read(ui+0xEC,1)[0],layout_roots=roots,widgets=widgets,
         window_nodes=len(visited),unknown_window_getters=unknown[:16],container_window_traversal_complete=not unknown,
         widget_scope='Verified container descendants only; absence does not prove native UILayout::FindWindowByID absence',
         read_calls=reads,read_bytes=total,elapsed_ms=(time.perf_counter()-started)*1000)

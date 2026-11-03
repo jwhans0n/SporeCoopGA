@@ -16,7 +16,7 @@ import time
 
 ROOT=Path(__file__).resolve().parents[2]
 sys.path[:0]=[str(ROOT/'tools/tests'),str(ROOT/'tools')]
-from coop_adventure import FixtureError
+from coop_adventure import FixtureError,_startup_tree,_startup_identity,_STARTUP_WINDOW
 from coop_adventure_editor import status
 from coop_editor_party import Ownership,parse_context,parse_history
 from coop_editor_creations import CreationGame,NEW,EDIT,CHOICE,FAMILIES,TYPES,assets,input_steps,validate_steps,verify_viewport
@@ -29,6 +29,51 @@ PROFILES={
     'spaceship':dict(family='spaceship',editor_id=0x96B24187,model_type=0x98E03C0D,model_name='UFO',choice=None),
 }
 DONE,CANCEL=0x058A3350,0x90439D7C
+SAVE_NEW=0x05107B1A
+
+def edit_save_new_modal(tree):
+    """Recognize only the complete measured Edit-exit overlay, even if later UI is truncated."""
+    if not tree or len(tree)>8192:raise FixtureError('Edit confirmation tree exceeds its diagnostic bound')
+    lines=tree.splitlines();starts=[i for i,line in enumerate(lines)if 'id=0x05B598F7 'in line]
+    if len(starts)!=1:raise FixtureError('Edit confirmation overlay is missing or ambiguous')
+    start=starts[0];end=None
+    for i in range(start+1,len(lines)):
+        match=_STARTUP_WINDOW.fullmatch(lines[i])
+        if not match:raise FixtureError('Incomplete Edit confirmation overlay')
+        if len(match[1])<=2:end=i;break
+    if end is None:raise FixtureError('Edit confirmation overlay has no complete boundary')
+    nodes=_startup_tree('\n'.join([lines[0],*lines[start:end]]))
+    overlay=nodes[1]
+    if overlay['depth']!=1 or not overlay['visible']or nodes[0]['rect']!=(0,0,1024,768)or any(node['command']or not node['flags']&2 for node in nodes[:2]):raise FixtureError('Edit confirmation viewport/overlay changed')
+    visible=[node for node in nodes[2:]if node['visible']]
+    if not visible:return None
+    modals=[node for node in visible if node['flags']&0x40]
+    if len(modals)!=1 or modals[0]['ident']!=0x06318E78 or modals[0]['parent']is not overlay or modals[0]['command']or not modals[0]['flags']&2:raise FixtureError('Unrecognized Edit confirmation modal')
+    modal=modals[0]
+    def exact(ident,caption=None,parent=None):
+        found=[node for node in visible if node['ident']==ident]
+        if len(found)!=1:raise FixtureError('Edit confirmation control is missing or duplicated')
+        node=found[0]
+        if node['command']!=0 or not node['flags']&2 or parent is not None and node['parent']is not parent or caption is not None and node['caption']!=caption:
+            raise FixtureError('Edit confirmation control identity changed')
+        return node
+    body=exact(0x01510D08,parent=modal)
+    names=re.fullmatch(r'Save "([^"\r\n]{1,128})" as a new creation or replace "([^"\r\n]{1,128})" before exiting\?',body['caption'])
+    if not names:raise FixtureError('Edit confirmation body is not the measured Save New/Replace question')
+    frame=exact(0x05822D40,'',modal)
+    buttons=[exact(ident,caption,frame)for ident,caption in ((0x05107B17,"Don't Save"),(0x05107B18,'Cancel'),(0x05107B19,'Replace'),(SAVE_NEW,'Save New'))]
+    if {node['address']for node in visible if node['caption']}!={node['address']for node in [body,*buttons]}:raise FixtureError('Edit confirmation has unexpected visible text')
+    target=buttons[-1];x,y=target['origin'];rect=target['rect'];point=(x+(rect[2]-rect[0])//2,y+(rect[3]-rect[1])//2)
+    fx,fy=frame['origin'];fr=frame['rect']
+    if any(node['rect'][2]<=node['rect'][0]or node['rect'][3]<=node['rect'][1]for node in buttons)or not(0<=point[0]<1024 and 0<=point[1]<768 and fx<=point[0]<fx+fr[2]-fr[0]and fy<=point[1]<fy+fr[3]-fr[1]):raise FixtureError('Edit Save New target lies outside the measured dialog')
+    return dict(identity=[_startup_identity(node)for node in nodes],point=point,new_name=names[1],old_name=names[2])
+
+def edit_confirmation_errors(row,profile,source,request):
+    if not source:return ['Save New confirmation is allowed only for Edit']
+    errors=finish_errors(dict(row,ui_pending_command_cc=0),profile,source)
+    if row.get('request')!=request:errors.append('Edit confirmation request changed')
+    if row.get('ui_pending_command_cc')!=0x102 or row.get('ui_confirmation_flag_ec')!=0:errors.append('Edit confirmation command/state changed')
+    return errors
 
 def creation_serial(text):
     match=re.search(r'creation_editor active=1 phase=1 serial=(\d+) stale=0 entered=1\b',text)
@@ -90,7 +135,7 @@ def other_request_errors(row,profile):
         source=row.get('source_key',[])
         if row.get('request_editor_id')not in(0xFFFFFFFF,expected['editor_id']) or len(source)!=3 or not source[0]or source[1]!=TYPES[FAMILIES.index(expected['family'])]:errors.append('other Edit source/family changed')
     else:errors.append('other request mode is missing')
-    if row.get('save_phase_38C')!=0 or row.get('ui_pending_command_cc')!=0:errors.append('other editor Save/transition is pending')
+    if row.get('save_phase_38C')not in(0,6) or row.get('ui_pending_command_cc')!=0:errors.append('other editor Save/transition is pending')
     return errors
 
 def resume_errors(previous,current):
@@ -151,7 +196,7 @@ def finish_errors(row,profile,source=None):
     if not allowed or row.get('model_type')not in allowed:errors.append('subtype is outside native allowed list')
     if not any(row.get('changed_4B3_4B4',[])):errors.append('native editor has no changed model/metadata')
     if row.get('finish_state_if_debug_disabled')!=0:errors.append('native finish masks still block or require confirmation')
-    if row.get('save_phase_38C')!=0 or row.get('ui_pending_command_cc')!=0:errors.append('native save/exit is already pending')
+    if row.get('save_phase_38C')not in(0,6) or row.get('ui_pending_command_cc')!=0:errors.append('native save/exit is already pending')
     visible=lambda name:any(w.get('visible')for w in row.get('widgets',{}).get(name,[]))
     if not visible('058A3350'):errors.append('Done is not visible in the verified editor container')
     if row.get('early_done_owner_flag44') and visible('03F67620'):errors.append('native early-Done gate is active')
@@ -262,6 +307,24 @@ def run(args):
         errors=request_errors(row,args.profile,result.get('target_source'))
         if errors:raise FixtureError(', '.join(errors))
         guard();result['native_request']=row['request'];result[label]=row;write();return row
+    def edit_return_or_confirm():
+        if returned():return True
+        if result.get('confirmation_dispatched'):return False
+        if not designing():return False
+        guard();modal=edit_save_new_modal(author.call('coop.ui tree 7'))
+        if modal is None:return False
+        sample_others('other-editors-before-confirmation')
+        row=sample('edit-confirmation');errors=edit_confirmation_errors(row,args.profile,result.get('target_source'),result['native_request'])
+        result['confirmation_preflight_errors']=errors;write()
+        if errors:raise FixtureError('Edit Save New preflight rejected: '+', '.join(errors))
+        guard();fresh=edit_save_new_modal(author.call('coop.ui tree 7'))
+        if fresh is None or fresh['identity']!=modal['identity']:raise FixtureError('Edit confirmation changed before dispatch')
+        row=sample('edit-confirmation-dispatch')
+        errors=edit_confirmation_errors(row,args.profile,result.get('target_source'),result['native_request'])
+        if errors:raise FixtureError('Edit Save New dispatch identity expired: '+', '.join(errors))
+        result['confirmation']=fresh;result['confirmation_dispatched']=True;write()
+        author.click(*fresh['point'])
+        return returned()
     def record(label):
         owner.verify_windows()
         result[label]=dict(states=[status(g)for g in games],canonical=canonical(),
@@ -336,7 +399,7 @@ def run(args):
                 row=result['before-action'];errors=finish_errors(row,args.profile,result.get('target_source'));result['finish_preflight_errors']=errors;write()
                 if errors:raise FixtureError('Done preflight rejected without clicking: '+', '.join(errors))
                 sample_others('other-editors-before-save');guard();result['save_dispatched']=True;write();author.click_control(DONE)
-                try:author.wait('ordinary Save returns independently',returned,timeout=60)
+                try:author.wait('ordinary Save returns independently',edit_return_or_confirm if result['target_class']else returned,timeout=60)
                 except Exception:
                     if designing():sample('failed-done')
                     raise
@@ -371,6 +434,9 @@ def self_test():
     for profile,config in PROFILES.items():
         row=dict(request_editor_id=config['editor_id'],model_type=config['model_type'],model_type_name=config['model_name'],allowed_types=[dict(type=config['model_type'])],new_asset=True,changed_4B3_4B4=[1,0],finish_state_if_debug_disabled=0,save_phase_38C=0,ui_pending_command_cc=0,widgets={'058A3350':[dict(visible=True)]})
         assert not finish_errors(row,profile);checks+=1
+        assert not finish_errors(dict(row,save_phase_38C=6),profile);checks+=1
+        for phase in (1,2,3,4,5,7,None):
+            assert finish_errors(dict(row,save_phase_38C=phase),profile);checks+=1
         for key,value in [('model_type',0),('request_editor_id',0),('new_asset',False),('changed_4B3_4B4',[0,0]),('finish_state_if_debug_disabled',2),('save_phase_38C',1),('ui_pending_command_cc',1),('allowed_types',[]),('widgets',{})]:
             bad=dict(row);bad[key]=value;assert finish_errors(bad,profile);checks+=1
     assert creation_serial('creation_editor active=1 phase=1 serial=7 stale=0 entered=1')==7;checks+=1
@@ -424,6 +490,9 @@ def self_test():
     assert edit_source_key('00000000!7D000001.2B978C46')==[0x7D000001,TYPES[0],0];checks+=1
     held=dict(edit,new_asset=True,request_editor_id=config['editor_id'],changed_4B3_4B4=[0,0],finish_state_if_debug_disabled=4)
     assert not other_request_errors(held,'creature');checks+=1
+    assert not other_request_errors(dict(held,save_phase_38C=6),'creature');checks+=1
+    for phase in (1,2,3,4,5,7,None):
+        assert other_request_errors(dict(held,save_phase_38C=phase),'creature');checks+=1
     for key,value in [('model_type',0),('request_editor_id',0),('save_phase_38C',1),('ui_pending_command_cc',1)]:
         bad=dict(held);bad[key]=value;assert other_request_errors(bad,'creature');checks+=1
     held=dict(edit,source_key=[source[1],source[2],0],changed_4B3_4B4=[0,0],finish_state_if_debug_disabled=4)
@@ -439,8 +508,8 @@ def self_test():
         try:other_editor_profiles(bad)
         except FixtureError:checks+=1
         else:raise AssertionError('Invalid other editor declaration accepted')
-    from coop_editor_creation_save_contracts import workflow_contracts
-    checks+=workflow_contracts(sys.modules[__name__])
+    from coop_editor_creation_save_contracts import workflow_contracts,confirmation_contracts
+    checks+=confirmation_contracts(sys.modules[__name__])+workflow_contracts(sys.modules[__name__])
     print(f'staged creation Save: {checks} offline checks passed')
 
 def main():

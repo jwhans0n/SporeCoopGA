@@ -1493,3 +1493,40 @@ scenes strictly converge with zero faults. Evidence:
 post-check compared JSON lists with parser tuples; its retained failure is a
 fixture representation error, independently corrected by read-only inspection.
 No second confirmation or Save was issued.
+
+### C44 bounded Edit confirmation and completed native Save state
+
+The staged source fixture now recognizes only the measured Edit-exit question:
+overlay `05B598F7`, modal `06318E78`, body `01510D08`, frame `05822D40`, and the
+four visible, enabled buttons `05107B17` Don't Save, `05107B18` Cancel,
+`05107B19` Replace, and `05107B1A` Save New. The complete overlay must end before
+any later truncated UI output. The body must have the exact quoted
+`Save "..." as a new creation or replace "..." before exiting?` form. The tool
+closes the same Edit request, exact source, family, false New flag, public
+serial, project/epoch, participant generations and held other editors against
+a fresh read. Pending command must be `0x102` (258), confirmation flag zero, and
+the full modal identity must still match a second UI snapshot. It records the
+one-shot confirmation dispatch before clicking the measured Save New center.
+It never repeats Done or confirmation, including after an uncertain input
+failure. An already returning editor simply waits for its ordinary return.
+The New workflow retains its original return predicate and no confirmation
+input; the reader's additional command/flag coherence reads apply only to Edit.
+
+Native save state `editor+38C == 6` is completed idle, not an active bake.
+The supported-image per-frame driver at `58CD3E..58CD4D` explicitly skips the
+Save state machine for both 0 and 6. After `Editor_Save` at `58628F`, completion
+calls `585C10` at `5862E6`; `585C9E` writes 6. Active states 1 through 5 continue
+through `585D40`. The source finish/other-editor guards therefore permit exactly
+0 or 6 with pending command zero, while all identity, validation and visibility
+guards remain required. Unknown states are refused. This matches the reused
+C44 host New Creature: serial 3 stays designing, first blank and then changed
+with finish state zero, while save state remains 6 and command remains zero.
+Evidence is retained in `out/preview9-c44-host-away-design/result.json` and
+`out/preview9-c44-guest-hostaway-enter-r2/other-editors-initial-native.json`.
+
+Controlled two/four-party contracts cover one confirmation, delayed return,
+other editors held, wrong source/request/pending/phase/modal, changed modal,
+stale author/other serial, and post-dispatch click failure. The source receipt
+is `out/preview9-c44-edit-confirm-source/receipt.json`. These tests are fake
+game/owner/read-only-reader contracts; the actual shared Edit result above
+remains Root's independently measured Native evidence.
