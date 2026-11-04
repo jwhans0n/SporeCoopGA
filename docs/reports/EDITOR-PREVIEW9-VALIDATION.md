@@ -124,7 +124,31 @@ Saved/cold comparator finds all3,994,584 decoded bytes identical, no machine-ID
 changes, and only the permitted unused fourth word of scalar key00B2CCCB
 different in the prefix. Evidence:
 `out/preview9-c60-count4096-cold-open/result.json`.
-BUG-0475 is fixed in the private candidate. Actual1,024-class refusal remains pending.
+BUG-0475 is fixed in the private candidate.
+
+### C60 actual native class boundary
+
+The exact generated419-placement/1,024-class/five-act fixture cold-opens and
+shares with two participants. Native class IDs and the next-class companion
+remain valid; original rows and dependencies are preserved. Host and guest each
+attempt a genuinely absent stock `Power-Up Health` import through the native
+picker. Each refusal leaves the entire native inspection, canonical hash,
+history and revision unchanged, with no partial class, placement or fault.
+Evidence: `out/preview9-c60-class1024-open`,
+`out/preview9-c60-class1024-host-refusal-r3` and
+`out/preview9-c60-class1024-guest-refusal`.
+
+Native Save completes SavedApplied2/2 at R0 and retains all authored root
+payloads. The exact original persisted DBPF contains the Saved root. Fresh
+processes cold-open it and share all1,024 classes with strict convergence and
+zero faults. The unchanged Saved/cold comparator finds all7,931,162 decoded
+bytes exact, no machine-ID changes, and only the existing unused scalar-key
+fourth-word exception in the prefix. Evidence:
+`out/preview9-c60-class1024-native-save/result.json` and
+`out/preview9-c60-class1024-cold-open/result.json`.
+Initial fixture API/key-name mistakes stopped before any import; their outputs
+remain retained. This qualifies native class-boundary refusal and persistence,
+not publication eligibility or the deferred four-player/release checks.
 
 - Crew roster/capacity has a separate settings identity and ownership scope.
 - Host-ordered terrain records have stable identities, checked replacement and

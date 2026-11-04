@@ -315,3 +315,17 @@ does not change production or broaden the Saved/cold comparator. The original
 failed1,025 Save inspection-hash assertion and boundary harness failures remain
 retained. A canonical hash includes revision and should not be equated across
 Undo revisions; the restored native inspection SHA/semantic identity is exact.
+
+CORRECTION (2026-11-03): the separate exact1,024-class fixture now cold-opens,
+shares and saves in C60. Host and guest each use the normal native picker to
+try the absent stock Power-Up Health. Each refusal preserves byte-exact native
+inspection, canonical hash/revision and history with no partial class or fault.
+Native Save reaches SavedApplied2/2. Fresh processes reopen the Saved file and
+share419 placements/1,024 classes/5 acts; the unchanged strict comparator finds
+all7,931,162 decoded bytes exact, no machine-ID changes and only the known unused
+scalar ResourceKey fourth-word variation. Receipts are under
+`out/preview9-c60-class1024-{open,host-refusal-r3,guest-refusal,native-save,cold-open}`.
+This is actual Native count/refusal/persistence acceptance, separate from the
+Core exact1,024/1,025 rejection test in e2dc2c0. No1,025-class or4,097-marker
+image was opened or generated. Publication and deferred release checks remain
+unqualified; no new personal installation was performed.
