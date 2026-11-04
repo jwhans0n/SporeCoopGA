@@ -416,6 +416,91 @@ void test_terrain_control_retry(){
     setup_terrain_retry();h.end=reinterpret_cast<void*>(uintptr_t(h.begin)+3);terrain_gradient(t_terraform.data(),&h,&c);
     CHECK(held_terrain_controls.empty()&&!terrain_gradients);reset();
 }
+std::function<void(uint32_t)> t_ground_effect_write;
+void SK_THISCALL t_ground_effect_native(void* self,uint32_t raw){
+    CHECK(self==t_terraform.data()&&t_granted);++terrain_values_called;
+    CHECK(bool(t_ground_effect_write));t_ground_effect_write(raw);
+}
+std::map<uint32_t,editor::Value> ground_effect_properties(uint32_t effect){
+    using namespace editor_native_terrain;
+    Property ground{0xA,0,{}};u32(ground.value,effect);
+    Property forest{0x20,0x9C,{}};u32(forest.value,2);u32(forest.value,12);
+    // F34500 emits the permanent forest key57974AC6, then the nonzero
+    // GroundEffect key. ResourceKey array words are little endian.
+    for(auto key:{0x57974AC6u,effect})for(auto word:{key,0u,0u})
+        for(unsigned shift=0;shift<32;shift+=8)forest.value.push_back(uint8_t(word>>shift));
+    return {{0x56B14F05,property_value(std::move(ground))},{0x03ABB0AF,property_value(std::move(forest))}};
+}
+void test_ground_effect_companion_ownership(){
+    // Actual C54 Flowers was rejected at Core1083: F35160 -> F34500
+    // changes the forest key array as well as the selected GroundEffect.
+    // This gate feeds the real coordinator rather than treating any grant
+    // as sufficient. The unchanged C54 map supplies only the first lease.
+    for(unsigned scenario=0;scenario<5;++scenario){
+        setup_terrain_retry();const auto planet=editor_native_terrain::kPlanetObject;
+        const auto before=ground_effect_properties(0xA9D6A81D),after=ground_effect_properties(0x74C0E257);
+        editor::State seed;seed.document.project[0]=7;seed.document.epoch=1;
+        seed.document.next_id=planet.id+1;seed.document.acts.insert({1,1});
+        auto& row=seed.document.settings[planet];row.object=planet;row.kind=editor::SettingsKind::Planet;row.properties=before;
+        for(const auto& [property,value]:before){(void)value;seed.document.settings_schema[property]={editor::ValueKind::Structured,0,0,0,true,false};}
+        editor::Coordinator core;std::string error;CHECK(core.reset(seed,1,error));
+        const editor::Peer author{0,1},foreign{1,1};CHECK(core.connect(author)&&core.connect(foreign));
+        act_identity=core.state().document;auto native_properties=before;
+        std::vector<editor::LeaseToken> tokens;editor::Decision decision;unsigned sequence=0;
+        std::vector<editor::Lease> foreign_leases;
+        C.terrain_gate=[&](const auto& records,const auto& fields){
+            CHECK(records.empty());if(!t_granted)return false;if(fields.empty())return true;
+            std::vector<editor::Scope> scopes;for(auto property:fields)scopes.push_back({editor::ScopeKind::Field,planet,{editor::Field::Property,property}});
+            const auto granted=core.acquire(author,scopes,100,1000);if(!granted.accepted())return false;
+            tokens.clear();for(const auto& lease:granted.leases)tokens.push_back({lease.scope,lease.token});return true;
+        };
+        t_ground_effect_write=[&](uint32_t raw){
+            CHECK(raw==0x74C0E257);native_properties=ground_effect_properties(raw);
+            editor::Request request;request.project=core.state().document.project;request.epoch=1;
+            request.operation={author,++sequence,1};request.base_revision=core.state().document.revision;
+            request.leases=tokens;request.summary="Flowers with forest companion";
+            for(const auto& [property,value]:native_properties){
+                editor::Mutation change;change.target=planet;change.field={editor::Field::Property,property};change.value=value;
+                change.expected=editor::field_revision(core.state().document,planet,change.field);request.mutations.push_back(std::move(change));
+            }
+            decision=core.submit(request,100);
+        };
+        original_terrain_values[13]=t_ground_effect_native;
+        terrain_value<13>(t_terraform.data(),0x74C0E257);
+        CHECK(held_terrain_controls.size()==1&&!terrain_values_called&&!terrain_starts&&native_properties==before);
+        continue_terrain_control();CHECK(!terrain_values_called&&core.state().document.revision==0);
+        if(scenario==1){
+            const auto held=core.acquire(foreign,{{editor::ScopeKind::Field,planet,{editor::Field::Property,0x03ABB0AF}}},100,1000);
+            CHECK(held.accepted());foreign_leases=held.leases;
+        }
+        if(scenario==2)act_identity.settings.at(planet).properties[0x03ABB0AF]=after.at(0x03ABB0AF);
+        if(scenario==3)++act_identity.settings.at(planet).field_revisions[{editor::Field::Property,0x03ABB0AF}];
+        if(scenario==4)deny_input({{editor::ScopeKind::Field,planet,{editor::Field::Property,0x03ABB0AF}}});
+        t_granted=true;pin_terrain_before();continue_terrain_control();
+        if(scenario>=2){
+            CHECK(held_terrain_controls.empty()&&!terrain_values_called&&!terrain_starts&&!terrain_commits);
+            CHECK(native_properties==before&&core.state().document.revision==0&&!t_failure.empty());
+            t_ground_effect_write={};reset();continue;
+        }
+        if(scenario==1){
+            CHECK(held_terrain_controls.size()==1&&!terrain_values_called&&!terrain_starts&&native_properties==before);
+            std::vector<editor::LeaseToken> release;for(const auto& lease:foreign_leases)release.push_back({lease.scope,lease.token});
+            CHECK(core.release(foreign,release));continue_terrain_control();
+        }
+        if(!decision.accepted())std::printf("GroundEffect decision=%u reason=%s\n",unsigned(decision.code),decision.reason.c_str());
+        CHECK(decision.accepted()); // Genuine pre-fix C54 fails with its exact Core1083 error.
+        CHECK(tokens.size()==2&&terrain_values_called==1&&terrain_starts==1&&terrain_commits==1&&held_terrain_controls.empty());
+        CHECK(core.state().document.settings.at(planet).properties==after&&native_properties==after);
+        CHECK(core.state().history.size()==1&&decision.change->patch.fields.size()==2);
+        editor::Request undo;undo.project=core.state().document.project;undo.epoch=1;undo.operation={author,++sequence,1};
+        undo.base_revision=core.state().document.revision;undo.intent=editor::Intent::Undo;undo.leases=tokens;
+        editor::Hooks hooks;hooks.apply=[&](const auto&,const auto& restored,const auto&,std::string&){native_properties=restored.settings.at(planet).properties;return true;};
+        CHECK(core.submit(undo,101,hooks).accepted());
+        CHECK(core.state().document.settings.at(planet).properties==before&&native_properties==before);
+        CHECK(core.state().document.revision==2&&!core.state().history.front().applied);
+        t_ground_effect_write={};reset();
+    }
+}
 void test_preset_history_boundary(){
     for(bool existing:{false,true}){
         setup_terrain_retry();C.terrain_gate=[](const auto& records,const auto& fields){CHECK(records.empty());CHECK(fields.empty()||fields.size()==editor_native_terrain::planet_properties().size());return t_granted;};
@@ -1683,6 +1768,12 @@ int main(int argc,char** argv){
     if(argc==2&&std::string(argv[1])=="--flora-controls-only"){
         test_flora_control_retry();std::printf("native flora controls: %u checks passed\n",checks);return 0;
     }
+    if(argc==2&&std::string(argv[1])=="--ground-effect-only"){
+        test_ground_effect_companion_ownership();std::printf("native GroundEffect ownership: %u checks passed\n",checks);return 0;
+    }
+    if(argc==2&&std::string(argv[1])=="--flora-refresh-only"){
+        test_native_flora_refresh();std::printf("native Flora UI refresh: %u checks passed\n",checks);return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--history-toolbar-only"){
         test_history_toolbar_current_layout();std::printf("native history toolbar: %u checks passed\n",checks);return 0;
     }
@@ -1722,6 +1813,8 @@ int main(int argc,char** argv){
     test_preset_history_boundary();
     test_flora_control_retry();
     test_terrain_control_retry();
+    test_ground_effect_companion_ownership();
+    test_native_flora_refresh();
     test_cold_native_terrain_initialization();
     test_terrain_pending_grab();
     test_terrain_preset_retry();
