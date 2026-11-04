@@ -1,6 +1,81 @@
 # Changelog
 
-## [Unreleased]
+## [0.7.4] - 2026-11-03
+
+### Fixed
+- When Spore itself fails to start (the game closes at once after the mod was installed), you now get a
+  message that says what to check and a report to attach, instead of the game just closing (BUG-0521).
+- Cell: when the cells grow to the next size, the other cells no longer fly around on the guest's screen for a
+  few seconds; they stay where the host's game has them (BUG-0511).
+- The game no longer crashes when you open Settings in the galaxy menu or a Cell editor opens (for example from a
+  mate) on a PC where Spore cannot make its Documents\My Spore Creations folders, as with the Russian Steam version;
+  pictures and videos then go to the Spore folder in AppData (BUG-0506).
+- Creature: a guest now sees the host's animals look around, eat, answer and fight as they do on the host,
+  instead of standing still or only walking (BUG-0464).
+- Creature: a partner whose game froze or was minimized is no longer shown sunk into the ground; you
+  are told that the partner is not responding, and when it is back (BUG-0513).
+- Cell: a knocked-out cell can no longer bite, spike or kill anything while it waits to be revived
+  (BUG-0509).
+- Creature: the host's pack no longer turns on a partner when the host targets the partner's creature or
+  fights next to it (BUG-0512).
+- Creature: a guest no longer crashes when its game removes the partner's creature by itself (seen after
+  a long freeze or alt-tab); the partner is shown again (BUG-0507).
+- Cell and Creature: after the host's editor a guest in the same world keeps playing: it no longer drops
+  to the galaxy menu and loads the whole world again; the host's new creature and (when you play the host's
+  species) your own new body arrive in place. A migration to a new nest still sends the world (BUG-0508).
+- Creature: a guest can befriend creatures with the mouse too: a click on the social ability's button
+  of the ability bar (sing, dance, ...) next to the creature now counts, not only the keys 1-4 (BUG-0518).
+- Cell and Creature: a party no longer evolves two to four times faster than a single player: every
+  player's DNA (and Cell food) now counts 1/N with N players in the world, so the shared total grows at
+  the single-player pace; spending is not affected. Hosts who prefer the old sum set `dna_pace=0` in
+  `mods\coop.ini` [coop] (BUG-0510).
+- Creature: animals are neutral, hostile or allied to a guest as they are to the host; a guest playing its own
+  creature no longer sees neutral species as hostile (BUG-0462).
+- Creature: a partner who sneaks is shown sneaking (see-through) on your screen too, and the host's animals
+  no longer hear a sneaking guest (BUG-0463).
+- Co-op window: a chat line typed while a caption is on the screen (a new part, the brain upgrade, a nest)
+  is no longer lost; the line takes the typing and Enter sends it (BUG-0482).
+- Creature: after a death your partner's creature appears at the nest and steps out of its egg where its
+  own game has it, instead of sliding there or standing a few metres away for a moment (BUG-0499).
+- Creature: animals of other species now have the same size on every player's screen; young ones are no
+  longer shown at an adult's size on the guest (BUG-0461).
+- Tribe: tribe members (yours, your partners' and other tribes') have the same size on every screen; the
+  guest no longer sees them bigger or smaller than the host does (BUG-0475).
+- Space: your partner's ship is shown at a player ship's size, not at the smaller size of an NPC ship
+  (BUG-0479).
+- Creature: an animal near a guest no longer stays missing on its screen (or keeps living there after
+  the host killed it) when its first message was lost; the guest asks the host for it again (BUG-0487).
+- Civ: a guest no longer crashes in its city planner while the host's world goes on (attacks, new
+  buildings, vehicles that die): the planner's city is left as it is until the planner closes, and a
+  building outside its plot can no longer be picked up (BUG-0491, BUG-0493).
+- Civ: a guest no longer crashes when it clicks a city of a nation its game does not know (BUG-0492).
+- Civ: a guest's saves no longer keep the host's vehicles it was showing; the save loads cleanly on its
+  own (BUG-0470).
+- Civ: a vehicle that is gone on the host no longer stays behind as a wreck on the guest (BUG-0478).
+- Cell and Creature: the effects of your cell or creature (mating-call hearts, being hit, death, a part
+  found, the brain upgrade, ...) now show on the other players' screens too, while they play in the same
+  place as you. Tribe, Civilization and Space follow in their own versions (BUG-0451, BUG-0471).
+- Creature: a bone or skeleton one player takes is taken for everybody: the party gets one new part, not
+  two (BUG-0459).
+- Creature and Tribe: fruit one player eats is gone for the other players too, and fruit that falls from
+  a tree falls in every game (BUG-0472).
+- Creature: a nest whose species the host's game made extinct is extinct for every player (BUG-0460).
+- Tribe: the eggs at the animal nests are now in every player's game, not only in the host's (BUG-0474).
+- Cell: a part one player collects is now unlocked for the whole party (the host and every guest get
+  it in their cell editor, with the mating call), not only in the game of the player who touched it
+  (BUG-0467).
+- Creature: the parts a guest adds in its own editor of an evolution vote now cost DNA, and the DNA a
+  guest spends is taken off the party's total for everybody; before, the guest had the same DNA as
+  before the editor (BUG-0466).
+- Creature: the host's game no longer crashes when an animal was attacking the partner's creature at the
+  moment that creature disappeared (the partner died, left or came back); the animal stops its attack
+  (BUG-0453).
+- Creature: the host's game no longer aborts ("pure virtual function call") when animals still
+  remembered a partner's creature that had just disappeared (BUG-0456).
+- Cell: a guest's game no longer crashes when the host comes back from its editor with a new cell before
+  the new cell has reached the guest; such cells show up as soon as it arrives (BUG-0455).
+- Editor: a skin texture the graphics driver could not make no longer crashes the creature editor
+  (RenderWare::Raster::Fill) (BUG-0454).
 
 - Support the exact GOG 2024 Large Address Aware executable variant for up to
   4 GB per game on 64-bit Windows. Preserve full-file native adapter checks,

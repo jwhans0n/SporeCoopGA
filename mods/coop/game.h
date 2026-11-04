@@ -78,6 +78,7 @@ void* spawn_creature(const net::Vec3& pos, void* species, void* herd);
 // cGameNounManager::DestroyInstance; a creature (cCreatureAnimal) is kept until the running
 // cinematic is over (it may be one of its actors), destroy_deferred_tick() removes it then
 void destroy_creature(void* c);
+void destroy_untracked(void* c); // tests (BUG-0507): the game's destroy without the mod's bookkeeping
 void destroy_deferred_tick(); // once per frame
 void set_destroy_defer(bool on); // tests (off: at once)
 void set_defer_keeps_puppet(bool on); // tests (off: a deferred puppet leaves the puppet list at once, BUG-0066)
@@ -112,6 +113,66 @@ bool gait_state(void* c, int* gait, int* gait2, int* moving, int* speed_state);
 using AnimListener = void (*)(void* creature, uint32_t anim_id, int block, bool disable_blend, bool to_target);
 void set_anim_listener(AnimListener fn);
 void play_animation(void* c, uint32_t anim_id, int block, bool disable_blend);
+// BUG-0464: animations started on a creature outside its idle refresh 0xC148B0 (the idle / walk choice every
+// game makes by itself): how 0 SporeCoop::CreaturePlayAnim (thiscall(creature, anim, int a, int b) ret 0xC, the
+// behaviour tree's), 1 cCreatureBase::PlayAnimation (a = disable blend, b = block), 2 PlayAnimationTo (b = block).
+// Called after the play, not for plays of the mod (play_animation, play_behaviour_anim).
+using BehaviourAnimListener = void (*)(void* creature, uint32_t anim_id, int how, int a, int b);
+void set_behaviour_anim_listener(BehaviourAnimListener fn);
+bool play_behaviour_anim(void* c, uint32_t anim_id, int how, int a, int b); // how 2 is played as 1
+void behaviour_anim_counts(uint32_t* seen, uint32_t* idle);
+
+// Visual effects of a creature (BUG-0451): every effect the game makes on or at a creature goes
+// through its two effect pools (cCreatureBase +0xCC8 pool 1, +0xD68 pool 2); these are the only
+// creators and the one stop (docs/re/creature.md#creature-effects-relay).
+struct EffectEvent {
+    uint32_t id = 0;    // the effect id (FNV hash of its name)
+    uint32_t key = 0;   // the key it is kept under in the pool (the effect id unless the game renames it)
+    uint8_t pool = 0;   // 1 or 2 for a start, 0 for a stop
+    bool stop = false;
+};
+using EffectListener = void (*)(void* creature, const EffectEvent& ev);
+void set_effect_listener(EffectListener fn);
+// A visual effect created for an arbitrary object (not only a creature): effect.cpp reads its
+// position (effect +0x9C, where the game's transform setter put it) in its tick. The listener runs
+// only on the game's main thread; the hooks call the original and return on every other thread.
+using WorldEffectListener = void (*)(void* effect, uint32_t id);
+void set_world_effect_listener(WorldEffectListener fn);
+// the stage logic's gate for the world effect hooks (installed once in init); no work outside a
+// played stage. Never installs or removes a hook: a hook removed while the UI skinner's render
+// thread was inside it faulted (BUG-0451 review).
+void set_world_relay(bool on);
+// effects.cpp's switch: false = the hooks only call the original (the frame cost measured in
+// out/REPORT.md); also notes the main thread id (called from effects::tick, main thread)
+void set_effect_relay_enabled(bool on);
+// the receiver: create an effect by id in the game's effect world, set the same transform, start it
+void* create_world_effect(uint32_t id, const void* xform);
+// a test / perf workload: the same, but our hooks see it as a game effect (the relay sends it)
+void* create_local_effect(uint32_t id, const void* xform);
+// what effects::tick reads about the effects the hooks recorded this frame
+bool effect_position(void* effect, net::Vec3& out);
+bool effect_relayed(void* effect); // a creature hook already sent it
+uint32_t last_effect_id();          // the last effect id the game created (a valid id in this stage)
+// a bone index inside the creature model's bone array (the range cCreatureBase::CreateEffect indexes)
+bool creature_bone_ok(void* creature, int bone);
+void clear_effect_table();         // after effects::tick (once a frame, main thread)
+void effect_table_stats(uint32_t& creates, uint32_t& probes, uint32_t& evicted, uint32_t& mgr, uint32_t& world,
+                        uint32_t& anim);
+// our own work in the create hooks (the original game call is not counted)
+void effect_hook_cost(double& sum, double& max, uint64_t& calls);
+void set_effect_log(bool on); // support logging of every effect the game creates (coop.effects log on)
+// the game's own pool calls, for a relayed effect (start: the same create+start as StartOrStop...)
+void* start_effect(void* c, const EffectEvent& ev);
+// the game's one-shot creature effect (pool 3 in EffectEvent: key = the bone index)
+void* create_creature_effect(void* c, int bone, uint32_t effect_id);
+bool stop_effect(void* c, uint32_t key);
+// the game's state: the effect object of `key` in the creature's pools, and whether it is active (vt 0x10)
+void* effect_from_pools(void* c, uint32_t key);
+bool effect_active(void* effect);
+// stop a world effect the relay created (IVisualEffect vt 0xC with 0); false if the object is not callable
+bool stop_world_effect(void* effect);
+// drop the reference the relay holds on a created world effect (IVisualEffect vt 0x4, Release)
+bool release_world_effect(void* effect);
 
 // ---- creature registry: every cCreatureAnimal that ran Update since the last call ----
 const std::vector<void*>& creatures_updated();   // swap per frame (call once per frame)
@@ -166,6 +227,14 @@ void hit(void* c, float damage, int type, void* attacker_creature);          // 
 // the same with a push (knockback impulse, the 4th TakeDamage argument; tests: a charge's throw, BUG-0383)
 void hit_push(void* c, float damage, int type, void* attacker_creature, const net::Vec3& push);
 void set_health(void* c, float hp);
+// BUG-0463 sneak (docs/re/creature.md#creature-sneak): +0xBB1 is 1 while the creature sneaks, +0xB80 its
+// noise radius (0 while sneaking, what the NPCs' hearing check reads), +0xB7C the model's alpha the
+// creature's update eases to 0.2 while sneaking (written to the model +0x80)
+bool sneaking(void* c);
+float noise_radius(void* c);
+float sneak_alpha(void* c);
+// the game's own setter CreatureSetSneaking 0xC1B030 (c, on, force 1: no ability check); false: no symbol
+bool set_sneaking(void* c, bool on);
 // A hatchling (age +0xB34 == 0) whose behaviour tree waits for a family member of its nest to greet it
 // (tree 0x9413EDEB): after a respawn or a hatch the greeting NPC makes it grow up (docs/re/creature.md 13).
 constexpr uint32_t kHatchlingTree = 0x9413EDEBu;
@@ -190,7 +259,7 @@ void set_time_of_day(const net::Quat& q);
 // ---- DNA (cCreatureGameData evolution points, a global) ----
 float dna();
 void dna_add_raw(float delta);              // original AddEvolutionPoints, not reported
-using DnaListener = bool (*)(float delta);  // return false to swallow a gain
+using DnaListener = bool (*)(float& delta); // return false to swallow a gain; may change it (BUG-0510 pace)
 void set_dna_listener(DnaListener fn);
 
 // ---- any game object (cGameData) ----
@@ -200,6 +269,8 @@ void for_each_object(bool (*fn)(void* obj, uint32_t noun, void* user), void* use
 uint32_t noun_id(void* obj);                    // ISimulatorSerializable::GetNounID (vt 0x20)
 void* cast(void* obj, uint32_t type);           // Object::Cast (vt 0x0C)
 bool object_position(void* obj, net::Vec3& out); // via cSpatialObject (TYPE 0x1186577), position +4
+float object_scale(void* obj);                   // cSpatialObject::GetScale (vt 0x34), -1 without one
+void set_object_scale(void* obj, float s);         // cSpatialObject::SetScale (vt 0x40), nothing without one
 bool object_alive(void* obj);                    // cGameData::mbIsDestroyed (+0x21) not set
 // cGameData::mID (+0x24): `++[counter]` in cGameNounManager::CreateInstance (GOG 2024 0xB20BF0,
 // counter 0x167BE28): unique among the objects CreateInstance made in this process. The pointer

@@ -411,8 +411,9 @@ static void test_session_end_in_delivery()
 static void test_protocol_versions()
 {
     printf("merged protocol boundary and HELLO version validation\n");
-    CHECK(kProtoVersion == 25 && kDiscoverPorts == 20);
-    CHECK(MSG_SPACE == 48 && MSG_ADVENTURE == 61 && MSG_EDITOR == 62 && MSG_NEST == 52 && MSG_PARTS == 53 && MSG_DIAG == 60);
+    CHECK(kProtoVersion == 26 && kDiscoverPorts == 20);
+    CHECK(MSG_SPACE == 48 && MSG_ADVENTURE == 63 && MSG_EDITOR == 62 && MSG_ACTIVITY == 55 && MSG_NEST == 52 && MSG_PARTS == 53 && MSG_DIAG == 60);
+    CHECK(MSG_WOBJ == 54 && MSG_FIELDS == 56 && MSG_NPC_RESYNC == 57 && MSG_NPC_ANIM == 59 && MSG_EFFECT == 61);
     Session host;
     std::string err;
     CHECK(host.host(0, "host", err));
@@ -423,7 +424,7 @@ static void test_protocol_versions()
     Connection guest;
     guest.conn_id = 0x12345678;
     Hello old;
-    old.proto = 24;
+    old.proto = 25;
     old.name = "old-version";
     Writer hello;
     old.write(hello);
@@ -433,7 +434,7 @@ static void test_protocol_versions()
     CHECK(Connection::looks_valid(packet.data(), packet.size()));
     bool delivered = false;
     Connection receiver;
-    for(const uint16_t version:{uint16_t(23),uint16_t(24)}){
+    for(const uint16_t version:{uint16_t(23),uint16_t(24),uint16_t(25)}){
         auto upstream=packet;upstream[4]=uint8_t(version);upstream[5]=uint8_t(version>>8);
         CHECK(!Connection::looks_valid(upstream.data(),upstream.size()));
         CHECK(!receiver.on_packet(upstream.data(),upstream.size(),1000,

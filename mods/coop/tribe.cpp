@@ -21,6 +21,7 @@
 #include "net/validate.h"
 #include "sporekit_game.hpp"
 #include "fixes.h"
+#include "fields.h"
 
 using skg::thiscall;
 using skg::vcall;
@@ -213,6 +214,8 @@ static bool g_mirror_ground_fix = true;
 COOP_FIX("tribe.mirror_ground", "BUG-0444", g_mirror_ground_fix, "tribe: a guest's mirrors of members are made and kept on this game's ground, never left under it (as the animal proxies)");
 static uint32_t g_mirror_grounded; // diagnostics (coop.tribe): standing mirrors put out of the ground
 constexpr double kMirrorDelay = 0.2;  // s: the interpolation delay (the host sends every 0.12 s or more)
+// tests (BUG-0481): `coop.tribe delay <s>` on a guest: a planted late mirror (play_tribe's sync check must fail)
+static double g_test_delay = kMirrorDelay;
 constexpr float kMirrorWalkMax = 8.f; // farther off: drive::step (it teleports at 8 m)
 constexpr double kPathDt = 0.1;       // s: the interpolated path's velocity is taken over this
 static std::unordered_map<void*, uint16_t> g_gid_of;
@@ -401,11 +404,38 @@ static int SK_THISCALL h_WalkSelected(void* self, const float* pos)
 
 static void coop_init();
 
+// BUG-0475: a member's size is its own game's pick (cCreatureCitizen GetDesiredScale vt 0x80: a random
+// size per member, the chief's bigger): the guest's mirror (bound to a local member or spawned) kept a
+// size of its own (3.79 host, 4.47 guest). The members are one kind of the field replication (fields.h):
+// the guest sets the host member's scale on its mirror. `coop.fix tribe.scale off`: own sizes (0.7.3.6).
+static bool g_scale_fix = true;
+COOP_FIX("tribe.scale", "BUG-0475", g_scale_fix, "tribe: a guest's mirror of a tribe member gets the host member's size");
+static const fields::Field kMemberFields[] = {fields::kScale};
+
+static void member_each(void (*cb)(uint16_t, void*, void*), void* u)
+{
+    // the tribes' own member lists now (a g_hm entry can be a member freed since the last cycle)
+    for (void* t : all_tribes())
+        for (void* c : members(t)) {
+            auto it = g_hm.find(c);
+            if (it != g_hm.end())
+                cb(it->second.id, c, u);
+        }
+}
+
+static void* member_mirror(uint16_t id)
+{
+    auto it = g_gm.find(id);
+    return it != g_gm.end() && it->second.c && game::object_alive(it->second.c) ? it->second.c : nullptr;
+}
+
 bool init(const SkHost* host, SkMod* mod, Ctx ctx)
 {
     H = host;
     M = mod;
     C = std::move(ctx);
+    fields::add_kind({fields::K_TRIBE_MEMBER, "tribe_member", &g_scale_fix, kMemberFields, 1, member_each, member_mirror,
+                      [] { return active(); }});
     a_GetPlayerTribe = H->sym("Simulator::cGameNounManager::GetPlayerTribe");
     a_DoAction = H->sym("Simulator::cCreatureCitizen::DoAction");
     a_SetValueVector3 = H->sym("App::Property::SetValueVector3");
@@ -900,7 +930,7 @@ static void guest_state(net::Reader& r)
             ps.pos = g.pos;
             ps.rot = g.rot;
             ps.vel = g.vel;
-            g.buf.delay = kMirrorDelay;
+            g.buf.delay = g_test_delay;
             g.buf.push(ps, now);
         }
         if (c && !game::object_alive(c)) {
@@ -2001,6 +2031,29 @@ static void* local_of(uint16_t id)
     return it == g_gm.end() ? nullptr : it->second.c;
 }
 
+bool near_member(const net::Vec3& p, float radius)
+{
+    struct Ctx { const net::Vec3* p; float r; uint8_t me; bool hit; } ctx{&p, radius, (uint8_t)(C.sess ? C.sess->my_id() : 0), false};
+    for_each_owned([](void* c, uint8_t owner, void* user) {
+        auto* q = (Ctx*)user;
+        if (!q->hit && owner == q->me && net::dist(game::position(c), *q->p) < q->r)
+            q->hit = true;
+    }, &ctx);
+    return ctx.hit;
+}
+
+std::vector<net::Vec3> local_member_positions()
+{
+    std::vector<net::Vec3> v;
+    std::pair<std::vector<net::Vec3>*, uint8_t> ctx{&v, C.sess ? C.sess->my_id() : 0};
+    for_each_owned([](void* c, uint8_t owner, void* user) {
+        auto* p = (std::pair<std::vector<net::Vec3>*, uint8_t>*)user;
+        if (owner == p->second)
+            p->first->push_back(game::position(c));
+    }, &ctx);
+    return v;
+}
+
 std::string debug(const std::vector<std::string>& a)
 {
     // tests of the co-op mechanics through the game's damage path (host): ids as in coop.tribe
@@ -2200,6 +2253,10 @@ std::string debug(const std::vector<std::string>& a)
                 n++;
             }
         return "stacked " + std::to_string(n) + " chiefs on the chief of player " + std::to_string(first.first);
+    }
+    if (a.size() >= 2 && a[0] == "delay" && is_guest()) { // delay <s>: tests (BUG-0481), the mirrors' interpolation delay
+        g_test_delay = std::max(0.0, std::min(3.0, atof(a[1].c_str())));
+        return "mirrors follow the host's states " + std::to_string(g_test_delay) + " s back";
     }
     if (a.size() >= 2 && a[0] == "lift" && is_guest()) { // lift <m>: tests (BUG-0329), the host's members m higher
         g_test_lift = (float)atof(a[1].c_str());

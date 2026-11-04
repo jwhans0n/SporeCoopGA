@@ -58,7 +58,10 @@
 #include "squadron.h"
 #include "npc.h"
 #include "creature_hp.h"
+#include "effects.h"
 #include "nest.h"
+#include "fields.h"
+#include "worldobj.h"
 #include "parts.h"
 #include "rejoin.h"
 #include "savestrip.h"
@@ -80,9 +83,11 @@
 #include "sporekit.h"
 #include "sporekit_game.hpp"
 #include "fixes.h"
+#include <shlobj.h>
 #include "share_wait.h"
 #include "dna_route.h"
 #include "dna_ledger.h"
+#include "dna_pace.h"
 #include "host_world.h"
 #include "diag_coop.h"
 #include "trace.h"
@@ -115,11 +120,17 @@ struct Remote {
     dbpf::Key captain_model;
     uint64_t captain_run = 0;
     bool captain_downed = false;
+    bool silent_said = false; // BUG-0513: "is not responding" was told (core.partner_silent)
     uint64_t world_sent = 0; // host: (mode << 32 | save crc) last sent to this guest
     double other_mode_since = -1; // host: since when the guest plays another mode
     bool joined_phase = false; // host: the guest played the host's mode after the last world send
     bool needs_world = false;  // host: joined while the host was not playing; send the world later
     double cine_wait_since = 0; // host: since when this guest's share waits for a cinematic (BUG-0232)
+    // host, BUG-0508 (world.evolve_in_place): after the host's editor this guest was in the same world and
+    // stage, so it may take the new body without the whole world; evo_check_until: until then its avatar
+    // must have left the host's pre-editor species (Creature), or it gets the world after all
+    bool evo_inplace = false;
+    double evo_check_until = 0;
     // host, BUG-0231 (core.share_retry): a failed share is retried; dropped with the entry at the
     // session end (g_remotes.clear())
     uint32_t join_serial = 0; // this guest's join (the share's tag: an id reused by a newcomer is not it)
@@ -167,6 +178,24 @@ uint32_t g_dna_owed_paid; // tests
 bool g_world_dna_fix = true;
 COOP_FIX("core.world_dna", "BUG-0231", g_world_dna_fix, "core: DNA a guest earns in its own world stays in that world");
 uint32_t g_dna_own = 0; // tests: gains kept in the guest's own world (row 2)
+// BUG-0466 (class G6, BUG-0423): a guest's own DNA spend (its own creature editor of a vote: the
+// editor takes the price from the game's GetEvolutionPoints when it closes) was never sent: the guest
+// forwards only gains (on_dna), so the host's next total (sent on a change and every 2 s) put the
+// guest's DNA back to what it had before the editor (free DNA, and the host's total never paid for
+// the guest's parts). Now a guest samples its own DNA while it plays the host's world: a drop it
+// made itself (not a host total, not a load) is a spend; it is kept across the editor (the stage
+// epoch: an editor and its Done keep it, a load does not), held while the host is away, sent once
+// to the host as a negative MSG_DNA_ADD (an older host ignores it: d > 0 only) and taken off the
+// party's total there (never below 0). Off: only gains go to the host (0.7.3.6).
+bool g_dna_spend_fix = true;
+COOP_FIX("core.dna_spend", "BUG-0466", g_dna_spend_fix, "core: the DNA a guest spends in its own editor leaves the party's total and is not given back");
+static float g_dna_seen = 0;           // guest: the game's DNA after the last sample / host total / own gain
+static bool g_dna_seen_ok = false;
+static uint32_t g_dna_seen_epoch = 0;  // the Creature stage epoch of g_dna_seen (a load starts a new one)
+static float g_dna_spend = 0;          // guest: spent here, not sent yet (<= 0)
+static uint32_t g_dna_spend_world = 0; // the world it was spent in
+static float g_dna_spend_owed = 0;     // host: guests' spends that arrived while it had no creature (<= 0)
+static uint32_t g_dna_spends_sent = 0, g_dna_spends_got = 0; // tests
 void feed_kind(const std::string& s, const char* kind);
 // the DNA cause ledger and its notices (dna_ledger.h; player request 2026-11-01, BUG-0351)
 static std::vector<dna_ledger::Part> g_dna_out; // host: the causes since the last total sent
@@ -203,7 +232,76 @@ static void dna_notices_tick(double now)
 }
 
 bool guest_elsewhere();
-bool on_dna(float delta)
+// BUG-0510 (dna_pace.h): every gain entering the party's shared DNA / food is scaled by 1/N, N = the
+// players playing the host's world now, so a party evolves at the single-player pace. The host
+// decides (coop.ini [coop] dna_pace, 0 = the full sum) and announces the divisor with its totals
+// (MSG_DNA's and MSG_CELL_FOOD's optional tail); each gain is scaled once, where its game made it.
+// Off (`coop.fix core.dna_pace off`): every gain whole, the sum of all players (0.7.3.6).
+bool g_dna_pace_fix = true;
+COOP_FIX("core.dna_pace", "BUG-0510", g_dna_pace_fix, "core: the party's DNA grows at the single-player pace (each gain / N players)");
+static int g_pace_heard = 1;          // guest: the host's divisor (1 until a total with one, or from an older host)
+static uint32_t g_paced = 0;          // tests: gains scaled here
+static float g_paced_in = 0, g_paced_out = 0; // tests: their sum before / after
+extern uint32_t g_world;
+// host: the players playing its world now (itself and the guests in its stage and world)
+static int pace_playing()
+{
+    int n = 1;
+    if (!g_world)
+        return n;
+    for (auto& [id, r] : g_remotes) {
+        if (r.echo || r.buf.empty())
+            continue;
+        const auto& ls = r.buf.latest();
+        if (ls.mode == g_mode && ls.world == g_world)
+            n++;
+    }
+    return n;
+}
+// the divisor the host announces
+int dna_pace_announce()
+{
+    return dna_pace::divisor(g_dna_pace_fix && dna_pace::g_ini != 0, pace_playing());
+}
+// the divisor for a gain of this machine's game now (1: whole)
+static int pace_div()
+{
+    if (!g_dna_pace_fix || dna_pace::g_bypass || !g_sess.connected())
+        return 1;
+    if (g_sess.role() == net::Role::Host)
+        return dna_pace_announce();
+    if (guest_elsewhere() || g_host_away)
+        return 1; // its own world / playing alone meanwhile: not the party's total
+    return std::max(1, g_pace_heard);
+}
+float dna_pace_gain(float amount)
+{
+    int div = pace_div();
+    float out = dna_pace::share(amount, div);
+    if (out != amount) {
+        g_paced++;
+        g_paced_in += amount;
+        g_paced_out += out;
+        trace::line("dna", "pace 1/%d: +%.1f -> +%.1f", div, amount, out);
+    }
+    return out;
+}
+static dna_pace::Carry g_pace_carry;
+int dna_pace_meal(int amount) // Cell: an own meal's food points
+{
+    int div = pace_div();
+    int out = g_pace_carry.take(amount, div);
+    if (out != amount) {
+        g_paced++;
+        g_paced_in += (float)amount;
+        g_paced_out += (float)out;
+        trace::line("dna", "pace 1/%d: meal +%d -> +%d", div, amount, out);
+    }
+    return out;
+}
+void dna_pace_heard(int div) { g_pace_heard = std::clamp(div, 1, 255); }
+
+bool on_dna(float& delta)
 {
     if (coop_editor::authoring()) return true;
     bool guest = g_sess.role() == net::Role::Client && g_sess.connected();
@@ -217,11 +315,14 @@ bool on_dna(float delta)
         if (g_solo_dna <= 0)
             g_solo_mode = g_mode; // the stage it is earned in (BUG-0233)
         g_solo_dna += delta; // nobody to send it to: kept here, given to the pack on the host's return
+        g_dna_seen += delta;  // BUG-0466: applied here now, not a spend
         return true;
     }
     if (social::goal_dna(delta))
         return false; // a goal card's reward: the host pays it into the shared pool once
     if (g == dna_route::Gain::Local) {
+        if (g_sess.role() == net::Role::Host && delta > 0 && g_mode == modes::kCreature)
+            delta = dna_pace_gain(delta); // BUG-0510: the host's own gain (after the goal card: those stay whole)
         if (g_sess.role() == net::Role::Host && delta != 0 && g_mode == modes::kCreature)
             dna_host_gain(dna_ledger::g_credit.gain(delta, H->time_seconds()), game::dna());
         return true;
@@ -231,7 +332,7 @@ bool on_dna(float delta)
         return true;
     }
     net::Writer w;
-    w.f32(delta);
+    w.f32(dna_pace_gain(delta)); // BUG-0510: its share, with the host's divisor (the host adds it whole)
     g_sess.send_reliable_to(0, net::MSG_DNA_ADD, w);
     g_dna_fwd++;
     return false; // applied when the host's total comes back
@@ -369,6 +470,7 @@ uint32_t g_mode = 0, g_world = 0;
 bool g_save_on_share = true; // host saves before sending the world, so guests get the current state
 const modes::Adapter* g_adapter = nullptr;
 bool g_puppet_hold = false; // tests (coop.puppet hold): remote puppets are not driven (BUG-0251), never saved
+double g_puppet_hide_until = 0; // tests (coop.puppet respawn <s>): partners' puppets stay away until then (BUG-0453)
 void* g_local = nullptr; // entity the local player controls (adapter specific)
 
 net::AdventureMotion g_adventure_motion;
@@ -698,13 +800,37 @@ int c_track(void*, int argc, const char* const* argv, SkOut* out)
     return 0;
 }
 
+// BUG-0513: a partner whose game stops sending (minimized, alt-tabbed full screen, a stall of 17-38 s) was hidden
+// after 5 s without a word ("the guest is bugged into the ground"). With core.partner_silent the others are told
+// once that the partner is not responding and when it plays again. Off: 0.7.3.6.
+static bool g_partner_silent_fix = true;
+COOP_FIX("core.partner_silent", "BUG-0513", g_partner_silent_fix, "core: a partner whose game stopped answering (minimized, frozen) is announced, and when it is back");
+uint32_t g_silent_notices = 0; // tests
+
+static void silent_tick(Remote& r, double now)
+{
+    if (!g_partner_silent_fix || r.echo || r.buf.empty())
+        return;
+    double age = r.buf.age(now);
+    if (!r.silent_said && age > 5.0 && g_sess.connected()) {
+        r.silent_said = true;
+        g_silent_notices++;
+        feed(r.name + " is not responding (game minimized or frozen?)");
+    } else if (r.silent_said && age < 1.0) {
+        r.silent_said = false;
+        feed(r.name + " is responding again");
+    }
+}
+
 void drive_puppet(Remote& r, double now)
 {
     sync_pause_motion(r, now);
     if (r.pause_motion.paused()) return;
     net::PlayerState s;
+    r.buf.jump_speed = g_mode == modes::kCreature ? modes::puppet_jump_speed() : 0.f; // BUG-0499
     if (!r.buf.sample(now, s))
         return;
+    silent_tick(r, now);
     adventure::CaptainState life;
     const bool has_life = g_mode == modes::kScenario && adventure::captain_state(r.id, life);
     const bool downed = has_life && ga::hold_downed_movement(life.captain, s);
@@ -722,7 +848,7 @@ void drive_puppet(Remote& r, double now)
     }
     // dead players are hidden until they respawn
     bool visible = g_adapter && g_local && (s.flags & net::PF_IN_WORLD) && !(s.flags & net::PF_DEAD) &&
-                   r.buf.age(now) < 5.0 && (r.echo || same_place(s));
+                   r.buf.age(now) < 5.0 && (r.echo || same_place(s)) && now >= g_puppet_hide_until;
     dbpf::Key captain_model;
     if (g_mode == modes::kScenario && g_sess.connected() && !r.echo) {
         const auto* d = adventure::current();
@@ -932,7 +1058,8 @@ static bool world_state_msg(uint8_t type)
     return type == net::MSG_DNA || type == net::MSG_WORLD_TIME ||
            (type >= net::MSG_CELL_STATE && type <= net::MSG_CELL_FOOD) || type == net::MSG_CELL_KO ||
            type == net::MSG_CELL_BITTEN || type == net::MSG_TRIBE_STATE || type == net::MSG_TRIBE_CMD ||
-           type == net::MSG_SPECIES || type == net::MSG_SOCIAL || type == net::MSG_NEST || type == net::MSG_PARTS;
+           type == net::MSG_SPECIES || type == net::MSG_SOCIAL || type == net::MSG_NEST || type == net::MSG_PARTS ||
+           type == net::MSG_FIELDS;
 }
 
 // the gate: does this machine drop the host's message? (0.7.3.0 with core.world_gate off: the old
@@ -942,6 +1069,76 @@ static bool gate_drops(uint8_t type)
     if (!world_state_msg(type))
         return false;
     return g_world_gate_fix ? guest_elsewhere() : host_elsewhere(type == net::MSG_DNA);
+}
+
+// BUG-0466: the guest's own spends (see g_dna_spend_fix)
+static void dna_spend_sample()
+{
+    if (!g_dna_spend_fix || g_sess.role() != net::Role::Client || !g_sess.connected()) {
+        g_dna_seen_ok = false;
+        g_dna_spend = 0;
+        return;
+    }
+    if (game::mode_id() != modes::kCreature)
+        return; // an editor, a load: the last value is kept (an editor's price shows when it closes;
+                // a world held for the editor's end may load before the avatar is back: no avatar asked)
+    uint32_t epoch = game::stage_epoch(modes::kCreature);
+    if (guest_elsewhere() || !g_dna_seen_ok || epoch != g_dna_seen_epoch) {
+        g_dna_seen = game::dna(); // another world or a load: its value is not a change of ours
+        g_dna_seen_ok = !guest_elsewhere();
+        g_dna_seen_epoch = epoch;
+        return;
+    }
+    float cur = game::dna(), d = cur - g_dna_seen;
+    if (d < -0.5f) {
+        if (g_dna_spend == 0)
+            g_dna_spend_world = g_stage_world; // (an editor has no world of its own)
+        g_dna_spend += d;
+        LOG("dna: spent %.0f here (%.0f -> %.0f): goes to the host", -d, g_dna_seen, cur);
+    }
+    g_dna_seen = cur;
+}
+
+// a spend the mod made for the game (the own editor's price): counted at once, not left to the
+// sample (a host total can arrive before the next tick: it would undo it)
+static void dna_spend_note(float d)
+{
+    if (!g_dna_spend_fix || g_sess.role() != net::Role::Client || !g_sess.connected() || d >= 0)
+        return;
+    if (g_dna_spend == 0)
+        g_dna_spend_world = g_stage_world; // (an editor has no world of its own)
+    g_dna_spend += d;
+    if (g_dna_seen_ok)
+        g_dna_seen += d;
+    LOG("dna: spent %.0f here (the own editor's price): goes to the host", -d);
+}
+
+// the game's DNA was set by the mod (a host total): the next sample starts from it
+static void dna_spend_resync()
+{
+    if (g_dna_seen_ok)
+        g_dna_seen = game::dna();
+}
+
+static void dna_spend_tick(double now)
+{
+    static double last_send = -100;
+    dna_spend_sample();
+    if (g_dna_spend > -0.5f)
+        return;
+    if (g_dna_spend_world != g_world && g_mode == modes::kCreature && game::avatar()) {
+        LOG("dna: a spend of %.0f made in world %08X dropped (now %08X)", -g_dna_spend, g_dna_spend_world, g_world);
+        g_dna_spend = 0; // that world is gone (another save): its DNA has no total to come off
+        return;
+    }
+    if (g_host_away || !host_here() || guest_elsewhere() || now - last_send < 0.25)
+        return; // held: the host has no creature now (its own editor) or plays elsewhere
+    net::Writer w;
+    w.f32(g_dna_spend);
+    g_sess.send_reliable_to(0, net::MSG_DNA_ADD, w);
+    g_dna_spends_sent++;
+    last_send = now;
+    g_dna_spend = 0;
 }
 
 void host_away_tick(double now)
@@ -963,6 +1160,12 @@ void host_away_tick(double now)
             g_dna_owed = 0;
             g_owed_dropped++;
         }
+    }
+    if (g_dna_spend_owed < 0 && g_sess.role() == net::Role::Host && g_mode == modes::kCreature && game::avatar()) {
+        float d = std::max(g_dna_spend_owed, -game::dna()); // BUG-0466: never below 0
+        dna_host_gain({dna_ledger::Cause::Earned, 0, d}, game::dna());
+        game::dna_add_raw(d);
+        g_dna_spend_owed = 0;
     }
     if (g_dna_pending >= 0 && g_sess.role() == net::Role::Client && host_here() && game::avatar() && !g_host_away) {
         float d = g_dna_pending - game::dna(); // the host's total, once we play its world
@@ -1207,6 +1410,7 @@ bool SK_THISCALL h_StageMsg(void* self, uint32_t id, void* msg)
 // works). In the own editor such parts are allowed: the bit is dropped from the blocking set
 // (docs/re/creations.md 7).
 bool g_own_editor = false; // the own editor was requested and the player has not left it yet
+static bool g_own_editor_charge_due = false; // BUG-0466: the own editor opened; its result charges once
 using BlockingErrors_t = uint32_t*(SK_THISCALL*)(void*, uint32_t*, void*, void*, int);
 BlockingErrors_t o_BlockingErrors;
 unsigned g_part_list_waivers; // tests: how often the part-list error was waived
@@ -1264,6 +1468,7 @@ bool open_own_editor(uint32_t editor_id)
     }
     g_vote_bypass = true;
     g_own_editor = true; // the editor loads the creature after Submit, on a later frame
+    g_own_editor_charge_due = true; // BUG-0466: its result charges the price
     bool r = skg::cdecl_call<bool>(submit, req);
     g_vote_bypass = false;
     if (!r)
@@ -1447,6 +1652,43 @@ int SK_THISCALL h_SimMsg(void* self, uint32_t id, void* data)
     if (id == 0x4715068u) // BUG-0264: the game leaves the stage now (any source of the quit)
         game::stage_leaving("quit message handled");
     return o_SimMsg(self, id, data);
+}
+
+// BUG-0466 (observed, lab 20261103-141812 editor_sync_guest): the guest's own editor of a vote
+// (open_own_editor: an EditorRequest without the evolution tag +0x90) showed the DNA budget and the
+// price of the new parts (40 -> 15), but the game never charged it: the creature game's handler
+// 0xD42E50 applies an editor's result (message 0x30C11C7, data +0xC the request's tag) only for the
+// evolution tag 0x64AA168 (then the stage's return sets GetEvolutionPoints to the result's
+// remaining DNA, +0x34, 0xD445AA). The guest kept its DNA and the host's total stayed the same:
+// free parts. Now the result of the own editor (not cancelled, +0x44 == 0) charges the price
+// through the game (the remaining DNA at +0x34), and core.dna_spend sends it to the host.
+// `coop.fix creations.own_editor_dna off`: the own editor costs nothing (0.7.3.6).
+static void dna_spend_note(float d);
+bool g_own_editor_dna_fix = true;
+COOP_FIX("creations.own_editor_dna", "BUG-0466", g_own_editor_dna_fix, "creature: the parts a guest adds in its own editor cost DNA (the editor's price is charged)");
+static unsigned g_own_editor_charged = 0;
+typedef bool(SK_THISCALL* CreatureGameMsg_t)(void*, uint32_t, void*);
+CreatureGameMsg_t o_CreatureGameMsg;
+bool SK_THISCALL h_CreatureGameMsg(void* self, uint32_t id, void* data)
+{
+    if (id == 0x30C11C7u && g_own_editor_charge_due && data && skg::readable(data, 0x48)) {
+        uint32_t tag = skg::field<uint32_t>(data, 0xC);
+        int left = skg::field<int32_t>(data, 0x34);
+        uint8_t cancelled = skg::field<uint8_t>(data, 0x44);
+        float now = game::dna();
+        LOG("own editor result: tag %08X remaining DNA %d cancelled %u, DNA here %.0f%s", tag, left, (unsigned)cancelled, now,
+            g_own_editor_dna_fix ? "" : " (creations.own_editor_dna off)");
+        if (tag != 0x64AA168u && tag != 0x12191CAu) {
+            g_own_editor_charge_due = false;
+            if (g_own_editor_dna_fix && !cancelled && left >= 0 && left < now) {
+                game::dna_add_raw((float)left - now); // the editor's price, as the evolution's return sets it
+                g_own_editor_charged++;
+                dna_spend_note((float)left - now); // a spend of ours: to the host (core.dna_spend)
+                feed("your new parts cost " + std::to_string((int)(now - left)) + " DNA");
+            }
+        }
+    }
+    return o_CreatureGameMsg(self, id, data);
 }
 
 bool SK_CDECL h_Submit(void* req)
@@ -1647,6 +1889,66 @@ double g_share_cine_since = 0, g_share_due_at = 0;
 bool g_share_cine_each_fix = true;
 COOP_FIX("npc.sharecine_each", "BUG-0232", g_share_cine_each_fix, "world: the wait for the evolution cinematic counts per guest");
 
+// BUG-0508: after every host editor (Cell and Creature) every guest got the whole world again (a 3 MB
+// save) and went Cell / Creature -> galaxy menu -> load, although the host's new creation (its bundle,
+// creations.cpp) had already rebuilt its puppet. A guest of this version in the same world and stage
+// now keeps playing: the bundle rebuilds the host's puppet and a guest that plays the world's species
+// takes the host's new one in place (creations.cpp `follow`); in Creature the host still saves its own
+// game once (its avatar takes the evolved species only with a save) but sends nothing. The world still
+// goes when the evolution needs it (docs/re/creations.md#creations-evolve-in-place): a migration started
+// (the brain grew, BUG-0019), the guest in another world or stage, an older guest, or (Creature) a guest
+// whose avatar still plays the pre-editor species 30 s later.
+// Off: every guest gets the world after every editor (0.7.3.6).
+static bool g_evolve_inplace_fix = true;
+COOP_FIX("world.evolve_in_place", "BUG-0508", g_evolve_inplace_fix,
+         "world: after the host's editor a guest in the same world and stage takes the new body without loading the world again");
+static uint32_t g_evo_key_before = 0; // host: its avatar's species when its editor opened (Creature)
+static int g_evo_age_before = -1;     // host: its avatar's age (+0xB34) then
+static bool g_evo_cine = false;       // host: a cinematic held a share since the last evolution
+static unsigned g_evo_inplace = 0, g_evo_fallback = 0; // tests: guests kept in place, worlds sent after all
+// the migration state of this game's player (cPlayer +0x69C property 0x514A219, docs/re/creature.md:
+// CreatureGame_AfterEditor): 1 = a migration started by this evolution (CRG_SpeciesMigrate), 2 = its goal
+static int host_migration()
+{
+    static uintptr_t a_GetProperty = H->sym("SporeCoop::Player_GetProperty");
+    uint8_t* nm = (uint8_t*)game::noun_manager();
+    void* pl = nm && skg::readable(nm + 0x74, 4) ? *(void**)(nm + 0x74) : nullptr;
+    return a_GetProperty && pl ? skg::thiscall<int>(a_GetProperty, pl, 0x514A219u) : -1;
+}
+static int g_evo_migration_before = -1;
+static uint32_t g_evo_seen_key = 0; // host: the avatar's species, age and migration in the Creature stage
+static int g_evo_seen_age = -1, g_evo_seen_mig = -1;
+static double g_evo_seen_at = 0;
+static unsigned g_evo_saves = 0; // host: saves made for an evolution in place (tests)
+static bool g_evo_save_due = false;
+static int host_avatar_age()
+{
+    void* av = game::mode_id() == modes::kCreature ? game::avatar() : nullptr;
+    return av && skg::readable((uint8_t*)av + 0xB34, 4) ? *(int*)((uint8_t*)av + 0xB34) : -1;
+}
+static const std::string* peer_version(uint8_t id)
+{
+    for (auto& p : g_sess.players())
+        if (p.id == id)
+            return &p.version;
+    return nullptr;
+}
+// host: may guest r take the host's evolution in place (same world, the host's stage or an editor)?
+static bool evolve_inplace_ok(uint8_t id, const Remote& r, uint32_t stage)
+{
+    // (called from on_mode_change too, before g_adapter / g_world follow the new mode)
+    const modes::Adapter* ad = modes::for_mode(stage);
+    uint32_t world = ad ? modes::current_place(ad) : 0;
+    if (!g_evolve_inplace_fix || r.echo || r.buf.empty() || !ad || ad->own_worlds)
+        return false;
+    const std::string* v = peer_version(id);
+    if (!v || v->empty())
+        return false; // an older SporeCoop: it does not follow the host's species in place
+    const auto& ls = r.buf.latest();
+    bool editor = ls.mode == modes::kEdit || ls.mode == modes::kEditor;
+    return (ls.mode == stage || editor) && world && ls.world == world;
+}
+
 void on_mode_change(uint32_t from, uint32_t to)
 {
     coop_editor::mode_changed(from, to);
@@ -1659,8 +1961,13 @@ void on_mode_change(uint32_t from, uint32_t to)
     if (to == modes::kMenu && stage_mode(from) && g_sess.role() == net::Role::Host && !g_remotes.empty())
         feed("the others play on alone until you load a game again (they get its world)");
     bool editor = to == modes::kEdit || to == modes::kEditor;
-    if (editor && stage_mode(from))
+    if (editor && stage_mode(from)) {
         g_was_in_editor = true;
+        // BUG-0508: what the evolution changes, as last seen in the stage (the avatar is gone by now)
+        g_evo_key_before = from == modes::kCreature ? g_evo_seen_key : 0;
+        g_evo_age_before = from == modes::kCreature ? g_evo_seen_age : -1;
+        g_evo_migration_before = from == modes::kCreature ? g_evo_seen_mig : -1;
+    }
     if (!editor && (from == modes::kEdit || from == modes::kEditor)) {
         g_own_editor = false;
         g_editor_left_at = H->time_seconds(); // BUG-0404: the evolution's cinematic starts now
@@ -1676,10 +1983,14 @@ void on_mode_change(uint32_t from, uint32_t to)
         return;
     if (!new_stage && !evolved)
         return;
+    g_evo_cine = false;
+    g_evo_save_due = evolved;
     for (auto& [id, r] : g_remotes)
         if (!r.echo) {
             r.needs_world = true; // sent by follow_phase as soon as the host controls something
             r.cine_wait_since = 0; // a new wait (BUG-0232)
+            r.evo_inplace = evolved && evolve_inplace_ok(id, r, to); // BUG-0508: decided after the wait
+            r.evo_check_until = 0;
         }
     g_share_due_at = H->time_seconds() + (evolved ? 3.0 : 0.0); // BUG-0019: its cinematic starts first
     notice(new_stage            ? g_name + " entered the " + modes::mode_name(to) + " stage: everybody follows"
@@ -1766,6 +2077,12 @@ void follow_phase(double now)
         !stage_mode(g_mode))
         return;
     uint64_t key = ((uint64_t)g_mode << 32) | modes::current_world();
+    if (g_mode == modes::kCreature && g_local && now - g_evo_seen_at > 0.5) { // BUG-0508
+        g_evo_seen_at = now;
+        g_evo_seen_key = game::species_instance(g_local);
+        g_evo_seen_age = host_avatar_age();
+        g_evo_seen_mig = host_migration();
+    }
     for (auto& [id, r] : g_remotes) {
         if (r.echo)
             continue;
@@ -1779,8 +2096,10 @@ void follow_phase(double now)
                 bool cine = gate != 0;
                 bool waited = since != 0 && cine;
                 if (share_wait::hold(since, cine, now, g_share_due_at)) {
-                    if (cine)
+                    if (cine) {
                         g_share_cine_held_at = now; // BUG-0382: trace share_wait=cinematic
+                        g_evo_cine = true; // BUG-0508: this evolution plays a cinematic: the world goes
+                    }
                     continue;
                 }
                 if (waited)
@@ -1788,6 +2107,46 @@ void follow_phase(double now)
             } else
                 g_share_cine_since = 0;
             r.cine_wait_since = 0;
+            if (r.evo_inplace) { // BUG-0508: the evolution in place, unless it needs the world after all
+                r.evo_inplace = false;
+                // (every Creature evolution plays a cinematic after the editor, ~10 s, and the host's avatar
+                // takes the new species only after it: lab 20261103-173315; the migration is what the
+                // guest's game cannot get without the world, BUG-0019)
+                int age = host_avatar_age(), mig = g_mode == modes::kCreature ? host_migration() : -1;
+                const char* why = !evolve_inplace_ok(id, r, g_mode)                      ? "left the world or stage"
+                                  : g_mode == modes::kCreature && mig < 0                  ? "the migration state is unknown"
+                                  : mig > 0 && mig != g_evo_migration_before              ? "a migration started"
+                                                                                         : nullptr;
+                // (the age is no sign: the evolved avatar is a hatchling, age 0, for a few seconds after the
+                // cinematic of every evolution, lab 20261103-173652)
+                if (!why) {
+                    // The host's own avatar takes the evolved species only with a save of the game: without
+                    // the share's save it stayed the pre-editor species for minutes while the world's player
+                    // species (cSpeciesManager +0xA4) was the new one (lab 20261103-173652). The save is made,
+                    // only not sent (once per evolution, docs/re/creations.md#creations-evolve-in-place).
+                    if (g_mode == modes::kCreature && g_evo_save_due) {
+                        g_evo_save_due = false;
+                        std::string err;
+                        if (world::save_game(err))
+                            g_evo_saves++;
+                        else
+                            LOG("evolved in place: the save for the host's new body failed: %s", err.c_str());
+                    }
+                    r.needs_world = false;
+                    r.world_sent = key;
+                    r.joined_phase = true;
+                    r.evo_check_until = g_mode == modes::kCreature && g_evo_key_before ? now + 30.0 : 0;
+                    g_evo_inplace++;
+                    LOG("evolved in place: %s keeps its world (host species %08X -> %08X, age %d -> %d, migration %d -> %d, cinematic %d)",
+                        r.name.c_str(), g_evo_key_before,
+                        g_mode == modes::kCreature && game::avatar() ? game::species_instance(game::avatar()) : 0,
+                        g_evo_age_before, age, g_evo_migration_before, mig, (int)g_evo_cine);
+                    feed(r.name + " gets your new body in place (no reload)");
+                    continue;
+                }
+                LOG("evolved: %s gets the world (%s)", r.name.c_str(), why);
+            }
+            r.evo_check_until = 0;
             r.needs_world = false;
             r.world_sent = key;
             r.joined_phase = false;
@@ -1804,6 +2163,20 @@ void follow_phase(double now)
         if (r.buf.empty())
             continue;
         const auto& ls = r.buf.latest();
+        // BUG-0508: a guest kept in place whose avatar still plays the host's pre-editor species: the
+        // apply failed there (or its switch is off): it gets the world after all
+        if (r.evo_check_until) {
+            if (ls.mode == modes::kCreature && ls.species && ls.species != g_evo_key_before)
+                r.evo_check_until = 0; // it follows (or plays a creature of its own)
+            else if (now > r.evo_check_until && ls.mode == modes::kCreature) {
+                r.evo_check_until = 0;
+                g_evo_fallback++;
+                LOG("evolved in place: %s still plays %08X after 30 s: sending the world", r.name.c_str(), ls.species);
+                r.needs_world = true;
+                r.cine_wait_since = 0;
+                continue;
+            }
+        }
         // a guest in an editor is left alone (it may be evolving inside the same stage); a guest
         // that plays another stage than the host is pulled back into the host's stage
         bool behind = ls.mode != g_mode && stage_mode(ls.mode);
@@ -2224,6 +2597,8 @@ void avatar_change_check()
         forget_puppets();
         npc::on_world_change();
         nest::on_world_change();
+        fields::on_world_change();
+        wobj::on_world_change();
         if (!tribe::editor_world_fix()) // BUG-0217: else tribe::world_check() decides
             tribe::on_world_change();
         if (!civ::world_epoch_fix()) // BUG-0223: else civ::world_check() decides
@@ -2572,6 +2947,30 @@ void trace_tick(double now)
     }
 }
 
+// Tests: fix switches that act while the game starts (before a console can switch them, e.g. game.save_areas,
+// BUG-0506) are switched off by a file <AppData>\Spore\SporeCoop\fixes_off.txt of the profile, one name per
+// line, read once when the mod loads. The file is the test's (coop_save_areas.py writes and removes it).
+static void apply_startup_off()
+{
+    wchar_t p[MAX_PATH];
+    if (FAILED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, p))) // profile-aware (hooked)
+        return;
+    FILE* f = _wfopen((std::wstring(p) + L"\\Spore\\SporeCoop\\fixes_off.txt").c_str(), L"r");
+    if (!f)
+        return;
+    char line[128];
+    while (fgets(line, sizeof line, f)) {
+        std::string n(line);
+        while (!n.empty() && (n.back() == '\n' || n.back() == '\r' || n.back() == ' '))
+            n.pop_back();
+        if (n.empty() || n[0] == '#')
+            continue;
+        bool ok = fix::set(n, false);
+        H->log(M, SK_WARN, "coop: fix %s switched off at startup (fixes_off.txt)%s", n.c_str(), ok ? "" : ": unknown name");
+    }
+    fclose(f);
+}
+
 void on_frame(void*, int, void*)
 {
     modes::CellScope cell_scope; // BUG-0271: no game code runs in here, the pool check holds for it
@@ -2590,6 +2989,7 @@ void on_frame(void*, int, void*)
         double st = support::session_time(&clock_ok);
         squadron::frame_start(st, clock_ok); // BUG-0378 tests: the ships as drawn, before any write of ours
     }
+    gamefixes::frame(); // BUG-0506: once
     game::world_epoch(); // BUG-0119: sees every frame outside the creature stage
     game::stage_epoch_tick(); // BUG-0217: before any message or module tick of this frame
     modes::world_name_tick(); // BUG-0258: the planet stays known through snapshot.spo
@@ -2638,8 +3038,12 @@ void on_frame(void*, int, void*)
     savestrip::tick();
     npc::tick(now);
     nest::tick(now); // BUG-0384
+    fields::tick(now); // BUG-0419 G2 (after the modules that make the mirrors)
+    wobj::tick(now); // BUG-0472, BUG-0459
     parts::tick(now); // BUG-0401
+    effects::tick(now); // BUG-0451: sends the queued effects on the main thread
     social::tick(now);
+    creature_hp::tick();
     shared::tick(g_sess, game::mode_id(), now, guest_elsewhere()); // BUG-0231: held while elsewhere
     if (g_sess.role() == net::Role::Host && game::avatar()) {
         float total = game::dna();
@@ -2656,6 +3060,7 @@ void on_frame(void*, int, void*)
                 w.u8(c.player);
                 w.f32(c.amount);
             }
+            w.u8((uint8_t)dna_pace_announce()); // BUG-0510 (after the causes: older guests stop there)
             g_dna_out.clear();
             for (auto& p : g_sess.players())
                 if (p.id != 0)
@@ -2676,6 +3081,10 @@ void on_frame(void*, int, void*)
 
     uint32_t prev_mode = g_mode;
     g_mode = game::mode_id();
+    // the effect hooks are installed once (game::init); this only gates their work to the played
+    // stages (a hook removed at a stage change faulted the UI skinner's render thread, BUG-0451 review)
+    game::set_world_relay(g_mode == modes::kCell || g_mode == modes::kCreature || g_mode == modes::kTribe
+                          || g_mode == modes::kCiv || g_mode == modes::kSpace);
     if (g_mode != prev_mode)
         on_mode_change(prev_mode, g_mode);
     g_adapter = modes::for_mode(g_mode);
@@ -2690,6 +3099,7 @@ void on_frame(void*, int, void*)
     follow_phase(now);
     share_wait_tick();
     host_away_tick(now);
+    dna_spend_tick(now); // BUG-0466
     dna_notices_tick(now);
     tribe::tick(now);
     bool walk_done = !gamefixes::leave_walk_armed();
@@ -3175,7 +3585,10 @@ void end_session(EndPath path, bool cell)
     if (g_session_end_fix || path == EndPath::Disconnect) {
         npc::on_session_end();
         nest::on_session_end(); // BUG-0384: our egg mirrors
+        fields::on_session_end();
+        wobj::on_session_end();
         parts::on_session_end(); // BUG-0401
+        effects::on_session_end(); // BUG-0451
         social::on_session_end();
         tribe::on_session_end();
         if (cell)
@@ -3187,7 +3600,10 @@ void end_session(EndPath path, bool cell)
     } else if (path == EndPath::Leave) { // before BUG-0033 (tests)
         npc::on_session_end();
         nest::on_session_end(); // BUG-0384: our egg mirrors
+        fields::on_session_end();
+        wobj::on_session_end();
         parts::on_session_end(); // BUG-0401
+        effects::on_session_end(); // BUG-0451
         social::on_session_end();
         if (cell)
             cellsync::on_session_end();
@@ -3195,7 +3611,10 @@ void end_session(EndPath path, bool cell)
     } else if (path == EndPath::Unload) {
         npc::on_session_end();
         nest::on_session_end(); // BUG-0384: our egg mirrors
+        fields::on_session_end();
+        wobj::on_session_end();
         parts::on_session_end(); // BUG-0401
+        effects::on_session_end(); // BUG-0451
         social::on_session_end();
     }
     if (g_session_end_fix || path != EndPath::Restart) {
@@ -3208,6 +3627,7 @@ void end_session(EndPath path, bool cell)
         drop_vote("the session ended");
     g_vote_action_due = nullptr; // BUG-0404: a result still waiting at the busy gate ends with its session
     g_puppet_hold = false; // tests (coop.puppet hold, BUG-0251)
+    g_puppet_hide_until = 0; // tests (coop.puppet respawn <s>, BUG-0453)
     world::reset_shares();
     shared::on_session_end();
     world::on_session_end(); // the guest's queued loads of the host's world (BUG-0074)
@@ -3220,6 +3640,9 @@ void end_session(EndPath path, bool cell)
     }
     g_dna_owed = 0;
     g_dna_owed_world = 0;
+    g_pace_heard = 1; // BUG-0510
+    g_pace_carry.reset();
+    g_dna_spend_owed = 0; // BUG-0466
     g_dna_out.clear();
     g_dna_notices.clear();
     g_state_mode_override = 0; // tests
@@ -3386,6 +3809,10 @@ void setup_callbacks()
                 on_remote_anim(ev);
             return;
         }
+        if (type == net::MSG_EFFECT) { // BUG-0451: a partner's creature made an effect
+            effects::on_message(type, from, r);
+            return;
+        }
         // (also before the host's first state when the host named no world in WELCOME: one Civ
         // cycle applied in that window bound the guest's own vehicles for good, BUG-0231; with
         // Welcome::world a guest in the host's world is Same from WELCOME on and loses nothing)
@@ -3409,8 +3836,14 @@ void setup_callbacks()
                     if (c >= 1 && c <= 4 && std::isfinite(a) && std::fabs(a) < 100000)
                         parts.push_back({(dna_ledger::Cause)c, pl, a});
                 }
-            }
+                // BUG-0510: the host's pace divisor (an older host sends none: the full sum)
+                dna_pace_heard(r.ok() && r.left() >= 1 ? r.u8() : 1);
+            } else
+                dna_pace_heard(1);
             if (r.ok() && dna_route::host_total(false, g_host_away, game::avatar() != nullptr) == dna_route::Total::Apply) {
+                dna_spend_sample(); // BUG-0466: a spend since the last tick is ours, not undone by this total
+                if (g_dna_spend_fix)
+                    total = std::max(0.f, total + g_dna_spend); // a spend not sent yet stays off
                 float before = game::dna(), d = total - before;
                 if (d != 0) {
                     LOG("dna: %.0f -> %.0f cause=%s", before, total, dna_ledger::causes_text(parts).c_str());
@@ -3418,6 +3851,7 @@ void setup_callbacks()
                     for (auto& p : parts)
                         dna_note(p, g_sess.my_id());
                 }
+                dna_spend_resync();
                 g_dna_rx++;
             }
             return;
@@ -3429,6 +3863,14 @@ void setup_callbacks()
                 dna_host_gain({dna_ledger::Cause::Earned, from, d}, game::dna());
                 game::dna_add_raw(d);
                 feed(g_sess.name_of(from) + " earned " + std::to_string((int)d) + " DNA");
+            } else if (g_dna_spend_fix && r.ok() && d < 0 && d > -100000) { // BUG-0466: a guest's own spend
+                g_dna_spends_got++;
+                if (add == dna_route::Add::Pay) {
+                    float dd = std::max(d, -game::dna()); // the total never goes below 0
+                    dna_host_gain({dna_ledger::Cause::Earned, from, dd}, game::dna());
+                    game::dna_add_raw(dd);
+                } else
+                    g_dna_spend_owed += d; // in an editor or a load: taken off when our creature is back
             } else if (r.ok() && d > 0 && d < 10000 && add == dna_route::Add::Owe && g_dna_owed < 100000) {
                 trace::line("dna", "from %u +%.0f kept as owed (no own creature now)", from, d);
                 if (g_dna_owed <= 0)
@@ -3593,7 +4035,7 @@ void setup_callbacks()
         }
         switch (type) {
         case net::MSG_NPC_SPAWN: case net::MSG_NPC_DESPAWN: case net::MSG_NPC_STATE:
-        case net::MSG_DAMAGE_REQ: case net::MSG_DAMAGE:
+        case net::MSG_DAMAGE_REQ: case net::MSG_DAMAGE: case net::MSG_NPC_RESYNC: case net::MSG_NPC_ANIM:
             npc::on_message(type, from, r);
             return;
         case net::MSG_SPECIES: case net::MSG_SOCIAL:
@@ -3602,8 +4044,14 @@ void setup_callbacks()
         case net::MSG_NEST: // BUG-0384
             nest::on_message(type, from, r);
             return;
+        case net::MSG_FIELDS: // BUG-0419 G2: replicated fields of mirrored objects
+            fields::on_message(type, from, r);
+            return;
         case net::MSG_PARTS: // BUG-0401
             parts::on_message(type, from, r);
+            return;
+        case net::MSG_WOBJ: // BUG-0472, BUG-0459
+            wobj::on_message(type, from, r);
             return;
         }
         if (g_sess.role() == net::Role::Client && from == 0)
@@ -3826,6 +4274,7 @@ int c_status(void*, int, const char* const*, SkOut* out)
     for (auto& pl : g_sess.players()) // CAP_VERSION: each player's mod, SporeKit and game build
         SAY("version %u '%s': %s\n", pl.id, pl.name.c_str(), pl.version.empty() ? "unknown (pre-0.7.4)" : pl.version.c_str());
     SAY("remote animations: received %u, played %u\n", g_anims_rx, g_anims_played);
+    SAY("%s", effects::status().c_str()); // BUG-0451
     SAY("%s", npc::status().c_str());
     SAY("%s", social::status().c_str());
     SAY("%s", tribe::status().c_str());
@@ -3840,6 +4289,10 @@ int c_status(void*, int, const char* const*, SkOut* out)
     SAY("%s", gamefixes::status().c_str());
     SAY("dna=%.1f (rx %u totals, forwarded %u gains) solo=%.1f owed=%.1f owed_paid=%u away=%d\n", game::dna(), g_dna_rx,
         g_dna_fwd, g_solo_dna, g_dna_owed, g_dna_owed_paid, (int)g_host_away);
+    SAY("dna spend: unsent=%.1f sent=%u got=%u owed=%.1f seen=%.1f/%d\n", g_dna_spend, g_dna_spends_sent, g_dna_spends_got,
+        g_dna_spend_owed, g_dna_seen, (int)g_dna_seen_ok); // BUG-0466
+    SAY("dna pace: div=%d fix=%d ini=%d heard=%d paced=%u in=%.1f out=%.1f\n", pace_div(), (int)g_dna_pace_fix, dna_pace::g_ini,
+        g_pace_heard, g_paced, g_paced_in, g_paced_out); // BUG-0510
     for (size_t i = g_chat.size() > 6 ? g_chat.size() - 6 : 0; i < g_chat.size(); i++)
         SAY("chat: %s\n", g_chat[i].c_str());
     void* av = g_local;
@@ -3848,6 +4301,7 @@ int c_status(void*, int, const char* const*, SkOut* out)
     SAY("host elsewhere=%d, its world's messages dropped %u, dna pending %.1f, own-world dna gains %u, welcome world %08X, share retries %u\n",
         (int)(g_world_gate_fix ? guest_elsewhere() : host_elsewhere()), g_place_dropped, g_dna_pending, g_dna_own,
         g_sess.welcome_world(), g_share_retries); // BUG-0130, BUG-0231
+    SAY("evolve in place: kept %u, sent after all %u, saves %u\n", g_evo_inplace, g_evo_fallback, g_evo_saves); // BUG-0508
     SAY("away dna: solo_mode=%08X solo_dropped=%u owed_world=%08X owed_dropped=%u\n", g_solo_mode, g_solo_dropped,
         g_dna_owed_world, g_owed_dropped); // BUG-0233
     SAY("strays: pending=%u removed=%u\n", (unsigned)g_strays.size(), g_strays_removed);
@@ -3879,9 +4333,12 @@ int c_status(void*, int, const char* const*, SkOut* out)
                     (unsigned long long)r.captain_run, (unsigned long long)s.captain_selection,
                     r.captain_model.instance, game::scale(r.puppet), s.scale);
             if (g_mode == modes::kCreature)
-                SAY("   drive err=%.2f speed=%.2f nudges=%u kept=%u teleports=%u walk_goals=%u\n", r.drv.last_err,
-                    r.drv.last_speed, r.drv.nudges, r.drv.nudges_kept, r.drv.teleports, r.drv.goals);
+                SAY("   drive err=%.2f speed=%.2f nudges=%u kept=%u teleports=%u walk_goals=%u jumps=%u\n", r.drv.last_err,
+                    r.drv.last_speed, r.drv.nudges, r.drv.nudges_kept, r.drv.teleports, r.drv.goals, r.drv.jumps);
         }
+        // tests (BUG-0507): the puppet the mod holds is a live creature in the game's own object list
+        if (r.puppet && creature_puppet(r.puppet_adapter))
+            SAY("puppet_listed %u %d gone_by_game=%u\n", id, (int)game::creature_listed(r.puppet), modes::g_puppets_gone_alive);
         // tests: both players are in the same world and place right now
         SAY("together %u %d\n", id, !r.buf.empty() && r.buf.age(now) < 3.0 && same_place(r.buf.latest()) ? 1 : 0);
     }
@@ -4049,6 +4506,31 @@ COOP_FIX("tools.gopos_ground", "BUG-0400", g_gopos_ground_fix, "tests: coop.npc 
 
 int c_npc(void*, int argc, const char* const* argv, SkOut* out)
 {
+    if (argc > 2 && !strcmp(argv[1], "animquiet")) { // guest (tests, BUG-0464)
+        npc::set_anim_quiet((float)atof(argv[2]));
+        SAY("ok\n");
+        return 0;
+    }
+    if (argc > 1 && !strcmp(argv[1], "anims")) { // BUG-0464: the behaviour animation relay's counters
+        SAY("%s", npc::anims_status().c_str());
+        return 0;
+    }
+    if (argc > 1 && !strcmp(argv[1], "cur")) { // BUG-0464 (tests): each NPC's current animation
+        SAY("%s", npc::current_anims().c_str());
+        return 0;
+    }
+    if (argc > 2 && !strcmp(argv[1], "untune")) { // guest (tests, BUG-0462): proxy <id> as made in a herd of ours
+        SAY("%s", npc::debug_untune((uint16_t)atoi(argv[2])).c_str());
+        return 0;
+    }
+    if (argc > 2 && !strcmp(argv[1], "forget")) { // guest (tests, BUG-0487): forget <id>
+        SAY("%s", npc::debug_forget((uint16_t)atoi(argv[2])).c_str());
+        return 0;
+    }
+    if (argc > 1 && !strcmp(argv[1], "resync")) {
+        SAY("%s", npc::resync_status().c_str());
+        return 0;
+    }
     if (argc > 1 && !strcmp(argv[1], "list")) {
         SAY("%s", npc::status().c_str());
         // out_printf keeps 8 KB per call: a guest's list with 40 proxies is longer (BUG-0305)
@@ -4139,6 +4621,11 @@ int c_npc(void*, int argc, const char* const* argv, SkOut* out)
         net::Vec3 side = std::fabs(up.x) < 0.9f ? net::Vec3{0, -up.z, up.y} : net::Vec3{-up.z, 0, up.x};
         float sl = std::sqrt(side.x * side.x + side.y * side.y + side.z * side.z);
         net::Vec3 q{p.x + side.x / sl * d + up.x * 2, p.y + side.y / sl * d + up.y * 2, p.z + side.z / sl * d + up.z * 2};
+        // BUG-0400 as for gopos: on a slope the point d m aside can be under the terrain (pack_target: the host's
+        // own creature 0.6-0.7 m under it for 10 s+, the monitor's ground rule), so it goes onto the ground
+        float qr = drive::speed(q), qg = game::ground_radius(q);
+        if (g_gopos_ground_fix && qg > 1 && qr > 1 && qr < qg + 0.3f)
+            q = {q.x * (qg + 0.3f) / qr, q.y * (qg + 0.3f) / qr, q.z * (qg + 0.3f) / qr};
         game::teleport(av, q, game::orientation(av));
         SAY("avatar at (%.1f %.1f %.1f)", q.x, q.y, q.z);
         return 0;
@@ -4297,6 +4784,10 @@ int c_social(void*, int argc, const char* const* argv, SkOut* out)
     }
     if (argc > 1 && !strcmp(argv[1], "species")) {
         SAY("%s", social::species_dump().c_str());
+        return 0;
+    }
+    if (argc > 1 && !strcmp(argv[1], "rel")) {
+        SAY("%s", social::relations_dump().c_str());
         return 0;
     }
     if (argc > 4 && !strcmp(argv[1], "goal")) { // tests: goal <hex crt> <outcome 5|6> <dna> (guest -> host, BUG-0205)
@@ -4940,6 +5431,7 @@ void support_init()
     g_ini_teamplay = H->config_int(M, "coop", "teamplay", 1);
     g_ini_update = H->config_int(M, "update", "check", 1);
     g_ini_sync = H->config_int(M, "coop", "sync_check", 30);
+    dna_pace::g_ini = H->config_int(M, "coop", "dna_pace", 1); // BUG-0510
     support::Probe p;
     p.sess = &g_sess;
     p.feed = feed;
@@ -5029,6 +5521,8 @@ void support_init()
             add("update.check", g_ini_update);
         if (g_ini_sync != 30)
             add("sync_check", g_ini_sync);
+        if (dna_pace::g_ini != 1)
+            add("dna_pace", dna_pace::g_ini);
         return s;
     };
     p.describe = [](const std::string& key) { // BUG-0381: the object's line of coop.npc list / coop.tribe
@@ -5206,13 +5700,92 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
         hc.is_host = [] { return g_sess.role() == net::Role::Host; };
         creature_hp::init(H, M, hc);
     }
+    { // BUG-0451: the creatures' visual effects on the partner's puppet
+        effects::Ctx ec;
+        ec.sess = &g_sess;
+        ec.puppet_of = [](uint8_t id) -> void* {
+            auto it = g_remotes.find(id);
+            return it == g_remotes.end() ? nullptr : it->second.puppet;
+        };
+        ec.all_puppets = [] {
+            std::vector<std::pair<uint8_t, void*>> v;
+            for (auto& [id, r] : g_remotes)
+                v.push_back({id, r.puppet});
+            return v;
+        };
+        ec.near_local = [](const net::Vec3& p) {
+            void* av = game::avatar();
+            if (av) {
+                net::Vec3 a = game::position(av);
+                return net::dist(a, p) < 1.8f;
+            }
+            if (g_adapter && g_adapter->local) {
+                void* l = g_adapter->local();
+                if (l && net::dist(modes::entity_pos(g_adapter, l), p) < 1.8f)
+                    return true;
+            }
+            // allocation-free: this runs from inside the game's effect transform setter, also in
+            // the UI skinner's render pipeline (a vector here faulted in Skinner::StartRender)
+            if (g_mode == modes::kTribe)
+                return tribe::near_member(p, 1.8f);
+            if (g_mode == modes::kCiv)
+                return civ::near_vehicle(p, 1.8f);
+            return false;
+        };
+        ec.world = [] { return g_world; };
+        ec.here = [](uint8_t id) {
+            auto it = g_remotes.find(id);
+            if (it == g_remotes.end() || it->second.echo || it->second.buf.empty())
+                return false;
+            const auto& ls = it->second.buf.latest();
+            return same_place(ls) && (ls.flags & net::PF_IN_WORLD) != 0;
+        };
+        ec.anyone_here = [] {
+            for (auto& [id, r] : g_remotes) {
+                if (r.echo || r.buf.empty())
+                    continue;
+                const auto& ls = r.buf.latest();
+                if (same_place(ls) && (ls.flags & net::PF_IN_WORLD))
+                    return true;
+            }
+            return false;
+        };
+        ec.local_pos = [] {
+            void* av = game::avatar();
+            if (av)
+                return game::position(av);
+            if (g_adapter && g_adapter->local) {
+                void* l = g_adapter->local();
+                if (l)
+                    return modes::entity_pos(g_adapter, l);
+            }
+            return net::Vec3{};
+        };
+        effects::init(H, M, ec);
+    }
     { // BUG-0384: eggs at the nests
         nest::Ctx nc;
         nc.sess = &g_sess;
         nc.player_pos = ctx.player_pos;
         nc.in_place = ctx.in_place;
         nc.host_away = ctx.host_away;
+        nc.stage_center = ctx.stage_center;
         nest::init(H, M, nc);
+    }
+    { // BUG-0419 G2: replicated fields (the modules register their kinds in their init)
+        fields::Ctx fc;
+        fc.sess = &g_sess;
+        fc.in_place = ctx.in_place;
+        fields::init(H, M, fc);
+    }
+    { // BUG-0472, BUG-0459: world objects owned by the host
+        wobj::Ctx wc;
+        wc.sess = &g_sess;
+        wc.player_pos = ctx.player_pos;
+        wc.in_place = ctx.in_place;
+        wc.host_away = ctx.host_away;
+        wc.stage_center = ctx.stage_center;
+        wobj::init(H, M, wc);
     }
     { // BUG-0401: the party's collected creature parts
         parts::Ctx pc;
@@ -5221,6 +5794,7 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
         pc.guest_in_host_world = [] { return host_world_now() == host_world::HostWorld::Same; };
         pc.world = [] { return g_world; };
         pc.feed = feed;
+        pc.cell_parts = [] { return cellsync::part_states(); }; // BUG-0467
         parts::init(H, M, pc);
     }
     savestrip::init(H, M); // BUG-0020: our objects never go into a save
@@ -5236,6 +5810,7 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
         return it == g_remotes.end() ? nullptr : it->second.puppet;
     };
     sc.blocked = [] { return g_menu_up.load() || coop_ui::is_open() || g_text_up.load(); };
+    sc.pace = dna_pace_gain; // BUG-0510
     social::init(H, M, sc);
     adventure_native::Ctx native;
     native.sess = &g_sess;
@@ -5317,8 +5892,29 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
     H->command_add(M, "coop.leave", "leave the session", c_leave, nullptr, MT);
     H->command_add(M, "coop.framefix", "coop.framefix [0|1] - forget a torn-down world's puppets before the frame's messages (tests: 0 = the old order, BUG-0091)",
                    c_framefix, nullptr, MT);
-    H->command_add(M, "coop.puppet", "coop.puppet hold on|off - tests: the remote players' puppets are not moved (a seeded failure for coop_mode.py, BUG-0251)",
+    H->command_add(M, "coop.puppet", "coop.puppet hold on|off | respawn [s] | gamekill - tests: the remote players' puppets are not moved (a seeded failure for coop_mode.py, BUG-0251); respawn: removed now, shown again next frame or after s seconds (BUG-0453); gamekill: the game destroys the Creature puppets behind the mod's back (BUG-0507)",
                    [](void*, int argc, const char* const* argv, SkOut* out) {
+                       if (argc > 1 && !strcmp(argv[1], "respawn")) { // tests (BUG-0453): every partner's puppet
+                           int n = 0; // goes now (as on a death or a hide) and is shown again next frame or in <s> s
+                           g_puppet_hide_until = argc > 2 ? H->time_seconds() + atof(argv[2]) : 0;
+                           for (auto& [id, r] : g_remotes)
+                               if (r.puppet) {
+                                   despawn(r);
+                                   n++;
+                               }
+                           SAY("%d puppet(s) removed\n", n);
+                           return 0;
+                       }
+                       if (argc > 1 && !strcmp(argv[1], "gamekill")) { // tests (BUG-0507): the game destroys
+                           int n = 0; // every partner's Creature puppet behind the mod's back (as it did on a
+                           for (auto& [id, r] : g_remotes) // player's PC): the mod must notice and show it again
+                               if (r.puppet && creature_puppet(r.puppet_adapter)) {
+                                   game::destroy_untracked(r.puppet);
+                                   n++;
+                               }
+                           SAY("%d puppet(s) destroyed by the game\n", n);
+                           return 0;
+                       }
                        if (argc > 2 && !strcmp(argv[1], "hold"))
                            g_puppet_hold = !strcmp(argv[2], "on") || !strcmp(argv[2], "1");
                        SAY("puppet hold %s\n", g_puppet_hold ? "on" : "off");
@@ -5401,6 +5997,53 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
             (unsigned long long)value.editor[2],(unsigned long long)value.generic[2],(unsigned long long)value.editor[3],(unsigned long long)value.generic[3],
             (unsigned long long)value.editor[4],(unsigned long long)value.generic[4]);return 0;
     },nullptr,SK_CMD_OUTSIDE_FRAME);
+    H->command_add(M, "coop.effects",
+                   "coop.effects [probe <hex key> | map | log on|off | load <n> [period_ms] [hex id]] - creature effects "
+                   "relayed to the partners' puppets (BUG-0451); probe: the game's own effect pool of a key on the avatar "
+                   "and every puppet; load: n effects per period at the local player (the frame-time measurement)",
+                   [](void*, int argc, const char* const* argv, SkOut* out) {
+                       if (argc > 1 && !strcmp(argv[1], "log")) {
+                           SAY("effects log %s\n", effects::set_log(argc > 2 && (!strcmp(argv[2], "on") || !strcmp(argv[2], "1"))) ? "on" : "off");
+                           return 0;
+                       }
+                       if (argc > 1 && !strcmp(argv[1], "inject")) {
+                           // tests: a crafted MSG_EFFECT as if peer `from` sent it (validation)
+                           if (argc < 8) {
+                               SAY("inject <from> <player> <stop> <pool> <id hex> <key> [x y z]");
+                               return 1;
+                           }
+                           net::Vec3 p{};
+                           if (argc > 10) {
+                               p.x = (float)atof(argv[8]);
+                               p.y = (float)atof(argv[9]);
+                               p.z = (float)atof(argv[10]);
+                           }
+                           effects::inject((uint8_t)strtoul(argv[2], nullptr, 0), (uint8_t)strtoul(argv[3], nullptr, 0),
+                                           (uint8_t)strtoul(argv[4], nullptr, 0), (uint8_t)strtoul(argv[5], nullptr, 0),
+                                           (uint32_t)strtoul(argv[6], nullptr, 16), (uint32_t)strtoul(argv[7], nullptr, 0), p);
+                           SAY("%s", effects::status().c_str());
+                           return 0;
+                       }
+                       if (argc > 1 && !strcmp(argv[1], "load")) {
+                           uint32_t n = argc > 2 ? (uint32_t)strtoul(argv[2], nullptr, 10) : 0;
+                           uint32_t ms = argc > 3 ? (uint32_t)strtoul(argv[3], nullptr, 10) : 1000;
+                           uint32_t id = argc > 4 ? (uint32_t)strtoul(argv[4], nullptr, 16) : 0;
+                           effects::set_load(n, ms, id);
+                           SAY("%s", effects::status().c_str());
+                           return 0;
+                       }
+                       if (argc > 2 && !strcmp(argv[1], "probe")) {
+                           SAY("%s", effects::probe((uint32_t)strtoul(argv[2], nullptr, 16)).c_str());
+                           return 0;
+                       }
+                       if (argc > 1 && !strcmp(argv[1], "map")) {
+                           SAY("%s", effects::map_dump().c_str());
+                           return 0;
+                       }
+                       SAY("%s", effects::status().c_str());
+                       return 0;
+                   },
+                   nullptr, MT);
     H->command_add(M, "coop.track", "coop.track start|stop|count|dump [from] [n]|lift <m>|novel 0|1 - every frame: the partners' puppets and the own avatar; in Tribe the player tribe's members (tests, BUG-0360, BUG-0365, BUG-0366)",
                    c_track, nullptr, MT);
     H->command_add(M, "coop.log", "coop.log detail [0|1|2] - support logging: 0 = the old lines only, 1 = state trace + events "
@@ -5420,6 +6063,30 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
     H->command_add(M, "coop.echo", "coop.echo [on|off] [offset] [delay] - loopback puppet test", c_echo, nullptr, MT);
     H->command_add(M, "coop.overlay", "coop.overlay on|off|self", c_overlay, nullptr, MT);
     H->command_add(M, "coop.social", "coop.social [species | log | act <npc id> [slot] | goto <npc id>] - creature social games", c_social, nullptr, MT);
+    H->command_add(M, "coop.fields", "coop.fields - replicated state fields of mirrored objects per kind (BUG-0419 G2, fields.h)",
+                   [](void*, int argc, const char* const* argv, SkOut* out) -> int {
+                       // tests / RE: `coop.fields scale <hex object> [value]` reads (and sets) an object's scale
+                       if (argc > 2 && !strcmp(argv[1], "scale")) {
+                           void* o = (void*)(uintptr_t)strtoul(argv[2], nullptr, 16);
+                           if (!o || IsBadReadPtr(o, 0x40) || !game::object_alive(o)) {
+                               SAY("no object %s\n", argv[2]);
+                               return 0;
+                           }
+                           if (argc > 3)
+                               game::set_object_scale(o, (float)atof(argv[3]));
+                           SAY("scale %p %.3f\n", o, game::object_scale(o));
+                           return 0;
+                       }
+                       if (argc > 2 && !strcmp(argv[1], "list")) {
+                           std::string l = fields::list(argv[2]);
+                           for (size_t at = 0; at < l.size(); at += 6000) // out_printf keeps 8 KB per call
+                               SAY("%s", l.substr(at, 6000).c_str());
+                           return 0;
+                       }
+                       SAY("%s", fields::status().c_str());
+                       return 0;
+                   },
+                   nullptr, MT);
     H->command_add(M, "coop.npc", "coop.npc [on|off|list|herds|hit <id> <dmg>|hosthit <id> <dmg> [push]|recruit <id>|spawn <hex>|cinedefer on|off] - host-authoritative NPC sync", c_npc, nullptr, MT);
     H->command_add(M, "coop.res", "coop.res [[joinsim] add <food|money> <n> | fix reset|floor [0|1]] - shared resources", c_res, nullptr, MT);
     H->command_add(M, "coop.ping", "coop.ping - show everybody the place under your mouse / where you are", c_ping,
@@ -5458,6 +6125,8 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
         H->hook_create(M, (void*)a, (void*)h_StageMsg, (void**)&o_StageMsg);
     if (uintptr_t a = H->sym("Editors::EditorRequest::Submit"))
         H->hook_create(M, (void*)a, (void*)h_Submit, (void**)&o_Submit);
+    if (uintptr_t a = H->sym("SporeCoop::CreatureGame_HandleMessage")) // BUG-0466
+        H->hook_create(M, (void*)a, (void*)h_CreatureGameMsg, (void**)&o_CreatureGameMsg);
     if (uintptr_t a = H->sym("SporeCoop::Simulator_HandleMessage"))
         H->hook_create(M, (void*)a, (void*)h_SimMsg, (void**)&o_SimMsg);
     if (uintptr_t a = H->sym("Editors::cEditor::GetBlockingErrors"))
@@ -5519,10 +6188,17 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
                        return 0;
                    },
                    nullptr, SK_CMD_OUTSIDE_FRAME);
-    H->command_add(M, "coop.parts", "coop.parts [unlock <n>|find <level>|keys|states] - the collected creature parts as the trace's parts= field counts them; "
+    H->command_add(M, "coop.parts", "coop.parts [unlock <n>|find <level>|keys|states|cell [collect <i>]] - the collected creature parts as the trace's parts= field counts them; "
                    "unlock <n>: unlock n locked ones in this game only (tests: a player's unlock the other games miss); "
                    "find <level>: the game's own 'a part was found' (a skeleton's reward, BUG-0401); keys: the unlocked unlockable keys; states: every item state (BUG-0441)",
                    [](void*, int argc, const char* const* argv, SkOut* out) {
+                       if (argc > 1 && !strcmp(argv[1], "cell")) { // BUG-0467: cell [collect <i>]
+                           std::vector<std::string> a;
+                           for (int i = 2; i < argc; i++)
+                               a.push_back(argv[i]);
+                           SAY("%s", parts::cell_debug(a).c_str());
+                           return 0;
+                       }
                        std::vector<std::pair<uint32_t, uint32_t>> locked;
                        int n = 0, all = 0, done = 0;
                        uint32_t h = 0;
@@ -5574,6 +6250,43 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
                            skg::field<uint32_t>(req, 0x18) = k.group;
                            bool r = skg::cdecl_call<bool>(submit, req);
                            SAY("editor request submitted -> %d\n", (int)r);
+                       } else if (argc > 1 && !strcmp(argv[1], "evolve") && game::mode_id() == modes::kCreature) {
+                           // tests (BUG-0457): the creature stage's own evolution request, as its message handler
+                           // 0xD42E50 builds it when the avatar meets its mate (docs/re/creations.md#creations-evolution-request):
+                           // +0x90 the evolution tag (the editor's result is applied to the species), +0x94 the
+                           // collected parts, the flags, +0x70 cPlayer +0x10FC..+0x1108; through the vote (the hook)
+                           uintptr_t ctor = H->sym("EditorRequest_ctor"), submit = H->sym("Editors::EditorRequest::Submit"),
+                                     assign = H->sym("SporeCoop::IntrusivePtr_Assign"), push = H->sym("SporeCoop::VectorU32_PushBack"),
+                                     nouns = H->sym("Simulator::cGameNounManager::Get"), getp = H->sym("SporeCoop::cGameNounManager_GetPlayer");
+                           void* av = game::avatar();
+                           void* nm = nouns ? skg::cdecl_call<void*>(nouns) : nullptr;
+                           void* pl = nm && getp ? skg::thiscall<void*>(getp, nm) : nullptr;
+                           if (!ctor || !submit || !assign || !push || !av || !pl || !skg::readable((char*)pl + 0x10E8, 0x24)) {
+                               SAY("not possible here");
+                               return 1;
+                           }
+                           void* req = skg::cdecl_call<void*>(H->sym("GeneralAllocator::new_"), (size_t)0x9C, "EditorRequest", 0, 0, 0, 0);
+                           skg::thiscall<void*>(ctor, req);
+                           skg::field<uint32_t>(req, 0xC) = 0x465C50BAu;
+                           game::Key k = game::species_key(av);
+                           skg::field<uint32_t>(req, 0x10) = k.instance;
+                           skg::field<uint32_t>(req, 0x14) = k.type;
+                           skg::field<uint32_t>(req, 0x18) = k.group;
+                           skg::field<uint32_t>(req, 0x90) = 0x64AA168u;
+                           if (void* items = skg::field<void*>(pl, 0x10E8))
+                               skg::thiscall<void*>(assign, (char*)req + 0x94, items);
+                           for (int o : {0x34, 0x36, 0x37, 0x38, 0x39, 0x3B})
+                               skg::field<uint8_t>(req, o) = 0;
+                           skg::field<uint8_t>(req, 0x3C) = 1;
+                           skg::field<uint8_t>(req, 0x3D) = 1;
+                           for (int o = 0x10FC; o <= 0x1108; o += 4) {
+                               uint32_t v = skg::field<uint32_t>(pl, o);
+                               skg::thiscall<void*>(push, (char*)req + 0x70, &v);
+                           }
+                           bool r = skg::cdecl_call<bool>(submit, req);
+                           if (uintptr_t f = H->sym("SporeCoop::CreatureEvolutionPending_flag")) // as 0xD43069
+                               *(uint8_t*)f = 1;
+                           SAY("evolution request submitted -> %d\n", (int)r);
                        } else if (argc > 1 && !strcmp(argv[1], "action") && g_sess.role() == net::Role::Host) {
                            // an action vote like the superweapon's (tests, BUG-0043)
                            start_action_vote(g_name + " wants to test an action", "the test action runs",
@@ -5694,6 +6407,9 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
         dna_note({dna_ledger::Cause::Meal, (uint8_t)from, (float)amount}, g_sess.connected() ? g_sess.my_id() : 0);
     };
     cc.my_name = [] { return g_name; };
+    cc.pace_meal = dna_pace_meal; // BUG-0510
+    cc.pace_announce = dna_pace_announce;
+    cc.pace_heard = dna_pace_heard;
     cc.puppet_owner = [](void* cell) -> int {
         for (auto& [id, r] : g_remotes)
             if (r.puppet == cell && !r.echo)
@@ -5733,6 +6449,12 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
     csc.place = [](uint32_t& m, uint32_t& w) {
         m = g_mode;
         w = g_world;
+    };
+    csc.self_pos = [](net::Vec3& p) {
+        if (!local_now())
+            return false;
+        p = local_state().pos;
+        return true;
     };
     census::init(H, M, std::move(csc));
     squadron::Ctx sqc;
@@ -5774,6 +6496,7 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
     };
     spc.beacon = add_beacon;
     spacecoop::init(H, M, std::move(spc));
+    apply_startup_off(); // tests: switches that must be off before the game starts (fixes_off.txt)
     gamefixes::init(H, M);
     autoupdate::set_feed(feed);
     autoupdate::init(H, M, COOP_VERSION);

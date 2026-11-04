@@ -52,7 +52,7 @@ def add(name, cmd, suites=('full',), warm=False, exclusive=False, minutes=4, fix
     """reports=True: the test makes crash / hang reports or faults on purpose and checks them itself;
     for every other test the lab fails it on a new crash-*/report-* file of its lane, a game that
     dies right after it, or a non-zero fault count in its log (tools/lab.py run_one, BUG-0036/0042)"""
-    if 'campaign' in suites or 'mixed' in suites:  # hours on one lane / a second lane: only when asked for
+    if {'campaign', 'mixed', 'detector'} & set(suites):  # hours on one lane / a second lane / the detector: only when asked for
         suites = set(suites)
     else:
         suites = set(suites) | ({'nightly'} if {'nightly', 'extended'} & set(suites) else {'full', 'nightly'})
@@ -73,6 +73,20 @@ add('space', P + 'coop_mode.py --fixture space', minutes=3)
 add('phase', P + 'coop_phase.py', minutes=6)
 add('ui', P + 'coop_ui.py', ('smoke',), exclusive=True, minutes=5)
 add('team', P + 'coop_team.py', ('smoke',), warm=True, minutes=3, fixture='creature')
+add('creature_effects', P + 'coop_creature_effects.py', warm=True, minutes=3, fixture='creature', monitor={'proxy_n': 1000})  # BUG-0451: a player's creature effects (mating call, hit, part, brain, death) on the partner's puppet; SPORE_FIX_OFF=creature.effects_relay fails; proxy_n: the known NPC proxies under the ground, not this test
+add('cell_effects', P + 'coop_cell_effects.py', warm=True, minutes=3, fixture='cell', monitor={'proxy_n': 1000})  # BUG-0451: a cell's world effects on the partner's cell; SPORE_FIX_OFF=creature.effects_relay fails
+add('tribe_effects', P + 'coop_tribe_effects.py', ('extended',), warm=True, minutes=4, fixture='tribe', monitor={'proxy_n': 1000})  # BUG-0451: a tribe member's effect on the partner's mirror; SPORE_FIX_OFF=creature.effects_relay fails
+add('effects_party', P + 'coop_effects_party.py', minutes=6, monitor={'proxy_n': 1000})  # BUG-0451 review: a guest's world effect reaches the second guest through the host relay (3 players); SPORE_FIX_OFF=creature.effects_relay fails
+for st in ('cell',):  # BUG-0471: the same 3-player relay in every stage, cost under 1 % of the frame time
+    add(f'effects_party_{st}', P + f'coop_effects_party.py --fixture {st}', minutes=6, monitor={'proxy_n': 1000})
+# Tribe, Civilization and Space: the relay is off there in 0.7.4 (coop.fix effects.other_stages, the skin painter
+# faulted on a relayed world effect, out/lab/20261103-215559 / -223036); these only make sense with it on (0.7.5+)
+for st in ('tribe', 'civ', 'space'):
+    add(f'effects_party_{st}', P + f'coop_effects_party.py --fixture {st}', ('extended',), minutes=6, monitor={'proxy_n': 1000})
+add('effects_here', P + 'coop_effects_here.py', minutes=5, fixture='creature', monitor={'proxy_n': 1000})  # BUG-0471: no effect relayed into a guest's main menu, back in the world it is; SPORE_FIX_OFF=effects.here fails
+add('effects_validate', P + 'coop_effects_validate.py', warm=True, minutes=3, fixture='creature', monitor={'proxy_n': 1000})  # BUG-0451 review: spoofed and malformed effect messages are dropped before a game call, counted in coop.effects
+add('effects_live', P + 'coop_effects_live.py', warm=True, minutes=2, fixture='creature', monitor={'proxy_n': 1000})  # BUG-0451 review: relayed world effects stay bounded (64, 8 s) and return to 0
+add('effects_release', P + 'coop_effects_release.py', minutes=6, fixture='creature', monitor={'proxy_n': 1000})  # BUG-0451 review item 7: 60 s at the rate limit, the relay releases the effect reference (off: the game's private commit grows)
 add('tribe_coop', P + 'coop_tribe.py', ('smoke',), warm=True, minutes=4, fixture='tribe')
 add('civ_coop', P + 'coop_civ.py', ('smoke',), warm=True, minutes=3, fixture='civ')
 add('cell_coop', P + 'coop_cell.py', ('smoke',), warm=True, minutes=4, fixture='cell')
@@ -81,6 +95,13 @@ add('cell_spin', P + 'coop_cell_spin.py', warm=True, minutes=4, fixture='cell') 
 add('cell_leave', P + 'coop_cell_leave.py', minutes=4)  # Cell -> Creature with mirrors on the guest, then the session ends
 add('cell_sync', P + 'coop_cell_sync.py', minutes=8, fixture='cell')  # mirror map, missed totals, regrowth over a level line, knockout and leave (BUG-0088, 0128, 0041, 0070, 0061)
 add('cell_net', 'SPORE_NET="delay=250,loss=0.05" ' + P + 'coop_cell_net.py', minutes=8, fixture='cell')  # lost state chunks, food race over a level line (BUG-0032, 0051)
+add('cell_gone', P + 'coop_cell_gone.py --case lost', warm=True, minutes=3, fixture='cell',
+    allow=[allow('sync-check', 'BUG-0480', "the test drops the host's Cell state on the guest on purpose for seconds (coop.pool statehold) while the host destroys cells: the sync-check sees the gap", stage='Cell', kind='c missing'),
+           allow('sync-check', 'BUG-0480', "the test drops the host's Cell state on the guest on purpose for seconds (coop.pool statehold) while the host destroys cells: the sync-check sees the gap", stage='Cell', kind='c extra')])  # BUG-0480: a guest's mirror of a cell the host destroyed while the host's state was lost dies once the state flows again
+add('cell_gone_play', P + 'coop_cell_gone.py --case play', suites=('extended',), warm=True, minutes=4, fixture='cell')  # BUG-0480 (fails in 2 of 6 runs: 49 meat mirrors the host has in neither dump, cause not found): no guest mirror of a cell the host has not had for 2.5 s while both swim around; the detector's Cell compare with one host dump and bracketed
+add('cell_gone_probe', P + 'coop_cell_gone.py --case held', warm=True, minutes=3, fixture='cell',
+    allow=[allow('sync-check', 'BUG-0480', "the test drops the host's Cell state on the guest on purpose for seconds (coop.pool statehold) while the host destroys cells: the sync-check sees the gap", stage='Cell', kind='c missing'),
+           allow('sync-check', 'BUG-0480', "the test drops the host's Cell state on the guest on purpose for seconds (coop.pool statehold) while the host destroys cells: the sync-check sees the gap", stage='Cell', kind='c extra')])  # BUG-0480: the stale-mirror probe sees mirrors kept while the host's state is lost (the probe's own FAIL case)
 add('cell_guest_bite', P + 'coop_cell_guest_bite.py', warm=True, minutes=4, fixture='cell')  # a guest's bite passes DamageCell's gate (BUG-0078; SPORE_CELL_FIX=0 fails)
 add('cell_rescue', P + 'coop_cell_rescue.py', warm=True, minutes=3, fixture='cell')  # a knocked-out partner rescues nobody (BUG-0131; SPORE_CELL_FIX=0 fails)
 add('cell_ko_gap', P + 'coop_cell_ko_gap.py', warm=True, minutes=3, fixture='cell')  # a knockout lasts through a late refresh (BUG-0238; SPORE_FIX_OFF=pool.ko_grace fails)
@@ -104,6 +125,7 @@ add('space_coop', P + 'coop_space.py', ('smoke',), warm=True, minutes=2, fixture
 add('stage_switch', P + 'coop_stage_switch.py', minutes=13)  # every stage pair that matters, in game
 add('vote', P + 'coop_vote.py', minutes=5)
 add('vote_caption', P + 'coop_vote_caption.py', minutes=4)  # a guest's I'm ready counts while a caption holds the input lock (BUG-0273; SPORE_FIX_OFF=core.ui_locked_clicks fails)
+add('chat_caption', P + 'coop_chat_caption.py', warm=True, minutes=4, fixture='creature')  # a chat line typed in the co-op window while a caption holds the input lock reaches both players, typed once (BUG-0482; SPORE_FIX_OFF=core.ui_locked_edit fails)
 add('vote_during_cinematic', P + 'coop_vote_cinematic.py', warm=True, minutes=10, fixture='creature')  # a vote that ends while a cinematic plays or the game time stands: the host's editor and the guest's own editor open after it, with their buttons (BUG-0404; SPORE_FIX_OFF=core.editor_cinematic and core.own_editor_busy fail)
 add('busy_gate', P + 'coop_vote_cinematic.py --part gate', warm=True, minutes=7, fixture='creature')  # an action vote's result waits at the busy gate (a cinematic, the game time paused) and runs after it; a share waits for a cinematic, not a pause (BUG-0404; SPORE_FIX_OFF=core.vote_action_busy fails)
 add('vote_stale', P + 'coop_vote_stale.py', minutes=5)  # a vote ends with its session and its stage (BUG-0043)
@@ -124,6 +146,13 @@ add('ui_menu_leave', P + 'coop_ui_menu_leave.py', minutes=2)  # the galaxy menu'
 add('reload_update', P + 'coop_reload_update.py', minutes=2)  # hot reload while the update check waits: the old thread stays in the old image (BUG-0060)
 add('update_leak', P + 'coop_update_leak.py', minutes=4)  # 5 refused update attempts free their 20 MB packs (BUG-0241; SPORE_FIX_OFF=core.update_unwind fails)
 add('guest_editor', P + 'coop_guest_editor.py', minutes=4)
+add('cell_parts', P + 'coop_cell_parts.py', minutes=3, fixture='cell')  # BUG-0467: a Cell part the guest collects is unlocked in the host's game (its part state, its mating-call button) and the other way (SPORE_FIX_OFF=parts.shared_cell fails)
+add('dna_spend', P + 'coop_editor_sync.py --case spend', minutes=3, fixture='creature')  # BUG-0466 class G6: a guest's own DNA spend (AddEvolutionPoints < 0 in its game) leaves the host's total and is not given back by the host's next total (SPORE_FIX_OFF=core.dna_spend fails)
+add('dna_pace', P + 'coop_dna_pace.py', minutes=3, fixture='creature')  # BUG-0510: two players earn 20 each, the shared DNA grows by 20 on both games (single-player pace), a spend is whole, dna_pace=0 gives the sum (SPORE_FIX_OFF=core.dna_pace fails)
+add('dna_pace_cell', P + 'coop_dna_pace.py --cell', minutes=3, fixture='cell')  # BUG-0510 in Cell: two meals of 20, the shared food grows by 20 on both games (SPORE_FIX_OFF=core.dna_pace fails)
+add('editor_sync_guest', P + 'coop_editor_sync.py --case guest', minutes=5, fixture='creature')  # BUG-0466: the DNA a guest spends in its own editor leaves the party's total and is not given back (SPORE_FIX_OFF=creations.own_editor_dna fails)
+add('editor_sync_host', P + 'coop_editor_sync.py --case host', minutes=5, fixture='creature')  # BUG-0457: the host evolves its creature in its editor: the guest's game draws the host with the new species
+add('editor_sync_host2', P + 'coop_editor_sync.py --case host2', minutes=8, fixture='creature')  # BUG-0457: two evolutions of the host in a row: the guest's game draws the host with the second one
 add('guest_editor_locks', P + 'coop_guest_editor_locks.py', minutes=4)  # the guest's own editor locks the parts the species has not collected (BUG-0368; SPORE_FIX_OFF=creations.own_editor_items fails)
 add('parts_shared', P + 'coop_parts_shared.py', minutes=6, fixture='creature')  # the parts a player finds are the party's: host -> guest, guest -> host, the guest's editor palette, a rejoin (BUG-0401; SPORE_FIX_OFF=parts.shared fails)
 add('parts_transition', P + 'coop_parts_shared.py --from-cell', minutes=10, fixture='cell')  # BUG-0441: after Cell -> Creature the players' way the guest's collected parts are the host's within 10 s (the Cell twins), then parts_shared's finds, editor (the palette offers the host's parts) and rejoin (SPORE_FIX_OFF=parts.census_states fails)
@@ -148,7 +177,10 @@ add('unknown_parts', P + 'coop_unknown_parts.py', minutes=6, uses_free_lane=True
 add('content_civ', P + 'coop_content_civ.py', minutes=10, uses_free_lane=True)  # a civ mirror vehicle whose design model names a part the guest's game lacks does not fault and is shown, and the save it gets into reloads without the mod's key (BUG-0469; SPORE_FIX_OFF=content.all_kinds / content.model_key fail)
 add('content_space', P + 'coop_content_space.py', minutes=6, uses_free_lane=True)  # a host ship whose model names a part the guest's game lacks does not fault and is mirrored (BUG-0469; SPORE_FIX_OFF=content.all_kinds fails)
 add('creations_rejoin', P + 'coop_creations_rejoin.py', minutes=5)  # a newcomer under a reused id is not shown with the previous player's creature (BUG-0076)
+add('evolve_in_place_cell', P + 'coop_evolve_in_place.py --case cell', minutes=5, fixture='cell')  # BUG-0508: the host's cell editor does not reload the guest (SPORE_FIX_OFF=world.evolve_in_place fails)
+add('evolve_in_place_creature', P + 'coop_evolve_in_place.py --case creature', minutes=6, fixture='creature')  # BUG-0508: the host's evolution in Creature does not reload the guest; its avatar and player species follow (SPORE_FIX_OFF=world.evolve_in_place fails)
 add('editor_desync', P + 'coop_editor_desync.py', minutes=7)  # mating call and editors in Cell and Creature, real input (BUG-0411: --old-wait fails about 1 run in 2)
+add('cell_unknown_model', P + 'coop_cell_unknown_model.py', minutes=3, fixture='cell')  # the host sends a cell of a creation the guest does not have: no fault at 0xE83EC8, the mirror comes once the model is known (BUG-0455; SPORE_FIX_OFF=cell.unknown_model fails)
 add('creature_desync', P + 'coop_creature_desync.py', minutes=4)  # editors, a crash and a reload: companion of a host-only species, no NPC copies, kills, the guest's look
 add('editor_strays', P + 'coop_editor_strays.py', minutes=6)  # two evolutions: no puppet left over, herd homes on the surface (crash 0xB88BEA)
 add('creature_e84', P + 'coop_creature_e84.py', minutes=5)  # a save with the partner's puppet, loaded after a restart: no crash on attack (0xD48634), removed
@@ -162,9 +194,17 @@ add('social_console', P + 'coop_social_console.py', warm=True, minutes=3, fixtur
 add('creature_kills', P + 'coop_creature_kills.py', minutes=3)  # a guest's kill dies on the guest too (no 0 hp mirror standing), NPCs notice the partner
 add('creature_death', P + 'coop_creature_death.py', minutes=4)  # alone: die, skip the caption and the respawn cutscene
 add('creature_respawn', P + 'coop_creature_respawn.py', minutes=5)  # both players die (also after a pack rescue): the hatchling grows up and walks
+add('npc_lost_target', P + 'coop_npc_lost_target.py', minutes=5, allow=[allow('monitor', 'BUG-0453', 'the test takes the partner\'s puppet away for 3 s on purpose (coop.puppet respawn 3)', kind='puppet', match='hidden: not spawned')])  # NPCs fight the partner's puppet when it goes: no fault at 0xD65D23 in the attack node, no stimulus names the destroyed puppet (BUG-0453/0456; SPORE_FIX_OFF=npc.attack_lost_target,npc.stale_sender fails)
+add('puppet_freed', P + 'coop_puppet_freed.py', minutes=4)  # the game frees the partner's Creature puppet behind the mod's back (and two device Resets): a new live puppet at the partner (BUG-0507; SPORE_FIX_OFF=creature.puppet_alive fails)
+add('pack_target', P + 'coop_creature_pack_target.py', minutes=3,
+    allow=[allow('monitor', 'BUG-0504', 'coop.npc gonpc puts the host next to the picked NPC; on some spots of the fixture '
+                 'its own creature then stands 0.6-0.7 m under the monitor\'s ground (no player path places it there)',
+                 kind='ground', who='host', match='its own creature')])  # the host targets the guest, the pack in a fight with the guest's creature: no pack member keeps a partner as its target (BUG-0512; SPORE_FIX_OFF=npc.pack_spares_partners fails)
+add('partner_silent', P + 'coop_partner_silent.py', minutes=3, allow=[allow('hitch', 'BUG-0513', 'the test stalls the guest on purpose (frame.limit 9000)', who='guest'), allow('monitor', 'BUG-0513', 'the stalled guest is hidden on the host after 5 s on purpose', kind='puppet', match='hidden: state older than 5 s')])  # a stalled guest is announced on the host, and when it is back (BUG-0513; SPORE_FIX_OFF=core.partner_silent fails)
 add('diag', P + 'diag_check.py --crash', minutes=5, reports=True)  # kept logs, environment, version in the menu, report button, hang / crash reports
 add('kit_freeze', P + 'kit_freeze.py', minutes=4, reports=True)  # stack / hangdump under a held heap, cheat-console waits, faults inside the log / fault logger, hook churn, hooks made while threads run the function, new hooks' originals (BUG-0050/0065/0115/0132/0202/0398; --old: every case fails)
 add('kit_hooknew', P + 'kit_freeze.py --case hooknew', minutes=2, reports=True)  # new hooks made while threads call the functions: no detour runs before its original is set (BUG-0398, the guest's call to address 0; SPORE_FIX_OFF=hookorig fails)
+add('kit_initfail', P + 'kit_initfail.py', minutes=3, reports=True)  # the game's own start fails (cSporeApp::Init 0): a report, a mark, the log says what to check, the next start names it (BUG-0521; SPORE_FIX_OFF=initfail fails)
 add('kit_docs', P + 'kit_profile_docs.py', minutes=2)  # a test profile's My Spore Creations is in the profile, the bottle's own Documents unchanged (BUG-0156; --old fails)
 add('kit_crash', P + 'kit_crash.py', minutes=7, reports=True)  # crash reports for a stack overflow and a failed archive (out of memory); old reports pruned; the exception line names the crashed thread (BUG-0056/0127/0137/0248; --old: every case fails)
 # frames from the game loop when Present is lost (issue #4, the Steam overlay on Windows)
@@ -213,6 +253,10 @@ add('civ_cursor', P + 'coop_civ_cursor.py', warm=True, minutes=3, fixture='civ')
 add('civ_ai_spawn', P + 'coop_civ_ai_spawn.py', warm=True, minutes=4, fixture='civ_npc')  # the NPC AI spawns no vehicles on the guest (BUG-0188; --nofix fails)
 add('civ_mirror_place', P + 'coop_civ_mirror_place.py', warm=True, minutes=3, fixture='civ_npc')  # the guest's game does not throw a mirrored vehicle off its place (BUG-0186; --nofix fails)
 add('civ_ruin_repair', P + 'coop_civ_ruin_repair.py', warm=True, minutes=3, fixture='civ_npc')  # a ruin the host rebuilt does not stay on the guest (BUG-0324; --nofix fails)
+add('civ_planner', P + 'coop_civ_planner.py', warm=True, minutes=3, fixture='civ_npc')  # the guest's open city planner: the mod changes nothing it holds (BUG-0493, BUG-0491; SPORE_FIX_OFF=civ.planner_hold fails: out/lab/20261103-131021)
+add('civ_discovery', P + 'coop_civ_discovery.py', warm=True, minutes=3, fixture='civ_npc')  # meeting a civilization the guest's game lacks shows no card and does not crash (BUG-0492; SPORE_FIX_OFF=civ.discovery_card crashes)
+add('civ_save_strip', P + 'coop_civ_save_strip.py', minutes=10, uses_free_lane=True)  # a Civ guest's save holds no mirror vehicle and reloads alone without a fault or a null in the civ lists (BUG-0470; SPORE_FIX_OFF=civ.save_strip fails)
+add('civ_mirror_remove', P + 'coop_civ_mirror_remove.py', warm=True, minutes=3, fixture='civ_npc')  # a vehicle the host's game removed leaves no dead vehicle on the guest (BUG-0478; SPORE_FIX_OFF=civ.mirror_remove fails)
 add('civ_pause_city', P + 'coop_civ_pause_city.py', warm=True, minutes=3, fixture='civ_npc')  # a city founded while a guest is paused reaches it after the pause (BUG-0331)
 add('civ_leave', P + 'coop_civ_leave.py', warm=True, minutes=4, fixture='civ')  # the vehicles of a guest who left go to a present player (BUG-0031; --nofix fails)
 add('civ_sw_vote', P + 'coop_civ_sw_vote.py', warm=True, minutes=3, fixture='civ')  # a second superweapon request does not change the running vote (BUG-0117; --nofix fails)
@@ -241,6 +285,7 @@ add('npc_walk_slope', P + 'coop_npc_walk.py --goto=-195,-465,-45 --falls 3', war
 add('npc_walk_tribe', 'TRACK_FIXTURE=tribe ' + P + 'coop_npc_walk.py', warm=True, minutes=4, fixture='tribe')  # BUG-0361 (Tribe): the same around the guest's tribe (SPORE_FIX_OFF=npc.walk_tribe fails)
 add('puppet_slope', 'SPORE_NET=player ' + P + 'coop_puppet_walk.py --dir guest --guest-fps 30 --goto=-195,-465,-45 --secs 40 --ground', minutes=4, fixture='creature')  # BUG-0366: the guest at 30 fps over a home connection (spikes, loss bursts) walks on a slope of the fixture: its puppet on the host never starts to fall ("constantly jumping"; SPORE_FIX_OFF=creature.puppet_ground fails)
 add('puppet_under', 'PUPPET_WALK_CMDS="coop.track lift -1" ' + P + 'coop_puppet_walk.py --dir guest --secs 25 --stand 8 --ground', minutes=4, fixture='creature')  # BUG-0367: the guest's states 1 m under the host's ground (coop.track lift -1): its puppet is never drawn under the ground (SPORE_FIX_OFF=creature.puppet_ground fails)
+add('puppet_deep', 'PUPPET_WALK_CMDS="coop.track lift -6" ' + P + 'coop_puppet_walk.py --dir guest --secs 25 --stand 8 --ground', minutes=4, fixture='creature')  # BUG-0513: the guest's states 6 m under the host's ground (a stalled guest reported that): its puppet is never drawn under the ground (SPORE_FIX_OFF=creature.puppet_deep fails)
 # the walks at the players' frame rate (the game caps at 30 fps) and over the `player` network (BUG-0394)
 add('puppet_walk_fps30', 'SPORE_FPS=30 ' + P + 'coop_puppet_walk.py', minutes=5, fixture='creature')  # puppet_walk with both games at 30 fps (BUG-0394)
 add('puppet_walk_player', 'SPORE_FPS=30 SPORE_NET=player ' + P + 'coop_puppet_walk.py', minutes=5, fixture='creature')  # puppet_walk at 30 fps over the player network (BUG-0394)
@@ -252,10 +297,23 @@ add('tribe_walk_fps30', P + 'coop_tribe_walk.py --fps 30', minutes=5, fixture='t
 add('tribe_walk_player', 'SPORE_NET=player ' + P + 'coop_tribe_walk.py --fps 30', minutes=5, fixture='tribe')  # tribe_walk at 30 fps over the player network (BUG-0394)
 add('npc_run_hp', P + 'coop_npc_run_hp.py', warm=True, minutes=3, fixture='creature')  # BUG-0334: a running NPC's health and death reach the guest (SPORE_FIX_OFF=npc.kinematic_sync fails)
 add('creature_partner_hp', P + 'coop_creature_partner_hp.py', warm=True, minutes=3, fixture='creature')  # BUG-0373: each game shows the partner's real health and max health on its creature (SPORE_FIX_OFF=creature.partner_hp fails)
+add('creature_sneak', P + 'coop_creature_sneak.py', warm=True, minutes=3, fixture='creature')  # BUG-0463: a sneaking player's puppet sneaks on the partner's game (+0xBB1, noise radius 0, see-through), both ways (SPORE_FIX_OFF=creature.sneak fails)
+add('creature_relations', P + 'coop_creature_relations.py', warm=True, minutes=3, fixture='creature')  # BUG-0462: every NPC near the guest has the host's relation and social mode in the guest's game (GetRelationship, CreatureSocialMode) (SPORE_FIX_OFF=creature.relations fails, SPORE_FIX_OFF=npc.tuning fails)
 add('monitor_plant', P + 'coop_monitor_plant.py', minutes=5, fixture='creature', gates={'off': ('monitor', 'sync-check')})  # the invariant monitor catches one planted problem per rule over the mod's monitor fields (drawn, puppet_hp, posse_damage, unlocks, proxies; ground: puppet_under with SPORE_FIX_OFF=creature.puppet_ground; docs/06-testing.md#testing-monitor-fields); fails on a build without the fields
 add('monitor_tribe', P + 'coop_monitor_tribe.py', minutes=5, fixture='tribe', gates={'off': ('monitor', 'sync-check')})  # the monitor in Tribe: no drawn violation for a pointer that jumped just before the mark (BUG-0416; SPORE_MONITOR='{"drawn_still": -1}' fails), drawn reported for a planted copy off a resting pointer, no link violation for two world transfers (BUG-0415)
 add('creature_party', P + 'coop_creature_party.py', warm=True, minutes=3, fixture='creature')  # BUG-0374: the host's pack does not fight the guest after the guest's hit on it (SPORE_FIX_OFF=npc.party_peace fails)
 add('nest_eggs', P + 'coop_nest_eggs.py', warm=True, minutes=3, fixture='creature')  # BUG-0384: the host's eggs at a nest of another species are on the guest at the same places, on the ground; an egg eaten on one game is eaten on the other (SPORE_FIX_OFF=nest.eggs fails)
+add('mirror_scale_npc', P + 'coop_mirror_scale.py --kind npc', warm=True, minutes=3, fixture='creature')  # BUG-0461: every NPC proxy has the host NPC's size (GetScale on both games; SPORE_FIX_OFF=npc.scale fails)
+add('mirror_scale_tribe', P + 'coop_mirror_scale.py --kind tribe_member', warm=True, minutes=3, fixture='tribe')  # BUG-0475: every tribe member mirror has the host member's size (SPORE_FIX_OFF=tribe.scale fails)
+add('mirror_scale_space', P + 'coop_mirror_scale.py --kind ufo', warm=True, minutes=3, fixture='space')  # BUG-0479: each player's ship is drawn on the other game at the size its own game gives it (SPORE_FIX_OFF=space.puppet_scale fails)
+add('npc_resync', P + 'coop_npc_resync.py', warm=True, minutes=3, fixture='creature')  # BUG-0487: a guest that has no proxy of an NPC it gets states of asks for its spawn again (SPORE_FIX_OFF=npc.resync fails)
+add('npc_anims', P + 'coop_npc_anims.py', warm=True, minutes=3, fixture='creature')  # BUG-0464: the guest's NPC proxies play the animations the host's NPCs' behaviour trees start (look around, eat, social, fights) within 1 s (GetCurrentAnimation on both games; SPORE_FIX_OFF=npc.anims fails)
+add('wobj_ornament', P + 'coop_world_objects.py --kind ornament', warm=True, minutes=3, fixture='creature')  # BUG-0459 / BUG-0473: a bone the guest used is used up in the host's game, the host's use gives no second part (SPORE_FIX_OFF=wobj.ornament fails)
+add('world_lod', P + 'coop_world_lod.py', warm=True, minutes=4, fixture='creature')  # BUG-0473 / BUG-0498: plants and rocks one game has and the other has not lie around that game's own player (each game streams them by its camera)
+add('wobj_fruit', P + 'coop_world_objects.py --kind fruit', warm=True, minutes=3, fixture='creature')  # BUG-0472: a fruit on the ground one player eats is gone in the other's game, both ways (SPORE_FIX_OFF=wobj.fruit fails)
+add('wobj_tree', P + 'coop_world_objects.py --kind tree', warm=True, minutes=3, fixture='creature')  # BUG-0472: a fruit that falls from a tree in one game falls from the same tree in the other's, both ways (SPORE_FIX_OFF=wobj.tree fails)
+add('wobj_herd', P + 'coop_world_objects.py --kind herd', warm=True, minutes=3, fixture='creature')  # BUG-0460: a species the host kills out is extinct at its nest in the guest's game too (SPORE_FIX_OFF=wobj.herd fails)
+add('nest_eggs_tribe', P + 'coop_world_objects.py --kind eggs', warm=True, minutes=4, fixture='tribe')  # BUG-0474: the host's eggs at the Tribe stage's animal nests are in the guest's game (SPORE_FIX_OFF=nest.eggs_tribe fails)
 add('nest_eggs_air', P + 'coop_nest_eggs_air.py', warm=True, minutes=3, fixture='creature')  # BUG-0443: an NPC egg that hangs in the air (2 m up) lies on the surface again on the host within 6 s; the other egg stays (SPORE_FIX_OFF=nest.egg_ground fails)
 add('creature_brain_hp', P + 'coop_creature_brain_hp.py', minutes=4, fixture='creature')  # BUG-0375: a guest playing its own creature gets the brain level's health (SPORE_FIX_OFF=creature.own_brain_hp fails)
 # w33 (audit items 15, 17, 19, 22, 26, 27): what the other player sees in fights, after events, of bodies, of the pack
@@ -265,9 +323,11 @@ add('team_real_damage', P + 'coop_team_real_damage.py', warm=True, minutes=4, fi
 add('team_real_damage_player', 'SPORE_FPS=guest:30 SPORE_NET=player ' + P + 'coop_team_real_damage.py', minutes=5, fixture='creature')  # team_real_damage with the guest at 30 fps over the player network
 add('puppet_fight', P + 'coop_puppet_fight.py', warm=True, minutes=4, fixture='creature')  # each player fights NPCs (clicks, ability keys, sprints, turns), the other's game samples its creature every frame: drawn jumps and teleports <= 1 per minute, drawn p95 <= 2.5 m off the fighter at the same moment while it moves, drawn path <= 0.3 s late (both creature.puppet_path and creature.puppet_walk off: FAIL, lab 20261101-141612)
 add('puppet_fight_player', 'SPORE_FPS=guest:30 SPORE_NET=player ' + P + 'coop_puppet_fight.py', minutes=5, fixture='creature')  # puppet_fight with the guest at 30 fps over the player network (BUG-0414: steps out of the observer's view, a creature on a nest mound drawn on the plain terrain, are not judged)
+add('puppet_jump', P + 'coop_puppet_jump.py', warm=True, minutes=4, fixture='creature')  # the partner's creature jumps with its own game's creature at the respawn and out of the egg, never walks after it (BUG-0499; SPORE_FIX_OFF=creature.puppet_jump fails)
 add('puppet_after_events', P + 'coop_puppet_after_events.py', minutes=9, fixture='creature', gates={'hitch_ms': 5000})  # the partner's creature shown within 2 m after a rejoin, the vote's editors, deaths and respawns, Alt+Enter, cinematics, a world share (PUPPET_EVENTS_PLANT=hold fails)
 add('puppet_after_events_player', 'SPORE_FPS=guest:30 SPORE_NET=player ' + P + 'coop_puppet_after_events.py', minutes=10, fixture='creature', gates={'hitch_ms': 5000})  # puppet_after_events with the guest at 30 fps over the player network (hitch gate 5 s: its Alt+Enter device reset took 2.3 s on the 30 fps guest)
 add('creature_social_ally', P + 'coop_creature_social_ally.py', warm=True, minutes=5, fixture='creature')  # BUG-0021: the guest impresses 3 Kooks by real input: each impressed on both games, the species allied on both, the guest's card; an allied Kook recruited by the host follows it on both games (SOCIAL_ALLY_PLANT=npcsync fails; SPORE_FIX_OFF=social.no_bite fails in about half of the runs: the guest's key 1 kills a Kook)
+add('creature_social_bar', P + 'coop_creature_social_bar.py', warm=True, minutes=4, fixture='creature')  # BUG-0179: the guest befriends a Kook with a mouse click on the social ability button (no key): impressed on both games, the species table on both (SPORE_FIX_OFF=social.bar_click fails)
 add('creature_social_ally_player', 'SPORE_FPS=guest:30 SPORE_NET=player ' + P + 'coop_creature_social_ally.py', minutes=6, fixture='creature')  # creature_social_ally with the guest at 30 fps over the player network
 add('creature_editor_soak', P + 'coop_editor_soak.py', ('extended',), minutes=30, timeout=3600, fixture='creature')  # BUG-0371: 32 rounds of vote, editors and done (a world share every 4): every round back, address space loss <= 8 MB per round, largest free block >= 128 MB, no fault (SOAK_PLANT_MB=40 fails)
 add('away_refill', P + 'coop_away_refill.py', minutes=3)  # BUG-0180: the host leaves to the main menu: the guest's game has its own NPCs where the host's were at once (SPORE_FIX_OFF=npc.away_locals fails)
@@ -275,7 +335,7 @@ add('editor_after_swap', P + 'coop_editor_after_swap.py', minutes=5)  # BUG-0318
 add('editor_after_load', P + 'coop_editor_after_swap.py --no-swap', minutes=5)  # BUG-0318: the same without an avatar swap (only the loaded world's new avatar)
 add('ability_bar', P + 'coop_ability_bar.py', minutes=5)  # a guest's ability bar holds its own creature's abilities after the swap, keys do not fault (BUG-0358; SPORE_FIX_OFF=creations.ability_bar fails)
 # two bots play Civilization for 10 minutes through real input (docs/stability/civ.md)
-add('play_civ', P + 'play_civ.py --minutes 10', ('nightly',), minutes=13, fixture='civ_npc')
+add('play_civ', P + 'play_civ.py --minutes 10', ('nightly', 'detector'), minutes=13, fixture='civ_npc')
 add('space_play', P + 'coop_space_play.py', ('smoke',), minutes=6)
 add('space_page', P + 'coop_space_page.py', ('smoke',), minutes=4)  # the F9 Space page (space_ext.h), jump by a real click
 add('space_map', P + 'coop_space_map.py', minutes=6)  # partners and their colonies on the galaxy map, the roster (space_map.h)
@@ -312,6 +372,8 @@ add('space_allies_reload_addr', P + 'coop_space_allies_reload.py --same-address'
 add('space_trade_reload', P + 'coop_space_trade_reload.py', minutes=6, fixture='space')  # a trade refund that comes back while another game is loaded waits for its own game (BUG-0225; SPORE_FIX_OFF=space.owed_id fails)
 add('space_trade_reload_same', P + 'coop_space_trade_reload.py --same-game', minutes=5, fixture='space')  # the same game loaded again (saved by the quit after the gift): paid once (BUG-0225, BUG-0058)
 add('dead_modal', P + 'coop_dead_modal.py', warm=True, minutes=3, fixture='space')  # a destroyed modal window in the window manager does not fault the next mouse message (BUG-0270; SPORE_FIX_OFF=game.dead_modal fails)
+add('save_areas', P + 'coop_save_areas.py', minutes=3)  # the game settings window opened from the galaxy menu when My Spore Creations cannot be made does not fault (BUG-0506; SPORE_FIX_OFF=game.save_areas fails)
+add('save_areas_editor', P + 'coop_save_areas_editor.py', minutes=4, fixture='cell')  # the Cell editor opened from a mate when My Spore Creations cannot be made does not fault (BUG-0506, GitHub #190; SPORE_FIX_OFF=game.save_areas fails)
 add('space_finale', P + 'coop_space_finale.py', minutes=12)  # the galaxy core together (space_finale.cpp): wait, joint entry, Staff of Life, rejoin
 add('space_finale_wait', P + 'coop_space_finale_wait.py', minutes=6)  # the host that waited at the core counts its entry as together when it enters first (BUG-0320; --without-fix fails); in the core each game draws the partner's ship where it is (BUG-0378; SPORE_FIX_OFF=space.puppet_pin fails)
 add('space_drawn', P + 'coop_space_drawn.py', minutes=4, fixture='space')  # where each game draws the partner's ship and the host's NPC ships against where they are, both flying with real keys in a star system (BUG-0378, BUG-0190)
@@ -337,17 +399,17 @@ add('chaos_tribe', P + 'coop_chaos.py --fixture tribe --minutes 2', ('smoke',), 
 for st, m in (('creature', 6), ('cell', 6), ('tribe', 8), ('civ', 8), ('space', 6)):
     add(f'chaos_{st}_long', P + f'coop_chaos.py --fixture {st} --minutes {m}', ('nightly',), minutes=m + 1)
 # two bots PLAY the Cell stage together (real input: swim, eat, flee, revive), sync / food / regression checks
-add('play_cell', P + 'play_cell.py --minutes 10', ('nightly',), warm=True, minutes=12, fixture='cell')
+add('play_cell', P + 'play_cell.py --minutes 10', ('nightly', 'detector'), warm=True, minutes=12, fixture='cell')
 # played like people play (real input, measurements; docs/stability/creature.md)
-add('play_creature', P + 'play_creature.py --minutes 10', ('nightly',), minutes=12)
+add('play_creature', P + 'play_creature.py --minutes 10', ('nightly', 'detector'), minutes=12)
 # games played by bots through real input for many minutes (docs/stability/<stage>.md)
-add('play_tribe', P + 'play_tribe.py --minutes 10', ('nightly',), warm=True, minutes=12, fixture='tribe')
+add('play_tribe', P + 'play_tribe.py --minutes 10', ('nightly', 'detector'), warm=True, minutes=12, fixture='tribe')
 # the same tests over a bad network between guest and host (tools/tests/netem.py)
 for name, cmd in (('tribe_coop', 'coop_tribe.py'), ('cell_coop', 'coop_cell.py'), ('civ_coop', 'coop_civ.py'),
                   ('team', 'coop_team.py'), ('space_coop', 'coop_space.py')):
     add(f'{name}_mobile', 'SPORE_NET=mobile ' + P + cmd, ('nightly',), minutes=4)
 # the Space stage played by two bots with real input (docs/stability/space.md)
-add('play_space', P + 'play_space.py --minutes 12', ('nightly',), minutes=14)
+add('play_space', P + 'play_space.py --minutes 12', ('nightly', 'detector'), minutes=14)
 add('chaos_tribe_awful', 'SPORE_NET=awful ' + P + 'coop_chaos.py --fixture tribe --minutes 5', ('nightly',),
     minutes=6)
 
@@ -385,7 +447,9 @@ add('cell_churn', P + 'coop_cell_churn.py', minutes=4)  # the guest's mirrors re
 add('cell_sap', P + 'coop_cell_sap.py', ('multi', 'extended'), minutes=6)  # four players, over 1024 host cells in one column: the broadphase sweep holds them, no fault per frame (BUG-0337; SPORE_FIX_OFF=cell.sap_sweep fails)
 add('cell_pause', P + 'coop_cell_pause.py', minutes=4)  # a guest in its pause menu while its mirrors churn: the cell broadphase's pending list stays in bounds, its order intact, leaving Cell does not fault (BUG-0348; SPORE_FIX_OFF=cell.sap_pending fails)
 add('cell_sync_check', P + 'coop_cell_sync_check.py', minutes=4)  # the sync-check finds no difference while food comes in and in a crowded pool with the guest swimming (BUG-0379; SPORE_FIX_OFF=diag.total_lag fails phase A)
+add('cell_grow', P + 'coop_cell_grow.py', minutes=4, fixture='cell')  # the host's cells stay where they are on the guest while a level change rescales the worlds (BUG-0511; SPORE_FIX_OFF=cell.world_scale fails)
 add('cell_ko_food', P + 'coop_cell_ko_food.py', minutes=4)  # a knocked-out cell (guest, then host) eats nothing it touches: no food on either game (BUG-0364; SPORE_FIX_OFF=cell.ko_no_eat fails)
+add('cell_ko_bite', P + 'coop_cell_ko_bite.py', minutes=4)  # a knocked-out cell (guest, then host) bites nobody: the bitten creature's health in the host's game holds (BUG-0509; SPORE_FIX_OFF=cell.ko_no_bite fails)
 add('cell_particles', P + 'coop_cell_particles.py', minutes=3)  # a full soft-body particle pool on a guest while its mirrors churn: no fault, the pool's count sane, its cell in place (BUG-0338; SPORE_FIX_OFF=cell.particles fails)
 add('cell_particles_nofill', P + 'coop_cell_particles.py --no-fill', ('extended',), minutes=3)  # control for cell_particles: the same mirror churn without a full pool (BUG-0355 follow-up)
 add('cell_spare', P + 'coop_cell_spare.py', minutes=6)  # a crowd of cells on both games' screens: no soft-body particle lost, none shares the spare slot, then the end of Cell at over 10 fps (BUG-0355; SPORE_FIX_OFF=cell.gfx_full fails)
@@ -395,22 +459,27 @@ add('cell_spare', P + 'coop_cell_spare.py', minutes=6)  # a crowd of cells on bo
 # the lab's suites; campaign_short is the first stage change only (a quick check of the tool itself)
 add('campaign', P + 'coop_campaign.py --minutes 8', ('campaign',), minutes=150,
     timeout=5 * 3600)
-add('campaign_short', P + 'coop_campaign.py --to creature --minutes 3 --advance-minutes 8', ('campaign',),
+add('campaign_short', P + 'coop_campaign.py --to creature --minutes 3 --advance-minutes 8', ('campaign', 'detector'),
     minutes=25, timeout=3600)
 # BUG-0276: the guests get the host's world after a live stage change with four players (the share
 # save posted in the first frames of Tribe / of the solar system); a stuck finding is the bug.
 # A timing race: FAIL with SPORE_FIX_OFF=world.share_settle_reset in about 1 of 3 games (--repeat)
-add('campaign_tribe', P + 'coop_campaign.py --from creature --to tribe --minutes 2 --no-finale', ('campaign',),
+add('campaign_tribe', P + 'coop_campaign.py --from creature --to tribe --minutes 2 --no-finale', ('campaign', 'detector'),
     minutes=30, timeout=3600)
-add('campaign_space', P + 'coop_campaign.py --from civ --to space --minutes 2 --no-finale', ('campaign',),
+add('campaign_space', P + 'coop_campaign.py --from civ --to space --minutes 2 --no-finale', ('campaign', 'detector'),
     minutes=35, timeout=3600)
 # BUG-0359: the host's heap corruption that surfaced at Creature -> Tribe in a whole campaign (Cell ran
 # in the same process first): Cell -> Creature -> Tribe with four players, the stress of that path
-add('campaign_ct', P + 'coop_campaign.py --from cell --to tribe --minutes 2 --no-finale', ('campaign',),
+add('campaign_ct', P + 'coop_campaign.py --from cell --to tribe --minutes 2 --no-finale', ('campaign', 'detector'),
     minutes=45, timeout=3600)
 
 
-SUITES = ('smoke', 'full', 'nightly', 'extended', 'campaign', 'multi', 'players', 'mixed')
+# the divergence detector (docs/sync-architecture-plan.md L0): a quiet session per stage, then the play bots
+# and the campaigns; run with SPORE_DETECTOR=<s> (tools/nightly_detect.sh), read with tools/detector_report.py
+for _st, _fx in (('cell', 'cell'), ('creature', 'creature'), ('tribe', 'tribe'), ('civ', 'civ_npc'), ('space', 'space')):
+    add(f'detect_{_st}', P + f'coop_detect.py --fixture {_fx} --minutes 4', ('detector',), minutes=7, fixture=_fx)
+
+SUITES = ('smoke', 'full', 'nightly', 'extended', 'campaign', 'multi', 'players', 'mixed', 'detector')
 
 
 def select(spec):

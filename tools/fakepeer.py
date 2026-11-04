@@ -5,7 +5,7 @@ Joins a host (a game running `coop.host`), then walks around the host's avatar s
 the host sees a remote player's puppet without a second copy of the game.
 
 usage: fakepeer.py [host[:port]] [--name Bot] [--mode circle|follow|static]
-                   [--radius 8] [--period 12] [--seconds 60] [--build HEX] [--protocol 6|7]
+                   [--radius 8] [--period 12] [--seconds 60] [--build HEX] [--protocol N]
 Mirrors mods/coop/net (protocol.h, connection.cpp). Run with python3 -I.
 """
 import argparse
@@ -18,7 +18,7 @@ import time
 
 MAGIC = 0x4F435053
 # Default to the current protocol. Check the wire format before adding versions.
-PROTO = 7
+PROTO = 26
 HEADER = '<IHIHHQQB'  # magic, proto, conn, seq, ack, ackbits (2 x u64), count
 HEADER_SIZE = struct.calcsize(HEADER)
 HELLO, WELCOME, REJECT, JOIN, LEAVE, STATE, CHAT, PING, PONG, BYE = range(1, 11)
@@ -161,7 +161,7 @@ def main():
     ap.add_argument('--period', type=float, default=12.0)
     ap.add_argument('--seconds', type=float, default=60.0)
     ap.add_argument('--build', default='dc04aee5', help='first 8 hex digits of the host game build ID')
-    ap.add_argument('--protocol', type=int, choices=(6, 7), default=PROTO, help='host protocol version (default: 7)')
+    ap.add_argument('--protocol', type=int, choices=range(6, 27), default=PROTO, help='host protocol version (default: 26)')
     ap.add_argument('--say', default='hello from fakepeer')
     a = ap.parse_args()
     h, _, port = a.host.partition(':')

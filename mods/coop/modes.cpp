@@ -9,6 +9,7 @@
 #include <unordered_set>
 
 #include "cell_logic.h"
+#include "creations.h"
 #include "creature_hp.h"
 #include "game.h"
 #include "adventure_native.h"
@@ -41,10 +42,59 @@ static void creature_fill(void* av, net::PlayerState& st)
         st.flags |= net::PF_RUNNING;
     if (game::is_dead(av))
         st.flags |= net::PF_DEAD;
+    if (game::sneaking(av))
+        st.flags |= net::PF_SNEAKING;
     st.health = game::health(av);
     st.max_health = game::max_health(av);
     st.species = game::species_instance(av);
     st.scale = game::scale(av);
+}
+
+// BUG-0507: a guest crashed in drive_puppet -> creature_drive -> walk_place -> set_speed on a puppet whose
+// memory was another object's (a cModelObject vtable at +0xC0): the game had freed the partner's puppet and
+// the Creature adapter had no liveness check (Cell and Space have one), so coop.cpp's puppet_now() and
+// drive_puppet() kept driving the raw pointer. With creature.puppet_alive a puppet is alive only while the
+// game's object list still holds it as a live creature (noun 0x18EB45E, +0x21 not set) with the serial
+// (cGameData::mID +0x24) it had when we made it: a freed puppet, or its memory reused by a new creature,
+// is dropped and the partner is shown again with a new puppet. The list walk runs once per frame and
+// puppet (a cache by frame index). `coop.fix creature.puppet_alive off`: no check (0.7.3.6).
+static bool g_puppet_alive_fix = true;
+COOP_FIX("creature.puppet_alive", "BUG-0507", g_puppet_alive_fix, "creature: a partner's creature the game removed is shown again instead of being used after it was freed (crash)");
+struct AliveNote {
+    uint32_t serial = 0;
+    uint64_t frame = ~0ull; // the frame of the last check that found it alive
+};
+static std::unordered_map<void*, AliveNote> g_puppet_serials;
+uint32_t g_puppets_gone_alive = 0; // tests: creature puppets found freed by the game (coop.status)
+
+static void puppet_alive_note(void* p)
+{
+    if (g_puppet_serials.size() > 64) // (forgotten puppets of old worlds)
+        g_puppet_serials.clear();
+    g_puppet_serials[p] = AliveNote{game::object_serial(p), ~0ull};
+}
+
+static bool creature_alive(void* p)
+{
+    if (!g_puppet_alive_fix || !p)
+        return true;
+    uint64_t f = g_host_for_modes ? g_host_for_modes->frame_index() : 0;
+    auto it = g_puppet_serials.find(p);
+    if (it != g_puppet_serials.end() && it->second.frame == f && f)
+        return true; // checked this frame
+    bool ok = game::creature_listed(p) && (it == g_puppet_serials.end() || !it->second.serial ||
+                                           game::object_serial(p) == it->second.serial);
+    if (!ok) {
+        if (it != g_puppet_serials.end())
+            g_puppet_serials.erase(it);
+        g_puppets_gone_alive++;
+        game::puppet_unregister(p); // (a new creature at this address is no puppet of ours)
+        creature_hp::forget_puppet(p);
+        return false;
+    }
+    if (it != g_puppet_serials.end())
+        it->second.frame = f;
+    return true;
 }
 
 static void* creature_spawn(const net::PlayerState& s, void* av)
@@ -67,6 +117,7 @@ static void* creature_spawn(const net::PlayerState& s, void* av)
     game::teleport(p, s.pos, s.rot);
     if (game::mode_id() == kScenario) game::set_scale(p, s.scale);
     else game::set_scale(p, game::scale(p) * 1.15f);
+    puppet_alive_note(p);
     return p;
 }
 
@@ -98,6 +149,13 @@ COOP_FIX("creature.puppet_walk", "BUG-0360", g_puppet_walk_fix, "creature: the w
 // it stays grounded. A partner higher up (a jump, a rock) is placed where it is.
 static bool g_puppet_ground_fix = true;
 COOP_FIX("creature.puppet_ground", "BUG-0366", g_puppet_ground_fix, "creature: the partner's creature is put on this game's ground (no fall animation walking downhill, never under the ground)");
+// BUG-0513: a guest whose game stalled (minimized, alt-tabbed, paused while it received a world) reported its own
+// creature 3-7 m under its ground (its own trace: agl=-6.53, busy=paused), and the host drew the puppet there:
+// on_own_ground leaves a target more than kUnderGround under the ground where it is ("the guest is bugged into the
+// ground"). With creature.puppet_deep a target 3-15 m under this game's ground (the terrain only: a creature is never
+// there legitimately) is put onto it as the proxies are (drive::out_of_ground). Off: 0.7.3.6.
+static bool g_puppet_deep_fix = true;
+COOP_FIX("creature.puppet_deep", "BUG-0513", g_puppet_deep_fix, "creature: a partner reported deep under the ground (a stalled or minimized game) is drawn on this game's ground");
 
 // BUG-0394: the partner's creature can move without a speed of its own: an animation that carries it
 // (B4212A07 after a click, 3-4.6 m/s for a second with the game's velocity 0 and speed state 0 on the
@@ -108,15 +166,66 @@ COOP_FIX("creature.puppet_ground", "BUG-0366", g_puppet_ground_fix, "creature: t
 static bool g_puppet_path_fix = true;
 COOP_FIX("creature.puppet_path", "BUG-0394", g_puppet_path_fix, "creature: the partner's creature also walks where the partner moves without a speed (moves carried by an animation)");
 
+// BUG-0463: a player's sneak (the sneak ability: the creature +0xBB1, the noise radius +0xB80 = 0, the model
+// eased to alpha 0.2 by the creature's update) ran only on the sneaking player's game. The partner's puppet
+// walked upright and opaque, and on the host the NPCs whose AI looks at the puppet (npc.cpp ai_target: the
+// puppet as the avatar of NPCTickAI) heard it at the full noise radius. With creature.sneak the puppet is
+// put into the same state with the game's own setter (CreatureSetSneaking 0xC1B030, force: no ability
+// check) whenever the partner's PF_SNEAKING differs from it; the puppet's energy is kept so the game's
+// update does not end the sneak (it does at 0 energy). `coop.fix creature.sneak off`: the old behaviour.
+static bool g_sneak_fix = true;
+COOP_FIX("creature.sneak", "BUG-0463", g_sneak_fix, "creature: a sneaking partner is shown sneaking (see-through) and the host's NPCs do not hear it");
+
+static void puppet_sneak(void* p, const net::PlayerState& s)
+{
+    if (!g_sneak_fix || !game::in_creature_stage())
+        return;
+    bool want = (s.flags & net::PF_SNEAKING) && !(s.flags & net::PF_DEAD);
+    if (want && skg::readable(p, 0xE5C) && skg::field<float>(p, 0xE58) < 1.f)
+        skg::field<float>(p, 0xE58) = 1.f; // (the update ends a sneak at 0 energy, +0xE58)
+    if (game::sneaking(p) != want)
+        game::set_sneaking(p, want);
+}
+
+// BUG-0499: the partner's own game puts its creature somewhere else at once: the hatchling steps out of
+// its egg (5-11 m in one frame, ~10 s after the respawn), the respawn at the nest (100+ m). The states
+// were blended across that step (the target slid the whole way in 0.1 s), the puppet walked or was
+// nudged after it and stood 6-23 m off for up to a second (play_creature `never more than 6 m apart`,
+// one sample, puppet speed 0). With creature.puppet_jump the buffer does not blend across such a step
+// (net::SnapshotBuffer::jump_speed, the death flag) and a target that jumps more than kJumpM in one
+// frame puts the puppet there (a teleport), as the partner's own game did. Off: blended and walked.
+static bool g_puppet_jump_fix = true;
+COOP_FIX("creature.puppet_jump", "BUG-0499", g_puppet_jump_fix, "creature: the partner's creature jumps where its own game put it (out of the egg, the respawn) instead of walking there");
+constexpr float kJumpM = 3.f;          // m in one frame: no creature walks that fast (180 m/s at 60 fps)
+constexpr float kJumpSpeed = 40.f;     // m/s between two states: a jump (sprints and charges stay under ~15)
+float puppet_jump_speed() { return g_puppet_jump_fix ? kJumpSpeed : 0.f; }
+
 static void creature_drive(void* p, const net::PlayerState& s_in, drive::State& ds, double now)
 {
     const bool scenario = game::mode_id() == kScenario;
     if (scenario && std::isfinite(s_in.scale) && s_in.scale > 0 && s_in.scale <= 10000 &&
         std::fabs(game::scale(p) - s_in.scale) > .0001f) game::set_scale(p, s_in.scale);
+    puppet_sneak(p, s_in);
     ds.drawn = game::position(p);
     net::PlayerState s = s_in;
     if (g_puppet_ground_fix && game::in_creature_stage())
         s.pos = drive::on_own_ground(s.pos);
+    if (g_puppet_deep_fix && game::in_creature_stage())
+        s.pos = drive::out_of_ground(s.pos, true); // BUG-0513: 3-15 m under this game's ground
+    const bool jumped = g_puppet_jump_fix && ds.jump_have && net::dist(s.pos, ds.jump_from) > kJumpM;
+    ds.jump_from = s.pos;
+    ds.jump_have = true;
+    if (jumped && net::dist(game::position(p), s.pos) > kJumpM) {
+        drive::walk_end(p, s.pos, ds, now);
+        game::teleport(p, s.pos, s.rot);
+        ds.teleports++;
+        ds.jumps++;
+        ds.path = drive::PathTrack{}; // (no path velocity across the jump)
+        ds.track = drive::Track{};
+        ds.last_step = now;
+        ds.last_cmd = now;
+        return;
+    }
     drive::path_update(ds, s.pos, now);
     if (g_puppet_path_fix && !scenario && drive::speed(s.vel) <= 0.3f)
         s.vel = drive::path_velocity(ds);
@@ -148,6 +257,7 @@ static void creature_drive(void* p, const net::PlayerState& s_in, drive::State& 
 
 static void creature_despawn(void* p)
 {
+    g_puppet_serials.erase(p);
     creature_hp::forget_puppet(p);
     game::destroy_creature(p);
 }
@@ -838,8 +948,37 @@ bool cell_sap_room()
     return false;
 }
 
+// BUG-0455 (the class of BUG-0004): a cell made with a forced model key builds that key's cell model data
+// on first use (GetCellModelData 0xE679E0 -> 0xE83E30 -> Editors::cEditor::LoadCreatureData); a key whose
+// creation this game does not have yet loads nothing and the game reads the missing data at 0xE83EC8 (read
+// 0x9C). A guest mirrored the host's cells of the host's new creation right after the host left its Cell
+// editor, before the creation's records arrived. Every forced key is checked first: a cell of an unknown
+// creation is not made (cellsync tries again with the next state round, the creation's bundle follows),
+// a puppet falls back to the own avatar's model. Off (`coop.fix cell.unknown_model off`): 0.7.3.4.
+static bool g_fix_unknown_model = true;
+COOP_FIX("cell.unknown_model", "BUG-0455", g_fix_unknown_model,
+         "cell: no cell is made with the model of a creation this game does not have (yet): the game read its missing data at 0xE83EC8");
+static uint32_t g_unknown_models, g_unknown_last;
+
+static bool model_known(const uint32_t key[3])
+{
+    if (!g_fix_unknown_model || !key[0] || creations::key_known(creations::Key{key[0], key[1], key[2]}))
+        return true;
+    if (key[0] != g_unknown_last || g_unknown_models % 200 == 0) // (once per key, then rarely)
+        g_host_for_modes->log(g_mod_for_modes, SK_INFO,
+                              "cell: model %08X/%08X/%08X is not in this game (a creation not received yet): no cell with it "
+                              "now (BUG-0455, %u)", key[0], key[1], key[2], g_unknown_models + 1);
+    g_unknown_last = key[0];
+    g_unknown_models++;
+    return false;
+}
+
+uint32_t cell_unknown_models() { return g_unknown_models; }
+
 uint32_t cell_create(const net::Vec3& pos, void* res_ref, int level, const uint32_t key[3], const net::Quat* rot)
 {
+    if (!model_known(key))
+        return 0;
     ensure_model_hook();
     uint8_t* g = cell_game();
     uintptr_t create = S("Simulator::Cell::CreateCellObject");
@@ -881,8 +1020,11 @@ static void* cell_spawn(const net::PlayerState& s, void* local)
     }
     g_key = skg::field<skg::ResourceKey>(me, 0xFC);
     uint32_t own[3];
-    if (g_model_for_player && g_model_for_player(s.id, 1, own)) // the player's own cell
+    if (g_model_for_player && g_model_for_player(s.id, 1, own) && model_known(own)) // the player's own cell
         g_key = {own[0], own[1], own[2]};
+    uint32_t forced[3] = {g_key.instance, g_key.type, g_key.group};
+    if (!model_known(forced)) // (the own avatar's model: known; else the game's own choice for the resource)
+        g_key.instance = 0;
     g_force_key = o_GetModelKey && g_key.instance != 0;
     uint32_t idx = skg::cdecl_call<uint32_t>(create, query, &p, 0.f, res, scale, 1.f, 1.f, 1, (void*)nullptr, 0);
     g_force_key = false;
@@ -1126,9 +1268,9 @@ static const Adapter kAdapters[] = {
     {"Tribe", kTribe, nullptr, false, rts_local, rts_fill, rts_spawn, rts_drive, rts_despawn, rts_tag},
     {"Civilization", kCiv, nullptr, false, rts_local, rts_fill, rts_spawn, rts_drive, rts_despawn, rts_tag},
     {"Cell", kCell, nullptr, false, cell_local, cell_fill, cell_spawn, cell_drive, cell_despawn, cell_tag, cell_alive, true},
-    {"Creature", kCreature, nullptr, false, creature_local, creature_fill, creature_spawn, creature_drive, creature_despawn, creature_tag},
+    {"Creature", kCreature, nullptr, false, creature_local, creature_fill, creature_spawn, creature_drive, creature_despawn, creature_tag, creature_alive},
     // adventures are not saves: every player starts the same adventure, puppets meet inside it
-    {"Adventure", kScenario, adventure_place, true, creature_local, creature_fill, creature_spawn, creature_drive, creature_despawn, creature_tag},
+    {"Adventure", kScenario, adventure_place, true, creature_local, creature_fill, creature_spawn, creature_drive, creature_despawn, creature_tag, creature_alive},
     {"Space", kSpace, space_place, false, space_local, space_fill, space_spawn, space_drive, space_despawn, space_tag, space_alive},
 };
 

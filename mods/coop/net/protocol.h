@@ -12,7 +12,7 @@
 namespace net {
 
 constexpr uint32_t kMagic = 0x4F435053; // 'SPCO'
-constexpr uint16_t kProtoVersion = 25; // 3: shared resources; 4: lobby/discovery; 5: 128-packet acks;
+constexpr uint16_t kProtoVersion = 26; // 3: shared resources; 4: lobby/discovery; 5: 128-packet acks;
                                       // 6: connection id/BYE; 7: upstream Space features and GA runs;
                                       // 8: GA preparation; 9: party flow/captain identity;
                                       // 10: static state, interactions and teleport generations;
@@ -30,6 +30,7 @@ constexpr uint16_t kProtoVersion = 25; // 3: shared resources; 4: lobby/discover
                                       // 22: host-authoritative NPC teleports and actor movement generations
                                       // 24: upstream nest/parts IDs retained, adventure/editor moved to 61/62;
                                       // 25: Extended Complexity policy2 with stable Native marker arenas;
+                                      // 26: retain upstream 0.7.4 WOBJ/effects, activity55/adventure63/editor62;
                                       // 23: crew, procedural terrain, immutable assets and independent editors
 constexpr uint16_t kDefaultPort = 47810;
 constexpr int kMaxPlayers = 4; // host + 3 guests (Spore pack size)
@@ -95,13 +96,32 @@ enum MsgType : uint8_t {
     MSG_PARTS = 53,       // the party's collected creature parts (parts.cpp, BUG-0401): u8 kind (0 host -> guests the
                           // host's set, 1 host -> guests news, 2 guest -> host found here), u8 origin, u32 world,
                           // u16 n, n x {u32 lo, u32 hi}. Older SporeCoop ignores it (an unknown type).
-    MSG_ADVENTURE = 61,  // u8 subkind, run-scoped adventure coordination; 64..71 resource transfer
+    MSG_ADVENTURE = 63,  // u8 subkind, run-scoped adventure coordination; 64..71 resource transfer
     MSG_EDITOR = 62,     // project/epoch-scoped authoring, kept separate from gameplay runs
-    MSG_ACTIVITY = 54,   // guest -> host: actual native mode and editor activity
+    MSG_ACTIVITY = 55,   // guest -> host: actual native mode and editor activity
+    MSG_FIELDS = 56,      // host -> guests: replicated state fields of mirrored objects (fields.h, BUG-0419 G2):
+                          // u8 kind, u8 nf, nf x u8 field, u16 n, n x {u16 id, nf x f32}; unreliable, deltas + refresh.
+                          // Older SporeCoop ignores it (an unknown type).
+    MSG_NPC_RESYNC = 57,  // guest -> host: u8 n, n x u16 NPC id the guest gets states for and has no spawn of
+                          // (BUG-0487 / G5): the host sends that spawn again. Older SporeCoop ignores it.
+    MSG_NPC_ANIM = 59,    // host -> guest: animations the host's NPCs' behaviour trees started (BUG-0464, npc.cpp):
+                          // u8 kind 0 (started, at most once a frame): u8 n, n x {u16 NPC id, u32 anim, u8 how (0 CreaturePlayAnim,
+                          // 1 PlayAnimation, 2 PlayAnimationTo), u8 arg, u32 arg2};
+                          // kind 1 (1 Hz: what they play now, a BT's animation or a body's): u8 n, n x {u16 id, u32 anim}.
+                          // Unreliable.
+                          // Older SporeCoop ignores it (an unknown type).
+    MSG_WOBJ = 54,        // world objects owned by the host (worldobj.cpp, BUG-0472 / BUG-0459): u8 kind (0 host -> guest
+                          // snapshot {u8 obj kind, vec3 centre, f32 r, u8 n, n x {u32 id, vec3 pos, u32 state}}, unreliable 1 Hz;
+                          // 1 guest -> host request {u8 obj kind, u32 id, vec3 pos, u32 state now}). Older SporeCoop ignores it.
     MSG_CELL_KO = 44,     // any -> host -> all: u8 player, u8 state (0 up,1 out,2 revived,3 respawned),
                           // u8 tenths of a second left, u8 revive progress 0..255
     MSG_DIAG = 60,        // support diagnostics (net/diagmsg.h): u8 kind, payload; session clock, bug
                           // marks, sync self-check. Older SporeCoop ignores it (an unknown type).
+    MSG_EFFECT = 61,      // a player's own creature started / stopped a visual effect (BUG-0451,
+                          // effects.h): u8 player, u8 stop, u8 pool (1/2), u32 effect id, u32 key.
+                          // The host relays a guest's message to the other guests; the receiver
+                          // plays it on that player's puppet with the game's own effect pools.
+                          // Older SporeCoop ignores it (an unknown type).
 };
 
 // LAN discovery: plain datagrams outside any connection, answered by hosts on their game port
@@ -148,6 +168,7 @@ enum PlayerFlags : uint8_t {
     PF_JUMPING = 8,
     PF_DEAD = 16,
     PF_SWIMMING = 32,
+    PF_SNEAKING = 64, // BUG-0463: the creature sneaks (+0xBB1); older SporeCoop ignores the bit
 };
 
 struct Vec3 {

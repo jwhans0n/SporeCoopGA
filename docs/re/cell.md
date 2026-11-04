@@ -1373,3 +1373,105 @@ BUG-0355. GOG 2024, Ghidra and `tools/tests/coop_cell_spare.py` (suite `cell_spa
 * ✔ runtime: after the host's cell editor the host shares its world again (saved 3 s after the
   stage settled); the guest leaves the Cell stage about 4-5 s after it got the host's new cell
   record and is back in Cell another ~5 s later. A mate the guest called before that load is gone.
+
+## The Cell parts a player collects, and the party's shared set (2026-11-03, fix/w40-editor)
+<a id="cell-parts-shared"></a>
+
+BUG-0467. GOG 2024, objdump of `SporeApp.exe` (dc04aee5).
+
+* ✔ (disassembly) The Cell stage's collected parts are **13 ints** at cCellSerializableData (`S`,
+  cCellGame+0x5190) **+0x34 + 4*part**, not bytes: 0 locked, 1 unlocked, 2 collected and not seen in
+  the editor yet. 0xE4FB90 turns every 2 into 1 (the editor's return); 0xE4FAA0(int* states) builds
+  the cCollectableItems of the cell editor (`G+0x5164`) from them: state 1 -> UnlockPart, 0 ->
+  LockPart, then state 2 -> UnlockPart, over the table **0x1483DD8** ({part index, item instance} x 12,
+  type 0x150D6D8).
+  CORRECTION (2026-11-03, fix/w40-editor): `coop.pool`'s `parts=` read 13 bytes at `S+0x34` (only the
+  first 3-4 parts' low bytes); it reads the 13 ints now.
+* ✔ (disassembly) **0xE5D7B0 `Simulator::Cell::CollectPart`**, cdecl void(int part), plain ret: a part
+  token collected (from the collision code 0xE7B630; a debug key 0xE81120). The first time
+  (`S+0x69 == 0`) timers `G+0x51D0` / `G+0x51CC` and a callout; then the parts mission (`S+0x90`
+  1 -> 3, counter `S+0x94` up to 6), `S+0x69 = S+0x68 = 1` (the mating-call button), `state[part] = 2`,
+  the part's item key from the table, 0xE83430 (the part pop-up), 0xE4FAA0 over `S+0x34` (the
+  palette's items rebuilt). It runs in the collecting player's game only: a part a guest picked up
+  never reached the host (BUG-0467) and the other way round.
+* The co-op rule (as BUG-0401 for the creature parts): the party has one set, the union, held by the
+  host's game. `parts.shared_cell` (parts.cpp, MSG_PARTS kinds 3 and 4, keys `{part, 0}`): every game
+  polls the 13 states in a live Cell game (1 Hz); a guest that plays the host's world sends the parts
+  it has and the host lacks (kind 4, resent every 3 s, at most 5 times a part), the host collects them
+  through CollectPart (outside the frame: it shows the pop-up) and sends its set (kind 3, at once on a
+  change, else every 10 s); a guest collects what it lacks of the host's set the same way. The notice
+  "Bob found a new cell part: it is in your editor too". Nothing is locked. Older SporeCoop ignores
+  the new kinds. `coop.parts cell [collect <i>]` prints the states (tests: the game's own collect).
+* ~ inferred, not seen: the cell editor opened while a part arrives keeps its palette until the next
+  editor (0xE4FAA0 builds it from the states at the collect and the editor request).
+## A mirror of a creation this game does not have (2026-11-03, fix/w40-crashes)
+<a id="cell-unknown-model"></a>
+
+BUG-0455 (a guest's crash at 0xE83EC8, read 0x9C, "when the host left the evolution editor"), the
+signature of BUG-0004 on another path.
+
+* ✔ The player's dump: CreateCellObject+0x4B9 (0xE74ED9) <- coop.dll `cellsync::guest_state`
+  (cellsync.cpp, `modes::cell_create` with the model key the host sent) -> 0xE6CAF7 -> 0xE69726 ->
+  0xE67A41 (GetCellModelData 0xE679E0: the model data of a key, built on first use) -> 0xE83E30, which
+  calls `Editors::cEditor::LoadCreatureData` (0x4BB500) and reads `[result+0x9C]` at **0xE83EC8**: ecx
+  = 0, the creation's file was not found. Symbolized with a v0.7.3.4 build (`git archive v0.7.3.4`).
+* ~ After the host's Cell editor its cells of the player's species carry the new creation's key; the
+  guest mirrored them before the creation's records reached it (the creation bundle comes later, docs/re
+  /creations.md 8). Lab: a host cell sent with an unknown model instance (`coop.cell spawn <slot> dx dy
+  level <instance>`, cellsync::set_fake_model) faulted the guest at 0xE83EC8 with the players' chain
+  (0xE67A41 0xE69726 0xE6CAF7 0xE4F9E4 0xE74ED9) and the guest made no mirror after it.
+* Fix (`cell.unknown_model`, mods/coop/modes.cpp): every forced model key is checked with
+  `creations::key_known` (RM FindRecord) first; `cell_create` makes no cell of an unknown creation
+  (cellsync tries again with the next state round; `unknown_models=` in coop.status), `cell_spawn`
+  (puppets) falls back to the own avatar's model.
+
+## Does a guest's mirror die when the host's cell is gone? (2026-11-03, fix/w40-cell-evo)
+<a id="cell-stale-mirrors"></a>
+
+BUG-0480. Lane 4, `tools/tests/coop_cell_gone.py` (docs/06-testing.md#testing-world-lod).
+
+* ✔ (runtime) The purge of guest_state: a mirror not listed in a complete round of the host's MSG_CELL_STATE
+  goes at the round's last chunk; after a lost chunk one not listed for 1 s. A 4 s dead link
+  (`coop.pool statehold 4`) while the host destroyed 8 cells near the guest left no mirror of them 2.5 s after
+  the state came back (6 of 6 rounds).
+* ✔ (runtime) The detector's `Cell:guest_only:cell` / `host_only:cell` came mostly from its single host dump:
+  Cell cells live for seconds and a host level change replaces hundreds between two dumps. Bracketing the guest's
+  dump by two host dumps 1.5 s apart: 0 where one dump gave 2 (10 rounds).
+* ? (runtime, 3 of 9 cold runs) 28-49 mirrors at once (meat / rock / bubble, level 0-1) of host indices the host
+  had in neither dump and not in `coop.pool cell` (cell_at) a moment later, though the guest's entry had been
+  refreshed 0.1-0.2 s before; the host never sent an index cell_at did not find at the send. Inferred: cells that
+  exist in the host's pool during part of its frame only (the partner tiles populated for the guest's view);
+  not verified.
+## A knocked-out cell's attacks (2026-11-03, fix/w40-guest-combat)
+<a id="cell-ko-attacks"></a>
+
+* ✔ The knockout (cellsync go_down / downed_tick: hp 1, dead/dying 0, invulnerable +0x111, translucent, held in
+  place) did not stop the avatar's attacks: the game's Bite 0xE7B0A0 for the avatar still ran and killed (lab
+  lane 2, `coop.pool realbite` while downed: a guest's creature 6 -> 3 -> 0 on the host through MSG_CELL_HIT; the
+  host's own bites the same in its game). Only the mouth's chunks and food were blocked (cell.ko_no_eat, BUG-0364).
+* `cell.ko_no_bite` (BUG-0509): while downed, h_Bite (the avatar as attacker) returns false, h_DamageCell drops a
+  hit whose attacker is the avatar (spikes, poison) and h_Break drops a lethal one; the host refuses MSG_CELL_HIT
+  from a guest whose last MSG_CELL_KO state is KO_OUT (an old guest, a hit in flight).
+* ? "got damaged" while knocked out (the report) is not looked at: the cell is invulnerable and its hp forced to 1
+  every frame; inferred: the health ring moving.
+
+## The world scale of a level change on two games (2026-11-03, fix/w40-misc)
+<a id="cell-world-scale"></a>
+
+* ✔ `WorldScaleStep` 0xE73E50: while the world scale `G+0x514C` differs from its target `G+0x5150` it moves
+  it (log-space smoothing 0xE509F0, dt * 0.75) and calls 0xE6DB70 with ratio = new / old. 0xE6DB70 divides by
+  the ratio, about a centre `C`: every soft-body particle, every cell's `+0x4C` pos, `+0x08` target, `+0x58`
+  size, `+0x90` velocity, `+0xB4` target size (and mass), `+0x1C4`, the camera points (0x16B3C0C +0x48/+0x54/
+  +0x60) and `G+4`. `C` is 0x16B3C28 (read (0 0 0) at runtime) while the camera point is within 1000 m of the
+  origin, else 0xE4F900 picks one (not looked at). So in the usual case `pos * G+0x514C` is invariant.
+* ✔ Runtime (lab, cell fixture, lanes 9): world scale 0.5 at level 1, 1.5 at level 2, 5.0 at level 3; one change
+  takes ~3.5 s. The guest's change starts 1-4 frames after the host's (its level follows the shared food total,
+  MSG_CELL_FOOD), so for ~3 s the two scales differ (host 0.964 / guest 0.702 at one sample).
+* ✔ BUG-0511: the guest applied the host's cell poses (MSG_CELL_STATE, in the host's scale) unchanged: the
+  mirrors were 14-18 m (p90, guest metres) from where the host's cells were during each level change and glided
+  back over seconds ("cells float around very fast"). Fix `cell.world_scale` (cellsync.cpp): the host appends its
+  world scale to each state chunk (after the cells: older guests stop reading before it); the guest keeps each
+  mirror's pose in the host's scale and draws it times host scale / own scale every frame (size at receive).
+  p90 0.1 m during the change with it (`cell_grow`, docs/06-testing.md#testing-cell-grow).
+* ? Not done: the players' own cells (puppets, MSG_STATE through `modes::cell_drive`) carry no scale; a partner's
+  puppet may be off in the same way for those ~3 s (BUG-0519).

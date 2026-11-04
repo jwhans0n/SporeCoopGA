@@ -41,12 +41,12 @@ def pickup_transport_version(header):
     if len(header) != 31 or header[:4] != b'SPCO':
         return None
     version = struct.unpack_from('<H', header, 4)[0]
-    return version if 10 <= version <= 24 else None
+    return version if 10 <= version <= 26 else None
 
 
 def adventure_injection_packet(header, payload):
     require(pickup_transport_version(header) is not None,
-            'pickup network fixture requires a reviewed protocol10..24 header')
+            'pickup network fixture requires a reviewed protocol10..26 header')
     kind = adventure_message_type(header)
     header = bytearray(header)
     header[30] = 1
@@ -54,7 +54,7 @@ def adventure_injection_packet(header, payload):
 
 
 class CaptureProxy(NetworkProxy):
-    """Record the exact 95-byte protocol10..24 state for private-lab faults."""
+    """Record the exact 95-byte protocol10..26 state for private-lab faults."""
     def __init__(self, listen, target):
         super().__init__(listen, target)
         self.states = {}
@@ -65,7 +65,7 @@ class CaptureProxy(NetworkProxy):
         if direction != 'up' or len(data)<31 or data[:4] != b'SPCO':
             return
         if pickup_transport_version(data[:31]) is None:
-            self.error = 'pickup network fixture requires a reviewed protocol10..24 header'
+            self.error = 'pickup network fixture requires a reviewed protocol10..26 header'
             return
         offset = 31
         for _ in range(data[30]):

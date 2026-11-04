@@ -78,6 +78,7 @@ extern bool cell_at_fix;           // coop.pool fix cellat 0: the old bound (slo
 bool cell_is_puppet(void* cell);  // a remote player's cell
 // BUG-0271 (core.stale_local): no cell is read from a pool block the game already freed
 extern bool stale_fix;
+extern uint32_t g_puppets_gone_alive; // BUG-0507: Creature puppets found freed by the game (creature.puppet_alive)
 bool cell_usable(void* cell);     // the local cell or a puppet, still live in a mapped pool
 // our frame scope (on_frame, on_overlay): no game code runs inside, so the pool check is cached
 void cell_scope(bool enter);
@@ -118,6 +119,7 @@ void space_retired_clear(const char* why); // session end, unload
 std::string space_ident_test(void* u, const std::string& what, bool on);
 void cell_forget();               // the Cell stage was left: forget the puppets' pool indices
 uint32_t cell_create(const net::Vec3& pos, void* res_ref, int level, const uint32_t key[3], const net::Quat* rot);
+uint32_t cell_unknown_models(); // BUG-0455: cells not made because their model's creation is not here
 void cell_destroy(uint32_t idx);
 // BUG-0308: the Cell stage is being left (quit posted for a world load or the menu) and coop.fix
 // cell.leave_guard is on: no mirror creation and no pool write of ours until the mode changes
@@ -126,5 +128,7 @@ bool cell_leaving();
 void cell_move(uint8_t* c, const net::Vec3& p, bool still = false);
 void mat_to_quat(const float* m, net::Quat& q);
 void quat_to_mat(const net::Quat& q, float* m);
+// BUG-0499 (creature.puppet_jump): the speed a partner's states may not be blended over (0: off)
+float puppet_jump_speed();
 
 } // namespace modes

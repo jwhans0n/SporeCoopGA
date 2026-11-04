@@ -332,8 +332,8 @@ original scope.
 * Since 2026-10-23 a guest befriends a mirrored NPC (click in the social stance, a social ability
   key; the host applies the native win, docs/re/creature.md 8.3), but the guest does not see the
   native social meter and the NPC's ability prompts (they belong to the NPC's behaviour tree, which
-  runs only on the host): any social ability counts as the answer, one press per round. A click on
-  the ability bar instead of a key is not counted (the mod polls the keys 1-4). The host's own
+  runs only on the host): any social ability counts as the answer, one press per round (a key or,
+  since BUG-0518, a click on the ability's button of the bar). The host's own
   game is native. The success message 0x60B4123 (CreatureStageEventHandler) is not posted for a
   guest's win. Reproduce: `tools/tests/coop_creature_social.py`.
 * Ticket: BUG-0179.
@@ -1420,6 +1420,11 @@ Reproduce a full game: `tools/lab.py run campaign --lane N` (about 85 min) or `c
 * Next steps: measure the address space the editor's paint mode takes on lane 10; tell players with
   the large-address flag off to use the 4GB patch.
 * Ticket: BUG-0371
+* CORRECTION (2026-11-03, fix/w40-crashes): ~ superseded: the same host crashed twice more in 15
+  minutes on 0.7.3.4 with 868+ MB free; the dumps show a texture the texture manager returned without a
+  raster (the driver did not make it), not an allocation of ours or of the address space
+  (docs/re/graphics.md#graphics-null-raster). Guarded (game.null_raster_fill, BUG-0454): the fill is
+  skipped; why the driver refuses that texture is still not known.
 ## Creature: the partner's jumps are mostly not shown (2026-11-01, fix/w30-puppet-jump)
 <a id="issue-puppet-jumps"></a>
 
@@ -1714,9 +1719,140 @@ Reproduce a full game: `tools/lab.py run campaign --lane N` (about 85 min) or `c
   recipe transaction. The draft remains converged and fault-free, but the guest
   receives no authored move. The native Terraform input functions bypass the
   placement input hooks. Private C61 adds the separate hooks and passes controlled
-  checks; actual game qualification remains pending. Ticket: BUG-0476.
+  checks; actual game qualification remains pending. Ticket: BUG-0527.
 
   CORRECTION (2026-11-03): private C62 also repairs the acquired-record revision
   mapping and passes host/guest native movement with checked Undo/Redo and exact
-  Planet restoration. BUG-0476's movement failure is fixed in this uninstalled
+  Planet restoration. BUG-0527's movement failure is fixed in this uninstalled
   candidate. Remaining Terraform controls and release checks stay separate.
+## Civ: city citizens have another size on each game (2026-11-03, fix/w40-scale)
+<a id="issue-civ-citizen-scale"></a>
+
+* What happens: the detector's `Civilization:scale:citizen` (50 % of the Civ comparisons). Each game simulates
+  its own city citizens (BUG-0476): the citizen the detector pairs by position is another individual with its
+  own random size (GetDesiredScale vt 0x80), not a mirror. The replicated-field engine
+  (docs/sync-architecture-plan.md#sync-fields) needs a mirror to apply a size to.
+* Not fixed: comes with mirrored citizens (BUG-0476): then they are one more field kind.
+* Ticket: BUG-0475 (its Tribe half is fixed), BUG-0476
+## Commodity nodes at scale 10 on the host only (2026-11-03, fix/w40-scale)
+<a id="issue-node-scale"></a>
+
+* What happens: after the live Cell -> Creature transition the host's game has one node (noun 0x0403DF5C,
+  vtable 0x1469AC0) at scale 10.0 near the players, the guest's copy (from the shared world) 1.0
+  (`Creature:scale:node` / `Tribe:scale:node`, campaign_short, campaign_ct). On the `creature` / `tribe`
+  fixtures (loaded saves) all 16 nodes are 1.0 on both games: the 10 is set at runtime, not saved.
+* Not fixed: who sets it and what a player sees are not known; the SetScale hook (squadron.cpp) logs
+  `scale 10 set on an object with vtable ... from ...` once per caller, so the next campaign run names it.
+* Reproduce: `tools/lab.py run campaign_short` with SPORE_DETECTOR=20 (detector line `scale:node`).
+* Ticket: BUG-0485
+* 2026-11-03 (fix/w40-civ-crashes): the Civ half is fixed (`civ.save_strip`, test `civ_save_strip`):
+  the guest's mirror vehicles stay out of its saves and leave no null in the civilizations' lists. Still
+  open: the Tribe mirrors (SpawnNpcTribe tribes and their members) and the Space UFO mirrors / puppets
+  (BUG-0495).
+
+## Civ: roads between cities built on the host are missing on the guest (2026-11-03, fix/w40-civ-crashes)
+<a id="issue-civ-roads-not-mirrored"></a>
+
+* What happens: the detector finds `noun_only_host:inter_city_road` in 10% of the Civ comparisons: the
+  host's game has a road (noun 0x02B8A4E7) between two cities, the guest's has none. Cosmetic (no
+  gameplay of the guest depends on it as far as known).
+* Not fixed: the code that makes a road in the host's game is not traced (docs/re/civ.md#civ-planner-lifetime);
+  a fix needs that function (and its arguments: the two cities) to replay it on the guest from the
+  host's snapshot.
+* Ticket: BUG-0494 (split from BUG-0478, whose vehicle half is fixed: `civ.mirror_remove`).
+
+## play_creature: a puppet once far off, no joint hunt (2026-11-03, fix/w40-effects)
+<a id="issue-play-creature-puppet-far"></a>
+
+* One sample of ~140 per player: the partner's puppet 11-177 m from where its own game has it,
+  speed 0 (BUG-0499); some runs have no joint hunt or the host's creature 0.71 m under the ground
+  for 2 log lines (BUG-0500). Both with and without the effect relay (out/lab/20261103-124913 in
+  SporeCoop-wt/fix/w40-effects, relay off) and on main.
+* Reproduce: `tools/lab.py run play_creature --repeat 4` (about 1 run in 4).
+* Tickets: BUG-0499, BUG-0500
+
+## Creature / Tribe: world objects not yet owned by the host (2026-11-03, fix/w40-world-objects)
+<a id="issue-world-objects-left"></a>
+
+What mods/coop/worldobj.cpp does not cover yet (docs/re/creature.md#creature-world-objects):
+* A fruit that fell in the host's game where the guest's tree had no fruit left in that slot (the guest's
+  own fall came first) is not shown on the guest: the mechanism does not make fruit, it only binds, eats and
+  drops them. Trees that grow fruit again (not seen, ~) would not be copied either. Ticket: BUG-0497.
+* Plants and rocks (`game_plant` 0x18C84A9, `rock`): not a desync (2026-11-03, fix/w40-cell-evo): each game
+  makes them around its own player's camera (tools/tests/coop_world_lod.py, docs/06-testing.md#testing-world-lod);
+  the detector leaves them out. Tickets: BUG-0473, BUG-0498.
+* The guest's home nest heal ("I don't get any heals from it", BUG-0496, split from BUG-0460) is not reproduced or analysed;
+  only the extinct nests are copied.
+* A Cell part a guest collects (BUG-0467, open) is not unlocked for the host: parts.shared polls the creature
+  parts (cCollectableItems) in Creature only; the Cell game keeps its parts in its own state
+  (`S+0x34+4*part = 2`, the token pickup 0xE5D7B0, docs/re/cell.md section 12). A Cell variant needs a poll
+  of that array and the host's unlock of it with the game's own pickup path (not the world object table:
+  it is a ledger, like the creature parts).
+* Ornaments in Tribe: no reward handler there (no cCreatureModeStrategy), the kind runs in Creature only.
+
+## Creature: after the host's evolution editor a guest may still show the host's previous creature (2026-11-03, fix/w40-editor)
+* Report 2026-11-02 (0.7.3.4): the guest's screen showed the host's creature from before its editor.
+* Reproduce: not reproduced on 0.7.4 (2026-11-03, fix/w40-cell-evo): `coop.vote evolve` does apply the
+  host's evolution once the editor really adds a part (the test dragged a locked one before), every evolution
+  gives the host a new species key, and the guest's game draws the host with it (`editor_sync_host`,
+  `editor_sync_host2`: one and two evolutions in a row; docs/re/creations.md#creations-host-evolution).
+* Still suspected, not seen: a host species changed under the same key (a key-only bundle, the guest's cached
+  species profile), or a bundle the guest cannot use (another build's parts) on the reporter's PCs.
+* Ticket: BUG-0457
+
+## Creature: what fix/w40-creature-acts left open (2026-11-03, fix/w40-creature-acts)
+
+- Creature: a picked-up and thrown stick (or rock) moves in each player's game separately (BUG-0458).
+- Creature: the animals' own animations (eating, social, a nest's evolution) do not show on a guest; its copies
+  only walk and stand (BUG-0464, test tools/tests/coop_npc_anims.py fails). Fixed on fix/w40-npc-anims (npc.anims,
+  2026-11-03); a nest's real evolution (the herd's new generation) is not reproduced in a test.
+- Creature: the sea monster ("kraken") of a player in deep water shows only on that player's screen (BUG-0465).
+- Creature: a guest's roar does nothing to the animals (BUG-0501).
+
+## Player reports of 2026-11-04 still open after rel/0.7.4 (2026-11-03, fix/w40-reports)
+
+- ~~Galaxy menu (Steam build, no session): opening the game settings can crash the game (null resource database
+  0x011AC197 at 0x6025A9) (BUG-0506).~~ Fixed on fix/w40-misc (game.save_areas).
+- Creature: a guest's game can crash right after a long freeze (minimized / alt-tab) when the partner's creature
+  it draws was freed (BUG-0507).
+- Cell and Creature: every host evolution sends the whole world again; the guest goes to the galaxy menu and
+  loads it (BUG-0508).
+- Cell: a knocked-out cell can still bite and kill (BUG-0509).
+- Cell and Creature: far more DNA than single player; a guest's meals land at once in the host's open editor
+  (BUG-0510).
+- Cell: other cells float around very fast on the guest after the cell grows (BUG-0511).
+- Creature: the host's pack attacks the guest when the host targets it (BUG-0512).
+- Creature: a guest whose game stops drawing for many seconds is shown sunk into the ground on the host (BUG-0513).
+- Tribe: the guest's members cannot pick up tools from the host's tool buildings (BUG-0514).
+- Tribe: epic creatures deal only 8 damage (unclear which side, BUG-0515).
+Found by fix/w40-play (2026-11-03), not fixed:
+* Tribe: an animal proxy that the guest places on the host's path can stay 3.5-8 m off the host's NPC for
+  2-11 s (the lab's monitor rule `proxies`; play_tribe 1 of 3, campaign_tribe 1 of 3 in 20261103-012624).
+  Ticket: BUG-0503.
+* Creature: under the brain upgrade caption both own creatures read 0.63-0.71 m under the ground once (monitor
+  rule `ground`, 20261103-124913 play_creature#2); not reproduced at the fixture's nest. Ticket: BUG-0504.
+* play_tribe: in 2 of 3 runs the guest's members stayed idle on 7-12 orders the host took, and the host's bot
+  gave only 8-9 orders (its minimap look missed 24 times once). Ticket: BUG-0505.
+
+## The game closes at start with the mod installed: the game's own start fails (2026-11-03, fix/w40-gh-issues)
+<a id="issue-game-start-fails"></a>
+
+* BUG-0521 (GitHub #193, 0.7.3.6, GOG 2024, Windows build 26300): SporeKit and the mod boot, then the game's own
+  App::cSporeApp::Init returns 0 and the game ends with ExitProcess(0) at the first frame. Before it, the main
+  thread sat 31 s in a modal window during App::cAppSystem::Init (a message of the game or of Windows). Cause not
+  known (inferred: a damaged or partial game install or a data package the game cannot read; not checked
+  whether the game starts there without the mod). From 0.7.4 SporeKit writes a report ("could not start") and
+  shows a message with the checks: start once without mods (rename SporebinEP1\mods), repair the game files in
+  GOG Galaxy / Steam, attach the report. To reproduce: not reproducible in the lab.
+
+## Effects are not relayed in Tribe, Civilization and Space in 0.7.4 (2026-11-03, rel/0.7.4)
+<a id="issue-effects-civ-space"></a>
+
+* BUG-0451: in the final 0.7.4 check, effects_party_civ (3 players, Civilization) made the receiving games fault
+  hundreds of times at Skinner::cSkinnerTexturePainter::StartRender+0x28 (read 0) and IO::ReadCString+0x3BA1, the
+  chain EffectWorld_CreateEffect -> cSkinPainterPipeline::ExecutePipeline (out/lab/20261103-215559, both repeats).
+  A relayed world effect starts the game's skin painter without its context there. So 0.7.4 relays effect starts
+  only in Cell and Creature (`coop.fix effects.other_stages`, off by default; stops always pass); effects_party_tribe faulted the same way (out/lab/20261103-223036). To
+  reproduce: `coop.fix effects.other_stages on` on every game, then tools/tests/coop_effects_party.py --fixture civ.
+  To check for 0.7.5 (Civ) and 0.7.6 (Space): which effect ids need the painter, and whether a per-id allow list
+  or the painter's context check is the right fix.

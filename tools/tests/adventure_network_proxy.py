@@ -9,13 +9,13 @@ import time
 
 
 def adventure_message_type(packet):
-    """GA's top-level ID changed when protocol 24 retained upstream nest/parts IDs."""
+    """GA's top-level ID changed at protocols24 (nest/parts) and26 (world objects/effects)."""
     if len(packet) < 31 or packet[:4] != b'SPCO':
         return None
     version = struct.unpack_from('<H', packet, 4)[0]
-    if not 7 <= version <= 24:
+    if not 7 <= version <= 26:
         return None
-    return 61 if version == 24 else 52
+    return 63 if version >= 26 else 61 if version >= 24 else 52
 
 
 class NetworkProxy:

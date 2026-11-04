@@ -2139,3 +2139,179 @@ the game files' index and Ghidra. The rest of BUG-0424 after BUG-0452.
   (no pack in this install has ship or vehicle paints: the Creepy & Cute pack has creature parts and
   paints only); a key whose records are not in a package the mod can read (a baked resource): the model is
   built as it is and a warning is logged once.
+
+## The own editor's price, the evolution request, the result message (2026-11-03, fix/w40-editor)
+<a id="creations-own-editor-dna"></a>
+
+BUG-0466, BUG-0457. GOG 2024, objdump of `SporeApp.exe` (dc04aee5) and lanes 6 / 7
+(`tools/tests/coop_editor_sync.py`).
+
+* ✔ (runtime) The guest's own editor (`open_own_editor`, no evolution tag) shows the DNA budget and the
+  price of new parts (a mouth 25: 40 -> 15), but **the game never takes the price**: back in the stage
+  GetEvolutionPoints was 40 again, no mod code wrote it (lab 20261103-141812).
+* ✔ (disassembly) `SporeCoop::CreatureGame_HandleMessage` 0xD42E50, thiscall bool(this, u32 msg, void* data)
+  ret 8: message 0x30C11C7 is an editor's result; data +0xC carries the request's +0x90, +0x18 the
+  species key, **+0x34 the remaining DNA (int)**, +0x44 cancelled. Only the tags 0x12191CA (the Cell ->
+  Creature editor) and 0x64AA168 (an evolution, not cancelled) go to 0x572620(this+0x5C, data), which
+  keeps the result for the stage's return (state machine 0xD43DE0): 0xD44545 the species from +0x18,
+  0xD445AA `SetEvolutionPoints` 0xD2E480 = (float) +0x34. ✔ runtime: the own editor's result had tag 0,
+  remaining 15, cancelled 0 (lab 20261103-143345).
+* ✔ The DNA value is the float 0x169E398: GetEvolutionPoints 0xD2E350 reads it, AddEvolutionPoints 0xD2E8A0
+  adds, **SetEvolutionPoints 0xD2E480** (cdecl(float), plain ret) writes it (callers 0xD402CB, 0xD44222
+  from cPlayer +0x10EC, 0xD445AA). After Submit the creature stage posts **0x90A03FDF** with +8 = (int)
+  GetEvolutionPoints (0xD455FD: the editor's budget, the same message as the Cell editor's).
+* Fix `creations.own_editor_dna` (coop.cpp h_CreatureGameMsg): the own editor's result (no evolution tag,
+  not cancelled) sets the DNA to its +0x34 through the game; `core.dna_spend` sends the spend to the host.
+* ✔ (disassembly) 0xD42E50 message 0x4471C60 (Creature mode, `this+0xDA` set) builds the evolution request
+  (docs above, #creations-own-editor-items) and after Submit posts 0x5D02A72 {+8 the collected parts' count
+  object} and sets **0x1686AF0 = 1** (`SporeCoop::CreatureEvolutionPending_flag`; read by 0xB5EB94 and
+  0xCD00C0, cleared at 0xB5F19D). Push into the request's +0x70 vector: `SporeCoop::VectorU32_PushBack`
+  0x454D30, thiscall(vector*, const u32*) ret 4.
+* ? (runtime, lab 20261103-142443) A request built like that by the mod (`coop.vote evolve`) opened the
+  host's editor through the vote; after an edit and done the host's DNA stayed 40 and its avatar key
+  065CBE70 for 60+ s, with hearts over the nest: the evolution was not applied. `coop.vote editor` (all
+  older editor tests) is the "edit a creation" editor for the host too: its result never changes the
+  host's species (BUG-0457 not reproduced through it).
+
+## The host's editor without a world reload: what the guest's game needs (2026-11-03, fix/w40-no-reload)
+<a id="creations-evolve-in-place"></a>
+
+BUG-0508. GOG 2024, lane 6, `tools/tests/coop_evolve_in_place.py --case cell|creature` (a guest without own
+creations: it plays the host world's species, the case where the reload gave the guest's own avatar its body).
+
+Until 0.7.3.6 every host editor inside a stage (`on_mode_change` "evolved") marked every guest `needs_world`:
+`follow_phase` saved the host's game (MessagePost 0x1CD20F0) and sent it, the guest went stage -> galaxy menu
+(GalaxyGameEntry 0x02CCD1D2) -> LoadGame -> stage (lab 20261103-173049 Cell: 3 s in the menu;
+20261103-173315 Creature: menu + LoadGame, 4 s). What that reload carried, checked one by one:
+
+* ✔ (runtime) **The host's puppet**: not the reload. The host's creation bundle (share_own, every 2 s) reaches the
+  guest before the world, is registered under a content key (0x7C......) and under the host's key at priority 2000,
+  and rebuilds the puppet (Cell 7C76F89F 'Inplacecell', Creature 7C530FCB 'Burpee') with or without the reload.
+* ✔ (runtime) **The guest's own avatar** (a guest that plays the world's species): the reload gave it the host's
+  new species (the save's avatar). Without it the guest kept the pre-editor body (Cell 4DA56CA5, Creature 065CBE70).
+  Now `creations.follow_evolution`: when the host's bundle changes from the key the guest plays (or played before
+  the vote's editor) to a new one, the guest's `mine()` follows it in this stage world (Cell: player model and
+  the level rebuild of apply_own_cell, 4DA56CA5 -> 291431B5; Creature: SetSpecies, 065CBE70 -> 29143508, the
+  ability bar rebuilt by bar_tick). A guest with own creations plays its own and is not touched.
+* ✔ (runtime) **The world's player species** (cSpeciesManager +0xA4, a 12-byte ResourceKey read by
+  `cSpeciesManager_PlayerSpecies` 0x4DF490 -> GetSpeciesProfile 0x4DF5C0 on every call, the key used when the
+  asked key's instance is 0): the host's game has the new species there right after the editor (291433C0 while its
+  avatar was still 065CBE70); a reloaded guest had it from the save; in place it stayed 065CBE70. It is read by
+  BaseMaxHitPoints (the brain level's HP), IsPlayerSpecies (relations) and the ability bar's slots past the
+  avatar's own (docs/re/creature.md). The guest now writes the host's new key there when it still holds the
+  host's previous one (in a Creature frame, the key resolvable): 29143508 on both (lab 20261103-174221).
+* ✔ (runtime) **The host's own avatar** takes the evolved species only with a save of the game: without the
+  share's save the host played 065CBE70 for 2+ minutes after its editor although +0xA4 was 291433C0 and the
+  new creation was in its My Creations (lab 20261103-173652); with the share's save (0.7.3.6) or the save the host
+  now makes in place (`world::save_game`, not sent) the avatar became the new species 0.6-1.7 s after it
+  (20261103-173315, 20261103-174221). ? Why the save applies it (the stage's return 0xD43DE0 applying the stored
+  result, a mode round trip inside the save, the game's own autosave after the editor) was not looked up.
+  ~ Inferred: a host whose share save failed or was skipped would play its old creature (BUG-0457's report?).
+* ✔ (runtime) **A cinematic after every Creature evolution**: ~10 s (`busy=cinematic,input_lock,paused`, share
+  wait `cinematic`), the evolved avatar is a hatchling (age 0, half HP: 5/5) for a few seconds after it, then
+  age 1 (10/10). So neither "a cinematic played" nor "the age changed" marks a migration.
+* ✔ (BUG-0019) **The migration** (player property 0x514A219 = 1 set by CreatureGame_AfterEditor 0xD40FA0 when the
+  stage's DNA crossed a brain threshold, CRG_SpeciesMigrate, age 0 until its caption): the guest's game only gets
+  it from the host's save made after the caption. Kept: the host reads the property after the BUG-0019 wait; a
+  value above 0 that was not there before the editor sends the world as before ("evolved: X gets the world (a
+  migration started)"). Not run in place.
+* ✔ (BUG-0232) The per-guest cinematic wait is unchanged: the in-place decision is taken where the share would go
+  out (after `share_wait::hold`), so it waits as long as the share did.
+* ✔ (runtime, detector) NPC proxies, nests, eggs: the host's NPCs do not change species with its evolution;
+  the detector (SPORE_DETECTOR=20, 4 comparisons in 20261103-174221) found only the known `gameplay_marker`,
+  `game_plant`, `fruit` signatures, no `model:creature`; Cell (5 comparisons, 20261103-172813): one known
+  `guest_only:cell` (BUG-0480).
+* Cell: the host's own cell follows its editor without a save (its player model 4DA56CA5 -> 291431B5 in place).
+* Kept as before (world sent): a guest in another world or stage (its latest state), a guest of an older
+  SporeCoop (no CAP_VERSION), a Creature guest whose reported avatar species is still the host's pre-editor one
+  30 s after the decision (the apply failed or `creations.follow_evolution` is off there), a migration.
+  The decision is taken with the stage's adapter: `on_mode_change` runs before `g_adapter` / `g_world` follow the
+  new mode (the first version read the editor's null adapter and kept every guest on the reload).
+
+### Why the guest must be ready for the host's editor (the vote)
+
+`h_Submit` holds the host's editor request until every player pressed "I'm ready", 60 s, or "Start now"
+(docs/09-coop-design.md). It does three things: (1) every guest's own editor opens with the host's ("evolving
+together": the guest's only editor turn in the stage, its DNA spent there, BUG-0466); (2) the host's game, which
+simulates every NPC, stops while it is in its editor: guests in the stage then play on alone (BUG-0205 away
+state) and a guest in combat would lose its NPCs' state; (3) before this change the reload after the editor
+would have thrown a guest out of whatever it did, so it had to be at a safe point. With the reload gone only (1)
+and (2) remain. Not changed here: dropping the wait would open the host's editor while a guest fights, and the
+guest's own editor would open alone later (BUG-0318 timing, BUG-0205 away, the same vote); "Start now" and the
+60 s limit already let the host go without a slow guest. A possible relaxation (the host's editor at once, the
+guest's own editor offered as a button while the host is away) is a design change, not clearly safe: BUG-0516.
+## The host's evolution in the Creature stage reaches the guest (2026-11-03, fix/w40-cell-evo)
+<a id="creations-host-evolution"></a>
+
+BUG-0457. GOG 2024, lane 4 (`tools/tests/coop_editor_sync.py --case host|host2`).
+
+* CORRECTION (2026-11-03, fix/w40-cell-evo): the `?` of #creations-own-editor-dna ("a request built like
+  that by the mod: the evolution was not applied") was the test's drag: the part at the palette's first
+  column, row y 170, is locked in the host's evolution editor (uncollected parts are locked there too), so the
+  host pressed done on an unchanged creature. Dragging the unlocked mouth (y 780) the evolution is applied:
+  GetEvolutionPoints 40 -> 15 after the editor, the avatar's species 065CBE70 -> 29141F13 'Burpee' (lab
+  20261103-160241, 20261103-160839), the stage's return applying the result as 0xD44545 / 0xD445AA describe.
+  `coop.vote evolve` is a working evolution request.
+* ✔ (runtime) Every evolution gives the host's species a **new key** (065CBE70 -> 29141FE7 -> 29141FEC in two
+  evolutions in a row, lab 20261103-161211), saved in its My Creations: share_own sends a bundle with its
+  records, the guest registers it under a content key (0x7C...... from owner + bundle id, new per version) and
+  the host's world key 29141FEC as 0x7D...... (world package), rebuilds the puppet (appearance_changed ->
+  despawn -> spawn with the new profile). The guest's puppet species = the bundle key with the host's creature
+  name, in every run. ~ The screenshots (out/lane4/shots/editor_sync_host_on_guest.png, _self.png) show a red biped
+  for the host on both games (by eye only).
+* ✔ (disassembly) 0xD42E50 message 0x4471C60 (posted by 0xE45E0F at the end of the mating scene) builds the
+  request only when `this+0xDA` (creature game base +0xDE) is set; it is set at 0xD2C709 on message
+  0x287259F6 with data+0xC == 0x6455B55 (the mating-call command), cleared in the constructor 0xD3BA3F.
+  The stage's return 0xD43DE0 applies a stored result (this+0x60) only when it comes back from the editor
+  modes 0x1654C06 / 0xDBDBA1 (0xD44442).
+* ? Not reproduced: the report's "previous version". The same-key path (a key-only bundle of a stage species
+  edited in place, the guest's species manager keeping its cached profile of that key, §2.1) did not happen
+  here: the evolution never kept the key.
+
+## Save areas of My Spore Creations and the settings window (2026-11-03, fix/w40-misc)
+<a id="creations-save-areas"></a>
+
+* ✔ The app's init (`App::cAppSystem::Init` -> 0x6B3760, GOG 2024) makes the save areas with
+  `Resource::Paths::CreateSaveAreaDirectoryDatabase(dirID, name, &db, areaID)` + `RegisterSaveArea(areaID, db, 0)`:
+  dir id 0xA0214B = Documents\My Spore Creations: Pictures 0x11AC196, Movies 0x11AC197, Animations 0x11AC198
+  (names localized, LocalizedString 0x19F76D11 / 0x5CA8D99, 0x5CA8D98, 0x5CA8D9A); dir id 0xA02151 = AppData\Spore:
+  Games\Game0 0x4729A47, Preferences 0x11AC192, EditorSaves (packed) 0x11AC199..0x11AC19B, 0x90368EA0/A2/A3,
+  0x86CA01C9, CityMusic 0x500EFC6, Cache / Server (Pollination.package) 0x11AC19C / 0x11AC19D, Planets 0x31389B5,
+  RigblockInfo 0x49A3D83, GraphicsCache 0x11AC1AC. A failed create leaves the area unregistered:
+  `Resource::GetDatabaseByID(id)` (= Paths::GetSaveArea) returns 0.
+* ✔ The game settings window's builder (`SporeCoop::GameSettings_Build` 0x602070) calls
+  `GetDatabaseByID(0x11AC197)->vt 0x28` (the folder path shown in the window) without a null check unless App
+  property 0x61B67B6 is true; other users of 0x11AC197 (0x63B940, 0x61B730 the video upload) check for null.
+* ✔ Runtime (lab, 2026-11-03): with the profile's `Documents\My Spore Creations` replaced by a plain file, the
+  three areas are 0 and Options -> Settings in the galaxy menu faults at 0x6025A9 reading 0, the players' BUG-0506
+  signature. Vanilla behaviour: without a `-sporekit-profile` SporeKit does not touch the Documents path (the players
+  ran with "profile own"), so the cause is the players' Documents folder (missing, redirected or blocked by
+  Windows' controlled folder access: inferred, not seen on their PCs).
+* Fix (gamefixes.cpp, `game.save_areas`): before the builder runs, a missing area of the three gets a fallback
+  directory database in AppData\Spore\<name> (dir id 0xA02151), made and registered as the init does.
+
+## Save areas of a ru-ru install, the editor's backgrounds (2026-11-03, fix/w40-misc)
+<a id="creations-save-areas-locale"></a>
+
+GitHub issue #190 (BUG-0506), a follow-up of #creations-save-areas.
+
+* ✔ Static: `App::cSporeApp::Init` reads `HKLM\Software\Electronic Arts\SPORE\PlayerDir` (default
+  "My Spore Creations") and `AppDir` (default "Spore") and gives them to cAppSystem vt 0xC; dir id 0xA0214B (the
+  Pictures / Movies / Animations save areas) is Documents\<PlayerDir>. The ru-ru Steam install writes PlayerDir
+  "??? ????????" (the issue's InstallScript.vdf: the Russian name lost in a code page).
+* ✔ Runtime (lane 9, 2026-11-03): with the bottle's `playerdir` set to "??? ????????" the game made none of the three
+  areas (GetDatabaseByID 0x11AC196 / 0x11AC197 / 0x11AC198 all 0 in the galaxy menu) and no folder of that name.
+  So the localized subfolder names are not the cause; the PlayerDir that cannot be a folder name is. Inferred: the
+  ru-ru folders under My Spore Creations (localized names) that the reporter saw were made by other code (creation
+  PNGs), not by these areas; switching the game to English fixed it because the installer then writes a valid
+  PlayerDir. Not checked: which code makes those localized folders.
+* ✔ The editor's play-mode backgrounds (`SporeCoop::PlayModeBackgrounds_LoadPictures` 0x633750, caller 0x633890)
+  call GetDatabaseByID(0x11AC196 Pictures)->vt 0x5C without a null check: a read of 0 at 0x633765 when a Cell editor
+  opens (the issue's 0x513765 is the same instruction in an image loaded 0x120000 lower; GOG 2024 0x633765 here).
+  Reproduced in the lab with the save areas missing (coop_save_areas_editor.py, fix off).
+* Fix: the fallback (`game.save_areas`) now runs right after the app's init made the areas (hook on
+  `SporeCoop::SaveAreas_Init` 0x6B3760, called once by cAppSystem::Init, after coop.dll is loaded), with a log line of
+  the three areas (`save areas after the game's startup: Pictures=... Movies=... Animations=...`); the first frame
+  checks once more when the hook did not run (hot reload), and the settings builder keeps its check. Pictures,
+  Movies and Animations are the only areas of dir 0xA0214B (the folder AnimatedAvatars on disk is made elsewhere,
+  not looked at).

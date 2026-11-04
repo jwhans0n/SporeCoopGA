@@ -54,20 +54,20 @@ class GuestAttackFixtureTests(unittest.TestCase):
 
     def test_versioned_adventure_hit_id_does_not_accept_nest_or_future_id(self):
         payload = bytes([130])+struct.pack('<QQIIfI', 41, 7, 56, 12345, 90.0, 0)
-        for version in range(7, 25):
+        for version in range(7, 27):
             with self.subTest(version=version):
                 audit = self.audit()
-                correct, wrong = (61, 52) if version == 24 else (52, 61)
+                correct, wrong = (63, 61) if version >= 26 else (61, 52) if version >= 24 else (52, 61)
                 audit._record('up', packet(payload, kind=wrong, version=version))
                 self.assertFalse(audit.audit())
                 audit._record('up', packet(payload, kind=correct, version=version))
                 self.assertEqual(len(audit.audit()), 1)
                 self.assertEqual(audit.audit()[0]['marker'], 56)
                 self.assertEqual(audit.audit()[0]['wire_receptions'], 1)
-        for version in (0, 6, 25, 65535):
+        for version in (0, 6, 27, 65535):
             with self.subTest(invalid_version=version):
                 audit = self.audit()
-                for kind in (52, 61):
+                for kind in (52, 61, 63):
                     data = packet(payload, kind=kind, version=version)
                     audit._record('up', data)
                     self.assertFalse(list(messages(data)))
@@ -77,7 +77,7 @@ class GuestAttackFixtureTests(unittest.TestCase):
         payload = bytearray(15+54)
         payload[0], payload[14] = 128, 1
         struct.pack_into('<II', payload, 15, 56, 12345)
-        for version, correct, wrong in ((7, 52, 61), (23, 52, 61), (24, 61, 52)):
+        for version, correct, wrong in ((7, 52, 61), (23, 52, 61), (24, 61, 52), (25, 61, 52), (26, 63, 61)):
             with self.subTest(version=version):
                 audit = self.audit()
                 audit._record('down', packet(payload, kind=wrong, version=version))
@@ -107,7 +107,7 @@ class GuestAttackFixtureTests(unittest.TestCase):
             def sendto(self, data, destination):
                 self.sent.append((data, destination))
 
-        for version, expected in ((10, 52), (23, 52), (24, 61)):
+        for version, expected in ((10, 52), (23, 52), (24, 61), (25, 61), (26, 63)):
             with self.subTest(version=version):
                 proxy = CaptureProxy.__new__(CaptureProxy)
                 proxy.lock, proxy.counts = threading.Lock(), Counter()
@@ -130,14 +130,14 @@ class GuestAttackFixtureTests(unittest.TestCase):
                 self.assertEqual(list(messages(actual)), [(expected, False, payload)])
                 for invalid in (b'', observed[:30], observed[:31]+b'x',
                                 packet(state, kind=6, version=9)[:31],
-                                packet(state, kind=6, version=25)[:31]):
+                                packet(state, kind=6, version=27)[:31]):
                     proxy.state = lambda player, bad=invalid: {'header': bad}
                     with self.assertRaises(FixtureError):
                         proxy.inject_adventure(2, payload)
                 self.assertEqual(len(proxy.socket.sent), 1)
 
     def test_pickup_injection_rejects_unsupported_and_bad_magic_headers(self):
-        for version in (0, 7, 9, 25, 65535):
+        for version in (0, 7, 9, 27, 65535):
             with self.subTest(version=version):
                 with self.assertRaises(FixtureError):
                     adventure_injection_packet(packet(b'', version=version)[:31], b'event')

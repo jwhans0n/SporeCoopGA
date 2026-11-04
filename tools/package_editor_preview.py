@@ -16,7 +16,7 @@ from large_address_aware import SUPPORTED_EXES, GOG2024_LAA
 ROOT = Path(__file__).resolve().parents[1]
 EXE = 'dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37'
 PREVIEW_VERSION = '0.7.5.0-ga-editor-preview.9'
-PROTOCOL = 24
+PROTOCOL = 26
 LOADED_EDITOR_MAP = 'data/symbols/overrides_editor_dc04aee5.sym'
 REQUIRED_EDITOR_SYMBOLS = {
     'SporeCoop::CreationEditor::' + name
@@ -39,7 +39,7 @@ def release_identity():
     if not version or version[1] != PREVIEW_VERSION:
         raise ValueError('This packaging recipe is scoped to editor preview 9')
     if not protocol or int(protocol[1]) != PROTOCOL:
-        raise ValueError('Editor preview 9 requires protocol 24')
+        raise ValueError('Editor preview 9 requires protocol 26')
     return version[1], int(protocol[1])
 
 

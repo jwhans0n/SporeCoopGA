@@ -27,15 +27,15 @@ class ProxyTests(unittest.TestCase):
                 Profile(**kwargs)
 
     def test_reviewed_current_transport_versions(self):
-        for version in range(16,25):
+        for version in range(16,27):
             value=packet()[:4]+struct.pack('<H',version)+packet()[6:]
             self.assertEqual(messages(value),[(1234,53,7,b'x')])
-        for version in (0,15,25,65535):
+        for version in (0,15,27,65535):
             self.assertEqual(messages(packet()[:4]+struct.pack('<H',version)+packet()[6:]),[])
 
     def test_editor_accounting_uses_the_versioned_message_id(self):
         payload=bytearray(43);payload[9]=1;payload[42]=7
-        for version,editor_kind,other_kind in ((23,53,62),(24,62,53)):
+        for version,editor_kind,other_kind in ((23,53,62),(24,62,53),(25,62,53),(26,62,53)):
             with EditorProxy(9) as proxy:
                 proxy._record(0,packet(payload=payload,version=version,kind=other_kind))
                 self.assertEqual(proxy.snapshot()['down'].get('editor_messages',0),0)

@@ -1650,3 +1650,790 @@ BUG-0443 (the host's screenshot of the "eggs flying mid air" report). GOG 2024, 
   (state 5 / 6) within 60 m of its avatar; one that did not move for two checks and lies more than 0.3 m
   over the surface is put onto it with cEgg_SnapToGround (what the game does to the avatar's eggs and to
   every egg at its hatch).
+
+## The size of NPCs and their proxies (2026-11-03, fix/w40-scale)
+<a id="creature-npc-scale"></a>
+
+* ✔ NPC sizes differ per individual: on the creature fixture the four members of one herd had 0.69, 0.75,
+  0.85, 0.86 (the bigger one with 7.5 health instead of 6), another herd 0.87-1.06; all age 1 (+0xB34).
+  A proxy made by `game::spawn_creature` gets a size of its own game's pick (0.65 / 0.73 / 0.81 / 0.86 for
+  that herd): the detector's `Creature:scale:creature` in 94 % of the comparisons. A young one (age 0) is
+  smaller on the host; its proxy was made at an adult's size (player report BUG-0461: babies shown as
+  alphas). `NpcSpawn.scale` was always sent and never read.
+* ✔ SetScale (spatial vt 0x40) on a proxy stays: 19 of 21 proxies set once, 0 set again over 2 minutes
+  (`coop.fields`: applied 19, reapplied 0). The proxies' size is a replicated field now
+  (docs/sync-architecture-plan.md#sync-fields, `npc.scale`); a young one that grows up on the host grows on
+  the guest with the next delta.
+* BUG-0487 (class G5): the host sends a spawn once per guest (npc.cpp `g_known`); a guest without the proxy
+  of an id dropped that NPC's states for good. Now it asks for the spawn again (`MSG_NPC_RESYNC`,
+  `npc.resync`; `coop.npc forget <id>` makes the case on purpose, `coop.npc resync` counts).
+## Creature effects relay (2026-11-02, fix/w38-effects)
+<a id="creature-effects-relay"></a>
+
+BUG-0451: a player's creature made effects (the mating call, ability particles, ...) that only that
+player saw; the partner's puppet played the relayed animation but no effect. The owner's screenshots:
+hearts over the host's red creature (`out/hearts_host.png`), none over the host's puppet on the guest
+(`out/hearts_guest.png`).
+
+### Where the game makes a creature's effects
+
+Two game functions make every effect on or at a creature (GOG 2024):
+
+* **`Simulator::cCreatureBase::CreateEffect` 0xC150D0** (thiscall(creature, int bone, u32 effect id,
+  u32 unused) ret 0xC -> effect*): a one-shot effect. It calls `Swarm::IEffectsManager::Get()` vt 0x2C
+  (`Swarm::cEffectsManager::CreateEffect` 0xA6CAD0 -> `Swarm::EffectWorld::CreateEffect` 0xA71300),
+  sets the effect's transform to the creature's model (+0xC0) position (vt 0x2C) and rotation (vt 0x30),
+  starts it (effect vt 8) and, when bone != -1, attaches it to that bone (`0x9CB230` / `0x9CA970`).
+  Callers for the player's creature: the ability/social code (`0xC155D0`, `0xC17DE0`, `0xC17E20`,
+  `0xC17EC0`) and the creature-stage action handlers (`0xD75F70`, `0xD812C0`, `0xD8ECB0`).
+* **The two effect pools** (persistent effects the creature keeps): pool 1 map at +0xCC8,
+  `CreateEffectForPool1` 0xC1D3F0 and `CreateEffectForPool1Renamed` 0xC1D280; pool 2 map at +0xD68,
+  `CreateEffectForPool2Renamed` 0xC1D5C0; `StartOrStopEffectFromPool1/2` 0xC20300 / 0xC1D740 start or
+  stop by key; `StopEffectFromPools` 0xC174B0 stops a key (effect vt 0xC).
+
+Effects created by the **animation system** of an animation the puppet plays are made by the guest's
+own game (`FUN_009FBF00` -> effect world, and the manager for animation events): the animation relay
+(MSG_ANIM, `on_remote_anim`) already shows those on the puppet. Measured on the creature fixture: the
+footstep puffs (`2D4ADB36`) and the mating call's green ring (the `E699F6E4` copied from the effect
+object's name `CRG_growUp_brainUp` was the brain-upgrade effect; the ring came through the animation
+event path) were created on the guest before any effect relay. The **hearts** were not: the mating call
+creates `E1B24DDB` (bone 9) through 0xC150D0 on the host's avatar only, and the pack members make
+`4EC6CD85` through the same function (not the player's own creature, so not relayed).
+
+### The relay (mods/coop/effects.cpp, game.cpp)
+
+* The game hooks report every effect of `CreateEffect` (pool 3, key = bone) and of the pool creators
+  and `StopEffectFromPools` (pool 1 / 2, key = pool key) for a creature. effects.cpp sends one only
+  when the creature is the **local avatar** (`game::avatar()`, not a puppet, so a relayed effect is
+  never echoed) and the session is connected: `MSG_EFFECT 61` = u8 player, u8 stop, u8 pool, u32 effect
+  id, u32 key. The host relays a guest's message to the other guests. Rate limit 40/s (token bucket),
+  a stop is sent only for a key this game sent a start for (the game stops some keys every frame).
+* The receiver calls the **same game function** on the partner's puppet: pool 3 ->
+  `CreateEffect(puppet, bone, id, 0)` (the game puts it at the puppet's model and bone); pool 1 / 2 ->
+  `StartOrStopEffectFromPool1/2(puppet, 1, id, key)`. No per-effect list.
+* Switch: `coop.fix creature.effects_relay off` (COOP_FIX, BUG-0451); counters and the last sent /
+  received effect in `coop.effects` and `coop.status`; `coop.effects map` dumps the puppets' pool maps,
+  `coop.effects probe <key>` asks the game's pool, `coop.effects log on` logs the hooks.
+* The game also creates effects **inside its UI skinner's render pipeline** (Tribe and Civ):
+  `Skinner::cSkinPainterPipeline::ExecutePipeline` -> `EffectWorld_CreateEffect`. Hooking the
+  direct `EffectWorld::CreateEffect` there made the game fault at
+  `Skinner::cSkinnerTexturePainter::StartRender+0x28` (4852 times on a Tribe host, 2863 in Civ);
+  the hook was removed and re-installed at every stage change while the render thread was inside it.
+  The final shape (### What was measured (lane 2, GOG 2024, 2026-11-02)
+
+Every "made by" below is the game function the effect came from; "before" is without this relay
+(the old behaviour) and "after" with `coop.fix creature.effects_relay on`.
+
+| stage | effect | made on the actor by | on the partner before | after |
+|---|---|---|---|---|
+| Creature | mating call `E1B24DDB` bone 9 (host), bone 0x11 (guest) | `cCreatureBase::CreateEffect` 0xC150D0 | no (only the relayed animation) | yes, game effect active at the puppet (0.1-0.5 m) |
+| Creature | being hit `E1A4BD93` bone 0 | 0xC150D0 | no | yes (0.1-0.5 m) |
+| Creature | death: `EF8F883F`, `BED2AD51` (world), `7809F8FD` (pool 1), `E1A4BD93` | effect world + pool 1 + 0xC150D0 | no | yes (the world effects at the avatar; the pool and one-shot through their hooks) |
+| Creature | a part found `A3C5EB2B` (world) | effect world at the avatar | no | yes (1.3-1.6 m) |
+| Creature | brain upgrade `D7BE955C` (pool 2); the cinematic's `E699F6E4` | pool 2 here; the cinematic effect is made by both games (both got the DNA) | no (the cinematic effect: yes, the guest plays its own) | yes |
+| Creature | an ability's kept effect `3A616FEE` (pool 1, `coop.abilities play 10`) | pool 1 | no | yes |
+| Creature | social abilities (sing, dance, charm, pose) and the social result | the ability animation; animation-event effects (`FUN_009FBF00`) | yes: the animation relay makes them on the puppet | yes (not duplicated by this relay) |
+| Creature | attack abilities bite, charge, strike, spit (`coop.abilities play 0..9`) | the ability animation; animation-event effects | yes (animation relay) | yes (no one-shot/pool effect was made by these in the fixture) |
+| Creature | sprint, sneak, glide | the locomotion animation and its animation-event effects (footsteps `2D4ADB36`, dust `E6D770B8`) | yes (animation relay) | yes (not duplicated); the fixture cannot glide (no jump) |
+| Creature | eating fruit / meat | not measured: the fixture has no reachable fruit and no deterministic eat command; the world relay would catch an effect at the avatar | not measured | not measured |
+| Creature | level-up / brain upgrade (see above) | `AddEvolutionPoints` -> pool 2 + cinematic | no | yes |
+| Cell | a hit / knock-out death `F3BA1C83`, `2C34420C`, `A6D4590B`, `44894CD7`, `94AF0B82` (world) | effect world at the cell | no | yes, the partner's game creates it at the same world position (test: 0.0-0.2 m from the cell, 0.05 m from the puppet) |
+| Cell | eating, bites, electric/poison/spikes | not separated from the hit effects above; the same world path | no | yes (same relay; not a separate case) |
+| Tribe | a member's death `EF8F883F`, `E55DC391` (world) | effect world at the member | no | yes, at the member's mirror (0.18 m; test) |
+| Tribe | tool use, gathering, dance/social, fire | not measured: `coop.tribe act 7` ordered the attack but made no effect in the create/pool hooks in the fixture; their visible part is animation | not measured | not measured |
+| Civ | vehicle weapon / ability | not measured: `coop.civ` has no command that fires a vehicle weapon in the fixture (move/buy/build/siege do not), and no effect appeared in the create/world hooks during them | not measured | not measured |
+| Space | UFO weapon / ability | not measured: `coop.space hit 1|50` (the game's damage path on the own UFO) and `coop.fleet spawn 6` made no effect (`coop.effects world=0`); firing at a target would make one, but the fixture has no target in range and no test command fires the player's weapon | not measured | not measured |
+
+The generic relay is in place for every stage that makes an effect at the local player's own
+controlled object: `effects.cpp` decides by the effect's world position against
+`coop.cpp`'s `near_local` (the avatar in Creature and Cell, `tribe::local_member_positions()` in
+Tribe, `civ::local_positions()` in Civ, the adapter's local UFO in Space). The receiver creates the
+same effect id at the same world position with `Swarm::cEffectsManager::CreateEffect` and the same
+transform, so no per-stage puppet mapping is needed. Civ and Space are wired but no effect could be
+made to test them (above).
+
+### Review: cost, threads and hook lifetime below): every hook is installed
+  **once** in `game::init`, the stage logic only flips a work flag, and a hook body on any thread
+  but the game's main thread only calls the original and returns. The hooks record into a fixed
+  open-addressing table (no allocation, no linear scan) and `effects::tick` (main thread, once a
+  frame) reads the effect's position and sends. No allocation and no network call happens in the
+  render thread.
+
+### Review: cost, threads and hook lifetime (2026-11-02, fix/w38-effects)
+<a id="creature-effects-relay-review"></a>
+
+A code review of the first shape found three problems; this is what changed and what was measured
+(lane 2, GOG 2024, 2026-11-02, `out/measure_effects_perf.py`).
+
+* **Cost**: the base transform setter `VisualEffect_SetTransform` 0xA827B0 ran on every transform
+  set of every effect, in every stage, and looked the effect up with a linear scan of 4096 entries.
+  The setter is no longer hooked: `cEffectsManager::CreateEffect` and `EffectWorld::CreateEffect`
+  record the effect in a fixed 1024-slot open-addressing table keyed by the effect pointer (one
+  probe for nearly every effect, cleared once a frame), and `effects::tick` reads the position
+  `VisualEffect_SetTransform` wrote (`effect+0xA0`, see the correction below) when it drains the
+  queue. Per created effect the hooks cost 0.16-0.26 us (two QPC reads included), which is
+  0.0001-0.0006 % of the main thread's time; `effects::tick` costs 0.001-0.02 ms/frame
+  (0.01-0.1 % of a 15 ms frame). Frame time with the relay on against
+  `coop.fix creature.effects_relay off`, 20 effects/s at the local player over four 20 s windows
+  (the windows alternate and a second run swaps the order, because the fourth window of a session
+  drifts down for both settings):
+
+  | stage | fps off | fps on | ms/frame off | ms/frame on | difference |
+  |---|---|---|---|---|---|
+  | Creature (both orders, paired) | 64.74 / 64.81 | 63.41 / 66.19 | 15.447 / 15.439 | 15.779 / 15.107 | -0.002 % (ordering cancels) |
+  | Tribe | 67.72 | 67.44 | 14.768 | 14.829 | +0.41 % |
+  | Civ | 66.82 | 66.76 | 14.966 | 14.979 | +0.09 % |
+
+  The measured cost is under 1 % in every stage (the Tribe +0.41 % is inside the run-to-run noise,
+  the tick cost there is 0.016 ms/frame). Reproduce: `coop.effects load 20 1000 [hex id]` on both
+  games (`coop.effects load 0` stops it; no id = the last effect id the game created, which is a
+  valid id in every stage), then read `coop.effects` (tick cost, hook work, created/failed) and the
+  `perf: effects` lines in the game log; compare four 20 s windows with
+  `coop.fix creature.effects_relay on|off` and swap the order in a second run, because the fourth
+  window of a session drifts down for both settings.
+
+* **Threads**: the game creates effects from the UI skinner's render thread too. Every hook body
+  now checks the game's main thread id (set by `effects::tick`, `game::set_effect_relay_enabled`)
+  and only calls the original when it is another thread; the table and the queue are written on
+  the main thread only. The naked stubs are gone (no shared return-address slot): the animation
+  effect wrapper `AnimEffect_Create` 0x9FBF00 is a normal cdecl hook that sets a **thread-local**
+  flag, so the effects of a relayed animation are still skipped (the animation relay shows them)
+  without a caller-address match.
+* **Hook lifetime**: `set_world_create_hook` called `hook_create`/`hook_remove` at stage changes;
+  the removal while the render thread was inside the function is what faulted. All effect hooks
+  are installed once in `game::init` for the life of the game; `game::set_world_relay` (the stage
+  logic: Cell, Creature, Tribe, Civ, Space) and `game::set_effect_relay_enabled` (the fix switch)
+  only gate the work.
+* **Correction (2026-11-02, fix/w38-effects)**: `VisualEffect_SetTransform` 0xA827B0 assigns
+  Transform+4 to the math Vector3 object at `effect+0x9C`, and that object has a 4-byte header: the
+  position floats are at `effect+0xA0`. Reading `+0x9C` returned `(0, x, y)`, so every world effect
+  looked like it was not on the local player and nothing was relayed (measured: part found
+  `A3C5EB2B` at `(0.00, -170.10, -468.99)` while the avatar was at `(-169.51, -467.81, -87.11)`).
+  The receiver's displayed position in `coop.effects` had the same wrong offset.
+
+* Faults after the change: 0 in cell_coop, creature, tribe_coop, civ_coop, space_coop, chaos_tribe
+  (`out/lab/20261102-180357`), guest_editor and editor_desync (`out/lab/20261102-170849`); every
+  test prints `total faults: 0` for both games.
+
+### Review fixes, second pass (2026-11-02, fix/w38-effects)
+
+<a id="creature-effects-relay-review2"></a>
+
+The orchestrator's review of the first relay found six more problems; fixed in this order (one
+commit each, tests where asked):
+
+1. **Three players**: the host's relay of a guest's message wrote only the header, so the 0x44-byte
+   transform of a pool 5 effect was missing for the other guests and their `on_message` dropped the
+   message. The relay now forwards the transform. Test: `tools/tests/coop_effects_party.py`
+   (`effects_party`, three players from the same lane): the host's world effect reaches guest 2 and
+   guest 1's world effect reaches guest 2. Without the forward the guest 1 -> guest 2 case fails
+   (`out/lab/20261102-184838`); with it all pass (`out/lab/20261102-184722`).
+2. **Spoofing** (BUG-0201): the `player` byte of a message chooses whose puppet plays it. The host
+   drops a guest message whose byte is not the sender and a guest drops anything that did not come
+   from the host (messages are never sent guest to guest). `coop.effects inject <from> <player>
+   <stop> <pool> <id> <key> [x y z]` feeds a crafted message through the same `on_message` (the
+   transport cannot make a guest claim another player); `coop.effects` counts the drops
+   (`spoof=`).
+3. **Validation before the game**: a stop must have pool 0 and a key; a start a non-zero effect id
+   and a pool the sender uses (1, 2, 3, 5); a pool 3 bone index must be inside the puppet model's
+   bone array; a pool 5 transform must have finite floats and a position within 1e5. Counters:
+   `pool= id= bone= transform= short=`. The bone range: `cCreatureBase::CreateEffect` 0xC150D0
+   indexes `[AnimatedCreature +0xB54] -> +0x17C -> +0x2E4` with `bone * 700` and has **no check**
+   (the only test is `bone != -1`, which returns null); the array end at `model+0x2E8` gives the
+   count (24 bones for the fixture creature). Test: `tools/tests/coop_effects_validate.py`
+   (`effects_validate`): every rejection is counted and not played, a valid message still plays.
+   Without the validation call the bad cases fail (`out/lab/20261102-185729`), with it all pass
+   (`out/lab/20261102-185635`).
+4. **A relayed world effect is stopped**: a looping effect (the mating-call hearts id stays active
+   when the effect world owns it) never ends on the receiver. The receiver keeps a fixed list of 64
+   live relayed world effects: the oldest is stopped when the 65th arrives, any still active after
+   8 s is stopped (`IVisualEffect` vt 0xC with 0, the slot `StopEffectFromPools` 0xC174B0 calls),
+   and a stage / world change (mode or world id differs) drops the list **without** calling into
+   the effects (the game's effect manager freed them); a session end stops what is still there.
+   `game::effect_active` and the new `game::stop_world_effect` only call the object when it and its
+   vtable are readable. Test: `tools/tests/coop_effects_live.py` (`effects_live`): 20 effects/s for
+   30 s, the guest stays at or under 64 (it reaches 64) and returns to 0 after the load stops
+   (`out/lab/20261102-190208`; with the switch off nothing is relayed and it fails).
+5. **Full transform**: the relayed 0x44-byte Transform had a zero scale and a zero 3x3 matrix. The
+   layout (`cCreatureBase`'s creators, `VisualEffect_SetTransform` 0xA827B0): u16 flags, u16 change
+   counter, Vec3 position at +4, **uniform scale at +0x10**, **3x3 rotation at +0x14** (36 bytes,
+   the rest of the object). The relay now sends position, scale 1.0 and the identity rotation. Proof
+   on the partner's screen: `out/effect_relay_on_1.png` (guest's view, the host makes the hearts
+   with `coop.effects load 2 1000 E1B24DDB`: the effect is at the host's puppet "Alice"),
+   `out/effect_relay_off_1.png` (same camera and moment after the switch off: no effect) and
+   `out/effect_relay_host.png` (the host's own screen with the same effect, for comparison);
+   `out/effects_shot.py` (lane 2).
+6. **O(1) dedupe**: `process_world` scanned the 2048-entry `g_world_sent` ring for every queued
+   world effect (the manager and the world create hooks queue the same effect). It is a fixed
+   512-slot open-addressing set keyed by the effect pointer, cleared once a frame, and
+   `coop.effects` shows the probe count (`sent_probes=`).
+
+7. **Reference leak** (added after 15bd1ebc): `EffectWorld::CreateEffect` 0xA71300 writes the new
+   effect into the caller's intrusive pointer and calls its AddRef (vtable slot 0x00 at 0x923720,
+   refcount at object+0x10); the game drops such a pointer with Release (slot 0x04 at 0xA81CE0, as
+   the pool map erase 0xD2C9F0 does). The relay never released it, so every received world effect
+   stayed allocated for the session, even after Stop. The live list now owns that reference and
+   releases it when the effect ends by itself, is stopped after 8 s, is evicted as the oldest, or
+   the session ends. Because the reference is held until then, `IsActive` and `Stop` on a listed
+   effect are safe even after the effect path ended (the object cannot be freed while we hold it);
+   after the Release nothing uses the pointer. A stage / world change still drops the list without
+   calling into the objects (their internals may be gone). `create_local_effect` (the perf
+   workload) releases its reference right away. Switch `coop.fix effects.release off` is the old
+   leaking behaviour, for the measurement; `coop.effects` prints `released=` and `dropped=`.
+   Test `tools/tests/coop_effects_release.py` (`effects_release`, 60 s per window at the relay rate
+   limit): fix on 2380 effects created, 2380 released, live 0, private commit flat/negative; fix off
+   2320 created, 0 released, private commit +8.2 MB (about 3.5 KB per leaked effect), 25 MB
+   difference (`out/lab/20261102-195942`). Without the release the on window fails
+   (`out/lab/20261102-200305`).
+
+Verification of the second pass (lane 2 and 3, GOG 2024): the effects tests (creature, cell, tribe,
+effects_party, effects_validate, effects_live) pass in
+`out/lab/20261102-191038` and fail with `SPORE_FIX_OFF=creature.effects_relay` in
+`out/lab/20261102-193333`; the regression (smoke, creature, team, puppet_walk and the effect tests)
+is in `out/lab/20261102-191038`; the `unit` test of that run fails in its own lab selftest's lane
+lock checks under the run's CPU load (no game code; `make test` alone and `unit` alone in the lab,
+`out/lab/20261102-194317`, pass). Item 7: `out/lab/20261102-202254` (effects tests + effects_release pass);
+`out/lab/20261102-202617` with the relay switch off.
+
+## The effects relay and play_creature: A/B, and effects only between players in one place (2026-11-03, fix/w40-effects)
+<a id="creature-effects-relay-ab"></a>
+
+BUG-0471 asked whether the relay (#creature-effects-relay) makes play_creature fail. Measured on one
+build (fix/w40-effects fe5afc69, lane 4, GOG 2024), play_creature 10 min x4 with the relay on and x4
+with `SPORE_FIX_OFF=creature.effects_relay`, sequentially (out/lab/20261103-120602 on,
+out/lab/20261103-124913 off; table and parser `out/ab_parse.py` in out/REPORT.md):
+
+* ✔ pass rate: relay on 3 of 4 test OK (2 of 4 with the lab's log gates), relay off 0 of 4. Main
+  0.7.3.6 without the relay: 2 of 6 (nightly 20261103-000836, -012624). The failure kinds are the
+  same with and without the relay: a chat line lost (BUG-0482), a puppet once 11-177 m off with
+  speed 0 (BUG-0499), no joint hunt (BUG-0500), an NPC missing / apart on the guest (sync-check gate).
+* ✔ net and sync numbers do not move with the relay: puppet p90 0.49-0.52 m on vs 0.50-0.72 off,
+  NPC p90 0.30-0.39 vs 0.08-0.40, moving delay p90 0.24-0.26 s both, state_age p90 0.1 s / max
+  0.5-0.7 s both, host backlog max 600 in both (the guest's return from the main menu: the world
+  transfer), resends after the join minute 3.5k-10k on vs 3.2k-5.6k off (the same world transfers;
+  main without the relay 5.4k-8.9k), rtt max 650-830 ms both, fps 64-68 both.
+* ✔ the relay's traffic is tiny in play: 7-41 effects sent per 10 min by the host and 7-13 by the
+  guest (under 0.1 messages a second, against the 40/s limit); head-of-line blocking of the reliable
+  channel by effect messages is ruled out by the rate alone.
+* ✔ main-thread cost in play: hooks at most 0.0006 % of the main thread, `effects::tick` 0.0032-0.0034
+  ms a frame (0.02 % of a 15 ms frame).
+* So the 1-of-5 of 2026-11-02 was play_creature's own flakiness plus a loaded machine (7 lanes),
+  not the relay.
+
+Found on the way (fixed, switch `coop.fix effects.here`, BUG-0471): the relay sent every effect to
+every partner and the receiver created a world effect in whatever world its game had then. A guest
+in the main menu (play_creature's guest leaves and comes back), an editor, a loading screen or at
+another star got the host's effects created there. Now a start is sent only while some partner
+plays in the sender's place (`same_place` + `PF_IN_WORLD` of its last state) and a received start
+is played only while its owner plays in the receiver's place; stops are always passed. Counters:
+`effects elsewhere: not sent=N not played=N` in `coop.effects`. Test `coop_effects_here.py`
+(`effects_here`): the guest in the main menu, the host making 2 effects a second: fix on, host
+`not sent` 24 and the guest's game called 0 times; back in the world the effects reach it again.
+
+With `SPORE_FIX_OFF=effects.here` the guest's game in the main menu (GalaxyGameEntry) did create
+12 of the host's world effects (`played` +12, none failed: the menu's effect world accepts them),
+out/lab/20261103-141143; on, 0 (out/lab/20261103-133351). Three players in every stage
+(`coop_effects_party.py --fixture cell|creature|tribe|civ|space`, out/lab/20261103-134650): the
+host's and a guest's world effect reach the second guest at the actor (0.00-0.17 m) in all five
+stages; the relay's cost with all three games making 2.5 effects a second is 0.11-0.51 % of the
+frame time (the third game, two extra instances in one bottle, the highest).
+## World objects the players take: fruit, trees, bone rewards, extinct nests (2026-11-03, fix/w40-world-objects)
+<a id="creature-world-objects"></a>
+
+BUG-0472, BUG-0459 / BUG-0473, BUG-0460, BUG-0474. GOG 2024, Ghidra (out/ghidra-2024) and lane 9 at runtime
+(creature and tribe fixtures, `coop.wobj`). The mod's use: mods/coop/worldobj.cpp (one table of kinds,
+docs/sync-architecture-plan.md L1 / L2).
+
+* ✔ **Fruit** cFruit (noun 0x2C9CC91, size 0x170, vtable 0x145C568): +0x16C state, set by
+  `cFruit_SetState` 0xAFFFE0 `thiscall(fruit, state, force) ret 8`: 0 hanging in a tree, 1 falling, 2 on the
+  ground (+0x168 = 0, then a time there), 3 held by a creature eating it, 4 hidden (model off), 5 / 6 eaten
+  (+0x108 holder dropped). +0x158 the plant species (0x029C388A big fruit tree, 0x6D60A1CC small plant),
+  +0x160 the tree's index, +0x164 the slot on the tree (-1 once fallen). Runtime: SetState(5) on a fruit takes
+  it out of the noun list within 2 s, on host and guest alike.
+* ✔ The eat node 0xD87590 (case 3, the meal's end): fruit state 3 -> when +0x148 & 1 message 0xD335362B
+  {creature, fruit, 0} and DestroyInstance; then SetState(5), 0xD335362B again, health; the avatar gets DNA.
+* ✔ Hanging fruit are not lasting objects: the flora makes and frees their cFruit as it likes (the pointers
+  near a resting avatar changed within minutes, the serials differ between games: 4013.. on the host, 4679..
+  on the guest). Their truth is the tree: cTreeData +0x48 / +0x4C, a u64 mask of the fruit left (bit per slot:
+  0x07 small plants, 0x1F big trees on the fixture). The same trees and masks on both games after a load.
+* ✔ A fruit falls with `Flora_DropFruit` 0xB09AE0 `thiscall(flora, tree, slot, make_fruit) ret 0xC` (flora =
+  `Flora_Get`): nothing when the slot's bit is clear, else 0xB09790 clears it and makes a falling cFruit
+  (state 1) at the slot. The creature's tree bump 0xD38DD0 calls it for a hanging fruit it hits. Runtime: a
+  drop on the host clears the bit and puts a fruit on the ground 1.1-1.3 m from the trunk; the same drop on
+  the guest puts its fruit within 0.2 m of the host's.
+* ✔ Fallen fruit from the save (state 2) are at the same places on both games (serials 317, 2561, 2562 on
+  both); fruit that fell later fell in one game only (each game's flora and creatures drop their own): the
+  detector's `unmatched:fruit`.
+* ✔ **Interactive ornaments** cInteractiveOrnament (noun 0x3A2511E, size 0x260): from the save, the same
+  objects at the same places with the same serials (2555..2568 on the fixture). +0x110 a sort (2 bones /
+  skeletons with a part, 3, 6 pushable like a rock (0xD3A0D0), 7), +0x108 the creature using it, +0xA3 can be
+  used, +0x248 / +0x24C..+0x250 the index into a list of 12-byte models (empty on the fixture: -1).
+* ✔ The interact node 0xD869B0 walks the creature there, plays animation 0x3DF6DFF, calls
+  `cInteractiveOrnament_NextModel` 0xC40360 (the next model; 0 at the last), clears +0xA3 and posts
+  0xD3353638 {creature, ornament, 0} through `cCreatureModeStrategy::ExecuteAction`. The listener
+  CreatureStageRewardHandler (vtable 0x147AD48, slot 0x18 = 0xD47860, one of strategy +0xBC..+0xC0) finds the
+  reward with `CreatureReward_Find` 0xD475E0 `thiscall(handler, msg, obj) ret 8` (rewards made from the
+  model's property 0x3D03B03 at the first lookup, per object) and pays it with 0xD46BE0 when +0x08 is 0 or
+  the creature is the avatar.
+* ✔ The reward {+0x04 kind (6 a part), +0x08 avatar only, +0x0C trigger (0xA07DDE8F any), +0x10 uses left,
+  +0x14 part level, +0x1C effect, +0x20 event, +0x24 used up}. Runtime (lane 9): the 5 ornaments of sort 2
+  near the fixture's avatar have a part reward (level 1 or 2, one use); sorts 3, 6, 7 none. A use paid one part
+  (54 -> 55), +0x10 1 -> 0, +0x24 0 -> 1; a second use paid nothing. **The ornament itself does not change**
+  (no next model on the fixture's bones): the used state lives in the reward only.
+* ✔ So BUG-0459: each game has its own reward per bone; with parts.shared (the union) a bone used in both
+  games unlocks two different parts for everybody (lane 9, switch off: 54 -> 56 on both games).
+* ✔ **Extinct nests** (BUG-0460): cSpeciesRelationshipManager::ApplyEvent's "species extinct" 0xBA4750 (GOG
+  2024; the 0xBA4730 above is its GOG 2016 neighbour): achievement, relation 6 via 0xBA5F10, and
+  `cHerd_SetExtinct` 0xC6AED0 on every herd whose +0xA4 species is the dead creature's: +0x190 mbExtinction
+  = 1 and the nest (+0x160) +0x120 = 1 (the extinct nest on the minimap, ~ inferred from the name). The guest
+  writes the host's relationship table (social.cpp) but never runs 0xBA4750, so its herds and nests stayed
+  alive. Other writers of +0x190: 0xC70160 (a setter, called from scenario code 0xFE0150 / 0xFF96B0).
+* ✔ **Eggs in Tribe** (BUG-0474): the animal nests of the Tribe stage are the same cHerd / cEgg; the guest's
+  game removes its animals there too (tribe proxies), so no layer, no eggs; the nest.cpp mirrors work there
+  unchanged (the guest's own herds of the host's nests are found by home), centred on the player tribe when a
+  player's position is the (0 0 0) of an RTS pointer. Runtime: 5 host eggs, 5 guest mirrors at the same places.
+* What worldobj.cpp does with it: the host sends per kind the objects near each guest (1 Hz, unreliable,
+  MSG_WOBJ); the guest binds them to its own by position (fruit 3 m, tree 0.5 m, ornament 1.5 m, herd 1 m) and
+  applies the host's state with the game's own function (fruit eaten: SetState 5; tree: DropFruit of the
+  slots the host lost; ornament: reward +0x10 = 0, +0x24 = 1, +0xA3 = 0, no reward; herd: cHerd_SetExtinct).
+  Loose fruit of the guest's own (no host partner for 3 snapshots) are eaten away (SetState 5). What a guest
+  player does to a bound copy (ate it, made a fruit fall, used a bone) goes to the host as a request; the host
+  does the same to its object (no reward: the guest had it) and the next snapshot carries it to the others.
+* ? Not known: whether trees grow fruit again (a host's new fruit cannot be given to the guest: no set-bit
+  path is used); what the game shows on a used bone (no visual change seen); who else rewards ornaments in
+  Tribe (no cCreatureModeStrategy there: the ornament kind is Creature only).
+## NPCs that fight a creature which is destroyed (2026-11-03, fix/w40-crashes)
+<a id="creature-lost-target"></a>
+
+Player reports BUG-0453 (host crash 0xD65D23, read 0, twice) and BUG-0456 (host abort 0x40000015 at
+0xD8F2AD). GOG 2024 addresses; static analysis in the private Ghidra project, runtime on lane 2
+(`coop_npc_lost_target.py`).
+
+* ✔ The creature attack node is BT id **0x02D852E6** (action table .data 0x1583F30: id, enter
+  0xD67980, tick `SporeCoop::BT_AttackTick` 0xD67CD0, exit 0xD672A0). Enter takes the target from the
+  "attacked" stimuli (0x200 / 0x400 senders, 0xD998E0 / 0xD99930) or its argument and calls the
+  creature's **SetTarget** vt 0x84 (0xC0EEC0 / 0xC03DF0: thiscall(target, bool, int), the target is
+  stored at **+0xE7C** as the target's combatant (creature +0x5A8), AddRef vt 0x60 / Release vt 0x64).
+* ✔ The tick reads the target (0xC0EFC0 = `[c+0xE7C]`). Its own check for a missing target (0xD65980:
+  null -> 1, the node ends with 0) is only called when the node's attack animation (node data +0x30)
+  is finished (`*(data+0x30) == 0 || IsAnimDone 0xC0E420`). While it plays the tick goes on and
+  0xD65BE0 (data +0x34 / +0x38 / +0x3C: other animations; game mode != 0x1654C10; `[c+0xB4C]+0x600`
+  set) calls `target->vt 8` on null at **0xD65D23** (`mov edx,[ebx]`, ebx = the target argument).
+  Both player dumps: ebx = 0, the node's tick on the stack (0xD680B2), cinematic F0428C29 playing.
+* ✔ **The game clears the target of every NPC aimed at a creature it destroys** (lab: an NPC in node
+  0x02D852E6 with the partner's puppet as target; the puppet destroyed by the guest's death: +0xE7C = 0
+  within 0.2 s, the node changed to 0x02D852F3). An NPC whose attack animation plays at that moment
+  then faults at 0xD65D23 in every tick (lab, fix off: 135 faults at 0xD65D23 with the players' call
+  chain 0xD680B2 <- 0xD8F463 <- 0xD8B88A <- 0xD7D942 <- 0xBC8B44). The vanilla game never destroys a
+  creature in a fight (corpses stay 60 s); co-op destroys a partner's puppet when the partner dies, is
+  hidden, leaves or rejoins (both player crashes came ~4 s after the guest's death and the puppet's
+  removal, 50 ms after the host's own respawn).
+* ✔ **Stimuli outlive their sender**: BT_PostStimulus 0xBC9960 keeps a reference to the sender
+  (slot +0x2C); the game's clear is `SporeCoop::BT_ClearStimulus` 0xBC9A60 (thiscall(stimuli, lo, hi)
+  ret 8). After the puppet's destroy the NPC's "noticed" stimulus 0x4000000 still named it for 4 s
+  (the object's vtables still cCreatureAnimal 0x146A080 / combatant 0x1469E30 in the lab), 28-37 stale
+  senders over 6 removals in one run.
+* ✔ BUG-0456: the herd-help node 0xD8F1C0 (`SporeCoop::BT_HerdHelpEval`, likely) takes the sender of
+  the "attacked" stimulus 0x200 (0xD998E0), checks +0x135 and vt 0x2C, then calls its combatant
+  `[c+0x5A8]` vt 0xC(0x18EB45E) at 0xD8F2AB. In the player's dump the object (ebp) had the root base
+  vtable 0x13EB92C (slots 0 and 1 `_purecall` 0x11E0710): it had been destroyed; the call went to
+  msvcr90's _purecall -> abort -> 0x40000015 (the context's eip is the return address 0xD8F2AD).
+  **Who calls abort: the CRT's pure-virtual-call handler (R6025)**, reached through the destroyed sender.
+* Fix (mods/coop/gamefixes.cpp): `npc.attack_lost_target` hooks BT_AttackTick: no target -> return 0
+  (what the node's own check does); `npc.stale_sender` hooks `cGameNounManager::DestroyInstance`:
+  before a creature (0x18EB45E) or citizen (0x18EB4B7) is destroyed, every creature's and citizen's
+  stimulus naming it (sender inside [obj, obj+0x1700)) is cleared as 0xBC9A60 does (masks, value,
+  sender released) and the union of the rest rewritten. Any destroy, ours or the game's.
+* Test tools: `coop.puppet respawn [s]` (host: every partner's puppet goes now, shown again after s
+  seconds), `coop.attackcut` (the next NPC in its attack animation has its target cleared by vt 0x84
+  (null), as the destroy does).
+
+## Sneak: the creature's state and the partner's puppet (2026-11-03, fix/w40-creature-acts)
+<a id="creature-sneak"></a>
+
+BUG-0463. GOG 2024, Ghidra (out/ghidra-2024) and lane 9 at runtime (creature fixture, `coop.sneak`).
+
+* ✔ `CreatureSetSneaking` 0xC1B030 `thiscall(creature, bool on, bool force) ret 8`: on: without force it returns when
+  the creature has no ability of type 0xD or 0x52 (`GetAbilityIndexByType`); sets +0xB80 (noise radius) = 0, +0xBB1 = 1
+  and plays the procedural sound 0xC881120E at the creature. Off (only when +0xBB1 is set): +0xB80 back (the avatar,
+  +0xB58 bit 0x200: from its sneak ability via 0xC19900; others: the constant at 0x150C8C0, 6.0), +0xBB1 = 0, sound
+  0x529FEC69. 30 callers (TakeDamage ends a sneak, the creature-stage action handlers 0xD6xxxx / 0xD8xxxx).
+* ✔ 0xC0C290 (fastcall) returns +0xBB1: NPCTickAI calls it 4 times (the notice step, docs/re/creature.md 14.2),
+  cCreatureCitizen::Update and the stage's UI code too. 0xC11730 (a vtable slot, 0x146A650 / 0x146ADC0) returns false
+  at once for a sneaking target (a sight / distance check).
+* ✔ The sneak's look: `0xC1CF30` (called from cCreatureAnimal::Update 0xC0AE30 and cCreatureBase::Update every frame,
+  for puppets too) eases +0xB7C towards 0.2 while sneaking (1.0 else) and writes it to the model (+0xB54) +0x80, unless
+  +0xB5E or +0xB58 bit 0x800; with the sneak ability it consumes energy (+0xE58, ability +0x104 per ms) and ends the
+  sneak at 0 energy. Runtime: the fixture's creatures have energy 1000; the alpha reached 0.2-0.26 within 2-5 s of the
+  sneak on both the avatar and the puppet.
+* ✔ The guest's fixture creature has no sneak ability (types 0xE 0x1D 0x28 0x10 0x25 0x1E 0x31 0x32 0x33), the host's
+  has 0xD (index 7): the guest's sneak in the test uses the force flag.
+* ✔ Before the fix the partner's puppet kept +0xBB1 0, noise 6.0, alpha 1.0 while the partner sneaked: nothing of it was
+  sent. Now PlayerState flag PF_SNEAKING (modes.cpp) and `CreatureSetSneaking(puppet, on, 1)` on the receiver
+  (`creature.sneak`); the puppet's energy is kept above 0.
+* ~ Inferred, not run as a behaviour test: the host's NPCs with a guest's puppet swapped in as the avatar (npc.cpp
+  ai_target) now get noise 0 and the sneak flag from the puppet, as from a sneaking host avatar.
+
+## Relations to a player of another species, proxies without tuning (2026-11-03, fix/w40-creature-acts)
+<a id="creature-relations"></a>
+
+BUG-0462. GOG 2024, Ghidra (out/ghidra-2024) and lane 9 at runtime (`coop.social rel`).
+
+* ✔ `GetRelationship` 0xBA40E0 `thiscall(mgr, key*, a, b) ret 0xC` in the Creature stage (mode not 0x1654C10): when
+  neither a nor b answers creature vt 0xD0 (`cCreatureBase_IsPlayerSpecies` 0xC0C430: +0xB20 == cSpeciesManager
+  PlayerSpecies 0x4DF490), it returns the **diet / size rule** 0xBA2900(a, b) (6 same species, else 1-4 by herbivore /
+  carnivore and a size class from 0xC0BA40 against 0x156C194 / 0x156C198). Else: the species record (map +0x24, node
+  +0xC) when not 0, else the tuning +0x390 of the one that is not the avatar (0xC0C300 = +0xE84), else the rule.
+  CreatureSocialMode 0xC0E800 calls it with (avatar, npc); vt 0xD4 0xC0C3B0 ("friendly") with the same.
+* ✔ So a guest playing its own creature (another species in its own game) got the rule for every NPC: on the fixture
+  4 instead of the tuning's 3 for 12 herbivores (social mode 1 instead of 2). Fixed by `creature.relations`
+  (creature_hp.cpp hooks vt 0xD0: the own avatar's and the puppets' species count as the player species).
+* ✔ The archetype tuning: `cCreatureAnimal::Create` 0xC09B40 sets it with `cCreatureBase_SetTuning` 0xC0C2E0 (+0xE84,
+  +0xE80 = tuning +0x10) from `cSpeciesManager_GetTuning` 0x4E00C0(mgr, key, variant) (the player species: key
+  0xAED08DD4). The tuning is the value of a map node: the dword before it is its key, the same as the herd's archetype
+  +0x88 (lane 9: tkey B5BC62BF = arch B5BC62BF on the host).
+* ✔ A proxy made in a herd of ours (archetype 0: the species' nest herd not found on the guest yet) got no tuning (lane
+  9, the first proxies of species 06805133 after a join); its relation then came from the rule: 1 (hostile) where the
+  host's NPC had 3 (neutral). Made again a minute later, the same proxy went into the game's herd (arch B5BC62BF) and
+  had the tuning. Fixed by `npc.tuning` (the host's key after MSG_NPC_SPAWN, the guest sets the same tuning).
+* ~ Inferred: on the host the NPCs' AI with a guest's puppet as the avatar (npc.cpp ai_target) used the rule too; the
+  hook covers the puppets' species there.
+
+## Carried objects, herd evolution, NPC animations on the guest (2026-11-03, fix/w40-creature-acts)
+<a id="creature-npc-anims"></a>
+
+BUG-0458, BUG-0464 (both open). GOG 2024, Ghidra (out/ghidra-2024) and lane 9 (creature fixture). Findings only.
+
+### Picking up and throwing (BUG-0458)
+
+* ✔ The Creature stage's cursor choice 0xD311B0 asks 0xD30830 -> 0xD2FFD0 (the object under the mouse) for a cursor
+  kind: 0xB / 0x19 load cursor 0x3B360DC ("cursor-crg-pickup", the strings are loaded in 0xD366C0), 0xD / 0x16 cursor
+  0x3B360E4 ("cursor-crg-throw"). 0x19 / 0x16 are returned for an object of noun **0x2A8FB3F (cRock)** with interface
+  0x1186577 (+0x50 bit 0x100, +0x70) when 0xC13DC0(obj, 0, ..) says it can be taken; 0x1A for an ornament of sort 2.
+* ✔ The carry behaviour (a BT node without a direct caller, 0xD84120): walks to the object (WalkTo), plays animation
+  0x39E4C77 (or 0x39E4C77 + 0x1597E79), and at the end, by the object: a fruit (0x2C9CC91), a cRock (0x2A8FB3F) or an
+  interactive ornament (0x3A2511E) of **sort 3** (the stick, ~ inferred from the sort list of
+  docs/re/creature.md#creature-world-objects) posts BT stimulus 0x40000 (value 60) with slot +0xC = 1 (carrying).
+  0xD3A0D0 (a creature bumping into an object) pushes cRocks and sort-6 ornaments.
+* ✔ The fixture has one cRock (census noun 0x2A8FB3F = 1, vtable 0x1473228) and 12 ornaments, 5 of them sort 2.
+* Not done: the carried object follows the carrier's hand in each game separately, and a throw moves it with the
+  physics of the game that threw it. A fix is a host-owned world object with a carrier (worldobj.cpp: a kind for
+  cRock and sort-3 ornaments with pos / rot / carried-by at 10+ Hz, the guest's carry as a request) or the carry
+  stimulus relayed to the partner's puppet. Neither tried.
+
+### Herd evolution (BUG-0464)
+
+* ✔ cHerd's serialized fields (descriptor 0x134D380): `mGeneration` +0xF0, `mEvolvedSpeciesProfileKeys` +0xA8 (a
+  vector of species keys), `mDNAEvolutionThreshold` +0x94, `mbShouldEvolve` +0x85, `mbBestFriends` (after it).
+  cHerd::Update 0xC6D960 reads the archetype tuning with `cSpeciesManager_GetTuning(herd +0x88, herd +0xF0)`: the
+  generation is the tuning's variant. ~ Inferred: a nest "evolves" by a new generation / species key from the list;
+  the guest's herds are not simulated (its NPCs are removed), so its nest never does.
+* ✔ The NPCs' own animations do not reach the guest at all: sampled twice a second for 40 s (coop_npc_anims.py,
+  `coop.npc cur`, vt 0x58 GetCurrentAnimation), the host's 21 NPCs played B31EB92C (760 samples), 731EA3EA, 0519E154,
+  042A1CAF, 02481DE5, 05807346, ...; their proxies 02481DE5 (1444 of 1617), the death F14FAA46 and 04866Dxx. The proxy
+  showed the host NPC's animation in 7-9 % of the samples (lab runs 20261103-153901, 20261103-154027).
+* ✗ Tried and reverted: relaying the host NPCs' cCreatureBase::PlayAnimation / PlayAnimationTo calls (the hooks of the
+  players' MSG_ANIM) to the proxies: 287 calls in 40 s (171 more over a rate limit of 80/s), 279 played on proxies, and
+  the proxies' current animation did not change (7 % before, 9 % with it). So the behaviour animations (B31EB92C ...)
+  are not started through those two functions, or the proxy's driving replaces them at once. Next: find the caller
+  of the AnimatedCreature (Anim::AnimatedCreature::PlayAnimation 0xA0C5D0) for B31EB92C, or replicate the current
+  animation as state (host: GetCurrentAnimation per NPC; guest: play it when the proxy's differs).
+* CORRECTION (2026-11-03, fix/w40-npc-anims): the behaviour animations are started with SporeCoop::CreaturePlayAnim
+  0xC122F0, not through PlayAnimation / PlayAnimationTo; relayed through it they stick on the proxies (79-82 % of the
+  samples): docs/re/creature.md#creature-bt-anims.
+
+## The sea monster (the players' "kraken", 2026-11-03, fix/w40-creature-acts)
+<a id="creature-sea-monster"></a>
+
+BUG-0465 (open). GOG 2024, Ghidra strings only, not seen at runtime.
+
+* ✔ There is no "kraken" / "monster" creature or noun in the exe's strings; the game's sea monster is
+  `cSeaMonsterEvent` (class name strings 0x147AEEC / 0x147B2F8, used by 0xD4AE00 and 0xD4C4D0; the component path
+  "SP_Simulator/cSeaMonsterEvent/COM" at 0xD4D450). The avatar's death of cause 9 plays the cinematic
+  `CRG_AvatarDied_SeaMonster` (0xD38E60, called by 0xD401E0; cause 5 starvation, others CRG_AvatarDied).
+* ✔ Known before (docs/re/creature.md#creature-deep-water): an avatar over deep water starts caption cinematic
+  5E205931 ("Dangerous creatures lurk in the deep").
+* ~ Inferred: the monster is an avatar event (the player's own game makes it for its own avatar, as its death
+  cinematic), not a world object: the partner's game has no such event for a puppet, so it never shows. Class B of
+  docs/sync-architecture-plan.md (the game knows one player). A fix would relay the event (or the death cause 9) to
+  the partner and play the monster there at the puppet; the event's object and how it is drawn are not analysed.
+
+## Captions in play: the chat line, the brain upgrade, the jumps after a death (2026-11-03, fix/w40-play)
+<a id="creature-chat-under-caption"></a>
+
+* ✔ A click on a text line of the co-op window (the chat line) under the game's input lock (any caption,
+  #creature-input-lock-clicks) is dropped like the button clicks: the line never takes the focus and
+  the typing is lost (BUG-0482; coop_chat_caption.py with CRG_ClaimNest, both roles, out/lab/20261103-151853).
+  The WM_CHAR messages still reach the game window's queue (a WH_GETMESSAGE hook sees them, mouse.cpp
+  `take_chars`); the mod types them into the clicked line itself (`core.ui_locked_edit`, coop_ui.cpp).
+  `locked_typed=` in `coop.uistate` counts the characters it typed.
+* ✔ The brain upgrade at 100 DNA plays cinematic `F6A4B1E1` with the caption window (control id 0x0445C9AB)
+  "Brain power! You've grown a little smarter and taken your first step towards sentience! ..." on both
+  games (the DNA is shared); it holds the input lock and the game time stands until Enter / OK. At the
+  fixture's nest the own creature's height over the ground did not change under it (0.32 / 0.39 m before
+  and during, lane 6 probe 2026-11-03). play_creature's bots did not answer it and stood in it for the rest
+  of the run (BUG-0500: no hunts from s 290, `+0 joint hits`, every chat line typed under its lock).
+* ✔ After a death the partner's own game moves its creature at once twice: the respawn at the nest (while
+  the puppet is hidden: dead) and, ~10 s later (the guest's hatchling; the host's waits for its family), the
+  hatchling stepping out of its egg: 5.6-6.0 m in one frame at the fixture's nest (lane 6 probe and
+  coop_puppet_jump.py), 10-11 m in play (out/lab/20261103-124913 play_creature#3: the guest's own position
+  (-171.8 -467.8 -84.0) -> (-175.1 -464.2 -94.2) between two trace lines). The puppet's buffer blended across
+  that step (the target slid the whole way in 0.1 s) and the puppet walked after it: 0.29-0.30 s for 6 m,
+  6-23 m off on the sample play_creature took then (BUG-0499, `never more than 6 m apart`, puppet speed 0).
+  The respawn blended from the dead state at the place of the death (no PF_IN_WORLD change) to the nest.
+  `creature.puppet_jump` (modes.cpp, net::SnapshotBuffer::jump_speed 40 m/s, the PF_DEAD flag): no blend
+  across those steps, a target that moves over 3 m in one frame teleports the puppet (`jumps=` in
+  coop.status): 0.03 s for the same 6 m, and the puppet shows again 0.00 m from its target (0.35 m off).
+
+## Plants and rocks are made by each game around its own camera (2026-11-03, fix/w40-cell-evo)
+<a id="creature-plants-rocks-lod"></a>
+
+BUG-0473 (plants, rocks), BUG-0498. Lane 4, `tools/tests/coop_world_lod.py` (out/lab/20261103-161705).
+
+* ✔ (runtime) `rock` (noun 0x2A8FB3F, vtable 0x1473228): the fixture's save has 1 rock, in both games' lists
+  at the same place. 28 more appear in the walking guest's list only (30-75 m ahead of it at the first step,
+  then where it walks), never in the host's list although the host stood 1 m from the guest at the start;
+  they stay in the guest's list while it walks 200 m away and back. Serials differ per game even for the
+  shared rock.
+* ✔ (runtime) `game_plant` (noun 0x18C84A9, vtable 0x146C2A8): 0-2 objects in a whole list, each 8-14 m from
+  that game's own player, never in the other game's list. Its factory is registered at 0xC83B0B; who places
+  them was not looked up (~ inferred: decoration near the camera, like the hanging fruit of
+  #creature-world-objects).
+* So neither is a world object the players share: no worldobj kind. The detector leaves them out
+  (tools/tests/worlddiff.py IGNORE, docs/06-testing.md#testing-world-lod).
+## How the behaviour tree starts an NPC's animations (2026-11-03, fix/w40-npc-anims)
+<a id="creature-bt-anims"></a>
+
+BUG-0464. GOG 2024, Ghidra (out/ghidra-2024) and lane 9 at runtime (creature fixture, `coop.npc cur`, `coop.npc anims`).
+
+* ✔ The behaviour animations are started with `SporeCoop::CreaturePlayAnim` 0xC122F0 (thiscall(creature, anim, int a,
+  int b) ret 0xC, returns the animation's handle, 0 when not played), not with cCreatureBase::PlayAnimation 0xC12470
+  (that is why the PlayAnimation relay of fix/w40-creature-acts changed nothing). ~150 callers, the BT nodes
+  0xD6xxxx-0xDBxxxx among them. Example: the idle / look-around node 0xD8DC30 (state in its node data +0, handle +0x10:
+  it waits while the handle plays, 0xC0E420): carnivores B31EB92C, herbivores 731EA3EA, every third step
+  0519E154 / 731EA494 / 051C689B / F31EA59C, a social variant 0x42A1CA0.. + RandomInt(species +0x5E4..0x5F0) by the
+  species' kind +0x620 (0x22-0x25); with a target creature 0xC14AA0 (CreaturePlayAnim + a look-at 0xC0B670).
+* ✔ The idle refresh `SporeCoop::Creature_IdleRefresh` 0xC148B0 (thiscall(creature, bool force) ret 4) plays the choice
+  of Creature_ChooseIdleAnim 0xC0C790 through 0xC146F0 (mode 0: CreaturePlayAnim(anim, 1, -1), 1: PlayAnimation,
+  2: a second layer) when it differs from the current animation. Creature_ChooseIdleAnim returns the BT's idle override
+  +0xE3C first (set by 0xC0B4D0, -1 = none, reset in 0xC08210 / 0xC1FFE0). cCreatureAnimal::Update 0xC0AE30 calls the
+  refresh only when no main animation is left (0xA02AE0 < 1), and ~120 BT nodes call it at their end.
+* ✔ So a proxy (no NPCTickAI) keeps an animation played on it until it ends, then its own game picks idle / walk:
+  the relay sticks. Runtime (lane 9, 40 s, 21 NPCs): the host's NPCs started ~11 behaviour animations a second
+  (seen 355-627 per run, idle refresh plays 337-912 not counted); on the guest 93-100 % of them played.
+* ✔ Fix `npc.anims`: the host hooks CreaturePlayAnim and PlayAnimation / PlayAnimationTo outside the idle refresh (a
+  depth counter around 0xC148B0) for its NPCs and sends them once a frame (MSG_NPC_ANIM 59 kind 0, 12 bytes each);
+  once a second it sends what each mirrored NPC plays now when that is its last BT animation or it is dead (kind 1,
+  6 bytes each); the guest plays a snapshot's animation when the proxy plays another, not within 1.5 s of a start and
+  at most every 2 s per proxy (a proxy made after the start, a lost message, an animation cut). Samples where the
+  proxy plays the host NPC's animation: 15-22 % off, 79-82 % on; an NPC attacking the guest's puppet (attack node
+  0x02D852E6, attack animations 044DDEA6, 026EDE51, 035EE245): 0 % off, 83 % on. The rest are phase differences of
+  the 0.5 s sampling (a pair seen both ways: 0519E154 / B31EB92C).
+* ~ A dead host NPC plays 05807346 (a body's animation) where the guest's play_death played F14FAA46: the snapshot
+  now plays the host's on the body.
+* ~ Not verified: a nest's real evolution (cHerd generation +0xF0, docs/re/creature.md#creature-npc-anims): an
+  evolved NPC is a new species (host_tick gives it a new id and spawn), its animations go through the same relay.
+
+## The roar: what is known (2026-11-03, fix/w40-npc-anims)
+<a id="creature-roar"></a>
+
+BUG-0501 (open). GOG 2024, Ghidra strings and decompiles only, not seen at runtime. Findings only.
+
+* ✔ The only "roar" string in the exe is the BT blackboard variable `HeardRagingRoar` (0x147C000; "Raging Roar", the
+  Creature stage's consequence ability of a carnivore Cell, ~ inferred from the name), registered with `Loudness`,
+  `HeardSirenSong` and `WasMother` in the static init 0x13674D0 through 0xBC9FA0 (thiscall(var, float max, init,
+  on_end, update, name) ret 0x14: a variable object at a global: Loudness 0x169F0F0, HeardRagingRoar 0x169F134,
+  HeardSirenSong 0x169F178, WasMother 0x169F1BC). The roar and the siren song share the end callback 0xD85400 (posts
+  BT stimulus (0, hi 0x4000000) with value FLT_MAX, clears stimulus 0x400000, stops effect 0x4F26350B on the NPC);
+  the siren song has an update 0xD85470 (counts its value down, keeps it while the NPC's node +0x1D8 is 0x341BD4BE).
+* ✔ The globals of HeardRagingRoar / HeardSirenSong are referenced only by that init (`scan`): the BT reads them by
+  name / registry index, the setter (the ability that roars) was not found. Loudness is written by 0xD8B290.
+* ✔ The avatar's ability use 0xC1E8B0 (thiscall(creature, float) ret 4) posts its hit stimuli (0x2000, or hi 0x80000
+  for a citizen) with value 10.0 to the target or to every creature in range (0xD99A20 distance), sender the avatar.
+* ~ Inferred: the roar sets HeardRagingRoar on the NPCs around the roaring avatar in that player's own game only; a
+  guest's NPCs are AI-less proxies, so nothing reacts and the host's NPCs never hear it. A fix is an L1 request: the
+  guest's roar sent to the host, the host sets the same variable on its NPCs around the guest's puppet. Neither
+  fixture creature has the ability (types 0xD 0xE 0x10 0x11 0x1D 0x1E 0x25 0x28 0x31 0x32 0x33): a test needs a
+  creature from a carnivore Cell.
+## A partner's puppet freed by the game, liveness of puppets (2026-11-03, fix/w40-guest-combat)
+<a id="creature-puppet-alive"></a>
+
+* ✔ The Creature (and Adventure) adapter had no `alive` callback (Cell and Space had one), so `puppet_now()` and
+  `drive_puppet()` never checked that the raw puppet pointer `Remote::puppet` was still a creature: a puppet the
+  game destroyed by itself was driven on every frame (BUG-0507: a guest crash in set_speed, the memory reused by
+  a cModelObject). `creature.puppet_alive` adds `creature_alive` (modes.cpp): the game's object list holds the
+  pointer as a live creature (noun 0x18EB45E, +0x21 = 0) and its cGameData serial (+0x24) is the one recorded at
+  the spawn; checked once per frame and puppet (cache by `frame_index`). A dead one is dropped from the puppet
+  list (`puppet_unregister`, a new creature at the address is no puppet) and drive_puppet makes a new puppet.
+* ✔ Lab (lane 2): cGameNounManager::DestroyInstance on a puppet (`coop.puppet gamekill`) takes it out of the
+  object list at once; the memory was not reused within 4 s and driving the dead creature did not fault (with
+  the switch off the mod kept the dead pointer, the partner was gone from the screen for good).
+* ✔ Negative: two device Resets (Alt+Enter on the guest) do not free or replace the partner's puppet.
+* ? What freed the puppet on the player's PC is not known: the log has no hide / despawn line of ours (the puppet
+  was shown, d=7 m, 30/44 hp, a cinematic had run 40 s before), then a 4.1 s hitch, a device Reset and the crash
+  0.6 s later. Candidates not checked: the game's own cleanup of a creature after a frame of 4 s (fell out of the
+  world?), a cinematic's actor cleanup. The check covers any of them.
+
+## The host's pack and a partner as its target (2026-11-03, fix/w40-guest-combat)
+<a id="creature-pack-target"></a>
+
+* ✔ A left click on a creature sets the avatar's target **+0xE7C** to that creature's combatant (+0x5A8): a click on
+  the partner's puppet on the host gave avatar +0xE7C = puppet + 0x5A8 (lane 2, 3 times).
+* ✔ Negative: neither that click, nor 10 PlayAbility calls of ability 0 or the key 1 after it, made the recruited pack
+  member take the puppet as its target in 15 s (its +0xE7C stayed 0, node 0x02D852F6). The pack's "help the leader"
+  trigger is not found.
+* ✔ SetTarget (creature vt 0x84, `thiscall(target, 1, 0)`) takes the target's **combatant** (creature + 0x5A8), not
+  the creature: called with the creature pointer the host game hung or died at once (lane 2). With the combatant the
+  pack member held +0xE7C on the puppet for good (node 0x02D852F6, no bite in 10 s).
+* ✔ The players' host log (0.7.3.6): during that fight the pack's hits on the guest's puppet arrived every 0.3 s and
+  were all dropped by `npc.party_peace` (`hit by pack posse=1 amount=0.0 dropped`); the hits that reached the guest
+  were from other NPCs (`hit by npc posse=0`, forwarded). So on 0.7.3.6 the pack fought the guest on both screens
+  without damage; the guest's losses in that fight came from the wild NPCs.
+* `npc.pack_spares_partners` (npc.cpp, BUG-0512): on the host every frame, a pack member (the pack list
+  cGameNounManager +0x5C..+0x60: it is not always in the creature update list) or family member aimed at a partner's
+  puppet gets SetTarget(null, 1, 0) and its stimuli naming the puppet cleared.
+
+## A stalled partner drawn under the ground (2026-11-03, fix/w40-guest-combat)
+<a id="creature-partner-stalled"></a>
+
+* ✔ Players' logs (0.7.3.6, BUG-0513): the guest's own trace showed its creature at agl=-6.53 (6.5 m under its own
+  ground) while `busy=paused` during a 12 s stall (receiving a world), then 0.31 after; the host drew the puppet at
+  agl -6.32 and later -3.2 (states arriving), then hid it after 5 s without states (`state older than 5 s`).
+  `creature.puppet_ground` (BUG-0367) leaves a target more than 3 m under this game's ground where it is.
+* ✔ Lab (lane 2): with the guest's states 6 m under the host's ground (`coop.track lift -6`) a standing puppet stays
+  on the ground (the game's own grounding); a walking one is drawn under it (144 frames, switch off).
+* `creature.puppet_deep`: a target 3-15 m under this game's ground goes onto it (`drive::out_of_ground`, as the
+  proxies, BUG-0399). `core.partner_silent`: "<name> is not responding (game minimized or frozen?)" once when a
+  partner's states are older than 5 s, "<name> is responding again" when they come back (coop.cpp silent_tick).
+* `frame.limit 9000` on a game stalls it in the lab (a frame every 9 s, no states between them): the hitch gate and
+  the monitor's "hidden" rule see it.
+* ? Why the guest's game holds its creature under its ground while paused or stalled is not known (inferred: the
+  terrain of a world being received, or the creature not grounded while the game does not update).
+
+## The party's DNA pace: each gain counts 1/N (2026-11-03, fix/w40-dna-social)
+<a id="creature-dna-pace"></a>
+
+BUG-0510 (players: "3-4x the DNA of a solo game", Cell and Creature). Code: `mods/coop/dna_pace.h`,
+coop.cpp `dna_pace_gain` / `dna_pace_meal`, cellsync.cpp `h_AddFood`; test `coop_dna_pace.py`
+(suite `dna_pace`, `dna_pace_cell`).
+
+* ✔ observed (lab 20261103-180306, `SPORE_FIX_OFF=core.dna_pace`): two players' gains of 20 each
+  (AddEvolutionPoints, the game's reward call) made the shared total grow by 40 on both games; Cell: two
+  meals of 20 (AddFoodPoints) +40 food on both (lab 20261103-180539). The party's total is the sum of
+  every player's progress, so N players evolve about N times faster than the game is tuned for.
+* Design (orchestrator's decision): one shared total stays; every GAIN entering it is scaled by 1/N,
+  N = the host plus the guests whose latest state has the host's mode and world crc (`pace_playing`,
+  a guest in an editor or a load does not count while it is there); spends (< 0) stay whole.
+* Each gain is scaled once, where its game made it: the host's own AddEvolutionPoints (its kills,
+  meals, friends, a guest's kill credited to the host's avatar) in `on_dna`, a guest's forwarded gain
+  before MSG_DNA_ADD (the host adds it whole), a guest's social win in `social::apply_success`, an
+  own Cell meal in `h_AddFood` on the eater's game (the guest applies and sends its share, so its food
+  bar does not jump up and back). Integer food points keep the remainder (`dna_pace::Carry`).
+* Not scaled: a species goal card's reward (paid once per party, `social::goal_dna`), the owed / solo
+  DNA paths (already scaled when they were forwarded, or earned alone while the host was away: N = 1
+  then), the guest's own world (core.world_dna), and the test setup commands `coop.dna add` /
+  `coop.pool food` (exact N; `coop.dna gain` / `coop.pool meal` are the paced reward).
+* The host decides: `coop.ini [coop] dna_pace` (1 default, 0 = the full sum; `coop.dna pace 0|1`).
+  It announces the divisor in an optional last byte of MSG_DNA (after the causes) and of the host's
+  MSG_CELL_FOOD total (after the ack); older guests stop reading before it, a newer guest of an older
+  host reads none and uses 1 (the full sum, as that host does).
+* The host's open Cell editor (report 2, "+68 from the guest's meals" 7 s after the editor request):
+  ✔ (Ghidra, #cell-editor-dna in cell.md) the editor's budget is computed once, at the request
+  (0xE59800: DNAForFood(S+0x1C) - S+0x2C), and the meals are those that arrive during the ~10 s mating
+  cinematic before the stage is left (the host is still in Cell, so they are applied); in the editor
+  itself a guest's meal is refused (BUG-0239). Decision: nothing more is held; such meals go into
+  the food total and count at the next editor, now at 1/N. ~ inferred, not checked at runtime: the
+  85 DNA on the screenshot is the budget of the next request (or a negative "spent",
+  cell.md#cell-editor-negative-spent).
+
+## The guest's social game by the ability bar's buttons (2026-11-03, fix/w40-dna-social)
+<a id="creature-guest-social-bar"></a>
+
+BUG-0518 (from BUG-0179's reports). GOG 2024, Ghidra (`tools/ghidra/q.sh --build 2024`) and lane 4.
+
+* ✔ (Ghidra) every ability use of the HUD goes through `SporeCoop::AbilityBar_Use` 0xD49560
+  (cdecl(int ability index of the avatar)): the keys (OnKeyDown 0xD3AFF0 -> AbilityBar_OnKey 0xD4A450 ->
+  AbilityBar_FindByKey 0xD4A320 -> 0xD49560) and a click on a bar button (`AbilityBar_OnButton` 0xD497D0
+  (window id): 0x4C61B50 the social stance, 0x4C61DD9 the combat stance, else the button's slot via
+  0xD48B70 -> 0xD49560). Inside: 0xD49220(index) is a status (0 = usable -> 0xD48AB0(index) uses it, else
+  a hint: 2, 3/4, 6, 8, 10-15 with UI::cHintManager); it also remembers the last social (+0xE74) and
+  combat (+0xE70) ability index of the avatar.
+* ✔ (runtime, lab 20261103-181651) a guest's click on the sing button (1440x1080: 550,1020, the first
+  button of the green social row) next to an engaged mirror reaches 0xD49560 and the game does nothing
+  (no NPC session on the guest): no animation, nothing sent. The mod polled only the keys 1-4.
+* ✔ (runtime, social probe on lane 4 with BUG-0462 merged) the mirrors near the fixture's nest have the
+  host's relation 3 / social mode 2 on the guest; with an engaged mirror the social path impresses
+  065CB8BD, 065CBF12 and 065CB8AB in one round each on the host; the own species 065CBE70 (relation 6,
+  mode 0) is refused like in the game.
+* Fix `social.bar_click`: the hook of 0xD49560 takes a social ability (+0x10 == 1) used in the social
+  stance next to the engaged mirror like the key (plays it on the avatar, K_ACT to the host).
+
+## Hold slots: how a creature carries an object (2026-11-03, fix/w40-misc)
+<a id="creature-hold-slots"></a>
+
+BUG-0458 (open). GOG 2024, Ghidra only (no runtime: the lane was busy with the regression).
+
+* ✔ A creature's carried objects are in a vector of hold slots at `creature+0xE40..+0xE44`, 0x24 bytes each:
+  `+0x00` a model socket index (-1: none), `+0x20` the held object.
+* ✔ `SporeCoop::Creature_HoldObject` 0xC15B20 (thiscall `(obj, slot, replace)`, ret 0xC) puts an object into a slot:
+  attaches it to the socket (0xC120B0, the socket transform of `creature+0xB54 -> +0x17C -> +0x2E4 + idx*700`), aligns
+  it by the object's properties 0x670F1AF / 0x7E9994D (degrees), then 0xD7D1A0(obj): `obj+0x50 |= 0x100`,
+  `obj+0x77 = 0`, the object's physics component (0x116DD1B) `+0x268 = 0`, `+0x1F0 = 3`; finally `obj+0x71 = 1`
+  (held). `SporeCoop::Creature_ReleaseObject` 0xC15EB0 (thiscall `(obj, a, b)`, ret 0xC) finds the slot and
+  releases it through 0xC15D30(slot, a, b).
+* ✔ The NPC carry node 0xD84120 (state block: `[0]` phase 0 walk / 1 pick-up animation / 2 done / 3 give up,
+  `[6]` the creature, `[7]` the object, `[9]` the animation) calls ReleaseObject(obj, 0, 0) and HoldObject(obj, 0, 1)
+  in phase 1; the stimulus of phase 2 is only for NPCs (`+0xB58 & 0x200` clear). The player's own pickup goes
+  through other callers of HoldObject (0xC23460, 0xD7EE10, 0xD87590, 0xF1D4B0: not looked at which is the avatar's).
+* Plan for BUG-0458 (not done): hook HoldObject / ReleaseObject on every game; when the own avatar (or a host NPC)
+  holds or lets go of a cRock (noun 0x2A8FB3F) or a sort-3 ornament, send it with the object's identity (a worldobj
+  kind for rocks and sort-3 ornaments, matched by position on the shared save objects) and let the partner's game
+  call HoldObject on the carrier's puppet / proxy with its copy; after a release the host owns the object's pose
+  (worldobj snapshot at 10+ Hz while it moves) until it rests. Rocks made around a game's own camera (#creature-plants-rocks-lod)
+  are not shared and cannot be matched: only the save's objects can.
+
+## The UFO abduction event of the Creature stage (2026-11-03, fix/w40-gh-issues)
+<a id="creature-ufo-abduction-event"></a>
+
+Ghidra, GOG 2024 (BUG-0520, GitHub #194):
+* ✔ The visiting UFO is a **Drama Manager event**: class `cUFOAbductionEvent` (factory 0xD4D3F0, 0x74 bytes, ctor
+  0xD4C000, vtables 0x147B1D8 / 0x147B058, class id 0x5599EC7, its data class 0x5599EB8). cDramaManager
+  (0xD4E020) builds its events from the prop group 0x0EBCFBC7 in Creature (0xE7CA1F54 in Tribe); one of nine event
+  kinds (0..8, ids 0x5599D0C .. 0x609EEDF), kind 2 is the UFO.
+* ✔ Start (vt+0x30, 0xD4F8A0): in Creature at the avatar's position (Tribe: the player tribe's), height prop
+  0x9B0EF346 (default 20 m), "empire ship" chance prop 0x51BE5FAE; `SporeCoop::UFOAbductionEvent_SpawnUFO`
+  0xD4C150 = stdcall(const Vector3* pos, float height, bool) ret 0xC: SpawnUFO(**type 7**, ...) placed above pos, in
+  Creature `[ufo+0x6C8]+0x5FC |= 1`; the ship goes into the event's map (+0x5C..+0x60, 8-byte nodes, ship at +4).
+* ✔ Update (vt+0x40, 0xD4FBA0, thiscall(event, float dt) ret 4): `SporeCoop::UFO_TickBehavior` 0xC388A0 =
+  thiscall(ufo, float dt, double now s) ret 0xC runs the ship's behaviour tree (BehaviorTreeTickGeneric); when
+  the AI's flag `+0x5FC & 2` is set and no BT state is left, 0x102C350 destroys the ship (it first clears +0x68C of
+  every UFO that names it, then cGameNounManager::DestroyInstance). End (vt+0x2C, 0xD4DA90): DestroyInstance on
+  every ship of the map.
+* ✔ The beam: an abduct strategy's hit (0x10323E0) on a creature (cast 0xCE9F6639) plays the animations
+  0x3CC7EAB / 0x3CC7EB4 and gives it a `cAbductionBeamLocomotion` (0x24 bytes, 0x1030E90); other targets
+  (0xAEB336B4, 0x283D961) get the same locomotion. `cSpaceGameBehaviorAbducted` (0xA0 bytes, factory 0x1032790)
+  is the abducted object's behaviour.
+* ✔ Negative (lab, lane 4, 3 runs): a type 7 ship made with UFOAbductionEvent_SpawnUFO over the partner's puppet,
+  also ticked with UFO_TickBehavior every frame (60 s each, twice per run), never got a target (+0x550, +0x7A8,
+  +0x7AC stayed 0) and took nothing: outside the event its BT does not select a creature (the event's other
+  state, or a stimulus it posts, is needed). How the event's ship picks its creature is not found.
+* ✔ Negative: `npc ... updated at the planet's centre ... dead=1` (npc.cpp) is not a sign of an abduction: the lab
+  prints it for one NPC 58 s into every Creature run with no UFO at all.
+* ? Not known: whether the ship can take a partner's puppet (the players' report says a host crashed every time
+  it took a creature, with the BUG-0507 signature: inferred, yes) and what the game does with the taken creature.
+
+## Who asks "player species": the scope of creature.relations (2026-11-03, fix/w40-relations-scope)
+<a id="creature-relations-scope"></a>
+
+BUG-0462 follow-up. GOG 2024, Ghidra.
+
+* ✔ `cCreatureBase_IsPlayerSpecies` 0xC0C430 has one direct caller (0xC228B0, a thunk) and is otherwise reached as
+  creature vt 0xD0 (vtables 0x146A080 +0xD0 = 0x146A150 and 0x146A590 +0xD0 = 0x146A660): every caller is an
+  indirect `call [reg+0xD0]`, so Ghidra lists none of them. Known readers: GetRelationship 0xBA40E0 (736 bytes),
+  CreatureSocialMode 0xC0E800 (522 bytes), vt 0xD4 0xC0C3B0 ("friendly", via GetRelationship), and the family /
+  hatchling / pack / nest code (seen at runtime: with the hook answering true everywhere, a guest's hatchling did not
+  step out of its egg after a death, puppet_jump, BUG-0499 test, rel/0.7.4 runs 20261103-202813 fail /
+  20261103-204331 pass with creature.relations off).
+* What the mod does now: the hook gives the party species the "player species" answer only when its return
+  address lies inside GetRelationship or CreatureSocialMode; the cursor / click (0xD2FFD0) and the faces reach the
+  relation through those two. Other callers get the game's own answer (`coop.hp`: `other_callers=` counts them).

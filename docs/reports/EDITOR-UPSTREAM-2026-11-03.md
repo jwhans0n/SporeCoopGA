@@ -1,5 +1,46 @@
 # Shared Editor upstream synchronization, 2026-11-03
 
+## Upstream 0.7.4 follow-up (2026-11-04)
+
+Upstream advanced again during focused Terraform validation. Current fetched
+main is `e396d1cb0158f035fc4854bc087424df45d92765`, release0.7.4. A second normal
+merge preserves this history and the independently verified C69 Save correction
+at `517b0d8c`. Rollback branch `rollback/preview9-c69-before-upstream074` retains
+that exact tested pre-merge source. Personal preview9/protocol23 is unchanged.
+
+Four conflict paths require composition: `coop.cpp`, `modes.cpp`, the transport
+header and frozen-build annotations. Upstream puppet liveness, silence notices,
+sneaking, startup save-area fixes, effects and native diagnostics remain present.
+GA captain scale/life/run fences, shared-editor holds, outside-frame commands,
+service-pulse callbacks and the corrected Save materialization proof remain.
+Duplicate frame diagnostics are not invoked twice. New field/world/effect ticks
+and messages remain behind the existing shared-authoring gate.
+
+Upstream owns WOBJ54 and EFFECT61. The uninstalled source now uses protocol26:
+ACTIVITY55, ADVENTURE63 and EDITOR62. Fields56, NPC resync57, NPC animation59,
+DIAG60 and all earlier upstream IDs remain unchanged and distinct. Tests reject
+protocol23/24/25 headers and explicitly reject an old HELLO on current transport.
+Proxy/audit helpers review the unchanged transport envelope through26, retaining
+the historical23/24/25 mappings. The fake peer and packaging recipe follow26;
+packaging tests use synthetic files only. No distribution or personal update
+is produced by these checks.
+
+Independent fork tickets formerly0471-0487 collide with upstream's newer tickets.
+They are renamed0522-0538, with explicit legacy references and original commits
+and OUT receipts retained. Shared upstream BUG-0470 keeps its identity. The
+renumbering updates only lines owned by the fork, preserving incoming upstream
+references. Mapping: `out/preview9-upstream074-integration/ticket-mapping.json`.
+
+C70 co-op and Kit builds pass with332 retained production inputs and zero drift.
+DLL SHA is `de7d3a706241e2481b8f02e6cc61e507bb84afb262a03e7311898e701d1375dd`;
+Kit is `f68aaa3ac945e1bf3e01275c03bc5ccc59b0d0426c4ebcab13967fe684559f0b`.
+The merged portable network suite passes. Versioned proxy tests7, GA/pickup
+audit tests8 and synthetic packaging tests16 pass. RE lint717 used/3,245 known
+and docs lint1,600 files report zero problems. Ticket ancestry checking performed
+before the merge commit cannot see its incoming second parent and is rerun after
+the commit. Focused native entry/join/edit/Save qualification follows separately.
+Deferred release smoke, performance and broad creation testing stay deferred.
+
 The user requested three priorities: install preview 9 for testing, synchronize
 the feature branch with the original SporeCoop repository, then continue
 Terraform and Extended Complexity coverage. Performance acceptance, broader
@@ -295,7 +336,7 @@ The C57 normal gradient drag at height index2 changes only `B6929C92`, R100
 to101; gradient color bytes are unchanged. Undo at R102 restores every Planet
 field and strict convergence without faults. The host's displayed height node
 nevertheless stays at y330 while its restored data and the guest show y303.
-This is a local native Color UI refresh failure (BUG-0473), distinct from the
+This is a local native Color UI refresh failure (BUG-0524), distinct from the
 successful data/history proof. Evidence:
 `out/preview9-c57-gradient-height-probe/`. The category1 correction passes1,567
 controlled Color checks and143,729 full adapter checks, with68 inputs unchanged;
@@ -313,7 +354,7 @@ normal height303 to330 plus own Undo/Redo/Undo, R3 to11, changes only B6929C92.
 Six UI checks prove303 restored and330 absent after Undo; both final PNGs were
 reviewed without a tab-toggle workaround. Both peers stay strict and fault-free.
 Evidence: `out/preview9-c58-two-gradient-ui/result.json` and `ui-proof.json`.
-BUG-0473 is fixed in this private protocol24 candidate; the installed personal
+BUG-0524 is fixed in this private protocol24 candidate; the installed personal
 protocol23 Flora update remains pinned independently.
 
 C58 also qualifies one real native Sound Alt-clone, R1 to2, followed by Undo3.
@@ -342,7 +383,7 @@ qualification remains separate.
 
 Tab0 planet-look presets have a concrete source/controlled-producer ownership
 gap: F0CD40 directly calls bulk Flora F37340 inside one Start/Commit, bypassing
-the full-load gate. BUG-0474's private C59 source fix preflights exactly17 field
+the full-load gate. BUG-0525's private C59 source fix preflights exactly17 field
 leases at the outer card boundary. Unchanged C58 reproduces the real Core
 ownership rejection; strict actual-i686 C59 passes8,910 preset checks plus the
 four affected UI/control focuses, seventy compiler/Make inputs with zero drift.

@@ -10,6 +10,8 @@
 #include <windows.h>
 
 #include "cell_logic.h"
+#include "cellsync.h"
+#include "dna_pace.h"
 #include "game.h"
 #include "gamefixes.h"
 #include "modes.h"
@@ -67,6 +69,13 @@ int c_leavewalk(void*, int, const char* const*, SkOut* out)
 int c_physorphan(void*, int, const char* const*, SkOut* out)
 {
     SAY("%s", gamefixes::arm_physics_orphan().c_str());
+    return 0;
+}
+
+// tests (BUG-0453): the next NPC in its attack animation loses its target (as when the target is destroyed)
+int c_attackcut(void*, int, const char* const*, SkOut* out)
+{
+    SAY("%s", gamefixes::arm_attack_cut().c_str());
     return 0;
 }
 
@@ -207,10 +216,12 @@ int c_cell(void*, int argc, const char* const* argv, SkOut* out)
         Vector3 pos{mp[0] + (argc > 3 ? (float)atof(argv[3]) : 4.f), mp[1] + (argc > 4 ? (float)atof(argv[4]) : 0.f), mp[2]};
         uint32_t idx = cdecl_call<uint32_t>(H->sym("Simulator::Cell::CreateCellObject"), *(void**)(g + 0x40FC), &pos, 0.f,
                                             *(void**)(src + 0x108), argc > 5 ? atoi(argv[5]) : *(int*)(src + 0x358), 1.f, 1.f, 1, (void*)nullptr, 0);
+        if (argc > 6) // tests (BUG-0455): the guests get this cell with a model instance they do not have
+            cellsync::set_fake_model(idx, strtoul(argv[6], nullptr, 16));
         SAY("created %08X from #%u", idx, slot);
         return 0;
     }
-    SAY("usage: coop.cell list | spawn <slot> [dx dy]");
+    SAY("usage: coop.cell list | spawn <slot> [dx dy [level [model instance hex sent to the guests]]]");
     return 1;
 }
 
@@ -420,9 +431,16 @@ namespace {
 int c_dna(void*, int argc, const char* const* argv, SkOut* out)
 {
     if (argc > 2 && !strcmp(argv[1], "add")) {
-        // simulate a gain as the game would report it (goes through the coop hook)
+        // simulate a gain as the game would report it (goes through the coop hook), exactly N: test
+        // setups (not scaled by the party's pace, BUG-0510)
+        dna_pace::g_bypass = true;
         skg::cdecl_call<void>(H->sym("Simulator::cCreatureGameData::AddEvolutionPoints"), (float)atof(argv[2]));
+        dna_pace::g_bypass = false;
     }
+    if (argc > 2 && !strcmp(argv[1], "gain")) // a reward of the game (a kill, a friend): the party's pace applies (BUG-0510)
+        skg::cdecl_call<void>(H->sym("Simulator::cCreatureGameData::AddEvolutionPoints"), (float)atof(argv[2]));
+    if (argc > 2 && !strcmp(argv[1], "pace")) // as coop.ini [coop] dna_pace (tests)
+        dna_pace::g_ini = atoi(argv[2]);
     if (argc > 2 && !strcmp(argv[1], "local")) // tests: our total only, as a host total we missed (BUG-0128)
         game::dna_add_raw((float)atof(argv[2]));
     SAY("dna=%.1f", game::dna());
@@ -557,9 +575,11 @@ void coop_register_debug_commands2(const SkHost* host, SkMod* self)
                       c_leavewalk, nullptr, SK_CMD_MAIN_THREAD);
     host->command_add(self, "coop.physorphan", "tests (BUG-0449): the next physics update gets a body of kind 0 without an owner",
                       c_physorphan, nullptr, SK_CMD_MAIN_THREAD);
+    host->command_add(self, "coop.attackcut", "tests (BUG-0453): the next NPC in its attack animation loses its target (cleared as on the target's destroy)",
+                      c_attackcut, nullptr, SK_CMD_MAIN_THREAD);
     host->command_add(self, "coop.save", "save the game (like the pause menu Save)", c_save, nullptr,
                       SK_CMD_MAIN_THREAD);
-    host->command_add(self, "coop.dna", "coop.dna [add|local <n>] - shared DNA debug", c_dna, nullptr, SK_CMD_MAIN_THREAD);
+    host->command_add(self, "coop.dna", "coop.dna [add|gain|local <n> | pace 0|1] - shared DNA debug", c_dna, nullptr, SK_CMD_MAIN_THREAD);
     host->command_add(self, "coop.memfind", "coop.memfind <hex dword> [max] - addresses holding the value (RE)",
                       c_memfind, nullptr, 0);
     host->command_add(self, "coop.w2s", "check world_to_screen against the game's screen ray", c_w2s, nullptr,
