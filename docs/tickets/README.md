@@ -548,3 +548,4 @@ not-reproduced, game-bug (Spore itself), wontfix, duplicate.
 | [BUG-0536](BUG-0536-gradient-point-color-changes-are-omitted-by-nati.md) | open | bug | GA shared editor | 2026-11-04 |  | Gradient point color gesture does not reach a shared transaction |
 | [BUG-0537](BUG-0537-native-save-after-terraform-edits-freezes-shared.md) | fixed | bug | GA shared editor | 2026-11-04 | unreleased | Native Save after Terraform edits freezes shared checkpoint on recipe transition |
 | [BUG-0538](BUG-0538-cold-native-reopen-of-terraformed-save-changes-d.md) | open | bug | GA shared editor | 2026-11-04 |  | Cold native reopen of terraformed Save changes decoded authored bytes |
+| [BUG-0539](BUG-0539-fake-peer-omits-current-playerstate-scale-and-ad.md) | fixed | tooling | Network | 2026-11-04 | unreleased | Fake peer omits current PlayerState scale and adventure identity tail |

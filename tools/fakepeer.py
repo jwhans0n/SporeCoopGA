@@ -133,9 +133,12 @@ class Conn:
                 self.rel_in.setdefault(rid, (typ, p))
 
 
-def pack_state(pid, t_ms, pos, rot, vel, flags, hp, mhp, species, mode=0, world=0):
-    return struct.pack('<BI3f4f3fBBffIII', pid, t_ms & 0xFFFFFFFF, *pos, *rot, *vel, flags, 0, hp, mhp, species,
+def pack_state(pid, t_ms, pos, rot, vel, flags, hp, mhp, species, mode=0, world=0, protocol=PROTO):
+    base = struct.pack('<BI3f4f3fBBffIII', pid, t_ms & 0xFFFFFFFF, *pos, *rot, *vel, flags, 0, hp, mhp, species,
                        mode, world)
+    # A generic network bot has scale1 and no authored captain/run identity.
+    # Current PlayerState::read requires all95 bytes, including these zeros.
+    return base + struct.pack('<fQQQ', 1.0, 0, 0, 0) if protocol >= 23 else base
 
 
 def unpack_state(p):
@@ -161,7 +164,7 @@ def main():
     ap.add_argument('--period', type=float, default=12.0)
     ap.add_argument('--seconds', type=float, default=60.0)
     ap.add_argument('--build', default='dc04aee5', help='first 8 hex digits of the host game build ID')
-    ap.add_argument('--protocol', type=int, choices=range(6, 27), default=PROTO, help='host protocol version (default: 26)')
+    ap.add_argument('--protocol', type=int, choices=(6, 7, 23, 24, 25, 26), default=PROTO, help='host protocol version (default: 26)')
     ap.add_argument('--say', default='hello from fakepeer')
     a = ap.parse_args()
     h, _, port = a.host.partition(':')
@@ -231,7 +234,7 @@ def main():
             speed = math.sqrt(sum(v * v for v in vel))
             flags = PF_IN_WORLD | (PF_MOVING if speed > 0.3 else 0)
             c.send_unreliable(STATE, pack_state(st['my_id'], int(now * 1000), p, st['host']['rot'], vel,
-                                                flags, 10.0, 10.0, 0, st['host']['mode'], st['host']['world']))
+                                                flags, 10.0, 10.0, 0, st['host']['mode'], st['host']['world'], c.protocol))
             if not st['said'] and now - t0 > 2:
                 txt = a.say.encode()
                 c.send_reliable(CHAT, struct.pack('<BH', st['my_id'], len(txt)) + txt)
