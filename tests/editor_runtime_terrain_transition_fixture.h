@@ -129,14 +129,61 @@ static void test_transition_recovery_failure_retains_previous_checkpoint(){
     CHECK(runtime_guest::store.snapshot()==guest_checkpoint&&!runtime_guest::view().can_save);
     side=0;runtime_host::end();CHECK(spin([]{return !runtime_host::recovery&&!runtime_host::closing;}));
 }
+static void test_transition_recovery_retires_failed_save_hold_case(bool extended){
+    seed_complexity_settings=extended;
+    Party party(0,0xA5,true,true);
+    seed_complexity_settings=false;
+    if(extended){
+        CHECK(spin([]{return runtime_host::controller->view().complexity_ready&&runtime_guest::controller->view().complexity_ready;}));
+        side=0;runtime_host::set_extended_complexity(true);
+        CHECK(spin([]{return runtime_host::controller->state().document.revision==1&&runtime_guest::controller->state().document.revision==1&&
+            !runtime_host::awaiting_operation&&!runtime_host::durable_commit&&!runtime_guest::durable_commit&&runtime_host::controller->settled();}));
+        CHECK(editor::extended_complexity(runtime_host::controller->state().document));
+    }
+    const auto checkpoint=runtime_host::store.snapshot();
+    const auto committed=runtime_host::controller->state();
+    side=0;runtime_host::save();CHECK(spin([]{return native[0].save_busy;}));
+    native[0].refuse_transition_normalize=true;
+    complete_native_save(0,{812,0x366A930D,0x408A0000});
+    CHECK(runtime_host::frozen&&runtime_host::save_publication_pending&&runtime_host::save_terrain);
+    CHECK(runtime_host::store.snapshot()==checkpoint);
+    native[0].refuse_transition_normalize=false;native[0].transition_defer_ready=true;
+    runtime_host::recover();
+    CHECK(spin([]{return runtime_host::recovery&&runtime_host::recovery->terrain&&runtime_host::recovery->terrain->materializing;}));
+    CHECK(runtime_host::save_publication_pending&&runtime_host::save_terrain);
+    CHECK(runtime_host::store.snapshot()==checkpoint&&!runtime_host::current_gesture_scope().epoch);
+    native[0].transition_defer_ready=false;native[0].state.ready=true;
+    CHECK(spin([]{return !runtime_host::recovery&&!runtime_host::frozen;}));
+    CHECK(!runtime_host::save_publication_pending&&!runtime_host::save_terrain&&!runtime_host::save_cancelling);
+    CHECK(runtime_host::controller->state().document.revision==committed.document.revision);
+    CHECK(runtime_host::controller->state().history==committed.history);
+    CHECK(runtime_host::store.snapshot().epoch!=checkpoint.epoch);
+    CHECK(runtime_host::current_gesture_scope().epoch&&runtime_host::current_projection_scope().epoch);
+    CHECK(spin([]{return !runtime_guest::closing&&(runtime_guest::controller->view().phase==es::Phase::Offered||runtime_guest::controller->view().phase==es::Phase::Ready);}));
+    side=1;std::string error;
+    if(runtime_guest::controller->view().phase==es::Phase::Offered)CHECK(runtime_guest::controller->accept_offer(error));
+    CHECK(spin([]{return runtime_guest::controller->view().phase==es::Phase::Ready;}));
+    for(unsigned author=0;author<2;++author){
+        creation_field(author,placement,{editor::Field::Position,0},editor::Vec3{float(21+author),8,7},
+            {editor::ScopeKind::Placement,placement,{}});
+        CHECK(runtime_host::controller->state().document.revision==committed.document.revision+author+1);
+        CHECK(runtime_guest::controller->state().document==runtime_host::controller->state().document);
+    }
+}
+static void test_transition_recovery_retires_failed_save_hold(){
+    test_transition_recovery_retires_failed_save_hold_case(false);
+    test_transition_recovery_retires_failed_save_hold_case(true);
+}
 static void test_transition_failed_recovery_resume_is_terminal_until_explicit_retry(){
     Party party;const auto checkpoint=runtime_host::store.snapshot();side=0;
+    runtime_host::save_publication_pending=true;
     native[0].transition_defer_ready=true;runtime_host::frozen=true;runtime_host::recover();
     CHECK(spin([]{return runtime_host::recovery&&runtime_host::recovery->terrain&&runtime_host::recovery->terrain->materializing;}));
     const auto resumes=native[0].transition_resumes;
     native[0].refuse_transition_resume=true;native[0].transition_defer_ready=false;native[0].state.ready=true;
     CHECK(spin([&]{return native[0].transition_resumes>resumes;}));
     CHECK(runtime_host::recovery&&runtime_host::frozen&&runtime_host::store.snapshot()==checkpoint);
+    CHECK(runtime_host::save_publication_pending&&!runtime_host::current_gesture_scope().epoch);
     const auto held=runtime_host::recovery->terrain->ticket;const auto image=runtime_host::recovery->native.bytes;
     const auto first=runtime_host::view().status;const auto attempts=native[0].transition_resumes;
     for(unsigned i=0;i<12;++i)step();
@@ -145,6 +192,7 @@ static void test_transition_failed_recovery_resume_is_terminal_until_explicit_re
     runtime_host::status="later invalid receipt";runtime_host::refresh();CHECK(runtime_host::view().status==first);
     native[0].refuse_transition_resume=false;runtime_host::recover();
     CHECK(spin([]{return !runtime_host::recovery&&!runtime_host::frozen;}));
+    CHECK(!runtime_host::save_publication_pending&&runtime_host::current_gesture_scope().epoch);
     CHECK(native[0].transition_resumes>attempts&&runtime_host::store.snapshot().epoch!=checkpoint.epoch);
 }
 static void test_transition_scene_probe_closes_logical_owner(){
@@ -171,5 +219,6 @@ static void test_all_terrain_transition_runtime_cases(){
     test_transition_cancel_never_restores_replacement_scene();
     test_transition_recovery_bootstrap_keeps_prior_checkpoint_until_ready();
     test_transition_recovery_failure_retains_previous_checkpoint();
+    test_transition_recovery_retires_failed_save_hold();
     test_transition_failed_recovery_resume_is_terminal_until_explicit_retry();
 }

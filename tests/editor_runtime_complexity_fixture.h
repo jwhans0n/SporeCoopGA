@@ -139,7 +139,7 @@ static void test_runtime_complexity_diagnostic_uses_owned_values(){
         const auto diagnostic=[&]{return author?runtime_guest::debug({"complexity"}):runtime_host::debug({"complexity"});};
         const auto text=diagnostic();CHECK(text.find("context_current=1")!=std::string::npos&&text.find("ready=1")!=std::string::npos);
         CHECK(n.callbacks.canonical_revision()==state.document.revision);
-        CHECK(text.find("policy=00000001 formula=DC04DB80 available=1 reason=0")!=std::string::npos);
+        CHECK(text.find("policy=00000002 formula=DC04DB80 available=1 reason=0")!=std::string::npos);
         CHECK(text.find("41100000")==std::string::npos&&std::count(text.begin(),text.end(),',')==12&&text.size()<1536);
         CHECK(text.find("claim_serial=0")==std::string::npos);
         ++observed;CHECK(diagnostic().find("context_current=0")!=std::string::npos);--observed;

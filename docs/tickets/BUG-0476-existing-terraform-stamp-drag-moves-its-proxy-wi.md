@@ -1,16 +1,16 @@
 ---
 id: BUG-0476
 title: Existing Terraform stamp drag moves its proxy without a synchronized commit
-status: open
+status: fixed
 kind: desync
 stage: GA shared editor
 reported: 2026-11-03
 source: C60 actual existing Effect drag at shared R54, proxy position changed while native recipe and revision stayed unchanged
 role: host
 versions: private preview9 C60 protocol25
-fixed_in:
+fixed_in: private preview9 C62 (protocol25), not installed personally
 branch: feat/ga-editor-multi-act
-commits:
+commits: 7812a0a
 tests: out/preview9-c60-terrain-existing-move; out/preview9-c60-terrain-input-red-preserved; out/editor-preview9-terraform-input/receipt.json
 signature: active Terraform action F028F0 and tick F029E0 bypass placement-only F03770/F02B30 hooks
 docs: docs/re/adventure-editor-history.md#history-terraform-input-dispatch

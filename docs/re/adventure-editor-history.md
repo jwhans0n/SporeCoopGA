@@ -2394,3 +2394,62 @@ on both peers. All Planet fields restore and reapply exactly through the checked
 history sequence. Evidence: `out/preview9-c62-terrain-existing-move` and
 `out/preview9-c62-terrain-guest-move`. Manipulator, Model and delete breadth remain
 separate qualification; this closes the actual movement failure in BUG-0476.
+
+C62 actual scale handles subsequently pass guest R66 to70 and host R70 to74,
+each with A/U/R/U and exact Planet restoration. The actual scale handle pick
+is375345 in the qualified1,024x768 aligned view. The selected row180 scale
+changes0.070000067 to0.152063593; only02A907B6 changes. Native Update also
+exports its current grounded proxy position as a companion in that transform.
+The source grab/release point is not a stable post-rebuild pick position.
+
+Native strength at physical20,235 passes host R74 to78 and guest R78 to82.
+It changes03DD8E5A plus02A907B6: F381D0 exports the selected transform even
+when the manipulator edits descriptor strength. Host strength changes0.05 to
+0.088538475; only row180 changes in both columns, and all other fields/records
+remain unchanged. The initial OUT assertion allowed only intensity and failed
+after the valid R75 commit; its immutable before/after images establish the
+companion, and separate checked history reaches R78 with exact restoration.
+No production validation was relaxed.
+
+Evidence: `out/preview9-c62-terrain-guest-scale-r3`,
+`out/preview9-c62-terrain-host-scale`,
+`out/preview9-c62-terrain-host-strength-history` and
+`out/preview9-c62-terrain-guest-strength`. Early OUT handle calibration used
+insufficient hover/settle fences and is retained. Both incidental native
+transform edits were checked-Undone before qualification, with exact Planet
+restoration; these probes are not passed control cases. Correct physical input
+waits for hover before press, and actual qualification waits for the new durable
+revision. The native Context auxiliary pointer must equal the requested handle
+before movement, so a body move cannot masquerade as a manipulator test.
+
+## Failed Save publication hold after verified recovery (2026-11-03, feat/ga-editor-multi-act)
+<a id="editor-failed-save-recovery-hold"></a>
+
+CORRECTION (2026-11-03, feat/ga-editor-multi-act): the C62 same-party revision-90
+recovery proves exact restored authored fields, convergence and fault-free
+scene readiness, but does not prove input readiness. The next Model and Effect
+drags acquire leases without starting native history. `saved_native` retained
+`save_publication_pending` after its Save terrain consistency rejection, and
+`finish_recovery` failed to retire that superseded hold. Both gesture and read
+projection scopes remain empty after the new epoch is durable. Extended
+Complexity consequently reports lost original-editor evidence. BUG-0477 tracks
+the focused lifecycle fix. The original Save recipe mismatch remains open
+investigation and is not attributed to Model selection or Escape.
+
+Evidence: `out/preview9-c62-model-probe-save-guard-preserved/`,
+`out/preview9-c62-recover-model-probe/result.json`,
+`out/preview9-c62-model-held-move-diagnostic/result.json`, and
+`out/preview9-c62-post-recovery-effect-move/result.json`. Normal retirement
+then returns both private games to Galaxy with zero faults, preserving R90:
+`out/preview9-c62-r90-retirement/result.json`.
+
+BUG-0477 source fix: only after `store.checkpoint` succeeds in finish_recovery,
+retire save_terrain, save_cancelling and save_publication_pending. A deferred or
+failed recovery leaves them and the prior checkpoint intact. Strict-i686
+RED fails at the stale flag; GREEN exercises both default and Extended modes,
+then accepts one edit from each role. Transition3,772, recovery2,014, consensus
+1,564 and read-scope190 checks pass. The consensus diagnostic fixture now
+expects arena-safe policy2, correcting its stale policy1 string. Evidence:
+`out/editor-preview9-save-recovery/receipt.json`. Private C63 keeps323 exact
+production inputs. Fresh R90 recovery and subsequent both-role native Model
+movement pass; failed-Save recovery in the same native process is still open.

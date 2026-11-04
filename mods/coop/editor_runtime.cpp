@@ -3969,6 +3969,10 @@ void finish_recovery() {
     if(!store.checkpoint(recovery->staged,error)){fail_recovery(error);return;}
     current_native=std::move(recovery->native);rendered_revision=current_native.document.revision;
     native_generation=recovery->native_generation;native_attached=true;native_identity_lost=false;frozen=false;
+    // A failed native Save retains its publication hold until recovery proves
+    // this replacement scene and publishes the new durable checkpoint. The old
+    // Save receipt cannot continue in the recovered epoch.
+    save_terrain.reset();save_cancelling=false;save_publication_pending=false;
     recovery.reset();
     queue_scene_alias_attachment(SceneAliasOwner{target.owner,target.generation});
     refresh_complexity_capability();

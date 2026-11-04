@@ -85,6 +85,46 @@ The private C60 protocol25 boundary candidate is not installed personally.
 Users were told to leave Extended Complexity off in the personal candidate
 until its marker-storage correction is qualified and delivered.
 
+### C62 actual native stamp dragging
+
+Both roles now pass ordinary existing-Effect dragging, one synchronized history
+item per gesture, and checked Undo/Redo/Undo with exact Planet-field restoration.
+Host R54 to58 and guest R58 to62 change only transform column02A907B6; both
+peers converge with zero faults. This fixes BUG-0476 in private C62/protocol25,
+commit7812a0a. It is not a new personal installation.
+
+Actual C60 RED identified separate Terraform F028F0/F029E0 input dispatch that
+bypasses placement F03770/F02B30 hooks. Actual C61 then exposed the native versus
+acquired-record revision mismatch. C62 retains immutable acquired metadata and
+checks the native before-image, identity/kind/order and new payload without
+weakening Core validation. Controlled actual-i686 Terraform input195, Clone838,
+preset8,910/full adapter153,522 and host/i686 Core366 checks pass; exact GOG ABI117
+passes. The Core checks also preserve a foreign stroke through Undo/Redo and
+reject forged/invalid variants. Native picking and grounded proxy calibration
+are retained separately from authored recipe comparisons.
+
+Evidence: `out/preview9-c62-terrain-existing-move`,
+`out/preview9-c62-terrain-guest-move`,
+`out/editor-preview9-terraform-input`, `out/editor-preview9-terrain-revisions`,
+`out/preview9-c61-terraform-native-route-audit-r2` and
+`out/preview9-candidate62-build-receipt.json` (323 unchanged production inputs).
+C62 then also passes both-role scale (R66 to74), strength (R74 to82) and yaw
+(R82 to90), with one synchronized history item per gesture and exact Planet
+Undo/Redo/Undo restoration. The strength handle changes its intensity and
+transform companion; the other handles change only transforms. Native picks
+are verified against the current handle identity before motion. Receipt:
+`out/preview9-c62-manipulator-qualified/receipt.json`.
+
+A later Model probe reaches a native Save recipe consistency guard. Revision90
+is preserved. Same-party recovery restores every Planet field, but subsequent
+Model and Effect drag probes fail to start native history because the old Save
+publication flag survives recovery (BUG-0477). This does not invalidate the
+eight pre-recovery Effect cases. The Save recipe mismatch itself is not yet
+assigned. Both games subsequently return normally to Galaxy with zero faults.
+The C60/C61 failures and calibration mistakes remain retained. Model, delete,
+clone, wheel scaling and gradient-operation coverage is still open. Deferred
+release gates remain deferred.
+
 ### C60 actual native placement boundary
 
 The exact generated4,095-placement/118-class/five-act private fixture cold-opens
