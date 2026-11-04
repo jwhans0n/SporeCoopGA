@@ -222,7 +222,118 @@ static void placement_history_after_act_deletion(){
     const auto& restored=core.state().document.placements.at(p.object);CHECK(restored.act_id==second && restored.position==p.position);
     std::vector<uint8_t> bytes;State recovered;CHECK(wire::encode_state(core.state(),bytes,error));CHECK(wire::decode_state(bytes,recovered,error));CHECK(recovered==core.state());
 }
-int main(){
+static void exact_class_boundary(bool relaxed_mutant=false){
+    // Exercise real canonical allocation/validation/history. The dependency
+    // registry below is a transactional hook double, not Native admission.
+    constexpr uint32_t limit=1024;
+    auto baseline=seed();auto& doc=baseline.document;doc.next_id=9ull<<32;doc.next_class=limit-1;
+    auto row=[](uint32_t index){
+        auto result=initial();result.class_id.id|=index;result.object.id|=index;
+        auto& body=std::get<StructuredValue>(result.properties.at(block.property));
+        body.bytes={0x71,uint8_t(index),uint8_t(index>>8),0xA9};
+        if(index)body.references={cast};
+        return result;
+    };
+    for(uint32_t index=0;index<limit-1;++index){auto c=row(index);doc.classes.insert(c.class_id);doc.class_settings.emplace(c.object,std::move(c));}
+    const ObjectId untouched{(1ull<<32)|77,1};
+    Placement placement;placement.object=untouched;placement.class_id=cast;placement.act_id=act;placement.position={19,23,29};
+    doc.placements.emplace(untouched,placement);
+    doc.settings_schema=editor_native::authoring_property_schema();
+    AuthoringSettings authoring;authoring.object=editor_native::act_settings_id(0);authoring.act_id=act;
+    authoring.properties[editor_native::kActBlockProperty]=StructuredValue{editor_native::kActBlockFormat,{0x19,0x23,0x29},{cast}};
+    doc.settings.emplace(authoring.object,authoring);
+    std::string error;CHECK(valid(doc,{},error));
+    Limits limits;if(relaxed_mutant)limits.classes=limit+1; // Test sensitivity only.
+    Coordinator core(limits);CHECK(core.reset(baseline,7,error));CHECK(core.connect(host));CHECK(core.connect(guest));
+    const ObjectId last{cast.id|(limit-1),1},last_settings{settings.id|(limit-1),1};
+    const auto foreign=core.acquire(guest,{{ScopeKind::Content,cast,{}}},100,30000);CHECK(foreign.accepted());
+    auto granted=core.acquire(host,{{ScopeKind::Structure,{},{}}},100,30000);CHECK(granted.accepted());
+    const auto resources=[](const Document& d){
+        std::set<ResourceKey> result;
+        for(const auto& [id,c]:d.class_settings){(void)id;result.insert(std::get<ResourceKey>(c.properties.at(kClassAssetResourceProperty)));}
+        return result;
+    };
+    auto admitted=resources(doc);State durable=baseline,replica=baseline;
+    unsigned validations=0,applications=0,persists=0,rollbacks=0;
+    Hooks hooks;
+    hooks.validate=[&](const Document&,const Document&,const Change& change,std::string&){
+        ++validations;CHECK(change.patch.dependencies.size()==2);return true;
+    };
+    hooks.apply=[&](const Document&,const Document& after,const Change&,std::string&){++applications;admitted=resources(after);return true;};
+    hooks.persist=[&](const State& next,const Change&,std::string&){++persists;durable=next;return true;};
+    hooks.rollback=[&](const Document&,const Document&,const Change&,std::string&){++rollbacks;return true;};
+    uint64_t sequence=0;
+    const auto request=[&](Intent intent,std::vector<Mutation> mutations={}){
+        Request r;r.project=doc.project;r.epoch=7;r.operation={host,++sequence,7};r.base_revision=core.state().document.revision;
+        r.intent=intent;r.summary="Exact canonical class boundary";r.mutations=std::move(mutations);
+        if(intent==Intent::Forward)r.dependencies={{untouched,CheckKind::Object,{},0},{settings,CheckKind::Field,block,0}};
+        for(const auto& lease:granted.leases)r.leases.push_back({lease.scope,lease.token});return r;
+    };
+    const auto unrelated=[&]{
+        const auto& after=core.state().document;
+        CHECK(after.placements==doc.placements && after.settings==doc.settings && after.external_references==doc.external_references);
+        CHECK(after.schema==doc.schema && after.class_schema==doc.class_schema && after.settings_schema==doc.settings_schema);
+        CHECK(after.acts==doc.acts && after.act_order==doc.act_order && after.terrain==doc.terrain);
+        for(const auto& [id,c]:doc.class_settings)CHECK(after.class_settings.at(id)==c);
+    };
+    const auto accepted=[&](Request r,size_t count,Revision revision){
+        const auto decision=core.submit(r,100,hooks);
+        if(!decision.accepted())std::cerr<<"class boundary revision="<<revision<<" code="<<unsigned(decision.code)<<" reason="<<decision.reason<<'\n';
+        CHECK(decision.accepted() && decision.change);
+        CHECK(core.state().document.classes.size()==count && core.state().document.class_settings.size()==count);
+        CHECK(core.state().document.revision==revision && core.state().history.size()==1);
+        CHECK(core.state().document.next_class==limit);CHECK(admitted==resources(core.state().document));
+        CHECK(durable==core.state());CHECK(apply_committed(replica,decision,error));
+        // A host's rejected-decision cache need not be copied to the replica.
+        CHECK(replica.document==core.state().document && replica.history==core.state().history);
+        std::vector<uint8_t> bytes;State reopened;CHECK(wire::encode_state(durable,bytes,error));
+        CHECK(wire::decode_state(bytes,reopened,error) && reopened==durable);unrelated();return decision;
+    };
+    auto candidate=row(limit-1);candidate.properties[kClassAssetResourceProperty]=ResourceKey{0x710003FF,2,3};
+    std::get<StructuredValue>(candidate.properties.at(block.property)).references={cast,{cast.id|1,1}};
+    Mutation add;add.kind=MutationKind::CreateClass;add.class_initial=candidate;
+    const auto created=accepted(request(Intent::Forward,{add}),limit,1);
+    CHECK(created.change->patch.classes.size()==1 && created.change->patch.classes.front().object==last);
+    CHECK(core.state().document.classes.contains(last) && core.state().document.class_settings.contains(last_settings));
+    CHECK(core.state().document.class_settings.at(last_settings).properties==candidate.properties);
+    CHECK(validations==1 && applications==1 && persists==1 && rollbacks==0);
+    // Class/Content capabilities are meaningful only after the new canonical
+    // identity exists. Retain them across the subsequent Undo tombstone.
+    const auto history_grant=core.acquire(host,{{ScopeKind::Class,last,{}},{ScopeKind::Content,last,{}}},100,30000);CHECK(history_grant.accepted());
+    granted.leases.insert(granted.leases.end(),history_grant.leases.begin(),history_grant.leases.end());
+    auto overflow=row(limit);overflow.properties[kClassAssetResourceProperty]=ResourceKey{0x71000400,2,3};
+    add.class_initial=overflow;const auto rejected_request=request(Intent::Forward,{add});
+    const auto before=core.state(),before_durable=durable;const auto before_admitted=admitted;
+    const auto decision=core.submit(rejected_request,100,hooks);
+    CHECK(!decision.accepted() && !decision.change && !decision.reason.empty());
+    CHECK(core.state().document==before.document && core.state().history==before.history);
+    CHECK(core.state().retired_sequences==before.retired_sequences && core.state().history_truncated==before.history_truncated);
+    CHECK(admitted==before_admitted && durable==before_durable);
+    CHECK(validations==1 && applications==1 && persists==1 && rollbacks==0);
+    // Rejection is remembered, but it cannot touch a class, dependency, durable
+    // revision or undo stack, and replay cannot invoke any transactional hook.
+    CHECK(core.state().decisions.at(rejected_request.operation)==decision);
+    const auto rejected_state=core.state();CHECK(core.submit(rejected_request,100,hooks)==decision && core.state()==rejected_state);
+    CHECK(!core.state().document.classes.contains(overflow.class_id) && !core.state().document.class_settings.contains(overflow.object));
+    CHECK(!admitted.contains(std::get<ResourceKey>(overflow.properties.at(kClassAssetResourceProperty))));
+    const auto undone=accepted(request(Intent::Undo),limit-1,2);CHECK(undone.change->patch.classes.size()==1);
+    CHECK(!core.state().document.classes.contains(last) && admitted==resources(doc));
+    CHECK(core.state().history.front().redo_available && !core.state().history.front().applied);
+    accepted(request(Intent::Redo),limit,3);
+    CHECK(core.state().document.class_settings.at(last_settings).properties==candidate.properties);
+    CHECK(core.state().history.front().applied && !core.state().history.front().redo_available);
+    CHECK(validations==3 && applications==3 && persists==3 && rollbacks==0);
+    CHECK(core.release(host,rejected_request.leases));
+    std::vector<LeaseToken> foreign_tokens;for(const auto& lease:foreign.leases)foreign_tokens.push_back({lease.scope,lease.token});
+    CHECK(core.release(guest,foreign_tokens));
+}
+int main(int argc,char** argv){
+    if(argc==2 && std::string(argv[1])=="--class-boundary-relaxed-mutant"){
+        exact_class_boundary(true);return 0;
+    }
+    if(argc>2 || (argc==2 && std::string(argv[1])!="--class-boundary-only"))return 2;
+    exact_class_boundary();
+    if(argc==2){std::cout<<checks<<" exact class-boundary checks passed\n";return 0;}
     active_behavior_reference_metadata();
     placement_history_after_act_deletion();
     ordered_act_roster();
