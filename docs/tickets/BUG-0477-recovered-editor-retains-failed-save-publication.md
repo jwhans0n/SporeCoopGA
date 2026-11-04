@@ -1,16 +1,16 @@
 ---
 id: BUG-0477
 title: Recovered editor retains failed Save publication hold
-status: open
+status: fixed
 kind: bug
 stage: GA shared editor
 reported: 2026-11-03
 source: Private C62 Terraform validation
 role: host
 versions: 0.7.5.0-ga-editor-preview.9
-fixed_in:
+fixed_in: 0.7.5.0-ga-editor-preview.9 (private C63)
 branch: feat/ga-editor-multi-act
-commits:
+commits: b120545
 tests: editor_runtime_windows_tests.exe --terrain-transition-only; --recovery-lifecycle-only; --complexity-only; --projection-scope-only
 signature: save_publication_pending survives finish_recovery; gesture/projection scopes empty
 docs: docs/re/adventure-editor-history.md#editor-failed-save-recovery-hold

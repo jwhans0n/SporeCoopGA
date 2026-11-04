@@ -216,7 +216,7 @@ void reset(){
     held_terrain_preset.reset();a_copy_terrain_properties=0;
     held_terrain_controls.clear();terrain_before.reset();terrain_pending=terrain_rebuilding=terrain_capturing=terrain_recipe_replacement=false;terrain_available=false;
     deferred_local_view.reset();local_view_queued=local_view_settling=false;
-    held_tool.reset();held_import.reset();held_creation.reset();held_class_removal.reset();held_captain_asset.reset();held_crew_action.reset();
+    held_tool.reset();held_terrain_delete.reset();held_import.reset();held_creation.reset();held_class_removal.reset();held_captain_asset.reset();held_crew_action.reset();
     for(auto item:pending){release(item.entry);release(item.before);}pending.clear();
     if(gesture_before_resource){release(gesture_before_resource);gesture_before_resource=nullptr;}
     gesture_before_metadata.reset();gesture_metadata_error.clear();
@@ -625,6 +625,71 @@ void test_terrain_pending_grab(){
         if(reason==8)deny_input({{editor::ScopeKind::Authoring,{},{}}});
         continue_input(nullptr);CHECK(!held_tool&&!t_steps&&value(t_live.data(),0)==1);
     }
+    reset();
+}
+unsigned terrain_delete_calls=0;
+void SK_THISCALL t_terrain_delete(void* manager){
+    CHECK(manager==t_tool_pointer);++terrain_delete_calls;
+    t_terrain_start(t_terraform.data());skg::field<void*>(t_context.data(),4)=nullptr;
+    value(t_live.data(),0)+=1;t_terrain_commit(t_terraform.data());
+}
+void setup_terrain_delete(){
+    setup_terrain_grab();terrain_delete_calls=0;original_terrain_delete=t_terrain_delete;
+    terrain_before.reset(); // No native history starts while Delete is held.
+    skg::field<void*>(t_terraform.data(),0x19C)=t_terrain_descriptor.data();
+    skg::field<void*>(t_terraform.data(),0x1A0)=t_terrain_descriptor.data()+16;
+    skg::field<void*>(t_terraform.data(),0x1B0)=t_terrain_descriptor.data();
+}
+void test_terrain_pending_delete(){
+    setup_terrain_delete();
+    terrain_delete_native(t_tool_pointer);
+    CHECK(held_terrain_delete&&!terrain_delete_calls&&skg::field<void*>(t_context.data(),4)==t_actors[0].data());
+    CHECK(!terrain_starts&&!terrain_commits&&value(t_live.data(),0)==1);
+    terrain_delete_native(t_tool_pointer);CHECK(held_terrain_delete&&!terrain_delete_calls);
+    continue_input(nullptr);CHECK(!terrain_delete_calls);
+    t_granted=true;continue_input(nullptr);
+    CHECK(terrain_delete_calls==1&&terrain_starts==1&&terrain_commits==1&&value(t_live.data(),0)==2);
+    continue_input(nullptr);CHECK(terrain_delete_calls==1);
+    for(unsigned reason=0;reason<18;++reason){
+        setup_terrain_delete();terrain_delete_native(t_tool_pointer);CHECK(held_terrain_delete);
+        if(reason==0)++t_revision;if(reason==1)++t_scope.epoch;if(reason==2)++generation;
+        if(reason==3)++skg::field<uint32_t>(t_context.data(),0);
+        if(reason==4)skg::field<void*>(t_context.data(),4)=t_actors[1].data();
+        if(reason==5)skg::field<uintptr_t>(t_context.data(),0x10)=123;
+        if(reason==6)t_time+=3;if(reason==7)const_cast<HeldTerrainDelete&>(*held_terrain_delete).focused=true;
+        if(reason==8)deny_input({{editor::ScopeKind::Document,{},{}}});
+        if(reason==9)deny_input({{editor::ScopeKind::Terrain,{55,1},{}}});
+        if(reason==10)deny_input({{editor::ScopeKind::Authoring,{},{}}});
+        if(reason==11)native_fixture_escape_state=SHORT(0x8000);
+        if(reason==12)t_active=false;
+        if(reason==13)skg::field<editor::ResourceKey>(t_live.data(),8).instance++;
+        if(reason==14)skg::field<void*>(t_terraform.data(),0x1B0)=nullptr;
+        if(reason==15)act_identity.terrain.clear();
+        if(reason==16)skg::field<bool>(t_terrain_definition.data(),0x68)=true;
+        if(reason==17)C.object_revision=[](editor::ObjectId)->std::optional<editor::Revision>{return std::nullopt;};
+        t_granted=true;continue_input(nullptr);
+        if(held_terrain_delete||terrain_delete_calls||terrain_starts||terrain_commits||value(t_live.data(),0)!=1)
+            std::fprintf(stderr,"Terraform Delete cancellation reason %u: held=%u calls=%u start=%u commit=%u\n",reason,
+                unsigned(bool(held_terrain_delete)),terrain_delete_calls,terrain_starts,terrain_commits);
+        CHECK(!held_terrain_delete&&!terrain_delete_calls&&!terrain_starts&&!terrain_commits&&value(t_live.data(),0)==1);
+    }
+    for(unsigned changed=0;changed<3;++changed){
+        setup_terrain_delete();terrain_delete_native(t_tool_pointer);CHECK(held_terrain_delete);
+        C.terrain_gate=[changed](const auto&,const auto&){
+            if(changed==0)++t_scope.epoch;
+            if(changed==1)skg::field<editor::ResourceKey>(t_live.data(),8).instance++;
+            if(changed==2)held_terrain_delete.reset();
+            return true;
+        };
+        continue_input(nullptr);CHECK(!held_terrain_delete&&!terrain_delete_calls&&!terrain_starts);
+    }
+    setup_terrain_delete();t_granted=true;terrain_delete_native(t_tool_pointer);
+    CHECK(!held_terrain_delete&&terrain_delete_calls==1&&terrain_starts==1&&terrain_commits==1);
+    setup_terrain_delete();terrain_delete_native(t_tool_pointer);CHECK(held_terrain_delete);
+    deny_input({{editor::ScopeKind::Terrain,{99,1},{}}});CHECK(held_terrain_delete);
+    C.transaction_pending=[]{return true;};t_granted=true;continue_input(nullptr);
+    CHECK(held_terrain_delete&&!terrain_delete_calls);C.transaction_pending=[]{return false;};
+    continue_input(nullptr);CHECK(!held_terrain_delete&&terrain_delete_calls==1);
     reset();
 }
 std::map<void*,std::vector<uint8_t>> t_preset_payloads;
@@ -1736,6 +1801,9 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
 #include "editor_native_clone_input_fixture.h"
 #include "editor_native_planet_preset_fixture.h"
 int main(int argc,char** argv){
+    if(argc==2&&std::string(argv[1])=="--terrain-delete-only"){
+        test_terrain_pending_delete();std::printf("native Terraform Delete: %u checks passed\n",checks);return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--terrain-input-only"){
         test_terrain_pending_grab();std::printf("native Terraform input: %u checks passed\n",checks);return 0;
     }
@@ -1853,6 +1921,7 @@ int main(int argc,char** argv){
     test_native_color_refresh();
     test_cold_native_terrain_initialization();
     test_terrain_pending_grab();
+    test_terrain_pending_delete();
     test_terrain_preset_retry();
     test_full_roster_fingerprint();test_exact_class_projection_cache();
     test_crew_input_ownership();

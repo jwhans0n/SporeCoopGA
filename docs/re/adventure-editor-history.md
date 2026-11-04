@@ -2453,3 +2453,43 @@ expects arena-safe policy2, correcting its stale policy1 string. Evidence:
 `out/editor-preview9-save-recovery/receipt.json`. Private C63 keeps323 exact
 production inputs. Fresh R90 recovery and subsequent both-role native Model
 movement pass; failed-Save recovery in the same native process is still open.
+
+C63 actual Model control acceptance (2026-11-03): both-role move, scale and yaw
+pass fromR90 throughR116, only changing03A90C5F. Sampled definitions suppress
+strength through equal min/max values. Missed scale calibrationR99 is checked
+undone atR100 to the exact prior native image. Native yaw selection requires
+the arrowhead (measured350,216 in this pinned camera), rather than the visible
+ring arc; the actual Context10 pointer must equal Context20 before movement.
+Scale's measured head is620,520. These coordinates are fixture observations,
+not application constants. Exact handle identities and authored results are
+retained in `out/preview9-c63-model-controls-qualified/receipt.json`.
+
+## Terraform Delete ownership before selection clearing (2026-11-03, feat/ga-editor-multi-act)
+<a id="editor-terraform-delete-entry"></a>
+
+Actual C63 first Delete on Effect180 does not commit. EFEEC0 is the independent
+Terraform vt10 entry, not placement F02CE0. It calls StartF33A90, clears selected
+Context4 through vt20, then calls RemoveF37FF0 and tails CommitF34400. The old
+Remove gate therefore loses the initial command while requesting ownership.
+BUG-0478 hooks this entry before Start/clearing. Its immutable pending values
+pin scene source, context/tool, act, current descriptor/vector membership and
+actor/definition/index, canonical record revision and project/epoch/author.
+A checked grant executes the original Delete exactly once; stale callbacks,
+denial, Escape/focus and expiry cancel without a native mutation.
+
+Strict-i686 RED fails the old invocation; GREEN Delete216, drag195 and full
+adapter153897 checks pass. Exact Native ABI118 includes the prologue, plain
+return, F34400 tail, call sites and vt10. Native C65 acceptance is pending.
+
+C64 build is retained but rejected before launch: `--write-map` emits only the
+verifier's known subset and must not replace the extended hand-audited map.
+C65 preserves all165 previous bindings and adds only Delete. Receipt:
+`out/preview9-candidate64-rejection.json`. Both co-op DLLs have identical code;
+the corrected C65 source retention contains the complete external map.
+
+C63 clone and Shift+wheel probes also commit nothing and preserve exact native,
+semantic/canonical and history values atR116. The wheel probe changes camera
+zoom, so ownership failure is not yet established for its actual producer.
+BUG-0479 tracks qualification of actions6/11 and the adapter's missing pending
+retention for those actions. Evidence:
+`out/preview9-c63-terrain-first-action-failures/result.json`.

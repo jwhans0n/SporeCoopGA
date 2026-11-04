@@ -125,6 +125,34 @@ The C60/C61 failures and calibration mistakes remain retained. Model, delete,
 clone, wheel scaling and gradient-operation coverage is still open. Deferred
 release gates remain deferred.
 
+### C63 failed-Save recovery hold and native Model controls
+
+BUG-0477 (`b120545`) retires a failed Save publication hold only after the new
+recovery checkpoint is durable and its terrain scene is verified. Deferred and
+failed recovery preserve the previous checkpoint and hold. Strict actual-i686
+RED reproduces the stale flag; GREEN covers default and Extended modes and
+subsequent edits from both roles: transition3,772, recovery2,014, complexity
+consensus1,564 and projection-scope190 checks. The consensus diagnostic's old
+policy1 assertion is corrected to policy2. Evidence:
+`out/editor-preview9-save-recovery/{receipt,postcommit}.json`.
+
+C63 retains323 exact production inputs and changes only the private installation.
+Fresh R90 recovery restores every Planet field. Native Model movement, scale and
+yaw then pass from each role, with one history entry and exact checked
+Undo/Redo/Undo restoration through R116. Only Model transform column03A90C5F
+changes. The sampled Model definitions have fixed strength ranges and expose
+no strength handle. Receipt: `out/preview9-c63-model-controls-qualified/receipt.json`.
+One missed scale-handle calibration produced an incidental move atR99;
+checked Undo restores the complete R98 native image atR100. Other missed yaw
+picks stop before movement. All failed calibration artifacts remain retained.
+
+Full before/after Planet images qualify changed fields. Subsequent history
+steps compare each participant's exact complete serialized native SHA and
+semantic SHA against its own retained before/after image. This reduces repeated
+pagination without relaxing restoration checks. Native failed-Save recovery in
+the same process, Delete/clone/wheel and gradient-operation checks remain open.
+The original Save recipe rejection remains separately unassigned.
+
 ### C60 actual native placement boundary
 
 The exact generated4,095-placement/118-class/five-act private fixture cold-opens
