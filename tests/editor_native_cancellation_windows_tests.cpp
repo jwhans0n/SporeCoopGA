@@ -216,7 +216,7 @@ void reset(){
     held_terrain_preset.reset();a_copy_terrain_properties=0;
     held_terrain_controls.clear();terrain_before.reset();terrain_pending=terrain_rebuilding=terrain_capturing=terrain_recipe_replacement=false;terrain_available=false;
     deferred_local_view.reset();local_view_queued=local_view_settling=false;
-    held_tool.reset();held_terrain_delete.reset();held_import.reset();held_creation.reset();held_class_removal.reset();held_captain_asset.reset();held_crew_action.reset();
+    held_tool.reset();held_terrain_delete.reset();held_terrain_input.reset();held_import.reset();held_creation.reset();held_class_removal.reset();held_captain_asset.reset();held_crew_action.reset();
     for(auto item:pending){release(item.entry);release(item.before);}pending.clear();
     if(gesture_before_resource){release(gesture_before_resource);gesture_before_resource=nullptr;}
     gesture_before_metadata.reset();gesture_metadata_error.clear();
@@ -1789,6 +1789,7 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
 #include "editor_native_pose_capture_fixture.h"
 #include "editor_native_staged_capture_fixture.h"
 #include "editor_native_terrain_materialization_fixture.h"
+#include "editor_native_terrain_first_use_fixture.h"
 #include "editor_native_diagnostic_fixture.h"
 #include "editor_native_view_fence_fixture.h"
 #include "editor_native_water_fixture.h"
@@ -1886,6 +1887,9 @@ int main(int argc,char** argv){
     if(argc==2&&std::string(argv[1])=="--save-grounding-only"){
         test_saved_grounding_transition();std::printf("native saved grounding: %u checks passed\n",checks);return 0;
     }
+    if(argc==2&&std::string(argv[1])=="--terrain-first-use-only"){
+        test_terrain_first_use();std::printf("native Terraform first use: %u checks passed\n",checks);return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--terrain-materialization-only"){
         test_terrain_materialization_hooks();std::printf("native terrain materialization: %u checks passed\n",checks);return 0;
     }
@@ -1922,6 +1926,7 @@ int main(int argc,char** argv){
     test_cold_native_terrain_initialization();
     test_terrain_pending_grab();
     test_terrain_pending_delete();
+    test_terrain_first_use();
     test_terrain_preset_retry();
     test_full_roster_fingerprint();test_exact_class_projection_cache();
     test_crew_input_ownership();

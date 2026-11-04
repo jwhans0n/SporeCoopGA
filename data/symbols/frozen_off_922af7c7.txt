@@ -375,3 +375,4 @@ SporeCoop::Editor::ScenarioResourceVTable ; shared editor: constructor marker-ca
 SporeCoop::Editor::TerraformToolAction ; shared editor: native Terraform input dispatch is disabled on GOG 2016 (BUG-0108)
 SporeCoop::Editor::TerraformTickTools ; shared editor: native Terraform input dispatch is disabled on GOG 2016 (BUG-0108)
 SporeCoop::Editor::TerraformDeleteSelection ; shared editor: native Terraform Delete dispatch is disabled on GOG 2016 (BUG-0108)
+SporeCoop::Editor::TerraformEndScale ; shared editor: native Terraform scale finalizer is disabled on GOG 2016 (BUG-0108)

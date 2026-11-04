@@ -308,6 +308,7 @@ $(B)/host/editor_native_cancellation_tests.exe: tests/editor_native_cancellation
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/editor_native_cancellation_windows_tests.cpp mods/coop/net/dbpf.cpp mods/coop/net/editor_document.cpp -o $@
 
 $(B)/host/editor_native_cancellation_tests.exe: tests/editor_native_clone_input_fixture.h mods/coop/editor_native_clone_input_impl.h
+$(B)/host/editor_native_cancellation_tests.exe: tests/editor_native_terrain_first_use_fixture.h mods/coop/editor_native_terrain_input_impl.h
 
 $(B)/host/editor_metrics_tests.exe: tests/editor_metrics_tests.cpp mods/coop/editor_metrics.h mods/coop/net/editor_document.h
 	@mkdir -p $(B)/host

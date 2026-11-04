@@ -2569,3 +2569,85 @@ difference. Incorrect physical picks stop before Delete. The verifier is run
 without --check-map/--write-map because its118-entry generated subset is not
 the full166-entry manual map; the initial subset comparison reports a mismatch
 without changing any bindings. Full ABI118 verification then passes.
+
+
+## Terraform first-use clone and wheel ownership (2026-11-04, feat/ga-editor-multi-act)
+<a id="editor-terrain-first-use"></a>
+
+BUG-0479: Terraform F028F0 action6 and11 previously requested a record lease but
+dropped the initiating input. Only action1 had a held capsule. Verified stock
+UIMachineScenarioEdit first enters SCNObjectScale without changing scale, then
+emits action6 on later Shift-wheel events. Shift release uses virtual28 EFC690,
+not action0. EFC690 is thiscall(activeTerraformTool)->boolAL, plain ret EFC6B2;
+byte5 guards final F381D0(true), F34400 and byte5 clearing. Vtable148B688+28 is
+148B6B0 ->EFC690. ABI119 verification includes both calls and the exact return.
+F00F10 consumes actor/float(delta), ret8, adds delta*0.01 to native spatial scale
+before EFF3A0 validation. F00D30 consumes actor, ret4/boolAL, starts history,
+clones through F33540 and attaches through EFF110/F362F0. The ordinary Native
+Terraform tick and action0 complete clone motion and release.
+
+The new value-only input capsule retains the exact native scene/source, scope,
+generation, act, manager/context/selected descriptor/actor/definition/index,
+record revision, modifiers and release. It owns at most64 ordered raw wheel
+quanta. Native history, clone allocation, scale writes and drag ticking wait
+for ownership. Reentrant callbacks are followed by fresh closure checks. Late
+Shift release is retained separately; clone repeats cannot allocate duplicates.
+Denied/stale/cancelled/expired input and invalid/bounded-out quanta retire without
+native mutation. Latches restore only while the original native scene/scope is
+still current. Existing started wheel gestures retain the original native path.
+
+Controlled strict-i686/O1 RED disables only the new retention entry and fails
+its missing-held-input assertion. A separate C67 continuation RED fails when a
+later wheel quantum is intercepted after Native history has started. Final
+GREEN passes553 first-use checks, existing Delete216/drag195, and the full native
+adapter155,260. Evidence: `out/preview9-terrain-first-use-red`,
+`out/preview9-terrain-first-use-continuation-red`,
+`out/preview9-terrain-first-use-green-r3`, and
+`out/editor-preview9-terrain-first-use/receipt.json`.
+
+Corrected test wheel input posts WM_MOUSEWHEEL with MK_SHIFT only to the verified
+hidden owned HWND, while exclusive virtual Shift is held. The original SDK helper
+sets those bits to zero (BUG-0480), so its old camera-zoom probe is unqualified.
+No OS-wide input, native function call or process-memory write is used. C66 three
+wheel events yield one actual scale quantum; C68 yields both subsequent quanta
+as required by the stock transition. Model64 scale changes0.7371397614 to
+0.7511397600. Host164-168 and guest168-172 pass one transaction and exact full
+native/authored-semantic Undo/Redo/Undo. Native Model Alt-clone passes host172-176
+and guest176-180. Effect cases are recorded separately as they finish.
+
+Native C67 had also caught a structural-checksum assumption (BUG-0483): Clone161
+and Undo162 restore complete native bytes on both participants, but the original
+projection hash includes allocation high-water marks. C68 prints both allocators
+and retains that checksum, adding an authored checksum with only those two fields
+fixed in a private copy. At Undo174, host has next_id55834575134/order286 and guest
+55834575135/order287; their authored checksums and native bytes are identical.
+All actual IDs, order, values and references remain in the authored checksum.
+Allocation and Undo policy are unchanged. The complete C68 clone history passes
+with the new comparison; C67's strict failure remains retained.
+
+Color UI interface clarification: EE6FE0 receives the IWinProc at primary+4;
+its ESI14 is the primary UILayout18. EE7100 subtracts4 before RefreshColorUI.
+The primary wrapper+10 pointer and its gradient1C/picker20/selected24 fields
+remain the verified layout. Interface-relative disassembly must account for
+this adjustment; it does not establish a stale selected gradient window.
+
+
+C68 Effect wheel passes host180-184 and guest184-188, changing only02A907B6.
+Effect clone passes host189/190/191/192 and guest193/194/195/196. All181 old rows
+remain exact; one new record is appended, all six columns retain common length,
+and full native/authored semantic history restores exactly. Evidence:
+`out/editor-preview9-terrain-first-use/receipt.json`. BUG-0484 records a fixture
+correction: the appended seed is current Planet02A907B7 (676a3b72), not source
+seed7940402e. F33540 copies spatial pose only; final F37240 loads the current
+planet seed and passes it through F37313/F37328 to F35910's64/68 seed vector.
+The preliminary new-random-seed interpretation is superseded by this exact
+property/data-flow evidence. The failed fixture is retained; its continuation
+qualifies the exact seed and full history. No product seed behavior changes.
+
+C66 source provenance receipt correction: the original raw-Git comparison
+misclassified working-tree CRLF files; a clean-only comparison then flags the
+legacy CRLF MinHook.rc blob. All323 preserved production inputs match commit
+091b71b through exact raw blob or configured clean identity, and exact frozen
+build bytes remain independently unchanged. Correct receipt:
+`out/editor-preview9-terrain-remove/postcommit-r3.json`. Earlier failures remain
+retained and are not advertised as source drift.
