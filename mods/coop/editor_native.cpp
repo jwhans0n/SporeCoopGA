@@ -2023,6 +2023,7 @@ void SK_CDECL select_act_native(uint32_t act){
     original_select_act(act);
 }
 HistoryFn original_tick_tools;
+HistoryFn original_terrain_tick_tools;
 using ApplyMarkerFn=void(SK_THISCALL*)(void*,void*,uint32_t);
 ApplyMarkerFn original_apply_marker;
 HistoryFn original_ground_step,original_vertical_step,original_radial_step,original_auxiliary_step;
@@ -2058,6 +2059,7 @@ using ImportFn=uint32_t(SK_THISCALL*)(void*,const editor::ResourceKey*);
 using CloneSelectionFn=bool(SK_THISCALL*)(void*,void*);
 SelectFn original_select;
 ToolFn original_tool;
+ToolFn original_terrain_tool;
 HistoryFn original_delete;
 CreateFn original_create;
 ImportFn original_import;
@@ -3336,7 +3338,7 @@ void finish_held_input(){
     if(item.native_started && active() && !cancellation && item.generation==generation &&
        (!item.terrain || (observed.terraforming && observed.act==item.act)) &&
        item.manager==*reinterpret_cast<void**>(a_tools) && observed.gesture && (!item.clone || clone_tool_current(item)))
-        original_tool(item.manager,0,0,0);
+        (item.terrain?original_terrain_tool:original_tool)(item.manager,0,0,0);
 }
 void deny_held_input(const std::vector<editor::Scope>& scopes){
     for(const auto& scope:scopes){
@@ -3371,6 +3373,7 @@ void deny_held_input(const std::vector<editor::Scope>& scopes){
 // Native Start prepares local drag anchors/history. Authoring steps remain
 // stopped until ownership arrives, including between the press and release.
 void SK_THISCALL tick_tools(void* self){if(!held_tool && !clone_pose_blocked && !clone_enrolling)original_tick_tools(self);}
+void SK_THISCALL terrain_tick_tools(void* self){if(!held_tool && !clone_pose_blocked && !clone_enrolling)original_terrain_tick_tools(self);}
 void* selected_marker(){
     if(!active())return nullptr;
     void* context=a_context?*reinterpret_cast<void**>(a_context):nullptr;
@@ -3493,9 +3496,11 @@ void SK_CDECL continue_input(void*){
     const auto previous=latch;latch=1;
     auto& modifiers=skg::field<uint32_t>(mode(),0x40);
     const auto current_modifiers=modifiers;modifiers=item.modifiers;
-    if(!item.native_started)original_tool(item.manager,item.action,item.a,item.b);
-    original_tick_tools(item.manager);
-    if(item.released)original_tool(item.manager,0,0,0);
+    const auto tool=item.terrain?original_terrain_tool:original_tool;
+    const auto tick=item.terrain?original_terrain_tick_tools:original_tick_tools;
+    if(!item.native_started)tool(item.manager,item.action,item.a,item.b);
+    tick(item.manager);
+    if(item.released)tool(item.manager,0,0,0);
     modifiers=current_modifiers;
     latch=previous;
 }
@@ -3518,8 +3523,9 @@ bool tool_rejection(size_t reason,uint32_t action,void* context,const State& obs
         static_cast<unsigned long long>(observed.generation),static_cast<unsigned long long>(tool_rejection_counts[reason]));
     return true;
 }
-uint32_t SK_THISCALL tool_native(void* self,uint32_t action,uint32_t a,uint32_t b){
+uint32_t tool_native_dispatch(void* self,uint32_t action,uint32_t a,uint32_t b,bool terrain_entry){
     const State observed=editor_native::state();
+    if(terrain_entry && (applying || !active() || !observed.terraforming))return original_terrain_tool(self,action,a,b);
     if(clone_replay || (clone_enrolling && !held_tool))return 1;
     if(!applying && active() && ordinary_capture_pending() && action!=0)return 1;
     if(!applying && active() && held_tool){
@@ -3528,6 +3534,10 @@ uint32_t SK_THISCALL tool_native(void* self,uint32_t action,uint32_t a,uint32_t 
         finish_held_input();
     }
     if(!applying && active() && observed.terraforming){
+        // Terraform dispatches through F028F0/F029E0, independently of the
+        // placement tool's F03770/F02B30. Never send a Terraform receiver to
+        // the placement originals, including delayed release/cancellation.
+        if(!terrain_entry)return original_tool(self,action,a,b);
         if(action==1 || action==6 || action==11){
             void* context=a_context?*reinterpret_cast<void**>(a_context):nullptr;
             void* actor=skg::readable(context,8)?skg::field<void*>(context,4):nullptr;
@@ -3537,16 +3547,19 @@ uint32_t SK_THISCALL tool_native(void* self,uint32_t action,uint32_t a,uint32_t 
                 const auto revision=object && C.object_revision?C.object_revision(*object):std::nullopt;
                 const auto scope=C.gesture_scope?C.gesture_scope():GestureScope{};
                 if(action==1 && observed.ready && !observed.gesture && object && revision && valid_scope(scope) &&
-                   a_tool_tick && original_tick_tools && self==*reinterpret_cast<void**>(a_tools) && skg::readable(context,0x2C)){
+                   original_terrain_tick_tools && self==*reinterpret_cast<void**>(a_tools) && skg::readable(context,0x2C)){
                     held_tool=HeldTool{scope,generation,*object,*revision,self,action,a,b,skg::field<uintptr_t>(context,0x10),false,
                         H->time_seconds(),skg::field<uint32_t>(mode(),0x40),true,real_focus(),true,observed.act,uintptr_t(actor)};
-                    original_tool(self,action,a,b);
-                    if(held_tool)original_tick_tools(self);
+                    // Start retains the native grab anchor/history. Its
+                    // Terraform tick directly moves the proxy, so it must
+                    // wait for the record grant; placement-step guards do not
+                    // intercept that separate native writer.
+                    original_terrain_tool(self,action,a,b);
                 }
                 return 1;
             }
         }
-        return original_tool(self,action,a,b);
+        return original_terrain_tool(self,action,a,b);
     }
     MarkerAudio audio(data(mode()),selected_marker());
     if(!applying && active() && speech_pending() && action!=0)return 1;
@@ -3627,6 +3640,8 @@ uint32_t SK_THISCALL tool_native(void* self,uint32_t action,uint32_t a,uint32_t 
     input_clone=previous;
     return result;
 }
+uint32_t SK_THISCALL tool_native(void* self,uint32_t action,uint32_t a,uint32_t b){return tool_native_dispatch(self,action,a,b,false);}
+uint32_t SK_THISCALL terrain_tool_native(void* self,uint32_t action,uint32_t a,uint32_t b){return tool_native_dispatch(self,action,a,b,true);}
 void SK_THISCALL delete_native(void* self){
     editor_native::state();
     if(!applying && active()){
@@ -5052,6 +5067,8 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
         install("SporeCoop::Editor::SetSelection", (void*)select_native, (void**)&original_select) &&
         install("SporeCoop::Editor::ToolAction", (void*)tool_native, (void**)&original_tool) &&
         install("SporeCoop::Editor::TickTools",(void*)tick_tools,(void**)&original_tick_tools) &&
+        install("SporeCoop::Editor::TerraformToolAction",(void*)terrain_tool_native,(void**)&original_terrain_tool) &&
+        install("SporeCoop::Editor::TerraformTickTools",(void*)terrain_tick_tools,(void**)&original_terrain_tick_tools) &&
         install("SporeCoop::Editor::GroundDragStep",(void*)ground_step,(void**)&original_ground_step) &&
         install("SporeCoop::Editor::VerticalDragStep",(void*)vertical_step,(void**)&original_vertical_step) &&
         install("SporeCoop::Editor::RadialDragStep",(void*)radial_step,(void**)&original_radial_step) &&

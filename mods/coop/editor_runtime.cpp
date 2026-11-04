@@ -1,4 +1,5 @@
 #include "editor_runtime.h"
+#include "editor_terrain_edit.h"
 
 #include <windows.h>
 #include <algorithm>
@@ -2953,7 +2954,7 @@ void captured(editor_native::Gesture gesture) {
         if(owned==guarded_terrain.end()){error="The changed terrain stamp has no record ownership";reject_captured();return;}
         editor::Mutation mutation;mutation.target=id;mutation.expected=owned->second.revision;
         if(next==gesture.after.document.terrain.end())mutation.kind=editor::MutationKind::DeleteTerrain;
-        else{mutation.kind=editor::MutationKind::SetTerrain;mutation.terrain=next->second;}
+        else if(!editor_terrain_edit::replacement(owned->second,record,next->second,mutation,error)){reject_captured();return;}
         r.mutations.push_back(std::move(mutation));r.summary="Terraform adventure";
     }
     for(const auto& [id,record]:gesture.after.document.terrain)if(!gesture.before.document.terrain.contains(id)){

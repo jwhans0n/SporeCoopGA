@@ -372,3 +372,5 @@ SporeCoop::Editor::Free ; shared editor: constructor marker-capacity policy is d
 SporeCoop::Editor::MarkerPoolReserve ; shared editor: constructor marker-capacity policy is disabled on GOG 2016 (BUG-0108)
 SporeCoop::Editor::ReadMarkerRows ; shared editor: constructor marker-capacity policy is disabled on GOG 2016 (BUG-0108)
 SporeCoop::Editor::ScenarioResourceVTable ; shared editor: constructor marker-capacity policy is disabled on GOG 2016 (BUG-0108)
+SporeCoop::Editor::TerraformToolAction ; shared editor: native Terraform input dispatch is disabled on GOG 2016 (BUG-0108)
+SporeCoop::Editor::TerraformTickTools ; shared editor: native Terraform input dispatch is disabled on GOG 2016 (BUG-0108)

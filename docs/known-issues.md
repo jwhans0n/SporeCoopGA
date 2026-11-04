@@ -1706,3 +1706,17 @@ Reproduce a full game: `tools/lab.py run campaign --lane N` (about 85 min) or `c
 * Not fixed: a strip needs the civ / tribe / space object registry and a null-safe removal from
   `civ+0xB0` / `civ+0xD4` and the city's lists (BUG-0020's null rule), with a save + reload test per stage.
 * Ticket: BUG-0470
+
+## Shared editor: existing terrain stamp movement can remain local (2026-11-03, feat/ga-editor-multi-act)
+<a id="issue-editor-terrain-input-dispatch"></a>
+
+* C60's ordinary Terraform drag moves its local proxy without a synchronized
+  recipe transaction. The draft remains converged and fault-free, but the guest
+  receives no authored move. The native Terraform input functions bypass the
+  placement input hooks. Private C61 adds the separate hooks and passes controlled
+  checks; actual game qualification remains pending. Ticket: BUG-0476.
+
+  CORRECTION (2026-11-03): private C62 also repairs the acquired-record revision
+  mapping and passes host/guest native movement with checked Undo/Redo and exact
+  Planet restoration. BUG-0476's movement failure is fixed in this uninstalled
+  candidate. Remaining Terraform controls and release checks stay separate.

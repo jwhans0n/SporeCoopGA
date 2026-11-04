@@ -156,6 +156,7 @@ $(B)/host/editor_cast_tests.exe: tests/editor_cast_tests.cpp mods/coop/editor_na
 
 test-editor-windows: $(B)/host/editor_stage_metrics_tests.exe
 test-editor-windows: $(B)/host/editor_authoring_extensions_tests.exe $(B)/host/editor_creation_tests.exe $(B)/host/editor_creation_ui_tests.exe
+$(B)/host/editor_authoring_extensions_tests $(B)/host/editor_authoring_extensions_tests.exe $(B)/host/editor_runtime_windows_tests.exe: mods/coop/editor_terrain_edit.h
 test-editor-windows: $(B)/host/editor_creation_png_carrier_tests.exe $(B)/host/editor_creation_png_tests.exe $(B)/host/editor_creation_zlib_tests.exe
 
 $(B)/host/editor_creation_zlib_tests.exe: tests/editor_creation_zlib_tests.cpp mods/coop/editor_creation_zlib.h

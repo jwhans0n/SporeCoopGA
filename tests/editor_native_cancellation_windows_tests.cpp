@@ -600,24 +600,24 @@ void setup_terrain_grab(){
     skg::field<void*>(t_terrain_descriptor.data(),4)=t_terrain_definition.data();
     editor::TerrainRecord row;row.object={55,1};row.kind=editor::TerrainKind::Effect;row.order=1;row.revision=t_revision;
     act_identity.terrain.emplace(row.object,row);pin_terrain_before();
-    a_terrain_selection=uintptr_t(t_terrain_selected);original_tool=t_terrain_grab;
+    a_terrain_selection=uintptr_t(t_terrain_selected);original_terrain_tool=t_terrain_grab;original_terrain_tick_tools=t_tick;
     C.terrain_gate=[](const auto& records,const auto& fields){CHECK(fields.empty());CHECK(records.empty()||records==std::vector<editor::ObjectId>({{55,1}}));return t_granted;};
 }
 void test_terrain_pending_grab(){
     for(bool quick_release:{false,true}){
         setup_terrain_grab();CHECK(state().terraforming&&state().ready&&!state().gesture);
-        CHECK(tool_native(t_tool_pointer,1,17,23)==1&&held_tool&&held_tool->terrain);
-        CHECK(t_presses==1&&t_ticks==1&&!t_steps&&terrain_starts==1&&!terrain_commits);
-        tick_tools(t_tool_pointer);ground_step(nullptr);vertical_step(nullptr);radial_step(nullptr);auxiliary_step(nullptr);
-        CHECK(t_ticks==1&&!t_steps&&value(t_live.data(),0)==1);
-        if(quick_release)CHECK(tool_native(t_tool_pointer,0,0,0)==1&&held_tool->released);
+        CHECK(terrain_tool_native(t_tool_pointer,1,17,23)==1&&held_tool&&held_tool->terrain);
+        CHECK(t_presses==1&&t_ticks==0&&!t_steps&&terrain_starts==1&&!terrain_commits);
+        terrain_tick_tools(t_tool_pointer);ground_step(nullptr);vertical_step(nullptr);radial_step(nullptr);auxiliary_step(nullptr);
+        CHECK(t_ticks==0&&!t_steps&&value(t_live.data(),0)==1);
+        if(quick_release)CHECK(terrain_tool_native(t_tool_pointer,0,0,0)==1&&held_tool->released);
         continue_input(nullptr);CHECK(held_tool&&!t_steps);
-        t_granted=true;continue_input(nullptr);CHECK(!held_tool&&t_presses==1&&t_steps==1&&t_ticks==2);
-        if(!quick_release)tool_native(t_tool_pointer,0,0,0);
+        t_granted=true;continue_input(nullptr);CHECK(!held_tool&&t_presses==1&&t_steps==1&&t_ticks==1);
+        if(!quick_release)terrain_tool_native(t_tool_pointer,0,0,0);
         CHECK(t_finishes==1&&terrain_starts==1&&terrain_commits==1&&terrain_pending);
     }
     for(unsigned reason=0;reason<9;++reason){
-        setup_terrain_grab();tool_native(t_tool_pointer,1,0,0);CHECK(held_tool);
+        setup_terrain_grab();terrain_tool_native(t_tool_pointer,1,0,0);CHECK(held_tool);
         if(reason==0)++t_revision;if(reason==1)++t_scope.epoch;if(reason==2)++generation;
         if(reason==3)++skg::field<uint32_t>(t_context.data(),0);if(reason==4)skg::field<void*>(t_context.data(),4)=t_actors[1].data();
         if(reason==5)skg::field<uintptr_t>(t_context.data(),0x10)=123;
@@ -1736,6 +1736,9 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
 #include "editor_native_clone_input_fixture.h"
 #include "editor_native_planet_preset_fixture.h"
 int main(int argc,char** argv){
+    if(argc==2&&std::string(argv[1])=="--terrain-input-only"){
+        test_terrain_pending_grab();std::printf("native Terraform input: %u checks passed\n",checks);return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--marker-capacity-only"){
         marker_capacity_fixture::test();std::printf("native marker capacity: %u checks passed\n",checks);return 0;
     }

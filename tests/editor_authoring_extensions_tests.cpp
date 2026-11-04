@@ -1,6 +1,7 @@
 // Portable crew/project settings, ordered terrain and staged durability.
 #include "net/editor_protocol.h"
 #include "net/editor_terrain.h"
+#include "editor_terrain_edit.h"
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -57,6 +58,33 @@ static void terrain_concurrency(){
     auto inverse=request(c.state(),host,6,{},Intent::Undo);owned(c,inverse,{{ScopeKind::Terrain,prior.object,{}}});CHECK(c.submit(inverse,100).accepted());
     auto original=request(c.state(),host,7,{},Intent::Undo);owned(c,original,scopes);CHECK(c.submit(original,100).accepted()); // Refreshes own causal terrain preconditions.
     CHECK(c.state().document.terrain.size()==2);wire_roundtrip(c.state());
+}
+static void native_terrain_revisions(){
+    std::string error;Coordinator c;CHECK(c.reset(initial(),9,error));CHECK(c.connect(host));CHECK(c.connect(guest));
+    CHECK(c.submit(request(c.state(),host,1,{append()}),100).accepted());
+    const auto prior=terrain_recipe(c.state().document).front();CHECK(prior.revision==1);
+    auto before=prior;before.revision=0;auto after=before;number(after.payload.bytes,16,20);
+    Mutation legacy;legacy.kind=MutationKind::SetTerrain;legacy.target=prior.object;legacy.expected=prior.revision;legacy.terrain=after;
+    auto bad=request(c.state(),host,2,{legacy});owned(c,bad,{{ScopeKind::Terrain,prior.object,{}}});
+    CHECK(c.submit(bad,100).code==Code::Invalid);CHECK(c.state().document.revision==1);
+    Mutation fixed;CHECK(editor_terrain_edit::replacement(prior,before,after,fixed,error));
+    CHECK(fixed.expected==1&&fixed.terrain->revision==1&&fixed.terrain->object==prior.object&&fixed.terrain->order==prior.order);
+    auto edit=request(c.state(),host,3,{fixed});owned(c,edit,{{ScopeKind::Terrain,prior.object,{}}});CHECK(c.submit(edit,100).accepted());
+    CHECK(c.submit(request(c.state(),guest,1,{append(30)}),100).accepted());
+    auto undo=request(c.state(),host,4,{},Intent::Undo);owned(c,undo,{{ScopeKind::Terrain,prior.object,{}}});CHECK(c.submit(undo,100).accepted());
+    CHECK(c.state().document.terrain.size()==2&&c.state().document.terrain.at(prior.object).payload==prior.payload);
+    auto redo=request(c.state(),host,5,{},Intent::Redo);owned(c,redo,{{ScopeKind::Terrain,prior.object,{}}});CHECK(c.submit(redo,100).accepted());
+    CHECK(c.state().document.terrain.size()==2&&c.state().document.terrain.at(prior.object).payload==after.payload);
+    for(unsigned variant=0;variant<6;++variant){
+        auto first=before,next=after;
+        if(variant==0)++first.object.generation;if(variant==1)++next.order;
+        if(variant==2)next.kind=TerrainKind::Model;if(variant==3)number(first.payload.bytes,16,99);
+        if(variant==4)next.payload.references={{7,1}};if(variant==5)number(next.payload.bytes,16,std::numeric_limits<float>::infinity());
+        auto unchanged=fixed;CHECK(!editor_terrain_edit::replacement(prior,first,next,unchanged,error));CHECK(unchanged==fixed);
+    }
+    auto untrusted=after;untrusted.revision=UINT64_MAX;Mutation bounded;
+    CHECK(editor_terrain_edit::replacement(prior,before,untrusted,bounded,error)&&bounded==fixed);
+    wire_roundtrip(c.state());
 }
 static void terrain_negatives(){
     std::string error;Coordinator c;CHECK(c.reset(initial(),9,error));CHECK(c.connect(host));CHECK(c.connect(guest));
@@ -242,4 +270,4 @@ static void large_terrain_stroke_and_recipe_replacement(){
     overflow.assign(2*Limits{}.terrain_records+1,append());q=request(s,host,6,std::move(overflow));CHECK(!wire::encode_request(q,bytes,error));
     auto huge=append();huge.terrain->payload.bytes.resize(Limits{}.structured_bytes,1);q=request(s,host,7,std::vector<Mutation>(33,huge));CHECK(!wire::encode_request(q,bytes,error));
 }
-int main(){terrain_concurrency();terrain_negatives();mixed_allocation_replay();singleton_and_assets();staged_durability();presence();authoring_hold_keeps_content_independent();class_references_authoring_settings();large_terrain_stroke_and_recipe_replacement();std::cout<<checks<<" authoring extension checks passed\n";}
+int main(){native_terrain_revisions();terrain_concurrency();terrain_negatives();mixed_allocation_replay();singleton_and_assets();staged_durability();presence();authoring_hold_keeps_content_independent();class_references_authoring_settings();large_terrain_stroke_and_recipe_replacement();std::cout<<checks<<" authoring extension checks passed\n";}

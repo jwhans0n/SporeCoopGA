@@ -2337,3 +2337,60 @@ and actor+18 evidence, C60 pre-bind constructor policy, allocation-fallback
 behavior and protocol25 isolation are recorded in
 [the complexity storage audit](adventure-complexity.md#complexity-marker-storage-lifetime).
 The native authored Save/history formats are unchanged.
+
+## Actual Terraform input dispatch (2026-11-03, feat/ga-editor-multi-act)
+<a id="history-terraform-input-dispatch"></a>
+
+CORRECTION: the existing controlled Terraform drag check entered placement
+ToolActionF03770, whose Terraform branch is not the normal native Terraform
+input route. Actual selected-stamp drag on C60 moves only the local proxy and
+leaves shared R54/history/recipe unchanged. Canonical checks remain strict and
+fault-free; they do not prove the proxy movement committed. BUG-0476 records
+the actual RED reproduction and retained logs.
+
+The exact native Terraform tool vtable148B688 contains F028F0 at slot2C and
+F029E0 at slot40. Action F028F0 is thiscall(self,action,raw,raw), retC on every
+return. Action1 begins surface/auxiliary dragging,0 finalizes,6 scales and11
+clones. Tick F029E0 is thiscall(self), plain return or EFEFA0 tail, and writes
+proxies directly through F025E0/F00E60. It bypasses the placement tickF02B30 and
+its four pose-step hooks. A local inferred tick-slot30 assertion failed during
+static verification; slot30 is950E00. No game call used that assumption.
+
+C61 explicitly hooks those native functions and uses the correct originals
+for pending drag, tick, release and cancellation. Native anchor/history setup
+may prepare a held gesture, but its direct tick waits for ownership. The updated
+controlled fixture calls the actual Terraform entry and checks zero ticks before
+grant, one completion after quick release and stale scope/act/actor/revision
+retirement. Strict i686195 focused and153,522 full checks pass; Native ABI117
+passes. Actual C61 manipulation qualification remains pending. Evidence:
+`out/editor-preview9-terraform-input`,
+`out/preview9-c61-terraform-native-route-audit-r2`, and
+`out/preview9-c60-terrain-input-red-preserved`.
+
+Ordinary picking is separately verified. After the shared append, the new
+Effect's authored transform position differs from its grounded proxy position.
+The former release point200550 misses; the actual native proxy center projects
+to183519. A normal click there selects descriptor180 and shows native handles.
+Readonly observations use the current viewer matrix/Camera viewport and current
+descriptor actor positions, not a setter or forced selection. Both models and
+effects occur in the native descriptor vector. This corrects the earlier absent
+selection observation without inventing a missing visibility toggle.
+
+CORRECTION (2026-11-03): actual C61 hooks reach transaction submission, but
+Core then rejects the native replacement's identity/order/revision metadata.
+C62 separates immutable acquired record metadata from native geometry:
+`editor_terrain_edit::replacement` verifies the native before-image and both
+identities/kinds/orders, retains the acquired revision, and copies only the
+new validated payload. It changes no Core lease or revision rules. Host/i686
+Core366 checks cover the legacy zero-revision rejection, accepted replacement,
+foreign-stroke preservation through Undo/Redo and atomic rejection of six
+invalid variants. Native C61 remains RED with checked restoration, retained
+under `out/preview9-c61-terrain-revision-red-preserved`; C62 game checks remain pending.
+
+CORRECTION (2026-11-03): C62 actual host and guest existing-Effect movement now
+passes. Host A/U/R/U advances54 to58; guest advances58 to62. Each drag changes
+only02A907B6, creates one synchronized history item and remains strict/fault-free
+on both peers. All Planet fields restore and reapply exactly through the checked
+history sequence. Evidence: `out/preview9-c62-terrain-existing-move` and
+`out/preview9-c62-terrain-guest-move`. Manipulator, Model and delete breadth remain
+separate qualification; this closes the actual movement failure in BUG-0476.
