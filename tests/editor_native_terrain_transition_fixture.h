@@ -54,6 +54,76 @@ Snapshot ttt_setup(TerrainTransitionKey& key){
     C.projection_scope=[] {return ttt_held?GestureScope{}:t_scope;};
     return entry;
 }
+unsigned tss_action=0;bool tss_restored=false;
+void* SK_THISCALL tss_assign_text(void* header,const char16_t* first,const char16_t* last){
+    CHECK(first==last);skg::field<void*>(header,0)=nullptr;skg::field<void*>(header,4)=nullptr;return header;
+}
+uintptr_t tss_symbol(const char* name){
+    return std::string(name)=="SporeCoop::Editor::AssignMetadataText"?uintptr_t(tss_assign_text):tmc_symbol(name);
+}
+void SK_THISCALL tss_restore(void* entry,void* before){
+    ttt_restore(entry,before);
+    // With unchanged authored terrain, RestoreHistorySnapshot materializes
+    // the existing live vectors again; it does not reload canonical columns.
+    terrain_materialize(t_terraform.data());tss_restored=true;
+    if(tss_action==12){tmf_columns[0][1][16]^=1;tmf_bind();}
+    if(tss_action==13)++generation;
+}
+void test_saved_terrain_restore(){
+    const auto old_write=a_write,old_read=a_read,old_acts=a_copy_acts,old_crew=a_copy_crew,old_shown=a_layout_shown;
+    const auto old_init=a_scenario_initialization,old_modes=a_get_simulator_mode_manager;const auto* old_host=H;
+    const auto old_alloc=a_alloc,old_entry=a_entry,old_restore=a_restore;const auto old_select=original_select_act;
+    const auto old_message_manager=a_metadata_message_manager,old_message_send=a_metadata_message_send;
+    for(unsigned action=0;action<14;++action){
+        tss_action=action;tss_restored=false;TerrainTransitionKey key;auto entry=ttt_setup(key);
+        remember_terrain(entry.document);std::string error;const auto current=[] {return ttt_allowed;};
+        TerrainTransitionTicket ticket;CHECK(capture_terrain_transition(key,entry,current,ticket,error));
+        ttt_held=true;C.gesture_scope=[] {return GestureScope{};};
+        static SkHost host;host=*H;host.sym=tss_symbol;H=&host;
+        v_message_vt.fill(nullptr);v_messages=v_message_vt.data();v_message_vt[0x14/4]=reinterpret_cast<void*>(v_name_notice);
+        a_metadata_message_manager=uintptr_t(v_get_messages);a_metadata_message_send=uintptr_t(v_name_notice);v_name_mutation=0;
+        TerrainTransitionReceipt receipt{TerrainTransitionKind::Save,key,key,3,5};
+        receipt.after.owner.source.instance=202;skg::field<editor::ResourceKey>(t_live.data(),8)=receipt.after.owner.source;
+        Snapshot saved=entry;saved.source=receipt.after.owner.source;saved.bytes=ttt_saved_bytes(entry);
+        {Owned image(parse(saved.bytes,error));CHECK(image.p);
+            skg::field<editor::ResourceKey>(image.p,8)=saved.source;CHECK(serialize(image.p,saved.bytes,error));}
+        CHECK(normalize_saved_terrain(ticket,receipt,entry,saved,current,error));
+        // Ordinary capture observes the rotated Save source while publication
+        // scope is empty; only the retained completed-Save ticket survives.
+        clear_terrain_materialization();
+        const auto raw=tmf_columns;ttt_restore_bind();a_restore=uintptr_t(tss_restore);
+        if(action==1)ticket->saved.reset();
+        if(action==2)++receipt.save_serial;
+        if(action==3)++receipt.after.scope.epoch;
+        if(action==4)++receipt.after.generation;
+        if(action==5)++receipt.after.owner.resource;
+        if(action==6)++saved.source.instance;
+        if(action==7)++saved.document.revision;
+        if(action==8){tmf_columns[0][1][16]^=1;tmf_bind();}
+        if(action==9)ttt_allowed=false;
+        if(action==10)ticket->retired=true;
+        if(action==11)materialized_terrain->terrain.clear();
+        const auto calls=t_restores;TerrainTransitionTicket prepared;
+        const bool accepted=restore_saved_terrain(ticket,receipt,saved,current,prepared,error);
+        if(!accepted&&action==0)std::printf("saved restore diagnostic: %s\n",error.c_str());
+        std::printf("saved restore action=%u accepted=%u\n",action,unsigned(accepted));
+        CHECK(!terrain_read_identity&&terrain_materialization.empty()&&t_allocations.empty());
+        if(action){
+            CHECK(!accepted&&!prepared&&!error.empty());
+            CHECK((action>=12)==tss_restored);
+            CHECK(t_restores==calls+(action>=12?1:0));continue;
+        }
+        CHECK(accepted&&prepared&&ticket->retired&&!prepared->retired&&tss_restored&&tmf_columns!=raw);
+        auto resume=receipt;resume.kind=TerrainTransitionKind::Export;resume.before=resume.after;
+        Snapshot observed;CHECK(resume_terrain_transition(prepared,resume,saved,current,error,&observed));
+        CHECK(prepared->retired&&observed.document==saved.document&&validate(observed,saved.document,error));
+        CHECK(!resume_terrain_transition(prepared,resume,saved,current,error));
+    }
+    tmc_properties.clear();act_cache_rows.clear();a_write=old_write;a_read=old_read;a_copy_acts=old_acts;a_copy_crew=old_crew;
+    a_layout_shown=old_shown;a_scenario_initialization=old_init;a_get_simulator_mode_manager=old_modes;H=old_host;
+    a_alloc=old_alloc;a_entry=old_entry;a_restore=old_restore;original_select_act=old_select;reset();
+    a_metadata_message_manager=old_message_manager;a_metadata_message_send=old_message_send;
+}
 unsigned tcr_action=0;
 unsigned tcr_rotation_refreshes=0;
 bool tcr_explicit_load=false,tcr_sample_ready=false,tcr_tainted=false;
@@ -320,4 +390,5 @@ void test_terrain_transition_receipts(){
     original_terrain_load=old_load;original_terrain_rebuild=old_rebuild;
     a_alloc=old_alloc;a_entry=old_entry;a_restore=old_restore;original_select_act=old_select;reset();
     test_cold_recovery_grounding_bootstrap();
+    test_saved_terrain_restore();
 }

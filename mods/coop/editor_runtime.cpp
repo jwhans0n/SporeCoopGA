@@ -3344,7 +3344,7 @@ bool create_store(const editor::State& state, const editor_native::Snapshot& nat
     return true;
 }
 bool checkpoint_resources(editor_project::Resources content, editor_native::Snapshot native, std::string& error,
-                          const std::function<bool(const editor_native::Snapshot&,std::string&)>& restored={}) {
+                          const std::function<bool(const editor_native::Snapshot&,std::string&)>& restore_native={}) {
     const auto alias_owner=pin_scene_alias_owner();retire_scene_alias();
     if(!alias_owner){error="The saved scene could not pin its original native attachment";return false;}
     if(!restore_tentative(error))return false;
@@ -3354,8 +3354,8 @@ bool checkpoint_resources(editor_project::Resources content, editor_native::Snap
     // Save can normalize opaque authoring metadata as well as rotate the key.
     // Install those exact bytes on the saving host as well as its guests before
     // another gesture captures the working resource.
-    if (!scene_alias_owner_current(*alias_owner,error) || !editor_native::restore(native, error)) return false;
-    if(restored && !restored(native,error))return false;
+    if (!scene_alias_owner_current(*alias_owner,error)) return false;
+    if(restore_native ? !restore_native(native,error) : !editor_native::restore(native,error))return false;
     std::vector<uint8_t> envelope, delta;
     if (!editor_project::encode_resources(content, envelope, error) || !root_delta(content, delta, error)) return false;
     editor_store::Snapshot saved;
@@ -3428,7 +3428,13 @@ void saved_native(editor::ResourceKey key,const editor_native_save::SaveOperatio
     if (!persist_saved_dependencies(key,genuine_saved,content.bundle.records,error) ||
         !replace_root(content, native, error) ||
         !checkpoint_resources(std::move(content), std::move(native), error,[&](const auto& restored,std::string& reason){
-            return !terrain || resume_terrain_hold(*terrain,receipt,restored,false,false,reason);
+            if(!terrain)return editor_native::restore(restored,reason);
+            auto current=*terrain;current.key=receipt.after;
+            editor_native::TerrainTransitionTicket prepared;
+            if(!editor_native::restore_saved_terrain(terrain->ticket,receipt,restored,terrain_fence(current),prepared,reason))return false;
+            terrain->ticket=std::move(prepared);terrain->key=receipt.after;
+            auto resumed=receipt;resumed.kind=editor_native::TerrainTransitionKind::Export;resumed.before=resumed.after;
+            return resume_terrain_hold(*terrain,resumed,restored,false,false,reason);
         }) ||
         !controller->publish_saved({controller->state().document.revision, key}, error)) {
         frozen = true; tell("The native save completed, but sharing its recovery checkpoint stopped: " + error); return;

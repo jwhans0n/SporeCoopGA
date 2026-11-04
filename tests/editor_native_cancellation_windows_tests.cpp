@@ -1890,6 +1890,9 @@ int main(int argc,char** argv){
     if(argc==2&&std::string(argv[1])=="--terrain-first-use-only"){
         test_terrain_first_use();std::printf("native Terraform first use: %u checks passed\n",checks);return 0;
     }
+    if(argc==2&&std::string(argv[1])=="--saved-terrain-restore-only"){
+        test_saved_terrain_restore();std::printf("native saved terrain restoration: %u checks passed\n",checks);return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--terrain-materialization-only"){
         test_terrain_materialization_hooks();std::printf("native terrain materialization: %u checks passed\n",checks);return 0;
     }

@@ -296,6 +296,61 @@ materialization proof across that boundary. Evidence:
 `preview9-c68-road-save-raw-recipes-r2`. Complete Terraform acceptance remains
 open while this failure and the remaining lifecycle checks are unresolved.
 
+### C69 completed-Save terrain restoration
+
+BUG-0486 now has controlled FAIL/PASS and actual native Save acceptance.
+`restore_saved_terrain` requires the exact previously normalized completed-Save
+receipt, unchanged canonical document and live recipe, and the same scene,
+generation, scope and operation. Its stack-scoped owned read identity retains
+the exact materialization map while native restoration synchronously rebuilds
+the existing tool vectors. A fresh ticket is issued only after exact authored
+recipe, placement and complete native-image checks. Runtime installs that
+verified native image before durable checkpoint publication and SavedApplied.
+This adds no tolerance, authored-data rewrite, wire/recovery format or native
+signature. Ordinary mutation scopes remain closed during Save.
+
+Controlled RED `out/preview9-saved-restore-red/run.log` restores without retaining
+the proof and reproduces the old raw-recipe failure. Strict-i686/O1 GREEN passes
+4,801 focused checks, including thirteen stale/invalid/callback cases. The full
+affected Native adapter passes160,106 checks. Runtime checks pass transition3,774,
+scene-alias11,193, recovery2,028, complexity1,564 and saved-root158. Evidence:
+`out/preview9-saved-restore-green-o1` and
+`out/preview9-saved-restore-runtime-o0`. Earlier fixture setup failures are
+retained: the controlled serializer must rotate its embedded fixture source,
+the metadata routes must model native Save, and unchanged-recipe restore
+materializes existing vectors rather than importing canonical columns again.
+
+C69 retains324 production inputs with zero build drift. Private DLL SHA-256 is
+`b790e42cdd58c0f7d66026e0b66c1d2577ce949c077fa6acdca4a0377b30bcfc`;
+Kit remains `f03635d08960b6f3ffc0676bc195f0dfbae1f339f67b2fbb0f51b7a380c8be58`.
+Recovery restores the exact committed251 Planet fields. Actual Save then passes
+SavedApplied2/2, exact authored root payloads, unchanged canonical document and
+history, retained genuine original saved DBPF and zero faults. Saved root is
+`408A0000!2914C2B9.366A930D`. Evidence:
+`out/preview9-c69-recover-r251`, `out/preview9-c69-road-native-save`.
+
+The first subsequent guest atmosphere edit/Undo252/253 restores all authored
+bytes but differs in raw unused prefix words. Its strict failure is preserved.
+Independent complete native audit finds no root metadata changes and no
+authored differences, using only the existing unused-word normalization:
+`out/preview9-c69-first-post-save-undo-audit`. The complete repeat253-257 then
+passes own full raw SHA and authored-semantic Undo/Redo/Undo on both peers:
+`out/preview9-c69-guest-after-save-r2`. No assertion was silently relaxed.
+Host257-261 also passes a complete post-Save atmosphere sequence. Repeated native
+Save at261 again passes SavedApplied2/2, exact authored root payloads and history,
+and original DBPF acquisition: `out/preview9-c69-road-native-save-repeat`.
+Its saved root is `408A0000!2914C2BA.366A930D`. Both games return normally to
+Galaxy with zero faults before fresh-process reopening.
+
+Fresh native reopening reaches the exact saved root and Ready with419 placements,
+118 classes and five acts. The strict cold comparator then rejects decoded
+differences beginning at11104, before hosting or sharing. This is separately
+recorded as BUG-0487; no cold authored-equality or sharing acceptance is claimed.
+The complete cold image and failed comparison remain retained in
+`out/preview9-c69-road-cold-open`. The Save checkpoint failure is fixed, while
+terraformed cold-reopen equality remains an open qualification.
+Personal preview9/protocol23 and all user-deferred release gates are unchanged.
+
 ### C60 actual native placement boundary
 
 The exact generated4,095-placement/118-class/five-act private fixture cold-opens

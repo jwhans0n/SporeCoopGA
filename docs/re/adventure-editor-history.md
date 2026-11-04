@@ -2735,3 +2735,23 @@ Both games preserve durable251 and report zero faults. Evidence:
 `out/preview9-c68-road-native-save`, `out/preview9-c68-road-save-frozen`,
 `out/preview9-c68-road-save-raw-recipes-r2`. The first raw probe stopped on an
 anchored-source regex before retaining its result and remains unqualified.
+
+The corrected completed-Save boundary is `restore_saved_terrain`: require the
+exact successful normalization receipt and unchanged authored recipe, seed the
+owned materialization map under a stack-scoped read identity, run the existing
+native restore, and verify its new exact recipe and full readback before issuing
+a fresh one-use value ticket. With unchanged authored terrain, this native
+restore materializes the existing vectors; it does not load canonical columns.
+No ordinary projection or mutation scope is reopened. Unknown scale/matrix or
+scalar changes, owner/generation replacement and stale receipts still reject.
+
+Controlled FAIL: `out/preview9-saved-restore-red/run.log`. Strict-i686/O1 PASS:
+`out/preview9-saved-restore-green-o1`,4,801 focused/160,106 full adapter checks.
+Runtime PASS: `out/preview9-saved-restore-runtime-o0`, transition3,774,
+scene-alias11,193, recovery2,028, complexity1,564, saved-root158. Actual C69 Save
+at251 passes SavedApplied2/2 with exact authored root payloads/history and zero
+faults: `out/preview9-c69-road-native-save`. The first post-Save edit/Undo raw
+difference consists solely of existing unused prefix words, independently
+verified against the complete native images with no root metadata changes:
+`out/preview9-c69-first-post-save-undo-audit`. Its complete repeat253-257 passes
+own exact raw SHA and authored semantic history without changing assertions.

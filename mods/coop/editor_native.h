@@ -297,6 +297,7 @@ struct TerrainTransitionReceipt {
     TerrainTransitionKind kind=TerrainTransitionKind::Save;
     TerrainTransitionKey before,after;
     uint64_t save_generation=0,save_serial=0;
+    bool operator==(const TerrainTransitionReceipt&)const=default;
 };
 using TerrainTransitionCurrent=std::function<bool()>;
 struct TerrainTransitionProof;
@@ -307,6 +308,8 @@ bool refresh_terrain_transition(const TerrainTransitionTicket&,const TerrainTran
                                 const TerrainTransitionCurrent&,TerrainTransitionTicket&,Snapshot& observed,std::string& error);
 bool normalize_saved_terrain(const TerrainTransitionTicket&,const TerrainTransitionReceipt&,const Snapshot& expected,
                              Snapshot& saved,const TerrainTransitionCurrent&,std::string& error);
+bool restore_saved_terrain(const TerrainTransitionTicket&,const TerrainTransitionReceipt&,const Snapshot& saved,
+                           const TerrainTransitionCurrent&,TerrainTransitionTicket& prepared,std::string& error);
 bool resume_terrain_transition(const TerrainTransitionTicket&,const TerrainTransitionReceipt&,const Snapshot& expected,
                                const TerrainTransitionCurrent&,std::string& error,Snapshot* observed=nullptr);
 bool restore_terrain_transition(const TerrainTransitionTicket&,const TerrainTransitionReceipt&,const Snapshot& expected,

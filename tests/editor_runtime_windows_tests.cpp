@@ -654,6 +654,20 @@ bool normalize_saved_terrain(const TerrainTransitionTicket& ticket,const Terrain
     }
     saved.document=expected.document;ticket->saved=receipt;return true;
 }
+bool restore_saved_terrain(const TerrainTransitionTicket& ticket,const TerrainTransitionReceipt& receipt,const Snapshot& saved,
+        const TerrainTransitionCurrent& current,TerrainTransitionTicket& prepared,std::string& error){
+    CHECK(!dispatching);auto& n=native[side];
+    if(receipt.kind!=TerrainTransitionKind::Save || !fixture_transition_receipt(ticket,receipt) || !ticket->saved ||
+       *ticket->saved!=receipt || n.refuse_transition_restore || ticket->raw!=n.raw_terrain ||
+       saved.source!=receipt.after.owner.source || saved.document!=ticket->entry.document ||
+       !fixture_transition_current(receipt.after,ticket->tool,current) || !validate(saved,saved.document,error)){
+        error="Injected completed Save restoration failure";return false;
+    }
+    ticket->retired=true;
+    if(!restore(saved,error) || !fixture_transition_current(receipt.after,ticket->tool,current))return false;
+    ++n.raw_terrain;auto result=std::const_pointer_cast<TerrainTransitionProof>(fixture_transition(receipt.after,saved));
+    result->saved=receipt;prepared=std::move(result);return true;
+}
 bool resume_terrain_transition(const TerrainTransitionTicket& ticket,const TerrainTransitionReceipt& receipt,const Snapshot& expected,
         const TerrainTransitionCurrent& current,std::string& error,Snapshot* observed){
     CHECK(!dispatching);auto& n=native[side];++n.transition_resumes;const bool accepted=fixture_transition_receipt(ticket,receipt);

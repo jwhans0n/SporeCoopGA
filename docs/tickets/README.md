@@ -495,4 +495,5 @@ not-reproduced, game-bug (Spore itself), wontfix, duplicate.
 | [BUG-0483](BUG-0483-native-inspection-checksum-treats-terrain-alloca.md) | fixed | tooling | GA native fixtures | 2026-11-04 | unreleased | Native inspection checksum treats terrain allocation state as authored Undo data |
 | [BUG-0484](BUG-0484-effect-clone-fixture-incorrectly-requires-the-so.md) | fixed | tooling | GA native fixtures | 2026-11-04 | unreleased | Effect clone fixture incorrectly requires the source random seed |
 | [BUG-0485](BUG-0485-gradient-point-color-changes-are-omitted-by-nati.md) | open | bug | GA shared editor | 2026-11-04 |  | Gradient point color gesture does not reach a shared transaction |
-| [BUG-0486](BUG-0486-native-save-after-terraform-edits-freezes-shared.md) | open | bug | GA shared editor | 2026-11-04 |  | Native Save after Terraform edits freezes shared checkpoint on recipe transition |
+| [BUG-0486](BUG-0486-native-save-after-terraform-edits-freezes-shared.md) | fixed | bug | GA shared editor | 2026-11-04 | unreleased | Native Save after Terraform edits freezes shared checkpoint on recipe transition |
+| [BUG-0487](BUG-0487-cold-native-reopen-of-terraformed-save-changes-d.md) | open | bug | GA shared editor | 2026-11-04 |  | Cold native reopen of terraformed Save changes decoded authored bytes |

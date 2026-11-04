@@ -375,6 +375,64 @@ bool normalize_saved_terrain(const TerrainTransitionTicket& supplied_ticket,cons
         ticket->saved=receipt;saved=std::move(candidate);error.clear();return true;
     }catch(...){error="Cannot normalize the owned native Save terrain record";return false;}
 }
+bool restore_saved_terrain(const TerrainTransitionTicket& supplied_ticket,const TerrainTransitionReceipt& supplied_receipt,const Snapshot& supplied_saved,
+                           const TerrainTransitionCurrent& supplied_current,TerrainTransitionTicket& prepared,std::string& error){
+    try{
+        const auto ticket=supplied_ticket;const auto receipt=supplied_receipt;const auto saved=supplied_saved;const auto current=supplied_current;
+        if(terrain_read_identity || receipt.kind!=TerrainTransitionKind::Save || !transition_receipt(ticket,receipt,false,error) ||
+           !ticket->saved || *ticket->saved!=receipt || saved.source!=receipt.after.owner.source ||
+           saved.document!=ticket->entry.document){
+            error="The native terrain restoration has no completed Save receipt";return false;
+        }
+        const auto retained=[&]{return !ticket->retired && transition_current(receipt.after,ticket->tool,current) &&
+            !ticket->retired && transition_placements_current(*ticket,error);};
+        if(!retained()){error="The completed Save no longer owns its original terrain scene";return false;}
+        if(!validate(saved,saved.document,error))return false;
+        editor_native_terrain_materialization::Recipe raw;
+        if(!materialization_recipe(terraform_mode(),raw,error) || raw!=ticket->rendered ||
+           !transition_recipe_matches(raw,ticket->materialization,saved,error)){
+            error="The completed Save terrain changed before canonical restoration";return false;
+        }
+        // Save does not author a new terrain recipe. A different recipe needs
+        // the asynchronous canonical Load/Rebuild path, never this transfer.
+        if(!same_terrain(materialized_terrain?*materialized_terrain:act_identity,saved.document)){
+            error="The completed Save needs a separate canonical terrain rebuild";return false;
+        }
+        auto values=ticket->materialization;
+        const auto key=receipt.after;const auto tool=ticket->tool;
+        const auto exact=[&]{return transition_current(key,tool,current);};
+        struct PrivateValues {~PrivateValues(){clear_terrain_materialization();}} private_values;
+        {
+            // Publication intentionally empties ordinary projection scope.
+            // This completed-Save identity carries only the checked restore,
+            // including synchronous F35E10 and every native Release callback.
+            TransitionRead read(key,tool,current,&terrain_materialization);
+            terrain_materialization=std::move(values);
+            terrain_materialization_owner=TerrainMaterializationOwner{key.scope,key.generation,key.owner.mode,key.owner.data,
+                key.owner.resource,tool,key.owner.source};
+            terrain_materialization_error.clear();terrain_materialization_error_reported=false;
+            for(auto& rows:terrain_authored_rows)rows.clear();
+            ticket->retired=true;
+            if(!exact() || !restore(saved,error) || read.identity.invalid || !exact()){
+                if(error.empty())error="The completed Save owner changed during canonical restoration";return false;
+            }
+            const auto owner=materialization_owner(terraform_mode());
+            if(!owner || terrain_materialization_owner!=owner || !terrain_materialization_error.empty() ||
+               !materialization_recipe(terraform_mode(),raw,error) ||
+               !transition_recipe_matches(raw,terrain_materialization,saved,error)){
+                if(error.empty())error="The restored Save lost its exact terrain materialization proof";return false;
+            }
+            values=terrain_materialization;
+        }
+        std::shared_ptr<TerrainTransitionProof> result;
+        if(!make_transition_ticket(key,tool,saved,raw,values,result,error,true))return false;
+        Snapshot observed;if(!transition_observe(key,tool,saved,raw,values,current,observed,error))return false;
+        if(!transition_observation_matches(saved,observed,exact,error) || !exact() || !transition_placements_current(*result,error)){
+            if(error.empty())error="The restored Save proof expired before publication";return false;
+        }
+        result->saved=receipt;prepared=std::move(result);error.clear();return true;
+    }catch(...){error="Cannot restore the completed native Save terrain proof";return false;}
+}
 bool resume_terrain_transition(const TerrainTransitionTicket& ticket,const TerrainTransitionReceipt& receipt,const Snapshot& expected,
                                const TerrainTransitionCurrent& current,std::string& error,Snapshot* observed){
     const bool accepted=transition_receipt(ticket,receipt,false,error);
