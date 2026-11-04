@@ -2674,3 +2674,64 @@ capture or cache policy. Evidence: `out/preview9-c68-gradient-color-drag-host`,
 `out/preview9-c68-gradient-solo-doubleclick`,
 `out/preview9-c68-gradient-live-versus-capture`. No native function is invoked
 or process memory written by the observations; both fault counters stay zero.
+
+
+Point-color C68 qualification update: same-binary in-place recovery restores
+committedR196 and both tools' exact old RGB. Ordinary selection and a single
+red-family click commits197; the observer receives exact live RGB. Undo198
+restores full canonical native SHA d751b52b3f8305f175042f883f61883490d85deda53d198f637502cdf0e05015.
+Fresh-panel host198-202 and guest202-206 pass one selected-node change, only
+B6929C93, one history item and full native/authored semantic Undo/Redo/Undo.
+A direct host repeat206-210 also passes without reopening the category after
+Undo. Thus no persistent adapter failure or need to change capture is shown.
+The original failed palette setups remain open/unassigned in BUG-0485.
+The recovery helper itself stopped on a UI precondition after both parties
+were already ready; the following live-step probe pins thatR196 baseline
+before input. Evidence: `out/preview9-c68-shared-gradient-live-steps`,
+`out/preview9-c68-point-color-undo198`,
+`out/preview9-c68-gradient-color-host-fresh`,
+`out/preview9-c68-gradient-color-guest-fresh`,
+`out/preview9-c68-gradient-color-host-repeat`.
+
+Environment category buttons toggle their panel when clicked twice. The first
+inventory probe therefore captured an activated but hidden Environment panel;
+a subsequent single click opens the measured six controls. Atmosphere source
+071842D8 is at781,326..936,352; time dial073BEC90 is at776,141..943,212; day/night
+074261F8 at881,221..900,240; hazards899EB157 at769,649..790,670. The decorative
+time needle at857,126 is outside the actual input window. Temperature and Water
+remain the previously qualified native sliders. UI source guards must check
+current visibility, rather than blindly toggling twice.
+
+
+Environment time input clarification: F3AAA0's073BEC90 mouse-down stores initial
+X/time and opens history, mouse-move uses deltaX to call F33420, mouse-up commits.
+A simple click at900,175 has no delta and correctly creates no authored change.
+The first C68 time click therefore does not qualify input or indicate a product
+failure. The subsequent measured drag stays inside the exact dial source.
+Atmosphere density already passes host210-214 and guest214-218, only03A23F98,
+one history item and exact complete native/authored semantic history.
+
+Time dragging passes host218-222/guest222-226, day/night226-230/230-234 and
+hazards234-238/238-242. Only their exact property above changes; complete native
+and authored semantic Undo/Redo/Undo restores on both peers. Road placement
+passes host242-246 and guest246-250 through native card073933B8/04A1CB6F,
+changing only the two Model columns, one transaction and exact full history.
+Basic Tools hover confirms the first card caption `Raise Round Terrain`.
+
+## Completed Save loses the next materialization proof (2026-11-04, feat/ga-editor-multi-act)
+<a id="editor-saved-terrain-restore-proof"></a>
+
+BUG-0486 reproduces the unassigned C62 recipe rejection on C68 atR251 after
+guest Road Redo. `normalize_saved_terrain` succeeds against the retained live
+and genuine saved raw recipe. `checkpoint_resources` then calls native restore
+before `resume_terrain_hold`, whose old rendered recipe no longer matches.
+While publication is held, `current_projection_scope` is empty, so ordinary
+materialization ownership does not retain that rebuild's proof. Read-only
+comparison with the exact original saved DBPF shows28 Effect and93 Model
+transforms changed only in WORD counter and XYZ; all keys/scalars are identical.
+Do not weaken raw equality or infer provenance from these offsets. Restoration
+needs a completed-Save-owned read boundary and a newly verified value proof.
+Both games preserve durable251 and report zero faults. Evidence:
+`out/preview9-c68-road-native-save`, `out/preview9-c68-road-save-frozen`,
+`out/preview9-c68-road-save-raw-recipes-r2`. The first raw probe stopped on an
+anchored-source regex before retaining its result and remains unqualified.

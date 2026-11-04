@@ -96,7 +96,7 @@ class StampChecks(unittest.TestCase):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--selftest', action='store_true')
+    parser.add_argument('--self-test', '--selftest', dest='selftest', action='store_true')
     parser.add_argument('--capture', type=Path, help='result.json containing before/after checks and a case')
     args = parser.parse_args()
     if args.selftest:

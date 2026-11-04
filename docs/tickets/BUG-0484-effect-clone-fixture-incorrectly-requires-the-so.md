@@ -1,17 +1,17 @@
 ---
 id: BUG-0484
 title: Effect clone fixture incorrectly requires the source random seed
-status: open
+status: fixed
 kind: tooling
 stage: GA native fixtures
 reported: 2026-11-04
 source: C68 actual Effect clone companion audit
 role: host
 versions: C68 native fixture
-fixed_in:
+fixed_in: unreleased
 branch: feat/ga-editor-multi-act
-commits:
-tests:
+commits: 9f94bbd
+tests: coop_editor_terrain_stamp_checks.py --self-test; eight captured native cases
 signature:
 docs:
 related: BUG-0479

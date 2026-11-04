@@ -1,17 +1,17 @@
 ---
 id: BUG-0483
 title: Native inspection checksum treats terrain allocation state as authored Undo data
-status: open
+status: fixed
 kind: tooling
 stage: GA native fixtures
 reported: 2026-11-04
 source: C67 native Model Clone Undo checksum
 role: observer
 versions: private preview9 C67
-fixed_in:
+fixed_in: unreleased
 branch: feat/ga-editor-multi-act
-commits:
-tests:
+commits: 2b45b34
+tests: tests/editor_native_cancellation_windows_tests.cpp; C67 native checksum FAIL; C68 host/guest Model/Effect clone histories PASS
 signature:
 docs:
 related: BUG-0479

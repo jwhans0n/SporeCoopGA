@@ -258,6 +258,44 @@ diagnostic uses `capture`, whereas gesture export uses `capture_draft`; the
 initial cache explanation is superseded. BUG-0485 tracks the unresolved shared
 commit path. No cache or validation bypass is justified by those observations.
 
+### C68 point colors, Environment and Road placement
+
+Point-color qualification now passes at host198-202 and guest202-206. A direct
+host repeat206-210 also passes immediately after Undo without reopening the
+panel. Each changes only selected node2 in B6929C93. The original failed picker
+procedures remain retained and unassigned in BUG-0485; no cache fix is claimed.
+
+All four additional Environment controls pass both roles: atmosphere210-218,
+time dragging218-226, day/night226-234 and hazards234-242. Temperature and Water
+retain their earlier C30/C31 native acceptance. Atmosphere changes only03A23F98,
+time/day-night only0B208B41 and hazards only8E390196. A time-dial click alone
+correctly makes no change: its native input uses horizontal dragging.
+
+Road gallery placement passes host242-246 and guest246-250. It appends a Model
+record through the native card drag, changing only03A90C57/03A90C5F. All thirteen
+new full sequences above produce one synchronized transaction/history item and
+exact complete native/authored-semantic Undo/Redo/Undo on both participants,
+with zero faults. Artifacts use the `out/preview9-c68-` prefix:
+`gradient-color-{host,guest}-fresh`, `gradient-color-host-repeat`,
+`{host,guest}-{atmosphere,time-drag,day-night,hazards}` and
+`{host,guest}-road-placement`. Accordion positions change while opening;
+Road input is guarded by the actual visible073933B8/04A1CB6F card.
+
+Guest Road Redo251 then reproduces the earlier Native Save problem, BUG-0486.
+Native Save completes and its exact original DBPF is retained, but checkpoint
+publication freezes at the owned recipe comparison. Both peers retain durable251
+and zero faults. Save normalization passed before `checkpoint_resources` restores
+the normalized native image. The subsequent resume compares against the old raw
+rendered recipe. Read-only comparison with the genuine saved resource finds28
+Effect and93 Model transforms changed in the live restored tool, only their
+counter/XYZ bytes; keys and all scalar companion columns remain exact. This is
+the verified native restore/materialization boundary, not permission to ignore
+unknown recipe changes. A completed-Save restoration must retain a fresh exact
+materialization proof across that boundary. Evidence:
+`out/preview9-c68-road-native-save`, `preview9-c68-road-save-frozen` and
+`preview9-c68-road-save-raw-recipes-r2`. Complete Terraform acceptance remains
+open while this failure and the remaining lifecycle checks are unresolved.
+
 ### C60 actual native placement boundary
 
 The exact generated4,095-placement/118-class/five-act private fixture cold-opens
