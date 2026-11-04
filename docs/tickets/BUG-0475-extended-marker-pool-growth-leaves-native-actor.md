@@ -1,16 +1,16 @@
 ---
 id: BUG-0475
 title: Extended marker-pool growth leaves native actor marker caches dangling
-status: open
+status: fixed
 kind: crash
 stage: GA shared editor
 reported: 2026-11-03
 source: C58 cold1025 shared R0 Extended R1 clone AV ED8A1F, retained crash dump and exact code audit
 role: host
 versions: private preview9 C58 protocol24
-fixed_in:
+fixed_in: private preview9 C60 (protocol25), not installed personally
 branch: feat/ga-editor-multi-act
-commits:
+commits: ecd9580c03adad27da15f98ba7cd8633b81c6e4f; f182eff96c92a96071fba95484532c0107a07c87
 tests: out/editor-preview9-marker-capacity/receipt.json; out/preview9-c58-count-1025-clone-crash-preserved
 signature: runtime C08A1F / preferred ED8A1F reads old marker through actor+18 after cold1025 clone
 docs: docs/re/adventure-complexity.md#complexity-marker-storage-lifetime
@@ -82,10 +82,27 @@ semantic identity return byte-exactly to the pre-clone values. Only native
 count[4] increases630 to631; all six uniqueness counts and thirteen words remain
 exact, with no faults or crash. Receipts are under
 `out/preview9-c60-recover-count1025` and `out/preview9-c60-count-1025-clone`.
-The4,096/overflow and native Save/cold boundary checks remain pending, so this
-ticket remains open for that acceptance.
+CORRECTION (2026-11-03): PASS now includes actual native4,095 to4,096, refusal
+of4,097 with no document/history mutation, exact native Undo/Redo, Native Save
+with SavedApplied2/2 and fresh-process cold reopen/shared materialization.
+All4,096 placements,118 classes and5 acts survive, both peers strictly converge
+and report zero faults. The unchanged strict Saved/cold comparator finds every
+decoded byte exact and only one unused scalar-key fourth word different in
+the prefix. No machine-ID exception is needed. Evidence:
+`out/preview9-c60-count-boundary-qualified/receipt.json`,
+`out/preview9-c60-count4096-native-save-r2/result.json` and
+`out/preview9-c60-count4096-cold-open/result.json`.
+The retained failed harness assertions concern the12-KiB object-list limit and
+an inappropriate canonical-hash equality across different revisions. They do
+not hide a native crash, authored-byte mismatch or accepted overflow. The
+OUT-only Save audit also rejects eight authored/nonfinite metadata mutations;
+production validators and the strict Saved/cold comparator are unchanged.
+This closes the marker-storage failure in the private candidate. Personal
+installation, publication eligibility, four-player breadth and release smoke
+remain separate; the installed protocol23 build still requires Extended off.
 
 ## History
 - 2026-11-03: opened.
 - 2026-11-03: exact capacity/cache lifetime cause and strict C60 controlled correction pass; running Native qualification remains open. Personal users were told to leave Extended off until validation.
 - 2026-11-03: actual C60 cause repro passes1,025 to1,026 and exact Undo; larger boundary/Save acceptance remains open.
+- 2026-11-03: actual4,096/overflow/Undo/Redo/Native Save/cold acceptance passes; fixed in private C60, not yet installed personally or released.

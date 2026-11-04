@@ -1,13 +1,13 @@
 # Shared Adventure Editor preview 9 validation
 
 Installed testing candidate: **`0.7.5.0-ga-editor-preview.9`**, protocol **23**.
-The subsequent uninstalled upstream-integration source uses protocol **24**,
+The subsequent uninstalled upstream-integration source uses protocol **25**,
 branch `feat/ga-editor-multi-act`, updated 2026-11-03. The original supported GOG 2024
 executable and its exact 4 GB LAA variant remain supported. Older protocol
 clients are explicitly rejected. This report records development evidence,
 not completed native acceptance, a main merge or a public release.
 
-The user-requested testing installation is C49, co-op DLL SHA-256
+The initial user-requested testing installation was C49, co-op DLL SHA-256
 `3741ec661fd54588f531cda059d708d5d4971c946a278f58c1a3e165f3a337dc`,
 with Kit `0f25bb7a2943a4e1ce3ad7d44a077ea3e8bd41a230c1130b8f2957b10cf6ecfc`.
 It was installed on 2026-11-03 before deferred release acceptance, as requested.
@@ -73,6 +73,58 @@ Rollback files and their checked restore manifest are at
 the earlier full preview-8 rollback payload is retained as well.
 
 ## Candidate changes
+
+The personal testing installation subsequently received the three qualified
+Flora fixes at `bd0c350df8273eb8f8999208d23067beaab89a5c`, still protocol23.
+Its current DLL SHA is
+`8d9f79abb0ff140a8392d7420e4eb792bbc0d4bc671fc8d016a238575d34d40b`;
+the Kit and exact LAA executable above remain unchanged. Settings and shortcut
+were preserved. Receipt:
+`out/preview9-delivery/preview9-flora-testing-update-installation.json`.
+The private C60 protocol25 boundary candidate is not installed personally.
+Users were told to leave Extended Complexity off in the personal candidate
+until its marker-storage correction is qualified and delivered.
+
+### C60 actual native placement boundary
+
+The exact generated4,095-placement/118-class/five-act private fixture cold-opens
+and shares with two participants. Its authored bytes match the generated source
+under the bounded container-relocation/compression comparison. Both report
+policy2/Extended Ready. Ordinary native Alt-clone reaches4,096 in one transaction;
+only Sound count[4] increases and all uniqueness counts/thirteen tuning words
+remain unchanged. A second ordinary clone attempt at the ceiling leaves native
+inspection, canonical document and collaboration history unchanged at R2.
+Undo restores the exact4,095 native SHA and inspection semantic hash at R3;
+Redo restores the exact4,096 values at R4. Both peers remain strictly converged
+with zero faults. The canonical document hash includes revision, so equality
+between R1 and R3 is not an appropriate Undo assertion.
+
+Evidence: `out/preview9-c60-count-4095-open`,
+`out/preview9-c60-count-boundary-qualified`,
+`out/preview9-c60-count-4096-overflow` and
+`out/preview9-c60-count-4096-redo`. Failed fixture assertions are retained:
+the bounded12-KiB object listing omitted the newly appended selected item;
+later, an unnecessary cross-revision canonical-hash assertion failed despite
+exact native restoration. Neither failure was a native crash or accepted overflow.
+
+Native Save at4,096 completes normal confirmation and SavedApplied2/2, with
+unchanged revision, history and canonical document hash. Exact retained before/
+after images preserve every authored root payload. Host changes are confined
+to the documented local camera block; both images vary only the existing
+reserved prefix words/obsolete None union outside those payloads. The original
+persisted DBPF contains the exact host Saved bytes. Evidence:
+`out/preview9-c60-count4096-native-save-r2/result.json`.
+An OUT-only Save comparator uses the existing reserved-word/None policy and
+explicit screenshot/camera metadata shapes; the narrower production-independent
+Saved/cold comparator remains unchanged. The earlier1,025 Save fixture's stricter
+inspection-hash failure is retained and its raw authored records were separately
+verified unchanged. Fresh processes then cold-open the exact4,096 Saved root
+and both peers share it at a new R0 with zero faults. The unchanged strict
+Saved/cold comparator finds all3,994,584 decoded bytes identical, no machine-ID
+changes, and only the permitted unused fourth word of scalar key00B2CCCB
+different in the prefix. Evidence:
+`out/preview9-c60-count4096-cold-open/result.json`.
+BUG-0475 is fixed in the private candidate. Actual1,024-class refusal remains pending.
 
 - Crew roster/capacity has a separate settings identity and ownership scope.
 - Host-ordered terrain records have stable identities, checked replacement and

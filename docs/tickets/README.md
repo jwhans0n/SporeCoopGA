@@ -484,4 +484,4 @@ not-reproduced, game-bug (Spore itself), wontfix, duplicate.
 | [BUG-0472](BUG-0472-shared.md) | open | bug | GA shared editor | 2026-11-03 |  | First Alt clone is lost while waiting for Structure ownership |
 | [BUG-0473](BUG-0473-gradient-height-undo-restores-planet-data-but-le.md) | fixed | bug | GA shared editor | 2026-11-03 | private preview9 C58 (protocol24) | Gradient height Undo restores Planet data but leaves local native Color UI stale |
 | [BUG-0474](BUG-0474-planet-look-presets-bypass-bulk-flora-field-owne.md) | fixed | bug | GA shared editor | 2026-11-03 | private preview9 C59 (protocol24) | Planet look presets bypass bulk Flora field ownership and split pending setters |
-| [BUG-0475](BUG-0475-extended-marker-pool-growth-leaves-native-actor.md) | open | crash | GA shared editor | 2026-11-03 |  | Extended marker-pool growth leaves native actor marker caches dangling |
+| [BUG-0475](BUG-0475-extended-marker-pool-growth-leaves-native-actor.md) | fixed | crash | GA shared editor | 2026-11-03 | private preview9 C60 (protocol25), not installed personally | Extended marker-pool growth leaves native actor marker caches dangling |

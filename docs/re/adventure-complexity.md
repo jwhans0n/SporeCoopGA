@@ -293,3 +293,25 @@ That report establishes a long no-frame operation, not a demonstrated deadlock.
 The separate4,096/overflow and native Save/cold checks remain pending; BUG-0475
 stays open for them. Earlier C58 shorthand "count4" meant input index[4],
 whose real value increased24 to25 on the419-marker baseline.
+
+CORRECTION (2026-11-03): actual C60 placement-boundary qualification is complete.
+The generated4,095 Sound fixture cold-opens and shares; normal Alt-clone reaches
+4,096 in one transaction. Another attempt at4,096 changes no native inspection,
+canonical document or history. Undo/Redo restore exact native snapshots. Native
+Save completes SavedApplied2/2, preserving authored root payloads, history and
+canonical revision/hash. Fresh processes cold-open the Saved root and share it
+with4,096 placements/118 classes/5 acts and zero faults. The existing strict
+Saved/cold comparator finds all3,994,584 decoded bytes exact, no machine changes,
+and only scalar key00B2CCCB's unused fourth word different in the prefix.
+Receipts: `out/preview9-c60-count-boundary-qualified`,
+`out/preview9-c60-count4096-native-save-r2` and
+`out/preview9-c60-count4096-cold-open`. BUG-0475 is fixed in private C60, still
+uninstalled personally. Publication eligibility, actual class-cap qualification
+and deferred release breadth/performance/smoke are separate. Eight controlled
+Save-audit mutations are rejected, including placement/class/act/captain, terrain
+gradient, color, nonfinite camera and negative view distance. The OUT-only audit
+uses existing Native Save padding and explicit screenshot/camera metadata; it
+does not change production or broaden the Saved/cold comparator. The original
+failed1,025 Save inspection-hash assertion and boundary harness failures remain
+retained. A canonical hash includes revision and should not be equated across
+Undo revisions; the restored native inspection SHA/semantic identity is exact.
