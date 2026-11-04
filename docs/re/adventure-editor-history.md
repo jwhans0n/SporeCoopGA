@@ -2092,3 +2092,50 @@ last policy callback, cancellation/held input, exceptions and reentrant newer
 refresh preservation. `out/editor-preview9-flora-refresh/receipt.json` retains
 the complete source set and logs. The ABI verifier passes102 entries and
 repository symbol/docs lints pass. Running-game C56 acceptance remains pending.
+
+### Galaxy intro must finish before Adventure Editor entry (C56/C57)
+
+C56 recovery retained exact canonical/native data and reached Ready at revision58,
+but the host remained in the Galaxy orbit cinematic without toolbar07104132.
+The guest had the ordinary editor UI. The host's existing `coop.status` proved
+`cinematic 8915F9BB playing (menu intro)` and `busy: cinematic,input_lock`;
+this was not inferred from camera appearance or missing controlled creatures.
+Evidence is under `out/preview9-c56-cinematic-observe` and
+`out/preview9-c56-editor-ui-arrival`.
+
+The existing world cleanup handles the exact GGE_Intro8915F9BB before a normal
+world load, and later only in Cell/Creature/Tribe/Civ/Space. Scenario is excluded.
+The shared editor's existing native entry bypassed that load cleanup. A menu
+intro crossing into Scenario can consequently retain its input lock and hidden
+HUD while canonical recovery checks still pass. The current Adventure intro and
+talk barriers require an active co-op attempt, so an idle content run does not
+authorize ending any Adventure cinematic.
+
+The common `editor_native::enter` now runs an exact-menu preflight before
+ResetRequest, the first native entry mutation. It owns the input key and pins
+module, game thread and generation before any symbol/getter callback; getter
+reinit cannot become a new entry authority. The world adapter ends only active
+GGE_Intro while that copied Galaxy fence remains current. Other active
+cinematics return an explicit error untouched. Fresh observations require the
+same manager, inactive state and native end ID zero; unknown/stale contexts
+perform no entry mutation. Reentrant entry is denied. No native owner or task
+is retained, and all existing entry callers remain outside Present.
+
+ADFF50's exact dc04 body supplies the postcondition: ADFF87 decrements the
+native input lock, ADFFA5 reads the prior cinematic ID, ADFFBF explicitly clears
+manager+148, then ADFFE1 publishes044F1189. The native active-state cleanup is
+called at ADFF60. Inactive managers may retain an old ID and are accepted without
+calling End. This does not broaden the global world tick's stage set.
+
+The host's explicit Recover rejects before a new Recovery/controller is
+published and can be retried. An automatic guest entry failure retains the
+existing explicit failed-join/Retry path; it never becomes a healthy baseline
+or silently spins. Full planet/placement/dependency/recovery proof is unchanged.
+
+Strict controlled validation passes134 actual-i686 native-entry assertions,
+54 pure preflight assertions on Linux and i686, and the affected world object
+compile. Focused Flora990, Environment1,137 and complexity1,199 remain green.
+The exact retained C56 native producer reproduces the missing-toolbar assertion
+with an active menu intro. `out/editor-preview9-editor-entry` retains source
+pins, exact ADFF50 bytes, old-producer RED, final focused logs and executables.
+These controlled checks do not replace C57's running-game entry qualification.

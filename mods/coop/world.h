@@ -72,6 +72,11 @@ bool cinematic_playing();
 // outside the frame. True if one played (BUG-0404: a cinematic left playing in an editor keeps it
 // without its buttons)
 bool end_cinematic(const char* where);
+// Main thread, outside Present, before the first Adventure Editor request
+// mutation. Ends only the exact Galaxy menu intro; other cinematics remain
+// untouched and return an explicit retryable error. The copied current fence
+// must pin the caller's module/native generation and Galaxy mode.
+bool prepare_editor_entry(std::function<bool()> current, std::string& error);
 // the game time stands (cGameTimeManager +0x48 bit 0): the pause menu, the Sporepedia, My Collections,
 // a planner (busy.h kPaused); callable in the frame
 bool time_paused();

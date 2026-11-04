@@ -1,4 +1,5 @@
 #include "editor_native.h"
+#include "world.h"
 #include "editor_native_snapshot_values.h"
 #include "editor_native_bindings.h"
 #include "editor_native_tools.h"
@@ -7215,24 +7216,48 @@ bool select_act(uint32_t act,std::string& error){
 }
 
 bool enter(const editor::ResourceKey& key,std::string& error){
-    if(!supported || !key.instance || key.type!=0x366A930D || !creation_group() || key.group!=creation_group() || game::mode_id()!=modes::kMenu){
+    const auto wanted=key;
+    const auto* host=H;auto* mod=M;const auto expected_generation=generation;
+    const auto expected_thread=native_owner_thread;
+    const auto owned=[=]{return host && supported && H==host && M==mod && generation==expected_generation &&
+        expected_thread && native_owner_thread==expected_thread && GetCurrentThreadId()==expected_thread;};
+    if(!owned() || !wanted.instance || wanted.type!=0x366A930D){
         error="A registered adventure can enter the native editor only from Galaxy";return false;
     }
+    static bool entering=false;
+    if(entering){error="Native Adventure Editor entry is already in progress";return false;}
+    struct EntryGuard {bool& busy;explicit EntryGuard(bool& value):busy(value){busy=true;}~EntryGuard(){busy=false;}} guard(entering);
+    const auto group=creation_group();
+    if(!owned()){error="The native Adventure Editor entry context changed";return false;}
+    if(!group || wanted.group!=group){error="A registered adventure can enter the native editor only from Galaxy";return false;}
+    const auto current=[owned]{return owned() && game::mode_id()==modes::kMenu && owned();};
+    if(!current()){error="A registered adventure can enter the native editor only from Galaxy";return false;}
     const char* required[]={"SporeCoop::Adventure::ResetRequest","SporeCoop::Adventure::LoadingScreenGet",
         "SporeCoop::Adventure::LoadingScreenShow","App::IStateManager::Get","App::cStateManager::SwitchToState",
         "App::IGameModeManager::Get","App::cGameModeManager::SetActiveMode"};
     std::array<uintptr_t,7> address{};
-    for(size_t i=0;i<address.size();++i)if(!(address[i]=H->sym(required[i]))){
-        error="Verified native editor entry is unavailable";return false;
+    for(size_t i=0;i<address.size();++i){
+        address[i]=host->sym(required[i]);
+        if(!current()){error="The native Adventure Editor entry context changed";return false;}
+        if(!address[i]){error="Verified native editor entry is unavailable";return false;}
+    }
+    // ResetRequest already mutates the global native request. Finish only the
+    // exact Galaxy intro before that first mutation, under the copied fence.
+    if(!world::prepare_editor_entry(current,error) || !current()){
+        if(error.empty())error="The native Adventure Editor entry context changed";return false;
     }
     void* request=skg::cdecl_call<void*>(address[0]);
+    if(!current()){error="The native Adventure Editor entry context changed";return false;}
     void* loading=skg::cdecl_call<void*>(address[1]);
+    if(!current()){error="The native Adventure Editor entry context changed";return false;}
     void* app=skg::cdecl_call<void*>(address[3]);
+    if(!current()){error="The native Adventure Editor entry context changed";return false;}
     void* manager=skg::cdecl_call<void*>(address[5]);
+    if(!current()){error="The native Adventure Editor entry context changed";return false;}
     if(!request || !loading || !app || !manager){error="Native editor entry context is not initialized";return false;}
     // Native existing-adventure editor route DFBD54..DFBD95. The reset helper
     // initializes kind1/context0 and clears captain; this is not quickplay2/1.
-    skg::field<editor::ResourceKey>(request,0)=key;
+    skg::field<editor::ResourceKey>(request,0)=wanted;
     skg::field<uint32_t>(request,0x24)=1;
     skg::field<uint32_t>(request,0x28)=0;
     skg::thiscall<void>(address[2],loading,true,modes::kScenario,true);

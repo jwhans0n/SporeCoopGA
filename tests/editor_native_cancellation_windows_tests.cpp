@@ -52,6 +52,7 @@ void* t_tool_pointer=t_tool.data();
 bool t_active=true,t_restore_fail=false,t_callback_fail=false,t_alloc_fail=false;
 uint64_t t_frame=10;
 uint32_t t_game_mode_id=modes::kScenario;
+std::function<void()> t_game_mode_callback;
 double t_time=1;
 unsigned t_presses=0,t_finishes=0,t_ticks=0,t_steps=0;
 bool t_granted=false;
@@ -200,6 +201,7 @@ void native_cancel(void* entry=nullptr){
 }
 void begin(){start(t_data.data());CHECK(!t_allocations.empty());CHECK(gesture_serial!=0);}
 void reset(){
+    t_game_mode_callback={};
     clear_environment_refresh();environment_refresh_queued=environment_refresh_servicing=false;
     native_fixture_escape_state=0;
     clear_terrain_capture_rotations();
@@ -1195,7 +1197,8 @@ void test_async_captain_asset_keeps_value_and_rechecks_identity(){
     }
 }
 }
-namespace game { uint32_t mode_id(){return t_game_mode_id;} void destroy_creature(void* actor){CHECK(actor==t_ghost_actor.data()||actor==t_ghost_exit.data());++t_ghosts_destroyed;skg::field<bool>(actor,0x20)=true;t_release(actor);} }
+namespace game { uint32_t mode_id(){if(t_game_mode_callback){auto callback=std::move(t_game_mode_callback);callback();}return t_game_mode_id;} void destroy_creature(void* actor){CHECK(actor==t_ghost_actor.data()||actor==t_ghost_exit.data());++t_ghosts_destroyed;skg::field<bool>(actor,0x20)=true;t_release(actor);} }
+#include "editor_native_entry_fixture.h"
 #include "editor_native_history_toolbar_fixture.h"
 namespace sui {
 Win layout_container(void* layout){
@@ -1723,6 +1726,10 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
 #include "editor_native_pose_prepare_staged_fixture.h"
 #include "editor_native_service_pulse_fixture.h"
 int main(int argc,char** argv){
+    if(argc==2&&std::string(argv[1])=="--entry-only"){
+        native_entry_fixture::test();std::printf("native editor entry: %u checks passed\n",checks);return 0;
+    }
+    if(argc==1)native_entry_fixture::test();
     if(argc==2&&std::string(argv[1])=="--pose-prepare-staged-only"){
         test_two_frame_native_pose_prepare();test_staged_pose_checked_application();std::printf("native staged pose prepare: %u checks passed\n",checks);return 0;
     }

@@ -1,6 +1,7 @@
 // World sharing: the host streams its current save folder (AppData\Spore\Games\GameN)
 // to a joining guest, who stores it as a new save slot. See docs/03-gameplay.md 3.2.
 #include "world.h"
+#include "world_editor_entry.h"
 
 #include <winsock2.h>
 #define WIN32_LEAN_AND_MEAN
@@ -746,6 +747,30 @@ bool cinematic_playing()
 {
     uint8_t* cm = (uint8_t*)cinematic_mgr();
     return cm && *(uint32_t*)(cm + kCineState);
+}
+
+bool prepare_editor_entry(std::function<bool()> current, std::string& error)
+{
+    const auto* host=H;auto* mod=M;
+    const auto owned=[host,mod,current=std::move(current)]{
+        return host && mod && H==host && M==mod && current && current() && H==host && M==mod;
+    };
+    if(!owned()){error="The native Adventure Editor entry context changed";return false;}
+    const auto get=host->sym("Simulator::cCinematicManager::Get");
+    if(!owned()){error="The native Adventure Editor entry context changed";return false;}
+    const auto end=host->sym("SporeCoop::cCinematicManager_EndCinematic");
+    if(!owned() || !get || !end){error="The verified Galaxy menu-intro preflight is unavailable";return false;}
+    const auto observe=[&]{
+        auto* cm=skg::cdecl_call<uint8_t*>(get);
+        if(!owned() || !skg::readable(cm,kCineId+4))return world_editor_entry::Cinematic{};
+        return world_editor_entry::Cinematic{reinterpret_cast<uintptr_t>(cm),
+            skg::field<uint32_t>(cm,kCineState),skg::field<uint32_t>(cm,kCineId)};
+    };
+    const auto finish=[&](uintptr_t manager){
+        skg::thiscall<void>(end,reinterpret_cast<void*>(manager));
+    };
+    // No policy callback after the helper's final fresh observation.
+    return world_editor_entry::prepare(owned,observe,finish,error);
 }
 
 bool time_paused()

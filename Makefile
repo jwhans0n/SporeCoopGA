@@ -182,6 +182,18 @@ $(B)/host/adventure_collect_tests.exe: tests/adventure_collect_windows_tests.cpp
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-unused-function -static -Imods/coop -Isdk/include tests/adventure_collect_windows_tests.cpp mods/coop/adventure_music.cpp mods/coop/net/dbpf.cpp updater/sha256.cpp -o $@
 
 $(B)/host/editor_native_cancellation_tests.exe: $(wildcard mods/coop/editor_native*.h) mods/coop/net/editor_terrain.h tests/editor_native_pose_prepare_fixture.h tests/editor_native_pose_prepare_staged_fixture.h mods/coop/editor_native_pose_prepare_staged_impl.h mods/coop/editor_native_pose_prepare_impl.h
+$(B)/host/editor_native_cancellation_tests.exe: tests/editor_native_entry_fixture.h mods/coop/world.h mods/coop/world_editor_entry.h
+
+.PHONY: test-world-editor-entry test-world-editor-entry-windows
+test-world-editor-entry: $(B)/host/world_editor_entry_tests
+	$<
+test-world-editor-entry-windows: $(B)/host/world_editor_entry_tests.exe
+$(B)/host/world_editor_entry_tests: tests/world_editor_entry_tests.cpp mods/coop/world_editor_entry.h
+	@mkdir -p $(dir $@)
+	$(HOSTCXX) -std=c++20 -O2 -Wall -Wextra -Werror $< -o $@
+$(B)/host/world_editor_entry_tests.exe: tests/world_editor_entry_tests.cpp mods/coop/world_editor_entry.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static $< -o $@
 
 # CPU-only Snapshot construction and all sidecar copy domains; no Native calls.
 .PHONY: test-editor-snapshot-values-windows
