@@ -2651,3 +2651,26 @@ legacy CRLF MinHook.rc blob. All323 preserved production inputs match commit
 build bytes remain independently unchanged. Correct receipt:
 `out/editor-preview9-terrain-remove/postcommit-r3.json`. Earlier failures remain
 retained and are not advertised as source drift.
+
+
+## Point-color investigation and committed versus live inspection (2026-11-04, feat/ga-editor-multi-act)
+<a id="editor-gradient-point-color-live"></a>
+
+AtR196 the click/held-drag shade procedures produce no shared transaction.
+Standalone selection then visibly turns node2 red. A bounded read-only Native
+tool capture proves RGB0.6196078658/0.0392156877/0.0549019650 in vector108/10C;
+heights are in11C/120. F34380 assigns those vectors exactly. UI node RGB lives
+at34/38/3C; EEA090 sendsD69290D7 after updating it, and EE72FA starts history,
+exports UI nodes through EEB820, sets F34380 and commits F34400.
+
+CORRECTION (2026-11-04): the preliminary cache-omission explanation is not
+established. Public inspect calls capture(resource). capture_draft separately
+exports current tool values through F27C00 into an owned native copy before
+projection. Standalone live changes need not already exist in the resource
+inspected by the public command. BUG-0485 tracks the actual missing shared
+transaction; instrument its control/ownership/history path before changing
+capture or cache policy. Evidence: `out/preview9-c68-gradient-color-drag-host`,
+`out/preview9-c68-gradient-solo-reference`,
+`out/preview9-c68-gradient-solo-doubleclick`,
+`out/preview9-c68-gradient-live-versus-capture`. No native function is invoked
+or process memory written by the observations; both fault counters stay zero.

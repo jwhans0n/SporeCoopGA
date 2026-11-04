@@ -5713,12 +5713,22 @@ std::string debug(const std::vector<std::string>& args) {
             projection.epoch = 1; projection.revision = 0;
             std::string semantic;
             if (!editor_session::document_hash(projection, semantic, error)) return "Native projection inspection failed: " + error;
+            // Structural Undo preserves allocation high-water marks. Keep the
+            // original full projection checksum, and additionally compare all
+            // authored values/identities with only those two counters fixed in
+            // this private checksum copy. Never alter the canonical document.
+            projection.next_id=UINT64_MAX-1;projection.next_terrain_order=UINT64_MAX-1;
+            std::string authored_semantic;
+            if (!editor_session::document_hash(projection, authored_semantic, error)) return "Native authored projection inspection failed: " + error;
             char source[40];
             snprintf(source, sizeof source, "%08X!%08X.%08X", native.source.group, native.source.instance, native.source.type);
             return "placements=" + std::to_string(native.document.placements.size()) +
                 " classes=" + std::to_string(native.document.classes.size()) + " acts=" + std::to_string(native.document.acts.size()) +
                 " act=" + std::to_string(native.act) + " bytes=" + std::to_string(native.bytes.size()) + " source=" + source +
-                "\nnative_sha256=" + upd::sha256_hex(native.bytes) + "\ndocument_semantic_sha256=" + semantic;
+                "\nnative_sha256=" + upd::sha256_hex(native.bytes) + "\ndocument_semantic_sha256=" + semantic +
+                "\ndocument_authored_semantic_sha256=" + authored_semantic +
+                "\nprojection_next_id=" + std::to_string(native.document.next_id) +
+                " projection_next_terrain_order=" + std::to_string(native.document.next_terrain_order);
         }
         if (args[0] == "roundtrip") {
             auto before_hash = upd::sha256_hex(native.bytes);

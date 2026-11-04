@@ -215,6 +215,49 @@ Evidence: `out/editor-preview9-terrain-remove/receipt.json`,
 inputs with zero drift. It changes only the private installation; the personal
 preview and deferred release gates remain unchanged.
 
+### C68 first-use stamp clone and wheel scaling
+
+BUG-0479 (`55b4a82`) retains the first Terraform clone or ordered wheel quanta
+until the source lease arrives, including a quick ordinary release or separate
+native Shift-release finalizer. Native mutation/history/allocation waits for
+ownership; scene/scope/act/record identity is rechecked after grant callbacks.
+Pending input is bounded and cancellation/stale-context fences retain the
+existing safe behavior. Native EndScale ABI119 is verified; all166 previous
+manual bindings are preserved and one entry is added.
+
+Strict-i686/O1 controlled RED reproduces missing retention and a separate C67
+continued-wheel defect. GREEN553, prior Delete216/drag195 and the full native
+adapter155,260 pass. C68 retains324 production inputs with zero build drift.
+Eight actual two-player cases pass throughR164-196: Model wheel164-172,
+Model clone172-180, Effect wheel180-188 and Effect clone188-196, each from host
+and guest. Each gesture creates one transaction/history item, both peers
+converge and complete native/authored-semantic Undo/Redo/Undo restores exactly.
+Source and unrelated records remain unchanged. Effect append uses the exact
+current planet seed, as independently verified in Native code (BUG-0484).
+Receipt: `out/editor-preview9-terrain-first-use/receipt.json`.
+
+BUG-0483 retains the original projection checksum and exposes its two allocation
+high-water marks. A second checksum fixes only those two fields in a private
+copy, preserving all actual identities, order, references and values. Actual
+Clone Undo174 has host allocators55834575134/order286 versus observer
+55834575135/order287, while complete native bytes and authored checksums are
+identical. The prior fixture failed on allocation state rather than authored
+restoration. Its failed C67 artifact is retained. No canonical allocation,
+validation, Undo or native byte behavior changes.
+
+The first cold C68 wheel163/Undo164 again encounters the retained raw-host
+pre-image difference, while Planet and authored values restore. Its repeat is
+the complete qualified host sequence above. Ordinary C66 and C67 shutdowns
+return both private games to Galaxy with zero faults. Personal testing payload,
+shortcut and 4 GB executable are unchanged; deferred release gates stay deferred.
+
+Gradient point-color qualification continues separately atR196. Initial palette
+procedures produce no shared transaction. Standalone editing changes live
+Terraform RGB while committed-resource inspection remains unchanged. That
+diagnostic uses `capture`, whereas gesture export uses `capture_draft`; the
+initial cache explanation is superseded. BUG-0485 tracks the unresolved shared
+commit path. No cache or validation bypass is justified by those observations.
+
 ### C60 actual native placement boundary
 
 The exact generated4,095-placement/118-class/five-act private fixture cold-opens
