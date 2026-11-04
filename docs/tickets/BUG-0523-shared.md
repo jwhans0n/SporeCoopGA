@@ -6,8 +6,8 @@ kind: bug
 stage: GA shared editor
 reported: 2026-11-03
 source: actual C57 Sound Alt-clone qualification
-role: 
-versions: 
+role:
+versions:
 fixed_in:
 branch: feat/ga-editor-multi-act
 commits:

@@ -10,7 +10,7 @@ role: guest
 versions: shared editor protocol26 integration
 fixed_in: unreleased
 branch: feat/ga-editor-multi-act
-commits:
+commits: ee5550c3
 tests: tools/tests/fakepeer_check.py
 signature:
 docs:

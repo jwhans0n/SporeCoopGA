@@ -1968,6 +1968,3 @@ bool Controller::settled() const
 }
 
 } // namespace editor_session
-
-
-

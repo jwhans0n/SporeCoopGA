@@ -41,6 +41,39 @@ before the merge commit cannot see its incoming second parent and is rerun after
 the commit. Focused native entry/join/edit/Save qualification follows separately.
 Deferred release smoke, performance and broad creation testing stay deferred.
 
+The follow-up merge is committed as `0c61fe6a`; `origin/main` at the exact0.7.4
+commit is an ancestor. All332 retained production inputs match that merge by
+exact raw blob (83) or configured Git-clean identity (249), with zero differences:
+`out/preview9-upstream074-integration/postcommit.json`. The merged real-UDP
+editor suite passes32,089 checks with two/four peers, drops, duplicates and
+reordering. Ticket checks after the merge report537 tickets and zero problems.
+The staged whitespace check reports only incoming upstream ticket metadata's
+existing trailing spaces; those files retain upstream content. Focused docs and
+RE lint pass without changing either linter's rules.
+
+Actual C70 private recovery/join restores committed261 on both roles. A guest
+atmosphere gesture and checked Undo/Redo/Undo pass263-267, with one transaction,
+only03A23F98 changed, exact own native/authored hashes and zero faults. Its first
+attempt262/263 has exact authored restoration but the retained cold raw-image
+assertion failure. Native Save267 passes SavedApplied2/2, exact authored root
+payloads/history and original saved DBPF retention. Evidence:
+`out/preview9-c70-recover-r261`, `out/preview9-c70-guest-atmosphere-r2`,
+`out/preview9-c70-native-save`. These are focused editor integration checks,
+not native acceptance of every upstream0.7.4 gameplay feature.
+
+The current-protocol fake-peer check also exposes an old helper omission:
+HELLO/chat/leave pass, but its67-byte player-state payload is rejected by the
+current95-byte reader. BUG-0539 fixes only that bot payload and preserves the
+reviewed6/7 legacy shape. Actual C++ Session FAIL/PASS receipts are
+`out/preview9-upstream074-integration/fakepeer-{red,green}.log`; all handshake,
+player-state, chat, leave and executable-mismatch checks then pass. No product
+wire reader is weakened. Fix commit: `ee5550c3`.
+
+C70 additionally passes both-role Ocean gallery placement, exact complete
+Undo/Redo/Undo and native Save with its nonzero water companion retained at278.
+Both games return normally to Galaxy with zero faults before owned runner
+retirement. No private payload is copied to the user's testing installation.
+
 The user requested three priorities: install preview 9 for testing, synchronize
 the feature branch with the original SporeCoop repository, then continue
 Terraform and Extended Complexity coverage. Performance acceptance, broader
@@ -413,3 +446,11 @@ Evidence: `out/preview9-c54-passive-complexity/`,
 `out/preview9-complexity-qualification/`,
 `out/preview9-c56-terraform-companion-audit/` and
 `out/preview9-qualified-count-plan/`.
+
+Read-only personal handoff recheck on2026-11-04 confirms the shortcut resolves
+to the existing launcher, co-op DLL8d9f79ab, Kit0f25bb7a and exact LAA
+executable47f60c4d. Receipt:
+`out/preview9-delivery/personal-testing-readonly-recheck-20261104.json`.
+The final source-only cleanup removes pre-existing blank EOF lines and two
+ticket metadata trailing spaces. C70 remains pinned to merge0c61fe6a; no
+post-validation executable change or new personal installation is claimed.

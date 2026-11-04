@@ -1856,3 +1856,15 @@ Found by fix/w40-play (2026-11-03), not fixed:
   reproduce: `coop.fix effects.other_stages on` on every game, then tools/tests/coop_effects_party.py --fixture civ.
   To check for 0.7.5 (Civ) and 0.7.6 (Space): which effect ids need the painter, and whether a per-id allow list
   or the painter's context check is the right fix.
+
+## Experimental shared-editor native reopen qualification (2026-11-04)
+<a id="issue-editor-terraformed-cold-reopen"></a>
+
+* BUG-0538 (legacy fork BUG-0487): after a native Save of a terraformed private
+  adventure, cold opening reaches the correct adventure and Native Ready, but
+  the strict decoded saved/reopened comparison differs before sharing starts.
+  The field and native load boundary are unassigned. Reproduce with the retained
+  C69 Road draft and `out/preview9-c69-road-cold-open.py`; complete saved/cold
+  images are retained under the matching OUT directory. Shared Save checkpoint
+  publication is separately fixed under BUG-0537. Cold authored equality is not
+  qualified, and the comparator has not been relaxed.

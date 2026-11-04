@@ -2755,3 +2755,23 @@ difference consists solely of existing unused prefix words, independently
 verified against the complete native images with no root metadata changes:
 `out/preview9-c69-first-post-save-undo-audit`. Its complete repeat253-257 passes
 own exact raw SHA and authored semantic history without changing assertions.
+
+## Ocean gallery water companion and merged transport (2026-11-04, feat/ga-editor-multi-act)
+<a id="editor-ocean-gallery-water-companion"></a>
+
+C70/protocol26 preserves upstream0.7.4 while retaining the Save correction.
+The Oceans & Lakes accordion moves its first card to728,235..798,304 after
+animation; visible073933B8/04A1CB6F is the guarded source at760,270. Ordinary
+native drag appends one Effect with all six columns and water7A6AA70B=0.5.
+Host269-273 and guest273-277 preserve every old row, only change those columns,
+produce one history item and restore complete own native/authored hashes through
+Undo/Redo/Undo on both peers. The earlier first post-Save host raw-image assertion
+failure remains retained and is not counted as a complete passing sequence.
+Evidence: `out/preview9-c70-host-ocean-placement-r2` and
+`out/preview9-c70-guest-ocean-placement`.
+
+Guest Redo278 then Native Save passes SavedApplied2/2 with the actual Ocean/water
+record retained, exact authored root payloads/history and zero faults:
+`out/preview9-c70-ocean-native-save`. Both games return normally to Galaxy at278
+before private runner retirement. This does not qualify the separately rejected
+strict cold-reopen comparison (current BUG-0538, legacy fork BUG-0487).

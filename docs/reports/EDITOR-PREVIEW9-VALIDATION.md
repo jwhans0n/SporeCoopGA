@@ -351,7 +351,53 @@ The complete cold image and failed comparison remain retained in
 terraformed cold-reopen equality remains an open qualification.
 Personal preview9/protocol23 and all user-deferred release gates are unchanged.
 
-### C60 actual native placement boundary
+### Current integration and coverage status
+
+The current upstream0.7.4 integration is recorded in
+[the synchronization report](EDITOR-UPSTREAM-2026-11-03.md). C70 uses protocol26
+and changes only the private lab installation. Existing legacy fork tickets471-487
+are now522-538 to preserve upstream's independent IDs; older commits and OUT
+receipts retain the historical numbers.
+
+### Current Terraform control coverage (2026-11-04)
+
+The following summarizes native control families, rather than every stock
+gallery resource. Each passing authoring sequence includes observer convergence,
+one transaction/history item, checked Undo/Redo and fault checks.
+
+| Native tab | Host and guest qualification | Evidence |
+| --- | --- | --- |
+| Planet presets | Native card and atomic composite fields | C59 preset sequences45-53 |
+| Colors | Four color families; selected point color; gradient height, Add and drag-off Delete | C58, C63, C68 |
+| Flora | Add/replace/remove, density and ground-cover/flowers families | C57, with qualified fixes backported personally |
+| Environment | Temperature, water, atmosphere, time dragging, day/night and hazards | C30/C31 and C68 |
+| Basic Tools | Effect and Model placement; move, handle scale/yaw, Effect strength; wheel scale, Alt-clone and Delete | C62/C63/C65/C66/C68/C70 |
+
+Additional C70 Oceans & Lakes placement qualifies a nonzero native water
+companion. Host269-273 and guest273-277 each append exactly one Effect across all
+six recipe columns, with water7A6AA70B equal0.5, preserving all old rows and
+unrelated fields. Own complete native/authored-semantic Undo/Redo/Undo restores
+exactly on both peers. The first host267/268/269 attempt retains the raw-preimage
+assertion failure; its authored projection restores and the complete repeat is
+the qualified sequence. Source cards are guarded by actual073933B8/04A1CB6F.
+Evidence: `out/preview9-c70-{host-ocean-placement-r2,guest-ocean-placement}`.
+
+Guest Redo278 retains the real Ocean effect. Native Save then passes
+SavedApplied2/2, unchanged document/history and exact all authored payloads,
+including the water companion, retaining the genuine original DBPF:
+`out/preview9-c70-ocean-native-save`. Saved root is
+`408A0000!2914C952.366A930D`. Both private games return normally to Galaxy with
+zero faults before owned runner retirement.
+
+Complete Terraform acceptance is still open: strict terraformed cold-reopen
+equality (BUG-0538), further catalog-specific combinations and native collision/
+Solo/Test Together qualification are not established by this control table.
+The harness's older generic labels such as paint/smooth/erase/style are not
+independent verified GUI controls. Native `adventureLook` is a separate cheat,
+and its synchronization is not qualified here. Four-player creation, performance,
+final regressions, release smoke and final packaging/install remain user-deferred.
+
+### C60 actual native placement boundary evidence
 
 The exact generated4,095-placement/118-class/five-act private fixture cold-opens
 and shares with two participants. Its authored bytes match the generated source
