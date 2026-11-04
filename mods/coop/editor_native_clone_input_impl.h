@@ -19,6 +19,7 @@ bool clone_context(const HeldClone& pin){
        !a_context || !a_tools || *reinterpret_cast<void**>(a_context)!=pin.context ||
        *reinterpret_cast<void**>(a_tools)!=pin.manager)return false;
     auto* m=mode();auto* d=data(m);auto* r=resource(d);
+    if(editor::extended_complexity(act_identity) && (!marker_capacity_code_current() || !marker_capacity_ready(r)))return false;
     return uintptr_t(m)==pin.owner.mode && uintptr_t(d)==pin.owner.data && uintptr_t(r)==pin.owner.resource &&
         skg::readable(r,kResourceSize) && skg::field<editor::ResourceKey>(r,8)==pin.owner.source &&
         skg::readable(pin.context,0x8C) && !skg::field<uintptr_t>(pin.context,0x10);
@@ -81,6 +82,9 @@ CloneInput gate_clone_input(void* manager,void* actor,uint32_t a,uint32_t b,
         auto* m=mode();auto* d=data(m);auto* r=resource(d);
         if(!skg::readable(r,kResourceSize) || !skg::readable(m,0x44) || !a_context || !a_tools)return CloneInput::Denied;
         pin->owner={uintptr_t(m),uintptr_t(d),uintptr_t(r),skg::field<editor::ResourceKey>(r,8)};
+        if(extended_complexity()){
+            std::string error;if(!marker_capacity_require(r,error)){const auto notice=C.notice;if(notice)notice(error);return CloneInput::Denied;}
+        }
         pin->context=*reinterpret_cast<void**>(a_context);pin->manager=manager;pin->actor=actor;
         if(!clone_context(*pin) || skg::field<void*>(pin->context,4)!=actor ||
            ordinary_capture_pending())return CloneInput::Denied;

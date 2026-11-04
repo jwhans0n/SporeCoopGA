@@ -196,3 +196,100 @@ inputs unchanged. Exact receipts are retained under
 `out/editor-preview9-complexity-observation` and
 `out/editor-preview9-flora-layout`. These prove diagnostic composition and
 retirement, not running-game complexity boundaries or publication acceptance.
+
+## Marker storage is reserved before native actor binding (2026-11-03, feat/ga-editor-multi-act)
+<a id="complexity-marker-storage-lifetime"></a>
+
+Actual C58 cold-loaded the genuine1,025-Sound carrier and reached shared R0
+on both participants, strict and fault-free. Extended reached R1. The first
+normal host Alt clone then crashed. The retained executable loaded at00130000:
+runtimeC08A1F is preferredED8A1F, where native UI refresh reads a marker returned
+by6C0230 (`mov eax,[ecx+18]; ret`). The old actor0 and source24 cache pointers
+are1FCB000C and1FCB354C, exactly24*238h apart in the old marker arena.
+The GetClass address in the stack scan is not the immediate crashing caller.
+Crash, dump and stable private Store evidence remains in
+`out/preview9-c58-count-1025-clone-crash-preserved`; BUG-0475 tracks the fix.
+
+Exact supported-code receipts explain the419 versus1,025 boundary. Constructor
+F2E670 reserves1,024 atF2E97B/F2E996. ReadMarkerRowsF2F050 reserves the serialized
+count before insertion. ReserveF2E0D0 does not shrink: larger requests allocate
+exactlyN*238h bytes, with no unused-slot initialization. Thus419 retains1,024
+capacity, but cold1,025 has exactly1,025. Its next insertion grows through
+F2E470, doubles to2,050, copies and destroys the old rows and frees their arena.
+F2EBC0 protects the clone source with a stack copy before this growth. However,
+F3F8C0 writes marker addresses only into the new actor's+18. The synchronous
+07311FE9 broadcast reachesED8930 before the outer clone returns and enumerates
+the old actor caches. HeldClone and MarkerAudio use value/slot witnesses; their
+later cleanup cannot repair that native pre-return dereference.
+
+C60 hooks the verified constructor while its pool is still empty and unpublished.
+After the original valid1,024 constructor, a checked allocation from the native
+F47240/F47220 pair supplies4,096 slots. Only begin/end/cap change, exactly as in
+the native empty Reserve path. Free-list/iterator metadata, every resource field,
+logical native1,024 limits and all weighted tuning remain unchanged. If the extra
+allocation fails, the valid original resource remains: several native constructor
+callers ignore EAX or unconditionally copy through the original self, so returning
+null or freeing self would be unsafe. Populated or pre-existing live arenas are
+never promoted. Native CopyMarkerRowsDFF300 retains destination capacity when
+the source fits, and ResourceCopyDFFA00 copies metadata rather than capacity.
+Read/Copy/recovery/late-join resources created after the hook therefore keep the
+reserve before any actor/map binding. Native RestoreF46400 separately tears down
+maps and retires/updates actors throughF411A0 before its copy/rematerialization.
+
+The extra retained capacity is3,072*568 =1,744,896 bytes per constructed GA
+resource; total marker capacity is2,326,528 bytes. Construction temporarily owns
+both old and replacement empty arenas. This is a memory cost, not a measured
+performance claim; actual heap use and performance remain separate acceptance.
+The native allocation wrapper forwards only size/flags to927E70 through928C80,
+ignoring its name argument, so its debug-name pointer does not escape the DLL.
+
+A value-only immutable constructor policy is atomically published and retired.
+The resource factory may construct off the editor thread: that path reads only
+the retained policy, native code and its unpublished self. Main-thread calls
+also close host/module/generation, allocator and policy identity after callbacks.
+An atomic trampoline handoff covers entry during hook activation. No worker,
+Native owner, frame-spanning parser or live actor-cache rewrite is introduced.
+Controlled worker-retirement checks do not claim a new SDK module-unload guarantee.
+The policy checks full constructor, Reserve, ReadRows, CopyRows and Free bodies,
+including ret4 immediates and verified HIGHLOW relocations, and pins the installed
+constructor bytes. The same code profile covers original and LAA executables;
+GOG2016 remains frozen under BUG-0108 without invented symbols.
+
+Fresh current-scene capacity is part of Extended capability and input/apply/restore
+closure. An old or allocation-fallback scene holds Extended with its draft intact;
+it cannot inherit another scene's widened hard bounds. No scene is required for
+the global code/tuning proof while a host is away. Current policy2 and protocol25
+exclude unsafe older private clients at the handshake; updated same-build native
+default editing still accepts unavailable or mismatched tuning. Native Save,
+recovery and authored formats are unchanged. Personal installed protocol23 remains
+pinned independently; users were told to leave Extended off pending validation.
+
+The controlled production-hook fixture passes508 checks: native storage models
+for1,024 to1,025, cold1,025 to1,026,4,095 to4,096, refusal of4,097, unchanged
+default1,024 behavior, Copy/recovery/late join, failed allocation, stale callbacks,
+reentry, exact-code conflicts and worker retirement. Adjacent complexity1,575,
+delayed Clone838, preset8,910, terrain materialization73,241 and full adapter153,522
+checks pass under strict actual-i686 compilation,76 compiler/Make inputs with
+zero drift. Receipts are under `out/editor-preview9-marker-capacity`; the first
+fixture-only sentinel failure is retained separately. The initial unrecognized
+`--materialization-only` ran a legacy default subset and is explicitly qualified;
+the registered `--terrain-materialization-only` then passes on the unchanged EXE.
+Static source receipts are in `out/preview9-c58-count-clone-source-audit` and
+`out/preview9-c60-marker-capacity-review`. Actual C60 native boundary, Save/cold,
+publication and performance qualification remain pending.
+
+CORRECTION (2026-11-03): C60 now passes the original running-game cause repro.
+It recovers the prior crash's durable R1 with1,025 markers,118 classes and5 acts;
+both participants report current policy2 and Extended Ready. The same normal
+Alt Sound clone reaches1,026 at R2, then checked Undo restores1,025 at R3.
+Both peers' native SHA57e19767...36a1b9 and semantic4f492774...95dcb1 return
+exactly to their pre-clone values. Only native count[4] changes630 to631;
+all six uniqueness counts and thirteen tuning words remain exact. No fault or
+crash occurs. Evidence is retained in `out/preview9-c60-recover-count1025`,
+`out/preview9-c60-count-1025-navigation` and `out/preview9-c60-count-1025-clone`.
+The recovery watchdog sampled `skg::readable` and existing terrain-validation
+closures, and recovery subsequently completed within the120-second fixture.
+That report establishes a long no-frame operation, not a demonstrated deadlock.
+The separate4,096/overflow and native Save/cold checks remain pending; BUG-0475
+stays open for them. Earlier C58 shorthand "count4" meant input index[4],
+whose real value increased24 to25 on the419-marker baseline.

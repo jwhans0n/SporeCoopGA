@@ -13,6 +13,7 @@
 #include "net/dbpf.h"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -21,6 +22,7 @@
 #include <memory>
 #include <new>
 #include <set>
+#include <span>
 #include <utility>
 
 #include "sporekit_game.hpp"
@@ -281,11 +283,19 @@ bool extended_complexity(){
 }
 using ComplexityFn=float(SK_THISCALL*)(void*,const uint32_t*);
 ComplexityFn original_complexity;
+bool marker_capacity_code_current();
+bool marker_capacity_scene_current();
+bool marker_capacity_ready(void*);
+bool marker_capacity_require(void*,std::string&);
 bool read_complexity_capability(editor::ComplexityCapability& out,std::string& error){
     out={};
     const auto reject=[&](editor::ComplexityReason reason,const char* message){out={};out.reason=reason;error=message;return false;};
     if(!complexity_available || !complexity_code_pinned)
         return reject(editor::ComplexityReason::Unavailable,"The exact native Extended Complexity adapter is unavailable");
+    if(!marker_capacity_code_current())
+        return reject(editor::ComplexityReason::CodeConflict,"The verified native 4096-marker reserve policy is unavailable or changed");
+    if(!marker_capacity_scene_current())
+        return reject(editor::ComplexityReason::Unavailable,"The native marker reserve is incomplete. Reopen this scene before enabling Extended Complexity; the draft is preserved.");
     // No native calls or callbacks occur inside this bounded global read. The
     // same proof remains available while the host owns a creation editor.
     skg::ReadOnlyMemoryScope memory;
@@ -309,7 +319,7 @@ bool read_complexity_capability(editor::ComplexityCapability& out,std::string& e
     };
     value.words=read_words();
     if(!editor::valid_complexity(value))return reject(editor::ComplexityReason::InvalidTuning,"Native complexity tuning is invalid");
-    if(!code_current() || read_words()!=value.words)
+    if(!code_current() || !marker_capacity_code_current() || !marker_capacity_scene_current() || read_words()!=value.words)
         return reject(editor::ComplexityReason::Changed,"Native complexity evidence changed during capture");
     out=value;error.clear();return true;
 }
@@ -317,6 +327,10 @@ float SK_THISCALL complexity_ratio(void* self,const uint32_t* counts);
 bool update_complexity(std::string& error){
     const bool requested=extended_complexity();
     if(requested){
+        // A pre-existing or allocation-fallback scene must never inherit a
+        // previous scene's widened insertion bounds. The read-only capability
+        // holds Extended authoring and still permits the exact disable escape.
+        if(!marker_capacity_code_current() || !marker_capacity_scene_current())return complexity_bounds.set(false,error);
         editor::ComplexityCapability evidence;
         if(!read_complexity_capability(evidence,error)){
             if(evidence.reason==editor::ComplexityReason::CodeConflict){++complexity_conflicts;complexity_conflict=error;return false;}
@@ -434,6 +448,8 @@ bool SK_THISCALL write(Stream* s, const void* in, uint32_t n) {
 void* stream_vtable[] = {(void*)destroy,(void*)ref,(void*)unref,(void*)type,(void*)access,
     (void*)stream_state,(void*)close,(void*)size,(void*)resize,(void*)position,(void*)seek,
     (void*)available,(void*)read,(void*)flush,(void*)write};
+
+#include "editor_native_marker_capacity_impl.h"
 
 void* construct() {
     void* p = skg::cdecl_call<void*>(a_alloc, size_t(kResourceSize), "CoopEditorSnapshot", 0, 0, 0, 0);
@@ -3629,6 +3645,9 @@ void SK_THISCALL delete_native(void* self){
 bool SK_THISCALL create_native(void* self,uint32_t class_id){
     editor_native::state();
     if(!applying && active()){
+        if(extended_complexity()){
+            std::string error;if(!marker_capacity_require(resource(data(mode())),error)){if(C.notice)C.notice(error);++rejected;return false;}
+        }
         if(cancellation || speech_pending()){++rejected;return false;}
         if(class_id==UINT32_MAX-1){
             if(!tracks_authoring() || !C.settings_gate){++rejected;return false;}
@@ -3656,6 +3675,9 @@ bool SK_THISCALL clone_selection_native(void* self,void* object){
     editor_native::state();
     std::optional<editor::ObjectId> source;
     if(!applying && active()){
+        if(extended_complexity()){
+            std::string error;if(!marker_capacity_require(resource(data(mode())),error)){if(C.notice)C.notice(error);++rejected;return false;}
+        }
         if(cancellation || speech_pending()){++rejected;return false;}
         if(clone_replay){
             const auto pin=clone_replay;
@@ -4976,6 +4998,10 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     a_erase_history=H->sym("SporeCoop::Editor::EraseHistoryRange");
     a_discard_history=H->sym("SporeCoop::Editor::DiscardHistoryEntry");
     a_copy_marker_rows=H->sym("SporeCoop::Editor::CopyMarkerRows");
+    a_marker_pool_free=H->sym("SporeCoop::Editor::Free");
+    a_marker_pool_reserve=H->sym("SporeCoop::Editor::MarkerPoolReserve");
+    a_read_marker_rows=H->sym("SporeCoop::Editor::ReadMarkerRows");
+    a_resource_vtable=H->sym("SporeCoop::Editor::ScenarioResourceVTable");
     a_copy_class_rows=H->sym("SporeCoop::Editor::CopyClassRows");
     a_copy_class=H->sym("SporeCoop::Editor::CopyClass");
     a_insert_class=H->sym("SporeCoop::Editor::ClassByIndex");
@@ -4999,6 +5025,18 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     supported = a_copy_acts && a_copy_act && a_select_act && a_inspector_open && a_layout_shown && a_preview_factory && a_mode && a_history && a_act && a_ctor && a_read && a_write && a_copy && a_entry && a_entry_vtable && a_restore && a_alloc &&
         a_context && a_tools && a_marker && a_object && a_clone_marker && a_create_marker && a_delete_marker && a_apply_marker && a_loading && a_layout_find && a_erase_history && a_discard_history && a_copy_marker_rows && a_insert_marker && a_copy_class_rows && a_copy_class && a_insert_class && a_speech_ui && a_behavior_data && a_history_undo_return && a_history_redo_return;
     if (!supported) return false;
+    marker_capacity_hook_installed=marker_capacity_profile_pinned=false;
+    if(a_marker_pool_free && a_resource_vtable && marker_capacity_preflight({a_ctor,a_marker_pool_reserve,a_read_marker_rows,a_copy_marker_rows,a_marker_pool_free})){
+        marker_capacity_installing.store(true,std::memory_order_release);
+        void* trampoline=nullptr;
+        const bool installed=install("SporeCoop::Editor::ScenarioResourceCtor",(void*)resource_ctor_capacity,&trampoline);
+        if(installed && trampoline){
+            original_resource_ctor=reinterpret_cast<ResourceCtorFn>(trampoline);
+            marker_capacity_fallback_ctor.store(original_resource_ctor,std::memory_order_release);
+        }
+        marker_capacity_installing.store(false,std::memory_order_release);
+        if(installed && trampoline)marker_capacity_pin_installed();
+    }
     supported = install("SporeCoop::Editor::StartHistory", (void*)start, (void**)&original_start) &&
         install("SporeCoop::Editor::SelectAct",(void*)select_act_native,(void**)&original_select_act) &&
         install("SporeCoop::Editor::CaptainInput",(void*)captain_input,(void**)&original_captain_input) &&
@@ -5090,6 +5128,9 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
 }
 
 void shutdown() {
+    marker_capacity_retire();
+    marker_capacity_hook_installed=marker_capacity_profile_pinned=false;
+    if(marker_capacity_lifecycle!=UINT64_MAX)++marker_capacity_lifecycle;
     clear_staged_pose_prepare();
     clear_environment_refresh();
     staged_pose.reset();
@@ -6138,9 +6179,13 @@ bool rebuild_canonical_transition(const Snapshot& canonical,const TerrainTransit
 }
 bool restore_impl(const Snapshot& snapshot,const RestoreFence* fence,std::string& error){
     ServiceScope service_scope;
+    const bool extended_target=editor::extended_complexity(snapshot.document);
     std::function<bool()> current;if(fence)current=[fence]{return fence->checked();};
     const auto* required=fence?&current:nullptr;
-    auto checked=[&]{if(!fence || fence->checked())return true;error="The native restoration's pinned editor expired";return false;};
+    auto checked=[&]{
+        if(fence && !fence->checked()){error="The native restoration's pinned editor expired";return false;}
+        return !extended_target || marker_capacity_require(resource(data(mode())),error);
+    };
     if(!checked())return false;
     clear_terrain_capture_rotations();
     InspectorView inspector(current);
@@ -6854,6 +6899,7 @@ bool apply_prepared_checked(const Snapshot& prepared,const editor::Change& chang
 
 bool apply(const editor::Document& document,const editor::Change& change,const Snapshot* artifact,std::string& error) {
     ServiceScope service_scope;
+    if(editor::extended_complexity(document) && !marker_capacity_require(resource(data(mode())),error))return false;
     // Runtime supplies its independently canonical owned artifact for a terrain
     // inverse. Pin the original scene before InspectorView or snapshot getters;
     // a normalized typed pose must not let the generic field loop skip LIVE
@@ -7150,6 +7196,7 @@ bool apply(const editor::Document& document,const editor::Change& change,const S
         return false;
     };
     refresh_selection();auto selected=selection;
+    if(editor::extended_complexity(document) && !marker_capacity_require(resource(owner),error))return false;
     applying=true;
     bool changed=false;
     for(const auto& [id,unused]:snapshot.document.placements){

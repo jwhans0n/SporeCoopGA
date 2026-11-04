@@ -1,16 +1,16 @@
 ---
 id: BUG-0474
 title: Planet look presets bypass bulk Flora field ownership and split pending setters
-status: open
+status: fixed
 kind: bug
 stage: GA shared editor
 reported: 2026-11-03
 source: Verified F0CD40 F37340 F35B20 call chain and Native hook audit
 role: host and guest
 versions: GA shared editor preview9
-fixed_in:
+fixed_in: private preview9 C59 (protocol24)
 branch: feat/ga-editor-multi-act
-commits:
+commits: 942a05192bf623b1014e98283bffa0a37f33396e
 tests: out/editor-preview9-planet-preset/receipt.json; out/editor-preview9-planet-preset/old-c58-red/receipt.json
 signature: F0CD40 direct F37340 bulk Flora writes escape nested field gates
 docs: docs/re/adventure-editor-history.md#history-planet-look-preset-ownership
@@ -61,8 +61,16 @@ hold each of the seventeen fields, prove zero native writes before grant,
 one Native Start/Commit and one accepted history item after grant, exact Undo,
 no-op cleanup, cancellation, stale values/UI/context and callback retirement.
 These are controlled native-interface doubles, not a real serializer oracle or
-running-game Tab0 acceptance. The latter remains pending for private C59.
+running-game Tab0 acceptance. That separate check subsequently passes on C59:
+host R45 to46 then own Undo/Redo/Undo to49; guest R49 to50 then own history to53.
+Each preset changes fourteen actual fields inside one history item, including
+Flora keys, bands/intensities and GroundEffect. Every full Planet comparison and
+strict peer check converges without faults. Evidence is retained under
+`out/preview9-c59-first-preset-probe`, `out/preview9-c59-first-preset-history` and
+`out/preview9-c59-guest-preset-r2`. The seventeen-field preflight is a conservative
+potential write set; it does not claim all seventeen change in each preset.
 
 ## History
 - 2026-11-03: opened.
 - 2026-11-03: verified C59 outer-boundary source fix and controlled old-source RED/strict GREEN; ticket remains open for native qualification.
+- 2026-11-03: C59 both-author native preset/history qualification passes R45 to53; closed for the private candidate, with the installed personal protocol23 payload unchanged.

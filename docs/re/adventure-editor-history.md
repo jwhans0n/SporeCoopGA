@@ -2253,6 +2253,10 @@ unchanged uniqueness counts and thirteen tuning words. Evidence is retained in
 every delayed modified clone variant or native count-boundary acceptance for
 the generated carriers.
 
+CORRECTION (2026-11-03): the preceding shorthand "Sound count4 plus one" means
+native input count[4], from24 to25. It does not mean a baseline value of four.
+The retained C58 sample and typed new-class proof establish this exact delta.
+
 ## Planet-look preset ownership begins at its selected card (2026-11-03, feat/ga-editor-multi-act)
 <a id="history-planet-look-preset-ownership"></a>
 
@@ -2309,6 +2313,16 @@ Flora990, Flora UI900, Color UI1,567 and Environment1,137 checks also pass;
 inputs with zero drift. Earlier controlled setup failures remain retained.
 No actual Native Tab0 preset acceptance or full serializer oracle is claimed.
 
+CORRECTION (2026-11-03): the separate native preset acceptance now passes on
+private C59. Host first preset R45 to46 is one history item, then own
+Undo/Redo/Undo reaches49. Guest R49 to50 produces one item, then own history
+reaches53. Both actual presets change fourteen fields, including Flora keys,
+bands/intensities and GroundEffect; full Planet comparisons and strict peer
+checks remain exact and fault-free. Seventeen is the potential native write
+set, not a claim that every field changes on each preset. Evidence is retained
+under `out/preview9-c59-first-preset-probe`, `out/preview9-c59-first-preset-history`
+and `out/preview9-c59-guest-preset-r2`. BUG-0474 is closed for the private candidate.
+
 CORRECTION (2026-11-03): controls07393E58/073A7978 in F3AAA0 are Update/Paint
 parent controls, not an established Style popup. The verified B60B4D toF339F0
 route is the separate native `adventureLook` cheat, with options `-filmnoir`,
@@ -2316,3 +2330,10 @@ route is the separate native `adventureLook` cheat, with options `-filmnoir`,
 Root's click857280 correctly produced no change at R44, retained under
 `out/preview9-c58-style-popup`. No missing Style GUI control or GUI defect is
 inferred; command synchronization qualification remains separate.
+
+The independent C58 first-clone crash above1,024 is a native marker-arena
+lifetime gap, not a preset or serialized-identity failure. The exact capacity
+and actor+18 evidence, C60 pre-bind constructor policy, allocation-fallback
+behavior and protocol25 isolation are recorded in
+[the complexity storage audit](adventure-complexity.md#complexity-marker-storage-lifetime).
+The native authored Save/history formats are unchanged.

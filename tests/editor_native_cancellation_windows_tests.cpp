@@ -205,6 +205,7 @@ void native_cancel(void* entry=nullptr){
 }
 void begin(){start(t_data.data());CHECK(!t_allocations.empty());CHECK(gesture_serial!=0);}
 void reset(){
+    marker_capacity_retire();marker_capacity_hook_installed=marker_capacity_profile_pinned=false;
     held_planet_preset.reset();t_planet_main=nullptr;t_planet_parent={};t_planet_visible={};
     t_game_mode_callback={};
     clear_environment_refresh();environment_refresh_queued=environment_refresh_servicing=false;
@@ -1727,6 +1728,7 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
 #include "editor_native_view_fence_fixture.h"
 #include "editor_native_water_fixture.h"
 #include "editor_native_environment_fixture.h"
+#include "editor_native_marker_capacity_fixture.h"
 #include "editor_native_complexity_fixture.h"
 #include "editor_native_pose_prepare_fixture.h"
 #include "editor_native_pose_prepare_staged_fixture.h"
@@ -1734,6 +1736,10 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
 #include "editor_native_clone_input_fixture.h"
 #include "editor_native_planet_preset_fixture.h"
 int main(int argc,char** argv){
+    if(argc==2&&std::string(argv[1])=="--marker-capacity-only"){
+        marker_capacity_fixture::test();std::printf("native marker capacity: %u checks passed\n",checks);return 0;
+    }
+    if(argc==1)marker_capacity_fixture::test();
     if(argc==2&&std::string(argv[1])=="--planet-preset-only"){
         planet_preset_fixture::test();std::printf("native atomic planet preset: %u checks passed\n",checks);return 0;
     }

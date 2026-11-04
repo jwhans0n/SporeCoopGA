@@ -317,8 +317,8 @@ BUG-0473 is fixed in this private protocol24 candidate; the installed personal
 protocol23 Flora update remains pinned independently.
 
 C58 also qualifies one real native Sound Alt-clone, R1 to2, followed by Undo3.
-Native bytes and semantic identity restore exactly on Undo. Sound count4 grows
-by one while every uniqueness count and all thirteen tuning words remain
+Native bytes and semantic identity restore exactly on Undo. Native input count[4]
+increases from24 to25 while every uniqueness count and all thirteen tuning words remain
 unchanged. Evidence: `out/preview9-c58-sound-clone-qualification/result.json`.
 The exact1,024/1,025 class boundary is covered on both deterministic architectures
 in commit `e2dc2c0`. Sound-carrier generation at1,025/4,095/4,096 placements

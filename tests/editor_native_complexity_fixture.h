@@ -27,6 +27,7 @@ float SK_THISCALL cx_original(void* self,const uint32_t* counts){
 }
 void cx_setup(uint32_t count=1){
     reset();cx_live=count;cx_original_calls=0;cx_override.reset();cx_callback={};cx_counts={};cx_maximum=10;
+    marker_capacity_fixture::prepare_profile();
     complexity_conflicts=0;complexity_conflict.clear();
     cx_formula=editor_native_complexity::kFormulaCode;complexity_installed_code=cx_formula;
     cx_create={0x3D,0,4,0,0,0x0F,0x83,0xD7,1,0,0};
@@ -38,15 +39,16 @@ void cx_setup(uint32_t count=1){
     complexity_bounds={};CHECK(complexity_bounds.initialize(a_complexity_create,a_complexity_clone));
     complexity_code_pinned=complexity_available=true;original_complexity=cx_original;
     C.projection_scope=[] {return t_scope;};
-    editor::ComplexityCapability expected;std::string error;CHECK(read_complexity_capability(expected,error));cx_cohort_ready=true;
-    C.complexity_current=[expected](const editor::ComplexityCapability& value){return cx_cohort_ready&&value==expected;};
     auto& project=act_identity.settings[kProjectObject];project.object=kProjectObject;project.kind=editor::SettingsKind::Project;
     project.properties[kExtendedComplexityProperty]=true;
     skg::field<editor::ResourceKey>(t_live.data(),8)={1,2,3};
-    auto& markers=t_rows[t_live.data()];markers.assign(size_t(count)*0x238,0);rows_for(t_live.data());
-    skg::field<uintptr_t>(t_live.data(),0x2C18)=skg::field<uintptr_t>(t_live.data(),0x2C14);
+    auto& markers=t_rows[t_live.data()];markers.assign(size_t(kPlacementLimit)*0x238,0);rows_for(t_live.data());
+    skg::field<uintptr_t>(t_live.data(),0x2C14)=skg::field<uintptr_t>(t_live.data(),0x2C10)+size_t(count)*0x238;
+    skg::field<uintptr_t>(t_live.data(),0x2C18)=skg::field<uintptr_t>(t_live.data(),0x2C10)+size_t(kPlacementLimit)*0x238;
     skg::field<uint32_t>(t_live.data(),0x2C24)=0;
     for(size_t n=0;n<count;++n)skg::field<uint32_t>(markers.data()+n*0x238,0)=0x40000000;
+    editor::ComplexityCapability expected;std::string error;CHECK(read_complexity_capability(expected,error));cx_cohort_ready=true;
+    C.complexity_current=[expected](const editor::ComplexityCapability& value){return cx_cohort_ready&&value==expected;};
 }
 void cx_expect_unavailable(editor::ComplexityReason reason){
     editor::ComplexityCapability out;out.available=true;out.words.fill(0xFFFF);std::string error;
@@ -178,6 +180,7 @@ void test_native_complexity_capability(){
     ComplexityPool pool;uint32_t counted=0;CHECK(complexity_pool(t_live.data(),pool,counted)&&counted==2);
     CHECK(skg::cdecl_call<uint32_t>(a_complexity_count,reinterpret_cast<void*>(pool.first),reinterpret_cast<void*>(pool.end))==counted);
     cx_setup();skg::field<uint32_t>(t_rows[t_live.data()].data(),0)=0;
+    skg::field<uintptr_t>(t_live.data(),0x2C18)=skg::field<uintptr_t>(t_live.data(),0x2C14);
     CHECK(!complexity_pool(t_live.data(),pool,counted));
     cx_setup(2);skg::field<uint32_t>(t_live.data(),0x2C24)=3;CHECK(!complexity_pool(t_live.data(),pool,counted));
     cx_setup(2);skg::field<uintptr_t>(t_live.data(),0x2C18)--;CHECK(!complexity_pool(t_live.data(),pool,counted));
