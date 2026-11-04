@@ -21,7 +21,8 @@ using namespace editor_native;
 std::array<uint8_t,0xE0> t_mode;
 std::array<uint8_t,0x128> t_data,t_other_data;
 std::array<uint8_t,0x2CB0> t_live;
-std::array<uint8_t,0x28> t_history,t_context;
+std::array<uint8_t,0x28> t_history;
+std::array<uint8_t,0xC0> t_context;
 std::array<uint8_t,0x2C> t_display;
 std::array<uint8_t,0x18> t_layout,t_entry,t_other_entry;
 std::array<uint8_t,0x8C> t_container;
@@ -1725,7 +1726,12 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
 #include "editor_native_pose_prepare_fixture.h"
 #include "editor_native_pose_prepare_staged_fixture.h"
 #include "editor_native_service_pulse_fixture.h"
+#include "editor_native_clone_input_fixture.h"
 int main(int argc,char** argv){
+    if(argc==2&&std::string(argv[1])=="--clone-input-only"){
+        clone_input_fixture::test();std::printf("native delayed clone input: %u checks passed\n",checks);return 0;
+    }
+    if(argc==1)clone_input_fixture::test();
     if(argc==2&&std::string(argv[1])=="--entry-only"){
         native_entry_fixture::test();std::printf("native editor entry: %u checks passed\n",checks);return 0;
     }

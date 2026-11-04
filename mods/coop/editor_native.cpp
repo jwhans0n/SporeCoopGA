@@ -70,6 +70,7 @@ uintptr_t a_environment_ui_refresh,a_environment_ui_vtable,a_flora_ui_refresh;
 uintptr_t a_color_ui_refresh,a_color_ui_vtable,a_color_ui_wrapper_vtable,a_color_gradient_vtable;
 uintptr_t a_entry_vtable;
 uintptr_t a_tool_tick;
+uintptr_t a_capture_ground_anchor;
 uintptr_t a_copy_class_rows,a_copy_class,a_insert_class;
 uintptr_t a_speech_ui,a_behavior_data;
 uintptr_t a_preview_factory;
@@ -2057,6 +2058,9 @@ PaletteMessageFn original_palette_message;
 using SpeechApplyFn=void(SK_CDECL*)();
 SpeechApplyFn original_speech_apply;
 SpeechApplyFn original_behavior_apply;
+struct HeldClone;
+std::shared_ptr<HeldClone> clone_replay;
+bool clone_enrolling=false,clone_pose_blocked=false;
 struct HeldTool {
     GestureScope scope;
     uint64_t generation;
@@ -2072,6 +2076,7 @@ struct HeldTool {
     bool terrain=false;
     uint32_t act=0;
     uintptr_t actor=0;
+    std::shared_ptr<HeldClone> clone={};
 };
 std::optional<HeldTool> held_tool;
 struct HeldTerrainPreset {
@@ -3292,14 +3297,15 @@ void cancel_current_entry(void* self){
     if(!cancellation_queued){cancellation_queued=true;H->run_outside_frame(drain_cancellation,nullptr);}
 }
 void finish_held_input();
+bool clone_tool_current(const HeldTool&);
 void SK_THISCALL select_native(void* self,void* object){
     MarkerAudio audio(data(mode()),active() && object && a_marker?skg::thiscall<void*>(a_marker,data(mode()),object):nullptr);
     void* context=a_context?*reinterpret_cast<void**>(a_context):nullptr;
-    if(held_tool && skg::readable(context,8) && skg::field<void*>(context,4)!=object)finish_held_input();
+    if(held_tool && !clone_replay && skg::readable(context,8) && skg::field<void*>(context,4)!=object)finish_held_input();
     original_select(self,object);
     if(!applying && editing())refresh_selection();
-    if(held_tool && !held_tool->terrain && (selection.empty() || selection.front()!=held_tool->object))finish_held_input();
-    if(!applying && active() && !selection.empty() && C.gate)C.gate(selection);
+    if(held_tool && !clone_replay && !held_tool->terrain && (selection.empty() || selection.front()!=held_tool->object))finish_held_input();
+    if(!clone_replay && !applying && active() && !selection.empty() && C.gate)C.gate(selection);
 }
 bool real_focus(){
     GUITHREADINFO info{};info.cbSize=sizeof info;
@@ -3312,12 +3318,13 @@ void finish_held_input(){
     const auto observed=state();
     if(item.native_started && active() && !cancellation && item.generation==generation &&
        (!item.terrain || (observed.terraforming && observed.act==item.act)) &&
-       item.manager==*reinterpret_cast<void**>(a_tools) && observed.gesture)
+       item.manager==*reinterpret_cast<void**>(a_tools) && observed.gesture && (!item.clone || clone_tool_current(item)))
         original_tool(item.manager,0,0,0);
 }
 void deny_held_input(const std::vector<editor::Scope>& scopes){
     for(const auto& scope:scopes){
         if(held_tool && (scope.kind==editor::ScopeKind::Document || scope.object==held_tool->object ||
+           (held_tool->clone && (scope.kind==editor::ScopeKind::Structure || scope.kind==editor::ScopeKind::Class)) ||
            (held_tool->terrain && scope.kind==editor::ScopeKind::Authoring)))finish_held_input();
         if(scope.kind==editor::ScopeKind::Document){
             if(held_import)H->log(M,SK_DEBUG,"Cast queue denied: keys=%u",unsigned(held_import->size()));
@@ -3343,17 +3350,18 @@ void deny_held_input(const std::vector<editor::Scope>& scopes){
 }
 // Native Start prepares local drag anchors/history. Authoring steps remain
 // stopped until ownership arrives, including between the press and release.
-void SK_THISCALL tick_tools(void* self){if(!held_tool)original_tick_tools(self);}
+void SK_THISCALL tick_tools(void* self){if(!held_tool && !clone_pose_blocked && !clone_enrolling)original_tick_tools(self);}
 void* selected_marker(){
     if(!active())return nullptr;
     void* context=a_context?*reinterpret_cast<void**>(a_context):nullptr;
     void* object=skg::readable(context,8)?skg::field<void*>(context,4):nullptr;
     return object && a_marker?skg::thiscall<void*>(a_marker,data(mode()),object):nullptr;
 }
-void SK_THISCALL ground_step(void* self){if(!held_tool){ScopedPoseInput pose;MarkerAudio audio(data(mode()),selected_marker());original_ground_step(self);}}
-void SK_THISCALL vertical_step(void* self){if(!held_tool){ScopedPoseInput pose;MarkerAudio audio(data(mode()),selected_marker());original_vertical_step(self);}}
-void SK_THISCALL radial_step(void* self){if(!held_tool){ScopedPoseInput pose;MarkerAudio audio(data(mode()),selected_marker());original_radial_step(self);}}
-void SK_THISCALL auxiliary_step(void* self){if(!held_tool){ScopedPoseInput pose;MarkerAudio audio(data(mode()),selected_marker());original_auxiliary_step(self);}}
+void SK_THISCALL ground_step(void* self){if(!held_tool && !clone_pose_blocked && !clone_enrolling){ScopedPoseInput pose;MarkerAudio audio(data(mode()),selected_marker());original_ground_step(self);}}
+void SK_THISCALL vertical_step(void* self){if(!held_tool && !clone_pose_blocked && !clone_enrolling){ScopedPoseInput pose;MarkerAudio audio(data(mode()),selected_marker());original_vertical_step(self);}}
+void SK_THISCALL radial_step(void* self){if(!held_tool && !clone_pose_blocked && !clone_enrolling){ScopedPoseInput pose;MarkerAudio audio(data(mode()),selected_marker());original_radial_step(self);}}
+void SK_THISCALL auxiliary_step(void* self){if(!held_tool && !clone_pose_blocked && !clone_enrolling){ScopedPoseInput pose;MarkerAudio audio(data(mode()),selected_marker());original_auxiliary_step(self);}}
+#include "editor_native_clone_input_impl.h"
 void SK_THISCALL apply_marker_state(void* self,void* marker,uint32_t flags){
     MarkerAudio audio(self,marker);original_apply_marker(self,marker,flags);
 }
@@ -3437,6 +3445,7 @@ void SK_CDECL continue_input(void*){
         }
     }
     if(!held_tool)return;
+    if(held_tool->clone){continue_clone_input();return;}
     const auto item=*held_tool;
     const auto observed=state();if(!held_tool)return;
     if(!item.terrain)refresh_selection();
@@ -3490,10 +3499,11 @@ bool tool_rejection(size_t reason,uint32_t action,void* context,const State& obs
 }
 uint32_t SK_THISCALL tool_native(void* self,uint32_t action,uint32_t a,uint32_t b){
     const State observed=editor_native::state();
+    if(clone_replay || (clone_enrolling && !held_tool))return 1;
     if(!applying && active() && ordinary_capture_pending() && action!=0)return 1;
     if(!applying && active() && held_tool){
         if(action==0){held_tool->released=true;return 1;}
-        if(action==1)return 1;
+        if(action==1 || (action==11 && held_tool->clone))return 1;
         finish_held_input();
     }
     if(!applying && active() && observed.terraforming){
@@ -3567,6 +3577,13 @@ uint32_t SK_THISCALL tool_native(void* self,uint32_t action,uint32_t a,uint32_t 
         const auto destination=tracks_extended_poses()?pose_handle(0x28,0x076C67DF):0;
         if(!supported_tool_auxiliary(action,auxiliary,rotations,ball,destination,secondary)){tool_rejection(0,action,context,observed);return 1;}
         if(selection.empty()){tool_rejection(1,action,context,observed);return 1;}
+        if(action==11){
+            std::optional<editor::ObjectId> source;
+            const auto decision=gate_clone_input(self,skg::field<void*>(context,4),a,b,&source);
+            if(decision!=CloneInput::Allowed)return 1;
+            auto previous=input_clone;input_clone=source;
+            const auto result=original_tool(self,action,a,b);input_clone=previous;return result;
+        }
         if(!C.gate){tool_rejection(2,action,context,observed);return 1;}
         if(!C.gate(selection)){
             tool_rejection(3,action,context,observed);
@@ -3581,8 +3598,6 @@ uint32_t SK_THISCALL tool_native(void* self,uint32_t action,uint32_t a,uint32_t 
             }
             return 1;
         }
-        if(action==11 && !C.structure_gate){tool_rejection(4,action,context,observed);return 1;}
-        if(action==11 && !C.structure_gate(selected_class)){tool_rejection(5,action,context,observed);return 1;}
     }
     auto previous=input_clone;
     if(action==11 && !selection.empty())input_clone=selection.front();
@@ -3637,17 +3652,14 @@ bool SK_THISCALL clone_selection_native(void* self,void* object){
     std::optional<editor::ObjectId> source;
     if(!applying && active()){
         if(cancellation || speech_pending()){++rejected;return false;}
-        void* context=*reinterpret_cast<void**>(a_context);
-        void* marker=object?skg::thiscall<void*>(a_marker,data(mode()),object):nullptr;
-        Rows map;
-        if(skg::readable(context,0x14) && !skg::field<void*>(context,0x10) &&
-           marker && rows(resource(data(mode())),0x2C10,0x238,kPlacementLimit,map)){
-            for(auto p=map.begin;p!=map.end;p+=0x238)if(live_slot(p) && p+4==marker){
-                source=marker_id(slot_index(map,p));break;
-            }
+        if(clone_replay){
+            const auto pin=clone_replay;
+            if(self!=pin->manager || object!=pin->actor || !held_tool || held_tool->clone!=pin || !clone_current(*pin,true))return false;
+            auto previous=input_clone;input_clone=pin->object;
+            const bool result=original_clone_selection(self,object);
+            input_clone=previous;return result;
         }
-        if(!source || !C.gate || !C.gate({*source}) || !C.structure_gate ||
-           !C.structure_gate(skg::field<uint32_t>(marker,0))){++rejected;return false;}
+        if(gate_clone_input(self,object,0,0,&source)!=CloneInput::Allowed){++rejected;return false;}
     }
     // Alt-drag reaches this native entry directly as well as through action11.
     // Capture its source before native StartHistory and all cursor mutations.
@@ -4913,6 +4925,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     a_context=H->sym("SporeCoop::Editor::Context");
     a_tools=H->sym("SporeCoop::Editor::ToolManager");
     a_tool_tick=H->sym("SporeCoop::Editor::TickTools");
+    a_capture_ground_anchor=H->sym("SporeCoop::Editor::CaptureGroundDragAnchor");
     a_marker=H->sym("Simulator::cScenarioData::GetMarkerForObject");
     a_object=H->sym("Simulator::cScenarioData::GetObjectForMarker");
     a_clone_marker=H->sym("SporeCoop::Editor::CloneMarker");

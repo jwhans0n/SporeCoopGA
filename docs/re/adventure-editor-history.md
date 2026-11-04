@@ -2182,3 +2182,59 @@ compiler/Make inputs and zero drift. Its receipt is
 two earlier clone-fixture assertion failures remain retained separately.
 Actual corrected native gradient Undo UI acceptance remains a separate Root-run
 check.
+
+## First Alt clone retains its press while ownership is pending (2026-11-03, feat/ga-editor-multi-act)
+<a id="adventure-editor-first-alt-clone"></a>
+
+Actual C57 rejected the first ordinary Alt-drag of the selected Sound at
+revision92: ToolAction11 returned on a pending Structure lease, without a held
+continuation. No clone was allocated and both peers remained strict. Existing
+move holds start Native history before the lease, so they cannot be used to
+allocate an unowned clone. Replaying only after release is also insufficient:
+the first tick would sample the release cursor as the original grab.
+
+Exact GOG2024 `EFD860` is `cdecl(GameData* source)`, plain `ret` at`EFDAEA`.
+`F01BB1` passes the dragged actor and the caller removes four stack bytes. The
+function computes its local offset from the current camera ray and source
+transform. Its only Context output stores are the three floats at`6C/70/74`
+(`EFDACD`, `EFDAD9`, `EFDADF`); it does not load the old output words before
+writing them. The fallback can write a valid offset while returning false in
+AL. The adapter therefore temporarily marks only these derived outputs NaN,
+requires all three Native outputs finite, and restores the previous bytes
+before waiting. No marker, history or authored pose operation runs there.
+The named alias and exact entry/caller/output receipts are in
+`tools/addrport/verify_editor_dc04.py` (original executable SHA`dc04aee5...`).
+
+The held clone owns values: the original scene/source/context identities,
+source and class revisions, exact source marker and class-row bytes, complete
+live slot/class/editor-key roster, modifiers and the Native-derived anchor.
+Every policy callback closes those pins again. Both Placement and
+Structure/Class gates are requested on the first gesture. Denial, Escape,
+focus loss, timeout, a new capture or any identity/revision change retires it.
+No borrowed Native reference or marker pointer is dereferenced across waits.
+
+After both grants, one original ToolAction11 starts the genuine clone/history.
+A one-shot replay identity spans its nested direct CloneSelection route. Its
+first Native tick runs with all four authored pose steps independently blocked,
+including if a callback clears the held optional. That tick consumes Native
+flag64 and initializes radius/elevation. Only then is the retained press anchor
+installed; one ordinary tick consumes the current cursor and the matching
+release finalizes once. Existing Native capture, opaque proof and canonical
+admission remain the final authority.
+
+Already-owned Shift/Ctrl variants keep their Native route. A pending modified
+variant cancels explicitly with a notice; preserving its alternative drag mode
+remains open. Unknown auxiliary clones remain blocked. This change does not
+claim complete modified-delayed-clone coverage.
+
+The retained exact C57 producer (`88253c94...`) compiles under the controlled
+i686 fixture and exits1 at the first missing held-clone assertion.
+`out/preview9-c58-clone-input/old-c57-red-receipt.json` retains its executable,
+original fixture bytes and source hashes. The superseding shared strict
+controlled run records delayed-grant-after-release movement, one allocation,
+scratch restoration, first-tick overwrite, cancellation, source/class/key and
+callback-retirement negatives: 838 focused checks and143,729 full checks pass
+under strict actual-i686 compilation, with68 compiler/Make inputs unchanged.
+The shared receipt is `out/editor-preview9-color-refresh/receipt.json`.
+Actual Native Alt-clone and count-delta
+qualification remain Root-owned.
