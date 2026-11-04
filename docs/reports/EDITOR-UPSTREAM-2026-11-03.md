@@ -191,3 +191,90 @@ repeat Recovery or relax authored-field/history comparisons.
 The user's installed C49 protocol-23 payload is still unchanged. A separate
 Flora-only backport is being built and verified against that exact baseline;
 the merged protocol-24 payload is not installed over running personal games.
+
+## Ground Cover companion and Flora panel refresh
+
+The first C54 Flowers action is rejected for missing settings ownership, with
+no revision or canonical history change. The committed revision 42 and all
+planet fields are restored on both participants. Native `F35160` also invokes
+`F34500`, rebuilding `03ABB0AF` from the base effect and selected Ground Cover
+key. Leasing only `56B14F05` is insufficient. Commit `ee02953` leases the exact
+companion and adds a later-frame, fenced refresh of the current Flora panel.
+The native `EE8C80` refresh updates all nine cards, density, Ground Cover and
+Flowers without authoring notifications. Previously the rejected Flowers
+checkbox stayed checked despite the restored draft.
+
+The actual native fixture passes GroundEffect 108, Flora input 990, Flora UI
+refresh 900, Environment refresh 1,137 and full adapter 141,185 checks, with 59
+inputs unchanged. Exact C54 code fails the new real-Core test with the same
+ownership rejection. ABI verification passes 102 entries; the frozen-build
+symbol audit reports zero problems. Evidence: `out/editor-preview9-ground-effect/`,
+`out/editor-preview9-flora-refresh/` and `out/preview9-c56-re-lint/`.
+
+The isolated protocol-23 backport at `bd0c350` contains the three Flora fixes,
+without the upstream merge or passive diagnostic. Its DLL is
+`8d9f79abb0ff140a8392d7420e4eb792bbc0d4bc671fc8d016a238575d34d40b`;
+Kit remains the installed C49 `0f25bb7a2943a4e1ce3ad7d44a077ea3e8bd41a230c1130b8f2957b10cf6ecfc`.
+Private recovery restores revision 58 with all 129 classes, complete planet
+fields and history. Both authors complete Flowers and Ground Cover
+edit/Undo/Redo/Undo, reaching revision 74. Each action changes exactly
+`56B14F05` and `03ABB0AF`, creates one history item and converges strictly.
+Root reviews show the checked Flowers state after commit and unchecked state
+after Undo on both peers. This verifies the UI correction as well as stored
+values. Receipts: `out/preview9-backport-v2-recover-r58/`,
+`out/preview9-backport-v2-two-flowers/` and
+`out/preview9-backport-v2-two-ground-cover/`.
+
+Both authors also complete Flora removal history on C54, reaching revision 50;
+only `04E13CB7`, `073154E0` and `072BEC91` change. The replacement picker test
+initially stops before card selection because a chooser ancestor changes flags
+while opening. That fixture failure is retained separately from product
+failures. Replacement and empty-card append remain unqualified at this point.
+
+## Recovery entry during the Galaxy intro
+
+C56 restores revision 58's data and strict projections, but the host has no
+native toolbar. Existing `coop.status` identifies the exact stuck
+`8915F9BB` Galaxy intro and input lock; the guest reaches its normal editor.
+This matches upstream BUG-0404. The normal world-load preflight does not cover
+the shared editor's direct entry, and the stage cleanup excludes Scenario.
+This run is a recovery UI failure, not a successful live control qualification.
+The guest returns normally; the host is detached and stopped through the owned
+private runner because its native exit toolbar is absent. Revision 58,
+checkpoints, EditorSaves and logs are retained in
+`out/preview9-c56-menu-intro-preserved/`.
+
+Commit `c89215b` checks the common native editor entry before ResetRequest or
+loading mutations. It finishes only the exact Galaxy intro under copied
+module, generation, thread and mode fences. Other cinematics remain intact and
+produce an explicit retryable entry error. Native `ADFFBF` is verified to clear
+the cinematic ID; this postcondition is not inferred from a mock. Focused
+checks pass Native entry 134 and portable preflight 54 on Linux and i686;
+unchanged C56 fails the new regression. C57 builds with 318 unchanged production
+inputs; DLL `bd696414346662837ff8d82fb9c6bf896fc13a1d2412265bcdc48ec0f42552b1`.
+Actual entry while the intro is playing is still pending. Evidence:
+`out/editor-preview9-editor-entry/` and
+`out/preview9-candidate57-build-receipt.json`.
+
+## Boundary qualification preparation
+
+Both participants' passive natural queries agree on 419 markers, the same
+twelve counts and thirteen tuning words. The native weighted ratio is
+`1.01392865`; maximum tuning is 560. These observations change no draft or
+history. Bounded setter audits find no further proved missing companion beyond
+GroundEffect; deep renderer and virtual callbacks remain qualified as unresolved.
+
+The native measure routine maps its first six counts to Building, Vehicle/UFO,
+Creature, default prop, Sound and Effect, with corresponding uniqueness maps in
+the last six. A default prop cannot isolate the 4,096 count boundary under the
+verified weights: even an otherwise minimal adventure exceeds weighted ratio 4
+at that count. Sound marker 24/class 1306 matches the exact genuine C28 carrier
+and has verified stock sound provenance without a powerup override. It is a
+candidate for count-boundary testing, still requiring an actual native clone
+with Sound count +1 and unchanged uniqueness counts. No tuning is overridden.
+New count plans remain inert and refuse generation without that qualification.
+Native 1,025/4,096/overflow, Save/cold reopen and publication claims remain open.
+Evidence: `out/preview9-c54-passive-complexity/`,
+`out/preview9-complexity-qualification/`,
+`out/preview9-c56-terraform-companion-audit/` and
+`out/preview9-qualified-count-plan/`.
