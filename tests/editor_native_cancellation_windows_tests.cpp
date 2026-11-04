@@ -1742,6 +1742,9 @@ int main(int argc,char** argv){
     if(argc==2&&std::string(argv[1])=="--environment-only"){
         test_native_environment_refresh();std::printf("native Environment refresh: %u checks passed\n",checks);return 0;
     }
+    if(argc==2&&std::string(argv[1])=="--color-refresh-only"){
+        test_native_color_refresh();std::printf("native Color UI refresh: %u checks passed\n",checks);return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--water-only"){
         test_native_water_completion();std::printf("native Water completion: %u checks passed\n",checks);return 0;
     }
@@ -1822,6 +1825,7 @@ int main(int argc,char** argv){
     test_terrain_control_retry();
     test_ground_effect_companion_ownership();
     test_native_flora_refresh();
+    test_native_color_refresh();
     test_cold_native_terrain_initialization();
     test_terrain_pending_grab();
     test_terrain_preset_retry();

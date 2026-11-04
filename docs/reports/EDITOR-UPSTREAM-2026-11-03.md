@@ -16,6 +16,16 @@ faults. The installation is pinned independently of subsequent source changes.
 Receipts: `out/preview9-delivery/preview9-testing-installation.json` and
 `personal-startup-readonly.json`.
 
+The subsequent Flora testing update is now installed from the isolated
+protocol-23 backport `bd0c350df8273eb8f8999208d23067beaab89a5c`. It contains the
+three validated Flora fixes and preserves the installed C49 Kit, executable,
+settings, personal profiles and player launcher. Co-op DLL is
+`8d9f79abb0ff140a8392d7420e4eb792bbc0d4bc671fc8d016a238575d34d40b`;
+the installation verifies the symbol/configuration hashes, shortcut and rollback
+copy. The user has been notified that this testing update is ready. Receipt:
+`out/preview9-delivery/preview9-flora-testing-update-installation.json`.
+This update does not install the merged protocol-24 candidate.
+
 ## Integration decisions
 
 The fetched upstream is `WoodyWizard/SporeCoop` main at
@@ -188,9 +198,10 @@ then an in-memory integer-key dictionary was compared to JSON string keys.
 The successful follow-up only observes the already recovered draft; it does not
 repeat Recovery or relax authored-field/history comparisons.
 
-The user's installed C49 protocol-23 payload is still unchanged. A separate
-Flora-only backport is being built and verified against that exact baseline;
-the merged protocol-24 payload is not installed over running personal games.
+At this C54 checkpoint the user's installed C49 protocol-23 payload was still
+unchanged. The separate Flora-only backport was then built and verified against
+that exact baseline. Its subsequent installation is recorded above; the merged
+protocol-24 payload is not installed over personal games.
 
 ## Ground Cover companion and Flora panel refresh
 
@@ -229,7 +240,8 @@ Both authors also complete Flora removal history on C54, reaching revision 50;
 only `04E13CB7`, `073154E0` and `072BEC91` change. The replacement picker test
 initially stops before card selection because a chooser ancestor changes flags
 while opening. That fixture failure is retained separately from product
-failures. Replacement and empty-card append remain unqualified at this point.
+failures. Replacement and empty-card append were unqualified at this point;
+their subsequent C57 checks are recorded below.
 
 ## Recovery entry during the Galaxy intro
 
@@ -252,9 +264,49 @@ the cinematic ID; this postcondition is not inferred from a mock. Focused
 checks pass Native entry 134 and portable preflight 54 on Linux and i686;
 unchanged C56 fails the new regression. C57 builds with 318 unchanged production
 inputs; DLL `bd696414346662837ff8d82fb9c6bf896fc13a1d2412265bcdc48ec0f42552b1`.
-Actual entry while the intro is playing is still pending. Evidence:
+Actual C57 entry while the intro is playing now passes on both participants:
+recovery reaches the native editor at revision82, with all129 classes and the
+retained history/Planet state. Evidence:
 `out/editor-preview9-editor-entry/` and
-`out/preview9-candidate57-build-receipt.json`.
+`out/preview9-candidate57-build-receipt.json`, plus
+`out/preview9-c57-intro-recover-r82/result.json`.
+
+## Native Flora replacement, append and gradient data
+
+C57 filled-card Flora replacement passes edit/Undo/Redo/Undo for both authors,
+R82 to90. Each accepted replacement changes only `04E13CB7`, retains nine
+entries and changes exactly one serialized key at index6 while the other eight
+keys remain byte-identical. The source card is `072C2820`; its visible UI slot
+does not imply serialized row0. The native chooser closes after selection and
+both replicas remain strict and fault-free. Receipt and per-author key proofs:
+`out/preview9-c57-two-flora-replace/`.
+
+After a legitimate Flora removal, fresh native calibration identifies the
+empty first card, `072C2820` with entry `073D54A0`. The previously assumed third
+card remains filled because UI slots are not compacted. The native empty-card
+append passes both authors' edit/Undo/Redo/Undo, R92 to100, changing exactly
+`04E13CB7`, `073154E0` and `072BEC91`. Each accepted append grows all three
+arrays from eight to nine, preserves the complete old eight-row prefix and
+appends the new key, band and intensity at index8. Receipt and array proofs:
+`out/preview9-c57-two-flora-add/`. Earlier chooser animation/cached-root fixture
+failures remain retained and are not recast as accepted product actions.
+
+The C57 normal gradient drag at height index2 changes only `B6929C92`, R100
+to101; gradient color bytes are unchanged. Undo at R102 restores every Planet
+field and strict convergence without faults. The host's displayed height node
+nevertheless stays at y330 while its restored data and the guest show y303.
+This is a local native Color UI refresh failure (BUG-0473), distinct from the
+successful data/history proof. Evidence:
+`out/preview9-c57-gradient-height-probe/`. The category1 correction passes1,567
+controlled Color checks and143,729 full adapter checks, with68 inputs unchanged;
+the exact unchanged C57 producer fails the new displayed-node regression.
+Receipts are retained under `out/editor-preview9-color-refresh/`.
+Corrected live UI is not yet qualified. Both C57 participants subsequently retire normally at R102,
+and the owned runner stops; `out/preview9-c57-r102-retirement/` retains the exit.
+
+These are two-player control-family checks. They do not establish complete
+Terraform coverage, native count-boundary acceptance, performance budgets,
+broader four-player creation/failure/recovery coverage or final release smoke.
 
 ## Boundary qualification preparation
 

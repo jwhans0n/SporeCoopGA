@@ -151,3 +151,7 @@ SporeCoop::Editor::LoadingScreen=0x0167EB28 ; verified static: global loading sc
 SporeCoop::Editor::MarkerCtor=0x00F2A960 ; verified static: thiscall(storage234)->marker,ret; initializes owning inline marker-act vector28/2C/30 and detached placement IDFFFFFFFF at228
 SporeCoop::Editor::MarkerDtor=0x00DFC580 ; verified static: thiscall(marker),ret; destroys owning path/act storage, never frees marker storage itself
 SporeCoop::Editor::ResizeMarkerActs=0x00F42D90 ; verified static: thiscall(marker+28,uint32 count),ret4; constructs/destroys native34 act rows, up to eight for editor previews
+SporeCoop::Editor::ColorUIWrapperVTable=0x0148ABDC ; verified static: primary current category1 wrapper; TerraformUI+C, constructorEE8B2A; owned primary ColorUI+10 and parent IWindow+C
+SporeCoop::Editor::ColorUIVTable=0x0148AA00 ; verified static: primary ColorUI vtable; ctorEE6D95; wrapper+10, parent IWindow14, UILayout18 and owned gradient1C
+SporeCoop::Editor::ColorGradientVTable=0x0148AC9C ; verified static: primary gradient UI vtable; ctorEEAA18; ColorUI+1C owns it; native EEB480 rebuilds UI node array3C/40 from current tool vectors
+SporeCoop::Editor::RefreshColorUI=0x00EE6AD0 ; verified static: thiscall(ColorUI),no stack arguments,plain ret; TerraformUI category1 wrapperC owns primary ColorUI10; UILayout18; refreshes four swatches and rebuilds gradient1C from current tool vectors, no authored setter call

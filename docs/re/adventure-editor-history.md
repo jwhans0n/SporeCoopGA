@@ -2139,3 +2139,46 @@ The exact retained C56 native producer reproduces the missing-toolbar assertion
 with an active menu intro. `out/editor-preview9-editor-entry` retains source
 pins, exact ADFF50 bytes, old-producer RED, final focused logs and executables.
 These controlled checks do not replace C57's running-game entry qualification.
+
+## Restored Color UI gradient controls (2026-11-03, preview9)
+<a id="history-color-ui-refresh"></a>
+
+C57 normal gradient height input changed only B6929C92, at index2, from the
+visible y303 node to y330. Undo restored every Planet field and both replicas
+remained strictly converged and fault-free at R102. The authoring host's native
+gradient marker remained at y330 while the guest displayed y303. This is a local
+control refresh failure, separate from accepted data/history correctness
+(BUG-0473). Exact input, fields and both screenshots are retained under
+`out/preview9-c57-gradient-height-probe`.
+
+Verified dc04 native TerraformUI::Refresh EE9160 has a category1 path at EE9186:
+TerraformUI+C owns a wrapper (primary vtable148ABDC, ctorEE8B2A), whose+10 owns
+the actual ColorUI (primary vtable148AA00, ctorEE6D95). EE9190 calls EE6AD0 as
+thiscall(ColorUI), without stack arguments; EE6D79 is a plain ret. ColorUI+18
+is a UILayout created through8100A0, not an IWindow. ColorUI+1C owns the gradient
+UI (ctorEEAA18, primary vtable148AC9C). Its+14 F68DDB4A and+18 168F59FC windows
+are retained by EEB2B0/EEB2F7. The refresh updates four swatches, then reads
+the current native color/elevation vectors through F0D2C0/F31CE0 and calls
+EEB480 to reconstruct the gradient's UI nodes. It has no direct authored setter
+call. Static bytes, ABI checks and disassembly are retained under
+`out/preview9-c58-color-refresh`; the exact supported executable hash is
+dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37.
+
+The existing later-frame, outside-Present deferred refresh now includes current
+category1. It freshly pins the wrapper, ColorUI, gradient, their vtables and
+window pointers, and the distinct UILayout/backing/container. Native scene,
+source, generation, read scope, input counters and queued serial must remain
+current across the getter and policy callbacks and after the refresh. A category
+change drops the passive request without navigating the user. No authored
+field, lease, camera or native history policy changes. The genuine unchanged
+C57 Native producer fails the displayed-gradient assertion in the new fixture;
+its code matches the retained C57 source after CRLF-to-LF conversion only.
+`out/editor-preview9-color-refresh/red/receipt.json` records actual-i686 strict
+build success, expected test exit1 and66 compiler/Make inputs with zero drift.
+The final shared producer passes1,567 Color checks,990 Flora controls,900 Flora
+UI,1,137 Environment,838 delayed Clone and143,729 full adapter checks, with68
+compiler/Make inputs and zero drift. Its receipt is
+`out/editor-preview9-color-refresh/receipt.json`; the first compile failure and
+two earlier clone-fixture assertion failures remain retained separately.
+Actual corrected native gradient Undo UI acceptance remains a separate Root-run
+check.

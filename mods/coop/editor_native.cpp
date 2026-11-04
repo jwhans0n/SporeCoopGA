@@ -67,6 +67,7 @@ uintptr_t a_context, a_tools, a_marker, a_object, a_clone_marker, a_create_marke
 uintptr_t a_loading, a_layout_find, a_display_vtable, a_erase_history, a_discard_history, a_copy_marker_rows, a_insert_marker;
 uintptr_t a_history_undo_return,a_history_redo_return;
 uintptr_t a_environment_ui_refresh,a_environment_ui_vtable,a_flora_ui_refresh;
+uintptr_t a_color_ui_refresh,a_color_ui_vtable,a_color_ui_wrapper_vtable,a_color_gradient_vtable;
 uintptr_t a_entry_vtable;
 uintptr_t a_tool_tick;
 uintptr_t a_copy_class_rows,a_copy_class,a_insert_class;
@@ -4307,6 +4308,8 @@ struct EnvironmentRefresh {
 struct EnvironmentUiOwner {
     void* display=nullptr;void* layout=nullptr;void* terraform=nullptr;void* panel=nullptr;void* root=nullptr;
     void* panel_layout=nullptr;void* backing=nullptr;uint32_t category=0;
+    void* wrapper=nullptr;void* wrapper_root=nullptr;void* panel_root=nullptr;void* gradient=nullptr;
+    void* gradient_parent=nullptr;void* gradient_image=nullptr;
     bool operator==(const EnvironmentUiOwner&)const=default;
 };
 std::optional<EnvironmentRefresh> environment_refresh;
@@ -4342,9 +4345,23 @@ bool environment_ui_owner_current(const EnvironmentUiOwner& pin){
         skg::field<void*>(terraform,0x14)==pin.panel && skg::readable(pin.panel,0x40) &&
         skg::field<uintptr_t>(pin.panel,0)==a_environment_ui_vtable &&
         skg::field<void*>(pin.panel,0x0C)==pin.root && skg::readable(pin.root,0x80);
-    if(pin.category!=2 || !a_flora_ui_refresh || !a_flora_ui_vtable || skg::field<void*>(terraform,0x18)!=pin.panel ||
+    if(pin.category==1){
+        if(!a_color_ui_refresh || !a_color_ui_vtable || !a_color_ui_wrapper_vtable || !a_color_gradient_vtable ||
+           skg::field<void*>(terraform,0x0C)!=pin.wrapper || !skg::readable(pin.wrapper,0x14) ||
+           skg::field<uintptr_t>(pin.wrapper,0)!=a_color_ui_wrapper_vtable ||
+           skg::field<void*>(pin.wrapper,0x0C)!=pin.wrapper_root || !skg::readable(pin.wrapper_root,0x40) ||
+           skg::field<void*>(pin.wrapper,0x10)!=pin.panel || !skg::readable(pin.panel,0x3C) ||
+           skg::field<uintptr_t>(pin.panel,0)!=a_color_ui_vtable ||
+           skg::field<void*>(pin.panel,0x14)!=pin.panel_root || !skg::readable(pin.panel_root,0x40) ||
+           skg::field<void*>(pin.panel,0x1C)!=pin.gradient || !skg::readable(pin.gradient,0x5C) ||
+           skg::field<uintptr_t>(pin.gradient,0)!=a_color_gradient_vtable ||
+           skg::field<void*>(pin.gradient,0x14)!=pin.gradient_parent || !skg::readable(pin.gradient_parent,0x40) ||
+           skg::field<void*>(pin.gradient,0x18)!=pin.gradient_image || !skg::readable(pin.gradient_image,0x40) ||
+           skg::field<void*>(pin.panel,0x18)!=pin.panel_layout)return false;
+    }else if(pin.category!=2 || !a_flora_ui_refresh || !a_flora_ui_vtable || skg::field<void*>(terraform,0x18)!=pin.panel ||
        !skg::readable(pin.panel,0x174) || skg::field<uintptr_t>(pin.panel,0)!=a_flora_ui_vtable ||
-       skg::field<void*>(pin.panel,0x168)!=pin.panel_layout || !skg::readable(pin.panel_layout,0x18) ||
+       skg::field<void*>(pin.panel,0x168)!=pin.panel_layout)return false;
+    if(!skg::readable(pin.panel_layout,0x18) ||
        skg::field<void*>(pin.panel_layout,0x14)!=pin.backing || !skg::readable(pin.backing,0x8C))return false;
     return skg::field<void*>(pin.backing,0x88)==pin.root && skg::readable(pin.root,0x40);
 }
@@ -4365,17 +4382,27 @@ bool current_environment_ui(EnvironmentUiOwner& out){
             pin.panel_layout=skg::field<void*>(pin.panel,0x168);if(!skg::readable(pin.panel_layout,0x18))return false;
             pin.backing=skg::field<void*>(pin.panel_layout,0x14);if(!skg::readable(pin.backing,0x8C))return false;
             pin.root=skg::field<void*>(pin.backing,0x88);
+        }else if(pin.category==1){
+            pin.wrapper=skg::field<void*>(pin.terraform,0x0C);if(!skg::readable(pin.wrapper,0x14))return false;
+            pin.wrapper_root=skg::field<void*>(pin.wrapper,0x0C);
+            pin.panel=skg::field<void*>(pin.wrapper,0x10);if(!skg::readable(pin.panel,0x3C))return false;
+            pin.panel_root=skg::field<void*>(pin.panel,0x14);pin.gradient=skg::field<void*>(pin.panel,0x1C);
+            if(!skg::readable(pin.gradient,0x5C))return false;
+            pin.gradient_parent=skg::field<void*>(pin.gradient,0x14);pin.gradient_image=skg::field<void*>(pin.gradient,0x18);
+            pin.panel_layout=skg::field<void*>(pin.panel,0x18);if(!skg::readable(pin.panel_layout,0x18))return false;
+            pin.backing=skg::field<void*>(pin.panel_layout,0x14);if(!skg::readable(pin.backing,0x8C))return false;
+            pin.root=skg::field<void*>(pin.backing,0x88);
         }else return false;
     }
     if(!environment_ui_owner_current(pin))return false;
     // UILayout is not IWindow. Resolve through the verified leaf getter, with
     // no cached memory probe scope spanning its controlled callback boundary.
-    if(pin.category==2 && sui::layout_container(pin.panel_layout)!=pin.root)return false;
+    if(pin.category!=3 && sui::layout_container(pin.panel_layout)!=pin.root)return false;
     if(!environment_ui_owner_current(pin))return false;
     out=pin;return true;
 }
 void request_environment_refresh(){
-    if((!a_environment_ui_refresh && !a_flora_ui_refresh) || !H || !H->frame_index || !H->time_seconds ||
+    if((!a_environment_ui_refresh && !a_flora_ui_refresh && !a_color_ui_refresh) || !H || !H->frame_index || !H->time_seconds ||
        environment_refresh_serial==UINT64_MAX)return;
     try{
         EnvironmentRefresh pin;pin.generation=generation;pin.frame=H->frame_index();pin.started=H->time_seconds();
@@ -4412,8 +4439,11 @@ void SK_CDECL drain_environment_refresh(void*){
         }
         // Native F3AF60 and EE8C80 use SetValue(value,false) and existing UI
         // flags/images. EE8C80 also refreshes all nine Flora cards, GroundCover
-        // and Flowers. Neither route sends an authoring setter notification.
-        skg::thiscall<void>(owner.category==2?a_flora_ui_refresh:a_environment_ui_refresh,owner.panel);
+        // and Flowers. EE6AD0 also rebuilds ColorUI gradient nodes from the
+        // current native vectors. These routes send no authoring setter event.
+        const auto refresh=owner.category==1?a_color_ui_refresh:
+            owner.category==2?a_flora_ui_refresh:a_environment_ui_refresh;
+        skg::thiscall<void>(refresh,owner.panel);
         if(environment_refresh_current(pin) && environment_ui_owner_current(owner))++environment_ui_updates;
         else ++environment_ui_expired;
         drop();
@@ -4908,6 +4938,10 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     a_environment_ui_refresh=H->sym("SporeCoop::Editor::RefreshEnvironmentUI");
     a_environment_ui_vtable=H->sym("SporeCoop::Editor::EnvironmentUIVTable");
     a_flora_ui_refresh=H->sym("SporeCoop::Editor::RefreshFloraUI");
+    a_color_ui_refresh=H->sym("SporeCoop::Editor::RefreshColorUI");
+    a_color_ui_vtable=H->sym("SporeCoop::Editor::ColorUIVTable");
+    a_color_ui_wrapper_vtable=H->sym("SporeCoop::Editor::ColorUIWrapperVTable");
+    a_color_gradient_vtable=H->sym("SporeCoop::Editor::ColorGradientVTable");
     a_flora_ui_vtable=H->sym("SporeCoop::Editor::FloraUIVTable");
     a_copy_class_acts=H->sym("SporeCoop::Editor::CopyClassActs");a_copy_marker_acts=H->sym("SporeCoop::Editor::CopyMarkerActs");
     a_insert_act=H->sym("SporeCoop::Editor::InsertAct");a_insert_class_act=H->sym("SporeCoop::Editor::InsertClassAct");a_insert_marker_act=H->sym("SporeCoop::Editor::InsertMarkerAct");
@@ -4999,6 +5033,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
         complexity_code_pinned=complexity_available=true;
     }
     terrain_available=supported && a_terrain_load && a_copy_terrain_properties && a_terrain_rebuild && a_terrain_materialize && a_terrain_selection && a_terrain_loaded && a_terrain_vtable && a_terraform_ui_vtable && a_flora_ui_vtable && a_environment_ui_refresh && a_environment_ui_vtable && a_flora_ui_refresh &&
+        a_color_ui_refresh && a_color_ui_vtable && a_color_ui_wrapper_vtable && a_color_gradient_vtable &&
         install("SporeCoop::Editor::TerraformInitializeResource",(void*)terrain_resource_init,(void**)&original_terrain_resource_init) &&
         install("SporeCoop::Editor::TerraformActivate",(void*)terrain_activate,(void**)&original_terrain_activate) &&
         install("SporeCoop::Editor::TerraformStartHistory",(void*)terrain_start,(void**)&original_terrain_start) &&

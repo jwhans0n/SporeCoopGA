@@ -481,3 +481,4 @@ not-reproduced, game-bug (Spore itself), wontfix, duplicate.
 | [BUG-0469](BUG-0469-content-check-for-every-model-kind-civ-vehicles.md) | fixed | crash | All | 2026-11-02 | 0.7.3.6 | content check for every model kind: Civ vehicles, buildings and city designs, Space NPC ship parts, cell and UFO paints (rest of BUG-0424 after BUG-0452) |
 | [BUG-0470](BUG-0470-civ-mirror-vehicles-and-other-civ-tribe-and-spac.md) | open | bug | Civ | 2026-11-02 |  | civ mirror vehicles (and other civ, tribe and space objects the mod creates on a guest) go into the guest's saves |
 | [BUG-0471](BUG-0471-native-flowers-and-groundcover-omit-the-regenera.md) | open | bug | GA shared editor | 2026-11-03 |  | Native Flowers and GroundCover omit the regenerated forest field lease |
+| [BUG-0473](BUG-0473-gradient-height-undo-restores-planet-data-but-le.md) | open | bug | GA shared editor | 2026-11-03 |  | Gradient height Undo restores Planet data but leaves local native Color UI stale |

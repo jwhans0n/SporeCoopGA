@@ -219,3 +219,119 @@ void test(){
 }
 }
 static void test_native_flora_refresh(){flora_refresh_fixture::test();}
+
+// Category1 has two distinct owners before its UILayout. In particular the
+// TerraformUI+C wrapper is not the ColorUI passed to the native refresh.
+namespace color_refresh_fixture {
+std::array<uint8_t,0x14> wrapper;
+std::array<uint8_t,0x3C> color;
+std::array<uint8_t,0x5C> gradient;
+std::array<uint8_t,0x40> parent,wrapper_parent;
+std::array<uint8_t,0x40> gradient_parent,gradient_image;
+std::array<float,8> authored{},shown{};
+unsigned calls=0;
+std::function<void()> callback;
+void SK_THISCALL refresh(void* self){
+    CHECK(environment_refresh_fixture::outside&&self==color.data());++calls;
+    CHECK(skg::field<void*>(self,0x18)==t_flora_layout.data());
+    CHECK(skg::field<void*>(self,0x1C)==gradient.data());
+    shown=authored;const auto notify=callback;if(notify)notify();
+}
+struct Routes {
+    environment_refresh_fixture::Routes environment;
+    uintptr_t function=a_color_ui_refresh,vtable=a_color_ui_vtable,wrapper_vtable=a_color_ui_wrapper_vtable,
+        gradient_vtable=a_color_gradient_vtable;
+    ~Routes(){a_color_ui_refresh=function;a_color_ui_vtable=vtable;a_color_ui_wrapper_vtable=wrapper_vtable;
+        a_color_gradient_vtable=gradient_vtable;t_flora_on_container={};callback={};}
+};
+void setup(){
+    environment_refresh_fixture::setup();calls=0;callback={};
+    wrapper.fill(0);color.fill(0);gradient.fill(0);parent.fill(0);wrapper_parent.fill(0);
+    gradient_parent.fill(0);gradient_image.fill(0);
+    t_flora_layout.fill(0);t_flora_container.fill(0);t_flora_window.fill(0);
+    t_flora_on_container={};t_flora_layout_gets=0;
+    a_color_ui_refresh=uintptr_t(refresh);a_color_ui_vtable=0x12345680;
+    a_color_ui_wrapper_vtable=0x12345681;a_color_gradient_vtable=0x12345682;
+    skg::field<uint32_t>(environment_refresh_fixture::terraform.data(),0x28)=1;
+    skg::field<void*>(environment_refresh_fixture::terraform.data(),0x0C)=wrapper.data();
+    skg::field<uintptr_t>(wrapper.data(),0)=a_color_ui_wrapper_vtable;
+    skg::field<void*>(wrapper.data(),0x0C)=wrapper_parent.data();skg::field<void*>(wrapper.data(),0x10)=color.data();
+    skg::field<uintptr_t>(color.data(),0)=a_color_ui_vtable;skg::field<void*>(color.data(),0x14)=parent.data();
+    skg::field<void*>(color.data(),0x18)=t_flora_layout.data();skg::field<void*>(color.data(),0x1C)=gradient.data();
+    skg::field<uintptr_t>(gradient.data(),0)=a_color_gradient_vtable;
+    skg::field<void*>(gradient.data(),0x14)=gradient_parent.data();skg::field<void*>(gradient.data(),0x18)=gradient_image.data();
+    skg::field<void*>(t_flora_layout.data(),0x14)=t_flora_container.data();
+    skg::field<void*>(t_flora_container.data(),0x88)=t_flora_window.data();
+    authored={0,.1f,.3f,.5f,.7f,.8f,.9f,1};shown=authored;shown[2]=.4f;
+}
+void expire_ui(unsigned reason){
+    if(reason==0)skg::field<uint32_t>(environment_refresh_fixture::terraform.data(),0x28)=2;
+    if(reason==1)skg::field<void*>(environment_refresh_fixture::terraform.data(),0x0C)=nullptr;
+    if(reason==2)skg::field<uintptr_t>(wrapper.data(),0)=0;
+    if(reason==3)skg::field<void*>(wrapper.data(),0x0C)=nullptr;
+    if(reason==4)skg::field<void*>(wrapper.data(),0x10)=nullptr;
+    if(reason==5)skg::field<uintptr_t>(color.data(),0)=0;
+    if(reason==6)skg::field<void*>(color.data(),0x14)=nullptr;
+    if(reason==7)skg::field<void*>(color.data(),0x18)=nullptr;
+    if(reason==8)skg::field<void*>(color.data(),0x1C)=nullptr;
+    if(reason==9)skg::field<uintptr_t>(gradient.data(),0)=0;
+    if(reason==10)skg::field<void*>(t_flora_layout.data(),0x14)=nullptr;
+    if(reason==11)skg::field<void*>(t_flora_container.data(),0x88)=nullptr;
+    if(reason==12)a_color_ui_refresh=0;
+    if(reason==13)skg::field<void*>(gradient.data(),0x14)=nullptr;
+    if(reason==14)skg::field<void*>(gradient.data(),0x18)=nullptr;
+}
+void run(){environment_refresh_fixture::run();}
+void test(){
+    Routes routes;setup();const auto original=authored;const auto resource_before=t_live;const auto data_before=t_data;
+    const auto rows=t_rows.at(t_live.data());const auto current_category=skg::field<uint32_t>(environment_refresh_fixture::terraform.data(),0x28);
+    const auto updates=environment_ui_updates;
+    request_environment_refresh();CHECK(environment_refresh);run();CHECK(!calls&&shown!=authored&&environment_refresh);
+    ++t_frame;run();CHECK(calls==1&&shown==authored&&!environment_refresh&&environment_ui_updates==updates+1);
+    CHECK(t_flora_layout_gets>=2&&authored==original&&t_live==resource_before&&t_data==data_before&&t_rows.at(t_live.data())==rows);
+    CHECK(skg::field<uint32_t>(environment_refresh_fixture::terraform.data(),0x28)==current_category);
+    // A second canonical value, then Undo back to the first, each refreshes the
+    // existing UI without reopening the tab or changing any serialized bytes.
+    authored[2]=.4f;request_environment_refresh();++t_frame;run();CHECK(calls==2&&shown==authored);
+    authored=original;request_environment_refresh();++t_frame;run();CHECK(calls==3&&shown==original);
+    for(unsigned reason=0;reason<15;++reason){
+        setup();request_environment_refresh();++t_frame;expire_ui(reason);run();
+        CHECK(!calls&&!environment_refresh&&shown!=authored);
+    }
+    for(unsigned reason=0;reason<12;++reason){
+        setup();request_environment_refresh();++t_frame;bool allowed=true;
+        restore_fence_fixture::expire(reason,allowed);if(reason==10)C.active=[] {return false;};
+        run();CHECK(!calls&&!environment_refresh&&shown!=authored);
+    }
+    // The root getter can retire either owner or replace the layout. No call
+    // to the native refresh may follow even when the old objects stay readable.
+    for(unsigned reason=0;reason<20;++reason){
+        setup();request_environment_refresh();++t_frame;bool fired=false;
+        t_flora_on_container=[&]{fired=true;
+            if(reason<15)expire_ui(reason);
+            if(reason==15)++generation;
+            if(reason==16)++skg::field<editor::ResourceKey>(t_live.data(),8).instance;
+            if(reason==17)clear_environment_refresh();
+            if(reason==18)held_terrain_controls.emplace_back();
+            if(reason==19)throw 5;
+        };
+        run();CHECK(fired&&!calls&&!environment_refresh&&shown!=authored);
+    }
+    // Fresh raw closure follows the final scope callback, including every
+    // category1 pointer rather than only the shared outer TerraformUI owner.
+    for(unsigned reason=0;reason<16;++reason){
+        setup();request_environment_refresh();++t_frame;bool fired=false;
+        C.projection_scope=[&]{if(!fired&&t_flora_layout_gets>=2){fired=true;
+            if(reason<15)expire_ui(reason);else clear_environment_refresh();
+        }return t_scope;};
+        run();CHECK(fired&&!calls&&!environment_refresh&&shown!=authored);
+    }
+    setup();request_environment_refresh();++t_frame;
+    callback=[] {editor_native::tick();drain_environment_refresh(nullptr);};run();
+    CHECK(calls==1&&t_tasks.empty()&&!environment_refresh&&!environment_refresh_servicing&&!environment_refresh_queued);
+    setup();C.gesture_scope=[] {return GestureScope{};};request_environment_refresh();++t_frame;run();CHECK(calls==1&&shown==authored);
+    setup();request_environment_refresh();++t_frame;callback=[] {throw 7;};run();
+    CHECK(calls==1&&!environment_refresh&&!environment_refresh_servicing&&!environment_refresh_queued);
+}
+}
+static void test_native_color_refresh(){color_refresh_fixture::test();}

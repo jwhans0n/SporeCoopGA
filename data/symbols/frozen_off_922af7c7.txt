@@ -359,3 +359,7 @@ SporeKit::RefPack::LinkAllocationTag ; compression memo: exact GOG 2024 encoder/
 SporeKit::RefPack::MemcpyThunk ; compression memo: exact GOG 2024 encoder/caller-profile optimization is disabled on GOG 2016 (BUG-0108)
 SporeKit::RefPack::MemsetThunk ; compression memo: exact GOG 2024 encoder/caller-profile optimization is disabled on GOG 2016 (BUG-0108)
 SporeKit::RefPack::Raw ; compression memo: exact GOG 2024 encoder/caller-profile optimization is disabled on GOG 2016 (BUG-0108)
+SporeCoop::Editor::ColorUIWrapperVTable ; shared editor: native Color UI and gradient refresh are disabled on GOG 2016 (BUG-0108)
+SporeCoop::Editor::ColorUIVTable ; shared editor: native Color UI and gradient refresh are disabled on GOG 2016 (BUG-0108)
+SporeCoop::Editor::ColorGradientVTable ; shared editor: native Color UI and gradient refresh are disabled on GOG 2016 (BUG-0108)
+SporeCoop::Editor::RefreshColorUI ; shared editor: native Color UI and gradient refresh are disabled on GOG 2016 (BUG-0108)
