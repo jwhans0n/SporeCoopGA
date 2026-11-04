@@ -3211,6 +3211,7 @@ bool SK_THISCALL flora_input(void* self,void* window,void* message){
     }
     return original_flora_input(self,window,message);
 }
+#include "editor_native_planet_preset_impl.h"
 bool cancellation_current(const PendingCancellation& item){
     const auto scope=C.gesture_scope?C.gesture_scope():GestureScope{};
     return active() && item.owner==data(mode()) && item.mode==mode() && item.ticket.generation==generation &&
@@ -3334,6 +3335,9 @@ void deny_held_input(const std::vector<editor::Scope>& scopes){
         if(held_captain_asset && (scope.kind==editor::ScopeKind::Document || scope.object==kCaptainObject))held_captain_asset.reset();
         if(held_crew_action && (scope.kind==editor::ScopeKind::Document || scope.object==kCrewObject))held_crew_action.reset();
         if(scope.kind==editor::ScopeKind::Document || scope.kind==editor::ScopeKind::Authoring || scope.object==editor_native_terrain::kPlanetObject){
+            if(held_planet_preset && (scope.kind!=editor::ScopeKind::Field || held_planet_preset->guards.contains(scope.field.property))){
+                held_planet_preset.reset();if(C.notice)C.notice("The pending planet look was cancelled because its settings are owned by another player.");
+            }
             if(held_terrain_preset){held_terrain_preset.reset();if(C.notice)C.notice("The pending planet preset was cancelled because its terrain or settings are owned by another player.");}
             for(auto item=held_terrain_controls.begin();item!=held_terrain_controls.end();){
                 if(scope.kind!=editor::ScopeKind::Field || item->guards.contains(scope.field.property)){
@@ -3368,6 +3372,7 @@ void SK_THISCALL apply_marker_state(void* self,void* marker,uint32_t flags){
 void SK_CDECL continue_input(void*){
     input_queued=false;
     continue_terrain_preset();
+    continue_planet_preset();
     continue_terrain_control();
     if(held_creation){
         const auto item=*held_creation;
@@ -4330,7 +4335,7 @@ bool environment_refresh_queued=false,environment_refresh_servicing=false;
 void clear_environment_refresh(){environment_refresh.reset();}
 bool environment_interaction_idle(){
     return !applying && !gesture_before_resource && pending.empty() && !staged_pose && !terrain_before && !terrain_pending &&
-        held_terrain_controls.empty() && !held_terrain_preset && !held_tool && !cancellation &&
+        held_terrain_controls.empty() && !held_terrain_preset && !held_planet_preset && !held_tool && !cancellation &&
         skg::readable(reinterpret_cast<void*>(a_history),0x21) && *reinterpret_cast<uint8_t*>(a_history+0x20)!=0;
 }
 bool environment_refresh_current(const EnvironmentRefresh& pin,bool published=true){
@@ -4956,6 +4961,9 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     a_color_ui_wrapper_vtable=H->sym("SporeCoop::Editor::ColorUIWrapperVTable");
     a_color_gradient_vtable=H->sym("SporeCoop::Editor::ColorGradientVTable");
     a_flora_ui_vtable=H->sym("SporeCoop::Editor::FloraUIVTable");
+    a_planet_preset_card_vtable=H->sym("SporeCoop::Editor::PlanetPresetCardVTable");
+    a_planet_preset_message_vtable=H->sym("SporeCoop::Editor::PlanetPresetMessageVTable");
+    a_planet_palette_vtable=H->sym("SporeCoop::Editor::PlanetLookPaletteVTable");
     a_copy_class_acts=H->sym("SporeCoop::Editor::CopyClassActs");a_copy_marker_acts=H->sym("SporeCoop::Editor::CopyMarkerActs");
     a_insert_act=H->sym("SporeCoop::Editor::InsertAct");a_insert_class_act=H->sym("SporeCoop::Editor::InsertClassAct");a_insert_marker_act=H->sym("SporeCoop::Editor::InsertMarkerAct");
     a_add_act=H->sym("SporeCoop::Editor::AddAct");a_delete_act=H->sym("SporeCoop::Editor::DeleteAct");
@@ -5047,6 +5055,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
     }
     terrain_available=supported && a_terrain_load && a_copy_terrain_properties && a_terrain_rebuild && a_terrain_materialize && a_terrain_selection && a_terrain_loaded && a_terrain_vtable && a_terraform_ui_vtable && a_flora_ui_vtable && a_environment_ui_refresh && a_environment_ui_vtable && a_flora_ui_refresh &&
         a_color_ui_refresh && a_color_ui_vtable && a_color_ui_wrapper_vtable && a_color_gradient_vtable &&
+        a_planet_preset_card_vtable && a_planet_preset_message_vtable && a_planet_palette_vtable &&
         install("SporeCoop::Editor::TerraformInitializeResource",(void*)terrain_resource_init,(void**)&original_terrain_resource_init) &&
         install("SporeCoop::Editor::TerraformActivate",(void*)terrain_activate,(void**)&original_terrain_activate) &&
         install("SporeCoop::Editor::TerraformStartHistory",(void*)terrain_start,(void**)&original_terrain_start) &&
@@ -5066,6 +5075,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
         install("SporeCoop::Editor::FloraRemove",(void*)flora_remove,(void**)&original_flora_remove) &&
         install("SporeCoop::Editor::FloraAdd",(void*)flora_add,(void**)&original_flora_add) &&
         install("SporeCoop::Editor::FloraInput",(void*)flora_input,(void**)&original_flora_input);
+    if(terrain_available)terrain_available=install("SporeCoop::Editor::PlanetPresetMessage",(void*)planet_preset_message,(void**)&original_planet_preset_message);
     const std::array<const char*,18> names{{"TerraformSetWaterColor","TerraformSetAtmosphereColor","TerraformSetBeachColor","TerraformSetCliffColor",
         "TerraformSetTemperature","TerraformSetAtmosphere","TerraformSetGroundType","TerraformSetDeadType","TerraformSetOverride","TerraformSetHazards",
         "TerraformSetWaterLevel","TerraformSetWaterType","TerraformSetAtmosphereType","TerraformSetGroundEffect","TerraformRefreshColors",
@@ -5097,7 +5107,7 @@ void shutdown() {
     input_speech=false;
     terrain_before.reset();terrain_pending=terrain_queued=terrain_capturing=terrain_rebuilding=terrain_recipe_replacement=false;terrain_grounding.clear();materialized_terrain.reset();terrain_available=false;
     clear_terrain_materialization();
-    held_tool.reset();held_creation.reset();held_class_removal.reset();held_captain_asset.reset();held_crew_action.reset();held_terrain_controls.clear();held_terrain_preset.reset();input_queued=false;
+    held_tool.reset();held_creation.reset();held_class_removal.reset();held_captain_asset.reset();held_crew_action.reset();held_terrain_controls.clear();held_terrain_preset.reset();held_planet_preset.reset();input_queued=false;
     deferred_local_view.reset();local_view_queued=local_view_settling=false;
     held_import.reset();
     cancellation.reset();cancellation_queued=cancellation_settling=false;
@@ -5120,7 +5130,7 @@ void tick(){
     if(terrain_pending && !terrain_queued){terrain_queued=true;H->run_outside_frame(drain_terrain,nullptr);}
     if(!terrain_materialization_error.empty() && !terrain_materialization_error_queued && !terrain_materialization_error_reported){terrain_materialization_error_queued=true;H->run_outside_frame(materialization_failure,nullptr);}
     if(!pending.empty() && !queued){queued=true;H->run_outside_frame(drain,nullptr);}
-    if((held_tool || held_import || held_creation || held_class_removal || held_captain_asset || held_crew_action || held_terrain_preset || !held_terrain_controls.empty()) && !input_queued){input_queued=true;H->run_outside_frame(continue_input,nullptr);}
+    if((held_tool || held_import || held_creation || held_class_removal || held_captain_asset || held_crew_action || held_terrain_preset || held_planet_preset || !held_terrain_controls.empty()) && !input_queued){input_queued=true;H->run_outside_frame(continue_input,nullptr);}
     if(cancellation && !cancellation_queued){cancellation_queued=true;H->run_outside_frame(drain_cancellation,nullptr);}
     if(fence_queued)return;
     double now=H->time_seconds();
@@ -5146,7 +5156,7 @@ State state() {
         bindings.clear();incarnations.clear();selection.clear();act_identity={};
         terrain_before.reset();terrain_pending=terrain_capturing=terrain_rebuilding=terrain_recipe_replacement=false;terrain_grounding.clear();materialized_terrain.reset();
         clear_terrain_materialization();
-        deferred_local_view.reset();clear_environment_refresh();held_terrain_controls.clear();held_terrain_preset.reset();held_tool.reset();
+        deferred_local_view.reset();clear_environment_refresh();held_terrain_controls.clear();held_terrain_preset.reset();held_planet_preset.reset();held_tool.reset();
         gesture_before_metadata.reset();gesture_metadata_error.clear();
     }
     s.generation = generation;

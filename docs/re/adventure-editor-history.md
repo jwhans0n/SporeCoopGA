@@ -2183,6 +2183,13 @@ two earlier clone-fixture assertion failures remain retained separately.
 Actual corrected native gradient Undo UI acceptance remains a separate Root-run
 check.
 
+CORRECTION (2026-11-03): that pending qualification is now completed on private
+C58. `out/preview9-c58-two-gradient-ui/result.json` and `ui-proof.json` retain
+both authors' normal height303 to330 and own Undo/Redo/Undo, R3 to11. Only
+B6929C92 changes; six UI checks prove restored303 and absent330 after Undo.
+Both final screenshots were reviewed, with no tab toggle, strict peers and
+zero faults. This closes BUG-0473 for the private protocol24 candidate.
+
 ## First Alt clone retains its press while ownership is pending (2026-11-03, feat/ga-editor-multi-act)
 <a id="adventure-editor-first-alt-clone"></a>
 
@@ -2238,3 +2245,74 @@ under strict actual-i686 compilation, with68 compiler/Make inputs unchanged.
 The shared receipt is `out/editor-preview9-color-refresh/receipt.json`.
 Actual Native Alt-clone and count-delta
 qualification remain Root-owned.
+
+CORRECTION (2026-11-03): C58 now qualifies a real Sound Alt-clone, R1 to2 and
+Undo3, with exact restored native/semantic bytes, Sound count4 plus one, and
+unchanged uniqueness counts and thirteen tuning words. Evidence is retained in
+`out/preview9-c58-sound-clone-qualification/result.json`. This does not establish
+every delayed modified clone variant or native count-boundary acceptance for
+the generated carriers.
+
+## Planet-look preset ownership begins at its selected card (2026-11-03, feat/ga-editor-multi-act)
+<a id="history-planet-look-preset-ownership"></a>
+
+Verified GOG2024 executable SHA `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`
+has the Tab0 selected-card callback at F0CD40. Its ABI is bool AL
+`thiscall(presetCard+20, uint32 message, void* source)`, ret8 at F0D2A5/F0D2B3.
+Only message0743B6FA with source equal to the primary card is the selected
+operation. The primary card vtable is148BAC0, message-interface vtable148BA84;
+card24 owns a UILayout, and card28/card30 hold the selected `.prop` instance/group.
+The current TerraformUI10 Tab0 wrapper has vtable148ABBC. It is distinct from
+the card and from the UILayout's container IWindow.
+
+F0CF0D starts one history item through F33A90. The callback then invokes the
+water/temperature/atmosphere, type, color/gradient and ground-effect setters,
+directly calls F37340 at F0D220, and commits through F34400 at F0D25D. It never
+calls the existing wrapped full Load F32A90 or Build F37530 route. F37340 is
+`thiscall(tool, const vector<ResourceKey>*)`, ret4 at F3737F. F31DC0 writes the
+Flora key list, then F35B20 regenerates/truncates the live bands and intensity
+vectors as required. Native capture F27C00 through F33A50/F32BB0 exports the
+four Flora fields04E13CB7,073154E0,073137BB,072BEC91. The previous nested
+gates therefore missed bulk Flora; adding a queued inner setter would split
+one native operation. BUG-0474 records this source/controlled-producer defect.
+
+The new outer barrier requests these seventeen Planet field scopes together:
+`03A23F98,03A23F99,07B18058,0536250C,0536250D,968C496A,968C496B,B6929C94,`
+`B6929C95,B6929C92,B6929C93,56B14F05,03ABB0AF,04E13CB7,073154E0,073137BB,072BEC91`.
+It retains only owned values and exact field revisions plus current scene,
+source, project/epoch, generation, category, selected key, wrapper/card and
+UILayout/container identities. Copy charging precedes allocation. Fresh root
+ancestry and policy closure are repeated before replay; no Native AddRef owner
+or marker pointer is retained. Denial, Escape, focus loss, timeout or changed
+context retires the intent. One original callback still owns one native
+Start/Commit. Cleanup retires only this operation's unused before-image after
+pre-start callback expiry or native acknowledgement without a Start.
+
+The caller's false return must not be guessed as a UI propagation contract.
+F0CB30 registers this listener through the native message manager. Immediate
+dispatch8855A0 is followed by unconditional jump8855A2; deferred-copy
+dispatch88568A by unconditional jump88568C. Neither tests AL. The queued false
+result is retained. Supported entry/return/call and vtable receipts are added
+to `tools/addrport/verify_editor_dc04.py`; GOG2016 remains explicitly frozen
+under BUG-0108, with no invented2016 addresses.
+
+The unchanged C58 Native producer from a16c41e passes real before/after capture
+and opaque support in the controlled fixture, acquires only three scopes and
+hits the real Core rejection `Editing shared properties requires ownership of
+their settings.` Expected exit1 and exact old-source inputs are retained in
+`out/editor-preview9-planet-preset/old-c58-red/receipt.json`. The new strict
+actual-i686 fixture passes8,910 preset checks, including each independently
+foreign-held field, zero setter writes before grants, one accepted history item,
+exact Undo, no-op cleanup and stale/reentrant callback negatives. Adjacent
+Flora990, Flora UI900, Color UI1,567 and Environment1,137 checks also pass;
+`out/editor-preview9-planet-preset/receipt.json` pins seventy compiler/Make
+inputs with zero drift. Earlier controlled setup failures remain retained.
+No actual Native Tab0 preset acceptance or full serializer oracle is claimed.
+
+CORRECTION (2026-11-03): controls07393E58/073A7978 in F3AAA0 are Update/Paint
+parent controls, not an established Style popup. The verified B60B4D toF339F0
+route is the separate native `adventureLook` cheat, with options `-filmnoir`,
+`-eightbit`, `-sixteenbit`, `-watercolor`, `-norainbows`, `-sepia`, `-none`.
+Root's click857280 correctly produced no change at R44, retained under
+`out/preview9-c58-style-popup`. No missing Style GUI control or GUI defect is
+inferred; command synchronization qualification remains separate.

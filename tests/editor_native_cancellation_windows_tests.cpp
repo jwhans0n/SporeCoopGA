@@ -57,6 +57,9 @@ std::function<void()> t_game_mode_callback;
 double t_time=1;
 unsigned t_presses=0,t_finishes=0,t_ticks=0,t_steps=0;
 bool t_granted=false;
+void* t_planet_main=nullptr;
+std::function<void*(void*)> t_planet_parent;
+std::function<bool(void*)> t_planet_visible;
 bool t_audio_drift=false;
 bool t_retired_actor=false;
 uint32_t t_card_id=0;
@@ -202,6 +205,7 @@ void native_cancel(void* entry=nullptr){
 }
 void begin(){start(t_data.data());CHECK(!t_allocations.empty());CHECK(gesture_serial!=0);}
 void reset(){
+    held_planet_preset.reset();t_planet_main=nullptr;t_planet_parent={};t_planet_visible={};
     t_game_mode_callback={};
     clear_environment_refresh();environment_refresh_queued=environment_refresh_servicing=false;
     native_fixture_escape_state=0;
@@ -1202,11 +1206,12 @@ namespace game { uint32_t mode_id(){if(t_game_mode_callback){auto callback=std::
 #include "editor_native_entry_fixture.h"
 #include "editor_native_history_toolbar_fixture.h"
 namespace sui {
+Win main_window(){return t_planet_main;}
 Win layout_container(void* layout){
     ++t_flora_layout_gets;
     void* backing=skg::readable(layout,0x18)?skg::field<void*>(layout,0x14):nullptr;
     Win root=skg::readable(backing,0x8C)?skg::field<Win>(backing,0x88):nullptr;
-    if(t_flora_on_container){auto callback=std::move(t_flora_on_container);callback();}
+    if(t_flora_on_container){auto callback=std::exchange(t_flora_on_container,{});callback();}
     return root;
 }
 Win find(Win root,uint32_t){
@@ -1218,7 +1223,7 @@ Win find(Win root,uint32_t){
 void set_enabled(Win w,bool value){if(history_ui_fixture::active){history_ui_fixture::enabled(w,value);return;}CHECK(false);} void release(Win){CHECK(false);} void add_ref(Win){CHECK(false);}
 uint32_t control_id(Win w){if(history_ui_fixture::active)return history_ui_fixture::id(w);if(w==&t_flora_slider)return 0x072BFDFD;CHECK(w==&t_card_id||w==&t_text);return w==&t_text?t_text_id:t_card_id;} uint32_t flags(Win w){if(history_ui_fixture::active)return history_ui_fixture::flags(w);CHECK(false);return 0;}
 std::vector<Win> children(Win w){if(history_ui_fixture::active)return history_ui_fixture::children(w);CHECK(false);return {};}
-Win parent(Win w){if(history_ui_fixture::active)return history_ui_fixture::parent(w);CHECK(false);return nullptr;}bool visible(Win w){if(history_ui_fixture::active)return history_ui_fixture::visible(w);CHECK(false);return false;}
+Win parent(Win w){if(t_planet_parent)return t_planet_parent(w);if(history_ui_fixture::active)return history_ui_fixture::parent(w);CHECK(false);return nullptr;}bool visible(Win w){if(t_planet_visible)return t_planet_visible(w);if(history_ui_fixture::active)return history_ui_fixture::visible(w);CHECK(false);return false;}
 }
 namespace {
 std::array<uint8_t,0x318> v_camera,v_replacement;
@@ -1727,7 +1732,12 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
 #include "editor_native_pose_prepare_staged_fixture.h"
 #include "editor_native_service_pulse_fixture.h"
 #include "editor_native_clone_input_fixture.h"
+#include "editor_native_planet_preset_fixture.h"
 int main(int argc,char** argv){
+    if(argc==2&&std::string(argv[1])=="--planet-preset-only"){
+        planet_preset_fixture::test();std::printf("native atomic planet preset: %u checks passed\n",checks);return 0;
+    }
+    if(argc==1)planet_preset_fixture::test();
     if(argc==2&&std::string(argv[1])=="--clone-input-only"){
         clone_input_fixture::test();std::printf("native delayed clone input: %u checks passed\n",checks);return 0;
     }

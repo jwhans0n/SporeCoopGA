@@ -160,9 +160,9 @@ static asset and measured effective weighted headroom. No native 1,025/4,096
 or publication acceptance is inferred from generated counts.
 
 Existing four-player Crew and Basic Tools concurrency evidence remains recorded
-in the preview-9 report. The next terrain checks start with host/guest Hazards
-history, then environment subtypes, selected-stamp transforms, Flora and the
-remaining visible Terraform controls. Recipes require fresh native calibration.
+in the preview-9 report. Hazards and clock are covered above; remaining terrain
+checks include environment subtypes, selected-stamp transforms, Flora and other
+visible Terraform controls. Recipes require fresh native calibration.
 Complexity checks must establish actual native 1,025/4,096/overflow behavior and
 Save/reopen, separately from generated offline carriers and portable bounds.
 Publication eligibility remains unverified.
@@ -307,6 +307,48 @@ and the owned runner stops; `out/preview9-c57-r102-retirement/` retains the exit
 These are two-player control-family checks. They do not establish complete
 Terraform coverage, native count-boundary acceptance, performance budgets,
 broader four-player creation/failure/recovery coverage or final release smoke.
+
+Private C58 subsequently closes the gradient UI regression for both authors:
+normal height303 to330 plus own Undo/Redo/Undo, R3 to11, changes only B6929C92.
+Six UI checks prove303 restored and330 absent after Undo; both final PNGs were
+reviewed without a tab-toggle workaround. Both peers stay strict and fault-free.
+Evidence: `out/preview9-c58-two-gradient-ui/result.json` and `ui-proof.json`.
+BUG-0473 is fixed in this private protocol24 candidate; the installed personal
+protocol23 Flora update remains pinned independently.
+
+C58 also qualifies one real native Sound Alt-clone, R1 to2, followed by Undo3.
+Native bytes and semantic identity restore exactly on Undo. Sound count4 grows
+by one while every uniqueness count and all thirteen tuning words remain
+unchanged. Evidence: `out/preview9-c58-sound-clone-qualification/result.json`.
+The exact1,024/1,025 class boundary is covered on both deterministic architectures
+in commit `e2dc2c0`. Sound-carrier generation at1,025/4,095/4,096 placements
+does not establish native count-boundary acceptance; the later native mounting,
+clone/overflow and Save/cold sequence is tracked separately.
+
+All four native color routes now pass for both authors on C58, eight cases from
+R11 to43. Each first opens and cancels without changing draft/history, then
+accepts exactly its one expected Planet field and performs own Undo/Redo/Undo.
+Twenty-four history UI checks compare both peers' swatch pixels with their
+exact baseline/accepted images. All Planet fields restore strictly with zero
+faults. This supersedes C26's partial opposite-author/current-UI coverage;
+`out/preview9-c58-four-colors/result.json` retains the complete proof.
+
+The previous proposed Style-popup case was a control-family misidentification.
+Native07393E58/073A7978 belong to Update/Paint parent handling; the verified
+`adventureLook` style route is a separate native cheat command. The C58 click
+at857280 correctly leaves R44 unchanged (`out/preview9-c58-style-popup`). No
+missing Terraform Style GUI or GUI defect is claimed. Command synchronization
+qualification remains separate.
+
+Tab0 planet-look presets have a concrete source/controlled-producer ownership
+gap: F0CD40 directly calls bulk Flora F37340 inside one Start/Commit, bypassing
+the full-load gate. BUG-0474's private C59 source fix preflights exactly17 field
+leases at the outer card boundary. Unchanged C58 reproduces the real Core
+ownership rejection; strict actual-i686 C59 passes8,910 preset checks plus the
+four affected UI/control focuses, seventy compiler/Make inputs with zero drift.
+Receipts: `out/editor-preview9-planet-preset/receipt.json` and
+`old-c58-red/receipt.json`. Actual running-game Tab0 preset acceptance remains
+pending; these controlled checks do not add native control coverage.
 
 ## Boundary qualification preparation
 

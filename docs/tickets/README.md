@@ -482,4 +482,5 @@ not-reproduced, game-bug (Spore itself), wontfix, duplicate.
 | [BUG-0470](BUG-0470-civ-mirror-vehicles-and-other-civ-tribe-and-spac.md) | open | bug | Civ | 2026-11-02 |  | civ mirror vehicles (and other civ, tribe and space objects the mod creates on a guest) go into the guest's saves |
 | [BUG-0471](BUG-0471-native-flowers-and-groundcover-omit-the-regenera.md) | open | bug | GA shared editor | 2026-11-03 |  | Native Flowers and GroundCover omit the regenerated forest field lease |
 | [BUG-0472](BUG-0472-shared.md) | open | bug | GA shared editor | 2026-11-03 |  | First Alt clone is lost while waiting for Structure ownership |
-| [BUG-0473](BUG-0473-gradient-height-undo-restores-planet-data-but-le.md) | open | bug | GA shared editor | 2026-11-03 |  | Gradient height Undo restores Planet data but leaves local native Color UI stale |
+| [BUG-0473](BUG-0473-gradient-height-undo-restores-planet-data-but-le.md) | fixed | bug | GA shared editor | 2026-11-03 | private preview9 C58 (protocol24) | Gradient height Undo restores Planet data but leaves local native Color UI stale |
+| [BUG-0474](BUG-0474-planet-look-presets-bypass-bulk-flora-field-owne.md) | open | bug | GA shared editor | 2026-11-03 |  | Planet look presets bypass bulk Flora field ownership and split pending setters |

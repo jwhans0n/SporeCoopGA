@@ -183,6 +183,7 @@ $(B)/host/adventure_collect_tests.exe: tests/adventure_collect_windows_tests.cpp
 
 $(B)/host/editor_native_cancellation_tests.exe: $(wildcard mods/coop/editor_native*.h) mods/coop/net/editor_terrain.h tests/editor_native_pose_prepare_fixture.h tests/editor_native_pose_prepare_staged_fixture.h mods/coop/editor_native_pose_prepare_staged_impl.h mods/coop/editor_native_pose_prepare_impl.h
 $(B)/host/editor_native_cancellation_tests.exe: tests/editor_native_entry_fixture.h mods/coop/world.h mods/coop/world_editor_entry.h
+$(B)/host/editor_native_cancellation_tests.exe: tests/editor_native_planet_preset_fixture.h
 
 .PHONY: test-world-editor-entry test-world-editor-entry-windows
 test-world-editor-entry: $(B)/host/world_editor_entry_tests

@@ -1,16 +1,16 @@
 ---
 id: BUG-0473
 title: Gradient height Undo restores Planet data but leaves local native Color UI stale
-status: open
+status: fixed
 kind: bug
 stage: GA shared editor
 reported: 2026-11-03
 source: C57 native gradient height R100 to101 Undo102
 role: host and guest
 versions: GA shared editor preview9
-fixed_in:
+fixed_in: private preview9 C58 (protocol24)
 branch: feat/ga-editor-multi-act
-commits:
+commits: e19b5362c9ae2e0fe2ce1cd2dd5c41804a66cdb5
 tests: out/editor-preview9-color-refresh/receipt.json
 signature: C57 R102 local gradient marker y330 after canonical Undo restored y303
 docs: docs/re/adventure-editor-history.md#history-color-ui-refresh
@@ -45,7 +45,15 @@ The producer matches the actual retained C57 code after line endings only.
 PASS: strict actual-i686 Color1,567, Flora990, Flora UI900, Environment1,137,
 delayed Clone838 and full adapter143,729 under
 `out/editor-preview9-color-refresh/receipt.json`,68 inputs with zero drift.
-Corrected running-game native UI acceptance remains pending.
+The earlier pending running-game qualification is superseded by the following
+C58 acceptance. Both authors perform normal height303 to330 followed by own
+Undo/Redo/Undo, R3 to11, changing only B6929C92. Six history UI checks prove the
+303 node is restored and the330 node absent after Undo; both final screenshots
+were reviewed, with no tab-toggle workaround, strict peers and zero faults.
+Receipts: `out/preview9-c58-two-gradient-ui/result.json` and `ui-proof.json`.
+This is the private protocol24 candidate, not an update to the installed
+personal protocol23 Flora payload.
 
 ## History
 - 2026-11-03: opened.
+- 2026-11-03: C58 two-player normal native input and restored UI acceptance pass.

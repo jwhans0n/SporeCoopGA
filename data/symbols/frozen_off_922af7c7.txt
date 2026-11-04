@@ -364,3 +364,7 @@ SporeCoop::Editor::ColorUIVTable ; shared editor: native Color UI and gradient r
 SporeCoop::Editor::ColorGradientVTable ; shared editor: native Color UI and gradient refresh are disabled on GOG 2016 (BUG-0108)
 SporeCoop::Editor::RefreshColorUI ; shared editor: native Color UI and gradient refresh are disabled on GOG 2016 (BUG-0108)
 SporeCoop::Editor::CaptureGroundDragAnchor ; shared editor: verified GOG 2024-only cursor anchor is disabled on GOG 2016 (BUG-0108)
+SporeCoop::Editor::PlanetPresetCardVTable ; shared editor: native planet-look presets are disabled on GOG 2016 (BUG-0108)
+SporeCoop::Editor::PlanetPresetMessageVTable ; shared editor: native planet-look presets are disabled on GOG 2016 (BUG-0108)
+SporeCoop::Editor::PlanetLookPaletteVTable ; shared editor: native planet-look presets are disabled on GOG 2016 (BUG-0108)
+SporeCoop::Editor::PlanetPresetMessage ; shared editor: native planet-look presets are disabled on GOG 2016 (BUG-0108)
