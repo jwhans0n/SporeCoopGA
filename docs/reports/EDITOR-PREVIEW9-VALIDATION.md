@@ -153,6 +153,68 @@ pagination without relaxing restoration checks. Native failed-Save recovery in
 the same process, Delete/clone/wheel and gradient-operation checks remain open.
 The original Save recipe rejection remains separately unassigned.
 
+### C63 native gradient Add and drag-off Delete
+
+Both roles pass gradient Add at an empty bar position and deletion by dragging
+an existing knob off the bar. Each creates one synchronized transaction and
+preserves all other nodes. Only heightB6929C92 and colorB6929C93 change, adding
+or removing one pair at the same array index. Checked Undo/Redo/Undo restores
+each participant's complete native SHA and semantic SHA, and the visible knob
+returns/disappears at the expected location. Host Add R116 to120, guest Add
+R120 to124, host Delete R124 to128 and guest Delete R128 to132 pass with zero
+faults. Evidence: `out/preview9-c63-gradient-empty-bar-click`,
+`preview9-c63-gradient-add-history`, `preview9-c63-gradient-add-guest`,
+`preview9-c63-gradient-delete-host-r2` and `preview9-c63-gradient-delete-guest`.
+
+The earlier generic Delete-button probe finds no such Adventure UI control and
+stops without an authored change. Native EE9E10/EEA1F0 use the off-bar flag50 and
+deleted flag2C for the real drag-off route. A point-color picker procedure has
+not yet produced an edit; its attempts preserve R132. Read-only observation
+confirms selected ColorUI24 matches the current node's color window14, so a
+stale selected-node binding is not established. The picker procedure remains
+unqualified. No process memory is written or native setter invoked by fixtures.
+
+Both C63 games return normally to Galaxy with zero faults at durableR132:
+`out/preview9-c63-r132-retirement/result.json`. C65 is deployed only to the
+private installation and freshly recovers those exact Planet fields on both
+peers. The testing installation and deferred release gates are unchanged.
+
+### C65/C66 native stamp Delete and synchronous rebuild
+
+Both-role Effect Delete passes in C65, including one history entry and exact
+complete-native/semantic Undo/Redo/Undo restoration: host135-138, guest141-144.
+The earlier first cold-run author/observer native SHA difference is retained;
+Planet and semantic values restore exactly, but own raw SHA acceptance is not
+claimed for those first attempts. Evidence: `out/preview9-c65-terrain-host-effect-delete-r2`
+and `out/preview9-c65-terrain-guest-effect-delete-r3`.
+
+Actual Model Delete atR144 exposes BUG-0482: native Remove compacts transform
+arrays and synchronously materializes proxies before returning. The adapter
+previously marked the removed index fresh and shifted it afterward, allowing
+the unchanged successor to acquire a false authored provenance. Both peers
+freeze before acceptance with no native faults, preserving durableR144.
+Closed six/four-file recovery copies retain exact hashes. C66 validates the
+current row, retains before-history witnesses and shifts existing fresh indices
+before entering native Remove. It preserves ambiguous-source rejection.
+
+Controlled strict-i686/O1 RED reproduces the stale fresh mark. GREEN passes
+73,437 materialization checks, existing Delete216/drag195 and the full native
+adapter154,118 checks. Exact original-executable ABI118 verification includes
+the synchronous Remove call. Fresh C66 recovery restoresR144. Host Model
+Delete147/Undo148/Redo149/Undo150 and guest151-154 pass, changing only the two
+Model columns and retaining all other records. Each operation creates one
+history item, both peers converge and complete native/semantic restoration is
+exact. The first host145/146 run also deletes and restores the exact Planet and
+semantic values; its stricter own raw SHA assertion encounters the same cold
+host pre-image difference. Its failure remains retained.
+
+Evidence: `out/editor-preview9-terrain-remove/receipt.json`,
+`out/preview9-c66-terrain-host-model-delete-r2`,
+`out/preview9-c66-terrain-guest-model-delete-r2` and
+`out/preview9-c65-model-delete-closed/receipt.json`. C66 retains323 production
+inputs with zero drift. It changes only the private installation; the personal
+preview and deferred release gates remain unchanged.
+
 ### C60 actual native placement boundary
 
 The exact generated4,095-placement/118-class/five-act private fixture cold-opens

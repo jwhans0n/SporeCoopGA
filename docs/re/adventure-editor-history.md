@@ -2493,3 +2493,79 @@ zoom, so ownership failure is not yet established for its actual producer.
 BUG-0479 tracks qualification of actions6/11 and the adapter's missing pending
 retention for those actions. Evidence:
 `out/preview9-c63-terrain-first-action-failures/result.json`.
+
+## C65 native Delete and presentation-reset interruption (2026-11-04, feat/ga-editor-multi-act)
+<a id="editor-c65-delete-and-reset"></a>
+
+Actual host first Delete now commits atR133. UndoR134 restores every Planet
+field and the exact original semantic document. Both peers then have the
+observer's exact pre-edit native SHA. The author's earlier raw pre-image had a
+different SHA, but no Planet or semantic difference; its origin is unassigned.
+Reselecting the same Effect after Undo does not reproduce that byte difference
+(`out/preview9-c65-delete-selection-byte-audit`). A complete host repeat then
+passes Delete135/Undo136/Redo137/Undo138, exact native/semantic image restoration
+on both participants, one history item and zero faults.
+
+A guest selection probe subsequently stops before deletion. Both watchdogs
+report no frames for30s at00:15:58/59. Their sampled main threads wait beneath
+d3d9 presentation reset, and both fault counters remain zero. BUG-0481 records
+the unassigned rendering interruption; this is not evidence of an editor
+transaction failure. The two owned private processes are retired only after
+reports/logs/archives are copied. The first live recovery copy encounters the
+exclusive project.lock; closed copies verify all six/four files before/after
+copying. Fresh unchanged C65 processes recover R138 exactly on both peers.
+
+Evidence: `out/preview9-c65-terrain-host-effect-delete-r2`,
+`out/preview9-c65-delete-undo-diff`,
+`out/preview9-c65-presentation-hang-preserved`,
+`out/preview9-c65-presentation-hang-closed/receipt.json` and
+`out/preview9-c65-r2-recover-baseline-c/result.json`. Guest and Model Delete
+qualification resumes after that fresh recovery. Personal installation and
+deferred release gates are unchanged.
+
+
+## Terraform Remove rebuilds before returning (2026-11-04, feat/ga-editor-multi-act)
+<a id="editor-terrain-remove-synchronous"></a>
+
+CORRECTION (2026-11-04): removal is not an authored Update of its old index.
+F37FF0 compacts model transforms atF3805F and Effect transforms atF3809E through
+F33870, using Transform assignment and its destination counter. It calls
+F35E10 synchronously atF381AD, before ret4 atF381C9. The old adapter marked the
+deleted row fresh and only shifted that set after native return. Its synchronous
+observer could therefore assign the successor a new authored source. Actual C65
+host Model64 Delete freezes both peers at durableR144 with ambiguous import
+provenance and zero native faults (BUG-0482). The failed command and both frozen
+logs/images are retained in `out/preview9-c65-terrain-host-model-delete-r3` and
+`out/preview9-c65-model-delete-frozen`. A normal leave waits for unavailable
+native readiness; the exact owned private processes are then retired by their
+runner. Closed recovery copies preserve all six/four files and hashes atR144:
+`out/preview9-c65-model-delete-closed/receipt.json`.
+
+Remove now validates the current bounded descriptor without Update's fresh mark
+or witness retirement, shifts existing fresh indices before native entry, and
+keeps old payload proofs for deferred before-history capture. No ambiguous
+source is preferred and no float tolerance is accepted. Strict-i686/O1 RED
+fails the native-entry fresh-mark assertion; GREEN passes73,437 focused checks,
+including synchronous first/middle/final removal of both kinds and exact old
+and surviving authored normalization. Existing Delete216, drag195 and the full
+adapter154,118 checks pass. Evidence:
+`out/preview9-terrain-remove-red-r3`, `out/preview9-terrain-remove-green`.
+Actual corrected-native Model Delete remains pending.
+
+Native proxy position readers are confirmed: GameData QueryInterface01186577
+returns this+34; its vt2C returns position at interface+4 (actor+38). Terraform
+icons float above that ground origin. Model64 at the current view is selected
+by the visible Cube at344,213; clicking its projected ground origin355,260
+misses. Selection checks stopped all earlier wrong picks before Delete.
+
+
+Actual C66 acceptance (2026-11-04): fresh recovery restoresR144. Host Model64
+Delete147/Undo148/Redo149/Undo150 and guest151-154 pass exact complete native
+and semantic restoration, one history entry, only two Model columns changed
+and zero faults. Evidence: `out/editor-preview9-terrain-remove/receipt.json`.
+The first corrected host145/146 attempt restores Planet/semantic values but
+fails its own raw SHA assertion on the previously recorded cold-host pre-image
+difference. Incorrect physical picks stop before Delete. The verifier is run
+without --check-map/--write-map because its118-entry generated subset is not
+the full166-entry manual map; the initial subset comparison reports a mismatch
+without changing any bindings. Full ABI118 verification then passes.

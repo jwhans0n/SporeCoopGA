@@ -489,3 +489,6 @@ not-reproduced, game-bug (Spore itself), wontfix, duplicate.
 | [BUG-0477](BUG-0477-recovered-editor-retains-failed-save-publication.md) | fixed | bug | GA shared editor | 2026-11-03 | 0.7.5.0-ga-editor-preview.9 (private C63) | Recovered editor retains failed Save publication hold |
 | [BUG-0478](BUG-0478-first-terraform-delete-loses-selection-while-acq.md) | open | bug | GA shared editor | 2026-11-03 |  | First Terraform Delete loses selection while acquiring ownership |
 | [BUG-0479](BUG-0479-first-terraform-clone-and-wheel-input-is-dropped.md) | open | bug | GA shared editor | 2026-11-03 |  | First Terraform clone and wheel input is dropped pending ownership |
+| [BUG-0480](BUG-0480-virtual-wheel-messages-omit-held-modifier-flags.md) | open | tooling | Win32 native fixtures | 2026-11-04 |  | Virtual wheel messages omit held modifier flags |
+| [BUG-0481](BUG-0481-two-hidden-native-games-hang-in-presentation-res.md) | open | freeze | Win32 lab rendering | 2026-11-04 |  | Two hidden native games hang in presentation reset |
+| [BUG-0482](BUG-0482-model-stamp-deletion-freezes-on-ambiguous-terrai.md) | open | bug | GA shared editor | 2026-11-04 |  | Model stamp deletion freezes on ambiguous terrain import provenance |

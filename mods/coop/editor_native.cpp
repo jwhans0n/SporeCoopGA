@@ -2813,20 +2813,26 @@ void SK_CDECL drain_terrain(void*){
 }
 void SK_THISCALL terrain_remove(void* self,void* actor){
     if(!applying && active() && (!terrain_gate_record(actor) || !terrain_begin(self)))return;
-    std::optional<std::pair<editor::TerrainKind,uint32_t>> removed;
     if(!applying && active()){
+        if(self!=terraform_mode())return;
+        prepare_materialization_owner(self);
         void* descriptor=actor&&a_terrain_selection?skg::thiscall<void*>(a_terrain_selection,self,actor):nullptr;
-        if(!authored_terrain_record(descriptor))return;
+        if(!skg::readable(descriptor,16) || skg::field<void*>(descriptor,0)!=actor)return;
         void* definition=skg::field<void*>(descriptor,4);
-        removed={{skg::field<bool>(definition,0x68)?editor::TerrainKind::Model:editor::TerrainKind::Effect,skg::field<uint32_t>(descriptor,8)}};
-    }
-    original_terrain_remove(self,actor);
-    if(removed){
-        auto& changed=terrain_authored_rows[size_t(removed->first)];changed.erase(removed->second);
+        if(!skg::readable(definition,0x69))return;
+        const auto kind=skg::field<bool>(definition,0x68)?editor::TerrainKind::Model:editor::TerrainKind::Effect;
+        const auto index=skg::field<uint32_t>(descriptor,8);Rows keys;
+        if(!rows(self,kind==editor::TerrainKind::Effect?0x14:0xA0,12,editor_native_terrain::kRecipeLimit,keys) ||
+           index>=size_t(keys.end-keys.begin)/12)return;
+        // F37FF0 compacts through Transform assignment, then synchronously
+        // calls F35E10. Deletion authors no surviving row: retain its old
+        // before-history witness and shift existing fresh marks BEFORE entry.
+        auto& changed=terrain_authored_rows[size_t(kind)];changed.erase(index);
         std::set<size_t> shifted;
-        while(!changed.empty()){auto node=changed.extract(changed.begin());if(node.value()>removed->second)--node.value();shifted.insert(std::move(node));}
+        while(!changed.empty()){auto node=changed.extract(changed.begin());if(node.value()>index)--node.value();shifted.insert(std::move(node));}
         changed=std::move(shifted);
     }
+    original_terrain_remove(self,actor);
 }
 void SK_THISCALL terrain_update(void* self,bool final){
     if(!applying && active()){
