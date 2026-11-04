@@ -190,14 +190,16 @@ struct Controller::Impl {
     }
     void refresh_complexity(){
         bool ready=false;
+        const bool current=local_complexity&&local_complexity->available&&
+            local_complexity->policy==kComplexityPolicy&&complexity_claim_serial;
         if(hosting){
-            ready=local_complexity&&local_complexity->available&&complexity_claim_serial;
+            ready=current;
             for(const auto& [slot,member]:view.members)if(complexity_member(member)){
                 (void)slot;
                 if(!member.complexity||!member.complexity_serial||!member.complexity->available||
                    !local_complexity||*member.complexity!=*local_complexity)ready=false;
             }
-        }else if(remote_complexity&&local_complexity&&local_complexity->available&&complexity_claim_serial){
+        }else if(remote_complexity&&current){
             const auto& cohort=*remote_complexity;
             ready=cohort.ready&&cohort.host==*local_complexity;
             const auto own=std::find_if(cohort.members.begin(),cohort.members.end(),[&](const w::ComplexityAck& a){return a.peer==view.local;});

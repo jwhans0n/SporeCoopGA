@@ -13,7 +13,45 @@ static bool complexity_ready(const Party& p){
     for(unsigned n=0;n<p.count;++n)if(!p.controllers[n]->view().complexity_ready)return false;
     return true;
 }
+static void test_complexity_legacy_policy(){
+    const auto current=complexity_proof();auto legacy=current;legacy.policy=kLegacyComplexityPolicy;
+    CHECK(valid_complexity(legacy)&&legacy!=current);
+    // These are current-transport clients advertising legacy proof values,
+    // not older executables (which the transport handshake rejects).
+    for(unsigned legacy_roles=1;legacy_roles<=3;++legacy_roles){
+        Party p(2);std::string e;
+        for(unsigned n=0;n<2;++n)CHECK(p.controllers[n]->set_complexity_capability(legacy_roles&(1u<<n)?legacy:current,e));
+        p.start(complexity_seed());p.accept();CHECK(!complexity_ready(p));
+        for(unsigned n=0;n<2;++n)CHECK(p.controllers[n]->view().phase==es::Phase::Ready&&!p.controllers[n]->view().complexity_ready);
+        const auto unrelated=p.controllers[0]->state().document.placements.at(object_b);
+        const auto placement=p.grant(1,{ScopeKind::Placement,object_a,{}});
+        CHECK(p.controllers[1]->submit(p.edit(1,object_a,position,Vec3{71,2,3},placement),e));
+        CHECK(p.revision(1));p.release(1,placement);
+        const FieldKey enabled{Field::Property,kComplexityProperty};
+        const auto field=p.grant(0,{ScopeKind::Field,kComplexityProjectObject,enabled});
+        const auto before=p.controllers[0]->state().document;
+        const auto decisions=p.native[0].decisions,commits=p.native[0].commits,persists=p.native[0].persists;
+        CHECK(p.controllers[0]->submit(p.edit(0,kComplexityProjectObject,enabled,true,field),e));
+        CHECK(p.spin([&]{return p.native[0].decisions>decisions;}));
+        CHECK(p.controllers[0]->state().document==before&&p.native[0].commits==commits&&p.native[0].persists==persists);
+        // Even matching legacy1 on every participant cannot become Ready.
+        for(unsigned n=0;n<2;++n)CHECK(p.controllers[n]->set_complexity_capability(legacy,e));
+        for(unsigned n=0;n<20;++n)p.step();CHECK(!complexity_ready(p));
+        for(unsigned n=0;n<2;++n)CHECK(p.controllers[n]->set_complexity_capability(current,e));
+        CHECK(p.spin([&]{return complexity_ready(p);}));
+        CHECK(p.controllers[0]->submit(p.edit(0,kComplexityProjectObject,enabled,true,field),e));
+        CHECK(p.revision(2)&&extended_complexity(p.controllers[0]->state().document));
+        for(unsigned n=0;n<2;++n)CHECK(p.controllers[n]->set_complexity_capability(legacy_roles&(1u<<n)?legacy:current,e));
+        CHECK(p.spin([&]{return !p.controllers[0]->view().complexity_ready&&!p.controllers[1]->view().complexity_ready;}));
+        // The exact singleton false escape still works under a retired proof.
+        CHECK(p.controllers[0]->submit(p.edit(0,kComplexityProjectObject,enabled,false,field),e));
+        CHECK(p.revision(3)&&!extended_complexity(p.controllers[0]->state().document));
+        for(unsigned n=0;n<2;++n)CHECK(p.controllers[n]->view().phase==es::Phase::Ready&&
+            p.controllers[n]->state().document.placements.at(object_b)==unrelated);
+    }
+}
 static void test_complexity_cohort(unsigned players){
+    if(players==2)test_complexity_legacy_policy();
     Party p(players);std::string e;const auto proof=complexity_proof();
     for(unsigned n=0;n<players;++n){auto v=proof;if(n==1)v.words[0]=std::bit_cast<uint32_t>(2.0f);
         CHECK(p.controllers[n]->set_complexity_capability(v,e));}

@@ -5,7 +5,9 @@
 #include <cmath>
 
 namespace editor {
-inline constexpr uint32_t kComplexityPolicy=1,kComplexityFormula=0xDC04DB80;
+// Policy2 includes stable marker-arena capacity before Native actor binding.
+// Legacy1 remains a decodable value, never current Extended authority.
+inline constexpr uint32_t kLegacyComplexityPolicy=1,kComplexityPolicy=2,kComplexityFormula=0xDC04DB80;
 inline constexpr ObjectId kComplexityProjectObject{12ull<<32,1};
 inline constexpr uint32_t kComplexityProperty=0x434F4D50;
 enum class ComplexityReason:uint8_t {None,Unavailable,CodeConflict,InvalidTuning,Changed};
@@ -17,7 +19,8 @@ struct ComplexityCapability {
     bool operator==(const ComplexityCapability&)const=default;
 };
 inline bool valid_complexity(const ComplexityCapability& value){
-    if(value.policy!=kComplexityPolicy||value.formula!=kComplexityFormula||value.reason>ComplexityReason::Changed)return false;
+    if((value.policy!=kLegacyComplexityPolicy&&value.policy!=kComplexityPolicy)||
+       value.formula!=kComplexityFormula||value.reason>ComplexityReason::Changed)return false;
     if(!value.available)return value.reason!=ComplexityReason::None&&value.words==std::array<uint32_t,13>{};
     if(value.reason!=ComplexityReason::None)return false;
     for(size_t n=0;n<value.words.size();++n){

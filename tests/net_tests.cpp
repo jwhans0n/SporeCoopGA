@@ -411,7 +411,7 @@ static void test_session_end_in_delivery()
 static void test_protocol_versions()
 {
     printf("merged protocol boundary and HELLO version validation\n");
-    CHECK(kProtoVersion == 24 && kDiscoverPorts == 20);
+    CHECK(kProtoVersion == 25 && kDiscoverPorts == 20);
     CHECK(MSG_SPACE == 48 && MSG_ADVENTURE == 61 && MSG_EDITOR == 62 && MSG_NEST == 52 && MSG_PARTS == 53 && MSG_DIAG == 60);
     Session host;
     std::string err;
@@ -423,7 +423,7 @@ static void test_protocol_versions()
     Connection guest;
     guest.conn_id = 0x12345678;
     Hello old;
-    old.proto = 23;
+    old.proto = 24;
     old.name = "old-version";
     Writer hello;
     old.write(hello);
@@ -431,14 +431,14 @@ static void test_protocol_versions()
     std::vector<uint8_t> packet;
     CHECK(guest.build_packet(1000, packet));
     CHECK(Connection::looks_valid(packet.data(), packet.size()));
-    auto upstream = packet;
-    upstream[4] = 18;
-    upstream[5] = 0;
-    CHECK(!Connection::looks_valid(upstream.data(), upstream.size()));
     bool delivered = false;
     Connection receiver;
-    CHECK(!receiver.on_packet(upstream.data(), upstream.size(), 1000,
-                             [&](uint8_t, Reader&) { delivered = true; }));
+    for(const uint16_t version:{uint16_t(23),uint16_t(24)}){
+        auto upstream=packet;upstream[4]=uint8_t(version);upstream[5]=uint8_t(version>>8);
+        CHECK(!Connection::looks_valid(upstream.data(),upstream.size()));
+        CHECK(!receiver.on_packet(upstream.data(),upstream.size(),1000,
+                                 [&](uint8_t,Reader&){delivered=true;}));
+    }
     CHECK(!delivered);
     // A current transport carrying an incompatible HELLO receives an explicit
     // rejection. Older transport headers are discarded before HELLO decoding.
@@ -2472,6 +2472,9 @@ static void test_diag_conn_stats()
 
 int main(int argc, char** argv)
 {
+    if(argc==2&&std::string(argv[1])=="--protocol-only"){
+        test_protocol_versions();std::printf(g_fail?"FAILED (%d)\n":"ALL OK\n",g_fail);return g_fail?1:0;
+    }
     if (argc == 2 && std::string(argv[1]) == "--fakepeer-host")
         return fakepeer_host();
     // `--off <name>[,<name>]`: one wave 5 switch off (its test must fail), the rest on

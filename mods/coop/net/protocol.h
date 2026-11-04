@@ -12,7 +12,7 @@
 namespace net {
 
 constexpr uint32_t kMagic = 0x4F435053; // 'SPCO'
-constexpr uint16_t kProtoVersion = 24; // 3: shared resources; 4: lobby/discovery; 5: 128-packet acks;
+constexpr uint16_t kProtoVersion = 25; // 3: shared resources; 4: lobby/discovery; 5: 128-packet acks;
                                       // 6: connection id/BYE; 7: upstream Space features and GA runs;
                                       // 8: GA preparation; 9: party flow/captain identity;
                                       // 10: static state, interactions and teleport generations;
@@ -29,6 +29,7 @@ constexpr uint16_t kProtoVersion = 24; // 3: shared resources; 4: lobby/discover
                                       // 21: act/captain authoring and an immutable group test starting act
                                       // 22: host-authoritative NPC teleports and actor movement generations
                                       // 24: upstream nest/parts IDs retained, adventure/editor moved to 61/62;
+                                      // 25: Extended Complexity policy2 with stable Native marker arenas;
                                       // 23: crew, procedural terrain, immutable assets and independent editors
 constexpr uint16_t kDefaultPort = 47810;
 constexpr int kMaxPlayers = 4; // host + 3 guests (Spore pack size)

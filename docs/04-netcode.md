@@ -4,11 +4,19 @@
 <a id="netcode-protocol-scope"></a>
 
 The installed C49 shared-editor preview 9 build uses protocol **23**. The source
-being integrated with upstream 0.7.3.6 is a separate, **uninstalled protocol 24
-candidate**; it must reject protocol 23 peers. Upstream owns top-level
+being integrated with upstream 0.7.3.6 is a separate, **uninstalled protocol 25
+candidate**; it rejects protocol 23 and 24 peers before editor messages. Upstream owns top-level
 `MSG_NEST=52` and `MSG_PARTS=53`, so the candidate moves `MSG_ADVENTURE` to 61 and
 `MSG_EDITOR` to 62, retaining `MSG_ACTIVITY=54` and upstream `MSG_DIAG=60`.
 All participants need the same candidate before testing it together.
+
+Protocol 25 requires Extended Complexity policy 2, whose Native adapter keeps
+marker storage stable before binding actors. Known policy-1 capability values
+remain decodable by updated clients, allowing NativeDefault edits with retired
+or mismatched capability values; they never establish an Extended cohort, even
+when every participant advertises policy 1. This is not executable compatibility
+with protocol-24 clients. The authored Saved, checkpoint and journal formats are
+unchanged; marker capacity is transient Native storage.
 
 The published GA gameplay release 0.7.4.0 uses protocol 15. Sections marked
 protocol 8, 10 or 12 below retain the historical preview contract and evidence.
@@ -46,7 +54,7 @@ it builds both as a Windows DLL and **natively on Linux** (unit tests, `fakepeer
 
 ```
 u32  magic   'SPCO'
-u16  proto   protocol version (24; uninstalled upstream-integration candidate)
+u16  proto   protocol version (25; uninstalled upstream-integration candidate)
 u32  conn    connection id: the guest picks a new random one for every join (protocol 6)
 u16  seq     packet number (for ack)
 u16  ack     last received seq

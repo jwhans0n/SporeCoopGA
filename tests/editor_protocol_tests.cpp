@@ -251,6 +251,19 @@ static void complexity_capability_codec(){
         for(size_t n=0;n<bytes.size();++n)CHECK(!read({bytes.begin(),bytes.begin()+n},decoded,from_host?host:guest,from_host));
         auto trailing=bytes;trailing.push_back(0);CHECK(!read(trailing,decoded,from_host?host:guest,from_host));
     }
+    // Known prior capability values remain data under the current transport.
+    // Session readiness, rather than structural decoding, rejects their use
+    // as authority for Extended Complexity.
+    auto legacy_claim=claim;legacy_claim.value.policy=kLegacyComplexityPolicy;
+    auto legacy_cohort=cohort;legacy_cohort.host=legacy_claim.value;
+    for(const auto& payload:std::vector<w::Payload>{legacy_claim,legacy_cohort}){
+        const bool from_host=std::holds_alternative<w::ComplexityState>(payload);
+        const auto bytes=packet({context(),payload});w::Message decoded;
+        CHECK(read(bytes,decoded,from_host?host:guest,from_host));
+        if(from_host)CHECK(std::get<w::ComplexityState>(decoded.payload)==legacy_cohort);
+        else CHECK(std::get<w::ComplexityClaim>(decoded.payload)==legacy_claim);
+    }
+    auto unknown=proof;unknown.policy=0;CHECK(!valid_complexity(unknown));
     for(unsigned n=0;n<9;++n){
         auto bad=claim;
         if(n==0)bad.serial=0;if(n==1)++bad.value.policy;if(n==2)++bad.value.formula;
