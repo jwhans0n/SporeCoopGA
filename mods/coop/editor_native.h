@@ -124,6 +124,8 @@ struct CaptureTicket {
     bool operator==(const CaptureTicket&) const = default;
 };
 enum class CaptureState {Wait,Ready,Retired};
+// Local capture classification only. This is never authored or sent on wire.
+enum class GestureDomain {Settings,Placement,Captain,Terrain};
 struct PoseSupportProof;
 struct Gesture {
     Snapshot before, after;
@@ -133,6 +135,7 @@ struct Gesture {
     // Opaque, owned values sealed only by the native producer after both the
     // genuine typed projection and exact opaque comparison have completed.
     std::shared_ptr<const PoseSupportProof> capture_proof;
+    GestureDomain domain=GestureDomain::Settings;
 };
 struct CancellationTicket {
     GestureScope scope;

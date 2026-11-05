@@ -42,3 +42,5 @@ before more input. Exact calibration evidence:
 display enumeration, not the original D3D-reset trigger.
 
 Legacy fork reference: `BUG-0481` before upstream 0.7.4 integration. Existing commits and OUT receipts retain that historical ID; upstream owns its independent ticket under that number.
+
+2026-11-05 recurrence during C75 recovery: `out/preview10-c75-presentation-hang/receipt.json` retains the instance96 watchdog report, archive and logs. Console retirement timed out; only the owned private runner stopped its processes. This run is excluded from preview10 acceptance. Fresh C76 processes subsequently recover and Save successfully.

@@ -78,7 +78,7 @@ class PreviewPackageTests(unittest.TestCase):
         self.assertEqual(result.exception.code, 2)
         self.assertFalse(self.output.exists())
 
-    def test_manifest_archive_pack_and_documents_match_preview9(self):
+    def test_manifest_archive_pack_and_documents_match_preview10(self):
         receipt = self.run_package()
         distribution = self.output / 'SporeCoopGA'
         manifest = json.loads((distribution / 'SHA256.json').read_text())

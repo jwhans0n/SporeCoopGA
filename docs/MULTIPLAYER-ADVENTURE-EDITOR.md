@@ -1,5 +1,10 @@
 # Shared Adventure Editor development guide
 
+Current private stability testing: **preview 10, protocol 26**. Captain capture,
+terrain grounding, held recovery and Native Save qualification are recorded in
+the [preview 10 report](reports/EDITOR-PREVIEW10-VALIDATION.md). All party members
+must use the same preview payload. Broader release acceptance remains deferred.
+
 The editor implementation is under validation. It is separate from the published
 0.7.4.0 GA gameplay release. Do not treat passing portable tests as acceptance of
 the native editor or install this development build over an active game.

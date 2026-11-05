@@ -1638,3 +1638,30 @@ report. `compare(saved,cold)` returns a compact report or raises ValueError.
 Focused tests use the genuine C46 pair plus controlled decoded/prefix mutations;
 the latter are not claimed as newly generated genuine NativeWrite artifacts.
 This comparator grants no Native admission, cache or projection authority.
+
+## Captain grounding across native Save (2026-11-05, feat/ga-editor-multi-act)
+<a id="editor-save-captain-grounding-preview10"></a>
+
+Native Save exports the grounded special Captain marker and rotates the local
+resource identity. A normal live-scene witness cannot be reused against the old
+source. C73 reaches native saved confirmation, then correctly refuses shared
+publication because property43415003 differs from the committed Captain pose.
+The durable draft remains at revision299; no successful SavedApplied is claimed.
+C74 also preserves the checkpoint when the normal projection scope is unavailable
+during recovery. These are BUG-0541 evidence, separate from BUG-0538.
+
+The local terrain transition ticket now retains the exact Captain position
+witness alongside placement witnesses. Saved-image normalization requires the
+completed Save receipt, exact source and current scene; private Read/Write must
+round-trip the original bytes. Only XYZ equal to the retained authored or
+rendered value can normalize. Restore all temporary private writes, verify the
+entire original stream again, release native owners, and close the current
+fence before publishing normalized bytes. Unexpected pose, appearance, health
+or other fields remain subject to full committed-document validation.
+
+After that validation, rebind the live witness to the receipt's exact new owner
+only if marker, native generation, Captain revision, scope and primitive pose
+still match. This is read evidence during the existing hold, not ownership or a
+new saved field. The recovery/Save read scope uses the existing transition key
+and fenced callback; ordinary authoring scope stays unavailable. The cold
+Saved-versus-reopened payload comparison tracked by BUG-0538 is unchanged.

@@ -406,3 +406,4 @@ SporeCoop::Player_GetProperty ; BUG-0508: on GOG 2016 the migration state is unk
 SporeCoop::AbilityBar_Use ; BUG-0518: a guest's click on the social ability button plays no social game (keys 1-4 only, as before)
 SporeCoop::GameSettings_Build ; BUG-0506: on GOG 2016 the missing save area guard is off (game.save_areas has no effect there)
 SporeCoop::SaveAreas_Init ; BUG-0506: on GOG 2016 the missing save area guard is off (game.save_areas has no effect there)
+SporeCoop::Editor::GroundScene ; BUG-0541: shared terrain captain grounding observation is GOG 2024 only; the shared Terraform adapter remains unavailable on the frozen GOG 2016 build

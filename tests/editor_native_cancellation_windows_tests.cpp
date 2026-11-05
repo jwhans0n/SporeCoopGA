@@ -205,6 +205,7 @@ void native_cancel(void* entry=nullptr){
 }
 void begin(){start(t_data.data());CHECK(!t_allocations.empty());CHECK(gesture_serial!=0);}
 void reset(){
+    captain_grounding.reset();++captain_grounding_serial;
     marker_capacity_retire();marker_capacity_hook_installed=marker_capacity_profile_pinned=false;
     held_planet_preset.reset();t_planet_main=nullptr;t_planet_parent={};t_planet_visible={};
     t_game_mode_callback={};
@@ -305,6 +306,34 @@ void test_pending_press(){
         t_granted=true;continue_input(nullptr);
         CHECK(!held_tool&&!t_steps&&value(t_live.data(),0)==1);
         CHECK(t_finishes==(kind==3?0u:1u));
+    }
+    reset();
+}
+void test_captain_drag_capture_domain(){
+    for(bool granted:{false,true}){
+        reset();C.authoring_tracked=[]{return true;};
+        skg::field<void*>(t_data.data(),0x8C)=t_rows[t_live.data()].data()+4;
+        C.gate=[](const auto& ids){CHECK(ids==std::vector<editor::ObjectId>{kCaptainObject});return t_granted;};
+        t_granted=granted;
+        CHECK(tool_native(t_tool_pointer,1,17,23)==1);
+        CHECK(state().gesture);
+        if(!granted){
+            CHECK(held_tool&&held_tool->object==kCaptainObject&&!t_steps);
+            CHECK(tool_native(t_tool_pointer,0,0,0)==1&&held_tool->released);
+            continue_input(nullptr);CHECK(held_tool&&!t_steps&&!t_finishes);
+            t_granted=true;continue_input(nullptr);
+            CHECK(!held_tool&&t_presses==1&&t_ticks==2&&t_steps==1&&t_finishes==1);
+        }else{
+            tick_tools(t_tool_pointer);
+            CHECK(tool_native(t_tool_pointer,0,0,0)==1&&t_steps==1&&t_finishes==1);
+        }
+        // The minimal native finalizer double closes history without Commit.
+        // Exercise the production Commit hook with that original entry.
+        skg::field<uint8_t>(t_history.data(),0x20)=0;commit(t_data.data());
+        CHECK(pending.size()==1);
+        // Captain movement belongs to Settings, never placement-only staging.
+        CHECK(!pending.front().pose_candidate);
+        CHECK(pending.front().domain==GestureDomain::Captain);
     }
     reset();
 }
@@ -1801,7 +1830,21 @@ static void test_exact_validation_cache_and_owned_pose_prepare(){
 #include "editor_native_service_pulse_fixture.h"
 #include "editor_native_clone_input_fixture.h"
 #include "editor_native_planet_preset_fixture.h"
+#include "editor_native_captain_grounding_fixture.h"
 int main(int argc,char** argv){
+    if(argc==2&&std::string(argv[1])=="--captain-grounding-held-only"){
+        captain_grounding_fixture::held();std::printf("native held captain grounding: %u checks passed\n",checks);return 0;
+    }
+    if(argc==2&&std::string(argv[1])=="--captain-grounding-saved-only"){
+        captain_grounding_fixture::saved();std::printf("native saved captain grounding: %u checks passed\n",checks);return 0;
+    }
+    if(argc==2&&std::string(argv[1])=="--captain-grounding-only"){
+        captain_grounding_fixture::test();std::printf("native captain grounding: %u checks passed\n",checks);return 0;
+    }
+    if(argc==2&&std::string(argv[1])=="--captain-drag-only"){
+        test_captain_drag_capture_domain();test_pending_press();
+        std::printf("native captain drag domain: %u checks passed\n",checks);return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--terrain-delete-only"){
         test_terrain_pending_delete();std::printf("native Terraform Delete: %u checks passed\n",checks);return 0;
     }
@@ -1965,6 +2008,10 @@ int main(int argc,char** argv){
     continue_input(nullptr);CHECK(held_import && held_import->size()==1);
     ++t_scope.author.generation;continue_input(nullptr);CHECK(!held_import);
     test_pending_press();
+    test_captain_drag_capture_domain();
+    captain_grounding_fixture::test();
+    captain_grounding_fixture::saved();
+    captain_grounding_fixture::held();
     test_card_action_scope();
     test_cast_actor_rebuild_keeps_marker_identity();
     test_script_cast_callback_keeps_bindings();

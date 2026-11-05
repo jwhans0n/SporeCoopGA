@@ -7,6 +7,7 @@ struct TerrainTransitionProof {
     // Exact pre-transition live slots and rendered/authored XYZ. A recovery
     // preparation has no such readback until its settled refresh captures it.
     std::optional<std::vector<CreationTerrainProof::Placement>> placements;
+    std::optional<CaptainGrounding> captain;
     bool canonical_grounding=false; // Issued only around explicit canonical Load/Rebuild.
     std::optional<Snapshot::Metadata> grounding_metadata;
     size_t owned_bytes=0;
@@ -128,6 +129,18 @@ bool make_transition_ticket(const TerrainTransitionKey& key,uintptr_t tool,const
     }
     auto result=std::make_shared<TerrainTransitionProof>();result->key=key;result->tool=tool;result->entry=entry;
     result->rendered=raw;result->materialization=values;result->placements=std::move(placements);
+    if(auto captain=current_captain_grounding(&key)){
+        const auto settings=entry.document.settings.find(kCaptainObject);
+        if(settings!=entry.document.settings.end()){
+            const auto& properties=settings->second.properties;
+            const auto position=properties.find(kCaptainPositionProperty),rotation=properties.find(kCaptainRotationProperty),scale=properties.find(kCaptainScaleProperty);
+            if(position!=properties.end()&&rotation!=properties.end()&&scale!=properties.end()&&
+               std::get_if<editor::Vec3>(&position->second)&&std::get_if<editor::Rotation>(&rotation->second)&&std::get_if<float>(&scale->second)&&
+               captain_exact(std::get<editor::Vec3>(position->second),captain->authored.position)&&
+               captain_exact(std::get<editor::Rotation>(rotation->second),captain->authored.rotation)&&
+               captain_exact(std::get<float>(scale->second),captain->authored.scale))result->captain=*captain;
+        }
+    }
     result->owned_bytes=charged;out=std::move(result);return true;
 }
 bool transition_observation_matches(const Snapshot& expected,const Snapshot& observed,const TerrainTransitionCurrent& current,std::string& error){
@@ -222,12 +235,21 @@ bool normalize_transition_grounding(const TerrainTransitionProof& proof,Snapshot
                                     const std::function<bool()>& current,std::string& error){
     if(!proof.placements){error="The native Save has no retained placement grounding roster";return false;}
     if(image.bindings!=proof.entry.bindings){error="The native Save placement bindings changed";return false;}
-    if(std::none_of(proof.placements->begin(),proof.placements->end(),[](const auto& row){return row.grounded;}))return true;
+    if(!proof.captain&&std::none_of(proof.placements->begin(),proof.placements->end(),[](const auto& row){return row.grounded;}))return true;
     Owned owned(parse(image.bytes,error));if(!owned.p)return false;
     if(!current()){error="The native Save grounding owner expired during Read";return false;}
     std::vector<uint8_t> roundtrip;
     if(!serialize(owned.p,roundtrip,error))return false;
     if(!current() || roundtrip!=image.bytes){error="The native Save grounding Read changed its exact serialized image";return false;}
+    std::optional<editor::Vec3> captain_position;
+    if(proof.captain){
+        auto captain=*proof.captain;
+        // The completed Save receipt already pins the external new root.
+        // A private Read's internal resource key is not its factory identity.
+        captain.owner.source=skg::field<editor::ResourceKey>(owned.p,8);
+        if(!captain_resource_matches(owned.p,captain)){error="The persisted Captain pose has no exact retained grounding witness";return false;}
+        captain_position=skg::field<editor::Vec3>(owned.p,0x150);
+    }
     struct Position {uint32_t dense=0,class_index=0,native_key=0;editor::Vec3 original,authored;};
     std::vector<Position> positions;positions.reserve(proof.placements->size());
     std::map<editor::ObjectId,uint32_t> dense;
@@ -255,6 +277,7 @@ bool normalize_transition_grounding(const TerrainTransitionProof& proof,Snapshot
         positions.push_back({binding->second,row.class_index,UINT32_MAX,actual,row.authored});
     }
     const auto unchanged=[&]{
+        if(captain_position&&!captain_exact(skg::field<editor::Vec3>(owned.p,0x150),*captain_position))return false;
         Rows actual;if(!rows(owned.p,0x2C10,0x238,kPlacementLimit,actual))return false;
         size_t count=0;for(auto* raw=actual.begin;raw!=actual.end;raw+=0x238)if(live_slot(raw))++count;
         if(count!=positions.size())return false;
@@ -268,13 +291,16 @@ bool normalize_transition_grounding(const TerrainTransitionProof& proof,Snapshot
     // first primitive write, including exceptional NativeWrite exits.
     struct RestorePositions {
         void* resource;const std::vector<Position>& positions;bool active=true;
+        std::optional<editor::Vec3> captain;
         void restore() noexcept {if(!active)return;active=false;for(const auto& row:positions)
             if(!exact_grounding_position(row.original,row.authored))
-                if(auto* marker=marker_for_key(resource,row.dense))skg::field<editor::Vec3>(marker,4)=row.original;}
+                if(auto* marker=marker_for_key(resource,row.dense))skg::field<editor::Vec3>(marker,4)=row.original;
+            if(captain)skg::field<editor::Vec3>(resource,0x150)=*captain;}
         ~RestorePositions(){restore();}
-    } restore{owned.p,positions};
+    } restore{owned.p,positions,true,captain_position};
     for(const auto& row:positions)if(!exact_grounding_position(row.original,row.authored))
         skg::field<editor::Vec3>(marker_for_key(owned.p,row.dense),4)=row.authored;
+    if(captain_position)skg::field<editor::Vec3>(owned.p,0x150)=proof.captain->authored.position;
     std::vector<uint8_t> normalized;
     if(!serialize(owned.p,normalized,error))return false;
     if(!current()){error="The native Save grounding owner expired during Write";return false;}
@@ -371,6 +397,15 @@ bool normalize_saved_terrain(const TerrainTransitionTicket& supplied_ticket,cons
         candidate.document=expected.document;
         if(!retained() || !materialization_recipe(terraform_mode(),live,error) || live!=ticket->rendered){
             error="The native Save terrain owner changed during readback";return false;
+        }
+        if(ticket->captain){
+            auto captain=*ticket->captain;
+            captain.owner=receipt.after.owner;captain.scope=receipt.after.scope;captain.generation=receipt.after.generation;
+            captain.serial=captain_grounding_serial;
+            if(!captain_grounding_at(captain,receipt.after)||!retained()){
+                error="The completed Save Captain grounding no longer owns its exact scene";return false;
+            }
+            captain_grounding=captain;
         }
         ticket->saved=receipt;saved=std::move(candidate);error.clear();return true;
     }catch(...){error="Cannot normalize the owned native Save terrain record";return false;}

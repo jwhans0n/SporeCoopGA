@@ -549,3 +549,5 @@ not-reproduced, game-bug (Spore itself), wontfix, duplicate.
 | [BUG-0537](BUG-0537-native-save-after-terraform-edits-freezes-shared.md) | fixed | bug | GA shared editor | 2026-11-04 | unreleased | Native Save after Terraform edits freezes shared checkpoint on recipe transition |
 | [BUG-0538](BUG-0538-cold-native-reopen-of-terraformed-save-changes-d.md) | open | bug | GA shared editor | 2026-11-04 |  | Cold native reopen of terraformed Save changes decoded authored bytes |
 | [BUG-0539](BUG-0539-fake-peer-omits-current-playerstate-scale-and-ad.md) | fixed | tooling | Network | 2026-11-04 | unreleased | Fake peer omits current PlayerState scale and adventure identity tail |
+| [BUG-0540](BUG-0540-captain-drag-is-rejected-by-placement-only-stage.md) | fixed | desync | GA shared editor | 2026-11-04 | 0.7.5.0-ga-editor-preview.10 (private testing) | Captain drag is rejected by placement-only staged capture |
+| [BUG-0541](BUG-0541-terraform-gesture-changes-unowned-settings-and-f.md) | fixed | desync | GA shared editor | 2026-11-04 | 0.7.5.0-ga-editor-preview.10 (private testing) | Terraform gesture changes unowned settings and fails canonical restoration |

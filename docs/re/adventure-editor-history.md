@@ -2775,3 +2775,66 @@ record retained, exact authored root payloads/history and zero faults:
 `out/preview9-c70-ocean-native-save`. Both games return normally to Galaxy at278
 before private runner retirement. This does not qualify the separately rejected
 strict cold-reopen comparison (current BUG-0538, legacy fork BUG-0487).
+
+## Captain gesture domains and grounded scene poses (2026-11-05, feat/ga-editor-multi-act)
+<a id="editor-captain-terrain-stability-preview10"></a>
+
+BUG-0540: the ordinary tool gate already requested Captain Settings ownership,
+but every pose StartHistory enrolled as a placement-only staged capture. Pin the
+local gesture domain from the original native target before StartHistory. Captain
+movement retains the general Settings transaction path. Pending press/motion/up
+continues through the existing held-input fence; no pose step runs before grant.
+
+BUG-0541: `F3E250`, `void thiscall(ScenarioData,bool)`, returns with `ret4` at
+`F3E3C8`. It also grounds the special captain marker at data+8C through F3E150
+at F3E3BF. The existing placement grounding roster excludes that marker. A real
+Raise Round Terrain stroke in the private Adventure Town draft moves its XYZ
+from (-266.4986572265625,486.2348937988281,88.08042907714844) to
+(-268.1554260253906,489.2577819824219,88.62801361083984). F3D930 exports those
+values into resource+150. Both roles then reject an unowned Captain settings
+change. Preserved RED evidence: `out/preview10-c70-terrain-under-captain/`,
+`out/preview10-c70-terrain-under-captain-poll/`. The poll stops at its bounded
+identity check during subsequent native restoration; it performs no writes.
+
+Observe the original grounding call on the game thread. Retain exact authored
+and rendered XYZ, Captain pose/identity, marker identity, scene owner, act, native
+generation, read scope and Captain record revision. Sample the native result
+before policy callbacks and close those primitive identities again afterward.
+Normalize only exact witnessed XYZ in an owned serialized copy. Other settings
+remain serialized and strictly validated. A property edit retains its position
+evidence while its changed property remains visible. An unchanged denied grab
+keeps its witness; a real pose change invalidates the old exact marker image.
+The owned BEFORE image is normalized before any native mutation can expire it.
+
+Normal projection scope is deliberately empty during recovery and Save holds.
+The existing synchronous TerrainReadIdentity and its current callback provide
+read identity there, without enabling gesture_scope or granting an editing lease.
+Transition-ticket capture can retain an exact witness against its already-checked
+key while ordinary input remains paused. Wrong scope, owner, generation, revision,
+marker, serial or unexpected pose cannot acquire normalization authority.
+
+Native history can retain the old special marker when the Captain asset is the
+same. Canonical restoration seeds that marker from the owned target and invokes
+verified F3D930 before native act selection/export can overwrite resource+150.
+The ordinary native grounding path then derives the visible pose again. This
+changes no document, checkpoint, recovery or wire fields.
+
+Controlled actual-i686 RED/GREEN runs cover domain routing, quick release before
+ownership, position grounding, unrelated fields, denied grabs, saved images and
+held read scopes. Native C72/C73 runs prove host/guest terrain and Captain
+Undo/Redo with reciprocal visible actors, beyond canonical checks. Save with
+grounding applied exposed a separate missing saved-image witness, retained in
+`out/preview10-c73-native-save-grounded-captain/`; explicit recovery retained its
+checkpoint in `out/preview10-c73-explicit-recover-after-save/`. Final payload
+qualification is tracked in the preview 10 report.
+
+Baseline loading is another read-only boundary: Controller::service_baseline
+invokes apply_baseline while its incoming State is pending and the replica has
+not adopted it. Native attachment is also not yet published. A stack-scoped
+BaselineRead owns the incoming Document and pins Controller, transport, context,
+local participant and Syncing phase. projection_scope and object_revision can
+read that exact document during native application; gesture_scope remains empty.
+The pin retires on callback return. The runtime regression fails before this
+change and passes108 checks afterward (`out/preview10-baseline-read-red/`,
+`out/preview10-baseline-read-green/`). C75 native evidence: host recovery passes
+while the initial guest scene is DIVERGED before this baseline read fix.

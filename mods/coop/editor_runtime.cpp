@@ -161,6 +161,17 @@ struct ProjectionScope {
     }
     ~ProjectionScope() { projection_override = before;extended_projection_override=before_extended;cast_projection_override=before_cast;authoring_projection_override=before_authoring; }
 };
+// A baseline is read before Controller adopts pending_baseline. Own its
+// document for this synchronous Native application; this grants no input scope.
+struct BaselineRead {
+    editor::Document document;
+    editor_native::GestureScope scope;
+    const editor_session::Controller* controller=nullptr;
+    const net::Session* session=nullptr;
+    uint64_t transport=0;
+    editor::wire::Context context;
+};
+const BaselineRead* baseline_read=nullptr;
 editor_project::Resources resources;
 std::optional<editor_project::Resources> incoming_resources;
 std::optional<editor::wire::Saved> pending_saved;
@@ -1700,8 +1711,31 @@ void log_capture_rejection(const char* stage,const editor_native::Gesture& gestu
             }
         };
         compare("canonical-before",current_native,gesture.before);compare("before-after",gesture.before,gesture.after);
-        H->log(M,SK_DEBUG,"Shared editor capture rejection stage=%s generation=%llu reason=%s",stage,
-            static_cast<unsigned long long>(gesture.generation),detail.c_str());
+        H->log(M,SK_WARN,"Shared editor capture rejection stage=%s generation=%llu domain=%u authoring_guards=%u terrain_guards=%u reason=%s",stage,
+            static_cast<unsigned long long>(gesture.generation),unsigned(gesture.domain),unsigned(guarded_authoring.size()),unsigned(guarded_terrain.size()),detail.c_str());
+        unsigned settings_fields=0;
+        for(const auto& [id,after]:gesture.after.document.settings){
+            const auto before=gesture.before.document.settings.find(id);
+            if(before==gesture.before.document.settings.end())continue;
+            std::set<uint32_t> keys;
+            for(const auto& [key,value]:before->second.properties){(void)value;keys.insert(key);}
+            for(const auto& [key,value]:after.properties){(void)value;keys.insert(key);}
+            for(auto key:keys){
+                if(settings_fields==8)break;
+                const editor::FieldKey field{editor::Field::Property,key};
+                if(editor::value(gesture.before.document,id,field)==editor::value(gesture.after.document,id,field))continue;
+                ++settings_fields;
+                const auto guard=guarded_authoring.find(id);
+                editor::Revision revision=0;
+                if(guard!=guarded_authoring.end()){
+                    const auto found=guard->second.field_revisions.find(field);
+                    if(found!=guard->second.field_revisions.end())revision=found->second;
+                }
+                H->log(M,SK_WARN,"Shared editor rejected settings kind=%u object=%llu:%u property=%08X owned=%u field_revision=%llu",unsigned(after.kind),
+                    static_cast<unsigned long long>(id.id),id.generation,key,unsigned(guard!=guarded_authoring.end()),static_cast<unsigned long long>(revision));
+            }
+            if(settings_fields==8)break;
+        }
         for(const auto& record:records)H->log(M,SK_DEBUG,
             "Shared editor capture rejection value stage=%s comparison=%s object=%llu:%u field=%s before=%s after=%s",stage,record.comparison,
             static_cast<unsigned long long>(record.object.id),record.object.generation,record.field.field.c_str(),record.field.before.c_str(),record.field.after.c_str());
@@ -1715,7 +1749,17 @@ editor_native::GestureScope current_gesture_scope(bool retained_import=false) {
        (!retained_import && awaiting_operation))return {};
     return {view.context.project, view.context.epoch, view.local};
 }
+bool baseline_read_current(){
+    if(!baseline_read||!controller||!C.session||controller.get()!=baseline_read->controller||C.session!=baseline_read->session||
+       !C.session->connected()||C.session->transport_generation()!=baseline_read->transport||observed_transport!=baseline_read->transport)return false;
+    const auto& pin=*baseline_read;const auto& view=controller->view();
+    return view.phase==Phase::Syncing&&view.local==pin.scope.author&&view.local.generation&&view.local.slot==C.session->my_id()&&
+        view.context==pin.context&&incoming_context==pin.context&&pin.context.project==pin.document.project&&
+        pin.context.epoch==pin.document.epoch&&pin.context.revision==pin.document.revision&&
+        pin.scope.project==pin.document.project&&pin.scope.epoch==pin.document.epoch;
+}
 editor_native::GestureScope current_projection_scope() {
+    if(baseline_read)return baseline_read_current()?baseline_read->scope:editor_native::GestureScope{};
     // An immutable read proof can outlive the local edit request or an owned
     // playtest hold. It never grants permission to start or mutate a gesture.
     if (!controller || !native_attached || closing || frozen || recovery || transport_teardown || !C.session ||
@@ -2867,6 +2911,7 @@ void captured(editor_native::Gesture gesture) {
     };
     auto reject_captured=[&]{
         const auto reason=error;
+        log_capture_rejection("captured",gesture,reason);
         if(!captured_identity()){
             frozen=true;native_identity_lost=true;
             tell("The captured gesture's native editor identity expired; the current scene was left intact: "+reason+
@@ -4910,6 +4955,15 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
         if (!incoming_resources || incoming_context.project != state.document.project || incoming_context.epoch != state.document.epoch || incoming_context.revision != state.document.revision) {
             error = "The editor baseline has no matching verified resources"; return false;
         }
+        if(baseline_read){error="Another native baseline read is already active";return false;}
+        const BaselineRead read{state.document,{state.document.project,state.document.epoch,controller->view().local},
+            controller.get(),C.session,observed_transport,incoming_context};
+        struct ReadScope {
+            const BaselineRead* previous=baseline_read;
+            explicit ReadScope(const BaselineRead& read){baseline_read=&read;}
+            ~ReadScope(){baseline_read=previous;}
+        } read_scope(read);
+        if(!baseline_read_current()){error="The native baseline read lost its original context";return false;}
         editor_native::Snapshot native;
         if (!supported_act(incoming_resources->act, error) || !supported_native_act(error) ||
             !editor_project::native_snapshot(*incoming_resources, state.document, native, error)) return false;
@@ -5218,12 +5272,13 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     native.transaction_pending = [] { return bool(native_pose_prepare) || bool(staged_capture) || complexity_held() || rejection_restore.has_value() || pending.has_value() || awaiting_operation.has_value() || bool(durable_commit); };
     native.object_revision = [](editor::ObjectId object)->std::optional<editor::Revision> {
         if(!controller)return std::nullopt;
-        const auto& placements=controller->state().document.placements;
-        auto settings=controller->state().document.settings.find(object);if(settings!=controller->state().document.settings.end())return settings->second.revision;
+        const auto& document=baseline_read_current()?baseline_read->document:controller->state().document;
+        const auto& placements=document.placements;
+        auto settings=document.settings.find(object);if(settings!=document.settings.end())return settings->second.revision;
         auto found=placements.find(object);
         if(found!=placements.end())return found->second.revision;
-        auto terrain=controller->state().document.terrain.find(object);if(terrain!=controller->state().document.terrain.end())return terrain->second.revision;
-        for(const auto& [id,settings]:controller->state().document.class_settings){(void)id;if(settings.class_id==object)return settings.revision;}
+        auto terrain=document.terrain.find(object);if(terrain!=document.terrain.end())return terrain->second.revision;
+        for(const auto& [id,settings]:document.class_settings){(void)id;if(settings.class_id==object)return settings.revision;}
         return std::nullopt;
     };
     bool available = editor_native::init(H, M, std::move(native));

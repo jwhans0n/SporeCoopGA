@@ -188,6 +188,7 @@ std::map<editor::Peer,PreviewActor> preview_actors;
 uint32_t selected_class;
 std::optional<editor::ObjectId> input_clone, gesture_clone;
 bool input_cast=false,gesture_cast=false,input_pose=false,gesture_pose=false;
+GestureDomain gesture_domain=GestureDomain::Settings;
 struct ScopedPoseInput {
     bool previous=input_pose;
     explicit ScopedPoseInput(bool pose=true){input_pose=previous||pose;}
@@ -208,6 +209,9 @@ std::optional<Snapshot> terrain_before;
 GestureScope terrain_scope;uint64_t terrain_generation=0;void* terrain_owner=nullptr;
 struct Grounding {editor::Vec3 native,authored;};
 std::map<editor::ObjectId,Grounding> terrain_grounding;
+using GroundSceneFn=void(SK_THISCALL*)(void*,bool);
+GroundSceneFn original_ground_scene;
+void SK_THISCALL ground_scene(void* self,bool flag);
 struct TerrainCaptureRotations;
 std::shared_ptr<const TerrainCaptureRotations> terrain_capture_rotations;
 uint64_t terrain_rotation_serial=0;
@@ -1640,6 +1644,7 @@ bool normalize_terrain_capture_rotations(void* copied,const std::shared_ptr<cons
     if(count!=proof->canonical.size() || !terrain_capture_rotations_current(proof,error))return false;
     return true;
 }
+#include "editor_native_captain_grounding_impl.h"
 bool capture_resource(void* r, uint32_t act, Snapshot& out, std::string& error,
                       const std::map<uint32_t,editor::ObjectId>* supplied=nullptr,const editor::Document* identity=nullptr,
                       bool boundary_owned=false) {
@@ -1647,25 +1652,30 @@ bool capture_resource(void* r, uint32_t act, Snapshot& out, std::string& error,
     const auto& grounding=terrain_read_identity&&terrain_read_identity->grounding?*terrain_read_identity->grounding:terrain_grounding;
     const auto rotations=materialized_input && terrain_capture_rotations && terrain_capture_rotations->values.size()?terrain_capture_rotations:nullptr;
     try{
+    const auto captain=materialized_input?current_captain_grounding():std::optional<CaptainGrounding>{};
+    const auto witnesses_current=[&]{
+        if(rotations&&!terrain_capture_rotations_current(rotations,error))return false;
+        if(captain&&!captain_grounding_current(*captain)){error="The exact native captain grounding witness expired";return false;}
+        return true;
+    };
     if(materialized_input && !terrain_capture_rotation_error.empty()){error=terrain_capture_rotation_error;return false;}
     void* original=r;std::vector<uint8_t> original_bytes;
     Owned authored;
-    if(rotations){
-        if(!skg::readable(r,kResourceSize) || skg::field<editor::ResourceKey>(r,8)!=rotations->source){
+    if(rotations||captain){
+        if(!skg::readable(r,kResourceSize) || (rotations&&skg::field<editor::ResourceKey>(r,8)!=rotations->source)){
             error="The original terrain rotation image changed its native source";return false;
         }
-        if(!terrain_capture_rotations_current(rotations,error) || !serialize(r,original_bytes,error) ||
-           !terrain_capture_rotations_current(rotations,error))return false;
+        if(!witnesses_current() || !serialize(r,original_bytes,error) || !witnesses_current())return false;
     }
-    if(rotations || !grounding.empty()){
+    if(rotations || captain || !grounding.empty()){
         authored.p=construct();if(!authored.p){error="Cannot allocate an owned grounding snapshot";return false;}
         skg::thiscall<void*>(a_copy,authored.p,r);r=authored.p;
-        if(rotations){
+        if(rotations||captain){
             std::vector<uint8_t> copied;
-            if(!terrain_capture_rotations_current(rotations,error) || !serialize(r,copied,error) ||
-               !terrain_capture_rotations_current(rotations,error))return false;
+            if(!witnesses_current() || !serialize(r,copied,error) || !witnesses_current())return false;
             if(copied!=original_bytes){error="The owned terrain rotation copy changed unknown authored bytes";return false;}
-            if(!normalize_terrain_capture_rotations(r,rotations,supplied,error))return false;
+            if(rotations&&!normalize_terrain_capture_rotations(r,rotations,supplied,error))return false;
+            if(captain)normalize_captain_grounding(r,*captain);
         }
         Rows markers;if(!rows(r,0x2C10,0x238,kPlacementLimit,markers)){error="Grounded native markers are unavailable";return false;}
         for(auto p=markers.begin;p!=markers.end;p+=0x238)if(live_slot(p)){
@@ -1679,21 +1689,21 @@ bool capture_resource(void* r, uint32_t act, Snapshot& out, std::string& error,
     out = {}; out.act = act;
     out.source = skg::field<editor::ResourceKey>(r, 8);
     if (!serialize(r,out.bytes,error))return false;
-    if(rotations && !terrain_capture_rotations_current(rotations,error))return false;
+    if(!witnesses_current())return false;
     if(materialized_input && !normalize_materialized_terrain(out.bytes,error))return false;
     const auto rotation_closure=[&]{
-        if(!rotations)return true;
+        if(!rotations&&!captain)return true;
         std::vector<uint8_t> settled;
-        if(!terrain_capture_rotations_current(rotations,error) || !serialize(original,settled,error) ||
-           !terrain_capture_rotations_current(rotations,error))return false;
+        if(!witnesses_current() || !serialize(original,settled,error) || !witnesses_current())return false;
         if(settled!=original_bytes){error="The original terrain rotation image changed during owned capture";return false;}
-        if(!serialize(r,settled,error) || !terrain_capture_rotations_current(rotations,error) ||
+        if(!serialize(r,settled,error) || !witnesses_current() ||
            !normalize_materialized_terrain(settled,error))return false;
-        if(skg::field<editor::ResourceKey>(original,8)!=rotations->source || skg::field<editor::ResourceKey>(r,8)!=rotations->source){
+        const auto source=rotations?rotations->source:captain->owner.source;
+        if(skg::field<editor::ResourceKey>(original,8)!=source || skg::field<editor::ResourceKey>(r,8)!=source){
             error="The native terrain rotation image source changed during owned capture";return false;
         }
         if(settled!=out.bytes){error="The owned terrain rotation projection changed its authored bytes";return false;}
-        return terrain_capture_rotations_current(rotations,error);
+        return witnesses_current();
     };
     const auto reused=reuse_resource_projection(r,out,supplied,identity,error);
     if(reused==RecentMatches::Match){if(!rotation_closure())return false;++captures;return true;}
@@ -2185,6 +2195,7 @@ struct Pending {
     bool pose_candidate=false;
     uint64_t serial=0;
     SceneOwner owner_pin;
+    GestureDomain domain=GestureDomain::Settings;
 };
 std::deque<Pending> pending;
 struct StagedPose {
@@ -2253,7 +2264,7 @@ void fail_staged_capture(const std::shared_ptr<StagedPose>& stage,const std::str
     if(failed)failed(ticket,reason.substr(0,512));
 }
 bool enroll_staged_capture(const Pending& boundary,Owned& entry,Owned& before,std::string& error){
-    if(!boundary.pose_candidate || boundary.clone_source || boundary.speech || !boundary.serial || !terrain_grounding.empty() ||
+    if(!boundary.pose_candidate || boundary.clone_source || boundary.speech || !boundary.serial || !terrain_grounding.empty() || captain_has_grounding() ||
        terrain_capturing || terrain_capture_rotations || !boundary.metadata_error.empty() || !boundary.before_metadata ||
        boundary.before_metadata!=boundary.after_metadata || boundary.before_bindings!=boundary.after_bindings ||
        !C.capture_begin || !C.capture_current || !C.capture_before || !C.capture_failed || !H || !H->frame_index)return false;
@@ -2279,7 +2290,7 @@ bool enroll_staged_capture(const Pending& boundary,Owned& entry,Owned& before,st
     if(!accepted && error.empty())return false; // No Runtime hold was published.
     stage->entry=std::exchange(entry.p,nullptr);stage->before=std::exchange(before.p,nullptr);
     stage->boundary.entry=stage->boundary.before=nullptr;
-    stage->image.generation=boundary.generation;stage->image.capture=stage->ticket;
+    stage->image.generation=boundary.generation;stage->image.capture=stage->ticket;stage->image.domain=GestureDomain::Placement;
     staged_pose=stage;
     if(!accepted){fail_staged_capture(stage,error);return true;}
     if(staged_capture_current(stage)==CaptureState::Retired){
@@ -2312,6 +2323,7 @@ void SK_CDECL drain(void*) {
         Gesture gesture;
         gesture.generation = generation;
         gesture.clone_source = item.clone_source;
+        gesture.domain = item.domain;
         std::string error;
         if(C.gesture_capture)C.gesture_capture(true);
         bool ok=item.metadata_error.empty() && item.before_metadata && item.after_metadata;
@@ -2489,13 +2501,27 @@ void SK_THISCALL start(void* self) {
         gesture_serial=gesture_counter==UINT64_MAX?0:++gesture_counter;
         gesture_clone=input_clone;
         gesture_cast=input_cast;
-        gesture_pose=input_pose&&!input_cast;
+        gesture_domain=GestureDomain::Settings;
+        if(input_pose&&!input_cast){
+            // Pin the domain from the native target before StartHistory or
+            // any pose writer runs. Captain owns Settings, not a pool slot.
+            refresh_selection();
+            gesture_domain=std::find(selection.begin(),selection.end(),kCaptainObject)!=selection.end()?
+                GestureDomain::Captain:GestureDomain::Placement;
+        }
+        gesture_pose=gesture_domain==GestureDomain::Placement;
         gesture_before_metadata.reset();gesture_metadata_error.clear();
         Snapshot::Metadata metadata;
         if(capture_metadata(self,metadata,gesture_metadata_error))gesture_before_metadata=std::move(metadata);
         release(gesture_before_resource);
         gesture_before_resource=construct();
         if(gesture_before_resource)skg::thiscall<void*>(a_copy,gesture_before_resource,resource(self));
+        // Capture BEFORE while the original marker and field revisions still
+        // exist, including property gestures which will change those revisions.
+        if(gesture_before_resource)if(auto proof=current_captain_grounding())normalize_captain_grounding(gesture_before_resource,*proof);
+        // A pending grab keeps unchanged XYZ evidence until ownership arrives
+        // or it is cancelled. Exact marker-pose checks invalidate that evidence
+        // when a native pose writer actually changes the captain.
         // Native Start reuses its previous entry.after, which is stale after
         // canonical remote application. This independent owned before is the
         // current authored resource; serialize it only in the deferred drain.
@@ -2812,7 +2838,7 @@ void SK_CDECL drain_terrain(void*){
     terrain_capturing=true;
     struct RotationEnd {uint64_t serial=terrain_rotation_serial;~RotationEnd(){if(serial==terrain_rotation_serial)clear_terrain_capture_rotations();}} rotation_end;
     if(C.gesture_capture)C.gesture_capture(true);
-    Gesture gesture;gesture.before=*terrain_before;gesture.generation=generation;std::string error;
+    Gesture gesture;gesture.before=*terrain_before;gesture.generation=generation;gesture.domain=GestureDomain::Terrain;std::string error;
     const bool okay=capture_draft(gesture.after,error);
     if(C.gesture_capture)C.gesture_capture(false);
     terrain_capturing=false;terrain_pending=false;terrain_before.reset();terrain_rebuilding=false;terrain_recipe_replacement=false;
@@ -4183,7 +4209,7 @@ void SK_THISCALL commit(void* self) {
     }
     uint32_t act = skg::cdecl_call<uint32_t>(a_act);
     pending.push_back({entry,before,self,generation,act,gesture_clone,gesture_before_bindings,bindings,gesture_scope_pin,speech,
-        std::move(before_metadata),std::move(after_metadata),std::move(metadata_error),gesture_pose&&!gesture_cast&&!speech&&!gesture_clone,gesture_serial,gesture_scene_owner});
+        std::move(before_metadata),std::move(after_metadata),std::move(metadata_error),gesture_pose&&!gesture_cast&&!speech&&!gesture_clone,gesture_serial,gesture_scene_owner,gesture_domain});
     if (!queued) { queued = true; H->run_outside_frame(drain, nullptr); }
 }
 void SK_THISCALL undo_native(void* self) {
@@ -5232,6 +5258,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context) {
         install("SporeCoop::Editor::TerraformUndoHistoryEntry",(void*)terrain_undo,(void**)&original_terrain_undo) &&
         install("SporeCoop::Editor::TerraformLoadProperties",(void*)terrain_load,(void**)&original_terrain_load) &&
         install("SporeCoop::Editor::TerraformBuildProperties",(void*)terrain_build,(void**)&original_terrain_build) &&
+        install("SporeCoop::Editor::GroundScene",(void*)ground_scene,(void**)&original_ground_scene) &&
         install("SporeCoop::Editor::TerraformRebuild",(void*)terrain_rebuild,(void**)&original_terrain_rebuild) &&
         install("SporeCoop::Editor::TerraformCompleteWater",(void*)terrain_complete_water,(void**)&original_terrain_complete_water) &&
         install("SporeCoop::Editor::TerraformMaterialize",(void*)terrain_materialize,(void**)&original_terrain_materialize) &&
@@ -6390,6 +6417,24 @@ bool restore_impl(const Snapshot& snapshot,const RestoreFence* fence,std::string
     if(!checked())return false;
     struct Applying {bool prior=applying;~Applying(){applying=prior;}} restore_applying;
     applying=true;
+    // Native history may retain the old special Captain marker when its asset
+    // key is unchanged. Seed that marker from the owned restoration target
+    // before native act selection/export can write the old pose back to +150.
+    // F3D930 refreshes the real visible actor and resource through the same
+    // verified special-marker path used by native Captain movement.
+    if(snapshot.document.settings.contains(kCaptainObject)){
+        auto* owner=data(mode());auto* marker=skg::readable(owner,0x90)?skg::field<void*>(owner,0x8C):nullptr;
+        if(marker){
+            if(!checked()||!skg::readable(marker,0x24)||skg::field<uint32_t>(marker,0)!=UINT32_MAX-1||!original_apply_marker){
+                error="The restoration Captain marker is unavailable";return false;
+            }
+            const auto pose=skg::field<editor::Pose>(copy.p,0x150);
+            if(!captain_finite(pose)){error="The restoration Captain pose is invalid";return false;}
+            skg::field<editor::Pose>(marker,4)=pose;
+            original_apply_marker(owner,marker,0);
+            if(!checked())return false;
+        }
+    }
     // RestoreHistorySnapshot rebuilds through the current native act. Clamp
     // before its copy when deletion removed the old last act.
     if(s.act>=snapshot.document.acts.size()){
