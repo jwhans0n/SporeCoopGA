@@ -121,3 +121,8 @@ Receipts: `installation-receipt.json` and `independent-verification.json` in tha
 delivery directory. All four private games return normally to Galaxy with zero
 faults before their owned runner exits; retirement evidence is
 `out/preview10-c76-r305-four-retirement/result.json`.
+
+Production commit: `4dc8c64a`. `committed-source-binding.json` in the delivery
+directory compares every frozen production input to that Git tree, permitting
+only Git line-ending normalization. This is the installed candidate's source
+binding. No main merge, public package or release smoke claim is made.

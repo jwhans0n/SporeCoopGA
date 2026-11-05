@@ -10,7 +10,7 @@ role: both
 versions: 0.7.5.0-ga-editor-preview.9
 fixed_in: 0.7.5.0-ga-editor-preview.10 (private testing)
 branch: feat/ga-editor-multi-act
-commits:
+commits: 4dc8c64a
 tests: tests/editor_native_cancellation_windows_tests.cpp, tests/editor_native_captain_grounding_fixture.h, tests/editor_runtime_windows_tests.cpp; docs/reports/EDITOR-PREVIEW10-VALIDATION.md
 signature:
 docs:
