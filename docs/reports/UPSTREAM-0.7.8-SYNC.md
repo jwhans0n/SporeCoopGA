@@ -54,3 +54,13 @@ Do not advance destination main or feat/ga-editor-multi-act. Do not push upstrea
 force-push, publish release tags or install either candidate. The installed
 preview10, shortcut, exact4GB executable, settings and rollback remain untouched.
 Broader creation matrices, performance and final release acceptance stay deferred.
+
+## Harness correction
+
+BUG-0628 records an integration-time test harness failure: inherited explicit
+Git context made temporary self-test commits on the unpublished main candidate.
+The test history is retained under a local safety ref; only intended source
+changes remain on the review branch. Parent Git settings and original destination
+refs are verified. A two-repository regression fails before context isolation
+and passes afterward. The corrected full lab self-test must also leave HEAD
+unchanged. No accidental test commits are pushed.

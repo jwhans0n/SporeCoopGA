@@ -637,3 +637,4 @@ not-reproduced, game-bug (Spore itself), wontfix, duplicate.
 | [BUG-0625](BUG-0625-terraform-gesture-changes-unowned-settings-and-f.md) | fixed | desync | GA shared editor | 2026-11-04 | 0.7.5.0-ga-editor-preview.10 (private testing) | Terraform gesture changes unowned settings and fails canonical restoration |
 | [BUG-0626](BUG-0626-upstream-synchronization-cannot-qualify-windows.md) | open | bug | Validation | 2026-11-05 |  | Upstream synchronization cannot qualify Windows smoke without native fixtures |
 | [BUG-0627](BUG-0627-merged-transport-fixture-stalls-while-receiving.md) | open | desync | Networking | 2026-11-05 |  | Merged transport fixture stalls while receiving queued reliable data |
+| [BUG-0628](BUG-0628-lab-self-tests-inherit-git-context-and-mutate-th.md) | open | bug | Validation | 2026-11-05 |  | Lab self-tests inherit Git context and mutate the parent checkout |
