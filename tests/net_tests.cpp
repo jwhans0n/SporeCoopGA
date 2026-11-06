@@ -495,7 +495,7 @@ static void test_protocol_versions()
                                  [&](uint8_t,Reader&){delivered=true;}));
     }
     CHECK(!delivered);
-    for (uint16_t version : {uint16_t(7), uint16_t(15), uint16_t(26), uint16_t(28)}) {
+    for (uint16_t version : {uint16_t(7), uint16_t(15), uint16_t(26), uint16_t(27)}) {
         auto old_header = packet;old_header[4]=uint8_t(version);old_header[5]=uint8_t(version>>8);
         CHECK(!Connection::looks_valid(old_header.data(),old_header.size()));
     }
