@@ -18,6 +18,7 @@
 
 #include "../updater/sha256.h"
 #include "install.h"
+#include "../sdk/include/sporekit_build.hpp"
 #include "../updater/winupdate.h"
 
 #ifndef SETUP_VERSION
@@ -257,7 +258,7 @@ void refresh()
     else if (std::vector<uint8_t> exe = read_file(root + L"\\SporebinEP1\\SporeApp.exe");
              upd::sha256_hex(exe) == kGog2016Sha)
         game = L"Game: GOG 2016; base stages supported, co-op adventures unavailable";
-    else if (upd::sha256_hex(exe) == kGog2024Sha)
+    else if (skg::supported_gog2024(upd::sha256_hex(exe).c_str()))
         game = L"Game: GOG 2024; base stages and co-op adventure preview supported";
     else if (code_sha(exe) == kGog2024Code)
         game = L"Game: GOG 2024 code variant; base stages only, co-op adventures unavailable";

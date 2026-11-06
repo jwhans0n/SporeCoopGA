@@ -1,4 +1,5 @@
 #include "adventure_explosives.h"
+#include "sporekit_build.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -444,7 +445,7 @@ bool init(const SkHost* host_api,SkMod* mod,Ctx context)
     H=host_api; C=std::move(context); g_ok=false; reset();
     constexpr const char* hash="dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37";
     if(!H || !H->sym || !H->hook_create || !H->run_outside_frame || !H->time_seconds || !C.sess || !C.run || !C.act || !C.active ||
-        !H->exe_sha256 || !H->exe_sha256() || std::strcmp(H->exe_sha256(),hash) ||
+        !H->exe_sha256 || !H->exe_sha256() || !skg::supported_gog2024(H->exe_sha256()) ||
         !C.identify || !C.object || !C.powerup || !C.combatant || !C.from_spatial || !C.captain || !C.owner ||
         !C.can_act || !C.owns_throw || !C.nearby || !C.bounds || !C.retire || !C.failed) return false;
     struct Hook { const char* symbol; void* detour; void** original; };

@@ -1,4 +1,5 @@
 #include "adventure_world_actions.h"
+#include "sporekit_build.hpp"
 
 #include <array>
 #include <cmath>
@@ -100,7 +101,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx ctx)
     if (!H || !H->sym || !H->exe_sha256 || !H->hook_create || !C.active || !C.host ||
         !C.local_captain || !C.request_give) return false;
     const char* hash = H->exe_sha256();
-    if (!hash || std::strcmp(hash, kHash)) return false;
+    if (!skg::supported_gog2024(hash)) return false;
     const char* names[] = {"App::cScenarioMode::ptr", "Simulator::cScenarioData::GetClass",
         "SporeCoop::Adventure::BuildingInventoryGive", "SporeCoop::Adventure::VehicleInventoryGive",
         "SporeCoop::Adventure::VehicleGiveConsumesItem", "SporeCoop::Adventure::DropItem",

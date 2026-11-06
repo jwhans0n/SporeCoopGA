@@ -20,6 +20,7 @@ constexpr uint16_t kProtoVersion = 27; // 3: shared resources; 4: lobby/discover
                                       // 12: run-scoped pause intent and unanimous party pause
                                       // 13: matching native actor follower capabilities (wire/bundles retained)
                                       // 14: matching native party perception (wire/bundles retained)
+                                      // 27: upstream 0.7.8, mirror effects64, adventure65/editor66 and AGL before GA identity;
                                       // 15: verified terminal result acknowledgements and shared menu exit
 constexpr uint16_t kDefaultPort = 47810;
 constexpr int kMaxPlayers = 4; // host + 3 guests (Spore pack size)
@@ -100,7 +101,7 @@ enum MsgType : uint8_t {
                           // snapshot {u8 obj kind, vec3 centre, f32 r, u8 n, n x {u32 id, vec3 pos, u32 state}}, unreliable 1 Hz;
                           // 1 guest -> host request {u8 obj kind, u32 id, vec3 pos, u32 state now}). Older SporeCoop ignores it.
     MSG_ADVENTURE = 65,  // u8 subkind, run-scoped adventure coordination; 64..71 resource transfer
-    MSG_EDITOR = 64, // reserved for the separately versioned shared-editor build
+    MSG_EDITOR = 66, // reserved for the separately versioned shared-editor build
     MSG_ACTIVITY = 55, // reserved for participant-local editor activity
     MSG_CELL_KO = 44,     // any -> host -> all: u8 player, u8 state (0 up,1 out,2 revived,3 respawned),
                           // u8 tenths of a second left, u8 revive progress 0..255
@@ -115,6 +116,10 @@ enum MsgType : uint8_t {
                           // (player_rules.cpp, BUG-0418 / P1 of 0.7.7): u8 kind; kind 0 host -> guest "stunned"
                           // {u8 player, f32 seconds} (an NPC's charge stunned its puppet: CreatureStun vt 0x94),
                           // kind 1 guest -> host {u16 NPC id, f32 seconds} (the guest's charge stunned a proxy).
+                          // Older SporeCoop ignores it (an unknown type).
+    MSG_MIRROR_FX = 64,   // host -> guests: what the host's game did to a creature a guest mirrors (mirror_fx.h, BUG-0600):
+                          // u8 kind; 0 effect {u8 space (0 NPC, 1 tribe member), u16 id, u8 stop, u8 pool, u32 effect,
+                          // u32 key}, 1 combat voice {space, id, u8 enter}, 2 sprint {space, id, u8 on}.
                           // Older SporeCoop ignores it (an unknown type).
     MSG_WSTATE = 62,      // host -> guests: host-owned world state rows (wsync.h, BUG-0419 / BUG-0565 / BUG-0577 /
                           // BUG-0579 / BUG-0564): u8 kind 0, u32 host mode, u8 rows, {u8 id, u8 nv, u8 n, n x {u32 key,
@@ -167,6 +172,10 @@ enum PlayerFlags : uint8_t {
     PF_SWIMMING = 32,
     PF_SNEAKING = 64, // BUG-0463: the creature sneaks (+0xBB1); older SporeCoop ignores the bit
 };
+
+// BUG-0425: a height over the sender's terrain (m) that is not known (an older sender, no terrain)
+constexpr float kNoAgl = -1e9f;
+inline bool agl_known(float agl) { return agl > -1e6f; }
 
 struct Vec3 {
     float x = 0, y = 0, z = 0;
@@ -365,6 +374,10 @@ struct PlayerState {
     uint32_t world = 0;   // crc32 of the current save name (same world <=> same value)
     float scale = 1;
     uint64_t adventure_run = 0, captain_selection = 0, movement_generation = 0;
+    // BUG-0425: the sender's height over its own terrain (cPlanetModel::GetHeightAt) when its body is off the
+    // ground (PF_JUMPING); kNoAgl otherwise or from an older sender (appended after scale: older readers stop
+    // before it). NPC states carry it in the MSG_NPC_STATE batch's trailer (npc.cpp), not here
+    float agl = kNoAgl;
 
     void write(Writer& w) const
     {
@@ -377,6 +390,7 @@ struct PlayerState {
         w.u32(species);
         w.u32(mode); w.u32(world);
         w.f32(scale);
+        w.f32(agl);
         w.u32(uint32_t(adventure_run)); w.u32(uint32_t(adventure_run >> 32));
         w.u32(uint32_t(captain_selection)); w.u32(uint32_t(captain_selection >> 32));
         w.u32(uint32_t(movement_generation)); w.u32(uint32_t(movement_generation >> 32));
@@ -392,10 +406,11 @@ struct PlayerState {
         species = r.u32();
         mode = r.u32(); world = r.u32();
         scale = r.f32();
+        agl = r.f32();
         adventure_run = r.u32(); adventure_run |= uint64_t(r.u32()) << 32;
         captain_selection = r.u32(); captain_selection |= uint64_t(r.u32()) << 32;
         movement_generation = r.u32(); movement_generation |= uint64_t(r.u32()) << 32;
-        return r.ok() && std::isfinite(scale) && scale >= 0 && scale <= 10000;
+        return r.ok() && std::isfinite(agl) && std::isfinite(scale) && scale >= 0 && scale <= 10000;
     }
 };
 
@@ -412,6 +427,8 @@ enum NpcFlags : uint8_t {
     NF_IMPRESSED = 4, // impressed by a player (cCreatureAnimal +0xB58 bit 0x80, set by a social success)
     NF_PACK = 8,      // in the host's pack (+0xB58 bit 0x100: recruited, a Summon Flock member; BUG-0556). Older guests ignore it
     NF_SUMMONED = 16, // its herd is a summoned flock (herd +0x192, cSummonCreatureEvent: the hearts effect 0x6A17B05A; BUG-0556)
+    NF_AIR = 32,      // BUG-0550 / BUG-0425: off its ground in the host's game (+0x137 = 0 and off GetHeightAt: a jump, a fall,
+                      // thrown, flying); its height over the host's terrain is in the batch's agl trailer. Older guests ignore it
 };
 
 struct NpcSpawn {

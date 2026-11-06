@@ -43,6 +43,29 @@ static bool g_nofix = false; // --nofix: the code before the wave 2 netcode fixe
         }                                                                \
     } while (0)
 
+static void test_upstream_ga_channels()
+{
+    // Literal receiver expectations make a sender/receiver constant mismatch visible.
+    const uint8_t ids[]={MSG_NEST,MSG_PARTS,MSG_WOBJ,MSG_ACTIVITY,MSG_FIELDS,MSG_NPC_RESYNC,
+        MSG_NPC_ANIM,MSG_DIAG,MSG_EFFECT,MSG_WSTATE,MSG_PLAYER_RULE,MSG_MIRROR_FX,MSG_ADVENTURE,MSG_EDITOR};
+    CHECK(std::set<uint8_t>(std::begin(ids),std::end(ids)).size()==std::size(ids));
+    Session host,guest;std::string error;unsigned upstream=0,adventure=0,editor=0;
+    host.cb.custom=[&](uint8_t type,uint8_t from,Reader& r){
+        CHECK(from==1);CHECK(type==64);CHECK(r.u32()==0xAABBCCDD&&r.left()==0&&r.ok());++upstream;
+    };
+    guest.cb.custom=[&](uint8_t type,uint8_t from,Reader& r){
+        CHECK(from==0);CHECK(r.u32()==0xAABBCCDD&&r.left()==0&&r.ok());
+        if(type==65)++adventure;else if(type==66)++editor;else CHECK(false);
+    };
+    CHECK(host.host(0,"host",error));
+    CHECK(guest.join("127.0.0.1:"+std::to_string(host.port()),"guest",error));
+    auto service=[&]{for(unsigned i=0;i<100;++i){host.update();guest.update();std::this_thread::sleep_for(std::chrono::milliseconds(2));}};
+    service();CHECK(guest.connected());
+    Writer payload;payload.u32(0xAABBCCDD);
+    guest.send_event(MSG_MIRROR_FX,payload);host.send_event(MSG_ADVENTURE,payload);host.send_event(MSG_EDITOR,payload);
+    service();CHECK(upstream==1&&adventure==1&&editor==1);
+}
+
 static void test_buffer()
 {
     printf("buffer roundtrip\n");
@@ -54,7 +77,7 @@ static void test_buffer()
     s.movement_generation=0xFEDCBA9876543210ULL;
     Writer w;
     s.write(w);
-    CHECK(w.size() == 95); // protocol 15 retains the GA identity and teleport fields
+    CHECK(w.size() == 99); // upstream AGL plus the complete GA identity and teleport fields
     Reader r(w.data.data(), w.size());
     PlayerState t;
     CHECK(t.read(r));
@@ -80,16 +103,26 @@ static void test_buffer()
     Reader r2(w2.data.data(), w2.size());
     PlayerState t2;
     CHECK(t2.read(r2) && t2.mode == 0x1654C05 && t2.world == 0x80B16021);
-    // BUG-0519: the Cell world scale is appended; an older sender's state (without it) reads as 0
+    // BUG-0519: retain upstream Cell scale; fork transport rejects older partial states.
     s.scale = 1.5f;
     Writer w4;
     s.write(w4);
     Reader r4(w4.data.data(), w4.size());
     PlayerState t4;
     CHECK(t4.read(r4) && t4.scale == 1.5f && r4.left() == 0);
-    Reader r5(w4.data.data(), w4.size() - 4);
+    Reader r5(w4.data.data(), w4.size() - 8);
     PlayerState t5;
-    CHECK(t5.read(r5) && t5.scale == 0.f && t5.world == 0x80B16021);
+    CHECK(!t5.read(r5)); // Fork protocol27 requires its complete payload.
+    // BUG-0425: upstream AGL precedes the three required fork identity words.
+    s.agl = 2.5f;
+    Writer w6;
+    s.write(w6);
+    Reader r6(w6.data.data(), w6.size());
+    PlayerState t6;
+    CHECK(t6.read(r6) && t6.agl == 2.5f && t6.scale == 1.5f && r6.left() == 0);
+    Reader r7(w6.data.data(), w6.size() - 4);
+    PlayerState t7;
+    CHECK(!t7.read(r7)); // Upstream protocol7 defaults cannot admit a truncated GA identity.
     // shared resource message payload (u8 id, f64)
     Writer w3;
     w3.u8(3);
@@ -423,8 +456,8 @@ static void test_session_end_in_delivery()
 static void test_protocol_versions()
 {
     printf("merged protocol boundary and HELLO version validation\n");
-    CHECK(kProtoVersion == 15 && kDiscoverPorts == 20);
-    CHECK(MSG_SPACE == 48 && MSG_ADVENTURE == 52);
+    CHECK(kProtoVersion == 27 && kDiscoverPorts == 20);
+    CHECK(MSG_SPACE == 48 && MSG_ADVENTURE == 65 && MSG_EDITOR == 66 && MSG_WSTATE == 62 && MSG_PLAYER_RULE == 63 && MSG_MIRROR_FX == 64);
     Session host;
     std::string err;
     CHECK(host.host(0, "host", err));
@@ -452,6 +485,10 @@ static void test_protocol_versions()
     CHECK(!receiver.on_packet(upstream.data(), upstream.size(), 1000,
                              [&](uint8_t, Reader&) { delivered = true; }));
     CHECK(!delivered);
+    for (uint16_t version : {uint16_t(7), uint16_t(15), uint16_t(26), uint16_t(28)}) {
+        auto old_header = packet;old_header[4]=uint8_t(version);old_header[5]=uint8_t(version>>8);
+        CHECK(!Connection::looks_valid(old_header.data(),old_header.size()));
+    }
     // A current transport carrying an incompatible HELLO receives an explicit
     // rejection. Older transport headers are discarded before HELLO decoding.
     CHECK(socket.send_to(destination, packet.data(), packet.size()));
@@ -2742,6 +2779,7 @@ int main(int argc, char** argv)
     test_bulk_busy_receiver();
     test_session();
     test_protocol_versions();
+    test_upstream_ga_channels();
     test_session_end_in_delivery();
     test_rejoin_same_endpoint();
     test_unique_names();

@@ -1,4 +1,5 @@
 #include "adventure_social.h"
+#include "sporekit_build.hpp"
 
 #include <array>
 #include <cstring>
@@ -143,7 +144,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx ctx)
     if (ready || !host || !host->sym || !host->exe_sha256 || !host->frame_index || !host->hook_create || !ctx.active || !ctx.run ||
         !ctx.act || !ctx.local_avatar || !ctx.mirrored || !ctx.listed) return false;
     const char* hash = host->exe_sha256();
-    if (!hash || std::strcmp(hash, kHash)) return false;
+    if (!skg::supported_gog2024(hash)) return false;
     const char* names[] = {"SporeCoop::Adventure::SocialProposeStart", "SporeCoop::Adventure::SocialProposeTick",
         "SporeCoop::Adventure::SocialProposeEnd", "SporeCoop::Adventure::GetBehaviorOrder",
         "SporeCoop::Adventure::SocialOrderTarget", "SporeCoop::Adventure::CreatureTarget",

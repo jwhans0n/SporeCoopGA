@@ -58,6 +58,9 @@ struct Api {
     std::function<dbpf::Key(uint8_t)> captain_key;
     std::function<bool()> can_ready;
     std::function<void()> change_captain, cancel_adventure;
+    // BUG-0597: what "Send my world" would do now: 0 send it, 1 no world loaded (a menu: the world goes
+    // to everyone once the host plays), 2 nobody has joined
+    std::function<int()> share_state;
     // own creation of the current stage: kind 0 creature / 1 cell / 2 ship, its name ("" = the
     // world's own), how many own creations of that kind exist; false = not shown. cycle: -1 / +1
     std::function<bool(int& kind, std::string& name, int& own)> creation;
@@ -97,6 +100,9 @@ void open(bool on);
 // Outside-frame launch transition: hide before entering the native loading UI.
 void close_for_adventure_launch();
 bool is_open();
+// BUG-0599: the window covers (x, y) (screen pixels of the game window): hide it for `secs` so that a click of the
+// mod there reaches the game's window under it (the "game saved" box's OK); false = not open or not there
+bool step_aside(int x, int y, double secs);
 int input_lock_now(); // the game's input lock count (cGameInputManager +0x110; > 0 = clicks are dropped)
 void shutdown(); // mod unload: hide our windows
 std::string debug_state();
@@ -112,5 +118,6 @@ extern bool g_menu_drop_fix; // tests: `coop.corefix menu_drop 0` keeps the menu
 uint32_t text_font();
 // the window speaks Russian (ui lang = ru, or auto on a Russian system)
 bool russian();
+void set_russian(bool ru); // tests (coop.uistate lang): the texts set from now on
 
 } // namespace coop_ui

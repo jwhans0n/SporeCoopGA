@@ -1,4 +1,5 @@
 #include "adventure_catalog.h"
+#include "sporekit_build.hpp"
 
 #include <windows.h>
 
@@ -116,7 +117,7 @@ bool init(const SkHost* host, SkMod* mod)
 {
     if (!host || !host->exe_sha256 || !host->sym || !host->command_add || !host->out_printf) return false;
     const char* hash = host->exe_sha256();
-    if (!hash || std::strcmp(hash, kHash)) return false;
+    if (!skg::supported_gog2024(hash)) return false;
     resource_manager = host->sym("Resource::ResourceManager_ptr");
     if (!resource_manager) return false;
     H = host;

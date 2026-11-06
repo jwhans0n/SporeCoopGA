@@ -1663,3 +1663,182 @@ BUG-0583. GOG 2024, Ghidra and the lab's fault record.
 * Fix `tribe.leader_tool` (tribe.cpp apply_held_tool): no tool of type 1..6 on this game's leader.
 * ✔ (lab 20261105-002402, fix off) a leader mirror set to 1 by the field's apply did not fault before the host's next
   field gave it 11 again (seconds): the state must last for the fault (+0xB54 updates).
+
+## A model's attached effects and the guard for a broken one (2026-11-05, fix/w44-crashes)
+<a id="tribe-model-fx-guard"></a>
+
+BUG-0575. GOG 2024 (= the Steam 3010a413 code), Ghidra and asm. Extends #tribe-model-effects-crash.
+
+* CORRECTION (2026-11-05, fix/w44-crashes): the crash report's names (cSpatialObject::SetModelKey <- QuaternionToMatrix
+  <- cModelObject <- cPlanetaryArtifact::SetLocomotion) are the nearest .sym names of stale return addresses found by
+  the stack scan, not the calls: nothing set a model key or a locomotion. The real chain (the Steam exe at 0x4E0000,
+  GOG 2024 = Steam - 0xE0000): VisualEffect_Start 0xA82660 (fault 0xA826F3) <- SpatialEffects_UpdateByDistance
+  0xC8ABF0 (return 0xC8ACC4) <- CreatureView_Update 0xE8C100 (return 0xE8C96E) <- the view list walk 0xB3CB6F
+  (return 0xB3CB71, a linked list of views, vt 4(a, b) each). 0xC69BC6, 0xE8E5D3 / 0xE8EA45, 0xE8CD3B are stale.
+* ✔ The creature view (vtable 0x1486328, 0x1C bytes, made by 0xE8BCF0 from an object cast to 0xCE9F6639): +0xC the
+  creature (a counted reference), +0x10 its AnimatedCreature (creature +0xB54, counted with 0xA02B70 / 0xA051B0),
+  +0x14 a flag. Its update (vt 1, `SporeCoop::CreatureView_Update`) returns at once when creature +0x135 is clear or
+  +0xB54 is null; else camera distance (creature +0x128), LOD (0xC0C460), the creature's pool-2 effects by key
+  (0xC20300 / 0xC14FD0: 0x73E4CDF, 0x77492D8, 0x7E2FEDF, 0x7A16140, 0x6452CA4), then when +0x134 is set
+  SpatialEffects_SetTransform 0xC89EF0 and always SpatialEffects_UpdateByDistance 0xC8ABF0 on the creature's spatial
+  (creature +0xC0): its attached-effect vector is at creature +0x180 / +0x184.
+* ✔ Attached effects (`SporeCoop::SpatialEffects_Add` 0xC8AFB0 thiscall(owner, id, group, key, bool restart) ret
+  0x10): entry 0x3C bytes, +0 key, +4 effect id, +8 enabled, +9 restart (the bool), +0xA a second restart flag,
+  +0xC threshold (256 m when made), +0x14 1.0, +0x38 the effect (a counted reference). The range check stops (vt
+  0xC(0)) a running effect at or past the threshold and starts (vt 8(0)) a stopped one inside it when +8 and +9 or
+  +0xA are set; a stopped entry with neither is erased with its Release. Removal by key 0xC8AEC0. Views add theirs
+  through the wrappers 0xC8B1D0 / 0xC8B1F0 / 0xC8B210 / 0xC8B2C0 / 0xC8B340 (cDefaultBeamProjectileView 0xCC2EF0,
+  0xE87xxx, 0xE96xxx).
+* ✔ VisualEffect (`SporeCoop::VisualEffect_vftable` 0x1457DE8, the only vtable with Start 0xA82660 in slot 2): Start
+  calls vt 8(arg) of each component (+0x144..+0x148, 0x5C bytes, object +0x38) without a check. The crash's
+  registers (edi = 0x5C, esi = 1, ebp = 0, ebx = the vector's end) mean the first component's call went into a
+  function through a vtable that is not one (a freed component whose memory was reused) and came back with
+  esi / edi destroyed.
+* ? Not found: what freed the component while the effect stayed in a creature's attached list. Not the relay of
+  effects.cpp: it keeps and releases only the world effects it made itself (pool 5, g_live), the creature pools
+  +0xCC8 / +0xD68 are other lists, and its references balance (read 2026-11-05). Not reproduced (two runs of
+  fix/w43-*, see the ticket).
+* Guard `game.model_fx` (gamefixes.cpp): hooks on 0xC8ABF0 and 0xC89EF0 check every listed effect first (its vtable
+  in the game's image with slots 2, 3, 4, 6 in its code; for a VisualEffect the component vector and each component
+  object's vtable and slots 2, 3); a broken one leaves its entry (+0x38 = 0, no Release, the reference is lost) and the
+  game makes it again when it wants it. Arithmetic checks only (no VirtualQuery): the loops run for every view every
+  frame. `coop.fxlist [creature|all]` lists attached effects; `coop.fxcut` makes the crash state (tests).
+
+## Animals over the ground in Tribe (2026-11-05, fix/w44-height)
+<a id="tribe-animal-height"></a>
+
+* ✔ The host's Tribe game puts an animal lifted 4 m over its ground (teleported there at every mod frame, +0x137 = 0,
+  `coop.npc lift`) back onto its terrain in its own update: the host's npctrack rows say 0.00 m in every frame (lab
+  20261105-112236, 112346). So the game itself keeps Tribe animals on the ground (inferred: the animal's AI walk
+  grounds it; a guest's proxy, which has no AI, stayed at 4 m when placed there). The height rule's air side
+  (docs/re/creature.md#creature-height-rule) has no Tribe case found; its ground side was already in place
+  (own_height, out_of_ground).
+* ✔ BUG-0402's fourth kind (campaign_ct, lab 20261105-015350 in the rel/0.7.7 worktree) is a terrain difference, not a
+  placement: the host's NPC n146 stood at agl 0.00 on the host's terrain (its own `sync-check: n146 here:` line), the
+  guest's terrain at that point is 8.39 m higher (`want_agl=-8.39`), and the proxy stood on the guest's ground
+  (`agl=0.00`): what the rule asks. The sync-check compares absolute positions, so the terrain difference showed as
+  `n apart 8.4` (BUG-0329's kind, larger than the 5 m seen there).
+## Music, member animations and the village pace on a guest (2026-11-05, fix/w44-tribe-guest)
+<a id="tribe-guest-a1"></a>
+
+A1 of 0.7.8 (BUG-0568, BUG-0569, BUG-0571). GOG 2024, lab lane 9 / 10.
+
+**Audio (BUG-0568).**
+* ✔ (Ghidra) Audio::AudioSystem (singleton 0x166D9F4; vtables 0x1452CE8 base / 0x1453FC8 derived, slot 0 Init 0xA25200) is
+  a command builder: vt 0x38 begin(cmd) `SporeCoop::AudioSystem_BeginCommand` 0xA20A80 ret 4, vt 0x3C float parameter
+  0xA20A90 ret 8, vt 0x40 int parameter `_SetInt` 0xA20AB0 ret 8, vt 0x58 submit `_Submit` 0xA20B10; all write the buffer at
+  +0x214. Commands: 0x3475365 play (0x3475381 sound, 0x3475385 track), 0x347536B stop (track, 0x34753A0), 0x3475376 set
+  property, 0x3CDD1A9 (key 0x34753A7: a state hash), 0x3991984 the listener (every frame). vt 0x20 / 0x24 hand out tracks
+  (two pools: 1.. and 1001..).
+* ✔ `coop.audio [mark | list [n]]` (mods/coop/audio.cpp) records them with the first 4 return addresses on the stack:
+  the lab games are muted, the commands are still submitted.
+* ✔ (runtime + Ghidra) the stage's sounds come in groups: 0xEA9DA0 is a message listener that activates / deactivates
+  groups (0xEA9A10 / 0xEA9250; 0x22D1ADC = the mode changed: the group of the new mode by a map). The Tribe mode's group
+  (0x34D61238, 0x931E43A7, 0x014B6A97, 0xE02B7355, 0x7B470F0F, 0x55AA10F0, 0x03AF053F, 0x9A3C482A, 0x4421F8E8, 0xD6C4FC3B)
+  plays on the host and the guest alike after a load from the galaxy menu and after a guest's own editor visit. The
+  editor's group (0x02A8D194, 0xF8EFEA3C, 0x38EB66F8 x12) stays playing after the red X on both (the game's own).
+  The galaxy menu: 0xF390C020 / 0xCCF3D9C6 / 0xCD785B24 and the music 0xBD7F5BC9; after the menu intro GGE_Intro ends
+  0x54AB9C8A / 0x896ED613 (on a lab host they play into Tribe when world.cpp ends the intro there).
+* ✔ (Ghidra + runtime) **the Tribe stage's theme music manager** TribeStage (= [0x169B2C8], `cTribeUI_Get`) **+0x1C8**
+  (made by the stage UI setup 0xCD78F0, stopped at the stage's exit 0xCD5FC0 by 0xBC2330): 23 slots {track, squared
+  distance}. `SporeCoop::TribeTheme_Play` 0xBC23B0 (sound, pos) -> slot, `_Move` 0xBC2540, `_Stop` 0xBC22F0. Callers are
+  behaviours of citizens only: 0xD69740 (hunt / fight: **0xAD1A17D**, while its member is the player tribe's and
+  0xC238B0), 0xDB1060, 0xDB7120, 0xDBAAF0, 0xDBB7D0. A 40 s fight: host 7-11 plays, guest 0 (mirrors have no tree).
+  Fix `tribe.theme_music` relays them (BUG-0568).
+* ? The hit and weapon sounds of a fight (0xA7E3E1FB, 0xD05B58ED, 0xD967193C, 0xCE5F2ED0; callers 0xA3749B / 0xA83B18) and
+  the creature voices 0xC881120E / 0x529FEC69 are host-only too: BUG-0600, not analysed.
+
+**Member animations (BUG-0569).**
+* ✔ (runtime) The host's members play 24 kinds of behaviour animations in 45 s of a fight and the villages' own work
+  (0x591B056, 0x2C39003, 0x67378DD, 0x2C39001, 0x62FF867, ...), all started by their trees through
+  SporeCoop::CreaturePlayAnim (game.cpp's listener); a guest's mirror plays none of them (0 of 646 samples): only its
+  locomotion's idle / walk. Fix `tribe.mirror_anims`: the npc.anims relay (BUG-0464) for the members (MSG_NPC_ANIM kinds
+  2 / 3, member ids), 94 % of the samples the same on the guest. `coop.tribe anims` lists `cur <id> anim= bhv=`.
+
+**The NPC tribe controller's pace (BUG-0571).**
+* ✔ (Ghidra) `cNpcTribeController` update 0xCC6A90 (vt 0x10, thiscall(ctrl, u64 dt ms) ret 8): returns while a cinematic
+  plays or the game is paused; a 1 s timer 0x157E940 (FormTribe sets it to 1); then by the tribe nouns: **1**: FormTribe
+  after 25 s (properties 0x3D346A77 / 0x1A09D79E, or a tutorial flag); **2**: when TribeStage +0x40 (mGoalProgressHistory)
+  is not empty, or the player tribe's vt 0xA4 (food) > property 0x4C87E711 (default 100, `SporeCoop::App_GetPropInt` 0x4E1CA0
+  on `SporeCoop::TribeProps_ptr` 0x1581288); **3, 4**: every second; **5**: with 3 goals done; more: never. FormTribe
+  0xCC6440 then needs tribes x 2 <= its property list's length (the list +0xFC is picked by the player tribe's diet and
+  the difficulty, 0xCC6160) and a spawn marker.
+* ~ the controller's vt 0xA4 on the player tribe behaves as the food (food 15: no tribe in 5 min, 135: 3 tribes in 2 s):
+  GetTotalFood as in the cTribe table above (that table's addresses are GOG 2016; 0xC8E850 on GOG 2024 is another
+  function, `add ecx,0x510; jmp 0xBC3260`). The GOG 2024 address of the slot was not read.
+* ✔ (runtime) food 135 with 2 tribes: villages 3, 4, 5 within 2 s, alone (no session) and in a session alike; the guest
+  makes the host's within 2-4 s, its own controller forms none (tribe.guest_tribes). Fix `tribe.form_pace`: in a session
+  the food path waits for the threshold x the players (BUG-0571).
+
+## Villages formed during play: other political ids on a guest (2026-11-05, fix/w44-world-state2)
+<a id="tribe-new-village-ids"></a>
+
+BUG-0591. Lab lane 6 (tribe fixture, coop_wsync_tribe.py villages).
+
+* ✔ (observed, lab 20261105-123323 / 123225) Three `coop.tribe form` on the host made its NPC tribe controller form
+  4 villages (1 -> 5 NPC tribes); the guest made each of them (tribe.npc_tribes, SpawnNpcTribe at the host's centre)
+  with its own next political ids: host 000021CE / CF / D0 / D1 -> guest 000021D0 / D1 / D2 / D3 at the same places.
+  The host's ids 000021D0 and 000021D1 were other villages on the guest. The save's village keeps its id (000021CB on
+  both). So political ids of villages formed during play are not shared; positions are (0.0 m).
+* ✔ wsync's match() took the same political id first: the host's relation and food of village 000021D0 went to the
+  guest's 000021D0 (another village), the two right villages got none (relation 0, food 0): the 0.7.7 final
+  check's `Tribe:state:relation` / `tribe_food` rows from the host's forming at 418 s on (play_tribe, lab
+  20261105-015320). Fixed by `wsync.tribe_pos`: the closest village within 40 m first, the id only without one
+  (also the goal card's village).
+
+## The end of Tribe on a guest: the taken-down village and animals (2026-11-05, fix/w44-world-state2)
+<a id="tribe-stage-end"></a>
+
+BUG-0588, BUG-0594. Lab lanes 6 / 7 (tribe fixture, coop_tribe_civ.py).
+
+* ✔ (observed, the 0.7.7 final tribe_civ 20261105-015320 and lab 20261105-123325) Back from the City Hall editor
+  the host's game has no totem pole (none in its noun list) and no food mat of the player tribe (+0x260 = 0,
+  BUG-0585); a guest's game keeps both at the village (404 8 305) until the Civ world comes. ✔ (observed, lab
+  20261104-224338) The host's animals then read at (0, 0, 0) (46 NPC rows "here" at (0 0 0) with their health)
+  while the guests' proxies stay: the sync-check's "n: 46 apart" MISMATCH 18 s after the City Hall.
+* ✔ `cTribeUI +0x28` / `+0x29` (what the listener 0xCD1D60 sets when it submits the City Hall / vehicle editor, see
+  [tribe-civ-transition](#tribe-civ-transition)) read 0 on the object cTribeUI_Get 0xCD4230 returns, back in Tribe
+  after the City Hall (lab 20261105-123325): ~ the listener's object is another one, or the flags are cleared. The
+  mod's sign of the phase is the player tribe without its food mat (`tribe::stage_end`).
+* Decision: a guest runs no such phase (its game never opens these editors); neither player sees the other's
+  world then (the host is in the cinematic and the editors), and the Civ world replaces both. So it is not
+  re-aligned: the sync-check compares nothing while the host's game ends the stage (`diag.stage_end`), the
+  detector skips the sample as `apart` (`st phase stage_end=1` of coop.wstate).
+* ✔ The vote / notice path after these editors took them for an evolution ("Alice evolved the species: everybody
+  gets the new body", the Creature evolve-in-place path): the notice now says a design for the Civilization stage
+  was made. The in-place path itself (no world sent between the two editors) stays: the Civ stage sends the world.
+
+## The fight's effects, sprints and voices on a guest's mirrors (2026-11-05, fix/w44-guest-player3)
+<a id="tribe-mirror-fx"></a>
+
+P2b of 0.7.8 (BUG-0600). GOG 2024, lab lanes 4 / 5, `coop.audio` and `coop.effects log on` (the log lines now carry
+the first four return addresses into the game's code: the creator of every effect).
+* ✔ (runtime, out/lab/20261105-134329) In a 30 s fight of the host's members the host's game played, besides the
+  theme (#tribe-guest-a1), sounds from an effect's sound component (FUN_00a37430, return address 0xA3749B) and the
+  creature voices; the guest's game none of them. Matched by the intervals between the plays and the effect creations
+  of the same log:
+  * 0xD967193C = the sound of pool-1 effect **0xE55DC391 key 0x35052B7 (the sprint)**: `cCreatureBase::Update`
+    0xC21530 calls StartOrStopEffectFromPool1(bit 0x20 of +0xFA4, 0xE55DC391, 0x35052B7) every frame when the
+    creature's +0xC0 vt 0x58 is true (the player tribe's members: the enemy's had none). The bit is the sprint:
+    `SporeCoop::Creature_SetSprint` 0xC1AE70, called by ~30 behaviour nodes (run to the target).
+  * 0xC881120E (into a fight) / 0x529FEC69 (out of it) = `SporeCoop::Creature_CombatVoice` 0xC1B030 (+0xBB1 the
+    in-combat byte), called by the fight node 0xD69540 and the TakeDamage of animals and citizens.
+  * 0xCE5F2ED0 = effect 0xA231DA2F of 0xCCBE90 (~ the tribe UI's order marker at the target: the effect id is picked by
+    the order kind and the camera distance band): the ordering player's own feedback, not a member's.
+  * other pool effects of the members (no sound in these runs): 0x8ADA6617 (pool 1 on the NPC chief, from 0xC2103D),
+    0xF8122731 / 0x759B0E13 (one-shots at bone 20 / 22, cCreatureBase::CreateEffect from 0xC25419 / 0xCCAA2F: the
+    tools), 0x21C934A7 / 0x85A02492 (pool 2 key 0x55559EF from the behaviour 0xDAB4A0).
+* ✔ The animation-event effects (0x9FBF00: 0x2D4ADB36 footsteps, 0xE6D770B8..BD) play on the guest's mirrors too
+  (the relayed animations, BUG-0569); 0xDCAE75D5 (the foot step's second effect, made by 0x9A6910 only while the foot
+  event's +0x2D5 is set) plays on the host only: not followed further.
+* ? The A1 run (out/lab/20261105-115203) also had 0xA7E3E1FB (18) and 0xD05B58ED (17) through the same sound
+  component path; none of the three runs of this branch had them, their effect is not known.
+* ✔ Fix `mirror.fx` (mods/coop/mirror_fx.cpp, MSG_MIRROR_FX 64): the host sends, for a tribe member or an npc.cpp NPC,
+  the pool effect starts / stops and one-shots the game's pool hooks report (effects.cpp passes every creature but the
+  own avatar and the puppets on), and the changes of CombatVoice and SetSprint; a guest makes the same call on its
+  mirror (start_effect / create_creature_effect with the bone check / stop_effect, the original CombatVoice with
+  force, the original SetSprint: its Update then starts the sprint effect itself). Lab (coop_tribe_fight_sounds.py,
+  the order marker and the per-target impacts left out): the guest's game 9 of the host's 9 such sounds, the voices
+  4 of 4 (out/lab/20261105-135946, 2 runs); off 4 of 15 (only the animation effects' C656EAF8) and 0 of 4
+  (out/lab/20261105-140001).
+* ~ NPCs of the Creature stage go through the same path (npc::id_of / npc::proxy); not tested there.

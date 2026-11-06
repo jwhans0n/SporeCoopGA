@@ -1,4 +1,5 @@
 #include "adventure_relationships.h"
+#include "sporekit_build.hpp"
 
 #include <cstring>
 #include <utility>
@@ -51,7 +52,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx ctx)
     if (ready || !host || !host->sym || !host->exe_sha256 || !host->hook_create ||
         !ctx.active || !ctx.remote_captain || !ctx.local_avatar) return false;
     const char* hash = host->exe_sha256();
-    if (!hash || std::strcmp(hash, kHash)) return false;
+    if (!skg::supported_gog2024(hash)) return false;
     auto* target = reinterpret_cast<void*>(host->sym("SporeCoop::Adventure::GetCreatureRelationship"));
     if (!target) return false;
     C = std::move(ctx);

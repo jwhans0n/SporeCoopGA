@@ -46,13 +46,24 @@ std::string debug(const std::vector<std::string>& args);
 // owner of a player tribe member (player id), 0xFF if unknown
 uint8_t owner_of(void* citizen);
 bool active(); // tribe sync running (tribe stage, connected)
+// BUG-0588, BUG-0594: this game is in the end of Tribe (docs/re/tribe.md#tribe-civ-transition): back from the City Hall editor
+// (the player tribe has no food mat any more, +0x260 = 0). From the City Hall on the game takes the player village and
+// the animals out of the world (totem pole and food mat destroyed, every animal at (0, 0, 0)) for the Civ stage; a
+// guest's game, which runs no such phase, keeps them until the Civ world comes
+bool stage_end();
 bool center(net::Vec3& pos); // position of the player tribe
 // members of the player tribe with their owner (for name tags)
 // the epic creature was hit by a creature (host; from the creature damage filter)
 void note_animal_hit(void* animal, void* attacker_creature);
+// BUG-0569 (tribe.mirror_anims): host, a behaviour animation the game started on a creature (game.cpp's listener,
+// npc.cpp passes it on); guest, MSG_NPC_ANIM kinds 2 / 3 after the kind byte
+void on_behaviour_anim(void* c, uint32_t anim, int how, int a, int b);
+void on_member_anims(uint8_t kind, net::Reader& r);
 // a chief of a player (bigger, "★" tag)
 // the member id (as in coop.tribe and coop.sync t<id>), 0 when not a tracked member
 uint16_t id_of(void* citizen);
+// guest: the mirror of the host's member #id (null: none)
+void* mirror_of(uint16_t id);
 // tests: "hut<tribe index>[p]" for a tribe's hut, "" for anything else
 std::string object_key(void* obj);
 // tests: the position of every planet tree (cTreeData, fruit trees to gather from)

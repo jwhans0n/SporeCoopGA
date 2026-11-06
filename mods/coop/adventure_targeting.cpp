@@ -1,4 +1,5 @@
 #include "adventure_targeting.h"
+#include "sporekit_build.hpp"
 
 #include <algorithm>
 #include <array>
@@ -85,7 +86,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx ctx)
     if (ready || !host || !host->sym || !host->exe_sha256 || !host->hook_create ||
         !ctx.active || !ctx.live_npc || !ctx.captains || !ctx.remote_captain) return false;
     const char* hash = host->exe_sha256();
-    if (!hash || std::strcmp(hash, kHash)) return false;
+    if (!skg::supported_gog2024(hash)) return false;
     const char* names[] = {
         "SporeCoop::Adventure::MatchesBehaviorTarget",
         "SporeCoop::Adventure::AttackConditionTargetReturn",

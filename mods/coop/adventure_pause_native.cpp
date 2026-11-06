@@ -1,4 +1,5 @@
 #include "adventure_pause_native.h"
+#include "sporekit_build.hpp"
 
 #include <array>
 #include <cstring>
@@ -90,7 +91,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx context)
     if (ready || !host || !host->sym || !host->hook_create || !host->run_outside_frame ||
         !host->exe_sha256 || !context.active || !context.held || !context.local_intent) return false;
     const char* hash = host->exe_sha256();
-    if (!hash || std::strcmp(hash, kHash)) return false;
+    if (!skg::supported_gog2024(hash)) return false;
     auto address = host->sym("SporeCoop::Adventure::RecalculatePauseFlags");
     getter = host->sym("Simulator::cGameTimeManager::Get");
     if (!address || !getter || host->hook_create(mod, reinterpret_cast<void*>(address),

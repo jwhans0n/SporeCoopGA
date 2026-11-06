@@ -218,6 +218,48 @@ with the original SporeCoop project and its authors credited below and in README
   `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
   Other stages on that executable remain unvalidated. See
   [the preview guide](docs/GALACTIC-ADVENTURES.md) for setup and remaining limits.
+## [0.7.8] - 2026-11-05
+
+### Changed
+- The GOG 2016 build of Spore is no longer supported: please update the game through GOG (the current download
+  is the 2024 build). SporeCoop still starts on GOG 2016, but it is not tested there and its bugs are not fixed.
+
+### Fixed
+- Creature: the guest's Raging Roar now scares the host's animals: creatures of other species around the guest
+  run away in both games, as they do from the host's roar (BUG-0501).
+- Co-op window: *Send my world* is greyed out while no game is loaded or nobody has joined, instead of saying
+  "Sending the world to everyone..." and doing nothing; the lobby of a host alone says that you can start or load a
+  game now and friends can join any time (BUG-0597).
+- Co-op window: the "My creature" / "My cell" row says whose creature you play ("the host's species") and, when you
+  have none of your own, that making one in an editor gives you the choice (BUG-0598).
+- Co-op window: a chat line typed while the host's game was saving the world for a joining player is no longer lost
+  (BUG-0551).
+- The host's game no longer stays paused on the "game saved" box while the co-op window is open (BUG-0599).
+- Tribe: a guest's game should no longer crash when the camera jumps (the home button) to creatures whose effect
+  was broken; the broken effect is left out instead (BUG-0575, a guard: the cause is not known).
+- Creature / Tribe: the game no longer crashes when a fruit falls from a plant after the other player ate a fruit
+  that was on the ground since the save was loaded (BUG-0584).
+- Tribe: villages founded during play now show the host's mood and food in the guest's game too, instead of the
+  values of another village (BUG-0591).
+- Civilization: a city the host's player captured, bought or converted now has the player's buildings in the
+  guest's game too, and the other nations' moods and money are the host's (BUG-0593).
+- Tribe -> Civilization: the City Hall and vehicle editors of the end of Tribe no longer say "evolved the species",
+  and the co-op sync check no longer reports a mismatch while the host's game prepares the Civilization stage
+  (BUG-0588).
+
+- Creature: an animal in the air in the host's game (a flier, a jump, thrown by a hit) is in the air at the same
+  height in the guest's game too, instead of walking on the ground under it (BUG-0550).
+- Creature: your own creature no longer stays half in the ground after the other player comes back at your spot
+  (after a return from the main menu or an editor) or bumps into it on a slope (BUG-0592, BUG-0504).
+- Tribe: a guest sees the members of every village fight, gather, dance and build, instead of standing still
+  (BUG-0569).
+- Tribe: a guest hears the stage's hunting and fighting music of its tribe, as the host does (BUG-0568).
+- Tribe: a guest hears the fight's sounds of the host's villagers: their war cries going into a fight, their sighs
+  coming out of it, the sprint and the effects of their attacks (BUG-0600; the hit impacts of the attack animations
+  are still open, BUG-0603).
+- Tribe: in co-op new villages no longer appear as soon as the whole party has gathered the food one player's tribe
+  needs alone: they come at one player's pace (BUG-0571).
+
 ## [0.7.7] - 2026-11-05
 
 ### Fixed

@@ -1,4 +1,5 @@
 #include "adventure_world.h"
+#include "sporekit_build.hpp"
 #include "adventure_world_lifecycle.h"
 #include "adventure_world_actions.h"
 #include "adventure_world_vehicles.h"
@@ -2374,7 +2375,7 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
     a_Impulse=H->sym("Simulator::cPhysicsWorld::ApplyImpulse");
     a_ThrowGrace=H->sym("SporeCoop::Adventure::ThrowPairGrace");
     o_Drop = (Drop_t)H->sym("SporeCoop::Adventure::DropItem");
-    if (std::string(H->exe_sha256()) != "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37" ||
+    if (!skg::supported_gog2024(H->exe_sha256()) ||
         !a_Mode || !a_SetAct || !a_GetMarker || !a_Hostile || !a_Befriend || !a_Ally || !a_Relationships || !a_SocialEvent || !a_SocialMode || !a_AnimalDamage || !a_GoalHUD || !a_MovementRequest || !a_VehicleGroundUpdate ||
         !check || !complete || !goals || !state || !pick || !picked || !dropped || !count || !avatar || !generic || !o_Drop || !C.sess || !C.captain_can_act ||
         !talk || !talk_end_address || !gate || !a_GateKey || !a_OpenGate || !a_Physics || !a_Impulse || !a_ThrowGrace || !adventure_world_lifecycle::init(H, M)) return false;

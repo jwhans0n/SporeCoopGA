@@ -1,7 +1,7 @@
 // SporeCoop mod: creature-stage co-op ("pack" mode). See docs/03-gameplay.md.
 // the release version (tools/package.sh names the zip after it)
 #ifndef COOP_VERSION
-#define COOP_VERSION "0.7.7.0"
+#define COOP_VERSION "0.7.8.0"
 #endif
 
 #include <winsock2.h>
@@ -35,6 +35,7 @@
 #include "tribe.h"
 #include "drama.h"
 #include "cellsync.h"
+#include "audio.h"
 #include "census.h"
 #include "civ.h"
 #include "autoupdate.h"
@@ -55,6 +56,7 @@
 #include "npc.h"
 #include "creature_hp.h"
 #include "player_rules.h"
+#include "mirror_fx.h"
 #include "effects.h"
 #include "nest.h"
 #include "fields.h"
@@ -1071,7 +1073,7 @@ static bool world_state_msg(uint8_t type)
            (type >= net::MSG_CELL_STATE && type <= net::MSG_CELL_FOOD) || type == net::MSG_CELL_KO ||
            type == net::MSG_CELL_BITTEN || type == net::MSG_TRIBE_STATE || type == net::MSG_TRIBE_CMD ||
            type == net::MSG_SPECIES || type == net::MSG_SOCIAL || type == net::MSG_NEST || type == net::MSG_PARTS ||
-           type == net::MSG_FIELDS || type == net::MSG_WSTATE || type == net::MSG_PLAYER_RULE;
+           type == net::MSG_FIELDS || type == net::MSG_WSTATE || type == net::MSG_PLAYER_RULE || type == net::MSG_MIRROR_FX;
 }
 
 // the gate: does this machine drop the host's message? (0.7.3.0 with core.world_gate off: the old
@@ -1782,9 +1784,17 @@ bool SK_THISCALL h_CreatureGameMsg(void* self, uint32_t id, void* data)
     return o_CreatureGameMsg(self, id, data);
 }
 
+// BUG-0588: the editor of the last request (EditorRequest +0xC): the end of Tribe's City Hall and vehicle editors
+static uint32_t g_last_editor_req = 0;
+static bool tribe_civ_editor(uint32_t id)
+{
+    return id == 0x99E92F05u || id == 0xF670AA43u || id == 0x9AD7D4AAu || id == 0x7CB21BADu;
+}
 bool SK_CDECL h_Submit(void* req)
 {
     uint32_t mode = game::mode_id();
+    if (req && skg::readable(req, 0x10))
+        g_last_editor_req = skg::field<uint32_t>(req, 0xC);
     // The cell stage asks for its editor again while the mate is still next to the avatar
     // (0xE78D10 -> mating -> event 0x1E -> 0xE59800 -> Submit): one more request came 13 ms after
     // the vote had ended, before the held one reached the game, and started a second vote that
@@ -2104,6 +2114,8 @@ void on_mode_change(uint32_t from, uint32_t to)
     g_share_due_at = H->time_seconds() + (evolved ? 3.0 : 0.0); // BUG-0019: its cinematic starts first
     notice(new_stage            ? g_name + " entered the " + modes::mode_name(to) + " stage: everybody follows"
            : design_stage(to) ? g_name + " changed a design: everybody gets the new designs"
+           // BUG-0588: the City Hall and vehicle editors of the end of Tribe are no evolution
+           : to == modes::kTribe && (tribe::stage_end() || tribe_civ_editor(g_last_editor_req)) ? g_name + " made a design for the Civilization stage: it comes next"
                               : g_name + " evolved the species: everybody gets the new body",
            -1);
 }
@@ -3094,6 +3106,7 @@ void on_frame(void*, int, void*)
         avatar_change_check();
     monitor_frame_start(now); // the puppets as drawn, before any driving (docs/06-testing.md#testing-monitor)
     npc::monitor_tick(now);   // the proxies as drawn
+    modes::own_ground_tick(now); // BUG-0592: the own creature not left in the ground
     // BUG-0231: the world a joining guest hears in WELCOME (before the host's first state); the
     // values of the last frame, as every message of this update sees them. Not switched: 0.7.3.0
     // guests never read it
@@ -4077,6 +4090,9 @@ void setup_callbacks()
         case net::MSG_PLAYER_RULE: // P1 of 0.7.7: stun (BUG-0554)
             player_rules::on_message(type, from, r);
             return;
+        case net::MSG_MIRROR_FX: // BUG-0600: the host's creature effects, sprints and voices on the mirrors
+            mirror_fx::on_message(type, from, r);
+            return;
         }
         if (g_sess.role() == net::Role::Client && from == 0)
             world::on_message(type, r, g_sess.name_of(0));
@@ -4585,6 +4601,10 @@ int c_npc(void*, int argc, const char* const* argv, SkOut* out)
     }
     if (argc > 2 && !strcmp(argv[1], "pool")) { // host (tests, BUG-0339): pool <id>
         SAY("%s", npc::debug_pool((uint16_t)atoi(argv[2])).c_str());
+        return 0;
+    }
+    if (argc > 4 && !strcmp(argv[1], "lift")) { // host (tests, BUG-0550): lift <id> <m> <s>
+        SAY("%s", npc::debug_lift((uint16_t)atoi(argv[2]), (float)atof(argv[3]), (float)atof(argv[4])).c_str());
         return 0;
     }
     if (argc > 3 && !strcmp(argv[1], "sink")) { // guest (tests, BUG-0399): sink <id> <m> [mark]
@@ -5286,6 +5306,7 @@ void init_ui()
     a.can_ready = adventure::can_ready;
     a.change_captain = [] { adventure::change_captain(); };
     a.cancel_adventure = [] { adventure::cancel("The party cancelled adventure preparation."); };
+    a.share_state = [] { return !(g_adapter && g_local) ? 1 : g_sess.players().size() > 1 ? 0 : 2; };
     a.say = [](const std::string& t) {
         if (support::chat_command(t)) // "/bug <text>" (docs/REPORTING.md#reporting-support)
             return;
@@ -5316,6 +5337,11 @@ int c_uistate(void*, int argc, const char* const* argv, SkOut* out)
     if (argc > 1 && !strcmp(argv[1], "log")) {
         coop_ui::g_log_msgs = !coop_ui::g_log_msgs;
         SAY("ui message log %s", coop_ui::g_log_msgs ? "on" : "off");
+        return 0;
+    }
+    if (argc > 2 && !strcmp(argv[1], "lang")) { // tests: the layout of the texts that change in Russian
+        coop_ui::set_russian(!strcmp(argv[2], "ru"));
+        SAY("ui lang %s (the texts set from now on)", coop_ui::russian() ? "ru" : "en");
         return 0;
     }
     if (argc > 1)
@@ -5480,6 +5506,7 @@ void support_init()
     p.mode = [] { return g_mode; };
     p.place = [] { return g_world; };
     p.playing = [] { return g_local != nullptr; };
+    p.stage_end = [] { return tribe::stage_end(); };
     p.dna = [](float& v) {
         if (!game::avatar() || g_mode != modes::kCreature)
             return false;
@@ -5721,6 +5748,11 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
         };
         player_rules::init(H, M, pc);
     }
+    { // BUG-0600: the fight's effects, sprints and voices of the host's members / NPCs on a guest's mirrors
+        mirror_fx::Ctx mc;
+        mc.sess = &g_sess;
+        mirror_fx::init(H, M, mc);
+    }
     { // BUG-0451: the creatures' visual effects on the partner's puppet
         effects::Ctx ec;
         ec.sess = &g_sess;
@@ -5838,6 +5870,7 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
         rc.host_away = ctx.host_away;
         realign::init(H, M, rc);
     }
+    audio::init(H, M); // BUG-0568: the game's audio commands for tests (coop.audio)
     { // BUG-0401: the party's collected creature parts
         parts::Ctx pc;
         pc.sess = &g_sess;
@@ -6571,7 +6604,7 @@ extern "C" SK_EXPORT const SkModInfo* sporekit_mod_main(const SkHost* host, SkMo
     H->command_add(M, "coop.adapters", "coop.adapters [stress N|fault] - local address lookup (BUG-0286)",
                    [](void*, int argc, const char* const* argv, SkOut* out) { return adapters::command(argc, argv, out); },
                    nullptr, SK_CMD_OUTSIDE_FRAME);
-    H->command_add(M, "coop.uistate", "coop.uistate [0|1] - co-op window state (open/close it)", c_uistate, nullptr,
+    H->command_add(M, "coop.uistate", "coop.uistate [0|1|log|lang en|ru] - co-op window state (open/close it; lang: tests)", c_uistate, nullptr,
                    SK_CMD_OUTSIDE_FRAME);
     H->cheat_register("coop", "coop.",
                       "coop host [port] | join <ip[:port]> | leave | status | name <nick> | say <text>");

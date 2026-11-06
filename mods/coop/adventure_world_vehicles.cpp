@@ -1,4 +1,5 @@
 #include "adventure_world_vehicles.h"
+#include "sporekit_build.hpp"
 
 #include <array>
 #include <cstring>
@@ -91,7 +92,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx ctx)
     if (!H || !H->sym || !H->exe_sha256 || !H->hook_create || !H->hook_remove ||
         !C.active || !C.host || !C.run || !C.is_mirrored) return false;
     const char* hash = H->exe_sha256();
-    if (!hash || std::strcmp(hash, kHash) != 0) return false;
+    if (!skg::supported_gog2024(hash) != 0) return false;
     std::array<void*, 4> targets{};
     for (size_t i = 0; i < targets.size(); ++i) {
         targets[i] = reinterpret_cast<void*>(H->sym(kSymbols[i]));

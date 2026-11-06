@@ -493,6 +493,20 @@ typedef void*(SK_THISCALL* StartStopFx_t)(void*, int, uint32_t, uint32_t);
 typedef int(SK_THISCALL* StopFx_t)(void*, uint32_t, uint32_t);
 typedef void*(SK_THISCALL* GetFx_t)(void*, uint32_t);
 static bool g_fx_log;
+// support log only (coop.effects log on): the first return addresses into the game's code on the stack, the creator
+// of an effect (no frame pointers in the game; BUG-0600 analysis)
+struct FxFrom { uint32_t a[4] = {}; };
+static FxFrom fx_from()
+{
+    FxFrom f;
+    const uint32_t* sp = (const uint32_t*)__builtin_frame_address(0);
+    for (int k = 0, n = 0; k < 128 && n < 4; k++) {
+        uint32_t v = sp[k];
+        if (v > 0x401000 && v < 0x1300000)
+            f.a[n++] = v;
+    }
+    return f;
+}
 // The game calls effect creation from its UI skinner's render thread too (Tribe/Civ, measured in
 // Skinner::cSkinPainterPipeline::ExecutePipeline). Everything of ours that touches game objects,
 // the effect table or the network happens on the game's main thread only; on any other thread a
@@ -675,15 +689,17 @@ static int SK_THISCALL h_WorldCreateFx(void* world, uint32_t id, uint32_t a3, vo
     if (!g_world_on.load(std::memory_order_relaxed) || !fx_main_thread()
         || !g_fx_relay_on.load(std::memory_order_relaxed))
         return r;
+    if (g_fx_log) {
+        FxFrom f = fx_from();
+        H->log(M, SK_INFO, "fxw: world %p main %p id %08X ok %d anim %d relay %d from %X,%X,%X,%X", world, main_effect_world(), id,
+               r & 0xFF, t_in_anim_fx ? 1 : 0, g_in_relay ? 1 : 0, f.a[0], f.a[1], f.a[2], f.a[3]);
+    }
     if (t_in_anim_fx) {
         g_fx_anim++;
         return r;
     }
     if (g_in_relay)
         return r;
-    if (g_fx_log)
-        H->log(M, SK_INFO, "fxw: world %p main %p id %08X ok %d ret %08X", world, main_effect_world(), id, r & 0xFF,
-               (unsigned)((uintptr_t)__builtin_return_address(0) - H->rebase(0)));
     if ((r & 0xFF) && out && *out) {
         double t0 = H->time_seconds();
         g_fx_world++;
@@ -740,7 +756,7 @@ static void* SK_THISCALL h_CreateCreatureFx(void* self, int bone, uint32_t id, u
     if (!fx_main_thread()) // the UI skinner's render thread: the original only
         return fx;
     if (g_fx_log)
-        H->log(M, SK_INFO, "fxcr: self %p avatar %p id %08X bone %d fx %p", self, avatar(), id, bone, fx);
+        { FxFrom f = fx_from(); H->log(M, SK_INFO, "fxcr: self %p avatar %p id %08X bone %d fx %p from %X,%X,%X,%X", self, avatar(), id, bone, fx, f.a[0], f.a[1], f.a[2], f.a[3]); }
     if (fx && g_fx_relay_on.load(std::memory_order_relaxed)) {
         if (FxCreated* e = fx_find(fx))
             e->relayed = true;
@@ -767,7 +783,7 @@ static void* SK_THISCALL h_CreateFx1(void* self, uint32_t id)
     void* fx = o_CreateFx1(self, id);
     if (!fx_main_thread())
         return fx;
-    if (g_fx_log) H->log(M, SK_INFO, "fx1: self %p avatar %p id %08X", self, avatar(), id);
+    if (g_fx_log) { FxFrom f = fx_from(); H->log(M, SK_INFO, "fx1: self %p avatar %p id %08X from %X,%X,%X,%X", self, avatar(), id, f.a[0], f.a[1], f.a[2], f.a[3]); }
     if (fx && g_fx_relay_on.load(std::memory_order_relaxed)) {
         if (FxCreated* e = fx_find(fx))
             e->relayed = true;
@@ -781,7 +797,7 @@ static void* SK_THISCALL h_CreateFx1Keyed(void* self, uint32_t id, uint32_t key)
     void* fx = o_CreateFx1Keyed(self, id, key);
     if (!fx_main_thread())
         return fx;
-    if (g_fx_log) H->log(M, SK_INFO, "fx1k: self %p avatar %p id %08X key %08X", self, avatar(), id, key);
+    if (g_fx_log) { FxFrom f = fx_from(); H->log(M, SK_INFO, "fx1k: self %p avatar %p id %08X key %08X from %X,%X,%X,%X", self, avatar(), id, key, f.a[0], f.a[1], f.a[2], f.a[3]); }
     if (fx && g_fx_relay_on.load(std::memory_order_relaxed)) {
         if (FxCreated* e = fx_find(fx))
             e->relayed = true;
@@ -795,7 +811,7 @@ static void* SK_THISCALL h_CreateFx2Keyed(void* self, uint32_t id, uint32_t key)
     void* fx = o_CreateFx2Keyed(self, id, key);
     if (!fx_main_thread())
         return fx;
-    if (g_fx_log) H->log(M, SK_INFO, "fx2k: self %p avatar %p id %08X key %08X", self, avatar(), id, key);
+    if (g_fx_log) { FxFrom f = fx_from(); H->log(M, SK_INFO, "fx2k: self %p avatar %p id %08X key %08X from %X,%X,%X,%X", self, avatar(), id, key, f.a[0], f.a[1], f.a[2], f.a[3]); }
     if (fx && g_fx_relay_on.load(std::memory_order_relaxed)) {
         if (FxCreated* e = fx_find(fx))
             e->relayed = true;
@@ -1499,6 +1515,13 @@ void destroy_creature(void* c)
         thiscall<void>(a_DestroyInstance, nm, c);
 }
 
+void destroy_instance(void* obj)
+{
+    void* nm = g_ready && obj ? cdecl_call<void*>(a_NounGet) : nullptr;
+    if (nm)
+        thiscall<void>(a_DestroyInstance, nm, obj);
+}
+
 // tests (BUG-0507): the game destroys c as it does on its own (cGameNounManager::DestroyInstance), without
 // the mod's bookkeeping (no puppet_unregister, no deferring): a puppet freed behind the mod's back
 void destroy_untracked(void* c)
@@ -1570,7 +1593,7 @@ void air_hold(void* c, bool on, const net::Vec3& pos, const net::Quat& rot, cons
                 g_air.erase(g_air.begin() + i);
             return;
         }
-    if (on && g_air.size() < 16)
+    if (on && g_air.size() < 64) // (BUG-0550: NPC proxies in the air too)
         g_air.push_back({c, field<void*>(c, 0xB54), pos, vel, rot});
 }
 
@@ -1819,6 +1842,7 @@ void puppet_register(void* c)
 
 void puppet_unregister(void* c)
 {
+    air_hold(c, false); // BUG-0550: a proxy or puppet held in the air is released with it (no hold on a freed creature)
     g_puppets.erase(std::remove(g_puppets.begin(), g_puppets.end(), c), g_puppets.end());
 }
 

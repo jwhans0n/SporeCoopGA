@@ -1,4 +1,5 @@
 #include "adventure_progress.h"
+#include "sporekit_build.hpp"
 
 #include <cstring>
 
@@ -41,7 +42,7 @@ bool init(const SkHost* host, SkMod*)
     ready = false; a_load = a_int32 = 0;
     if (!host || !host->sym || !host->exe_sha256) return false;
     const char* hash = host->exe_sha256();
-    if (!hash || std::strcmp(hash, kHash) != 0) return false;
+    if (!skg::supported_gog2024(hash) != 0) return false;
     a_load = host->sym("SporeCoop::Adventure::LoadAssetProperties");
     a_int32 = host->sym("App::Property::GetValueInt32");
     ready = a_load && a_int32;

@@ -3,7 +3,9 @@
 Bugs found and not fixed yet. Each entry: what happens, how to reproduce it, what is known.
 Fixed entries move to the commit message (and a test).
 
-## Galactic Adventures preview 12: validation limits
+## Galactic Adventures preview 12: validation limits (BUG-0626)
+
+Historical validation limitations and current missing smoke prerequisites are tracked by BUG-0626.
 
 Preview `0.7.3.5-ga-preview.12` requires the exact dc04 GOG executable and matching
 protocol 15 clients. It seals the host's first win/loss decision, holds gameplay
@@ -1827,7 +1829,8 @@ Found by fix/w40-play (2026-11-03), not fixed:
   Ticket: BUG-0503. Fixed on fix/w43-tests (2026-11-04): on a guest at a low frame rate the placing was capped at
   0.1 s frames and fell behind (npc.proxy_slow_frames); not yet confirmed with a long session.
 * Creature: under the brain upgrade caption both own creatures read 0.63-0.71 m under the ground once (monitor
-  rule `ground`, 20261103-124913 play_creature#2); not reproduced at the fixture's nest. Ticket: BUG-0504.
+  rule `ground`, 20261103-124913 play_creature#2); not reproduced at the fixture's nest. Ticket: BUG-0504. Fixed on fix/w44-height (2026-11-05) through
+  creature.own_ground (BUG-0592); the caption itself not rerun.
 * play_tribe: in 2 of 3 runs the guest's members stayed idle on 7-12 orders the host took, and the host's bot
   gave only 8-9 orders (its minimap look missed 24 times once). Ticket: BUG-0505.
 
@@ -1912,7 +1915,7 @@ other has not (both landed, `coop.census all 3000 0 0 0`); not the camera's leve
 * What happens: the 4 cultural targets per city (city setup 0xBE7D40) are placed by each game on its own; the
   detector's `unmatched:cultural_target` in campaign_space. Not seen in play_civ.
 * Not fixed. Ticket: BUG-0540
-- BUG-0550: Creature: an NPC 9 m over the ground on the host is drawn on the ground on the guest (seen once in play_creature, sync-check `n: 1 apart`).
+- BUG-0550: Creature: an NPC 9 m over the ground on the host is drawn on the ground on the guest (seen once in play_creature, sync-check `n: 1 apart`). Fixed on fix/w44-height (2026-11-05, npc.air).
 - BUG-0551: Creature: a chat line typed while the host pauses to save the world for a returning guest can be lost (seen once in play_creature).
 
 Player reports 2026-11-04 (0.7.5, Discord bug-reports; not analysed yet):
@@ -1930,10 +1933,10 @@ Player reports 2026-11-04 (0.7.5, Discord bug-reports; not analysed yet):
 - BUG-0565: Tribe: every village's relation is neutral on the guest, while the host sees them aggressive and slightly aggressive
 - BUG-0566: Tribe: the guest does not see an enemy village's hut (hub) health go down when the players attack it
 - BUG-0567: Tribe: a building is broken (bugged) on the guest after the guest dies
-- BUG-0568: Tribe: no music in the guest's Tribe game
-- BUG-0569: Tribe: the guest sees no animations
+- BUG-0568: Tribe: no music in the guest's Tribe game (fixed on fix/w44-tribe-guest, unreleased: tribe.theme_music, the hunt / fight theme)
+- BUG-0569: Tribe: the guest sees no animations (fixed on fix/w44-tribe-guest, unreleased: tribe.mirror_anims)
 - BUG-0570: Tribe: no red target circle under an enemy the guest targets (fixed on fix/w43-guest-player, unreleased)
-- BUG-0571: Tribe: villages are founded (spawn) much faster than in the single-player game
+- BUG-0571: Tribe: villages are founded (spawn) much faster than in the single-player game (fixed on fix/w44-tribe-guest, unreleased: tribe.form_pace)
 - BUG-0572: Tribe: the guest's food counter is 0 while the host's tribe has food (reproduce: tribe_food_zero; the guest's game spends its last food, shared.cpp cannot write into an empty bundle list) (from about an hour into the session)
 - BUG-0573: Tribe: the guest's tribe members do not eat on their own, they must be ordered to eat
 - BUG-0574: Tribe: two buildings stand right next to each other on the guest (fixed in 0.7.6 by BUG-0523: tribe_tools_all, 2026-11-04 replay)
@@ -1981,6 +1984,9 @@ Player reports 2026-11-04 (0.7.5, Discord bug-reports; not analysed yet):
   purpose (BUG-0486).
 * Not checked: how the ship picks its creature; what the game does with an abducted avatar.
 * Next steps: find the target pick of cAbductToolStrategy, keep puppets out of it on the host, or relay the visit.
+* 2026-11-05 (fix/w44-guest-player2): the pick is the ship's BT node 0x0519E372 (docs/re/creature.md#creature-ufo-pick);
+  `creature.ufo_puppet` keeps puppets out of it (not verified: in the lab the ship's BT stops after ~7 s and never
+  picks). Still open: the guest does not see the host's ship.
 * Ticket: BUG-0558
 
 ## Tribe: a guest's game crashes in a model's effect list after a camera jump (2026-11-04, player report 0.7.5)
@@ -2005,14 +2011,33 @@ Player reports 2026-11-04 (0.7.5, Discord bug-reports; not analysed yet):
 * Reproduce: `tools/lab.py run tribe_civ --lane N`; the host's log between the editors.
 * Known: docs/re/tribe.md#tribe-civ-transition (last item). Both games still reach Civ.
 * Not checked: whether a guest sees anything wrong then; whether the sync-check gate of a lab test trips on it.
+* Fixed on fix/w44-world-state2 (unreleased): diag.stage_end and the notice, docs/re/tribe.md#tribe-stage-end.
 * Ticket: BUG-0588
 - BUG-0582: Tribe: the host's game faults at 0xD72745 every frame during its own creature attack event (lab, ~1 run in 3 of tribe_bounce_world; its game-over caption may not come then) (fixed on fix/w43-crashes, unreleased: tribe.attack_spot)
 - BUG-0583: Tribe: a guest faulted in a citizen's Update (GetAbilityIndexByType) after leaving and joining again (lab, once in realign_tribe_rejoin) (guard on fix/w43-crashes, unreleased: tribe.leader_tool; not reproduced)
 - BUG-0580: Tribe: the NPC tribes' food differs between the host and the guest (detector `Tribe:state:tribe_food`; `SPORE_DETECTOR=20 tools/lab.py run play_tribe`) (fixed on fix/w43-crashes, unreleased: wsync.tribe_food)
 - BUG-0584: Creature: a caught fault on the host, a call through null from 0xB097C4 (once in a 44 min `long_creature`, lab 20261104-214938; analysed, not reproduced: docs/re/creature.md#creature-fruit-pool)
 - BUG-0591: Tribe: in play_tribe the wsync rows tribe_rel and tribe_food stop reaching some villages on the guest from about 400 s on (detector rows; `SPORE_DETECTOR=20 tools/lab.py run play_tribe`)
-- BUG-0592: Creature: after the guest returns from the main menu, the host's standing creature can stand 0.7 m under the ground for about 20 s, until it walks (`SPORE_DETECTOR=20 tools/lab.py run long_creature_short`)
+- BUG-0592: Creature: after the guest returns from the main menu, the host's standing creature can stand 0.7 m under the ground for about 20 s, until it walks (`SPORE_DETECTOR=20 tools/lab.py run long_creature_short`). Fixed on fix/w44-height (2026-11-05, creature.own_ground)
 - BUG-0593: Civilization: a city the player took can stay the NPC's on the guest, with that civilization's relations and money (detector rows; `SPORE_DETECTOR=20 tools/lab.py run campaign_space`)
 - BUG-0594: Tribe: a totem pole on the guest only before the move to Civ (`SPORE_DETECTOR=20 tools/lab.py run tribe_civ`)
 - BUG-0595: Space: the guest's money reads nan in the detector's state row (`SPORE_DETECTOR=20 tools/lab.py run campaign_space`)
 - BUG-0596: Creature: a species has a relation in one game only (`SPORE_DETECTOR=20 tools/lab.py run long_creature_short`)
+- BUG-0575: Tribe: the guest crashed after double-clicking the home icon (0xA826F3) (guard on fix/w44-crashes, unreleased: game.model_fx; not reproduced, the freeing of the effect's part not found: docs/re/tribe.md#tribe-model-fx-guard)
+- BUG-0584: Creature: a fault on the host, a call through null from 0xB097C4 (fixed on fix/w44-crashes, unreleased: wobj.fruit_saved + game.fruit_pool; reproduced by `crash_fruit_eat`: docs/re/creature.md#creature-fruit-pool-guard)
+- BUG-0600: Tribe: a guest's game plays none of the hit and fight sounds of the members' fights (the host's 40+ in a
+  40 s fight, the guest's 0; `coop.audio list` on both after `coop.tribe act 7`).
+- BUG-0591: Tribe: in play_tribe the wsync rows tribe_rel and tribe_food stop reaching some villages on the guest from about 400 s on (detector rows; `SPORE_DETECTOR=20 tools/lab.py run play_tribe`) (fixed on fix/w44-world-state2, unreleased: wsync.tribe_pos)
+- BUG-0592: Creature: after the guest returns from the main menu, the host's standing creature can stand 0.7 m under the ground for about 20 s, until it walks (`SPORE_DETECTOR=20 tools/lab.py run long_creature_short`)
+- BUG-0593: Civilization: a city the player took can stay the NPC's on the guest, with that civilization's relations and money (detector rows; `SPORE_DETECTOR=20 tools/lab.py run campaign_space`) (fixed on fix/w44-world-state2, unreleased: wsync.city_owner, wsync.civ_rel, wsync.civ_money)
+- BUG-0594: Tribe: a totem pole on the guest only before the move to Civ (`SPORE_DETECTOR=20 tools/lab.py run tribe_civ`) (fixed on fix/w44-world-state2, unreleased: a detector read of the host's end of Tribe, docs/re/tribe.md#tribe-stage-end)
+- BUG-0595: Space: the guest's money reads nan in the detector's state row (`SPORE_DETECTOR=20 tools/lab.py run campaign_space`) (fixed on fix/w44-world-state2, unreleased: a detector parse)
+- BUG-0596: Creature: a species has a relation in one game only (`SPORE_DETECTOR=20 tools/lab.py run long_creature_short`) (fixed on fix/w44-world-state2, unreleased: detector reads, docs/re/creature.md#creature-species-only)
+- BUG-0575: Tribe: the guest crashed after double-clicking the home icon (0xA826F3) (guard on fix/w44-crashes, unreleased: game.model_fx; not reproduced, the freeing of the effect's part not found: docs/re/tribe.md#tribe-model-fx-guard)
+- BUG-0584: Creature: a fault on the host, a call through null from 0xB097C4 (fixed on fix/w44-crashes, unreleased: wobj.fruit_saved + game.fruit_pool; reproduced by `crash_fruit_eat`: docs/re/creature.md#creature-fruit-pool-guard)
+- BUG-0602: Civilization: one building of a city stands at another place in the guest's game (detector `Civilization:planet:building_*`; `SPORE_DETECTOR=20 tools/lab.py run campaign_space`)
+  Fixed on fix/w44-guest-player3 (unreleased, `mirror.fx`) except the attack animations' hit impacts: BUG-0603.
+- BUG-0603: Tribe: a guest's game plays none of the hit impact effects of the members' attack animations (the
+  animation event's per-target effects 0x682E8D4B / 0xF0D5A994 / 0xCFECC623, sound 0xD05B58ED; `coop_tribe_fight_sounds.py`
+  prints the host's plays). docs/re/tribe.md#tribe-mirror-fx.
+- BUG-0604: Cell: after the guest's level-up its screen showed only water (no cell drawn, nothing on screen for 7 min) in one cell_new_game run (`tools/lab.py run cell_new_game`; not analysed)
