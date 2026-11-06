@@ -1,16 +1,16 @@
 ---
 id: BUG-0627
 title: Merged transport fixture stalls while receiving queued reliable data
-status: open
+status: fixed
 kind: desync
 stage: Networking
 reported: 2026-11-05
 source: 0.7.8 editor integration Win32 session_transport_tests
 role: 
 versions: 
-fixed_in:
+fixed_in: unreleased
 branch: sync/upstream-0.7.8-editor
-commits:
+commits: 498164cc
 tests: tests/session_transport_tests.cpp
 signature:
 docs:
@@ -27,7 +27,7 @@ Upstream bulk_acks intentionally retries a lost reliable message only after newe
 Keep production retry policy intact. Assert no early retry without ACK evidence, then exercise a fresh-time send-only flush after the actual silent interval. Keep the shared packet-budget boundary after retries become eligible. Train the real loopback RTT with fresh traffic before asserting the LAN branch; use no private RTT setter.
 
 ## Verification
-RED: out/upstream078/session-transport-red.log and transport-diagnosis.log. GREEN: out/upstream078/transport-green.log, 3616 actual-Win32 checks pass. The fixture was also exercised by the portable repository suite.
+FAIL: out/upstream078/session-transport-red.log and transport-diagnosis.log. PASS: out/upstream078/transport-green.log, 3616 actual-Win32 checks pass. The fixture was also exercised by the portable repository suite.
 
 ## History
 - 2026-11-05: opened.
