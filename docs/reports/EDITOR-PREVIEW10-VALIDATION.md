@@ -91,9 +91,9 @@ under `out/preview10-testing-delivery-candidate76/`.
 
 Broader creation/replacement/failure/recovery matrices, performance acceptance,
 final release regressions, lab smoke, public release packaging and publication
-claims remain deferred. BUG-0538 cold-reopen comparison remains separate and open.
+claims remain deferred. BUG-0622 cold-reopen comparison remains separate and open.
 
-The C75 private lab later hits the known D3D presentation hang (BUG-0532); its
+The C75 private lab later hits the known D3D presentation hang (BUG-0616); its
 report and archive are preserved, and that run is not acceptance. Display-mode
 indices change again during C76 startup. Native Settings calibration restores
 1024x768@60 (index2), with no changes to personal graphics settings.

@@ -2028,7 +2028,7 @@ installed-C49 backport acceptance.
 ## GroundEffect forest companion ownership and Flora refresh (2026-11-03, feat/ga-editor-multi-act)
 <a id="history-ground-effect-flora-refresh"></a>
 
-BUG-0522: C54's first normal Flowers action at revision42 was rejected with
+BUG-0606: C54's first normal Flowers action at revision42 was rejected with
 `Editing shared properties requires ownership of their settings.` The retained
 failure is `out/preview9-c54-two-flowers/result.json`. Independent read-only
 checks in `out/preview9-c54-flowers-rejected-fields-r2/verification.json` prove
@@ -2148,7 +2148,7 @@ visible y303 node to y330. Undo restored every Planet field and both replicas
 remained strictly converged and fault-free at R102. The authoring host's native
 gradient marker remained at y330 while the guest displayed y303. This is a local
 control refresh failure, separate from accepted data/history correctness
-(BUG-0524). Exact input, fields and both screenshots are retained under
+(BUG-0608). Exact input, fields and both screenshots are retained under
 `out/preview9-c57-gradient-height-probe`.
 
 Verified dc04 native TerraformUI::Refresh EE9160 has a category1 path at EE9186:
@@ -2188,7 +2188,7 @@ C58. `out/preview9-c58-two-gradient-ui/result.json` and `ui-proof.json` retain
 both authors' normal height303 to330 and own Undo/Redo/Undo, R3 to11. Only
 B6929C92 changes; six UI checks prove restored303 and absent330 after Undo.
 Both final screenshots were reviewed, with no tab toggle, strict peers and
-zero faults. This closes BUG-0524 for the private protocol24 candidate.
+zero faults. This closes BUG-0608 for the private protocol24 candidate.
 
 ## First Alt clone retains its press while ownership is pending (2026-11-03, feat/ga-editor-multi-act)
 <a id="adventure-editor-first-alt-clone"></a>
@@ -2278,7 +2278,7 @@ Flora key list, then F35B20 regenerates/truncates the live bands and intensity
 vectors as required. Native capture F27C00 through F33A50/F32BB0 exports the
 four Flora fields04E13CB7,073154E0,073137BB,072BEC91. The previous nested
 gates therefore missed bulk Flora; adding a queued inner setter would split
-one native operation. BUG-0525 records this source/controlled-producer defect.
+one native operation. BUG-0609 records this source/controlled-producer defect.
 
 The new outer barrier requests these seventeen Planet field scopes together:
 `03A23F98,03A23F99,07B18058,0536250C,0536250D,968C496A,968C496B,B6929C94,`
@@ -2321,7 +2321,7 @@ bands/intensities and GroundEffect; full Planet comparisons and strict peer
 checks remain exact and fault-free. Seventeen is the potential native write
 set, not a claim that every field changes on each preset. Evidence is retained
 under `out/preview9-c59-first-preset-probe`, `out/preview9-c59-first-preset-history`
-and `out/preview9-c59-guest-preset-r2`. BUG-0525 is closed for the private candidate.
+and `out/preview9-c59-guest-preset-r2`. BUG-0609 is closed for the private candidate.
 
 CORRECTION (2026-11-03): controls07393E58/073A7978 in F3AAA0 are Update/Paint
 parent controls, not an established Style popup. The verified B60B4D toF339F0
@@ -2345,7 +2345,7 @@ CORRECTION: the existing controlled Terraform drag check entered placement
 ToolActionF03770, whose Terraform branch is not the normal native Terraform
 input route. Actual selected-stamp drag on C60 moves only the local proxy and
 leaves shared R54/history/recipe unchanged. Canonical checks remain strict and
-fault-free; they do not prove the proxy movement committed. BUG-0527 records
+fault-free; they do not prove the proxy movement committed. BUG-0611 records
 the actual RED reproduction and retained logs.
 
 The exact native Terraform tool vtable148B688 contains F028F0 at slot2C and
@@ -2393,7 +2393,7 @@ only02A907B6, creates one synchronized history item and remains strict/fault-fre
 on both peers. All Planet fields restore and reapply exactly through the checked
 history sequence. Evidence: `out/preview9-c62-terrain-existing-move` and
 `out/preview9-c62-terrain-guest-move`. Manipulator, Model and delete breadth remain
-separate qualification; this closes the actual movement failure in BUG-0527.
+separate qualification; this closes the actual movement failure in BUG-0611.
 
 C62 actual scale handles subsequently pass guest R66 to70 and host R70 to74,
 each with A/U/R/U and exact Planet restoration. The actual scale handle pick
@@ -2432,7 +2432,7 @@ drags acquire leases without starting native history. `saved_native` retained
 `save_publication_pending` after its Save terrain consistency rejection, and
 `finish_recovery` failed to retire that superseded hold. Both gesture and read
 projection scopes remain empty after the new epoch is durable. Extended
-Complexity consequently reports lost original-editor evidence. BUG-0528 tracks
+Complexity consequently reports lost original-editor evidence. BUG-0612 tracks
 the focused lifecycle fix. The original Save recipe mismatch remains open
 investigation and is not attributed to Model selection or Escape.
 
@@ -2443,7 +2443,7 @@ Evidence: `out/preview9-c62-model-probe-save-guard-preserved/`,
 then returns both private games to Galaxy with zero faults, preserving R90:
 `out/preview9-c62-r90-retirement/result.json`.
 
-BUG-0528 source fix: only after `store.checkpoint` succeeds in finish_recovery,
+BUG-0612 source fix: only after `store.checkpoint` succeeds in finish_recovery,
 retire save_terrain, save_cancelling and save_publication_pending. A deferred or
 failed recovery leaves them and the prior checkpoint intact. Strict-i686
 RED fails at the stale flag; GREEN exercises both default and Extended modes,
@@ -2471,7 +2471,7 @@ Actual C63 first Delete on Effect180 does not commit. EFEEC0 is the independent
 Terraform vt10 entry, not placement F02CE0. It calls StartF33A90, clears selected
 Context4 through vt20, then calls RemoveF37FF0 and tails CommitF34400. The old
 Remove gate therefore loses the initial command while requesting ownership.
-BUG-0529 hooks this entry before Start/clearing. Its immutable pending values
+BUG-0613 hooks this entry before Start/clearing. Its immutable pending values
 pin scene source, context/tool, act, current descriptor/vector membership and
 actor/definition/index, canonical record revision and project/epoch/author.
 A checked grant executes the original Delete exactly once; stale callbacks,
@@ -2490,7 +2490,7 @@ the corrected C65 source retention contains the complete external map.
 C63 clone and Shift+wheel probes also commit nothing and preserve exact native,
 semantic/canonical and history values atR116. The wheel probe changes camera
 zoom, so ownership failure is not yet established for its actual producer.
-BUG-0530 tracks qualification of actions6/11 and the adapter's missing pending
+BUG-0614 tracks qualification of actions6/11 and the adapter's missing pending
 retention for those actions. Evidence:
 `out/preview9-c63-terrain-first-action-failures/result.json`.
 
@@ -2508,7 +2508,7 @@ on both participants, one history item and zero faults.
 
 A guest selection probe subsequently stops before deletion. Both watchdogs
 report no frames for30s at00:15:58/59. Their sampled main threads wait beneath
-d3d9 presentation reset, and both fault counters remain zero. BUG-0532 records
+d3d9 presentation reset, and both fault counters remain zero. BUG-0616 records
 the unassigned rendering interruption; this is not evidence of an editor
 transaction failure. The two owned private processes are retired only after
 reports/logs/archives are copied. The first live recovery copy encounters the
@@ -2534,7 +2534,7 @@ F35E10 synchronously atF381AD, before ret4 atF381C9. The old adapter marked the
 deleted row fresh and only shifted that set after native return. Its synchronous
 observer could therefore assign the successor a new authored source. Actual C65
 host Model64 Delete freezes both peers at durableR144 with ambiguous import
-provenance and zero native faults (BUG-0533). The failed command and both frozen
+provenance and zero native faults (BUG-0617). The failed command and both frozen
 logs/images are retained in `out/preview9-c65-terrain-host-model-delete-r3` and
 `out/preview9-c65-model-delete-frozen`. A normal leave waits for unavailable
 native readiness; the exact owned private processes are then retired by their
@@ -2574,7 +2574,7 @@ without changing any bindings. Full ABI118 verification then passes.
 ## Terraform first-use clone and wheel ownership (2026-11-04, feat/ga-editor-multi-act)
 <a id="editor-terrain-first-use"></a>
 
-BUG-0530: Terraform F028F0 action6 and11 previously requested a record lease but
+BUG-0614: Terraform F028F0 action6 and11 previously requested a record lease but
 dropped the initiating input. Only action1 had a held capsule. Verified stock
 UIMachineScenarioEdit first enters SCNObjectScale without changing scale, then
 emits action6 on later Shift-wheel events. Shift release uses virtual28 EFC690,
@@ -2607,7 +2607,7 @@ adapter155,260. Evidence: `out/preview9-terrain-first-use-red`,
 
 Corrected test wheel input posts WM_MOUSEWHEEL with MK_SHIFT only to the verified
 hidden owned HWND, while exclusive virtual Shift is held. The original SDK helper
-sets those bits to zero (BUG-0531), so its old camera-zoom probe is unqualified.
+sets those bits to zero (BUG-0615), so its old camera-zoom probe is unqualified.
 No OS-wide input, native function call or process-memory write is used. C66 three
 wheel events yield one actual scale quantum; C68 yields both subsequent quanta
 as required by the stock transition. Model64 scale changes0.7371397614 to
@@ -2615,7 +2615,7 @@ as required by the stock transition. Model64 scale changes0.7371397614 to
 native/authored-semantic Undo/Redo/Undo. Native Model Alt-clone passes host172-176
 and guest176-180. Effect cases are recorded separately as they finish.
 
-Native C67 had also caught a structural-checksum assumption (BUG-0534): Clone161
+Native C67 had also caught a structural-checksum assumption (BUG-0618): Clone161
 and Undo162 restore complete native bytes on both participants, but the original
 projection hash includes allocation high-water marks. C68 prints both allocators
 and retains that checksum, adding an authored checksum with only those two fields
@@ -2636,7 +2636,7 @@ C68 Effect wheel passes host180-184 and guest184-188, changing only02A907B6.
 Effect clone passes host189/190/191/192 and guest193/194/195/196. All181 old rows
 remain exact; one new record is appended, all six columns retain common length,
 and full native/authored semantic history restores exactly. Evidence:
-`out/editor-preview9-terrain-first-use/receipt.json`. BUG-0535 records a fixture
+`out/editor-preview9-terrain-first-use/receipt.json`. BUG-0619 records a fixture
 correction: the appended seed is current Planet02A907B7 (676a3b72), not source
 seed7940402e. F33540 copies spatial pose only; final F37240 loads the current
 planet seed and passes it through F37313/F37328 to F35910's64/68 seed vector.
@@ -2667,7 +2667,7 @@ CORRECTION (2026-11-04): the preliminary cache-omission explanation is not
 established. Public inspect calls capture(resource). capture_draft separately
 exports current tool values through F27C00 into an owned native copy before
 projection. Standalone live changes need not already exist in the resource
-inspected by the public command. BUG-0536 tracks the actual missing shared
+inspected by the public command. BUG-0620 tracks the actual missing shared
 transaction; instrument its control/ownership/history path before changing
 capture or cache policy. Evidence: `out/preview9-c68-gradient-color-drag-host`,
 `out/preview9-c68-gradient-solo-reference`,
@@ -2684,7 +2684,7 @@ Fresh-panel host198-202 and guest202-206 pass one selected-node change, only
 B6929C93, one history item and full native/authored semantic Undo/Redo/Undo.
 A direct host repeat206-210 also passes without reopening the category after
 Undo. Thus no persistent adapter failure or need to change capture is shown.
-The original failed palette setups remain open/unassigned in BUG-0536.
+The original failed palette setups remain open/unassigned in BUG-0620.
 The recovery helper itself stopped on a UI precondition after both parties
 were already ready; the following live-step probe pins thatR196 baseline
 before input. Evidence: `out/preview9-c68-shared-gradient-live-steps`,
@@ -2721,7 +2721,7 @@ Basic Tools hover confirms the first card caption `Raise Round Terrain`.
 ## Completed Save loses the next materialization proof (2026-11-04, feat/ga-editor-multi-act)
 <a id="editor-saved-terrain-restore-proof"></a>
 
-BUG-0537 reproduces the unassigned C62 recipe rejection on C68 atR251 after
+BUG-0621 reproduces the unassigned C62 recipe rejection on C68 atR251 after
 guest Road Redo. `normalize_saved_terrain` succeeds against the retained live
 and genuine saved raw recipe. `checkpoint_resources` then calls native restore
 before `resume_terrain_hold`, whose old rendered recipe no longer matches.
@@ -2774,18 +2774,18 @@ Guest Redo278 then Native Save passes SavedApplied2/2 with the actual Ocean/wate
 record retained, exact authored root payloads/history and zero faults:
 `out/preview9-c70-ocean-native-save`. Both games return normally to Galaxy at278
 before private runner retirement. This does not qualify the separately rejected
-strict cold-reopen comparison (current BUG-0538, legacy fork BUG-0487).
+strict cold-reopen comparison (current BUG-0622, legacy fork BUG-0487).
 
 ## Captain gesture domains and grounded scene poses (2026-11-05, feat/ga-editor-multi-act)
 <a id="editor-captain-terrain-stability-preview10"></a>
 
-BUG-0540: the ordinary tool gate already requested Captain Settings ownership,
+BUG-0624: the ordinary tool gate already requested Captain Settings ownership,
 but every pose StartHistory enrolled as a placement-only staged capture. Pin the
 local gesture domain from the original native target before StartHistory. Captain
 movement retains the general Settings transaction path. Pending press/motion/up
 continues through the existing held-input fence; no pose step runs before grant.
 
-BUG-0541: `F3E250`, `void thiscall(ScenarioData,bool)`, returns with `ret4` at
+BUG-0625: `F3E250`, `void thiscall(ScenarioData,bool)`, returns with `ret4` at
 `F3E3C8`. It also grounds the special captain marker at data+8C through F3E150
 at F3E3BF. The existing placement grounding roster excludes that marker. A real
 Raise Round Terrain stroke in the private Adventure Town draft moves its XYZ

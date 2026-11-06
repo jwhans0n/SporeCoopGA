@@ -1,4 +1,5 @@
 #include "adventure_social.h"
+#include "sporekit_build.hpp"
 
 #include <array>
 #include <cstring>

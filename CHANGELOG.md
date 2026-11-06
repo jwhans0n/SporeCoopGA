@@ -1,5 +1,400 @@
 # Changelog
 
+## [Unreleased]
+
+## [0.7.4.0] - 2026-10-25
+
+- Publish the first SporeCoopGA release, collecting the Galactic Adventures
+  co-op work through preview 12. Play shared Sporepedia adventures with saved
+  captains, an explicit Ready lobby, shared scenes and objectives, synchronized
+  interactions, revival, party pause, enemy targeting and coordinated results.
+- Retain preview 12 gameplay and protocol 15. This release adds no editor support
+  or new gameplay behavior. Galactic Adventures support remains experimental and
+  requires the exact supported GOG executable and matching release builds.
+- Provide a normal published release for the fork's existing updater. Numeric
+  version 0.7.4.0 sorts above 0.7.3.5-ga-preview.12 without relying on preview
+  suffix ordering. Keep Setup beside its matching update pack when extracting.
+- Document release installation and preserve the historical preview reports,
+  including their compatibility, movement and combat-input limits. See the
+  [release validation report](docs/validation-ga-0.7.4.0.md).
+
+## [0.7.3.5-ga-preview.12] - 2026-10-25
+
+- Seal the first host-authoritative adventure win or loss for every participant.
+  Stop gameplay, damage, revival and objective/act progression while applying
+  results, including after the running phase ends. Late native callbacks and
+  goal batches cannot reopen the completed attempt.
+- Confirm actual native result state before acknowledging it. Keep native
+  results cinematics and captain saves, with recovery to the menu if native
+  result application fails. The 1 HP downed display remains intentional;
+  a failed attempt must not become playable through that display.
+- Make host Done return the whole party to the native menu while preserving
+  the connection. Guest Done accepts results locally. Replay requires every
+  remaining player to apply and accept their result, then reuses saved captains
+  in a shared lobby with fresh explicit readiness.
+- Preserve native captain saving before a forced party exit. Finish the native
+  result cinematic and use the normal enabled Done action; mandatory captain
+  reward selections still require the player's choice.
+- Coalesce overlapping Done, Replay, cancellation and disconnect cleanup so old
+  callbacks cannot tear down a replacement attempt. Retain early result
+  acknowledgements while host native cleanup is settling.
+- Use protocol 15 for result acknowledgements and the shared menu return.
+  Adventure/captain resource bundle formats and existing targeting, movement
+  and performance behavior are retained. See the
+  [preview 12 report](docs/validation-ga-preview.12.md) for validation and limits;
+  earlier reports keep their original scope.
+
+## [0.7.3.4-ga-preview.11] - 2026-10-25
+
+- Fix authored player-team enemy targets rejecting eligible guest captains.
+  Remote puppets keep their native identity; a narrow host-side match recognizes
+  living party captains while preserving native sensing, hostility, authored
+  nonparty targets and one normal AI tick.
+- Keep native sensor candidate lists and ownership unchanged. The initial
+  perception-record workaround did not repair the actual authored target check
+  and is excluded from the minimal fix.
+- Use protocol 14 for matching native targeting behavior. Actor packets,
+  creation bundles, native waypoint followers and static-object handling retain
+  their existing formats and behavior.
+- Pass targeted two-player **Defend the Crystal Mine** checks: native guest and
+  host targeting, natural damage, and guest/host/guest target switching. See the
+  [preview 11 report](docs/validation-ga-preview.11.md). Broader compatibility,
+  residual movement lag and ordinary guest click/key combat input remain limits.
+
+## [0.7.3.3-ga-preview.10] - 2026-10-25
+
+- Follow replicated host creature and vehicle positions with native waypoints using native locomotion between
+  network samples, with bounded prediction and catch-up. Reserve hard pose
+  corrections for initial binding, severe divergence, stuck movement and
+  confirmed stationary disagreement.
+- Keep NPC AI, combat, health and objectives host-authoritative. Preserve native
+  attachment behavior, existing attack/unknown clip handling, party holds and
+  run/act/incarnation resets.
+- Use protocol 13 so all participants run matching follower behavior. Actor
+  packet layouts, creation bundles and static-object optimization are unchanged.
+- See [preview 10 validation](docs/validation-ga-preview.10.md) for evidence and
+  limits, including residual tracking lag. Ordinary guest combat input remains
+  unverified.
+
+## [0.7.3.2-ga-preview.9] - 2026-10-25
+
+- Keep client NPC visual updates running while the host owns NPC AI and damage.
+  Share host NPC visual clip requests without replaying their gameplay effects.
+- Pause shared adventures only when all connected participants are paused.
+  One player resuming releases the pause; scene confirmation holds stay separate.
+  Retain queued damage, item/throw and social actions through the hold and
+  revalidate them once on Resume.
+- Increase teammate revival distance from two to six metres, including its ring
+  and instructions. Keep the three-second duration and interruption rules.
+- Use protocol 12 for run-scoped pause and NPC animation state. Resource bundle
+  formats and the existing static-object optimization remain unchanged.
+- See [preview 9 validation](docs/validation-ga-preview.9.md) for evidence and limits.
+
+## [0.7.3.1-ga-preview.8] - 2026-10-25
+
+- Resolve act music through native audio descriptors and inherited sample
+  references, including The Eighth Day's music. Preserve authored IDs and reject
+  unsupported custom audio overrides instead of adding per-adventure allowlists.
+- Route guest item giving through native NPC/container receive behavior and share
+  complete held-item attachments, including NPC tools and replacement bindings.
+- Synchronize ordinary handheld throws and host-validated catches. Timed bombs
+  retain their existing fuse; contact grenades keep native impact behavior.
+- Show group beam-down/conversation confirmations in the native bottom black bar
+  beside its check mark. Add a two-metre revive ring, progress bar and timer.
+- Fence downed movement and orders while retaining native visual updates. Keep
+  adventure lighting local instead of copying the host's planet orientation;
+  shared gameplay clocks remain authoritative.
+- Use protocol 11 for item attachment and throw/catch messages; all players need
+  this preview. Adventure/captain resource bundle formats remain unchanged.
+- Record targeted two-player native acceptance and four-player beam-down UI
+  checks in [the preview 8 report](docs/validation-ga-preview.8.md), with remaining
+  coverage and delivery details.
+
+## [0.7.3.0-ga-preview.7] - 2026-10-24
+
+Fork integration of upstream SporeCoop 0.7.2.1 and Galactic Adventures previews 1-6.
+The fork is maintained at [jwhans0n/SporeCoopGA](https://github.com/jwhans0n/SporeCoopGA),
+with the original SporeCoop project and its authors credited below and in README.md.
+
+- Retain upstream SporeKit 0.3.4 diagnostics, crash/hang reports, Steam DRM and
+  frame-loop support, and the existing non-adventure stages.
+- Include shared Sporepedia adventure preparation, saved captain creation/transfer,
+  explicit party readiness, group scenes, Replay, actor/combat/objective replication,
+  static-object traffic reduction and shared native interactions from preview 6.
+- Use protocol 10: every participant needs this fork build. Upstream 0.7.0-0.7.2.1
+  uses a different protocol and cannot join this preview.
+- Keep the native adventure adapter restricted to exact GOG executable SHA-256
+  `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
+  Upstream Steam and same-code recognition remains available for other stages;
+  it does not establish Steam Galactic Adventures support.
+- Direct fork downloads, update checks and new problem reports to SporeCoopGA.
+  No tag or release is created by this integration.
+
+### Earlier Galactic Adventures previews
+
+### Shared static objects and interactions: 0.7.0-ga-preview.6
+
+- Send verified stationary buildings and props once, then send reliable changed
+  health/state. Continue observing movement and promote moved, carried and thrown
+  objects to spatial replication. Creature and vehicle update rates stay unchanged.
+- Let the host own native mine, barrel, bomb and grenade activation, delayed
+  chains, damage and removal. Treat their explosions as environmental hazards
+  regardless of friendly fire. Preserve harmless crate behavior and native fuses.
+- Keep initial powerup spawning during group holds. Allow a timed bomb to be
+  picked up and thrown again while its original fuse continues.
+- Share pickup consumption and authored respawns. Apply health, speed, damage and
+  shield upgrades only to the collecting captain, with shared simulation expiry.
+- Validate authored teleport exits per captain, synchronize native cleanup and
+  cooldowns, and reject movement from before the teleport correction.
+- Preserve preparation message order during Replay cleanup so new content and
+  captain transfers reach the new run, including open-captain adventures.
+- Preserve shared keys/gates, saved captain creation, group scenes, Replay and the
+  existing performance fix. Protocol 10 requires the same preview on every player;
+  adventure/captain bundle formats and asset caching remain unchanged.
+
+### Adventure party flow: 0.7.0-ga-preview.5
+
+- Require every participant to confirm beam-down Continue before gameplay and
+  adventure clocks advance. Show who is still confirming.
+- Present objective conversations to the whole party, retain independent dialog
+  pages and complete the objective only after everyone presses Finished.
+- Route native Replay back through the shared lobby with saved captains and
+  everyone unready. Any participant may request it after accepting results.
+- Render remote captains from the current validated selection and copy their
+  owner's actual scale. Reject old run/selection packets and rebuild stale models.
+- Validate shared colored keys and gates on the host, synchronize native opening
+  and key consumption, and reconstruct the correct open gate after replica loss.
+- Retain preparation recovery and the large-adventure FPS fix. Protocol 9 requires
+  this preview on every participant; resource bundle formats remain unchanged.
+
+### Shared adventure lobby: 0.7.0-ga-preview.4
+
+- Accept native music event 1 used by Mr Puzzle's Magical Gates, preserving the
+  authored setting and retaining validation of unsupported custom dependencies.
+- Show the adventure artwork, title and author with four shared saved-captain
+  cards, native portraits, saved captain names, transfer progress and readiness.
+- Require explicit Ready from the host and every guest. Captain replacement
+  clears party readiness; cancelling replacement keeps the saved captain.
+- Synchronize preparation with run/revision/selection guards. Protocol 8 requires
+  the same preview on every participant. Keep preview 3 recovery and the FPS fix.
+
+### Galactic Adventures captain recovery: 0.7.0-ga-preview.3
+
+- Guests use native captain creation, naming, review and saving before sharing
+  their captain. Existing saved captains and authored captain restrictions remain.
+- Gate early loading animations until the native captain save completes. Readiness
+  reflects validated captain preparation and required transfer acknowledgements.
+- Cancelled preparation closes owned native pickers and restores both galaxy
+  application state and game mode. Clear pending callbacks and readiness on
+  cancellation/disconnect so the same adventure can be retried without restarting.
+- Retain preview 2's large-adventure performance fix and the existing wire format.
+
+### Galactic Adventures performance fix: 0.7.0-ga-preview.2
+
+- Batch memory-region validation during read-only actor traversals instead of
+  querying Windows for every field of every actor. Mapping checks remain fresh
+  between traversals, native mutations and frames.
+- Remove the guest's duplicate per-frame actor enumeration and keep native
+  result bookkeeping out of frequently called eligibility queries.
+- Add a two-session, 400-plus-actor FPS regression and native tests for guarded,
+  inaccessible and released memory. Network format and friendly-fire rules are
+  unchanged from preview 1.
+
+### Galactic Adventures preview: 0.7.0-ga-preview.1
+
+- Start a party adventure through the host's normal Sporepedia Play button, choose
+  personal captains, transfer supported missing adventure/captain assets, and wait
+  for every participant to finish loading before play begins.
+- Share host-authoritative actors, combat, objectives and act changes. Configure
+  enemy health/damage, friendly fire, teammate revival, automatic recovery or
+  failure on any death in Adventure settings.
+- Retain each player's local captain for native XP, progression and saving while
+  suppressing co-op submissions to the single-player adventure leaderboard.
+- Two isolated native Windows instances verified launch, guest objectives, actor
+  cleanup, friendly-fire settings, death/revival rules, native success/failure UI,
+  and captain progression persisting across restart. This is not a complete
+  adventure playthrough or four-player validation.
+- The native GA adapter is verified only for GOG March 2017 executable SHA-256
+  `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
+  Other stages on that executable remain unvalidated. See
+  [the preview guide](docs/GALACTIC-ADVENTURES.md) for setup and remaining limits.
+## [0.7.8] - 2026-11-05
+
+### Changed
+- The GOG 2016 build of Spore is no longer supported: please update the game through GOG (the current download
+  is the 2024 build). SporeCoop still starts on GOG 2016, but it is not tested there and its bugs are not fixed.
+
+### Fixed
+- Creature: the guest's Raging Roar now scares the host's animals: creatures of other species around the guest
+  run away in both games, as they do from the host's roar (BUG-0501).
+- Co-op window: *Send my world* is greyed out while no game is loaded or nobody has joined, instead of saying
+  "Sending the world to everyone..." and doing nothing; the lobby of a host alone says that you can start or load a
+  game now and friends can join any time (BUG-0597).
+- Co-op window: the "My creature" / "My cell" row says whose creature you play ("the host's species") and, when you
+  have none of your own, that making one in an editor gives you the choice (BUG-0598).
+- Co-op window: a chat line typed while the host's game was saving the world for a joining player is no longer lost
+  (BUG-0551).
+- The host's game no longer stays paused on the "game saved" box while the co-op window is open (BUG-0599).
+- Tribe: a guest's game should no longer crash when the camera jumps (the home button) to creatures whose effect
+  was broken; the broken effect is left out instead (BUG-0575, a guard: the cause is not known).
+- Creature / Tribe: the game no longer crashes when a fruit falls from a plant after the other player ate a fruit
+  that was on the ground since the save was loaded (BUG-0584).
+- Tribe: villages founded during play now show the host's mood and food in the guest's game too, instead of the
+  values of another village (BUG-0591).
+- Civilization: a city the host's player captured, bought or converted now has the player's buildings in the
+  guest's game too, and the other nations' moods and money are the host's (BUG-0593).
+- Tribe -> Civilization: the City Hall and vehicle editors of the end of Tribe no longer say "evolved the species",
+  and the co-op sync check no longer reports a mismatch while the host's game prepares the Civilization stage
+  (BUG-0588).
+
+- Creature: an animal in the air in the host's game (a flier, a jump, thrown by a hit) is in the air at the same
+  height in the guest's game too, instead of walking on the ground under it (BUG-0550).
+- Creature: your own creature no longer stays half in the ground after the other player comes back at your spot
+  (after a return from the main menu or an editor) or bumps into it on a slope (BUG-0592, BUG-0504).
+- Tribe: a guest sees the members of every village fight, gather, dance and build, instead of standing still
+  (BUG-0569).
+- Tribe: a guest hears the stage's hunting and fighting music of its tribe, as the host does (BUG-0568).
+- Tribe: a guest hears the fight's sounds of the host's villagers: their war cries going into a fight, their sighs
+  coming out of it, the sprint and the effects of their attacks (BUG-0600; the hit impacts of the attack animations
+  are still open, BUG-0603).
+- Tribe: in co-op new villages no longer appear as soon as the whole party has gathered the food one player's tribe
+  needs alone: they come at one player's pace (BUG-0571).
+
+## [0.7.7] - 2026-11-05
+
+### Fixed
+- Creature: on a guest with a low frame rate the animals no longer trail metres behind where they walk in the
+  host's game (BUG-0590).
+- Tribe: the host's game no longer faults every frame when the animals of a creature attack go for a village that
+  was founded during play (BUG-0582).
+- Tribe: the other villages have the same food in the guest's game as in the host's (BUG-0580).
+- Tribe: a guest's game no longer faults every frame when its tribe's leader would take a weapon or instrument a
+  member took in the host's game (BUG-0583).
+- Creature: an animal's charge now stuns the guest's creature as it stuns the host's (the stars, the stagger), and the
+  guest's charge stuns the host's animals too (BUG-0554).
+- Creature: animals can no longer bite or charge a guest's creature while it is in the air (BUG-0555).
+- Creature: the creatures the host calls with Summon Flock are friendly to the guest too and show their hearts on the
+  guest's screen; so are the members of the host's pack (BUG-0556).
+- Creature: a nest of a species you allied with shows the ally face on the guest's minimap too (BUG-0561).
+- Tribe: the guest sees the red circle under the enemy its selected members attack (BUG-0570).
+- Creature: on a game without a parts pack (Creepy & Cute, or any other) the other player's creatures and their
+  family no longer show big blocks where the pack's parts are; each part the game lacks is shown as the most similar
+  part it has (an eye stays an eye, a foot a foot, of a similar size) (BUG-0559).
+- Creature: a creature that kept a paint of the Cell stage (such as the cell stripes) has the same colours on every
+  player's screen instead of another shade (BUG-0559).
+- Tribe: on a guest whose game runs slowly the animals no longer trail several metres behind where the host's game
+  has them while they walk (BUG-0503).
+- Tribe: a guest's food no longer stays at 0 for good after its tribe spent the last of it; it shows the host's food
+  again, so its members can eat on their own (BUG-0572, BUG-0573).
+- Tribe: the villages feel about a guest's tribe as they do in the host's game (hostile after the host's raids,
+  friendly after its gifts), instead of all staying neutral (BUG-0565).
+- Tribe: a guest's goal card shows the host's current goal village and the host's goal progress (BUG-0564).
+- Tribe and Civilization: day and night are the host's on a guest's screen, also after the host's game over and
+  reload (BUG-0579).
+- Cell: the host's editor after the evolution vote shows the DNA the stage earned instead of 100, and no longer gives
+  DNA again on every visit; a guest's Cell DNA counts what the host's editor spent (BUG-0560).
+- A guest's game shows the stages the host's game has done (BUG-0577).
+- Tribe: after the host's game over and the reload of its last save (or a rejoin) a guest's game no longer keeps the
+  villages the host's world does not have: their huts, tools, food mats and map marks are gone too (BUG-0564).
+- Tribe: a guest sees an enemy village's hut lose health when the host's tribe attacks it, and a hut or tool damaged
+  in the guest's old world is mended to the host's (BUG-0566, BUG-0567).
+- Tribe: the co-op epic creature is never one of the players' own creatures from the Creature stage (BUG-0563).
+- Tribe -> Civilization: after the evolution vote at the end of Tribe the host's City Hall editor (and then the
+  vehicle editor) opens at once instead of after a minute or more on a black screen (BUG-0576).
+- Tribe -> Civilization: the host's game no longer freezes in the vehicle editor when a guest's tribe gathers or
+  eats food meanwhile (BUG-0585).
+
+## [0.7.6] - 2026-11-04
+
+### Fixed
+- Space: a colony a guest founds in the host's home system is kept for it too when it leaves and joins again
+  (BUG-0552).
+- Civilization: when a guest looks at another city than the host, the people walking there are shown in the
+  guest's game; they were all put back at the host's city and the guest's city stayed empty (BUG-0553).
+
+- Space: the game no longer crashes when an NPC empire's ship uses a creation whose model is missing from your
+  Sporepedia cache; the ship is shown with a known ship model instead (BUG-0546).
+- Civilization: an old tribe village the host's vehicles raided is gone on every guest's screen too (BUG-0539).
+- Civilization: a religious vehicle's area of conversion ends on a guest's screen when it ends on the host's, with no
+  religious shots left behind (BUG-0530).
+- Tribe: the tools of every tribe (the other tribes' fire pits, racks and huts too) now stand at the same places in
+  every player's game; a guest's game no longer shows tools there the host's game does not have (BUG-0523).
+- Tribe: a tool a guest buys and places now appears in the host's game too, at the same spot, and the guest's
+  members can take the weapon or instrument from it (BUG-0524).
+- Space: on a colony planet you and your partner now see the colony's citizens standing at the same spots and at
+  the same size, and its vehicles driving at the same places (BUG-0490).
+- Space: the spice stored in a shared colony's cities is collected once: when one player's ship collects it (by
+  arriving in the colony's system), it is gone from the colony and from the spice pickups by its cities on every
+  player's planet; before, the other player could collect the same spice again (BUG-0537).
+- Civilization: a city the host's vehicles hit now shows its damage on every guest's screen too, not full health
+  until a building falls (BUG-0529).
+- Civilization: the host's shots (religious ones too) appear on a guest's screen about 0.2 s sooner, nearly at the
+  same time as on the host's; a guest's game fires exactly the shots that left on the host (BUG-0530, BUG-0538).
+- Civilization: a city's defence turrets are the same in every game: a guest's game no longer builds its own, and
+  a turret the host's city builds appears for the guests (BUG-0484).
+- Space: a guest's save no longer keeps the partners' ships and the host's ships its game showed; after loading it
+  alone they came back as extra Defenders of your own empire (BUG-0522).
+- Space: a guest's own colonies are no longer lost when it leaves and joins again: the host keeps them and gives
+  them back (with one city; a host that restarts its game does not keep them yet) (BUG-0195).
+- Creature: in a guest's social game the creature now shows what to do (it sings, dances ... first) and only an answer
+  to its prompt counts, as in the host's own game; before, any social ability at any time counted (BUG-0525).
+- Creature: your partner's creature in the middle of a jump or fall no longer drops to the ground for a frame and
+  back up (BUG-0532).
+- Space: a tool gift or a spice sale to a partner that is still waiting for the answer when you leave the session
+  no longer comes back to you while your partner keeps it too (BUG-0542).
+- Space: a colony your partner founds in a star system you both own (another planet of your home system, for
+  example) now appears in your game too, as a colony of your empire; it stayed a free planet there (BUG-0543).
+- Space: a gift, mission, war or alliance your partner makes with an alien empire while the host is in an editor
+  is no longer lost when the host comes back to Space (BUG-0544).
+- Space: right after the session restarts (a rejoin, a new load) a lethal hit next to your partner disables your
+  ship again instead of destroying it (BUG-0257).
+
+## [0.7.5] - 2026-11-04
+
+### Fixed
+- A guest in a new world now plays that world's species, not its cell or creature from another game; it plays its
+  own creation when it picks it in the co-op window or already played it in this world, and everybody gets a
+  notice "<name> plays its own creature" (BUG-0345).
+- Creature: when your partner's creature jumps or falls, it now leaves the ground on your screen too instead of
+  staying on the ground (BUG-0376).
+- Creature: a partner standing on a nest mound is drawn on the mound, not half sunk into it (BUG-0435).
+- Cell: after a knockout and the respawn next to your partner, and after your cell is put next to the host after a
+  load or an editor, your view is centred on your cell again; it stayed off to the side until you swam a while
+  (BUG-0343).
+- Cell: while a level-up rescales the world, your partner's cell is drawn where it is; it was drawn several
+  metres off for a few seconds (BUG-0519).
+- Minimizing the game or switching away from it no longer writes a "WATCHDOG" stack dump into the log as if the
+  game had frozen; a real freeze is still reported (BUG-0347).
+- Joining a host whose world is sent while your game is still loading no longer sends most of the world twice:
+  the transfer resends almost nothing on a good connection and is about twice as fast then (BUG-0405).
+- Creature: a guest's game no longer starts its own UFO visit that the host's world does not have, so no UFO
+  takes the host's creatures in the guest's game only (BUG-0486).
+- Tribe: a weapon rack (or any tool building) the host builds now appears in the guests' games too, a guest's
+  members can take the weapon from it, and a guest sees its members hold the weapons and tools they took
+  (BUG-0514).
+- Tribe: a tribe member sent to take a weapon or tool from a rack no longer stands still next to the rack for
+  good when its walk stops short of its place there; it takes the tool (BUG-0505).
+- Tribe: the epic creature that comes to the players' village now hits as hard as the game's own epics; it
+  dealt only about 8 damage, like an ordinary animal (BUG-0515).
+- Tribe: when you save as a guest and later load that save alone, your tribe no longer holds copies of the
+  host's members, and the host's villages your game showed are not in it (BUG-0495).
+- Tribe: a guest's game no longer makes new villages of its own that the host's world does not have, and the
+  members of a village the host no longer has leave the guest's game too (BUG-0483).
+- Civilization: the people walking in the cities are where the host's are and have their size on a guest's
+  screen, instead of walking somewhere else (BUG-0476, BUG-0475).
+- Civilization: roads between cities (trade routes) that appear in the host's game appear in the guest's game too
+  (BUG-0494).
+- Civilization: a guest sees the host's fights: vehicles and turrets fire their shots in the guest's game too,
+  and those shots do no damage of their own there (BUG-0477).
+- Creature: a guest's social game now shows the game's social meter, like the host's, and a win tells the
+  guest's game that the creature became a friend (BUG-0179).
+- A chat line typed in the co-op window while the game's "game saved" box (or another box of the game) is up
+  is no longer lost; the window's buttons work then too (BUG-0482).
+- Creature: after evolving in the editor your creature is the new species at once, also when you play alone;
+  the host no longer saves the game after every evolution in co-op (BUG-0517).
+- Tribe and Civilization: the effects of your tribe members and vehicles (a hit, a death, ...) now show on the
+  other players' screens too, as in Cell and Creature (BUG-0451).
+
 ## [0.7.4] - 2026-11-03
 
 ### Fixed

@@ -70,6 +70,7 @@ in the file and unpacked when the game starts). Since 0.7.1 SporeCoop recognises
 unpacked code, checks that it is the GOG 2024 code and then uses the GOG 2024 addresses: Steam and
 GOG 2024 players can play together in the base stages. This recognition does not
 enable the exact-file-gated GA adapter on Steam. The log says "the unpacked code is the code of build dc04aee5...".
+
 Steam installs Spore and Galactic Adventures as two apps in two folders next to each other: base
 Spore (app 17390) in `steamapps\common\Spore` (only `SporeBin`, no `SporebinEP1`) and Galactic
 Adventures (app 24720) in **`steamapps\common\Spore 24720`** (Steam may write it `spore 24720`), which

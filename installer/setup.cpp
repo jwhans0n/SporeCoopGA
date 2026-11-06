@@ -19,6 +19,7 @@
 #include "../sdk/include/sporekit_build.hpp"
 #include "../updater/sha256.h"
 #include "install.h"
+#include "../sdk/include/sporekit_build.hpp"
 #include "../updater/winupdate.h"
 
 #ifndef SETUP_VERSION

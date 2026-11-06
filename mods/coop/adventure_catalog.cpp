@@ -1,4 +1,5 @@
 #include "adventure_catalog.h"
+#include "sporekit_build.hpp"
 
 #include <windows.h>
 

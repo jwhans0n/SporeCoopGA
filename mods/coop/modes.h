@@ -78,6 +78,8 @@ extern bool cell_at_fix;           // coop.pool fix cellat 0: the old bound (slo
 bool cell_is_puppet(void* cell);  // a remote player's cell
 // BUG-0271 (core.stale_local): no cell is read from a pool block the game already freed
 extern bool stale_fix;
+void own_ground_tick(double now); // BUG-0592 (creature.own_ground): once per frame, before the drives
+extern uint32_t g_own_grounded;       // BUG-0592: times the own creature was put onto its ground
 extern uint32_t g_puppets_gone_alive; // BUG-0507: Creature puppets found freed by the game (creature.puppet_alive)
 bool cell_usable(void* cell);     // the local cell or a puppet, still live in a mapped pool
 // our frame scope (on_frame, on_overlay): no game code runs inside, so the pool check is cached
@@ -107,7 +109,11 @@ bool space_puppet_ok(void* u); // listed, alive and still our puppet
 void space_pin(void* u, const float p[3], bool fix);
 extern bool puppet_pin_fix; // coop.fix space.puppet_pin (BUG-0378)
 void space_pin_frame();       // every Present, before the drives: nothing pinned yet
-bool space_pinned(void* u);   // pinned (fix on) since the last Present: its controller update is skipped
+bool space_pinned(void* u);
+// diagnostics (BUG-0388, coop.fleet track): the pose space_drive gave puppet u last, and how far past the
+// partner's newest snapshot that state was extrapolated (s, 0 = interpolated); false = never driven
+extern double g_drive_extrap; // set by coop.cpp drive_puppet before the adapter's drive
+bool space_drive_note(void* u, float p[3], float& extrap);   // pinned (fix on) since the last Present: its controller update is skipped
 // BUG-0218: the identity is the object serial; our puppet taken by a game mission (owner mission
 // +0x800) is retired: held still, not sent to the guests, its shots dropped, destroyed (deferred)
 // once the mission lets go, left to the game at session end (a log line). fleet.puppet_id
@@ -130,5 +136,7 @@ void mat_to_quat(const float* m, net::Quat& q);
 void quat_to_mat(const net::Quat& q, float* m);
 // BUG-0499 (creature.puppet_jump): the speed a partner's states may not be blended over (0: off)
 float puppet_jump_speed();
+// BUG-0376 (creature.puppet_air), tests: coop.track air <v>
+extern int g_puppet_air_variant;
 
 } // namespace modes

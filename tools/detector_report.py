@@ -41,29 +41,45 @@ KNOWN = {  # <stage>:<what>:<kind> (or <stage>:*:<kind>, <*>:*:<kind>) -> the ti
     'Creature:*:egg': 'BUG-0421 class (eggs, BUG-0384)',
     'Tribe:scale:citizen': 'BUG-0475',
     'Civilization:scale:citizen': 'BUG-0475',
-    'Civilization:*:citizen': 'BUG-0476',
+    'Civilization:*:citizen': 'BUG-0476', 'Civilization:guest_only:citizen': 'BUG-0526', 'Civilization:host_only:citizen': 'BUG-0526',
     '*:*:default_tool_projectile': 'BUG-0477',
     '*:*:resource_projectile': 'BUG-0477',
     '*:*:cultural_projectile': 'BUG-0477',
     '*:*:default_beam_projectile': 'BUG-0477',
     '*:*:default_ao_e_area': 'BUG-0477',
-    'Civilization:*:vehicle': 'BUG-0478',
+    'Civilization:*:vehicle': 'BUG-0478', 'Civilization:scale:vehicle': 'BUG-0549',
     'Civilization:*:inter_city_road': 'BUG-0478',
-    'Space:*:ufo': 'BUG-0479',
-    'Space:*:planetary_artifact': 'BUG-0479',
+    'Space:*:ufo': 'BUG-0479', 'Space:unmatched:ufo': 'BUG-0388',
+    'Space:*:planetary_artifact': 'BUG-0537',
     'Cell:*:cell': 'BUG-0480',
     'Creature:guest_local:creature': 'BUG-0421 class (guest-local objects)',
     '*:*:tribe': 'BUG-0483', '*:*:tribe_hut': 'BUG-0483', '*:*:tribe_food_mat': 'BUG-0483',
-    'Civilization:*:tribe_tool': 'BUG-0483', 'Tribe:guest_only:tribe_tool': 'BUG-0483', 'Tribe:guest_only:citizen': 'BUG-0483',
-    'Civilization:*:cultural_target': 'BUG-0484', 'Civilization:*:game_bundle': 'BUG-0484', 'Civilization:*:turret': 'BUG-0484',
+    'Civilization:*:tribe_tool': 'BUG-0539', 'Tribe:guest_only:tribe_tool': 'BUG-0483', 'Tribe:guest_only:citizen': 'BUG-0483',
+    'Civilization:*:cultural_target': 'BUG-0540', 'Space:*:cultural_target': 'BUG-0540',
+    'Civilization:*:game_bundle': 'BUG-0548', 'Civilization:*:turret': 'BUG-0484',
+    'Civilization:*:tribe': 'BUG-0539', 'Civilization:*:tribe_hut': 'BUG-0539', 'Civilization:*:tribe_food_mat': 'BUG-0539',
+    'Civilization:*:cultural_projectile': 'BUG-0530', 'Civilization:*:default_ao_e_area': 'BUG-0530',
     '*:scale:node': 'BUG-0485',
     'Creature:*:ufo': 'BUG-0486',
     'Creature:host_only:creature': 'BUG-0487', 'Creature:hp:creature': 'BUG-0487', 'Creature:alive:creature': 'BUG-0487',
     'Creature:host_local:creature': 'BUG-0487', 'Creature:guest_only:creature': 'BUG-0487',
     'Tribe:unmatched:tribe_tool': 'BUG-0488', 'Tribe:unmatched:citizen': 'BUG-0488', 'Tribe:*:nest': 'BUG-0488',
     'Tribe:*:interactive_ornament': 'BUG-0488',
+    'Tribe:*:ornament': 'BUG-0528',
     '*:*:gameplay_marker': 'BUG-0489',
     'Space:*:citizen': 'BUG-0490', 'Space:*:vehicle': 'BUG-0490',
+    'Space:*:ornament': 'BUG-0541',
+    # world state and whole-planet lists (coop.wstate, docs/06-testing.md#testing-detector-state)
+    'All:state:time_of_day': 'BUG-0579', 'All:state:day_length': 'BUG-0579',
+    'All:state:stage_done': 'BUG-0577',
+    'Cell:state:dna': 'BUG-0560', 'Cell:state:dna_spent': 'BUG-0560',
+    'Tribe:state:food': 'BUG-0572', 'Tribe:state:relation': 'BUG-0565', 'Tribe:state:goal': 'BUG-0564',
+    'Tribe:planet:village': 'BUG-0564', 'Tribe:planet:tribe_hut': 'BUG-0566',
+    'Tribe:planet:tribe_tool': 'BUG-0574', 'Tribe:planet:totem_pole': 'BUG-0574',
+    'Tribe:state:members': 'BUG-0564', 'Tribe:planet_owner:village': 'BUG-0565', 'Tribe:state:tribe_food': 'BUG-0580',
+    '*:state:species_relation': 'BUG-0419 class (species table)', '*:state:species_impressed': 'BUG-0419 class (species table)',
+    '*:state:species_killed': 'BUG-0419 class (species table)',
+    '*:*:spear': 'BUG-0477',  # a thrown spear: a projectile, as the other *_projectile kinds
 }
 
 
@@ -142,12 +158,15 @@ def main():
            'A signature is `<stage>:<what>:<kind>`: host_only / guest_only (objects near the guest on one game only), '
            'unmatched (both have the kind, some without a partner), guest_local / host_local (objects the mod does not '
            'track), alive / scale / model / hp / pos (matched objects that differ), noun_only_* (a noun type in one '
-           'game\'s whole list only). `seen` = comparisons with the finding, `share` = of that stage\'s comparisons.', '']
+           'game\'s whole list only); <stage>:state:* / All:state:* (the world state: food, DNA, relations, goal, time of day, '
+           'stages done) and <stage>:planet:* / planet_owner:* (the whole planet\'s villages, huts, nests, cities, buildings). '
+           '`seen` = comparisons with the finding, `share` = of that stage\'s comparisons.', '']
     by_stage = collections.defaultdict(list)
     for s in seen:
         by_stage[s.split(':')[0]].append(s)
     for stage in sorted(by_stage):
-        n = samples.get(stage, 0) or 1
+        # `All:state:*` (time of day, stages done) is compared on every stage: its share is of all comparisons
+        n = (sum(samples.values()) if stage == 'All' else samples.get(stage, 0)) or 1
         out += [f'## {stage}', '', '| signature | seen | share | objects | tests | ticket | example |', '|---|---|---|---|---|---|---|']
         for s in sorted(by_stage[stage], key=lambda s: -seen[s]):
             ex = examples[s][0].replace('|', '/') if examples[s] else ''

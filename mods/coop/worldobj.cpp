@@ -13,11 +13,14 @@
 #include <set>
 #include <vector>
 
+#include "fields.h"
 #include "fixes.h"
 #include "game.h"
 #include "modes.h"
+#include "realign.h"
 #include "net/protocol.h"
 #include "sporekit_game.hpp"
+#include "tribe.h"
 
 namespace wobj {
 
@@ -37,11 +40,18 @@ struct Item {
     uint32_t id;
     net::Vec3 pos;
     uint32_t st;
+    uint32_t cls = 0; // BUG-0490: a kind with `classes`: a copy is bound only to a host object of its class
 };
 using Items = std::vector<Item>;
 
-enum : uint8_t { kStCreature = 1, kStTribe = 2 };
+enum : uint8_t { kStCreature = 1, kStTribe = 2, kStCiv = 4, kStSpace = 8 }; // kStSpace: on a planet (BUG-0490)
 
+// BUG-0476: a moving kind's guest copy follows the host's object: where the host's was (the last snapshot),
+// its velocity (from the last two snapshots), and the follower's own memory (the last walk goal given)
+struct Follow {
+    net::Vec3 goal{};
+    double at = -100;
+};
 struct Kind {
     const char* name;  // as the divergence detector names the noun (tools/tests/worlddiff.py)
     bool* fix;         // its coop.fix switch (off: each game keeps its own, the old behaviour)
@@ -61,17 +71,35 @@ struct Kind {
     void (*act)(const Item& obj, uint32_t guest_now);
     bool gone_acted;  // a bound copy that vanished from the guest's game was taken there (eaten fruit)
     bool drop_own;    // guest: its own copies the host does not have are removed (apply(local, kGone))
+    // BUG-0476: a kind that moves (city citizens): guest, on each snapshot, every bound copy is brought to the
+    // host's object (nullptr: the kind does not move); a bind is kept while both exist, however far apart
+    void (*follow)(const Item& local, const net::Vec3& host_pos, const net::Vec3& host_vel, double age, Follow& st,
+                   double now) = nullptr;
+    double every = 0; // s between snapshots (0: kSnapInterval)
+    // guest: the host has an object this game has no copy of: make one (nullptr: the kind only binds)
+    int (*make)(const net::Vec3& pos, uint32_t host) = nullptr; // 1 made, 0 failed, -1 not now (no try counted)
+    // guest: an own copy the host has no partner of (each snapshot); true: keep it (not dropped)
+    bool (*own)(const Item& local, double now) = nullptr;
+    // host: a guest's request for an object this game has not (id 0): make it
+    void (*buy)(uint8_t from, const net::Vec3& pos, uint32_t st) = nullptr;
+    // BUG-0490: the objects carry a class (Item::cls, one more u32 on the wire): a copy binds only to its class
+    bool classes = false;
+    float vmax = 15.f; // m/s: a faster step between two snapshots is a jump (no velocity)
+    // BUG-0490: guest, every frame, every bound copy is drawn where the host's is (nullptr: only `follow`)
+    void (*drive)(const Item& local, const net::Vec3& host_pos, const net::Vec3& host_vel, double age, uint32_t host_st) = nullptr;
 };
 constexpr uint32_t kGone = 0xFFFFFFFFu; // the state of an object the host's game no longer has
 
-static void collect_noun(uint32_t noun, Items& out, uint32_t (*read)(void*), bool (*take)(void*) = nullptr)
+static void collect_noun(uint32_t noun, Items& out, uint32_t (*read)(void*), bool (*take)(void*) = nullptr,
+                         uint32_t (*cls)(void*) = nullptr)
 {
     struct U {
         uint32_t noun;
         Items* out;
         uint32_t (*read)(void*);
         bool (*take)(void*);
-    } u{noun, &out, read, take};
+        uint32_t (*cls)(void*);
+    } u{noun, &out, read, take, cls};
     game::for_each_object(
         [](void* o, uint32_t noun, void* p) {
             auto* u = (U*)p;
@@ -81,6 +109,8 @@ static void collect_noun(uint32_t noun, Items& out, uint32_t (*read)(void*), boo
             if (!game::object_position(o, it.pos))
                 return true;
             it.st = u->read(o);
+            if (u->cls)
+                it.cls = u->cls(o);
             u->out->push_back(it);
             return true;
         },
@@ -101,10 +131,22 @@ static uint32_t fruit_state(void* o) { return IsBadReadPtr(o, 0x170) ? 6 : field
 static bool fruit_loose(void* o) { uint32_t s = fruit_state(o); return s >= 1 && s <= 4; }
 static bool fruit_done(uint32_t s) { return s == kGone || s >= 5; }
 static void fruit_collect(Items& out) { collect_noun(kFruitNoun, out, fruit_state, fruit_loose); }
+// BUG-0584: a fruit of the save (+0x148 bit 0, cFruit vt 0xB066A0) eaten with SetState(5) alone went to the
+// plants' free fruit with one reference left (lab 20261105-100942: 19 -> 1), and the next fruit that fell took
+// it from the free fruit and freed it (Flora_TakeFruitForDrop's pop releases the pool's reference and its own):
+// the host faulted at 0xB097C2 with a call through null. The eat node 0xD87590 destroys such a fruit
+// (cGameNounManager::DestroyInstance) before its SetState(5); so does this now.
+// `coop.fix wobj.fruit_saved off`: SetState(5) alone (0.7.7).
+static bool g_fruit_saved_fix = true;
+COOP_FIX("wobj.fruit_saved", "BUG-0584", g_fruit_saved_fix,
+         "creature / tribe: a fruit of the save eaten in another player's game is destroyed as the game's eating does (a host faulted when the next fruit fell)");
 static void fruit_eat(void* o)
 {
-    if (!fruit_done(fruit_state(o)))
-        thiscall<void>(a_FruitSetState, o, 5, 0); // what the eat node 0xD87590 does when the meal ends
+    if (fruit_done(fruit_state(o)))
+        return;
+    if (g_fruit_saved_fix && game::noun_id(o) == kFruitNoun && (field<uint32_t>(o, 0x148) & 1))
+        game::destroy_instance(o); // as the eat node 0xD87590 at the meal's end (state 3)
+    thiscall<void>(a_FruitSetState, o, 5, 0); // what the eat node 0xD87590 does when the meal ends
 }
 static bool fruit_behind(uint32_t local, uint32_t host) { return fruit_done(host) && !fruit_done(local); }
 static void fruit_apply(const Item& l, uint32_t) { fruit_eat(l.p); }
@@ -264,12 +306,298 @@ static void herd_apply(const Item& l, uint32_t host)
 static bool herd_acted(uint32_t, uint32_t, uint32_t) { return false; }
 static void herd_act(const Item&, uint32_t) {}
 
+// ---------------------------------------------------------------- kind: tribe tool (BUG-0514, BUG-0523, BUG-0524)
+// cTribeTool (noun 0x18C8F0C) of the tribes (tribe +0x36C): the weapon racks, instrument stands, the healer's
+// hut, the fire pit. The palette's placement makes one in the game of the player who bought it, an NPC tribe's
+// in each game on its own (docs/re/tribe.md 5, #tribe-tools-all): a rack the host bought was in the host's game
+// only, so a guest could not click it and its members never got the weapon (the guest's orders run on the
+// host, on the host's rack, found by position). The tools are the host's: a guest gets a copy of every host tool
+// it has none of (the same type at the host's place, upright), so its click on the rack becomes the host's
+// GrabTool there.
+// State: the tool type (vt 0x58) | the host's index of its tribe << 8 | 1 << 16 for the player tribe.
+// BUG-0523 (`wobj.tribe_tools_all`): every tribe's tools, not the player tribe's only; a tool the palette drags
+// is not sent (it is not placed yet); a guest's own tool the host has not (another spot, a tribe the host has
+// not) goes with the game's RemoveTool, the host's is made in the mapped tribe.
+// BUG-0524 (`wobj.tribe_tool_buy`): a tool a guest bought for the player tribe (its own copy without a host
+// partner) is a request to the host, which places the same there (the old one of the type goes, as the
+// palette does); the guest's copy is bound to it at the next snapshot. The food was paid in the guest's game
+// (the shared food ledger takes its change to the host).
+static bool g_tool_fix = true, g_tool_all_fix = true, g_tool_buy_fix = true;
+COOP_FIX("wobj.tribe_tool", "BUG-0514", g_tool_fix, "tribe: a tool building (weapon rack, ...) the host built is in every player's game");
+COOP_FIX("wobj.tribe_tools_all", "BUG-0523", g_tool_all_fix,
+         "tribe: every tribe's tools stand where the host's stand (NPC tribes too); a guest's own copy elsewhere goes");
+COOP_FIX("wobj.tribe_tool_buy", "BUG-0524", g_tool_buy_fix, "tribe: a tool a guest buys and places is placed in the host's game too");
+constexpr uint32_t kToolPlayer = 1u << 16;
+static uint32_t tool_state(int type, int tribe, bool player)
+{
+    return (uint32_t)(type & 0xFF) | (uint32_t)(tribe & 0xFF) << 8 | (player ? kToolPlayer : 0);
+}
+static bool is_guest();
+// guest: the player tribe's tools this game had when the host's first snapshot came, and the copies it made: never a
+// purchase (a copy left from an earlier session or world is not bought again on the host)
+static std::set<std::pair<void*, uint32_t>> g_tool_base;
+static bool g_tool_base_done;
+static void tool_collect(Items& out)
+{
+    if (!g_tool_base_done && is_guest()) { // the first look after a reset (the first snapshot's reconcile)
+        g_tool_base_done = true;
+        tribe::for_each_tool(
+            false, [](void* t, int, int, bool, const net::Vec3&, void*) { g_tool_base.insert({t, game::object_serial(t)}); }, nullptr);
+    }
+    tribe::for_each_tool(
+        g_tool_all_fix,
+        [](void* t, int type, int ix, bool player, const net::Vec3& pos, void* u) {
+            ((Items*)u)->push_back(Item{t, game::object_serial(t), pos, tool_state(type, ix, player)});
+        },
+        &out);
+}
+static uint32_t g_tools_removed, g_tool_buys_tx, g_tool_buys_rx, g_tool_buys_done;
+static bool tool_behind(uint32_t local, uint32_t host) { return g_tool_all_fix && host == kGone && local != kGone; }
+static void tool_apply(const Item& l, uint32_t host)
+{
+    if (host != kGone || !tribe::remove_tool(l.p))
+        return;
+    g_tools_removed++;
+    H->log(M, SK_INFO, "wobj: removed a tribe tool type %u the host has not at (%.1f %.1f %.1f)", l.st & 0xFF, l.pos.x, l.pos.y, l.pos.z);
+}
+static bool tool_acted(uint32_t, uint32_t, uint32_t) { return false; }
+static void tool_act(const Item&, uint32_t) {}
+// 1 made, 0 failed (a try), -1 not now (no try counted)
+static int tool_make(const net::Vec3& pos, uint32_t host)
+{
+    int type = (int)(host & 0xFF), ix = (int)(host >> 8 & 0xFF);
+    if (host == kGone || type < 1 || type > 10)
+        return 0;
+    void* t = nullptr;
+    if (!g_tool_all_fix) // BUG-0514 alone: the player tribe's
+        t = (host & kToolPlayer) || host <= 10 ? tribe::make_player_tool(type, pos) : nullptr;
+    else {
+        // this game's tribe has one of the type elsewhere (its own, to be removed, or one the palette drags:
+        // a guest's purchase on its way to the host): one per type, as the palette keeps it
+        int has = tribe::has_tool_type(ix, type);
+        if (has != 0)
+            return -1; // (-1: no such tribe here yet)
+        t = tribe::make_tool(ix, type, pos);
+    }
+    if (t)
+        g_tool_base.insert({t, game::object_serial(t)});
+    if (t)
+        H->log(M, SK_INFO, "wobj: made the host's tribe tool type %d (tribe %d) at (%.1f %.1f %.1f)", type, ix, pos.x, pos.y, pos.z);
+    return t ? 1 : 0;
+}
+static void send_act(int k, uint32_t id, const net::Vec3& pos, uint32_t now);
+static int tool_kind();
+// guest: its own tool without a host partner; true: keep it (a purchase on its way to the host)
+struct ToolBuy {
+    double first = 0, sent = -100;
+};
+static std::map<std::pair<void*, uint32_t>, ToolBuy> g_tool_buys;
+static bool tool_own(const Item& l, double now)
+{
+    if (!(l.st & kToolPlayer))
+        return false;
+    if (!g_tool_buy_fix)
+        return true; // the old behaviour: it stays in this game only
+    if (g_tool_base.count({l.p, l.id}))
+        return false; // not bought in this session: an own copy as any other
+    ToolBuy& b = g_tool_buys[{l.p, l.id}];
+    if (b.first == 0)
+        b.first = now;
+    if (now - b.first > 20.0)
+        return false; // the host never placed it (refused): this game drops it as any own copy
+    if (now - b.sent >= 2.0) {
+        b.sent = now;
+        send_act(tool_kind(), 0, l.pos, l.st);
+        g_tool_buys_tx++;
+        H->log(M, SK_INFO, "wobj: bought a tribe tool type %u at (%.1f %.1f %.1f): asking the host", l.st & 0xFF, l.pos.x, l.pos.y, l.pos.z);
+    }
+    return true;
+}
+// host: a guest's purchase
+static void tool_buy(uint8_t from, const net::Vec3& pos, uint32_t st)
+{
+    g_tool_buys_rx++;
+    if (!g_tool_buy_fix || !(st & kToolPlayer))
+        return;
+    if (tribe::buy_player_tool((int)(st & 0xFF), pos)) {
+        g_tool_buys_done++;
+        H->log(M, SK_INFO, "wobj: player %u bought a tribe tool type %u at (%.1f %.1f %.1f): placed here too", from, st & 0xFF, pos.x, pos.y, pos.z);
+    }
+}
+
 // ---------------------------------------------------------------- the table
+// ---------------------------------------------------------------- kind: citizen (Civ city citizens, BUG-0476)
+// cCreatureCitizen (noun 0x18EB4B7) of the cities: each game spawns and walks its own (an idle walk 0xD57680
+// picked by Citizen_OffStageCheck outside Tribe, docs/re/civ.md#civ-roads-citizens), so a fifth to a half of
+// them were elsewhere on the guest. The host's citizens near a guest (its pointer, else the host's capital)
+// are sent like the other kinds; a guest binds its own citizens to them by position (both games spawn the
+// same number per city) and walks each bound one to the host's (the game's own MoveTo, so it animates), or
+// puts it there when it is far. Their size is the fields kind `civ_citizen` (below, BUG-0475's Civ half).
+// `coop.fix civ.citizens off`: each game walks its own (0.7.4).
+constexpr uint32_t kCitizenNoun = 0x018EB4B7;
+static bool g_citizen_fix = true;
+COOP_FIX("civ.citizens", "BUG-0476", g_citizen_fix, "civ: city citizens walk where the host's walk (the host's citizens near a guest)");
+static uint32_t citizen_state(void*) { return 0; }
+static void citizen_collect(Items& out) { collect_noun(kCitizenNoun, out, citizen_state); }
+static bool citizen_behind(uint32_t, uint32_t) { return false; }
+static void citizen_apply(const Item&, uint32_t) {}
+static bool citizen_acted(uint32_t, uint32_t, uint32_t) { return false; }
+static void citizen_act(const Item&, uint32_t) {}
+// m: walked when farther than kCitizenWalk from where the host's is now (its last place moved on with its
+// velocity), put there over kCitizenPut (the detector's 15 m). A walk goes kCitizenLead s ahead of the host's
+// and is given again only when that goal moved 2 m or after 1.5 s (a MoveTo every tick hardly walks: BUG-0281)
+constexpr float kCitizenWalk = 1.5f, kCitizenPut = 12.f, kCitizenLead = 1.5f;
+static uint32_t g_cit_walks, g_cit_puts, g_cit_far;
+// BUG-0553: each game keeps a pool of citizens per planet and moves it to the city near its own camera
+// (BUG-0526). A bound copy far from the host's (kCitizenFar, no walk lags that much) was moved by the guest's
+// game to the city the guest looks at: left there (it was put back at the host's city, the guest's city empty).
+// `coop.fix civ.citizen_far off`: put back however far (0.7.5).
+constexpr float kCitizenFar = 60.f;
+static bool g_cit_far_fix = true;
+COOP_FIX("civ.citizen_far", "BUG-0553", g_cit_far_fix, "civ: a guest's citizens the game moved to the city its camera is at stay there");
+
+static void citizen_follow(const Item& l, const net::Vec3& hp, const net::Vec3& v, double age, Follow& st, double now)
+{
+    float t = (float)std::min(age, 1.5);
+    net::Vec3 at{hp.x + v.x * t, hp.y + v.y * t, hp.z + v.z * t};
+    float d = net::dist(l.pos, at);
+    if (g_cit_far_fix && d > kCitizenFar) {
+        g_cit_far++;
+        return;
+    }
+    if (d > kCitizenPut) {
+        game::stop(l.p);
+        game::place(l.p, at, game::orientation(l.p));
+        st.at = -100;
+        g_cit_puts++;
+        return;
+    }
+    float sp = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+    if (d <= kCitizenWalk && sp < 0.3f)
+        return; // there, and the host's stands: the game's own idle
+    net::Vec3 goal = sp >= 0.3f ? net::Vec3{at.x + v.x * kCitizenLead, at.y + v.y * kCitizenLead, at.z + v.z * kCitizenLead} : at;
+    if (net::dist(goal, st.goal) < 2.f && now - st.at < 1.5)
+        return;
+    game::move_to(l.p, goal, 0.5f);
+    st.goal = goal;
+    st.at = now;
+    g_cit_walks++;
+}
+
+// ---------------------------------------------------------------- kinds on a planet in Space (BUG-0490)
+// docs/re/space.md#space-planet-life. A colony planet's citizens (the same cCreatureCitizen noun) are a pool
+// of 150 that each game puts at the cities near its own camera (measured: city 4's citizens moved to city 0
+// when only the guest's ship went there); most stand, some run about (~5 m/s); 123 of 150 were within 3 m of
+// a partner, the rest elsewhere, each of its own size. Citizens near a guest the host's
+// game also has: bound and put where the host's are every frame (space_citizen_drive), their size by the
+// fields kind `space_citizen`. Citizens at a city the host's camera never came near exist in the guest's
+// game only: the host has none to bind (level of detail, not compared by the detector).
+// The colony's vehicles (cVehicle, noun 0x18C6DE8, 40 on the fixture's planet on both games, ~20 m/s)
+// are driven by each game's own planner: 25 of 40 were more than 15 m from any partner. The host's are
+// sent (the whole planet, every 0.4 s) with their orientation; a guest binds its own of the same class
+// (political id, locomotion, purpose) and draws each where the host's is every frame (StopMovement +
+// Teleport, as civ.cpp moves its vehicle mirrors). `coop.fix space.citizens off` / `space.vehicles off`:
+// each game keeps its own (0.7.5).
+// Space citizens: most stand, some run about (~5 m/s): a MoveTo hardly moved them (500 walks in 25 s, 4-10 of 19
+// still 3+ m off), a put every 0.25 s lagged 4 m behind the runners. So, like the vehicles, every frame a bound one
+// is put where the host's is now (its last place moved on with its velocity)
+static uint32_t g_space_cit_puts;
+static void space_citizen_drive(const Item& l, const net::Vec3& hp, const net::Vec3& v, double age, uint32_t)
+{
+    float t = (float)std::min(age, 1.0);
+    net::Vec3 want{hp.x + v.x * t, hp.y + v.y * t, hp.z + v.z * t};
+    if (net::dist(l.pos, want) <= 0.3f)
+        return;
+    game::stop(l.p);
+    game::place(l.p, want, game::orientation(l.p));
+    g_space_cit_puts++;
+}
+static bool g_space_cit_fix = true;
+COOP_FIX("space.citizens", "BUG-0490", g_space_cit_fix, "space: a colony's citizens stand where the host's stand (the host's citizens near a guest on its planet)");
+static bool g_space_veh_fix = true;
+COOP_FIX("space.vehicles", "BUG-0490", g_space_veh_fix, "space: a colony's vehicles drive where the host's drive (on the planet both players are on)");
+constexpr uint32_t kVehicleNoun = 0x018C6DE8;
+constexpr uintptr_t kVehSpatial = 0x34, kVehRot = 0x44, kVehLoco = 0xB1C, kVehPurpose = 0xB20, kVehPol = 0x30; // civ.cpp
+static uint32_t g_veh_drives;
+
+// a unit quaternion in 32 bits: the index of the largest component (2 bits), the other three (10 bits each)
+static uint32_t quat_pack(const float q[4])
+{
+    int big = 0;
+    for (int i = 1; i < 4; i++)
+        if (std::fabs(q[i]) > std::fabs(q[big]))
+            big = i;
+    float sg = q[big] < 0 ? -1.f : 1.f;
+    uint32_t v = (uint32_t)big;
+    for (int i = 0, k = 0; i < 4; i++) {
+        if (i == big)
+            continue;
+        float c = std::clamp(q[i] * sg * 1.41421356f, -1.f, 1.f); // |c| <= 1/sqrt(2) before the scale
+        v |= (uint32_t)std::lround((c + 1.f) * 511.5f) << (2 + 10 * k++);
+    }
+    return v;
+}
+static void quat_unpack(uint32_t v, float q[4])
+{
+    int big = (int)(v & 3);
+    float sum = 0;
+    for (int i = 0, k = 0; i < 4; i++) {
+        if (i == big)
+            continue;
+        float c = (float)((v >> (2 + 10 * k++)) & 1023) / 511.5f - 1.f;
+        q[i] = c / 1.41421356f;
+        sum += q[i] * q[i];
+    }
+    q[big] = std::sqrt(std::max(0.f, 1.f - sum));
+}
+static bool veh_take(void* v) { return !IsBadReadPtr(v, kVehPurpose + 4); }
+static uint32_t veh_state(void* v) { return quat_pack(&field<float>(v, kVehRot)); }
+static uint32_t veh_class(void* v)
+{
+    return field<uint32_t>(v, kVehPol) * 2654435761u ^ (uint32_t)field<int>(v, kVehLoco) * 40503u ^ (uint32_t)field<int>(v, kVehPurpose);
+}
+static void space_vehicle_collect(Items& out) { collect_noun(kVehicleNoun, out, veh_state, veh_take, veh_class); }
+static bool none_behind(uint32_t, uint32_t) { return false; }
+static void none_apply(const Item&, uint32_t) {}
+static bool none_acted(uint32_t, uint32_t, uint32_t) { return false; }
+static void none_act(const Item&, uint32_t) {}
+static void space_vehicle_drive(const Item& l, const net::Vec3& hp, const net::Vec3& v, double age, uint32_t host_st)
+{
+    if (host_st == kGone)
+        return;
+    float t = (float)std::min(age, 0.5);
+    net::Vec3 want{hp.x + v.x * t, hp.y + v.y * t, hp.z + v.z * t};
+    float d = net::dist(l.pos, want);
+    net::Vec3 p = want;
+    if (d < 30.f && d > 0.01f) // glide small corrections out (civ.cpp's mirrors)
+        p = {l.pos.x + (want.x - l.pos.x) * 0.5f, l.pos.y + (want.y - l.pos.y) * 0.5f, l.pos.z + (want.z - l.pos.z) * 0.5f};
+    float pp[3] = {p.x, p.y, p.z}, q[4];
+    quat_unpack(host_st, q);
+    void* sp = (uint8_t*)l.p + kVehSpatial;
+    vcall<void>(sp, 0xEC / 4);                                   // StopMovement: its planner does not pull it back
+    vcall<void>(sp, 0x44 / 4, (const float*)pp, (const float*)q); // Teleport
+    g_veh_drives++;
+}
+
 static Kind g_kinds[] = {
     {"fruit", &g_fruit_fix, kStCreature | kStTribe, 3.0f, 70.f, 48, fruit_collect, fruit_behind, fruit_apply, fruit_acted, fruit_act, true, true},
     {"tree", &g_tree_fix, kStCreature | kStTribe, 0.5f, 70.f, 48, tree_collect, tree_behind, tree_apply, tree_acted, tree_act, false, false},
     {"herd", &g_herd_fix, kStCreature, 1.0f, 3000.f, 48, herd_collect, herd_behind, herd_apply, herd_acted, herd_act, false, false},
     {"interactive_ornament", &g_orn_fix, kStCreature, 1.5f, 90.f, 40, orn_collect, orn_behind, orn_apply, orn_acted, orn_act, false, false},
+    // the bind radius 30 m: 15 of 19 citizens were within 15 m of a partner without the fix (out/detector/20261103-final.md)
+    {"citizen", &g_citizen_fix, kStCiv, 30.f, 200.f, 56, citizen_collect, citizen_behind, citizen_apply, citizen_acted, citizen_act, false, false,
+     citizen_follow, 0.5},
+    {"tribe_tool", &g_tool_fix, kStTribe, 2.0f, 150.f, 48, tool_collect, tool_behind, tool_apply, tool_acted, tool_act, false, true, nullptr, 0, tool_make,
+     tool_own, tool_buy},
+    // BUG-0490 (new kinds at the end: an older guest drops a kind index it does not know)
+    {.name = "space_citizen", .fix = &g_space_cit_fix, .stages = kStSpace, .tol = 30.f, .range = 400.f, .max = 56,
+     .collect = citizen_collect, .behind = none_behind, .apply = none_apply, .acted = none_acted, .act = none_act,
+     .gone_acted = false, .drop_own = false, .every = 0.5, .drive = space_citizen_drive},
+    // the whole planet (the fixture's is ~510 m in radius): every vehicle binds to the nearest host vehicle of its class
+    // (sea vehicles were 400+ m from their partner: the bind radius is the planet's size)
+    {.name = "space_vehicle", .fix = &g_space_veh_fix, .stages = kStSpace, .tol = 1500.f, .range = 2500.f, .max = 44,
+     .collect = space_vehicle_collect, .behind = none_behind, .apply = none_apply, .acted = none_acted, .act = none_act,
+     .gone_acted = false, .drop_own = false, .every = 0.4, .classes = true, .vmax = 60.f, .drive = space_vehicle_drive},
 };
 constexpr int kKinds = (int)(sizeof g_kinds / sizeof g_kinds[0]);
 // a snapshot is one unreliable message: 19 bytes + 20 per object within net::Connection::kMaxSingle (1163)
@@ -280,13 +608,24 @@ constexpr uint8_t kMsgSnap = 0, kMsgAct = 1;
 constexpr double kSnapInterval = 1.0, kGuestInterval = 0.25, kStale = 3.5, kReqRetry = 2.0;
 constexpr int kOwnGrace = 3; // snapshots a guest's own copy is seen without a host partner before it goes
 
+static int kind_of_name(const char* n)
+{
+    for (int k = 0; k < kKinds; k++)
+        if (!strcmp(g_kinds[k].name, n))
+            return k;
+    return -1;
+}
+static int tool_kind() { return kind_of_name("tribe_tool"); }
+
 static bool is_host() { return C.sess && C.sess->role() == net::Role::Host; }
 static bool is_guest() { return C.sess && C.sess->role() == net::Role::Client && C.sess->connected(); }
 
 static uint8_t stage_bit()
 {
     uint32_t m = game::mode_id();
-    return m == modes::kCreature ? kStCreature : m == modes::kTribe ? kStTribe : 0;
+    if (m == modes::kSpace)
+        return C.space_on_planet && C.space_on_planet() ? kStSpace : 0;
+    return m == modes::kCreature ? kStCreature : m == modes::kTribe ? kStTribe : m == modes::kCiv ? kStCiv : 0;
 }
 
 struct Bind {               // guest: a host object and this game's copy of it
@@ -296,63 +635,91 @@ struct Bind {               // guest: a host object and this game's copy of it
     uint32_t local_st = 0;  // the copy's state when last looked at
     net::Vec3 host_pos{};
     double req_at = -100;   // the last request sent for it
+    double host_at = -100;  // BUG-0476: when host_pos came, the host object's velocity, the follower's state
+    net::Vec3 host_vel{};
+    Follow fol;
 };
 struct Snap {
     net::Vec3 c{};
     float r = 0;
     double at = -100;
-    std::map<uint32_t, std::pair<net::Vec3, uint32_t>> objs; // host id -> (pos, state)
+    struct Obj {
+        net::Vec3 first; // position
+        uint32_t second; // state
+        uint32_t cls;    // class (kinds with `classes`)
+    };
+    std::map<uint32_t, Obj> objs; // host id -> object
 };
 struct GuestKind {
     std::map<uint32_t, Bind> binds;                   // host id -> copy
+    std::map<uint32_t, std::pair<double, int>> made;  // host id -> (last make, tries): K.make at most every 3 s, 3 times
     std::map<std::pair<void*, uint32_t>, int> own;    // copies without a host partner -> snapshots seen so
     Snap snap;
 };
 static GuestKind g_g[kKinds];
 static uint32_t g_epoch = 0;
-static double g_last_tx = 0, g_last_guest = 0;
+static double g_last_tx[16], g_last_guest = 0;
 struct Stat {
-    uint32_t tx = 0, rx = 0, bound = 0, applied = 0, dropped = 0, req_tx = 0, req_rx = 0, acted = 0, missing = 0;
+    uint32_t tx = 0, rx = 0, bound = 0, applied = 0, dropped = 0, req_tx = 0, req_rx = 0, acted = 0, missing = 0, made = 0;
 };
 static Stat g_st[kKinds];
 
 static void guest_reset()
 {
+    g_tool_buys.clear();
+    g_tool_base.clear();
+    g_tool_base_done = false;
     for (auto& g : g_g) {
         g.binds.clear();
         g.own.clear();
+        g.made.clear();
         g.snap = Snap{};
     }
 }
 
+// W2 (BUG-0488): a tool of a far village was never the host's (the snapshot covered 150 m around a guest): after a
+// rejoin the guest's planet lacked 8 of the host's tools (coop_realign_planet.py, lab 20261104-212408) and each
+// game's far tribes kept the tools they bought themselves. The tools' snapshot covers the whole planet (the 48
+// nearest a guest; the tribe fixture's planet has 10-20). `coop.fix wobj.tools_planet off`: 150 m (0.7.6).
+static bool g_tools_planet_fix = true;
+COOP_FIX("wobj.tools_planet", "BUG-0488", g_tools_planet_fix, "tribe: every village's tools on the planet are the host's in a guest's game, not only those near it");
+static float kind_range(int k) { return k == tool_kind() && g_tools_planet_fix ? 3000.f : g_kinds[k].range; }
+
 static void host_tick(double now)
 {
-    if (now - g_last_tx < kSnapInterval)
-        return;
-    g_last_tx = now;
     uint8_t sb = stage_bit();
-    for (int k = 0; k < kKinds; k++) {
+    for (int k = 0; k < kKinds && k < 16; k++) {
         Kind& K = g_kinds[k];
-        if (!*K.fix || !(K.stages & sb) || K.max > kMaxPerSnap)
+        if (!*K.fix || !(K.stages & sb) || K.max > kMaxPerSnap || now - g_last_tx[k] < (K.every > 0 ? K.every : kSnapInterval))
             continue;
+        g_last_tx[k] = now;
         Items all;
         K.collect(all);
         for (auto& p : C.sess->players()) {
             if (p.id == 0 || (C.in_place && !C.in_place(p.id)))
                 continue;
             net::Vec3 c;
-            if (!C.player_pos || !C.player_pos(p.id, c) || (c.x == 0 && c.y == 0 && c.z == 0)) {
-                if (!(sb == kStTribe && C.stage_center && C.stage_center(c)))
+            if (sb == kStSpace) { // BUG-0490: a guest's ship on our planet, over the ground the objects stand on
+                if (!C.space_partner || !C.space_partner(p.id, c) || all.empty())
+                    continue;
+                float rc = std::sqrt(c.x * c.x + c.y * c.y + c.z * c.z);
+                const net::Vec3& o = all[0].pos;
+                float ro = std::sqrt(o.x * o.x + o.y * o.y + o.z * o.z);
+                if (rc > 1.f && ro > 1.f && ro < rc)
+                    c = {c.x * ro / rc, c.y * ro / rc, c.z * ro / rc};
+            } else if (!C.player_pos || !C.player_pos(p.id, c) || (c.x == 0 && c.y == 0 && c.z == 0)) {
+                if (!(sb == kStTribe && C.stage_center && C.stage_center(c)) && !(sb == kStCiv && C.civ_center && C.civ_center(c)))
                     continue;
             }
             std::vector<std::pair<float, const Item*>> close;
+            float range = kind_range(k);
             for (auto& it : all) {
                 float d = net::dist(it.pos, c);
-                if (d < K.range)
+                if (d < range)
                     close.push_back({d, &it});
             }
             std::sort(close.begin(), close.end(), [](auto& a, auto& b) { return a.first < b.first; });
-            float r = K.range;
+            float r = range;
             if (close.size() > (size_t)K.max) { // the guest knows which area the snapshot covers
                 r = close[K.max].first;
                 close.resize(K.max);
@@ -371,6 +738,8 @@ static void host_tick(double now)
                 w.f32(it->pos.y);
                 w.f32(it->pos.z);
                 w.u32(it->st);
+                if (K.classes)
+                    w.u32(it->cls);
             }
             C.sess->send_unreliable_to(p.id, net::MSG_WOBJ, w);
             g_st[k].tx++;
@@ -420,6 +789,8 @@ static void reconcile(int k, double now, bool fresh)
         }
         Item& l = *f->second;
         used.insert(f->first);
+        if (K.follow && b.host_at > 0)
+            K.follow(l, b.host_pos, b.host_vel, now - b.host_at, b.fol, now);
         if (K.acted(b.local_st, l.st, b.host_st) && now - b.req_at > kReqRetry) {
             send_act(k, bi->first, b.host_pos, l.st);
             b.req_at = now;
@@ -437,13 +808,23 @@ static void reconcile(int k, double now, bool fresh)
             float bd = K.tol;
             for (auto& l : local) {
                 float d = net::dist(l.pos, ps.first);
-                if (d < bd && !used.count({l.p, l.id})) {
+                if (d < bd && !used.count({l.p, l.id}) && (!K.classes || l.cls == ps.cls)) {
                     bd = d;
                     best = &l;
                 }
             }
             if (!best) {
                 g_st[k].missing++;
+                auto& m = G.made[id];
+                if (K.make && m.second < 3 && now - m.first > 3.0) {
+                    int r = K.make(ps.first, ps.second);
+                    if (r >= 0) {
+                        m.first = now;
+                        m.second++;
+                    }
+                    if (r > 0)
+                        g_st[k].made++; // bound at the next snapshot (this frame's list is older)
+                }
                 continue;
             }
             used.insert({best->p, best->id});
@@ -456,7 +837,16 @@ static void reconcile(int k, double now, bool fresh)
         }
         Bind& b = bi->second;
         b.host_st = ps.second;
+        double dt = now - b.host_at;
+        if (b.host_at > 0 && dt > 0.3 && dt < 3.0) {
+            net::Vec3 v{(ps.first.x - b.host_pos.x) / (float)dt, (ps.first.y - b.host_pos.y) / (float)dt,
+                        (ps.first.z - b.host_pos.z) / (float)dt};
+            float sp = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+            b.host_vel = sp < K.vmax ? v : net::Vec3{}; // (a jump: no velocity)
+        } else
+            b.host_vel = {};
         b.host_pos = ps.first;
+        b.host_at = now;
         auto f = by_key.find({b.p, b.serial});
         if (f != by_key.end() && K.behind(f->second->st, ps.second)) {
             K.apply(*f->second, ps.second);
@@ -486,6 +876,10 @@ static void reconcile(int k, double now, bool fresh)
         auto o = G.own.find(key);
         if (o != G.own.end())
             n = o->second + 1;
+        if (K.own && K.own(l, now)) {
+            own[key] = n;
+            continue;
+        }
         if (K.drop_own && n >= kOwnGrace && K.behind(l.st, kGone)) {
             K.apply(l, kGone);
             g_st[k].dropped++;
@@ -496,12 +890,35 @@ static void reconcile(int k, double now, bool fresh)
     G.own.swap(own);
 }
 
+// BUG-0490: guest, every frame: the bound copies of a kind with `drive` are drawn where the host's objects are
+// (this frame's list only: a copy the game freed is not in it)
+static void drive_frame(double now, uint8_t sb, bool away)
+{
+    for (int k = 0; k < kKinds; k++) {
+        Kind& K = g_kinds[k];
+        GuestKind& G = g_g[k];
+        if (!K.drive || !*K.fix || !(K.stages & sb) || away || G.binds.empty() || now - G.snap.at > kStale)
+            continue;
+        Items local;
+        K.collect(local);
+        std::map<std::pair<void*, uint32_t>, const Item*> by_key;
+        for (auto& it : local)
+            by_key[{it.p, it.id}] = &it;
+        for (auto& [id, b] : G.binds) {
+            auto f = by_key.find({b.p, b.serial});
+            if (f != by_key.end() && b.host_at > 0)
+                K.drive(*f->second, b.host_pos, b.host_vel, now - b.host_at, b.host_st);
+        }
+    }
+}
+
 static void guest_tick(double now)
 {
     if (g_epoch != game::world_epoch()) {
         guest_reset();
         g_epoch = game::world_epoch();
     }
+    drive_frame(now, stage_bit(), C.host_away && C.host_away());
     if (now - g_last_guest < kGuestInterval)
         return;
     g_last_guest = now;
@@ -524,7 +941,7 @@ static void on_snap(net::Reader& r, double now)
     net::Vec3 c{r.f32(), r.f32(), r.f32()};
     float rad = r.f32();
     uint8_t n = r.u8();
-    if (!r.ok() || k >= kKinds || n > g_kinds[k].max || !std::isfinite(rad) || rad < 0 || rad > 1000.f)
+    if (!r.ok() || k >= kKinds || n > g_kinds[k].max || !std::isfinite(rad) || rad < 0 || rad > 5000.f) // (Space vehicles: the whole planet, 2500 m)
         return;
     Snap s;
     s.c = c;
@@ -534,11 +951,12 @@ static void on_snap(net::Reader& r, double now)
         uint32_t id = r.u32();
         net::Vec3 p{r.f32(), r.f32(), r.f32()};
         uint32_t st = r.u32();
+        uint32_t cls = k < kKinds && g_kinds[k].classes ? r.u32() : 0;
         if (!r.ok())
             return;
         if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) || p.x * p.x + p.y * p.y + p.z * p.z > 1e8f)
             continue;
-        s.objs[id] = {p, st};
+        s.objs[id] = {p, st, cls};
     }
     Kind& K = g_kinds[k];
     if (!*K.fix || !(K.stages & stage_bit()) || (C.host_away && C.host_away()) || g_epoch != game::world_epoch())
@@ -566,8 +984,11 @@ static void on_act(uint8_t from, net::Reader& r)
     for (auto& it : all)
         if (it.id == id && net::dist(it.pos, p) < K.tol * 4 + 5.f)
             hit = &it;
-    if (!hit)
+    if (!hit) {
+        if (id == 0 && K.buy && (!C.in_place || C.in_place(from)))
+            K.buy(from, p, now); // a guest made one this game has not (BUG-0524)
         return; // gone already (eaten here too, or out of the game)
+    }
     if (K.acted(hit->st, now, hit->st) || K.behind(hit->st, now)) {
         K.act(*hit, now);
         g_st[k].acted++;
@@ -597,6 +1018,8 @@ void on_message(uint8_t type, uint8_t from, net::Reader& r)
         on_snap(r, H->time_seconds());
     else if (kind == kMsgAct && is_host())
         on_act(from, r);
+    else if (kind == 2) // the whole planet's list after transitions (realign.cpp, W2: BUG-0564)
+        realign::on_planet(from, r);
 }
 
 void on_session_end() { guest_reset(); }
@@ -610,11 +1033,17 @@ std::string status()
     char b[320];
     for (int k = 0; k < kKinds; k++) {
         const Stat& t = g_st[k];
-        snprintf(b, sizeof b, "kind %s fix=%d binds=%zu own=%zu snap_n=%zu snap_r=%.0f tx=%u rx=%u bound=%u applied=%u dropped=%u missing=%u req_tx=%u req_rx=%u acted=%u\n",
+        snprintf(b, sizeof b, "kind %s fix=%d binds=%zu own=%zu snap_n=%zu snap_r=%.0f tx=%u rx=%u bound=%u applied=%u dropped=%u missing=%u made=%u req_tx=%u req_rx=%u acted=%u\n",
                  g_kinds[k].name, (int)*g_kinds[k].fix, g_g[k].binds.size(), g_g[k].own.size(), g_g[k].snap.objs.size(), g_g[k].snap.r,
-                 t.tx, t.rx, t.bound, t.applied, t.dropped, t.missing, t.req_tx, t.req_rx, t.acted);
+                 t.tx, t.rx, t.bound, t.applied, t.dropped, t.missing, t.made, t.req_tx, t.req_rx, t.acted);
         s += b;
     }
+    snprintf(b, sizeof b, "citizens walks=%u puts=%u far=%u; space citizens puts=%u; space vehicles drives=%u\n", g_cit_walks, g_cit_puts, g_cit_far,
+             g_space_cit_puts, g_veh_drives);
+    s += b;
+    snprintf(b, sizeof b, "tools all=%d buy=%d removed=%u buys_tx=%u buys_rx=%u buys_done=%u\n", (int)g_tool_all_fix, (int)g_tool_buy_fix,
+             g_tools_removed, g_tool_buys_tx, g_tool_buys_rx, g_tool_buys_done);
+    s += b;
     return s;
 }
 
@@ -704,6 +1133,90 @@ static int c_wobj(void*, int argc, const char* const* argv, SkOut* out)
     return 0;
 }
 
+// ---------------------------------------------------------------- fields kind civ_citizen (BUG-0475's Civ half)
+// The fields engine's ids are u16: a citizen's id is the low half of the host's object serial (a second
+// citizen with the same low half is left out on the host: rare, 1 in ~65000 per pair)
+static int citizen_kind() { return kind_of_name("citizen"); }
+static bool g_cit_scale_fix = true;
+COOP_FIX("civ.citizen_scale", "BUG-0475", g_cit_scale_fix, "civ: a guest's bound city citizen gets the host citizen's size");
+static const fields::Field kCitizenFields[] = {fields::kScale};
+static void citizen_each(void (*cb)(uint16_t, void*, void*), void* u)
+{
+    Items all;
+    citizen_collect(all);
+    std::set<uint16_t> seen;
+    for (auto& it : all)
+        if (seen.insert((uint16_t)(it.id & 0xFFFF)).second)
+            cb((uint16_t)(it.id & 0xFFFF), it.p, u);
+}
+// guest: the bound copy of the host's citizen `id`, only when it is still a live citizen of this frame's list
+static uint64_t g_cit_live_frame = ~0ull;
+static std::set<void*> g_cit_live;
+static void* citizen_mirror(uint16_t id)
+{
+    int k = citizen_kind();
+    if (k < 0 || !*g_kinds[k].fix)
+        return nullptr;
+    for (auto& [hid, b] : g_g[k].binds) {
+        if ((uint16_t)(hid & 0xFFFF) != id)
+            continue;
+        if (H->frame_index() != g_cit_live_frame) {
+            g_cit_live_frame = H->frame_index();
+            g_cit_live.clear();
+            Items all;
+            citizen_collect(all);
+            for (auto& it : all)
+                g_cit_live.insert(it.p);
+        }
+        return g_cit_live.count(b.p) && game::object_serial(b.p) == b.serial ? b.p : nullptr;
+    }
+    return nullptr;
+}
+
+// ---------------------------------------------------------------- fields kinds space_citizen / space_vehicle (BUG-0490)
+// The same shape as civ_citizen: ids are the low half of the host's serial, the guest's mirror is its bound copy.
+static bool g_space_scale_fix = true;
+COOP_FIX("space.planet_scale", "BUG-0490", g_space_scale_fix, "space: a guest's bound colony citizen or vehicle gets the host's size");
+struct LiveSet {
+    uint64_t frame = ~0ull;
+    std::set<void*> live;
+};
+static void* bound_mirror(const char* kind, uint16_t id, LiveSet& ls)
+{
+    int k = kind_of_name(kind);
+    if (k < 0 || !*g_kinds[k].fix)
+        return nullptr;
+    for (auto& [hid, b] : g_g[k].binds) {
+        if ((uint16_t)(hid & 0xFFFF) != id)
+            continue;
+        if (H->frame_index() != ls.frame) {
+            ls.frame = H->frame_index();
+            ls.live.clear();
+            Items all;
+            g_kinds[k].collect(all);
+            for (auto& it : all)
+                ls.live.insert(it.p);
+        }
+        return ls.live.count(b.p) && game::object_serial(b.p) == b.serial ? b.p : nullptr;
+    }
+    return nullptr;
+}
+static void each_of(void (*collect)(Items&), void (*cb)(uint16_t, void*, void*), void* u)
+{
+    Items all;
+    collect(all);
+    std::set<uint16_t> seen;
+    for (auto& it : all)
+        if (seen.insert((uint16_t)(it.id & 0xFFFF)).second)
+            cb((uint16_t)(it.id & 0xFFFF), it.p, u);
+}
+static LiveSet g_sc_live, g_sv_live;
+static void space_citizen_each(void (*cb)(uint16_t, void*, void*), void* u) { each_of(citizen_collect, cb, u); }
+static void space_vehicle_each(void (*cb)(uint16_t, void*, void*), void* u) { each_of(space_vehicle_collect, cb, u); }
+static void* space_citizen_mirror(uint16_t id) { return bound_mirror("space_citizen", id, g_sc_live); }
+static void* space_vehicle_mirror(uint16_t id) { return bound_mirror("space_vehicle", id, g_sv_live); }
+static bool space_planet_active() { return stage_bit() == kStSpace; }
+
 void init(const SkHost* host, SkMod* mod, const Ctx& ctx)
 {
     H = host;
@@ -723,6 +1236,12 @@ void init(const SkHost* host, SkMod* mod, const Ctx& ctx)
     if (!a_FruitSetState || !a_FloraGet || !a_DropFruit || !a_TreeVt || !a_OrnUsed || !a_RewardFind || !a_RewardHandlerVt || !a_HerdSetExtinct || !a_HerdSetExtinctFlag)
         for (auto& k : g_kinds)
             k.stages = 0; // a symbol missing on this build: every game keeps its own (logged below)
+    fields::add_kind({fields::K_CIV_CITIZEN, "civ_citizen", &g_cit_scale_fix, kCitizenFields, 1, citizen_each, citizen_mirror,
+                      [] { return game::mode_id() == modes::kCiv; }});
+    fields::add_kind({fields::K_SPACE_CITIZEN, "space_citizen", &g_space_scale_fix, kCitizenFields, 1, space_citizen_each,
+                      space_citizen_mirror, space_planet_active});
+    fields::add_kind({fields::K_SPACE_VEHICLE, "space_vehicle", &g_space_scale_fix, kCitizenFields, 1, space_vehicle_each,
+                      space_vehicle_mirror, space_planet_active});
     if (!a_FruitSetState || !a_DropFruit || !a_OrnUsed)
         H->log(M, SK_WARN, "wobj: symbols missing, world objects stay per game");
     H->command_add(M, "coop.wobj",

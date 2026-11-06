@@ -63,7 +63,7 @@ not native acceptance of every upstream0.7.4 gameplay feature.
 
 The current-protocol fake-peer check also exposes an old helper omission:
 HELLO/chat/leave pass, but its67-byte player-state payload is rejected by the
-current95-byte reader. BUG-0539 fixes only that bot payload and preserves the
+current95-byte reader. BUG-0623 fixes only that bot payload and preserves the
 reviewed6/7 legacy shape. Actual C++ Session FAIL/PASS receipts are
 `out/preview9-upstream074-integration/fakepeer-{red,green}.log`; all handshake,
 player-state, chat, leave and executable-mismatch checks then pass. No product
@@ -369,7 +369,7 @@ The C57 normal gradient drag at height index2 changes only `B6929C92`, R100
 to101; gradient color bytes are unchanged. Undo at R102 restores every Planet
 field and strict convergence without faults. The host's displayed height node
 nevertheless stays at y330 while its restored data and the guest show y303.
-This is a local native Color UI refresh failure (BUG-0524), distinct from the
+This is a local native Color UI refresh failure (BUG-0608), distinct from the
 successful data/history proof. Evidence:
 `out/preview9-c57-gradient-height-probe/`. The category1 correction passes1,567
 controlled Color checks and143,729 full adapter checks, with68 inputs unchanged;
@@ -387,7 +387,7 @@ normal height303 to330 plus own Undo/Redo/Undo, R3 to11, changes only B6929C92.
 Six UI checks prove303 restored and330 absent after Undo; both final PNGs were
 reviewed without a tab-toggle workaround. Both peers stay strict and fault-free.
 Evidence: `out/preview9-c58-two-gradient-ui/result.json` and `ui-proof.json`.
-BUG-0524 is fixed in this private protocol24 candidate; the installed personal
+BUG-0608 is fixed in this private protocol24 candidate; the installed personal
 protocol23 Flora update remains pinned independently.
 
 C58 also qualifies one real native Sound Alt-clone, R1 to2, followed by Undo3.
@@ -416,7 +416,7 @@ qualification remains separate.
 
 Tab0 planet-look presets have a concrete source/controlled-producer ownership
 gap: F0CD40 directly calls bulk Flora F37340 inside one Start/Commit, bypassing
-the full-load gate. BUG-0525's private C59 source fix preflights exactly17 field
+the full-load gate. BUG-0609's private C59 source fix preflights exactly17 field
 leases at the outer card boundary. Unchanged C58 reproduces the real Core
 ownership rejection; strict actual-i686 C59 passes8,910 preset checks plus the
 four affected UI/control focuses, seventy compiler/Make inputs with zero drift.
@@ -454,3 +454,10 @@ executable47f60c4d. Receipt:
 The final source-only cleanup removes pre-existing blank EOF lines and two
 ticket metadata trailing spaces. C70 remains pinned to merge0c61fe6a; no
 post-validation executable change or new personal installation is claimed.
+
+## Upstream 0.7.8 pivot (2026-11-05)
+
+The later user-authorized synchronization targets the published0.7.8 release.
+See [the new synchronization report](UPSTREAM-0.7.8-SYNC.md) for protocol28,
+retained editor safeguards, ticket mapping, validation and the missing native
+smoke fixture gate. Prior acceptance records above retain their original scope.

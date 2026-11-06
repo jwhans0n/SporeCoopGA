@@ -1,4 +1,5 @@
 #include "adventure_pickups.h"
+#include "sporekit_build.hpp"
 
 #include <algorithm>
 #include <cmath>

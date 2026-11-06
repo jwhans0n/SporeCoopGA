@@ -136,6 +136,7 @@ static void* planner_city()
     return o ? game::cast(o, kCityType) : nullptr;
 }
 static bool planner_holds(void* city) { return g_fix_planner_hold && city && city == planner_city(); }
+bool planner_holds_city(void* city) { return planner_holds(city); }
 // the spatial objects in the planner's moved-objects map (an eastl rbtree: anchor right +0, left +4,
 // root +8; node value at +0x10 = the object's spatial interface, then its target position)
 static void planner_moved(std::vector<void*>& out)
@@ -344,6 +345,643 @@ static void SK_THISCALL h_KeepGround(void* v)
     }
     o_KeepGround(v);
 }
+// ---------------- BUG-0477: the host's shots on the guests ----------------
+// Every Civ weapon (vehicles, city turrets) fires through cToolManager::FireTool (0x01050080, called each
+// update by cCombatSimulator::Update 0xAE7360 for a combatant whose target is in range; the tool's own
+// refire time decides whether a projectile leaves). A guest's mirrors run no behaviour tree, so they never
+// had a target and the guest saw the host's fights only as falling hit points. Now the host notes who
+// fires where (squadron.cpp's FireTool hook calls fire_observed) and sends the shooters of the last 0.25 s
+// every 0.2 s (MSG_CIV_STATE with chunk 0xFE / chunks 0: an older guest drops it at cycle_chunk_ok); the
+// guest fires its mirror's own weapon at the same point with the same FireTool, so the game makes the
+// projectile, its flight and its explosion. Its hits do nothing on the guest (cosmetic_hit: the damage
+// of a mirror's weapon is dropped in the TakeDamage hooks; the host's state brings the real damage).
+// `coop.fix civ.shots off`: the guest shows no shot (0.7.4).
+static bool g_fix_shots = true;
+COOP_FIX("civ.shots", "BUG-0477", g_fix_shots, "civ: a guest sees the host's vehicles and turrets fire (no damage of their own)");
+constexpr uint8_t kShotChunk = 0xFE;     // MSG_CIV_STATE chunk index of a shot list (chunks 0)
+constexpr uint32_t kTurretNoun = 0x0436F342;
+constexpr uintptr_t kVCombatant = 0x508, kBCombatant = 0x120;
+constexpr double kShotSend = 0.2, kShotKeep = 0.25, kShotFireEvery = 0.1;
+static uintptr_t a_FireTool, a_ToolMgrGet;
+struct Shot {
+    uint8_t kind = 0;   // 1 vehicle (host net id), 3 turret (its position)
+    uint16_t id = 0;
+    net::Vec3 at{};     // turret: where it stands
+    net::Vec3 aim{};
+    uint8_t tkind = 0;  // its target (FireTool's, a spatial: object + 0x34): 0 none, 1 vehicle id, 3 noun + position
+    uint16_t tid = 0;
+    uint32_t tnoun = 0;
+    net::Vec3 tpos{};
+    double seen = -100; // host: the last FireTool; guest: until when it fires
+    double tried = -100; // guest: the last FireTool of the mirror
+    uint8_t count = 0;   // BUG-0530: host: the shots that left (FireTool true); guest: the host's count
+    uint8_t done = 0;    // guest: the host's shots this game fired (FireTool true)
+    bool counted = false; // guest: a list of the host's fired shots (chunk kShotChunkFired)
+    bool stopped = false; // BUG-0530: the host's game stopped this weapon (cToolManager::OnMouseUp)
+    bool released = false; // guest: this game's copy of the weapon was stopped too
+};
+static std::map<std::pair<uint16_t, uint32_t>, Shot> g_shots;   // host: shooter -> last shot
+static std::map<std::pair<uint16_t, uint32_t>, Shot> g_shots_in; // guest: shooter -> its shots
+static double g_shots_sent_at = -100;
+static uint32_t g_shots_seen, g_shots_tx, g_shots_rx, g_shots_fired, g_shots_nomirror, g_shots_notool,
+    g_hits_dropped;
+static uint32_t g_shots_tgt_wanted, g_shots_tgt_found;
+static uint32_t g_shots_notarget; // guest: shots not fired, their target is not in this game (BUG-0534)
+static bool g_fix_shot_target = true;
+COOP_FIX("civ.shot_target", "BUG-0534", g_fix_shot_target,
+         "civ: a guest fires a host's shot only at a target it has (the game faults on a shot without one)");
+static std::unordered_set<void*> g_turret_shooters; // guest: turrets fired from (their hits are dropped too)
+// BUG-0530: cCombatSimulator::Update calls FireTool every update for a combatant with a target in range; FireTool
+// returns true only when the weapon's refire time passed and its strategy (vt 0x34, WhileFiring) made the shot
+// (GOG 2024 0x0105030B: `call [strategy+0x34]`, its al returned). The relay of every call let a guest's weapon
+// fire on its own refire time for as long as the host's kept trying: religious (cultural) shots and AoE areas
+// the host's game never made. Now the host counts the shots that left and the guest fires that many.
+static bool g_fix_shot_fired = true;
+COOP_FIX("civ.shot_fired", "BUG-0530", g_fix_shot_fired,
+         "civ: a guest fires the host's shots that left, not one per FireTool the host's game tried");
+constexpr uint8_t kShotChunkFired = 0xFC;  // MSG_CIV_STATE chunk index of a counted shot list (chunks 0)
+constexpr double kShotKeepFired = 1.0;     // host: a shooter stays in the lists (its count) for so long
+static uint32_t g_shots_tried, g_shots_refused; // host: FireTool calls that made no shot; guest: FireTool false
+// BUG-0530: a shot that left goes out at once (at most every 0.05 s), not with the next 0.2 s list: religious
+// projectiles and AoE areas live about a second, and 0.2-0.4 s of relay delay showed them in one game only
+static bool g_shot_new;
+// BUG-0530: an AoE weapon (cDefaultAoETool) makes its area once when it starts firing (tool +0x120) and keeps it
+// until cToolManager::OnMouseUp (0x0104FAA0, thiscall(mgr, tool) ret 4) stops the tool; cCombatSimulator::Update
+// stops a combatant's tool when its target is gone. The area sends cultural projectiles at what is inside. A guest's
+// copy of the weapon was never stopped: its area (and the area's cultural projectiles) stayed in the guest's game.
+// Now the host notes the stop of a listed shooter's tool, the guest stops its copy (and at the latest when the
+// shooter's list entry ends).
+static bool g_fix_shot_release = true;
+COOP_FIX("civ.shot_release", "BUG-0530", g_fix_shot_release,
+         "civ: a guest stops its copy of a host's weapon when the host's stops (no AoE area left behind)");
+static uintptr_t a_ToolMouseUp;
+static uint32_t g_shot_stops_seen, g_shot_released;
+static bool g_fix_shot_now = true;
+COOP_FIX("civ.shot_now", "BUG-0530", g_fix_shot_now,
+         "civ: the host's new shots go to the guests at once (no 0.2 s wait for the next shot list)");
+
+static uint32_t pos_key(const net::Vec3& p)
+{
+    return (uint32_t)(int)std::lround(p.x) * 73856093u ^ (uint32_t)(int)std::lround(p.y) * 19349663u ^
+           (uint32_t)(int)std::lround(p.z) * 83492791u;
+}
+
+// an object whose vtable lies in the game's image (no read through a vtable that is not one: a target of FireTool
+// can be an object without a spatial at -kVSpatial, and IsBadReadPtr on its "vtable", a float, wrote a fault
+// per shot to the host's log, BUG-0535)
+static bool vtable_in_game(const void* obj)
+{
+    static uintptr_t lo, hi;
+    if (!hi)
+        if (HMODULE exe = GetModuleHandleW(nullptr)) {
+            auto* nt = (IMAGE_NT_HEADERS*)((uint8_t*)exe + ((IMAGE_DOS_HEADER*)exe)->e_lfanew);
+            lo = (uintptr_t)exe;
+            hi = lo + nt->OptionalHeader.SizeOfImage;
+        }
+    uintptr_t vt = *(const uintptr_t*)obj;
+    return vt >= lo && vt + 0x24 <= hi;
+}
+
+// BUG-0530 (diagnostics): FireTool calls a guest's game makes itself in Civ (not guest_fire's copies), by caller
+static bool g_in_guest_fire;
+struct LocalFire {
+    uint32_t calls = 0, fired = 0;
+    uintptr_t owner_vt = 0;
+};
+static std::map<uintptr_t, LocalFire> g_local_fire;
+// BUG-0530 (diagnostics): shots by the tool's strategy key (tool +0x178: which weapon made it), host and guest
+static std::map<uint32_t, uint32_t> g_shot_tools;
+static void note_tool(void* tool)
+{
+    if (tool && !IsBadReadPtr(tool, 0x17C) && g_shot_tools.size() < 32)
+        g_shot_tools[F<uint32_t>(tool, 0x178)]++;
+}
+static void shots_log(double now) // BUG-0530 (diagnostics): the shots by weapon every 120 s in the game log
+{
+    static double last = -1;
+    if (last >= 0 && now - last < 120)
+        return;
+    last = now;
+    if (g_shot_tools.empty())
+        return;
+    std::string t;
+    for (auto& [k, n] : g_shot_tools) {
+        char x[32];
+        snprintf(x, sizeof x, " %08X=%u", k, n);
+        t += x;
+    }
+    H->log(M, SK_INFO, "civ: shots by weapon (%s):%s", is_host() ? "host, fired" : "guest, copies fired", t.c_str());
+}
+void fire_local(void* owner, uintptr_t ret, bool fired)
+{
+    if (g_in_guest_fire || !is_guest() || game::mode_id() != modes::kCiv || !owner)
+        return;
+    auto& e = g_local_fire[ret];
+    e.calls++;
+    e.fired += fired;
+    void* o = (uint8_t*)owner - kVSpatial;
+    if (!e.owner_vt && !IsBadReadPtr(o, 4))
+        e.owner_vt = *(uintptr_t*)o;
+    if (fired && e.fired == 1 && g_local_fire.size() <= 16)
+        H->log(M, SK_INFO, "civ: this guest's game fired a tool itself: FireTool from 0x%08X (owner vtable %08X, noun %08X)",
+               (unsigned)ret, (unsigned)e.owner_vt, e.owner_vt && vtable_in_game(o) ? game::noun_id(o) : 0u);
+}
+
+void fire_observed(void* tool, void* owner, const float* aim, void* target, bool fired)
+{
+    if (!g_fix_shots || !owner || !aim || !tool || !is_host() || !active())
+        return;
+    if (g_fix_shot_fired && !fired) {
+        g_shots_tried++;
+        return;
+    }
+    if (fired)
+        note_tool(tool);
+    void* o = (uint8_t*)owner - kVSpatial;
+    Shot s;
+    auto it = g_hv.find(o);
+    if (it != g_hv.end()) {
+        s.kind = 1;
+        s.id = it->second.id;
+    } else if (!IsBadReadPtr(o, 0x40) && vtable_in_game(o) && game::noun_id(o) == kTurretNoun && game::object_position(o, s.at)) {
+        s.kind = 3;
+    } else
+        return;
+    s.aim = {aim[0], aim[1], aim[2]};
+    if (!std::isfinite(s.aim.x) || !std::isfinite(s.aim.y) || !std::isfinite(s.aim.z))
+        return;
+    if (target && target != owner && !IsBadReadPtr((uint8_t*)target - kVSpatial, 0x40)) {
+        void* t = (uint8_t*)target - kVSpatial;
+        auto tv = g_hv.find(t);
+        if (tv != g_hv.end()) {
+            s.tkind = 1;
+            s.tid = tv->second.id;
+        } else if (vtable_in_game(t) && game::object_alive(t) && game::object_position(t, s.tpos)) {
+            s.tkind = 3;
+            s.tnoun = game::noun_id(t);
+        } else
+            s.tkind = 2; // a target the guest cannot find: it does not fire this one (BUG-0534)
+    }
+    s.seen = H->time_seconds();
+    auto& e = g_shots[{s.id, s.kind == 3 ? pos_key(s.at) : 0u}];
+    s.count = (uint8_t)(e.count + 1);
+    g_shot_new = true;
+    e = s;
+    g_shots_seen++;
+}
+
+static void tribe_count_log(double now); // BUG-0539 diagnostics (below)
+static void host_send_shots(double now)
+{
+    shots_log(now);
+    tribe_count_log(now);
+    bool soon = g_fix_shot_now && g_fix_shot_fired && g_shot_new && now - g_shots_sent_at >= 0.05;
+    if (!g_fix_shots || (now - g_shots_sent_at < kShotSend && !soon))
+        return;
+    g_shots_sent_at = now;
+    g_shot_new = false;
+    const bool counted = g_fix_shot_fired;
+    const double keep = counted ? kShotKeepFired : kShotKeep;
+    std::vector<const Shot*> list;
+    for (auto it = g_shots.begin(); it != g_shots.end();) {
+        if (now - it->second.seen > keep) {
+            it = g_shots.erase(it);
+            continue;
+        }
+        if (list.size() < 120)
+            list.push_back(&it->second);
+        ++it;
+    }
+    // one message holds at most 22 shooters (47 bytes each, kMaxPacket): 40 in one (up to 0.7.5) were 1845
+    // bytes, a message the connection drops, so with more than 24 shooters a guest saw no shot at all
+    constexpr size_t kPerMsg = 22;
+    for (size_t at = 0; at < list.size(); at += kPerMsg) {
+        size_t n = std::min(kPerMsg, list.size() - at);
+        net::Writer w;
+        w.u16(0); w.u8(counted ? kShotChunkFired : kShotChunk); w.u8(0);
+        w.u8((uint8_t)n);
+        for (size_t i = at; i < at + n; i++) {
+            const Shot* s = list[i];
+            w.u8(s->kind); w.u16(s->id);
+            w.f32(s->at.x); w.f32(s->at.y); w.f32(s->at.z);
+            w.f32(s->aim.x); w.f32(s->aim.y); w.f32(s->aim.z);
+            w.u8(s->tkind); w.u16(s->tid); w.u32(s->tnoun);
+            w.f32(s->tpos.x); w.f32(s->tpos.y); w.f32(s->tpos.z);
+            if (counted) {
+                w.u8(s->count);
+                w.u8(s->stopped ? 1 : 0);
+            }
+        }
+        for (auto& pl : C.sess->players())
+            if (pl.id != 0)
+                C.sess->send_unreliable_to(pl.id, net::MSG_CIV_STATE, w);
+        g_shots_tx++;
+    }
+}
+
+static void guest_shots(net::Reader& r, bool counted)
+{
+    uint8_t n = r.u8();
+    double now = H->time_seconds();
+    for (int i = 0; i < n && r.ok(); i++) {
+        Shot s;
+        s.kind = r.u8(); s.id = r.u16();
+        s.at.x = r.f32(); s.at.y = r.f32(); s.at.z = r.f32();
+        s.aim.x = r.f32(); s.aim.y = r.f32(); s.aim.z = r.f32();
+        s.tkind = r.u8(); s.tid = r.u16(); s.tnoun = r.u32();
+        s.tpos.x = r.f32(); s.tpos.y = r.f32(); s.tpos.z = r.f32();
+        uint8_t flags = 0;
+        if (counted) {
+            s.count = r.u8();
+            flags = r.u8();
+        }
+        s.stopped = (flags & 1) != 0;
+        if (!r.ok() || (s.kind != 1 && s.kind != 3) || !std::isfinite(s.aim.x) || !std::isfinite(s.aim.y) ||
+            !std::isfinite(s.aim.z) || !std::isfinite(s.at.x))
+            return;
+        auto key = std::make_pair(s.id, s.kind == 3 ? pos_key(s.at) : 0u);
+        auto found = g_shots_in.find(key);
+        bool fresh = found == g_shots_in.end() || found->second.counted != counted;
+        auto& e = g_shots_in[key];
+        double tried = e.tried;
+        if (counted && g_fix_shot_now && !fresh && e.count != s.count)
+            tried = -100; // a new shot of the host's: fired on this frame (the weapon's refire time still decides)
+        uint8_t done = fresh ? (uint8_t)(s.count - 1) : e.done; // a shooter first heard of: its last shot
+        bool released = !fresh && e.released && s.stopped;
+        e = s;
+        e.tried = tried;
+        e.counted = counted;
+        e.done = done;
+        e.released = released;
+        if (s.stopped)
+            e.done = e.count; // fires no more
+        if ((uint8_t)(e.count - e.done) > 3) // far behind (a hitch, lost lists): the last few only
+            e.done = (uint8_t)(e.count - 3);
+        // fires on until then (the next list keeps it going; not much past the host's last shot)
+        e.seen = now + (counted ? kShotKeepFired + 0.2 : kShotKeep + 0.05);
+        g_shots_rx++;
+    }
+}
+
+// BUG-0539 (diagnostics): who destroys a Tribe stage tribe in Civ, and when the count of tribes changes
+constexpr uint32_t kTribeNoun = 0x018C6D19;
+static bool g_tribe_gone; // BUG-0539, host: a tribe was destroyed since the last list
+using DestroyInstance_t = void(SK_THISCALL*)(void*, void*);
+static DestroyInstance_t o_DestroyInstance;
+static std::map<uintptr_t, uint32_t> g_tribe_destroys;
+static void SK_THISCALL h_DestroyInstance(void* mgr, void* obj)
+{
+    if (obj && game::mode_id() == modes::kCiv && !IsBadReadPtr(obj, 4) && vtable_in_game(obj) &&
+        game::noun_id(obj) == kTribeNoun) {
+        uintptr_t ra = (uintptr_t)__builtin_return_address(0);
+        if (is_host())
+            g_tribe_gone = true; // BUG-0539: the guests hear of it with the next tribe list
+        if (g_tribe_destroys[ra]++ == 0 && g_tribe_destroys.size() <= 8)
+            H->log(M, SK_INFO, "civ: a tribe of the Tribe stage is destroyed here (%s), DestroyInstance from 0x%08X",
+                   is_host() ? "host" : is_guest() ? "guest" : "alone", (unsigned)ra);
+    }
+    o_DestroyInstance(mgr, obj);
+}
+// BUG-0539: the host's NPC vehicles raid the old Tribe stage villages (a behaviour tree action, 0xDCAAB0 "HR":
+// money and an event, then DestroyInstance of the tribe at 0xDCB2B2, its huts, tools, food mat and bundles go with
+// it); a guest's mirrors run no behaviour tree, so the guest's villages stood for good. The host sends the places of
+// its tribes in Civ (MSG_CIV_STATE chunk 0xFA, every 5 s and when one is destroyed); a guest destroys a tribe of its
+// own with no host tribe within 10 m (two looks in a row), the same DestroyInstance.
+static bool g_fix_tribe_ruins = true;
+COOP_FIX("civ.tribe_ruins", "BUG-0539", g_fix_tribe_ruins,
+         "civ: an old tribe village the host's vehicles raided is gone on the guests too");
+constexpr uint8_t kTribeChunk = 0xFA;
+static uintptr_t a_DestroyInst;
+static double g_tribes_sent_at = -100;
+static uint32_t g_tribes_tx, g_tribes_rx, g_tribes_removed;
+static std::unordered_map<void*, int> g_tribe_extra_seen; // guest: tribe -> looks without a host tribe
+static std::vector<std::pair<void*, net::Vec3>> tribes_here()
+{
+    std::vector<std::pair<void*, net::Vec3>> out;
+    game::for_each_object([](void* o, uint32_t noun, void* u) {
+        net::Vec3 p;
+        if (noun == kTribeNoun && game::object_alive(o) && game::object_position(o, p))
+            ((std::vector<std::pair<void*, net::Vec3>>*)u)->push_back({o, p});
+        return true;
+    }, &out);
+    return out;
+}
+static void host_send_tribes(double now)
+{
+    if (!g_fix_tribe_ruins || !(now - g_tribes_sent_at >= 5.0 || (g_tribe_gone && now - g_tribes_sent_at >= 0.5)))
+        return;
+    g_tribes_sent_at = now;
+    g_tribe_gone = false;
+    auto ts = tribes_here();
+    if (ts.size() > 80)
+        ts.resize(80); // 80 x 12 bytes: one packet
+    net::Writer w;
+    w.u16(0); w.u8(kTribeChunk); w.u8(0);
+    w.u8((uint8_t)ts.size());
+    for (auto& [t, p] : ts) {
+        w.f32(p.x); w.f32(p.y); w.f32(p.z);
+    }
+    for (auto& pl : C.sess->players())
+        if (pl.id != 0)
+            C.sess->send_unreliable_to(pl.id, net::MSG_CIV_STATE, w);
+    g_tribes_tx++;
+}
+static void guest_tribes(net::Reader& r)
+{
+    std::vector<net::Vec3> hp(r.u8());
+    for (auto& p : hp) {
+        p.x = r.f32(); p.y = r.f32(); p.z = r.f32();
+    }
+    if (!r.ok())
+        return;
+    g_tribes_rx++;
+    if (!g_fix_tribe_ruins || !a_DestroyInst || local_play() || game::mode_id() != modes::kCiv)
+        return;
+    auto here = tribes_here();
+    // a list without any tribe while this game has several: the host's world is not there yet (a load, a
+    // stage change), not a raid of all of them; and never more than two per list (a raid takes one at a time)
+    if (hp.empty() && here.size() > 2)
+        return;
+    int removed = 0;
+    std::unordered_map<void*, int> seen;
+    for (auto& [t, p] : here) {
+        bool host_has = false;
+        for (auto& q : hp)
+            if (net::dist(p, q) < 10.f) {
+                host_has = true;
+                break;
+            }
+        if (host_has)
+            continue;
+        int n = g_tribe_extra_seen.count(t) ? g_tribe_extra_seen[t] + 1 : 1;
+        if (n < 2 || removed >= 2) {
+            seen[t] = n;
+            continue;
+        }
+        removed++;
+        g_applying = true;
+        thiscall<void>(a_DestroyInst, nm(), t);
+        g_applying = false;
+        g_tribes_removed++;
+        H->log(M, SK_INFO, "civ: the old tribe village at (%.0f %.0f %.0f) is gone on the host: removed here (BUG-0539)", p.x,
+               p.y, p.z);
+    }
+    g_tribe_extra_seen = std::move(seen);
+}
+
+static void tribe_count_log(double now)
+{
+    static double last = -100;
+    static int known = -1;
+    if (now - last < 5)
+        return;
+    last = now;
+    int n = 0;
+    game::for_each_object([](void*, uint32_t noun, void* u) {
+        if (noun == kTribeNoun)
+            ++*(int*)u;
+        return true;
+    }, &n);
+    if (n != known)
+        H->log(M, SK_INFO, "civ: tribes of the Tribe stage in this game: %d (was %d, cities %u)", n, known,
+               (unsigned)all_cities().size());
+    known = n;
+}
+
+// host: a tool stops (cToolManager::OnMouseUp): a listed shooter's entry says so (BUG-0530)
+using ToolMouseUp_t = int(SK_THISCALL*)(void*, void*);
+static ToolMouseUp_t o_ToolMouseUp;
+static int SK_THISCALL h_ToolMouseUp(void* mgr, void* tool)
+{
+    if (g_fix_shot_release && g_fix_shot_fired && g_fix_shots && tool && is_host() && active() &&
+        !IsBadReadPtr(tool, 0x118)) {
+        void* owner = *(void**)((uint8_t*)tool + 0x114);
+        void* o = owner ? (uint8_t*)owner - kVSpatial : nullptr;
+        auto it = o ? g_hv.find(o) : g_hv.end();
+        std::pair<uint16_t, uint32_t> key{0, 0};
+        bool known = false;
+        if (it != g_hv.end()) {
+            key = {it->second.id, 0u};
+            known = true;
+        } else if (o && !IsBadReadPtr(o, 0x40) && vtable_in_game(o) && game::noun_id(o) == kTurretNoun) {
+            net::Vec3 at;
+            if (game::object_position(o, at)) {
+                key = {0, pos_key(at)};
+                known = true;
+            }
+        }
+        auto e = known ? g_shots.find(key) : g_shots.end();
+        if (e != g_shots.end() && !e->second.stopped) {
+            e->second.stopped = true;
+            e->second.seen = H->time_seconds(); // in the lists a while longer, so the guests hear of it
+            g_shot_new = true;
+            g_shot_stops_seen++;
+        }
+    }
+    return o_ToolMouseUp(mgr, tool);
+}
+
+// guest: the weapon of a local shooter (combatant vt 0x14, as cCombatSimulator::Update gets it)
+static void* weapon_of(void* comb)
+{
+    if (!comb || IsBadReadPtr(comb, 8) || IsBadReadPtr(*(void**)comb, 0x18))
+        return nullptr;
+    void* t = vcall<void*>(comb, 0x14 / 4);
+    return t && !IsBadReadPtr(t, 0x120) ? t : nullptr;
+}
+
+// guest: objects by noun near a place, all found in one walk of the noun list (turret shooters, building targets)
+struct Want {
+    uint32_t noun;
+    net::Vec3 pos;
+    float best;
+    void* found;
+};
+static void find_wanted(std::vector<Want>& w)
+{
+    if (w.empty())
+        return;
+    game::for_each_object(
+        [](void* o, uint32_t n, void* u) {
+            auto& w = *(std::vector<Want>*)u;
+            net::Vec3 p;
+            bool have = false;
+            for (auto& x : w) {
+                if (x.noun != n)
+                    continue;
+                if (!have && !(game::object_alive(o) && game::object_position(o, p)))
+                    return true;
+                have = true;
+                float d = net::dist(p, x.pos);
+                if (d < x.best) {
+                    x.best = d;
+                    x.found = o;
+                }
+            }
+            return true;
+        },
+        &w);
+}
+
+// BUG-0530: this game's copy of a host's weapon stops (vehicles; a turret's copy stops when its entry ends only
+// if found again, which needs the noun walk: turrets are military, no AoE)
+static void release_copy(Shot& s)
+{
+    s.released = true;
+    if (!g_fix_shot_release || !a_ToolMouseUp || s.kind != 1)
+        return;
+    auto g = g_gv.find(s.id);
+    void* o = g == g_gv.end() ? nullptr : g->second.v;
+    if (!o || !exists(o) || F<uint8_t>(o, kVDead))
+        return;
+    void* tool = weapon_of((uint8_t*)o + kVCombatant);
+    if (!tool || !F<uint8_t>(tool, 0x80)) // +0x80: firing (FireTool sets it, OnMouseUp clears it)
+        return;
+    void* mgr = skg::cdecl_call<void*>(a_ToolMgrGet);
+    if (!mgr)
+        return;
+    g_in_guest_fire = true;
+    thiscall<int>(a_ToolMouseUp, mgr, tool);
+    g_in_guest_fire = false;
+    g_shot_released++;
+}
+
+static void guest_fire(double now)
+{
+    shots_log(now);
+    tribe_count_log(now);
+    if (!g_fix_shots || !a_FireTool || !a_ToolMgrGet || local_play()) {
+        g_shots_in.clear();
+        return;
+    }
+    std::vector<Shot*> due;
+    std::vector<Want> want; // per due shot: [2i] its turret (kind 3), [2i + 1] its target (tkind 3)
+    for (auto it = g_shots_in.begin(); it != g_shots_in.end();) {
+        Shot& s = it->second;
+        if (now > s.seen) {
+            if (!s.released)
+                release_copy(s); // the host's list no longer has it: its weapon stopped there
+            it = g_shots_in.erase(it);
+            continue;
+        }
+        ++it;
+        if (s.stopped && !s.released) {
+            g_shot_stops_seen++;
+            release_copy(s);
+        }
+        if (now - s.tried < kShotFireEvery || (s.counted && s.done == s.count))
+            continue;
+        s.tried = now;
+        due.push_back(&s);
+        want.push_back({s.kind == 3 ? kTurretNoun : 0u, s.at, 6.f, nullptr});
+        want.push_back({s.tkind == 3 ? s.tnoun : 0u, s.tpos, 4.f, nullptr});
+    }
+    bool any = false;
+    for (auto& w : want)
+        any |= w.noun != 0;
+    if (any)
+        find_wanted(want);
+    for (size_t i = 0; i < due.size(); i++) {
+        Shot& s = *due[i];
+        void* o = nullptr;
+        void* comb = nullptr;
+        if (s.kind == 1) {
+            auto g = g_gv.find(s.id);
+            o = g == g_gv.end() ? nullptr : g->second.v;
+            if (o && (!exists(o) || F<uint8_t>(o, kVDead)))
+                o = nullptr;
+            comb = o ? (uint8_t*)o + kVCombatant : nullptr;
+        } else {
+            o = want[2 * i].found;
+            comb = o ? (uint8_t*)o + kBCombatant : nullptr;
+        }
+        if (!o) {
+            g_shots_nomirror++;
+            continue;
+        }
+        void* tool = weapon_of(comb);
+        void* mgr = tool ? skg::cdecl_call<void*>(a_ToolMgrGet) : nullptr;
+        if (!mgr) {
+            g_shots_notool++;
+            continue;
+        }
+        if (s.kind == 3)
+            g_turret_shooters.insert(o);
+        // the target in this game (the projectile homes on it as the host's does); its place is the aim
+        void* t = nullptr;
+        if (s.tkind == 1) {
+            auto g = g_gv.find(s.tid);
+            t = g == g_gv.end() ? nullptr : g->second.v;
+            if (t && (!exists(t) || F<uint8_t>(t, kVDead)))
+                t = nullptr;
+        } else if (s.tkind == 3)
+            t = want[2 * i + 1].found;
+        // BUG-0534: the host's shot had a target and this game has none for it: no FireTool. The game's
+        // weapon update (0xCB5FA0, GOG 2024) reads the target of a tool's shot without a null check
+        // (`mov eax,[edi+0x50]` with edi = 0) and faulted every frame for a beam with no target.
+        if (s.tkind && !t && g_fix_shot_target) {
+            g_shots_notarget++;
+            continue;
+        }
+        net::Vec3 ap = s.aim;
+        if (s.tkind)
+            g_shots_tgt_wanted++;
+        if (t) {
+            g_shots_tgt_found++;
+            net::Vec3 tp;
+            if (game::object_position(t, tp)) // the host aimed at its own copy's place: the same offset here
+                ap = {s.aim.x + tp.x - (s.tkind == 3 ? s.tpos.x : tp.x), s.aim.y + tp.y - (s.tkind == 3 ? s.tpos.y : tp.y),
+                      s.aim.z + tp.z - (s.tkind == 3 ? s.tpos.z : tp.z)};
+        }
+        float aim[3] = {ap.x, ap.y, ap.z};
+        g_in_guest_fire = true;
+        int fired = thiscall<int>(a_FireTool, mgr, tool, (uint8_t*)o + kVSpatial, (const float*)aim, -1, 0,
+                                  t ? (void*)((uint8_t*)t + kVSpatial) : nullptr, 0);
+        g_in_guest_fire = false;
+        if (fired & 0xFF) { // FireTool returns a bool in al (BUG-0530)
+            note_tool(tool);
+            s.done++;
+            g_shots_fired++;
+        } else
+            g_shots_refused++;
+    }
+}
+
+// guest: a hit from a mirror's (or a fired-from turret's) weapon: the shot is the host's, its damage too
+static bool g_fix_shot_damage = true;
+COOP_FIX("civ.shot_damage", "BUG-0477", g_fix_shot_damage,
+         "civ: the host's shots a guest's game shows hurt nothing there (the host's state brings the damage)");
+static uint32_t g_hits_guest, g_hits_noatt; // guest: TakeDamage calls in Civ seen by the hooks, without an attacker
+static uintptr_t g_hit_att_vt;               // the vtable of the last attacker (diagnostics)
+static bool cosmetic_hit(void* att)
+{
+    if (is_guest() && game::mode_id() == modes::kCiv) {
+        g_hits_guest++;
+        if (!att || IsBadReadPtr(att, 4))
+            g_hits_noatt++;
+        else
+            g_hit_att_vt = *(uintptr_t*)att;
+    }
+    if (!g_fix_shots || !g_fix_shot_damage || !att || !is_guest() || game::mode_id() != modes::kCiv || local_play() || IsBadReadPtr(att, 4) ||
+        IsBadReadPtr(*(void**)att, 0x60))
+        return false;
+    void* v = vcall<void*>(att, 0x5C / 4, 0x137E8E0u); // the vehicle behind a combatant
+    bool ours = (v && g_gv_of.count(v)) || g_turret_shooters.count((uint8_t*)att - kBCombatant);
+    if (ours)
+        g_hits_dropped++;
+    return ours;
+}
+bool hit_is_cosmetic(void* attacker) { return cosmetic_hit(attacker); }
+
+using VTakeDamage_t = int(SK_THISCALL*)(void*, float, uint32_t, int, const void*, void*);
+static VTakeDamage_t o_VTakeDamage;
+static int SK_THISCALL h_VTakeDamage(void* s, float d, uint32_t pol, int t, const void* dir, void* a)
+{
+    if (cosmetic_hit(a))
+        return 0;
+    return o_VTakeDamage(s, d, pol, t, dir, a);
+}
+
 static uint32_t g_removed_local; // the guest's own vehicles removed (civ_ai_spawn: not the host's departed ones)
 static uint32_t g_created, g_removed, g_cmds_sent, g_builds_in, g_captures_in, g_orders_dropped, g_growth_blocked, g_nodes_in;
 
@@ -700,6 +1338,125 @@ static bool SK_THISCALL h_SpawnNextCity(void* ex, int instant, void* who)
     return r;
 }
 
+// BUG-0494: roads between cities (noun 0x2B8A4E7 "inter_city_road") are the ground objects of trade
+// routes: cCity::AddTradeRoute (thiscall(city, other, type) ret 8) pushes {partner, route object, type}
+// (stride 0xC) on the vector +0x55C of both cities and, for type 0, makes the road. The host's game makes
+// routes in its own AI (an economic vehicle's "create route", diplomacy); the guest's mirrors run none of
+// it, so the host's roads never appeared there. Now the host sends its route list (MSG_CIV_BUILD with the
+// city index kRoadList) on every change and every 10 s, and a guest adds the routes it lacks with the
+// game's own AddTradeRoute. Routes are only added: the game removes them itself in ChangeOwner (a capture,
+// mirrored), and RemoveTradeRoute (one side) of a shared route object is not proven safe.
+// `coop.fix civ.roads off`: no list, the guest keeps its own routes (0.7.4).
+constexpr uint8_t kRoadList = 0xFE; // MSG_CIV_BUILD city index: the host's trade routes follow
+constexpr uintptr_t kCityRoutes = 0x55C; // vector<{cCity* partner, route object*, int type}>, stride 0xC
+static bool g_fix_roads = true;
+COOP_FIX("civ.roads", "BUG-0494", g_fix_roads, "civ: roads (trade routes) between cities on the host appear on the guests");
+static uintptr_t a_AddTradeRoute;
+static uint32_t g_roads_sent, g_roads_in, g_roads_added, g_roads_failed;
+static double g_roads_sent_at = -100;
+static std::vector<std::array<uint8_t, 3>> g_roads_last; // host: the list sent last
+
+struct Route {
+    void* partner;
+    void* obj;
+    int type;
+};
+static std::vector<Route> routes_of(void* city)
+{
+    std::vector<Route> r;
+    auto* b = F<uint8_t*>(city, kCityRoutes);
+    auto* e = F<uint8_t*>(city, kCityRoutes + 4);
+    if (!b || e < b || (e - b) % 0xC || (e - b) > 0xC * 64)
+        return r;
+    for (uint8_t* p = b; p < e; p += 0xC)
+        r.push_back({*(void**)p, *(void**)(p + 4), *(int*)(p + 8)});
+    return r;
+}
+
+// host: (index a < index b, type) of every route between two cities of the snapshot's list
+static std::vector<std::array<uint8_t, 3>> host_routes()
+{
+    std::vector<std::array<uint8_t, 3>> out;
+    size_t n = std::min<size_t>(g_host_cities.size(), 250);
+    for (size_t i = 0; i < n; i++)
+        for (const Route& r : routes_of(g_host_cities[i])) {
+            auto it = std::find(g_host_cities.begin(), g_host_cities.begin() + n, r.partner);
+            size_t j = (size_t)(it - g_host_cities.begin());
+            if (j < n && i < j && r.type >= 0 && r.type < 256)
+                out.push_back({(uint8_t)i, (uint8_t)j, (uint8_t)r.type});
+        }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    if (out.size() > 200)
+        out.resize(200);
+    return out;
+}
+
+static void host_send_roads(double now)
+{
+    if (!g_fix_roads || !a_AddTradeRoute)
+        return;
+    auto r = host_routes();
+    if (r == g_roads_last && now - g_roads_sent_at < 10.0)
+        return;
+    g_roads_last = r;
+    g_roads_sent_at = now;
+    net::Writer w;
+    w.u8(kRoadList);
+    w.u8((uint8_t)r.size());
+    for (auto& x : r) {
+        w.u8(x[0]);
+        w.u8(x[1]);
+        w.u8(x[2]);
+    }
+    C.sess->broadcast_reliable(net::MSG_CIV_BUILD, w);
+    g_roads_sent++;
+}
+
+static bool city_listed(void* c)
+{
+    auto all = all_cities();
+    return c && std::find(all.begin(), all.end(), c) != all.end();
+}
+
+static bool has_route(void* a, void* b)
+{
+    for (const Route& r : routes_of(a))
+        if (r.partner == b)
+            return true;
+    return false;
+}
+
+static bool planner_holds(void* city);
+static void guest_roads(net::Reader& r)
+{
+    uint8_t n = r.u8();
+    std::vector<std::array<uint8_t, 3>> list;
+    for (int i = 0; i < n && r.ok(); i++) {
+        std::array<uint8_t, 3> x{r.u8(), r.u8(), r.u8()};
+        list.push_back(x);
+    }
+    if (!r.ok())
+        return;
+    g_roads_in++;
+    if (!g_fix_roads || !a_AddTradeRoute || game::mode_id() != modes::kCiv)
+        return;
+    for (auto& x : list) {
+        void* a = x[0] < g_host_cities.size() ? g_host_cities[x[0]] : nullptr;
+        void* b = x[1] < g_host_cities.size() ? g_host_cities[x[1]] : nullptr;
+        if (!a || !b || a == b || !city_listed(a) || !city_listed(b) || planner_holds(a) || planner_holds(b) || has_route(a, b))
+            continue;
+        g_applying = true;
+        thiscall<void>(a_AddTradeRoute, a, b, (int)x[2]);
+        g_applying = false;
+        if (has_route(a, b)) {
+            g_roads_added++;
+            H->log(M, SK_INFO, "civ: the host's trade route %u-%u (type %u) added here (BUG-0494)", x[0], x[1], x[2]);
+        } else if (g_roads_failed++ < 5)
+            H->log(M, SK_WARN, "civ: the host's trade route %u-%u (type %u) did not take here", x[0], x[1], x[2]);
+    }
+}
+
 // Money is the host's: the guest's local economy (its own copy of the claimed spice derricks, city
 // income) ran too and every local gain went to the host as a shared-money delta (+80..+100 every few
 // seconds: the treasury grew about twice as fast with a guest). Guests ignore AddMoney for the player
@@ -805,6 +1562,8 @@ using BTakeDamage_t = int(SK_THISCALL*)(void*, float, uint32_t, int, const void*
 static BTakeDamage_t o_BTakeDamage, o_HallTakeDamage;
 static int b_damage(BTakeDamage_t orig, void* self, float dmg, uint32_t pol, int type, const void* dir, void* att)
 {
+    if (cosmetic_hit(att)) // BUG-0477: a relayed shot of the host's
+        return 0;
     uint8_t p = is_host() && active() ? player_of_combatant(att) : 0xFF;
     if (p != 0xFF && role(p) == 1) {
         dmg *= 1.25f;
@@ -1057,6 +1816,115 @@ static void host_superweapon_request(uint8_t from, net::Reader& r)
         g_votes++;
 }
 
+// ---- BUG-0484: city turrets ----
+// A city's turrets (cCity +0x354, noun 0x436F342) are made by City_AddTurret 0xBE39A0 (the next free turret slot):
+// the city growth 0xBE5890 buys them from the city's budget (two calls), so a guest's game, whose growth runs
+// on its own copy of an NPC city, put turrets there that the host's never had (and the other way round), and
+// the snapshot carried none. Now the guest's growth makes none (like its buildings, CivGrowth_*_Ret) and the
+// host sends the places of one city's turrets per snapshot cycle (chunk 0xFB, when they changed and every 3 s);
+// a guest adds the ones it lacks with City_AddTurret and removes the ones the host does not have (two looks in
+// a row, as reconcile_buildings).
+static bool g_fix_turrets = true;
+COOP_FIX("civ.turrets", "BUG-0484", g_fix_turrets,
+         "civ: a city's defence turrets are the host's on every guest (a guest's own city growth makes none)");
+constexpr uint8_t kTurretChunk = 0xFB;
+constexpr uintptr_t kCityTurrets = 0x354;
+static uintptr_t a_AddTurret, a_RemoveTurret, a_TurretRet1, a_TurretRet2;
+using AddTurret_t = int(__fastcall*)(void*);
+static AddTurret_t o_AddTurret;
+static uint32_t g_turrets_blocked, g_turrets_added, g_turrets_removed, g_turret_tx, g_turret_rx;
+static std::unordered_map<void*, std::pair<uint32_t, double>> g_turret_sent; // host: city -> hash, when
+static std::unordered_map<void*, int> g_turret_seen;                          // guest: city -> mismatches in a row
+static int __fastcall h_AddTurret(void* city)
+{
+    uintptr_t ret = (uintptr_t)__builtin_return_address(0);
+    if (g_fix_turrets && !g_applying && is_guest() && game::mode_id() == modes::kCiv && !local_play() &&
+        (ret == a_TurretRet1 || ret == a_TurretRet2)) {
+        g_turrets_blocked++;
+        return 0; // both growth calls ignore the result (the host's turrets come with the snapshot)
+    }
+    return o_AddTurret(city);
+}
+static std::vector<std::pair<void*, net::Vec3>> turrets_of(void* city)
+{
+    std::vector<std::pair<void*, net::Vec3>> out;
+    for (void* t : vec_of((uint8_t*)city + kCityTurrets)) {
+        net::Vec3 p;
+        if (t && game::object_position(t, p) && out.size() < 40)
+            out.push_back({t, p});
+    }
+    return out;
+}
+static void host_send_turrets(size_t ci, void* city, double now)
+{
+    if (!g_fix_turrets || !a_AddTurret)
+        return;
+    auto ts = turrets_of(city);
+    uint32_t h = 2166136261u + (uint32_t)ts.size();
+    for (auto& [t, p] : ts)
+        h = (h ^ pos_key(p)) * 16777619u;
+    auto& last = g_turret_sent[city];
+    if (last.first == h && now - last.second < 3.0)
+        return;
+    last = {h, now};
+    net::Writer w;
+    w.u16(0); w.u8(kTurretChunk); w.u8(0);
+    w.u8((uint8_t)ci);
+    w.u8((uint8_t)ts.size());
+    for (auto& [t, p] : ts) {
+        w.f32(p.x); w.f32(p.y); w.f32(p.z);
+    }
+    for (auto& pl : C.sess->players())
+        if (pl.id != 0)
+            C.sess->send_unreliable_to(pl.id, net::MSG_CIV_STATE, w);
+    g_turret_tx++;
+}
+static void guest_turrets(net::Reader& r)
+{
+    uint8_t ci = r.u8(), n = r.u8();
+    std::vector<net::Vec3> hp(n);
+    for (auto& p : hp) {
+        p.x = r.f32(); p.y = r.f32(); p.z = r.f32();
+    }
+    if (!r.ok())
+        return;
+    g_turret_rx++;
+    void* city = ci < g_host_cities.size() ? g_host_cities[ci] : nullptr;
+    if (!g_fix_turrets || !a_AddTurret || !city || local_play() || planner_holds(city) || game::mode_id() != modes::kCiv)
+        return;
+    auto local = turrets_of(city);
+    std::vector<bool> used(local.size(), false);
+    size_t missing = 0;
+    for (auto& p : hp) {
+        bool found = false;
+        for (size_t k = 0; k < local.size() && !found; k++)
+            if (!used[k] && net::dist(local[k].second, p) < 6.f)
+                used[k] = found = true;
+        missing += !found;
+    }
+    std::vector<void*> extra;
+    for (size_t k = 0; k < local.size(); k++)
+        if (!used[k])
+            extra.push_back(local[k].first);
+    int& seen = g_turret_seen[city];
+    if (!missing && extra.empty()) {
+        seen = 0;
+        return;
+    }
+    if (++seen < 2)
+        return;
+    seen = 0;
+    g_applying = true;
+    for (void* t : extra) { // the host has no turret there
+        thiscall<void>(a_RemoveTurret, city, t, 0);
+        g_turrets_removed++;
+    }
+    for (size_t i = 0; i < missing; i++) // the next free slot: the order the host's game fills them in
+        if (o_AddTurret(city))
+            g_turrets_added++;
+    g_applying = false;
+}
+
 static bool save_filter(void* o, uint32_t noun);
 static void save_start();
 static void save_end();
@@ -1147,6 +2015,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx ctx)
     } opts[] = {
         {"Simulator::cBuilding::TakeDamage", (void*)h_BTakeDamage, (void**)&o_BTakeDamage},
         {"Simulator::cCityHall::TakeDamage", (void*)h_HallTakeDamage, (void**)&o_HallTakeDamage},
+        {"Simulator::cVehicle::TakeDamage", (void*)h_VTakeDamage, (void**)&o_VTakeDamage}, // BUG-0477
         {"Simulator::cCity::AddCaptureDamage", (void*)h_AddCapture, (void**)&o_AddCapture},
         {"Simulator::cCity::ConvertCitizens", (void*)h_Convert, (void**)&o_Convert},
         {"Simulator::cCity::OnAttacked", (void*)h_OnAttacked, (void**)&o_OnAttacked},
@@ -1155,11 +2024,30 @@ bool init(const SkHost* host, SkMod* mod, Ctx ctx)
     for (auto& o : opts)
         if (uintptr_t a = H->sym(o.name))
             H->hook_create(M, (void*)a, o.hook, o.orig);
+    // BUG-0484 (optional): the turret growth of a guest's cities, the host's turrets
+    a_AddTurret = H->sym("SporeCoop::City_AddTurret");
+    a_RemoveTurret = H->sym("SporeCoop::City_RemoveTurret");
+    a_TurretRet1 = H->sym("SporeCoop::CivGrowth_Turret_Ret1");
+    a_TurretRet2 = H->sym("SporeCoop::CivGrowth_Turret_Ret2");
+    if (a_AddTurret && a_RemoveTurret && a_TurretRet1 && a_TurretRet2)
+        H->hook_create(M, (void*)a_AddTurret, (void*)h_AddTurret, (void**)&o_AddTurret);
+    else
+        a_AddTurret = 0;
+    if (uintptr_t di = H->sym("Simulator::cGameNounManager::DestroyInstance")) { // BUG-0539
+        H->hook_create(M, (void*)di, (void*)h_DestroyInstance, (void**)&o_DestroyInstance);
+        a_DestroyInst = di;
+    }
+    a_ToolMouseUp = H->sym("Simulator::cToolManager::OnMouseUp"); // BUG-0530 (optional)
+    if (a_ToolMouseUp)
+        H->hook_create(M, (void*)a_ToolMouseUp, (void*)h_ToolMouseUp, (void**)&o_ToolMouseUp);
+    a_FireTool = H->sym("Simulator::cToolManager::FireTool"); // BUG-0477 (optional)
+    a_ToolMgrGet = H->sym("Simulator::cToolManager::Get");
     savestrip::add_filter(save_filter); // BUG-0470
     savestrip::add_save_hooks(save_start, save_end);
     // the city planner (BUG-0491, BUG-0493; GOG 2024 symbols, optional)
     a_DestroyInstance = H->sym("Simulator::cGameNounManager::DestroyInstance");
     a_VehicleRemove = H->sym("SporeCoop::Vehicle_Remove");
+    a_AddTradeRoute = H->sym("Simulator::cCity::AddTradeRoute"); // BUG-0494 (optional)
     if ((a_EditorUpdate = H->sym("SporeCoop::CommunityEditor_Update")))
         H->hook_create(M, (void*)a_EditorUpdate, (void*)h_EditorUpdate, (void**)&o_EditorUpdate);
     if (uintptr_t dc = H->sym("SporeCoop::AssetDiscovery_AddCard"))
@@ -1423,6 +2311,58 @@ struct HeldBuild {
 };
 static std::vector<HeldBuild> g_held_builds;
 static void* build_in_city(void* city, uint32_t noun, const net::Vec3& pos, bool pay);
+
+// ---- BUG-0529: the hit points of a city's buildings ----
+// The snapshot's building rows (one city per cycle) carry noun, place and the ruined flag: a guest got the
+// host's ruins, never the hit points of a building that still stands, so a city the host's vehicles hit stood
+// whole on the guest until a building fell. The host now sends the hit points of the same city's buildings
+// (MSG_CIV_STATE chunk 0xFD, chunks 0: an older guest drops it) when they changed and every 3 s; the guest
+// lowers a building's hit points with the game's combatant damage (no attacker: its own damage look, no
+// capture or alarm) and raises them (the host's repair) by setting them.
+static bool g_fix_building_hp = true;
+COOP_FIX("civ.building_hp", "BUG-0529", g_fix_building_hp,
+         "civ: a guest's city buildings have the host's hit points (a city the host's vehicles hit looks hit)");
+constexpr uint8_t kHpChunk = 0xFD;
+constexpr uint32_t kCityHallNoun = 0x18EA1EB;
+static std::unordered_map<void*, std::pair<uint32_t, double>> g_hp_sent; // host: city -> hash of the hit points, when
+static uint32_t g_hp_tx, g_hp_rx, g_hp_lowered, g_hp_raised, g_hp_nomatch;
+static bool hp_building(void* bl)
+{
+    uint32_t n = game::noun_id(bl);
+    return type_for_noun(n) || n == kCityHallNoun;
+}
+static void host_send_building_hp(size_t ci, void* city, double now)
+{
+    if (!g_fix_building_hp)
+        return;
+    std::vector<void*> blds;
+    for (void* bl : vec_of((uint8_t*)city + kCityBuildings))
+        if (hp_building(bl) && blds.size() < 40)
+            blds.push_back(bl);
+    uint32_t h = 2166136261u;
+    for (void* bl : blds)
+        h = (h ^ (uint32_t)(int)std::lround(F<float>(bl, kBuildingState + 4))) * 16777619u;
+    auto& last = g_hp_sent[city];
+    if (last.first == h && now - last.second < 3.0)
+        return;
+    last = {h, now};
+    net::Writer w;
+    w.u16(0); w.u8(kHpChunk); w.u8(0);
+    w.u8((uint8_t)ci);
+    w.u8((uint8_t)blds.size()); // 40 x 20 bytes + 6: within kMaxPacket
+    for (void* bl : blds) {
+        net::Vec3 bp;
+        game::object_position(bl, bp);
+        w.u32(game::noun_id(bl));
+        w.f32(bp.x); w.f32(bp.y); w.f32(bp.z);
+        w.f32(F<float>(bl, kBuildingState + 4));
+    }
+    for (auto& pl : C.sess->players())
+        if (pl.id != 0)
+            C.sess->send_unreliable_to(pl.id, net::MSG_CIV_STATE, w);
+    g_hp_tx++;
+}
+
 static void host_tick(double now)
 {
     if (!g_held_builds.empty() && !planner_city()) {
@@ -1439,6 +2379,8 @@ static void host_tick(double now)
     trade_tick(now);
     boost_tick(now);
     movie_tick();
+    host_send_shots(now); // BUG-0477
+    host_send_tribes(now); // BUG-0539
     if (now - g_last_send < 0.1)
         return;
     g_last_send = now;
@@ -1498,6 +2440,7 @@ static void host_tick(double now)
         g_hv_by_id[id] = v;
     }
     g_cycle++;
+    host_send_roads(now); // BUG-0494
     // Chunks that fit one packet (kMaxPacket): a larger message is dropped by the connection for
     // good. Until 2026-10-23 chunk 0 carried every city and 24 vehicles (and later the spice nodes and
     // a city's buildings): ~1200 bytes with 9 cities and 24 vehicles, so with a grown planet the
@@ -1602,6 +2545,10 @@ static void host_tick(double now)
             if (pl.id != 0)
                 C.sess->send_unreliable_to(pl.id, net::MSG_CIV_STATE, w);
     }
+    if (bci != 0xFF) {
+        host_send_building_hp(bci, g_host_cities[bci], now); // BUG-0529
+        host_send_turrets(bci, g_host_cities[bci], now);     // BUG-0484
+    }
 }
 
 static const char* g_buy_fail = "";
@@ -1683,18 +2630,29 @@ static void* resolve_target(const Target& t)
 static void host_command(uint8_t from, net::Reader& r)
 {
     uint8_t kind = r.u8();
+
+    // BUG-0325 diagnostics: why a vehicle of a command is not the sender's (gone from the host's game, dead,
+    // or another owner: a gift or a capture in between), logged with the rejection
+    char why[80] = "";
+    auto own_vehicle = [&](uint16_t id) -> void* {
+        auto it = g_hv_by_id.find(id);
+        if (it == g_hv_by_id.end()) {
+            snprintf(why, sizeof why, " (vehicle %u: not in the host's game)", (unsigned)id);
+            return nullptr;
+        }
+        if (g_hv[it->second].owner != from) {
+            snprintf(why, sizeof why, " (vehicle %u: owner %u%s)", (unsigned)id, (unsigned)g_hv[it->second].owner,
+                     F<uint8_t>(it->second, kVDead) ? ", dead" : "");
+            return nullptr;
+        }
+        return it->second;
+    };
     auto reject = [&] {
         if (from != C.sess->my_id()) {
             g_cmds_rejected++;
-            if (g_cmds_rejected <= 20) // BUG-0325 diagnostics: which command, from whom
-                H->log(M, SK_INFO, "civ: rejected command kind %u from player %u", (unsigned)kind, (unsigned)from);
+            if (g_cmds_rejected <= 20) // BUG-0325 diagnostics: which command, from whom, why
+                H->log(M, SK_INFO, "civ: rejected command kind %u from player %u%s", (unsigned)kind, (unsigned)from, why);
         }
-    };
-    auto own_vehicle = [&](uint16_t id) -> void* {
-        auto it = g_hv_by_id.find(id);
-        if (it == g_hv_by_id.end() || g_hv[it->second].owner != from)
-            return nullptr;
-        return it->second;
     };
     if (kind == 5) { // a guest wants to fire a superweapon: everybody votes
         host_superweapon_request(from, r);
@@ -1897,6 +2855,70 @@ static void reconcile_buildings(void* city, size_t n,
             g_bfix_added++;
     }
     g_applying = false;
+}
+
+// BUG-0529: the host's hit points of one city's buildings (chunk kHpChunk)
+static void guest_building_hp(net::Reader& r)
+{
+    uint8_t ci = r.u8(), n = r.u8();
+    struct Row {
+        uint32_t noun;
+        net::Vec3 p;
+        float hp;
+    };
+    std::vector<Row> rows(n);
+    for (auto& b : rows) {
+        b.noun = r.u32();
+        b.p.x = r.f32(); b.p.y = r.f32(); b.p.z = r.f32();
+        b.hp = r.f32();
+    }
+    if (!r.ok())
+        return;
+    g_hp_rx++;
+    void* city = ci < g_host_cities.size() ? g_host_cities[ci] : nullptr;
+    if (!g_fix_building_hp || !city || local_play() || planner_holds(city) || game::mode_id() != modes::kCiv)
+        return;
+    auto local = vec_of((uint8_t*)city + kCityBuildings);
+    std::vector<bool> used(local.size(), false);
+    static const float zero[3] = {0, 0, 0};
+    for (auto& b : rows) {
+        if (!std::isfinite(b.hp) || b.hp <= 0.f)
+            continue; // a ruin: reconcile_buildings makes it
+        void* best = nullptr;
+        size_t bk = 0;
+        float bd = 4.f;
+        for (size_t k = 0; k < local.size(); k++) {
+            net::Vec3 lp;
+            if (used[k] || game::noun_id(local[k]) != b.noun || !game::object_position(local[k], lp))
+                continue;
+            float d = net::dist(lp, b.p);
+            if (d < bd) {
+                bd = d;
+                best = local[k];
+                bk = k;
+            }
+        }
+        if (!best) {
+            g_hp_nomatch++;
+            continue;
+        }
+        used[bk] = true;
+        if (F<int>(best, kBuildingState) == 2)
+            continue; // ruined here, whole there: reconcile_buildings (civ.ruin_repair)
+        float& hp = F<float>(best, kBuildingState + 4);
+        if (hp > b.hp + 0.5f) {
+            g_applying = true;
+            thiscall<int>(a_CombatantDamage, (uint8_t*)best + 0x120, hp - b.hp, 0xFFFFFFFFu, 0, (const float*)zero,
+                          (void*)nullptr);
+            g_applying = false;
+            if (F<int>(best, kBuildingState) != 2 && std::fabs(hp - b.hp) > 0.5f)
+                hp = b.hp; // the game's damage scaled it: the host's value
+            g_hp_lowered++;
+        } else if (hp < b.hp - 0.5f) {
+            hp = b.hp;
+            g_hp_raised++;
+        }
+    }
 }
 
 static bool g_fix_mirror_remove = true; // BUG-0478 (kill_local below)
@@ -2333,6 +3355,7 @@ static void guest_state(net::Reader& r)
 
 static void guest_tick(double now)
 {
+    guest_fire(now); // BUG-0477
     for (auto it = g_kill_later.begin(); it != g_kill_later.end();) {
         void* v = *it;
         if (!exists(v) || F<uint8_t>(v, kVDead) || g_gv_of.count(v)) { // gone, or a mirror again
@@ -2388,6 +3411,10 @@ static void guest_tick(double now)
 static void guest_build(net::Reader& r)
 {
     uint8_t ci = r.u8();
+    if (r.ok() && ci == kRoadList) { // BUG-0494: the host's trade routes
+        guest_roads(r);
+        return;
+    }
     uint32_t noun = r.u32();
     net::Vec3 p;
     p.x = r.f32(); p.y = r.f32(); p.z = r.f32();
@@ -2461,8 +3488,22 @@ void on_message(uint8_t type, uint8_t from, net::Reader& r)
         return;
     }
     prune_gone();
-    if (type == net::MSG_CIV_STATE && is_guest())
-        guest_state(r);
+    if (type == net::MSG_CIV_STATE && is_guest()) {
+        net::Reader peek = r;
+        peek.u16();
+        uint8_t chunk = peek.u8(), chunks = peek.u8();
+        if (peek.ok() && (chunk == kShotChunk || chunk == kShotChunkFired) && chunks == 0) { // BUG-0477: the host's shooters
+            if (g_fix_shots)
+                guest_shots(peek, chunk == kShotChunkFired);
+        } else if (peek.ok() && chunk == kHpChunk && chunks == 0) // BUG-0529: buildings' hit points
+            guest_building_hp(peek);
+        else if (peek.ok() && chunk == kTurretChunk && chunks == 0) // BUG-0484: turrets
+            guest_turrets(peek);
+        else if (peek.ok() && chunk == kTribeChunk && chunks == 0) // BUG-0539: old tribe villages
+            guest_tribes(peek);
+        else
+            guest_state(r);
+    }
     else if (type == net::MSG_CIV_CMD && is_host())
         host_command(from, r);
     else if (type == net::MSG_CIV_BUILD && is_guest())
@@ -2491,6 +3532,13 @@ static void clear_coop_tables(bool restore_speed)
     g_ui_city = nullptr;
     g_kill_later.clear();
     g_held_builds.clear();
+    g_shots.clear(); // BUG-0477
+    g_shots_in.clear();
+    g_turret_shooters.clear();
+    g_hp_sent.clear();
+    g_turret_sent.clear();
+    g_turret_seen.clear();
+    g_tribe_extra_seen.clear();
 }
 
 void on_session_end()
@@ -2498,6 +3546,13 @@ void on_session_end()
     caption_disarm(); // BUG-0224
     if (g_fix_boost)
         clear_coop_tables(true);
+    g_shots.clear();
+    g_shots_in.clear();
+    g_turret_shooters.clear();
+    g_hp_sent.clear();
+    g_turret_sent.clear();
+    g_turret_seen.clear();
+    g_tribe_extra_seen.clear();
     g_hv.clear();
     g_hv_by_id.clear();
     g_gv.clear();
@@ -2627,7 +3682,34 @@ std::string status()
     snprintf(pl, sizeof pl, "planner: open=%d held=%u kills_held=%u kills_waiting=%u picks_refused=%u builds_held=%u build_orphans=%u save_stripped=%u cards_skipped=%u owner_unknown=%u met=%d\n",
              planner_city() ? 1 : 0, g_planner_held, g_planner_kills_held, (unsigned)g_kill_later.size(),
              g_planner_picks_refused, (unsigned)g_held_builds.size(), g_build_orphans, g_save_stripped, g_cards_skipped, g_owner_unknown, g_met);
-    return std::string(b) + pl;
+    char sh[320];
+    snprintf(sh, sizeof sh, "shots: fix=%d seen=%u tx=%u rx=%u active=%u fired=%u no_mirror=%u no_tool=%u hits_dropped=%u hits=%u no_attacker=%u att_vt=%08X targets=%u/%u no_target=%u counted=%d tried=%u refused=%u stops=%u released=%u\n",
+             (int)g_fix_shots, g_shots_seen, g_shots_tx, g_shots_rx, (unsigned)g_shots_in.size(), g_shots_fired,
+             g_shots_nomirror, g_shots_notool, g_hits_dropped, g_hits_guest, g_hits_noatt, (unsigned)g_hit_att_vt, g_shots_tgt_found, g_shots_tgt_wanted, g_shots_notarget, (int)g_fix_shot_fired, g_shots_tried, g_shots_refused, g_shot_stops_seen, g_shot_released);
+    char bh[160];
+    snprintf(bh, sizeof bh, "building_hp: fix=%d tx=%u rx=%u lowered=%u raised=%u no_match=%u\n", (int)g_fix_building_hp,
+             g_hp_tx, g_hp_rx, g_hp_lowered, g_hp_raised, g_hp_nomatch);
+    std::string lf = "local_fire:";
+    for (auto& [ra, e] : g_local_fire) {
+        char x[64];
+        snprintf(x, sizeof x, " %08X=%u/%u(vt %08X)", (unsigned)ra, e.fired, e.calls, (unsigned)e.owner_vt);
+        lf += x;
+    }
+    lf += " tools:";
+    for (auto& [k, n] : g_shot_tools) {
+        char x[32];
+        snprintf(x, sizeof x, " %08X=%u", k, n);
+        lf += x;
+    }
+    lf += "\n";
+    char tr[120];
+    snprintf(tr, sizeof tr, "tribe_ruins: fix=%d tx=%u rx=%u removed=%u\n", (int)g_fix_tribe_ruins, g_tribes_tx, g_tribes_rx,
+             g_tribes_removed);
+    lf += tr;
+    char tu[160];
+    snprintf(tu, sizeof tu, "turrets: fix=%d tx=%u rx=%u blocked=%u added=%u removed=%u\n", (int)g_fix_turrets, g_turret_tx,
+             g_turret_rx, g_turrets_blocked, g_turrets_added, g_turrets_removed);
+    return std::string(b) + pl + sh + bh + tu + lf;
 }
 
 void for_each_target(void (*fn)(const char* kind, int id, int owner, const net::Vec3& pos, void* user), void* user)
@@ -2762,6 +3844,18 @@ bool near_vehicle(const net::Vec3& p, float radius)
             q->hit = true;
     }, &ctx);
     return ctx.hit;
+}
+
+bool center(net::Vec3& p)
+{
+    if (!g_ok || game::mode_id() != modes::kCiv)
+        return false;
+    void* pc = player_civ();
+    auto cs = pc ? vec_of((uint8_t*)pc + kCivCities) : std::vector<void*>{};
+    if (cs.empty())
+        return false;
+    p = city_pos(cs[0]);
+    return true;
 }
 
 std::vector<net::Vec3> local_positions()
@@ -2946,6 +4040,110 @@ std::string debug(const std::vector<std::string>& a)
     }
     if (!a.empty() && a[0] == "pushprobe" && is_guest()) // tests (BUG-0186): who moves a mirror
         return push_probe();
+    if (a.size() >= 3 && a[0] == "attack" && is_host()) {
+        // attack <id> <host city index | v<vehicle id>> [type]: the game's own attack order (tests, BUG-0477):
+        // type 2 the military attack of a city (default for a city), 1 a unit (default for a vehicle)
+        void* v = local_vehicle((uint16_t)atoi(a[1].c_str()));
+        void* t = nullptr;
+        int type = 2;
+        if (a[2][0] == 'v') {
+            t = local_vehicle((uint16_t)atoi(a[2].c_str() + 1));
+            type = 1;
+        } else {
+            int ci = atoi(a[2].c_str());
+            t = ci >= 0 && ci < (int)g_host_cities.size() ? g_host_cities[ci] : nullptr;
+        }
+        if (a.size() >= 4)
+            type = atoi(a[3].c_str());
+        if (!v || !t)
+            return "no such vehicle or target";
+        thiscall<int>(a_SetOrder, v, t, type, 1);
+        thiscall<void>(a_OrderStamp, v, 0);
+        return "attack ordered";
+    }
+    if (!a.empty() && (a[0] == "tribes" || a[0] == "razetribe")) {
+        // tribes: the old Tribe stage tribes in this game; razetribe <i>: the host's game destroys tribe i of that
+        // list (DestroyInstance, the last step of its vehicles' raid 0xDCAAB0; tests BUG-0539)
+        auto ts = tribes_here();
+        if (a[0] == "razetribe") {
+            size_t i = a.size() >= 2 ? (size_t)atoi(a[1].c_str()) : 0;
+            if (!is_host() || i >= ts.size() || !a_DestroyInst)
+                return "no such tribe (host only)";
+            thiscall<void>(a_DestroyInst, nm(), ts[i].first);
+            return "tribe destroyed";
+        }
+        std::string out;
+        for (auto& [t, p] : ts) {
+            char line[96];
+            snprintf(line, sizeof line, "tribe %p pos=(%.1f %.1f %.1f)\n", t, p.x, p.y, p.z);
+            out += line;
+        }
+        return out + "tribes " + std::to_string(ts.size());
+    }
+    if (a.size() >= 2 && (a[0] == "turrets" || a[0] == "addturret" || a[0] == "budget")) {
+        // turrets <host city index>: the city's turrets; addturret <ci>: one more in the next free slot (the game's
+        // City_AddTurret, tests BUG-0484); budget <ci> <value>: the city's civilization's growth budget (+0x4AC,
+        // what the city growth 0xBE5890 buys turrets and buildings with; tests BUG-0484)
+        int ci = atoi(a[1].c_str());
+        void* city = ci >= 0 && ci < (int)g_host_cities.size() ? g_host_cities[ci] : nullptr;
+        if (!city)
+            return "no such city";
+        if (a[0] == "addturret") {
+            if (!a_AddTurret)
+                return "no turret hook";
+            return o_AddTurret(city) ? "turret added" : "no free turret slot";
+        }
+        if (a[0] == "budget" && a.size() >= 3 && a[2] == "attacked") {
+            // budget <ci> attacked: the city counts as attacked now (city +0x98 / +0x9C, the time 0xC00600 compares
+            // with the game time: under attack in the last 20 s, the growth buys turrets first; tests BUG-0484)
+            uintptr_t tg = H->sym("Simulator::cGameTimeManager::Get"), tf = H->sym("cGameTimeManager_TimeAtStartOfFrame");
+            void* mgr = tg ? skg::cdecl_call<void*>(tg) : nullptr;
+            if (!mgr || !tf)
+                return "no game time";
+            uint64_t t = thiscall<uint64_t>(tf, mgr);
+            F<uint32_t>(city, 0x98) = (uint32_t)t;
+            F<uint32_t>(city, 0x9C) = (uint32_t)(t >> 32);
+            return "attacked at " + std::to_string(t);
+        }
+        if (a[0] == "budget") {
+            void* civ = F<void*>(city, kCityCiv);
+            if (!civ)
+                return "no civilization";
+            if (a.size() >= 3)
+                F<float>(civ, 0x4AC) = (float)atof(a[2].c_str());
+            return "budget " + std::to_string(F<float>(civ, 0x4AC));
+        }
+        std::string out;
+        for (auto& [t, p] : turrets_of(city)) {
+            char line[96];
+            snprintf(line, sizeof line, "turret %p pos=(%.1f %.1f %.1f)\n", t, p.x, p.y, p.z);
+            out += line;
+        }
+        return out + "turrets " + std::to_string(turrets_of(city).size());
+    }
+    if (a.size() >= 4 && a[0] == "spawnveh" && is_host()) {
+        // spawnveh <host city index> <purpose 0 military | 1 religious | 2 economic> <loco>: a vehicle of the
+        // player's civilization at that city, free (tests, BUG-0530: religious shots); the civ's own design for
+        // that purpose and locomotion, else the game's generated one (key 0, as cVehicle::Load makes it)
+        int ci = atoi(a[1].c_str()), purpose = atoi(a[2].c_str()), loco = atoi(a[3].c_str());
+        void* city = ci >= 0 && ci < (int)g_host_cities.size() ? g_host_cities[ci] : nullptr;
+        void* civ = player_civ();
+        if (!city || !civ)
+            return "no such city";
+        if (thiscall<int>(a_SlotsLeft, civ, purpose) <= 0)
+            return "no vehicle slot left";
+        uint32_t* key = thiscall<uint32_t*>(a_DesignKey, civ, skg::cdecl_call<int>(a_DesignId, purpose, loco));
+        uint32_t k[3] = {0, 0, 0};
+        if (key)
+            k[0] = key[0], k[1] = key[1], k[2] = key[2];
+        void* v = thiscall<void*>(a_SpawnVehicle, city, purpose, loco, k[0], k[1], k[2], 0); // the city's spawn point
+        if (!v)
+            return "the game made no vehicle";
+        thiscall<int>(a_PushEvent, v, 10);
+        char b[96];
+        snprintf(b, sizeof b, "spawned %p purpose=%d loco=%d design=%08X", v, F<int>(v, kVPurpose), F<int>(v, kVLoco), k[0]);
+        return b;
+    }
     if (a.size() >= 5 && a[0] == "move") { // move <id> <x> <y> <z>
         void* v = local_vehicle((uint16_t)atoi(a[1].c_str()));
         if (!v)
@@ -2988,6 +4186,33 @@ std::string debug(const std::vector<std::string>& a)
             return b ? "built locally, sent to the host" : "no free slot";
         }
         return build_in_city(city, noun, p, true) ? "built" : "no free slot";
+    }
+    if (!a.empty() && a[0] == "roads") { // roads [a b [type]]: every city's trade routes; host (tests): AddTradeRoute a b
+        std::string out;
+        char b[160];
+        if (a.size() >= 3 && is_host() && a_AddTradeRoute) {
+            size_t i = (size_t)atoi(a[1].c_str()), j = (size_t)atoi(a[2].c_str());
+            if (i >= g_host_cities.size() || j >= g_host_cities.size() || i == j)
+                return "no such cities";
+            thiscall<void>(a_AddTradeRoute, g_host_cities[i], g_host_cities[j], a.size() > 3 ? atoi(a[3].c_str()) : 0);
+            snprintf(b, sizeof b, "route %zu-%zu added: %s\n", i, j, has_route(g_host_cities[i], g_host_cities[j]) ? "yes" : "no");
+            out += b;
+        }
+        for (size_t i = 0; i < g_host_cities.size(); i++) {
+            void* c = g_host_cities[i];
+            if (!c || !city_listed(c))
+                continue;
+            for (const Route& r : routes_of(c)) {
+                auto it = std::find(g_host_cities.begin(), g_host_cities.end(), r.partner);
+                snprintf(b, sizeof b, "route %zu %d type=%d obj=%p noun=%08X\n", i,
+                         it == g_host_cities.end() ? -1 : (int)(it - g_host_cities.begin()), r.type, r.obj,
+                         r.obj ? game::noun_id(r.obj) : 0);
+                out += b;
+            }
+        }
+        snprintf(b, sizeof b, "roads sent=%u in=%u added=%u failed=%u fix=%d\n", g_roads_sent, g_roads_in, g_roads_added,
+                 g_roads_failed, (int)g_fix_roads);
+        return out + b;
     }
     if (a.size() >= 1 && a[0] == "nouns") { // nouns [hex noun [TYPE]]: objects per noun, or that noun's objects on screen
         struct Q {

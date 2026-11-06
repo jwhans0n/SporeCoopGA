@@ -5,15 +5,18 @@
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <set>
 #include "net/dbpf.h"
+#include "net/partprops.h"
 #include <cmath>
 #include <cstring>
 #include <cstdio>
 #include <random>
 #include <chrono>
 #include <thread>
+#include <tuple>
 #include <type_traits>
 #include <arpa/inet.h>
 
@@ -41,6 +44,29 @@ static bool g_nofix = false; // --nofix: the code before the wave 2 netcode fixe
         }                                                                \
     } while (0)
 
+static void test_upstream_ga_channels()
+{
+    // Literal receiver expectations make a sender/receiver constant mismatch visible.
+    const uint8_t ids[]={MSG_NEST,MSG_PARTS,MSG_WOBJ,MSG_ACTIVITY,MSG_FIELDS,MSG_NPC_RESYNC,
+        MSG_NPC_ANIM,MSG_DIAG,MSG_EFFECT,MSG_WSTATE,MSG_PLAYER_RULE,MSG_MIRROR_FX,MSG_ADVENTURE,MSG_EDITOR};
+    CHECK(std::set<uint8_t>(std::begin(ids),std::end(ids)).size()==std::size(ids));
+    Session host,guest;std::string error;unsigned upstream=0,adventure=0,editor=0;
+    host.cb.custom=[&](uint8_t type,uint8_t from,Reader& r){
+        CHECK(from==1);CHECK(type==64);CHECK(r.u32()==0xAABBCCDD&&r.left()==0&&r.ok());++upstream;
+    };
+    guest.cb.custom=[&](uint8_t type,uint8_t from,Reader& r){
+        CHECK(from==0);CHECK(r.u32()==0xAABBCCDD&&r.left()==0&&r.ok());
+        if(type==65)++adventure;else if(type==66)++editor;else CHECK(false);
+    };
+    CHECK(host.host(0,"host",error));
+    CHECK(guest.join("127.0.0.1:"+std::to_string(host.port()),"guest",error));
+    auto service=[&]{for(unsigned i=0;i<100;++i){host.update();guest.update();std::this_thread::sleep_for(std::chrono::milliseconds(2));}};
+    service();CHECK(guest.connected());
+    Writer payload;payload.u32(0xAABBCCDD);
+    guest.send_event(MSG_MIRROR_FX,payload);host.send_event(MSG_ADVENTURE,payload);host.send_event(MSG_EDITOR,payload);
+    service();CHECK(upstream==1&&adventure==1&&editor==1);
+}
+
 static void test_buffer()
 {
     printf("buffer roundtrip\n");
@@ -52,7 +78,7 @@ static void test_buffer()
     s.movement_generation=0xFEDCBA9876543210ULL;
     Writer w;
     s.write(w);
-    CHECK(w.size() == 95); // protocol 15 retains the GA identity and teleport fields
+    CHECK(w.size() == 99); // upstream AGL plus the complete GA identity and teleport fields
     Reader r(w.data.data(), w.size());
     PlayerState t;
     CHECK(t.read(r));
@@ -61,6 +87,12 @@ static void test_buffer()
     CHECK(t.scale==s.scale && t.adventure_run==s.adventure_run && t.captain_selection==s.captain_selection);
     CHECK(t.movement_generation==s.movement_generation);
     CHECK(r.left() == 0);
+    for(float invalid : {-1.f,10001.f,std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()}) {
+        auto bad_value=s;bad_value.scale=invalid;Writer bytes;bad_value.write(bytes);Reader input(bytes.data.data(),bytes.size());PlayerState out;CHECK(!out.read(input));
+    }
+    for(float invalid : {std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()}) {
+        auto bad_value=s;bad_value.agl=invalid;Writer bytes;bad_value.write(bytes);Reader input(bytes.data.data(),bytes.size());PlayerState out;CHECK(!out.read(input));
+    }
     // In particular, the upstream protocol 7 PlayerState prefix (67 bytes) cannot
     // silently supply default GA identity fields after merging the two branches.
     for (size_t bytes = 0; bytes < w.size(); ++bytes) {
@@ -78,6 +110,26 @@ static void test_buffer()
     Reader r2(w2.data.data(), w2.size());
     PlayerState t2;
     CHECK(t2.read(r2) && t2.mode == 0x1654C05 && t2.world == 0x80B16021);
+    // BUG-0519: retain upstream Cell scale; fork transport rejects older partial states.
+    s.scale = 1.5f;
+    Writer w4;
+    s.write(w4);
+    Reader r4(w4.data.data(), w4.size());
+    PlayerState t4;
+    CHECK(t4.read(r4) && t4.scale == 1.5f && r4.left() == 0);
+    Reader r5(w4.data.data(), w4.size() - 8);
+    PlayerState t5;
+    CHECK(!t5.read(r5)); // Fork protocol27 requires its complete payload.
+    // BUG-0425: upstream AGL precedes the three required fork identity words.
+    s.agl = 2.5f;
+    Writer w6;
+    s.write(w6);
+    Reader r6(w6.data.data(), w6.size());
+    PlayerState t6;
+    CHECK(t6.read(r6) && t6.agl == 2.5f && t6.scale == 1.5f && r6.left() == 0);
+    Reader r7(w6.data.data(), w6.size() - 4);
+    PlayerState t7;
+    CHECK(!t7.read(r7)); // Upstream protocol7 defaults cannot admit a truncated GA identity.
     // shared resource message payload (u8 id, f64)
     Writer w3;
     w3.u8(3);
@@ -411,9 +463,11 @@ static void test_session_end_in_delivery()
 static void test_protocol_versions()
 {
     printf("merged protocol boundary and HELLO version validation\n");
-    CHECK(kProtoVersion == 26 && kDiscoverPorts == 20);
-    CHECK(MSG_SPACE == 48 && MSG_ADVENTURE == 63 && MSG_EDITOR == 62 && MSG_ACTIVITY == 55 && MSG_NEST == 52 && MSG_PARTS == 53 && MSG_DIAG == 60);
+    CHECK(kProtoVersion == 28 && kDiscoverPorts == 20);
+    CHECK(MSG_SPACE == 48 && MSG_ADVENTURE == 65 && MSG_EDITOR == 66 && MSG_ACTIVITY == 55 && MSG_NEST == 52 && MSG_PARTS == 53 && MSG_DIAG == 60);
     CHECK(MSG_WOBJ == 54 && MSG_FIELDS == 56 && MSG_NPC_RESYNC == 57 && MSG_NPC_ANIM == 59 && MSG_EFFECT == 61);
+    CHECK(kProtoVersion == 28 && kDiscoverPorts == 20);
+    CHECK(MSG_SPACE == 48 && MSG_ADVENTURE == 65 && MSG_EDITOR == 66 && MSG_WSTATE == 62 && MSG_PLAYER_RULE == 63 && MSG_MIRROR_FX == 64);
     Session host;
     std::string err;
     CHECK(host.host(0, "host", err));
@@ -441,6 +495,10 @@ static void test_protocol_versions()
                                  [&](uint8_t,Reader&){delivered=true;}));
     }
     CHECK(!delivered);
+    for (uint16_t version : {uint16_t(7), uint16_t(15), uint16_t(26), uint16_t(28)}) {
+        auto old_header = packet;old_header[4]=uint8_t(version);old_header[5]=uint8_t(version>>8);
+        CHECK(!Connection::looks_valid(old_header.data(),old_header.size()));
+    }
     // A current transport carrying an incompatible HELLO receives an explicit
     // rejection. Older transport headers are discarded before HELLO decoding.
     CHECK(socket.send_to(destination, packet.data(), packet.size()));
@@ -643,6 +701,24 @@ static void test_interp()
     PlayerState o;
     CHECK(b.sample(5.0 + 0.5, o)); // newest local recv time -> render 0.1 s behind -> x=8
     CHECK(std::fabs(o.pos.x - 8.0f) < 0.01f);
+    {   // BUG-0519: a Cell level change: the same point at x=10 (scale 1) and x=5 (scale 2) blends
+        // in the newer state's scale (5), not half-way between two scales (7.5)
+        SnapshotBuffer c;
+        c.delay = 0.1;
+        for (int i = 0; i <= 10; i++) {
+            PlayerState s;
+            s.time_ms = 1000 + i * 50;
+            s.scale = i < 5 ? 1.f : 2.f;
+            s.pos = {i < 5 ? 10.f : 5.f, 0, 0};
+            c.push(s, 5.0 + i * 0.05);
+        }
+        PlayerState q;
+        CHECK(c.sample(5.0 + 0.325, q)); // between the states 4 (scale 1) and 5 (scale 2)
+        CHECK(std::fabs(q.pos.x - 5.0f) < 0.01f && q.scale == 2.f);
+        SnapshotBuffer::scale_lerp = false;
+        CHECK(c.sample(5.0 + 0.325, q) && q.pos.x > 6.f); // the old blend (cell.puppet_scale off)
+        SnapshotBuffer::scale_lerp = true;
+    }
     CHECK(b.sample(5.0 + 0.6, o)); // extrapolate 0 s past newest: x=10
     CHECK(std::fabs(o.pos.x - 10.0f) < 0.01f);
     CHECK(b.sample(5.0 + 2.0, o)); // capped at 0.25 s -> x = 10 + 5
@@ -843,6 +919,101 @@ static void test_bulk_bad_link()
                a.stats.resends, a.rtt_ms);
         CHECK(got == N && ordered);
         CHECK(now - 1000 < 45000);
+    }
+}
+
+// BUG-0405: the world sent to a guest that loads. The guest reads its socket once per frame (frames of
+// 200-950 ms while it loads), up to 256 packets per update, and acknowledges at the end of the frame:
+// the ack bits covered the last 128 packets only and the sender's rto (from a 5-80 ms rtt) fired long
+// before the guest read the rest, so 50-90 % of the packets went out twice on a clean loopback.
+struct BusyResult {
+    int got = 0;
+    double secs = 0;
+    uint32_t sent = 0, resends = 0;
+};
+static BusyResult bulk_busy_case(bool fix, bool busy, uint32_t delay, float loss, int seed)
+{
+    bool was = g_fix.bulk_acks;
+    g_fix.bulk_acks = fix;
+    struct Pk {
+        uint32_t t;
+        std::vector<uint8_t> d;
+    };
+    Connection a, b;
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> U(0, 1);
+    std::deque<Pk> ab, ba; // in flight (constant delay: in order)
+    auto send = [&](std::deque<Pk>& q, const std::vector<uint8_t>& p, uint32_t now) {
+        if (U(rng) >= loss && q.size() < 3600) // udp.cpp: a 4 MB receive buffer, the rest is dropped
+            q.push_back({now + delay, p});
+    };
+    const int N = 3400; // a tribe world: ~3.4 MB in 1 KB chunks
+    int queued = 0, got = 0;
+    bool ordered = true;
+    uint32_t now = 1000, guest_next = 1000;
+    std::vector<uint8_t> pkt;
+    for (; got < N && now < 1000 + 120000; now += 1) {
+        if (now % 33 == 0) { // the host's frame: world.cpp's window, Session::flush's burst
+            size_t window = a.rtt_ms < 40 ? 600 : 160;
+            while (queued < N && a.pending_reliable() < window) {
+                Writer w;
+                w.u32(queued++);
+                std::vector<uint8_t> pad(1010, 0x55);
+                w.raw(pad.data(), pad.size());
+                a.send_reliable(42, w);
+            }
+            int burst = a.rtt_ms < 40.f ? (int)kAckWindow : (int)kAckWindow / 3;
+            for (int i = 0; i < burst && a.build_packet(now, pkt); i++)
+                send(ab, pkt, now);
+        }
+        while (!ba.empty() && ba.front().t <= now) { // the host reads in its frame too, but often
+            a.on_packet(ba.front().d.data(), ba.front().d.size(), now, [](uint8_t, Reader&) {});
+            ba.pop_front();
+        }
+        if (now >= guest_next) { // the guest's frame: Session::update, then Session::flush
+            for (int i = 0; i < 256 && !ab.empty() && ab.front().t <= now; i++) {
+                b.on_packet(ab.front().d.data(), ab.front().d.size(), now, [&](uint8_t type, Reader& r) {
+                    if (type == 42 && r.u32() != (uint32_t)got++)
+                        ordered = false;
+                });
+                ab.pop_front();
+                if (b.ack_urgent() && b.build_packet(now, pkt))
+                    send(ba, pkt, now);
+            }
+            while (b.build_packet(now, pkt))
+                send(ba, pkt, now);
+            guest_next = now + (busy ? 200 + (uint32_t)(U(rng) * 750) : 33);
+        }
+    }
+    g_fix.bulk_acks = was;
+    CHECK(ordered);
+    return {got, (now - 1000) / 1000.0, a.stats.packets_sent, a.stats.resends};
+}
+
+static void test_bulk_busy_receiver()
+{
+    printf("bulk transfer to a guest that loads (BUG-0405)\n");
+    struct Case {
+        const char* name;
+        bool busy;
+        uint32_t delay;
+        float loss;
+    } cases[] = {{"clean, guest loads", true, 1, 0}, {"clean, guest plays", false, 1, 0},
+                 {"40 ms, 3% loss, guest loads", true, 40, 0.03f}, {"40 ms, 3% loss, guest plays", false, 40, 0.03f},
+                 {"150 ms, 10% loss, guest loads", true, 150, 0.10f}};
+    for (auto& c : cases) {
+        BusyResult r[2];
+        for (int fix = 0; fix < 2; fix++) {
+            r[fix] = bulk_busy_case(fix, c.busy, c.delay, c.loss, 3);
+            printf("  %-30s fix %s: %d/3400 in %.1f s, sent %u, resends %u (%.0f %%)\n", c.name, fix ? "on " : "off",
+                   r[fix].got, r[fix].secs, r[fix].sent, r[fix].resends, 100.0 * r[fix].resends / std::max(1u, r[fix].sent));
+        }
+        CHECK(r[1].got == 3400);
+        CHECK(r[1].secs <= r[0].secs * 1.1 + 0.5); // not slower
+        if (c.loss == 0)
+            CHECK(r[1].resends * 10 <= r[1].sent); // a clean link resends little (was 50-90 %)
+        else
+            CHECK(r[1].resends <= r[0].resends);
     }
 }
 
@@ -2471,6 +2642,84 @@ static void test_diag_conn_stats()
     CHECK(c.stats.packets_sent > 1500 && c.stats.lost == 0);
 }
 
+
+// BUG-0559: a part's description and the most similar part (net/partprops)
+static std::vector<uint8_t> part_prop(const std::vector<std::tuple<uint32_t, uint16_t, std::vector<uint8_t>>>& props)
+{
+    std::vector<uint8_t> d;
+    auto be = [&](uint32_t v, int n) {
+        for (int i = n - 1; i >= 0; i--)
+            d.push_back((uint8_t)(v >> (8 * i)));
+    };
+    be((uint32_t)props.size(), 4);
+    for (auto& [id, t, val] : props) {
+        be(id, 4);
+        be(t, 2);
+        be(t == 0x39 ? 0x1C : t == 0x13 ? 0x0D : 0, 2);
+        if (t == 0x39) { // an array of one bounding box
+            be(1, 4);
+            be(24, 4);
+        } else if (t == 0x13) {
+            be((uint32_t)val.size() / 2, 4);
+        }
+        d.insert(d.end(), val.begin(), val.end());
+    }
+    return d;
+}
+
+static std::vector<uint8_t> be_int(int v)
+{
+    return {(uint8_t)(v >> 24), (uint8_t)(v >> 16), (uint8_t)(v >> 8), (uint8_t)v};
+}
+
+static std::vector<uint8_t> box(float s)
+{
+    std::vector<uint8_t> b(24);
+    float f[6] = {-s, -s, -s, s, s, s};
+    memcpy(b.data(), f, 24);
+    return b;
+}
+
+static void test_partprops()
+{
+    using namespace partprops;
+    std::vector<uint8_t> name = {'a', 0, 'b', 0};
+    // a carnivore mouth of the pack (bite 3), a small one; a string with flags 0x0D before the ints
+    auto want_d = part_prop({{0x04EBB27E, 0x13, name}, {0xB00F0FEC, 0x01, {1}}, {0xB1C3E5B6, 0x09, be_int(3)},
+                             {0x02166464, 0x09, be_int(75)}, {0x1CBB2F62, 0x39, box(0.1f)}});
+    Part want;
+    CHECK(parse(want_d.data(), want_d.size(), 0xF6DE5C63, want));
+    CHECK(want.roles.size() == 1 && want.roles[0] == 0xB00F0FEC && want.abil.size() == 1 && want.abil[0].second == 3);
+    CHECK(want.cost == 75 && want.has_box && std::fabs(want.size() - 0.3464f) < 0.01f);
+    std::vector<Part> have(5);
+    auto mk = [&](int i, uint32_t id, std::vector<std::tuple<uint32_t, uint16_t, std::vector<uint8_t>>> pr) {
+        auto d = part_prop(pr);
+        CHECK(parse(d.data(), d.size(), id, have[i]));
+    };
+    mk(0, 0x10000001, {{0x02166464, 0x09, be_int(75)}, {0x1CBB2F62, 0x39, box(0.1f)}});                    // a detail
+    mk(1, 0x10000002, {{0xB00F0FE9, 0x01, {1}}, {0xB1C3E5B6, 0x09, be_int(3)}, {0x1CBB2F62, 0x39, box(0.1f)}}); // an eye
+    mk(2, 0x10000003, {{0xB00F0FEC, 0x01, {1}}, {0xB1C3E5B6, 0x09, be_int(3)}, {0x02166464, 0x09, be_int(75)},
+                       {0x1CBB2F62, 0x39, box(1.0f)}});                                                           // a big mouth
+    mk(3, 0x10000004, {{0xB00F0FEC, 0x01, {1}}, {0xB1C3E5B6, 0x09, be_int(2)}, {0x02166464, 0x09, be_int(75)},
+                       {0x1CBB2F62, 0x39, box(0.12f)}});                                                          // a mouth like it
+    mk(4, 0x10FE0005, {{0xB00F0FEC, 0x01, {1}}, {0xB1C3E5B6, 0x09, be_int(3)}, {0x02166464, 0x09, be_int(75)},
+                       {0x1CBB2F62, 0x39, box(0.1f)}});                                                           // the same, but an 0xFE byte
+    CHECK(nearest(want, have) == 0x10000004); // a mouth stays a mouth, of a similar size, and fits in place
+    CHECK(std::isinf(distance(want, have[0])) && std::isinf(distance(want, have[1])));
+    have.resize(2);
+    CHECK(nearest(want, have) == 0); // no mouth here: none (the caller falls back)
+    // untrusted bytes: truncations and a count past the end are refused, never read past the end
+    for (size_t n = 0; n < want_d.size(); n++) {
+        Part p;
+        CHECK(!parse(want_d.data(), n, 1, p));
+    }
+    std::vector<uint8_t> bad = want_d;
+    bad[3] = 0xFF;
+    Part p;
+    CHECK(!parse(bad.data(), bad.size(), 1, p));
+    printf("partprops: ok\n");
+}
+
 int main(int argc, char** argv)
 {
     if(argc==2&&std::string(argv[1])=="--protocol-only"){
@@ -2529,6 +2778,7 @@ int main(int argc, char** argv)
     test_adventure_motion();
     test_unreliable_chunks();
     test_dbpf();
+    test_partprops();
     test_be_keys();
     test_dbbf();
     test_refpack_untrusted();
@@ -2539,8 +2789,11 @@ int main(int argc, char** argv)
     test_ackbits();
     test_bulk();
     test_bulk_bad_link();
+    test_bulk_busy_receiver();
     test_session();
     test_protocol_versions();
+
+    test_upstream_ga_channels();
     test_session_end_in_delivery();
     test_rejoin_same_endpoint();
     test_unique_names();

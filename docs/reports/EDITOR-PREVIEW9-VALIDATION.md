@@ -90,7 +90,7 @@ until its marker-storage correction is qualified and delivered.
 Both roles now pass ordinary existing-Effect dragging, one synchronized history
 item per gesture, and checked Undo/Redo/Undo with exact Planet-field restoration.
 Host R54 to58 and guest R58 to62 change only transform column02A907B6; both
-peers converge with zero faults. This fixes BUG-0527 in private C62/protocol25,
+peers converge with zero faults. This fixes BUG-0611 in private C62/protocol25,
 commit7812a0a. It is not a new personal installation.
 
 Actual C60 RED identified separate Terraform F028F0/F029E0 input dispatch that
@@ -118,7 +118,7 @@ are verified against the current handle identity before motion. Receipt:
 A later Model probe reaches a native Save recipe consistency guard. Revision90
 is preserved. Same-party recovery restores every Planet field, but subsequent
 Model and Effect drag probes fail to start native history because the old Save
-publication flag survives recovery (BUG-0528). This does not invalidate the
+publication flag survives recovery (BUG-0612). This does not invalidate the
 eight pre-recovery Effect cases. The Save recipe mismatch itself is not yet
 assigned. Both games subsequently return normally to Galaxy with zero faults.
 The C60/C61 failures and calibration mistakes remain retained. Model, delete,
@@ -127,7 +127,7 @@ release gates remain deferred.
 
 ### C63 failed-Save recovery hold and native Model controls
 
-BUG-0528 (`b120545`) retires a failed Save publication hold only after the new
+BUG-0612 (`b120545`) retires a failed Save publication hold only after the new
 recovery checkpoint is durable and its terrain scene is verified. Deferred and
 failed recovery preserve the previous checkpoint and hold. Strict actual-i686
 RED reproduces the stale flag; GREEN covers default and Extended modes and
@@ -188,7 +188,7 @@ Planet and semantic values restore exactly, but own raw SHA acceptance is not
 claimed for those first attempts. Evidence: `out/preview9-c65-terrain-host-effect-delete-r2`
 and `out/preview9-c65-terrain-guest-effect-delete-r3`.
 
-Actual Model Delete atR144 exposes BUG-0533: native Remove compacts transform
+Actual Model Delete atR144 exposes BUG-0617: native Remove compacts transform
 arrays and synchronously materializes proxies before returning. The adapter
 previously marked the removed index fresh and shifted it afterward, allowing
 the unchanged successor to acquire a false authored provenance. Both peers
@@ -217,7 +217,7 @@ preview and deferred release gates remain unchanged.
 
 ### C68 first-use stamp clone and wheel scaling
 
-BUG-0530 (`55b4a82`) retains the first Terraform clone or ordered wheel quanta
+BUG-0614 (`55b4a82`) retains the first Terraform clone or ordered wheel quanta
 until the source lease arrives, including a quick ordinary release or separate
 native Shift-release finalizer. Native mutation/history/allocation waits for
 ownership; scene/scope/act/record identity is rechecked after grant callbacks.
@@ -233,10 +233,10 @@ Model clone172-180, Effect wheel180-188 and Effect clone188-196, each from host
 and guest. Each gesture creates one transaction/history item, both peers
 converge and complete native/authored-semantic Undo/Redo/Undo restores exactly.
 Source and unrelated records remain unchanged. Effect append uses the exact
-current planet seed, as independently verified in Native code (BUG-0535).
+current planet seed, as independently verified in Native code (BUG-0619).
 Receipt: `out/editor-preview9-terrain-first-use/receipt.json`.
 
-BUG-0534 retains the original projection checksum and exposes its two allocation
+BUG-0618 retains the original projection checksum and exposes its two allocation
 high-water marks. A second checksum fixes only those two fields in a private
 copy, preserving all actual identities, order, references and values. Actual
 Clone Undo174 has host allocators55834575134/order286 versus observer
@@ -255,7 +255,7 @@ Gradient point-color qualification continues separately atR196. Initial palette
 procedures produce no shared transaction. Standalone editing changes live
 Terraform RGB while committed-resource inspection remains unchanged. That
 diagnostic uses `capture`, whereas gesture export uses `capture_draft`; the
-initial cache explanation is superseded. BUG-0536 tracks the unresolved shared
+initial cache explanation is superseded. BUG-0620 tracks the unresolved shared
 commit path. No cache or validation bypass is justified by those observations.
 
 ### C68 point colors, Environment and Road placement
@@ -263,7 +263,7 @@ commit path. No cache or validation bypass is justified by those observations.
 Point-color qualification now passes at host198-202 and guest202-206. A direct
 host repeat206-210 also passes immediately after Undo without reopening the
 panel. Each changes only selected node2 in B6929C93. The original failed picker
-procedures remain retained and unassigned in BUG-0536; no cache fix is claimed.
+procedures remain retained and unassigned in BUG-0620; no cache fix is claimed.
 
 All four additional Environment controls pass both roles: atmosphere210-218,
 time dragging218-226, day/night226-234 and hazards234-242. Temperature and Water
@@ -281,7 +281,7 @@ with zero faults. Artifacts use the `out/preview9-c68-` prefix:
 `{host,guest}-road-placement`. Accordion positions change while opening;
 Road input is guarded by the actual visible073933B8/04A1CB6F card.
 
-Guest Road Redo251 then reproduces the earlier Native Save problem, BUG-0537.
+Guest Road Redo251 then reproduces the earlier Native Save problem, BUG-0621.
 Native Save completes and its exact original DBPF is retained, but checkpoint
 publication freezes at the owned recipe comparison. Both peers retain durable251
 and zero faults. Save normalization passed before `checkpoint_resources` restores
@@ -298,7 +298,7 @@ open while this failure and the remaining lifecycle checks are unresolved.
 
 ### C69 completed-Save terrain restoration
 
-BUG-0537 now has controlled FAIL/PASS and actual native Save acceptance.
+BUG-0621 now has controlled FAIL/PASS and actual native Save acceptance.
 `restore_saved_terrain` requires the exact previously normalized completed-Save
 receipt, unchanged canonical document and live recipe, and the same scene,
 generation, scope and operation. Its stack-scoped owned read identity retains
@@ -345,7 +345,7 @@ Galaxy with zero faults before fresh-process reopening.
 Fresh native reopening reaches the exact saved root and Ready with419 placements,
 118 classes and five acts. The strict cold comparator then rejects decoded
 differences beginning at11104, before hosting or sharing. This is separately
-recorded as BUG-0538; no cold authored-equality or sharing acceptance is claimed.
+recorded as BUG-0622; no cold authored-equality or sharing acceptance is claimed.
 The complete cold image and failed comparison remain retained in
 `out/preview9-c69-road-cold-open`. The Save checkpoint failure is fixed, while
 terraformed cold-reopen equality remains an open qualification.
@@ -390,7 +390,7 @@ including the water companion, retaining the genuine original DBPF:
 zero faults before owned runner retirement.
 
 Complete Terraform acceptance is still open: strict terraformed cold-reopen
-equality (BUG-0538), further catalog-specific combinations and native collision/
+equality (BUG-0622), further catalog-specific combinations and native collision/
 Solo/Test Together qualification are not established by this control table.
 The harness's older generic labels such as paint/smooth/erase/style are not
 independent verified GUI controls. Native `adventureLook` is a separate cheat,
@@ -436,7 +436,7 @@ Saved/cold comparator finds all3,994,584 decoded bytes identical, no machine-ID
 changes, and only the permitted unused fourth word of scalar key00B2CCCB
 different in the prefix. Evidence:
 `out/preview9-c60-count4096-cold-open/result.json`.
-BUG-0526 is fixed in the private candidate.
+BUG-0610 is fixed in the private candidate.
 
 ### C60 actual native class boundary
 

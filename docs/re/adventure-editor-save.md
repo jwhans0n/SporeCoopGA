@@ -1648,7 +1648,7 @@ source. C73 reaches native saved confirmation, then correctly refuses shared
 publication because property43415003 differs from the committed Captain pose.
 The durable draft remains at revision299; no successful SavedApplied is claimed.
 C74 also preserves the checkpoint when the normal projection scope is unavailable
-during recovery. These are BUG-0541 evidence, separate from BUG-0538.
+during recovery. These are BUG-0625 evidence, separate from BUG-0622.
 
 The local terrain transition ticket now retains the exact Captain position
 witness alongside placement witnesses. Saved-image normalization requires the
@@ -1664,4 +1664,4 @@ only if marker, native generation, Captain revision, scope and primitive pose
 still match. This is read evidence during the existing hold, not ownership or a
 new saved field. The recovery/Save read scope uses the existing transition key
 and fenced callback; ordinary authoring scope stays unavailable. The cold
-Saved-versus-reopened payload comparison tracked by BUG-0538 is unchanged.
+Saved-versus-reopened payload comparison tracked by BUG-0622 is unchanged.

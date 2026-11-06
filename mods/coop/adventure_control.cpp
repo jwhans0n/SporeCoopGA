@@ -1,4 +1,5 @@
 #include "adventure_control.h"
+#include "sporekit_build.hpp"
 
 #include <array>
 #include <cmath>

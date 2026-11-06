@@ -16,9 +16,11 @@ first drawn frames are within NEAR m of the target.
 SPORE_FIX_OFF=creature.puppet_jump: blended and walked again (the catch takes 0.5-1 s: the test fails).
 """
 import math
+import os
 import re
 import time
 
+import creations_state
 import uifind
 from coop_puppet_walk import dump
 from twoinst import Checks, start
@@ -70,13 +72,42 @@ def jumps(rows):
 def main():
     host, guest = start('creature')
     ck = Checks()
+    # BUG-0345: the guest plays its own creature (as this test was made for) only when chosen in a world it
+    # never played it in; the profile is put back as it was at the end
+    st0 = creations_state.save(guest)
+    world = os.environ.get('PUPPET_JUMP_WORLD') == '1'  # BUG-0536: the guest plays the world's species
+    print('  guest profile before:', st0, '| chose', 'nothing (world species)' if world else creations_state.choose_own(guest), flush=True)
+    if world and st0['record'] != '00000000':
+        # a record of this world in the lane's profile (an earlier test chose the own creature here): the guest
+        # plays its own creature until it is forgotten and the game started again (`--cold` next time)
+        guest.call('coop.creations worlds set creature 00000000')
+        guest.call('coop.creations unchoose creature')
+        ck(False, f'the guest plays the world\'s species (record {st0["record"]} forgotten now: run again cold)')
+        return ck.result()
+    try:
+        return run(host, guest, ck)
+    finally:
+        if not world:
+            creations_state.restore(guest, st0)
+
+
+def run(host, guest, ck):
     time.sleep(3)
     all_jumps = []
     for name, me, viewer, pid in (('guest', guest, host, 1), ('host', host, guest, 0)):
         viewer.call('coop.track stop')
         viewer.call('coop.track start')
         ck(die(me, name, ck), f'{name}: the death caption came and was answered')
-        time.sleep(28)  # the respawn, the hatchling waits ~10 s and steps out of its egg
+        own = []  # BUG-0536: where the dying player's own game has its creature (the game's, not the track's)
+        t_end = time.time() + 28  # the respawn, the hatchling waits ~10 s and steps out of its egg
+        while time.time() < t_end:
+            m = re.search(r'pos=\(([-\d.]+) ([-\d.]+) ([-\d.]+)\)', me.call('coop.avatar')['out'])
+            if m:
+                own.append((time.time(), tuple(map(float, m.groups()))))
+            time.sleep(0.5)
+        steps = [(round(b[0] - own[0][0], 1), round(math.dist(a[1], b[1]), 1)) for a, b in zip(own, own[1:])
+                 if math.dist(a[1], b[1]) > 1.5]
+        print(f'  {name}: its own game moved its creature by over 1.5 m in 0.5 s at {steps}', flush=True)
         viewer.call('coop.track stop')
         rows, seen_t = [], set()
         for r in dump(viewer):

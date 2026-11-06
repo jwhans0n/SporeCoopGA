@@ -10,6 +10,7 @@
 
 #include "fixes.h"
 #include "game.h"
+#include "mirror_fx.h"
 #include "modes.h"
 #include "net/protocol.h"
 #include "sporekit_game.hpp"
@@ -35,26 +36,55 @@ COOP_FIX("effects.here", "BUG-0471", g_here_fix,
 static uint32_t g_elsewhere_tx, g_elsewhere_rx;
 static bool nobody_here() { return g_here_fix && C.anyone_here && !C.anyone_here(); }
 
-// 0.7.4 scope (Cell and Creature): in Tribe and Civilization a relayed world effect could start the game's skin
-// painter without its context (EffectWorld_CreateEffect -> cSkinPainterPipeline -> cSkinnerTexturePainter::StartRender
-// read 0, hundreds of caught faults: effects_party_civ out/lab/20261103-215559, effects_party_tribe
-// out/lab/20261103-223036). Until those stages are checked (0.7.5 / 0.7.6), effect starts are neither sent nor
-// played in Tribe, Civilization and Space; stops always pass.
-// `coop.fix effects.other_stages on`: relayed in every stage (as in the branch's first tests).
-static bool g_civ_space = false;
-COOP_FIX("effects.other_stages", "BUG-0451", g_civ_space,
-         "effects: also relayed in Tribe, Civilization and Space (off in 0.7.4: unverified, the skin painter faulted)");
+// BUG-0451 (Tribe / Civilization): 0.7.4 relayed effect starts only in Cell and Creature, because a relayed world
+// effect made the receivers fault hundreds of times in Skinner::cSkinnerTexturePainter::StartRender+0x28
+// (effects_party_civ out/lab/20261103-215559, effects_party_tribe out/lab/20261103-223036). The cause: the
+// skin painter (Skinner::cSkinPainterPipeline::ExecutePipeline, it paints a creature's skin when a model is
+// built, e.g. a partner's puppet or a tribe member) creates its paint effects in an effect world of its own
+// on the main thread; the world-effect hook saw them like any effect, and one made near the local player was
+// sent. Created in the receiver's game effect world it has no painter and faults every frame while it lives
+// (docs/re/creature.md#creature-effects-painter). `effects.main_world` (on) sends only effects of the game's
+// own effect world and never plays an id this game saw only in another world; with it, Tribe and Civilization
+// relay again (`effects.other_stages`, on). Off: the 0.7.4 behaviour (no effect starts there; stops pass).
+static bool g_other_stages = true;
+COOP_FIX("effects.other_stages", "BUG-0451", g_other_stages,
+         "effects: also relayed in Tribe and Civilization (off: Cell and Creature only, as 0.7.4)");
+// Space: not verified (no effect of the own UFO could be made in a test, docs/re/creature.md); off as in 0.7.4
+static bool g_space = false;
+COOP_FIX("effects.space", "BUG-0451", g_space, "effects: also relayed in Space (unverified, off by default)");
+static bool g_main_world_fix = true;
+COOP_FIX("effects.main_world", "BUG-0451", g_main_world_fix,
+         "effects: the skin painter's own effects are never relayed (they faulted the partner's game in Tribe and Civ)");
 static uint32_t g_stage_skipped;
 static bool stage_off()
 {
-    if (g_civ_space)
-        return false;
     uint32_t m = game::mode_id();
-    if (m == modes::kTribe || m == modes::kCiv || m == modes::kSpace) {
+    bool off = m == modes::kSpace ? !g_space : (m == modes::kTribe || m == modes::kCiv) ? !g_other_stages : false;
+    if (off)
         g_stage_skipped++;
-        return true;
-    }
+    return off;
+}
+// ids this game created only in another effect world (the skin painter's): a received start of one is not
+// played (a partner of another build, or one that sent it before this fix). Fixed size, no allocation.
+static constexpr size_t kForeignIds = 256;
+static uint32_t g_foreign_ids[kForeignIds];
+static size_t g_foreign_n, g_foreign_at;
+static uint32_t g_w_foreign, g_w_foreign_near, g_rx_foreign;
+static bool foreign_id(uint32_t id)
+{
+    for (size_t i = 0; i < g_foreign_n; i++)
+        if (g_foreign_ids[i] == id)
+            return true;
     return false;
+}
+static void note_foreign_id(uint32_t id)
+{
+    if (foreign_id(id))
+        return;
+    g_foreign_ids[g_foreign_at] = id; // a ring: the oldest id goes first
+    g_foreign_at = (g_foreign_at + 1) % kForeignIds;
+    if (g_foreign_n < kForeignIds)
+        g_foreign_n++;
 }
 
 // Rate limit: a creature can make a burst of one-shot effects (footsteps, bites, particles). 40 a
@@ -320,6 +350,10 @@ static void process_local(void* creature, const game::EffectEvent& ev)
 {
     if (!g_fix || !creature)
         return;
+    if (creature != game::avatar() && !game::is_puppet(creature)) { // BUG-0600: a host's NPC / member: its mirrors
+        mirror_fx::on_creature_effect(creature, ev);
+        return;
+    }
     if (creature != game::avatar() || game::is_puppet(creature))
         return;
     if (!C.sess || !C.sess->connected())
@@ -381,6 +415,18 @@ static void process_world(void* fx, uint32_t id)
     if (game::effect_relayed(fx)) { // a creature hook already sent this effect
         g_w_relayed++;
         return;
+    }
+    if (game::effect_foreign(fx)) { // the skin painter's own effect world: never a world effect to relay
+        note_foreign_id(id);
+        g_w_foreign++;
+        net::Vec3 fp;
+        if (game::effect_position(fx, fp) && C.near_local && C.near_local(fp))
+            g_w_foreign_near++; // one a player's play would have sent without the fix
+        if (g_main_world_fix) {
+            if (g_log)
+                H->log(M, SK_INFO, "effect: world id %08X dropped, made in another effect world (skin painter)", id);
+            return;
+        }
     }
     // the position the game's transform setter put into effect+0x9C. Animation-event effects are
     // skipped in the hook (0x9FBF00 sets a thread-local flag): the animation relay shows those.
@@ -508,7 +554,7 @@ static void load_tick(double t)
     g_load_at = t + g_load_ms / 1000.0;
     if (g_load_at < t)
         g_load_at = t + 1.0;
-    uint32_t id = g_load_id ? g_load_id : game::last_effect_id();
+    uint32_t id = g_load_id ? g_load_id : game::last_effect_id(g_main_world_fix);
     if (!id) {
         if (g_log)
             H->log(M, SK_INFO, "effect: perf load waits for the game to create an effect (no id yet)");
@@ -535,25 +581,64 @@ static uint32_t g_perf_creates, g_perf_probes, g_perf_evicted, g_perf_sent, g_pe
 static double g_perf_hook_sum;
 static uint64_t g_perf_hook_calls;
 
+// BUG-0527: the parts of the tick, so a test can tell the relay's own cost from the test workload's game calls
+// (load_tick: `coop.effects load`, the game's CreateEffect at the player) and from the machine's load. Wall ms per
+// part; the relay part (the tick without load_tick) split into frames under SLOW_S and slow frames. Measured
+// 2026-11-04 (lane 4, load average 8-12): 29-35 slow frames in 20 s (5-822 ms each) held 2.6-5.3 % of the main
+// thread's wall time but no more than 0-5 jiffies of the thread's CPU time (GetThreadTimes, 10 ms steps under
+// Wine): the OS preempted those ticks, the relay did not spend them. Under a lighter load (5.8) 0-1 slow frames.
+// The thread's CPU time itself is no measure here: its 10 ms step is a whole frame, and the call costs ~50 us.
+struct Part {
+    double sum = 0, max = 0;
+    uint64_t n = 0;
+    void add(double dt, uint64_t k = 1)
+    {
+        sum += dt;
+        max = dt > max ? dt : max;
+        n += k;
+    }
+};
+static const double SLOW_S = 0.005;
+static Part g_p_load, g_p_rx, g_p_live, g_p_rest, g_p_relay, g_p_fast, g_p_slow;
+
 void tick(double)
 {
     double t0 = H ? H->time_seconds() : 0;
     game::set_effect_relay_enabled(g_fix); // also notes the game's main thread id
-    if (g_fix)
+    double load_wall = 0;
+    if (g_fix && H && g_load_n) {
+        double a = H->time_seconds();
         load_tick(t0);
+        load_wall = H->time_seconds() - a;
+        g_p_load.add(load_wall);
+    } else if (g_fix) {
+        load_tick(t0);
+    }
+    double t1 = H ? H->time_seconds() : 0;
     Pending p;
+    uint64_t rx = 0;
     while (q_pop(p)) {
+        rx++;
         if (p.world)
             process_world(p.fx, p.id);
         else
             process_local(p.creature, p.ev);
     }
+    double t2 = H ? H->time_seconds() : 0;
     live_tick(t0, game::mode_id(), C.world ? C.world() : 0);
+    double t3 = H ? H->time_seconds() : 0;
     world_sent_clear();
     game::clear_effect_table();
     if (!H)
         return;
     double dt = H->time_seconds() - t0;
+    if (rx)
+        g_p_rx.add(t2 - t1, rx);
+    g_p_live.add(t3 - t2);
+    g_p_rest.add(dt - (t3 - t0));
+    double relay = dt - load_wall;
+    g_p_relay.add(relay);
+    (relay < SLOW_S ? g_p_fast : g_p_slow).add(relay);
     g_tick_sum += dt;
     g_tick_max = dt > g_tick_max ? dt : g_tick_max;
     g_tick_frames++;
@@ -648,6 +733,12 @@ void on_message(uint8_t type, uint8_t from, net::Reader& r)
             H->log(M, SK_INFO, "effect: from %u skipped, not in this place (id %08X pool %u)", player, id, pool);
         return;
     }
+    if (!stop && pool == 5 && g_main_world_fix && foreign_id(id)) {
+        g_rx_foreign++;
+        if (g_log)
+            H->log(M, SK_INFO, "effect: from %u world id %08X not played: a skin painter effect here", player, id);
+        return;
+    }
     void* puppet = pool == 5 ? reinterpret_cast<void*>(1) : (C.puppet_of ? C.puppet_of(player) : nullptr);
     if (!puppet) {
         g_skipped++;
@@ -737,6 +828,7 @@ void init(const SkHost* host, SkMod* mod, const Ctx& ctx)
     g_sent = g_rx = g_played = g_stopped = g_skipped = g_failed = g_dropped = 0;
     g_w_no_pos = g_w_relayed = g_w_far = g_w_seen = g_w_rate = 0;
     g_elsewhere_tx = g_elsewhere_rx = 0;
+    g_w_foreign = g_w_foreign_near = g_rx_foreign = 0;
     g_dropped_spoof = 0;
     g_bad_pool = g_bad_id = g_bad_bone = g_bad_xf = g_bad_short = 0;
     g_last_tx = Last{};
@@ -877,7 +969,7 @@ std::string probe(uint32_t key)
 std::string status()
 {
     std::string s;
-    char b[320];
+    char b[480];
     snprintf(b, sizeof b,
              "effects: fix=%d sent=%u received=%u played=%u stopped=%u skipped=%u failed=%u dropped_rate=%u world=%u\n",
              (int)g_fix, g_sent, g_rx, g_played, g_stopped, g_skipped, g_failed, g_dropped, g_world);
@@ -889,8 +981,16 @@ std::string status()
              "animation %u skipped), %u table probes, %u evicted; last game effect id %08X; load %u per %u ms: "
              "%u created, %u failed\n",
              g_tick_frames ? g_tick_sum / g_tick_frames * 1000 : 0.0, g_tick_max * 1000,
-             (unsigned long long)g_tick_frames, creates, mgr, world, anim, probes, evicted, game::last_effect_id(),
+             (unsigned long long)g_tick_frames, creates, mgr, world, anim, probes, evicted, game::last_effect_id(g_main_world_fix),
              g_load_n, g_load_ms, g_load_ok, g_load_failed);
+    s += b;
+    snprintf(b, sizeof b,
+             "effects cost parts: load %.3f ms (%llu, max %.3f) rx %.3f ms (%llu msgs, max %.3f) live %.3f ms (max %.3f) "
+             "rest %.3f ms; relay %.3f ms (max %.3f) in %llu frames: under 5 ms %.3f ms, slow %llu frames %.3f ms\n",
+             g_p_load.sum * 1000, (unsigned long long)g_p_load.n, g_p_load.max * 1000, g_p_rx.sum * 1000,
+             (unsigned long long)g_p_rx.n, g_p_rx.max * 1000, g_p_live.sum * 1000, g_p_live.max * 1000,
+             g_p_rest.sum * 1000, g_p_relay.sum * 1000, g_p_relay.max * 1000, (unsigned long long)g_p_relay.n,
+             g_p_fast.sum * 1000, (unsigned long long)g_p_slow.n, g_p_slow.sum * 1000);
     s += b;
     snprintf(b, sizeof b, "effects world drops: no_pos=%u relayed=%u far=%u seen=%u rate=%u sent_probes=%u\n",
              g_w_no_pos, g_w_relayed, g_w_far, g_w_seen, g_w_rate, g_world_sent_probes);
@@ -898,8 +998,14 @@ std::string status()
     snprintf(b, sizeof b, "effects received drops: spoof=%u pool=%u id=%u bone=%u transform=%u short=%u\n",
              g_dropped_spoof, g_bad_pool, g_bad_id, g_bad_bone, g_bad_xf, g_bad_short);
     s += b;
-    snprintf(b, sizeof b, "effects elsewhere: not sent=%u not played=%u here_fix=%d other_stages=%d stage_skipped=%u\n",
-             g_elsewhere_tx, g_elsewhere_rx, (int)g_here_fix, (int)g_civ_space, g_stage_skipped);
+    snprintf(b, sizeof b, "effects elsewhere: not sent=%u not played=%u here_fix=%d other_stages=%d space=%d stage_skipped=%u\n",
+             g_elsewhere_tx, g_elsewhere_rx, (int)g_here_fix, (int)g_other_stages, (int)g_space, g_stage_skipped);
+    s += b;
+    snprintf(b, sizeof b,
+             "effects foreign world: created=%u last=%08X queued=%u near=%u not played=%u known ids=%u main_world_fix=%d\n",
+             game::foreign_effects(), game::last_foreign_effect_id(), g_w_foreign, g_w_foreign_near, g_rx_foreign,
+             (unsigned)g_foreign_n,
+             (int)g_main_world_fix);
     s += b;
     snprintf(b, sizeof b,
              "effects world live: live=%u stopped=%u expired=%u released=%u dropped=%u release_fix=%d\n",

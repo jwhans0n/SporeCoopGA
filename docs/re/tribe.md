@@ -1183,3 +1183,662 @@ lab 20261103-150636, 298 samples:
   send interval) and prints the raw p90 next to it. `coop.tribe delay <s>` (guest, tests) sets the mirrors'
   interpolation delay: `PLAY_TRIBE_GUEST_CMDS="coop.tribe delay 0.6"` is a planted late mirror the check
   must fail.
+
+## Tools of the player tribe and the guests (2026-11-03, fix/w41-tribe-actions)
+<a id="tribe-tools-guest"></a>
+
+BUG-0514 (players: a guest's members cannot take weapons from the racks the host built). GOG 2024 (Ghidra
+`--build 2024`, runtime lane 2, `coop_tribe_tools.py`):
+* ✔ A bought tool is made only in the buyer's game: the palette's placement (0xD13C05, the same address in
+  both builds) does `GetToolByType`, `tribe->CreateTool(type)` (vt 0xB4 = 0xC96170), `tool+0x84 |= 8`,
+  `tool->vt[0x64](tribe)` (SetTribe), 0xC9D2D0(tool) (a clock reset, 0xBC32A0), then the drag; the finish
+  0xD10F90 puts it into a cLayoutSlot of the village and, for a type not bought before, sets the purchased bit
+  (0xC8ED70 `tribe+0x19D8 |= 1 << type`, the test 0xC8ED90). Nothing of it reached a guest: the fixture's
+  village has one tool (type 10, the fire pit) on both games; a rack the host built (`coop.tribe build 1`) was
+  in the host's tool list only (lab 20261103-234416).
+* ✔ The tool's spatial object is at tool+0x34 (the placement reads its position with vt 0x2C there);
+  `game::cast(tool, 0x1186577)` gives it; SetPosition vt 0x38 / SetOrientation vt 0x3C place a tool made by
+  CreateTool + SetTribe where wanted; it is drawn upright with the rotation of +Z onto the planet's up.
+* ✔ DoToolActionForAllSelected (GOG 2024 0xCD09B0, ret 4): a damaged tool (+0x158 < combatant +0x120 vt 0x58)
+  -> DoActionForAllSelected(0x18 Repair); type (tool vt 0x58) 1..9 -> (3 GrabTool); 10 (fire pit) -> (0xC Party).
+  The order goes through DoActionForObjects (hooked): a guest sends it with the tool as target kind 2 (noun
+  0x18C8F0C + position); the host's `game::find_object` finds its own tool within 8 m and its member takes it
+  (+0x102C = 1 in 3-37 s).
+* ✔ cCreatureCitizen::SetSpecializedTool GOG 2024 **0xC27B00** (2016 0xC27AE0), thiscall(int) ret 4: callers
+  0xDABA9A (in 0xDAB4A0, the grab behaviour), 0xC8FF67 (0xC8FEE0: making a chief, 0xB), 0xDA75D9 (0xDA7590:
+  `SetSpecializedTool(0)`, a drop), 0xD576EC. The guest's mirror never runs these (its AI ticks are skipped):
+  it showed no weapon while the host's member had one (lab 20261103-234532, `tribe.tool_hold` off).
+* Fix: the player tribe's tools are host-owned world objects (worldobj.cpp kind `tribe_tool`, switch
+  `wobj.tribe_tool`): a guest makes a copy of a host tool it has none of within 2 m (the same type, upright,
+  purchased bit); the held tool is a replicated field of the members (fields.h kind `tribe_member_tool`, field
+  `tool`, switch `tribe.tool_hold`), applied with SetSpecializedTool (the leader's 0 -> 0xB left alone).
+* ? Not done: a tool a GUEST buys is still made in its own game only (the host has no rack there, the guest's
+  grab order is rejected "no such target here"): BUG-0524. A raided (damaged) rack's state is not replicated.
+
+## The co-op epic's blows (2026-11-03, fix/w41-tribe-actions)
+<a id="tribe-epic-damage"></a>
+
+BUG-0515 (players: "in Tribe giants only deal 8 damage"). Runtime, GOG 2024, 'tribe' fixture, lane 2
+(`coop_tribe_epic_damage.py`, `coop.tribe epic stats`: every live epic with its herd and its blows on members, read
+in the host's citizen TakeDamage hook):
+* ✔ The fixture planet's own epic: herd archetype 0xEC4C89F8, generation 0, mScaleMultiplier (+0x150) 1.0,
+  mHitpointOverride (+0x154) 0, **mDamageMultiplier (+0x158) 15.0**, size 11.4, 1000 HP.
+* ✔ The co-op epic (spawn_epic: CreateHerd + archetype 0xFC811218, isEpic): +0x158 = **1.0**, size 7.7-9.6,
+  1000/1250 HP. Its blows on members: 1.5 and **8.0** (lab 20261104-000238): an ordinary animal's, exactly the
+  players' "8". With +0x158 = 15 set on the herd before cCreatureAnimal::Create: 120 per blow (lab 20261104-000059).
+  So the multiplier is read at the blow (or at Create) from the herd; the archetype's isEpic does not set it.
+* The blows are the host's (it simulates every tribe); the guests see the members' health of the host.
+* ? The co-op epic is smaller than the game's (7.7-9.6 vs 11.4, the same scale multiplier): its size comes from
+  elsewhere (the archetype 0xEC4C89F8's tuning?), not changed.
+## A guest's own tribes and saves (2026-11-03, fix/w41-tribe-world)
+<a id="tribe-guest-world"></a>
+
+* ✔ The objects the mod makes in a Tribe guest's game: the members `guest_state` spawns as mirrors
+  (`spawn_member`: cTribe vt 0x98 SpawnMember, else CreateCitizen + AddMember) and the NPC tribes it makes
+  for the host's (SpawnNpcTribe, tribe.npc_tribes, BUG-0381) with their hut (+0x368), tools (+0x36C, +0x380)
+  and food mat (noun 0x629BAFE; ~ it holds its tribe's pointer at +0x2C: found by a scan at the first save,
+  lane 5 2026-11-03, "a food mat holds its tribe at +0x2C"). Members of the guest's own game bound as
+  mirrors (the loaded world's) are the player's.
+* ✔ (BUG-0495, tribe.save_strip, lab 20261103-234419) A save on the guest writes none of them: the savestrip
+  filter nulls their references, and while the save is written the members leave the tribes' member vector
+  +0x340 and selectable vector +0x354 (citizen+0xC0). The reloaded world (alone, no session) had the player
+  tribe with the guest's own 2 members (7 before the save: 5 spawned mirrors), no tribe where the made ones
+  stood, no fault; the mirrors were back in the session after the save.
+* ✔ `SporeCoop::NpcTribeController_FormTribe` (GOG 2024 0xCC6440): thiscall(controller, int) ret 4, slot 0x24
+  of the controller's vtable 0x1476878 (no direct caller), the singleton from `cNpcTribeController::Get`
+  0xCC8C90 (global 0x169B054, ctor 0xCC5BF0). Each call forms the next tribe when the planet has fewer than its
+  property list allows (the spawn marker nearest the player tribe, docs above).
+* ~ (BUG-0483) The detector's guest-only villages came after the live Creature -> Tribe change (campaign_ct)
+  only. Inferred: the guest's own controller formed a tribe at another time or marker than the host's (the
+  guests' games form tribes, the host's tribe there came later or elsewhere), or a host tribe the guest's was
+  mapped to was gone. tribe.guest_tribes: on a guest in a session the controller's forming does not run (the
+  host's tribes come through tribe.npc_tribes), and a local NPC tribe no host tribe maps to (40 m, or the one
+  made for it) for 5 s of complete cycles loses its members (RemoveMember with destroy). Its hut, tools and
+  food mat stay: no game function to remove a whole tribe is known (? which one the game uses when a tribe is
+  conquered).
+* ? Tools (BUG-0523): the mod syncs no tool; each game makes the tools its tribes buy at its own spots.
+## A guest's orders on the host and the game's own: the grab spots (2026-11-04, fix/w41-tribe-orders)
+<a id="tribe-orders"></a>
+
+BUG-0505 (a guest's orders taken by the host, its members standing still). GOG 2024, Ghidra + runtime, lane 9
+(`coop.tribe ai <id>`: the order record, the behaviour node with its memory, the walk; `coop.tribe layout <type>`:
+the tribe's grab spots of a tool type).
+* ✔ The game's own order and host_command run the same code: a click goes DoActionGeneric ->
+  DoActionForAllSelected 0xCD0940 (the terrain cursor's selected objects, vt 0x5C) -> 0xCCFE70 ->
+  DoActionForObjects 0xCCEB30 (per object: cast to citizen, `DoAction(action, target, prop)`), then 0xCCFDA0 (the
+  selected members' voice, vt 0xF0) and a feedback sound per action. host_command calls the same DoAction with
+  prop 0. Nothing else (no flag, no queue, no priority) is set by the UI path: the only difference is that the
+  host's members of a guest are not selected on the host (+0x12C); the BT flags do not carry it (? the
+  behaviour code was not searched for other reads of IsSelected, spatial vt 0x50 = 0xAD26E0) (the BT flags built in citizen Update 0xC24A30: `ai[+0x5FC] | 4 if the list at c+0x38 is not empty | 8
+  unless c+0x110 & 0x100 | 0x40 if an order record exists | 0x400/0x800/0x1000 by c+0xEAC`).
+* ✔ DoAction 0xC27710: copies the current record, `0xBCB0E0(ai, action, target, 1)` clears the queue at
+  ai+0x60C and appends one record, copies prop and the target's position, 0xC265B0 posts the action's stimulus
+  (the switch action -> mask: 0 -> 8, 2 -> 0x20, 3 -> 0x40, 10 -> 0x8000, ...), and **only when the new record
+  differs from the old one** (0xBCA2F0 compares action, target and the four properties) posts stimulus 0x4000
+  (re-plan). So a second identical order (the same tool again) does not restart a member stuck in its node.
+* ✔ Behaviour nodes (the action table at 0x1593A80, entries `{id, enter, tick, exit}`): **0x0462854D = GrabTool**
+  (enter 0xDAFC10, tick 0xDAB4A0, exit 0xDAFD20), 0x0462854E next to it, 0x0562C0FB heal, 0x04611FF4 sleep,
+  0x0461300F eat, 0x04623E0C gift food, **0x05F79546** (enter 0xDA7850: needs stimulus (0, 0x4000000), plays
+  anim 0x5F73E48 and the tick 0xD7C730 waits for its end: a reaction to an area blow, posted by 0xC20390 to every
+  creature within its radius; ~ name), 0x05CA7FA7 knocked out. **0x0569236E** is in another table (0x158426C,
+  enter 0xD75A80, tick 0xD75F70: the gather behaviour, a 20-state machine with the tree, walk, pick and bundle
+  steps). 0xCCA550 maps a member's node to the card's activity icon.
+* ✔ The grab node's memory (the leaf's, ai+0x1D0 + 4 * (0xF + 0x2B * (depth - 1)), depth ai+0x1DC):
+  `+0 state, +4 the tool, +8 the tool's position at the enter (moved more than 1 m: the node fails), +0x14
+  took-it flag, +0x18 claimed spot, +0x1C wait counter`. States: 2 walk near the tool (chiefs: to the hut), 3 wait
+  until within reach, 4 claim a spot (0xC98860: cTribe, the free cLayoutSlot of the type's layout
+  (SporeCoop::cTribe_ToolLayout) nearest to the member; none: walk 1-2 m, wait 45 ticks, again), then WalkTo the
+  point on the line tool -> spot at the radii + 0.1 from the tool facing it, 1 wait for the walk's arrival
+  (0xC42F80 on c+0xC0: goal mode +0x250 1-4, radius check, modes 3/4 also the facing; **no time limit**), 6 / 7
+  the grab animation and its event 0x7D7502FC -> SetSpecializedTool(type), 8 done.
+* ✔ The grab spots of the 'tribe' fixture's rack built 9 m off the centre (`coop.tribe build 1 9`): 6 spots on a
+  ring ~6.8 m round the rack; the one toward the village is at (406.1 -7.1 302.7), 2.2 m from the fire pit's
+  centre, the member's radius 2.87. Observed in a failing tribe_tools run (lab 20261104-014156 #2): the guest's
+  member in node 0x0462854D, state 1, spot 0, walk mode 3, goal that spot, standing 1.5 m short of it for 90 s
+  (speed 0, the 40 s re-order changed nothing). The order was the guest's and taken by the host as its own; the
+  member stopped because the spot cannot be stood on. Three of the six spots were used (`used=1`) before the order.
+* ~ Why the walk stops short is not pinned down: a member put 5 m from the rack toward the fire pit, also with
+  another member put onto that spot, reached it (or took another spot) in 6 s with the fix off; the stop in the
+  failing runs was 1.5 m short with walk flags 01 (+0x270) and mode 3 (the arrival also checks the facing).
+* Fix (`tribe.grab_spot`, host): a player tribe member in the grab node's state 1 standing still 4 s within 3 m of
+  its walk goal is set onto the goal facing the tool (game::teleport); the node then arrives and grabs.
+* ~ The play_tribe idle orders of the earlier runs were not reproduced in 2 runs on lane 9 (lab 20261104-014832):
+  the host's own idle orders there (ok 9 of 14 in 20261104-010027) show the same game behaviour for host orders.
+* ✔ (play_tribe, out/lab/20261104-030728 #3) A member stuck in the gather node 0x0569236E (state 1, walk mode 1,
+  its goal the old tree 100 m off, not moving) keeps that node when a new order comes (rec=4 walk, rec=10 hunt with
+  its target set): the record is replaced, the node is not left. ? what ends the gather node's state 1 (tick
+  0xD75F70 case 1 runs while the list at c+0x38 is empty or +0xFC8 != +0xFC4, unless 0xC26DF0(0x30000)); BUG-0505.
+## Every tribe's tools, the palette's drag and a guest's purchase (2026-11-04, fix/w42-tribe-left)
+<a id="tribe-tools-all"></a>
+
+BUG-0523 (each game places the tools its tribes buy at its own spots), BUG-0524 (a guest's purchase only in its
+game). GOG 2024, Ghidra (`tools/ghidra/q.sh --build 2024`):
+* ✔ One tool per type and tribe: the palette's placement start (0xD130D0, the tool branch at 0xD13C05, message
+  property 0x4294750 = the tool type) calls `GetToolByType(type)`, makes the new tool (CreateTool vt 0xB4), sets
+  `tool+0x84 |= 8`, SetTribe (vt 0x64), 0xC9D2D0, starts the drag 0xD09FA0(tool+0x34), sets `tool+0xA2 = 1`, and
+  when the tribe had a tool of the type: `cLayoutSlot::RemoveObject` and **RemoveTool (vt 0xB8) of the old one at
+  once** (a move of a tool is a new tool, the old one destroyed).
+* ✔ The drag: 0xD09FA0 thiscall(placement, spatial) ret 4 keeps the dragged spatial at placement+0xC0, clears
+  `+0x72` of the last one and sets **`spatial+0x72 = 1`** on the new one (a tool's spatial is tool+0x34: the byte
+  tool+0xA6 is 1 while the cursor drags it). The finish 0xD10F90 (thiscall(placement), ret 8, only caller
+  0xD12910) puts the tool into the village's layout slot nearest (0xD0B750, `cLayoutSlot::SetObject`), sets the
+  purchased bit for a new type (0xC8ED90 test, 0xC8ED70 set) and posts message 0x53850BAF {type, tribe +0x504};
+  0xD09FA0(0) ends the drag. A cancel / sell is 0xD09D70: message 0x53850BAF, RemoveTool, then 0xC8F600(0,
+  0x800000, FLT_MAX, 0) = SporeCoop::BT_PostStimulus 0x800000 on every member (vt 0x90).
+* ✔ cTribe::RemoveTool GOG 2024 0xC97020, thiscall(tool) ret 4: the village's layout slots holding it
+  (tribe+0x404..+0x408, 0x18 each) `RemoveObject`, out of +0x380 and +0x36C, tool vt 0x44, DestroyInstance,
+  0xC96B90(&type).
+* So a tool the host was dragging was in its tool list (and in BUG-0514's snapshots) at the cursor's places: a
+  guest could copy it mid-drag. Tools with spatial+0x72 set are not world objects now.
+* Fix (worldobj kind `tribe_tool`, state = type | host tribe index << 8 | 1 << 16 for the player tribe):
+  `wobj.tribe_tools_all` every tribe's tools (host index = the MSG_TRIBE_STATE table order, a guest's local tribe
+  by tribe.cpp's mapping g_local_tribe_of), a guest's own tool the host has not goes (RemoveTool, kind drop_own),
+  the host's is made in the mapped tribe only when that tribe has no tool of the type (one per type: a dragged
+  purchase or an own one about to go waits); `wobj.tribe_tool_buy` a guest's own player-tribe tool without a host
+  partner is a request (MSG_WOBJ kind 1 with id 0, state as above, every 2 s for 20 s): the host removes its tool
+  of the type elsewhere and makes the same at the guest's place (tribe.cpp buy_player_tool); the next snapshot
+  binds the guest's copy. The food: the guest's palette paid in its game, the shared food ledger (shared.cpp
+  MSG_RES_ADD) takes the change to the host; the host pays nothing more.
+* ? Not done: a tool made by the mod (a guest's copy, the host's copy of a guest's purchase) is not put into a
+  village layout slot (the finish's 0xD0B750 / SetObject): the slot looks free to that game's palette. A guest
+  selling a tool (0xD09D70) is not sent: the host keeps it and the guest gets its copy back.
+## The gather behaviour and a new order (2026-11-04, fix/w42-tribe-left)
+<a id="tribe-gather-orders"></a>
+
+BUG-0531 (a member in the gather node does not act on a new order). GOG 2024, Ghidra + runtime lane 6
+(`coop_tribe_gather_stall.py`, `coop.tribe ai` now also prints `carry=` the food the member carries and `tool=`):
+* ✔ The gather node's table entry 0x1584260: `{0x42464100, 0x2B8CBCCC, 100.0, 0x0569236E, enter 0xD75A80, tick
+  0xD75F70, exit 0xD75520, 6, 0, 1.0, 0, FLT_MAX, 4.3125, ...}` (100.0: the range the ticket saw next to the id).
+* ✔ Its memory (the leaf's): `+0 state, +4 an object (refcounted, its +0x108 released at state 0), +8 the tree,
+  +0xC, +0x10 a timer, +0x18 a counter (state 0 fails when it passes a tuning value 0x78F4963A), +0x1C byte, +0x1D
+  byte "ordered" (from the enter's argument +0x18), +0x20 a claimed food-mat slot (0xDBA5C0(c, 0xD)), +0x24 an
+  object`. The enter zeroes it, state 1 when it starts with a walk.
+* ✔ 0xCEE490 / 0xCEE4E0 on the member's own cGameBundleContainer (c+0x38: bundle vector +4..+8): the first bundle /
+  the sum of the bundles' +0x134 (the food it carries). 0xC26DF0 thiscall(c, mask, x) ret 8: the handheld item of
+  the member's tool (+0x102C; 0 on the tribe's leader = item 0x11) tested against `mask` (0x30000 in the gather).
+* ✔ The tick's state 1 returns "running" while (it carries nothing, or c+0xFC8 != c+0xFC4) and 0xC26DF0(0x30000)
+  is false; then the walk's arrival (0xC42F80) -> state 0; otherwise, unless +0x1D, "running" again: **no time
+  limit**. State 0xF with +4 = 0 returns 0 ("done") at once; the failure path (LAB 0xD76512) is 0xDA61D0(c, 2) then
+  0. States 0x12 -> 0x13 (claim a food-mat slot, 0xDBA5C0(c, 0xD)) -> 0x14 (walk there; arrived and 0xAF0B50 ->
+  state 0, else the failure path).
+* ✔ The exit 0xD75520 releases +0x24 and +4, drops or keeps the carried bundles (0xC23460 / cBundleManager), frees
+  the food-mat slot (0xC988E0 / 0xC97ED0 with 0xD) and 0xD753C0. It does not touch the order queue.
+* ✔ Runtime (lab 20261104-095422, -100046, -100245, -100604; 'tribe' fixture, a guest's member sent by
+  `coop.tribe order <id> 2 <tree>` to a fruit tree 90-130 m off): the member walks there in state 1 (walk mode 1,
+  goal the tree, carry 0), then states 5, 2 (at the tree), 19 = 0x13 (back home to a food-mat slot, goal near the
+  village), then the delivery node 0x04623E0C and 0x05524115. A walk order (the guest's own: select + walk, run
+  by host_command's DoAction(4) + SetValueVector3) in state 1 at the tree or in state 19 carrying the food home
+  took the member out of the gather node every time (7 runs): rec=-1 and node 0x04626360 (an idle / walk-end
+  node) within 3 s, the member at the goal on both games. After a walk that ends, the game's own behaviour goes on
+  (a member carrying food delivers it).
+* ~ So the play_tribe stall of BUG-0531 (state 1, walk mode 1, goal the old tree, standing) was not reproduced:
+  inferred, it needs the state-1 wait with the walk itself stopped (the member standing short of the tree, as the
+  grab spots of BUG-0505), which the gather's state 1 never leaves without arriving. Not fixed.
+* ✔ A test pitfall: a walk goal 12 m from the village toward some trees ended at the hut's edge (the game's walk
+  stopped at (413.8 -22.6 291.4) in three runs, the member 8 m short): check that a member walks, not that it
+  reaches a point near the village.
+## Chiefs put in each other after the arrival (2026-11-04, fix/w42-tribe-left)
+<a id="tribe-chiefs-overlap"></a>
+
+BUG-0340, 2 players, 'tribe' fixture, lane 6 (`coop.tribe near <ratio>`: the later chief put that part of the sum
+of the two chiefs' bounding radii from the first, standing):
+* ✔ The chiefs' bounding radii (spatial vt 0x70) are ~8 m in this fixture: 15 m apart is 0.92 of the sum. The
+  bounding sphere is much larger than the body: "closer than the sum" is not a visible overlap.
+* ✔ Put at 0.46 of the sum (~7 m, more than spread_chiefs' 1.5 m) with no mod parting: 0.92 within 14 s on both
+  games (the game's avoidance; lab 20261104-102641).
+* ✔ At the fixture's arrival (session s 5) the two chiefs stood closer than 0.6 of the sum for 2 s before
+  place_chiefs or the game parted them (a watchdog's log in lab 20261104-102249 and -102641; the watchdog,
+  `tribe.chiefs_overlap`, was removed again for want of a failing run).
+* ✔ 4 players (campaign_tribe, out/lab/20261104-102948): the three chiefs place_chiefs put on ring spots at the
+  arrival were back within 14-28 s at 5.0-5.3 m from the host's chief (bounding radii sum 5.8-6.2 m) on all four
+  machines: the idle behaviour gathers idle members round the host's chief / the centre. ? which node and target.
+
+## The player tribe's food after the game spends the last of it (2026-11-04, fix/w43-replay)
+<a id="tribe-food-zero"></a>
+
+* ✔ (lab, tribe fixture, GOG 2024): `cTribe::AddFood(tribe, -n)` (`SporeCoop::cTribe_AddFood`, the game's own
+  spending path -> `cBundleManager::RemoveBundles`) that spends the whole food removes the emptied bundle: the
+  container's vector at tribe+0x210 is empty afterwards (begin == end). Editing the amounts at bundle+0x134 down
+  to 0 (shared.cpp s_food, `coop.res add food -n`) keeps the bundles.
+* ✔ consequence (BUG-0572): shared.cpp s_food returns without a change on an empty vector, so a guest whose game
+  spent its last food (a purchase, its members eating) keeps 0 food for good while the host's total goes up
+  (tribe_food_zero, out/lab/20261104-201453). A total written there needs AddFood (creates bundles) for the
+  positive part.
+
+## A model's attached-effect list and the BUG-0575 crash site (2026-11-04, fix/w43-replay)
+<a id="tribe-model-effects-crash"></a>
+
+* ~ (disassembly, GOG 2024 = Steam 3010a413 code): 0xC8AC40.. walks a model's attached effects (vector at
+  +0xC0 / +0xC4, 0x3C bytes per entry, the effect at entry+0x38, a distance threshold at entry-0x30 compared with
+  the camera's): an effect that comes into range gets vt+8(0), one that leaves vt+0xC(0).
+* ~ 0xA82660 (thiscall, the effect's vt+8 with one int): checks +0x28, flags +0x2C, then calls vt+8(arg) of each
+  component (vector +0x144..+0x148, 0x5C bytes each, object at +0x38). BUG-0575 crashed in that loop with
+  edi = 0x5C, esi = 1 (a component's call returned with the callee-saved registers broken: a freed component).
+
+## The red ring under an attack order's target (2026-11-04, fix/w43-guest-player)
+<a id="tribe-target-ring"></a>
+
+BUG-0570. GOG 2024, Ghidra. See also docs/re/creature.md#creature-player-rules.
+
+* ✔ The attack order (DoActionGeneric 0xCD0C20 input action 0xA -> DoActionForAllSelected 0xCD0940(7, target)) draws
+  nothing. The ring is the Tribe HUD's: `TribeTargetRings_Update` 0xCCC7C0 (thiscall(owner), owner =
+  [`TribeUI_ptr` 0x169B2C8] + 0x240, from 0xCCDDB0 <- TribeUI vt 0x34) draws, every frame while owner +0x78, a ring
+  with `TribeTargetRing_Draw` 0xCCBE90 for every **selected** citizen with a live combat target +0xE7C (kind =
+  citizen +0xB74, flag = target spatial +0x77), plus the eat target and social members, then stops every ring not
+  touched in that pass. The rings are a map keyed by the target's +0x24 at owner +0x2C0 (buckets +0x2C4, count +0x2C8,
+  node {key, effect id, IVisualEffect*, touched +0xC, next +0x10}).
+* ✔ +0xE7C is set by SetTarget vt 0x84 0xC0EEC0 (thiscall(c, combatant, bool, int kind) ret 0xC) from the AI attack
+  node's enter 0xD67980 only; a guest's mirrors run no AI, so its game never had a ring.
+* `tribe.target_ring` (tribe.cpp): the guest remembers its own attack order (target, members) and, after the HUD's
+  pass, draws the ring under that target while one of those members is selected, the target lives and no other
+  order came (120 s at most). `coop.tribe ring <id>` says whether the HUD's map holds a live ring under creature
+  <id>. ~ Alternative not done: the host sends each member's +0xE7C and the guest sets it on the mirrors
+  (SetTarget on a mirror makes a cTribeToTribeMission, side effects not audited).
+## The goal card, village relations and the sky on a guest (2026-11-04, fix/w43-world-state)
+<a id="tribe-wsync"></a>
+
+What the host-owned world state rows (docs/sync-architecture-plan.md#sync-wsync) use in Tribe:
+
+* ✔ (Ghidra, GOG 2024) the Tribe goal card ("attack / befriend the <colour> village") is the **current
+  cTribeToTribeMission** of the Tribe Mission Manager: `SporeCoop::TribeMissionManager_Get` 0xCD35C0 (cdecl, `mov
+  eax,[0x169B27C]`) +0x74. Manager: +0x14..+0x1C every mission (the generic goal manager base 0xB6F5xx, shared with
+  the Creature goal manager 0xD38150), +0x70 dirty byte, +0x74 current mission, +0x78..+0x84 map pol -> mission.
+  cTribeToTribeMission (noun 0x5436411A, ctor 0xC2F5D0): **+0x7C state** (the ctor sets 3, 5 = done; vt 0x60
+  0xA02C70 reads it), **+0x80 the village** (cTribe, intrusive), +0x84 / +0x88 the card's property lists, +0x8C /
+  +0x90 cached from the two tribes' +0x230.
+* CORRECTION (2026-11-04, fix/w43-world-state): #tribe-detector-state says the cMission state is +0x84 (cMission::SetState
+  0xC47E20); for cTribeToTribeMission the state is +0x7C (vt 0x60 reads it), +0x84 is a property list pointer written
+  by 0xC30000. Evidence: decompiles of 0xA02C70, 0xC30000, 0xC2F7F0.
+* ✔ `SporeCoop::TribeMission_SetTargetTribe` 0xCD3D70 thiscall(mgr, cTribe or citizen) ret 4: the mission of its
+  political id (made when new), mgr+0x74 = it, the old card removed from the HUD panel and the new one added and
+  focused unless its state is 5, then mgr->vt 0x28(0). Callers: the input actions 0xC / 0xE / 0x10 (0xCD0C20: attack,
+  gift on another tribe's object), SetTarget 0xC0EEC0, tribe messages 0xCD1D60, BT 0xDBB7D0. **The card follows the
+  last village the player acted on**; no "next village" pick was found. ✔ (runtime, lab 20261104-205242) called on
+  the guest outside the frame it moved the guest's card (`MissionCardPanel_HasCard` true for the new mission).
+* ~ (Ghidra) card text 0xC30000 (fastcall(mission), vt 0x80 via 0xC301E0): relation level > 1 -> prop 0x3D61DF6C
+  (befriend), else 0x57E2F080 (attack). Completion 0xC2F7F0 (vt 0x78): +0x7C = 5, 0xCDB520(kind 1 conquered / 2
+  allied, tribe), TRG_TotemPole_Conquer; ? its caller.
+* ✔ the goal progress bar: `SporeCoop::TribeStage_AddGoalProgress` 0xCDB520 thiscall([0x169B2C8] = cTribeUI_Get,
+  kind, tribe) ret 8 adds a tTribeGoalData to +0x40 (mGoalProgressHistory: the owner of table 0x135DB90 is that object)
+  and cPlayer +0x10F0 += 1; 0xCDE470 sets +0x10F0 = 0, +0x10F4 = min(5, villages - 1 + ...) at a new game; the HUD
+  (0xCCDDB0) reads the two floats every frame. 0xB3D500 on GOG 2024 returns [0x167EB60], the mission card panel
+  (`SporeCoop::MissionCardPanel_Get`), not cTerraformingManager (a GOG 2016 name).
+* ✔ (runtime, lab 20261104-204941) `ApplyRelationship(mgr, npc pol, player tribe pol, 0x530CF07, d)` moves
+  `CalculateRelationship` by d at once and it stays (0.00 -> -7.00, 20 s later -7.00); with d from
+  `CalculateRelationshipAbsolute` 0xD05A60 (ret 0xC, unclamped) the result is the host's value. Nothing in a guest's
+  game moved its villages' relations before (BUG-0565): the host's raids and gifts are events in the host's game.
+* ✔ (code + lab 20261104-205648) **BUG-0579**: MSG_WORLD_TIME was applied only when `game::avatar()` is set, and
+  game::avatar() is null outside Creature and adventures: a Tribe or Civ guest never took the host's sky; both start
+  from the save's time at their own load, so they look the same until a load or a reload of one of them (0.097 rad,
+  about 15 s of a 960 s day, apart in a plain session of the FAIL run; the host's game over and reload moved its sky
+  0.2 rad). The tod row applies while the guest has its own entity in any of the three stages.
+* ✔ (lab 20261104-205648, every fix off) a guest's rejoin loads the host's current world: relations, the goal, the
+  stages done and the food were the host's after the rejoin without any row (the world transfer carries them).
+* ~ (lab 20261104-205651) the host's game over and reload kept the village's relation, the goal card and a
+  consequence trait written before it (the reload does not restore cPlayer or the relationship manager from the save,
+  or the game saved them before the reload: ? which).
+## Whole-planet re-alignment after transitions (2026-11-04, fix/w43-realign)
+<a id="tribe-realign"></a>
+
+W2 of 0.7.7 (BUG-0564, BUG-0566, BUG-0567, BUG-0563; classes BUG-0421, BUG-0427). GOG 2024, lab lanes 6 / 7.
+
+* ✔ The player reports' sessions: the host's game went Tribe -> Loading -> Tribe three times (the game over's
+  reload of its last save) while the guest's stayed in its world. Lab (tribe_bounce_world): after the host's reload
+  its world had 2 tribes (the player's and the save's NPC tribe), the guest's 5: BUG-0483 emptied the 3 extra
+  tribes to 0 members, their tribe objects, huts, tools, food mats (and map marks) stayed (out/lab/20261104-204705).
+* Decision: the guest re-aligns in place, it does not load the host's world again: a load costs a loading screen
+  at every host game over and the guest's own game's changes since, and does not cover a rejoin, an editor return
+  or a death (the same mechanism must).
+* ✔ `cGameNounManager::DestroyInstance` of a cTribe in the Tribe stage on a guest (realign.villages,
+  `tribe::remove_village`, members first with RemoveMember destroy): the tribe, its hut, its tools and its food
+  mat leave the noun list together (coop.realign planet: village 5 -> 2, hut 5 -> 2, food_mat 5 -> 2 in one
+  look, lab 20261104-211648), no fault in the 40 s after. ? The map mark: not read by a test (the planet map
+  lists tribes from the noun list, inferred).
+* ✔ A guest's own Drama Manager event kind 7 (creature attack) in Tribe faulted 15 s after such a removal, in its
+  start (0xD521BA, data 0x120, null + 0x120; lab 20261104-211318): the event had picked a village. On a guest in
+  Tribe the kind does not start any more (drama.cpp, tribe.guest_attacks).
+* ✔ Huts (noun 0x1E4DAAE) and tools (0x18C8F0C): cCombatant at +0x120, health +0x158 (combatant +0x38), maximum
+  +0x14C (+0x2C). The fixture's NPC huts read 1000/1000 on both games. Written on a guest
+  (`coop.realign hp hut x y z <permille>`) the guest's own value changes, nothing goes to the host. ? Whether the
+  hut's damage effects (smoke, the broken model of BUG-0567) follow the health field or only TakeDamage: not seen
+  (no screenshot compared).
+* ✔ The whole planet's lists in the tribe fixture (coop.realign planet): 5 villages, 5 huts, 5 food mats, 6-10
+  tools, 49 nests. Tools of far tribes differ between the games (the guest 6, the host 8-10: tools within 150 m of
+  the guest only are synced, wobj.tribe_tools_all): BUG-0488's tool rows on the whole planet, not changed here.
+* ✔ (BUG-0563) The co-op epic (tribe.cpp spawn_epic) took the species of the animal nearest the player village.
+  Player logs: the guest's puppet of the Creature stage (species of the guest's creation) stood next to the host
+  until the stage change; the epic came 8 min after it (its timer), the host fought "the guest's creature" as a
+  monster. tribe.epic_species: puppets, proxies and the players' creatures' species are never the epic's.
+## Tribe state the detector reads (2026-11-04, fix/w43-detector2)
+<a id="tribe-detector-state"></a>
+
+What `coop.wstate` (mods/coop/wstate.cpp, docs/06-testing.md#testing-detector-state) reads in Tribe, all from the game:
+
+* ✔ (Ghidra, GOG 2024) cTribe serializer table (0x13551E0 -> 0x157ABB0), field offsets: +0x260 mpFoodMat, +0x264
+  mbMotiveCheatOn, +0x268 mRSquareSize, +0x270 mVignetteTimer, +0x2C0 mEggPenFoodValue, +0x2C4 mInitialRelationship,
+  +0x2C8 mChieftainRespawnTimer, +0x2CC mGiftRelationshipDecayTimer, +0x300 / +0x301 mbCheckedForWater / Forests, +0x304
+  mClosestWater, +0x314 mClosestForests, +0x32C mUpgradeLevel, +0x330 mZoningRadius, +0x334 mbRoboTribe, +0x338
+  mRoboPopulationCount, +0x33C mbVisualized, **+0x340 mTribeMembers**, +0x354 mSelectableMembers, +0x368 mpHut, +0x36C
+  mTools, +0x380 mSocialTools, +0x510 mPopulationTimer, +0x530 mTimer, +0x550 mTribeArchetype, +0x557 mGoodyPopped,
+  +0x1904 mSpeciesKeys, +0x19C4 mpDomesticatedAnimalsPen, +0x19C8 mpEggPen, +0x19CC mpDomesticatedAnimalsHerd, +0x19D0
+  mpTotemPole, +0x19D4 mhFootprint, +0x19D8 mPurchasedTools.
+* ✔ (runtime, lane 2, tribe fixture) every tribe's food = the sum of its bundles (+0x20C, as for the player tribe): the
+  NPC tribe had 70 on the host and 80 on the guest at the same time (each game's own NPC tribe gathers on its own);
+  its relation to the player tribe `CalculateRelationship(mgr, tribe pol, player tribe pol, 0)` 0.00 on both; the player
+  tribe's political id 0x800021CA, the NPC tribe's 0x000021CB, the same on both games (the guest loads the host's save).
+* ✔ (runtime) cRelationshipManager +0x10..+0x1C in Tribe: -7, -3, 3, 7 (~ the level thresholds GetRelationshipLevel
+  uses: the UI's aggressive / slightly aggressive / neutral / friendly / allied, not checked against the UI).
+* ✔ (Ghidra) **the Tribe Mission Manager** (UTF-16 name "Tribe Mission Manager Simulator" before its vtables): instance
+  global `SporeCoop::TribeMissionManager_ptr` 0x169B27C (ctor 0xCD3CE0, dtor 0xCD3C30, vtables 0x14772CC / 0x14772A8 /
+  0x1477298). Serializer table 0x157EE90 (0x135D720): **+0x74 mpTribeToTribeMission** (an intrusive pointer; 0xCD3600
+  checks its vt 0x60 == 5 before a save), +0x78 mTribeToTribeMissionMap (hash map: buckets +0x7C, bucket count +0x80,
+  count +0x84). cTribeToTribeMission (noun 0x5436411A, table 0x1572A18 by 0x1336CD0): **+0x80 mpAssociatedTribe**; the
+  cMission state is +0x84 (cMission::SetState 0xC47E20; state 3 posts 0x38CF2FD).
+* ~ (runtime, tribe fixture) +0x74 was null and the map empty on both games: the fixture's tribe has no tribe-to-tribe
+  mission. ? Whether this mission is the goal card players see ("attack the X village's centre", BUG-0564) is not
+  shown: `goal tribe=-1` in every sample so far. Another tribe-stage table (0x135DB90): +0x40 mGoalProgressHistory
+  (a vector of tTribeGoalData), +0x78 mTotalTimeInTribe, +0x7C mFullHealsPerPerTribeMember, +0x94 mEnchantedAnimals,
+  +0xA8 mUnlockedTools, +0x19C mpAccessories, +0x258 / +0x2A8 player / NPC spear ornaments, +0x3A3 mbMatingAllowed
+  (the owner object of that table not found yet).
+* ✗ `cRelationshipManager::IsAllied` 0xD02030 / `IsAtWar` 0xD01F90 take two **cEmpire** pointers (their pol at +0x84,
+  stack purge 8), not political ids: not usable for tribes.
+## What the NPC tribe controller needs before it forms a tribe (2026-11-04, fix/w43-tests)
+<a id="tribe-form-needs"></a>
+
+* ✔ (Ghidra, GOG 2024 0xCC6440, NpcTribeController_FormTribe) Before forming, besides "fewer tribe nouns (0x18C6D19,
+  counted from the noun list) x 2 than the property list (controller +0xFC) holds" and a spawn marker (noun
+  0x36BE27E with +0x108 == 0x57F09E5E): the next species (list +0xD0, index min(tribes - 1, size - 1)) must have its
+  model baked: `Editors::IBakeManager::Get()` vt 0x1C(species + 0x504, 0); when 0 it asks for the bake (vt 0x3C,
+  else vt 0x4C with key 0x609B763 / 0x40000) and returns without forming. The game calls it again later.
+* ✔ (runtime, lane 2) The tribe fixture has 4 spawn markers; each formed tribe uses one (4 -> 1 after three).
+* ✔ The pause bit (cGameTimeManager +0x48 = 3, held with mem.write) does not stop the forming (`tribes 2 -> 3`).
+* ✔ With tribe.guest_tribes on, a guest's controller never reaches the bake request (the hook blocks the call), so the
+  first call with the fix off may only start the bake (BUG-0587).
+
+## The end of Tribe: from the goal bar to the Civ stage (2026-11-04, fix/w43-transitions)
+<a id="tribe-civ-transition"></a>
+
+BUG-0576, BUG-0585. GOG 2024, Ghidra (tools/ghidra/q.sh) and lab runs on lane 4 (tribe fixture, coop_tribe_civ.py).
+
+* ✔ The goal bar full (cPlayer +0x10F0 >= +0x10F4) shows the HUD's **advance button** (window id 0x6454B47) in place of
+  the History button (0x44827B8): 0xCC8C20 thiscall(display strategy, bool full) toggles the three windows (0x6454B47,
+  0x652A628 shown, 0x44827B8 hidden). Called at the stage's entry (0xCD78F0) and by the stage's message listener
+  0xCD81F0 on message **0x5CC2589** (sent after a goal; with the bar full it also posts hint 0x566CDF0 and, with
+  tutorials on, pauses with reason 0x4BF38A7). `coop.tribe advance` (tests) fills the bar and posts 0x5CC2589: the
+  button appears within 3 s (lab, lane 4).
+* ✔ The button's click is handled by the stage's window proc 0xCDBEA0 (vtable 0x14775C0 +0x10, control id
+  0x6454B47): achievements, the stage card (History screen with the consequence trait; its check at (1415, 1055)),
+  then `PlayCinematic("TRG2CVG_PreEditor")` (id 11E9E5AF; its caption "Your tribe now dominates this continent ..."
+  waits for the check (1410, 1048) with the game paused).
+* ✔ **The game opens the City Hall editor from a paused game**: the listener 0xCD1D60 takes the cinematic's end
+  (message 0x44F1189 with the cinematic's id), `cGameTimeManager::Pause(0x4BF38A6)`, cGameInputManager +0x110 += 1
+  (the input lock), cTribeUI +0x28 = 1, a new EditorRequest (0x9C bytes) with editor **0x99E92F05** (the building
+  editor, City Hall), +0x90 = 0x116DD1B, flags +0x34..+0x3D, +0x64 = 1, then `Editors::EditorRequest::Submit`.
+  After the City Hall (back in Tribe) TRG2CVG_ShowCityHall (id 10792A72) plays, its caption waits, and its end
+  submits the same way the **vehicle editor F670AA43** (or 9AD7D4AA / 7CB21BAD by cPlayer +0x1104: the consequence
+  archetype), +0x29 = 1. After the vehicle editor the game goes to Civ (0x1654C04) by itself.
+* ✔ `cGameModeManager::SubmitEditorRequest` 0xB1DE20 (thiscall(mgr, req) ret 4) keeps the request at +0x2C; when
+  the mode object +0x30 vt+8(0x4CF52822) says so it pauses with the same reason 0x4BF38A6, listens for 0x462C656
+  and its handler 0xB1DF60 submits the request and only then resumes 0x4BF38A6. The pause reason 0x4BF38A6 is "an
+  editor is coming": the editor (and the stage after it) lifts it.
+* ✔ The editors save only with **at least 3 parts** ("You need at least 3 parts to Save") and a name ("You must give
+  your creation a name before you can save"; the name panel's dice at (614, 826)); done at (1416, 1058). The building
+  editor's palette first row (88 / 220 / 350, 130), the plot around (900, 850); the vehicle editor the same.
+* ✔ **BUG-0576** (observed, lab 20261104-2213xx on 0.7.6 code): the vote's busy gate (BUG-0404, busy::kEditorGate)
+  held the held request while the game time stood or the input lock was up: both were the game's own for this
+  editor, so the editor opened only when the gate's limit ran out: 60 s with the input lock, 300 s with the pause
+  only (the players' log: `busy=paused` for 50 s, then they gave up on a black screen). Fix `core.editor_own_pause`:
+  the busy bits the game had when it submitted the request (kPaused while `GetPauseCount(0x4BF38A6)` > 0,
+  kInputLock) are not waited for; a cinematic or a later pause still are.
+* ✔ **BUG-0585** (observed, lab, twice): after the City Hall editor the player tribe's food mat pointer +0x260 is 0.
+  `Simulator::cTribe::UpdateFoodVisuals` 0xC94CE0 (thiscall(tribe, float change) ret 4) reads `[+0x260]+0x34` and
+  calls its vt+0x2C without a check: a guest's food change relayed to the host then (shared.cpp `s_food`) faulted
+  at UpdateFoodVisuals+0x28 (data 0x34) inside the message pump and the host's game froze in the vehicle editor
+  (the log line "shared food ... from player 1" comes after the call, so it never printed). Alone the change to Civ
+  ran without a fault (lab, guest left). Fix `tribe.food_fx_mat` (game::tribe_food_visuals): no visual without the
+  food mat; the food itself still changes.
+* ~ (BUG-0588) Seen in the same runs, not analysed: at the vote for the vehicle editor the host logs "evolved in place: Bob keeps
+  its world (host species 00000000 -> 00000000 ...)" (the Creature evolve-in-place path runs for a Tribe editor; no
+  harm seen), and a sync-check MISMATCH right after the City Hall: the host's own NPCs read at (0, 0, 0) for 2 checks.
+
+## The game's pause reasons (2026-11-04, fix/w43-transitions)
+<a id="tribe-game-time-pauses"></a>
+
+* ✔ `cGameTimeManager` (0xB3D480 Get): +0x48 flags (bit 0 = paused), +0x4C a map reason -> index (EASTL rbtree,
+  anchor +0x50; node: right +0, left +4, parent +8, key +0x10, index +0x14), +0x68 an array of 8-byte rows whose
+  first int is the count. Pause 0xB32330 / Resume 0xB32360 (thiscall(tm, reason) ret 4) add / remove one;
+  `GetPauseCount` 0xB321E0 (thiscall(tm, reason) ret 4) reads one. `coop.pauses` lists every reason counted now
+  (runtime, lane 4/5: the stage card 0x4BF38A4, a stage entry / hints 0x4BF38A7, the editor 0x4BF38A6).
+* ✔ Reasons seen: **0x4BF38A6** an editor is coming (above); **0x4BF38A7** a UI modal / tutorial hint / the stage
+  entry (90 call sites); **0x4BF38A4** the stage card (History screen) of the end of Tribe.
+* ✔ **BUG-0313** (observed, lane 5, GOG 2024, 2 runs): a guest's game after its world load in Tribe stands on a
+  black screen with the single pause reason **0x4BF38A7** for 7.6 / 8.7 s, the host none. It is the Tribe stage's
+  own entry: the mode-change handler 0xCDEE00 (vtable 0x1477578) pauses 0x4BF38A7 on entering Tribe and the entry
+  state machine 0xCDE7E0 (cTribeGame +0x22C: 2 planet / flora, 3 0xCD78F0 stage UI, 4 planet model ready, 5 the
+  simulator, 6 the renderer's layer 0x16 off until `IBakeManager` has nothing queued (vt+0x28 < 1) and the model
+  world nothing pending (vt+0x10 < 1), 7 Resume(0x4BF38A7)) resumes only when every creature model is baked. A
+  guest that just received the host's world bakes the host's creations then (the host's own game had them baked).
+  Inferred: GOG 2024 bakes slower on the lanes than GOG 2016 (the 2016 guest was running when start() returned).
+  Not a mod bug: the guest's mirrors are kept on the ground meanwhile by `tribe.mirror_ground` (BUG-0444).
+## The creature attack's spots round a village (2026-11-05, fix/w43-crashes)
+<a id="tribe-attack-spot"></a>
+
+BUG-0582. GOG 2024, Ghidra and lab lane 2 (`tools/tests/coop_tribe_attack_spot.py`).
+
+* ✔ (Ghidra) The creature attack (Drama Manager kind 7) runs its animals through a behaviour whose start 0xD73930
+  stores the attacked place's position (+0xB0) and its planet cell id (+0xC0, `SporeCoop::SpotRecord_CellId` 0xC9B140
+  with make = 0) and whose update 0xD73FD0 walks them through states; in state 3 it looks the cell's spot record up
+  (`SporeCoop::SpotRecord_Find` 0xC945C0: a global sorted fixed vector 0x157ABB0, 0x60-byte entries, null when the
+  cell has none) and takes the nearest free spot with `SporeCoop::TribeAttack_TakeSpot` 0xD72720, which reads the
+  record's spots (+0x40 / +0x44, 0x1C bytes: used flag, position) **without a check** (null + 0x44 at 0xD72745). Its
+  sibling 0xD72690 (a spot given back) checks for null; a false answer of 0xD72720 is the game's own "no free spot"
+  branch (0xDA61D0 + the behaviour's vt 0x44: the attack ends).
+* ✔ Records are made for every cTribe (0xC9B8D0 over the noun list, 0xC9B860 from a tribe's creation 0xCD4F10, make
+  = 1); the table is emptied by 0xC9A210 on the stage modes' enter / exit (0xCDEE00, 0xCFA770, 0xFFA170).
+* ✔ (lab) The host's own creature attack (`coop.drama start 7`) after a tribe formed during play (`coop.tribe form`,
+  the controller's own forming): the attackers reached state 3 with no record within ~55 s in 3 of 3 runs (431 and
+  357 caught faults with the guard off, lab 20261105-000150, 20261104-235754; 2 attackers ended by the guard, lab
+  20261104-235955); without the formed tribe none in 1 run. ~ Inferred: the formed tribe's cell has no record (a
+  game bug that co-op tests hit because they form tribes; the NPC controller forms them in long sessions too).
+* Fix `tribe.attack_spot` (gamefixes.cpp): with no record 0xD72720 answers "no free spot" (out = -1, false).
+## A tribe leader's abilities and a tool (2026-11-05, fix/w43-crashes)
+<a id="tribe-leader-tool"></a>
+
+BUG-0583. GOG 2024, Ghidra and the lab's fault record.
+
+* ✔ (Ghidra) A citizen's abilities: count vt 0xB0 = `SporeCoop::Citizen_AbilityCount` 0xC24DB0: its species' (+0xB20
+  profile, vector +0x6D4 / +0x6D8) + 2 for a tool (+0x102C) of type 1..6, 1 for 9 or 0xB, + 6 when it leads its
+  tribe (`SporeCoop::Citizen_IsLeader` 0xC23430: owner +0x1010 city, else +0x1014 tribe, owner +0x11C == it). The
+  getter vt 0xB4 = 0xC24E40 serves n (the species' count) entries, then index n = GetTribeToolData(tool) +0x24, then
+  for a leader n+1..n+6 the table 0x169DE30 +0x1C.., for others n+1 = the table's +0x34..+0x48 by tool 1..6; null
+  past that. **A leader with a tool of type 1..6 counts n + 8 and the getter serves n + 7**: the last is null and
+  `GetAbilityIndexByType` 0xC0C1E0 (from every citizen's Update through 0xC1CF30 when +0xB54 is set) reads null + 8.
+* ✔ (lab 20261104-212803, fix/w43-realign) the guest's fault: EBX = 21 (count), ESI = 20 (the last index), EAX = 0,
+  **ECX = 1**: 0xC23430 returns with ECX = its result, only the leader branch keeps it (the others leave 0): a leader
+  holding a tool of type 1..6.
+* The game never makes that state: `SetSpecializedTool(0)` on a leader gives 0xB (the staff) and the leader takes
+  no rack's tool. The mirrors' tool field (tribe.tool_hold, BUG-0514) copies the host's member's tool to the guest's
+  mirror, which can be its own tribe's leader there (? how the leaders came to differ after the rejoin: not seen
+  again; in 3 lab runs the guest's leaders were a subset of the host's, lab 20261105-002001, -002140, -002402).
+* Fix `tribe.leader_tool` (tribe.cpp apply_held_tool): no tool of type 1..6 on this game's leader.
+* ✔ (lab 20261105-002402, fix off) a leader mirror set to 1 by the field's apply did not fault before the host's next
+  field gave it 11 again (seconds): the state must last for the fault (+0xB54 updates).
+
+## A model's attached effects and the guard for a broken one (2026-11-05, fix/w44-crashes)
+<a id="tribe-model-fx-guard"></a>
+
+BUG-0575. GOG 2024 (= the Steam 3010a413 code), Ghidra and asm. Extends #tribe-model-effects-crash.
+
+* CORRECTION (2026-11-05, fix/w44-crashes): the crash report's names (cSpatialObject::SetModelKey <- QuaternionToMatrix
+  <- cModelObject <- cPlanetaryArtifact::SetLocomotion) are the nearest .sym names of stale return addresses found by
+  the stack scan, not the calls: nothing set a model key or a locomotion. The real chain (the Steam exe at 0x4E0000,
+  GOG 2024 = Steam - 0xE0000): VisualEffect_Start 0xA82660 (fault 0xA826F3) <- SpatialEffects_UpdateByDistance
+  0xC8ABF0 (return 0xC8ACC4) <- CreatureView_Update 0xE8C100 (return 0xE8C96E) <- the view list walk 0xB3CB6F
+  (return 0xB3CB71, a linked list of views, vt 4(a, b) each). 0xC69BC6, 0xE8E5D3 / 0xE8EA45, 0xE8CD3B are stale.
+* ✔ The creature view (vtable 0x1486328, 0x1C bytes, made by 0xE8BCF0 from an object cast to 0xCE9F6639): +0xC the
+  creature (a counted reference), +0x10 its AnimatedCreature (creature +0xB54, counted with 0xA02B70 / 0xA051B0),
+  +0x14 a flag. Its update (vt 1, `SporeCoop::CreatureView_Update`) returns at once when creature +0x135 is clear or
+  +0xB54 is null; else camera distance (creature +0x128), LOD (0xC0C460), the creature's pool-2 effects by key
+  (0xC20300 / 0xC14FD0: 0x73E4CDF, 0x77492D8, 0x7E2FEDF, 0x7A16140, 0x6452CA4), then when +0x134 is set
+  SpatialEffects_SetTransform 0xC89EF0 and always SpatialEffects_UpdateByDistance 0xC8ABF0 on the creature's spatial
+  (creature +0xC0): its attached-effect vector is at creature +0x180 / +0x184.
+* ✔ Attached effects (`SporeCoop::SpatialEffects_Add` 0xC8AFB0 thiscall(owner, id, group, key, bool restart) ret
+  0x10): entry 0x3C bytes, +0 key, +4 effect id, +8 enabled, +9 restart (the bool), +0xA a second restart flag,
+  +0xC threshold (256 m when made), +0x14 1.0, +0x38 the effect (a counted reference). The range check stops (vt
+  0xC(0)) a running effect at or past the threshold and starts (vt 8(0)) a stopped one inside it when +8 and +9 or
+  +0xA are set; a stopped entry with neither is erased with its Release. Removal by key 0xC8AEC0. Views add theirs
+  through the wrappers 0xC8B1D0 / 0xC8B1F0 / 0xC8B210 / 0xC8B2C0 / 0xC8B340 (cDefaultBeamProjectileView 0xCC2EF0,
+  0xE87xxx, 0xE96xxx).
+* ✔ VisualEffect (`SporeCoop::VisualEffect_vftable` 0x1457DE8, the only vtable with Start 0xA82660 in slot 2): Start
+  calls vt 8(arg) of each component (+0x144..+0x148, 0x5C bytes, object +0x38) without a check. The crash's
+  registers (edi = 0x5C, esi = 1, ebp = 0, ebx = the vector's end) mean the first component's call went into a
+  function through a vtable that is not one (a freed component whose memory was reused) and came back with
+  esi / edi destroyed.
+* ? Not found: what freed the component while the effect stayed in a creature's attached list. Not the relay of
+  effects.cpp: it keeps and releases only the world effects it made itself (pool 5, g_live), the creature pools
+  +0xCC8 / +0xD68 are other lists, and its references balance (read 2026-11-05). Not reproduced (two runs of
+  fix/w43-*, see the ticket).
+* Guard `game.model_fx` (gamefixes.cpp): hooks on 0xC8ABF0 and 0xC89EF0 check every listed effect first (its vtable
+  in the game's image with slots 2, 3, 4, 6 in its code; for a VisualEffect the component vector and each component
+  object's vtable and slots 2, 3); a broken one leaves its entry (+0x38 = 0, no Release, the reference is lost) and the
+  game makes it again when it wants it. Arithmetic checks only (no VirtualQuery): the loops run for every view every
+  frame. `coop.fxlist [creature|all]` lists attached effects; `coop.fxcut` makes the crash state (tests).
+
+## Animals over the ground in Tribe (2026-11-05, fix/w44-height)
+<a id="tribe-animal-height"></a>
+
+* ✔ The host's Tribe game puts an animal lifted 4 m over its ground (teleported there at every mod frame, +0x137 = 0,
+  `coop.npc lift`) back onto its terrain in its own update: the host's npctrack rows say 0.00 m in every frame (lab
+  20261105-112236, 112346). So the game itself keeps Tribe animals on the ground (inferred: the animal's AI walk
+  grounds it; a guest's proxy, which has no AI, stayed at 4 m when placed there). The height rule's air side
+  (docs/re/creature.md#creature-height-rule) has no Tribe case found; its ground side was already in place
+  (own_height, out_of_ground).
+* ✔ BUG-0402's fourth kind (campaign_ct, lab 20261105-015350 in the rel/0.7.7 worktree) is a terrain difference, not a
+  placement: the host's NPC n146 stood at agl 0.00 on the host's terrain (its own `sync-check: n146 here:` line), the
+  guest's terrain at that point is 8.39 m higher (`want_agl=-8.39`), and the proxy stood on the guest's ground
+  (`agl=0.00`): what the rule asks. The sync-check compares absolute positions, so the terrain difference showed as
+  `n apart 8.4` (BUG-0329's kind, larger than the 5 m seen there).
+## Music, member animations and the village pace on a guest (2026-11-05, fix/w44-tribe-guest)
+<a id="tribe-guest-a1"></a>
+
+A1 of 0.7.8 (BUG-0568, BUG-0569, BUG-0571). GOG 2024, lab lane 9 / 10.
+
+**Audio (BUG-0568).**
+* ✔ (Ghidra) Audio::AudioSystem (singleton 0x166D9F4; vtables 0x1452CE8 base / 0x1453FC8 derived, slot 0 Init 0xA25200) is
+  a command builder: vt 0x38 begin(cmd) `SporeCoop::AudioSystem_BeginCommand` 0xA20A80 ret 4, vt 0x3C float parameter
+  0xA20A90 ret 8, vt 0x40 int parameter `_SetInt` 0xA20AB0 ret 8, vt 0x58 submit `_Submit` 0xA20B10; all write the buffer at
+  +0x214. Commands: 0x3475365 play (0x3475381 sound, 0x3475385 track), 0x347536B stop (track, 0x34753A0), 0x3475376 set
+  property, 0x3CDD1A9 (key 0x34753A7: a state hash), 0x3991984 the listener (every frame). vt 0x20 / 0x24 hand out tracks
+  (two pools: 1.. and 1001..).
+* ✔ `coop.audio [mark | list [n]]` (mods/coop/audio.cpp) records them with the first 4 return addresses on the stack:
+  the lab games are muted, the commands are still submitted.
+* ✔ (runtime + Ghidra) the stage's sounds come in groups: 0xEA9DA0 is a message listener that activates / deactivates
+  groups (0xEA9A10 / 0xEA9250; 0x22D1ADC = the mode changed: the group of the new mode by a map). The Tribe mode's group
+  (0x34D61238, 0x931E43A7, 0x014B6A97, 0xE02B7355, 0x7B470F0F, 0x55AA10F0, 0x03AF053F, 0x9A3C482A, 0x4421F8E8, 0xD6C4FC3B)
+  plays on the host and the guest alike after a load from the galaxy menu and after a guest's own editor visit. The
+  editor's group (0x02A8D194, 0xF8EFEA3C, 0x38EB66F8 x12) stays playing after the red X on both (the game's own).
+  The galaxy menu: 0xF390C020 / 0xCCF3D9C6 / 0xCD785B24 and the music 0xBD7F5BC9; after the menu intro GGE_Intro ends
+  0x54AB9C8A / 0x896ED613 (on a lab host they play into Tribe when world.cpp ends the intro there).
+* ✔ (Ghidra + runtime) **the Tribe stage's theme music manager** TribeStage (= [0x169B2C8], `cTribeUI_Get`) **+0x1C8**
+  (made by the stage UI setup 0xCD78F0, stopped at the stage's exit 0xCD5FC0 by 0xBC2330): 23 slots {track, squared
+  distance}. `SporeCoop::TribeTheme_Play` 0xBC23B0 (sound, pos) -> slot, `_Move` 0xBC2540, `_Stop` 0xBC22F0. Callers are
+  behaviours of citizens only: 0xD69740 (hunt / fight: **0xAD1A17D**, while its member is the player tribe's and
+  0xC238B0), 0xDB1060, 0xDB7120, 0xDBAAF0, 0xDBB7D0. A 40 s fight: host 7-11 plays, guest 0 (mirrors have no tree).
+  Fix `tribe.theme_music` relays them (BUG-0568).
+* ? The hit and weapon sounds of a fight (0xA7E3E1FB, 0xD05B58ED, 0xD967193C, 0xCE5F2ED0; callers 0xA3749B / 0xA83B18) and
+  the creature voices 0xC881120E / 0x529FEC69 are host-only too: BUG-0600, not analysed.
+
+**Member animations (BUG-0569).**
+* ✔ (runtime) The host's members play 24 kinds of behaviour animations in 45 s of a fight and the villages' own work
+  (0x591B056, 0x2C39003, 0x67378DD, 0x2C39001, 0x62FF867, ...), all started by their trees through
+  SporeCoop::CreaturePlayAnim (game.cpp's listener); a guest's mirror plays none of them (0 of 646 samples): only its
+  locomotion's idle / walk. Fix `tribe.mirror_anims`: the npc.anims relay (BUG-0464) for the members (MSG_NPC_ANIM kinds
+  2 / 3, member ids), 94 % of the samples the same on the guest. `coop.tribe anims` lists `cur <id> anim= bhv=`.
+
+**The NPC tribe controller's pace (BUG-0571).**
+* ✔ (Ghidra) `cNpcTribeController` update 0xCC6A90 (vt 0x10, thiscall(ctrl, u64 dt ms) ret 8): returns while a cinematic
+  plays or the game is paused; a 1 s timer 0x157E940 (FormTribe sets it to 1); then by the tribe nouns: **1**: FormTribe
+  after 25 s (properties 0x3D346A77 / 0x1A09D79E, or a tutorial flag); **2**: when TribeStage +0x40 (mGoalProgressHistory)
+  is not empty, or the player tribe's vt 0xA4 (food) > property 0x4C87E711 (default 100, `SporeCoop::App_GetPropInt` 0x4E1CA0
+  on `SporeCoop::TribeProps_ptr` 0x1581288); **3, 4**: every second; **5**: with 3 goals done; more: never. FormTribe
+  0xCC6440 then needs tribes x 2 <= its property list's length (the list +0xFC is picked by the player tribe's diet and
+  the difficulty, 0xCC6160) and a spawn marker.
+* ~ the controller's vt 0xA4 on the player tribe behaves as the food (food 15: no tribe in 5 min, 135: 3 tribes in 2 s):
+  GetTotalFood as in the cTribe table above (that table's addresses are GOG 2016; 0xC8E850 on GOG 2024 is another
+  function, `add ecx,0x510; jmp 0xBC3260`). The GOG 2024 address of the slot was not read.
+* ✔ (runtime) food 135 with 2 tribes: villages 3, 4, 5 within 2 s, alone (no session) and in a session alike; the guest
+  makes the host's within 2-4 s, its own controller forms none (tribe.guest_tribes). Fix `tribe.form_pace`: in a session
+  the food path waits for the threshold x the players (BUG-0571).
+
+## Villages formed during play: other political ids on a guest (2026-11-05, fix/w44-world-state2)
+<a id="tribe-new-village-ids"></a>
+
+BUG-0591. Lab lane 6 (tribe fixture, coop_wsync_tribe.py villages).
+
+* ✔ (observed, lab 20261105-123323 / 123225) Three `coop.tribe form` on the host made its NPC tribe controller form
+  4 villages (1 -> 5 NPC tribes); the guest made each of them (tribe.npc_tribes, SpawnNpcTribe at the host's centre)
+  with its own next political ids: host 000021CE / CF / D0 / D1 -> guest 000021D0 / D1 / D2 / D3 at the same places.
+  The host's ids 000021D0 and 000021D1 were other villages on the guest. The save's village keeps its id (000021CB on
+  both). So political ids of villages formed during play are not shared; positions are (0.0 m).
+* ✔ wsync's match() took the same political id first: the host's relation and food of village 000021D0 went to the
+  guest's 000021D0 (another village), the two right villages got none (relation 0, food 0): the 0.7.7 final
+  check's `Tribe:state:relation` / `tribe_food` rows from the host's forming at 418 s on (play_tribe, lab
+  20261105-015320). Fixed by `wsync.tribe_pos`: the closest village within 40 m first, the id only without one
+  (also the goal card's village).
+
+## The end of Tribe on a guest: the taken-down village and animals (2026-11-05, fix/w44-world-state2)
+<a id="tribe-stage-end"></a>
+
+BUG-0588, BUG-0594. Lab lanes 6 / 7 (tribe fixture, coop_tribe_civ.py).
+
+* ✔ (observed, the 0.7.7 final tribe_civ 20261105-015320 and lab 20261105-123325) Back from the City Hall editor
+  the host's game has no totem pole (none in its noun list) and no food mat of the player tribe (+0x260 = 0,
+  BUG-0585); a guest's game keeps both at the village (404 8 305) until the Civ world comes. ✔ (observed, lab
+  20261104-224338) The host's animals then read at (0, 0, 0) (46 NPC rows "here" at (0 0 0) with their health)
+  while the guests' proxies stay: the sync-check's "n: 46 apart" MISMATCH 18 s after the City Hall.
+* ✔ `cTribeUI +0x28` / `+0x29` (what the listener 0xCD1D60 sets when it submits the City Hall / vehicle editor, see
+  [tribe-civ-transition](#tribe-civ-transition)) read 0 on the object cTribeUI_Get 0xCD4230 returns, back in Tribe
+  after the City Hall (lab 20261105-123325): ~ the listener's object is another one, or the flags are cleared. The
+  mod's sign of the phase is the player tribe without its food mat (`tribe::stage_end`).
+* Decision: a guest runs no such phase (its game never opens these editors); neither player sees the other's
+  world then (the host is in the cinematic and the editors), and the Civ world replaces both. So it is not
+  re-aligned: the sync-check compares nothing while the host's game ends the stage (`diag.stage_end`), the
+  detector skips the sample as `apart` (`st phase stage_end=1` of coop.wstate).
+* ✔ The vote / notice path after these editors took them for an evolution ("Alice evolved the species: everybody
+  gets the new body", the Creature evolve-in-place path): the notice now says a design for the Civilization stage
+  was made. The in-place path itself (no world sent between the two editors) stays: the Civ stage sends the world.
+
+## The fight's effects, sprints and voices on a guest's mirrors (2026-11-05, fix/w44-guest-player3)
+<a id="tribe-mirror-fx"></a>
+
+P2b of 0.7.8 (BUG-0600). GOG 2024, lab lanes 4 / 5, `coop.audio` and `coop.effects log on` (the log lines now carry
+the first four return addresses into the game's code: the creator of every effect).
+* ✔ (runtime, out/lab/20261105-134329) In a 30 s fight of the host's members the host's game played, besides the
+  theme (#tribe-guest-a1), sounds from an effect's sound component (FUN_00a37430, return address 0xA3749B) and the
+  creature voices; the guest's game none of them. Matched by the intervals between the plays and the effect creations
+  of the same log:
+  * 0xD967193C = the sound of pool-1 effect **0xE55DC391 key 0x35052B7 (the sprint)**: `cCreatureBase::Update`
+    0xC21530 calls StartOrStopEffectFromPool1(bit 0x20 of +0xFA4, 0xE55DC391, 0x35052B7) every frame when the
+    creature's +0xC0 vt 0x58 is true (the player tribe's members: the enemy's had none). The bit is the sprint:
+    `SporeCoop::Creature_SetSprint` 0xC1AE70, called by ~30 behaviour nodes (run to the target).
+  * 0xC881120E (into a fight) / 0x529FEC69 (out of it) = `SporeCoop::Creature_CombatVoice` 0xC1B030 (+0xBB1 the
+    in-combat byte), called by the fight node 0xD69540 and the TakeDamage of animals and citizens.
+  * 0xCE5F2ED0 = effect 0xA231DA2F of 0xCCBE90 (~ the tribe UI's order marker at the target: the effect id is picked by
+    the order kind and the camera distance band): the ordering player's own feedback, not a member's.
+  * other pool effects of the members (no sound in these runs): 0x8ADA6617 (pool 1 on the NPC chief, from 0xC2103D),
+    0xF8122731 / 0x759B0E13 (one-shots at bone 20 / 22, cCreatureBase::CreateEffect from 0xC25419 / 0xCCAA2F: the
+    tools), 0x21C934A7 / 0x85A02492 (pool 2 key 0x55559EF from the behaviour 0xDAB4A0).
+* ✔ The animation-event effects (0x9FBF00: 0x2D4ADB36 footsteps, 0xE6D770B8..BD) play on the guest's mirrors too
+  (the relayed animations, BUG-0569); 0xDCAE75D5 (the foot step's second effect, made by 0x9A6910 only while the foot
+  event's +0x2D5 is set) plays on the host only: not followed further.
+* ? The A1 run (out/lab/20261105-115203) also had 0xA7E3E1FB (18) and 0xD05B58ED (17) through the same sound
+  component path; none of the three runs of this branch had them, their effect is not known.
+* ✔ Fix `mirror.fx` (mods/coop/mirror_fx.cpp, MSG_MIRROR_FX 64): the host sends, for a tribe member or an npc.cpp NPC,
+  the pool effect starts / stops and one-shots the game's pool hooks report (effects.cpp passes every creature but the
+  own avatar and the puppets on), and the changes of CombatVoice and SetSprint; a guest makes the same call on its
+  mirror (start_effect / create_creature_effect with the bone check / stop_effect, the original CombatVoice with
+  force, the original SetSprint: its Update then starts the sprint effect itself). Lab (coop_tribe_fight_sounds.py,
+  the order marker and the per-target impacts left out): the guest's game 9 of the host's 9 such sounds, the voices
+  4 of 4 (out/lab/20261105-135946, 2 runs); off 4 of 15 (only the animation effects' C656EAF8) and 0 of 4
+  (out/lab/20261105-140001).
+* ~ NPCs of the Creature stage go through the same path (npc::id_of / npc::proxy); not tested there.

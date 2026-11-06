@@ -1,4 +1,5 @@
 #include "adventure_collect.h"
+#include "sporekit_build.hpp"
 #include "adventure_music.h"
 #include "../../updater/sha256.h"
 

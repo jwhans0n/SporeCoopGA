@@ -55,6 +55,12 @@ static bool g_helper_fix = true;   // coop.space helperfix 0: any partner here r
 static bool g_repair_fix = true;   // coop.space repairfix 0: the old head start of up to 0.5 s (tests)
 COOP_FIX("space.helper", "BUG-0131", g_helper_fix, "space: a disabled or frozen partner does not count as a rescuer");
 COOP_FIX("space.repair", "BUG-0147", g_repair_fix, "space: a new disable starts its repair from 0");
+// BUG-0257: the 60 s between two disables belong to the Space world they happened in: a load (a
+// warm test reset, a rejoin that loads the host's world) starts a new game where the first lethal
+// hit disables again. Off: the time of the last disable counts across loads (before).
+static uint32_t g_last_down_epoch;
+static bool g_down_epoch_fix = true;
+COOP_FIX("space.down_epoch", "BUG-0257", g_down_epoch_fix, "space: the 60 s between two disables end with a load of the Space world");
 // BUG-0228, BUG-0229: the ship the disabled state was set on, with its object serial and the Space
 // world it lived in (spaceext::world_epoch). The invincible byte is cleared on that ship only, at
 // once in Space or owed until the first Space frame back in the same world (an editor, an
@@ -206,7 +212,8 @@ float filter_own_damage(void* ufo, float dmg, int type)
     double now = H->time_seconds();
     // (a ship whose HP got to 1 or less through small hits is disabled too: `hp <= 1` used to let
     // the next hit kill it next to the partner, play_space.py 2026-10-23)
-    if (hp - dmg >= 1.f || F<int>(ufo, kState) == 2 || now - g_last_down < 60)
+    bool cooling = now - g_last_down < 60 && (!g_down_epoch_fix || g_last_down_epoch == spaceext::world_epoch());
+    if (hp - dmg >= 1.f || F<int>(ufo, kState) == 2 || cooling)
         return dmg;
     auto here = helpers_here();
     if (here.empty())
@@ -215,6 +222,7 @@ float filter_own_damage(void* ufo, float dmg, int type)
     g_down = true;
     g_down_until = now + kDownTime;
     g_last_down = now;
+    g_last_down_epoch = spaceext::world_epoch();
     note_down_ship(ufo);
     g_repair_t = 0; // invincible from the next frame on (down_tick): this hit still shows
     g_down_fresh = g_repair_fix;
@@ -1967,6 +1975,20 @@ std::string debug(const std::vector<std::string>& a)
                 return b;
             }
         return "no partner here";
+    }
+    if (a[0] == "over" && u && a.size() > 3) { // tests (BUG-0490): on a planet, put the own ship over the point x y z at its height
+        float t[3] = {(float)atof(a[1].c_str()), (float)atof(a[2].c_str()), (float)atof(a[3].c_str())};
+        const float* p = (const float*)((uint8_t*)u + kPos);
+        float r = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+        float rt = std::sqrt(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
+        if (!((C.my_place ? C.my_place() : 0) & 0x40000000u) || !(rt > 1.f) || !(r > 1.f))
+            return "not on a planet";
+        float q[3] = {t[0] * r / rt, t[1] * r / rt, t[2] * r / rt};
+        memcpy((uint8_t*)u + kPos, q, 12);
+        memcpy((uint8_t*)u + 0x718, q, 12); // next position
+        memcpy((uint8_t*)u + 0x750, q, 12); // destination
+        snprintf(b, sizeof b, "moved over (%.0f %.0f %.0f)", q[0], q[1], q[2]);
+        return b;
     }
     if (a[0] == "repairdist" && a.size() > 1) { // tests: the repair range (0: a disabled ship is never repaired)
         g_repair_dist = (float)atof(a[1].c_str());

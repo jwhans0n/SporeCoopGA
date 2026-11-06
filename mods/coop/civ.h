@@ -60,5 +60,15 @@ void for_each_target(void (*fn)(const char* kind, int id, int owner, const net::
 std::vector<net::Vec3> local_positions();
 // allocation-free test for the effect relay: is p on one of the local player's vehicles?
 bool near_vehicle(const net::Vec3& p, float radius);
+// BUG-0476: the host's capital (the player civilization's first city), the centre of what a guest without a
+// pointer is sent; false outside Civ
+bool center(net::Vec3& p);
+// BUG-0477: the FireTool hook (squadron.cpp) tells the host who fires where; a guest drops the hits of the
+// host's shots it shows (attacker: the combatant of a mirror, or of a turret it fired from)
+void fire_observed(void* tool, void* owner, const float* aim, void* target, bool fired);
+bool hit_is_cosmetic(void* attacker);
+void fire_local(void* owner, uintptr_t ret, bool fired); // BUG-0530 diagnostics (guest)
+// BUG-0493: the open city planner of this game holds this city (the mod changes none of its buildings then)
+bool planner_holds_city(void* city);
 
 } // namespace civ

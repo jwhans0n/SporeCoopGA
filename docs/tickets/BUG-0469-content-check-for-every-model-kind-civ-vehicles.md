@@ -66,7 +66,7 @@ key as they get it).
   cell models (their header is not the creature one).
 * Review fix (2026-11-02, item 1 of out/TASK2.md): the copy used to be registered under an instance of the
   mod's own (0x7D......), and a civ mirror vehicle was created from it. Mirror vehicles are not kept out
-  of saves (BUG-0522), so the guest's save named a model key no package answers after a restart (or
+  of saves (BUG-0606), so the guest's save named a model key no package answers after a restart (or
   without the mod), which is the very bake fault this ticket fixes. The copy now shadows the model's own
   key: package at priority 3000 (above the game's packages, the host's world at 2000 and My Creations at
   1000), the resource manager walks that list highest first and probes `OpenRecord` (no global key index,
@@ -126,5 +126,5 @@ key as they get it).
   key at priority 3000 (never a 0x7D key of the mod's), verified with FindRecord after registering and
   refused otherwise; switch `content.model_key`; the civ test now saves, restarts without a session and
   loads the save (PASS out/lab/20261102-213135, FAIL with `content.model_key` off out/lab/20261102-213354);
-  BUG-0522 opened for the mirror vehicles that stay in the guest's save.
+  BUG-0606 opened for the mirror vehicles that stay in the guest's save.
 - 2026-11-02: released in 0.7.3.6.

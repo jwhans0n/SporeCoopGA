@@ -646,9 +646,87 @@ def test_mergelogs():
           'a log with two sessions: the last one by default, both listed')
 
 
+def test_worldstate():
+    """worlddiff.diff_state / diff_planet: the detector's world-state and whole-planet rows (coop.wstate)"""
+    # SELFTEST_WORLDDIFF=<dir>: the worlddiff.py of another copy (an old version: the BUG-0595 check fails there)
+    sys.path.insert(0, os.environ.get('SELFTEST_WORLDDIFF') or os.path.dirname(os.path.abspath(__file__)))
+    import worlddiff
+
+    def st(food=15, rel=0.0, q='0.1 0.2 0.9 0.3', traits='1,2,0,0,0', village2=True, goal='1', huts='', pol2='000021CB'):
+        t = ['wstate v1 role=host mode=Tribe modeid=01654C02 world=A3930F03 t=1.0',
+             f'st tod q=({q}) day=960.0', f'st player traits={traits} progress=0.0 total=5.0 social=0.00 combat=0.00',
+             f'st res food={food}', 'st rel lv=-7.00,-3.00,3.00,7.00',
+             f'tribe i=0 player=1 pol=800021CA pos=(406.3 -4.9 302.6) members=3 food={food}.0 rel=nan',
+             f'tribe i=1 player=0 pol={pol2} pos=(327.5 -156.9 352.3) members=4 food=70.0 rel={rel}',
+             f'goal tribe={goal} state=1 pos=(327.5 -156.9 352.3)' if goal == '1' else 'goal tribe=-1 state=-1 pos=(0 0 0)',
+             'pl 018C6D19 pos=(406.3 -4.9 302.6) pol=800021CA', 'pl 52AA6122 pos=(448.7 38.6 241.9) pol=FFFFFFFF']
+        if village2:
+            t.append(f'pl 018C6D19 pos=(327.5 -156.9 352.3) pol={pol2}')
+        t += [ln for ln in huts.split(';') if ln]
+        t.append('end wstate rows=9')
+        return worlddiff.State('\n'.join(t))
+
+    def sigs(h, g):
+        return {f'{w}:{k}' for w, k, _, _ in worlddiff.diff_state(h, g, 'Tribe')}
+    a = st()
+    check(worlddiff.State('nothing').mode is None, 'no wstate answer: no state')
+    check(sigs(a, st()) == set(), 'two equal states: no row')
+    check(sigs(a, st(food=0)) == {'Tribe:state:food'}, f'the guest\'s food 0: Tribe:state:food ({sigs(a, st(food=0))})')
+    check(sigs(a, st(food=16)) == set(), 'a food tick between the two reads is within the tolerance')
+    check('Tribe:state:relation' in sigs(a, st(rel=-5.0)), 'a village aggressive on one game only: Tribe:state:relation')
+    check('All:state:time_of_day' in sigs(a, st(q='0.9 0.1 0.1 0.3')), 'night on one, day on the other: All:state:time_of_day')
+    check(sigs(a, st(traits='0,0,0,0,0')) == {'All:state:stage_done'}, 'stages done lost: All:state:stage_done')
+    check(sigs(a, st(village2=False)) == {'Tribe:planet:village'}, 'a village on one planet only: Tribe:planet:village')
+    check('Tribe:state:goal' in sigs(a, st(goal='-1')), 'the goal on one game only: Tribe:state:goal')
+    check('Tribe:planet_owner:village' in sigs(a, st(pol2='800021CA')),
+          'a village the player\'s on one game only: Tribe:planet_owner:village')
+    # BUG-0595: a guest's Space money before the host's first total reads `money=100000(unsynced)`: the game's
+    # value is 100000 (the same as the host's), not nan
+    sp = 'wstate v1 role={} mode=Space modeid=01654C05 world=80AE3044 t=1.0\nst res money={}\nend wstate rows=1'
+    hs, gs = worlddiff.State(sp.format('host', '100000')), worlddiff.State(sp.format('guest', '100000(unsynced)'))
+    check(gs.res.get('money') == 100000.0, f'an unsynced total is read as its number ({gs.res})')
+    out = {f'{w}:{k}' for w, k, _, _ in worlddiff.diff_state(hs, gs, 'Space')}
+    check(out == set(), f'the same money, one of them unsynced: no Space:state:money row ({out})')
+    gs2 = worlddiff.State(sp.format('guest', '90000(unsynced)'))
+    out = {f'{w}:{k}' for w, k, _, _ in worlddiff.diff_state(hs, gs2, 'Space')}
+    check(out == {'Space:state:money'}, f'other money, unsynced: still a Space:state:money row ({out})')
+    # BUG-0594: the host's game in the end of Tribe (stage_end): its village is taken down, not compared
+    h, g = worlddiff.World('census v1 role=host me=0 mode=Tribe modeid=01654C02 world=A3930F03 t=1.0'), \
+        worlddiff.World('census v1 role=guest me=1 mode=Tribe modeid=01654C02 world=A3930F03 t=1.0')
+    h.state, g.state = st(village2=False), st()
+    h.state.stage_end = True
+    out = [f['sig'] for f in worlddiff.diff(h, g)]
+    check(out == ['apart'], f'the host in the end of Tribe: not the same place ({out})')
+    # BUG-0596: a game that lists no object (it loads its world) is not compared
+    obj = 'obj c{} key=2915F01F alive=1 hp=10.0 ai=1 own=npc owner=0 pos=(1.0 2.0 3.0)'
+    h = worlddiff.World('\n'.join(['census v1 role=host me=0 mode=Creature modeid=01654C01 world=A3930F03 t=1.0',
+                                    'me pos=(1.0 2.0 3.0) ok=1'] + [obj.format(i) for i in range(12)] + ['end objects=12']))
+    g = worlddiff.World('census v1 role=guest me=1 mode=Creature modeid=01654C01 world=A3930F03 t=1.0\nend objects=0')
+    out = [f['sig'] for f in worlddiff.diff(h, g)]
+    check(out == ['apart'], f'a guest that lists no object (loading): not compared ({out})')
+    # BUG-0596: a species record the host's game just made: the guest's first dump lacks it, its second (1.5 s after
+    # the host's dump) has it: no row; a record still missing in the second dump: species_only
+    cr = 'wstate v1 role={} mode=Creature modeid=01654C01 world=A3930F03 t=1.0\nst dna v=10.0\n{}end wstate rows=2'
+    rec = 'species 065CBF12/2B978C46/40626200 relation=3 x=0 impressed=1 killed=0\n'
+    hs, gs = worlddiff.State(cr.format('host', rec)), worlddiff.State(cr.format('guest', ''))
+    gs.after = worlddiff.State(cr.format('guest', rec))
+    out = {f'{w}:{k}' for w, k, _, _ in worlddiff.diff_state(hs, gs, 'Creature')}
+    check(out == set(), f'a record on its way to the guest: no species_only row ({out})')
+    gs.after = worlddiff.State(cr.format('guest', ''))
+    out = {f'{w}:{k}' for w, k, _, _ in worlddiff.diff_state(hs, gs, 'Creature')}
+    check(out == {'Creature:state:species_only'}, f'a record the guest still lacks 1.5 s later: species_only ({out})')
+    # through diff(): the state rows come with the area compare, also when there is no centre
+    h, g = worlddiff.World('census v1 role=host me=0 mode=Tribe modeid=01654C02 world=A3930F03 t=1.0'), \
+        worlddiff.World('census v1 role=guest me=1 mode=Tribe modeid=01654C02 world=A3930F03 t=1.0')
+    h.state, g.state = a, st(food=0)
+    out = [f['sig'] for f in worlddiff.diff(h, g)]
+    check(out == ['Tribe:state:food'], f'diff() without a centre gives the state rows ({out})')
+
+
 CHECKS = {'noenv': test_noenv, 'docslint': test_docslint, 'kill': test_kill, 'fixture': test_fixture, 'headless': test_headless, 'tickets': test_tickets,
           'tickets_check': test_tickets_check, 'relint': test_relint,
-          'release': test_release, 'triage': test_triage, 'campaign': test_campaign, 'mergelogs': test_mergelogs}
+          'release': test_release, 'triage': test_triage, 'campaign': test_campaign, 'mergelogs': test_mergelogs,
+          'worldstate': test_worldstate}
 
 if __name__ == '__main__':
     if sys.argv[1:2] == ['--kill-inside']:

@@ -356,3 +356,11 @@ Use isolated test profiles for development.
   unaffiliated with Electronic Arts or Maxis. It contains no game files.
 
 Licensed under the [MIT license](LICENSE).
+
+## Upstream 0.7.8 source synchronization
+
+The synchronization branch includes upstream `v0.7.8` while retaining this fork's
+Galactic Adventures support. Its source version is `0.7.8.0`, protocol27.
+It is not a published release or an installed game update. Every party member
+needs the same fork build. The original and verified 4 GB GOG 2024 executable
+variants are accepted. See the synchronization validation report for merge gates.

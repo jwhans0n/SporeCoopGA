@@ -958,6 +958,7 @@ Civ and Space planners (update callers 0xCDFA5D, 0xCFE56B, 0xFE126E).
 * ? Roads (`inter_city_road`, noun 0x02B8A4E7, vtable 0x146CE08) are not mirrored: where the host's game
   makes them (the input commands "CityBuildRoad" 4000 and "CityCreateTradeRoute" 0x37E95BC are
   registered in 0xCF47C0) is not traced. Open in BUG-0478.
+  ~ superseded (2026-11-04): the road is the trade route's object (cCity::AddTradeRoute), see [civ-roads-citizens](#civ-roads-citizens).
 
 **Saves (BUG-0470).**
 * ✔ A guest's mirror vehicle stripped from a save (a null reference) is read back as a null entry in the
@@ -966,3 +967,236 @@ Civ and Space planners (update callers 0xCDFA5D, 0xCFE56B, 0xFE126E).
   while the save is written (savestrip's save hooks, the save is written within one frame) and are put
   back on the next frame: the reloaded world has no mirror, no null and no fault. A world loaded with no
   vehicle at all gets the game's free first vehicle at its city.
+
+## Roads and city citizens between the games (2026-11-04, fix/w41-civ-citizens)
+<a id="civ-roads-citizens"></a>
+
+GOG 2024 addresses (dc04aee5).
+
+**Roads (BUG-0494).**
+* ✔ The road between two cities (`inter_city_road`, noun 0x02B8A4E7, vtable 0x146CE08) is the ground object of a
+  trade route: `cCity::AddTradeRoute` 0xBE1490 (GOG 2016 0xBE1470, same prologue +0x20, `ret 8`) thiscall(city,
+  cCity* other, int type) pushes `{partner, route object, type}` (stride 0xC) on +0x55C of **both** cities and,
+  for type 0, makes the road. Runtime (lab 20261103-234403): after `AddTradeRoute(c0, c1, 0)` both cities list
+  the route with the same object (`route 0 1 type=0 obj=1F275758 noun=02B8A4E7`, `route 1 0 ... obj=1F275758`).
+  The object's own position (`coop.civ nouns 2B8A4E7`) is (0 0 0): roads are counted, not placed.
+* ✔ The host's game makes routes in its own AI (economic vehicles' "create route", 0xBE1950 AddTradeRouteWithCiv);
+  a guest's mirrors run none of it, so the host's roads never appeared there. Now the host sends its route list
+  (MSG_CIV_BUILD, city index 0xFE: u8 n, n x {u8 host city a, u8 b, u8 type}) when it changes and every 10 s;
+  a guest adds the routes it lacks with AddTradeRoute (`civ.roads`, `coop.civ roads` lists them).
+* ? Removal is left to the game: `RemoveTradeRoute` 0xBDFA70 (GOG 2016 0xBDFA50, `ret 4`) works on one side and
+  destroys the route object, which the other city's entry shares: calling it for both ends would free the object
+  twice (not tried). A capture removes routes on both games itself (ChangeOwner -> RemoveTradeRoutesWithCiv).
+
+**City citizens (BUG-0476, BUG-0475's Civ half).**
+* ✔ Both games spawn the same number of citizens (noun 0x18EB4B7, cCreatureCitizen) per city (19 / 19 around
+  the host's capital in every comparison of lab 20261103-233836) and walk them on their own: 9 of 19 had no
+  partner within 15 m (100 % of the comparisons), 88 % of the comparisons had a pair of another size.
+* ✔ `Citizen_OffStageCheck` 0xACA2A0 is not what walks Civ citizens: a filter that skipped it for the guest's
+  bound citizens skipped 0 calls in a 90 s Civ session (lab 20261104-000150). Where the Civ citizens' walks
+  come from (their behaviour tree?) is not traced.
+* ✔ The fix is a moving kind of the world-object table (worldobj.cpp, `citizen`, stage Civ): the host sends the
+  56 citizens nearest each guest's pointer (its capital when the guest has none: a background game's pointer
+  is (0 0 0)) every 0.5 s; the guest binds its own citizens to them by position (30 m) and walks each bound one
+  with the game's MoveTo to where the host's is now (its last place moved on with its velocity from the last two
+  snapshots, 1.5 s ahead), a MoveTo again only when that goal moved 2 m or after 1.5 s, and puts it there (place,
+  no teleport mark) when it is 12 m off. 1 s snapshots left a median 2-5 m lag and 4-19 % unpaired; 0.5 s:
+  0 of 95 unpaired, median pair distance 0.5-4.9 m (lab 20261104-000358).
+* ✔ Their size is the fields kind `civ_citizen` (field `scale`): the host sends every citizen (id = the low 16
+  bits of its object serial, a duplicate left out), the guest applies it to the bound copy (applied 17-18, differ
+  0 at the end of each run).
+* ~ The detector's `Civilization:scale:citizen` stays in part: its greedy nearest pairs cross in a crowd (pairs
+  0.3 m apart of two different citizens, one bound elsewhere). `coop_civ_citizens.py` compares sizes on
+  unambiguous pairs only (each the other's nearest within 3 m, the next one 2 m farther).
+* Cost: host one walk of the noun list per 0.5 s for the snapshot and one for the fields; the net 19 + 20 bytes
+  per citizen per guest every 0.5 s (19 citizens: 0.8 KB/s, at most 56: 2.3 KB/s), the fields about 6 bytes per
+  citizen of the planet every 4 s.
+
+## Shots, turrets and cultural targets between the games (2026-11-04, fix/w41-civ-combat)
+<a id="civ-combat-shots"></a>
+
+GOG 2024 addresses (dc04aee5).
+
+**How Civ weapons fire (BUG-0477).**
+* ✔ Every Civ weapon goes through `cToolManager::FireTool` 0x01050080 (thiscall(mgr, tool, owner spatial, const
+  Vector3* aim, int dmgPoint, int, target spatial, bool) ret 0x1C). Callers: `cCombatSimulator::Update` 0xAE7360
+  (every combatant of the noun list with a target in range: weapon = combatant vt 0x14, owner / target = the
+  objects' spatials, i.e. object + 0x34; it calls FireTool **every update**, the tool's refire time decides
+  whether a projectile leaves: lab 20261104-014831, 5120 calls in ~70 s for 3 vehicles, about 100 projectiles),
+  the city functions 0xBDC2F0 / 0xBE4300 / 0xBE4550 (from 0xBE5D30: city-wide strikes), 0xD56BE0, 0xDC1360.
+* ✔ Runtime: FireTool's target argument is a spatial (vtable 0x1474BE8 = a vehicle's +0x34, 0x14673F0 = a
+  building's), never the owner. `cDefaultProjectileWeapon::WhileFiring` 0x01056F10 makes noun 0x24270C5 and
+  calls `LaunchDefaultToolProjectile` 0x01054390 (homing on the tool's +0x118 target when there is one, else
+  straight at the aim). Projectile nouns: 0x24270C5 default tool (vtable 0x1476110), 0x5776A2C resource (made by
+  0xBFE8E0), 0x4F76F0D cultural (0xCB7030), 0x4167186 AoE area (cDefaultAoETool). A projectile keeps its tool at
+  +0x518 (+0x504 the cProjectile part); 0xBE4700 walks the default projectiles of a civilization's vehicles.
+* ✔ A guest's mirrors (no behaviour tree) never get a target: no FireTool, no projectile ever in a guest's
+  game (the detector's `noun_only_host:*_projectile`, 81 % of the play_civ comparisons in lab 20261104-013631).
+* ✔ Fix `civ.shots`: the host notes each FireTool of a listed vehicle or a turret (shooter, aim, target: a
+  vehicle id or noun + position) and sends the shooters of the last 0.25 s every 0.2 s; the guest calls FireTool
+  for its mirror (or its turret at that place) with the mirror's own weapon and the target of its own game, at
+  most every 0.1 s (turret shooters and building targets are found in one walk of the noun list per 0.1 s for all
+  shots due). Without the target (aim only) the guest's projectiles flew straight, hit nothing and
+  lived longer: 186 guest / 99 host projectiles in the samples (lab 20261104-014352); with it 93 / 95
+  (lab 20261104-015048), and they hit.
+* ✔ The guest's copies hit and would do the host's damage a second time (with `civ.shot_damage` off the guest's
+  city lost 5200 -> 4452 hit points, the host's 4452: lab 20261104-015254). `cosmetic_hit` drops a hit whose
+  attacker is a mirror's combatant (vt 0x5C cast to 0x137E8E0, attacker vtable 0x1474CE8) or a turret the guest
+  fired from, in the vehicle (`Simulator::cVehicle::TakeDamage` 0xCAB6F0), building, city hall and citizen
+  TakeDamage hooks. Before the fix no hit of the guest's own reached those hooks in a fight (0 calls).
+* Cost: host, one map write per FireTool call (every update of every combatant in range) and, while something
+  fires, 5 + 46 bytes per shooter every 0.2 s to each guest (10 shooters: about 2.3 KB/s); nothing when quiet.
+  Guest: one FireTool per shooter per 0.1 s and at most one noun-list walk per 0.1 s.
+* ~ A guest's buildings keep their own hit points: only the host's ruins reach it (`reconcile_buildings`), so a
+  city the host hit stands at full hit points on the guest (5200 / 4452 above). Not fixed here (BUG-0529).
+
+**Turrets (BUG-0484, not fixed).**
+* ✔ `cCity` +0x354 / +0x358 / +0x35C: the vector of the city's turrets (noun 0x436F342, cast 0x436F315), their
+  layout at city+0x4B4 (0xBD80B0). 0xBE2100 (`CreateTurret`, fastcall city): CreateInstance(0x436F342), push on
+  +0x354, put at the city. 0xBE39A0 (fastcall city): the next free turret slot (0xBD9A10), CreateTurret,
+  cLayoutSlot::SetObject, position and orientation (callers 0xBE5890 x2, 0xBE5F20, 0xBE87D0, 0xFF55D0,
+  0x1025200); 0xBE3AE0 (thiscall city, slot) the same in a given slot (caller 0xFF6900); the planner calls
+  CreateTurret itself (0xD13CC7). 0xBE5F20 rebuilds a city's turrets (removes them with 0xBE21C0 and adds
+  as many with 0xBE39A0).
+* ✔ The detector's turret rows (play_civ, lab 20261104-013631): `noun_only_guest:turret` in 23 % of the
+  comparisons (the host's game had no turret at all, the guest's one): the guest's game added a turret the
+  host's did not. Which caller (its own AI for an NPC city, a rebuild 0xBE5F20, the planner) is not traced.
+  Turrets are not in MSG_CIV_BUILD (`h_AddBuilding` sees buildings only).
+
+**Cultural targets and bundles (BUG-0484, not fixed).**
+* ✔ The city setup 0xBE7D40 makes 4 cultural targets (noun 0x3D5C325) per city (a loop of 4, stored in the city
+  record +0x618 table at +0x78 + 0x80 * i). The detector saw them unmatched in campaign_space only (3 / 3, 2 of
+  3 without a partner within 3 m): their places are the game's own per city.
+* ✔ The Civ `game_bundle` rows of play_civ are at the old tribe's village place (-234 -34 482), next to the
+  guest-only `tribe`, `tribe_hut`, `tribe_food_mat` rows (BUG-0483): leftovers of the Tribe stage in the guest's
+  world, not bundles of a Civ fight.
+
+## Building hit points, fired shots and turrets between the games (2026-11-04, fix/w42-civ-left)
+<a id="civ-hp-shots-turrets"></a>
+
+GOG 2024 addresses (dc04aee5).
+
+**Building hit points (BUG-0529).**
+* ✔ A building's combatant is at +0x120: state +0x154 (2 = ruin), hit points +0x158 (9.4). The guest's own game
+  never hurts its buildings in a fight (the shots it copies are cosmetic, `civ.shot_damage`), so before the fix a
+  city the host's vehicles hit stood at 5200 on the guest while the host's fell to 4462 (civ_shots, lab
+  20261104-095130).
+* ✔ Fix `civ.building_hp`: the host sends the hit points of the snapshot cycle's city (noun, place, hp; the buildings
+  of type house / factory / entertainment and the city hall 0x18EA1EB, at most 40) in MSG_CIV_STATE chunk 0xFD
+  (chunks 0) when they changed and every 3 s. The guest pairs each row with its own building (same noun, within
+  4 m), lowers its hit points with `cCombatant::TakeDamage` 0xBFCEF0 (no attacker, direction (0 0 0): the damage look
+  of the game, no capture damage) and raises them (the host's repair) by writing +0x158. Rows at 0 hp and local
+  ruins are left to `reconcile_buildings`. Runtime: guest 4976 / host 4972 at 30 s, 4470 / 4462 at the end
+  (lab 20261104-094742). Cost: about 20 bytes per building of one city per change (a city of 20 buildings in a
+  fight: 400 bytes per snapshot cycle of that city), nothing for a quiet city but one list per 3 s.
+
+**FireTool's result (BUG-0530).**
+* ✔ `cToolManager::FireTool` 0x01050080 returns a bool in al: 0 unless the tool's refire time (+0x1D4 * 1000 ms)
+  passed and the strategy's WhileFiring (vt 0x34, called at 0x0105030B, its al stored at [esp+0x13]) made the shot.
+  cCombatSimulator::Update calls it every update: in civ_shots 35 calls of 3474 made a shot on the host
+  (`tried=3439`).
+* ✔ Fix `civ.shot_fired`: the host counts only the calls that made a shot (u8 count per shooter) and sends the
+  shooters of the last 1 s with their counts (MSG_CIV_STATE chunk 0xFC; 0xFE is the 0.7.5 list, still read); the
+  guest fires until it made as many (its own FireTool true), at most every 0.1 s, at most 3 behind.
+* ✔ The shot lists are split into messages of 22 shooters (47 bytes each): the 0.7.5 list of up to 40 was 1845
+  bytes, over kMaxPacket (1200), and a connection drops such a message: with more than 24 shooters a guest saw no
+  shot at all (not seen in a test; found reading the code).
+* ~ A single religious vehicle against an NPC city gave the same religious shots on both games with the switch on
+  and off (126 / 126, lab 20261104-095320): the guest's weapon refused 1099 of the relayed calls on its own refire
+  time. The extra religious shots and AoE areas of the detector (play_civ) are therefore not explained by the
+  every-call relay alone.
+* ✔ What the rows are (play_civ x3, lab 20261104-100146 / 101322 / 102449): a guest's game fires no tool of its own
+  in Civ (a FireTool hook for calls outside the relay logged none), and the guest's copies made as many shots of the
+  same weapon as the host's (`civ: shots by weapon`: 397 host, 397 guest at 600 s). Religious projectiles and AoE
+  areas live about a second; the relay showed them 0.3-0.4 s later on the guest (civ_religious, the best shift of
+  the two count series), so a detector sample often saw them in one game only (both ways: `noun_only_host` rows
+  too once the counts matched). Fix `civ.shot_now`: a shot that left goes out at once (at most every 0.05 s) and
+  the guest fires a new count on the frame it arrives: 0.10-0.20 s (lab 20261104-104140).
+* ~ The delay was not all of it: after civ.shot_now one play_civ run still had guest-only AoE areas in 26 % and
+  cultural projectiles in 13 % of the comparisons (lab 20261104-113023; another 3 % / 6 %, lab 20261104-110843).
+  Inferred: those objects live longer on the guest (a copy that misses). Open in BUG-0530.
+
+**Turrets (BUG-0484).**
+* ✔ `City_AddTurret` 0xBE39A0 fastcall(city) -> 1 / 0: the next free turret slot, CreateTurret 0xBE2100,
+  cLayoutSlot::SetObject, place and orientation. `City_RemoveTurret` 0xBE21C0 thiscall(city, turret or 0, bool)
+  ret 8. Callers of AddTurret: the city growth 0xBE5890 (0xBE59B8 when the city was attacked in the last 20 s,
+  0xBE5CFF at random), the turret rebuild 0xBE5F20 (removes all, adds as many), the city setup 0xBE87D0, 0xFF55D0,
+  0x1025200 (a vtable slot). The growth pays from the civilization's budget (+0x4AC, float).
+* ✔ `0xC00600` thiscall(city, int k) ret 4: true when city +0x98 + 8k (a game time, u64) lies within the last 20 s.
+* ✔ Fix `civ.turrets`: a guest's growth calls (return addresses 0xBE59BD, 0xBE5D04) make no turret; the host sends
+  the places of the snapshot city's turrets (chunk 0xFB) when they changed and every 3 s, the guest adds the ones it
+  lacks with City_AddTurret and removes extra ones (two looks in a row). Runtime: a turret the host's game added
+  stood on the guest within 25 s (lab 20261104-095903), not without the fix (lab 20261104-100015).
+* ? A guest's own growth buying a turret was not seen in the test: with a 100000 budget and the city marked attacked
+  the guest's growth spent the budget on other things (blocked buildings / vehicles) with the switch off too.
+* The Civ `game_bundle` rows are Tribe leftovers (BUG-0483, fixed in 0.7.5). Cultural targets were unmatched only
+  in campaign_space (BUG-0484 history): not part of the Civ fight.
+
+## AoE weapons and their stop between the games (2026-11-04, fix/w42-civ-left)
+<a id="civ-aoe-stop"></a>
+
+GOG 2024 addresses (dc04aee5).
+
+* ✔ `cDefaultAoETool` (strategy vtable 0x149B830): WhileFiring 0x01056B20 (vt 0x34) returns 1 and, when the tool has
+  no area yet (tool +0x120 == 0), calls vt 0x48 (0x01054FF0): CreateInstance(0x4167186, the AoE area), placed at the
+  owner (tool +0x114), kept at tool +0x120. vt 0x4C (0x01053ED0) moves the area with the owner. OnMouseUp vt 0x38
+  (0x01053E90) releases the area.
+* ✔ `cToolManager::OnMouseUp` 0x0104FAA0 thiscall(mgr, tool) ret 4: the strategy's vt 0x38, tool +0x80 (firing) = 0,
+  the tool's 3 effects at +0x108 stopped. cCombatSimulator::Update 0xAE7360 calls it (three sites) when a combatant's
+  target is gone or changes; FireTool sets +0x80.
+* ✔ The cultural projectile (noun 0x4F76F0D) is made by 0xCB7030; its only caller 0xCBEBA0 (a vtable slot at
+  0x1475150, next to the AoE area's vtable 0x1475240) makes three: the area sends them.
+* ✔ A guest's copies of a host's AoE weapon were never stopped: the guest's area lived 30 s after a 5 s area on the
+  host, its cultural projectiles 21 s against 2 s (civ_aoe, lab 20261104-124527). Fix `civ.shot_release`: the host's
+  OnMouseUp of a listed shooter is sent with the shot list (stopped flag), the guest calls OnMouseUp for its copy
+  (lab 20261104-124742: the guest's area ended 0.2 s after the host's).
+* Supersedes the "late, not extra" reading of [civ-hp-shots-turrets](#civ-hp-shots-turrets) for the AoE rows: the
+  delay explained part of the cultural rows, the never-stopped areas the rest.
+
+## Old tribe raids and the city citizens' pool (2026-11-04, fix/w42-civ-left)
+<a id="civ-tribe-raids"></a>
+
+GOG 2024 addresses (dc04aee5).
+
+* ✔ A Civ world keeps the Tribe stage's tribes (civ_npc: 17, each with a hut, a tool, a food mat and 2 bundles) on both
+  games. The NPC vehicles raid them: behaviour tree action 0xDCAAB0 ("HR: no spice target found", "HR: path
+  failure"): drive there, stimulus 0x8000 to its members, then AddMoney (random 400-1000) or an event log entry and
+  `cGameNounManager::DestroyInstance` of the tribe at 0xDCB2B2 (return 0xDCB2B7); the huts, tools, food mat and
+  bundles go with the tribe. A founding at a tribe's site destroys it too (return 0xB9BCE6, both games). A capture
+  removes none. Runtime: the host's count 17 -> 5 in 10 min of play_civ (lab 20261104-125332), the guest's stayed.
+* ✔ Fix `civ.tribe_ruins`: the host's tribe places (chunk 0xFA, every 5 s and after a destroy), the guest destroys a
+  tribe with no host tribe within 10 m on two lists in a row (lab 20261104-130500: 3 removed, 14 / 14).
+* ✔ City citizens (noun 0x18EB4B7) are a pool of 150 per planet on each game, 19 put at the city nearest the own
+  camera (coop_civ_citizen_lod, lab 20261104-130500): level of detail, as in Space; the detector skips a city whose
+  citizens only one game has (BUG-0526).
+
+
+## A captured city's buildings, the nations' relations and money on a guest (2026-11-05, fix/w44-world-state2)
+<a id="civ-wsync-owners"></a>
+
+BUG-0593. GOG 2024, Ghidra (tools/ghidra/q.sh --build 2024) and lab lane 7 (civ_npc fixture, coop_wsync_civ.py).
+
+* ✔ `cCity::Capture` 0xBE9430 sets the city's flags **+0x2E0..+0x2E6 to 1** before it calls `ChangeOwner`
+  0xBE8A20 (directly when the captor is no player civ or `+0x762` / arg 4 is set; else after its caption cinematic
+  CVG_Capture). ChangeOwner acts on the flags: **+0x2E2** -> `City_SetPartsOwner` 0xBE4C80 (thiscall(city, newCiv)
+  ret 4: SetPoliticalID vt 0x48 of every building +0x340, turret +0x354 and +0x308 part, the new owner's building
+  models from its culture set (0xBE4B60: 0x99E92F05 City Hall, 0x4E3F7777, 0x47C10953, 0x72C49181), an update
+  request 0xBD1C00(1)); +0x2E3 -> 0xBD91B0 (the new owner's colour, a view effect); +0x2E1 the capture
+  cinematic; +0x2E6 -> 0xBDB200 (an effect at the City Hall). It also asks the relationship manager (0xD00BD0, a
+  level query) and, in Space, 0xBD9130.
+* ✔ (observed, lab 20261105-122815 with the fix off) A guest gets a capture from MSG_CIV_STATE and calls
+  `ChangeOwner(city, pol, 0, 0)` itself (civ.cpp guest_cities) with the flags 0: the city became the player's, its
+  three buildings kept the NPC's political id 000021CB (the detector's `planet_owner:building_*` rows of the 0.7.7
+  final check, campaign_space). Fixed by the wsync row `city_owner` (wsync.city_owner): a guest's city whose
+  buildings or turrets have another owner than the city gets them through City_SetPartsOwner (not while the open
+  city planner holds the city, BUG-0493).
+* ✔ The nations' feelings about the player civilization (`CalculateRelationship(civ, playerCiv)`, the same manager
+  as Tribe) change on the host by its game's events (a capture: -1.12 in the lab, the guest's own ChangeOwner gave
+  the same -1.12 but none of the host's other events); a guest's never followed (0.7.7 final: 000021CB -3.21 on the
+  host, 3.00 on the guest). Row `civ_rel` (wsync.civ_rel): ApplyRelationship by the difference, as tribe_rel.
+* ✔ An NPC civilization's money (+0x98; GetMoney adds the NPC budgets +0x4AC / +0x4B0) moves with its own AI: 1500
+  added on the host was 0 again 25 s later (lab 20261105-122514). Row `civ_money` (wsync.civ_money): +0x98 written
+  (AddMoney applies the difficulty, SpendMoney refills an NPC's budget: no setter fits).
+* ~ civ_coop's `Civilization:state:money` row ("-800 on the host, 0 on the guest"): the test's `coop.civ build`
+  on the host spends without the game's price check (the host's wealth went 400 -> -800); a guest's shared total
+  is floored at 0 (res.floor, BUG-0106). Not a player's case (the game refuses a building it cannot pay); not changed.

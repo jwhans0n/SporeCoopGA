@@ -11,15 +11,38 @@
 
 namespace sk {
 
-static void outf(SkOut* o, const char* fmt, ...)
+// BUG-0388: a command's printf output (SkHost::out_printf, outf) went through an 8 KB buffer and was cut there
+// without a word: a test reading 300 track rows got the first 97 (coop.fleet track dump), and every other long
+// dump (coop.track, coop.npctrack) lost rows the same way. Now one printf may give up to kMaxOutPiece bytes; a
+// longer one is cut with a line that says so. `kit.fix longout 0`: the 8 KB cut (SporeKit 0.3.8).
+constexpr int kMaxOutPiece = 1 << 20;
+void out_vappend(Out* o, const char* fmt, va_list ap)
 {
     char buf[8192];
+    va_list ap2;
+    va_copy(ap2, ap);
+    int n = vsnprintf(buf, sizeof buf, fmt, ap);
+    if (n > 0 && n < (int)sizeof buf)
+        o->text.append(buf, n);
+    else if (n > 0 && !g_fix_longout.on)
+        o->text.append(buf, sizeof buf - 1);
+    else if (n > 0) {
+        size_t want = (size_t)std::min(n, kMaxOutPiece);
+        std::string big(want + 1, '\0');
+        vsnprintf(big.data(), big.size(), fmt, ap2);
+        o->text.append(big.data(), want);
+        if (n > kMaxOutPiece)
+            o->text += "\n[output cut at 1 MB]\n";
+    }
+    va_end(ap2);
+}
+
+static void outf(SkOut* o, const char* fmt, ...)
+{
     va_list ap;
     va_start(ap, fmt);
-    int n = vsnprintf(buf, sizeof buf, fmt, ap);
+    out_vappend(reinterpret_cast<Out*>(o), fmt, ap);
     va_end(ap);
-    if (n > 0)
-        reinterpret_cast<Out*>(o)->text.append(buf, n < (int)sizeof buf ? n : (int)sizeof buf - 1);
 }
 
 // "0x1234", "1234" (hex), "Sym::Name", "Sym::Name+0x10"
@@ -702,6 +725,36 @@ static int c_test_hooknew(void*, int argc, const char* const* argv, SkOut* o)
     return 0;
 }
 
+// BUG-0347 tests: the window minimized / restored / hidden / shown (the game loop goes on, no
+// frames), or the main thread blocked for a while (a real hang: no frames, no loop)
+static int c_test_window(void*, int argc, const char* const* argv, SkOut* o)
+{
+    HWND w = (HWND)game_window();
+    if (!w || argc < 2) {
+        outf(o, "%s", w ? "kit.test.window minimize|restore|hide|show" : "no window");
+        return 1;
+    }
+    struct { const char* n; int cmd; } m[] = {{"minimize", SW_MINIMIZE}, {"restore", SW_RESTORE},
+                                              {"hide", SW_HIDE}, {"show", SW_SHOWNA}};
+    for (auto& e : m)
+        if (!strcmp(argv[1], e.n)) {
+            ShowWindowAsync(w, e.cmd); // any thread: the game's thread carries it out in its message pump
+            Sleep(300);
+            outf(o, "window %s: minimized %d visible %d", e.n, (int)IsIconic(w), (int)IsWindowVisible(w));
+            return 0;
+        }
+    outf(o, "unknown: %s", argv[1]);
+    return 1;
+}
+
+static int c_test_hang(void*, int argc, const char* const* argv, SkOut* o)
+{
+    int ms = argc > 1 ? atoi(argv[1]) : 40000;
+    run_on_main([ms] { Sleep(ms); });
+    outf(o, "the main thread sleeps %d ms on its next frame", ms);
+    return 0;
+}
+
 void register_builtin_commands()
 {
     SkMod* k = &g_kit_mod;
@@ -811,6 +864,10 @@ void register_builtin_commands()
                 c_test_hookchurn, nullptr, M);
     command_add(k, "kit.test.hooknew", "kit.test.hooknew [rounds] [threads] - make new hooks while threads call the functions; counts detours that ran before their original was set (BUG-0398)",
                 c_test_hooknew, nullptr, M);
+    command_add(k, "kit.test.window", "kit.test.window minimize|restore|hide|show - the game window (BUG-0347: no frames, the loop runs)",
+                c_test_window, nullptr, A);
+    command_add(k, "kit.test.hang", "kit.test.hang [ms] - block the main thread on its next frame (a real hang, BUG-0347)",
+                c_test_hang, nullptr, A);
     command_add(k, "bg", "bg [on|off] - keep running when the window is unfocused", c_bg, nullptr, A);
     command_add(k, "frames.source", "frames.source [auto|loop] - where frames come from (loop: ignore Present, tests)",
                 c_frames_source, nullptr, A);

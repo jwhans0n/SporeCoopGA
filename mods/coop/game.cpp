@@ -86,6 +86,23 @@ std::string herd_nulls_status()
 }
 
 static std::vector<void*> g_puppets;
+
+// BUG-0532: a partner's puppet in the air (creature.puppet_air) was drawn on its terrain for 1-3 frames when the
+// game started another animation on it (fall -> idle, the walk start): something in that update grounds it. The
+// puppets held in the air (air_hold, set by modes.cpp each frame) are put back where the partner is and marked not
+// grounded right after the game's animation starts and its update when the game grounded them.
+struct AirHold {
+    void* c;
+    void* ac; // its AnimatedCreature (+0xB54), the low animation start's this
+    net::Vec3 pos, vel;
+    net::Quat rot;
+};
+static std::vector<AirHold> g_air;
+static uint32_t g_air_regrounded[5]; // by the call after which it was grounded: 0 update, 1 anim, 2 idle, 3 BT anim, 4 low anim
+static void air_reassert(void* c, int where);
+typedef int(SK_THISCALL* AcPlay_t)(void*, uint32_t, int);
+static AcPlay_t o_AcPlay;
+static int SK_THISCALL h_AcPlay(void* ac, uint32_t id, int a);
 static std::vector<void*> g_our_herds; // made by create_herd (puppets, proxies); diagnostics only
 
 // ---- registry via cCreatureAnimal::Update (thiscall, int deltaTime) ----
@@ -114,6 +131,8 @@ static void SK_THISCALL h_Update(void* self, int dt)
     ++g_creature_update_counts.native;
     o_Update(self, dt);
     if (g_update_observer) g_update_observer(self, false);
+    if (!g_air.empty())
+        air_reassert(self, 0);
 }
 
 const std::vector<void*>& creatures_updated()
@@ -144,14 +163,55 @@ typedef int(SK_THISCALL* TakeDamage_t)(void*, float, uint32_t, int, const void*,
 static TakeDamage_t o_TakeDamage;
 static DamageFilter g_damage_filter;
 
+// tests / RE (P1): the last hits that went through the game's TakeDamage of a creature, with the caller
+// (`coop.hp dmglog`): which code hits, with which damage type (3 = the charge's stun, docs/re/creature.md#creature-stun)
+struct DamageRec {
+    double t;
+    void *victim, *attacker;
+    float dmg;
+    int type;
+    uintptr_t ret;
+    int how; // 0 filtered, 1 applied, 2 the mod's own apply_damage
+    bool air; // the victim was not grounded (+0x137 == 0) at the hit
+};
+static DamageRec g_dmglog[48];
+static unsigned g_dmglog_n = 0;
+
+static void dmglog_add(void* victim, void* attacker, float dmg, int type, uintptr_t ret, int how)
+{
+    bool air = victim && readable(victim, 0x138) && field<uint8_t>(victim, 0x137) == 0;
+    g_dmglog[g_dmglog_n++ % 48] = {H ? H->time_seconds() : 0, victim, attacker, dmg, type, ret, how, air};
+}
+
+std::string damage_log(bool clear)
+{
+    std::string s;
+    char b[160];
+    unsigned first = g_dmglog_n > 48 ? g_dmglog_n - 48 : 0;
+    for (unsigned i = first; i < g_dmglog_n; i++) {
+        const DamageRec& r = g_dmglog[i % 48];
+        snprintf(b, sizeof b, "dmg t=%.2f victim=%p attacker=%p amount=%.2f type=%d ret=0x%08X %s air=%d\n", r.t, r.victim,
+                 r.attacker, r.dmg, r.type, (unsigned)r.ret, r.how == 0 ? "filtered" : r.how == 1 ? "applied" : "direct",
+                 (int)r.air);
+        s += b;
+    }
+    if (clear)
+        g_dmglog_n = 0;
+    return s.empty() ? "no hits\n" : s;
+}
+
 static int SK_THISCALL h_TakeDamage(void* combatant, float dmg, uint32_t pol, int type, const void* pos, void* attacker)
 {
     void* self = (uint8_t*)combatant - kCombatOff;
     // Attackers can be creatures, vehicles or other combatants. Their native virtual
     // owner conversion handles the different subobject offsets.
     void* att = attacker ? vcall<void*>(attacker, 0x0C / 4) : nullptr;
-    if (g_damage_filter && !g_damage_filter(self, dmg, type, att))
+    uintptr_t ret = (uintptr_t)__builtin_return_address(0);
+    if (g_damage_filter && !g_damage_filter(self, dmg, type, att)) {
+        dmglog_add(self, att, dmg, type, ret, 0);
         return 0;
+    }
+    dmglog_add(self, att, dmg, type, ret, 1);
     return o_TakeDamage(combatant, dmg, pol, type, pos, attacker);
 }
 
@@ -165,6 +225,7 @@ void apply_damage(void* c, float dmg, int type, void* attacker)
     // It used to be the creature's position (|v| ~ 505): every forwarded hit threw the creature,
     // a kill ~80 m up (play_creature.py 2026-10-23, docs/re/creature.md 3)
     Vector3 push{};
+    dmglog_add(c, attacker, dmg, type, (uintptr_t)__builtin_return_address(0), 2);
     o_TakeDamage((uint8_t*)c + kCombatOff, dmg, attacker ? political_id(attacker) : 0xFFFFFFFFu, type, &push,
                  attacker ? (uint8_t*)attacker + kCombatOff : nullptr);
 }
@@ -331,6 +392,8 @@ static int SK_THISCALL h_PlayAnim(void* self, uint32_t id, int block, int disabl
     if (g_anim_listener && !g_in_puppet_anim)
         g_anim_listener(self, id, block, (disable & 0xFF) != 0, false);
     int r = o_PlayAnim(self, id, block, disable);
+    if (!g_air.empty())
+        air_reassert(self, 1);
     if (r)
         bhv_report(self, id, 1, disable & 0xFF, block);
     return r;
@@ -341,6 +404,8 @@ static int SK_THISCALL h_PlayAnimTo(void* self, uint32_t id, void* other, int a,
     if (g_anim_listener && !g_in_puppet_anim)
         g_anim_listener(self, id, block, false, true);
     int r = o_PlayAnimTo(self, id, other, a, block);
+    if (!g_air.empty())
+        air_reassert(self, 1);
     if (r)
         bhv_report(self, id, 2, 0, block);
     return r;
@@ -382,6 +447,8 @@ static void bhv_report(void* self, uint32_t id, int how, int a, int b)
 static int SK_THISCALL h_CreaturePlayAnim(void* self, uint32_t id, int a, int b)
 {
     int r = o_CreaturePlayAnim(self, id, a, b);
+    if (!g_air.empty())
+        air_reassert(self, 3);
     if (r)
         bhv_report(self, id, 0, a, b);
     return r;
@@ -392,6 +459,8 @@ static void SK_THISCALL h_IdleRefresh(void* self, int force)
     g_idle_depth++;
     o_IdleRefresh(self, force);
     g_idle_depth--;
+    if (!g_air.empty())
+        air_reassert(self, 2);
 }
 
 void set_behaviour_anim_listener(BehaviourAnimListener fn) { g_bhv_listener = fn; }
@@ -430,6 +499,20 @@ typedef void*(SK_THISCALL* StartStopFx_t)(void*, int, uint32_t, uint32_t);
 typedef int(SK_THISCALL* StopFx_t)(void*, uint32_t, uint32_t);
 typedef void*(SK_THISCALL* GetFx_t)(void*, uint32_t);
 static bool g_fx_log;
+// support log only (coop.effects log on): the first return addresses into the game's code on the stack, the creator
+// of an effect (no frame pointers in the game; BUG-0600 analysis)
+struct FxFrom { uint32_t a[4] = {}; };
+static FxFrom fx_from()
+{
+    FxFrom f;
+    const uint32_t* sp = (const uint32_t*)__builtin_frame_address(0);
+    for (int k = 0, n = 0; k < 128 && n < 4; k++) {
+        uint32_t v = sp[k];
+        if (v > 0x401000 && v < 0x1300000)
+            f.a[n++] = v;
+    }
+    return f;
+}
 // The game calls effect creation from its UI skinner's render thread too (Tribe/Civ, measured in
 // Skinner::cSkinPainterPipeline::ExecutePipeline). Everything of ours that touches game objects,
 // the effect table or the network happens on the game's main thread only; on any other thread a
@@ -447,12 +530,14 @@ void set_effect_relay_enabled(bool on)
 // addressing keyed by the effect pointer: one probe for nearly every effect, fixed size, no
 // allocation, no linear scan (the old scan over 4096 entries ran for every transform set of every
 // effect in every stage). Cleared once per frame after effects::tick read what it needed.
-struct FxCreated { void* fx; uint32_t id; bool relayed; };
+struct FxCreated { void* fx; uint32_t id; bool relayed; bool foreign; };
 static constexpr size_t kFxSlots = 1024; // power of two; far more than a frame creates
 static FxCreated g_fx_ids[kFxSlots];
 static uint32_t g_fx_creates, g_fx_probes, g_fx_evicted;
 static uint32_t g_fx_mgr, g_fx_world, g_fx_anim; // creates seen per hook, animation effects skipped
 static uint32_t g_fx_last_id; // the last effect id the game created (the perf workload uses it in every stage)
+static uint32_t g_fx_last_main_id, g_fx_last_foreign_id; // ... in the game's own effect world / in another one
+static uint32_t g_fx_foreign; // effects created in another effect world than the game's own (the skin painter's)
 // the cost of our own work in the create hooks (the original call is not counted): the frame-time
 // number in out/REPORT.md. Two QPC reads per created effect, on the main thread only.
 static double g_fx_hook_sum, g_fx_hook_max;
@@ -474,18 +559,20 @@ static FxCreated* fx_find(void* fx)
     }
     return nullptr;
 }
-static void fx_add(void* fx, uint32_t id)
+static void fx_add(void* fx, uint32_t id, bool foreign = false)
 {
     g_fx_creates++;
     size_t i = fx_slot(fx);
     for (unsigned n = 0; n < 6; n++, i = (i + 1) & (kFxSlots - 1)) {
         if (!g_fx_ids[i].fx || g_fx_ids[i].fx == fx) {
-            g_fx_ids[i] = FxCreated{fx, id, false};
+            // the manager's hook runs after the world's for the same object: keep a foreign mark
+            bool was = g_fx_ids[i].fx == fx && g_fx_ids[i].foreign;
+            g_fx_ids[i] = FxCreated{fx, id, false, foreign || was};
             return;
         }
     }
     g_fx_evicted++; // 6 probes over: take the home slot (does not happen with 1024 slots)
-    g_fx_ids[fx_slot(fx)] = FxCreated{fx, id, false};
+    g_fx_ids[fx_slot(fx)] = FxCreated{fx, id, false, foreign};
 }
 void clear_effect_table()
 {
@@ -545,7 +632,14 @@ bool effect_relayed(void* fx)
     FxCreated* e = fx_find(fx);
     return e && e->relayed;
 }
-uint32_t last_effect_id() { return g_fx_last_id; }
+bool effect_foreign(void* fx)
+{
+    FxCreated* e = fx_find(fx);
+    return e && e->foreign;
+}
+uint32_t last_effect_id(bool main_world_only) { return main_world_only ? g_fx_last_main_id : g_fx_last_id; }
+uint32_t last_foreign_effect_id() { return g_fx_last_foreign_id; }
+uint32_t foreign_effects() { return g_fx_foreign; }
 static bool g_in_relay;        // a relayed effect played by us: never put it in the table again
 static thread_local bool t_in_anim_fx; // inside the animation system's effect wrapper (main thread)
 static WorldEffectListener g_world_listener;
@@ -570,6 +664,7 @@ static int SK_THISCALL h_MgrCreateFx(void* mgr, uint32_t id, uint32_t a3, void**
         double t0 = H->time_seconds();
         g_fx_mgr++;
         g_fx_last_id = id;
+        g_fx_last_main_id = id; // the manager creates in the game's own effect world (manager +0x244)
         fx_add(*out, id);
         if (g_world_listener)
             g_world_listener(*out, id);
@@ -583,6 +678,16 @@ static int SK_THISCALL h_MgrCreateFx(void* mgr, uint32_t id, uint32_t a3, void**
 typedef int(SK_THISCALL* WorldCreateFx_t)(void*, uint32_t, uint32_t, void**);
 static WorldCreateFx_t o_WorldCreateFx;
 static uintptr_t a_WorldCreateFx;
+// the game's own effect world: the one cEffectsManager::CreateEffect forwards to (manager +0x244)
+static void* main_effect_world()
+{
+    if (!a_EffectsGet)
+        return nullptr;
+    uint8_t* mgr = cdecl_call<uint8_t*>(a_EffectsGet);
+    if (!mgr || !skg::readable(mgr + 0x244, 4))
+        return nullptr;
+    return *(void**)(mgr + 0x244);
+}
 static std::atomic<bool> g_world_on{false}; // the stage logic's gate (set_world_relay): no work outside a played stage
 static int SK_THISCALL h_WorldCreateFx(void* world, uint32_t id, uint32_t a3, void** out)
 {
@@ -590,6 +695,11 @@ static int SK_THISCALL h_WorldCreateFx(void* world, uint32_t id, uint32_t a3, vo
     if (!g_world_on.load(std::memory_order_relaxed) || !fx_main_thread()
         || !g_fx_relay_on.load(std::memory_order_relaxed))
         return r;
+    if (g_fx_log) {
+        FxFrom f = fx_from();
+        H->log(M, SK_INFO, "fxw: world %p main %p id %08X ok %d anim %d relay %d from %X,%X,%X,%X", world, main_effect_world(), id,
+               r & 0xFF, t_in_anim_fx ? 1 : 0, g_in_relay ? 1 : 0, f.a[0], f.a[1], f.a[2], f.a[3]);
+    }
     if (t_in_anim_fx) {
         g_fx_anim++;
         return r;
@@ -599,8 +709,22 @@ static int SK_THISCALL h_WorldCreateFx(void* world, uint32_t id, uint32_t a3, vo
     if ((r & 0xFF) && out && *out) {
         double t0 = H->time_seconds();
         g_fx_world++;
+        // BUG-0451 (Tribe / Civ): the skin painter (Skinner::cSkinPainterPipeline::ExecutePipeline) makes
+        // its paint effects in an effect world of its own, on the main thread. Such an effect created in
+        // the game's effect world (the relay's receiver, the perf load) has no painter and faults in
+        // cSkinnerTexturePainter::StartRender every frame. Mark them: effects.cpp never sends them.
+        static void* s_main_world; // the game's world changes only with a stage: ask the manager on a mismatch
+        if (world != s_main_world)
+            s_main_world = main_effect_world();
+        bool foreign = world != s_main_world;
+        if (foreign) {
+            g_fx_foreign++;
+            g_fx_last_foreign_id = id;
+        } else {
+            g_fx_last_main_id = id;
+        }
         g_fx_last_id = id;
-        fx_add(*out, id);
+        fx_add(*out, id, foreign);
         if (g_world_listener)
             g_world_listener(*out, id);
         double dt = H->time_seconds() - t0;
@@ -638,7 +762,7 @@ static void* SK_THISCALL h_CreateCreatureFx(void* self, int bone, uint32_t id, u
     if (!fx_main_thread()) // the UI skinner's render thread: the original only
         return fx;
     if (g_fx_log)
-        H->log(M, SK_INFO, "fxcr: self %p avatar %p id %08X bone %d fx %p", self, avatar(), id, bone, fx);
+        { FxFrom f = fx_from(); H->log(M, SK_INFO, "fxcr: self %p avatar %p id %08X bone %d fx %p from %X,%X,%X,%X", self, avatar(), id, bone, fx, f.a[0], f.a[1], f.a[2], f.a[3]); }
     if (fx && g_fx_relay_on.load(std::memory_order_relaxed)) {
         if (FxCreated* e = fx_find(fx))
             e->relayed = true;
@@ -665,7 +789,7 @@ static void* SK_THISCALL h_CreateFx1(void* self, uint32_t id)
     void* fx = o_CreateFx1(self, id);
     if (!fx_main_thread())
         return fx;
-    if (g_fx_log) H->log(M, SK_INFO, "fx1: self %p avatar %p id %08X", self, avatar(), id);
+    if (g_fx_log) { FxFrom f = fx_from(); H->log(M, SK_INFO, "fx1: self %p avatar %p id %08X from %X,%X,%X,%X", self, avatar(), id, f.a[0], f.a[1], f.a[2], f.a[3]); }
     if (fx && g_fx_relay_on.load(std::memory_order_relaxed)) {
         if (FxCreated* e = fx_find(fx))
             e->relayed = true;
@@ -679,7 +803,7 @@ static void* SK_THISCALL h_CreateFx1Keyed(void* self, uint32_t id, uint32_t key)
     void* fx = o_CreateFx1Keyed(self, id, key);
     if (!fx_main_thread())
         return fx;
-    if (g_fx_log) H->log(M, SK_INFO, "fx1k: self %p avatar %p id %08X key %08X", self, avatar(), id, key);
+    if (g_fx_log) { FxFrom f = fx_from(); H->log(M, SK_INFO, "fx1k: self %p avatar %p id %08X key %08X from %X,%X,%X,%X", self, avatar(), id, key, f.a[0], f.a[1], f.a[2], f.a[3]); }
     if (fx && g_fx_relay_on.load(std::memory_order_relaxed)) {
         if (FxCreated* e = fx_find(fx))
             e->relayed = true;
@@ -693,7 +817,7 @@ static void* SK_THISCALL h_CreateFx2Keyed(void* self, uint32_t id, uint32_t key)
     void* fx = o_CreateFx2Keyed(self, id, key);
     if (!fx_main_thread())
         return fx;
-    if (g_fx_log) H->log(M, SK_INFO, "fx2k: self %p avatar %p id %08X key %08X", self, avatar(), id, key);
+    if (g_fx_log) { FxFrom f = fx_from(); H->log(M, SK_INFO, "fx2k: self %p avatar %p id %08X key %08X from %X,%X,%X,%X", self, avatar(), id, key, f.a[0], f.a[1], f.a[2], f.a[3]); }
     if (fx && g_fx_relay_on.load(std::memory_order_relaxed)) {
         if (FxCreated* e = fx_find(fx))
             e->relayed = true;
@@ -797,6 +921,31 @@ bool stop_world_effect(void* effect)
 // 0xA71300 writes the effect into *out and calls its AddRef, vtable slot 0x0 at 0x923720; the
 // game lets go of such a pointer with the Release slot 0x4 at 0xA81CE0, e.g. the pool map erase
 // 0xD2C9F0). Without this the relay keeps every received world effect alive for the session.
+// BUG-0585: Simulator::cTribe::UpdateFoodVisuals (0xC94CE0, thiscall(tribe, float change) ret 4) reads the tribe's
+// food mat at +0x260 and calls [+0x260]+0x34 vt+0x2C (its position) without a null check. After the City Hall editor
+// at the end of Tribe the player tribe has no food mat any more (+0x260 = 0) while the stage still runs for the
+// vehicle editor's vote and captions; a guest's food change relayed then (shared.cpp) faulted the host's game at
+// UpdateFoodVisuals+0x28 (data 0x34) inside the message pump and froze it. On: no visual without the food mat (the
+// food itself is changed). `coop.fix tribe.food_fx_mat off`: called anyway (0.7.6).
+static bool g_food_fx_fix = true;
+COOP_FIX("tribe.food_fx_mat", "BUG-0585", g_food_fx_fix,
+         "tribe: no +N/-N food visual on a tribe without its food mat (the end of Tribe: the City Hall stands)");
+unsigned g_food_fx_skipped; // tests
+bool tribe_food_visuals(void* tribe, float change)
+{
+    uintptr_t f = H->sym("Simulator::cTribe::UpdateFoodVisuals");
+    if (!f || !tribe || !skg::readable((uint8_t*)tribe + 0x260, 4))
+        return false;
+    uint8_t* mat = *(uint8_t**)((uint8_t*)tribe + 0x260);
+    if (g_food_fx_fix && (!mat || !skg::readable(mat + 0x34, 4) || !skg::readable(*(void**)(mat + 0x34), 0x30))) {
+        if (g_food_fx_skipped++ < 3)
+            H->log(M, SK_INFO, "tribe: no food visual: the tribe has no food mat (the City Hall stands, BUG-0585)");
+        return false;
+    }
+    skg::thiscall<void>(f, tribe, change);
+    return true;
+}
+
 bool release_world_effect(void* effect)
 {
     if (!effect_callable(effect))
@@ -984,6 +1133,8 @@ bool init(const SkHost* host, SkMod* mod)
     a_PlayAnimTo = H->sym("Simulator::cCreatureBase::PlayAnimationTo");
     if (a_PlayAnim)
         H->hook_create(M, (void*)a_PlayAnim, (void*)h_PlayAnim, (void**)&o_PlayAnim);
+    if (uintptr_t a = H->sym("Anim::AnimatedCreature::PlayAnimation")) // BUG-0532
+        H->hook_create(M, (void*)a, (void*)h_AcPlay, (void**)&o_AcPlay);
     if (a_PlayAnimTo)
         H->hook_create(M, (void*)a_PlayAnimTo, (void*)h_PlayAnimTo, (void**)&o_PlayAnimTo);
     // BUG-0464: the behaviour tree's animation starter and the idle refresh
@@ -1251,6 +1402,13 @@ bool gait_state(void* c, int* gait, int* gait2, int* moving, int* speed_state)
     return true;
 }
 
+bool grounded(void* c) { return c && skg::readable(c, 0x138) && field<uint8_t>(c, 0x137) != 0; }
+void set_grounded(void* c, bool on)
+{
+    if (c && skg::readable(c, 0x138))
+        field<uint8_t>(c, 0x137) = on ? 1 : 0;
+}
+
 bool drawn_state(void* c, net::Vec3* drawn, uint32_t* anim)
 {
     if (!c || !skg::readable((uint8_t*)c + 0xB54, 4))
@@ -1344,6 +1502,8 @@ static bool cinematic_running()
     return cm && field<uint32_t>(cm, 0x2C) != 0; // cCinematicManager state: 0 none, 2 playing
 }
 
+bool cinematic_playing() { return g_ready && cinematic_running(); }
+
 void destroy_creature(void* c)
 {
     if (!g_ready || !c)
@@ -1363,6 +1523,13 @@ void destroy_creature(void* c)
     void* nm = cdecl_call<void*>(a_NounGet);
     if (nm)
         thiscall<void>(a_DestroyInstance, nm, c);
+}
+
+void destroy_instance(void* obj)
+{
+    void* nm = g_ready && obj ? cdecl_call<void*>(a_NounGet) : nullptr;
+    if (nm)
+        thiscall<void>(a_DestroyInstance, nm, obj);
 }
 
 // tests (BUG-0507): the game destroys c as it does on its own (cGameNounManager::DestroyInstance), without
@@ -1424,6 +1591,58 @@ void place(void* c, const net::Vec3& pos, const net::Quat& rot)
 {
     teleport(c, pos, rot);
     field<uint8_t>(c, 0xB5D) = 0;
+}
+
+void air_hold(void* c, bool on, const net::Vec3& pos, const net::Quat& rot, const net::Vec3& vel)
+{
+    for (size_t i = 0; i < g_air.size(); i++)
+        if (g_air[i].c == c) {
+            if (on)
+                g_air[i] = {c, field<void*>(c, 0xB54), pos, vel, rot};
+            else
+                g_air.erase(g_air.begin() + i);
+            return;
+        }
+    if (on && g_air.size() < 64) // (BUG-0550: NPC proxies in the air too)
+        g_air.push_back({c, field<void*>(c, 0xB54), pos, vel, rot});
+}
+
+void air_release_all() { g_air.clear(); }
+
+static void air_reassert(void* c, int where)
+{
+    for (auto& h : g_air)
+        if (h.c == c) {
+            if (!grounded(c))
+                return;
+            place(c, h.pos, h.rot);
+            set_grounded(c, false);
+            *(net::Vec3*)((uint8_t*)c + kVelOff) = h.vel;
+            g_air_regrounded[where]++;
+            return;
+        }
+}
+
+// the animation system's own start (Anim::AnimatedCreature::PlayAnimation 0xA0C5D0, a vtable slot every start
+// goes through, also the locomotion's: the walk start, fall -> idle)
+static int SK_THISCALL h_AcPlay(void* ac, uint32_t id, int a)
+{
+    int r = o_AcPlay(ac, id, a);
+    if (!g_air.empty())
+        for (auto& h : g_air)
+            if (h.ac == ac) {
+                air_reassert(h.c, 4);
+                break;
+            }
+    return r;
+}
+
+std::string air_status()
+{
+    char b[180];
+    snprintf(b, sizeof b, "air hold: held=%u regrounded update=%u anim=%u idle=%u bt=%u low=%u\n", (unsigned)g_air.size(),
+             g_air_regrounded[0], g_air_regrounded[1], g_air_regrounded[2], g_air_regrounded[3], g_air_regrounded[4]);
+    return b;
 }
 
 void set_position(void* c, const net::Vec3& pos)
@@ -1633,6 +1852,7 @@ void puppet_register(void* c)
 
 void puppet_unregister(void* c)
 {
+    air_hold(c, false); // BUG-0550: a proxy or puppet held in the air is released with it (no hold on a freed creature)
     g_puppets.erase(std::remove(g_puppets.begin(), g_puppets.end(), c), g_puppets.end());
 }
 

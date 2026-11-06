@@ -5,6 +5,8 @@
 #include <thread>
 #include <string>
 #include <vector>
+#include <source_location>
+#include <source_location>
 unsigned checks;
 #define CHECK(x) do { ++checks; if (!(x)) { std::printf("FAIL %d: %s\n",__LINE__,#x); std::exit(1); } } while(0)
 template<class F> void until(net::Session& host,net::Session& guest,F done) {
@@ -13,11 +15,13 @@ template<class F> void until(net::Session& host,net::Session& guest,F done) {
     CHECK(done());
 }
 
-template<class F> void receive_until(net::Session& receiver,F done) {
+template<class F> void receive_until(net::Session& receiver,F done,std::source_location caller=std::source_location::current()) {
     const auto began=net::now_ms();
     while(!done() && uint32_t(net::now_ms()-began)<5000) {
         receiver.update();std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
+    if(!done())std::printf("receive wait expired: caller=%u checks=%u role=%u pending=%zu\n",caller.line(),checks,unsigned(receiver.role()),receiver.pending_to(0));
+    if(!done())std::printf("receive wait expired: caller=%u checks=%u role=%u pending=%zu\n",caller.line(),checks,unsigned(receiver.role()),receiver.pending_to(0));
     CHECK(done());
 }
 net::Writer numbered(uint32_t value) {
@@ -130,6 +134,11 @@ void flush_retry_uses_fresh_time() {
     const auto before=relay.reliable;
     std::this_thread::sleep_for(std::chrono::milliseconds(250));
     CHECK(host.flush_pending(host.transport_generation()));relay.pump();
+    // Upstream bulk_acks waits for acknowledged newer traffic or at least
+    // one second of silence. A missing ACK must not trigger the old 250ms retry.
+    CHECK(relay.reliable==before&&delivered.empty());
+    std::this_thread::sleep_for(std::chrono::milliseconds(800));
+    CHECK(host.flush_pending(host.transport_generation()));relay.pump();
     receive_until(guest,[&]{return delivered.size()==2;});
     CHECK(relay.reliable>before&&delivered==std::vector<uint32_t>({1,2}));
     relay_until(host,guest,relay,[&]{return host.pending_to(1)==0;});
@@ -160,7 +169,7 @@ void flush_packet_allowance_is_shared() {
         for(unsigned i=0;i<4;++i){CHECK(host.flush_pending(host.transport_generation()));relay.pump();}
         // Even due retransmissions cannot start another allowance without
         // update. Unsent reliable data remains queued for the next update.
-        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1050));
         CHECK(host.flush_pending(host.transport_generation()));relay.pump();
         CHECK(relay.downstream-packets==burst&&host.pending_to(1)==total);
         for(unsigned i=0;i<80;++i)CHECK(host.send_unreliable_to(1,100,numbered(i)));
@@ -182,6 +191,12 @@ void flush_packet_allowance_is_shared() {
     exercise(net::kAckWindow/3,160);
     // The acknowledged bulk trains the real loopback connection's RTT into
     // the LAN branch; no test-only RTT setter or private peer access is used.
+    // The deliberate silent interval contributes high RTT samples with upstream
+    // bulk ACKs. Train the LAN branch using fresh real traffic, never an RTT setter.
+    relay_until(host,guest,relay,[&]{
+        if(host.rtt_of(1)>=0&&host.rtt_of(1)<40)return true;
+        CHECK(host.send_unreliable_to(1,100,numbered(9999)));return false;
+    });
     CHECK(host.rtt_of(1)>=0&&host.rtt_of(1)<40);
     exercise(net::kAckWindow,240);
     guest.leave();host.leave();

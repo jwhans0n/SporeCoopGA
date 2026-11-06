@@ -1,4 +1,5 @@
 #include "adventure_world.h"
+#include "sporekit_build.hpp"
 #include "adventure_world_lifecycle.h"
 #include "adventure_world_actions.h"
 #include "adventure_world_vehicles.h"

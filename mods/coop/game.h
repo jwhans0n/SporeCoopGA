@@ -79,9 +79,11 @@ void* spawn_creature(const net::Vec3& pos, void* species, void* herd);
 // cinematic is over (it may be one of its actors), destroy_deferred_tick() removes it then
 void destroy_creature(void* c);
 void destroy_untracked(void* c); // tests (BUG-0507): the game's destroy without the mod's bookkeeping
+void destroy_instance(void* obj); // cGameNounManager::DestroyInstance of a game object that is no creature (a fruit, BUG-0584)
 void destroy_deferred_tick(); // once per frame
 void set_destroy_defer(bool on); // tests (off: at once)
 void set_defer_keeps_puppet(bool on); // tests (off: a deferred puppet leaves the puppet list at once, BUG-0066)
+bool cinematic_playing(); // cCinematicManager +0x2C != 0 (W2: no destroy of a village meanwhile)
 bool destroy_pending(void* c);     // queued by destroy_creature, still there
 std::string destroy_deferred_status();
 void teleport(void* c, const net::Vec3& pos, const net::Quat& rot);
@@ -108,6 +110,14 @@ bool drawn_state(void* c, net::Vec3* drawn, uint32_t* anim);
 // gait state (AnimatedCreature +0x17C -> +0x15B8, two ints: 0 = no gait), the creature's +0x137 and
 // its speed state +0xF98. False when it has no animation.
 bool gait_state(void* c, int* gait, int* gait2, int* moving, int* speed_state);
+// BUG-0376: +0x137, 1 while the creature is grounded on the terrain, 0 while it falls or stands on an object
+bool grounded(void* c);
+void set_grounded(void* c, bool on);
+// BUG-0532: puppet c is held in the air at pos (modes.cpp, every frame while the partner is airborne): put back there
+// and marked not grounded right after an animation start or an update of the game that grounded it
+void air_hold(void* c, bool on, const net::Vec3& pos = {}, const net::Quat& rot = {}, const net::Vec3& vel = {});
+void air_release_all();
+std::string air_status();
 
 // Animation events: called for every PlayAnimation/PlayAnimationTo on any creature.
 using AnimListener = void (*)(void* creature, uint32_t anim_id, int block, bool disable_blend, bool to_target);
@@ -152,7 +162,13 @@ void* create_local_effect(uint32_t id, const void* xform);
 // what effects::tick reads about the effects the hooks recorded this frame
 bool effect_position(void* effect, net::Vec3& out);
 bool effect_relayed(void* effect); // a creature hook already sent it
-uint32_t last_effect_id();          // the last effect id the game created (a valid id in this stage)
+// created in another effect world than the game's own (cEffectsManager +0x244): the skin painter's
+bool effect_foreign(void* effect);
+// the last effect id the game created (a valid id in this stage); main_world_only: in the game's own
+// effect world (not the skin painter's, whose effects fault anywhere else)
+uint32_t last_effect_id(bool main_world_only);
+uint32_t last_foreign_effect_id();
+uint32_t foreign_effects();
 // a bone index inside the creature model's bone array (the range cCreatureBase::CreateEffect indexes)
 bool creature_bone_ok(void* creature, int bone);
 void clear_effect_table();         // after effects::tick (once a frame, main thread)
@@ -173,6 +189,9 @@ bool effect_active(void* effect);
 bool stop_world_effect(void* effect);
 // drop the reference the relay holds on a created world effect (IVisualEffect vt 0x4, Release)
 bool release_world_effect(void* effect);
+// the tribe's "+N / -N food" over its food mat (Simulator::cTribe::UpdateFoodVisuals); false when the game would
+// fault: the tribe's food mat (+0x260) is gone once the City Hall stands at the end of Tribe (BUG-0585)
+bool tribe_food_visuals(void* tribe, float change);
 
 // ---- creature registry: every cCreatureAnimal that ran Update since the last call ----
 const std::vector<void*>& creatures_updated();   // swap per frame (call once per frame)
@@ -227,6 +246,7 @@ void hit(void* c, float damage, int type, void* attacker_creature);          // 
 // the same with a push (knockback impulse, the 4th TakeDamage argument; tests: a charge's throw, BUG-0383)
 void hit_push(void* c, float damage, int type, void* attacker_creature, const net::Vec3& push);
 void set_health(void* c, float hp);
+std::string damage_log(bool clear); // the last creature hits through TakeDamage (coop.hp dmglog)
 // BUG-0463 sneak (docs/re/creature.md#creature-sneak): +0xBB1 is 1 while the creature sneaks, +0xB80 its
 // noise radius (0 while sneaking, what the NPCs' hearing check reads), +0xB7C the model's alpha the
 // creature's update eases to 0.2 while sneaking (written to the model +0x80)

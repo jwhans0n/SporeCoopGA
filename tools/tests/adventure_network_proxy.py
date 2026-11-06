@@ -13,9 +13,9 @@ def adventure_message_type(packet):
     if len(packet) < 31 or packet[:4] != b'SPCO':
         return None
     version = struct.unpack_from('<H', packet, 4)[0]
-    if not 7 <= version <= 26:
+    if not 7 <= version <= 28:
         return None
-    return 63 if version >= 26 else 61 if version >= 24 else 52
+    return 65 if version >= 27 else 63 if version >= 26 else 61 if version >= 24 else 52
 
 
 class NetworkProxy:

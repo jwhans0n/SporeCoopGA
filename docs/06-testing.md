@@ -2292,6 +2292,9 @@ wrong. Suite `campaign` (in no other suite): `tools/lab.py run campaign --lanes 
   reached it (`local_refused`, `puppet_refused`, `pool_gone`).
 * Pitfall: two `lab.py run` started in the same second from one worktree get the same run id and
   write into the same `out/lab/<id>/` (logs mixed); start them a few seconds apart.
+  CORRECTION (2026-11-04, fix/w42-infra): fixed by BUG-0353 / BUG-0362: `lab.new_run_dir` takes the
+  directory with os.mkdir and gives a run of the same second the next suffix (`<id>-2`, `-3`; with a branch
+  `<time>-2-<branch>`), flaky.json is written under a file lock; lab_selftest `same_second` checks it.
 
 ## Votes during a caption: coop_vote_caption.py (2026-10-29, fix/w7-vote)
 <a id="testing-vote-caption"></a>
@@ -4483,3 +4486,559 @@ its game's `world_scale=` from coop.pool, read before and after the dump). Fails
   start (the twin run; `SPORE_FIX_OFF=initfail` in the test writes it). ~25 s on one lane.
 * Pitfall: returning 0 **after** the game's full Init does not work for this: the game's teardown then faults
   (0xC0000005 in MSVCR90 / steam_api frames), a crash report instead of the clean exit.
+
+## Tribe actions of 0.7.5: tools (2026-11-03, fix/w41-tribe-actions)
+<a id="testing-tribe-tools"></a>
+
+* `coop_tribe_tools.py [--nofix] [--type 1] [--dist 9]` (suite `tribe_tools`, ~1.5 min cold): `coop.tribe build
+  <type> [m]` (host, test setup: the 'tribe' fixture's palette is locked) makes a tool of the player tribe as
+  the palette's placement does, `m` metres from the village centre; `coop.tribe tools` lists the player tribe's
+  tools (`tool <i> <ptr> serial= type= pos=`) and what each member holds (`held <id> owner= tool=`, the game's
+  +0x102C); `coop.tribe grab <member id> <tool index>` gives the member the GrabTool order a click on the tool
+  gives (DoActionForObjects: a guest sends it to the host). `coop.wobj` prints `made=` for the kind
+  `tribe_tool` (copies of host tools a guest made). `--nofix` = `SPORE_FIX_OFF=wobj.tribe_tool,tribe.tool_hold`.
+* The fixture's player tribe has one tool, the fire pit (type 10), on both games; the rack (type 1) comes
+  out on the village's edge 9 m off the centre. The host's member took the weapon 3-37 s after the order.
+* `coop_tribe_epic_damage.py [--nofix] [--min-blow 30]` (suite `tribe_epic_damage`, ~1.5 min cold): `coop.tribe epic`
+  (host) spawns the co-op epic 60 m off, `coop.tribe epic near <member id>` puts it 6 m from a member (repeated: it
+  walks off), `coop.tribe epic stats` lists every live epic (`ours=`, hp, size, its herd's archetype and
+  multipliers, `blows= last= max=`: its blows on members, counted in the host's citizen TakeDamage hook). The
+  fixture's own epic does not hit anybody in the test (it is far off). Two blows come within 10-40 s.
+## Tribe: a guest's saves and own tribes (2026-11-03, fix/w41-tribe-world)
+<a id="testing-tribe-guest-world"></a>
+
+* `coop_tribe_save_strip.py` (suite `tribe_save_strip`, ~2 min, the free lane for Carol): Carol joins the
+  host's tribe world, the host adds 4 adults (`coop.tribe spawn 4`) and forms an NPC tribe 70 m away
+  (`coop.tribe npc_tribe 3 70`); Carol saves (`coop.save`), restarts alone and loads: her player tribe holds her
+  own members only and no tribe stands where the made one did (`coop.tribe` marks `made=1` tribes and `ours=1`
+  members on a guest). `SPORE_FIX_OFF=tribe.save_strip` fails. The host's game forms more NPC tribes of its own
+  while the test runs (2 more in 2 min on the tribe fixture): compare tribes by place, not by count.
+* `coop_tribe_guest_tribes.py` (suite `tribe_guest_tribes`, cold, ~2 min): `coop.tribe form` on the guest runs
+  its game's NPC tribe controller's forming (NpcTribeController_FormTribe, what the game does during play); then
+  with the fix off for a moment a tribe the host has not is made and must lose its members once the fix is on.
+  `SPORE_FIX_OFF=tribe.guest_tribes` fails.
+## Civ roads and citizens (2026-11-04, fix/w41-civ-citizens)
+<a id="testing-civ-roads-citizens"></a>
+
+* `coop_civ_roads.py` (suite `civ_roads`, warm, about 50 s): the host's game adds a trade route (`coop.civ roads 0 1`,
+  the game's AddTradeRoute); 8 s later the guest has as many road objects (`coop.civ nouns 2B8A4E7`) and both cities
+  list the route. Twin: `SPORE_FIX_OFF=civ.roads` (guest: no road).
+* `coop_civ_citizens.py` (suite `civ_citizens`, warm, about 100 s): 8 rounds 6 s apart, the citizens of both games
+  around the same centre (`coop.census all`): at most 10 % of the host's without a partner within 15 m and at most
+  10 % of the unambiguous pairs (each the other's nearest within 3 m, the next 2 m farther) of another size.
+  Twins: `SPORE_FIX_OFF=civ.citizens` (about half unpaired), `civ.citizen_scale` (sizes differ).
+* Pitfall met: a lab run with `SPORE_FIX_OFF` leaves the switch off in the warm games; the next run without it on
+  the same lane reused them (`fix=0` in `coop.wobj`). Run the PASS after a twin with `--cold`.
+
+## Civ shots between the games (2026-11-04, fix/w41-civ-combat)
+<a id="testing-civ-shots"></a>
+
+* `coop_civ_shots.py` (suite `civ_shots`, warm, about 110 s): the host's military vehicles attack the nearest NPC
+  city (`coop.civ attack <id> <city> 2`: the game's SetOrder); 60 samples 1 s apart of the projectile objects in
+  each game's noun list (`coop.civ nouns 24270C5` and the other projectile nouns). PASS: the host fired, the
+  guest had projectiles in at least half the host's samples, at most about twice as many, and the city's
+  building hit points on the guest did not fall (its copies of the shots hurt nothing). Twins:
+  `SPORE_FIX_OFF=civ.shots` (no projectile on the guest), `civ.shot_damage` (the guest's city loses hit points).
+  The status line `shots:` (`coop.civ`) counts the host's FireTool calls seen, the guest's calls, the targets
+  found and the hits dropped.
+* `sync_civ_loss` (coop_sync.py civ under SPORE_NET=burst, cold, about 1 min): the sync_burst variant for Civ
+  alone, for BUG-0438. With one vehicle sampled 16 times its p90 is the second worst sample: one burst decides
+  a run (see the ticket).
+## Creature leftovers of 0.7.5 (2026-11-03, fix/w41-creature-left)
+<a id="testing-k1-creature"></a>
+
+* `creature_social_meter` (coop_creature_social_meter.py, ~1.2 min warm): the guest's social game with a Kook by
+  real input; `coop.social meter` prints the game's meter object (`visible=` the layout's own byte,
+  `visible_at_win=`, `rounds=`, `stage_win_msgs=` the 0x60B4123 the creature-stage handler got). The Kook needs one
+  round: the win usually comes within the engagement's first second, so the test reads `visible_at_win`, not a
+  live sample. The meter's bar fields stay 0.0 on the guest (not laid out in that time): no bar check.
+* `chat_modal` (coop_chat_modal.py, ~1 min warm): the host's "game saved" box held up with `coop.save hold`
+  (`coop.save box` says whether it is up, `coop.save confirm` lets the mod confirm it); `coop.uistate` has
+  `modal=` (the window manager's modal window) next to `input_lock=`.
+* `nest_heal` (coop_nest_heal.py, ~1.7 min): each player at the nest with `coop.team off` (the pack regeneration
+  would heal too) and `coop.team hp 3`, 12 s; then 100 m away. Both heal at the fixture's nest (BUG-0496 not
+  reproduced).
+* `evolve_key` (coop_evolve_in_place.py --case creature --nosave, ~2.5 min): `coop.evokey nosave` turns the host's
+  in-place save off (a host alone does not save either); `coop.evokey` prints `keys_set=`.
+
+## Puppet look: jumps, nest mound, stops, the gait near the camera (2026-11-04, fix/w41-puppet-look)
+<a id="testing-puppet-look"></a>
+
+* `coop_puppet_walk.py --air` (suite `puppet_air`, warm, ~1.5 min: `--dir guest --jumps 0.9 --secs 30`, hops by
+  `coop.abilities lift 1.5`): of the frames with the walker's target more than 0.4 m over the observer's ground, the
+  next frame draws the puppet at least half as high in >= 80 % (at least 5 hops). With `--air` a drawn frame step that
+  follows a step of the target itself (the hop is a teleport of the walker's own creature) is no jump of the driving.
+  `SPORE_FIX_OFF=creature.puppet_air` fails (5 %; with the fix 99 %).
+* `--mound x,y,z` (suite `puppet_mound`, cold: `--goto`): the walker stands 10 s 0.5 m over that point (it lands on
+  the fixture's nest mound, lower part at -128.4,-487.5,-67.4), then walks; checks that of the frames with the target
+  over 0.15 m above GetHeightAt and the puppet on the screen at most 10 % are drawn 0.15 m under the walker's height.
+  `SPORE_FIX_OFF=creature.puppet_mound` fails (179 of 303 frames).
+* `--stop-walk`: walks of 1-2.5 s by W, each followed by a 1.4 s stop, 60 % of them abrupt (`coop.abilities halt`:
+  StopMovement, a teleport in place, velocity 0); prints per stop the drawn way after the stop less the target's
+  (`slid on ...`) and checks at most 10 % over 0.15 m. Not in the suite: no stop slid with the 0.7.4 driving (BUG-0408).
+* `--zoom N`: both cameras zoomed out by N wheel turns (`wheel x y -5`); the wheel stops at 25-60 px/m.
+* `coop.track` column 29 `ppm`: pixels per metre of the creature on this game's screen (0 off screen). puppet_walk
+  judges the walk gait only where it is >= 10 (BUG-0436: three gait-0 runs had ~1 px/m, the camera hundreds of m
+  away) and prints `NOT MEASURED ... the observer's camera is far away` when most frames are farther.
+* `coop.track air <v>` (tests): the puppet in the air 0 placed and marked not grounded (the fix), 1 placed only, 2
+  teleported, 3 walked on (walk_place).
+## Cell leftovers of 0.7.5: the camera, the partner in a level change, Cell twins (2026-11-04, fix/w41-cell-left)
+<a id="testing-l1-cell"></a>
+
+* `cell_camera` (coop_cell_camera.py, cell fixture, ~1 min warm): waits for the hatch to end (`coop.uistate`
+  `input_lock=0` and `cine=0`: during the hatch the game puts the cell back at its start, a jump made then is
+  undone); the guest `coop.pool tp 40 0`, then the host `coop.pool selfhit 250` with the guest 40 m away (it
+  respawns next to the guest after 10 s). `coop.pool cam` prints the camera (`off=` the drawn point to the own
+  cell). Fails when `off` is 1.5 m or more 3 s after each jump. BUG-0343: SPORE_FIX_OFF=cell.camera_snap 7.0 m
+  (FAILS, lab 20261104-020658), the fix 0.1-0.2 m (lab 20261104-020550).
+* `cell_puppet_scale` (coop_cell_puppet_scale.py, ~70 s): both cells idle 7 m apart, the host's food up until two
+  level changes; every 0.25 s `coop.pool scalepos` on both (scale, own cell, puppets in one frame); the error is
+  the puppet against the partner's own cell, both times their game's scale, in the drawing game's metres.
+  BUG-0519: SPORE_FIX_OFF=cell.puppet_scale p90 8.0 / 4.2 m (FAILS, lab 20261104-021951), the fix 0.5 / 0.3 m.
+* `parts_cell_twin` (coop_parts_shared.py --from-cell --guest-cell-part, ~2.5 min cold): the guest collects a Cell
+  part with a creature twin that neither game has (`coop.parts cell collect <i>`), then Cell -> Creature the
+  players' way; the twin must be IsUnlocked (`coop.parts states`, the `u`) on both games, then the test stops.
+  BUG-0446: SPORE_FIX_OFF=parts.shared_cell FAILS (lab 20261104-022323), on PASS (lab 20261104-022114).
+## Tribe: orders and the grab spots (2026-11-04, fix/w41-tribe-orders)
+<a id="testing-tribe-orders"></a>
+
+* `coop.tribe ai <member id>` (any game; the host's is the one that counts): the member's order record (`rec=`
+  action, `target=`, `has=`), behaviour node (`node=`, `depth=`), the leaf node's memory (`mem=` state, the tool,
+  the tool's position at the enter, flags, claimed spot, wait counter for the grab node 0x0462854D), the walk
+  (`mode=`, `flags=`, `goal=`, `r=`) and `sel=`. `coop.tribe layout <tool type>` (host): the tribe's grab spots of
+  that type (place, `used=`, the member on it). `coop.tribe put <id> <x> <y> <z>` (host): test setup, a member onto
+  the ground there. docs/re/tribe.md#tribe-orders.
+* `coop_tribe_tools.py`: the guest's member walks to one of the rack's grab spots (a ring ~7 m round it) and,
+  in some runs, stops 1.5 m short of it for good (3 of 8 runs before the fix). Twin: `SPORE_FIX_OFF=tribe.grab_spot`
+  over `--repeat` (the failure is not deterministic: putting the member next to the fire pit spot, or another
+  member onto the spot, with `coop.tribe put` did not make it stop: it reached the spot or took another one).
+  `--own`: the host orders one of its own members (not the chief: tool 11 does not grab) the same way, a control.
+* play_tribe logs `host ai #<id>: ...` for every member of an order nobody acted on.
+* `creations` (coop_creations.py, ~1 min, BUG-0345 since 2026-11-04): the guest's own creature by the per-world
+  rule: `coop.creations unchoose creature` + `worlds forget` (a world it never played its creature in) -> the
+  world's species; `choose` -> own, the notice "plays its own creature" in both game logs, `worlds` records it;
+  unchoose (same world) -> still own; forget -> the world's species; the window's next. The host knows the
+  guest's creature under its shared remapped key (7C...), not the guest's id: compare the host's puppet with
+  "not the world's species". SPORE_FIX_OFF=creations.guest_world_species
+  FAILS (lab 20261104-033933).
+## Watchdog, world transfer, world events (2026-11-04, fix/w41-infra)
+<a id="testing-g1-infra"></a>
+
+* `kit_watchdog.py` (BUG-0347, one game, ~2 min): `kit.test.window minimize` for 40 s, then `kit.test.hang 40000`.
+  Minimized under Wine the frames stop (IsIconic 1, 66 -> 66) while App::Canvas::Tick goes on. `SPORE_FIX_OFF=hangloop`
+  (or `--old`) fails the minimize case (the WATCHDOG dump). Pitfall: a hidden window (`kit.test.window hide`,
+  SW_HIDE) is no pause under Wine: the game goes on presenting without the frame cap (~80 000 frames/s, 440 ->
+  84 282 in 4 s), so that case is only run with `--case hide`.
+* World transfer statistics: the host logs one line per transfer when the guest has acknowledged all of it,
+  `world: transfer to N acknowledged (KB in s, KB/s; packets P, resends R = x %, rtt ms)`. The fix's switch
+  `net.bulk_acks` (BUG-0405); measure with `rejoin_race_long` (clean loopback, the guest loads while the world
+  comes) and `rejoin_mobile` (SPORE_NET=mobile), each twice (`SPORE_FIX_OFF=net.bulk_acks` and on). On the clean
+  link: 27 transfers 63 % resends (160 228 of 255 858 packets), median 2.2 s / 1571 KB/s (off,
+  out/lab/20261104-032411) against 33 transfers 0 resends of 117 813 packets, median 1.2 s / 2939 KB/s (on,
+  out/lab/20261104-033012). net_tests `bulk_busy_receiver` simulates the same (a guest that reads once per 200-950
+  ms frame, 256 packets per update) on clean, 40 ms / 3 % and 150 ms / 10 % links.
+* `coop_drama_guest.py` (BUG-0486, suite drama_guest, ~1 min warm start): `coop.drama start 2` (the Drama Manager's
+  own StartKind for the UFO visit) on the guest and then on the host; the UFOs are counted in each game's object
+  list (`coop.census` nouns, worlddiff.NOUNS 'ufo'). `SPORE_FIX_OFF=creature.guest_events` fails (the guest's UFO).
+* CORRECTION (2026-11-04, fix/w41-cell-left): coop_creations.py no longer leaves the fixture world recorded (that made
+  later tests depend on the order and on the lane). Tests that need the guest's own creature choose it and put the
+  guest's choice and this world's record back (`tools/tests/creations_state.py`: save / choose_own / restore; used by
+  creations, creations_rejoin, old_species), and wait until the host has the guest's own creature rather than the
+  world's species it announces first. Verified in both orders, --cold: creations, creations_cell, creations_rejoin,
+  old_species, npc_swap, creation_leave OK (lab 20261104-053801 .. 20261104-060316); legless_guest fails either way
+  (BUG-0533, not the rule).
+## Tribe tools of every tribe, a guest's purchase, orders during a gather (2026-11-04, fix/w42-tribe-left)
+<a id="testing-tribe-tools-all"></a>
+
+* `coop_tribe_tools_all.py` (suite `tribe_tools_all`, BUG-0523): the host forms an NPC tribe (`coop.tribe npc_tribe 3
+  70`) and places a rack for it (`coop.tribe place <host tribe index> <type> <m> [deg]`, any role: the index is the
+  host's MSG_TRIBE_STATE order, a guest maps it); the guest places an own tool of that tribe. The guest's tribes' own
+  tool lists (`coop.tribe tools all`) must match the host's within 3 m near the village. The new tribe's index is
+  looked up by its fire pit: an added tribe can shift the indexes of the object list. ~60 s warm.
+* `coop_tribe_tool_buy.py` (suite `tribe_tool_buy`, BUG-0524): `coop.tribe buy <type> <m> [deg]` on the guest runs
+  the palette's placement calls (the old tool of the type goes, CreateTool, dragged: spatial +0x72) until `coop.tribe
+  buy_end`; the host's tool list must have it within 2 m after the drag only, and a guest's member takes the weapon.
+  ~65-90 s.
+* `coop_tribe_gather_stall.py` (suite `tribe_gather_stall`, BUG-0531 regression check): `coop.tribe order <id>
+  <action> <x y z>` (host) sends a guest's member to gather a tree 90-130 m off; the guest's walk order (select +
+  walk) is given while it carries the food home (gather state 19). Pitfall: the game's walk ends some metres short
+  of goals near the hut: the test checks the member leaves the gather node and walks 5 m of 15 toward the goal.
+
+## Life on a colony planet in Space: space_planet_citizens, space_planet_vehicles, space_colony_spice (2026-11-04, fix/w42-space-planets)
+<a id="testing-space-planet"></a>
+
+`tools/tests/coop_space_planet.py --case citizens|vehicles|spice` (space fixture, 3-5 min each;
+docs/re/space.md#space-planet-life). Each asserts the game's own objects in the other player's game:
+
+* `citizens` (BUG-0490): both ships land on the home planet, the host's ship is put over the guest's
+  (`coop.space over x y z`: on a planet, the own ship over a point at its height), 12 s for the host's game to
+  move its citizens there; 3 rounds of `coop.census all` within 400 m of the guest's ground point: every host
+  citizen needs a guest citizen within 3 m and of the same size (12 %); FAIL over 5 %. Twin
+  `SPORE_FIX_OFF=space.citizens`.
+* `vehicles` (BUG-0490): the colony's 40 vehicles, 4 rounds: a host vehicle without a guest vehicle within 15 m
+  counts; FAIL over 10 % (the two dumps are a fraction of a second apart at ~20 m/s). Twin `space.vehicles`.
+* `spice` (BUG-0537): the host lands (9 pickups by its cities), the guest jumps to the next star and back (its
+  game collects the home colony's stored spice into its hold on arrival, as every arrival does); 10 s later the
+  host's colony cities keep no more than the guest's, the host's planet shows at most 1 pickup, the host's hold
+  is unchanged, and after the guest lands both planets show the same pickups. Twin `space.colony_spice`.
+* `coop.space colonyspice`: the feature's counters and this game's colonies with the stored spice of each city;
+  `coop.wobj` lines `space_citizen` / `space_vehicle` and `space vehicles drives=`.
+* The divergence detector in Space (worlddiff.py): citizens near the guest are compared only when the host's
+  game has citizens there (each game puts its pool of 150 at the cities near its own camera); a ship's size is
+  compared relative to the own ship of the game that draws it (each game sizes every ship by its camera zoom).
+
+## Space lifecycle tests: saves and rejoins (2026-11-04, fix/w42-space-life)
+<a id="testing-space-lifecycle"></a>
+
+* `coop_space_save_strip.py` (~2 min, needs the free lane): Carol (lane B) saves in the host's star system
+  with two puppets and a mirror, is restarted alone and loads the save; our ships are told apart in
+  `coop.fleet list` by `puppet` / the mirror id, `inv=` and `model=`, and in the reloaded world by type, model
+  and the spot they stood on (5 m). The game does not keep the invincible byte: a reloaded puppet is a plain
+  Defender (`inv=0`), so "no invincible Defender" alone does not catch it.
+* `coop_space_colony_rejoin.py` (~1 min): pitfall: right after `coop.leave` and a join the guest still answers
+  `coop.avatar` in its own old world, so `twoinst.wait_guest_in` can return before the host's world is loaded;
+  wait for `coop.space world` (`world=N open=1`) to move on first.
+* Console answers were cut at 8 KB until 2026-11-04 (SporeKit `out_printf`, BUG-0388): a dump read in pages of
+  300 rows got ~97 of each page, silently. Now up to 1 MB per printf (`kit.fix longout`); `coop_space_drawn.dump`
+  prints `track dump: N of M rows read` when rows are missing. A test that reads a long answer should still count
+  what it got against what the game says it has.
+* `SPORE_FIX_OFF=kit.<name>` switches a SporeKit fix (`kit.fix <name> 0`) off on both games (twoinst.start).
+
+## Creature leftovers of 0.7.6 (2026-11-04, fix/w42-creature-left)
+<a id="testing-creature-leftovers-076"></a>
+
+* `creature_social_prompts` (coop_creature_social_prompts.py, ~70 s warm, BUG-0525): a real engagement of a Kook, then
+  the answers as the key / bar path sends them (`coop.social act <id> 0`, `coop.social answer <id> <hex type>` for an
+  ability of another kind). The prompt's animation is checked on the guest's mirror with `coop.npc cur` (the game may
+  play another of the animation's family: 042A1CAF as 042A1CB3). A failed social game leaves the guest not engaged; the
+  test engages again with `coop.social act` (the click's camera sweep found the Kook again in 1 of 2 runs).
+* `puppet_air` and BUG-0532: the 1-3 frame drops come in about 1 run of 3; a FAIL / PASS claim needs a series
+  (`--repeat 3 --retry 0` on, `--repeat 4` off). `coop.track air` prints the air hold's counters.
+* `PUPPET_JUMP_WORLD=1 coop_puppet_jump.py` (BUG-0536) runs it with the world's species; a lane whose guest profile
+  recorded its own creature for the fixture world plays its own creature anyway: the first run clears the record and
+  fails, the next `--cold` run plays the world's species. Put the record back afterwards (`coop.creations worlds set
+  creature <key>`), other tests choose the own creature themselves.
+## The effects relay's cost check: effects_party (2026-11-04, fix/w42-infra)
+<a id="testing-effects-cost"></a>
+
+BUG-0527. `coop_effects_party.py` checks that each of the three games spends under 1 % of its main thread in the
+relay while all three create 2.5 effects a second (`coop.effects load 1 400 <id>`). The check before measured the
+whole `effects::tick` in wall time (`effects cost: tick avg ... over N frames`) and failed on a loaded machine (lane 4,
+load average 8-12: 1.0-5.4 %, also with the 0.7.4 build). `coop.effects` now prints the tick's parts
+(`effects cost parts: load / rx / live / rest; relay ... in N frames: under 5 ms ..., slow N frames ...`), measured:
+
+* the workload itself (`load`: the game's CreateEffect at the player, what a player's own game does anyway) is
+  0.2-3.2 % of the main thread under load: it is no relay cost and is left out;
+* ticks over 5 ms (29-35 frames in 20 s at load average 10-12, 0-10 at 8-11, 0 at 6) held 2.6-5.3 % of the wall
+  time but 0-5 jiffies of the thread's CPU time (GetThreadTimes, a build of 20261104-122037): the OS preempted them;
+* the relay's own cost over the frames under 5 ms is 0.42-0.58 % (lab 20261104-123812; most of it `live_tick`,
+  0.25-0.56 %, the release bookkeeping of relayed effects; the hooks 0.0002 %).
+
+The check is now: hooks + the relay part over frames under 5 ms < 1 %, and frames with a relay part of 5 ms or more
+< 5 % of the frames (a relay that is slow every frame still fails). `--old-cost` runs the old check (FAIL on lane 4:
+the worktree's out/effects_party_tribe_oldcost_20261104.log, 2.3-3.0 %; in the passing run 20261104-123812 the old
+numbers were 1.27 % (Alice, Tribe), 1.21 % (Carol, Tribe) and 1.00 % (Alice, Civ)).
+* Pitfalls: the thread's CPU time is no measure under Wine (GetThreadTimes moves in 10 ms steps and costs ~50 us
+  a call: called every frame it was itself 0.4 % of the main thread). The old number (`tick avg` x frames) also
+  restarts every 60 s with the `perf:` line, so a window over that moment was wrong.
+
+## Space play tests: session ends, own systems, diplomacy away, the disable rule after a load (2026-11-04, fix/w42-space-play)
+<a id="testing-space-play-w42"></a>
+
+* `coop_space_trade_end.py` (~1 min warm): `coop.space trade hold 2` makes the receiver keep a gift or a sale without
+  answering (its answer "lost"); `trade` shows `delivered=N` (gifts the partner's side acknowledged at the transport)
+  and `kept_at_end=N`. `hold 1` (no add, no answer) is the old switch for the "still on its way" case.
+* `coop_space_allies_own.py` (~1 min warm): the guest founds a record-level colony in the fixture's home system
+  (`coop.space allies colonize <PlanetID>`); the host's `allies planet <PlanetID>` must show tech 5 and a cCivData of
+  the host's pol. `allies star` lists `loaded(pol=...)`: the political id of the loaded cPlanet. A run of this kind
+  must show 0 faults: a record-level colony the game's HUD does not expect faults at 0x107453A (handled, counted).
+* `coop_space_diplo_away.py` (~2 min, fixture `space_empire`): `coop.space away 1` on the host stands for an editor
+  entered from Space; the check waits 25 s after the host is back so the host's periodic table (every 20 s) has run.
+* `coop_space_down_reload.py` (~1 min warm): calls `twoinst.warm_reset` itself inside one test, so a state the
+  lab's warm reset carries over (BUG-0257) shows in a single run; it skips when the reset takes over 58 s.
+* BUG-0257 pitfall: tests that leave a ship disabled change the next warm test on the same games for 60 s; since
+  `space.down_epoch` a load ends that, but other per-world state may still carry over a warm reset.
+
+## A Sporepedia cache without ship models: space_npc_model (2026-11-04, fix/w42-infra)
+<a id="testing-space-npc-model"></a>
+
+BUG-0546. `coop_space_npc_model.py --solo` (suite `space_npc_model`; `space_npc_model_coop` with a guest) copies
+lane 5's Sporepedia cache of 2026-11-04 (no UFO with its model record) over the host profile's
+Pollination.package, loads space_empire, flies to star 004A0014 and checks there is no fault; the lane's own file
+comes back at the end. The cache copy is not in git: `out/fixtures/bug0546-Pollination.package` of the main
+checkout (else `out/bug0546/lane5-Pollination.package` of the fix/w42-infra worktree); without it the test SKIPs.
+It also SKIPs when the guard had no ship to fix (lane 4: its other caches have the models). About 1.5 minutes.
+`SPORE_FIX_OFF=game.ufo_model` must FAIL (lane 5: out/lab/20261104-130233).
+
+## The guest as a player: stun, flight, flock, nest ally, Tribe ring (2026-11-04, fix/w43-guest-player)
+<a id="testing-player-rules"></a>
+
+P1 of 0.7.7 (docs/re/creature.md#creature-player-rules). Each test checks the guest's own game's state.
+
+| Test (suite) | What | Twin switch |
+|---|---|---|
+| coop_creature_stun.py (creature_stun) | the host's NPC plays its charge on the guest's puppet (`coop.rules charge <npc> <player>`: SetTarget + PlayAbility, the hit and the stun are the game's); the guest's avatar holds stimulus 0x1000; the guest's stun of a proxy stuns the host's NPC (`coop.rules stun <s> <id>`, as its own hit) | creature.stun_relay |
+| coop_creature_air.py (creature_air) | a wild NPC bites the guest on the ground, then the guest's creature is kept 1.5 m up for 20 s (`coop.abilities lift`): no host melee hit lands while the guest's own game has it off the ground (`coop.hp dmglog`: `air=1`) | creature.air_immune |
+| coop_creature_flock.py (creature_flock) | the host's game starts its Summon Flock event (`coop.drama start 8`); on the guest every flock proxy answers vt 0xD4 friendly and wears the hearts (`coop.rules friendly <id>`) | creature.party_allies, npc.flock_hearts |
+| coop_creature_nest_ally.py (creature_nest_ally) | the host's record of a species becomes allied; the guest's herds of it get +0x191 (`coop.rules nests <inst> <type> <group>`), and lose it again | social.nest_ally |
+| coop_tribe_target_ring.py (tribe_target_ring) | the guest selects its members and orders an attack (`coop.tribe act 7`); its HUD's ring map holds a live ring under the enemy (`coop.tribe ring <id>`, the HUD's own lookup) | tribe.target_ring |
+
+* `coop.hp dmglog [clear]`: the last 48 hits through the creature TakeDamage hook (victim, attacker, amount, type,
+  caller, filtered / applied / direct = the mod's own apply_damage, air = the victim not grounded). A bite of an NPC
+  is type 2 from 0xC20A78.
+* `coop.social abil <id>` prints each ability's effect list (`fx kind:chance ... stun=<s>`): the NPCs with a charge
+  (type 0x1F) of the creature fixture are of 065CB811, 065CBF12, 065CB8BD and the host's family.
+* Pitfall: walking the HUD's ring map by hand from the console hung a guest twice (the owner pointer taken from
+  [0x169B2C8] +0x240 was not the map's); the test asks the game's own lookup on the owner the HUD's update ran on.
+* Pitfall: dropping CreatureAttackTarget on an airborne puppet left a charging NPC flying on towards it (82 m up, a
+  sync-check `n apart` in lab 20261104-212957): the hit runs, only its damage / stun are not carried.
+## Host-owned world state tests (2026-11-04, fix/w43-world-state)
+<a id="testing-wsync"></a>
+
+`coop.wsync dump [row]` prints the game's own values of the world state rows (docs/sync-architecture-plan.md#sync-wsync);
+tools/tests/wsync_util.py parses them and `differences(host, guest)` lists every row a guest's game has other than
+the host's. Tests: tribe_rel / tribe_goal / wsync_stages (coop_wsync_tribe.py rel|goal|stages, 1-5 min),
+wsync_transitions (the class test on Tribe: the host's game over and reload, a rejoin, the guest's own changes;
+8 min), cell_editor_budget (the host's Cell editor through the vote, 3 min). Pitfall: a rejoin loads the host's
+current world, so relations, the goal, the stages and the food are the host's after a rejoin even without the rows.
+## Whole-planet re-alignment tests (2026-11-04, fix/w43-realign)
+<a id="testing-realign"></a>
+
+* `coop.realign planet [kind]`: every village, hut, tool, food mat, nest and city of the game's noun list (the
+  whole planet, not 250 m) with its position, `fl=1` for the player's own and a hut's / tool's health in 1/1000;
+  `coop.realign`: the counters and the last compare per kind (here / host / lack / extra / state_off / removed /
+  state_fixed); `coop.realign hp <kind> x y z <permille>`: the health of the nearest hut / tool (tests).
+* `coop_realign_planet.py --fixture tribe|creature --case gameover|rejoin` (suite `realign_tribe`,
+  `realign_tribe_rejoin`, `realign_creature_rejoin`): a transition, then the two games' planets compared whole
+  (villages, huts with their health, food mats, nests, cities; tools are printed, not counted: BUG-0488).
+  `SPORE_FIX_OFF=realign.villages,realign.buildings` fails `realign_tribe` (the extra villages, huts, food mats
+  stay; the host's damaged hut is not shown).
+* `coop_tribe_epic_species.py` (`tribe_epic_species`, ~14 min): the live Creature -> Tribe change, then the co-op
+  epic is no player's species (BUG-0563).
+* Pitfall: the host's game-over caption in the tribe fixture comes ~20 s after the last member is out, later under
+  load; while the host's own creature_attack event runs it may not come at all (BUG-0582). The bounce tests wait
+  75 s for it and press its OK again when the game has not left the stage 10 s later.
+## The detector's world state and whole-planet rows (2026-11-04, fix/w43-detector2)
+<a id="testing-detector-state"></a>
+
+The detector of [#testing-detector](#testing-detector) compared only objects within ~250 m of the guest. The 2026-11-04
+player reports (BUG-0554..BUG-0579) were mostly world state it could not see. Now every sample also compares:
+
+* `coop.wstate` (mods/coop/wstate.cpp, one command per game, read-only, all from the game; offsets in
+  docs/re/tribe.md#tribe-detector-state and docs/re/creations.md#creations-cplayer-fields): the sky (time of day) and the
+  day's length, cPlayer's consequence trait per stage (stages done) and the stage progress bar, the mode's shared resource
+  (food / money), Cell food / spent DNA, Creature DNA and the species table (relation, impressed, killed per species), every
+  tribe's food, members and relation to the player tribe, the tribe mission manager's current mission (the goal), every
+  civilization's money, relation and cities, every NPC empire's relation and war / alliance flags, and the planet's whole
+  lists of villages, huts, tools, totems, food mats, nests, cities, buildings and turrets with position and owner.
+* `worlddiff.diff_state` / `diff_planet` (`pair_dump(..., state=True)`; the monitor's `SPORE_DETECTOR` samples use it,
+  other callers of pair_dump do not), signatures and tolerances:
+
+| signature | compared | tolerance | ticket |
+|---|---|---|---|
+| `All:state:time_of_day` | the planet context's orientation (what MSG_WORLD_TIME sends) | 20 deg | BUG-0579 |
+| `All:state:day_length` | cTimeOfDay +0x24 | 2 % | BUG-0579 |
+| `All:state:stage_done` | a stage done (trait != 0) on one game only | exact | BUG-0577 |
+| `<stage>:state:goal_progress` | the stage progress bar (cPlayer +0x10F0 / +0x10F4) | 5 or 10 % | |
+| `<stage>:state:money` / `food` | `coop.res`'s game value (Tribe: the player tribe row) | 20 or 5 % / 3 or 10 % | BUG-0572 (Tribe food) |
+| `Cell:state:dna`, `dna_spent` | cCellSerializableData food, spent DNA | 3 or 10 %, 1 | BUG-0560 |
+| `Creature:state:dna` | GetEvolutionPoints | 5 or 10 % | |
+| `Creature:state:species_relation` / `_impressed` / `_killed` / `species_only` | the species table, common keys (a guest's 7C / 7D keys have no partner) | exact | BUG-0419 class |
+| `Tribe:state:food`, `player_members` | the player tribe's bundles, members | 3 or 10 %, 1 | BUG-0572 |
+| `Tribe:state:relation`, `members`, `tribe_food` | NPC tribes matched by centre (30 m): level by the manager's thresholds or 1.0 apart, members 1, food 5 or 20 % | | BUG-0565, BUG-0564 |
+| `Tribe:state:goal` | the current mission's tribe (30 m) and state, or a goal on one game only | | BUG-0564 |
+| `Civilization:state:relation`, `civ_money`, `cities`, `player_cities`, `civ_only` | civilizations by political id | 1.0, 50 or 20 %, exact | |
+| `Space:state:relation`, `war_alliance`, `empire_only` | NPC empires by political id | 0.5, flags & 3 | |
+| `<stage>:planet:<kind>` | the planet's whole list of a kind (village 25 m, city 25 m, others 8 m) | presence + position | BUG-0564 (village), BUG-0566 (tribe_hut), BUG-0574 (tools, totem) |
+| `<stage>:planet_owner:<kind>` | matched objects: the player's on one game only, or one host owner that is two owners on the guest | | BUG-0565 (village) |
+
+* No player position (an RTS game in the background): the state rows still count; the sample is no longer `nocentre`.
+* `tools/detector_report.py` maps the new signatures in `KNOWN`; an `All` row's share is of all comparisons.
+* `tools/tests/tools_selftest.py worldstate` (in `make test`) checks the rows on made-up dumps.
+* First long runs on rel/0.7.7 = 0.7.6 code (labs 20261104-203017, 20261104-210208; out/detector of the report in the D0
+  report): Tribe `state:tribe_food` 57 % (BUG-0580, new), `planet:tribe_tool` 41 % (BUG-0574), `state:relation` 34 %
+  (-7 aggressive on the host, 0 neutral on the guest: BUG-0565), `state:goal` 28 % (BUG-0564), `planet:village` /
+  `tribe_hut` 7 % (BUG-0564 / 0566), `All:state:time_of_day` 16 % (the host's sky stood still: BUG-0579); Creature
+  `state:species_killed` / `species_relation` 1-2 %. The mission's +0x84 held pointer-like values: it is printed, not
+  compared.
+* First runtime check (lane 2, tribe fixture, quiet): both games equal (food 15 / 15, the NPC tribe 4 members, the same
+  political ids, the sky 0.7 deg apart), 0 rows in 14 samples of `detect_tribe` (lab 20261104-201322). The tribe fixture
+  has no stage done (it starts at Tribe) and no tribe-to-tribe mission (`goal tribe=-1`): those rows are not shown to fire
+  on a real game yet.
+
+## The long-session bot (2026-11-04, fix/w43-detector2)
+<a id="testing-long-session"></a>
+
+`tools/tests/coop_long_session.py --stage creature|tribe [--minutes 40] [--events death,editor,menu,restart,rejoin]`
+(suite `detector`: `long_creature`, `long_tribe`, 40 min of play, about 55-65 min with the transitions, lab timeout
+80 min; `long_<stage>_short`: 6 min of play, about 12 min). The play is the stage's play bot (play_creature.Player threads,
+play_tribe.Game) in segments; between them one transition of the guest: `death` (Creature: `coop.team die`; Tribe: the
+guest's chief leaves the tribe through `coop.tribe drop_chief 1`, an approximation: no real Tribe death of a player),
+`editor` (the host's evolution vote, the guest's "I'm ready", the red X on the host and, in Creature, on the guest's own
+editor too), `menu` (the guest's pause menu, Exit to Main Menu, Don't Save x2), `restart` (the guest leaves the session,
+its game is SIGKILLed, started again and joins: a player closing the game; a crash without the leave made the host's
+puppet rule fire, lab 20261104-210208), `rejoin` (`coop.leave` and join). 20 s after each one it prints a detector sample with
+`"after": "<event>"` (DETECTOR-SAMPLE / DETECTOR lines like the monitor's); with `SPORE_DETECTOR=<s>` the monitor samples
+during the play as well. It fails only on faults, crashes, freezes and a guest that is not back in the host's world
+within 4 min of a transition (the session cannot go on); the divergences are rows for `tools/detector_report.py`.
+
+* After every play segment an editor the play opened is left with the red X on both games (the creature bots' own
+  evolution vote ends in the host's editor when its time is up: lab 20261104-210208, the rejoin then waited on it).
+* Pitfalls met: in Creature the vote opens the guest's editor too (lab 20261104-203017: the guest stayed in its editor
+  after the host's red X); a 40 min session exceeds the lab's default 30 min timeout (`timeout=4800` in suite.py).
+* Timings (lab 20261104-203017, lane 2/3): death back in 5-8 s, editor 13-170 s (Tribe: the host's editor opened
+  61 s after the vote once), menu 16-21 s, restart 17 s, rejoin 14 s.
+
+## content_lookalike: a guest without two packs sees the host's creature (2026-11-04, fix/w43-content)
+<a id="testing-content-lookalike"></a>
+
+* `tools/lab.py run content_lookalike --lane 9 --skip 1,2,3,4,5,6,7,8` with `SPORE_FREE_LANE=10` (~2 min): host and
+  Bob on the run's lane, Carol on the free lane with `bp1content/BoosterPack_01.package` and
+  `Data/Spore_Pack_03.package` renamed `*.bug0559-off` for the test (put back in `finally`, and at the start of the
+  next run if one died). The host's Tiger Horse gets Creepy & Cute parts, a Spore_Pack_03 foot, the base game's
+  cell stripes paint and a pack detail paint. Checks on Carol's game: `coop.creations partlist` (roles of the
+  model's parts, the species data's parts she lacks), `paints`, `parts`, 0 faults. FAIL with
+  `SPORE_FIX_OFF=content.species_data` or `content.lookalike` (docs/re/creations.md#creations-lookalike).
+* Looking at it: `CONTENT_HOLD=<s>` keeps the games after the checks (raise the suite's minutes for a long hold);
+  `python3 tools/sporectl.py -i <inst> shot <path>` (a path inside the worktree: the game cannot write to /tmp),
+  `coop.cam <x> <y>` gives the screen ray, `coop.abilities goto <x> <y> <z>` puts a game's creature there.
+  `CONTENT_SWAPS=<old>=<new>,...` puts any parts into the host's model instead (the control run with base parts).
+* Pitfall: the host's family members look like the host's creature: find a puppet by moving it (`goto`) between
+  two screenshots. ? Seen once (not analysed): the partner names sat over a creature 10-15 m behind the creatures
+  that moved with `goto`.
+* Pitfall: `lab.py reload` of a guest that is in a session drops the packages co-op registered for it (the
+  received creations: `partlist` answers `none` afterwards); inspect before a reload.
+## Tests that waited for the wrong thing: the controller's bake, the cold join pause, meals, food on screen (2026-11-04, fix/w43-tests)
+<a id="testing-harness-g1"></a>
+
+G1 of 0.7.7 (BUG-0430 class: tests and harness that hide failures). Each change names the run where the old test was
+wrong and the run where the new one is right; no threshold was loosened.
+
+* **tribe_guest_tribes** (BUG-0587): (1) since W2 (realign.villages) its twin run `SPORE_FIX_OFF=tribe.guest_tribes`
+  passed step 1 although the guest's controller formed three tribes: W2 removed them within 4 s (wrong run lab
+  20261104-231126). realign.villages is now off until step 3 (right run 20261104-231338: step 1 and 3 FAIL as
+  BUG-0483's FAIL). (2) Its step 2 ("tribes 2 -> 2", 12 of 13 runs of fix/w43-world-state, lab 20261104-212104 ..
+  -214344, and fix/w43-realign 20261104-214542): the controller (0xCC6440) forms nothing while the next species'
+  model is not baked (it asks for the bake and returns), without a spawn marker (noun 0x36BE27E, +0x108 ==
+  0x57F09E5E; 4 on the fixture) or when the tribe nouns reach its property list. `coop.tribe form` now ends with
+  `(next species <p> baked|not baked yet) (tribe nouns N, tribe spawn markers M)` and `(blocked: tribe.guest_tribes)`;
+  the test calls it again while it only baked (at most 40 s). Which condition stopped it on lanes 4/5 is not
+  confirmed (lane 2 always `baked`, 2 nouns, 4 markers). Disproved: the cold join's pause bit does not stop the
+  forming (held by hand, lab 20261104-225835: `tribes 2 -> 3`).
+* **play_tribe** (BUG-0586): "guest: the minimap takes the view where it points" failed when the calibration ran
+  inside the guest's cold join pause (BUG-0444; `busy=1` at the failure in lab 20261104-220200 and fix/w43-realign
+  20261104-213145): its minimap clicks did not move the view. The test waits for both games' clock to run
+  (coop_sync.wait_running) first. Holding only the pause bit does not stop the view, so the bit is a marker of the
+  loading game, not the cause.
+* **cell_coop** (BUG-0356): its warm-rerun failures were the revive / respawn counters of the previous run (fixed by
+  BUG-0396, ba7bb495, 40 of 40 runs ok since 2026-11-03); the cold one (lab fix/w31-civ-gate 20261101-100204,
+  "revives 1, hp 6") was a meal right after the revive (own_eats 1 -> 2; AvatarEat adds the food's hpValue up to 6).
+  The revive check allows hp 6 only when the guest ate since the knockout (`meals since the knockout` in the line).
+* **cell_new_game** (BUG-0293): a probe try that found no meat on screen at once was spent after 60 frames ("none on
+  screen" in 4 of 10 runs of 2026-10-30). A try now waits up to 20 s for food of its kind on the screen; a try with
+  none in that time still counts as not eaten, and the 3-of-6 rule is unchanged. The first run after it still
+  failed (lab 20261104-232622: the host found no meat in 20 s in 4 tries; the guest swam 6 times into one meat its
+  game never ate, BUG-0589): the probe's failures are not only an empty screen.
+* **The proxies gate** (BUG-0503, BUG-0440; play_tribe, long_tribe, chaos_tribe): the gate was right. A guest at 3-5
+  fps under lab load placed a walking animal's proxy with walk_place's catch-up capped at 0.1 s frames and fell
+  behind the host's animal (placed position 0.1 -> 7.3 m in 6 s, coop.npctrack on both games). Fixed in the mod
+  (`npc.proxy_slow_frames`, max_dt 0.4 as the Tribe mirrors). `coop_npc_walk_slow.py` (suite `npc_walk_slow`, tribe
+  fixture, ~1.5 min): the guest at 4 fps (`frame.limit 250`), the host's game walks 4 animals at 4-5 m/s for 40 s;
+  per walker >= 40 walked rows, never 3 m off for 2 s (the monitor's rule), placed p90 <= 1 m. FAIL with the fix off
+  (20261104-232034: placed p90 1.42-2.41 m), PASS (20261104-232210 x2: 0.00 m).
+* Pitfall: at 4 fps the off rule alone (3 m for 2 s) passed the twin run (1.5 s at most): the placed-position check
+  is what catches the fall-behind; look at the FAIL run's rows, not only its verdict.
+
+
+## The live Tribe -> Civ change and pause reasons (2026-11-04, fix/w43-transitions)
+<a id="testing-tribe-civ"></a>
+
+* `tribe_civ` (coop_tribe_civ.py, tribe fixture, ~3.5 min): the first lab test of the live Tribe -> Civ change (the
+  campaign jumps to the civ_npc fixture instead). `coop.tribe advance` fills the goal bar (cPlayer +0x10F0 = +0x10F4)
+  and posts the stage's goal message 0x5CC2589: the HUD's advance button (window 0x6454B47, `coop.ui where
+  6454B47`) appears; from there everything is the players' way: the button, the stage card's check (1415, 1055),
+  the captions' check (1410, 1048) while `busy` shows cinematic + paused, the guest's "I'm ready", the City Hall
+  and vehicle editors (3 parts dragged from the palette's first row, done, the name panel's dice (614, 826), done
+  twice). BUG-0576 (SPORE_FIX_OFF=core.editor_own_pause: the editors 60 s after the votes) and BUG-0585
+  (SPORE_FIX_OFF=tribe.food_fx_mat: the host freezes when the guest adds food in the vehicle editor).
+  Runs: FAIL 20261104-224338 / 20261104-224915, PASS 20261104-224318 / 20261104-224930.
+* A frozen game shows as a console timeout: the test prints a FAIL line and RESULT: FAIL for it.
+* `coop.pauses` lists the pause reasons the game counts now (docs/re/tribe.md#tribe-game-time-pauses): a guest that
+  just loaded a Tribe world shows `04BF38A7=1` for 7-9 s on GOG 2024 (the stage entry waiting for its bakes,
+  BUG-0313); the end-of-Tribe stage card `04BF38A4`, an editor coming `04BF38A6`.
+* A hot reload (`lab.py reload`) of a lane whose games are in a session left the host `offline` (seen once on lane 4):
+  start the games again for tests that need the session.
+
+## The game's audio commands in tests (2026-11-05, fix/w44-tribe-guest)
+<a id="testing-audio"></a>
+
+The lab games run muted, but the game still submits every sound to its audio system. `coop.audio mark` empties the
+list; `coop.audio list [n]` prints the commands since (play 0x3475365, stop 0x347536B, ...; the listener's moves are only
+counted) with the sound id, the track, the first parameters and `from=` the first four return addresses on the stack,
+then `playing track= sound= since=` (played and not stopped). tribe_theme_music counts the plays whose second return
+address is TribeTheme_Play's (0xBC2414). docs/re/tribe.md#tribe-guest-a1 lists the sound ids seen in Tribe.
+
+## Detector reads that were no desync (2026-11-05, fix/w44-world-state2)
+<a id="testing-detector-reads"></a>
+
+* `SPORE_DETECTOR_DIAG="<cmd>;<cmd>"`: with any `:state:` or `:planet_owner:` finding the monitor prints both
+  games' answers to these console commands as `DETECTOR-DIAG <side> <cmd>: <line>` (e.g.
+  `coop.wsync;coop.wsync dump tribe_rel;coop.wsync want tribe_rel`); not counted by detector_report.py.
+* A total a guest has not synced yet prints `money=100000(unsynced)`: read as its number (BUG-0595).
+* Skipped as `apart` (not counted as findings): a game that lists no object while the other lists its world (it
+  loads: a rejoin, BUG-0596), and the host's game in the end of Tribe (`st phase stage_end=1`: from the City Hall
+  editor on it takes its village and animals out of the world for Civ, BUG-0588 / BUG-0594;
+  `SPORE_DETECTOR_STAGE_END=1` compares anyway).
+* Creature: a guest's species table is read twice, 1.5 s apart (`SPORE_DETECTOR_BRACKET=0`: once); a record in one
+  game only must be so in both reads (the host's table reaches a guest within ~1 s, BUG-0596).
+* The Tribe state rows name both games' political ids (`pol <host> / <guest>`).
+## Tests that failed for the bot, not the game: NPC picks, the order pace (2026-11-05, fix/w44-tests)
+<a id="testing-harness-g2"></a>
+
+G2 of 0.7.8 (BUG-0430 class). For each: which kind of fault it was and the evidence; no check was loosened.
+
+* **A test that takes "the first NPC of `coop.npc list`" takes whatever the mod numbered first.** Cold games list the
+  same animals (#17-#21), warm games go on numbering (#40-#63) and which NPC comes first depends on the test before.
+  team (BUG-0437) hunted #40 of the host's own species after puppet_fight (lab 20261101-171437): the joint hunt made
+  the host bite its own family and the family bit back (the posse_damage gate). A test that needs a wild animal
+  filters the host's species and the `family` mark (coop_team.py, coop_creature_air.py). Not checked yet for this:
+  other tests that take the first listed NPC (e.g. coop_npc_run_hp.py, coop_team_real_damage.py).
+* **creature_air** (BUG-0601): an animal that bites the guest on the ground often does not stay in reach once the
+  guest is in the air (the game allows no melee at an airborne target 1 m or more away): it stood 12-14 m off or
+  walked 30-120 m away in every species of the creature fixture, and the precondition "the NPC struck at the airborne
+  guest" failed (warm after nest_heal in every run kept: rel/0.7.8 20261105-121717, fix/w44-guest-player2
+  20261105-113638, -114336, -121010, here 20261105-124455, -124913; also cold here with another NPC first,
+  20261105-130042). The guest is put beside its NPC every 5 s of a round when it is 3-15 m off,
+  and an NPC farther off or without a strike in 3 rounds gives way to the next (up to 8). The twin
+  `SPORE_FIX_OFF=creature.air_immune` still fails (3 bites in the air, lab 20261105-131430). nest_heal leaves nothing
+  behind that the warm reset keeps: it only changes the numbering.
+* **play_tribe "gave orders through real clicks"** (BUG-0397): the bot's own rate, not the game (12 of 37 kept runs had
+  8-9 orders for one player in 10 min; the host's bot too, 0-9 in 5 runs). The random mix of camera moves, partner
+  clicks, waits and gifts, heals with no food mat on screen and gathers with no tree in the open (that one was not
+  even counted) left too few orders. Each bot now keeps a pace of one order per 30 s of play (`ORDER_EVERY`): behind
+  it, it plays an order kind (the plan's, else a gather; a hunt when the last try found nothing). The floor (10) and
+  the checks on the orders (acted on, lost, rejected) are unchanged; the summary line says how many steps the pace
+  chose (`kinds chosen by the order pace`).
+* **play_tribe "the members act on the orders"** (BUG-0505 class): the one failure of 0.7.8 (fix/w44-tribe-guest
+  20261105-115848, 13 ok / 11 idle) was the game: members standing in the gather node with their walk stopped short,
+  new orders not taking them out (BUG-0531, still open). This check measures the game; it stays.
+* **cell_new_game's meat probe** (BUG-0589): meat is kill loot. A run where neither player found meat on its screen in
+  any of 12 tries of 20 s (lab 20261105-132739 #2) measured the pool, not eating: the probe now bites the nearest
+  creature on its screen (the game's bite, `coop.pool kill <key>`) when no meat floated by in half of its wait, then
+  waits for the meat. Near food (under 8 m) is swum to from where the cell is, mouth first: the teleport of
+  `swimto <key> tp` puts the cell beside the food without turning it (a guest sat 0.33 m from a meat's centre and did
+  not eat it, 20261105-132739 #1). A try that ate nothing logs what the cell is in the eater's game (`coop.pool cell`:
+  layer, level, size) and the avatar's size, hp and place.
+* **tribe_guest_tribes** (BUG-0587): closed. No failure since G1's controller retry (0.7.7): 8 runs, 3 of them here on
+  a loaded lane (lab 20261105-134354).
+* **long_session transitions** (BUG-0430, long_creature_short rel/0.7.8 20261105-123757): a console call into a guest
+  that loads the shared world can time out (a 52 s load); restart, rejoin, menu and wait_together take a timeout as
+  "not yet" (`busy_ok`) and wait on until their deadline. A guest that never comes back still fails.
+* The lab orders the tests of one call by their suite minutes (longest first, `lab.py` parallel sort; equal minutes
+  keep the given order): with 6 min creature_air ran before nest_heal in `nest_heal,creature_air`. Separate lab calls
+  start the games cold, so a warm pair must be one call with the first test not shorter than the second.
+* **The proxies gate** (BUG-0440 / BUG-0445; chaos_tribe, play_tribe): its trace line `proxy N ... m off the host's
+  NPC` now ends with the error when it went off, how far the proxy moved since and the host NPC's largest step between
+  two audits (0.25 s) in the last 3 s. A host snap shows as a large step (several m) just before; the lines of G2
+  (lab 20261105-135000 play_tribe#2) had none (0.6-1.5 m per 0.25 s at 2.5-5.5 m/s): proxies falling behind a moving
+  host NPC, a real desync. The gate and its window stay.

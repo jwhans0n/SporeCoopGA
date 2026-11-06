@@ -32,12 +32,18 @@ import sys
 import time
 
 import lane
-from coop_sync import LIMITS, angle, pct, sample
+from coop_sync import LIMITS, angle, game_paused, pct, sample, wait_running
 from twoinst import Checks, Monitor, shot, start
 
 SOCIAL_BTN, ATTACK_BTN = (725, 1030), (795, 1030)  # tribe UI interaction mode (1440x1080)
 MINIMAP = (110, 980)                               # a point inside the minimap
 PLAN = ['gather', 'hunt', 'raid', 'gather', 'social', 'hunt', 'gather', 'raid']
+ORDER_KINDS = ('gather', 'hunt', 'raid', 'social', 'epic', 'walk', 'heal')
+# BUG-0397: each bot gives at least one order per ORDER_EVERY s of play. The random mix (camera, partner clicks, waits,
+# gifts, a heal with no food mat on screen, a gather with no tree in the open) left a bot with 8-9 orders in 10 min
+# in ~1 run of 3 (12 of 37 kept runs): the bot's own order rate, not the game. A bot behind this pace plays an order
+# kind until it is back on it; the checks on the orders (acted on, lost, rejected) are unchanged.
+ORDER_EVERY = 30
 
 
 def tribe_state(con):
@@ -117,6 +123,8 @@ class Player:
         self.J = None                # minimap calibration
         self.zoom = 0                # wheel notches from the start view
         self.actions = {}            # kind -> {CitizenAction id the click became: count}
+        self.given = 0               # orders its clicks gave (the pace of BUG-0397)
+        self.last_nothing = None     # the order kind whose last try found nothing to click
 
     def do(self, line):
         self.log.append(f'{time.strftime("%H:%M:%S")} {self.name}: {line}')
@@ -150,8 +158,9 @@ class Player:
         else:  # BUG-0481: why (no point under the mouse, or the view did not move)
             st = self.con.call('coop.status')['out']
             busy = re.search(r'busy=\S+|input_lock=\d+', st)
-            self.log.append(f'   {self.name}: minimap calibration: o {o} a {a} b {b} ({busy.group(0) if busy else "-"})')
-            print(f'  {self.name}: minimap calibration: o {o} a {a} b {b} ({busy.group(0) if busy else "-"})', flush=True)
+            why = f'{busy.group(0) if busy else "-"}, game time paused={game_paused(self.con)}'
+            self.log.append(f'   {self.name}: minimap calibration: o {o} a {a} b {b} ({why})')
+            print(f'  {self.name}: minimap calibration: o {o} a {a} b {b} ({why})', flush=True)
         return self.J is not None
 
     def solve(self, w, x, y, c):
@@ -254,6 +263,8 @@ class Game:
         self.phases = []
         self.pending_gift = None
         self.probe = []
+        self.t0 = time.time()        # the play's start (main sets it): the order pace counts from here
+        self.forced = 0              # steps the order pace chose the kind of (BUG-0397)
 
     # ---------------- the plan the two friends agree on ----------------
     def plan(self):
@@ -282,12 +293,23 @@ class Game:
         hurt = [i for i in idle if st[i]['hp'] < 0.6 * self.maxhp.get(i, 1)]
         plan = self.plan()
         kind = plan if rng.random() < 0.75 else rng.choice(['gather', 'hunt', 'partner', 'camera', 'give', 'walk'])
+        # BUG-0397: behind the order pace: an order kind (the plan's, else a gather; not the kind that just found
+        # nothing to click, a hunt instead), the random draws above stay the same so the seed replays the rest
+        behind = pl.given < (now - self.t0) / ORDER_EVERY
+        if behind and kind not in ORDER_KINDS:
+            kind = plan if plan in ORDER_KINDS else 'gather'
+        if behind and kind == pl.last_nothing:
+            kind = 'hunt' if kind != 'hunt' else 'gather'
         if kind in ('raid', 'epic') and (len(alive) < 4 or len(idle) < 2):
             kind = 'gather'  # too few to fight: friends gather first
-        if hurt and rng.random() < 0.7:
+        if hurt and rng.random() < 0.7 and not (behind and pl.last_nothing == 'heal'):
             kind, idle = 'heal', hurt
-        if kind in ('gather', 'hunt', 'raid', 'social', 'epic', 'walk', 'heal') and not idle:
-            kind = rng.choice(['partner', 'camera', 'wait', 'wait'])
+        if kind in ORDER_KINDS and not idle:
+            if behind and mine:  # every own member was ordered within its busy time: order one of them again
+                idle = [i for i in mine if i not in pl.busy] or mine
+            else:
+                kind = rng.choice(['partner', 'camera', 'wait', 'wait'])
+        self.forced += behind
         pl.note(kind)
         centres = tribe_centres(self.host)  # where the tribes live (a player sees them on the minimap)
         enemies = [t for t in centres if t != 'p']
@@ -295,6 +317,7 @@ class Game:
             group = kind in ('raid', 'epic') or (kind == 'hunt' and rng.random() < 0.5)
             sel = self.select_idle(pl, st, idle, group)
             if not self.check_sel(pl, sel, st):
+                pl.last_nothing = kind  # (a heal of a member its box misses: another kind when behind the pace)
                 return self.pause(pl)
             if kind == 'walk':
                 tgt = ('ground', rng.randint(300, self.w - 300), rng.randint(400, self.h - 300))
@@ -302,6 +325,7 @@ class Game:
             where, pick = self.target_for(pl, kind, st, centres, enemies)
             if where is None:
                 pl.note(kind + '_nothing')
+                pl.last_nothing = kind
                 return self.pause(pl)
             pl.look(where)
             pl.centre()  # the mouse in the middle: the listed distances (and the 250 nearest) are from there
@@ -312,6 +336,7 @@ class Game:
                             key=lambda o: o[3])[:1]
             if not tg:
                 pl.note(kind + '_nothing')
+                pl.last_nothing = kind
                 return self.pause(pl)
             if kind in ('raid', 'social', 'epic'):
                 pl.mode(0 if kind == 'social' else 1)
@@ -321,6 +346,10 @@ class Game:
                 tg = [o for o in tg if o[3] < 90 and all(math.hypot(o[1] - b[1], o[2] - b[2]) > 70 for b in busy)]
                 tg.sort(key=lambda o: math.hypot(o[1] - self.w / 2, o[2] - self.h / 2))
                 tg = tg[:4]
+                if not tg:  # every tree on screen behind the fire, a hut or members (was not counted)
+                    pl.note('gather_nothing')
+                    pl.last_nothing = kind
+                    return self.pause(pl)
             if kind == 'raid':
                 hits = self.attacked.setdefault(enemies[0], {})
                 hits[pl.pid] = time.time()
@@ -471,6 +500,8 @@ class Game:
             return False
         acts = pl.actions.setdefault(kind, {})
         acts[act] = acts.get(act, 0) + 1
+        pl.given += 1
+        pl.last_nothing = None
         for i in sel:
             pl.busy[i] = time.time() + busy
         hs = tribe_state(self.host)
@@ -505,6 +536,13 @@ class Game:
             else:  # the order arrived but nobody moved (the target right there, gone, or dead)
                 pl.orders['idle'] += 1
                 self.log.append(f'   {pl.name} {o["kind"]} {o["tgt"]} {o["sel"]}: no movement ({o["last"][:110]})')
+                # BUG-0505: what the host's game has the members do (behaviour node, place, health)
+                for line in self.host.call('coop.tribe')['out'].splitlines():
+                    m = re.match(r'\s+#(\d+) ', line)
+                    if m and int(m.group(1)) in o['sel']:
+                        self.log.append(f'      host: {line.strip()[:150]}')
+                for i in o['sel']:  # its order record, node, node state and walk (docs/re/tribe.md#tribe-orders)
+                    self.log.append(f'      host ai #{i}: {self.host.call(f"coop.tribe ai {i}")["out"].strip()[:260]}')
 
     # ---------------- measuring ----------------
     def measure(self):
@@ -672,6 +710,9 @@ def main():
     ap.add_argument('--seed', type=int, default=None)
     ap.add_argument('--rate', type=float, default=1.0, help='mean pauses per second between actions')
     a = ap.parse_args()
+    import os
+    if a.seed is None and os.environ.get('PLAY_TRIBE_SEED'):  # a replay through the lab (BUG-0505)
+        a.seed = int(os.environ['PLAY_TRIBE_SEED'])
     seed = a.seed if a.seed is not None else random.randrange(1 << 30)
     print(f'  play_tribe: {a.minutes} min, seed {seed}', flush=True)
     host, guest = start('tribe')
@@ -688,10 +729,18 @@ def main():
         time.sleep(2)
     g = Game(host, guest, seed, a.rate)
     food0 = food(host)
+    # BUG-0586: the guest's calibration failed (the view did not move on its minimap clicks, o == a) only while its
+    # game was still in the pause that follows a cold join (BUG-0444: busy=1 at the failure in lab 20261104-220200
+    # and fix/w43-realign 20261104-213145). Holding the pause bit by hand does not stop the view (lab lane 3,
+    # 2026-11-04): the bit marks the join's pause, it is not its cause. Wait for the game's own clock to run on
+    # both machines, as a player waits for the game to respond.
+    w = wait_running(host, guest, 90)
+    print(f'  both games\' time runs: {"after %.0f s" % w if w is not None else "NOT within 90 s"}', flush=True)
     for p in g.p:
         ck(p.calibrate(), f'{p.name}: the minimap takes the view where it points')
     print(f'  start: food {food0}, {len(tribe_state(host))} citizens, screen {g.w}x{g.h}', flush=True)
     t0, last_measure, n, ok = time.time(), 0, 0, True
+    g.t0 = t0
     try:
         while time.time() - t0 < a.minutes * 60 and ok:
             g.step(g.p[n % 2])
@@ -714,7 +763,8 @@ def main():
     for p in g.p:
         g.check_orders(p, final=True)
     st1, gst = status(host), status(guest)
-    print(f'  played {played / 60:.1f} min, {n} actions, game overs {g.game_overs}; plan: '
+    print(f'  played {played / 60:.1f} min, {n} actions ({g.forced} kinds chosen by the order pace of one per '
+          f'{ORDER_EVERY} s), game overs {g.game_overs}; plan: '
           + ' '.join(f'{(t - t0) / 60:.1f}:{k}' for t, k in g.phases), flush=True)
     for p in g.p:
         print(f'  {p.name}: ' + ' '.join(f'{k}={v}' for k, v in sorted(p.count.items())), flush=True)

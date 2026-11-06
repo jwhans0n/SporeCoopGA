@@ -11,6 +11,7 @@ import re
 import sys
 import time
 
+import creations_state
 import lane
 from twoinst import Checks, shot, start, wait_guest_in
 
@@ -32,9 +33,14 @@ def main():
         for sw in ('creations_leave 0', 'id_reuse 0'):
             host.call('coop.corefix ' + sw)
         print('  fix switches off on the host')
+    # BUG-0345: a guest plays its own creature by default only in a world it played it in: choose it,
+    # then wait until the host has it (not the world's species it may have announced first)
+    st0 = creations_state.save(guest)
+    print('  guest profile before:', st0, '| chose', creations_state.choose_own(guest))
+    w_av = field(host.call('coop.avatar')['out'], r'key=0x([0-9A-F]{8})')
     key = None
     t0 = time.time()
-    while time.time() - t0 < 40 and not key:
+    while time.time() - t0 < 40 and (not key or key == w_av):
         key = field(host.call('coop.creations')['out'], r'player 1 creature: ([0-9A-F]{8})')
         time.sleep(2)
     hp = None
@@ -83,6 +89,7 @@ def main():
     if without:
         for sw in ('creations_leave 1', 'id_reuse 1'):
             host.call('coop.corefix ' + sw)
+    creations_state.restore(guest, st0)  # the profile as it was (BUG-0345)
     ck.faults(host=host, guest=guest)
     return ck.result()
 

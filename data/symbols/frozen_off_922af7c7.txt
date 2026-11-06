@@ -406,4 +406,66 @@ SporeCoop::Player_GetProperty ; BUG-0508: on GOG 2016 the migration state is unk
 SporeCoop::AbilityBar_Use ; BUG-0518: a guest's click on the social ability button plays no social game (keys 1-4 only, as before)
 SporeCoop::GameSettings_Build ; BUG-0506: on GOG 2016 the missing save area guard is off (game.save_areas has no effect there)
 SporeCoop::SaveAreas_Init ; BUG-0506: on GOG 2016 the missing save area guard is off (game.save_areas has no effect there)
-SporeCoop::Editor::GroundScene ; BUG-0541: shared terrain captain grounding observation is GOG 2024 only; the shared Terraform adapter remains unavailable on the frozen GOG 2016 build
+SporeCoop::Editor::GroundScene ; BUG-0625: shared terrain captain grounding observation is GOG 2024 only; the shared Terraform adapter remains unavailable on the frozen GOG 2016 build
+SporeCoop::cTribeTool_PlacementReset ; BUG-0514: host tools are not copied to guests on GOG 2016 (tribe_tool world objects off)
+SporeCoop::cTribe_SetToolPurchased ; BUG-0514: as above
+SporeCoop::cTribe_ToolLayout ; BUG-0505: `coop.tribe layout` (a test listing of the grab spots) is off on GOG 2016
+SporeCoop::NpcTribeController_FormTribe ; BUG-0483: on GOG 2016 a guest's own game may still form NPC tribes of its own (tribe.guest_tribes keeps only the emptying of tribes the host has not)
+SporeCoop::SocialMeter_Reset ; BUG-0179: on GOG 2016 a guest's social game shows no social meter and no win message 0x60B4123 (social.guest_meter has no effect there)
+SporeCoop::SocialMeter_SetVisible ; BUG-0179: on GOG 2016 a guest's social game shows no social meter and no win message 0x60B4123 (social.guest_meter has no effect there)
+SporeCoop::SocialMeter_SetRounds ; BUG-0179: on GOG 2016 a guest's social game shows no social meter and no win message 0x60B4123 (social.guest_meter has no effect there)
+SporeCoop::SocialMeter_SetRelation ; BUG-0179: on GOG 2016 a guest's social game shows no social meter and no win message 0x60B4123 (social.guest_meter has no effect there)
+SporeCoop::SocialMeter_SetBar ; BUG-0179: on GOG 2016 a guest's social game shows no social meter and no win message 0x60B4123 (social.guest_meter has no effect there)
+SporeCoop::SocialMeter_Finish ; BUG-0179: on GOG 2016 a guest's social game shows no social meter and no win message 0x60B4123 (social.guest_meter has no effect there)
+SporeCoop::DramaManager_Get ; Creature: a guest's game still starts its own UFO visit (BUG-0486)
+SporeCoop::DramaManager_StartEvent ; Creature: a guest's game still starts its own UFO visit (BUG-0486)
+SporeCoop::DramaManager_StartKind ; Creature: a guest's game still starts its own UFO visit (BUG-0486)
+SporeCoop::City_AddTurret ; BUG-0484: on GOG 2016 a city's turrets are each game's own (civ.turrets has no effect there)
+SporeCoop::City_RemoveTurret ; BUG-0484: on GOG 2016 a city's turrets are each game's own (civ.turrets has no effect there)
+SporeCoop::CivGrowth_Turret_Ret1 ; BUG-0484: on GOG 2016 a city's turrets are each game's own (civ.turrets has no effect there)
+SporeCoop::CivGrowth_Turret_Ret2 ; BUG-0484: on GOG 2016 a city's turrets are each game's own (civ.turrets has no effect there)
+SporeCoop::UfoGfx_SetModel ; BUG-0546: the ship model guard (game.ufo_model) is off on GOG 2016
+SporeCoop::UfoGfx_SetVisible ; BUG-0546: the ship model guard (game.ufo_model) is off on GOG 2016
+SporeCoop::CreatureStun ; BUG-0554: no stun relay between the games on GOG 2016
+SporeCoop::CreatureAttackTarget ; BUG-0555: NPCs may bite a guest in the air on GOG 2016
+SporeCoop::CreatureFriendly ; BUG-0556: the host's pack is not shown friendly on a GOG 2016 guest
+SporeCoop::cHerd_SetBestFriends ; BUG-0561: no ally face on a GOG 2016 guest's minimap
+SporeCoop::TribeTargetRing_Draw ; BUG-0570: no target ring on a GOG 2016 guest
+SporeCoop::TribeTargetRing_Find ; BUG-0570: (test lookup)
+SporeCoop::TribeTargetRings_Update ; BUG-0570: no target ring on a GOG 2016 guest
+SporeCoop::TribeUI_ptr ; BUG-0570: no target ring on a GOG 2016 guest
+SporeCoop::EditorBudgetMsg_vtable ; BUG-0560: the held Cell editor's budget re-post (cell.editor_budget) is off on GOG 2016
+SporeCoop::MissionCardPanel_Get ; BUG-0564: the wsync goal dump shows no card state on GOG 2016
+SporeCoop::MissionCardPanel_HasCard ; BUG-0564: the wsync goal dump shows no card state on GOG 2016
+SporeCoop::TribeMissionManager_Get ; BUG-0564: the wsync Tribe goal row (wsync.tribe_goal) is off on GOG 2016
+SporeCoop::TribeMission_SetTargetTribe ; BUG-0564: the wsync Tribe goal row (wsync.tribe_goal) is off on GOG 2016
+SporeCoop::TribeMissionManager_ptr ; BUG-0430: the detector's Tribe goal row (coop.wstate `goal`) is empty on GOG 2016
+SporeCoop::TribeAttack_TakeSpot ; BUG-0582: the creature attack spot guard (tribe.attack_spot) is off on GOG 2016
+SporeCoop::Citizen_IsLeader ; BUG-0583: the leader's staff guard (tribe.leader_tool) is off on GOG 2016 (mirrors take every tool as before)
+SporeCoop::SpatialEffects_UpdateByDistance ; BUG-0575: the model attached effect guard (game.model_fx) is off on GOG 2016
+SporeCoop::SpatialEffects_SetTransform ; BUG-0575: the model attached effect guard (game.model_fx) is off on GOG 2016
+SporeCoop::VisualEffect_Start ; BUG-0575: the model attached effect guard (game.model_fx) is off on GOG 2016
+SporeCoop::VisualEffect_vftable ; BUG-0575: the model attached effect guard (game.model_fx) is off on GOG 2016
+SporeCoop::Flora_TakeFruitForDrop ; BUG-0584: the fruit pool guard (game.fruit_pool) is off on GOG 2016 (wobj.fruit_saved still works)
+SporeCoop::cFruit_vftable ; BUG-0584: the fruit pool guard (game.fruit_pool) is off on GOG 2016
+SporeCoop::BT_SpecialAbilityTick ; BUG-0501: the guest roar relay (creature.roar_relay) is off on GOG 2016
+SporeCoop::BT_GoalSlotStart ; BUG-0501: the guest roar relay (creature.roar_relay) is off on GOG 2016
+SporeCoop::BT_GoalSlotFind ; BUG-0501: the guest roar relay (creature.roar_relay) is off on GOG 2016
+SporeCoop::BT_GoalSlotEnd ; BUG-0501: the guest roar relay (creature.roar_relay) is off on GOG 2016
+SporeCoop::BT_ClearStimulus ; BUG-0501: the guest roar relay (creature.roar_relay) is off on GOG 2016
+SporeCoop::UFOPick_IsEpicReturn ; BUG-0558: the UFO pick guard (creature.ufo_puppet) is off on GOG 2016
+SporeCoop::BT_EventList_ptr ; BUG-0496: coop.rules heal (tests only) is off on GOG 2016
+SporeCoop::UFO_TickBehavior ; BUG-0558: coop.rules ufo's tick counter (diagnostics) is off on GOG 2016
+SporeCoop::AudioSystem_BeginCommand ; coop.audio (the tests' list of the game's audio commands) is off (BUG-0568)
+SporeCoop::AudioSystem_SetInt ; coop.audio (the tests' list of the game's audio commands) is off (BUG-0568)
+SporeCoop::AudioSystem_Submit ; coop.audio (the tests' list of the game's audio commands) is off (BUG-0568)
+SporeCoop::App_GetPropInt ; Tribe: new villages appear at the party's food pace like one player's tribe (BUG-0571)
+SporeCoop::TribeProps_ptr ; Tribe: new villages appear at the party's food pace like one player's tribe (BUG-0571)
+SporeCoop::TribeTheme_Play ; Tribe: a guest hears the hunt and fight music of its tribe (BUG-0568)
+SporeCoop::TribeTheme_Move ; Tribe: a guest hears the hunt and fight music of its tribe (BUG-0568)
+SporeCoop::TribeTheme_Stop ; Tribe: a guest hears the hunt and fight music of its tribe (BUG-0568)
+SporeCoop::City_SetPartsOwner ; BUG-0593: the owner of a captured city's buildings (wsync.city_owner) is not re-aligned on GOG 2016
+SporeCoop::Creature_CombatVoice ; Tribe / Creature: a guest hears the combat voices of the host's members and animals (BUG-0600)
+SporeCoop::Creature_SetSprint ; Tribe / Creature: a guest sees and hears the sprint of the host's members and animals (BUG-0600)
+
+# Exact-GOG-only adventure adapters retained from the validated fork.

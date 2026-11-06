@@ -208,7 +208,7 @@ by6C0230 (`mov eax,[ecx+18]; ret`). The old actor0 and source24 cache pointers
 are1FCB000C and1FCB354C, exactly24*238h apart in the old marker arena.
 The GetClass address in the stack scan is not the immediate crashing caller.
 Crash, dump and stable private Store evidence remains in
-`out/preview9-c58-count-1025-clone-crash-preserved`; BUG-0526 tracks the fix.
+`out/preview9-c58-count-1025-clone-crash-preserved`; BUG-0610 tracks the fix.
 
 Exact supported-code receipts explain the419 versus1,025 boundary. Constructor
 F2E670 reserves1,024 atF2E97B/F2E996. ReadMarkerRowsF2F050 reserves the serialized
@@ -290,7 +290,7 @@ crash occurs. Evidence is retained in `out/preview9-c60-recover-count1025`,
 The recovery watchdog sampled `skg::readable` and existing terrain-validation
 closures, and recovery subsequently completed within the120-second fixture.
 That report establishes a long no-frame operation, not a demonstrated deadlock.
-The separate4,096/overflow and native Save/cold checks remain pending; BUG-0526
+The separate4,096/overflow and native Save/cold checks remain pending; BUG-0610
 stays open for them. Earlier C58 shorthand "count4" meant input index[4],
 whose real value increased24 to25 on the419-marker baseline.
 
@@ -305,7 +305,7 @@ Saved/cold comparator finds all3,994,584 decoded bytes exact, no machine changes
 and only scalar key00B2CCCB's unused fourth word different in the prefix.
 Receipts: `out/preview9-c60-count-boundary-qualified`,
 `out/preview9-c60-count4096-native-save-r2` and
-`out/preview9-c60-count4096-cold-open`. BUG-0526 is fixed in private C60, still
+`out/preview9-c60-count4096-cold-open`. BUG-0610 is fixed in private C60, still
 uninstalled personally. Publication eligibility, actual class-cap qualification
 and deferred release breadth/performance/smoke are separate. Eight controlled
 Save-audit mutations are rejected, including placement/class/act/captain, terrain

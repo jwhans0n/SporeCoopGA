@@ -12,7 +12,7 @@
 namespace net {
 
 constexpr uint32_t kMagic = 0x4F435053; // 'SPCO'
-constexpr uint16_t kProtoVersion = 26; // 3: shared resources; 4: lobby/discovery; 5: 128-packet acks;
+constexpr uint16_t kProtoVersion = 28; // 3: shared resources; 4: lobby/discovery; 5: 128-packet acks;
                                       // 6: connection id/BYE; 7: upstream Space features and GA runs;
                                       // 8: GA preparation; 9: party flow/captain identity;
                                       // 10: static state, interactions and teleport generations;
@@ -20,6 +20,7 @@ constexpr uint16_t kProtoVersion = 26; // 3: shared resources; 4: lobby/discover
                                       // 12: run-scoped pause intent and unanimous party pause
                                       // 13: matching native actor follower capabilities (wire/bundles retained)
                                       // 14: matching native party perception (wire/bundles retained)
+                                      // 27: upstream 0.7.8, mirror effects64, adventure65/editor66 and AGL before GA identity;
                                       // 15: verified terminal result acknowledgements and shared menu exit
                                       // 16: separate project-scoped collaborative Adventure Editor messages
                                       // 17: class/act-owned authoring properties and checkpoint extension
@@ -96,8 +97,8 @@ enum MsgType : uint8_t {
     MSG_PARTS = 53,       // the party's collected creature parts (parts.cpp, BUG-0401): u8 kind (0 host -> guests the
                           // host's set, 1 host -> guests news, 2 guest -> host found here), u8 origin, u32 world,
                           // u16 n, n x {u32 lo, u32 hi}. Older SporeCoop ignores it (an unknown type).
-    MSG_ADVENTURE = 63,  // u8 subkind, run-scoped adventure coordination; 64..71 resource transfer
-    MSG_EDITOR = 62,     // project/epoch-scoped authoring, kept separate from gameplay runs
+    MSG_ADVENTURE = 65,  // u8 subkind, run-scoped adventure coordination; 64..71 resource transfer
+    MSG_EDITOR = 66,     // project/epoch-scoped authoring, kept separate from gameplay runs
     MSG_ACTIVITY = 55,   // guest -> host: actual native mode and editor activity
     MSG_FIELDS = 56,      // host -> guests: replicated state fields of mirrored objects (fields.h, BUG-0419 G2):
                           // u8 kind, u8 nf, nf x u8 field, u16 n, n x {u16 id, nf x f32}; unreliable, deltas + refresh.
@@ -113,6 +114,7 @@ enum MsgType : uint8_t {
     MSG_WOBJ = 54,        // world objects owned by the host (worldobj.cpp, BUG-0472 / BUG-0459): u8 kind (0 host -> guest
                           // snapshot {u8 obj kind, vec3 centre, f32 r, u8 n, n x {u32 id, vec3 pos, u32 state}}, unreliable 1 Hz;
                           // 1 guest -> host request {u8 obj kind, u32 id, vec3 pos, u32 state now}). Older SporeCoop ignores it.
+
     MSG_CELL_KO = 44,     // any -> host -> all: u8 player, u8 state (0 up,1 out,2 revived,3 respawned),
                           // u8 tenths of a second left, u8 revive progress 0..255
     MSG_DIAG = 60,        // support diagnostics (net/diagmsg.h): u8 kind, payload; session clock, bug
@@ -122,6 +124,18 @@ enum MsgType : uint8_t {
                           // The host relays a guest's message to the other guests; the receiver
                           // plays it on that player's puppet with the game's own effect pools.
                           // Older SporeCoop ignores it (an unknown type).
+    MSG_PLAYER_RULE = 63, // the game's rules for a player that one game decides on the other player's creature
+                          // (player_rules.cpp, BUG-0418 / P1 of 0.7.7): u8 kind; kind 0 host -> guest "stunned"
+                          // {u8 player, f32 seconds} (an NPC's charge stunned its puppet: CreatureStun vt 0x94),
+                          // kind 1 guest -> host {u16 NPC id, f32 seconds} (the guest's charge stunned a proxy).
+                          // Older SporeCoop ignores it (an unknown type).
+    MSG_MIRROR_FX = 64,   // host -> guests: what the host's game did to a creature a guest mirrors (mirror_fx.h, BUG-0600):
+                          // u8 kind; 0 effect {u8 space (0 NPC, 1 tribe member), u16 id, u8 stop, u8 pool, u32 effect,
+                          // u32 key}, 1 combat voice {space, id, u8 enter}, 2 sprint {space, id, u8 on}.
+                          // Older SporeCoop ignores it (an unknown type).
+    MSG_WSTATE = 62,      // host -> guests: host-owned world state rows (wsync.h, BUG-0419 / BUG-0565 / BUG-0577 /
+                          // BUG-0579 / BUG-0564): u8 kind 0, u32 host mode, u8 rows, {u8 id, u8 nv, u8 n, n x {u32 key,
+                          // nv x u32}}. Older SporeCoop ignores it (an unknown type).
 };
 
 // LAN discovery: plain datagrams outside any connection, answered by hosts on their game port
@@ -170,6 +184,10 @@ enum PlayerFlags : uint8_t {
     PF_SWIMMING = 32,
     PF_SNEAKING = 64, // BUG-0463: the creature sneaks (+0xBB1); older SporeCoop ignores the bit
 };
+
+// BUG-0425: a height over the sender's terrain (m) that is not known (an older sender, no terrain)
+constexpr float kNoAgl = -1e9f;
+inline bool agl_known(float agl) { return agl > -1e6f; }
 
 struct Vec3 {
     float x = 0, y = 0, z = 0;
@@ -368,6 +386,10 @@ struct PlayerState {
     uint32_t world = 0;   // crc32 of the current save name (same world <=> same value)
     float scale = 1;
     uint64_t adventure_run = 0, captain_selection = 0, movement_generation = 0;
+    // BUG-0425: the sender's height over its own terrain (cPlanetModel::GetHeightAt) when its body is off the
+    // ground (PF_JUMPING); kNoAgl otherwise or from an older sender (appended after scale: older readers stop
+    // before it). NPC states carry it in the MSG_NPC_STATE batch's trailer (npc.cpp), not here
+    float agl = kNoAgl;
 
     void write(Writer& w) const
     {
@@ -380,6 +402,7 @@ struct PlayerState {
         w.u32(species);
         w.u32(mode); w.u32(world);
         w.f32(scale);
+        w.f32(agl);
         w.u32(uint32_t(adventure_run)); w.u32(uint32_t(adventure_run >> 32));
         w.u32(uint32_t(captain_selection)); w.u32(uint32_t(captain_selection >> 32));
         w.u32(uint32_t(movement_generation)); w.u32(uint32_t(movement_generation >> 32));
@@ -395,10 +418,11 @@ struct PlayerState {
         species = r.u32();
         mode = r.u32(); world = r.u32();
         scale = r.f32();
+        agl = r.f32();
         adventure_run = r.u32(); adventure_run |= uint64_t(r.u32()) << 32;
         captain_selection = r.u32(); captain_selection |= uint64_t(r.u32()) << 32;
         movement_generation = r.u32(); movement_generation |= uint64_t(r.u32()) << 32;
-        return r.ok() && std::isfinite(scale) && scale > 0 && scale <= 10000;
+        return r.ok() && std::isfinite(agl) && std::isfinite(scale) && scale >= 0 && scale <= 10000;
     }
 };
 
@@ -413,6 +437,10 @@ enum NpcFlags : uint8_t {
     NF_DEAD = 1,
     NF_FAMILY = 2, // member of the host avatar's herd
     NF_IMPRESSED = 4, // impressed by a player (cCreatureAnimal +0xB58 bit 0x80, set by a social success)
+    NF_PACK = 8,      // in the host's pack (+0xB58 bit 0x100: recruited, a Summon Flock member; BUG-0556). Older guests ignore it
+    NF_SUMMONED = 16, // its herd is a summoned flock (herd +0x192, cSummonCreatureEvent: the hearts effect 0x6A17B05A; BUG-0556)
+    NF_AIR = 32,      // BUG-0550 / BUG-0425: off its ground in the host's game (+0x137 = 0 and off GetHeightAt: a jump, a fall,
+                      // thrown, flying); its height over the host's terrain is in the batch's agl trailer. Older guests ignore it
 };
 
 struct NpcSpawn {
@@ -475,8 +503,16 @@ struct Damage { // host -> guest: you were hit
     float damage = 0;
     int32_t type = 0;
     uint16_t attacker = 0xFFFF; // NPC net id or 0xFFFF
-    void write(Writer& w) const { w.u8(player); w.f32(damage); w.u32((uint32_t)type); w.u16(attacker); }
-    bool read(Reader& r) { player = r.u8(); damage = r.f32(); type = (int32_t)r.u32(); attacker = r.u16(); return r.ok(); }
+    // BUG-0555 (appended, older readers ignore it): the type of the attacker's ability whose hit it is (+8 of the
+    // ability, 0x1E bite, 0x1F charge, 0x20 spit; 0 = not an ability hit / unknown, also from an older host)
+    uint32_t ability = 0;
+    void write(Writer& w) const { w.u8(player); w.f32(damage); w.u32((uint32_t)type); w.u16(attacker); w.u32(ability); }
+    bool read(Reader& r)
+    {
+        player = r.u8(); damage = r.f32(); type = (int32_t)r.u32(); attacker = r.u16();
+        ability = r.ok() && r.left() >= 4 ? r.u32() : 0;
+        return r.ok();
+    }
 };
 
 struct AnimEvent {

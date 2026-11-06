@@ -1,4 +1,5 @@
 #include "adventure_relationships.h"
+#include "sporekit_build.hpp"
 
 #include <cstring>
 #include <utility>

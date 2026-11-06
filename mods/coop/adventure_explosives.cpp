@@ -1,4 +1,5 @@
 #include "adventure_explosives.h"
+#include "sporekit_build.hpp"
 
 #include <algorithm>
 #include <cmath>

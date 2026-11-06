@@ -29,7 +29,7 @@ class PreviewPackageTests(unittest.TestCase):
         self.output = self.root / 'distribution'
         source_files = {
             'mods/coop/coop.cpp': '#define COOP_VERSION "' + preview.PREVIEW_VERSION + '"\n',
-            'mods/coop/net/protocol.h': 'constexpr uint16_t kProtoVersion = 26;\n',
+            'mods/coop/net/protocol.h': 'constexpr uint16_t kProtoVersion = 28;\n',
             'data/symbols/test.sym': 'Fixture=0x1 ; verified synthetic fixture\n',
             'data/config/coop.ini': '[fixture]\n',
             'docs/MULTIPLAYER-ADVENTURE-EDITOR.md': '[Report](reports/EDITOR-PREVIEW9-VALIDATION.md)\n',
@@ -83,7 +83,7 @@ class PreviewPackageTests(unittest.TestCase):
         distribution = self.output / 'SporeCoopGA'
         manifest = json.loads((distribution / 'SHA256.json').read_text())
         self.assertEqual(manifest['version'], preview.PREVIEW_VERSION)
-        self.assertEqual(manifest['protocol'], 26)
+        self.assertEqual(manifest['protocol'], 28)
         self.assertFalse(manifest['complete_release_acceptance'])
         self.assertEqual(manifest['supported_exe_sha256'], preview.EXE)
         self.assertEqual(manifest['supported_laa_exe_sha256'], preview.GOG2024_LAA)
@@ -102,7 +102,7 @@ class PreviewPackageTests(unittest.TestCase):
         self.assertIn('https://example.com/evidence',
                       (distribution / 'EDITOR-PREVIEW9-VALIDATION.md').read_text())
         readme = (distribution / 'README.txt').read_text()
-        self.assertIn('protocol 26', readme)
+        self.assertIn('protocol 28', readme)
         self.assertIn('Native\nacceptance of these additions is pending', readme)
         self.assertNotIn('Terrain, nested creation editors', readme)
         self.assertEqual((self.kit / 'SporebinEP1/SporeApp.exe').read_bytes(), self.original_exe)
@@ -115,7 +115,7 @@ class PreviewPackageTests(unittest.TestCase):
 
     def test_repository_identity_and_loaded_symbol_map(self):
         with patch.object(preview, 'ROOT', REPOSITORY):
-            self.assertEqual(preview.release_identity(), (preview.PREVIEW_VERSION, 26))
+            self.assertEqual(preview.release_identity(), (preview.PREVIEW_VERSION, 28))
             preview.validate_loaded_symbols()
         self.assertEqual(PRODUCTION_EXES, {preview.EXE, preview.GOG2024_LAA})
 

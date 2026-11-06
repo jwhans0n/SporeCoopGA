@@ -1,4 +1,5 @@
 #include "adventure_captains.h"
+#include "sporekit_build.hpp"
 
 #include <algorithm>
 #include <array>

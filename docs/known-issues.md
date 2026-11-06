@@ -50,6 +50,9 @@ Recover restores the private draft. Observed while correcting an animated-picker
 fixture on C32; the supported import and property routes are tested separately.
 
 ### Galactic Adventures preview 12: validation limits
+## Galactic Adventures preview 12: validation limits (BUG-0626)
+
+Historical validation limitations and current missing smoke prerequisites are tracked by BUG-0626.
 
 Preview `0.7.3.5-ga-preview.12` requires the exact dc04 GOG executable and matching
 protocol 15 clients. It seals the host's first win/loss decision, holds gameplay
@@ -336,7 +339,10 @@ original scope.
   since BUG-0518, a click on the ability's button of the bar). The host's own
   game is native. The success message 0x60B4123 (CreatureStageEventHandler) is not posted for a
   guest's win. Reproduce: `tools/tests/coop_creature_social.py`.
-* Ticket: BUG-0179.
+* 2026-11-03 (fix/w41-creature-left): the meter and the win message are shown / posted on the guest now
+  (BUG-0179, social.guest_meter); still open: the NPC's prompts and any social ability counting as the
+  answer (BUG-0525, docs/re/creature.md#creature-guest-meter).
+* Ticket: BUG-0179 (meter, message: fixed), BUG-0525 (prompts: open).
 
 ## Creature: while the host is in the main menu the guest's planet fills up slowly
 
@@ -510,6 +516,8 @@ original scope.
 * `coop_space_death.py` failed once in the forced-jump step: after the OK the ship stayed dead for 47 s
   and the guard "respawn caption without a planet" did not fire (0), so the respawn caption had ended
   some other way; passed in the next run and on the base branch.
+* 2026-11-04 (fix/w42-space-play): coop_space_rescue.py flies off in 0.3 s pulses until the repair distance is
+  120 m (at most 2.5 s), not 2.5 s of W at once.
 * Ticket: BUG-0193.
 
 ## Space diplomacy: what is not shared or may drift (space_diplomacy.cpp)
@@ -532,6 +540,9 @@ original scope.
   empire's ships, missions and trade use the same hook but are not played in the test.
 * Rivals mode (feature 10) turns sharing off; it is not tested here (the switch belongs to
   space_rivalry.cpp).
+* 2026-11-04 (fix/w42-space-play): partners' changes arriving while a game is out of Space (an editor) are kept
+  and replayed (BUG-0544, `diplomacy.keep_away`); before, the host lost them and its next table took them from
+  the guest too.
 * Ticket: BUG-0194.
 
 ## Space map: a guest's colonies last only until it rejoins
@@ -549,6 +560,10 @@ original scope.
 * The map is overlay text (a ring of dots, a name tag), not the game's own star marks; tags are not
   hidden behind the game's own galaxy panels (the star info card), only under the pause menu, the
   co-op window, comm screens and cinematics.
+* 2026-11-04 (fix/w42-space-life): the rejoin is fixed (BUG-0195, `space.keep_colonies`, test
+  space_colony_rejoin): the host keeps a guest's own colonies and gives them back when it rejoins. Still open: a
+  host that restarts its game keeps nothing (memory only), the colony comes back with one city and no stored
+  spice, the list is keyed by the player's name.
 * Ticket: BUG-0195.
 
 ## Space trade: open ends (space_trade.cpp, 2026-10-23)
@@ -581,6 +596,9 @@ original scope.
 * Spice values are the game's own (`spacetrading~` 0x34F1A4A x the difficulty multiplier, about
   5 600 to 24 000 per unit on normal), so one sale of 10 is worth 110 000 to 490 000 at 2x: big
   next to the fixture's $100 000. NPC stores pay similar money for the spices they want.
+* 2026-11-04 (fix/w42-space-play): "a gift or sale on its way when the own session ends comes back" is fixed
+  (BUG-0542, `trade.delivered`): what the partner's side acknowledged stays there. The leftover that did not fit
+  is lost when its answer is lost.
 * Ticket: BUG-0196.
 
 ## Space allies: what the mirror of a partner's colonies does not do (space_allies.cpp)
@@ -606,6 +624,9 @@ original scope.
   bit, enemies vectors); not tested here (feat/space-rivalry not merged).
   ~ superseded (2026-10-27): space_rivalry.cpp is on main now; whether this path is tested was not
   re-checked, BUG-0153.
+* 2026-11-04 (fix/w42-space-play): a partner's colony in a star system that is mine here (both own it since the
+  join) is now a record-level colony of my empire, undone before saves (BUG-0543, `allies.own_star`). Systems of an
+  NPC empire in my copy are still skipped.
 * Ticket: BUG-0197.
 
 ## Space: the galactic core finale, open ends (space_finale.cpp)
@@ -1256,6 +1277,9 @@ Reproduce a full game: `tools/lab.py run campaign --lane N` (about 85 min) or `c
   the cell.
 * Reproduce: not tried; knock the host out with a partner, wait for the 10 s respawn.
 * Ticket: BUG-0343
+* CORRECTION (2026-11-04, fix/w41-cell-left): fixed (BUG-0343, `cell.camera_snap`): the cell camera's target
+  follows a stopped cell only while it swims; every jump of the own cell by the mod now resets the camera as the
+  game's own jumps do (docs/re/cell.md#cell-camera).
 
 ## All: the watchdog dumps stacks while the game is minimized (2026-10-31, player report)
 <a id="issue-watchdog-minimized"></a>
@@ -1437,6 +1461,9 @@ Reproduce a full game: `tools/lab.py run campaign --lane N` (about 85 min) or `c
 * Known: the game keeps a grounded creature (+0x137 = 1) on the terrain; the partner sends no
   airborne flag (PF_JUMPING is never set).
 * Next steps: send the airborne state and put the puppet into the game's fall (or play the jump)
+* FIXED (2026-11-04, fix/w41-puppet-look, unreleased): the partner's game sends PF_JUMPING while its creature is off
+  the terrain; the puppet is placed in the air and marked not grounded (`creature.puppet_air`, suite `puppet_air`).
+  Not checked with a creature that can really jump (the fixture's cannot).
   on the observer; check with a creature that can jump.
 * Ticket: BUG-0376
 
@@ -1453,6 +1480,9 @@ Reproduce a full game: `tools/lab.py run campaign --lane N` (about 85 min) or `c
   inferred: the partner interpolation (extrapolation up to 0.25 s with the last velocity) or late
   snapshots during the host's cinematic.
 * Not checked: a frame-by-frame look at the received states around the moment.
+* 2026-11-04 (fix/w42-space-life): not a drawing error (BUG-0388): the console cut the track dumps at 8 KB, the
+  guest's path had gaps and the check measured against the chord across them; with complete rows the ship is
+  drawn within 0.17 m (docs/re/space.md#space-fast-ship-track). SporeKit `kit.fix longout`.
 * Ticket: BUG-0388.
 ## Tests: the creature test's hit lands on the host's family and is dropped (2026-11-01, fix/w30-tribe-walk)
 <a id="issue-creature-test-party-hit"></a>
@@ -1601,6 +1631,10 @@ Reproduce a full game: `tools/lab.py run campaign --lane N` (about 85 min) or `c
 * What happens: on the host, the guest's creature moves on its path but keeps its standing animation (02481DE5,
   walk gait 0) for a whole 25-40 s walk.
 * Reproduce: about 1 run in 10 of the cold tests puppet_walk / puppet_slope / puppet_under (host watches guest).
+* Resolved (2026-11-04, fix/w41-puppet-look): in all three recorded runs the observer's camera was far away (a 30 m
+  walk spanned 20-30 pixels, ~1 px/m; 25-90 px/m in the passing runs): its game animates a creature that far without a
+  walk gait, its NPC proxies alike. A test artifact of a cold start, not the driving (inferred: the camera's state at
+  that moment was not read). puppet_walk now judges the gait near the camera only (`coop.track` column ppm).
 * Ticket: BUG-0436
 
 ## Creature: a hit animal is held off its path on the guest for a second (2026-11-01, fix/w34-walk-stable)
@@ -1617,6 +1651,9 @@ Reproduce a full game: `tools/lab.py run campaign --lane N` (about 85 min) or `c
 * What happens: when the partner stops, its creature on the other screen slides 0.3-0.7 m past the spot in ~2 % of
   the stops; on a slope it may play the fall animation for 0.2 s there.
 * Reproduce: puppet_walk prints the stops (`stops: N, drawn past the stop by more than 0.3 m in M`).
+* Not reproduced again (2026-11-04, fix/w41-puppet-look): 21 stops of `coop_puppet_walk.py --stop-walk` on the slope
+  (guest 30 fps, `player` network), 10 of them abrupt (`coop.abilities halt`): none slid on more than 0.05 m with the
+  0.7.4 driving, so the hold after a stop (creature.puppet_stop, tried) was not kept.
 * Ticket: BUG-0408
 * Fixed (2026-11-01, fix/w33-unlocks): the party shares its collected parts (`parts.shared`, test
   `parts_shared`).
@@ -1678,6 +1715,8 @@ Reproduce a full game: `tools/lab.py run campaign --lane N` (about 85 min) or `c
 * What happens: a partner standing 0-0.5 m over the plain terrain on a mound is drawn 5 cm into the plain terrain,
   i.e. up to 0.45 m under the mound's surface; crossing 0.5 m it steps 0.4-0.5 m up or down.
 * Cause: `creature.puppet_ground` takes the plain terrain (`GetHeightAt`, without the mound) as the ground.
+* FIXED (2026-11-04, fix/w41-puppet-look, unreleased): a grounded partner 0.1-0.5 m over `GetHeightAt` is put 5 cm
+  under its own height (`creature.puppet_mound`, suite `puppet_mound`).
 * Ticket: BUG-0435
 ## Creature: parts not shared after Cell -> Creature the players' way (2026-11-01, feat/w33-tests-session)
 <a id="known-parts-after-cell"></a>
@@ -1719,11 +1758,11 @@ Reproduce a full game: `tools/lab.py run campaign --lane N` (about 85 min) or `c
   recipe transaction. The draft remains converged and fault-free, but the guest
   receives no authored move. The native Terraform input functions bypass the
   placement input hooks. Private C61 adds the separate hooks and passes controlled
-  checks; actual game qualification remains pending. Ticket: BUG-0527.
+  checks; actual game qualification remains pending. Ticket: BUG-0611.
 
   CORRECTION (2026-11-03): private C62 also repairs the acquired-record revision
   mapping and passes host/guest native movement with checked Undo/Redo and exact
-  Planet restoration. BUG-0527's movement failure is fixed in this uninstalled
+  Planet restoration. BUG-0611's movement failure is fixed in this uninstalled
   candidate. Remaining Terraform controls and release checks stay separate.
 ## Civ: city citizens have another size on each game (2026-11-03, fix/w40-scale)
 <a id="issue-civ-citizen-scale"></a>
@@ -1733,6 +1772,9 @@ Reproduce a full game: `tools/lab.py run campaign --lane N` (about 85 min) or `c
   own random size (GetDesiredScale vt 0x80), not a mirror. The replicated-field engine
   (docs/sync-architecture-plan.md#sync-fields) needs a mirror to apply a size to.
 * Not fixed: comes with mirrored citizens (BUG-0476): then they are one more field kind.
+* Fixed (2026-11-04, fix/w41-civ-citizens): citizens near a guest follow the host's (`civ.citizens`) and get their
+  size (`civ.citizen_scale`). Left: the detector's greedy pairs cross in a crowd of citizens, so a few
+  `scale:citizen` rows remain without a real difference (docs/re/civ.md#civ-roads-citizens).
 * Ticket: BUG-0475 (its Tribe half is fixed), BUG-0476
 ## Commodity nodes at scale 10 on the host only (2026-11-03, fix/w40-scale)
 <a id="issue-node-scale"></a>
@@ -1759,6 +1801,9 @@ Reproduce a full game: `tools/lab.py run campaign --lane N` (about 85 min) or `c
 * Not fixed: the code that makes a road in the host's game is not traced (docs/re/civ.md#civ-planner-lifetime);
   a fix needs that function (and its arguments: the two cities) to replay it on the guest from the
   host's snapshot.
+* Fixed (2026-11-04, fix/w41-civ-citizens): the road is a trade route's object (cCity::AddTradeRoute); the guests
+  add the host's routes (`civ.roads`, test `civ_roads`, docs/re/civ.md#civ-roads-citizens). Left: a route the host
+  removes without a capture stays on the guest (removal not replayed).
 * Ticket: BUG-0494 (split from BUG-0478, whose vehicle half is fixed: `civ.mirror_remove`).
 
 ## play_creature: a puppet once far off, no joint hunt (2026-11-03, fix/w40-effects)
@@ -1828,9 +1873,11 @@ What mods/coop/worldobj.cpp does not cover yet (docs/re/creature.md#creature-wor
 Found by fix/w40-play (2026-11-03), not fixed:
 * Tribe: an animal proxy that the guest places on the host's path can stay 3.5-8 m off the host's NPC for
   2-11 s (the lab's monitor rule `proxies`; play_tribe 1 of 3, campaign_tribe 1 of 3 in 20261103-012624).
-  Ticket: BUG-0503.
+  Ticket: BUG-0503. Fixed on fix/w43-tests (2026-11-04): on a guest at a low frame rate the placing was capped at
+  0.1 s frames and fell behind (npc.proxy_slow_frames); not yet confirmed with a long session.
 * Creature: under the brain upgrade caption both own creatures read 0.63-0.71 m under the ground once (monitor
-  rule `ground`, 20261103-124913 play_creature#2); not reproduced at the fixture's nest. Ticket: BUG-0504.
+  rule `ground`, 20261103-124913 play_creature#2); not reproduced at the fixture's nest. Ticket: BUG-0504. Fixed on fix/w44-height (2026-11-05) through
+  creature.own_ground (BUG-0592); the caption itself not rerun.
 * play_tribe: in 2 of 3 runs the guest's members stayed idle on 7-12 orders the host took, and the host's bot
   gave only 8-9 orders (its minimap look missed 24 times once). Ticket: BUG-0505.
 
@@ -1860,11 +1907,196 @@ Found by fix/w40-play (2026-11-03), not fixed:
 ## Experimental shared-editor native reopen qualification (2026-11-04)
 <a id="issue-editor-terraformed-cold-reopen"></a>
 
-* BUG-0538 (legacy fork BUG-0487): after a native Save of a terraformed private
+* BUG-0622 (legacy fork BUG-0487): after a native Save of a terraformed private
   adventure, cold opening reaches the correct adventure and Native Ready, but
   the strict decoded saved/reopened comparison differs before sharing starts.
   The field and native load boundary are unassigned. Reproduce with the retained
   C69 Road draft and `out/preview9-c69-road-cold-open.py`; complete saved/cold
   images are retained under the matching OUT directory. Shared Save checkpoint
-  publication is separately fixed under BUG-0537. Cold authored equality is not
+  publication is separately fixed under BUG-0621. Cold authored equality is not
   qualified, and the comparator has not been relaxed.
+* 2026-11-04 (fix/w41-effects-stages): Tribe and Civilization fixed for 0.7.5. The relayed id was the skin
+  painter's own paint effect `D723B947` (made in the painter's effect world, sent by the test's workload), not a
+  game effect; such effects are never sent or played now (`coop.fix effects.main_world`) and
+  `effects.other_stages` is on (docs/re/creature.md#creature-effects-painter). Space stays off
+  (`coop.fix effects.space`, not verified). The fault itself did not come back on lane 4 even with the 0.7.4 build.
+## Space: the partners' UFO puppets may go into a guest's save (2026-11-03, fix/w41-tribe-world)
+<a id="issue-space-objects-in-save"></a>
+
+* What happens: the save filter knows creatures, herds, Civ mirror vehicles (civ.save_strip) and Tribe mirrors
+  and made tribes (tribe.save_strip), not the Space objects the mod makes (the partners' UFO puppets). Not
+  checked whether a Space save writes them at all.
+* Not fixed: needs a Space save + reload test as tribe_save_strip.
+* 2026-11-04 (fix/w42-space-life): fixed (BUG-0522, `space.save_strip`, test space_save_strip): a Space save
+  did write them (they came back as plain Defenders of the guest's empire); now null references
+  (docs/re/space.md#space-save-strip). Still open: the Creature-stage fallback puppet in the avatar's herd.
+* Ticket: BUG-0522
+## Tribe: tools stand elsewhere on each game; an emptied village keeps its hut (2026-11-03, fix/w41-tribe-world)
+<a id="issue-tribe-tools"></a>
+
+* What happens: the mod syncs no tribe tool: a tool bought after the world was shared is made by each game at its
+  own spot (the detector's `Tribe:unmatched:tribe_tool`). A guest's tribe the host no longer has loses its members
+  (tribe.guest_tribes) but its hut, tools and food mat stay: no game function to remove a whole tribe is known.
+* Ticket: BUG-0523, BUG-0483
+* Update (2026-11-04, fix/w42-tribe-left): the tools are synced now (BUG-0523 fixed: every tribe's tools are the
+  host's; a guest's own tools the host has not are removed with the game's RemoveTool, so an emptied village loses
+  its tools too). Its hut and food mat still stay (BUG-0483). Left: a tool made by the mod is in no village layout
+  slot; a guest selling a tool is not sent (the host keeps it).
+## Tribe: a member stalled in the gather behaviour, the chiefs at a 4-player arrival (2026-11-04, fix/w42-tribe-left)
+<a id="issue-tribe-gather-chiefs"></a>
+
+* What happens: play_tribe saw a member in the gather node (state 1, standing, its walk goal the old tree) that did
+  not act on new orders (BUG-0531); with 4 players the chiefs arrive close together and the game's idle behaviour
+  brings them back next to each other (BUG-0340).
+* Not reproduced with 2 players: a guest's walk order took a gathering member out of the node in 7 of 7 runs
+  (tribe_gather_stall), and chiefs put in each other after the arrival were parted by the game within 14 s
+  (tribe_chiefs_apart check 5). Both tests are regression checks; next step a 4-player campaign
+  (`coop_campaign.py --from creature --to tribe --players 4`) and play_tribe's idle order lines (`coop.tribe ai`).
+* Ticket: BUG-0531, BUG-0340
+
+## Space: ornaments by a colony city in one game only (2026-11-04, fix/w42-space-planets)
+<a id="issue-space-ornaments"></a>
+
+BUG-0541: on the `space` fixture's home planet one game can have 9 ornaments (noun 0x18C88E4) next to city 0 that the
+other has not (both landed, `coop.census all 3000 0 0 0`); not the camera's level of detail. Cosmetic; not traced.
+## Civ: the old tribe village stands in the guest's Civ world only (2026-11-04, fix/w42-civ-left)
+<a id="issue-civ-tribe-leftovers"></a>
+
+* What happens: in play_civ on civ_npc the guest's game has the Tribe stage's tribes, huts, tools, food mats and
+  bundles at the old village (-234 -34 482) that the host's game does not have (the detector's
+  `Civilization:noun_only_guest:tribe*`, `game_bundle`, 7-10 % of the comparisons). How to reproduce:
+  `SPORE_DETECTOR=20 tools/lab.py run play_civ`.
+* Fixed on fix/w42-civ-left (civ.tribe_ruins): the host's vehicles raid the villages, the guest now removes them too.
+  Ticket: BUG-0539
+## Space: a city's cultural targets stand at other places in each game (2026-11-04, fix/w42-civ-left)
+<a id="issue-space-cultural-targets"></a>
+
+* What happens: the 4 cultural targets per city (city setup 0xBE7D40) are placed by each game on its own; the
+  detector's `unmatched:cultural_target` in campaign_space. Not seen in play_civ.
+* Not fixed. Ticket: BUG-0540
+- BUG-0550: Creature: an NPC 9 m over the ground on the host is drawn on the ground on the guest (seen once in play_creature, sync-check `n: 1 apart`). Fixed on fix/w44-height (2026-11-05, npc.air).
+- BUG-0551: Creature: a chat line typed while the host pauses to save the world for a returning guest can be lost (seen once in play_creature).
+
+Player reports 2026-11-04 (0.7.5, Discord bug-reports; not analysed yet):
+- BUG-0554: Creature: the guest's creature is not stunned by an NPC's charge (fixed on fix/w43-guest-player, unreleased)
+- BUG-0555: Creature: NPCs bite and charge the guest's creature while it flies (glides) (fixed on fix/w43-guest-player, unreleased)
+- BUG-0556: Creature: creatures the host summons with Summon Flock are not friendly (green) to the guest (fixed on fix/w43-guest-player, unreleased)
+- BUG-0557: Creature: the guest cannot eat some bodies of creatures the players killed
+- BUG-0558: Creature: the UFO that picks up the players at the end of Creature cannot pick up the guest (the guest does not see the ship)
+- BUG-0559: Creature: parts of a pack the guest lacks (Creepy & Cute) are drawn as big blocks, and the host's colours are another shade on the guest
+- BUG-0560: Cell: the host gets a lot of DNA again after going into the cell editor
+- BUG-0561: Creature: an allied nest has no ally (green) icon on the guest's minimap, only the grey discovered mark (fixed on fix/w43-guest-player, unreleased)
+- BUG-0562: Creature: an NPC creature backing away from the guest gets stuck inside its nest (video)
+- BUG-0563: Tribe: the guest's creature from Creature stage appears as an enemy monster at the start of Tribe; killed, it leaves meat that never runs out
+- BUG-0564: Tribe: after the guest dies, its map still shows villages that do not exist any more (reproduce: tribe_bounce_world, the host's game over and reload; BUG-0566, 0567, 0569 the same class)
+- BUG-0565: Tribe: every village's relation is neutral on the guest, while the host sees them aggressive and slightly aggressive
+- BUG-0566: Tribe: the guest does not see an enemy village's hut (hub) health go down when the players attack it
+- BUG-0567: Tribe: a building is broken (bugged) on the guest after the guest dies
+- BUG-0568: Tribe: no music in the guest's Tribe game (fixed on fix/w44-tribe-guest, unreleased: tribe.theme_music, the hunt / fight theme)
+- BUG-0569: Tribe: the guest sees no animations (fixed on fix/w44-tribe-guest, unreleased: tribe.mirror_anims)
+- BUG-0570: Tribe: no red target circle under an enemy the guest targets (fixed on fix/w43-guest-player, unreleased)
+- BUG-0571: Tribe: villages are founded (spawn) much faster than in the single-player game (fixed on fix/w44-tribe-guest, unreleased: tribe.form_pace)
+- BUG-0572: Tribe: the guest's food counter is 0 while the host's tribe has food (reproduce: tribe_food_zero; the guest's game spends its last food, shared.cpp cannot write into an empty bundle list) (from about an hour into the session)
+- BUG-0573: Tribe: the guest's tribe members do not eat on their own, they must be ordered to eat
+- BUG-0574: Tribe: two buildings stand right next to each other on the guest (fixed in 0.7.6 by BUG-0523: tribe_tools_all, 2026-11-04 replay)
+- BUG-0575: Tribe: the guest crashed after double-clicking the home icon (3010a413:SporeApp.exe+0x6826F3)
+- BUG-0576: Tribe -> Civ: black screen after evolving from Tribe into the city stage
+- BUG-0577: After a rejoin the game shows the Cell and Creature stages as not done yet (stage progress lost)
+- BUG-0578: Crash at Graphics::cModelWorld::FinishBackgroundLoad+0x2735 on 0.7.3.6 (3010a413, mode none)
+- BUG-0579: Tribe: day and night differ: the guest's world is at night while the host's is in daylight
+- BUG-0582: Tribe: the host's game faults at 0xD72745 every frame during its own creature attack event (lab, ~1 run in 3 of tribe_bounce_world; its game-over caption may not come then)
+- BUG-0583: Tribe: a guest faulted in a citizen's Update (GetAbilityIndexByType) after leaving and joining again (lab, once in realign_tribe_rejoin)
+- BUG-0580: Tribe: the NPC tribes' food differs between the host and the guest (detector `Tribe:state:tribe_food`; `SPORE_DETECTOR=20 tools/lab.py run play_tribe`)
+- BUG-0584: Creature: a caught fault on the host, a call through null from 0xB097C4 (once in a 44 min `long_creature`, lab 20261104-214938)
+
+## Content one game lacks: what the lookalike parts do not cover yet (2026-11-04, fix/w43-content)
+<a id="issue-content-lookalike-gaps"></a>
+
+* [BUG-0424](tickets/BUG-0424-class-content-parts-paints-designs-the-other-gam.md) (open, class): since BUG-0559 a
+  part a guest's game lacks in a player's creature, cell or UFO, or in a species of the host's world, is shown as
+  the most similar part that game has (the sender's description of the part, docs/re/creations.md#creations-lookalike).
+  Not covered: civ mirror vehicles, buildings and host ships in Space (`ensure_model` builds them from a key, no
+  description comes with it: the 0.7.6 tables, a part of no table becomes a fixed detail); cell and UFO parts use the
+  same code but have no test; an animation that only the missing part has is not played.
+* Reproduce: `content_lookalike` with the host's creature changed to use a vehicle part of `Spore_Pack_03` in a civ
+  mirror (not written yet).
+
+## Tests: what G1 of 0.7.7 left open (2026-11-04, fix/w43-tests)
+<a id="issue-g1-open"></a>
+
+* Space: sync-check MISMATCH p0 46 m while the host flies a rescue with key pulses (BUG-0547); the speed slack uses
+  the speed at the read. Not reproduced or changed here.
+* Space: coop_space_death once kept the ship dead 47 s after the forced jump (BUG-0193); not seen since.
+* Tribe: tribe_guest_tribes' fix-off forming failed 12 of 13 times on fix/w43-world-state's lanes 4/5; the test now
+  says why the controller formed nothing (bake, tribe nouns, spawn markers) and retries only while it bakes; the
+  cause on those lanes is not confirmed (BUG-0587).
+
+## Creature: the host's drama UFO tries to take the guest's creature, the guest sees no ship (2026-11-04, player report 0.7.5)
+<a id="issue-ufo-puppet"></a>
+
+* What happens: in Creature the host's game starts its UFO visit (Drama Manager event kind 2); its ship beams at the
+  guest's creature in the host's game, which does not rise; the guest's game shows no ship.
+* Reproduce: creature fixture, `coop.drama start 2` on the host next to the guest's creature (lab: not run with a
+  partner nearby yet).
+* Known: docs/re/creature.md#creature-ufo-puppet (the start posts BT stimulus 2, the abduct tool's hit 0x10323E0
+  gives a beam locomotion; the puppet is placed every frame by the mod). The guest's own event is held back on
+  purpose (BUG-0486).
+* Not checked: how the ship picks its creature; what the game does with an abducted avatar.
+* Next steps: find the target pick of cAbductToolStrategy, keep puppets out of it on the host, or relay the visit.
+* 2026-11-05 (fix/w44-guest-player2): the pick is the ship's BT node 0x0519E372 (docs/re/creature.md#creature-ufo-pick);
+  `creature.ufo_puppet` keeps puppets out of it (not verified: in the lab the ship's BT stops after ~7 s and never
+  picks). Still open: the guest does not see the host's ship.
+* Ticket: BUG-0558
+
+## Tribe: a guest's game crashes in a model's effect list after a camera jump (2026-11-04, player report 0.7.5)
+<a id="issue-tribe-effect-list-crash"></a>
+
+* What happens: the guest's game crashed (0xC0000005 at GOG 2024 0xA826F3) right after a double-click on the home
+  icon in Tribe, after it had given members to the host.
+* Reproduce: not reproduced (step 0: 8 gifts and the HUD's home button, which did not move the lab camera).
+* Known: docs/re/tribe.md#tribe-model-effects-crash; the crash's own frames (GOG 2024): 0xC88F20+0x14,
+  QuaternionToMatrix, 0xC8ABF0+0xD4 (the model's attached-effect loop), 0xE8C100 and the view update 0xE8E5B0
+  (+0x23, +0x495), 0xC69BA0, 0xE8CD10: an object view brought into the camera's range starts its model's effects,
+  one of which has a freed component.
+* Not checked: which object's model (a mirror given to the host, an effect the relay attached).
+* Next steps: a test that gives members and jumps the camera with the minimap's house icon (55, 918) double-click.
+* Ticket: BUG-0575
+
+## Tribe -> Civ: the evolve-in-place path and a sync-check MISMATCH between the two Civ editors (2026-11-04, test tribe_civ)
+<a id="issue-tribe-civ-between-editors"></a>
+
+* What happens: between the City Hall and the vehicle editor the host logs the Creature evolve-in-place lines for
+  the Tribe editors, and its sync check reports its own NPCs at (0, 0, 0) (MISMATCH, 46 apart).
+* Reproduce: `tools/lab.py run tribe_civ --lane N`; the host's log between the editors.
+* Known: docs/re/tribe.md#tribe-civ-transition (last item). Both games still reach Civ.
+* Not checked: whether a guest sees anything wrong then; whether the sync-check gate of a lab test trips on it.
+* Fixed on fix/w44-world-state2 (unreleased): diag.stage_end and the notice, docs/re/tribe.md#tribe-stage-end.
+* Ticket: BUG-0588
+- BUG-0582: Tribe: the host's game faults at 0xD72745 every frame during its own creature attack event (lab, ~1 run in 3 of tribe_bounce_world; its game-over caption may not come then) (fixed on fix/w43-crashes, unreleased: tribe.attack_spot)
+- BUG-0583: Tribe: a guest faulted in a citizen's Update (GetAbilityIndexByType) after leaving and joining again (lab, once in realign_tribe_rejoin) (guard on fix/w43-crashes, unreleased: tribe.leader_tool; not reproduced)
+- BUG-0580: Tribe: the NPC tribes' food differs between the host and the guest (detector `Tribe:state:tribe_food`; `SPORE_DETECTOR=20 tools/lab.py run play_tribe`) (fixed on fix/w43-crashes, unreleased: wsync.tribe_food)
+- BUG-0584: Creature: a caught fault on the host, a call through null from 0xB097C4 (once in a 44 min `long_creature`, lab 20261104-214938; analysed, not reproduced: docs/re/creature.md#creature-fruit-pool)
+- BUG-0591: Tribe: in play_tribe the wsync rows tribe_rel and tribe_food stop reaching some villages on the guest from about 400 s on (detector rows; `SPORE_DETECTOR=20 tools/lab.py run play_tribe`)
+- BUG-0592: Creature: after the guest returns from the main menu, the host's standing creature can stand 0.7 m under the ground for about 20 s, until it walks (`SPORE_DETECTOR=20 tools/lab.py run long_creature_short`). Fixed on fix/w44-height (2026-11-05, creature.own_ground)
+- BUG-0593: Civilization: a city the player took can stay the NPC's on the guest, with that civilization's relations and money (detector rows; `SPORE_DETECTOR=20 tools/lab.py run campaign_space`)
+- BUG-0594: Tribe: a totem pole on the guest only before the move to Civ (`SPORE_DETECTOR=20 tools/lab.py run tribe_civ`)
+- BUG-0595: Space: the guest's money reads nan in the detector's state row (`SPORE_DETECTOR=20 tools/lab.py run campaign_space`)
+- BUG-0596: Creature: a species has a relation in one game only (`SPORE_DETECTOR=20 tools/lab.py run long_creature_short`)
+- BUG-0575: Tribe: the guest crashed after double-clicking the home icon (0xA826F3) (guard on fix/w44-crashes, unreleased: game.model_fx; not reproduced, the freeing of the effect's part not found: docs/re/tribe.md#tribe-model-fx-guard)
+- BUG-0584: Creature: a fault on the host, a call through null from 0xB097C4 (fixed on fix/w44-crashes, unreleased: wobj.fruit_saved + game.fruit_pool; reproduced by `crash_fruit_eat`: docs/re/creature.md#creature-fruit-pool-guard)
+- BUG-0600: Tribe: a guest's game plays none of the hit and fight sounds of the members' fights (the host's 40+ in a
+  40 s fight, the guest's 0; `coop.audio list` on both after `coop.tribe act 7`).
+- BUG-0591: Tribe: in play_tribe the wsync rows tribe_rel and tribe_food stop reaching some villages on the guest from about 400 s on (detector rows; `SPORE_DETECTOR=20 tools/lab.py run play_tribe`) (fixed on fix/w44-world-state2, unreleased: wsync.tribe_pos)
+- BUG-0592: Creature: after the guest returns from the main menu, the host's standing creature can stand 0.7 m under the ground for about 20 s, until it walks (`SPORE_DETECTOR=20 tools/lab.py run long_creature_short`)
+- BUG-0593: Civilization: a city the player took can stay the NPC's on the guest, with that civilization's relations and money (detector rows; `SPORE_DETECTOR=20 tools/lab.py run campaign_space`) (fixed on fix/w44-world-state2, unreleased: wsync.city_owner, wsync.civ_rel, wsync.civ_money)
+- BUG-0594: Tribe: a totem pole on the guest only before the move to Civ (`SPORE_DETECTOR=20 tools/lab.py run tribe_civ`) (fixed on fix/w44-world-state2, unreleased: a detector read of the host's end of Tribe, docs/re/tribe.md#tribe-stage-end)
+- BUG-0595: Space: the guest's money reads nan in the detector's state row (`SPORE_DETECTOR=20 tools/lab.py run campaign_space`) (fixed on fix/w44-world-state2, unreleased: a detector parse)
+- BUG-0596: Creature: a species has a relation in one game only (`SPORE_DETECTOR=20 tools/lab.py run long_creature_short`) (fixed on fix/w44-world-state2, unreleased: detector reads, docs/re/creature.md#creature-species-only)
+- BUG-0575: Tribe: the guest crashed after double-clicking the home icon (0xA826F3) (guard on fix/w44-crashes, unreleased: game.model_fx; not reproduced, the freeing of the effect's part not found: docs/re/tribe.md#tribe-model-fx-guard)
+- BUG-0584: Creature: a fault on the host, a call through null from 0xB097C4 (fixed on fix/w44-crashes, unreleased: wobj.fruit_saved + game.fruit_pool; reproduced by `crash_fruit_eat`: docs/re/creature.md#creature-fruit-pool-guard)
+- BUG-0602: Civilization: one building of a city stands at another place in the guest's game (detector `Civilization:planet:building_*`; `SPORE_DETECTOR=20 tools/lab.py run campaign_space`)
+  Fixed on fix/w44-guest-player3 (unreleased, `mirror.fx`) except the attack animations' hit impacts: BUG-0603.
+- BUG-0603: Tribe: a guest's game plays none of the hit impact effects of the members' attack animations (the
+  animation event's per-target effects 0x682E8D4B / 0xF0D5A994 / 0xCFECC623, sound 0xD05B58ED; `coop_tribe_fight_sounds.py`
+  prints the host's plays). docs/re/tribe.md#tribe-mirror-fx.
+- BUG-0604: Cell: after the guest's level-up its screen showed only water (no cell drawn, nothing on screen for 7 min) in one cell_new_game run (`tools/lab.py run cell_new_game`; not analysed)
