@@ -64,3 +64,22 @@ changes remain on the review branch. Parent Git settings and original destinatio
 refs are verified. A two-repository regression fails before context isolation
 and passes afterward. The corrected full lab self-test must also leave HEAD
 unchanged. No accidental test commits are pushed.
+
+## Frozen payload evidence
+
+The final main build retains295 production inputs with zero drift. The editor
+build retains383 with zero drift. Their `final-source.json` and
+`final-build-receipt.json` are under the respective worktrees'
+`out/upstream077/` and `out/upstream078/`. These are bounded production-input
+manifests, not a claim to capture the entire compiler/toolchain closure.
+
+The main DLL SHA256 is
+`c817f08e84f76c8bb2ad73a472838e251ba2366994d2d7099038c12442242620`;
+the editor DLL is
+`847456ec5305bc6c95bcc4e2e28e69ff9131770a2f8db6b13d8a5e10e5dac053`.
+No candidate payload is copied to the personal installation.
+
+The corrected complete lab self-test passes with its parent HEAD unchanged.
+Final repository runs use a read-only, per-command WSL Git path adapter rather
+than an inherited global repository context. Temporary-repository Git writes
+remain confined to the test directories.
