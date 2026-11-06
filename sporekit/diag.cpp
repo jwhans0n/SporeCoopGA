@@ -8,6 +8,8 @@
 //  - a report on request (console `report`, the co-op window): the same without the exception
 //  - ExitProcess is logged (a game that closes itself leaves its exit code in the log)
 #include "core.h"
+#include "inifile.h"
+#include "../updater/pending.h"
 
 #include <d3d9.h>
 
@@ -15,6 +17,8 @@
 #include <atomic>
 #include <cstdio>
 #include <mutex>
+#include <new>
+#include <stdexcept>
 
 namespace sk {
 
@@ -178,6 +182,11 @@ std::string diag_env()
     s += "SporeKit " SK_VERSION ", game " + std::string(build_name()) + " (exe " + exe_sha256().substr(0, 16) +
          "), frames from " + frame_source() + "\n";
     s += os_text() + "\n";
+    // which game wrote it (BUG-0249: the lab tells a test game on lane 1 from the owner's own Spore);
+    // only a flag for the profile, never its name, no path
+    s += "run: instance " + std::to_string(instance_id()) + ", profile " +
+         (wcsstr(GetCommandLineW(), L"-sporekit-profile:") ? "set" : "own") + ", pid " +
+         std::to_string(GetCurrentProcessId()) + "\n";
     s += memory_text() + "\n";
     s += (g_gpu.empty() ? std::string("GPU: not read yet") : g_gpu) + "\n";
     s += "other hooks: " + foreign_hooks() + "\n";
@@ -209,6 +218,27 @@ void diag_context(SkMod* mod, const char* (*fn)(void*), void* user)
 }
 
 void diag_context_remove(SkMod* mod) { diag_context(mod, nullptr, nullptr); }
+
+// a block at the top of reports (a mod's session summary), per mod
+static std::vector<std::pair<SkMod*, std::string>> g_headlines; // under g_ctx_mu
+
+void diag_headline(SkMod* mod, const char* text)
+{
+    std::lock_guard<std::mutex> lk(g_ctx_mu);
+    for (auto it = g_headlines.begin(); it != g_headlines.end();)
+        it = it->first == mod ? g_headlines.erase(it) : std::next(it);
+    if (text && *text)
+        g_headlines.push_back({mod, text});
+}
+
+std::string diag_headline_text()
+{
+    std::lock_guard<std::mutex> lk(g_ctx_mu);
+    std::string s;
+    for (auto& [m, t] : g_headlines)
+        s += t + (t.empty() || t.back() == '\n' ? "" : "\n");
+    return s;
+}
 
 // ---------------- reports ----------------
 static std::string where(uintptr_t a)
@@ -292,24 +322,28 @@ static void write_text(const std::wstring& path, const std::string& s)
     CloseHandle(f);
 }
 
-static void write_minidump(const std::wstring& path, EXCEPTION_POINTERS* ep)
+// tid: the thread that faulted (the crash report is written by a thread of its own)
+static bool write_minidump(const std::wstring& path, EXCEPTION_POINTERS* ep, DWORD tid)
 {
     typedef BOOL(WINAPI * Dump_t)(HANDLE, DWORD, HANDLE, int, void*, void*, void*);
     HMODULE dh = LoadLibraryW(L"dbghelp.dll");
     auto dump = dh ? (Dump_t)(void*)GetProcAddress(dh, "MiniDumpWriteDump") : nullptr;
     if (!dump)
-        return;
+        return false;
     HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
     if (f == INVALID_HANDLE_VALUE)
-        return;
+        return false;
     struct {
         DWORD tid;
         EXCEPTION_POINTERS* ep;
         BOOL client;
-    } info{GetCurrentThreadId(), ep, FALSE};
+    } info{tid, ep, FALSE};
     // MiniDumpWithIndirectlyReferencedMemory | MiniDumpScanMemory: small, with the stacks' targets
-    dump(GetCurrentProcess(), GetCurrentProcessId(), f, 0x40 | 0x10, ep ? &info : nullptr, nullptr, nullptr);
+    BOOL ok = dump(GetCurrentProcess(), GetCurrentProcessId(), f, 0x40 | 0x10, ep ? &info : nullptr, nullptr, nullptr);
     CloseHandle(f);
+    if (!ok)
+        DeleteFileW(path.c_str());
+    return ok != FALSE;
 }
 
 static std::string report_base(bool crash)
@@ -318,14 +352,22 @@ static std::string report_base(bool crash)
            (instance_id() > 1 ? "-i" + std::to_string(instance_id()) : "");
 }
 
-static std::string diag_write_report_as(const std::string& base, const char* reason, EXCEPTION_POINTERS* ep);
+static std::string diag_write_report_as(const std::string& base, const char* reason, EXCEPTION_POINTERS* ep,
+                                        bool dump = true, DWORD fault_tid = 0);
+// > 0 while a crash, hang or exit report is written (report_step): no screenshot of that moment
+static std::atomic<int> g_in_problem_report{0};
 
-std::string diag_write_report(const char* reason, EXCEPTION_POINTERS* ep)
+std::string diag_write_report(const char* reason, EXCEPTION_POINTERS* ep, DWORD fault_tid)
 {
-    return diag_write_report_as(report_base(ep != nullptr), reason, ep);
+    return diag_write_report_as(report_base(ep != nullptr), reason, ep, true, fault_tid);
 }
 
-static std::string diag_write_report_as(const std::string& base, const char* reason, EXCEPTION_POINTERS* ep)
+// BUG-0248: the report is written by a thread of its own (or the exiting thread): the exception line
+// names the thread that faulted. 0 / kit.fix crashtid 0: the current thread, as before
+static DWORD fault_thread(DWORD fault_tid) { return fault_tid && fixed(g_fix_crashtid) ? fault_tid : GetCurrentThreadId(); }
+
+static std::string diag_write_report_as(const std::string& base, const char* reason, EXCEPTION_POINTERS* ep, bool dump,
+                                        DWORD fault_tid)
 {
     std::string kind = ep ? "crash" : "report";
     CreateDirectoryW(logs_dir().c_str(), nullptr);
@@ -334,16 +376,23 @@ static std::string diag_write_report_as(const std::string& base, const char* rea
     s += "SporeCoop " + kind + " " + stamp() + (reason && *reason ? std::string(" (") + reason + ")" : "") + "\n";
     s += "Please attach this file (and the .dmp next to it, if there is one) to an issue:\n";
     s += "https://github.com/jwhans0n/SporeCoopGA/issues\n\n";
-    s += "== Environment\n" + diag_env() + "\n";
+    if (std::string h = diag_headline_text(); !h.empty())
+        s += "== Summary\n" + h + "\n";
+    s += "== Environment\n" + diag_env() + diag_files_text() + "\n";
     if (ep && ep->ExceptionRecord && ep->ContextRecord) {
         EXCEPTION_RECORD* er = ep->ExceptionRecord;
         CONTEXT* c = ep->ContextRecord;
         char b[512];
         s += "== Exception\n";
+        DWORD ft = fault_thread(fault_tid);
         snprintf(b, sizeof b, "0x%08lX %s at 0x%08X %s (thread %lu%s)\n", er->ExceptionCode,
-                 code_name(er->ExceptionCode), (unsigned)c->Eip, where(c->Eip).c_str(), GetCurrentThreadId(),
-                 GetCurrentThreadId() == main_thread_id() ? ", the game's main thread" : "");
+                 code_name(er->ExceptionCode), (unsigned)c->Eip, where(c->Eip).c_str(), ft,
+                 ft == main_thread_id() ? ", the game's main thread" : "");
         s += b;
+        if (ft != GetCurrentThreadId()) {
+            snprintf(b, sizeof b, "report written by thread %lu\n", GetCurrentThreadId());
+            s += b;
+        }
         if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2) {
             snprintf(b, sizeof b, "%s of address 0x%08X\n",
                      er->ExceptionInformation[0] == 0 ? "read" : er->ExceptionInformation[0] == 1 ? "write" : "execute",
@@ -391,12 +440,27 @@ static std::string diag_write_report_as(const std::string& base, const char* rea
         snprintf(b, sizeof b, "  %08X %8X %s\n", (unsigned)m.base, m.size, m.path.c_str());
         s += b;
     }
-    s += "\n== The last log lines\n";
+    s += "\n";
+    // the screenshots of the marks (reportshot.cpp); a crash or hang report, written outside the frame
+    // (another thread, or a main thread stopped somewhere), never takes one of its own
+    try {
+        s += report_shots_text(ep != nullptr || g_in_problem_report.load() > 0);
+    } catch (...) {
+    }
+    s += "== The last log lines\n";
     for (auto& l : log_tail(300))
         s += l + "\n";
-    write_text(txt, s);
-    if (ep)
-        write_minidump(logs_dir() + L"\\" + widen(base) + L".dmp", ep);
+    write_text(txt, mask_paths(s)); // no private path in full (the module list, a mod's state)
+    if (ep && dump) {
+        // the fault's thread when it still exists (the exit report runs on the exiting thread)
+        DWORD dt = GetCurrentThreadId();
+        if (fault_tid && fixed(g_fix_crashtid))
+            if (HANDLE th = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, fault_tid)) {
+                CloseHandle(th);
+                dt = fault_tid;
+            }
+        write_minidump(logs_dir() + L"\\" + widen(base) + L".dmp", ep, dt);
+    }
     return narrow(txt);
 }
 
@@ -426,7 +490,7 @@ static std::vector<std::wstring> files_in(const std::wstring& dir, const wchar_t
 // a settings file without the address of the last host joined (a friend's IP)
 static std::vector<uint8_t> redacted_ini(const std::vector<uint8_t>& d)
 {
-    std::string s(d.begin(), d.end()), out;
+    std::string s = skini::to_utf8_text(std::string(d.begin(), d.end())), out; // UTF-16 since BUG-0142
     size_t i = 0;
     while (i < s.size()) {
         size_t e = s.find('\n', i);
@@ -449,6 +513,63 @@ static void mark_problem(const std::string& zip, const char* what)
 }
 
 static std::string g_last_problem; // read at boot: "<what>\n<zip path>" of the previous run, or ""
+
+// Only the newest files of each kind stay in mods\logs (BUG-0137): a crash on every start wrote a
+// report, a minidump and an archive of up to 24 MB per start and nothing removed them. Names carry
+// the time, so the name order is the age. The files named in last-problem.txt (this run's or the
+// previous run's, which the player was told about) are never removed.
+static constexpr size_t kKeepCrashes = 5, kKeepReports = 5, kKeepArchives = 3;
+
+static std::wstring file_name_of(const std::string& path)
+{
+    std::wstring w = widen(path);
+    size_t k = w.find_last_of(L"\\/");
+    return k == std::wstring::npos ? w : w.substr(k + 1);
+}
+
+void diag_prune_logs()
+{
+    if (!fixed(g_fix_logprune))
+        return;
+    std::wstring dir = logs_dir();
+    std::vector<std::wstring> keep;
+    auto keep_lines = [&](const std::string& t) {
+        size_t i = 0;
+        while (i < t.size()) {
+            size_t e = t.find('\n', i);
+            std::string l = t.substr(i, e == std::string::npos ? std::string::npos : e - i);
+            while (!l.empty() && (l.back() == '\r' || l.back() == ' '))
+                l.pop_back();
+            if (!l.empty())
+                keep.push_back(file_name_of(l));
+            if (e == std::string::npos)
+                break;
+            i = e + 1;
+        }
+    };
+    keep_lines(g_last_problem);
+    std::vector<uint8_t> d;
+    if (read_file_tail(dir + L"\\last-problem.txt", 4096, d))
+        keep_lines(std::string(d.begin(), d.end()));
+    int removed = 0;
+    auto prune = [&](const wchar_t* pattern, size_t n) {
+        std::vector<std::wstring> v = files_in(dir, pattern); // oldest first
+        for (size_t i = 0; i + n < v.size(); i++) {
+            bool kept = false;
+            for (auto& k : keep)
+                kept |= _wcsicmp(k.c_str(), v[i].c_str()) == 0;
+            if (!kept && DeleteFileW((dir + L"\\" + v[i]).c_str()))
+                removed++;
+        }
+    };
+    prune(L"crash-*.txt", kKeepCrashes);
+    prune(L"crash-*.dmp", kKeepCrashes);
+    prune(L"report-*.txt", kKeepReports);
+    prune(L"SporeCoop-report-*.zip", kKeepArchives);
+    if (removed)
+        logf(&g_kit_mod, SK_INFO, "logs: %d old crash / report files removed (kept the newest %u crashes, %u reports, %u archives)",
+             removed, (unsigned)kKeepCrashes, (unsigned)kKeepReports, (unsigned)kKeepArchives);
+}
 
 void diag_read_last_problem()
 {
@@ -492,12 +613,17 @@ std::string diag_write_bundle_with(const char* reason, const std::string& existi
         "Please attach this .zip to an issue: https://github.com/jwhans0n/SporeCoopGA/issues\n"
         "and say what you did when the problem happened.\n\n"
         "Inside:\n"
-        "  report-*.txt      the game build, Windows / Wine, memory, graphics card, other overlays and mods,\n"
-        "                    the co-op session, faults, loaded modules, the last log lines\n"
+        "  report-*.txt      the latest co-op session summary, the game build, Windows / Wine, memory, graphics\n"
+        "                    card, other overlays, mods and extra game files, the co-op session, faults,\n"
+        "                    loaded modules, the last log lines\n"
+        "  (maintainers: docs/REPORTING.md#reporting-support says where each answer is; tools/merge_logs.py lines up the logs\n"
+        "   of all players by their session clock)\n"
         "  logs/             the logs of this run (sporekit.log; sporekit.N.log of other instances)\n"
         "  crashes/          crash reports and minidumps (.dmp: memory of the crashed game, no files of yours)\n"
         "  reports/          earlier reports (hangs, problems)\n"
         "  previous/         the logs of the last runs\n"
+        "  shots/            screenshots of the game taken when a problem was marked (/bug, \"Report a problem\");\n"
+        "                    off with [report] screenshot=0 in mods\\coop.ini\n"
         "  settings/         mods\\*.ini (your player name is in coop.ini; the last address you joined is hidden)\n";
     z.push_back({"README.txt", std::vector<uint8_t>(readme.begin(), readme.end())});
     std::wstring rep_w = widen(report);
@@ -505,6 +631,8 @@ std::string diag_write_bundle_with(const char* reason, const std::string& existi
     add(rep_w, narrow(rep_name), kLogCap, false);
     for (auto& f : files_in(dir, L"sporekit*.log"))
         add(dir + L"\\" + f, "logs/" + narrow(f), kLogCap, false);
+    for (auto& [full, name] : report_shot_files()) // the newest few, each under 450 KB
+        add(full, name, 1u << 20, true);
     auto newest = [](std::vector<std::wstring> v, size_t n) {
         if (v.size() > n)
             v.erase(v.begin(), v.end() - (ptrdiff_t)n);
@@ -547,6 +675,8 @@ std::string diag_write_bundle_with(const char* reason, const std::string& existi
     }
     logf(&g_kit_mod, SK_INFO, "report archive: %s (%u files, %u KB)", narrow(zip).c_str(), (unsigned)z.size(),
          (unsigned)(total >> 10));
+    z.clear();
+    diag_prune_logs();
     return narrow(zip);
 }
 
@@ -562,6 +692,45 @@ static ExitProcess_t o_ExitProcess;
 using TerminateProcess_t = BOOL(WINAPI*)(HANDLE, UINT);
 static TerminateProcess_t o_TerminateProcess;
 
+// BUG-0127: a crash report runs in a process that may have crashed because memory ran out. Each
+// step catches its own failure (a std::bad_alloc that left the thread ended the game through
+// std::terminate before the minidump and the mark were written); the next step still runs.
+static std::atomic<int> g_test_oom{0}; // crash.test oom: the archive fails like an allocation would
+
+template <class F> static bool report_step(const char* what, F f)
+{
+    struct InProblem { // the report's screenshot section says none was taken of this moment
+        InProblem() { g_in_problem_report++; }
+        ~InProblem() { g_in_problem_report--; }
+    } in_problem;
+    if (!fixed(g_fix_crashsafe)) {
+        f();
+        return true;
+    }
+    try {
+        f();
+        return true;
+    } catch (const std::exception& e) {
+        try {
+            logf(&g_kit_mod, SK_ERROR, "problem report: %s failed (%s), the next step goes on", what, e.what());
+        } catch (...) {
+        }
+    } catch (...) {
+        try {
+            logf(&g_kit_mod, SK_ERROR, "problem report: %s failed, the next step goes on", what);
+        } catch (...) {
+        }
+    }
+    return false;
+}
+
+static std::string bundle_for_problem(const char* why, const std::string& report)
+{
+    if (g_test_oom.load())
+        throw std::bad_alloc();
+    return diag_write_bundle_with(why, report);
+}
+
 // the game ends: after a fault of the last kFaultExitSec (its own handler caught it and closes the
 // game, the unhandled filter never runs) or with an error code, a crash report of that fault
 static constexpr double kFaultExitSec = 15.0;
@@ -572,7 +741,8 @@ static void exit_report(UINT code, const char* how)
     EXCEPTION_RECORD er;
     CONTEXT ctx;
     double t = -1;
-    bool fault = exceptions_last(&er, &ctx, &t) && now_seconds() - t < kFaultExitSec;
+    DWORD ftid = 0;
+    bool fault = exceptions_last(&er, &ctx, &t, &ftid) && now_seconds() - t < kFaultExitSec;
     if (!fault && !code)
         return;
     g_crashed++;
@@ -580,9 +750,13 @@ static void exit_report(UINT code, const char* how)
     snprintf(why, sizeof why, "the game ends (%s %u)%s", how, code,
              fault ? ", seconds after a fault: the report shows that fault" : "");
     EXCEPTION_POINTERS ep{&er, &ctx};
-    std::string p = diag_write_report(why, fault ? &ep : nullptr);
-    mark_problem(diag_write_bundle_with(why, p), fault ? "closed right after an error" : "closed with an error code");
-    logf(&g_kit_mod, SK_ERROR, "%s; crash report: %s", why, p.c_str());
+    const char* what = fault ? "closed right after an error" : "closed with an error code";
+    std::string p;
+    if (!report_step("the report", [&] { p = diag_write_report(why, fault ? &ep : nullptr, ftid); }))
+        return;
+    report_step("the mark", [&] { mark_problem(p, what); });
+    report_step("the archive", [&] { mark_problem(bundle_for_problem(why, p), what); });
+    report_step("the log line", [&] { logf(&g_kit_mod, SK_ERROR, "%s; crash report: %s", why, p.c_str()); });
 }
 
 // the full report is written by a thread of its own: if the crashed thread holds a lock the report
@@ -592,28 +766,115 @@ static constexpr DWORD kReportWaitMs = 15000;
 struct CrashJob {
     std::string base;
     EXCEPTION_POINTERS* ep;
+    DWORD tid; // the crashed thread
 };
-static DWORD WINAPI crash_report_thread(void* p)
+// the report, the archive and the mark first; the minidump last (the riskiest step: it suspends the
+// other threads and walks the crashed one), then the archive again with it
+static DWORD WINAPI crash_report_thread_old(void* p)
 {
     auto* j = (CrashJob*)p;
-    std::string path = diag_write_report_as(j->base, "unhandled exception", j->ep);
+    std::string path = diag_write_report_as(j->base, "unhandled exception", j->ep, false, j->tid);
     logf(&g_kit_mod, SK_ERROR, "crash report: %s", path.c_str());
-    std::string zip = diag_write_bundle_with("the game crashed", path); // one file to send
+    std::string zip = bundle_for_problem("the game crashed", path); // one file to send
     mark_problem(zip, "crashed");
+    if (write_minidump(logs_dir() + L"\\" + widen(j->base) + L".dmp", j->ep, j->tid)) {
+        std::string zip2 = diag_write_bundle_with("the game crashed", path);
+        if (zip2 != path && zip2 != zip) {
+            mark_problem(zip2, "crashed");
+            DeleteFileW(widen(zip).c_str());
+        }
+    } else
+        logf(&g_kit_mod, SK_ERROR, "crash report: no minidump (MiniDumpWriteDump failed)");
+    return 0;
+}
+
+// BUG-0127: every step guarded; the mark names the crash report before the archive is built (the
+// short report written by the filter is there already), then the archive when it exists
+static DWORD WINAPI crash_report_thread(void* p)
+{
+    if (!fixed(g_fix_crashsafe))
+        return crash_report_thread_old(p);
+    auto* j = (CrashJob*)p;
+    std::string path = narrow(logs_dir() + L"\\" + widen(j->base) + L".txt"); // the short report
+    report_step("the crash report", [&] { path = diag_write_report_as(j->base, "unhandled exception", j->ep, false, j->tid); });
+    report_step("the mark", [&] { mark_problem(path, "crashed"); });
+    report_step("the log line", [&] { logf(&g_kit_mod, SK_ERROR, "crash report: %s", path.c_str()); });
+    std::string zip;
+    report_step("the archive", [&] {
+        zip = bundle_for_problem("the game crashed", path); // one file to send
+        if (zip != path)
+            mark_problem(zip, "crashed");
+    });
+    bool dumped = false;
+    report_step("the minidump", [&] { dumped = write_minidump(logs_dir() + L"\\" + widen(j->base) + L".dmp", j->ep, j->tid); });
+    if (!dumped) {
+        report_step("the log line", [&] { logf(&g_kit_mod, SK_ERROR, "crash report: no minidump (MiniDumpWriteDump failed)"); });
+        return 0;
+    }
+    report_step("the archive with the minidump", [&] {
+        std::string zip2 = bundle_for_problem("the game crashed", path);
+        if (zip2 != path && zip2 != zip) {
+            mark_problem(zip2, "crashed");
+            if (!zip.empty() && zip != path)
+                DeleteFileW(widen(zip).c_str());
+        }
+    });
+    return 0;
+}
+
+// BUG-0056: a stack overflow leaves the crashed thread about one page of stack; creating a thread
+// there (or formatting, logging) overflows again and Windows ends the game without a report. This
+// thread is made at boot and waits: the filter only signals it and waits for it.
+static CrashJob g_so_job;
+static HANDLE g_so_go, g_so_done;
+
+static DWORD WINAPI so_report_thread(void*)
+{
+    WaitForSingleObject(g_so_go, INFINITE);
+    report_step("the short report", [&] {
+        g_so_job.base = report_base(true);
+        DWORD code = g_so_job.ep->ExceptionRecord->ExceptionCode;
+        uintptr_t eip = g_so_job.ep->ContextRecord->Eip;
+        char b[512];
+        snprintf(b, sizeof b,
+                 "SporeCoop crash %s (short: the full report is being written over this file)\n"
+                 "SporeKit " SK_VERSION ", game %s\nexception 0x%08lX %s at 0x%08X %s (thread %lu)\n",
+                 g_so_job.base.c_str(), build_name(), code, code_name(code), (unsigned)eip, where(eip).c_str(),
+                 g_so_job.tid);
+        CreateDirectoryW(logs_dir().c_str(), nullptr);
+        write_text(logs_dir() + L"\\" + widen(g_so_job.base) + L".txt", b);
+        logf(&g_kit_mod, SK_ERROR, "the game crashed: exception 0x%08lX (stack overflow) at 0x%08X %s, thread %lu", code,
+             (unsigned)eip, where(eip).c_str(), g_so_job.tid);
+    });
+    if (!g_so_job.base.empty())
+        crash_report_thread(&g_so_job);
+    SetEvent(g_so_done);
     return 0;
 }
 
 static LONG WINAPI crash_filter(EXCEPTION_POINTERS* ep)
 {
+    if (ep && ep->ExceptionRecord && ep->ExceptionRecord->ExceptionCode == EXCEPTION_STACK_OVERFLOW && g_so_go &&
+        fixed(g_fix_stackov)) {
+        // nothing but a signal and a wait on this stack (BUG-0056)
+        if (g_crashed++ == 0) {
+            g_so_job.ep = ep;
+            g_so_job.tid = GetCurrentThreadId();
+            SetEvent(g_so_go);
+            WaitForSingleObject(g_so_done, kReportWaitMs);
+        }
+        return g_next_filter ? g_next_filter(ep) : EXCEPTION_CONTINUE_SEARCH;
+    }
     if (g_crashed++ == 0 && ep && ep->ExceptionRecord && ep->ContextRecord) {
         DWORD code = ep->ExceptionRecord->ExceptionCode;
         uintptr_t eip = ep->ContextRecord->Eip;
         std::string w = where(eip);
-        logf(&g_kit_mod, SK_ERROR, "the game crashed: exception 0x%08lX at 0x%08X %s", code, (unsigned)eip, w.c_str());
-        // a short report at once (no locks but the file system's)
+        // a short report at once (no locks but the file system's), before the log: the crashed
+        // thread may hold the log's lock (BUG-0115; the log drops lines re-entered on one thread)
         static CrashJob job;
         job.base = report_base(true);
         job.ep = ep;
+        job.tid = GetCurrentThreadId();
         char b[512];
         snprintf(b, sizeof b,
                  "SporeCoop crash %s (short: the full report is being written over this file)\n"
@@ -621,6 +882,7 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS* ep)
                  job.base.c_str(), build_name(), code, code_name(code), (unsigned)eip, w.c_str());
         CreateDirectoryW(logs_dir().c_str(), nullptr);
         write_text(logs_dir() + L"\\" + widen(job.base) + L".txt", b);
+        logf(&g_kit_mod, SK_ERROR, "the game crashed: exception 0x%08lX at 0x%08X %s", code, (unsigned)eip, w.c_str());
         HANDLE t = CreateThread(nullptr, 0, crash_report_thread, &job, 0, nullptr);
         if (t) {
             if (WaitForSingleObject(t, kReportWaitMs) != WAIT_OBJECT_0)
@@ -641,8 +903,35 @@ static LPTOP_LEVEL_EXCEPTION_FILTER WINAPI h_SetUEF(LPTOP_LEVEL_EXCEPTION_FILTER
     return prev;
 }
 
+// BUG-0243: an in-game update swaps files under the update lock of the game folder; the game ending
+// between a file's two moves left steam_api.dll missing (the game no longer started) or a mix of
+// versions. The exit waits for the lock (at most 5 s) and releases it at once. A crash does not wait.
+static void wait_for_update()
+{
+    if (!fixed(g_fix_exitwait))
+        return;
+    std::wstring root = mods_dirw();
+    for (int i = 0; i < 2; i++) {
+        size_t k = root.find_last_of(L"\\/");
+        if (k == std::wstring::npos)
+            return;
+        root.resize(k);
+    }
+    wchar_t name[160];
+    if (!sc_lock_name(L"SporeCoopUpdate-", root.c_str(), name, 160))
+        return;
+    HANDLE h = OpenMutexW(SYNCHRONIZE | MUTEX_MODIFY_STATE, FALSE, name);
+    if (!h)
+        return; // no update made the lock in this run
+    DWORD r = WaitForSingleObject(h, 5000);
+    if (r == WAIT_OBJECT_0 || r == WAIT_ABANDONED)
+        ReleaseMutex(h);
+    CloseHandle(h);
+}
+
 static void WINAPI h_ExitProcess(UINT code)
 {
+    wait_for_update();
     logf(&g_kit_mod, code ? SK_WARN : SK_INFO, "the game exits (ExitProcess %u) after %d s, frame %llu", code,
          (int)now_seconds(), (unsigned long long)frame_index());
     exit_report(code, "ExitProcess");
@@ -652,6 +941,7 @@ static void WINAPI h_ExitProcess(UINT code)
 static BOOL WINAPI h_TerminateProcess(HANDLE h, UINT code)
 {
     if (h == GetCurrentProcess() || GetProcessId(h) == GetCurrentProcessId()) {
+        wait_for_update();
         logf(&g_kit_mod, SK_WARN, "the game terminates itself (TerminateProcess %u) after %d s", code,
              (int)now_seconds());
         exit_report(code, "TerminateProcess");
@@ -666,9 +956,47 @@ void diag_hang_report(const char* why)
     HWND w = (HWND)game_window();
     if (!w || IsIconic(w) || GetForegroundWindow() != w || once++)
         return;
-    std::string p = diag_write_report(why, nullptr);
-    logf(&g_kit_mod, SK_ERROR, "hang report: %s", p.c_str());
-    mark_problem(diag_write_bundle_with(why, p), "stopped responding");
+    std::string p;
+    if (!report_step("the hang report", [&] { p = diag_write_report(why, nullptr); }))
+        return;
+    report_step("the mark", [&] { mark_problem(p, "stopped responding"); });
+    report_step("the log line", [&] { logf(&g_kit_mod, SK_ERROR, "hang report: %s", p.c_str()); });
+    report_step("the archive", [&] { mark_problem(bundle_for_problem(why, p), "stopped responding"); });
+}
+
+// BUG-0521: the game's own start (App::cSporeApp::Init) failed and the game is about to end with
+// ExitProcess(0): no fault, no error code, so neither the crash filter nor exit_report says anything
+// and the player saw the game close. A report and a mark (the next start names it), a log line, and a
+// message that says it is the game's own start that failed and what to check.
+void diag_init_failed(int result)
+{
+    if (!fixed(g_fix_initfail))
+        return;
+    char why[200];
+    snprintf(why, sizeof why, "the game's own start failed (App::cSporeApp::Init returned %d), the game ends", result);
+    std::string p;
+    report_step("the report", [&] { p = diag_write_report(why, nullptr); });
+    report_step("the mark", [&] { mark_problem(p, "could not start"); });
+    report_step("the archive", [&] { mark_problem(bundle_for_problem(why, p), "could not start"); });
+    report_step("the log line", [&] {
+        logf(&g_kit_mod, SK_ERROR,
+             "%s. This is not a crash of a mod: the game stopped its own start (missing or damaged game files, a "
+             "data package it cannot read, a message of the game before this line). Check: start the game once "
+             "without mods (rename SporebinEP1\\mods), verify the game files in GOG Galaxy / Steam. Report: %s",
+             why, p.c_str());
+    });
+    if (instance_id() <= 1 && !GetEnvironmentVariableW(L"SPOREKIT_NO_DIALOGS", nullptr, 0)) // (lab instances)
+        MessageBoxW(nullptr,
+                    L"Spore could not finish starting (the game's own start, App::cSporeApp::Init, failed).\n\n"
+                    L"This is reported by SporeKit, the framework of SporeCoop; it is not a crash of the mod.\n"
+                    L"Please check:\n"
+                    L"  1. Start the game once without mods: rename the folder SporebinEP1\\mods and start it.\n"
+                    L"     If it still does not start, the game itself needs a repair.\n"
+                    L"  2. Verify / repair the game files in GOG Galaxy or Steam.\n"
+                    L"  3. A message of the game or of Windows before this one names the cause.\n\n"
+                    L"A report was saved in SporebinEP1\\mods\\logs (SporeCoop-report-*.zip):\n"
+                    L"attach it to an issue at github.com/WoodyWizard/SporeCoop/issues.",
+                    L"SporeKit: the game could not start", MB_OK | MB_ICONERROR | MB_TOPMOST);
 }
 
 static DWORD WINAPI crash_thread(void*)
@@ -678,9 +1006,47 @@ static DWORD WINAPI crash_thread(void*)
     return 0;
 }
 
-// tests: crash.test thread (a fault nobody handles, in a thread of its own) | main (in the frame)
+// a fault on a new thread that a test handler repairs (the thread goes on): the last fault of the
+// fault logger comes from a worker thread; an exit within 15 s reports it (BUG-0248)
+static DWORD WINAPI repaired_fault_thread(void*)
+{
+    volatile uint8_t* page = (volatile uint8_t*)test_fault_page();
+    page[0] = 1;
+    return 0;
+}
+
+// a recursion without end with 4 KB of locals per call: a stack overflow (BUG-0056)
+static volatile int g_recurse_stop; // never set: the compiler must not see an endless recursion
+static int __attribute__((noinline)) recurse_forever(int depth)
+{
+    volatile char pad[4096];
+    pad[0] = (char)depth;
+    pad[4095] = (char)depth;
+    if (g_recurse_stop)
+        return depth;
+    return recurse_forever(depth + 1) + pad[depth & 4095];
+}
+
+static DWORD WINAPI stack_overflow_thread(void*) { return (DWORD)recurse_forever(0); }
+
+// tests: crash.test thread (a fault nobody handles, in a thread of its own) | main (in the frame) |
+// stackoverflow (a thread recursing without end, BUG-0056) | oom (thread, and every archive of the
+// report fails like an allocation in a full address space, BUG-0127)
 void diag_crash_test(const char* where_)
 {
+    if (where_ && !strcmp(where_, "stackoverflow")) {
+        CreateThread(nullptr, 0, stack_overflow_thread, nullptr, 0, nullptr);
+        return;
+    }
+    if (where_ && !strcmp(where_, "oom"))
+        g_test_oom = 1;
+    if (where_ && !strcmp(where_, "faultthread")) { // no crash: a repaired fault on a worker thread
+        if (HANDLE t = CreateThread(nullptr, 0, repaired_fault_thread, nullptr, 0, nullptr)) {
+            WaitForSingleObject(t, 5000);
+            CloseHandle(t);
+        }
+        return;
+    }
     if (where_ && !strcmp(where_, "main")) {
         volatile int* p = nullptr;
         *p = 1;
@@ -704,6 +1070,21 @@ void diag_install()
     if (void* e = k32 ? (void*)GetProcAddress(k32, "TerminateProcess") : nullptr)
         hook_create(&g_kit_mod, e, (void*)h_TerminateProcess, (void**)&o_TerminateProcess);
     logf(&g_kit_mod, SK_INFO, "%s; %s", os_text().c_str(), memory_text().c_str());
+    // BUG-0056: the stack overflow reporter waits from now on; the game's main thread keeps 64 KB
+    // for the exception dispatch and the filter after an overflow (Windows; Wine may ignore it)
+    g_so_go = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    g_so_done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (g_so_go && g_so_done)
+        CloseHandle(CreateThread(nullptr, 0, so_report_thread, nullptr, 0, nullptr));
+    ULONG guarantee = 64 * 1024;
+    SetThreadStackGuarantee(&guarantee);
+    // BUG-0246: the guarantee is taken from the main thread's reserve (1 MB in both GOG builds, so
+    // 6 %); logged so a player's log shows it next to a stack overflow, if one is ever reported
+    if (auto* dos = (IMAGE_DOS_HEADER*)GetModuleHandleW(nullptr))
+        if (auto* nt = (IMAGE_NT_HEADERS32*)((uint8_t*)dos + dos->e_lfanew); nt->Signature == IMAGE_NT_SIGNATURE)
+            logf(&g_kit_mod, SK_INFO, "main thread stack: reserve %lu KB, guarantee %lu KB",
+                 (unsigned long)(nt->OptionalHeader.SizeOfStackReserve / 1024), 64ul); // guarantee: the old value now
+    diag_prune_logs(); // BUG-0137: piles of earlier versions
 }
 
 void diag_after_device()
@@ -713,6 +1094,15 @@ void diag_after_device()
         return;
     once = true;
     logf(&g_kit_mod, SK_INFO, "%s; other hooks: %s", gpu_text().c_str(), foreign_hooks().c_str());
+    // other mods, extra packages, changed game files (docs/REPORTING.md#reporting-support-environment)
+    const std::string& f = diag_files_text();
+    for (size_t i = 0; i < f.size();) {
+        size_t e = f.find('\n', i);
+        logf(&g_kit_mod, SK_INFO, "files: %s", f.substr(i, e == std::string::npos ? std::string::npos : e - i).c_str());
+        if (e == std::string::npos)
+            break;
+        i = e + 1;
+    }
 }
 
 } // namespace sk

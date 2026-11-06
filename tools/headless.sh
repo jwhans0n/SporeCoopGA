@@ -35,7 +35,14 @@ envvars() {
 
 group() { [[ -f "$RT/pgid" ]] && cat "$RT/pgid"; }
 
-running() { local g; g=$(group) && [[ -n "$g" ]] && kill -0 -- "-$g" 2>/dev/null; }
+# the group is ours only while its leader still runs with our runtime folder: after the shell died,
+# its number can belong to any process group of the user (a stale pgid file must not kill that)
+running() {
+    local g
+    g=$(group) && [[ "$g" =~ ^[0-9]+$ ]] || return 1
+    [[ "$(ps -o pgid= -p "$g" 2>/dev/null | tr -d ' ')" == "$g" ]] || return 1
+    tr '\0' '\n' < "/proc/$g/environ" 2>/dev/null | grep -qxF "XDG_RUNTIME_DIR=$RT"
+}
 
 case "${1:-}" in
     up)

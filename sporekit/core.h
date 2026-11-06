@@ -12,7 +12,7 @@
 
 #include "../sdk/include/sporekit.h"
 
-#define SK_VERSION "0.3.4"
+#define SK_VERSION "0.3.10"
 
 // ---- SkMod (opaque for mods) ----
 struct SkMod {
@@ -33,6 +33,9 @@ void logf(SkMod* mod, int level, const char* fmt, ...);
 void logv(SkMod* mod, int level, const char* fmt, va_list ap);
 std::vector<std::string> log_tail(size_t n);
 extern int g_log_level;
+void log_session_clock(double offset, int on); // "[s <now + offset>]" in every line (on = 0: none)
+bool log_session_time(double& t);               // false: no session clock
+std::string mask_paths(const std::string& s);   // the game folder, user and home folders as tokens
 
 // util
 std::string narrow(const std::wstring& w);
@@ -78,7 +81,7 @@ bool hooks_init();
 int hook_create(SkMod* mod, void* target, void* detour, void** original);
 int hook_enable(SkMod* mod, void* target, int enable);
 int hook_remove(SkMod* mod, void* target);
-void hooks_remove_all(SkMod* mod);
+int hooks_remove_all(SkMod* mod); // the count removed
 std::vector<std::string> hooks_describe();
 
 // events.cpp
@@ -92,6 +95,10 @@ void run_on_main(std::function<void()> fn);
 void pump_main_tasks(); // called on main thread every frame
 void run_after_frames(int frames, std::function<void()> fn);
 void run_outside_frame(std::function<void()> fn); // main thread, from the window procedure
+// the same for a mod's task: `code` is the mod's function, so an unload can drop what it queued
+void run_on_main_from(const void* code, std::function<void()> fn);
+void run_outside_frame_from(const void* code, std::function<void()> fn);
+size_t drop_tasks_in(uintptr_t lo, uintptr_t hi); // queued mod tasks whose code is in [lo, hi)
 void pump_outside_tasks();
 bool in_frame(); // inside the Present hook
 DWORD main_thread_id();
@@ -101,6 +108,8 @@ void set_main_thread();
 struct Out {
     std::string text;
 };
+// append printf output to a command's output (BUG-0388: up to 1 MB per call, kit.fix longout)
+void out_vappend(Out* o, const char* fmt, va_list ap);
 bool console_start(int port);
 int command_add(SkMod* mod, const char* name, const char* help, SkCommandFn fn, void* user,
                 int flags);
@@ -122,6 +131,16 @@ void frame_from_game_loop();          // after App::Canvas::Tick: the frame when
 const char* frame_source();           // "Present" / "game loop (...)" for info
 void set_frame_source_mode(bool loop); // tests: true = ignore Present, frames from the game loop
 void request_screenshot(const std::wstring& path, std::function<void(bool, std::string)> done);
+
+// reportshot.cpp: screenshots for report archives (docs/02-modkit.md#modkit-report-shots)
+int report_shot_request(const char* tag, const char* caption, char* out, int cap); // main thread; caption NULL: remove all
+int report_shot_pending();
+int report_shot_clear();
+void report_shot_on_present(void* dev); // the Present hook, after the overlay
+void report_shot_tick();                // every frame
+void report_shot_boot();
+std::vector<std::pair<std::wstring, std::string>> report_shot_files(); // full path, name in the archive
+std::string report_shots_text(bool crash);                             // the report's "== Screenshots"
 void overlay_text(int x, int y, uint32_t argb, const char* utf8);
 int world_to_screen(const float* w, float* out);
 void screen_size(int* w, int* h);
@@ -170,7 +189,8 @@ std::string ftrace_set(const std::string& substr);
 
 // exceptions.cpp (more below)
 void exceptions_pump(); // every frame: SK_EV_FAULT for a fault caught in SporeKit / mod code
-bool exceptions_last(EXCEPTION_RECORD* er, CONTEXT* ctx, double* t); // the last fault seen (copies)
+bool exceptions_last(EXCEPTION_RECORD* er, CONTEXT* ctx, double* t, DWORD* tid = nullptr); // the last fault seen (copies)
+bool exceptions_stack_overflow(EXCEPTION_RECORD* er, CONTEXT* ctx, DWORD* tid, double* t); // BUG-0056
 // zip.cpp
 struct ZipEntry {
     std::string name; // UTF-8, '/' separated
@@ -186,17 +206,24 @@ const char* diag_last_problem(); // "<what>\n<zip path>" or ""
 const char* build_name();     // "GOG 2024", "Steam (the GOG 2024 code)", ...
 std::string diag_env();       // the environment, several lines
 std::string foreign_hooks();  // overlays / wrappers / ModAPI loaded in the game
-std::string diag_write_report(const char* reason, EXCEPTION_POINTERS* ep); // path of the .txt
+// fault_tid: the thread that faulted (0 = unknown: the current thread, as for hang reports)
+std::string diag_write_report(const char* reason, EXCEPTION_POINTERS* ep, DWORD fault_tid = 0); // path of the .txt
 std::string diag_logs_dir();
 void diag_context(SkMod* mod, const char* (*fn)(void*), void* user);
 void diag_context_remove(SkMod* mod);
+void diag_headline(SkMod* mod, const char* text); // a block at the top of reports (session summary)
+std::string diag_headline_text();
+// diag_files.cpp: other mods, extra / changed game files and packages (computed once, cached)
+const std::string& diag_files_text();
 void diag_install();          // the crash filter, ExitProcess log
 void diag_after_device();     // GPU and other hooks into the log (once)
-void diag_hang_report(const char* why); // the watchdog: no frames while focused (once per run)
+void diag_hang_report(const char* why);
+void diag_init_failed(int result);      // BUG-0521: App::cSporeApp::Init returned 0 (the game ends) // the watchdog: no frames while focused (once per run)
 void diag_crash_test(const char* where); // tests: "thread" (unhandled) | "main"
 // watchdog.cpp
 void watchdog_start();
 void watchdog_mark(const char* stage);
+void watchdog_loop_tick();           // after every App::Canvas::Tick: the game loop is alive (BUG-0347)
 std::string watchdog_dump_now();
 
 // cheats.cpp
@@ -224,6 +251,71 @@ void vcursor_hold(bool on);     // a held button keeps the virtual cursor active
 void place_test_window();
 void apply_frame_limit();
 void set_frame_limit(int ms);    // console: frame.limit <ms> (33 = the game's own, 0 = none)        // test runs: lift the game's 30 fps cap ([sporekit] test_frame_ms)       // test runs: move the game window to a secondary monitor
+
+// fixes.cpp: fixes with a switch for tests (`kit.fix <name> 0|1`): 1 (default) = fixed, 0 = the old
+// behaviour, so a test can show that it still catches the bug. Plain atomics: readable from an
+// exception handler without locks or allocation.
+struct KitFix {
+    const char* name;
+    const char* what;
+    volatile LONG on;
+};
+extern KitFix g_fix_longout;   // BUG-0388: a command's printf output is not cut at 8 KB
+extern KitFix g_fix_stackdump; // BUG-0050: copy a suspended thread's stack, resume, then format
+extern KitFix g_fix_cheatwait; // BUG-0065: commands that wait for the main thread refuse to run on it
+extern KitFix g_fix_reentry;   // BUG-0115: the fault logger and the log are not re-entered by a fault
+extern KitFix g_fix_hookkeep;  // BUG-0132: removed hooks keep their trampolines, a grace before FreeLibrary
+extern KitFix g_fix_stackov;   // BUG-0056: a stack overflow is reported by a thread that waits beforehand
+extern KitFix g_fix_crashsafe; // BUG-0127: a failed step of a crash report does not end the game
+extern KitFix g_fix_hookpark;  // BUG-0202: hooks switch a stub, the function's code is written once
+extern KitFix g_fix_hookorig;  // BUG-0398: a new hook's original is set before its jump goes live
+extern KitFix g_fix_iniutf;    // BUG-0142: settings with non-ASCII text are kept in UTF-16
+extern KitFix g_fix_iniencode; // BUG-0245: UTF-16 BE converted, unknown encodings left alone
+extern KitFix g_fix_inilock;   // BUG-0245: a named mutex per settings file; no "????" writes
+extern KitFix g_fix_exitwait;  // BUG-0243: the exit waits for an update's file swaps
+extern KitFix g_fix_crashtid;  // BUG-0248: a crash report names the faulting thread
+extern KitFix g_fix_initfail;  // BUG-0521: a failed start of the game is reported and explained
+extern KitFix g_fix_hangloop;  // BUG-0347: no frames while the game loop runs (minimized) is not a hang
+extern KitFix g_fix_logprune;  // BUG-0137: old crash reports, dumps, reports and archives are removed
+inline bool fixed(const KitFix& f) { return f.on != 0; }
+KitFix* kit_fix_find(const char* name);
+std::vector<KitFix*> kit_fixes();
+
+// per-thread flags (a TLS slot: no allocation, safe in an exception handler), BUG-0115
+enum : uintptr_t {
+    SK_TF_IN_LOG = 1, // inside the log's locked part
+    SK_TF_IN_EXC = 2, // inside the exception logger or a holder of its lock
+};
+uintptr_t thread_flags();
+void thread_flags_set(uintptr_t f, bool on);
+struct ThreadFlag {
+    uintptr_t f;
+    bool was;
+    explicit ThreadFlag(uintptr_t f_) : f(f_), was((thread_flags() & f_) != 0) { thread_flags_set(f, true); }
+    ~ThreadFlag() { if (!was) thread_flags_set(f, false); }
+};
+
+// watchdog.cpp: a copy of a thread's registers and stack, taken while it is suspended for as short
+// as possible (nothing that allocates or locks runs while it is suspended), BUG-0050
+struct ThreadSnap {
+    CONTEXT c;
+    uint32_t esp;
+    int n; // dwords copied from esp up
+    uint32_t words[4096];
+};
+// suspends tid, copies, resumes; false (and why) for the calling thread itself or a failure.
+// while_suspended: called before the resume (the old behaviour for kit.fix stackdump 0)
+// (a plain function pointer: nothing may allocate on the way between the caller and the suspend)
+bool thread_snapshot(DWORD tid, ThreadSnap& s, std::string* why, void (*while_suspended)(void*) = nullptr,
+                     void* ctx = nullptr);
+// calls a lambda through thread_snapshot's function pointer
+template <class F> void call_lambda(void* f) { (*(F*)f)(); }
+// test commands (kit.test ...): force the conditions of BUG-0050 / 0115 / 0132
+void log_fault_test();
+void exceptions_fault_test();
+void hooks_churn_test(int rounds, int threads, std::string& out, bool nogate = false);
+void hooks_new_test(int rounds, int threads, std::string& out); // BUG-0398
+void* test_fault_page(); // a PAGE_NOACCESS page whose first access is repaired by a test handler
 
 } // namespace sk
 

@@ -67,6 +67,13 @@ GOG 2024 players can play together in the base stages. This recognition does not
 enable the exact-file-gated GA adapter on Steam. The log says "the unpacked code is the code of build dc04aee5...".
 Steam's own game folder is `steamapps\common\<Spore folder>`: install into its `SporebinEP1` as for GOG.
 
+GOG 2024 players can play together. The log says "the unpacked code is the code of build dc04aee5...".
+Steam installs Spore and Galactic Adventures as two apps in two folders next to each other: base
+Spore (app 17390) in `steamapps\common\Spore` (only `SporeBin`, no `SporebinEP1`) and Galactic
+Adventures (app 24720) in **`steamapps\common\Spore 24720`** (Steam may write it `spore 24720`), which
+has `SporebinEP1`. SporeCoop goes into `Spore 24720`: choose that folder in the setup (setups newer
+than 0.7.3.3 find it by themselves, also when you choose `Spore` or its `SporeBin`).
+
 **0.7.x is the last version for the GOG 2016 build.** From 0.8 SporeCoop supports only the current
 GOG build (the 2024 update; GOG Galaxy and the GOG installers give you that one): with the 2016
 build co-op stays off. Update the game, or stay on SporeCoop 0.7.
@@ -146,6 +153,14 @@ also installs the exact release from the zip.
    or use the one included beside its matching pack, then run it.
 2. It finds the game by itself (GOG and EA registry entries, common folders); if not, press
    **Browse...** and choose the SPORE folder (the one with `SporebinEP1`).
+   **Steam:** Galactic Adventures has its own folder, **`steamapps\common\Spore 24720`**: choose that
+   one, not `steamapps\common\Spore` (base Spore, no `SporebinEP1`) and not `SporeBin`. No
+   `Spore 24720` folder means Galactic Adventures is not installed: install the *Spore Galactic
+   Adventures* DLC first, SporeCoop needs it.
+   Setups newer than 0.7.3.3 also search Steam's library folders, take the folder above a chosen
+   `SporeBin` / `SporebinEP1`, switch to `Spore 24720` by themselves ("Galactic Adventures is installed
+   in ...\Spore 24720: using that folder") and say **Galactic Adventures is not installed** when no
+   folder has it.
 3. It shows whether your game build is the tested one and which SporeCoop version is installed.
    Press **Install**. The setup downloads the newest release from GitHub and checks it.
 4. If the game is under `C:\Program Files (x86)`, the setup offers to restart itself as
@@ -155,6 +170,12 @@ also installs the exact release from the zip.
 The same window updates SporeCoop (**Update to x.y.z**) and removes it (**Uninstall**). Without
 internet, run the `SporeCoopSetup.exe` from the release zip: it installs the update pack
 (`SporeCoop-<version>.pack`) lying next to it.
+
+The setup and the in-game update ask GitHub's API for the newest release. GitHub allows 60 such
+requests an hour per IP address without a login, so on a shared address or a VPN the API can answer
+403 or 429. Versions after 0.7.3.3 then find the release through its web page instead (the window
+shows "Newest release: SporeCoop x.y.z (from the release page)"); the download is checked against
+the release's `SHA256SUMS.txt` either way.
 
 ### With install.bat
 
@@ -230,7 +251,7 @@ SPORE\
 
 * The main menu (galaxy screen) has a new **Co-op** item on the left.
 * `SporebinEP1\mods\logs\sporekit.log` exists and reports the installed version
-  (for this fork release, `loaded coop v0.7.4.0`).
+  (for this fork release, `loaded coop v0.7.7.0`).
 * Start a game, press **F9**: the co-op window opens.
 
 If there is no Co-op item, see [Troubleshooting](#9-troubleshooting).
@@ -275,7 +296,10 @@ check=0
 ```
 
 **Update with the setup:** run `SporeCoopSetup.exe` and press **Update to x.y.z**. **By hand:**
-extract the new zip into `SporebinEP1` over the old files and run `install.bat` again.
+extract the new zip into `SporebinEP1` over the old files and run `install.bat` again. Both keep
+your `mods\coop.ini` and `mods\sporekit.ini` (name, last address, `[update] check=0`). An older setup
+never installs its older version over a newer one without asking (the button then says **Install
+older x.y.z**; silent mode `SporeCoopSetup.exe /S` needs `/downgrade` for that).
 
 **Uninstall:** in `SporeCoopSetup.exe` press **Uninstall**, or run `uninstall.bat` in `SporebinEP1`. It puts the original `steam_api.dll` back and
 removes `sporekit.dll` and `Data\SporeCoop.package`; delete the `mods` folder too if you like.
@@ -288,8 +312,13 @@ and reuses it next time. If you already have your own save of the same planet, i
 
 ## 9. Troubleshooting
 
+Stuck? Ask in the [SporeCoop Discord](https://discord.gg/7Yre7u4b8x).
+
 | Problem | What to do |
 |---|---|
+| The setup says **Galactic Adventures is not installed** (setups newer than 0.7.3.3) | No Spore folder the setup found has `SporebinEP1` (the Galactic Adventures game). On Steam, Galactic Adventures is its own DLC app and installs into its own folder, `steamapps\common\Spore 24720`, next to base Spore's `steamapps\common\Spore` (which never has `SporebinEP1`): install the *Spore Galactic Adventures* DLC in Steam, then run the setup again or choose `Spore 24720`. On GOG the SPORE Collection has it. |
+| The setup says **SporeApp.exe is not in this folder's SporebinEP1** | Choose the SPORE folder itself (the one that holds `SporebinEP1`, `Data`, ...). On Steam it is `steamapps\common\Spore 24720` (Galactic Adventures) in the library where Spore is installed, not `steamapps\common\Spore`. |
+| The setup says **GitHub not reachable** or **the server answered 403** | GitHub limits requests per IP address (VPNs and shared networks hit it). Versions after 0.7.3.3 fall back to the release page; if that fails too, wait an hour or turn the VPN off, or install by hand: download `SporeCoop-<version>.zip` from the [releases](https://github.com/WoodyWizard/SporeCoop/releases/latest), extract it into `SporebinEP1` and run `install.bat` (section 3, *With install.bat*). The release zip also has a `SporeCoopSetup.exe` that installs the pack next to it without the internet. |
 | No **Co-op** item in the menu | Check the build (section 2). Check that `steam_api.dll` in `SporebinEP1` is the SporeCoop one (about 8 KB) and `steam_api_orig.dll` exists. Look at `mods\logs\sporekit.log`. If it says `WATCHDOG (no frames` while the game draws, another overlay (Steam, Discord, RivaTuner) keeps the frames from SporeKit: update to 0.7.2 or newer, which then takes the frames from the game loop. |
 | The game does not start after installing | Run `uninstall.bat`, start the game once without the mod, then install again. An antivirus may have removed `steam_api.dll` or `sporekit.dll`: restore them or add an exception. |
 | *Games on your network* stays empty | Both PCs must be on the same network or VPN; allow SporeApp.exe in the firewall (private networks). Type the host's address instead. |
@@ -297,3 +326,4 @@ and reuses it next time. If you already have your own save of the same planet, i
 | The guest loads the world and then nothing | In Space the host must be in a star system, not on a planet (the game only saves off-planet). |
 | The game crashed or froze | Since 0.7.2.1 SporeCoop packs a report by itself when the game crashes, freezes for 30 s or closes right after an error: `mods\logs\SporeCoop-report-<date-time>.zip`, and the next start of the game tells you its name. Send that one file in an [issue](https://github.com/jwhans0n/SporeCoopGA/issues). (Inside: the crash report `crash-<date-time>.txt` and its `.dmp`, the logs; the logs of the last 10 runs stay in `mods\logs\previous\`.) |
 | Something else | In the co-op window (F9) press **Report a problem**: it packs everything into one file, `mods\logs\SporeCoop-report-<date-time>.zip` (a report with your game build, Windows / Wine, memory, graphics card, other overlays and the co-op session; the logs of this and the last runs; the newest crash reports; the mod settings), and opens the folder with it selected. Send that one file (from host and guest) in an [issue](https://github.com/jwhans0n/SporeCoopGA/issues) and say what you did. Your player name is in it; the address you last joined is not. The window's bottom line and the main menu show your SporeCoop version. |
+| Something goes wrong while you play (only one of you can eat, a partner looks wrong, things out of sync) | Type `/bug <what you see>` into the co-op window's chat (F9) right when it happens, e.g. `/bug only I can eat`. The game says "marked for the report" and every player's log gets a line with your text and the moment, so we find that moment in all the logs. Then press **Report a problem** (each player) and send the files. |

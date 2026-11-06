@@ -58,9 +58,22 @@ tools/lab.py reload --lane 2                     # dev loop: build + hot reload 
   They run on the run's first lane among 1-5 (LAN discovery sees only those) and are skipped when
   the run has none; until 2026-10-23 they always took lane 1, even with `--skip 1` (a run on lanes
   7/8 started the UI test in the real install's bottle while other agents had lane 1).
-* After a failure the lane restarts cold and the test runs once more: passing then = **flaky**.
+* After a failure the lane restarts cold. Only harness trouble (no RESULT line, a traceback, a
+  timeout) runs once more: passing then = **flaky** (`ok (flaky)`, the run still passes, the
+  summary counts it). A `RESULT: FAIL`, a crash or a fault is a failure of the run, never retried
+  (until 2026-10-28 every failure was retried and a pass on the retry passed the run: BUG-0073).
   `out/lab/flaky.json` keeps the history; the summary lists the unstable tests - each one is a
   bug in the test or in the mod and gets fixed, not ignored.
+* `RESULT: SKIP` is shown as `SKIP` / `skip` and counted apart ("PASSED: 14/15, 1 skipped"), never
+  as a pass (BUG-0100).
+* A timeout (30 min) kills the test's whole process group: tests run in their own session
+  (BUG-0052: the shell died, the Python test went on driving the lane). Ctrl+C on the lab kills
+  the running tests too.
+* `--branch <b>` takes only the worktree whose branch is exactly `<b>` (BUG-0048: `fix/cell` took
+  the tree of `fix/cell-meat`) and stops when the tree has another branch checked out; the run
+  header and `summary.md` name the tree's branch.
+* Self-test of the lab: `tools/tests/lab_selftest.py` (in `make test`), fake tests through
+  `lab.cmd_run` with the lanes stubbed; `--tree <checkout>` runs it against another checkout's lab.
 * Results: `out/lab/<run>/summary.md`, `results.json`, the test logs and both games' own logs.
 
 ## 10.4 Invariants (checked in every test)
@@ -71,7 +84,23 @@ tools/lab.py reload --lane 2                     # dev loop: build + hot reload 
   stack into the game log after 30 s);
 * a game stops answering (crash);
 * the exception logger caught a fault (`exc`);
-* a fixture lacks what the test needs (`tools/tests/fixtures.py` facts).
+* a fixture lacks what the test needs (`tools/tests/fixtures.py` facts; since 2026-10-28 for real,
+  `twoinst.FIXTURE_BAD`; a warm reset that lacks them falls back to a cold start, BUG-0124).
+
+The monitor finds the game log (`loading()`: a world load gets 60 s instead of 10 s) with
+`lane.game_log()` / `lane.game_dir()`, right from a worktree too (BUG-0068: from
+`../SporeCoop-wt/<branch>` it read a folder that does not exist and long loads became FROZE).
+
+`tools/lab.py` checks every test from outside as well (BUG-0036, BUG-0042), so a test that forgets
+`Checks.faults()` or crashes after its checks still fails:
+
+* a new `crash-*.txt`, `crash-*.dmp` or `report-*.txt` in the lane's `mods/logs` between the start
+  of the test and 5 s after it (copied into the run directory as `<test>.<file>`);
+* a game of the lane that answered its console when the test ended and no longer answers 5 s later;
+* a line `<name> faults: total faults: N` with N > 0 in the test's log.
+
+Tests that make reports or faults on purpose (diag, kit_crash, kit_freeze, exit_thread) have
+`reports=True` in `suite.py`.
 
 ## 10.5 Bots
 
@@ -128,3 +157,58 @@ Search before analysing, write down after learning: `data/symbols/overrides_*.sy
 confidence and signature), `docs/re/<area>.md`, `docs/known-issues.md`, this file and
 `docs/06-testing.md`. `tools/re_lint.py` keeps the symbol file honest. Subagents get the same rule
 in their prompt.
+
+## Batches of agents: the brief (2026-10-25)
+<a id="pipeline-agent-brief"></a>
+
+Player reports and work packages are handed to parallel agents, one per branch, worktree and lane.
+The steps an agent follows are in the skill `.claude/skills/fix-player-report` (the orchestrator's
+merge steps: `.claude/skills/merge-batch`), so a brief only says what is specific:
+
+```
+Fix player report BUG-NNNN: <one line> (source: issue #N | report zip path | screenshot text below)
+Branch fix/<name>, worktree ../SporeCoop-wt/fix/<name>, lane <N> only.
+Follow .claude/skills/fix-player-report and return its report format.
+Context: <known-issues anchor, docs/re anchor, tools/crash_triage.py output (skill triage-crash)>
+Others in this batch: <branches and the files or areas they own>
+```
+
+Agents append one line per finding to `out/findings.md` in the main checkout (not in git:
+`<date> <branch> <area>: <finding> (<anchor>)`), and read it before analysing, so siblings in the
+same batch do not find the same thing twice; the orchestrator folds the lines into the docs when it
+merges. Practices taken over from a review of another co-op modding project (2026-10-25): unnumbered
+sections with anchors, CORRECTION lines, union merges of shared files, "a test you never saw fail
+proves nothing", oracles on the other machine, crash triage by signature (CLAUDE.md).
+
+## Dev tools never touch the owner's game (2026-10-28, fix/w4-tools)
+<a id="pipeline-owner-safety"></a>
+
+* Lane 1 is the real install the owner plays from. `spore.sh kill` there ends only games started
+  for tests (a `-sporekit-profile:` or `-sporekit-instance:` argument); the owner's own Spore is
+  never killed and, while it runs, no Wine tree of the "Games" bottle either (its wineserver may sit
+  in a test's launch sandbox). On lanes 2..10 it ends every game of the lane and whatever runs in
+  the lane's bottle, never another lane's (a half-dead game is matched by a live thread's command
+  line). `spore.sh pids [inst]` lists what it would end (BUG-0025, BUG-0101, BUG-0103).
+* `lab.py kill` cleans lanes 2..10; `--lane N` one lane, `--upto N` lanes 2..N, `--lanes 2,3` a list (a
+  bare `--lanes 3` is refused as ambiguous, BUG-0253); lane 1 only with `--include-lane-1` (test games
+  only). It prints the lanes it ends and exits 1 when none is left.
+* `spore.sh fixture restore|slot` refuses the player's own profile `-` (only `save` reads from it)
+  and a missing fixture before it deletes anything (BUG-0102).
+* A test profile redirects Documents ("My Spore Creations") as well as AppData (BUG-0156):
+  `AppData\Roaming\SporeKit-<profile>\Documents`. `-sporekit-profile-docs:0` turns that off (the
+  old behaviour, for `kit_profile_docs.py --old`).
+* `headless.sh down` kills the process group of its pgid file only while the group's leader still
+  runs with the headless runtime folder (BUG-0207).
+* `tools/tests/tools_selftest.py` (in `make test`) checks all of this on fakes: a private PID
+  namespace (`unshare -Urpf --mount-proc`) with fake game processes, a fake HOME and bottle, a
+  temporary git repository. `SELFTEST_<TOOL>=<old copy>` runs a check against an older tool.
+
+## Releases: the tag, COOP_VERSION and the notes (2026-10-28, fix/w4-tools)
+<a id="pipeline-release-check"></a>
+
+`tools/release_check.sh vX.Y.Z [notes.md]` (run by the build and release jobs on a tag, and
+locally before tagging) fails when the tag is not `COOP_VERSION` (the updater would offer an update
+that never applies) or when CHANGELOG.md has no `## [X.Y.Z]` section, and writes exactly that
+section as the release notes (not the X.Y.Z.N sections after it) (BUG-0097). Before a release
+also check README (Compatibility, footnotes) and INSTALL, which name no patch versions any more
+(BUG-0165).

@@ -50,6 +50,9 @@ enum SkCommandFlags {
     SK_CMD_ANY_THREAD = 1,  /* executed on the console thread (must be thread safe) */
     SK_CMD_OUTSIDE_FRAME = 2, /* main thread, but outside IDirect3DDevice9::Present: for code that
                                  creates D3D resources (Spore UI windows, fonts, textures) */
+    SK_CMD_NOT_ON_MAIN = 4,   /* with SK_CMD_ANY_THREAD: waits for frames or stops the main thread
+                                 from outside; refused when called on the main thread (the cheat
+                                 console, a mod's command_exec), where it would freeze the game */
 };
 
 typedef void (*SkTaskFn)(void* user);
@@ -154,6 +157,32 @@ typedef struct SkHost {
     /* the previous run's problem: "<what>\n<path of its SporeCoop-report .zip>" ("crashed", "stopped
      * responding", ...), "" when it ended well. Told once: the mark is removed at this boot. */
     const char* (*last_problem)(void);
+
+    /* ---- since 0.3.5 (check size) ---- */
+    /* the session clock of every log line (a co-op session's common time): on != 0: each line
+     * carries "[s <time_seconds() + offset>]" after the local time; on == 0: no session clock */
+    void (*log_session_clock)(double offset, int on);
+    /* a text block put at the top of reports, right after their title (a session summary); NULL or
+     * "" removes it. Copied. Removed automatically when the mod unloads. */
+    void (*diag_headline)(SkMod* mod, const char* text);
+    /* the game files part of the environment: other mods, extra .package files in the game's Data
+     * folders and the player's, known files whose size is not the build's (several lines) */
+    const char* (*diag_files)(void);
+
+    /* ---- since 0.3.6 (check size) ---- */
+    /* a screenshot for report archives: the next frame drawn through Present (with the overlay) is
+     * scaled to at most 1280 px wide and written as a JPEG (under 450 KB) to mods\logs\shots by a
+     * worker thread; the newest 5 stay and every report archive includes them under shots/, listed
+     * in its report with their caption. tag: the file name's start ("mark"); caption: the line the
+     * shot belongs to (the MARK line). Returns 1 when requested, its name ("shots/<tag>-<date>-<time>
+     * [-s<session second>].jpg") in out; 0 when not (busy, another shot under 2 s ago, no device),
+     * the reason in out. Never waits; a capture that fails later is a log line. caption NULL removes
+     * every kept screenshot (the player switched them off). Main thread. */
+    int (*report_shot)(const char* tag, const char* caption, char* out, int cap);
+    /* 1 while the last requested screenshot is not written yet (its frame has not come, or the JPEG is
+     * being made), 0 when it was written, -1 when it failed: a report that should include it waits
+     * until this is not 1 (from its frame tick, never blocking) */
+    int (*report_shot_pending)(void);
 } SkHost;
 
 typedef struct SkModInfo {

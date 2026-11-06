@@ -16,17 +16,23 @@ namespace sk {
 
 // ---------------- main thread tasks ----------------
 static std::mutex g_task_mu;
-static std::deque<std::function<void()>> g_tasks;
+struct Task {
+    std::function<void()> fn;
+    const void* code = nullptr; // a mod's function (h_run_on_main / h_run_outside_frame), else null
+};
+static std::deque<Task> g_tasks;
 static DWORD g_main_tid = 0;
 
 void set_main_thread() { g_main_tid = GetCurrentThreadId(); }
 DWORD main_thread_id() { return g_main_tid; }
 
-void run_on_main(std::function<void()> fn)
+void run_on_main(std::function<void()> fn) { run_on_main_from(nullptr, std::move(fn)); }
+
+void run_on_main_from(const void* code, std::function<void()> fn)
 {
     {
         std::lock_guard<std::mutex> lk(g_task_mu);
-        g_tasks.push_back(std::move(fn));
+        g_tasks.push_back({std::move(fn), code});
     }
     // also wake the window procedure: works during loading screens / broken frames
     if (GetCurrentThreadId() != g_main_tid)
@@ -36,13 +42,15 @@ void run_on_main(std::function<void()> fn)
 
 // tasks that must not run inside IDirect3DDevice9::Present (DXVK holds its locks there):
 // anything that may create D3D resources, e.g. Spore UI windows (fonts, textures)
-static std::deque<std::function<void()>> g_out_tasks;
+static std::deque<Task> g_out_tasks;
 
-void run_outside_frame(std::function<void()> fn)
+void run_outside_frame(std::function<void()> fn) { run_outside_frame_from(nullptr, std::move(fn)); }
+
+void run_outside_frame_from(const void* code, std::function<void()> fn)
 {
     {
         std::lock_guard<std::mutex> lk(g_task_mu);
-        g_out_tasks.push_back(std::move(fn));
+        g_out_tasks.push_back({std::move(fn), code});
     }
     if (HWND w = (HWND)game_window())
         PostMessageW(w, WM_SK_PUMP_OUT, 0, 0);
@@ -61,11 +69,29 @@ void pump_outside_tasks()
             std::lock_guard<std::mutex> lk(g_task_mu);
             if (g_out_tasks.empty())
                 return;
-            fn = std::move(g_out_tasks.front());
+            fn = std::move(g_out_tasks.front().fn);
             g_out_tasks.pop_front();
         }
         fn();
     }
+}
+
+// BUG-0060: a hot reload frees the old image of a mod; a task it queued (and the window procedure
+// postponed while a message was dispatched inside Present) would then call into unmapped memory
+size_t drop_tasks_in(uintptr_t lo, uintptr_t hi)
+{
+    std::lock_guard<std::mutex> lk(g_task_mu);
+    size_t n = 0;
+    for (auto* q : {&g_tasks, &g_out_tasks})
+        for (auto it = q->begin(); it != q->end();) {
+            uintptr_t c = (uintptr_t)it->code;
+            if (c >= lo && c < hi) {
+                it = q->erase(it);
+                n++;
+            } else
+                ++it;
+        }
+    return n;
 }
 
 struct DelayedTask {
@@ -102,7 +128,7 @@ void pump_main_tasks()
             std::lock_guard<std::mutex> lk(g_task_mu);
             if (g_tasks.empty())
                 return;
-            fn = std::move(g_tasks.front());
+            fn = std::move(g_tasks.front().fn);
             g_tasks.pop_front();
         }
         fn();
@@ -204,6 +230,13 @@ int command_exec_line(const std::string& line, std::string& out, bool from_main)
             return 1;
         }
         c = it->second;
+    }
+    // on the main thread a command that waits for the next frames (or suspends the main thread)
+    // waits for itself: the game stops (BUG-0065, the cheat console `sk shot`)
+    if ((c.flags & SK_CMD_NOT_ON_MAIN) && GetCurrentThreadId() == main_thread_id() && fixed(g_fix_cheatwait)) {
+        out += "'" + args[0] + "' waits for the game's frames and cannot run on the game's own thread "
+               "(the cheat console): use the devkit console (tools/sporectl.py)";
+        return 1;
     }
     if (from_main || (c.flags & SK_CMD_ANY_THREAD))
         return run_cmd(c, args, out);

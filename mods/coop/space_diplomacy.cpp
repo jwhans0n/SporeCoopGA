@@ -29,6 +29,7 @@
 
 #include "space_ext.h"
 #include "sporekit_game.hpp"
+#include "fixes.h"
 
 using skg::cdecl_call;
 using skg::thiscall;
@@ -82,6 +83,16 @@ static bool g_was_space, g_ask_pending;
 static uint32_t g_sent_contact, g_got_contact;
 static uint32_t g_sent_ev, g_sent_state, g_got_ev, g_got_state, g_snaps_sent, g_snaps_got, g_fixed, g_unknown,
     g_skipped_rivals;
+// BUG-0544: a partner's changes that arrive while this game is out of Space (an editor, an adventure
+// entered from Space: the same Space world lives on) were dropped. On a guest the next table brings
+// them back; on the host they were lost for good, and the host's next table took them away from the
+// partner who made them too (a gift paid, its relation gone). Now they wait (in the Space world they
+// came in) and are replayed once the game is back in Space. Off: dropped (before).
+static bool g_keep_fix = true;
+COOP_FIX("diplomacy.keep_away", "BUG-0544", g_keep_fix, "space: a partner's diplomacy changes made while I am out of Space are kept for me");
+static uint32_t g_in_epoch;              // spaceext::world_epoch() the messages of g_in came in
+static uint32_t g_kept_away, g_dropped_away;
+constexpr size_t kKeepMax = 512;
 static std::string g_last_notice;
 static std::vector<std::string> g_log; // last messages (coop.space diplomacy log)
 
@@ -95,6 +106,20 @@ static void log_line(const std::string& s)
 
 // ---------------- game state ----------------
 static bool is_empire(uint32_t pol) { return (pol & 0x80000000u) && pol != 0xFFFFFFFFu; }
+// BUG-0071: the allies mirror empire (a partner's colonies) is local to each copy: its id means
+// another empire, or a real NPC, in the partner's galaxy. Its record and events were shared by pol
+// and the partner was allied with / contacted an NPC it never met. Now it is neither sent nor
+// applied onto. `coop.space diplomacy mirrorfix 0` restores that (tests).
+static bool g_mirror_fix = true;
+COOP_FIX("diplomacy.mirror", "BUG-0071", g_mirror_fix, "space: the allies mirror empire's record is neither sent nor applied");
+static uint32_t g_mirror_skipped;
+static bool local_mirror(uint32_t pol)
+{
+    if (!g_mirror_fix || !spaceext::allies_mirror_pol(pol))
+        return false;
+    g_mirror_skipped++;
+    return true;
+}
 static uint32_t my_pol() { return a_PlayerPol ? cdecl_call<uint32_t>(a_PlayerPol) : 0xFFFFFFFFu; }
 static void* my_empire() { return a_PlayerEmpire ? cdecl_call<void*>(a_PlayerEmpire) : nullptr; }
 static void* rel_mgr() { return a_RelGet ? cdecl_call<void*>(a_RelGet) : nullptr; }
@@ -228,7 +253,7 @@ static std::vector<Rec> my_table()
     walk((uint8_t*)mgr + 0x24, [&](void* node) {
         uint32_t a = F<uint32_t>(node, 0x10), b = F<uint32_t>(node, 0x14);
         uint32_t npc = a == me ? b : b == me ? a : 0;
-        if (!npc || !is_empire(npc) || npc == me)
+        if (!npc || !is_empire(npc) || npc == me || local_mirror(npc))
             return;
         auto mf = met.find(npc);
         Rec r{npc, (F<uint32_t>(node, 0x1C) & 3) | (mf == met.end() ? 0 : mf->second), {}};
@@ -327,7 +352,8 @@ static float SK_THISCALL h_ApplyEv(void* mgr, void* map, uint32_t a, uint32_t b,
     if (map == (uint8_t*)mgr + 0x24 && mgr == rel_mgr() && is_empire(a) && is_empire(b) && a != b &&
         (a == me || b == me) && !own_event(ev) && scale != 0.f) {
         uint32_t npc = a == me ? b : a;
-        g_out.push_back({K_EVENT, npc, (uint8_t)(a == me), ev, scale, {}});
+        if (!local_mirror(npc))
+            g_out.push_back({K_EVENT, npc, (uint8_t)(a == me), ev, scale, {}});
     }
     return r;
 }
@@ -353,7 +379,8 @@ static void state_hook(State_t orig, uint8_t what, void* mgr, void* e1, void* e2
     if (flags_with(e1, other) == before)
         return; // nothing changed (war again, peace without a war, ...)
     uint32_t npc = pol_of(e1 == me ? other : e1);
-    g_out.push_back({K_STATE, npc, (uint8_t)(e1 == me), what, 0, {}});
+    if (!local_mirror(npc))
+        g_out.push_back({K_STATE, npc, (uint8_t)(e1 == me), what, 0, {}});
 }
 static void SK_THISCALL h_War(void* m, void* a, void* b) { state_hook(o_War, W_WAR, m, a, b); }
 static void SK_THISCALL h_Ally(void* m, void* a, void* b) { state_hook(o_Ally, W_ALLY, m, a, b); }
@@ -369,7 +396,7 @@ static void SK_THISCALL h_Contact(void* empire, int arg)
     g_depth++;
     o_Contact(empire, arg);
     g_depth--;
-    if (watch && contacted(pol)) {
+    if (watch && contacted(pol) && !local_mirror(pol)) {
         g_out.push_back({K_CONTACT, pol, 0, kMet, 0, {}});
     }
 }
@@ -383,7 +410,7 @@ static void SK_THISCALL h_Spoken(void* empire)
     g_depth++;
     o_Spoken(empire);
     g_depth--;
-    if (watch && (contact_of(pol) & kContacted))
+    if (watch && (contact_of(pol) & kContacted) && !local_mirror(pol))
         g_out.push_back({K_CONTACT, pol, 0, kContacted, 0, {}});
 }
 static bool busy(const Rec& r) { return r.flags || !r.ev.empty(); }
@@ -413,6 +440,8 @@ static void apply_event(uint8_t from, const Out& m)
         log_line("event " + std::to_string(m.ev) + " for an unknown empire");
         return;
     }
+    if (local_mirror(m.npc))
+        return; // our own mirror: the partner meant another empire
     uint32_t a = m.first ? me : m.npc, b = m.first ? m.npc : me;
     thiscall<float>(a_Apply, mgr, a, b, m.ev, m.scale);
     g_got_ev++;
@@ -426,6 +455,8 @@ static void apply_event(uint8_t from, const Out& m)
 static void apply_state(uint8_t from, const Out& m)
 {
     void* e = empire_of(m.npc);
+    if (local_mirror(m.npc))
+        return;
     if (!e || !set_state((uint8_t)m.ev, e, m.first)) {
         g_unknown++;
         log_line("state change for an unknown empire");
@@ -442,6 +473,8 @@ static void apply_state(uint8_t from, const Out& m)
 static void apply_contact(uint8_t from, const Out& m)
 {
     void* e = empire_of(m.npc);
+    if (local_mirror(m.npc))
+        return;
     if (!e) {
         g_unknown++;
         log_line("contact with an unknown empire");
@@ -472,6 +505,8 @@ static bool reconcile(const Rec& h, bool asked)
     void* me = my_empire();
     uint32_t mp = my_pol();
     void* e = empire_of(h.npc);
+    if (local_mirror(h.npc))
+        return false;
     if (!mgr || !me || !e) {
         g_unknown++;
         return false;
@@ -562,11 +597,25 @@ static void inbox_task(void*)
 {
     g_in_task = false;
     if (!active() || !sharing()) { // not in Space (loading, another stage): entering Space asks again
+        if (g_keep_fix && sharing() && !g_in.empty() && g_in_epoch == spaceext::world_epoch()) {
+            g_kept_away = (uint32_t)g_in.size(); // the same Space world: replayed when we are back (tick)
+            g_snap_in.clear();
+            g_snap_ready = false;
+            return;
+        }
+        g_dropped_away += (uint32_t)g_in.size();
         g_in.clear();
         g_snap_in.clear();
         g_snap_ready = false;
         return;
     }
+    if (g_in_epoch != spaceext::world_epoch()) { // kept for a world that is gone
+        g_dropped_away += (uint32_t)g_in.size();
+        g_in.clear();
+    }
+    if (g_kept_away && !g_in.empty())
+        log_line(std::to_string(g_in.size()) + " partner changes made while out of Space replayed");
+    g_kept_away = 0;
     auto in = std::move(g_in);
     g_in.clear();
     g_applying = true;
@@ -590,6 +639,23 @@ static void inbox_task(void*)
     }
     g_applying = false;
 }
+static void schedule();
+// a partner's message to replay (outside the frame)
+static void queue_in(uint8_t origin, const Out& m)
+{
+    if (g_in.empty() || g_in_epoch != spaceext::world_epoch()) {
+        g_dropped_away += (uint32_t)g_in.size(); // (another Space world: they meant the old one)
+        g_in.clear();
+        g_in_epoch = spaceext::world_epoch();
+    }
+    if (g_in.size() >= kKeepMax) {
+        g_in.erase(g_in.begin());
+        g_dropped_away++;
+    }
+    g_in.push_back({origin, m});
+    schedule();
+}
+
 static void schedule()
 {
     if (!g_in_task) {
@@ -650,10 +716,8 @@ static void on_message(uint8_t kind, uint8_t origin, net::Reader& r)
         Out m{kind, r.u32(), 0, 0, 0, {}};
         m.ev = r.u8() == 2 ? kContacted : kMet;
         m.name = r.str8();
-        if (r.ok()) {
-            g_in.push_back({origin, m});
-            schedule();
-        }
+        if (r.ok())
+            queue_in(origin, m);
     } else if (kind == K_EVENT || kind == K_STATE) {
         Out m{kind, r.u32(), 0, 0, 0, {}};
         m.first = r.u8();
@@ -665,14 +729,14 @@ static void on_message(uint8_t kind, uint8_t origin, net::Reader& r)
         m.name = r.str8();
         if (!r.ok())
             return;
-        g_in.push_back({origin, m});
-        schedule();
+        queue_in(origin, m);
     } else if (kind == K_SNAP) {
         if (spaceext::is_host())
             return;
         bool last = r.u8() != 0;
         uint8_t reply_to = r.u8();
         uint16_t n = r.u16();
+        std::vector<Rec> part;
         for (uint16_t i = 0; i < n && r.ok(); i++) {
             Rec h{r.u32(), r.u32() & (3 | kMet | kContacted), {}};
             uint8_t k = r.u8();
@@ -682,9 +746,15 @@ static void on_message(uint8_t kind, uint8_t origin, net::Reader& r)
                 h.ev.push_back({id, v});
             }
             std::sort(h.ev.begin(), h.ev.end());
-            if (r.ok())
-                g_snap_in.push_back(std::move(h));
+            part.push_back(std::move(h));
         }
+        if (!r.ok()) { // a cut chunk: the table is incomplete, wait for the next one
+            if (!g_snap_ready)
+                g_snap_in.clear();
+            return;
+        }
+        for (auto& h : part)
+            g_snap_in.push_back(std::move(h));
         if (last) {
             g_snap_ready = true;
             g_snap_asked = reply_to == spaceext::my_id();
@@ -692,8 +762,7 @@ static void on_message(uint8_t kind, uint8_t origin, net::Reader& r)
         }
     } else if (kind == K_ASK) {
         if (spaceext::is_host()) { // after the messages that came before it (same queue)
-            g_in.push_back({origin, Out{K_ASK, 0, origin, 0, 0, {}}});
-            schedule();
+            queue_in(origin, Out{K_ASK, 0, origin, 0, 0, {}});
         }
     }
 }
@@ -713,6 +782,8 @@ static void tick(double now)
         g_out.clear();
         return;
     }
+    if (g_kept_away && !g_in.empty() && !g_in_task)
+        schedule(); // back in Space: the partners' changes kept meanwhile (BUG-0544)
     if (spaceext::rivals()) {
         g_out.clear();
         return;
@@ -748,7 +819,8 @@ static void tick(double now)
         log_line(buf);
     }
     g_out.clear();
-    if (spaceext::is_host() && active() && now - g_last_snap > 20)
+    // (not while partners' changes wait to be replayed: the table would not have them yet)
+    if (spaceext::is_host() && active() && now - g_last_snap > 20 && (g_in.empty() || !g_keep_fix))
         send_snapshot(0xFF);
 }
 
@@ -806,13 +878,13 @@ static std::vector<spaceext::Row> rows()
 
 static std::string status()
 {
-    char b[300];
+    char b[360];
     snprintf(b, sizeof b,
              "diplomacy: %s sent ev=%u state=%u contact=%u got ev=%u state=%u contact=%u snaps sent=%u got=%u fixed=%u"
-             " unknown=%u rivals_skipped=%u",
+             " unknown=%u rivals_skipped=%u kept_away=%u dropped_away=%u",
              a_ApplyEv && o_ApplyEv ? "on" : "no hooks", g_sent_ev, g_sent_state, g_sent_contact, g_got_ev, g_got_state,
              g_got_contact, g_snaps_sent,
-             g_snaps_got, g_fixed, g_unknown, g_skipped_rivals);
+             g_snaps_got, g_fixed, g_unknown, g_skipped_rivals, (unsigned)(g_kept_away ? g_in.size() : 0), g_dropped_away);
     return b;
 }
 
@@ -911,6 +983,11 @@ static std::string debug(const std::vector<std::string>& a)
             out += l + "\n";
         return out.empty() ? "empty\n" : out;
     }
+    if (a[0] == "mirrorfix" && a.size() > 1) { // BUG-0071: 0 = share the allies mirror's record (tests)
+        g_mirror_fix = a[1] != "0";
+        snprintf(b, sizeof b, "mirrorfix %d skipped=%u\n", (int)g_mirror_fix, g_mirror_skipped);
+        return b;
+    }
     if (a[0] == "sync") {
         if (spaceext::is_host())
             g_last_snap = -1e9;
@@ -987,6 +1064,23 @@ static bool init(const SkHost* h, SkMod* m)
     if (a_Spoken && a_NounMgr)
         ok = H->hook_create(M, (void*)a_Spoken, (void*)h_Spoken, (void**)&o_Spoken) == 0 && ok;
     return ok && o_ApplyEv && o_War && o_Ally && o_Peace && o_Break;
+}
+
+// coop.wstate (census.h, the divergence detector): every NPC empire with a relation record, as the game
+// computes the relation (CalculateRelationship) and its war / alliance / contact flags
+std::string wstate()
+{
+    std::string out;
+    char b[96];
+    if (!rel_mgr() || !is_empire(my_pol()))
+        return out;
+    for (auto& r : my_table()) {
+        snprintf(b, sizeof b, "emp pol=%08X rel=%.2f flags=%u\n", r.npc, relation(r.npc), r.flags);
+        out += b;
+        if (out.size() > 6000)
+            break;
+    }
+    return out;
 }
 
 static bool reg = spaceext::add({.name = "diplomacy",

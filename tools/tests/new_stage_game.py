@@ -2,7 +2,7 @@
 """Start a new game at any stage from the galaxy menu via the stage chooser (cheat levels -unlock).
 
 Coordinates are for the 1440x1080 windowed test profile. Usage:
-  new_stage_game.py <cell|creature|tribe|civ|space> [-i N] [--slot X,Y | --slot N] [--npc-cities N]
+  new_stage_game.py <cell|creature|tribe|civ|space> [-i N] [--slot X,Y | --slot N] [--npc-cities N] [--name NAME]
 The planet slot is found in the galaxy menu by itself: every slot ring has a 48x48 UI window
 with id 0x02E5A4A8 (coop.ui tree); --slot N takes the N-th of them, --slot X,Y a screen point.
 Use a profile without saves (an empty Games folder): a slot with a save would load that save.
@@ -22,6 +22,7 @@ STAGE_ICON = {"cell": (720, 392), "creature": (800, 428), "tribe": (848, 496), "
               "space": (798, 646)}
 MODE = {"cell": "Cell", "creature": "Creature", "tribe": "Tribe", "civ": "Civ", "space": "Space"}
 DICE_CARD, DICE_NAME, DICE_STUFF = (930, 486), (1102, 474), (1092, 495)
+PLANET_NAME = (1010, 540)  # the text field of the last wizard step "Name Your Planet"
 NEXT = (1086, 618)
 
 # wizard steps after choosing the stage: ("click", x, y) / ("wait", frames)
@@ -30,9 +31,13 @@ STEPS = {
     "civ": [DICE_CARD, NEXT, NEXT, NEXT, NEXT, DICE_STUFF, NEXT, (1090, 608)],  # card, theme, difficulty, specialty, city stuff, planet
     # diet card, sporepedia creature + confirm, theme, difficulty, planet name
     "tribe": [(852, 536), NEXT, (428, 220), (1400, 1058), NEXT, NEXT, (1090, 608)],
-    "creature": [DICE_CARD, NEXT, DICE_NAME, NEXT, NEXT, (1090, 608)],
+    # like tribe (GOG 2024, 2026-10-24): a diet card opens the Sporepedia, a creature, confirm, theme, difficulty
+    "creature": [(852, 536), NEXT, (428, 220), (1400, 1058), NEXT, NEXT, (1090, 608)],
     "cell": [(900, 537), NEXT, NEXT, (1090, 608)],  # diet card, difficulty, planet name
 }
+
+# the two diet cards of the Cell wizard (GOG 2024, 1440x1080): wiz_cell_start.png of `--shots`
+CELL_DIET = {"herb": (900, 537), "carn": (995, 537)}  # leaf, meat
 
 
 SLOT_WINDOW = "0x02E5A4A8"  # the hotspot over a planet slot ring in the galaxy menu
@@ -93,14 +98,14 @@ def npc_cities(c, n):
             if not intro_up(c):
                 break
         c.cmd("wait.frames 30 20000")
-    m = re.search(r"eax=(0x[0-9A-Fa-f]+)", c.cmd("call Simulator::cCitySimulator::Get cdecl"))
+    m = re.search(r"eax=(0x[0-9A-Fa-f]+)", c.cmd("call Simulator::cCivExpansion::Get cdecl"))
     if not m or int(m.group(1), 16) == 0:
         print("FAILED: no city simulator")
         return 1
     cs = m.group(1)
     before = city_count(c)
     for _ in range(n):
-        print("  appear:", c.cmd(f"call Simulator::cCitySimulator::AppearNextCity thiscall {cs} 1 0").strip())
+        print("  appear:", c.cmd(f"call Simulator::cCivExpansion::SpawnNextCity thiscall {cs} 1 0").strip())
         c.cmd("wait.frames 90 30000")
     c.cmd("wait.frames 150 30000")
     after = city_count(c)
@@ -116,6 +121,9 @@ def main():
     ap.add_argument("--npc-cities", type=int, default=0,
                     help="civ: let N cities of other nations appear right away (the game waits for spice and money)")
     ap.add_argument("--shots", action="store_true", help="screenshot every wizard step to out/shots")
+    ap.add_argument("--diet", help="cell: the diet card, herb | carn | X,Y (default: the wizard's first card)")
+    ap.add_argument("--no-settle", action="store_true", help="return as soon as the stage mode is up (its intro still runs)")
+    ap.add_argument("--name", help="type this planet name (any letters, e.g. Cyrillic) instead of the game's")
     a = ap.parse_args()
     for _ in range(120):  # the game is up (its console answers)
         try:
@@ -151,7 +159,25 @@ def main():
     x, y = STAGE_ICON[a.stage]
     c.cmd(f"click {x} {y}")
     c.cmd("wait.frames 150 60000")
-    for n, (x, y) in enumerate(STEPS[a.stage]):
+    if a.shots:  # the first wizard page (the diet cards of the cell wizard)
+        subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__), "..", "sporectl.py"), "-i", str(a.i),
+                        "shot", os.path.join(lane.out_dir("shots"), f"wiz_{a.stage}_start.png"), "--scale", "0.4"],
+                       stdout=subprocess.DEVNULL)
+    steps = list(STEPS[a.stage])
+    if a.stage == "cell" and a.diet:
+        steps[0] = CELL_DIET[a.diet] if a.diet in CELL_DIET else tuple(map(int, a.diet.split(",")))
+    for n, (x, y) in enumerate(steps):
+        if a.name and n == len(steps) - 1:  # the last step names the planet: type over the game's name
+            c.cmd(f"move {PLANET_NAME[0]} {PLANET_NAME[1]}")
+            c.cmd(f"click {PLANET_NAME[0]} {PLANET_NAME[1]}")
+            c.cmd("wait.frames 20 10000")
+            c.cmd("key end")
+            for _ in range(30):
+                c.cmd("key back")
+            c.cmd(f'text "{a.name}"')
+            c.cmd("wait.frames 20 10000")
+        c.cmd(f"move {x} {y}")
+        c.cmd("wait.frames 10 10000")
         c.cmd(f"click {x} {y}")
         c.cmd("wait.frames 80 60000")
         if a.shots:
@@ -164,6 +190,8 @@ def main():
         mode = c.cmd("game.mode")
         if MODE[a.stage].lower() in mode.lower():
             print("in", mode.strip())
+            if a.no_settle:
+                return 0
             c.cmd("wait.frames 600 120000")
             if a.stage == "civ" and a.npc_cities:
                 return npc_cities(c, a.npc_cities)

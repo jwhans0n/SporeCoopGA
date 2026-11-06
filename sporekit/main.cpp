@@ -1,5 +1,6 @@
 // SporeKit entry point (called by the loader at the exe entry point) and the SkHost table.
 #include "core.h"
+#include "inifile.h"
 
 #include <cstdio>
 #include <memory>
@@ -15,17 +16,25 @@ const std::wstring& game_dir() { return g_game_dir; }
 const std::wstring& mods_dirw() { return g_mods_dir; }
 int instance_id() { return g_instance; }
 
+// mods\*.ini in Unicode (BUG-0142, sporekit/inifile.h; kit.fix iniutf 0: the old ANSI files)
 int ini_int(const std::wstring& file, const char* section, const char* key, int def)
 {
-    return (int)GetPrivateProfileIntW(widen(section).c_str(), widen(key).c_str(), def, file.c_str());
+    return skini::read_int(file, section, key, def);
+}
+
+// the kit.fix switches of skini (inifile.cpp is also built into win_tests without SporeKit)
+static void ini_fixes()
+{
+    skini::g_unicode_fix = fixed(g_fix_iniutf);
+    skini::g_encode_fix = fixed(g_fix_iniencode);
+    skini::g_lock_fix = fixed(g_fix_inilock);
+    skini::g_log = [](const std::string& s) { SKLOG(SK_WARN, "%s", s.c_str()); };
 }
 
 std::string ini_str(const std::wstring& file, const char* section, const char* key, const char* def)
 {
-    wchar_t buf[1024];
-    GetPrivateProfileStringW(widen(section).c_str(), widen(key).c_str(), widen(def).c_str(), buf,
-                             1024, file.c_str());
-    return narrow(buf);
+    ini_fixes();
+    return skini::read_str(file, section, key, def);
 }
 
 // ---------------- SkHost implementation ----------------
@@ -63,13 +72,10 @@ static void h_out_printf(SkOut* out, const char* fmt, ...)
 {
     if (!out)
         return;
-    char buf[8192];
     va_list ap;
     va_start(ap, fmt);
-    int n = vsnprintf(buf, sizeof buf, fmt, ap);
+    out_vappend(reinterpret_cast<Out*>(out), fmt, ap); // BUG-0388: not cut at 8 KB
     va_end(ap);
-    if (n > 0)
-        reinterpret_cast<Out*>(out)->text.append(buf, n < (int)sizeof buf ? n : (int)sizeof buf - 1);
 }
 static int h_command_exec(const char* line, SkOut* out)
 {
@@ -104,14 +110,18 @@ static void h_config_str(SkMod* m, const char* s, const char* k, const char* d, 
 {
     std::string v = ini_str(mod_ini(m), s, k, d ? d : "");
     if (sz > 0) {
-        strncpy(buf, v.c_str(), sz - 1);
-        buf[sz - 1] = 0;
+        size_t n = v.size() < (size_t)sz - 1 ? v.size() : (size_t)sz - 1;
+        if (n < v.size())
+            while (n > 0 && ((unsigned char)v[n] & 0xC0) == 0x80) // never inside a UTF-8 character
+                n--;
+        memcpy(buf, v.data(), n);
+        buf[n] = 0;
     }
 }
 static int h_config_set_str(SkMod* m, const char* s, const char* k, const char* v)
 {
-    return WritePrivateProfileStringW(widen(s).c_str(), widen(k).c_str(), v ? widen(v).c_str() : nullptr,
-                                      mod_ini(m).c_str()) ? 0 : 1;
+    ini_fixes();
+    return skini::write_str(mod_ini(m), s, k, v) ? 0 : 1;
 }
 static void h_run_outside_frame(SkTaskFn fn, void* u)
 {
@@ -142,6 +152,14 @@ static int h_diag_report(const char* reason, char* out, int cap)
 }
 static void h_diag_context(SkMod* mod, const char* (*fn)(void*), void* user) { diag_context(mod, fn, user); }
 static const char* h_last_problem() { return diag_last_problem(); }
+static void h_log_session_clock(double off, int on) { log_session_clock(off, on); }
+static void h_diag_headline(SkMod* mod, const char* text) { diag_headline(mod, text); }
+static const char* h_diag_files() { return diag_files_text().c_str(); }
+static int h_report_shot(const char* tag, const char* caption, char* out, int cap)
+{
+    return report_shot_request(tag, caption, out, cap);
+}
+static int h_report_shot_pending() { return report_shot_pending(); }
 static const char* h_logs_dir()
 {
     static std::string d = diag_logs_dir();
@@ -179,6 +197,11 @@ SkHost g_host = {
     h_diag_context,
     h_logs_dir,
     h_last_problem,
+    h_log_session_clock,
+    h_diag_headline,
+    h_diag_files,
+    h_report_shot,
+    h_report_shot_pending,
 };
 
 } // namespace sk
@@ -286,6 +309,7 @@ extern "C" __declspec(dllexport) int __cdecl sporekit_boot(HMODULE loader)
           GetCurrentProcessId());
 
     diag_read_last_problem(); // the previous run crashed / hung: its archive, told to the player
+    report_shot_boot();       // the newest report screenshots stay, unfinished ones go
     watchdog_start();
     exceptions_install();
     watchdog_mark("hooks_init");

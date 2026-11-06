@@ -1,5 +1,9 @@
 # 9. Concept: playing together, not side by side
 
+This chapter is the session mode **Together**. The second mode, **Rivals** (every player with a
+base and a faction of its own, a race through every stage), is designed in
+[chapter 11](11-rivals.md); the host picks the mode per stage in the lobby (11.2).
+
 Before this version every player played in their own copy of the host's world, and only resources
 and visibility were shared. The new goal: **one world, one team**. All players are in the same
 world and affect it, each has their own role and their own property, and the best results come
@@ -143,9 +147,9 @@ Shared contracts between the features:
 
 | Phase | Done | Module | Test |
 |---|---|---|---|
-| All | Evolution vote: the host's request to enter an editor (new phase or evolution within a phase) waits until everyone presses "I'm ready", 60 s, or "Start now"; once the host returns from the editor or enters the new phase, the world is immediately sent to everyone ("evolving together"); a guest's editor session is not interrupted | `coop.cpp` (`h_Submit`, `on_mode_change`) | `coop_vote.py` |
-| Cell | One pool: the host's NPCs and food appear on the guest as passive mirrors, the guest has none of its own; guest bites are applied by the host; bites by the host's NPCs on the guest's cell are sent to the guest; shared food counter; "Symbiosis" - a 10 s knockout (visible to all: translucent cell, "KO n", revive bar, off-screen arrow to the partner, game effects), revive by a partner right next to you, otherwise respawn next to them as a small cell (grows by eating); healing near a partner; the partner's cell is exactly in place and faces the same way (pose is set right after the simulation step) | `cellsync.cpp` | `coop_cell.py` |
-| Creature | Joint hunting +25 %, "The pack protects" (40 % health instead of death, once a minute), regeneration near a partner; NPCs, fights, DNA shared (existing) | `teamplay.cpp`, `npc.cpp` | `coop_team.py`, `coop_two_instances.py` |
+| All | Evolution vote: the host's request to enter an editor (new phase or evolution within a phase) waits until everyone presses "I'm ready", 60 s, or "Start now"; once the host enters the new phase the world is sent to everyone ("evolving together"); after an editor inside a stage a guest in the same world gets only the new creation (BUG-0508; a migration still sends the world); a guest's editor session is not interrupted | `coop.cpp` (`h_Submit`, `on_mode_change`) | `coop_vote.py` |
+| Cell | One pool: the host's NPCs and food appear on the guest as passive mirrors, the guest has none of its own; guest bites are applied by the host (DamageCell, the lethal BreakOrSwallow and mouth chunks); kills, their death and their meat happen on the host and are seen by both, the guest's game drops no loot of its own, food from a chunk counts once (docs/re/cell.md 11); the host's NPCs face on the guest as on the host (the soft body is turned, docs/re/cell.md 10); bites by the host's NPCs on the guest's cell are sent to the guest; shared food counter; "Symbiosis" - a 10 s knockout (visible to all: translucent cell, "KO n", revive bar, off-screen arrow to the partner, game effects), revive by a partner right next to you, otherwise respawn next to them as a small cell (grows by eating); healing near a partner; the partner's cell is exactly in place and faces the same way (pose is set right after the simulation step) | `cellsync.cpp` | `coop_cell.py`, `coop_cell_spin.py`, `coop_cell_meat.py` |
+| Creature | Joint hunting +25 %, "The pack protects" (40 % health instead of death, once a minute), regeneration near a partner; NPCs, fights, DNA shared (existing); kills die on every screen and count for the hunt on both; NPCs near a partner treat it as the player (the game's AI knows only one) | `teamplay.cpp`, `npc.cpp` | `coop_team.py`, `coop_two_instances.py`, `coop_creature_kills.py` |
 | Tribe | All members of all tribes are host mirrors; the player tribe's members are split between players; you can select and command only your own; guest orders (move, attack, hunt, gather…) are executed by the host; animals around the tribe are shared; owner labels | `tribe.cpp` | `coop_tribe.py` |
 | Civilization | All vehicles are host mirrors; cities are split (the capital is shared while there are fewer cities than players); a vehicle belongs to its buyer; guest purchases, orders and buildings go through the host; host buildings and captures are replayed on guests; owner labels | `civ.cpp` | `coop_civ.py` |
 | Tribe (co-op) | Pincer +50 %, own chief per player (aura, protection, tag), duet, healer food, epic creature at the village | `tribe.cpp` (co-op section) | `coop_tribe_play.py` |
@@ -181,7 +185,13 @@ analysis - [docs/re/creations.md](re/creations.md)):
   cell - the player's model + a level rebuild (the cell hatches again next to the partner);
 * evolution vote: the host and guests open the editor for **their own** creature; a host world
   that arrives while the guest is in the editor is loaded after the guest leaves the editor; after the editor
-  the edited creature becomes the player's own and is sent to the others.
+  the edited creature (or cell) becomes the player's own and is sent to the others, always with its
+  records (a new creation is sent once it is in the My Creations file: [re/creations.md](re/creations.md) 8);
+* Cell stage: a guest calls its own mate (the mating-call button) and evolves its own cell in its
+  own editor without a vote; the host's mating call goes through the vote (one vote per call), and
+  after the host's editor everybody gets the host's new cell in place (no world reload since BUG-0508,
+  [re/creations.md](re/creations.md#creations-evolve-in-place))
+  ([re/cell.md](re/cell.md) 10, `coop_editor_desync.py`).
 
 In the own editor the parts of the player's own creature are allowed even when the stage editor's
 part list lacks them (Creature Creator parts): otherwise "done" would stay in the editor
@@ -220,6 +230,7 @@ time, and players only see each other when their stage and place match (the star
 | Play as a rogue or an epic creature | own creature from My Creations (`SetSpecies`), epic spawning known (docs/re/tribe.md E: `isEpic`, archetypes) | the player's avatar with the epic archetype or size and health, balanced against the partners; NPC reactions to it | medium |
 | Balance: no wiping out other players from Space | rivals mode limits PvP to ships | any planet-level attack on another player (bombs, planet busters) needs rules or a switch before it exists | design note |
 
-Good next candidates: Creature PvP (reuses the rivals mode), play as an epic, and the Space
+PvP in every stage, "dominate the planet" races and separate bases are now designed as the
+Rivals mode ([chapter 11](11-rivals.md)). Other good next candidates: play as an epic, and the Space
 "sabotage" part of visits (rivals at war attacking mirrored colonies). The mixed-stage ideas need a
 research spike first: can one game show a puppet of a player who is in another stage?

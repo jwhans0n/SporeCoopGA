@@ -21,6 +21,8 @@ play. Measured all the time (docs/stability/tribe.md):
   * no freeze, crash or fault (twoinst monitors, exc).
 
   play_tribe.py [--minutes 10] [--seed N] [--rate 1.0]
+  PLAY_TRIBE_GUEST_CMDS="cmd;cmd": console commands on the guest first (`coop.tribe delay 0.6`: the
+  mirrors 0.6 s late, a planted desync the citizens' sync check must fail; BUG-0481)
 """
 import argparse
 import math
@@ -30,7 +32,7 @@ import sys
 import time
 
 import lane
-from coop_sync import LIMITS, angle, pct, sample
+from coop_sync import LIMITS, angle, game_paused, pct, sample, wait_running
 from twoinst import Checks, Monitor, shot, start
 
 SOCIAL_BTN, ATTACK_BTN = (725, 1030), (795, 1030)  # tribe UI interaction mode (1440x1080)
@@ -145,6 +147,12 @@ class Player:
             self.J = ([(a[i] - o[i]) / 30 for i in range(3)], [(b[i] - o[i]) / 20 for i in range(3)])
             self.base = (x0, y0, o)
             self.cur = b
+        else:  # BUG-0481: why (no point under the mouse, or the view did not move)
+            st = self.con.call('coop.status')['out']
+            busy = re.search(r'busy=\S+|input_lock=\d+', st)
+            why = f'{busy.group(0) if busy else "-"}, game time paused={game_paused(self.con)}'
+            self.log.append(f'   {self.name}: minimap calibration: o {o} a {a} b {b} ({why})')
+            print(f'  {self.name}: minimap calibration: o {o} a {a} b {b} ({why})', flush=True)
         return self.J is not None
 
     def solve(self, w, x, y, c):
@@ -233,6 +241,7 @@ class Game:
         self.roster_mismatch = []
         self.partner_selected = []
         self.sync_pos = {'t': [], 'n': []}
+        self.sync_raw = {'t': [], 'n': []}
         self.sync_rot = {'t': [], 'n': []}
         self.outliers = {}
         self.rejections = []
@@ -245,6 +254,7 @@ class Game:
         self.game_overs = 0
         self.phases = []
         self.pending_gift = None
+        self.probe = []
 
     # ---------------- the plan the two friends agree on ----------------
     def plan(self):
@@ -496,6 +506,13 @@ class Game:
             else:  # the order arrived but nobody moved (the target right there, gone, or dead)
                 pl.orders['idle'] += 1
                 self.log.append(f'   {pl.name} {o["kind"]} {o["tgt"]} {o["sel"]}: no movement ({o["last"][:110]})')
+                # BUG-0505: what the host's game has the members do (behaviour node, place, health)
+                for line in self.host.call('coop.tribe')['out'].splitlines():
+                    m = re.match(r'\s+#(\d+) ', line)
+                    if m and int(m.group(1)) in o['sel']:
+                        self.log.append(f'      host: {line.strip()[:150]}')
+                for i in o['sel']:  # its order record, node, node state and walk (docs/re/tribe.md#tribe-orders)
+                    self.log.append(f'      host ai #{i}: {self.host.call(f"coop.tribe ai {i}")["out"].strip()[:260]}')
 
     # ---------------- measuring ----------------
     def measure(self):
@@ -544,22 +561,47 @@ class Game:
             hs, gs = tribe_state(self.host), tribe_state(self.guest)
             if roster(hs) != roster(gs):
                 self.roster_mismatch.append(f'host {roster(hs)} guest {roster(gs)}')
+        def chief_set(m):  # owner:#member pairs only (the line goes on with the host's own counters spread= placed=)
+            return set(re.findall(r'\d+:#\d+', m.group(1)))
         hc, gc = re.search(r'chiefs=(.*)', status(self.host)), re.search(r'chiefs=(.*)', status(self.guest))
-        if hc and gc and set(hc.group(1).split()) != set(gc.group(1).split()):
+        if hc and gc and chief_set(hc) != chief_set(gc):
             time.sleep(1.5)
             hc, gc = re.search(r'chiefs=(.*)', status(self.host)), re.search(r'chiefs=(.*)', status(self.guest))
-            if hc and gc and set(hc.group(1).split()) != set(gc.group(1).split()):
+            if hc and gc and chief_set(hc) != chief_set(gc):
                 self.roster_mismatch.append(f'chiefs host {hc.group(1)} guest {gc.group(1)}')
         for name, s, me in (('host', hs, 0), ('guest', gs, 1)):
             bad = [i for i, v in s.items() if v['sel'] and v['tribe'] == 'p' and v['owner'] != me]
             if bad:
                 self.partner_selected.append(f'{name} has partner members selected: {bad}')
-        h1, g, h2 = sample(self.host), sample(self.guest), sample(self.host)
+        # the host's path over the last PROBE_S before the guest is read (BUG-0481: how late the
+        # mirror is, whether it is on that path at all, how fast the member walked)
+        hist, t_end = [], time.time() + PROBE_S
+        while True:
+            ta = time.time()
+            hs_ = sample(self.host)
+            hist.append(((ta + time.time()) / 2, hs_))
+            if time.time() > t_end:
+                break
+        h1 = hist[-1][1]
+        ta = time.time()
+        g = sample(self.guest)
+        tg = (ta + time.time()) / 2
+        ta = time.time()
+        h2 = sample(self.host)
+        hist.append(((ta + time.time()) / 2, h2))
+        on_path = {}
+        for k, (gp, _) in g.items():
+            if k[0] == 't' and all(k in s_ for _, s_ in hist):
+                self.probe.append(probe_row(k, gp, tg, [(t_, s_[k][0]) for t_, s_ in hist]))
+                on_path[k] = self.probe[-1]['ew']
         for k, (gp, gq) in g.items():
             if k[0] not in 'tn' or k not in h1 or k not in h2:
                 continue
             e1, e2 = math.dist(gp, h1[k][0]), math.dist(gp, h2[k][0])
-            self.sync_pos[k[0]].append(min(e1, e2))
+            # citizens: against the host's path over the mirrors' interpolation delay (BUG-0481), as
+            # coop_sync.py compares with its LAG_WINDOW; the raw error (lag included) is printed
+            self.sync_raw[k[0]].append(min(e1, e2))
+            self.sync_pos[k[0]].append(min(e1, e2, on_path.get(k, 1e9)))
             if min(e1, e2) > 50 and k not in self.outliers and math.dist(h1[k][0], (0, 0, 0)) > 100:
                 # (at the planet centre on the host: a creature the host stops tracking after a
                 # reload, it reads a destroyed object for up to 2 s; not shown anywhere)
@@ -576,6 +618,57 @@ class Game:
                 self.roster_mismatch.append(f'gift of #{mid} to {to}: host owner {ho}, guest owner {go}')
 
 
+PROBE_S = 0.45  # s of the host's path kept before each guest sample (>= TRIBE_LAG; each costs the bots ~0.5 s)
+# BUG-0481: a guest shows the host's members TRIBE_LAG s late on purpose: the mirrors follow the host's
+# states kMirrorDelay = 0.2 s back (tribe.cpp, net::SnapshotBuffer) and the host sends every 0.12 s or
+# more. Measured in play_tribe (lab 20261103-150636): walking members (p50 8.4 m/s) were on the host's path
+# 0.21-0.25 s back (p10-p90), 0.09 m p90 off it there, while the raw distance to where the host has them
+# now was 2.14 m p90 (= 0.22 s x 8.4 m/s): the 1.5 m limit of coop_sync.py is for that path measure
+TRIBE_LAG = 0.32
+
+
+def probe_row(k, gp, tg, path):
+    """one guest sample of a member against the host's path [(t, pos)]: the error now (raw), the lag
+    that fits best (0..PROBE_S, 10 ms steps) and the error at it, the member's speed before tg"""
+    def at(t):
+        if t <= path[0][0]:
+            return path[0][1]
+        for (t0, p0), (t1, p1) in zip(path, path[1:]):
+            if t0 <= t <= t1:
+                f = (t - t0) / ((t1 - t0) or 1)
+                return tuple(a + (b - a) * f for a, b in zip(p0, p1))
+        return path[-1][1]
+    errs = [(math.dist(gp, at(tg - lag / 100)), lag / 100) for lag in range(0, int(PROBE_S * 100) + 1)]
+    best = min(errs)
+    older = at(tg - 0.4)
+    speed = math.dist(at(tg), older) / 0.4
+    return dict(k=k, raw=errs[0][0], err=best[0], lag=best[1], speed=speed,
+                ew=min(e for e, l in errs if l <= TRIBE_LAG + 1e-9),
+                e15=min(e for e, l in errs if l <= 0.15), e30=min(e for e, l in errs if l <= 0.30),
+                e45=min(e for e, l in errs if l <= 0.45))
+
+
+def probe_report(rows, log):
+    """BUG-0481: the members' sync split by standing / walking and by the lag window"""
+    if not rows:
+        return
+    import json
+    import os
+    path = os.path.join(lane.out_dir('track'), f'play_tribe_probe_{time.strftime("%H%M%S")}.json')
+    with open(path, 'w') as f:
+        json.dump(rows, f)
+    for name, sel in (('all', rows), ('standing (<0.3 m/s)', [r for r in rows if r['speed'] < 0.3]),
+                      ('walking', [r for r in rows if r['speed'] >= 0.3])):
+        if not sel:
+            continue
+        lags = sorted(r['lag'] for r in sel)
+        print(f'  probe {name:20}: n {len(sel):4} raw p90 {pct([r["raw"] for r in sel], .9):5.2f} | on the path '
+              f'within 0.15 s p90 {pct([r["e15"] for r in sel], .9):5.2f}, 0.30 s {pct([r["e30"] for r in sel], .9):5.2f}, '
+              f'0.45 s {pct([r["e45"] for r in sel], .9):5.2f}, best lag p50 {lags[len(lags) // 2]:.2f} s; '
+              f'speed p50 {pct([r["speed"] for r in sel], .5):4.1f} m/s', flush=True)
+    print(f'  probe rows: {path}', flush=True)
+
+
 def shot_path(name):
     import os
     return os.path.join(lane.out_dir('shots'), f'play_tribe_{name}.png')
@@ -587,10 +680,16 @@ def main():
     ap.add_argument('--seed', type=int, default=None)
     ap.add_argument('--rate', type=float, default=1.0, help='mean pauses per second between actions')
     a = ap.parse_args()
+    import os
+    if a.seed is None and os.environ.get('PLAY_TRIBE_SEED'):  # a replay through the lab (BUG-0505)
+        a.seed = int(os.environ['PLAY_TRIBE_SEED'])
     seed = a.seed if a.seed is not None else random.randrange(1 << 30)
     print(f'  play_tribe: {a.minutes} min, seed {seed}', flush=True)
     host, guest = start('tribe')
     ck = Checks()
+    import os
+    for cmd in filter(None, os.environ.get('PLAY_TRIBE_GUEST_CMDS', '').split(';')):  # e.g. a planted late mirror
+        print(f'  guest: {cmd}: {guest.call(cmd)["out"].strip()}', flush=True)   # (coop.tribe delay 0.6, BUG-0481)
     # setup: the fixture's tribe has 3 members; 3 more give each player 3 to play with
     print('  setup:', host.call('coop.tribe spawn 3')['out'], flush=True)
     t0 = time.time()
@@ -600,6 +699,13 @@ def main():
         time.sleep(2)
     g = Game(host, guest, seed, a.rate)
     food0 = food(host)
+    # BUG-0586: the guest's calibration failed (the view did not move on its minimap clicks, o == a) only while its
+    # game was still in the pause that follows a cold join (BUG-0444: busy=1 at the failure in lab 20261104-220200
+    # and fix/w43-realign 20261104-213145). Holding the pause bit by hand does not stop the view (lab lane 3,
+    # 2026-11-04): the bit marks the join's pause, it is not its cause. Wait for the game's own clock to run on
+    # both machines, as a player waits for the game to respond.
+    w = wait_running(host, guest, 90)
+    print(f'  both games\' time runs: {"after %.0f s" % w if w is not None else "NOT within 90 s"}', flush=True)
     for p in g.p:
         ck(p.calibrate(), f'{p.name}: the minimap takes the view where it points')
     print(f'  start: food {food0}, {len(tribe_state(host))} citizens, screen {g.w}x{g.h}', flush=True)
@@ -642,10 +748,14 @@ def main():
     for kind, name in (('t', 'citizens'), ('n', 'animals')):
         p, r = g.sync_pos[kind], g.sync_rot[kind]
         if p:
+            if kind == 't':
+                print(f'  sync {name:9}: raw (the host now, the {TRIBE_LAG} s delay included) p90 '
+                      f'{pct(g.sync_raw[kind], .9):5.2f}', flush=True)
             print(f'  sync {name:9}: samples {len(p):4} pos p50 {pct(p, .5):5.2f} p90 {pct(p, .9):5.2f} '
                   f'max {max(p):6.2f} m | facing p90 {pct(r, .9):5.1f} deg', flush=True)
     for k, v in g.outliers.items():
         print(f'  sync outlier {k}: {v}', flush=True)
+    probe_report(g.probe, g.log)
     ck(ok, 'the games survived the play')
     ck(not g.partner_selected, f'nobody selects a partner\'s member ({g.partner_selected[:3]})')
     ck(g.food_mismatch <= max(1, len(fs) // 20), f'the shared food is the same on both ({g.food_mismatch} differences)')
@@ -662,7 +772,8 @@ def main():
     ck(not far, f'no citizen or animal more than 50 m off on the guest ({list(far)[:5]})')
     for kind in 'tn':
         if g.sync_pos[kind]:
-            ck(pct(g.sync_pos[kind], .9) <= LIMITS[kind][0], f'sync {kind}*: 90% within {LIMITS[kind][0]} m')
+            ck(pct(g.sync_pos[kind], .9) <= LIMITS[kind][0],
+               f'sync {kind}*: 90% within {LIMITS[kind][0]} m' + (f' of the host\'s path over {TRIBE_LAG} s' if kind == 't' else ''))
     if not ok or not ck.ok:
         print('  last actions:')
         for line in g.log[-40:]:

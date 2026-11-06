@@ -66,6 +66,8 @@ struct Api {
     // the partner they would go to; give_do gives them
     std::function<int(std::string& what, std::string& to)> give;
     std::function<void()> give_do;
+    std::function<void()> give_cycle;  // the next other player as the recipient (BUG-0075)
+    std::function<int()> give_choices; // how many players a gift can go to
     // space: travel to a partner's star system (false = not possible now, else whose)
     std::function<bool(std::string& to)> jump;
     std::function<void()> jump_do;
@@ -83,6 +85,9 @@ struct Api {
     std::function<uint32_t()> mode; // game mode id
     std::function<std::string()> version_line; // "SporeCoop 0.7.2.1  -  GOG 2024" (window footer)
     std::function<std::string()> report;       // writes a problem report, returns its path ("" = cannot)
+    // a screenshot for the report first: 1 requested, 0 not possible, -1 switched off (coop.ini)
+    std::function<int()> report_shot;
+    std::function<int()> report_shot_state;    // 1 being taken, 0 written, -1 failed
     uint16_t default_port = 0;
 };
 
@@ -92,9 +97,16 @@ void open(bool on);
 // Outside-frame launch transition: hide before entering the native loading UI.
 void close_for_adventure_launch();
 bool is_open();
+int input_lock_now(); // the game's input lock count (cGameInputManager +0x110; > 0 = clicks are dropped)
 void shutdown(); // mod unload: hide our windows
 std::string debug_state();
 extern bool g_log_msgs; // debug: log UI messages reaching our handlers
+extern bool g_lan_pages_fix; // tests: `coop.corefix lan_pages 0` lists the first three games only (BUG-0183)
+extern bool g_status_fix; // tests: `coop.corefix ui_status 0` keeps the status of the last button (BUG-0104)
+// the session was joined (connected) or ended (why): replaces the status line of the join
+void session_event(bool connected, const std::string& why);
+extern bool g_recenter_fix;  // tests: `coop.corefix window_recenter 0` keeps the first position (BUG-0113)
+extern bool g_menu_drop_fix; // tests: `coop.corefix menu_drop 0` keeps the menu item pointer after the menu (BUG-0163)
 
 // the dialog text font (0 until the co-op window was built once)
 uint32_t text_font();

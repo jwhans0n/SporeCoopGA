@@ -1,0 +1,76 @@
+name: Bug report or crash
+description: Something went wrong while playing with SporeCoop (a crash, a freeze, players out of sync, anything else).
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! The most useful thing is the report file: SporeCoop packs it by itself
+        when the game crashes or freezes (`Spore\SporebinEP1\mods\logs\SporeCoop-report-<date-time>.zip`,
+        the next start of the game tells you its name), or press **F9 -> Report a problem**.
+        Please attach the file of **both** players. See [how to report](https://github.com/WoodyWizard/SporeCoop/blob/main/docs/REPORTING.md).
+  - type: input
+    id: version
+    attributes:
+      label: SporeCoop version
+      description: The bottom line of the F9 window or of the main menu (for example 0.7.2.3).
+    validations:
+      required: true
+  - type: dropdown
+    id: build
+    attributes:
+      label: Game
+      options: [GOG (Galaxy, 2024 update), Steam, GOG (older 2016 build), EA app, Disc, I don't know]
+    validations:
+      required: true
+  - type: dropdown
+    id: system
+    attributes:
+      label: System
+      options: [Windows, Linux (Wine / Proton / Bottles), Steam Deck, Other]
+    validations:
+      required: true
+  - type: dropdown
+    id: role
+    attributes:
+      label: Who had the problem
+      options: [The host, The guest (the player who joined), Both, Playing alone]
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Stage
+      options: [Cell, Creature, Tribe, Civilization, Space, An editor, Main menu or galaxy menu, Adventure]
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What happened
+      options: [The game crashed, The game froze, Players see different things (out of sync), Something does not work, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What did you do just before?
+      description: For example "the host finished migrating to a new nest, then the guest's game closed".
+    validations:
+      required: true
+  - type: dropdown
+    id: often
+    attributes:
+      label: How often
+      options: [Once, Sometimes, Every time]
+  - type: textarea
+    id: files
+    attributes:
+      label: Report files
+      description: Drag the SporeCoop-report-*.zip of both players here. If Spore showed its own "Exception Report" files (they are in your user folder), you can attach them too. They contain your Windows user name.
+  - type: checkboxes
+    id: same
+    attributes:
+      label: Check
+      options:
+        - label: Both players run the same SporeCoop version.

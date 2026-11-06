@@ -6,6 +6,7 @@
 #include <mutex>
 
 #include "../../updater/winupdate.h"
+#include "fixes.h"
 
 namespace autoupdate {
 
@@ -37,6 +38,42 @@ static std::wstring game_root()
     return m;
 }
 
+// BUG-0060: a hot reload (mod.reload coop) freed the DLL while this thread was blocked in WinHTTP
+// (up to 30 s); it then returned into unmapped memory or into the next image at the same base.
+// Every thread holds a reference to its own module and leaves through FreeLibraryAndExitThread,
+// so the old image stays mapped until the thread is done. `g_unloaded` keeps an old image's thread
+// quiet after on_unload (it only finishes its own copy of the state).
+static std::atomic<bool> g_unloaded{false};
+static std::atomic<int> g_threads{0};
+bool g_pin_fix = true; // tests: `coop.corefix update_pin 0` = threads without a module reference
+COOP_FIX_UNSAFE("core.update_pin", "BUG-0060", g_pin_fix, "update: its threads hold a reference to their module (hot reload)");
+
+static bool start_thread(LPTHREAD_START_ROUTINE fn)
+{
+    HMODULE self = nullptr;
+    if (g_pin_fix && !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCWSTR)(void*)&start_thread, &self))
+        return false;
+    g_threads++;
+    HANDLE h = CreateThread(nullptr, 0, fn, self, 0, nullptr);
+    if (!h) {
+        g_threads--;
+        if (self)
+            FreeLibrary(self);
+        return false;
+    }
+    CloseHandle(h);
+    return true;
+}
+
+[[noreturn]] static void end_thread(void* self)
+{
+    g_busy = false;
+    g_threads--;
+    if (!self)
+        ExitThread(0); // the old way (update_pin 0): the image may be gone under this thread
+    FreeLibraryAndExitThread((HMODULE)self, 0);
+}
+
 static void set(State s, const std::string& err = {})
 {
     std::lock_guard<std::mutex> l(g_mu);
@@ -44,25 +81,42 @@ static void set(State s, const std::string& err = {})
     g_err = err;
 }
 
-static DWORD WINAPI check_thread(void*)
+// BUG-0241: ExitThread / FreeLibraryAndExitThread do not unwind the C++ stack: a thread function
+// that called end_thread() with its locals in scope leaked them (the whole decoded update pack, several
+// MB, at every Update / Try again). The work runs in a function of its own whose locals are destroyed
+// when it returns; the thread functions hold no objects and only call it and end_thread().
+// Off (coop.fix core.update_unwind off): end_thread() inside the work function, the 0.7.3.0 leak.
+static bool g_unwind_fix = true;
+COOP_FIX("core.update_unwind", "BUG-0241", g_unwind_fix, "update: the threads free the downloaded pack before they end");
+
+static void check_work(bool exit_inside, void* self)
 {
     upd::Release r;
     std::string err;
     set(Checking);
     if (!upd::latest_release(g_url, r, err)) {
-        H->log(M, SK_INFO, "update check: %s", err.c_str());
+        if (!g_unloaded)
+            H->log(M, SK_INFO, "update check: %s", err.c_str());
         set(Idle); // offline is normal: no message
     } else {
         std::lock_guard<std::mutex> l(g_mu);
         g_rel = r;
         g_state = upd::compare_versions(r.version, g_version) > 0 && !r.pack_url.empty() ? Available : UpToDate;
-        H->log(M, SK_INFO, "update check: latest %s, running %s", r.version.c_str(), g_version.c_str());
+        if (!g_unloaded)
+            H->log(M, SK_INFO, "update check: latest %s, running %s%s", r.version.c_str(), g_version.c_str(),
+                   r.from_web ? " (from the release page: the GitHub API refused, BUG-0392)" : "");
     }
-    g_busy = false;
-    return 0;
+    if (exit_inside)
+        end_thread(self); // the 0.7.3.0 leak (r, err never destroyed)
 }
 
-static DWORD WINAPI apply_thread(void*)
+static DWORD WINAPI check_thread(void* self)
+{
+    check_work(!g_unwind_fix, self);
+    end_thread(self);
+}
+
+static void apply_work(bool exit_inside, void* self)
 {
     upd::Release r;
     {
@@ -83,10 +137,17 @@ static DWORD WINAPI apply_thread(void*)
     int later = 0;
     if (ok)
         ok = upd::apply_pack(game_root(), p, err, &later); // files the game holds open: next start
-    H->log(M, ok ? SK_INFO : SK_WARN, "update to %s: %s", r.version.c_str(), ok ? "installed" : err.c_str());
+    if (!g_unloaded)
+        H->log(M, ok ? SK_INFO : SK_WARN, "update to %s: %s", r.version.c_str(), ok ? "installed" : err.c_str());
     set(ok ? Ready : Failed, err);
-    g_busy = false;
-    return 0;
+    if (exit_inside)
+        end_thread(self); // the 0.7.3.0 leak (the pack p never freed)
+}
+
+static DWORD WINAPI apply_thread(void* self)
+{
+    apply_work(!g_unwind_fix, self);
+    end_thread(self);
 }
 
 void init(const SkHost* host, SkMod* mod, const char* version)
@@ -100,10 +161,18 @@ void init(const SkHost* host, SkMod* mod, const char* version)
     g_url = b;
     upd::cleanup_old(game_root()); // the files an update replaced last time
     if (g_enabled && !g_busy.exchange(true))
-        CloseHandle(CreateThread(nullptr, 0, check_thread, nullptr, 0, nullptr));
+        if (!start_thread(check_thread))
+            g_busy = false;
 }
 
 void set_feed(void (*f)(const std::string&)) { g_feed = f; }
+
+int shutdown()
+{
+    g_unloaded = true;
+    g_feed = nullptr;
+    return g_threads;
+}
 
 void tick()
 {
@@ -164,14 +233,16 @@ void start_update()
         g_told_failed = false;
     }
     if (!g_busy.exchange(true))
-        CloseHandle(CreateThread(nullptr, 0, apply_thread, nullptr, 0, nullptr));
+        if (!start_thread(apply_thread))
+            g_busy = false;
 }
 
 std::string command(const std::string& arg)
 {
     if (arg == "check") {
         if (!g_busy.exchange(true))
-            CloseHandle(CreateThread(nullptr, 0, check_thread, nullptr, 0, nullptr));
+            if (!start_thread(check_thread))
+            g_busy = false;
         return "checking " + g_url;
     }
     if (arg == "apply") {
@@ -181,6 +252,7 @@ std::string command(const std::string& arg)
     static const char* names[] = {"idle", "checking", "up to date", "available", "downloading", "ready", "failed"};
     std::lock_guard<std::mutex> l(g_mu);
     return std::string("update: ") + names[g_state] + " running=" + g_version + " latest=" + g_rel.version +
+           (g_rel.from_web ? " via=page" : "") +
            " check=" + (g_enabled ? "on" : "off") + " url=" + g_url + (g_err.empty() ? "" : " error=" + g_err);
 }
 

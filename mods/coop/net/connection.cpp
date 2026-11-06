@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 
+#include "fixes.h"
 #include "protocol.h"
 
 namespace net {
@@ -26,13 +27,79 @@ uint32_t Connection::peek_conn(const uint8_t* data, size_t n)
     return c;
 }
 
+// payload of a reliable message that fits one packet (header + type, flags, len, rel_id)
+static constexpr size_t kRelPiece = kMaxPacket - kHeader - 6;
+static_assert(kRelPiece == Connection::kMaxSingle, "Connection::kMaxSingle is one reliable piece");
+
 void Connection::send_reliable(uint8_t type, const Writer& w)
 {
+    if (g_fix.big_reliable && w.data.size() > kRelPiece) {
+        // BUG-0034: a message that fits no packet was never sent and blocked every reliable message
+        // after it (and the due check sent a burst of empty packets every frame): split it into
+        // pieces of one packet, flag 2 on all but the last; the receiver joins them in order
+        if (w.data.size() > kMaxReliable) {
+            stats.too_big++;
+            return;
+        }
+        if (g_fix.peer_caps && !peer_split) {
+            // BUG-0219: an older peer would read each piece as a whole message; queuing it whole
+            // brings back the BUG-0034 stall: not sent (callers cut what can be cut, e.g. chat)
+            stats.too_big_old++;
+            return;
+        }
+        stats.split++;
+        for (size_t off = 0; off < w.data.size(); off += kRelPiece) {
+            size_t n = std::min(kRelPiece, w.data.size() - off);
+            OutMsg m;
+            m.type = type;
+            m.rel_id = next_rel_id_++;
+            m.payload.assign(w.data.begin() + off, w.data.begin() + off + n);
+            m.more = off + n < w.data.size();
+            rel_out_.push_back(std::move(m));
+        }
+        return;
+    }
     OutMsg m;
     m.type = type;
     m.rel_id = next_rel_id_++;
     m.payload = w.data;
     rel_out_.push_back(std::move(m));
+}
+
+void Connection::deliver_reliable(uint8_t type, uint8_t flags, const uint8_t* p, size_t len, const Deliver& deliver)
+{
+    bool more = (flags & 2) != 0;
+    if (!more && !frag_on_) {
+        Reader pr(p, len);
+        deliver(type, pr);
+        return;
+    }
+    if (!frag_on_ || frag_type_ != type) { // the first piece (a different type: the old one was cut)
+        frag_.clear();
+        frag_on_ = true;
+        // BUG-0219: a peer that never announced splitting sends no pieces: drop, do not join
+        frag_drop_ = g_fix.peer_caps && !peer_split;
+        frag_type_ = type;
+    }
+    if (!frag_drop_ && frag_.size() + len > kMaxReliable) {
+        frag_drop_ = true; // never collect more than the sender may send
+        frag_.clear();
+        frag_.shrink_to_fit();
+    }
+    if (!frag_drop_)
+        frag_.insert(frag_.end(), p, p + len);
+    if (more)
+        return;
+    frag_on_ = false;
+    if (frag_drop_) {
+        stats.frag_lost++;
+        return;
+    }
+    stats.joined++;
+    std::vector<uint8_t> whole = std::move(frag_);
+    frag_.clear();
+    Reader pr(whole.data(), whole.size());
+    deliver(type, pr);
 }
 
 void Connection::send_unreliable(uint8_t type, const Writer& w, bool first)
@@ -47,8 +114,22 @@ bool Connection::build_packet(uint32_t now, std::vector<uint8_t>& out)
 {
     uint32_t rto = (uint32_t)std::max(100.f, rtt_ms * 1.5f + 20.f);
     uint16_t oldest = rel_out_.empty() ? 0 : rel_out_.front().rel_id; // rel_out_ is in rel_id order
+    // BUG-0405: a guest that loads reads and acks its packets once per frame (frames of 200-950 ms):
+    // every message sent in the last stall was resent at the rto although it waited in the guest's
+    // socket. A message is sent again when a packet sent after it was acknowledged (it was lost) or
+    // when the peer has said nothing for a long while (both lost, or a stall); the rto first in both.
+    uint32_t silent_rto = std::max<uint32_t>(rto * 4, 1000);
+    bool evidence = g_fix.bulk_acks;
     auto due = [&](const OutMsg& m) {
-        return (m.sends == 0 || now - m.last_sent >= rto) && (uint16_t)(m.rel_id - oldest) < kRelWindow;
+        if ((uint16_t)(m.rel_id - oldest) >= kRelWindow)
+            return false;
+        if (m.sends == 0)
+            return true;
+        if (now - m.last_sent < rto)
+            return false;
+        if (!evidence)
+            return true;
+        return (any_acked_ && seq_greater(newest_acked_seq_, m.last_seq)) || now - m.last_sent >= silent_rto;
     };
     bool any_rel_due = false;
     for (auto& m : rel_out_) {
@@ -60,7 +141,7 @@ bool Connection::build_packet(uint32_t now, std::vector<uint8_t>& out)
         }
     }
     uint32_t since = now - last_send_ms_;
-    bool keepalive = since >= 250 || (ack_pending_ && since >= 30);
+    bool keepalive = since >= 250 || (ack_pending_ && since >= 30) || ack_urgent();
     if (unrel_out_.empty() && !any_rel_due && !keepalive)
         return false;
 
@@ -68,6 +149,11 @@ bool Connection::build_packet(uint32_t now, std::vector<uint8_t>& out)
     w.u32(kMagic);
     w.u16(kProtoVersion);
     w.u32(conn_id);
+    if (!seq_started_) {
+        seq_started_ = true;
+        if (g_fix.first_ack) // read at the first packet, so a test can switch it per connection
+            local_seq_ = 1;
+    }
     uint16_t seq = local_seq_++;
     w.u16(seq);
     w.u16(remote_seq_);
@@ -108,7 +194,7 @@ bool Connection::build_packet(uint32_t now, std::vector<uint8_t>& out)
         if (w.size() + 6 + m.payload.size() > kMaxPacket || count == 255)
             break;
         w.u8(m.type);
-        w.u8(1);
+        w.u8(m.more ? 3 : 1);
         w.u16((uint16_t)m.payload.size());
         w.u16(m.rel_id);
         w.raw(m.payload.data(), m.payload.size());
@@ -116,6 +202,7 @@ bool Connection::build_packet(uint32_t now, std::vector<uint8_t>& out)
             stats.resends++;
         m.sends++;
         m.last_sent = now;
+        m.last_seq = seq;
         sp.rel_ids.push_back(m.rel_id);
         count++;
     }
@@ -123,9 +210,11 @@ bool Connection::build_packet(uint32_t now, std::vector<uint8_t>& out)
     sent_.push_back(std::move(sp));
     while (sent_.size() > 1024)
         sent_.pop_front();
+    stats.bytes_sent += w.data.size();
     out = std::move(w.data);
     last_send_ms_ = now;
     ack_pending_ = false;
+    recv_since_send_ = 0;
     stats.packets_sent++;
     return true;
 }
@@ -136,8 +225,18 @@ void Connection::ack_packet(SentPkt& p, uint32_t now)
         return;
     p.acked = true;
     stats.acked++;
+    if (!any_acked_ || seq_greater(p.seq, newest_acked_seq_)) {
+        newest_acked_seq_ = p.seq;
+        any_acked_ = true;
+    }
     float sample = (float)(now - p.time);
     rtt_ms = rtt_ms * 0.9f + sample * 0.1f;
+    if (!stats.rtt_n || sample < stats.rtt_min)
+        stats.rtt_min = sample;
+    if (sample > stats.rtt_max)
+        stats.rtt_max = sample;
+    stats.rtt_sum += sample;
+    stats.rtt_n++;
     for (uint16_t id : p.rel_ids) {
         auto it = std::find_if(rel_out_.begin(), rel_out_.end(),
                                [id](const OutMsg& m) { return m.rel_id == id; });
@@ -168,8 +267,10 @@ bool Connection::on_packet(const uint8_t* data, size_t n, uint32_t now, const De
         return false;
 
     stats.packets_recv++;
+    stats.bytes_recv += n;
     last_recv_ms = now;
     ack_pending_ = true;
+    recv_since_send_++;
 
     // receive window
     if (!have_remote_) {
@@ -199,6 +300,11 @@ bool Connection::on_packet(const uint8_t* data, size_t n, uint32_t now, const De
         uint16_t diff = (uint16_t)(ack - p.seq);
         if (diff >= 1 && diff <= kAckWindow && ackbits.test(diff - 1u))
             ack_packet(p, now);
+        else if (!p.lost && diff >= kLostAfter && diff <= kAckWindow) { // counted once (support statistics);
+            // further back the ack bits say nothing (a bulk transfer outruns them): not counted
+            p.lost = true;
+            stats.lost++;
+        }
     }
 
     for (int i = 0; i < count; i++) {
@@ -218,20 +324,19 @@ bool Connection::on_packet(const uint8_t* data, size_t n, uint32_t now, const De
             continue;
         }
         if (rel_id == next_rel_expected_) {
-            Reader pr(p, len);
-            deliver(type, pr);
             next_rel_expected_++;
+            deliver_reliable(type, flags, p, len, deliver);
             for (auto it = rel_in_.find(next_rel_expected_); it != rel_in_.end();
                  it = rel_in_.find(next_rel_expected_)) {
-                Reader br(it->second.second.data(), it->second.second.size());
-                deliver(it->second.first, br);
+                InMsg m = std::move(it->second);
                 rel_in_.erase(it);
                 next_rel_expected_++;
+                deliver_reliable(m.type, m.flags, m.payload.data(), m.payload.size(), deliver);
             }
         } else if (seq_greater(rel_id, next_rel_expected_)) {
             // the sender keeps within kRelWindow of the oldest message we lack (see build_packet)
             if ((uint16_t)(rel_id - next_rel_expected_) < kRelWindow && !rel_in_.count(rel_id))
-                rel_in_[rel_id] = {type, std::vector<uint8_t>(p, p + len)};
+                rel_in_[rel_id] = {type, flags, std::vector<uint8_t>(p, p + len)};
         }
         // else: duplicate of an already delivered message
     }

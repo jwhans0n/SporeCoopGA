@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Cell co-op ("Symbiosis") on two instances: one tide pool simulated by the host, guest mirrors,
 guest bites applied by the host, shared food progress, knockout: revive by the partner or a small respawn next to it, regen."""
+import os
 import re
 import time
 
@@ -11,7 +12,7 @@ def pool(con):
     out = con.call('coop.pool')['out']  # avatar line + the cell(...) status line only
     d = {}
     for k in ('hp', 'local_gameplay_cells', 'food', 'mirrors', 'hits_in', 'hits_sent', 'revives', 'respawns',
-              'purged', 'downed'):
+              'purged', 'downed', 'own_points', 'own_eats'):
         m = re.search(k + r'=(-?\d+)', out)
         d[k] = int(m.group(1)) if m else None
     for k in ('size', 'target', 'body', 'partner_dist', 'revive_dist'):
@@ -29,6 +30,8 @@ def main():
     ck(not any(int(f, 16) & 1 for f in boxes), f'no "game saved" box left open on the host ({boxes})')
     h, ho = pool(host)
     g, go = pool(guest)
+    # the counters belong to the game process: a warm run (lab --repeat) starts with the last run's
+    rv0, rs0 = g['revives'] or 0, g['respawns'] or 0
     print(' ', ho.strip().replace('\n', ' | '))
     print(' ', go.strip().replace('\n', ' | '))
     ck((g['mirrors'] or 0) > 0, f'guest mirrors the host pool ({g["mirrors"]} cells)')
@@ -75,7 +78,14 @@ def main():
     time.sleep(2)
     h3, _ = pool(host)
     g3, _ = pool(guest)
-    ck(h3['food'] == f0 + 20, f'shared food progress on the host ({f0} -> {h3["food"]})')
+    # the host's own cell may eat a plant that floats into it meanwhile (BUG-0395: +12 in 1 of 130 runs)
+    own = (h3['own_points'] or 0) - (h2['own_points'] or 0)
+    ck(h3['food'] == f0 + 20 + own, f'shared food progress on the host ({f0} -> {h3["food"]}, the host ate +{own} itself)')
+    for _ in range(6):  # the host sends its total every 0.5 s: a meal of its own may be on the way
+        if g3['food'] == h3['food']:
+            break
+        time.sleep(0.5)
+        g3, _ = pool(guest)
     ck(g3['food'] == h3['food'], f'guest has the same total ({g3["food"]})')
 
     # knockout far from the partner: nobody saves it at once
@@ -110,8 +120,14 @@ def main():
     time.sleep(1)
     g5, go5 = pool(guest)
     print(' ', go5.splitlines()[0])
-    ck(g5['downed'] == 0 and g5['revives'] == 1 and 3 <= (g5['hp'] or 0) <= 5,  # 3, +1 regen every 3 s near the partner
-       f'the partner right next to it revives it (revives {g5["revives"]}, hp {g5["hp"]})')
+    # 3, +1 regen every 3 s near the partner; a meal adds the food's hpValue up to 6 (docs/re/cell.md, AvatarEat):
+    # BUG-0356's cold run had hp 6 after a plant eaten right after the revive (own_eats 1 -> 2), so a meal since the
+    # knockout allows the full 6, and nothing else does
+    ate = (g5['own_eats'] or 0) - (g4['own_eats'] or 0)
+    hp_max = 6 if ate > 0 else 5
+    ck(g5['downed'] == 0 and (g5['revives'] or 0) - rv0 == 1 and 3 <= (g5['hp'] or 0) <= hp_max,
+       f'the partner right next to it revives it (revives +{(g5["revives"] or 0) - rv0}, hp {g5["hp"]}, meals since the '
+       f'knockout {ate})')
     ck(g5['body'] == 1.0, 'a revived cell keeps its size')
     ck('revived' in host.call('coop.status')['out'], 'everybody sees the revive')
 
@@ -125,16 +141,16 @@ def main():
     shot(host, 'ko_arrow_host.png')
     time.sleep(3)
     g6, _ = pool(guest)
-    ck(g6['downed'] == 1 and g6['respawns'] == 0, 'still knocked out after 6 s')
+    ck(g6['downed'] == 1 and (g6['respawns'] or 0) == rs0, 'still knocked out after 6 s')
     # the pool lives on after the respawn: the small cell drifts, gets pushed and eats what floats by
     # (seen: 23 m away and body 0.62 four seconds later), so the respawn is checked on the first sample
     for _ in range(40):
         g7, go7 = pool(guest)
-        if g7['respawns']:
+        if (g7['respawns'] or 0) > rs0:
             break
         time.sleep(0.25)
     print(' ', go7.splitlines()[0])
-    ck(g7['downed'] == 0 and g7['respawns'] == 1 and g7['hp'] == 6, f'respawn after 10 s (respawns {g7["respawns"]}, hp {g7["hp"]})')
+    ck(g7['downed'] == 0 and (g7['respawns'] or 0) - rs0 == 1 and g7['hp'] == 6, f'respawn after 10 s (respawns +{(g7["respawns"] or 0) - rs0}, hp {g7["hp"]})')
     ck(g7['partner_dist'] is not None and 0 <= g7['partner_dist'] < 6, f'next to the partner (distance {g7["partner_dist"]})')
     ck(g7['body'] == 0.5 and g7['target'] < size0 * 0.6, f'small again (target size {size0} -> {g7["target"]})')
     for _ in range(16):  # the game smooths the size towards the target
@@ -161,6 +177,49 @@ def main():
     ck((g5['hp'] or 0) > 3, f'regen next to the partner (hp 3 -> {g5["hp"]})')
     shot(host, 'cell_host.png')
     shot(guest, 'cell_guest.png')
+
+    # Guest leave removes the host's mirrors from the game pool, not just the mod's list.
+    # The local indices include a generation, so a new cell in the same slot is not the old mirror.
+    leave_fix = os.environ.get('SPORE_CELL_LEAVE_FIX', '1')
+    if leave_fix not in ('0', '1'):
+        raise ValueError('SPORE_CELL_LEAVE_FIX must be 0 or 1')
+    try:
+        switch = guest.call(f'coop.pool leavefix {leave_fix}')
+        ck(switch['ok'] and switch['out'].strip() == ('leave fix on' if leave_fix == '1' else 'leave fix off'),
+           f'voluntary leave fix set to {leave_fix}')
+        own_before = guest.call('coop.pool own')
+        own = re.search(r'^avatar=(\d+) mate=(\d+) mate_alive=([01])$', own_before['out'].strip())
+        ck(own_before['ok'] and own is not None and int(own.group(1)) != 0, 'guest avatar exists before leave')
+        indices = []
+        for _ in range(30):
+            out = guest.call('coop.pool mirrors')['out']
+            indices = re.findall(r'^mirror_local (\d+)$', out, re.MULTILINE)
+            if indices:
+                break
+            time.sleep(1)
+        indices = indices[::max(1, len(indices) // 10)][:10]
+        ck(indices, f'guest has live mirror cells before leaving ({len(indices)} sampled)')
+        leave = guest.call('coop.leave')
+        ck(leave['ok'] and guest.call('coop.status')['out'].startswith('offline'), 'guest left the session')
+        survivors = []
+        for idx in indices:
+            cell = guest.call(f'coop.pool cell {idx}')
+            if not cell['ok'] or 'no such cell' not in cell['out']:
+                survivors.append((idx, cell['out'].strip()))
+        ck(indices and not survivors, f'the sampled mirror cells left the game pool (remaining: {survivors})')
+        own_after = guest.call('coop.pool own')
+        after = re.search(r'^avatar=(\d+) mate=(\d+) mate_alive=([01])$', own_after['out'].strip())
+        ck(own is not None and own_after['ok'] and after is not None and after.group(1) == own.group(1),
+           'the guest avatar remains in the pool after leave')
+        if own and own.group(3) == '1':
+            ck(after is not None and after.group(2) == own.group(2) and after.group(3) == '1',
+               'the guest mate remains in the pool after leave')
+        else:
+            print('  no guest mate in the pool to check at leave')
+    finally:
+        guest.call('coop.pool leavefix 1')  # restore the default for warm runs
+    frames = guest.call('wait.frames 30 10000')
+    ck(frames['ok'], f'the guest continues drawing after leave ({frames["out"].strip()})')
     ck.faults(host=host, guest=guest)
     return ck.result()
 

@@ -10,6 +10,7 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -30,6 +31,16 @@ struct Pack {
 // The only places an update may write to (a pack comes from the internet): the loader, SporeKit,
 // the mods folder and the resource package. No "..", no absolute paths, no drive letters.
 bool allowed_path(const std::string& path);
+// BUG-0242: the name Windows uses for `path`, lowercased, or "" when it is not a plain file name we
+// write (a trailing dot, a DOS device name, a name of the updater's own working files). allowed_path
+// and duplicate_path both use it, so they never disagree. g_path_fix false = 0.7.3.0 (case only).
+std::string canonical_path(const std::string& path);
+extern bool g_path_fix;
+
+// a path listed twice (compared without case, as Windows does): "" if none (BUG-0089: a second
+// entry for a file deleted the first entry's backup of the original, and the rollback lost it)
+std::string duplicate_path(const std::vector<PackFile>& files);
+extern bool g_dup_fix; // tests: false = the old behaviour (duplicates accepted)
 
 // parse + check every file's SHA-256 and path; err says what is wrong
 bool parse_pack(const std::vector<uint8_t>& bytes, Pack& out, std::string& err);
@@ -43,8 +54,96 @@ struct Release {
     std::string tag, version;          // "v0.5.1", "0.5.1"
     std::string pack_url, sums_url;    // update pack, SHA256SUMS.txt
     std::string setup_url, page_url;   // SporeCoopSetup.exe, the release page
+    bool from_web = false;             // BUG-0392: found through the release page, not the API
 };
 bool parse_release(const std::string& json, Release& out);
+
+// BUG-0392: the GitHub API allows 60 calls an hour per IP without a login; a shared IP or a VPN
+// gets 403 (or 429) and the setup could not install at all. The web page <owner>/<repo>/releases/latest
+// is no API call: it redirects to .../releases/tag/<tag>, and every release has the same asset names
+// (SporeCoop-<version>.pack, SHA256SUMS.txt, SporeCoopSetup.exe) under .../releases/download/<tag>/.
+// web_latest_url: that page for an API address (https://api.github.com/repos/O/R/releases/latest ->
+// https://github.com/O/R/releases/latest; the local test server keeps its origin), "" when the address
+// has no web page (another host, not a releases/latest address).
+std::string web_latest_url(const std::string& api_url);
+// the release from the page's redirect target (absolute or "/O/R/releases/tag/<tag>"); the asset
+// addresses are built on web_latest, never on the redirect's host. false: no plain tag in it
+bool release_from_redirect(const std::string& web_latest, const std::string& location, Release& out);
+
+// BUG-0094: the version in an update pack's file name ("SporeCoop-0.11.0.pack" -> "0.11.0", case
+// ignored, a folder in front is fine), "" when the name is not one; pick_pack: the name with the
+// highest version (the first of equal ones), "" if none. g_pick_fix false = the old choice: the
+// first name in the listing (tests).
+std::string pack_version_of(const std::string& name);
+std::string pick_pack(const std::vector<std::string>& names);
+extern bool g_pick_fix; // not a lab switch: setup only
+
+// BUG-0077: the newest release as the setup's check thread found it, read by the window and the
+// install job. Every access copies under one lock; g_release_lock_fix false = the old unlocked
+// access (tests: ThreadSanitizer must report it).
+struct ReleaseInfo {
+    Release rel;
+    bool ok = false;   // rel is valid
+    bool done = false; // the check has finished (ok or not)
+    std::string err;
+};
+extern bool g_release_lock_fix; // not a lab switch: setup only
+// BUG-0244: the check thread's result never replaces a good release the install job stored meanwhile
+// (one lock for the compare and the store); false = the old get-then-set under two locks
+extern bool g_release_merge_fix; // not a lab switch: setup only (setup /oldmerge, release_tsan --old-merge)
+class ReleaseBox {
+public:
+    ReleaseInfo get() const
+    {
+        if (!g_release_lock_fix)
+            return info_;
+        std::lock_guard<std::mutex> l(mu_);
+        return info_;
+    }
+    void set(const ReleaseInfo& i)
+    {
+        if (!g_release_lock_fix) {
+            info_ = i;
+            return;
+        }
+        std::lock_guard<std::mutex> l(mu_);
+        info_ = i;
+    }
+    // store i unless the box holds an ok release and i is not ok; returns whether it stored
+    // tests (release_tsan): runs where another writer can come in (between the old code's get and
+    // set; before the fixed code takes its lock)
+    static inline void (*test_between)(ReleaseBox&) = nullptr;
+    bool merge(const ReleaseInfo& i)
+    {
+        if (!g_release_merge_fix) { // the old get-then-set: another writer can come in between
+            bool was_ok = get().ok;
+            if (test_between)
+                test_between(*this);
+            if (!was_ok || i.ok) {
+                set(i);
+                return true;
+            }
+            return false;
+        }
+        if (test_between)
+            test_between(*this);
+        if (!g_release_lock_fix) {
+            if (info_.ok && !i.ok)
+                return false;
+            info_ = i;
+            return true;
+        }
+        std::lock_guard<std::mutex> l(mu_);
+        if (info_.ok && !i.ok)
+            return false;
+        info_ = i;
+        return true;
+    }
+
+private:
+    mutable std::mutex mu_;
+    ReleaseInfo info_;
+};
 
 // the hash of `file` in a SHA256SUMS.txt ("<hex>  <name>" lines), "" if absent
 std::string sums_lookup(const std::string& sums, const std::string& file);

@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(ROOT, 'tools'))
 from sporectl import Console  # noqa: E402
 import lane  # noqa: E402
 from fixtures import planet_of  # noqa: E402
+from twoinst import Checks, watch  # noqa: E402
 
 SPORE = os.path.join(ROOT, 'tools', 'spore.sh')
 
@@ -77,6 +78,7 @@ def main():
     t = wait_mode(guest, 'Tribe')
     print('1) guest followed the host into the tribe stage in-game:', f'{t:.0f}s' if t else 'NO')
     ok &= t is not None
+    watch(lane.HOST, lane.GUEST)  # freezes and dead consoles fail the test (Checks.faults, BUG-0042)
     guest.call('wait.frames 300 60000')
     # the guest leaves for its own creature save: the host must pull it back
     print(guest.call('coop.load ' + planet_of('creature').replace('/', ' '))['out'])
@@ -87,10 +89,10 @@ def main():
     print('2) guest went back to Creature:', 'yes' if t1 is not None else 'NO',
           '| host pulled it into its phase again:', f'{t2:.0f}s' if t2 else 'NO')
     ok &= t1 is not None and t2 is not None
-    for name, c in (('host', host), ('guest', guest)):
-        print(f'{name} faults:', c.call('exc')['out'].splitlines()[0])
-    print('RESULT:', 'OK' if ok else 'FAIL')
-    return 0 if ok else 1
+    ck = Checks()
+    ck(ok, 'the checks above')
+    ck.faults(host=host, guest=guest)
+    return ck.result()
 
 
 if __name__ == '__main__':

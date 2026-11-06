@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Three or four players in one session, for minutes (docs/stability-report.md): the host and the
-first guest from lane A (SPORE_LANE), one or two more guests from lane B (SPORE_LANE_B, default A+1:
-its own bottle and profiles). The chaos bot plays all of them (real input, rejoins), and every
-minute the session is checked:
+first guest from lane A (SPORE_LANE), one or two more guests either in the same lane (default, how
+the lab runs it: instances 20+N and 30+N in lane N's bottle, own console and co-op ports that no
+lane uses) or from another lane B (SPORE_LANE_B=B: its own bottle and profiles). The chaos bot plays
+all of them (real input, rejoins), and every minute the session is checked:
 
   together   the host sees every guest in its world
   desync     every guest's copy of every synchronized object vs the host's (90th percentile of
@@ -11,6 +12,7 @@ minute the session is checked:
   shared     food / money the same on every machine
   health     no freeze, no crash, no caught fault (twoinst monitors, exc)
 
+  SPORE_LANE=5 python3 tools/tests/coop_multi.py --fixture tribe --players 3 --minutes 3
   SPORE_LANE=1 SPORE_LANE_B=8 python3 tools/tests/coop_multi.py --fixture tribe --players 4 --minutes 8
 """
 import argparse
@@ -22,6 +24,7 @@ import sys
 import time
 
 import lane
+import twoinst
 from coop_chaos import Bot
 from coop_sync import LIMITS, pct
 from sporectl import Console
@@ -31,9 +34,19 @@ NAMES = ['Carol', 'Dave']
 
 
 def lane_b():
-    b = int(os.environ.get('SPORE_LANE_B', str(lane.LANE + 1)))
+    """the lane of the extra guests: this one unless SPORE_LANE_B names another (the lab gives a test
+    one lane: the next lane belongs to other work)"""
+    b = int(os.environ.get('SPORE_LANE_B') or lane.LANE)
     env = dict(os.environ, SPORE_LANE=str(b))
     return b, env
+
+
+def extra_instances(b, n):
+    """instance numbers of n extra guests: the other lane's two, or 20+N / 30+N in this lane (console
+    ports 47820..47839 and co-op ports 47830..47849 are no lane's: lanes 1..10 use instances 1..20)"""
+    if b == lane.LANE:
+        return [20 + b, 30 + b][:n]
+    return [2 * b - 1, 2 * b][:n]
 
 
 def sample(con):
@@ -61,11 +74,12 @@ def start_extra(n):
     """n more guests from lane B, joined to lane A's host; {name: console}"""
     b, env = lane_b()
     sh = lambda *a: subprocess.run([lane.SPORE, *a], env=env, capture_output=True)  # noqa: E731
-    sh('lane', 'create', str(b)) if b > 1 else None
-    sh('kill')
-    sh('deploy')
+    if b != lane.LANE:  # another lane: a clean start there (in this lane the host and guest run already)
+        sh('lane', 'create', str(b)) if b > 1 else None
+        sh('kill')
+        sh('deploy')
     out = {}
-    insts = [2 * b - 1, 2 * b][:n]
+    insts = extra_instances(b, n)
     for i, inst in enumerate(insts):
         prof = f'mp{i + 1}'
         # an empty profile: the host's world arrives
@@ -82,10 +96,17 @@ def start_extra(n):
             time.sleep(1)
         c.call('wait.frames 200 60000')
         out[NAMES[i]] = (c, inst)
+        twoinst.monitor_add(f'extra{i + 1}', inst)  # the invariant monitor follows them too (monitor.py)
+        twoinst.apply_fps(c, f'extra{i + 1}')  # SPORE_FPS
     return out
 
 
 def join_cmd(name):
+    """the join line of an extra guest; with SPORE_NET through its own proxy (netem.py: one per guest, a
+    proxy has one guest address)"""
+    if os.environ.get('SPORE_NET'):
+        import netem
+        return f'cheat coop join 127.0.0.1:{netem.from_env(lane.PORT, lane.LANE, name)} {name}'
     return lane.JOIN.replace(' Bob', ' ' + name)
 
 
@@ -127,8 +148,8 @@ def check_round(ck, host, guests, label, report):
     h1 = sample(host)
     worst = {}
     for name, g in guests.items():
-        errs, cov, total = measure(host, g, h1)
-        over = [k for k, v in errs.items() if pct(v, 0.9) > limit(k)]
+        errs, cov, total, _ = measure(host, g)
+        over = [k for k, v in errs.items() if over_limit(v, limit(k))]
         # one moment of one guest: a guest that has just rejoined spawns its NPC proxies within
         # seconds (a churn right before the round), a fight can throw a few NPCs for a moment. A
         # real desync stays: measure again
@@ -140,7 +161,7 @@ def check_round(ck, host, guests, label, report):
             wait_all(host, len(guests), 90)  # a churn just before the round: the guest is still loading
             time.sleep(4)
             h1 = sample(host)
-            errs, cov, total = measure(host, g, h1)
+            errs, cov, total, _ = measure(host, g)
         kinds = {}
         for k in h1:
             kinds[k[0]] = kinds.get(k[0], 0) + 1
@@ -148,11 +169,11 @@ def check_round(ck, host, guests, label, report):
         for kind, v in sorted(errs.items()):
             p90 = pct(v, 0.9)
             line += f', {kind} p90 {p90:.2f} m'
-            worst[(name, kind)] = (p90, limit(kind))
+            worst[(name, kind)] = (p90, limit(kind), over_limit(v, limit(kind)))
         report.append(f'  [{label}] {line}')
         ck(cov >= 0.85, f'[{label}] {name} has the host\'s world ({cov:.0%})')
-    for (name, kind), (p90, lim) in worst.items():
-        ck(p90 <= lim, f'[{label}] {name}: {kind} objects in sync (p90 {p90:.2f} m <= {lim} m)')
+    for (name, kind), (p90, lim, over) in worst.items():
+        ck(not over, f'[{label}] {name}: {kind} objects in sync (p90 {p90:.2f} m, limit {lim} m for 10 % and 2 objects)')
     hr = res(host)
     for name, g in guests.items():
         gr = res(g)
@@ -164,30 +185,80 @@ def limit(kind):
     return LIMITS.get(kind, (3.0, 30))[0] * 2  # chaos keeps everything moving: twice the still limit
 
 
-def measure(host, g, h1):
-    """position errors per kind of one guest against host samples, coverage, objects counted"""
+def seg_dist(p, a, b):
+    """distance of p from the segment a-b: the guest shows the host's object somewhere between the
+    host's two samples around its own (h1 can be seconds old for the last of four guests; the two
+    ends alone counted the object's way in between as a desync, BUG-0269)"""
+    d = [y - x for x, y in zip(a, b)]
+    dd = sum(v * v for v in d)
+    t = 0.0 if dd == 0 else max(0.0, min(1.0, sum((q - x) * v for q, x, v in zip(p, a, d)) / dd))
+    return sum((q - (x + t * v)) ** 2 for q, x, v in zip(p, a, d)) ** 0.5
+
+
+# the host's path is sampled over this much time before the guest is read: the guest shows NPCs
+# 0.15 s late on purpose (npc.cpp buf.delay) and cells from their last state (0.1 s), and a guest
+# read ~10 ms after the host's sample lay outside that sample's segment (BUG-0275)
+LAG_GAP = 0.25
+
+
+def host_path(host):
+    """two host samples LAG_GAP apart: the start of the host's path the guest is compared with"""
+    h0 = sample(host)
+    time.sleep(LAG_GAP)
+    return h0, sample(host)
+
+
+def over_limit(v, lim):
+    """a kind is out of sync when at least 10 % of its objects, and at least two of them, are
+    farther than the limit. With fewer than 10 objects (2 of 3 checks in the Creature stage) the
+    90th percentile was the largest error: one object off (a proxy pushed by the guest's own
+    avatar, BUG-0281) made the whole kind a desync (BUG-0275)"""
+    n = sum(1 for e in v if e > lim)
+    return n >= max(2, len(v) - int(0.9 * len(v)))
+
+
+def measure(host, g, path=None, missed=None):
+    """position errors per kind of one guest against the host's path (host_path() before the
+    guest's sample, one more host sample after it), coverage, objects counted.
+    Returns errs {kind: [m]}, coverage, total, worst {kind: (m, key)}; `missed` (a dict) gets the
+    host's keys the guest lacks per kind (which kind a coverage desync is: BUG-0288)"""
+    h0, h1 = path or host_path(host)
     gs = sample(g)
     h2 = sample(host)
-    errs = {}
+    errs, worst = {}, {}
     missing = 0
     me = gs.get(my_key(g, gs))
     total = 0
+    # the host sends a guest at most its nearest 900 cells (cellsync kSendCap, BUG-0295)
+    far = set()
+    if me:
+        cells = sorted((sum((a - b) ** 2 for a, b in zip(hp, me)), key) for key, hp in h1.items() if key.startswith('c'))
+        far = {key for _, key in cells[900:]}
     for key, hp in h1.items():
+        if key in far:
+            continue
         if key.startswith('p'):
             continue
         # the host streams NPCs within 110 m of each guest (npc.cpp kRelevance): only those count
         if key.startswith('n') and me and sum((a - b) ** 2 for a, b in zip(hp, me)) ** 0.5 > 90:
             continue
+        # cells: each guest gets the ones around its own cell (BUG-0174, the nearest 900: BUG-0295), not
+        # the ones around the other players (BUG-0298); the same 60 m as the sync-check (diagmsg.h)
+        if key.startswith('c') and me and sum((a - b) ** 2 for a, b in zip(hp, me)) ** 0.5 > 60:
+            continue
         total += 1
         gp = gs.get(key)
         if gp is None:
             missing += 1
+            if missed is not None:
+                missed.setdefault(key[0], []).append(key)
             continue
-        hp2 = h2.get(key, hp)
-        e = min(sum((a - b) ** 2 for a, b in zip(hp, gp)) ** 0.5, sum((a - b) ** 2 for a, b in zip(hp2, gp)) ** 0.5)
+        e = min(seg_dist(gp, h0.get(key, hp), hp), seg_dist(gp, hp, h2.get(key, hp)))
         errs.setdefault(key[0], []).append(e)
+        if e > worst.get(key[0], (-1, ''))[0]:
+            worst[key[0]] = (e, key)
     cov = 1 - missing / total if total else 1
-    return errs, cov, total
+    return errs, cov, total, worst
 
 
 def main():

@@ -34,6 +34,11 @@ Why not the other stages (initially):
 2. The mod checks compatibility (mod version, exe build), receives a **world snapshot**
    from the host (the save folder, a few MB), puts it into the slot
    "Co-op: <host>" and loads it (milestone M1: the guest loads the slot manually).
+   Where it goes (mods/coop/slotfs.cpp): the co-op slot of the same host and planet (its
+   `sporecoop.txt` names both), else a free `Games\GameN`; never the slot the game plays. The
+   files are written into `Spore\Games-sporecoop-tmp` first and moved into place as a whole; a
+   world that could not be written completely is neither kept nor loaded. A load of a received
+   world waits while an editor is open and is dropped when the session ends.
 3. The guest appears next to the host's creature: "<Nick> joined the posse".
 
 **In game**
@@ -51,7 +56,7 @@ Why not the other stages (initially):
 | Guest attack/ability on an NPC | guest sends "ability X on target Y", host computes damage | animation for everyone, target health from the host |
 | Damage to a guest from an NPC | host | guest receives a damage event |
 | Guest death | - | respawns at the host's nest after 10 s |
-| DNA | host's shared pool: a kill/befriend by any player gives DNA to everyone within 50 m | single progress bar |
+| DNA | host's shared pool: a kill/befriend by any player gives DNA to everyone within 50 m; each gain counts 1/N with N players in the world, so the party evolves at the single-player pace (`dna_pace=1` in `mods\coop.ini` [coop] on the host; 0 = every gain whole, BUG-0510) | single progress bar |
 | Body parts (bones, finds) | shared unlocks | - |
 | Mating call → editor | host decides when; guests wait in an "editor lobby" | M4: everyone edits their own creature |
 | Transition to the Tribe stage | session ends cleanly with a message | - |

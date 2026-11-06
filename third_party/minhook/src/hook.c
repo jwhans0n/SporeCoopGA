@@ -330,6 +330,9 @@ static BOOL EnumerateThreads(PFROZEN_THREADS pThreads)
 // installs hooks from the main thread between frames, so freezing is off by default.
 static BOOL g_freezeThreads = FALSE;
 VOID WINAPI MH_SetFreezeThreads(BOOL enable) { g_freezeThreads = enable; }
+// SporeKit patch: removed hooks keep their trampolines (a thread of the game may still run one)
+static BOOL g_keepTrampolines = FALSE;
+VOID WINAPI MH_SetKeepTrampolines(BOOL enable) { g_keepTrampolines = enable; }
 
 static MH_STATUS Freeze(PFROZEN_THREADS pThreads, UINT pos, UINT action)
 {
@@ -707,7 +710,8 @@ MH_STATUS WINAPI MH_RemoveHook(LPVOID pTarget)
 
             if (status == MH_OK)
             {
-                FreeBuffer(g_hooks.pItems[pos].pTrampoline);
+                if (!g_keepTrampolines)
+                    FreeBuffer(g_hooks.pItems[pos].pTrampoline);
                 DeleteHookEntry(pos);
             }
         }

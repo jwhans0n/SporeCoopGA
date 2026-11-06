@@ -154,15 +154,26 @@ def main():
             if k in done:
                 continue
             done.add(k)
-            if not engage(guest, 'n' + k, 45):
-                continue
-            r0 = num(r'results_in=(\d+)', social(guest), 0)
-            for _ in range(4):  # an alpha takes two rounds; the ability cools down in between
-                hold(guest, 0x31)
-                time.sleep(3)
-                if num(r'results_in=(\d+)', social(guest), 0) > r0:
+            # a game the host refuses (the Kook walked out of the social range while the guest
+            # played: `refused` of the host's coop.social) is played again with the same Kook: it
+            # is neither impressed nor dead. Moving on to the next one ran out of Kooks in 3 of 6
+            # runs (BUG-0021)
+            for attempt in range(3):
+                if not engage(guest, 'n' + k, 45):
                     break
-                engage(guest, 'n' + k, 15)
+                i0 = num(r'impressed=(\d+)', social(host), 0)
+                f0 = num(r'refused=(\d+)', social(host), 0)
+                for _ in range(4):  # an alpha takes two rounds; the ability cools down in between
+                    hold(guest, 0x31)
+                    time.sleep(3)
+                    hs = social(host)
+                    if num(r'impressed=(\d+)', hs, 0) > i0 or num(r'refused=(\d+)', hs, 0) > f0:
+                        break
+                    engage(guest, 'n' + k, 15)
+                if num(r'impressed=(\d+)', social(host), 0) > i0:
+                    break
+                print(f'  n{k}: no impression (attempt {attempt + 1}, refused {f0} -> '
+                      f'{num(r"refused=(\d+)", social(host), 0)}): played again')
         time.sleep(3)
         ht, gt = table(host), table(guest)
         dna_b = num(r'dna=([\d.]+)', host.call('coop.dna')['out'], 0)

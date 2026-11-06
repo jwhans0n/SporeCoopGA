@@ -1,6 +1,7 @@
 #include "coop_ui.h"
 #include "coop_ui_pages.h"
 #include "adventure_hud.h"
+#include "trace.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -12,9 +13,15 @@
 #include <tuple>
 
 #include "modes.h"
+#include "mouse.h"
+#include "net/fixes.h"
+#include "notify.h"
+#include "net/udp.h"
+#include "notify_text.h"
 #include "space_ext.h"
 #include "sui.h"
 #include "world.h"
+#include "fixes.h"
 
 namespace coop_ui {
 
@@ -32,8 +39,12 @@ static bool g_want_open, g_pending, g_dirty = true;
 static double g_last_refresh;
 static std::string g_status;
 static uint32_t g_status_color = 0xFFFFD866;
+static double g_status_until; // the status goes away then (0 = stays until the next session event)
+bool g_status_fix = true;     // BUG-0104 (`coop.corefix ui_status 0`: the status of the last button stays)
+COOP_FIX("core.ui_status", "BUG-0104", g_status_fix, "ui: the co-op window shows the session's status, not the last button's");
 static bool g_f9_down;
 static bool g_lb_down;      // the left mouse button in the last frame (the Co-op item during the menu intro)
+static uint32_t g_lb_seen;  // mouse::clicks() handled (BUG-0145)
 static double g_skip_since; // the Co-op item was clicked during the menu intro: open once it is over
 static double g_intro_over; // when that intro was over
 static bool g_raise = true; // move the window above all UI layers when it opens
@@ -49,6 +60,9 @@ constexpr uint32_t kGold = 0xFFFFCC4D, kWhite = 0xFFFFFFFF, kDim = 0xFF9DB8CC, k
 constexpr float kW = 760, kH = 600; // 560 + a footer row (version, "Report a problem")
 constexpr int kSpaceRows = 12;
 static bool g_space_page; // the lobby shows the Space page instead
+static int g_lan_first;   // the first game on the network listed (pages of three, BUG-0183)
+bool g_lan_pages_fix = true; // `coop.corefix lan_pages 0`: only the first three games, no "More" (BUG-0183)
+COOP_FIX("core.lan_pages", "BUG-0183", g_lan_pages_fix, "ui: every network game is listed, with More pages");
 static int g_space_first; // the first row shown (pages of kSpaceRows rows)
 
 static const char* T(const char* en, const char* ru) { return g_ru ? ru : en; }
@@ -62,6 +76,8 @@ struct Cache {
     Rect box;
 };
 static std::map<Win, Cache> g_cache;
+static int g_chat_scroll;            // chat lines scrolled up from the newest (BUG-0129)
+constexpr size_t kChatCols = 70;     // letter cells of a chat line (680 px)
 
 // width of a text in the dialog font (average glyph width, measured at 1080p)
 static float text_width(const std::string& t)
@@ -114,6 +130,30 @@ static void show(Win w, bool on)
 
 // ---------------- main menu item ----------------
 static Win g_menu_btn, g_menu_parent;
+// BUG-0163: the item is a child of the galaxy menu window, which the game frees when it leaves the
+// menu; the pointer was dropped only by the next refresh (up to 1 s later), and a click meanwhile
+// made a virtual call on the freed item. It goes as soon as the mode is not the menu.
+// `coop.corefix menu_drop 0` = the old behaviour (tests).
+bool g_menu_drop_fix = true;
+bool g_recenter_fix = true;
+COOP_FIX_UNSAFE("core.menu_drop", "BUG-0163", g_menu_drop_fix, "ui: the galaxy menu's Co-op item pointer goes with the menu");
+COOP_FIX("core.window_recenter", "BUG-0113", g_recenter_fix, "ui: the co-op window is placed again after a resolution change");
+
+// The window is centred on the screen it opens on (BUG-0113: it is kept for the whole run, and was
+// centred once; after a smaller resolution in the options its bottom row was off the screen).
+static int g_placed_w = -1, g_placed_h = -1;
+static void place_window(Win root)
+{
+    int sw = 0, sh = 0;
+    H->screen_size(&sw, &sh);
+    if (sw <= 0 || sh <= 0 || (sw == g_placed_w && sh == g_placed_h))
+        return;
+    g_placed_w = sw;
+    g_placed_h = sh;
+    float x = std::max(0.f, (sw - kW) / 2), y = std::max(0.f, (sh - kH) / 2);
+    sui::set_area(root, Rect{x, y, x + kW, y + kH});
+}
+static bool in_menu() { return A.mode && A.mode() == modes::kMenu; }
 static void* g_menu_drawable;
 static Win g_menu_drawable_for; // the menu window the drawable was made for
 
@@ -199,13 +239,15 @@ struct Dialog {
     Win lan_hdr = nullptr, host_hint = nullptr, status = nullptr, update_btn = nullptr;
     Win lan_rows[3] = {};
     std::string lan_addr[3];
+    Win lan_more = nullptr; // BUG-0183: the next three games on the network
     // lobby page
     std::vector<Win> page_lobby;
     Win session = nullptr, world = nullptr, chat_edit = nullptr, send_btn = nullptr;
     Win ready_btn = nullptr, share_btn = nullptr, leave_btn = nullptr;
     Win row_name[4] = {}, row_stage[4] = {}, row_ping[4] = {}, row_ready[4] = {};
     Win chat_lines[5] = {};
-    Win creation = nullptr, creation_prev = nullptr, creation_next = nullptr, give_btn = nullptr, jump_btn = nullptr;
+    Win chat_up = nullptr, chat_down = nullptr;
+    Win creation = nullptr, creation_prev = nullptr, creation_next = nullptr, give_btn = nullptr, give_next = nullptr, jump_btn = nullptr;
     Win space_btn = nullptr; // lobby -> the Space page (Space stage only)
     // Space page: the rows of the space features (space_ext.h)
     std::vector<Win> page_space;
@@ -280,6 +322,65 @@ static Win add_label(std::vector<Win>& page, const Rect& r, const std::string& t
     return w;
 }
 
+// BUG-0273: while a cinematic or a caption plays, the game holds its input lock
+// (cGameInputManager +0x110 above 0) and drops every click on the UI, also on our window: a
+// guest's "I'm ready" during the brain-upgrade captions of a vote did nothing, the vote ran out of
+// time. The click is taken from the window's messages instead (mouse.h) and given to the button
+// under it, unless the game delivered it itself within kLockedClickWait. Off: the clicks are
+// dropped while the lock is held (0.7.3.0).
+bool g_locked_clicks_fix = true;
+COOP_FIX("core.ui_locked_clicks", "BUG-0273", g_locked_clicks_fix, "ui: co-op window buttons take clicks while a caption holds the game's input lock");
+static std::map<Win, std::function<void()>> g_btn_fn; // every button of the window and its action
+static std::map<Win, double> g_btn_native;
+static std::map<Win, int> g_edit_max;                 // every text line of the window and its length (BUG-0482)            // when the game last delivered a click to it
+static Win g_locked_btn;                              // a click under the lock waits for the game
+static double g_locked_at;
+static unsigned g_locked_clicks, g_locked_native;     // tests: clicks given / the game delivered itself
+constexpr double kLockedClickWait = 0.5;
+
+static int input_lock()
+{
+    uintptr_t get = H ? H->sym("Simulator::cGameInputManager::Get") : 0;
+    using Get_t = uint8_t*(__cdecl*)();
+    uint8_t* im = get ? ((Get_t)get)() : nullptr;
+    return im && !IsBadReadPtr(im + 0x110, 4) ? *(int*)(im + 0x110) : 0;
+}
+
+// BUG-0482 follow-up: a modal box of the game (the "game saved" box, the window manager's modal window
+// cWindowManager +0x82C, PushModal; gamefixes.cpp BUG-0270) takes the clicks like the input lock does: a
+// chat line clicked while the host's "game saved" box was up never took the typing (play_creature, rel/0.7.4
+// out/lab/20261103-224540). The locked paths (buttons, text lines) take any such box too. Off: only the
+// input lock (0.7.4).
+static bool g_modal_fix = true;
+COOP_FIX("core.ui_modal_edit", "BUG-0482", g_modal_fix, "ui: the co-op window's buttons and chat line work while a modal box of the game (\"game saved\") is up");
+static unsigned g_modal_seen; // tests: frames with a modal box of the game seen under a click
+
+static void* game_modal()
+{
+    uintptr_t get = H ? H->sym("UTFWin::IWindowManager::Get") : 0;
+    using Get_t = uint8_t*(__cdecl*)();
+    uint8_t* wm = get ? ((Get_t)get)() : nullptr;
+    void* m = wm && !IsBadReadPtr(wm + 0x82C, 4) ? *(void**)(wm + 0x82C) : nullptr;
+    if (!m)
+        return nullptr;
+    for (Win w = (Win)m; w; w = sui::parent(w)) // our own window is no box of the game
+        if (w == D.root)
+            return nullptr;
+    return m;
+}
+
+// clicks on our window are dropped now: the input lock (a caption) or a modal box of the game
+static bool clicks_locked()
+{
+    if (input_lock() > 0)
+        return true;
+    if (g_modal_fix && game_modal()) {
+        g_modal_seen++;
+        return true;
+    }
+    return false;
+}
+
 static Win add_button(std::vector<Win>& page, const char* name, const Rect& r, const std::string& t,
                       std::function<void()> fn)
 {
@@ -290,16 +391,60 @@ static Win add_button(std::vector<Win>& page, const char* name, const Rect& r, c
     page.push_back(w);
     g_named[name] = w;
     g_cache[w] = Cache{t, 0, 1};
-    sui::add_handler(w, [fn, name = std::string(name)](Win, const sui::Msg& m) {
+    sui::add_handler(w, [fn, w, name = std::string(name)](Win, const sui::Msg& m) {
         if (g_log_msgs && m.type != 8 && m.type != 0xC && m.type != 0xD)
             H->log(M, SK_DEBUG, "ui msg %s 0x%X src=%p %08X %08X %08X", name.c_str(), m.type, m.source, m.a, m.b, m.c);
         if (sui::is_click(m)) {
+            trace::line("ui", "click %s", name.c_str());
+            g_btn_native[w] = H->time_seconds();
             fn();
             return true;
         }
         return false;
     });
+    g_btn_fn[w] = fn;
     return w;
+}
+
+// a click under the game's input lock on one of our visible buttons (BUG-0273); main thread
+static void locked_click_tick(bool clicked)
+{
+    double now = H->time_seconds();
+    if (g_locked_btn && now - g_locked_at >= kLockedClickWait) {
+        Win w = g_locked_btn;
+        g_locked_btn = nullptr;
+        auto f = g_btn_fn.find(w);
+        auto n = g_btn_native.find(w);
+        if (n != g_btn_native.end() && n->second >= g_locked_at - 0.05)
+            g_locked_native++; // the game delivered it after all: no second press
+        else if (f != g_btn_fn.end() && D.root && sui::visible(D.root) && sui::visible(w)) {
+            g_locked_clicks++;
+            std::string nm;
+            for (auto& [n, win] : g_named)
+                if (win == w)
+                    nm = n;
+            H->log(M, SK_INFO, "ui: a click on the co-op window while the game's input is locked (a caption): pressed %s",
+                   nm.c_str());
+            static std::function<void()> s_fn;
+            s_fn = f->second;
+            H->run_outside_frame([](void*) { if (s_fn) s_fn(); }, nullptr);
+        }
+    }
+    if (!clicked || !g_locked_clicks_fix || !mouse::g_fix || !g_want_open || !D.root || !sui::visible(D.root) ||
+        g_locked_btn || !clicks_locked())
+        return;
+    int cx = 0, cy = 0;
+    mouse::last_click(cx, cy);
+    for (auto& [w, fn] : g_btn_fn) {
+        if (!sui::visible(w))
+            continue;
+        Rect r = sui::screen_rect(w);
+        if (cx >= r.x1 && cx < r.x2 && cy >= r.y1 && cy < r.y2) {
+            g_locked_btn = w;
+            g_locked_at = now;
+            return;
+        }
+    }
 }
 
 static Win add_edit(std::vector<Win>& page, const char* name, const Rect& r, const std::string& t, int max_len)
@@ -308,21 +453,133 @@ static Win add_edit(std::vector<Win>& page, const char* name, const Rect& r, con
     if (w) {
         page.push_back(w);
         g_named[name] = w;
+        g_edit_max[w] = max_len;
     }
     return w;
 }
 
-static void set_status(const std::string& s, uint32_t c)
+// BUG-0482: a click on one of our text lines under the game's input lock (a caption: a part found, the
+// death, a nest claimed) is dropped like every click (BUG-0273), so the line never takes the focus and
+// what the player types next goes nowhere (play_creature lost a chat line typed while the "new part"
+// caption was up). The mod then takes the typing itself: the characters the game window takes from its
+// queue (mouse::take_chars) go into that line, Backspace erases, Enter does what Enter in the line does
+// (the chat: send). It stops at the next click anywhere else, when the window closes, or as soon as the
+// game changes the line's text itself (it has the focus after all: never typed twice).
+// `coop.fix core.ui_locked_edit off`: the typing is lost (0.7.3.6).
+static void do_send_chat();
+static bool g_locked_edit_fix = true;
+COOP_FIX("core.ui_locked_edit", "BUG-0482", g_locked_edit_fix, "ui: the co-op window's chat line takes the typing while a caption holds the game's input lock");
+static Win g_locked_edit;          // the line clicked under the lock, typed by the mod
+static std::string g_locked_text;  // its text as the mod left it (the game changing it: it has the focus)
+static unsigned g_locked_typed;    // tests: characters the mod typed
+static std::u16string g_typed_queue;
+
+static void locked_edit_apply(void*)
+{
+    Win w = g_locked_edit;
+    std::u16string q;
+    q.swap(g_typed_queue);
+    if (!w || !D.root || !sui::visible(D.root) || !sui::visible(w))
+        return;
+    std::string t = sui::edit_text(w);
+    if (t != g_locked_text) { // the game typed into it itself
+        g_locked_edit = nullptr;
+        return;
+    }
+    int max_len = g_edit_max.count(w) ? g_edit_max[w] : 120;
+    bool enter = false;
+    for (char16_t c : q) {
+        if (c == 0x0D) {
+            enter = true;
+            break;
+        }
+        if (c == 0x08) {
+            while (!t.empty() && (t.back() & 0xC0) == 0x80) // a UTF-8 continuation byte
+                t.pop_back();
+            if (!t.empty())
+                t.pop_back();
+        } else if (c >= 0x20 && (int)t.size() < max_len) {
+            char b[4];
+            int n = c < 0x80 ? (b[0] = (char)c, 1)
+                    : c < 0x800 ? (b[0] = (char)(0xC0 | (c >> 6)), b[1] = (char)(0x80 | (c & 0x3F)), 2)
+                                : (b[0] = (char)(0xE0 | (c >> 12)), b[1] = (char)(0x80 | ((c >> 6) & 0x3F)),
+                                   b[2] = (char)(0x80 | (c & 0x3F)), 3);
+            t.append(b, n);
+            g_locked_typed++;
+        }
+    }
+    sui::set_edit_text(w, t);
+    g_locked_text = sui::edit_text(w);
+    if (enter && w == D.chat_edit) {
+        do_send_chat();
+        g_locked_text = sui::edit_text(w);
+    }
+}
+
+// every frame (main thread): a click under the lock on a line starts the mod's typing, any other click ends it
+static void locked_edit_tick(bool clicked)
+{
+    std::u16string chars = mouse::take_chars();
+    if (clicked) {
+        g_locked_edit = nullptr;
+        if (g_locked_edit_fix && mouse::g_fix && g_want_open && D.root && sui::visible(D.root) && clicks_locked()) {
+            int cx = 0, cy = 0;
+            mouse::last_click(cx, cy);
+            for (auto& [w, n] : g_edit_max) {
+                if (!sui::visible(w))
+                    continue;
+                Rect r = sui::screen_rect(w);
+                if (cx >= r.x1 && cx < r.x2 && cy >= r.y1 && cy < r.y2) {
+                    g_locked_edit = w;
+                    g_locked_text = sui::edit_text(w);
+                    H->log(M, SK_INFO, "ui: a click on a co-op text line while the game's input is locked (a caption): "
+                                       "the mod takes the typing");
+                    break;
+                }
+            }
+        }
+        return; // (characters of the frame of the click went to whatever had the focus before)
+    }
+    if (!g_locked_edit || chars.empty())
+        return;
+    if (!g_want_open || !D.root || !sui::visible(D.root)) {
+        g_locked_edit = nullptr;
+        return;
+    }
+    bool queued = !g_typed_queue.empty();
+    g_typed_queue += chars;
+    if (!queued)
+        H->run_outside_frame(locked_edit_apply, nullptr);
+}
+
+// ttl: seconds the text stays (0: until the session event that ends it, session_event)
+static void set_status(const std::string& s, uint32_t c, double ttl = 0)
 {
     g_status = s;
     g_status_color = c;
+    g_status_until = ttl > 0 ? H->time_seconds() + ttl : 0;
     g_dirty = true;
+}
+
+// BUG-0104: "Connecting to ..." stayed for the whole session (the lobby showed it as the world line)
+// and hid the update line on the connect page for good; the end of the join or of the session now
+// replaces it
+void session_event(bool connected, const std::string& why)
+{
+    if (!g_status_fix || !g_ok)
+        return;
+    if (connected)
+        set_status("", kYellow);
+    else
+        set_status(std::string(T("Disconnected: ", "Отключено: ")) + why, kRed, 30);
 }
 
 static void save_str(const char* section, const char* key, const std::string& v)
 {
-    if (H->config_set_str)
-        H->config_set_str(M, section, key, v.c_str());
+    // BUG-0245: SporeKit refuses a value that is not ASCII when the file could not be made Unicode
+    // (it became "????" before): say so instead of losing the typed text silently at the next start
+    if (H->config_set_str && H->config_set_str(M, section, key, v.c_str()) != 0)
+        notify::show(std::string("could not save the ") + key + ", try again", "danger");
 }
 static std::string load_str(const char* section, const char* key, const char* def)
 {
@@ -344,6 +601,8 @@ static void do_join(const std::string& address)
 {
     apply_name();
     std::string addr = address;
+    if (net::g_fix.addr_check) // BUG-0138: a leading space or the whole pasted hint line
+        addr = net::Endpoint::clean(addr);
     while (!addr.empty() && addr.back() == ' ')
         addr.pop_back();
     if (addr.empty()) {
@@ -353,7 +612,7 @@ static void do_join(const std::string& address)
     }
     std::string err;
     if (!A.join(addr, err)) {
-        set_status(std::string(T("Cannot join: ", "Не удалось подключиться: ")) + err, kRed);
+        set_status(std::string(T("Cannot join: ", "Не удалось подключиться: ")) + err, kRed, g_status_fix ? 30 : 0);
         return;
     }
     save_str("ui", "last_address", addr);
@@ -375,10 +634,19 @@ static void do_host()
     set_status("", kYellow);
 }
 
-// "Report a problem": SporeKit writes mods\logs\report-<time>.txt (environment, co-op state, the
-// last log lines, faults); the folder opens with the file selected so the player can attach it
-static void do_report()
+// "Report a problem": SporeKit writes mods\logs\SporeCoop-report-<time>.zip (environment, co-op state,
+// the logs, faults, the screenshots of the marks); the folder opens with the file selected so the
+// player can attach it. A screenshot of the screen at the click goes in first: SporeKit takes it at
+// the next frame, the archive is written once it is there (at most kReportShotWait s later).
+static constexpr double kReportShotWait = 4.0;
+static double g_report_wait_until;  // > 0: the report waits for its screenshot
+static bool g_report_queued;        // finish_report is queued outside the frame
+static int g_report_shot;           // what report_shot answered (1 requested, 0 not, -1 off)
+
+static void finish_report(void*)
 {
+    g_report_queued = false;
+    bool shot = g_report_shot > 0 && A.report_shot_state && A.report_shot_state() == 0;
     std::string p = A.report ? A.report() : "";
     if (p.empty()) {
         set_status(T("This SporeKit cannot write reports (update SporeCoop)", "Этот SporeKit не умеет писать отчёты (обновите SporeCoop)"),
@@ -386,7 +654,11 @@ static void do_report()
         return;
     }
     set_status(std::string(T("Report saved: ", "Отчёт сохранён: ")) + p.substr(p.find_last_of("\\/") + 1) +
-                   T(" - attach it to an issue on GitHub", " - приложите его к issue на GitHub"),
+                   T(" - attach it to an issue on GitHub; the other players should send theirs too",
+                     " - приложите его к issue на GitHub; другие игроки пусть пришлют свои") +
+                   (shot ? T(". A screenshot of the game is included (coop.ini [report] screenshot=0 turns it off)",
+                             ". В отчёт входит снимок экрана игры (отключить: coop.ini [report] screenshot=0)")
+                         : ""),
                kGreen);
     std::wstring w(p.begin(), p.end()); // the path is ASCII-safe enough for /select; UTF-8 below if not
     int n = MultiByteToWideChar(CP_UTF8, 0, p.c_str(), -1, nullptr, 0);
@@ -397,6 +669,32 @@ static void do_report()
     }
     std::wstring args = L"/select,\"" + w + L"\"";
     ShellExecuteW(nullptr, L"open", L"explorer.exe", args.c_str(), nullptr, SW_SHOWNORMAL);
+}
+
+static void do_report()
+{
+    if (g_report_wait_until > 0 || g_report_queued)
+        return; // one is being made
+    g_report_shot = A.report_shot ? A.report_shot() : 0;
+    if (g_report_shot > 0) {
+        H->log(M, SK_INFO, "ui: report: waiting for its screenshot");
+        g_report_wait_until = H->time_seconds() + kReportShotWait;
+        set_status(T("Making the report...", "Создаю отчёт..."), kYellow);
+        return;
+    }
+    finish_report(nullptr);
+}
+
+// tick: the report's screenshot is written (or failed, or did not come): the archive, outside the frame
+static void report_tick(double now)
+{
+    if (g_report_wait_until <= 0 || g_report_queued)
+        return;
+    if (A.report_shot_state && A.report_shot_state() == 1 && now < g_report_wait_until)
+        return;
+    g_report_wait_until = 0;
+    g_report_queued = true;
+    H->run_outside_frame(finish_report, nullptr);
 }
 
 static void do_send_chat()
@@ -456,6 +754,11 @@ static void build_dialog()
     }
     D = Dialog{};
     g_named.clear();
+    g_btn_fn.clear();
+    g_edit_max.clear();
+    g_locked_edit = nullptr;
+    g_btn_native.clear();
+    g_locked_btn = nullptr;
     D.root = root;
     D.layer = sui::parent(root);
     sui::add_ref(root); // ours: the window survives mode changes that clear the layer
@@ -480,10 +783,7 @@ static void build_dialog()
             return false;
         });
     }
-    int sw = 0, sh = 0;
-    H->screen_size(&sw, &sh);
-    Rect a{(sw - kW) / 2, (sh - kH) / 2, (sw + kW) / 2, (sh + kH) / 2};
-    sui::set_area(root, a);
+    place_window(root);
 
     std::vector<Win> common;
     D.subtitle = add_label(common, {0, 70, kW, 96}, T("CO-OP", "КООПЕРАТИВ"), kGold, sui::kAlignCenter);
@@ -501,7 +801,11 @@ static void build_dialog()
     D.addr_edit = add_edit(P, "address", {230, 194, 520, 226}, load_str("ui", "last_address", ""), 64);
     D.join_btn = add_button(P, "join", {540, 190, 720, 230}, T("Join", "Подключиться"),
                             [] { do_join(sui::edit_text(D.addr_edit)); });
-    D.lan_hdr = add_label(P, {40, 242, 720, 268}, "", kDim);
+    D.lan_hdr = add_label(P, {40, 242, 590, 268}, "", kDim);
+    D.lan_more = add_button(P, "lanmore", {600, 238, 720, 268}, T("More >", "Ещё >"), [] {
+        g_lan_first += 3; // refresh_connect wraps it to the first page
+        g_dirty = true;
+    });
     for (int i = 0; i < 3; i++) {
         char nm[16];
         snprintf(nm, sizeof nm, "lan%d", i);
@@ -542,6 +846,9 @@ static void build_dialog()
     D.world = add_label(L, {40, 284, 720, 310}, "", kYellow);
     for (int i = 0; i < 4; i++)
         D.chat_lines[i] = add_label(L, {40, 316.f + i * 23, 720, 338.f + i * 23}, "", kWhite);
+    std::vector<Win> arrows; // shown by refresh_lobby only when there is more to see
+    D.chat_up = add_button(arrows, "chatup", {722, 316, 756, 346}, "^", [] { g_chat_scroll++; g_dirty = true; });
+    D.chat_down = add_button(arrows, "chatdown", {722, 376, 756, 406}, "v", [] { g_chat_scroll--; g_dirty = true; });
     // the own creation of this stage: "My creature: Kirgle  < >"
     D.creation = add_label(L, {40, 408, 560, 434}, "", kGold);
     D.creation_prev = add_button(L, "cprev", {570, 404, 640, 434}, "<", [] {
@@ -559,6 +866,12 @@ static void build_dialog()
     D.give_btn = add_button(L, "give", {570, 404, 720, 434}, "", [] {
         if (A.give_do)
             A.give_do();
+        g_dirty = true;
+    });
+    // 3 or 4 players: ">" picks the next other player as the recipient (BUG-0075)
+    D.give_next = add_button(L, "givenext", {520, 404, 560, 434}, ">", [] {
+        if (A.give_cycle)
+            A.give_cycle();
         g_dirty = true;
     });
     D.creation_next = add_button(L, "cnext", {650, 404, 720, 434}, ">", [] {
@@ -590,11 +903,11 @@ static void build_dialog()
             return;
         }
         A.share_world();
-        set_status(T("Sending the world to everyone...", "Мир отправляется всем..."), kYellow);
+        set_status(T("Sending the world to everyone...", "Мир отправляется всем..."), kYellow, g_status_fix ? 5 : 0);
     });
     D.leave_btn = add_button(L, "leave", {500, 488, 720, 528}, "", [] {
         A.leave();
-        set_status(T("Left the session", "Вы вышли из игры"), kYellow);
+        set_status(T("Left the session", "Вы вышли из игры"), kYellow, g_status_fix ? 5 : 0);
     });
     // ---- Space page ----
     auto& S = D.page_space;
@@ -715,12 +1028,26 @@ static void refresh_connect()
 {
     bool scanning = A.role() == 0;
     auto games = A.lan_games ? A.lan_games() : std::vector<LanGame>{};
-    text(D.lan_hdr, games.empty() ? T("Games on your network: searching...", "Игры в вашей сети: поиск...")
-                                  : T("Games on your network (click to join):", "Игры в вашей сети (нажмите, чтобы войти):"));
+    // BUG-0183: only the first three answers were listed; with more hosts on the network (lab lanes,
+    // a LAN party) the others could not be joined from the list. "More >" shows the next three.
+    bool pages = g_lan_pages_fix && games.size() > 3;
+    if (!pages || g_lan_first >= (int)games.size() || g_lan_first < 0)
+        g_lan_first = 0;
+    if (games.empty())
+        text(D.lan_hdr, T("Games on your network: searching...", "Игры в вашей сети: поиск..."));
+    else if (pages) {
+        char b[160];
+        snprintf(b, sizeof b, T("Games on your network: %d-%d of %d (click to join)", "Игры в сети: %d-%d из %d (нажмите, чтобы войти)"),
+                 g_lan_first + 1, std::min(g_lan_first + 3, (int)games.size()), (int)games.size());
+        text(D.lan_hdr, b);
+    } else
+        text(D.lan_hdr, T("Games on your network (click to join):", "Игры в вашей сети (нажмите, чтобы войти):"));
+    show(D.lan_more, pages && scanning);
     for (int i = 0; i < 3; i++) {
-        bool have = i < (int)games.size();
+        int k = g_lan_first + i;
+        bool have = k < (int)games.size();
         if (have) {
-            const auto& g = games[i];
+            const auto& g = games[k];
             char b[256];
             snprintf(b, sizeof b, "%s  -  %s  -  %d/%d  -  %s", g.name.c_str(), g.info.c_str(), g.players,
                      g.max_players, g.address.c_str());
@@ -743,7 +1070,8 @@ static void refresh_connect()
     // the session status wins; otherwise the update line (a new SporeCoop release)
     text(D.status, g_status.empty() && up ? up_line : g_status);
     color(D.status, g_status.empty() && up ? kGreen : g_status_color);
-    show(D.update_btn, up && !up_btn.empty());
+    // the Update button belongs to the update line, not to a session message (BUG-0104)
+    show(D.update_btn, up && !up_btn.empty() && (!g_status_fix || g_status.empty()));
     text(D.update_btn, up_btn);
 }
 
@@ -774,10 +1102,17 @@ static void refresh_lobby()
     }
     std::string wl = A.world_line ? A.world_line() : "";
     text(D.world, wl.empty() ? g_status : wl);
-    auto chat = A.chat ? A.chat() : std::vector<std::string>{};
-    size_t first = chat.size() > 4 ? chat.size() - 4 : 0;
+    // the chat history (50 lines kept): long lines wrapped, scrolled with the arrows (BUG-0129)
+    std::vector<std::string> chat;
+    for (auto& l : A.chat ? A.chat() : std::vector<std::string>{})
+        for (auto& w : notify_text::wrap(l, kChatCols))
+            chat.push_back(w);
+    g_chat_scroll = std::max(0, std::min(g_chat_scroll, (int)chat.size() - 4));
+    size_t first = chat.size() > 4 ? chat.size() - 4 - (size_t)g_chat_scroll : 0;
     for (int i = 0; i < 4; i++)
         text(D.chat_lines[i], first + i < chat.size() ? chat[first + i] : "");
+    show(D.chat_up, first > 0);
+    show(D.chat_down, g_chat_scroll > 0);
     int ck = 0, cown = 0;
     std::string cname, cl;
     if (A.creation && A.creation(ck, cname, cown)) {
@@ -810,6 +1145,7 @@ static void refresh_lobby()
     }
     text(D.creation, cl);
     show(D.give_btn, giving && gn > 0);
+    show(D.give_next, giving && gn > 0 && !space && A.give_choices && A.give_choices() > 1);
     text(D.give_btn, space ? std::string(T("Give 10 to ", "Дать 10: ")) + gto : std::string(T("Give to ", "Отдать ")) + gto);
     std::string jto;
     bool jump = A.jump && A.jump(jto);
@@ -951,6 +1287,8 @@ static void refresh()
         sui::bring_to_front(main, D.root);
         sui::set_flag(D.root, sui::kFlagAlwaysInFront, true);
     }
+    if (g_want_open && g_recenter_fix)
+        place_window(D.root);
     show(D.root, g_want_open);
     if (!g_want_open) {
         if (A.lan_scan)
@@ -986,6 +1324,7 @@ static void refresh()
         show(D.adventure_picture.window, false);
         for (auto& p : D.captain_picture) show(p.window, false);
     }
+    if (page != Page::Lobby) {show(D.chat_up, false);show(D.chat_down, false);}
     text(D.subtitle, page == Page::AdventureSettings ? "ADVENTURE DIFFICULTY"
                      : page == Page::Space ? T("CO-OP: SPACE", "КООПЕРАТИВ: КОСМОС")
                      : lobby ? T("CO-OP LOBBY", "ЛОББИ КООПЕРАТИВА") : T("CO-OP", "КООПЕРАТИВ"));
@@ -1051,6 +1390,7 @@ void close_for_adventure_launch()
 }
 
 bool is_open() { return g_want_open; }
+int input_lock_now() { return input_lock(); }
 
 void tick()
 {
@@ -1070,13 +1410,28 @@ void tick()
     // handler) and opens the window once the menu takes clicks again. (Ending the intro with EndCinematic in the
     // menu, as before a load, left the menu broken: an access violation in UTFWin::Window::SetFlag
     // from App::Canvas::Tick 10 s later, or a game that stopped answering.)
-    bool lb = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    if (g_menu_drop_fix && g_menu_btn && !in_menu())
+        g_menu_btn = g_menu_parent = nullptr;
+    // BUG-0145: the primary click from the window's messages (mouse.h), not the physical left button
     HWND gw = (HWND)H->game_window();
-    if (lb && !g_lb_down && gw && g_menu_btn && sui::visible(g_menu_btn) && !g_want_open && !g_skip_since &&
+    mouse::install(gw);
+    uint32_t nclicks = mouse::clicks();
+    bool lb = mouse::g_fix ? nclicks != g_lb_seen : (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    g_lb_seen = nclicks;
+    locked_click_tick(mouse::g_fix && lb);
+    locked_edit_tick(mouse::g_fix && lb);
+    if (mouse::g_fix)
+        g_lb_down = false;
+    // menu_intro_playing() (mode-checked) before any call on the item
+    if (lb && !g_lb_down && gw && g_menu_btn && !g_want_open && !g_skip_since &&
+        (!g_menu_drop_fix || world::menu_intro_playing()) && sui::visible(g_menu_btn) &&
         world::menu_intro_playing()) {
         POINT c{};
+        int cx = 0, cy = 0;
         Rect r = sui::screen_rect(g_menu_btn);
-        if (GetCursorPos(&c) && ScreenToClient(gw, &c) && c.x >= r.x1 && c.x < r.x2 && c.y >= r.y1 && c.y < r.y2) {
+        mouse::last_click(cx, cy);
+        bool at = mouse::g_fix ? (c = POINT{cx, cy}, true) : GetCursorPos(&c) && ScreenToClient(gw, &c);
+        if (at && c.x >= r.x1 && c.x < r.x2 && c.y >= r.y1 && c.y < r.y2) {
             H->log(M, SK_INFO, "ui: Co-op clicked during the menu intro: Escape skips it, then the window opens");
             LPARAM lp = 1 | (MapVirtualKeyW(VK_ESCAPE, MAPVK_VK_TO_VSC) << 16);
             PostMessageW(gw, WM_KEYDOWN, VK_ESCAPE, lp);
@@ -1102,6 +1457,12 @@ void tick()
         }
     }
     double now = H->time_seconds();
+    report_tick(now);
+    if (g_status_until > 0 && now >= g_status_until) { // a message of a finished action (BUG-0104)
+        g_status.clear();
+        g_status_until = 0;
+        g_dirty = true;
+    }
     double period = g_want_open ? 0.25 : 1.0;
     if (!g_pending && (g_dirty || now - g_last_refresh >= period)) {
         g_pending = true;
@@ -1116,7 +1477,7 @@ void shutdown()
     if (g_ok) adventure_hud::shutdown();
     if (D.root)
         sui::set_visible(D.root, false);
-    if (g_menu_btn)
+    if (g_menu_btn && (!g_menu_drop_fix || in_menu()))
         sui::set_visible(g_menu_btn, false);
 }
 
@@ -1124,7 +1485,11 @@ std::string debug_state()
 {
     std::string s = "open=" + std::to_string(g_want_open) + " page=" +
                     (A.role() ? (g_space_page ? "space" : "lobby") : "connect") +
-                    " menu_button=" + (g_menu_btn ? "yes" : "no") + "\n";
+                    " menu_button=" + (g_menu_btn ? "yes" : "no") + " in_menu=" + (in_menu() ? "1" : "0") +
+                    " input_lock=" + std::to_string(input_lock()) + " modal=" + (game_modal() ? "1" : "0") +
+                    " modal_seen=" + std::to_string(g_modal_seen) + " locked_clicks=" + std::to_string(g_locked_clicks) +
+                    " locked_native=" + std::to_string(g_locked_native) +
+                    " locked_typed=" + std::to_string(g_locked_typed) + "\n";
     char b[256];
     ga::PreparationView preparation;
     if(A.preparation && A.preparation(preparation)) {
@@ -1135,7 +1500,11 @@ std::string debug_state()
             s += "captain player="+std::to_string(m.player)+" serial="+std::to_string(m.serial)+" name='"+sui::caption(D.prep_captain[i])+"' portrait="+std::to_string(D.captain_picture[i].window!=nullptr)+" ready="+std::to_string(m.ready)+" stage="+std::to_string(unsigned(m.stage))+"\n";
         }
     }
-    if (g_menu_btn) {
+    int sw = 0, sh = 0;
+    H->screen_size(&sw, &sh);
+    snprintf(b, sizeof b, "screen %d %d\n", sw, sh);
+    s += b;
+    if (g_menu_btn && in_menu()) { // never a call on an item of a menu that is gone (BUG-0163)
         Rect r = sui::screen_rect(g_menu_btn);
         snprintf(b, sizeof b, "menu %.0f %.0f %.0f %.0f %d '%s'\n", r.x1, r.y1, r.x2, r.y2,
                  (int)sui::visible(g_menu_btn), sui::caption(g_menu_btn).c_str());

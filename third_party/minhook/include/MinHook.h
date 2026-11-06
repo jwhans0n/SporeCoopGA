@@ -93,6 +93,9 @@ extern "C" {
 
     // SporeKit extension: enable/disable suspending other threads while patching.
     VOID WINAPI MH_SetFreezeThreads(BOOL enable);
+    // SporeKit patch: MH_RemoveHook keeps the trampoline's memory (another thread may still be
+    // inside it or about to call it; BUG-0132). A few bytes per removed hook are never reused.
+    VOID WINAPI MH_SetKeepTrampolines(BOOL enable);
 
     // Initialize the MinHook library. You must call this function EXACTLY ONCE
     // at the beginning of your program.

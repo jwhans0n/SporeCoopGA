@@ -22,10 +22,14 @@
 #include <cstring>
 #include <map>
 #include <random>
+#include <set>
 
 #include "game.h"
+#include "net/utf8.h"
 #include "space_ext.h"
+#include "space_logic.h"
 #include "sporekit_game.hpp"
+#include "fixes.h"
 
 using skg::cdecl_call;
 using skg::thiscall;
@@ -41,7 +45,7 @@ enum Reason : uint8_t { R_NONE = 0, R_TIMEOUT = 1, R_EXPIRED = 2, R_LEFT = 3, R_
 
 const SkHost* H;
 SkMod* M;
-uintptr_t a_PlayerUFOGet, a_GetAllUFOs, a_StartRaid, a_StarMgr, a_PlayerEmpire, a_AddMoney,
+uintptr_t a_SetState, a_PlayerUFOGet, a_GetAllUFOs, a_StartRaid, a_StarMgr, a_PlayerEmpire, a_AddMoney,
     a_SpaceGame, a_AddItemByKey, a_Context;
 
 template <typename T>
@@ -85,6 +89,28 @@ bool g_wave_on, g_wave_ships;     // a raid was started / its ships appeared
 double g_wave_t, g_last_alive;    // when the raid was started / the last time a ship of it was alive
 uint32_t g_wave_place;
 int g_wave_result;                // the raid's end seen by spacecoop's SetState hook: 5 defended, 6 lost
+// BUG-0046: the wave's own raid mission. A host who left the planet and came back started a second
+// raid while the first still ran; the ships of both were taken for the wave (HP raised for each),
+// and the end of either decided it. Now the wave keeps its mission: ships and the end state count
+// only for it, and a return resumes it while it runs. coop.space contracts wavefix 0: the old way.
+void* g_wave_mission;             // the cMission of the wave (pointer, checked in the mission list)
+std::set<uint64_t> g_toughened;   // ships of the wave mission whose HP was raised (once each): spacelogic::tough_key
+bool g_wave_fix = true;
+COOP_FIX("contracts.wave", "BUG-0046", g_wave_fix, "space: an armada wave keeps its own mission");
+// BUG-0227: the resume of BUG-0046 had three gaps. tough: the "raised once" set held pointers, so
+// a new ship at a freed one's address kept its normal HP (now keyed by object serial). resume: a
+// resumed wave kept "its ships appeared" and was won without a fight 30 s later (now it waits for
+// ships again and, when none come, ends its old raid before a new one). away: a raid result while
+// the host was away was dropped (now a loss fails the contract, a win counts).
+bool g_wave_tough_fix = true, g_wave_resume_fix = true, g_wave_away_fix = true;
+COOP_FIX("contracts.wave_tough", "BUG-0227", g_wave_tough_fix, "space: armada ships get their HP raised once per object, not per address");
+COOP_FIX("contracts.wave_resume", "BUG-0227", g_wave_resume_fix, "space: a resumed armada wave waits for its ships again");
+COOP_FIX("contracts.wave_away", "BUG-0227", g_wave_away_fix, "space: an armada raid that ends while the host is away counts");
+bool g_wave_resumed;              // the running wave was resumed (BUG-0227)
+int g_wave_away_result;           // the wave's raid ended while the host was away: 5 or 6 (BUG-0227)
+bool g_tough_reuse, g_hide_ships; // tests: the address-reuse simulation / the resumed raid brings no ships
+uint32_t n_aborted, n_away_results;
+uint32_t n_resumed;               // returns that resumed the running raid
 uint32_t g_stable_place;          // host: the place the crew check saw last, and since when
 double g_stable_since, g_next_wave, g_last_tick, g_last_publish, g_next_offer;
 std::vector<double> g_hold;       // host, survey: seconds the crew is together at each target
@@ -426,7 +452,9 @@ bool read_state(net::Reader& r, Contract& c, double t)
     for (int i = 0; i < n && r.ok(); i++)
         c.crew.push_back(r.u8());
     n = r.u8();
-    for (int i = 0; i < n && i < 16 && r.ok(); i++) {
+    if (n > 16)
+        return false;
+    for (int i = 0; i < n && r.ok(); i++) {
         Target tg;
         tg.star = r.u32();
         tg.done = r.u8();
@@ -437,6 +465,9 @@ bool read_state(net::Reader& r, Contract& c, double t)
     c.waves = r.u8();
     c.left = r.u8();
     c.up = r.u8();
+    // an armada needs its target planet (title, rows, the raid all read targets[0])
+    if (c.type > T_SURVEY || (c.type == T_ARMADA && c.targets.empty()))
+        return false;
     return r.ok();
 }
 
@@ -532,6 +563,10 @@ void finish(bool ok, uint8_t reason)
     g.deadline = now() + kShowEnd;
     g_wave_on = false; // (a raid still running goes on as an ordinary raid of the game)
     g_seen.clear();
+    g_wave_mission = nullptr;
+    g_toughened.clear();
+    g_wave_resumed = false;
+    g_wave_away_result = 0;
     g_alive.clear();
     ok ? n_done++ : n_failed++;
     g_next_offer = now() + g_period;
@@ -673,6 +708,10 @@ std::string offer(uint8_t type, const std::string& arg)
         c.money *= 2; // every tool of the list is in the cargo already
     g_wave_on = false;
     g_seen.clear();
+    g_wave_mission = nullptr;
+    g_toughened.clear();
+    g_wave_resumed = false;
+    g_wave_away_result = 0;
     g_alive.clear();
     g = c;
     g_hold.assign(g.targets.size(), 0);
@@ -744,25 +783,56 @@ int crew_with_me()
 // on the contract's planet (cMission +0x78 id, +0x1E8 target cPlanet, its record +0x13C, docs/re/space.md 6)
 bool armada_ship(void* u)
 {
+    if (g_hide_ships)
+        return false; // tests: the raid's ships never come (set around a return)
     void* m = F<void*>(u, kMission);
+    if (g_wave_fix && g_wave_mission && m != g_wave_mission)
+        return false;
     if (!m || IsBadReadPtr(m, 0x1F0) || F<uint32_t>(m, 0x78) != kRaidMission)
         return false;
     void* planet = F<void*>(m, 0x1E8);
     void* rec = planet && !IsBadReadPtr(planet, 0x140) ? F<void*>(planet, 0x13C) : nullptr;
-    return rec && !IsBadReadPtr(rec, 0x188) && F<uint32_t>(rec, 0x184) == g.targets[0].planet;
+    return rec && !IsBadReadPtr(rec, 0x188) && !g.targets.empty() && F<uint32_t>(rec, 0x184) == g.targets[0].planet;
 }
 
 // the game's raid starter (the `raid -start` cheat's routine 0x0100E620, the same address in both
 // builds): thiscall, `this` unused, (int unused, cPlanetRecord* colony, int bombers), ret 0xC. It creates
 // mission 0xA4B0A2DF (CreateMission 0xFEC420), SetTargetPlanet, SetNumBombers, Accept; the raid's ships
 // (bombers type 4, 4 raiders type 2 each) come while the raided empire's player is on the planet.
+// raid missions on the contract's planet in state 2 (accepted) or 3 (active) (docs/re/space.md 6)
+static std::set<void*> raids_on_target()
+{
+    std::set<void*> r;
+    if (g.targets.empty() || !spaceext::in_space())
+        return r;
+    for (void* m : spaceext::game_missions()) {
+        if (!m || IsBadReadPtr(m, 0x1F0) || F<uint32_t>(m, 0x78) != kRaidMission)
+            continue;
+        int st = F<int>(m, 0x84);
+        void* planet = F<void*>(m, 0x1E8);
+        void* rec = planet && !IsBadReadPtr(planet, 0x140) ? F<void*>(planet, 0x13C) : nullptr;
+        if ((st == 2 || st == 3) && rec && !IsBadReadPtr(rec, 0x188) && F<uint32_t>(rec, 0x184) == g.targets[0].planet)
+            r.insert(m);
+    }
+    return r;
+}
+
 bool start_raid(int bombers)
 {
-    void* rec = planet_record(g.targets[0].planet);
+    void* rec = g.targets.empty() ? nullptr : planet_record(g.targets[0].planet);
     if (!rec || !a_StartRaid)
         return false;
+    std::set<void*> before = g_wave_fix ? raids_on_target() : std::set<void*>{};
     thiscall<bool>(a_StartRaid, (void*)nullptr, 0, rec, bombers);
     n_raids++;
+    g_wave_mission = nullptr;
+    g_toughened.clear();
+    g_wave_resumed = false;
+    g_wave_away_result = 0;
+    if (g_wave_fix)
+        for (void* m : raids_on_target())
+            if (!before.count(m))
+                g_wave_mission = m; // the raid StartRaid made (CreateMission + Accept, synchronous)
     return true;
 }
 
@@ -777,7 +847,7 @@ void armada_tick(double t)
         if (place != g_wave_place) {
             // the host left the planet: the game runs the raid on without anybody there (off-screen
             // simulation): this wave comes again when the crew is together on the planet
-            g_wave_on = false;
+            g_wave_on = false; // (the wave's mission stays: a return resumes it, BUG-0046)
             g_seen.clear();
             g_alive.clear();
             g.up = 0;
@@ -791,9 +861,14 @@ void armada_tick(double t)
                     continue;
                 bool live = F<int>(u, kState) != 2 && F<float>(u, kHp) > 0;
                 auto it = g_seen.find(u);
-                if (it == g_seen.end() && live) { // a new ship of the wave: tougher
-                    F<float>(u, kMaxHp) *= kTough;
-                    F<float>(u, kHp) = F<float>(u, kMaxHp);
+                if (it == g_seen.end() && live) { // a new ship of the wave: tougher (once, BUG-0046)
+                    if (g_tough_reuse) // tests (set around a return): as if an earlier ship at this address was raised
+                        g_toughened.insert(spacelogic::tough_key((uintptr_t)u, 0, false));
+                    uint64_t key = spacelogic::tough_key((uintptr_t)u, game::object_serial(u), g_wave_tough_fix);
+                    if (!g_wave_fix || g_toughened.insert(key).second) {
+                        F<float>(u, kMaxHp) *= kTough;
+                        F<float>(u, kHp) = F<float>(u, kMaxHp);
+                    }
                     it = g_seen.emplace(u, Seen{}).first;
                     n_ships++;
                     g_wave_ships = true;
@@ -825,6 +900,16 @@ void armada_tick(double t)
             if (!g_wave_ships && t - g_wave_t > 30) {
                 H->log(M, SK_WARN, "contracts: the raid of wave %d brought no ships in 30 s: again", g.wave);
                 g_wave_on = false; // started again below
+                if (g_wave_resume_fix && g_wave_resumed) {
+                    // BUG-0227: end the old raid first (found in the live list this tick), or the
+                    // next ready tick would resume it again, or start a second raid next to it
+                    if (g_wave_mission && raids_on_target().count(g_wave_mission) && a_SetState) {
+                        thiscall<void>(a_SetState, g_wave_mission, 7); // aborted
+                        n_aborted++;
+                    }
+                    g_wave_mission = nullptr;
+                    g_wave_resumed = false;
+                }
             } else if (g_wave_result == 5 || g_wave_result == 6 || (g_wave_ships && alive.empty() && t - g_last_alive > 30)) {
                 // (no end state 30 s after the last ship: taken as won, the ships are gone)
                 bool won = g_wave_result != 6;
@@ -853,7 +938,50 @@ void armada_tick(double t)
         g_stable_place = place;
         g_stable_since = t;
     }
-    if (ready && t - g_stable_since >= 3 && start_raid((int)g.crew.size() + g.wave - 1)) {
+    // BUG-0227: the wave's raid ended while the host was away
+    if (!g_wave_on && g_wave_away_result) {
+        int r = g_wave_away_result;
+        g_wave_away_result = 0;
+        g_wave_mission = nullptr;
+        auto act = spacelogic::wave_on_return(r, false);
+        H->log(M, SK_INFO, "contracts: wave %d: its raid ended with %d while the host was away", g.wave, r);
+        if (act == spacelogic::WaveReturn::Fail) {
+            finish(false, R_PLUNDERED);
+            return;
+        }
+        if (act == spacelogic::WaveReturn::Won) {
+            if (g.wave >= g.waves) {
+                finish(true, R_NONE);
+                return;
+            }
+            g.wave++;
+            g_next_wave = t + 10;
+            publish();
+            return;
+        }
+    }
+    // BUG-0046: back on the planet while the wave's raid still runs: the wave goes on with it
+    bool resume = false;
+    if (ready && g_wave_fix && g_wave_mission && t - g_stable_since >= 3) {
+        if (raids_on_target().count(g_wave_mission)) {
+            resume = true;
+            n_resumed++;
+            H->log(M, SK_INFO, "contracts: wave %d: its raid still runs, resumed", g.wave);
+        } else
+            g_wave_mission = nullptr;
+    }
+    if (resume) {
+        g_wave_on = true;
+        g_wave_t = g_last_alive = t;
+        g_wave_place = place;
+        g_wave_result = 0;
+        g_seen.clear();
+        if (g_wave_resume_fix) { // BUG-0227: its ships have to come again
+            g_wave_ships = false;
+            g_wave_resumed = true;
+        }
+        changed = true;
+    } else if (ready && t - g_stable_since >= 3 && start_raid((int)g.crew.size() + g.wave - 1)) {
         g_wave_on = true;
         g_wave_ships = false;
         g_wave_t = g_last_alive = t;
@@ -960,6 +1088,7 @@ bool init(const SkHost* h, SkMod* m)
     a_PlayerUFOGet = S("Simulator::cSimulatorPlayerUFO::Get");
     a_GetAllUFOs = S("Simulator::GetAllUFOs");
     a_StartRaid = S("SporeCoop::Space_StartRaid");
+    a_SetState = S("Simulator::cMission::SetState"); // BUG-0227: abort a resumed raid without ships
     a_StarMgr = S("Simulator::cStarManager::Get");
     a_PlayerEmpire = S("Simulator::GetPlayerEmpire");
     a_AddMoney = S("Simulator::cEmpire::AddMoney");
@@ -967,10 +1096,18 @@ bool init(const SkHost* h, SkMod* m)
     a_AddItemByKey = S("Simulator::cPlayerInventory::AddItemByKey");
     a_Context = S("SporeCoop::Space_GetCurrentContext");
     g_rng.seed((uint32_t)(h->time_seconds() * 1000) ^ 0xC0B0u);
-    spacecoop::set_raid_listener([](uint32_t place, int state) {
+    spacecoop::set_raid_listener([](void* mission, uint32_t place, int state) {
+        if (g_hide_ships)
+            return; // tests: a raid whose ships never came cannot end defended or plundered either
         if (host() && g.state == S_ACTIVE && g.type == T_ARMADA && g_wave_on && !g.targets.empty() &&
-            place == (g.targets[0].planet | 0x40000000u) && state != 3)
+            place == (g.targets[0].planet | 0x40000000u) && state != 3 &&
+            (!g_wave_fix || !g_wave_mission || mission == g_wave_mission)) // (BUG-0046: only the wave's raid)
             g_wave_result = state;
+        else if (g_wave_away_fix && g_wave_fix && host() && g.state == S_ACTIVE && g.type == T_ARMADA && !g_wave_on &&
+                 g_wave_mission && mission == g_wave_mission && (state == 5 || state == 6)) {
+            g_wave_away_result = state; // BUG-0227: the host is away from the colony
+            n_away_results++;
+        }
     });
     return a_PlayerUFOGet && a_GetAllUFOs && a_StartRaid && a_StarMgr && a_PlayerEmpire &&
            a_AddMoney && a_SpaceGame && a_AddItemByKey && a_Context;
@@ -1025,6 +1162,10 @@ void on_session_end()
     g_sent = Contract{};
     g_wave_on = false;
     g_seen.clear();
+    g_wave_mission = nullptr;
+    g_toughened.clear();
+    g_wave_resumed = false;
+    g_wave_away_result = 0;
     g_alive.clear();
     g_next_offer = 0;
 }
@@ -1071,7 +1212,7 @@ std::vector<spaceext::Row> rows()
         }
         r2.text = tr("Reward each: ", "Награда каждому: ") + reward_text(g) + ", " + mmss(g.deadline - t) +
                   tr(" to accept", " на ответ");
-        if (g.type == T_ARMADA)
+        if (g.type == T_ARMADA && !g.targets.empty())
             jump_row(r2, g.targets[0].star);
         v.push_back(std::move(r1));
         v.push_back(std::move(r2));
@@ -1080,7 +1221,7 @@ std::vector<spaceext::Row> rows()
     // active
     spaceext::Row r1;
     r1.color = 0xFFFFD040;
-    if (g.type == T_ARMADA) {
+    if (g.type == T_ARMADA && !g.targets.empty()) {
         uint32_t s = g.targets[0].star;
         if (g.up)
             snprintf(b, sizeof b, tr(": wave %d/%d, %d ships, ", ": волна %d/%d, кораблей %d, "), g.wave, g.waves, g.left);
@@ -1148,7 +1289,8 @@ void draw_overlay()
         snprintf(b, sizeof b, tr("CONTRACT  survey %d/%d stars  %s", "КОНТРАКТ  разведка %d/%d звёзд  %s"), d,
                  (int)g.targets.size(), mmss(left).c_str());
     }
-    H->overlay_text(sw / 2 - (int)strlen(b) * 9 / 2, 70, left < 60 ? 0xFFFF8040 : 0xFFFFD040, b);
+    H->overlay_text(sw / 2 - utf8::overlay_width(b) / 2, 70, // cells, not bytes (BUG-0159)
+                    left < 60 ? 0xFFFF8040 : 0xFFFFD040, b);
 }
 
 std::string status()
@@ -1163,12 +1305,12 @@ std::string status()
     snprintf(b, sizeof b,
              "contracts: id=%u type=%s state=%s reason=%u crew=%s needed=%u secs=%d star=%u wave=%u/%u ships_left=%u "
              "ships_up=%u targets=%d/%d money=%u tool=%08X offered=%u done=%u failed=%u rewards=%u tools_got=%u "
-             "money_got=%d planet=%08X raids=%u ships=%u gone=%u period=%.0f\n",
+             "money_got=%d planet=%08X raids=%u ships=%u gone=%u period=%.0f resumed=%u wave_raids=%d\n",
              g.id, type_name(g.type), state_name(g.state), g.reason, crew.empty() ? "-" : crew.c_str(), g.needed,
              g.state ? (int)std::ceil(g.deadline - now()) : 0, g.targets.empty() ? 0u : g.targets[0].star, g.wave,
              g.waves, g.left, g.up, d, (int)g.targets.size(), g.money, g.tool, n_offered, n_done, n_failed, n_rewards,
              n_tools, g_money_got, g.targets.empty() ? 0u : g.targets[0].planet, n_raids, n_ships, n_gone,
-             g_period);
+             g_period, n_resumed, (int)raids_on_target().size());
     return b;
 }
 
@@ -1199,6 +1341,29 @@ std::string debug(const std::vector<std::string>& a)
         g_limit_override = atof(a[1].c_str());
         snprintf(b, sizeof b, "time limit of new contracts %.0f s (0 = the default)\n", g_limit_override);
         return b;
+    }
+    if ((a[0] == "tough_reuse" || a[0] == "hideships") && a.size() > 1) { // tests (BUG-0227)
+        (a[0] == "tough_reuse" ? g_tough_reuse : g_hide_ships) = a[1] != "0";
+        return a[0] + " " + a[1] + "\n";
+    }
+    if (a[0] == "wave") { // tests (BUG-0227): the wave's state
+        snprintf(b, sizeof b, "wave %d/%d on=%d ships=%d resumed=%d away_result=%d mission=%p aborted=%u away_results=%u resumed_n=%u\n",
+                 g.wave, g.waves, (int)g_wave_on, (int)g_wave_ships, (int)g_wave_resumed, g_wave_away_result,
+                 g_wave_mission, n_aborted, n_away_results, n_resumed);
+        return b;
+    }
+    if (a[0] == "wavefix" && a.size() > 1) { // BUG-0046: 0 = a wave is any raid on the planet (tests)
+        g_wave_fix = a[1] != "0";
+        return std::string("wavefix ") + (g_wave_fix ? "1" : "0") + "\n";
+    }
+    if (a[0] == "raids") { // tests (BUG-0046): the raid missions on the contract's planet (state 2/3)
+        std::string o;
+        char b[96];
+        for (void* m : raids_on_target()) {
+            snprintf(b, sizeof b, "raid %p state %d%s\n", m, F<int>(m, 0x84), m == g_wave_mission ? " (wave)" : "");
+            o += b;
+        }
+        return o.empty() ? "no raids\n" : o;
     }
     if (a[0] == "ships") { // host: the armada ships alive now (the pointers coop.fleet list prints)
         std::string s;
