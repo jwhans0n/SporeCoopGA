@@ -58,9 +58,37 @@ def check(cond, what):
         FAILS.append(what)
 
 
+def isolated_git_env():
+    env=os.environ.copy()
+    for key in ('GIT_DIR','GIT_COMMON_DIR','GIT_WORK_TREE','GIT_INDEX_FILE'):
+        env.pop(key,None)
+    return env
+
+
 def git(cwd, *a):
     return subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@t', *a], cwd=cwd, check=True,
-                          capture_output=True, text=True).stdout
+                          capture_output=True, text=True, env=isolated_git_env()).stdout
+
+
+def git_context_case(tmp):
+    # Both repositories are disposable. Even the failing old helper can only
+    # mutate the outer fixture, never the caller's source checkout (BUG-0628).
+    outer=os.path.join(tmp,'git-env-outer');inner=os.path.join(tmp,'git-env-inner')
+    os.makedirs(outer);os.makedirs(inner)
+    git(outer,'init','-q','-b','main');git(outer,'commit','-q','--allow-empty','-m','outer')
+    before=git(outer,'rev-parse','HEAD').strip()
+    keys=('GIT_DIR','GIT_COMMON_DIR','GIT_WORK_TREE','GIT_INDEX_FILE')
+    saved={key:os.environ.get(key)for key in keys}
+    try:
+        os.environ.update(GIT_DIR=os.path.join(outer,'.git'),GIT_COMMON_DIR=os.path.join(outer,'.git'),
+                          GIT_WORK_TREE=outer,GIT_INDEX_FILE=os.path.join(outer,'.git','index'))
+        git(inner,'init','-q','-b','main');git(inner,'commit','-q','--allow-empty','-m','inner')
+    finally:
+        for key,value in saved.items():
+            if value is None:os.environ.pop(key,None)
+            else:os.environ[key]=value
+    check(os.path.isdir(os.path.join(inner,'.git')), 'git context: inner fixture owns its repository')
+    check(git(outer,'rev-parse','HEAD').strip()==before, 'git context: inherited environment cannot commit to the outer repository')
 
 
 def leftovers(marker):
@@ -413,7 +441,7 @@ def interrupt_cases(tree, tmp):
     open(script, 'w').write(INTERRUPT)
     lanes = os.path.join(tmp, 'ilanes')
     os.makedirs(os.path.join(lanes, 'lane5'), exist_ok=True)
-    subprocess.run(['git', 'init', '-q', '-b', 'main', tmp], capture_output=True)
+    subprocess.run(['git', 'init', '-q', '-b', 'main', tmp], capture_output=True, env=isolated_git_env())
     git(tmp, 'commit', '-q', '--allow-empty', '-m', 'selftest')
 
     def run(mode, sig, hold_lock=False):
@@ -603,6 +631,7 @@ def main():
     tree = os.path.abspath(a.tree)
     print(f'lab self-test of {tree}', flush=True)
     with tempfile.TemporaryDirectory(prefix='labselftest-') as tmp:
+        git_context_case(tmp)
         lab_cases(tree, tmp)
         worktree_case(tree, tmp)
         game_log_case(tree, tmp)

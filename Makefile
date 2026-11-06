@@ -251,9 +251,9 @@ $(B)/host/adventure_control_tests.exe: tests/adventure_control_tests.cpp mods/co
 $(B)/obj/tests/native_fixture_rc.o: tests/native_fixture.rc tests/native_fixture.manifest
 	@mkdir -p $(dir $@)
 	$(WINDRES) -i tests/native_fixture.rc -o $@ --include-dir tests
-$(B)/host/adventure_tick_dispatch_tests.exe: tests/adventure_blocked_update_tests.cpp mods/coop/game.cpp $(ADVENTURE_ABI_HEADERS) $(B)/obj/tests/native_fixture_rc.o
+$(B)/host/adventure_tick_dispatch_tests.exe: tests/adventure_blocked_update_tests.cpp mods/coop/game.cpp mods/coop/fixes.cpp mods/coop/fixes.h $(ADVENTURE_ABI_HEADERS) $(B)/obj/tests/native_fixture_rc.o
 	@mkdir -p $(B)/host
-	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/adventure_blocked_update_tests.cpp $(B)/obj/tests/native_fixture_rc.o -o $@
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/adventure_blocked_update_tests.cpp mods/coop/fixes.cpp $(B)/obj/tests/native_fixture_rc.o -o $@
 
 # Includes actual debug.cpp; discard unrelated command implementations at link time.
 test-debug-capabilities-windows: $(B)/host/adventure_debug_capability_tests.exe

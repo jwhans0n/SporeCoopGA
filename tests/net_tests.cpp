@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <set>
 #include "net/dbpf.h"
@@ -86,6 +87,12 @@ static void test_buffer()
     CHECK(t.scale==s.scale && t.adventure_run==s.adventure_run && t.captain_selection==s.captain_selection);
     CHECK(t.movement_generation==s.movement_generation);
     CHECK(r.left() == 0);
+    for(float invalid : {-1.f,10001.f,std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()}) {
+        auto bad_value=s;bad_value.scale=invalid;Writer bytes;bad_value.write(bytes);Reader input(bytes.data.data(),bytes.size());PlayerState out;CHECK(!out.read(input));
+    }
+    for(float invalid : {std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()}) {
+        auto bad_value=s;bad_value.agl=invalid;Writer bytes;bad_value.write(bytes);Reader input(bytes.data.data(),bytes.size());PlayerState out;CHECK(!out.read(input));
+    }
     // In particular, the upstream protocol 7 PlayerState prefix (67 bytes) cannot
     // silently supply default GA identity fields after merging the two branches.
     for (size_t bytes = 0; bytes < w.size(); ++bytes) {
