@@ -1132,6 +1132,40 @@ void test_palette_removal_waits_before_ui_and_history(){
     skg::field<void*>(t_display.data(),0x14)=t_context.data();t_granted=true;continue_input(nullptr);
     CHECK(!held_class_removal && !t_palette_calls && !t_steps && pending.empty());
 }
+void* SK_THISCALL card_component(void* self,uint32_t type){return type==0x0722DE63?self:nullptr;}
+const editor::ResourceKey* SK_THISCALL card_resource(void* self){return &skg::field<editor::ResourceKey>(self,0x20);}
+void* SK_THISCALL no_card_component(void*,uint32_t){return nullptr;}
+void* SK_THISCALL attached_card(void* self,void* previous){return previous?nullptr:skg::field<void*>(self,4);}
+void test_palette_drop_values_and_window_procedure(){
+    reset();skg::field<void*>(t_display.data(),0x14)=t_layout.data();
+    original_palette_message=t_palette_message;t_palette_calls=0;C.cast_tracked=[]{return true;};
+    std::array<void*,0x44> component_vt{},window_vt{};
+    component_vt[3]=reinterpret_cast<void*>(card_component);component_vt[0x2C/4]=reinterpret_cast<void*>(card_resource);
+    window_vt[3]=reinterpret_cast<void*>(no_card_component);window_vt[0x10C/4]=reinterpret_cast<void*>(attached_card);
+    std::array<uint8_t,0x30> source{},destination{};std::array<uint8_t,8> window{};std::array<uint8_t,0x28> payload{};
+    for(auto* p:{source.data(),destination.data()})skg::field<void*>(p,0)=component_vt.data();
+    const editor::ResourceKey key{19,0x2399BE55,0x40636200};skg::field<editor::ResourceKey>(source.data(),0x20)=key;
+    skg::field<int32_t>(source.data(),0x10)=7;skg::field<int32_t>(destination.data(),0x10)=-1;
+    skg::field<void*>(window.data(),0)=window_vt.data();skg::field<void*>(window.data(),4)=source.data();
+    const auto found=cast_window(window.data());CHECK(found&&found->index==7&&found->asset==key);
+    skg::field<void*>(payload.data(),0x20)=destination.data();skg::field<void*>(payload.data(),0x24)=source.data();
+    std::optional<CastDrop> copied;C.cast_drop=[&](CastDrop value){copied=std::move(value);};
+    palette_message(t_layout.data()+8,0x07C7B9BB,uint32_t(uintptr_t(payload.data())));
+    CHECK((copied&&copied->source==editor::ObjectId{(2ull<<32)|7,1}&&!copied->target&&copied->asset==key));
+    CHECK(!t_palette_calls&&pending.empty()&&!gesture_entry);
+    source.fill(0);CHECK(copied->asset==key&&copied->source.id==((2ull<<32)|7));
+}
+void test_palette_drop_missing_class_is_consumed(){
+    reset();skg::field<void*>(t_display.data(),0x14)=t_layout.data();
+    t_palette_calls=0;
+    original_palette_message=[](void*,uint32_t,uint32_t)->bool{++t_palette_calls;return false;};
+    C.cast_tracked=[]{return true;};
+    // A card notification can outlive the class it described. Never let the
+    // native outer handler continue to CopyClassActs after a rejected import.
+    std::array<uint8_t,0x28> payload{};
+    palette_message(t_layout.data()+8,0x07C7B9BB,uint32_t(uintptr_t(payload.data())));
+    CHECK(t_palette_calls==0 && pending.empty() && !gesture_entry);
+}
 void test_coalesced_speech(){
     reset();std::array<uint8_t,0x27E8> classes{};std::array<uint8_t,8> ui{};void* ui_pointer=ui.data();
     skg::field<uint32_t>(classes.data(),0)=7;
@@ -2017,6 +2051,8 @@ int main(int argc,char** argv){
     test_script_cast_callback_keeps_bindings();
     test_pending_class_removal();
     test_palette_removal_waits_before_ui_and_history();
+    test_palette_drop_missing_class_is_consumed();
+    test_palette_drop_values_and_window_procedure();
     test_pending_palette_drag();
     test_coalesced_speech();
     test_pose_refresh_preserves_authored_audio();

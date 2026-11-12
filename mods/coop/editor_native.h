@@ -143,6 +143,11 @@ struct CancellationTicket {
     bool operator==(const CancellationTicket&) const = default;
 };
 
+struct CastCard {int32_t index=-1;editor::ResourceKey asset;};
+struct CastDrop {editor::ObjectId source;std::optional<editor::ObjectId> target;editor::ResourceKey asset;};
+std::optional<CastCard> cast_card(void* window);
+std::optional<CastCard> cast_window(void* window);
+
 struct Ctx {
     // active gates only this shared document, never unrelated native editing.
     std::function<bool()> active;
@@ -202,6 +207,8 @@ struct Ctx {
     std::function<bool()> navigation_allowed;
     std::function<void(int)> act_action;
     std::function<bool(uint32_t)> remove_class_gate;
+    // Value-owned input; the native palette payload dies when its handler returns.
+    std::function<void(CastDrop)> cast_drop;
     std::function<bool(const Snapshot&,std::string&)> validate_dependencies;
     std::function<bool()> transaction_pending;
     // Stable batch owner even while a submitted local operation settles.

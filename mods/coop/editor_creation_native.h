@@ -39,6 +39,8 @@ std::optional<editor::ObjectId> selected_cast();
 std::optional<editor::ObjectId> resolve_cast_asset(const editor::Document&,const editor::ResourceKey&);
 bool prepare_cast_save(const editor_native::Snapshot&,const editor::ResourceKey&,
                        std::optional<editor::ObjectId> target,editor_native::Snapshot&,std::string&);
+bool prepare_cast_drop(const editor_native::Snapshot&,const editor_native::CastDrop&,
+                       editor_native::Snapshot&,std::string&);
 // Fresh project-owned aliases avoid per-profile IDs and in-place resource
 // replacement. Record bytes stay immutable; authored ancestry remains original.
 bool immutable_version(const editor::ProjectId&,const editor::ResourceKey& source,

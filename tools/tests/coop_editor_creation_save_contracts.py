@@ -94,6 +94,14 @@ def workflow_contracts(module):
     class Game:
         def __init__(self, instance, *_): self.instance = instance
         def asset_text(self): return asset_text()
+        def native_create(self,family,editor_id):
+            assert module.PROFILES[state['profile']]['family']==family
+            assert module.PROFILES[state['profile']]['editor_id']==editor_id
+            state['actions'].append(('native-create',family,editor_id))
+            self.click_control(module.CHOICE+module.FAMILIES.index(family))
+        def native_edit(self,class_id):
+            assert class_id in module.assets(asset_text())['rows']
+            self.click_control(module.EDIT)
         def call(self, command):
             if command == 'coop.editor assets': return asset_text()
             if command == 'coop.editor creations':
@@ -311,7 +319,7 @@ def workflow_contracts(module):
                 saved = json.loads(report(finish).read_text())
                 assert saved['passed'] and saved['save_dispatched'] and saved['updated_asset'if editing else 'added_asset']['key'][2] == module.TYPES[module.FAMILIES.index(module.PROFILES[profile]['family'])]; checks += 1
                 assert state['actions'].count(module.DONE) == 1 and state['revision'] == 1; checks += 1
-                if profile=='building-house':assert 0xC00F0341 in state['actions'];checks += 1
+                if profile=='building-house':assert ('native-create','building',0x4E3F7777) in state['actions'];checks += 1
                 if editing:assert module.EDIT in state['actions']and module.NEW not in state['actions'];checks += 1
                 if confirmation_case in('confirm','confirm-wait'):
                     assert saved['confirmation_dispatched']and sum(isinstance(action,tuple)and action[0]=='confirm'for action in state['actions'])==1;checks+=1

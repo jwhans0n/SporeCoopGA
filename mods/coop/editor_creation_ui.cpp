@@ -1,161 +1,208 @@
 #include "editor_creation_ui.h"
 #include "editor_creation.h"
-#include "editor_creation_native.h"
 #include "editor_runtime.h"
+#include "editor_native.h"
 #include "coop_ui.h"
 #include "sui.h"
 #include <algorithm>
 #include <array>
-#include <optional>
+#include <map>
+#include <memory>
+#include <set>
+#include <cstdio>
+#include <chrono>
 
 namespace editor_creation_ui {
 namespace {
 const SkHost* H;
-bool queued=false,want_menu=false;
-uint32_t variant_type=0;
-struct Panel {
-    sui::Win root=nullptr,main=nullptr,new_button=nullptr,edit_button=nullptr;
-    std::array<sui::Win,4> choices{};
-    sui::Win back=nullptr;
-    std::array<sui::Win,9> variants{};
+bool queued=false;
+std::string display_status="browser unavailable";
+uint64_t update_us=0;
+constexpr uint32_t kEdit=0xC00F0401,kDecoration=0xC00F0410;
+struct Card {
+    sui::Win window=nullptr,edit=nullptr;
+    std::array<sui::Win,4> border{};
+    std::array<sui::Win,5> padlock{};
     std::vector<std::pair<sui::Win,void*>> handlers;
-    std::string identity;
-    std::optional<editor::ObjectId> target;
-} panel;
-constexpr uint32_t kRoot=0xC00F0300,kNew=0xC00F0301,kEdit=0xC00F0302,kChoice=0xC00F0310;
-constexpr uint32_t kBack=0xC00F0320,kVariant=0xC00F0340;
-constexpr std::array<uint32_t,4> types{0x2B978C46,0x2399BE55,0x24682294,0x476A98C7};
-constexpr std::array<const char*,4> labels{"New creature","New building","New vehicle","New spaceship"};
-bool native_modal_visible(sui::Win main){
-    // Sporepedia keeps its root and empty scaffold visible after closing.
-    // Its header/card/sidebar frames are visible only while a picker is open.
-    // Search their current owning visible path, including duplicate roots.
-    // Native child lists are bounded by sui::children; this traversal also
-    // bounds depth, total work and stack size, failing closed on overflow.
-    struct Entry {sui::Win window;unsigned depth;bool picker,options;};
-    constexpr size_t limit=4096;
-    std::vector<Entry> stack{{main,0,false,false}};size_t visited=0;
+    void *edit_tip=nullptr,*owner_tip=nullptr;
+    coop_editor::AssetCardView value;
+    bool hover=false,button_hover=false,focus=false;
+    std::string identity,owner_text;
+};
+sui::Win main_window=nullptr;
+sui::Win edit_style=nullptr;
+std::string identity;
+std::map<sui::Win,std::shared_ptr<Card>> cards;
+void destroy(Card& card){
+    for(auto [window,handler]:card.handlers)sui::remove_handler(window,handler);
+    sui::remove_tooltip(card.edit,card.edit_tip);sui::remove_tooltip(card.window,card.owner_tip);
+    const auto remove=[](sui::Win window){
+        if(!window)return;
+        if(auto owner=sui::parent(window))sui::remove_child(owner,window);
+        sui::release(window);
+    };
+    remove(card.edit);for(auto window:card.border)remove(window);for(auto window:card.padlock)remove(window);
+    if(card.window)sui::release(card.window);
+    card={};
+}
+void clear(){
+    for(auto& [window,card]:cards){(void)window;destroy(*card);}cards.clear();
+    if(edit_style)sui::release(edit_style);edit_style=nullptr;
+    if(main_window)sui::release(main_window);main_window=nullptr;identity.clear();
+}
+// Find only owning visible paths. Cached fullscreen picker/scaffold windows
+// remain in the tree after close; hidden ancestors must never block authoring.
+bool modal_visible(sui::Win main){
+    struct Item{sui::Win window;unsigned depth;bool picker,options;};
+    std::vector<Item> stack{{main,0,false,false}};size_t visited=0;
     while(!stack.empty()){
-        const auto [window,depth,in_picker,in_options]=stack.back();stack.pop_back();
-        if(!window || window==panel.root || !sui::visible(window))continue;
-        if(++visited>limit || depth>=64)return true;
+        auto [window,depth,in_picker,in_options]=stack.back();stack.pop_back();
+        if(!window || !sui::visible(window))continue;
+        if(++visited>4096 || depth>=64)return true;
         const auto id=sui::control_id(window);
-        const bool picker=in_picker || id==0x53C6DC80;
-        if(picker && (id==0x53C5B392 || id==0x53C5B391 || id==0x53C5B390))return true;
-        const bool options=in_options || id==0x0615B50D;
-        if(options && id==0x064C23F8)return true;
-        for(auto child:sui::children(window)){
-            if(sui::parent(child)!=window)continue;
-            if(stack.size()>=limit)return true;
-            stack.push_back({child,depth+1,picker,options});
+        const bool picker=in_picker||id==0x53C6DC80,options=in_options||id==0x0615B50D;
+        if((picker&&(id==0x53C5B392||id==0x53C5B391||id==0x53C5B390)) || (options&&id==0x064C23F8))return true;
+        for(auto child:sui::children(window))if(sui::parent(child)==window){
+            if(stack.size()>=4096)return true;stack.push_back({child,depth+1,picker,options});
         }
     }
     return false;
 }
-void clear(){
-    want_menu=false;variant_type=0;
-    for(auto [window,handler]:panel.handlers)sui::remove_handler(window,handler);
-    if(panel.root){sui::set_visible(panel.root,false);if(auto parent=sui::parent(panel.root))sui::remove_child(parent,panel.root);sui::release(panel.root);}
-    if(panel.main)sui::release(panel.main);
-    panel={};
-}
-bool current(){
-    const auto view=coop_editor::view();
-    return panel.root && sui::visible(panel.root) && panel.main==sui::main_window() &&
-        view.active && view.can_save && !view.frozen && view.native_editing && view.prompt_identity==panel.identity &&
-        !editor_creation::active() && !native_modal_visible(panel.main);
-}
-void handler(sui::Win window,std::function<bool(sui::Win,const sui::Msg&)> callback){
-    if(auto value=sui::add_handler(window,std::move(callback)))panel.handlers.push_back({window,value});
-}
-bool build(const coop_editor::View& view){
-    // Reuse the reviewed native account-dialog frame/style, as the existing
-    // playtest popup does. Every window belongs to this retained local panel.
-    auto root=sui::load_layout(0x34A6339E);if(!root)return false;
-    panel.root=root;sui::add_ref(root);panel.identity=view.prompt_identity;
-    auto like=sui::find(root,0x0519E168),text=sui::find(root,0x0451D381);
-    if(!like || !text){clear();return false;}
-    const auto font=sui::font(text);
-    // Keep the native style sources alive, but hide every original subtree,
-    // including decorative logos and future template additions.
-    for(auto child:sui::children(root))sui::set_visible(child,false);
-    sui::set_ids(root,kRoot,0);sui::set_drawable(root,nullptr);sui::set_fill_color(root,0xE5202834);
-    panel.new_button=sui::button_like(root,like,{4,4,120,34},"New asset");
-    panel.edit_button=sui::button_like(root,like,{124,4,240,34},"Edit asset");
-    if(!panel.new_button || !panel.edit_button){clear();return false;}
-    sui::set_ids(panel.new_button,kNew,kNew);sui::set_ids(panel.edit_button,kEdit,kEdit);
-    for(auto b:{panel.new_button,panel.edit_button}){sui::set_font(b,font);sui::set_caption_padding(b,2);}
-    handler(panel.new_button,[](auto,const sui::Msg& message){if(!sui::is_click(message))return false;if(current()){want_menu=!want_menu;variant_type=0;}return true;});
-    handler(panel.edit_button,[](auto,const sui::Msg& message){if(!sui::is_click(message))return false;if(current() && panel.target)coop_editor::edit_asset(*panel.target);want_menu=false;variant_type=0;return true;});
-    for(size_t i=0;i<types.size();++i){
-        auto b=sui::button_like(root,like,{4,40.f+34*i,240,70.f+34*i},labels[i]);if(!b){clear();return false;}
-        panel.choices[i]=b;sui::set_ids(b,kChoice+uint32_t(i),kChoice+uint32_t(i));sui::set_font(b,font);sui::set_caption_padding(b,2);
-        handler(b,[i](auto,const sui::Msg& message){
-            if(!sui::is_click(message))return false;
-            if(current() && want_menu && !variant_type){
-                if(editor_creation::new_variants(types[i]).size()>1){variant_type=types[i];return true;}
-                coop_editor::create_asset(types[i]);
-            }
-            want_menu=false;variant_type=0;return true;
-        });
-    }
-    panel.back=sui::button_like(root,like,{4,40,240,70},"Back");if(!panel.back){clear();return false;}
-    sui::set_ids(panel.back,kBack,kBack);sui::set_font(panel.back,font);sui::set_caption_padding(panel.back,2);
-    handler(panel.back,[](auto,const sui::Msg& message){if(!sui::is_click(message))return false;if(current() && want_menu)variant_type=0;return true;});
-    for(size_t i=0;i<panel.variants.size();++i){
-        auto b=sui::button_like(root,like,{4,74.f+34*i,240,104.f+34*i},"");if(!b){clear();return false;}
-        panel.variants[i]=b;sui::set_ids(b,kVariant+uint32_t(i),kVariant+uint32_t(i));sui::set_font(b,font);sui::set_caption_padding(b,2);
-        handler(b,[i](auto,const sui::Msg& message){
-            if(!sui::is_click(message))return false;
-            const auto type=variant_type;const auto variants=editor_creation::new_variants(type);
-            if(current() && want_menu && type && i<variants.size())coop_editor::create_asset(type,variants[i].editor_id);
-            want_menu=false;variant_type=0;return true;
-        });
-    }
-    panel.main=sui::main_window();if(!panel.main){clear();return false;}sui::add_ref(panel.main);
-    if(auto parent=sui::parent(root))if(parent!=panel.main)sui::remove_child(parent,root);
-    if(sui::parent(root)!=panel.main)sui::add_child(panel.main,root);
-    sui::set_flag(root,sui::kFlagAlwaysInFront,true);
-    handler(panel.main,[](auto,const sui::Msg& message){
-        if(!want_menu)return false;
-        if(message.type==sui::kMsgKeyDown && message.a==0x1B){want_menu=false;variant_type=0;return true;}
-        if(message.type==sui::kMsgMouseDown && message.source){
-            for(auto w=message.source;w;w=sui::parent(w))if(w==panel.root)return false;
-            want_menu=false;variant_type=0;
+std::vector<sui::Win> visible_cards(sui::Win main){
+    struct Item{sui::Win window;unsigned depth;bool palette;};
+    std::vector<Item> stack{{main,0,false}};std::vector<sui::Win> result;size_t visited=0;
+    while(!stack.empty()){
+        auto [window,depth,in_palette]=stack.back();stack.pop_back();
+        if(!window||!sui::visible(window))continue;
+        if(++visited>4096||depth>=64)return {};
+        const auto id=sui::control_id(window);if(id>=kEdit && id<kDecoration+32)continue;
+        const bool palette=in_palette||id==0x52DF67AF;
+        if(palette)if(auto card=editor_native::cast_window(window);card && card->index>=0){result.push_back(window);continue;}
+        for(auto child:sui::children(window))if(sui::parent(child)==window){
+            if(stack.size()>=4096)return {};stack.push_back({child,depth+1,palette});
         }
-        return false;
-    });
+    }
+    return result;
+}
+bool current(const std::shared_ptr<Card>& card,const coop_editor::View& view){
+    const auto found=cards.find(card->window);
+    return found!=cards.end() && found->second==card && view.active && view.native_editing && view.can_save &&
+        !view.frozen && view.prompt_identity==card->identity && !editor_creation::active() &&
+        main_window==sui::main_window() && !modal_visible(main_window);
+}
+bool build(const std::shared_ptr<Card>& card,sui::Win style){
+    sui::add_ref(card->window);
+    card->edit=sui::button_like(card->window,style,{},"");if(!card->edit)return false;
+    sui::set_flag(card->edit,sui::kFlagAlwaysInFront,true);
+    sui::set_ids(card->edit,kEdit,kEdit);sui::set_visible(card->edit,false);
+    auto tip=sui::tooltip_caption(style);if(tip.empty())tip="Edit";
+    card->edit_tip=sui::tooltip(card->edit,tip);
+    card->owner_tip=sui::tooltip(card->window,"");
+    if(!card->edit_tip||!card->owner_tip)return false;
+    const auto decorate=[&](sui::Win& window,unsigned index){
+        window=sui::label(card->window,{},"",sui::font(style),0xFFFFFFFF,sui::kAlignLeft);
+        if(!window)return false;sui::set_flag(window,sui::kFlagAlwaysInFront,true);sui::set_ids(window,kDecoration+index,0);sui::set_visible(window,false);return true;
+    };
+    for(unsigned i=0;i<4;++i)if(!decorate(card->border[i],i))return false;
+    for(unsigned i=0;i<5;++i)if(!decorate(card->padlock[i],4+i))return false;
+    std::weak_ptr<Card> weak=card;
+    for(auto window:{card->window,card->edit}){
+        const bool button=window==card->edit;
+        auto handler=sui::add_handler(window,[weak,button](auto recipient,const sui::Msg& message){
+            auto item=weak.lock();if(!item)return false;
+            if(message.type==sui::kMsgMouseEnter)(button?item->button_hover:item->hover)=true;
+            if(message.type==sui::kMsgMouseLeave)(button?item->button_hover:item->hover)=false;
+            if(message.type==0x0A && message.a==0)item->focus=message.d==uintptr_t(recipient);
+            const bool keyboard=message.type==sui::kMsgKeyDown && message.b==VK_F2;
+            if(keyboard)item->focus=true;
+            if(!keyboard&&(!button||!sui::is_click(message)))return false;
+            const auto view=coop_editor::view();
+            if(current(item,view))for(const auto& asset:view.assets)if(asset.class_id==item->value.class_id &&
+                asset.asset==item->value.asset && asset.content_revision==item->value.content_revision && asset.editable){
+                const bool blocked=std::any_of(asset.owners.begin(),asset.owners.end(),[](const auto& owner){return owner.content&&!owner.local;});
+                if(!blocked)coop_editor::edit_asset(asset.class_id,asset.asset,asset.content_revision);
+                break;
+            }
+            return true;
+        },0xC1); // Basic/advanced input plus native hover/focus refresh events.
+        if(!handler)return false;card->handlers.push_back({window,handler});
+    }
     return true;
 }
 void SK_CDECL update(void*){
+    struct Timer{std::chrono::steady_clock::time_point start=std::chrono::steady_clock::now();~Timer(){update_us=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count());}} timer;
     queued=false;if(!H)return;
-    const auto view=coop_editor::view();const auto native=editor_native::state();
-    const bool visible=view.active && view.native_editing && native.ready && native.world_visible &&
-        !view.frozen && !view.playtesting && !view.exporting && !editor_creation::active() && !coop_ui::is_open() &&
-        !native_modal_visible(sui::main_window());
-    if(panel.root && (panel.main!=sui::main_window() || panel.identity!=view.prompt_identity))clear();
-    if(!visible){want_menu=false;variant_type=0;if(panel.root)sui::set_visible(panel.root,false);return;}
-    if(!panel.root && !build(view))return;
-    panel.target=editor_creation_native::selected_cast();
-    sui::set_enabled(panel.new_button,view.can_save);
-    sui::set_enabled(panel.edit_button,view.can_save && panel.target.has_value());
-    if(!view.can_save){want_menu=false;variant_type=0;}
-    int width=0,height=0;H->screen_size(&width,&height);
-    const auto variants=editor_creation::new_variants(variant_type);
-    const float menu_height=40.f+34.f*(variant_type?variants.size()+1:types.size());
-    const float x=12,y=std::clamp(98.f,4.f,std::max(4.f,height-menu_height-4.f));
-    sui::set_area(panel.root,{x,y,x+244,y+(want_menu?menu_height:38.f)});
-    for(auto b:panel.choices)sui::set_visible(b,want_menu&&!variant_type);
-    sui::set_visible(panel.back,want_menu&&variant_type);
-    for(size_t i=0;i<panel.variants.size();++i){
-        const bool shown=want_menu&&variant_type&&i<variants.size();
-        if(shown)sui::set_caption(panel.variants[i],variants[i].name);
-        sui::set_visible(panel.variants[i],shown);
+    const auto view=coop_editor::view();const auto native=editor_native::state();const auto main=sui::main_window();
+    if(main_window && (main_window!=main || identity!=view.prompt_identity))clear();
+    if(!view.active || !view.native_editing || !native.ready || !native.world_visible || view.frozen ||
+       view.playtesting || view.exporting || editor_creation::active() || coop_ui::is_open() || modal_visible(main)){
+        display_status="browser held active="+std::to_string(view.active)+" editing="+std::to_string(view.native_editing)+
+            " ready="+std::to_string(native.ready)+" world="+std::to_string(native.world_visible)+" modal="+std::to_string(modal_visible(main));clear();return;
     }
-    sui::set_visible(panel.root,true);sui::bring_to_front(panel.main,panel.root);
+    // The native Sporepedia Edit button supplies its icon, drawable states,
+    // font and localized tooltip. No separate creation toolbar is installed.
+    if(!edit_style){
+        auto style=sui::find(main,0x54ACB9F1);if(!style || !sui::as_button(style)){display_status="browser missing native Edit prototype";clear();return;}
+        edit_style=style;sui::add_ref(edit_style);
+    }
+    const auto style=edit_style;
+    if(!main_window){main_window=main;sui::add_ref(main_window);identity=view.prompt_identity;}
+    std::set<sui::Win> present;
+    unsigned candidates=0;
+    for(auto window:visible_cards(main)){
+        ++candidates;
+        const auto key=editor_native::cast_window(window);if(!key)continue;
+        const editor::ObjectId id{(2ull<<32)|uint32_t(key->index),1};
+        const auto value=std::find_if(view.assets.begin(),view.assets.end(),[&](const auto& item){return item.class_id==id && item.asset==key->asset;});
+        if(value==view.assets.end())continue;
+        auto found=cards.find(window);
+        if(found!=cards.end() && (found->second->value.class_id!=id || found->second->value.asset!=key->asset)){
+            destroy(*found->second);cards.erase(found);found=cards.end();
+        }
+        if(found==cards.end()){
+            auto card=std::make_shared<Card>();card->window=window;card->identity=identity;card->value=*value;
+            if(!build(card,style)){destroy(*card);continue;}found=cards.emplace(window,std::move(card)).first;
+        }
+        present.insert(window);auto& card=*found->second;card.value=*value;
+        const auto area=sui::area(window);const float width=area.w(),height=area.h();
+        sui::set_area(card.edit,{width-27,height-27,width-4,height-4});
+        sui::set_visible(card.edit,card.value.editable&&(card.hover||card.button_hover||card.focus));
+        const bool blocked=std::any_of(value->owners.begin(),value->owners.end(),[](const auto& owner){return owner.content&&!owner.local;});
+        sui::set_enabled(card.edit,view.can_save&&!blocked);
+        std::string owners;
+        for(const auto& owner:value->owners){
+            if(!owners.empty())owners+='\n';owners+=owner.name+": ";
+            if(owner.content)owners+="editing content";
+            if(owner.content&&owner.properties)owners+="; ";
+            if(owner.properties)owners+="editing properties";
+        }
+        if(owners!=card.owner_text){card.owner_text=owners;sui::tooltip_text(card.owner_tip,owners);}
+        const std::array<sui::Rect,4> border{{{1,1,width-1,3},{1,height-3,width-1,height-1},{1,3,3,height-3},{width-3,3,width-1,height-3}}};
+        for(unsigned i=0;i<4;++i){
+            sui::set_area(card.border[i],border[i]);sui::set_visible(card.border[i],!value->owners.empty());
+            if(!value->owners.empty())sui::set_fill_color(card.border[i],value->owners[i%value->owners.size()].color);
+        }
+        // A small closed padlock drawn with noninteractive native windows.
+        // It never changes native selection, drag hit-testing or caption text.
+        const float x=6,y=height-17;
+        const std::array<sui::Rect,5> lock{{{x+2,y,x+8,y+2},{x+1,y+2,x+3,y+6},{x+7,y+2,x+9,y+6},{x,y+5,x+10,y+13},{x+4,y+8,x+6,y+11}}};
+        for(unsigned i=0;i<5;++i){
+            sui::set_area(card.padlock[i],lock[i]);sui::set_visible(card.padlock[i],!owners.empty());
+            sui::set_fill_color(card.padlock[i],i==4?0xFF20303C:0xFFFFFFFF);
+        }
+    }
+    for(auto it=cards.begin();it!=cards.end();)if(!present.contains(it->first)){destroy(*it->second);it=cards.erase(it);}else ++it;
+    display_status="browser cards="+std::to_string(cards.size())+" candidates="+std::to_string(candidates)+" assets="+std::to_string(view.assets.size());
+    for(const auto& [window,card]:cards){
+        if(display_status.size()>7000)break;const auto rect=sui::screen_rect(window);
+        char row[256];std::snprintf(row,sizeof(row),"\ncard class=%llu:%u key=%08X!%08X.%08X revision=%llu rect=%.0f,%.0f,%.0f,%.0f edit=%u owners=%u",
+            static_cast<unsigned long long>(card->value.class_id.id),card->value.class_id.generation,card->value.asset.group,card->value.asset.instance,card->value.asset.type,
+            static_cast<unsigned long long>(card->value.content_revision),rect.x1,rect.y1,rect.x2,rect.y2,unsigned(sui::visible(card->edit)),unsigned(card->value.owners.size()));display_status+=row;
+    }
 }
 }
 void init(const SkHost* host){H=host;}
-void tick(){if(H && !queued){queued=true;H->run_outside_frame(update,nullptr);}}
+void tick(){if(H&&!queued){queued=true;H->run_outside_frame(update,nullptr);}}
 void shutdown(){clear();H=nullptr;queued=false;}
+std::string diagnostic(){return display_status+"\nupdate_us="+std::to_string(update_us);}
 } // namespace editor_creation_ui

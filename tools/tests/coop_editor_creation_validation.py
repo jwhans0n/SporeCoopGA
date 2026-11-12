@@ -20,7 +20,7 @@ SUPPORTED={
     'dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37',
     '47f60c4db38fda1f15c5a3525617e171b0a98d728d99d645b035aa794a9199ab'}
 # Exact GA New request variants. Family and subtype are checked independently.
-EDITORS={'creature':0x465C50BA,'building-house':0x4E3F7777,
+EDITORS={'creature':0x465C50BA,'building-house':0x4E3F7777,'building-entertainment':0x72C49181,
          'vehicle-military-land':0x7D433FAD,'spaceship':0x96B24187}
 TYPE_NAMES={0x99E92F05:'BuildingCityHall',0x4E3F7777:'BuildingHouse',0xBDD15F3D:'BuildingFarm',
     0x47C10953:'BuildingFactory',0x72C49181:'BuildingEntertainment',
@@ -40,7 +40,7 @@ def u32(data,at=0):return struct.unpack_from('<I',data,at)[0]
 def verify_named_symbols():
     names={}
     for file in ('march2017_dc04aee5.sym','overrides_dc04aee5.sym'):
-        for line in (ROOT/'data/symbols'/file).read_text().splitlines():
+        for line in (ROOT/'data/symbols'/file).read_text(encoding='utf-8').splitlines():
             match=re.match(r'([^=]+)=0x([0-9A-Fa-f]{8})\b',line)
             if match:names[match[1]]=int(match[2],16)
     required={'App::IGameModeManager::Get':0x67DCD0,'App::cGameModeManager::GetActiveMode':0x7D8380,

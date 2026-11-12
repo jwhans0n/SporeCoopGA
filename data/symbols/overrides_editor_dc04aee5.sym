@@ -146,6 +146,11 @@ SporeCoop::Editor::AuxiliaryDragStep=0x00F02040 ; verified static: thiscall(tool
 SporeCoop::Editor::CopyClassRows=0x00DFF8B0 ; verified static: thiscall(classMap,const classMap*)->destination,ret4; DFFA00 deep-copies vector rows27E8 through DFF2C0 and DFEE50; source descriptor begin/end/capacity is borrowed only during call
 SporeCoop::Editor::CopyClass=0x00DFEE50 ; verified static: thiscall(classData,const classData*)->destination,ret4; DFF2C0 calls with row+8; owns act vectors, behavior/text strings and graphics keys
 SporeCoop::Editor::CopyClassActs=0x00DFEC20 ; verified static: thiscall(classActs,const classActs*)->destination,ret4 DFED52; owning assignment of 4E0 rows, classData+70, source reads begin/end only
+SporeCoop::Editor::IsCreatureClass=0x00F255B0 ; verified static: thiscall(classData)->boolAL,plain ret F255C5; EECD40 primary key category equals CF56099A; F43A17 replacement predicate
+SporeCoop::Editor::ClassActCtor=0x00F2D520 ; verified static: thiscall(storage4E0)->classAct,plain ret F2D675; initializes owning behavior vectors and dialogue strings; F43A10 caller
+SporeCoop::Editor::ClassActDtor=0x00DFBB70 ; verified static: thiscall(classAct),plain ret DFBC48; releases owning behavior vectors and dialogue strings; F43A74 caller
+SporeCoop::Editor::InitializeClassAct=0x00F428F0 ; verified static: register ABI EAX=const ResourceKey*,ESI=constructed classAct; plain ret F42C5E,EBX/EDI preserved; initializes native model defaults, F43A21..27/F46397..A2 callers
+SporeCoop::Editor::FillClassActs=0x00F43790 ; verified static: thiscall(classActs,uint32 count,const classAct*),ret8 F4389E; owns fill/resize of 4E0 act rows; F43A50..53 caller
 SporeCoop::Editor::CopyMarkerActs=0x00DFCEB0 ; verified static: thiscall(markerActs,const markerActs*)->destination,ret4 DFCFE5; owning assignment of 34 rows at marker+28, destroys/copies patrol vectors at row+1C
 SporeCoop::Editor::InsertAct=0x00F44620 ; verified static: thiscall(actVector,position,const act*)->row,ret8 F44670/F4468D; owning insert of 534 rows, used by F448E0
 SporeCoop::Editor::InsertClassAct=0x00F43720 ; verified static: thiscall(classActs,position,const classAct*)->row,ret8 F43770/F4378D; owning insert of 4E0 rows, used by F448E0
@@ -169,3 +174,7 @@ SporeCoop::Editor::Free=0x00F47220 ; verified static: cdecl(void* allocation),pl
 SporeCoop::Editor::MarkerPoolReserve=0x00F2E0D0 ; verified static: void thiscall(markerPool*,uint32 capacity),ret4; no shrink; empty reserve allocates capacity*238 with no per-slot initialization; only begin/end/cap change, actor caches are not rebound
 SporeCoop::Editor::ReadMarkerRows=0x00F2F050 ; verified static: cdecl(serializer*,markerPool*),plain ret; clears rows without shrinking capacity, reads exact count, reserves that count before constructor/read/insertion; no live actor binding
 SporeCoop::Editor::ScenarioResourceVTable=0x0148C644 ; verified static: primary native ScenarioResource interface; constructorF2E694, AddRef0/Release4; empty marker reserve is acquired before actor publication
+# Native tooltip construction/text ownership, BUG-0631 and BUG-0632.
+SporeCoop::Editor::TooltipCtor=0x00835DA0 ; verified static: thiscall(self)->self, ret; UTFWin allocation size68; initializes native tooltips layout and owning strings; E01A28 caller.
+SporeCoop::Editor::TooltipVTable=0x0141B0A8 ; verified static: primary UTFWin tooltip vtable written by835DB3 and835E73; bounded inspection only, never a capability.
+SporeCoop::Editor::TooltipText=0x00835FB0 ; verified static: thiscall(self,const char16_t* text,int locale,bool refresh), retC at836024; owning text at24; E01A50..E01A60 passes(text,-1,true).

@@ -28,7 +28,7 @@ ASSET_PAGE_ROWS, ASSET_MAX_ROWS = 24, 8192
 
 
 def creation_command(line):
-    if line in ('coop.editor assets', 'coop.editor creations'):
+    if line in ('coop.editor assets', 'coop.editor creations', 'coop.editor browser'):
         return True
     page = re.fullmatch(r'coop\.editor assets ([0-9]{1,4}) ([0-9]{1,2})', line)
     if page:
@@ -58,6 +58,42 @@ class CreationGame(PublicGame):
 
     def asset_text(self):
         return fetch_assets(self.call)
+
+    def native_create(self, family, editor_id=None):
+        """Measured Adventure palette/picker input, without mod creation buttons."""
+        if family not in FAMILIES:raise FixtureError('Unsupported native picker family')
+        self.call('coop.uistate 0')
+        self.click({'creature':50,'building':136,'vehicle':178,'spaceship':178}[family],40)
+        self.call('wait.frames 25 15000')
+        if not self.control(0x52DF67AF):
+            self.click({'creature':50,'building':136,'vehicle':178,'spaceship':178}[family],40)
+            self.call('wait.frames 25 15000')
+        rows=assets(self.asset_text())['rows'].values()
+        types={TYPES[FAMILIES.index(family)]}
+        if family in ('vehicle','spaceship'):types={TYPES[2],TYPES[3]}
+        count=sum(row['key'][2]in types for row in rows)
+        if count>=10:raise FixtureError('Measured native picker fixture needs a visible empty card')
+        for _ in range(4):
+            if self.control(0x14580F81):break
+            self.click(88+156*(count%2),165+111*(count//2));self.call('wait.frames 25 15000')
+        self.wait('native Create Your Own tile',lambda:self.control(0x14580F81))
+        if family=='building':
+            category={0x99E92F05:240,0x4E3F7777:277,0xBDD15F3D:310,0x47C10953:310,0x72C49181:350}.get(editor_id,240)
+            self.click(category,88);self.call('wait.frames 25 15000')
+        # Retry only while the exact native tile remains visible. A category
+        # transition can finish after its tile first becomes visible.
+        for _ in range(4):
+            tile=self.control(0x14580F81)
+            if not tile:return
+            self.click((tile[0]+tile[2])//2,(tile[1]+tile[3])//2)
+            self.call('wait.frames 30 15000')
+
+    def native_edit(self, class_id):
+        text=self.call('coop.editor browser')
+        match=re.search(r'^card class='+re.escape(class_id)+r' key=\S+ revision=\d+ rect=(-?\d+),(-?\d+),(-?\d+),(-?\d+)',text,re.M)
+        if not match:raise FixtureError('Exact native hovered cast card is not displayed: '+class_id)
+        x1,y1,x2,y2=map(int,match.groups());self.call(f'move {(x1+x2)//2} {(y1+y2)//2}')
+        self.call('wait.frames 15 15000');self.click(x2-15,y2-15)
 
     def choose_card(self, name):
         def point():
@@ -285,11 +321,7 @@ def run(args):
         return bool(re.search(r'creation_editor active=1 phase=1\b', game.call('coop.editor creations')))
 
     def open_new(game, family):
-        game.call('coop.uistate 0');game.click_control(NEW);game.click_control(CHOICE+FAMILIES.index(family))
-        # These families expose native subtypes before entry. The default
-        # recipes use City hall / Military land, the first measured variants.
-        if family in ('building', 'vehicle'):
-            game.click_control(0xC00F0340)
+        game.native_create(family)
         game.wait('local native '+family+' editor', lambda: designing(game))
 
     def returned(game):
@@ -369,7 +401,7 @@ def run(args):
         # that class's behavior. Content commit must retain the later behavior.
         cls, name = created[('creature', guest.instance)]
         input_steps(host, recipe['families']['creature']['select'], name)
-        host.click_control(EDIT);host.wait('edit another participant creation', lambda: designing(host))
+        host.native_edit(cls);host.wait('edit another participant creation', lambda: designing(host))
         baseline = canonical();old = baseline['rows'][cls]
         input_steps(guest, recipe['families']['creature']['select'], name)
         _, changed = change_once(guest, 'behavior change during content editing',

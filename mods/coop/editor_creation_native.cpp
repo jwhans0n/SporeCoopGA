@@ -320,9 +320,9 @@ std::optional<editor::ObjectId> resolve_cast_asset(const editor::Document& docum
     }
     return found;
 }
-bool prepare_cast_save(const editor_native::Snapshot& base,const editor::ResourceKey& saved,
-                       std::optional<editor::ObjectId> target,editor_native::Snapshot& result,std::string& error){
-    if(!supported || !saved.instance || !saved.group || !family(saved.type)){
+static bool prepare_cast_content(const editor_native::Snapshot& base,const editor::ResourceKey& saved,
+                       std::optional<editor::ObjectId> target,editor_native::Snapshot& result,std::string& error,bool creation){
+    if(!supported || !saved.instance || !saved.group || (creation&&!family(saved.type))){
         error="The saved creation cannot be used by the shared adventure";return false;
     }
     if(target && !base.document.classes.contains(*target)){error="The creation's cast entry no longer exists";return false;}
@@ -332,7 +332,7 @@ bool prepare_cast_save(const editor_native::Snapshot& base,const editor::Resourc
             auto* row=begin;for(;row!=end;row+=0x27E8)if(skg::field<uint32_t>(row,0)==uint32_t(target->id))break;
             if(row==end){reason="The cast content target is absent from the owned snapshot";return false;}
             auto* primary=row+8;
-            if(skg::field<editor::ResourceKey>(primary,0).type!=saved.type){reason="Editing cannot change the creation's native resource family";return false;}
+            if(creation&&skg::field<editor::ResourceKey>(primary,0).type!=saved.type){reason="Editing cannot change the creation's native resource family";return false;}
             skg::field<editor::ResourceKey>(primary,0)=saved;
             skg::field<uint32_t>(primary,0xC)=0;skg::field<uint64_t>(primary,0x10)=UINT64_MAX;
             return true;
@@ -349,6 +349,71 @@ bool prepare_cast_save(const editor_native::Snapshot& base,const editor::Resourc
         return true;
     },result,error);
 }
+bool prepare_cast_save(const editor_native::Snapshot& base,const editor::ResourceKey& saved,
+                       std::optional<editor::ObjectId> target,editor_native::Snapshot& result,std::string& error){
+    return prepare_cast_content(base,saved,target,result,error,true);
+}
+bool prepare_cast_drop(const editor_native::Snapshot& base,const editor_native::CastDrop& drop,
+                       editor_native::Snapshot& out,std::string& error){
+    if(!base.document.classes.contains(drop.source) || drop.target==drop.source){
+        error="The source asset changed or was dropped onto itself";return false;
+    }
+    bool matches=false;
+    for(const auto& [id,row]:base.document.class_settings)if(row.class_id==drop.source){
+        (void)id;const auto value=row.properties.find(editor::kClassAssetResourceProperty);
+        matches=value!=row.properties.end() && value->second==editor::Value{drop.asset};
+    }
+    const auto copy=H?H->sym("SporeCoop::Editor::CopyClassActs"):0;
+    if(!matches || !copy){error="The dragged asset's current native content is unavailable";return false;}
+    editor_native::Snapshot content;
+    // Native card copying also supports stock props/effects. Creation editor
+    // family restrictions belong only to New/Edit, never to existing cast data.
+    if(!prepare_cast_content(base,drop.asset,drop.target,content,error,false))return false;
+    auto target=drop.target;
+    if(!target)for(const auto& id:content.document.classes)if(!base.document.classes.contains(id)){
+        if(target){error="The drop allocated more than one cast entry";return false;}target=id;
+    }
+    if(!target){error="The native drop did not allocate a cast entry";return false;}
+    return editor_native::edit_owned_snapshot(content,[&](void* resource,std::string& reason){
+        uint8_t* begin=nullptr;uint8_t* end=nullptr;if(!rows(resource,begin,end,reason))return false;
+        uint8_t *source=nullptr,*destination=nullptr;
+        for(auto row=begin;row!=end;row+=0x27E8){
+            if(skg::field<uint32_t>(row,0)==uint32_t(drop.source.id))source=row+8;
+            if(skg::field<uint32_t>(row,0)==uint32_t(target->id))destination=row+8;
+        }
+        if(!source || !destination || source==destination){reason="The drop's owned class mapping is absent";return false;}
+        // ED3A30 replaces content in an occupied card. Only an originally empty
+        // card reaches ED45CD's source-act copy. Occupied creature cards reset
+        // acts to the new model's defaults; other families retain their acts.
+        skg::field<uint32_t>(destination,0x18)=skg::field<uint32_t>(source,0x18);
+        if(!drop.target)skg::thiscall<void*>(copy,destination+0x70,source+0x70);
+        else{
+            skg::field<uint8_t>(destination,0x1C)=0;
+            const auto creature=H->sym("SporeCoop::Editor::IsCreatureClass");
+            if(!creature){reason="The native replacement classifier is unavailable";return false;}
+            if(skg::thiscall<bool>(creature,destination)){
+                const auto ctor=H->sym("SporeCoop::Editor::ClassActCtor"),dtor=H->sym("SporeCoop::Editor::ClassActDtor");
+                const auto init=H->sym("SporeCoop::Editor::InitializeClassAct"),fill=H->sym("SporeCoop::Editor::FillClassActs");
+                const auto first=skg::field<uintptr_t>(resource,0x23C),last=skg::field<uintptr_t>(resource,0x240);
+                if(!ctor||!dtor||!init||!fill||last<first||(last-first)%0x534||(last-first)/0x534>8){
+                    reason="The native replacement defaults are unavailable";return false;
+                }
+                std::array<uint8_t,0x4E0> act;
+                skg::thiscall<void*>(ctor,act.data());
+                struct Cleanup{uintptr_t dtor;void* act;~Cleanup(){skg::thiscall<void>(dtor,act);}} cleanup{dtor,act.data()};
+                // Verified F43A21/F4639E register ABI: EAX=key, ESI=owned act,
+                // plain ret, EBX/EDI preserved. No borrowed native vectors.
+                auto* key=&drop.asset;auto* data=act.data();
+                asm volatile("call *%2" : "+a"(key), "+S"(data) : "r"(init)
+                    : "ecx","edx","xmm0","xmm1","xmm2","xmm3","xmm4","xmm5","xmm6","xmm7","memory","cc");
+                skg::thiscall<void>(fill,destination+0x70,uint32_t((last-first)/0x534),act.data());
+                skg::field<uint32_t>(destination,0x24)=0;skg::field<uint32_t>(destination,0x48)=0;
+            }
+        }
+        return true;
+    },out,error);
+}
+
 bool immutable_version(const editor::ProjectId& project,const editor::ResourceKey& source,const std::vector<dbpf::Record>& source_records,
                        const std::function<bool(const editor::ResourceKey&)>& reserved,
                        editor::ResourceKey& version,std::vector<dbpf::Record>& records,std::string& error){

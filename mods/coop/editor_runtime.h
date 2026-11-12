@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -29,6 +30,14 @@ struct TransformHint {
     uint32_t color = 0xFF80C8FF;
     bool locked = false;
 };
+struct AssetOwnerView {
+    editor::Peer peer;std::string name;uint32_t color=0;
+    bool local=false,content=false,properties=false;
+};
+struct AssetCardView {
+    editor::ObjectId class_id;editor::ResourceKey asset;editor::Revision content_revision=0;
+    bool editable=false;std::vector<AssetOwnerView> owners;
+};
 
 struct View {
     bool visible = false, active = false, offered = false, host = false;
@@ -48,6 +57,7 @@ struct View {
     std::vector<TransformHint> previews;
     std::vector<TransformHint> selections;
     std::vector<std::string> locks;
+    std::vector<AssetCardView> assets;
     bool world_hints = false;
 };
 
@@ -97,7 +107,8 @@ void approve_playtest(bool);
 void choose_test(int choice); // 0 solo, 1 together, 2 dismiss.
 void edit_acts(int action); // 0 add, 1 delete, 2 left, 3 right.
 void create_asset(uint32_t resource_type,uint32_t editor_id=0);
-void edit_asset(editor::ObjectId class_id);
+void edit_asset(editor::ObjectId class_id,editor::ResourceKey expected={},
+                std::optional<editor::Revision> expected_revision={});
 void set_extended_complexity(bool);
 void resolve_join(int choice); // 0 Save, 1 Discard, 2 Cancel.
 std::string debug(const std::vector<std::string>& args);

@@ -493,7 +493,7 @@ class WindowsLab:
                 exe = self.installation / 'SporebinEP1' / 'SporeApp.exe'
                 command = [str(exe), '-w', '-sporekit-instance:' + str(instance), '-sporekit-profile:' + profile]
                 if self.hidden:
-                    command.append('-sporekit-invisible')
+                    command.extend(('-sporekit-invisible', '-sporekit-exclusive-input'))
                 process = DesktopProcess(command, self.desktop.name, cwd=exe.parent)
                 self.processes.append((process, instance, profile))
                 self.record()

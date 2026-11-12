@@ -25,6 +25,7 @@ import hashlib
 PROFILES={
     'creature':dict(family='creature',editor_id=0x465C50BA,model_type=0x9EA3031A,model_name='AnimalCreature',choice=None),
     'building-house':dict(family='building',editor_id=0x4E3F7777,model_type=0x4E3F7777,model_name='BuildingHouse',choice=0xC00F0341),
+    'building-entertainment':dict(family='building',editor_id=0x72C49181,model_type=0x72C49181,model_name='BuildingEntertainment',choice=0xC00F0343),
     'vehicle-military-land':dict(family='vehicle',editor_id=0x7D433FAD,model_type=0x7D433FAD,model_name='VehicleMilitaryLand',choice=0xC00F0340),
     'spaceship':dict(family='spaceship',editor_id=0x96B24187,model_type=0x98E03C0D,model_name='UFO',choice=None),
 }
@@ -151,6 +152,8 @@ def other_request_errors(row,profile):
     if row.get('model_type')!=expected['model_type']or row.get('model_type_name')!=expected['model_name']:errors.append('other editor family/model changed')
     if row.get('new_asset')is True:
         if row.get('request_editor_id')!=expected['editor_id']:errors.append('other New editor profile changed')
+    elif row.get('new_asset')is False and row.get('source_key')==[0,0,0]:
+        if row.get('request_editor_id')!=expected['editor_id']:errors.append('other picker New editor profile changed')
     elif row.get('new_asset')is False:
         source=row.get('source_key',[])
         if row.get('request_editor_id')not in(0xFFFFFFFF,expected['editor_id']) or len(source)!=3 or not source[0]or source[1]!=TYPES[FAMILIES.index(expected['family'])]:errors.append('other Edit source/family changed')
@@ -192,7 +195,7 @@ def request_errors(row,profile,source=None):
         errors.append('wrong exact native request/model subtype')
     if source:
         if row.get('new_asset')is not False or row.get('source_key')!=[source[1],source[2],source[0]]:errors.append('Edit request/source changed')
-    elif not row.get('new_asset'):errors.append('request is not the original New operation')
+    elif not row.get('new_asset') and row.get('source_key')!=[0,0,0]:errors.append('request is not the original New operation')
     return errors
 
 def saved_asset_result(before,current,profile,target=None):
@@ -409,7 +412,10 @@ def run(args):
         record('before')
         if args.stage=='enter':
             author.call('coop.uistate 0')
-            if result['target_class']:author.click_control(EDIT)
+            if not getattr(args,'legacy_toolbar',False):
+                if result['target_class']:author.native_edit(result['target_class'])
+                else:author.native_create(PROFILES[args.profile]['family'],PROFILES[args.profile]['editor_id'])
+            elif result['target_class']:author.click_control(EDIT)
             else:
                 author.click_control(NEW);author.click_control(CHOICE+FAMILIES.index(PROFILES[args.profile]['family']))
                 choice=PROFILES[args.profile]['choice']
@@ -557,6 +563,7 @@ def self_test():
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--execute',action='store_true');p.add_argument('--self-test',action='store_true');p.add_argument('--screenshots',action='store_true')
+    p.add_argument('--legacy-toolbar',action='store_true',help='Old-build reproduction only; candidate uses native picker/hover controls')
     p.add_argument('--metadata',type=Path);p.add_argument('--candidate');p.add_argument('--instances',nargs='+',type=int,default=[95,96])
     p.add_argument('--author',type=int);p.add_argument('--profile',choices=PROFILES);p.add_argument('--stage',choices=('enter','steps','inspect','finish','cancel'))
     p.add_argument('--allow-other-editors',action='store_true',help='Explicitly pin other already-designing sessions; author must start ready')

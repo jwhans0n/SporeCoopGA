@@ -46,6 +46,15 @@ void admission_log(SkMod*,int,const char* format,...){
     CHECK(size>=0 && size<int(text.size()));admission_logs.emplace_back(text.data());
 }
 editor::ResourceKey source{0x29001234,0x2B978C46,0x40626200};
+bool drop_fixture=false;
+unsigned copied_acts=0,act_ctors=0,act_dtors=0;
+constexpr uint32_t fixture_act=0xFF000001,fixture_disguise=0xFF000002;
+void* SK_THISCALL copy_acts(void* to,const void* from){++copied_acts;skg::field<uint32_t>(to,0x14)=skg::field<uint32_t>(const_cast<void*>(from),0x14);return to;}
+bool SK_THISCALL creature_class(void* p){return skg::field<editor::ResourceKey>(p,0).type==0x2B978C46;}
+void* SK_THISCALL act_ctor(void* p){++act_ctors;std::memset(p,0,0x4E0);return p;}
+void SK_THISCALL act_dtor(void*){++act_dtors;}
+__attribute__((naked)) void act_defaults(){asm volatile("movl $42, 0x14(%esi); ret");}
+void SK_THISCALL fill_acts(void* p,uint32_t count,const void* act){CHECK(count==2);skg::field<uint32_t>(p,0x14)=skg::field<uint32_t>(const_cast<void*>(act),0x14);}
 std::array<void*,8> admission_manager_vt{};
 std::array<void*,4> admission_model_vt{};
 void* admission_manager=nullptr;
@@ -133,6 +142,12 @@ uintptr_t sym(const char* name){
     if(key=="SporeCoop::CreationEditor::GetClass")return uintptr_t(get_class);
     if(key=="SporeCoop::CreationEditor::AssetModelType")return uintptr_t(model_type);
     if(key=="SporeCoop::Editor::ImportClass")return uintptr_t(native_import);
+    if(key=="SporeCoop::Editor::CopyClassActs")return uintptr_t(copy_acts);
+    if(key=="SporeCoop::Editor::IsCreatureClass")return uintptr_t(creature_class);
+    if(key=="SporeCoop::Editor::ClassActCtor")return uintptr_t(act_ctor);
+    if(key=="SporeCoop::Editor::ClassActDtor")return uintptr_t(act_dtor);
+    if(key=="SporeCoop::Editor::InitializeClassAct")return uintptr_t(act_defaults);
+    if(key=="SporeCoop::Editor::FillClassActs")return uintptr_t(fill_acts);
     if(key=="SporeCoop::CreationEditor::RequestCtor")return uintptr_t(ctor);
     if(key=="SporeCoop::CreationEditor::Allocate")return uintptr_t(allocate);
     if(key=="Editors::EditorRequest::Submit")return uintptr_t(submit_entry);
@@ -198,11 +213,18 @@ State state(){State result;result.generation=admission_generation;return result;
 bool edit_owned_snapshot(const Snapshot& base,const std::function<bool(void*,std::string&)>& edit,Snapshot& out,std::string& error){
     ++owned_edits;
     owned_resource.fill(0);owned_classes.clear();
+    std::array<uint8_t,2*0x534> acts{};
+    if(drop_fixture){skg::field<void*>(owned_resource.data(),0x23C)=acts.data();skg::field<void*>(owned_resource.data(),0x240)=acts.data()+acts.size();}
     for(const auto& [id,settings]:base.document.class_settings){
         (void)id;const auto at=owned_classes.size();owned_classes.resize(at+0x27E8);
         auto* row=owned_classes.data()+at;skg::field<uint32_t>(row,0)=uint32_t(settings.class_id.id);
         skg::field<editor::ResourceKey>(row,8)=std::get<editor::ResourceKey>(settings.properties.at(editor::kClassAssetResourceProperty));
         row[0x180]=0xA5;
+        if(drop_fixture){
+            skg::field<uint32_t>(row+8,0x84)=uint32_t(std::get<int64_t>(settings.properties.at(fixture_act)));
+            skg::field<uint32_t>(row+8,0x24)=uint32_t(std::get<int64_t>(settings.properties.at(fixture_disguise)));
+            skg::field<uint32_t>(row+8,0x48)=skg::field<uint32_t>(row+8,0x24);
+        }
     }
     row_pointers();skg::field<uint32_t>(owned_resource.data(),0x2C0C)=base.document.next_class;
     if(!edit(owned_resource.data(),error))return false;
@@ -212,6 +234,7 @@ bool edit_owned_snapshot(const Snapshot& base,const std::function<bool(void*,std
         editor::ObjectId cls{(2ull<<32)|index,1},setting{(5ull<<32)|index,1};
         auto& target=out.document.class_settings[setting];target.object=setting;target.class_id=cls;
         target.properties[editor::kClassAssetResourceProperty]=skg::field<editor::ResourceKey>(row,8);
+        if(drop_fixture){target.properties[fixture_act]=int64_t(skg::field<uint32_t>(row+8,0x84));target.properties[fixture_disguise]=int64_t(skg::field<uint32_t>(row+8,0x24));CHECK(skg::field<uint32_t>(row+8,0x24)==skg::field<uint32_t>(row+8,0x48));}
         out.document.classes.insert(cls);
     }
     return true;
@@ -458,6 +481,28 @@ static void test_immutable_alias_has_its_own_local_metadata_identity(){
 int main(int argc,char** argv){
     if(argc==2&&std::string(argv[1])=="--alias-identity-only"){test_immutable_alias_has_its_own_local_metadata_identity();std::printf("immutable alias metadata: %u checks passed\n",checks);return 0;}
     if(argc!=1)return 2;
+    {
+        initialize();drop_fixture=true;copied_acts=act_ctors=act_dtors=0;
+        editor_native::Snapshot base,out;std::string error;
+        const editor::ObjectId a{(2ull<<32)|7,1},b{(2ull<<32)|8,1},sa{(5ull<<32)|7,1},sb{(5ull<<32)|8,1},sc{(5ull<<32)|9,1};
+        base.document.classes={a,b};base.document.next_class=9;
+        base.document.class_settings[sa]={sa,a,{},{{editor::kClassAssetResourceProperty,source},{fixture_act,int64_t(81)},{fixture_disguise,int64_t(2)}}};
+        base.document.class_settings[sb]={sb,b,{},{{editor::kClassAssetResourceProperty,source},{fixture_act,int64_t(19)},{fixture_disguise,int64_t(2)}}};
+        CHECK(editor_creation_native::prepare_cast_drop(base,{a,{},source},out,error));
+        CHECK(copied_acts==1&&!act_ctors&&out.document.class_settings.at(sc).properties.at(fixture_act)==editor::Value{int64_t(81)});
+        CHECK(editor_creation_native::prepare_cast_drop(base,{a,b,source},out,error));
+        CHECK(copied_acts==1&&act_ctors==1&&act_dtors==1&&live_class_writes==0);
+        CHECK(out.document.class_settings.at(sb).properties.at(fixture_act)==editor::Value{int64_t(42)});
+        CHECK(out.document.class_settings.at(sb).properties.at(fixture_disguise)==editor::Value{int64_t(0)});
+        auto building=source;building.type=0x2399BE55;base.document.class_settings.at(sa).properties[editor::kClassAssetResourceProperty]=building;
+        CHECK(editor_creation_native::prepare_cast_drop(base,{a,b,building},out,error));
+        CHECK(act_ctors==1&&act_dtors==1&&copied_acts==1&&out.document.class_settings.at(sb).properties.at(fixture_act)==editor::Value{int64_t(19)});
+        CHECK(out.document.class_settings.at(sb).properties.at(fixture_disguise)==editor::Value{int64_t(2)});
+        const auto before=out.document;
+        CHECK(!editor_creation_native::prepare_cast_drop(base,{a,b,source},out,error)&&out.document==before);
+        CHECK(!editor_creation_native::prepare_cast_drop(base,{a,a,building},out,error)&&out.document==before);
+        drop_fixture=false;
+    }
     test_immutable_alias_has_its_own_local_metadata_identity();
     test_ga_new_routes();
     test_native_model_admission();

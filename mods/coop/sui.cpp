@@ -505,9 +505,13 @@ static int tramp(void* user, void* window, const void* msg)
 
 void* add_handler(Win w, std::function<bool(Win, const Msg&)> fn)
 {
+    return add_handler(w,std::move(fn),0);
+}
+void* add_handler(Win w, std::function<bool(Win, const Msg&)> fn, int event_flags)
+{
     // the box is never freed: after a hot reload the old handler is disabled, not deleted
     auto* box = new HandlerBox{std::move(fn)};
-    void* p = H->ui_winproc(M, tramp, box, 0);
+    void* p = H->ui_winproc(M, tramp, box, event_flags);
     vcall<void>(w, 0x104 / 4, p);
     return p;
 }
@@ -520,6 +524,39 @@ void remove_handler(Win w, void* h)
     if (w)
         vcall<void>(w, 0x108 / 4, h);
     obj_release(h);
+}
+
+void tooltip_text(void* tooltip,const std::string& text){
+    const auto setter=H->sym("SporeCoop::Editor::TooltipText");
+    if(!tooltip || !setter)return;
+    const auto value=utf16(text);
+    thiscall<void>(setter,tooltip,value.c_str(),int32_t(-1),true);
+}
+std::string tooltip_caption(Win window){
+    if(!window)return {};
+    const auto type=H->sym("SporeCoop::Editor::TooltipVTable");void* procedure=nullptr;
+    for(unsigned i=0;i<64;++i){
+        procedure=vcall<void*>(window,0x10C/4,procedure);if(!procedure)return {};
+        if(!skg::readable(procedure,0x30) || skg::field<uintptr_t>(procedure,0)!=type)continue;
+        auto* begin=skg::field<const char16_t*>(procedure,0x24);
+        auto* end=skg::field<const char16_t*>(procedure,0x28);
+        const auto first=reinterpret_cast<uintptr_t>(begin),last=reinterpret_cast<uintptr_t>(end);
+        if(last<first || (last-first)%2 || last-first>4096 || !skg::readable(begin,last-first))return {};
+        const std::u16string value(begin,end);return utf8(value.c_str());
+    }
+    return {};
+}
+void* tooltip(Win window,const std::string& text){
+    const auto ctor=H->sym("SporeCoop::Editor::TooltipCtor");
+    if(!window || !ctor || !H->sym("SporeCoop::Editor::TooltipText"))return nullptr;
+    auto* object=utf_new(0x68);if(!object)return nullptr;
+    thiscall<void*>(ctor,object);obj_addref(object);
+    tooltip_text(object,text);vcall<void>(window,0x104/4,object);return object;
+}
+void remove_tooltip(Win window,void* object){
+    if(!object)return;
+    if(window)vcall<void>(window,0x108/4,object);
+    obj_release(object);
 }
 
 // ---------------- devkit ----------------

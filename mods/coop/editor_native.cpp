@@ -3881,6 +3881,27 @@ uint32_t SK_THISCALL import_native(void* self,const editor::ResourceKey* key){
 }
 bool SK_THISCALL palette_message(void* self,uint32_t message,uint32_t payload){
     editor_native::state();
+    if(!applying && active() && message==0x07C7B9BB && self==palette_listener()){
+        // BUG-0629: ImportClass may defer/return UINT_MAX while ownership is
+        // pending. The outer handler still copies class acts through a null
+        // GetClass result. Consume the entire drop before native history.
+        auto* input=reinterpret_cast<uint8_t*>(uintptr_t(payload));
+        if(skg::readable(input,0x28)){
+            const auto destination=cast_card(skg::field<void*>(input,0x20));
+            const auto source=cast_card(skg::field<void*>(input,0x24));
+            // The separately fenced captain path never copies class acts.
+            if(destination && destination->index==-2 && source && source->index>=0)
+                return original_palette_message(self,message,payload);
+            if(source && destination && source->index>=0 && destination->index>=-1 &&
+               tracks_cast() && C.cast_drop && !speech_pending()){
+                CastDrop drop{{(2ull<<32)|uint32_t(source->index),1},{},source->asset};
+                if(destination->index>=0)drop.target=editor::ObjectId{(2ull<<32)|uint32_t(destination->index),1};
+                C.cast_drop(std::move(drop));return false;
+            }
+        }
+        if(C.notice)C.notice("The asset card changed before the drop. Drag its current card again.");
+        return false;
+    }
     if(!applying && active() && message==0x07326686 && self==palette_listener()){
         if(speech_pending() || !tracks_cast() || !C.remove_class_gate)return false;
         if(!C.remove_class_gate(payload)){
@@ -6869,6 +6890,28 @@ void cancel_pose_prepare(PosePrepareTicket ticket){
     if(!native_owner_thread || GetCurrentThreadId()!=native_owner_thread)return;
     ServiceScope service_scope;
     if(staged_pose_prepare && staged_pose_prepare->ticket==ticket && GetCurrentThreadId()==native_owner_thread)clear_staged_pose_prepare();
+}
+
+std::optional<CastCard> cast_card(void* window){
+    if(!native_slot(window,0x0C/4))return std::nullopt;
+    auto* component=skg::vcall<void*>(window,0x0C/4,uint32_t(0x0722DE63));
+    if(!skg::readable(component,0x14) || !native_slot(component,0x2C/4))return std::nullopt;
+    const auto index=skg::field<int32_t>(component,0x10);
+    if(index<0)return CastCard{index,{}};
+    auto* key=skg::vcall<const editor::ResourceKey*>(component,0x2C/4);
+    if(!skg::readable(key,sizeof(*key)))return std::nullopt;
+    return CastCard{index,*key};
+}
+std::optional<CastCard> cast_window(void* window){
+    if(auto card=cast_card(window))return card;
+    if(!native_slot(window,0x10C/4))return std::nullopt;
+    void* procedure=nullptr;std::set<void*> seen;
+    for(unsigned i=0;i<64;++i){
+        procedure=skg::vcall<void*>(window,0x10C/4,procedure);
+        if(!procedure||!seen.insert(procedure).second)return std::nullopt;
+        if(auto card=cast_card(procedure))return card;
+    }
+    return std::nullopt;
 }
 
 bool edit_owned_snapshot(const Snapshot& base,const std::function<bool(void*,std::string&)>& edit,

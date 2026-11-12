@@ -107,7 +107,13 @@ void set_fill_color(Win w, uint32_t argb);
 // ---- events ----
 // fn(window, message) -> handled. The handler object lives in sporekit (safe on hot reload).
 void* add_handler(Win w, std::function<bool(Win, const Msg&)> fn);
+void* add_handler(Win w, std::function<bool(Win, const Msg&)> fn, int event_flags);
 void remove_handler(Win w, void* handler);
+// Native tooltip procedure; caller owns one reference until remove_tooltip.
+void* tooltip(Win, const std::string& text);
+std::string tooltip_caption(Win);
+void tooltip_text(void*, const std::string& text);
+void remove_tooltip(Win, void*);
 
 uint32_t fnv(const char* s); // Spore id()
 

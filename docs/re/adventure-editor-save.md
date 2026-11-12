@@ -1665,3 +1665,74 @@ still match. This is read evidence during the existing hold, not ownership or a
 new saved field. The recovery/Save read scope uses the existing transition key
 and fenced callback; ordinary authoring scope stays unavailable. The cold
 Saved-versus-reopened payload comparison tracked by BUG-0622 is unchanged.
+
+## Shared cast card-drop boundary (2026-11-12)
+<a id="editor-cast-card-drop"></a>
+
+BUG-0629: the installed preview 10 client report faults in CopyClassActs+25,
+read78, with the native PaletteMessage+4FA on its stack. Exact GOG/LAA image
+ED4500..ED4618 handles 07C7B9BB: payload20 is the destination IWindow and24 the
+source. QueryInterface at virtual0C with0722DE63 supplies each card component;
+GetIndex7F55C0 is a leaf reading component10. Its virtual2C returns ResourceKey*.
+The handler starts history atED456F, calls ED3A30 to import/replace, and then
+looks up destination and source classes atED45E0/ED45F9 without null checks.
+The copy uses classData70. ED3A30 calls ImportClass for indexFFFFFFFF and the
+asset setter for existing classes; indexFFFFFFFE routes to the captain instead.
+The shared importer can defer ownership and returnFFFFFFFF; forwarding the
+outer native notification while that import waits is unsafe. A scoped value-only
+operation must consume the outer handler before StartHistory. Do not retain
+its stack payload or native card windows for deferred replay. The focused
+old-source FAIL is out/preview12/evidence/card-drop-red.log. The private baseline
+also reproduced the exact guest-created BuildingEntertainment drop onto an empty
+card: crash-20261112-150213-i46, CopyClassActs+25, read78, PaletteMessage+4FA.
+Evidence is out/preview12/baseline-drop and baseline-entertainment-{enter,parts,save}.
+
+Only an originally empty destination copies source acts (ED45BC checks -1).
+Occupied cards use SetClassAsset, clear visibility1C and update model type18.
+For a creature (F255B0 categoryCF56099A), native replacement constructs4E0 bytes
+with F2D520, initializes defaults with F428F0 (EAX=key, ESI=act, plain ret),
+fills the act vector through F43790(count,act), and clears disguise selectors24/48.
+DFBB70 destroys the temporary owning act. Other families retain destination
+acts. The detached implementation omits species-cache release and live actor
+refresh; normal committed projection handles scene refresh. Never copy owning
+act rows as bytes. Full native comparison and fixed-build acceptance are pending.
+
+## Native cast hover Edit presentation (2026-11-12)
+<a id="editor-native-cast-hover-edit"></a>
+
+The private baseline UI inventory contains9,484 IWindows. The actual Sporepedia
+Edit button is54ACB9F1, native36x37 with a SporeStdDrawable and localized Edit
+tooltip. It is under149371C4/067A3600. 0462C656 in64C88C is a message ID, not
+a window ID; it is absent from that complete inventory and must not be used
+as a style prototype. D48F0E8A also has Edit tooltips but belongs to category
+controls, not the creation Edit action. Prototype/style references are retained
+locally and retired with the UI context, not rediscovered through all cached
+windows on every hover update. The Create Your Own tile is14580F81.
+
+The live cast palette is52DF67AF, with card caption079591E0 under04A1CB70.
+33C58C8D is a Load hover scaffold, not the live palette. Card windows expose
+their class component through attached native procedures (GetNextWinProc10C),
+whereas drop payload20/24 already carry the component-capable objects. Resolve
+both to copied values; do not retain procedure pointers across callbacks.
+SporeKit's default WinProc event mask81 excludes enter/leave events. Card-only
+handlers explicitly subscribeC1 (basic, advanced and refresh40). Missing that
+bit produces an invisible Edit action even though normal clicks still work.
+
+Native Create Your Own sends an exact specialized editor request with a zero
+source key and new_asset20=false (measured Entertainment request flags34..3D
+00000101010001010000). The zero source distinguishes New from Edit; the custom
+toolbar's forced true flag is not a valid native-picker fixture requirement.
+Evidence: out/preview12/native-guest-building-enter/entered-native.json.
+Native imports deliberately refuse authoring after module reload. Cold-launch
+browser acceptance; reload can diagnose UI but is not a qualifying import run.
+
+Tooltip constructor835DA0 is thiscall(self)->self, ret, allocated as68 bytes by
+E01A16. Its primary vtable is141B0A8. Setter835FB0 takes(text,locale,refresh),
+retC at836024; the native call sequence atE01A50..E01A60 passes(text,-1,true).
+Text lives in the owning UTF16 string at24. GetNextWinProc961300 reads its
+list anchor at IWindow60 and procedure pointer at list-node08. These facts
+were verified in the supported original/LAA code; the passive private inventory
+and exact bytes are under out/preview12/evidence/.
+
+The SDK's [ShopperRequest header](https://github.com/Spore-Community/Spore-ModAPI/blob/master/Spore%20ModAPI/Spore/Sporepedia/ShopperRequest.h)
+also lists54ACB9F1 as a native shopper action. No SDK implementation is copied.

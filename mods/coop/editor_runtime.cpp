@@ -23,6 +23,7 @@
 #include "editor_native_save.h"
 #include "editor_saved_native.h"
 #include "editor_creation.h"
+#include "editor_creation_ui.h"
 #include "editor_creation_native.h"
 #include "editor_metrics.h"
 #include "editor_stage_metrics.h"
@@ -396,8 +397,19 @@ std::optional<TestMenu> test_menu;
 struct WaitingActs { TestMenu identity;int action=0;uint64_t started=0; };
 std::optional<WaitingActs> waiting_acts;
 std::deque<Action> actions;
-struct OpenCreation {uint32_t type=0;std::optional<editor::ObjectId> target;uint32_t editor_id=0;};
+struct OpenCreation {
+    uint32_t type=0;std::optional<editor::ObjectId> target;uint32_t editor_id=0;
+    editor::ResourceKey expected={};std::optional<editor::Revision> expected_revision={};
+};
 std::deque<OpenCreation> creation_actions;
+struct PendingCastDrop {
+    editor_native::GestureScope scope;
+    uint64_t generation=0,started=0;
+    editor_native::CastDrop input;
+    std::map<editor::ObjectId,editor::ClassActSettings> read;
+    std::set<std::pair<editor::Scope,uint64_t>> existing_leases;
+};
+std::shared_ptr<PendingCastDrop> cast_drop_action;
 std::optional<bool> complexity_request;
 std::optional<editor::ComplexityCapability> complexity_sample;
 bool complexity_publication_failed=false;
@@ -456,7 +468,7 @@ void retire_transport(bool explicit_stop) {
     if (deferred_offer && deferred_offer->transport <= retired_transport) deferred_offer.reset();
     close_preserve_offer = false; reopen_saved.reset();
     actions.clear(); if(!pending || !pending->tentative)pending.reset(); awaiting_operation.reset();
-    queued_exports.clear();queued_solo.reset();deferred_test.reset();creation_actions.clear();complexity_request.reset();
+    queued_exports.clear();queued_solo.reset();deferred_test.reset();creation_actions.clear();cast_drop_action.reset();complexity_request.reset();
     pending_preview_return.reset(); pending_preparation_cancel.reset();
     requested_scopes.clear(); guarded_placements.clear(); observed_lease_grants.clear();
     adventure_messages.clear(); adventure_message_bytes = 0;
@@ -2416,6 +2428,90 @@ bool creation_current(const editor_creation::Scope& scope){
     const auto& view=controller->view();
     return scope.project==view.context.project && scope.epoch==view.context.epoch && scope.author==view.local && view.phase==Phase::Ready;
 }
+void queue_cast_drop(editor_native::CastDrop input){
+    if(!controller || !cached.can_save || detached_scene() || cast_drop_action || input.target==input.source)return;
+    const auto& doc=controller->state().document;
+    if(!doc.classes.contains(input.source) || (input.target && !doc.classes.contains(*input.target)))return;
+    auto pin=std::make_shared<PendingCastDrop>();pin->scope=current_gesture_scope();
+    pin->generation=native_generation;pin->started=now_ms();pin->input=std::move(input);
+    for(const auto& held:controller->view().local_leases)pin->existing_leases.emplace(held.scope,held.token);
+    bool source=false;
+    for(const auto& [id,row]:doc.class_settings){
+        if(row.class_id==pin->input.source){
+            auto value=editor::value(doc,id,{editor::Field::Property,editor::kClassAssetResourceProperty});
+            if(!value || *value!=editor::Value{pin->input.asset})return;
+            source=true;pin->read.emplace(id,row);
+        }else if(pin->input.target && row.class_id==*pin->input.target)pin->read.emplace(id,row);
+    }
+    if(!source)return;
+    cast_drop_action=std::move(pin);tell("Waiting for asset drop ownership");schedule();
+}
+void service_cast_drop(){
+    const auto pin=cast_drop_action;if(!pin)return;
+    const auto cancel=[&](const std::string& reason){if(cast_drop_action==pin){
+        if(controller&&current_projection_scope()==pin->scope){
+            std::vector<editor::LeaseToken> release;
+            for(const auto& held:controller->view().local_leases){
+                const bool relevant=pin->input.target?
+                    (held.scope.object==*pin->input.target&&(held.scope.kind==editor::ScopeKind::Class||held.scope.kind==editor::ScopeKind::Content)):
+                    held.scope.kind==editor::ScopeKind::Structure;
+                if(relevant&&!pin->existing_leases.contains({held.scope,held.token}))release.push_back({held.scope,held.token});
+            }
+            std::string error;if(!release.empty())controller->release_leases(release,error);requested_scopes.clear();
+        }
+        cast_drop_action.reset();tell(reason);
+    }};
+    if(!controller || closing || frozen || recovery || local_creation || exporting ||
+       current_projection_scope()!=pin->scope || native_generation!=pin->generation ||
+       controller->view().phase!=Phase::Ready || now_ms()-pin->started>15000 || (GetKeyState(VK_ESCAPE)&0x8000)){
+        cancel("The asset drop was cancelled before changing the draft");return;
+    }
+    const auto& doc=controller->state().document;
+    for(const auto& [id,row]:pin->read){
+        auto current=doc.class_settings.find(id);
+        if(current==doc.class_settings.end() || current->second!=row){cancel("An asset changed while the drop was waiting. Drag its current card again.");return;}
+    }
+    if(pending || awaiting_operation || durable_commit || rejection_restore || !controller->settled())return;
+    const auto native=editor_native::state();
+    if(!native.ready || native.gesture || native.generation!=pin->generation)return;
+    std::vector<editor::Scope> scopes;
+    if(pin->input.target){scopes={{editor::ScopeKind::Class,*pin->input.target,{}},{editor::ScopeKind::Content,*pin->input.target,{}}};}
+    else scopes={{editor::ScopeKind::Structure,{},{}}};
+    if(!lease(scopes))return;
+    const auto revision=doc.revision;
+    editor_native::Snapshot changed;std::string error;std::vector<uint8_t> assets;
+    if(!editor_creation_native::prepare_cast_drop(current_native,pin->input,changed,error) || !collect_cast_assets(changed,assets,error)){
+        cancel(error.empty()?"The native asset drop could not be prepared":error);return;
+    }
+    // Owned native copy/serialization may call back into game code. Never
+    // submit a result built against a different canonical head or cohort.
+    if(cast_drop_action!=pin || !controller || current_projection_scope()!=pin->scope ||
+       native_generation!=pin->generation || controller->state().document.revision!=revision)return;
+    auto operation=request(editor::Intent::Forward);operation.summary=pin->input.target?"Replace cast asset from card":"Copy cast asset";
+    for(const auto& [id,row]:changed.document.class_settings){
+        const auto prior=doc.class_settings.find(id);
+        if(prior==doc.class_settings.end()){
+            editor::Mutation mutation;mutation.kind=editor::MutationKind::CreateClass;mutation.class_initial=row;
+            mutation.class_initial->revision=0;mutation.class_initial->field_revisions.clear();operation.mutations.push_back(std::move(mutation));
+        }else{
+            if(!pin->input.target || row.class_id!=*pin->input.target){
+                if(row.properties!=prior->second.properties){cancel("The drop changed an unrelated cast entry");return;}continue;
+            }
+            for(const auto& [key,value]:row.properties){
+                const editor::FieldKey field{editor::Field::Property,key};
+                if(editor::value(doc,id,field)==std::optional<editor::Value>{value})continue;
+                editor::Mutation mutation;mutation.target=id;mutation.field=field;mutation.value=value;
+                mutation.expected=editor::field_revision(doc,id,field);operation.mutations.push_back(std::move(mutation));
+            }
+        }
+    }
+    if(changed.document.placements!=doc.placements || changed.document.settings!=doc.settings || changed.document.terrain!=doc.terrain){
+        cancel("The drop changed unsupported data outside its cast entry");return;
+    }
+    if(operation.mutations.empty()){cancel("The asset drop made no changes");return;}
+    if(!controller->upload_assets(operation.operation,assets,error) || !controller->submit(operation,error)){cancel(error);return;}
+    awaiting_operation=operation.operation;cast_drop_action.reset();last_presence_value.reset();
+}
 bool creation_lease(const editor_creation::Scope& scope,editor::ObjectId target){
     if(!creation_current(scope))return false;
     return std::any_of(controller->view().local_leases.begin(),controller->view().local_leases.end(),[&](const auto& item){
@@ -3264,6 +3360,30 @@ void refresh() {
     next.can_recover = next.host && !closing && recovery_available && !recovery && (next.frozen || !next.active) &&
         (game::mode_id() == modes::kMenu || (native.editing && native.generation == native_generation));
     if (v.saved) { next.natively_saved = true; next.saved_revision = v.saved->saved_revision; }
+    // Host-derived display summaries are informational, never capabilities.
+    // Keep Class and Content independent so a properties lock does not disable
+    // editing another content version, or editing an unrelated cast entry.
+    for(const auto& [id,row]:doc.class_settings){
+        const auto content=row.properties.find(editor::kClassAssetResourceProperty);
+        const auto* key=content==row.properties.end()?nullptr:std::get_if<editor::ResourceKey>(&content->second);
+        if(!key)continue;
+        AssetCardView asset;asset.class_id=row.class_id;asset.asset=*key;
+        asset.content_revision=editor::field_revision(doc,id,{editor::Field::Property,editor::kClassAssetResourceProperty});
+        asset.editable=key->instance && (key->type==0x2B978C46 || key->type==0x2399BE55 || key->type==0x24682294 || key->type==0x476A98C7);
+        for(const auto& [slot,member]:v.members){
+            constexpr uint32_t colors[]={0xFF80C8FF,0xFFFFB060,0xFFB79CFF,0xFF70DF98};
+            AssetOwnerView owner{member.peer,member.name,colors[slot%4],member.peer==v.local};
+            for(const auto& scope:member.presence.owned_scopes){
+                if(scope.object==row.class_id){owner.content|=scope.kind==editor::ScopeKind::Content;owner.properties|=scope.kind==editor::ScopeKind::Class;}
+                if(scope.object==id && scope.kind==editor::ScopeKind::Field){
+                    owner.content|=scope.field==editor::FieldKey{editor::Field::Property,editor::kClassAssetResourceProperty};
+                    owner.properties|=scope.field!=editor::FieldKey{editor::Field::Property,editor::kClassAssetResourceProperty};
+                }
+            }
+            if(owner.content||owner.properties)asset.owners.push_back(std::move(owner));
+        }
+        next.assets.push_back(std::move(asset));
+    }
     for (const auto& [slot, member] : v.members) {
         constexpr uint32_t colors[]={0xFF80C8FF,0xFFFFB060,0xFFB79CFF,0xFF70DF98};
         const auto color=colors[slot%4];
@@ -3622,7 +3742,7 @@ void close_session(bool preserve_offer = false) {
         native_identity_lost=true;frozen=true;rejection_restore.reset();
     }
     waiting_history.reset();
-    queued_exports.clear();queued_solo.reset();deferred_test.reset();creation_actions.clear();complexity_request.reset();
+    queued_exports.clear();queued_solo.reset();deferred_test.reset();creation_actions.clear();cast_drop_action.reset();complexity_request.reset();
     pending_preparation_cancel.reset();
     preview_selection.reset();
     observed_lease_grants.clear();
@@ -4612,6 +4732,7 @@ void SK_CDECL drain(void*) {
         if(!(recovery&&recovery->controller_started))controller->tick(now_ms());
         if(durable_commit || native_pose_prepare){pump_staged_capture();refresh();return;}
         service_rejection_restore();
+        service_cast_drop();
         if(!creation_actions.empty() && !complexity_held() && !editor_creation::active() && !detached_scene() && !durable_commit && controller->view().phase==Phase::Ready){
             const auto action=creation_actions.front();creation_actions.pop_front();
             editor::ResourceKey source{0,action.type,0};std::string error;
@@ -4621,6 +4742,11 @@ void SK_CDECL drain(void*) {
                     if(field!=row.properties.end())if(auto key=std::get_if<editor::ResourceKey>(&field->second))source=*key;
                 }
                 if(!source.instance)error="The selected cast entry has no editable creation content";
+                if(action.expected_revision){
+                    for(const auto& [id,row]:controller->state().document.class_settings)if(row.class_id==*action.target &&
+                       (source!=action.expected || editor::field_revision(controller->state().document,id,{editor::Field::Property,editor::kClassAssetResourceProperty})!=*action.expected_revision))
+                        error="The hovered asset changed before editing began. Reopen its current card.";
+                }
             }
             if(error.empty() && !editor_creation::open(source.type,source,action.target,error,action.editor_id) && error.empty())error="The native creation editor is unavailable";
             if(!error.empty())tell(error);
@@ -4849,7 +4975,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     preview_selection.reset();pending_preview_return.reset();pending_preparation_cancel.reset();
     if (!C.session) return false;
     observed_transport = C.session->transport_generation(); retired_transport = 0; transport_teardown.reset(); deferred_offer.reset(); settled_cancellation.reset();
-    queued_exports.clear();queued_solo.reset();deferred_test.reset();creation_actions.clear();complexity_request.reset();
+    queued_exports.clear();queued_solo.reset();deferred_test.reset();creation_actions.clear();cast_drop_action.reset();complexity_request.reset();
     complexity_sample.reset();complexity_publication_failed=false;complexity_local_error.clear();
     editor_session::Callbacks callbacks;
     callbacks.command=receive_command;
@@ -5110,6 +5236,7 @@ bool init(const SkHost* host_api, SkMod* mod, Ctx context) {
     };
     controller = std::make_unique<editor_session::Controller>(*C.session, std::move(callbacks));
     editor_native::Ctx native;
+    native.cast_drop=queue_cast_drop;
     native.gesture_released=[] {native_release_qpc=stage_qpc();};
     native.gesture_capture=[](bool begin){(begin?native_capture_begin_qpc:native_capture_end_qpc)=stage_qpc();};
     native.active = [] { return session_active() || recovery.has_value() || closing || native_attached; };
@@ -5404,7 +5531,7 @@ void shutdown() {
     solo_preview.reset();solo_ready_scope.reset();pending_solo_return.reset();pending_solo_request=0;
     native_playtesting=return_started=disconnected_return=end_after_return=false;return_error.clear();settled_cancellation.reset();
     transport_teardown.reset();deferred_offer.reset();observed_transport=retired_transport=0;reopen_saved.reset();projection_override.reset();
-    store.close();adventure_native::clear_editor_preview();editor_native_save::shutdown();editor_native::shutdown();actions.clear();creation_actions.clear();complexity_request.reset();queued_exports.clear();queued_solo.reset();deferred_test.reset();
+    store.close();adventure_native::clear_editor_preview();editor_native_save::shutdown();editor_native::shutdown();actions.clear();creation_actions.clear();cast_drop_action.reset();complexity_request.reset();queued_exports.clear();queued_solo.reset();deferred_test.reset();
     complexity_sample.reset();complexity_publication_failed=false;complexity_local_error.clear();
     pending_preview_return.reset();pending_preparation_cancel.reset();preview_selection.reset();observed_lease_grants.clear();
     queued=false;closing=native_attached=close_restored=close_preserve_offer=false;H=nullptr;
@@ -5456,10 +5583,13 @@ void edit_acts(int value){
     waiting_acts=WaitingActs{TestMenu{current_gesture_scope(),native_generation,controller->state().document.revision,editor_native::state().act},value,now_ms()};schedule();
 }
 void create_asset(uint32_t type,uint32_t editor_id){if(!detached_scene() && creation_actions.size()<8){creation_actions.push_back({type,{},editor_id});schedule();}}
-void edit_asset(editor::ObjectId class_id){if(!detached_scene() && creation_actions.size()<8){creation_actions.push_back({0,class_id});schedule();}}
+void edit_asset(editor::ObjectId class_id,editor::ResourceKey expected,std::optional<editor::Revision> revision){
+    if(!detached_scene() && creation_actions.size()<8){creation_actions.push_back({0,class_id,0,expected,revision});schedule();}
+}
 void set_extended_complexity(bool value){complexity_request=value;schedule();}
 void resolve_join(int choice) {action(choice==0?Action::HandoffSave:choice==1?Action::HandoffDiscard:Action::HandoffCancel);}
 std::string debug(const std::vector<std::string>& args) {
+    if(args.size()==1&&args[0]=="browser")return editor_creation_ui::diagnostic();
     if(args.size()==2 && args[0]=="complexity" && (args[1]=="sample" || args[1]=="observation")){
         if(!controller || !native_attached || frozen || closing || recovery || durable_commit ||
            controller->view().phase!=Phase::Ready)return "complexity_observation state=unavailable error=No settled shared editor";

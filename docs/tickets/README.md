@@ -638,3 +638,8 @@ not-reproduced, game-bug (Spore itself), wontfix, duplicate.
 | [BUG-0626](BUG-0626-upstream-synchronization-cannot-qualify-windows.md) | open | bug | Validation | 2026-11-05 |  | Upstream synchronization cannot qualify Windows smoke without native fixtures |
 | [BUG-0627](BUG-0627-merged-transport-fixture-stalls-while-receiving.md) | fixed | desync | Networking | 2026-11-05 | unreleased | Merged transport fixture stalls while receiving queued reliable data |
 | [BUG-0628](BUG-0628-lab-self-tests-inherit-git-context-and-mutate-th.md) | fixed | bug | Validation | 2026-11-05 | unreleased | Lab self-tests inherit Git context and mutate the parent checkout |
+| [BUG-0629](BUG-0629-dragging-a-session-created-cast-asset-onto-anoth.md) | open | crash | Adventure | 2026-11-12 |  | Dragging a session-created cast asset onto another card crashes in CopyClassActs |
+| [BUG-0630](BUG-0630-use-native-create-your-own-instead-of-the-shared.md) | open | feature | Adventure | 2026-11-12 |  | Use native Create Your Own instead of the shared editor creation toolbar |
+| [BUG-0631](BUG-0631-show-a-native-edit-icon-on-the-hovered-shared-ca.md) | open | feature | Adventure | 2026-11-12 |  | Show a native Edit icon on the hovered shared cast card |
+| [BUG-0632](BUG-0632-display-scoped-player-ownership-on-shared-cast-c.md) | open | feature | Adventure | 2026-11-12 |  | Display scoped player ownership on shared cast cards |
+| [BUG-0633](BUG-0633-native-creation-validation-reads-utf-8-symbols-w.md) | open | bug | Tests | 2026-11-12 |  | Native creation validation reads UTF-8 symbols with the Windows locale codec |
