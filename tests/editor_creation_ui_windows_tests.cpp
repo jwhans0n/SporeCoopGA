@@ -70,6 +70,7 @@ void set_ids(Win w,uint32_t id,uint32_t){node(w)->id=id;}
 void set_area(Win w,const Rect& r){node(w)->rect=r;}
 void set_fill_color(Win w,uint32_t color){node(w)->color=color;}
 void remove_child(Win owner,Win child){auto& list=node(owner)->children;auto it=std::find(list.begin(),list.end(),child);CHECK(it!=list.end());list.erase(it);node(child)->parent=nullptr;}
+void bring_to_front(Win owner,Win child){auto& list=node(owner)->children;const auto it=std::find(list.begin(),list.end(),child);CHECK(it!=list.end());list.erase(it);list.insert(list.begin(),child);}
 Win button_like(Win owner,Win source,const Rect& rect,const std::string& text){CHECK(source==style&&text.empty());auto* p=make(node(owner),0,true);p->rect=rect;p->style=node(source);p->refs=1;return p;}
 Win label(Win owner,const Rect& rect,const std::string& text,uint32_t,uint32_t,int){CHECK(text.empty());auto* p=make(node(owner),0);p->rect=rect;p->refs=1;p->flags|=kFlagIgnoreMouse;return p;}
 void* add_handler(Win w,std::function<bool(Win,const Msg&)> callback){auto h=std::make_unique<Handler>();h->callback=std::move(callback);auto* p=h.get();node(w)->handlers.push_back(std::move(h));return p;}
@@ -84,6 +85,7 @@ int main(){
     main_node=make(nullptr,1);palette=make(main_node,0x52DF67AF);
     // The native editor icon can be in a cached, hidden Sporepedia tree.
     auto cached=make(main_node,0x53C6DC80);cached->flags&=~sui::kFlagVisible;style=make(cached,0x54ACB9F1,true);
+    style->rect={0,0,36,37};
     auto native_new=make(cached,0x14580F81,true);
     first=make(palette,0x111);second=make(palette,0x222);
     const editor::ResourceKey building{17,0x2399BE55,0x40636200},creature{18,0x2B978C46,0x40626200};
@@ -97,7 +99,7 @@ int main(){
     CHECK(sui::find(main_node,0x14580F81)==native_new&&native_new->flags==3);
     CHECK(node(edit(first))->style==style);
     hover(first);CHECK(shown(edit(first))&&!shown(edit(second)));
-    const auto rect=node(edit(first))->rect;CHECK(rect.x2==152&&rect.y2==128&&rect.x1==129&&rect.y1==105);
+    const auto rect=node(edit(first))->rect;CHECK(rect.x2==152&&rect.y2==128&&rect.x1==116&&rect.y1==91);
     click(edit(first));CHECK(edits==1&&edited==a&&edited_key==building&&edited_revision==3);
     message(first,sui::kMsgMouseLeave);hover(edit(first));CHECK(shown(edit(first)));
     hover(edit(first),false);CHECK(!shown(edit(first)));

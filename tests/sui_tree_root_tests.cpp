@@ -44,6 +44,9 @@ void membership()
     check(accepted==0xDEADBEEF,"missing member output atomic");
     for (auto node:inspected) check(node!=0x05D17546,"invalid candidate never inspected");
     inspected.clear();
+    check(sui_tree_root::resolve(0xC00F0401,current,read,accepted)==Result::Missing,"browser control ID is not a diagnostic pointer");
+    for(auto node:inspected)check(node!=0xC00F0401,"browser control ID never dereferenced");
+    inspected.clear();
     check(sui_tree_root::resolve(0,current,read,accepted)==Result::Missing && inspected.empty(),"null candidate not inspected");
     check(sui_tree_root::resolve(0x1000,current,read,accepted)==Result::Found && accepted==0x1000,"explicit main member");
     for (const auto limits:{sui_tree_root::Limits{3,9},sui_tree_root::Limits{9,2},sui_tree_root::Limits{0,9}}) {

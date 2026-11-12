@@ -593,6 +593,16 @@ bool tree_child_refs(uintptr_t address, uintptr_t image_base, std::vector<uintpt
 int c_ui(void*, int argc, const char* const* argv, SkOut* out)
 {
     std::string sub = argc > 1 ? argv[1] : "tree";
+    const auto checked_window=[&](const char* argument)->Win{
+        uintptr_t candidate=0,accepted=0;
+        if(!argument||!sui_tree_root::parse(argument,candidate))return nullptr;
+        const auto image_base=H->image_base();
+        const auto result=sui_tree_root::resolve(candidate,
+            []{return reinterpret_cast<uintptr_t>(main_window());},
+            [image_base](uintptr_t window,std::vector<uintptr_t>& refs){return tree_child_refs(window,image_base,refs);},accepted);
+        if(result!=sui_tree_root::Result::Found){H->out_printf(out,"window rejected: not owned by the current native UI\n");return nullptr;}
+        return reinterpret_cast<Win>(accepted);
+    };
     if (sub == "findall" && argc > 2) {
         std::string text = argv[2];
         for (int i = 3; i < argc; i++) text += std::string(" ") + argv[i];
@@ -699,7 +709,7 @@ int c_ui(void*, int argc, const char* const* argv, SkOut* out)
         return w ? 0 : 1;
     }
     if (sub == "btn" && argc > 2) { // button properties
-        Win w = (Win)strtoul(argv[2], nullptr, 16);
+        Win w = checked_window(argv[2]);if(!w)return 1;
         void* b = as_button(w);
         if (!b) {
             H->out_printf(out, "not a button");
@@ -716,11 +726,13 @@ int c_ui(void*, int argc, const char* const* argv, SkOut* out)
         return 0;
     }
     if (sub == "font" && argc > 3) {
-        set_font((Win)strtoul(argv[2], nullptr, 16), (uint32_t)strtoul(argv[3], nullptr, 16));
+        auto w=checked_window(argv[2]);if(!w)return 1;
+        set_font(w, (uint32_t)strtoul(argv[3], nullptr, 16));
         return 0;
     }
     if (sub == "show" && argc > 2) {
-        set_visible((Win)strtoul(argv[2], nullptr, 16), argc < 4 || atoi(argv[3]));
+        auto w=checked_window(argv[2]);if(!w)return 1;
+        set_visible(w, argc < 4 || atoi(argv[3]));
         return 0;
     }
     int depth = argc > 2 ? atoi(argv[2]) : 4;

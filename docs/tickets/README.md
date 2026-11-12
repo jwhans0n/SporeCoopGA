@@ -643,3 +643,4 @@ not-reproduced, game-bug (Spore itself), wontfix, duplicate.
 | [BUG-0631](BUG-0631-show-a-native-edit-icon-on-the-hovered-shared-ca.md) | open | feature | Adventure | 2026-11-12 |  | Show a native Edit icon on the hovered shared cast card |
 | [BUG-0632](BUG-0632-display-scoped-player-ownership-on-shared-cast-c.md) | open | feature | Adventure | 2026-11-12 |  | Display scoped player ownership on shared cast cards |
 | [BUG-0633](BUG-0633-native-creation-validation-reads-utf-8-symbols-w.md) | open | bug | Tests | 2026-11-12 |  | Native creation validation reads UTF-8 symbols with the Windows locale codec |
+| [BUG-0634](BUG-0634-raw-pointer-coop-ui-btn-diagnostic-dereferences.md) | open | crash | Tests | 2026-11-12 |  | Raw-pointer coop.ui btn diagnostic dereferences unverified input |

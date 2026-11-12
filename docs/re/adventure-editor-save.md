@@ -1717,6 +1717,10 @@ both to copied values; do not retain procedure pointers across callbacks.
 SporeKit's default WinProc event mask81 excludes enter/leave events. Card-only
 handlers explicitly subscribeC1 (basic, advanced and refresh40). Missing that
 bit produces an invisible Edit action even though normal clicks still work.
+Native child lists paint the first child in front. New windows append behind
+the existing thumbnail children. Set the front flag and explicitly call the
+existing IWindow BringToFront virtualE8 after attaching decorations. Retain the
+prototype's measured36x37 sizing, rather than shrinking its sliced drawable.
 
 Native Create Your Own sends an exact specialized editor request with a zero
 source key and new_asset20=false (measured Entertainment request flags34..3D
@@ -1725,6 +1729,13 @@ toolbar's forced true flag is not a valid native-picker fixture requirement.
 Evidence: out/preview12/native-guest-building-enter/entered-native.json.
 Native imports deliberately refuse authoring after module reload. Cold-launch
 browser acceptance; reload can diagnose UI but is not a qualifying import run.
+
+BUG-0634: the legacy coop.ui btn diagnostic accepts a window address, not a
+control ID. A private operator error with C00F0401 caused a read of that exact
+address (crash-20261112-153833-i45), separate from any card-drop path. Before
+btn/font/show dispatch, resolve the address through the same complete current
+native-tree membership guard already used by tree. Never test a guessed pointer
+by dereferencing it. Exclude this poisoned game run from feature acceptance.
 
 Tooltip constructor835DA0 is thiscall(self)->self, ret, allocated as68 bytes by
 E01A16. Its primary vtable is141B0A8. Setter835FB0 takes(text,locale,refresh),

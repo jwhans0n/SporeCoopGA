@@ -27,6 +27,7 @@ struct Card {
     void *edit_tip=nullptr,*owner_tip=nullptr;
     coop_editor::AssetCardView value;
     bool hover=false,button_hover=false,focus=false;
+    float edit_width=36,edit_height=37;
     std::string identity,owner_text;
 };
 sui::Win main_window=nullptr;
@@ -92,6 +93,8 @@ bool current(const std::shared_ptr<Card>& card,const coop_editor::View& view){
 }
 bool build(const std::shared_ptr<Card>& card,sui::Win style){
     sui::add_ref(card->window);
+    const auto native_size=sui::area(style);
+    if(native_size.w()>0&&native_size.w()<=64&&native_size.h()>0&&native_size.h()<=64){card->edit_width=native_size.w();card->edit_height=native_size.h();}
     card->edit=sui::button_like(card->window,style,{},"");if(!card->edit)return false;
     sui::set_flag(card->edit,sui::kFlagAlwaysInFront,true);
     sui::set_ids(card->edit,kEdit,kEdit);sui::set_visible(card->edit,false);
@@ -105,6 +108,11 @@ bool build(const std::shared_ptr<Card>& card,sui::Win style){
     };
     for(unsigned i=0;i<4;++i)if(!decorate(card->border[i],i))return false;
     for(unsigned i=0;i<5;++i)if(!decorate(card->padlock[i],4+i))return false;
+    // AddWindow appends behind the native thumbnail children. The front flag
+    // controls later ordering but does not itself move an existing list node.
+    for(auto window:card->border)sui::bring_to_front(card->window,window);
+    for(auto window:card->padlock)sui::bring_to_front(card->window,window);
+    sui::bring_to_front(card->window,card->edit);
     std::weak_ptr<Card> weak=card;
     for(auto window:{card->window,card->edit}){
         const bool button=window==card->edit;
@@ -165,7 +173,7 @@ void SK_CDECL update(void*){
         }
         present.insert(window);auto& card=*found->second;card.value=*value;
         const auto area=sui::area(window);const float width=area.w(),height=area.h();
-        sui::set_area(card.edit,{width-27,height-27,width-4,height-4});
+        sui::set_area(card.edit,{width-4-card.edit_width,height-4-card.edit_height,width-4,height-4});
         sui::set_visible(card.edit,card.value.editable&&(card.hover||card.button_hover||card.focus));
         const bool blocked=std::any_of(value->owners.begin(),value->owners.end(),[](const auto& owner){return owner.content&&!owner.local;});
         sui::set_enabled(card.edit,view.can_save&&!blocked);
