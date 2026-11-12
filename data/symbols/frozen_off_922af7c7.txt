@@ -469,3 +469,11 @@ SporeCoop::Creature_CombatVoice ; Tribe / Creature: a guest hears the combat voi
 SporeCoop::Creature_SetSprint ; Tribe / Creature: a guest sees and hears the sprint of the host's members and animals (BUG-0600)
 
 # Exact-GOG-only adventure adapters retained from the validated fork.
+SporeCoop::Editor::IsCreatureClass ; BUG-0629: shared cast replacement is disabled on retired GOG 2016
+SporeCoop::Editor::ClassActCtor ; BUG-0629: shared cast replacement is disabled on retired GOG 2016
+SporeCoop::Editor::ClassActDtor ; BUG-0629: shared cast replacement is disabled on retired GOG 2016
+SporeCoop::Editor::InitializeClassAct ; BUG-0629: shared cast replacement is disabled on retired GOG 2016
+SporeCoop::Editor::FillClassActs ; BUG-0629: shared cast replacement is disabled on retired GOG 2016
+SporeCoop::Editor::TooltipCtor ; BUG-0631: native shared cast hover controls are disabled on retired GOG 2016
+SporeCoop::Editor::TooltipText ; BUG-0631: native shared cast hover controls are disabled on retired GOG 2016
+SporeCoop::Editor::TooltipVTable ; BUG-0631: native shared cast hover controls are disabled on retired GOG 2016

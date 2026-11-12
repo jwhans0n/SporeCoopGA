@@ -1721,6 +1721,12 @@ Native child lists paint the first child in front. New windows append behind
 the existing thumbnail children. Set the front flag and explicitly call the
 existing IWindow BringToFront virtualE8 after attaching decorations. Retain the
 prototype's measured36x37 sizing, rather than shrinking its sliced drawable.
+The cached Edit template retains its closing fade: GetShadeColor virtual30
+reads Window1D4=00FFFFFF (verified getter A02Cxx leaf), while enabled stateA8=1.
+Cloning that transient zero alpha leaves a correctly bound button invisible.
+Keep its drawable/state styling but set the live clone's shade toFFFFFFFF via
+the existing verified SetShadeColor virtual5C. Evidence: private read-only
+source/clone values in out/preview12/read-edit-state.py output.
 
 Native Create Your Own sends an exact specialized editor request with a zero
 source key and new_asset20=false (measured Entertainment request flags34..3D

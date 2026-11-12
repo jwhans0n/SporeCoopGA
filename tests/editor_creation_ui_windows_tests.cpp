@@ -69,6 +69,7 @@ void set_flag(Win w,uint32_t flag,bool value){CHECK(w);if(value)node(w)->flags|=
 void set_ids(Win w,uint32_t id,uint32_t){node(w)->id=id;}
 void set_area(Win w,const Rect& r){node(w)->rect=r;}
 void set_fill_color(Win w,uint32_t color){node(w)->color=color;}
+void set_shade_color(Win,uint32_t color){CHECK(color==0xFFFFFFFF);}
 void remove_child(Win owner,Win child){auto& list=node(owner)->children;auto it=std::find(list.begin(),list.end(),child);CHECK(it!=list.end());list.erase(it);node(child)->parent=nullptr;}
 void bring_to_front(Win owner,Win child){auto& list=node(owner)->children;const auto it=std::find(list.begin(),list.end(),child);CHECK(it!=list.end());list.erase(it);list.insert(list.begin(),child);}
 Win button_like(Win owner,Win source,const Rect& rect,const std::string& text){CHECK(source==style&&text.empty());auto* p=make(node(owner),0,true);p->rect=rect;p->style=node(source);p->refs=1;return p;}

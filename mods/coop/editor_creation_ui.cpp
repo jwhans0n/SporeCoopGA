@@ -96,6 +96,9 @@ bool build(const std::shared_ptr<Card>& card,sui::Win style){
     const auto native_size=sui::area(style);
     if(native_size.w()>0&&native_size.w()<=64&&native_size.h()>0&&native_size.h()<=64){card->edit_width=native_size.w();card->edit_height=native_size.h();}
     card->edit=sui::button_like(card->window,style,{},"");if(!card->edit)return false;
+    // Cached Sporepedia buttons retain their closing fade (00FFFFFF). That
+    // transient opacity is not part of the icon/style to reuse on a live card.
+    sui::set_shade_color(card->edit,0xFFFFFFFF);
     sui::set_flag(card->edit,sui::kFlagAlwaysInFront,true);
     sui::set_ids(card->edit,kEdit,kEdit);sui::set_visible(card->edit,false);
     auto tip=sui::tooltip_caption(style);if(tip.empty())tip="Edit";
