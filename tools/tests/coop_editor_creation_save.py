@@ -195,7 +195,7 @@ def request_errors(row,profile,source=None):
         errors.append('wrong exact native request/model subtype')
     if source:
         if row.get('new_asset')is not False or row.get('source_key')!=[source[1],source[2],source[0]]:errors.append('Edit request/source changed')
-    elif not row.get('new_asset') and row.get('source_key')!=[0,0,0]:errors.append('request is not the original New operation')
+    elif row.get('new_asset')is not True and not(row.get('new_asset')is False and row.get('source_key')==[0,0,0]):errors.append('request is not the original New operation')
     return errors
 
 def saved_asset_result(before,current,profile,target=None):

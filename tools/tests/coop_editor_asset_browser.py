@@ -59,7 +59,9 @@ def run(args):
         # Native tab clicks also collapse the current palette. Reopen it before
         # resolving the exact card; never drag against guessed hidden contents.
         author.click(tab,40)
-        if not author.control(0x52DF67AF):author.click(tab,40)
+        author.call('wait.frames 3 15000')
+        if not author.control(0x52DF67AF):
+            author.click(tab,40);author.call('wait.frames 3 15000')
         def cards():
             rows={m[1]:tuple(map(int,m.groups()[1:]))for m in CARD.finditer(author.call('coop.editor browser'))}
             return rows if args.source in rows and (not args.target or args.target in rows)else None
@@ -68,9 +70,9 @@ def run(args):
         if args.target:
             box=visible[args.target];end=((box[0]+box[2])//2,(box[1]+box[3])//2)
         else:
-            count=len(visible)
-            if count>=10:raise FixtureError('Fixture requires a visible empty card')
-            end=(88+156*(count%2),165+111*(count//2))
+            slots=re.findall(r'^empty rect=(-?\d+),(-?\d+),(-?\d+),(-?\d+)$',author.call('coop.editor browser'),re.M)
+            if not slots:raise FixtureError('Fixture requires a verified current empty card')
+            x1,y1,x2,y2=map(int,slots[0]);end=((x1+x2)//2,(y1+y2)//2)
         owner.verify_windows()
         if snapshot()!=before or parse_context(status(author)['text'])!=context:raise FixtureError('Drop context changed before input')
         result.update(start=start,end=end,dispatched=True);write()

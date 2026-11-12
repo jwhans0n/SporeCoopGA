@@ -1722,7 +1722,7 @@ the existing thumbnail children. Set the front flag and explicitly call the
 existing IWindow BringToFront virtualE8 after attaching decorations. Retain the
 prototype's measured36x37 sizing, rather than shrinking its sliced drawable.
 The cached Edit template retains its closing fade: GetShadeColor virtual30
-reads Window1D4=00FFFFFF (verified getter A02Cxx leaf), while enabled stateA8=1.
+reads Window1D4=00FFFFFF (verified leaf bytes8B81D4010000C3), while enabled stateA8=1.
 Cloning that transient zero alpha leaves a correctly bound button invisible.
 Keep its drawable/state styling but set the live clone's shade toFFFFFFFF via
 the existing verified SetShadeColor virtual5C. Evidence: private read-only

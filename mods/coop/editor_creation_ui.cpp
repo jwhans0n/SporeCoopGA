@@ -78,7 +78,7 @@ std::vector<sui::Win> visible_cards(sui::Win main){
         if(++visited>4096||depth>=64)return {};
         const auto id=sui::control_id(window);if(id>=kEdit && id<kDecoration+32)continue;
         const bool palette=in_palette||id==0x52DF67AF;
-        if(palette)if(auto card=editor_native::cast_window(window);card && card->index>=0){result.push_back(window);continue;}
+        if(palette)if(auto card=editor_native::cast_window(window);card && card->index>=-1){result.push_back(window);continue;}
         for(auto child:sui::children(window))if(sui::parent(child)==window){
             if(stack.size()>=4096)return {};stack.push_back({child,depth+1,palette});
         }
@@ -159,10 +159,12 @@ void SK_CDECL update(void*){
     const auto style=edit_style;
     if(!main_window){main_window=main;sui::add_ref(main_window);identity=view.prompt_identity;}
     std::set<sui::Win> present;
+    std::vector<sui::Rect> empty_slots;
     unsigned candidates=0;
     for(auto window:visible_cards(main)){
         ++candidates;
         const auto key=editor_native::cast_window(window);if(!key)continue;
+        if(key->index==-1){empty_slots.push_back(sui::screen_rect(window));continue;}
         const editor::ObjectId id{(2ull<<32)|uint32_t(key->index),1};
         const auto value=std::find_if(view.assets.begin(),view.assets.end(),[&](const auto& item){return item.class_id==id && item.asset==key->asset;});
         if(value==view.assets.end())continue;
@@ -204,6 +206,9 @@ void SK_CDECL update(void*){
     }
     for(auto it=cards.begin();it!=cards.end();)if(!present.contains(it->first)){destroy(*it->second);it=cards.erase(it);}else ++it;
     display_status="browser cards="+std::to_string(cards.size())+" candidates="+std::to_string(candidates)+" assets="+std::to_string(view.assets.size());
+    for(const auto& rect:empty_slots){
+        char row[128];std::snprintf(row,sizeof(row),"\nempty rect=%.0f,%.0f,%.0f,%.0f",rect.x1,rect.y1,rect.x2,rect.y2);display_status+=row;
+    }
     for(const auto& [window,card]:cards){
         if(display_status.size()>7000)break;const auto rect=sui::screen_rect(window);
         char row[256];std::snprintf(row,sizeof(row),"\ncard class=%llu:%u key=%08X!%08X.%08X revision=%llu rect=%.0f,%.0f,%.0f,%.0f edit=%u owners=%u",

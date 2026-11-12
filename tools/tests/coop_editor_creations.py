@@ -64,29 +64,31 @@ class CreationGame(PublicGame):
         if family not in FAMILIES:raise FixtureError('Unsupported native picker family')
         self.call('coop.uistate 0')
         self.click({'creature':50,'building':136,'vehicle':178,'spaceship':178}[family],40)
-        self.call('wait.frames 25 15000')
+        self.call('wait.frames 3 15000')
         if not self.control(0x52DF67AF):
             self.click({'creature':50,'building':136,'vehicle':178,'spaceship':178}[family],40)
-            self.call('wait.frames 25 15000')
-        rows=assets(self.asset_text())['rows'].values()
-        types={TYPES[FAMILIES.index(family)]}
-        if family in ('vehicle','spaceship'):types={TYPES[2],TYPES[3]}
-        count=sum(row['key'][2]in types for row in rows)
-        if count>=10:raise FixtureError('Measured native picker fixture needs a visible empty card')
+            self.call('wait.frames 3 15000')
+        slots=re.findall(r'^empty rect=(-?\d+),(-?\d+),(-?\d+),(-?\d+)$',self.call('coop.editor browser'),re.M)
+        if not slots:raise FixtureError('Native browser exposes no current empty card')
+        x1,y1,x2,y2=map(int,slots[0]);point=((x1+x2)//2,(y1+y2)//2)
         for _ in range(4):
             if self.control(0x14580F81):break
-            self.click(88+156*(count%2),165+111*(count//2));self.call('wait.frames 25 15000')
-        self.wait('native Create Your Own tile',lambda:self.control(0x14580F81))
+            self.click(*point);self.call('wait.frames 3 15000')
+        def tile_ready():
+            tile=self.control(0x14580F81)
+            return tile if tile and 190<=tile[0]<=230 and 125<=tile[1]<=165 and tile[4]else None
+        self.wait('settled native Create Your Own tile',tile_ready)
         if family=='building':
             category={0x99E92F05:240,0x4E3F7777:277,0xBDD15F3D:310,0x47C10953:310,0x72C49181:350}.get(editor_id,240)
-            self.click(category,88);self.call('wait.frames 25 15000')
+            self.click(category,88);self.call('wait.frames 3 15000')
         # Retry only while the exact native tile remains visible. A category
         # transition can finish after its tile first becomes visible.
         for _ in range(4):
             tile=self.control(0x14580F81)
             if not tile:return
             self.click((tile[0]+tile[2])//2,(tile[1]+tile[3])//2)
-            self.call('wait.frames 30 15000')
+            self.call('wait.frames 3 15000')
+            if 'creation_editor active=1'in self.call('coop.editor creations'):return
 
     def native_edit(self, class_id):
         text=self.call('coop.editor browser')

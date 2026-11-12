@@ -91,6 +91,7 @@ int main(){
     first=make(palette,0x111);second=make(palette,0x222);
     const editor::ResourceKey building{17,0x2399BE55,0x40636200},creature{18,0x2B978C46,0x40626200};
     native_cards[first]={7,building};native_cards[second]={8,creature};
+    auto empty=make(palette,0x333);native_cards[empty]={-1,{}};
     view.active=view.native_editing=view.can_save=true;view.prompt_identity="project:epoch";view.selection="An unrelated placement";
     const editor::ObjectId a{(2ull<<32)|7,1},b{(2ull<<32)|8,1};
     view.assets={{a,building,3,true,{}},{b,creature,4,true,{}}};native_state.ready=native_state.world_visible=true;
@@ -99,6 +100,7 @@ int main(){
     CHECK(edit(first)&&edit(second)&&!shown(edit(first))&&!sui::find(main_node,0xC00F0301));
     CHECK(sui::find(main_node,0x14580F81)==native_new&&native_new->flags==3);
     CHECK(node(edit(first))->style==style);
+    CHECK(editor_creation_ui::diagnostic().find("empty rect=")!=std::string::npos&&!edit(empty));
     hover(first);CHECK(shown(edit(first))&&!shown(edit(second)));
     const auto rect=node(edit(first))->rect;CHECK(rect.x2==152&&rect.y2==128&&rect.x1==116&&rect.y1==91);
     click(edit(first));CHECK(edits==1&&edited==a&&edited_key==building&&edited_revision==3);
