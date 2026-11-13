@@ -2838,3 +2838,23 @@ The pin retires on callback return. The runtime regression fails before this
 change and passes108 checks afterward (`out/preview10-baseline-read-red/`,
 `out/preview10-baseline-read-green/`). C75 native evidence: host recovery passes
 while the initial guest scene is DIVERGED before this baseline read fix.
+
+## Live browser caption hierarchy correction (2026-11-12, fix/ga-editor-asset-browser)
+<a id="editor-browser-live-caption"></a>
+
+CORRECTION: the earlier caption-padding fixture placed 079591E0 inside the
+Cast thumbnail. Native GOG 2024 cards contain an empty thumbnail label with
+that ID and a separate visible caption directly under card root 04A1CB70.
+Adjust the owning visible caption, found through a bounded ancestor walk,
+while retaining its reference and restoring only the managed left edge.
+Never change another card's caption. The native c815-content-lock screenshot
+and captured caption ancestry retain the overlap. The sibling-layout fixture
+fails before this correction (sibling-caption-red.log) and passes 3610 checks
+afterward (sibling-caption-green.log), under out/preview12/evidence/.
+
+Creation fixture category changes must settle after the co-op overlay and
+native return. A previous Creature palette can remain visible after the first
+vehicle-tab click. Check actual displayed card resource types and use bounded
+normal tab selection before choosing an empty card. Retained failed host/guest
+Vehicle entries and successful -r2 continuations are under out/preview12/.
+This changes only fixture input readiness, not native creation requests.

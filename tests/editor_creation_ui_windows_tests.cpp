@@ -8,7 +8,7 @@ static unsigned checks=0;
 namespace {
 struct Handler{std::function<bool(sui::Win,const sui::Msg&)> callback;};
 struct Node{
-    uint32_t id=0,flags=3,color=0;int refs=0;bool button=false;
+    uint32_t id=0,flags=3,color=0;int refs=0;bool button=false;std::string text;
     Node* parent=nullptr;Node* style=nullptr;std::vector<sui::Win> children;
     std::vector<std::unique_ptr<Handler>> handlers;sui::Rect rect{0,0,156,132};
 };
@@ -57,6 +57,7 @@ Win main_window(){return main_node;}
 std::vector<Win> children(Win w){return w?node(w)->children:std::vector<Win>{};}
 Win parent(Win w){return w?node(w)->parent:nullptr;}
 uint32_t control_id(Win w){return w?node(w)->id:0;}
+std::string caption(Win w){return w?node(w)->text:std::string{};}
 uint32_t flags(Win w){return w?node(w)->flags:0;}
 bool visible(Win w){return w&&(node(w)->flags&kFlagVisible);}
 Win find(Win w,uint32_t id){if(!w)return nullptr;if(control_id(w)==id)return w;for(auto child:children(w))if(auto hit=find(child,id))return hit;return nullptr;}
@@ -92,9 +93,11 @@ int main(){
     auto cached=make(main_node,0x53C6DC80);cached->flags&=~sui::kFlagVisible;style=make(cached,0x54ACB9F1,true);
     style->rect={0,0,36,37};
     auto native_new=make(cached,0x14580F81,true);
-    first=make(palette,0x111);second=make(palette,0x222);
+    auto native_card_root=make(palette,0x04A1CB70);
+    first=make(native_card_root,0x111);second=make(palette,0x222);
     second->rect={156,0,312,132};
-    auto native_name=make(first,0x079591E0);native_name->rect={2,84,143,105};
+    auto blank_name=make(first,0x079591E0);blank_name->rect={2,84,143,105};
+    auto native_name=make(native_card_root,0x079591E0);native_name->rect={2,84,143,105};native_name->text="Native asset caption";
     const editor::ResourceKey building{17,0x2399BE55,0x40636200},creature{18,0x2B978C46,0x40626200};
     native_cards[first]={7,building};native_cards[second]={8,creature};
     auto empty=make(palette,0x333);native_cards[empty]={-1,{}};

@@ -45,7 +45,18 @@ void release_name(Card& card){
     sui::release(card.name);card.name=nullptr;card.name_shifted=false;
 }
 void reserve_name(Card& card,bool locked){
-    auto name=sui::find(card.window,0x079591E0);
+    // The live caption is a sibling of the Cast thumbnail, under the native
+    // card root. Its thumbnail also contains an empty label with this ID.
+    sui::Win name=nullptr;
+    auto root=card.window;
+    for(unsigned depth=0;root&&depth<8;++depth,root=sui::parent(root)){
+        if(sui::control_id(root)==0x52DF67AF)break;
+        if(sui::control_id(root)!=0x04A1CB70)continue;
+        for(auto child:sui::children(root))if(sui::parent(child)==root&&
+            sui::control_id(child)==0x079591E0&&!sui::caption(child).empty()){name=child;break;}
+        break;
+    }
+    if(!name){name=sui::find(card.window,0x079591E0);if(name&&sui::caption(name).empty())name=nullptr;}
     if(name!=card.name){release_name(card);card.name=name;if(name){sui::add_ref(name);card.name_area=sui::area(name);}}
     if(!name)return;const auto current=sui::area(name);auto base=current;
     if(card.name_shifted&&current.x1==card.name_adjusted.x1)base.x1=card.name_area.x1;

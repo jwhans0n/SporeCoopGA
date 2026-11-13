@@ -63,13 +63,20 @@ class CreationGame(PublicGame):
         """Measured Adventure palette/picker input, without mod creation buttons."""
         if family not in FAMILIES:raise FixtureError('Unsupported native picker family')
         self.call('coop.uistate 0')
-        self.click({'creature':50,'building':136,'vehicle':94,'spaceship':94}[family],40)
-        def slots():return re.findall(r'^empty rect=(-?\d+),(-?\d+),(-?\d+),(-?\d+)$',self.call('coop.editor browser'),re.M)
-        def palette_settled():return slots()or('closed'if not self.control(0x52DF67AF)else None)
-        available=self.wait('opened or fully closed native palette',palette_settled)
-        if available=='closed':
+        self.call('wait.frames 7 15000')
+        def slots():
+            text=self.call('coop.editor browser')
+            kinds={int(kind,16)for kind in re.findall(r'^card class=\d+:\d+ key=\w{8}!\w{8}\.([0-9A-Fa-f]{8}) ',text,re.M)}
+            expected={TYPES[FAMILIES.index(family)]}if family not in('vehicle','spaceship')else{TYPES[2],TYPES[3]}
+            if kinds-expected:return [] # Previous tab can remain visible while native return completes.
+            return re.findall(r'^empty rect=(-?\d+),(-?\d+),(-?\d+),(-?\d+)$',text,re.M)
+        available=[]
+        for _ in range(4):
             self.click({'creature':50,'building':136,'vehicle':94,'spaceship':94}[family],40)
-            available=self.wait('current native empty card',slots)
+            self.call('wait.frames 7 15000')
+            available=slots()
+            if available:break
+        if not available:raise FixtureError('Native palette did not switch to the requested family')
         x1,y1,x2,y2=map(int,available[0]);point=((x1+x2)//2,(y1+y2)//2)
         for _ in range(4):
             if self.control(0x14580F81):break
