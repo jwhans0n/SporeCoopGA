@@ -928,3 +928,13 @@ setup exposed BUG-0637 and BUG-0638. These are not counted as passes. Native
 Save within the shared session is qualified; the separate standalone Save New
 and strict cold-reopen preservation paths are not. This is a focused browser
 testing payload, with the broader gates and destination promotion still deferred.
+
+Installed the qualified testing payload after verifying no personal Spore process
+was running. Sixteen payload files match the tested private installation: co-op
+DLL, SporeKit, loader, package, symbol maps and preview version marker. The
+installed co-op SHA256 is a5e8c7734560b8850e44c48835c03027454822b2146a16953dd7de589d922cf3. The exact 4 GB executable, all checked
+settings, existing launchers and SporeCoop Two Players shortcut retain their
+pre-install hashes. Profiles were not modified by deployment. The shortcut still
+resolves to the same two-player launcher. Verification:
+out/preview12/installation-verification.json. Complete preview 10 payload and
+checked restore script: out/preview12/rollback-preview10-20261113-021533/. No release tag or public package was made.
