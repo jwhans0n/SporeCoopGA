@@ -140,6 +140,15 @@ def checkpoint_head(previous,state):
         raise FixtureError('Stale/modified checkpoint; use the last recorded result')
     return path
 
+def replace_checkpoint(temporary,target):
+    # Windows readers may briefly deny delete sharing. Retry only that file
+    # replacement, preserving the already-owned bytes and never editor input.
+    for attempt in range(8):
+        try:return temporary.replace(target)
+        except PermissionError as error:
+            if getattr(error,'winerror',None)not in(5,32)or attempt==7:raise
+            time.sleep(.01*(1<<attempt))
+
 def other_editor_profiles(args):
     result=[];seen=set()
     for value in getattr(args,'other_editor',[]) or []:
@@ -255,8 +264,8 @@ def run(args):
     def write():
         result['workflow_head']=str(head)
         path=args.output.resolve()/'result.json';raw=(json.dumps(result,indent=2)+'\n').encode()
-        temporary=path.with_suffix('.tmp');temporary.write_bytes(raw);temporary.replace(path)
-        next_head=head.with_suffix('.tmp');next_head.write_text(json.dumps(dict(result=str(path),sha256=hashlib.sha256(raw).hexdigest()))+'\n');next_head.replace(head)
+        temporary=path.with_suffix('.tmp');temporary.write_bytes(raw);replace_checkpoint(temporary,path)
+        next_head=head.with_suffix('.tmp');next_head.write_text(json.dumps(dict(result=str(path),sha256=hashlib.sha256(raw).hexdigest()))+'\n');replace_checkpoint(next_head,head)
         for g in games:g.save_log()
     def other_conflict(message):
         result.setdefault('other_editor_conflict',message);raise FixtureError(message)
@@ -568,8 +577,8 @@ def self_test():
         try:other_editor_profiles(bad)
         except FixtureError:checks+=1
         else:raise AssertionError('Invalid other editor declaration accepted')
-    from coop_editor_creation_save_contracts import workflow_contracts,confirmation_contracts,cancel_contracts
-    checks+=confirmation_contracts(sys.modules[__name__])+cancel_contracts(sys.modules[__name__])+workflow_contracts(sys.modules[__name__])
+    from coop_editor_creation_save_contracts import workflow_contracts,confirmation_contracts,cancel_contracts,checkpoint_contracts
+    checks+=confirmation_contracts(sys.modules[__name__])+cancel_contracts(sys.modules[__name__])+workflow_contracts(sys.modules[__name__])+checkpoint_contracts(sys.modules[__name__])
     print(f'staged creation Save: {checks} offline checks passed')
 
 def main():

@@ -5,6 +5,27 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
+def checkpoint_contracts(module):
+    checks=0
+    class Replacement:
+        def __init__(self,failures,code):self.calls=0;self.failures=failures;self.code=code
+        def replace(self,target):
+            self.calls+=1
+            if self.calls<=self.failures:
+                error=PermissionError(13,'controlled sharing failure');error.winerror=self.code;raise error
+            return target
+    for code in(5,32):
+        item=Replacement(2,code)
+        with patch.object(module.time,'sleep')as wait:
+            assert module.replace_checkpoint(item,'head')=='head'and item.calls==3 and wait.call_count==2;checks+=1
+    for failures,code,attempts in((100,5,8),(100,32,8),(1,123,1)):
+        item=Replacement(failures,code)
+        with patch.object(module.time,'sleep'):
+            try:module.replace_checkpoint(item,'head')
+            except PermissionError:assert item.calls==attempts;checks+=1
+            else:raise AssertionError('Permanent checkpoint failure was ignored')
+    return checks
+
 EDIT_MODAL = """Window 100 id=0xFFFFFFF0 cmd=0x00000000 fl=0x3 [0 0 1024 768] drw=00000000 vt=00000000 font=00000001 ''
   Window 101 id=0x05B598F7 cmd=0x00000000 fl=0x13 [0 0 1024 768] drw=00000000 vt=00000000 font=00000001 ''
     Window 102 id=0x06318E78 cmd=0x00000000 fl=0x43 [322 368 701 400] drw=00000000 vt=00000000 font=00AEBB69 ''
