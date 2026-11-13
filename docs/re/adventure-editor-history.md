@@ -2873,3 +2873,14 @@ cursor idle timeout during a frame gap. An explicit normal button-down/up
 keeps that cursor held throughout the native press. The first unchanged
 qualified-hover-enter failed to activate; qualified-hover-enter-r2 activates
 the exact same native card with the held press. No product input path changed.
+
+CORRECTION (2026-11-12): the remaining native caption overlap was an anchor
+interpretation error. Verified GetArea 95F950 returns window+94 and GetRealArea
+95F960 returns window+84. The live label's input is (2,-17,2,4), while its
+rendered rectangle is (2,83,143,104). Clamping its left reservation to input x2
+therefore cancels it. Bound the reservation by rendered width plus the managed
+left displacement, preserving the right/bottom anchors and later native resize.
+Read-only evidence: out/preview12/label-anchor-observation.json. The measured
+anchor fixture fails before the fix (anchored-caption-red.log) and preserves
+native anchor values after the correction. Earlier name-lookup experiments
+remain retained; they did not establish the rendered spacing as accepted.

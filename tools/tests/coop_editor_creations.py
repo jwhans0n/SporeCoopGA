@@ -114,6 +114,10 @@ class CreationGame(PublicGame):
         # Background frame gaps can outlast its ordinary click's idle timeout.
         x,y=x2-22,y2-23 # Center of the measured native36x37 icon, inset4.
         self.call(f'move {x} {y}');self.call('wait.frames 3 15000')
+        # Newly revealed windows can become hit-testable after the first move.
+        # Refresh native hover after registration without replaying a press.
+        self.call(f'move {x-1} {y}');self.call('wait.frames 2 15000')
+        self.call(f'move {x} {y}');self.call('wait.frames 2 15000')
         self.call(f'button {x} {y} down')
         try:self.call('wait.frames 2 15000')
         finally:self.call(f'button {x} {y} up')

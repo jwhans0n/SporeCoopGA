@@ -65,7 +65,11 @@ void reserve_name(Card& card,bool locked){
     if(!name)return;const auto current=sui::area(name);auto base=current;
     if(card.name_shifted&&current.x1==card.name_adjusted.x1)base.x1=card.name_area.x1;
     card.name_area=base;
-    auto desired=card.name_area;if(locked)desired.x1=std::min(desired.x1+16,desired.x2);
+    auto desired=card.name_area;
+    // x2 may be a right-anchor offset (native captions use 2, not their
+    // rendered right edge). Bound the reservation by the laid-out width.
+    const float width=sui::real_area(name).w()+current.x1-base.x1;
+    if(locked)desired.x1+=std::min(16.f,std::max(0.f,width));
     if(!same_area(current,desired))sui::set_area(name,desired);
     card.name_adjusted=desired;card.name_shifted=locked;
 }

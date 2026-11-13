@@ -8,7 +8,7 @@ static unsigned checks=0;
 namespace {
 struct Handler{std::function<bool(sui::Win,const sui::Msg&)> callback;};
 struct Node{
-    uint32_t id=0,flags=3,color=0;int refs=0;bool button=false;std::string text;
+    uint32_t id=0,flags=3,color=0;int refs=0;bool button=false,anchored=false;std::string text;
     Node* parent=nullptr;Node* style=nullptr;std::vector<sui::Win> children;
     std::vector<std::unique_ptr<Handler>> handlers;sui::Rect rect{0,0,156,132};
 };
@@ -62,6 +62,7 @@ uint32_t flags(Win w){return w?node(w)->flags:0;}
 bool visible(Win w){return w&&(node(w)->flags&kFlagVisible);}
 Win find(Win w,uint32_t id){if(!w)return nullptr;if(control_id(w)==id)return w;for(auto child:children(w))if(auto hit=find(child,id))return hit;return nullptr;}
 Rect area(Win w){return node(w)->rect;}
+Rect real_area(Win w){auto r=area(w);if(node(w)->anchored){auto p=area(parent(w));r.x2+=p.w();r.y1+=p.h();r.y2+=p.h();}return r;}
 Rect screen_rect(Win w){return node(w)->rect;}
 bool cursor_position(float& x,float& y){x=pointer_x;y=pointer_y;return true;}
 void* as_button(Win w){return w&&node(w)->button?w:nullptr;}
@@ -95,10 +96,11 @@ int main(){
     auto native_new=make(cached,0x14580F81,true);
     first=make(palette,0x111);second=make(palette,0x222);
     auto native_card_root=make(first,0x04A1CB70);
+    native_card_root->rect={0,0,141,101};
     auto native_thumbnail=make(native_card_root,0x04A1CB6F);
     second->rect={156,0,312,132};
     auto blank_name=make(native_thumbnail,0x079591E0);blank_name->rect={2,84,143,105};
-    auto native_name=make(native_card_root,0x079591E0);native_name->rect={2,84,143,105};native_name->text="Native asset caption";
+    auto native_name=make(native_card_root,0x079591E0);native_name->rect={2,-17,2,4};native_name->anchored=true;native_name->text="Native asset caption";
     const editor::ResourceKey building{17,0x2399BE55,0x40636200},creature{18,0x2B978C46,0x40626200};
     native_cards[first]={7,building};native_cards[second]={8,creature};
     auto empty=make(palette,0x333);native_cards[empty]={-1,{}};
@@ -128,7 +130,8 @@ int main(){
     hover(second);click(edit(second));CHECK(edits==2&&edited==b&&edited_revision==4);
     view.assets[0].owners={{{0,9},"Host",0xFF123456,false,false,true}};step();
     auto border=sui::find(first,0xC00F0410);CHECK(shown(border)&&node(border)->color==0xFF123456&&(node(border)->flags&sui::kFlagIgnoreMouse));
-    CHECK(native_name->rect.x1==18&&native_name->rect.x2==143);
+    CHECK(native_name->rect.x1==18&&native_name->rect.x2==2);
+    CHECK(sui::real_area(native_name).w()==125);
     native_name->rect.x2=200;step();CHECK(native_name->rect.x1==18&&native_name->rect.x2==200);
     CHECK(shown(sui::find(first,0xC00F0414)));hover(first);CHECK(node(edit(first))->flags&sui::kFlagEnabled);
     click(edit(first));CHECK(edits==3); // Property ownership does not own Content.
