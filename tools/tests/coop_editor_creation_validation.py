@@ -20,7 +20,7 @@ SUPPORTED={
     'dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37',
     '47f60c4db38fda1f15c5a3525617e171b0a98d728d99d645b035aa794a9199ab'}
 # Exact GA New request variants. Family and subtype are checked independently.
-EDITORS={'creature':0x465C50BA,'building-house':0x4E3F7777,'building-entertainment':0x72C49181,
+EDITORS={'creature':0x465C50BA,'creature-outfitter':0xA56567F7,'building-house':0x4E3F7777,'building-entertainment':0x72C49181,
          'vehicle-military-land':0x7D433FAD,'vehicle-colony-land':0xBC1041E6,'spaceship':0x96B24187}
 TYPE_NAMES={0x99E92F05:'BuildingCityHall',0x4E3F7777:'BuildingHouse',0xBDD15F3D:'BuildingFarm',
     0x47C10953:'BuildingFactory',0x72C49181:'BuildingEntertainment',
@@ -33,7 +33,7 @@ TYPE_NAMES={0x99E92F05:'BuildingCityHall',0x4E3F7777:'BuildingHouse',0xBDD15F3D:
     0x65672ADE:'SpaceCreature',0x4178B8E8:'AdventurerCreature',
     0xBCD73E89:'FloraSmall',0xB8669EC9:'FloraMedium',0x37148141:'FloraLarge'}
 WIDGETS={0x03F67620:'early_done_visibility_gate',0x058A3350:'done',0x90439D7C:'cancel',
-         0xD0353720:'type_chooser',0x503517B0:'type_list'}
+         0xD0353720:'type_chooser',0x503517B0:'type_list',0x0615FF74:'continue_outfitter'}
 
 def u32(data,at=0):return struct.unpack_from('<I',data,at)[0]
 
@@ -72,7 +72,7 @@ class Module(C.Structure):
         ('GlblcntUsage',W.DWORD),('ProccntUsage',W.DWORD),('modBaseAddr',C.c_void_p),
         ('modBaseSize',W.DWORD),('hModule',W.HMODULE),('szModule',W.WCHAR*256),('szExePath',W.WCHAR*260)]
 
-def native_sample(kernel,handle,image,base,family,edit_source=None,observe_other=False,exit_confirmation=False):
+def native_sample(kernel,handle,image,base,family,edit_source=None,observe_other=False,exit_confirmation=False,chain_root=None):
     reads=0;total=0;started=time.perf_counter()
     def read(address,count):
         nonlocal reads,total
@@ -102,6 +102,12 @@ def native_sample(kernel,handle,image,base,family,edit_source=None,observe_other
         u32(request_bytes,0x1C)!=0x01654C10):raise ValueError('Native creation request owner/family changed')
     if edit_source is not None and (bool(request_bytes[0x20]) or list(struct.unpack_from('<III',request_bytes,0x10))!=edit_source):
         raise ValueError('Native Edit request/source changed')
+    root_bytes=read(chain_root,0x9C)if chain_root else None
+    if chain_root and (family!='creature-outfitter' or chain_root==request or
+        u32(root_bytes)!=u32(request_bytes)or not 0<u32(root_bytes,8)<1000000 or
+        u32(root_bytes,0xC)!=EDITORS['creature']or u32(root_bytes,0x98)!=request or
+        u32(root_bytes,0x1C)!=u32(request_bytes,0x1C)or u32(request_bytes,0x14)!=0x2B978C46):
+        raise ValueError('Outfitter is not the exact owned creature request descendant')
     model=u32(head,0x98);resource=u32(head,0x7C);config=u32(head,0x24);ui=u32(head,0x78)
     if word(ui+0x5C)!=editor:raise ValueError('Creation UI belongs to another native editor')
     check_pending=edit_source is not None or exit_confirmation
@@ -151,9 +157,10 @@ def native_sample(kernel,handle,image,base,family,edit_source=None,observe_other
         read(request,0x34)!=request_bytes[:0x34] or word(editor+0x98)!=model or word(editor+0x7C)!=resource or
         word(editor+0x78)!=ui or word(ui+0x5C)!=editor or word(model+0x58)!=model_type or
         read(editor+0x48,32)!=head[0x48:0x68] or read(editor+0x38C,4)!=head[0x38C:0x390] or
-        check_pending and(read(ui+0xCC,4)!=edit_pending or read(ui+0xEC,1)!=edit_confirmation)):
+        check_pending and(read(ui+0xCC,4)!=edit_pending or read(ui+0xEC,1)!=edit_confirmation)or
+        chain_root and read(chain_root,0x9C)!=root_bytes):
         raise ValueError('Creation owner/validation changed during the bounded sample')
-    return dict(mode_manager=manager,active_index=active,mode_id=mode_id,editor=editor,request=request,
+    return dict(mode_manager=manager,active_index=active,mode_id=mode_id,editor=editor,request=request,chain_root=chain_root,
         request_editor_id=u32(request_bytes,0xC),source_key=list(struct.unpack_from('<III',request_bytes,0x10)),
         return_mode=u32(request_bytes,0x1C),new_asset=bool(request_bytes[0x20]),request_flags_34_3D=request_bytes[0x34:0x3E].hex(),
         model=model,model_type=model_type,model_type_name=TYPE_NAMES.get(model_type,'unmapped'),
@@ -184,6 +191,7 @@ def main():
     parser.add_argument('--observe-other-editors',action='store_true',help='Read-only context pins; not an authoring or Save proof')
     parser.add_argument('--edit-source',help='Exact existing GROUP!INSTANCE.TYPE; Edit preserves the constructor FFFFFFFF sentinel')
     parser.add_argument('--exit-confirmation',action='store_true',help='Close the author pending-command/confirmation fields across the read-only sample')
+    parser.add_argument('--chain-root',type=lambda value:int(value,0),help='Exact retained creature request for the native Outfitter descendant')
     args=parser.parse_args()
     if not args.execute:
         print(json.dumps(dict(prepared=True,read_only=True,no_console=True,no_native_calls=True,profiles=EDITORS),indent=2));return
@@ -192,6 +200,7 @@ def main():
     if not output.is_relative_to((ROOT/'out').resolve()) or output.exists():parser.error('A new OUT receipt is required')
     edit_source=None
     if args.exit_confirmation and(args.observe_other_editors or len(args.participant)!=1):parser.error('Exit confirmation needs one exact author participant')
+    if args.chain_root and(not 0<args.chain_root<=0xFFFFFFFF or len(args.participant)!=1 or args.observe_other_editors):parser.error('One exact author and Win32 chain root required')
     if args.edit_source and args.observe_other_editors:parser.error('Author Edit proof and other-editor observer modes are separate')
     if args.edit_source:
         if len(args.participant)!=1:parser.error('One exact Edit participant required')
@@ -238,7 +247,7 @@ def main():
                     found[Path(module.szExePath).resolve()]=module.modBaseAddr
                     ok=kernel.Module32NextW(modules,C.byref(module))
                 if exe not in found:raise ValueError('Expected private executable is not loaded')
-                row=native_sample(kernel,handle,image,found[exe],family,edit_source,args.observe_other_editors,args.exit_confirmation)
+                row=native_sample(kernel,handle,image,found[exe],family,edit_source,args.observe_other_editors,args.exit_confirmation,args.chain_root)
                 result['rows'].append(dict(instance=instance,pid=pid,expected_family=family,image_base=found[exe],
                     dll_base=found.get(dll),dll_module_witness='optional: SporeKit may map payload outside the loader module list; candidate hash pins installed payload, owner pins this launch',**row))
             finally:kernel.CloseHandle(modules)

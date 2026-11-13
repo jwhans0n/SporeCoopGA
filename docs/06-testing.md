@@ -1,5 +1,19 @@
 # 6. Testing
 
+Shared editor browser/Outfitter regressions (BUG-0639, BUG-0640):
+`tools/tests/coop_editor_browser_fps.py --execute` and
+`tools/tests/coop_editor_outfitter.py --execute` require exact hidden/muted
+Windows-lab process metadata, candidate SHA-256 and a new `out/` receipt directory.
+Both operate on an already shared private adventure and assert actual observer
+native convergence. The FPS fixture samples Creature/Building/Creature tabs,
+keeps document/history unchanged and restores `editor.browser_idle on` after
+its optional negative control. The Outfitter fixture uses native Create Your
+Own, a measured 1024x768 body recipe, Continue `0615FF74`, a read-only owned
+request-chain proof and native Save/Cancel. It requires one final class/history
+admission or no authored change on cancellation. It does not retry a failed
+creation input. Self-tests validate receipt guards only; they are not native
+passes. See [the preview 13 report](reports/EDITOR-PREVIEW13-VALIDATION.md).
+
 The local GOG 2024 4 GB update has portable identity/backup/rollback checks in
 `make test`. `make test-memory-windows test-controls-windows` builds the native
 fixtures. On 64-bit Windows, run `readable_memory_tests.exe` to verify the 4 GB

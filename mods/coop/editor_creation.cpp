@@ -4,6 +4,8 @@
 #include "game.h"
 #include "modes.h"
 #include "sporekit_game.hpp"
+#include "fixes.h"
+#include <array>
 #include <cstdio>
 #include <utility>
 
@@ -13,6 +15,8 @@ const SkHost* H;
 SkMod* M;
 Ctx C;
 bool supported=false,queued=false;
+bool g_creation_chain_fix=true;
+COOP_FIX("editor.creation_chain", "BUG-0640", g_creation_chain_fix, "retain ownership of the native creature-to-outfitter result");
 uint64_t next_serial=0;
 Submit original_submit=nullptr;
 using Notify=void(SK_THISCALL*)(void*,void*);
@@ -26,6 +30,8 @@ struct Session {
     double started=0;
     bool entered=false,stale=false;
     std::optional<Result> result;
+    uint32_t observed_mode=UINT32_MAX;
+    unsigned observations=0;
 };
 std::optional<Session> session;
 std::optional<Result> retained_saved;
@@ -33,6 +39,14 @@ std::optional<editor::ObjectId> opening_target;
 std::optional<editor_native::GestureScope> opening_owner;
 void* opening_request=nullptr;
 std::string status;
+void observe(const char* boundary,void* request=nullptr){
+    if(!H||!H->log||!M||!session||session->observations++>=32)return;
+    auto* value=request?request:session->native_request;
+    const bool valid=skg::readable(value,0x9C);
+    H->log(M,SK_INFO,"Creation transition: serial=%llu phase=%u boundary=%s mode=%08X owned=%p request=%p editor=%08X return=%08X",
+        (unsigned long long)session->scope.serial,unsigned(session->phase),boundary,game::mode_id(),session->native_request,value,
+        valid?skg::field<uint32_t>(value,0xC):0,valid?skg::field<uint32_t>(value,0x1C):0);
+}
 
 void addref(void* object){if(object)skg::vcall<int>(object,1);}
 void release(void* object){if(object)skg::vcall<int>(object,2);}
@@ -53,6 +67,34 @@ uint32_t editor_family(uint32_t editor_id){
 }
 void tell(const std::string& message){status=message;if(C.notice)C.notice(message);}
 bool current(){return session && C.current && C.current(session->scope);}
+bool owns_request(void* request){
+    if(!session || !request)return false;
+    if(request==session->native_request)return true;
+    if(!g_creation_chain_fix || session->phase==Phase::Preparing)return false;
+    // Native57C14F..57C160 follows the intrusive request+98 link without Submit
+    // or an intermediate NotifyResult. Our retained root owns the entire chain.
+    // Accept only verified adventure-compatible descendants with the same
+    // resource family and return mode, never an arbitrary active editor request.
+    auto* parent=session->native_request;
+    if(!skg::readable(parent,0x9C))return false;
+    const auto return_mode=skg::field<uint32_t>(parent,0x1C);
+    std::array<void*,8> seen{parent};
+    for(size_t depth=1;depth<seen.size();++depth){
+        auto* child=skg::field<void*>(parent,0x98);
+        if(!child || !skg::readable(child,0x9C))return false;
+        for(size_t prior=0;prior<depth;++prior)if(seen[prior]==child)return false;
+        if(skg::field<void*>(child,0)!=skg::field<void*>(parent,0) ||
+           skg::field<int>(child,8)<=0 || skg::field<uint32_t>(child,0x1C)!=return_mode)return false;
+        const auto id=skg::field<uint32_t>(child,0xC);
+        const auto type=skg::field<editor::ResourceKey>(child,0x10).type;
+        const auto allowed_family=editor_family(id);
+        if(type!=session->request.source.type ||
+           (allowed_family!=type && !(type==0x2B978C46 && id==0xA56567F7)))return false;
+        if(child==request)return true;
+        seen[depth]=child;parent=child;
+    }
+    return false;
+}
 void finish(bool success,const std::string& reason){
     if(!session)return;
     auto item=std::move(*session);session.reset();
@@ -61,10 +103,11 @@ void finish(bool success,const std::string& reason){
     if(C.finished)C.finished(item.scope,success,reason);
 }
 void SK_THISCALL notify(void* editor,void* result){
-    // 57A710 consumes result and releases editor+1CC. Match the owned request
+    if(session)observe("notify",skg::readable(editor,0x1D0)?skg::field<void*>(editor,0x1CC):nullptr);
+    // 57A710 consumes result and releases editor+1CC. Match the owned chain
     // before reading anything; unrelated editors/results stay entirely native.
     if(!session || !skg::readable(editor,0x1D0) ||
-       skg::field<void*>(editor,0x1CC)!=session->native_request || !skg::readable(result,0x48)){
+       !owns_request(skg::field<void*>(editor,0x1CC)) || !skg::readable(result,0x48)){
         original_notify(editor,result);return;
     }
     if(!session->result){
@@ -113,6 +156,7 @@ void service(){
         return;
     }
     const auto mode=game::mode_id();
+    if(session->observed_mode!=mode){session->observed_mode=mode;observe("mode");}
     if(session->phase==Phase::Submitted){
         if(mode==modes::kEditor || mode==modes::kEdit)session->entered=true;
         else if(session->entered && (mode==modes::kScenario || mode==modes::kMenu))
@@ -145,7 +189,7 @@ void shutdown(){editor_creation_ui::shutdown();if(session){release(session->nati
 void tick(){if(H)editor_creation_ui::tick();if(H && session && !queued){queued=true;H->run_outside_frame(drain,nullptr);}}
 bool intercept(void* request,Submit original){
     if(!supported || !original || !skg::readable(request,0x9C)){tell("Native creation editor support is unavailable");return false;}
-    if(session){tell("Finish or cancel your current creation before opening another editor");return false;}
+    if(session){observe("nested-submit",request);tell("Finish or cancel your current creation before opening another editor");return false;}
     auto owner=C.scope?C.scope():std::nullopt;
     if(!owner || owner->project==editor::ProjectId{} || !owner->epoch || !owner->author.generation || next_serial==UINT64_MAX){
         tell("Creation entry requires a current shared adventure");return false;

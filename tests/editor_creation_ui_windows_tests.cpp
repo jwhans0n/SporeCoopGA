@@ -4,6 +4,9 @@
 #include <cstdlib>
 
 static unsigned checks=0;
+static unsigned native_mutations=0;
+static unsigned native_card_queries=0;
+static uint64_t native_frame=1;
 #define CHECK(x) do {++checks;if(!(x)){std::printf("FAIL %d: %s\n",__LINE__,#x);std::exit(1);}}while(0)
 namespace {
 struct Handler{std::function<bool(sui::Win,const sui::Msg&)> callback;};
@@ -27,7 +30,7 @@ Node* make(Node* owner,uint32_t id,bool button=false){
     if(owner)owner->children.push_back(p);return p;
 }
 void pump(){auto work=std::move(tasks);tasks.clear();for(auto [fn,data]:work)fn(data);}
-void step(){editor_creation_ui::tick();pump();}
+void step(){++native_frame;editor_creation_ui::tick();pump();}
 bool shown(sui::Win w){if(!w)return false;for(auto* n=node(w);n;n=n->parent)if(!(n->flags&sui::kFlagVisible))return false;return true;}
 void message(sui::Win w,int type){
     CHECK(w);sui::Msg m{};m.source=w;m.type=type;
@@ -48,7 +51,7 @@ void edit_asset(editor::ObjectId id,editor::ResourceKey key,std::optional<editor
 namespace editor_native {
 State state(){return native_state;}
 std::optional<CastCard> cast_card(void* w){auto found=native_cards.find(w);return found==native_cards.end()?std::nullopt:std::optional(found->second);}
-std::optional<CastCard> cast_window(void* w){return cast_card(w);}
+std::optional<CastCard> cast_window(void* w){++native_card_queries;return cast_card(w);}
 }
 namespace editor_creation {bool active(){return creating;}}
 namespace coop_ui {bool is_open(){return lobby;}}
@@ -71,10 +74,10 @@ void add_ref(Win w){++node(w)->refs;}
 void release(Win w){CHECK(node(w)->refs>0);--node(w)->refs;}
 void set_visible(Win w,bool value){set_flag(w,kFlagVisible,value);}
 void set_enabled(Win w,bool value){set_flag(w,kFlagEnabled,value);}
-void set_flag(Win w,uint32_t flag,bool value){CHECK(w);if(value)node(w)->flags|=flag;else node(w)->flags&=~flag;}
+void set_flag(Win w,uint32_t flag,bool value){++native_mutations;CHECK(w);if(value)node(w)->flags|=flag;else node(w)->flags&=~flag;}
 void set_ids(Win w,uint32_t id,uint32_t){node(w)->id=id;}
-void set_area(Win w,const Rect& r){node(w)->rect=r;}
-void set_fill_color(Win w,uint32_t color){node(w)->color=color;}
+void set_area(Win w,const Rect& r){++native_mutations;node(w)->rect=r;}
+void set_fill_color(Win w,uint32_t color){++native_mutations;node(w)->color=color;}
 void set_shade_color(Win,uint32_t color){CHECK(color==0xFFFFFFFF);}
 void remove_child(Win owner,Win child){auto& list=node(owner)->children;auto it=std::find(list.begin(),list.end(),child);CHECK(it!=list.end());list.erase(it);node(child)->parent=nullptr;}
 void bring_to_front(Win owner,Win child){auto& list=node(owner)->children;const auto it=std::find(list.begin(),list.end(),child);CHECK(it!=list.end());list.erase(it);list.insert(list.begin(),child);}
@@ -108,10 +111,17 @@ int main(){
     const editor::ObjectId a{(2ull<<32)|7,1},b{(2ull<<32)|8,1};
     view.assets={{a,building,3,true,{}},{b,creature,4,true,{}}};native_state.ready=native_state.world_visible=true;
     SkHost host{};host.run_outside_frame=[](SkTaskFn fn,void* data){tasks.push_back({fn,data});};
+    host.frame_index=[](){return native_frame;};
     editor_creation_ui::init(&host);editor_creation_ui::tick();CHECK(!edit(first)&&tasks.size()==1);pump();
     CHECK(edit(first)&&edit(second)&&!shown(edit(first))&&!sui::find(main_node,0xC00F0301));
     CHECK(sui::find(main_node,0x14580F81)==native_new&&native_new->flags==3);
     CHECK(node(edit(first))->style==style);
+    step();const auto idle_mutations=native_mutations;
+    for(unsigned i=0;i<10;++i)step();
+    CHECK(native_mutations==idle_mutations); // Idle UI must not invalidate native thumbnail layout.
+    const auto frame_queries=native_card_queries;
+    for(unsigned i=0;i<10;++i){editor_creation_ui::tick();pump();}
+    CHECK(native_card_queries==frame_queries); // Network service pulses are not rendered frames.
     CHECK(editor_creation_ui::diagnostic().find("empty rect=")!=std::string::npos&&!edit(empty));
     hover(first);CHECK(shown(edit(first))&&!shown(edit(second)));
     // Native thumbnail/child leave notifications can arrive during a press

@@ -2469,3 +2469,61 @@ fix/w40-cell-evo 20261103-161211, rel/0.7.4 20261103-204638), so the editor star
 a config start budget, whatever the held post did. GetEvolutionPoints reads the same value inside the editor (40 -> 40
 while the part is bought: the editor keeps its own count until done, the result's +0x34 then sets it).
 ? Not looked at: where the Creature editor takes its start budget (OnEnter or the stage's DNA); no re-post needed.
+
+## Native cast browser service pulses and chained Outfitter requests (2026-11-13, fix/ga-editor-browser-runtime)
+<a id="creations-browser-pulses-outfitter"></a>
+
+BUG-0639: observed in the installed preview 12 logs, both games repeatedly spend
+about 0.5 seconds between rendered frames without a native fault or packet loss.
+Read-only sampling of the private game's main thread resolves the hot stack to
+`skg::readable`, `editor_native::cast_window`/`native_slot` and
+`editor_creation_ui::visible_cards`. The 5 ms editor network service calls
+`editor_creation::tick` between frames. Clearing only `queued` when its outside
+callback drains allows another whole card-tree scan in the same Present frame.
+Native outside-work metrics counted 15,408 calls and 9,390 callbacks over only a
+few hundred rendered frames. Limit UI scheduling by `H->frame_index()` as well
+as the pending callback flag. Continue draining networking normally.
+
+Correction to the initial hypothesis: unchanged border/padlock writes also
+invalidate native controls and are now skipped, but those setter guards alone
+left the native pair at about 2 FPS. The frame guard is the measured correction:
+switching `editor.browser_idle` off reproduces about 2 FPS; on restores about
+21 FPS on both hidden games, retaining actual native convergence. Final test
+receipts also assert readiness, unchanged canonical document/history and zero
+native faults across Creature, Building and Creature-return tabs. Background
+hidden-game FPS is not an acceptance result for visible-game performance or
+large-adventure commit latency.
+
+BUG-0640: the native GA Creature picker route uses body editor `465C50BA`, with
+an intrusive successor request at `EditorRequest+98`. The native Continue
+button is `0615FF74` (selected at `58FC16..58FC34`). After a successful body
+save, `57C0E0` (thiscall(cEditor*), plain ret) checks the result and follows
+that successor at `57C131..57C165`. `5725E0` copies its intrusive reference;
+`5766E0` (thiscall(request-slot*, request-slot*), ret4) assigns it to
+`cEditor+1CC`, retaining the child and releasing the previous editor reference.
+It does not clear the root's `+98`. `57C16D..57C185` fills an empty successor
+source with the body result key. `579720` starts that editor directly,
+bypassing Submit and an intermediate NotifyResult.
+
+Observed successor: `A56567F7`, model `4178B8E8` (AdventurerCreature), same
+Scenario return mode `01654C10`, ordinary CRT source `2B978C46`, and a distinct
+request pointer. Final Done calls verified `57A710` with that child request.
+Preview 12 compares only the root pointer, leaves this result uncaptured, then
+freezes the draft with "returned without its owned result". Private failing
+native input reproduces the installed error exactly.
+
+The adapter's retained root owns the child through the final posted result.
+Match a bounded, cycle-checked chain from that root, checking request vtable,
+live reference, return mode and verified same-family editor variant. Keep
+matching while its completion is returning so duplicate notifications cannot
+restore the native uncoordinated import path. Do not accept arbitrary active
+requests, broader nested Submit calls or changed resource families. Preserve
+the original shared scope, content lease, stale-result fences and queued-result
+cancellation. Only the final Outfitter completion enters coordinated content
+admission. Cancelling after the intermediate local body save adds no cast entry.
+
+Private native evidence: `out/preview13/outfitter-red-native.log`,
+`outfitter-return-red/`, `outfitter-guest-green1/`,
+`outfitter-host-green2/` and the preview 13 validation report. The existing
+independent creation-session section describes direct requests; this owned
+successor path extends its exact-request matching rule.

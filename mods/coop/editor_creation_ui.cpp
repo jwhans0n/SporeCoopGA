@@ -4,6 +4,7 @@
 #include "editor_native.h"
 #include "coop_ui.h"
 #include "sui.h"
+#include "fixes.h"
 #include <algorithm>
 #include <array>
 #include <map>
@@ -16,6 +17,9 @@ namespace editor_creation_ui {
 namespace {
 const SkHost* H;
 bool queued=false;
+std::optional<uint64_t> queued_frame;
+bool g_browser_idle_fix=true;
+COOP_FIX("editor.browser_idle", "BUG-0639", g_browser_idle_fix, "update native cast controls once per rendered frame and skip unchanged decorations");
 std::string display_status="browser unavailable";
 uint64_t update_us=0;
 constexpr uint32_t kEdit=0xC00F0401,kDecoration=0xC00F0410;
@@ -23,6 +27,8 @@ struct Card {
     sui::Win window=nullptr,edit=nullptr,name=nullptr;
     std::array<sui::Win,4> border{};
     std::array<sui::Win,5> padlock{};
+    std::array<std::optional<uint32_t>,4> border_colors{};
+    std::array<std::optional<uint32_t>,5> padlock_colors{};
     std::vector<std::pair<sui::Win,void*>> handlers;
     void *edit_tip=nullptr,*owner_tip=nullptr;
     coop_editor::AssetCardView value;
@@ -38,6 +44,11 @@ sui::Win edit_style=nullptr;
 std::string identity;
 std::map<sui::Win,std::shared_ptr<Card>> cards;
 bool same_area(const sui::Rect& a,const sui::Rect& b){return a.x1==b.x1&&a.y1==b.y1&&a.x2==b.x2&&a.y2==b.y2;}
+void decoration_area(sui::Win window,const sui::Rect& area){if(!g_browser_idle_fix||!same_area(sui::area(window),area))sui::set_area(window,area);}
+void decoration_visible(sui::Win window,bool visible){if(!g_browser_idle_fix||sui::visible(window)!=visible)sui::set_visible(window,visible);}
+void decoration_color(sui::Win window,uint32_t color,std::optional<uint32_t>& prior){
+    if(!g_browser_idle_fix||prior!=color)sui::set_fill_color(window,color);prior=color;
+}
 void release_name(Card& card){
     if(!card.name)return;
     auto current=sui::area(card.name);
@@ -254,16 +265,16 @@ void SK_CDECL update(void*){
         reserve_name(card,!value->owners.empty());
         const std::array<sui::Rect,4> border{{{1,1,width-1,3},{1,height-3,width-1,height-1},{1,3,3,height-3},{width-3,3,width-1,height-3}}};
         for(unsigned i=0;i<4;++i){
-            sui::set_area(card.border[i],border[i]);sui::set_visible(card.border[i],!value->owners.empty());
-            if(!value->owners.empty())sui::set_fill_color(card.border[i],value->owners[i%value->owners.size()].color);
+            decoration_area(card.border[i],border[i]);decoration_visible(card.border[i],!value->owners.empty());
+            if(!value->owners.empty())decoration_color(card.border[i],value->owners[i%value->owners.size()].color,card.border_colors[i]);
         }
         // A small closed padlock drawn with noninteractive native windows.
         // It never changes native selection, drag hit-testing or caption text.
         const float x=6,y=height-17;
         const std::array<sui::Rect,5> lock{{{x+2,y,x+8,y+2},{x+1,y+2,x+3,y+6},{x+7,y+2,x+9,y+6},{x,y+5,x+10,y+13},{x+4,y+8,x+6,y+11}}};
         for(unsigned i=0;i<5;++i){
-            sui::set_area(card.padlock[i],lock[i]);sui::set_visible(card.padlock[i],!owners.empty());
-            sui::set_fill_color(card.padlock[i],i==4?0xFF20303C:0xFFFFFFFF);
+            decoration_area(card.padlock[i],lock[i]);decoration_visible(card.padlock[i],!owners.empty());
+            decoration_color(card.padlock[i],i==4?0xFF20303C:0xFFFFFFFF,card.padlock_colors[i]);
         }
     }
     for(auto it=cards.begin();it!=cards.end();)if(!present.contains(it->first)){destroy(*it->second);it=cards.erase(it);}else ++it;
@@ -280,8 +291,13 @@ void SK_CDECL update(void*){
     }
 }
 }
-void init(const SkHost* host){H=host;}
-void tick(){if(H&&!queued){queued=true;H->run_outside_frame(update,nullptr);}}
-void shutdown(){clear();H=nullptr;queued=false;}
+void init(const SkHost* host){H=host;queued_frame.reset();}
+void tick(){
+    if(!H||queued)return;
+    const auto frame=H->frame_index();
+    if(g_browser_idle_fix&&queued_frame==frame)return;
+    queued_frame=frame;queued=true;H->run_outside_frame(update,nullptr);
+}
+void shutdown(){clear();H=nullptr;queued=false;queued_frame.reset();}
 std::string diagnostic(){return display_status+"\nupdate_us="+std::to_string(update_us);}
 } // namespace editor_creation_ui

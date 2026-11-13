@@ -199,6 +199,55 @@ void result_key(editor::ResourceKey saved,bool cancel=false){
     notify_hook(native_editor.data(),native_result.data());
 }
 void result(bool cancel=false,bool unchanged=false){result_key(unchanged?source:editor::ResourceKey{0x29004321,source.type,source.group},cancel);}
+void test_outfitter_return(){
+    for(unsigned scenario=0;scenario<4;++scenario){
+        const bool cancel=scenario==1,stale=scenario>=2;
+        initialize();start();step();
+        std::array<uint8_t,0x9C> outfit{};
+        skg::field<void*>(outfit.data(),0)=refs_vt.data();skg::field<int>(outfit.data(),8)=2;
+        skg::field<uint32_t>(request.data(),0x1C)=modes::kScenario;
+        skg::field<uint32_t>(outfit.data(),0xC)=0xA56567F7;
+        skg::field<editor::ResourceKey>(outfit.data(),0x10)=source;
+        skg::field<uint32_t>(outfit.data(),0x1C)=modes::kScenario;
+        // Native57C14F..57C160 copies request+98 into editor+1CC, retaining
+        // the child and releasing the editor's old root reference. Our root
+        // reference owns that exact child until the final posted result.
+        skg::field<void*>(request.data(),0x98)=outfit.data();
+        unref(request.data());skg::field<void*>(native_editor.data(),0x1CC)=outfit.data();
+        if(scenario==2)lease=false;
+        if(scenario==3)live_scope=false;
+        step();
+        result(cancel);CHECK(editor_creation::owns_request(outfit.data()));return_ready=true;step();
+        CHECK(!editor_creation::active() && returned==unsigned(!stale) && finished==1);
+        CHECK((stale || returned_cancelled==cancel) && native_imports==0);
+        if(stale)CHECK(editor_creation::last_saved()->saved.instance==0x29004321);
+        CHECK(skg::field<int>(request.data(),8)==0 && skg::field<int>(outfit.data(),8)==1);
+        CHECK(skg::field<int>(native_result.data(),8)==0);
+        // The fixture has no native request destructor: release its link here.
+        skg::field<void*>(request.data(),0x98)=nullptr;unref(outfit.data());
+    }
+    initialize();start();
+    auto child=request;
+    skg::field<uint32_t>(request.data(),0x1C)=modes::kScenario;
+    skg::field<uint32_t>(child.data(),0x1C)=modes::kScenario;
+    skg::field<uint32_t>(child.data(),0xC)=0xA56567F7;
+    skg::field<void*>(request.data(),0x98)=child.data();
+    CHECK(editor_creation::owns_request(child.data()));
+    skg::field<uint32_t>(child.data(),0x1C)=modes::kMenu;
+    CHECK(!editor_creation::owns_request(child.data()));
+    skg::field<uint32_t>(child.data(),0x1C)=modes::kScenario;
+    skg::field<uint32_t>(child.data(),0xC)=0xDEADBEEF;
+    CHECK(!editor_creation::owns_request(child.data()));
+    skg::field<uint32_t>(child.data(),0xC)=0xA56567F7;
+    skg::field<editor::ResourceKey>(child.data(),0x10).type=0x2399BE55;
+    CHECK(!editor_creation::owns_request(child.data()));
+    skg::field<editor::ResourceKey>(child.data(),0x10).type=source.type;
+    skg::field<void*>(child.data(),0x98)=request.data();
+    CHECK(!editor_creation::owns_request(reinterpret_cast<void*>(1)));
+    skg::field<void*>(request.data(),0x98)=nullptr;
+    CHECK(!editor_creation::owns_request(child.data()));
+    result(true);return_ready=true;step();CHECK(!editor_creation::active());
+}
 std::vector<uint8_t> model(){return {0xD3,0x7E,0x65,0x48,1,2,3,4,5,6,7,8};}
 bool same_records(const std::vector<dbpf::Record>& a,const std::vector<dbpf::Record>& b){
     return a.size()==b.size() && std::equal(a.begin(),a.end(),b.begin(),[](const auto& x,const auto& y){return x.key==y.key && x.data==y.data;});
@@ -507,6 +556,7 @@ int main(int argc,char** argv){
     test_immutable_alias_has_its_own_local_metadata_identity();
     test_ga_new_routes();
     test_native_model_admission();
+    test_outfitter_return();
     initialize();
     CHECK(!editor_creation::intercept(request.data(),submit));unref(request.data());step();step();
     CHECK(submissions==0 && editor_creation::active() && !editor_creation::designing());

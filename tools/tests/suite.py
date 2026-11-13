@@ -64,6 +64,8 @@ def add(name, cmd, suites=('full',), warm=False, exclusive=False, minutes=4, fix
 
 P = 'python3 tools/tests/'
 add('unit', 'make test', ('smoke',), minutes=1, gates=NO_GAME)
+add('editor_outfitter_contracts', P + 'coop_editor_outfitter.py --self-test', minutes=1, gates=NO_GAME)
+add('editor_browser_fps_contracts', P + 'coop_editor_browser_fps.py --self-test', minutes=1, gates=NO_GAME)
 add('win_unit', P + 'win_unit.py', minutes=1, gates=NO_GAME)  # Win32 file handling under Wine: updater backups / pending list / duplicate files, received world slots (BUG-0035/0087/0089/0105/0114/0150; --old fails), the setup's Spore-without-GA folder and GitHub API 403 fallback (BUG-0391: SPORE_WIN_UNIT_ARGS=--old-ga fails; BUG-0392: SPORE_FIX_OFF=update.web_fallback fails)
 add('creature', P + 'coop_two_instances.py --guest-menu', ('smoke',), minutes=4)
 add('cell', P + 'coop_mode.py --fixture cell', minutes=3)

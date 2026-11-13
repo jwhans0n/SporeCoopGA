@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- Shared Adventure Editor preview 13: fix sustained frame-rate loss from repeated
+  asset-card scans between rendered frames, and preserve creation ownership
+  through the native Creature to Outfitter save/return chain (BUG-0639, BUG-0640).
+  Retain protocol 28 and existing save/recovery formats.
+
 ## [0.7.4.0] - 2026-10-25
 
 - Publish the first SporeCoopGA release, collecting the Galactic Adventures

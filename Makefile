@@ -171,9 +171,9 @@ $(B)/host/editor_creation_png_tests.exe: tests/editor_creation_png_windows_tests
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_creation_png_windows_tests.cpp mods/coop/editor_creation_png.cpp -lole32 -o $@
 
-$(B)/host/editor_creation_ui_tests.exe: tests/editor_creation_ui_windows_tests.cpp mods/coop/editor_creation_ui.cpp mods/coop/editor_creation_ui.h mods/coop/editor_creation.h mods/coop/editor_runtime.h mods/coop/coop_ui.h mods/coop/sui.h $(ADVENTURE_ABI_HEADERS)
+$(B)/host/editor_creation_ui_tests.exe: tests/editor_creation_ui_windows_tests.cpp mods/coop/editor_creation_ui.cpp mods/coop/editor_creation_ui.h mods/coop/editor_creation.h mods/coop/editor_runtime.h mods/coop/coop_ui.h mods/coop/sui.h mods/coop/fixes.cpp mods/coop/fixes.h $(ADVENTURE_ABI_HEADERS)
 	@mkdir -p $(B)/host
-	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-unused-function -static -Imods/coop -Isdk/include tests/editor_creation_ui_windows_tests.cpp -o $@
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-unused-function -static -Imods/coop -Isdk/include tests/editor_creation_ui_windows_tests.cpp mods/coop/fixes.cpp -o $@
 test-editor-windows: $(B)/host/editor_native_pose_tests.exe
 test-editor-windows: $(B)/host/editor_native_terrain_tests.exe $(B)/host/editor_native_complexity_tests.exe
 test-editor-windows: $(B)/host/adventure_collect_tests.exe
@@ -289,9 +289,9 @@ $(B)/host/editor_authoring_extensions_tests.exe: $(EDITOR_WIRE_SRC) tests/editor
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(EDITOR_WIRE_SRC) tests/editor_authoring_extensions_tests.cpp -o $@
 
-$(B)/host/editor_creation_tests.exe: tests/editor_creation_windows_tests.cpp mods/coop/editor_creation.cpp mods/coop/editor_creation.h mods/coop/editor_creation_ui.h mods/coop/editor_creation_native.cpp mods/coop/editor_creation_native.h mods/coop/editor_creation_png.cpp mods/coop/editor_creation_png.h mods/coop/editor_creation_png_carrier.h mods/coop/editor_creation_zlib.h mods/coop/net/adventure_assets.cpp mods/coop/net/dbpf.cpp updater/sha256.cpp
+$(B)/host/editor_creation_tests.exe: tests/editor_creation_windows_tests.cpp mods/coop/editor_creation.cpp mods/coop/editor_creation.h mods/coop/editor_creation_ui.h mods/coop/editor_creation_native.cpp mods/coop/editor_creation_native.h mods/coop/editor_creation_png.cpp mods/coop/editor_creation_png.h mods/coop/editor_creation_png_carrier.h mods/coop/editor_creation_zlib.h mods/coop/net/adventure_assets.cpp mods/coop/net/dbpf.cpp mods/coop/fixes.cpp mods/coop/fixes.h updater/sha256.cpp
 	@mkdir -p $(B)/host
-	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-missing-field-initializers -static -Imods/coop -Isdk/include tests/editor_creation_windows_tests.cpp mods/coop/net/adventure_assets.cpp mods/coop/net/dbpf.cpp updater/sha256.cpp -luser32 -lole32 -o $@
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-missing-field-initializers -static -Imods/coop -Isdk/include tests/editor_creation_windows_tests.cpp mods/coop/net/adventure_assets.cpp mods/coop/net/dbpf.cpp mods/coop/fixes.cpp updater/sha256.cpp -luser32 -lole32 -o $@
 
 test-editor-windows: $(B)/host/editor_accounting_tests.exe
 
@@ -428,6 +428,8 @@ test: sanitizer-probe
 	python3 tools/tests/coop_editor_save.py --self-test
 	python3 tools/tests/coop_editor_creations.py --self-test
 	python3 tools/tests/coop_editor_creation_save.py --self-test
+	python3 tools/tests/coop_editor_outfitter.py --self-test
+	python3 tools/tests/coop_editor_browser_fps.py --self-test
 	python3 tools/tests/coop_editor_terrain_stamp_checks.py --self-test
 	python3 tests/editor_preview_package_tests.py
 	python3 tools/tests/editor_native_audit.py --self-test
