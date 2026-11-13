@@ -1,8 +1,8 @@
 <p align="center">
 
-> Source integration candidate: `0.7.8.0-ga-editor-preview.11`, protocol 28, based on upstream `v0.7.8`.
-> Native smoke is pending; this branch is not an installed or published update.
-> See the [synchronization report](docs/reports/UPSTREAM-0.7.8-SYNC.md).
+> Editor testing candidate: `0.7.8.0-ga-editor-preview.13`, protocol 28, based on upstream `v0.7.8`.
+> Focused browser/Outfitter checks are in the [preview 13 report](docs/reports/EDITOR-PREVIEW13-VALIDATION.md).
+> Upstream-wide smoke and destination promotion remain pending; see the [synchronization report](docs/reports/UPSTREAM-0.7.8-SYNC.md).
 
   <img src="docs/media/banner.svg" alt="SporeCoopGA - Co-op Galactic Adventures for Spore." width="100%">
 </p>

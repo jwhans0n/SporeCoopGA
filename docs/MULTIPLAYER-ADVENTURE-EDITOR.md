@@ -1,10 +1,13 @@
 # Shared Adventure Editor development guide
 
-Current browser testing candidate: **0.7.8.0-ga-editor-preview.12, protocol 28**.
+Current browser testing candidate: **0.7.8.0-ga-editor-preview.13, protocol 28**.
 It includes the upstream0.7.8 integration and retains the preview10 captain and
 terrain fixes. All party members must update together. Browser validation and
-the testing installation receipt appear in the
+the earlier testing installation receipt appear in the
 [native-flow report](reports/EDITOR-NATIVE-FLOW-VALIDATION.md#editor-preview12-browser).
+Preview13 fixes sustained browser frame-rate loss and native Creature to
+Outfitter return ownership. Its focused qualification and deployment evidence
+are in the [preview 13 report](reports/EDITOR-PREVIEW13-VALIDATION.md).
 Captain capture,
 terrain grounding, held recovery and Native Save qualification are recorded in
 the [preview 10 report](reports/EDITOR-PREVIEW10-VALIDATION.md). All party members
@@ -22,7 +25,7 @@ playing while others continue editing remain later milestones in the
 
 ## Compatibility and scope
 
-Preview12 uses protocol28, with editor/adventure message IDs64/65 and upstream
+Preview13 retains protocol28, with editor/adventure message IDs64/65 and upstream
 WSTATE/PLAYER_RULE IDs62/63. It explicitly rejects older protocol26 preview10
 clients and the protocol27 main integration. Native saves and recovery formats
 remain compatible; see the report for the tested scope and remaining gates.
