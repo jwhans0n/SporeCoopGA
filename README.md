@@ -1,7 +1,7 @@
 <p align="center">
 
-> Editor testing candidate: `0.7.8.0-ga-editor-preview.13`, protocol 28, based on upstream `v0.7.8`.
-> Focused browser/Outfitter checks are in the [preview 13 report](docs/reports/EDITOR-PREVIEW13-VALIDATION.md).
+> Editor testing candidate: `0.7.8.0-ga-editor-preview.14`, protocol 28, based on upstream `v0.7.8`.
+> Focused creation-return checks are in the [preview 14 report](docs/reports/EDITOR-PREVIEW14-VALIDATION.md).
 > Upstream-wide smoke and destination promotion remain pending; see the [synchronization report](docs/reports/UPSTREAM-0.7.8-SYNC.md).
 
   <img src="docs/media/banner.svg" alt="SporeCoopGA - Co-op Galactic Adventures for Spore." width="100%">

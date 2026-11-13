@@ -2527,3 +2527,44 @@ Private native evidence: `out/preview13/outfitter-red-native.log`,
 `outfitter-host-green2/` and the preview 13 validation report. The existing
 independent creation-session section describes direct requests; this owned
 successor path extends its exact-request matching rule.
+
+## Canonical creation-return reconstruction (2026-11-13, fix/ga-editor-creation-grounding)
+<a id="creations-canonical-return"></a>
+
+CORRECTION (2026-11-13): BUG-0641 exposes a separate return boundary after the
+preview 13 owned-result fix. Installed logs contain the exact original-placement
+grounding-witness rejection on both roles, after direct Creature and Outfitter
+completion. The owned results were received. A private cold recovery of the
+reported 300-placement, 70-class, four-act draft instead reproduces the related
+captain settings rejection: authored captain Y is C2DE6A8F while the returned
+native scene contains C2DE6A8E. That is one ULP, not evidence authorizing a float
+tolerance. The original placement-key mismatch is not reproduced by that cold
+recovery and its exact native cause remains unproven.
+
+The former return path first transferred old raw placement/terrain witnesses
+and validated the entry image, then restored the current canonical resource.
+Native creator teardown retires scene-derived evidence; that ordering could
+prevent the reconstruction needed to establish valid evidence. Failure precedes
+paired camera activation and freezes the retained draft. Subsequent input
+cannot repair this terminal state.
+
+With editor.creation_restore enabled (default), require the same retained
+project, epoch, participant-local creation serial, native scene owner, ready
+initialization state 4 and visible world. Activate the existing verified paired
+camera resume and restore the latest owned canonical snapshot through
+restore_fenced. A fresh native scene must also match the authenticated entry
+resource. Do not transfer expired placement/captain grounding or admit returned
+render values as authored edits. Native restore rebuilds exact grounding and
+captain provenance from the canonical image. No new native signature is used.
+
+A restored revision is the revision of its owned snapshot, not a newer revision
+accepted during callbacks. Coalesce to the latest revision before acknowledging.
+After readiness and a later rendered frame, capture and strictly validate all
+supported fields and opaque authoring against the committed image; recheck the
+session, owner and generation around verification. Preserve per-player act,
+selection and camera. Failed restoration, stale owner or unsupported final
+state retains the checkpoint and freezes recovery. Ordinary authoring's exact
+placement witness checks are unchanged. The old return path remains available
+with coop.fix editor.creation_restore off for private regression only.
+
+Evidence and qualification limits: [preview 14 report](../reports/EDITOR-PREVIEW14-VALIDATION.md).

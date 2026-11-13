@@ -80,6 +80,9 @@ def run(args):
         entered=sample('body-entered','creature');root=entered['request']
         if request_errors(entered,'creature'):raise FixtureError('Not the requested new Creature editor')
         steps,digest=steps_file(ROOT/'tools/tests/fixtures/editor_creation/creature-held-c39.json','creature')
+        if args.body_target:
+            steps=[{'slow_drag':[*step['slow_drag'][:2],*args.body_target]}if 'slow_drag'in step else step for step in steps]
+            result['body_target']=args.body_target
         result['recipe_sha256']=digest;write()
         input_steps(author,steps,args.name)
         body=sample('body-before-continue','creature')
@@ -147,6 +150,7 @@ def main():
     p.add_argument('--execute',action='store_true');p.add_argument('--self-test',action='store_true')
     p.add_argument('--metadata',type=Path);p.add_argument('--candidate');p.add_argument('--instances',nargs=2,type=int,default=[45,46])
     p.add_argument('--author',type=int);p.add_argument('--output',type=Path);p.add_argument('--name',default='OutfitterRegression');p.add_argument('--cancel',action='store_true')
+    p.add_argument('--body-target',nargs=2,type=int,help='Explicitly measured body attachment point in the 1024x768 private fixture')
     a=p.parse_args()
     if a.self_test:
         good=dict(chain_root=1,request=2,request_editor_id=0xA56567F7,model_type=0x4178B8E8,source_key=[7,0x2B978C46,8],return_mode=0x01654C10,new_asset=False,save_phase_38C=0,ui_pending_command_cc=0)
@@ -156,6 +160,7 @@ def main():
         print('Outfitter chain receipt guards passed; no game connections');return
     if not a.execute:print('Prepared only; explicit private metadata, candidate and author required.');return
     if not a.metadata or not a.output or a.author not in a.instances or not re.fullmatch('[0-9a-f]{64}',a.candidate or'')or not a.output.resolve().is_relative_to((ROOT/'out').resolve()):p.error('Exact owned private pair, candidate, author and new OUT output required')
+    if a.body_target and not(350<=a.body_target[0]<1000 and 100<=a.body_target[1]<700):p.error('Measured body point must be inside the native design viewport')
     run(a)
 
 

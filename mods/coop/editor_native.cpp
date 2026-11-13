@@ -4717,6 +4717,15 @@ bool creation_terrain_placements_current(const CreationTerrainProof& proof,bool 
            !marker || skg::field<uint32_t>(marker,0)!=row.class_index || skg::field<uint32_t>(marker,0x228)!=row.native_key ||
            !exact_grounding_position(skg::field<editor::Vec3>(marker,4),row.rendered) ||
            (entry_boundary && marker_id(row.live.marker)!=row.live.object)){
+            if(H && H->log && M){
+                const auto actual=marker?skg::field<editor::Vec3>(marker,4):editor::Vec3{};
+                H->log(M,SK_INFO,"Creation grounding mismatch: serial=%llu entry=%u object=%llu:%u slot=%u revision=%llu/%llu class=%u/%u key=%08X/%08X rendered=%.9g,%.9g,%.9g returned=%.9g,%.9g,%.9g generation=%llu/%llu",
+                    (unsigned long long)proof.serial,unsigned(entry_boundary),(unsigned long long)row.live.object.id,row.live.object.generation,row.live.marker,
+                    (unsigned long long)row.revision,(unsigned long long)(found==proof.entry.document.placements.end()?UINT64_MAX:found->second.revision),
+                    row.class_index,marker?skg::field<uint32_t>(marker,0):UINT32_MAX,row.native_key,marker?skg::field<uint32_t>(marker,0x228):UINT32_MAX,
+                    double(row.rendered.x),double(row.rendered.y),double(row.rendered.z),double(actual.x),double(actual.y),double(actual.z),
+                    (unsigned long long)proof.generation,(unsigned long long)generation);
+            }
             error="The creation return lost an exact original placement grounding witness";return false;
         }
         if(entry_boundary && row.grounded){

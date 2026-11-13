@@ -38,6 +38,7 @@
 #include "game.h"
 #include "modes.h"
 #include "sporekit_game.hpp"
+#include "fixes.h"
 #include "../updater/sha256.h"
 
 // Two independent process-global runtime instances, with the production source
@@ -46,6 +47,7 @@ namespace runtime_host { using coop_editor::Ctx; using coop_editor::View; using 
 #ifndef SPORECOOP_RUNTIME_SOURCE
 #define SPORECOOP_RUNTIME_SOURCE "../mods/coop/editor_runtime.cpp"
 #endif
+#define SPORECOOP_RUNTIME_FIXTURE
 #define coop_editor runtime_host
 #include SPORECOOP_RUNTIME_SOURCE
 #undef coop_editor
@@ -788,7 +790,7 @@ void service_capture(){
 bool restore(const Snapshot& value,std::string& error){CHECK(!dispatching);CHECK(native[side].state.ready);
     if(native[side].baseline_restore_callback){auto callback=native[side].baseline_restore_callback;callback();}
     if(native[side].refuse_restore){error="Injected native restore failure";return false;}
-    native[side].snapshot_steps.push_back('R');
+    native[side].snapshot_steps.push_back('R');native[side].terrain_needs_ticket=false;
     if(native[side].callbacks.relative_scale_tracked)CHECK(native[side].callbacks.relative_scale_tracked()==!value.document.schema.empty());const auto live_key=native[side].snapshot.source;native[side].snapshot=value;native[side].state.act=value.act;if(native[side].preserve_live_resource_key_on_restore)native[side].snapshot.source=live_key;native[side].snapshot.captain=avatar_key;++native[side].restores;
     if(native[side].bump_generation_on_restore)++native[side].state.generation;
     if(native[side].defer_readiness_on_restore)native[side].state.ready=false;return true;}
@@ -4472,18 +4474,80 @@ static void test_failed_creation_return_is_terminal_and_keeps_first_error(){
         retain_fixture_logs=false;
     }
 }
+static void test_creation_return_rebuilds_retired_grounding(){
+    for(unsigned author=0;author<2;++author){
+        seed_creation_settings=true;Party party;seed_creation_settings=false;
+        const auto checkpoint=author?runtime_guest::store.snapshot():runtime_host::store.snapshot();
+        const auto view=native[author].view;
+        auto value=creation_request(author,0x2B978C46);creation_enter(value);
+        auto& n=native[author];n.state.editing=n.state.ready=true;
+        // Native teardown can retire marker/grounding evidence. Returned scene
+        // values are disposable; only a verified canonical rebuild can resume.
+        n.terrain_needs_ticket=true;n.refuse_terrain_resume=true;
+        n.snapshot.document.placements.at(placement).position={99,98,97};n.snapshot.bytes=body(n.snapshot.document);
+        const auto restores=n.restores;
+        auto& context=editor_creation::fixture_contexts[author];
+        const editor_creation::Result result{value.request,{},true};std::string error;side=int(author);
+        CHECK(!context.returned(value.scope,result,error)&&error.empty());
+        CHECK(n.restores==restores+1&&!n.terrain_ticket_resumes&&!n.terrain_needs_ticket);
+        ++game_frame;CHECK(context.returned(value.scope,result,error)&&error.empty());
+        CHECK(n.snapshot.document==(author?runtime_guest::controller->state().document:runtime_host::controller->state().document));
+        CHECK(n.view==view);
+        creation_active[author]=false;context.finished(value.scope,true,{});
+        CHECK(spin([&]{return author?!runtime_guest::local_creation:!runtime_host::local_creation;}));
+        CHECK((author?runtime_guest::store.snapshot():runtime_host::store.snapshot())==checkpoint);
+        CHECK(!runtime_host::frozen&&!runtime_guest::frozen);
+        // The next entry must work immediately, with a new scene-bound proof.
+        n.refuse_terrain_resume=false;
+        auto next=creation_request(author,0x2B978C46);creation_enter(next);creation_return(next,true);
+        CHECK(!runtime_host::frozen&&!runtime_guest::frozen);
+    }
+}
+static void test_creation_canonical_return_failure_fences(){
+    for(unsigned author=0;author<2;++author)for(unsigned fault=0;fault<5;++fault){
+        seed_creation_settings=true;Party party;seed_creation_settings=false;
+        const auto checkpoint=author?runtime_guest::store.snapshot():runtime_host::store.snapshot();
+        auto value=creation_request(author,0x2B978C46);creation_enter(value);
+        auto& n=native[author];n.state.editing=n.state.ready=true;
+        auto& context=editor_creation::fixture_contexts[author];
+        const editor_creation::Result result{value.request,{},true};std::string error;side=int(author);
+        const auto restores=n.restores;
+        if(fault==0)n.refuse_restore=true;
+        if(fault==1)n.restore_callback=[&]{++n.scene_owner.resource;};
+        if(fault==2)n.restore_callback=[&]{
+            if(author)runtime_guest::local_creation.reset();else runtime_host::local_creation.reset();
+        };
+        CHECK(!context.returned(value.scope,result,error));
+        if(fault<3){CHECK(!error.empty()&&n.restores==restores);}
+        else{
+            CHECK(error.empty()&&n.restores==restores+1);++game_frame;
+            if(fault==3){n.snapshot.document.placements.at(placement).position.x+=1;n.snapshot.bytes=body(n.snapshot.document);}
+            else n.snapshot.bytes.front()^=1;
+            CHECK(!context.returned(value.scope,result,error)&&!error.empty());
+            CHECK(!(author?runtime_guest::local_creation->materialized:runtime_host::local_creation->materialized));
+        }
+        n.restore_callback={};creation_active[author]=false;context.finished(value.scope,false,error);
+        CHECK((author?runtime_guest::store.snapshot():runtime_host::store.snapshot())==checkpoint);
+        CHECK(!runtime_host::controller->state().document.revision&&runtime_host::controller->state().history.empty());
+    }
+}
 static void test_all_creation_lifecycle_cases(){
     const auto run=[](const char* name,void (*test)()){
         if(std::getenv("SPORECOOP_FIXTURE_TRACE"))std::printf("CREATION lifecycle %s\n",name);test();
     };
+    run("retired grounding canonical rebuild",test_creation_return_rebuilds_retired_grounding);
+    run("canonical restore failure fences",test_creation_canonical_return_failure_fences);
     run("live Recover",test_recovery_cannot_discard_live_creation_design);
     run("terrain entry proof",test_creation_terrain_entry_rejection_is_atomic);
+    // Preserve the old witness-transfer path as a tested diagnostic switch.
+    runtime_host::creation_canonical_return=runtime_guest::creation_canonical_return=false;
     run("terrain return retry",test_creation_terrain_ticket_survives_capture_retry);
     run("terrain canonical advance",test_creation_terrain_ticket_keeps_entry_while_canonical_advances);
     run("native resume holds",test_creation_return_waits_for_native_resume_before_camera);
     run("replaced owner",test_creation_return_rejects_replaced_scene_before_writes);
     run("failed return End/Leave",test_failed_creation_return_retires_on_end_or_leave);
     run("failed return is terminal",test_failed_creation_return_is_terminal_and_keeps_first_error);
+    runtime_host::creation_canonical_return=runtime_guest::creation_canonical_return=true;
 }
 static void test_asset_browser_drop_transactions(){
     for(unsigned author:{0u,1u}){

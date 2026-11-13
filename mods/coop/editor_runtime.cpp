@@ -25,6 +25,7 @@
 #include "editor_creation.h"
 #include "editor_creation_ui.h"
 #include "editor_creation_native.h"
+#include "fixes.h"
 #include "editor_metrics.h"
 #include "editor_stage_metrics.h"
 #include "editor_reopen_identity.h"
@@ -46,6 +47,10 @@ using Phase = editor_session::Phase;
 const SkHost* H;
 SkMod* M;
 Ctx C;
+bool creation_canonical_return=true;
+#ifndef SPORECOOP_RUNTIME_FIXTURE
+COOP_FIX("editor.creation_restore", "BUG-0641", creation_canonical_return, "Rebuild the canonical scene before verifying a creation return");
+#endif
 std::unique_ptr<editor_session::Controller> controller;
 editor::ObjectId logical_act(uint32_t index){
     if(controller && index<controller->state().document.act_order.size())return controller->state().document.act_order[index];
@@ -2624,23 +2629,36 @@ bool materialize_creation_return(std::string& error){
         }
         if(!scene.owner && !local_creation->entered_adventure){error="The creation returned to a different native adventure owner";return false;}
         const editor_native::GestureScope scope{local_creation->scope.project,local_creation->scope.epoch,local_creation->scope.author};
-        if(!local_creation->entered_adventure && !local_creation->terrain_resumed){
-            if(!editor_native::resume_creation_terrain(local_creation->terrain_ticket,scope,local_creation->scope.serial,
-                   local_creation->scene_owner,local_creation->entry_native,native.generation,error))return false;
-            // This ticket is one-use. A later transient capture/camera retry
-            // must retain the successful transfer rather than consume it again.
-            local_creation->terrain_resumed=true;
+        if(creation_canonical_return){
+            // Native creator teardown can replace transient marker keys and
+            // grounding evidence. These are not authored changes to admit.
+            // Restore the owned canonical image under the original scene fence
+            // instead of requiring disposable render state to survive teardown.
+            if(local_creation->entered_adventure){
+                editor_native::SceneOwner owner;
+                if(!editor_native::capture_scene_owner(owner,error))return false;
+                if(owner.source!=local_creation->entry_native.source){error="The creation returned to a different adventure resource";return false;}
+                local_creation->scene_owner=owner;
+            }
+        }else{
+            if(!local_creation->entered_adventure && !local_creation->terrain_resumed){
+                if(!editor_native::resume_creation_terrain(local_creation->terrain_ticket,scope,local_creation->scope.serial,
+                       local_creation->scene_owner,local_creation->entry_native,native.generation,error))return false;
+                // This ticket is one-use. A later transient capture/camera retry
+                // must retain the successful transfer rather than consume it again.
+                local_creation->terrain_resumed=true;
+            }
+            editor_native::Snapshot loaded;
+            ProjectionScope projection(local_creation->entry_native.document);
+            if(!editor_native::capture_draft(loaded,error))return false;
+            loaded.bindings=local_creation->entry_native.bindings;
+            if((local_creation->entered_adventure && loaded.source!=local_creation->entry_native.source) ||
+               !editor_native::validate(loaded,local_creation->entry_native.document,error)){
+                if(error.empty())error="The returned native adventure differs from its owned entry snapshot";
+                return false;
+            }
+            if(local_creation->entered_adventure && !editor_native::capture_scene_owner(local_creation->scene_owner,error))return false;
         }
-        editor_native::Snapshot loaded;
-        ProjectionScope projection(local_creation->entry_native.document);
-        if(!editor_native::capture_draft(loaded,error))return false;
-        loaded.bindings=local_creation->entry_native.bindings;
-        if((local_creation->entered_adventure && loaded.source!=local_creation->entry_native.source) ||
-           !editor_native::validate(loaded,local_creation->entry_native.document,error)){
-            if(error.empty())error="The returned native adventure differs from its owned entry snapshot";
-            return false;
-        }
-        if(local_creation->entered_adventure && !editor_native::capture_scene_owner(local_creation->scene_owner,error))return false;
         if(!editor_native::resume_creation_scene_camera(scope,local_creation->scope.serial,native.generation,local_creation->scene_owner,error))return false;
         local_creation->camera_resumed=true;local_creation->returned_generation=native.generation;
     }
@@ -2649,18 +2667,44 @@ bool materialize_creation_return(std::string& error){
         const auto& order=controller->state().document.act_order;
         auto act=std::find(order.begin(),order.end(),local_creation->authored_act);
         snapshot.act=act!=order.end()?uint32_t(act-order.begin()):std::min<uint32_t>(local_creation->act,uint32_t(controller->state().document.acts.size()-1));
-        if(!register_native_records(resources.root,resources.bundle.records,error) || !editor_native::restore(snapshot,error))return false;
+        const auto session=local_creation->scope;
+        const auto owner=local_creation->scene_owner;
+        const editor_native::GestureScope scope{session.project,session.epoch,session.author};
+        const auto current=[session]{return local_creation && local_creation->scope==session &&
+            !local_creation->return_failed && creation_current(session);};
+        ProjectionScope projection(snapshot.document);
+        if(!register_native_records(resources.root,resources.bundle.records,error))return false;
+        if(!current()){error="The creation return session expired before restoration";return false;}
+        if(creation_canonical_return){
+            if(!editor_native::restore_fenced(snapshot,native.generation,owner,scope,current,error))return false;
+            if(!current()){error="The creation return session expired during restoration";return false;}
+        }else if(!editor_native::restore(snapshot,error))return false;
         native_generation=editor_native::state().generation;local_creation->returned_generation=native_generation;
-        editor_native::bind(current_native.bindings);editor_native::bind_acts(controller->state().document);
-        local_creation->scene_revision=controller->state().document.revision;local_creation->scene_frame=H->frame_index?H->frame_index():0;
+        editor_native::bind(snapshot.bindings);editor_native::bind_acts(snapshot.document);
+        // Native calls can pump callbacks. A newer accepted revision requires
+        // another materialization, never an acknowledgement for an older image.
+        local_creation->scene_revision=snapshot.document.revision;local_creation->scene_frame=H->frame_index?H->frame_index():0;
         status="Restoring adventure revision "+std::to_string(*local_creation->scene_revision)+"; waiting for native scene readiness";return false;
     }
     const auto resumed=editor_native::creation_scene_state(local_creation->scene_owner);
     if(!resumed.owner){error="The creation return's native adventure owner changed during restoration";return false;}
     if(!resumed.settled())return false;
     if(H->frame_index && H->frame_index()<=local_creation->scene_frame)return false;
+    const auto session=local_creation->scope;
+    const auto owner=local_creation->scene_owner;
+    const auto generation=local_creation->returned_generation;
+    const auto wanted=controller->state().document;
+    const auto current=[session]{return local_creation && local_creation->scope==session &&
+        !local_creation->return_failed && creation_current(session);};
+    ProjectionScope projection(wanted);
     editor_native::Snapshot verified;
-    if(!editor_native::capture(verified,error) || !editor_native::validate(verified,controller->state().document,error))return false;
+    if(!editor_native::capture(verified,error))return false;
+    if(!current()){error="The creation return session expired during verification";return false;}
+    if(controller->state().document.revision!=wanted.revision)return false;
+    const auto checked=editor_native::creation_scene_state(owner);
+    if(!current() || !checked.owner || checked.generation!=generation){error="The creation return scene expired during verification";return false;}
+    if(!checked.settled())return false;
+    if(!native_integrity(verified,wanted,error))return false;
     if(local_creation->selected && (controller->state().document.placements.contains(*local_creation->selected) ||
        (*local_creation->selected==editor_native::kCaptainObject && controller->state().document.settings.contains(editor_native::kCaptainObject))) &&
        !editor_native::select_placement(*local_creation->selected,error))return false;

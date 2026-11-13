@@ -5056,3 +5056,25 @@ G2 of 0.7.8 (BUG-0430 class). For each: which kind of fault it was and the evide
   two audits (0.25 s) in the last 3 s. A host snap shows as a large step (several m) just before; the lines of G2
   (lab 20261105-135000 play_tribe#2) had none (0.6-1.5 m per 0.25 s at 2.5-5.5 m/s): proxies falling behind a moving
   host NPC, a real desync. The gate and its window stay.
+
+## Creature return and re-entry regression (2026-11-13, fix/ga-editor-creation-grounding)
+<a id="testing-creation-return"></a>
+
+BUG-0641: tools/tests/coop_editor_creation_return.py uses an explicitly owned
+hidden/muted Windows pair, exact candidate hash and private project. It cancels
+Create Your Own Creature twice per author, checks actual observer native
+convergence and unchanged cast/history, and immediately re-enters. Native request
+reads fence cancellation and any confirmation. Retain screenshots after 25
+rendered frames: native readiness may precede fade-in, so a transition-frame
+black screenshot alone is not a persistent black-screen reproduction. Run the
+Outfitter fixture separately for completed native saves and one-transaction
+admission. Its optional --body-target takes a measured attachment point for
+random native starting bodies. Failed geometry preconditions stop before Save
+and are not product-return results.
+
+The --creation-lifecycle-only Win32 runtime fixture exercises retired grounding,
+canonical rebuild, repeat entry, failed restore, owner/context retirement and
+strict final field/opaque rejection from both roles. It also retains the old
+witness-transfer cases with the fix disabled. --creations-only checks detached
+canonical progress and independent return. See the preview 14 report for FAIL
+and PASS evidence; protocol and save/recovery formats do not change.
