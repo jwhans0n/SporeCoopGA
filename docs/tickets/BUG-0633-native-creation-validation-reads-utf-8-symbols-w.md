@@ -1,16 +1,16 @@
 ---
 id: BUG-0633
 title: Native creation validation reads UTF-8 symbols with the Windows locale codec
-status: open
+status: fixed
 kind: bug
 stage: Tests
 reported: 2026-11-12
 source: internal
 role: both
 versions: 
-fixed_in:
+fixed_in: unreleased
 branch: fix/ga-editor-asset-browser
-commits:
+commits: b736f8ec
 tests: tools/tests/coop_editor_creation_validation.py
 signature:
 docs:
@@ -31,3 +31,5 @@ FAIL: out/preview12/baseline-house-enter/result.json. PASS: out/preview12/baseli
 
 ## History
 - 2026-11-12: opened.
+
+- 2026-11-12: implemented on the preview 12 review branch; public release and destination promotion remain deferred.

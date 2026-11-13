@@ -1,16 +1,16 @@
 ---
 id: BUG-0629
 title: Dragging a session-created cast asset onto another card crashes in CopyClassActs
-status: open
+status: fixed
 kind: crash
 stage: Adventure
 reported: 2026-11-12
 source: player
 role: guest
 versions: 0.7.5.0-ga-editor-preview.10
-fixed_in:
+fixed_in: unreleased
 branch: fix/ga-editor-asset-browser
-commits:
+commits: b736f8ec f7545c3e
 tests: tests/editor_native_cancellation_windows_tests.cpp tests/editor_creation_windows_tests.cpp tests/editor_runtime_windows_tests.cpp
 signature: CopyClassActs+0x25 read 0x78 through PaletteMessage+0x4FA
 docs:
@@ -30,7 +30,9 @@ Observed: main-thread AV at CopyClassActs+0x25, read 0x78, through PaletteMessag
 Consume the entire drop before history. Queue stable class/resource values, acquire destination ownership, construct an owned native result and submit one checked transaction. Cancel stale or invalid inputs without changing the draft.
 
 ## Verification
-FAIL: out/preview12/evidence/card-drop-red.log, old native handler forwards a stale/missing-card notification. PASS: out/preview12/evidence/editor_native_cancellation_tests.exe.log and browser-runtime-green.log. Native copy at revision2 plus exact Undo/Redo passed in out/preview12/drop-undo-redo/result.json. Final visibility-field comparison and qualified-payload checks remain pending.
+FAIL: out/preview12/evidence/card-drop-red.log, old native handler forwards a stale/missing-card notification. PASS: out/preview12/evidence/editor_native_cancellation_tests.exe.log and browser-runtime-green.log. Native copy at revision2 plus exact Undo/Redo passed in out/preview12/drop-undo-redo/result.json. Focused native copy/replacement checks, actual observer state and checked history are recorded in docs/reports/EDITOR-NATIVE-FLOW-VALIDATION.md#editor-preview12-browser.
 
 ## History
 - 2026-11-12: opened.
+
+- 2026-11-12: implemented on the preview 12 review branch; public release and destination promotion remain deferred.

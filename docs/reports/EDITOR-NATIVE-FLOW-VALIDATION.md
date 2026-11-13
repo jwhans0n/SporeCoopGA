@@ -763,3 +763,168 @@ The change does not establish sustained stability for every large adventure.
 Linux lab smoke was attempted but failed at its initial WSL git query because
 this Windows worktree pointer is not usable there. Evidence:
 `out/4gb/lab-smoke.log`. No main merge or public release is claimed.
+
+## Preview12 native asset browser qualification (2026-11-12)
+<a id="editor-preview12-browser"></a>
+
+Candidate `0.7.8.0-ga-editor-preview.12`, protocol 28, review branch
+`fix/ga-editor-asset-browser`. Base `f096e6f0` retains pinned upstream 0.7.8
+commit `18f8d657e4691c547e50af97567fe17fd19c8193` and the editor work separately
+from main. Save, recovery and wire formats are unchanged by this browser fix.
+
+Code commits: `b736f8ec` (owned synchronized card drops, native controls and
+ownership view), `9bd8ee07` (native UI lifetime/diagnostic guards), `ec6793d0`
+(native icon alpha), `5a35e3b4` (actual empty-slot fixtures), `ffc73c44`
+(cursor-based hover and lock caption space), `b4b4bc13` (native colony vehicle
+configs and resumable native confirmation fixtures), `e067c51b` (bounded Windows
+checkpoint retry), `86decc65` and `0d43b5bc` (live native caption hierarchy and
+held private-fixture presses), `da29cef4` (verified native caption anchors).
+
+The final code candidate's coop.dll SHA256 is
+`a5e8c7734560b8850e44c48835c03027454822b2146a16953dd7de589d922cf3`.
+`out/preview12/candidate-final.json` binds it to the source commit and exact
+retained 4 GB executable. The focused qualification receipt is
+`out/preview12/qualification.json`; installation hashes and rollback are recorded
+separately in `out/preview12/installation-verification.json`.
+
+The native card-drop crash was reproduced before fixing it: guest-created
+Entertainment building, `CopyClassActs+25`, invalid read 78. User preview 10
+and the private preview 11 reproduction share that signature. Evidence is kept
+in `out/preview12/evidence/`; no player dump or raw report is published.
+Native empty-card copying and occupied-card replacement have different act
+semantics. Empty copies use the verified owning CopyClassActs routine;
+occupied building cards keep their destination class acts. Changed resources
+and the entire drop commit together, after destination ownership is granted.
+
+The earlier production candidates passed guest session-created card copying,
+host replacement of a distinct stock entry, immediate native observer checks,
+one history item and checked Undo/Redo. The unshared native copy/Undo comparison
+also passed. Receipts: `acceptance-guest-copy`,
+`acceptance-host-distinct-replace`, `ordinary-native-equivalence` under
+`out/preview12/`. Identical-key building replacement is correctly a no-op;
+the earlier fixture that expected a new transaction there is retained as a
+fixture failure. Class behavior fragment hashes include class identity and
+the next-class counter, so cross-class hash equality is not a behavior test.
+
+Normal mouse Edit initially failed despite controlled UI tests: bubbled child
+leave notifications hid the action during a press. The cursor-based fix passes
+the native exact-card request check in `cursor-guest-hover-edit-enter`.
+`cursor-guest-hover-edit-confirm` completed that same guest building edit as
+one immutable replacement, preserving other cast rows and behaviors with
+matching native observer checks. `cursor-host-house-save-r2` passed a native
+host Create Your Own House save. `cursor-host-creature-cancel` proved independent
+host return while the guest remained designing. The name/lock overlap seen
+in `cursor-content-lock` is corrected by reserving and restoring only the
+native caption's left edge; the fixture preserves independent native resizing.
+
+The New Vehicle default is native ColonyLand BC1041E6, omitted by the old custom
+menu. The existing verified ColonyWater/Air configs are accepted too. Unknown
+generic editor 99F87089 remains rejected. The exact normal-input request and
+the failing/passing Win32 fixtures are retained. No terrain or gameplay path
+is changed to admit these creation requests.
+
+The native Save New question exposed a fixture bound error: unrelated creation
+UI made the full tree larger than 8 KiB. The parser now scopes the complete known
+modal before applying that bound. Confirmation-only resume revalidates the
+original pending request and revision and never clicks Done twice. The original
+failed receipt and successful continuation remain separate. One host construction
+attempt hit a transient Windows checkpoint replace denial before any recipe
+input; its recorded, unchanged session resumed successfully. These failures
+are not native game crashes or silent passes.
+
+Regression evidence before final native qualification:
+
+| Check | Result / evidence |
+| --- | --- |
+| Repository portable, sanitizers, fuzz, symbols, docs and tools | Exit 0; `repository-exit.json`, `repository-native-exit.log` |
+| Native cancellation/card drop fixture | 161136 checks; retained RED and GREEN receipts |
+| Native creation/owned preparation fixture | 1914 checks; `colony-picker-red.log`, `colony-picker-green.log` |
+| Browser UI/ownership/cleanup fixture | 3612 checks; `anchored-caption-green.log`; native anchor RED retained |
+| Runtime asset-browser fixture | 1760 checks; unchanged runtime source |
+| Runtime quick regression | 100917 checks; `runtime-quick.log` |
+| Native tree membership guard | 143 checks; invalid control-ID diagnostic rejects safely |
+| Staged creation fixture contracts | 728 checks; includes pending-confirmation, large-tree and checkpoint retry cases |
+| Native Save and observer restoration | `cursor-native-save-confirmed`, revision 2, equal native checks |
+
+A separate private diagnostic accidentally supplied a control ID as a raw
+window address and crashed. BUG-0634 now checks current native-tree membership
+before btn/font/show dispatch. That poisoned run and all temporary diagnostic
+module/altered UI runs are excluded from acceptance. Cold production-only
+launches are used for the installable candidate.
+
+Broader creation/replacement/failure matrices, performance acceptance,
+upstream-wide smoke, overnight testing and release acceptance remain deferred.
+Missing upstream smoke fixtures remain a separate promotion blocker. This work
+does not promote main or the active editor destination, create a release tag
+or publish a public package.
+
+The C815 production candidate completed native House and Entertainment saves
+from both roles, plus Creature, ColonyLand and UFO entry/cancellation from both
+roles. The native exact-card guest Edit completed one immutable replacement
+while an independent host Creature session entered and returned without
+changing the canonical draft. Receipts: final-creations-result.json and
+c815-hover-edit-finish/result.json, with c815-independent-host-* evidence.
+
+The 93e52aaf candidate completed a fresh guest Entertainment Save, occupied and
+empty card drops, host occupied replacement and all three checked Undo/Redo
+sequences. Every stage compares actual native observers and history, without
+reselection. Native Save at revision 13 reached host 2/2 and guest 1/1 coverage;
+the earlier helper's incorrect guest 2/2 expectation is retained as a fixture
+failure. Receipts: qualified-drop-*, qualified-native-save-confirmed/.
+
+Cross-act setup exposed BUG-0637: shared Add Act after independent editor return
+loses its native scene identity. No act/history change was accepted. Same-scene
+recovery correctly refused; a cold Galaxy recovery restored the exact cast rows
+and complete history with converged native observers. Strict binary document
+hash comparison differed and remains separate, consistent with the existing
+cold-reopen comparison limitation. Retained evidence: c815-cross-act/,
+qualified-cold-recovery/ (failed raw diagnostic comparison) and
+qualified-recovered-state/ (native, inventory and history verification).
+
+A separate native two-act fixture was created and saved through ordinary
+unshared controls as Preview12BrowserActs. Reusing the old editor cache without
+reopening rejects the changed act roster, so the final payload cold-opens that
+unique native file. This is not a passing shared Add Act test.
+
+The separate ordinary Save New fixture showed a native creation-replacement
+warning on cold open (BUG-0638). Replacement was declined. This is not a passing
+dependency-preservation check, and the warning does not establish an online ban.
+The verified shared checkpoint remained available and restored; broader creation
+and strict cold-reopen comparison work remains deferred.
+
+The anchor-corrected payload is built from da29cef4. Its actual native mouse
+Edit and Content ownership check passes in anchor-hover-enter/ and anchor-lock/:
+the visible caption is [18,83,143,104], with its right anchor preserved, and the
+padlock no longer overlaps the name. Native cancellation changes no revision or
+history. anchor-cold-recovery/ verifies the two restored native scenes and nine
+cast entries at revision 14. There are no diagnostic modules in this cold run.
+
+Repository validation retained both full runs. repository-qualified-exit.json
+records a complete exit 0 on b4b4bc13. repository-final-exit.json records exit 2
+at the final ticket check solely because its generated index was stale while
+tickets were being updated. The index was regenerated; final-tickets.log then
+reports zero problems. The Linux-only tools suite was rerun in WSL and passes
+all 13 checks (final-tools-wsl-exit.json); its attempted Windows invocation is
+retained as a wrong-environment failure. Sanitizers, fuzzing, portable tests,
+symbols, docs and glyph checks had already passed in the final full run.
+The final affected Win32 fixtures pass in final-win32-results.json, including
+3612 UI, 1914 creation, 161136 cancellation and 143 native-tree checks. The final
+code delta after that full run is confined to caption layout; its measured
+anchored-layout RED/GREEN and native proof are retained. No full-release or
+upstream-wide smoke pass is claimed.
+
+Final a5e8c77 qualification: anchor-guest-enter/steps/finish complete a fresh
+native guest Entertainment save. anchor-held-drop-guest-occupied,
+anchor-held-drop-guest-empty and anchor-held-drop-host-occupied each pass one
+synchronized operation, one Undo item, native observer comparison and checked
+Undo/Redo. The preceding scheduled drag produced no mutation or rejection and
+is retained as a failed private-input attempt; the held version uses one press,
+not two clicks. Native Save passes at revision 24, with the native success
+popup acknowledged, host 2/2 coverage, guest 1/1 coverage, unchanged history
+and matching actual native observers. Evidence: anchor-native-save/result.json.
+
+Cross-act native browser qualification remains unavailable because the private
+setup exposed BUG-0637 and BUG-0638. These are not counted as passes. Native
+Save within the shared session is qualified; the separate standalone Save New
+and strict cold-reopen preservation paths are not. This is a focused browser
+testing payload, with the broader gates and destination promotion still deferred.

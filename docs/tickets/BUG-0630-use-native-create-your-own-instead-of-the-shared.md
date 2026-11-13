@@ -1,16 +1,16 @@
 ---
 id: BUG-0630
 title: Use native Create Your Own instead of the shared editor creation toolbar
-status: open
+status: fixed
 kind: feature
 stage: Adventure
 reported: 2026-11-12
 source: player
 role: both
 versions: 
-fixed_in:
+fixed_in: unreleased
 branch: fix/ga-editor-asset-browser
-commits:
+commits: b736f8ec 5a35e3b4 b4b4bc13 86decc65
 tests: tests/editor_creation_ui_windows_tests.cpp tests/editor_creation_windows_tests.cpp
 signature:
 docs:
@@ -30,7 +30,9 @@ The preview adds a separate New asset/family/variant menu. Existing native Edito
 Keep creation routing scoped to the shared adventure picker and existing participant-local creation sessions. Remove the custom New asset menus.
 
 ## Verification
-FAIL: out/preview12/evidence/native-ui-red.log (old custom toolbar). PASS: out/preview12/evidence/editor_creation_ui_tests.exe.log. Final native presentation and ownership acceptance remain pending.
+FAIL: out/preview12/evidence/native-ui-red.log (old custom toolbar). PASS: out/preview12/evidence/editor_creation_ui_tests.exe.log. Native presentation and ownership evidence, including the corrected visible caption, is recorded in docs/reports/EDITOR-NATIVE-FLOW-VALIDATION.md#editor-preview12-browser. Broader release acceptance remains deferred.
 
 ## History
 - 2026-11-12: opened.
+
+- 2026-11-12: implemented on the preview 12 review branch; public release and destination promotion remain deferred.

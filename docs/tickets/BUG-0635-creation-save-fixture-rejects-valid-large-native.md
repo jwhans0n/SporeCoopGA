@@ -1,16 +1,16 @@
 ---
 id: BUG-0635
 title: Creation Save fixture rejects valid large native confirmation trees
-status: open
+status: fixed
 kind: test
 stage: Tests
 reported: 2026-11-12
 source: internal
 role: both
 versions: 
-fixed_in:
+fixed_in: unreleased
 branch: fix/ga-editor-asset-browser
-commits:
+commits: b4b4bc13
 tests: tools/tests/coop_editor_creation_save.py --self-test
 signature:
 docs:
@@ -31,3 +31,5 @@ FAIL: out/preview12/cursor-guest-hover-edit-save/result.json and out/preview12/e
 
 ## History
 - 2026-11-12: opened.
+
+- 2026-11-12: implemented on the preview 12 review branch; public release and destination promotion remain deferred.

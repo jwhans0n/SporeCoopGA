@@ -1,16 +1,16 @@
 ---
 id: BUG-0636
 title: Windows sharing violations interrupt native fixture checkpoints
-status: open
+status: fixed
 kind: test
 stage: Tests
 reported: 2026-11-12
 source: internal
 role: both
 versions: preview12 qualification harness
-fixed_in:
+fixed_in: unreleased
 branch: fix/ga-editor-asset-browser
-commits:
+commits: e067c51b
 tests: tools/tests/coop_editor_creation_save.py --self-test
 signature:
 docs:
@@ -31,3 +31,5 @@ FAIL/PASS: out/preview12/checkpoint-sharing-probe/result.json records the actual
 
 ## History
 - 2026-11-12: opened.
+
+- 2026-11-12: implemented on the preview 12 review branch; public release and destination promotion remain deferred.

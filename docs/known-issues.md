@@ -2100,3 +2100,7 @@ Player reports 2026-11-04 (0.7.5, Discord bug-reports; not analysed yet):
   animation event's per-target effects 0x682E8D4B / 0xF0D5A994 / 0xCFECC623, sound 0xD05B58ED; `coop_tribe_fight_sounds.py`
   prints the host's plays). docs/re/tribe.md#tribe-mirror-fx.
 - BUG-0604: Cell: after the guest's level-up its screen showed only water (no cell drawn, nothing on screen for 7 min) in one cell_new_game run (`tools/lab.py run cell_new_game`; not analysed)
+
+- BUG-0637: Shared Adventure Editor Add Act after independent creation return can lose its native scene identity and freeze the recoverable draft. Same-scene recovery refuses; return to Galaxy before recovery. Retained separately from preview 12 browser qualification; no passing cross-act setup is claimed.
+
+- BUG-0638: An ordinary standalone Save New after shared editing can show the native creation-replacement warning on cold reopen. Cause remains unclassified; that path is not qualified by the preview 12 browser tests.

@@ -638,11 +638,13 @@ not-reproduced, game-bug (Spore itself), wontfix, duplicate.
 | [BUG-0626](BUG-0626-upstream-synchronization-cannot-qualify-windows.md) | open | bug | Validation | 2026-11-05 |  | Upstream synchronization cannot qualify Windows smoke without native fixtures |
 | [BUG-0627](BUG-0627-merged-transport-fixture-stalls-while-receiving.md) | fixed | desync | Networking | 2026-11-05 | unreleased | Merged transport fixture stalls while receiving queued reliable data |
 | [BUG-0628](BUG-0628-lab-self-tests-inherit-git-context-and-mutate-th.md) | fixed | bug | Validation | 2026-11-05 | unreleased | Lab self-tests inherit Git context and mutate the parent checkout |
-| [BUG-0629](BUG-0629-dragging-a-session-created-cast-asset-onto-anoth.md) | open | crash | Adventure | 2026-11-12 |  | Dragging a session-created cast asset onto another card crashes in CopyClassActs |
-| [BUG-0630](BUG-0630-use-native-create-your-own-instead-of-the-shared.md) | open | feature | Adventure | 2026-11-12 |  | Use native Create Your Own instead of the shared editor creation toolbar |
-| [BUG-0631](BUG-0631-show-a-native-edit-icon-on-the-hovered-shared-ca.md) | open | feature | Adventure | 2026-11-12 |  | Show a native Edit icon on the hovered shared cast card |
-| [BUG-0632](BUG-0632-display-scoped-player-ownership-on-shared-cast-c.md) | open | feature | Adventure | 2026-11-12 |  | Display scoped player ownership on shared cast cards |
-| [BUG-0633](BUG-0633-native-creation-validation-reads-utf-8-symbols-w.md) | open | bug | Tests | 2026-11-12 |  | Native creation validation reads UTF-8 symbols with the Windows locale codec |
-| [BUG-0634](BUG-0634-raw-pointer-coop-ui-btn-diagnostic-dereferences.md) | open | crash | Tests | 2026-11-12 |  | Raw-pointer coop.ui btn diagnostic dereferences unverified input |
-| [BUG-0635](BUG-0635-creation-save-fixture-rejects-valid-large-native.md) | open | test | Tests | 2026-11-12 |  | Creation Save fixture rejects valid large native confirmation trees |
-| [BUG-0636](BUG-0636-windows-sharing-violations-interrupt-native-fixt.md) | open | test | Tests | 2026-11-12 |  | Windows sharing violations interrupt native fixture checkpoints |
+| [BUG-0629](BUG-0629-dragging-a-session-created-cast-asset-onto-anoth.md) | fixed | crash | Adventure | 2026-11-12 | unreleased | Dragging a session-created cast asset onto another card crashes in CopyClassActs |
+| [BUG-0630](BUG-0630-use-native-create-your-own-instead-of-the-shared.md) | fixed | feature | Adventure | 2026-11-12 | unreleased | Use native Create Your Own instead of the shared editor creation toolbar |
+| [BUG-0631](BUG-0631-show-a-native-edit-icon-on-the-hovered-shared-ca.md) | fixed | feature | Adventure | 2026-11-12 | unreleased | Show a native Edit icon on the hovered shared cast card |
+| [BUG-0632](BUG-0632-display-scoped-player-ownership-on-shared-cast-c.md) | fixed | feature | Adventure | 2026-11-12 | unreleased | Display scoped player ownership on shared cast cards |
+| [BUG-0633](BUG-0633-native-creation-validation-reads-utf-8-symbols-w.md) | fixed | bug | Tests | 2026-11-12 | unreleased | Native creation validation reads UTF-8 symbols with the Windows locale codec |
+| [BUG-0634](BUG-0634-raw-pointer-coop-ui-btn-diagnostic-dereferences.md) | fixed | crash | Tests | 2026-11-12 | unreleased | Raw-pointer coop.ui btn diagnostic dereferences unverified input |
+| [BUG-0635](BUG-0635-creation-save-fixture-rejects-valid-large-native.md) | fixed | test | Tests | 2026-11-12 | unreleased | Creation Save fixture rejects valid large native confirmation trees |
+| [BUG-0636](BUG-0636-windows-sharing-violations-interrupt-native-fixt.md) | fixed | test | Tests | 2026-11-12 | unreleased | Windows sharing violations interrupt native fixture checkpoints |
+| [BUG-0637](BUG-0637-native-act-creation-after-independent-editor-ret.md) | open | bug | Adventure | 2026-11-12 |  | Native act creation after independent editor return loses scene identity |
+| [BUG-0638](BUG-0638-standalone-save-new-after-shared-editing-warns-o.md) | open | bug | Adventure | 2026-11-12 |  | Standalone Save New after shared editing warns of unavailable custom creations on reopen |

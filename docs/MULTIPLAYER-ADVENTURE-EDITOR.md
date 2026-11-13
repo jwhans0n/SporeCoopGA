@@ -1,6 +1,11 @@
 # Shared Adventure Editor development guide
 
-Current private stability testing: **preview 10, protocol 26**. Captain capture,
+Current browser testing candidate: **0.7.8.0-ga-editor-preview.12, protocol 28**.
+It includes the upstream0.7.8 integration and retains the preview10 captain and
+terrain fixes. All party members must update together. Browser validation and
+the testing installation receipt appear in the
+[native-flow report](reports/EDITOR-NATIVE-FLOW-VALIDATION.md#editor-preview12-browser).
+Captain capture,
 terrain grounding, held recovery and Native Save qualification are recorded in
 the [preview 10 report](reports/EDITOR-PREVIEW10-VALIDATION.md). All party members
 must use the same preview payload. Broader release acceptance remains deferred.
@@ -17,10 +22,10 @@ playing while others continue editing remain later milestones in the
 
 ## Compatibility and scope
 
-The installed C49 testing build uses `0.7.5.0-ga-editor-preview.9`, protocol 23.
-The subsequent upstream 0.7.3.6 integration source uses protocol 24 and has not
-been installed. Its adventure/editor message IDs are 61/62, preserving upstream
-nest/parts IDs 52/53. Protocol 23 and 24 builds explicitly reject each other.
+Preview12 uses protocol28, with editor/adventure message IDs64/65 and upstream
+WSTATE/PLAYER_RULE IDs62/63. It explicitly rejects older protocol26 preview10
+clients and the protocol27 main integration. Native saves and recovery formats
+remain compatible; see the report for the tested scope and remaining gates.
 Every participant needs the same build, Galactic Adventures
 and the exact GOG executable with SHA-256
 `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
@@ -51,6 +56,18 @@ Property changes hold their asset, while other players can edit,
 import and remove unrelated assets. Undo refreshes the ownership snapshot before
 another gesture. Native scene refreshes retain each participant's open inspector
 when that asset still exists.
+
+Use an empty native cast slot to open Add Asset, select the desired Sporepedia
+category and choose **Create Your Own**. Native Save submits the creation to
+the shared cast; Cancel adds no entry. Hover a supported cast card for its native
+**Edit** icon at the bottom-right, or press **F2** on its focused card. This
+edits that exact card, independently of the world selection or inspector.
+
+An owned card has a thin border in its player's color and a small padlock beside
+its name. Its tooltip identifies the player and whether they are editing content
+or properties. Only conflicting actions on that asset are disabled. Dragging a
+card onto another card preserves native replacement/copy behavior, with one
+synchronized transaction and one Undo item.
 
 Collaborators have distinct selection colors and labels. A lock marks every
 placed instance of the owned asset; the lobby and viewport also identify asset

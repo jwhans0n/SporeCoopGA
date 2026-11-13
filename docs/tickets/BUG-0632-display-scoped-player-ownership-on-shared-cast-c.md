@@ -1,16 +1,16 @@
 ---
 id: BUG-0632
 title: Display scoped player ownership on shared cast cards
-status: open
+status: fixed
 kind: feature
 stage: Adventure
 reported: 2026-11-12
 source: player
 role: both
 versions: 
-fixed_in:
+fixed_in: unreleased
 branch: fix/ga-editor-asset-browser
-commits:
+commits: b736f8ec ffc73c44 86decc65 0d43b5bc da29cef4
 tests: tests/editor_creation_ui_windows_tests.cpp tests/editor_runtime_windows_tests.cpp
 signature:
 docs:
@@ -30,7 +30,11 @@ Existing host-derived Class/Content scope summaries are available but the cast U
 Expose a typed cached per-asset view. Preserve separate Class/Content scope rules and independent selection; display ownership without granting capabilities.
 
 ## Verification
-FAIL: out/preview12/evidence/native-ui-red.log (old custom toolbar). PASS: out/preview12/evidence/editor_creation_ui_tests.exe.log. Final native presentation and ownership acceptance remain pending.
+FAIL: out/preview12/evidence/native-ui-red.log (old custom toolbar). PASS: out/preview12/evidence/editor_creation_ui_tests.exe.log. Native presentation and ownership evidence, including the corrected visible caption, is recorded in docs/reports/EDITOR-NATIVE-FLOW-VALIDATION.md#editor-preview12-browser. Broader release acceptance remains deferred.
 
 ## History
 - 2026-11-12: opened.
+
+- 2026-11-12: native sibling caption correction retained with RED/GREEN fixture and actual card geometry.
+
+- 2026-11-12: implemented on the preview 12 review branch; public release and destination promotion remain deferred.
