@@ -10,7 +10,7 @@ role: both
 versions: 0.7.8.0-ga-editor-preview.12
 fixed_in: unreleased
 branch: fix/ga-editor-browser-runtime
-commits: 90535e52
+commits: 90535e52 4d0b4116 0083a944
 tests: tools/tests/coop_editor_browser_fps.py, tests/editor_creation_ui_windows_tests.cpp
 signature: repeated native cast scans from same-frame editor service pulses
 docs: docs/re/creations.md#creations-browser-pulses-outfitter
@@ -46,3 +46,5 @@ faults. Further final candidate evidence is in the preview 13 validation report.
 ## History
 - 2026-11-13: opened.
 - 2026-11-13: reproduced and fixed on the preview 13 testing branch; no main promotion.
+
+- 2026-11-13: final 694490b9 payload passes focused native host/guest checks, affected Win32 fixtures and complete repository tests; preview 13 installed with preview 12 rollback. See docs/reports/EDITOR-PREVIEW13-VALIDATION.md.
