@@ -2884,3 +2884,10 @@ Read-only evidence: out/preview12/label-anchor-observation.json. The measured
 anchor fixture fails before the fix (anchored-caption-red.log) and preserves
 native anchor values after the correction. Earlier name-lookup experiments
 remain retained; they did not establish the rendered spacing as accepted.
+
+The same private input constraint applies to palette drags immediately after
+new-card registration. The scheduled first a5e8c77 drag produced no transaction,
+no rejection and no fault. The explicit held-drag fixture retains one ordinary
+press across native frame fences; it does not retry a dispatched operation.
+Both modes remain available, and the missed attempt is retained separately.
+This is fixture timing, not authorization to mutate before ownership.

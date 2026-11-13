@@ -11,7 +11,7 @@ import re
 import time
 
 from coop_adventure import FixtureError
-from coop_adventure_editor import status
+from coop_adventure_editor import status, EditorPair
 from coop_editor_creations import CreationGame, assets, verify_viewport
 from coop_editor_party import Ownership, parse_context, parse_history
 
@@ -75,8 +75,12 @@ def run(args):
             x1,y1,x2,y2=map(int,slots[0]);end=((x1+x2)//2,(y1+y2)//2)
         owner.verify_windows()
         if snapshot()!=before or parse_context(status(author)['text'])!=context:raise FixtureError('Drop context changed before input')
-        result.update(start=start,end=end,dispatched=True);write()
-        author.call(f'drag {start[0]} {start[1]} {end[0]} {end[1]}')
+        result.update(start=start,end=end,dispatched=True,input='held'if args.held_drag else'scheduled');write()
+        if args.held_drag:
+            # A single normal press held through explicit frame fences keeps
+            # the private virtual cursor alive during background frame gaps.
+            EditorPair.slow_drag(author,start,end)
+        else:author.call(f'drag {start[0]} {start[1]} {end[0]} {end[1]}')
         # Poll actual state instead of long frame fences in background-limited games.
         host.wait('exactly one durable card transaction',lambda:settled(before['revision']+1))
         after=host.wait('matching canonical inventory',snapshot);result['after']=after
@@ -111,6 +115,7 @@ def main():
     p.add_argument('--execute',action='store_true');p.add_argument('--self-test',action='store_true');p.add_argument('--metadata',type=Path)
     p.add_argument('--candidate');p.add_argument('--instances',nargs=2,type=int,default=[45,46])
     p.add_argument('--author',type=int);p.add_argument('--source');p.add_argument('--target');p.add_argument('--output',type=Path)
+    p.add_argument('--held-drag',action='store_true',help='One normal held press with native frame fences for slow background games')
     args=p.parse_args()
     if args.self_test:
         a={'rows':{'7:1':dict(content_revision=1,key=[1,2,3],behavior='a')}}
