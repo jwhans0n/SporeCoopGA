@@ -167,6 +167,11 @@ Rect screen_rect(Win w)
     return r;
 }
 bool visible(Win w) { return w && (flags(w) & kFlagVisible); }
+bool cursor_position(float& x,float& y){
+    POINT point{};auto window=H?static_cast<HWND>(H->game_window()):nullptr;
+    if(!window||!GetCursorPos(&point)||!ScreenToClient(window,&point))return false;
+    x=float(point.x);y=float(point.y);return true;
+}
 uint32_t font(Win w) { return w ? vcall<uint32_t>(w, 0x40 / 4) : 0; }
 
 Win find(Win root, uint32_t id)

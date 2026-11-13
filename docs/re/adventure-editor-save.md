@@ -1753,3 +1753,32 @@ and exact bytes are under out/preview12/evidence/.
 
 The SDK's [ShopperRequest header](https://github.com/Spore-Community/Spore-ModAPI/blob/master/Spore%20ModAPI/Spore/Sporepedia/ShopperRequest.h)
 also lists54ACB9F1 as a native shopper action. No SDK implementation is copied.
+
+CORRECTION (2026-11-12, fix/ga-editor-asset-browser): subscribing to hover
+notifications alone does not qualify native mouse activation. The earlier
+statement that normal clicks worked referred to controlled fixtures. Private
+native clicks lost their press because the action was hidden and shown again.
+Enter/leave1B/1C notifications bubble through ancestors and carry their actual
+target at18; a descendant leaving is not evidence that the cursor left its card.
+Kind0 is native focus, separate from kind1 mouse hover. Native flag-change0E
+records show visible flags3 ->2 ->3 during the rejected press. A retained native
+probe and normal-input failure are in out/preview12/evidence/native-priority-all-input.json
+and out/preview12/final-guest-hover-edit-enter/. Changing parentage, clearing the
+front flag and suppressing unchanged geometry updates did not fix this failure.
+
+Use one game-client cursor sample and current card rectangles for hover
+visibility, retaining native focus/F2 handling independently. Do not capture
+the authored document or recreate the scene on hover. Native mouse entry now
+passes at out/preview12/cursor-guest-hover-edit-enter/ with the exact original
+class/source and native BuildingEntertainment request verified read-only.
+The child-leave regression fails on the prior UI and passes on the corrected
+UI: out/preview12/evidence/cursor-hover-red.log and cursor-hover-green.log.
+Diagnostic modules and altered UI runs are excluded from acceptance; the
+passing entry used a cold production-only launch.
+
+The native Adventure palette tabs are Creature0 at x50, Vehicle1 at x94 and
+Building2 at x136 in the measured1024x768 viewport. x178 selects Props, so it
+must not be used by a Vehicle creation fixture. Native tooltip inventory
+confirms those tab identities. Empty cast slots are sparse: new entries fill
+the first column while right-hand slots can remain empty. Fixture input must
+resolve a current empty slot rather than infer one from the class count.

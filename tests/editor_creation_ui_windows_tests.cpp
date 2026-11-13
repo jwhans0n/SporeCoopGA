@@ -19,6 +19,7 @@ std::vector<std::pair<SkTaskFn,void*>> tasks;
 Node *main_node=nullptr,*style=nullptr,*palette=nullptr,*first=nullptr,*second=nullptr;
 coop_editor::View view;editor_native::State native_state;
 bool creating=false,lobby=false;unsigned edits=0;
+float pointer_x=-10000,pointer_y=-10000;
 editor::ObjectId edited;editor::ResourceKey edited_key;std::optional<editor::Revision> edited_revision;
 Node* node(sui::Win w){return static_cast<Node*>(w);}
 Node* make(Node* owner,uint32_t id,bool button=false){
@@ -30,12 +31,13 @@ void step(){editor_creation_ui::tick();pump();}
 bool shown(sui::Win w){if(!w)return false;for(auto* n=node(w);n;n=n->parent)if(!(n->flags&sui::kFlagVisible))return false;return true;}
 void message(sui::Win w,int type){
     CHECK(w);sui::Msg m{};m.source=w;m.type=type;
+    if(type==sui::kMsgMouseEnter||type==sui::kMsgMouseLeave)m.a=1;
     // Retain callable values across a callback that could retire a binding.
     std::vector<std::function<bool(sui::Win,const sui::Msg&)>> calls;
     for(const auto& h:node(w)->handlers)calls.push_back(h->callback);
     for(auto& fn:calls)fn(w,m);
 }
-void hover(sui::Win w,bool yes=true){message(w,yes?sui::kMsgMouseEnter:sui::kMsgMouseLeave);step();}
+void hover(sui::Win w,bool yes=true){auto target=node(w);if(target->id==0xC00F0401)target=target->parent;pointer_x=yes?(target->rect.x1+target->rect.x2)/2:-10000;pointer_y=yes?(target->rect.y1+target->rect.y2)/2:-10000;message(w,yes?sui::kMsgMouseEnter:sui::kMsgMouseLeave);step();}
 sui::Win edit(sui::Win w){return sui::find(w,0xC00F0401);}
 void click(sui::Win w){message(w,sui::kMsgComponentActivated);}
 }
@@ -55,10 +57,12 @@ Win main_window(){return main_node;}
 std::vector<Win> children(Win w){return w?node(w)->children:std::vector<Win>{};}
 Win parent(Win w){return w?node(w)->parent:nullptr;}
 uint32_t control_id(Win w){return w?node(w)->id:0;}
+uint32_t flags(Win w){return w?node(w)->flags:0;}
 bool visible(Win w){return w&&(node(w)->flags&kFlagVisible);}
 Win find(Win w,uint32_t id){if(!w)return nullptr;if(control_id(w)==id)return w;for(auto child:children(w))if(auto hit=find(child,id))return hit;return nullptr;}
 Rect area(Win w){return node(w)->rect;}
 Rect screen_rect(Win w){return node(w)->rect;}
+bool cursor_position(float& x,float& y){x=pointer_x;y=pointer_y;return true;}
 void* as_button(Win w){return w&&node(w)->button?w:nullptr;}
 uint32_t font(Win){return 77;}
 void add_ref(Win w){++node(w)->refs;}
@@ -89,6 +93,8 @@ int main(){
     style->rect={0,0,36,37};
     auto native_new=make(cached,0x14580F81,true);
     first=make(palette,0x111);second=make(palette,0x222);
+    second->rect={156,0,312,132};
+    auto native_name=make(first,0x079591E0);native_name->rect={2,84,143,105};
     const editor::ResourceKey building{17,0x2399BE55,0x40636200},creature{18,0x2B978C46,0x40626200};
     native_cards[first]={7,building};native_cards[second]={8,creature};
     auto empty=make(palette,0x333);native_cards[empty]={-1,{}};
@@ -102,6 +108,14 @@ int main(){
     CHECK(node(edit(first))->style==style);
     CHECK(editor_creation_ui::diagnostic().find("empty rect=")!=std::string::npos&&!edit(empty));
     hover(first);CHECK(shown(edit(first))&&!shown(edit(second)));
+    // Native thumbnail/child leave notifications can arrive during a press
+    // while the pointer is still inside this card. Keep the button alive.
+    message(first,sui::kMsgMouseLeave);message(edit(first),sui::kMsgMouseLeave);step();CHECK(shown(edit(first)));
+    {
+        sui::Msg focus_leave{};focus_leave.type=sui::kMsgMouseLeave;focus_leave.a=0;
+        for(const auto& handler:node(first)->handlers)handler->callback(first,focus_leave);
+        step();CHECK(shown(edit(first)));
+    }
     const auto rect=node(edit(first))->rect;CHECK(rect.x2==152&&rect.y2==128&&rect.x1==116&&rect.y1==91);
     click(edit(first));CHECK(edits==1&&edited==a&&edited_key==building&&edited_revision==3);
     message(first,sui::kMsgMouseLeave);hover(edit(first));CHECK(shown(edit(first)));
@@ -110,6 +124,8 @@ int main(){
     hover(second);click(edit(second));CHECK(edits==2&&edited==b&&edited_revision==4);
     view.assets[0].owners={{{0,9},"Host",0xFF123456,false,false,true}};step();
     auto border=sui::find(first,0xC00F0410);CHECK(shown(border)&&node(border)->color==0xFF123456&&(node(border)->flags&sui::kFlagIgnoreMouse));
+    CHECK(native_name->rect.x1==18&&native_name->rect.x2==143);
+    native_name->rect.x2=200;step();CHECK(native_name->rect.x1==18&&native_name->rect.x2==200);
     CHECK(shown(sui::find(first,0xC00F0414)));hover(first);CHECK(node(edit(first))->flags&sui::kFlagEnabled);
     click(edit(first));CHECK(edits==3); // Property ownership does not own Content.
     view.assets[0].owners[0].content=true;view.assets[0].owners[0].properties=false;step();
@@ -119,6 +135,7 @@ int main(){
     for(const auto& [p,text]:tips){(void)p;native_tip|=*text=="Native localized Edit";owner_tip|=*text=="Host: editing content";}
     CHECK(native_tip&&owner_tip);
     view.assets[0].owners.clear();step();CHECK(!shown(border)&&(node(edit(first))->flags&sui::kFlagEnabled));
+    CHECK(native_name->rect.x1==2&&native_name->rect.x2==200);
     // Queued activations must not edit a replacement or another card.
     ++view.assets[0].content_revision;click(edit(first));CHECK(edits==4);step();click(edit(first));CHECK(edits==5&&edited_revision==4);
     auto stale=edit(first);view.prompt_identity="another epoch";click(stale);CHECK(edits==5);step();CHECK(edit(first)!=stale);

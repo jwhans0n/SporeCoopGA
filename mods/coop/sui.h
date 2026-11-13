@@ -56,6 +56,7 @@ std::string caption(Win w); // UTF-8
 Rect area(Win w);           // relative to the parent
 Rect real_area(Win w);
 Rect screen_rect(Win w);    // in screen pixels (sum of the parents' offsets)
+bool cursor_position(float& x,float& y); // current cursor in game client pixels
 void* drawable(Win w);
 bool visible(Win w);
 Win find(Win root, uint32_t control_id);

@@ -20,23 +20,44 @@ std::string display_status="browser unavailable";
 uint64_t update_us=0;
 constexpr uint32_t kEdit=0xC00F0401,kDecoration=0xC00F0410;
 struct Card {
-    sui::Win window=nullptr,edit=nullptr;
+    sui::Win window=nullptr,edit=nullptr,name=nullptr;
     std::array<sui::Win,4> border{};
     std::array<sui::Win,5> padlock{};
     std::vector<std::pair<sui::Win,void*>> handlers;
     void *edit_tip=nullptr,*owner_tip=nullptr;
     coop_editor::AssetCardView value;
-    bool hover=false,button_hover=false,focus=false;
+    bool hover=false,focus=false;
     float edit_width=36,edit_height=37;
     std::string identity,owner_text;
+    std::array<unsigned,5> activation_events{};
+    uint32_t last_enter_kind=0,last_leave_kind=0;
+    sui::Rect name_area{},name_adjusted{};bool name_shifted=false;
 };
 sui::Win main_window=nullptr;
 sui::Win edit_style=nullptr;
 std::string identity;
 std::map<sui::Win,std::shared_ptr<Card>> cards;
+bool same_area(const sui::Rect& a,const sui::Rect& b){return a.x1==b.x1&&a.y1==b.y1&&a.x2==b.x2&&a.y2==b.y2;}
+void release_name(Card& card){
+    if(!card.name)return;
+    auto current=sui::area(card.name);
+    if(card.name_shifted&&current.x1==card.name_adjusted.x1){current.x1=card.name_area.x1;sui::set_area(card.name,current);}
+    sui::release(card.name);card.name=nullptr;card.name_shifted=false;
+}
+void reserve_name(Card& card,bool locked){
+    auto name=sui::find(card.window,0x079591E0);
+    if(name!=card.name){release_name(card);card.name=name;if(name){sui::add_ref(name);card.name_area=sui::area(name);}}
+    if(!name)return;const auto current=sui::area(name);auto base=current;
+    if(card.name_shifted&&current.x1==card.name_adjusted.x1)base.x1=card.name_area.x1;
+    card.name_area=base;
+    auto desired=card.name_area;if(locked)desired.x1=std::min(desired.x1+16,desired.x2);
+    if(!same_area(current,desired))sui::set_area(name,desired);
+    card.name_adjusted=desired;card.name_shifted=locked;
+}
 void destroy(Card& card){
     for(auto [window,handler]:card.handlers)sui::remove_handler(window,handler);
     sui::remove_tooltip(card.edit,card.edit_tip);sui::remove_tooltip(card.window,card.owner_tip);
+    release_name(card);
     const auto remove=[](sui::Win window){
         if(!window)return;
         if(auto owner=sui::parent(window))sui::remove_child(owner,window);
@@ -121,8 +142,18 @@ bool build(const std::shared_ptr<Card>& card,sui::Win style){
         const bool button=window==card->edit;
         auto handler=sui::add_handler(window,[weak,button](auto recipient,const sui::Msg& message){
             auto item=weak.lock();if(!item)return false;
-            if(message.type==sui::kMsgMouseEnter)(button?item->button_hover:item->hover)=true;
-            if(message.type==sui::kMsgMouseLeave)(button?item->button_hover:item->hover)=false;
+            if(button){
+                constexpr std::array<int,5> kinds{sui::kMsgMouseDown,sui::kMsgMouseUp,sui::kMsgButtonClick,sui::kMsgButtonSelect,sui::kMsgComponentActivated};
+                for(unsigned i=0;i<kinds.size();++i)if(message.type==kinds[i]&&item->activation_events[i]<1000000)++item->activation_events[i];
+            }
+            if(message.type==sui::kMsgMouseEnter){
+                item->last_enter_kind=message.a;
+                if(!message.a)item->focus=message.d==uintptr_t(item->window)||message.d==uintptr_t(item->edit);
+            }
+            if(message.type==sui::kMsgMouseLeave){
+                item->last_leave_kind=message.a;
+                if(!message.a)item->focus=false;
+            }
             if(message.type==0x0A && message.a==0)item->focus=message.d==uintptr_t(recipient);
             const bool keyboard=message.type==sui::kMsgKeyDown && message.b==VK_F2;
             if(keyboard)item->focus=true;
@@ -160,6 +191,7 @@ void SK_CDECL update(void*){
     if(!main_window){main_window=main;sui::add_ref(main_window);identity=view.prompt_identity;}
     std::set<sui::Win> present;
     std::vector<sui::Rect> empty_slots;
+    float cursor_x=0,cursor_y=0;const bool cursor=sui::cursor_position(cursor_x,cursor_y);
     unsigned candidates=0;
     for(auto window:visible_cards(main)){
         ++candidates;
@@ -177,11 +209,21 @@ void SK_CDECL update(void*){
             if(!build(card,style)){destroy(*card);continue;}found=cards.emplace(window,std::move(card)).first;
         }
         present.insert(window);auto& card=*found->second;card.value=*value;
+        // Native enter/leave messages bubble from thumbnail children. A child
+        // leaving does not mean the pointer left this card; hiding the action
+        // then cancels the native button's in-flight press.
+        const auto card_rect=sui::screen_rect(window);
+        card.hover=cursor&&cursor_x>=card_rect.x1&&cursor_x<card_rect.x2&&cursor_y>=card_rect.y1&&cursor_y<card_rect.y2;
         const auto area=sui::area(window);const float width=area.w(),height=area.h();
-        sui::set_area(card.edit,{width-4-card.edit_width,height-4-card.edit_height,width-4,height-4});
-        sui::set_visible(card.edit,card.value.editable&&(card.hover||card.button_hover||card.focus));
+        const sui::Rect edit_area{width-4-card.edit_width,height-4-card.edit_height,width-4,height-4};
+        const auto prior_area=sui::area(card.edit);
+        if(prior_area.x1!=edit_area.x1||prior_area.y1!=edit_area.y1||prior_area.x2!=edit_area.x2||prior_area.y2!=edit_area.y2)
+            sui::set_area(card.edit,edit_area);
+        const bool shown=card.value.editable&&(card.hover||card.focus);
+        if(sui::visible(card.edit)!=shown)sui::set_visible(card.edit,shown);
         const bool blocked=std::any_of(value->owners.begin(),value->owners.end(),[](const auto& owner){return owner.content&&!owner.local;});
-        sui::set_enabled(card.edit,view.can_save&&!blocked);
+        const bool enabled=view.can_save&&!blocked;
+        if(bool(sui::flags(card.edit)&sui::kFlagEnabled)!=enabled)sui::set_enabled(card.edit,enabled);
         std::string owners;
         for(const auto& owner:value->owners){
             if(!owners.empty())owners+='\n';owners+=owner.name+": ";
@@ -190,6 +232,7 @@ void SK_CDECL update(void*){
             if(owner.properties)owners+="editing properties";
         }
         if(owners!=card.owner_text){card.owner_text=owners;sui::tooltip_text(card.owner_tip,owners);}
+        reserve_name(card,!value->owners.empty());
         const std::array<sui::Rect,4> border{{{1,1,width-1,3},{1,height-3,width-1,height-1},{1,3,3,height-3},{width-3,3,width-1,height-3}}};
         for(unsigned i=0;i<4;++i){
             sui::set_area(card.border[i],border[i]);sui::set_visible(card.border[i],!value->owners.empty());
@@ -214,6 +257,7 @@ void SK_CDECL update(void*){
         char row[256];std::snprintf(row,sizeof(row),"\ncard class=%llu:%u key=%08X!%08X.%08X revision=%llu rect=%.0f,%.0f,%.0f,%.0f edit=%u owners=%u",
             static_cast<unsigned long long>(card->value.class_id.id),card->value.class_id.generation,card->value.asset.group,card->value.asset.instance,card->value.asset.type,
             static_cast<unsigned long long>(card->value.content_revision),rect.x1,rect.y1,rect.x2,rect.y2,unsigned(sui::visible(card->edit)),unsigned(card->value.owners.size()));display_status+=row;
+        std::snprintf(row,sizeof(row)," input=%u,%u,%u,%u,%u enter_kind=%u leave_kind=%u",card->activation_events[0],card->activation_events[1],card->activation_events[2],card->activation_events[3],card->activation_events[4],card->last_enter_kind,card->last_leave_kind);display_status+=row;
     }
 }
 }
