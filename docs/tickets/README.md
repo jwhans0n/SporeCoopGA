@@ -648,5 +648,5 @@ not-reproduced, game-bug (Spore itself), wontfix, duplicate.
 | [BUG-0636](BUG-0636-windows-sharing-violations-interrupt-native-fixt.md) | fixed | test | Tests | 2026-11-12 | unreleased | Windows sharing violations interrupt native fixture checkpoints |
 | [BUG-0637](BUG-0637-native-act-creation-after-independent-editor-ret.md) | open | bug | Adventure | 2026-11-12 |  | Native act creation after independent editor return loses scene identity |
 | [BUG-0638](BUG-0638-standalone-save-new-after-shared-editing-warns-o.md) | open | bug | Adventure | 2026-11-12 |  | Standalone Save New after shared editing warns of unavailable custom creations on reopen |
-| [BUG-0639](BUG-0639-shared-editor-frame-rate-regresses-with-the-nati.md) | open | bug | Adventure | 2026-11-13 |  | Shared editor frame rate regresses with the native cast browser |
-| [BUG-0640](BUG-0640-creature-to-outfitter-creation-flow-fails-to-ret.md) | open | bug | Adventure | 2026-11-13 |  | Creature to outfitter creation flow fails to return to shared adventure editing |
+| [BUG-0639](BUG-0639-shared-editor-frame-rate-regresses-with-the-nati.md) | fixed | bug | Adventure | 2026-11-13 | unreleased | Shared editor frame rate regresses with the native cast browser |
+| [BUG-0640](BUG-0640-creature-to-outfitter-creation-flow-fails-to-ret.md) | fixed | bug | Adventure | 2026-11-13 | unreleased | Creature to outfitter creation flow fails to return to shared adventure editing |
