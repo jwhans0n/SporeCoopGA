@@ -650,4 +650,4 @@ not-reproduced, game-bug (Spore itself), wontfix, duplicate.
 | [BUG-0638](BUG-0638-standalone-save-new-after-shared-editing-warns-o.md) | open | bug | Adventure | 2026-11-12 |  | Standalone Save New after shared editing warns of unavailable custom creations on reopen |
 | [BUG-0639](BUG-0639-shared-editor-frame-rate-regresses-with-the-nati.md) | fixed | bug | Adventure | 2026-11-13 | unreleased | Shared editor frame rate regresses with the native cast browser |
 | [BUG-0640](BUG-0640-creature-to-outfitter-creation-flow-fails-to-ret.md) | fixed | bug | Adventure | 2026-11-13 | unreleased | Creature to outfitter creation flow fails to return to shared adventure editing |
-| [BUG-0641](BUG-0641-creation-return-rejects-original-placement-groun.md) | open | bug | Adventure | 2026-11-13 |  | Creation return rejects original placement grounding and poisons subsequent editor entry |
+| [BUG-0641](BUG-0641-creation-return-rejects-original-placement-groun.md) | fixed | bug | Adventure | 2026-11-13 | unreleased | Creation return rejects original placement grounding and poisons subsequent editor entry |
