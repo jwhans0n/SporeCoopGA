@@ -110,7 +110,14 @@ class CreationGame(PublicGame):
             row=re.search(r'^card class='+re.escape(class_id)+r' key=\S+ revision=\d+ rect=(-?\d+),(-?\d+),(-?\d+),(-?\d+) edit=1\b',self.call('coop.editor browser'),re.M)
             return row if row and tuple(map(int,row.groups()))==(x1,y1,x2,y2)else None
         self.wait('exact hovered native Edit action',hovered)
-        self.click(x2-22,y2-23) # Center of the measured native36x37 icon, inset4.
+        # Keep the private virtual cursor held through the complete press.
+        # Background frame gaps can outlast its ordinary click's idle timeout.
+        x,y=x2-22,y2-23 # Center of the measured native36x37 icon, inset4.
+        self.call(f'move {x} {y}');self.call('wait.frames 3 15000')
+        self.call(f'button {x} {y} down')
+        try:self.call('wait.frames 2 15000')
+        finally:self.call(f'button {x} {y} up')
+        self.call('wait.frames 3 15000')
 
     def choose_card(self, name):
         def point():

@@ -45,18 +45,22 @@ void release_name(Card& card){
     sui::release(card.name);card.name=nullptr;card.name_shifted=false;
 }
 void reserve_name(Card& card,bool locked){
-    // The live caption is a sibling of the Cast thumbnail, under the native
-    // card root. Its thumbnail also contains an empty label with this ID.
+    // Cast procedures can belong to an outer wrapper. Search its owning
+    // visible subtree: the thumbnail has an empty duplicate of the label ID.
     sui::Win name=nullptr;
-    auto root=card.window;
-    for(unsigned depth=0;root&&depth<8;++depth,root=sui::parent(root)){
-        if(sui::control_id(root)==0x52DF67AF)break;
-        if(sui::control_id(root)!=0x04A1CB70)continue;
-        for(auto child:sui::children(root))if(sui::parent(child)==root&&
-            sui::control_id(child)==0x079591E0&&!sui::caption(child).empty()){name=child;break;}
-        break;
+    std::vector<std::pair<sui::Win,unsigned>> pending{{card.window,0}};size_t visited=0;
+    while(!pending.empty()){
+        auto [window,depth]=pending.back();pending.pop_back();
+        if(!sui::visible(window))continue;
+        if(++visited>128||depth>16){name=nullptr;break;}
+        if(sui::control_id(window)==0x079591E0&&!sui::caption(window).empty()){
+            if(name){name=nullptr;break;}name=window;
+        }
+        for(auto child:sui::children(window))if(sui::parent(child)==window){
+            if(pending.size()>=128){pending.clear();name=nullptr;break;}
+            pending.push_back({child,depth+1});
+        }
     }
-    if(!name){name=sui::find(card.window,0x079591E0);if(name&&sui::caption(name).empty())name=nullptr;}
     if(name!=card.name){release_name(card);card.name=name;if(name){sui::add_ref(name);card.name_area=sui::area(name);}}
     if(!name)return;const auto current=sui::area(name);auto base=current;
     if(card.name_shifted&&current.x1==card.name_adjusted.x1)base.x1=card.name_area.x1;

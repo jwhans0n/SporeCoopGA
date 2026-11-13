@@ -93,10 +93,11 @@ int main(){
     auto cached=make(main_node,0x53C6DC80);cached->flags&=~sui::kFlagVisible;style=make(cached,0x54ACB9F1,true);
     style->rect={0,0,36,37};
     auto native_new=make(cached,0x14580F81,true);
-    auto native_card_root=make(palette,0x04A1CB70);
-    first=make(native_card_root,0x111);second=make(palette,0x222);
+    first=make(palette,0x111);second=make(palette,0x222);
+    auto native_card_root=make(first,0x04A1CB70);
+    auto native_thumbnail=make(native_card_root,0x04A1CB6F);
     second->rect={156,0,312,132};
-    auto blank_name=make(first,0x079591E0);blank_name->rect={2,84,143,105};
+    auto blank_name=make(native_thumbnail,0x079591E0);blank_name->rect={2,84,143,105};
     auto native_name=make(native_card_root,0x079591E0);native_name->rect={2,84,143,105};native_name->text="Native asset caption";
     const editor::ResourceKey building{17,0x2399BE55,0x40636200},creature{18,0x2B978C46,0x40626200};
     native_cards[first]={7,building};native_cards[second]={8,creature};

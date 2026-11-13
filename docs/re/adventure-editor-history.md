@@ -2845,7 +2845,8 @@ while the initial guest scene is DIVERGED before this baseline read fix.
 CORRECTION: the earlier caption-padding fixture placed 079591E0 inside the
 Cast thumbnail. Native GOG 2024 cards contain an empty thumbnail label with
 that ID and a separate visible caption directly under card root 04A1CB70.
-Adjust the owning visible caption, found through a bounded ancestor walk,
+~ superseded: an ancestor-only lookup still misses the procedure wrapper.
+Adjust the owning visible caption, found through the bounded owning subtree,
 while retaining its reference and restoring only the managed left edge.
 Never change another card's caption. The native c815-content-lock screenshot
 and captured caption ancestry retain the overlap. The sibling-layout fixture
@@ -2858,3 +2859,17 @@ vehicle-tab click. Check actual displayed card resource types and use bounded
 normal tab selection before choosing an empty card. Retained failed host/guest
 Vehicle entries and successful -r2 continuations are under out/preview12/.
 This changes only fixture input readiness, not native creation requests.
+
+CORRECTION (2026-11-12): the Cast procedure can be attached to the outer
+wrapper of 04A1CB70. The visible name is within that wrapper, alongside a
+thumbnail containing the empty duplicate. Search only its visible owning
+subtree, bound depth/nodes and reject ambiguous captions. The wrapped-layout
+fixture fails before the change and passes 3611 checks after it
+(wrapped-caption-red.log and wrapped-caption-green.log). The prior ancestor
+experiment and native qualified-lock/captions.txt remain retained as failures.
+
+In hidden games, an ordinary scheduled click can outlast the private virtual
+cursor idle timeout during a frame gap. An explicit normal button-down/up
+keeps that cursor held throughout the native press. The first unchanged
+qualified-hover-enter failed to activate; qualified-hover-enter-r2 activates
+the exact same native card with the held press. No product input path changed.
