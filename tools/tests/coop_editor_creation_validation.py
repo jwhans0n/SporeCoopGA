@@ -21,7 +21,7 @@ SUPPORTED={
     '47f60c4db38fda1f15c5a3525617e171b0a98d728d99d645b035aa794a9199ab'}
 # Exact GA New request variants. Family and subtype are checked independently.
 EDITORS={'creature':0x465C50BA,'building-house':0x4E3F7777,'building-entertainment':0x72C49181,
-         'vehicle-military-land':0x7D433FAD,'spaceship':0x96B24187}
+         'vehicle-military-land':0x7D433FAD,'vehicle-colony-land':0xBC1041E6,'spaceship':0x96B24187}
 TYPE_NAMES={0x99E92F05:'BuildingCityHall',0x4E3F7777:'BuildingHouse',0xBDD15F3D:'BuildingFarm',
     0x47C10953:'BuildingFactory',0x72C49181:'BuildingEntertainment',
     0x7D433FAD:'VehicleMilitaryLand',0x8F963DCB:'VehicleMilitaryWater',0x441CD3E6:'VehicleMilitaryAir',

@@ -26,6 +26,9 @@ def confirmation_contracts(module):
     checks=0
     modal=module.edit_save_new_modal(EDIT_MODAL)
     assert modal['point']==(721,450)and modal['new_name']=='ControlledCreation'and modal['old_name']=='PriorCreature';checks+=1
+    # The bounded console tree includes unrelated editor controls after the
+    # complete modal. Bound the recognized subtree independently.
+    assert module.edit_save_new_modal(EDIT_MODAL+'x'*8192)==modal;checks+=1
     for old,new in [('0x06318E78','0x06318E79'),('before exiting?','before playing?'),("'Save New'","'Save'"),
                     ('0x05107B19','0x05107B1A'),('fl=0x43','fl=0x3'),('[-88 -112 472 118]','[-88 -112 40 118]'),
                     ('[0 0 1024 768]','[0 0 800 600]'),('fl=0x13 [0 0 1024 768]','fl=0x12 [0 0 1024 768]'),
@@ -37,7 +40,7 @@ def confirmation_contracts(module):
         try:module.edit_save_new_modal(EDIT_MODAL.replace(old,new))
         except module.FixtureError:checks+=1
         else:raise AssertionError('Unrecognized Edit confirmation accepted')
-    for tree in ('',EDIT_MODAL[:EDIT_MODAL.index('  Window 109')],EDIT_MODAL+'x'*8192):
+    for tree in ('',EDIT_MODAL[:EDIT_MODAL.index('  Window 109')],EDIT_MODAL+'x'*60000,EDIT_MODAL.replace('  Window 109',' '*8192+'\n  Window 109')):
         try:module.edit_save_new_modal(tree)
         except module.FixtureError:checks+=1
         else:raise AssertionError('Incomplete Edit overlay accepted')

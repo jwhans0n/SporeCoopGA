@@ -27,6 +27,7 @@ PROFILES={
     'building-house':dict(family='building',editor_id=0x4E3F7777,model_type=0x4E3F7777,model_name='BuildingHouse',choice=0xC00F0341),
     'building-entertainment':dict(family='building',editor_id=0x72C49181,model_type=0x72C49181,model_name='BuildingEntertainment',choice=0xC00F0343),
     'vehicle-military-land':dict(family='vehicle',editor_id=0x7D433FAD,model_type=0x7D433FAD,model_name='VehicleMilitaryLand',choice=0xC00F0340),
+    'vehicle-colony-land':dict(family='vehicle',editor_id=0xBC1041E6,model_type=0xBC1041E6,model_name='VehicleColonyLand',choice=None),
     'spaceship':dict(family='spaceship',editor_id=0x96B24187,model_type=0x98E03C0D,model_name='UFO',choice=None),
 }
 DONE,CANCEL=0x058A3350,0x90439D7C
@@ -34,7 +35,7 @@ SAVE_NEW=0x05107B1A
 
 def _creation_exit_modal(tree,discard=False):
     """Recognize only the two measured exit questions; later UI may be truncated."""
-    if not tree or len(tree)>8192:raise FixtureError('Edit confirmation tree exceeds its diagnostic bound')
+    if not tree or len(tree)>60000:raise FixtureError('Edit confirmation tree exceeds its diagnostic bound')
     lines=tree.splitlines();starts=[i for i,line in enumerate(lines)if 'id=0x05B598F7 'in line]
     if len(starts)!=1:raise FixtureError('Edit confirmation overlay is missing or ambiguous')
     start=starts[0];end=None
@@ -43,7 +44,9 @@ def _creation_exit_modal(tree,discard=False):
         if not match:raise FixtureError('Incomplete Edit confirmation overlay')
         if len(match[1])<=2:end=i;break
     if end is None:raise FixtureError('Edit confirmation overlay has no complete boundary')
-    nodes=_startup_tree('\n'.join([lines[0],*lines[start:end]]))
+    scoped='\n'.join([lines[0],*lines[start:end]])
+    if len(scoped)>8192:raise FixtureError('Edit confirmation overlay exceeds its diagnostic bound')
+    nodes=_startup_tree(scoped)
     overlay=nodes[1]
     if overlay['depth']!=1 or not overlay['visible']or nodes[0]['rect']!=(0,0,1024,768)or any(node['command']or not node['flags']&2 for node in nodes[:2]):raise FixtureError('Edit confirmation viewport/overlay changed')
     visible=[node for node in nodes[2:]if node['visible']]
@@ -163,11 +166,14 @@ def other_request_errors(row,profile):
 
 def resume_errors(previous,current):
     errors=[]
+    confirmation=current.get('stage')=='confirm'
+    pending=previous.get('stage')=='finish'and previous.get('save_dispatched')and not previous.get('passed')and not previous.get('confirmation_dispatched')
     for key in ('candidate','metadata','instances','process_pins','peer_pins','author','profile','target_class'):
         if previous.get(key)!=current.get(key):errors.append('changed '+key)
     if bool(previous.get('allow_other_editors',False))!=bool(current.get('allow_other_editors',False)) or previous.get('other_editor_profiles',[])!=current.get('other_editor_profiles',[]):errors.append('changed other editor declaration')
     if previous.get('other_editor_conflict'):errors.append('previous other-editor scope expired')
-    if previous.get('save_dispatched')or previous.get('cancel_dispatched')or previous.get('quit_dispatched') or previous.get('passed')and previous.get('stage')in('finish','cancel'):
+    if confirmation and not pending:errors.append('no original pending Save confirmation')
+    if previous.get('save_dispatched')and not(confirmation and pending)or previous.get('confirmation_dispatched')or previous.get('cancel_dispatched')or previous.get('quit_dispatched') or previous.get('passed')and previous.get('stage')in('finish','confirm','cancel'):
         errors.append('workflow is terminal or exit input was already dispatched')
     if not previous.get('context') or not previous.get('serial') or not previous.get('native_request'):
         errors.append('previous stage has no complete creation identity')
@@ -440,10 +446,11 @@ def run(args):
                 author.call('wait.frames 30 15000');sample('after-action')
             elif args.stage=='inspect':
                 pass
-            elif args.stage=='finish':
-                row=result['before-action'];errors=finish_errors(row,args.profile,result.get('target_source'));result['finish_preflight_errors']=errors;write()
+            elif args.stage in('finish','confirm'):
+                row=result['before-action'];errors=finish_errors(row,args.profile,result.get('target_source'))if args.stage=='finish'else edit_confirmation_errors(row,args.profile,result.get('target_source'),result['native_request']);result['finish_preflight_errors']=errors;write()
                 if errors:raise FixtureError('Done preflight rejected without clicking: '+', '.join(errors))
-                sample_others('other-editors-before-save');guard();result['save_dispatched']=True;write();author.click_control(DONE)
+                sample_others('other-editors-before-save');guard();result['save_dispatched']=True;write()
+                if args.stage=='finish':author.click_control(DONE)
                 try:author.wait('ordinary Save returns independently',edit_return_or_confirm if result['target_class']else returned,timeout=60)
                 except Exception:
                     if designing():sample('failed-done')
@@ -467,7 +474,7 @@ def run(args):
                 sample_others('other-editors-before-cancel');guard();result['cancel_dispatched']=True;write();author.click_control(CANCEL)
                 author.wait('ordinary Cancel returns',cancel_return_or_confirm)
                 if canonical()!=baseline['canonical']or history_rows(host.call('coop.editor history'))!=baseline['history']:raise FixtureError('Cancel changed authored state/history')
-        if args.stage not in ('finish',)and canonical()!=baseline['canonical']:raise FixtureError('Unsaved local stage changed canonical state')
+        if args.stage not in ('finish','confirm')and canonical()!=baseline['canonical']:raise FixtureError('Unsaved local stage changed canonical state')
         sample_others('other-editors-end');record('after');result['passed']=True;write()
     except Exception as error:
         result['error']=repr(error)
@@ -495,6 +502,11 @@ def self_test():
     current=dict(candidate='a'*64,metadata='owned.json',instances=[95,96],process_pins=[dict(instance=95,pid=123,profile='winlab_owned')],peer_pins=[dict(instance=95,peer=[0,1])],author=95,profile='creature')
     previous=dict(current,context=['b'*32,9],serial=7,native_request=123,stage='steps',passed=True)
     assert not resume_errors(previous,current);checks+=1
+    confirmation=dict(current,stage='confirm')
+    pending=dict(previous,stage='finish',passed=False,save_dispatched=True)
+    assert not resume_errors(pending,confirmation);checks+=1
+    for bad in (previous,dict(pending,passed=True),dict(pending,confirmation_dispatched=True),dict(pending,stage='steps')):
+        assert resume_errors(bad,confirmation);checks+=1
     for key in current:
         bad=dict(current);bad[key]=None;assert resume_errors(previous,bad);checks+=1
     for changes in (dict(save_dispatched=True),dict(cancel_dispatched=True),dict(quit_dispatched=True),dict(stage='finish'),dict(serial=0),dict(native_request=0)):
@@ -565,7 +577,7 @@ def main():
     p.add_argument('--execute',action='store_true');p.add_argument('--self-test',action='store_true');p.add_argument('--screenshots',action='store_true')
     p.add_argument('--legacy-toolbar',action='store_true',help='Old-build reproduction only; candidate uses native picker/hover controls')
     p.add_argument('--metadata',type=Path);p.add_argument('--candidate');p.add_argument('--instances',nargs='+',type=int,default=[95,96])
-    p.add_argument('--author',type=int);p.add_argument('--profile',choices=PROFILES);p.add_argument('--stage',choices=('enter','steps','inspect','finish','cancel'))
+    p.add_argument('--author',type=int);p.add_argument('--profile',choices=PROFILES);p.add_argument('--stage',choices=('enter','steps','inspect','finish','confirm','cancel'))
     p.add_argument('--allow-other-editors',action='store_true',help='Explicitly pin other already-designing sessions; author must start ready')
     p.add_argument('--other-editor',action='append',default=[],help='Owned INSTANCE:PROFILE for every other non-ready participant')
     p.add_argument('--target-class',help='Existing full class-id:generation; UI owner selects its native cast card before enter')
@@ -573,7 +585,7 @@ def main():
     args=p.parse_args()
     if args.self_test:self_test();return
     if not args.execute:
-        print(json.dumps(dict(prepared=True,profiles=PROFILES,stages=['enter','steps','inspect','finish','cancel'],normal_input_only=True,requires_explicit_ui_handoff=True,creature_recipe='tools/tests/fixtures/editor_creation/creature-held-c39.json',historical_creature_recipe='tools/tests/fixtures/editor_creation/creature-mouth-c7.json',building_house_recipe='tools/tests/fixtures/editor_creation/building-house-minimal-c46.json',vehicle_recipe='tools/tests/fixtures/editor_creation/vehicle-military-land-minimal-c46.json',spaceship_recipe='tools/tests/fixtures/editor_creation/spaceship-minimal-c46.json'),indent=2));return
+        print(json.dumps(dict(prepared=True,profiles=PROFILES,stages=['enter','steps','inspect','finish','confirm','cancel'],normal_input_only=True,requires_explicit_ui_handoff=True,creature_recipe='tools/tests/fixtures/editor_creation/creature-held-c39.json',historical_creature_recipe='tools/tests/fixtures/editor_creation/creature-mouth-c7.json',building_house_recipe='tools/tests/fixtures/editor_creation/building-house-minimal-c46.json',vehicle_recipe='tools/tests/fixtures/editor_creation/vehicle-military-land-minimal-c46.json',spaceship_recipe='tools/tests/fixtures/editor_creation/spaceship-minimal-c46.json'),indent=2));return
     if (not args.metadata or not args.output or len(args.instances)not in(2,4)or len(set(args.instances))!=len(args.instances)or args.author not in args.instances or
         not re.fullmatch('[0-9a-f]{64}',args.candidate or'')or not args.profile or not args.stage or args.stage=='steps'and not args.steps or
         not re.fullmatch('[A-Za-z0-9 _-]{1,64}',args.name)):

@@ -644,3 +644,4 @@ not-reproduced, game-bug (Spore itself), wontfix, duplicate.
 | [BUG-0632](BUG-0632-display-scoped-player-ownership-on-shared-cast-c.md) | open | feature | Adventure | 2026-11-12 |  | Display scoped player ownership on shared cast cards |
 | [BUG-0633](BUG-0633-native-creation-validation-reads-utf-8-symbols-w.md) | open | bug | Tests | 2026-11-12 |  | Native creation validation reads UTF-8 symbols with the Windows locale codec |
 | [BUG-0634](BUG-0634-raw-pointer-coop-ui-btn-diagnostic-dereferences.md) | open | crash | Tests | 2026-11-12 |  | Raw-pointer coop.ui btn diagnostic dereferences unverified input |
+| [BUG-0635](BUG-0635-creation-save-fixture-rejects-valid-large-native.md) | open | test | Tests | 2026-11-12 |  | Creation Save fixture rejects valid large native confirmation trees |

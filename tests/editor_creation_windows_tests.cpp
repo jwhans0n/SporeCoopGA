@@ -329,8 +329,9 @@ void test_ga_new_routes(){
     // Independent stock GA category table: a typo in the production menu must
     // not pass merely because the request and UI share that same table.
     const std::array<uint32_t,4> building_ids{0x99E92F05,0x4E3F7777,0x8707BE7D,0x72C49181};
-    const std::array<uint32_t,9> vehicle_ids{0x7D433FAD,0x8F963DCB,0x441CD3E6,
-        0xF670AA43,0x2A5147A9,0x1A4E0708,0x9AD7D4AA,0x1F2A25B6,0x449C040F};
+    const std::array<uint32_t,12> vehicle_ids{0x7D433FAD,0x8F963DCB,0x441CD3E6,
+        0xF670AA43,0x2A5147A9,0x1A4E0708,0x9AD7D4AA,0x1F2A25B6,0x449C040F,
+        0xBC1041E6,0xC15695DA,0x2090A11B};
     const auto buildings=editor_creation::new_variants(0x2399BE55);
     const auto vehicles=editor_creation::new_variants(0x24682294);
     CHECK(buildings.size()==building_ids.size()&&vehicles.size()==vehicle_ids.size());

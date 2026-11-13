@@ -33,10 +33,11 @@ inline std::span<const Variant> new_variants(uint32_t resource_type){
     static constexpr std::array<Variant,4> buildings{{
         {0x99E92F05,"City hall"},{0x4E3F7777,"House"},
         {0x8707BE7D,"Factory"},{0x72C49181,"Entertainment"}}};
-    static constexpr std::array<Variant,9> vehicles{{
+    static constexpr std::array<Variant,12> vehicles{{
         {0x7D433FAD,"Military land"},{0x8F963DCB,"Military water"},{0x441CD3E6,"Military air"},
         {0xF670AA43,"Economic land"},{0x2A5147A9,"Economic water"},{0x1A4E0708,"Economic air"},
-        {0x9AD7D4AA,"Cultural land"},{0x1F2A25B6,"Cultural water"},{0x449C040F,"Cultural air"}}};
+        {0x9AD7D4AA,"Cultural land"},{0x1F2A25B6,"Cultural water"},{0x449C040F,"Cultural air"},
+        {0xBC1041E6,"Colony land"},{0xC15695DA,"Colony water"},{0x2090A11B,"Colony air"}}};
     static constexpr std::array<Variant,1> spaceships{{{0x96B24187,"Spaceship"}}};
     switch(resource_type){
     case 0x2B978C46:return creatures;case 0x2399BE55:return buildings;

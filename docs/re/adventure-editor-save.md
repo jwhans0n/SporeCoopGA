@@ -1782,3 +1782,15 @@ must not be used by a Vehicle creation fixture. Native tooltip inventory
 confirms those tab identities. Empty cast slots are sparse: new entries fill
 the first column while right-hand slots can remain empty. Fixture input must
 resolve a current empty slot rather than infer one from the class count.
+
+The native All Vehicles and Land categories submit zero-source New requests
+for ColonyLand editorBC1041E6, new_asset20=false. The former custom menu's nine
+military/economic/cultural entries omitted this legitimate native default.
+Private read-only request observation: out/preview12/native-vehicle-request-probe/request.json
+and native-vehicle-category-audit/result.json. The existing verified subtype
+map in the [creations notes](creations.md) also
+maps colony WaterC15695DA and Air2090A11B to their specialized editors. Accept
+these three exact configs with the existing Vehicle resource family; keep the
+unverified generic99F87089 rejected. The i686 native-picker request fixture
+fails with the former nine-config list and passes for all twelve configs:
+out/preview12/evidence/colony-picker-red.log and colony-picker-green.log.

@@ -63,14 +63,14 @@ class CreationGame(PublicGame):
         """Measured Adventure palette/picker input, without mod creation buttons."""
         if family not in FAMILIES:raise FixtureError('Unsupported native picker family')
         self.call('coop.uistate 0')
-        self.click({'creature':50,'building':136,'vehicle':178,'spaceship':178}[family],40)
-        self.call('wait.frames 3 15000')
-        if not self.control(0x52DF67AF):
-            self.click({'creature':50,'building':136,'vehicle':178,'spaceship':178}[family],40)
-            self.call('wait.frames 3 15000')
-        slots=re.findall(r'^empty rect=(-?\d+),(-?\d+),(-?\d+),(-?\d+)$',self.call('coop.editor browser'),re.M)
-        if not slots:raise FixtureError('Native browser exposes no current empty card')
-        x1,y1,x2,y2=map(int,slots[0]);point=((x1+x2)//2,(y1+y2)//2)
+        self.click({'creature':50,'building':136,'vehicle':94,'spaceship':94}[family],40)
+        def slots():return re.findall(r'^empty rect=(-?\d+),(-?\d+),(-?\d+),(-?\d+)$',self.call('coop.editor browser'),re.M)
+        def palette_settled():return slots()or('closed'if not self.control(0x52DF67AF)else None)
+        available=self.wait('opened or fully closed native palette',palette_settled)
+        if available=='closed':
+            self.click({'creature':50,'building':136,'vehicle':94,'spaceship':94}[family],40)
+            available=self.wait('current native empty card',slots)
+        x1,y1,x2,y2=map(int,available[0]);point=((x1+x2)//2,(y1+y2)//2)
         for _ in range(4):
             if self.control(0x14580F81):break
             self.click(*point);self.call('wait.frames 3 15000')
@@ -81,6 +81,10 @@ class CreationGame(PublicGame):
         if family=='building':
             category={0x99E92F05:240,0x4E3F7777:277,0xBDD15F3D:310,0x47C10953:310,0x72C49181:350}.get(editor_id,240)
             self.click(category,88);self.call('wait.frames 3 15000')
+        elif family in('vehicle','spaceship'):
+            self.click_control(0x476A98C7 if family=='spaceship'else 0x39E64A16)
+            self.call('wait.frames 3 15000')
+        self.wait('selected category Create Your Own tile',tile_ready)
         # Retry only while the exact native tile remains visible. A category
         # transition can finish after its tile first becomes visible.
         for _ in range(4):
@@ -95,7 +99,11 @@ class CreationGame(PublicGame):
         match=re.search(r'^card class='+re.escape(class_id)+r' key=\S+ revision=\d+ rect=(-?\d+),(-?\d+),(-?\d+),(-?\d+)',text,re.M)
         if not match:raise FixtureError('Exact native hovered cast card is not displayed: '+class_id)
         x1,y1,x2,y2=map(int,match.groups());self.call(f'move {(x1+x2)//2} {(y1+y2)//2}')
-        self.call('wait.frames 15 15000');self.click(x2-15,y2-15)
+        def hovered():
+            row=re.search(r'^card class='+re.escape(class_id)+r' key=\S+ revision=\d+ rect=(-?\d+),(-?\d+),(-?\d+),(-?\d+) edit=1\b',self.call('coop.editor browser'),re.M)
+            return row if row and tuple(map(int,row.groups()))==(x1,y1,x2,y2)else None
+        self.wait('exact hovered native Edit action',hovered)
+        self.click(x2-22,y2-23) # Center of the measured native36x37 icon, inset4.
 
     def choose_card(self, name):
         def point():
