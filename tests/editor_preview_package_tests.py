@@ -29,7 +29,7 @@ class PreviewPackageTests(unittest.TestCase):
         self.output = self.root / 'distribution'
         source_files = {
             'mods/coop/coop.cpp': '#define COOP_VERSION "' + preview.PREVIEW_VERSION + '"\n',
-            'mods/coop/net/protocol.h': 'constexpr uint16_t kProtoVersion = 28;\n',
+            'mods/coop/net/protocol.h': 'constexpr uint16_t kProtoVersion = 29;\n',
             'data/symbols/test.sym': 'Fixture=0x1 ; verified synthetic fixture\n',
             'data/config/coop.ini': '[fixture]\n',
             'docs/MULTIPLAYER-ADVENTURE-EDITOR.md': '[Report](reports/EDITOR-PREVIEW9-VALIDATION.md)\n',
@@ -78,12 +78,12 @@ class PreviewPackageTests(unittest.TestCase):
         self.assertEqual(result.exception.code, 2)
         self.assertFalse(self.output.exists())
 
-    def test_manifest_archive_pack_and_documents_match_preview10(self):
+    def test_manifest_archive_pack_and_documents_match_current_preview(self):
         receipt = self.run_package()
         distribution = self.output / 'SporeCoopGA'
         manifest = json.loads((distribution / 'SHA256.json').read_text())
         self.assertEqual(manifest['version'], preview.PREVIEW_VERSION)
-        self.assertEqual(manifest['protocol'], 28)
+        self.assertEqual(manifest['protocol'], 29)
         self.assertFalse(manifest['complete_release_acceptance'])
         self.assertEqual(manifest['supported_exe_sha256'], preview.EXE)
         self.assertEqual(manifest['supported_laa_exe_sha256'], preview.GOG2024_LAA)
@@ -115,7 +115,7 @@ class PreviewPackageTests(unittest.TestCase):
 
     def test_repository_identity_and_loaded_symbol_map(self):
         with patch.object(preview, 'ROOT', REPOSITORY):
-            self.assertEqual(preview.release_identity(), (preview.PREVIEW_VERSION, 28))
+            self.assertEqual(preview.release_identity(), (preview.PREVIEW_VERSION, 29))
             preview.validate_loaded_symbols()
         self.assertEqual(PRODUCTION_EXES, {preview.EXE, preview.GOG2024_LAA})
 
@@ -133,7 +133,7 @@ class PreviewPackageTests(unittest.TestCase):
 
     def test_previous_protocol_is_rejected(self):
         path = self.source / 'mods/coop/net/protocol.h'
-        path.write_text('constexpr uint16_t kProtoVersion = 25;\n')
+        path.write_text('constexpr uint16_t kProtoVersion = 28;\n')
         self.rejects_before_output()
 
     def test_missing_source_identity_is_rejected(self):

@@ -33,9 +33,9 @@ def sha(path):
 
 def release_identity():
     version = re.search(r'^#define COOP_VERSION "([^"]+)"',
-                        (ROOT / 'mods/coop/coop.cpp').read_text(), re.M)
+                        (ROOT / 'mods/coop/coop.cpp').read_text(encoding='utf-8'), re.M)
     protocol = re.search(r'^constexpr uint16_t kProtoVersion = (\d+);',
-                         (ROOT / 'mods/coop/net/protocol.h').read_text(), re.M)
+                         (ROOT / 'mods/coop/net/protocol.h').read_text(encoding='utf-8'), re.M)
     if not version or version[1] != PREVIEW_VERSION:
         raise ValueError('This packaging recipe is scoped to editor preview 15')
     if not protocol or int(protocol[1]) != PROTOCOL:
