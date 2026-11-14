@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# suite: none (offline generator requiring explicitly hashed private inputs; no standalone native lab fixture)
 """Offline private complexity inputs; never opens a process or a profile.
 
 Inputs must be explicitly hashed copies under this worktree's OUT directory.

@@ -71,8 +71,18 @@ bool inspect_loader(const std::wstring& dll, bool& loader);
 
 // BUG-0851: the symbol files a release installs (data/symbols/*.sym; tools/tests/tools_selftest.py
 // `symlist` keeps the list complete): the uninstall deletes these and no other *.sym
-constexpr const char* kSymbolFiles[] = {"gog2016_922af7c7.sym", "march2017_dc04aee5.sym", "overrides_922af7c7.sym",
-                                        "overrides_dc04aee5.sym"};
+constexpr const char* kSymbolFiles[] = {
+    "gog2016_922af7c7.sym",
+    "march2017_dc04aee5.sym",
+    "overrides_922af7c7.sym",
+    "overrides_adventure_dc04aee5.sym",
+    "overrides_dc04aee5.sym",
+    "overrides_editor_dc04aee5.sym",
+    "overrides_editor_history_dc04aee5.sym",
+    "overrides_editor_save_dc04aee5.sym",
+    "overrides_ga_dc04aee5.sym",
+    "overrides_refpack_dc04aee5.sym",
+    "overrides_world_dc04aee5.sym"};
 
 // BUG-0851: the update lock of a game folder without waiting, for the uninstall. false = another
 // update holds it (nothing may change); true = go on, *held (may be null: no lock with update.lock

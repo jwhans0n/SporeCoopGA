@@ -1,3 +1,4 @@
+# suite: none (read-only helper requiring explicit owned Windows process metadata; not a standalone lab fixture)
 """Bounded read-only validation receipt for already-owned native creation editors.
 
 Run only after the UI owner explicitly grants an idle diagnostic window. This

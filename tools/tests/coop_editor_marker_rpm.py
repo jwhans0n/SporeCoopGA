@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# suite: none (read-only helper requiring explicit owned Windows process metadata; not a standalone lab fixture)
 """Passive exact marker-slot pose sample from an owned hidden dc04 lab.
 
 Uses the same process/image/profile/HWND proof as the terrain reader. It never

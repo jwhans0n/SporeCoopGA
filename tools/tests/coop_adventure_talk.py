@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# suite: none (opt-in native Windows fixture requiring an already-owned hidden lab and explicit private inputs; automatic launcher qualification is tracked by BUG-1014)
 """Complete an ordinary native conversation in an existing isolated GA pair.
 
 The caller supplies a visible NPC body coordinate after positioning the captain,

@@ -15,6 +15,7 @@ tests: tests/editor_native_cancellation_windows_tests.cpp; editor_native_cancell
 signature: F37FF0 synchronous F35E10 observes stale deleted-index fresh mark
 docs:
 related: BUG-1001
+switch: none (strict materialization validation must stay enabled; controlled stale-fresh-mark RED evidence is retained)
 ---
 
 ## Report
@@ -41,3 +42,4 @@ Legacy fork reference: `BUG-0482` before upstream 0.7.4 integration. Existing co
 Legacy fork reference: `BUG-0533` before upstream 0.7.8 integration. Historical commits and OUT evidence retain that ID; upstream owns its independent ticket under that number.
 
 Legacy fork reference: `BUG-0617` before upstream 0.7.13 integration. Historical commits and OUT receipts retain that identity; upstream owns its independently created ticket under that number.
+- 2026-11-13 integration: declare the twin strategy for the newer upstream ticket checker; retain the original FAIL/PASS evidence.

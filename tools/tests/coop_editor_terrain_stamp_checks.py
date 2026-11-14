@@ -1,3 +1,4 @@
+# suite: none (pure self-tests run in make test; native assertions require caller-owned capture evidence)
 """Independent native stamp column assertions for owned Win32 lab fixtures.
 
 Native effect Append uses the current planet seed, including on Alt-clone. This

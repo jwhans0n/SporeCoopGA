@@ -15,6 +15,7 @@ tests: tools/tests/coop_editor_creation_validation.py
 signature:
 docs:
 related:
+switch: none (tool encoding correction, no mod change)
 ---
 
 ## Report
@@ -35,3 +36,4 @@ FAIL: out/preview12/baseline-house-enter/result.json. PASS: out/preview12/baseli
 - 2026-11-12: implemented on the preview 12 review branch; public release and destination promotion remain deferred.
 
 Legacy fork reference: `BUG-0633` before upstream 0.7.13 integration. Historical commits and OUT receipts retain that identity; upstream owns its independently created ticket under that number.
+- 2026-11-13 integration: declare the twin strategy for the newer upstream ticket checker; retain the original FAIL/PASS evidence.

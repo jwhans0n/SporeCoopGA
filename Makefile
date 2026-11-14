@@ -85,7 +85,7 @@ $(B)/obj/installer/setup_rc.o: installer/setup.rc installer/version.rc $(B)/setu
 	@mkdir -p $(dir $@)
 	cp installer/setup.rc $(B)/setup.rc
 	$(WINDRES) -i $(B)/setup.rc -o $@ -I$(B) -Iinstaller
-$(B)/SporeCoopSetup.exe: installer/setup.cpp installer/install.cpp installer/install.h sdk/include/sporekit_build.hpp updater/winupdate.cpp updater/pack.cpp updater/sha256.cpp $(B)/obj/installer/setup_rc.o mods/coop/coop.cpp
+$(B)/SporeCoopSetup.exe: installer/setup.cpp installer/install.cpp installer/install.h updater/winupdate.h updater/pending.h updater/pack.h updater/sha256.h sdk/include/sporekit_build.hpp updater/winupdate.cpp updater/pack.cpp updater/sha256.cpp $(B)/obj/installer/setup_rc.o mods/coop/coop.cpp
 	$(CXX) $(CXXFLAGS) -DSETUP_VERSION='"$(COOP_VERSION)"' -municode -mwindows -static -o $@ $(filter-out %.h %.hpp mods/coop/coop.cpp,$^) \
 		-lwinhttp -lcomctl32 -lshell32 -lole32 -ladvapi32 -luser32 -lgdi32
 
@@ -526,7 +526,7 @@ test-tsan: sanitizer-probe
 # Windows-side unit tests (file handling of the updater and of received worlds), run under Wine in
 # a lane's bottle by tools/tests/win_unit.py (lab test win_unit)
 test-win: $(B)/win_tests.exe $(B)/SporeCoopSetup.exe
-$(B)/win_tests.exe: tests/win_tests.cpp installer/install.cpp installer/install.h mods/coop/slotfs.cpp mods/coop/slotfs.h updater/winupdate.cpp updater/pending.h updater/pack.cpp updater/sha256.cpp sporekit/inifile.cpp sporekit/inifile.h
+$(B)/win_tests.exe: tests/win_tests.cpp updater/winupdate.h updater/pack.h updater/sha256.h installer/install.cpp installer/install.h mods/coop/slotfs.cpp mods/coop/slotfs.h updater/winupdate.cpp updater/pending.h updater/pack.cpp updater/sha256.cpp sporekit/inifile.cpp sporekit/inifile.h
 	@mkdir -p $(B)
 	$(CXX) $(CXXFLAGS) -static -o $@ tests/win_tests.cpp installer/install.cpp mods/coop/slotfs.cpp updater/winupdate.cpp updater/pack.cpp updater/sha256.cpp sporekit/inifile.cpp -lwinhttp -lws2_32
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# suite: none (read-only helper requiring explicit owned Windows process metadata; not a standalone lab fixture)
 """Passive bounded inventory of the current native UILayout's owned objects.
 
 No Cast, native function calls, children traversal, console, input or mutation.

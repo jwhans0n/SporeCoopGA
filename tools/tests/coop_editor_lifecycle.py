@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# suite: none (pure self-tests run in make test; live mode requires an already-owned hidden Windows lab)
 """Opt-in native editor lifecycle checks in an already-owned hidden Windows lab.
 
 No launches, deployment, memory writes, external save writes or synthetic results.

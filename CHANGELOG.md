@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- Shared Adventure Editor preview 15 integration candidate: merge pinned upstream
+  SporeCoop 0.7.13 and retain preview 14 fixes. Reconcile networking, native UI and
+  SporeKit 0.3.16; use protocol 29 with independent upstream/fork message IDs.
+  Preserve native saves, editor recovery and the installed preview. Main
+  promotion awaits native qualification; known fork reports and exact validation
+  scope are in the [synchronization report](docs/reports/UPSTREAM-0.7.13-SYNC.md).
+
 - Shared Adventure Editor preview 14: restore the latest committed scene before
   verifying Creature/Outfitter return, preserving exact grounding checks after
   reconstruction and allowing subsequent editor entry (BUG-1029). Protocol 28

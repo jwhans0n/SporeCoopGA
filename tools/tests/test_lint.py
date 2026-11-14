@@ -61,8 +61,6 @@ COUNTER_ALLOW = {
         'as down (the game\'s repair timer of the ship)',
     ('coop_tribe.py', 'cmds_done'):
         'pending: the host\'s member doing the order (coop.tribe: the member\'s action / target) instead',
-    ('coop_tribe.py', 'rejected'):
-        'pending: the host\'s member gathering at the tree (coop.tribe) instead of no rejection',
 }
 
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# suite: none (opt-in native Windows fixture requiring an already-owned hidden lab and explicit private inputs; automatic launcher qualification is tracked by BUG-1014)
 """Opt-in actual native editor LAN/WAN gestures in an already-owned Windows lab.
 
 Requires Galaxy on two/four hidden, muted, isolated processes and an exact DLL.

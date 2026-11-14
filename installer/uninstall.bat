@@ -46,7 +46,7 @@ pause
 exit /b 1
 
 :files
-for %%f in (sporekit.dll mods\coop.dll ..\Data\SporeCoop.package mods\sporekit\symbols\gog2016_922af7c7.sym mods\sporekit\symbols\march2017_dc04aee5.sym mods\sporekit\symbols\overrides_922af7c7.sym mods\sporekit\symbols\overrides_dc04aee5.sym mods\sporecoop.version) do (
+for %%f in (sporekit.dll mods\coop.dll ..\Data\SporeCoop.package mods\sporekit\symbols\gog2016_922af7c7.sym mods\sporekit\symbols\march2017_dc04aee5.sym mods\sporekit\symbols\overrides_922af7c7.sym mods\sporekit\symbols\overrides_dc04aee5.sym mods\sporekit\symbols\overrides_adventure_dc04aee5.sym mods\sporekit\symbols\overrides_editor_dc04aee5.sym mods\sporekit\symbols\overrides_editor_history_dc04aee5.sym mods\sporekit\symbols\overrides_editor_save_dc04aee5.sym mods\sporekit\symbols\overrides_ga_dc04aee5.sym mods\sporekit\symbols\overrides_refpack_dc04aee5.sym mods\sporekit\symbols\overrides_world_dc04aee5.sym mods\sporecoop.version) do (
   if exist "%%f" del /q "%%f" >nul 2>nul
   if exist "%%f" (
     echo Could not remove %%f: close Spore and run uninstall.bat again.

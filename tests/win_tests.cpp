@@ -29,6 +29,11 @@ static int g_fail;
     } while (0)
 
 static std::wstring g_tmp;
+static const wchar_t* kForkSymbols[] = {
+    L"overrides_adventure_dc04aee5.sym", L"overrides_editor_dc04aee5.sym",
+    L"overrides_editor_history_dc04aee5.sym", L"overrides_editor_save_dc04aee5.sym",
+    L"overrides_ga_dc04aee5.sym", L"overrides_refpack_dc04aee5.sym", L"overrides_world_dc04aee5.sym"};
+
 static bool g_old;          // --old
 static std::wstring g_bat;  // --bat <install.bat to test> (tools/tests/win_unit.py)
 static std::wstring g_ubat; // --ubat <uninstall.bat to test> (win_unit.py)
@@ -1673,6 +1678,7 @@ static std::wstring installed_game(const wchar_t* name)
     std::wstring sym = g + L"\\SporebinEP1\\mods\\sporekit\\symbols\\";
     put(sym + L"overrides_dc04aee5.sym", "ours");
     put(sym + L"mine.sym", "the player's own");
+    for (const auto* name : kForkSymbols) put(sym + name, "fork-owned symbol map");
     return g;
 }
 
@@ -1718,6 +1724,7 @@ static void test_uninstall()
     printf("  (c) symbols: ours %s, the player's %s\n", exists(bin + L"\\mods\\sporekit\\symbols\\overrides_dc04aee5.sym") ? "kept" : "removed",
            exists(bin + L"\\mods\\sporekit\\symbols\\mine.sym") ? "kept" : "removed");
     CHECK(!exists(bin + L"\\mods\\sporekit\\symbols\\overrides_dc04aee5.sym"));
+    for (const auto* name : kForkSymbols) CHECK(!exists(bin + L"\\mods\\sporekit\\symbols\\" + name));
     CHECK(get(bin + L"\\mods\\sporekit\\symbols\\mine.sym") == "the player's own");
     // (d) another update holds the folder's lock: nothing changes
     g = installed_game(L"un_d"), bin = g + L"\\SporebinEP1";
@@ -1789,8 +1796,11 @@ static void test_uninstall_bat()
 
 int main(int argc, char** argv)
 {
+    bool uninstall_only = false;
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--old"))
+        if (!strcmp(argv[i], "--uninstall-only"))
+            uninstall_only = true;
+        else if (!strcmp(argv[i], "--old"))
             g_old = true;
         else if (!strcmp(argv[i], "--old-suffix")) // BUG-0114 alone (update.old_suffix)
             upd::g_old_suffix_fix = false;
@@ -1855,6 +1865,12 @@ int main(int argc, char** argv)
     g_tmp = std::wstring(t) + L"sporecoop-win-tests";
     rmtree(g_tmp);
     CreateDirectoryW(g_tmp.c_str(), nullptr);
+    if (uninstall_only) {
+        test_uninstall();
+        rmtree(g_tmp);
+        printf(g_fail ? "FAILED (%d)\n" : "ALL OK\n", g_fail);
+        return g_fail ? 1 : 0;
+    }
     test_cleanup_old();
     test_apply_pack();
     test_apply_rollback();

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# suite: none (opt-in native Windows fixture requiring an already-owned hidden lab and explicit private inputs; automatic launcher qualification is tracked by BUG-1014)
 """Teleporter placement regression on an already-owned hidden editor party.
 
 Uses ordinary UI input and read-only diagnostics. The runner owns private

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# suite: none (read-only helper requiring explicit owned Windows process metadata; not a standalone lab fixture)
 """Bounded, passive PropertyList/Transform reads from an owned hidden dc04 lab.
 
 No game console, native calls, process/profile writes, audio changes or inputs.

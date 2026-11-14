@@ -15,6 +15,7 @@ tests: tests/editor_native_terrain_transition_fixture.h; tests/editor_runtime_te
 signature: The native terrain recipe changed during its owned transition
 docs:
 related:
+switch: none (exact saved-materialization receipts are mandatory; the controlled RED omits the receipt)
 ---
 
 ## Report
@@ -41,3 +42,4 @@ Legacy fork reference: `BUG-0486` before upstream 0.7.4 integration. Existing co
 Legacy fork reference: `BUG-0537` before upstream 0.7.8 integration. Historical commits and OUT evidence retain that ID; upstream owns its independent ticket under that number.
 
 Legacy fork reference: `BUG-0621` before upstream 0.7.13 integration. Historical commits and OUT receipts retain that identity; upstream owns its independently created ticket under that number.
+- 2026-11-13 integration: declare the twin strategy for the newer upstream ticket checker; retain the original FAIL/PASS evidence.

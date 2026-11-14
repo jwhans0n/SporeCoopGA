@@ -15,6 +15,7 @@ tests: tests/editor_native_cancellation_windows_tests.cpp; editor_native_cancell
 signature: Terraform pending ownership retains only action1; investigate actual action6/11 producers
 docs:
 related:
+switch: none (before-grant mutation cannot be runtime-enabled; controlled first-use RED evidence is retained)
 ---
 
 ## Report
@@ -39,3 +40,4 @@ Legacy fork reference: `BUG-0479` before upstream 0.7.4 integration. Existing co
 Legacy fork reference: `BUG-0530` before upstream 0.7.8 integration. Historical commits and OUT evidence retain that ID; upstream owns its independent ticket under that number.
 
 Legacy fork reference: `BUG-0614` before upstream 0.7.13 integration. Historical commits and OUT receipts retain that identity; upstream owns its independently created ticket under that number.
+- 2026-11-13 integration: declare the twin strategy for the newer upstream ticket checker; retain the original FAIL/PASS evidence.

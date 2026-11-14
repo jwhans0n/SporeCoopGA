@@ -15,6 +15,7 @@ tests: tests/sui_tree_root_tests.cpp
 signature:
 docs:
 related:
+switch: none (raw-pointer native dispatch cannot be re-enabled; pre-fix crash and guarded rejection evidence is retained)
 ---
 
 ## Report
@@ -35,3 +36,4 @@ FAIL: out/preview12/evidence/crash-20261112-153833-i45.txt. PASS: out/preview12/
 - 2026-11-12: implemented on the preview 12 review branch; public release and destination promotion remain deferred.
 
 Legacy fork reference: `BUG-0634` before upstream 0.7.13 integration. Historical commits and OUT receipts retain that identity; upstream owns its independently created ticket under that number.
+- 2026-11-13 integration: declare the twin strategy for the newer upstream ticket checker; retain the original FAIL/PASS evidence.

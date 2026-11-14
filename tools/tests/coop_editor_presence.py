@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# suite: none (opt-in native Windows fixture requiring an already-owned hidden lab and explicit private inputs; automatic launcher qualification is tracked by BUG-1014)
 """Native collaboration regression on an already owned hidden lab party.
 
 Normal UI input and read-only diagnostics only. The runner owns deployment,

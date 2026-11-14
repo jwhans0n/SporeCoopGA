@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# suite: none (opt-in native Windows fixture requiring an already-owned hidden lab and explicit private inputs; automatic launcher qualification is tracked by BUG-1014)
 """Bounded ordinary Crew UI steps on an already-owned hidden lab party.
 
 Preparation makes no game connections. Execution never deploys, launches,

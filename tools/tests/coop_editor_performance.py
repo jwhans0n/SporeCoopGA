@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# suite: none (opt-in native Windows fixture requiring an already-owned hidden lab and explicit private inputs; automatic launcher qualification is tracked by BUG-1014)
 """Measure actual frame intervals in already-owned hidden Windows editor games.
 
 This fixture does not drive UI, change frame caps or write game memory. Capture

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# suite: none (opt-in native Windows fixture requiring an already-owned hidden lab and explicit private inputs; automatic launcher qualification is tracked by BUG-1014)
 """Verify stationary actor replication in an existing, committed lab adventure.
 
 The runner owns hidden, muted Windows games and their recorded metadata. This

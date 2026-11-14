@@ -1,3 +1,4 @@
+# suite: none (helper module for coop_editor_creation_save.py unit self-tests in make test; no standalone runner)
 """Controlled stage/resume tests. Every game, OS owner and sampler is fake."""
 import json
 from pathlib import Path

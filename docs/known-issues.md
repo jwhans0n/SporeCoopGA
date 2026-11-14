@@ -3085,3 +3085,28 @@ Found by eye in the sheets of lab 20261111-044257 (54 sheets); details and how t
   (lab 20261112-175447, campaign_short play-creature).
 * Reproduce: not known.
 * Ticket: BUG-0990
+
+
+## Shared Adventure Editor: open fork reports and qualification (2026-11-13)
+<a id="issue-fork-preview15-tracking"></a>
+
+The preview 15 integration retains the installed preview 14 fixes and imports
+upstream 0.7.13. These fork-specific reports are tracked separately from inherited
+upstream tickets. A validation item does not imply the source fix is missing.
+
+| Ticket | Scope | GitHub tracking |
+|---|---|---|
+| BUG-0994 | Verify live GroundEffect/Flora ownership after the existing fix | [#1](https://github.com/jwhans0n/SporeCoopGA/issues/1) |
+| BUG-0995 | First Alt-clone can be lost during Structure ownership wait | [#2](https://github.com/jwhans0n/SporeCoopGA/issues/2) |
+| BUG-1003 | Recheck native virtual-wheel held modifiers; controlled Win32 fixture passes | [#3](https://github.com/jwhans0n/SporeCoopGA/issues/3) |
+| BUG-1004 | Recheck hidden-game presentation reset hangs with current SporeKit | [#4](https://github.com/jwhans0n/SporeCoopGA/issues/4) |
+| BUG-1008 | Historical gradient point-color gesture sometimes has no transaction | [#5](https://github.com/jwhans0n/SporeCoopGA/issues/5) |
+| BUG-1010 | Terraformed native Save/cold reopen changes unclassified authored bytes | [#6](https://github.com/jwhans0n/SporeCoopGA/issues/6) |
+| BUG-1014 | Main qualification lacks native smoke fixtures and Windows launcher | [#7](https://github.com/jwhans0n/SporeCoopGA/issues/7) |
+| BUG-1025 | Add Act after independent editor return loses scene identity | [#8](https://github.com/jwhans0n/SporeCoopGA/issues/8) |
+| BUG-1026 | Standalone Save New/cold reopen warns of unavailable custom creations | [#9](https://github.com/jwhans0n/SporeCoopGA/issues/9) |
+| BUG-1031 | Native startup harness rejects an unclassified close-command value | [#10](https://github.com/jwhans0n/SporeCoopGA/issues/10) |
+
+Historical observations need fresh reproduction. No smoke or focused live editor
+pass is claimed for the blocked startup runs. See the
+[0.7.13 synchronization report](reports/UPSTREAM-0.7.13-SYNC.md).

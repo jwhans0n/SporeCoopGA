@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# suite: none (opt-in native Windows fixture requiring an already-owned hidden lab and explicit private inputs; automatic launcher qualification is tracked by BUG-1014)
 """Verify real NPC teleporter contact in an already-running private adventure.
 
 The only gameplay action is the isolated actorroute command: ordinary native

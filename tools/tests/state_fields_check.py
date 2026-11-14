@@ -33,6 +33,9 @@ FIELDS = {
         'scale': (A, 'modes.cpp', r's_in\.scale / own'),  # Cell: the sender's world scale (BUG-0519)
         'agl': (A, 'modes.cpp', r'agl'),
         'body': (A, 'modes.cpp', r'puppet_body\(p, s_in\)'),  # BUG-0733: the puppet's size (Creature)
+        'adventure_run': (A, 'coop.cpp', r's\.adventure_run == d->run_id'),  # Current adventure run only.
+        'captain_selection': (A, 'coop.cpp', r's\.captain_selection == adventure::selection_serial'),
+        'movement_generation': (A, 'net/adventure_motion.h', r'state\.movement_generation == generations_'),
     },
     'NpcSpawn': {
         'net_id': (A, 'npc.cpp', r'sp\.net_id'),

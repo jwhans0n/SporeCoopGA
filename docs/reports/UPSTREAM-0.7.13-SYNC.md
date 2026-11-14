@@ -119,7 +119,7 @@ qualify movement, recovery, gameplay or smoke. The runtime guard is unchanged.
 Only assigned private test games are stopped; no personal profile is used.
 
 The GitHub issue publication workflow succeeds and creates issues 1-10,
-including the new startup blocker. Publication runs43545839354 and43547137097
+including the new startup blocker. Publication runs 43545839354 and 43547137097
 retain their output artifacts. The connector still rejects PR creation with
 403; the normal Git-pushed integration branch remains available for review.
 The initial local and CI repository runs fail on stale protocol 28 packaging
@@ -127,7 +127,7 @@ fixtures. Commit 99fa3d01 corrects those identities, rejects protocol 28 and rea
 source files explicitly as UTF8 on Windows; all 16 packaging checks then pass.
 Final full repository validation is still running.
 
-CI run43546502877 additionally catches unsupported parenthesized aggregate
+CI run 43546502877 additionally catches unsupported parenthesized aggregate
 initialization in the Ubuntu22.04 Clang fixture build. Both affected ObjectId
 comparisons now use brace initialization with the same assertions.
 
@@ -146,9 +146,48 @@ Initial link/compile failures and the stale-version assertion remain in the
 No personal game, profile or installed payload was changed. All ten recorded
 installed hashes match the baseline, including shortcut, configuration and
 4GB executable. The shortcut still targets the existing Two Players script.
-The cleanup inventory identifies43 absorbed local/remote refs; deletion and
+The cleanup inventory identifies 43 absorbed local/remote refs; deletion and
 worktree retirement are conditional on main promotion and have not run.
 
 The crash dialog, report archive text and updater all point to this fork.
 The temporary issue-publication tooling is removed after successful publication;
 no branch-specific issue-writing workflow is left in the product source.
+
+The first complete ticket audit finds nine historical fork records missing the
+new upstream twin-strategy field. Each now names the actual controlled RED
+strategy or explains why unsafe native behavior is not runtime-selectable.
+Tool-only corrections are explicitly marked as having no mod change. Original
+failure/pass evidence and strict checker rules are retained.
+
+## Final integration findings
+
+BUG-1032 records an actual uninstall cleanup defect exposed by the inherited
+inventory test: seven fork maps were omitted. An independent focused Win32
+regression first fails all seven removals, then passes after exact-name C++/batch
+inventories and header build dependencies are corrected. Unrelated symbols,
+settings and logs remain protected. The test uses only a checked workspace
+TEMP directory and starts no game/setup window.
+
+The receiver-field audit now explicitly names the adventure run and captain
+selection checks in coop.cpp and movement-generation fence in adventure_motion.h.
+All 46 fields/flags pass. The new registration lint identifies 53 opt-in Windows
+fixtures or helper modules that cannot be launched by the Linux lane runner.
+Each now states its actual ownership/private-input prerequisite; existing pure
+self-tests remain in make test. No live test is marked passed by these
+annotations. Remove one stale counter allowance; all 729 counter keys pass lint.
+
+The final product identity remains preview 15/protocol 29. The single local full
+make invocation stops at the new ticket declarations after all compiled suites,
+ASan/UBSan, TSan and decoder fuzzing pass. After the record corrections, the
+complete native-Windows ticket audit passes 1028 records with zero problems.
+The subsequent tool self-tests expose the inventory defect above; its focused
+checker and actual uninstall regression pass after correction. Remaining tool
+checks are recorded separately. These resumed stages are not reported as a
+clean end-to-end make invocation. Final clean CI is still required.
+
+Read-only Git history caching was compared against native Git before use; the
+original path adapter is restored byte for byte. Running the Git-heavy audit
+through native Windows Python avoids WSL interoperability overhead. All rollback
+refs and the original complete-history bundle remain intact. No merge to main,
+old-branch deletion, public release, tag or installation occurs while native
+qualification is blocked.

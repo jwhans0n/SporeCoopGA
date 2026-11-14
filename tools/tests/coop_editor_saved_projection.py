@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# suite: none (offline comparator requiring pinned private captures; no standalone game test)
 """Strict offline Saved/cold comparison for the qualified C46 private machine ID.
 
 No process, Native API, profile or production validator is accessed. This tool

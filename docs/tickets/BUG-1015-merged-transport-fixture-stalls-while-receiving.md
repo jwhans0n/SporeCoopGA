@@ -15,6 +15,7 @@ tests: tests/session_transport_tests.cpp
 signature:
 docs:
 related:
+switch: none (test-only timing correction, no mod change)
 ---
 
 ## Report
@@ -33,3 +34,4 @@ FAIL: out/upstream078/session-transport-red.log and transport-diagnosis.log. PAS
 - 2026-11-05: opened.
 
 Legacy fork reference: `BUG-0627` before upstream 0.7.13 integration. Historical commits and OUT receipts retain that identity; upstream owns its independently created ticket under that number.
+- 2026-11-13 integration: declare the twin strategy for the newer upstream ticket checker; retain the original FAIL/PASS evidence.

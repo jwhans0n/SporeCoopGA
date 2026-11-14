@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# suite: none (opt-in native Windows fixture requiring an already-owned hidden lab and explicit private inputs; automatic launcher qualification is tracked by BUG-1014)
 """Observe real Maxis Crystal Mine AI, native models and combat in a lab pair.
 
 No actors, goals, damage, AI orders, or authored properties are manufactured. The

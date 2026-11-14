@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# suite: none (pure self-tests run in make test; live mode requires an already-owned hidden Windows lab)
 """Opt-in native Save/reopen and naturally completed Editor Test checks.
 
 Preparation only until an owner assigns existing hidden, muted lab processes.

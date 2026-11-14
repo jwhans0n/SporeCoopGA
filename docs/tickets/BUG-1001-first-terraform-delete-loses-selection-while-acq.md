@@ -15,6 +15,7 @@ tests: tests/editor_native_cancellation_windows_tests.cpp; editor_native_cancell
 signature: Terraform vt10 EFEEC0 clears Context4 before F37FF0 ownership check
 docs: docs/re/adventure-editor-history.md#editor-terraform-delete-entry
 related:
+switch: none (ownership before mutation is mandatory; the controlled fixture RED preserves the old Delete route)
 ---
 
 ## Report
@@ -55,3 +56,4 @@ Legacy fork reference: `BUG-0478` before upstream 0.7.4 integration. Existing co
 Legacy fork reference: `BUG-0529` before upstream 0.7.8 integration. Historical commits and OUT evidence retain that ID; upstream owns its independent ticket under that number.
 
 Legacy fork reference: `BUG-0613` before upstream 0.7.13 integration. Historical commits and OUT receipts retain that identity; upstream owns its independently created ticket under that number.
+- 2026-11-13 integration: declare the twin strategy for the newer upstream ticket checker; retain the original FAIL/PASS evidence.

@@ -15,6 +15,7 @@ tests: tests/editor_native_cancellation_windows_tests.cpp tests/editor_creation_
 signature: CopyClassActs+0x25 read 0x78 through PaletteMessage+0x4FA
 docs:
 related:
+switch: none (stale native card-drop crash routes cannot be runtime-enabled; controlled RED evidence is retained)
 ---
 
 ## Report
@@ -38,3 +39,4 @@ FAIL: out/preview12/evidence/card-drop-red.log, old native handler forwards a st
 - 2026-11-12: implemented on the preview 12 review branch; public release and destination promotion remain deferred.
 
 Legacy fork reference: `BUG-0629` before upstream 0.7.13 integration. Historical commits and OUT receipts retain that identity; upstream owns its independently created ticket under that number.
+- 2026-11-13 integration: declare the twin strategy for the newer upstream ticket checker; retain the original FAIL/PASS evidence.

@@ -15,6 +15,7 @@ tests: tools/tests/lab_selftest.py::git_context_case
 signature:
 docs:
 related:
+switch: none (harness Git-context isolation, no mod change)
 ---
 
 ## Report
@@ -33,3 +34,4 @@ FAIL: out/upstream077/git-context-red.log. PASS: out/upstream077/git-context-gre
 - 2026-11-05: opened.
 
 Legacy fork reference: `BUG-0628` before upstream 0.7.13 integration. Historical commits and OUT receipts retain that identity; upstream owns its independently created ticket under that number.
+- 2026-11-13 integration: declare the twin strategy for the newer upstream ticket checker; retain the original FAIL/PASS evidence.

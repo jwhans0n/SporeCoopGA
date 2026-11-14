@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# suite: none (opt-in native Windows fixture requiring an already-owned hidden lab and explicit private inputs; automatic launcher qualification is tracked by BUG-1014)
 """Checked native card drop on an explicitly owned, already running private pair.
 
 Uses ordinary input only. A failed invocation never retries a dispatched drop.

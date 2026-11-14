@@ -5,8 +5,6 @@
 #include <thread>
 #include <string>
 #include <vector>
-#include <source_location>
-#include <source_location>
 unsigned checks;
 #define CHECK(x) do { ++checks; if (!(x)) { std::printf("FAIL %d: %s\n",__LINE__,#x); std::exit(1); } } while(0)
 template<class F> void until(net::Session& host,net::Session& guest,F done) {
@@ -15,13 +13,12 @@ template<class F> void until(net::Session& host,net::Session& guest,F done) {
     CHECK(done());
 }
 
-template<class F> void receive_until(net::Session& receiver,F done,std::source_location caller=std::source_location::current()) {
+template<class F> void receive_until(net::Session& receiver,F done,unsigned caller=__builtin_LINE()) {
     const auto began=net::now_ms();
     while(!done() && uint32_t(net::now_ms()-began)<5000) {
         receiver.update();std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    if(!done())std::printf("receive wait expired: caller=%u checks=%u role=%u pending=%zu\n",caller.line(),checks,unsigned(receiver.role()),receiver.pending_to(0));
-    if(!done())std::printf("receive wait expired: caller=%u checks=%u role=%u pending=%zu\n",caller.line(),checks,unsigned(receiver.role()),receiver.pending_to(0));
+    if(!done())std::printf("receive wait expired: caller=%u checks=%u role=%u pending=%zu\n",caller,checks,unsigned(receiver.role()),receiver.pending_to(0));
     CHECK(done());
 }
 net::Writer numbered(uint32_t value) {
