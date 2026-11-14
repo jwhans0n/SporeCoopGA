@@ -1039,4 +1039,4 @@ not-reproduced, game-bug (Spore itself), wontfix, duplicate.
 | [BUG-1029](BUG-1029-creation-return-rejects-original-placement-groun.md) | fixed | bug | Adventure | 2026-11-13 | unreleased | Creation return rejects original placement grounding and poisons subsequent editor entry |
 | [BUG-1030](BUG-1030-0-7-13-integration-conflicts-with-fork-ui-keepal.md) | fixed | bug | Integration | 2026-11-13 | unreleased | 0.7.13 integration conflicts with fork UI, keepalive diagnostics and message classification |
 | [BUG-1031](BUG-1031-native-registration-harness-rejects-a-verified-z.md) | open | tooling | Lab | 2026-11-13 |  | Native registration close command differs from the strict Windows harness |
-| [BUG-1032](BUG-1032-integrated-uninstall-inventory-omits-fork-symbol.md) | open | bug | Installer | 2026-11-13 | unreleased | Integrated uninstall inventory omits fork symbol maps |
+| [BUG-1032](BUG-1032-integrated-uninstall-inventory-omits-fork-symbol.md) | fixed | bug | Installer | 2026-11-13 | unreleased | Integrated uninstall inventory omits fork symbol maps |

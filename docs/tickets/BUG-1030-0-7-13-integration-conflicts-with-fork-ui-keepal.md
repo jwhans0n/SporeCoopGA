@@ -10,7 +10,7 @@ role: both
 versions: 0.7.13.0-ga-editor-preview.15 integration
 fixed_in: unreleased
 branch: sync/upstream-0.7.13-editor-main
-commits: 44dc57e3, 99fa3d01, 3d257400, f14f96a3
+commits: 44dc57e3, 99fa3d01, 3d257400, f14f96a3, 66961c8b
 tests: make test; tests/net_tests.cpp; tests/validate_tests.cpp
 signature: Windows integration build errors and custom-output setup resource paths
 docs: docs/reports/UPSTREAM-0.7.13-SYNC.md

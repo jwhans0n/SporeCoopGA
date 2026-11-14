@@ -1,7 +1,7 @@
 ---
 id: BUG-1032
 title: Integrated uninstall inventory omits fork symbol maps
-status: open
+status: fixed
 kind: bug
 stage: Installer
 reported: 2026-11-13
@@ -10,7 +10,7 @@ role: both
 versions: 0.7.13.0-ga-editor-preview.15
 fixed_in: unreleased
 branch: sync/upstream-0.7.13-editor-main
-commits:
+commits: 66961c8b
 tests: tests/win_tests.cpp; tools/tests/tools_selftest.py symlist
 signature: uninstall leaves all seven fork-specific symbol maps
 switch: none (inventory correction; actual pre-fix Win32 failure is retained)

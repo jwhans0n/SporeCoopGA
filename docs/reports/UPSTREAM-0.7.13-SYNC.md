@@ -62,8 +62,8 @@ on a colliding UI variable, obsolete keepalive timestamp and the exhaustive
 world-message classifier. `build-second.log` exposes hard-coded setup-resource
 paths under a custom build directory. The corrected product build passes in
 `build-verified.log` with its exit receipt. Win32 cancellation fixtures pass 161136 checks and editor-runtime fixtures pass
-124246 checks. Their exit receipts are zero. Final repository/native qualification
-remains in progress.
+124246 checks. Their exit receipts are zero. Repository audit follow-ups are recorded below; native qualification remains
+blocked.
 
 The first merged portable networking suite passes (`net-first.log`), including
 restart callbacks. Protocol proxy tests pass. New tests cover every authoring
@@ -125,7 +125,8 @@ retain their output artifacts. The connector still rejects PR creation with
 The initial local and CI repository runs fail on stale protocol 28 packaging
 fixtures. Commit 99fa3d01 corrects those identities, rejects protocol 28 and reads
 source files explicitly as UTF8 on Windows; all 16 packaging checks then pass.
-Final full repository validation is still running.
+The remaining local audit/tool findings are resolved below. A fresh end-to-end
+CI run remains pending.
 
 CI run 43546502877 additionally catches unsupported parenthesized aggregate
 initialization in the Ubuntu22.04 Clang fixture build. Both affected ObjectId
@@ -179,7 +180,7 @@ annotations. Remove one stale counter allowance; all 729 counter keys pass lint.
 The final product identity remains preview 15/protocol 29. The single local full
 make invocation stops at the new ticket declarations after all compiled suites,
 ASan/UBSan, TSan and decoder fuzzing pass. After the record corrections, the
-complete native-Windows ticket audit passes 1028 records with zero problems.
+complete native-Windows ticket audit initially passes 1028 records with zero problems.
 The subsequent tool self-tests expose the inventory defect above; its focused
 checker and actual uninstall regression pass after correction. Remaining tool
 checks are recorded separately. These resumed stages are not reported as a
@@ -191,3 +192,46 @@ through native Windows Python avoids WSL interoperability overhead. All rollback
 refs and the original complete-history bundle remain intact. No merge to main,
 old-branch deletion, public release, tag or installation occurs while native
 qualification is blocked.
+
+## Delivery decision
+
+The integration source is published for review only. Main remains at 2d28b60a;
+43 absorbed refs and their worktrees remain intact pending promotion. The
+installed preview 14, settings, shortcut and exact 4 GB executable remain unchanged.
+There is no new release tag, package publication or installation.
+
+The applied [merge-batch skill](../../.claude/skills/merge-batch/SKILL.md)
+requires: "After the batch: `tools/lab.py run smoke,<the batch's new tests> --lanes 6`."
+The approved plan uses the reviewable-branch fallback when this gate cannot pass.
+Issues [#7](https://github.com/jwhans0n/SporeCoopGA/issues/7) and
+[#10](https://github.com/jwhans0n/SporeCoopGA/issues/10) track the required native
+qualification blockers. The GitHub connector also rejects draft PR creation
+with 403; branch publication uses the owner's normal Git push access instead.
+
+All 18 dev-tool self-test cases were exercised; the inventory case initially
+fails and then passes in its focused rerun. The changed registration checker
+also passes its positive and negative self-tests. Visual self-tests, all 46
+receiver-field/flag declarations and the 729-key counter/test registry pass.
+No actual native smoke, focused live editor/gameplay assertions, four-player
+run, broader creation matrix, performance acceptance or overnight run is
+claimed. The guarded startup failure prevents those live checks from starting.
+
+## Built source and payload record
+
+The final native product build passes at commit `66961c8bc25c4b805f8b1c849fd40ad960724d69`.
+The following records-only update does not change these build inputs. These
+are local validation payloads, with no native launch acceptance or installation.
+
+| File | SHA-256 |
+|---|---|
+| coop.dll | `6b7d021a3dbdf897288fb5ad52107a625bc8f493b1b7a21bb3adbb48825454c0` |
+| sporekit.dll | `d5c5a7c197193aef2eb3d5c4bc4f3fad9ccf4b11821859f53ef8f4553a36c5e6` |
+| steam_api.dll | `ef23406ccef6dc8cefeee35db14577b8f6d17474f52122a17afd1c5b632ca483` |
+| SporeCoopSetup.exe | `cddeac79c4e34e4009ff0e0c812aa64311f275142c57ee0109bb128fc72c3763` |
+| SporeCoop.package | `d122637d84dd9c06f6b29bfcaa726b2550795357376303f9a4fc18b3219f0f42` |
+
+The final complete ticket audit, including BUG-1032, passes 1029 records with zero
+problems (ticket-qualified.log, exit 0). Documentation, state-field and registry
+checks pass again after the record updates. The original adapter is restored;
+no temporary shell line-ending changes remain. Final source code is 66961c8b;
+only this validation record and fixed-ticket metadata follow it.
