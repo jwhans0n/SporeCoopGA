@@ -3,6 +3,8 @@
 #include <cstdio>
 #include "../mods/coop/game.cpp"
 
+namespace gamefixes { bool destroy_hooked() { return false; } } // No native hooks in this fixture.
+
 namespace {
 int failures, originals, blocked, extra_calls, base_calls, observed_before, observed_after;
 bool extra_allows = true, base_allows = true;

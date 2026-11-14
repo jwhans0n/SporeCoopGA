@@ -19,6 +19,8 @@ void* game_window(){return reinterpret_cast<void*>(1);}
 uint64_t frame_index(){return 12;}
 SkMod g_kit_mod;
 KitFix g_fix_cheatwait{"cheatwait","controlled main-thread wait guard",1};
+KitFix g_fix_outpump{"outpump","controlled frame deferral",1};
+KitFix g_fix_taskdrop{"taskdrop","controlled unlocked task destruction",1};
 void logf(SkMod*,int,const char*,...){ }
 std::string json_escape(const std::string& value){return value;}
 }
@@ -45,8 +47,11 @@ int main(){
     sk::pump_outside_tasks();const auto measured=sk::outside_pump_metrics("stop");
     CHECK(other==1&&sk::g_out_tasks.size()==1&&measured.calls==1&&measured.peak.processed==1&&measured.budget_hits==1);
     sk::pump_outside_tasks();CHECK(other==2&&!sk::g_out_tasks.size());
-    sk::run_outside_frame([&]{++other;});presenting=true;sk::pump_outside_tasks();
-    CHECK(other==2&&sk::g_out_tasks.size()==1);presenting=false;sk::pump_outside_tasks();CHECK(other==3);
+    sk::run_outside_frame([&]{++other;});presenting=true;const auto wake_before=posted.load();sk::pump_outside_tasks();
+    CHECK(other==2&&sk::g_out_tasks.size()==1&&sk::g_out_deferred&&posted==wake_before);
+    presenting=false;sk::outside_tasks_resume();CHECK(posted==wake_before+1&&!sk::g_out_deferred);
+    sk::outside_tasks_resume();CHECK(posted==wake_before+1);
+    sk::pump_outside_tasks();CHECK(other==3);
     auto owned=std::make_shared<int>(1);std::weak_ptr<int> weak=owned;
     sk::run_outside_frame([&,owned]{CHECK(!weak.expired());sk::run_outside_frame([&,owned]{CHECK(!weak.expired());++other;});});owned.reset();
     sk::pump_outside_tasks();CHECK(!weak.expired()&&sk::g_out_tasks.size()==1);

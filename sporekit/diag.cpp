@@ -1049,7 +1049,7 @@ void diag_init_failed(int result)
                     L"  2. Verify / repair the game files in GOG Galaxy or Steam.\n"
                     L"  3. A message of the game or of Windows before this one names the cause.\n\n"
                     L"A report was saved in SporebinEP1\\mods\\logs (SporeCoop-report-*.zip):\n"
-                    L"attach it to an issue at github.com/WoodyWizard/SporeCoop/issues.",
+                    L"attach it to an issue at github.com/jwhans0n/SporeCoopGA/issues.",
                     L"SporeKit: the game could not start", MB_OK | MB_ICONERROR | MB_TOPMOST);
 }
 

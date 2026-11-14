@@ -1037,5 +1037,5 @@ not-reproduced, game-bug (Spore itself), wontfix, duplicate.
 | [BUG-1027](BUG-1027-shared-editor-frame-rate-regresses-with-the-nati.md) | fixed | bug | Adventure | 2026-11-13 | unreleased | Shared editor frame rate regresses with the native cast browser |
 | [BUG-1028](BUG-1028-creature-to-outfitter-creation-flow-fails-to-ret.md) | fixed | bug | Adventure | 2026-11-13 | unreleased | Creature to outfitter creation flow fails to return to shared adventure editing |
 | [BUG-1029](BUG-1029-creation-return-rejects-original-placement-groun.md) | fixed | bug | Adventure | 2026-11-13 | unreleased | Creation return rejects original placement grounding and poisons subsequent editor entry |
-| [BUG-1030](BUG-1030-0-7-13-integration-conflicts-with-fork-ui-keepal.md) | fixed | bug | Integration | 2026-11-13 |  | 0.7.13 integration conflicts with fork UI, keepalive diagnostics and message classification |
+| [BUG-1030](BUG-1030-0-7-13-integration-conflicts-with-fork-ui-keepal.md) | open | bug | Integration | 2026-11-13 | unreleased | 0.7.13 integration conflicts with fork UI, keepalive diagnostics and message classification |
 | [BUG-1031](BUG-1031-native-registration-harness-rejects-a-verified-z.md) | open | tooling | Lab | 2026-11-13 |  | Native registration close command differs from the strict Windows harness |

@@ -163,7 +163,7 @@ int main()
     std::printf("old manager: %u checks\n", checks);
     return 0;
 #else
-    CHECK(std::string(SK_VERSION) == "0.3.6"); CHECK(SK_ABI_VERSION == 1);
+    CHECK(std::string(SK_VERSION) == "0.3.16"); CHECK(SK_ABI_VERSION == 1);
     // Upstream unload reads a real fixture PE extent and retains hook grace.
     reset();load_alpha();hook_count=1;
     accepted(sk::mod_unload("alpha",status),status);run_tasks();CHECK(drop_scans==1&&grace_calls==1&&frees==1);

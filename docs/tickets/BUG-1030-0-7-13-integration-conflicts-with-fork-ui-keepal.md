@@ -54,3 +54,14 @@ CI follow-up: run43546502877 fails on parenthesized aggregate ObjectId
 initialization in a terrain fixture under Ubuntu22.04 Clang. Use brace
 initialization with macro-safe expression parentheses in the terrain and native
 grounding fixtures. Product ObjectId construction is unchanged.
+
+The first affected Win32 fixture build also fails at link time: the included
+new upstream input.cpp now needs vcursor_release and g_fix_wheelmk endpoints.
+Update the controlled fixture endpoints and assert actual scheduled wheel
+modifier/button flags and deferred cursor release. No OS hooks, physical input
+or game processes are used by this test. FAIL: win32-affected-build-first.log.
+
+Further Win32 fixture compilation identifies missing outpump/taskdrop controlled
+endpoints and a strict dangling-else warning in native deferred destruction.
+Retain upstream fix defaults, assert one deferred wake after the frame, and
+brace the existing deferred-identity guard without changing its behavior.

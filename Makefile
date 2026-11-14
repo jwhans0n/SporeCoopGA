@@ -446,7 +446,6 @@ test: sanitizer-probe
 	python3 tests/editor_commit_performance_tool_tests.py
 	python3 tests/editor_memory_accounting_tests.py
 	python3 tests/editor_network_proxy_tests.py
-	python3 tests/publish_fork_issues_tests.py
 	python3 tools/tests/coop_editor_lifecycle.py --self-test
 	python3 tools/tests/coop_editor_save.py --self-test
 	python3 tools/tests/coop_editor_creations.py --self-test

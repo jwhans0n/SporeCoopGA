@@ -13,7 +13,8 @@ static unsigned checks;
 namespace {
 std::wstring command, profile;
 bool invisible = true, module_available = true, cursor_held = false;
-int instance = 95, hook_calls = 0, async_calls = 0, key_calls = 0, messages = 0;
+int instance = 95, hook_calls = 0, async_calls = 0, key_calls = 0, messages = 0, cursor_releases = 0;
+std::vector<std::pair<UINT, WPARAM>> posted;
 std::array<SHORT, 256> physical{};
 std::array<int, 2> hook_failure{};
 std::array<bool, 2> missing_export{}, null_original{};
@@ -30,7 +31,7 @@ FARPROC WINAPI proc_address(HMODULE module, LPCSTR name) {
     if (missing_export[async ? 0 : 1]) return nullptr;
     return std::bit_cast<FARPROC>(async ? &original_async : &original_key);
 }
-BOOL WINAPI post_message(HWND window, UINT, WPARAM, LPARAM) { CHECK(window == HWND(0x5678)); ++messages; return TRUE; }
+BOOL WINAPI post_message(HWND window, UINT message, WPARAM keys, LPARAM) { CHECK(window == HWND(0x5678)); ++messages; posted.emplace_back(message, keys); return TRUE; }
 UINT WINAPI map_key(UINT key, UINT type) { CHECK(type == MAPVK_VK_TO_VSC); return key; }
 BOOL WINAPI client_to_screen(HWND window, LPPOINT) { CHECK(window == HWND(0x5678)); return TRUE; }
 }
@@ -50,6 +51,7 @@ BOOL WINAPI client_to_screen(HWND window, LPPOINT) { CHECK(window == HWND(0x5678
 
 namespace sk {
 SkMod g_kit_mod;
+KitFix g_fix_wheelmk{"wheelmk", "controlled test endpoint", 1};
 void* game_window() { return reinterpret_cast<void*>(0x5678); }
 bool invisible_mode() { return invisible; }
 const std::wstring& profile_name() { return profile; }
@@ -57,6 +59,7 @@ int instance_id() { return instance; }
 void logf(SkMod*, int, const char*, ...) {}
 std::wstring widen(const std::string& text) { return {text.begin(), text.end()}; }
 void vcursor_set(int, int) {}
+void vcursor_release() { ++cursor_releases; }
 void vcursor_hold(bool held) { cursor_held = held; }
 void run_after_frames(int frames, std::function<void()> callback) { tasks.emplace_back(frames, std::move(callback)); }
 int hook_create(SkMod* mod, void* target, void* detour, void** original) {
@@ -73,7 +76,8 @@ static void reset(bool exclusive)
     if (exclusive) command += L" -sporekit-exclusive-input";
     profile = L"winlab_input_95"; invisible = module_available = true; instance = 95;
     physical.fill(0); hook_failure.fill(0); missing_export.fill(false); null_original.fill(false); detours.fill(nullptr);
-    hook_calls = async_calls = key_calls = messages = 0; cursor_held = false; tasks.clear();
+    hook_calls = async_calls = key_calls = messages = cursor_releases = 0; cursor_held = false; tasks.clear(); posted.clear();
+    sk::g_fix_wheelmk.on = 1;
     sk::g_input_policy = {}; sk::g_input_policy_frozen = sk::g_input_hooks_attempted = false; sk::g_input_hooks_installed = 0;
     sk::o_GetAsyncKeyState = nullptr; sk::o_GetKeyState = nullptr;
     for (auto& key : sk::g_vkdown) key = 0;
@@ -132,6 +136,25 @@ int main()
     CHECK(poll_async(VK_LBUTTON) == 0);
     CHECK(sk::input_key(VK_SHIFT, "tap")); CHECK(poll_key(VK_SHIFT) == SHORT(0x8000));
     release_tasks(); CHECK(poll_key(VK_SHIFT) == 0);
+    // Upstream wheel delivery uses the currently held virtual keys and buttons.
+    CHECK(sk::input_key(VK_LSHIFT, "down") && sk::input_key(VK_RCONTROL, "down"));
+    CHECK(sk::input_button(20, 30, 0, true));
+    CHECK(sk::input_wheel(20, 30, -1)); release_tasks();
+    CHECK(posted.back().first == WM_MOUSEWHEEL);
+    CHECK(LOWORD(posted.back().second) == (MK_SHIFT | MK_CONTROL | MK_LBUTTON));
+    CHECK(SHORT(HIWORD(posted.back().second)) == -WHEEL_DELTA);
+    sk::g_fix_wheelmk.on = 0;
+    CHECK(sk::input_wheel(20, 30, 1)); release_tasks();
+    CHECK(posted.back().first == WM_MOUSEWHEEL && LOWORD(posted.back().second) == 0);
+    sk::g_fix_wheelmk.on = 1;
+    CHECK(sk::input_key(VK_LSHIFT, "up") && sk::input_key(VK_RCONTROL, "up"));
+    CHECK(sk::input_button(20, 30, 0, false));
+    // Releasing a click schedules cursor restoration after its button-up.
+    CHECK(sk::input_click(20, 30, 0, true)); release_tasks();
+    CHECK(cursor_releases == 0 && tasks.size() == 1);
+    release_tasks(); CHECK(cursor_releases == 1 && tasks.empty());
+    CHECK(sk::input_click(20, 30, 0, false)); release_tasks();
+    CHECK(cursor_releases == 1 && tasks.empty());
     command = L"game"; profile = L"personal"; invisible = false; instance = 1;
     CHECK(sk::input_install_hooks() && hook_calls == 2 && sk::g_input_policy.exclusive);
     CHECK(poll_async(VK_SHIFT) == 0); // Neither later settings nor OS state change startup policy.

@@ -79,9 +79,12 @@ symbol names. Documentation and symbol checks pass after reconciliation.
 The reviewed public issue manifest covers the nine original open fork reports plus the new startup-harness blocker,
 separating source bugs, historical observations and missing qualification.
 GitHub's connector rejects issue writes with 403, even after the user updates
-access. A repository workflow requests only issue-write and contents-read,
-publishes only this fork's reviewed manifest, deduplicates stable markers,
-preserves maintainer closures and records issue URLs as an artifact.
+access. A temporary repository workflow requested only issue-write and contents-read,
+published this fork's reviewed manifest, deduplicated stable markers and
+preserved maintainer closures. Its successful runs and output remain in GitHub
+Actions. After all ten issues were verified, the one-shot workflow, publisher
+and its isolated tests were removed from the final source candidate. The
+reviewed issue manifest remains as a source record.
 No private saves, profiles or raw player logs are published.
 
 Required native smoke is not yet qualified: the original fixture archives are
@@ -115,8 +118,10 @@ close control versus the required command 3. Startup diagnostic probes do not
 qualify movement, recovery, gameplay or smoke. The runtime guard is unchanged.
 Only assigned private test games are stopped; no personal profile is used.
 
-The GitHub issue publication workflow succeeds and creates issues 1-9. The new
-startup blocker is added to the same deduplicated manifest for publication.
+The GitHub issue publication workflow succeeds and creates issues 1-10,
+including the new startup blocker. Publication runs43545839354 and43547137097
+retain their output artifacts. The connector still rejects PR creation with
+403; the normal Git-pushed integration branch remains available for review.
 The initial local and CI repository runs fail on stale protocol 28 packaging
 fixtures. Commit 99fa3d01 corrects those identities, rejects protocol 28 and reads
 source files explicitly as UTF8 on Windows; all 16 packaging checks then pass.
@@ -125,3 +130,25 @@ Final full repository validation is still running.
 CI run43546502877 additionally catches unsupported parenthesized aggregate
 initialization in the Ubuntu22.04 Clang fixture build. Both affected ObjectId
 comparisons now use brace initialization with the same assertions.
+
+## Additional fixture reconciliation
+
+The affected Win32 fixture build exposed missing controlled endpoints for new
+upstream wheel/cursor, task-queue and native destruction-hook dependencies, plus
+an old exact SporeKit version assertion. The fixtures now retain current fix
+defaults and check delivered wheel modifiers, deferred cursor restoration,
+a single post-frame wake and callback lifetime. All eleven affected executables
+pass after these corrections. The native deferred-identity guard is braced to
+satisfy the fixture's stricter dangling-else warning, preserving its behavior.
+Initial link/compile failures and the stale-version assertion remain in the
+`win32-affected-build-first/second/third.log` and lifecycle FAIL receipts.
+
+No personal game, profile or installed payload was changed. All ten recorded
+installed hashes match the baseline, including shortcut, configuration and
+4GB executable. The shortcut still targets the existing Two Players script.
+The cleanup inventory identifies43 absorbed local/remote refs; deletion and
+worktree retirement are conditional on main promotion and have not run.
+
+The crash dialog, report archive text and updater all point to this fork.
+The temporary issue-publication tooling is removed after successful publication;
+no branch-specific issue-writing workflow is left in the product source.
