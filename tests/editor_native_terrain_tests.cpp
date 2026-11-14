@@ -35,7 +35,7 @@ static void roundtrip(){
     std::vector<uint8_t> merged;CHECK(merge(source,d,merged,error));Properties decoded;CHECK(decode(merged,decoded,error));
     CHECK(decoded.tail==std::vector<uint8_t>({'D','B','P','F',0,1,2,3}));CHECK(decoded.fields.at(0xFFFFFFFF).value==std::vector<uint8_t>({1,2,3,4}));
     editor::Document read;CHECK(project(merged,d,read,error));CHECK(read.terrain==d.terrain);CHECK(read.next_terrain_order==4);
-    const auto ordered=editor::terrain_recipe(read);CHECK(ordered.size()==3);CHECK(ordered[0].object==editor::ObjectId(101,1));
+    const auto ordered=editor::terrain_recipe(read);CHECK(ordered.size()==3);CHECK((ordered[0].object==editor::ObjectId{101,1}));
     CHECK(editor::terrain_float(ordered[0].payload.bytes,16)==17);CHECK(editor::terrain_word(ordered[0].payload.bytes,72)==0xF123ABCD);
     // A modified existing stroke retains its stable identity. A separate erase
     // preserves surviving exact matches, including after a concurrent append.

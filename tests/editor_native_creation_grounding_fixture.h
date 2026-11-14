@@ -121,7 +121,7 @@ void test_creation_grounding_return(){
     } routes;
     std::string error;auto entry=tcg_setup();SceneOwner scene;CHECK(capture_scene_owner(scene,error));
     CHECK((entry.bindings==std::vector<Binding>{{{9001,4},0},{{9002,7},1}}));
-    CHECK(bindings.at(1)==editor::ObjectId(9001,4)&&bindings.at(3)==editor::ObjectId(9002,7));
+    CHECK((bindings.at(1)==editor::ObjectId{9001,4}&&bindings.at(3)==editor::ObjectId{9002,7}));
     const auto raw=t_rows.at(t_live.data());const auto columns=tmf_columns;
     const auto live=t_live;const auto owner=t_data;const auto history=t_history;
     CreationTerrainTicket ticket;CHECK(capture_creation_terrain(t_scope,7,scene,entry,ticket,error));

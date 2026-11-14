@@ -76,7 +76,7 @@ symbol names. Documentation and symbol checks pass after reconciliation.
 
 ## Known issues and publication gate
 
-The reviewed public issue manifest covers the nine still-open fork reports,
+The reviewed public issue manifest covers the nine original open fork reports plus the new startup-harness blocker,
 separating source bugs, historical observations and missing qualification.
 GitHub's connector rejects issue writes with 403, even after the user updates
 access. A repository workflow requests only issue-write and contents-read,
@@ -96,3 +96,32 @@ after successful main publication and evidence/rollback archival. Preserve
 uncommitted ticket locks and unrelated work. The installed preview 14 payload,
 shortcut, profiles, settings and exact 4 GB executable are outside this source
 update and must match their baseline at completion.
+
+## Native qualification attempt
+
+The 14-case smoke prerequisites are UNAVAILABLE: creature, cell, tribe, civ,
+space, space_empire and both creation packages are absent. The actual
+`lab.py run smoke --lane 3 --no-build --retry 0` invocation fails before
+assertions on Windows because the Wine shell backend is not a Win32 executable
+(WinError193). Receipts: `smoke-preflight.json`, `native-smoke-attempt.log` and
+`native-smoke-exit.json`. No skip is counted as a pass.
+
+A separate, copied private installation launches two hidden muted GOG LAA games
+and verifies relocated symbols, exclusive virtual input and SporeKit 0.3.16.
+Their payload is 53c49fd87a32bb8dd86f1f2135c574b660ac1ade67ca3a55ae8eee60c8ff46fc.
+Fresh and copied prior private editor profiles both stop at the strict
+registration fixture before editor assertions. BUG-1031 records a zero-command
+close control versus the required command 3. Startup diagnostic probes do not
+qualify movement, recovery, gameplay or smoke. The runtime guard is unchanged.
+Only assigned private test games are stopped; no personal profile is used.
+
+The GitHub issue publication workflow succeeds and creates issues 1-9. The new
+startup blocker is added to the same deduplicated manifest for publication.
+The initial local and CI repository runs fail on stale protocol 28 packaging
+fixtures. Commit 99fa3d01 corrects those identities, rejects protocol 28 and reads
+source files explicitly as UTF8 on Windows; all 16 packaging checks then pass.
+Final full repository validation is still running.
+
+CI run43546502877 additionally catches unsupported parenthesized aggregate
+initialization in the Ubuntu22.04 Clang fixture build. Both affected ObjectId
+comparisons now use brace initialization with the same assertions.

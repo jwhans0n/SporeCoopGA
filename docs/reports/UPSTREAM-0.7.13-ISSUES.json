@@ -41,7 +41,7 @@
       "key": "fork-upstream-synchronization-cannot-qualify-windows",
       "ticket": "BUG-1014",
       "title": "[Validation] Main promotion requires native Windows smoke fixtures and launcher qualification",
-      "body": "Local ticket: BUG-1014 (legacy fork BUG-0626).\n\nThe required native smoke archives are absent from the shared fixture directory, and the Windows launch/profile adapter must run the pinned upstream assertions with verified fixtures. Portable and mocked Win32 tests do not substitute for native smoke. Main remains unchanged until the required smoke gate passes.\n\nOriginal report version: historical integration preflight. Fresh 0.7.13 candidate qualification is pending.\n\nTracking source: https://github.com/jwhans0n/SporeCoopGA/blob/sync/upstream-0.7.13-editor-main/docs/tickets/BUG-1014-upstream-synchronization-cannot-qualify-windows.md\n\nPrivate saves, user profiles and raw player logs are not attached."
+      "body": "Local ticket: BUG-1014 (legacy fork BUG-0626).\n\nThe required native smoke archives are absent from the shared fixture directory, and the Windows launch/profile adapter must run the pinned upstream assertions with verified fixtures. Portable and mocked Win32 tests do not substitute for native smoke. Main remains unchanged until the required smoke gate passes.\n\nOriginal report version: historical integration preflight. Fresh 0.7.13 candidate qualification is pending.\n\nTracking source: https://github.com/jwhans0n/SporeCoopGA/blob/sync/upstream-0.7.13-editor-main/docs/tickets/BUG-1014-upstream-synchronization-cannot-qualify-windows.md\n\nPrivate saves, user profiles and raw player logs are not attached.\n\nThe 0.7.13 integration attempt confirms that all eight fixture files are absent. The native Windows lab smoke launch also fails before assertions because the current runner invokes its Wine shell backend (WinError 193). A hidden private GOG LAA launch loads SporeKit 0.3.16, but focused editor qualification stops at the separate startup registration harness mismatch tracked by BUG-1031. None of these attempts qualifies native smoke."
     },
     {
       "key": "fork-native-act-creation-after-independent-editor-ret",
@@ -54,6 +54,12 @@
       "ticket": "BUG-1026",
       "title": "[Editor] standalone Save New after shared editing warns of unavailable custom creations on reopen",
       "body": "Local ticket: BUG-1026 (legacy fork BUG-0638).\n\nAfter ending shared editing, standalone Save New reported success, but cold reopen warned that some creations would be replaced. Replacement was declined. This is not proof of an online ban. Verify saved dependencies and resource identities; coordinated shared Save remains separate evidence.\n\nOriginal report version: 0.7.8.0-ga-editor-preview.12 candidate 93e52aaf. Fresh 0.7.13 candidate qualification is pending.\n\nTracking source: https://github.com/jwhans0n/SporeCoopGA/blob/sync/upstream-0.7.13-editor-main/docs/tickets/BUG-1026-standalone-save-new-after-shared-editing-warns-o.md\n\nPrivate saves, user profiles and raw player logs are not attached."
+    },
+    {
+      "key": "native-registration-harness-command",
+      "ticket": "BUG-1031",
+      "title": "[Validation] Native registration command differs from strict Windows startup harness",
+      "body": "The 0.7.13 integration testing candidate loads SporeKit 0.3.16 in hidden private Windows games, but the native startup fixture rejects a registration close control whose diagnostic command is 0 instead of the expected 3. The surrounding modal, Login and content identities match. Earlier full-tree startup output reported 3.\n\nThis is an unclassified fixture/initialization or diagnostic discrepancy, not proof that the player registration flow is broken. No guard has been relaxed. Compare complete and scoped trees, native readiness and actual input before changing the harness. Retain exact modal ownership and stale-identity rejection. This currently prevents the focused editor checks from reaching their assertions.\n\nSource record: [BUG-1031](https://github.com/jwhans0n/SporeCoopGA/blob/sync/upstream-0.7.13-editor-main/docs/tickets/BUG-1031-native-registration-harness-rejects-a-verified-z.md). Main qualification remains blocked by this and issue #7."
     }
   ]
 }
