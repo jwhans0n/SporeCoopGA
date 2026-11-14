@@ -19,7 +19,7 @@ const SkHost* H;
 bool queued=false;
 std::optional<uint64_t> queued_frame;
 bool g_browser_idle_fix=true;
-COOP_FIX("editor.browser_idle", "BUG-0639", g_browser_idle_fix, "update native cast controls once per rendered frame and skip unchanged decorations");
+COOP_FIX("editor.browser_idle", "BUG-1027", g_browser_idle_fix, "update native cast controls once per rendered frame and skip unchanged decorations");
 std::string display_status="browser unavailable";
 uint64_t update_us=0;
 constexpr uint32_t kEdit=0xC00F0401,kDecoration=0xC00F0410;

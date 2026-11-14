@@ -1,4 +1,4 @@
-"""Repeated native Creature cancellation/return regression (BUG-0641).
+"""Repeated native Creature cancellation/return regression (BUG-1029).
 
 Requires an already shared private hidden/muted Windows pair. Inert without
 --execute. Uses native controls and read-only request/observer verification.

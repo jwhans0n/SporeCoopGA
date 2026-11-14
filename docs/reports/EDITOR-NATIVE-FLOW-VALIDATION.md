@@ -847,7 +847,7 @@ Regression evidence before final native qualification:
 | Native Save and observer restoration | `cursor-native-save-confirmed`, revision 2, equal native checks |
 
 A separate private diagnostic accidentally supplied a control ID as a raw
-window address and crashed. BUG-0634 now checks current native-tree membership
+window address and crashed. BUG-1022 now checks current native-tree membership
 before btn/font/show dispatch. That poisoned run and all temporary diagnostic
 module/altered UI runs are excluded from acceptance. Cold production-only
 launches are used for the installable candidate.
@@ -872,7 +872,7 @@ reselection. Native Save at revision 13 reached host 2/2 and guest 1/1 coverage;
 the earlier helper's incorrect guest 2/2 expectation is retained as a fixture
 failure. Receipts: qualified-drop-*, qualified-native-save-confirmed/.
 
-Cross-act setup exposed BUG-0637: shared Add Act after independent editor return
+Cross-act setup exposed BUG-1025: shared Add Act after independent editor return
 loses its native scene identity. No act/history change was accepted. Same-scene
 recovery correctly refused; a cold Galaxy recovery restored the exact cast rows
 and complete history with converged native observers. Strict binary document
@@ -887,7 +887,7 @@ reopening rejects the changed act roster, so the final payload cold-opens that
 unique native file. This is not a passing shared Add Act test.
 
 The separate ordinary Save New fixture showed a native creation-replacement
-warning on cold open (BUG-0638). Replacement was declined. This is not a passing
+warning on cold open (BUG-1026). Replacement was declined. This is not a passing
 dependency-preservation check, and the warning does not establish an online ban.
 The verified shared checkpoint remained available and restored; broader creation
 and strict cold-reopen comparison work remains deferred.
@@ -924,7 +924,7 @@ popup acknowledged, host 2/2 coverage, guest 1/1 coverage, unchanged history
 and matching actual native observers. Evidence: anchor-native-save/result.json.
 
 Cross-act native browser qualification remains unavailable because the private
-setup exposed BUG-0637 and BUG-0638. These are not counted as passes. Native
+setup exposed BUG-1025 and BUG-1026. These are not counted as passes. Native
 Save within the shared session is qualified; the separate standalone Save New
 and strict cold-reopen preservation paths are not. This is a focused browser
 testing payload, with the broader gates and destination promotion still deferred.

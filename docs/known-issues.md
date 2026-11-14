@@ -50,9 +50,9 @@ Recover restores the private draft. Observed while correcting an animated-picker
 fixture on C32; the supported import and property routes are tested separately.
 
 ### Galactic Adventures preview 12: validation limits
-## Galactic Adventures preview 12: validation limits (BUG-0626)
+## Galactic Adventures preview 12: validation limits (BUG-1014)
 
-Historical validation limitations and current missing smoke prerequisites are tracked by BUG-0626.
+Historical validation limitations and current missing smoke prerequisites are tracked by BUG-1014.
 
 Preview `0.7.3.5-ga-preview.12` requires the exact dc04 GOG executable and matching
 protocol 15 clients. It seals the host's first win/loss decision, holds gameplay
@@ -1758,11 +1758,11 @@ Reproduce a full game: `tools/lab.py run campaign --lane N` (about 85 min) or `c
   recipe transaction. The draft remains converged and fault-free, but the guest
   receives no authored move. The native Terraform input functions bypass the
   placement input hooks. Private C61 adds the separate hooks and passes controlled
-  checks; actual game qualification remains pending. Ticket: BUG-0611.
+  checks; actual game qualification remains pending. Ticket: BUG-0999.
 
   CORRECTION (2026-11-03): private C62 also repairs the acquired-record revision
   mapping and passes host/guest native movement with checked Undo/Redo and exact
-  Planet restoration. BUG-0611's movement failure is fixed in this uninstalled
+  Planet restoration. BUG-0999's movement failure is fixed in this uninstalled
   candidate. Remaining Terraform controls and release checks stay separate.
 ## Civ: city citizens have another size on each game (2026-11-03, fix/w40-scale)
 <a id="issue-civ-citizen-scale"></a>
@@ -1907,13 +1907,13 @@ Found by fix/w40-play (2026-11-03), not fixed:
 ## Experimental shared-editor native reopen qualification (2026-11-04)
 <a id="issue-editor-terraformed-cold-reopen"></a>
 
-* BUG-0622 (legacy fork BUG-0487): after a native Save of a terraformed private
+* BUG-1010 (legacy fork BUG-0487): after a native Save of a terraformed private
   adventure, cold opening reaches the correct adventure and Native Ready, but
   the strict decoded saved/reopened comparison differs before sharing starts.
   The field and native load boundary are unassigned. Reproduce with the retained
   C69 Road draft and `out/preview9-c69-road-cold-open.py`; complete saved/cold
   images are retained under the matching OUT directory. Shared Save checkpoint
-  publication is separately fixed under BUG-0621. Cold authored equality is not
+  publication is separately fixed under BUG-1009. Cold authored equality is not
   qualified, and the comparator has not been relaxed.
 * 2026-11-04 (fix/w41-effects-stages): Tribe and Civilization fixed for 0.7.5. The relayed id was the skin
   painter's own paint effect `D723B947` (made in the painter's effect world, sent by the test's workload), not a
@@ -2101,6 +2101,6 @@ Player reports 2026-11-04 (0.7.5, Discord bug-reports; not analysed yet):
   prints the host's plays). docs/re/tribe.md#tribe-mirror-fx.
 - BUG-0604: Cell: after the guest's level-up its screen showed only water (no cell drawn, nothing on screen for 7 min) in one cell_new_game run (`tools/lab.py run cell_new_game`; not analysed)
 
-- BUG-0637: Shared Adventure Editor Add Act after independent creation return can lose its native scene identity and freeze the recoverable draft. Same-scene recovery refuses; return to Galaxy before recovery. Retained separately from preview 12 browser qualification; no passing cross-act setup is claimed.
+- BUG-1025: Shared Adventure Editor Add Act after independent creation return can lose its native scene identity and freeze the recoverable draft. Same-scene recovery refuses; return to Galaxy before recovery. Retained separately from preview 12 browser qualification; no passing cross-act setup is claimed.
 
-- BUG-0638: An ordinary standalone Save New after shared editing can show the native creation-replacement warning on cold reopen. Cause remains unclassified; that path is not qualified by the preview 12 browser tests.
+- BUG-1026: An ordinary standalone Save New after shared editing can show the native creation-replacement warning on cold reopen. Cause remains unclassified; that path is not qualified by the preview 12 browser tests.

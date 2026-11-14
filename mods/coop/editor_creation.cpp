@@ -16,7 +16,7 @@ SkMod* M;
 Ctx C;
 bool supported=false,queued=false;
 bool g_creation_chain_fix=true;
-COOP_FIX("editor.creation_chain", "BUG-0640", g_creation_chain_fix, "retain ownership of the native creature-to-outfitter result");
+COOP_FIX("editor.creation_chain", "BUG-1028", g_creation_chain_fix, "retain ownership of the native creature-to-outfitter result");
 uint64_t next_serial=0;
 Submit original_submit=nullptr;
 using Notify=void(SK_THISCALL*)(void*,void*);

@@ -1648,7 +1648,7 @@ source. C73 reaches native saved confirmation, then correctly refuses shared
 publication because property43415003 differs from the committed Captain pose.
 The durable draft remains at revision299; no successful SavedApplied is claimed.
 C74 also preserves the checkpoint when the normal projection scope is unavailable
-during recovery. These are BUG-0625 evidence, separate from BUG-0622.
+during recovery. These are BUG-1013 evidence, separate from BUG-1010.
 
 The local terrain transition ticket now retains the exact Captain position
 witness alongside placement witnesses. Saved-image normalization requires the
@@ -1664,12 +1664,12 @@ only if marker, native generation, Captain revision, scope and primitive pose
 still match. This is read evidence during the existing hold, not ownership or a
 new saved field. The recovery/Save read scope uses the existing transition key
 and fenced callback; ordinary authoring scope stays unavailable. The cold
-Saved-versus-reopened payload comparison tracked by BUG-0622 is unchanged.
+Saved-versus-reopened payload comparison tracked by BUG-1010 is unchanged.
 
 ## Shared cast card-drop boundary (2026-11-12)
 <a id="editor-cast-card-drop"></a>
 
-BUG-0629: the installed preview 10 client report faults in CopyClassActs+25,
+BUG-1017: the installed preview 10 client report faults in CopyClassActs+25,
 read78, with the native PaletteMessage+4FA on its stack. Exact GOG/LAA image
 ED4500..ED4618 handles 07C7B9BB: payload20 is the destination IWindow and24 the
 source. QueryInterface at virtual0C with0722DE63 supplies each card component;
@@ -1736,7 +1736,7 @@ Evidence: out/preview12/native-guest-building-enter/entered-native.json.
 Native imports deliberately refuse authoring after module reload. Cold-launch
 browser acceptance; reload can diagnose UI but is not a qualifying import run.
 
-BUG-0634: the legacy coop.ui btn diagnostic accepts a window address, not a
+BUG-1022: the legacy coop.ui btn diagnostic accepts a window address, not a
 control ID. A private operator error with C00F0401 caused a read of that exact
 address (crash-20261112-153833-i45), separate from any card-drop path. Before
 btn/font/show dispatch, resolve the address through the same complete current

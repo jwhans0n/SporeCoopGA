@@ -55,15 +55,15 @@ The corrected real-UDP transport fixture passes 3,616 Win32 checks. Synthetic
 preview packaging (16 tests) and versioned editor proxy checks (7 tests) pass.
 An attempted adventure-proxy discovery found no tests and is not a pass.
 
-Integration regressions retain failing and passing evidence. BUG-0627 covers
+Integration regressions retain failing and passing evidence. BUG-1015 covers
 transport fixture assumptions about upstream ACK/retry timing: the fixture now
 exercises the release's retry policy without changing product timing.
-BUG-0628 covers inherited Git context escaping a temporary lab test repository.
+BUG-1016 covers inherited Git context escaping a temporary lab test repository.
 Both fixes have focused FAIL/PASS evidence in the candidate OUT directories.
 
 ## Native gate and publication
 
-BUG-0626 remains open. `tools/windows_smoke_preflight.py` finds none of the eight
+BUG-1014 remains open. `tools/windows_smoke_preflight.py` finds none of the eight
 required native fixture/creation archives in `D:/Code/SporeCoop/out/fixtures`.
 It lists all 14 smoke scenarios, starts no games and changes no profiles. This
 preflight does not implement or qualify the Windows smoke launcher adapter.

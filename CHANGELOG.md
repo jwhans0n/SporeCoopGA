@@ -4,12 +4,12 @@
 
 - Shared Adventure Editor preview 14: restore the latest committed scene before
   verifying Creature/Outfitter return, preserving exact grounding checks after
-  reconstruction and allowing subsequent editor entry (BUG-0641). Protocol 28
+  reconstruction and allowing subsequent editor entry (BUG-1029). Protocol 28
   and save/recovery formats remain unchanged.
 
 - Shared Adventure Editor preview 13: fix sustained frame-rate loss from repeated
   asset-card scans between rendered frames, and preserve creation ownership
-  through the native Creature to Outfitter save/return chain (BUG-0639, BUG-0640).
+  through the native Creature to Outfitter save/return chain (BUG-1027, BUG-1028).
   Retain protocol 28 and existing save/recovery formats.
 
 ## [0.7.4.0] - 2026-10-25

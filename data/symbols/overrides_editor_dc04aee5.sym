@@ -174,7 +174,7 @@ SporeCoop::Editor::Free=0x00F47220 ; verified static: cdecl(void* allocation),pl
 SporeCoop::Editor::MarkerPoolReserve=0x00F2E0D0 ; verified static: void thiscall(markerPool*,uint32 capacity),ret4; no shrink; empty reserve allocates capacity*238 with no per-slot initialization; only begin/end/cap change, actor caches are not rebound
 SporeCoop::Editor::ReadMarkerRows=0x00F2F050 ; verified static: cdecl(serializer*,markerPool*),plain ret; clears rows without shrinking capacity, reads exact count, reserves that count before constructor/read/insertion; no live actor binding
 SporeCoop::Editor::ScenarioResourceVTable=0x0148C644 ; verified static: primary native ScenarioResource interface; constructorF2E694, AddRef0/Release4; empty marker reserve is acquired before actor publication
-# Native tooltip construction/text ownership, BUG-0631 and BUG-0632.
+# Native tooltip construction/text ownership, BUG-1019 and BUG-1020.
 SporeCoop::Editor::TooltipCtor=0x00835DA0 ; verified static: thiscall(self)->self, ret; UTFWin allocation size68; initializes native tooltips layout and owning strings; E01A28 caller.
 SporeCoop::Editor::TooltipVTable=0x0141B0A8 ; verified static: primary UTFWin tooltip vtable written by835DB3 and835E73; bounded inspection only, never a capability.
 SporeCoop::Editor::TooltipText=0x00835FB0 ; verified static: thiscall(self,const char16_t* text,int locale,bool refresh), retC at836024; owning text at24; E01A50..E01A60 passes(text,-1,true).
