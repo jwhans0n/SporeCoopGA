@@ -19,8 +19,13 @@ bool share_with(uint8_t peer, std::string& err, bool save_first = false, uint32_
 // planet had no file after 3 saves. Called from tick(); not for shares dropped with their player
 void set_share_failed(void (*f)(uint8_t peer, uint32_t tag, bool planet_missing));
 bool share_now(uint8_t peer, std::string& err);
+// host (BUG-0754): seconds since a world share to this guest was asked for (the save, the transfer and the guest's load
+// follow), a large number when none
+double since_share(uint8_t peer);
 // the game's own save (pause menu "Save"); also works on planets in space
 bool save_game(std::string& err);
+// the game's quit message 0x4715068 (save and leave the stage for the galaxy menu); refused in an adventure (BUG-0854)
+bool post_quit_to_menu(std::string& err);
 extern bool g_box_hold; // tests (BUG-0482): our save's "game saved" box is not confirmed while set
 bool saved_box_up();     // the "game saved" box of our last save is up (seen, watched)
 // coop.cpp: why the game must not save now (an editor opens or is open, a mode switch is pending),
@@ -63,13 +68,20 @@ bool load_slot(const std::wstring& slot, const std::string& planet_file, std::st
                const std::string& share_host = "");
 // load Games\<slot_name>\<planet>.spo of the local profile (works from the galaxy menu)
 bool load_local(const std::string& slot_name, const std::string& planet, std::string& err);
+// BUG-0332: after a live Creature -> Tribe change the host loads its own share save once it has gone out
+void host_reload_after_share();
+uint32_t host_reloads();
+bool host_reloading(); // BUG-0332: the host's reload of the new Tribe world runs (PF_RESYNC)
 
 // the galaxy menu's intro cinematic GGE_Intro plays (docs/re/space.md 7.9; ~10 s starting ~16 s after
 // the menu came up, its input lock drops all clicks on the menu); callable in the frame
 bool menu_intro_playing();
+// tests (BUG-0167): the galaxy menu intro starts in the first tick of the next stage (coop.introstage)
+void arm_intro_in_stage();
 // a cinematic or a caption of the game plays (cCinematicManager +0x2C): the HUD is hidden, an editor
 // opened meanwhile came up without its interface (coop.cpp own editor)
 bool cinematic_playing();
+uint32_t cinematic_id(); // the playing cinematic's registry id (0: none), BUG-0656
 // ends the cinematic that plays (EndCinematic: stop, release the input lock, post its end message);
 // outside the frame. True if one played (BUG-0404: a cinematic left playing in an editor keeps it
 // without its buttons)

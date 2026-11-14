@@ -5,7 +5,8 @@ CXX := $(LLVM_MINGW)/bin/i686-w64-mingw32-clang++
 HOSTCXX ?= clang++
 
 B := build
-COMMON  := -O2 -g -Wall -Wno-unused-function -Wno-missing-braces -D_WIN32_WINNT=0x0601 -DUNICODE -D_UNICODE
+comma := ,
+COMMON  := -O2 -g -Wall -Werror=misleading-indentation -Wno-unused-function -Wno-missing-braces -D_WIN32_WINNT=0x0601 -DUNICODE -D_UNICODE
 CFLAGS  := $(COMMON)
 CXXFLAGS:= $(COMMON) -std=c++20
 LDDLL   := -shared -static -Wl,--kill-at -Wl,--enable-stdcall-fixup
@@ -22,7 +23,7 @@ COOP_OBJ := $(patsubst %.cpp,$(B)/obj/%.o,$(COOP_SRC))
 
 .PHONY: all loader sporekit coop res setup clean test test-captains-windows test-lifecycle-windows test-actions-windows test-vehicles-windows test-mirror-windows test-progress-windows test-relationships-windows test-targeting-windows test-social-windows test-blocked-update-windows test-debug-capabilities-windows
 .PHONY: test-win test-asan test-tsan all loader sporekit coop res setup clean test sanitizer-probe
-all: loader sporekit coop res setup
+all: loader sporekit coop res setup $(B)/test/rtsshooks.dll
 
 # game resources (icons, ...) for SporeCoop: Data/SporeCoop.package
 UI_PNG := $(wildcard data/ui/*.png)
@@ -31,13 +32,31 @@ $(B)/SporeCoop.package: tools/mkpackage.py $(UI_PNG)
 	@mkdir -p $(B)
 	python3 tools/mkpackage.py $@ $(foreach f,$(UI_PNG),sporecoop!$(basename $(notdir $(f))).png=$(f))
 
+# tests: a do-nothing DLL under another program's name (BUG-0782, coop_rtss_note.py)
+$(B)/test/rtsshooks.dll: tests/dll/stand_in.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -shared -o $@ $<
+
 loader: $(B)/steam_api.dll
 sporekit: $(B)/sporekit.dll
 coop: $(B)/coop.dll
 
-$(B)/steam_api.dll: loader/loader.c loader/steam_api.def updater/pending.h
+$(B)/steam_api.dll: loader/loader.c loader/steam_api.def updater/pending.h $(B)/obj/loader/loader_rc.o
 	@mkdir -p $(B)
-	$(CC) $(CFLAGS) -shared -o $@ loader/loader.c loader/steam_api.def -Wl,--kill-at
+	$(CC) $(CFLAGS) -shared -o $@ loader/loader.c loader/steam_api.def $(B)/obj/loader/loader_rc.o -Wl,--kill-at
+
+# BUG-0784: a VERSIONINFO resource in every binary (installer/version.rc), its version from
+# COOP_VERSION: build/version.h is rewritten only when the version changes
+WINDRES := $(LLVM_MINGW)/bin/i686-w64-mingw32-windres
+COOP_VERSION = $(shell sed -n 's/^\#define COOP_VERSION "\(.*\)"/\1/p' mods/coop/coop.cpp)
+VER_NUM = $(shell echo "$(COOP_VERSION)" | awk -F. '{printf "%d,%d,%d,%d", $$1, $$2, $$3, $$4}')
+$(B)/version.h: mods/coop/coop.cpp
+	@mkdir -p $(B)
+	@printf '#define SC_VER_NUM %s\n#define SC_VER_STR "%s"\n' "$(VER_NUM)" "$(COOP_VERSION)" > $@.tmp
+	@if cmp -s $@.tmp $@; then rm $@.tmp; touch $@; else mv $@.tmp $@; echo "version.h: $(COOP_VERSION) ($(VER_NUM))"; fi
+$(B)/obj/%_rc.o: %.rc installer/version.rc $(B)/version.h
+	@mkdir -p $(dir $@)
+	$(WINDRES) -i $< -o $@ -I$(B) -Iinstaller
 
 $(B)/obj/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -47,22 +66,25 @@ $(B)/obj/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -I$(MINHOOK)/include -Isdk/include -c $< -o $@ -MMD -MP
 
-$(B)/sporekit.dll: $(KIT_OBJ) $(MH_OBJ)
+$(B)/sporekit.dll: $(KIT_OBJ) $(MH_OBJ) $(B)/obj/sporekit/sporekit_rc.o
 	$(CXX) $(LDDLL) -o $@ $^ -lws2_32 -luser32 -lshell32 -ld3d9 -Wl,--out-implib,$(B)/libsporekit.a
 
-$(B)/coop.dll: $(COOP_OBJ)
+$(B)/coop.dll: $(COOP_OBJ) $(B)/obj/mods/coop/coop_rc.o
 	$(CXX) $(LDDLL) -o $@ $^ -lws2_32 -luser32 -liphlpapi -lwinhttp -lshell32 -lole32
 
 # SporeCoopSetup.exe: install / update / uninstall (installer/, updater/)
-WINDRES := $(LLVM_MINGW)/bin/i686-w64-mingw32-windres
-COOP_VERSION = $(shell sed -n 's/^#define COOP_VERSION "\(.*\)"/\1/p' mods/coop/coop.cpp)
 setup: $(B)/SporeCoopSetup.exe
 $(B)/setup.ico: data/ui/coop_icon.png tools/make_ico.py
 	@mkdir -p $(B)
 	python3 tools/make_ico.py $< $@
-$(B)/obj/installer/setup_rc.o: installer/setup.rc installer/setup.manifest $(B)/setup.ico
+# the manifest's assemblyIdentity version is COOP_VERSION too (BUG-0784; it was 1.0.0.0)
+$(B)/setup.manifest: installer/setup.manifest $(B)/version.h
+	sed 's/name="SporeCoop.Setup" version="[0-9.]*"/name="SporeCoop.Setup" version="$(subst $(comma),.,$(VER_NUM))"/' $< > $@
+	grep -q 'version="$(subst $(comma),.,$(VER_NUM))"' $@
+$(B)/obj/installer/setup_rc.o: installer/setup.rc installer/version.rc $(B)/setup.manifest $(B)/setup.ico $(B)/version.h
 	@mkdir -p $(dir $@)
-	$(WINDRES) -i installer/setup.rc -o $@ --include-dir installer
+	cp installer/setup.rc $(B)/setup.rc
+	$(WINDRES) -i $(B)/setup.rc -o $@ -I$(B) -Iinstaller
 $(B)/SporeCoopSetup.exe: installer/setup.cpp installer/install.cpp installer/install.h sdk/include/sporekit_build.hpp updater/winupdate.cpp updater/pack.cpp updater/sha256.cpp $(B)/obj/installer/setup_rc.o mods/coop/coop.cpp
 	$(CXX) $(CXXFLAGS) -DSETUP_VERSION='"$(COOP_VERSION)"' -municode -mwindows -static -o $@ $(filter-out %.h %.hpp mods/coop/coop.cpp,$^) \
 		-lwinhttp -lcomctl32 -lshell32 -lole32 -ladvapi32 -luser32 -lgdi32
@@ -424,6 +446,7 @@ test: sanitizer-probe
 	python3 tests/editor_commit_performance_tool_tests.py
 	python3 tests/editor_memory_accounting_tests.py
 	python3 tests/editor_network_proxy_tests.py
+	python3 tests/publish_fork_issues_tests.py
 	python3 tools/tests/coop_editor_lifecycle.py --self-test
 	python3 tools/tests/coop_editor_save.py --self-test
 	python3 tools/tests/coop_editor_creations.py --self-test
@@ -442,6 +465,7 @@ endif
 	python3 tools/tests/lab_selftest.py
 	python3 tools/tests/gates_selftest.py
 	python3 tools/tests/walk_selftest.py
+	python3 tools/tests/dash_selftest.py
 ifneq ($(SKIP_SANITIZERS),1)
 	$(MAKE) --no-print-directory test-asan
 	$(MAKE) --no-print-directory test-tsan
@@ -469,6 +493,9 @@ endif
 	python3 tools/glyph_lint.py
 	python3 tools/tickets.py check
 	python3 tools/tests/tools_selftest.py
+	python3 tools/tests/visual_selftest.py
+	python3 tools/tests/state_fields_check.py
+	python3 tools/tests/test_lint.py
 ifeq ($(SKIP_SANITIZERS),1)
 	@echo "WARNING: SANITIZER TESTS NOT RUN (SKIP_SANITIZERS=1)"
 endif

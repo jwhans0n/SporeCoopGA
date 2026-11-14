@@ -18,7 +18,7 @@ import time
 
 MAGIC = 0x4F435053
 # Default to the current protocol. Check the wire format before adding versions.
-PROTO = 28
+PROTO = 29
 HEADER = '<IHIHHQQB'  # magic, proto, conn, seq, ack, ackbits (2 x u64), count
 HEADER_SIZE = struct.calcsize(HEADER)
 HELLO, WELCOME, REJECT, JOIN, LEAVE, STATE, CHAT, PING, PONG, BYE = range(1, 11)
@@ -138,6 +138,8 @@ def pack_state(pid, t_ms, pos, rot, vel, flags, hp, mhp, species, mode=0, world=
                        mode, world)
     # A generic network bot has scale1 and no authored captain/run identity.
     # Protocols27/28 include upstream AGL before the three GA identity words.
+    if protocol >= 29:
+        return base + struct.pack('<fffQQQ', 1.0, -1e6, 0.0, 0, 0, 0)
     if protocol >= 27:
         return base + struct.pack('<ffQQQ', 1.0, -1e6, 0, 0, 0)
     return base + struct.pack('<fQQQ', 1.0, 0, 0, 0) if protocol >= 23 else base
@@ -166,7 +168,7 @@ def main():
     ap.add_argument('--period', type=float, default=12.0)
     ap.add_argument('--seconds', type=float, default=60.0)
     ap.add_argument('--build', default='dc04aee5', help='first 8 hex digits of the host game build ID')
-    ap.add_argument('--protocol', type=int, choices=(6, 7, 23, 24, 25, 26, 27, 28), default=PROTO, help='host protocol version (default: 28)')
+    ap.add_argument('--protocol', type=int, choices=(6, 7, 23, 24, 25, 26, 27, 28, 29), default=PROTO, help='host protocol version (default: 29)')
     ap.add_argument('--say', default='hello from fakepeer')
     a = ap.parse_args()
     h, _, port = a.host.partition(':')

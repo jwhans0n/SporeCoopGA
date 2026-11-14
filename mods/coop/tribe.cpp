@@ -1,4 +1,5 @@
 #include "tribe.h"
+#include "player_life.h"
 
 #include <algorithm>
 #include <cmath>
@@ -12,17 +13,22 @@
 #include "coop_ui.h"
 #include "creations.h"
 #include "driver.h"
+#include "effects.h"
 #include "game.h"
 #include "modes.h"
 #include "npc.h"
 #include "savestrip.h"
 #include "space_ext.h"
 #include "stage_epoch.h"
+#include "world.h"
+#include "wsync.h"
+#include "net/held_cmds.h"
 #include "net/ids.h"
 #include "net/interp.h"
 #include "net/validate.h"
 #include "sporekit_game.hpp"
 #include "fixes.h"
+#include "settings.h"
 #include "fields.h"
 
 using skg::thiscall;
@@ -47,7 +53,7 @@ constexpr uint32_t kTreeNoun = 0x6ABEE7E;    // cTreeData (planet flora: fruit t
 static uintptr_t a_TreeVt;    // Simulator::cTreeData::vftable (main vtable)
 
 static uintptr_t a_GetPlayerTribe, a_DoAction, a_SetValueVector3, a_BTTick, a_DoActionForObjects, a_WalkSelected,
-    a_SetSelected, a_CreateCitizen, a_AddMember, a_SpawnNpcTribe;
+    a_SetSelected, a_CreateCitizen, a_AddMember, a_SpawnNpcTribe, a_MaxPop;
 
 template <typename T>
 static T& F(void* p, uintptr_t off) { return *(T*)((uint8_t*)p + off); }
@@ -180,12 +186,129 @@ struct HMember {
     uint16_t id;
     uint8_t owner;
     uint32_t bhv_anim = 0; // BUG-0569: the last animation its behaviour tree started
+    uint32_t idle_anim = 0; // BUG-0936: the last animation its idle refresh played (its own idle / walk choice)
+    uint32_t hold = 0;      // BUG-0914: the hand's started hold modifier last seen (handle), 0 none
+    void* tribe = nullptr; // BUG-0620: the tribe whose member list held it last
+    double body_since = 0; // BUG-0620: when it left that list dead (its body), 0: in a list
+    uint32_t bt_ticks = 0; // BUG-0531 (diagnostics, `coop.tribe ai`): its behaviour tree's ticks in the host's game
+    uint32_t serial = 0;   // BUG-0951: its cGameData::mID when the entry was made
 };
+// BUG-0951 (class BUG-0426): pointers the Tribe code keeps across frames were checked by their own memory (object_alive):
+// the host's member table (a new citizen at a freed member's address took its id and its owner), the target ring of a
+// guest's attack order (kept up to 120 s: drawn under whatever the game built at the address), the epic animal, the
+// babies the host's game made. Now each keeps the object's serial and is used only while it is that object in the
+// game's list (game::alive). Old (`coop.fix tribe.kept_refs off`): object_alive.
+static bool g_kept_refs_fix = true;
+COOP_FIX("tribe.kept_refs", "BUG-0951", g_kept_refs_fix, "tribe: the attack ring, the epic animal, the babies and the host's member table never follow another object the game built where theirs was");
+static uint32_t g_kept_stale;
+static bool kept_alive(void* o, uint32_t serial, uint32_t noun)
+{
+    if (!o)
+        return false;
+    if (!g_kept_refs_fix)
+        return game::object_alive(o);
+    if (game::alive(game::LiveRef{o, serial, noun}))
+        return true;
+    g_kept_stale++;
+    return false;
+}
+// BUG-0620 (docs/re/tribe.md#tribe-member-body): a member that dies for good leaves its tribe's member list
+// (+0x1014 = 0) while the game keeps its body (the dead flag +0xB5E, in the object list) for 10-20 s more; the host's
+// snapshot dropped it at once and the guest removed its mirror: the body lay on the host only (the detector's
+// `Tribe:unmatched:citizen`). With tribe.member_body the host sends the body with its last tribe (health 0: the guest's
+// mirror plays the death, tribe.ko) while the game keeps it, at most kBodyMax s. Off: dropped at once (0.7.8).
+static bool g_member_body_fix = true;
+COOP_FIX("tribe.member_body", "BUG-0620", g_member_body_fix,
+         "tribe: the body of a member that died lies in every player's game as long as in the host's");
+// BUG-0665 (docs/known-issues.md#issue-tribe-join-body): a guest made no mirror for a body entry, so a guest that joined
+// or loaded the world while a dead member's body lay on the host had none (its own loaded member of it, alive in the
+// shared save, was removed at the end of the cycle as unknown). With tribe.join_body a body entry without a mirror binds
+// or spawns one as a live entry does; guest_tick then plays its death (tribe.ko) and takes it out of its tribe
+// (detach_body) as for a member that died while the guest was there. Off: no mirror for a body (0.7.10).
+static bool g_join_body_fix = true;
+COOP_FIX("tribe.join_body", "BUG-0665", g_join_body_fix,
+         "tribe: a guest that joins while a dead member's body lies on the host gets a mirror of that body too");
+static uint32_t g_join_bodies;
+constexpr double kBodyMax = 60.0;
+constexpr uint8_t kBodyBit = 0x80; // in a snapshot entry's age byte: a body (the guest takes it out of its tribe too)
+// guest: mirrors taken out of their tribe as bodies (destroyed on removal) -> the tribe they were taken out of
+static std::unordered_map<void*, void*> g_detached;
+static uintptr_t a_BTTerminate; // BUG-0667: SporeCoop::Citizen_BTTerminate (optional)
+static uint32_t g_bodies_detached;
+// BUG-0667 (docs/re/tribe.md#tribe-body-teardown): a detached body's mirror was destroyed (DestroyInstance) with its
+// +0x1014 cleared. The citizen's teardown (0xC1FFE0) shuts its behaviour tree down, and the exit of a node still active
+// there reads the tribe: the eat node 0x0461300F's exit 0xDB0C40 releases its food mat spot through
+// cTribe_ReleaseSlot(citizen+0x1014 = null) and faulted in cTribe_ToolLayout's map lookup (0xAC9C7D, data 0x39C). A
+// mirror's tree runs only while the host is away (local_play), so the node stayed active from then until the destroy
+// (long_tribe on rel/0.7.9, the guest froze after the fault). The game's own RemoveMember destroys a member with its
+// tribe still set. tribe.body_teardown: the body gets its tribe back right before it is destroyed (when that tribe
+// still exists), and a slot release with no tribe is skipped. Off: destroyed with no tribe, no guard (0.7.9 before).
+static bool g_body_teardown_fix = true;
+COOP_FIX("tribe.body_teardown", "BUG-0667", g_body_teardown_fix,
+         "tribe: a guest destroys a dead member's body with its tribe set (its behaviour tree's exits need it), never faults there");
+static uint32_t g_teardown_restored, g_slot_null_skipped;
+// guest: the mirror leaves its tribe's member and selectable lists as the host's body left its own (not selectable, not
+// counted as a member), the object stays until the host's body goes
+// BUG-0961: the host's game takes a dead member's card off the roster (the right edge) through the stage's message
+// listener (0xCD81F0 -> 0xCD51F0: cast to a citizen, the roster's card removal 0xCCBCE0 on the stage's game UI +0x240);
+// a guest's mirror taken out of its tribe here (detach_body) kept its card: the guest's roster showed one member more
+// than its tribe (and the host's) had for as long as the play went on (play_tribe's end frame). The card goes with
+// the body now, as on the host. Old (`coop.fix tribe.body_card off`): the card stays.
+static bool g_body_card_fix = true;
+COOP_FIX("tribe.body_card", "BUG-0961", g_body_card_fix,
+         "tribe: a member that died on the host leaves the guest's roster too (one card more stayed there)");
+static uint32_t g_body_cards;
+static void body_card_off(void* c)
+{
+    static uintptr_t get = H->sym("SporeCoop::cTribeUI_Get"), off = H->sym("SporeCoop::TribeStage_RemoveMemberCard");
+    void* stage = get ? skg::cdecl_call<void*>(get) : nullptr;
+    if (!g_body_card_fix || !stage || !off || !skg::readable(stage, 0x244) || !F<void*>(stage, 0x240))
+        return;
+    thiscall<void>(off, stage, c);
+    g_body_cards++;
+}
+
+static void detach_body(void* c)
+{
+    void* t = F<void*>(c, 0x1014);
+    if (!t || g_detached.count(c))
+        return;
+    body_card_off(c); // BUG-0961 (while it is still the tribe's member, as the game's message comes)
+    for (uintptr_t off : {(uintptr_t)0x340, (uintptr_t)0x354}) {
+        void**& b = F<void**>(t, off);
+        void**& e = F<void**>(t, off + 4);
+        if (!b || e < b || e - b > 256)
+            continue;
+        void* want = off == 0x340 ? c : (uint8_t*)c + 0xC0;
+        void** w = b;
+        for (void** it = b; it != e; ++it)
+            if (*it != want)
+                *w++ = *it;
+        for (void** it = w; it != e; ++it)
+            *it = nullptr;
+        e = w;
+    }
+    F<uint8_t>(c, 0x12C) = 0; // (not selected)
+    // BUG-0667: the body's behaviour tree is ended while its tribe is still set (as the host's body ended its nodes
+    // by dying before its game took it out of the tribe): the exits of the nodes a mirror's skipped tree left active
+    // (eat, GrabTool, ...) release their spots now, and nothing is left for its teardown, which may come after the
+    // tribes are gone (the world's teardown at a menu exit: long_tribe_short 20261107-043030)
+    if (g_body_teardown_fix && a_BTTerminate)
+        skg::cdecl_call<void>(a_BTTerminate, c);
+    F<void*>(c, 0x1014) = nullptr;
+    g_detached[c] = t;
+    g_bodies_detached++;
+}
+static uint32_t g_bodies_sent;
 static std::unordered_map<void*, HMember> g_hm;
 static std::unordered_map<uint16_t, void*> g_hm_by_id;
 static uint16_t g_next_id = 1;
 static uint32_t g_player_members_seen = 0;
 static std::vector<uint8_t> g_split_for; // player ids the player tribe was split for
+// BUG-0671 (below, h_BabyBorn)
+using BabyBorn_t = void(SK_THISCALL*)(void*, float, float, float);
+static BabyBorn_t o_BabyBorn;
+static std::unordered_map<void*, uint8_t> g_born_for; // host: a new member made for a guest -> its owner
 static double g_last_send;
 static uint16_t g_cycle;
 static uint32_t g_cmds_done, g_cmds_rejected;
@@ -200,6 +323,7 @@ struct GMember {
     void* c = nullptr;
     uint16_t id = 0; // the host's member id
     uint8_t tribe = 0, owner = 0xFE, age = 1;
+    bool body = false; // BUG-0620: the host's member is a body out of its tribe's list
     net::Vec3 pos, vel;
     net::Quat rot;
     float hp = 0;
@@ -208,9 +332,59 @@ struct GMember {
     net::SnapshotBuffer buf; // BUG-0365 (tribe.mirror_time): the host's states by its clock
     net::Vec3 aim;           // coop.track: where the driving aimed this frame
     float aim_speed = 0;     // and the host's speed of that state
+    float walk_sp = 0;       // BUG-0619: the speed the smoothed target's mirror is walked at (eased in)
+    double walk_t = 0;
+    bool jittery = false;    // BUG-0619 (diagnostics)
+    float lead_sp = -1;      // BUG-0619: the raw lead's speed while the smoothed target drives it (-1: none)
+    double held_since = 0, held_said = -1e9; // BUG-0386 (diagnostics)
+    double test_undo_until = 0; // tests (BUG-0386, `coop.tribe undo <id> <s>`): this game undoes the mirror's placing
+    net::Vec3 test_undo_at{};   // and its walk: where it is held
     double anim_rx_at = 0, anim_fix_at = 0; // BUG-0569: the last relayed start, the last snapshot play
+    const char* not_made = nullptr; // BUG-0685: why no mirror was made for it last time (logged when it changes)
+    uint32_t serial = 0;            // BUG-0844: c's cGameData::mID when it was bound
+    float air_agl = 0;              // BUG-0946: the host's member over the host's ground (m), when it was off it
+    double air_at = -1e9;           // and when that came (MSG_NPC_ANIM kind 9)
+    bool air = false;               // placed in the air last frame (drive::air_place)
+    uint32_t hold_anim = 0;         // BUG-0914: the animation the host's member took its item in (kind 11), 0 none
+    double hold_at = -1e9;          // when that came
+    bool hold_bound = false;        // the mirror's hold modifier was started in that animation here
+    uint32_t hold_anim_bound = 0;   // (that animation)
+    int hold_item = 0;              // BUG-0971: the item the host's member holds in that hold (kind 12), 0 unknown
+    double hold_play_at = -1e9;     // BUG-0968: when hold_try last started the host's hold animation on the mirror
+    double hold_end_at = -1e9;      // the host's last end (reliable): an older start overtaking it is no new hold
+    uint32_t relayed_anim = 0;      // BUG-0936: the last animation the relay (kinds 2 / 3 / 10) played on it
 };
 static std::unordered_map<uint16_t, GMember> g_gm;
+// BUG-0844 (class BUG-0426): a mirror's citizen was kept across frames and checked by its own memory (object_alive):
+// the game frees a removed citizen later and gives the block to the next citizen it makes (a member of any tribe,
+// the guest's own too). While the host's states paused (its editor, the fork's graduation report) the mirror stayed
+// bound to that address: the guest then drove a member of another tribe as the host's member, and the snapshot's end
+// called RemoveMember through the citizen's owner field (garbage in a freed block: the fork's crash in
+// remove_member). Now a mirror's citizen is used only while it is the object bound (the object list of the frame and
+// its serial), and RemoveMember runs only on a live tribe that has it in its member vector; a citizen that is not is
+// only forgotten. Old (`coop.fix tribe.mirror_member_lifetime off`): object_alive and the owner field.
+static bool g_member_lifetime_fix = true;
+COOP_FIX("tribe.mirror_member_lifetime", "BUG-0844", g_member_lifetime_fix, "tribe: a guest never moves or removes another tribe's member that the game built where a removed copy of a host's member was");
+static uint32_t g_mirror_stale, g_remove_refused;
+static bool mirror_ok(const GMember& g)
+{
+    if (!g.c)
+        return false;
+    if (!g_member_lifetime_fix)
+        return game::object_alive(g.c);
+    return game::alive(game::LiveRef{g.c, g.serial, 0x18EB4B7u}); // (kCitizenNoun)
+}
+// BUG-0685: a guest's log says when a member mirror goes and why one is not made again (at most kMirrorLogMax lines;
+// a mirror's "not made" line only when its reason changes)
+constexpr uint32_t kMirrorLogMax = 60;
+static uint32_t g_mirror_logs;
+#define MIRROR_LOG(...) \
+    do { \
+        if (g_mirror_logs < kMirrorLogMax) { \
+            g_mirror_logs++; \
+            H->log(M, SK_INFO, __VA_ARGS__); \
+        } \
+    } while (0)
 // BUG-0365 (see mirror_drive)
 static bool g_mirror_walk_fix = true, g_mirror_time_fix = true;
 COOP_FIX("tribe.mirror_walk", "BUG-0365", g_mirror_walk_fix, "tribe: a guest's mirror of a walking member walks on the host's path instead of stop-and-go and surges");
@@ -232,14 +406,42 @@ constexpr double kMirrorDelay = 0.2;  // s: the interpolation delay (the host se
 // tests (BUG-0481): `coop.tribe delay <s>` on a guest: a planted late mirror (play_tribe's sync check must fail)
 static double g_test_delay = kMirrorDelay;
 constexpr float kMirrorWalkMax = 8.f; // farther off: drive::step (it teleports at 8 m)
+// BUG-0386 (`coop.fix tribe.mirror_keep`): a walked member mirror whose placing this game does not keep is moved by
+// teleports with the mark until it is on its path again (WalkPlace::keep_lost, the NPC proxies' rule of BUG-0361).
+// Observed (tribe_walk_mobile, fix/w45-remote-bodies-2 lab 20261106-172428 #2, track tribe_walk_guest_walks_173129,
+// the guest's own member 2 on the guest): from the frame its game's walk took over (game speed 0 -> 11-12 m/s) every
+// placing of 0.38-0.40 m was undone and the game moved it 0.03-0.04 m per frame for 0.9 s while its target walked on at
+// 9 m/s; the error grew to 8 m and drive::step teleported it. The placing was never counted as lost (under 0.5 m a
+// frame) and keep_lost was off for mirrors. Off: placed without the mark always (0.7.9).
+static bool g_mirror_keep_fix = true;
+COOP_FIX("tribe.mirror_keep", "BUG-0386", g_mirror_keep_fix, "tribe: a member mirror the guest's game holds back (its placing undone) is moved on its path by marked teleports, not left to fall 8 m behind");
+// BUG-0619: a member's lead jump up to this is smoothed (a start known late over a mobile network: 2.9-4 m at 9 m/s;
+// the lead's cap kMaxLead x 9 m/s = 5.4 m)
+constexpr float kMirrorSmoothMax = 6.f; // m
+constexpr float kMirrorWalkAcc = 40.f; // m/s2 (BUG-0619)
+constexpr float kMirrorWalkOver = 3.f; // m/s: walked at most this faster than the lead itself (BUG-0619)
 constexpr double kPathDt = 0.1;       // s: the interpolated path's velocity is taken over this
 static std::unordered_map<void*, uint16_t> g_gid_of;
 static std::unordered_set<uint16_t> g_cycle_ids;
-static std::unordered_set<uint8_t> g_cycle_chunks; // chunks of the current cycle received
+static net::CycleTracker g_cyc;                    // the cycle being received and its chunks (BUG-0612)
 static uint32_t g_incomplete;                      // cycles whose cleanup was skipped (a chunk missing)
-static uint16_t g_rx_cycle = 0xFFFF;
+// BUG-0612 (the older-cycle part of BUG-0425's umbrella): a late chunk of an older snapshot cycle started that cycle
+// again (the newer cycle's chunks forgotten, older states over newer ones). Off: 0.7.8 (any other cycle restarts).
+bool g_cycle_order_fix = true;
+COOP_FIX("net.cycle_order", "BUG-0612", g_cycle_order_fix, "net: a late chunk of an older Tribe / Civ snapshot or realign planet-list cycle is dropped, not taken as a new cycle (BUG-0886 too)");
 static uint32_t g_spawned, g_removed, g_cmds_sent;
 static std::vector<void*> g_local_tribe_of; // host tribe index -> local tribe
+// BUG-0672 (tribe.world_map): the mapping outlived the world it was made in. After a load (a warm reset, a received
+// world) the guest's wobj tool kind made the host's tool in tribe index i before the new world's first tribe state had
+// mapped it again: tribe_of_index gave the old world's freed tribe (its species +0x18CC already released), and the
+// tool's SetPosition (0xC9DB80) re-laid that tribe's spots (0xC98940 type 6), which read the species' size: the fault
+// at 0xCE6AE7 (data 0x554). On: the mapping is dropped with the world and an entry is used only while it is one of
+// this world's tribes. Off: 0.7.9.
+static bool g_world_map_fix = true;
+COOP_FIX("tribe.world_map", "BUG-0672", g_world_map_fix,
+         "tribe: right after a world load the guest never builds the host's tool buildings into a tribe of the old world");
+static uint32_t g_map_stale_skipped;
+static bool g_state_hold; // tests (BUG-0672): the guest ignores the host's tribe states (the mapping is not renewed)
 
 uint8_t owner_of(void* c)
 {
@@ -257,15 +459,110 @@ uint8_t owner_of(void* c)
 using BTTick_t = int(SK_CDECL*)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
 static BTTick_t o_BTTick;
 static uint32_t g_bt_skipped, g_bt_calls; // diagnostics (coop.tribe): mirrors' AI ticks skipped / all ticks
+// tests (BUG-0667): `coop.tribe localbt <member id> 1|0` on a guest: that mirror's tree runs as while the host is away
+static std::unordered_set<void*> g_bt_local;
+// BUG-0667: cTribe_ReleaseSlot (a behaviour node's exit giving a layout spot back) with no tribe is skipped
+using ReleaseSlot_t = void(SK_THISCALL*)(void*, int, int);
+static ReleaseSlot_t o_ReleaseSlot;
+static void SK_THISCALL h_ReleaseSlot(void* t, int type, int slot)
+{
+    if (!t && g_body_teardown_fix) {
+        if (g_slot_null_skipped++ < 8)
+            H->log(M, SK_WARN, "tribe: a layout spot release (type %d, slot %d) with no tribe skipped (BUG-0667)", type, slot);
+        return;
+    }
+    o_ReleaseSlot(t, type, slot);
+}
+// BUG-0667: on a guest a citizen torn down with no tribe gets back the tribe it left last (the game's SetTribe(null),
+// e.g. a member's death in this game's own play while the host was away, or detach_body), so the exits of the
+// behaviour nodes still active on it (a mirror's tree is skipped: eat 0x0461300F, 0x0551759F, ...) find it; with no
+// such tribe left, its tree's stack is emptied first (no exit runs, none can read the null tribe). long_tribe_short
+// (20261107-032137): the guest left the world for the menu, the eat exit's slot release was skipped, the next exit
+// (0xDA7FB0, reads tribe+0x26C) faulted.
+static std::unordered_map<void*, void*> g_left_tribe; // guest: citizen -> the tribe its SetTribe(null) took it out of
+static uint32_t g_teardown_tribe_back, g_teardown_bt_emptied;
+using SetTribe_t = void(SK_THISCALL*)(void*, void*);
+static SetTribe_t o_SetTribe;
+static void SK_THISCALL h_SetTribe(void* c, void* t)
+{
+    if (g_body_teardown_fix && is_guest()) {
+        void* old = F<void*>(c, 0x1014);
+        if (!t && old) {
+            g_left_tribe[c] = old;
+            static uint32_t said;
+            if (said++ < 24) { // diagnostics (BUG-0667): who takes a citizen out of its tribe on a guest
+                char b[160] = "";
+                int n = 0;
+                const uint32_t* sp = (const uint32_t*)__builtin_frame_address(0);
+                for (int i = 0; i < 96 && n < 8; i++)
+                    if (sp[i] > 0x401000 && sp[i] < 0x1300000)
+                        n += snprintf(b + strlen(b), sizeof b - strlen(b), " %08X", sp[i]) > 0;
+                auto gi = g_gid_of.find(c);
+                H->log(M, SK_INFO, "tribe: SetTribe(null) on %p (mirror #%d, old tribe %p, dead %u, node %08X); stack:%s (BUG-0667)", c,
+                       gi == g_gid_of.end() ? -1 : (int)gi->second, old, F<uint8_t>(c, 0xB5E),
+                       F<uint8_t*>(c, 0xB4C) ? *(uint32_t*)(F<uint8_t*>(c, 0xB4C) + 0x1D8) : 0, b);
+            }
+        }
+        else if (t)
+            g_left_tribe.erase(c);
+    }
+    o_SetTribe(c, t);
+}
+using CitizenTeardown_t = void(SK_THISCALL*)(void*);
+static CitizenTeardown_t o_CitizenTeardown;
+static void SK_THISCALL h_CitizenTeardown(void* c)
+{
+    if (g_body_teardown_fix && !F<void*>(c, 0x1014) && (is_guest() || g_left_tribe.count(c) || g_detached.count(c))) {
+        auto tribes = all_tribes();
+        auto listed = [&](void* t) { return t && std::find(tribes.begin(), tribes.end(), t) != tribes.end(); };
+        void* t = nullptr;
+        bool add_ref = false;
+        if (auto it = g_detached.find(c); it != g_detached.end() && listed(it->second))
+            t = it->second; // detach_body kept the reference
+        else if (auto it2 = g_left_tribe.find(c); it2 != g_left_tribe.end() && listed(it2->second))
+            t = it2->second, add_ref = true; // SetTribe(null) released it
+        if (t) {
+            if (add_ref)
+                vcall<void>(t, 0); // AddRef: the teardown releases +0x1014 (0xC27CF3)
+            F<void*>(c, 0x1014) = t;
+            g_teardown_tribe_back++;
+        } else {
+            uint8_t* ai = F<uint8_t*>(c, 0xB4C);
+            // the tree's terminate (0xC0D500 -> 0xBC8850) runs the exits unless the stack's first word (ai+0x1D0) is
+            // -1, its "no tree running" mark; it then fills the 0x418-byte stack with 0xFF itself
+            if (ai && skg::readable(ai, 0x620) && *(int*)(ai + 0x1D0) != -1) {
+                if (g_teardown_bt_emptied++ < 8) {
+                    auto lt = g_left_tribe.find(c);
+                    H->log(M, SK_WARN, "tribe: citizen %p torn down with no tribe in node %08X (depth %d): its tree's exits "
+                           "skipped (BUG-0667; left tribe %p, detached %d, tribes listed %u)", c, *(uint32_t*)(ai + 0x1D8),
+                           *(int*)(ai + 0x1DC), lt == g_left_tribe.end() ? nullptr : lt->second, (int)g_detached.count(c),
+                           (unsigned)tribes.size());
+                }
+                memset(ai + 0x1D0, 0xFF, 0x418); // as 0xBC8850 leaves it (BUG-0667: depth 0 alone did not stop the exits)
+            }
+        }
+    }
+    g_detached.erase(c);
+    g_left_tribe.erase(c);
+    o_CitizenTeardown(c);
+}
 // behaviour tree tick (shared by every creature kind): skipped for citizen mirrors on guests
 static int SK_CDECL h_BTTick(uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t self, uint32_t a5, uint32_t a6,
                              uint32_t a7, uint32_t a8)
 {
     g_bt_calls++;
-    if (is_guest() && is_citizen((void*)self) && game::mode_id() == modes::kTribe && !local_play()) {
+    if (g_body_teardown_fix && g_detached.count((void*)self)) { // BUG-0667: a detached body's tree stays ended
         g_bt_skipped++;
         return 0;
     }
+    if (is_guest() && is_citizen((void*)self) && game::mode_id() == modes::kTribe && !local_play() &&
+        !g_bt_local.count((void*)self)) {
+        g_bt_skipped++;
+        return 0;
+    }
+    if (!is_guest()) // BUG-0531 (diagnostics): does a host member's tree run
+        if (auto it = g_hm.find((void*)self); it != g_hm.end())
+            it->second.bt_ticks++;
     return o_BTTick(a0, a1, a2, a3, self, a5, a6, a7, a8);
 }
 
@@ -331,7 +628,18 @@ static Target read_target(net::Reader& r)
     return t;
 }
 
-enum : uint8_t { CMD_ACTION = 0, CMD_WALK = 1, CMD_GIVE = 2 };
+enum : uint8_t { CMD_ACTION = 0, CMD_WALK = 1, CMD_GIVE = 2, CMD_BABY = 3, CMD_CONQUER = 4 };
+
+// BUG-0879: while the host is away the guest's own game plays (tribe.away): a raid of its members can end an NPC
+// village there (the hut's fall, the village's conquered flag +0x556, the conquest cinematic), and nothing told the
+// host: when it was back its state stood the village up again. A village this guest's game conquers while the host
+// is away now goes to the host as CMD_CONQUER (its position; held there until the host is back in Tribe, BUG-0693),
+// and the host's game fells that village's hut with the game's own blow by a member of that player.
+// `coop.fix tribe.away_conquest off`: 0.7.12.
+static bool g_away_conquest_fix = true;
+COOP_FIX("tribe.away_conquest", "BUG-0879", g_away_conquest_fix,
+         "tribe: a village a guest conquers while the host is away is conquered in the host's game when it is back");
+static uint32_t g_conquests_sent, g_conquests_done, g_conquests_refused;
 
 static void send_cmd(uint8_t kind, const std::vector<uint16_t>& ids, int action, const Target& tgt, const net::Vec3& pos)
 {
@@ -406,6 +714,7 @@ static struct {
     void* target = nullptr;
     std::vector<uint16_t> ids;
     double since = 0;
+    uint32_t serial = 0; // BUG-0951
 } g_ring;
 static uint32_t g_rings_drawn = 0;
 static uintptr_t a_RingDraw, a_TribeUI;
@@ -418,6 +727,7 @@ static void ring_order(int action, void* target, const std::vector<uint16_t>& id
         g_ring.target = target;
         g_ring.ids = ids;
         g_ring.since = H->time_seconds();
+        g_ring.serial = game::object_serial(target);
     } else
         g_ring.target = nullptr; // another order ends the attack
 }
@@ -433,7 +743,7 @@ static void SK_THISCALL h_RingsUpdate(void* owner)
     void* t = g_ring.target;
     if (!t || !g_ring_fix || !a_RingDraw || !is_guest() || game::mode_id() != modes::kTribe)
         return;
-    if (H->time_seconds() - g_ring.since > 120 || !game::object_alive(t) || game::is_destroyed(t) || game::is_dead(t) ||
+    if (H->time_seconds() - g_ring.since > 120 || !kept_alive(t, g_ring.serial, 0) || game::is_destroyed(t) || game::is_dead(t) ||
         F<float>(t, 0x5E0) <= 0) {
         g_ring.target = nullptr;
         return;
@@ -441,7 +751,7 @@ static void SK_THISCALL h_RingsUpdate(void* owner)
     void* by = nullptr;
     for (uint16_t id : g_ring.ids) {
         auto it = g_gm.find(id);
-        if (it != g_gm.end() && it->second.c && F<uint8_t>(it->second.c, kSelectedOff)) {
+        if (it != g_gm.end() && mirror_ok(it->second) && F<uint8_t>(it->second.c, kSelectedOff)) { // (BUG-0955)
             by = it->second.c;
             break;
         }
@@ -510,7 +820,21 @@ static void coop_init();
 // the guest sets the host member's scale on its mirror. `coop.fix tribe.scale off`: own sizes (0.7.3.6).
 static bool g_scale_fix = true;
 COOP_FIX("tribe.scale", "BUG-0475", g_scale_fix, "tribe: a guest's mirror of a tribe member gets the host member's size");
-static const fields::Field kMemberFields[] = {fields::kScale};
+// BUG-0652: which member leads its tribe (the tribe's cCommunity::mpLeader +0x11C: the chief, staff 0xB, chief
+// size) is each game's own: after a mirror of the host's leader was made again (a load, a rejoin, the mirror
+// respawned) the guest's game had made another member the leader (cTribe::SetChieftain(0): the first adult), an
+// NPC tribe's musician (tool 6) there. That mirror kept the staff (tribe.leader_tool, BUG-0583: the warning
+// "fields: tribe_member_tool N tool: applied 6.000, the game reads 11.000" in 55 lab runs), the host's leader
+// mirror was a member with a staff too: the guest saw two chiefs and one musician less. The leader is a field of
+// the members (2 = leads, 1 = not: values under 0.001 are not sent); the guest's game makes the mirror of the
+// host's leader its tribe's leader with SetChieftain. In this kind (kid 2) it is applied before the tools (kid 5)
+// in the same pass: the old leader takes the host's tool at once. `coop.fix tribe.leader_sync off`: own leaders.
+static bool g_leader_sync_fix = true;
+COOP_FIX("tribe.leader_sync", "BUG-0652", g_leader_sync_fix, "tribe: a guest's game makes the mirror of the host's tribe leader its leader (staff, chief size): no second chief, the old one takes its tool");
+static float read_leader(void* c);
+static void apply_leader(void* c, float v);
+static const fields::Field kLeader{fields::F_LEADER, "leader", read_leader, apply_leader, 0.01f};
+static const fields::Field kMemberFields[] = {fields::kScale, kLeader};
 
 static void member_each(void (*cb)(uint16_t, void*, void*), void* u)
 {
@@ -526,7 +850,7 @@ static void member_each(void (*cb)(uint16_t, void*, void*), void* u)
 static void* member_mirror(uint16_t id)
 {
     auto it = g_gm.find(id);
-    return it != g_gm.end() && it->second.c && game::object_alive(it->second.c) ? it->second.c : nullptr;
+    return it != g_gm.end() && mirror_ok(it->second) ? it->second.c : nullptr; // (BUG-0955)
 }
 
 // ---- tools (BUG-0514, docs/re/tribe.md#tribe-tools-guest) ----
@@ -538,6 +862,8 @@ static void* member_mirror(uint16_t id)
 // its mirror with the game's SetSpecializedTool. `coop.fix tribe.tool_hold off`: mirrors keep their own.
 constexpr uintptr_t kToolsOff = 0x36C;    // cTribe: vector<cTribeTool*> mTools
 constexpr uintptr_t kHeldToolOff = 0x102C; // cCreatureCitizen: mSpecializedTool
+static uintptr_t a_SetChieftain; // BUG-0652
+static uint16_t member_id(void* c);
 static uintptr_t a_SetSpecializedTool, a_ToolModelReset, a_SetToolPurchased, a_ToolLayout, a_IsLeader;
 static bool g_tool_hold_fix = true;
 COOP_FIX("tribe.tool_hold", "BUG-0514", g_tool_hold_fix, "tribe: a guest's mirror of a member holds the tool the host's member took (weapon, instrument, heal)");
@@ -571,8 +897,295 @@ static void apply_held_tool(void* c, float v)
     thiscall<void>(a_SetSpecializedTool, c, t);
     g_tool_sets++;
 }
+// BUG-0652 (above kMemberFields)
+static uint32_t g_leaders_set;
+static float read_leader(void* c) { return is_leader(c) ? 2.f : 1.f; }
+static void apply_leader(void* c, float v)
+{
+    if (!g_leader_sync_fix || !a_SetChieftain || v < 1.5f || !is_citizen(c) || is_leader(c))
+        return;
+    void* tribe = F<void*>(c, 0x1014); // cCreatureCitizen: its tribe (+0x1010 its city: Civ, not here)
+    if (F<void*>(c, 0x1010) || !tribe || !skg::readable(tribe, 0x120))
+        return;
+    void* old = F<void*>(tribe, 0x11C);
+    thiscall<void>(a_SetChieftain, tribe, c);
+    if (g_leaders_set++ < 5)
+        H->log(M, SK_INFO, "tribe: member #%u leads its tribe here too, as in the host's game (the leader was %s, BUG-0652)",
+               member_id(c), old ? ("#" + std::to_string(member_id(old))).c_str() : "none");
+}
 static const fields::Field kHeldTool{fields::F_TOOL, "tool", read_held_tool, apply_held_tool, 0.01f};
 static const fields::Field kToolFields[] = {kHeldTool};
+
+// BUG-0906: what a member holds in its hand (+0xFFC mCurrentHandheldItem: 0x11 the chief's staff, 1..4 / 0xD..0x10 /
+// 0x12 the racks' weapons, instruments and the healer's rod, 0x13.. what it carries) is put there by the game's
+// behaviours (the grab 0xDAB4A0, the idle and gather nodes: 0xC26470 / 0xC250A0), never by SetSpecializedTool, which
+// only writes the tool type. A guest's mirrors run no behaviours: the mirror of the host's chief stood without its
+// staff (the tool read 0xB on both games) and the mirrors of members with a weapon or an instrument were empty-handed
+// (seen in the same_view_tribe key frames, lab 20261110-201619). The held item is a replicated field of the members
+// (its own kind and switch): the guest attaches the host member's item with the game's own call. On the wire the
+// item + 1 (values under 0.001 are not sent). `coop.fix tribe.held_item off`: the mirrors' hands as before.
+constexpr uintptr_t kHeldItemOff = 0xFFC; // cCreatureCitizen: mCurrentHandheldItem
+constexpr uintptr_t kHandOff = 0xFC4;     // ... the hand (an attachment slot) the item goes to
+constexpr uint32_t kHandKeyBase = 0x2735300; // the attachment key of hand h (0xC250A0)
+static uintptr_t a_SetHandheldItem, a_AttachmentOf;
+static uintptr_t a_ClearPending; // BUG-0992
+static bool g_held_item_fix = true;
+COOP_FIX("tribe.held_item", "BUG-0906", g_held_item_fix, "tribe: a guest's mirror of a member holds what the host's member holds (the chief's staff, a weapon, an instrument)");
+static uint32_t g_item_sets;
+// the member's animated body exists (+0xB54: null once the game cleaned the citizen up)
+static bool has_body(void* c) { return is_citizen(c) && F<void*>(c, 0xB54) != nullptr; }
+static float read_held_item(void* c) { return has_body(c) ? (float)(F<int>(c, kHeldItemOff) + 1) : 1.f; }
+// The item's model alone is not the look: how it is held is a timed modifier of kind 5 of the creature (the table at
+// +0xB48, 8 entries of 0x44 bytes; data: the attachment's index, the handle of an animation, a "started" flag; added
+// by the attach 0xC250A0 through 0xC240E0). Its tick 0xC11240 starts the taking of the item on its first run
+// (attachment +0xC count up, 0xC0FCA0) and lives as long as its animation plays; its remove 0xC14A00 (count down,
+// 0xC141D0) puts the item into the resting grip (the chief: the arm raised, the staff upright). In the host's game
+// the animation is a short one (the change animation 0x2C39200, a behaviour's), the modifier ends with it. A
+// mirror's animation is its idle loop, which never ends: the modifier stayed and the item was held as in the middle
+// of taking it (the staff stuck out forward, the arm down; the same on the host when a test attached there, until
+// the modifier was ended by hand). So a started kind 5 modifier that a mirror has had for kHoldMax s is ended with
+// the game's own remove (as the detach 0xC241A0 does): the item settles into the grip.
+constexpr uintptr_t kModifiersOff = 0xB48; // cCreatureBase: the timed modifiers' table (8 x 0x44)
+constexpr double kHoldMax = 1.5;
+static uintptr_t a_ModifierRemove;
+static uint32_t g_item_holds_ended;
+struct HoldSeen {
+    uint32_t handle;
+    double since;
+};
+static std::unordered_map<uint16_t, HoldSeen> g_hold_seen; // mirror id -> its started modifier, first seen
+// the hand's started modifier of c: its handle (u16 serial | index << 16), 0 none; end: remove it
+static uint32_t hold_modifier(void* c, bool end)
+{
+    uint8_t* tab = F<uint8_t*>(c, kModifiersOff);
+    if (!a_ModifierRemove || !tab || !skg::readable(tab, 8 * 0x44))
+        return 0;
+    for (uint32_t i = 0; i < 8; i++) {
+        uint8_t* e = tab + i * 0x44;
+        if (*(int*)(e + 0x24) != 5 || *(int*)(e + 0x28) != 0 || *(void**)(e + 0x3C) != c || !*(int*)(e + 8))
+            continue; // (not started: ended now it would leave the item without a grip)
+        uint32_t h = (uint32_t) * (uint16_t*)(e + 0x20) | (i << 16) | 0x80000000u;
+        if (end) {
+            thiscall<void>(a_ModifierRemove, tab, h & 0x7FFFFFFFu);
+            g_item_holds_ended++;
+        }
+        return h;
+    }
+    return 0;
+}
+static void set_hand(void* c, int item) { thiscall<void>(a_SetHandheldItem, c, item, -1); } // -1: its own hand (+0xFC4)
+// BUG-0914: a member's staff or instrument is held in its hand while the animation it was taken in plays (the kind 5
+// timed modifier the attach 0xC240E0 adds with that animation's handle; #tribe-held-item), else in the resting grip.
+// The host's game takes the item inside its behaviour animations (a chief swinging its staff: `hold=1`); the guest's
+// mirror plays the same animation (the relay) but its hand never takes the item again: the staff stayed upright. The
+// host sends each start of a member's hold with the animation playing then (kind 11: u8 n, n x {u16 id, u32 anim}; anim 0:
+// the hold ended, and a mirror's hold taken for it ends too); a
+// guest attaches the item again on its mirror while it plays that animation (Citizen_SetHandheldItem, its own hand:
+// the modifier is bound to the mirror's animation and ends with it, as on the host), and held_items_tick leaves such
+// a hold to its animation (8 s at most). `coop.fix tribe.mirror_hold off`: nothing sent or done.
+static bool g_mirror_hold_fix = true;
+COOP_FIX("tribe.mirror_hold", "BUG-0914", g_mirror_hold_fix, "tribe: a guest's mirror swings its staff or instrument when the host's member does (it stood with the item in the resting grip)");
+static uint32_t g_hold_sent, g_hold_rx, g_hold_bound;
+constexpr double kHoldBoundMax = 8.0;
+// BUG-0962: the host's hold is the truth for a mirror's hand too. A gesture's own event can take the item on the mirror
+// where the host's member does not take it (lab, the chief's 0x04C6CB02: the mirror held its staff for 1.66 s, the
+// host's member never; the same_view stills showed the staff in the hand on one game and upright on the other). Such a
+// hold (not bound to a host's hold, none of the host's known for the member) ends after kHoldUnsent s instead of
+// BUG-0906's 1.5 s; a hold the host's member also takes comes with the host's start 0.0-0.07 s after the mirror's own
+// (lab) and is bound then. `coop.fix tribe.mirror_hold_only off`: 1.5 s as before.
+static bool g_hold_only_fix = true;
+COOP_FIX("tribe.mirror_hold_only", "BUG-0962", g_hold_only_fix,
+         "tribe: a guest's mirror lets go of an item its own animation took when the host's member did not take it (the staff was in the hand on one game only)");
+constexpr double kHoldUnsent = 0.35;
+// BUG-0971: the change animation 0x02C39200 (Citizen's animated change 0xC255E0) is where a member takes an item into
+// its hand (or another one): the host's member has it at the animation's event, the hold starts with it, and the
+// mirror's item (the replicated field, a few frames later) is still 0 or the old one when the host's start comes:
+// hold_try found no item and the mirror played the change empty-handed (lab: `coop.tribe holdtrace`, the start came
+// 0.1-0.3 s after the host's hold began, the mirror's item 0 until it ended). The host sends the item with the start
+// (kind 12: kind 11's entries + u8 item) and the mirror takes that item. `coop.fix tribe.hold_item off`: kind 11, the
+// mirror's own item.
+static bool g_hold_item_fix = true;
+COOP_FIX("tribe.hold_item", "BUG-0971", g_hold_item_fix,
+         "tribe: a guest's mirror takes the item the host's member takes in its change animation (it played the change with the hand empty)");
+static uint32_t g_hold_item_sets;
+// BUG-0968: a host's hold whose animation the mirror does not play could never bind (hold_try waits for the mirror to
+// play it): lab, `coop.tribe holdtrace` of the guest's chief: the host went from its gesture 0x04C6CB02 straight into
+// the change 0x02C39200 and held, the relay brought no start of it (or the mirror's gesture went on), and every start
+// (again once a second) found the mirror in the gesture until the host's end; the same_view still showed the host's
+// chief with the torch raised in its hand and the guest's copy in another pose without it. The host's start says what
+// its member plays now: a mirror that plays another animation starts that one (at most once a second) and binds the
+// hold to it. `coop.fix tribe.hold_anim off`: it waits for the relay as before.
+static bool g_hold_anim_fix = true;
+COOP_FIX("tribe.hold_anim", "BUG-0968", g_hold_anim_fix,
+         "tribe: a guest's mirror plays the animation the host's member holds its item in when it played another one (the chief raised its torch on one game only)");
+static uint32_t g_hold_anim_plays;
+// BUG-0992: a start over a non-looping animation (a gesture 0x04C6CB02, 2-46 s) waits until that one ends, on the
+// host too (its change began 1.1 s after its own start call). (a) The mirror's gesture began later than the host's, so
+// it ended later: the host's change and its 0.35-0.43 s hold were over before the mirror's change began (0.7.13 final
+// check, holdtrace `P 02C39200 04C6CB02`, `t` until `E`). Now a fresh host hold whose animation the mirror still does
+// not play 0.2 s after hold_try started it is held in the animation the mirror plays (trace Q). (b) A relayed restart
+// of the gesture the mirror plays waited as a pending track of the same id, and the attach bound the hold to that
+// pending track (0xC240E0 looks there first): no hold for the host's 2.7-4.2 s. Now the pending tracks are ended
+// first (the game's 0xA02B00, trace W) and the hold binds to the running one. docs/re/tribe.md#tribe-anim-queued-start.
+// `coop.fix tribe.hold_queued off`: neither.
+static bool g_hold_queued_fix = true;
+COOP_FIX("tribe.hold_queued", "BUG-0992", g_hold_queued_fix,
+         "tribe: a guest's mirror holds its item while the host's member does even when the mirror's own gesture still runs (a short hold in the change animation was missed)");
+static uint32_t g_hold_queued;
+static uint32_t g_hold_only_ended;
+static void hold_try(GMember& g, double now);
+// tests (BUG-0968 / BUG-0970): the last hold events of the guest's mirrors (`coop.tribe holdtrace [id]`)
+struct HoldEv {
+    double t;
+    uint16_t id;
+    char what; // S host start rx, E host end rx, T bound by hold_try, t hold_try miss (cur), Q bound in the mirror's current animation, W pending tracks ended (BUG-0992), O own hold seen, C own cut, M 1.5 s end, R relay played
+    uint32_t a, b;
+};
+static HoldEv g_hold_ev[4096];
+static uint32_t g_hold_ev_n;
+static void hold_ev(uint16_t id, char what, uint32_t a, uint32_t b)
+{
+    g_hold_ev[g_hold_ev_n++ % 4096] = {H->time_seconds(), id, what, a, b};
+}
+// guest, a few times a second: the mirrors' items settle into the grip
+static void held_items_tick(double now)
+{
+    static double last;
+    if (now - last < 0.25 && now >= last)
+        return;
+    last = now;
+    if (!g_held_item_fix) {
+        g_hold_seen.clear();
+        return;
+    }
+    for (auto& [id, m] : g_gm) {
+        void* c = m.c;
+        if (m.hold_anim && g_mirror_hold_fix) // BUG-0914: a hold that came before the mirror had the item or the animation
+            hold_try(m, now);
+        uint32_t h = mirror_ok(m) && has_body(c) && F<int>(c, kHeldItemOff) ? hold_modifier(c, false) : 0; // (BUG-0955)
+        auto it = g_hold_seen.find(id);
+        if (!h) {
+            if (it != g_hold_seen.end())
+                g_hold_seen.erase(it);
+        } else if (it == g_hold_seen.end() || it->second.handle != h || now < it->second.since) {
+            g_hold_seen[id] = {h, now};
+            uint32_t cur = 0;
+            game::drawn_state(c, nullptr, &cur);
+            hold_ev(id, 'O', cur, m.hold_bound);
+        } else if (g_hold_only_fix && g_mirror_hold_fix && !m.hold_bound && !m.hold_anim &&
+                 now - it->second.since >= kHoldUnsent) { // BUG-0962: no host hold for it
+            hold_ev(id, 'C', 0, 0);
+            hold_modifier(c, true);
+            g_hold_seen.erase(it);
+            g_hold_only_ended++;
+        } else if (now - it->second.since >= kHoldMax) {
+            uint32_t cur = 0;
+            if (g_mirror_hold_fix && m.hold_bound && now - m.hold_at < kHoldBoundMax && game::drawn_state(c, nullptr, &cur) &&
+                cur == m.hold_anim_bound)
+                continue; // BUG-0914: taken in the host's animation, it ends with it
+            m.hold_bound = false;
+            hold_ev(id, 'M', 0, 0);
+            hold_modifier(c, true);
+            g_hold_seen.erase(it);
+        }
+    }
+    if (g_hold_seen.size() > 512)
+        g_hold_seen.clear();
+}
+static void apply_held_item(void* c, float v)
+{
+    int item = (int)std::lround(v) - 1, cur = has_body(c) ? F<int>(c, kHeldItemOff) : -1;
+    if (cur < 0 || !a_SetHandheldItem || item < 0 || item > 0x17 || cur == item)
+        return;
+    set_hand(c, item);
+    if (g_item_sets++ < 20)
+        H->log(M, SK_INFO, "tribe: member #%u's hand: item %d -> %d as in the host's game (BUG-0906)", member_id(c), cur, item);
+}
+// tests: 1 when the game has a model attached to the member's hand (what is drawn), 0 none, -1 unknown
+static int hand_model(void* c)
+{
+    if (!has_body(c) || !a_AttachmentOf)
+        return -1;
+    uint8_t* rec = thiscall<uint8_t*>(a_AttachmentOf, c, kHandKeyBase + F<uint32_t>(c, kHandOff));
+    return rec && skg::readable(rec + 0x8C, 4) && *(void**)(rec + 0x8C) ? 1 : 0;
+}
+static const fields::Field kHeldItem{fields::F_HELD_ITEM, "item", read_held_item, apply_held_item, 0.01f};
+static const fields::Field kItemFields[] = {kHeldItem};
+
+// BUG-0912: the game sizes the item's model when it attaches it (0xC250A0: the scale of the model's transform = the
+// height of the member's bounding box, spatial vt 0x68 [+0x14] - [+8], times the tuning float 0x1581334) and never
+// again. The host's chief got its staff at its own size and was made 1.3x by the mod afterwards (chiefs_tick); its
+// mirror gets the staff when it already has the host's 1.3x size: the staff was 1.3x bigger on the guest's screen
+// (tribe_held_item's key frames, lab 20261110-214352). The size of the held model is a replicated field of the
+// members (its own kind and switch): the guest sets the host's on its mirror's item, the way the attach does (the
+// model's transform read, its scale set, written back). 1 stands for "no model". `coop.fix tribe.item_scale off`:
+// the mirror's own item size.
+static bool g_item_scale_fix = true;
+COOP_FIX("tribe.item_scale", "BUG-0912", g_item_scale_fix, "tribe: what a guest's mirror of a member holds has the size it has in the host's game (the chief's staff was 1.3x bigger)");
+struct ItemXf { // Math Transform as the game passes it to a model (0x38 bytes)
+    uint16_t flags, count;
+    float offset[3];
+    float scale;
+    float rot[9];
+};
+static void* hand_item_model(void* c)
+{
+    if (!has_body(c) || !a_AttachmentOf || !F<int>(c, kHeldItemOff))
+        return nullptr;
+    uint8_t* rec = thiscall<uint8_t*>(a_AttachmentOf, c, kHandKeyBase + F<uint32_t>(c, kHandOff));
+    void* m = rec && skg::readable(rec + 0x8C, 4) ? *(void**)(rec + 0x8C) : nullptr;
+    return m && skg::readable(m, 4) && skg::readable(*(void**)m, 0x48) ? m : nullptr;
+}
+static uint32_t g_item_scale_sets;
+static float read_item_scale(void* c)
+{
+    void* m = hand_item_model(c);
+    if (!m)
+        return 1.f;
+    ItemXf t{};
+    vcall<void>(m, 0x20 / 4, &t); // the model's transform (as 0xC2553E)
+    return std::isfinite(t.scale) && t.scale > 0.001f && t.scale < 1000.f ? t.scale : 1.f;
+}
+static void apply_item_scale(void* c, float v)
+{
+    void* m = hand_item_model(c);
+    if (!m || !(v > 0.01f && v < 200.f))
+        return;
+    ItemXf t{};
+    vcall<void>(m, 0x20 / 4, &t);
+    t.scale = v;
+    t.count++; // (as 0xC25556: the transform's change count)
+    vcall<void>(m, 0x18 / 4, &t);
+    g_item_scale_sets++;
+}
+static const fields::Field kItemScale{fields::F_ITEM_SCALE, "item_scale", read_item_scale, apply_item_scale, 0.02f};
+static const fields::Field kItemScaleFields[] = {kItemScale};
+
+// BUG-0935: a guest's roster showed every member card red with an empty bar while the host's were well. A member's
+// hunger is cCreatureBase +0xBBC (mHunger, 0..100; +0xBB8 mHungerDelta, -0.28 a second; +0xB90 mHungerDelayTimer). Its
+// update 0xC0D5A0 (cCreatureBase vt, every frame) adds delta x dt and, below 1, has the member starve: TakeDamage of its
+// combatant (+0x5A8 vt 0x18) every frame. The member eats in its behaviour tree (0xC22C40: hunger up, AddHealth, the
+// tribe's food bundles down). A guest's mirror runs no behaviour tree (h_BTTick), so it never ate: its hunger ran down to
+// 0 in about 6 minutes and the game showed the member starving (the card red, the bar empty) and took health off it,
+// which the snapshot put back. Hunger is a replicated field of the members (its own kind and switch), set with the
+// game's clamped setter 0xC0BB30. `coop.fix tribe.mirror_hunger off`: the mirror's own hunger.
+static bool g_hunger_fix = true;
+COOP_FIX("tribe.mirror_hunger", "BUG-0935", g_hunger_fix, "tribe: a guest's mirror of a member is as hungry as the host's member (the roster's cards were red, starving, on the guest)");
+static uintptr_t a_SetHunger;
+static uint32_t g_hunger_sets;
+constexpr uintptr_t kHungerOff = 0xBBC;
+static float read_hunger(void* c) { return has_body(c) ? F<float>(c, kHungerOff) : 100.f; }
+static void apply_hunger(void* c, float v)
+{
+    if (!has_body(c) || !a_SetHunger || !(v >= 0.f && v <= 100.f))
+        return;
+    if (g_hunger_sets++ < 10)
+        H->log(M, SK_INFO, "tribe: member #%u's hunger %.1f -> %.1f as in the host's game (BUG-0935)", member_id(c),
+               F<float>(c, kHungerOff), v);
+    thiscall<void>(a_SetHunger, c, v);
+}
+static const fields::Field kHunger{fields::F_HUNGER, "hunger", read_hunger, apply_hunger, 0.02f};
+static const fields::Field kHungerFields[] = {kHunger};
 
 static int tool_type(void* tool) { return vcall<int>(tool, 0x58 / 4); }
 
@@ -659,7 +1272,16 @@ static void* tribe_of_index(int i)
         auto ts = all_tribes();
         return i < (int)ts.size() && i < 32 ? ts[i] : nullptr;
     }
-    return i < (int)g_local_tribe_of.size() ? g_local_tribe_of[i] : nullptr;
+    void* t = i < (int)g_local_tribe_of.size() ? g_local_tribe_of[i] : nullptr;
+    if (t && g_world_map_fix) { // BUG-0672: a tribe of this world only (the entry may be of a world that is gone)
+        auto ts = all_tribes();
+        if (std::find(ts.begin(), ts.end(), t) == ts.end()) {
+            if (g_map_stale_skipped++ < 8)
+                H->log(M, SK_WARN, "tribe: the host's tribe %d maps to %p, no tribe of this world: not used (BUG-0672)", i, t);
+            return nullptr;
+        }
+    }
+    return t;
 }
 
 void for_each_tool(bool all, ToolFn fn, void* user)
@@ -823,9 +1445,41 @@ static std::string ai_line(void* c)
              rec ? *(int*)rec : -1, rec ? *(void**)(rec + 0x28) : nullptr, rec ? (int)rec[0x38] : 0, node, depth, (int)mem[0],
              mem[1], *(float*)&mem[2], *(float*)&mem[3], *(float*)&mem[4], mem[5], (int)mem[6], (int)mem[7], mode, lf,
              goal[0], goal[1], goal[2], goal[3], p.x, p.y, p.z, F<uint8_t>(c, kSelectedOff));
-    char e[64];
+    char e[200];
     snprintf(e, sizeof e, " carry=%.1f tool=%d", carried(c), F<int>(c, kHeldToolOff));
-    return std::string(b) + e;
+    std::string out = std::string(b) + e;
+    { // BUG-0531 (diagnostics): the walk's waypoints left, the tree's ticks so far (host), the animation playing
+        auto hm = g_hm.find(c);
+        uint32_t an = 0;
+        game::drawn_state(c, nullptr, &an);
+        // (cCreatureCitizen::Update 0xC24A30 ticks the tree only with +0x135 set, the tree *ai set and no city +0x1010)
+        snprintf(e, sizeof e, " path=%d bt=%u anim=%08X upd=%u tree=%d city=%d", lb && le >= lb ? (int)((le - lb) / 0x3C) : -1,
+                 hm == g_hm.end() ? 0u : hm->second.bt_ticks, an, F<uint8_t>(c, 0x135), *(void**)ai != nullptr,
+                 F<void*>(c, 0x1010) != nullptr);
+        out += e;
+    }
+    // BUG-0531: the order's target object: alive in the object list, its noun and place, its distance
+    if (void* t = rec ? *(void**)(rec + 0x28) : nullptr) {
+        struct Q {
+            void* t;
+            uint32_t noun;
+        } q{t, 0};
+        game::for_each_object(
+            [](void* o, uint32_t n, void* u) {
+                if (o == ((Q*)u)->t) {
+                    ((Q*)u)->noun = n;
+                    return false;
+                }
+                return true;
+            },
+            &q);
+        net::Vec3 tp{};
+        bool has_pos = q.noun && game::object_alive(t) && game::object_position(t, tp);
+        snprintf(e, sizeof e, " tgt_listed=%d tgt_noun=%08X tgt_alive=%d tgt_pos=(%.1f %.1f %.1f) tgt_d=%.1f", q.noun != 0, q.noun,
+                 q.noun ? (int)game::object_alive(t) : -1, tp.x, tp.y, tp.z, has_pos ? net::dist(tp, p) : -1.f);
+        out += e;
+    }
+    return out;
 }
 static bool save_filter(void* o, uint32_t noun); // BUG-0495 (below)
 static void* SK_THISCALL h_Form(void* self, int arg); // BUG-0483 (below)
@@ -833,20 +1487,42 @@ using Form_t = void*(SK_THISCALL*)(void*, int);
 static Form_t o_Form;
 static uintptr_t a_Form, a_NpcCtrl;
 static void theme_hooks_install(); // BUG-0568 (the Tribe theme music relay, below)
+static void party_hooks_install(); // BUG-0646 (the fire pit party music relay, below)
+static void party_forget();
+static void SK_THISCALL h_BabyBorn(void*, float, float, float); // BUG-0671 (below)
+static void baby_tick(double now);
+static void baby_forget();
+static void on_world_effect_start(uint8_t from, uint32_t id, void* fx, const net::Vec3& pos); // BUG-0824 (below)
 static void save_start();
 static void save_end();
 
+static void on_idle_anim(void* c, uint32_t anim);
+static uintptr_t a_TribeGroundStamp; // BUG-0947 (village_stamps_tick)
 bool init(const SkHost* host, SkMod* mod, Ctx ctx)
 {
     H = host;
     M = mod;
     C = std::move(ctx);
-    fields::add_kind({fields::K_TRIBE_MEMBER, "tribe_member", &g_scale_fix, kMemberFields, 1, member_each, member_mirror,
+    fields::add_kind({fields::K_TRIBE_MEMBER, "tribe_member", &g_scale_fix, kMemberFields, 2, member_each, member_mirror,
                       [] { return active(); }});
     fields::add_kind({fields::K_TRIBE_TOOL, "tribe_member_tool", &g_tool_hold_fix, kToolFields, 1, member_each, member_mirror,
                       [] { return active(); }});
+    fields::add_kind({fields::K_TRIBE_ITEM, "tribe_member_item", &g_held_item_fix, kItemFields, 1, member_each, member_mirror,
+                      [] { return active(); }});
+    fields::add_kind({fields::K_TRIBE_ITEM_SCALE, "tribe_member_item_scale", &g_item_scale_fix, kItemScaleFields, 1, member_each,
+                      member_mirror, [] { return active(); }});
+    fields::add_kind({fields::K_TRIBE_HUNGER, "tribe_member_hunger", &g_hunger_fix, kHungerFields, 1, member_each, member_mirror,
+                      [] { return active(); }});
+    a_SetHunger = H->sym("SporeCoop::Creature_SetHunger");
+    a_TribeGroundStamp = H->sym("SporeCoop::cTribe_ApplyGroundStamp"); // BUG-0947
+    game::set_idle_anim_listener(on_idle_anim); // BUG-0936
+    a_SetHandheldItem = H->sym("SporeCoop::Citizen_SetHandheldItem");
+    a_AttachmentOf = H->sym("SporeCoop::Creature_AttachmentOf");
+    a_ModifierRemove = H->sym("SporeCoop::CreatureModifiers_Remove");
+    a_ClearPending = H->sym("SporeCoop::AnimatedCreature_ClearPending"); // BUG-0992
     a_SetSpecializedTool = H->sym("Simulator::cCreatureCitizen::SetSpecializedTool");
     a_IsLeader = H->sym("SporeCoop::Citizen_IsLeader");
+    a_SetChieftain = H->sym("SporeCoop::cTribe_SetChieftain");
     a_ToolModelReset = H->sym("SporeCoop::cTribeTool_PlacementReset");
     a_SetToolPurchased = H->sym("SporeCoop::cTribe_SetToolPurchased");
     a_ToolLayout = H->sym("SporeCoop::cTribe_ToolLayout");
@@ -862,6 +1538,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx ctx)
     a_CitizenVt = H->sym("Simulator::cCreatureCitizen::vftable");
     a_TreeVt = H->sym("Simulator::cTreeData::vftable");
     a_SpawnNpcTribe = H->sym("Simulator::SpawnNpcTribe"); // BUG-0381 (optional)
+    a_MaxPop = H->sym("SporeCoop::cTribe_MaxPopulation"); // BUG-0645 (optional)
     g_ok = a_GetPlayerTribe && a_DoAction && a_SetValueVector3 && a_BTTick && a_DoActionForObjects && a_WalkSelected &&
            a_SetSelected && a_CreateCitizen && a_AddMember && a_CitizenVt && a_TreeVt;
     if (!g_ok) {
@@ -876,11 +1553,22 @@ bool init(const SkHost* host, SkMod* mod, Ctx ctx)
     a_TribeUI = H->sym("SporeCoop::TribeUI_ptr");
     if (uintptr_t a = H->sym("SporeCoop::TribeTargetRings_Update"))
         H->hook_create(M, (void*)a, (void*)h_RingsUpdate, (void**)&o_RingsUpdate);
+    a_BTTerminate = H->sym("SporeCoop::Citizen_BTTerminate"); // BUG-0667 (optional)
+    if (uintptr_t a = H->sym("SporeCoop::cTribe_ReleaseSlot")) // BUG-0667 (optional)
+        H->hook_create(M, (void*)a, (void*)h_ReleaseSlot, (void**)&o_ReleaseSlot);
+    if (uintptr_t a = H->sym("Simulator::cCreatureCitizen::SetTribe")) // BUG-0667 (optional)
+        H->hook_create(M, (void*)a, (void*)h_SetTribe, (void**)&o_SetTribe);
+    if (uintptr_t a = H->sym("SporeCoop::cCreatureCitizen_Teardown")) // BUG-0667 (optional)
+        H->hook_create(M, (void*)a, (void*)h_CitizenTeardown, (void**)&o_CitizenTeardown);
     a_Form = H->sym("SporeCoop::NpcTribeController_FormTribe"); // BUG-0483 (optional)
     a_NpcCtrl = H->sym("Simulator::cNpcTribeController::Get");
     if (a_Form)
         H->hook_create(M, (void*)a_Form, (void*)h_Form, (void**)&o_Form);
     theme_hooks_install(); // BUG-0568 (optional)
+    party_hooks_install(); // BUG-0646 (optional)
+    if (uintptr_t a = H->sym("SporeCoop::TribeStage_BabyBorn")) // BUG-0671 (optional)
+        H->hook_create(M, (void*)a, (void*)h_BabyBorn, (void**)&o_BabyBorn);
+    effects::set_world_start_observer(on_world_effect_start); // BUG-0824
     coop_init();
     savestrip::add_filter(save_filter); // BUG-0495
     savestrip::add_save_hooks(save_start, save_end);
@@ -894,12 +1582,20 @@ bool init(const SkHost* host, SkMod* mod, Ctx ctx)
 // `coop.fix tribe.place_chiefs off`: chiefs stay where the game put them.
 static bool g_place_fix = true;
 COOP_FIX("tribe.place_chiefs", "BUG-0340", g_place_fix, "tribe: at arrival and after a rejoin every player's chief too close to another gets its own spot round the village");
+// BUG-0610: place_chiefs looked at every chief for 60 s after an arrival, also one that walked past another chief: a
+// member walking at 6-9 m/s on its player's order was teleported 9-22 m onto its spot (both games saw the jump). Only a
+// chief that stands is put on its spot now (as spread_chiefs). Off: 0.7.8 (walking chiefs too).
+static bool g_place_still_fix = true;
+COOP_FIX("tribe.place_still", "BUG-0610", g_place_still_fix, "tribe: the arrival's chief placing leaves a walking chief alone (it was teleported up to 22 m)");
+static uint32_t g_place_walking = 0; // chiefs left alone because they walked
 static double g_place_due = 0, g_place_until = 0;
 static uint32_t g_placed;
 static std::unordered_set<void*> g_placed_now; // chiefs placed in this arrival's window
+static std::unordered_map<void*, net::Vec3> g_place_first; // BUG-0610: where each chief stood at its first look
 static void arrival_place_due(double now)
 {
     g_placed_now.clear();
+    g_place_first.clear();
     g_place_due = now + 3.0;   // the split and the chiefs settle first
     g_place_until = now + 60.0; // a player still loading: the guests' games come in later
 }
@@ -975,8 +1671,200 @@ void on_behaviour_anim(void* c, uint32_t anim, int how, int a, int b)
         g_member_anim_out.push_back({it->second.id, anim, (uint8_t)how, (uint8_t)(a & 0xFF), (int32_t)b});
 }
 
+// BUG-0946 (docs/re/tribe.md#tribe-member-toss): a blow of 60 hp and more throws a member up (about 5 m, over 3 m for
+// 1.3-1.5 s, on the host's game, the fight node's reaction); a guest's mirror keeps its own height (the two games'
+// grounds differ: drive.own_height BUG-0329, tribe.mirror_ground BUG-0444) and stayed on its ground. As the animal
+// proxies (npc.air, BUG-0550): once a cycle the host sends every member it runs that is off its ground for a reason
+// its game knows (drive::body_airborne: not grounded and more than 0.15 m off GetHeightAt; not dead) with its height
+// over the host's ground (MSG_NPC_ANIM kind 9: u8 n, n x {u16 member id, f32 agl}); a guest places that mirror at that
+// height over its own ground (drive::air_place: not walked, not grounded, held through animation starts) while the
+// news is fresh (0.35 s), and lets its game land it after. Older guests ignore the kind (npc.cpp passes 2..8 on).
+// `coop.fix tribe.mirror_air off`: nothing sent or placed (the mirror on its ground).
+static bool g_mirror_air_fix = true;
+COOP_FIX("tribe.mirror_air", "BUG-0946", g_mirror_air_fix, "tribe: a member thrown up by a blow (or otherwise off its ground) on the host is in the air on the guests' screens too");
+static uint32_t g_air_sent, g_air_rx, g_air_placed;
+constexpr double kMirrorAirFresh = 0.35;
+constexpr float kMirrorAirMin = 0.5f; // m over the host's ground: off it whatever the grounded byte says
+static void send_member_air()
+{
+    if (!g_mirror_air_fix)
+        return;
+    std::vector<std::pair<uint16_t, float>> v;
+    for (auto& [c, m] : g_hm) {
+        if (v.size() >= 64 || !kept_alive(c, m.serial, 0x18EB4B7u) || game::is_dead(c))
+            continue;
+        // (a thrown member can keep the grounded byte +0x137 for part of its flight: its height over the ground counts)
+        float agl = drive::over_ground(game::position(c));
+        if (agl > kMirrorAirMin || drive::body_airborne(c))
+            v.push_back({m.id, agl});
+    }
+    if (v.empty())
+        return;
+    net::Writer w;
+    w.u8(9);
+    w.u8((uint8_t)v.size());
+    for (auto& [id, agl] : v) {
+        w.u16(id);
+        w.f32(agl);
+    }
+    for (auto& p : C.sess->players())
+        if (p.id != 0)
+            C.sess->send_unreliable_to(p.id, net::MSG_NPC_ANIM, w);
+    g_air_sent += (uint32_t)v.size();
+}
+
+// BUG-0936: same-view pairs differed in the pose of members at rest (one stands, the other sits or crouches at the
+// fire), BUG-0914 in what a staff does. Probe (lane 4, tribe fixture, 5 min, both games' current animation of every
+// player member once a second): 72 % of the pairs the same; the rest mostly the guest's mirror still in a relayed
+// behaviour animation (the idle variants 0x02C39001..3, a gesture 0x04C6CB02) while the host's member, whose tree had
+// cut it short, walked or stood in its idle (0x04866DAB / 0x04866D8E / 0x02481DE5): the relay starts animations and
+// a mirror keeps one until it ends (no tree to cut it); the snapshot (kind 3) sends only behaviour animations. And
+// the host's own idle choices (its idle refresh, Creature_IdleRefresh 0xC148B0) are never relayed. Now the host
+// notes each member's idle refresh plays and once a second sends, for every member whose current animation is not
+// its behaviour animation, that animation with whether its idle refresh chose it (MSG_NPC_ANIM kind 10: u8 n, n x
+// {u16 id, u32 anim, u8 1 idle choice | 2 another start}); a guest whose mirror plays something else (not within 1.5 s
+// of a relayed start, at most every 2 s) ends it: the idle refresh (forced) for an idle choice, so its own game picks
+// idle or walk as its locomotion has it, or the host's animation played for another start. `coop.fix
+// tribe.mirror_idle off`: nothing sent or done (a relayed animation plays to its end).
+static bool g_mirror_idle_fix = true;
+COOP_FIX("tribe.mirror_idle", "BUG-0936", g_mirror_idle_fix, "tribe: a guest's mirror stops a member's animation when the host's member has gone back to its idle or walk (members at rest had other poses)");
+static uint32_t g_idle_sent, g_idle_refreshed, g_idle_played;
+static void on_idle_anim(void* c, uint32_t anim)
+{
+    if (!g_ok || !is_host())
+        return;
+    auto it = g_hm.find(c);
+    if (it != g_hm.end())
+        it->second.idle_anim = anim;
+}
+static uint32_t hold_modifier(void* c, bool end);
+static void send_member_holds()
+{
+    std::vector<std::pair<uint16_t, uint32_t>> v, ends;
+    std::vector<uint8_t> items; // BUG-0971: v's items
+    static double again_at; // once a second every hold again (a mirror that played the animation later, a lost start)
+    double now = H->time_seconds();
+    bool again = now - again_at >= 1.0 || now < again_at;
+    if (again)
+        again_at = now;
+    for (auto& [c, m] : g_hm) {
+        uint32_t h = kept_alive(c, m.serial, 0x18EB4B7u) && F<int>(c, kHeldItemOff) ? hold_modifier(c, false) : 0;
+        uint32_t cur = 0;
+        if (h && (h != m.hold || again) && v.size() < 64 && game::drawn_state(c, nullptr, &cur) && cur) {
+            v.push_back({m.id, cur});
+            int it = F<int>(c, kHeldItemOff);
+            items.push_back((uint8_t)(it > 0 && it <= 0x17 ? it : 0));
+        }
+        else if (!h && m.hold && ends.size() < 64)
+            ends.push_back({m.id, 0}); // the hold ended (the item back in the resting grip)
+        m.hold = h;
+    }
+    if (!g_mirror_hold_fix)
+        return;
+    for (int reliable = 0; reliable < 2; reliable++) { // (an end must not be lost: the mirror would hold on for 8 s)
+        auto& list = reliable ? ends : v;
+        if (list.empty())
+            continue;
+        net::Writer w;
+        bool with_item = !reliable && g_hold_item_fix; // (BUG-0971: starts carry the item)
+        w.u8(with_item ? 12 : 11);
+        w.u8((uint8_t)list.size());
+        for (size_t k = 0; k < list.size(); k++) {
+            w.u16(list[k].first);
+            w.u32(list[k].second);
+            if (with_item)
+                w.u8(items[k]);
+        }
+        for (auto& p : C.sess->players())
+            if (p.id != 0) {
+                if (reliable)
+                    C.sess->send_reliable_to(p.id, net::MSG_NPC_ANIM, w);
+                else
+                    C.sess->send_unreliable_to(p.id, net::MSG_NPC_ANIM, w);
+            }
+        g_hold_sent += (uint32_t)list.size();
+    }
+}
+// BUG-0992: the attach (0xC240E0) binds the hold modifier to the track of the current animation's id, looking in the
+// animation state's pending tracks (+0xF4C, 16 indices) before the playing ones (+0xF0C): a start of the same id waiting
+// behind the running one (a relayed restart of a gesture) got the hold, whose tick (0xC11240) ends it while that track
+// does not play. When a pending track has the current id, the pending tracks are cleared with the game's own call
+// (0xA02B00, as CreaturePlayAnim does for its `a`): the mirror goes on in the running instance, the hold binds to it.
+static bool clear_pending_same(void* c, uint32_t cur)
+{
+    uint8_t* ac = has_body(c) ? F<uint8_t*>(c, 0xB54) : nullptr;
+    uint8_t* st = ac && skg::readable(ac + 0x184, 4) ? *(uint8_t**)(ac + 0x184) : nullptr;
+    if (!st || !cur || !a_ClearPending || !skg::readable(st, 0xFAC))
+        return false;
+    bool same = false;
+    for (int i = 0; i < 16 && !same; i++) {
+        uint32_t k = *(uint32_t*)(st + 0xF4C + i * 4);
+        if (k > 0xF || k == *(uint32_t*)(st + 0xFA8))
+            continue;
+        uint8_t* tr = st + 8 + k * 0xF0;
+        same = *(uint32_t*)tr && *(uint32_t*)(tr + 0xD8) == cur;
+    }
+    if (same) {
+        thiscall<void>(a_ClearPending, ac);
+        g_hold_queued++;
+    }
+    return same;
+}
+// guest: the mirror takes its item in the host's animation when it plays it (kind 11, or right after the relay played it)
+static void hold_try(GMember& g, double now)
+{
+    if (!g.hold_anim || now - g.hold_at > 3.0 || !mirror_ok(g) || !has_body(g.c) || !a_SetHandheldItem)
+        return;
+    int item = F<int>(g.c, kHeldItemOff);
+    bool other_item = g_hold_item_fix && g.hold_item > 0 && item != g.hold_item; // BUG-0971
+    if (other_item)
+        item = g.hold_item;
+    uint32_t cur = 0;
+    if (g_hold_anim_fix && item > 0 && game::drawn_state(g.c, nullptr, &cur) && cur != g.hold_anim && now - g.hold_at < 0.5 &&
+        now - g.hold_play_at >= 1.0 && !game::is_dead(g.c)) { // BUG-0968: the host's member plays it now
+        g.hold_play_at = now;
+        if (game::play_behaviour_anim(g.c, g.hold_anim, 0, 1, -1)) {
+            g.relayed_anim = g.hold_anim;
+            g.anim_rx_at = now; // (as a relayed start: the idle fix leaves it alone for 1.5 s)
+            g_hold_anim_plays++;
+            hold_ev(member_id(g.c), 'P', g.hold_anim, cur);
+        }
+    }
+    bool queued = false;
+    if (item > 0 && game::drawn_state(g.c, nullptr, &cur) && cur && cur != g.hold_anim && g_hold_anim_fix &&
+        g_hold_queued_fix && now - g.hold_at < 1.0 && now - g.hold_play_at >= 0.2 && now - g.hold_play_at < 1.0 &&
+        !game::is_dead(g.c)) { // BUG-0992: the started animation waits behind the mirror's current one
+        queued = true;
+        g_hold_queued++;
+        hold_ev(member_id(g.c), 'Q', g.hold_anim, cur);
+    }
+    if (item <= 0 || !game::drawn_state(g.c, nullptr, &cur) || (cur != g.hold_anim && !queued)) {
+        hold_ev(member_id(g.c), 't', g.hold_anim, item <= 0 ? 0xFFFFFFFFu : cur);
+        return;
+    }
+    hold_ev(member_id(g.c), 'T', cur, (hold_modifier(g.c, false) ? 1 : 0) | (other_item ? 2 : 0) | (uint32_t)item << 8);
+    if (other_item || !hold_modifier(g.c, false)) {
+        if (other_item)
+            g_hold_item_sets++;
+        // (the attach adds the hold modifier with the animation playing now; it also sizes the model again by the
+        // mirror's own size: the size it had, the host's (tribe.item_scale, BUG-0912), is put back at once)
+        float sc = read_item_scale(g.c);
+        if (g_hold_queued_fix && clear_pending_same(g.c, cur))
+            hold_ev(member_id(g.c), 'W', cur, 0); // BUG-0992
+        set_hand(g.c, item);
+        if (g_item_scale_fix && sc != 1.f)
+            apply_item_scale(g.c, sc);
+    }
+    g.hold_bound = true;
+    g.hold_at = now; // (bound: held_items_tick lets it end with the animation)
+    g.hold_anim_bound = queued ? cur : g.hold_anim;
+    g.hold_anim = 0;
+    g_hold_bound++;
+}
+
 static void send_member_anims(double now)
 {
+    send_member_holds(); // BUG-0914
     if (!g_mirror_anims_fix) {
         g_member_anim_out.clear();
         return;
@@ -1001,10 +1889,32 @@ static void send_member_anims(double now)
         return;
     g_member_snap_at = now;
     std::vector<std::pair<uint16_t, uint32_t>> v;
+    struct IdleNow {
+        uint16_t id;
+        uint32_t anim;
+        uint8_t how;
+    };
+    std::vector<IdleNow> idle; // BUG-0936
     for (auto& [c, m] : g_hm) {
         uint32_t cur = 0;
         if (m.bhv_anim && game::object_alive(c) && game::drawn_state(c, nullptr, &cur) && cur && cur == m.bhv_anim)
             v.push_back({m.id, cur});
+        else if (g_mirror_idle_fix && cur && idle.size() < 255 && !game::is_dead(c))
+            idle.push_back({m.id, cur, (uint8_t)(cur == m.idle_anim ? 1 : 2)});
+    }
+    if (!idle.empty()) {
+        net::Writer w;
+        w.u8(10);
+        w.u8((uint8_t)idle.size());
+        for (auto& e : idle) {
+            w.u16(e.id);
+            w.u32(e.anim);
+            w.u8(e.how);
+        }
+        for (auto& p : C.sess->players())
+            if (p.id != 0)
+                C.sess->send_unreliable_to(p.id, net::MSG_NPC_ANIM, w);
+        g_idle_sent += (uint32_t)idle.size();
     }
     const size_t per2 = (net::kMaxPacket - 64) / 6;
     for (size_t i = 0; i < v.size(); i += per2) {
@@ -1138,16 +2048,322 @@ static void on_theme(uint8_t kind, net::Reader& r)
     g_theme_relaying = false;
 }
 
+// BUG-0646: "the guest does not hear the music of the dance around the fire". The fire pit party (CitizenAction 12 Party
+// on the own fire pit, the game behaviour cTribeGameBehaviorParty, vtable 0x147BEB0) plays its music straight through
+// Audio::PlayProceduralAudio(0x19DC06DF, a new track, the fire pit's position) from its tick 0xD793F0 once every
+// partying member stands at its slot, and stops it (Audio::StopAudio) in its exit 0xD78F80; not through the theme
+// manager, so the BUG-0568 relay never saw it. The behaviour runs on the host's game only (a guest's party order goes to
+// the host; its members are mirrors): lab 20261107-102952, the host's game played 0x19DC06DF (caller 0xD79E81), the
+// guest's none. The host relays the play and the stop (MSG_NPC_ANIM kind 7 {u32 host track, u32 sound, vec3}, kind 8
+// {u32 host track}, reliable); a guest plays the same sound on a track of its own (the game's call: its own volume and
+// settings) unless its own game plays the party music itself. Older guests ignore the kinds.
+// `coop.fix tribe.party_music off`: nothing sent or played.
+static bool g_party_fix = true;
+COOP_FIX("tribe.party_music", "BUG-0646", g_party_fix, "tribe: a guest hears the music of the dance at its tribe's fire pit as the host does");
+static constexpr uint32_t kPartyMusic = 0x19DC06DF;
+using PlayProc_t = void(SK_CDECL*)(uint32_t, uint32_t, float, float, float);
+using StopAudio_t = void(SK_CDECL*)(uint32_t, int);
+static PlayProc_t o_PlayProc;
+static StopAudio_t o_StopAudio;
+static uintptr_t a_AudioGet;
+static bool g_party_relaying;            // guest: our own call of the game's functions
+static uint32_t g_party_host_track;      // host: the party music's track now (0 none)
+static uint32_t g_party_rx_track, g_party_local; // guest: the host's track and this game's track for it
+static uint32_t g_party_own;             // guest: a party music track its own game plays
+static uint32_t g_party_sent, g_party_rx, g_party_played, g_party_stopped;
+
+static bool party_host() { return g_ok && g_party_fix && C.sess && is_host() && game::mode_id() == modes::kTribe; }
+// BUG-0890: "the fire-dance music plays on on the guest". The host sent the stop only while its own game was in Tribe and
+// a guest dropped every MSG_NPC_ANIM while its game was not in Tribe (an editor, a load), so a stop that came then was
+// lost and the guest's track played on until its next world change. Now the host sends the stop of a track it relayed
+// whatever its mode, and a guest takes a stop (kind 8) in any mode. `coop.fix tribe.party_stop off`: the old checks.
+static bool g_party_stop_fix = true;
+COOP_FIX("tribe.party_stop", "BUG-0890", g_party_stop_fix, "tribe: the end of the dance music reaches the guest also when the host or the guest is not in Tribe at that moment");
+static uint32_t g_party_stops_outside; // stops sent or taken outside Tribe (tests)
+static void party_send(uint8_t kind, uint32_t track, uint32_t sound, float x, float y, float z)
+{
+    net::Writer w;
+    w.u8(kind); w.u32(track);
+    if (kind == 7) {
+        w.u32(sound); w.f32(x); w.f32(y); w.f32(z);
+    }
+    for (auto& p : C.sess->players())
+        if (p.id != 0)
+            C.sess->send_reliable_to(p.id, net::MSG_NPC_ANIM, w);
+    g_party_sent++;
+}
+static void SK_CDECL h_PlayProc(uint32_t sound, uint32_t track, float x, float y, float z)
+{
+    o_PlayProc(sound, track, x, y, z);
+    if (sound != kPartyMusic || g_party_relaying || !g_ok)
+        return;
+    if (party_host()) {
+        g_party_host_track = track;
+        party_send(7, track, sound, x, y, z);
+    } else if (is_guest()) {
+        g_party_own = track;
+    }
+}
+static void SK_CDECL h_StopAudio(uint32_t track, int how)
+{
+    o_StopAudio(track, how);
+    if (!track || g_party_relaying || !g_ok)
+        return;
+    if (track == g_party_host_track) {
+        g_party_host_track = 0;
+        if (party_host())
+            party_send(8, track, 0, 0, 0, 0);
+        else if (g_party_stop_fix && g_party_fix && C.sess && is_host()) { // BUG-0890: relayed before, stopped outside Tribe
+            party_send(8, track, 0, 0, 0, 0);
+            g_party_stops_outside++;
+        }
+    } else if (track == g_party_own) {
+        g_party_own = 0;
+    }
+}
+static void party_hooks_install()
+{
+    uintptr_t p = H->sym("Audio::PlayProceduralAudio"), s = H->sym("Audio::StopAudio");
+    a_AudioGet = H->sym("Audio::AudioSystem::Get");
+    if (!p || !s || !a_AudioGet)
+        return;
+    H->hook_create(M, (void*)p, (void*)h_PlayProc, (void**)&o_PlayProc);
+    H->hook_create(M, (void*)s, (void*)h_StopAudio, (void**)&o_StopAudio);
+}
+static void party_stop_local()
+{
+    if (g_party_local && o_StopAudio) {
+        g_party_relaying = true;
+        o_StopAudio(g_party_local, 0);
+        g_party_relaying = false;
+        g_party_stopped++;
+    }
+    g_party_local = g_party_rx_track = 0;
+}
+static void party_forget()
+{
+    party_stop_local(); // (the audio system outlives the world: a track left playing would play on)
+    g_party_host_track = g_party_own = 0;
+}
+static void on_party(uint8_t kind, net::Reader& r)
+{
+    uint32_t track = r.u32(), sound = 0;
+    float x = 0, y = 0, z = 0;
+    if (kind == 7) {
+        sound = r.u32(); x = r.f32(); y = r.f32(); z = r.f32();
+    }
+    if (!r.ok() || !track)
+        return;
+    g_party_rx++;
+    if (!g_party_fix || !o_PlayProc)
+        return;
+    if (kind == 8) {
+        if (track == g_party_rx_track)
+            party_stop_local();
+        return;
+    }
+    if (sound != kPartyMusic || g_party_own) // only the party music; its own game plays it already
+        return;
+    party_stop_local();
+    void* as = skg::cdecl_call<void*>(a_AudioGet);
+    if (!as)
+        return;
+    uint32_t mine = thiscall<uint32_t>(F<uintptr_t>(F<void*>(as, 0), 0x20), as); // a new track (AudioSystem vt 0x20)
+    if (!mine)
+        return;
+    g_party_relaying = true;
+    o_PlayProc(sound, mine, x, y, z);
+    g_party_relaying = false;
+    g_party_local = mine;
+    g_party_rx_track = track;
+    g_party_played++;
+}
+
+// BUG-0960: when every member of the player tribe is knocked out the game-over caption ("Alas! Your population has
+// fallen below the minimum ...") comes on the host only and stands the host's game (busy=cinematic,input_lock,paused)
+// until its player answers it; the guest's game showed nothing and played on against the paused host (its orders and
+// the mirrors' moves waited for a game that stood). Now the host tells the guests while its caption is up
+// (MSG_NPC_ANIM kind 20 {u8 up}, reliable, again every 3 s while up) and a guest's game stands too (the game's own
+// cGameTimeManager::Pause with the reason of the game's own UI modals 0x4BF38A7, docs/re/tribe.md#tribe-game-time-pauses) with a co-op note, until the
+// host's caption is gone (its OK reloads the tribe for everybody), the host's news stops for 10 s, or the stage or the
+// session ends. The guest's own caption is not shown: its OK would reload its own save (BUG-0685).
+// Old (`coop.fix tribe.gameover_wait off`): the guest plays on.
+static bool g_gameover_wait_fix = true;
+COOP_FIX("tribe.gameover_wait", "BUG-0960", g_gameover_wait_fix,
+         "tribe: a guest's game waits (paused, with a note) while the host's game-over caption is up");
+constexpr uint8_t kGameOverKind = 20;
+constexpr uint32_t kGameOverPause = 0x4BF38A7u; // (the game's UI-modal / hint reason; counted: balanced with ours)
+static bool g_go_host_up;       // host: its caption is up (last sent)
+static double g_go_host_sent = -100;
+static bool g_go_paused;        // guest: its game stands for the host's caption (one Pause of ours)
+static double g_go_news = -100; // guest: the host's last "up"
+static uint32_t g_go_sent, g_go_pauses, g_go_resumes;
+static bool player_tribe_out(void* t);
+
+static void* time_manager()
+{
+    static uintptr_t get = H->sym("Simulator::cGameTimeManager::Get");
+    return get ? skg::cdecl_call<void*>(get) : nullptr;
+}
+
+static void gameover_pause(bool on, const char* why)
+{
+    static uintptr_t pause = H->sym("Simulator::cGameTimeManager::Pause"),
+                     resume = H->sym("Simulator::cGameTimeManager::Resume");
+    void* tm = time_manager();
+    if (on == g_go_paused || !tm || !pause || !resume)
+        return;
+    thiscall<int>(on ? pause : resume, tm, kGameOverPause);
+    g_go_paused = on;
+    (on ? g_go_pauses : g_go_resumes)++;
+    H->log(M, SK_INFO, "tribe: the host's game-over caption is %s: this game %s (BUG-0960, %s)", on ? "up" : "gone",
+           on ? "waits" : "goes on", why);
+    if (C.feed && C.sess)
+        C.feed(on ? "The tribe is out: waiting for " + C.sess->name_of(0) + " (host) to answer the caption"
+                  : C.sess->name_of(0) + " (host) answered: the game goes on");
+}
+
+// host, every send cycle: its caption is up (the input lock and the stood time in Tribe, entered with the player
+// tribe out: a knocked-out chief may stand up again under the caption, BUG-0922)
+static void gameover_host_tick(double now)
+{
+    if (!g_gameover_wait_fix || !C.sess)
+        return;
+    bool lock = coop_ui::input_lock_now() > 0 && world::time_paused();
+    bool up = g_go_host_up ? lock : lock && player_tribe_out(player_tribe());
+    if (up == g_go_host_up && (!up || now - g_go_host_sent < 3.0))
+        return;
+    g_go_host_up = up;
+    g_go_host_sent = now;
+    net::Writer w;
+    w.u8(kGameOverKind);
+    w.u8(up ? 1 : 0);
+    for (auto& p : C.sess->players())
+        if (p.id != 0)
+            C.sess->send_reliable_to(p.id, net::MSG_NPC_ANIM, w);
+    g_go_sent++;
+}
+
+// guest, every tick (any mode): the wait ends with the stage, the session or the host's news
+static void gameover_guest_tick(double now)
+{
+    if (!g_go_paused)
+        return;
+    if (!C.sess || !C.sess->connected() || game::mode_id() != modes::kTribe)
+        gameover_pause(false, "the stage or the session ended");
+    else if (now - g_go_news > 10.0)
+        gameover_pause(false, "no news from the host for 10 s");
+}
+
 // guest: MSG_NPC_ANIM kinds 2 / 3 (npc.cpp passes them on after the kind byte)
 void on_member_anims(uint8_t kind, net::Reader& r)
 {
+    if (kind == kGameOverKind) { // BUG-0960
+        bool up = r.u8() != 0;
+        if (!r.ok() || !g_ok || !is_guest())
+            return;
+        if (up)
+            g_go_news = H->time_seconds();
+        if (g_gameover_wait_fix && (!up || game::mode_id() == modes::kTribe))
+            gameover_pause(up, "the host's news");
+        return;
+    }
+    if (kind == 8 && g_party_stop_fix && g_ok && is_guest() && game::mode_id() != modes::kTribe) { // BUG-0890
+        g_party_stops_outside++;
+        on_party(kind, r);
+        return;
+    }
     if (!g_ok || !is_guest() || game::mode_id() != modes::kTribe)
         return;
     if (kind >= 4 && kind <= 6) { // BUG-0568: the theme music
         on_theme(kind, r);
         return;
     }
+    if (kind == 7 || kind == 8) { // BUG-0646: the fire pit party music
+        on_party(kind, r);
+        return;
+    }
     double now = H->time_seconds();
+    if (kind == 11 || kind == 12) { // BUG-0914: a host member took its item in this animation (12: and which, BUG-0971)
+        uint8_t n = r.u8();
+        for (int i = 0; i < n && r.ok(); i++) {
+            uint16_t id = r.u16();
+            uint32_t anim = r.u32();
+            int item = kind == 12 ? r.u8() : 0;
+            if (!r.ok())
+                break;
+            g_hold_rx++;
+            auto it = g_gm.find(id);
+            if (!g_mirror_hold_fix || it == g_gm.end())
+                continue;
+            hold_ev(id, anim ? 'S' : 'E', anim, 0);
+            if (!anim) { // the host's member put the item back into the grip: so does a mirror that took it for it
+                GMember& g = it->second;
+                g.hold_anim = 0;
+                g.hold_end_at = now;
+                if (g.hold_bound && mirror_ok(g) && has_body(g.c))
+                    hold_modifier(g.c, true);
+                g.hold_bound = false;
+                continue;
+            }
+            if (now - it->second.hold_end_at < 0.4)
+                continue; // (an unreliable start sent before the end, arriving after it)
+            it->second.hold_anim = anim;
+            it->second.hold_at = now;
+            it->second.hold_item = item;
+            hold_try(it->second, now);
+        }
+        return;
+    }
+    if (kind == 10) { // BUG-0936: what the host's members play now that is no behaviour animation
+        uint8_t n = r.u8();
+        for (int i = 0; i < n && r.ok(); i++) {
+            uint16_t id = r.u16();
+            uint32_t anim = r.u32();
+            uint8_t how = r.u8();
+            if (!r.ok())
+                break;
+            auto it = g_gm.find(id);
+            if (!g_mirror_idle_fix || it == g_gm.end() || !mirror_ok(it->second) || game::is_dead(it->second.c))
+                continue;
+            GMember& g = it->second;
+            uint32_t cur = 0;
+            if (now - g.anim_fix_at < 2.0 || now - g.anim_rx_at < 1.5 || !game::drawn_state(g.c, nullptr, &cur) || cur == anim)
+                continue;
+            // the locomotion's own idle / walk (Creature_ChooseIdleAnim, docs/re/creature.md): started by the animation
+            // system's gait, not by the idle refresh, on the host too; never played as a main animation on a mirror
+            if (anim == 0x02481DE5u || anim == 0x04866D8Eu || anim == 0x04866DABu || anim == 0x04866DD4u)
+                how = 1;
+            if (how == 1 && cur != g.relayed_anim)
+                continue; // (its own idle or walk: its locomotion's choice, which may lag the host's by a step)
+            g.anim_fix_at = now;
+            hold_ev(id, 'I', anim, cur); // (tests: the mirror's animation ended for the host's idle / other start)
+            if (how == 1) {
+                game::idle_refresh(g.c, true);
+                g_idle_refreshed++;
+            } else if (game::play_behaviour_anim(g.c, anim, 0, 1, -1)) {
+                g.relayed_anim = anim;
+                g_idle_played++;
+            }
+        }
+        return;
+    }
+    if (kind == 9) { // BUG-0946: the members off their ground on the host
+        uint8_t n = r.u8();
+        for (int i = 0; i < n && r.ok(); i++) {
+            uint16_t id = r.u16();
+            float agl = r.f32();
+            if (!r.ok())
+                break;
+            g_air_rx++;
+            auto it = g_gm.find(id);
+            if (it != g_gm.end() && std::isfinite(agl)) {
+                it->second.air_agl = agl;
+                it->second.air_at = now;
+            }
+        }
+        return;
+    }
     uint8_t n = r.u8();
     for (int i = 0; i < n && r.ok(); i++) {
         uint16_t id = r.u16();
@@ -1166,7 +2382,7 @@ void on_member_anims(uint8_t kind, net::Reader& r)
             continue;
         auto it = g_gm.find(id);
         void* c = it == g_gm.end() ? nullptr : it->second.c;
-        if (!c || !game::object_alive(c) || game::is_dead(c))
+        if (!c || !mirror_ok(it->second) || game::is_dead(c)) // (BUG-0955)
             continue;
         GMember& g = it->second;
         if (kind == 3) { // only when the mirror plays another one, at most every 2 s, not right after a start
@@ -1174,23 +2390,70 @@ void on_member_anims(uint8_t kind, net::Reader& r)
             if (now - g.anim_fix_at < 2.0 || now - g.anim_rx_at < 1.5 || !game::drawn_state(c, nullptr, &cur) || cur == anim)
                 continue;
             g.anim_fix_at = now;
-            if (game::play_behaviour_anim(c, anim, 0, 1, -1))
+            if (game::play_behaviour_anim(c, anim, 0, 1, -1)) {
                 g_anim_snap_played++;
+                g.relayed_anim = anim; // (BUG-0936)
+                hold_try(g, now);      // (BUG-0914)
+            }
             continue;
         }
         g.anim_rx_at = now;
-        if (game::play_behaviour_anim(c, anim, how, a, b))
+        if (g_hold_anim_fix && now - g.hold_play_at < 0.5 && g.relayed_anim == anim) {
+            uint32_t cur = 0;
+            if (game::drawn_state(c, nullptr, &cur) && cur == anim) {
+                // BUG-0968: hold_try started it for the host's hold just now (the start and the relay came together);
+                // started again, the hold bound to the first start ended and the item never came back (lab trace:
+                // P, T, R at one moment, then no hold for the host's 2.7 s)
+                hold_ev(id, 'D', anim, cur);
+                continue;
+            }
+        }
+        bool played = game::play_behaviour_anim(c, anim, how, a, b);
+        {
+            uint32_t now_cur = 0;
+            game::drawn_state(c, nullptr, &now_cur);
+            hold_ev(id, played ? 'R' : 'r', anim, now_cur); // (tests: what the mirror plays right after)
+        }
+        if (played) {
             g_anim_relay_played++;
-        else
+            g.relayed_anim = anim; // (BUG-0936)
+            hold_try(g, now);      // (BUG-0914: the hold came before the animation)
+        } else
             g_anim_relay_failed++;
     }
 }
 
+// tests (BUG-0759): `coop.tribe setvel <id> <vx> <vy> <vz> <s>` holds a host member's velocity field (cLocomotiveObject
+// mVelocity) at that value for s seconds, as the game left the chief's in campaign_tc2 (119.7 m/s while it slept)
+struct TestVel {
+    net::Vec3 v;
+    double until;
+};
+static std::unordered_map<void*, TestVel> g_test_vel;
+static void test_vel_tick(double now)
+{
+    for (auto it = g_test_vel.begin(); it != g_test_vel.end();) {
+        if (now > it->second.until || !game::object_alive(it->first)) {
+            it = g_test_vel.erase(it);
+            continue;
+        }
+        auto& f = F<float[3]>(it->first, 0xC0 + 0x1C8);
+        f[0] = it->second.v.x; f[1] = it->second.v.y; f[2] = it->second.v.z;
+        ++it;
+    }
+}
+
+// BUG-0841 (evidence): members the host's game moved from one tribe to another (none seen: the game adds only new
+// citizens to a tribe, docs/re/tribe.md#tribe-member-moves); unowned: into the player tribe with owner 0xFE
+static uint32_t g_member_moves, g_member_moves_unowned;
 static void host_tick(double now)
 {
+    test_vel_tick(now);
     if (now - g_last_send < 0.12)
         return;
     g_last_send = now;
+    gameover_host_tick(now); // BUG-0960
+    baby_tick(now); // BUG-0671
     void* pt = player_tribe();
     auto tribes = all_tribes();
     std::vector<uint8_t> players;
@@ -1213,6 +2476,7 @@ static void host_tick(double now)
         uint16_t id;
         uint8_t tribe, owner, age;
         void* c;
+        bool body = false; // BUG-0620
     };
     std::vector<Entry> entries;
     for (size_t ti = 0; ti < tribes.size() && ti < 32; ti++) {
@@ -1220,15 +2484,50 @@ static void host_tick(double now)
         for (void* c : members(tribes[ti])) {
             alive.insert(c);
             auto it = g_hm.find(c);
+            // BUG-0951: another citizen the game built at a freed member's address is a new member (a new id, its owner)
+            if (it != g_hm.end() && g_kept_refs_fix && it->second.serial && it->second.serial != game::object_serial(c)) {
+                g_kept_stale++;
+                g_hm_by_id.erase(it->second.id);
+                g_hm.erase(it);
+                it = g_hm.end();
+            }
             if (it == g_hm.end()) {
                 // the player tribe is split between the players in turns; others belong to nobody
                 uint8_t owner = player && !players.empty() ? players[g_player_members_seen++ % players.size()] : 0xFE;
+                auto bf = g_born_for.find(c); // BUG-0671: a member a guest bought is that guest's
+                if (bf != g_born_for.end()) {
+                    if (player && net::is_player(*C.sess, bf->second))
+                        owner = bf->second;
+                    g_born_for.erase(bf);
+                }
                 // BUG-0154: never a live id, never 0
                 it = g_hm.emplace(c, HMember{net::alloc_id(g_next_id, g_hm_by_id), owner}).first;
+                it->second.serial = game::object_serial(c);
                 g_hm_by_id[it->second.id] = c;
             }
+            if (it->second.tribe && it->second.tribe != tribes[ti]) { // BUG-0841: a known member in another tribe now
+                g_member_moves++;
+                if (player && it->second.owner == 0xFE)
+                    g_member_moves_unowned++;
+            }
+            it->second.tribe = tribes[ti];
+            it->second.body_since = 0;
             entries.push_back({it->second.id, (uint8_t)ti, it->second.owner, F<uint8_t>(c, kAgeOff), c});
         }
+    }
+    for (auto& [c, hm] : g_hm) { // BUG-0620: the bodies of members that left their list dead
+        if (!g_member_body_fix || alive.count(c) || !kept_alive(c, hm.serial, 0x18EB4B7u) || !game::is_dead(c)) // (BUG-0951)
+            continue;
+        auto ti = std::find(tribes.begin(), tribes.end(), hm.tribe);
+        if (ti == tribes.end() || ti - tribes.begin() >= 32)
+            continue;
+        if (hm.body_since == 0)
+            hm.body_since = now;
+        if (now - hm.body_since > kBodyMax)
+            continue;
+        alive.insert(c);
+        g_bodies_sent++;
+        entries.push_back({hm.id, (uint8_t)(ti - tribes.begin()), hm.owner, F<uint8_t>(c, kAgeOff), c, true});
     }
     for (auto it = g_hm.begin(); it != g_hm.end();) {
         if (!alive.count(it->first)) {
@@ -1267,11 +2566,11 @@ static void host_tick(double now)
             const Entry& e = entries[i];
             net::Vec3 p = game::position(e.c), v = game::velocity(e.c);
             net::Quat q = game::orientation(e.c);
-            w.u16(e.id); w.u8(e.tribe); w.u8(e.owner); w.u8(e.age);
+            w.u16(e.id); w.u8(e.tribe); w.u8(e.owner); w.u8((uint8_t)(e.age | (e.body ? kBodyBit : 0)));
             w.f32(p.x); w.f32(p.y); w.f32(p.z);
             w.f32(v.x); w.f32(v.y); w.f32(v.z);
             w.f32(q.x); w.f32(q.y); w.f32(q.z); w.f32(q.w);
-            w.f32(game::health(e.c));
+            w.f32(e.body ? 0.f : game::health(e.c)); // (a body: dead, BUG-0620)
         }
         w.u32(kStateTrailer); // BUG-0365: the host's clock (guests before 0.7.3.4 stop reading before it)
         w.u32((uint32_t)(now * 1000.0));
@@ -1292,6 +2591,31 @@ static void host_tick(double now)
             }
     }
     send_member_anims(now); // BUG-0569
+    send_member_air();      // BUG-0946
+}
+
+// BUG-0744: a guest's gather order on a loose fruit (cFruit, noun 0x2C9CC91) its game has and the host's has not within
+// 8 m (each game's fruit roll and are recycled their own way, BUG-0472 / BUG-0497) was rejected: the guest's members
+// stood. With the fix the host takes the nearest tree with fruit left (cTreeData +0x48 != 0) within 12 m (the
+// usual gather target, CitizenAction 2), else its own nearest fruit within 15 m, so the order is a gather on both games.
+// `coop.fix tribe.fruit_order off`: rejected (0.7.11).
+static bool g_fruit_order_fix = true;
+COOP_FIX("tribe.fruit_order", "BUG-0744", g_fruit_order_fix,
+         "tribe: a guest's gather order on a fruit the host's game does not have there gathers the host's nearest fruit or fruit tree");
+static uint32_t g_fruit_orders_moved;
+static constexpr uint32_t kFruitNoun = 0x2C9CC91;
+static void* fruit_instead(const net::Vec3& pos)
+{
+    void* best = nullptr;
+    float bd = 12.f;
+    for_each_tree([&](void* t, const net::Vec3& p) {
+        float d = net::dist(p, pos);
+        if (d < bd && F<uint64_t>(t, 0x48) != 0) {
+            bd = d;
+            best = t;
+        }
+    });
+    return best ? best : game::find_object(kFruitNoun, pos, 15.f);
 }
 
 static void* resolve_target(const Target& t)
@@ -1326,6 +2650,232 @@ static void give_on_host(uint8_t from, uint8_t to, const std::vector<uint16_t>& 
                  C.sess->name_of(to));
 }
 
+// BUG-0671: "a member the guest buys is made in the guest's game only and removed again". A click on the own hut
+// (food 10, the game's own price) makes a baby some seconds later: the stage's message 0x63BBC42 (from data, no code
+// sends it) reaches SporeCoop::TribeStage_BabyBorn (0xCD74A0), which spawns the member (cTribe vt 0x98), plays its cry and
+// fills the HUD. A guest's game makes a baby of its own there, which the mirror reconcile removes (the host never has
+// it). The host got one only because the world effects relay (effects.other_stages) replays the guest's hut effect in
+// the host's game, whose message makes the host's baby too (lab: with the relay off the guest paid 10 food and the host
+// had no new member, 20261107-104533); its owner was the next in the turn split, not the buyer.
+// With tribe.guest_baby a guest's game makes no baby of its own while it mirrors the host's tribe: it sends the place
+// (MSG_TRIBE_CMD kind CMD_BABY) and the host's game makes the member, the buyer's, and the guest gets its mirror. The
+// host takes a baby its own game makes within kBabyPair s at that place (the relayed effect's) as that one instead of a
+// second, and makes it itself (the same function) when none comes. The food was paid in the guest's game (the shared
+// food). `coop.fix tribe.guest_baby off`: the guest's game makes its own baby (0.7.9).
+static bool g_guest_baby_fix = true;
+COOP_FIX("tribe.guest_baby", "BUG-0671", g_guest_baby_fix, "tribe: a tribe member the guest buys at its hut is born in the host's game and is the guest's");
+static constexpr double kBabyPair = 4.0;
+static constexpr float kBabyNear = 6.0f;
+struct BabyAsk {
+    uint8_t from;
+    net::Vec3 pos;
+    double t;
+};
+struct BabyMade {
+    void* c;
+    net::Vec3 pos;
+    double t;
+    uint32_t serial = 0; // BUG-0951
+    uint8_t buyer = 0xFF; // BUG-0824: the guest whose relayed purchase it is (0xFF: not known)
+};
+static std::vector<BabyAsk> g_baby_asks;   // host: guests' babies its game did not make yet
+static std::vector<BabyMade> g_baby_made;  // host: babies its own game made lately that no guest claimed
+static uint32_t g_babies_sent, g_babies_made, g_babies_paired, g_babies_local;
+static uintptr_t g_baby_from; // the last caller (tests: which path made it)
+static bool baby_near(const net::Vec3& a, const net::Vec3& b)
+{
+    float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+    return dx * dx + dy * dy + dz * dz < kBabyNear * kBabyNear;
+}
+static void baby_give(void* c, uint8_t from)
+{
+    auto it = g_hm.find(c);
+    if (it != g_hm.end())
+        it->second.owner = from;
+    else
+        g_born_for[c] = from;
+}
+// host: the new members of the player tribe that one call of the game's function made
+static std::vector<void*> baby_call(void* stage, const net::Vec3& p)
+{
+    std::vector<void*> out;
+    void* pt = player_tribe();
+    auto before = pt ? members(pt) : std::vector<void*>{};
+    o_BabyBorn(stage, p.x, p.y, p.z);
+    if (pt)
+        for (void* c : members(pt))
+            if (std::find(before.begin(), before.end(), c) == before.end())
+                out.push_back(c);
+    return out;
+}
+// BUG-0824: "a member the host buys is given to the guest". Every game makes a baby for every purchase: the hut
+// effect 0xDB6F2233 a click on the own hut starts here is relayed to the partners (effects.other_stages), and its data
+// sends the stage's message 0x63BBC42 5.2 s later in each game that plays it (lab 20261112-084158: 5.16-5.20 s after
+// the start, the own and the relayed one alike). Before, the host took any baby its game made within 4 s of a guest's
+// ask (CMD_BABY) as that guest's, its own purchase too, and a guest asked for a baby for the host's relayed effect as if
+// it were its own purchase: every member the host bought went to the guest (lab 20261112-083858). Now each game notes
+// whose hut effect started (effects' observer: its own or the player that relayed it) and gives a baby of the message
+// the oldest such purchase: the host's own is the host's, a guest's relayed one is that guest's (and pairs only with
+// that guest's ask), and a guest asks only for its own. A baby without a noted purchase goes the old way.
+// `coop.fix tribe.baby_pair off`: the 0.7.12 pairing.
+static bool g_baby_pair_fix = true;
+COOP_FIX("tribe.baby_pair", "BUG-0824", g_baby_pair_fix, "tribe: a member a player buys at the hut is that player's, the host's own purchase too; a guest asks only for its own");
+static constexpr uint32_t kHutBuyFx = 0xDB6F2233u; // the effect a click on the own hut starts (lab 20261112-084158)
+static constexpr double kBuyKeep = 12.0;           // the baby comes 5.2 s after the effect
+static constexpr float kBuyNear = 25.0f;           // the baby is born ~10 m from the effect's place
+struct Buy {
+    uint8_t from;
+    net::Vec3 pos;
+    double t;
+    void* fx; // only to tell a second report of the same effect (never used as an object)
+};
+static std::vector<Buy> g_buys; // the purchases (hut effects) of this world whose baby did not come yet, oldest first
+static uint32_t g_buys_seen, g_buys_own, g_buys_other, g_buys_none;
+static void on_world_effect_start(uint8_t from, uint32_t id, void* fx, const net::Vec3& pos)
+{
+    if (id != kHutBuyFx || !g_ok || game::mode_id() != modes::kTribe)
+        return;
+    double now = H->time_seconds();
+    g_buys.erase(std::remove_if(g_buys.begin(), g_buys.end(), [&](const Buy& b) { return now - b.t > kBuyKeep; }), g_buys.end());
+    for (auto& b : g_buys)
+        if (b.fx == fx && now - b.t < 1.0) // the same effect reported by a second creator hook (lab 20261112-084503)
+            return;
+    if (g_buys.size() >= 16)
+        g_buys.erase(g_buys.begin());
+    g_buys.push_back({from, pos, now, fx});
+    g_buys_seen++;
+}
+// the purchase a baby born at p belongs to (the oldest one near), taken from the list; false: none noted
+static bool take_buy(const net::Vec3& p, uint8_t* from)
+{
+    double now = H->time_seconds();
+    for (auto it = g_buys.begin(); it != g_buys.end(); ++it) {
+        float dx = it->pos.x - p.x, dy = it->pos.y - p.y, dz = it->pos.z - p.z;
+        if (now - it->t <= kBuyKeep && dx * dx + dy * dy + dz * dz < kBuyNear * kBuyNear) {
+            *from = it->from;
+            g_buys.erase(it);
+            return true;
+        }
+    }
+    return false;
+}
+static std::string g_baby_last; // tests: how the last baby went
+static void SK_THISCALL h_BabyBorn(void* stage, float x, float y, float z)
+{
+    g_baby_from = (uintptr_t)__builtin_return_address(0);
+    static uintptr_t a_msg_ret = H->sym("SporeCoop::TribeStage_BabyBornMsg_Ret");
+    // BUG-0824: whose purchase this baby is (only a baby of the hut's message; the stage's first baby is nobody's)
+    uint8_t buyer = 0xFF;
+    bool bought = g_ok && g_baby_pair_fix && g_guest_baby_fix && a_msg_ret && g_baby_from == a_msg_ret && C.sess &&
+                  take_buy(net::Vec3{x, y, z}, &buyer);
+    if (g_baby_pair_fix && g_ok && a_msg_ret && g_baby_from == a_msg_ret && !bought)
+        g_buys_none++;
+    {
+        char b[96];
+        snprintf(b, sizeof b, "at (%.1f %.1f %.1f) buyer=%d", x, y, z, bought ? (int)buyer : -1);
+        g_baby_last = b;
+    }
+    bool on = g_ok && g_guest_baby_fix && game::mode_id() == modes::kTribe && stage;
+    if (on && is_guest() && !local_play() && !g_gm.empty()) {
+        if (bought && buyer != C.sess->my_id()) { // BUG-0824: another player's purchase: the host makes it
+            g_buys_other++;
+            return;
+        }
+        net::Writer w;
+        w.u8(CMD_BABY); w.u8(0); w.u32(0);
+        write_target(w, Target{});
+        w.f32(x); w.f32(y); w.f32(z);
+        C.sess->send_reliable_to(0, net::MSG_TRIBE_CMD, w);
+        g_babies_sent++;
+        g_cmds_sent++;
+        return;
+    }
+    g_babies_local++;
+    if (!(on && is_host())) {
+        o_BabyBorn(stage, x, y, z);
+        return;
+    }
+    net::Vec3 p{x, y, z};
+    double now = H->time_seconds();
+    if (bought && buyer == C.sess->my_id()) { // BUG-0824: the host's own purchase is the host's
+        for (void* c : baby_call(stage, p))
+            baby_give(c, buyer);
+        g_buys_own++;
+        return;
+    }
+    if (bought) { // BUG-0824: the relayed effect of guest `buyer`: its member; its ask (before or after) pairs with it
+        g_buys_other++;
+        for (void* c : baby_call(stage, p)) {
+            baby_give(c, buyer);
+            auto a = std::find_if(g_baby_asks.begin(), g_baby_asks.end(), [&](const BabyAsk& k) { return k.from == buyer; });
+            if (a != g_baby_asks.end()) {
+                g_baby_asks.erase(a);
+                g_babies_paired++;
+            } else
+                g_baby_made.push_back({c, p, now, game::object_serial(c), buyer});
+        }
+        return;
+    }
+    for (void* c : baby_call(stage, p)) {
+        auto a = std::find_if(g_baby_asks.begin(), g_baby_asks.end(), [&](const BabyAsk& k) { return baby_near(k.pos, p); });
+        if (a != g_baby_asks.end()) { // the guest's baby, made here by its relayed effect
+            baby_give(c, a->from);
+            g_baby_asks.erase(a);
+            g_babies_paired++;
+        } else {
+            g_baby_made.push_back({c, p, now, game::object_serial(c)});
+        }
+    }
+}
+static void baby_on_host(uint8_t from, const net::Vec3& pos)
+{
+    if (!o_BabyBorn || !std::isfinite(pos.x) || !std::isfinite(pos.y) || !std::isfinite(pos.z) || std::fabs(pos.x) > 1e6 ||
+        std::fabs(pos.y) > 1e6 || std::fabs(pos.z) > 1e6 || g_baby_asks.size() >= 16) {
+        g_cmds_rejected++;
+        return;
+    }
+    auto m = std::find_if(g_baby_made.begin(), g_baby_made.end(), [&](const BabyMade& k) {
+        return g_baby_pair_fix && k.buyer != 0xFF ? k.buyer == from : baby_near(k.pos, pos); // BUG-0824: only that guest's own purchase
+    });
+    if (m != g_baby_made.end()) { // the host's game made it already (the relayed effect came first)
+        if (kept_alive(m->c, m->serial, 0x18EB4B7u)) // (BUG-0951; kCitizenNoun)
+            baby_give(m->c, from);
+        g_baby_made.erase(m);
+        g_babies_paired++;
+        return;
+    }
+    g_baby_asks.push_back({from, pos, H->time_seconds()});
+}
+static void baby_tick(double now)
+{
+    g_baby_made.erase(std::remove_if(g_baby_made.begin(), g_baby_made.end(), [&](const BabyMade& k) { return now - k.t > kBabyPair; }),
+                      g_baby_made.end());
+    for (size_t i = 0; i < g_baby_asks.size();) {
+        if (now - g_baby_asks[i].t < kBabyPair) {
+            i++;
+            continue;
+        }
+        BabyAsk k = g_baby_asks[i];
+        g_baby_asks.erase(g_baby_asks.begin() + i);
+        static uintptr_t a_Stage = H->sym("SporeCoop::cTribeUI_Get");
+        void* stage = a_Stage ? skg::cdecl_call<void*>(a_Stage) : nullptr;
+        if (!stage || !player_tribe() || !net::is_player(*C.sess, k.from))
+            continue;
+        for (void* c : baby_call(stage, k.pos)) { // none came: the host's game makes it (null at the cap: none)
+            baby_give(c, k.from);
+            g_babies_made++;
+        }
+    }
+}
+static void baby_forget()
+{
+    g_buys.clear(); // BUG-0824
+    g_born_for.clear();
+    g_baby_asks.clear();
+    g_baby_made.clear();
+}
+
+static void conquer_on_host(uint8_t from, const net::Vec3& p); // BUG-0879 (below)
 static void host_command(uint8_t from, net::Reader& r)
 {
     uint8_t kind = r.u8(), n = r.u8();
@@ -1338,6 +2888,20 @@ static void host_command(uint8_t from, net::Reader& r)
     pos.x = r.f32(); pos.y = r.f32(); pos.z = r.f32();
     if (!r.ok())
         return;
+    if (kind == CMD_BABY) { // BUG-0671
+        if (g_guest_baby_fix && from != 0 && game::mode_id() == modes::kTribe)
+            baby_on_host(from, pos);
+        else
+            g_cmds_rejected++;
+        return;
+    }
+    if (kind == CMD_CONQUER) { // BUG-0879
+        if (g_away_conquest_fix && from != 0 && game::mode_id() == modes::kTribe)
+            conquer_on_host(from, pos);
+        else
+            g_cmds_rejected++;
+        return;
+    }
     if (kind == CMD_GIVE) {
         if (action >= 0 && action <= 0xFF && net::is_player(*C.sess, (uint8_t)action))
             give_on_host(from, (uint8_t)action, ids);
@@ -1358,6 +2922,13 @@ static void host_command(uint8_t from, net::Reader& r)
     snprintf(b, sizeof b, "from=%u kind=%u n=%u action=%d target=%u/%u/%X (%.1f %.1f %.1f) -> %p", from, kind,
              (unsigned)ids.size(), action, tgt.kind, tgt.id, tgt.noun, tgt.pos.x, tgt.pos.y, tgt.pos.z, target);
     g_last_cmd = b;
+    if (kind == CMD_ACTION && !target && g_fruit_order_fix && tgt.kind == 2 && tgt.noun == kFruitNoun && action == 2 &&
+        (target = fruit_instead(tgt.pos))) { // BUG-0744
+        g_fruit_orders_moved++;
+        char m[96];
+        snprintf(m, sizeof m, " (no such fruit here: %s %p instead)", is_tree(target) ? "tree" : "fruit", target);
+        g_last_cmd += m;
+    }
     if (kind == CMD_ACTION && tgt.kind != 0 && !target) {
         g_cmds_rejected++;
         g_last_cmd += " rejected: no such target here";
@@ -1425,10 +2996,23 @@ static bool player_tribe_out(void* t)
     return true;
 }
 
+// BUG-0685: why the last spawn_member returned null (the mirror log names it)
+static const char* g_spawn_fail = "";
+// BUG-0857: "a baby stays a baby on the guest". A guest's mirror of a baby member grows up by the game's own timer of
+// that mirror, from its spawn: a mirror spawned (or bound) after the host's baby was born (a guest joining or rejoining
+// mid-growth) grew up that much later, and the host's age in the snapshot was used only at a spawn. Now a bound mirror
+// still a baby (+0xB34 0) whose host member is an adult grows up at once through the citizen's own GrowUp
+// (vt 0x78 0xC248C0: age 1, the adult's scale, model and AI flags, the HUD's selectable member).
+// `coop.fix tribe.mirror_grow off`: the mirror grows by its own timer only.
+static bool g_mirror_grow_fix = true;
+COOP_FIX("tribe.mirror_grow", "BUG-0857", g_mirror_grow_fix, "tribe: a guest's mirror of a baby member grows up when the host's member does, also when it was made later than the host's baby");
+static uint32_t g_mirrors_grown;
+
 static void* spawn_member(void* t, uint8_t age)
 {
     if (player_tribe_out(t)) {
         g_spawns_blocked++;
+        g_spawn_fail = "the player tribe is out (tribe.gameover guard: no member with health, input lock up)";
         return nullptr;
     }
     // SpawnMember (vt 0x98) returns null at the population cap: then create + add directly
@@ -1437,15 +3021,60 @@ static void* spawn_member(void* t, uint8_t age)
         c = thiscall<void*>(a_CreateCitizen, t, (int)age);
         if (c)
             thiscall<void>(a_AddMember, t, c, 1);
+        else
+            g_spawn_fail = "the game made no citizen (SpawnMember and CreateCitizen null)";
     }
     return c;
 }
 
+// BUG-0667: a detached body's tribe back into its +0x1014 for its teardown, when that tribe is still one of the world's
+static void restore_body_tribe(void* c, void* t)
+{
+    if (!g_body_teardown_fix || !t || F<void*>(c, kOwnerTribeOff))
+        return;
+    auto tribes = all_tribes();
+    if (std::find(tribes.begin(), tribes.end(), t) == tribes.end())
+        return;
+    F<void*>(c, kOwnerTribeOff) = t;
+    g_teardown_restored++;
+}
+
+// BUG-0844: c is a live citizen and a live tribe of the world has it in its member vector: that tribe (else null)
+static void* tribe_holding(void* c)
+{
+    if (!game::listed(c, 0x18EB4B7u)) // (kCitizenNoun)
+        return nullptr;
+    for (void* t : all_tribes()) {
+        void** b = F<void**>(t, kMembersOff);
+        void** e = F<void**>(t, kMembersOff + 4);
+        for (void** it = b; it && it < e && it - b < 1024; ++it)
+            if (*it == c)
+                return t;
+    }
+    return nullptr;
+}
 static void remove_member(void* c)
 {
+    game::air_hold(c, false); // BUG-0946: no hold on a citizen the game frees later
+    if (g_member_lifetime_fix && !g_detached.count(c)) {
+        void* lt = tribe_holding(c);
+        if (!lt) {
+            g_remove_refused++;
+            MIRROR_LOG("tribe: %p is no member of a live tribe (freed, or another object there): forgotten, not removed (BUG-0844)", c);
+            return;
+        }
+        vcall<void>(lt, 0x9C / 4, c, 1); // RemoveMember(c, destroy) on the tribe that holds it
+        return;
+    }
     void* t = F<void*>(c, kOwnerTribeOff);
     if (t)
         vcall<void>(t, 0x9C / 4, c, 1); // RemoveMember(c, destroy)
+    else if (auto it = g_detached.find(c); it != g_detached.end()) { // BUG-0620: a body out of its tribe: the object
+        void* bt = it->second;
+        g_detached.erase(it);
+        restore_body_tribe(c, bt); // BUG-0667
+        game::destroy_instance(c);
+    }
 }
 
 // BUG-0495: the objects the mod makes on a guest (the members it spawns as mirrors of the host's, and the
@@ -1576,6 +3205,51 @@ static bool save_filter(void* o, uint32_t noun)
     return true;
 }
 
+// BUG-0741: the host's NPC tribe controller (FormTribe 0xCC6440) destroys the tribe spawn marker (cGameplayMarker noun
+// 0x36BE27E, +0x108 == 0x57F09E5E) it formed a tribe at (cGameNounManager::DestroyInstance); a guest's copy of that
+// tribe (make_npc_tribes) never goes through FormTribe, so the guest kept the marker (the detector's unpaired
+// gameplay marker): a guest controller that ever formed tribes (tribe.guest_tribes off, a host handover) could form
+// one on a site already used. With the fix the guest destroys its marker nearest the copy, within 30 m.
+static bool g_marker_fix = true;
+COOP_FIX("tribe.copy_marker", "BUG-0741", g_marker_fix,
+         "tribe: a guest's copy of the host's new NPC tribe uses up the tribe spawn marker there, as the host's controller did");
+static uint32_t g_markers_used;
+static net::Vec3 marker_pos(void* o)
+{
+    const float* q = (const float*)((uint8_t*)o + 0x1A8); // mNounPosition (docs/re/creature.md#creature-gameplay-markers)
+    return {q[0], q[1], q[2]};
+}
+static void use_marker_at(const net::Vec3& at)
+{
+    if (!g_marker_fix)
+        return;
+    struct Best {
+        net::Vec3 at;
+        void* o = nullptr;
+        float d = 30.f;
+    } best{at};
+    game::for_each_object(
+        [](void* o, uint32_t noun, void* u) {
+            auto* b = (Best*)u;
+            if (noun == 0x36BE27E && F<uint32_t>(o, 0x108) == 0x57F09E5E) {
+                float d = net::dist(marker_pos(o), b->at);
+                if (d < b->d) {
+                    b->d = d;
+                    b->o = o;
+                }
+            }
+            return true;
+        },
+        &best);
+    if (!best.o)
+        return;
+    net::Vec3 mp = marker_pos(best.o);
+    game::destroy_instance(best.o);
+    g_markers_used++;
+    H->log(M, SK_INFO, "tribe: the copy of the host's NPC tribe used up the tribe spawn marker at (%.0f %.0f %.0f), %.1f m off",
+           mp.x, mp.y, mp.z, best.d);
+}
+
 // BUG-0381 (tribe.npc_tribes): a guest makes each host NPC tribe that has no tribe of this game
 // within the mapping's 40 m (guest_state). `p`: the tribe table after the trailer (tag, count,
 // count x kTribeInfo). One try per host tribe every 5 s (an unknown species is asked for first).
@@ -1634,6 +3308,7 @@ static void make_npc_tribes(const uint8_t* p, size_t len, const std::vector<std:
         g_local_tribe_of[i] = t;
         note_ours(g_ours_t, t); // BUG-0495
         g_npc_tribe_made[cell] = t;
+        use_marker_at(hp); // BUG-0741
         net::Vec3 lp = tribe_pos(t);
         H->log(M, SK_INFO,
                "tribe: the host's NPC tribe %u at (%.0f %.0f %.0f) is not in this game: made it (species %08X, archetype %d) at "
@@ -1788,8 +3463,129 @@ int remove_village(void* t)
     }
     g_unmapped_since.erase(t);
     g_ours_t.erase(t);
+    wsync::village_gone(t); // BUG-0942: the game's goal card of this village
     game::destroy_creature(t); // (not an animal: DestroyInstance at once)
     return 1;
+}
+
+// BUG-0777: a hut the host's game saw fall falls in this guest's game too, through the game's own blow (the hut's
+// combatant TakeDamage vt 0x18, its remaining health and a little more, the attacker a member of the player tribe):
+// the game's own defeat follows (the death message, the village's conquered flag +0x556, the goal mission's end).
+// 1 dealt, 0 nothing to do, -1 not now (a cinematic plays).
+static int fell_hut_by(void* hut, int owner);
+int fell_hut(void* hut)
+{
+    if (!is_guest())
+        return 0;
+    return fell_hut_by(hut, -1);
+}
+static int fell_hut_by(void* hut, int owner) // owner >= 0: the attacker a member of that player if there is one
+{
+    if (!hut || game::mode_id() != modes::kTribe || !skg::readable(hut, 0x160))
+        return 0;
+    if (F<int>(hut, 0x120 + 0x34) == 2)
+        return 0;
+    if (game::cinematic_playing())
+        return -1;
+    void* pt = player_tribe();
+    void* att = nullptr;
+    if (pt)
+        for (void* c : members(pt))
+            if (is_citizen(c) && !game::is_dead(c) && (!att || (owner >= 0 && owner_of(c) == owner))) {
+                att = c;
+                if (owner < 0 || owner_of(c) == owner)
+                    break;
+            }
+    static const float zero[3] = {0, 0, 0}; // the hit direction must not be null
+    float hp = F<float>(hut, 0x120 + 0x38);
+    vcall<int>((uint8_t*)hut + 0x120, 0x18 / 4, hp + 10.f, 0xFFFFFFFFu, 0, zero, att ? (uint8_t*)att + 0x5A8 : nullptr);
+    H->log(M, SK_INFO, "tribe: a hut falls here (health %.1f, attacker %p of player %d): state %d (BUG-0777 / BUG-0879)", hp, att,
+           att ? (int)owner_of(att) : -1, F<int>(hut, 0x120 + 0x34));
+    return 1;
+}
+
+// BUG-0777: a village the host's game conquered: its hut falls here (fell_hut); a village without a standing hut
+// gets the game's own conquered flag (cTribe_SetConquered: +0x556, its view effect, its food bundles go), which the
+// goal mission's update (0xC2F750) reads to end the mission. 1 done, 0 nothing to do, -1 not now.
+int conquer_village(void* t)
+{
+    if (!t || !is_guest() || game::mode_id() != modes::kTribe || t == player_tribe() || !skg::readable(t, 0x557))
+        return 0;
+    if (F<uint8_t>(t, 0x556))
+        return 0;
+    void* hut = skg::readable(t, 0x36C) ? F<void*>(t, 0x368) : nullptr;
+    if (hut && skg::readable(hut, 0x160) && F<int>(hut, 0x120 + 0x34) != 2)
+        return fell_hut(hut);
+    static uintptr_t a_SetConquered = H->sym("SporeCoop::cTribe_SetConquered");
+    if (!a_SetConquered)
+        return 0;
+    if (game::cinematic_playing())
+        return -1;
+    thiscall<void>(a_SetConquered, t, 1);
+    H->log(M, SK_INFO, "tribe: the village %p the host's game conquered is conquered here (hut %p) (BUG-0777)", t, hut);
+    return 1;
+}
+
+// BUG-0879: guest, the conquered flag of every NPC village as last seen; a village this game conquers while the host
+// is away goes to the host
+static std::unordered_map<void*, uint8_t> g_conq_seen;
+static void away_conquest_tick(double now)
+{
+    static double next;
+    if (now < next || !is_guest())
+        return;
+    next = now + 0.5;
+    void* pt = player_tribe();
+    std::unordered_map<void*, uint8_t> seen;
+    for (void* t : all_tribes()) {
+        if (t == pt || !skg::readable(t, 0x557))
+            continue;
+        uint8_t f = F<uint8_t>(t, 0x556);
+        auto it = g_conq_seen.find(t);
+        if (f && it != g_conq_seen.end() && !it->second && g_away_conquest_fix && local_play()) {
+            net::Vec3 p = tribe_pos(t);
+            net::Writer w;
+            w.u8(CMD_CONQUER);
+            w.u8(0);
+            w.u32(0);
+            write_target(w, Target{});
+            w.f32(p.x); w.f32(p.y); w.f32(p.z);
+            C.sess->send_reliable_to(0, net::MSG_TRIBE_CMD, w);
+            g_conquests_sent++;
+            H->log(M, SK_INFO, "tribe: this game conquered the village at (%.0f %.0f %.0f) while the host is away: sent to the host (BUG-0879)",
+                   p.x, p.y, p.z);
+            if (C.feed)
+                C.feed("your conquest waits: " + C.sess->name_of(0) + " (host) is away, it is made when the host is back");
+        }
+        seen[t] = f;
+    }
+    g_conq_seen.swap(seen);
+}
+
+// BUG-0879: host, a guest's game conquered the NPC village at p while this game was away: its hut falls here
+static void conquer_on_host(uint8_t from, const net::Vec3& p)
+{
+    void* pt = player_tribe();
+    void* best = nullptr;
+    float bd = 40.f;
+    for (void* t : all_tribes()) {
+        float d = net::dist(tribe_pos(t), p);
+        if (t != pt && d < bd && skg::readable(t, 0x557)) {
+            bd = d;
+            best = t;
+        }
+    }
+    void* hut = best && skg::readable(best, 0x36C) ? F<void*>(best, 0x368) : nullptr;
+    int r = best && !F<uint8_t>(best, 0x556) ? fell_hut_by(hut, from) : 0;
+    if (r > 0) {
+        g_conquests_done++;
+        H->log(M, SK_INFO, "tribe: player %u conquered the village at (%.0f %.0f %.0f) while this game was away: conquered here (BUG-0879)",
+               (unsigned)from, p.x, p.y, p.z);
+    } else {
+        g_conquests_refused++;
+        H->log(M, SK_INFO, "tribe: player %u's conquest of the village at (%.0f %.0f %.0f) not made here: %s (BUG-0879)", (unsigned)from,
+               p.x, p.y, p.z, !best ? "no village there" : F<uint8_t>(best, 0x556) ? "already conquered" : r < 0 ? "a cinematic plays" : "no standing hut");
+    }
 }
 
 static void guest_state(net::Reader& r)
@@ -1798,6 +3594,11 @@ static void guest_state(net::Reader& r)
     uint8_t chunk = r.u8(), chunks = r.u8(), nt = r.u8();
     if (!r.ok() || !net::cycle_chunk_ok(chunk, chunks))
         return;
+    bool started = false;
+    if (!g_cyc.begin(cycle, g_cycle_order_fix, &started))
+        return; // a late chunk of an older cycle
+    if (started)
+        g_cycle_ids.clear();
     std::vector<std::pair<net::Vec3, bool>> htribes;
     for (int i = 0; i < nt && r.ok(); i++) {
         net::Vec3 p;
@@ -1824,11 +3625,6 @@ static void guest_state(net::Reader& r)
             }
         }
     }
-    if (cycle != g_rx_cycle) {
-        g_rx_cycle = cycle;
-        g_cycle_ids.clear();
-        g_cycle_chunks.clear();
-    }
     double now = H->time_seconds();
     uint8_t n = r.u8();
     // BUG-0365: the host's clock after the entries (none from a host before 0.7.3.4)
@@ -1851,6 +3647,8 @@ static void guest_state(net::Reader& r)
         uint16_t id = r.u16();
         GMember m;
         m.tribe = r.u8(); m.owner = r.u8(); m.age = r.u8();
+        m.body = (m.age & kBodyBit) != 0; // BUG-0620
+        m.age &= (uint8_t)~kBodyBit;
         m.pos.x = r.f32(); m.pos.y = r.f32(); m.pos.z = r.f32();
         m.vel.x = r.f32(); m.vel.y = r.f32(); m.vel.z = r.f32();
         m.rot.x = r.f32(); m.rot.y = r.f32(); m.rot.z = r.f32(); m.rot.w = r.f32();
@@ -1861,8 +3659,8 @@ static void guest_state(net::Reader& r)
         auto& g = g_gm[id];
         g.id = id;
         void* c = g.c;
-        g.tribe = m.tribe; g.owner = m.owner; g.age = m.age;
-        g.pos = m.pos; g.vel = m.vel; g.rot = m.rot; g.hp = m.hp; g.seen = now;
+        g.tribe = m.tribe; g.owner = m.owner; g.age = m.age; g.body = m.body;
+        g.pos = m.pos; g.vel = game::finite_vel(m.vel); g.rot = m.rot; g.hp = m.hp; g.seen = now; // BUG-0894
         if (g_test_lift != 0.f) { // tests (BUG-0329): the host's member as if its ground were higher
             float r = std::sqrt(g.pos.x * g.pos.x + g.pos.y * g.pos.y + g.pos.z * g.pos.z);
             if (r > 1.f) {
@@ -1878,17 +3676,36 @@ static void guest_state(net::Reader& r)
             ps.rot = g.rot;
             ps.vel = g.vel;
             g.buf.delay = g_test_delay;
+            g.buf.lead = true; // BUG-0425 (drive.lead)
+            g.buf.smooth_max = kMirrorSmoothMax; // BUG-0619 (drive.lead_smooth)
             g.buf.push(ps, now);
         }
-        if (c && !game::object_alive(c)) {
+        if (c && !mirror_ok(g)) { // (BUG-0844: also another object at its address)
+            MIRROR_LOG("tribe: mirror #%u: its object is gone (not removed by the mod, BUG-0685)", id);
+            if (g_member_lifetime_fix && game::object_alive(c))
+                g_mirror_stale++;
             g_gid_of.erase(c);
+            game::air_hold(c, false); // (BUG-0946)
+            g.air = false;
             g.c = c = nullptr;
         }
-        if (c)
+        if (c && g_mirror_grow_fix && m.age == 1 && !m.body && F<uint8_t>(c, kAgeOff) == 0 && !game::is_dead(c)) {
+            vcall<void>(c, 0x78 / 4); // BUG-0857: the citizen's own GrowUp (vt 0x78, plain ret)
+            g_mirrors_grown++;
+            MIRROR_LOG("tribe: mirror #%u grew up with the host's member (BUG-0857)", id);
+        }
+        if (c || (m.body && !g_join_body_fix)) // (no new mirror for a body before BUG-0665)
             continue;
+        auto not_made = [&g, id](const char* why) {
+            if (g.not_made != why)
+                MIRROR_LOG("tribe: mirror #%u is not made: %s (BUG-0685)", id, why);
+            g.not_made = why;
+        };
         void* t = m.tribe < g_local_tribe_of.size() ? g_local_tribe_of[m.tribe] : nullptr;
-        if (!t)
+        if (!t) {
+            not_made("its tribe has no tribe of this game");
             continue;
+        }
         // bind to the nearest unbound local member of that tribe, else spawn one
         float best = 6.f;
         for (void* lc : members(t)) {
@@ -1901,24 +3718,35 @@ static void guest_state(net::Reader& r)
             }
         }
         if (!c) {
+            g_spawn_fail = "";
             c = spawn_member(t, m.age);
-            if (!c)
+            if (!c) {
+                not_made(g_spawn_fail);
                 continue;
+            }
             note_ours(g_ours_c, c); // BUG-0495
             // BUG-0444: the host's position (g.pos: with the tests' lift), onto this game's ground where that lies
             // higher (BUG-0329)
             game::teleport(c, g_mirror_ground_fix ? drive::out_of_ground(g.pos, true) : g.pos, m.rot);
             g_spawned++;
         }
+        if (m.body) { // BUG-0665: guest_tick lays it down as a body
+            g_join_bodies++;
+            MIRROR_LOG("tribe: mirror #%u is made for a body of the host's (BUG-0665)", id);
+        }
+        if (g.not_made)
+            MIRROR_LOG("tribe: mirror #%u is made again (BUG-0685)", id);
+        g.not_made = nullptr;
         g.c = c;
+        g.serial = game::object_serial(c); // BUG-0844
         g_gid_of[c] = id;
     }
     if (!r.ok()) // a cut chunk does not count: the cycle stays incomplete, nothing is removed
         return;
-    g_cycle_chunks.insert(chunk);
+    g_cyc.add(chunk);
     if (chunk + 1 < chunks)
         return;
-    if (g_cycle_chunks.size() < chunks) { // a chunk of this cycle was lost or comes late: keep everything
+    if (!g_cyc.complete(chunks)) { // a chunk of this cycle was lost or comes late: keep everything
         g_incomplete++;
         return;
     }
@@ -1926,7 +3754,9 @@ static void guest_state(net::Reader& r)
     // the host does not know (the guest's tribes are only mirrors)
     for (auto it = g_gm.begin(); it != g_gm.end();) {
         if (!g_cycle_ids.count(it->first)) {
-            if (it->second.c && game::object_alive(it->second.c)) {
+            if (mirror_ok(it->second)) { // (BUG-0844)
+                MIRROR_LOG("tribe: mirror #%u goes: the host's snapshot has it no more%s (BUG-0685)", it->first,
+                           g_detached.count(it->second.c) ? " (a body)" : "");
                 remove_member(it->second.c);
                 g_removed++;
             }
@@ -1939,6 +3769,7 @@ static void guest_state(net::Reader& r)
         if (t)
             for (void* lc : members(t))
                 if (!g_gid_of.count(lc)) {
+                    MIRROR_LOG("tribe: a member of this game the host has not goes (leader %d, BUG-0685)", (int)is_leader(lc));
                     remove_member(lc);
                     g_removed++;
                 }
@@ -1979,6 +3810,34 @@ static void mirror_target(GMember& g, double now, net::Vec3& pos, net::Quat& rot
         // standing state to a walking one the path moves slower than the walking state says, and the
         // game walks the mirror at this speed between two placings (it showed as stop-and-go)
         vel = s.vel;
+        // BUG-0619 (drive.lead_smooth): the smoothed target's own velocity (its offset closing a late state's step
+        // included): walked at the raw path's speed the mirror fell 0.5-1.4 m behind a closing target and surged
+        // after it at 7-8 m/s when the closing ended (tribe_walk_mobile 20261106-140306 #3: uneven 16 %)
+        g.lead_sp = -1;
+        if (g.buf.lead_off() != g.jittery) { // (diagnostics: the lead switched off / on by the link's jitter)
+            g.jittery = g.buf.lead_off();
+            static unsigned said = 0; // (BUG-0650: 400 lines; 12 did not cover one test run)
+            if (said++ < 400)
+                H->log(M, SK_INFO, "tribe: mirror #%u lead %s (one-way latency %.0f ms, BUG-0619)", g.id,
+                       g.jittery ? "off" : "on", g.buf.jitter() * 1000.0);
+        }
+        if (g.buf.smooth_velocity(vel)) {
+            // the walk's speed rises at most kMirrorWalkAcc to the target's (it never goes under the lead's own):
+            // set at once, the game's walk of the next frame grew by up to 0.4 m on top of the placing (1-1.3 m frames)
+            float want = drive::speed(vel), raw = drive::speed(s.vel);
+            double dt = now - g.walk_t;
+            float w = (g.walk_t <= 0 || dt > 0.5) ? raw : g.walk_sp + kMirrorWalkAcc * (float)std::min(std::max(dt, 0.0), 0.1);
+            w = want < raw ? want : std::min({std::max(w, raw), want, raw + kMirrorWalkOver});
+            g.walk_sp = w;
+            g.lead_sp = raw;
+            g.walk_t = now;
+            if (want > 0.01f) {
+                float k = w / want;
+                vel = {vel.x * k, vel.y * k, vel.z * k};
+            }
+            age = 0;
+            return;
+        }
         if (g.buf.sample(now - kPathDt, back)) {
             float k = (float)(1.0 / kPathDt);
             vel = {(s.pos.x - back.pos.x) * k, (s.pos.y - back.pos.y) * k, (s.pos.z - back.pos.z) * k};
@@ -1998,6 +3857,7 @@ static void mirror_target(GMember& g, double now, net::Vec3& pos, net::Quat& rot
     rot = g.rot;
     vel = g.vel;
     age = now - g.seen;
+    g.lead_sp = -1;
 }
 
 // BUG-0444: this game's time is paused (cGameTimeManager +0x48 bit 0: after a cold join for 10-40 s, the pause
@@ -2049,8 +3909,45 @@ static void mirror_drive(GMember& g, double now)
         o.speed_after_goal = true;
         o.max_dt = 0.4; // a slow guest keeps up with its members (driver.h)
         o.ground = g_mirror_ground_fix; // BUG-0444
+        // BUG-0425; BUG-0619: not while the smoothed target closes the error itself (catch_prop on top measured the
+        // catch-up from the game's walk and drew walk + catch-up, 0.9-1.25 m frames), nor without the lead (0.7.8)
+        o.catch_prop = g.lead_sp < 0 && !(net::g_lead_smooth_fix && g.buf.lead_off());
+        // BUG-0651 (drive.lead_keep): while the late lead catches up (the target and the walk at up to 2x the body's speed)
+        // a frame draws at most 2 x the body's own speed + catch_up (WalkPlace::lead_speed, BUG-0619's bound): without it
+        // the game's walk at 13-17 m/s plus catch_prop's closing drew 1.0-1.4 m frames (tribe_walk_player 20261107-102038
+        // #3); with catch_prop off instead a 6-9 m error (BUG-0674) took 0.6 s to close
+        // (and always: a mirror held by its game and moved by keep_lost's marked teleports, BUG-0386, caught up in 0.91 m
+        // frames at 12.8 m/s, tribe_walk_player 20261107-111106 #2)
+        if (net::g_lead_keep_fix && g.lead_sp < 0)
+            o.lead_speed = std::max(sp / g.buf.late_rate(), 0.5f);
+        o.keep_lost = g_mirror_keep_fix; // BUG-0386
         drive::walk_place(g.c, g.aim, rot, vel, g.ds, now, o);
+        // tests (BUG-0386): the game's walk and a placing without the teleport mark are undone, the mirror crawls 0.04 m
+        // a frame towards its aim (what the guest's game did to the held mirror); a marked teleport (keep_lost's held) is
+        // kept, the hold goes on from there
+        if (now < g.test_undo_until) {
+            if (g.ds.held)
+                g.test_undo_at = g.ds.placed_to;
+            else {
+                net::Vec3 d = g.test_undo_at, to = g.aim;
+                float e = net::dist(d, to), k = e > 0.04f ? 0.04f / e : 1.f;
+                g.test_undo_at = {d.x + (to.x - d.x) * k, d.y + (to.y - d.y) * k, d.z + (to.z - d.z) * k};
+                game::place(g.c, g.test_undo_at, rot);
+            }
+        }
         g_mirror_walks++;
+        // BUG-0386 (diagnostics): a walked mirror held over 2 m off its aim for 1 s: what is around it, once per 10 s
+        if (g.ds.last_err > 2.f) {
+            if (g.held_since <= 0)
+                g.held_since = now;
+            if (now - g.held_since > 1.0 && now - g.held_said > 10.0) {
+                g.held_said = now;
+                H->log(M, SK_INFO, "tribe: mirror #%u held %.1f m off its aim for %.1f s (place lost %u, held %d, %.1f m/s); "
+                       "objects within 3 m: %s (BUG-0386)", g.id, g.ds.last_err, now - g.held_since, (unsigned)g.ds.place_lost,
+                       (int)g.ds.held, sp, game::objects_near(game::position(g.c), 3.f, g.c).c_str());
+            }
+        } else
+            g.held_since = 0;
         return;
     }
     drive::walk_end(g.c, g.aim, g.ds, now);
@@ -2062,26 +3959,53 @@ static void guest_tick(double now)
     if (local_play())
         return; // the last states would hold the members for 3 s
     for (auto& [id, g] : g_gm) {
-        if (!g.c || !game::object_alive(g.c) || now - g.seen > 3.0)
+        if (!mirror_ok(g) || now - g.seen > 3.0) // (BUG-0844)
             continue;
         g.ds.drawn = game::position(g.c); // coop.track (BUG-0365): where the game drew it this frame
         if (g_fix_ko && g.hp <= 0) {
+            if (g.air) { // (BUG-0946)
+                g.air = false;
+                game::air_hold(g.c, false);
+            }
             if (!game::is_dead(g.c)) {
                 game::set_health(g.c, 0);
                 game::play_death(g.c);
                 g_ko_shown++;
             }
+            if (g.body && g_member_body_fix)
+                detach_body(g.c);
             mirror_step(g, g.pos, g.rot, g.vel, now, now - g.seen);
             continue;
         }
         if (g_fix_ko && game::is_dead(g.c)) { // back on its feet on the host
+            MIRROR_LOG("tribe: mirror #%u goes: dead here, back on its feet on the host (made again, BUG-0685)", id);
             g_gid_of.erase(g.c);
             remove_member(g.c);
             g.c = nullptr;
             g_ko_replaced++;
             continue;
         }
-        mirror_drive(g, now);
+        if (g_mirror_air_fix && now - g.air_at < kMirrorAirFresh && g.air_agl > drive::kAirOver &&
+            g.air_agl < drive::g_agl_max) { // BUG-0946: at the host's height over this game's ground
+            net::Vec3 pos, vel;
+            net::Quat rot;
+            double age;
+            mirror_target(g, now, pos, rot, vel, age);
+            float r = std::sqrt(pos.x * pos.x + pos.y * pos.y + pos.z * pos.z), gr = game::ground_radius(pos);
+            if (r > 1.f && gr > 0) {
+                float k = (gr + g.air_agl) / r;
+                g.aim = {pos.x * k, pos.y * k, pos.z * k};
+                drive::air_place(g.c, g.aim, rot, vel, g.ds, now);
+                g.air = true;
+                g_air_placed++;
+            }
+        } else {
+            if (g.air) { // (its game lands it)
+                g.air = false;
+                game::air_hold(g.c, false);
+            }
+            mirror_drive(g, now);
+        }
         float hp = game::health(g.c);
         if (std::fabs(hp - g.hp) > 0.01f && g.hp > 0)
             game::set_health(g.c, g.hp);
@@ -2102,9 +4026,18 @@ static std::unordered_map<void*, std::unordered_map<uint8_t, double>> g_pincer; 
 static std::unordered_map<void*, double> g_pincer_told;
 static std::unordered_map<uint8_t, void*> g_chief;                              // owner -> chief citizen
 static std::unordered_map<void*, float> g_chief_scale;                          // chief -> its own scale
+// BUG-0422: the departed player's chief (a pointer into this game) and its pincer hits stayed under its id
+PLAYER_STATE("tribe", [](uint8_t id) { g_chief.erase(id); for (auto& [t, m] : g_pincer) m.erase(id); },
+             [](uint8_t id) -> size_t {
+                 size_t n = g_chief.count(id);
+                 for (auto& [t, m] : g_pincer)
+                     n += m.count(id);
+                 return n;
+             });
 static std::unordered_map<void*, double> g_chief_saved;                         // chief -> last rescue
 static uint32_t g_pincer_hits, g_aura_hits, g_chief_rescues, g_duet_ticks, g_heals, g_epics, g_epic_kills;
 static void* g_epic;
+static uint32_t g_epic_serial; // BUG-0951
 static void* g_epic_herd; // the herd g_epic lives in (ours: quieted when the epic is gone)
 static std::unordered_set<uint8_t> g_epic_hitters;
 // BUG-0146: only the players' members count as hitters (an NPC tribe's member is owner 0xFE).
@@ -2131,7 +4064,7 @@ uint16_t id_of(void* c) { return member_id(c); }
 void* mirror_of(uint16_t id)
 {
     auto it = g_gm.find(id);
-    return it == g_gm.end() ? nullptr : it->second.c;
+    return it == g_gm.end() || !mirror_ok(it->second) ? nullptr : it->second.c; // (BUG-0955)
 }
 
 // tests (game bots): a readable key for tribe buildings on screen: hut<tribe index>, "p" for the player's
@@ -2266,10 +4199,35 @@ static bool is_epic_animal(void* a)
     static uintptr_t is_epic = H->sym("SporeCoop::cCreatureAnimal_IsEpic");
     return a && is_epic && !IsBadReadPtr(a, 8) && game::noun_id(a) == 0x18EB45E && thiscall<bool>(is_epic, a);
 }
+// BUG-0685 (docs/re/tribe.md#tribe-guest-game-over): a guest's mirrors have the host's members' health (the snapshot),
+// the host's game decides who falls (tribe.ko plays it). A blow of the guest's own game that took a mirror to 0 health
+// made that game's own decisions on it: a mirror that was the last member with health of the guest's player tribe (the
+// host's tribe down to its chief) brought up the guest's own game over at once (the input lock, 12 s later the caption
+// "Alas! Your population has fallen below the minimum ...", its OK reloads the guest's own last save) while the host
+// played on; with the input lock up tribe.gameover's guard (BUG-0172/0288) then refused the mirror the host's member
+// needed again (campaign 20261107-141346, Carol: `t: 1 missing on the guest (t4)` for good). tribe.mirror_blow: a
+// blow of a guest's game never takes a mirror below kMirrorBlowFloor (it falls when the host's member does), also
+// not while the host is away (local_play: the guest's game runs on its own then). Off: the game's blow (0.7.10).
+static bool g_mirror_blow_fix = true;
+COOP_FIX("tribe.mirror_blow", "BUG-0685", g_mirror_blow_fix,
+         "tribe: a blow of a guest's own game never kills a mirror of the host's member (no game over of its own there)");
+constexpr float kMirrorBlowFloor = 0.3f; // (the game's own floor of a chief that still has its tribe)
+static uint32_t g_mirror_blows_kept;
 static int SK_THISCALL h_CitizenTD(void* comb, float dmg, uint32_t pol, int type, const void* pos, void* att)
 {
     if (civ::hit_is_cosmetic(att)) // BUG-0477: a Civ guest's copy of a host's shot hurts nobody
         return 0;
+    if (g_mirror_blow_fix && is_guest() && active() && !local_play()) { // BUG-0685
+        void* victim = (uint8_t*)comb - 0x5A8;
+        auto it = g_gid_of.find(victim);
+        float hp = it != g_gid_of.end() ? F<float>(victim, 0x5E0) : 0.f;
+        if (it != g_gid_of.end() && hp > 0 && dmg > hp - kMirrorBlowFloor) {
+            if (g_mirror_blows_kept++ < 5)
+                H->log(M, SK_INFO, "tribe: a blow of this game on mirror #%u (%.1f of its %.1f health) leaves it %.1f: the host's "
+                       "game decides when it falls (tribe.mirror_blow, BUG-0685)", it->second, dmg, hp, std::min(hp, kMirrorBlowFloor));
+            dmg = std::max(0.f, hp - kMirrorBlowFloor);
+        }
+    }
     if (is_host() && active()) {
         void* victim = (uint8_t*)comb - 0x5A8;
         void* pt = player_tribe();
@@ -2290,7 +4248,7 @@ static int SK_THISCALL h_CitizenTD(void* comb, float dmg, uint32_t pol, int type
             for (auto& [o, t] : hits)
                 if (now - t < kPincerWindow)
                     players++;
-            if (players >= 2) {
+            if (players >= 2 && settings::on(settings::kTribePincer)) { // F3 (BUG-0768): tribe.pincer
                 dmg *= 1.5f;
                 g_pincer_hits++;
                 if (now - g_pincer_told[vt] > 60 && C.notice) {
@@ -2298,13 +4256,13 @@ static int SK_THISCALL h_CitizenTD(void* comb, float dmg, uint32_t pol, int type
                     C.notice("pincer attack: +50% damage");
                 }
             }
-            if (near_own_chief(ac, ao)) {
+            if (settings::on(settings::kTribeAura) && near_own_chief(ac, ao)) { // tribe.chief_aura
                 dmg *= 1.2f;
                 g_aura_hits++;
             }
         }
         // a chief about to fall next to a partner's member: the tribe protects it
-        if (vt == pt && is_chief(victim)) {
+        if (vt == pt && is_chief(victim) && settings::on(settings::kTribeAura)) {
             float hp = F<float>(victim, 0x5E0), mx = F<float>(victim, 0x5D4);
             uint8_t o = owner_of(victim);
             if (dmg >= hp && mx > 0 && now - g_chief_saved[victim] > 60) {
@@ -2336,6 +4294,10 @@ static void bonus_food(int n)
 }
 
 // heal tick 0xDB9B20 (cdecl: arg1 healer, *arg6 patient): a full heal of a partner's member
+// BUG-0745: the patient's maximum is cCombatant::GetMaxHitPoints (game::max_health); the field +0x5D4
+// (combatant +0x2C) holds 1.0, so the bonus never fired. `coop.fix tribe.heal_max off`: that field (tests)
+static bool g_fix_heal_max = true;
+COOP_FIX("tribe.heal_max", "BUG-0745", g_fix_heal_max, "tribe: the healer bonus compares the patient's health with its real maximum");
 using HealTick_t = bool(SK_CDECL*)(void*, void*, void*, void*, void*, void**, void*, float, void*, void*, void*, void*);
 static HealTick_t o_HealTick;
 static bool SK_CDECL h_HealTick(void* healer, void* a2, void* a3, void* a4, void* a5, void** target, void* a7, float a8,
@@ -2347,7 +4309,7 @@ static bool SK_CDECL h_HealTick(void* healer, void* a2, void* a3, void* a4, void
         pat = skg::cdecl_call<void*>(a_PatientOf, *target);
         if (pat) {
             hp0 = F<float>(pat, 0x5E0);
-            mx = F<float>(pat, 0x5D4);
+            mx = g_fix_heal_max ? game::max_health(pat) : F<float>(pat, 0x5D4);
         }
     }
     bool r = o_HealTick(healer, a2, a3, a4, a5, target, a7, a8, a9, a10, a11, a12);
@@ -2363,9 +4325,41 @@ static bool SK_CDECL h_HealTick(void* healer, void* a2, void* a3, void* a4, void
 }
 
 // duet: performances (BT node 0xB46E8803) of both players for the same tribe
+// BUG-0748 (the duet's test): `coop.fix tribe.duet off` leaves the performances to the game alone (the test's twin)
+static bool g_duet_fix = true;
+COOP_FIX("tribe.duet", "BUG-0748", g_duet_fix, "tribe: performances of two players' members for the same village fill its social mini-game faster (the duet)");
+struct Performer {
+    uint16_t id;
+    uint8_t owner;
+    void* target;
+    void* ui;
+    int state;
+};
+static std::vector<Performer> performers()
+{
+    std::vector<Performer> v;
+    void* pt = player_tribe();
+    if (!pt || !a_SessionGet)
+        return v;
+    for (void* c : members(pt)) {
+        uint8_t o = owner_of(c);
+        uint8_t* ai = o < 0xFE ? F<uint8_t*>(c, 0xB4C) : nullptr;
+        if (!ai || IsBadReadPtr(ai, 0x604) || F<uint32_t>(ai, 0x1D8) != 0xB46E8803u)
+            continue;
+        uint8_t* blk = F<uint8_t*>(ai, 0x600);
+        if (!blk || IsBadReadPtr(blk, 0x1AC))
+            continue;
+        uint8_t* ss = skg::cdecl_call<uint8_t*>(a_SessionGet, F<int>(blk, 0x1A8));
+        if (!ss || IsBadReadPtr(ss, 0xF0))
+            continue;
+        auto h = g_hm.find(c);
+        v.push_back({h == g_hm.end() ? (uint16_t)0 : h->second.id, o, F<void*>(ss, 0xC), F<void*>(ss, 0xE8), F<int>(ss, 4)});
+    }
+    return v;
+}
 static void duet_tick(double now)
 {
-    if (now - g_last_duet < 0.5 || !a_SessionGet)
+    if (!g_duet_fix || now - g_last_duet < 0.5 || !a_SessionGet || !settings::on(settings::kTribeDuet)) // F3: tribe.duet
         return;
     g_last_duet = now;
     void* pt = player_tribe();
@@ -2576,6 +4570,7 @@ static bool spawn_epic()
         return false;
     }
     g_epic = c;
+    g_epic_serial = game::object_serial(c); // BUG-0951
     g_epic_herd = herd;
     g_epic_hitters.clear();
     g_epics++;
@@ -2607,7 +4602,9 @@ static bool epic_listed()
 
 static void epic_tick(double now)
 {
-    if (g_epic && (!epic_listed() || !game::object_alive(g_epic) || game::is_dead(g_epic))) {
+    if (g_epic && ((g_kept_refs_fix ? !kept_alive(g_epic, g_epic_serial, 0x18EB45Eu) // (BUG-0951: listed, the same object)
+                                    : (!epic_listed() || !game::object_alive(g_epic))) ||
+                   game::is_dead(g_epic))) {
         int food = g_epic_hitters.size() >= 2 ? 80 : 30;
         bonus_food(food);
         g_epic_kills++;
@@ -2619,7 +4616,7 @@ static void epic_tick(double now)
     }
     if (!g_epic_next)
         g_epic_next = now + 480; // the first one after 8 minutes together
-    if (!g_epic && now > g_epic_next && C.sess->players().size() >= 2) {
+    if (!g_epic && now > g_epic_next && C.sess->players().size() >= 2 && settings::on(settings::kTribeEpic)) { // F3
         g_epic_next = now + 600;
         spawn_epic();
     }
@@ -2727,6 +4724,8 @@ static void place_chiefs(double now)
         void* b = ch[j].second;
         if (!game::object_alive(b))
             continue;
+        if (g_place_still_fix)
+            g_place_first.emplace(b, game::position(b)); // (the first look of this window)
         bool close = false;
         for (size_t i = 0; i < ch.size() && !close; i++) {
             void* a = ch[i].second;
@@ -2737,13 +4736,22 @@ static void place_chiefs(double now)
         }
         if (!close)
             continue;
+        if (g_place_still_fix) {
+            // a chief that walks, or walked since it was first looked at in this window, moves by its player's
+            // orders: not a chief stacked at the arrival (seen: walked next to the host's chief and put 13.8 m away)
+            if (drive::speed(game::velocity(b)) >= 0.3f || net::dist(game::position(b), g_place_first[b]) > 1.5f) {
+                if (g_placed_now.insert(b).second)
+                    g_place_walking++;
+                continue;
+            }
+        }
         if (g_placed_now.count(b))
             continue; // once per arrival
         g_placed_now.insert(b);
         put_chief(b, ring_spot(centre, ch[j].first));
         g_placed++;
-        H->log(M, SK_INFO, "tribe: %s's chief stood next to another one at the arrival: put on its own spot round the village",
-               C.sess->name_of(ch[j].first).c_str());
+        H->log(M, SK_INFO, "tribe: %s's chief stood next to another one at the arrival: put on its own spot round the village "
+                           "(t %.3f)", C.sess->name_of(ch[j].first).c_str(), H->time_seconds());
     }
 }
 
@@ -2864,10 +4872,84 @@ static void grab_spot_tick(double now)
         it = seen.count(it->first) ? std::next(it) : g_grab_watch.erase(it);
 }
 
+// BUG-0531 (docs/re/tribe.md#tribe-conquer-caption): a village the player tribe conquers (its hut down to health 0) or
+// allies plays TRG_TotemPole_Conquer / TRG_TotemPole_Social on the host, then TRG_Upgrade (the tribe's new level), and
+// their captions wait for the host's OK with the game time standing (input lock, paused): every member, the guests' too, stands and takes no order (a guest's
+// order changes the order record only) until the host clicks it away. A host who looks elsewhere or is away stops
+// everybody's tribe for good (play_tribe: minutes). With guests in the session the caption closes itself after
+// kVillageCaptionWait s (the game's EndCinematic, as the OK / Enter does) and everybody is told, as civ.caption
+// does for a capture (BUG-0187). `coop.fix tribe.conquer_caption off`: the wait for the host's OK (0.7.10).
+static bool g_conquer_caption_fix = true;
+COOP_FIX("tribe.conquer_caption", "BUG-0531", g_conquer_caption_fix,
+         "tribe: the host's caption of a conquered or allied village closes itself after 8 s when guests wait");
+// the registry ids (FNV-1 of the lower-case names): TRG_TotemPole_Conquer, TRG_TotemPole_Social, TRG_Upgrade
+constexpr uint32_t kVillageCines[] = {0x5418B038, 0x6A4BB900, 0x94D17D9F};
+static bool village_cine(uint32_t id)
+{
+    return std::find(std::begin(kVillageCines), std::end(kVillageCines), id) != std::end(kVillageCines);
+}
+constexpr double kVillageCaptionWait = 8.0;
+// BUG-0983: a guest's game plays the same captions when the realign conquers the village there too (BUG-0777) and
+// stood paused (input lock, game time) until the guest clicked it, while the host's tribe went on after 8 s. Now a
+// guest's village caption closes itself after the same 8 s. `coop.fix tribe.conquer_caption_guest off`: it waits for
+// the guest's click (0.7.12).
+static bool g_guest_caption_fix = true;
+COOP_FIX("tribe.conquer_caption_guest", "BUG-0983", g_guest_caption_fix,
+         "tribe: a guest's caption of a village conquered in the session closes itself after 8 s, as the host's does");
+static uint32_t g_village_cine, g_village_captions_closed;
+static double g_village_cine_since;
+static bool g_village_cine_ending;
+static void village_caption_tick(double now)
+{
+    uint32_t id = world::cinematic_id();
+    bool village = village_cine(id);
+    bool host = is_host();
+    bool guests = C.sess->players().size() >= 2;
+    if (!village) {
+        g_village_cine = 0;
+        g_village_cine_ending = false;
+        return;
+    }
+    if (id != g_village_cine) {
+        bool chained = g_village_cine != 0; // TRG_Upgrade right after the conquest: told once
+        g_village_cine = id;
+        g_village_cine_since = now;
+        g_village_cine_ending = false;
+        H->log(M, SK_INFO, "tribe: the village cinematic %08X plays on the %s (BUG-0531)", id, host ? "host" : "guest");
+        if (host && guests && C.notice && !chained)
+            C.notice(C.sess->name_of(C.sess->my_id()) + " watches a cinematic: the tribe waits for the OK" +
+                     (g_conquer_caption_fix ? " (or " + std::to_string((int)kVillageCaptionWait) + " s)" : ""));
+    }
+    if (!(host ? g_conquer_caption_fix : g_guest_caption_fix) || !guests || g_village_cine_ending ||
+        now - g_village_cine_since < kVillageCaptionWait)
+        return;
+    g_village_cine_ending = true;
+    H->run_outside_frame(
+        host ? +[](void*) {
+            uint32_t now_id = world::cinematic_id();
+            if (!village_cine(now_id) || game::mode_id() != modes::kTribe ||
+                !world::end_cinematic("in Tribe after 8 s with guests waiting (BUG-0531)"))
+                return;
+            g_village_captions_closed++;
+            if (C.notice)
+                C.notice("the caption closed by itself: the tribe goes on");
+        }
+             : +[](void*) { // BUG-0983: the guest's own game only (no notice: the host's tribe did not wait)
+                   if (!village_cine(world::cinematic_id()) || game::mode_id() != modes::kTribe ||
+                       !world::end_cinematic("in Tribe after 8 s on a guest (BUG-0983)"))
+                       return;
+                   g_village_captions_closed++;
+               },
+        nullptr);
+}
+
 static void coop_tick(double now)
 {
     chiefs_tick();
+    if (!is_host())
+        village_caption_tick(now); // BUG-0983
     if (is_host()) {
+        village_caption_tick(now);
         grab_spot_tick(now);
         spread_chiefs(now);
         place_chiefs(now);
@@ -2915,15 +4997,168 @@ static void drop_foreign_selection()
     }
 }
 
+// tests (BUG-0672): `coop.tribe frametool <tribe index> <type> <metres>`: the host's tool made in this game's tribe of
+// that index the way the wobj tool kind makes it (make_tool), from the next frame's tick (inside SporeKit's frame, as the
+// wobj snapshot runs), with a task for outside the frame queued just before (as one often is)
+struct FrameTool {
+    bool armed = false;
+    int ix = 0, type = 0;
+    float metres = 10.f;
+};
+static FrameTool g_frame_tool;
+static void frame_tool_run()
+{
+    FrameTool f = g_frame_tool;
+    g_frame_tool.armed = false;
+    void* t = f.ix >= 0 && f.ix < (int)g_local_tribe_of.size() ? g_local_tribe_of[f.ix] : nullptr;
+    net::Vec3 c = t ? tribe_pos(t) : net::Vec3{};
+    float l = std::sqrt(c.x * c.x + c.y * c.y + c.z * c.z);
+    H->log(M, SK_INFO, "tribe: tests: frametool tribe %d (mapped to %p) type %d", f.ix, t, f.type);
+    H->run_outside_frame([](void*) {}, nullptr);
+    if (l < 1.f)
+        return;
+    net::Vec3 p{c.x + 0.3f * f.metres, c.y, c.z};
+    void* tool = make_tool(f.ix, f.type, p);
+    H->log(M, SK_INFO, "tribe: tests: frametool made %p", tool);
+}
+
+// BUG-0693: a guest's command (an order, a baby bought, a gift) that reaches a host out of the Tribe mode (an editor, a
+// menu, a load) is held and run when the host is back in the same Tribe world (net/held_cmds.h). Off: dropped (0.7.10).
+static bool g_cmd_hold_fix = true;
+COOP_FIX("tribe.cmd_hold", "BUG-0693", g_cmd_hold_fix,
+         "tribe: a guest's command made while the host is in an editor or a menu runs when the host is back");
+static net::HeldCommands g_cmd_held;
+PLAYER_STATE("tribe.held_cmds", [](uint8_t id) { g_cmd_held.forget(id); }, // BUG-0422 / BUG-0693: a leaver's held commands
+             [](uint8_t id) -> size_t {
+                 size_t n = 0;
+                 for (auto& c : g_cmd_held.q)
+                     n += c.from == id;
+                 return n;
+             });
+static uint32_t g_cmd_world; // BUG-0693: the save this game last played the stage in (modes::current_world)
+
+// tests (BUG-0844, class BUG-0426): mirror <id>'s citizen is removed by the game (RemoveMember with destroy on its
+// tribe, no bookkeeping of ours: the mirror still names it), then once a frame a member is made in the guest's own
+// tribe (removed again unless it is at the freed address) until the game gives it that block
+struct TribeHunt {
+    uint8_t* target = nullptr;
+    uint16_t id = 0;
+    int left = 0, tries = 0;
+    void* hit = nullptr;
+    uint32_t hit_serial = 0;
+};
+static TribeHunt g_th;
+static void tribe_hunt_tick()
+{
+    if (g_th.left <= 0 || !g_th.target)
+        return;
+    g_th.left--;
+    void* t = player_tribe();
+    if (!t)
+        return;
+    void* c = spawn_member(t, 1);
+    g_th.tries++;
+    if (!c)
+        return;
+    if ((uint8_t*)c == g_th.target) {
+        g_th.hit = c;
+        g_th.hit_serial = game::object_serial(c);
+        g_th.left = 0;
+        H->log(M, SK_INFO, "tribe reuse: the freed citizen address %p holds a new member of the player tribe (serial %u, try %d)",
+               c, g_th.hit_serial, g_th.tries);
+        return;
+    }
+    vcall<void>(t, 0x9C / 4, c, 1);
+}
+static std::string tribe_hunt_status()
+{
+    char b[400];
+    bool l = g_th.hit && game::listed(g_th.hit, kCitizenNoun) && game::object_serial(g_th.hit) == g_th.hit_serial;
+    net::Vec3 q = l ? game::position(g_th.hit) : net::Vec3{};
+    auto it = g_gm.find(g_th.id);
+    net::Vec3 want = it != g_gm.end() ? it->second.pos : net::Vec3{};
+    auto gi = l ? g_gid_of.find(g_th.hit) : g_gid_of.end();
+    snprintf(b, sizeof b, "tribe reuse target=%p mirror=%u left=%d tries=%d hit=%p alive=%d own_tribe=%d pos=(%.2f %.2f %.2f) "
+             "host_member=(%.2f %.2f %.2f) bound_as=%d stale=%u refused=%u ring=%d ring_order=%d kept_stale=%u\n",
+             (void*)g_th.target, g_th.id, g_th.left, g_th.tries, g_th.hit, (int)l,
+             (int)(l && tribe_holding(g_th.hit) == player_tribe()), q.x, q.y, q.z, want.x, want.y, want.z,
+             gi != g_gid_of.end() ? (int)gi->second : -1, g_mirror_stale, g_remove_refused,
+             l ? (int)ring_shown(g_th.hit) : -1, (int)(g_ring.target && g_ring.target == g_th.target), g_kept_stale);
+    return b;
+}
+
+// BUG-0947 (docs/re/tribe.md#tribe-village-load-stamp): a village has two ground stamps: the one made with it
+// (0xC9DEE0) and the tribe's own (cTribe +0x19D4, SporeCoop::cTribe_ApplyGroundStamp 0xC91890: 50 m wide). The live
+// Creature -> Tribe change and every load make the tribe's stamp (a load: for a village saved without it); the NPC
+// tribe controller's forming and SpawnNpcTribe (a guest's copy of the host's) do not. So the games that saw a village
+// made had one stamp there and a game that loaded the world later (a guest's rejoin, a host's reload) two: its ground
+// 50 m round the village 5-8 m off (lab 20261112-094334: 7.95 m). The same stamp applied live gives the loaded ground
+// exactly (lab: the host stamped it by hand, 0.00 m at every point). Fix: every game in Tribe gives a village without
+// it the tribe's stamp through the game's own call, a second after it appeared. Off: the village keeps one stamp.
+static bool g_village_stamp_fix = true;
+COOP_FIX("tribe.village_load_stamp", "BUG-0947", g_village_stamp_fix,
+         "tribe: a village made during play gets the ground stamp a load of the world gives it (a rejoining guest's ground round it was 5-8 m off)");
+static uint32_t g_village_stamps;
+constexpr uintptr_t kTribeStampOff = 0x19D4, kTribeStampPropOff = 0x2D4;
+static void village_stamps_tick(double now)
+{
+    static double last;
+    static std::unordered_map<void*, double> seen; // tribe -> first seen without its stamp
+    if (now - last < 0.5 && now >= last)
+        return;
+    last = now;
+    if (!g_village_stamp_fix || !a_TribeGroundStamp || game::mode_id() != modes::kTribe) {
+        seen.clear();
+        return;
+    }
+    std::unordered_map<void*, double> next;
+    for (void* t : all_tribes()) {
+        if (!skg::readable((uint8_t*)t + kTribeStampOff, 4) || F<uint32_t>(t, kTribeStampOff) || !F<void*>(t, kTribeStampPropOff))
+            continue;
+        auto it = seen.find(t);
+        double since = it == seen.end() ? now : it->second;
+        if (now - since < 1.0) { // (the live change makes it itself right after the village)
+            next[t] = since;
+            continue;
+        }
+        thiscall<void>(a_TribeGroundStamp, t);
+        g_village_stamps++;
+        net::Vec3 p = tribe_pos(t);
+        H->log(M, SK_INFO, "tribe: the village at (%.0f %.0f %.0f) made during play gets the ground stamp a load gives it: id %u (BUG-0947)",
+               p.x, p.y, p.z, F<uint32_t>(t, kTribeStampOff));
+    }
+    seen.swap(next);
+}
+
 void tick(double now)
 {
+    tribe_hunt_tick();
+    if (is_guest() || g_go_paused)
+        gameover_guest_tick(now); // BUG-0960 (also outside Tribe: the wait ends there)
+    if (g_frame_tool.armed && is_guest())
+        frame_tool_run();
+    village_stamps_tick(now); // BUG-0947
     if (!active())
         return;
+    g_cmd_world = modes::current_world();
+    static double active_at, active_since;
+    if (now - active_at > 1.0) // the stage just came back (a load, an editor): its world settles first
+        active_since = now;
+    active_at = now;
+    if (is_host() && !g_cmd_held.q.empty() && now - active_since > net::HeldCommands::kSettle && game::mode_id() == modes::kTribe) // BUG-0693
+        g_cmd_held.drain(modes::current_world(), now, [](const net::HeldCommands::Cmd& c) {
+            net::Reader r(c.bytes.data(), c.bytes.size());
+            H->log(M, SK_INFO, "tribe: a command of player %u held while away runs now", c.from);
+            host_command(c.from, r);
+        });
     drop_foreign_selection();
+    away_conquest_tick(now); // BUG-0879 (guest)
     if (is_host())
         host_tick(now);
-    else if (is_guest())
+    else if (is_guest()) {
         guest_tick(now);
+        held_items_tick(now); // BUG-0906
+    }
     coop_tick(now);
 }
 
@@ -2938,10 +5173,14 @@ void on_message(uint8_t type, uint8_t from, net::Reader& r)
         if (!is_guest() || game::mode_id() != modes::kTribe)
             g_rx_skipped++;
     }
-    if (type == net::MSG_TRIBE_STATE && is_guest() && game::mode_id() == modes::kTribe)
+    if (type == net::MSG_TRIBE_STATE && is_guest() && game::mode_id() == modes::kTribe && !g_state_hold)
         guest_state(r);
     else if (type == net::MSG_TRIBE_CMD && is_host() && game::mode_id() == modes::kTribe)
         host_command(from, r);
+    else if (type == net::MSG_TRIBE_CMD && is_host() && g_cmd_hold_fix && r.left()) { // BUG-0693: run when back
+        g_cmd_held.push(from, r.cur(), r.left(), g_cmd_world, H->time_seconds());
+        H->log(M, SK_INFO, "tribe: a command of player %u held: this game is not in Tribe (mode %08X)", from, game::mode_id());
+    }
 }
 
 // BUG-0217: forget the co-op mechanics' pointers of a world that is gone (no game call: the
@@ -3002,16 +5241,30 @@ void before_save()
 
 void on_session_end()
 {
+    g_cmd_held.clear(); // BUG-0693
+    g_hold_seen.clear(); // BUG-0906
+    for (auto& [c, t] : g_detached) // BUG-0667: the bodies stay in this world; the game tears them down later
+        if (game::object_alive(c))
+            restore_body_tribe(c, t);
+    g_detached.clear();
+    g_bt_local.clear(); // (g_left_tribe stays until the world goes: its citizens are torn down later)
     theme_forget(); // BUG-0568
+    party_forget(); // BUG-0646
+    baby_forget(); // BUG-0671
     clear_coop_tables(true);
     g_split_for.clear();
     g_hm.clear();
     g_hm_by_id.clear();
+    for (auto& [id, g] : g_gm) // BUG-0946: no air hold left on a mirror (a pointer compare only)
+        if (g.air)
+            game::air_hold(g.c, false);
     g_gm.clear();
     g_gid_of.clear();
     g_npc_tribe_made.clear(); // BUG-0381
     g_npc_tribe_tried.clear();
     g_player_members_seen = 0;
+    if (g_world_map_fix)
+        g_local_tribe_of.clear(); // BUG-0672: the old world's tribes are freed; the next tribe state maps the new ones
 }
 
 // a world of the Tribe stage is gone (a load, a received world, the stage left, the game-over
@@ -3020,11 +5273,19 @@ void on_session_end()
 void on_world_change()
 {
     theme_forget(); // BUG-0568
+    party_forget(); // BUG-0646
+    baby_forget(); // BUG-0671
     g_resets++;
     forget_world_tables(); // every citizen of the old world is freed: nothing to restore
+    g_detached.clear(); // (BUG-0667: freed with the world)
+    g_left_tribe.clear();
+    g_bt_local.clear();
     g_split_for.clear();
     g_hm.clear();
     g_hm_by_id.clear();
+    for (auto& [id, g] : g_gm) // BUG-0946: no air hold left on a mirror (a pointer compare only)
+        if (g.air)
+            game::air_hold(g.c, false);
     g_gm.clear();
     g_gid_of.clear();
     g_npc_tribe_made.clear(); // BUG-0381
@@ -3109,9 +5370,37 @@ void for_each_tracked(void (*fn)(const TrackMember& m, void* user), void* user)
     }
     double now = H->time_seconds();
     for (auto& [id, g] : g_gm) {
-        if (g.owner >= 0xFE || !g.c || !game::object_alive(g.c) || now - g.seen > 3.0)
+        if (g.owner >= 0xFE || !mirror_ok(g) || now - g.seen > 3.0) // (BUG-0955)
             continue;
         fn({id, g.owner, g.c, &g.aim, g.aim_speed, (uint16_t)g.ds.teleports, &g.ds.drawn}, user);
+    }
+}
+
+std::string member_brief(void* c)
+{
+    if (!c || !game::object_alive(c) || !skg::readable(c, 0x1040))
+        return "gone";
+    char b[160];
+    snprintf(b, sizeof b, "bt=%08X hp=%.0f dead=%d age=%u tool=%d item=%d leader=%d", bt_node(c), game::health(c),
+             (int)game::is_dead(c), F<uint8_t>(c, kAgeOff), F<int>(c, kHeldToolOff), F<int>(c, kHeldItemOff), (int)is_leader(c));
+    return b;
+}
+
+void for_each_diag(void (*fn)(const char* key, const net::Vec3& p, void* user), void* user)
+{
+    if (!active() || is_host())
+        return;
+    double now = H->time_seconds();
+    char k[8];
+    for (auto& [id, g] : g_gm) {
+        if (!mirror_ok(g) || now - g.seen > 3.0 || g.buf.empty()) // (BUG-0955)
+            continue;
+        snprintf(k, sizeof k, "a%u", (unsigned)id);
+        fn(k, g.aim, user);
+        snprintf(k, sizeof k, "r%u", (unsigned)id);
+        fn(k, g.buf.raw_lead(now), user);
+        snprintf(k, sizeof k, "l%u", (unsigned)id);
+        fn(k, net::Vec3{(float)g.buf.late_behind(now), g.buf.lead_off() ? 1.f : 0.f, g.ds.last_err}, user);
     }
 }
 
@@ -3119,47 +5408,57 @@ std::string status()
 {
     if (!g_ok)
         return "tribe: unavailable for this executable\n";
-    char b[448];
+    char b[1024];
     if (C.sess && C.sess->role() == net::Role::Host)
-        snprintf(b, sizeof b, "tribe(host): members=%u cmds_done=%u rejected=%u gifts=%u unselected=%u\n",
-                 (unsigned)g_hm.size(), g_cmds_done, g_cmds_rejected, g_gifts, g_unselected);
+        snprintf(b, sizeof b, "tribe(host): members=%u cmds_done=%u rejected=%u gifts=%u unselected=%u bodies_sent=%u village_captions_closed=%u member_moves=%u/%u\n",
+                 (unsigned)g_hm.size(), g_cmds_done, g_cmds_rejected, g_gifts, g_unselected, g_bodies_sent, g_village_captions_closed,
+                 g_member_moves, g_member_moves_unowned);
     else
         snprintf(b, sizeof b,
                  "tribe(guest): mirrors=%u spawned=%u removed=%u cmds_sent=%u rx=%u skipped=%u resets=%u "
-                 "local_tribes=%u player_tribe=%p unselected=%u incomplete=%u ai_skipped=%u/%u away_orders=%u local=%d mirror_walks=%u timed=%u "
-                 "npc_tribes_made=%u failed=%u mirror_grounded=%u ours=%u/%u save_stripped=%u/%u forms_blocked=%u forms_run=%u unmapped_removed=%u\n",
+                 "local_tribes=%u player_tribe=%p unselected=%u incomplete=%u older_chunks=%u ai_skipped=%u/%u away_orders=%u local=%d mirror_walks=%u timed=%u "
+                 "npc_tribes_made=%u failed=%u mirror_grounded=%u ours=%u/%u save_stripped=%u/%u forms_blocked=%u forms_run=%u unmapped_removed=%u bodies_detached=%u teardown_restored=%u slot_null_skipped=%u teardown_tribe_back=%u teardown_bt_emptied=%u map_stale_skipped=%u join_bodies=%u mirrors_grown=%u\n",
                  (unsigned)g_gm.size(), g_spawned, g_removed, g_cmds_sent, g_rx, g_rx_skipped, g_resets,
-                 (unsigned)all_tribes().size(), player_tribe(), g_unselected, g_incomplete, g_bt_skipped, g_bt_calls, g_away_orders, (int)local_play(),
+                 (unsigned)all_tribes().size(), player_tribe(), g_unselected, g_incomplete, g_cyc.older, g_bt_skipped, g_bt_calls, g_away_orders, (int)local_play(),
                  g_mirror_walks, g_mirror_timed, g_npc_tribes_made, g_npc_tribes_failed, g_mirror_grounded, (unsigned)g_ours_c.size(),
-                 (unsigned)g_ours_t.size(), g_save_stripped, g_save_saves, g_forms_blocked, g_forms_run, g_unmapped_removed);
+                 (unsigned)g_ours_t.size(), g_save_stripped, g_save_saves, g_forms_blocked, g_forms_run, g_unmapped_removed, g_bodies_detached, g_teardown_restored, g_slot_null_skipped, g_teardown_tribe_back,
+                 g_teardown_bt_emptied, g_map_stale_skipped, g_join_bodies, g_mirrors_grown);
     std::string out = b;
     if (!g_last_cmd.empty())
         out += "tribe last order: " + g_last_cmd + "\n";
     out += "tribe ui mode=" + std::to_string(ui_mode()) + " (0 social, 1 attack)\n";
     if (!g_last_local.empty())
         out += "tribe last local order: #" + std::to_string(g_local_orders) + " " + g_last_local + "\n";
+    snprintf(b, sizeof b, "tribe game over wait: host_up=%d sent=%u paused=%d pauses=%u resumes=%u (BUG-0960); body cards off %u (BUG-0961); unsent holds ended %u (BUG-0962)\n",
+             (int)g_go_host_up, g_go_sent, (int)g_go_paused, g_go_pauses, g_go_resumes, g_body_cards, g_hold_only_ended);
+    out += b;
     std::string chiefs;
     for (auto& [o, c] : g_chief)
         chiefs += " " + std::to_string(o) + ":#" + std::to_string(member_id(c));
     snprintf(b, sizeof b,
              "tribe co-op: pincer=%u aura=%u chief_rescues=%u duet=%u heals=%u epics=%u epic_kills=%u epic=%p "
-             "chiefs=%s spread=%u placed=%u\n",
+             "chiefs=%s spread=%u placed=%u place_walking=%u\n",
              g_pincer_hits, g_aura_hits, g_chief_rescues, g_duet_ticks, g_heals, g_epics, g_epic_kills, g_epic,
-             chiefs.c_str(), g_spread_moves, g_placed);
+             chiefs.c_str(), g_spread_moves, g_placed, g_place_walking);
     out += b;
     // the chiefs' size in the game (spatial GetScale / their own scale) and the lifetime checks
     std::string scales;
-    for (auto& [o, c] : g_chief) {
-        auto it = g_chief_scale.find(c);
-        char sb[32];
-        snprintf(sb, sizeof sb, " %u:%.2f", o, it != g_chief_scale.end() && it->second > 0 ? game::scale(c) / it->second : 0.f);
-        scales += sb;
+    {
+        game::LiveScope live; // BUG-0919: a chief of the last tick is asked only when the game's list has it now
+        for (auto& [o, c] : g_chief) {
+            auto it = g_chief_scale.find(c);
+            char sb[32];
+            bool ok = !npc::entries_listed() || game::listed(c);
+            snprintf(sb, sizeof sb, ok ? " %u:%.2f" : " %u:gone", o,
+                     ok && it != g_chief_scale.end() && it->second > 0 ? game::scale(c) / it->second : 0.f);
+            scales += sb;
+        }
     }
     snprintf(b, sizeof b,
              "tribe lifetime: chief_restores=%u chief_gone=%u chief_bad_calls=%u spawns_blocked=%u mirror_out_passed=%u fix_chiefs=%d "
-             "fix_gameover=%d knocked_out=%u ko_replaced=%u epic_herd_reused=%u epic_saved_out=%u chief_scale=%s\n",
+             "fix_gameover=%d knocked_out=%u ko_replaced=%u mirror_blows_kept=%u epic_herd_reused=%u epic_saved_out=%u chief_scale=%s\n",
              g_chief_restores, g_chief_gone, g_chief_bad_calls, g_spawns_blocked, g_mirror_out_passed, (int)g_fix_chiefs, (int)g_fix_gameover,
-             g_ko_shown, g_ko_replaced, g_epic_herd_reused, g_epic_saved_out, scales.c_str());
+             g_ko_shown, g_ko_replaced, g_mirror_blows_kept, g_epic_herd_reused, g_epic_saved_out, scales.c_str());
     return out + b;
 }
 
@@ -3175,7 +5474,7 @@ static void* local_of(uint16_t id)
         return it == g_hm_by_id.end() ? nullptr : it->second;
     }
     auto it = g_gm.find(id);
-    return it == g_gm.end() ? nullptr : it->second.c;
+    return it == g_gm.end() || !mirror_ok(it->second) ? nullptr : it->second.c; // (BUG-0955)
 }
 
 bool near_member(const net::Vec3& p, float radius)
@@ -3201,13 +5500,18 @@ std::vector<net::Vec3> local_member_positions()
     return v;
 }
 
+// BUG-0171 (0.7.11 N1): the dead-victim stop of the test commands' hits as a lab switch; off: blows on a victim at
+// hp 0 or dead go through TakeDamage as before ba9dc46 (coop_tribe_epic_dying.py)
+static bool g_fix_hit_dead = true;
+COOP_FIX("tribe.hit_dead", "BUG-0171", g_fix_hit_dead, "tribe: the test commands' blows stop at a dead victim (no TakeDamage on hp 0)");
+
 std::string debug(const std::vector<std::string>& a)
 {
     // tests of the co-op mechanics through the game's damage path (host): ids as in coop.tribe
     auto hit = [](void* victim, void* attacker, float dmg) {
         float before = F<float>(victim, 0x5E0);
         // a dead victim takes no more blows: the test loop went on hitting the dying epic (BUG-0171)
-        if (before <= 0 || game::is_dead(victim))
+        if (g_fix_hit_dead && (before <= 0 || game::is_dead(victim)))
             return std::string("hp 0.00 -> 0.00 (dead)");
         // the combatant's TakeDamage (vt 0x18): the same path as a real blow, with our hooks
         // (the push vector: (0,0,0) as the game's own bites and strikes, docs/re/creature.md 3)
@@ -3401,6 +5705,9 @@ std::string debug(const std::vector<std::string>& a)
                 return "no epic / member";
             return hit(g_epic, at, a.size() > 3 ? (float)atof(a[3].c_str()) : 50.f);
         }
+        // F3 (BUG-0768): tribe.epic off: no co-op epic (`epic force` spawns one anyway, tests)
+        if (!settings::on(settings::kTribeEpic) && !(a.size() >= 2 && a[1] == "force"))
+            return "no epic: the session setting tribe.epic is off";
         bool ok = spawn_epic();
         uintptr_t is_epic = H->sym("SporeCoop::cCreatureAnimal_IsEpic");
         char b[200];
@@ -3613,7 +5920,14 @@ std::string debug(const std::vector<std::string>& a)
     }
     // order <member id> <action> <x> <y> <z>: test setup (BUG-0531, host), the member's DoAction as an order gives it:
     // 4 walks there, 2 gathers the tree there, others take the object of this game nearest there (8 m)
-    if (a.size() >= 6 && a[0] == "order" && is_host()) {
+    // (on a guest while the host is away too: its own game runs its members then, BUG-0879 tests)
+    if (!a.empty() && a[0] == "conquests") { // BUG-0879 / BUG-0777 counters
+        char b[160];
+        snprintf(b, sizeof b, "conquests fix=%d sent=%u done=%u refused=%u local_play=%d\n", (int)g_away_conquest_fix, g_conquests_sent,
+                 g_conquests_done, g_conquests_refused, (int)local_play());
+        return b;
+    }
+    if (a.size() >= 6 && a[0] == "order" && (is_host() || local_play())) {
         void* c = local_of((uint16_t)atoi(a[1].c_str()));
         int action = atoi(a[2].c_str());
         net::Vec3 p{(float)atof(a[3].c_str()), (float)atof(a[4].c_str()), (float)atof(a[5].c_str())};
@@ -3625,15 +5939,151 @@ std::string debug(const std::vector<std::string>& a)
                 thiscall<void>(a_SetValueVector3, (uint8_t*)rec + 0x39, (const float*)&p);
             return "walk ordered";
         }
-        void* tgt = action == 2 ? find_tree(p, 3.f) : nullptr;
+        // [noun hex]: the object of that kind within 8 m of the point (a raid's hut 0x1E4DAAE, a village 0x18C6D19)
+        uint32_t noun = a.size() >= 7 ? (uint32_t)strtoul(a[6].c_str(), nullptr, 16) : 0;
+        void* tgt = noun ? game::find_object(noun, p, 8.f) : action == 2 ? find_tree(p, 3.f) : nullptr;
         if (!tgt)
             return "no target there";
         thiscall<void*>(a_DoAction, c, action, tgt, (void*)nullptr);
         return "ordered " + std::to_string(action);
     }
+    // huthp <x> <y> <z> <hp>: tests (BUG-0531, host), the health of the hut within 10 m of the point (cCombatant at
+    // +0x120, docs/re/tribe.md): a raid then ends in a few blows
+    if (a.size() >= 5 && a[0] == "huthp" && (is_host() || local_play())) {
+        net::Vec3 p{(float)atof(a[1].c_str()), (float)atof(a[2].c_str()), (float)atof(a[3].c_str())};
+        void* h = game::find_object(0x01E4DAAE, p, 10.f);
+        if (!h || !skg::readable(h, 0x160))
+            return "no hut there";
+        float& hp = F<float>(h, 0x120 + 0x38);
+        char b[200];
+        // BUG-0761: exact= the health unrounded; state= cCombatant +0x34 (2: dead, set by TakeDamage 0xBFCF10 when the
+        // health goes under 1.5e-5, which posts the death message); last= +0x28 the last attacker (a cCombatant owner)
+        snprintf(b, sizeof b, "hut %p health %.0f/%.0f exact=%.5f state=%d last=%p", h, hp, F<float>(h, 0x120 + 0x2C), hp,
+                 F<int>(h, 0x120 + 0x34), F<void*>(h, 0x120 + 0x28));
+        if (a.size() >= 5 && a[4] != "-")
+            hp = (float)atof(a[4].c_str());
+        return std::string(b) + " -> " + std::to_string((int)hp);
+    }
+    if (a.size() >= 2 && a[0] == "who") { // who <citizen pointer>: BUG-0620, what a citizen of the object list is
+        void* c = (void*)(uintptr_t)strtoul(a[1].c_str(), nullptr, 16);
+        bool listed = false;
+        game::for_each_object(
+            [](void* o, uint32_t, void* u) {
+                if (o == *(void**)((void**)u)[0])
+                    *(bool*)((void**)u)[1] = true;
+                return true;
+            },
+            (void*)(void* []){&c, &listed});
+        if (!listed || !is_citizen(c))
+            return "not a citizen of the object list";
+        void* t = F<void*>(c, 0x1014);
+        char b[200];
+        int in_members = -1, n_tribes = 0, in_any = 0;
+        for (void* tt : all_tribes()) {
+            n_tribes++;
+            auto m = members(tt);
+            bool in = std::find(m.begin(), m.end(), c) != m.end();
+            in_any += in;
+            if (tt == t)
+                in_members = in;
+        }
+        uint8_t ow = owner_of(c);
+        snprintf(b, sizeof b, "tribe=%p (a tribe of the list: %s, in its members: %d) in any tribe's members: %d of %d tribes; "
+                 "player tribe=%p; mod owner=%d id=%u; age=%u dead=%u species=%08X city=%p; ",
+                 t, in_members >= 0 ? "yes" : "no", in_members, in_any, n_tribes, player_tribe(), ow == 0xFF ? -1 : ow, id_of(c),
+                 F<uint8_t>(c, 0xB34), F<uint8_t>(c, 0xB5E), F<uint32_t>(c, 0xB28), F<void*>(c, 0x1010));
+        return std::string(b) + ai_line(c);
+    }
+    if (a.size() >= 3 && a[0] == "frametool" && is_guest()) {
+        g_frame_tool.ix = atoi(a[1].c_str());
+        g_frame_tool.type = atoi(a[2].c_str());
+        g_frame_tool.metres = a.size() >= 4 ? (float)atof(a[3].c_str()) : 10.f;
+        g_frame_tool.armed = true;
+        char b[96];
+        snprintf(b, sizeof b, "frametool armed: tribe %d type %d (mapped=%u)", g_frame_tool.ix, g_frame_tool.type,
+                 (unsigned)g_local_tribe_of.size());
+        return b;
+    }
+    if (a.size() >= 1 && a[0] == "reusehunt" && is_guest()) { // reusehunt [<mirror id> [frames]]: BUG-0844 (tests)
+        if (a.size() < 2)
+            return tribe_hunt_status();
+        auto it = g_gm.find((uint16_t)atoi(a[1].c_str()));
+        // any: the first mirror with a living member of a live tribe, alive on the host, seen now; npc: of a tribe that
+        // is not the guest's player tribe (the new member is made in the player tribe: another tribe's)
+        if (a[1] == "any" || a[1] == "npc")
+            for (it = g_gm.begin(); it != g_gm.end(); ++it)
+                if (it->second.c && it->second.hp > 0 && !it->second.body && H->time_seconds() - it->second.seen < 1.0 &&
+                    !g_detached.count(it->second.c) && tribe_holding(it->second.c) && !game::is_dead(it->second.c) &&
+                    (a[1] == "any" || tribe_holding(it->second.c) != player_tribe()))
+                    break;
+        void* c = it != g_gm.end() ? it->second.c : nullptr;
+        void* lt = c ? tribe_holding(c) : nullptr;
+        if (!lt || g_detached.count(c))
+            return "no mirror with a member of a live tribe\n";
+        g_th = TribeHunt{};
+        g_th.target = (uint8_t*)c;
+        g_th.id = it->first;
+        g_th.left = a.size() > 2 ? atoi(a[2].c_str()) : 150;
+        vcall<void>(lt, 0x9C / 4, c, 1); // the game's removal (RemoveMember with destroy): the mirror still names it
+        return "mirror's citizen removed by the game; " + tribe_hunt_status();
+    }
+    if (a.size() >= 2 && a[0] == "statehold" && is_guest()) { // statehold 1|0: tests (BUG-0672), the host's tribe
+        // states are ignored (the mapping of host tribe index -> this game's tribe stays as it is, as before the first
+        // state of a new world)
+        g_state_hold = atoi(a[1].c_str()) != 0;
+        char b[96];
+        snprintf(b, sizeof b, "tribe states %s; mapped=%u stale_skipped=%u map=", g_state_hold ? "held" : "taken",
+                 (unsigned)g_local_tribe_of.size(), g_map_stale_skipped);
+        std::string out = b;
+        void* pt = player_tribe();
+        for (size_t i = 0; i < g_local_tribe_of.size() && i < 32; i++) {
+            snprintf(b, sizeof b, "%u:%p%s ", (unsigned)i, g_local_tribe_of[i], g_local_tribe_of[i] && g_local_tribe_of[i] == pt ? "(p)" : "");
+            out += b;
+        }
+        return out;
+    }
+    if (a.size() >= 3 && a[0] == "localbt" && is_guest()) { // localbt <member id> 1|0: tests (BUG-0667), that mirror's
+        // behaviour tree runs on this guest as while the host is away (local_play), or is skipped again
+        void* c = member_mirror((uint16_t)atoi(a[1].c_str()));
+        if (!c)
+            return "no such mirror";
+        if (atoi(a[2].c_str()))
+            g_bt_local.insert(c);
+        else
+            g_bt_local.erase(c);
+        return std::string("mirror's tree ") + (g_bt_local.count(c) ? "runs" : "skipped");
+    }
+    if (a.size() >= 2 && a[0] == "eat" && is_guest()) { // eat <member id>: tests (BUG-0667), the mirror's own Eat
+        // (CitizenAction 0) at its tribe's food mat (+0x260) in this game, as a click on the mat gives it
+        void* c = member_mirror((uint16_t)atoi(a[1].c_str()));
+        void* t = c ? F<void*>(c, kOwnerTribeOff) : nullptr;
+        void* mat = t ? F<void*>(t, 0x260) : nullptr;
+        if (!mat)
+            return "no such mirror or no food mat";
+        void* rec = thiscall<void*>(a_DoAction, c, 0, mat, (void*)nullptr);
+        return std::string("eat ordered (rec ") + (rec ? "made" : "none") + ")";
+    }
     if (a.size() >= 2 && a[0] == "ai") { // ai <member id>: BUG-0505, the member's order record, node and walk
         void* c = local_of((uint16_t)atoi(a[1].c_str()));
         return c ? ai_line(c) : "no such member";
+    }
+    if (a.size() >= 2 && a[0] == "hand") { // hand <member id> [item | end]: tests (BUG-0906), the member's hand: what it
+        // holds, its scale; with an item the game's attach again (the hand emptied first)
+        void* c = is_guest() ? member_mirror((uint16_t)atoi(a[1].c_str())) : local_of((uint16_t)atoi(a[1].c_str()));
+        if (!has_body(c))
+            return "no such member";
+        if (a.size() >= 3 && a[2] != "end" && a_SetHandheldItem) {
+            thiscall<void>(a_SetHandheldItem, c, 0, -1);
+            set_hand(c, atoi(a[2].c_str()));
+        }
+        if (a.size() >= 3 && a[2] == "end")
+            return "end " + std::to_string(hold_modifier(c, true) ? 1 : 0);
+        char b[160];
+        snprintf(b, sizeof b, "hand item=%d model=%d hand=%d scale=%.3f desired=%.3f sets=%u", F<int>(c, kHeldItemOff),
+                 hand_model(c), F<int>(c, kHandOff), vcall<float>((uint8_t*)c + 0xC0, 0x34 / 4), vcall<float>(c, 0x80 / 4, 0),
+                 g_item_sets);
+        return std::string(b) + " hold=" + std::to_string(hold_modifier(c, false) ? 1 : 0) + " holds_ended=" +
+               std::to_string(g_item_holds_ended);
     }
     if (a.size() >= 3 && a[0] == "applytool" && is_guest()) { // applytool <member id> <type>: tests (BUG-0583), the
         // mirror's tool field applied as if the host's member held that tool (tribe.tool_hold's own apply)
@@ -3642,6 +6092,47 @@ std::string debug(const std::vector<std::string>& a)
             return "no such mirror";
         apply_held_tool(c, (float)atoi(a[2].c_str()));
         return "tool " + std::to_string(F<int>(c, kHeldToolOff)) + " leader=" + std::to_string((int)is_leader(c));
+    }
+    if (a.size() >= 3 && a[0] == "hurt" && is_guest()) { // hurt <member id> <dmg>: tests (BUG-0685), a blow of this
+        // game on the mirror (the citizen's TakeDamage, as a fight in the guest's own game)
+        void* c = member_mirror((uint16_t)atoi(a[1].c_str()));
+        if (!c)
+            return "no such mirror";
+        return hit(c, nullptr, (float)atof(a[2].c_str()));
+    }
+    if (a.size() >= 2 && a[0] == "chief" && is_guest()) { // chief <member id>: tests (BUG-0652), this game's
+        // cTribe::SetChieftain on the mirror (the state a load or a respawned mirror left: another leader here)
+        void* c = member_mirror((uint16_t)atoi(a[1].c_str()));
+        void* tribe = c && is_citizen(c) ? F<void*>(c, 0x1014) : nullptr;
+        if (!tribe || !a_SetChieftain)
+            return "no such mirror";
+        thiscall<void>(a_SetChieftain, tribe, c);
+        return "leader=" + std::to_string((int)is_leader(c)) + " tool " + std::to_string(F<int>(c, kHeldToolOff));
+    }
+    if (a.size() >= 6 && a[0] == "setvel" && is_host()) { // setvel <id> <vx> <vy> <vz> <s>: tests (BUG-0759), above
+        void* c = local_of((uint16_t)atoi(a[1].c_str()));
+        if (!c)
+            return "no such member";
+        g_test_vel[c] = {{(float)atof(a[2].c_str()), (float)atof(a[3].c_str()), (float)atof(a[4].c_str())},
+                         H->time_seconds() + atof(a[5].c_str())};
+        return "velocity held";
+    }
+    // hunger <member id> <v>: tests (BUG-0935), the member's (host) or mirror's (guest) hunger through the game's setter,
+    // as minutes of the game's own hunger update leave it (a guest's mirror that never eats: 0)
+    if (a.size() >= 3 && a[0] == "hunger") {
+        void* c = local_of((uint16_t)atoi(a[1].c_str()));
+        if (!c || !has_body(c) || !a_SetHunger)
+            return "no such member";
+        thiscall<void>(a_SetHunger, c, (float)atof(a[2].c_str()));
+        return "hunger " + std::to_string(F<float>(c, kHungerOff)) + " sets=" + std::to_string(g_hunger_sets) +
+               " fix=" + std::to_string((int)g_hunger_fix);
+    }
+    if (a.size() >= 3 && a[0] == "sethp" && is_host()) { // sethp <member id> <hp>: tests (BUG-0759), the member's health
+        void* c = local_of((uint16_t)atoi(a[1].c_str()));
+        if (!c)
+            return "no such member";
+        game::set_health(c, (float)atof(a[2].c_str()));
+        return "hp " + std::to_string(game::health(c));
     }
     if (a.size() >= 3 && a[0] == "settool" && is_host()) { // settool <member id> <type>: tests (BUG-0583), the game's
         // SetSpecializedTool on the host's member (any tribe's), as when it takes a rack's weapon
@@ -3676,6 +6167,101 @@ std::string debug(const std::vector<std::string>& a)
         int r = thiscall<int>(a_DoActionForObjects, (void*)nullptr, (void*)vec, 3, u.tool, (void*)nullptr);
         return "grab ordered (ret " + std::to_string(r) + ") " + g_last_cmd;
     }
+    // fruit <x> <y> <z>: tests (BUG-0744), the selected members' Gather (2) on this game's cFruit nearest the point
+    // (within 3 m), as a right-click on it gives (DoActionForObjects; a guest sends it to the host)
+    if (a.size() >= 4 && a[0] == "fruit") {
+        net::Vec3 p{(float)atof(a[1].c_str()), (float)atof(a[2].c_str()), (float)atof(a[3].c_str())};
+        void* f = game::find_object(kFruitNoun, p, 3.f);
+        if (!f)
+            return "no fruit there";
+        std::vector<void*> sel;
+        for (auto& [id, g] : g_gm)
+            if (g.c && F<uint8_t>(g.c, kSelectedOff))
+                sel.push_back((uint8_t*)g.c + 0xC0);
+        for (auto& [c, hm] : g_hm)
+            if (F<uint8_t>(c, kSelectedOff))
+                sel.push_back((uint8_t*)c + 0xC0);
+        void* vec[3] = {sel.data(), sel.data() + sel.size(), sel.data() + sel.size()};
+        int r = thiscall<int>(a_DoActionForObjects, (void*)nullptr, (void*)vec, 2, f, (void*)nullptr);
+        return "gather ordered (" + std::to_string(sel.size()) + " selected, ret " + std::to_string(r) + ") " + g_last_cmd;
+    }
+    // unfruit <x> <y> <z> <r>: tests (BUG-0744, host), this game's cFruit within r m of the point destroyed (a fruit
+    // the guest's game still shows there is then on the guest only)
+    if (a.size() >= 5 && a[0] == "unfruit" && is_host()) {
+        net::Vec3 p{(float)atof(a[1].c_str()), (float)atof(a[2].c_str()), (float)atof(a[3].c_str())};
+        float r = (float)atof(a[4].c_str());
+        struct Q {
+            net::Vec3 p;
+            float r;
+            std::vector<void*> v;
+        } q{p, r, {}};
+        game::for_each_object(
+            [](void* o, uint32_t noun, void* u) {
+                auto* q = (Q*)u;
+                net::Vec3 op;
+                if (noun == kFruitNoun && game::object_position(o, op) && net::dist(op, q->p) <= q->r)
+                    q->v.push_back(o);
+                return true;
+            },
+            &q);
+        for (void* f : q.v)
+            game::destroy_instance(f);
+        size_t n = q.v.size();
+        return "destroyed " + std::to_string(n) + " fruit; tribe.fruit_order moved " + std::to_string(g_fruit_orders_moved);
+    }
+    // duet: tests (BUG-0748), the player tribe's members in the social performance node 0xB46E8803 (host): id, owner, the
+    // session's target tribe, its state, the mini-game's progress (ui +0x68)
+    if (!a.empty() && a[0] == "duet") {
+        std::string o;
+        char b[160];
+        for (auto& p : performers()) {
+            float pr = p.ui && !IsBadReadPtr(p.ui, 0x6C) ? F<float>(p.ui, 0x68) : -1.f;
+            snprintf(b, sizeof b, "performer #%u owner=%u target=%p state=%d ui=%p progress=%.3f\n", p.id, p.owner, p.target,
+                     p.state, p.ui, pr);
+            o += b;
+        }
+        return o + "duet fix=" + std::to_string((int)g_duet_fix) + " ticks=" + std::to_string(g_duet_ticks) + "\n";
+    }
+    // act_obj <action> <noun hex> <x> <y> <z>: tests (BUG-0748), the selected members' order on this game's object of
+    // that noun nearest the point (8 m), through DoActionForObjects as a click gives (a guest sends it to the host)
+    if (a.size() >= 6 && a[0] == "act_obj") {
+        int action = atoi(a[1].c_str());
+        uint32_t noun = (uint32_t)strtoul(a[2].c_str(), nullptr, 16);
+        net::Vec3 p{(float)atof(a[3].c_str()), (float)atof(a[4].c_str()), (float)atof(a[5].c_str())};
+        void* t = game::find_object(noun, p, 8.f);
+        if (!t)
+            return "no such object there";
+        if (g_fix_act_check && act_needs_object(action) && is_citizen(t))
+            return "action needs a tool or a hut";
+        std::vector<void*> sel;
+        for (auto& [id, g] : g_gm)
+            if (g.c && F<uint8_t>(g.c, kSelectedOff))
+                sel.push_back((uint8_t*)g.c + 0xC0);
+        for (auto& [c, hm] : g_hm)
+            if (F<uint8_t>(c, kSelectedOff))
+                sel.push_back((uint8_t*)c + 0xC0);
+        void* vec[3] = {sel.data(), sel.data() + sel.size(), sel.data() + sel.size()};
+        int r = thiscall<int>(a_DoActionForObjects, (void*)nullptr, (void*)vec, action, t, (void*)nullptr);
+        return "action ordered (" + std::to_string(sel.size()) + " selected, ret " + std::to_string(r) + ") " + g_last_cmd;
+    }
+    if (!a.empty() && a[0] == "party") { // party: tests (BUG-0646), the selected members party at the own fire pit
+        // (a click on the fire pit: CitizenAction 12 Party with the tool of type 10, docs/re/tribe.md 2)
+        void* pt = player_tribe();
+        void* pit = nullptr;
+        if (pt)
+            for (void** it = F<void**>(pt, kToolsOff); it && it < F<void**>(pt, kToolsOff + 4); ++it)
+                if (*it && tool_type(*it) == 10)
+                    pit = *it;
+        if (!pit)
+            return "no fire pit";
+        std::vector<void*> sel;
+        for (auto& [c, hm] : g_hm)
+            if (F<uint8_t>(c, kSelectedOff))
+                sel.push_back((uint8_t*)c + 0xC0);
+        void* vec[3] = {sel.data(), sel.data() + sel.size(), sel.data() + sel.size()};
+        int r = thiscall<int>(a_DoActionForObjects, (void*)nullptr, (void*)vec, 12, pit, (void*)nullptr);
+        return "party ordered (" + std::to_string(sel.size()) + " selected, ret " + std::to_string(r) + ")";
+    }
     if (a.size() >= 3 && (a[0] == "act" || a[0] == "act_npc")) { // act <action> <member id | npc id>
         void* t = a[0] == "act" ? local_of((uint16_t)atoi(a[2].c_str())) : npc::proxy((uint16_t)atoi(a[2].c_str()));
         int action = atoi(a[1].c_str());
@@ -3694,6 +6280,30 @@ std::string debug(const std::vector<std::string>& a)
         void* vec[3] = {sel.data(), sel.data() + sel.size(), sel.data() + sel.size()};
         int r = thiscall<int>(a_DoActionForObjects, (void*)nullptr, (void*)vec, action, t, (void*)nullptr);
         return "action ordered (" + std::to_string(sel.size()) + " selected, ret " + std::to_string(r) + ")";
+    }
+    if (a.size() >= 2 && a[0] == "chief_away" && is_host()) { // chief_away <m> [deg]: tests (F2, BUG-0764), the host's own
+        // chief put <m> metres from where it stands, on the ground (off the partners' view)
+        auto it = g_chief.find(0);
+        if (it == g_chief.end() || !it->second)
+            return "no host chief";
+        void* c = it->second;
+        net::Vec3 p0 = game::position(c);
+        float l = std::sqrt(p0.x * p0.x + p0.y * p0.y + p0.z * p0.z), d = (float)atof(a[1].c_str());
+        if (l < 1.f)
+            return "no position";
+        net::Vec3 n{p0.x / l, p0.y / l, p0.z / l};
+        net::Vec3 ax = std::fabs(n.z) < 0.9f ? net::Vec3{0, 0, 1} : net::Vec3{1, 0, 0};
+        net::Vec3 u{n.y * ax.z - n.z * ax.y, n.z * ax.x - n.x * ax.z, n.x * ax.y - n.y * ax.x};
+        float ul = std::sqrt(u.x * u.x + u.y * u.y + u.z * u.z);
+        u = {u.x / ul, u.y / ul, u.z / ul};
+        net::Vec3 v{n.y * u.z - n.z * u.y, n.z * u.x - n.x * u.z, n.x * u.y - n.y * u.x}; // [angle]: degrees from u
+        float an = a.size() >= 3 ? (float)atof(a[2].c_str()) * 0.0174533f : 0.f, ca = std::cos(an), sa = std::sin(an);
+        net::Vec3 p{p0.x + (u.x * ca + v.x * sa) * d, p0.y + (u.y * ca + v.y * sa) * d, p0.z + (u.z * ca + v.z * sa) * d};
+        float g = game::ground_radius(p), pl = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+        if (g > 1.f && pl > 1.f)
+            p = {p.x / pl * g, p.y / pl * g, p.z / pl * g};
+        game::teleport(c, p, game::orientation(c));
+        return "chief put " + std::to_string((int)d) + " m away";
     }
     if (a.size() >= 2 && a[0] == "near" && is_host()) { // near <ratio>: tests (BUG-0340), the later chief put that
         // part of the sum of the two chiefs' bounding radii from the first one, standing (no order)
@@ -3738,15 +6348,62 @@ std::string debug(const std::vector<std::string>& a)
         g_test_delay = std::max(0.0, std::min(3.0, atof(a[1].c_str())));
         return "mirrors follow the host's states " + std::to_string(g_test_delay) + " s back";
     }
+    if (a.size() >= 3 && a[0] == "undo" && is_guest()) { // undo <id> <s>: tests (BUG-0386), placings of a mirror undone
+        auto it = g_gm.find((uint16_t)atoi(a[1].c_str()));
+        if (it == g_gm.end() || !it->second.c)
+            return "no mirror " + a[1];
+        it->second.test_undo_until = H->time_seconds() + std::max(0.0, std::min(10.0, atof(a[2].c_str())));
+        it->second.test_undo_at = game::position(it->second.c);
+        return "mirror " + a[1] + ": placings without the mark undone for " + a[2] + " s";
+    }
     if (a.size() >= 2 && a[0] == "lift" && is_guest()) { // lift <m>: tests (BUG-0329), the host's members m higher
         g_test_lift = (float)atof(a[1].c_str());
         return "members of the host taken " + a[1] + " m further from the planet's centre";
     }
-    if (a.size() >= 2 && a[0] == "spawn" && is_host()) { // spawn <n>: test setup, n more adults in the player tribe
+    if (a.size() >= 3 && a[0] == "color") { // color <tribe index> <hex colour id>: tests (BUG-0644), this game's village colour
+        auto tribes = all_tribes();
+        size_t i = (size_t)atoi(a[1].c_str());
+        if (i >= tribes.size())
+            return "no such tribe";
+        F<uint32_t>(tribes[i], 0x234) = (uint32_t)strtoul(a[2].c_str(), nullptr, 16); // mIDColorID (+0x230 +4)
+        memset((uint8_t*)tribes[i] + 0x254, 0, 12);                                 // mCachedColor
+        return "color set";
+    }
+    if (a.size() >= 2 && a[0] == "setspecies") { // setspecies <hex crt inst>: tests (BUG-0643), this game's player tribe
+        // members get that species (cCreatureAnimal::SetSpecies, as the game does after an editor: 0xD5BFA0)
+        uintptr_t set = H->sym("Simulator::cCreatureAnimal::SetSpecies");
+        void* prof = game::species_by_key({(uint32_t)strtoul(a[1].c_str(), nullptr, 16), 0x2B978C46, 0x40626200});
         void* pt = player_tribe();
+        if (!set || !prof || !pt)
+            return "no species / tribe";
         int n = 0;
+        for (void* c : members(pt)) {
+            thiscall<bool>(set, c, prof, F<int>(c, kAgeOff), true);
+            n++;
+        }
+        // the tribe's own species key (mSpeciesKeys +0x1904: a vector whose first key sits at +0x1920 here, runtime
+        // 2026-11-07): the roster's portraits are of this species
+        if (F<uint32_t>(pt, 0x1924) == 0x2B978C46)
+            F<uint32_t>(pt, 0x1920) = (uint32_t)strtoul(a[1].c_str(), nullptr, 16);
+        return "species set on " + std::to_string(n);
+    }
+    if (a.size() >= 2 && a[0] == "level" && is_host()) { // level <0..7>: tests (BUG-0645), the stores of the hut upgrade
+        void* pt = player_tribe();
+        int lv = atoi(a[1].c_str());
+        if (!pt || lv < 0 || lv > 7)
+            return "no player tribe / level 0..7";
+        F<int>(pt, 0x38) = lv; // 0xFF0260, as the upgrade 0xCDA4F0 sets it
+        uintptr_t hudp = H->sym("SporeCoop::TribeHud_ptr");
+        void* hud = hudp && skg::readable((void*)hudp, 4) ? *(void**)hudp : nullptr;
+        if (hud && skg::readable(hud, 0x14) && a_MaxPop)
+            F<int>(hud, 0x10) = thiscall<int>(a_MaxPop, pt);
+        return "level " + std::to_string(lv);
+    }
+    if (a.size() >= 2 && a[0] == "spawn" && is_host()) { // spawn <n> [age]: test setup, n more adults (age 0: babies)
+        void* pt = player_tribe();
+        int n = 0, age = a.size() >= 3 ? atoi(a[2].c_str()) : 1; // BUG-0700: babies grow up in the host's game
         for (int i = 0; pt && i < atoi(a[1].c_str()) && i < 40; i++) {
-            void* c = spawn_member(pt, 1);
+            void* c = spawn_member(pt, age);
             if (!c)
                 break;
             n++;
@@ -3780,29 +6437,71 @@ std::string debug(const std::vector<std::string>& a)
                  (unsigned)members(t).size(), net::dist(tp, c));
         return b;
     }
+    // npc_tribe_at <members> <x> <y> <z>: tests (BUG-0332), SpawnNpcTribe at exactly that position (as a guest makes its
+    // copy of a host's new village, tribe.npc_tribes), with the game's ground there before and after
+    if (a.size() >= 5 && a[0] == "npc_tribe_at" && a_SpawnNpcTribe) {
+        net::Vec3 q{(float)atof(a[2].c_str()), (float)atof(a[3].c_str()), (float)atof(a[4].c_str())};
+        float g0 = game::ground_radius(q);
+        skg::Vector3 pos{q.x, q.y, q.z};
+        void* t = skg::cdecl_call<void*>(a_SpawnNpcTribe, &pos, 0, atoi(a[1].c_str()), 0, 0, (void*)nullptr);
+        if (!t)
+            return "SpawnNpcTribe returned null";
+        net::Vec3 tp = tribe_pos(t);
+        char b[200];
+        snprintf(b, sizeof b, "npc tribe %p at (%.2f %.2f %.2f) r %.2f: %u members; ground before %.2f after %.2f, %.2f m from the given point",
+                 t, tp.x, tp.y, tp.z, drive::speed(tp), (unsigned)members(t).size(), g0, game::ground_radius(q), net::dist(tp, q));
+        return b;
+    }
     // anims: tests (BUG-0569), the animation each member plays now as the game holds it (Anim::AnimatedCreature
     // vt 0x58 GetCurrentAnimation): host, its members by id (with the tribe index), guest, its mirrors by the host's id
-    if (!a.empty() && a[0] == "anims") {
+    if (!a.empty() && a[0] == "holdtrace") { // tests (BUG-0968): the guest's last hold events, oldest first
+        int want = a.size() > 1 ? atoi(a[1].c_str()) : -1;
         std::string o;
         char b[96];
-        auto line = [&](uint16_t id, void* c, uint32_t bhv) {
+        uint32_t n = std::min<uint32_t>(g_hold_ev_n, 4096);
+        for (uint32_t i = g_hold_ev_n - n; i != g_hold_ev_n; i++) {
+            const HoldEv& e = g_hold_ev[i % 4096];
+            if (want >= 0 && e.id != want)
+                continue;
+            snprintf(b, sizeof b, "hev %.3f %u %c %08X %08X\n", e.t, e.id, e.what, e.a, e.b);
+            o += b;
+        }
+        snprintf(b, sizeof b, "now %.3f\n", H->time_seconds());
+        return o + b;
+    }
+    if (!a.empty() && a[0] == "anims") {
+        std::string o;
+        char b[160];
+        auto line = [&](uint16_t id, void* c, uint32_t bhv, uint32_t idle) {
             uint32_t an = 0;
             if (c && game::object_alive(c) && game::drawn_state(c, nullptr, &an)) {
                 net::Vec3 p = game::position(c);
-                snprintf(b, sizeof b, "cur %u anim=%08X bhv=%08X pos=(%.1f %.1f %.1f)\n", id, an, bhv, p.x, p.y, p.z);
+                snprintf(b, sizeof b, "cur %u anim=%08X bhv=%08X pos=(%.1f %.1f %.1f) idle=%08X hold=%d\n", id, an, bhv, p.x, p.y,
+                         p.z, idle, has_body(c) && hold_modifier(c, false) ? 1 : 0);
                 o += b;
             }
         };
         if (is_host()) // bhv: the last animation its behaviour tree started (the game's call, game.cpp's listener)
             for (auto& [c, m] : g_hm)
-                line(m.id, c, m.bhv_anim);
+                line(m.id, c, m.bhv_anim, m.idle_anim);
         else
             for (auto& [id, g] : g_gm)
-                line(id, g.c, 0);
+                line(id, mirror_ok(g) ? g.c : nullptr, g.relayed_anim, 0);
         return o + "anims fix=" + std::to_string((int)g_mirror_anims_fix) + " sent=" + std::to_string(g_anim_relay_sent) +
                " rx=" + std::to_string(g_anim_relay_rx) + " played=" + std::to_string(g_anim_relay_played) + " failed=" +
-               std::to_string(g_anim_relay_failed) + " snap_played=" + std::to_string(g_anim_snap_played) + "\ntheme fix=" + std::to_string((int)g_theme_fix) +
-               " sent=" + std::to_string(g_theme_sent) + " rx=" + std::to_string(g_theme_rx) + " played=" + std::to_string(g_theme_played);
+               std::to_string(g_anim_relay_failed) + " snap_played=" + std::to_string(g_anim_snap_played) + "\nair fix=" + std::to_string((int)g_mirror_air_fix) + " sent=" + std::to_string(g_air_sent) +
+               " rx=" + std::to_string(g_air_rx) + " placed=" + std::to_string(g_air_placed) + " hunger_sets=" + std::to_string(g_hunger_sets) + "\nidle fix=" + std::to_string((int)g_mirror_idle_fix) +
+               " sent=" + std::to_string(g_idle_sent) + " refreshed=" + std::to_string(g_idle_refreshed) + " played=" + std::to_string(g_idle_played) +
+               "\nhold fix=" + std::to_string((int)g_mirror_hold_fix) + " sent=" + std::to_string(g_hold_sent) + " rx=" + std::to_string(g_hold_rx) +
+               " bound=" + std::to_string(g_hold_bound) + " item_sets=" + std::to_string(g_hold_item_sets) + " anim_plays=" + std::to_string(g_hold_anim_plays) + " queued=" + std::to_string(g_hold_queued) + "\ntheme fix=" + std::to_string((int)g_theme_fix) +
+               " sent=" + std::to_string(g_theme_sent) + " rx=" + std::to_string(g_theme_rx) + " played=" + std::to_string(g_theme_played) +
+               "\nparty fix=" + std::to_string((int)g_party_fix) + " sent=" + std::to_string(g_party_sent) + " rx=" +
+               std::to_string(g_party_rx) + " played=" + std::to_string(g_party_played) + " stopped=" + std::to_string(g_party_stopped) + " outside=" + std::to_string(g_party_stops_outside) +
+               "\nbaby fix=" + std::to_string((int)g_guest_baby_fix) + " sent=" + std::to_string(g_babies_sent) + " made=" + std::to_string(g_babies_made) + " paired=" + std::to_string(g_babies_paired) +
+               " local=" + std::to_string(g_babies_local) + " from=" + [] { char b[16]; snprintf(b, sizeof b, "%X", (unsigned)g_baby_from); return std::string(b); }() +
+               "\nbaby_pair fix=" + std::to_string((int)g_baby_pair_fix) + " seen=" + std::to_string(g_buys_seen) + " own=" +
+               std::to_string(g_buys_own) + " other=" + std::to_string(g_buys_other) + " none=" + std::to_string(g_buys_none) +
+               " waiting=" + std::to_string(g_buys.size()) + " last " + g_baby_last;
     }
     if (!a.empty() && a[0] == "form_pace") // tests (BUG-0571): the last decision of tribe.form_pace
         return "form_pace fix=" + std::to_string((int)g_form_pace_fix) + " held=" + std::to_string(g_forms_paced) + " last: " +
@@ -3852,6 +6551,24 @@ std::string debug(const std::vector<std::string>& a)
         return "tribes " + std::to_string(before) + " -> " + std::to_string(all_tribes().size()) + why +
                (g_forms_blocked != blocked0 ? " (blocked: tribe.guest_tribes)" : "") +
                (g_pace_last.empty() ? "" : " (pace: " + g_pace_last + ")");
+    }
+    // markers: tests (BUG-0332), the NPC tribe spawn markers of this game (noun 0x36BE27E, +0x108 == 0x57F09E5E: where the
+    // tribe controller forms the next tribes) with their positions
+    if (!a.empty() && a[0] == "markers") {
+        std::string out;
+        game::for_each_object(
+            [](void* o, uint32_t noun, void* u) {
+                if (noun == 0x36BE27E && F<uint32_t>(o, 0x108) == 0x57F09E5E) {
+                    // a placed planet object: its position at +0x1A8 (docs/re/host-centric.md, the activation pass)
+                    const float* q = (const float*)((uint8_t*)o + 0x1A8);
+                    char b[96];
+                    snprintf(b, sizeof b, "marker %p pos=(%.2f %.2f %.2f)\n", o, q[0], q[1], q[2]);
+                    *(std::string*)u += b;
+                }
+                return true;
+            },
+            &out);
+        return (out.empty() ? "no markers\n" : out) + "markers_used=" + std::to_string(g_markers_used) + "\n";
     }
     if (!a.empty() && a[0] == "trees") { // trees near the village with their raw fields (RE)
         net::Vec3 at;
@@ -3909,19 +6626,31 @@ static uint32_t bt_node(void* c)
     return ai && skg::readable(ai + 0x1D8, 4) ? *(uint32_t*)(ai + 0x1D8) : 0;
 }
 
+static uint32_t cur_anim(void* c)
+{
+    uint32_t an = 0;
+    return game::drawn_state(c, nullptr, &an) ? an : 0;
+}
+
 std::string list()
 {
     std::string out;
-    char b[320];
+    char b[512];
     void* pt = player_tribe();
     auto tribes = all_tribes();
     for (size_t ti = 0; ti < tribes.size(); ti++) {
         net::Vec3 p = tribe_pos(tribes[ti]);
         auto ms = members(tribes[ti]);
         TribeInfo ti_info = tribe_info(tribes[ti]); // the members' species (BUG-0381 tests)
-        snprintf(b, sizeof b, "tribe %u%s at (%.0f %.0f %.0f): %u members species=%08X archetype=%d made=%d\n", (unsigned)ti,
-                 tribes[ti] == pt ? " (player)" : "", p.x, p.y, p.z, (unsigned)ms.size(), ti_info.key.instance,
-                 ti_info.arch == 0xFF ? -1 : (int)ti_info.arch, (int)ours_in(g_ours_t, tribes[ti]));
+        uintptr_t hudp = tribes[ti] == pt ? H->sym("SporeCoop::TribeHud_ptr") : 0; // BUG-0645: the HUD's cap
+        void* hud = hudp && skg::readable((void*)hudp, 4) ? *(void**)hudp : nullptr;
+        snprintf(b, sizeof b, "tribe %u%s at (%.0f %.0f %.0f): %u members species=%08X archetype=%d made=%d level=%d cap=%d "
+                 "hud_cap=%d obj=%p color=%08X stamp=%u\n",
+                 (unsigned)ti, tribes[ti] == pt ? " (player)" : "", p.x, p.y, p.z, (unsigned)ms.size(), ti_info.key.instance,
+                 ti_info.arch == 0xFF ? -1 : (int)ti_info.arch, (int)ours_in(g_ours_t, tribes[ti]), F<int>(tribes[ti], 0x38),
+                 a_MaxPop ? thiscall<int>(a_MaxPop, tribes[ti]) : -1,
+                 hud && skg::readable(hud, 0x14) ? F<int>(hud, 0x10) : -1, tribes[ti], F<uint32_t>(tribes[ti], 0x234),
+                 F<uint32_t>(tribes[ti], kTribeStampOff)); // (BUG-0947: the tribe's ground stamp, 0 none)
         out += b;
         for (void* c : ms) {
             net::Vec3 cp = game::position(c);
@@ -3944,10 +6673,13 @@ std::string list()
                 }
             }
             snprintf(b, sizeof b,
-                     "  #%u %p owner=%d age=%u sel=%u hp=%.1f pos=(%.1f %.1f %.1f) speed=%.1f host_speed=%.1f dead=%d bt=%08X radius=%.2f ours=%d tool=%d leader=%d\n",
+                     "  #%u %p owner=%d age=%u sel=%u hp=%.1f pos=(%.1f %.1f %.1f) speed=%.1f host_speed=%.1f dead=%d bt=%08X radius=%.2f ours=%d tool=%d leader=%d item=%d model=%d hold=%d iscale=%.3f scale=%.3f maxhp=%.1f hunger=%.2f/%.2f/%.2f idle=%08X anim=%08X\n",
                      id, c, ow == 0xFF ? -1 : (int)ow, F<uint8_t>(c, kAgeOff), F<uint8_t>(c, kSelectedOff),
                      game::health(c), cp.x, cp.y, cp.z, drive::speed(v), drive::speed(sv), (int)game::is_dead(c),
-                     bt_node(c), game::bounding_radius(c), (int)ours_in(g_ours_c, c), F<int>(c, kHeldToolOff), (int)is_leader(c));
+                     bt_node(c), game::bounding_radius(c), (int)ours_in(g_ours_c, c), F<int>(c, kHeldToolOff), (int)is_leader(c),
+                     F<int>(c, kHeldItemOff), hand_model(c), hold_modifier(c, false) ? 1 : 0, read_item_scale(c), game::scale(c), game::max_health(c),
+                     F<float>(c, 0xBBC), F<float>(c, 0xBB8), F<float>(c, 0xB90), F<uint32_t>(c, 0xE3C), cur_anim(c)); // (BUG-0906: what the hand holds,
+            // whether a model is attached, 1 while the item is still being taken: not in the resting grip)
             out += b;
             if (ds) { // guests: how the mirror is driven (drive::step)
                 snprintf(b, sizeof b, "     drive err=%.2f nudges=%u kept=%u teleports=%u\n", ds->last_err, ds->nudges,
@@ -3959,16 +6691,26 @@ std::string list()
     return out;
 }
 
+// BUG-0664 (docs/re/tribe.md#tribe-sync-bodies): the sync-check compares members, not bodies. tribe.member_body
+// (BUG-0620) keeps a dead member's body in g_hm while the host's game keeps it, but a guest spawns no mirror for a body
+// (it only lets a mirror it already has lie there): a guest that joined or loaded the world while a body lay on the
+// host had none, and the check said "t: 1 missing on the guest" (long_tribe on rel/0.7.9, after its restart and its
+// rejoin). With the fix both sides leave bodies out of the check; off: the host lists them (0.7.9 before the fix).
+static bool g_sync_bodies_fix = true;
+COOP_FIX("tribe.sync_bodies", "BUG-0664", g_sync_bodies_fix,
+         "tribe: the sync-check leaves the bodies of dead members out (a guest that joined meanwhile has no copy)");
+
 std::vector<syncdbg::Entry> sync_entries()
 {
     std::vector<syncdbg::Entry> v;
+    game::LiveScope live; // BUG-0919 (one walk of the object list)
     if (C.sess && C.sess->role() == net::Role::Host) {
         for (auto& [c, h] : g_hm)
-            if (game::object_alive(c))
+            if ((npc::entries_listed() ? game::listed(c) : game::object_alive(c)) && !(g_sync_bodies_fix && h.body_since != 0))
                 v.push_back({"t" + std::to_string(h.id), game::position(c), game::orientation(c)});
     } else {
         for (auto& [id, g] : g_gm)
-            if (g.c && game::object_alive(g.c))
+            if (mirror_ok(g) && !(g_sync_bodies_fix && g.body)) // (BUG-0955)
                 v.push_back({"t" + std::to_string(id), game::position(g.c), game::orientation(g.c)});
     }
     return v;

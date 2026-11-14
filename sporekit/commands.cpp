@@ -115,7 +115,8 @@ static int c_info(void*, int, const char* const*, SkOut* o)
 
 static int c_frame(void*, int, const char* const*, SkOut* o)
 {
-    outf(o, "frame=%llu fps=%.1f", (unsigned long long)frame_index(), fps());
+    outf(o, "frame=%llu fps=%.1f limit=%d own=%d changes=%u", (unsigned long long)frame_index(), fps(),
+         frame_limit_now(), frame_limit_own(), frame_limit_changes());
     return 0;
 }
 
@@ -355,7 +356,7 @@ static int c_shot(void*, int argc, const char* const* argv, SkOut* o)
 
 static int c_key(void*, int argc, const char* const* argv, SkOut* o)
 {
-    NEED(2, "key <vk|name> [tap|down|up]");
+    NEED(2, "key <vk|name> [tap|down|up|elsewhere]");
     std::string k = argv[1];
     int vk = 0;
     struct { const char* n; int vk; } names[] = {
@@ -403,10 +404,21 @@ static int c_text(void*, int argc, const char* const* argv, SkOut* o)
 
 static int c_click(void*, int argc, const char* const* argv, SkOut* o)
 {
-    NEED(3, "click <x> <y> [left|right|middle]");
+    NEED(3, "click <x> <y> [left|right|middle] [release]");
     int b = argc > 3 ? (!strcmp(argv[3], "right") ? 1 : (!strcmp(argv[3], "middle") ? 2 : 0)) : 0;
-    bool ok = input_click(atoi(argv[1]), atoi(argv[2]), b);
+    bool release = argc > 4 && !strcmp(argv[4], "release"); // BUG-0804: the real mouse again after the click
+    bool ok = input_click(atoi(argv[1]), atoi(argv[2]), b, release);
     outf(o, ok ? "clicked" : "failed");
+    return ok ? 0 : 1;
+}
+
+// tests (BUG-0804): the mouse position the game reads (GetCursorPos as hooked), client coordinates
+static int c_cursor(void*, int, const char* const*, SkOut* o)
+{
+    int x = 0, y = 0;
+    bool virt = false;
+    bool ok = vcursor_state(x, y, virt);
+    outf(o, "virtual=%d x=%d y=%d", virt ? 1 : 0, x, y);
     return ok ? 0 : 1;
 }
 
@@ -641,6 +653,13 @@ static int c_quit(void*, int, const char* const*, SkOut* o)
     return 0;
 }
 
+// kit.cam [reset] (BUG-0948): the copy of the drawn camera and how far the viewer moved by Present
+static int c_kit_cam(void*, int argc, const char* const* argv, SkOut* o)
+{
+    outf(o, "%s\n", drawn_cam_command(argc > 1 ? argv[1] : nullptr).c_str());
+    return 0;
+}
+
 // kit.fix [name [0|1]]: the fix switches (tests show with 0 that they still catch the bug)
 static int c_kit_fix(void*, int argc, const char* const* argv, SkOut* o)
 {
@@ -697,6 +716,69 @@ static int c_test_stackheap(void*, int argc, const char* const* argv, SkOut* o)
     return 0;
 }
 
+// kit.test.stackvm [rounds] [ms]: the main thread allocates and frees 64 KB blocks (VirtualAlloc / VirtualFree:
+// Wine's virtual memory lock) for <ms> while this thread takes <rounds> stack snapshots of it, as `stack`, `hangdump`
+// and the watchdog do (BUG-0880). Prints the slowest snapshot and how many VirtualQuery calls ran while the main
+// thread was suspended (0 with kit.fix stackvq; the old loop makes one per stack region).
+static int c_test_stackvm(void*, int argc, const char* const* argv, SkOut* o)
+{
+    int rounds = argc > 1 ? atoi(argv[1]) : 300;
+    int ms = argc > 2 ? atoi(argv[2]) : 5000;
+    static ThreadSnap snap;
+    static std::mutex mu;
+    std::lock_guard<std::mutex> lk(mu);
+    HANDLE started = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    static volatile LONG allocs;
+    allocs = 0;
+    run_on_main([started, ms] {
+        SetEvent(started);
+        DWORD t0 = GetTickCount();
+        while (GetTickCount() - t0 < (DWORD)ms) {
+            void* p = VirtualAlloc(nullptr, 0x10000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+            if (p) {
+                DWORD old;
+                VirtualProtect(p, 0x1000, PAGE_READONLY, &old);
+                VirtualFree(p, 0, MEM_RELEASE);
+            }
+            InterlockedIncrement(&allocs);
+        }
+    });
+    if (WaitForSingleObject(started, 30000) != WAIT_OBJECT_0) {
+        CloseHandle(started);
+        outf(o, "the main thread did not start the allocation loop");
+        return 1;
+    }
+    CloseHandle(started);
+    DWORD worst = 0;
+    int done = 0, vq = 0, nmin = 1 << 30, nmax = 0;
+    for (int i = 0; i < rounds; i++) {
+        DWORD t0 = GetTickCount();
+        std::string why;
+        if (!thread_snapshot(main_thread_id(), snap, &why))
+            break;
+        DWORD dt = GetTickCount() - t0;
+        worst = dt > worst ? dt : worst;
+        vq += snap.vq_suspended;
+        nmin = snap.n < nmin ? snap.n : nmin;
+        nmax = snap.n > nmax ? snap.n : nmax;
+        done++;
+        Sleep((DWORD)(ms / (rounds > 0 ? rounds : 1)));
+    }
+    outf(o, "stackvm: %d of %d snapshots, slowest %lu ms, vq_suspended=%d, words %d..%d, main allocs=%ld, stackvq=%d\n",
+         done, rounds, worst, vq, done ? nmin : 0, nmax, (long)allocs, (int)fixed(g_fix_stackvq));
+    return 0;
+}
+
+// kit.test.wheel: the last WM_MOUSEWHEEL the game's window procedure got: its key flags and delta (BUG-0859)
+static int c_test_wheel(void*, int, const char* const*, SkOut* o)
+{
+    uint32_t wp = 0, n = 0;
+    wheel_seen(wp, n);
+    outf(o, "wheel n=%u keys=0x%04X delta=%d shift=%d ctrl=%d lbutton=%d rbutton=%d", n, wp & 0xFFFF, (int)(short)(wp >> 16),
+         (wp & MK_SHIFT) ? 1 : 0, (wp & MK_CONTROL) ? 1 : 0, (wp & MK_LBUTTON) ? 1 : 0, (wp & MK_RBUTTON) ? 1 : 0);
+    return 0;
+}
+
 static int c_test_fault(void* user, int, const char* const*, SkOut* o)
 {
     int which = (int)(intptr_t)user;
@@ -720,7 +802,8 @@ static int c_test_hookchurn(void*, int argc, const char* const* argv, SkOut* o)
 static int c_test_hooknew(void*, int argc, const char* const* argv, SkOut* o)
 {
     std::string r;
-    hooks_new_test(argc > 1 ? atoi(argv[1]) : 200, argc > 2 ? atoi(argv[2]) : 3, r);
+    hooks_new_test(argc > 1 ? atoi(argv[1]) : 200, argc > 2 ? atoi(argv[2]) : 3, r,
+                   argc > 3 && !strcmp(argv[3], "split"));
     outf(o, "%s", r.c_str());
     return 0;
 }
@@ -752,6 +835,48 @@ static int c_test_hang(void*, int argc, const char* const* argv, SkOut* o)
     int ms = argc > 1 ? atoi(argv[1]) : 40000;
     run_on_main([ms] { Sleep(ms); });
     outf(o, "the main thread sleeps %d ms on its next frame", ms);
+    return 0;
+}
+
+// BUG-0925 tests: the main thread shows a message box on its next frame (no frames while it is up, the thread pumps
+// messages, as the C runtime's error box); this thread closes it after ms. "report": the watchdog also writes the
+// report it writes for a runtime library box.
+static BOOL CALLBACK test_dialog_find(HWND w, LPARAM l)
+{
+    wchar_t t[64] = L"";
+    GetWindowTextW(w, t, 64);
+    if (wcscmp(t, L"SporeKit test dialog"))
+        return TRUE;
+    *(HWND*)l = w;
+    return FALSE;
+}
+static int c_test_dialog(void*, int argc, const char* const* argv, SkOut* o)
+{
+    int ms = argc > 1 ? atoi(argv[1]) : 6000;
+    if (ms < 500 || ms > 60000)
+        ms = 6000;
+    watchdog_dialog_test_report(argc > 2 && !strcmp(argv[2], "report"));
+    uint64_t f0 = frame_index();
+    run_on_main([] {
+        MessageBoxW(nullptr, L"Runtime error!\n\nR6025\n- pure virtual function call (a test)", L"SporeKit test dialog", MB_OK);
+    });
+    DWORD t0 = GetTickCount();
+    HWND dlg = nullptr;
+    while (!dlg && GetTickCount() - t0 < 10000) {
+        Sleep(50);
+        EnumThreadWindows(main_thread_id(), test_dialog_find, (LPARAM)&dlg);
+    }
+    if (!dlg) {
+        outf(o, "no dialog seen within 10 s");
+        return 1;
+    }
+    uint64_t f1 = frame_index();
+    Sleep(ms);
+    uint64_t f2 = frame_index();
+    PostMessageW(dlg, WM_COMMAND, IDOK, 0);
+    watchdog_dialog_test_report(false);
+    outf(o, "dialog shown for %d ms: frames %llu before, %llu when it was up, %llu when it was closed", ms,
+         (unsigned long long)f0, (unsigned long long)f1, (unsigned long long)f2);
     return 0;
 }
 
@@ -809,6 +934,12 @@ void register_builtin_commands()
         for(uint32_t i=0;i<value.count;++i)row("recent",value.recent[(value.next+value.recent.size()-value.count+i)%value.recent.size()]);
         return 0;
     },nullptr,A);
+    command_add(k, "frame.interval", "frame.interval [reset] - Present interval statistic since the last reset (BUG-0779)",
+                [](void*, int argc, const char* const* argv, SkOut* out) {
+                    outf(out, "%s", present_intervals(argc > 1 && !strcmp(argv[1], "reset")).c_str());
+                    return 0;
+                },
+                nullptr, A);
     command_add(k, "wait.frames", "wait.frames <n> [timeout_ms]", c_wait_frames, nullptr, W);
     command_add(k, "log", "log [n] - last log lines", c_log, nullptr, A);
     command_add(k, "sym", "sym <name|addr> - resolve", c_sym, nullptr, A);
@@ -825,7 +956,8 @@ void register_builtin_commands()
     command_add(k, "text", "text <string> - WM_CHAR input", c_text, nullptr, A);
     command_add(k, "window", "window [x y | test] - game window position (move it)", c_window, nullptr,
                 SK_CMD_OUTSIDE_FRAME);
-    command_add(k, "click", "click <x> <y> [button]", c_click, nullptr, A);
+    command_add(k, "click", "click <x> <y> [left|right|middle] [release]", c_click, nullptr, A);
+    command_add(k, "cursor", "cursor - where the game reads the mouse: virtual=0|1 x y (client)", c_cursor, nullptr, A);
     command_add(k, "move", "move <x> <y> - mouse move", c_move, nullptr, A);
     command_add(k, "button", "button <x> <y> <down|up> [left|right|middle] - press and hold / release", c_button,
                 nullptr, A);
@@ -853,21 +985,38 @@ void register_builtin_commands()
                 nullptr, A);
     command_add(k, "stack.here", "stack.here [n] [all] - main thread call chain, read on the main thread itself",
                 c_stack_here, nullptr, M);
+    command_add(k, "kit.cam", "kit.cam [reset] - the camera the overlay projects with (BUG-0948)", c_kit_cam, nullptr, A);
     command_add(k, "kit.fix", "kit.fix [name [0|1]] - fix switches (tests: 0 = the old behaviour)", c_kit_fix, nullptr, A);
     command_add(k, "kit.test.stackheap", "kit.test.stackheap [stack|hangdump] [hold_ms] - stack dump while the main thread holds the heap (BUG-0050)",
                 c_test_stackheap, nullptr, A);
+    command_add(k, "kit.test.stackvm", "kit.test.stackvm [rounds] [ms] - stack snapshots while the main thread allocates and frees virtual memory (BUG-0880)",
+                c_test_stackvm, nullptr, A);
+    command_add(k, "kit.test.wheel", "kit.test.wheel - the last mouse wheel message the game's window got (BUG-0859)", c_test_wheel, nullptr, A);
     command_add(k, "kit.test.logfault", "kit.test.logfault - a fault inside the log's lock (BUG-0115)", c_test_fault,
                 (void*)0, M);
     command_add(k, "kit.test.excfault", "kit.test.excfault - a fault inside the exception logger's lock (BUG-0115)",
                 c_test_fault, (void*)1, M);
     command_add(k, "kit.test.hookchurn", "kit.test.hookchurn [rounds] [threads] [nogate] - hook / unhook while threads run the hook (BUG-0132; nogate: also while the hook is made, BUG-0202)",
                 c_test_hookchurn, nullptr, M);
-    command_add(k, "kit.test.hooknew", "kit.test.hooknew [rounds] [threads] - make new hooks while threads call the functions; counts detours that ran before their original was set (BUG-0398)",
+    command_add(k, "kit.test.hooknew", "kit.test.hooknew [rounds] [threads] [split] - make new hooks while threads call the functions; counts detours that ran before their original was set (BUG-0398); split: over several instructions, counts wrong results (BUG-0403)",
                 c_test_hooknew, nullptr, M);
     command_add(k, "kit.test.window", "kit.test.window minimize|restore|hide|show - the game window (BUG-0347: no frames, the loop runs)",
                 c_test_window, nullptr, A);
+    command_add(k, "kit.test.dialog", "kit.test.dialog [ms] [report] - the main thread shows a message box for ms (no frames; BUG-0925: the watchdog names it)",
+                c_test_dialog, nullptr, W);
     command_add(k, "kit.test.hang", "kit.test.hang [ms] - block the main thread on its next frame (a real hang, BUG-0347)",
                 c_test_hang, nullptr, A);
+    command_add(k, "kit.test.loadlib", "kit.test.loadlib <file> - load a DLL from the game folder (tests: a stand-in for another program's hooks DLL, BUG-0782)",
+                [](void*, int argc, const char* const* argv, SkOut* out) {
+                    if (argc < 2 || strpbrk(argv[1], "\\/:"))
+                        return 1; // a file name in the game folder only
+                    std::wstring p = game_dir() + L"\\" + widen(argv[1]);
+                    HMODULE m = LoadLibraryW(p.c_str());
+                    outf(out, "%s: %p (error %lu); other hooks: %s", argv[1], (void*)m, m ? 0ul : GetLastError(),
+                         foreign_hooks().c_str());
+                    return m ? 0 : 1;
+                },
+                nullptr, M);
     command_add(k, "bg", "bg [on|off] - keep running when the window is unfocused", c_bg, nullptr, A);
     command_add(k, "frames.source", "frames.source [auto|loop] - where frames come from (loop: ignore Present, tests)",
                 c_frames_source, nullptr, A);

@@ -32,6 +32,7 @@ struct State {
     uint32_t grounded = 0;   // BUG-0399: put out of the ground (step with ground)
     float grounded_from = 0; // BUG-0399: how far over (negative: under) the ground it was then (m)
     float last_err = 0, last_speed = 0;
+    float last_want_speed = 0; // BUG-0788 tests: the speed the last catch-up walk of step asked for
     double hold_until = 0; // BUG-0305: after a trail teleport the nudge puts it on the path every frame
     double last_step = 0;  // BUG-0175: the time of the previous step (the nudge per second, not per frame)
     bool kinematic = false; // BUG-0360: a walking partner's puppet, walked and placed on its path (modes.cpp)
@@ -45,6 +46,11 @@ struct State {
     bool jump_have = false;
     uint32_t jumps = 0;     // BUG-0499: puppets put at a target that jumped
     uint32_t airs = 0;      // BUG-0376: frames placed in the air (the partner off the ground)
+    double stop_until = 0;  // BUG-0408: held where the partner stopped until then
+    uint32_t stop_holds = 0; // BUG-0408: frames held so
+    double under_since = -1; // BUG-0683: since when the standing puppet is under this game's terrain (-1: not)
+    uint32_t ungrounded = 0; // BUG-0683: times it was put onto it
+    float tgt_sp = 0;        // BUG-0408: the target's own speed last frame (a stop: it drops to 0.3 m/s or less)
     net::Vec3 drawn;        // BUG-0360 (coop.track): its position before this frame's driving, i.e. where the
                             // game's update put it and drew it (the mod's frame runs at Present)
 };
@@ -215,8 +221,11 @@ inline void step(void* p, const net::Vec3& pos_in, const net::Quat& rot, const n
         net::Vec3 tgt{pos.x + vel.x * 0.25f, pos.y + vel.y * 0.25f, pos.z + vel.z * 0.25f};
         float want_sp = std::min((sp > 0.5f ? sp : 2.f) + err * 1.2f, std::max(sp, 2.f) * 2.5f);
         if (now - ds.last_cmd > 0.1 || net::dist(tgt, ds.last_target) > 1.f) {
+            // (BUG-0788: MoveTo ends with SetDesiredSpeed(standard), so this speed is lost; the order does not matter:
+            // the game sets a puppet's desired speed again every frame, docs/re/creature.md#creature-c2-audit-0713)
             game::set_speed(p, want_sp);
             game::move_to(p, tgt, 0.3f);
+            ds.last_want_speed = want_sp;
             ds.last_cmd = now;
             ds.last_target = tgt;
         }
@@ -294,7 +303,19 @@ struct WalkPlace {
     // tests (coop.npctrack variant): 1 place only, no walk goal (the velocity written); 2 the walk goal
     // but teleports with the mark; 3 keep_lost off
     int variant = 0;
+    // BUG-0425 (drive.lead): the error is closed in about kCatchTime s (faster than catch_up for a big one), at
+    // most at the remote's speed + catch_up on top of its speed. A remote that starts to walk is known here a
+    // latency late; its lead target is then 1-3 m ahead and was closed at catch_up (3 m/s): a Tribe member at
+    // 9 m/s stayed 2-3 m behind for the first 0.75 s of every walk over the player network (p90 2.9-3.1 m)
+    bool catch_prop = false;
+    // BUG-0619: > 0: the remote's own speed (a Tribe member mirror's raw lead) when it is walked faster than that
+    // (at its smoothed target's speed, the lead's offset closing included). What the player sees in a frame is the
+    // placing's step from where the game's walk had it plus the game's walk of the next frame, so the placing's step
+    // is held to (2 x lead_speed + catch_up - the walk's speed) x dt: a frame never draws more than 0.7.8's
+    // (2 x speed + 3 m/s). Placed from the last placing instead, the next walk came on top (1-1.3 m frames)
+    float lead_speed = 0.f;
 };
+constexpr float kCatchTime = 0.25f;     // s
 constexpr float kWalkLostErr = 0.75f;   // m
 constexpr double kWalkLostAfter = 0.15; // s
 
@@ -358,7 +379,12 @@ inline void walk_place(void* p, const net::Vec3& pos_in, const net::Quat& rot, c
         ds.track = Track{};
         return;
     }
-    float max_step = (sp + o.catch_up) * (float)dt;
+    float catch_up = o.catch_up;
+    if (o.catch_prop && net::g_lead_fix)
+        catch_up = std::max(catch_up, std::min(err / kCatchTime, sp + o.catch_up));
+    float max_step = (sp + catch_up) * (float)dt;
+    if (o.lead_speed > 0)
+        max_step = std::min(max_step, std::max(0.f, 2.f * o.lead_speed + catch_up - walk_sp) * (float)dt);
     net::Vec3 to = pos;
     if (err > max_step) {
         float k = max_step / err;

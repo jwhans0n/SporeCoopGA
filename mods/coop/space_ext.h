@@ -81,6 +81,9 @@ void set_away(bool on);
 // every feature's tick of that frame. Not seen: a reload that shows no non-Space frame and reuses
 // the old cEmpire's address.
 uint32_t world_epoch();
+// BUG-0694 (space_contracts.cpp): a reward tool (its key) this game cannot take now (outside Space) is owed and given in
+// the first Space frame of the same Space world; false: the switch space.reward_owed is off (the tool is lost)
+bool owe_tool_key(const uint32_t key[3], const std::string& what);
 // the game's saves made while the mod runs (space_allies' save hook counts them; 0 without it).
 // Only the 0.7.3.0 refund rule (`coop.fix space.owed_id off`) still reads it (BUG-0225).
 void note_save();
@@ -123,6 +126,8 @@ std::vector<void*> game_missions();
 // neutral or at war. The setters are for space_rivalry.cpp only.
 enum class Relation : uint8_t { Ally = 0, Neutral = 1, War = 2 };
 bool rivals();
+// F3 (BUG-0768): the host's session settings allow this feature (space.trade, ..., space.rivals for "rivalry")
+bool feature_allowed(const std::string& name);
 Relation relation(uint8_t a, uint8_t b);
 void set_rivals(bool on);
 void set_relation(uint8_t a, uint8_t b, Relation r);

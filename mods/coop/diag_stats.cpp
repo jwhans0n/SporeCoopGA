@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <map>
+#include <vector>
 
 #include "fixes.h"
 #include "modes.h"
@@ -99,6 +100,44 @@ static DWORD WINAPI mem_walk(void*)
     g_mem_regions = n;
     g_mem_walk_us = (int)((b.QuadPart - a.QuadPart) * 1000000 / f.QuadPart);
     return 0;
+}
+
+// BUG-0631: a 32-bit game on the 2 GB space (the GOG 2024 exe has the large-address flag off) fills it with the game's
+// own caches over a long session (creature skins of 5.3 MB each, models, materials, effects: docs/re/graphics.md#graphics-
+// address-space; in co-op the host also holds what lives around its partners). Near the end the space is fragmented: the
+// host of the report crashed in Civ with 133 MB free but no free block over 12 MB, where the game's allocator grows in
+// 16 MB segments and a model's vertex buffer came back null. With core.mem_reserve a contiguous block is reserved at the
+// start (address space only, nothing committed) and given back when the space runs low, with a notice to the player to
+// save and restart the game soon: the game gets one last big block instead of crashing on the first allocation that
+// needs one. Off: no reserve, the low state is only written in the log (0.7.9).
+static bool g_fix_mem_reserve = true;
+COOP_FIX("core.mem_reserve", "BUG-0631", g_fix_mem_reserve, "core: a block of address space is kept from the start and given back, with a notice to save and restart, when the game's address space runs low");
+constexpr SIZE_T kReserveMB = 128;
+static void* g_reserve;            // the kept block (MEM_RESERVE, never committed)
+static bool g_reserve_given = false; // given back this run (once: it is not taken again)
+static double g_reserve_told = -1e9;
+static uint32_t g_reserve_released = 0; // tests
+
+static void reserve_take()
+{
+    if (g_reserve || g_reserve_given || !g_fix_mem_reserve)
+        return;
+    // top-down: out of the way of the game's own allocations, which mostly grow bottom-up
+    g_reserve = VirtualAlloc(nullptr, kReserveMB << 20, MEM_RESERVE | MEM_TOP_DOWN, PAGE_NOACCESS);
+    if (g_reserve)
+        SLOG("mem: %u MB of address space kept for the end of a long session (core.mem_reserve, BUG-0631)",
+             (unsigned)kReserveMB);
+}
+
+static void reserve_give(const char* why)
+{
+    if (!g_reserve)
+        return;
+    VirtualFree(g_reserve, 0, MEM_RELEASE);
+    g_reserve = nullptr;
+    g_reserve_given = true;
+    g_reserve_released++;
+    SLOG("mem: the %u MB kept for the end were given back to the game (%s)", (unsigned)kReserveMB, why);
 }
 
 static void mem_start()
@@ -298,6 +337,87 @@ static void reset_counters()
 }
 
 // ---------------- the frame ----------------
+// ---------------- programs on the player's PC that change the game (notes for the player) ----------------
+// BUG-0782: RivaTuner Statistics Server (MSI Afterburner) injects RTSSHooks.dll and hooks the same d3d9 functions as
+// SporeKit; players reported crashes at start with it running. Its DLL is named in the log and the reports; with
+// core.rtss_note the player is also told, once per start, how to keep it out of Spore. Off: the log line only (0.7.12).
+static bool g_fix_rtss_note = true;
+COOP_FIX("core.rtss_note", "BUG-0782", g_fix_rtss_note, "core: when RivaTuner / MSI Afterburner hooks the game, the player is told (once per start) how to keep it out of Spore");
+// BUG-0779: the game runs without its frame limit (kFrameLimitMS 0, or under 10 ms: its own is 16) at a high
+// frame rate: that is what a player saw tear (82-138 fps, a d3d9 wrapper and Spore ModAPI present). With
+// core.uncapped_note the player is told once per start what changed it and how to get a steady picture back.
+// Off: the log line only (0.7.12).
+static bool g_fix_uncapped_note = true;
+COOP_FIX("core.uncapped_note", "BUG-0779", g_fix_uncapped_note, "core: when the game runs without Spore's frame cap for a minute, the player is told (once per start) that another program lifted it and how to stop the tearing");
+static bool g_rtss_told = false, g_uncapped_told = false;
+static uint32_t g_env_notes = 0; // notes shown (tests)
+
+static const wchar_t* rtss_dll()
+{
+    for (const wchar_t* n : {L"RTSSHooks.dll", L"RTSSHooks64.dll"})
+        if (GetModuleHandleW(n))
+            return n;
+    return nullptr;
+}
+
+// kFrameLimitMS now (AppProperties id 44; docs/02-modkit.md#modkit-frame-limit), -1 when not readable
+static int frame_limit_ms()
+{
+    uintptr_t p = g_H->sym("App::FrameLimit_ptr");
+    uint8_t* app = p ? *(uint8_t**)p : nullptr;
+    uint8_t* cfg = app ? *(uint8_t**)(app + 0x3C) : nullptr;
+    return cfg ? *(int*)(cfg + 0xB0) : -1;
+}
+
+static void env_second(double now)
+{
+    static double next_rtss = 10; // RTSS may inject after the start: looked for every 10 s
+    if (!g_rtss_told && now >= next_rtss) {
+        next_rtss = now + 10;
+        if (const wchar_t* d = rtss_dll()) {
+            g_rtss_told = true;
+            SWARN("env: %ls is loaded (RivaTuner Statistics Server / MSI Afterburner): it hooks the game's Direct3D "
+                  "like SporeKit; if Spore crashes at start, give SporeApp.exe an RTSS profile with Application "
+                  "detection level None, or close RTSS (docs/INSTALL.md#install-rtss) (BUG-0782)", d);
+            if (g_fix_rtss_note && g_P.feed) {
+                g_env_notes++;
+                g_P.feed("RivaTuner / MSI Afterburner is hooked into Spore. If Spore crashes at start, set "
+                         "\"Application detection level\" to None for SporeApp.exe in RivaTuner, or close it");
+            }
+        }
+    }
+}
+
+static void env_minute(int avg_fps)
+{
+    if (g_uncapped_told)
+        return;
+    int ms = frame_limit_ms();
+    if (ms < 0 || ms >= 10 || avg_fps < 50)
+        return; // capped (the game's own 16 ms, a limit another program set) or not fast anyway
+    g_uncapped_told = true;
+    SWARN("env: the game runs without Spore's frame limit: %d fps, kFrameLimitMS %d ms (Spore's own 16); a mod or "
+          "program lifted it; with vsync off the picture tears (docs/INSTALL.md#install-tearing) (BUG-0779)",
+          avg_fps, ms);
+    if (g_fix_uncapped_note && g_P.feed) {
+        g_env_notes++;
+        char b[300];
+        snprintf(b, sizeof b,
+                 "Spore runs at %d fps without its frame cap (another mod or program lifted it). If the picture "
+                 "tears, turn on vsync in mods\\sporekit.ini (vsync=1) or a frame cap in that program",
+                 avg_fps);
+        g_P.feed(b);
+    }
+}
+
+std::string env_status()
+{
+    char b[200];
+    snprintf(b, sizeof b, "env: notes %u, rtss %s, frame limit %d ms\n", g_env_notes, rtss_dll() ? "loaded" : "no",
+             frame_limit_ms());
+    return b;
+}
+
 static double g_minute_at = -1, g_mem_at = -1e9;
 
 void stats_tick(double now)
@@ -308,11 +428,14 @@ void stats_tick(double now)
     if (now - g_net_sec >= 1.0) {
         bool minute = g_minute_at >= 0 && now - g_minute_at >= 60;
         net_second(now, minute);
+        env_second(now);
         g_net_sec = now;
         if (g_minute_at < 0)
             g_minute_at = now;
         if (in_session())
             settings_check(now, false);
+        if (!g_fix_mem_reserve && g_reserve) // the switch turned off at runtime (tests): no reserve, as before
+            reserve_give("core.mem_reserve off");
         if (now - g_mem_at >= 60) { // the walk runs on a thread: its result is read next time
             g_mem_at = now;
             mem_start();
@@ -322,6 +445,7 @@ void stats_tick(double now)
             int avg = (int)(g_min_frames / (now - g_min_start) + 0.5);
             if (fps >= 0 && (g_c.min_fps < 0 || fps < g_c.min_fps))
                 g_c.min_fps = fps;
+            env_minute(avg);
             int fr = g_mem_free_mb, bl = g_mem_block_mb;
             if (fr >= 0 && (g_c.min_free_mb < 0 || fr < g_c.min_free_mb))
                 g_c.min_free_mb = fr;
@@ -333,6 +457,15 @@ void stats_tick(double now)
                      avg, fps, (int)(g_frame_max * 1000), g_hitches_min, fr, (int)g_mem_total_mb, bl,
                      g_P.activity ? g_P.activity().c_str() : "?");
             // a 32-bit game: the largest block is what a big allocation (a planet, an editor) needs
+            if (fr >= 0 && (fr < 300 || bl < 48) && g_fix_mem_reserve) {
+                if (g_reserve)
+                    reserve_give("the address space runs low");
+                if (now - g_reserve_told > 600 && g_P.feed) { // every 10 minutes while it stays low
+                    g_reserve_told = now;
+                    g_P.feed("Your game is running out of memory: save and restart it soon (Spore is a 32-bit game "
+                             "and keeps what it loads until it is closed)");
+                }
+            }
             if (fr >= 0 && (fr < 300 || bl < 48) && now - g_mem_low_told > 300) {
                 g_mem_low_told = now;
                 SWARN("mem: the game's address space runs low: %d MB free, largest free block %d MB (a crash with "
@@ -358,6 +491,7 @@ std::string stats_status()
              (int)g_mem_total_mb, (int)g_mem_block_mb, (int)g_mem_regions, g_mem_walk_us / 1000.0,
              g_cost_frames ? g_cost_sum / g_cost_frames * 1000 : 0.0, (unsigned long long)g_cost_frames, g_cost_max * 1000);
     std::string s = b;
+    s += env_status();
     for (auto& [id, n] : g_net) {
         snprintf(b, sizeof b, "net: player %u rtt %d ms, usual %.0f, max loss %.1f%%, silent %u ms\n", id, n.last_rtt,
                  n.usual_rtt, n.max_loss, n.last_silent);
@@ -387,6 +521,7 @@ void init(const SkHost* host, SkMod* mod, const Probe& probe)
                 g_H->diag_headline(g_M, (std::string("(an earlier run) ") + b).c_str());
         }
     reset_counters();
+    reserve_take();
 }
 
 void tick(double now)
@@ -505,6 +640,10 @@ void on_shutdown()
 
 void on_unload()
 {
+    if (g_reserve) { // a hot reload takes a new one
+        VirtualFree(g_reserve, 0, MEM_RELEASE);
+        g_reserve = nullptr;
+    }
     if (g_mem_thread) {
         WaitForSingleObject(g_mem_thread, 3000);
         CloseHandle(g_mem_thread);
@@ -536,6 +675,45 @@ std::string command(const std::vector<std::string>& a)
         s_reserved_mb += p ? mb : 0;
         return std::string(p ? "reserved " : "not reserved ") + std::to_string(mb) + " MB (" + std::to_string(s_reserved_mb) +
                " MB in all)\n";
+    }
+    if (a.size() >= 2 && a[0] == "fill") { // tests (coop_mem_reserve.py, BUG-0631): the address space as hours of play
+        // leave it: every free block of <piece> MB or more reserved (never freed), then every other one given back
+        // until <left> MB are free: holes of one piece, no big free block
+        int left = std::max(0, atoi(a[1].c_str())), piece = a.size() > 2 ? std::max(1, std::min(64, atoi(a[2].c_str()))) : 16;
+        std::vector<void*> got;
+        while (got.size() < 8192)
+            if (void* p = VirtualAlloc(nullptr, (SIZE_T)piece << 20, MEM_RESERVE, PAGE_NOACCESS))
+                got.push_back(p);
+            else
+                break;
+        std::sort(got.begin(), got.end());
+        auto free_mb = [] {
+            MEMORY_BASIC_INFORMATION mbi;
+            uint64_t f = 0;
+            for (uintptr_t p = 0x10000; p < 0xFFFF0000u && VirtualQuery((void*)p, &mbi, sizeof mbi) == sizeof mbi;) {
+                if (mbi.State == MEM_FREE)
+                    f += mbi.RegionSize;
+                uintptr_t next = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+                if (next <= p)
+                    break;
+                p = next;
+            }
+            return (int)(f >> 20);
+        };
+        int freed = 0, have = free_mb();
+        for (size_t i = 0; i < got.size() && have < left; i += 2) { // every other one: the holes do not merge
+            VirtualFree(got[i], 0, MEM_RELEASE);
+            freed++;
+            have += piece;
+        }
+        return "filled: " + std::to_string(got.size() - freed) + " blocks of " + std::to_string(piece) + " MB kept, " +
+               std::to_string(freed) + " given back, " + std::to_string(free_mb()) + " MB free\n";
+    }
+    if (a.size() >= 1 && a[0] == "reserve" && a.size() == 1) {
+        char b[160];
+        snprintf(b, sizeof b, "reserve: %s, %u MB, given back %u time(s), switch %s\n", g_reserve ? "kept" : "none",
+                 (unsigned)kReserveMB, (unsigned)g_reserve_released, g_fix_mem_reserve ? "on" : "off");
+        return b;
     }
     if (a.size() >= 1 && a[0] == "mem") {
         mem_start();

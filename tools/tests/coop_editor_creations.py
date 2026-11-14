@@ -533,7 +533,7 @@ def self_test():
     else:
         raise AssertionError('Truncated canonical asset diagnostic accepted')
     validate_steps([{'click': [10, 20]}, {'slow_drag': [10, 20, 30, 40]}, {'control': 'C00F0301'}, {'text': '{name}'}, {'key': 'ctrl down'}])
-    for invalid in ([{'call': 'Editor::Save'}], [{'mem.write': '00'}], [{'click': [-1, 2]}], [{'frames': 99999}], [{'key': 'esc\ncall foo'}]):
+    for invalid in ([{'call': 'forbidden_native_call'}], [{'mem.write': '00'}], [{'click': [-1, 2]}], [{'frames': 99999}], [{'key': 'esc\ncall foo'}]):
         try:
             validate_steps(invalid)
         except ValueError:

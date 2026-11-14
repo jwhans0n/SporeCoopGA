@@ -17,17 +17,27 @@ check, the caption of TRG2CVG_PreEditor, the guest's "I'm ready". Checked:
   * BUG-0585: in the vehicle editor (the City Hall stands, the tribe has no food mat) the guest changes its food
     (`coop.res add food 2`, as its tribe eats and gathers): the host's game takes it without a fault.
 
+  --ground: then the ground round every city on both games (the BUG-0332 class in Civ, coop_civ_city_ground.py).
+
+  --rejoin (BUG-0849): back from the City Hall editor (the end of Tribe: the game takes the village down for Civ) the
+    guest leaves and joins again. The host's game must write nothing into its slot from the City Hall editor's end
+    until it is in the Civ stage, and no fault; the guest gets the world in Civ and both games reach Civ.
+    SPORE_FIX_OFF=tribe.graduation_save fails: the join's share save faults in the game's serializer at 0xBCAB07
+    (data 0x60C; the fork saw the same address) and writes part of the slot (lab 20261112-021437).
+
   SPORE_FIX_OFF=core.editor_own_pause: the old gate: FAIL (the editor opens 60 s or more after the vote).
   SPORE_FIX_OFF=tribe.food_fx_mat: FAIL (the host faults at cTribe::UpdateFoodVisuals+0x28 and freezes).
 """
+import os
 import re
 import sys
 import time
 
+import lane
 import worlddiff
 
 from coop_ui import Ui
-from twoinst import Checks, shot, start
+from twoinst import Checks, lane_state, shot, start
 
 ADVANCE = 0x6454B47  # the HUD's advance button (shown when the goal bar is full)
 CARD_OK = (1415, 1055)  # the stage card's check
@@ -124,9 +134,33 @@ def end_of_tribe(host, guest, ck):
     host.call('coop.diag sync on')
 
 
+def host_slot():
+    st = lane_state()
+    slot = (st.get('planet') or 'Game0/Zorispe').split('/')[0]
+    return os.path.join(lane.HOST_DIR, 'Games', slot)
+
+
+def newest_write(d):
+    """the newest write of a file in the host's slot (a save writes several files; one that faults half way
+    leaves some of them, lab 20261112-021437)"""
+    return max((os.path.getmtime(os.path.join(d, f)) for f in os.listdir(d)), default=0)
+
+
+def rejoin_in_end(host, guest, ck):
+    """BUG-0849: a guest that joins in the end of Tribe"""
+    print('  guest: ' + guest.call('coop.leave')['out'].strip(), flush=True)
+    time.sleep(5)
+    print('  guest: ' + guest.call(lane.JOIN)['out'].strip(), flush=True)
+    ok = wait(lambda: 'Bob' in status(host), 30, 1)
+    ck(ok, 'the guest joined again in the end of Tribe')
+
+
 def main():
     ck = Checks()
     host, guest = start(fixture='tribe')
+    rejoin = '--rejoin' in sys.argv
+    pf = host_slot()
+    t_cityhall = None
     ck('Tribe' in mode(host) and 'Tribe' in mode(guest), 'both games in Tribe')
     print(' ', host.call('coop.tribe advance')['out'].strip(), flush=True)
     r = wait(lambda: where(host, ADVANCE), 15)
@@ -167,8 +201,11 @@ def main():
     t0 = time.time()
     editors = 0
     checked_end = False
+    end_writes = []
     while time.time() - t0 < 300 and 'Civ' not in mode(host):
         m = mode(host)
+        if t_cityhall and editors < 2 and 'Editor' not in m and newest_write(pf) > t_cityhall:
+            end_writes.append(newest_write(pf) - t_cityhall)
         if 'Editor' in m:
             editors += 1
             print(f'  host editor {editors}: {host.call("coop.vote")["out"].strip().splitlines()[-1]}', flush=True)
@@ -184,6 +221,12 @@ def main():
             wait(lambda: 'Editor' not in mode(host), 20)
             if editors == 1 and not checked_end and 'Tribe' in mode(host):
                 checked_end = True
+                time.sleep(3)  # (the game writes into the slot itself when the City Hall editor ends)
+                t_cityhall = max(time.time(), newest_write(pf) + 0.5)
+                print(f'  back from the City Hall editor; the host\'s slot last written {t_cityhall - newest_write(pf):.0f} s '
+                      'ago', flush=True)
+                if rejoin:
+                    rejoin_in_end(host, guest, ck)
                 end_of_tribe(host, guest, ck)
             continue
         b = busy(host)
@@ -199,10 +242,28 @@ def main():
             continue
         time.sleep(3)
     shot(host, 'tribe_civ_host')
+    t_civ = time.time()
     ck('Civ' in mode(host), 'the host reaches the Civ stage (%s)' % mode(host).strip())
+    if rejoin and t_cityhall:
+        # the slot's files, sampled from the City Hall editor's end until the vehicle editor opens: a save then (the
+        # guest's join) is a write after the City Hall editor's end. (The game itself writes into the slot when the
+        # vehicle editor ends, lab 20261112-022253: not sampled.)
+        print(f'  writes into the host\'s slot seen in the end of Tribe: {sorted(set(round(w) for w in end_writes))} s '
+              f'after the City Hall editor; Civ at {t_civ - t_cityhall:+.0f} s', flush=True)
+        ck(not end_writes, 'no save into the host\'s slot in the end of Tribe (the joined guest gets the world in Civ)')
+        ck('total faults: 0' in host.call('exc')['out'].splitlines()[0],
+           'no fault in the host\'s game in the end of Tribe (the fork: the serializer at 0xBCAB07 during that save)')
     g = wait(lambda: 'Civ' in mode(guest), 300, 3)
     shot(guest, 'tribe_civ_guest')
     ck(g, "the guest's game follows into the Civ stage (%s)" % mode(guest).strip())
+    if g and '--ground' in sys.argv:
+        # the BUG-0332 class in Civ: the host made its first city live (its stamps), the guest loaded it; the ground
+        # round every city on both games (coop_civ_city_ground.py's grid)
+        from coop_civ_city_ground import survey
+        time.sleep(20)
+        bad, worst, n = survey(host, guest, 'after the live Tribe -> Civ change')
+        ck(n > 0 and not bad, f'the ground round the cities is the same on both games ({len(bad)} of {n} points off, '
+                              f'largest {worst:.2f} m)')
     ck.faults(host=host, guest=guest)
     return ck.result()
 

@@ -19,6 +19,9 @@ struct Ctx {
     net::Session* sess = nullptr;
     // creature that represents player `id` locally (host: guest puppet), or nullptr
     std::function<void*(uint8_t id)> puppet_of;
+    // BUG-0426 class (L1): player id's Creature puppet only while it is the live object made for it (listed, its serial,
+    // this frame's world); a Cell cell, a Tribe marker, a freed or reused one: null
+    std::function<void*(uint8_t id)> puppet_live;
     // last known world position of player `id`; false if not in the world
     std::function<bool(uint8_t id, net::Vec3& pos)> player_pos;
     // the latest state of player `id` says it is dead (death caption, respawn)
@@ -31,6 +34,8 @@ struct Ctx {
     // host: player `id` plays our world (same stage and world); a guest in another world gets no
     // NPCs (BUG-0130). Unset = everybody.
     std::function<bool(uint8_t id)> in_place;
+    // guest: the host plays in this guest's world now (its latest state: same place, in the world). Unset = yes.
+    std::function<bool()> host_here;
 };
 
 void init(const SkHost* host, SkMod* mod, const Ctx& ctx);
@@ -46,6 +51,7 @@ bool is_proxy(void* creature);
 // TakeDamage filter shared with coop.cpp; returns true to let the game apply damage
 bool debug_host_hit(uint16_t id, float damage, float push = 0); // host avatar hits host NPC #id (push: thrown, tests)
 bool debug_recruit(uint16_t id);
+std::string debug_ghost(uint16_t id); // tests (BUG-0931)
 void* debug_spawn(uint32_t instance);           // host: an NPC of that crt species next to the avatar                 // host: NPC #id joins the pack (cPosseSimulator AddMember)
 void* debug_spawn_epic(uint8_t player, float dist, uint32_t archetype, uint32_t species = 0); // host (tests): an epic near a player's creature
 void* proxy(uint16_t id);                       // guest: local creature mirroring host NPC #id
@@ -59,6 +65,11 @@ std::string trace_line(const net::Vec3& me, float radius); // support trace: NPC
 void monitor_tick(double now);
 std::string monitor_fields();
 std::vector<syncdbg::Entry> sync_entries(); // coop.sync (tests)
+bool entries_listed(); // BUG-0919: npc.entries_listed (the synced entries ask the game's object list)
+// diagnostics (coop.bodyrec start diag, BUG-0363), guest: per NPC proxy a row `q<id>`, the interpolation target the
+// driving of the frame before used (the drawn proxy of this frame is that frame's driving plus the game's update)
+// and `u<id>`, M1's raw lead target now (no drive.lead_late time, no smoothing: what the target is without them)
+void for_each_diag(void (*fn)(const char* key, const net::Vec3& p, void* user), void* user);
 std::string list();                                  // debug: mirrored NPCs
 std::string creatures(bool untuned_only, uint32_t species); // debug: creatures (+0xE84 = archetype tuning)
 std::string herds(bool all = false);                 // debug: herd objects
@@ -79,6 +90,8 @@ bool proxy_in_host_pack(void* c); // guest: proxy c mirrors a member of the host
 uint16_t id_of(void* c);         // host: the net id of NPC c, guest: of proxy c (0xFFFF: none)
 void* host_npc(uint16_t id);     // host: NPC #id if it is alive this frame
 std::string debug_pool(uint16_t id); // host (tests, BUG-0339): NPC #id to the game's creature pool
+std::string debug_nanvel(float secs, int id, bool air); // tests (BUG-0894)
+std::string debug_rxkeep(int n, float secs); // guest (tests, BUG-0611): only the first n NPCs of each state batch for secs
 std::string debug_lift(uint16_t id, float m, float secs); // host (tests, BUG-0550): NPC #id held m over its ground for secs s
 std::string debug_sink(uint16_t id, float m, bool mark = false); // guest (tests, BUG-0399): the proxy m under this game's ground once
 std::string debug_pwalk(uint16_t id, const net::Vec3& p, float speed, float secs, int mode = 0); // guest (tests, BUG-0281)
@@ -92,6 +105,17 @@ bool enabled();
 
 // tests (BUG-0487): the guest forgets a proxy without telling the host; the resync's counters
 std::string debug_forget(uint16_t id);
+// guest (tests, BUG-0850): the game destroys proxy <id> by itself (DestroyInstance, no bookkeeping of ours), then the
+// proxy is dropped before the next npc tick (as a despawn or the stale drop in the same frame); counts DestroyInstance
+std::string debug_gamekill(uint16_t id);
+std::string debug_settle(double s); // tests (BUG-0842): the guest's npc tick waits s seconds, as after an avatar change
+// tests (BUG-0426 class): a freed address given to a new creature (npc.cpp ReuseHunt); proxy <id>'s creature
+void debug_reuse_wait_free(int tries); // tests (BUG-0825): the hunt ends N tries after the target's heap chunk is free
+std::string debug_reuse_hunt(void* target, int frames, void* species, int now_tries = 0, int burst = 1, void* herd = nullptr,
+                             const net::Vec3* at = nullptr, bool herds = false, bool pool = false, bool keep = false, int every = 1);
+std::string debug_reuse_status();
+void* debug_proxy_creature(uint16_t id);
+uint32_t handler_dropped(); // BUG-0805: handler calls that met a proxy whose creature is not the live one it made
 std::string resync_status();
 std::string tuning_status();
 void set_anim_quiet(float s); // tests: the snapshot waits this long after a start (BUG-0464)

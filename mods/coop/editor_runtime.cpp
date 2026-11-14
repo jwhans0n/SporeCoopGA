@@ -3340,6 +3340,10 @@ void submit_pending_gesture() {
     }
     else status = "Waiting for the host to commit the placement gesture";
 }
+uint32_t author_color(uint8_t slot){
+    constexpr uint32_t colors[]={0xFF80C8FF,0xFFFFB060,0xFFB79CFF,0xFF70DF98};
+    return C.player_color?C.player_color(slot):colors[slot%4];
+}
 void refresh() {
     View next;
     if (!controller) { cached = next; return; }
@@ -3415,8 +3419,7 @@ void refresh() {
         asset.content_revision=editor::field_revision(doc,id,{editor::Field::Property,editor::kClassAssetResourceProperty});
         asset.editable=key->instance && (key->type==0x2B978C46 || key->type==0x2399BE55 || key->type==0x24682294 || key->type==0x476A98C7);
         for(const auto& [slot,member]:v.members){
-            constexpr uint32_t colors[]={0xFF80C8FF,0xFFFFB060,0xFFB79CFF,0xFF70DF98};
-            AssetOwnerView owner{member.peer,member.name,colors[slot%4],member.peer==v.local};
+            AssetOwnerView owner{member.peer,member.name,author_color(slot),member.peer==v.local};
             for(const auto& scope:member.presence.owned_scopes){
                 if(scope.object==row.class_id){owner.content|=scope.kind==editor::ScopeKind::Content;owner.properties|=scope.kind==editor::ScopeKind::Class;}
                 if(scope.object==id && scope.kind==editor::ScopeKind::Field){
@@ -3429,8 +3432,7 @@ void refresh() {
         next.assets.push_back(std::move(asset));
     }
     for (const auto& [slot, member] : v.members) {
-        constexpr uint32_t colors[]={0xFF80C8FF,0xFFFFB060,0xFFB79CFF,0xFF70DF98};
-        const auto color=colors[slot%4];
+        const auto color=author_color(slot);
         PlayerView player; player.id = slot; player.name = member.name; player.host = slot == 0; player.local = slot == v.local.slot;
         player.ready = member.ready; player.durable_revision = member.coverage.durable_revision; player.applied_revision = member.applied_revision;
         player.selection = member.presence.selected.id ? identity(member.presence.selected) : "No placement selected";

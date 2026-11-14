@@ -19,6 +19,9 @@
 #include "mouse.h"
 #include "coop_ui.h"
 #include "slotfs.h"
+#include "world_path.h"
+#include "net/fixes.h"
+#include "net/utf8.h"
 #include "sui.h"
 #include "fixes.h"
 #include "creations.h"
@@ -65,30 +68,15 @@ struct In {
 
 // A received world comes from another player's machine: only plain relative names inside the
 // save slot, sane sizes (a save slot is a few MB; a Space save with many systems stays far below)
-constexpr uint32_t kMaxWorldBytes = 128u << 20, kMaxWorldFiles = 2048;
+using slotfs::kMaxWorldBytes; // (slotfs.h: 128 MB, 2048 files; the host's collect checks them too, BUG-0847)
+using slotfs::kMaxWorldFiles;
 
-static bool safe_rel(const std::string& rel)
-{
-    if (rel.empty() || rel.size() > 200)
-        return false;
-    size_t start = 0;
-    int depth = 0;
-    while (start <= rel.size()) {
-        size_t end = rel.find_first_of("/\\", start);
-        if (end == std::string::npos)
-            end = rel.size();
-        std::string part = rel.substr(start, end - start);
-        if (part.empty() || part.back() == '.' || part.back() == ' ' || ++depth > 4)
-            return false; // also rejects leading or doubled separators, "." and ".." (Windows drops trailing dots)
-        // a planet file is named as the player typed it ("Bob's World!.spo"): any character a Windows
-        // file name may have, but no ':' (drives, streams), wildcards or control characters
-        for (unsigned char c : part)
-            if (c < 0x20 || c == 0x7F || strchr("<>:\"|?*", c))
-                return false;
-        start = end + 1;
-    }
-    return true;
-}
+// BUG-0785: the names Windows opens as devices (con, nul, com1, lpt1.spo ...) are refused too: CreateFileW opened
+// the device instead of a file of the slot, the write went nowhere (or waited on a serial port) and the world counted
+// as written without that file. `coop.fix world.device_names off`: the check before (world_path.h).
+static bool g_device_names_fix = true;
+COOP_FIX("world.device_names", "BUG-0785", g_device_names_fix, "world: a received file named as a Windows device (con, nul, com1, lpt1.spo) is refused");
+static bool safe_rel(const std::string& rel) { return world_path::safe_rel(rel, g_device_names_fix); }
 
 static std::deque<Out> g_out;
 static std::function<void(uint8_t, const std::vector<const std::vector<uint8_t>*>&)> g_share_hook;
@@ -117,50 +105,6 @@ static std::wstring widen(const std::string& s)
     std::wstring w(n, 0);
     MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), w.data(), n);
     return w;
-}
-
-static bool read_file(const std::wstring& p, std::vector<uint8_t>& out)
-{
-    FILE* f = _wfopen(p.c_str(), L"rb");
-    if (!f)
-        return false;
-    fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    out.resize(n > 0 ? n : 0);
-    bool ok = n <= 0 || fread(out.data(), 1, n, f) == (size_t)n;
-    fclose(f);
-    return ok;
-}
-
-static void collect(const std::wstring& root, const std::wstring& rel, std::vector<File>& out)
-{
-    WIN32_FIND_DATAW fd;
-    HANDLE h = FindFirstFileW((root + L"\\" + rel + L"*").c_str(), &fd);
-    if (h == INVALID_HANDLE_VALUE)
-        return;
-    do {
-        std::wstring n = fd.cFileName;
-        if (n == L"." || n == L"..")
-            continue;
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            collect(root, rel + n + L"\\", out);
-        } else {
-            File f;
-            std::wstring r = rel + n;
-            if (r == L"sporecoop.txt")
-                continue;
-            if (!read_file(root + L"\\" + r, f.data))
-                continue;
-            std::string s = narrow(r);
-            for (auto& c : s)
-                if (c == '\\')
-                    c = '/';
-            f.rel = s;
-            out.push_back(std::move(f));
-        }
-    } while (FindNextFileW(h, &fd));
-    FindClose(h);
 }
 
 // newest Games\Game* folder = the slot the host played/saved last
@@ -217,6 +161,35 @@ static void save_write_watch()
         g_planet_write_at = GetTickCount64();
 }
 
+static void install_intro_hook();
+// coop.menuslot <GameN> (tests, BUG-0676): the galaxy menu shows the planets of another save slot, as when the player
+// picks that slot: the save database moves there and the star manager reads its stars (the menu rebuilds its planets
+// on the message 0x625D27D that sends). Outside the frame (it rebuilds UI).
+static int c_menuslot(void*, int argc, const char* const* argv, SkOut* out)
+{
+    if (argc < 2 || game::mode_id() != modes::kMenu) {
+        H->out_printf(out, "usage: coop.menuslot <GameN> (in the galaxy menu)\n");
+        return 1;
+    }
+    void* db = skg::cdecl_call<void*>(H->sym("Resource::GetDatabaseByID"), 0x4729A47u);
+    uintptr_t starget = H->sym("Simulator::cStarManager::Get"), readstars = H->sym("Simulator::cStarManager::ReadStarsFromSaveDB");
+    if (!db || !starget || !readstars) {
+        H->out_printf(out, "no save database / star manager\n");
+        return 1;
+    }
+    std::u16string dir;
+    for (wchar_t c : games_dir() + L"\\" + widen(argv[1]) + L"\\")
+        dir += (char16_t)(c == L'\\' ? L'/' : c);
+    skg::vcall<bool>(db, 0x1C / 4); // Close
+    bool set = skg::vcall<bool>(db, 0x2C / 4, dir.c_str()); // SetLocation
+    bool open = set && skg::vcall<bool>(db, 0x18 / 4, 3, 6, 0); // Open(ReadWrite, CD::Default, autoOpen=false)
+    if (open)
+        if (void* sm = skg::cdecl_call<void*>(starget))
+            skg::thiscall<void>(readstars, sm);
+    H->out_printf(out, "galaxy menu: slot %s (SetLocation %d, Open %d)\n", argv[1], set, open);
+    return open ? 0 : 1;
+}
+
 void init(const SkHost* host, SkMod* mod, std::function<void(const std::string&)> feed)
 {
     H = host;
@@ -227,6 +200,9 @@ void init(const SkHost* host, SkMod* mod, std::function<void(const std::string&)
                    "queue: shares for these players in one frame, each with a save",
                    c_worldfix, nullptr, SK_CMD_MAIN_THREAD);
     savestrip::set_write_watch(save_write_watch);
+    H->command_add(M, "coop.menuslot", "coop.menuslot <GameN> - tests: the galaxy menu shows that save slot's planets (BUG-0676)",
+                   c_menuslot, nullptr, SK_CMD_OUTSIDE_FRAME);
+    install_intro_hook(); // BUG-0626
 }
 
 static std::wstring current_db_dir(bool lower = true);
@@ -322,10 +298,73 @@ COOP_FIX("world.box_aside", "BUG-0599", g_box_aside_fix, "world: the co-op windo
 // the box's OK button (the check mark, control id 0xFFFFFFF1, 2026-10-23 tree dump)
 constexpr uint32_t kSavedBoxOk = 0xFFFFFFF1;
 
+// BUG-0846: 0x06318E78 is the game's message-box layout, not only the saved box: the pause menu's
+// "Do you want to save your game?" (Don't Save 0x05107B17, Cancel 0x05107B19, Save 0x05107B1A, no OK;
+// lab tree dump 2026-11-12) and the Civ captured-city specialty question (0x05107B19 / 0x05107B1A,
+// from the fork) use it too. The watcher took the first one it saw for the saved box: it posted Enter
+// on the question (the question was answered for the player) and counted the save as written, then
+// stopped watching when the question closed, and the real saved box stayed up with the game paused
+// (coop_saved_box.py --case question). Now a box counts only with its OK and none of the choice
+// buttons, the watch goes on while a saved box is up, and no new save is posted under an old box.
+// Off: any visible 0x06318E78 (0.7.12).
+static bool g_saved_box_fix = true;
+COOP_FIX("world.saved_box_only", "BUG-0846", g_saved_box_fix, "world: only the game saved box (its OK, no choice buttons) is confirmed and counts for a save, not the game's questions of the same window");
+// BUG-0804: the click on the box's OK kept SporeKit's virtual cursor at the OK point for 5 s (the
+// game read the mouse there: a Cell steered to it). Off: the 5 s (0.7.12).
+static bool g_box_cursor_fix = true;
+COOP_FIX("world.saved_box_cursor", "BUG-0804", g_box_cursor_fix, "world: the mod's click on the game saved box gives the mouse back to the player right after the click");
+// BUG-0806: an OK button outside the game window (the box placed past the edge) was clicked every
+// second for the whole watch and never hit; the click command still succeeded, so Enter never came.
+// Now an OK outside the client area is confirmed with Enter (the box is the modal window then).
+// Off: the useless click (0.7.12).
+static bool g_box_offscreen_fix = true;
+COOP_FIX("world.saved_box_offscreen", "BUG-0806", g_box_offscreen_fix, "world: a game saved box whose OK is outside the game window is confirmed with Enter");
+
+static bool g_saved_box_visible; // the last look saw a saved box up (BUG-0846)
+static unsigned g_box_questions; // tests: looks that found a question of the same window, left alone
+static unsigned g_box_enters;    // tests: Enters posted for an OK outside the window (BUG-0806)
+
+static void all_visible(sui::Win w, uint32_t id, std::vector<sui::Win>& out, int depth = 0)
+{
+    if (!w || depth > 12 || !sui::visible(w))
+        return;
+    if (sui::control_id(w) == id) {
+        out.push_back(w);
+        return;
+    }
+    for (sui::Win c : sui::children(w))
+        all_visible(c, id, out, depth + 1);
+}
+
+static bool is_saved_box(sui::Win box)
+{
+    if (!first_visible(box, kSavedBoxOk))
+        return false;
+    for (uint32_t id = 0x05107B17; id <= 0x05107B1A; id++)
+        if (first_visible(box, id))
+            return false;
+    return true;
+}
+
+static sui::Win find_saved_box()
+{
+    if (!g_saved_box_fix)
+        return first_visible(sui::main_window(), kSavedBoxId);
+    std::vector<sui::Win> boxes;
+    all_visible(sui::main_window(), kSavedBoxId, boxes);
+    for (sui::Win b : boxes)
+        if (is_saved_box(b))
+            return b;
+    if (!boxes.empty() && !g_box_questions++)
+        H->log(M, SK_INFO, "world: a question of the game (window 0x06318E78 without its OK) is up: not the saved box, left to the player");
+    return nullptr;
+}
+
 static void box_task(void*)
 {
     g_box_task = false;
-    sui::Win box = first_visible(sui::main_window(), kSavedBoxId);
+    sui::Win box = find_saved_box();
+    g_saved_box_visible = box != nullptr;
     if (!box) {
         if (g_box_seen_at) // confirmed and closed: stop watching (a later Enter hit other menus)
             g_box_watch_until = 0;
@@ -336,6 +375,8 @@ static void box_task(void*)
         H->log(M, SK_INFO, "world: the game saved box is up %llu ms after the save: confirming it",
                (unsigned long long)(now - g_saved_at));
     g_box_seen_at = now;
+    if (g_saved_box_fix) // watched while it is up (a box that outlives the 30 s is still confirmed)
+        g_box_watch_until = std::max(g_box_watch_until, now + 5000);
     if (g_box_hold) {
         g_box_watch_until = now + 30000;
         return;
@@ -349,13 +390,23 @@ static void box_task(void*)
     // 2026-10-23: both 3-4 s after such an Enter).
     if (sui::Win ok = first_visible(box, kSavedBoxOk)) {
         sui::Rect r = sui::screen_rect(ok);
-        char cmd[64];
-        snprintf(cmd, sizeof cmd, "click %d %d", (int)((r.x1 + r.x2) / 2), (int)((r.y1 + r.y2) / 2));
-        mouse::own_click((int)((r.x1 + r.x2) / 2), (int)((r.y1 + r.y2) / 2)); // BUG-0551: not the player's click
-        if (g_box_aside_fix && coop_ui::step_aside((int)((r.x1 + r.x2) / 2), (int)((r.y1 + r.y2) / 2), 0.6))
-            H->log(M, SK_INFO, "world: the co-op window steps aside for the click on the game saved box");
-        if (H->command_exec(cmd, nullptr) == 0)
-            return;
+        int x = (int)((r.x1 + r.x2) / 2), y = (int)((r.y1 + r.y2) / 2);
+        RECT cr{};
+        HWND gw = (HWND)H->game_window();
+        if (g_box_offscreen_fix && gw && GetClientRect(gw, &cr) && (x < cr.left || y < cr.top || x >= cr.right || y >= cr.bottom)) {
+            if (!g_box_enters)
+                H->log(M, SK_WARN, "world: the game saved box's OK (%d, %d) is outside the window (%ld x %ld): confirming it with Enter",
+                       x, y, (long)cr.right, (long)cr.bottom);
+            g_box_enters++;
+        } else {
+            char cmd[64];
+            snprintf(cmd, sizeof cmd, g_box_cursor_fix ? "click %d %d left release" : "click %d %d", x, y);
+            mouse::own_click(x, y); // BUG-0551: not the player's click
+            if (g_box_aside_fix && coop_ui::step_aside(x, y, 0.6))
+                H->log(M, SK_INFO, "world: the co-op window steps aside for the click on the game saved box");
+            if (H->command_exec(cmd, nullptr) == 0)
+                return;
+        }
     }
     if (HWND w = (HWND)H->game_window()) {
         PostMessageW(w, WM_KEYDOWN, VK_RETURN, 0x001C0001);
@@ -408,9 +459,20 @@ static uint64_t newest_write(const std::wstring& dir, int depth = 0)
     return best;
 }
 
+// BUG-0854: an adventure started from the galaxy menu (Galactic Adventures) has no campaign home planet; the
+// campaign save (and the quit message, which saves first) read it as null: the fork's games faulted at
+// cStarManager::GetPlanetRecord+0x2D. The adventure has its own menu to leave it; the mod neither saves nor posts
+// the quit there (shares are not made in adventures, a load from one goes through load_now). Off: allowed (0.7.12).
+static bool g_adventure_fix = true;
+COOP_FIX("world.adventure_saves", "BUG-0854", g_adventure_fix, "world: no campaign save and no quit message from the mod while an adventure is played");
+
 bool save_game(std::string& err)
 {
     using namespace skg;
+    if (g_adventure_fix && game::mode_id() == modes::kScenario) {
+        err = "finish or quit the adventure in its own menu before saving the campaign";
+        return false;
+    }
     // A save written while the game switches modes does not load again: the host's save for a
     // world share went into the game's message queue on the frame its evolution vote ended, the
     // editor opened while it was written, and the save (no cVisiblePlanet, extra rocks and
@@ -419,6 +481,11 @@ bool save_game(std::string& err)
     // or a mode switch is pending.
     if (const char* why = g_save_blocker ? g_save_blocker() : nullptr) {
         err = why;
+        return false;
+    }
+    // BUG-0846: the previous save's box is still up: a new save would take it for its own confirmation
+    if (g_saved_box_fix && g_saved_box_visible) {
+        err = "waiting for the previous save's \"game saved\" box to close";
         return false;
     }
     uintptr_t get = H->sym("App::IMessageManager::Get");
@@ -476,8 +543,16 @@ static bool g_fail_next; // tests (coop.worldfix failnext): the next share_now f
 static std::vector<PendingShare> g_pending;
 extern bool g_share_reset_fix;
 
+static std::map<uint8_t, double> g_share_asked; // BUG-0754: host time a share to the peer was asked for
+double since_share(uint8_t peer)
+{
+    auto it = g_share_asked.find(peer);
+    return it == g_share_asked.end() ? 1e9 : H->time_seconds() - it->second;
+}
+
 bool share_with(uint8_t peer, std::string& err, bool save_first, uint32_t tag)
 {
+    g_share_asked[peer] = H->time_seconds(); // BUG-0754
     if (save_first) {
         for (auto& p : g_pending)
             if (p.peer == peer && p.need_save) {
@@ -529,6 +604,39 @@ COOP_FIX("world.share_one_save", "BUG-0112", g_one_save_fix, "world: one save fo
 // A share save now waits until the stage has been playable for kShareSettle, and a share without
 // its box is sent only when a file of the slot was written after the save was posted (else: save
 // again, up to three times). Off: the old timing (0.7.3.0).
+// BUG-0332: the ground a game renders for the terrain stamps it applies live (the ~56 of a live Creature -> Tribe
+// change: villages, tribe spawn markers) is not the ground a load of the same save gives: every guest (it loads the
+// host's save) had plateaus 0.5-14 m off the host's, and the host's own reload of that save gave exactly the guests'
+// (lab 20261106-043244; docs/re/tribe.md#tribe-terrain-stamps). A rebuild started by the mod gave a third ground. So
+// after a live Creature -> Tribe change the host loads its own share save once it has gone out, as the guests do:
+// every game then has the ground any later load gives. Off: the host keeps its live ground (0.7.8).
+bool g_host_reload_fix = true;
+COOP_FIX("tribe.host_reload", "BUG-0332", g_host_reload_fix,
+         "tribe: after the live Creature -> Tribe change the host loads its own share save, so its ground is the guests'");
+static bool g_reload_due;     // set by the stage change, done after the next share save went out
+static uint32_t g_host_reloads;
+void host_reload_after_share()
+{
+    if (g_host_reload_fix)
+        g_reload_due = true;
+}
+uint32_t host_reloads() { return g_host_reloads; }
+// BUG-0332: from the reload's start until the host plays Tribe again (at most 60 s): the guests are told why the
+// host left (PF_RESYNC), not "left for the main menu"
+static double g_reload_at = -1;
+static bool g_reload_left;
+bool host_reloading()
+{
+    if (g_reload_at < 0)
+        return false;
+    bool tribe = game::mode_id() == modes::kTribe;
+    if (!tribe)
+        g_reload_left = true;
+    if ((g_reload_left && tribe) || H->time_seconds() - g_reload_at > 60.0)
+        g_reload_at = -1;
+    return g_reload_at >= 0;
+}
+
 bool g_share_settle_fix = true;
 COOP_FIX("world.share_settle", "BUG-0276", g_share_settle_fix, "world: a share save waits for a settled stage and is not sent stale");
 // BUG-0276 (reopened, wave 8): the settle clock above was the "playable since" of the via-menu load,
@@ -553,8 +661,11 @@ COOP_FIX("world.busy_slot", "BUG-0035", slotfs::g_busy_fix, "world: a received w
 COOP_FIX("world.slot_match", "BUG-0087", slotfs::g_match_fix, "world: a received world goes only into its own host's co-op slot");
 COOP_FIX("world.write_check", "BUG-0105", slotfs::g_write_fix, "world: a world whose files could not be written is not loaded");
 COOP_FIX("world.slot_fallback", "BUG-0254", slotfs::g_fallback_fix, "world: a slot that cannot be replaced (a file in use) gives way to another slot");
+COOP_FIX("world.staged_move", "BUG-0848", slotfs::g_staged_move_fix, "world: the received world's final folder move is tried again for 1.5 s when a file in it is held for a moment (Windows error 5 / 32)");
+COOP_FIX("world.share_complete", "BUG-0847", slotfs::g_collect_fix, "world: a share whose save files cannot all be read completely fails and is tried again (off: the unreadable files are left out)");
 COOP_FIX("world.tmp_cleanup", "BUG-0254", slotfs::g_cleanup_fix, "world: leftovers of interrupted world writes are tidied (under a mutex)");
 static unsigned g_share_saves;         // saves posted for shares (tests)
+static unsigned g_collect_failures;    // tests (BUG-0847): shares refused because a save file could not be read
 // BUG-0284: the game's own reset for the galaxy menu (0xB32C30) clears the player's record
 // (SpacePlayerData: empire id, cached cEmpire*, colonies) before it reads the slot's stars. A game
 // fault while the stage was left (a tribe citizen's WalkTo, handled by the game's own exception
@@ -630,7 +741,16 @@ bool share_now(uint8_t peer, std::string& err)
     }
     Out o;
     o.peer = peer;
-    collect(slot, L"", o.files);
+    // BUG-0847: a file that cannot be read completely (Windows: held by a scanner, or still being
+    // written) fails the share; the caller tries again (coop.cpp, BUG-0231) instead of the guest
+    // loading the slot without it
+    std::string cerr;
+    if (!slotfs::collect(slot, o.files, cerr)) {
+        H->log(M, SK_WARN, "world: not sharing %s with player %u: %s", narrow(slot).c_str(), peer, cerr.c_str());
+        g_collect_failures++;
+        err = cerr;
+        return false;
+    }
     if (o.files.empty()) {
         err = "save folder is empty";
         return false;
@@ -740,7 +860,13 @@ static bool end_menu_intro(bool any, const char* where)
     uint32_t id = *(uint32_t*)(cm + kCineId);
     if (id != kMenuIntroId && !any)
         return false;
-    H->log(M, SK_WARN, "world: cinematic %08X still playing %s: ended it", id, where);
+    // BUG-0654: the menu's own intro ended in the menu before a load is the designed step (about 1600 WARN lines
+    // in two days of lab runs, every one of them this case; "in a stage" stopped with BUG-0626): an INFO line.
+    // Any other cinematic, or the intro found in a stage, stays a WARN.
+    if (id == kMenuIntroId && game::mode_id() == modes::kMenu)
+        H->log(M, SK_INFO, "world: the galaxy menu intro (%08X) ended %s, in the menu (BUG-0654)", id, where);
+    else
+        H->log(M, SK_WARN, "world: cinematic %08X still playing %s: ended it", id, where);
     skg::thiscall<void>(end, cm);
     g_intros_ended++;
     return true;
@@ -764,6 +890,110 @@ static void menu_intro_tick()
         return;
     g_intro_seen = -1; // once per sighting
     H->run_outside_frame([](void*) { end_menu_intro(false, "in a stage"); }, nullptr);
+}
+
+// BUG-0626 (class of BUG-0607): the menu's intro starts ~16 s after the galaxy menu came up even when a load left
+// the menu before (docs/re/space.md 7.9, docs/re/tribe.md#tribe-intro-camera): a host that loaded a Tribe save
+// within 16 s had it start in the stage, here while the share's save and its "game saved" box ran; ended there (a
+// second later by menu_intro_tick, or in the same call), the host's view stayed at the camera of that moment: the
+// minimap and real clicks did nothing for the whole session (play_tribe "host: the minimap takes the view", 3 of 12
+// runs whose intro came before the box, 0 of 48 with the other order; tribe_intro_camera 20261106-124414: ending it
+// in the same call was not enough). Now the intro does not start outside the galaxy menu: it belongs to the menu,
+// and nothing of a stage waits for it. Off: it plays and menu_intro_tick ends it after 1 s (0.7.8).
+static bool g_intro_at_once_fix = true;
+COOP_FIX("world.intro_at_once", "BUG-0626", g_intro_at_once_fix,
+         "world: the galaxy menu intro does not start after a load (outside the menu), so it never takes a stage's camera");
+using PlayCinematicFn = int(SK_THISCALL*)(void*, const char*, int, int, int, int, int);
+static PlayCinematicFn o_PlayCinematic;
+static uint32_t g_intros_at_once;
+static int SK_THISCALL h_PlayCinematic(void* mgr, const char* name, int a, int b, int c, int d, int e)
+{
+    if (g_intro_at_once_fix && name && !_stricmp(name, "GGE_intro") && game::mode_id() != modes::kMenu) {
+        g_intros_at_once++;
+        H->log(M, SK_INFO, "world: the galaxy menu intro would start outside the menu (mode %08X): not started (BUG-0626)",
+               game::mode_id());
+        return 0; // as PlayCinematic without a cinematic (its caller, GalaxyGameEntry_IntroMessages, ignores it)
+    }
+    // BUG-0607: when and in which mode it starts (the timer fires ~15.85 s after the menu came up; after a load
+    // requested just before, in the next frame, already in the Loading mode 01654C08)
+    if (name && !_stricmp(name, "GGE_intro"))
+        H->log(M, SK_INFO, "world: the galaxy menu intro starts (mode %08X)", game::mode_id());
+    return o_PlayCinematic(mgr, name, a, b, c, d, e);
+}
+// tests (BUG-0167, coop_tribe_camera_null.py): the menu intro's timer firing in the first frames of a stage, made on
+// purpose (`coop.introstage`): the natural race needs a join ~12.5 s after the guest's menu came up, which a slow lane
+// misses (its console answers later than that). Started as the menu's handler starts it, through the BUG-0626 hook
+// (world.intro_at_once on: not started), in the first tick the game is in a stage after the next load.
+static bool g_intro_in_stage;
+void arm_intro_in_stage() { g_intro_in_stage = true; }
+static void intro_in_stage_tick()
+{
+    if (!g_intro_in_stage || !in_stage(game::mode_id()))
+        return;
+    g_intro_in_stage = false;
+    uintptr_t get = H->sym("Simulator::cCinematicManager::Get");
+    void* cm = get ? skg::cdecl_call<void*>(get) : nullptr;
+    if (cm && o_PlayCinematic) {
+        H->log(M, SK_INFO, "world: tests: the galaxy menu intro started in the first tick of the stage (mode %08X, BUG-0167)",
+               game::mode_id());
+        h_PlayCinematic(cm, "GGE_intro", 1, 0, 0, 0, 0);
+    }
+}
+
+// BUG-0938: the galaxy menu shows its splash (logos, then the legal lines with "Online Interactions Not Rated by the
+// ESRB") step by step from a table in GalaxyGameEntry (+0x204 + 12 * step: window id, delay, time shown; 0xDEAC80 shows
+// a step's window and hides it when its time is up, 0xDEA510 ends the splash). That update runs only in the menu: a
+// player who joins from the menu while a step is up (the legal lines stand 4.1 s) takes it into the stage, where it
+// stays over the play until the next visit of the menu (a guest's Civ play in the 0.7.12 final check). In a stage the
+// splash's windows are hidden as their own step's end hides them. Off (`coop.fix world.menu_splash off`): as 0.7.12.
+static bool g_splash_fix = true;
+COOP_FIX("world.menu_splash", "BUG-0938", g_splash_fix,
+         "world: the galaxy menu's logos and legal lines left up by a join from the menu are hidden in the stage");
+static uint32_t g_splash_hidden;
+static double g_splash_checked = -100;
+constexpr uint32_t kSplashGroups[2] = {0x06776FE0u, 0x06776FE1u}; // (0xDEA510 hides these two at the splash's end)
+
+static void hide_menu_splash(void*)
+{
+    uintptr_t gp = H->sym("SporeCoop::GalaxyGameEntry_ptr");
+    uint8_t* gge = gp && !IsBadReadPtr((void*)gp, 4) ? *(uint8_t**)gp : nullptr;
+    if (!gge || IsBadReadPtr(gge + 0x204, 6 * 12) || !in_stage(game::mode_id()))
+        return;
+    uint32_t ids[8];
+    for (int k = 0; k < 6; k++)
+        ids[k] = *(uint32_t*)(gge + 0x204 + 12 * k);
+    ids[6] = kSplashGroups[0];
+    ids[7] = kSplashGroups[1];
+    sui::Win root = sui::main_window();
+    for (uint32_t id : ids) {
+        sui::Win w = id ? sui::find(root, id) : nullptr;
+        if (!w || !sui::visible(w))
+            continue;
+        bool shown = true; // drawn: every parent visible too
+        for (sui::Win p = sui::parent(w); p && shown; p = sui::parent(p))
+            shown = sui::visible(p);
+        if (!shown)
+            continue;
+        sui::set_visible(w, false);
+        g_splash_hidden++;
+        H->log(M, SK_INFO, "world: the galaxy menu's splash window %08X was up in the stage (mode %08X): hidden (BUG-0938, %u)",
+               id, game::mode_id(), g_splash_hidden);
+    }
+}
+
+static void menu_splash_tick()
+{
+    double now = H->time_seconds();
+    if (!g_splash_fix || !in_stage(game::mode_id()) || now - g_splash_checked < 1.0)
+        return;
+    g_splash_checked = now;
+    H->run_outside_frame(hide_menu_splash, nullptr); // (UI: outside the frame)
+}
+
+static void install_intro_hook()
+{
+    if (uintptr_t a = H->sym("Simulator::cCinematicManager::PlayCinematic"))
+        H->hook_create(M, (void*)a, (void*)h_PlayCinematic, (void**)&o_PlayCinematic);
 }
 
 // coop_ui.cpp: the galaxy menu plays its intro right now (its input lock drops every click on the
@@ -804,6 +1034,12 @@ bool prepare_editor_entry(std::function<bool()> current, std::string& error)
     return world_editor_entry::prepare(owned,observe,finish,error);
 }
 
+uint32_t cinematic_id()
+{
+    uint8_t* cm = (uint8_t*)cinematic_mgr();
+    return cm && *(uint32_t*)(cm + kCineState) ? *(uint32_t*)(cm + kCineId) : 0;
+}
+
 bool time_paused()
 {
     static uintptr_t get = H->sym("Simulator::cGameTimeManager::Get");
@@ -823,8 +1059,12 @@ bool end_cinematic(const char* where)
 }
 
 // the game's quit message: saves and leaves any stage for the galaxy menu (in space the planet first)
-static bool post_quit_to_menu(std::string& err)
+bool post_quit_to_menu(std::string& err)
 {
+    if (g_adventure_fix && game::mode_id() == modes::kScenario) { // BUG-0854
+        err = "leave the adventure through its own menu";
+        return false;
+    }
     uintptr_t get = H->sym("App::IMessageManager::Get");
     void* mm = get ? skg::cdecl_call<void*>(get) : nullptr;
     if (!mm) {
@@ -990,16 +1230,20 @@ bool load_queued() { return g_editor_load_fix && (g_via_menu.on || g_deferred.on
 
 void guest_tick()
 {
+    intro_in_stage_tick();
     via_menu_tick();
     menu_intro_tick();
+    menu_splash_tick();
     deferred_tick();
     box_tick();
 }
 
 void tick(net::Session& s)
 {
+    intro_in_stage_tick();
     via_menu_tick();
     menu_intro_tick();
+    menu_splash_tick();
     deferred_tick();
     box_tick();
     if (g_drop_peer_fix) {
@@ -1159,6 +1403,21 @@ void tick(net::Session& s)
         g_pending.erase(g_pending.begin() + i); // p is invalid from here
         if (failed && g_share_failed)
             g_share_failed(fpeer, ftag, missing); // BUG-0231: coop.cpp retries
+        if (g_reload_due && !failed && g_pending.empty()) { // BUG-0332: the save has gone out to every guest
+            g_reload_due = false;
+            std::string planet, lerr;
+            bool miss = false;
+            std::wstring slot = game::mode_id() == modes::kTribe ? current_slot(planet, miss) : std::wstring();
+            if (!slot.empty() && !planet.empty() && !miss && load_slot(slot, planet, lerr, std::string())) {
+                g_host_reloads++;
+                g_reload_at = H->time_seconds();
+                g_reload_left = false;
+                H->log(M, SK_INFO, "world: the host loads its own share save of the new Tribe stage (%s), as the guests do: "
+                       "one ground for everybody (BUG-0332)", planet.c_str());
+            } else {
+                H->log(M, SK_WARN, "world: the host could not load its own Tribe share save (%s)", lerr.c_str());
+            }
+        }
     }
     for (auto& o : g_out) {
         if (o.done)
@@ -1407,6 +1666,17 @@ static void finish(const std::string& host_name)
         g_in = In{};
         return;
     }
+    // BUG-0847: every file of the offer, in full (the checksum covers only what arrived)
+    uint64_t got = 0;
+    for (auto& [i, f] : g_in.files)
+        got += f.data.size();
+    if (slotfs::g_collect_fix && (g_in.files.size() != g_in.offer.file_count || got != g_in.offer.total_size)) {
+        H->log(M, SK_WARN, "world: the world from %s is incomplete: %u of %u files, %llu of %u bytes", host_name.c_str(),
+               (unsigned)g_in.files.size(), (unsigned)g_in.offer.file_count, (unsigned long long)got, g_in.offer.total_size);
+        g_feed("world transfer failed: the world is incomplete");
+        g_in = In{};
+        return;
+    }
     std::vector<std::string> rels;
     for (auto& [i, f] : g_in.files) {
         if (!safe_rel(f.rel)) { // checked on arrival already; never write outside the slot
@@ -1494,14 +1764,18 @@ static void finish(const std::string& host_name)
 void on_message(uint8_t type, net::Reader& r, const std::string& host_name)
 {
     switch (type) {
-    case net::MSG_WORLD_OFFER:
+    case net::MSG_WORLD_OFFER: {
         g_in = In{};
-        if (g_in.offer.read(r) && g_in.offer.total_size <= kMaxWorldBytes && g_in.offer.file_count <= kMaxWorldFiles) {
+        bool got = g_in.offer.read(r);
+        if (got && net::g_fix.name_clean) // BUG-0774: the planet name goes into logs and the slot marker
+            g_in.offer.planet = utf8::clean_text(g_in.offer.planet, 120);
+        if (got && g_in.offer.total_size <= kMaxWorldBytes && g_in.offer.file_count <= kMaxWorldFiles) {
             g_in.active = true;
             g_feed("receiving world from " + host_name + " (" + std::to_string(g_in.offer.total_size / 1024) +
                    " KB)");
         }
         break;
+    }
     case net::MSG_WORLD_FILE: {
         net::WorldFile wf;
         if (g_in.active && wf.read(r)) {
@@ -1510,8 +1784,8 @@ void on_message(uint8_t type, net::Reader& r, const std::string& host_name)
                 if (i != wf.index)
                     sum += f.data.size();
             if (!safe_rel(wf.path) || wf.index >= g_in.offer.file_count || sum > g_in.offer.total_size) {
-                H->log(M, SK_WARN, "world: rejected file %u '%s' (%u bytes) from %s", wf.index, wf.path.c_str(),
-                       wf.size, host_name.c_str());
+                H->log(M, SK_WARN, "world: rejected file %u '%s' (%u bytes) from %s", wf.index,
+                       utf8::clean_text(wf.path, 200).c_str(), wf.size, host_name.c_str()); // BUG-0774: a refused name may hold anything
                 g_feed("the world from " + host_name + " was rejected (bad file name or size)");
                 g_in = In{};
                 break;
@@ -1569,6 +1843,12 @@ std::string status()
     s += b;
     snprintf(b, sizeof b, "shares saved again (written on a planet) %u\n", g_planet_saves); // tests (BUG-0357)
     s += b;
+    snprintf(b, sizeof b, "saved box: questions left alone %u, Enters for an OK outside the window %u\n", g_box_questions,
+             g_box_enters); // tests (BUG-0846, BUG-0806)
+    s += b;
+    snprintf(b, sizeof b, "shares refused (a save file unreadable) %u, staged moves tried again %u\n", g_collect_failures,
+             slotfs::g_move_retries); // tests (BUG-0847, BUG-0848)
+    s += b;
     snprintf(b, sizeof b, "stale menu player cleared %u\n", g_menu_player_cleared); // tests (BUG-0284)
     s += b;
     if (g_in.active) {
@@ -1581,8 +1861,8 @@ std::string status()
                  *(uint32_t*)(cm + kCineId) == kMenuIntroId ? " (menu intro)" : "");
         s += b;
     }
-    if (g_intros_ended) {
-        snprintf(b, sizeof b, "menu intro ended %u\n", g_intros_ended);
+    if (g_intros_ended || g_intros_at_once) {
+        snprintf(b, sizeof b, "menu intro ended %u (not started %u), menu splash hidden %u\n", g_intros_ended, g_intros_at_once, g_splash_hidden);
         s += b;
     }
     return s;

@@ -1,7 +1,7 @@
 ---
 id: BUG-0440
 title: Tests: chaos_tribe fails on the monitor's proxies gate (one Tribe NPC proxy over 3 m off the host's NPC)
-status: open
+status: not-reproduced
 kind: test
 stage: Tribe
 reported: 2026-11-01
@@ -9,12 +9,12 @@ source: fix/w34-ability-pop smoke (lab 20261101-173425)
 role: guest
 versions: 0.7.3.3+
 fixed_in:
-branch:
-commits:
-tests: chaos_tribe
+branch: fix/w46-k3-bodies
+commits: aed2f801
+tests: chaos_tribe, play_tribe
 signature:
 docs:
-related: BUG-0402, BUG-0503
+related: BUG-0402, BUG-0503, BUG-0425, BUG-0610
 ---
 
 ## Report
@@ -35,10 +35,10 @@ The same lines are in the pre-merge branch runs of 0.7.7 (fix/w43-detector2 2026
 20261104-210354: 5, fix/w43-transitions 20261104-232331: 8) and 0.7.4-0.7.6 runs (1 each): not a 0.7.7 regression.
 
 ## Fix
-See BUG-0503 (npc.proxy_slow_frames).
+No fix: the gate failure is not reproduced on 0.7.9. Diagnostics added (aed2f801): the audit line now has a second line with the driving's own view (its walk error, held, place lost, teleports, walked) and the nearest other proxy.
 
 ## Verification
-no-fail-run: covered by BUG-0503 (npc_walk_slow FAIL 20261104-232034 / PASS 20261104-232210); chaos_tribe itself not rerun.
+no-fail-run: not reproduced on 0.7.10 code (rel/0.7.10 + fix/w46-k3-bodies, drive.lead_keep, tribe.mirror_keep, drive.lead_late_npc), the gate never fired and no audit line had a stuck proxy: chaos_tribe out/lab/20261107-101948 (3 of 3, lane 6), at 30 fps over SPORE_NET=player out/lab/20261107-103414 (2 of 2, lane 7) and out/lab/20261107-112617-2 (2 of 2, lane 7); every one of the 81 `proxy_stuck=` audit lines of those runs reads 0. Earlier (0.7.9): 8 runs of fix/w45-remote-bodies-2 (below). The single cases there (a proxy the guest's game moves back next to a herd mate, `place lost`) are BUG-0386's class: tribe.mirror_keep gives the member mirrors the proxies' keep_lost rule, which the proxies have had since BUG-0361.
 
 ## History
 - 2026-11-01: opened (fix/w34-ability-pop).
@@ -56,3 +56,13 @@ no-fail-run: covered by BUG-0503 (npc_walk_slow FAIL 20261104-232034 / PASS 2026
   would not touch these cases). Kind: desync (the game's walk of a proxy placed on the host's path not keeping up),
   not a test fault. Not analysed further: why proxy 624 moved at half the host's speed while placed (an obstacle on
   the guest's ground, the placing not kept: `coop.npctrack` rows of such a proxy are the next step). Open.
+- 2026-11-06 (fix/w45-remote-bodies, M1): the monitor's audit compares a proxy with its OWN target (the host state
+  the guest received), so the common 0.2 s lag of the target (BUG-0425) is not what it measures: this ticket is a
+  proxy falling behind its target (the second case of the 2026-11-05 analysis, half the host's speed while placed),
+  i.e. the guest's game not keeping the placing (a different mechanism from the lag; inferred: a guest-only obstacle
+  or the proxies' collision, as BUG-0386). With drive.lead (walk_place's error closed in ~0.25 s, catch_prop) no
+  `proxy_stuck` line in play_tribe / play_creature / play_civ of out/lab/20261106-021152 (0.7.8's runs on
+  rel/0.7.8: 2 lines) and no stretch over 2 m longer than 0.46 s in 9 body_trail Tribe runs. A host jump (21 m, the
+  host's own game) is seen and is BUG-0610. Not marked fixed: chaos_tribe's gate not rerun often enough to say.
+- 2026-11-06 (fix/w45-remote-bodies-2, M2): 8 chaos_tribe runs (6 with the lead, 2 without), no gate failure; 2 single audit lines with the new diagnostics (an offset the guest's game keeps next to a herd mate); closed not-reproduced, the blocker named.
+- 2026-11-07 (fix/w46-k3-bodies, K3): one more attempt on the current build, with a low fps and bad network variant (30 fps, SPORE_NET=player): 7 of 7 chaos_tribe pass, no stuck proxy in any audit line. Stays not-reproduced, closed with these runs.

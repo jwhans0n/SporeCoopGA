@@ -102,7 +102,7 @@ class PreviewPackageTests(unittest.TestCase):
         self.assertIn('https://example.com/evidence',
                       (distribution / 'EDITOR-PREVIEW9-VALIDATION.md').read_text())
         readme = (distribution / 'README.txt').read_text()
-        self.assertIn('protocol 28', readme)
+        self.assertIn('protocol 29', readme)
         self.assertIn('Native\nacceptance of these additions is pending', readme)
         self.assertNotIn('Terrain, nested creation editors', readme)
         self.assertEqual((self.kit / 'SporebinEP1/SporeApp.exe').read_bytes(), self.original_exe)

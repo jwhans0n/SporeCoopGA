@@ -1,0 +1,32 @@
+name: Publish reviewed fork issues
+on:
+  push:
+    branches: [sync/upstream-0.7.13-editor-main]
+    paths:
+      - docs/reports/UPSTREAM-0.7.13-ISSUES.json
+      - tools/publish_fork_issues.py
+      - .github/workflows/fork-issues.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: reviewed-fork-issues
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'jwhans0n/SporeCoopGA'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: python3 tools/publish_fork_issues.py docs/reports/UPSTREAM-0.7.13-ISSUES.json --publish --output issue-publication.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fork-issue-publication
+          path: issue-publication.json

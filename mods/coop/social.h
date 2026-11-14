@@ -26,6 +26,7 @@ struct Ctx {
     std::function<void*(uint8_t id)> puppet_of;        // host: the creature of player `id`
     std::function<bool()> blocked;                     // a menu / the co-op window takes the keys
     std::function<float(float)> pace;                  // host: a gain's share of the party total (BUG-0510)
+    std::function<bool()> elsewhere;                   // guest: plays another world of the host's stage (BUG-0420)
 };
 
 void init(const SkHost* host, SkMod* mod, const Ctx& ctx);
@@ -41,6 +42,7 @@ std::string status();
 bool drop_social_hit(uint16_t proxy_id);
 std::string species_dump(); // coop.social species (tests)
 extern unsigned g_stage_msg_win; // 0x60B4123 (a social win) seen by the creature-stage handler (tests)
+std::string games_dump(); // coop.social games (tests, BUG-0831): the host's social games, their prompts' animations
 std::string meter_dump(); // coop.social meter (tests, BUG-0179): the game's social meter object
 bool debug_answer(uint16_t id, uint32_t type); // coop.social answer <npc id> <hex type> (tests, BUG-0525)
 std::string abilities_dump(int id); // coop.social abil <npc id | -1> (tests, BUG-0525): abilities and prompt candidates
@@ -48,6 +50,7 @@ std::string relations_dump(); // coop.social rel (tests, BUG-0462): each NPC's r
 bool debug_send_goal(uint32_t crt_instance, int outcome, float dna); // guest, tests: a goal card's reward (K_GOAL)
 extern bool g_goal_owe_fix; // BUG-0205: a K_GOAL without a host creature waits for it (false: dropped)
 bool debug_set_record(uint32_t crt_instance, int relation, uint32_t impressed); // host, tests: a record of the table
+bool debug_event(uint32_t crt_instance, int event); // host, tests (BUG-0168): the game's ApplyEvent(event, species, null)
 // guest: a social action (ability slot 0-3) on proxy #id as if done in game; slot -1 toggles the
 // stimulus log
 bool debug_social(uint16_t npc_id, int slot);

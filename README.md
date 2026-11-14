@@ -1,8 +1,7 @@
 <p align="center">
 
-> Editor testing candidate: `0.7.8.0-ga-editor-preview.14`, protocol 28, based on upstream `v0.7.8`.
-> Focused creation-return checks are in the [preview 14 report](docs/reports/EDITOR-PREVIEW14-VALIDATION.md).
-> Upstream-wide smoke and destination promotion remain pending; see the [synchronization report](docs/reports/UPSTREAM-0.7.8-SYNC.md).
+> Editor testing candidate: `0.7.13.0-ga-editor-preview.15`, protocol 29, based on upstream `v0.7.13`.
+> Integration status and main-promotion gates are in the [0.7.13 synchronization report](docs/reports/UPSTREAM-0.7.13-SYNC.md).
 
   <img src="docs/media/banner.svg" alt="SporeCoopGA - Co-op Galactic Adventures for Spore." width="100%">
 </p>
@@ -41,12 +40,14 @@ using protocol **15**. Galactic Adventures support remains **experimental**.
 - [Development](#development)
 - [Credits](#credits)
 
-The separately installed shared Adventure Editor preview 9 (C49) uses protocol
-23 and remains under validation. The current upstream-integration source is an
-**uninstalled protocol 24 candidate**, with native acceptance pending. It does
-not update that installed preview or the published protocol 15 gameplay release.
-See the [editor preview 9 report](docs/reports/EDITOR-PREVIEW9-VALIDATION.md) and
-[protocol scope](docs/04-netcode.md#netcode-protocol-scope) for the separate limits.
+The shared Adventure Editor source includes the preview 14 fixes and upstream
+0.7.13. The consolidated testing candidate is **preview 15, protocol 29**;
+all participants must use a matching build. It supports independent act views,
+shared asset and captain settings, terrain editing and native creation sessions.
+Native smoke and main promotion remain pending as recorded in the
+[synchronization report](docs/reports/UPSTREAM-0.7.13-SYNC.md).
+The published protocol 15 release described below remains a separate build.
+Source synchronization does not change an installed preview.
 
 ## Current GA features
 
@@ -369,3 +370,8 @@ Galactic Adventures support. Its source version is `0.7.8.0`, protocol27.
 It is not a published release or an installed game update. Every party member
 needs the same fork build. The original and verified 4 GB GOG 2024 executable
 variants are accepted. See the synchronization validation report for merge gates.
+
+## Build the fork
+<a id="building-from-source"></a>
+
+Use the pinned llvm-mingw toolchain with `make` and run `make test`. See [installation and build instructions](docs/INSTALL.md).

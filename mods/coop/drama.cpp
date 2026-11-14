@@ -36,6 +36,26 @@ static void* g_last_event[9];
 
 static bool is_guest() { return S && S->role() == net::Role::Client && S->connected(); }
 
+// BUG-0736 (class BUG-0418): a guest's Summon Flock (ability 0x33 -> DramaManager_StartKind(8), cSummonCreatureEvent
+// start 0xD50EA0: a herd of the event's species 70 m from the avatar, its members into the local pack, then made to
+// follow the avatar) was made in the guest's own game only: creatures the host's world never had (the host never saw
+// them; on the guest they were AI-less creatures of its own game). Now the guest's game does not start the event; it
+// asks the host (player_rules K_FLOCK), whose game starts the same event with the guest's puppet as the avatar
+// (cGameNounManager +0x54, as the AI swap): the flock comes to the guest's creature and joins the party's pack (the
+// host's: what the guests show as NF_PACK allies). `coop.fix creature.flock_relay off`: the guest's own event (0.7.10).
+bool g_flock_relay = true;
+COOP_FIX("creature.flock_relay", "BUG-0736", g_flock_relay, "creature: a guest's Summon Flock is made by the host's game next to the guest's creature (both games show it)");
+static unsigned g_flock_relayed, g_flock_refused;
+// BUG-0800: the summon event started for a puppet was remembered for good (g_flock_event / g_flock_puppet below): the
+// Drama Manager builds its events once and runs the same object again, so the host's own later Summon Flock ran its
+// update with the guest's puppet as the avatar and its flock followed the guest. Now the event is forgotten when the
+// game starts it again without our swap (the host's own summon) and when its update finds it inactive (+0xC 0).
+// `coop.fix creature.flock_forget off`: kept for good (0.7.11).
+static bool g_flock_forget = true;
+COOP_FIX("creature.flock_forget", "BUG-0800", g_flock_forget, "creature: the host's own Summon Flock after a guest's follows the host (the guest's summon event is forgotten)");
+static bool g_in_summon_for = false; // summon_for is starting the event for a puppet now
+static unsigned g_flock_forgotten;
+
 // W2 (BUG-0564): in Tribe a guest's own game started a creature attack on a village (kind 7) of its own world:
 // once the whole-planet re-alignment had removed villages the host's world has not, the event's start faulted
 // on a null (0xD521BA, data 0x120, lab 20261104-211318). The host's world has its own attacks (its members and
@@ -44,6 +64,16 @@ static bool is_guest() { return S && S->role() == net::Role::Client && S->connec
 static bool g_guest_attacks_fix = true;
 COOP_FIX("tribe.guest_attacks", "BUG-0564", g_guest_attacks_fix,
          "tribe: a guest's own game starts no creature attack on a village (Drama Manager event of the host's world)");
+
+static void* g_flock_event;  // the summon event started for a puppet (host)
+static void* g_flock_puppet; // that puppet
+static void forget_flock(const char* why)
+{
+    g_flock_event = nullptr;
+    g_flock_puppet = nullptr;
+    g_flock_forgotten++;
+    H->log(M, SK_INFO, "drama: the summon event of a partner's creature is over: forgotten (%s, BUG-0800)", why);
+}
 
 // SporeCoop::DramaManager_StartEvent: thiscall(cDramaManager*, event*, int) ret 8: marks the event
 // active (+0xC = 1), counts down its uses (+0x18) and calls its start (vt+0x30); the kind is +0x14
@@ -55,11 +85,18 @@ static void SK_THISCALL h_Start(void* mgr, void* ev, int arg)
     if (kind < 9)
         g_last_event[kind] = ev;
     bool tribe_attack = g_guest_attacks_fix && kind == 7 && game::mode_id() == modes::kTribe;
+    if (g_flock_relay && kind == 8 && is_guest() && game::in_creature_stage()) {
+        g_flock_refused++; // BUG-0736: the host makes it (player_rules sent the ability)
+        return;
+    }
     if (((g_guest_events_fix && kind < 9 && (g_mask >> kind & 1)) || tribe_attack) && is_guest()) {
         if (g_refused[kind]++ < 5)
             H->log(M, SK_INFO, "drama: this game would start its own %s event: not on a guest, the host's world has "
                                "its own (creature.guest_events)", kKind[kind]);
         return; // stays inactive: the manager tries again after the event's next wait
+    }
+    if (kind == 8 && g_flock_forget && !g_in_summon_for && ev == g_flock_event) { // BUG-0800: the host's own summon
+        forget_flock("the game starts it for its own avatar");
     }
     if (kind < 9) {
         g_started[kind]++;
@@ -69,6 +106,34 @@ static void SK_THISCALL h_Start(void* mgr, void* ev, int arg)
 }
 
 static uintptr_t a_Get, a_StartKind;
+// BUG-0736: the summon event's update (SporeCoop::SummonEvent_Update 0xD512A0, thiscall(event, u32) ret 4, slot of the
+// event vtable at .rdata 0x147B3D8) posts "follow" (BT_PostStimulus(0, 4, FLT_MAX, avatar)) to each member every frame
+// and releases members 50 / 100 m from the avatar (cGameNounManager +0x54). An event started for a partner's puppet
+// runs its update with that puppet as the avatar, so its flock follows the partner.
+using SummonUpdate_t = void(SK_THISCALL*)(void*, uint32_t);
+static SummonUpdate_t o_SummonUpdate;
+static unsigned g_flock_updates;
+static void SK_THISCALL h_SummonUpdate(void* ev, uint32_t a)
+{
+    if (g_flock_forget && ev && ev == g_flock_event && !((const uint8_t*)ev)[0xC])
+        forget_flock("its update found it inactive"); // BUG-0800
+    void* nm = ev && ev == g_flock_event && g_flock_relay ? game::noun_manager() : nullptr;
+    void* pup = g_flock_puppet;
+    if (!nm || !pup || !game::is_puppet(pup) || !game::object_alive(pup)) {
+        o_SummonUpdate(ev, a);
+        return;
+    }
+    void*& av = skg::field<void*>(nm, game::kNounAvatarOff);
+    void* real = av;
+    // (BUG-0800: in the swap ledger, so a fault inside the update gives the avatar back, BUG-0110 / BUG-0882)
+    size_t mark = game::lend_ledger_on() ? game::swap_open(game::swap_undo_u32, &av, (uintptr_t)real, "flock avatar") : 0;
+    av = pup;
+    o_SummonUpdate(ev, a);
+    av = real;
+    if (game::lend_ledger_on())
+        game::swap_close(mark);
+    g_flock_updates++;
+}
 
 void init(const SkHost* host, SkMod* mod, const net::Session* sess)
 {
@@ -80,8 +145,46 @@ void init(const SkHost* host, SkMod* mod, const net::Session* sess)
     a_StartKind = H->sym("SporeCoop::DramaManager_StartKind");
     if (a)
         H->hook_create(M, (void*)a, (void*)h_Start, (void**)&o_Start);
+    if (uintptr_t u = H->sym("SporeCoop::SummonEvent_Update"))
+        H->hook_create(M, (void*)u, (void*)h_SummonUpdate, (void**)&o_SummonUpdate);
     else
         H->log(M, SK_WARN, "drama: SporeCoop::DramaManager_StartEvent missing: a guest's own world events are not held back");
+}
+
+bool summon_for(void* puppet)
+{
+    void* mgr = a_Get ? skg::cdecl_call<void*>(a_Get) : nullptr;
+    void* nm = game::noun_manager();
+    if (!mgr || !a_StartKind || !nm || !puppet || !game::is_puppet(puppet) || is_guest())
+        return false;
+    void*& av = skg::field<void*>(nm, game::kNounAvatarOff);
+    void* real = av;
+    if (!real)
+        return false;
+    // (a puppet of the partner's own creature has no archetype tuning: it borrows the avatar's, as in the AI swap)
+    void*& tun = skg::field<void*>(puppet, 0xE84);
+    void* lent = !tun ? skg::field<void*>(real, 0xE84) : nullptr;
+    if (lent)
+        tun = lent;
+    unsigned before = g_started[8];
+    size_t mark = game::lend_ledger_on() ? game::swap_open(game::swap_undo_u32, &av, (uintptr_t)real, "flock avatar") : 0;
+    av = puppet;
+    g_in_summon_for = true;
+    skg::thiscall<void>(a_StartKind, mgr, 8, 0);
+    g_in_summon_for = false;
+    av = real;
+    if (game::lend_ledger_on())
+        game::swap_close(mark);
+    if (lent && tun == lent)
+        tun = nullptr;
+    bool ok = g_started[8] != before;
+    g_flock_relayed += ok;
+    if (ok) {
+        g_flock_event = g_last_event[8];
+        g_flock_puppet = puppet;
+    }
+    H->log(M, SK_INFO, "drama: summon event for a partner's creature: %s", ok ? "started" : "none idle");
+    return ok;
 }
 
 std::string debug(const std::vector<std::string>& a)
@@ -98,8 +201,33 @@ std::string debug(const std::vector<std::string>& a)
         skg::thiscall<void>(a_StartKind, mgr, (int)kind, 0);
     }
     std::string out;
-    snprintf(b, sizeof b, "drama: fix=%d mask=%X guest=%d mode=%08X\n", (int)g_guest_events_fix, g_mask, (int)is_guest(),
-             game::mode_id());
+    if (a.size() >= 1 && a[0] == "mate") {
+        // BUG-0177 (docs/re/creature.md#creature-mating-call): the mate the drama manager picked near the nest (mgr
+        // +0x38 mpMate, marked +0xB58 & 0x10), and the avatar's behaviour tree node (brain +0xB4C, +0x1D8: 02D852F0
+        // while it goes to mate)
+        void* mgr = a_Get ? skg::cdecl_call<void*>(a_Get) : nullptr;
+        if (!mgr || !skg::readable(mgr, 0x40))
+            return "no drama manager\n";
+        uint8_t* mate = *(uint8_t**)((uint8_t*)mgr + 0x38);
+        uint8_t* av = (uint8_t*)game::avatar();
+        auto node = [](uint8_t* c) -> uint32_t {
+            if (!c || !skg::readable(c + 0xB4C, 4))
+                return 0;
+            uint8_t* br = *(uint8_t**)(c + 0xB4C);
+            return br && skg::readable(br + 0x1D8, 4) ? *(uint32_t*)(br + 0x1D8) : 0;
+        };
+        bool ok = mate && skg::readable(mate, 0xB60);
+        net::Vec3 p = ok ? game::position(mate) : net::Vec3{};
+        snprintf(b, sizeof b, "mate %p flags=%X node=%08X pos=(%.1f %.1f %.1f) | avatar node=%08X eggs=%d flags=%X\n",
+                 (void*)mate, ok ? *(uint32_t*)(mate + 0xB58) : 0, ok ? node(mate) : 0, p.x, p.y, p.z, node(av),
+                 av && skg::readable(av + 0x1678, 4) ? *(int*)(av + 0x1678) : -1,
+                 av && skg::readable(av + 0xB58, 4) ? *(uint32_t*)(av + 0xB58) : 0);
+        return b;
+    }
+    snprintf(b, sizeof b, "drama: fix=%d mask=%X guest=%d mode=%08X flock_relay=%d relayed=%u refused=%u updates=%u "
+             "flock_event=%p forgotten=%u\n",
+             (int)g_guest_events_fix, g_mask, (int)is_guest(), game::mode_id(), (int)g_flock_relay, g_flock_relayed,
+             g_flock_refused, g_flock_updates, g_flock_event, g_flock_forgotten);
     out += b;
     for (int k = 0; k < 9; k++) {
         const uint8_t* ev = (const uint8_t*)g_last_event[k];

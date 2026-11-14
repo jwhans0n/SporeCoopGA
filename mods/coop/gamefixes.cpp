@@ -2,16 +2,19 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "creations.h"
 #include "fixes.h"
 #include "game.h"
 #include "sporekit_game.hpp"
+#include "world.h"
 
 namespace gamefixes {
 
@@ -83,20 +86,31 @@ using CamUpdateFn = void(__thiscall*)(void*);
 static LookAtFn g_lookat_orig;
 static CamUpdateFn g_camupd_orig;
 static std::atomic<unsigned> g_cam_skipped{0};
+// BUG-0167 (0.7.11 N1): the guard as a lab switch; off calls the game's LookAt / 0xB13A60 on the null camera as before
+// d605e96 (an access violation in the tribe setup: only for the FAIL side of coop_tribe_camera_null.py)
+static bool g_cam_guard_fix = true;
+COOP_FIX_UNSAFE("tribe.camera_guard", "BUG-0167", g_cam_guard_fix,
+                "gamefixes: the tribe setup's LookAt / camera update are skipped while the simulator camera is null");
 
 static void __fastcall lookat_guard(void* obj, void*, void* target, int a, int instant)
 {
-    if (!obj) {
+    if (!obj && g_cam_guard_fix) {
+        // BUG-0656: the reason in the line: all 7 lab cases (2026-11-01..05) had the galaxy menu intro (8915F9BB)
+        // playing into the stage (BUG-0607 / BUG-0626; none in 1905 Tribe loads since that fix)
         if (++g_cam_skipped <= 4)
-            H->log(M, SK_WARN, "game fixes: skipped the tribe camera set-up without a simulator camera");
+            H->log(M, SK_WARN, "game fixes: skipped the tribe camera set-up without a simulator camera (mode %08X, cinematic %08X)",
+                   game::mode_id(), world::cinematic_id());
         return;
     }
+    if (!obj)
+        H->log(M, SK_WARN, "game fixes: tribe camera guard off: the tribe setup points a null simulator camera (mode %08X)",
+               game::mode_id());
     g_lookat_orig(obj, target, a, instant);
 }
 
 static void __fastcall camupd_guard(void* obj, void*)
 {
-    if (obj)
+    if (obj || !g_cam_guard_fix)
         g_camupd_orig(obj);
 }
 
@@ -188,8 +202,55 @@ static bool modal_alive(const void* w)
     return executable(((const uintptr_t*)vt)[0xC4 / 4]) && executable(((const uintptr_t*)vt)[0xF8 / 4]);
 }
 
+// BUG-0956: the windows under the modal one (the list +0x81C, node {next, prev, window, handler}) can hold a destroyed
+// window as well. PopModal of the top one makes the next listed window the modal one and calls its vt 0x10 at once:
+// a guest that had earned a Space badge and loaded the host's world from the same game had the refcounted base's
+// vtable 0x13EB92C there (slot 0x10 reads 0x00420065, the tail `mov esp,ebp; pop ebp; ret 4` of 0x420050), so the
+// game ran on with esp in the heap and Wine ended it without a report (the fault could not be dispatched). Before
+// each PopModal (and UpdateHover) such entries are unlinked (the node is left to the game's allocator: 16 bytes).
+// `coop.fix game.dead_modal_list off`: not checked (0.7.12).
+static bool g_dead_modal_list_fix = true;
+COOP_FIX("game.dead_modal_list", "BUG-0956", g_dead_modal_list_fix,
+         "gamefixes: a destroyed window in the window manager's list of modal windows is dropped before PopModal makes it the modal one");
+static std::atomic<unsigned> g_dead_modal_listed{0};
+static bool modal_alive(const void* w);
+static void drop_dead_listed(uint8_t* m, const char* when)
+{
+    if (!g_dead_modal_list_fix || !m)
+        return;
+    uintptr_t* head = (uintptr_t*)(m + 0x81C);
+    int guard = 0;
+    for (uintptr_t* n = (uintptr_t*)head[0]; n && n != head && guard < 256; guard++) {
+        if (!readable(n, 16))
+            break;
+        uintptr_t* next = (uintptr_t*)n[0];
+        void* w = (void*)n[2];
+        if (w && !modal_alive(w)) {
+            uintptr_t* prev = (uintptr_t*)n[1];
+            if (!readable(prev, 8) || !readable(next, 8))
+                break;
+            prev[0] = (uintptr_t)next; // unlink, as PopModal does (0x9594A8)
+            next[1] = (uintptr_t)prev;
+            unsigned k = ++g_dead_modal_listed;
+            if (k <= 8)
+                H->log(M, SK_WARN, "game fixes: a destroyed window %p (vtable %08X) was listed under the modal window (%s): "
+                       "dropped it (BUG-0956)", w, readable(w, 4) ? (unsigned)*(uintptr_t*)w : 0u, when);
+        }
+        n = next;
+    }
+}
+
+using PopModalFn = bool(__thiscall*)(void*, void*, void*);
+static PopModalFn g_popmodal_orig;
+static bool __fastcall popmodal_guard(void* wm, void*, void* w, void* arg)
+{
+    drop_dead_listed((uint8_t*)wm, "PopModal");
+    return g_popmodal_orig(wm, w, arg);
+}
+
 static void* __fastcall hover_guard(void* wm, void*, void* out, int flag)
 {
+    drop_dead_listed((uint8_t*)wm, "UpdateHover");
     uint8_t* m = (uint8_t*)wm;
     void* modal = m ? *(void**)(m + 0x82C) : nullptr;
     if (g_dead_modal_fix && modal && !modal_alive(modal)) {
@@ -221,6 +282,44 @@ std::string fake_dead_modal(void* wm)
     *(void**)(m + 0x82C) = g_test_obj;
     *(void**)(m + 0x830) = nullptr;
     return "the modal window is now a destroyed object\n";
+}
+
+// tests (BUG-0956): a destroyed window listed under a modal window, then that modal window popped (WM vt 0x78), as
+// the game's mode switch does. The listed object's vtable slots hold 0x65 (the destroyed object's slot 0x10 led to
+// 0x00420065 and the game ran on in the heap; a fault at 0x65 shows the same call without killing the stack)
+static uintptr_t g_test_vt2[0x100 / 4];
+static uintptr_t g_test_dead[4], g_test_top[4], g_test_node[4];
+std::string fake_dead_listed(void* wm)
+{
+    uint8_t* m = (uint8_t*)wm;
+    if (!m)
+        return "no window manager\n";
+    if (*(void**)(m + 0x82C))
+        return "a modal window is open: not replaced\n";
+    uintptr_t* head = (uintptr_t*)(m + 0x81C);
+    if (head[0] != (uintptr_t)head)
+        return "modal windows listed: not replaced\n";
+    for (auto& v : g_test_vt2)
+        v = 0x65;
+    g_test_dead[0] = (uintptr_t)g_test_vt2;
+    g_test_top[0] = (uintptr_t)g_test_vt2; // never called: PopModal calls only the window it makes modal
+    g_test_node[0] = (uintptr_t)head;
+    g_test_node[1] = (uintptr_t)head;
+    g_test_node[2] = (uintptr_t)g_test_dead;
+    g_test_node[3] = 0;
+    head[0] = head[1] = (uintptr_t)g_test_node;
+    *(void**)(m + 0x82C) = g_test_top;
+    *(void**)(m + 0x830) = nullptr;
+    void** vt = *(void***)m;
+    using Pop = bool(__thiscall*)(void*, void*, void*);
+    bool r = ((Pop)vt[0x78 / 4])(m, g_test_top, nullptr);
+    bool clean = !*(void**)(m + 0x82C) && head[0] == (uintptr_t)head;
+    if (!clean) { // the fake objects must not stay in the game's window manager
+        *(void**)(m + 0x82C) = nullptr;
+        head[0] = head[1] = (uintptr_t)head;
+    }
+    return std::string("popped the modal window over a destroyed listed one: ") + (r ? "1" : "0") +
+           (clean ? ", the window manager has no modal window and nothing listed\n" : ", left over (cleared)\n");
 }
 
 // BUG-0285 / BUG-0310: Citizen_OffStageCheck (0xACA2A0, thiscall(mgr, object), ret 4) sends a
@@ -393,6 +492,40 @@ static void __fastcall phys_update_guard(void* mgr, void*, uint32_t dt)
         }
     }
     g_phys_orig(mgr, dt);
+    game::after_physics(); // BUG-0434 (creature.culled_ground)
+}
+
+// BUG-0719 (class BUG-0432, tests): the fill of the game's fixed object pools every stage uses (the physics
+// world's body pool +0x3C, 0x1000 slots, and contact pool +0x08, 0x800; docs/re/tribe.md#tribe-physics-orphan) and the
+// world's objects by kind (game::for_each_object), so a stress run can show how far co-op object counts take them
+std::string pools_report()
+{
+    std::string out;
+    char b[200];
+    uint8_t* w = g_phys_world && readable((void*)g_phys_world, 4) ? *(uint8_t**)g_phys_world : nullptr;
+    if (w && readable(w, 0xBC)) {
+        for (int off : {0x3C, 0x08}) {
+            uint8_t* p = w + off;
+            snprintf(b, sizeof b, "pool %s: count=%u high=%u cap=%u\n", off == 0x3C ? "physics_bodies" : "physics_contacts",
+                     *(uint32_t*)(p + 0xC), *(uint32_t*)(p + 0x10), *(uint32_t*)(p + 0x18));
+            out += b;
+        }
+    } else
+        out += "pool physics_bodies: none\n";
+    struct Acc {
+        uint32_t creatures = 0, all = 0;
+    } a;
+    game::for_each_object(
+        [](void* o, uint32_t noun, void* u) {
+            auto* a = (Acc*)u;
+            (void)o;
+            a->all++;
+            a->creatures += noun == 0x18EB45Eu;
+            return true;
+        },
+        &a);
+    snprintf(b, sizeof b, "objects: all=%u creatures=%u\n", a.all, a.creatures);
+    return out + b;
 }
 
 std::string arm_physics_orphan()
@@ -478,19 +611,41 @@ struct Scrub {
     unsigned cleared;
 };
 
+// BUG-0926: a stimulus also names a second creature, at +0x10, with no reference: in the "attacked" stimulus 0x200
+// that TakeDamage posts to the victim's herd the sender (+0x2C) is the victim and +0x10 is the ATTACKER. The scrub of
+// BUG-0456 looked at the sender only, so the herd mates of an NPC the partner had hit kept naming the partner's
+// destroyed puppet as the attacker; the puppet's block lives on while references to it remain and is freed when the
+// last one goes, and the herd-help node (BT_HerdHelpEval 0xD8F1C0) then called +0xC0 vt 0x58 / +0x5A8 vt 0xC of the
+// freed creature: a pure virtual call (R6025, the game ends; lab 20261111-064457 and the 0.7.12 final check's
+// long_creature, 0.4-2 s after the partner's death; on Windows 0x40000015 at 0xD8F2AD, BUG-0456's own signature).
+// A stimulus whose +0x10 names the creature being destroyed is cleared as a whole, like one sent by it.
+// Old (`coop.fix npc.stale_attacker off`): the sender only.
+static bool g_stale_attacker_fix = true;
+COOP_FIX("npc.stale_attacker", "BUG-0926", g_stale_attacker_fix,
+         "creature: a destroyed creature is also taken out of the NPCs' stimuli that name it as the attacker (the herd-help AI called it after it was freed: runtime error R6025, the game ended)");
+static std::atomic<unsigned> g_attackers_cleared{0};
+constexpr size_t kStimOther = 0x10;
+
 static unsigned scrub_stimuli(uint8_t* stim, const uint8_t* dying)
 {
     unsigned n = 0;
     for (int i = 0; i < 8; i++) {
         uint8_t* s = stim + i * kStimSlot;
         uint8_t* snd = at<uint8_t*>(s, kStimSender);
-        if (!(at<uint32_t>(s, 0) | at<uint32_t>(s, 4)) || snd < dying || snd >= dying + kCreatureSpan)
+        uint8_t* other = at<uint8_t*>(s, kStimOther);
+        bool by_sender = snd >= dying && snd < dying + kCreatureSpan;
+        bool by_other = g_stale_attacker_fix && other >= dying && other < dying + kCreatureSpan;
+        if (by_other) // (no reference to drop; also in a slot that is not live: the next post need not write it)
+            *(void**)(s + kStimOther) = nullptr;
+        if (!(at<uint32_t>(s, 0) | at<uint32_t>(s, 4)) || (!by_sender && !by_other))
             continue;
+        if (!by_sender)
+            g_attackers_cleared++;
         *(uint32_t*)s = 0;
         *(uint32_t*)(s + 4) = 0;
         *(uint32_t*)(s + 8) = 0;
         *(void**)(s + kStimSender) = nullptr;
-        if (readable(snd, 4) && readable(*(void**)snd, 8)) // Release, as the game's clear does
+        if (snd && readable(snd, 4) && readable(*(void**)snd, 8)) // Release, as the game's clear does
             ((void(__thiscall*)(void*))(*(void***)snd)[1])(snd);
         n++;
     }
@@ -538,14 +693,261 @@ static void forget_sender(void* dying)
     }
 }
 
+// BUG-0918 (found with BUG-0917): the avatar's combat target (+0xE7C, the target's combatant) outlives the target. The game clears the
+// target of every NPC aimed at a creature it destroys, not the avatar's (vanilla never destroys a creature the player
+// fights: corpses stay 60 s); co-op destroys a partner's puppet (the partner dies, hides, leaves) and a guest's
+// proxies. Lab 20261111-030815: the host's avatar, its target the partner's puppet (a click on it), named the
+// removed puppet for the whole 1.5 s watched, and the puppet's memory was given to a later puppet. The game's own
+// ability use (Ability_Use 0xD1E930, a combat key) casts that pointer (vt 0x5C) and measures the gap to it
+// (Ability_TargetGap): a use of freed memory. Before a creature is destroyed, an avatar aimed at it loses its target
+// through the creature's own SetTarget (vt 0x84, null: the reference is released while the target still lives).
+static bool g_avatar_target_fix = true;
+COOP_FIX("game.avatar_stale_target", "BUG-0918", g_avatar_target_fix,
+         "creature: the avatar's combat target is cleared when the creature it names is destroyed (a combat key then used freed memory)");
+static std::atomic<unsigned> g_avatar_targets_cleared{0};
+static void forget_avatar_target(void* dying)
+{
+    void* av = game::in_creature_stage() ? game::avatar() : nullptr;
+    if (!av || av == dying || !readable(av, 0xE80))
+        return;
+    const uint8_t* t = at<const uint8_t*>(av, 0xE7C);
+    if (!t || t < (const uint8_t*)dying || t >= (const uint8_t*)dying + kCreatureSpan)
+        return;
+    skg::vcall<void>(av, 0x84 / 4, (void*)nullptr, 1, 0);
+    unsigned n = ++g_avatar_targets_cleared;
+    if (n <= 16 || n % 100 == 0)
+        H->log(M, SK_INFO, "game fixes: the avatar's target was %p, destroyed now: cleared (BUG-0918, %u in all)", dying, n);
+}
+
+// BUG-0930: the creature a creature was hit by last is kept at its combatant +0x28 (creature +0x5D0) with a reference.
+// When co-op destroys a partner's puppet in a fight, the NPC it hit last keeps that reference: the destroyed puppet's
+// block lives on (vtables intact, destroyed flag set, count 1) until that NPC is hit by another creature or goes, 25 s
+// and more in the lab (lab lane 2, coop_stale_refs.py --watch). Vanilla never destroys a creature in a fight (corpses
+// stay 60 s). Right after a creature is destroyed, every listed creature whose last attacker it was lets go of it (the
+// reference released, the field null, as a creature never hit has it), so the block is freed with its other references.
+// Old (`coop.fix npc.stale_last_attacker off`): the reference stays until the game replaces it.
+static bool g_last_attacker_fix = true;
+COOP_FIX("npc.stale_last_attacker", "BUG-0930", g_last_attacker_fix,
+         "creature: an NPC lets go of a destroyed partner's puppet that hit it last (its block was kept alive by that NPC for 25 s and more)");
+static std::atomic<unsigned> g_last_attackers_cleared{0};
+constexpr size_t kLastAttackerOff = 0x5A8 + 0x28; // combatant (+0x5A8) +0x28
+
+static void forget_last_attacker(void* dying)
+{
+    struct LA {
+        uint8_t* dying;
+        unsigned n;
+    } la{(uint8_t*)dying, 0};
+    game::for_each_object(
+        [](void* o, uint32_t noun, void* u) {
+            auto* la = (LA*)u;
+            if ((noun != kAnimalNoun && noun != kCitizenNoun) || o == la->dying || !readable(o, kLastAttackerOff + 4))
+                return true;
+            uint8_t* a = at<uint8_t*>(o, kLastAttackerOff);
+            if (a < la->dying || a >= la->dying + kCreatureSpan)
+                return true;
+            *(void**)((uint8_t*)o + kLastAttackerOff) = nullptr;
+            // the combatant's own Release (vt 0x64; AddRef 0x60): cCombatant::TakeDamage 0xBFCF10 replaces +0x28 so.
+            // (vt 4 of a combatant is no Release: the thunk 0xC06640 to the creature's Write 0xC04380 faulted)
+            if (readable(a, 4) && readable(*(void**)a, 0x68))
+                ((void(__thiscall*)(void*))(*(void***)a)[0x64 / 4])(a);
+            la->n++;
+            return true;
+        },
+        &la);
+    if (la.n) {
+        unsigned n = g_last_attackers_cleared += la.n;
+        if (n <= 16 || n % 100 < la.n)
+            H->log(M, SK_INFO, "game fixes: %u NPC(s) were last hit by %p, destroyed now: let go (BUG-0930, %u in all)", la.n,
+                   dying, n);
+    }
+}
+
+static DestroyListener g_destroy_listener; // BUG-0623 (civ.cpp, BUG-0539)
+void set_destroy_listener(DestroyListener fn) { g_destroy_listener = fn; }
+static void* g_count_obj; // tests (BUG-0850)
+static std::atomic<unsigned> g_count_n{0};
+bool count_destroys(void* obj)
+{
+    g_count_obj = obj;
+    g_count_n = 0;
+    return g_destroy_orig != nullptr;
+}
+unsigned destroys_counted() { return g_count_n; }
+bool destroy_hooked() { return g_destroy_orig != nullptr; }
+// BUG-0926 (RE, tests): who still names a destroyed creature. The last creatures destroyed (address, when, whether a
+// puppet of ours) are kept; `coop.staleref [index]` scans the process's writable memory for pointers into such a
+// creature's block and says where each one sits: inside a listed object (noun, offset), inside a creature's AI block,
+// in a module's data (our own tables), elsewhere on the heap. A pointer into a freed creature that a live object
+// still holds is a use of freed memory waiting for its reader (BUG-0453, BUG-0456, BUG-0918 were found one by one).
+struct Destroyed {
+    uint8_t* at;
+    double when;
+    bool puppet;
+    uint32_t serial;
+};
+static Destroyed g_destroyed[8];
+static unsigned g_destroyed_n;
+static bool g_staleref_on;
+
+struct StaleHit {
+    uint32_t noun; // 0: not in a listed object
+    uint32_t off;
+    uint8_t kind;  // 0 object, 1 AI block, 2 module, 3 other, 4 cModifiers (BUG-0930)
+    void* first;
+    unsigned n;
+    char mod[24];
+};
+
+static int c_staleref(void*, int argc, const char* const* argv, SkOut* out)
+{
+    if (argc > 1 && (!strcmp(argv[1], "on") || !strcmp(argv[1], "off"))) {
+        g_staleref_on = argv[1][1] == 'n';
+        H->out_printf(out, "staleref %s\n", g_staleref_on ? "on" : "off");
+        return 0;
+    }
+    if (!g_destroyed_n) {
+        H->out_printf(out, "no creature destroyed since `coop.staleref on`\n");
+        return 0;
+    }
+    uint8_t* want = argc > 1 ? (uint8_t*)strtoul(argv[1], nullptr, 16) : nullptr; // a creature's address: that one
+    const Destroyed* d = nullptr;
+    for (unsigned k = 0; k < g_destroyed_n && k < 8 && !d; k++) { // the newest first
+        const Destroyed& c = g_destroyed[(g_destroyed_n - 1 - k) % 8];
+        if (!want || c.at == want)
+            d = &c;
+    }
+    if (!d) {
+        H->out_printf(out, "%p was not destroyed since `coop.staleref on` (or 8 creatures ago)\n", want);
+        return 0;
+    }
+    // the listed objects and the creatures' AI blocks, sorted by address
+    struct Blk {
+        uint8_t* at;
+        uint32_t size, noun;
+        uint8_t kind;
+    };
+    static std::vector<Blk> blks;
+    blks.clear();
+    game::for_each_object(
+        [](void* o, uint32_t noun, void*) {
+            bool creature = noun == kAnimalNoun || noun == kCitizenNoun;
+            blks.push_back({(uint8_t*)o, creature ? (uint32_t)kCreatureSpan : 0x400u, noun, 0});
+            // BUG-0930: the AI block (cBehaviorTreeData) is 0x670 bytes (GeneralAllocator::new_ at 0xC1FF76); the next
+            // heap block is usually the creature's cModifiers (+0xB48, 0x230 bytes, 0xC0B797): its own kind here
+            if (creature && readable(o, kAiOff + 4))
+                if (uint8_t* ai = at<uint8_t*>(o, kAiOff); ai && readable(ai, 0x670))
+                    blks.push_back({ai, 0x670, noun, 1});
+            if (creature && readable(o, 0xB48 + 4))
+                if (uint8_t* md = at<uint8_t*>(o, 0xB48); md && readable(md, 0x230))
+                    blks.push_back({md, 0x230, noun, 4});
+            return true;
+        },
+        nullptr);
+    std::sort(blks.begin(), blks.end(), [](const Blk& a, const Blk& b) { return a.at < b.at; });
+    std::vector<StaleHit> hits;
+    unsigned total = 0, in_self = 0;
+    uintptr_t lo = (uintptr_t)d->at, hi = lo + kCreatureSpan;
+    volatile uint32_t marker = 0;
+    MEMORY_BASIC_INFORMATION mi;
+    for (uint8_t* a = (uint8_t*)0x10000; a < (uint8_t*)0x7FFF0000 && VirtualQuery(a, &mi, sizeof mi) == sizeof mi;
+         a = (uint8_t*)mi.BaseAddress + mi.RegionSize) {
+        if (mi.State != MEM_COMMIT || (mi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
+            !(mi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE)))
+            continue;
+        uint32_t* p = (uint32_t*)mi.BaseAddress;
+        uint32_t* e = (uint32_t*)((uint8_t*)mi.BaseAddress + mi.RegionSize);
+        if ((uint8_t*)&marker >= (uint8_t*)p && (uint8_t*)&marker < (uint8_t*)e) // our own stack
+            continue;
+        for (; p < e; p++) {
+            uint32_t v = *p;
+            if (v < lo || v >= hi)
+                continue;
+            total++;
+            if ((uintptr_t)p >= lo && (uintptr_t)p < hi) { // the block's own pointers into itself
+                in_self++;
+                continue;
+            }
+            StaleHit h{0, 0, 3, p, 1, ""};
+            auto it = std::upper_bound(blks.begin(), blks.end(), (uint8_t*)p, [](uint8_t* x, const Blk& b) { return x < b.at; });
+            if (it != blks.begin() && (uint8_t*)p < (it - 1)->at + (it - 1)->size) {
+                h.noun = (it - 1)->noun;
+                h.kind = (it - 1)->kind;
+                h.off = (uint32_t)((uint8_t*)p - (it - 1)->at);
+            } else if (mi.Type == MEM_IMAGE) {
+                h.kind = 2;
+                h.off = (uint32_t)((uint8_t*)p - (uint8_t*)mi.AllocationBase);
+                char path[MAX_PATH] = "";
+                GetModuleFileNameA((HMODULE)mi.AllocationBase, path, sizeof path);
+                const char* b = strrchr(path, '\\');
+                snprintf(h.mod, sizeof h.mod, "%s", b ? b + 1 : path);
+            } else
+                h.off = v - (uint32_t)lo; // elsewhere: grouped by what part of the creature is named
+            bool merged = false;
+            for (auto& o : hits)
+                if (o.kind == h.kind && o.noun == h.noun && o.off == h.off && !strcmp(o.mod, h.mod)) {
+                    o.n++;
+                    merged = true;
+                    break;
+                }
+            if (!merged && hits.size() < 400)
+                hits.push_back(h);
+        }
+    }
+    H->out_printf(out, "staleref %p puppet=%d serial=%u destroyed %.2f s ago: %u pointers into it (%u its own), listed now %d\n", d->at,
+                  (int)d->puppet, d->serial, H->time_seconds() - d->when, total, in_self, (int)game::creature_listed(d->at));
+    if (readable(d->at, 0x5B0)) // what the block is now: the creature's vtables (alive or a zombie), a base class's (destructed), other
+        H->out_printf(out, "  block now: vt %08X +4 %08X +8 %08X destroyed byte %u, +0xC0 vt %08X +0xC4 %08X, +0x5A8 vt %08X +0x5AC %08X\n",
+                      at<uint32_t>(d->at, 0), at<uint32_t>(d->at, 4), at<uint32_t>(d->at, 8), (unsigned)at<uint8_t>(d->at, 0x21),
+                      at<uint32_t>(d->at, 0xC0), at<uint32_t>(d->at, 0xC4), at<uint32_t>(d->at, 0x5A8), at<uint32_t>(d->at, 0x5AC));
+    static const uint8_t rank[] = {0, 1, 3, 4, 2}; // object, ai, modifiers, module, other
+    std::sort(hits.begin(), hits.end(), [](const StaleHit& a, const StaleHit& b) {
+        return a.kind != b.kind ? rank[a.kind] < rank[b.kind] : a.off < b.off;
+    });
+    static const char* kinds[] = {"object", "ai", "module", "other", "modifiers"};
+    unsigned shown = 0;
+    for (auto& h : hits) {
+        if (h.kind == 3 && shown >= 80)
+            break;
+        if (h.kind == 3)
+            H->out_printf(out, "  other names +0x%X x%u first at %p\n", h.off, h.n, h.first);
+        else if (h.kind == 2)
+            H->out_printf(out, "  module %s+0x%X x%u\n", h.mod, h.off, h.n);
+        else
+            H->out_printf(out, "  %s noun=%08X +0x%X x%u first at %p -> +0x%X\n", kinds[h.kind], h.noun, h.off, h.n, h.first,
+                          (unsigned)(*(uint32_t*)h.first - lo));
+        shown++;
+    }
+    return 0;
+}
+
 static void __fastcall destroy_guard(void* nm, void*, void* obj)
 {
+    if (g_staleref_on && obj && readable(obj, 0x30) && game::noun_id(obj) == kAnimalNoun)
+        g_destroyed[g_destroyed_n++ % 8] = {(uint8_t*)obj, H->time_seconds(), game::is_puppet(obj), game::object_serial(obj)};
+    if (obj && obj == g_count_obj)
+        g_count_n++;
+    game::note_destroyed(obj); // (BUG-0426: the object list of this frame, game::listed)
+    if (g_destroy_listener && obj)
+        g_destroy_listener(obj, (uintptr_t)__builtin_return_address(0));
     if (g_stale_sender_fix && obj && readable(obj, 0x30)) {
         uint32_t noun = game::noun_id(obj);
         if (noun == kAnimalNoun || noun == kCitizenNoun)
             forget_sender(obj);
     }
+    if (g_avatar_target_fix && obj && readable(obj, 0x30) && game::noun_id(obj) == kAnimalNoun)
+        forget_avatar_target(obj);
+    bool la = false;
+    if (g_last_attacker_fix && obj && readable(obj, 0x30)) {
+        uint32_t noun = game::noun_id(obj);
+        la = noun == kAnimalNoun || noun == kCitizenNoun;
+    }
     g_destroy_orig(nm, obj);
+    // after the destroy: a reference released before it may be the creature's last one (the game's destroy then ran on
+    // a freed block: a fault at 0xC0439F, lab 20261112-134349); afterwards it frees the block as the game's own
+    // replacement of the last attacker does
+    if (la)
+        forget_last_attacker(obj);
 }
 
 // BUG-0454 (BUG-0371): the host's creature editor crashed three times at RenderWare::Raster::Fill+0x7
@@ -643,6 +1045,85 @@ static void __fastcall ufo_set_visible_guard(void* gfx, void*, uint32_t visible)
         }
     }
     g_ufo_visible_orig(gfx, visible);
+}
+
+// BUG-0686 (docs/re/space.md#space-ufo-gfx-null): the ship gfx factory (SporeCoop::UfoGfx_Create 0xE994D0, slot 2 of
+// the gfx vtable 0x1486F6C, thiscall(any, cUFO*) ret 4) news a cUFOGfx (0xD8 bytes, ctor 0xE993A0), runs its
+// InitFromUfo (vt 0x24), then, outside game mode 0x1654C10, writes GetModel() (vt 0x2C) +4 |= 0x20 without a null
+// check: a read of 0x4 at 0xE99524 when the model world made no model for the ship's key (SetModel keeps none; the
+// game.ufo_model substitute needs a known ship model, which a Creature game has not). Seen on the host when the
+// Creature Drama Manager's UFO visit started while the evolution vote held the editor request (lab lanes 2 and 3,
+// whose Sporepedia caches hold UFO summaries only). The gfx's message listener (this = gfx + 0x3C,
+// SporeCoop::UfoGfx_HandleMessage 0xE9A7A0, thiscall(listener, id, data) ret 8) writes GetModel()+0x18 on message
+// 0x604C6F4 without a check too (0xE9A908, data 0x18). The guard makes the gfx the game's way and skips the flag
+// on a null model; the listener does nothing for 0x604C6F4 on a gfx without a model. Off: the game's code (0.7.10).
+using UfoGfxCreateFn = void*(__thiscall*)(void*, void*);
+using UfoGfxMsgFn = uint8_t(__thiscall*)(void*, uint32_t, void*);
+using UfoGfxCtorFn = void*(__thiscall*)(void*);
+using NewFn = void*(__cdecl*)(size_t, const char*, int, int, int, int);
+using ModeFn = uint32_t(__cdecl*)();
+static UfoGfxCreateFn g_ufo_create_orig;
+static UfoGfxMsgFn g_ufo_msg_orig;
+static UfoGfxCtorFn g_ufo_ctor;
+static NewFn g_game_new;
+static ModeFn g_game_mode;
+static bool g_ufo_gfx_fix = true;
+COOP_FIX("game.ufo_gfx", "BUG-0686", g_ufo_gfx_fix,
+         "gamefixes: a ship gfx the model world made no model for is made and kept without the null model's writes (no fault at 0xE99524 / 0xE9A908)");
+static std::atomic<unsigned> g_ufo_gfx_null{0}, g_ufo_msg_skipped{0};
+static constexpr uint32_t kUfoGfxModeNoFlag = 0x1654C10, kUfoMsgModel = 0x604C6F4;
+
+static void* ufo_gfx_model(void* gfx)
+{
+    if (!gfx || !readable(gfx, 4))
+        return nullptr;
+    void** vt = *(void***)gfx;
+    if (!vt || !readable(vt + 0x2C / 4, 4))
+        return nullptr;
+    using GetModelFn = void*(__thiscall*)(void*);
+    return ((GetModelFn)vt[0x2C / 4])(gfx);
+}
+
+static void* __fastcall ufo_gfx_create_guard(void* self, void*, void* ufo)
+{
+    if (!g_ufo_gfx_fix || !g_ufo_ctor || !g_game_new || !g_game_mode)
+        return g_ufo_create_orig(self, ufo);
+    void* mem = g_game_new(0xD8, "Simulator/cUFOGfx", 0, 0, 0, 0);
+    if (!mem)
+        return g_ufo_create_orig(self, ufo); // (the game's own path: it faults on a null gfx too)
+    void* gfx = g_ufo_ctor(mem);
+    void** vt = *(void***)gfx;
+    using InitFn = void(__thiscall*)(void*, void*);
+    ((InitFn)vt[0x24 / 4])(gfx, ufo);
+    void* model = ufo_gfx_model(gfx);
+    if (model) {
+        if (g_game_mode() != kUfoGfxModeNoFlag)
+            *(uint32_t*)((uint8_t*)model + 4) |= 0x20;
+    } else {
+        unsigned n = ++g_ufo_gfx_null;
+        if (n <= 8 || n % 100 == 0)
+            H->log(M, SK_WARN, "game fixes: a ship gfx was made without a model (ship %p): kept, no fault (BUG-0686, %u)", ufo, n);
+    }
+    return gfx;
+}
+
+static uint8_t __fastcall ufo_gfx_msg_guard(void* listener, void*, uint32_t id, void* data)
+{
+    if (g_ufo_gfx_fix && id == kUfoMsgModel && listener && !ufo_gfx_model((uint8_t*)listener - 0x3C)) {
+        unsigned n = ++g_ufo_msg_skipped;
+        if (n <= 8 || n % 100 == 0)
+            H->log(M, SK_WARN, "game fixes: a ship gfx without a model: its message %08X skipped (BUG-0686, %u)", id, n);
+        return 1;
+    }
+    return g_ufo_msg_orig(listener, id, data);
+}
+
+std::string ufo_forget()
+{
+    char b[96];
+    snprintf(b, sizeof b, "forgot the last known ship model %08X/%08X/%08X\n", g_ufo_good[0], g_ufo_good[1], g_ufo_good[2]);
+    memset(g_ufo_good, 0, sizeof g_ufo_good);
+    return b;
 }
 
 std::string arm_attack_cut()
@@ -1104,6 +1585,130 @@ static void __cdecl areas_init_guard()
         ensure_save_areas();
 }
 
+// BUG-0676: the galaxy menu (GalaxyGameEntry, global [0x16A1344]) keeps the planet under the mouse at +0xF8 (the
+// rollover, set by the planet set's vt 0x5C 0xDF7BF0) and the picked one at +0xFC, both pointers into the planet set's
+// entry vector ([0x16A15FC] +0x08..+0x0C, 0xBC bytes each, +0xB8 the entry's info panel). Its planet rebuild
+// (SporeCoop::GGE_RebuildPlanets 0xDF95A0, also on 0x625D27D, which cStarManager::ReadStarsFromSaveDB sends) clears every
+// entry (+0xB8 = 0, the panels freed), resizes the vector (a reallocation frees the old one) and refills it, but leaves
+// both pointers alone. Leaving the menu (its exit 0xDE8160) then rolls the old planet out (vt 0x5C(0)) and calls
+// 0xDF6D80 on its panel without a check: a guest that loaded a received world while the mouse rested on a planet faulted
+// at 0xDF6D93 (data 0x2C); the exit stopped half-way and the menu's frame faulted at 0xE01323 in every frame after
+// (chaos_tribe_awful, 22939 faults). The guard rolls the planet out the game's own way before the rebuild and drops a
+// pointer that names no entry of the new vector after it. Off: the game's code alone (0.7.9).
+using MenuRebuildFn = void(__thiscall*)(void*);
+static MenuRebuildFn g_menu_rebuild_orig;
+static uintptr_t g_gge_ptr;
+static bool g_menu_hover_fix = true;
+COOP_FIX("game.menu_hover", "BUG-0676", g_menu_hover_fix,
+         "gamefixes: the galaxy menu forgets the planet under the mouse when it rebuilds its planets (a load after it faulted at 0xDF6D93)");
+static std::atomic<unsigned> g_menu_rollouts{0}, g_menu_dropped{0}, g_menu_rebuilds{0};
+static int g_menu_hover_arm = -1; // tests (coop.menuhover arm <i>): the next rebuild first puts the mouse on entry i
+static bool g_menu_hover_watch;   // tests: the armed rebuild logs the rollover before and after
+
+struct MenuPlanets {
+    uint8_t* gge = nullptr;
+    void* set = nullptr;
+    uint8_t *begin = nullptr, *end = nullptr, *cap = nullptr;
+    size_t count() const { return begin && end > begin ? (size_t)(end - begin) / 0xBC : 0; }
+    bool entry(const uint8_t* p) const // a live entry of the vector with its panel
+    {
+        return p && p >= begin && p < end && (size_t)(p - begin) % 0xBC == 0 && readable(p + 0xB8, 4) && at<void*>(p, 0xB8);
+    }
+};
+
+static MenuPlanets menu_planets(void* set)
+{
+    MenuPlanets m;
+    m.gge = g_gge_ptr && readable((void*)g_gge_ptr, 4) ? *(uint8_t**)g_gge_ptr : nullptr;
+    if (m.gge && !readable(m.gge + 0xF8, 8))
+        m.gge = nullptr;
+    m.set = set;
+    if (set && readable(set, 0x14)) {
+        m.begin = at<uint8_t*>(set, 8);
+        m.end = at<uint8_t*>(set, 0xC);
+        m.cap = at<uint8_t*>(set, 0x10);
+    }
+    return m;
+}
+
+static void* menu_planet_set()
+{
+    uintptr_t p = H->sym("SporeCoop::GGE_PlanetSet_ptr");
+    return p && readable((void*)p, 4) ? *(void**)p : nullptr;
+}
+
+static void __fastcall menu_rebuild_guard(void* set, void*)
+{
+    g_menu_rebuilds++;
+    MenuPlanets m = menu_planets(set);
+    if (g_menu_hover_arm >= 0 && m.gge && (size_t)g_menu_hover_arm < m.count() && !at<void*>(m.gge, 0xFC)) {
+        uint8_t* e = m.begin + (size_t)g_menu_hover_arm * 0xBC;
+        if (m.entry(e)) {
+            skg::vcall<void>(set, 0x5C / 4, (void*)e); // the rollover, as the mouse over the planet
+            H->log(M, SK_WARN, "game fixes: tests: the mouse is on menu planet %d (%p) before the rebuild (%u entries, room for %u)",
+                   g_menu_hover_arm, e, (unsigned)m.count(), m.cap > m.begin ? (unsigned)((m.cap - m.begin) / 0xBC) : 0u);
+        }
+        g_menu_hover_arm = -1;
+        g_menu_hover_watch = true;
+    }
+    void* hover = m.gge ? at<void*>(m.gge, 0xF8) : nullptr;
+    if (g_menu_hover_fix && hover && !at<void*>(m.gge, 0xFC) && m.entry((uint8_t*)hover)) {
+        skg::vcall<void>(set, 0x5C / 4, (void*)nullptr); // the game's roll-out: hides the panel, +0xF8 = 0
+        unsigned n = ++g_menu_rollouts;
+        if (n <= 8 || n % 100 == 0)
+            H->log(M, SK_INFO, "game fixes: the galaxy menu rebuilds its planets with the mouse on planet %p: rolled out first (BUG-0676, %u)",
+                   hover, n);
+    }
+    void* hover_in = hover;
+    g_menu_rebuild_orig(set);
+    if (g_menu_hover_watch && m.gge) {
+        g_menu_hover_watch = false;
+        MenuPlanets now = menu_planets(set);
+        uint8_t* h = at<uint8_t*>(now.gge, 0xF8);
+        H->log(M, SK_WARN, "game fixes: tests: menu rollover %p before the rebuild, %p after (%s; panel %p; %u entries at %p, were at %p)",
+               hover_in, h, now.entry(h) ? "a planet of the list" : "no planet of the list", h && readable(h + 0xB8, 4) ? at<void*>(h, 0xB8) : nullptr,
+               (unsigned)now.count(), now.begin, m.begin);
+    }
+    if (!g_menu_hover_fix || !m.gge)
+        return;
+    MenuPlanets now = menu_planets(set);
+    for (uint32_t off : {0xF8u, 0xFCu}) {
+        uint8_t* p = at<uint8_t*>(now.gge, off);
+        if (!p || now.entry(p))
+            continue;
+        *(void**)(now.gge + off) = nullptr;
+        unsigned n = ++g_menu_dropped;
+        if (n <= 8 || n % 100 == 0)
+            H->log(M, SK_WARN, "game fixes: the galaxy menu's %s planet %p is no planet of the rebuilt list (%u entries at %p): dropped (BUG-0676, %u)",
+                   off == 0xF8 ? "rollover" : "picked", p, (unsigned)now.count(), now.begin, n);
+    }
+}
+
+// coop.menuhover [arm <i> | off]: the galaxy menu's planets, its rollover / picked planet; tests: arm the rollover
+static int c_menuhover(void*, int argc, const char* const* argv, SkOut* out)
+{
+    char b[512];
+    if (argc >= 3 && !strcmp(argv[1], "arm")) {
+        g_menu_hover_arm = atoi(argv[2]);
+        snprintf(b, sizeof b, "armed: the next planet rebuild of the galaxy menu puts the mouse on planet %d first\n", g_menu_hover_arm);
+        H->out_printf(out, "%s", b);
+        return 0;
+    }
+    if (argc >= 2 && !strcmp(argv[1], "off"))
+        g_menu_hover_arm = -1;
+    MenuPlanets m = menu_planets(menu_planet_set());
+    int panels = 0;
+    for (size_t i = 0; i < m.count(); i++)
+        panels += m.entry(m.begin + i * 0xBC);
+    snprintf(b, sizeof b,
+             "menu=%p set=%p planets=%u (panels %d, room %u) begin=%p rollover=%p picked=%p | rebuilds %u rolled out %u dropped %u%s\n",
+             m.gge, m.set, (unsigned)m.count(), panels, m.cap > m.begin ? (unsigned)((m.cap - m.begin) / 0xBC) : 0u, m.begin,
+             m.gge ? at<void*>(m.gge, 0xF8) : nullptr, m.gge ? at<void*>(m.gge, 0xFC) : nullptr, g_menu_rebuilds.load(),
+             g_menu_rollouts.load(), g_menu_dropped.load(), g_menu_hover_arm >= 0 ? " (armed)" : "");
+    H->out_printf(out, "%s", b);
+    return 0;
+}
+
 void frame()
 {
     fxcut_frame();
@@ -1157,6 +1762,9 @@ void init(const SkHost* host, SkMod* mod)
     uintptr_t uh = H->sym("UTFWin::cWindowManager::UpdateHover");
     bool hover = uh && g_code_hi && H->hook_create(M, (void*)uh, (void*)&hover_guard, (void**)&g_hover_orig) == 0;
     H->log(M, SK_INFO, "game fixes: dead modal window guard %s", hover ? "on" : "off");
+    uintptr_t pm = H->sym("UTFWin::cWindowManager::PopModal");
+    bool pop = pm && g_code_hi && H->hook_create(M, (void*)pm, (void*)&popmodal_guard, (void**)&g_popmodal_orig) == 0;
+    H->log(M, SK_INFO, "game fixes: dead listed modal window guard %s (BUG-0956)", pop ? "on" : "off");
     uintptr_t os = H->sym("SporeCoop::Citizen_OffStageCheck");
     g_idle_walk = (IdleWalkFn)H->sym("SporeCoop::Citizen_IdleWalk");
     bool walk = os && g_idle_walk && H->hook_create(M, (void*)os, (void*)&offstage_guard, (void**)&g_offstage_orig) == 0;
@@ -1207,6 +1815,14 @@ void init(const SkHost* host, SkMod* mod)
     bool ufo = um && uv && H->hook_create(M, (void*)um, (void*)&ufo_set_model_guard, (void**)&g_ufo_model_orig) == 0 &&
                H->hook_create(M, (void*)uv, (void*)&ufo_set_visible_guard, (void**)&g_ufo_visible_orig) == 0;
     H->log(M, SK_INFO, "game fixes: ship model guard %s", ufo ? "on" : "off");
+    uintptr_t ugc = H->sym("SporeCoop::UfoGfx_Create"), ugm = H->sym("SporeCoop::UfoGfx_HandleMessage");
+    g_ufo_ctor = (UfoGfxCtorFn)H->sym("SporeCoop::UfoGfx_ctor");
+    g_game_new = (NewFn)H->sym("GeneralAllocator::new_");
+    g_game_mode = (ModeFn)H->sym("Simulator_GetCurrentGameMode");
+    bool ufo_gfx = ugc && ugm && g_ufo_ctor && g_game_new && g_game_mode &&
+                   H->hook_create(M, (void*)ugc, (void*)&ufo_gfx_create_guard, (void**)&g_ufo_create_orig) == 0 &&
+                   H->hook_create(M, (void*)ugm, (void*)&ufo_gfx_msg_guard, (void**)&g_ufo_msg_orig) == 0;
+    H->log(M, SK_INFO, "game fixes: ship gfx null model guard %s (BUG-0686)", ufo_gfx ? "on" : "off");
     if (HMODULE exe = GetModuleHandleW(nullptr)) { // the game's code section (the vtable slot checks of BUG-0575)
         auto* nt = (IMAGE_NT_HEADERS*)((uint8_t*)exe + ((IMAGE_DOS_HEADER*)exe)->e_lfanew);
         auto* sec = IMAGE_FIRST_SECTION(nt);
@@ -1230,6 +1846,17 @@ void init(const SkHost* host, SkMod* mod)
     if (!fruit)
         g_take_fruit_orig = nullptr;
     H->log(M, SK_INFO, "game fixes: fruit pool guard %s", fruit ? "on" : "off");
+    uintptr_t mr = H->sym("SporeCoop::GGE_RebuildPlanets");
+    g_gge_ptr = H->sym("SporeCoop::GalaxyGameEntry_ptr");
+    bool menu = mr && g_gge_ptr && H->sym("SporeCoop::GGE_PlanetSet_ptr") &&
+                H->hook_create(M, (void*)mr, (void*)&menu_rebuild_guard, (void**)&g_menu_rebuild_orig) == 0;
+    if (!menu)
+        g_menu_rebuild_orig = nullptr;
+    H->log(M, SK_INFO, "game fixes: galaxy menu rollover guard %s", menu ? "on" : "off");
+    H->command_add(M, "coop.menuhover", "coop.menuhover [arm <i> | off] - the galaxy menu's planets and its rollover; tests: the next rebuild puts the mouse on planet i first (BUG-0676)",
+                   c_menuhover, nullptr, SK_CMD_MAIN_THREAD);
+    H->command_add(M, "coop.staleref", "coop.staleref on | off | [creature] - RE / tests (BUG-0926): pointers into the creature destroyed last (or the one at that address), by where they sit",
+                   c_staleref, nullptr, SK_CMD_MAIN_THREAD);
     H->command_add(M, "coop.fxlist", "coop.fxlist [creature] - a creature's attached effects (BUG-0575)", c_fxlist, nullptr,
                    SK_CMD_MAIN_THREAD);
     H->command_add(M, "coop.fxcut", "coop.fxcut - tests (BUG-0575): the next model with a running attached effect has it stopped and given a freed part",
@@ -1250,7 +1877,7 @@ std::string status()
            std::to_string(g_skipped.load()) + (g_last.empty() ? "" : " (last: " + g_last + ")") +
            ", tribe camera skipped " + std::to_string(g_cam_skipped.load()) + ", respawn caption without a planet " +
            std::to_string(g_planet_clear_skipped.load()) + ", Alt+Shift+Enter turned into Alt+Enter " +
-           std::to_string(g_adapter_keys.load()) + ", dead modal windows dropped " + std::to_string(g_dead_modal.load()) +
+           std::to_string(g_adapter_keys.load()) + ", dead modal windows dropped " + std::to_string(g_dead_modal.load()) + ", dead listed modal windows dropped " + std::to_string(g_dead_modal_listed.load()) +
            ", off-stage checks " + std::to_string(g_offstage_calls.load()) + " (citizens while the stage is left " +
            std::to_string(g_offstage_citizens.load()) + "), cleaned-up citizen walks skipped " +
            std::to_string(g_leave_walk_skipped.load()) + ", test citizens " + std::to_string(g_leave_walk_test_done) +
@@ -1258,15 +1885,21 @@ std::string status()
            std::to_string(g_phys_scans.load()) + "), attacks ended without a target " + std::to_string(g_attack_ended.load()) +
            " (test cuts " + std::to_string(g_attack_cuts) + (g_attack_cut_test ? ", armed" : "") + ")" +
            ", null raster fills skipped " + std::to_string(g_null_fills.load()) +
-           ", stale stimulus senders cleared " + std::to_string(g_senders_cleared.load()) + " (destroys " +
+           ", avatar targets cleared " + std::to_string(g_avatar_targets_cleared.load()) +
+           ", stale stimulus senders cleared " + std::to_string(g_senders_cleared.load()) + " (as the attacker " +
+           std::to_string(g_attackers_cleared.load()) + ", destroys " +
            std::to_string(g_destroys_scanned.load()) + "), missing save areas made " +
            std::to_string(g_areas_made.load()) + " (failed " + std::to_string(g_areas_failed.load()) + ")" +
            ", attack spots missing " + std::to_string(g_spots_missing.load()) + " (test cuts " +
            std::to_string(g_spot_cuts) + (g_spot_cut_test ? ", armed" : "") + ")" +
            ", ship models defaulted " + std::to_string(g_ufo_defaulted.load()) + " (SetVisible without a model skipped " +
-           std::to_string(g_ufo_invisible_skipped.load()) + ")" + ", broken model effects dropped " +
+           std::to_string(g_ufo_invisible_skipped.load()) + "), ship gfx made without a model " +
+           std::to_string(g_ufo_gfx_null.load()) + " (their messages skipped " + std::to_string(g_ufo_msg_skipped.load()) +
+           ")" + ", broken model effects dropped " +
            std::to_string(g_model_fx_dropped.load()) + " (tests: planted " + std::to_string(g_fxcut_planted) + ", dropped " + std::to_string(g_fxcut_done) + ")" +
-           ", freed fruit taken out of the pool " + std::to_string(g_fruit_dropped.load()) + "\n";
+           ", freed fruit taken out of the pool " + std::to_string(g_fruit_dropped.load()) +
+           ", galaxy menu rollovers rolled out before a rebuild " + std::to_string(g_menu_rollouts.load()) + " (stale dropped " +
+           std::to_string(g_menu_dropped.load()) + ")\n";
 }
 
 } // namespace gamefixes

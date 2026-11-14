@@ -32,6 +32,9 @@ namespace wsync {
 struct Ctx {
     net::Session* sess = nullptr;
     std::function<bool()> playing; // the local player has its entity in the world (not loading, not an editor)
+    // BUG-0712: Space, the sky row is in play: host on a planet; guest on a planet and the host's latest state at the
+    // same place (that planet)
+    std::function<bool()> space_sky;
 };
 
 void init(const SkHost* host, SkMod* mod, const Ctx& ctx);
@@ -42,5 +45,7 @@ void on_player_join(); // host: the newcomer gets every row at once
 // a guest with the time-of-day row on takes the host's sky from MSG_WSTATE, not MSG_WORLD_TIME
 bool owns_time_of_day();
 std::string status();
+// BUG-0942: a guest is about to destroy this village (tribe::remove_village): its goal card goes with it
+void village_gone(void* tribe);
 
 } // namespace wsync

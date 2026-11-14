@@ -15,6 +15,7 @@ KitFix g_fix_stackov{"stackov", "a stack overflow is reported from a thread wait
 KitFix g_fix_crashsafe{"crashsafe", "each step of a crash / hang report catches its own failure, the mark first (BUG-0127)", 1};
 KitFix g_fix_hookpark{"hookpark", "a hooked function's code is written once: hooks are made / removed by switching a stub (BUG-0202)", 1};
 KitFix g_fix_hookorig{"hookorig", "a new hook's original is set before its jump goes live: no detour calls address 0 (BUG-0398)", 1};
+KitFix g_fix_hookfirst{"hookfirst", "the first jmp of a hook made after boot is written while no thread runs the function's first bytes (BUG-0403)", 1};
 KitFix g_fix_iniutf{"iniutf", "mods\\*.ini with text that is not ASCII are kept in UTF-16 (BUG-0142)", 1};
 KitFix g_fix_iniencode{"iniencode", "a UTF-16 BE settings file is converted losslessly, one with NUL bytes is left alone (BUG-0245)", 1};
 KitFix g_fix_inilock{"inilock", "a named mutex per settings file around conversion and writes; no \"????\" writes (BUG-0245)", 1};
@@ -23,12 +24,25 @@ KitFix g_fix_crashtid{"crashtid", "a crash report names the thread that crashed,
 KitFix g_fix_initfail{"initfail", "a failed start of the game (cSporeApp::Init returns 0) writes a report and tells the player (BUG-0521)", 1};
 KitFix g_fix_hangloop{"hangloop", "the watchdog takes no frames while the game loop runs (minimized, unfocused, occluded) for a pause, not a hang (BUG-0347)", 1};
 KitFix g_fix_longout{"longout", "a command's printf output is not cut at 8 KB (up to 1 MB, then a line says so) (BUG-0388)", 1};
+KitFix g_fix_frameunwind{"frameunwind", "a frame cut off by a fault the game's handler caught does not stop every later frame (BUG-0667)", 1};
+KitFix g_fix_outpump{"outpump", "a task for outside the frame waits for the frame's end: no endless repost in the game's message pump after a cut-off frame (BUG-0672)", 1};
+KitFix g_fix_presentlost{"presentlost", "one long frame (a hitch over 2 s) is not taken for Present lost: the fallback needs game loop passes without Present too (BUG-0653)", 1};
+KitFix g_fix_faultstorm{"faultstorm", "one fault the game catches over and over (the same place, 300 times in 10 s) is named in the log and writes one report (BUG-0676)", 1};
+KitFix g_fix_dialognote{"dialognote", "a dialog on the main thread that stops the frames (the C runtime's error box) is logged with its text and the thread's stack, a runtime box writes a report (BUG-0925)", 1};
+KitFix g_fix_offstack{"offstack", "a fault whose stack pointer is outside its thread's stack (Windows and Wine cannot dispatch it, the game ends at once) writes its crash report from the fault logger (BUG-0956)", 1};
+KitFix g_fix_framelimit{"framelimit", "a frame limit another program or the game sets (kFrameLimitMS) is kept, not written back to the first frame's value (BUG-0779)", 1};
+KitFix g_fix_taskdrop{"taskdrop", "the tasks of an unloaded mod are destroyed after the task lock is released: a capture whose destructor queues a task does not deadlock (BUG-0860)", 1};
+KitFix g_fix_drawncam{"drawncam", "the overlay's labels are projected with the camera the frame was drawn with, not the one at Present (BUG-0948)", 1};
+KitFix g_fix_stackvq{"stackvq", "stack / hangdump / watchdog: the stack bounds come from the thread's TEB before the suspend, no VirtualQuery while it is suspended (BUG-0880)", 1};
+KitFix g_fix_wheelmk{"wheelmk", "the virtual mouse wheel carries the held keys and buttons in its wParam (MK_SHIFT, MK_CONTROL, MK_LBUTTON, MK_RBUTTON) (BUG-0859)", 1};
 KitFix g_fix_logprune{"logprune", "only the newest crash reports, dumps, reports and archives stay in mods\\logs (BUG-0137)", 1};
 
 std::vector<KitFix*> kit_fixes() { return {&g_fix_stackdump, &g_fix_cheatwait, &g_fix_reentry, &g_fix_hookkeep,
                                        &g_fix_stackov,   &g_fix_crashsafe, &g_fix_logprune, &g_fix_iniutf, &g_fix_hookpark,
                                        &g_fix_crashtid, &g_fix_iniencode, &g_fix_inilock,
-                                       &g_fix_exitwait, &g_fix_hookorig, &g_fix_initfail, &g_fix_hangloop, &g_fix_longout}; }
+                                       &g_fix_exitwait, &g_fix_hookorig, &g_fix_hookfirst, &g_fix_initfail, &g_fix_hangloop, &g_fix_longout,
+                                       &g_fix_frameunwind, &g_fix_outpump, &g_fix_presentlost, &g_fix_faultstorm, &g_fix_dialognote, &g_fix_framelimit, &g_fix_offstack, &g_fix_taskdrop, &g_fix_drawncam,
+                                       &g_fix_stackvq, &g_fix_wheelmk}; }
 
 KitFix* kit_fix_find(const char* name)
 {

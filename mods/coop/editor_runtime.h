@@ -68,6 +68,7 @@ struct Ctx {
     std::function<bool()> adventure_busy;
     std::function<void()> open_panel, close_panel;
     std::function<void()> leave_party;
+    std::function<uint32_t(uint8_t)> player_color; // Session palette; a passive cached lookup.
 };
 
 bool init(const SkHost*, SkMod*, Ctx);

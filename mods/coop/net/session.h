@@ -70,6 +70,18 @@ public:
     uint32_t welcome_world() const { return welcome_world_; }
     uint32_t timeout_ms = 30000; // the game can block for a long time while saving/loading
     std::string lobby_info;  // host: shown to players looking for games on the network
+    // F3 (BUG-0768), host: the players the session takes, the host counted (all.max_players, 2..kMaxPlayers), and
+    // whether a new player is refused now (all.late_join off while the host plays its world). A player who was in
+    // this session already (its name, or its rejoin token) may always come back. coop.cpp sets both every frame
+    int max_players = kMaxPlayers;
+    std::function<bool()> join_closed;
+    // BUG-0776, host: the broadcast addresses of this machine's adapters (network byte order, coop.cpp from
+    // adapters::list()): a discovery query from one of their subnets is answered too (a virtual LAN outside the
+    // private ranges)
+    std::vector<uint32_t> lan_broadcasts;
+    static constexpr uint32_t kDiscoverPerSecond = 20; // BUG-0776: discovery answers a second, all senders together
+    static constexpr size_t kMaxPeers = 16;            // host: accepted and half-open peers
+    static constexpr int kHalfOpenPerIp = 4;           // BUG-0778: half-open peers of one address (a NAT: several games)
 
     bool host(uint16_t port, const std::string& name, std::string& err);
     bool join(const std::string& addr, const std::string& name, std::string& err);
@@ -114,6 +126,8 @@ public:
     uint16_t port() const { return tr_->local_port(); }
     // round trip time to a player in ms (host: any guest, guest: the host), -1 if unknown
     int rtt_of(uint8_t id) const;
+    // BUG-0651: the q-quantile of the last round-trip samples to that peer (ms), -1 = none (yet)
+    float rtt_quantile_of(uint8_t id, float q) const;
     // the link to a player (host: any guest, guest: the host) for the support trace: no address
     struct Link {
         int rtt_ms = -1;
@@ -138,8 +152,12 @@ private:
     void drop_peer(size_t idx, uint8_t reason);
     void send_chat_to(Peer& p, const Chat& c);
     uint8_t alloc_id() const;
+    std::vector<std::string> seen_names_; // host: every name admitted since host() (the late-join rule)
     bool retired(uint32_t conn) const;
     void start_hello(const Endpoint& ep, uint32_t now);
+    static bool carries_hello(const uint8_t* data, size_t n); // BUG-0778
+    void make_room(const Endpoint& from);  // BUG-0778
+    bool discovery_answer(const Endpoint& from, uint32_t now); // BUG-0776
     bool poll_lookup(uint32_t now); // false = the session ended or still waits
 
     std::shared_ptr<Lookup> lookup_;
@@ -163,6 +181,9 @@ private:
     // Packet delivery retains a shared Peer owner and fences callbacks by
     // transport generation, including an immediate Leave/Host/Join callback.
 
+    uint32_t last_poll_ms_ = 0; // Upstream BUG-0651 socket-poll diagnostics.
+    uint32_t disc_window_ms_ = 0, disc_in_window_ = 0, disc_answered_ = 0, disc_refused_ = 0;
+    uint32_t halfopen_refused_ = 0, halfopen_evicted_ = 0;
 };
 
 } // namespace net

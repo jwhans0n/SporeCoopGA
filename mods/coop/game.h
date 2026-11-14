@@ -15,6 +15,7 @@ constexpr uintptr_t kSpatialOff = 0xC0;     // cLocomotiveObject/cSpatialObject 
 constexpr uintptr_t kPosOff = 0xC0 + 0x04;  // cSpatialObject::mPosition
 constexpr uintptr_t kRotOff = 0xC0 + 0x10;  // cSpatialObject::mOrientation
 constexpr uintptr_t kVelOff = 0xC0 + 0x1C8; // cLocomotiveObject::mVelocity
+constexpr uintptr_t kLocoModeOff = 0x2B0; // BUG-0409: the locomotion mode (0 normal, 3 thrown by a hit: cCreatureBase TakeDamage 0xC1A520, 4 abducted)
 constexpr uintptr_t kCombatOff = 0x5A8;     // cCombatant subobject
 constexpr uintptr_t kMaxHpOff = 0x5A8 + 0x2C;
 constexpr uintptr_t kHpOff = 0x5A8 + 0x38;
@@ -74,7 +75,7 @@ void* species_profile(void* c);
 // Every creature must belong to a herd: game code calls GetHerd() on neighbours
 // without a null check (0xD41A20 -> 0xC046B0, see docs/05-re-notes.md).
 void* avatar_herd();
-void* spawn_creature(const net::Vec3& pos, void* species, void* herd);
+void* spawn_creature(const net::Vec3& pos, void* species, void* herd, bool reuse = false); // reuse: Create's pool flag (tests)
 // cGameNounManager::DestroyInstance; a creature (cCreatureAnimal) is kept until the running
 // cinematic is over (it may be one of its actors), destroy_deferred_tick() removes it then
 void destroy_creature(void* c);
@@ -86,6 +87,11 @@ void set_defer_keeps_puppet(bool on); // tests (off: a deferred puppet leaves th
 bool cinematic_playing(); // cCinematicManager +0x2C != 0 (W2: no destroy of a village meanwhile)
 bool destroy_pending(void* c);     // queued by destroy_creature, still there
 std::string destroy_deferred_status();
+// BUG-0614 (game.finite_pose): a received pose with NaN / Inf; counted, false with the switch off
+// BUG-0434 (creature.culled_ground): this frame's target of a puppet, lifted to after the physics update when the game grounds it
+void mound_hold(void* c, const net::Vec3& tgt);
+void after_physics();
+bool pose_bad(const net::Vec3& pos, const net::Quat& rot, const net::Vec3& vel);
 void teleport(void* c, const net::Vec3& pos, const net::Quat& rot);
 // BUG-0360: teleport without the teleport mark (+0xB5D, set by vt 0x44 0xC0C040): the locomotion takes
 // the position, the animation's walk gait goes on (with the mark it restarts every frame)
@@ -99,8 +105,13 @@ void set_speed(void* c, float speed);
 float standard_speed(void* c);
 float scale(void* c);
 float bounding_radius(void* c);
+bool bounding_box(void* c, float out[6]);
+float posed_top(void* c); // the highest bone of the current pose, model space, before the scale; -1 none (BUG-0929) // spatial vt 0x68: min xyz, max xyz (BUG-0929)
 // the terrain's distance from the planet's centre in the direction of pos (cPlanetModel::GetHeightAt), 0 without a planet
 float ground_radius(const net::Vec3& pos);
+// the surface on pos's radial line as the game's snap finds it (cPlanetModel_SurfacePoint: the terrain or a collision
+// object over it, a nest mound, a rock; only where the collision is loaded, near this game's camera); 0: none
+float surface_radius(const net::Vec3& pos);
 void set_scale(void* c, float s);
 // BUG-0360 (coop.track): the creature's Anim::AnimatedCreature (cCreatureBase +0xB54): where its
 // model is drawn (+0x04) and the id of its current animation (vt 0x58 GetCurrentAnimation, 0 when
@@ -129,6 +140,12 @@ void play_animation(void* c, uint32_t anim_id, int block, bool disable_blend);
 // Called after the play, not for plays of the mod (play_animation, play_behaviour_anim).
 using BehaviourAnimListener = void (*)(void* creature, uint32_t anim_id, int how, int a, int b);
 void set_behaviour_anim_listener(BehaviourAnimListener fn);
+// BUG-0936: the idle refresh's own plays (Creature_IdleRefresh's choice: idle, walk, the BT's idle override), which the
+// behaviour listener leaves out; tribe.cpp notes them per member (the host) to tell its idle from a behaviour animation
+using IdleAnimListener = void (*)(void* creature, uint32_t anim_id);
+void set_idle_anim_listener(IdleAnimListener fn);
+// BUG-0936: the game's idle refresh on c (force: also when the choice is the current animation), as its update does
+void idle_refresh(void* c, bool force);
 bool play_behaviour_anim(void* c, uint32_t anim_id, int how, int a, int b); // how 2 is played as 1
 void behaviour_anim_counts(uint32_t* seen, uint32_t* idle);
 
@@ -148,6 +165,12 @@ void set_effect_listener(EffectListener fn);
 // only on the game's main thread; the hooks call the original and return on every other thread.
 using WorldEffectListener = void (*)(void* effect, uint32_t id);
 void set_world_effect_listener(WorldEffectListener fn);
+// BUG-0603: an attack animation's per-target hit impact (an animation event effect pointed at its target's hit
+// spot) made by this game: the effect id and the world position (main thread only)
+using HitEffectListener = void (*)(uint32_t id, const net::Vec3& pos);
+void set_hit_effect_listener(HitEffectListener fn);
+uint32_t hit_effects_seen();
+void hit_effect_calls(uint32_t& calls, uint32_t& last_other_ret, uint32_t& other_fx); // diagnostics
 // the stage logic's gate for the world effect hooks (installed once in init); no work outside a
 // played stage. Never installs or removes a hook: a hook removed while the UI skinner's render
 // thread was inside it faulted (BUG-0451 review).
@@ -225,9 +248,17 @@ struct Key {
 };
 Key species_key(void* c);
 void* species_by_key(const Key& k);
+// the cSpeciesManager's map slot that holds the profile of this key (its node value), or null: no node yet
+// (docs/re/creations.md#creations-species-map, BUG-0200)
+void** species_slot(const Key& k);
 void* create_herd(const net::Vec3& pos, void* species);
 void* own_herd_for(void* species); // an existing herd like create_herd's of this species, or null
 void* herd_of(void* c);
+// tests (BUG-0790): a hit through the hook with any combatant as the attacker (a UFO's +0x508, a vehicle's)
+void hit_by_combatant(void* c, float dmg, int type, void* attacker_combatant, uint32_t pol);
+bool attacker_owner_fix();
+net::Vec3 finite_vel(const net::Vec3& v); // BUG-0894 (game.finite_vel): a non-finite snapshot velocity -> 0
+uint32_t vel_zeroed(); // BUG-0790 (creature.attacker_owner): the hit's attacker is its object, maybe not a creature
 bool nest_position(void* c, net::Vec3& out); // the nest of the creature's herd (false: no herd or no nest)
 void herd_quiet(void* herd); // target size 0, disabled: the game spawns no members into it
 void herd_home(void* herd, const net::Vec3& pos); // a nestless herd's home follows its puppet
@@ -278,7 +309,10 @@ void set_time_of_day(const net::Quat& q);
 
 // ---- DNA (cCreatureGameData evolution points, a global) ----
 float dna();
-void dna_add_raw(float delta);              // original AddEvolutionPoints, not reported
+void dna_add_raw(float delta);              // a shared change, not reported: a gain through the original
+                                            // AddEvolutionPoints (DNA + the evolution bar), a spend the DNA only (BUG-0630)
+void dna_set_raw(float total);              // SetEvolutionPoints: the DNA only, as the game's editor spends it
+float evolution_bar();                      // cPlayer +0x10F0, the stage's total earned (NAN without a player)
 using DnaListener = bool (*)(float& delta); // return false to swallow a gain; may change it (BUG-0510 pace)
 void set_dna_listener(DnaListener fn);
 
@@ -286,11 +320,14 @@ void set_dna_listener(DnaListener fn);
 // cGameNounManager::mNouns (+0x78) lists every cGameData (list node at object+0xC)
 void* noun_manager();
 void for_each_object(bool (*fn)(void* obj, uint32_t noun, void* user), void* user);
+// BUG-0386 / BUG-0440 (diagnostics): "noun@dist" of every placed object within r m of pos but `self`, nearest first
+std::string objects_near(const net::Vec3& pos, float r, void* self, int max_n = 8);
 uint32_t noun_id(void* obj);                    // ISimulatorSerializable::GetNounID (vt 0x20)
 void* cast(void* obj, uint32_t type);           // Object::Cast (vt 0x0C)
 bool object_position(void* obj, net::Vec3& out); // via cSpatialObject (TYPE 0x1186577), position +4
 float object_scale(void* obj);                   // cSpatialObject::GetScale (vt 0x34), -1 without one
 void set_object_scale(void* obj, float s);         // cSpatialObject::SetScale (vt 0x40), nothing without one
+bool set_object_position(void* obj, const net::Vec3& pos); // cSpatialObject::SetPosition (vt 0x38), false without one
 bool object_alive(void* obj);                    // cGameData::mbIsDestroyed (+0x21) not set
 // cGameData::mID (+0x24): `++[counter]` in cGameNounManager::CreateInstance (GOG 2024 0xB20BF0,
 // counter 0x167BE28): unique among the objects CreateInstance made in this process. The pointer
@@ -317,6 +354,8 @@ using AiTargetPicker = void* (*)(void* npc);
 void set_ai_target_picker(AiTargetPicker fn);
 uint32_t ai_swaps(); // NPC ticks run with a puppet as the player (diagnostics)
 void swap_guard_tick();          // once per frame: undo an NPC tick's avatar swap a fault left open (BUG-0110)
+bool lend_ledger_on();           // BUG-0882 (game.lend_ledger): lent state in the ledger, call guards reset per frame
+uint32_t call_guards_reset();
 void set_swap_guard(bool on);    // tests (off: no undo)
 void debug_swap_fault();         // tests: the next swapped NPC tick returns without its restore
 uint32_t swaps_restored();
@@ -347,6 +386,35 @@ const std::vector<void*>& puppets(); // puppets and NPC proxies (creatures), UFO
 
 // `c` is still a live cCreatureAnimal of the world (compares pointers only: safe on a freed one)
 bool creature_listed(void* c);
+
+// ---- the liveness of a stored pointer (BUG-0426 class, package L1 of 0.7.13) ----
+// A pointer kept from an earlier frame (or from before a game call) may name an object the game freed since, or a new
+// object the game built at the same address. Its own memory says nothing (mbIsDestroyed +0x21 of a freed block can
+// read 0 again, BUG-0842 / BUG-0843 / BUG-0844). The truth is the game's object list (cGameNounManager +0x78) and the
+// object's serial (cGameData::mID +0x24, ++ in CreateInstance only, docs/re/space.md#space-object-serial).
+// listed(): one walk of the list per frame (on the first question of the frame), kept exact inside the frame by
+// gamefixes' DestroyInstance hook (an object destroyed now leaves the set) and by the serial counter (a miss after a
+// CreateInstance of this frame walks the list again). Compares pointers only: safe on a freed one.
+bool listed(const void* obj, uint32_t noun = 0); // in the list now (noun 0: any noun) and not destroyed
+struct LiveRef {
+    void* p = nullptr;
+    uint32_t serial = 0; // its cGameData::mID when it was taken
+    uint32_t noun = 0;
+    explicit operator bool() const { return p != nullptr; }
+};
+LiveRef live_ref(void* obj, uint32_t noun = 0); // {} unless obj is listed (with that noun) now
+bool alive(const LiveRef& r);                    // r.p is listed with r.noun now and is the same object (serial)
+inline void* live(const LiveRef& r) { return alive(r) ? r.p : nullptr; }
+void note_destroyed(void* obj); // gamefixes' DestroyInstance hook, before the game destroys obj
+// the mod's frame tick (coop.cpp on_frame): listed() keeps its walk only inside it; elsewhere (our hooks inside the
+// game's update, where the game may free objects without DestroyInstance) every question walks the list
+struct LiveScope {
+    LiveScope();
+    ~LiveScope();
+};
+void note_created();            // the mod made an object: the next miss walks the list again
+std::string live_status();      // coop.live (tests)
+bool listed_exact();            // listed() is kept exact inside a frame (its fix on, the destroy hook in)
 // diagnostics (coop.npc herds): every herd, and the creatures of herds without a nest
 std::string herds_dump();
 std::string herd_nulls_status(); // BUG-0256: null herd members taken out before Herd_Update

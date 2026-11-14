@@ -78,7 +78,7 @@ from coop_multi import fps, join_cmd, limit, measure, over_limit, start_extra, w
 import coop_multi as cm
 from coop_ui import Ui
 from sporectl import Console
-from twoinst import Monitor, shot, start
+from twoinst import Monitor, keyframe, shot, start
 
 CHECK_EVERY = 30
 CAPTION_OK = (1410, 1048)    # the green check of a caption that waits for the player
@@ -298,6 +298,8 @@ class Campaign:
                 return
             tog = self.together()
             self.ids()
+            if os.environ.get('CAMPAIGN_GROUND') == '1' and hst in ('creature', 'tribe'):
+                self.ground_probe(host, hst)
             bad_stage, apart = [], []
             for g in self.guests:
                 if g not in alive:
@@ -403,6 +405,62 @@ class Campaign:
                         self.F.attach('census', f'{hst}:{k}', [f'both censuses: {os.path.relpath(path, lane.ROOT)}'])
         except (OSError, ValueError) as e:
             self.finding('info', f'check:{e!r}'[:80], f'a check could not read a game: {e!r}')
+
+    def ground_probe(self, host, hst):
+        """BUG-0332 (CAMPAIGN_GROUND=1): the game's own ground (coop.ground) on every machine at a place of the host's
+        (a tribe member in Tribe, a player in Creature) and 15-200 m off it: noted when a guest's differs by more than 0.5 m"""
+        try:
+            hs = cm.sample(host.con)
+            pref = [k for k in sorted(hs) if k[0] == ('t' if hst == 'tribe' else 'p')]  # a member / a player: the village
+            key = (pref or sorted(hs) or [None])[0]
+            if not key:
+                return
+            c = hs[key]
+            r = math.dist(c, (0, 0, 0))
+            a = (0.0, 0.0, 1.0) if abs(c[2] / r) < 0.9 else (1.0, 0.0, 0.0)
+            e = (a[1] * c[2] - a[2] * c[1], a[2] * c[0] - a[0] * c[2], a[0] * c[1] - a[1] * c[0])
+            el = math.dist(e, (0, 0, 0))
+            pts = [c] + [tuple((c[i] + d * e[i] / el) * r / math.dist([c[j] + d * e[j] / el for j in range(3)], (0, 0, 0))
+                               for i in range(3)) for d in (15, 30, 60, 100, 200)]
+            # far from the village: the six axis directions of the planet (is the difference local to the village?)
+            pts += [tuple(r * (1 if k == i else 0) * s for k in range(3)) for i in range(3) for s in (1, -1)]
+            if hst == 'tribe':  # every tribe's village (NPC tribes too: the 2026-11-05/06 differences were at NPC members)
+                pts += [tuple(float(m.group(i)) for i in (1, 2, 3)) for m in re.finditer(
+                    r'^tribe \d+(?: \(player\))? at \(([-\d.]+) ([-\d.]+) ([-\d.]+)\)', host.call('coop.tribe'), re.M)
+                    if math.dist([float(m.group(i)) for i in (1, 2, 3)], (0, 0, 0)) > 50]
+
+            nv = len(pts) - 12
+            if hst == 'tribe':  # the NPC tribe spawn markers: where the host's controller forms the next villages
+                pts += [tuple(float(m.group(i)) for i in (1, 2, 3)) for m in re.finditer(
+                    r'pos=\(([-\d.]+) ([-\d.]+) ([-\d.]+)\)', host.call('coop.tribe markers'))]
+            names = [key, '15m', '30m', '60m', '100m', '200m', '+x', '-x', '+y', '-y', '+z', '-z']
+            names += [f'village{i}' for i in range(nv)]
+            names += [f'marker{i}' for i in range(len(pts) - len(names))]
+            if hst == 'creature':  # re-probed in Tribe: did the Tribe change move the ground (on which game)?
+                self._creature_pts = list(zip(names, pts))
+            else:
+                ms = [k for k in sorted(hs) if k[0] == 't'][:40]  # every member: where the ground differs, not only one
+                names += ms + [f'cr-{n}' for n, _ in getattr(self, '_creature_pts', [])]
+                pts += [hs[k] for k in ms] + [q for _, q in getattr(self, '_creature_pts', [])]
+
+            def gr(con, p):
+                m = re.search(r'ground (-?[\d.]+)', con.call('coop.ground %.2f %.2f %.2f' % tuple(p)))
+                return float(m.group(1)) if m else None
+            hg = [gr(host, p) for p in pts]
+            rows = []
+            for g in self.guests:
+                gg = [gr(g, p) for p in pts]
+                d = [(n, q, round(y - x, 2)) for n, q, x, y in zip(names, pts, hg, gg) if x is not None and y is not None]
+                bad = [f'{n}@({q[0]:.0f} {q[1]:.0f} {q[2]:.0f}) {v:+.2f}' for n, q, v in d if abs(v) > 0.5]
+                if bad:
+                    rows.append(f'{g.name} {len(bad)} of {len(d)}: ' + ', '.join(bad))
+            first = getattr(self, '_ground_seen', set())
+            self._ground_seen = first | {hst}
+            if rows or hst not in first:
+                self.note(f'ground ({hst}; host ' + ', '.join(f'{n} {h:.2f}' for n, h in zip(names, hg) if h is not None)
+                          + '): guest - host ' + ('; '.join(rows) or 'all within 0.5 m'))
+        except (OSError, ValueError, ZeroDivisionError) as e:
+            self.note(f'ground probe: {e!r}')
 
     def chiefs_overlap(self, p):
         """BUG-0340: pairs of players' chiefs whose bodies overlap on this player's own game
@@ -579,10 +637,11 @@ class Campaign:
     @staticmethod
     def is_ready(st):
         """this player is ready in the vote: its button offers "Not ready", or its own row (the
-        one marked "- you") says ready (coop_ui.cpp)"""
+        one marked "(you)" / "(host, you)", "- you" before 0.7.12) says ready (coop_ui.cpp)"""
         if st.get('ready', {}).get('text', '') in ('Not ready', 'Не готов'):
             return True
-        return any(r and ('- you' in r[0] or '- вы' in r[0]) and r[-1] in ('ready', 'готов') for r in st.get('rows', []))
+        return any(r and any(m in r[0] for m in ('- you', '- вы', 'you)', 'вы)')) and r[-1] in ('ready', 'готов')
+                   for r in st.get('rows', []))
 
     def ready(self, con, p):
         """F9 when the window is closed, then "I'm ready" (a real click on the widget)"""
@@ -714,6 +773,10 @@ class Campaign:
             if h.error:
                 self.finding('info', f'bot:{stage}:{h.name}', f'{stage} bot of {h.name} stopped: {h.error}')
         self.note('played: ' + '; '.join(f'{h.name} {h.summary()}' for h in hands))
+        # CAMPAIGN_HOST_CMDS_PLAYED_<STAGE>=<cmd>[;<cmd>]: the host's answers at the end of the stage's play (triage)
+        for cmd in [c.strip() for c in os.environ.get(f'CAMPAIGN_HOST_CMDS_PLAYED_{stage.upper()}', '').split(';') if c.strip()]:
+            for ln in self.host.call(cmd).splitlines()[:300]:
+                print(f'  host {cmd}: {ln}', flush=True)
         self.check()
 
     def bots(self, stage, end):
@@ -748,6 +811,11 @@ class Campaign:
                 time.sleep(2)  # the player tribe exists once the intro is over
             print('  tribe setup:', self.host.call(f'coop.tribe spawn {3 * len(self.P)}'), flush=True)
             time.sleep(8)
+            if os.environ.get('CAMPAIGN_FORM') == '1':  # BUG-0332: the host's controller forms its next villages now
+                self.host.call('coop.res add food 400')
+                for _ in range(2):
+                    print('  tribe setup: form:', self.host.call('coop.tribe form')[:160], flush=True)
+                    time.sleep(3)
             g = play_tribe.Game(Console(self.host.inst, timeout=30), Console(self.guests[0].inst, timeout=30),
                                 seed, 1.0)
             for p in self.P[2:]:
@@ -803,14 +871,19 @@ class Campaign:
         kicks = {'cell': self.kick_cell, 'creature': self.kick_creature, 'tribe': self.kick_tribe,
                  'civ': self.kick_civ}[stage]
         state = {'n': 0, 'last': 0.0}
+        reached = False  # BUG-0739: the host's own reload after Creature -> Tribe (BUG-0332) passes the menu a few s later
         log0 = self.log_size(self.host.inst)
         services = [Service(self, p) for p in self.P]
         for s in services:
             s.start()
+        spam = None
+        if os.environ.get('CAMPAIGN_SHARE_SPAM') == '1' and stage == 'creature':
+            spam = self.share_spam(nxt)
         try:
             while time.time() - t0 < timeout and not self.dead:
                 hst = cl.stage_of(self.host.call('game.mode'))
                 if hst == nxt:
+                    reached = True
                     break
                 busy = 'movie=1' in self.host.call('coop.status') or self.vote_open() or hst is None
                 if not busy and time.time() - state['last'] > 25:
@@ -826,8 +899,10 @@ class Campaign:
                 s.stop = True
             for s in services:
                 s.join(30)
+            if spam:
+                spam.join(30)
         took = time.time() - t0
-        if cl.stage_of(self.host.call('game.mode')) != nxt:
+        if not reached and cl.stage_of(self.host.call('game.mode')) != nxt:
             self.note(f'the host did not reach {nxt} in {took / 60:.1f} min')
             self.vote_check(log0, t0)
             return False
@@ -836,6 +911,35 @@ class Campaign:
         self.follow(nxt, services)  # a guest left behind is a finding; the game goes on in the stage
         self.vote_check(log0, t0)
         return True
+
+    def share_spam(self, nxt):
+        """BUG-0359 (CAMPAIGN_SHARE_SPAM=1): the host's world share posted again every ~1.5 s through the
+        Creature -> Tribe change, until 4 s after the host is in Tribe, so a share save is being written while
+        the game enters Tribe (the reported path "went from Creature to Tribe during the save"); to one guest
+        (the last one) so the others follow as usual"""
+        con = Console(self.host.inst, timeout=30)
+        gid = self.guests[-1].pid if self.guests else None
+
+        def run():
+            seen_at = None
+            n = 0
+            end = time.time() + self.advance_minutes('creature') * 60 + 30
+            while time.time() < end and not self.dead:
+                try:
+                    if cl.stage_of(con.call('game.mode').get('out', '')) == nxt:
+                        seen_at = seen_at or time.time()
+                        if time.time() - seen_at > 4:
+                            break
+                    con.call(f'coop.share {gid}' if gid else 'coop.share')
+                    n += 1
+                except (OSError, ValueError, KeyError):
+                    pass
+                time.sleep(1.5)
+            self.note(f'share spam: {n} shares posted through the change to {nxt}')
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        return t
 
     def follow(self, nxt, services=()):
         """every guest follows the host into the stage (the world share) and is in its world"""
@@ -879,6 +983,10 @@ class Campaign:
             self.note(f'all guests play {nxt} together with the host after {time.time() - t0:.0f} s')
             if nxt == 'tribe':
                 self.chiefs_check('arrival')
+            # CAMPAIGN_HOST_CMDS_<STAGE>=<cmd>[;<cmd>]: console commands for the host once every guest is in the stage
+            # (triage, e.g. `probe 0x00C911C0` for BUG-0528's markers)
+            for cmd in [c.strip() for c in os.environ.get(f'CAMPAIGN_HOST_CMDS_{nxt.upper()}', '').split(';') if c.strip()]:
+                self.note(f'host {cmd}: {self.host.call(cmd).strip()[:120]}')
             return True
         behind = [g for g in self.guests if cl.stage_of(g.call('game.mode')) != nxt or g.pid not in self.together()]
         if not behind:  # they got there just after the time
@@ -953,6 +1061,25 @@ class Campaign:
         for l in lines:
             if 'wants to evolve' in l or 'evolution starts' in l:
                 self.note('host log: ' + l.split('coop: ')[-1])
+        # BUG-0855: the spacecraft (Civ -> Space) and City Hall (Tribe -> Civ) editors come up at once after their vote;
+        # a request the busy gate held under the game's own pause (core.editor_own_pause off) kept the host on a paused
+        # screen for a minute (lab 20261112-100520: 61 s). (Creature's editors may wait for a cinematic: BUG-0404.)
+        def secs(l):
+            m = re.match(r'(\d\d):(\d\d):(\d\d\.\d+)', l)
+            return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)) if m else None
+        for i, l in enumerate(lines):
+            m = re.search(r'vote: end: .* editor=(96B24187|99E92F05)', l)  # the spacecraft / City Hall editor
+            if not m or secs(l) is None:
+                continue
+            nxt = next((x for x in lines[i + 1:] if re.search(r'coop: stage: \S+ \S+ -> Editor', x)), None)
+            wait = secs(nxt) - secs(l) if nxt and secs(nxt) is not None else None
+            if wait is not None and wait < 0:
+                wait += 86400
+            self.note(f'host: the editor {m.group(1)} came up {wait if wait is None else round(wait, 1)} s after its vote')
+            if wait is not None and wait > 15:
+                self.finding('editor', f'{self.stage}:editor_wait', f'the host\'s editor {m.group(1)} came up {wait:.0f} s '
+                             f'after its vote ({self.stage})', self.P,
+                             [f'`{x.strip()}`' for x in lines[i:i + 40] if 'editor' in x][:6])
         if timeups and readies:
             self.finding('vote', f'{self.stage}:timeup', f'a vote ran out of time although '
                          f'{", ".join(sorted({v[1] for v in readies}))} pressed "I\'m ready" ({self.stage})',
@@ -1044,10 +1171,16 @@ class Campaign:
             return
         pol = mine.group(2)
         took = 0
+        left = [o for o in others if o[1] != pol]
         for ptr, opol in others:
             if opol == pol:
                 continue
-            h.call(f'call Simulator::cCity::Capture thiscall {ptr if ptr.startswith("0x") else "0x" + ptr} 0x{pol} 0 0 0 0')
+            # Capture(newPol, type, instant, nuked caption, a5) (docs/re/civ.md#civ-stage-end). The last city instant, as
+            # a nation's surrender takes it: the game checks the end of Civ inside the call. By the cinematic path the
+            # check waits for that city's specialty box, which a talk or the bot's Esc left unanswered: every city owned,
+            # no end of Civ (BUG-0311, lab 20261030-104149 #1, 20261103-012624 #3)
+            inst = 1 if len(left) == 1 else 0
+            h.call(f'call Simulator::cCity::Capture thiscall {ptr if ptr.startswith("0x") else "0x" + ptr} 0x{pol} 0 {inst} 0 0')
             took += 1
             time.sleep(3)
             break  # one city per kick: its capture cinematic plays first
@@ -1278,6 +1411,22 @@ class Hands(threading.Thread):
                         pass
 
 
+PHASE_NOTES = {
+    'play': 'end of the {stage} play: every player still in {stage} play, the same creatures / tribes / cities / ships on '
+            'every screen, the partners drawn (none in the air or under the ground), the HUD in place',
+    'advance': 'after the {stage} -> next stage change: every game in the new stage, no loading or black screen left, '
+               'the players\' new creations drawn with their own models',
+    'finale': 'after the finale: every game in Space or at the galactic core, no loading screen, no frozen picture',
+}
+
+
+def phase_frame(camp, kind, stage):
+    """a key frame of every player at a phase's end (docs/06-testing.md#testing-key-frames)"""
+    roles = {('host-' if i == 0 else 'guest-') + p.name: p.con for i, p in enumerate(camp.P)}
+    keyframe(f'{kind}-{stage}', PHASE_NOTES.get(kind, '{stage}').format(stage=stage), players=roles, kind='phase',
+             extra=[f'campaign stage now {camp.stage}, phase {camp.phase}'])
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--from', dest='start', default='cell', choices=cl.STAGES)
@@ -1292,7 +1441,7 @@ def main():
     ap.add_argument('--finale-from-galaxy', action='store_true',
                     help='tests (BUG-0335): the guests go to the galaxy view before their finale steps')
     ap.add_argument('--no-jump', dest='jump', action='store_false', help='stop at a stage change that does not finish')
-    ap.add_argument('--seed', type=int, default=None)
+    ap.add_argument('--seed', type=int, default=int(os.environ['CAMPAIGN_SEED']) if os.environ.get('CAMPAIGN_SEED') else None)  # CAMPAIGN_SEED: a lab replay
     a = ap.parse_args()
     seed = a.seed if a.seed is not None else random.randrange(1 << 30)
     run = time.strftime('%Y%m%d-%H%M%S')
@@ -1356,6 +1505,7 @@ def main():
                     break
             elif kind == 'finale':
                 camp.finale()
+            phase_frame(camp, kind, stage)
             camp.check()
     except (OSError, ValueError) as e:
         camp.finding('dead', f'console:{e!r}'[:60], f'a console failed: {e!r}')

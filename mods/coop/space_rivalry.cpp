@@ -23,6 +23,7 @@
 //   the game's TakeDamage (the same hook: the rescue filter, then the native death and respawn).
 //   The rescue never helps a player at war with the ship (spacecoop.cpp partners_here).
 #include "space_rivalry.h"
+#include "player_life.h"
 
 #include <algorithm>
 #include <cmath>
@@ -33,6 +34,7 @@
 #include <string>
 #include <vector>
 
+#include "fixes.h"
 #include "game.h"
 #include "modes.h"
 #include "space_ext.h"
@@ -79,6 +81,15 @@ static uint32_t g_puppet_hits, g_restored;
 // rejoining guest loads the host's save again, whose money is not its budget); no reports until then
 static bool g_budget_known, g_was_in_space;
 static double g_last_ask;
+// BUG-0813: money_ptr() is null in an editor or an adventure entered from Space too, not only after a load: every
+// return asked the host again, whose copy is the last K_MONEY (up to 0.5 s old, and none while away), and K_SET put
+// the guest's money back to it: a contract reward paid in the first Space frame, or what was spent just before the
+// editor, was undone. The budget is asked for again only in another Space world (spaceext::world_epoch, which an
+// editor or an adventure does not change). `coop.fix space.rival_budget_world off`: every return (0.7.12).
+static bool g_budget_world_fix = true;
+COOP_FIX("space.rival_budget_world", "BUG-0813", g_budget_world_fix,
+         "space rivals: a guest's own budget is not reset to the host's copy after an editor or an adventure");
+static uint32_t g_budget_epoch, g_budget_kept;
 static int g_last_hit_type, g_last_hit_att;
 
 // ---------------- the host's authority ----------------
@@ -92,6 +103,10 @@ static uint16_t g_split_seq, g_merge_seq;
 static int g_split_total, g_split_share;
 static std::map<uint8_t, int> g_merge_credit_of; // the budgets the last merge counted
 static std::map<std::string, int> g_budget_name;  // player name -> its last reported budget (rejoins)
+// BUG-0422: a merge credited the departed player's last budget to a newcomer under its id (the name-keyed
+// g_budget_name keeps a rejoiner's own)
+PLAYER_STATE("space_rivalry", [](uint8_t id) { g_budget.erase(id); g_merge_credit_of.erase(id); },
+             [](uint8_t id) -> size_t { return g_budget.count(id) + g_merge_credit_of.count(id); });
 static std::vector<std::pair<uint8_t, std::string>> g_roster;
 static double g_last_state;
 
@@ -658,9 +673,15 @@ static void tick(double now)
         apply_pending_money();
     // a guest in a freshly loaded world (a rejoin loads the host's save): ask the host for its budget
     bool sp = money_ptr() != nullptr;
-    if (sp && !g_was_in_space)
-        g_budget_known = false;
+    if (sp && !g_was_in_space) {
+        if (g_budget_world_fix && g_budget_known && g_budget_epoch && g_budget_epoch == spaceext::world_epoch())
+            g_budget_kept++; // BUG-0813: back from an editor / adventure in the same Space world: still known
+        else
+            g_budget_known = false;
+    }
     g_was_in_space = sp;
+    if (sp && g_budget_known)
+        g_budget_epoch = spaceext::world_epoch();
     if (spaceext::is_host())
         g_budget_known = true;
     else if (spaceext::rivals() && sp && !g_budget_known && !g_split_pending && now - g_last_ask > 2.0) {
@@ -696,6 +717,7 @@ static void session_end()
     g_have_state = false;
     g_split_pending = g_merge_pending = false;
     g_budget_known = g_was_in_space = false;
+    g_budget_epoch = 0;
     g_budget_name.clear();
     g_last_reported = -1;
     g_rel_names.clear();
@@ -809,9 +831,9 @@ static std::string status()
     char b[320];
     snprintf(b, sizeof b,
              " hits_sent=%u hits_got=%u dmg_got=%.1f pvp_deaths=%u enemy_puppets=%u splits=%u merges=%u puppet_hits=%u"
-             " (last type %d by %s) restored=%u\n",
+             " (last type %d by %s) restored=%u budget_kept=%u\n",
              g_hits_sent, g_hits_got, g_dmg_got, g_pvp_deaths, g_enemy_puppets, g_splits, g_merges, g_puppet_hits,
-             g_last_hit_type, g_last_hit_att == 1 ? "me" : g_last_hit_att == 2 ? "other" : "none", g_restored);
+             g_last_hit_type, g_last_hit_att == 1 ? "me" : g_last_hit_att == 2 ? "other" : "none", g_restored, g_budget_kept);
     return s + b;
 }
 

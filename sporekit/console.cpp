@@ -8,6 +8,7 @@
 #include "core.h"
 #include "task_pump_metrics.h"
 #include "outside_tasks.h"
+#include "task_drop.h"
 
 #include <algorithm>
 #include <deque>
@@ -67,10 +68,29 @@ void run_outside_frame_from(const void* code, std::function<void()> fn)
         PostMessageW(w, WM_SK_PUMP_OUT, 0, 0);
 }
 
+// BUG-0672: the repost at once looped for ever when the frame flag stayed set after a fault the game's handler caught
+// (kit.fix frameunwind clears it after App::Canvas::Tick, but Canvas::Tick's PeekMessage loop got the reposted message
+// back every time and never returned: no frame ran again). With kit.fix outpump the tasks wait for the frame's end
+// (d3d9hook.cpp: the end of a frame, of Present, or the cut-off), which posts the message again.
+static bool g_out_deferred;
+
+void outside_tasks_resume()
+{
+    if (!g_out_deferred)
+        return;
+    g_out_deferred = false;
+    if (HWND w = (HWND)game_window())
+        PostMessageW(w, WM_SK_PUMP_OUT, 0, 0);
+}
+
 void pump_outside_tasks()
 {
     if (in_frame()) { // called from a message dispatched inside Present: try again later
         g_outside_metrics.defer();
+        if (fixed(g_fix_outpump)) {
+            g_out_deferred = true;
+            return;
+        }
         if (HWND w = (HWND)game_window())
             PostMessageW(w, WM_SK_PUMP_OUT, 0, 0);
         return;
@@ -102,21 +122,8 @@ void pump_outside_tasks()
 // postponed while a message was dispatched inside Present) would then call into unmapped memory
 size_t drop_tasks_in(uintptr_t lo, uintptr_t hi)
 {
-    size_t n = 0;
-    // Destroy removed callable targets after unlocking, while their image is
-    // still loaded. Their cleanup may itself enqueue another task.
-    for (;;) {
-        std::optional<std::function<void()>> retired;
-        {
-            std::lock_guard<std::mutex> lock(g_task_mu);
-            auto it = std::find_if(g_tasks.begin(),g_tasks.end(),[&](const Task& task) {
-                const auto code = uintptr_t(task.code);return code >= lo && code < hi;
-            });
-            if (it == g_tasks.end()) break;
-            retired = std::move(it->fn);g_tasks.erase(it);++n;
-        }
-    }
-    return n + g_out_tasks.drop_in(lo,hi);
+    const auto match = [&](const Task& task) { const auto code = uintptr_t(task.code); return code >= lo && code < hi; };
+    return drop_tasks(g_task_mu, {&g_tasks}, match, fixed(g_fix_taskdrop)) + g_out_tasks.drop_in(lo,hi);
 }
 
 struct DelayedTask {

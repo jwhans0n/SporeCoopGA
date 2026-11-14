@@ -42,9 +42,15 @@ void Discovery::update(uint32_t now)
         Writer w;
         w.u32(kDiscoverQuery);
         w.u16(kProtoVersion);
-        for (uint32_t ip : targets)
+        for (uint32_t ip : targets) {
+            if (!ports.empty()) {
+                for (uint16_t port : ports)
+                    sock_.send_to(Endpoint{ip, port}, w.data.data(), w.size());
+                continue;
+            }
             for (uint16_t i = 0; i < kDiscoverPorts; i++)
                 sock_.send_to(Endpoint{ip, (uint16_t)(kDefaultPort + i)}, w.data.data(), w.size());
+        }
     }
     uint8_t buf[512];
     for (int i = 0; i < 64; i++) {
@@ -56,6 +62,10 @@ void Discovery::update(uint32_t now)
         DiscoverReply rep;
         if (!rep.read(r) || rep.proto != kProtoVersion)
             continue;
+        if (g_fix.name_clean) { // BUG-0774: any machine of the LAN can answer; the list shows name and info
+            rep.name = utf8::net_name(rep.name);
+            rep.info = utf8::clean_text(rep.info, 64);
+        }
         on_reply(from, rep, now);
     }
     // BUG-0039: entries were never removed (a silent host was only hidden), so answers with a new

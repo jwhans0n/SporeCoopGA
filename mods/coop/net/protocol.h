@@ -12,7 +12,7 @@
 namespace net {
 
 constexpr uint32_t kMagic = 0x4F435053; // 'SPCO'
-constexpr uint16_t kProtoVersion = 28; // 3: shared resources; 4: lobby/discovery; 5: 128-packet acks;
+constexpr uint16_t kProtoVersion = 29; // 3: shared resources; 4: lobby/discovery; 5: 128-packet acks;
                                       // 6: connection id/BYE; 7: upstream Space features and GA runs;
                                       // 8: GA preparation; 9: party flow/captain identity;
                                       // 10: static state, interactions and teleport generations;
@@ -33,6 +33,7 @@ constexpr uint16_t kProtoVersion = 28; // 3: shared resources; 4: lobby/discover
                                       // 25: Extended Complexity policy2 with stable Native marker arenas;
                                       // 26: retain upstream 0.7.4 WOBJ/effects, activity55/adventure63/editor62;
                                       // 23: crew, procedural terrain, immutable assets and independent editors
+                                      // 29: upstream 0.7.13 body prefix; adventure70/editor71, complete GA identity required.
 constexpr uint16_t kDefaultPort = 47810;
 constexpr int kMaxPlayers = 4; // host + 3 guests (Spore pack size)
 constexpr size_t kMaxPacket = 1200;
@@ -80,7 +81,8 @@ enum MsgType : uint8_t {
     MSG_UFO_STATE = 40,   // host -> guests in its place: NPC ships snapshot (chunked)
     MSG_UFO_HIT = 41,     // guest -> host: u16 ship id, f32 damage, i32 type, vec3 dir
     MSG_UFO_DAMAGE = 42,  // host -> guest: f32 damage, i32 type, vec3 dir, u16 attacker ship id
-    MSG_VOTE = 43,        // host -> guests: u8 active, u8 seconds left, str8 text (evolution vote)
+    MSG_VOTE = 43,        // host -> guests: u8 active, u8 seconds left, str8 text (evolution vote), u32 editor, u8 flags (1: an
+                          // evolve offer with active 0, BUG-0516; older senders stop before the flags)
     MSG_CREATION = 45,    // reliable chunks of a player's creation (owner, kind, id, total, offset, data)
     MSG_ROLE = 46,        // guest -> host: u8 role (civilization: 0 none, 1 military, 2 economic, 3 religious)
     MSG_CIV_ALARM = 47,   // host -> guests: u8 city index, u8 kind (0 military, 1 religious), u8 owner
@@ -97,8 +99,8 @@ enum MsgType : uint8_t {
     MSG_PARTS = 53,       // the party's collected creature parts (parts.cpp, BUG-0401): u8 kind (0 host -> guests the
                           // host's set, 1 host -> guests news, 2 guest -> host found here), u8 origin, u32 world,
                           // u16 n, n x {u32 lo, u32 hi}. Older SporeCoop ignores it (an unknown type).
-    MSG_ADVENTURE = 65,  // u8 subkind, run-scoped adventure coordination; 64..71 resource transfer
-    MSG_EDITOR = 66,     // project/epoch-scoped authoring, kept separate from gameplay runs
+    MSG_ADVENTURE = 70,  // u8 subkind, run-scoped adventure coordination; 64..71 resource transfer
+    MSG_EDITOR = 71,     // project/epoch-scoped authoring, kept separate from gameplay runs
     MSG_ACTIVITY = 55,   // guest -> host: actual native mode and editor activity
     MSG_FIELDS = 56,      // host -> guests: replicated state fields of mirrored objects (fields.h, BUG-0419 G2):
                           // u8 kind, u8 nf, nf x u8 field, u16 n, n x {u16 id, nf x f32}; unreliable, deltas + refresh.
@@ -133,9 +135,25 @@ enum MsgType : uint8_t {
                           // u8 kind; 0 effect {u8 space (0 NPC, 1 tribe member), u16 id, u8 stop, u8 pool, u32 effect,
                           // u32 key}, 1 combat voice {space, id, u8 enter}, 2 sprint {space, id, u8 on}.
                           // Older SporeCoop ignores it (an unknown type).
+    MSG_NPC_MEAT = 65,    // the meat left on bodies of killed NPCs (BUG-0557 / BUG-0383, npc.cpp): u8 kind; 0 host -> guest
+                          // {u8 n, n x {u16 NPC id, f32 meat}} (unreliable, on a change and every 2 s), 1 guest -> host
+                          // {u8 n, n x {u16 NPC id, f32 eaten}} (reliable: what the guest's creature ate of its proxy).
+                          // Older SporeCoop ignores it (an unknown type).
     MSG_WSTATE = 62,      // host -> guests: host-owned world state rows (wsync.h, BUG-0419 / BUG-0565 / BUG-0577 /
                           // BUG-0579 / BUG-0564): u8 kind 0, u32 host mode, u8 rows, {u8 id, u8 nv, u8 n, n x {u32 key,
                           // nv x u32}}. Older SporeCoop ignores it (an unknown type).
+    MSG_SETTINGS = 66,    // host -> guests (reliable): the session settings (settings_core.h, F3 of 0.7.12): u8 kind 0,
+                          // u8 flags (1: the host plays its world), u8 n, n x {str8 key, u32 value}; on a join and on
+                          // every change. Older SporeCoop ignores it (an unknown type).
+    MSG_COLORS = 67,      // the player colours (find_core.h, F2 of 0.7.12): u8 kind; 0 host -> guests (reliable) the table
+                          // u8 n, n x {u8 id, u8 colour}; 1 guest -> host u8 colour (the guest asks for it). Older
+                          // SporeCoop ignores it (an unknown type).
+    MSG_REPORT = 68,      // the session report (net/sreport.h, F4 of 0.7.12, BUG-0767): u8 kind; host -> guest the
+                          // question / a stop, guest -> host the answer and its report zip in pieces (reliable).
+                          // Older SporeCoop ignores it (an unknown type).
+    MSG_HOST_WORLD = 69,  // host -> guests (reliable): u32 world, the world id of WELCOME again (host_world.h welcome_world:
+                          // the CRC of the host's save name), sent when the host's save changes during the session and
+                          // after a join (BUG-0933). Older SporeCoop ignores it (an unknown type).
 };
 
 // LAN discovery: plain datagrams outside any connection, answered by hosts on their game port
@@ -173,6 +191,7 @@ enum RejectReason : uint8_t {
     REJ_VERSION = 1,
     REJ_FULL = 2,
     REJ_BUILD = 3,
+    REJ_STARTED = 4, // F3 all.late_join off: the host plays its world already (an older guest shows the text)
 };
 
 enum PlayerFlags : uint8_t {
@@ -183,6 +202,7 @@ enum PlayerFlags : uint8_t {
     PF_DEAD = 16,
     PF_SWIMMING = 32,
     PF_SNEAKING = 64, // BUG-0463: the creature sneaks (+0xBB1); older SporeCoop ignores the bit
+    PF_RESYNC = 128,  // BUG-0332: the host loads the shared world once for everybody (tribe.host_reload); older SporeCoop ignores it
 };
 
 // BUG-0425: a height over the sender's terrain (m) that is not known (an older sender, no terrain)
@@ -390,6 +410,9 @@ struct PlayerState {
     // ground (PF_JUMPING); kNoAgl otherwise or from an older sender (appended after scale: older readers stop
     // before it). NPC states carry it in the MSG_NPC_STATE batch's trailer (npc.cpp), not here
     float agl = kNoAgl;
+    // BUG-0733: the sender's own creature's size (cSpatialObject GetScale) in the Creature stage; 0 = not sent (another
+    // stage, or an older sender: appended after agl, older readers stop before it)
+    float body = 0;
 
     void write(Writer& w) const
     {
@@ -403,6 +426,7 @@ struct PlayerState {
         w.u32(mode); w.u32(world);
         w.f32(scale);
         w.f32(agl);
+        w.f32(body);
         w.u32(uint32_t(adventure_run)); w.u32(uint32_t(adventure_run >> 32));
         w.u32(uint32_t(captain_selection)); w.u32(uint32_t(captain_selection >> 32));
         w.u32(uint32_t(movement_generation)); w.u32(uint32_t(movement_generation >> 32));
@@ -419,10 +443,11 @@ struct PlayerState {
         mode = r.u32(); world = r.u32();
         scale = r.f32();
         agl = r.f32();
+        body = r.f32();
         adventure_run = r.u32(); adventure_run |= uint64_t(r.u32()) << 32;
         captain_selection = r.u32(); captain_selection |= uint64_t(r.u32()) << 32;
         movement_generation = r.u32(); movement_generation |= uint64_t(r.u32()) << 32;
-        return r.ok() && std::isfinite(agl) && std::isfinite(scale) && scale >= 0 && scale <= 10000;
+        return r.ok() && std::isfinite(agl) && std::isfinite(scale) && scale >= 0 && scale <= 10000 && std::isfinite(body) && body >= 0 && body <= 10000;
     }
 };
 

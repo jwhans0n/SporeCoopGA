@@ -8,6 +8,9 @@
 #include <shellapi.h>
 
 #include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <map>
 #include <tuple>
@@ -16,9 +19,11 @@
 #include "mouse.h"
 #include "net/fixes.h"
 #include "notify.h"
+#include "net/protocol.h"
 #include "net/udp.h"
 #include "notify_text.h"
 #include "space_ext.h"
+#include "settings.h"
 #include "sui.h"
 #include "world.h"
 #include "fixes.h"
@@ -68,7 +73,7 @@ constexpr uint32_t kIdMainMenu = 0x0615A5FF, kIdShare = 0x0615B616;
 constexpr uint32_t kDialogLayout = 0x34A6339E; // the game's account dialog (frame, logo, close)
 constexpr uint32_t kGold = 0xFFFFCC4D, kWhite = 0xFFFFFFFF, kDim = 0xFF9DB8CC, kGreen = 0xFF8CF08C,
                    kRed = 0xFFFF7A6A, kYellow = 0xFFFFD866;
-constexpr float kW = 760, kH = 600; // 560 + a footer row (version, "Report a problem")
+constexpr float kW = 760, kH = 660; // the lobby rows, the host's "Ask the players" row, the footer (version, "Report a problem")
 constexpr int kSpaceRows = 12;
 static bool g_space_page; // the lobby shows the Space page instead
 static int g_lan_first;   // the first game on the network listed (pages of three, BUG-0183)
@@ -91,13 +96,74 @@ static std::map<Win, Cache> g_cache;
 static int g_chat_scroll;            // chat lines scrolled up from the newest (BUG-0129)
 constexpr size_t kChatCols = 70;     // letter cells of a chat line (680 px)
 
-// width of a text in the dialog font (average glyph width, measured at 1080p)
+// BUG-0904, BUG-0905, BUG-0908: labels center their text in their box (docs/08-ui.md), so a left-aligned label's box
+// is fitted to the text's width; with one average glyph width the rows of a column started up to ~8 px apart, a
+// caption overflowed its button and the lobby's Stage column touched the colour button. On: the advance of each glyph
+// (each glyph's advance measured in game, docs/08-ui.md#ui-text-width), the short settings caption and a
+// wider colour column. Off: the 0.7.12 pre-release layout.
+static bool g_layout_fix = true;
+COOP_FIX("core.ui_layout", "BUG-0905", g_layout_fix, "ui: labels fitted by the glyphs' widths, short Settings caption, room for the colour button");
+
+// width of a text in the dialog font (+30: the box's margins), measured at 1080p
 static float text_width(const std::string& t)
 {
-    int n = 0;
-    for (unsigned char ch : t)
-        n += (ch & 0xC0) != 0x80;
-    return n * 9.3f + 30;
+    if (!g_layout_fix) { // one average glyph width
+        int n = 0;
+        for (unsigned char ch : t)
+            n += (ch & 0xC0) != 0x80;
+        return n * 9.3f + 30;
+    }
+    // the advance of each glyph of the dialog font in pixels at 1440x1080 (measured: 12 against 4 copies of each
+    // glyph in a label, docs/08-ui.md#ui-text-width); ASCII 32..126, then Cyrillic U+0410..U+044F
+    static const unsigned char kAscii[95] = {
+        6, 7, 7, 11, 11, 13, 13, 4, 7, 7, 8, 11, 7, 7, 7, 7, 11, 11, 11,
+        11, 11, 11, 11, 11, 11, 11, 7, 7, 11, 11, 11, 8, 16, 12, 11, 12, 12, 11,
+        11, 13, 13, 5, 10, 12, 11, 14, 13, 13, 11, 13, 12, 10, 12, 13, 12, 17, 11,
+        13, 11, 7, 7, 7, 11, 11, 7, 10, 11, 10, 11, 11, 7, 10, 11, 6, 7, 10,
+        6, 16, 11, 11, 11, 11, 8, 8, 8, 11, 11, 16, 11, 10, 10, 7, 5, 7, 11};
+    static const unsigned char kCyr[64] = {
+        12, 11, 11, 10, 14, 11, 18, 11, 13, 14, 12, 13, 15, 13, 13, 13, 11, 12, 12, 12, 15, 12, 13, 12,
+        18, 18, 15, 16, 12, 12, 18, 12, 10, 11, 10, 9, 12, 11, 15, 9, 11, 11, 10, 11, 14, 11, 11, 11,
+        11, 10, 9, 10, 15, 11, 11, 11, 15, 16, 12, 14, 10, 10, 15, 11};
+    float w = 0;
+    for (size_t i = 0; i < t.size();) {
+        unsigned char ch = (unsigned char)t[i];
+        uint32_t cp = ch;
+        int n = ch < 0x80 ? 1 : (ch >> 5) == 6 ? 2 : (ch >> 4) == 14 ? 3 : 4;
+        if (n > 1) {
+            cp = ch & (0x3F >> (n - 1));
+            for (int k = 1; k < n && i + k < t.size(); k++)
+                cp = (cp << 6) | ((unsigned char)t[i + k] & 0x3F);
+        }
+        i += n;
+        if (cp >= 32 && cp < 127)
+            w += kAscii[cp - 32];
+        else if (cp >= 0x410 && cp < 0x450)
+            w += kCyr[cp - 0x410];
+        else if (cp == 0x401 || cp == 0x451) // Ё ё
+            w += 11;
+        else
+            w += 11;
+    }
+    return w + 30;
+}
+float caption_width(const std::string& t) { return text_width(t) - 30; }
+
+// README pictures (coop.uistate demo <address> <real port> <shown port>): the window shows a documentation address
+// instead of the PC's own and the default port instead of a test lane's; nothing else changes
+static std::string g_demo_addr, g_demo_from, g_demo_to;
+
+std::string demo_text(std::string t)
+{
+    if (g_demo_from.empty() || g_demo_from == g_demo_to)
+        return t;
+    for (const char* pre : {"port ", ":", "порт "}) {
+        std::string a = pre + g_demo_from, b = pre + g_demo_to;
+        for (size_t at = t.find(a); at != std::string::npos; at = t.find(a, at + b.size()))
+            if (at + a.size() == t.size() || !isdigit((unsigned char)t[at + a.size()]))
+                t.replace(at, a.size(), b);
+    }
+    return t;
 }
 
 static void fit(Win w, const Cache& c)
@@ -107,10 +173,11 @@ static void fit(Win w, const Cache& c)
     sui::set_area(w, r);
 }
 
-static void text(Win w, const std::string& t)
+static void text(Win w, const std::string& t0)
 {
     if (!w)
         return;
+    const std::string t = demo_text(t0);
     auto& c = g_cache[w];
     if (c.text != t) {
         c.text = t;
@@ -249,28 +316,55 @@ static void ensure_menu_button()
 }
 
 // ---------------- dialog ----------------
+// The connect steps (0.7.12 F1, docs/08-ui.md#ui-window-steps): the name (first start only), Host or Join, then
+// the Host page or the Join page. The lobby replaces them while a session runs (role != 0); a session that ends
+// leaves the window on the page of its role (a guest: Join, a host: Host).
+enum Step { kStepName, kStepChoose, kStepHost, kStepJoin };
+static int g_step = kStepChoose;
+static bool g_settings_page;  // the lobby shows the session settings instead
+static uint32_t g_test_color;  // tests / layout shots (coop.uistate color <argb>): the colour of rows without one
+static int g_set_first;       // the first settings entry shown (pages of kSetRows)
+static std::string g_set_line; // the settings page's answer line (a refused change, a setting's help)
+static uint32_t g_set_line_color = kDim;
+// BUG-0765: the first start asks for the player's name (owner 2026-11-08: typed, no Steam / GOG name); off: the
+// window opens on the Host / Join step with "Player"
+static bool g_name_first_fix = true;
+COOP_FIX("core.ui_name_first", "BUG-0765", g_name_first_fix, "ui: the first start of the co-op window asks for the player's name");
+constexpr int kSetRows = 13;
+
 struct Dialog {
     Win root = nullptr, layer = nullptr;
     uint32_t font_body = 0, font_button = 0;
     Win like_button = nullptr; // gold "Login" button of the layout
     Win subtitle = nullptr;
     Win version = nullptr, report_btn = nullptr; // every page: the version line, "Report a problem"
-    // connect page
-    std::vector<Win> page_connect;
-    Win name_edit = nullptr, addr_edit = nullptr, port_edit = nullptr, join_btn = nullptr, host_btn = nullptr;
+    // connect steps: every widget belongs to one step (status / update / back are shared, shown by refresh)
+    std::vector<Win> page_name, page_choose, page_host, page_join;
+    Win name_edit = nullptr, name_ok = nullptr, me_line = nullptr, back_btn = nullptr;
+    Win addr_edit = nullptr, port_edit = nullptr, join_btn = nullptr, host_btn = nullptr;
     Win lan_hdr = nullptr, host_hint = nullptr, status = nullptr, update_btn = nullptr;
     Win lan_rows[3] = {};
     std::string lan_addr[3];
     Win lan_more = nullptr; // BUG-0183: the next three games on the network
     // lobby page
     std::vector<Win> page_lobby;
-    Win session = nullptr, world = nullptr, chat_edit = nullptr, send_btn = nullptr;
-    Win ready_btn = nullptr, share_btn = nullptr, leave_btn = nullptr;
-    Win row_name[4] = {}, row_stage[4] = {}, row_ping[4] = {}, row_ready[4] = {};
+    Win session = nullptr, address = nullptr, world = nullptr, chat_edit = nullptr, send_btn = nullptr;
+    Win ready_btn = nullptr, share_btn = nullptr, leave_btn = nullptr, ask_btn = nullptr, settings_btn = nullptr;
+    Win rask = nullptr, rsend = nullptr, rnosend = nullptr; // a guest asked for its report (F4, BUG-0767)
+    Win rline = nullptr;                                     // the host: the answers while a round runs
+    Win row_name[4] = {}, row_color[4] = {}, row_stage[4] = {}, row_ping[4] = {}, row_ready[4] = {};
+    Win color_btn = nullptr; // F2: ">" next to the own colour: the next colour
+    Win stage_hdr = nullptr;  // the Stage column's header (moved with the column, BUG-0908)
     Win chat_lines[5] = {};
     Win chat_up = nullptr, chat_down = nullptr;
     Win creation = nullptr, creation_prev = nullptr, creation_next = nullptr, give_btn = nullptr, give_next = nullptr, jump_btn = nullptr;
     Win space_btn = nullptr; // lobby -> the Space page (Space stage only)
+    // settings page: group headers and the rows of settings_core.h kDefs, a value button and a scope tag each
+    std::vector<Win> page_settings;
+    Win set_title = nullptr, set_note = nullptr, set_line = nullptr, set_back = nullptr, set_prev = nullptr,
+        set_next = nullptr, set_pageno = nullptr;
+    Win set_label[kSetRows] = {}, set_btn[kSetRows] = {}, set_tag[kSetRows] = {};
+    int set_id[kSetRows] = {}; // the setting of each row now (-1: a group header or nothing)
     // Space page: the rows of the space features (space_ext.h)
     std::vector<Win> page_space;
     Win space_title = nullptr, space_back = nullptr, space_prev = nullptr, space_next = nullptr, space_pageno = nullptr;
@@ -631,25 +725,42 @@ static std::string load_str(const char* section, const char* key, const char* de
     return b;
 }
 
-static void apply_name()
+// the name step's Continue (and Enter in its field): the name is saved, the next start goes to Host / Join
+static void do_name_ok()
 {
     std::string n = sui::edit_text(D.name_edit);
-    if (!n.empty() && n != A.name()) {
-        A.set_name(n);
-        save_str("coop", "name", n);
+    while (!n.empty() && n.back() == ' ')
+        n.pop_back();
+    while (!n.empty() && n.front() == ' ')
+        n.erase(0, 1);
+    if (n.empty()) {
+        set_status(T("Type the name the other players will see", "Введите имя, которое увидят другие игроки"), kRed, 8);
+        return;
     }
+    if (A.role() != 0) { // (the name step is not shown in a session; a console join meanwhile)
+        set_status(T("Leave the session to change your name", "Чтобы сменить имя, выйдите из игры"), kRed, 8);
+        return;
+    }
+    if (n != A.name())
+        A.set_name(n);
+    save_str("coop", "name", A.name());
+    save_str("ui", "name_chosen", "1");
+    g_step = kStepChoose;
+    set_status("", kYellow);
 }
+
+static std::string g_join_line; // tests: the status line of the last join (a failed name lookup replaces it at once)
 
 static void do_join(const std::string& address)
 {
-    apply_name();
     std::string addr = address;
     if (net::g_fix.addr_check) // BUG-0138: a leading space or the whole pasted hint line
         addr = net::Endpoint::clean(addr);
     while (!addr.empty() && addr.back() == ' ')
         addr.pop_back();
     if (addr.empty()) {
-        set_status(T("Enter the host address, e.g. 192.168.1.5:47810", "Введите адрес хоста, например 192.168.1.5:47810"),
+        set_status(T("Type the host's address, e.g. 192.168.1.5 or sporecoop.local",
+                     "Введите адрес хоста, например 192.168.1.5 или sporecoop.local"),
                    kRed);
         return;
     }
@@ -659,12 +770,15 @@ static void do_join(const std::string& address)
         return;
     }
     save_str("ui", "last_address", addr);
-    set_status(std::string(T("Connecting to ", "Подключение к ")) + addr + "...", kYellow);
+    // a name or an address without a port: the session uses the default port (net::kDefaultPort)
+    bool port = addr.find(':') != std::string::npos;
+    g_join_line = std::string(T("Connecting to ", "Подключение к ")) + addr +
+                  (port ? "" : ":" + std::to_string(net::kDefaultPort)) + "...";
+    set_status(g_join_line, kYellow);
 }
 
 static void do_host()
 {
-    apply_name();
     int port = atoi(sui::edit_text(D.port_edit).c_str());
     if (port <= 0 || port > 65535)
         port = A.default_port;
@@ -696,13 +810,18 @@ static void finish_report(void*)
                    kRed);
         return;
     }
+    bool round = A.report_round && A.report_round(); // F4: the host's report asked every guest for its report too
     set_status(std::string(T("Report saved: ", "Отчёт сохранён: ")) + p.substr(p.find_last_of("\\/") + 1) +
-                   T(" - attach it to an issue on GitHub; the other players should send theirs too",
-                     " - приложите его к issue на GitHub; другие игроки пусть пришлют свои") +
+                   (round ? T(" - asking the players for theirs: the session report follows",
+                              " - игроков попросили прислать свои: будет общий отчёт")
+                          : T(" - attach it to an issue on GitHub; the other players should send theirs too",
+                              " - приложите его к issue на GitHub; другие игроки пусть пришлют свои")) +
                    (shot ? T(". A screenshot of the game is included (coop.ini [report] screenshot=0 turns it off)",
                              ". В отчёт входит снимок экрана игры (отключить: coop.ini [report] screenshot=0)")
                          : ""),
                kGreen);
+    if (!g_want_open) // the pause menu's item: the window is closed, a panel says where the report is
+        notify::show(std::string(T("Report saved: ", "Отчёт сохранён: ")) + p.substr(p.find_last_of("\\/") + 1));
     std::wstring w(p.begin(), p.end()); // the path is ASCII-safe enough for /select; UTF-8 below if not
     int n = MultiByteToWideChar(CP_UTF8, 0, p.c_str(), -1, nullptr, 0);
     if (n > 0) {
@@ -790,6 +909,8 @@ static void change_adventure(int field, int direction)
     A.set_adventure_difficulty(difficulty);
     g_dirty = true;
 }
+static void do_set_click(int row);
+static std::string g_report_seen; // the last session report line put into the status (F4)
 
 static void build_dialog()
 {
@@ -839,43 +960,105 @@ static void build_dialog()
     std::vector<Win> common;
     D.subtitle = add_label(common, {0, 70, kW, 96}, T("CO-OP", "КООПЕРАТИВ"), kGold, sui::kAlignCenter);
     // every page: which SporeCoop and game build run, and a report for bug reports
-    D.version = add_label(common, {40, 548, 500, 570}, A.version_line ? A.version_line() : "", kDim);
+    D.version = add_label(common, {40, 608, 500, 630}, A.version_line ? A.version_line() : "", kDim);
     if (A.version_line && text_width(A.version_line()) > 440) sui::set_font(D.version, D.font_button);
-    D.report_btn = add_button(common, "report", {510, 542, 720, 574}, T("Report a problem", "Сообщить об ошибке"),
+    D.report_btn = add_button(common, "report", {510, 602, 720, 634}, T("Report a problem", "Сообщить об ошибке"),
                               do_report);
 
-    // ---- connect page ----
-    auto& P = D.page_connect;
-    add_label(P, {40, 112, 225, 140}, T("Your name", "Ваше имя"), kWhite);
-    D.name_edit = add_edit(P, "name", {230, 108, 520, 140}, A.name(), 24);
-    add_label(P, {40, 158, 720, 186}, T("Join a friend's game", "Подключиться к другу"), kGold);
-    add_label(P, {40, 198, 225, 226}, T("Host address", "Адрес хоста"), kWhite);
-    D.addr_edit = add_edit(P, "address", {230, 194, 520, 226}, load_str("ui", "last_address", ""), 64);
-    D.join_btn = add_button(P, "join", {540, 190, 720, 230}, T("Join", "Подключиться"),
-                            [] { do_join(sui::edit_text(D.addr_edit)); });
-    D.lan_hdr = add_label(P, {40, 242, 590, 268}, "", kDim);
-    D.lan_more = add_button(P, "lanmore", {600, 238, 720, 268}, T("More >", "Ещё >"), [] {
+    // ---- step 1: the name (first start) ----
+    auto& N = D.page_name;
+    add_label(N, {40, 116, 720, 144}, T("Welcome to SporeCoop!", "Добро пожаловать в SporeCoop!"), kGold);
+    add_label(N, {40, 156, 720, 182}, T("Choose the name the other players will see.", "Выберите имя, которое увидят другие игроки."),
+              kWhite);
+    add_label(N, {40, 184, 720, 210}, T("You can change it later.", "Его можно сменить позже."), kDim);
+    add_label(N, {40, 240, 225, 268}, T("Your name", "Ваше имя"), kWhite);
+    D.name_edit = add_edit(N, "name", {230, 236, 520, 268}, A.name(), 24);
+    D.name_ok = add_button(N, "nameok", {540, 232, 720, 272}, T("Continue", "Далее"), do_name_ok);
+
+    // ---- step 2: Host or Join ----
+    auto& C = D.page_choose;
+    D.me_line = add_label(C, {40, 112, 520, 140}, "", kWhite);
+    add_button(C, "rename", {540, 106, 720, 142}, T("Change name", "Сменить имя"), [] {
+        g_step = kStepName;
+        sui::set_edit_text(D.name_edit, A.name());
+        set_status("", kYellow);
+    });
+    add_label(C, {40, 176, 720, 204}, T("What would you like to do?", "Что вы хотите сделать?"), kGold);
+    add_button(C, "gohost", {40, 214, 360, 264}, T("Host a game", "Создать игру"), [] {
+        g_step = kStepHost;
+        set_status("", kYellow);
+    });
+    add_button(C, "gojoin", {400, 214, 720, 264}, T("Join a game", "Подключиться к игре"), [] {
+        g_step = kStepJoin;
+        g_lan_first = 0;
+        set_status("", kYellow);
+    });
+    add_label(C, {40, 272, 360, 296}, T("Play your world, friends join you", "Ваш мир, друзья входят к вам"), kDim);
+    add_label(C, {400, 272, 720, 296}, T("Play in a friend's world", "Игра в мире друга"), kDim);
+    add_label(C, {40, 330, 720, 354}, T("Everyone needs SporeCoop and Spore with Galactic Adventures.",
+                                        "Всем нужны SporeCoop и Spore с Galactic Adventures."),
+              kDim);
+
+    // ---- step 3a: Host ----
+    auto& HP = D.page_host;
+    add_label(HP, {200, 108, 720, 134}, T("Host a game", "Создать игру"), kGold);
+    add_label(HP, {40, 170, 225, 198}, T("Port (UDP)", "Порт (UDP)"), kWhite);
+    D.port_edit = add_edit(HP, "port", {230, 166, 330, 198},
+                           load_str("ui", "host_port", std::to_string(A.default_port).c_str()), 5);
+    add_label(HP, {340, 170, 720, 198},
+              (std::string(T("(", "(")) + std::to_string(net::kDefaultPort) + T(" if you are not sure)", ", если не уверены)")),
+              kDim);
+    D.host_btn = add_button(HP, "host", {540, 214, 720, 254}, T("Host", "Создать"), do_host);
+    add_label(HP, {40, 274, 720, 298}, T("Friends on your network find your game in their list.",
+                                         "Друзья в вашей сети увидят игру в списке."),
+              kDim);
+    add_label(HP, {40, 300, 720, 324}, T("Over the internet: forward the UDP port on your router,",
+                                         "Через интернет: откройте UDP-порт на роутере"),
+              kDim);
+    add_label(HP, {40, 326, 720, 350}, T("or play over a VPN (ZeroTier, Tailscale, Radmin VPN).",
+                                         "или играйте через VPN (ZeroTier, Tailscale)."),
+              kDim);
+    D.host_hint = add_label(HP, {40, 366, 720, 392}, "", kWhite);
+
+    // ---- step 3b: Join ----
+    auto& J = D.page_join;
+    add_label(J, {200, 108, 720, 134}, T("Join a game", "Подключиться к игре"), kGold);
+    D.lan_hdr = add_label(J, {40, 148, 590, 174}, "", kDim);
+    D.lan_more = add_button(J, "lanmore", {600, 144, 720, 174}, T("More >", "Ещё >"), [] {
         g_lan_first += 3; // refresh_connect wraps it to the first page
         g_dirty = true;
     });
     for (int i = 0; i < 3; i++) {
         char nm[16];
         snprintf(nm, sizeof nm, "lan%d", i);
-        D.lan_rows[i] = add_button(P, nm, {40, 272.f + i * 38, 720, 306.f + i * 38}, "", [i] {
+        D.lan_rows[i] = add_button(J, nm, {40, 178.f + i * 38, 720, 212.f + i * 38}, "", [i] {
             if (!D.lan_addr[i].empty()) {
                 sui::set_edit_text(D.addr_edit, D.lan_addr[i]);
                 do_join(D.lan_addr[i]);
             }
         });
     }
-    add_label(P, {40, 390, 720, 418}, T("Host a game", "Создать игру"), kGold);
-    add_label(P, {40, 430, 225, 458}, T("Port (UDP)", "Порт (UDP)"), kWhite);
-    D.port_edit = add_edit(P, "port", {230, 426, 330, 458},
-                           load_str("ui", "host_port", std::to_string(A.default_port).c_str()), 5);
-    D.host_btn = add_button(P, "host", {540, 422, 720, 462}, T("Host", "Создать"), do_host);
-    D.host_hint = add_label(P, {40, 466, 720, 492}, "", kDim);
-    D.status = add_label(P, {40, 498, 560, 526}, "", kYellow);
-    D.update_btn = add_button(P, "update", {570, 494, 720, 530}, "", [] {
+    add_label(J, {40, 306, 720, 332}, T("Or type the host's address", "Или введите адрес хоста"), kGold);
+    add_label(J, {40, 344, 225, 372}, T("Address", "Адрес"), kWhite);
+    D.addr_edit = add_edit(J, "address", {230, 340, 520, 372}, load_str("ui", "last_address", ""), 64);
+    D.join_btn = add_button(J, "join", {540, 336, 720, 376}, T("Join", "Подключиться"),
+                            [] { do_join(sui::edit_text(D.addr_edit)); });
+    add_label(J, {40, 384, 720, 408}, T("An IP address or a host name: 192.168.1.5, sporecoop.local",
+                                        "IP-адрес или имя: 192.168.1.5, sporecoop.local"),
+              kDim);
+    add_label(J, {40, 410, 720, 434},
+              std::string(T("The port is ", "Порт ")) + std::to_string(net::kDefaultPort) +
+                  T(" unless you type one (sporecoop.local:47811)", ", если не указан (sporecoop.local:47811)"),
+              kDim);
+
+    // shared by the connect steps: Back (Host / Join), the status line and the update button
+    std::vector<Win> steps;
+    D.back_btn = add_button(steps, "back", {40, 104, 180, 136}, T("< Back", "< Назад"), [] {
+        g_step = kStepChoose;
+        set_status("", kYellow);
+    });
+    D.status = add_label(steps, {40, 548, 560, 576}, "", kYellow);
+    D.update_btn = add_button(steps, "update", {570, 544, 720, 580}, "", [] {
         if (A.update_do)
             A.update_do();
         g_dirty = true;
@@ -883,50 +1066,63 @@ static void build_dialog()
 
     // ---- lobby page ----
     auto& L = D.page_lobby;
+    D.settings_btn = add_button(L, "settings", {40, 66, 250, 98}, T("Settings", "Настройки"), [] {
+        g_settings_page = true;
+        g_set_line.clear();
+        g_dirty = true;
+    });
     D.session = add_label(L, {40, 104, 720, 130}, "", kWhite);
-    add_label(L, {40, 138, 300, 162}, T("Player", "Игрок"), kDim);
-    add_label(L, {300, 138, 540, 162}, T("Stage", "Этап"), kDim);
+    add_label(L, {40, 138, 280, 162}, T("Player", "Игрок"), kDim);
+    add_label(L, {280, 138, 345, 162}, T("Colour", "Цвет"), kDim);
+    D.stage_hdr = add_label(L, {345, 138, 540, 162}, T("Stage", "Этап"), kDim);
     add_label(L, {540, 138, 620, 162}, T("Ping", "Пинг"), kDim);
     add_label(L, {620, 138, 720, 162}, T("Ready", "Готов"), kDim);
     for (int i = 0; i < 4; i++) {
         float y = 166.f + i * 28;
-        D.row_name[i] = add_label(L, {40, y, 300, y + 26}, "", kWhite);
-        D.row_stage[i] = add_label(L, {300, y, 540, y + 26}, "", kWhite);
+        D.row_name[i] = add_label(L, {40, y, 280, y + 26}, "", kWhite);
+        D.row_color[i] = add_label(L, {280, y, 318, y + 26}, "", kDim); // (the own row: ">" at 318..346)
+        D.row_stage[i] = add_label(L, {345, y, 540, y + 26}, "", kWhite);
         D.row_ping[i] = add_label(L, {540, y, 620, y + 26}, "", kWhite);
         D.row_ready[i] = add_label(L, {620, y, 720, y + 26}, "", kWhite);
     }
-    D.world = add_label(L, {40, 284, 720, 310}, "", kYellow);
+    D.color_btn = add_button(L, "colour", {318, 167, 346, 191}, ">", [] { // F2: moved onto the own row by refresh_lobby
+        std::string line;
+        bool ok = A.color_next && A.color_next(line);
+        set_status(line, ok ? kGreen : kRed, 6);
+    });
+    D.address = add_label(L, {40, 282, 720, 306}, "", kDim);
+    D.world = add_label(L, {40, 308, 720, 334}, "", kYellow);
     for (int i = 0; i < 4; i++)
-        D.chat_lines[i] = add_label(L, {40, 316.f + i * 23, 720, 338.f + i * 23}, "", kWhite);
+        D.chat_lines[i] = add_label(L, {40, 338.f + i * 23, 720, 360.f + i * 23}, "", kWhite);
     std::vector<Win> arrows; // shown by refresh_lobby only when there is more to see
-    D.chat_up = add_button(arrows, "chatup", {722, 316, 756, 346}, "^", [] { g_chat_scroll++; g_dirty = true; });
-    D.chat_down = add_button(arrows, "chatdown", {722, 376, 756, 406}, "v", [] { g_chat_scroll--; g_dirty = true; });
+    D.chat_up = add_button(arrows, "chatup", {722, 338, 756, 368}, "^", [] { g_chat_scroll++; g_dirty = true; });
+    D.chat_down = add_button(arrows, "chatdown", {722, 398, 756, 428}, "v", [] { g_chat_scroll--; g_dirty = true; });
     // the own creation of this stage: "My creature: Kirgle  < >"
-    D.creation = add_label(L, {40, 408, 560, 434}, "", kGold);
-    D.creation_prev = add_button(L, "cprev", {570, 404, 640, 434}, "<", [] {
+    D.creation = add_label(L, {40, 434, 560, 460}, "", kGold);
+    D.creation_prev = add_button(L, "cprev", {570, 430, 640, 460}, "<", [] {
         if (A.mode && A.mode() == 0x1654C04 && A.civ_role_cycle)
             A.civ_role_cycle(-1);
         else if (A.creation_cycle)
             A.creation_cycle(-1);
         g_dirty = true;
     });
-    D.jump_btn = add_button(L, "jump", {400, 404, 560, 434}, "", [] {
+    D.jump_btn = add_button(L, "jump", {400, 430, 560, 460}, "", [] {
         if (A.jump_do)
             A.jump_do();
         g_dirty = true;
     });
-    D.give_btn = add_button(L, "give", {570, 404, 720, 434}, "", [] {
+    D.give_btn = add_button(L, "give", {570, 430, 720, 460}, "", [] {
         if (A.give_do)
             A.give_do();
         g_dirty = true;
     });
     // 3 or 4 players: ">" picks the next other player as the recipient (BUG-0075)
-    D.give_next = add_button(L, "givenext", {520, 404, 560, 434}, ">", [] {
+    D.give_next = add_button(L, "givenext", {520, 430, 560, 460}, ">", [] {
         if (A.give_cycle)
             A.give_cycle();
         g_dirty = true;
     });
-    D.creation_next = add_button(L, "cnext", {650, 404, 720, 434}, ">", [] {
+    D.creation_next = add_button(L, "cnext", {650, 430, 720, 460}, ">", [] {
         if (A.mode && A.mode() == 0x1654C04 && A.civ_role_cycle)
             A.civ_role_cycle(1);
         else if (A.creation_cycle)
@@ -949,19 +1145,19 @@ static void build_dialog()
     D.editor_return = add_button(L,"editor_return",{280,66,450,98},"Return to Editor",[]{
         if(A.editor_return)A.editor_return();
     });
-    D.editor_act_left=add_button(L,"editor_act_left",{400,404,555,434},"Move act left",[]{if(A.editor_act_action)A.editor_act_action(2);});
-    D.editor_act_right=add_button(L,"editor_act_right",{565,404,720,434},"Move act right",[]{if(A.editor_act_action)A.editor_act_action(3);});
-    D.editor_complexity=add_button(L,"editor_complexity",{10,404,390,434},"Complexity: Native",[]{
+    D.editor_act_left=add_button(L,"editor_act_left",{400,430,555,460},"Move act left",[]{if(A.editor_act_action)A.editor_act_action(2);});
+    D.editor_act_right=add_button(L,"editor_act_right",{565,430,720,460},"Move act right",[]{if(A.editor_act_action)A.editor_act_action(3);});
+    D.editor_complexity=add_button(L,"editor_complexity",{10,430,390,460},"Complexity: Native",[]{
         const auto editor=A.editor?A.editor():coop_editor::View{};
         if(editor.can_complexity && A.editor_complexity)A.editor_complexity(!editor.extended_complexity);
     });
-    D.chat_edit = add_edit(L, "chatedit", {40, 438, 560, 470}, "", 120);
-    D.send_btn = add_button(L, "send", {570, 434, 720, 474}, T("Send", "Отправить"), do_send_chat);
-    D.ready_btn = add_button(L, "ready", {40, 488, 240, 528}, "", [] {
+    D.chat_edit = add_edit(L, "chatedit", {40, 466, 560, 498}, "", 120);
+    D.send_btn = add_button(L, "send", {570, 462, 720, 502}, T("Send", "Отправить"), do_send_chat);
+    D.ready_btn = add_button(L, "ready", {40, 510, 240, 550}, "", [] {
         A.set_ready(!A.ready());
         g_dirty = true;
     });
-    D.share_btn = add_button(L, "share", {260, 488, 480, 528}, T("Send my world", "Отправить мир"), [] {
+    D.share_btn = add_button(L, "share", {260, 510, 480, 550}, T("Send my world", "Отправить мир"), [] {
         if(A.party_waiting && A.party_waiting()) { if(A.cancel_adventure) A.cancel_adventure(); return; }
         ga::Difficulty difficulty;
         int party = 1;
@@ -984,10 +1180,64 @@ static void build_dialog()
         A.share_world();
         set_status(T("Sending the world to everyone...", "Мир отправляется всем..."), kYellow, g_status_fix ? 5 : 0);
     });
-    D.leave_btn = add_button(L, "leave", {500, 488, 720, 528}, "", [] {
+    D.leave_btn = add_button(L, "leave", {500, 510, 720, 550}, "", [] {
         A.leave();
         set_status(T("Left the session", "Вы вышли из игры"), kYellow, g_status_fix ? 5 : 0);
     });
+    // the host: ask every guest for its problem report (F4 of 0.7.12 does the asking), any time
+    D.ask_btn = add_button(L, "askreports", {40, 558, 440, 592},
+                           T("Ask the players for their reports", "Попросить у игроков их отчёты"), [] {
+                               std::string line = A.ask_reports ? A.ask_reports()
+                                                                : T("Not available in this version yet",
+                                                                    "В этой версии пока недоступно");
+                               if (!line.empty())
+                                   set_status(line, kYellow, 10);
+                           });
+    // a guest asked by the host for its report (F4, BUG-0767): the question in the row of the host's button, what is
+    // sent in the status line
+    D.rask = add_label(L, {40, 562, 400, 590}, "", kGold);
+    g_named["rask"] = D.rask;
+    D.rline = add_label(L, {450, 562, 720, 590}, "", kYellow);
+    g_named["rline"] = D.rline;
+    D.rsend = add_button(L, "rsend", {410, 558, 560, 592}, T("Send", "Отправить"), [] {
+        if (A.report_answer)
+            A.report_answer(true);
+        g_dirty = true;
+    });
+    D.rnosend = add_button(L, "rnosend", {570, 558, 720, 592}, T("Don't send", "Не отправлять"), [] {
+        if (A.report_answer)
+            A.report_answer(false);
+        g_dirty = true;
+    });
+
+    // ---- settings page (settings_core.h kDefs by group; docs/07-modes.md#modes-session-settings) ----
+    auto& G = D.page_settings;
+    D.set_title = add_label(G, {40, 104, 720, 130}, T("Session settings", "Настройки сессии"), kGold);
+    D.set_note = add_label(G, {40, 130, 720, 154}, "", kDim);
+    for (int i = 0; i < kSetRows; i++) {
+        float y = 160.f + i * 27;
+        char nm[16];
+        D.set_label[i] = add_label(G, {40, y + 1, 470, y + 25}, "", kWhite);
+        snprintf(nm, sizeof nm, "set%d", i);
+        D.set_btn[i] = add_button(G, nm, {480, y, 590, y + 25}, "", [i] { do_set_click(i); });
+        D.set_tag[i] = add_label(G, {600, y + 1, 720, y + 25}, "", kDim);
+        D.set_id[i] = -1;
+    }
+    D.set_line = add_label(G, {40, 514, 720, 538}, "", kDim);
+    D.set_back = add_button(G, "setback", {40, 548, 240, 588}, T("< Lobby", "< Лобби"), [] {
+        g_settings_page = false;
+        g_dirty = true;
+    });
+    D.set_prev = add_button(G, "setprev", {500, 548, 570, 588}, "<", [] {
+        g_set_first = std::max(0, g_set_first - kSetRows);
+        g_dirty = true;
+    });
+    D.set_pageno = add_label(G, {575, 554, 645, 582}, "", kDim, sui::kAlignCenter);
+    D.set_next = add_button(G, "setnext", {650, 548, 720, 588}, ">", [] {
+        g_set_first += kSetRows;
+        g_dirty = true;
+    });
+
     // ---- Space page ----
     auto& S = D.page_space;
     D.space_title = add_label(S, {40, 104, 720, 130}, T("Your galaxy together", "Галактика вместе"), kGold);
@@ -1010,44 +1260,44 @@ static void build_dialog()
             g_dirty = true;
         });
     }
-    D.space_back = add_button(S, "sback", {40, 488, 240, 528}, T("< Lobby", "< Лобби"), [] {
+    D.space_back = add_button(S, "sback", {40, 548, 240, 588}, T("< Lobby", "< Лобби"), [] {
         g_space_page = false;
         g_dirty = true;
     });
     // more rows than fit: pages
-    D.space_prev = add_button(S, "sprev", {500, 488, 570, 528}, "<", [] {
+    D.space_prev = add_button(S, "sprev", {500, 548, 570, 588}, "<", [] {
         g_space_first = std::max(0, g_space_first - kSpaceRows);
         g_dirty = true;
     });
-    D.space_pageno = add_label(S, {575, 494, 645, 522}, "", kDim, sui::kAlignCenter);
-    D.space_next = add_button(S, "snext", {650, 488, 720, 528}, ">", [] {
+    D.space_pageno = add_label(S, {575, 554, 645, 582}, "", kDim, sui::kAlignCenter);
+    D.space_next = add_button(S, "snext", {650, 548, 720, 588}, ">", [] {
         g_space_first += kSpaceRows;
         g_dirty = true;
     });
-    auto& G = D.page_adventure;
-    add_label(G, {40, 108, 720, 136}, "Death rules", kGold);
-    D.adventure_death = add_button(G, "adventure_death", {40, 142, 720, 180}, "", [] { change_adventure(0, 1); });
+    auto& adventure_page = D.page_adventure;
+    add_label(adventure_page, {40, 108, 720, 136}, "Death rules", kGold);
+    D.adventure_death = add_button(adventure_page, "adventure_death", {40, 142, 720, 180}, "", [] { change_adventure(0, 1); });
     D.adventure_controls.push_back(D.adventure_death);
-    add_label(G, {40, 186, 720, 212}, "Revive: within 2 m for 3 s. Automatic recovery: 30 s in place.", kDim);
-    add_label(G, {40, 214, 720, 240}, "The attempt always fails when the entire party is downed.", kDim);
-    add_label(G, {40, 248, 720, 274}, "Enemy stats", kGold);
-    D.adventure_health = add_label(G, {40, 284, 540, 312}, "", kWhite);
-    D.adventure_damage = add_label(G, {40, 326, 540, 354}, "", kWhite);
+    add_label(adventure_page, {40, 186, 720, 212}, "Revive: within 2 m for 3 s. Automatic recovery: 30 s in place.", kDim);
+    add_label(adventure_page, {40, 214, 720, 240}, "The attempt always fails when the entire party is downed.", kDim);
+    add_label(adventure_page, {40, 248, 720, 274}, "Enemy stats", kGold);
+    D.adventure_health = add_label(adventure_page, {40, 284, 540, 312}, "", kWhite);
+    D.adventure_damage = add_label(adventure_page, {40, 326, 540, 354}, "", kWhite);
     for (int field = 1; field <= 2; ++field) {
         float y = field == 1 ? 280.f : 322.f;
         for (int direction : {-1, 1}) {
             std::string name = std::string("adventure_") + (field == 1 ? "health" : "damage") + (direction < 0 ? "_less" : "_more");
             float x = direction < 0 ? 570.f : 650.f;
-            D.adventure_controls.push_back(add_button(G, name.c_str(), {x, y, x + 70, y + 34}, direction < 0 ? "-" : "+",
+            D.adventure_controls.push_back(add_button(adventure_page, name.c_str(), {x, y, x + 70, y + 34}, direction < 0 ? "-" : "+",
                                                       [field, direction] { change_adventure(field, direction); }));
         }
     }
-    D.adventure_fire = add_button(G, "adventure_fire", {40, 366, 440, 404}, "", [] { change_adventure(3, 1); });
+    D.adventure_fire = add_button(adventure_page, "adventure_fire", {40, 366, 440, 404}, "", [] { change_adventure(3, 1); });
     D.adventure_controls.push_back(D.adventure_fire);
-    D.adventure_controls.push_back(add_button(G, "adventure_reset", {460, 366, 720, 404}, "Use party scaling", [] { change_adventure(4, 1); }));
-    add_label(G, {40, 410, 720, 436}, "Settings are fixed during play. Friendly fire affects party captains.", kDim);
-    D.adventure_status = add_label(G, {40, 444, 720, 478}, "", kYellow);
-    add_button(G, "adventure_back", {40, 488, 240, 528}, "Back to lobby", [] { g_adventure_page = false; g_dirty = true; });
+    D.adventure_controls.push_back(add_button(adventure_page, "adventure_reset", {460, 366, 720, 404}, "Use party scaling", [] { change_adventure(4, 1); }));
+    add_label(adventure_page, {40, 410, 720, 436}, "Settings are fixed during play. Friendly fire affects party captains.", kDim);
+    D.adventure_status = add_label(adventure_page, {40, 444, 720, 478}, "", kYellow);
+    add_button(adventure_page, "adventure_back", {40, 488, 240, 528}, "Back to lobby", [] { g_adventure_page = false; g_dirty = true; });
     auto& R = D.page_preparation;
     D.prep_no_preview = add_label(R,{40,106,112,174},"No preview",kDim,sui::kAlignCenter);
     D.prep_title = add_label(R,{126,108,720,136},"",kGold);
@@ -1081,6 +1331,7 @@ static void build_dialog()
     for (const char* name : {"prep_ready","prep_change","prep_settings","prep_cancel","prep_leave","prep_send"})
         sui::set_caption_padding(g_named[name],3.f);
     // Enter in the chat field sends the message
+    // Enter in a field does what its button does: the chat sends, the address joins, the name continues
     if (D.chat_edit)
         sui::add_handler(D.chat_edit, [](Win, const sui::Msg& m) {
             if (m.type == sui::kMsgKeyDown && (m.b & 0xFFFF) == VK_RETURN) {
@@ -1097,6 +1348,15 @@ static void build_dialog()
             }
             return false;
         });
+    if (D.name_edit)
+        sui::add_handler(D.name_edit, [](Win, const sui::Msg& m) {
+            if (m.type == sui::kMsgKeyDown && (m.b & 0xFFFF) == VK_RETURN) {
+                do_name_ok();
+                g_dirty = true;
+                return true;
+            }
+            return false;
+        });
     for (Win w : common)
         (void)w;
     sui::set_visible(root, false);
@@ -1106,7 +1366,8 @@ static void build_dialog()
 
 static void refresh_connect()
 {
-    bool scanning = A.role() == 0;
+    bool scanning = A.role() == 0 && g_step == kStepJoin;
+    text(D.me_line, std::string(T("Your name: ", "Ваше имя: ")) + A.name());
     auto games = A.lan_games ? A.lan_games() : std::vector<LanGame>{};
     // BUG-0183: only the first three answers were listed; with more hosts on the network (lab lanes,
     // a LAN party) the others could not be joined from the list. "More >" shows the next three.
@@ -1141,9 +1402,11 @@ static void refresh_connect()
     if (A.local_addresses) {
         auto ips = A.local_addresses();
         std::string port = sui::edit_text(D.port_edit);
-        for (size_t i = 0; i < ips.size() && i < 3; i++)
+        for (size_t i = 0; i < ips.size() && i < 2; i++) // (two fit the line)
             hint += (i ? ",  " : "") + ips[i] + ":" + port;
     }
+    if (!g_demo_addr.empty())
+        hint = g_demo_addr;
     text(D.host_hint, hint.empty() ? "" : std::string(T("Friends connect to: ", "Друзья подключаются к: ")) + hint);
     std::string up_line, up_btn;
     bool up = A.update && A.update(up_line, up_btn);
@@ -1155,13 +1418,40 @@ static void refresh_connect()
     text(D.update_btn, up_btn);
 }
 
+bool g_give_hint_fix = true;
+COOP_FIX("core.ui_give_hint", "BUG-0909", g_give_hint_fix, "ui: the give row shows only in Tribe, Civilization and Space");
+
 static void refresh_lobby()
 {
+    static bool s_layout = g_layout_fix; // the switch changed: every left-aligned label is fitted anew
+    if (s_layout != g_layout_fix) {
+        s_layout = g_layout_fix;
+        for (auto& [w, c] : g_cache)
+            if (c.left)
+                fit(w, c);
+    }
+    { // BUG-0908: the Stage column starts after the colour button (318..346) with room, not at its edge
+        float x1 = g_layout_fix ? 362.f : 345.f;
+        for (int i = -1; i < 4; i++) {
+            Win w = i < 0 ? D.stage_hdr : D.row_stage[i];
+            if (!w)
+                continue;
+            auto& c = g_cache[w];
+            if (c.box.x1 != x1) {
+                c.box.x1 = x1;
+                fit(w, c);
+            }
+        }
+    }
     text(D.session, A.session_line());
     auto rows = A.players();
+    int own_row = -1;
     for (int i = 0; i < 4; i++) {
         bool have = i < (int)rows.size();
+        if (have && rows[i].me)
+            own_row = i;
         show(D.row_name[i], have);
+        show(D.row_color[i], have);
         show(D.row_stage[i], have);
         show(D.row_ping[i], have);
         show(D.row_ready[i], have);
@@ -1170,16 +1460,29 @@ static void refresh_lobby()
         const auto& p = rows[i];
         std::string n = p.name;
         if (p.host)
-            n += T("  (host)", "  (хост)");
-        if (p.me)
-            n += T("  - you", "  - вы");
+            n += p.me ? T(" (host, you)", " (хост, вы)") : T(" (host)", " (хост)");
+        else if (p.me)
+            n += T(" (you)", " (вы)");
         text(D.row_name[i], n);
         color(D.row_name[i], p.me ? kGold : kWhite);
+        // the player's colour (F2 of 0.7.12 assigns it): a swatch in that colour, "-" while it has none
+        uint32_t pc = p.color ? p.color : g_test_color ? g_test_color : 0;
+        text(D.row_color[i], pc ? "\xE2\x96\xA0\xE2\x96\xA0\xE2\x96\xA0" : "-");
+        color(D.row_color[i], pc ? (pc | 0xFF000000u) : kDim);
+        if (p.me && D.color_btn) { // F2: the own colour's ">" on the own row
+            float y = 166.f + i * 28;
+            static float s_y = -1;
+            if (s_y != y) {
+                sui::set_area(D.color_btn, {318, y + 1, 346, y + 25});
+                s_y = y;
+            }
+        }
         text(D.row_stage[i], p.stage);
         text(D.row_ping[i], p.me ? "" : (p.ping_ms >= 0 ? std::to_string(p.ping_ms) + T(" ms", " мс") : "?"));
         text(D.row_ready[i], p.ready ? T("ready", "готов") : "-");
         color(D.row_ready[i], p.ready ? kGreen : kDim);
     }
+    show(D.color_btn, own_row >= 0 && A.color_next);
     std::string wl = A.world_line ? A.world_line() : "";
     int share_why = share_blocked();
     if (wl.empty() && g_status.empty() && share_why) // BUG-0597: a host alone can play now
@@ -1192,19 +1495,38 @@ static void refresh_lobby()
     text(D.world, wl.empty() ? g_status : wl);
     // the chat history (50 lines kept): long lines wrapped, scrolled with the arrows (BUG-0129)
     std::vector<std::string> chat;
-    for (auto& l : A.chat ? A.chat() : std::vector<std::string>{})
-        for (auto& w : notify_text::wrap(l, kChatCols))
-            chat.push_back(w);
+    std::vector<uint32_t> chat_col; // F2: the writer's colour of each wrapped line
+    {
+        std::vector<std::string> lines = A.chat ? A.chat() : std::vector<std::string>{};
+        std::vector<uint32_t> cols = A.chat_colors ? A.chat_colors() : std::vector<uint32_t>{};
+        for (size_t i = 0; i < lines.size(); i++)
+            for (auto& w : notify_text::wrap(lines[i], kChatCols)) {
+                chat.push_back(w);
+                chat_col.push_back(i < cols.size() && cols[i] ? cols[i] : kWhite);
+            }
+    }
     g_chat_scroll = std::max(0, std::min(g_chat_scroll, (int)chat.size() - 4));
     size_t first = chat.size() > 4 ? chat.size() - 4 - (size_t)g_chat_scroll : 0;
-    for (int i = 0; i < 4; i++)
+    static uint32_t s_chat_col[4] = {kWhite, kWhite, kWhite, kWhite};
+    static Win s_chat_w[4] = {};
+    for (int i = 0; i < 4; i++) {
         text(D.chat_lines[i], first + i < chat.size() ? chat[first + i] : "");
+        uint32_t c = first + i < chat.size() ? chat_col[first + i] : kWhite;
+        if (D.chat_lines[i] && (c != s_chat_col[i] || D.chat_lines[i] != s_chat_w[i])) {
+            sui::set_label_color(D.chat_lines[i], c);
+            s_chat_col[i] = c;
+            s_chat_w[i] = D.chat_lines[i];
+        }
+    }
     show(D.chat_up, first > 0);
     show(D.chat_down, g_chat_scroll > 0);
     int ck = 0, cown = 0;
     bool hint = false; // the creation row says how to get a choice: it may take the arrows' room
     std::string cname, cl;
+    bool one = A.one_creature && A.one_creature(); // F5 (BUG-0769): the host's creature for everybody
     if (A.creation && A.creation(ck, cname, cown)) {
+        if (one && ck != 2)
+            cown = 0;
         cl = ck == 1 ? T("My cell: ", "Моя клетка: ") : ck == 2 ? T("My ship: ", "Мой корабль: ") : T("My creature: ", "Моё существо: ");
         bool me_host = A.role() == 1;
         if (!cname.empty())
@@ -1214,7 +1536,9 @@ static void refresh_lobby()
         else // BUG-0598: say whose it is
             cl += ck == 2 ? T("your empire's ship", "корабль вашей империи")
                   : me_host ? T("your world's species", "вид вашего мира") : T("the host's species", "вид хоста");
-        if (ck != 2 && cown > 0)
+        if (one && ck != 2)
+            cl += T(" (the host evolves it for everybody)", " (хост развивает его для всех)");
+        else if (ck != 2 && cown > 0)
             cl += std::string(T("  (in My Creations: ", "  (своих: ")) + std::to_string(cown) + ")";
         else if (g_creation_hint_fix && ck != 2 && !me_host) { // no arrows: how to get a choice
             cl += T(" (make one in an editor to pick it)", " (создайте своё в редакторе)");
@@ -1224,7 +1548,9 @@ static void refresh_lobby()
     std::string gwhat, gto;
     int gn = A.give ? A.give(gwhat, gto) : 0;
     bool space = gwhat == "spice";
-    bool giving = A.give && !gto.empty() && (cl.empty() || space);
+    // BUG-0909: give() names what is given only in Tribe, Civilization and Space; elsewhere (the galaxy menu, Cell,
+    // Creature) the row showed the Tribe / Civ hint "Select your units to give them to a partner"
+    bool giving = A.give && !gto.empty() && (cl.empty() || space) && (!gwhat.empty() || !g_give_hint_fix);
     if (space) // the ship can't be changed in flight: the row is for the cargo
         cl = gn ? std::string(T("Spice in cargo: ", "Специи в трюме: ")) + std::to_string(gn)
                 : T("No spice in cargo to give", "В трюме нет специи");
@@ -1263,7 +1589,11 @@ static void refresh_lobby()
     show(D.creation_prev, can);
     show(D.creation_next, can);
     bool host = A.role() == 1;
-    text(D.ready_btn, A.ready() ? T("Not ready", "Не готов") : T("I'm ready", "Я готов"));
+    int offer = A.evolve_offer && !one ? A.evolve_offer() : 0; // BUG-0516: the host evolves now, this guest may follow
+    if (offer > 0)
+        text(D.ready_btn, T("Evolve now", "Эволюция"));
+    else
+        text(D.ready_btn, A.ready() ? T("Not ready", "Не готов") : T("I'm ready", "Я готов"));
     ga::Difficulty difficulty;
     int party = 1;
     bool editable = false;
@@ -1280,6 +1610,171 @@ static void refresh_lobby()
     if(waiting) text(D.share_btn,"Cancel adventure");
     enable(D.share_btn, adventure || waiting || !share_why || !g_share_explain_fix);
     text(D.leave_btn, host ? T("Stop hosting", "Закрыть игру") : T("Leave", "Выйти"));
+    show(D.ask_btn, host);
+    // F4 (BUG-0767): the guest's question and the host's line about the round, in the status line
+    std::string rq;
+    int asked = !host && A.report_prompt ? A.report_prompt(rq) : 0;
+    show(D.rask, asked);
+    show(D.rsend, asked);
+    show(D.rnosend, asked);
+    if (asked)
+        text(D.rask, rq);
+    bool round = host && A.report_round && A.report_round();
+    enable(D.ask_btn, !round);
+    show(D.rline, round); // the answers while the round runs ("Reports: 1 of 3 answered"); the status keeps "Report saved"
+    std::string rl = host ? (A.report_line ? A.report_line() : "")
+                   : asked ? T("Sent: logs, a game summary, screenshots, crash files (paths masked)",
+                               "Отправится: логи, сводка, снимки, сбои (пути скрыты)")
+                           : rq;
+    if (round)
+        text(D.rline, rl);
+    else if (rl != g_report_seen) {
+        g_report_seen = rl;
+        if (!rl.empty())
+            set_status(rl, asked ? kWhite : rl.find("refused") != std::string::npos ? kRed : kGreen, asked ? 0 : 60);
+    }
+    // the address to give to friends (the host) or the host's (a guest)
+    std::string addr = A.host_address ? A.host_address() : "";
+    if (!g_demo_addr.empty() && !addr.empty())
+        addr = g_demo_addr;
+    text(D.address, addr.empty() ? ""
+                    : std::string(host ? T("Friends connect to: ", "Друзья подключаются к: ") : T("Host address: ", "Адрес хоста: ")) +
+                          addr);
+    // the settings button says how many settings differ from the built-in defaults (F3: the lobby shows it)
+    int changed = 0;
+    for (int i = 0; i < settings::kCount; i++)
+        changed += settings::get((settings::Id)i) != settings::kDefs[i].def;
+    char sb[80];
+    if (changed && g_layout_fix) // BUG-0904: the long caption wrapped out of the button; the page marks them with *
+        snprintf(sb, sizeof sb, T("Settings (%d)", "Настройки (%d)"), changed);
+    else if (changed)
+        snprintf(sb, sizeof sb, T("Settings (%d changed)", "Настройки (изменено: %d)"), changed);
+    else
+        snprintf(sb, sizeof sb, "%s", T("Settings", "Настройки"));
+    text(D.settings_btn, sb);
+}
+
+// the settings page's entries: a group header (-1 - the index of its first setting) or a setting id. "All stages"
+// first, then the groups in the order of their first row; the rows of a group in kDefs order.
+static std::vector<int> settings_entries()
+{
+    std::vector<const char*> groups;
+    for (int i = 0; i < settings::kCount; i++) {
+        const char* g = settings::kDefs[i].group;
+        if (std::none_of(groups.begin(), groups.end(), [&](const char* x) { return !strcmp(x, g); }))
+            groups.push_back(g);
+    }
+    std::stable_partition(groups.begin(), groups.end(), [](const char* g) { return !strcmp(g, "All stages"); });
+    std::vector<int> e;
+    for (const char* g : groups) {
+        bool head = false;
+        for (int i = 0; i < settings::kCount; i++)
+            if (!strcmp(settings::kDefs[i].group, g)) {
+                if (!head)
+                    e.push_back(-i - 1);
+                head = true;
+                e.push_back(i);
+            }
+    }
+    return e;
+}
+
+// a setting's value as its button shows it: On / Off, a named value (creature.mode: Own / Host's), a number
+static std::string value_label(int id, int v)
+{
+    std::string val = settings::value_text(id, v);
+    return val == "on" ? T("On", "Вкл") : val == "off" ? T("Off", "Выкл") : val == "own" ? T("Own", "Свои")
+           : val == "host" ? T("Host's", "Хоста") : val;
+}
+
+// who may change setting `id` from this window now (settings_core.h can_set: a guest never, a session setting
+// only before the start)
+static settings::Refusal set_refusal(int id)
+{
+    return settings::can_set(id, A.role() != 2, settings::started());
+}
+
+static void do_set_click(int row)
+{
+    int id = row >= 0 && row < kSetRows ? D.set_id[row] : -1;
+    if (id < 0)
+        return;
+    const auto& d = settings::kDefs[id];
+    int v = settings::get((settings::Id)id);
+    int nv = d.max == 1 && d.min == 0 ? !v : (v >= d.max ? d.min : v + 1);
+    std::string why;
+    auto r = set_refusal(id);
+    if (r != settings::Refusal::None || !settings::set((settings::Id)id, nv, false, &why)) {
+        g_set_line = r == settings::Refusal::Guest ? T("Only the host changes the settings", "Настройки меняет только хост")
+                     : r == settings::Refusal::SessionStarted
+                         ? T("Locked: a session setting changes only before the start", "Заблокировано: меняется только до начала")
+                         : std::string(T("Not changed: ", "Не изменено: ")) + why;
+        g_set_line_color = kRed;
+    } else {
+        g_set_line = std::string(d.label) + ": " + value_label(id, nv);
+        g_set_line_color = kGreen;
+    }
+    trace::line("ui", "setting %s -> %d (%s)", d.key, nv, why.c_str());
+    g_dirty = true;
+}
+
+static void refresh_settings()
+{
+    auto e = settings_entries();
+    int n = (int)e.size(), pages = std::max(1, (n + kSetRows - 1) / kSetRows);
+    if (g_set_first >= n || g_set_first < 0)
+        g_set_first = (pages - 1) * kSetRows;
+    bool guest = A.role() == 2, started = settings::started();
+    text(D.set_note, guest ? T("The host decides these settings: you see them here.",
+                               "Эти настройки выбирает хост, здесь они видны вам.")
+                     : started ? T("Live settings change now; the others are locked in play.",
+                                   "Живые меняются сейчас, остальные заблокированы в игре.")
+                               : T("Click to change. Live settings can change in play too.",
+                                   "Нажмите, чтобы изменить. Живые можно менять и в игре."));
+    for (int i = 0; i < kSetRows; i++) {
+        int k = g_set_first + i;
+        bool have = k < n;
+        int id = have ? e[k] : -1;
+        D.set_id[i] = id;
+        show(D.set_label[i], have);
+        show(D.set_btn[i], have && id >= 0);
+        show(D.set_tag[i], have && id >= 0);
+        if (!have)
+            continue;
+        auto& c = g_cache[D.set_label[i]]; // a group header at the left, its settings indented
+        float x1 = id < 0 ? 40.f : 60.f;
+        if (c.box.x1 != x1) {
+            c.box.x1 = x1;
+            fit(D.set_label[i], c);
+        }
+        if (id < 0) {
+            text(D.set_label[i], settings::kDefs[-id - 1].group);
+            color(D.set_label[i], kGold);
+            continue;
+        }
+        const auto& d = settings::kDefs[id];
+        int v = settings::get((settings::Id)id);
+        bool differs = v != d.def;
+        text(D.set_label[i], std::string(d.label) + (differs ? " *" : ""));
+        color(D.set_label[i], differs ? kYellow : kWhite);
+        text(D.set_btn[i], value_label(id, v));
+        auto r = set_refusal(id);
+        enable(D.set_btn[i], r == settings::Refusal::None);
+        bool live = d.scope == settings::Scope::Live;
+        bool locked = !live && started; // (a guest too: the host's started flag)
+        text(D.set_tag[i], locked                                   ? T("locked", "закрыта")
+                           : live                                   ? T("live", "живая")
+                                                                    : T("session", "сессия"));
+        color(D.set_tag[i], locked ? kRed : live ? kGreen : kDim);
+    }
+    text(D.set_line, !g_set_line.empty() ? g_set_line
+                     : T("* differs from the default. Live: the host can change it in play.",
+                         "* не по умолчанию. Живая: хост меняет её и в игре."));
+    color(D.set_line, !g_set_line.empty() ? g_set_line_color : kDim);
+    show(D.set_prev, pages > 1);
+    show(D.set_next, pages > 1);
+    show(D.set_pageno, pages > 1);
+    text(D.set_pageno, std::to_string(g_set_first / kSetRows + 1) + "/" + std::to_string(pages));
 }
 
 static void refresh_space()
@@ -1469,13 +1964,145 @@ static void refresh_editor_prompt()
     sui::set_visible(EP.root,true);sui::bring_to_front(sui::main_window(),EP.root);
 }
 
+// ---------------- "Report a problem" in the game's pause menu (0.7.12 F1, docs/08-ui.md#ui-window-steps) ----
+// The pause menu (Esc in a stage: "Options", window 0x064C23F8 inside 0x0615B50D, loaded once per stage and shown /
+// hidden) is a column of buttons (Resume Game, Spore Guide, Spy Glass, Ban, Settings, Save, Exit to Main Menu, Quit
+// Spore in Creature). One more button is added at its end: the column keeps its top and its bottom (the frame
+// does not grow), the buttons get a smaller pitch. A copy of the "Spore Guide" button (its "?" icon). Done from
+// refresh (outside the frame), mostly while the menu is still hidden; never a pointer kept: found anew each time.
+constexpr uint32_t kIdPauseMenu = 0x064C23F8, kIdPauseReport = 0xC00F0002, kIdPauseGuide = 0x0447060A;
+static bool g_pause_report_fix = true;
+COOP_FIX("core.ui_pause_report", "BUG-0765", g_pause_report_fix, "ui: \"Report a problem\" in the game's pause menu");
+static Win g_pause_mine; // the button this mod instance made (compared only, never used across refreshes)
+static unsigned g_pause_clicks; // tests: clicks on it
+
+static bool shown_chain(Win w)
+{
+    for (; w; w = sui::parent(w))
+        if (!(sui::flags(w) & sui::kFlagVisible))
+            return false;
+    return true;
+}
+
+static Win pause_menu() { return in_menu() ? nullptr : sui::find(sui::main_window(), kIdPauseMenu); }
+
+static void pause_menu_tick()
+{
+    Win pm = pause_menu();
+    if (!pm)
+        return;
+    std::vector<Win> btns;
+    Win mine = nullptr;
+    for (Win c : sui::children(pm)) {
+        if (sui::control_id(c) == kIdPauseReport) {
+            mine = c;
+            continue;
+        }
+        if ((sui::flags(c) & sui::kFlagVisible) && sui::as_button(c) && !sui::caption(c).empty())
+            btns.push_back(c); // (the close cross has no caption)
+    }
+    if (btns.size() < 2)
+        return;
+    // The game's buttons are anchored (their area is the layout input, relative to the menu's bottom / right edge;
+    // real_area is where they are): they are placed in their own area space, ours (no anchors) at the real place,
+    // the anchors' offset taken from the first button before anything moves.
+    std::sort(btns.begin(), btns.end(), [](Win a, Win b) { return sui::real_area(a).y1 < sui::real_area(b).y1; });
+    Rect first = sui::area(btns.front()), last = sui::area(btns.back()), fr = sui::real_area(btns.front());
+    Rect off{fr.x1 - first.x1, fr.y1 - first.y1, fr.x2 - first.x2, fr.y2 - first.y2};
+    float bottom = last.y2;
+    if (mine) {
+        bottom = std::max(bottom, sui::area(mine).y2 - off.y2); // (ours: area = real)
+        if (mine != g_pause_mine || !g_pause_report_fix) { // a button of an earlier mod instance (hot reload): dead handler
+            sui::remove_child(pm, mine);
+            mine = nullptr;
+        }
+    }
+    int n = (int)btns.size() + (g_pause_report_fix ? 1 : 0);
+    float pitch = (bottom - first.y1 + 3) / n, h = pitch - 3;
+    auto target = [&](int i) { return Rect{first.x1, first.y1 + i * pitch, first.x2, first.y1 + i * pitch + h}; };
+    auto place = [&](Win w, Rect r) {
+        Rect a = sui::area(w);
+        if (std::abs(a.y1 - r.y1) > 0.5f || std::abs(a.y2 - r.y2) > 0.5f || std::abs(a.x1 - r.x1) > 0.5f ||
+            std::abs(a.x2 - r.x2) > 0.5f)
+            sui::set_area(w, r);
+    };
+    for (int i = 0; i < (int)btns.size(); i++)
+        place(btns[i], target(i));
+    if (!g_pause_report_fix)
+        return;
+    Rect t = target(n - 1);
+    Rect r{t.x1 + off.x1, t.y1 + off.y1, t.x2 + off.x2, t.y2 + off.y2}; // ours: the real place
+    if (mine) {
+        place(mine, r);
+        return;
+    }
+    Win like = nullptr;
+    for (Win b : btns)
+        if (sui::control_id(b) == kIdPauseGuide)
+            like = b;
+    if (!like)
+        like = btns.front();
+    Win b = sui::button_like(nullptr, like, r, T("Report a problem", "Сообщить об ошибке"));
+    if (!b)
+        return;
+    sui::set_ids(b, kIdPauseReport, kIdPauseReport);
+    sui::add_handler(b, [](Win, const sui::Msg& m) {
+        if (sui::is_click(m)) {
+            g_pause_clicks++;
+            trace::line("ui", "click pause_report");
+            H->log(M, SK_INFO, "ui: \"Report a problem\" in the pause menu");
+            do_report();
+            return true;
+        }
+        return false;
+    });
+    sui::add_child(pm, b);
+    g_pause_mine = b;
+    H->log(M, SK_INFO, "ui: \"Report a problem\" added to the pause menu (%d buttons, pitch %.1f)", n, pitch);
+}
+
+// tests (ui_golden's twin, docs/06-testing.md#testing-ui-golden): a named control moved by (dx, dy) or hidden,
+// applied at the end of every refresh, so the page logic cannot put it back
+struct Nudge {
+    float dx = 0, dy = 0;
+    bool hide = false;
+    bool have_base = false;
+    Rect base{};
+};
+static std::map<std::string, Nudge> g_nudges;
+
+static void apply_test_nudges()
+{
+    for (auto& [name, n] : g_nudges) {
+        auto it = g_named.find(name);
+        if (it == g_named.end() || !it->second)
+            continue;
+        Win w = it->second;
+        if (!n.have_base) {
+            n.base = sui::area(w);
+            n.have_base = true;
+        }
+        if (n.hide)
+            sui::set_visible(w, false);
+        else
+            sui::set_area(w, Rect{n.base.x1 + n.dx, n.base.y1 + n.dy, n.base.x2 + n.dx, n.base.y2 + n.dy});
+    }
+}
+
 static void refresh()
 {
     g_pending = false;
     if (!g_ok)
         return;
+    // a session leaves the window on the step of its role (the next session of a guest is a join again), also one
+    // joined or hosted from the console while the window was closed
+    if (int r = A.role())
+        g_step = r == 2 ? kStepJoin : kStepHost;
+    if (!g_name_first_fix && g_step == kStepName) // (switched off after the start: the 0.7.11 window, no name step)
+        g_step = kStepChoose;
     ensure_menu_button();
     refresh_editor_prompt();
+    pause_menu_tick();
     if (g_want_open && !D.root)
         build_dialog();
     if (!D.root)
@@ -1501,7 +2128,8 @@ static void refresh()
             A.lan_scan(false);
         return;
     }
-    bool lobby = A.role() != 0;
+    int role = A.role();
+    bool lobby = role != 0;
     auto editor = A.editor ? A.editor() : coop_editor::View{};
     ga::PreparationView preparation;
     bool preparing = lobby && A.preparation && A.preparation(preparation);
@@ -1515,33 +2143,36 @@ static void refresh()
     bool space = lobby && A.mode && A.mode() == modes::kSpace;
     if (!space || preparing || g_adventure_page)
         g_space_page = false;
+    if (!lobby || preparing || g_adventure_page) g_settings_page=false;
     const Page page = select_page(lobby, preparing, g_adventure_page, g_space_page);
-    for (Win w : D.page_connect)
-        show(w, page == Page::Connect);
-    for (Win w : D.page_lobby)
-        show(w, page == Page::Lobby);
-    for (Win w : D.page_space)
-        show(w, page == Page::Space);
-    for (Win w : D.page_adventure)
-        show(w, page == Page::AdventureSettings);
-    for (Win w : D.page_preparation)
-        show(w, page == Page::Preparation);
-    show(D.space_btn, space && page == Page::Lobby);
-    show(D.editor_retry, page == Page::Lobby && editor.retry);
-    show(D.editor_recover, page == Page::Lobby && editor.can_recover);
-    show(D.editor_test,page==Page::Lobby && editor.active && editor.can_playtest);
-    show(D.editor_return,page==Page::Lobby && editor.active && editor.can_return);
-    if (page != Page::Preparation) {
-        show(D.adventure_picture.window, false);
-        for (auto& p : D.captain_picture) show(p.window, false);
+    const bool sett=page==Page::Lobby && g_settings_page;
+    const bool visible_lobby=page==Page::Lobby && !sett;
+    for (Win w : D.page_name) show(w,page==Page::Connect && g_step==kStepName);
+    for (Win w : D.page_choose) show(w,page==Page::Connect && g_step==kStepChoose);
+    for (Win w : D.page_host) show(w,page==Page::Connect && g_step==kStepHost);
+    for (Win w : D.page_join) show(w,page==Page::Connect && g_step==kStepJoin);
+    show(D.back_btn,page==Page::Connect && (g_step==kStepHost || g_step==kStepJoin));
+    show(D.status,!lobby);
+    if(lobby)show(D.update_btn,false);
+    for (Win w : D.page_lobby) show(w,visible_lobby);
+    for (Win w : D.page_settings) show(w,sett);
+    for (Win w : D.page_space) show(w,page==Page::Space);
+    for (Win w : D.page_adventure) show(w,page==Page::AdventureSettings);
+    for (Win w : D.page_preparation) show(w,page==Page::Preparation);
+    show(D.space_btn,space && visible_lobby);
+    show(D.editor_retry,visible_lobby && editor.retry);
+    show(D.editor_recover,visible_lobby && editor.can_recover);
+    show(D.editor_test,visible_lobby && editor.active && editor.can_playtest);
+    show(D.editor_return,visible_lobby && editor.active && editor.can_return);
+    if(page!=Page::Preparation){
+        show(D.adventure_picture.window,false);
+        for(auto& picture:D.captain_picture)show(picture.window,false);
     }
-    if (page != Page::Lobby) {
-        show(D.chat_up, false);
-        show(D.chat_down, false);
-    }
-    text(D.subtitle, page == Page::AdventureSettings ? "ADVENTURE DIFFICULTY"
-                     : page == Page::Space ? T("CO-OP: SPACE", "КООПЕРАТИВ: КОСМОС")
-                     : lobby ? T("CO-OP LOBBY", "ЛОББИ КООПЕРАТИВА") : T("CO-OP", "КООПЕРАТИВ"));
+    if(!visible_lobby){show(D.chat_up,false);show(D.chat_down,false);}
+    text(D.subtitle,page==Page::AdventureSettings?"ADVENTURE DIFFICULTY":
+        page==Page::Space?T("CO-OP: SPACE","КООПЕРАТИВ: КОСМОС"):
+        sett?T("CO-OP: SETTINGS","КООПЕРАТИВ: НАСТРОЙКИ"):
+        lobby?T("CO-OP LOBBY","ЛОББИ КООПЕРАТИВА"):T("CO-OP","КООПЕРАТИВ"));
     if (A.version_line)
         text(D.version, A.version_line());
     if (A.lan_scan)
@@ -1552,20 +2183,24 @@ static void refresh()
         refresh_preparation(preparation);
     else if (page == Page::Space)
         refresh_space();
-    else if (page == Page::Lobby)
+    else if (sett)
+        refresh_settings();
+    else if (visible_lobby)
         refresh_lobby();
     else
         refresh_connect();
-    show(D.editor_act_left,page==Page::Lobby && editor.active && editor.native_editing);
-    show(D.editor_act_right,page==Page::Lobby && editor.active && editor.native_editing);
-    show(D.editor_complexity,page==Page::Lobby && editor.active && editor.native_editing);
-    if(editor.active && page==Page::Lobby){
-        show(D.jump_btn,false);show(D.give_btn,false);show(D.creation_next,false);
+    show(D.editor_act_left,visible_lobby && editor.active && editor.native_editing);
+    show(D.editor_act_right,visible_lobby && editor.active && editor.native_editing);
+    show(D.editor_complexity,visible_lobby && editor.active && editor.native_editing);
+    if(editor.active && visible_lobby){
+        show(D.jump_btn,false);show(D.give_btn,false);show(D.give_next,false);
+        show(D.creation,false);show(D.creation_prev,false);show(D.creation_next,false);
         sui::set_enabled(D.editor_act_left,editor.can_move_act_left);
         sui::set_enabled(D.editor_act_right,editor.can_move_act_right);
         sui::set_enabled(D.editor_complexity,editor.can_complexity);
         text(D.editor_complexity,editor.extended_complexity?"Complexity: Extended":"Complexity: Native");
     }
+    if(!g_nudges.empty())apply_test_nudges();
 }
 
 static void refresh_task(void*) { refresh(); }
@@ -1590,6 +2225,18 @@ void init(const SkHost* host, SkMod* mod, Api api)
         context.blocked=[] { return is_open(); };
         adventure_hud::init(H,M,std::move(context));
     }
+    // BUG-0765: the first start (no name chosen yet: coop.ini still has the default name) begins with the name
+    bool chosen = load_str("ui", "name_chosen", "0") == "1";
+    g_step = g_name_first_fix && !chosen && (A.name().empty() || A.name() == "Player") ? kStepName : kStepChoose;
+}
+
+void first_start()
+{
+    g_step = kStepName;
+    g_settings_page = g_space_page = false;
+    if (D.root)
+        sui::set_edit_text(D.name_edit, A.name());
+    set_status("", kYellow);
 }
 
 void open(bool on)
@@ -1622,6 +2269,13 @@ void open_editor()
 
 bool is_open() { return g_want_open; }
 
+void open_lobby()
+{
+    g_settings_page = false;
+    g_space_page = false;
+    open(true);
+}
+
 bool step_aside(int x, int y, double secs)
 {
     if (!g_want_open || !D.root || !sui::visible(D.root))
@@ -1642,9 +2296,13 @@ void tick()
     if (!g_ok)
         return;
     adventure_hud::tick();
-    // F9: show/hide the co-op window anywhere in the game
-    bool f9 = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
-    if (f9 && !g_f9_down)
+    // F9: show/hide the co-op window anywhere in the game. BUG-0713: a press the game window took (mouse.h), not
+    // the physical key: F9 in another program toggled the window (input.window off: the old polling)
+    mouse::install((HWND)H->game_window());
+    static uint32_t s_f9_seen = mouse::key_presses(VK_F9);
+    bool f9_press = mouse::key_pressed(VK_F9, s_f9_seen);
+    bool f9 = mouse::g_window_input ? f9_press : (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
+    if (f9 && (mouse::g_window_input || !g_f9_down))
         open(!g_want_open);
     g_f9_down = f9;
     // The galaxy menu's intro cinematic (~10 s, starting ~16 s after the menu came up unless the
@@ -1723,14 +2381,20 @@ void shutdown()
     if (g_ok) adventure_hud::shutdown();
     if (D.root)
         sui::set_visible(D.root, false);
+    if (g_ok)
+        if (Win pm = pause_menu()) // the next mod instance makes its own (this one's handler dies with the DLL)
+            if (Win mine = sui::find(pm, kIdPauseReport))
+                sui::set_visible(mine, false);
     if (g_menu_btn && (!g_menu_drop_fix || in_menu()))
         sui::set_visible(g_menu_btn, false);
 }
 
 std::string debug_state()
 {
+    static const char* const steps[] = {"name", "choose", "host", "join"};
     std::string s = "open=" + std::to_string(g_want_open) + " page=" +
-                    (A.role() ? (g_space_page ? "space" : "lobby") : "connect") +
+                    (A.role() ? (g_space_page ? "space" : g_settings_page ? "settings" : "lobby") : "connect") +
+                    " step=" + steps[g_step & 3] +
                     " menu_button=" + (g_menu_btn ? "yes" : "no") + " in_menu=" + (in_menu() ? "1" : "0") +
                     " input_lock=" + std::to_string(input_lock()) + " modal=" + (game_modal() ? "1" : "0") +
                     " modal_seen=" + std::to_string(g_modal_seen) + " locked_clicks=" + std::to_string(g_locked_clicks) +
@@ -1756,6 +2420,27 @@ std::string debug_state()
     H->screen_size(&sw, &sh);
     snprintf(b, sizeof b, "screen %d %d\n", sw, sh);
     s += b;
+    if (D.root) { // the window's frame on the screen (tests: ui_golden crops it)
+        Rect r = sui::screen_rect(D.root);
+        snprintf(b, sizeof b, "window %.0f %.0f %.0f %.0f %d\n", r.x1, r.y1, r.x2, r.y2, (int)sui::visible(D.root));
+        s += b;
+        // the texts that vary between runs (ui_golden masks them): addresses, ports, pings, the version, chat, LAN
+        std::vector<std::pair<std::string, Win>> areas = {
+            {"session", D.session}, {"hostaddr", D.address}, {"version", D.version}, {"lanhdr", D.lan_hdr},
+            {"statusline", D.status}, {"world", D.world}, {"creationline", D.creation}, {"setline", D.set_line},
+            {"meline", D.me_line}, {"hosthint", D.host_hint}};
+        for (int i = 0; i < 4; i++)
+            areas.push_back({"ping" + std::to_string(i), D.row_ping[i]});
+        for (int i = 0; i < 5; i++)
+            areas.push_back({"chatline" + std::to_string(i), D.chat_lines[i]});
+        for (auto& [nm, w] : areas)
+            if (w) {
+                Rect a = sui::screen_rect(w);
+                snprintf(b, sizeof b, "area %s %.0f %.0f %.0f %.0f %d\n", nm.c_str(), a.x1, a.y1, a.x2, a.y2,
+                         (int)sui::visible(w));
+                s += b;
+            }
+    }
     if (g_menu_btn && in_menu()) { // never a call on an item of a menu that is gone (BUG-0163)
         Rect r = sui::screen_rect(g_menu_btn);
         snprintf(b, sizeof b, "menu %.0f %.0f %.0f %.0f %d '%s'\n", r.x1, r.y1, r.x2, r.y2,
@@ -1773,8 +2458,17 @@ std::string debug_state()
     }
     for (int i = 0; i < 4; i++)
         if (D.row_name[i] && sui::visible(D.row_name[i]))
-            s += "row " + std::to_string(i) + " '" + sui::caption(D.row_name[i]) + "' '" + sui::caption(D.row_stage[i]) +
+            s += "row " + std::to_string(i) + " '" + sui::caption(D.row_name[i]) + "' '" + sui::caption(D.row_color[i]) +
+                 "' '" + sui::caption(D.row_stage[i]) +
                  "' '" + sui::caption(D.row_ping[i]) + "' '" + sui::caption(D.row_ready[i]) + "'\n";
+    { // F2: the colour of each row's swatch (ARGB; tests)
+        auto rows = A.players ? A.players() : std::vector<PlayerRow>{};
+        for (size_t i = 0; i < rows.size() && i < 4; i++) {
+            char cb[96];
+            snprintf(cb, sizeof cb, "rowcolor %u id=%u argb=%08X\n", (unsigned)i, (unsigned)rows[i].id, rows[i].color);
+            s += cb;
+        }
+    }
     for (int i = 0; i < 5; i++)
         if (D.chat_lines[i] && !sui::caption(D.chat_lines[i]).empty())
             s += "chat '" + sui::caption(D.chat_lines[i]) + "'\n";
@@ -1787,7 +2481,32 @@ std::string debug_state()
     if (D.lan_hdr)
         s += "lan '" + sui::caption(D.lan_hdr) + "'\n";
     s += "status '" + g_status + "'\n";
+    s += "joinline '" + g_join_line + "'\n";
     s += "spage first=" + std::to_string(g_space_first) + " rows=" + std::to_string(kSpaceRows) + "\n";
+    if (D.address)
+        s += "hostaddr '" + sui::caption(D.address) + "'\n";
+    for (int i = 0; i < kSetRows; i++) // the settings rows on the page now: key, value, editable, tag
+        if (D.set_id[i] >= 0 && D.set_btn[i] && sui::visible(D.set_btn[i]))
+            s += "setting " + std::to_string(i) + " " + settings::kDefs[D.set_id[i]].key + " " +
+                 std::to_string(settings::get((settings::Id)D.set_id[i])) + " " +
+                 ((sui::flags(D.set_btn[i]) & sui::kFlagEnabled) ? "1" : "0") + " '" + sui::caption(D.set_tag[i]) + "'\n";
+    if (D.set_line)
+        s += "setline '" + sui::caption(D.set_line) + "'\n";
+    if (Win pm = g_ok ? pause_menu() : nullptr) {
+        if (Win mine = sui::find(pm, kIdPauseReport)) {
+            Rect r = sui::screen_rect(mine);
+            snprintf(b, sizeof b, "pausereport %.0f %.0f %.0f %.0f %d '%s' clicks=%u\n", r.x1, r.y1, r.x2, r.y2,
+                     (int)shown_chain(mine), sui::caption(mine).c_str(), g_pause_clicks);
+            s += b;
+        }
+        for (Win c : sui::children(pm)) // the game's own buttons (tests: no overlap with ours)
+            if (sui::control_id(c) != kIdPauseReport && sui::as_button(c) && !sui::caption(c).empty() &&
+                (sui::flags(c) & sui::kFlagVisible)) {
+                Rect r = sui::screen_rect(c);
+                snprintf(b, sizeof b, "pausebtn %.0f %.0f %.0f %.0f '%s'\n", r.x1, r.y1, r.x2, r.y2, sui::caption(c).c_str());
+                s += b;
+            }
+    }
     return s;
 }
 
@@ -1799,6 +2518,65 @@ void set_russian(bool ru)
 {
     g_ru = ru;
     g_dirty = true;
+}
+
+void set_test_color(uint32_t argb)
+{
+    g_test_color = argb;
+    g_dirty = true;
+}
+
+void set_demo(const std::string& addr, const std::string& from, const std::string& to)
+{
+    g_demo_addr = addr;
+    g_demo_from = from;
+    g_demo_to = to;
+    g_dirty = true;
+}
+
+std::string widgets_state()
+{
+    // every visible widget of the window (tests: layout checks): screen rect, kind (L label, B button), the width
+    // the caption needs (caption_width) and the caption
+    std::string s;
+    if (!D.root || !sui::visible(D.root))
+        return s;
+    char b[512];
+    for (auto& [w, c] : g_cache) {
+        if (!sui::visible(w) || sui::parent(w) != D.root)
+            continue;
+        bool btn = g_btn_fn.count(w) != 0;
+        std::string cap = sui::caption(w);
+        Rect r = sui::screen_rect(w);
+        snprintf(b, sizeof b, "widget %.0f %.0f %.0f %.0f %c %.0f '%s'\n", r.x1, r.y1, r.x2, r.y2, btn ? 'B' : 'L',
+                 cap.empty() ? 0.f : caption_width(cap), cap.c_str());
+        s += b;
+    }
+    return s;
+}
+
+std::string test_nudge(const std::string& name, float dx, float dy, bool hide)
+{
+    if (name == "off") { // every nudged control back to its place
+        for (auto& [nm, n] : g_nudges) {
+            auto it = g_named.find(nm);
+            if (it != g_named.end() && it->second && n.have_base)
+                sui::set_area(it->second, n.base);
+        }
+        g_nudges.clear();
+        g_dirty = true;
+        return "ui: no control nudged";
+    }
+    if (!g_named.count(name))
+        return "ui: no control '" + name + "' (the window is built at its first open)";
+    Nudge& n = g_nudges[name];
+    n.dx = dx;
+    n.dy = dy;
+    n.hide = hide;
+    g_dirty = true;
+    char b[128];
+    snprintf(b, sizeof b, "ui: %s %s (%.0f, %.0f)", name.c_str(), hide ? "hidden" : "moved by", dx, dy);
+    return b;
 }
 
 } // namespace coop_ui

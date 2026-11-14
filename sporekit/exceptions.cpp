@@ -18,9 +18,27 @@ struct ExcRec {
     uint32_t regs[8];
     uint32_t stack[12];
     uint32_t rets[10]; // likely return addresses into the exe found deeper on the stack (0 = none)
+    uint32_t mrets[8]; // BUG-0977: the same into another module's code (our DLLs, the CRT, Wine's): who called in
+    uint32_t mark;     // count at the start of the fault storm window (BUG-0676)
+    bool storm;        // named as a fault storm already
 };
 
 // a dword on the stack that points just after a call instruction in the exe's code
+// BUG-0977: a dword on the stack that points just after a call instruction in a loaded module other than the exe (a
+// fault in ucrtbase's memcpy listed only exe addresses: the mod function that called it was not named)
+static bool module_return_address(uint32_t v)
+{
+    MEMORY_BASIC_INFORMATION mbi;
+    if (v < 0x10000 || !VirtualQuery((const void*)(uintptr_t)(v - 7), &mbi, sizeof mbi) || mbi.State != MEM_COMMIT ||
+        mbi.Type != MEM_IMAGE || !(mbi.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE | PAGE_EXECUTE_READWRITE)) ||
+        (uintptr_t)mbi.BaseAddress + mbi.RegionSize < (uintptr_t)v ||
+        mbi.AllocationBase == (void*)GetModuleHandleW(nullptr))
+        return false;
+    const uint8_t* c = (const uint8_t*)(uintptr_t)v;
+    return c[-5] == 0xE8 || (c[-6] == 0xFF && (c[-5] & 0x38) == 0x10) || (c[-2] == 0xFF && (c[-1] & 0xF8) == 0xD0) ||
+           (c[-3] == 0xFF && (c[-2] & 0x38) == 0x10);
+}
+
 static bool exe_return_address(uint32_t v)
 {
     static uintptr_t lo, hi;
@@ -106,6 +124,69 @@ bool exceptions_stack_overflow(EXCEPTION_RECORD* er, CONTEXT* ctx, DWORD* tid, d
     return true;
 }
 
+// BUG-0956: esp outside the faulting thread's own stack (another allocation than the one of the TIB's StackBase):
+// the game jumped into heap bytes that moved esp. Wine refuses to dispatch such a fault ("Exception frame is not in
+// stack limits") and ends the process; the SEH frames on the real stack are never run.
+static bool off_stack(uintptr_t esp, uintptr_t* lo, uintptr_t* hi)
+{
+    auto* tib = (const NT_TIB*)NtCurrentTeb();
+    *hi = (uintptr_t)tib->StackBase;
+    *lo = (uintptr_t)tib->StackLimit;
+    MEMORY_BASIC_INFORMATION a, b;
+    if (!*hi || !VirtualQuery((const void*)(*hi - 1), &b, sizeof b))
+        return false;
+    if (!VirtualQuery((const void*)esp, &a, sizeof a))
+        return true;
+    return a.AllocationBase != b.AllocationBase;
+}
+
+// the return addresses on the thread's real stack around its innermost SEH record: the live frames above it (the
+// caller chain of the code that went astray), then the nearest ones below it (the call itself, or older frames);
+// logged once per run for an off-stack fault
+static void log_real_stack(uintptr_t lo, uintptr_t hi)
+{
+    auto* tib = (const NT_TIB*)NtCurrentTeb();
+    uintptr_t seh = (uintptr_t)tib->ExceptionList;
+    if (seh < lo || seh >= hi)
+        seh = lo;
+    logf(&g_kit_mod, SK_ERROR, "  the thread's stack %08X..%08X, innermost SEH record %08X; return addresses above it, then "
+         "below it:", (unsigned)lo, (unsigned)hi, (unsigned)seh);
+    for (int dir = 0; dir < 2; dir++) {
+        char line[400];
+        int len = 0, n = 0;
+        for (int i = 0; i < 0x1000 && n < (dir ? 160 : 48); i++) {
+            uintptr_t q = dir == 0 ? (seh & ~3u) + 4 * i : (seh & ~3u) - 4 * (i + 1);
+            if (q < lo || q + 4 > hi)
+                break;
+            uint32_t v = *(const uint32_t*)q;
+            if (!exe_return_address(v))
+                continue;
+            n++;
+            std::string name = symbols_reverse(v);
+            len += snprintf(line + len, sizeof line - len, " [%c%X]%08X %s", dir ? '-' : '+', (unsigned)(4 * i + 4 * dir), v,
+                            name.empty() ? "?" : name.c_str());
+            if (len > 280) {
+                logf(&g_kit_mod, SK_ERROR, "   %s", line);
+                len = 0;
+            }
+        }
+        if (len)
+            logf(&g_kit_mod, SK_ERROR, "   %s", line);
+    }
+    // the raw dwords just below the record (the innermost frames: locals, arguments, return addresses)
+    for (int row = 0; row < 8; row++) {
+        char line[160];
+        int len = 0;
+        uintptr_t q0 = (seh & ~3u) - 0x20 * (row + 1);
+        if (q0 < lo)
+            break;
+        len += snprintf(line, sizeof line, "-%03X:", (unsigned)(seh - q0));
+        for (int k = 0; k < 8; k++)
+            len += snprintf(line + len, sizeof line - len, " %08X", *(const uint32_t*)(q0 + 4 * k));
+        logf(&g_kit_mod, SK_ERROR, "   %s", line);
+    }
+}
+
 // The handler runs at the first chance of every fault, on the faulting thread, maybe inside a lock
 // of SporeKit (BUG-0115):
 //  * a fault inside the handler itself, or while this thread holds g_mu (SK_TF_IN_EXC), is not
@@ -156,10 +237,13 @@ static LONG CALLBACK veh(EXCEPTION_POINTERS* ep)
             r.stack[i] = sp[i];
         // the call chain (roughly): return addresses within 2 KB of the stack, same committed region
         const uint32_t* end = (const uint32_t*)((const uint8_t*)mbi.BaseAddress + mbi.RegionSize);
-        int n = 0;
-        for (const uint32_t* q = sp; q < end && q < sp + 512 && n < 10; q++)
-            if (exe_return_address(*q))
-                r.rets[n++] = *q;
+        int n = 0, m = 0;
+        for (const uint32_t* q = sp; q < end && q < sp + 512 && (n < 10 || m < 8); q++)
+            if (exe_return_address(*q)) {
+                if (n < 10)
+                    r.rets[n++] = *q;
+            } else if (m < 8 && module_return_address(*q))
+                r.mrets[m++] = *q;
     }
     {
         std::lock_guard<std::mutex> lk(g_mu);
@@ -217,6 +301,33 @@ static LONG CALLBACK veh(EXCEPTION_POINTERS* ep)
         }
         logf(&g_kit_mod, SK_ERROR, "  called from: %s", named.c_str());
     }
+    if (r.mrets[0]) { // BUG-0977: return addresses into other modules (module+offset), innermost first
+        std::string ms;
+        for (int i = 0; i < 8 && r.mrets[i]; i++) {
+            HMODULE hm = nullptr;
+            char one[80];
+            if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   (LPCWSTR)(uintptr_t)r.mrets[i], &hm) && hm) {
+                wchar_t n[MAX_PATH];
+                GetModuleFileNameW(hm, n, MAX_PATH);
+                std::wstring w = n;
+                snprintf(one, sizeof one, " %s+0x%X", narrow(w.substr(w.find_last_of(L"\\/") + 1)).c_str(),
+                         (unsigned)(r.mrets[i] - (uintptr_t)hm));
+            } else
+                snprintf(one, sizeof one, " %08X", (unsigned)r.mrets[i]);
+            ms += one;
+        }
+        logf(&g_kit_mod, SK_ERROR, "  module calls:%s", ms.c_str());
+    }
+    uintptr_t lo, hi;
+    static volatile LONG offstack_told;
+    if (code != EXCEPTION_STACK_OVERFLOW && fixed(g_fix_offstack) && off_stack(c->Esp, &lo, &hi) &&
+        InterlockedCompareExchange(&offstack_told, 1, 0) == 0) {
+        logf(&g_kit_mod, SK_ERROR, "the stack pointer %08X is outside this thread's stack: this fault cannot be dispatched, "
+             "the game ends now (BUG-0956)", (unsigned)c->Esp);
+        log_real_stack(lo, hi);
+        diag_offstack_report(ep);
+    }
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
@@ -229,8 +340,47 @@ void exceptions_fault_test()
     page[0] = 1;
 }
 
+// BUG-0676: a fault the game's handler catches lets the game go on; when the same place faults in every frame (the
+// galaxy menu's exit cut off half-way: 22939 faults at 0xE01323 in 5 min, no crash, no report, a guest stuck in the
+// menu) the log had one line at the first fault and nothing after it. Every 10 s the counts are compared: 300 more of
+// one fault is a storm: one ERR line per place and one report per run. `kit.fix faultstorm 0`: nothing (0.3.12).
+static const uint32_t kStormFaults = 300;
+static const double kStormWindow = 10.0;
+static void storm_check()
+{
+    static double since = -1;
+    double now = now_seconds();
+    if (since < 0)
+        since = now;
+    if (now - since < kStormWindow)
+        return;
+    double span = now - since;
+    since = now;
+    char text[320] = "";
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        ThreadFlag tf(SK_TF_IN_EXC);
+        for (auto& r : g_recs) {
+            uint32_t n = r.count - r.mark;
+            r.mark = r.count;
+            if (r.storm || n < kStormFaults || text[0]) // one per check; another one at the next
+                continue;
+            r.storm = true;
+            snprintf(text, sizeof text, "fault storm: 0x%08lX at 0x%08X %s (data 0x%08X) %u times in %.0f s (%u in all, "
+                     "%u faults of every kind): the game's handler catches it and the game cannot get past it",
+                     r.code, (unsigned)r.eip, r.where.c_str(), (unsigned)r.addr, n, span, r.count, g_total.load());
+        }
+    }
+    if (!text[0])
+        return;
+    logf(&g_kit_mod, SK_ERROR, "%s (BUG-0676)", text);
+    diag_storm_report(text);
+}
+
 void exceptions_pump()
 {
+    if (fixed(g_fix_faultstorm))
+        storm_check();
     if (!g_mod_fault.exchange(false))
         return;
     char t[256];

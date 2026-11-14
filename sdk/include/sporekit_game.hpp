@@ -112,6 +112,10 @@ public:
     ReadOnlyMemoryScope(const ReadOnlyMemoryScope&) = delete;
     ReadOnlyMemoryScope& operator=(const ReadOnlyMemoryScope&) = delete;
 };
+// BUG-0791 (measurement): readable() calls of this module (one VirtualQuery each, a syscall), and for a cost check
+// readable_extra more VirtualQuery per call (tests compare the frame time with 1 and with 1 + extra queries).
+inline volatile LONG readable_calls = 0;
+inline int readable_extra = 0;
 
 // Basic memory sanity check before dereferencing game pointers from tools.
 inline bool readable(const void* p, size_t n)
@@ -119,6 +123,9 @@ inline bool readable(const void* p, size_t n)
     uintptr_t a = reinterpret_cast<uintptr_t>(p);
     if (n > std::numeric_limits<uintptr_t>::max() - a) return false;
     uintptr_t end = a + n;
+    InterlockedIncrement(&readable_calls);
+    MEMORY_BASIC_INFORMATION extra_query{};
+    for (int i = 0; i < readable_extra; ++i) VirtualQuery(p, &extra_query, sizeof extra_query);
     while (a < end) {
         ReadOnlyMemoryScope::Region region;
         if (ReadOnlyMemoryScope::current_) {

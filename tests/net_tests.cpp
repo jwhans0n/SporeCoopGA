@@ -2,6 +2,7 @@
 #include "../updater/pack.h"
 #include <algorithm>
 #include <cassert>
+#include <deque>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
@@ -31,6 +32,7 @@
 #include "net/shared_ledger.h"
 #include "net/session.h"
 #include "net/ipmask.h"
+#include "net/utf8.h"
 
 using namespace net;
 
@@ -48,23 +50,26 @@ static void test_upstream_ga_channels()
 {
     // Literal receiver expectations make a sender/receiver constant mismatch visible.
     const uint8_t ids[]={MSG_NEST,MSG_PARTS,MSG_WOBJ,MSG_ACTIVITY,MSG_FIELDS,MSG_NPC_RESYNC,
-        MSG_NPC_ANIM,MSG_DIAG,MSG_EFFECT,MSG_WSTATE,MSG_PLAYER_RULE,MSG_MIRROR_FX,MSG_ADVENTURE,MSG_EDITOR};
+        MSG_NPC_ANIM,MSG_DIAG,MSG_EFFECT,MSG_WSTATE,MSG_PLAYER_RULE,MSG_MIRROR_FX,MSG_NPC_MEAT,MSG_SETTINGS,MSG_COLORS,MSG_REPORT,MSG_HOST_WORLD,MSG_ADVENTURE,MSG_EDITOR};
     CHECK(std::set<uint8_t>(std::begin(ids),std::end(ids)).size()==std::size(ids));
-    Session host,guest;std::string error;unsigned upstream=0,adventure=0,editor=0;
+    Session host,guest;std::string error;unsigned upstream=0,observed_upstream=0,adventure=0,editor=0;
     host.cb.custom=[&](uint8_t type,uint8_t from,Reader& r){
-        CHECK(from==1);CHECK(type==64);CHECK(r.u32()==0xAABBCCDD&&r.left()==0&&r.ok());++upstream;
+        CHECK(from==1);CHECK(type>=64&&type<=69);CHECK(r.u32()==0xAABBCCDD&&r.left()==0&&r.ok());++upstream;
     };
     guest.cb.custom=[&](uint8_t type,uint8_t from,Reader& r){
         CHECK(from==0);CHECK(r.u32()==0xAABBCCDD&&r.left()==0&&r.ok());
-        if(type==65)++adventure;else if(type==66)++editor;else CHECK(false);
+        if(type>=64&&type<=69)++observed_upstream;else if(type==70)++adventure;else if(type==71)++editor;else CHECK(false);
     };
     CHECK(host.host(0,"host",error));
     CHECK(guest.join("127.0.0.1:"+std::to_string(host.port()),"guest",error));
     auto service=[&]{for(unsigned i=0;i<100;++i){host.update();guest.update();std::this_thread::sleep_for(std::chrono::milliseconds(2));}};
     service();CHECK(guest.connected());
     Writer payload;payload.u32(0xAABBCCDD);
-    guest.send_event(MSG_MIRROR_FX,payload);host.send_event(MSG_ADVENTURE,payload);host.send_event(MSG_EDITOR,payload);
-    service();CHECK(upstream==1&&adventure==1&&editor==1);
+    for(auto type:{MSG_MIRROR_FX,MSG_NPC_MEAT,MSG_SETTINGS,MSG_COLORS,MSG_REPORT,MSG_HOST_WORLD}){
+        guest.send_event(type,payload);host.send_event(type,payload);
+    }
+    host.send_event(MSG_ADVENTURE,payload);host.send_event(MSG_EDITOR,payload);
+    service();CHECK(upstream==6&&observed_upstream==6&&adventure==1&&editor==1);
 }
 
 static void test_buffer()
@@ -78,7 +83,7 @@ static void test_buffer()
     s.movement_generation=0xFEDCBA9876543210ULL;
     Writer w;
     s.write(w);
-    CHECK(w.size() == 99); // upstream AGL plus the complete GA identity and teleport fields
+    CHECK(w.size() == 103); // upstream AGL plus the complete GA identity and teleport fields
     Reader r(w.data.data(), w.size());
     PlayerState t;
     CHECK(t.read(r));
@@ -117,7 +122,7 @@ static void test_buffer()
     Reader r4(w4.data.data(), w4.size());
     PlayerState t4;
     CHECK(t4.read(r4) && t4.scale == 1.5f && r4.left() == 0);
-    Reader r5(w4.data.data(), w4.size() - 8);
+    Reader r5(w4.data.data(), w4.size() - 12); // (BUG-0733: the body after the agl)
     PlayerState t5;
     CHECK(!t5.read(r5)); // Fork protocol27 requires its complete payload.
     // BUG-0425: upstream AGL precedes the three required fork identity words.
@@ -127,9 +132,15 @@ static void test_buffer()
     Reader r6(w6.data.data(), w6.size());
     PlayerState t6;
     CHECK(t6.read(r6) && t6.agl == 2.5f && t6.scale == 1.5f && r6.left() == 0);
-    Reader r7(w6.data.data(), w6.size() - 4);
+    Reader r7(w6.data.data(), w6.size() - 8);
     PlayerState t7;
     CHECK(!t7.read(r7)); // Upstream protocol7 defaults cannot admit a truncated GA identity.
+    s.body = 1.21f;
+    Writer w8;s.write(w8);
+    Reader r8(w8.data.data(),w8.size());PlayerState t8;
+    CHECK(t8.read(r8) && t8.body==1.21f && t8.agl==2.5f && r8.left()==0);
+    Reader r9(w8.data.data(),w8.size()-4);PlayerState t9;
+    CHECK(!t9.read(r9)); // The fork requires its full generation-fenced payload.
     // shared resource message payload (u8 id, f64)
     Writer w3;
     w3.u8(3);
@@ -420,6 +431,55 @@ static void test_session()
     CHECK(bad.role() == Role::None);
 }
 
+// F3 (BUG-0768): the host's player limit (all.max_players) and the late-join rule (all.late_join off once the host
+// plays its world): a player over the limit or new after the start is refused with the reason; a player who was in
+// the session comes back
+static void test_join_rules()
+{
+    printf("join rules: the player limit and joining after the start (BUG-0768)\n");
+    Session host, a, b, c;
+    std::string err;
+    host.build = a.build = b.build = c.build = 0x922af7c7;
+    CHECK(host.host(0, "alice", err));
+    std::string port = "127.0.0.1:" + std::to_string(host.port());
+    host.max_players = 2;
+    CHECK(a.join(port, "bob", err));
+    pump(host, a, 300);
+    CHECK(a.connected() && host.players().size() == 2);
+    std::string why_b;
+    b.cb.disconnected = [&](const std::string& w) { why_b = w; };
+    CHECK(b.join(port, "carol", err));
+    pump(host, b, 300);
+    CHECK(!b.connected() && why_b.find("session is full") != std::string::npos && host.players().size() == 2);
+    printf("  limit 2: %s\n", why_b.c_str());
+    host.max_players = 3;
+    CHECK(b.join(port, "carol", err));
+    pump(host, b, 300);
+    CHECK(b.connected() && host.players().size() == 3);
+    printf("  %s", host.status().c_str());
+    CHECK(host.status().find("players=3/3") != std::string::npos);
+    // the host plays its world, new players not taken
+    host.max_players = 4;
+    bool closed = true;
+    host.join_closed = [&] { return closed; };
+    std::string why_c;
+    c.cb.disconnected = [&](const std::string& w) { why_c = w; };
+    CHECK(c.join(port, "dave", err));
+    pump(host, c, 300);
+    CHECK(!c.connected() && why_c.find("new players") != std::string::npos && host.players().size() == 3);
+    printf("  after the start: %s\n", why_c.c_str());
+    a.leave("test"); // bob leaves and comes back: he was in this session
+    pump(host, a, 200);
+    CHECK(host.players().size() == 2);
+    CHECK(a.join(port, "bob", err));
+    pump(host, a, 300);
+    CHECK(a.connected() && host.players().size() == 3);
+    closed = false; // joining after the start allowed again
+    CHECK(c.join(port, "dave", err));
+    pump(host, c, 300);
+    CHECK(c.connected() && host.players().size() == 4);
+}
+
 // BUG-0029: a guest that gets REJECT or BYE must not free its connection while that connection is
 // still parsing the packet (heap use-after-free, visible under -fsanitize=address: `make test-asan`)
 static void test_session_end_in_delivery()
@@ -463,11 +523,11 @@ static void test_session_end_in_delivery()
 static void test_protocol_versions()
 {
     printf("merged protocol boundary and HELLO version validation\n");
-    CHECK(kProtoVersion == 28 && kDiscoverPorts == 20);
-    CHECK(MSG_SPACE == 48 && MSG_ADVENTURE == 65 && MSG_EDITOR == 66 && MSG_ACTIVITY == 55 && MSG_NEST == 52 && MSG_PARTS == 53 && MSG_DIAG == 60);
+    CHECK(kProtoVersion == 29 && kDiscoverPorts == 20);
+    CHECK(MSG_SPACE == 48 && MSG_ADVENTURE == 70 && MSG_EDITOR == 71 && MSG_ACTIVITY == 55 && MSG_NEST == 52 && MSG_PARTS == 53 && MSG_DIAG == 60);
     CHECK(MSG_WOBJ == 54 && MSG_FIELDS == 56 && MSG_NPC_RESYNC == 57 && MSG_NPC_ANIM == 59 && MSG_EFFECT == 61);
-    CHECK(kProtoVersion == 28 && kDiscoverPorts == 20);
-    CHECK(MSG_SPACE == 48 && MSG_ADVENTURE == 65 && MSG_EDITOR == 66 && MSG_WSTATE == 62 && MSG_PLAYER_RULE == 63 && MSG_MIRROR_FX == 64);
+    CHECK(kProtoVersion == 29 && kDiscoverPorts == 20);
+    CHECK(MSG_SPACE == 48 && MSG_ADVENTURE == 70 && MSG_EDITOR == 71 && MSG_WSTATE == 62 && MSG_PLAYER_RULE == 63 && MSG_MIRROR_FX == 64);
     Session host;
     std::string err;
     CHECK(host.host(0, "host", err));
@@ -762,20 +822,639 @@ static void test_interp_gap()
     }
 }
 
+// K4 (BUG-0674, BUG-0675, BUG-0651, BUG-0680): SPORE_FIX_OFF=<switch>[,...] keeps that fix off on the fix's side of
+// test_lead_fall too, so the run FAILs (the twin-switch check of CLAUDE.md 3 for the unit test)
+static bool k4_on(const char* name)
+{
+    const char* e = std::getenv("SPORE_FIX_OFF");
+    if (!e)
+        return true;
+    std::string s = std::string(",") + e + ",";
+    return s.find(std::string(",") + name + ",") == std::string::npos;
+}
+
+// BUG-0650 (drive.lead_late): a Tribe member's walk that starts in a latency spike (its first walking state 0.35 s
+// late instead of 0.05 s) moved M1's lead target 3 m in one frame; with the fix the target steps no more than a walk
+// and is at the lead again within 1.5 s
+static float lead_late_max_step(bool fix, double spike_end, float* end_err, bool proxy = false)
+{
+    const bool was = g_lead_late_fix, was_fall = g_lead_fall_fix;
+    const double was_ow = g_one_way;
+    g_lead_late_fix = fix;
+    SnapshotBuffer b;
+    b.delay = 0.2;
+    b.lead = true;
+    b.smooth_max = 6.f;
+    if (proxy) { // BUG-0674: an NPC proxy (no smoothing, late_lead under drive.lead_fall)
+        b.delay = 0.15;
+        b.smooth_max = 8.f;
+        b.late_lead = true;
+        g_lead_late_fix = true;
+        g_lead_fall_fix = fix && k4_on("drive.lead_fall");
+    }
+    g_one_way = 0.05;
+    // the sender sends every 1/30 s; the body stands until sender time 3.0, then walks at 9 m/s along x
+    auto state = [](double st) {
+        PlayerState s;
+        s.time_ms = (uint32_t)(1000 + st * 1000.0 + 0.5);
+        s.mode = 0x1654C01;
+        s.world = 7;
+        s.flags = PF_IN_WORLD;
+        float x = st > 3.0 ? (float)(st - 3.0) * 9.f : 0.f;
+        s.pos = {x, 0.f, 0.f};
+        s.vel = {st > 3.0 ? 9.f : 0.f, 0.f, 0.f};
+        if (st > 3.0)
+            s.flags |= PF_MOVING;
+        return s;
+    };
+    // arrival: 0.05 s late, 0.35 s for the states sent in [2.95, spike_end) (the spike; the states sent after it come
+    // before the last of the spike's, which are dropped as old)
+    std::vector<std::pair<double, PlayerState>> arr;
+    for (int i = 0; i < 180; i++) {
+        double st = i / 30.0;
+        double lat = st >= 2.95 && st < spike_end ? 0.35 : 0.05;
+        arr.push_back({10.0 + st + lat, state(st)});
+    }
+    std::stable_sort(arr.begin(), arr.end(), [](auto& a, auto& c) { return a.first < c.first; });
+    size_t k = 0;
+    float max_step = 0;
+    Vec3 last{};
+    bool have = false;
+    PlayerState o;
+    for (double now = 10.0; now < 15.9; now += 1.0 / 30) {
+        while (k < arr.size() && arr[k].first <= now)
+            b.push(arr[k].second, arr[k].first), k++;
+        if (!b.sample(now, o))
+            continue;
+        if (have && now > 12.5 && now < 14.0)
+            max_step = std::max(max_step, dist(last, o.pos));
+        last = o.pos;
+        have = true;
+    }
+    // where the sender's body is now (+ one-way): sender time now - 10 + 0.05
+    *end_err = std::fabs(o.pos.x - (float)((15.9 - 1.0 / 30 - 10.0 + 0.05 - 3.0) * 9.0));
+    g_lead_late_fix = was;
+    g_lead_fall_fix = was_fall;
+    g_one_way = was_ow;
+    return max_step;
+}
+
+static void test_lead_late()
+{
+    printf("lead target of a walk known late (BUG-0650)\n");
+    for (double spike_end : {3.3, 3.65}) { // the walk's first states: after the spike / late, in order
+        float err_on = 0, err_off = 0;
+        float on = lead_late_max_step(true, spike_end, &err_on), off = lead_late_max_step(false, spike_end, &err_off);
+        printf("  spike to %.2f s: max target step per 1/30 s frame: fix %.2f m (end error %.2f), M1 %.2f m (%.2f)\n",
+               spike_end, on, err_on, off, err_off);
+        CHECK(off > 2.f);     // M1: the start known 0.35 s late jumps 2.7-3.3 m
+        // under 2 x the walk (9 m/s x 1/30 s; drive.lead_keep catches up at 2 x: + one frame's step back); the test
+        // draws a jump at 3 x
+        CHECK(on < (g_lead_keep_fix ? 0.7f : 0.6f));
+        CHECK(err_on < 0.5f); // and it is at the lead again
+    }
+}
+
+// BUG-0651, BUG-0410 (drive.lead_keep): a Tribe member walking at 9 m/s, its states every 1/30 s, `lat` s late (one
+// way); a walk that starts at sender time 3.0 is known `start_late` s late (a spike). Returns the mean distance of the
+// shown target from the sender's body now (sender time = local - 10 - lat + one-way, where the lead shows it) over
+// local 12.5-15.5 s, and in *catch_s how long after the late start's arrival the target is within 0.3 m of it
+static float lead_keep_err(bool keep, double lat, double start_late, double* catch_s)
+{
+    const bool was = g_lead_keep_fix;
+    const double was_ow = g_one_way;
+    g_lead_keep_fix = keep;
+    SnapshotBuffer b;
+    b.delay = 0.2;
+    b.lead = true;
+    b.smooth_max = 6.f;
+    g_one_way = lat;
+    auto x_at = [](double st) { return st > 3.0 ? (float)(st - 3.0) * 9.f : 0.f; };
+    std::vector<std::pair<double, PlayerState>> arr;
+    for (int i = 0; i < 210; i++) {
+        double st = i / 30.0;
+        PlayerState s;
+        s.time_ms = (uint32_t)(1000 + st * 1000.0 + 0.5);
+        s.mode = 0x1654C01;
+        s.world = 7;
+        s.flags = PF_IN_WORLD | (st > 3.0 ? PF_MOVING : 0);
+        s.pos = {x_at(st), 0.f, 0.f};
+        s.vel = {st > 3.0 ? 9.f : 0.f, 0.f, 0.f};
+        arr.push_back({10.0 + st + lat + (st >= 2.95 && st < 3.3 ? start_late : 0.0), s});
+    }
+    std::stable_sort(arr.begin(), arr.end(), [](auto& a, auto& c) { return a.first < c.first; });
+    size_t k = 0;
+    PlayerState o;
+    double sum = 0, known = -1;
+    int n = 0;
+    *catch_s = 99;
+    for (double now = 10.0; now < 16.9; now += 1.0 / 30) {
+        while (k < arr.size() && arr[k].first <= now) {
+            if (known < 0 && arr[k].second.flags & PF_MOVING)
+                known = now;
+            b.push(arr[k].second, arr[k].first), k++;
+        }
+        if (!b.sample(now, o))
+            continue;
+        float err = std::fabs(o.pos.x - x_at(now - 10.0));
+        if (now > 13.5 && now < 16.5) {
+            sum += err;
+            n++;
+        }
+        if (known >= 0 && *catch_s > 90 && err < 0.3f)
+            *catch_s = now - known;
+    }
+    g_lead_keep_fix = was;
+    g_one_way = was_ow;
+    return n ? (float)(sum / n) : 99.f;
+}
+
+// BUG-0410 (drive.lead_keep): a member walking at a speed that changes (5-11 m/s, a 2 s period) along x, its states every
+// 0.1 s with 0-30 ms of send and arrival jitter on a 45 ms link, a guest at 30 fps: the mean distance of the shown
+// target from the sender's body now and how far the shown time is behind the lead's (p90)
+static float lead_ratchet_err(bool keep, double* behind_p90)
+{
+    const bool was = g_lead_keep_fix;
+    const double was_ow = g_one_way;
+    g_lead_keep_fix = keep;
+    SnapshotBuffer b;
+    b.delay = 0.2;
+    b.lead = true;
+    b.smooth_max = 6.f;
+    g_one_way = 0.06;
+    auto spd = [](double st) { return 8.0 + 3.0 * std::sin(st * 3.14159); };
+    std::vector<double> xs(1); // x at sender time i / 1000
+    for (int i = 1; i < 20000; i++)
+        xs.push_back(xs.back() + spd(i / 1000.0) / 1000.0);
+    auto x_at = [&](double st) { return (float)xs[std::min<size_t>(xs.size() - 1, (size_t)std::max(0.0, st * 1000.0))]; };
+    std::mt19937 rng(11);
+    std::uniform_real_distribution<double> U(0, 1);
+    std::vector<std::pair<double, PlayerState>> arr;
+    for (double st = 0; st < 19.0; st += 0.1 + 0.01 * U(rng)) {
+        PlayerState s;
+        s.time_ms = (uint32_t)(1000 + st * 1000.0 + 0.5);
+        s.mode = 0x1654C01;
+        s.world = 7;
+        s.flags = PF_IN_WORLD | PF_MOVING;
+        s.pos = {x_at(st), 0.f, 0.f};
+        s.vel = {(float)spd(st), 0.f, 0.f};
+        arr.push_back({10.0 + st + 0.045 + 0.03 * U(rng), s});
+    }
+    std::stable_sort(arr.begin(), arr.end(), [](auto& a, auto& c) { return a.first < c.first; });
+    size_t k = 0;
+    PlayerState o;
+    double sum = 0;
+    int n = 0;
+    std::vector<double> lb;
+    for (double now = 10.0; now < 28.0; now += 1.0 / 30) {
+        while (k < arr.size() && arr[k].first <= now)
+            b.push(arr[k].second, now), k++;
+        if (!b.sample(now, o) || now < 13.0)
+            continue;
+        sum += std::fabs(o.pos.x - x_at(now - 10.0 - 0.045 + 0.06));
+        n++;
+        lb.push_back(b.late_behind(now));
+    }
+    std::sort(lb.begin(), lb.end());
+    *behind_p90 = lb.empty() ? 99 : lb[lb.size() * 9 / 10];
+    g_lead_keep_fix = was;
+    g_one_way = was_ow;
+    return n ? (float)(sum / n) : 99.f;
+}
+
+// BUG-0674 (drive.lead_keep): a member walking +x at 9 m/s turns round at sender time 3.0; the states of [2.95, 3.3) come
+// 0.35 s late (a spike), so the lead goes on the old way meanwhile. Returns how long (s) the shown target is over 2 m from
+// the sender's body after the first late state arrived
+static double lead_turn_over2(bool keep)
+{
+    const bool was = g_lead_keep_fix;
+    const double was_ow = g_one_way;
+    g_lead_keep_fix = keep;
+    SnapshotBuffer b;
+    b.delay = 0.2;
+    b.lead = true;
+    b.smooth_max = 6.f;
+    g_one_way = 0.05;
+    auto x_at = [](double st) { return st < 3.0 ? (float)st * 9.f : (float)(6.0 - st) * 9.f; };
+    std::vector<std::pair<double, PlayerState>> arr;
+    for (int i = 0; i < 180; i++) {
+        double st = i / 30.0;
+        PlayerState s;
+        s.time_ms = (uint32_t)(1000 + st * 1000.0 + 0.5);
+        s.mode = 0x1654C01;
+        s.world = 7;
+        s.flags = PF_IN_WORLD | PF_MOVING;
+        s.pos = {x_at(st), 0.f, 0.f};
+        s.vel = {st < 3.0 ? 9.f : -9.f, 0.f, 0.f};
+        arr.push_back({10.0 + st + 0.05 + (st >= 2.95 && st < 3.3 ? 0.35 : 0.0), s});
+    }
+    std::stable_sort(arr.begin(), arr.end(), [](auto& a, auto& c) { return a.first < c.first; });
+    size_t k = 0;
+    PlayerState o;
+    double over = 0, known = -1;
+    for (double now = 10.0; now < 15.9; now += 1.0 / 30) {
+        while (k < arr.size() && arr[k].first <= now) {
+            if (known < 0 && arr[k].second.vel.x < 0)
+                known = now;
+            b.push(arr[k].second, arr[k].first), k++;
+        }
+        if (!b.sample(now, o))
+            continue;
+        if (known >= 0 && std::fabs(o.pos.x - x_at(now - 10.0)) > 2.f)
+            over += 1.0 / 30;
+    }
+    g_lead_keep_fix = was;
+    g_one_way = was_ow;
+    return over;
+}
+
+
+// BUG-0674 (drive.lead_fall): a member walking +x at 9 m/s turns round (turn = true) or stops (false) at sender time 3.0;
+// the states of [2.95, 3.3) come 0.35 s late (a spike), the rest 0.05 s. Returns the worst distance of the shown target
+// from the sender's body (its now, where the lead shows it) over the whole run; *straight: the same for a walk that
+// goes straight on through the spike (the cost)
+static float lead_fall_err(bool fall, int kind)
+{
+    const bool was = g_lead_fall_fix;
+    const double was_ow = g_one_way;
+    g_lead_fall_fix = fall && k4_on("drive.lead_fall");
+    SnapshotBuffer b;
+    b.delay = 0.2;
+    b.lead = true;
+    b.smooth_max = 6.f;
+    g_one_way = 0.05;
+    auto x_at = [kind](double st) {
+        if (st < 3.0 || kind == 2)
+            return (float)st * 9.f;
+        return kind == 0 ? (float)(6.0 - st) * 9.f : 27.f;
+    };
+    auto v_at = [kind](double st) { return st < 3.0 || kind == 2 ? 9.f : kind == 0 ? -9.f : 0.f; };
+    std::vector<std::pair<double, PlayerState>> arr;
+    for (int i = 0; i < 180; i++) {
+        double st = i / 30.0;
+        PlayerState s;
+        s.time_ms = (uint32_t)(1000 + st * 1000.0 + 0.5);
+        s.mode = 0x1654C01;
+        s.world = 7;
+        s.flags = PF_IN_WORLD | (v_at(st) != 0 ? PF_MOVING : 0);
+        s.pos = {x_at(st), 0.f, 0.f};
+        s.vel = {v_at(st), 0.f, 0.f};
+        arr.push_back({10.0 + st + 0.05 + (st >= 2.95 && st < 3.3 ? 0.35 : 0.0), s});
+    }
+    std::stable_sort(arr.begin(), arr.end(), [](auto& a, auto& c) { return a.first < c.first; });
+    size_t k = 0;
+    PlayerState o;
+    float worst = 0;
+    for (double now = 10.0; now < 15.9; now += 1.0 / 30) {
+        while (k < arr.size() && arr[k].first <= now)
+            b.push(arr[k].second, arr[k].first), k++;
+        if (!b.sample(now, o) || now < 12.0)
+            continue;
+        worst = std::max(worst, std::fabs(o.pos.x - x_at(now - 10.0)));
+    }
+    g_lead_fall_fix = was;
+    g_one_way = was_ow;
+    return worst;
+}
+
+// BUG-0674 (drive.lead_fall) on VelocityEstimate (a Space ship's copy, a Civ vehicle): a ship at 28 m/s, its states every
+// 0.1 s, 0.03 s late; it stops at sender time 5.0 while the states of [4.9, 5.4) come 0.4 s late. The worst distance of
+// at() from the ship (its sender time now) after the stop
+static double ship_fall_err(bool fall)
+{
+    const bool was = g_lead_fall_fix;
+    g_lead_fall_fix = fall && k4_on("drive.lead_fall");
+    VelocityEstimate e;
+    e.max_ahead = 0.4;
+    auto x_at = [](double st) { return st < 5.0 ? st * 28.0 : 140.0; };
+    std::vector<std::pair<double, double>> arr; // arrival, sender time
+    for (int i = 0; i < 90; i++) {
+        double st = i * 0.1;
+        arr.push_back({100.0 + st + 0.03 + (st >= 4.9 && st < 5.4 ? 0.4 : 0.0), st});
+    }
+    std::stable_sort(arr.begin(), arr.end());
+    size_t k = 0;
+    double worst = 0;
+    for (double now = 100.0; now < 108.5; now += 1 / 60.0) {
+        while (k < arr.size() && arr[k].first <= now) {
+            e.update({(float)x_at(arr[k].second), 0, 0}, arr[k].first, 2000 + arr[k].second);
+            k++;
+        }
+        if (now > 104.0)
+            worst = std::max(worst, std::fabs((double)e.at(now, 0.03).x - x_at(now - 100.0)));
+    }
+    g_lead_fall_fix = was;
+    return worst;
+}
+
+// BUG-0675 (drive.lead_throw): an NPC thrown at 20 m/s (its states every 1/30 s report that speed), the states over the
+// player network (45 ms, a loss burst: one state in three comes): the longest time (s) the shown target stands still while the NPC flies
+static double throw_stand(bool fix)
+{
+    const bool was = g_lead_throw_fix;
+    const double was_ow = g_one_way;
+    g_lead_throw_fix = fix && k4_on("drive.lead_throw");
+    g_one_way = 0.045;
+    SnapshotBuffer b;
+    b.delay = 0.15;
+    b.lead = true;
+    auto x_at = [](double st) { return st < 3.0 ? st * 4.0 : 12.0 + (st - 3.0) * 20.0; };
+    std::vector<std::pair<double, PlayerState>> arr;
+    for (int i = 0; i < 120; i++) {
+        double st = i / 30.0;
+        if (st > 3.0 && i % 3 != 0)
+            continue; // lost (a loss burst: one state in three comes)
+        PlayerState s;
+        s.time_ms = (uint32_t)(1000 + st * 1000.0 + 0.5);
+        s.pos = {(float)x_at(st), 0.f, 0.f};
+        s.vel = {st < 3.0 ? 4.f : 20.f, 0.f, 0.f};
+        arr.push_back({10.0 + st + 0.045, s});
+    }
+    size_t k = 0;
+    PlayerState o;
+    double stand = 0, longest = 0;
+    float last = -1e9f;
+    for (double now = 10.0; now < 14.0; now += 1.0 / 30) {
+        while (k < arr.size() && arr[k].first <= now)
+            b.push(arr[k].second, arr[k].first), k++;
+        if (!b.sample(now, o))
+            continue;
+        if (now > 13.1 && now < 13.9) {
+            stand = std::fabs(o.pos.x - last) < 0.05f ? stand + 1.0 / 30 : 0;
+            longest = std::max(longest, stand);
+        }
+        last = o.pos.x;
+    }
+    g_lead_throw_fix = was;
+    g_one_way = was_ow;
+    return longest;
+}
+
+// BUG-0651 (drive.lead_low): a member buffer whose mean one-way latency reads 140 ms (spikes, a loaded PC) while the
+// link's own latency (the round trip's lower quartile) is 45 ms keeps the lead; the mobile network (100 ms) does not
+static bool lead_off_with(bool low_fix, double mean_ow, double low_ow)
+{
+    const bool was = g_lead_low_fix;
+    const double was_ow = g_one_way, was_low = g_one_way_low;
+    g_lead_low_fix = low_fix && k4_on("drive.lead_low");
+    g_one_way = mean_ow;
+    g_one_way_low = low_ow;
+    SnapshotBuffer b;
+    b.lead = true;
+    b.smooth_max = 6.f;
+    for (int i = 0; i < 100; i++) {
+        PlayerState s;
+        s.time_ms = (uint32_t)(1000 + i * 33);
+        s.flags = PF_IN_WORLD;
+        b.push(s, 10.0 + i * 0.033 + mean_ow);
+    }
+    bool off = b.lead_off();
+    g_lead_low_fix = was;
+    g_one_way = was_ow;
+    g_one_way_low = was_low;
+    return off;
+}
+
+
+// BUG-0680 (drive.puppet_fall): a partner walking +x at 4.75 m/s stops at sender time 3.0; its states of [2.9, 3.3) come
+// 0.25 s late (a spike). The puppet's buffer (interpolated, delay 0.1): how far the shown target goes past the stop and
+// whether its velocity falls under 0.3 m/s meanwhile (creature.puppet_stop's hold)
+static float puppet_stop_past(bool fix, bool* slowed)
+{
+    const bool was = g_puppet_fall_fix;
+    const double was_ow = g_one_way;
+    g_puppet_fall_fix = fix && k4_on("drive.puppet_fall");
+    g_one_way = 0.05;
+    SnapshotBuffer b;
+    b.delay = 0.1;
+    b.interp_fall = true;
+    auto x_at = [](double st) { return st < 3.0 ? (float)st * 4.75f : 14.25f; };
+    std::vector<std::pair<double, PlayerState>> arr;
+    for (int i = 0; i < 150; i++) {
+        double st = i / 30.0;
+        PlayerState s;
+        s.time_ms = (uint32_t)(1000 + st * 1000.0 + 0.5);
+        s.flags = PF_IN_WORLD;
+        s.pos = {x_at(st), 0.f, 0.f};
+        s.vel = {st < 3.0 ? 4.75f : 0.f, 0.f, 0.f};
+        arr.push_back({10.0 + st + 0.05 + (st >= 2.9 && st < 3.3 ? 0.25 : 0.0), s});
+    }
+    std::stable_sort(arr.begin(), arr.end(), [](auto& a, auto& c) { return a.first < c.first; });
+    size_t k = 0;
+    PlayerState o;
+    float past = 0;
+    *slowed = false;
+    for (double now = 10.0; now < 14.5; now += 1.0 / 30) {
+        while (k < arr.size() && arr[k].first <= now)
+            b.push(arr[k].second, arr[k].first), k++;
+        if (!b.sample(now, o) || now < 12.0)
+            continue;
+        past = std::max(past, o.pos.x - 14.25f);
+        if (o.pos.x > 13.f && o.pos.x < 14.25f + 1.f && std::fabs(o.vel.x) < 0.3f && std::fabs(o.vel.x) > 0.f)
+            *slowed = true;
+    }
+    g_puppet_fall_fix = was;
+    g_one_way = was_ow;
+    return past;
+}
+
+
+// BUG-0675 / BUG-0651 (drive.lead_throw): a member walking at 9.5 m/s whose loaded sender stamps its states off its frames
+// (positions every 1/30 s, the times alternately 6 ms early and late: every other pair of states 21 ms apart in its time,
+// a 15 m/s path): the mean distance of the shown target from the member (its sender time now)
+static double jitter_err(bool fix)
+{
+    const bool was = g_lead_throw_fix;
+    const double was_ow = g_one_way;
+    g_lead_throw_fix = fix && k4_on("drive.lead_throw");
+    g_one_way = 0.045;
+    SnapshotBuffer b;
+    b.delay = 0.2;
+    b.lead = true;
+    std::vector<std::pair<double, PlayerState>> arr;
+    for (int i = 0; i < 150; i++) {
+        double st = i / 30.0, ts = st + (i % 2 ? 0.006 : -0.006);
+        PlayerState s;
+        s.time_ms = (uint32_t)(1000 + ts * 1000.0 + 0.5);
+        s.flags = PF_IN_WORLD | PF_MOVING;
+        s.pos = {(float)(st * 9.5), 0.f, 0.f};
+        s.vel = {9.5f, 0.f, 0.f};
+        arr.push_back({10.0 + st + 0.045, s});
+    }
+    size_t k = 0;
+    PlayerState o;
+    int n = 0;
+    double sum = 0;
+    for (double now = 10.0; now < 14.8; now += 1.0 / 30) {
+        while (k < arr.size() && arr[k].first <= now)
+            b.push(arr[k].second, arr[k].first), k++;
+        if (!b.sample(now, o) || now < 11.0)
+            continue;
+        n++;
+        sum += std::fabs(o.pos.x - (now - 10.0) * 9.5);
+    }
+    g_lead_throw_fix = was;
+    g_one_way = was_ow;
+    return n ? sum / n : 99.0;
+}
+
+
+// BUG-0674 (drive.lead_fall): an NPC proxy walking +x at 6 m/s turns 90 degrees at sender time 3.0 while the states of
+// [2.95, 3.3) come 0.35 s late: the largest step of the shown target in one 1/30 s frame (its driving teleports onto a
+// target that jumps over snap / 2)
+static float proxy_turn_step(bool fix)
+{
+    const bool was = g_lead_fall_fix;
+    const double was_ow = g_one_way;
+    g_lead_fall_fix = fix && k4_on("drive.lead_fall");
+    g_one_way = 0.05;
+    SnapshotBuffer b;
+    b.delay = 0.15;
+    b.lead = true;
+    b.late_lead = true;
+    b.smooth_max = 8.f;
+    auto p_at = [](double st) { return st < 3.0 ? Vec3{(float)st * 6.f, 0, 0} : Vec3{18.f, (float)(st - 3.0) * 6.f, 0}; };
+    std::vector<std::pair<double, PlayerState>> arr;
+    for (int i = 0; i < 180; i++) {
+        double st = i / 30.0;
+        PlayerState s;
+        s.time_ms = (uint32_t)(1000 + st * 1000.0 + 0.5);
+        s.flags = PF_IN_WORLD | PF_MOVING;
+        s.pos = p_at(st);
+        s.vel = st < 3.0 ? Vec3{6.f, 0, 0} : Vec3{0, 6.f, 0};
+        arr.push_back({10.0 + st + 0.05 + (st >= 2.95 && st < 3.3 ? 0.35 : 0.0), s});
+    }
+    std::stable_sort(arr.begin(), arr.end(), [](auto& a, auto& c) { return a.first < c.first; });
+    size_t k = 0;
+    PlayerState o;
+    float mx = 0;
+    Vec3 last{};
+    bool have = false;
+    for (double now = 10.0; now < 15.9; now += 1.0 / 30) {
+        while (k < arr.size() && arr[k].first <= now)
+            b.push(arr[k].second, arr[k].first), k++;
+        if (!b.sample(now, o))
+            continue;
+        if (have && now > 12.0)
+            mx = std::max(mx, dist(last, o.pos));
+        last = o.pos;
+        have = true;
+    }
+    g_lead_fall_fix = was;
+    g_one_way = was_ow;
+    return mx;
+}
+
+static void test_lead_fall()
+{
+    printf("remote bodies moved on through a latency spike (BUG-0674, BUG-0675, BUG-0651)\n");
+    const char* what[] = {"turn round", "stop", "straight on"};
+    for (int kind = 0; kind < 3; kind++) {
+        float on = lead_fall_err(true, kind), off = lead_fall_err(false, kind);
+        printf("  member %s in a 0.35 s spike: worst target error fall %.2f m, 0.7.10 %.2f m\n", what[kind], on, off);
+        if (kind == 0) {
+            CHECK(off > 5.5f); // ~2 x 9 m/s x the gap
+            CHECK(on < 4.5f);
+        } else if (kind == 1) {
+            CHECK(off > 2.5f); // 9 m/s x the gap
+            CHECK(on < 2.0f);
+        } else
+            CHECK(on < 2.0f); // the cost: behind for the rest of the gap, caught up
+    }
+    for (double spike_end : {3.3, 3.65}) {
+        float e_on = 0, e_off = 0;
+        float on = lead_late_max_step(true, spike_end, &e_on, true), off = lead_late_max_step(false, spike_end, &e_off, true);
+        printf("  an NPC proxy's walk known late (spike to %.2f s): max target step %.2f m (end error %.2f), 0.7.10 %.2f m\n",
+               spike_end, on, e_on, off);
+        CHECK(off > 2.f);
+        CHECK(on < 0.7f);
+        CHECK(e_on < 0.5f);
+    }
+    float pt_on = proxy_turn_step(true), pt_off = proxy_turn_step(false);
+    printf("  an NPC proxy turning inside a 0.35 s spike: max target step %.2f m per frame (0.7.10 %.2f m)\n", pt_on, pt_off);
+    CHECK(pt_off > 1.25f); // over snap / 2 of the proxies' driving (2.5 m)
+    CHECK(pt_on < 0.8f);
+    double s_on = ship_fall_err(true), s_off = ship_fall_err(false);
+    printf("  a 28 m/s ship that stops in a 0.4 s spike: worst copy error fall %.1f m, 0.7.10 %.1f m\n", s_on, s_off);
+    CHECK(s_off > 7.5);
+    CHECK(s_on < 6.0);
+    double t_on = throw_stand(true), t_off = throw_stand(false);
+    printf("  a thrown NPC (20 m/s, two of three states lost): the target stands up to %.2f s (0.7.10 %.2f s)\n", t_on, t_off);
+    CHECK(t_off >= 0.06);
+    CHECK(t_on < 0.04);
+    double j_on = jitter_err(true), j_off = jitter_err(false);
+    printf("  a 9.5 m/s member stamped 6 ms off its frames: mean target error %.2f m (0.7.10 %.2f m)\n", j_on, j_off);
+    CHECK(j_off > 0.18);
+    CHECK(j_on < 0.1);
+    CHECK(lead_off_with(false, 0.14, 0.045));  // 0.7.10: the mean reads the spikes and frame waits: no lead
+    CHECK(!lead_off_with(true, 0.14, 0.045));  // the player network under load keeps it
+    CHECK(lead_off_with(true, 0.14, 0.10));    // the mobile network does not
+    CHECK(!lead_off_with(true, 0.06, -1));     // no samples yet: the mean as before
+    bool sl_on = false, sl_off = false;
+    float p_on = puppet_stop_past(true, &sl_on), p_off = puppet_stop_past(false, &sl_off);
+    printf("  a puppet whose partner stops in a 0.25 s spike: target past the stop %.2f m (0.7.10 %.2f m), slowed %d\n", p_on,
+           p_off, (int)sl_on);
+    CHECK(p_off > 0.5f);
+    CHECK(p_on < 0.3f);
+    CHECK(sl_on && !sl_off);
+}
+
+static void test_lead_keep()
+{
+    {
+        double on = lead_turn_over2(true), off = lead_turn_over2(false);
+        printf("  a turn round inside a spike: the target over 2 m off for %.2f s after the news (0.7.9 %.2f s)\n", on, off);
+        CHECK(off > 0.4);
+        CHECK(on < 0.1);
+    }
+    {
+        double b_on, b_off;
+        float on = lead_ratchet_err(true, &b_on), off = lead_ratchet_err(false, &b_off);
+        printf("  speed changes on a jittery 45 ms link: mean target error keep %.2f m (behind the lead p90 %.3f s), "
+               "0.7.9 %.2f m (%.3f s)\n", on, b_on, off, b_off);
+    }
+    printf("member lead over a 110 ms link and after a start known late (BUG-0651, BUG-0410)\n");
+    double c_on, c_off;
+    // a 110 ms one-way link (the player network under load reads 100-115 ms): 0.7.9 showed the members interpolated
+    float on = lead_keep_err(true, 0.11, 0.0, &c_on), off = lead_keep_err(false, 0.11, 0.0, &c_off);
+    printf("  one-way 110 ms: mean target error keep %.2f m, 0.7.9 %.2f m\n", on, off);
+    CHECK(off > 1.5f); // 0.2 s + 0.11 s late at 9 m/s
+    CHECK(on < 0.3f);
+    // over 130 ms (the mobile network) no lead with the fix either
+    on = lead_keep_err(true, 0.14, 0.0, &c_on);
+    CHECK(on > 1.5f);
+    // a 45 ms link, the walk's start known 0.3 s late (a spike of the player network): caught up at up to 2x, not 1.33x
+    on = lead_keep_err(true, 0.045, 0.3, &c_on);
+    off = lead_keep_err(false, 0.045, 0.3, &c_off);
+    printf("  start 0.3 s late: within 0.3 m of the body %.2f s after it is known (0.7.9 %.2f s); mean error %.2f / %.2f m\n",
+           c_on, c_off, on, off);
+    CHECK(c_off > 0.8);
+    CHECK(c_on < 0.7);
+    CHECK(on < 0.15f);
+}
+
 static void test_discovery()
 {
-    Session host;
+    // BUG-0969: an ephemeral port, asked alone: a fixed port of the discovery range collided with another lane's unit
+    // run (bind fails) and the range on 127.0.0.1 holds the hosts of games on other test lanes (they answered)
+    // another lane's game hosting in the discovery range of 127.0.0.1 at the same time (its bind may fail when a real
+    // one holds the port: then that one answers instead)
+    Session other;
     std::string err;
-    CHECK(host.host(kDefaultPort + kDiscoverPorts - 1, "LanHost", err));
+    other.host(kDefaultPort + kDiscoverPorts - 1, "OtherLane", err);
+    Session host;
+    CHECK(host.host(0, "LanHost", err));
     host.lobby_info = "Creature - Testworld";
     Discovery d;
     CHECK(d.start());
     d.targets = {0x0100007F}; // 127.0.0.1
+    d.ports = {host.port()};
     d.interval_ms = 100;
     std::vector<Discovery::Game> found;
     for (int i = 0; i < 200 && found.empty(); i++) {
         d.update(now_ms());
         host.update();
+        other.update();
         d.update(now_ms());
         found = d.games(now_ms());
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -785,7 +1464,7 @@ static void test_discovery()
         CHECK(found[0].info.name == "LanHost");
         CHECK(found[0].info.info == "Creature - Testworld");
         CHECK(found[0].info.players == 1);
-        CHECK(found[0].host.port == kDefaultPort + kDiscoverPorts - 1);
+        CHECK(found[0].host.port == host.port());
     }
     printf("discovery ok\n");
 }
@@ -1468,6 +2147,39 @@ static void test_old_peer_split()
     CHECK(whole == 0 && notice == 1 && r.stats.frag_lost == 1);
 }
 
+// BUG-0612: an unreliable message that can never fit a packet is counted (with its type and size), and the
+// messages queued after it still go out
+static void test_unreliable_too_big()
+{
+    printf("an unreliable message too big for any packet is counted, the rest sent (BUG-0612)\n");
+    Connection a, b;
+    Writer big, small;
+    for (int i = 0; i < 1300; i++)
+        big.u8((uint8_t)i);
+    small.u32(7);
+    a.send_unreliable(MSG_PLAYER_STATE, big);
+    a.send_unreliable(MSG_CHAT, small);
+    std::vector<uint8_t> pkt;
+    int got_small = 0, got_big = 0;
+    uint32_t now = 1000;
+    for (int i = 0; i < 4 && a.build_packet(now, pkt); i++)
+        b.on_packet(pkt.data(), pkt.size(), now, [&](uint8_t t, Reader& m) {
+            got_small += t == MSG_CHAT && m.left() == 4;
+            got_big += t == MSG_PLAYER_STATE;
+        });
+    CHECK(got_small == 1 && got_big == 0);
+    CHECK(a.stats.unrel_too_big == 1 && a.stats.unrel_too_big_type == MSG_PLAYER_STATE && a.stats.unrel_too_big_size == 1300);
+    // the largest message that fits is sent
+    Writer edge;
+    for (int i = 0; i < (int)kMaxPacket - 31 - 4; i++)
+        edge.u8(1);
+    a.send_unreliable(MSG_CHAT, edge);
+    int got_edge = 0;
+    for (int i = 0; i < 4 && a.build_packet(now + 10, pkt); i++)
+        b.on_packet(pkt.data(), pkt.size(), now + 10, [&](uint8_t t, Reader& m) { got_edge += t == MSG_CHAT && m.left() == edge.size(); });
+    CHECK(got_edge == 1 && a.stats.unrel_too_big == 1);
+}
+
 // BUG-0219 in a session: a guest whose HELLO has no extension (0.7.2) gets long chat lines cut
 // between two characters (from the host and relayed), no species table, and is announced once
 static void test_old_peer_session()
@@ -1901,7 +2613,11 @@ static double hitch_error(double ahead, bool hitch)
 static void test_velocity_hitch()
 {
     printf("vehicle position after a hitch of the sender (BUG-0186)\n");
-    double old_h = hitch_error(0.4, true), new_h = hitch_error(0.15, true);
+    const bool was_fall = g_lead_fall_fix;
+    g_lead_fall_fix = false; // (the bug as it was: BUG-0674's fall bounds it too)
+    double old_h = hitch_error(0.4, true);
+    g_lead_fall_fix = was_fall;
+    double new_h = hitch_error(0.15, true);
     double old_l = hitch_error(0.4, false), new_l = hitch_error(0.15, false);
     printf("  sender hitch 0.5 s: max error %.1f units with 0.4 s ahead, %.1f with 0.15 s; one packet 150 ms late: %.1f / %.1f\n",
            old_h, new_h, old_l, new_l);
@@ -2348,6 +3064,20 @@ static void test_diag_messages()
     dg::Digest d2;
     CHECK(rd.u8() == dg::kDigest && d2.read(rd) && d2.seq == 5 && d2.self == 1 && d2.world == 0xABCD && d2.vote == 1);
     CHECK(d2.totals.size() == 1 && d2.totals[0].second == 42 && d2.entries.size() == 2 && d2.entries[1].z == 6 && d2.out.size() == 2 && d2.out[1] == 3);
+    CHECK(d2.scale == 0); // BUG-0606: not in Cell
+    d.scale = 1.5f;
+    Writer ws;
+    d.write(ws);
+    Reader rs(ws.data.data(), ws.size());
+    dg::Digest d4;
+    CHECK(rs.u8() == dg::kDigest && d4.read(rs) && d4.scale == 1.5f && d4.out.size() == 2);
+    Writer wo; // an older sender's digest (no scale at the end) reads scale 0
+    d.write(wo);
+    wo.data.resize(wo.data.size() - 4);
+    Reader ro(wo.data.data(), wo.size());
+    dg::Digest d5;
+    CHECK(ro.u8() == dg::kDigest && d5.read(ro) && d5.scale == 0 && d5.out.size() == 2);
+    d.scale = 0;
     CHECK(dg::parse_key("c77") == dg::make_key('c', 77) && dg::parse_key("p") == 0 && dg::parse_key("x1y") == 0);
     CHECK(dg::key_text(dg::make_key('n', 12)) == "n12");
     // a digest that claims more entries than it has
@@ -2464,6 +3194,55 @@ static void test_diag_compare()
             dna |= i.id == "total:1";
         CHECK(dna);
     }
+    {   // BUG-0430: what the windows let through is late only when the host left that value a while ago, or the
+        // missing cells stood in the band at the check before; the normal lag of a changing value is not
+        dg::Digest gl = g;
+        gl.entries.erase(std::remove_if(gl.entries.begin(), gl.entries.end(),
+                                        [](const dg::Entry& e) { return e.key == dg::make_key('n', 9); }),
+                         gl.entries.end());
+        // a steadily rising total (host 100, guest 80 = one update back, still among the last moment's values)
+        std::vector<std::pair<uint8_t, float>> recent = {{dg::kTotalDna, 70}, {dg::kTotalDna, 80}, {dg::kTotalDna, 90}};
+        std::vector<std::pair<uint8_t, float>> fresh = {{dg::kTotalDna, 80}, {dg::kTotalDna, 90}};
+        auto no_total = [](const dg::Compared& x) {
+            return std::none_of(x.issues.begin(), x.issues.end(), [](const dg::Issue& i) { return i.cat == "total"; });
+        };
+        dg::Compared rising = dg::compare(h, gl, {}, &recent, {&fresh, nullptr});
+        CHECK(no_total(rising) && rising.late_totals == 0 && !rising.late());
+        // the host went 80 -> 100 2 s ago and stood still; the guest still shows 80: late
+        std::vector<std::pair<uint8_t, float>> stood = {{dg::kTotalDna, 100}};
+        dg::Compared lc = dg::compare(h, gl, {}, &recent, {&stood, nullptr});
+        CHECK(no_total(lc) && lc.late_totals == 1 && lc.late());
+        CHECK(dg::compare(h, gl, {}, &recent).late_totals == 0); // no Late: never late (the switch off)
+        dg::Compared on_time = dg::compare(h, h);
+        CHECK(on_time.late_totals == 0 && !on_time.late());
+        int run = 0;
+        CHECK(!dg::late_streak(run, lc) && !dg::late_streak(run, lc) && dg::late_streak(run, lc) && run == 3);
+        CHECK(!dg::late_streak(run, on_time) && run == 0); // one check in time ends the streak
+        CHECK(!dg::late_streak(run, lc) && run == 1);
+        // cells: the band between the sure 80 % and the sent part
+        dg::Digest hc, gc;
+        hc.mode = gc.mode = 0x1654C00;
+        hc.world = gc.world = 7;
+        gc.self = 1;
+        hc.entries.push_back({dg::make_key('p', 1), 0, 0, 0});
+        gc.entries.push_back({dg::make_key('p', 1), 0, 0, 0});
+        for (uint32_t i = 0; i < 1000; i++)
+            hc.entries.push_back({dg::make_key('c', 100 + i), 0.05f * (float)i, 0, 0});
+        auto band = [&](uint32_t lacking, const std::set<uint32_t>* steady) {
+            dg::Digest gx = gc;
+            for (uint32_t i = 0; i < 900 - lacking; i++)
+                gx.entries.push_back({dg::make_key('c', 100 + i), 0.05f * (float)i, 0, 0});
+            return dg::compare(hc, gx, {}, nullptr, {nullptr, steady});
+        };
+        dg::Compared first = band(40, nullptr); // the first check: nothing to compare the band with
+        CHECK(first.late_band == 180 && first.band.size() == 180 && first.late_cells == 0 && !first.late() && first.issues.empty());
+        std::set<uint32_t> changed; // the host's set changed: none of the missing ones stood in the band
+        dg::Compared moving = band(40, &changed);
+        CHECK(moving.late_cells == 0 && !moving.late());
+        dg::Compared few = band(3, &first.band), many = band(40, &first.band);
+        CHECK(few.late_cells == 3 && !few.late() && few.issues.empty());
+        CHECK(many.late_cells == 40 && many.late() && many.issues.empty());
+    }
     std::string t = dg::describe(c.issues);
     printf("  %s\n", t.c_str());
     CHECK(t.find("n: 1 missing on the guest (n4)") != std::string::npos && t.find("n: 1 apart (n1 30.0)") != std::string::npos);
@@ -2519,6 +3298,18 @@ static void test_diag_compare()
         CHECK(dg::compare(h5, g5, fast).issues.empty());
         g5.entries[0].x = 60; // far beyond its lag: still a difference
         CHECK(dg::compare(h5, g5, fast).issues.size() == 1);
+    }
+    {   // BUG-0547: the host's own path: a ship that flew 200 m/s and stopped 0.2 s ago
+        std::deque<dg::PathPoint> path;
+        for (int i = 0; i <= 60; i++) // 1 s at 60 fps: 0.8 s at 200 m/s along x, then standing at x = 160
+            path.push_back({i / 60.0, (float)std::min(i / 60.0 * 200.0, 160.0), 0, 700});
+        dg::PathHit h = dg::path_distance(path, 110, 3, 700, 0.0); // the copy 50 m behind, 3 m to the side
+        CHECK(std::fabs(h.d - 3) < 0.01f && std::fabs(h.lag - (1.0f - 0.55f)) < 0.02f);
+        h = dg::path_distance(path, 110, 3, 700, 0.9); // only the last 0.1 s (standing): 50 m off
+        CHECK(h.d > 49 && h.d < 51);
+        h = dg::path_distance(path, 160, 40, 700, 0.0); // beside the path: still far
+        CHECK(h.d > 39);
+        CHECK(dg::path_distance({}, 0, 0, 0, 0).d > 1e20f);
     }
     // another stage: nothing compared
     g2.mode = 0x1654C00;
@@ -2720,6 +3511,295 @@ static void test_partprops()
     printf("partprops: ok\n");
 }
 
+// ---- 0.7.13 N1: net and session (each FAILS with its switch off: `net_tests --off <name>`, and with --nofix) ----
+
+// a network for one Session: what it sends (with the address) and a queue of datagrams to read (from the address)
+struct FakeNet : Transport {
+    std::deque<std::pair<Endpoint, std::vector<uint8_t>>> in;
+    std::vector<std::pair<Endpoint, std::vector<uint8_t>>> out;
+    uint16_t port = 0;
+    bool open(uint16_t p, std::string*) override { port = p ? p : 50000; return true; }
+    void close() override {}
+    bool send_to(const Endpoint& to, const void* d, size_t n) override
+    {
+        out.push_back({to, std::vector<uint8_t>((const uint8_t*)d, (const uint8_t*)d + n)});
+        return true;
+    }
+    int recv_from(Endpoint& from, void* buf, size_t cap) override
+    {
+        if (in.empty())
+            return 0;
+        auto [ep, d] = std::move(in.front());
+        in.pop_front();
+        size_t n = std::min(cap, d.size());
+        if (n)
+            memcpy(buf, d.data(), n);
+        from = ep;
+        return (int)n;
+    }
+    uint16_t local_port() const override { return port; }
+    size_t sent_to(const Endpoint& e) const
+    {
+        size_t k = 0;
+        for (auto& [to, d] : out)
+            k += to == e;
+        return k;
+    }
+};
+static uint32_t g_fake_ms = 5000;
+static uint32_t fake_ms() { return g_fake_ms; }
+static Endpoint ep4(uint8_t a, uint8_t b, uint8_t c, uint8_t d, uint16_t port)
+{
+    Endpoint e;
+    uint8_t* p = reinterpret_cast<uint8_t*>(&e.ip);
+    p[0] = a; p[1] = b; p[2] = c; p[3] = d;
+    e.port = port;
+    return e;
+}
+// the first datagram of a guest that joins: a real Connection sending its HELLO
+static std::vector<uint8_t> hello_datagram(uint32_t conn, const std::string& name, uint32_t build)
+{
+    Connection c;
+    c.conn_id = conn;
+    Hello h;
+    h.build = build;
+    h.name = name;
+    Writer w;
+    h.write(w);
+    c.send_reliable(MSG_HELLO, w);
+    std::vector<uint8_t> pkt;
+    c.build_packet(g_fake_ms, pkt);
+    return pkt;
+}
+// a datagram with a valid header and no message (what any sender of 31 bytes could make)
+static std::vector<uint8_t> header_datagram(uint32_t conn)
+{
+    Connection c;
+    c.conn_id = conn;
+    Writer w;
+    w.u8(0);
+    c.send_unreliable(MSG_PING, w);
+    std::vector<uint8_t> pkt;
+    c.build_packet(g_fake_ms, pkt);
+    return pkt;
+}
+
+static bool one_clean_line(const std::string& s)
+{
+    for (unsigned char c : s)
+        if (c < 0x20 || c == 0x7F)
+            return false;
+    return utf8::valid(s);
+}
+
+// BUG-0774: a guest's HELLO name, the host's name in WELCOME and a newcomer's in PLAYER_JOIN come as sent (control
+// characters, a newline into the logs and the co-op slot's marker file, broken UTF-8, 255 bytes)
+static void test_name_clean()
+{
+    printf("names from the network are one clean line of at most 24 characters (BUG-0774)\n");
+    CHECK(utf8::clean_text("A\nB\x01\x1b[1m\xC2\x85\xE2\x80\xA8" "C", 24) == "AB[1mC");
+    CHECK(utf8::clean_text("\x80\xC3", 24).empty());              // a stray continuation byte, a cut sequence
+    CHECK(utf8::clean_text("\xC0\xAF" "x", 24) == "x");             // an overlong '/'
+    CHECK(utf8::clean_text("\xED\xA0\x80" "y", 24) == "y");         // a surrogate
+    CHECK(utf8::clean_text("Zoë 🦖 \xEF\xBF\xBD", 24) == "Zoë 🦖 \xEF\xBF\xBD"); // letters, emoji, a real U+FFFD stay
+    CHECK(utf8::count(utf8::clean_text(std::string(300, 'x'), 24)) == 24);
+    Session host, a, b;
+    std::string err;
+    host.build = a.build = b.build = 0x922af7c7;
+    std::vector<std::string> host_log, a_log;
+    host.cb.log = [&](const std::string& s) { host_log.push_back(s); };
+    a.cb.log = [&](const std::string& s) { a_log.push_back(s); };
+    CHECK(host.host(0, "Host\nplanet Evil\x07", err));
+    std::string addr = "127.0.0.1:" + std::to_string(host.port());
+    CHECK(a.join(addr, "Bob\nplanet X\x01", err));
+    pump(host, a, 300);
+    CHECK(b.join(addr, std::string(60, 'w') + "\r\n", err));
+    pump(host, b, 300);
+    pump(host, a, 200);
+    std::string an = host.name_of(1), bn = host.name_of(2), hn = a.name_of(0), bn_a = a.name_of(2);
+    printf("  host sees '%s', '%s'; guest A sees the host '%s', B '%s'\n", an.c_str(), bn.c_str(), hn.c_str(), bn_a.c_str());
+    CHECK(an == "Bobplanet X");
+    CHECK(utf8::count(bn) == 24 && one_clean_line(bn));
+    CHECK(hn == "Hostplanet Evil");
+    CHECK(bn_a == bn);
+    CHECK(a.name_of(1) == an); // the guest takes its name from the host's roster
+    for (auto* log : {&host_log, &a_log})
+        for (auto& l : *log)
+            CHECK(one_clean_line(l));
+    // the LAN game list: a host's name and info line as any machine of the network sends them
+    Session lan;
+    CHECK(lan.host(0, "Lan\nHost\x01", err)); // BUG-0969: an ephemeral port, asked alone
+    lan.lobby_info = "Creature\r\n - World";
+    Discovery d;
+    CHECK(d.start());
+    d.targets = {0x0100007F};
+    d.ports = {lan.port()};
+    d.interval_ms = 100;
+    std::vector<Discovery::Game> found;
+    for (int i = 0; i < 200 && found.empty(); i++) {
+        d.update(now_ms());
+        lan.update();
+        d.update(now_ms());
+        found = d.games(now_ms());
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    CHECK(found.size() == 1);
+    if (!found.empty()) {
+        printf("  the LAN list shows '%s' (%s)\n", found[0].info.name.c_str(), found[0].info.info.c_str());
+        CHECK(found[0].info.name == "LanHost" && found[0].info.info == "Creature - World");
+    }
+}
+
+// BUG-0776: a host with its port open to the internet answered a 6-byte discovery query from any address (up to
+// 520 bytes back: a reflector, and the host's name, players and world for any scanner)
+static void test_discovery_source()
+{
+    printf("LAN discovery is answered from local networks only, 20 a second at most (BUG-0776)\n");
+    std::vector<uint32_t> radmin = {ep4(26, 255, 255, 255, 0).ip};
+    CHECK(local_source(ep4(192, 168, 1, 5, 0).ip, {}) && local_source(ep4(10, 1, 2, 3, 0).ip, {}));
+    CHECK(local_source(ep4(127, 0, 0, 1, 0).ip, {}) && local_source(ep4(172, 20, 0, 9, 0).ip, {}));
+    CHECK(local_source(ep4(169, 254, 3, 4, 0).ip, {}) && local_source(ep4(100, 101, 1, 1, 0).ip, {}));
+    CHECK(!local_source(ep4(8, 8, 8, 8, 0).ip, {}) && !local_source(ep4(172, 32, 0, 1, 0).ip, {}));
+    CHECK(!local_source(ep4(26, 1, 2, 3, 0).ip, {}) && local_source(ep4(26, 1, 2, 3, 0).ip, radmin));
+    CHECK(!local_source(ep4(27, 1, 2, 3, 0).ip, radmin));
+    CHECK(!local_source(ep4(8, 8, 8, 8, 0).ip, {ep4(255, 255, 255, 255, 0).ip}));
+    FakeNet net;
+    Session host;
+    host.set_transport(&net);
+    host.clock = fake_ms;
+    std::string err;
+    CHECK(host.host(kDefaultPort, "LanHost", err));
+    host.lobby_info = "Creature - Testworld";
+    std::vector<uint8_t> q(6, 0);
+    uint32_t magic = kDiscoverQuery;
+    memcpy(q.data(), &magic, 4);
+    Endpoint pub = ep4(8, 8, 8, 8, 40001), lan = ep4(192, 168, 1, 5, 40002), vpn = ep4(26, 1, 2, 3, 40003);
+    net.in.push_back({pub, q});
+    net.in.push_back({lan, q});
+    net.in.push_back({vpn, q});
+    host.update();
+    size_t to_pub = net.sent_to(pub), to_lan = net.sent_to(lan), to_vpn_before = net.sent_to(vpn);
+    host.lan_broadcasts = radmin;
+    g_fake_ms += 1000;
+    net.in.push_back({vpn, q});
+    host.update();
+    size_t to_vpn = net.sent_to(vpn) - to_vpn_before;
+    g_fake_ms += 1000;
+    for (int i = 0; i < 200; i++)
+        net.in.push_back({ep4(10, 0, (uint8_t)(i / 250), (uint8_t)(i % 250 + 1), 40100), q});
+    size_t before = net.out.size();
+    host.update(); // reads 200 of them in one frame
+    size_t burst = net.out.size() - before;
+    printf("  answers: internet %zu, LAN %zu, VPN subnet %zu without / %zu with its adapter; 200 queries in a second: %zu\n",
+           to_pub, to_lan, to_vpn_before, to_vpn, burst);
+    CHECK(to_pub == 0);
+    CHECK(to_lan == 1);
+    CHECK(to_vpn_before == 0 && to_vpn == 1);
+    CHECK(burst <= Session::kDiscoverPerSecond);
+    CHECK(host.status().find("refused: discovery=") != std::string::npos);
+}
+
+// BUG-0778: any datagram with a valid header from a new address or port took one of 16 peer slots for 10 s; with
+// 16 of them no player could join or rejoin ("no answer from host")
+static void test_halfopen()
+{
+    printf("junk datagrams and refused HELLOs do not block a join (BUG-0778)\n");
+    std::string err;
+    for (int round = 0; round < 2; round++) {
+        FakeNet net;
+        Session host;
+        host.set_transport(&net);
+        host.clock = fake_ms;
+        host.build = 0x922af7c7;
+        CHECK(host.host(kDefaultPort, "Host", err));
+        for (int i = 0; i < 16; i++) {
+            if (round == 0) // 16 header-only datagrams from 16 ports of one address
+                net.in.push_back({ep4(203, 0, 113, 9, (uint16_t)(30000 + i)), header_datagram(0x1000u + i)});
+            else // 16 HELLOs of a wrong build (refused: half-open until their REJECT is through) from 16 addresses
+                net.in.push_back({ep4(198, 51, 100, (uint8_t)(i + 1), 30000), hello_datagram(0x2000u + i, "x", 0x1234)});
+        }
+        host.update();
+        size_t held = host.peer_count();
+        g_fake_ms += 500;
+        Endpoint guest = ep4(192, 168, 1, 7, 41000);
+        net.in.push_back({guest, hello_datagram(0x77, "Bob", 0x922af7c7)});
+        host.update();
+        bool in = host.players().size() == 2 && host.name_of(1) == "Bob";
+        printf("  %s: %zu peer(s) held, then a real guest: %s\n", round == 0 ? "16 header-only datagrams" : "16 refused HELLOs", held,
+               in ? "joined" : "NOT joined");
+        CHECK(in);
+        CHECK(net.sent_to(guest) >= 1);
+        CHECK(host.peer_count() <= Session::kMaxPeers);
+        if (round == 0)
+            CHECK(held == 0);
+    }
+    // a datagram without a HELLO from a joined guest's address and port with another connection id (spoofed, or late
+    // from an older connection) does not replace the guest
+    FakeNet net;
+    Session host;
+    host.set_transport(&net);
+    host.clock = fake_ms;
+    host.build = 0x922af7c7;
+    CHECK(host.host(kDefaultPort, "Host", err));
+    Endpoint guest = ep4(192, 168, 1, 7, 41000);
+    net.in.push_back({guest, hello_datagram(0x77, "Bob", 0x922af7c7)});
+    host.update();
+    net.in.push_back({guest, header_datagram(0x99)});
+    host.update();
+    CHECK(host.players().size() == 2);
+}
+
+// BUG-0861: a callback that starts a new session while a packet is delivered (here the guest's cb.connected:
+// leave, then host) had the new session closed at the end of the delivery by the old session's deferred leave
+static void test_restart_in_callback()
+{
+    printf("host() / join() inside a delivery callback keep the new session (BUG-0861)\n");
+    std::string err;
+    for (int variant = 0; variant < 3; variant++) {
+        Session host, cli, other;
+        host.build = cli.build = other.build = 0x922af7c7;
+        CHECK(host.host(0, "h", err));
+        CHECK(other.host(0, "o", err));
+        std::string addr = "127.0.0.1:" + std::to_string(host.port()), other_addr = "127.0.0.1:" + std::to_string(other.port());
+        int connected = 0, disc = 0;
+        bool restarted = false;
+        cli.cb.disconnected = [&](const std::string&) { disc++; };
+        cli.cb.connected = [&] {
+            connected++;
+            if (restarted)
+                return;
+            restarted = true;
+            std::string e;
+            if (variant == 0) {
+                cli.leave("callback");
+                CHECK(cli.host(0, "rehosted", e));
+            } else if (variant == 1) {
+                CHECK(cli.host(0, "rehosted", e)); // without a leave first
+            } else {
+                cli.leave("callback");
+                CHECK(cli.join(other_addr, "g", e)); // to another host
+            }
+        };
+        CHECK(cli.join(addr, "g", err));
+        for (int i = 0; i < 80; i++) {
+            host.update();
+            cli.update();
+            other.update();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        bool ok = variant < 2 ? cli.role() == Role::Host && cli.players().size() == 1
+                              : cli.role() == Role::Client && cli.connected() && other.players().size() == 2;
+        printf("  %s: role %s, connected %d, disconnected %d\n",
+               variant == 0 ? "leave + host" : variant == 1 ? "host" : "leave + join elsewhere",
+               cli.role() == Role::Host ? "host" : cli.role() == Role::Client ? "client" : "none", connected, disc);
+        CHECK(restarted);
+        CHECK(ok);
+        CHECK(disc == 0);
+        // the first host saw the guest go (BYE) and keeps running
+        CHECK(host.players().size() == 1 && host.role() == Role::Host);
+    }
+}
+
 int main(int argc, char** argv)
 {
     if(argc==2&&std::string(argv[1])=="--protocol-only"){
@@ -2735,6 +3815,10 @@ int main(int argc, char** argv)
                                                {"rejoin_token", &g_fix.rejoin_token},
                                                {"addr_label", &g_fix.addr_label},
                                                {"lan_dedup", &g_fix.lan_dedup},
+                                               {"name_clean", &g_fix.name_clean},
+                                               {"lan_only_disc", &g_fix.lan_only_disc},
+                                               {"halfopen_cap", &g_fix.halfopen_cap},
+                                               {"restart_gen", &g_fix.restart_gen},
                                                {"update_paths", &upd::g_path_fix}};
             for (size_t a = 0; a <= list.size();) {
                 size_t b = list.find(',', a);
@@ -2776,6 +3860,7 @@ int main(int argc, char** argv)
     }
     test_buffer();
     test_adventure_motion();
+    test_unreliable_too_big();
     test_unreliable_chunks();
     test_dbpf();
     test_partprops();
@@ -2797,9 +3882,13 @@ int main(int argc, char** argv)
     test_session_end_in_delivery();
     test_rejoin_same_endpoint();
     test_unique_names();
+    test_join_rules();
     test_big_snapshot();
     test_interp();
     test_interp_gap();
+    test_lead_late();
+    test_lead_keep();
+    test_lead_fall();
     test_discovery();
     test_lobby_roles();
     test_shared_ledger();
@@ -2831,6 +3920,10 @@ int main(int argc, char** argv)
     test_diag_compare();
     test_diag_session();
     test_diag_conn_stats();
+    test_name_clean();
+    test_discovery_source();
+    test_halfopen();
+    test_restart_in_callback();
     printf(g_fail ? "FAILED (%d)\n" : "ALL OK\n", g_fail);
     return g_fail ? 1 : 0;
 }

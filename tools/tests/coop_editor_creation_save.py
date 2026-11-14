@@ -523,7 +523,7 @@ def self_test():
     steps,digest=steps_file(ROOT/'tools/tests/fixtures/editor_creation/creature-mouth-c7.json','creature');assert len(steps)==4 and len(digest)==64;checks+=1
     with TemporaryDirectory()as directory:
         path=Path(directory)/'steps.json'
-        for steps in ([{'control':'058A3350'}],[{'key':'enter'}],[{'click':[1024,0]}],[{'call':'Editor::Save'}]):
+        for steps in ([{'control':'058A3350'}],[{'key':'enter'}],[{'click':[1024,0]}],[{'call':'forbidden_native_call'}]):
             path.write_text(json.dumps(steps))
             try:steps_file(path,'creature')
             except (FixtureError,ValueError):checks+=1

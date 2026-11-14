@@ -12,7 +12,7 @@
 
 #include "../sdk/include/sporekit.h"
 
-#define SK_VERSION "0.3.11"
+#define SK_VERSION "0.3.16"
 
 // ---- SkMod (opaque for mods) ----
 struct SkMod {
@@ -100,6 +100,7 @@ void run_on_main_from(const void* code, std::function<void()> fn);
 void run_outside_frame_from(const void* code, std::function<void()> fn);
 size_t drop_tasks_in(uintptr_t lo, uintptr_t hi); // queued mod tasks whose code is in [lo, hi)
 void pump_outside_tasks();
+void outside_tasks_resume(); // BUG-0672: a frame ended (or was cut off): post the outside tasks it held back
 bool in_frame(); // inside the Present hook
 DWORD main_thread_id();
 void set_main_thread();
@@ -144,7 +145,15 @@ void report_shot_boot();
 std::vector<std::pair<std::wstring, std::string>> report_shot_files(); // full path, name in the archive
 std::string report_shots_text(bool crash);                             // the report's "== Screenshots"
 void overlay_text(int x, int y, uint32_t argb, const char* utf8);
+void overlay_tris(const float* xy, int n, uint32_t argb); // since 0.3.15: n filled triangles (6 floats each)
 int world_to_screen(const float* w, float* out);
+// gamehooks.cpp, BUG-0948: the viewer as the game drew the frame (copied at its first SetTransform(VIEW) after a Present)
+void drawn_view_take();
+void drawn_view_drop();
+void drawn_view_measure();                // the overlay pass: how far the viewer moved since the copy (kit.cam)
+std::string drawn_view_text(bool reset);  // kit.cam
+int world_to_screen_drawn(const float* w, float* out);
+std::string drawn_cam_command(const char* arg); // d3d9hook.cpp: kit.cam [reset]
 void screen_size(int* w, int* h);
 
 // gamehooks.cpp
@@ -169,7 +178,7 @@ bool input_install_hooks(); // freeze policy; eagerly install isolated input bef
 std::string input_info();
 bool input_key(int vk, const char* mode);
 bool input_text(const std::string& utf8);
-bool input_click(int x, int y, int button);
+bool input_click(int x, int y, int button, bool release_cursor = false); // release: the real mouse again after the button-up (BUG-0804)
 bool input_drag(int x1, int y1, int x2, int y2, int button);
 bool input_move(int x, int y);
 // press or release a mouse button and keep it held (steering by holding the button: cell stage)
@@ -225,6 +234,9 @@ const std::string& diag_files_text();
 void diag_install();          // the crash filter, ExitProcess log
 void diag_after_device();     // GPU and other hooks into the log (once)
 void diag_hang_report(const char* why);
+void diag_dialog_report(const char* why); // BUG-0925: an error dialog of the C runtime on the main thread (once per run)
+void diag_offstack_report(EXCEPTION_POINTERS* ep); // BUG-0956: the dispatch of this fault will fail (once per run)
+void diag_storm_report(const char* why); // BUG-0676: one fault caught in every frame (once per run)
 void diag_init_failed(int result);      // BUG-0521: App::cSporeApp::Init returned 0 (the game ends) // the watchdog: no frames while focused (once per run)
 void diag_crash_test(const char* where); // tests: "thread" (unhandled) | "main"
 // watchdog.cpp
@@ -232,6 +244,8 @@ void watchdog_start();
 void watchdog_mark(const char* stage);
 void watchdog_loop_tick();           // after every App::Canvas::Tick: the game loop is alive (BUG-0347)
 std::string watchdog_dump_now();
+void watchdog_dialog_test_report(bool on); // tests (kit.test.dialog report)
+void watchdog_stack_here();                // the main thread, from its window procedure (WM_SK_STACK)
 
 // cheats.cpp
 int cheat_register(const char* keyword, const char* devkit_prefix, const char* desc);
@@ -246,18 +260,27 @@ void exceptions_clear();
 // window message used to run main-thread tasks when no frames are presented
 #define WM_SK_PUMP (WM_APP + 0x5C0)
 #define WM_SK_PUMP_OUT (WM_APP + 0x5C1)
+#define WM_SK_STACK (WM_APP + 0x5C2) // BUG-0925: the main thread logs its own call chain (watchdog_stack_here)
 
 // focus.cpp
 void focus_install_hooks();
 bool invisible_mode();
 void focus_attach_window(void* hwnd);
+void wheel_seen(uint32_t& wparam, uint32_t& count); // tests (BUG-0859): the last WM_MOUSEWHEEL the game's window got
 bool background_mode();
 void set_background_mode(bool on);
 void vcursor_set(int x, int y); // client coords, activates the virtual cursor
 void vcursor_tick();            // auto-release after inactivity
 void vcursor_hold(bool on);     // a held button keeps the virtual cursor active
+void vcursor_release();         // BUG-0804: back to the real mouse now (unless a button is held)
+bool vcursor_state(int& x, int& y, bool& virt); // the point GetCursorPos gives the game (client coords)
 void place_test_window();
 void apply_frame_limit();
+std::string present_intervals(bool reset); // BUG-0779: Present interval statistic since the last reset (console)
+void d3d9_note_function(const char* what, const void* p); // log the module of a hooked d3d9 function
+int frame_limit_now();          // kFrameLimitMS in the game now (-1: not readable yet)
+int frame_limit_own();          // the game's own value as SporeKit keeps it (BUG-0779)
+unsigned frame_limit_changes(); // changes of the value by another program / the game seen
 void set_frame_limit(int ms);    // console: frame.limit <ms> (33 = the game's own, 0 = none)        // test runs: lift the game's 30 fps cap ([sporekit] test_frame_ms)       // test runs: move the game window to a secondary monitor
 
 // fixes.cpp: fixes with a switch for tests (`kit.fix <name> 0|1`): 1 (default) = fixed, 0 = the old
@@ -268,6 +291,11 @@ struct KitFix {
     const char* what;
     volatile LONG on;
 };
+extern KitFix g_fix_taskdrop;    // BUG-0860: dropped tasks are destroyed outside the task lock
+extern KitFix g_fix_outpump;     // BUG-0672: outside tasks wait for the frame's end, no repost loop in the game's message pump
+extern KitFix g_fix_frameunwind; // BUG-0667: a frame cut off by a caught fault does not stop the later ones
+extern KitFix g_fix_offstack;  // BUG-0956: a fault with the stack pointer off its thread's stack writes its report from the logger
+extern KitFix g_fix_faultstorm; // BUG-0676: a fault caught in every frame is named once and writes one report
 extern KitFix g_fix_longout;   // BUG-0388: a command's printf output is not cut at 8 KB
 extern KitFix g_fix_stackdump; // BUG-0050: copy a suspended thread's stack, resume, then format
 extern KitFix g_fix_cheatwait; // BUG-0065: commands that wait for the main thread refuse to run on it
@@ -276,6 +304,7 @@ extern KitFix g_fix_hookkeep;  // BUG-0132: removed hooks keep their trampolines
 extern KitFix g_fix_stackov;   // BUG-0056: a stack overflow is reported by a thread that waits beforehand
 extern KitFix g_fix_crashsafe; // BUG-0127: a failed step of a crash report does not end the game
 extern KitFix g_fix_hookpark;  // BUG-0202: hooks switch a stub, the function's code is written once
+extern KitFix g_fix_hookfirst; // BUG-0403: a hook made after boot writes its jmp while no thread is in the bytes
 extern KitFix g_fix_hookorig;  // BUG-0398: a new hook's original is set before its jump goes live
 extern KitFix g_fix_iniutf;    // BUG-0142: settings with non-ASCII text are kept in UTF-16
 extern KitFix g_fix_iniencode; // BUG-0245: UTF-16 BE converted, unknown encodings left alone
@@ -283,8 +312,14 @@ extern KitFix g_fix_inilock;   // BUG-0245: a named mutex per settings file; no 
 extern KitFix g_fix_exitwait;  // BUG-0243: the exit waits for an update's file swaps
 extern KitFix g_fix_crashtid;  // BUG-0248: a crash report names the faulting thread
 extern KitFix g_fix_initfail;  // BUG-0521: a failed start of the game is reported and explained
+extern KitFix g_fix_dialognote; // BUG-0925: a dialog on the main thread is named in the log (text, stack, report)
 extern KitFix g_fix_hangloop;  // BUG-0347: no frames while the game loop runs (minimized) is not a hang
+extern KitFix g_fix_framelimit; // BUG-0779: a frame limit set by another program is kept, not written back
+extern KitFix g_fix_presentlost; // BUG-0653: a hitch over 2 s is not Present lost (game loop passes without Present needed)
+extern KitFix g_fix_drawncam;  // BUG-0948: the overlay projects with the camera the frame was drawn with
 extern KitFix g_fix_logprune;  // BUG-0137: old crash reports, dumps, reports and archives are removed
+extern KitFix g_fix_stackvq;   // BUG-0880: no VirtualQuery while a thread is suspended (stack bounds from its TEB first)
+extern KitFix g_fix_wheelmk;   // BUG-0859: the virtual wheel carries the held keys and buttons (MK_SHIFT, MK_CONTROL, ...)
 inline bool fixed(const KitFix& f) { return f.on != 0; }
 KitFix* kit_fix_find(const char* name);
 std::vector<KitFix*> kit_fixes();
@@ -309,6 +344,7 @@ struct ThreadSnap {
     CONTEXT c;
     uint32_t esp;
     int n; // dwords copied from esp up
+    int vq_suspended; // BUG-0880: VirtualQuery calls made while the thread was suspended (0 with kit.fix stackvq)
     uint32_t words[4096];
 };
 // suspends tid, copies, resumes; false (and why) for the calling thread itself or a failure.
@@ -322,7 +358,8 @@ template <class F> void call_lambda(void* f) { (*(F*)f)(); }
 void log_fault_test();
 void exceptions_fault_test();
 void hooks_churn_test(int rounds, int threads, std::string& out, bool nogate = false);
-void hooks_new_test(int rounds, int threads, std::string& out); // BUG-0398
+void hooks_new_test(int rounds, int threads, std::string& out, bool split = false); // BUG-0398 / 0403 (split)
+std::string hooks_live_stats(); // BUG-0403
 void* test_fault_page(); // a PAGE_NOACCESS page whose first access is repaired by a test handler
 
 } // namespace sk
