@@ -23,6 +23,12 @@ REGISTRATION = (ROOT_WINDOW + MODAL_LAYER
     + window(3, 0x1300, 0x0451A4C0, (24, 70, 732, 401), flags=0x403)
     + window(3, 0x1400, 0xFFFFFFF2, (726, 4, 745, 23), command=3)
     + window(3, 0x1500, 0x0519E168, (652, 23, 731, 60), 'Login'))
+# Two cold GOG/LAA 0.7.15 native captures: exact command-zero embedded-browser
+# close family. The live getter matches UTFWin::Window::GetCommandID; its native
+# click removes registration and reaches actual Galaxy controls without a warning.
+REGISTRATION_ZERO = REGISTRATION.replace(
+    window(3, 0x1400, 0xFFFFFFF2, (726, 4, 745, 23), command=3),
+    window(3, 0x1400, 0xFFFFFFF2, (726, 4, 745, 23)).replace('Window ', '- ', 1))
 # IDs/ancestry from C8 registration-current UI; C30 screenshot has this footer.
 GALAXY = (ROOT_WINDOW
     + window(1, 0x2100, 0x2EDD95CA, (0, 0, 1024, 768), flags=0x13)
@@ -104,6 +110,29 @@ class RegistrationContracts(unittest.TestCase):
     def test_actual_registration_owner_targets_close(self):
         kind, _, point = adventure.registration_action(REGISTRATION)
         self.assertEqual((kind, point), ('registration', (868, 159)))
+
+    def test_verified_command_zero_native_family_closes_directly_to_galaxy(self):
+        self.assertEqual(adventure.registration_action(REGISTRATION_ZERO)[::2], ('registration', (868, 159)))
+        game = self.run_game([REGISTRATION_ZERO, REGISTRATION_ZERO, GALAXY])
+        self.assertEqual(game.clicks, [(868, 159)])
+
+    def test_command_zero_requires_exact_native_family(self):
+        for old, new in (('- 00001400', 'Window 00001400'), ('fl=0x3 [726', 'fl=0x13 [726'),
+                         ('[726 4 745 23]', '[726 5 745 24]'), ('[133 146 891 621]', '[133 146 892 621]'),
+                         ('fl=0x403 [24', 'fl=0x3 [24'), ('[652 23 731 60]', '[651 23 730 60]'),
+                         ("font=00000001 ''\n  " , "font=00000001 'Close'\n  ")):
+            changed = REGISTRATION_ZERO.replace(old, new)
+            if changed == REGISTRATION_ZERO:
+                continue
+            with self.subTest(old=old), self.assertRaises(adventure.FixtureError):
+                adventure.registration_action(changed)
+
+    def test_command_zero_identity_is_revalidated_before_input(self):
+        moved = REGISTRATION_ZERO.replace('00001400', '00001401')
+        self.assertEqual(self.run_game([REGISTRATION_ZERO, moved, GALAXY]).clicks, [])
+        # A second close identity is unsafe even when its command differs.
+        with self.assertRaises(adventure.FixtureError):
+            adventure.registration_action(REGISTRATION_ZERO + window(3, 0x4200, 0xFFFFFFF2, (5, 5, 25, 25), command=3))
 
     def test_galaxy_footer_login_never_opens_or_closes_registration(self):
         self.assertIsNone(adventure.registration_action(GALAXY))

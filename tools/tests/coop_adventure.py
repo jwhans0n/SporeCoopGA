@@ -75,6 +75,24 @@ def _startup_identity(node):
     return tuple(node[key] for key in ('address', 'ident', 'command', 'flags', 'rect', 'caption'))
 
 
+def _registration_close_signature(modal, target, direct):
+    if target['command'] == 3 and target['flags'] & 2:
+        return True
+    # Verified GOG native embedded-browser variant (BUG-1031): its real
+    # UTFWin::Window::GetCommandID getter returns zero. The same native close
+    # control dismisses this registration root directly, without a quit warning.
+    # Match its complete local control family, not an arbitrary command-zero X.
+    # Modal origin may move with resolution; these are native local rectangles.
+    return (target['command'] == 0 and target['flags'] == 3 and not target['caption']
+            and target['line'].startswith('- ') and target['rect'] == (726, 4, 745, 23)
+            and modal['flags'] == 0x43
+            and (modal['rect'][2] - modal['rect'][0], modal['rect'][3] - modal['rect'][1]) == (758, 475)
+            and sum(node['ident'] == 0x0451A4C0 and node['flags'] == 0x403
+                    and node['command'] == 0 and node['rect'] == (24, 70, 732, 401) for node in direct) == 1
+            and sum(node['ident'] == 0x0519E168 and node['flags'] == 3 and node['command'] == 0
+                    and node['caption'] == 'Login' and node['rect'] == (652, 23, 731, 60) for node in direct) == 1)
+
+
 def registration_action(tree):
     """Return an exactly owned native registration action, or None.
 
@@ -110,8 +128,10 @@ def registration_action(tree):
         elif (modal['ident'] == 0xFFFFFFFF and not warning
               and sum(node['ident'] == 0x0519E168 and node['caption'] == 'Login' for node in direct) == 1
               and sum(node['ident'] == 0x0451A4C0 for node in direct) == 1):
-            targets = [node for node in direct if node['ident'] == 0xFFFFFFF2
-                       and node['command'] == 3 and node['flags'] & 2]
+            close_controls = [node for node in direct if node['ident'] == 0xFFFFFFF2]
+            if len(close_controls) != 1:
+                raise FixtureError('registration dialog has no unique native close identity')
+            targets = [node for node in close_controls if _registration_close_signature(modal, node, direct)]
             kind = 'registration'
         else:
             captions = ', '.join(node['caption'][:80] for node in direct if node['caption'])[:240]
