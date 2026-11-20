@@ -46,5 +46,21 @@ launcher failures remain tracked by BUG-1259 and GitHub issue7.
 ## History
 - 2026-11-13: opened from native qualification. Initial ticket slug said verified;
   the command 0 behavior remains unclassified and no strict guard was relaxed.
+- 2026-11-20: Reproduced the strict failure on the integrated 0.7.15 intermediate
+  payload, then verified the real native close in two different cold private
+  profiles. Its vtable slot0x20 matches named UTFWin::Window::GetCommandID and
+  reads object+0x80; the zero is real native data, not a diagnostic ABI mismatch.
+  A fresh, identity-checked ordinary click removes the registration root and
+  reveals verified Galaxy controls directly, with no warning. The earlier
+  warning-only probe therefore did not establish failed dismissal. Added only
+  this exact embedded-browser control family, retaining command3/warning support
+  and all modal/stale guards. Twenty-three startup contracts pass; the real
+  fixed helper also reaches verified Galaxy controls in a cold hidden game.
+  Final committed-payload startup and smoke acceptance remain required before
+  closing the issue. Evidence: out/windows-lab/native0715-startup,
+  native0715-registration-probe2, native0715-registration-probe4,
+  native0715-startup-fixed and intermediate-payload.json in the isolated
+  windows-native-qualification worktree.
+
 
 Legacy fork reference: `BUG-1031` before upstream0.7.15 integration. Prior aliases and historical commit/OUT identities remain unchanged; upstream owns its independently created ticket under that number.

@@ -20,8 +20,9 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 PAYLOAD = ('steam_api.dll', 'sporekit.dll', 'coop.dll', 'SporeCoop.package')
-RESETTABLE = {'Games', 'Games-sporecoop-backup', 'EditorSaves.package',
-              'SporeCoop/holds', 'SporeCoop/badges', 'SporeCoop/settings', 'SporeCoop/choices.ini'}
+RESETTABLE = {'Games', 'Games-sporecoop-backup', 'Games-sporecoop-store', 'EditorSaves.package',
+              'SporeCoop/holds', 'SporeCoop/badges', 'SporeCoop/settings', 'SporeCoop/choices.ini',
+              'SporeCoop/worlds.ini'}
 STOCK_SMOKE = {'creature', 'ui', 'team', 'select', 'frames_loop'}
 
 
@@ -253,7 +254,7 @@ class WindowsLane:
         role = self.role(profile)
         if role is None:
             raise ValueError('profile does not belong to this lane')
-        if relative in ('Games', 'Games-sporecoop-backup', 'EditorSaves.package'):
+        if relative in ('Games', 'Games-sporecoop-backup', 'Games-sporecoop-store', 'EditorSaves.package'):
             self.stopped(role)
         root = self.profile(role)
         target = contained(root / relative, root)
@@ -411,6 +412,11 @@ class WindowsLane:
                 del self.labs[role]
         if errors:
             raise RuntimeError('owned lane cleanup failed: ' + '; '.join(errors))
+
+    def processes(self, instance=None):
+        """Handle-backed inventory for upstream startup/lane-down predicates."""
+        return [process.pid for lab in self.labs.values() for process, number, _ in lab.processes
+                if (instance is None or number == instance) and process.poll() is None]
 
     def command(self, *args):
         self.owner()

@@ -6,6 +6,13 @@ by itself. Both tickets stay open until their real native acceptance checks pass
 
 ## Explicit lane and original assertions
 
+Native results also use the existing `out/lab/<timestamp>-windows-.../results.json`
+schema, source `head`, per-case verdict, copied `<case>.<role>.game.log` names
+and `summary.md`. The same `labcov` and recorded `loggates` readers consume them.
+An observed INCONCLUSIVE/SKIP is never a pass. The supervisor rejects a config
+whose payload source commit differs from the current test checkout HEAD, so
+different source revisions cannot inherit a final smoke pass.
+
 `tools/lab.py run smoke --no-build --windows-config <absolute-config.json>`
 runs the original `tools/tests/suite.py` smoke cases, in fresh case processes,
 through `tools/windows_native_suite.py`. No replacement test stubs are used.
@@ -99,3 +106,38 @@ startup and the actual original smoke plus focused GA/editor acceptance.
 
 No installed preview, shortcut, user profile, rollback payload, executable or
 public branch is changed by this adapter work.
+
+### Native startup investigation, 2026-11-20
+
+The intermediate integrated 0.7.15 payload reproduces the strict failure in
+`out/windows-lab/native0715-startup`: closeFFFFFFF2 has native command0 under the
+expected registration owner. Matching payload/map hashes are retained separately
+in `intermediate-payload.json`. This is not final source qualification.
+
+Two fresh hidden profiles (`native0715-registration-probe2` and `probe4`)
+verify that an ordinary click on that freshly resolved, revalidated native
+control removes registration directly. Actual after trees and screenshots show
+the Galaxy menu with native Play/Create/GA controls. No quit warning occurs.
+The earlier 0.7.13 probe waited only for that warning; that timeout did not prove
+the native close failed. The probe3 diagnostic had a multiline-memory reader
+error and is explicitly not passing evidence.
+
+Read-only native getter inspection resolves vtable slot0x20 exactly to named
+`UTFWin::Window::GetCommandID`. Its bytes `8B8180000000C3` read object+0x80;
+there is no evidence of a wrong getter ABI. The helper now recognizes only the
+observed command-zero embedded-browser family, checking its modal dimensions and
+flags, close control type/geometry/flags/empty caption, exact native content and
+Login companions, and all existing owner/identity guards. Command3 and the native
+quit warning retain their existing checked paths. Arbitrary command-zero close
+buttons remain rejected.
+
+Twenty-three startup contracts pass, including altered family rejection,
+duplicate close identities, stale snapshots, unrelated modals and bounded input.
+The production helper itself reaches a verified clear Galaxy menu on the new
+intermediate native payload (`native0715-startup-fixed`). Final committed hashes
+must repeat that check before BUG-1031 / GitHub issue10 is closed.
+
+The single-game renderer resize experiment reports1440x1080 while its native UI
+canvas remains1024x768. It is not accepted as a campaign bootstrap. Options11 and12
+both cold-launch1024x768 on this adapter/monitor; ordinary native Graphic Settings
+and a cold preference readback are the next viewport qualification step.

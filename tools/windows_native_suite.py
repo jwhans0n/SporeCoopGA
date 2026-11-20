@@ -8,6 +8,7 @@ and loggates remain active. Missing prerequisites are UNAVAILABLE, never PASS.
 import argparse
 import ctypes
 from ctypes import wintypes
+import datetime
 import json
 import os
 from pathlib import Path
@@ -96,9 +97,25 @@ def original_command(test):
 
 def verdict(test, code, text, failures):
     has_result = 'RESULT:' in text or test['name'] == 'unit'
-    skipped = 'RESULT: SKIP' in text
+    skipped = bool(re.search(r'RESULT: (?:SKIP|INCONCLUSIVE)\b', text))
     return (code == 0 and has_result and not skipped and 'RESULT: FAIL' not in text
             and 'Traceback' not in text and not failures)
+
+
+def repository_identity():
+    environment = {key: value for key, value in os.environ.items()
+                   if key not in ('GIT_DIR', 'GIT_COMMON_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE')}
+    def git(*args):
+        return subprocess.check_output(['git', *args], cwd=ROOT, env=environment, text=True).strip()
+    return git('rev-parse', 'HEAD'), git('branch', '--show-current')
+
+
+def lab_record(config, results, run_id, branch, began):
+    """The existing loggates/labcov/main-gate schema, with native identity added."""
+    return dict(run=run_id, tree=str(ROOT), branch=branch, head=config.source_commit, lanes=1,
+                seconds=round(time.time() - began), ok=bool(results) and all(r['ok'] for r in results),
+                quick=False, skipped=sum(bool(r.get('skipped')) for r in results), results=results,
+                backend='windows-native', **config.evidence())
 
 
 def worker(config_path, name, gate, receipt):
@@ -161,6 +178,9 @@ def worker(config_path, name, gate, receipt):
 def run(config_path, selection, repeat=1):
     config_path = Path(config_path).resolve()
     config = LaneConfig.load(config_path)
+    head, branch = repository_identity()
+    if head != config.source_commit:
+        raise RuntimeError('test checkout HEAD differs from the payload source commit; do not misattribute smoke')
     selected = suite.select(selection)
     config.verify_payload()
     store = FixtureStore(config.fixtures, config.fixture_hashes)
@@ -179,12 +199,16 @@ def run(config_path, selection, repeat=1):
         return 2
     if os.name != 'nt':
         raise RuntimeError('native Windows Python required')
+    began_run = time.time()
+    run_id = datetime.datetime.now().strftime('%Y%m%d-%H%M%S') + '-windows-' + uuid.uuid4().hex[:6]
+    record_root = ROOT / 'out' / 'lab' / run_id
+    record_root.mkdir(parents=True)
     results = []
     # Serial execution is intentional: UI discovery and native renderer reset
     # qualification are exclusive operations, not independent Linux lanes.
     for round_index in range(repeat):
         for test in selected:
-            name = test['name'] + (f'-{round_index + 1}' if repeat > 1 else '')
+            name = test['name'] + (f'#{round_index + 1}' if repeat > 1 else '')
             output = config.output / (name + '-' + uuid.uuid4().hex[:8])
             output.mkdir()
             gate, receipt, log = output / 'owned.start', output / 'native.json', output / 'test.log'
@@ -227,6 +251,7 @@ def run(config_path, selection, repeat=1):
                     target = output / (role + '.game.log')
                     shutil_copy_log(source, target)
                     logs[role] = str(target)
+            gate_failures = []
             try:
                 gate_failures, notes, _ = loggates.check_logs(logs, test.get('gates'),
                     list(test.get('allow') or []) + suite.ALLOW_ALL, text,
@@ -249,11 +274,25 @@ def run(config_path, selection, repeat=1):
                 if path.is_file():
                     shutil_copy_log(path, output / path.name)
             ok = verdict(test, code, text, failures)
+            skipped = bool(re.search(r'RESULT: (?:SKIP|INCONCLUSIVE)\b', text))
+            recorded_log = record_root / (name + '.log')
+            shutil_copy_log(log, recorded_log)
+            for role, source in logs.items():
+                shutil_copy_log(source, record_root / (name + '.' + role + '.game.log'))
             result = dict(name=name, ok=ok, rc=code, failures=failures, notes=notes,
-                          skipped='RESULT: SKIP' in text, seconds=round(time.time() - began, 2),
-                          log=str(log), native=str(receipt), **config.evidence())
+                          fails=failures, gates=gate_failures + notes,
+                          skipped=skipped, inconclusive=skipped, verdict='PASS' if ok else 'INCONCLUSIVE' if skipped else 'FAIL',
+                          lane=1, quick=False, harness=not receipt.exists(), reports=native.get('reports', ()),
+                          log_marks=native.get('log_marks', {}),
+                          seconds=round(time.time() - began, 2),
+                          log=str(recorded_log), native=str(receipt), **config.evidence())
             results.append(result)
-            write_json(config.output / 'results.json', results)
+            record = lab_record(config, results, run_id, branch, began_run)
+            write_json(config.output / 'results.json', record)
+            write_json(record_root / 'results.json', record)
+            (record_root / 'summary.md').write_text('# lab run ' + run_id + '\n\n'
+                + f'{branch} {config.source_commit}, native Windows, {len(results)} tests\n\n'
+                + '\n'.join(f'- {r["name"]}: {r["verdict"]}' for r in results) + '\n', encoding='utf-8')
             print(f'{"PASS" if ok else "FAIL"} {name} ({result["seconds"]} s): {"; ".join(failures)}', flush=True)
     return 0 if results and all(r['ok'] for r in results) else 1
 

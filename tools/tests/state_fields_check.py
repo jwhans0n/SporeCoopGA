@@ -19,22 +19,22 @@ N = 'not'
 FIELDS = {
     'PlayerState': {
         'id': (A, 'net/session.cpp', r'\bid\b'),  # the sender: the session fills it from the peer
-        'time_ms': (A, 'coop.cpp', r'time_ms'),  # the interpolation buffer's clock
+        'time_ms': (A, 'net/interp.h', r's\.time_ms'),  # the interpolation buffer's clock
         'pos': (A, 'modes.cpp', r's\.pos'),
         'rot': (A, 'modes.cpp', r's\.rot'),
         'vel': (A, 'modes.cpp', r's\.vel'),
         'flags': (A, 'modes.cpp', r's\.flags'),  # the bits: FLAGS below
-        'anim': (N, 'always 0: the animations of a player go by MSG_ANIM (coop.cpp), one message per animation start'),
+        'anim': (N, 'always 0: the animations of a player go by MSG_ANIM (puppets.cpp), one message per animation start'),
         'health': (A, 'creature_hp.cpp', r'drive_puppet'),  # Creature; Space: modes.cpp space_puppet_health (BUG-0697)
         'max_health': (A, 'modes.cpp', r'space_puppet_health\(mh, s\.health, s\.max_health'),
         'species': (A, 'session_glue.cpp', r'\.species'),  # the host's evolution in place reads the guest's species
-        'mode': (A, 'coop.cpp', r'\.mode\b'),
-        'world': (A, 'coop.cpp', r'\.world\b'),
+        'mode': (A, 'puppets.cpp', r's\.mode == g_mode'),
+        'world': (A, 'puppets.cpp', r's\.world == g_world'),
         'scale': (A, 'modes.cpp', r's_in\.scale / own'),  # Cell: the sender's world scale (BUG-0519)
         'agl': (A, 'modes.cpp', r'agl'),
         'body': (A, 'modes.cpp', r'puppet_body\(p, s_in\)'),  # BUG-0733: the puppet's size (Creature)
-        'adventure_run': (A, 'coop.cpp', r's\.adventure_run == d->run_id'),  # Current adventure run only.
-        'captain_selection': (A, 'coop.cpp', r's\.captain_selection == adventure::selection_serial'),
+        'adventure_run': (A, 'puppets.cpp', r's\.adventure_run == d->run_id'),  # Current adventure run only.
+        'captain_selection': (A, 'puppets.cpp', r's\.captain_selection == adventure::selection_serial'),
         'movement_generation': (A, 'net/adventure_motion.h', r'state\.movement_generation == generations_'),
     },
     'NpcSpawn': {
@@ -57,11 +57,11 @@ FIELDS = {
     },
 }
 FLAGS = {
-    'PF_IN_WORLD': (A, 'coop.cpp', r'PF_IN_WORLD'),
+    'PF_IN_WORLD': (A, 'puppets.cpp', r'PF_IN_WORLD'),
     'PF_MOVING': (A, 'modes.cpp', r'PF_MOVING'),
     'PF_RUNNING': (N, 'the gait follows the speed the drive gives the puppet (its velocity), not a flag'),
     'PF_JUMPING': (A, 'modes.cpp', r'PF_JUMPING'),
-    'PF_DEAD': (A, 'coop.cpp', r'PF_DEAD'),
+    'PF_DEAD': (A, 'puppets.cpp', r'PF_DEAD'),
     'PF_SWIMMING': (N, 'never set: a swimming creature is placed by its position and the water rules of each game'),
     'PF_SNEAKING': (A, 'modes.cpp', r'PF_SNEAKING'),
     'PF_RESYNC': (A, 'coop.cpp', r'PF_RESYNC'),
