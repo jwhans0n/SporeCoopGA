@@ -31,5 +31,13 @@ Verification evidence belongs in the upstream synchronization report. Missing pr
 
 ## History
 - 2026-11-05: opened.
+- 2026-11-20: Added an explicit private Windows lane backend and original-suite
+  adapter with hash-bound payload/symbols, handle-owned Job cleanup, checked
+  profile/fixture operations, native viewport verification and unchanged test
+  assertions/log gates. Fourteen adapter contracts and twenty strict startup
+  contracts pass; real fixture-backed native smoke remains required. Corrected
+  preflight to the five stock archives used by the fourteen smoke cases; genuine
+  creation packages are additional dependencies of selected creation scenarios.
+  See docs/reports/WINDOWS-NATIVE-QUALIFICATION-0.7.15.md.
 
 Legacy fork reference: `BUG-0626` before upstream 0.7.13 integration. Historical commits and OUT receipts retain that identity; upstream owns its independently created ticket under that number.

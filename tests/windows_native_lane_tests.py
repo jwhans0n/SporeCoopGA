@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""Portable contracts for the Windows backend; native smoke is a separate gate."""
+import io
+import json
+import os
+from pathlib import Path
+import sys
+import tarfile
+import tempfile
+import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
+from windows_native_lane import (FixtureStore, LaneConfig, WindowsLane, digest, required_fixtures)  # noqa: E402
+from tests_viewport import viewport_of  # noqa: E402
+from windows_native_suite import original_command, verdict, OwnedJob  # noqa: E402
+
+
+class LaneTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.env = patch.dict(os.environ, APPDATA=str(self.root / 'appdata'))
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.addCleanup(self.tmp.cleanup)
+        self.raw = dict(schema=1, id='regression', source_commit='a' * 40,
+                        installation=str(self.root / 'out/windows-lab/install'),
+                        output=str(self.root / 'out/windows-lab/run'), fixtures=str(self.root / 'fixtures'),
+                        build=str(self.root / 'build'), symbols=str(self.root / 'symbols'),
+                        payload_hashes={n: 'a' * 64 for n in (
+                            'steam_api.dll', 'sporekit.dll', 'coop.dll', 'SporeCoop.package')},
+                        symbol_hashes={'gog2024.sym': 'b' * 64}, fixture_hashes={})
+        self.path = self.root / 'lane.json'
+
+    def config(self):
+        self.path.write_text(json.dumps(self.raw), encoding='utf-8')
+        return LaneConfig.load(self.path, self.root)
+
+    def archive(self, entries, name='creature.tgz'):
+        root = Path(self.raw['fixtures'])
+        root.mkdir(exist_ok=True)
+        path = root / name
+        with tarfile.open(path, 'w:gz') as archive:
+            for entry in entries:
+                info = tarfile.TarInfo(entry[0])
+                if len(entry) > 2:
+                    info.type, info.linkname = entry[2], entry[1]
+                    archive.addfile(info)
+                else:
+                    data = entry[1].encode()
+                    info.size = len(data)
+                    archive.addfile(info, io.BytesIO(data))
+        self.raw['fixture_hashes'][name] = digest(path)
+        return path
+
+    def test_explicit_independent_udp_and_console_identity(self):
+        cfg = self.config()
+        self.assertEqual((cfg.host, cfg.guest, cfg.port), (49, 50, 47810))
+        self.assertEqual(cfg.profile('guest'), 'winlab_regression_guest_50')
+        self.assertEqual(cfg.game_log('host').name, 'sporekit.49.log')
+        self.assertNotIn('Games', str(cfg.profile_dir('host')))
+
+    def test_rejects_installation_escape_and_unbound_payload(self):
+        for key, value in [('installation', str(self.root / 'player')),
+                           ('output', str(self.root / 'out/windows-lab')),
+                           ('host', 50), ('port', 47858), ('source_commit', 'HEAD'),
+                           ('payload_hashes', {}), ('viewport', [1920, 1080])]:
+            previous = self.raw.get(key)
+            self.raw[key] = value
+            with self.subTest(key=key), self.assertRaises((ValueError, TypeError)):
+                self.config()
+            if previous is None:
+                del self.raw[key]
+            else:
+                self.raw[key] = previous
+
+    def test_unmarked_or_different_profile_is_never_adopted(self):
+        cfg = self.config()
+        root = cfg.profile_dir('host')
+        root.mkdir(parents=True)
+        (root / 'personal.dat').write_text('preserve')
+        with self.assertRaisesRegex(RuntimeError, 'unmarked'):
+            WindowsLane(cfg).profile('host')
+        self.assertEqual((root / 'personal.dat').read_text(), 'preserve')
+
+    def test_profile_reset_refuses_escape_unknown_and_loaded_save(self):
+        cfg = self.config()
+        lane = WindowsLane(cfg)
+        lane.profile('host')
+        with self.assertRaises(ValueError):
+            lane.remove(cfg.profile('host'), '../outside')
+        with self.assertRaises(ValueError):
+            lane.remove('test', 'Games')
+        lane.labs['host'] = object()
+        with self.assertRaisesRegex(RuntimeError, 'loaded'):
+            lane.remove(cfg.profile('host'), 'Games')
+        with self.assertRaisesRegex(RuntimeError, 'loaded'):
+            lane.remove(cfg.profile('host'), 'EditorSaves.package')
+
+    def test_child_process_cannot_mutate_owner_lane(self):
+        cfg = self.config()
+        with patch.dict(os.environ, SPORE_WINDOWS_LANE_OWNER=str(os.getpid() + 1)):
+            with self.assertRaisesRegex(RuntimeError, 'owning'):
+                WindowsLane(cfg).profile('guest')
+
+    def test_archive_safety_before_existing_games_change(self):
+        for bad in [('Games/../escape', 'bad'), ('Games/link', '/outside', tarfile.SYMTYPE),
+                    ('Games/A', 'one'), ('Games\\bad', 'bad'), ('Games/Game0/C:bad', 'bad')]:
+            self.archive([('Games/Game0/Scalinus.spo', 'native'), bad])
+            cfg = self.config()
+            lane = WindowsLane(cfg)
+            games = lane.profile('host') / 'Games'
+            games.mkdir(exist_ok=True)
+            previous = games / 'keep'
+            previous.write_text('committed')
+            # A normal extra path is allowed; a case-fold duplicate is forbidden.
+            if bad[0] == 'Games/A':
+                self.archive([('Games/Game0/Scalinus.spo', 'native'), bad, ('Games/a', 'two')])
+                lane.store = FixtureStore(cfg.fixtures, self.raw['fixture_hashes'])
+            with self.subTest(member=bad[0]), self.assertRaises(ValueError):
+                lane.restore('creature', cfg.profile('host'))
+            self.assertEqual(previous.read_text(), 'committed')
+
+    def test_failed_hash_preserves_previous_save(self):
+        path = self.archive([('Games/Game0/Scalinus.spo', 'native')])
+        cfg = self.config()
+        path.write_bytes(b'changed after manifest')
+        lane = WindowsLane(cfg)
+        games = lane.profile('host') / 'Games'
+        games.mkdir()
+        (games / 'keep').write_text('committed')
+        with self.assertRaisesRegex(ValueError, 'hash'):
+            lane.restore('creature', cfg.profile('host'))
+        self.assertEqual((games / 'keep').read_text(), 'committed')
+
+    def test_restore_and_fresh_warm_slot_keep_loaded_tree(self):
+        self.archive([('Games/Game0/Scalinus.spo', 'native')])
+        cfg = self.config()
+        lane = WindowsLane(cfg)
+        lane.restore('creature', cfg.profile('host'))
+        lane.labs['host'] = object()
+        lane.restore('creature', cfg.profile('host'), '10')
+        games = cfg.profile_dir('host') / 'Games'
+        self.assertEqual((games / 'Game0/Scalinus.spo').read_text(), 'native')
+        self.assertEqual((games / 'Game10/Scalinus.spo').read_text(), 'native')
+        with self.assertRaisesRegex(ValueError, 'already exists'):
+            lane.restore('creature', cfg.profile('host'), '10')
+        with self.assertRaisesRegex(RuntimeError, 'loaded'):
+            lane.restore('creature', cfg.profile('host'))
+
+    def test_real_packages_are_case_dependencies_not_universal(self):
+        self.assertEqual(required_fixtures([
+            {'name': n} for n in ('unit', 'creature', 'ui', 'team', 'space_play', 'space_page', 'chaos_tribe')
+        ]), ['creature.tgz', 'space.tgz', 'tribe.tgz'])
+        self.assertEqual(required_fixtures([dict(name='asset', fixture='creature',
+                                              creation_packages=['creations-guest.package'])]),
+                         ['creations-guest.package', 'creature.tgz'])
+
+    def test_missing_package_starts_clean_without_fabricating_a_package(self):
+        cfg = self.config()
+        lane = WindowsLane(cfg)
+        lane.restore_creations()
+        self.assertFalse((cfg.profile_dir('guest') / 'EditorSaves.package').exists())
+        self.assertFalse((cfg.profile_dir('host') / 'EditorSaves.package').exists())
+
+    def test_viewport_is_native_observation(self):
+        class Console:
+            def call(self, _):
+                return {'out': 'screen 1440 1080\nother status'}
+        self.assertEqual(viewport_of(Console()), (1440, 1080))
+
+    def test_original_commands_are_preserved_and_never_shell_executed(self):
+        path, args, environment = original_command(dict(cmd='SPORE_FIX_OFF=foo python3 tools/tests/coop_team.py --x'))
+        self.assertEqual(path.name, 'coop_team.py')
+        self.assertEqual(args, ['--x'])
+        self.assertEqual(environment, {'SPORE_FIX_OFF': 'foo'})
+        with self.assertRaises(ValueError):
+            original_command(dict(cmd='echo RESULT: OK'))
+        with self.assertRaises(ValueError):
+            original_command(dict(cmd='python3 ../outside.py'))
+
+    def test_skip_missing_result_crash_and_gate_failure_never_pass(self):
+        test = dict(name='creature')
+        self.assertTrue(verdict(test, 0, 'RESULT: OK', []))
+        for code, text, failures in [(0, 'RESULT: SKIP', []), (0, 'entered preview', []),
+                                     (1, 'RESULT: OK', []), (0, 'RESULT: OK', ['new crash']),
+                                     (0, 'RESULT: OK\nTraceback', [])]:
+            with self.subTest(code=code, text=text, failures=failures):
+                self.assertFalse(verdict(test, code, text, failures))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows Job kernel test runs natively on Windows')
+    def test_job_cleanup_stops_only_owned_case_process(self):
+        import subprocess
+        job = OwnedJob()
+        owned = subprocess.Popen([sys.executable, '-c', 'import time;time.sleep(60)'])
+        unrelated = subprocess.Popen([sys.executable, '-c', 'import time;time.sleep(60)'])
+        try:
+            job.assign(owned)
+            job.close()
+            self.assertIsNotNone(owned.wait(timeout=10))
+            self.assertIsNone(unrelated.poll(), 'an independent process must remain untouched')
+        finally:
+            job.close()
+            for process in (owned, unrelated):
+                if process.poll() is None:
+                    process.terminate()
+                process.wait(timeout=10)
+
+
+if __name__ == '__main__':
+    unittest.main()

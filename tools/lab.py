@@ -902,6 +902,7 @@ def main():
     r.add_argument('--no-build', action='store_true')
     r.add_argument('--retry', type=int, default=1)
     r.add_argument('--repeat', type=int, default=1, help='run every test N times (flaky bug hunt)')
+    r.add_argument('--windows-config', help='explicit owned native Windows lane configuration')
     ln = sub.add_parser('lanes')
     ln.add_argument('n', type=int)
     rl = sub.add_parser('reload')
@@ -926,6 +927,11 @@ def main():
     if a.cmd == 'gates':
         return loggates.main(['report', *a.dirs])
     if a.cmd == 'run':
+        if a.windows_config:
+            if a.branch or a.lane or a.skip or not a.no_build:
+                ap.error('native Windows lane uses a pinned built config: --no-build; no branch/lane/skip overrides')
+            from windows_native_suite import run
+            return run(a.windows_config, a.tests, a.repeat)
         return cmd_run(a)
     if a.cmd == 'lanes':
         ensure_lanes(a.n)
