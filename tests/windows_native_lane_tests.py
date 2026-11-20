@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 from windows_native_lane import (FixtureStore, LaneConfig, WindowsLane, digest, required_fixtures)  # noqa: E402
-from tests_viewport import viewport_of  # noqa: E402
+from tests_viewport import viewport_of, canvas_of  # noqa: E402
 from windows_native_suite import original_command, verdict, OwnedJob, lab_record  # noqa: E402
 
 
@@ -169,6 +169,10 @@ class LaneTests(unittest.TestCase):
             def call(self, _):
                 return {'out': 'screen 1440 1080\nother status'}
         self.assertEqual(viewport_of(Console()), (1440, 1080))
+        class Canvas:
+            def call(self, _):
+                return {'out': 'FFFFFFF0 0 0 1024 768 enabled=1'}
+        self.assertEqual(canvas_of(Canvas()), (0, 0, 1024, 768))
 
     def test_original_commands_are_preserved_and_never_shell_executed(self):
         path, args, environment = original_command(dict(cmd='SPORE_FIX_OFF=foo python3 tools/tests/coop_team.py --x'))

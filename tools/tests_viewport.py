@@ -8,3 +8,11 @@ def viewport_of(console):
     if not match:
         raise RuntimeError('native viewport dimensions unavailable in coop.uistate')
     return tuple(map(int, match.groups()))
+
+
+def canvas_of(console):
+    output = console.call('coop.ui where FFFFFFF0').get('out', '')
+    match = re.search(r'^FFFFFFF0 (-?\d+) (-?\d+) (-?\d+) (-?\d+) enabled=\d+', output, re.M)
+    if not match:
+        raise RuntimeError('native main UI canvas is unavailable')
+    return tuple(map(int, match.groups()))
