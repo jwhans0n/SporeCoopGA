@@ -104,6 +104,20 @@ class LaneTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'owning'):
                 WindowsLane(cfg).profile('guest')
 
+    def test_entire_installation_is_owned_before_profile_mutation(self):
+        cfg = self.config()
+        first, second = WindowsLane(cfg), WindowsLane(cfg)
+        try:
+            first.profile('host')
+            with self.assertRaisesRegex(RuntimeError, 'another test run'):
+                second.profile('guest')
+            self.assertFalse(cfg.profile_dir('guest').exists())
+            first.close()
+            second.profile('guest')
+        finally:
+            first.close()
+            second.close()
+
     def test_archive_safety_before_existing_games_change(self):
         for bad in [('Games/../escape', 'bad'), ('Games/link', '/outside', tarfile.SYMTYPE),
                     ('Games/A', 'one'), ('Games\\bad', 'bad'), ('Games/Game0/C:bad', 'bad')]:
@@ -133,6 +147,34 @@ class LaneTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'hash'):
             lane.restore('creature', cfg.profile('host'))
         self.assertEqual((games / 'keep').read_text(), 'committed')
+
+    def test_private_deploy_retires_only_obsolete_symbol_maps(self):
+        for name in self.raw['payload_hashes']:
+            path = Path(self.raw['build']) / name
+            path.parent.mkdir(exist_ok=True)
+            path.write_bytes(name.encode())
+            self.raw['payload_hashes'][name] = digest(path)
+        symbol = Path(self.raw['symbols']) / 'gog2024.sym'
+        symbol.parent.mkdir()
+        symbol.write_text('verified source maps')
+        self.raw['symbol_hashes']['gog2024.sym'] = digest(symbol)
+        cfg = self.config()
+        cfg.installation.mkdir(parents=True)
+        (cfg.installation / 'sporecoop-test-copy.json').write_text('{}')
+        for target in cfg.payload_targets().values():
+            target.parent.mkdir(parents=True, exist_ok=True)
+        symbols = cfg.installation / 'SporebinEP1/mods/sporekit/symbols'
+        symbols.mkdir(parents=True)
+        (symbols / 'old.sym').write_text('stale override')
+        (symbols / 'keep.txt').write_text('unrelated diagnostic')
+        lane = WindowsLane(cfg)
+        try:
+            with patch('windows_lab.inside_lab', side_effect=lambda path: path):
+                lane.deploy()
+            cfg.verify_installation()
+            self.assertEqual({p.name for p in symbols.iterdir()}, {'gog2024.sym', 'keep.txt'})
+        finally:
+            lane.close()
 
     def test_restore_and_fresh_warm_slot_keep_loaded_tree(self):
         self.archive([('Games/Game0/Scalinus.spo', 'native')])

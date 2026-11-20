@@ -17,6 +17,7 @@ import socket
 import tarfile
 import tempfile
 import time
+import weakref
 
 ROOT = Path(__file__).resolve().parents[1]
 PAYLOAD = ('steam_api.dll', 'sporekit.dll', 'coop.dll', 'SporeCoop.package')
@@ -218,10 +219,39 @@ class WindowsLane:
         self.owner_pid = os.getpid()
         self.lab_factory = lab_factory
         self.generations = {'host': 0, 'guest': 0}
+        self.lease = None
+        self.lease_finalizer = None
 
     def owner(self):
         if self.owner_pid != os.getpid() or os.environ.get('SPORE_WINDOWS_LANE_OWNER', str(self.owner_pid)) != str(self.owner_pid):
             raise RuntimeError('only the owning test process may mutate the private lane')
+        if self.lease is None:
+            # Upstream BUG-1070's whole-run lane ownership, using a native
+            # kernel-released byte lock on Windows rather than Wine flock.
+            # Acquire before any profile reset or deployment, not just launch.
+            self.config.installation.mkdir(parents=True, exist_ok=True)
+            lease = (self.config.installation / '.windows-native-lane.lock').open('a+b')
+            try:
+                lease.seek(0, 2)
+                if lease.tell() == 0:
+                    lease.write(b'\0')
+                    lease.flush()
+                lease.seek(0)
+                if os.name == 'nt':
+                    import msvcrt
+                    msvcrt.locking(lease.fileno(), msvcrt.LK_NBLCK, 1)
+                else:  # portable ownership contract tests only
+                    import fcntl
+                    fcntl.flock(lease.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                lease.seek(1)
+                lease.write(json.dumps(dict(pid=self.owner_pid, lane=self.config.identity)).encode())
+                lease.truncate()
+                lease.flush()
+            except OSError as error:
+                lease.close()
+                raise RuntimeError('private native installation is owned by another test run') from error
+            self.lease = lease
+            self.lease_finalizer = weakref.finalize(self, lease.close)
 
     def role(self, profile):
         return next((r for r in ('host', 'guest') if self.config.profile(r) == profile), None)
@@ -316,6 +346,7 @@ class WindowsLane:
         if role is None or not re.fullmatch(r'[a-z][a-z0-9_]{0,63}', name):
             raise ValueError('invalid private fixture source/name')
         self.stopped(role)
+        contained(self.config.fixtures, ROOT / 'out')
         games = self.profile(role) / 'Games'
         if not list((games / 'Game0').glob('*.spo')):
             raise ValueError('no native Game0 planet save to seal')
@@ -354,6 +385,9 @@ class WindowsLane:
                 raise RuntimeError('deployed payload did not verify')
         symbols = self.config.installation / 'SporebinEP1' / 'mods' / 'sporekit' / 'symbols'
         symbols.mkdir(parents=True, exist_ok=True)
+        for path in symbols.glob('*.sym'):
+            if path.name not in self.config.symbol_hashes:
+                contained(path, symbols).unlink()
         for name in self.config.symbol_hashes:
             shutil.copy2(self.config.symbols / name, symbols / name)
         self.config.verify_installation()
@@ -418,6 +452,16 @@ class WindowsLane:
         """Handle-backed inventory for upstream startup/lane-down predicates."""
         return [process.pid for lab in self.labs.values() for process, number, _ in lab.processes
                 if (instance is None or number == instance) and process.poll() is None]
+
+    def close(self):
+        try:
+            if self.labs:
+                self.stop()
+        finally:
+            if self.lease_finalizer is not None:
+                self.lease_finalizer()
+                self.lease_finalizer = None
+            self.lease = None
 
     def command(self, *args):
         self.owner()

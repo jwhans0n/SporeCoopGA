@@ -153,3 +153,16 @@ The fixed registration helper also reaches actual Galaxy controls at that size.
 WindowsLab accepts only the two audited viewport sizes for this option; every
 backend launch separately verifies both renderer dimensions and the actual
 native UI canvas before any fixed-pixel scenario input.
+
+Seventeen backend contracts now also cover the upstream1070 ownership rule on
+Windows. An exclusive kernel byte lock owns the private installation before any
+profile reset/deployment and remains held across owned game restarts. A second
+run is rejected before it can touch another active run's profile. Cleanup is
+idempotent, and the kernel releases ownership if the worker exits. The initial
+new lock test exposed a double-close ownership reacquisition; its failing and
+passing runs were retained during development.
+
+An old private installation copy can retain symbol maps removed in v15. Prepare
+and deploy retire only obsolete `.sym` files inside that explicitly marked
+private symbol directory, preserving unrelated diagnostic files. Exact deployed
+payload and symbol-set verification must then succeed before any native launch.

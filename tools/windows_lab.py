@@ -409,6 +409,14 @@ def prepare(source, destination, build, symbols_source=None):
     symbols_source = Path(symbols_source or ROOT / 'data' / 'symbols').resolve()
     if not list(symbols_source.glob('*.sym')):
         raise RuntimeError('verified build symbol directory is empty')
+    expected_symbols = {path.name for path in symbols_source.glob('*.sym')}
+    # This is a private marked copy, and old source installations can retain
+    # maps removed by the integrated build. Do not let stale overrides survive.
+    for path in symbols.glob('*.sym'):
+        if path.name not in expected_symbols:
+            if symbols.resolve() not in path.resolve().parents:
+                raise RuntimeError('private symbol file traverses a link')
+            path.unlink()
     for path in symbols_source.glob('*.sym'):
         shutil.copy2(path, symbols / path.name)
     (mods / 'sporekit.ini').write_text('[sporekit]\nlog_level=0\nconsole_port=47800\nbackground_mode=1\n[mods]\nload=coop\n', encoding='utf-8')
