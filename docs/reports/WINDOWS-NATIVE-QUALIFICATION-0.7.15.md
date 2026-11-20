@@ -141,3 +141,15 @@ The single-game renderer resize experiment reports1440x1080 while its native UI
 canvas remains1024x768. It is not accepted as a campaign bootstrap. Options11 and12
 both cold-launch1024x768 on this adapter/monitor; ordinary native Graphic Settings
 and a cold preference readback are the next viewport qualification step.
+
+That viewport blocker was resolved through a verified native launch switch,
+without introducing a renderer hook or changing the user's display. Read-only
+Configure0x7E7430 inspection finds native `CommandLine::FindSwitch("r")` at
+7E758B and wide `%dx%d` parsing at7E75A9, followed by the original renderer create.
+The ordinary `-r:1440x1080` launch argument produces both observed renderer
+1440x1080 and native main UI canvas `[0 0 1440 1080]` in a cold hidden game.
+`native0715-viewport1440/result.json` and its screenshot/commands retain this PASS.
+The fixed registration helper also reaches actual Galaxy controls at that size.
+WindowsLab accepts only the two audited viewport sizes for this option; every
+backend launch separately verifies both renderer dimensions and the actual
+native UI canvas before any fixed-pixel scenario input.

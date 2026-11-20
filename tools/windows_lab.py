@@ -445,13 +445,17 @@ def prepare_profile(name, screen_size=12):
 
 class WindowsLab:
     """Context manager for integration tests; `consoles` uses sporectl.Console."""
-    def __init__(self, installation, output=None, instances=2, first_instance=21, hidden=False, screen_size=12):
+    def __init__(self, installation, output=None, instances=2, first_instance=21, hidden=False, screen_size=12,
+                 viewport=None):
         self.installation = inside_lab(installation)
         self.output = inside_lab(output or LAB_ROOT / ('run-' + uuid.uuid4().hex[:12]))
         self.instances = instances
         self.first_instance = first_instance
         self.hidden = hidden
         self.screen_size = screen_size
+        if viewport is not None and tuple(viewport) not in ((1440, 1080), (1024, 768)):
+            raise RuntimeError('use an audited native test viewport')
+        self.viewport = tuple(viewport) if viewport is not None else None
         self.processes = []
         self.consoles = []
         self.desktop = None
@@ -496,6 +500,11 @@ class WindowsLab:
                 prepare_profile(profile, self.screen_size)
                 exe = self.installation / 'SporebinEP1' / 'SporeApp.exe'
                 command = [str(exe), '-w', '-sporekit-instance:' + str(instance), '-sporekit-profile:' + profile]
+                if self.viewport:
+                    # Verified native Configure0x7E7430 reads switch r, scans
+                    # %dx%d, and creates the renderer at these dimensions before
+                    # native UI construction. A late renderer Reset leaves old UI.
+                    command.append('-r:%dx%d' % self.viewport)
                 if self.hidden:
                     command.extend(('-sporekit-invisible', '-sporekit-exclusive-input'))
                 process = DesktopProcess(command, self.desktop.name, cwd=exe.parent)

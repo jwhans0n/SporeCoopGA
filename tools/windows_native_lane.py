@@ -376,14 +376,15 @@ class WindowsLane:
             factory = self.lab_factory
         output = self.config.output / (self.config.identity + '_' + role)
         lab = factory(self.config.installation, output, instances=1, first_instance=self.config.instance(role),
-                      hidden=True, screen_size=self.config.screen_size)
+                      hidden=True, screen_size=self.config.screen_size, viewport=self.config.viewport)
         try:
             lab.start()
             # These original scripts contain fixed pixel input. A configured preference
             # is insufficient: verify the actual native viewport before returning.
-            from tests_viewport import viewport_of
-            if viewport_of(lab.consoles[0]) != self.config.viewport:
-                raise RuntimeError('native viewport differs from the selected test recipe')
+            from tests_viewport import viewport_of, canvas_of
+            if (viewport_of(lab.consoles[0]) != self.config.viewport
+                    or canvas_of(lab.consoles[0]) != (0, 0, *self.config.viewport)):
+                raise RuntimeError('native renderer/UI canvas differs from the selected test recipe')
             from coop_adventure import Game
             startup = Game(self.config.instance(role), output / 'startup', timeout=120)
             try:
