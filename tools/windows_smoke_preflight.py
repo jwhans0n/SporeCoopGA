@@ -11,8 +11,6 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-REQUIRED = ('creature.tgz', 'cell.tgz', 'tribe.tgz', 'civ.tgz', 'space.tgz',
-            'space_empire.tgz', 'creations-host.package', 'creations-guest.package')
 EXES = {'dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37',
         '47f60c4db38fda1f15c5a3525617e171b0a98d728d99d645b035aa794a9199ab'}
 
@@ -25,15 +23,24 @@ def main():
     parser.add_argument('--fixture-dir', type=Path)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--installation', type=Path)
+    parser.add_argument('--tests', default='smoke', help='the actual suite/case selection')
+    parser.add_argument('--creation-packages', default='', help='genuine role packages required by selected creation cases')
     args = parser.parse_args()
     common = Path(subprocess.check_output(['git','rev-parse','--path-format=absolute','--git-common-dir'],
                                          cwd=ROOT, text=True).strip())
     fixtures = (args.fixture_dir or common.parent / 'out' / 'fixtures').resolve()
     sys.path.insert(0, str(ROOT / 'tools' / 'tests'))
     import suite
-    cases = [dict(name=test['name'], command=test['cmd']) for test in suite.T if 'smoke' in test['suites']]
+    from windows_native_lane import required_fixtures
+    selected = suite.select(args.tests)
+    cases = [dict(name=test['name'], command=test['cmd']) for test in selected]
+    required = set(required_fixtures(selected))
+    for name in filter(None, args.creation_packages.split(',')):
+        if name not in ('creations-host.package', 'creations-guest.package'):
+            parser.error('creation dependencies must name genuine host/guest package fixtures')
+        required.add(name)
     rows = [dict(name=name, present=(fixtures/name).is_file(),
-                 sha256=digest(fixtures/name) if (fixtures/name).is_file() else None) for name in REQUIRED]
+                 sha256=digest(fixtures/name) if (fixtures/name).is_file() else None) for name in sorted(required)]
     missing = [row['name'] for row in rows if not row['present']]
     reasons = ['Missing native fixture: '+name for name in missing]
     if sys.platform != 'win32':
@@ -45,6 +52,8 @@ def main():
     report = dict(status='UNAVAILABLE' if reasons else 'READY', native_smoke_passed=False,
                   project=str(ROOT), fixtures=str(fixtures), fixture_files=rows, cases=cases,
                   reasons=reasons, games_started=False, profiles_modified=False,
+                  dependency_policy='Stock smoke uses the five campaign archives and shipped Maxis creations. '
+                                    'Custom creation scenarios additionally require genuine dependency-closed packages.',
                   note='READY is not PASS. Run every smoke assertion and native/log gate before promoting main.')
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2)+'\n', encoding='utf-8')

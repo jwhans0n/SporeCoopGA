@@ -85,7 +85,7 @@ def main():
         sh('deploy')
         sh('fixture', 'restore', 'creature', lane.HOST_PROFILE)
         if guest_menu:
-            subprocess.run(['rm', '-rf', lane.GUEST_DIR + '/Games', lane.GUEST_DIR + '/Games-sporecoop-backup'])
+            lane.profile_remove(lane.GUEST_DIR, 'Games', 'Games-sporecoop-backup')
         else:
             sh('fixture', 'restore', 'creature', lane.GUEST_PROFILE)
         lane.run_guest()

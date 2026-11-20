@@ -371,7 +371,7 @@ class PrivateDesktop:
         self.close()
 
 
-def prepare(source, destination, build):
+def prepare(source, destination, build, symbols_source=None):
     source = source.resolve()
     destination = inside_lab(destination)
     if source == destination or source in destination.parents:
@@ -406,7 +406,10 @@ def prepare(source, destination, build):
     shutil.copy2(build / 'SporeCoop.package', destination / 'Data' / 'SporeCoop.package')
     symbols = mods / 'sporekit' / 'symbols'
     symbols.mkdir(parents=True, exist_ok=True)
-    for path in (ROOT / 'data' / 'symbols').glob('*.sym'):
+    symbols_source = Path(symbols_source or ROOT / 'data' / 'symbols').resolve()
+    if not list(symbols_source.glob('*.sym')):
+        raise RuntimeError('verified build symbol directory is empty')
+    for path in symbols_source.glob('*.sym'):
         shutil.copy2(path, symbols / path.name)
     (mods / 'sporekit.ini').write_text('[sporekit]\nlog_level=0\nconsole_port=47800\nbackground_mode=1\n[mods]\nload=coop\n', encoding='utf-8')
     shutil.copy2(ROOT / 'data' / 'config' / 'coop.ini', mods / 'coop.ini')
@@ -414,7 +417,7 @@ def prepare(source, destination, build):
     return destination
 
 
-def prepare_profile(name):
+def prepare_profile(name, screen_size=12):
     if not re.fullmatch(r'winlab_[a-z0-9_]+', name):
         raise RuntimeError('invalid isolated profile name')
     root = Path(os.environ['APPDATA']) / ('SporeKit-' + name) / 'Spore'
@@ -423,7 +426,7 @@ def prepare_profile(name):
     # Missing OptionVersion makes this build replace every supplied setting with
     # defaults, including unmuting audio. Version9 is emitted by this verified build.
     want = dict(OptionVersion='9', OptionFullScreen='0', OptionTutorialsEnabled='0', OptionShowHints='0',
-                OptionEdgeScroll='0', OptionScreenSize='12', AudioMuteAll='true', AudioMasterVolume='0.000000',
+                OptionEdgeScroll='0', OptionScreenSize=str(screen_size), AudioMuteAll='true', AudioMasterVolume='0.000000',
                 AudioMusicVolume='0.000000', AudioVOXVolume='0.000000', AudioSFXVolume='0.000000')
     path = preferences / 'Preferences.prop'
     previous = path.read_text(encoding='utf-8', errors='replace').splitlines() if path.exists() else []
@@ -442,12 +445,13 @@ def prepare_profile(name):
 
 class WindowsLab:
     """Context manager for integration tests; `consoles` uses sporectl.Console."""
-    def __init__(self, installation, output=None, instances=2, first_instance=21, hidden=False):
+    def __init__(self, installation, output=None, instances=2, first_instance=21, hidden=False, screen_size=12):
         self.installation = inside_lab(installation)
         self.output = inside_lab(output or LAB_ROOT / ('run-' + uuid.uuid4().hex[:12]))
         self.instances = instances
         self.first_instance = first_instance
         self.hidden = hidden
+        self.screen_size = screen_size
         self.processes = []
         self.consoles = []
         self.desktop = None
@@ -489,7 +493,7 @@ class WindowsLab:
                     if probe.connect_ex(('127.0.0.1', 47800 + instance - 1)) == 0:
                         raise RuntimeError('instance console port is already occupied')
                 profile = 'winlab_' + self.output.name.replace('-', '_') + '_' + str(instance)
-                prepare_profile(profile)
+                prepare_profile(profile, self.screen_size)
                 exe = self.installation / 'SporebinEP1' / 'SporeApp.exe'
                 command = [str(exe), '-w', '-sporekit-instance:' + str(instance), '-sporekit-profile:' + profile]
                 if self.hidden:

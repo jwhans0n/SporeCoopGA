@@ -1240,6 +1240,7 @@ def main():
                    'nearest of main and rel/*)')
     r.add_argument('--quick', action='store_true', help='the long play scenarios shortened (suite.py quick=; also '
                    'SPORE_LAB_QUICK=1): intermediate runs only, the release rule does not count them')
+    r.add_argument('--windows-config', help='explicit owned native Windows lane configuration')
     ln = sub.add_parser('lanes')
     ln.add_argument('n', type=int)
     rl = sub.add_parser('reload')
@@ -1285,6 +1286,11 @@ def main():
         import labimpact
         return labimpact.cmd_impact(a)
     if a.cmd == 'run':
+        if a.windows_config:
+            if a.branch or a.lane or a.skip or not a.no_build:
+                ap.error('native Windows lane uses a pinned built config: --no-build; no branch/lane/skip overrides')
+            from windows_native_suite import run
+            return run(a.windows_config, a.tests, a.repeat)
         return cmd_run(a)
     if a.cmd == 'lanes':
         ensure_lanes(a.n)

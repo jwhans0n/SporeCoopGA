@@ -36,6 +36,9 @@ def wait_up(inst, t=120):
 def lane_down(timeout=2.0):
     """A9 (BUG-1112): after `spore.sh kill`, until no process of the lane is left (`spore.sh procs`), at most the
     old fixed 2 s; seconds waited, None at the bound"""
+    if lane.WINDOWS:
+        from windows_native_lane import backend
+        return startwait.until(lambda: not backend().processes(), timeout)
     return startwait.until(lambda: not subprocess.run([lane.SPORE, 'procs'], capture_output=True, text=True,
                                                       timeout=10).stdout.strip(), timeout)
 
@@ -47,6 +50,9 @@ def game_process_up(inst, timeout=2.0):
     20261116-025154) the host was launched as soon as the guest's SporeApp.exe existed, both SporeKits booted in the
     same millisecond (the only one of 836 starts) and the guest's console reset the test's first call.
     SPORE_GAME_UP_PROCESS=1: the process only (the twin)."""
+    if lane.WINDOWS and os.environ.get('SPORE_GAME_UP_PROCESS') == '1':
+        from windows_native_lane import backend
+        return startwait.until(lambda: backend().processes(inst), timeout)
     if os.environ.get('SPORE_GAME_UP_PROCESS') == '1':
         return startwait.until(lambda: subprocess.run([lane.SPORE, 'pids', str(inst)], capture_output=True, text=True,
                                                       timeout=10).stdout.strip(), timeout)
@@ -419,6 +425,9 @@ def build_id():
     """what is deployed: the build outputs and the symbol files (size + mtime)"""
     import glob
     import hashlib
+    if lane.WINDOWS:
+        from windows_native_lane import backend
+        return hashlib.sha256(repr(backend().config.evidence()).encode()).hexdigest()[:16]
     h = hashlib.sha1()
     for f in sorted(glob.glob(os.path.join(ROOT, 'build', '*.dll')) + glob.glob(os.path.join(ROOT, 'build', '*.package'))
                     + glob.glob(os.path.join(ROOT, 'data', 'symbols', '*.sym'))):
@@ -453,11 +462,14 @@ def restore_creations(guest=True):
     lane starts with the same ones (fixtures creations-host / creations-guest). guest=False: the
     guest starts with none (a player who never used the Creature Creator)"""
     import shutil
+    if lane.WINDOWS:
+        from windows_native_lane import backend
+        return backend().restore_creations(guest)
     fx = os.path.join(os.path.dirname(os.path.dirname(subprocess.run(
         ['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], cwd=ROOT, capture_output=True,
         text=True).stdout.strip())), 'SporeCoop', 'out', 'fixtures')
     if not guest:
-        subprocess.run(['rm', '-f', os.path.join(lane.GUEST_DIR, 'EditorSaves.package')])
+        lane.profile_remove(lane.GUEST_DIR, 'EditorSaves.package')
     for name, d in (('creations-host', lane.HOST_DIR), ('creations-guest', lane.GUEST_DIR)):
         if name == 'creations-guest' and not guest:
             continue
@@ -488,7 +500,7 @@ KEEP_HOLDS = [False]
 
 def forget_holds():
     for d in (lane.HOST_DIR, lane.GUEST_DIR):
-        subprocess.run(['rm', '-rf', d + '/SporeCoop/holds', d + '/SporeCoop/badges'])  # (badges: BUG-0786)
+        lane.profile_remove(d, 'SporeCoop/holds', 'SporeCoop/badges')  # (badges: BUG-0786)
 
 
 def forget_store():
@@ -496,14 +508,14 @@ def forget_store():
     (<profile>/Spore/Games-sporecoop-store: one file per save slot and planet, and the profile's salt); a test across
     sessions keeps it through session_restart(), which does not call this"""
     for d in (lane.HOST_DIR, lane.GUEST_DIR):
-        subprocess.run(['rm', '-rf', d + '/Games-sporecoop-store'])
+        lane.profile_remove(d, 'Games-sporecoop-store')
 
 
 def forget_settings():
     """BUG-0762: every test starts with the default session settings: no world keeps the values an earlier test
     stored (<profile>/Spore/SporeCoop/settings, one file per world; a warm reset loads the same planet name)"""
     for d in (lane.HOST_DIR, lane.GUEST_DIR):
-        subprocess.run(['rm', '-rf', d + '/SporeCoop/settings'])
+        lane.profile_remove(d, 'SporeCoop/settings')
 
 
 # BUG-0430: switches and knobs live in the game process: coop.leave and a load keep them. A test that sets one
@@ -1009,7 +1021,7 @@ def _start(fixture='creature', planet=None, load_args=(), join_in_intro=False, g
     sh('deploy')
     sh('fixture', 'restore', fixture, lane.HOST_PROFILE)
     restore_creations(guest_creations)
-    subprocess.run(['rm', '-rf', lane.GUEST_DIR + '/Games', lane.GUEST_DIR + '/Games-sporecoop-backup'])
+    lane.profile_remove(lane.GUEST_DIR, 'Games', 'Games-sporecoop-backup')
     if not KEEP_HOLDS[0]:
         forget_holds()
     forget_settings()
@@ -1019,8 +1031,8 @@ def _start(fixture='creature', planet=None, load_args=(), join_in_intro=False, g
     # state, none; a test that needs the own creature chooses it (creations_state.choose_own). SPORE_WORLDS_INI_RESET_FIX=0:
     # the old start (worlds.ini kept), the twin of BUG-1176
     for d in (lane.HOST_DIR, lane.GUEST_DIR):
-        subprocess.run(['rm', '-f', d + '/SporeCoop/choices.ini']
-                       + ([] if os.environ.get('SPORE_WORLDS_INI_RESET_FIX') == '0' else [d + '/SporeCoop/worlds.ini']))
+        lane.profile_remove(d, 'SporeCoop/choices.ini',
+                            *([] if os.environ.get('SPORE_WORLDS_INI_RESET_FIX') == '0' else ['SporeCoop/worlds.ini']))
     # D2: the profile files of the fixture state (a test's PRESET_CHOICES below are not: its warm successor starts cold)
     fp_cold = {'host': None, 'guest': None, 'files': profile_fingerprint()}
     for who, lines in PRESET_CHOICES.items():  # a test's choices from an earlier session (BUG-0342/0344)

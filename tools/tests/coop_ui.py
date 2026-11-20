@@ -272,7 +272,7 @@ def main():
         time.sleep(2)
         sh('deploy')
         sh('fixture', 'restore', 'creature', lane.HOST_PROFILE)
-        subprocess.run(['rm', '-rf', lane.GUEST_DIR + '/Games', lane.GUEST_DIR + '/Games-sporecoop-backup'])
+        lane.profile_remove(lane.GUEST_DIR, 'Games', 'Games-sporecoop-backup')
         twoinst.forget_settings()
         old_ini = first_start_ini()
         lane.run_guest()
