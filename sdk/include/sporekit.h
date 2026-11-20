@@ -18,6 +18,14 @@ extern "C" {
 #endif
 
 #define SK_ABI_VERSION 1
+/* printf-style checking of the format string (A4, BUG-1122): `%s` with an int or `%d` with a 64-bit value
+ * corrupts the 32-bit varargs; the attribute makes such a call a compile error under -Werror.
+ * SK_PRINTF(f, a): f = the format's parameter number, a = the first vararg (0 for a va_list). */
+#if defined(__GNUC__) || defined(__clang__)
+#define SK_PRINTF(f, a) __attribute__((format(printf, f, a)))
+#else
+#define SK_PRINTF(f, a)
+#endif
 #define SK_EXPORT __declspec(dllexport)
 
 typedef struct SkMod SkMod; /* opaque handle owned by sporekit */
@@ -27,7 +35,7 @@ enum SkLogLevel { SK_DEBUG = 0, SK_INFO = 1, SK_WARN = 2, SK_ERROR = 3 };
 enum SkEvent {
     SK_EV_APP_PREINIT = 0,  /* after App::cAppSystem::PreInit */
     SK_EV_APP_INIT = 1,     /* after App::cAppSystem::Init (game managers exist) */
-    SK_EV_POST_INIT = 2,    /* after App::cSporeApp::Init (main menu ready) */
+    SK_EV_POST_INIT = 2,    /* after App::cSporeApp::Init (main menu ready); not fired when that Init failed */
     SK_EV_FRAME = 3,        /* every frame, before Present. arg = float* dt seconds */
     SK_EV_OVERLAY = 4,      /* every frame, draw on top. arg = IDirect3DDevice9* */
     SK_EV_SHUTDOWN = 5,     /* App::cSporeApp::Shutdown */
@@ -66,8 +74,8 @@ typedef struct SkHost {
     uint32_t size; /* sizeof(SkHost) for forward compatibility */
 
     /* logging */
-    void (*log)(SkMod* mod, int level, const char* fmt, ...);
-    void (*logv)(SkMod* mod, int level, const char* fmt, va_list ap);
+    void (*log)(SkMod* mod, int level, const char* fmt, ...) SK_PRINTF(3, 4);
+    void (*logv)(SkMod* mod, int level, const char* fmt, va_list ap) SK_PRINTF(3, 0);
 
     /* symbols: rebased absolute address, or 0 if unknown */
     uintptr_t (*sym)(const char* name);
@@ -88,7 +96,7 @@ typedef struct SkHost {
     /* console commands */
     int (*command_add)(SkMod* mod, const char* name, const char* help, SkCommandFn fn,
                        void* user, int flags);
-    void (*out_printf)(SkOut* out, const char* fmt, ...);
+    void (*out_printf)(SkOut* out, const char* fmt, ...) SK_PRINTF(2, 3);
     /* execute a console command line as if typed into the devkit console
      * (main thread only). Result text is appended to `out` (may be NULL). */
     int (*command_exec)(const char* line, SkOut* out);
@@ -144,7 +152,7 @@ typedef struct SkHost {
 
     /* ---- since 0.3.4 (check size) ---- */
     const char* (*kit_version)(void);
-    const char* (*build_name)(void); /* "GOG 2024", "Steam (the GOG 2024 code)", "GOG 2016", "unknown build ..." */
+    const char* (*build_name)(void); /* "GOG 2024", "Steam (the GOG 2024 code)", "GOG 2016 (not supported...)", "unknown build ..." */
     /* writes mods\logs\SporeCoop-report-<time>.zip: a fresh report-<time>.txt (environment, every
      * mod's diag_context, faults, modules, the last log lines), the current and previous logs, the
      * newest crash reports with minidumps, the settings; its path into out. Returns the path

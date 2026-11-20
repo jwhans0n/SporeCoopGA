@@ -13,7 +13,7 @@ branch: fix/w44-crashes
 commits: b37ea975, f3b238dc, 0570e27d
 tests: crash_model_fx (tools/tests/coop_crash_guards.py --case model_fx)
 signature: 0xC0000005 at 0xA826F3 (GOG 2024; Steam +0x6826F3), read of 0x94, VisualEffect_Start <- SpatialEffects_UpdateByDistance 0xC8ACC4 <- CreatureView_Update 0xE8C96E
-docs: docs/re/tribe.md#tribe-model-effects-crash, docs/re/tribe.md#tribe-model-fx-guard, docs/known-issues.md#issue-tribe-effect-list-crash
+docs: docs/re/tribe.md#tribe-model-effects-crash, docs/re/tribe.md#tribe-model-fx-guard, docs/archive/known-issues-2026.md#issue-tribe-effect-list-crash
 related:
 ---
 
@@ -87,3 +87,4 @@ by the game's own "home" (? which control: not found).
 - 2026-11-04 (fix/w43-transitions, T1): the call chain mapped to GOG 2024 (an object view's update); still not reproduced.
 - 2026-11-05 (fix/w44-crashes, X2): real call chain found (the report's names were stale), guard game.model_fx with a planted-state test (FAIL 20261105-101857, PASS 20261105-101523); the cause of the freed part not found; status fixed (guard, not verified against the player's crash).
 - 2026-11-05: released in 0.7.8.
+- 2026-11-15: switch `game.model_fx` retired in 0.7.15 (B1, BUG-1138): the old code path is gone, FAIL run 20261105-101857:crash_model_fx on record; its test runs PASS-only.

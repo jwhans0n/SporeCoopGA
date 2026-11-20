@@ -3,7 +3,7 @@ id: BUG-1267
 title: Raw-pointer coop.ui btn diagnostic dereferences unverified input
 status: fixed
 kind: crash
-stage: Tests
+stage: Tools
 reported: 2026-11-12
 source: internal
 role: both

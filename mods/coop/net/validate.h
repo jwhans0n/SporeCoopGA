@@ -107,20 +107,58 @@ struct CycleTracker {
 };
 
 // ---- MSG_SPACE: u8 kind, u8 origin, payload (spacecoop.cpp, space_ext.h) ----
-// kinds only the host sends: contracts K_STATE 20 / K_RESULT 22, diplomacy K_SNAP 32, rivalry
-// K_STATE 50 / K_EVENT 52 / K_SET 57
-inline bool space_host_only(uint8_t kind)
+// BUG-1041: who may send each kind, one table for every MSG_SPACE kind (as BUG-0701's message classes). B3 of 0.7.15
+// (BUG-1136): the table is net/space_kinds.def; tests/validate_tests.cpp fails for a kind of a space source file that
+// is not a row there (and for a row no source declares).
+//   Host:  only the host sends it (its tables, its decisions, what it kept for a rejoiner)
+//   Guest: only a guest sends it (to the host: its own state, an ask, a done)
+//   Any:   every player (its own events; gifts and trades addressed to a player)
+enum class SpaceDir : uint8_t { Unknown, Any, Host, Guest };
+inline SpaceDir space_dir(uint8_t kind)
 {
+    switch (kind) { // a duplicate kind in space_kinds.def is a duplicate case label: no build
+#define KIND(id, feature, name, dir) case id: return SpaceDir::dir;
+#include "space_kinds.def"
+    default:
+        return SpaceDir::Unknown; // no feature reads it: passed on as before (a newer peer's kind)
+    }
+}
+// the list before BUG-1041 (`coop.fix space.dir_table off`): contracts K_STATE 20 / K_RESULT 22, diplomacy K_SNAP 32,
+// rivalry K_STATE 50 / K_EVENT 52 / K_SET 57
+inline bool space_host_only(uint8_t kind, bool table = true)
+{
+    if (table)
+        return space_dir(kind) == SpaceDir::Host;
     return kind == 20 || kind == 22 || kind == 32 || kind == 50 || kind == 52 || kind == 57;
 }
 // May a message with this header be used (and, on the host, passed on)? The host gets the real
 // sender in `from`: a guest speaks only for itself and never sends a host-only kind. A guest gets
-// everything from the host (from 0): host-only kinds must be the host's own (origin 0).
-inline bool space_origin_ok(bool is_host, uint8_t from, uint8_t origin, uint8_t kind)
+// everything from the host (from 0): host-only kinds must be the host's own (origin 0), guest-only
+// kinds (BUG-1041) a guest's, never the host's. `table`: the caller's switch (space.dir_table), not a lab switch here
+inline bool space_origin_ok(bool is_host, uint8_t from, uint8_t origin, uint8_t kind, bool table = true) // not a lab switch: a parameter
 {
     if (is_host)
-        return from != 0 && origin == from && !space_host_only(kind);
-    return from == 0 && (!space_host_only(kind) || origin == 0);
+        return from != 0 && origin == from && !space_host_only(kind, table);
+    if (from != 0)
+        return false;
+    if (space_host_only(kind, table))
+        return origin == 0;
+    return !(table && space_dir(kind) == SpaceDir::Guest && origin == 0);
+}
+
+// ---- received world effects (effects.cpp, pool 5) ----
+// BUG-1048: the 16 floats after the effect id: position, uniform scale, 3x3 matrix. Finite, the position within
+// `pos_max`, and (`scale`) the scale in the sender's range 0 < s <= 1000 (effects.cpp copy_transform); the game used to
+// get a scale of 0, a negative one or 1e30 from a broken or hostile peer
+constexpr float kEffectScaleMax = 1000.f;
+inline bool effect_xf_ok(const float* f, float pos_max, bool scale = true)
+{
+    for (int i = 0; i < 16; i++)
+        if (!std::isfinite(f[i]))
+            return false;
+    if (!(std::fabs(f[0]) < pos_max && std::fabs(f[1]) < pos_max && std::fabs(f[2]) < pos_max))
+        return false;
+    return !scale || (f[3] > 0.f && f[3] <= kEffectScaleMax);
 }
 
 // ---- players ----
@@ -151,6 +189,19 @@ inline bool money_total(int n, int price, int& out)
         return false;
     out = (int)t;
     return true;
+}
+
+// BUG-1110: the game's Space money range (cEmpire::AddMoney clamps to it). A budget a player reports outside it is no
+// budget; a sum of budgets is taken in 64 bits and clamped once (several int budgets overflowed an int sum)
+constexpr int kMoneyMax = 99999999;
+inline bool money_in_range(long long v) { return v >= 0 && v <= kMoneyMax; }
+inline int money_clamp(long long v) { return v < 0 ? 0 : v > kMoneyMax ? kMoneyMax : (int)v; }
+template <class It> inline int money_sum(It a, It b)
+{
+    long long s = 0;
+    for (; a != b; ++a)
+        s += (long long)*a;
+    return money_clamp(s);
 }
 
 } // namespace net

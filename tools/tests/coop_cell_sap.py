@@ -9,9 +9,9 @@ the rest of SimUpdate is skipped, every frame, with a 500-750 ms hitch each (lab
 campaign#1, Carol: 4314 faults, a desync, then a frozen game after the stage change).
 
 Alice hosts, Bob, Carol and Dave are guests (tools/tests/party.py).
-1. The food progress goes up (`coop.pool food <n>` on the host) to a level with more cells: the
-   host holds over --cells live cells.
-2. The guests go --far m away (their own areas); the host puts --cells of its cells on one vertical line next to its own cell (`coop.pool column
+1. The food progress goes up (`coop.pool food <n>` on the host) to a level with more cells, the guests go --far m
+   away (their own areas, which the host's game populates too): the host holds over --cells live cells.
+2. The host puts --cells of its cells on one vertical line next to its own cell (`coop.pool column
    <n>`): their x ranges all overlap, so the sweep holds all of them open at once (what a player
    sees as a crowd of cells in one place; the broken order the campaign hit leaves them open the
    same way).
@@ -20,7 +20,7 @@ Alice hosts, Bob, Carol and Dave are guests (tools/tests/party.py).
    did hold over 1024 open objects (`coop.pool sap` sweep_peak, so the case was reached), and each
    guest's game shows the host's cell swimming (its puppet of the host moves as much).
 4. No caught fault in any game (the lab checks the logs too).
-SPORE_FIX_OFF=cell.sap_sweep must FAIL (faults at small addresses on the host, its cell stops).
+cell.sap_sweep off failed (retired in 0.7.15, BUG-1138: FAIL run 20261101-000232:cell_sap#1) (faults at small addresses on the host, its cell stops).
 
   SPORE_LANE=5 python3 tools/tests/coop_cell_sap.py [--food 300] [--cells 1100] [--seconds 40]
 """
@@ -30,14 +30,10 @@ import time
 
 import math
 
+from harness import num
 from coop_multi import sample
 from party import Party
 from twoinst import Checks
-
-
-def num(out, key):
-    m = re.search(r'\b' + key + r'=(-?\d+)', out)
-    return int(m.group(1)) if m else None
 
 
 def own_pos(p):
@@ -63,18 +59,26 @@ def main():
             print('  host:', h.call(f'coop.pool food {a.food}').strip()[:120], flush=True)
         cells = 0
         t0 = time.time()
-        while time.time() - t0 < 60:  # the level change, then the tiles fill
+        while time.time() - t0 < 12:  # the level change (the host's game rescales over ~4 s)
             time.sleep(4)
+            cells = num(h.call('coop.pool'), 'cells') or 0
+            print(f'  host cells {cells} (the level change)', flush=True)
+        # the guests play 200 m away (their own areas, BUG-0174): the column stays out of their
+        # mirrors (a guest mirroring such a pack faulted elsewhere once, BUG-0338). BUG-1186: before the count of
+        # step 1: with every guest in its own slot next to the host (BUG-0792, 0.7.13) the host's game populates one
+        # area and holds 830-1080 cells there, falling (nothing refills a tile its cells were eaten or culled in);
+        # the 1300 of before came from the two extra guests that landed ~180 m away. Their own areas bring it there.
+        for g, (dx, dy) in zip(p.guests, ((a.far, 0), (0, a.far), (a.far, a.far))):
+            print(f'  {g.name}:', g.call(f'coop.pool tp {dx} {dy} 0').strip()[:100], flush=True)
+        time.sleep(8)
+        t0 = time.time()
+        while time.time() - t0 < 60:  # the guests' areas fill
             cells = num(h.call('coop.pool'), 'cells') or 0
             print(f'  host cells {cells}', flush=True)
             if cells >= a.cells + 30:
                 break
+            time.sleep(4)
         ck(cells >= a.cells + 30, f'1. the host holds over {a.cells} cells ({cells})')
-        # the guests play 200 m away (their own areas, BUG-0174): the column stays out of their
-        # mirrors (a guest mirroring such a pack faulted elsewhere once, BUG-0338)
-        for g, (dx, dy) in zip(p.guests, ((a.far, 0), (0, a.far), (a.far, a.far))):
-            print(f'  {g.name}:', g.call(f'coop.pool tp {dx} {dy} 0').strip()[:100], flush=True)
-        time.sleep(8)
         # all the host's cells but 40 (at least --cells): over 1024 must stand in the column at once
         n = max(a.cells, (num(h.call('coop.pool'), 'cells') or 0) - 40)
         print('  host:', h.call(f'coop.pool column {n}').strip(), flush=True)

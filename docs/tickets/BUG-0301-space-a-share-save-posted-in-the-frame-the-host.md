@@ -3,7 +3,7 @@ id: BUG-0301
 title: space: a share save posted in the frame the host's ship left its home planet (the place one frame stale): the guests' ships went down to the planet again
 status: fixed
 kind: bug
-stage: space
+stage: Space
 reported: 2026-10-30
 source: lab 20261030-075052 campaign_space#3 (lane 7)
 role: 
@@ -56,3 +56,4 @@ why the game does that is not known).
 - 2026-10-30: opened (fix/w11-space-join) from lab 20261030-075052 campaign_space#3; reproduced with
   a 2-player test, fixed.
 - 2026-11-01: released in 0.7.3.2.
+- 2026-11-15: switch `world.share_settle_context` retired in 0.7.15 (B1, BUG-1138): the old code path is gone, FAIL run 20261030-100130:space_share_takeoff on record; its test runs PASS-only.

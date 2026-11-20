@@ -24,13 +24,14 @@ animation plays, through the creature's own SetTarget (vt 0x84, null), as the ga
 the host must go on (ARMED_CUTS times).
 
   coop_npc_lost_target.py [--rounds N]
-  (SPORE_FIX_OFF=npc.attack_lost_target,npc.stale_sender: the host crashes or a stale sender stays, FAILS)"""
+  (npc.attack_lost_target, npc.stale_sender off failed (retired in 0.7.15, BUG-1138: FAIL run 20261103-143947:npc_lost_target): the host crashes or a stale sender stays, FAILS)"""
 import argparse
 import random
 import re
 import struct
 import time
 
+from harness import puppet
 from coop_creature_kills import family, npcs, proxies, read
 from twoinst import Checks, start
 
@@ -43,11 +44,6 @@ HIDE_S = 3.0  # s the puppet stays away (a partner's death hides it for seconds)
 def u32(con, a):
     b = read(con, a, 4)
     return struct.unpack('<I', b)[0] if len(b) == 4 else None
-
-
-def puppet(con):
-    m = re.search(r'puppet=([0-9A-F]{8})', con.call('coop.status')['out'])
-    return int(m.group(1), 16) if m else 0
 
 
 def ai_state(con, ptr):

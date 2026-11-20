@@ -12,6 +12,7 @@ namespace sk {
 static std::vector<std::unique_ptr<SkMod>> g_mods;
 static int g_gen = 0;
 static const DWORD kUnloadGraceMs = 50;
+static const DWORD kCmdWaitMs = 10000; // BUG-1018: coop.sample runs up to 30 s; longer ones keep the old image
 
 enum class ModOperation { Load, Reload, Unload };
 struct ModRequest {
@@ -82,6 +83,28 @@ std::vector<SkMod*> mods_list()
     return v;
 }
 
+// BUG-1022: the mods line of a report written off the main thread (watchdog, crash report thread) walked g_mods and
+// m->info while mod.load / mod.reload changed them. A copy of the line is kept under a lock instead, made on the main
+// thread after every load and unload.
+static std::mutex g_line_mu;
+static std::string g_line;
+
+static void mods_line_update()
+{
+    std::string s;
+    for (auto& m : g_mods)
+        if (m->module)
+            s += m->name + (m->info && m->info->version ? std::string(" ") + m->info->version : "") + "  ";
+    std::lock_guard<std::mutex> lk(g_line_mu);
+    g_line = s;
+}
+
+std::string mods_line()
+{
+    std::lock_guard<std::mutex> lk(g_line_mu);
+    return g_line;
+}
+
 static SkMod* find_mod(const std::string& name)
 {
     for (auto& m : g_mods)
@@ -129,6 +152,7 @@ static bool load_into(SkMod* m, std::string& err)
         return false;
     }
     logf(m, SK_INFO, "loaded %s v%s (gen %d)", m->info->name, m->info->version, m->generation);
+    mods_line_update();
     return true;
 }
 
@@ -137,6 +161,19 @@ static bool unload_from(SkMod* m, std::string& err)
     if (!executor_current(err)) return false;
     if (!m->module)
         return true;
+    // BUG-1018: a console command of the mod running on another thread (any-thread commands, coop.sample) would come
+    // back into unmapped code: no new call starts once its commands are gone, the running ones are waited for before
+    // the mod tears down its state; one that does not return in time keeps the old image mapped (a leak of one DLL
+    // copy in a dev path, not a crash)
+    bool keep_image = false;
+    if (fixed(g_fix_cmdkeep)) {
+        commands_remove_all(m);
+        std::string why;
+        if (!commands_wait_idle(m, kCmdWaitMs, why)) {
+            keep_image = true;
+            logf(m, SK_WARN, "unload: %s; the old image stays mapped (BUG-1018)", why.c_str());
+        }
+    }
     if (m->info && m->info->on_unload)
         m->info->on_unload();
     int hooks = hooks_remove_all(m);
@@ -157,10 +194,13 @@ static bool unload_from(SkMod* m, std::string& err)
         if (size_t n = drop_tasks_in(base, base + nt->OptionalHeader.SizeOfImage))
             logf(m, SK_INFO, "dropped %u queued task(s) of the old image", (unsigned)n);
     }
-    FreeLibrary(m->module);
+    if (!keep_image) {
+        FreeLibrary(m->module);
+        DeleteFileW(m->live_path.c_str());
+    }
     m->module = nullptr;
     m->info = nullptr;
-    DeleteFileW(m->live_path.c_str());
+    mods_line_update();
     logf(m, SK_INFO, "unloaded");
     return true;
 }
@@ -168,6 +208,10 @@ static bool unload_from(SkMod* m, std::string& err)
 static bool load_mod(const std::string& name, std::string& err)
 {
     if (!executor_current(err)) return false;
+    if (*unsupported_build_text()) { // BUG-1125: a game build that is not supported (GOG 2016) runs no mod
+        err = unsupported_build_text();
+        return false;
+    }
     if (find_mod(name) && find_mod(name)->module) {
         err = "already loaded";
         return false;

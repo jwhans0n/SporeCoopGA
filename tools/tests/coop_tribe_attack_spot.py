@@ -14,19 +14,16 @@ without a check in 0xD72720 (its sibling 0xD72690 checks it). docs/re/tribe.md#t
 PASS: no caught fault on the host or the guest, the host's attackers that met the missing spot ended their attack
 (the game's own "no free spot" branch), the host's game keeps drawing.
 
-  SPORE_LANE=2 python3 tools/tests/coop_tribe_attack_spot.py [--cut]   (SPORE_FIX_OFF=tribe.attack_spot fails --cut)
+  SPORE_LANE=2 python3 tools/tests/coop_tribe_attack_spot.py [--cut]   (tribe.attack_spot off failed (retired in 0.7.15, BUG-1138: FAIL run 20261104-235517:tribe_attack_spot) --cut)
 """
+import os
 import re
 import sys
 import time
 
+from harness import faults
 from coop_tribe_gameover import frames_go_on, player_members
 from twoinst import Checks, start
-
-
-def faults(con):
-    m = re.search(r'total faults: (\d+)', con.call('exc')['out'])
-    return int(m.group(1)) if m else -1
 
 
 def spot_stats(con):
@@ -41,6 +38,11 @@ def main():
     ck = Checks()
     time.sleep(6)
     if '--no-form' not in sys.argv:
+        # BUG-1184 (as BUG-0943): tribe.form_pace holds the new tribe until the party's food is over the threshold times the
+        # players; without it the creature attack had no other village's spot to look up (the scenario never happened).
+        # ATTACK_SPOT_OLD_FOOD=1: no food first (stuck as lab 20261115-212642)
+        if os.environ.get('ATTACK_SPOT_OLD_FOOD') != '1':
+            print('  host: ' + host.call('coop.res add food 300')['out'].strip(), flush=True)
         print('  host: ' + host.call('coop.tribe form')['out'].strip(), flush=True)
     if cut:
         print('  host: ' + host.call('coop.spotcut')['out'].strip(), flush=True)

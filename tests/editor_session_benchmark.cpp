@@ -72,7 +72,7 @@ class Proxy {
         if (r.u32() != net::kMagic) return;
         const auto version = r.u16();
         if (version < 16 || version > net::kProtoVersion) return;
-        const uint8_t editor_type = version >= 24 ? net::MSG_EDITOR : uint8_t{53};
+        const uint8_t editor_type = version >= 30 ? uint8_t{73} : version >= 29 ? uint8_t{71} : version >= 27 ? uint8_t{66} : version >= 24 ? uint8_t{62} : uint8_t{53};
         const auto conn = r.u32(); r.skip(20); const auto count = r.u8();
         for (unsigned i = 0; i < count && r.ok(); ++i) {
             const auto type = r.u8(), flags = r.u8(); const auto size = r.u16(); const auto rel = flags & 1 ? r.u16() : 0;

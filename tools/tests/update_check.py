@@ -24,6 +24,7 @@ connection without an answer (GitHub's file host now and then); the in-game upda
 install, sporekit.log names the retries. With SPORE_FIX_OFF=update.retry (one attempt) it must FAIL.
 """
 import argparse
+import atexit
 import fcntl
 import hashlib
 import http.server
@@ -68,8 +69,7 @@ class Checks:
 
 def build_new(dist):
     """coop.dll that calls itself 0.5.1 + the current stage -> SporeCoop-0.5.1.pack"""
-    llvm = run('sed', '-n', 's/^LLVM_MINGW ?= //p', os.path.join(ROOT, 'Makefile')).strip().replace('$(HOME)',
-                                                                                                    os.environ['HOME'])
+    llvm = run('make', '-s', '--no-print-directory', '-C', ROOT, 'toolchain-path').strip()  # tools/toolchain.env
     cxx = f'{llvm}/bin/i686-w64-mingw32-clang++ -DCOOP_VERSION=\\"{NEW}\\"'
     subprocess.run(['make', '-s', '-j16', 'B=build-v' + NEW.replace('.', ''), 'coop', f'CXX={cxx}'], cwd=ROOT,
                    check=True)
@@ -78,6 +78,9 @@ def build_new(dist):
     shutil.copytree(os.path.join(dist, 'stage'), stage)
     shutil.copy(os.path.join(ROOT, 'build-v' + NEW.replace('.', ''), 'coop.dll'),
                 os.path.join(stage, 'SporeCoop', 'mods', 'coop.dll'))
+    # BUG-1214: stripped as tools/package.sh strips a release's coop.dll (unstripped it is 100+ MB since 0.7.15, over
+    # the in-game updater's 96 MB download limit: "the download is too big")
+    run(f'{llvm}/bin/llvm-strip', os.path.join(stage, 'SporeCoop', 'mods', 'coop.dll'))
     pack = os.path.join(dist, f'SporeCoop-{NEW}.pack')
     run('python3', os.path.join(ROOT, 'tools', 'mkpack.py'), stage, NEW, pack)
     return pack
@@ -227,8 +230,10 @@ def main():
     ck(os.path.exists(vf) and open(vf).read().strip() == ver, f'installed version {ver}')
     # 3. the game asks our "GitHub"
     ini = os.path.join(b, 'mods', 'coop.ini')
-    with open(ini, 'a') as f:
-        f.write(f'\n[update]\ncheck=1\nurl={api}\n')
+    # BUG-1190: the lane's coop.ini survives the lab's deploys: this url stayed and won over the [update] of the
+    # update tests that ran on this lane later; set here (no stale one of an earlier run first), removed at the end
+    lane_mod.ini_section(ini, 'update', {'check': 1, 'url': api})
+    atexit.register(lane_mod.ini_section, ini, 'update')
     inst = 2 * lane - 1
 
     def start_game():

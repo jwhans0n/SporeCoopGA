@@ -3,7 +3,7 @@ id: BUG-1248
 title: Virtual wheel messages omit held modifier flags
 status: open
 kind: tooling
-stage: Win32 native fixtures
+stage: Tools
 reported: 2026-11-04
 source: Terraform Shift wheel qualification
 role: test

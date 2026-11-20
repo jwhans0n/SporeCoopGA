@@ -3,7 +3,7 @@ id: BUG-1276
 title: Native registration close command differs from the strict Windows harness
 status: open
 kind: tooling
-stage: Lab
+stage: Tools
 reported: 2026-11-13
 source: native-Windows-0.7.13-qualification
 role: both

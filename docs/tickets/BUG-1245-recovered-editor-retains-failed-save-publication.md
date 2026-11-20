@@ -3,7 +3,7 @@ id: BUG-1245
 title: Recovered editor retains failed Save publication hold
 status: fixed
 kind: bug
-stage: GA shared editor
+stage: Editor
 reported: 2026-11-03
 source: Private C62 Terraform validation
 role: host

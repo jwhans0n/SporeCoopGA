@@ -3,13 +3,18 @@
 #include <algorithm>
 #include <atomic>
 #include <map>
+#include <mutex>
 #include <set>
+#include <unordered_map>
 #include <cmath>
 #include <cstring>
 #include <string>
 #include <vector>
 
 #include "sporekit_game.hpp"
+#include "lifecycle.h"
+#include "call_guard.h"
+#include "off_main.h"
 #include "stage_epoch.h"
 #include "swap_ledger.h"
 #include "fixes.h"
@@ -23,6 +28,71 @@ namespace game {
 static const SkHost* H;
 static SkMod* M;
 static bool g_ready;
+
+// ---- the game's main thread (A14, CORE-6, BUG-1130; docs/01-architecture.md#arch-threads) ----
+// One id for every module (it was kept four times: the effect hooks, debug.cpp, savestrip.cpp, spacecoop.cpp).
+// Noted by init() and every frame (stage_epoch_tick, set_effect_relay_enabled): both run on the main thread.
+static std::atomic<unsigned long> g_main_tid{0};
+void note_main_thread() { g_main_tid.store(GetCurrentThreadId(), std::memory_order_relaxed); }
+unsigned long main_thread() { return g_main_tid.load(std::memory_order_relaxed); }
+bool on_main()
+{
+    unsigned long t = main_thread();
+    return t && t == GetCurrentThreadId();
+}
+// skg::call_probe (sporekit_game.hpp): a game call through the skg helpers off the main thread is counted per call
+// site (off_main.h); the first one of a site writes a log line. Before the main thread is known nothing is counted.
+static std::mutex g_off_mu;
+static offmain::Table g_off;
+static uintptr_t g_self_base; // coop.dll's load address (the sites print as coop.dll+0x..., as crash_triage reads them)
+static __attribute__((noinline)) void off_main_probe(uintptr_t fn)
+{
+    unsigned long t = main_thread(), me = GetCurrentThreadId();
+    if (!t || t == me)
+        return;
+    uintptr_t from = (uintptr_t)__builtin_return_address(0);
+    bool first;
+    {
+        std::lock_guard<std::mutex> lk(g_off_mu);
+        first = g_off.note(from, fn, me);
+    }
+    if (first && H)
+        H->log(M, SK_INFO, "threads: game call 0x%X from coop.dll+0x%X on thread %lu, not the main thread %lu (A14, "
+               "coop.threads)", (unsigned)fn, (unsigned)(from - g_self_base), me, t);
+}
+uint64_t off_main_calls()
+{
+    std::lock_guard<std::mutex> lk(g_off_mu);
+    return g_off.total;
+}
+static void probe_task(void*)
+{
+    if (skg::call_probe) // tests: what a game call made on the main thread tells the probe (not counted)
+        skg::call_probe(0x401000);
+}
+// coop.threads [reset|on|off|probe]: the main thread and the off-main game calls (any thread: it only reads under
+// the lock). probe (tests, coop_threads.py): tells the probe of one call from this thread (the console's: off the
+// main thread, counted) and queues one on the main thread (not counted), as a skg helper would; no game call is made.
+static int c_threads(void*, int argc, const char* const* argv, SkOut* out)
+{
+    std::string a = argc > 1 ? argv[1] : "";
+    if (a == "on" || a == "off")
+        skg::call_probe = a == "on" ? off_main_probe : nullptr;
+    if (a == "probe") {
+        if (skg::call_probe)
+            skg::call_probe(0x401000); // (the exe's first code page: a made-up game function)
+        H->run_on_main(probe_task, nullptr);
+    }
+    std::string st;
+    {
+        std::lock_guard<std::mutex> lk(g_off_mu);
+        if (a == "reset")
+            g_off.clear();
+        st = g_off.status(g_self_base);
+    }
+    H->out_printf(out, "main_thread=%lu probe=%s\n%s", main_thread(), skg::call_probe ? "on" : "off", st.c_str());
+    return 0;
+}
 
 static uintptr_t a_NounGet, a_DestroyInstance, a_CreatureCreate, a_NPCTickAI, a_ModeMgrGet;
 static uintptr_t a_SpeciesMgrGet, a_GetSpecies, a_CreateHerd, a_CinematicGet;
@@ -47,14 +117,12 @@ static void SK_CDECL h_AddEvo(float delta)
 // has none, so moving the others down changes no count).
 typedef void(SK_THISCALL* HerdUpdate_t)(void*, int);
 static HerdUpdate_t o_HerdUpdate;
-static bool g_herd_nulls_fix = true;
-COOP_FIX("npc.herd_nulls", "BUG-0256", g_herd_nulls_fix, "creature: a herd loaded with a null member does not fault every frame");
 static uint32_t g_herd_nulls_removed, g_herd_nulls_herds;
 static void* g_herd_nulls_last;
 
 static void SK_THISCALL h_HerdUpdate(void* herd, int dt)
 {
-    if (g_herd_nulls_fix && herd && !IsBadReadPtr((uint8_t*)herd + 0x40, 8)) {
+    if (herd && !IsBadReadPtr((uint8_t*)herd + 0x40, 8)) {
         void**& b = *(void***)((uint8_t*)herd + 0x40);
         void**& e = *(void***)((uint8_t*)herd + 0x44);
         if (b && e > b && !IsBadReadPtr(b, (size_t)((uint8_t*)e - (uint8_t*)b))) {
@@ -83,14 +151,14 @@ static void SK_THISCALL h_HerdUpdate(void* herd, int dt)
 std::string herd_nulls_status()
 {
     char b[120];
-    snprintf(b, sizeof b, "herd nulls: fix=%d hooked=%d removed=%u herds=%u", (int)g_herd_nulls_fix,
-             (int)(o_HerdUpdate != nullptr), g_herd_nulls_removed, g_herd_nulls_herds);
+    snprintf(b, sizeof b, "herd nulls: hooked=%d removed=%u herds=%u", (int)(o_HerdUpdate != nullptr),
+             g_herd_nulls_removed, g_herd_nulls_herds);
     return b;
 }
 
 static std::vector<void*> g_puppets;
 
-// BUG-0532: a partner's puppet in the air (creature.puppet_air) was drawn on its terrain for 1-3 frames when the
+// BUG-0532: a partner's puppet in the air (BUG-0376) was drawn on its terrain for 1-3 frames when the
 // game started another animation on it (fall -> idle, the walk start): something in that update grounds it. The
 // puppets held in the air (air_hold, set by modes.cpp each frame) are put back where the partner is and marked not
 // grounded right after the game's animation starts and its update when the game grounded them.
@@ -99,8 +167,25 @@ struct AirHold {
     void* ac; // its AnimatedCreature (+0xB54), the low animation start's this
     net::Vec3 pos, vel;
     net::Quat rot;
+    uint32_t serial = 0; // BUG-0995: c's cGameData::mID when the hold was made
 };
 static std::vector<AirHold> g_air;
+// BUG-0995 (the serial part, package L2 of 0.7.14; class BUG-0426): air_reassert matched the updated creature with the
+// holds by address only: a held creature the game removed and freed while no forget path ran (the settle second of
+// npc.cpp's guest_tick after an avatar change) gave its block to the next creature the game built, and that animal of
+// the guest's own world was put in the air at the held spot on every update. Now a hold keeps the creature's serial
+// and is dropped (nothing placed) when the creature at that address is another object; the serial of the creature the
+// game updates is its own memory (no list walk on this hot path). `coop.fix game.air_live off`: by address (0.7.13).
+static bool g_air_live_fix = true;
+COOP_FIX("game.air_live", "BUG-0995", g_air_live_fix, "creature: a puppet's hold in the air never lifts another creature the game built where it was");
+static uint32_t g_air_stale;
+// BUG-0995 (the release part; the serial is package L2's): the holds are matched by address, so none may outlive its
+// session or its world: a creature the game freed with the world and built again at that address (an animal of
+// the next world) would be put in the air at the old spot. air_release_all had no caller. Off: kept (0.7.13).
+static bool g_air_release_fix = true;
+COOP_FIX("game.air_release", "BUG-0995", g_air_release_fix, "creature: no puppet held in the air outlives its session or its world");
+LIFECYCLE_STATE("game.air", lifecycle::kSession | lifecycle::kWorld, &g_air_release_fix, [] { g_air.clear(); },
+                []() -> size_t { return g_air.size(); });
 static uint32_t g_air_regrounded[5]; // by the call after which it was grounded: 0 update, 1 anim, 2 idle, 3 BT anim, 4 low anim
 static void air_reassert(void* c, int where);
 typedef int(SK_THISCALL* AcPlay_t)(void*, uint32_t, int);
@@ -108,6 +193,24 @@ static AcPlay_t o_AcPlay;
 static int SK_THISCALL h_AcPlay(void* ac, uint32_t id, int a);
 
 static std::vector<void*> g_our_herds; // made by create_herd (puppets, proxies); diagnostics only
+// BUG-1067: every herd of ours by its serial (cGameData::mID +0x24, new for every object the game creates): savestrip's
+// empty-herd rule (BUG-0255) strips only these. Herds are never destroyed by the game; a world change frees them and a
+// new object at the same address has another serial.
+static std::unordered_map<void*, uint32_t> g_our_herd_serial;
+static void note_our_herd(void* h)
+{
+    if (!h || !skg::readable(h, 0x28))
+        return;
+    if (g_our_herd_serial.size() > 1024) // (stale entries of older worlds)
+        for (auto it = g_our_herd_serial.begin(); it != g_our_herd_serial.end();)
+            it = !object_alive(it->first) || object_serial(it->first) != it->second ? g_our_herd_serial.erase(it) : std::next(it);
+    g_our_herd_serial[h] = object_serial(h);
+}
+bool our_herd(void* h)
+{
+    auto it = h ? g_our_herd_serial.find(h) : g_our_herd_serial.end();
+    return it != g_our_herd_serial.end() && skg::readable(h, 0x28) && object_alive(h) && object_serial(h) == it->second;
+}
 
 // ---- registry via cCreatureAnimal::Update (thiscall, int deltaTime) ----
 typedef void(SK_THISCALL* Update_t)(void*, int);
@@ -119,6 +222,106 @@ static UpdateFilter g_npc_ai_filter;
 static CreatureUpdateCounts g_creature_update_counts;
 static BlockedUpdateHandler g_blocked_update_handler;
 static UpdateObserver g_update_observer;
+
+// BUG-0440: see place_hold (game.h)
+struct PlaceHold {
+    void* c;
+    net::Vec3 pos, aim;
+    net::Quat rot;
+    double t;
+    float back_m; // a move away from aim up to this (m) in one update is the game's own walk: kept
+    bool still;   // BUG-1228: a standing body: put back without the teleport mark and without velocity
+};
+static std::vector<PlaceHold> g_place_hold;
+static uint32_t g_place_holds_kept = 0;
+static uint32_t g_still_holds_kept = 0; // BUG-1228: of them, standing bodies (still)
+struct TestPush {
+    void* c;
+    net::Vec3 dir;
+    float mps;
+    double t;
+};
+static std::vector<TestPush> g_test_push;
+static float vdist(const net::Vec3& a, const net::Vec3& b)
+{
+    return std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z));
+}
+static void place_reassert(void* c)
+{
+    double now = H->time_seconds();
+    for (size_t i = 0; i < g_place_hold.size(); i++)
+        if (PlaceHold& h = g_place_hold[i]; h.c == c) {
+            if (now - h.t > 0.1) { // (not placed held this frame)
+                g_place_hold.erase(g_place_hold.begin() + i);
+                return;
+            }
+            if (field<int32_t>(c, kLocoModeOff) != 0) // (thrown by a hit, abducted: the game's own move, BUG-0409)
+                return;
+            net::Vec3 p = position(c);
+            if (vdist(p, h.aim) > vdist(h.pos, h.aim) + std::max(0.02f, h.back_m)) {
+                if (h.still) {
+                    place(c, h.pos, h.rot);
+                    field<net::Vec3>(c, kVelOff) = net::Vec3{};
+                    g_still_holds_kept++;
+                } else
+                    teleport(c, h.pos, h.rot);
+                g_place_holds_kept++;
+            }
+            return;
+        }
+}
+void place_hold(void* c, const net::Vec3& pos, const net::Quat& rot, const net::Vec3& aim, float back_m, bool still)
+{
+    double now = H->time_seconds();
+    for (auto& h : g_place_hold)
+        if (h.c == c) {
+            h = {c, pos, aim, rot, now, back_m, still};
+            return;
+        }
+    for (size_t i = 0; i < g_place_hold.size();) // (stale ones)
+        if (now - g_place_hold[i].t > 0.1)
+            g_place_hold.erase(g_place_hold.begin() + i);
+        else
+            i++;
+    if (g_place_hold.size() < 64)
+        g_place_hold.push_back({c, pos, aim, rot, now, back_m, still});
+}
+uint32_t place_holds_kept() { return g_place_holds_kept; }
+uint32_t still_holds_kept() { return g_still_holds_kept; }
+void place_release(void* c)
+{
+    for (size_t i = 0; i < g_place_hold.size(); i++)
+        if (g_place_hold[i].c == c) {
+            g_place_hold.erase(g_place_hold.begin() + i);
+            return;
+        }
+}
+void test_push(void* c, const net::Vec3& dir, float mps)
+{
+    double now = H->time_seconds();
+    for (auto& e : g_test_push)
+        if (e.c == c) {
+            e = {c, dir, mps, now};
+            return;
+        }
+    if (g_test_push.size() < 8)
+        g_test_push.push_back({c, dir, mps, now});
+}
+static void test_push_apply(void* c, int dt_ms)
+{
+    double now = H->time_seconds();
+    for (size_t i = 0; i < g_test_push.size(); i++)
+        if (TestPush& e = g_test_push[i]; e.c == c) {
+            if (now - e.t > 0.1) {
+                g_test_push.erase(g_test_push.begin() + i);
+                return;
+            }
+            float s = e.mps * (float)std::min(std::max(dt_ms, 0), 100) / 1000.f;
+            net::Vec3 p = position(c);
+            teleport(c, {p.x + e.dir.x * s, p.y + e.dir.y * s, p.z + e.dir.z * s}, orientation(c));
+            return;
+        }
+}
 
 static void SK_THISCALL h_Update(void* self, int dt)
 {
@@ -133,10 +336,14 @@ static void SK_THISCALL h_Update(void* self, int dt)
     }
     if (g_update_observer) g_update_observer(self, true);
     ++g_creature_update_counts.native;
+    if (!g_test_push.empty())
+        test_push_apply(self, dt);
     o_Update(self, dt);
     if (g_update_observer) g_update_observer(self, false);
     if (!g_air.empty())
         air_reassert(self, 0);
+    if (!g_place_hold.empty())
+        place_reassert(self);
 }
 
 const std::vector<void*>& creatures_updated()
@@ -417,6 +624,7 @@ void hit_push(void* c, float dmg, int type, void* attacker, const net::Vec3& p)
 static uintptr_t a_PlayAnim, a_PlayAnimTo;
 static AnimListener g_anim_listener;
 static bool g_in_puppet_anim;
+CALL_GUARD("game.puppet_anim", g_in_puppet_anim); // BUG-1134: a partner's animation played by us: not relayed back
 
 typedef int(SK_THISCALL* PlayAnim_t)(void*, uint32_t, int, int);
 typedef int(SK_THISCALL* PlayAnimTo_t)(void*, uint32_t, void*, int, int);
@@ -453,9 +661,8 @@ void set_anim_listener(AnimListener fn) { g_anim_listener = fn; }
 
 void play_animation(void* c, uint32_t anim_id, int block, bool disable_blend)
 {
-    g_in_puppet_anim = true;
+    callguard::Hold puppet(g_in_puppet_anim);
     o_PlayAnim(c, anim_id, block, disable_blend ? 1 : 0);
-    g_in_puppet_anim = false;
 }
 
 // ---- behaviour animations (BUG-0464) ----
@@ -470,6 +677,7 @@ static CreaturePlayAnim_t o_CreaturePlayAnim;
 static IdleRefresh_t o_IdleRefresh;
 static BehaviourAnimListener g_bhv_listener;
 static int g_idle_depth = 0;
+CALL_GUARD_DEPTH("game.idle_depth", g_idle_depth); // BUG-1047
 static uint32_t g_bhv_seen = 0, g_bhv_idle = 0;
 
 static IdleAnimListener g_idle_listener;
@@ -498,9 +706,10 @@ static int SK_THISCALL h_CreaturePlayAnim(void* self, uint32_t id, int a, int b)
 
 static void SK_THISCALL h_IdleRefresh(void* self, int force)
 {
-    g_idle_depth++;
-    o_IdleRefresh(self, force);
-    g_idle_depth--;
+    {
+        callguard::Depth idle(g_idle_depth);
+        o_IdleRefresh(self, force);
+    }
     if (!g_air.empty())
         air_reassert(self, 2);
 }
@@ -518,12 +727,13 @@ bool play_behaviour_anim(void* c, uint32_t anim_id, int how, int a, int b)
     if (!c)
         return false;
     int r = 0;
-    g_in_puppet_anim = true;
-    if (how == 0 && o_CreaturePlayAnim)
-        r = o_CreaturePlayAnim(c, anim_id, a, b);
-    else if (how != 0 && o_PlayAnim) // (PlayAnimationTo's target is the host's object: played without one)
-        r = o_PlayAnim(c, anim_id, b, a);
-    g_in_puppet_anim = false;
+    {
+        callguard::Hold puppet(g_in_puppet_anim);
+        if (how == 0 && o_CreaturePlayAnim)
+            r = o_CreaturePlayAnim(c, anim_id, a, b);
+        else if (how != 0 && o_PlayAnim) // (PlayAnimationTo's target is the host's object: played without one)
+            r = o_PlayAnim(c, anim_id, b, a);
+    }
     return r != 0;
 }
 
@@ -564,13 +774,11 @@ static FxFrom fx_from()
 // The game calls effect creation from its UI skinner's render thread too (Tribe/Civ, measured in
 // Skinner::cSkinPainterPipeline::ExecutePipeline). Everything of ours that touches game objects,
 // the effect table or the network happens on the game's main thread only; on any other thread a
-// hook body calls the original and returns. The id is set from the frame callback (main thread).
-static std::atomic<unsigned long> g_main_tid{0};
-static inline bool fx_main_thread() { return GetCurrentThreadId() == g_main_tid.load(std::memory_order_relaxed); }
+// hook body calls the original and returns (on_main(), docs/01-architecture.md#arch-threads).
 static std::atomic<bool> g_fx_relay_on{false}; // effects.cpp's switch, read by the hooks
 void set_effect_relay_enabled(bool on)
 {
-    g_main_tid.store(GetCurrentThreadId(), std::memory_order_relaxed); // effects::tick: main thread
+    note_main_thread(); // effects::tick: main thread
     g_fx_relay_on.store(on, std::memory_order_relaxed);
 }
 // effect object -> id. A world effect created inside a creature effect creator must not be relayed
@@ -689,6 +897,7 @@ uint32_t last_effect_id(bool main_world_only) { return main_world_only ? g_fx_la
 uint32_t last_foreign_effect_id() { return g_fx_last_foreign_id; }
 uint32_t foreign_effects() { return g_fx_foreign; }
 static bool g_in_relay;        // a relayed effect played by us: never put it in the table again
+CALL_GUARD("game.fx_relay", g_in_relay); // BUG-1134
 static thread_local bool t_in_anim_fx; // inside the animation system's effect wrapper (main thread)
 static WorldEffectListener g_world_listener;
 static uintptr_t a_EffectsGet;
@@ -700,7 +909,7 @@ static MgrCreateFx_t o_MgrCreateFx;
 static int SK_THISCALL h_MgrCreateFx(void* mgr, uint32_t id, uint32_t a3, void** out)
 {
     int r = o_MgrCreateFx(mgr, id, a3, out);
-    if (!fx_main_thread() || !g_fx_relay_on.load(std::memory_order_relaxed))
+    if (!on_main() || !g_fx_relay_on.load(std::memory_order_relaxed))
         return r;
     if (t_in_anim_fx) {
         g_fx_anim++;
@@ -740,7 +949,7 @@ static std::atomic<bool> g_world_on{false}; // the stage logic's gate (set_world
 static int SK_THISCALL h_WorldCreateFx(void* world, uint32_t id, uint32_t a3, void** out)
 {
     int r = o_WorldCreateFx(world, id, a3, out);
-    if (!g_world_on.load(std::memory_order_relaxed) || !fx_main_thread()
+    if (!g_world_on.load(std::memory_order_relaxed) || !on_main()
         || !g_fx_relay_on.load(std::memory_order_relaxed))
         return r;
     if (g_fx_log) {
@@ -801,7 +1010,7 @@ static int SK_CDECL h_AnimFxCreate(void* world, int a, uint32_t id, uint32_t b, 
     t_in_anim_fx = was;
     if (out && *out) { // BUG-0603: an event's effect on another object than the animating one
         anim_event_effect(*out, id);
-        if (g_fx_log && fx_main_thread()) {
+        if (g_fx_log && on_main()) {
             net::Vec3 p{};
             bool ok = effect_position(*out, p);
             FxFrom f = fx_from();
@@ -846,7 +1055,7 @@ static void SK_CDECL h_AnimEvent(void* w, void* self, void* obj, uint32_t a4, ui
 // from h_AnimFxCreate: an animation event's effect was made
 static void anim_event_effect(void* fx, uint32_t id)
 {
-    if (!t_in_evt || !fx_main_thread() || g_in_relay)
+    if (!t_in_evt || !on_main() || g_in_relay)
         return;
     g_hit_calls++;
     if (!t_evt_obj || t_evt_obj == t_evt_self) { // on the animating object itself: its remote copies make it too
@@ -880,7 +1089,7 @@ static CreateCreatureFx_t o_CreateCreatureFx;
 static void* SK_THISCALL h_CreateCreatureFx(void* self, int bone, uint32_t id, uint32_t extra)
 {
     void* fx = o_CreateCreatureFx ? o_CreateCreatureFx(self, bone, id, extra) : nullptr;
-    if (!fx_main_thread()) // the UI skinner's render thread: the original only
+    if (!on_main()) // the UI skinner's render thread: the original only
         return fx;
     if (g_fx_log)
         { FxFrom f = fx_from(); H->log(M, SK_INFO, "fxcr: self %p avatar %p id %08X bone %d fx %p from %X,%X,%X,%X", self, avatar(), id, bone, fx, f.a[0], f.a[1], f.a[2], f.a[3]); }
@@ -908,7 +1117,7 @@ static void report_effect(void* c, const EffectEvent& ev)
 static void* SK_THISCALL h_CreateFx1(void* self, uint32_t id)
 {
     void* fx = o_CreateFx1(self, id);
-    if (!fx_main_thread())
+    if (!on_main())
         return fx;
     if (g_fx_log) { FxFrom f = fx_from(); H->log(M, SK_INFO, "fx1: self %p avatar %p id %08X from %X,%X,%X,%X", self, avatar(), id, f.a[0], f.a[1], f.a[2], f.a[3]); }
     if (fx && g_fx_relay_on.load(std::memory_order_relaxed)) {
@@ -922,7 +1131,7 @@ static void* SK_THISCALL h_CreateFx1(void* self, uint32_t id)
 static void* SK_THISCALL h_CreateFx1Keyed(void* self, uint32_t id, uint32_t key)
 {
     void* fx = o_CreateFx1Keyed(self, id, key);
-    if (!fx_main_thread())
+    if (!on_main())
         return fx;
     if (g_fx_log) { FxFrom f = fx_from(); H->log(M, SK_INFO, "fx1k: self %p avatar %p id %08X key %08X from %X,%X,%X,%X", self, avatar(), id, key, f.a[0], f.a[1], f.a[2], f.a[3]); }
     if (fx && g_fx_relay_on.load(std::memory_order_relaxed)) {
@@ -936,7 +1145,7 @@ static void* SK_THISCALL h_CreateFx1Keyed(void* self, uint32_t id, uint32_t key)
 static void* SK_THISCALL h_CreateFx2Keyed(void* self, uint32_t id, uint32_t key)
 {
     void* fx = o_CreateFx2Keyed(self, id, key);
-    if (!fx_main_thread())
+    if (!on_main())
         return fx;
     if (g_fx_log) { FxFrom f = fx_from(); H->log(M, SK_INFO, "fx2k: self %p avatar %p id %08X key %08X from %X,%X,%X,%X", self, avatar(), id, key, f.a[0], f.a[1], f.a[2], f.a[3]); }
     if (fx && g_fx_relay_on.load(std::memory_order_relaxed)) {
@@ -950,7 +1159,7 @@ static void* SK_THISCALL h_CreateFx2Keyed(void* self, uint32_t id, uint32_t key)
 static int SK_THISCALL h_StopFx(void* self, uint32_t key, uint32_t arg)
 {
     int r = o_StopFx(self, key, arg);
-    if (r && fx_main_thread() && g_fx_relay_on.load(std::memory_order_relaxed))
+    if (r && on_main() && g_fx_relay_on.load(std::memory_order_relaxed))
         report_effect(self, {0, key, 0, true});
     return r;
 }
@@ -967,8 +1176,7 @@ static void* create_effect_at(uint32_t id, const void* xform, bool relayed)
     if (!mgr)
         return nullptr;
     void* fx = nullptr;
-    bool was = g_in_relay;
-    g_in_relay = relayed; // a relayed effect: the hooks must not send it back
+    callguard::Hold relay(g_in_relay, relayed); // a relayed effect: the hooks must not send it back
     int ok = f_MgrCreate(mgr, id, 0, &fx);
     if ((ok & 0xFF) && fx) {
         vcall<void>(fx, 0x18 / 4, xform); // SetTransform
@@ -976,7 +1184,6 @@ static void* create_effect_at(uint32_t id, const void* xform, bool relayed)
     } else {
         fx = nullptr;
     }
-    g_in_relay = was;
     return fx;
 }
 
@@ -991,23 +1198,17 @@ void* create_creature_effect(void* c, int bone, uint32_t effect_id)
 {
     if (!c || !o_CreateCreatureFx)
         return nullptr;
-    bool was = g_in_relay;
-    g_in_relay = true; // relayed: the hooks must not send it back
-    void* fx = o_CreateCreatureFx(c, bone, effect_id, 0);
-    g_in_relay = was;
-    return fx;
+    callguard::Hold relay(g_in_relay); // relayed: the hooks must not send it back
+    return o_CreateCreatureFx(c, bone, effect_id, 0);
 }
 
 void* start_effect(void* c, const EffectEvent& ev)
 {
     if (!c)
         return nullptr;
-    bool was = g_in_relay;
-    g_in_relay = true; // relayed: the hooks must not send it back
-    void* fx = ev.pool == 2 && o_StartStopFx2 ? o_StartStopFx2(c, 1, ev.id, ev.key)
-                                                : o_StartStopFx1 ? o_StartStopFx1(c, 1, ev.id, ev.key) : nullptr;
-    g_in_relay = was;
-    return fx;
+    callguard::Hold relay(g_in_relay); // relayed: the hooks must not send it back
+    return ev.pool == 2 && o_StartStopFx2 ? o_StartStopFx2(c, 1, ev.id, ev.key)
+                                          : o_StartStopFx1 ? o_StartStopFx1(c, 1, ev.id, ev.key) : nullptr;
 }
 
 bool stop_effect(void* c, uint32_t key) { return c && o_StopFx && o_StopFx(c, key, 0) != 0; }
@@ -1046,11 +1247,8 @@ bool stop_world_effect(void* effect)
 // food mat at +0x260 and calls [+0x260]+0x34 vt+0x2C (its position) without a null check. After the City Hall editor
 // at the end of Tribe the player tribe has no food mat any more (+0x260 = 0) while the stage still runs for the
 // vehicle editor's vote and captions; a guest's food change relayed then (shared.cpp) faulted the host's game at
-// UpdateFoodVisuals+0x28 (data 0x34) inside the message pump and froze it. On: no visual without the food mat (the
-// food itself is changed). `coop.fix tribe.food_fx_mat off`: called anyway (0.7.6).
-static bool g_food_fx_fix = true;
-COOP_FIX("tribe.food_fx_mat", "BUG-0585", g_food_fx_fix,
-         "tribe: no +N/-N food visual on a tribe without its food mat (the end of Tribe: the City Hall stands)");
+// UpdateFoodVisuals+0x28 (data 0x34) inside the message pump and froze it. No visual without the food mat (the
+// food itself is changed).
 unsigned g_food_fx_skipped; // tests
 bool tribe_food_visuals(void* tribe, float change)
 {
@@ -1058,7 +1256,7 @@ bool tribe_food_visuals(void* tribe, float change)
     if (!f || !tribe || !skg::readable((uint8_t*)tribe + 0x260, 4))
         return false;
     uint8_t* mat = *(uint8_t**)((uint8_t*)tribe + 0x260);
-    if (g_food_fx_fix && (!mat || !skg::readable(mat + 0x34, 4) || !skg::readable(*(void**)(mat + 0x34), 0x30))) {
+    if (!mat || !skg::readable(mat + 0x34, 4) || !skg::readable(*(void**)(mat + 0x34), 0x30)) {
         if (g_food_fx_skipped++ < 3)
             H->log(M, SK_INFO, "tribe: no food visual: the tribe has no food mat (the City Hall stands, BUG-0585)");
         return false;
@@ -1147,20 +1345,29 @@ static void SK_THISCALL h_NPCTickAI(void* self, float dt)
 // frame, outside every NPC tick: a swap still open here is such a leftover and is undone.
 static void swap_ledger_tick();
 // BUG-0882: a detour that lends game state around a call puts its undo into the swap ledger (views' relevance pass, the
-// own creature's scale call); the mod's own call guards (inside a puppet's animation, an effect wrapper, an event,
-// a relayed effect) are false outside every game call, so the frame's tick clears one a caught fault left set (a
-// stuck guard switched its relay off for good). Off (`coop.fix game.lend_ledger off`): no entries, no reset.
+// own creature's scale call); the mod's own thread_local call guards (inside an effect wrapper, an event) are false
+// outside every game call, so the frame's tick clears one a caught fault left set (a stuck guard switched its relay
+// off for good; the puppet animation and relayed effect guards are registered in call_guard.h since BUG-1134). Off
+// (`coop.fix game.lend_ledger off`): no entries, no reset.
 static bool g_lend_ledger_fix = true;
 COOP_FIX("game.lend_ledger", "BUG-0882", g_lend_ledger_fix, "creature: a fault inside the game's relevance pass or the own creature's scale call cannot leave the game's sphere list on the mod's buffer, the player species changed or a relay of the mod switched off");
 bool lend_ledger_on() { return g_lend_ledger_fix; }
 static uint32_t g_guards_reset;
+// BUG-1047: the same rule for every module's call guard registered in call_guard.h (squadron, space_diplomacy,
+// mirror_fx, spacecoop, civ, cellsync, tribe, ...): a guard still set here is a caught fault's leftover. Off
+// (`coop.fix core.call_guard_reset off`): the modules' guards stay set (0.7.13).
+static bool g_call_guard_fix = true;
+COOP_FIX("core.call_guard_reset", "BUG-1047", g_call_guard_fix, "core: a module's call guard (g_applying and the like) left set by a fault the game caught is cleared on the next frame, the module's relay goes on");
 static void reset_call_guards()
 {
+    callguard::reset(g_call_guard_fix);
     if (!g_lend_ledger_fix)
         return;
-    if (g_in_puppet_anim || g_in_relay || t_in_anim_fx || t_in_evt)
+    // BUG-1134: g_in_puppet_anim and g_in_relay are registered call guards now (callguard::reset above clears them,
+    // core.call_guard_reset); the two thread_local ones cannot be registered (call_guard.h) and stay here
+    if (t_in_anim_fx || t_in_evt)
         g_guards_reset++;
-    g_in_puppet_anim = g_in_relay = t_in_anim_fx = t_in_evt = false;
+    t_in_anim_fx = t_in_evt = false;
 }
 uint32_t call_guards_reset() { return g_guards_reset; }
 void swap_guard_tick()
@@ -1238,6 +1445,14 @@ bool init(const SkHost* host, SkMod* mod)
 {
     H = host;
     M = mod;
+    note_main_thread(); // the mod is loaded on the main thread; every frame notes it again
+    HMODULE self = nullptr;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCWSTR)(void*)&off_main_probe, &self))
+        g_self_base = (uintptr_t)self;
+    skg::call_probe = off_main_probe;
+    H->command_add(M, "coop.threads", "coop.threads [reset|on|off|probe] - the main thread and the game calls made off it (A14)",
+                   c_threads, nullptr, SK_CMD_ANY_THREAD);
     static const char* req[] = {
         "Simulator::cGameNounManager::Get",
         "Simulator::cGameNounManager::DestroyInstance",
@@ -1507,7 +1722,11 @@ uint32_t world_epoch()
 }
 
 static stage_epoch::State g_stage_epochs;
-void stage_epoch_tick() { stage_epoch::step(g_stage_epochs, mode_id()); }
+void stage_epoch_tick()
+{
+    note_main_thread(); // the top of the mod's frame (A14)
+    stage_epoch::step(g_stage_epochs, mode_id());
+}
 uint32_t stage_epoch(uint32_t stage_mode) { return stage_epoch::get(g_stage_epochs, stage_mode); }
 
 net::Vec3 position(void* c)
@@ -1566,8 +1785,8 @@ bool drawn_state(void* c, net::Vec3* drawn, uint32_t* anim)
         *drawn = {p.x, p.y, p.z};
     }
     if (anim) {
-        // GetCurrentAnimation(u32* id, float* time, int*, int* index), thiscall ret 0x10 (GOG 2016
-        // 0xA05030, vtable 0x1449640): writes the id only when the creature has a main animation
+        // GetCurrentAnimation(u32* id, float* time, int*, int* index), thiscall ret 0x10 (vtable slot 0x58, found on
+        // the former GOG 2016 build): writes the id only when the creature has a main animation
         uint32_t id = 0;
         vcall<void>(ac, 0x58 / 4, &id, (float*)nullptr, (int*)nullptr, (int*)nullptr);
         *anim = id;
@@ -1642,9 +1861,6 @@ COOP_FIX("npc.defer_identity", "BUG-0825", g_defer_identity_fix, "creature: a cr
 static bool g_destroy_defer = true; // tests: off = at once, as before (coop.npc cinedefer off)
 COOP_FIX("npc.cinedefer", "BUG-0018", g_destroy_defer, "creature: creatures removed during a cinematic go when it is over");
 void set_destroy_defer(bool on) { g_destroy_defer = on; }
-static bool g_defer_keeps_puppet = true; // tests: off = unregistered at once (coop.npc deferpuppet off, BUG-0066)
-COOP_FIX("npc.deferpuppet", "BUG-0066", g_defer_keeps_puppet, "creature: a deferred puppet or proxy keeps its puppet state");
-void set_defer_keeps_puppet(bool on) { g_defer_keeps_puppet = on; }
 
 bool destroy_pending(void* c)
 {
@@ -1669,7 +1885,7 @@ void destroy_creature(void* c)
     bool defer = g_destroy_defer && noun_id(c) == 0x18EB45Eu && cinematic_running();
     // a puppet or proxy that waits stays one (BUG-0066): no AI of its own (h_NPCTickAI), not an
     // NPC for host_tick to send to the guests. It leaves the puppet list when it is destroyed.
-    if (!defer || !g_defer_keeps_puppet)
+    if (!defer)
         puppet_unregister(c); // also used for UFOs and other cGameData puppets
     if (defer) {
         if (destroy_pending(c))
@@ -1715,15 +1931,17 @@ void destroy_deferred_tick()
         } else
             ++it;
     if (g_defer_identity_fix) { // BUG-0825: freed meanwhile, or another creature at its address: not ours any more
-        for (auto it = g_destroy_later.begin(); it != g_destroy_later.end();)
+        for (auto it = g_destroy_later.begin(); it != g_destroy_later.end();) {
             if (!alive(LiveRef{it->first, it->serial, 0x18EB45Eu})) {
                 H->log(M, SK_INFO, "deferred destroy of %p dropped: not the creature queued any more (npc.defer_identity)",
                        it->first);
                 puppet_unregister(it->first);
                 g_destroys_not_same++;
                 it = g_destroy_later.erase(it);
-            } else
+            } else {
                 ++it;
+            }
+        }
     }
     if (g_destroy_later.empty() || cinematic_running())
         return;
@@ -1773,9 +1991,7 @@ static bool pose_refused(const net::Vec3* p, const net::Quat* q)
 // drawing still grounded it; writes at the mod's frame were undone by it). Not the physics' simple path
 // (+0xF90 = 1, LOD +0xEAC = 2 in every such frame, out/lab/20261106-042950). After the physics manager's update
 // (SporeCoop::PhysicsManager_Update, hooked by gamefixes.cpp for BUG-0449) a puppet whose target stands > 0.3 m over GetHeightAt and that was put within
-// 0.1 m of it is lifted back to its target's height over the ground. Off: 0.7.8.
-static bool g_culled_ground_fix = true;
-COOP_FIX("creature.culled_ground", "BUG-0434", g_culled_ground_fix, "creature: the partner's creature on a nest mound stays on it while off the screen (no low frame when it comes into view)");
+// 0.1 m of it is lifted back to its target's height over the ground.
 struct MoundHold {
     void* c;
     net::Vec3 tgt;
@@ -1797,9 +2013,96 @@ void mound_hold(void* c, const net::Vec3& tgt)
         g_mound.push_back({c, tgt, now});
 }
 
+// tests (BUG-1082, coop.tribe hang): creatures held at a height over the terrain after every physics update
+struct TestHang {
+    void* c;
+    float agl;
+    double until;
+};
+static std::vector<TestHang> g_test_hang;
+void test_hang(void* c, float agl, double secs)
+{
+    for (auto& h : g_test_hang)
+        if (h.c == c) {
+            h = {c, agl, H->time_seconds() + secs};
+            return;
+        }
+    g_test_hang.push_back({c, agl, H->time_seconds() + secs});
+}
+static void test_hang_apply()
+{
+    double now = H->time_seconds();
+    for (size_t i = 0; i < g_test_hang.size();) {
+        auto& h = g_test_hang[i];
+        if (now > h.until || !object_alive(h.c)) {
+            if (object_alive(h.c))
+                air_hold(h.c, false);
+            g_test_hang.erase(g_test_hang.begin() + i);
+            continue;
+        }
+        net::Vec3 p = position(h.c);
+        float r = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z), g = ground_radius(p);
+        if (r > 1.f && g > 1.f) {
+            float k = (g + h.agl) / r;
+            net::Vec3 to{p.x * k, p.y * k, p.z * k};
+            net::Quat q = orientation(h.c);
+            place(h.c, to, q);
+            set_grounded(h.c, false);
+            field<net::Vec3>(h.c, kVelOff) = {0, 0, 0};
+            air_hold(h.c, true, to, q, {0, 0, 0});
+        }
+        i++;
+    }
+}
+
+// BUG-1082 (docs/re/tribe.md#tribe-member-hang): a guest's mirror placed in the air (air_place / air_hold: a member the
+// host's game holds 12-110 m up) stood on the guest's terrain in most reads whenever the guest's camera was elsewhere:
+// the guest's physics update puts a creature off its screen onto the plain terrain (the BUG-0434 path) and air_reassert
+// only acts on the grounded byte, which that path does not set (lab 20261113-182546: the list received 5 times a
+// second, the mirror placed every frame, read on its ground in 12 of 14 reads). After the game's physics update every
+// held creature that is more than 0.5 m under its hold on its radial line is put back at the hold (not grounded, the
+// hold's velocity). `coop.fix game.air_culled off`: as 0.7.13.
+static bool g_air_culled_fix = true;
+COOP_FIX("game.air_culled", "BUG-1082", g_air_culled_fix,
+         "a creature the mod holds in the air (a partner's, a mirror, a proxy) stays there off the screen too");
+static uint32_t g_air_culled_lifts = 0;
+uint32_t air_culled_lifts() { return g_air_culled_lifts; }
+static void air_culled_apply()
+{
+    for (auto& h : g_air) {
+        if (!object_alive(h.c) || (h.serial && object_serial(h.c) != h.serial))
+            continue;
+        net::Vec3 p = position(h.c);
+        float r = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z), rh = std::sqrt(h.pos.x * h.pos.x + h.pos.y * h.pos.y + h.pos.z * h.pos.z);
+        if (r < 1.f || rh - r < 0.5f)
+            continue;
+        float k = rh / r; // (the point on the hold's height over where the game put it: its walk across the frame stays)
+        net::Vec3 up{p.x * k - h.pos.x, p.y * k - h.pos.y, p.z * k - h.pos.z};
+        if (up.x * up.x + up.y * up.y + up.z * up.z > 4.f) // moved more than 2 m sideways: not a drop onto the terrain
+            continue;
+        place(h.c, h.pos, h.rot);
+        set_grounded(h.c, false);
+        field<net::Vec3>(h.c, kVelOff) = h.vel;
+        g_air_culled_lifts++;
+    }
+}
+
 void after_physics() // gamefixes.cpp's hook of the physics update (BUG-0449), after the game's update
 {
-    if (!g_culled_ground_fix || g_mound.empty())
+    if (!g_test_hang.empty())
+        test_hang_apply();
+    if (g_air_culled_fix && !g_air.empty())
+        air_culled_apply();
+    if (!g_place_hold.empty()) { // BUG-0440 (a copy: reassert may drop entries)
+        void* cs[64];
+        size_t n = std::min<size_t>(g_place_hold.size(), 64);
+        for (size_t i = 0; i < n; i++)
+            cs[i] = g_place_hold[i].c;
+        for (size_t i = 0; i < n; i++)
+            if (creature_listed(cs[i]))
+                place_reassert(cs[i]);
+    }
+    if (g_mound.empty())
         return;
     double now = H->time_seconds();
     for (size_t i = 0; i < g_mound.size();) {
@@ -1896,22 +2199,38 @@ void air_hold(void* c, bool on, const net::Vec3& pos, const net::Quat& rot, cons
 {
     for (size_t i = 0; i < g_air.size(); i++)
         if (g_air[i].c == c) {
-            if (on)
-                g_air[i] = {c, field<void*>(c, 0xB54), pos, vel, rot};
+            if (on) // (the serial stays the one of the creature the hold was made for: BUG-0995)
+                g_air[i] = {c, field<void*>(c, 0xB54), pos, vel, rot, g_air[i].serial};
             else
                 g_air.erase(g_air.begin() + i);
             return;
         }
     if (on && g_air.size() < 64) // (BUG-0550: NPC proxies in the air too)
-        g_air.push_back({c, field<void*>(c, 0xB54), pos, vel, rot});
+        g_air.push_back({c, field<void*>(c, 0xB54), pos, vel, rot, object_serial(c)});
 }
 
-void air_release_all() { g_air.clear(); }
+void air_release_all() { g_air.clear(); } // (also the lifecycle entry game.air above)
 
-static void air_reassert(void* c, int where)
+bool air_held(void* c, net::Vec3* pos)
 {
     for (auto& h : g_air)
         if (h.c == c) {
+            if (pos)
+                *pos = h.pos;
+            return true;
+        }
+    return false;
+}
+
+static void air_reassert(void* c, int where)
+{
+    for (size_t i = 0; i < g_air.size(); i++)
+        if (AirHold& h = g_air[i]; h.c == c) {
+            if (g_air_live_fix && h.serial && object_serial(c) != h.serial) { // BUG-0995: another creature there now
+                g_air_stale++;
+                g_air.erase(g_air.begin() + i);
+                return;
+            }
             if (!grounded(c))
                 return;
             place(c, h.pos, h.rot);
@@ -1930,7 +2249,7 @@ static int SK_THISCALL h_AcPlay(void* ac, uint32_t id, int a)
     if (!g_air.empty())
         for (auto& h : g_air)
             if (h.ac == ac) {
-                air_reassert(h.c, 4);
+                air_reassert(h.c, 4); // (may drop h: BUG-0995)
                 break;
             }
     return r;
@@ -1938,10 +2257,16 @@ static int SK_THISCALL h_AcPlay(void* ac, uint32_t id, int a)
 
 std::string air_status()
 {
-    char b[180];
-    snprintf(b, sizeof b, "air hold: held=%u regrounded update=%u anim=%u idle=%u bt=%u low=%u nonfinite_refused=%u mound_lifts=%u\n", (unsigned)g_air.size(),
-             g_air_regrounded[0], g_air_regrounded[1], g_air_regrounded[2], g_air_regrounded[3], g_air_regrounded[4], g_nonfinite_drops, g_mound_lifts);
-    return b;
+    char b[220];
+    snprintf(b, sizeof b, "air hold: held=%u regrounded update=%u anim=%u idle=%u bt=%u low=%u nonfinite_refused=%u mound_lifts=%u stale=%u\n", (unsigned)g_air.size(),
+             g_air_regrounded[0], g_air_regrounded[1], g_air_regrounded[2], g_air_regrounded[3], g_air_regrounded[4], g_nonfinite_drops, g_mound_lifts,
+             g_air_stale);
+    std::string s = b;
+    for (auto& h : g_air) { // (BUG-0995 tests: each hold, by address)
+        snprintf(b, sizeof b, "  hold %p serial=%u pos=(%.2f %.2f %.2f)\n", h.c, h.serial, h.pos.x, h.pos.y, h.pos.z);
+        s += b;
+    }
+    return s;
 }
 
 void set_position(void* c, const net::Vec3& pos)
@@ -2037,6 +2362,25 @@ float surface_radius(const net::Vec3& pos)
     return r2 > 1.f ? std::sqrt(r2) : 0.f;
 }
 
+// BUG-1088: the planet's water surface as a radius (0: no planet / no terrain). The terrain kind 0xB83110 (docs/re/tribe.md,
+// a cPlanetModel method) takes the terrain object as GetHeightAt does (cPlanetModel +0x24, vt 0xC) and compares
+// `terrain+0x34 + terrain+0x38 * terrain+0x3C` with GetHeightAt there: water deeper than 0 m is over water.
+float water_radius()
+{
+    static uintptr_t get = H->sym("Simulator::cPlanetModel::Get");
+    void* pm = get ? cdecl_call<void*>(get) : nullptr;
+    if (!pm || !skg::readable(pm, 0x28))
+        return 0.f;
+    void* holder = field<void*>(pm, 0x24);
+    if (!holder || !skg::readable(holder, 4))
+        return 0.f;
+    void* t = vcall<void*>(holder, 0xC / 4);
+    if (!t || !skg::readable(t, 0x40))
+        return 0.f;
+    float w = field<float>(t, 0x34) + field<float>(t, 0x38) * field<float>(t, 0x3C);
+    return std::isfinite(w) && w > 1.f ? w : 0.f;
+}
+
 void set_scale(void* c, float s) { vcall<void>(spatial(c), 0x40 / 4, s); } // SetScale
 
 Key species_key(void* c)
@@ -2092,6 +2436,7 @@ void* create_herd(const net::Vec3& pos, void* species)
         if (g_our_herds.size() > 256)
             g_our_herds.erase(g_our_herds.begin());
         g_our_herds.push_back(h);
+        note_our_herd(h);
     }
     return h;
 }
@@ -2115,6 +2460,7 @@ void* own_herd_for(void* species)
             return false;
         },
         &f);
+    note_our_herd(f.found); // (BUG-1067: one a save brought back is ours from now on)
     return f.found;
 }
 
@@ -2177,14 +2523,11 @@ float dna()
 // the own editor's price) through AddEvolutionPoints: each editor spend lowered the other player's bar by the amount
 // (players: "the evolution bar reset to almost 0", "halved"). With the fix a negative change (a spend, anyone's)
 // writes the DNA only, never below 0; a gain still goes through AddEvolutionPoints and raises the bar as the game's
-// rewards do. Off (`coop.fix creature.bar_spend off`): 0.7.8, every change through AddEvolutionPoints.
-static bool g_bar_spend_fix = true;
-COOP_FIX("creature.bar_spend", "BUG-0630", g_bar_spend_fix,
-         "creature: a DNA spend shared between players (an editor's price) moves the DNA only, not the evolution bar");
+// rewards do.
 
 void dna_add_raw(float delta)
 {
-    if (g_bar_spend_fix && delta < 0) {
+    if (delta < 0) {
         if (uintptr_t set = H->sym("Simulator::cCreatureGameData::SetEvolutionPoints")) {
             cdecl_call<void>(set, std::max(0.f, dna() + delta));
             return;
@@ -2211,19 +2554,14 @@ void set_dna_listener(DnaListener fn) { g_dna_listener = fn; }
 
 // BUG-0433: TimeOfDay_Unavailable (= Simulator::GetCurrentContext, [[SpacePlayerData]+0x10]) reads the
 // game's SpacePlayerData, which does not exist before the game reaches its main menu: a session hosted then
-// (game mode 0) crashed in the host's once-a-second time-of-day send (on_frame -> time_of_day). Off: the
-// read as before (the test coop_tod_early.py crashes the host).
-static bool g_tod_guard_fix = true;
-COOP_FIX("core.tod_guard", "BUG-0433", g_tod_guard_fix,
-         "core: no time-of-day read or write while the game has no SpacePlayerData yet (before the main menu)");
+// (game mode 0) crashed in the host's once-a-second time-of-day send (on_frame -> time_of_day). No read or
+// write without SpacePlayerData.
 
 static void* tod_object()
 {
-    if (g_tod_guard_fix) {
-        uintptr_t spd = H->sym("Simulator::SpacePlayerData::ptr");
-        if (!mode_id() || !spd || !*(void**)spd)
-            return nullptr;
-    }
+    uintptr_t spd = H->sym("Simulator::SpacePlayerData::ptr");
+    if (!mode_id() || !spd || !*(void**)spd)
+        return nullptr;
     uintptr_t un = H->sym("SporeCoop::TimeOfDay_Unavailable"), get = H->sym("SporeCoop::TimeOfDay_GetObject");
     if (!un || !get || cdecl_call<int>(un) != 0)
         return nullptr;
@@ -2328,7 +2666,7 @@ bool listed(const void* obj, uint32_t noun)
     // only inside the mod's own frame tick (LiveScope): there no game update runs between the walk and the question.
     // In the game's update (our hooks) the game may tear objects down without DestroyInstance (a world's end) after
     // the walk: there every question walks the list as before.
-    if (!g_listed_frame_fix || !gamefixes::destroy_hooked() || !H || !g_main_tid.load() || !fx_main_thread() ||
+    if (!g_listed_frame_fix || !gamefixes::destroy_hooked() || !H || !on_main() ||
         !g_live_scope)
         return scan_listed(obj, noun);
     uint64_t f = H->frame_index();

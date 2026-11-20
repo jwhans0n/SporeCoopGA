@@ -1,4 +1,5 @@
 // Whole-planet re-alignment after transitions (realign.h, realign_rule.h, docs/re/tribe.md#tribe-realign).
+#include "lifecycle.h"
 #include "realign.h"
 #include "player_life.h"
 
@@ -38,11 +39,7 @@ static bool g_fix_villages = true;
 COOP_FIX("realign.villages", "BUG-0564", g_fix_villages,
          "tribe: after the host's game over and reload (or a rejoin) a guest's villages the host's world has not are gone");
 // BUG-0567 / BUG-0566: a hut's or tool's health on a guest is the host's (a damaged, smoking building of the old
-// world mended; the enemy hut's health bar going down as the host's). `coop.fix realign.buildings off`: each
-// game keeps its own (0.7.6).
-static bool g_fix_buildings = true;
-COOP_FIX("realign.buildings", "BUG-0567 BUG-0566", g_fix_buildings,
-         "tribe: a hut's and a tool's health on a guest is the host's (no broken building of the old world)");
+// world mended; the enemy hut's health bar going down as the host's).
 
 // BUG-0777: a village the host's game conquered was conquered there only: the guest's realign kept its hut at 1 hp
 // at least ("never 0"), so the guest's game never ran the defeat (the village's conquered flag, the goal mission's
@@ -53,6 +50,18 @@ static bool g_fix_hut_fall = true;
 COOP_FIX("realign.hut_fall", "BUG-0777", g_fix_hut_fall,
          "tribe: a village the host's game conquered is conquered in the guest's game too (its hut falls there)");
 static uint32_t g_huts_felled;
+// BUG-1076: the players' own hut dead in the host's game (an NPC village raided it back) took the killing blow in the
+// guest's game too: the guest's game ran its own defeat (the hut-destroyed cinematic, then a reload of its own save
+// 20 s later, every conquest gone), the realign conquered the villages and felled the hut again after each reload (a
+// loop of 11 reloads in 6 min, lab 20261113-082316), and a village caption played after such a reload read the
+// conquered tribe the reload had freed (the caption's tribe name, Tribe token provider +0x1C: faults at 0xCE69F9).
+// The host's game decides the players' defeat (its game over, then the realign of its reloaded world, BUG-0960 /
+// BUG-0685): a guest's own hut never takes the blow, its health follows the host's down to 1 hp.
+// `coop.fix realign.own_hut off`: the own hut falls too (0.7.13).
+static bool g_fix_own_hut = true;
+COOP_FIX("realign.own_hut", "BUG-1076", g_fix_own_hut,
+         "tribe: the players' own hut dead in the host's game does not fall in a guest's game (no defeat and reload of its own)");
+static uint32_t g_own_hut_kept;
 constexpr uint8_t kFlDown = 2; // a hut: dead (cCombatant +0x34 == 2); a village: conquered (cTribe +0x556)
 
 constexpr uint8_t kStCreature = 1, kStTribe = 2, kStCiv = 4;
@@ -162,7 +171,7 @@ static bool g_soon;
 static void host_tick(double now)
 {
     uint8_t sb = stage_bit();
-    if (!sb || (!g_fix_villages && !g_fix_buildings)) // both off: nothing sent (0.7.6)
+    if (!sb)
         return;
     uint32_t ep = game::stage_epoch(game::mode_id());
     if (ep != g_host_epoch) { // a load, the game over's reload: the guests re-align at once
@@ -311,7 +320,12 @@ static void compare(double now)
                            l[li].x, l[li].y, l[li].z);
                 continue;
             }
-            if (k == kHut && g_fix_hut_fall && (h[hi].fl & kFlDown) && !(l[li].fl & kFlDown)) { // BUG-0777
+            if (k == kHut && g_fix_hut_fall && (h[hi].fl & kFlDown) && !(l[li].fl & kFlDown) && g_fix_own_hut &&
+                (l[li].fl & kFlPlayer)) { // BUG-1076: the health below keeps it at 1 hp at least
+                if (g_own_hut_kept++ < 8)
+                    H->log(M, SK_INFO, "realign: the players' hut at (%.0f %.0f %.0f) is dead in the host's game: it stands here, the "
+                           "host's game decides the defeat (BUG-1076)", l[li].x, l[li].y, l[li].z);
+            } else if (k == kHut && g_fix_hut_fall && (h[hi].fl & kFlDown) && !(l[li].fl & kFlDown)) { // BUG-0777
                 if (tribe::fell_hut(lp[li]->p) > 0 && g_huts_felled++ < 8)
                     H->log(M, SK_INFO, "realign: the hut at (%.0f %.0f %.0f) fell in the host's game: it falls here (BUG-0777)", l[li].x,
                            l[li].y, l[li].z);
@@ -323,7 +337,7 @@ static void compare(double now)
                 continue;
             rw.state_off++;
             void* o = lp[li]->p;
-            if (!g_fix_buildings || !skg::readable(o, kHp + 4))
+            if (!skg::readable(o, kHp + 4))
                 continue;
             float mx = field<float>(o, kMaxHp);
             if (!(mx > 0))
@@ -404,15 +418,17 @@ void on_session_end()
     g_in_place.clear();
     g_list.clear();
 }
+LIFECYCLE_HOOK("realign.session", lifecycle::kSessionEnd, -82, [](const lifecycle::Ctx&) { on_session_end(); }, true); // C2 (BUG-1141): end_session
 
 std::string status()
 {
     std::string s;
     char b[256];
-    snprintf(b, sizeof b, "realign hut_fall=%d huts_felled=%u\n", (int)g_fix_hut_fall, g_huts_felled);
+    snprintf(b, sizeof b, "realign hut_fall=%d huts_felled=%u own_hut=%d own_hut_kept=%u\n", (int)g_fix_hut_fall, g_huts_felled,
+             (int)g_fix_own_hut, g_own_hut_kept);
     s += b;
-    snprintf(b, sizeof b, "realign role=%s villages=%d buildings=%d tx=%u soon=%u rx=%u compares=%u incomplete=%u host_changes=%u\n",
-             is_host() ? "host" : is_guest() ? "guest" : "none", (int)g_fix_villages, (int)g_fix_buildings, g_tx, g_tx_soon, g_rx, g_compares,
+    snprintf(b, sizeof b, "realign role=%s villages=%d tx=%u soon=%u rx=%u compares=%u incomplete=%u host_changes=%u\n",
+             is_host() ? "host" : is_guest() ? "guest" : "none", (int)g_fix_villages, g_tx, g_tx_soon, g_rx, g_compares,
              g_prx.incomplete, g_host_changes);
     s += b;
     snprintf(b, sizeof b, "realign older_chunks=%u dup_chunks=%u cycle_order=%d (BUG-0886)\n", g_prx.older, g_prx.dup,

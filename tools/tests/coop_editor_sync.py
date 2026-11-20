@@ -17,12 +17,15 @@ done without a change.
   --case spend  BUG-0466's class (G6): the guest's own game spends DNA (AddEvolutionPoints -25, no
                 editor): the host's total loses it and the guest's game keeps it.
 
-  coop_editor_sync.py --case host|guest|spend   (host: SPORE_FIX_OFF=creations.editor_species, guest: creations.own_editor_dna, spend: core.dna_spend fail)
+  coop_editor_sync.py --case host|guest|spend   (host: SPORE_FIX_OFF=creations.editor_species fails; guest:
+  creations.own_editor_dna and spend: core.dna_spend off failed, both retired in 0.7.15, BUG-1138: FAIL runs
+  20261103-143445:editor_sync_guest and 20261103-143105:dna_spend)
 """
 import re
 import sys
 import time
 
+from harness import field_dotall as field, mode, waiter
 from coop_ui import Ui
 from twoinst import Checks, shot, start
 
@@ -32,23 +35,7 @@ SAVE_NEW = (926, 604)  # the own editor's exit dialog after an edit: "Save New"
 MOUTH = 25             # the mouth's price in the creature editors (docs/re/creations.md#creations-own-editor-dna)
 
 
-def mode(con):
-    return con.call('game.mode')['out']
-
-
-def field(text, pat):
-    m = re.search(pat, text or '', re.S)
-    return m.group(1) if m else None
-
-
-def wait(cond, secs, step=1.0):
-    t0 = time.time()
-    while time.time() - t0 < secs:
-        r = cond()
-        if r:
-            return r
-        time.sleep(step)
-    return None
+wait = waiter(step=1.0)
 
 
 def dna(con):

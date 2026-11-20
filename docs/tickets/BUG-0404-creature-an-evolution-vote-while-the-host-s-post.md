@@ -13,7 +13,7 @@ branch: fix/w34-vote-cinematic
 commits: ddb7f14, 3b83b29
 tests: vote_during_cinematic, busy_gate (tools/tests/coop_vote_cinematic.py); npc_tests test_busy_gate
 signature:
-docs: docs/re/creature.md#creature-busy-states, docs/06-testing.md#testing-busy-gate, docs/known-issues.md#issue-vote-during-evolution-cinematic
+docs: docs/re/creature.md#creature-busy-states, docs/06-testing.md#testing-busy-gate, docs/archive/known-issues-2026.md#issue-vote-during-evolution-cinematic
 related: BUG-0371, BUG-0273, BUG-0019, BUG-0331, BUG-0336, BUG-0319
 switch: core.editor_cinematic, core.own_editor_busy, core.vote_action_busy
 ---
@@ -102,3 +102,6 @@ the guest's load).
   vote's editor, the guest's own editor, action votes and shares (widened on the coordinator's request after
   the ticket audit's class C15).
 - 2026-11-02: released in 0.7.3.4.
+- 2026-11-15: switch `core.editor_cinematic` retired in 0.7.15 (B1, BUG-1138): the old code path is gone, FAIL run 20261101-161342:vote_during_cinematic on record; its test runs PASS-only.
+- 2026-11-15: switch `core.own_editor_busy` retired in 0.7.15 (B1, BUG-1138): the old code path is gone, FAIL run 20261101-164848:vote_during_cinematic on record; its test runs PASS-only.
+- 2026-11-15: switch `core.vote_action_busy` retired in 0.7.15 (B1, BUG-1138): the old code path is gone, FAIL run 20261101-165714:busy_gate on record; its test runs PASS-only.

@@ -99,6 +99,14 @@ def main():
         actual = match.group(1) if match else 'not found'
         raise AssertionError(f'fakepeer protocol {peer.PROTO} differs from kProtoVersion {actual}')
 
+    manifest = (ROOT / 'mods' / 'coop' / 'net' / 'messages.def').read_text()
+    families = tuple(tuple(map(int, m)) for m in re.findall(r'^FAMILY\(\w+,\s*(\d+),\s*(\d+),\s*(\d+),', manifest, re.M))
+    if peer.FAMILIES != families:
+        raise AssertionError(f'fakepeer families {peer.FAMILIES} differ from messages.def {families}')
+    state = peer.pack_state(1, 22, (1., 2., 3.), (0., 0., 0., 1.), (0., 0., 0.), 1, 50., 100., 42)
+    if len(state) != 103:
+        raise AssertionError(f'fakepeer must send all required PlayerState fields, got {len(state)} bytes')
+
     # Keep the socket bound so Windows does not report an ICMP port-unreachable error.
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server:
         server.bind(('127.0.0.1', 0))

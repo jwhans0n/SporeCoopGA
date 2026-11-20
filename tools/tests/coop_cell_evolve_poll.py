@@ -13,12 +13,13 @@ puppet cell (and `coop.avatar` / `coop.sync` the local cell) from memory that wa
      full, the captions, History, its check) and both get into the Creature stage.
   3. No game faults or dies; `coop.cellgone` shows how often the pool block was gone in the window.
 
-  coop_cell_evolve_poll.py   (SPORE_FIX_OFF=core.stale_local must FAIL)
+  coop_cell_evolve_poll.py   (core.stale_local off failed (retired in 0.7.15, BUG-1138: FAIL run 20261029-114314:cell_evolve_poll))
 """
 import re
 import threading
 import time
 
+from harness import mode, waiter
 import lane
 from twoinst import Checks, Console, Monitor, alive, start
 
@@ -28,18 +29,7 @@ CAPTION_OK = (1410, 1048)
 POLL = ('coop.status', 'coop.avatar', 'coop.sync')
 
 
-def mode(con):
-    return con.call('game.mode')['out']
-
-
-def wait(cond, secs, step=1.0):
-    t0 = time.time()
-    while time.time() - t0 < secs:
-        r = cond()
-        if r:
-            return r
-        time.sleep(step)
-    return None
+wait = waiter(step=1.0)
 
 
 def gone(con):

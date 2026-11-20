@@ -3,7 +3,7 @@ id: BUG-1266
 title: Native creation validation reads UTF-8 symbols with the Windows locale codec
 status: fixed
 kind: bug
-stage: Tests
+stage: Tools
 reported: 2026-11-12
 source: internal
 role: both

@@ -11,12 +11,14 @@
 
 #include "fixes.h"
 #include "ipmask.h"
+#include "compat.h"
+#include "manifest.h"
 
 namespace net {
 
 static constexpr size_t kVersionMax = 120; // BUG-0774: a peer's version text ("coop X, SporeKit Y, <build> <hash>")
 
-static void logf(const Session::Callbacks& cb, const char* fmt, ...)
+__attribute__((format(printf, 2, 3))) static void logf(const Session::Callbacks& cb, const char* fmt, ...)
 {
     if (!cb.log)
         return;
@@ -55,6 +57,11 @@ bool Session::host(uint16_t port, const std::string& name, std::string& err)
     my_name_ = name;
     welcomed_ = true;
     seen_names_.clear();
+    seen_tokens_.clear();
+    host_mode_seen_ = 0; // B6: the first update() checks the stage
+    host_state_seen_ = false;
+    compat_warned_.clear();
+    dropped_names_.clear();
     lan_id_ = new_conn_id(now(), tr_->local_port() ^ 0x4C414E00u); // BUG-0210: new per hosted game
     logf(cb, "hosting on UDP port %u", tr_->local_port());
     return true;
@@ -111,6 +118,9 @@ bool Session::join(const std::string& addr, const std::string& name, std::string
     my_name_ = name;
     welcomed_ = false;
     welcome_world_ = 0;
+    host_mode_seen_ = 0;
+    host_state_seen_ = false;
+    compat_warned_.clear();
     join_started_ = now();
     if (!host_name.empty()) {
         auto l = std::make_shared<Lookup>();
@@ -147,9 +157,15 @@ void Session::start_hello(const Endpoint& ep, uint32_t now)
     h.version = version;
     h.has_token = rejoin_token != 0;
     h.token = rejoin_token;
+    h.families = families; // B6 (BUG-1137)
+    if (!send_families)
+        h.caps &= ~(uint32_t)CAP_FAMILIES;
     Writer w;
     h.write(w);
     p->conn.send_reliable(MSG_HELLO, w);
+    // BUG-1005: the host splits a WELCOME longer than one packet for a guest that announced CAP_SPLIT (in this HELLO):
+    // join its pieces (an older host never splits). WELCOME then sets what the host announced
+    p->conn.peer_split = g_fix.welcome_split && h.ext && (h.caps & CAP_SPLIT);
     peers_.push_back(std::move(p));
     logf(cb, "joining %s ...", ep.masked().c_str());
 }
@@ -237,6 +253,19 @@ uint8_t Session::alloc_id() const
     return 0xFF;
 }
 
+bool Session::peer_families(uint8_t id, bool& has, std::vector<FamilyRev>& out) const
+{
+    if (role_ != Role::Host)
+        return false;
+    for (auto& p : peers_)
+        if (p->accepted && p->id == id) {
+            has = p->has_families;
+            out = p->families;
+            return true;
+        }
+    return false;
+}
+
 std::string Session::name_of(uint8_t id) const
 {
     if (id == my_id_ && role_ != Role::None)
@@ -251,6 +280,34 @@ std::string Session::name_of(uint8_t id) const
                 return r.name;
     }
     return "player" + std::to_string(id);
+}
+
+std::string Session::player_key(uint8_t id) const
+{
+    if (role_ == Role::None)
+        return "";
+    if (role_ == Role::Host && id != my_id_) {
+        for (auto& p : peers_)
+            if (p->accepted && p->id == id) {
+                if (!p->has_token)
+                    return "n:" + p->name;
+                // splitmix64 finalizer: the token itself never leaves the session (logs, status, other players)
+                uint64_t x = p->token ^ 0x5C0F7E11ull;
+                x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
+                x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
+                x ^= x >> 31;
+                char b[24];
+                snprintf(b, sizeof b, "t:%016llx", (unsigned long long)x);
+                return b;
+            }
+        return "";
+    }
+    if (id == my_id_)
+        return "n:" + my_name_;
+    for (auto& r : roster_)
+        if (r.id == id)
+            return "n:" + r.name;
+    return "";
 }
 
 std::vector<PlayerInfo> Session::players() const
@@ -329,9 +386,19 @@ std::string Session::status() const
                  (unsigned long long)p->conn.stats.bytes_sent, (unsigned long long)p->conn.stats.bytes_recv);
         s += b;
     }
-    if (role_ == Role::Host && (disc_refused_ || halfopen_refused_ || halfopen_evicted_)) { // BUG-0776, BUG-0778
-        snprintf(b, sizeof b, "refused: discovery=%u (answered %u) no_hello=%u half_open_evicted=%u\n", disc_refused_, disc_answered_,
-                 halfopen_refused_, halfopen_evicted_);
+    if (role_ == Role::Host && (disc_refused_ || halfopen_refused_ || halfopen_evicted_ || replace_refused_)) { // BUG-0776, BUG-0778
+        snprintf(b, sizeof b, "refused: discovery=%u (answered %u) no_hello=%u half_open_evicted=%u replace=%u\n", disc_refused_,
+                 disc_answered_, halfopen_refused_, halfopen_evicted_, replace_refused_);
+        s += b;
+    }
+    if (role_ == Role::Host) { // BUG-1108: the peaks of this session against the limits, and the drops
+        snprintf(b, sizeof b, "limits: queue_peak=%zu/%zu relay_peak=%llu in_peak=%llu (1 s) budget=%u/s+%u drops: queue=%u relay=%u kicked=%u\n",
+                 lim_.queue_peak, queue_cap, (unsigned long long)lim_.relay_peak, (unsigned long long)lim_.in_peak, relay_rate,
+                 relay_burst, lim_.queue_drops, lim_.relay_drops, lim_.kicks);
+        s += b;
+    }
+    if (recv_skipped_) { // BUG-1007
+        snprintf(b, sizeof b, "datagrams skipped (too big): %u\n", recv_skipped_);
         s += b;
     }
     for (auto& p : peers_)
@@ -347,14 +414,27 @@ std::string Session::status() const
                      p->conn.stats.too_big_old, p->conn.stats.frag_lost);
             s += b;
         }
+    // B6 (BUG-1137): the versions and message family revisions of this game and of every peer (also in every report's
+    // state), the direction gate's drops and the refused joins (BUG-1136)
+    s += "versions: this game " + (version.empty() ? std::string("?") : version) + "; wire " + compat::families_text(families) + "\n";
+    for (auto& p : peers_)
+        if (p->accepted || role_ == Role::Client)
+            s += "versions: peer " + std::to_string(p->id) + " " + (p->version.empty() ? std::string("unknown (before 0.7.4)") : p->version) +
+                 "; wire " + compat::families_text(p->families, p->has_families) + "\n";
+    if (dir_drops_ || compat_refused_) {
+        snprintf(b, sizeof b, "manifest: dir_drops=%u compat_refused=%u\n", dir_drops_, compat_refused_);
+        s += b;
+    }
     return s;
 }
 
 void Session::broadcast_reliable(uint8_t type, const Writer& w, int except_id)
 {
     for (auto& p : peers_)
-        if (p->accepted && (int)p->id != except_id)
+        if (p->accepted && (int)p->id != except_id) {
             p->conn.send_reliable(type, w);
+            charge(w.size());
+        }
 }
 
 bool Session::send_reliable_to(uint8_t id, uint8_t type, const Writer& w)
@@ -362,6 +442,7 @@ bool Session::send_reliable_to(uint8_t id, uint8_t type, const Writer& w)
     for (auto& p : peers_)
         if ((p->accepted || role_ == Role::Client) && p->id == id) {
             p->conn.send_reliable(type, w);
+            charge(w.size());
             return true;
         }
     return false;
@@ -370,8 +451,123 @@ bool Session::send_reliable_to(uint8_t id, uint8_t type, const Writer& w)
 void Session::send_event(uint8_t type, const Writer& w)
 {
     for (auto& p : peers_)
-        if (p->accepted || role_ == Role::Client)
+        if (p->accepted || role_ == Role::Client) {
             p->conn.send_reliable(type, w);
+            charge(w.size());
+        }
+}
+
+// BUG-1108: what the host queues while it handles a guest's message (a relay, an answer) is that guest's doing
+void Session::charge(size_t bytes)
+{
+    if (charge_id_ == 0xFF || role_ != Role::Host)
+        return;
+    for (auto& p : peers_)
+        if (p->accepted && p->id == charge_id_) {
+            if (p->relay_started)
+                p->relay_tokens -= (double)bytes;
+            p->win_relay += bytes;
+            return;
+        }
+}
+
+bool Session::kick(uint8_t id, const std::string& text)
+{
+    if (role_ != Role::Host || id == my_id_)
+        return false;
+    for (auto& p : peers_)
+        if (p->accepted && !p->bye && p->id == id) {
+            p->drop_asked = true; // the next update() (never inside the delivery of its own packet, BUG-0029)
+            p->drop_text = text;
+            return true;
+        }
+    return false;
+}
+
+// BUG-1108: the guest is told why (REJECT, unreliable and sent now, three times: its Connection goes with drop_peer, a
+// queued reliable REJECT would never leave). A guest of any 0.7.x shows "rejected: <text>" and ends its session
+void Session::drop_told(size_t idx, const std::string& text)
+{
+    auto& p = peers_[idx];
+    Reject rej;
+    rej.reason = REJ_KICKED;
+    rej.text = text;
+    Writer w;
+    rej.write(w);
+    uint32_t now = this->now();
+    std::vector<uint8_t> pkt;
+    for (int i = 0; i < 3; i++) {
+        p->conn.send_unreliable(MSG_REJECT, w, true);
+        if (p->conn.build_packet(now + 1000, pkt))
+            tr_->send_to(p->conn.remote, pkt.data(), pkt.size());
+    }
+    drop_peer(idx, 0);
+}
+
+// BUG-1108, host, every update: the drops asked for, the limits (normal play stays far below them) and the peaks
+void Session::limits(uint32_t now)
+{
+    auto peak = [&](uint64_t v, uint64_t& logged, const char* what, uint8_t id) {
+        if (v >= 64 * 1024 && v >= logged * 2) { // a new peak (doubling steps): one line each, for the measurements
+            logged = v;
+            logf(cb, "net limits: new peak %s %llu bytes (player %u)", what, (unsigned long long)v, id);
+        }
+    };
+    for (size_t i = 0; i < peers_.size();) {
+        Peer& p = *peers_[i];
+        if (!p.accepted || p.bye) {
+            i++;
+            continue;
+        }
+        // the 1 s windows of what this guest made the host queue and what it sent
+        uint64_t in = p.conn.stats.rel_bytes_in;
+        p.win_in += in - p.in_seen;
+        p.in_seen = in;
+        if (now - p.win_t >= 1000) {
+            lim_.relay_peak = std::max(lim_.relay_peak, p.win_relay);
+            lim_.in_peak = std::max(lim_.in_peak, p.win_in);
+            peak(p.win_relay, relay_logged_, "queued for the players because of one guest in 1 s:", p.id);
+            peak(p.win_in, in_logged_, "received from one guest in 1 s:", p.id);
+            p.win_relay = p.win_in = 0;
+            p.win_t = now;
+        }
+        size_t q = p.conn.pending_bytes();
+        if (q > lim_.queue_peak) {
+            lim_.queue_peak = q;
+            peak(q, queue_logged_, "reliable backlog of one guest:", p.id);
+        }
+        // the budget: refilled at relay_rate up to relay_burst
+        if (!p.relay_started) {
+            p.relay_started = true;
+            p.relay_tokens = relay_burst;
+            p.relay_t = now;
+        } else {
+            p.relay_tokens = std::min<double>(relay_burst, p.relay_tokens + (double)relay_rate * (now - p.relay_t) / 1000.0);
+            p.relay_t = now;
+        }
+        std::string text;
+        if (p.drop_asked) {
+            lim_.kicks++;
+            logf(cb, "player %u (%s) removed by the host", p.id, p.name.c_str());
+            text = p.drop_text;
+        } else if (g_fix.queue_cap && q > queue_cap) {
+            lim_.queue_drops++;
+            logf(cb, "player %u (%s) dropped: %zu bytes wait for it (limit %zu)", p.id, p.name.c_str(), q, queue_cap);
+            text = "the host closed the connection: too much data was waiting for this game";
+        } else if (g_fix.relay_budget && p.relay_tokens < 0) {
+            lim_.relay_drops++;
+            logf(cb, "player %u (%s) dropped: its messages went over the session's data budget", p.id, p.name.c_str());
+            text = "the host closed the connection: this game sent more data than the session allows";
+        }
+        if (text.empty()) {
+            i++;
+            continue;
+        }
+        const auto g0 = transport_generation_;
+        drop_told(i, text); // the peer is gone: the same index is the next one
+        if (role_ != Role::Host || transport_generation_ != g0)
+            return; // a leave callback ended the session
+    }
 }
 
 bool Session::send_unreliable_to(uint8_t id, uint8_t type, const Writer& w)
@@ -425,9 +621,11 @@ void Session::send_chat_to(Peer& p, const Chat& c)
         Writer wc;
         cut.write(wc);
         p.conn.send_reliable(MSG_CHAT, wc);
+        charge(wc.size());
         return;
     }
     p.conn.send_reliable(MSG_CHAT, w);
+    charge(w.size());
 }
 
 void Session::send_chat(const std::string& text)
@@ -449,6 +647,14 @@ void Session::drop_peer(size_t idx, uint8_t reason)
     auto& p = peers_[idx];
     bool was = p->accepted;
     uint8_t id = p->id;
+    if (was && role_ == Role::Host) { // BUG-1001: when this name dropped (a player without a token may come back by it)
+        uint32_t t = now();
+        auto it = std::find_if(dropped_names_.begin(), dropped_names_.end(), [&](auto& e) { return e.first == p->hello_name; });
+        if (it != dropped_names_.end())
+            it->second = t;
+        else if (dropped_names_.size() < 64)
+            dropped_names_.push_back({p->hello_name, t});
+    }
     logf(cb, "player %u (%s) disconnected (reason %u)", id, p->name.c_str(), reason);
     retired_.push_back(p->conn.conn_id);
     if (retired_.size() > 64)
@@ -474,11 +680,39 @@ static void clean_info(PlayerInfo& pl)
     pl.version = utf8::clean_text(pl.version, kVersionMax);
 }
 
+// BUG-1001 (the owner's rule, plan 0.7.14 decision 7): may this HELLO come back while the host takes no new players?
+// With the token rule on and a token in the HELLO: only by that token (admitted before in this session, no live entry
+// has it now). Without a token (an older SporeCoop, or the token rule off): by its name, only when nobody of that name
+// is in the session now and the name dropped within kRejoinNameMs. Two friends both called "Player" are two players
+bool Session::rejoin_known(const Peer& p, const Hello& h, bool by_token) const
+{
+    auto live = [&](auto&& same) {
+        for (auto& o : peers_)
+            if (o.get() != &p && o->accepted && !o->bye && same(*o))
+                return true;
+        return false;
+    };
+    if (by_token && h.has_token)
+        return std::find(seen_tokens_.begin(), seen_tokens_.end(), h.token) != seen_tokens_.end() &&
+               !live([&](const Peer& o) { return o.has_token && o.token == h.token; });
+    auto it = std::find_if(dropped_names_.begin(), dropped_names_.end(), [&](auto& e) { return e.first == h.name; });
+    return it != dropped_names_.end() && this->now() - it->second <= kRejoinNameMs &&
+           !live([&](const Peer& o) { return o.hello_name == h.name; });
+}
+
 void Session::handle_msg(Peer& p, uint8_t type, Reader& r)
 {
     const auto message_transport = transport_generation_;
     const auto restarted = [&] { return transport_generation_ != message_transport; };
     if (role_ == Role::Host) {
+        // BUG-1108: what the host sends while it handles a joined guest's message is charged to that guest
+        struct Charge {
+            uint8_t& slot;
+            uint8_t was;
+            ~Charge() { slot = was; }
+        } charge_scope{charge_id_, charge_id_};
+        if (p.accepted)
+            charge_id_ = p.id;
         if (type == MSG_HELLO) {
             if (p.accepted)
                 return;
@@ -496,7 +730,8 @@ void Session::handle_msg(Peer& p, uint8_t type, Reader& r)
             // A busy player of the same name (loading, saving) keeps its entry: the token differs
             const bool by_token = unique_names && rejoin_by_name && g_fix.rejoin_token;
             bool dropped_by_token = false;
-            if (by_token && h.has_token && h.proto == kProtoVersion && !(build && h.build && h.build != build))
+            const auto required = compat::required_conflict(h.families, h.has_families);
+            if (!required.any && by_token && h.has_token && h.proto == kProtoVersion && !(build && h.build && h.build != build))
                 for (size_t k = 0; k < peers_.size(); k++) {
                     Peer* o = peers_[k].get();
                     if (o != &p && o->accepted && !o->bye && o->has_token && o->token == h.token &&
@@ -515,12 +750,45 @@ void Session::handle_msg(Peer& p, uint8_t type, Reader& r)
             } else if (build && h.build && h.build != build) {
                 rej.reason = REJ_BUILD;
                 rej.text = "different SporeApp.exe build";
+            } else if (required.any) {
+                rej.reason = REJ_VERSION;
+                rej.text = compat::refuse_text(my_name_, version, h.version, required.family, required.mine, required.theirs);
+                compat_refused_++;
+            } else if (compat::Conflict c = compat::conflict(families, h.families, h.has_families, mode);
+                       g_fix.family_check && c.any) {
+                // B6 (BUG-1137): another revision of a message family the host's stage uses. REJ_VERSION: every 0.7.x
+                // guest shows the text
+                rej.reason = REJ_VERSION;
+                rej.text = compat::refuse_text(my_name_, version, h.version, c.family, c.mine, c.theirs);
+                compat_refused_++;
+                if (cb.compat)
+                    cb.compat(0xFF, compat::not_let_in_text(h.name.empty() ? "a player" : h.name, h.version, version, c.family,
+                                                            c.theirs, c.mine), true);
             } else if (alloc_id() == 0xFF) {
                 rej.reason = REJ_FULL;
                 rej.text = "session is full";
+            } else if (g_fix.join_seen) {
+                // F3 (BUG-0768): the host's player limit and the late-join rule. BUG-1001: a rejoin is the old entry
+                // dropped by its token above, or rejoin_known (its token, or without one a name dropped recently that
+                // nobody has now); a name alone never passes. Every live entry counts, except a silent one of this name
+                // that the name rule below (net.rejoin_token off) retires now
+                bool seen = dropped_by_token || rejoin_known(p, h, by_token);
+                const bool name_rule = unique_names && rejoin_by_name && !by_token;
+                const std::string pname = h.name.empty() ? "guest" + std::to_string(alloc_id()) : h.name;
+                int here = 1; // the host
+                for (auto& o : peers_)
+                    if (o.get() != &p && o->accepted && !o->bye &&
+                        !(name_rule && o->name == pname && this->now() - o->conn.last_recv_ms > 2000))
+                        here++;
+                if (here >= max_players) {
+                    rej.reason = REJ_FULL;
+                    rej.text = "session is full (the host takes " + std::to_string(max_players) + " players)";
+                } else if (!seen && join_closed && join_closed()) {
+                    rej.reason = REJ_STARTED;
+                    rej.text = "the host does not take new players after the start";
+                }
             } else {
-                // F3 (BUG-0768): the host's player limit and the late-join rule. A rejoin (its old entry dropped by its
-                // token, or a name seen in this session, whose silent old entry the name rule below replaces) passes
+                // the rule before BUG-1001: a name seen in this session passes, and its silent entry is not counted
                 bool seen = dropped_by_token ||
                             std::find(seen_names_.begin(), seen_names_.end(), h.name) != seen_names_.end();
                 int here = 1; // the host
@@ -536,6 +804,7 @@ void Session::handle_msg(Peer& p, uint8_t type, Reader& r)
                     rej.text = "the host does not take new players after the start";
                 }
             }
+            if (restarted()) return;
             if (rej.reason) {
                 Writer w;
                 rej.write(w);
@@ -574,14 +843,25 @@ void Session::handle_msg(Peer& p, uint8_t type, Reader& r)
             p.caps = h.caps;
             p.has_token = h.has_token;
             p.token = h.token;
+            p.hello_name = h.name;
+            if (h.has_token && std::find(seen_tokens_.begin(), seen_tokens_.end(), h.token) == seen_tokens_.end()) {
+                if (seen_tokens_.size() >= 64)
+                    seen_tokens_.erase(seen_tokens_.begin());
+                seen_tokens_.push_back(h.token);
+            }
             p.conn.peer_split = (h.caps & CAP_SPLIT) != 0;
             p.version = h.version;
+            p.has_families = h.has_families;
+            p.families = h.families;
             Welcome wl;
             wl.your_id = p.id;
             wl.world = world;
             wl.players = players();
             wl.ext = send_caps;
             wl.host_version = version;
+            wl.families = families;
+            if (!send_families)
+                wl.caps &= ~(uint32_t)CAP_FAMILIES;
             Writer w;
             wl.write(w);
             p.conn.send_reliable(MSG_WELCOME, w);
@@ -604,6 +884,13 @@ void Session::handle_msg(Peer& p, uint8_t type, Reader& r)
         }
         if (!p.accepted)
             return;
+        if (dir_gate_drops(type, g_fix.dir_gate)) { // BUG-1136: a type only the host sends, from a guest
+            dir_drops_++;
+            if (dir_drops_ <= 5 || dir_drops_ % 100 == 0)
+                logf(cb, "player %u sent %s (%u), which only the host sends: dropped (%u so far)", p.id, msg_name(type), type,
+                     dir_drops_);
+            return;
+        }
         switch (type) {
         case MSG_PLAYER_STATE: {
             PlayerState st;
@@ -668,6 +955,25 @@ void Session::handle_msg(Peer& p, uint8_t type, Reader& r)
         Welcome wl;
         if (!wl.read(r))
             return;
+        if (g_fix.name_clean) // BUG-0774 (again below: the conflict text names the host's version)
+            wl.host_version = utf8::clean_text(wl.host_version, kVersionMax);
+        // The fork envelope is mandatory even in menus and with optional campaign family checking disabled.
+        const auto required = compat::required_conflict(wl.families, wl.has_families);
+        const auto optional = compat::conflict(families, wl.families, wl.has_families, 0);
+        if (compat::Conflict c = required.any ? required : optional; required.any || (g_fix.family_check && c.any)) {
+            std::string host_name = "the host";
+            for (auto& pl : wl.players)
+                if (pl.id == 0 && !pl.name.empty())
+                    host_name = utf8::net_name(pl.name);
+            std::string why = "rejected: " + compat::refuse_text(host_name, wl.host_version, version, c.family, c.theirs, c.mine);
+            logf(cb, "%s", why.c_str());
+            compat_refused_++;
+            leave("rejected");
+            if (cb.disconnected) cb.disconnected(why);
+            return;
+        }
+        p.has_families = wl.has_families;
+        p.families = wl.families;
         my_id_ = wl.your_id;
         welcome_world_ = wl.world; // BUG-0231: the host's world before its first state
         welcomed_ = true;
@@ -748,6 +1054,9 @@ void Session::handle_msg(Peer& p, uint8_t type, Reader& r)
         if (g_fix.state_roster && std::none_of(roster_.begin(), roster_.end(),
                                                [&](const PlayerInfo& x) { return x.id == st.id; }))
             break;
+        if (st.id == 0 && (!host_state_seen_ || st.mode != host_mode_seen_) && !host_compat(p, st.mode))
+            break; // B6: left (the host's stage uses a family of another revision)
+        if (restarted()) return;
         cb.player_state(st);
         break;
     }
@@ -765,6 +1074,69 @@ void Session::handle_msg(Peer& p, uint8_t type, Reader& r)
     default:
         if (cb.custom)
             cb.custom(type, 0, r);
+    }
+}
+
+std::vector<FamilyRev> compat_families() { return compat::my_families(); }
+
+// B6 (BUG-1137), guest: the host's state names a stage (its first state, or a stage change). The first one decides the
+// join: a family of another revision that stage uses ends it with the text (a host of 0.7.15 or later refused such a
+// guest already; this is for an older host, which sends no revisions); a later change only warns, once per family.
+// false: the session ends
+bool Session::host_compat(Peer& p, uint32_t host_mode)
+{
+    const bool first = !host_state_seen_;
+    host_state_seen_ = true;
+    host_mode_seen_ = host_mode;
+    compat::Conflict c = compat::conflict(families, p.families, p.has_families, host_mode);
+    if (!g_fix.family_check || !c.any)
+        return true;
+    if (first) {
+        std::string why = "rejected: " + compat::refuse_text(p.name.empty() ? "the host" : p.name, p.version, version, c.family,
+                                                             c.theirs, c.mine);
+        logf(cb, "%s", why.c_str());
+        compat_refused_++;
+        leave("rejected");
+        if (cb.disconnected) cb.disconnected(why);
+        return false;
+    }
+    if (std::find(compat_warned_.begin(), compat_warned_.end(), c.family) == compat_warned_.end()) {
+        compat_warned_.push_back(c.family);
+        std::string t = compat::stage_warn_text(p.name.empty() ? "the host" : p.name, p.version, c);
+        logf(cb, "%s", t.c_str());
+        if (cb.compat)
+            cb.compat(0, t, false);
+    }
+    return true;
+}
+
+// B6 (BUG-1137), host: its stage changed; a guest whose families of that stage differ gets a warning (both games), once
+// per guest and family
+void Session::stage_compat()
+{
+    if (role_ != Role::Host || mode == host_mode_seen_)
+        return;
+    host_mode_seen_ = mode;
+    if (!g_fix.family_check)
+        return;
+    const auto generation = transport_generation_;
+    const auto peers = peers_;
+    for (const auto& o : peers) {
+        if (!o->accepted || o->bye)
+            continue;
+        compat::Conflict c = compat::conflict(families, o->families, o->has_families, mode);
+        uint32_t key = ((uint32_t)o->id << 8) | c.family;
+        if (!c.any || std::find(compat_warned_.begin(), compat_warned_.end(), key) != compat_warned_.end())
+            continue;
+        compat_warned_.push_back(key);
+        std::string t = compat::stage_warn_text(o->name, o->version, c);
+        logf(cb, "%s", t.c_str());
+        if (cb.compat)
+            cb.compat(o->id, t, false);
+        if (transport_generation_ != generation) return;
+        Writer w; // the guest (any version) sees the host's line too: a notice is shown by every 0.7.x
+        w.str8(compat::stage_warn_text(my_name_, version, compat::Conflict{true, c.family, c.theirs, c.mine}));
+        o->conn.send_reliable(MSG_NOTICE, w);
     }
 }
 
@@ -815,7 +1187,7 @@ bool Session::flush_pending(uint64_t expected_transport)
 }
 
 // BUG-0778: does a datagram (looks_valid already) carry a HELLO that reads? Only such a datagram opens a peer
-bool Session::carries_hello(const uint8_t* data, size_t n)
+bool Session::carries_hello(const uint8_t* data, size_t n, Hello* out)
 {
     Reader r(data, n);
     r.skip(4 + 2 + 4 + 2 + 2 + 16); // magic, protocol, connection, seq, ack, ack bits
@@ -830,8 +1202,11 @@ bool Session::carries_hello(const uint8_t* data, size_t n)
         if (type == MSG_HELLO && (flags & 1) && !(flags & 2)) {
             Reader hr(r.cur(), len);
             Hello h;
-            if (h.read(hr))
+            if (h.read(hr)) {
+                if (out)
+                    *out = h;
                 return true;
+            }
         }
         r.skip(len);
     }
@@ -889,6 +1264,8 @@ void Session::update()
     for (auto& p : peers_) { p->send_packets = 0; p->send_burst = 0; }
     uint32_t now = this->now();
     if (lookup_ && !poll_lookup(now)) return;
+    stage_compat(); // B6 (BUG-1137): stage changes warn on campaign families.
+    if (transport_generation_ != update_transport || role_ == Role::None) return;
     uint8_t buf[2048];
     for (auto& p : peers_) // BUG-0651: when this game read the socket before
         p->conn.poll_prev_ms = last_poll_ms_;
@@ -896,6 +1273,10 @@ void Session::update()
     for (int i = 0; i < 256; i++) {
         Endpoint from;
         int n = tr_->recv_from(from, buf, sizeof buf);
+        if (n == kRecvSkipped && g_fix.recv_skip_big) { // BUG-1007: one datagram too big, the next ones are still read
+            recv_skipped_++;
+            continue;
+        }
         if (n <= 0)
             break;
         uint32_t magic = 0;
@@ -932,6 +1313,29 @@ void Session::update()
             if (g_fix.halfopen_cap && !carries_hello(buf, (size_t)n)) {
                 halfopen_refused_++;
                 continue;
+            }
+            if (p && p->accepted) {
+                Hello candidate;
+                // Admission failure must not retire the existing connection before handle_msg can reject it.
+                if (!carries_hello(buf, (size_t)n, &candidate) || candidate.proto != kProtoVersion ||
+                    (build && candidate.build && build != candidate.build) ||
+                    compat::required_conflict(candidate.families, candidate.has_families).any) {
+                    replace_refused_++;
+                    continue;
+                }
+            }
+            if (p && p->accepted && g_fix.replace_checked) {
+                // BUG-1003: a joined guest goes only for the same game (its rejoin token) or once its own connection
+                // has been silent for 2 s (the old game is gone); until then the new HELLO waits (it is sent again)
+                Hello nh;
+                bool hello = carries_hello(buf, (size_t)n, &nh);
+                bool same = hello && nh.has_token && p->has_token && nh.token == p->token;
+                if (!same && now - p->conn.last_recv_ms <= 2000) {
+                    if (replace_refused_++ < 5 || replace_refused_ % 100 == 0)
+                        logf(cb, "a new connection from %s waits: player %u is live (%u so far)", from.masked().c_str(), p->id,
+                             replace_refused_);
+                    continue;
+                }
             }
             if (p) {
                 // the same address and port with a new connection id: the guest left and joined
@@ -998,6 +1402,9 @@ void Session::update()
             } else
                 i++;
         }
+        limits(now);
+        if (role_ == Role::None || transport_generation_ != update_transport)
+            return;
     }
     flush(now);
 }

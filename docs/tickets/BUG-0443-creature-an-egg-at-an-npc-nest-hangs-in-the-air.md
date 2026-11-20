@@ -13,7 +13,7 @@ branch: fix/w35-egg-kick
 commits: 6f02d3b 86062d1f
 tests: tools/tests/coop_nest_eggs_air.py (suite nest_eggs_air)
 signature:
-docs: docs/re/creature.md#creature-egg-gravity, docs/known-issues.md#issue-nest-eggs-floating, docs/06-testing.md#testing-nest-eggs-air
+docs: docs/re/creature.md#creature-egg-gravity, docs/archive/known-issues-2026.md#issue-nest-eggs-floating, docs/06-testing.md#testing-nest-eggs-air
 related: BUG-0384
 ---
 
@@ -68,3 +68,4 @@ guest's copy lies on its surface.
 - 2026-11-01: opened.
 - 2026-11-01: eggs without gravity found and fixed with `nest.egg_ground` on fix/w35-egg-kick (lane 4).
 - 2026-11-02: released in 0.7.3.4.
+- 2026-11-15: switch `nest.egg_ground` retired in 0.7.15 (B1, BUG-1138): the old code path is gone, FAIL run 20261101-184259:nest_eggs_air on record; its test runs PASS-only.

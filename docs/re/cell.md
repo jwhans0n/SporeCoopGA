@@ -624,7 +624,7 @@ for verification and its limits.
   as the game's does. Before, the arguments were swapped and nothing was checked. `coop.pool fix
   guestbite 0|1`; test helper `coop.pool npcflag c<key> spare|invuln 0|1 | hp <n>` (host).
 * Knockout helpers (BUG-0131): `nearest_partner` skips partners whose knockout state is KO_OUT
-  (`coop.pool fix rescue 0|1`); `coop.pool selfhit <dmg>` bites our own cell (tests).
+  (switch pool.rescue, retired in 0.7.15); `coop.pool selfhit <dmg>` bites our own cell (tests).
 
 ## Knockout grace, meals while the host is away, IsDamageable's resource part (2026-10-28, fix/w5-cell)
 <a id="cell-ko-grace"></a>
@@ -823,7 +823,7 @@ BUG-0174 / BUG-0279 (a guest far from the host swam in an empty pool). GOG 2024,
   and goes (a level change flushes all our tiles), the shadow is populated right then (`hand_over`):
   without it the host's own area stayed empty after a level-up (`cell_new_game`, the host found no
   meat on its screen, lab 20261030-022912).
-* The fix (`coop.fix cell.partner_tiles`, cellsync.cpp `h_PopTiles`): on the host, after the game's
+* The fix (`coop.fix cell.partner_tiles` (retired in 0.7.15), cellsync.cpp `h_PopTiles`): on the host, after the game's
   own pass, one more PopulateTiles call per partner with a list of our own and the 12 view-box floats
   moved by (partner cell - host box centre), restored right after. `h_PopTile` populates a tile that
   another list (the host's or another partner's) already holds only once (and remembers the skipped
@@ -909,7 +909,7 @@ lanes 2 / 3 with four players (`tools/tests/coop_cell_4p.py`, suite `cell_4p`).
 * ✔ Where the cells came from: at level 4 the host alone with three partners next to it held ~1400
   to 2200 cells; with the partners 200 m apart (BUG-0174's partner passes, one screen of tiles each)
   it grew past 4000; and a guest got every host cell within 120 m of itself (up to 3140 mirrors).
-* The bound (`coop.fix cell.budget`, cellsync.cpp): (1) a partner's tile is populated only while the
+* The bound (`coop.fix cell.budget` (retired in 0.7.15), cellsync.cpp): (1) a partner's tile is populated only while the
   host has fewer than 1100 live cells (kPopCap; first 1400: host peak 1714, lab 20261030-053258; then 1250: peaks 1759-1776, lab 20261030-063326) (`G+0x1C+0xC`); the others are kept as empty tiles ("starved")
   and populated, 4 per frame, when the pool has room; a tile on the partner's own screen waits
   only above 1300 (kPopCapScreen; `partner_core`: IsTileActive reads the gameplay range as the visible box
@@ -950,7 +950,7 @@ lanes 2 / 3 with four players (`tools/tests/coop_cell_4p.py`, suite `cell_4p`).
   per frame while the list held 12), then 90 s later the level-up's RemoveCellsOfOldScale crashed in
   PopulateTile+0x8A. `coop.pool nanself` (tests) makes the same state: without the guard the
   guest's game hung after the level-ups (hang report, lab 20261030-055502). The guard
-  (`coop.fix cell.nan_guard`): no PopulateTiles / PopulateTile while the own view boxes are not
+  (`coop.fix cell.nan_guard` (retired in 0.7.15)): no PopulateTiles / PopulateTile while the own view boxes are not
   finite, and the own cell is written back to its last finite position (`+0x4C`, `+0x84`, the
   soft-body particles `G+0x4108` on a ring of 0.4 x size around it, at rest). ? Where the NaN came
   from is still not known (the guest held 900 mirrors, none NaN).
@@ -994,7 +994,7 @@ BUG-0306. GOG 2024, Ghidra (REA), lab 20261030-104149 campaign#2 (host, 4 player
   follower's 0xE70E30 clears the copy, sets `+0x238 = 0`, calls PickTargets at once, copies the dead
   target again and faults again: 8616 faults in 5 min at the host's frame rate, every cell after
   the follower frozen on the host, until the stage was left.
-* Fix (`coop.fix cell.pick_guard`, cellsync.cpp h_PickTargets, both roles, puppets left alone):
+* Fix (`coop.fix cell.pick_guard` (retired in 0.7.15), cellsync.cpp h_PickTargets, both roles, puppets left alone):
   after PickTargets a flee / chase target that is not a live cell is dropped with its timer, as
   0xE70E30 would do one frame later. `coop.pool` prints `stale_targets=` (cell_contacts line);
   `coop.pool staletarget [n]` (tests, host) makes n group leaders chase a dead cell and rest 60 s.
@@ -1102,7 +1102,7 @@ report) and `tools/tests/coop_cell_sap.py` (suite `cell_sap`). Answers the "? No
   (the own cell stops, 500-750 ms per fault on Wine, lab: 2642 faults in 40 s), the stack above is
   overwritten.
 * ✔ Reproduced: `coop.pool column 1100` on a host with ~1300 cells (food 300) puts 1100 cells on one
-  40 m line: `coop.fix cell.sap_sweep off` -> the same fault signature at once (esp=0012D394, small
+  40 m line: `coop.fix cell.sap_sweep off` (retired in 0.7.15) -> the same fault signature at once (esp=0012D394, small
   EIPs, edi=01639470), the host's cell stops, a guest lost its mirrors (lab 20261031-075501).
 * The fix `cell.sap_sweep` (cellsync.cpp `h_UpdatePairs`, hook on 0xBBB450): the same two
   MergeAxis calls, the same sweep with the open list in a heap vector, the same pair test (the
@@ -1349,7 +1349,7 @@ BUG-0355. GOG 2024, Ghidra and `tools/tests/coop_cell_spare.py` (suite `cell_spa
 <a id="cell-ko-eat"></a>
 
 * ✔ observed (BUG-0364, lab 20261101-023131 cell_coop; reproduced by cell_ko_food with
-  `coop.fix cell.ko_no_eat off`, lab 20261101-093513 and 20261101-094736): the knockout
+  `coop.fix cell.ko_no_eat off` (retired in 0.7.15), lab 20261101-093513 and 20261101-094736): the knockout
   (`go_down` / `downed_tick`: hp held at 1, invulnerable, `stop_at` its spot every frame) does not
   stop the game's contact events. EatFood 0xE7DF40 (event 0x12) still ran for the avatar: OnEat ->
   AvatarEat -> AddFoodPoints, +12 per plant, shared with the partner, the plant shrank or was
@@ -1712,7 +1712,7 @@ BUG-0480. GOG 2024, lane 7, `coop_cell_gone.py --case play` (cold starts), Ghidr
   **0xE7C3E6 only** (470-471 per run), in CellPhysicsStep 0xE7C080 (Ghidra): after the step, `ShouldCullCell`
   0xE5F8C0 and the keep-alive byte +0x354 == 0 -> DestroyCell(idx, 0, dt, 0). ShouldCullCell: never for level -1;
   a cell more than one level under the food-progress level only fades; else true when its parent tile +0x36C is
-  deleted and IsTileActive 0xE5F810 (our h_TileActive, with every player's box) refuses the tile of its position.
+  deleted (~ superseded (2026-11-13): +0x36C is a parent CELL, see docs/re/cell.md#cell-levelup-cull-measured) and IsTileActive 0xE5F810 (our h_TileActive, with every player's box) refuses the tile of its position.
   So the tile they were made for went (the view moved: the test teleports both cells 20 m a round) and their own
   tile was outside every box: the game's own streaming at the edge of the gameplay range (twice the visible box),
   in single player too. Not changed.
@@ -2276,3 +2276,132 @@ BUG-0975. GOG 2024, Ghidra and lanes 6 / 7.
   mirrors) had no fault with the cap alone. A hold for the whole descent (G+0x514C > G+0x5150) also held the
   one-level falls of cell_levelup_view (-150) and the guest lost more of its screen there (78-82 %, labs
   20261112-201333); the hold stops at one level above, so a one-level fall runs as in the game.
+
+## Loot tables, KillCell's death alert, mirrors that go NaN (2026-11-13, fix/w49-cell)
+<a id="cell-loot-alert"></a>
+
+BUG-1004, BUG-1008, BUG-1006, BUG-0999. GOG 2024, Ghidra (out/ghidra-2024) and lanes 4 / 5.
+
+* ✔ (Ghidra) **SpawnLoot 0xE771D0's table**: `GetData(lootTable)` gives `{entries*, count, radius min, radius max,
+  +0x10 ?, +0x14 speed, +0x18 flag, +0x1C flag (the "not on screen" test), +0x20 ?}`. An entry is 0x1C bytes: +0 type
+  (0 nothing, 1 cells, 2 repeat), +4 the cell resource key, +8 the sub-table of a repeat, +0xC float weight, +0x10 base
+  count, +0x14 random range (RandomInt), +0x18 level offset. One entry is picked by weight; type 1 makes `+0x10 +
+  RandomInt(+0x14)` cells through 0xE76480 and appends each to `outIdx` when given (no bound; a failed create appends
+  its 0 too); type 2 calls SpawnLoot again with the sub-table and the same list. The break event 0xE7ADD0 passes the
+  global table `0xE4CC90(7)` (not the creature's own `res+0xD4`, which KillCell uses through 0xE52A20).
+* ✔ (Ghidra) **KillCell 0xE7A4A0's death alert 0xE71F00** (cdecl `void(cell* victim, u32 killerIdx)`): reads the
+  victim's AI block (difficulty G+0x5190+0x7C: 0 -> res+0x248, 2 -> res+0x194 when not -1, else res+0xE0); only when
+  the block's float **+0x2C** is not 0, FindCellsInRadius(victim pos, table[..] / world scale x +0x2C / 30) and every
+  cell there with the **same resource ref** (+0x108, not the model key) gets flee target **+0x220 = killer**, flee time
+  +0x21C = block +0x34, and 0xE70950(cell, killer) (the flee start). The fixture's level-1 kinds have +0x2C = 0: their
+  kills alert nobody (runtime, lane 4: 4 cells of the kind 3 m round the victim kept flee 0).
+* `coop.pool npcflag c<key> alert <r>` (tests) sets +0x2C of the kind's AI blocks; `coop.pool herd c<key> <n>` puts
+  cells of the same resource round it; `coop.pool targets <idx,...>` prints +0x220 / +0x21C / +0x22C.
+* ✔ (runtime, BUG-1006) A guest's mirror whose particles are NaN never recovers without a repair: lab
+  20261113-022529 (`cell.mirror_nan_heal off`) still had non-finite fields 0x284 after 1 s and 0x385 after 3 s
+  (particle positions, then the centre, velocity and matrix: cell_move adds `want - pos` with pos NaN).
+* ✔ (code, BUG-0999) the host's view set is empty whenever its own view box centre fails views::finite_pos: with
+  cell.nan_guard on that is still reachable with both x edges at exactly 1e7 (view_bad refuses only > 1e7).
+
+## A level change round a partner in the host's game; the rescale and the food drain (2026-11-13, fix/w49-cell2)
+<a id="cell-levelup-partner-area"></a>
+
+BUG-1064, BUG-1066. GOG 2024, Ghidra (out/ghidra-2024) and lanes 2 / 3.
+
+* ✔ (Ghidra) the cell cull **0xE5F8C0** (cdecl `bool(cell*)`, called from the cell update 0xE7C080 at 0xE7C3AF): a
+  cell with level +0x358 == -1 is kept; a cell whose level + 1 is below the current level (0xE4EE40) gets target size
+  +0xB4 = 0 (it shrinks away: the old tier of an up change; its DestroyCell comes from 0xE7BFB0, return address
+  0xE7C03C); else, with no +0x36C parent, the tile under it {fg / bg, level, floor(pos / tile size)} (tile size
+  TileSizes[level] / world scale x step 0xE51FD0 x 0.85, as PopulateTiles) goes to IsTileActive, and when that says no
+  (and +0x354 is 0, and it is not G+0x51B0) 0xE7C080 destroys it (DestroyCell return address **0xE7C3E6**). So the
+  cells kept round a partner during a level change are the ones whose tile is inside a box of `g_view_boxes`
+  (h_TileActive's union), recomputed every frame from the view centres.
+* ✔ (runtime, `coop.pool areas`, `coop_cell_levelup_area.py`, the guest 60 m left of and 40 m below the host) per
+  change in the host's game the cells of its own visible box and of the same box round the partner: on an up change
+  nearly all are removed by 0xE7C03C (the old tier), on a down change by the cull 0xE7C3E6. With the partner's view
+  centre as it came the host's game lost more round the partner: down 52 % against 10 % of its own (lab
+  20261113-044709). Cause, measured (`centre_err`): coop.cpp noted the partner's centre (`views::note`) from its
+  state's pose, which is in the PARTNER's world scale (BUG-0519); each world rescales over ~3.5 s at its own moment
+  (and the state is sampled ~0.1 s late), so while the scale moved the centre was 17-37 m from where the host's game
+  draws the partner's cell (settled: 0-7 m), and the cull took the cells round the partner whose tiles were then
+  outside every box. Fix `cell.view_centre_scale` (coop.cpp view_pos): the centre times partner scale / own scale,
+  as cell_drive draws the cell (BUG-0519). With it the error is 0.7-3.6 m and the partner's area lost down 11 %
+  against 20 % (lab 20261113-044709-2), but in later runs still 28 / 16 %, 87 / 24 %, 74 / 22 % (labs
+  20261113-071833, -123921, -123921-2): the centre was one cause, not the only one (BUG-1064 open, known-issues
+  #issue-cell-first-down-partner).
+* ✔ (runtime) the Cell fixture's host sits near the level's right edge (x ~100 at world scale 0.5): `coop.pool tp 200
+  0` left the guest 5 m from the host (clamped), so the two areas were one. +-150 food is one world-scale step here
+  (0.5 <-> 1.5: distances to a third and back), and the host's view box (the camera) trails its cell by up to 40 m
+  right after a down change.
+* ✔ (runtime, BUG-1066) `food_drain` (BUG-0633: the food of a partner or of the shared total, applied inside the
+  step) runs in h_WorldScale right before the game's WorldScaleStep; its AddFoodPoints sets the target scale
+  G+0x5150, so the very step it runs in rescales (0xE6DB70 empties the host's list cCellGame+0x4128 and fills it from
+  every tile object of the pool, the last object of a key wins). The flush of our tiles looked at `scale_moving()`
+  before the drain: our tiles were in the pool for that first rescale, our shadow of a shared key replaced the host's
+  own populated tile in the host's list, h_PopTiles took ours out again (`unshared`, 15 a change) and the host's own
+  tile objects of those keys stayed live in no list (pool live 55, list entries 40), never deleted by anyone. The
+  tile check (`tiles_check`) logged it and its 21-warning budget was gone after two changes. Fix
+  `cell.scale_food_flush` (cellsync.cpp h_WorldScale): the flush runs after the drain. With it 0 unshared, 0
+  mismatches in 6 changes (lab 20261113-033642); off: 15 per change, 21 warnings (lab 20261113-033642-2).
+
+## The cull round a partner on a level down, measured with the areas apart (2026-11-13, fix/w49-cell3)
+<a id="cell-levelup-cull-measured"></a>
+
+BUG-1064 (the rest after `cell.view_centre_scale`). GOG 2024, objdump of `SporeApp.exe`, lanes 2 / 3 / 6 / 7,
+`coop.pool areas` (now also per ring of the box, the cull of each marked cell, `coop_cell_levelup_area.py`).
+
+* ✔ (objdump) **IsTileActive 0xE5F810** {layer, level, x, y}: the level within `[T - 1, T + 5]` (`level + 1 >= T`,
+  T the table entry 0x1483B54 + 0x1C per row for the food progress, 0x1483DA0 at food 1000); x, y within the range
+  of **0xE5F610** (layer in EAX, level in ESI): layer 0 the visible box (ViewBoxes 0..5) doubled about its centre,
+  layer 1 the background box (6..11), both divided by the tile size `TileSizes[level] / G+0x514C x step(0xE51FD0) x
+  0.85` and rounded outwards (floor / ceil): the active range is whole tiles, so how much of a box's surroundings
+  stays active depends on where its centre sits in the tile grid.
+* ✔ (objdump) CORRECTION (2026-11-13, fix/w49-cell3): ShouldCullCell's **+0x36C is a parent CELL** (the handle is
+  looked up in the cell pool G+0x1C, `cObjectPool_::GetIfNotDeleted` 0xB722E0), not a parent tile: a cell whose
+  parent cell lives is never culled. (The note "its parent tile +0x36C is deleted" in the section on cells destroyed
+  < 2 s after their first send, and the .sym entry, said tile.) In the test areas no marked cell had a live parent.
+* ✔ (runtime, 22 runs) negative: on a +-150 change the tile cap (BUG-0975, `tiles_overflow`) skipped no pass, and the
+  partner boxes the cull read were always built in the same frame (`stale=0`): not a stale box.
+* ✔ (runtime) while a down change rescales, the noted partner centre (views::note, state pose x scale ratio) trails
+  the partner's cell as the host's game draws it by 0.5-2.6 m towards the origin (every position moves away from it
+  at up to ~35 m/s; a state comes every ~0.1 s). Asked with the host's box moved onto the drawn cell, IsTileActive
+  would have kept 130 of 217 culled partner cells (boundary tiles), the host's own box on its cell 84 of 321 (labs
+  20261113-164346 .. -164352). Tried as `cell.view_centre_drawn` (the partner's box on its puppet cell): those culls
+  went to ~0, but the pooled loss did not change, with the areas together (labs 20261113-165344 .. -165350) or apart
+  (-170542 .. -170548, off / on alike): the cells the rescale pushes outwards leave the range a few frames later
+  anyway. Not shipped.
+* ✔ (runtime) the test's earlier excess was its own: one `coop.pool tp -60 -40` right after the start did not hold,
+  the guest was 1-8 m from the host at the marks in every lab of fix/w49-cell2 (20261113-044709-2, -071833,
+  -123921, -123921-2, -162634-2), so the partner's area was only the band of its box outside the host's box: the
+  outer cells, which a down change (positions x 3 about the origin, the box fixed) pushes out of the doubled range
+  first, while the host's area (with the overlap) had both boxes. Per ring of the box (sixths of the half size, down
+  changes, labs 20261113-165909 .. -165915) the cull took 0 % inside 3/6, then host 3 / 15 / 31 / 53 %, partner
+  2 / 13 / 49 / 75 %; the partner's area held 48 % of its cells in the outer two rings, the host's 37 %.
+* ✔ (runtime) with the guest 70 m (scale 0.5) / 30 m (1.5) away before each change and the host's camera on its
+  cell, 20 runs (labs 20261113-170542 .. -171723): one area loses 2-57 % of its cells in one down change, the host's
+  as much as the partner's; pooled per run partner minus host -38 .. +9 points on the down changes (mostly well
+  below 0), -14 .. +17 on the up changes (the old tier fading 0xE7C03C, decided by a cell's level). The rest is the game's own cull at the
+  edge of a whole-tile range, the same round the host.
+* ✔ (runtime) a still cell's camera (CameraUpdate moves it only at 1.5 x the avatar's speed) stays where a level
+  change's rescale left it: the host's visible box 7-40 m off its cell after a change in 2 of 8 runs, still 6-7 m
+  off a second after `coop.pool camsnap` at some marks. Single-player behaviour.
+
+## The mate is culled with the tiles; the hatch holds the input lock (2026-11-15, fix/w51-cell)
+<a id="cell-mate-cull"></a>
+
+BUG-1186. GOG 2024, lane 7, `coop.pool mate` (now with `from_host=(dx dy)` and `gone_by=<DestroyCell return address>`).
+
+* ✔ (runtime) The mate `G+0x51D4` is NOT spared by the cell cull of CellPhysicsStep 0xE7C080 (ShouldCullCell
+  0xE5F8C0, DestroyCell return address **0xE7C3E6**; the step spares only `G+0x51B0` and a cell with its keep-alive
+  byte +0x354): the visibility step's 0xE5CDE0 spares the mate (section 8, SoftBodyLod in the .sym), this one does
+  not. A guest that called its mate and then jumped 25 m to the other side (`coop.pool tp 25 0` with the mate on the
+  host's -x side, ~40 m from the cell) lost the mate within 0.5 s, `gone_by=0x00E7C3E6` (labs 20261115-232616 #1 / #3);
+  on the same side it stayed alive (#2, and 20261115-233205 x3 with the jump towards the mate). Single-player rule: a
+  mate whose tile leaves the active range goes, as any cell. Lab runs before 2026-11-02 kept a mate on the far side
+  (cell_editor_timed's left-side mates of 20261030-133815, 20261101-162501 survived); not traced which change since
+  made the guest's active range smaller there (inferred: the guest's own tile pass and boxes, BUG-0174 / BUG-1064).
+* ✔ (runtime) After a load the own cell hatches with the game's input lock on (`coop.uistate` input_lock=1, the
+  trace's `input_lock=1`) for ~5.5 s after the Cell stage is entered on a guest at load 25-30 (lab 20261115-231325:
+  Cell at s 6.1, still locked at s 10.1, `cell: our new cell joined the host` at s 11.6, which waits for the lock).
+  A swallow (`coop.pool swallow`, the executor 0xE7E7F0 kind 10) run inside it never reached SwallowWhole 0xE7D880
+  (`swallows_marked` 2 of 3, the first one's mirror never destroyed on the guest), the same after the lock 3 of 3.

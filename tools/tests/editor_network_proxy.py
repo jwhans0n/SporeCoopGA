@@ -31,8 +31,8 @@ class Profile:
 
 
 def messages(data):
-    """Validate the reviewed protocol16..29 transport envelope."""
-    if len(data) < 31 or data[:4] != b'SPCO' or not 16 <= struct.unpack_from('<H', data, 4)[0] <= 29:
+    """Validate the reviewed protocol16..30 transport envelope."""
+    if len(data) < 31 or data[:4] != b'SPCO' or not 16 <= struct.unpack_from('<H', data, 4)[0] <= 30:
         return []
     connection = struct.unpack_from('<I', data, 6)[0]
     offset, result = 31, []
@@ -126,7 +126,7 @@ class EditorProxy:
                 if len(self.seen[direction]) > 8192:
                     self.seen[direction].popitem(last=False)
             version = struct.unpack_from('<H', data, 4)[0]
-            editor_kind = 71 if version >= 29 else 66 if version >= 27 else 62 if version >= 24 else 53
+            editor_kind = 73 if version >= 30 else 71 if version >= 29 else 66 if version >= 27 else 62 if version >= 24 else 53
             if kind == editor_kind and len(payload) > 42 and payload[9] == 1:
                 stats['editor_messages'] += 1
                 stats['editor_payload_bytes'] += len(payload)

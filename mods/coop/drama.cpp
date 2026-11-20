@@ -5,8 +5,9 @@
 // The host owns the world: on a guest its own Drama Manager does not start the events of the kinds
 // in the mask (default: the UFO). The sea monster stays: it is the guest's own avatar's deep-water
 // death, which keeps a swimmer from leaving the island (docs/re/creature.md#creature-drama-events).
-// `coop.fix creature.guest_events off`: a guest starts every event as before (0.7.4).
 #include "drama.h"
+#include "call_guard.h"
+#include "lifecycle.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -22,17 +23,27 @@ static const SkHost* H;
 static SkMod* M;
 static const net::Session* S;
 
-static bool g_guest_events_fix = true;
-COOP_FIX("creature.guest_events", "BUG-0486", g_guest_events_fix,
-         "creature: a guest's own game starts no UFO visit (Drama Manager event of the host's world)");
-
 // event kinds of cDramaManager (0xD4E020): 0 ?, 1 night predator, 2 UFO abduction, 3 meteor strike,
 // 4 baby game, 5 rain storm, 6 sea monster, 7 creature attack, 8 summon creature
 static const char* kKind[9] = {"kind0", "night_predator", "ufo", "meteor", "baby_game", "rain",
                                "sea_monster", "creature_attack", "summon"};
 static unsigned g_mask = 1u << 2;
 static unsigned g_started[9], g_refused[9];
+// tests (BUG-1188, `coop.drama hold <hex mask>`): this game's Drama Manager starts no event of these kinds (any role)
+// until the world changes; tribe_duet holds the creature attack, whose attacked village is the test's NPC village
+static unsigned g_test_hold, g_held[9];
+WORLD_STATE("drama.test_hold", nullptr, [] { g_test_hold = 0; }, []() -> size_t { return g_test_hold != 0; });
 static void* g_last_event[9];
+// BUG-1059: the last events belong to the drama manager of their world (coop.drama read them after a load)
+WORLD_STATE("drama.last_events", nullptr, [] {
+    for (auto& e : g_last_event)
+        e = nullptr;
+}, []() -> size_t {
+    size_t n = 0;
+    for (void* e : g_last_event)
+        n += e != nullptr;
+    return n;
+});
 
 static bool is_guest() { return S && S->role() == net::Role::Client && S->connected(); }
 
@@ -54,6 +65,7 @@ static unsigned g_flock_relayed, g_flock_refused;
 static bool g_flock_forget = true;
 COOP_FIX("creature.flock_forget", "BUG-0800", g_flock_forget, "creature: the host's own Summon Flock after a guest's follows the host (the guest's summon event is forgotten)");
 static bool g_in_summon_for = false; // summon_for is starting the event for a puppet now
+CALL_GUARD("drama.summon_for", g_in_summon_for); // BUG-1047
 static unsigned g_flock_forgotten;
 
 // W2 (BUG-0564): in Tribe a guest's own game started a creature attack on a village (kind 7) of its own world:
@@ -64,6 +76,53 @@ static unsigned g_flock_forgotten;
 static bool g_guest_attacks_fix = true;
 COOP_FIX("tribe.guest_attacks", "BUG-0564", g_guest_attacks_fix,
          "tribe: a guest's own game starts no creature attack on a village (Drama Manager event of the host's world)");
+
+// BUG-1078: the creature attack event (kind 7) keeps its attacked tribe as a counted reference (object property
+// 0x5F11333): SpawnNpcTribe hands it the Nth NPC tribe the game makes (DramaManager_NoteNpcTribe 0xD516B0). A guest's
+// game makes NPC tribes for the host's (the member sync) and the re-alignment destroys the ones the host's world has
+// not any more (realign.villages, tribe::remove_village after the host's game over and reload): the event's reference
+// keeps the destroyed tribe object, without its hut. On a guest the event is held back (tribe.guest_attacks); once
+// the game is alone (the guest left, or the host did) it starts, and its start (CreatureAttackEvent_Start 0xD51BE0)
+// reads the hut's combatant without a check: 0xD521BA, data 0x120. Before a creature attack starts, an attacked
+// tribe whose place the start reads (its second tool, else its hut) is gone is forgotten (the game's own setter with
+// null): the start takes the tribe of its other branch (the tribe list at its picked index) or none.
+// `coop.fix tribe.attack_target off`: the start reads the stale tribe (0.7.13).
+static bool g_attack_target_fix = true;
+COOP_FIX("tribe.attack_target", "BUG-1078", g_attack_target_fix,
+         "tribe: a creature attack whose attacked village is gone (removed by the re-alignment) forgets it before it starts");
+static uintptr_t a_EvGetObj, a_EvSetObj;
+static unsigned g_targets_dropped;
+constexpr uint32_t kAttackTribeKey = 0x5F11333, kTribeType = 0x4F396A66;
+
+static void* attack_tribe(void* ev)
+{
+    return ev && a_EvGetObj ? skg::thiscall<void*>(a_EvGetObj, ev, kAttackTribeKey, kTribeType) : nullptr;
+}
+
+// what CreatureAttackEvent_Start reads of the attacked tribe: tools (vt 0xBC) [1] when it has more than one, else the
+// hut (vt 0xAC); null: the start would fault
+static void* attack_place(void* tribe)
+{
+    if (!tribe || !skg::readable(tribe, 0x370))
+        return nullptr;
+    void* hut = skg::vcall<void*>(tribe, 0xAC / 4);
+    void** tools = skg::vcall<void**>(tribe, 0xBC / 4);
+    if (tools && skg::readable(tools, 8) && (void**)tools[1] - (void**)tools[0] > 1)
+        return ((void**)tools[0])[1];
+    return hut;
+}
+
+static void drop_stale_attack_tribe(void* ev, const char* why)
+{
+    void* t = attack_tribe(ev);
+    if (!t || attack_place(t) || !a_EvSetObj)
+        return;
+    bool alive = game::object_alive(t);
+    skg::thiscall<void>(a_EvSetObj, ev, kAttackTribeKey, (void*)nullptr);
+    g_targets_dropped++;
+    H->log(M, SK_INFO, "drama: the creature attack's village %p is gone (no hut, %s): forgotten before %s (tribe.attack_target, BUG-1078)",
+           t, alive ? "listed alive" : "destroyed", why);
+}
 
 static void* g_flock_event;  // the summon event started for a puppet (host)
 static void* g_flock_puppet; // that puppet
@@ -82,6 +141,11 @@ static Start_t o_Start;
 static void SK_THISCALL h_Start(void* mgr, void* ev, int arg)
 {
     unsigned kind = ev ? *(const unsigned*)((const uint8_t*)ev + 0x14) : 99;
+    if (kind < 9 && (g_test_hold >> kind & 1)) { // BUG-1188 (tests): stays inactive, as a guest's held event
+        if (g_held[kind]++ < 3)
+            H->log(M, SK_INFO, "drama: %s event held (coop.drama hold, tests)", kKind[kind]);
+        return;
+    }
     if (kind < 9)
         g_last_event[kind] = ev;
     bool tribe_attack = g_guest_attacks_fix && kind == 7 && game::mode_id() == modes::kTribe;
@@ -89,7 +153,7 @@ static void SK_THISCALL h_Start(void* mgr, void* ev, int arg)
         g_flock_refused++; // BUG-0736: the host makes it (player_rules sent the ability)
         return;
     }
-    if (((g_guest_events_fix && kind < 9 && (g_mask >> kind & 1)) || tribe_attack) && is_guest()) {
+    if (((kind < 9 && (g_mask >> kind & 1)) || tribe_attack) && is_guest()) { // BUG-0486
         if (g_refused[kind]++ < 5)
             H->log(M, SK_INFO, "drama: this game would start its own %s event: not on a guest, the host's world has "
                                "its own (creature.guest_events)", kKind[kind]);
@@ -98,6 +162,8 @@ static void SK_THISCALL h_Start(void* mgr, void* ev, int arg)
     if (kind == 8 && g_flock_forget && !g_in_summon_for && ev == g_flock_event) { // BUG-0800: the host's own summon
         forget_flock("the game starts it for its own avatar");
     }
+    if (kind == 7 && g_attack_target_fix && game::mode_id() == modes::kTribe)
+        drop_stale_attack_tribe(ev, "its start"); // BUG-1078
     if (kind < 9) {
         g_started[kind]++;
         H->log(M, SK_INFO, "drama: %s event starts (%s)", kKind[kind], is_guest() ? "guest" : "host or alone");
@@ -143,12 +209,18 @@ void init(const SkHost* host, SkMod* mod, const net::Session* sess)
     uintptr_t a = H->sym("SporeCoop::DramaManager_StartEvent");
     a_Get = H->sym("SporeCoop::DramaManager_Get");
     a_StartKind = H->sym("SporeCoop::DramaManager_StartKind");
+    a_EvGetObj = H->sym("SporeCoop::DramaEvent_GetObject"); // BUG-1078
+    a_EvSetObj = H->sym("SporeCoop::DramaEvent_SetObject");
+    if (!a_EvGetObj || !a_EvSetObj)
+        H->log(M, SK_WARN, "drama: SporeCoop::DramaEvent_GetObject / SetObject missing: a creature attack on a removed village is not held back");
     if (a)
         H->hook_create(M, (void*)a, (void*)h_Start, (void**)&o_Start);
+    else // BUG-1059: the message named the wrong symbol
+        H->log(M, SK_WARN, "drama: SporeCoop::DramaManager_StartEvent missing: a guest's own world events are not held back");
     if (uintptr_t u = H->sym("SporeCoop::SummonEvent_Update"))
         H->hook_create(M, (void*)u, (void*)h_SummonUpdate, (void**)&o_SummonUpdate);
     else
-        H->log(M, SK_WARN, "drama: SporeCoop::DramaManager_StartEvent missing: a guest's own world events are not held back");
+        H->log(M, SK_WARN, "drama: SporeCoop::SummonEvent_Update missing: a flock summoned for a partner follows the host's avatar, not the partner");
 }
 
 bool summon_for(void* puppet)
@@ -169,9 +241,10 @@ bool summon_for(void* puppet)
     unsigned before = g_started[8];
     size_t mark = game::lend_ledger_on() ? game::swap_open(game::swap_undo_u32, &av, (uintptr_t)real, "flock avatar") : 0;
     av = puppet;
-    g_in_summon_for = true;
-    skg::thiscall<void>(a_StartKind, mgr, 8, 0);
-    g_in_summon_for = false;
+    {
+        callguard::Hold in_summon_for(g_in_summon_for);
+        skg::thiscall<void>(a_StartKind, mgr, 8, 0);
+    }
     av = real;
     if (game::lend_ledger_on())
         game::swap_close(mark);
@@ -192,6 +265,8 @@ std::string debug(const std::vector<std::string>& a)
     char b[256];
     if (a.size() >= 2 && a[0] == "mask") {
         g_mask = (unsigned)strtoul(a[1].c_str(), nullptr, 16);
+    } else if (a.size() >= 2 && a[0] == "hold") {
+        g_test_hold = (unsigned)strtoul(a[1].c_str(), nullptr, 16);
     } else if (a.size() >= 2 && a[0] == "start") {
         // the game's own "start every idle event of this kind" (0xD4D740, as the stage's start does)
         unsigned kind = (unsigned)atoi(a[1].c_str());
@@ -201,6 +276,26 @@ std::string debug(const std::vector<std::string>& a)
         skg::thiscall<void>(a_StartKind, mgr, (int)kind, 0);
     }
     std::string out;
+    if (a.size() >= 1 && a[0] == "target") {
+        // BUG-1078 tests: the creature attack event's attacked tribe (object property 0x5F11333); `target <obj hex>`
+        // sets it with the game's own setter, as SpawnNpcTribe does for the NPC tribe of its pick (0xD516B0)
+        void* ev = g_last_event[7];
+        if (!ev)
+            return "no creature_attack event seen yet (coop.drama start 7 first)\n";
+        if (a.size() >= 2) {
+            void* t = (void*)(uintptr_t)strtoull(a[1].c_str(), nullptr, 16);
+            if (!t || !skg::readable(t, 0x370) || game::cast(t, kTribeType) != t)
+                return "not a tribe\n";
+            if (!a_EvSetObj)
+                return "no setter symbol\n";
+            skg::thiscall<void>(a_EvSetObj, ev, kAttackTribeKey, t);
+        }
+        void* t = attack_tribe(ev);
+        snprintf(b, sizeof b, "attack_target event=%p tribe=%p place=%p alive=%d fix=%d dropped=%u\n", ev, t,
+                 t ? attack_place(t) : nullptr, t ? (int)game::object_alive(t) : -1, (int)g_attack_target_fix,
+                 g_targets_dropped);
+        return b;
+    }
     if (a.size() >= 1 && a[0] == "mate") {
         // BUG-0177 (docs/re/creature.md#creature-mating-call): the mate the drama manager picked near the nest (mgr
         // +0x38 mpMate, marked +0xB58 & 0x10), and the avatar's behaviour tree node (brain +0xB4C, +0x1D8: 02D852F0
@@ -224,17 +319,27 @@ std::string debug(const std::vector<std::string>& a)
                  av && skg::readable(av + 0xB58, 4) ? *(uint32_t*)(av + 0xB58) : 0);
         return b;
     }
-    snprintf(b, sizeof b, "drama: fix=%d mask=%X guest=%d mode=%08X flock_relay=%d relayed=%u refused=%u updates=%u "
+    if (g_test_hold) {
+        snprintf(b, sizeof b, "drama: test hold=%X held:", g_test_hold);
+        out += b;
+        for (int k = 0; k < 9; k++)
+            if (g_test_hold >> k & 1) {
+                snprintf(b, sizeof b, " %s=%u", kKind[k], g_held[k]);
+                out += b;
+            }
+        out += "\n";
+    }
+    snprintf(b, sizeof b, "drama: mask=%X guest=%d mode=%08X flock_relay=%d relayed=%u refused=%u updates=%u "
              "flock_event=%p forgotten=%u\n",
-             (int)g_guest_events_fix, g_mask, (int)is_guest(), game::mode_id(), (int)g_flock_relay, g_flock_relayed,
-             g_flock_refused, g_flock_updates, g_flock_event, g_flock_forgotten);
+             g_mask, (int)is_guest(), game::mode_id(), (int)g_flock_relay, g_flock_relayed, g_flock_refused,
+             g_flock_updates, g_flock_event, g_flock_forgotten);
     out += b;
     for (int k = 0; k < 9; k++) {
         const uint8_t* ev = (const uint8_t*)g_last_event[k];
         if (!ev && !g_started[k] && !g_refused[k])
             continue;
         snprintf(b, sizeof b, "  %-16s started=%u refused=%u event=%p active=%d\n", kKind[k], g_started[k], g_refused[k],
-                 (const void*)ev, ev ? (int)ev[0xC] : -1);
+                 (const void*)ev, ev && skg::readable(ev + 0xC, 1) ? (int)ev[0xC] : -1); // BUG-1059
         out += b;
     }
     return out;

@@ -23,9 +23,10 @@ The drawn position is the puppet's position before the mod's frame (the mod runs
 
   coop_puppet_walk.py [--dir host|guest|both] [--seed N] [--secs S]
   PUPPET_WALK_CMDS="cmd;cmd": console commands on both games before the walks (experiments)
-  (SPORE_FIX_OFF=creature.puppet_walk must FAIL)"""
+  (creature.puppet_walk off failed (retired in 0.7.15, BUG-1138: FAIL run 20261101-010809-fix-w29-puppet-move:puppet_walk))"""
 import argparse
 
+from harness import pct
 import body_trail  # noqa: E402
 import math
 import random
@@ -47,6 +48,7 @@ WALK_ANIMS = {0x04866D8E, 0x0452B634, 0x05CB2176, 0x04866DB9, 0x04866DC3, 0x0486
               0x05CB2177, 0x044828E9, 0x04482906}
 STAND_MAX, MATCHED_MIN = 0.05, 0.85
 GAIT_MIN = 0.80
+GAIT_AIR_SLACK = 0.10  # BUG-1092 (--air): the puppet's walk gait share may be this much under the walker's own
 GAIT_PPM = 10.0  # BUG-0436: pixels per metre on the observer's screen (a walking puppet near its camera: 25-90)
 
 
@@ -80,7 +82,12 @@ def dump(con):
                          'anim': f[15], 'gait': int(f[16]), 'gait2': int(f[17]), 'moving': int(f[18]),
                          'ss': int(f[19]), 'vis': int(f[20]), 'sx': float(f[21]), 'sy': float(f[22]),
                          'ppm': float(f[28]) if len(f) > 28 else None,
-                         'f90': int(f[29]) if len(f) > 30 else None, 'lod': int(f[30]) if len(f) > 30 else None})
+                         'f90': int(f[29]) if len(f) > 30 else None, 'lod': int(f[30]) if len(f) > 30 else None,
+                         # BUG-1093: the target's extrapolation past its newest state and that state's age (s); the
+                         # own avatar: the time since its last state was sent
+                         'ex': float(f[31]) if len(f) > 32 else None, 'age': float(f[32]) if len(f) > 32 else None,
+                         'knee': float(f[33]) if len(f) > 35 else None, 'hz': float(f[34]) if len(f) > 35 else None,
+                         'ow': float(f[35]) if len(f) > 35 else None})
     return rows
 
 
@@ -162,7 +169,9 @@ def walk(con, rng, secs, jumps=0.0):
                 # or the way there does not get closer: go there (latency_step_ingame, lab 20261101-180254: 'back 17m
                 # (not found)' for the whole walk)
                 b = re.search(r'remote \d+ .*? pos=\(([-\d.]+) ([-\d.]+) ([-\d.]+)\)', con.call('coop.status')['out'])
-                if b:
+                # BUG-1103: a remote line without a state to sample (state=no: a gap in the partner's states under load)
+                # prints pos=(0 0 0); beside_pos divided by its length 0 and the test died (final check 20261114-005006)
+                if b and sum(float(x) ** 2 for x in b.groups()) > 1.0:
                     con.call('coop.npc gopos %.1f %.1f %.1f' % tuple(beside_pos([float(x) for x in b.groups()], 4.0)))
                     log.append('to the partner (gopos)')
                     time.sleep(2.0)
@@ -219,11 +228,6 @@ def walk(con, rng, secs, jumps=0.0):
             time.sleep(stop)
             log.append(f'stop {stop:.1f}s')
     return log
-
-
-def pct(xs, q):
-    xs = sorted(xs)
-    return xs[min(len(xs) - 1, int(q * len(xs)))] if xs else 0.0
 
 
 FALL_ANIM = '0692E6A9'  # the game's fall animation (an airborne creature, +0x137 = 0)
@@ -292,7 +296,7 @@ def windows(pup, top):
 
 
 BODY_STOPS = []  # (slide, key, t, e0) of every direction (bodyrec)
-BODY_PAST = 0.3  # m (BUG-0408: 0.50 / 0.88 m before creature.puppet_stop, lab 20261106-053105)
+BODY_PAST = 0.3  # m (BUG-0408: 0.50 / 0.88 m before creature.puppet_stop (retired), lab 20261106-053105)
 STOP_MOVE, STOP_MOVES = 0.15, 0.1  # BUG-0408 (--stop-walk): m slid on after a stop, share of the stops
 STOP_SLIDE = 0.3  # m: a puppet drawn this far from where the walker stopped in the second after the stop slid past it
 
@@ -553,6 +557,10 @@ def direction(walker, observer, wname, oname, rng, secs, ck, stand=0, jumps=0.0,
           f'p90 {body_trail.pct([x[0] for x in sl], .9):.2f} max {max([x[0] for x in sl], default=0):.2f} m; '
           + ', '.join(f'{d:.2f} m at {t - min(x[0] for x in bw):.1f} s' for d, _, t, _ in sl[:4]), flush=True)
     BODY_STOPS.extend(sl)
+    # BUG-1093: the measure before the cut (the copy's way in the whole 1.5 s, the walker's next walk in it): printed only
+    sl_all = body_trail.stop_slides(bw, bo, cut=False)
+    print(f'  {oname} sees {wname} (bodyrec): uncut (BUG-1093, not judged): {sum(1 for x in sl_all if x[0] > BODY_PAST)} '
+          f'of {len(sl_all)} stops over {BODY_PAST} m, max {max([x[0] for x in sl_all], default=0):.2f} m', flush=True)
     if STOP_WALK and sl:
         # BUG-0408 on both games' own positions: the puppet never goes past where the walker's own creature stopped
         past = [x for x in sl if x[0] > BODY_PAST]
@@ -560,7 +568,7 @@ def direction(walker, observer, wname, oname, rng, secs, ck, stand=0, jumps=0.0,
            f'{BODY_PAST} m after {len(past)} of {len(sl)} stops, coop.bodyrec)')
     path = os.path.join(lane.out_dir('track'), f'puppet_walk_{oname}_sees_{wname}_{time.strftime("%Y%m%d-%H%M%S")}.json')
     with open(path, 'w') as f:
-        json.dump({'observer': obs, 'walker': wal}, f)
+        json.dump({'observer': obs, 'walker': wal, 'body_walker': bw, 'body_observer': bo}, f)
     print(f'  per-frame samples: {path}', flush=True)
     r = analyse(obs, wal, f'{oname} watches {wname}', air_exempt=air)
     print(f'  {wname} walked: {"; ".join(log)}', flush=True)
@@ -586,7 +594,7 @@ def direction(walker, observer, wname, oname, rng, secs, ck, stand=0, jumps=0.0,
         # (2026-11-06) the slide is judged on both games' own positions (coop.bodyrec, direction(): past where the
         # walker's own creature stopped). This measure compares the drawn way with the TARGET's after the target stood:
         # a puppet 0.16 s (0.6 m) behind that walks up to where the partner stopped counted as sliding (13 of 14 stops
-        # with creature.puppet_stop's 4 m/s approach, lab 20261106-081748, while bodyrec showed 0.09 m at most past the
+        # with creature.puppet_stop's (retired) 4 m/s approach, lab 20261106-081748, while bodyrec showed 0.09 m at most past the
         # stop); it is printed, not judged
         ck(len(st) >= 8, f'{r["label"]}: enough stops to judge ({len(st)} >= 8; slid on over {STOP_MOVE} m after the '
            f'target stood: {sum(1 for x in sl if x > STOP_MOVE)}, not judged)')
@@ -651,8 +659,12 @@ def direction(walker, observer, wname, oname, rng, secs, ck, stand=0, jumps=0.0,
         print(f'  NOT MEASURED {r["label"]}: the walk gait: the observer\'s camera is far away ({len(far)} frames under '
               f'{GAIT_PPM:.0f} px/m, {r["near"]} near): its game animates a creature that far without a gait', flush=True)
     else:
-        ck(r['near'] >= 150 * fps_k and r['near_gait'] >= GAIT_MIN,
-           f'{r["label"]}: the puppet walks where the observer sees it (walk gait in {r["near_gait"]:.0%} >= {GAIT_MIN:.0%} '
+        # BUG-1092: with --air the walker hops every second or so and its own avatar has no walk gait in the air either
+        # (its own 73-86 % in the runs where the puppet had 70-79 %, lab 20261113-191644, -191329 #1, -190457 #1): the
+        # puppet is held to its walker's own share then, less GAIT_AIR_SLACK
+        gmin = min(GAIT_MIN, r['own_gait'] - GAIT_AIR_SLACK) if air else GAIT_MIN
+        ck(r['near'] >= 150 * fps_k and r['near_gait'] >= gmin,
+           f'{r["label"]}: the puppet walks where the observer sees it (walk gait in {r["near_gait"]:.0%} >= {gmin:.0%} '
            f'of {r["near"]} frames on its screen)')
 
 

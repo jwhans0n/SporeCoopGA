@@ -84,7 +84,7 @@ uint64_t get64(net::Reader& r) { uint64_t n=r.u32();return n|(uint64_t(r.u32())<
 void put_id(net::Writer& w,Identity n) { w.u32(n.marker);w.u32(n.incarnation); }
 Identity get_id(net::Reader& r) { return {r.u32(),r.u32()}; }
 void* powerup(void* object) {
-    void* value=object ? game::cast(object,0x08367427) : nullptr;
+    void* value=game::listed(object) ? game::cast(object,0x08367427) : nullptr;
     return value&&skg::readable(value,0x3C) ? value : nullptr;
 }
 uint8_t owner(void* captain) {
@@ -180,9 +180,10 @@ void flush() {
     }
 }
 void consume(Identity id,void* object) {
+    const auto live=game::live_ref(object);
     consumed.insert(id);
     C.retire(id);
-    if(object && game::object_alive(object)) game::destroy_creature(object);
+    if(game::alive(live)) game::destroy_creature(live.p);
 }
 void collected(void* item,void* captain) {
     auto* p=play();
@@ -209,8 +210,8 @@ bool in_range(void* item,void* captain) {
 void commit_actor(Event e) {
     if(!active() || !host() || held() || e.act!=act() || !publication_space())return;
     void* item=C.object_for(e.item);void* actor=C.object_for(e.actor);void* value=powerup(item);
-    if(!value || skg::field<int>(value,4)!=8 || !game::object_alive(item) || !actor || owner(actor)!=kNone ||
-       !game::cast(actor,0xCE9F6639) || !game::object_alive(actor) || !skg::readable(actor,0xFA8) ||
+    if(!value || skg::field<int>(value,4)!=8 || !game::listed(item) || !actor || !game::listed(actor) || owner(actor)!=kNone ||
+       !game::cast(actor,0xCE9F6639) || !game::listed(actor) || !skg::readable(actor,0xFA8) ||
        skg::field<bool>(actor,0xB5E) || skg::field<bool>(actor,0xE60) ||
        (skg::field<uint32_t>(actor,0xB58)&256) || !in_range(item,actor) ||
        !skg::cdecl_call<bool>(a_destination,value,&e.position,&e.orientation) || !finite(e.position) || !finite(e.orientation)) {++rejected;return;}
@@ -227,7 +228,7 @@ void commit_actor(Event e) {
 void commit(Event e) {
     if(!active() || held() || e.act!=act() || !C.captain_can_act(e.player) || !publication_space()) {++rejected;return;}
     void* item=C.object_for(e.item);void* captain=C.captain_of(e.player);void* value=powerup(item);
-    if(!item || !value || !game::object_alive(item) || consumed.count(e.item) || !captain ||
+    if(!item || !value || !game::listed(item) || consumed.count(e.item) || !captain || !game::listed(captain) ||
        !skg::readable(captain,0xFA8) || skg::field<int>(value,4)!=e.type ||
        !supported(e.type) || skg::field<bool>(captain,0xB5E) || !in_range(item,captain)) {++rejected;return;}
     if(e.type==8) {
@@ -279,7 +280,7 @@ bool apply(Event e) {
         if(!C.actor_teleport(e.actor,e.revision,e.position,e.orientation))return true;
         void* actor=C.object_for(e.actor);void* value=powerup(C.object_for(e.item));
         if(!actor || !value)return clock()>=e.until;
-        if(!game::cast(actor,0xCE9F6639) || !game::object_alive(actor) || !skg::readable(actor,0xFA8))return true;
+        if(!game::listed(actor) || !game::cast(actor,0xCE9F6639) || !skg::readable(actor,0xFA8))return true;
         auto old=actor_cooldowns.find(e.actor);
         const bool previous=old!=actor_cooldowns.end()?old->second.previous:skg::field<bool>(actor,0xE60);
         skg::cdecl_call<void>(a_teleport,value,actor,&e.position,&e.orientation,false);
@@ -437,6 +438,7 @@ bool init(const SkHost* api,SkMod* mod,Ctx ctx) {
 bool available() {return ready;}
 bool activate(void* item,void* captain) {
     if(!active()) return false;
+    if(!game::listed(item)) return true; // A stale contact must not fall through to native pickup code.
     void* value=powerup(item);int type=value?skg::field<int>(value,4):0;
     if(!supported(type)) return false;
     uint8_t player=owner(captain);Identity id;

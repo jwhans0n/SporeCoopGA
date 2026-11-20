@@ -36,9 +36,15 @@ mechanic runs for real):
     caption, History and its check, as in coop_cell_leave.py.
   * Creature end: `AddEvolutionPoints 3000` on the host (brain upgrade 4, the bar full), then the
     History button and its check, the evolution vote, the creature editor, the fire cinematic, its caption.
-  * Tribe: `coop.tribe spawn` gives each player's share of the tribe more members (test setup), the
-    raids are real orders (play_tribe), their fights are helped by `coop.tribe pincer` (the game's
-    damage path); when the stage does not end in time the host jumps to the next fixture (below).
+  * Tribe (Q1 of 0.7.14, docs/re/tribe.md#tribe-raid-end): `coop.tribe spawn` gives each player's share of the tribe
+    more members (test setup, and again when the raiders are down to 7); every NPC village is raided until its hut
+    falls: the players' real attack right-clicks on the hut first (the host's own click is needed: BUG-1068), then
+    `coop.tribe order <id> 15 <hut>` for every member (the DoAction a right-click gives), the hut's health cut to 40
+    once a blow landed (`coop.tribe huthp`; 400-750 hp take the raiders minutes), the players' own hut kept above 80 % of
+    its health (an NPC village raids back; its fall is a game over that reloads the save), `coop.tribe form` when no
+    village is left before the bar is full. The game's own conquests fill the goal bar; then the advance button, the
+    stage card, the caption, the votes, the City Hall and vehicle editors (three parts, a name). When the stage does
+    not end in time the host jumps to the next fixture (below). CAMPAIGN_OLD_TRIBE=1: 0.7.13's raids (pincer on members).
   * Editors that need a creation (the empty spaceship editor): three parts dragged from the palette,
     the dice's random name; "Name Your Captain": the dice; the city specialty dialog: Military.
   * Civ: the cities still to come appear at once (cCivExpansion::SpawnNextCity(ex, 0, 0) as the
@@ -55,11 +61,25 @@ mechanic runs for real):
     goes to the core with `coop.space finale goto near|core` (crossing the galaxy takes hours); the
     guests fly there with the real "Fly to Alice" button.
 
+  * Reporting (A6 of 0.7.15, docs/06-testing.md#testing-campaign-segments): every finding that fails the run also
+    prints `FAIL <kind> <stage/phase>: <text>`, so the lab's result carries the reason. A stage change that does not
+    finish jumps to the next stage's fixture by default (--no-jump stops there), so one stuck stage does not end the
+    run.
+  * Segment saves: at the start of every played stage the host saves (`coop.save`, as a player) and the run keeps that
+    save (<run>/segments/<stage>.tgz, segments.json; CAMPAIGN_SEGMENTS=0: none). A failed run prints
+    `CAMPAIGN-SEGMENT {...}` with the stage of its first failing finding, that stage's save and the command that plays
+    the segment again from it: `--from <stage> --to <next> --save <that .tgz>` (the host starts on the stage's fixture,
+    loads the save in game, the guests follow by the world share, as after a jump). `lab.py run campaign_segment
+    --segment <lab run>` does that in the lab (owner decision 10: a final-check rerun may run only the failed segment).
+    CAMPAIGN_PLANT_STUCK=<stage>: that stage's change is not tried and counts as stuck (the reporting's own twin).
+
   SPORE_LANE=7 python3 tools/tests/coop_campaign.py [--from cell] [--to space] [--minutes 8]
-        [--advance-minutes M] [--no-finale] [--no-jump] [--seed N] [--players 4]
-Resume a late failure from its stage: --from tribe (the fixture of that stage, campaign_lib.FIXTURE).
+        [--advance-minutes M] [--no-finale] [--no-jump] [--seed N] [--players 4] [--save <segment .tgz>]
+Resume a late failure from its stage: --from tribe (the fixture of that stage, campaign_lib.FIXTURE), or from the save
+that stage had in the failed run: --from tribe --save <run>/segments/tribe.tgz.
 """
 import argparse
+import json
 import os
 import random
 import math
@@ -92,26 +112,98 @@ CIV_TALK = ('We happily accept your surrender.', 'I accept your offer! Start shi
 CAPTAIN_NAME = [(915, 555), (936, 630)]  # "Name Your Captain" (the first Space minutes): dice, check
 EDITOR_DICE = (614, 826)     # the dice of the name panel (a random name), open after a "done" without a name
 EDITOR_PARTS = [(85, 130), (350, 405), (480, 405)]       # spaceship editor palette: a hull, two discs
+TRIBE_EDITOR_PARTS = (((88, 130), (900, 850)), ((220, 130), (900, 700)), ((350, 130), (1150, 850)))  # City Hall / vehicle
 EDITOR_PLACES = [(1000, 560), (1000, 470), (1000, 650)]  # onto the stage
 VK_F9 = '0x78'
 # a badge's "Reward" panel (BUG-0268): its green check on the 1440x1080 screen (the panel is centred;
 # from the campaign screenshots of run 20261029-093248)
 REWARD_CHECK = (932, 844)
-ADVANCE_MIN = {'cell': 10, 'creature': 10, 'tribe': 20, 'civ': 20}  # default time of a stage change
+TRIBE_HUT = '1E4DAAE'        # the hut noun (a village falls with its hut)
+TRIBE_ADVANCE = 0x6454B47   # the HUD's advance button the full goal bar shows in place of History
+# BUG-1091: CAMPAIGN_OLD_RAID_SKIP=1: a raid without the host's click is not put aside (0.7.14 before the fix: the nearest
+# village again after every 300 s raid); CAMPAIGN_PLANT_NOCLICK=<min>: for that many minutes from the first raid the bots'
+# clicks on the first village raided while another stands never come (a planted view that does not reach it, the test's twin)
+OLD_RAID_SKIP = os.environ.get('CAMPAIGN_OLD_RAID_SKIP') == '1'
+PLANT_NOCLICK = float(os.environ.get('CAMPAIGN_PLANT_NOCLICK') or 0)
+# BUG-1165: the planted twin's Tribe advance gets the planted minutes on top of a 20 min advance (village 2 can fall only
+# after the plant, and the passing runs needed 22-26 min of the old 30: a game over's reload, a 300 s raid or the editor
+# at the end took the rest). CAMPAIGN_OLD_NOCLICK_BUDGET=1: the 30 min of every Tribe advance (stuck in 3 of 5 runs,
+# v0.7.14.1 lab 20261115-154852 too)
+OLD_NOCLICK_BUDGET = os.environ.get('CAMPAIGN_OLD_NOCLICK_BUDGET') == '1'
+# BUG-1169: a raid gets RAID_AFTER_CUT s after its hut's first cut (CAMPAIGN_OLD_RAID_CUT=1: dropped at 300 s however late the cut)
+OLD_RAID_CUT = os.environ.get('CAMPAIGN_OLD_RAID_CUT') == '1'
+RAID_AFTER_CUT = 120
+# BUG-1169: CAMPAIGN_PLANT_LATE_CUT=<s>: the first raid that gets its host click takes no blow before <s> s of its raid,
+# its hut is cut at <s> s and no blow lands for PLANT_CUT_HOLD s more (the late cut of lab 20261115-154901, planted);
+# that raid must fell its hut, a drop is a 'driver' finding (with
+# CAMPAIGN_OLD_RAID_CUT=1 it is dropped at 300 s: the twin)
+PLANT_LATE_CUT = float(os.environ.get('CAMPAIGN_PLANT_LATE_CUT') or 0)
+PLANT_CUT_HOLD = 45  # s after the planted cut in which no blow lands either
+# BUG-1096: CAMPAIGN_OLD_EDITOR_DRAG=1: the old editor driver: the parts dragged once only, every wait in seconds (a drag
+# or the name's dice click lost at low fps: "done" forever)
+OLD_EDITOR_DRAG = os.environ.get('CAMPAIGN_OLD_EDITOR_DRAG') == '1'
+# A6: CAMPAIGN_PLANT_STUCK=<stage>[,<stage>]: that stage change is not tried and counts as stuck (the reporting's twin)
+PLANT_STUCK = [x.strip() for x in os.environ.get('CAMPAIGN_PLANT_STUCK', '').split(',') if x.strip()]
+HOME_GUARD = 3              # members (besides the chiefs) that stay home in the Tribe end raids (tribe_order)
+# default time of a stage change; Tribe (Q1 of 0.7.14): five conquests of 1.5-5 min each and the two editors (3 min):
+# 13-19 min in the runs on the fixture and the campaign's own planet, so 30
+ADVANCE_MIN = {'cell': 10, 'creature': 10, 'tribe': 30, 'civ': 20}
 
 
-def drag_slow(con, sx, sy, tx, ty):
-    """hold the button and move in steps: a plain `drag` is too fast for the editors"""
+def frames(con, n):
+    """BUG-1096: wait n of the game's frames (and do nothing with CAMPAIGN_OLD_EDITOR_DRAG=1, the old driver: waits in
+    seconds only). A game at 3 fps runs one frame in 333 ms: the seconds of a wait tuned at 60 fps are a frame or two"""
+    if not OLD_EDITOR_DRAG and n > 0:
+        con.call(f'wait.frames {int(n)} {max(10000, int(n) * 2000)}')
+
+
+def drag_slow(con, sx, sy, tx, ty, pace=1.0):
+    """hold the button and move in steps: a plain `drag` is too fast for the editors. pace stretches every
+    wait (BUG-1096: at 3-15 fps with hitches of seconds the game saw the press, the moves and the release in
+    one or two frames and picked nothing up). Every wait is also at least some of the game's frames (frames()):
+    the hover before the press, the press, every step, the release each seen by the game in a frame of its own"""
     con.call(f'move {sx} {sy}')
-    time.sleep(0.3)
+    time.sleep(0.3 * pace)
+    frames(con, 3)
     con.call(f'button {sx} {sy} down')
-    time.sleep(0.3)
+    time.sleep(0.3 * pace)
+    frames(con, 3)
     for i in range(1, 11):
         con.call(f'move {sx + (tx - sx) * i // 10} {sy + (ty - sy) * i // 10}')
-        time.sleep(0.08)
-    time.sleep(0.3)
+        time.sleep(0.08 * pace)
+        frames(con, 1)
+    time.sleep(0.3 * pace)
+    frames(con, 3)
     con.call(f'button {tx} {ty} up')
-    time.sleep(1)
+    time.sleep(1 * pace)
+    frames(con, 4)
+
+
+def editor_click(con, x, y, settle=1.0):
+    """hover, click and wait until the click is over. The kit's `click` presses 3 frames and releases 6 frames
+    after the call (sporekit input_click), and the next command's move takes the cursor away at once: at 3 fps a
+    click of the name panel's dice followed 1 s later by "done" was released over "done" and the name never
+    came ("You must give your creation a name before you can save" for 20 tries, BUG-1096). Waited in frames;
+    CAMPAIGN_OLD_EDITOR_DRAG=1: in seconds only (before)"""
+    con.call(f'move {x} {y}')
+    time.sleep(0.4)
+    frames(con, 2)
+    con.call(f'click {x} {y}')
+    time.sleep(settle)
+    frames(con, 8)
+
+
+def editor_parts_due(n):
+    """the pace of the parts' drag at this "done" try of an editor, or None (no drag now). The first drag
+    comes at the third try (an editor with a creation leaves before); BUG-1096: when the editor is still up
+    4 tries later the parts did not land (the game at a few fps took the drag for a click: "You need at
+    least 3 parts to Save" for 30 min of "done", lab 20261113-231423-2): drag again, slower each time.
+    CAMPAIGN_OLD_EDITOR_DRAG=1: one drag only (before the fix)"""
+    if n == 2:
+        return 1.0
+    if OLD_EDITOR_DRAG or n < 6 or (n - 2) % 4:
+        return None
+    return min(1.0 + (n - 2) // 4, 4.0)
 
 
 def stands(con):
@@ -172,6 +264,7 @@ class Campaign:
         self.cap = {}  # player -> (caption seen since, last OK)
         self.talks = {}  # player -> answers to a Civ talk that is still up (BUG-0290)
         self.edits = {}  # player -> "done" clicks in the current editor
+        self.segments = {}  # A6: stage -> the save it started from ({save, planet} or {fixture})
 
     # ---------------- findings and evidence ----------------
     def finding(self, kind, key, text, players=(), evidence=()):
@@ -183,6 +276,7 @@ class Campaign:
         print(f'  FINDING [{kind}] {text}', flush=True)
         if kind == 'info':
             return True
+        print('  ' + cl.fail_line(kind, f'{self.stage}/{self.phase}', text), flush=True)  # A6: the lab's reason
         more = []
         for p in (players or self.P):
             more += self.evidence(p, f'{len(self.F.items):02d}_{kind}')
@@ -617,18 +711,21 @@ class Campaign:
         n = self.edits.get(p.name, 0)
         self.edits[p.name] = n + 1
         time.sleep(self.rng.uniform(3, 6))  # a look at the creation
-        if n == 2:
-            for (sx, sy), (tx, ty) in zip(EDITOR_PARTS, EDITOR_PLACES):
-                drag_slow(con, sx, sy, tx, ty)
-            self.note(f'{p.name}: three parts dragged into an empty editor')
+        pace = editor_parts_due(n)
+        if pace:
+            # the end of Tribe opens the City Hall and the vehicle editor empty: their palette and plot
+            # (coop_tribe_civ.PARTS); the spaceship editor's at the end of Civ
+            moves = TRIBE_EDITOR_PARTS if self.stage == 'tribe' else list(zip(EDITOR_PARTS, EDITOR_PLACES))
+            for (sx, sy), (tx, ty) in moves:
+                drag_slow(con, sx, sy, tx, ty, pace)
+            if n == 2:
+                self.note(f'{p.name}: three parts dragged into an empty editor')
+            else:
+                self.note(f'{p.name}: the editor still up after {n} "done": three parts dragged again (pace {pace:g}, '
+                          f'BUG-1096)')
         if n >= 3:
-            con.call(f'move {EDITOR_DICE[0]} {EDITOR_DICE[1]}')
-            time.sleep(0.4)
-            con.call(f'click {EDITOR_DICE[0]} {EDITOR_DICE[1]}')
-            time.sleep(1)
-        con.call(f'move {EDITOR_DONE[0]} {EDITOR_DONE[1]}')
-        time.sleep(0.4)
-        con.call(f'click {EDITOR_DONE[0]} {EDITOR_DONE[1]}')
+            editor_click(con, *EDITOR_DICE)
+        editor_click(con, *EDITOR_DONE, settle=0)
         return 'editor done'
 
     def vote_open(self):
@@ -864,6 +961,9 @@ class Campaign:
         nxt = cl.STAGES[cl.STAGES.index(stage) + 1]
         self.stage, self.phase = stage, 'advance'
         self.note(f'advance {stage} -> {nxt}')
+        if stage in PLANT_STUCK:  # A6's twin: this change counts as stuck
+            self.note(f'planted (CAMPAIGN_PLANT_STUCK): the {stage} -> {nxt} change is not tried')
+            return False
         for p in self.P:  # BUG-0263: a pause menu left open by the play phase blocks the stage change
             self.close_pause(p.con)
         t0 = time.time()
@@ -1088,7 +1188,10 @@ class Campaign:
     def advance_minutes(self, stage):
         """--advance-minutes, else per stage: Cell and Creature end in a few minutes, the Tribe stage
         needs every other tribe conquered (new ones form after each), the Civ stage every city"""
-        return self.a.advance_minutes or ADVANCE_MIN[stage]
+        m = self.a.advance_minutes or ADVANCE_MIN[stage]
+        if stage == 'tribe' and PLANT_NOCLICK and not OLD_NOCLICK_BUDGET and not self.a.advance_minutes:
+            m = max(m, PLANT_NOCLICK + 20)  # BUG-1165
+        return m
 
     def kick_cell(self, state):
         h = self.host
@@ -1118,8 +1221,435 @@ class Campaign:
         h.call(f'click {HISTORY_OK[0]} {HISTORY_OK[1]}')
         time.sleep(2)
 
+    # ---- the end of Tribe: every other village raided (Q1 of 0.7.14) ----
+    def tribe_progress(self):
+        """the stage's goal bar (cPlayer +0x10F0 / +0x10F4: conquests and alliances, `coop.wstate`), or None"""
+        m = re.search(r'progress=([-\d.]+) total=([-\d.]+)', self.host.call('coop.wstate'))
+        return (float(m.group(1)), float(m.group(2))) if m else None
+
+    def tribe_targets(self):
+        """(player village, [(tribe index, centre, hut pointer, hut position)]) of the NPC villages still standing: not
+        conquered (`coop.realign planet village` fl bit 1, cTribe +0x556) and with a hut the game has not felled"""
+        cent = {}
+        for m in re.finditer(r'^tribe (\d+)( \(player\))? at \(([-\d.]+) ([-\d.]+) ([-\d.]+)\)', self.host.call('coop.tribe'),
+                             re.M):
+            cent['p' if m.group(2) else int(m.group(1))] = tuple(float(m.group(i)) for i in (3, 4, 5))
+        home = cent.pop('p', None)
+        vil = [(tuple(float(x) for x in m.group(1, 2, 3)), int(m.group(4))) for m in re.finditer(
+            r'pl village \(([-\d.]+) ([-\d.]+) ([-\d.]+)\) st=\S+ fl=(\d+)', self.host.call('coop.realign planet village'))]
+        huts = []
+        for line in self.host.call(f'coop.tribe objs {TRIBE_HUT}').splitlines():
+            m = re.match(r'(\S+) alive=(\d) pos=\(([-\d.]+) ([-\d.]+) ([-\d.]+)\)', line)
+            if m and m.group(2) == '1':
+                huts.append((m.group(1), tuple(float(m.group(i)) for i in (3, 4, 5))))
+        out = []
+        for k, c in cent.items():
+            v = min(vil, key=lambda v: math.dist(v[0], c), default=None)
+            if v is not None and math.dist(v[0], c) < 40 and v[1] & 2:
+                continue  # conquered (or allied) already
+            hs = sorted((h for h in huts if math.dist(h[1], c) < 40 and not (home and math.dist(h[1], home) < 40)),
+                        key=lambda h: math.dist(h[1], c))
+            hs = [h for h in hs if 'state=2' not in self.host.call('coop.tribe huthp %.2f %.2f %.2f -' % h[1])]
+            if hs:
+                out.append((k, c, hs[0][0], hs[0][1]))
+        if home:
+            out.sort(key=lambda t: math.dist(t[1], home))
+        return home, out
+
+    def tribe_home_hut(self, state):
+        """shortcut: the players' own hut kept above 80 % of its health. With every member out raiding, an NPC village
+        raids back and the players' hut falls: the game ends the stage (its save reloaded, every conquest gone; twice
+        while the farthest village was raided, campaign_tc2 lab 20261113-051634). Players leave defenders at home or
+        come back; the bots raid with everyone."""
+        if 'home_hut' not in state:
+            cent = re.search(r'^tribe \d+ \(player\) at \(([-\d.]+) ([-\d.]+) ([-\d.]+)\)', self.host.call('coop.tribe'), re.M)
+            home = tuple(float(cent.group(i)) for i in (1, 2, 3)) if cent else None
+            hs = []
+            for line in self.host.call(f'coop.tribe objs {TRIBE_HUT}').splitlines():
+                m = re.match(r'(\S+) alive=1 pos=\(([-\d.]+) ([-\d.]+) ([-\d.]+)\)', line)
+                if m and home and math.dist(home, tuple(float(m.group(i)) for i in (2, 3, 4))) < 40:
+                    hs.append(tuple(float(m.group(i)) for i in (2, 3, 4)))
+            state['home_hut'] = hs[0] if hs else None
+        hut = state['home_hut']
+        if not hut:
+            return
+        out = self.host.call('coop.tribe huthp %.2f %.2f %.2f -' % hut)
+        m = re.search(r'health (\d+)/(\d+)', out)
+        if not m:
+            state.pop('home_hut')  # (another world after a reload: look again)
+            return
+        hp, mx = int(m.group(1)), int(m.group(2))
+        if mx and hp < mx * 0.8:  # (kicks come every 25-60 s: a raid took it from over half to 0 in between, lab 20261113-082316)
+            self.note(f'shortcut: coop.tribe huthp: the players\' hut repaired ({hp}/{mx} -> {mx}: an NPC village raids back)')
+            self.host.call('coop.tribe huthp %.2f %.2f %.2f %d' % (hut + (mx,)))
+
+    def tribe_members(self, tk):
+        """[(member id, hp)] of NPC village tk's living members (the host's game)"""
+        out, cur = [], None
+        for line in self.host.call('coop.tribe').splitlines():
+            t = re.match(r'tribe (\d+) at', line)
+            if t:
+                cur = int(t.group(1))
+                continue
+            if line.startswith('tribe '):
+                cur = None
+                continue
+            m = re.search(r'#(\d+) \S+ owner=254 .*?hp=([\d.]+) .*?dead=0', line)
+            if m and cur == tk and float(m.group(2)) > 0:
+                out.append((int(m.group(1)), float(m.group(2))))
+        return out
+
+    def tribe_raiders(self):
+        """{member id: position} of the players' living members (the host's game)"""
+        out = self.host.call('coop.tribe')
+        return {int(m.group(1)): tuple(float(m.group(i)) for i in (3, 4, 5)) for m in re.finditer(
+            r'#(\d+) \S+ owner=[0-3] .*?hp=([\d.]+) pos=\(([-\d.]+) ([-\d.]+) ([-\d.]+)\)', out) if float(m.group(2)) > 0}
+
     def kick_tribe(self, state):
-        """real raids by the players (play_tribe with the plan 'raid'), more members now and then"""
+        """the end of Tribe the players' way: every other village raided until its hut falls (the game's conquest,
+        its goal on the stage's bar), then the advance button the full bar shows, the stage card, the cinematic's
+        caption, the votes, the City Hall and vehicle editors (the Services answer those). The raid starts with the
+        players' real right-clicks on the village's hut (play_tribe, attack mode): only a player's own attack order
+        gives the game's mission on that village (cTribeToTribeMission, TribeMission_SetTargetTribe), whose
+        conquest fills the bar; a hut felled by orders alone is conquered without a goal (Q1 exploration, lane 4).
+        CAMPAIGN_OLD_TRIBE=1: the raids of 0.7.13 (pincer on members, never a hut: no village fell in 20 min)."""
+        if os.environ.get('CAMPAIGN_OLD_TRIBE') == '1':
+            return self.kick_tribe_old(state)
+        pr = self.tribe_progress()
+        if pr and pr[1] > 0 and pr[0] >= pr[1]:
+            r = re.search(r'%08X (-?\d+) (-?\d+) (-?\d+) (-?\d+)' % TRIBE_ADVANCE,
+                          self.host.call('coop.ui where %08X' % TRIBE_ADVANCE))
+            if r and not state.get('advanced'):
+                x, y = (int(r.group(1)) + int(r.group(3))) // 2, (int(r.group(2)) + int(r.group(4))) // 2
+                self.note(f'tribe: the goal bar is full ({pr[0]:.0f}/{pr[1]:.0f}): the advance button')
+                self.host.call(f'move {x} {y}')
+                time.sleep(0.4)
+                self.host.call(f'click {x} {y}')
+                state['advanced'] = time.time()
+                time.sleep(3)
+            # the stage card's check (History screen), then the game's own cinematic and editors
+            self.host.call(f'move {HISTORY_OK[0]} {HISTORY_OK[1]}')
+            time.sleep(0.4)
+            self.host.call(f'click {HISTORY_OK[0]} {HISTORY_OK[1]}')
+            if state.get('advanced') and time.time() - state['advanced'] > 90:
+                state['advanced'] = None  # no editor came: the button again
+            return
+        self.tribe_home_hut(state)
+        raid = state.get('raid')
+        if raid:
+            hs = self.host.call('coop.tribe huthp %.2f %.2f %.2f -' % raid['hut'])
+            m = re.search(r'exact=([-\d.]+) state=(\d+)', hs)
+            if pr and pr[0] < state.get('best', 0):
+                # the bar went back: the host's game reloaded its save (a game over: "Alas! Your population has
+                # fallen below the minimum", the Services confirm it), the villages stand again
+                self.note(f'tribe: the goal bar went back {state["best"]:.0f} -> {pr[0]:.0f} (the host\'s game reloaded: '
+                          f'a game over?); the raid on village {raid["tribe"]} starts again')
+                state['best'] = pr[0]
+                state['raid'] = None
+                state['reloads'] = state.get('reloads', 0) + 1
+                return
+            if hs.startswith('no hut') and not (m and m.group(2) == '2'):
+                self.note(f'tribe: the hut of village {raid["tribe"]} is gone without a fall ({hs.strip()[:60]})')
+                state['raid'] = None
+                return
+            if m and m.group(2) == '2':
+                state['conquests'] = state.get('conquests', 0) + 1
+                state['best'] = max(state.get('best', 0), (self.tribe_progress() or (0, 0))[0])
+                self.note(f'tribe: the hut of village {raid["tribe"]} fell after {time.time() - raid["t0"]:.0f} s '
+                          f'(goal bar {self.tribe_progress()})')
+                if raid.get('planted_cut'):
+                    self.note(f'tribe: the raid with the planted late cut (first cut at '
+                              f'{raid.get("cut_at", time.time()) - raid["t0"]:.0f} s) felled its hut (BUG-1169)')
+                state['raid'] = None
+                return
+            # BUG-1169: a raid whose hut was cut late (its host click came late) gets RAID_AFTER_CUT s after the first cut:
+            # one dropped 28 s after it with the hut at 39 of 750 (lab 20261115-154901 village 3) and its village was
+            # raided from the start again later (the Tribe advance ran out of its 30 min at 4/5). CAMPAIGN_OLD_RAID_CUT=1: 300 s
+            limit = 300 if OLD_RAID_CUT or not raid.get('cut_at') else max(300, raid['cut_at'] - raid['t0'] + RAID_AFTER_CUT)
+            if time.time() - raid['t0'] > limit:
+                self.note(f'tribe: the raid on village {raid["tribe"]} did not fell its hut in {limit:.0f} s ({hs.strip()[:80]})')
+                state['raid'] = None
+                if raid.get('planted_cut'):
+                    self.finding('driver', 'tribe:late_cut', f'the raid on village {raid["tribe"]} with the planted late cut '
+                                 f'(first cut at {raid.get("cut_at", time.time()) - raid["t0"]:.0f} s) was dropped at '
+                                 f'{limit:.0f} s before its hut fell ({hs.strip()[:60]}; BUG-1169)')
+                if not raid.get('host_click') and not OLD_RAID_SKIP and len(state.get('standing', [])) > 1:
+                    # BUG-1091: a raid without the host's click never gets its hut cut and never falls; the nearest
+                    # village was raided again and again (lab 20261113-181333: village 2 for 25 min, 750/750)
+                    state.setdefault('skip', {})[raid['tribe']] = time.time() + 240
+                    self.note(f'tribe: no attack click of the host on village {raid["tribe"]} in its raid: another '
+                              f'village first')
+                return
+            alive = self.tribe_raiders()
+            if not raid.get('host_click'):  # no attack click of the host yet: no mission, the conquest would be no goal
+                # (BUG-1091: counted per village over its raids; a raid's own count never reached 3 in its 300 s,
+                # tribe_clicks takes 1.5-2 min a try)
+                tries = raid if OLD_RAID_SKIP else state.setdefault('tries', {})
+                key = 'tries' if OLD_RAID_SKIP else raid['tribe']
+                tries[key] = tries.get(key, 0) + 1
+                if tries[key] >= 3 and len(state.get('standing', [])) > 1:
+                    # a far village the players' view does not reach (the minimap's look misses it, lab
+                    # 20261113-073952: 316 m, 9 min without a click): another village first, this one later
+                    state.setdefault('skip', {})[raid['tribe']] = time.time() + 240
+                    if not OLD_RAID_SKIP:
+                        state['tries'][raid['tribe']] = 0
+                    self.note(f'tribe: no attack click of the host on village {raid["tribe"]} in 3 tries: another village first')
+                    state['raid'] = None
+                    return
+                if len(alive) < 8:
+                    self.host.call('coop.tribe spawn 6')
+                self.tribe_clicks(raid)
+                self.tribe_order(raid)
+                return
+            if len(alive) < 8:
+                # the village's defenders kill raiders; under the tribe's minimum the game ends the stage (game over,
+                # its save reloaded: every conquest of the run gone, lab 20261113-051634 twice)
+                self.note(f'shortcut: coop.tribe spawn 6 (raiders down to {len(alive)}: a game over would reload)')
+                self.host.call('coop.tribe spawn 6')
+                self.tribe_order(raid)
+            near = [i for i, q in alive.items() if math.dist(q, raid['hut']) < 20]
+            mx = re.search(r'health \d+/(\d+)', hs)
+            hit = m and mx and float(m.group(1)) < float(mx.group(1)) - 1  # a blow landed (raiders hit from 20-30 m)
+            # cut again whenever it is over 40: the village's members repair their hut (damage type 10, docs/re/tribe.md
+            # #tribe-hut-fall) while the raiders die (lab 20261113-092426: cut to 40, back at 306 of 750 four minutes later)
+            if PLANT_LATE_CUT and raid.get('planted_cut') and raid['cut'] and time.time() - raid['cut_at'] < PLANT_CUT_HOLD:
+                # (the plant, after its cut: the raiders' next blows do not land for PLANT_CUT_HOLD s either, as in lab
+                # 20261115-154901: cut to 40, dropped 28 s later at 39)
+                if m and float(m.group(1)) < 39:
+                    self.host.call('coop.tribe huthp %.2f %.2f %.2f 40' % raid['hut'])
+                return
+            if PLANT_LATE_CUT and not raid['cut'] and (raid.get('planted_cut') or not getattr(self, 'late_cut_planted', False)):
+                # BUG-1169's plant: the raiders' blows on this raid's hut do not land before PLANT_LATE_CUT s of the raid
+                # (each one undone: the hut back to its maximum, as when the host's click came late), and no cut before
+                if not raid.get('planted_cut'):
+                    self.late_cut_planted = raid['planted_cut'] = True
+                    self.note(f'tribe: planted: the hut of village {raid["tribe"]} takes no damage before {PLANT_LATE_CUT:.0f} s '
+                              f'of its raid (CAMPAIGN_PLANT_LATE_CUT)')
+                if time.time() - raid['t0'] < PLANT_LATE_CUT:
+                    if hit:
+                        raid['undone'] = raid.get('undone', 0) + 1
+                        self.host.call('coop.tribe huthp %.2f %.2f %.2f %s' % (raid['hut'] + (mx.group(1),)))
+                    return
+                if m and float(m.group(1)) > 45:
+                    near = True  # the first cut comes at PLANT_LATE_CUT s (a blow then)
+                    self.note(f'tribe: planted: the first cut of the hut of village {raid["tribe"]} at '
+                              f'{time.time() - raid["t0"]:.0f} s of its raid ({raid.get("undone", 0)} blows undone before)')
+            if (near or hit) and m and float(m.group(1)) > 45:
+                if not raid['cut']:
+                    self.note('shortcut: coop.tribe huthp: the raided hut\'s health cut to 40 (its 400-1000 hp take the '
+                              'raiders minutes; again whenever the village repairs it)')
+                self.host.call('coop.tribe huthp %.2f %.2f %.2f 40' % raid['hut'])
+                raid['cut'] = True
+                raid.setdefault('cut_at', time.time())  # BUG-1169
+            elif m and 1.5 < float(m.group(1)) <= 45 and os.environ.get('CAMPAIGN_OLD_RAID') != '1':
+                # a hut at 4 of 750 stood for minutes once its raiders were dead (lab 20261113-145317): the next blow fells it
+                self.host.call('coop.tribe huthp %.2f %.2f %.2f 1' % raid['hut'])
+            if raid['cut'] and time.time() - raid.get('pinced', 0) > 60 and os.environ.get('CAMPAIGN_OLD_RAID') != '1':
+                # the village's defenders kill 6-12 raiders a raid, and with them dead an NPC village raids the players'
+                # village back (a game over reloaded the save at 2/5 in lab 20261113-145317): shortcut, every 60 s the
+                # raided village's members take the blows of the players' members (`coop.tribe pincer`)
+                defenders = self.tribe_members(raid['tribe'])
+                own = list(alive) or list(self.tribe_raiders())
+                if defenders and own:
+                    for i, (mid, hp) in enumerate(defenders[:8]):
+                        self.host.call(f'coop.tribe pincer {mid} {own[i % len(own)]} {hp + 1:.0f}')
+                    if not raid.get('pinced'):
+                        self.note(f'shortcut: coop.tribe pincer: the {min(8, len(defenders))} defenders of village '
+                                  f'{raid["tribe"]} take the raiders\' blows (again every 60 s)')
+                raid['pinced'] = time.time()
+            h = float(m.group(1)) if m else None
+            if h != raid.get('hp'):
+                raid['hp'], raid['since'] = h, time.time()
+            elif time.time() - raid.get('since', raid['t0']) > 20:
+                self.tribe_order(raid)  # the raiders stopped hitting a hut that stands: the raid order again
+                raid['since'] = time.time()
+            return
+        home, targets = self.tribe_targets()
+        raiders = self.tribe_raiders()
+        if len(raiders) < 8:
+            self.note('shortcut: coop.tribe spawn 6 (more members to raid with)')
+            self.host.call('coop.tribe spawn 6')
+        if not targets:
+            # every village standing is taken: the game forms the next ones itself (three at once after the first
+            # conquest in the exploration); when it does not, its own FormTribe (the controller's) is asked
+            state['empty'] = state.get('empty', 0) + 1
+            if state['empty'] % 3 == 0:
+                self.note('shortcut: coop.tribe form (the NPC tribe controller forms the next village now)')
+                self.host.call('coop.res add food 400')
+                self.host.call('coop.tribe form')
+            self.note(f'tribe: no village left to raid (goal bar {pr})')
+            return
+        state['standing'] = [t[0] for t in targets]
+        skip = state.get('skip', {})
+        pick = [t for t in targets if skip.get(t[0], 0) < time.time()] or targets
+        if home and os.environ.get('CAMPAIGN_OLD_RAID') != '1':
+            # (BUG-1091: the villages on the skip list stay out of the pick; the sort keeps the nearest of the rest)
+            # the nearest village first: the raiders walk 300 m to a far one and its defenders kill them on the way
+            # (village 4 at 318 m: two raids of 300 s without a fall while one at 170-230 m stood, lab 20261113-142203)
+            pick.sort(key=lambda t: math.dist(t[3], home))
+        tk, c, hut, hp = pick[0]
+        raid = dict(tribe=tk, hut=hp, ptr=hut, t0=time.time(), cut=False, standing=len(targets))
+        state['raid'] = raid
+        self.note(f'tribe: raid on village {tk} ({len(targets)} standing, goal bar {pr}), its hut {hut} '
+                  f'{math.dist(hp, home) if home else -1:.0f} m from the players\' village')
+        self.tribe_clicks(raid)
+        self.tribe_order(raid)
+
+    def tribe_clicks(self, raid):
+        """every player's real attack click on the raided hut (box-selected own members, attack mode). The host's
+        own click is the one that counts: the game makes the village's mission (the goal) from the host's input
+        action only; a guest's attack order runs on the host as a DoAction without it, and a village only guests
+        raided falls without a goal (BUG-1068, campaign_tc2 lab 20261113-050826). raid['host_click'] says it came."""
+        g = getattr(self, 'tribe_game', None)
+        if g is None:
+            return
+        tk = raid['tribe']
+        if PLANT_NOCLICK:  # (the twin: no bot's click on the first village raided ever comes)
+            if not hasattr(self, 'plant_tk') and raid.get('standing', 0) > 1:  # (with another village to raid)
+                self.plant_tk, self.plant_t0 = tk, time.time()
+            if tk == getattr(self, 'plant_tk', None) and time.time() - self.plant_t0 < PLANT_NOCLICK * 60:
+                raid['why'] = 'planted: CAMPAIGN_PLANT_NOCLICK'
+                time.sleep(110)  # as long as the failed tries took (127 s and 149 s for village 2 in 20261113-181333)
+                self.note(f'tribe: raid clicks on the hut of village {tk} by [] (the host\'s click: {raid["why"]})')
+                return
+        own = re.findall(r'#\d+ \S+ owner=0 .*?hp=([\d.]+)', self.host.call('coop.tribe'))
+        if sum(1 for h in own if float(h) > 0) < 4:
+            # play_tribe raids only with 4 or more own members alive (fewer: it gathers); the host's share of the
+            # tribe after the play on the campaign's own planet was 1-2 (lab 20261113-060756 / -060758: no host click)
+            # (a spawn is shared out among the players: 12 give the host 3-4)
+            self.note('shortcut: coop.tribe spawn 12 (the host\'s own members for its raid click)')
+            self.host.call('coop.tribe spawn 12')
+            time.sleep(3)
+        for pl in g.p:
+            pl.busy.clear()  # a player sends members that are on another job too
+        g.plan = lambda: 'raid'
+        g.target_for = lambda pl, kind, st, centres, enemies, tk=tk: (centres.get(tk, raid['hut']),
+                                                                       lambda o: o[0] == f'hut{tk}')
+        host_pl = next((pl for pl in g.p if pl.pid == 0), None)
+        for _ in range(2):  # the host's click first, on purpose (play_tribe's step draws its kind at random)
+            if host_pl is None or raid.get('host_click'):
+                break
+            try:
+                if self.tribe_host_click(g, host_pl, raid):
+                    raid.setdefault('clicks', []).append(host_pl.name)
+                    raid['host_click'] = True
+            except (OSError, ValueError, KeyError, IndexError, TypeError) as e:
+                self.finding('info', f'tribe:hostclick:{type(e).__name__}', f'tribe host click error: {e!r}')
+        for _ in range(3):
+            for pl in g.p:
+                if pl.pid == 0 and raid.get('host_click'):
+                    continue
+                n0 = pl.given
+                try:
+                    g.step(pl)
+                except (OSError, ValueError, KeyError, IndexError, TypeError) as e:
+                    self.finding('info', f'tribe:raid:{type(e).__name__}', f'tribe raid bot error: {e!r}')
+                if pl.given > n0 and 'action=15' in pl.last_order()[0]:
+                    raid.setdefault('clicks', []).append(pl.name)
+                    raid['host_click'] = raid.get('host_click') or pl.pid == 0
+            if raid.get('host_click'):
+                break
+        self.note(f'tribe: raid clicks on the hut of village {tk} by {raid.get("clicks", [])}'
+                  + (f' (the host\'s click: {raid["why"]})' if raid.get('why') else ''))
+        print('  BUG-1091 diag: bot step counts ' + '; '.join(f'{pl.name} {sorted(pl.count.items())}' for pl in g.p),
+              flush=True)
+
+    def tribe_host_click(self, g, pl, raid):
+        """the host's own attack click on the raided hut, as a player gives it: the view on its members, a box round
+        them, attack mode, the view on the hut (minimap), a right-click on the hut. True when the game took it as a raid
+        order (action 15); raid['why'] says what failed"""
+        import play_tribe
+        tk = raid['tribe']
+        st = play_tribe.tribe_state(pl.con)
+        mine = [i for i, v in st.items() if v['tribe'] == 'p' and v['owner'] == 0 and v['hp'] > 0]
+        if not mine:
+            raid['why'] = 'no own member'
+            return False
+        if not pl.J and not pl.calibrate():
+            raid['why'] = 'minimap not calibrated'
+            return False
+        sel = []
+        for group in (True, False, False):  # a box round several, else one member at a time (a box can miss: 12:32 of
+            sel = g.select_idle(pl, st, mine, group)  # lab 20261113-120534, "no member selected (6 own)")
+            if sel:
+                break
+        if not sel and not OLD_RAID_SKIP:
+            # BUG-1091: the members picked were out raiding where the view did not reach: the view on the village, a
+            # box round the host's members there (its home guard and the members spawned for this click)
+            home = play_tribe.tribe_centres(pl.con).get('p')
+            if home and pl.look(home):
+                sel = pl.select(mine, play_tribe.screen(pl.con), group=True)
+        if not sel:
+            raid['why'] = f'no member selected ({len(mine)} own)'
+            self.tribe_click_diag(pl, st, mine, raid)
+            return False
+        pl.mode(1)
+        if not pl.look(raid['hut']):
+            pl.calibrate()  # the view turned: the minimap's map again
+            if not pl.look(raid['hut']):
+                raid['why'] = 'the view did not reach the hut'
+                self.tribe_click_diag(pl, st, mine, raid)
+                return False
+        pl.centre()
+        tg = [o for o in pl.on_screen(play_tribe.screen(pl.con)) if o[0] == f'hut{tk}']
+        if not tg:
+            raid['why'] = 'the hut not on screen'
+            return False
+        n0 = pl.given
+        g.click_order(pl, 'raid', sel, tg[0], 30)
+        ok = pl.given > n0 and 'action=15' in pl.last_order()[0]
+        raid['why'] = '' if ok else f'the click gave {pl.last_order()[0][:60]!r}'
+        return ok
+
+    def tribe_click_diag(self, pl, st, mine, raid):
+        """BUG-1091 (diagnostics): where the host's view is when its box finds no own member"""
+        import play_tribe
+        try:
+            objs = play_tribe.screen(pl.con)
+            ons = pl.on_screen(objs)
+            own_on = [o for o in ons if o[0].startswith('member') and int(o[0][6:]) in mine]
+            mem_on = [o for o in ons if o[0].startswith('member')]
+            c = pl.centre()
+            pos = {i: tuple(round(v) for v in st[i]['pos']) for i in mine[:8]}
+            sel = [i for i, v in play_tribe.tribe_state(pl.con).items() if v['sel']]
+            n = raid['diag'] = raid.get('diag', 0) + 1
+            shot = os.path.join(lane.out_dir('shots'), f'bug1091_{time.strftime("%H%M%S")}.png') if n <= 3 else None
+            if shot:
+                self.host.call('shot ' + shot)
+            print(f'  BUG-1091 diag: own on screen {len(own_on)}/{len(mine)}, members on screen {len(mem_on)}, '
+                  f'objs {len(objs)}, view centre {tuple(round(v) for v in c) if c else None}, cur '
+                  f'{tuple(round(v) for v in pl.cur) if getattr(pl, "cur", None) else None}, zoom {pl.zoom}, '
+                  f'selected now {sel[:8]}, own at {pos}, status {play_tribe.status(pl.con)[:300]!r}, shot {shot}',
+                  flush=True)
+        except Exception as e:  # (diagnostics only)
+            print(f'  BUG-1091 diag failed: {e!r}', flush=True)
+
+    def tribe_order(self, raid):
+        """shortcut: every player member gets the raid order on the hut (`coop.tribe order <id> 15 <hut>`: the DoAction
+        a right-click gives, as host_command runs a guest's): the bots' clicks reach only the members on screen"""
+        ids = self.tribe_raiders()
+        if os.environ.get('CAMPAIGN_RAID_ALL') != '1':
+            # a home guard stays: the players' chiefs and the HOME_GUARD members nearest to the village. The game ends
+            # Tribe (game over, its save reloaded: every conquest gone) when no player member has health left; with every
+            # member sent the village's defenders killed them all (lab 20261113-120534 at 4/5). CAMPAIGN_RAID_ALL=1: all go
+            out = self.host.call('coop.tribe')
+            chiefs = {int(m.group(1)) for m in re.finditer(r'#(\d+) \S+ owner=[0-3] .*?leader=1', out)}
+            cm = re.search(r'chiefs=((?: \d:#\d+)*)', out)
+            chiefs |= {int(x) for x in re.findall(r'#(\d+)', cm.group(1))} if cm else set()
+            cent = re.search(r'^tribe \d+ \(player\) at \(([-\d.]+) ([-\d.]+) ([-\d.]+)\)', out, re.M)
+            home = tuple(float(cent.group(i)) for i in (1, 2, 3)) if cent else None
+            rest = sorted((i for i in ids if i not in chiefs), key=lambda i: math.dist(ids[i], home) if home else 0)
+            guard = set(rest[:HOME_GUARD]) | chiefs
+            ids = {i: q for i, q in ids.items() if i not in guard}
+        for mid in ids:
+            self.host.call('coop.tribe order %d 15 %.2f %.2f %.2f %s' % ((mid,) + raid['hut'] + (TRIBE_HUT,)))
+        if not raid.get('ordered'):
+            self.note(f'shortcut: coop.tribe order: {len(ids)} members to the raid on the hut')
+        raid['ordered'] = True
+
+    def kick_tribe_old(self, state):
+        """0.7.13's kick (CAMPAIGN_OLD_TRIBE=1): real raids by the players (play_tribe with the plan 'raid'), more
+        members now and then, pincer on the other tribes' members"""
         if state['n'] % 4 == 0:
             self.note('shortcut: coop.tribe spawn 6 (more members to raid with)')
             self.host.call('coop.tribe spawn 6')
@@ -1134,8 +1664,6 @@ class Campaign:
                     except (OSError, ValueError, KeyError, IndexError, TypeError) as e:
                         self.finding('info', f'tribe:raid:{type(e).__name__}', f'tribe raid bot error: {e!r}')
                         return
-        # the raiders' fights take long: their hits are helped by the game's damage path
-        # (`coop.tribe pincer <victim> <attacker> <dmg>`, citizen TakeDamage), from a player member
         out = self.host.call('coop.tribe')
         mine = [int(m.group(1)) for m in re.finditer(r'#(\d+) \S+ owner=[0-3] .*dead=0', out)]
         others = [int(m.group(1)) for m in re.finditer(r'#(\d+) \S+ owner=254 .*dead=0', out)]
@@ -1196,8 +1724,78 @@ class Campaign:
         self.stage, self.phase = nxt, 'jump'
         self.note(f'jump: the host loads the {fx} fixture in game (slot {slot}), the guests follow')
         self.jumps.append(nxt)
+        self.segments[nxt] = dict(fixture=fx, planet=planet)
+        return self.load_world(nxt, planet, slot, f'the {fx} fixture', f'jump:{nxt}',
+                               lambda: lane.sh('fixture', 'slot', fx, lane.HOST_PROFILE, str(slot)))
+
+    def load_save(self, stage, tgz):
+        """A6: the segment's save of a failed run (--save) loaded by the host in game, the guests follow"""
+        planet = os.path.basename(tgz)
+        meta = os.path.join(os.path.dirname(tgz), 'segments.json')
+        try:
+            planet = (json.load(open(meta)).get(stage) or {}).get('planet') or ''
+        except (OSError, ValueError):
+            planet = ''
+        if not planet:  # without its segments.json: the planet from the packed slot itself
+            import tarfile
+            with tarfile.open(tgz) as tf:
+                spo = [m.name.rsplit('/', 1)[1][:-4] for m in tf.getmembers()
+                       if m.name.lower().endswith('.spo') and not m.name.lower().endswith('snapshot.spo')]
+            planet = spo[0] if spo else ''
+        slot = 30
+        self.stage, self.phase = stage, 'segment'
+        self.note(f'segment: the host loads the save {os.path.relpath(tgz, lane.ROOT) if tgz.startswith(lane.ROOT) else tgz} '
+                  f'({planet}, slot {slot}), the guests follow')
+        self.segments[stage] = dict(save=tgz, planet=planet, rerun=True)
+        return self.load_world(stage, planet, slot, f'the segment save {os.path.basename(tgz)}', f'segment:{stage}',
+                               lambda: cl.unpack_slot(tgz, lane.HOST_DIR, slot))
+
+    def segment_save(self, stage):
+        """A6: the host saves at the start of a played stage (as a player does) and the run keeps that save, so the
+        segment can be played again from it (failed_segment, --save). Not saved: the fixture it came from is recorded"""
+        if os.environ.get('CAMPAIGN_SEGMENTS') == '0' or self.segments.get(stage, {}).get('rerun'):
+            return
+        before = time.time()
+        ans = ''
+        for _ in range(6):  # a save is refused while an editor, a mode switch or the last save's box is up
+            ans = self.host.call('coop.save')
+            if ans.startswith('saved'):
+                break
+            time.sleep(5)
+        slot, t, last = None, 0.0, None
+        if ans.startswith('saved'):
+            t1 = time.time()
+            while time.time() - t1 < 90:  # the save runs in the game's message processing: until its files rest
+                slot, t = cl.newest_slot(lane.HOST_DIR)
+                if slot and t >= before - 2 and last == t:
+                    break
+                last = t
+                time.sleep(4)
+            else:
+                slot = None
+        if not slot:
+            self.note(f'segment save of {stage}: not made ({ans.strip()[:80] or "no new save files"}); the stage keeps '
+                      f'{self.segments.get(stage, {}).get("fixture") or "no save"}')
+            if stage == self.a.start and stage not in self.segments:
+                self.segments[stage] = dict(fixture=cl.FIXTURE[stage],
+                                            planet=(fixtures.planet_of(cl.FIXTURE[stage]) or '/').split('/')[1])
+            self.write_segments()
+            return
+        dst = os.path.join(self.run_dir, 'segments', f'{stage}.tgz')
+        cl.pack_slot(slot, dst)
+        self.segments[stage] = dict(save=dst, planet=cl.slot_planet(slot), slot=os.path.basename(slot), at=now())
+        self.note(f'segment save of {stage}: {os.path.basename(slot)} ({self.segments[stage]["planet"]}) kept as '
+                  f'{os.path.relpath(dst, lane.ROOT)}')
+        self.write_segments()
+
+    def write_segments(self):
+        with open(os.path.join(self.run_dir, 'segments.json'), 'w') as f:
+            json.dump(self.segments, f, indent=1)
+
+    def load_world(self, nxt, planet, slot, what, key, put):
+        """the host loads a save slot in game (put() writes it first), the guests follow through the world share"""
         self.quiet_until = time.time() + 600
-        lane.sh('fixture', 'slot', fx, lane.HOST_PROFILE, str(slot))
+        put()
         self.host.call(f'coop.load Game{slot} {planet}')
         t0 = time.time()
         left = False
@@ -1208,7 +1806,7 @@ class Campaign:
                 break
             time.sleep(0.5)
         else:
-            self.finding('stuck', f'jump:{nxt}', f'the host did not load the {fx} fixture within 180 s', [self.host])
+            self.finding('stuck', key, f'the host did not load {what} within 180 s', [self.host])
             return False
         time.sleep(5)  # the host saves and sends its world to the guests now
         self.follow(nxt)
@@ -1232,6 +1830,12 @@ class Campaign:
         ck = Ck()
         for p in self.P:  # (the drive came with the Space play phase)
             fz.settle(p.con, p.name, timeout=60)
+            # BUG-0991: the space bot does not repair its ship; one left near death (8 of 1500 hp) was destroyed on
+            # the way and its death caption held the finale. A player repairs before such a trip: the bots get full hp
+            m = re.search(r'hp ([\d.]+) max ([\d.]+)', fz.sp(p.con, 'hp'))
+            if m and float(m.group(2)) > 0 and float(m.group(1)) < 0.5 * float(m.group(2)):
+                self.note(f'shortcut: {p.name}: ship at {m.group(1)} of {m.group(2)} hp: coop.space heal '
+                          f'({fz.sp(p.con, "heal")})')
         self.take_off(h)  # the Space play may have left the host on a planet
         fz.to_galaxy(h.con, h.name, ck)
         self.note('shortcut: coop.space finale goto near (the host crosses the galaxy)')
@@ -1441,8 +2045,32 @@ def main():
     ap.add_argument('--finale-from-galaxy', action='store_true',
                     help='tests (BUG-0335): the guests go to the galaxy view before their finale steps')
     ap.add_argument('--no-jump', dest='jump', action='store_false', help='stop at a stage change that does not finish')
+    ap.add_argument('--jump', dest='jump', action='store_true', help='(the default) a stage change that does not finish '
+                    'jumps to the next stage\'s fixture')
+    ap.add_argument('--save', help='A6: start the --from stage from this segment save of a failed run '
+                    '(<run>/segments/<stage>.tgz) instead of its fixture')
+    ap.add_argument('--segment', help='A6: a failed run\'s segment.json: --from, --to, --save, '
+                    '--seed from it')
     ap.add_argument('--seed', type=int, default=int(os.environ['CAMPAIGN_SEED']) if os.environ.get('CAMPAIGN_SEED') else None)  # CAMPAIGN_SEED: a lab replay
     a = ap.parse_args()
+    seg_file = a.segment  # (the suite entry passes $CAMPAIGN_SEGMENT: other campaigns of that run ignore it)
+    if seg_file is not None and not seg_file.strip():
+        # BUG-1192: a FAIL line with the reason (the lab names FAIL lines; a bare RESULT read as "without a FAIL line")
+        print('  FAIL no segment given: lab.py run campaign_segment --segment <lab run of a failed campaign>')
+        print('RESULT: FAIL (no segment: lab.py run campaign_segment --segment <lab run of a failed campaign>)')
+        return 1
+    if seg_file:  # A6: play only the failed segment of another run, from its save
+        seg = json.load(open(seg_file))
+        a.start, a.end = seg['stage'], seg['to']
+        a.save = a.save or seg.get('save')
+        if a.seed is None and seg.get('seed') is not None:
+            a.seed = seg['seed']
+        if seg.get('minutes'):
+            a.minutes = seg['minutes']
+        a.finale = a.finale and seg.get('finale', True) and a.end == 'space'
+        print(f'  segment of {seg.get("run", "?")}: {a.start} -> {a.end} from '
+              f'{seg.get("save") or "the " + cl.FIXTURE[a.start] + " fixture"} (its first failure: [{seg.get("finding")}] '
+              f'{seg.get("text", "")[:120]})', flush=True)
     seed = a.seed if a.seed is not None else random.randrange(1 << 30)
     run = time.strftime('%Y%m%d-%H%M%S')
     run_dir = lane.out_dir('campaign', run)
@@ -1475,6 +2103,14 @@ def main():
         m.start()
         monitors.append(m)
     camp.ids()
+    # a planted problem for the campaign's own twin (Q1 of 0.7.14): console commands on every guest at the start, e.g.
+    # CAMPAIGN_GUEST_CMDS="coop.tribe delay 1.0" (the Tribe mirrors 1 s late: the sync check must find a desync)
+    for cmd in filter(None, os.environ.get('CAMPAIGN_GUEST_CMDS', '').split(';')):
+        for p in camp.guests:
+            camp.note(f'planted on {p.name}: {cmd}: {p.call(cmd).strip()[:120]}')
+    if a.save:  # A6: the failed segment's own save, loaded in game (the guests follow)
+        if not camp.load_save(a.start, os.path.abspath(a.save)):
+            camp.finding('dead', 'segment:load', f'the segment save {a.save} did not load', players)
     camp.health()  # fault baselines
     camp.note(f'{len(players)} players in {cl.FIXTURE[a.start]} after {time.time() - t_start:.0f} s: '
               + ', '.join(f'{p.name}={p.pid} (instance {p.inst})' for p in players))
@@ -1487,15 +2123,20 @@ def main():
             if kind == 'play':
                 if stage != camp.stage and stage not in reached:
                     break  # the stage change before it failed and no jump was allowed
+                camp.segment_save(stage)  # A6: the save this segment starts from
                 camp.play(stage, a.minutes)
             elif kind == 'advance':
                 nxt = cl.STAGES[cl.STAGES.index(stage) + 1]
                 ok = camp.advance(stage)
                 if not ok and not camp.dead:
-                    sure = stage != 'tribe'  # the Tribe stage's end by raids is not sure to come in time
+                    # Q1 of 0.7.14: the Tribe end by conquests (the hut raids) came in every run on the tribe fixture and,
+                    # once the cinematics were on again after the host's Tribe reload (BUG-1073, fix/w49-camp), on the
+                    # campaign's own planet: a timeout is a failing `stuck` now. CAMPAIGN_STRICT_TRIBE=0: `info` (as before)
+                    sure = stage != 'tribe' or os.environ.get('CAMPAIGN_STRICT_TRIBE') != '0'
                     camp.finding('stuck' if sure else 'info', f'advance:{stage}',
                                  f'the stage change {stage} -> {nxt} did not finish in {camp.advance_minutes(stage):.0f} min'
-                                 + ('' if sure else ' (the raids did not conquer every tribe in time)'),
+                                 + (' (planted: CAMPAIGN_PLANT_STUCK)' if stage in PLANT_STUCK else '')
+                                 + ('' if stage != 'tribe' else f' (goal bar {camp.tribe_progress()})'),
                                  camp.P)
                     if a.jump:
                         ok = camp.jump(nxt)
@@ -1536,6 +2177,15 @@ def main():
     full = reached[-1] == a.end
     if not full:
         print(f'  FAIL the campaign stopped in {reached[-1]} (wanted {a.end})')
+    seg = cl.failed_segment(camp.F.items, camp.segments, a.end)
+    if seg and seg_file is None and not a.save:
+        seg.update(run=os.path.relpath(run_dir, lane.ROOT), seed=seed, minutes=a.minutes, finale=a.finale)
+        path = os.path.join(run_dir, 'segment.json')
+        with open(path, 'w') as f:
+            json.dump(seg, f, indent=1)
+        print('CAMPAIGN-SEGMENT ' + json.dumps(dict(seg, file=path)), flush=True)
+        print(f'  rerun the failed segment from its save: SPORE_LANE={lane.LANE} python3 tools/tests/coop_campaign.py '
+              f'--segment {os.path.relpath(path, lane.ROOT)}   (lab: lab.py run campaign_segment --segment <lab run>)')
     print('RESULT:', 'OK' if not bad and full and not camp.dead else 'FAIL')
     return 0 if not bad and full and not camp.dead else 1
 

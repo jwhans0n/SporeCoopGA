@@ -13,21 +13,17 @@ The host then takes off again. Checked on the guest's own game: no caught fault 
 its ship is in the host's solar system.
 
   SPORE_LANE=9 python3 tools/tests/coop_space_share_landing.py
-  (SPORE_FIX_OFF=world.share_planet_save: FAILS, the guest faults every frame)
+  (world.share_planet_save off failed (retired in 0.7.15, BUG-1138: FAIL run 20261031-204700:space_share_landing), the guest faults every frame)
 """
 import os
 import re
 import time
 
+from harness import faults
 import lane
 from coop_space_contracts import sp
 from coop_space_share_takeoff import log_size, log_tail, place, wait
 from twoinst import Checks, host_frame, start
-
-
-def faults(con):
-    m = re.search(r'total faults: (\d+)', con.call('exc')['out'])
-    return int(m.group(1)) if m else -1
 
 
 def main():

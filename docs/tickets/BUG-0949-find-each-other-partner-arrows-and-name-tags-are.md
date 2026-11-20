@@ -3,7 +3,7 @@ id: BUG-0949
 title: Find each other: partner arrows and name tags are drawn over each other, over notification cards and over the minimap and the bottom bar (unreadable labels)
 status: fixed
 kind: bug
-stage: Core
+stage: All
 reported: 2026-11-11
 source: key-frame review of the 0.7.12 final check 20261111-151535
 role: host,guest
@@ -59,3 +59,4 @@ under the minimap and a message card hidden, the one over the bottom bar moved, 
 - 2026-11-11: opened.
 - 2026-11-12: fixed on fix/w48-labels (find.layout), find_layout FAIL 20261112-123659, PASS 20261112-122824 and 20261112-123359-2.
 - 2026-11-12: released in 0.7.13.
+- 2026-11-18: key-frame review of the second 0.7.15 final check (out/frames-0.7.15-b.md): name and arrow both shown, or the arrow over a visible partner (S/028 Cell, S/131-132 Tribe); a name tag in the sky over a partner behind the planet's horizon (S/084, S/088, S/091).

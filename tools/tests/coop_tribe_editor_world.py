@@ -6,15 +6,19 @@
 2. The host opens an editor through the evolution vote (`coop.vote editor`, the guest's real
    "I'm ready" click; in Tribe the request carries a member's species) and leaves it with the red X.
    In the editor and after it the epic is still the tracked one.
-3. The world share that follows the editor ("evolved the species") saves the host's world: the
-   epic left before that save (BUG-0121's guard), so the host's game has no co-op epic any more.
+3. Since BUG-0508 (v0.7.10) the guest keeps its world after the host's editor ("evolved in place"):
+   no share save follows the editor and the epic stays alive and tracked in the host's game. The
+   test then makes a share due (`coop.share due`, with the share save of a joining guest): the epic
+   left before that save (BUG-0121's guard), so the host's game has no co-op epic any more.
+   (With `world.evolve_in_place` (retired) off the editor's own share does it, as before 0.7.10; BUG-1090.)
    (The guest's game lists no live epic at all, the planet's own one included: printed only.)
 4. The host ends its session: no co-op epic stays.
 
---nofix: `coop.fix tribe.editor_world off` (the old trigger: every editor frame is a world change):
-the editor visit drops the epic untracked, so it stays alive through the share save; must FAIL.
+tribe.editor_world (the old trigger: every editor frame is a world change; the editor visit dropped the epic
+untracked, so it stayed alive through the share save) was retired in 0.7.15 (BUG-1138: FAIL run
+20261029-003144:save_hygiene_leave on record); the test runs PASS-only.
 
-  SPORE_LANE=5 python3 tools/tests/coop_tribe_editor_world.py [--nofix]
+  SPORE_LANE=5 python3 tools/tests/coop_tribe_editor_world.py
 """
 import argparse
 import re
@@ -47,14 +51,10 @@ def num(v, k, d=-1):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--nofix', action='store_true')
     a = ap.parse_args()
     host, guest = start('tribe')
     ck = Checks()
     gu = Ui(guest, 'guest')
-    if a.nofix:
-        for c in (host, guest):
-            print(' ', c.call('coop.fix tribe.editor_world off')['out'].strip())
     t0 = time.time()
     while time.time() - t0 < 90:  # the split of the player tribe arrives with the first states
         if any(v[0] == 1 for v in members(host).values()):
@@ -104,13 +104,32 @@ def main():
     if not ck(mode(host) == m0, f'the host is back in Tribe ({mode(host)})'):
         return ck.result()
 
-    # 3. the world share after the editor ("evolved the species"): the guest loads it
+    # 3. after the editor ("evolved the species") the guest keeps its world in place (BUG-0508) or,
+    # with world.evolve_in_place (retired) off, gets the world again. Kept in place: the epic is still the tracked
+    # one (no save was made); then a share save of the test's own (coop.share due) must leave it out.
+    def loaded():
+        return num(herds(guest)[0], 'resets', 0) > g0 and mode(guest) == m0 and guest.call('coop.tribe')['ok']
+
+    def kept():
+        m = re.search(r'evolve in place: kept (\d+)', host.call('coop.status')['out'])
+        return int(m.group(1)) if m else 0
+
     t0 = time.time()
-    while time.time() - t0 < 150:
-        if num(herds(guest)[0], 'resets', 0) > g0 and mode(guest) == m0 and guest.call('coop.tribe')['ok']:
-            break
+    while time.time() - t0 < 60 and not loaded() and not kept():
         time.sleep(2)
+    if not loaded():
+        hk, outk = herds(host)
+        print(f'  after the editor ({time.time() - t0:.0f} s, kept in place {kept()}):', outk)
+        if not ck(kept() > 0, 'the guest kept its world after the host\'s editor (evolved in place, BUG-0508)'):
+            return ck.result()
+        ck(num(hk, 'live_epics') == base + 1 and hk.get('tracked') == h1.get('tracked'),
+           'kept in place (no save): the co-op epic is still alive and tracked')
+        print(' ', host.call('coop.share due')['out'].strip())  # the share with its save, as for a joining guest
+        t0 = time.time()
+        while time.time() - t0 < 150 and not loaded():
+            time.sleep(2)
     print(f'  the guest loaded the shared world after {time.time() - t0:.0f} s')
+    ck(loaded(), 'the guest loaded the shared world')
     time.sleep(8)
     h2, out2 = herds(host)
     hg, outg = herds(guest)

@@ -235,7 +235,9 @@ def workflow_contracts(module):
             rows.append(row)
         Path(command[command.index('--output')+1]).write_text(json.dumps(dict(observer_only='--observe-other-editors'in command,exit_confirmation='--exit-confirmation'in command and state.get('cancel_case')!='receipt',rows=rows)))
         return SimpleNamespace(returncode=0,stdout='controlled read-only sampler',stderr='')
-    with TemporaryDirectory(dir=module.ROOT/'out') as directory:
+    output_parent=module.ROOT/'out'
+    output_parent.mkdir(exist_ok=True)
+    with TemporaryDirectory(dir=output_parent) as directory:
         cases=[(profile,editing,away,'')for profile,editing,away in [('creature',False,''),('building-house',False,''),('creature',True,''),('building-house',False,'save'),('building-house',False,'save-other-edit'),('building-house',False,'default-denied'),('building-house',False,'pending'),('building-house',False,'serial-expired')]]
         cases += [('creature',True,'',case)for case in ('confirm','confirm-wait','direct-wait','source','late-source','request','pending','phase','modal','changed','stale','late-stale','click-failure')]
         cases += [('creature',True,'confirm-away','confirm')]

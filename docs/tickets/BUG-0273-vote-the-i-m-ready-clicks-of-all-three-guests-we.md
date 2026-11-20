@@ -3,7 +3,7 @@ id: BUG-0273
 title: vote: the I'm ready clicks of all three guests were not counted, the Creature -> Tribe vote ended by its timer
 status: fixed
 kind: bug
-stage: creature
+stage: Creature
 reported: 2026-10-29
 source: lab 20261029-122937 campaign
 role: 
@@ -53,3 +53,4 @@ frame) after 0.5 s, unless the game delivered the click itself meanwhile (counte
 - 2026-10-29: opened.
 - 2026-10-29: fixed on fix/w7-vote (input lock drops the clicks; the mod presses the button).
 - 2026-10-29: released in 0.7.3.1.
+- 2026-11-15: switch `core.ui_locked_clicks` retired in 0.7.15 (B1, BUG-1138): the old code path is gone, FAIL run 20261029-143459:vote_caption on record; its test runs PASS-only.

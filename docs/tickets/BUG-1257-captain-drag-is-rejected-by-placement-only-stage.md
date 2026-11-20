@@ -3,7 +3,7 @@ id: BUG-1257
 title: Captain drag is rejected by placement-only staged capture
 status: fixed
 kind: desync
-stage: GA shared editor
+stage: Editor
 reported: 2026-11-04
 source: Player preview9 logs: staged non-placement rejection followed by captain restoration mismatch
 role: both

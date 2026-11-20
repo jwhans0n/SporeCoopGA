@@ -3,7 +3,7 @@ id: BUG-1255
 title: Cold native reopen of terraformed Save changes decoded authored bytes
 status: open
 kind: bug
-stage: GA shared editor
+stage: Editor
 reported: 2026-11-04
 source: C69 R261 saved Road native cold reopen
 role: host

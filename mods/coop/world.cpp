@@ -2,6 +2,7 @@
 // to a joining guest, who stores it as a new save slot. See docs/03-gameplay.md 3.2.
 #include "world.h"
 #include "world_editor_entry.h"
+#include "lifecycle.h"
 
 #include <winsock2.h>
 #define WIN32_LEAN_AND_MEAN
@@ -142,9 +143,6 @@ static int c_worldfix(void*, int argc, const char* const* argv, SkOut* out);
 // loaded it faulted every frame at 0xEBDD12 (a planet-made Space save, docs/07-modes.md 7.2). The
 // context is read when the save really writes the world (savestrip's write watch); a share whose
 // save was written on a planet saves again (save_game then waits until the ship is off the planet).
-// Off: the share goes out with that save (0.7.3.1).
-static bool g_planet_save_fix = true;
-COOP_FIX("world.share_planet_save", "BUG-0357", g_planet_save_fix, "world: a Space share save that was written on a planet (the ship landed after it was posted) is made again off the planet");
 static uint64_t g_planet_write_at; // tick count of the last world write of a save in Space on a planet
 static unsigned g_planet_saves;    // tests: shares saved again because their save was written on a planet
 // tests (coop.worldfix landsave <ms>): the ship lands <ms> after the next Space share save is posted
@@ -431,7 +429,6 @@ static unsigned g_saves_posted; // tests: every save_game that posted the game's
 void set_save_blocker(const char* (*probe)()) { g_save_blocker = probe; }
 
 static FILETIME g_saved_ft; // when the last save was posted (system time, as file times)
-extern bool g_settle_reset_fix;
 static uint64_t g_saved_base; // the slot's newest file write when the last save was posted (BUG-0276)
 static unsigned g_stale_saves; // tests: shares whose save wrote nothing: saved again (BUG-0276)
 static unsigned g_settle_waits; // tests: share saves held while the stage settled (BUG-0276)
@@ -509,13 +506,10 @@ bool save_game(std::string& err)
     vcall<void>(mm, 0x18 / 4, 0x1CD20F0u, (void*)nullptr, (void*)nullptr, 0);
     g_saves_posted++;
     GetSystemTimeAsFileTime(&g_saved_ft);
-    g_saved_base = 0;
-    if (g_settle_reset_fix) {
-        std::string planet;
-        bool missing = false;
-        std::wstring slot = current_slot(planet, missing);
-        g_saved_base = slot.empty() ? 0 : newest_write(slot);
-    }
+    std::string planet;
+    bool missing = false;
+    std::wstring slot = current_slot(planet, missing);
+    g_saved_base = slot.empty() ? 0 : newest_write(slot);
     g_saved_at = GetTickCount64();
     g_box_seen_at = 0;
     g_box_watch_until = g_saved_at + 30000;
@@ -590,12 +584,10 @@ bool save_busy()
 bool g_share_reset_fix = true;
 
 // wave 2 fixes (tests: `coop.worldfix <name> 0` = the old behaviour)
-static bool g_world_reset_fix = true;  // BUG-0074: the session end drops the guest's queued world loads
 static bool g_drop_peer_fix = true;    // BUG-0166: shares for a player who left are dropped
 static bool g_one_save_fix = true;     // BUG-0112: one save for every share that waits at the same time
 static bool g_editor_load_fix = true;  // BUG-0157: a queued load never starts inside an editor
 COOP_FIX("core.share_reset", "BUG-0140", g_share_reset_fix, "world: the session end drops the shares and transfers of its players");
-COOP_FIX("world.world_reset", "BUG-0074", g_world_reset_fix, "world: the session end drops the guest's queued world loads");
 COOP_FIX("world.share_drop_peer", "BUG-0166", g_drop_peer_fix, "world: shares for a player who left are dropped");
 COOP_FIX("world.share_one_save", "BUG-0112", g_one_save_fix, "world: one save for every share that waits at the same time");
 // BUG-0276: the host's share save posted 70 ms after the game entered the Tribe stage was never
@@ -609,18 +601,19 @@ COOP_FIX("world.share_one_save", "BUG-0112", g_one_save_fix, "world: one save fo
 // host's save) had plateaus 0.5-14 m off the host's, and the host's own reload of that save gave exactly the guests'
 // (lab 20261106-043244; docs/re/tribe.md#tribe-terrain-stamps). A rebuild started by the mod gave a third ground. So
 // after a live Creature -> Tribe change the host loads its own share save once it has gone out, as the guests do:
-// every game then has the ground any later load gives. Off: the host keeps its live ground (0.7.8).
-bool g_host_reload_fix = true;
-COOP_FIX("tribe.host_reload", "BUG-0332", g_host_reload_fix,
-         "tribe: after the live Creature -> Tribe change the host loads its own share save, so its ground is the guests'");
+// every game then has the ground any later load gives.
 static bool g_reload_due;     // set by the stage change, done after the next share save went out
 static uint32_t g_host_reloads;
-void host_reload_after_share()
-{
-    if (g_host_reload_fix)
-        g_reload_due = true;
-}
+void host_reload_after_share() { g_reload_due = true; }
 uint32_t host_reloads() { return g_host_reloads; }
+// BUG-1054: the reload is due for the world of the live change only. A session that ended before the share went out
+// left it set: after the host loaded another game, its first share of a later session loaded the host's game again
+// (an unexpected reload a few seconds after a guest joined). Reset when the world changes (lifecycle.h); a session end
+// in the same live world keeps it (that world's ground still differs from the share save's, BUG-0332).
+// Off (`coop.fix tribe.host_reload_reset off`): kept until a share goes out (0.7.13).
+static bool g_reload_reset_fix = true;
+COOP_FIX("tribe.host_reload_reset", "BUG-1054", g_reload_reset_fix, "tribe: the host's reload after the live Tribe change is forgotten when the host's world changes before its share went out");
+WORLD_STATE("world.host_reload", &g_reload_reset_fix, [] { g_reload_due = false; }, []() -> size_t { return g_reload_due ? 1 : 0; });
 // BUG-0332: from the reload's start until the host plays Tribe again (at most 60 s): the guests are told why the
 // host left (PF_RESYNC), not "left for the main menu"
 static double g_reload_at = -1;
@@ -643,19 +636,14 @@ COOP_FIX("world.share_settle", "BUG-0276", g_share_settle_fix, "world: a share s
 // which a stage change with an avatar in both stages (Creature -> Tribe) or a Space context change
 // (home planet -> solar system) never restarted: the share saves still went out 9-75 ms into the
 // new stage / place (Tribe: dropped, the Creature files sent; Space: every guest loaded a ship that
-// went down to the planet). With this switch the share's clock restarts at every mode or place
+// went down to the planet). The share's clock restarts at every mode or place
 // change, and a share without its box is stale unless a file of the slot is newer than the newest
 // one before the save was posted (the 2 s slack let the previous save's files pass).
-bool g_settle_reset_fix = true;
-COOP_FIX("world.share_settle_reset", "BUG-0276", g_settle_reset_fix, "world: a share save waits 2 s after every stage or place change; files older than the save are stale");
 // BUG-0301: the place above is coop.cpp's g_world, updated after world::tick in the frame: in the
 // frame the host's ship left its home planet the game's context (Simulator::GetCurrentContext, read
 // by save_game) already said "solar system" while the place still said "planet, settled for 80 s",
 // and the share save went out in that frame (the guests' ships went down to the planet, BUG-0287
-// again). With this switch the Space context, read in the same frame as the save, restarts the
-// settle clock too.
-bool g_settle_ctx_fix = true;
-COOP_FIX("world.share_settle_context", "BUG-0301", g_settle_ctx_fix, "world: a Space share save also waits 2 s after the game's own context change (planet / solar system / galaxy) of the same frame");
+// again). The Space context, read in the same frame as the save, restarts the settle clock too.
 COOP_FIX("world.load_in_editor", "BUG-0157", g_editor_load_fix, "world: a queued load never starts inside an editor");
 COOP_FIX("world.busy_slot", "BUG-0035", slotfs::g_busy_fix, "world: a received world never moves or overwrites the slot being played");
 COOP_FIX("world.slot_match", "BUG-0087", slotfs::g_match_fix, "world: a received world goes only into its own host's co-op slot");
@@ -673,9 +661,6 @@ static unsigned g_collect_failures;    // tests (BUG-0847): shares refused becau
 // the stars of another slot, the star manager wrote stars.db back and asked for the player's home
 // planet: the old planet id indexed a star of the new galaxy without planets (null read in
 // cStarRecord::GetPlanetRecord). A load from the menu first clears a player record left there.
-// Off: the old behaviour (0.7.3.0).
-static bool g_menu_player_fix = true;
-COOP_FIX("world.menu_player", "BUG-0284", g_menu_player_fix, "world: a load from the galaxy menu clears the old world's player empire a broken stage exit left behind");
 static unsigned g_menu_player_cleared; // tests
 static unsigned g_shares_dropped;      // shares dropped because their player left (tests)
 static unsigned g_loads_dropped;       // guest: queued loads dropped at a session end (tests)
@@ -699,11 +684,8 @@ void reset_shares()
 // The player's own coop.load stays. (g_deferred and g_via_menu are defined further down.)
 static void drop_share_loads();
 
-void on_session_end()
-{
-    if (g_world_reset_fix)
-        drop_share_loads();
-}
+void on_session_end() { drop_share_loads(); }
+LIFECYCLE_HOOK("world.session", lifecycle::kSessionEnd, -12, [](const lifecycle::Ctx&) { on_session_end(); }, false); // C2 (BUG-1141): end_session
 
 bool share_waits_for_planet()
 {
@@ -990,6 +972,58 @@ static void menu_splash_tick()
     H->run_outside_frame(hide_menu_splash, nullptr); // (UI: outside the frame)
 }
 
+// BUG-1218: the start-up video (Movie::MovieSystem: the EA / Maxis logos, then the big SPORE logo over a starfield) is
+// still playing when a load leaves the galaxy menu within ~16 s of it (a guest that joins from its menu at once, a
+// host's quick load): the video's layer (DrawLayer) is drawn over the stage under the HUD until the video ends, and
+// its end (StopMovie, which posts 0x49731AD: the menu's GGE_intro, refused outside the menu by BUG-0626) comes only
+// then. In a stage the video is stopped as its own end stops it. Off (`coop.fix world.menu_movie off`): it plays on.
+static bool g_menu_movie_fix = true;
+COOP_FIX("world.menu_movie", "BUG-1218", g_menu_movie_fix,
+         "world: the start-up video (the SPORE logo) left playing by a quick load from the menu is stopped in the stage");
+static uint32_t g_movies_stopped;
+static double g_movie_seen;
+
+static uint8_t* movie_system()
+{
+    static uintptr_t get = H->sym("Movie::MovieSystem::Get");
+    uint8_t* ms = get ? skg::cdecl_call<uint8_t*>(get) : nullptr;
+    return ms && skg::readable(ms, 0x38) ? ms : nullptr;
+}
+
+// the start-up video plays (MovieIsPlaying: +0x34 the movie object)
+bool menu_movie_playing()
+{
+    uint8_t* ms = movie_system();
+    return ms && *(uint32_t*)(ms + 0x34);
+}
+
+static void stop_menu_movie(void*)
+{
+    static uintptr_t stop = H->sym("Movie::MovieSystem::StopMovie");
+    uint8_t* ms = movie_system();
+    if (!stop || !ms || !*(uint32_t*)(ms + 0x34) || !in_stage(game::mode_id()))
+        return;
+    skg::thiscall<int>(stop, ms);
+    g_movies_stopped++;
+    H->log(M, SK_INFO, "world: the start-up video was still playing in the stage (mode %08X): stopped (BUG-1218, %u)", game::mode_id(),
+           g_movies_stopped);
+}
+
+static void menu_movie_tick()
+{
+    if (!g_menu_movie_fix || !in_stage(game::mode_id()) || !menu_movie_playing()) {
+        g_movie_seen = 0;
+        return;
+    }
+    double now = H->time_seconds();
+    if (!g_movie_seen)
+        g_movie_seen = now;
+    if (g_movie_seen < 0 || now - g_movie_seen < 0.5) // (a stage's first frames: once per sighting)
+        return;
+    g_movie_seen = -1;
+    H->run_outside_frame(stop_menu_movie, nullptr); // (renderer, audio and a UI layout: outside the frame)
+}
+
 static void install_intro_hook()
 {
     if (uintptr_t a = H->sym("Simulator::cCinematicManager::PlayCinematic"))
@@ -1047,6 +1081,59 @@ bool time_paused()
     return tm && (tm[0x48] & 1);
 }
 
+static void pause_walk(const uint8_t* n, const uint8_t* anchor, const uint8_t* arr, std::vector<std::pair<uint32_t, int>>& out,
+                       int depth)
+{
+    if (!n || n == anchor || depth > 64 || !skg::readable(n, 0x18))
+        return;
+    pause_walk(*(const uint8_t* const*)(n + 4), anchor, arr, out, depth + 1);
+    int idx = *(const int*)(n + 0x14);
+    int cnt = idx >= 0 && idx < 256 && skg::readable(arr + idx * 8, 4) ? *(const int*)(arr + idx * 8) : 0;
+    if (cnt)
+        out.push_back({*(const uint32_t*)(n + 0x10), cnt});
+    pause_walk(*(const uint8_t* const*)n, anchor, arr, out, depth + 1);
+}
+
+std::vector<std::pair<uint32_t, int>> pause_reasons()
+{
+    std::vector<std::pair<uint32_t, int>> out;
+    static uintptr_t get = H->sym("Simulator::cGameTimeManager::Get");
+    const uint8_t* tm = get ? skg::cdecl_call<const uint8_t*>(get) : nullptr;
+    if (!tm || !skg::readable(tm, 0x6C))
+        return out;
+    const uint8_t* anchor = tm + 0x50;
+    pause_walk(*(const uint8_t* const*)(anchor + 8), anchor, *(const uint8_t* const*)(tm + 0x68), out, 0);
+    return out;
+}
+
+void time_pause(uint32_t reason, bool on)
+{
+    static uintptr_t get = H->sym("Simulator::cGameTimeManager::Get"), pause = H->sym("Simulator::cGameTimeManager::Pause"),
+                     resume = H->sym("Simulator::cGameTimeManager::Resume");
+    void* tm = get ? skg::cdecl_call<void*>(get) : nullptr;
+    if (tm && pause && resume)
+        skg::thiscall<int>(on ? pause : resume, tm, reason);
+}
+
+uint32_t cinematic_pause_slot()
+{
+    uint8_t* cm = (uint8_t*)cinematic_mgr();
+    return cm && skg::readable(cm + 0x160, 4) ? *(uint32_t*)(cm + 0x160) : 0;
+}
+
+bool cinematic_pause_resume()
+{
+    if (!cinematic_pause_slot())
+        return false;
+    uintptr_t get = H->sym("App::IMessageManager::Get");
+    void* mm = get ? skg::cdecl_call<void*>(get) : nullptr;
+    static uint8_t data[0x40];
+    if (!mm)
+        return false;
+    skg::vcall<void>(mm, 0x14 / 4, 0x46AC986u, (void*)data, 0); // MessageSend (as EndCinematic sends its end)
+    return true;
+}
+
 bool end_cinematic(const char* where)
 {
     uintptr_t end = H->sym("SporeCoop::cCinematicManager_EndCinematic");
@@ -1097,7 +1184,7 @@ static void via_menu_tick()
         g_playable_since = now;
     uint32_t place = g_place ? g_place() : 0;
     int ctx = -1;
-    if (g_settle_ctx_fix && mode == modes::kSpace) {
+    if (mode == modes::kSpace) {
         uintptr_t get = H->sym("Simulator::GetCurrentContext");
         ctx = get ? skg::cdecl_call<int>(get) : -1;
     }
@@ -1234,6 +1321,7 @@ void guest_tick()
     via_menu_tick();
     menu_intro_tick();
     menu_splash_tick();
+    menu_movie_tick();
     deferred_tick();
     box_tick();
 }
@@ -1244,6 +1332,7 @@ void tick(net::Session& s)
     via_menu_tick();
     menu_intro_tick();
     menu_splash_tick();
+    menu_movie_tick();
     deferred_tick();
     box_tick();
     if (g_drop_peer_fix) {
@@ -1295,7 +1384,7 @@ void tick(net::Session& s)
             // a stage that just began (loading screen, setup) is saved once the player controls
             // something, like a share at join (coop.cpp player_join)
             double ts = H->time_seconds();
-            double since = g_settle_reset_fix ? g_share_settled_since : g_playable_since;
+            double since = g_share_settled_since;
             if (now >= p.next_try && g_playing && !g_playing()) {
                 p.next_try = now + 1000;
             } else if (now >= p.next_try && g_share_settle_fix && in_stage(game::mode_id()) &&
@@ -1345,7 +1434,7 @@ void tick(net::Session& s)
             i++;
             continue;
         }
-        if (g_planet_save_fix && p.mode == modes::kSpace && g_saved_at && g_planet_write_at >= g_saved_at) {
+        if (p.mode == modes::kSpace && g_saved_at && g_planet_write_at >= g_saved_at) {
             H->log(M, SK_WARN, "world: the save for player %u was written on a planet (%llu ms after it was posted, the ship had landed): "
                    "saving again off the planet", p.peer, (unsigned long long)(g_planet_write_at - g_saved_at));
             g_planet_saves++; // (g_planet_write_at stays: a share that went out with the same save sees it too)
@@ -1364,7 +1453,7 @@ void tick(net::Session& s)
             uint64_t posted = ((uint64_t)g_saved_ft.dwHighDateTime << 32) | g_saved_ft.dwLowDateTime;
             uint64_t wrote = slot.empty() ? 0 : newest_write(slot);
             bool stale = wrote && posted && wrote + 20000000ull < posted; // 2 s of slack for coarse file times
-            if (g_settle_reset_fix && wrote && g_saved_base && wrote <= g_saved_base)
+            if (wrote && g_saved_base && wrote <= g_saved_base)
                 stale = true; // nothing newer than before the save (the slack let those files pass)
             if (stale) {
                 H->log(M, SK_WARN, "world: no saved box and no file written %llu ms after the save for player %u: saving again (try %d)",
@@ -1633,7 +1722,7 @@ static bool load_now(const std::wstring& slot, const std::string& planet_file, s
     }
     // BUG-0284: in the galaxy menu the player's record is empty (the game's menu reset clears it);
     // one left over from the old world must not meet the new slot's stars
-    if (g_menu_player_fix && game::mode_id() == modes::kMenu) {
+    if (game::mode_id() == modes::kMenu) {
         uintptr_t empid = H->sym("Simulator::GetPlayerEmpireID"), reset = H->sym("SporeCoop::SpacePlayerData_Reset");
         uint32_t id = empid ? skg::cdecl_call<uint32_t>(empid) : 0xFFFFFFFFu;
         if (id != 0xFFFFFFFFu && reset) {
@@ -1861,8 +1950,9 @@ std::string status()
                  *(uint32_t*)(cm + kCineId) == kMenuIntroId ? " (menu intro)" : "");
         s += b;
     }
-    if (g_intros_ended || g_intros_at_once) {
-        snprintf(b, sizeof b, "menu intro ended %u (not started %u), menu splash hidden %u\n", g_intros_ended, g_intros_at_once, g_splash_hidden);
+    if (g_intros_ended || g_intros_at_once || g_movies_stopped || menu_movie_playing()) {
+        snprintf(b, sizeof b, "menu intro ended %u (not started %u), menu splash hidden %u, start-up video stopped %u (playing %d)\n",
+                 g_intros_ended, g_intros_at_once, g_splash_hidden, g_movies_stopped, (int)menu_movie_playing());
         s += b;
     }
     return s;
@@ -1885,9 +1975,8 @@ static int c_worldfix(void*, int argc, const char* const* argv, SkOut* out)
         const char* name;
         bool* on;
     } sw[] = {{"busy_slot", &slotfs::g_busy_fix},       {"slot_match", &slotfs::g_match_fix},
-              {"write_check", &slotfs::g_write_fix},    {"world_reset", &g_world_reset_fix},
-              {"share_drop_peer", &g_drop_peer_fix},    {"share_one_save", &g_one_save_fix},
-              {"load_in_editor", &g_editor_load_fix}};
+              {"write_check", &slotfs::g_write_fix},    {"share_drop_peer", &g_drop_peer_fix},
+              {"share_one_save", &g_one_save_fix},      {"load_in_editor", &g_editor_load_fix}};
     if (argc > 2 && !strcmp(argv[1], "queue")) { // tests: several guests wait for the world at once
         for (int i = 2; i < argc; i++) {
             std::string err;

@@ -21,6 +21,7 @@ import os
 import re
 import time
 
+from harness import autosave_settled, sp, waiter
 import fixtures
 import lane
 from coop_ui import VK_F9, Ui
@@ -28,10 +29,6 @@ from twoinst import Checks, shot, start, wait_guest_in
 
 VK_RETURN = 0x0D
 DRIVE = 'interstellardrive'
-
-
-def sp(con, *a):
-    return con.call('coop.space ' + ' '.join(str(x) for x in a))['out'].strip()
 
 
 def place(con):
@@ -59,14 +56,7 @@ def rosters(con):
     return out
 
 
-def wait(cond, secs, step=1.0):
-    t0 = time.time()
-    while time.time() - t0 < secs:
-        r = cond()
-        if r:
-            return r
-        time.sleep(step)
-    return None
+wait = waiter(step=1.0)
 
 
 def no_movie(con, secs=30):
@@ -226,6 +216,9 @@ def main():
     ck(bool(ct) and ct[0]['star'] == home, f'the guest\'s colony star is marked on the host\'s map: {ct}')
     shot(host, 'map_galaxy_host.png')
     # under the pause menu the tags are hidden (coop.cpp hides the world labels, menu_up)
+    # (the guest's colony is a milestone of the host's autosave, saved once the host is off the planet: here. The Esc
+    # must not land in that save, lab 20261116-025154: BUG-1203)
+    autosave_settled(host)
     host.call('key 27')  # Esc: the pause menu
     time.sleep(1.5)
     hidden = wait(lambda: not tags(host), 5) is not None

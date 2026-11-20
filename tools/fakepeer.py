@@ -18,7 +18,7 @@ import time
 
 MAGIC = 0x4F435053
 # Default to the current protocol. Check the wire format before adding versions.
-PROTO = 29
+PROTO = 30
 HEADER = '<IHIHHQQB'  # magic, proto, conn, seq, ack, ackbits (2 x u64), count
 HEADER_SIZE = struct.calcsize(HEADER)
 HELLO, WELCOME, REJECT, JOIN, LEAVE, STATE, CHAT, PING, PONG, BYE = range(1, 11)
@@ -133,6 +133,20 @@ class Conn:
                 self.rel_in.setdefault(rid, (typ, p))
 
 
+# Mirrors messages.def; fakepeer_check compares this table against the real manifest.
+FAMILIES = ((1, 2, 0), (2, 1, 0), (3, 1, 0), (4, 1, 0), (5, 1, 0), (6, 1, 1),
+            (7, 1, 0), (8, 1, 2), (9, 1, 0), (10, 1, 0), (11, 1, 0), (12, 1, 0))
+
+
+def pack_hello(protocol, build, name):
+    encoded = name.encode()[:255]
+    base = struct.pack('<HIB', protocol, build, len(encoded)) + encoded
+    if protocol < 30:
+        return base
+    # CAP_FAMILIES only: this small bot does not implement reliable fragmentation.
+    return base + struct.pack('<IB', 8, len(FAMILIES)) + b''.join(struct.pack('<BHH', *f) for f in FAMILIES)
+
+
 def pack_state(pid, t_ms, pos, rot, vel, flags, hp, mhp, species, mode=0, world=0, protocol=PROTO):
     base = struct.pack('<BI3f4f3fBBffIII', pid, t_ms & 0xFFFFFFFF, *pos, *rot, *vel, flags, 0, hp, mhp, species,
                        mode, world)
@@ -168,7 +182,7 @@ def main():
     ap.add_argument('--period', type=float, default=12.0)
     ap.add_argument('--seconds', type=float, default=60.0)
     ap.add_argument('--build', default='dc04aee5', help='first 8 hex digits of the host game build ID')
-    ap.add_argument('--protocol', type=int, choices=(6, 7, 23, 24, 25, 26, 27, 28, 29), default=PROTO, help='host protocol version (default: 29)')
+    ap.add_argument('--protocol', type=int, choices=(6, 7, 23, 24, 25, 26, 27, 28, 29, 30), default=PROTO, help='host protocol version (default: 30)')
     ap.add_argument('--say', default='hello from fakepeer')
     a = ap.parse_args()
     h, _, port = a.host.partition(':')
@@ -177,8 +191,7 @@ def main():
     sock.bind(('0.0.0.0', 0))
     sock.setblocking(False)
     c = Conn(sock, addr, a.protocol)
-    name = a.name.encode()[:255]
-    c.send_reliable(HELLO, struct.pack('<HIB', c.protocol, int(a.build, 16), len(name)) + name)
+    c.send_reliable(HELLO, pack_hello(c.protocol, int(a.build, 16), a.name))
     st = {'my_id': None, 'host': None, 'said': False}
 
     def deliver(typ, p):

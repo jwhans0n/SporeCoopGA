@@ -31,6 +31,7 @@
 #include "sporekit_game.hpp"
 #include "fixes.h"
 #include "world.h"
+#include "wire/space_contracts.h"
 
 using skg::cdecl_call;
 using skg::thiscall;
@@ -107,6 +108,11 @@ bool g_wave_tough_fix = true, g_wave_resume_fix = true, g_wave_away_fix = true;
 COOP_FIX("contracts.wave_tough", "BUG-0227", g_wave_tough_fix, "space: armada ships get their HP raised once per object, not per address");
 COOP_FIX("contracts.wave_resume", "BUG-0227", g_wave_resume_fix, "space: a resumed armada wave waits for its ships again");
 COOP_FIX("contracts.wave_away", "BUG-0227", g_wave_away_fix, "space: an armada raid that ends while the host is away counts");
+// BUG-1038: a fresh (not resumed) wave whose raid brought no ships in 30 s kept its mission, so the next ready tick
+// resumed that same empty raid (30 s more) instead of starting a new one. Now the empty raid is aborted and a new one
+// starts. Off: resumed once more (0.7.13).
+bool g_wave_empty_fix = true;
+COOP_FIX("space.armada_empty_wave", "BUG-1038", g_wave_empty_fix, "space: an armada wave whose raid brought no ships starts a new raid");
 bool g_wave_resumed;              // the running wave was resumed (BUG-0227)
 int g_wave_away_result;           // the wave's raid ended while the host was away: 5 or 6 (BUG-0227)
 bool g_tough_reuse, g_hide_ships; // tests: the address-reuse simulation / the resumed raid brings no ships
@@ -308,6 +314,13 @@ struct OwedReward {
 };
 std::vector<OwedReward> g_owed;
 uint32_t g_owed_paid, g_owed_dropped;
+// BUG-1037: the owed rewards (also a partner's mission tool, spacecoop K_MISSION) were paid only by this feature's tick,
+// which does not run while the host's session settings have Space contracts off (F3, BUG-0768): the tool was never
+// given. Now they are paid also while the feature is off (spaceext tick_off). Off: not paid then (0.7.13).
+bool g_owed_always_fix = true;
+COOP_FIX("space.owed_always", "BUG-1037", g_owed_always_fix,
+         "space: an owed mission reward tool is given also while the session has Space contracts off");
+uint32_t g_owed_paid_off; // paid while the feature was off
 void say(const std::string& t);
 void owed_tick()
 {
@@ -334,6 +347,8 @@ void owed_tick()
             tool = true;
         }
         g_owed_paid++;
+        if (!spaceext::feature_allowed("contracts"))
+            g_owed_paid_off++;
         H->log(M, SK_INFO, "contracts: an owed reward paid (%s): money %d, tool %d", o.what.c_str(), o.money, (int)tool);
         say(o.what + tr(": the reward you earned while away is yours now", ": награда, заработанная вне космоса, получена"));
     }
@@ -468,61 +483,48 @@ uint32_t place_of_player(uint8_t id)
 // ---- state messages ----
 void write_state(net::Writer& w, const Contract& c, double t)
 {
-    w.u32(c.id);
-    w.u8(c.type);
-    w.u8(c.state);
-    w.u8(c.reason);
-    w.u8(c.needed);
-    w.u32(c.money);
-    w.u32(c.tool);
-    w.u32((uint32_t)std::max(0, (int)std::ceil(c.deadline - t)));
-    w.u8((uint8_t)c.crew.size());
-    for (uint8_t id : c.crew)
-        w.u8(id);
-    w.u8((uint8_t)c.targets.size());
-    for (auto& tg : c.targets) {
-        w.u32(tg.star);
-        w.u8(tg.done);
-        w.u32(tg.planet);
-    }
-    w.u8(c.wave);
-    w.u8(c.waves);
-    w.u8(c.left);
-    w.u8(c.up);
+    wire::space_contracts::State m;
+    m.id = c.id;
+    m.type = c.type;
+    m.state = c.state;
+    m.reason = c.reason;
+    m.needed = c.needed;
+    m.money = c.money;
+    m.tool = c.tool;
+    m.secs = (uint32_t)std::max(0, (int)std::ceil(c.deadline - t));
+    m.crew = c.crew;
+    for (auto& tg : c.targets)
+        m.targets.push_back({tg.star, tg.done, tg.planet});
+    m.wave = c.wave;
+    m.waves = c.waves;
+    m.left = c.left;
+    m.up = c.up;
+    m.write(w);
 }
 
 bool read_state(net::Reader& r, Contract& c, double t)
 {
+    static_assert(T_ARMADA == wire::space_contracts::kTypeArmada && T_SURVEY == wire::space_contracts::kTypeSurvey);
+    wire::space_contracts::State m;
     c = Contract{};
-    c.id = r.u32();
-    c.type = r.u8();
-    c.state = r.u8();
-    c.reason = r.u8();
-    c.needed = r.u8();
-    c.money = r.u32();
-    c.tool = r.u32();
-    c.deadline = t + r.u32();
-    uint8_t n = r.u8();
-    for (int i = 0; i < n && r.ok(); i++)
-        c.crew.push_back(r.u8());
-    n = r.u8();
-    if (n > 16)
+    if (!m.read(r))
         return false;
-    for (int i = 0; i < n && r.ok(); i++) {
-        Target tg;
-        tg.star = r.u32();
-        tg.done = r.u8();
-        tg.planet = r.u32();
-        c.targets.push_back(tg);
-    }
-    c.wave = r.u8();
-    c.waves = r.u8();
-    c.left = r.u8();
-    c.up = r.u8();
-    // an armada needs its target planet (title, rows, the raid all read targets[0])
-    if (c.type > T_SURVEY || (c.type == T_ARMADA && c.targets.empty()))
-        return false;
-    return r.ok();
+    c.id = m.id;
+    c.type = m.type;
+    c.state = m.state;
+    c.reason = m.reason;
+    c.needed = m.needed;
+    c.money = m.money;
+    c.tool = m.tool;
+    c.deadline = t + m.secs;
+    c.crew = std::move(m.crew);
+    for (auto& tg : m.targets)
+        c.targets.push_back({tg.star, tg.done, tg.planet});
+    c.wave = m.wave;
+    c.waves = m.waves;
+    c.left = m.left;
+    c.up = m.up;
+    return true;
 }
 
 // the notices of a change (every machine words its own, from the old and the new state)
@@ -641,15 +643,7 @@ void finish(bool ok, uint8_t reason)
     g_next_offer = now() + g_period;
     publish();
     net::Writer w;
-    w.u32(g.id);
-    w.u8(ok);
-    w.u8(reason);
-    w.u32(g.money);
-    w.u32(g.tool);
-    w.u8(g.type);
-    w.u8((uint8_t)g.crew.size());
-    for (uint8_t id : g.crew)
-        w.u8(id);
+    wire::space_contracts::Result{g.id, (uint8_t)ok, reason, g.money, g.tool, g.type, g.crew}.write(w);
     spaceext::send(K_RESULT, w);
     on_result(g.id, ok, reason, g.money, g.tool, g.crew, g.type);
 }
@@ -822,7 +816,7 @@ std::string accept_mine()
         return "accepted";
     }
     net::Writer w;
-    w.u32(g.id);
+    wire::space_contracts::Accept{g.id}.write(w);
     spaceext::send(K_ACCEPT, w);
     return "accept sent";
 }
@@ -969,7 +963,7 @@ void armada_tick(double t)
             if (!g_wave_ships && t - g_wave_t > 30) {
                 H->log(M, SK_WARN, "contracts: the raid of wave %d brought no ships in 30 s: again", g.wave);
                 g_wave_on = false; // started again below
-                if (g_wave_resume_fix && g_wave_resumed) {
+                if ((g_wave_resume_fix && g_wave_resumed) || g_wave_empty_fix) {
                     // BUG-0227: end the old raid first (found in the live list this tick), or the
                     // next ready tick would resume it again, or start a second raid next to it
                     if (g_wave_mission && raids_on_target().count(g_wave_mission) && a_SetState) {
@@ -1230,22 +1224,17 @@ void on_message(uint8_t kind, uint8_t origin, net::Reader& r)
         announce(g, c);
         g = c;
     } else if (kind == K_ACCEPT && host()) {
-        uint32_t id = r.u32();
-        if (r.ok() && id == g.id)
+        wire::space_contracts::Accept m;
+        if (m.read(r) && m.id == g.id)
             accept(origin);
     } else if (kind == K_RESULT && !host()) {
-        uint32_t id = r.u32();
-        uint8_t ok = r.u8(), reason = r.u8();
-        uint32_t mo = r.u32(), tool = r.u32();
-        uint8_t type = r.u8(), n = r.u8();
-        std::vector<uint8_t> crew;
-        for (int i = 0; i < n && r.ok(); i++)
-            crew.push_back(r.u8());
-        if (r.ok())
-            on_result(id, ok, reason, mo, tool, crew, type);
+        wire::space_contracts::Result m;
+        if (m.read(r))
+            on_result(m.id, m.ok, m.reason, m.money, m.tool, m.crew, m.type);
     }
 }
 
+// lifecycle-exempt: a Space feature (space_ext.h), run by spaceext::session_end_all from the spacecoop.session hook
 void on_session_end()
 {
     g = Contract{};
@@ -1492,6 +1481,11 @@ std::string debug(const std::vector<std::string>& a)
         snprintf(b, sizeof b, "result given; owed %u paid %u dropped %u\n", (unsigned)g_owed.size(), g_owed_paid, g_owed_dropped);
         return b;
     }
+    if (a[0] == "owed") { // tests (BUG-1037): the owed rewards
+        snprintf(b, sizeof b, "owed %u paid %u dropped %u paid_while_off %u\n", (unsigned)g_owed.size(), g_owed_paid,
+                 g_owed_dropped, g_owed_paid_off);
+        return b;
+    }
     if (a[0] == "tool" && a.size() > 1) {
         uint32_t h = (uint32_t)strtoul(a[1].c_str(), nullptr, 16);
         snprintf(b, sizeof b, "tool %08X %s: %s\n", h, tool_name(h).c_str(), has_tool(h) ? "have" : "no");
@@ -1511,6 +1505,11 @@ bool reg = spaceext::add({.name = "contracts",
                           .kind_hi = 29,
                           .init = init,
                           .tick = tick,
+                          .tick_off =
+                              [](double) {
+                                  if (g_owed_fix && g_owed_always_fix)
+                                      owed_tick(); // BUG-1037
+                              },
                           .on_message = on_message,
                           .on_session_end = on_session_end,
                           .draw_overlay = draw_overlay,

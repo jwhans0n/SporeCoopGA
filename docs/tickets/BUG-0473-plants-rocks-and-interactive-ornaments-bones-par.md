@@ -36,7 +36,7 @@ looked up). Not a desync a player can use (nothing to eat or pick up was seen in
 
 ## Fix
 The bones: worldobj.cpp kind `interactive_ornament` (see BUG-0459). Plants and rocks: no kind yet
-(docs/known-issues.md#issue-world-objects-left).
+(docs/archive/known-issues-2026.md#issue-world-objects-left).
 Plants and rocks: no worldobj kind; the detector leaves `rock` and `game_plant` out (worlddiff.IGNORE, with the
 evidence) (fix/w40-cell-evo).
 
@@ -51,3 +51,4 @@ no-fail-run: a detector compare rule (worlddiff.IGNORE), not game code; the evid
 - 2026-11-03: fix/w40-world-objects: partly fixed (worldobj.cpp / nest.cpp).
 - 2026-11-03: fix/w40-cell-evo: plants and rocks shown to be per camera; left out of the detector.
 - 2026-11-03: released in 0.7.4.
+- 2026-11-15: switch `wobj.ornament` retired in 0.7.15 (B1, BUG-1138): the old code path is gone, FAIL run 20261103-123009:wobj_ornament on record; its test runs PASS-only.

@@ -630,7 +630,7 @@ Runtime findings (✔ = seen working in the game), with what the co-op code does
   them (`modes::kEdit`, `kEditor`) so the owners survive an editor visit.
 * `HV.pol`: the political id a vehicle had when the host listed it; an entry whose `pol_of(v)`
   changed is listed anew (a new owner from the nearest player city, a new net id).
-* Test commands: `coop.civ tables` (sizes of every pointer table), `coop.civ fix boost|world 0|1`.
+* Test commands: `coop.civ tables` (sizes of every pointer table), (the switches civ.boost and civ.world were retired in 0.7.15).
 
 ## Shared money and food across sessions and crossing spends (2026-10-28, fix/w2-civ)
 <a id="civ-shared-pool-sessions"></a>
@@ -699,10 +699,10 @@ GOG 2024 addresses. Callers of `cCity::SpawnVehicle` 0xBDDEF0 (Ghidra `callers`)
 
 * Co-op (BUG-0031): when the player set changes the host gives every vehicle of an absent owner
   to the owner of the nearest player city (after the new city split; shared capital: the host);
-  `h_Capture` never picks a vehicle of an absent owner. `coop.civ fix orphans 0`.
+  `h_Capture` never picks a vehicle of an absent owner. Switch civ.orphans (retired in 0.7.15).
 * Co-op (BUG-0117): the superweapon vote captures civ, type and target by value; a request during
   another vote is refused with a notice to its sender. `coop.civ sw` shows the last request and the
-  type the last guest vote fired. `coop.civ fix sw_vote 0`.
+  type the last guest vote fired. Switch civ.sw_vote (retired in 0.7.15).
 * ✔ `cCinematicManager::EndCinematic` (0xADFF50, GOG 2024) ends a capture caption cleanly: called
   8 s into the caption of a capture made through `Capture` (`coop.civ capture <city>`, return 6), the
   cinematic state +0x2C went to 0, the HUD came back without the caption, the city belonged to the
@@ -737,7 +737,7 @@ BUG-0223, BUG-0224. GOG 2024, lane 5.
   got new ids (`next_id` 3 -> 5), the guest's game destroyed and rebuilt every vehicle (new object
   addresses), the guest's own vehicle lost its owner. Now `civ::world_check` decides from
   `game::stage_epoch(kCiv)`, leaving Civ for a non-editor mode, and the in-stage signals (another
-  player civilization object, another save name); switch `coop.fix civ.world_epoch`.
+  player civilization object, another save name); switch `coop.fix civ.world_epoch` (retired in 0.7.15).
   `host_tick` prunes `g_hv` against the game's vehicle list before it reads a vehicle (`pol`, the
   orphan loop).
 * ✔ `Simulator::cCivExpansion::SpawnNextCity(ex, 0, 0)` on civ_npc founds a city with no cinematic:
@@ -750,7 +750,7 @@ BUG-0223, BUG-0224. GOG 2024, lane 5.
 * ✔ `coop.civ capture <city>`: +0x2C is set within 0.3 s after `Capture` returns. BUG-0224: only a
   capture (`h_Capture`, host, any nation) arms the 8 s close of BUG-0187; the 8 s count from the
   arm, the arm ends when the cinematic ends, when none came within 3 s, after the close, at a world
-  change or session end. Switch `coop.fix civ.caption_only`. Not measured: the purchase chain
+  change or session end. Switch `coop.fix civ.caption_only` (retired in 0.7.15). Not measured: the purchase chain
   (BuyCity, FinishBuyCity, Capture) and whether +0x2C drops between its cinematics; an NPC capture
   of an NPC city arms too (accepted: its caption would stop everybody the same way).
 ## Superweapon fields and the boost speed on GOG 2024 (2026-10-30, fix/w9-tests)
@@ -776,7 +776,7 @@ Measured for BUG-0222 (the civ_reload / civ_sw_vote tests read these now):
   (0xB897A7, read of 0x8F04CAB0, lab 20261030-001517; via launch 0xBE5D30 → 0xBDC2F0). Types 1, 3
   and 9 at the zero vector worked. Tests use 1, 3, 9 only.
 * ✔ The alarm boost writes the vehicle's speed +0x218 (x1.5). The game does NOT bring it back by
-  itself: with `coop.fix civ.boost off` the boosted vehicles kept 1.5x for 30 s after `coop.leave`
+  itself: with `coop.fix civ.boost off` (retired in 0.7.15) the boosted vehicles kept 1.5x for 30 s after `coop.leave`
   (lab 20261030-002050); with the fix the session end restores them within 2 s. So the speed is a
   FAIL criterion of BUG-0040, read with `mem.read <vehicle+0x218> 4` (`coop.civ boosts` lists the
   boosted vehicles and their own speed).
@@ -886,7 +886,7 @@ docs/re/creations.md#creations-content-all-kinds.
 * ✔ The guest saves its world after the mirror was built (`coop.save`, the game's SaveGame), its game is
   restarted without a co-op session and loads that save: the saved mirror vehicles load with no bake
   fault, the save slot names the design's own key (0x29030001) and no key of the mod's
-  (`out/lab/20261102-213135`; with `coop.fix content.model_key off`, the first version's 0x7D72C793:
+  (`out/lab/20261102-213135`; with `coop.fix content.model_key off` (retired in 0.7.15), the first version's 0x7D72C793:
   `out/lab/20261102-213354` FAIL). The mirror vehicles themselves stay in the save, which is BUG-0470.
 
 ## The city planner, discovery cards and vehicle removal on a guest (2026-11-03, fix/w40-civ-crashes)
@@ -1674,3 +1674,436 @@ BUG-0970. Lab lane 4, GOG 2024.
   (~500 m off).
 * ✔ (runtime) A guest's right-click on a creature sends CMD_ORDER type 1 with target kind 3 (noun + position); the
   host now takes its own creature within 40 m of that place, else a move order there (`civ.creature_target`).
+
+## A guest's order on a vehicle the host's game just removed (2026-11-13, fix/w49-live)
+<a id="civ-cmd-listed"></a>
+
+* ✔ (lab 20261113-022453, BUG-1053) Vehicle_Remove (0xCAA7B0, `coop.civ remove`) leaves the game's object list in the
+  same call (`listed=0`), the host's table g_hv keeps the entry until the next host tick (0.1 s). SetOrder(v, <removed
+  vehicle>, 1, 1) is accepted: v's mOrders (+0xB68) element 0 names the removed block as its target.
+* ✔ The freed block of a removed vehicle is given to the next vehicle the game makes: three spawnveh calls ~5 s apart
+  after three removals got the same address 1A7719A0 each time (lab 20261113-022453). A stale table entry is therefore
+  quickly another vehicle of the same nation (BUG-0951's serial check covers host_tick; the commands use
+  game::alive with the serial, civ.cmd_listed).
+
+## The ground check of mirror vehicles while the host is away (2026-11-13, fix/w49-small)
+<a id="civ-away-ground"></a>
+
+BUG-1056 (owner decision 8 of plan-0.7.14). ✔ runtime (civ_npc fixture, lane 7):
+- While the host is in the menu (local_play), a land mirror put on the spice node near (-336, 132, 354) stays there
+  (0.2-0.4 m after 0.3 s) when Vehicle_KeepOnValidGround is skipped (civ.mirror_place, BUG-0186); with the game's check
+  it is moved about 13 m off within 0.3 s (the same 13 m as BUG-0186's outliers). So the bypass is only right while the
+  host's states place the mirror; in local play the game's own check runs (`civ.away_ground`).
+- A guest's SetPosition (spatial vt 0x38) of a mirror its own game drives is undone by the locomotion within 0.3 s (it
+  ended 630 m away, where it was driving): StopMovement (spatial vt 0xEC) first, as guest_tick does before Teleport.
+
+## Wild creatures owned by the host (2026-11-13, fix/w49-civ)
+<a id="civ-wild-sync"></a>
+
+BUG-0973. GOG 2024, lane 4, fixtures civ_npc / civ.
+* ✔ (runtime) civ_npc has 10 wild creatures (noun 0x18EB45E): a herd of 7 (species 06538C80, hp 10/5) near
+  (-285 246 353) and three epics (hp 3000, about 506 m from the centre, one each). They run the same
+  `cCreatureAnimal::Update` as the Creature stage's (game.cpp h_Update), so npc.cpp's update filter and host_tick see
+  them. Census rows of noun 0x18EB4B7 next to them are not wild creatures (not updated through that hook).
+* ✔ (runtime) The herd members have no archetype tuning (+0xE84) and their herd looks like the herds the mod makes
+  (no archetype +0x88, no nest): npc.stray_ids (BUG-0385, `saved_stray`) gave them no NPC id, only the epics were
+  tracked. Civ skips that rule (no partner's puppet exists in Civ to be saved).
+* ✔ (runtime) The Creature stage's relevance pass (Relevance_Update, view_centres.cpp) runs in Civ too: one game
+  sphere at the camera's point, enter 150 m, leave 200 m. A herd set 60 m aside (about 245 m from the host's camera
+  point) stopped updating and lost its herd within a second (npc `pooled=7` on the host); the epics 500 m away kept
+  updating (not checked why: no herd relevance for epics?).
+* Fix `npc.civ_wild`: npc.cpp runs in Civ like the Tribe stage (rts_stage: proxies walked at their own ground height)
+  without a centre: every wild creature the host's game updates goes to every guest in the world (kCivRelevance).
+  The guest's own wild creatures are removed by the update filter; proxies take the nest herd of their species.
+  `npc.view_centres_civ`: the partners' pointers (rts_fill) are spheres of the host's relevance pass in Civ too.
+* Bandwidth: 10 creatures x 47 B (NpcState) + 2 B (agl trailer) every 0.1 s per guest = about 4.9 KB/s per guest,
+  one or two unreliable packets per batch; spawns are reliable, once per creature. Measured (lab, civ_npc, 24-25
+  creatures once the cameras moved, host -> guest in all): 7.6 KB/s with the sync off, 20.1 KB/s with it, 12.3 KB/s
+  with `npc.civ_quiet` (a standing creature's state once a second).
+* ? Not checked: the guest's pointer as a relevance centre in play (in the tests the guest's mouse stays off the
+  planet, its centre is (0 0 0)); a guest whose host is away (local play) shows no wild creatures until the host is
+  back (the Tribe stage's rule: proxies dropped, the own ones were removed).
+
+## The specialty question goes to the buyer (2026-11-13, fix/w49-civ)
+<a id="civ-specialty-buyer"></a>
+
+BUG-0982. GOG 2024, Ghidra + runtime (lane 4, civ_npc).
+* ✔ (Ghidra) `GameCiv_CaptureNeedsSpecialty` 0xCF7A30: cdecl, no arguments, returns bool in AL; reads player civ
+  +0x44C (the last city it captured), compares its capture type +0x29C (0 military, 1 religious, 2 economic; a
+  purchase is 2) with the specialty (0xBD8320 = `mov eax,[ecx+0x540]`) and calls `cCity_ShowSpecialtyBox` 0xBD9330
+  (thiscall, ECX = city: the text by +0x540 / +0x29C, `cSPUIMessageBox::ShowDialog`, Pause 0x4BF38A7) when they
+  differ. Its only caller is GameCiv_HandleMessage (the capture cinematic's end); returning 0 lets the handler go on
+  to the planet-won check at once.
+* ✔ (Ghidra) The box's answer: 0xBDC950 posts message 0x40FAFDF with the pressed button at data +8; every city's
+  listener `cCity_MessageListener` 0xBE75C0 (this = city +0x20C) acts only for the player civ's +0x44C city: button
+  0x5107B1A = take the capture type (`cCity_SetSpecialty(city, +0x29C, 1)` + effects), else keep; then Resume
+  0x4BF38A7, 0xCFA280 (an effect and hint flags when the civ has more cities than before) and the planet-won check.
+* ✔ (runtime) Fix `civ.specialty_buyer`: the host's hook of 0xCF7A30 sends the question of a city whose owner is a
+  guest (owner table, else the pending captor) to that guest (MSG_CIV_CMD kind 8: city index, capture type) and
+  returns 0 (no box, no pause on the host). The guest writes the type into its copy's +0x29C and calls
+  ShowSpecialtyBox outside the frame (the game's own box and pause there); its listener hook takes the answer
+  message once (the same data pointer reaches every city's listener), sets its copy, resumes the pause and sends
+  kind 8 (city, take, type) back; the host's game calls SetSpecialty when the guest took the new one. civ_buy_city:
+  question on the guest only, Economic taken, specialty 2 in both games (`coop.civ` city lines print `spec=`).
+
+## The game's empty herds in a Civ save (2026-11-13, fix/w49-tests)
+<a id="civ-save-herds"></a>
+
+BUG-1067. GOG 2024, lane 5, civ fixture (Arigine), host + guest.
+* ✔ (runtime) The host's Civ world: 82 herds (noun 0x1BE418E), 78 without an archetype (+0x88 = 0) and a nest, 71 of
+  those empty, 25 members in all (`coop.npc archless all`); many have their home at (0 0 0). The guest's game: 90 / 86 /
+  79. Wild creatures out of the camera's relevance are pooled and leave their herd empty (#civ-wild-sync), so most of
+  the game's Civ herds are empty at any time.
+* ✔ (runtime) Such a herd looks exactly like a herd the mod makes for a puppet or a proxy (CreateHerd(.., 0, 0, 0, 0)):
+  savestrip's empty-herd rule of BUG-0255 left 72 of them out of the host's own save. After loading that save the game
+  has 82 herds again (it makes the missing ones at load), but 52 of the 72 were not back at their home (the same
+  species within 2 m): the herds' homes moved. No fault in 20 s after the load.
+* Fix `savestrip.our_herds`: the mod's herds are known by their serial (`game::our_herd`, cGameData::mID +0x24), only
+  those are stripped when empty.
+* ? Not checked: what a moved herd home changes in play (where the wild creatures roam, their nests); a guest's save
+  behaves the same (its 77 stripped in civ_save_strip, BUG-0973).
+
+## The cinematic manager's enabled flag and loads (2026-11-13, fix/w49-camp)
+<a id="civ-cinematics-enabled"></a>
+
+BUG-1073, BUG-1079. GOG 2024, Ghidra (tools/ghidra/q.sh --build 2024) and runtime (lab lanes 4 and 5, a watcher
+reading `[0x167EB50]` +0x15F / +0x2C / +0x148 every 5 s; `coop.cine` shows the same).
+
+* ✔ `cCinematicManager::PlayCinematic` 0xAE08B0 plays nothing and returns 0 while the manager's byte **+0x15F** is 0
+  (its first check). The only writer besides a table init is `SporeCoop::cCinematicManager_SetEnabled` 0xADF310
+  (thiscall(mgr, bool) ret 4; 0 also empties the queue at +0x118..+0x128). Call sites: **0** right after
+  `PlayCinematic("CRG2TRG")` (0xD3FFD2, the live Creature -> Tribe change) and after `TRG2CVG_PreEditor` (0xCDC6E8,
+  TribeGame_AdvanceProc, the Tribe advance button); **1** in the Tribe start (0xCD4410, 0xCD8341, 0xCDD5ED), in
+  Creature (0xD4538E), in the Civ start (0xCFD0CF) and in the galaxy menu's enter (0xEF24D4, vtable 0x148AFC0 +0x30).
+* ✔ (runtime) Creature -> Tribe: 0 from CRG2TRG (13:36:28) until the Tribe start; the advance button: 0 from the
+  click (13:22:34) through the City Hall and vehicle editors until the Civ start (13:25:22: 1).
+* ✔ (runtime, campaign_tribe_end lab 20261113-133534 lane 5, from 13:40:52) The mod's reload of the host's Tribe right after the live
+  change (tribe.host_reload, BUG-0332: Tribe -> galaxy menu -> Loading -> Tribe 6.6 s after the change) came before the
+  Tribe start's SetEnabled(1): the flag stayed 0 in the galaxy menu (its enter did not run SetEnabled(1) on this
+  path: another run of the same path showed 1 there, 13:38:02) and through the whole Tribe. A load does not set it.
+  Seen in the full campaigns too: the host had no cinematic after the Creature -> Tribe change in all four jump
+  campaigns of fix/w49-tests (`busy=cinematic` in its trace lines stops at 10:39 in lab 20261113-101808; 0.7.13's
+  final check had them in Tribe and Civ).
+* ✔ Consequence in Civ: `cCity::Capture` with instant 0 (sieges, conversions, purchases, the campaign's shortcut)
+  sets the city's pending flags +0x2E0.. and leaves the ChangeOwner to the end of CVG_Capture (msg 0x44F1189); with no
+  cinematic the city never changes hands. With instant 1 (a surrender) it does (the ChangeOwner is direct). In Space
+  a destroyed ship's death cinematic does not play (spacecoop's respawn_tick: "no death cinematic runs: respawn").
+* ~ (runtime, same run) In Tribe with the flag 0 the host's bot never box-selected its own members (32 tries, "no
+  member selected") and the full campaigns' minimap calibration read the same view for three clicks: inferred, the
+  view moves of a minimap or card click go through the cinematic manager and do nothing while it is off.
+* Fix (coop.dll, gamefixes `game.cinematics_on_load`): when a load ends in Cell / Creature / Tribe / Civ / Space with
+  +0x15F 0, SetEnabled(1). A boot + load starts with 1, so a loaded stage never needs 0.
+
+## Wild creatures parked while the host's game stands still (2026-11-13, fix/w49-proxy)
+<a id="civ-wild-parked"></a>
+
+BUG-1089. GOG 2024, lab lanes 4 and 5, civ_npc.
+* ✔ (runtime) The host NPCs at (0 0 0) of the full campaign's sync-check MISMATCH (lab 20261113-160426, 14 of
+  species 067A147A, hp 8-16) are wild creatures the game took back into its pool (the planet's centre, no herd) while
+  the host's simulation stood (the host's trace says `busy=paused` at 17:00:21; the BUG-0339 diagnostic "is updated at
+  the planet's centre" never fired for them, so host_tick never saw them updated there: they were parked in frames
+  without creature updates). The sync-check's entries are the last running frame's table (npc.entries_listed), the
+  positions are read now: (0 0 0) on the host, the proxies on Bob's ground.
+* ✔ (runtime, civ_wild_pooled with npc.frozen_pooled_rts off, lab 20261113-174015) With the host in its pause menu
+  and its camera panned to the other side of the planet, the game parked a herd of 14 (species 066742CD) by itself:
+  the same MISMATCH "n: 14 apart" (519-537 m). So the Civ relevance pass (#civ-wild-sync) runs during the pause menu
+  and parks creatures although no creature is updated.
+* Mod side: host_tick returned at once in Tribe / Civ frames without creature updates (the Creature stage's frozen
+  pass, BUG-0413 / BUG-0339, is relevance per guest and was skipped for the RTS stages), so nothing was despawned until
+  the game went on. Fix `npc.frozen_pooled_rts`: every 0.5 s of such a freeze the tracked NPCs that are no creature of
+  the world any more or are within 50 m of the centre are retired (despawned at every guest).
+* ~ Seen, not changed: dead creatures the game keeps updating at the centre (BUG-0339's corpse case, 4 lines at
+  17:01:03 in the same campaign) are not despawned in Civ by distance (every guest gets every wild creature); not
+  compared by the sync-check (dead), not looked at here.
+
+
+## A pooled wild creature given out again during the host's stand (2026-11-14, fix/w49-fcgates)
+<a id="civ-wild-reused-frozen"></a>
+
+BUG-1100. GOG 2024, lab lane 7, civ_npc. Follows #civ-wild-parked.
+* ✔ (logs, civ_wild_pooled of the 0.7.14 final check, lab 20261114-005006) While the host stood in its pause menu
+  (`busy=paused` at s 40 and 50), its object 10E5C360 of NPC #129 read species 065CBF12 at 517 m from the centre with
+  `moved64=507.1` (it went through the planet's centre within its last 64 updates); the guest's proxy #129 was species
+  06538C80, last news 15.4 s old, at (-387 -328 0): 690.9 m apart (sync-check MISMATCH n129). So the game's pool took
+  a creature back and gave the same object out again as another species within one stand of the host's game, between
+  two 0.5 s frozen passes (npc.frozen_pooled_rts saw neither "gone" nor "at the centre").
+* Inferred: the Civ relevance pass during the pause (the camera moved) both parks and brings out herds; it reuses the
+  pooled objects for the new ones. A natural reuse could not be forced in the lab (as for BUG-0044): the test makes the
+  same state with `coop.npc kill <id>` (the death flag) and `coop.npc reuse <id>` (alive again) during the pause.
+* Fix `npc.frozen_reused`: the frozen pass retires a tracked object that npc_object_reused calls another creature
+  (another species, or alive after dead), as host_tick does while the game runs.
+* ✔ (runtime, civ_wild_pooled 20261114-033051 with the BUG-1100 log line) In the host's stand right after the civ_npc
+  fixture's start the game rebuilt 14 tracked objects of species 06689607 as 065276AC / 066742CD within 2 s, several
+  at unplaced points with z = 0 ((0 524.8 0), (-368.7 -347.0 0)), the rest at their new herds: the reuse in a stand is
+  common, and the guest's #129 at (-387.0 -327.7 0.0) of the final check was such an unplaced object.
+
+## City and vehicle owners across sessions: claims by position (2026-11-15, feat/w51-store)
+<a id="civ-owner-claims"></a>
+
+BUG-1153 (E1 of 0.7.15), lab lanes 9 / 10 (coop_civ_owners_session.py).
+* The mod's owner tables (g_city_owner, the vehicle table g_hv) are rebuilt by every world change and every session:
+  the save holds no owner. civ.owners_kept (BUG-0950) kept them only in memory, by the owner's name.
+* ✔ Now each player city and vehicle has a claim (civ.cpp g_city_claim / g_veh_claim: its owner's stable key, the host
+  "host", the shared capital "shared"), written with every save of the game into the host's per-player store
+  (docs/01-architecture.md#arch-player-store, world record `civ.owners` v1: city spots then vehicle spots, each
+  {x, y, z, key, flags 1 gifted / 2 captured}; owner_claims.h). After the load the first host tick with cities pairs
+  them with the spots (one to one, nearest first, 5 m; vehicles 6 m): the saved positions come back exactly (lab: 3 of
+  3 cities, 2 of 2 vehicles, from_disk=3/2).
+* A claimed city (not the capital) is dealt to its player when it is here; while it is away the host holds it (never
+  another guest); its join gives it back (the deal on a changed roster). A claimed vehicle the same, on every change
+  of the roster. The claims follow the owners every 2 s for players that are here (a gift, a capture, a deal), and at
+  once for a gift (CMD_GIVE) and a capture (h_Capture). A world with claims from the disk skips BUG-0950's name-keyed
+  restore.
+* ? A vehicle that drove more than 6 m between the save and the load is not found (the save keeps its position, so
+  only a load of an older save). A city that changed hands in the host's game while its claimed player was away (an
+  NPC capture) keeps its claim only while it is a player city.
+## New designs between the games: the culture set (2026-11-15, fix/w51-editors)
+<a id="civ-culture-sync"></a>
+
+E4, BUG-1157, BUG-1158: cCivilization +0x6C is an EASTL map design id -> key, set by `Civ_SetDesign` 0xBF4C50 (the
+planner's pick, the editors' return), which re-models the civilization's buildings and vehicles of that design.
+Before 0.7.15 the host's new designs never reached a guest kept in place (BUG-0508) and a guest's own pick or editor
+changed only its own game. Now the wsync row `civ_design` carries the host's entries (the guest calls the same setter),
+a guest's own design editor is refused and its own pick goes back. Details and lab runs:
+docs/re/creations.md#creations-stage-designs.
+
+## The guest's specialty box stopped its game time (2026-11-15, fix/w51-civveh)
+<a id="civ-specialty-runs"></a>
+
+BUG-1175. GOG 2024, runtime, lanes 6 and 7, civ_npc.
+* ✔ (runtime) `cCity_ShowSpecialtyBox` (#civ-specialty-buyer) on the guest takes one Pause 0x4BF38A7 at once
+  (`coop.pauses` right after the box: `flags=3 paused=1 reasons: 04BF38A7=1`); the game time stands until the answer.
+  The host's game goes on (BUG-0982 does not pause it).
+* ✔ (runtime) A city the host's game founds while the guest's game stands is replayed on the guest (SpawnNextCity,
+  "here founded") but does not appear: the appearance is the timed callback of 9.3 and waits for the game time. The
+  guest then has no civilization of that political id, so `CivByPol` gives nothing and the new nation's vehicles get
+  no mirror (`v: N missing on the guest`). They appear 1-3 s after the answer (the city, then the design request of
+  BUG-0647 for its vehicle). civ_owners_reload left the box up 16 s and the game founded the next site after each
+  purchase (the host: "a tribe of the Tribe stage is destroyed", ApplyStamp of the new city ~20 s after the buy, held
+  by the capture cinematics): 2 of 2 MISMATCH on rel/0.7.15 9362bcdd.
+* ✔ (runtime) Resuming 0x4BF38A7 right after the box opened keeps the box up and working: its buttons answer (the
+  listener's message 0x40FAFDF), the specialty is set in both games, no pause is left counted; the game time runs
+  behind it (the new city and its vehicle on the guest within 5 s). Fix `civ.specialty_runs`: the guest counts the
+  box's pauses before and after ShowSpecialtyBox, resumes the difference and does not resume again at the answer.
+
+## The city citizens' binds after a load (2026-11-17, fix/w51-citizens)
+<a id="civ-citizens-reload"></a>
+
+BUG-1221, BUG-1227. GOG 2024, runtime, lane 4, civ_npc; the guest's `coop.wobj list citizen` (which host citizen each
+of its citizens is bound to) next to both games' census (coop_civ_citizens.py prints it for every miss).
+* ✔ (runtime) After the host loads a save in running games (the lab's warm reset, `--reload`), the two games' 19 city
+  citizens near the capital stand at other spots: the guest's first snapshot bound them first come in the host's id
+  order within the kind's 30 m, and 2-5 host citizens were left without a free guest citizen within 30 m (`kind citizen
+  binds=14 own=5` after a load, lab 20261117-123109). Their free guest citizens stood 32-76 m away (`unbound host
+  citizens [2, 9]: the nearest free guest citizen 71 m, 37 m`, 20261117-121708 #3) and walked on their own; some came
+  within 30 m by themselves after 20-40 s, others not for the whole test (the final check's 5 of 19).
+* ✔ (runtime) The citizen serials (cGameData +0x24) after a load are small numbers again (host 2..20, guest 2..20): the
+  game numbers the new pool from the start. The fields kind's low-16 ids do not collide (150 distinct per planet).
+* ✔ Fix `civ.citizen_rebind` (worldobj.cpp): a snapshot's new binds go by nearest pairs over all its host citizens
+  without a copy (`pair_nearest`), then a host citizen still without one takes the guest's nearest free citizen within
+  120 m (also by nearest pairs), which is stopped and put at the host's place (game::stop + game::place, as
+  citizen_follow's put) and bound. 120 m: a city's citizens stand within ~80 m of each other, the cities are hundreds of
+  metres apart (civ_npc's far city 855 m), so a citizen of the guest's other city (its camera's, BUG-0553) is not taken.
+  With it on, 5-18 relocations per load and `binds=19 own=0` after every load (lab 20261117-120957, -123516).
+* ✔ (runtime) The "another size" pairs of civ_citizens (the triage's relocation try, 2 of 6 runs) are no wrong sizes:
+  the guest citizen at a host citizen's place is the copy of a neighbour 3-6 m away with that neighbour's size, and the
+  host citizen's own copy stands 3-6 m away with its size (walking copies trail and cross, BUG-1227). 0 of 172 standing
+  pairs (both moved under 0.5 m in a second) had another size; `fields civ_citizen differ=0`.
+* `coop.wobj loose <kind> <n> <m>` (tests): the guest drops the binds of its n bound copies nearest the snapshot's centre
+  and puts each m metres farther out along the ground: the state a load leaves, made at will.
+## Wild creatures' copies, the ground and the sync-check (2026-11-17, fix/w51-civsync)
+<a id="civ-npc-ground"></a>
+
+BUG-1216 (the campaign's Civ segment failed the sync-check gate `n apart`). GOG 2024, lanes 5 / 9.
+* ✔ (runtime, final check lab 20261116-025154 campaign_tc2) The host's live Civ world and the guests' copy of its save
+  can differ in terrain height: at a standing herd (species 067A147A) the host's creatures stood at agl 0.00 on the
+  host's ground, every guest's ground at that point was 9.2-10.5 m higher (`want_agl=-10.47`) and every copy stood on
+  its own guest's ground (`agl=0.00`). A player sees the herd on the ground; only the sync-check's absolute positions
+  were "8.0-10.2 apart". No terrain stamp of either game lies within 250 m of the point; why the heights differ is not
+  found (the segment runs, where every game loads the same save, never showed it). There the guest's ground is also a
+  steep slope: the copies slid and were trail-teleported back every ~2.5 s (BUG-1228).
+* ✔ Fix `sync.npc_agl`: every digest entry of an NPC carries its height over the sender's own terrain (an appended
+  trailer, older readers stop before it, an older sender's entries are compared absolutely), and the host compares a
+  copy at its height over the guest's ground put over the host's ground (net::diag::agl_dist: the distance along the
+  ground and the difference of the two heights). The final check's n406 is 1.7 m apart that way (net_tests
+  test_diag_npc_agl); a copy in the air, under the ground or off to the side is as far apart as before.
+* ✔ (runtime, civ_wild_sync / civ_proxy_air / the campaign segment, labs 20261117-122701, -124343, -125242) The Civ
+  game's pool (#civ-wild-sync, #civ-wild-reused-frozen) moves the host's wild creatures hundreds of metres at once
+  (often to and from an unplaced point with z = 0, e.g. (0 524.8 0)), and that happens all the time: 120-160 copies
+  are made in 70 s of civ_npc with the cameras panned twice, 57-132 copies a run "drawn 2-84 m over the guest's
+  ground" (the guest's `npc: proxy N ... drawn X m over this game's ground ... (BUG-1216)` line, its creature on the
+  host's ground). Two ways a guest showed that jump: (1) the proxy buffer blended across it (jump_speed 0): the target
+  slid along the chord through the planet, 59-115 m under the ground and 80-205 m from the host's creature for seconds
+  (the campaign's `n: 7 apart (n1030 205.2 ...)`, `want_agl=-96.42`); (2) the jump went into the proxy's path velocity
+  (drive::path_update's v_ema, 1000+ m/s for 0.2 s), a standing creature's proxy is walked at its path's speed
+  (BUG-0394), and walk_place took it the whole way in a few frames on the straight line from where it stood: over a
+  valley 10-80 m in the air ("before this frame 0.00 m up", after the walk 57 m up). Inferred: the campaign's two
+  walking copies 8.2 m over the ground (lab 20261116-085558, `tp=1`, made while the host's game refilled its herds in
+  a pause) were such a flight's end, kept at that height by own_height.
+* ✔ Fix `npc.civ_jump`: a Civ proxy's buffer does not blend across a step faster than 40 m/s (the partners' puppets'
+  jump speed, BUG-0499), and a target that jumps more than 10 m in one frame puts the proxy there (onto this game's
+  ground, a fresh path, no walk). civ_proxy_air: off 59 "drawn high" lines and a copy 2 samples in a row 58-62 m up
+  (FAIL 20261117-125242), on none, 105 jumps (PASS 20261117-125257).
+* ✔ (runtime, campaign segment lab 20261117-130736) The pool also moves a tracked herd of the same species while the
+  host's game stands: during a 24 s pause of the host a herd of 7 was 392-398 m from where it had stood; host_tick
+  sends nothing in frames without creature updates and the frozen pass (#civ-wild-parked, #civ-wild-reused-frozen)
+  only retired objects at the centre or reused as another creature, so both guests kept it (states 20 s old,
+  `n: 7 apart`) until the game went on. Fix `npc.frozen_moved`: in Civ the frozen pass retires a tracked object more
+  than 20 m from where the game last updated it (no creature moves while none is updated). civ_wild_moved (the herd
+  set 60 m aside during the host's pause menu): off FAIL 20261117-131957, on PASS 20261117-132012.
+* ✔ (runtime, labs 20261117-121304, -121752, -122049, a lane 5 probe) Negative: a copy the game moved in one piece is
+  grounded by the Civ game itself, like Tribe's (docs/re/tribe.md#tribe-animal-height): a herd the host's game set
+  25 m aside onto ground 7.3 m lower, a walking creature shoved onto 3.2-4.6 m lower ground, and a walking copy put 8 m
+  up on the guest (`coop.npctrack`-style probes) were at agl 0.00 within 50 ms, also with no NF_AIR from the host for
+  30 s. So own_height alone does not hold a Civ copy in the air (a switch that put walked Civ copies at the sender's
+  height over this game's ground had no failing twin and was dropped).
+* ✔ (runtime) civ_npc's walking creatures are sent with NF_AIR often (`air_catches` 450-1900 per test): their game's
+  grounded byte is 0 and they are more than kAirOver (0.15 m) off GetHeightAt at times.
+
+## Walking city citizens on a guest: the lag and the glide (2026-11-17, fix/w51-trail)
+<a id="civ-citizens-trail"></a>
+
+BUG-1227. GOG 2024, runtime, lanes 4 and 6, civ_npc; measured with both games' own positions at the same moment
+(`coop.bodyrec start kinds zvny`: z<host id> the host's citizens and the guest's bound copies, keyed by the host's id,
+so each copy is compared with its own host citizen; tools/tests/coop_civ_citizen_trail.py, suite `civ_citizen_trail`).
+* ✔ (runtime) The host's city citizens near the capital mostly stand; when they move they run at a steady 8.0 m/s
+  (7.4 % of the host's samples move), in straight legs with sharp turns and stops (not a slow walk).
+* ✔ (runtime) Before the fix (`civ.citizen_lead off`, labs 20261117-133529, -133940, -135246): a walking copy was p50
+  4.7-5.2 m, p90 7.3-7.9 m behind its host citizen (lag p50 0.59-0.65 s, p90 0.92 s), stretches over 2 m of 16-35 s; in
+  42-56 % of the moving samples the copy stood over 2 m off with another copy nearer the host citizen (the crossings of
+  civ_citizens' size pairs). In the same sessions NPC proxies were p90 0.27-0.54 m off (lag p50 0.008-0.023 s) and Civ
+  vehicles p90 0.08-0.13 m (lag p50 0.003-0.007 s): the citizens lagged 25-80 times more than the mod's other mirrored
+  walkers, so not the relay's normal lag.
+* ✔ Cause (observed): citizen_follow's MoveTo goal was right (1.5 s ahead, 10-12 m in front of the host's citizen), but
+  the copy runs at the citizen's own top speed, the host's 8 m/s, and keeps the distance it lost at the start of each
+  leg (a start is known a snapshot later and the velocity after two snapshots, 0.5-1 s, i.e. 4-8 m): the copy-to-goal
+  distance stayed constant for seconds (`zf` 7.3 m behind for 5 s). The same class as the Tribe animal proxies
+  (docs/re/tribe.md#tribe-animal-proxy-trail): the game's locomotion does not run a creature faster than its top
+  speed, so a MoveTo alone never catches up.
+* ✔ Fix `civ.citizen_lead` (worldobj.cpp `citizen_drive`, a `drive` of the citizen kind, every frame on the guest): while
+  the host's citizen moves (0.3 m/s or more), the copy (still walked by MoveTo, so it plays its run animation) is
+  placed without the teleport mark (game::place) a part of the way to where the host's citizen is now (its last
+  place moved on with its velocity for the snapshot's age, at most 1 s): the error closes with a 0.12 s time constant,
+  at most 4 m/s over the host's speed. The host sends the kind every 0.25 s instead of 0.5 s to guests of 0.7.15 on (an
+  older guest takes a velocity only from snapshots over 0.3 s apart, so it still gets every 0.5 s: `Kind::fast_every`,
+  the peer's HELLO families), and such a guest takes the velocity from snapshots over 0.15 s apart. Result (labs
+  20261117-135241 and the ticket's PASS runs): p50 0.28-0.31 m, p90 1.38-1.70 m, lag p50 0.035-0.039 s, crossed
+  samples 2.9-4.5 %. The glide alone at 0.5 s snapshots: p50 0.82, p90 3.43 m (-133935); 0.125 s snapshots gave p90
+  1.68-1.86 m against 1.93-2.00 m at 0.25 s with the slower glide (0.25 s): the cadence is not the limit, 0.25 s kept.
+* ✔ (runtime) What is left is the sharp turns at 8 m/s: samples within 0.6 s after a turn over 60 degrees p90 2.7-3.5 m,
+  straight legs p90 1.1-1.6 m (the turn is known up to a snapshot late).
+* ✔ (runtime) Animations (bodyrec rows a<id>, game::drawn_state): a host citizen that moves plays 0x02481DB0 (its run,
+  every moving sample), a standing one 0x02481DE5 or an action (0x050A3F95, 0x04A1DD75, ...). A guest's copy of a
+  running host citizen plays the run in only 8-28 % of the samples with `civ.citizen_lead off` and 26-98 % with it; the
+  rest of the time it moves while it plays the standing 0x02481DE5 (key frames: the host's citizen in a run pose, the
+  copy crouched). Older than the glide, BUG-1229 (fixed: a copy keeps the animation it was bound with,
+  [civ-citizen-run](#civ-citizen-run)). game::gait_state's gait word is 0 for every citizen (both
+  games, moving or not): not a walk indicator for them.
+* Bandwidth: 19-56 citizens x 20 B every 0.25 s, about 1.6-4.6 KB/s per guest (was half).
+
+## City citizens' run animation, and why a guest's copies slid (2026-11-17, fix/w51-citanim)
+<a id="civ-citizen-run"></a>
+
+BUG-1229. GOG 2024, lanes 4 and 6, civ_npc; civ_citizen_trail's a<id> rows (each citizen's current animation,
+game::drawn_state, on both games at the same moment) and Ghidra.
+* ✔ (static) A city citizen's run 0x02481DB0 is played by its behaviour tree: about 30 sites in 0xD90E30..0xD97E98 (node
+  enters, ticks and exits of the citizens' node table, rows [id, enter, tick, exit] of 16 bytes at .data 0x15913xx-0x15916xx)
+  and 0xD57F30, each `cCreatureBase::PlayAnimation(0x2481DB0, -1, 0)`. Several nodes play it at their exit
+  (0x05DE40D5 exit 0xD90E30, 0x048F79DA exit 0xD91160, 0x04C0492C exit 0xD90FE0, overrides_dc04aee5.sym): between actions
+  a citizen goes back to its run. Nothing in the locomotion (MoveTo, cLocomotiveObject) plays it, and the idle refresh
+  (Creature_IdleRefresh 0xC148B0, only when no main animation is left) picks the plain idle 0x02481DE5 for a citizen
+  (Creature_ChooseIdleAnim needs a walk gait; a citizen's gait word is always 0, docs/re/civ.md#civ-citizens-trail).
+* ✔ (runtime) On the host every moving citizen sample (over 2 m/s) plays 0x02481DB0 (98-100 %); a standing one the idle
+  0x02481DE5 or an action (0x04A1DD75, 0x04A3442D, 0x050B5AB8, 0x050B3FA5, 0x050A3F95, 0x049C8AE2, ...), the run in
+  5-13 % of the standing samples (stops).
+* ✔ (runtime, observed) On a guest a bound copy keeps one animation for the whole 60 s recording while the mod walks it
+  (per copy, 4 recordings of 15 copies: every copy either 100 % 0x02481DB0 or 100 % 0x02481DE5, moving or not; the
+  copies that never moved stood in the idle): its own behaviour plays nothing on it there. So a copy bound in the idle
+  slid in its standing pose whenever it ran, a copy bound in the run ran in place while it stood (guest 37-59 % of the
+  standing samples in the run, host 5-13 %). The share of copies bound in the run varies by session: the copies of
+  running host citizens played the run in 8-98 % of the samples (BUG-1227's glide is not the cause: off and on alike).
+  The cause is neither the MoveTo goal (10-12 m ahead) nor the per-frame place (the same without civ.citizen_lead) nor
+  the speed (the copies run at the host's 8 m/s).
+* ? Why the guest's own behaviour of a bound citizen plays no animation for a minute (its tree held by the mod's MoveTo,
+  or the guest's game not running its citizens' behaviour near the host's capital) is not known; the copies of standing
+  host citizens never gesture either (BUG-1231).
+* ✔ Fix `civ.citizen_run` (worldobj.cpp `citizen_run`, from the citizen kind's per-frame `drive` on a guest): while the
+  host's citizen or the copy itself moves (1.5 m/s on, under 0.3 m/s off; the copy's own speed from its places, smoothed
+  over 0.15 s), the copy plays the run (`game::play_animation(c, 0x02481DB0, -1, false)`, as the nodes do) when another
+  animation is on it; a standing copy in the run gets the game's idle refresh (forced), at most every 0.2 s each. About
+  200 plays and 170 idle refreshes a minute for 15 copies; what the run replaced: 0x02481DE5 almost always, a few
+  0x04866DAB / 0x0490C8A6 / 0x0490C8B4. Moving copies in the run 97-98 % (host 98-100 %), standing ones 13-14 % (host
+  7-10 %). Off: the copy's animation is left alone (0.7.14).
+* ✔ (runtime) Found on the way: when the host's citizen stops, its copy runs on 8-10 m and comes back (over 3 m off in
+  5-24 % of the standing samples, max 10-12 m, with and without civ.citizen_lead): BUG-1230 (open; inferred: the walk goal
+  12 m ahead is not replaced when the copy is within 1.5 m of the stop point).
+## A standing copy on steep ground: slid by its game, held by the mod (2026-11-17, fix/w51-slope)
+<a id="civ-npc-slope"></a>
+
+BUG-1228 (the final check's copies on a guest's steep ground, #civ-npc-ground). GOG 2024, lanes 5 / 9, civ_npc;
+test civ_npc_slope (docs/06-testing.md#testing-npc-slope).
+* ✔ (runtime, labs 20261117-142058, -142930) A guest's NPC copy (a puppet: no AI) put onto ground of 56-68 degrees
+  (the rise over 3 m to each side) is slid down by its game: its velocity reads 19-28 m/s while its remote stands
+  (rv 0), the model (AnimatedCreature +0x04) 0.2-0.5 m under the terrain, the grounded byte 0. The mod's driving of a
+  standing copy then fought it: over 0.8 m off it walked it (MoveTo) and nudged it every frame, the trail rule
+  (BUG-0305) teleported it back after 0.5 s and the nudge put it onto the target every frame for 1 s (kTrailQuiet,
+  k = 1): drawn 0.4-1.1 m off in every other frame, then a 2-3.5 m slide, then the next trail teleport, every
+  ~1.5 s, for as long as the remote stood (7 trail teleports and 45-53 m of movement in 12 s). The final check's
+  copies (own=19-22, trail every ~2.5 s, nudges in 97 % of the frames) were the same cycle.
+* ✔ The same copy on 39-53 degrees stays where it is put, or slides 0.4-0.8 m once and rests (labs 20261117-140524,
+  -140718, -141408): below the walk's 0.8 m nothing drives it again.
+* ✔ The host's game holding its own AI creature on such a spot (put there every frame) reads 5.5 m/s most of the time
+  (its AI walks it back to its herd) and 25-26 m/s only at times: not a usable sign of the slope. A host creature put
+  on 70 degrees left the host's object list within seconds (`no such host npc`, twice).
+* Inferred (BUG-1228's campaign): there the copies' target lay on the guest's ground, 10 m higher than the host's
+  (#civ-npc-ground), on a slope steep enough for this slide; the host's creature stood on its own, flatter, ground.
+  Why the two terrains differ there is still not known.
+* ✔ Fix `npc.slope_hold` (npc.cpp, every NPC proxy driven by drive::step, every stage): a standing copy (its remote
+  under 0.3 m/s) that its game moved more than 0.1 m between two frames (kSlideM: where the last frame's driving left
+  it vs where the game drew it) is held from then on while its remote stands: game::place_hold with `still` (the
+  game's next creature update and physics update may move it towards its target, drive::State::step_to, not away;
+  put back with game::place, no teleport mark, velocity cleared) and its velocity cleared each frame. The hold ends
+  (game::place_release) when the remote walks, the copy is placed, put elsewhere (npc.civ_jump) or dies.
+  `coop.npc status`: `slope_slides=` (copies found moved so, counted with the switch off too), `still_kept=` (updates
+  undone). civ_npc_slope off: FAIL 20261117-142930, -150616 (63 / 68 degrees: 7 trail teleports each); on: PASS
+  20261117-150636, -150855 (the same spots: 0 teleports, at most 0.1 m).
+* Creature / Tribe (the same NPC proxy driving, so the same fix): the test's state could not be made there. Creature
+  (lab 20261117-145748, `SLOPE_TRACK=1`): a host animal held on a 57 degree spot 8 m from both avatars targeted the
+  partner (`on_partner`) and both games held it thrown (loco mode +0x2B0 = 3) 10-13 m over the spot: the guest's copy
+  was snapped onto the target every frame (800 teleports in 12 s) and drawn back up there: not the slide, and with the
+  switch on the same (labs 20261117-144954 / -145014). Held 30 m from the avatars it left the host's list
+  (20261117-145900). Tribe: no bare ground of 55-68 degrees within 100 m of the fixture's village; animals held 150 m and
+  more away left the host's list within 3 s (20261117-145014, -145553). Not seen in Creature / Tribe play either; the
+  Creature slope tests (npc_walk_slope) run with the fix.
+* ✔ (runtime) The detection also finds copies in normal play: 8-17 standing copies a run of civ_npc_slope outside the
+  measured one (herd mates the game moved over 0.1 m in a frame); a hold only stops moves away from the target.
+  ~ superseded (2026-11-17): see [civ-citizen-hold](#civ-citizen-hold) (the guest's own walks of a standing copy, not the stop).
+
+## A guest's copies of standing city citizens: their own walks (2026-11-17, fix/w51-overrun)
+<a id="civ-citizen-hold"></a>
+
+BUG-1230. GOG 2024, lanes 4 and 6, civ_npc; civ_citizen_trail's rows (z<id> both games' citizens, y<id> the guest's
+walk goals, a<id> animations), 6 recordings of fix/w51-trail and the labs below.
+* CORRECTION (2026-11-17, fix/w51-overrun): the inferred cause in [civ-citizen-run](#civ-citizen-run) ("the walk goal
+  12 m ahead is not replaced when the copy is within 1.5 m of the stop point") is not what happens. The far samples are
+  not at the stops: of a copy's standing samples over 3 m off, most come 3 s to more than 10 s after its host citizen
+  stopped (z3 of 20261117-141249: 12 within 1 s of the stop, 1214 later), and the walk goal y<id> is the host
+  citizen's place all the time (0.0 m from it).
+* ✔ (runtime, observed) While the host's citizen stands, the guest's own behaviour still walks its bound copy: every
+  2-3 s the copy, standing within 1 m, runs off at the citizens' 8 m/s, and citizen_follow (every 0.25 s and at each
+  snapshot) walks it back only when it is over kCitizenWalk (1.5 m) off and its last MoveTo to the same point is 1.5 s
+  old: 8-12 m out and back. Standing copies over 3 m off in 7-22 % of the standing samples, p90 2.3-6.4 m.
+* ✔ (runtime) StopMovement (cLocomotiveObject vt 0xEC) on a copy that starts such a walk, or a MoveTo back at once,
+  does not end it: the behaviour walks it again within a second (stop: 2-3 m out and back every 1-2 s, 1100-1600
+  StopMovements a minute, labs 20261117-152554, -153309) and plays the run again each time (the copies of standing host
+  citizens in the run 23-36 % of the samples against the host's 2-12 %).
+* ✔ (runtime) Placed every frame (no teleport mark) toward the host's citizen, a copy whose behaviour still walks it
+  rests about 0.5 m off it (its walk against the place); its behaviour then plays nothing new, so one idle refresh
+  ends its run. Some copies' walks end by themselves (6 000 against 24 000 places a minute in two sessions).
+* ✔ Fix `civ.citizen_hold` (worldobj.cpp `citizen_hold`, from the citizen kind's per-frame `drive` on a guest): while
+  the host's citizen stands (under 0.3 m/s), the copy is placed a part of the way to it (at the copy's own distance
+  from the planet's centre, time constant 0.06 s, at most 10 m/s; nothing within 0.15 m); one over 1.5 m off that moves
+  away gets a MoveTo back at once (at most every 0.3 s); within 1.5 m citizen_run takes it as standing (its own speed
+  from its walk against the place kept it in the run). Result: standing samples p90 0.54-0.55 m (off 3.41-4.50 m), max
+  2.4-2.8 m (off 11 m), standing copies in the run 0-1 % (host 4-5 %). Off: only citizen_follow's walk.
+* ? What in the citizens' behaviour tree keeps walking a bound copy (and whether it can be told to stand) is not traced.

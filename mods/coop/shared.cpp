@@ -1,3 +1,4 @@
+#include "lifecycle.h"
 #include "shared.h"
 #include "game.h"
 
@@ -11,6 +12,7 @@
 #include "space_ext.h"
 #include "sporekit_game.hpp"
 #include "fixes.h"
+#include "wire/shared_res.h"
 
 namespace shared {
 
@@ -208,6 +210,23 @@ static void say_cause(net::Session& s, const Res& r, uint8_t player, double v)
     g_feed(b);
     g_causes_shown++;
 }
+// BUG-1009: a guest's change the floor (0) or the money cap cut was counted in full in `applied` and in the guest's
+// cause: the next total's own part (v - synced - applied) then named the difference as the host's earning or spending
+// ("<host> earned 300 (shared)" when only the pool ran dry). On: what the game really took is counted.
+// `coop.fix shared.cause_clamped off`: the change as sent (0.7.13).
+static bool g_cause_clamp_fix = true;
+COOP_FIX("shared.cause_clamped", "BUG-1009", g_cause_clamp_fix,
+         "shared: a guest's change cut at 0 by the shared money's floor is counted as cut in the notices' causes");
+// add `change` to the resource: the part the game really took (the floor at 0, money_clamp's cap), or the change
+// itself with the fix off
+static double add_counted(Res& r, double cur, double change)
+{
+    r.set(net::shared_add(cur, change, g_floor_fix));
+    double after;
+    if (!g_cause_clamp_fix || !r.get(after) || !std::isfinite(after))
+        return change;
+    return after - cur;
+}
 static bool g_hold;          // the last tick: the guest is elsewhere and the totals are held
 static uint32_t g_held_totals; // tests: host totals ignored while held
 
@@ -267,6 +286,7 @@ void on_session_end()
         r.applied = 0;
     }
 }
+LIFECYCLE_HOOK("shared.session", lifecycle::kSessionEnd, -14, [](const lifecycle::Ctx&) { on_session_end(); }, false); // C2 (BUG-1141): end_session
 
 void on_player_leave(uint8_t id)
 {
@@ -315,8 +335,7 @@ void tick(net::Session& s, uint32_t mode, double now, bool elsewhere)
         if (g_mode_keep_fix && s.role() == net::Role::Client && r.have && game::stage_epoch(r.mode) != r.epoch)
             r.have = false; // another world of the stage: wait for the host's total
         if (s.role() == net::Role::Host && r.owed != 0 && !g_hold) { // BUG-0691: pay what was acked while away
-            r.set(net::shared_add(v, r.owed, g_floor_fix));
-            r.applied += r.owed;
+            r.applied += add_counted(r, v, r.owed); // BUG-1009: what the game took
             H->log(M, SK_INFO, "shared %s %+.1f owed to the guests paid", r.name, r.owed);
             r.owed = 0;
             g_owed_paid++;
@@ -332,28 +351,23 @@ void tick(net::Session& s, uint32_t mode, double now, bool elsewhere)
             // broadcast the total when it changed (and once per 2 s as a safety net)
             if (!r.have || r.ack_dirty || std::fabs(v - r.synced) > 1e-3 || now - r.last_send > 2.0) {
                 net::Writer w;
-                w.u8(r.id);
-                w.f64(v);
+                wire::shared_res::Res msg;
+                msg.id = r.id;
+                msg.v = v;
                 if (g_floor_fix) { // older guests stop reading here
-                    w.u8((uint8_t)r.acked.size());
-                    for (auto& [id, seq] : r.acked) {
-                        w.u8(id);
-                        w.u32(seq);
-                    }
+                    msg.has_acks = true;
+                    for (auto& [id, seq] : r.acked)
+                        msg.acks.push_back({id, seq});
                     if (g_cause_fix && r.have) { // BUG-0696: whose changes these are (older guests stop before)
                         double own = v - r.synced - r.applied;
                         if (std::fabs(own) >= kCauseMin)
                             r.causes[0] += own;
-                        w.u8((uint8_t)std::min<size_t>(r.causes.size(), 16));
-                        size_t i = 0;
-                        for (auto& [id, c] : r.causes) {
-                            if (i++ >= 16)
-                                break;
-                            w.u8(id);
-                            w.f64(c);
-                        }
+                        msg.has_causes = true;
+                        for (auto& [id, c] : r.causes) // (the struct sends the first 16)
+                            msg.causes.push_back({id, c});
                     }
                 }
+                msg.write(w);
                 r.causes.clear();
                 r.applied = 0;
                 r.ack_dirty = false;
@@ -376,13 +390,16 @@ void tick(net::Session& s, uint32_t mode, double now, bool elsewhere)
         }
         if (r.led.pending != 0 && now - r.last_send > 0.25) {
             net::Writer w;
-            w.u8(r.id);
-            w.f64(r.led.pending);
+            wire::shared_res::ResAdd msg;
+            msg.id = r.id;
+            msg.v = r.led.pending;
             uint32_t seq = r.led.send();
-            if (g_floor_fix)
-                w.u32(seq); // older hosts stop reading before it
-            else
+            if (g_floor_fix) { // older hosts stop reading before it
+                msg.has_seq = true;
+                msg.seq = seq;
+            } else
                 r.led.in_flight.clear();
+            msg.write(w);
             s.send_reliable_to(0, net::MSG_RES_ADD, w);
             r.last_send = now;
         }
@@ -391,10 +408,15 @@ void tick(net::Session& s, uint32_t mode, double now, bool elsewhere)
 
 void on_message(net::Session& s, uint8_t type, uint8_t from, net::Reader& rd)
 {
-    uint8_t id = rd.u8();
-    double v = rd.f64();
-    if (!rd.ok() || !std::isfinite(v))
+    // decode first (wire/shared_res.h); the cut ack list of a MSG_RES is refused where it was before (below)
+    wire::shared_res::Res res;
+    wire::shared_res::ResAdd add;
+    bool is_res = type == net::MSG_RES; // (else MSG_RES_ADD: the dispatch hands only these two here)
+    bool full = is_res ? res.read(rd) : add.read(rd);
+    if (is_res ? !res.head_ok : !full)
         return;
+    uint8_t id = is_res ? res.id : add.id;
+    double v = is_res ? res.v : add.v;
     for (auto& r : g_res) {
         if (r.id != id)
             continue;
@@ -406,12 +428,9 @@ void on_message(net::Session& s, uint8_t type, uint8_t from, net::Reader& rd)
             if (!(g_owed_fix && type == net::MSG_RES_ADD && s.role() == net::Role::Host))
                 return;
             // BUG-0691: the host's game cannot hold the change now (a load, the menu): ack it, pay it when back
-            if (rd.left() >= 4) {
-                uint32_t seq = rd.u32();
-                if (rd.ok()) {
-                    r.acked[from] = seq;
-                    r.ack_dirty = true;
-                }
+            if (add.has_seq) {
+                r.acked[from] = add.seq;
+                r.ack_dirty = true;
             }
             if (std::fabs(v) < 1e7) {
                 r.owed += v;
@@ -437,26 +456,18 @@ void on_message(net::Session& s, uint8_t type, uint8_t from, net::Reader& rd)
             // keep changes made since our last report and those the host has not counted yet
             bool has_ack = false;
             uint32_t ack = 0;
-            if (rd.left() >= 1) {
-                uint8_t n = rd.u8();
-                for (int i = 0; i < n && rd.ok(); i++) {
-                    uint8_t pid = rd.u8();
-                    uint32_t q = rd.u32();
-                    if (rd.ok() && pid == s.my_id()) {
+            if (res.has_acks) {
+                for (auto& [pid, q] : res.acks)
+                    if (pid == s.my_id()) {
                         has_ack = true;
                         ack = q;
                     }
-                }
-                if (!rd.ok())
-                    return;
-                if (g_cause_fix && rd.left() >= 1) { // BUG-0696: whose changes moved the total
-                    uint8_t nc = rd.u8();
-                    for (int i = 0; i < nc && rd.ok(); i++) {
-                        uint8_t pid = rd.u8();
-                        double c = rd.f64();
-                        if (rd.ok() && std::isfinite(c))
+                if (!full)
+                    return; // a cut ack list
+                if (g_cause_fix && res.has_causes) { // BUG-0696: whose changes moved the total
+                    for (auto& [pid, c] : res.causes)
+                        if (std::isfinite(c))
                             say_cause(s, r, pid, c);
-                    }
                 }
                 if (!has_ack) { // the host counted nothing of ours in this session yet
                     has_ack = true;
@@ -473,18 +484,15 @@ void on_message(net::Session& s, uint8_t type, uint8_t from, net::Reader& rd)
             if (g_away_due)
                 H->log(M, SK_INFO, "shared %s: a host total %.1f taken (test)", r.name, v);
         } else if (type == net::MSG_RES_ADD && s.role() == net::Role::Host) {
-            if (rd.left() >= 4) {
-                uint32_t seq = rd.u32();
-                if (rd.ok()) {
-                    r.acked[from] = seq;
-                    r.ack_dirty = true;
-                }
+            if (add.has_seq) {
+                r.acked[from] = add.seq;
+                r.ack_dirty = true;
             }
             if (std::fabs(v) < 1e7) {
-                r.set(net::shared_add(cur, v, g_floor_fix));
-                r.applied += v;
-                r.causes[from] += v;
-                say_cause(s, r, from, v); // BUG-0696: on the host at once
+                double d = add_counted(r, cur, v); // BUG-1009: the part the floor / the cap let through
+                r.applied += d;
+                r.causes[from] += d;
+                say_cause(s, r, from, d); // BUG-0696: on the host at once
             }
             (v > 0 ? r.gained : r.spent) += v; // tests: what the guests changed
             H->log(M, SK_INFO, "shared %s %+.1f from player %u", r.name, v, from);

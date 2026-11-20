@@ -3,7 +3,7 @@ id: BUG-0357
 title: space: a share save posted in the solar system was written after the host landed on a planet: the guest that loaded it faults every frame at 0xEBDD12 (and 0xFD9420)
 status: fixed
 kind: bug
-stage: space
+stage: Space
 reported: 2026-10-31
 source: lab 20261031-185843 campaign_space#3 (lane 7)
 role: guest
@@ -72,3 +72,4 @@ out with that save, 0.7.3.1). Test knob `coop.worldfix landsave <ms>|-1`.
 - 2026-10-31: opened (fix/w27-space-fault) from lab 20261031-185843 campaign_space#3; reproduced with
   a 2-player test, fixed.
 - 2026-11-01: released in 0.7.3.2.
+- 2026-11-15: switch `world.share_planet_save` retired in 0.7.15 (B1, BUG-1138): the old code path is gone, FAIL run 20261031-204700:space_share_landing on record; its test runs PASS-only.

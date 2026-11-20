@@ -3,7 +3,7 @@ id: BUG-0310
 title: Campaign jump to the civ_npc fixture after tribe: faults while leaving tribe and in cSpaceGfx init, the host never finishes loading
 status: fixed
 kind: bug
-stage: Tribe/Civ
+stage: Tribe, Civ
 reported: 2026-10-30
 source: lab 20261030-104149 campaign#3
 role: host
@@ -13,7 +13,7 @@ branch: fix/w13-tribe-civ
 commits: 22cbf89 d1cdf2e eb1bebf 4c6c6e1
 tests: tribe_leave_walk (coop_tribe_leave_walk.py)
 signature: 0xC0000005 at 0x00C0DB23 CreatureBase_SetMoveScale+0x13 data 0x3C < WalkTo < DoAction+0x496 < Citizen_IdleWalk < Citizen_OffStageCheck+0x18A; then 0x00C70A20 cPlanet::GetRingEffect+0x90, 0x010350D7 cSpaceGfx_EnableHeatEffects+0x847 in the next load
-docs: docs/re/tribe.md#tribe-offstage-action, docs/re/tribe.md#tribe-leave-walk-fault, docs/06-testing.md#testing-tribe-leave-walk, docs/known-issues.md#issue-tribe-leave-hears-fault
+docs: docs/re/tribe.md#tribe-offstage-action, docs/re/tribe.md#tribe-leave-walk-fault, docs/06-testing.md#testing-tribe-leave-walk, docs/archive/known-issues-2026.md#issue-tribe-leave-hears-fault
 related: BUG-0284, BUG-0285, BUG-0305
 switch: tribe.leave_walk
 ---
@@ -73,3 +73,4 @@ Not verified: which citizen the game cleaned up while its action still ran, and 
 - 2026-10-30: opened.
 - 2026-10-30: fixed on fix/w13-tribe-civ (tribe.leave_walk), stand-in test FAIL 20261030-135912, PASS 20261030-140307 (2x).
 - 2026-11-01: released in 0.7.3.2.
+- 2026-11-15: switch `tribe.leave_walk` retired in 0.7.15 (B1, BUG-1138): the old code path is gone, FAIL run 20261030-132850-fix-w13-tribe-civ:tribe_leave_walk on record; its test runs PASS-only.

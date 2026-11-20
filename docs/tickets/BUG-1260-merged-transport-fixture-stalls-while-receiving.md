@@ -3,7 +3,7 @@ id: BUG-1260
 title: Merged transport fixture stalls while receiving queued reliable data
 status: fixed
 kind: desync
-stage: Networking
+stage: All
 reported: 2026-11-05
 source: 0.7.8 editor integration Win32 session_transport_tests
 role: 

@@ -3,7 +3,7 @@ id: BUG-1253
 title: Gradient point color gesture does not reach a shared transaction
 status: open
 kind: bug
-stage: GA shared editor
+stage: Editor
 reported: 2026-11-04
 source: C68 live Terraform RGB versus serialized snapshot
 role: host

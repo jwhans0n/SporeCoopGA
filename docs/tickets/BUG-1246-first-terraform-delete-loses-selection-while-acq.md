@@ -3,7 +3,7 @@ id: BUG-1246
 title: First Terraform Delete loses selection while acquiring ownership
 status: fixed
 kind: bug
-stage: GA shared editor
+stage: Editor
 reported: 2026-11-03
 source: Private C63 native control coverage
 role: host

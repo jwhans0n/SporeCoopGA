@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <thread>
 #include <array>
+#include <algorithm>
 
 static unsigned checks;
 #define CHECK(x) do { ++checks; if (!(x)) { std::printf("FAIL %d: %s\n", __LINE__, #x); std::exit(1); } } while (0)
@@ -16,8 +17,11 @@ namespace {
 const DWORD main_id = GetCurrentThreadId();
 bool presenting = false, dispatch_failure = false, copy_failure = false, load_failure = false;
 bool missing_export = false, refuse_main = false;
+bool commands_idle = true;
+std::string unsupported_build;
 unsigned loads = 0, unloads = 0, frees = 0;
 unsigned drop_scans=0,grace_calls=0;
+unsigned command_removals=0,command_waits=0,deleted_files=0;
 int hook_count=0;
 std::wstring bootstrap = L"alpha,beta";
 std::vector<std::string> events, logs;
@@ -42,7 +46,7 @@ const SkModInfo* mod_main(const SkHost*, SkMod* mod) {
 }
 BOOL WINAPI create_directory(LPCWSTR, LPSECURITY_ATTRIBUTES) { safe(); return TRUE; }
 BOOL WINAPI copy_file(LPCWSTR, LPCWSTR, BOOL) { safe(); return !copy_failure; }
-BOOL WINAPI delete_file(LPCWSTR) { safe(); return TRUE; }
+BOOL WINAPI delete_file(LPCWSTR) { safe(); ++deleted_files; return TRUE; }
 HMODULE WINAPI load_library(LPCWSTR path) {
     safe(); if (load_failure) return nullptr;
     const std::wstring text(path); const auto start = text.find_last_of(L'\\') + 1, end = text.find(L".i", start);
@@ -107,6 +111,8 @@ namespace sk {
 SkMod g_kit_mod;
 SkHost g_host{};
 KitFix g_fix_hookkeep{"hookkeep","controlled hook-removal grace",1};
+KitFix g_fix_cmdkeep{"cmdkeep","controlled active-command retention",1};
+const char* unsupported_build_text() { return unsupported_build.c_str(); }
 DWORD main_thread_id() { return main_id; }
 bool in_frame() { CHECK(GetCurrentThreadId() == main_id); return presenting; }
 const std::wstring& mods_dirw() { static const std::wstring path = L"controlled\\mods"; return path; }
@@ -132,7 +138,12 @@ size_t drop_tasks_in(uintptr_t lo,uintptr_t hi){
     }
     CHECK(false);return 0;
 }
-void commands_remove_all(SkMod*) { safe(); }
+void commands_remove_all(SkMod*) { safe(); ++command_removals; }
+bool commands_wait_idle(SkMod*,DWORD ms,std::string& why) {
+    safe();CHECK(ms==10000&&command_removals>command_waits);++command_waits;
+    if(!commands_idle)why="controlled command still running";
+    return commands_idle;
+}
 void ui_winprocs_disable_mod(SkMod*) { safe(); }
 }
 
@@ -141,6 +152,7 @@ static void reset()
 {
     presenting = dispatch_failure = copy_failure = load_failure = missing_export = refuse_main = false;
     loads = unloads = frees = drop_scans = grace_calls = 0;hook_count=0;sk::g_fix_hookkeep.on=1;
+    commands_idle=true;unsupported_build.clear();command_removals=command_waits=deleted_files=0;sk::g_fix_cmdkeep.on=1;
     bootstrap = L"alpha,beta"; unload_callback = load_callback = {};
     tasks.clear(); events.clear(); logs.clear(); modules.clear();
     sk::g_mods.clear(); sk::g_gen = 0; sk::g_lifecycle_queue.clear(); sk::g_request_id = 0;
@@ -163,7 +175,25 @@ int main()
     std::printf("old manager: %u checks\n", checks);
     return 0;
 #else
-    CHECK(std::string(SK_VERSION) == "0.3.16"); CHECK(SK_ABI_VERSION == 1);
+    CHECK(std::string(SK_VERSION) == "0.3.18"); CHECK(SK_ABI_VERSION == 1);
+    // Remove entry points and wait for commands before destroying mod state.
+    reset();load_alpha();
+    unload_callback=[] { CHECK(command_waits==1&&command_removals==1); };
+    accepted(sk::mod_unload("alpha",status),status);run_tasks();
+    CHECK(unloads==1&&frees==1&&deleted_files==1&&command_waits==1);
+    // An outstanding command retains both the old mapped image and shadow copy.
+    reset();load_alpha();const auto retained_image=modules.front()->image.data();commands_idle=false;
+    accepted(sk::mod_unload("alpha",status),status);run_tasks();
+    CHECK(unloads==1&&!frees&&!deleted_files&&drop_scans==1&&command_waits==1);
+    CHECK(modules.front()->loaded&&!sk::mods_list().front()->module&&!sk::mods_list().front()->info);
+    CHECK(std::any_of(logs.begin(),logs.end(),[](const auto& line){return line.find("old image stays mapped")!=std::string::npos;}));
+    commands_idle=true;accepted(sk::mod_load("alpha",status),status);run_tasks();
+    CHECK(loads==2&&modules.front()->loaded&&reinterpret_cast<uint8_t*>(sk::mods_list().front()->module)!=retained_image);
+    // Unsupported builds reject queued loads before touching the native loader.
+    reset();unsupported_build="controlled unsupported game build";
+    accepted(sk::mod_load("alpha",status),status);run_tasks();
+    CHECK(!loads&&!unloads&&!frees&&sk::mods_list().empty());
+    CHECK(logs.back().find(unsupported_build)!=std::string::npos);
     // Upstream unload reads a real fixture PE extent and retains hook grace.
     reset();load_alpha();hook_count=1;
     accepted(sk::mod_unload("alpha",status),status);run_tasks();CHECK(drop_scans==1&&grace_calls==1&&frees==1);

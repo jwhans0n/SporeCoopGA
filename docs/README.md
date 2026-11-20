@@ -5,8 +5,9 @@ Editor authoring support is under validation. Preview 9's crew, terrain and
 independent asset-editor additions have pending native acceptance; other
 milestones follow in the [roadmap](../README.md#roadmap).
 
-The installed C49 editor preview 9 uses protocol 23. The upstream-integration
-source is an uninstalled protocol 24 candidate with separate acceptance pending;
+The source candidate is `0.7.15.0-ga-editor-preview.16`, protocol 30. It
+retains preview 14 editing fixes while integrating pinned upstream 0.7.15.
+This source synchronization leaves the installed preview unchanged;
 see [protocol scope](04-netcode.md#netcode-protocol-scope). Published GA gameplay
 and inherited upstream test results keep their original version labels.
 
@@ -68,5 +69,10 @@ are historical; they do not expand the GA compatibility stated above.
 - [Contributing](../CONTRIBUTING.md): development and review practices.
 
 The [inherited installation guide](INSTALL.md) records base-stage setup and
-historical GOG 2016/GOG 2024 platform testing. Use the fork installation entry
+current GOG 2024/Steam compatibility and historical platform testing. Use the fork installation entry
 above for current GA download guidance.
+
+Target game version: GOG "SPORE Collection", `SporebinEP1/SporeApp.exe`, the 2024 build, SHA-256
+`dc04aee5…`, 24,895,536 bytes, which has ModAPI's March2017 layout (see section 5), and Steam (the same
+code). The old GOG 2016 build (`922af7c7…`, 24,888,320 bytes) is not supported; its addresses were
+removed in 0.7.15 and the mod tells such a game that it is not supported. Where each was tested: [INSTALL.md section 2](INSTALL.md#where-sporecoop-has-been-tested).

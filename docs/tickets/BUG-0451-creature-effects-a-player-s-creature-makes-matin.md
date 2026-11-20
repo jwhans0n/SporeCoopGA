@@ -153,6 +153,7 @@ Verification of the review shape:
 - 2026-11-02: review fix on the same branch: setter hook replaced by an O(1) table and a position
   read in the tick, main-thread-only hook bodies, hooks installed once (no churn). Measured under
   1 % frame time, 0 faults in every stage and in both editors. Tests and docs updated.
+- 2026-11-15: switch `effects.main_world` retired in 0.7.15 (B1, BUG-1138): the old code path is gone, FAIL run 20261104-004532:effects_party_tribe on record; its test runs PASS-only.
 
 ## Second review fix (2026-11-02)
 
@@ -201,7 +202,7 @@ with SPORE_FIX_OFF=creature.effects_relay in out/lab/20261102-202617.
 - 2026-11-02: not in 0.7.3.6: play_creature 1/5 with the relay vs 3/3 without (see BUG-0471); kept on fix/w38-effects for 0.7.4.
 - 2026-11-03: rel/0.7.4 final check: a relayed world effect in Civilization faulted the receivers in the skin
   painter (effects_party_civ, out/lab/20261103-215559); 0.7.4 relays starts only in Cell and Creature
-  (`coop.fix effects.other_stages`, off; Tribe faulted the same way, out/lab/20261103-223036), docs/known-issues.md#issue-effects-civ-space.
+  (`coop.fix effects.other_stages`, off; Tribe faulted the same way, out/lab/20261103-223036), docs/archive/known-issues-2026.md#issue-effects-civ-space.
 - 2026-11-03: released in 0.7.4.
 
 ## Other stages: Tribe and Civilization (2026-11-04, fix/w41-effects-stages, 0.7.5 package E1)

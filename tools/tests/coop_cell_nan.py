@@ -12,13 +12,13 @@ known; this test makes it (`coop.pool nanself`: the own cell and its soft-body p
    (`pos=` of `coop.pool`, the game's cell +0x4C) and it still mirrors the host's cells.
 2. The host's food goes to 1000 (level-ups: RemoveCellsOfOldScale repopulates every tile): both
    games answer, the guest's position stays finite; the lab fails the test on any fault or crash.
-SPORE_FIX_OFF=cell.nan_guard must FAIL (the position stays NaN, faults in PopulateTiles).
+cell.nan_guard off failed (retired in 0.7.15, BUG-1138: FAIL run 20261030-055502:cell_nan) (the position stays NaN, faults in PopulateTiles).
 
 --all (BUG-0307, suite cell_nan_all): `coop.pool nanself all` also makes the rotation and shape
 matrices and the particles' rest offsets NaN, as left by the first heal in lab 20261030-104149
 (26 NaN episodes in 6 minutes). 3. Over the next 15 s the own cell does not go NaN again
 (`own_nf=` of `coop.pool`: finite -> not finite transitions, at most 1) and stays finite.
-SPORE_FIX_OFF=cell.nan_heal_all must FAIL check 3.
+cell.nan_heal_all off failed (retired in 0.7.15, BUG-1138: FAIL run 20261030-133256:cell_nan_drain) check 3.
 
 --all --drain S (BUG-0307, suite cell_nan_drain): after the level-ups the guest plays on for S s; its
 free address space (`vm_free_mb=`) is sampled every 15 s. 4. It loses at most 150 MB (lab 20261030-104149:
@@ -31,6 +31,7 @@ import math
 import re
 import time
 
+from harness import pool_num as num
 from twoinst import Checks, start
 
 
@@ -45,11 +46,6 @@ def pos(con):
 
 def finite(p):
     return p is not None and all(math.isfinite(v) for v in p)
-
-
-def num(con, key):
-    m = re.search(r'\b' + key + r'=(-?\d+)', con.call('coop.pool')['out'])
-    return int(m.group(1)) if m else None
 
 
 def main():

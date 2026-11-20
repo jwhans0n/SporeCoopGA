@@ -20,19 +20,15 @@ world's evolved species).
    and the bar is the one the game builds for this avatar.
 5. Keys of the creature stage (W, 1, 2, E) are pressed on the guest: no caught fault in any game.
 
-  coop_ability_bar.py   (SPORE_FIX_OFF=creations.ability_bar must FAIL)"""
+  coop_ability_bar.py   (creations.ability_bar off failed (retired in 0.7.15, BUG-1138: FAIL run 20261031-205235:ability_bar))"""
 import re
 import struct
 import time
 
+from harness import eax, faults
 from twoinst import Checks, start
 
 KEYS = ('w', '1', '2', 'e', 'w', '1')
-
-
-def eax(con, what):
-    m = re.search(r'eax=0x([0-9A-Fa-f]+)', con.call('call ' + what)['out'])
-    return int(m.group(1), 16) if m else None
 
 
 def mem(con, a, n):
@@ -101,11 +97,6 @@ def play(con, inst, timeout=40):
             return True
         time.sleep(0.5)
     return False
-
-
-def faults(con):
-    m = re.search(r'total faults: (\d+)', con.call('exc')['out'])
-    return int(m.group(1)) if m else -1
 
 
 def main():

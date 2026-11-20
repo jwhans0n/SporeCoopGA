@@ -31,21 +31,19 @@ import re
 import sys
 import time
 
+from harness import mode, waiter
 import lane
 from twoinst import Checks, shot, start
 
 HEART = (721, 1018)    # the mating-call button of the cell HUD (shown once S+0x69 is set)
 READY = (478, 747)     # "I'm ready" in the co-op window
+READY_BTN = re.compile(r"ready (\d+) (\d+) (\d+) (\d+) 1 'I'm ready'")  # coop.uistate: name, rectangle, shown, text
 DONE = (1416, 1058)    # the editors' green check (1440x1080 test window)
 CANCEL = (1383, 1062)  # the editors' red cross
 STAGE_BTN = (1396, 1063)  # the cell HUD button under the portrait: History, then the next stage
 HISTORY_OK = (1415, 1055)
 CAPTION_OK = (1410, 1048)
 OLD_WAIT = '--old-wait' in sys.argv
-
-
-def mode(con):
-    return con.call('game.mode')['out']
 
 
 def field(text, pat):
@@ -57,14 +55,7 @@ def mate(con):
     return con.call('coop.pool mate')['out']
 
 
-def wait(cond, secs, step=1.0):
-    t0 = time.time()
-    while time.time() - t0 < secs:
-        r = cond()
-        if r:
-            return r
-        time.sleep(step)
-    return None
+wait = waiter(step=1.0)
 
 
 def hud_ready(con):
@@ -195,9 +186,12 @@ def main():
     host_vote = lambda: 'vote active' in host.call('coop.vote')['out'] or 'Editor' in mode(host)
     alive, reached = mating_call(host, 'host', host_vote)
     ck(reached, 'the host reaches its mate: the evolution vote starts')
-    st = wait(lambda: guest.call('coop.uistate')['out'], 10)
-    ck(st and "ready 380 728 580 768 1 'I'm ready'" in st, "the guest gets the vote with an I'm ready button")
-    guest.call('click %d %d' % READY)
+    # BUG-1166: the button by its name and caption, waited for (the window's rows moved with F1 of 0.7.12: the fixed
+    # rectangle 380 728 580 768 of before never matched again), clicked at its centre
+    btn = wait(lambda: READY_BTN.search(guest.call('coop.uistate')['out']), 10)
+    ck(btn, "the guest gets the vote with an I'm ready button")
+    at = ((int(btn.group(1)) + int(btn.group(3))) // 2, (int(btn.group(2)) + int(btn.group(4))) // 2) if btn else READY
+    guest.call('click %d %d' % at)
     ck(wait(lambda: 'Editor' in mode(host), 30), 'the host editor opens after the vote')
     second = False
     for _ in range(8):  # the game asks again while the mate is near (a race: not every time)

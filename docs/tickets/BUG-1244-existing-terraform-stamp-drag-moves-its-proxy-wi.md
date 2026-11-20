@@ -3,7 +3,7 @@ id: BUG-1244
 title: Existing Terraform stamp drag moves its proxy without a synchronized commit
 status: fixed
 kind: desync
-stage: GA shared editor
+stage: Editor
 reported: 2026-11-03
 source: C60 actual existing Effect drag at shared R54, proxy position changed while native recipe and revision stayed unchanged
 role: host

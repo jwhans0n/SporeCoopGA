@@ -13,7 +13,7 @@ branch: fix/w22-cell
 commits: 21b178c, 90f091b, 27245c9
 tests: cell_pause
 signature: dc04aee5:GeneralAllocator_FreeInternal+0x13D / +0x64 from cObjectPool::_dtor in the Cell teardown 0xE7F9B0 (returns 0xE7FAF0 / 0xE7FA8D, named SimUpdate+0x750 / +0x6ED), then 0x00DDA358 (data 0x18)
-docs: docs/re/cell.md#cell-sap-pending, docs/06-testing.md#testing-cell-4p, docs/known-issues.md#issue-cell-sap-broken-order
+docs: docs/re/cell.md#cell-sap-pending, docs/06-testing.md#testing-cell-4p, docs/archive/known-issues-2026.md#issue-cell-sap-broken-order
 related: BUG-0337, BUG-0308, BUG-0289, BUG-0295
 ---
 
@@ -55,3 +55,4 @@ mirrors back, the guest reaches the galaxy menu, no fault); also 20261031-123047
 - 2026-10-31: opened.
 - 2026-10-31: fix/w22-cell: root cause (pending arrays of the cell broadphase overflow while the guest is paused), cell.sap_pending, cell_pause; fixed (unreleased).
 - 2026-11-01: released in 0.7.3.2.
+- 2026-11-15: switch `cell.sap_pending` retired in 0.7.15 (B1, BUG-1138): the old code path is gone, FAIL run 20261031-123042-fix-w22-cell:cell_pause on record; its test runs PASS-only.

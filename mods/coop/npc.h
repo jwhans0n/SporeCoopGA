@@ -36,6 +36,9 @@ struct Ctx {
     std::function<bool(uint8_t id)> in_place;
     // guest: the host plays in this guest's world now (its latest state: same place, in the world). Unset = yes.
     std::function<bool()> host_here;
+    // guest: the game mode of the host's latest state (0: none yet); owner decision 2 (an editor visit is not a world
+    // change): the proxies are held through the host's editor (npc.editor_hold)
+    std::function<uint32_t()> host_mode;
 };
 
 void init(const SkHost* host, SkMod* mod, const Ctx& ctx);
@@ -77,6 +80,7 @@ void set_strays(bool on);                            // tests: removal of creatu
 void set_hatch_help(bool on);
 void set_kill_clear(bool on);                        // tests: off = keep the guest's kill list across skipped frames (BUG-0082)
 std::string debug_reuse(uint16_t id);                // tests: a dead NPC's object is a living creature again (BUG-0044)
+std::string debug_kill(uint16_t id);                 // tests (BUG-1100): an NPC's object marked dead (flag, health 0)
 void set_reuse_fix(bool on);                         // tests: off = a reused object keeps the old id (BUG-0044)
 void set_id_fix(bool on);                            // tests: off = ids wrap over ids in use (BUG-0023)
 void debug_next_id(uint16_t id);                     // tests: the next id the allocator tries
@@ -95,11 +99,16 @@ std::string debug_rxkeep(int n, float secs); // guest (tests, BUG-0611): only th
 std::string debug_lift(uint16_t id, float m, float secs); // host (tests, BUG-0550): NPC #id held m over its ground for secs s
 std::string debug_sink(uint16_t id, float m, bool mark = false); // guest (tests, BUG-0399): the proxy m under this game's ground once
 std::string debug_pwalk(uint16_t id, const net::Vec3& p, float speed, float secs, int mode = 0); // guest (tests, BUG-0281)
-std::string debug_dash(uint16_t id, float len, float speed, float secs, float width, uint16_t mate = 0, float off = 0); // host (tests, BUG-0305): NPC #id dashes back and forth
+std::string debug_bhv(uint16_t id, uint32_t anim); // host (tests, BUG-0440): NPC #id plays a behaviour animation, relayed
+std::string debug_pushback(uint16_t id, float mps, float secs); // guest (tests, BUG-0440): the proxy moved back in its updates
+std::string debug_raised(float r, const net::Vec3* at = nullptr); // tests (BUG-0440): nests near the avatar and the raised ground there
+std::string debug_dash(uint16_t id, float len, float speed, float secs, float width, uint16_t mate = 0, float off = 0,
+                       const net::Vec3* to = nullptr, float vel_k = 1.f); // host (tests, BUG-0305): NPC #id dashes back and forth
 int host_id(void* creature);     // host: net id of an NPC, -1
 int proxy_id(void* creature);    // guest: net id of a proxy, -1
-bool test_hit_now();             // guest: a test's hit (coop.npc hit) is being applied (BUG-0021 social.no_bite)
+bool test_hit_now();             // guest: a test's hit (coop.npc hit) is being applied (BUG-0021)
 int proxy_id_of_ai(void* ai);    // guest: the proxy whose AI block (+0xB4C) this is, -1
+uint32_t ai_lookup_gone();       // BUG-0994 (tests): proxies proxy_id_of_ai skipped as gone
 void set_enabled(bool on);
 bool enabled();
 
@@ -110,6 +119,8 @@ std::string debug_forget(uint16_t id);
 std::string debug_gamekill(uint16_t id);
 std::string debug_settle(double s); // tests (BUG-0842): the guest's npc tick waits s seconds, as after an avatar change
 // tests (BUG-0426 class): a freed address given to a new creature (npc.cpp ReuseHunt); proxy <id>'s creature
+std::string debug_chunk(void* obj); // tests (BUG-1099): the heap chunk of an object and its neighbours' use
+void debug_reuse_free_first(int frames); // tests (BUG-1099): no try until the target's heap chunk is free (at most N frames)
 void debug_reuse_wait_free(int tries); // tests (BUG-0825): the hunt ends N tries after the target's heap chunk is free
 std::string debug_reuse_hunt(void* target, int frames, void* species, int now_tries = 0, int burst = 1, void* herd = nullptr,
                              const net::Vec3* at = nullptr, bool herds = false, bool pool = false, bool keep = false, int every = 1);

@@ -2090,7 +2090,7 @@ the game files' index and Ghidra. The rest of BUG-0424 after BUG-0452.
   answers, so the caller never builds a model that would fault and never sees a key of ours.
   Nothing of the game was found that resolves a model key once and keeps it: the model bake re-reads the
   parts on every build and the earlier FAIL run faults on every attempt (456 faults in one civ run), and
-  the runtime runs below show the copy in use at once. `coop.fix content.model_key off` keeps the first
+  the runtime runs below show the copy in use at once. `coop.fix content.model_key off` (retired in 0.7.15) keeps the first
   version (a key of our own) for the lab. Runtime (civ, lane 4 + guest lane 5): the guest's save names
   the design's own key 0x29030001 and no 0x7D instance, and the save loads in a game restarted without a
   session with the mirror vehicles (`out/lab/20261102-213135`); with `content.model_key` off the save
@@ -2819,3 +2819,186 @@ an unaudited callable ABI. Native methods and object layouts are unchanged.
 Evidence: out/upstream0713/named-symbols-disassembly.txt, with the exact supported
 4 GB executable retained. Negative fixtures use generic forbidden-call strings,
 not invented native symbols. No new native invocation is enabled by this audit.
+## Closing and releasing a creation package (2026-11-13, fix/w49-small)
+<a id="creations-package-close"></a>
+
+BUG-0996. GOG 2024 (dc04aee5), from the decompiler (tools/ghidra/q.sh --build 2024) ✔:
+
+- DatabasePackedFile primary vtable **0x01436938** (the ctor 0x8DA2A0 stores it at +0; the slots match
+  ModAPI's Database.h): +0x00 scalar deleting dtor 0x8D9CB0 (dtor body 0x8D9700, then `delete_` when bit 0 of the
+  argument), +0x04 Initialize 0x6BBDC0, +0x08 Shutdown 0x8D8970 (if initialized: Close when open, frees the index,
+  releases the stream), +0x0C GetDatabaseType, **+0x10 GetRefCount 0x69D3F0** (reads +0x08), +0x14 Lock,
+  +0x18 Open 0x8D8CA0, **+0x1C Close 0x8D9CD0** (= 0x8D97C0(1): flushes a writable file, closes the stream at
+  +0x260, clears the access flags +0x14; true when it was not open), +0x24 Flush, +0x28 GetLocation,
+  +0x2C SetLocation 0x8D9CE0, +0x30 GetKeyList, +0x34 OpenRecord, +0x38 GetOpenCount, +0x3C CloseRecord, +0x44 Attach.
+- Secondary (refcount) vtable **0x01436924** at +4: +0x00 AddRef 0x8DD4C0, **+0x04 Release 0x69D3C0** (this = db+4:
+  decrements +0x08; at 0 it calls the primary vt[0](1), the deleting dtor, whose Shutdown closes the file).
+- The ctor sets the count to 0: after our AddRef and RegisterDatabase(true) it is 2; RegisterDatabase(false) releases
+  the manager's reference (docs above), leaving ours (1). Our Release then frees the object and closes its file.
+- The mod: dropped packages wait 2 s, then outside the frame Close + Release only when GetRefCount is 1 and no table
+  of creations.cpp still names the package (`coop.fix creations.package_close`). Before, the open file made the next
+  write of the same name fail (`_2.package` ... `_49`, then "cannot write the package").
+- The GOG 2016 addresses in the section above (Close 0x8D9CC0, SetLocation 0x8D9CD0) are 0x10 lower than GOG 2024's
+  (the march2017 port names Close=0x8D9CD0, SetLocation=0x8D9CE0 for dc04aee5): not a contradiction, two builds.
+
+## The Tribe outfit and the Civ designs between the games (2026-11-15, fix/w51-editors)
+<a id="creations-stage-designs"></a>
+
+E4 of docs/plan-0.7.15.md, BUG-1156, BUG-1157, BUG-1158. GOG 2024, Ghidra (out/ghidra-2024) and lab lane 4 (`tribe` and
+`civ_npc` fixtures). The cases first observed with the 0.7.15 code before the fix (the base build of rel/0.7.15 at
+c90f2ed9, by hand), then as the FAIL halves of the twins (the fix switched off).
+
+**Tribe: the Tribal Outfitter.**
+* ✔ (runtime) The players' route: a click on the own hut opens the tribe planner (the first click after a while may
+  only take the focus: a second one opens it; the planner sets the input lock and the pause), its second tab (204, 40
+  of 1440x1080) shows the tribe's creature card, the card's blue edit badge (44, 630) asks for editor **0x156276D1**
+  (the outfitter: EditorRequest::Submit 0x5A947C gives it editor kind 7). On the host this is an editor request of the
+  stage: the vote of BUG-0151 ("Alice wants to evolve (Tribe)" before the fix). In the outfitter the third tab
+  (260, 40) holds body pieces; a drag of the second (84, 216) onto the chest (975, 440) costs 5 of the 100 budget;
+  Done (1416, 1060).
+* ✔ (runtime) Done saves the outfitted creature as a **new creation in the player's My Creations** (EditorSaves:
+  bem, metadata naming the tribe's species as its parent, creaturedata; e.g. 2923BFD6 with parent 067B3E4A) and the
+  tribe's members wear it at once. Nothing else changes: the members' own species key (+0xB28) stays the old species
+  (067B3E4A), the tribe's card shows the outfit; the outfit of an earlier visit is there again in the next one.
+* ✔ (Ghidra) The return: cTribeUI 0xCDCC90 (else branch, the result at +0x2F8, its new key at +0x18) calls
+  `cSpeciesManager 0x4DFBC0(mgr, tribe +0x18CC profile, &key)`: the tribe's species profile **reloaded in place**
+  (`SpeciesProfile_Load` 0x4D4F70: LoadCreatureData, +0x504 and +0x510 = the key, the profile built from the data,
+  generation +0x53C); 0x4DFBC0 also maps the old and the new key to the profile and deletes another profile object of
+  the new key. Then `cTribe_SpeciesSize` 0xC996E0(tribe, |place|), cPlayer map[0x55D6335] = result +0x34, and for
+  every member of the tribe (vt 0x90): +0xB24 = profile +0x53C, SetScale(vt 0x80(1)), `Creature_RebuildModel`
+  0xC21D50(1, 1), `Creature_AfterModel` 0xC0BD40, `TribeToolUI_AttachTool` 0xCCAA00(*(cTribeUI +0x240), member, tool
+  +0x102C), `cModifiers_Find` / `CreatureModifiers_Remove` (+0xB48, kind 5), `Creature_RestartAnimSlot`
+  0xC141D0(`Creature_FindAnimSlot`(+0xFC4)).
+* ✔ (runtime, before the fix) Host's outfit: host profile +0x504 = 2923BFD6, the guest's 067B3E4A for good (the guest
+  stayed in place, "evolved in place: Bob keeps its world", and the notice said "Alice evolved the species: everybody
+  gets the new body"). Guest's own outfitter: its request opened its own editor at once ("Bob evolves its own
+  creature"), after Done the guest's profile was its new creation 2923BFD1 and the host's stayed 2923BFD6: the guest's
+  outfit was its own game's only, and the next world from the host replaces it.
+* ✔ (runtime) A save names the tribe's species by the profile's +0x504 **in the save's main stream** (record
+  0x01897C18, after `011989B7 2905CC1D`, big-endian {group, type, instance}), which is written before the save hook of
+  savestrip fires: a key of ours at +0x504 reached the guest's save there. +0x510 (the model key, group 0x41626200) is
+  not in the save.
+* Fix (`tribe.outfit_sync`, BUG-1156, designs.cpp): wsync row `tribe_outfit` (id 16): the host's player tribe profile
+  +0x504 and +0x510; the host also sends the creation itself (creations::host_species_out, the BUG-0200 own-species
+  bundle: the guest registers it under 0x7D...... and aliases the host's key to it). A guest whose tribe profile is
+  not built from it loads it outside the frame (`SpeciesProfile_Load` with our key, not 0x4DFBC0: no map change, no
+  profile deleted), writes the host's species key back into +0x504 (the save's key) and keeps our key in +0x510 (the
+  model the members are built from), then rebuilds the members as 0xCDCC90 does. +0x510 holds the host's model key
+  while a save is written and from the session end on. A key of the host's that is no creation of its own (a premade,
+  a download) is used as it is after 10 s (want_species when unknown).
+* Lab: `tribe_outfit` PASS (the guest's profile key = the host's, its model key ours with the host's bem hash 1092B5E8,
+  every member at the new generation, the guest's save without our key); FAIL with SPORE_FIX_OFF=tribe.outfit_sync,
+  editors.guest_designs: out/lab/20261115-131200 (the guest's tribe stayed 067B3E4A; the guest's own outfitter opened).
+
+**Civilization: the culture set.**
+* ✔ (Ghidra, runtime) cCivilization +0x6C cCultureSet is an EASTL map<int design id, ResourceKey>: anchor at +0x70,
+  root at +0x78, node +0 right, +4 left, +0x10 the id, +0x14 the key (lookup 0xBF3DF0; PickCreation 0xBF9840 generates
+  a missing entry, so the mod walks the tree itself: `coop.designs culture`). The civ_npc player civilization has 18
+  entries: City Hall 99E92F05, house 4E3F7777, factory 47C10953, entertainment 72C49181, BDD15F3D and 13 vehicle ids
+  (7D433FAD military land = VehicleDesignId(0, 0), ...); most hold key 0 (no design yet).
+* ✔ (Ghidra) `Civ_SetDesign` 0xBF4C50 (thiscall(civ, id, const ResourceKey*) ret 8) is the one setter: the planner's
+  Sporepedia pick (message 0x5132389 in 0xD130D0: each picked cEditorResource's +0x18 design id), the editors' return
+  (0xD095A0; City Hall also into cPlayer +0x1150), the Civ start's first vehicle (0xBF5100 from cPlayer +0x115C) and
+  0xBD5FF0, 0xCACE00. For a building id it re-models every city building of that design (0xBE3870); for a vehicle id
+  it calls SetModelKey (vt 0x94 of +0x34) on every vehicle of the civilization (+0xB0) of that locomotion and purpose.
+* ✔ (runtime) The setter on the host re-models at once: `coop.designs set 99E92F05 067CEDE1` turned the host's City
+  Hall model 07EDB5B0 into 067CEDE1, `set 7D433FAD FFE48DC4` its military land vehicle (and its hit points 362 -> 314,
+  from the design). Before the fix the guest's culture set, City Hall and mirror kept the old design (the FAIL half).
+* Fix (`civ.design_sync`, BUG-1157): wsync row `civ_design` (id 17): the host's entries with a key; a guest whose entry
+  differs calls the same setter on its player civilization (its buildings and the mirrors of the civilization's
+  vehicles re-modelled by the game), then the host's own My Creations come by the BUG-0647 / BUG-0670 paths
+  (civ.host_buildings re-keys the buildings within a second, civ::redesign_vehicles the vehicles). The culture set
+  holds the host's keys, as after a world load. Not covered: an entry the host has none of yet (key 0) is not sent, so
+  a guest's own pick for such a design stays its own until the host makes one.
+* Lab: `civ_designs` PASS (with the guest's own other creations under the same ids: its City Hall and its mirror of
+  the host's vehicle have the host's bem hashes 0B25F69B / DD673F46); FAIL with SPORE_FIX_OFF=civ.design_sync,
+  editors.guest_designs: out/lab/20261115-131006.
+
+**A guest's own design (BUG-1158).** One tribe and one civilization are shared: the game has one species profile per
+tribe and one culture set per civilization, so there is no outfit or design of one player only. The host's world is
+the truth; a guest's own outfitter (Tribe, 0x156276D1) or design editor (Civ, any editor but the spaceship editor
+0x96B24187 of the stage's end) in the host's world is refused in the Submit hook with the line "the tribe's outfit is
+shared: only <host> changes it" / "the civilization's designs are shared: only <host> makes new ones"; the planner
+stays open, no input lock is left. A guest's own Sporepedia pick in its planner goes back to the host's design within
+a second with "the civilization's designs are shared: yours went back to <host>'s". `editors.guest_designs` off: the
+editor opens (0.7.14). Lab: the refusals in tribe_outfit / civ_designs; FAIL runs above.
+* Notices: the host's outfitter vote reads "<host> wants to change the tribe's outfit", its return "<host> made a new
+  outfit for the tribe: everybody's tribe wears it" (with `tribe.outfit_sync`; off: the old evolution texts). The
+  Civ return's "changed a design: everybody gets the new designs" is true with `civ.design_sync`.
+* ? Not checked: a Civ outfitter (AccessoryEditorActivate 0x4D2B5FD in the Civ input actions, planner kind 4); the
+  host's real Civ editor route (vote, building editor, save) end to end (the tests set the design with the game's
+  setter); the anthem.
+
+## The own creature swap under a cinematic (2026-11-15, fix/w51-evolve)
+<a id="creations-swap-cinematic"></a>
+
+BUG-1173. Lane 10 probe (creature fixture, the guest plays its own creature from worlds.ini):
+* ✔ `cCreatureAnimal::SetSpecies` on the avatar (creations.cpp apply_own_avatar, 3 s after a new avatar) while the
+  brain upgrade CRG_BrainUpgrade1 (F6A4B1E1) plays leaves that cinematic playing for good: its caption never comes,
+  the game time is never paused (a normal brain upgrade pauses with reason 0600C4AE when the caption shows, ~14 s
+  in), Enter does nothing, and the game's input lock (cGameInputManager +0x110) holds until the next world load.
+  The brain upgrade had started 0.6 s after the DNA arrived (each game runs its own, the DNA total is synced).
+* ✔ The same DNA after the swap: the caption at ~14 s, gone on the first Enter.
+* ? Inferred: the cinematic waits for something of the avatar that SetSpecies rebuilds over the next frames (BUG-0318:
+  the body is built over several frames); which field was not looked for. Other cinematics (CRG_ClaimNest,
+  CRG_SpeciesMigrate) under a swap were not tried.
+* Fix `creations.swap_after_cinematic`: the swap waits while `world::cinematic_playing()`; "own avatar X waits:
+  cinematic Y plays (BUG-1173)" in the log, `swap waits for a cinematic: N ticks` in coop.status. Not covered: the
+  in-place follow of the host's new species (BUG-0508 `follow`) still calls SetSpecies without that wait.
+
+## The in-place follow waits for a cinematic too (2026-11-15, feat/w51-labstate)
+<a id="creations-follow-cinematic"></a>
+
+BUG-1180. CORRECTION (2026-11-15, feat/w51-labstate) of #creations-swap-cinematic ("Not covered: the in-place follow
+... still calls SetSpecies without that wait"): ~ superseded. The follow of BUG-0508 makes no SetSpecies call of its
+own: `on_bundle` records the host's new key (`g_follow`), `mine()` returns it, and the avatar's species is set by
+`apply_own_avatar`, after BUG-1173's wait.
+* ✔ Runtime (evolve_in_place_cine, lanes 9 and 10): "follows it in place (BUG-0508)", "own avatar 29243096 waits:
+  cinematic F4F96E43 plays (BUG-1173)", "own avatar is now 29243096" 4 s later, before any world load.
+* ✔ 250 DNA added on the host while it is still in its evolution editor (the guest back in its stage) start a
+  cinematic F4F96E43 in the guest's game within 1 s, and the host's own brain upgrade makes it send its world after
+  its cinematic (BUG-0019), so the guest loads the host's world ~40 s later.
+* ~ With `creations.swap_after_cinematic` off, SetSpecies under F4F96E43 did not leave that cinematic stuck (it ended,
+  the input was free): BUG-1173's stuck caption was CRG_BrainUpgrade1 (F6A4B1E1); F4F96E43 under a swap is harmless
+  in this one run. Not tried: F6A4B1E1 under the follow.
+
+## The in-place follow for a guest with creations of its own (2026-11-16, fix/w51-t2)
+<a id="creations-follow-with-creations"></a>
+
+BUG-1196 (not reproduced). `on_bundle`'s follow of #creations-evolve-in-place (BUG-0508) still asks for a guest without
+creations of its own (`g_opts[k].empty()`, older than BUG-0345). That does not keep a guest with creations that plays
+the world's species from following:
+* ✔ Lab (evolve_in_place_own, creature fixture, the guest with the 5 creations of creations-guest, none chosen, no
+  record): after the host's real evolution the guest's avatar takes the host's new species in place, the guest stays in
+  the stage and the host sends nothing (`evolve in place: kept 1, sent after all 0`), also with that condition
+  dropped and switched off again (20261116-090728 / 20261116-092810). Inferred: `mine()`'s BUG-0345 branch answers the
+  host's applied creation (`g_applied` orig, which the new bundle replaced) for such a guest, so `apply_own_avatar`
+  swaps to it without `g_follow`.
+* ✔ The world after all that looked like this bug: the host's first creature editor after Cell (the Landfall editor
+  FD4902BD) leaves the host's species key as it was (`evolved in place: Bob keeps its world (host species 2924E0EB ->
+  2924E0EB ...)`, no new bundle of the host after it), so the 30 s check finds the guest "still" on that key and
+  sends the world after all (lab 20261116-090728 parts_transition; v0.7.14.1 20261116-084702 the same). That share
+  waits for the host's evolution cinematic (BUG-0019), i.e. until its caption is confirmed. ? Whether the Landfall
+  editor changes the species' content under the same key (so the world carries the new body) was not looked at.
+
+## A guest's own mating call while it plays its own creation (2026-11-16, fix/w51-t2)
+<a id="creations-own-mating-editor"></a>
+
+BUG-1222. Lab lane 10 (editor_after_swap: the guest chose its own creation 'Kirgle' 0x290225CD, left and joined
+again, then the creature stage's evolution request as its mating call builds it, `coop.vote evolve`, tag 0x12191CA):
+* ✔ The guest's `h_Submit` sends a guest's own in-stage request on as the game's (BUG-0516, "evolves its own
+  creature"): the evolution editor opens with the evolution flags (+0x39 / +0x3B = 0, +0x3C = 1), whose screen has
+  only the green check (no red cross, #creations-editor-request-builder). Its palette locks the parts the species has
+  not collected (BUG-0368).
+* ✔ The green check does nothing (three clicks, 20 s apart, at 6.7 fps and at normal fps; the screen unchanged):
+  the part-list error (bit 5 of `editor+0x48`, section 7 of this file) blocks "done" for a creation with Creature
+  Creator parts, and `h_BlockingErrors` waives it only in the own editor (`g_own_editor`). The guest cannot leave.
+  The world's species (editor_after_load) has no such error: its check works.
+* Fix `creature.own_mating_editor`: in the host's world (`host_world_now() == Same`) a guest playing one of its own
+  creations (`mine(kCreature)` is in `options(kCreature)`) has the game's request refused (`g_evo_flag_refused`,
+  BUG-0920) and its own editor scheduled as after a vote (`g_own_editor_due`, `own_editor_tick`: the stage settled,
+  the avatar's body built, BUG-0318): the red cross, the part-list waiver, no evolution tag (the world's species is
+  not evolved by it, BUG-0466 charges its price). Log: "evolution: this guest plays its own creation: its mating call
+  opens its own editor <id> (BUG-1222)". Off: the game's editor (0.7.14).
+* ? Not tried: the game's own mating call with real input (the test builds the same request), a guest in its own
+  world (left unchanged: the request goes on as before).

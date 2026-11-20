@@ -64,7 +64,7 @@ never reaches it.
 `civ.save_strip`: a savestrip filter for the guest's mirror vehicles (`g_gv_of`, and those waiting for
 the planner), and save hooks in savestrip (`add_save_hooks`: called when a save starts writing, and on the
 next frame): the mirrors leave both civ vectors while the save is written and come back after it. The
-Tribe and Space objects of the ticket moved to BUG-0495 (docs/known-issues.md#issue-civ-mirrors-in-save).
+Tribe and Space objects of the ticket moved to BUG-0495 (docs/archive/known-issues-2026.md#issue-civ-mirrors-in-save).
 content_civ no longer expects the mirrors in the reloaded world.
 Not fixed here: this is not the one-filter change the review allows without a verified save + reload
 test. It needs
@@ -92,3 +92,4 @@ switched off.
   vehicles; reproducible with `content_civ`'s save and reload step).
 - 2026-11-03: Civ half fixed on fix/w40-civ-crashes (civ.save_strip); Tribe / Space moved to BUG-0495.
 - 2026-11-03: released in 0.7.4.
+- 2026-11-15: switch `civ.save_strip` retired in 0.7.15 (B1, BUG-1138): the old code path is gone, FAIL run 20261103-131305:civ_save_strip on record; its test runs PASS-only.

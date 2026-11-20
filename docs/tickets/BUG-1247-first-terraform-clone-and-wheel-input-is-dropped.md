@@ -3,7 +3,7 @@ id: BUG-1247
 title: First Terraform clone and wheel input is dropped pending ownership
 status: fixed
 kind: bug
-stage: GA shared editor
+stage: Editor
 reported: 2026-11-03
 source: Private C63 native action coverage
 role: host

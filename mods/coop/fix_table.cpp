@@ -29,7 +29,15 @@ COOP_FIX("net.name_clean", "BUG-0774", net::g_fix.name_clean, "net: player names
 COOP_FIX("net.lan_only_disc", "BUG-0776", net::g_fix.lan_only_disc, "net: the host answers LAN discovery only from local networks, at most 20 answers a second");
 COOP_FIX("net.halfopen_cap", "BUG-0778", net::g_fix.halfopen_cap, "net: a new peer only for a HELLO, a full peer table evicts the oldest half-open peer");
 COOP_FIX("net.restart_gen", "BUG-0861", net::g_fix.restart_gen, "net: a host / join started inside a message callback is not closed by the old session's deferred leave");
-COOP_FIX("net.async_resolve", "BUG-0204",net::g_fix.async_resolve, "net: a host name is looked up on a worker thread (coop.corefix async_resolve)");
+COOP_FIX("net.join_seen", "BUG-1001", net::g_fix.join_seen, "net: after the start a player comes back by its rejoin token (or, without one, by a name that dropped recently and nobody has now); every live entry counts against the limit");
+COOP_FIX("net.replace_checked", "BUG-1003", net::g_fix.replace_checked, "net: a joined guest's entry is replaced by a new connection only when checked");
+COOP_FIX("net.welcome_split", "BUG-1005", net::g_fix.welcome_split, "net: a joining guest joins the pieces of a WELCOME longer than one packet");
+COOP_FIX("net.queue_cap", "BUG-1108", net::g_fix.queue_cap, "net: the host drops a guest whose waiting data grows far past normal play (a memory guard)");
+COOP_FIX("net.relay_budget", "BUG-1108", net::g_fix.relay_budget, "net: the host drops a guest whose messages make it send far more than normal play (a memory guard)");
+COOP_FIX("net.dir_gate", "BUG-1136", net::g_fix.dir_gate, "net: the host drops a message of a type only the host sends when a guest sends it (net/messages.def)");
+COOP_FIX("net.family_check", "BUG-1137", net::g_fix.family_check, "net: a player whose SporeCoop has another revision of a message family the stage uses cannot join (other versions join with a warning)");
+COOP_FIX("net.recv_skip_big", "BUG-1007", net::g_fix.recv_skip_big, "net: a datagram too big for the read buffer is skipped, the other datagrams of the frame are still read");
+COOP_FIX("net.async_resolve", "BUG-0204",net::g_fix.async_resolve, "net: a host name is looked up on a worker thread");
 
 // updater/ (FIX_SWITCH)
 COOP_FIX("update.dup", "BUG-0089", upd::g_dup_fix, "update: a pack that lists a path twice is refused");
@@ -37,6 +45,7 @@ COOP_FIX_UNSAFE("update.old_suffix", "BUG-0114", upd::g_old_suffix_fix, "update:
 COOP_FIX_UNSAFE("update.paths", "BUG-0242", upd::g_path_fix, "update: pack paths Windows treats as one file, device and working names are refused");
 COOP_FIX_UNSAFE("update.lock", "BUG-0243", upd::g_lock_fix, "update: file swaps under a lock per game folder; cleanup and pending swaps wait for it");
 COOP_FIX("update.keep_failed", "BUG-0150", upd::g_keep_failed_fix, "update: a deferred file whose swap failed stays on the pending list");
+COOP_FIX("update.pending_whole", "BUG-1019", upd::g_pending_whole_fix, "update: a deferred file is added to the whole sporecoop.pending list (was: its first 4 KB)");
 COOP_FIX("update.retry", "BUG-0755", upd::g_retry_fix, "update: a 5xx / 429 answer or a broken connection is tried again (3 attempts, 1 s and 3 s apart)");
 COOP_FIX("update.web_fallback", "BUG-0392", upd::g_web_fallback_fix, "update: when the GitHub API refuses (403/429), the newest release comes from the release page's redirect");
 

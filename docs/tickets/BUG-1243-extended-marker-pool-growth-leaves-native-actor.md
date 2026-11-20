@@ -3,7 +3,7 @@ id: BUG-1243
 title: Extended marker-pool growth leaves native actor marker caches dangling
 status: fixed
 kind: crash
-stage: GA shared editor
+stage: Editor
 reported: 2026-11-03
 source: C58 cold1025 shared R0 Extended R1 clone AV ED8A1F, retained crash dump and exact code audit
 role: host

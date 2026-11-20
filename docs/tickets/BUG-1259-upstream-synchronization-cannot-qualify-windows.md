@@ -3,7 +3,7 @@ id: BUG-1259
 title: Upstream synchronization cannot qualify Windows smoke without native fixtures
 status: open
 kind: bug
-stage: Validation
+stage: Tools
 reported: 2026-11-05
 source: Local 0.7.8 integration smoke preflight
 role: both

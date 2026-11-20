@@ -3,7 +3,7 @@ id: BUG-1249
 title: Two hidden native games hang in presentation reset
 status: open
 kind: freeze
-stage: Win32 lab rendering
+stage: Tools
 reported: 2026-11-04
 source: Private C65 Terraform control validation
 role: both

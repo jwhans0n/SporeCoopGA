@@ -3,7 +3,7 @@ id: BUG-1258
 title: Terraform gesture changes unowned settings and fails canonical restoration
 status: fixed
 kind: desync
-stage: GA shared editor
+stage: Editor
 reported: 2026-11-04
 source: Player preview9 logs: authored settings ownership missing during shared terrain edits
 role: both

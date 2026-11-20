@@ -3,7 +3,7 @@ id: BUG-1269
 title: Windows sharing violations interrupt native fixture checkpoints
 status: fixed
 kind: test
-stage: Tests
+stage: Tools
 reported: 2026-11-12
 source: internal
 role: both

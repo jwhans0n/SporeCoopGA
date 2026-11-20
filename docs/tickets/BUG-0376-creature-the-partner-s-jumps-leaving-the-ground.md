@@ -13,7 +13,7 @@ branch: fix/w41-puppet-look
 commits: af6fe121, see the branch log
 tests: puppet_air
 signature:
-docs: docs/re/creature.md#creature-puppet-look, docs/re/creature.md#creature-puppet-ground, docs/known-issues.md#issue-puppet-jumps
+docs: docs/re/creature.md#creature-puppet-look, docs/re/creature.md#creature-puppet-ground, docs/archive/known-issues-2026.md#issue-puppet-jumps
 related: BUG-0366, BUG-0360
 ---
 
@@ -53,3 +53,4 @@ walker's target over 0.4 m above the host's ground, the next frame draws the pup
 - 2026-11-01: opened.
 - 2026-11-04: fixed on fix/w41-puppet-look (creature.puppet_air).
 - 2026-11-04: released in 0.7.5.
+- 2026-11-15: switch `creature.puppet_air` retired in 0.7.15 (B1, BUG-1138): the old code path is gone, FAIL run 20261104-025342:puppet_air on record; its test runs PASS-only.

@@ -5,7 +5,7 @@ play_creature lost a chat line now and then (`the chat line takes the typing whi
 lives`): both times the host had just found a new part and its caption ("a new part", the
 cinematic) held the game's input lock (cGameInputManager +0x110). The game's UI drops every click
 while the lock is held, also the click on our chat line, so the line never takes the focus and the
-typing goes nowhere; core.ui_locked_clicks (BUG-0273) only presses buttons.
+typing goes nowhere; core.ui_locked_clicks (retired) (BUG-0273) only presses buttons.
 
 Each player, through real input:
 1. plays CRG_ClaimNest (a caption: the input lock is held), opens the co-op window (F9 held),
@@ -13,35 +13,18 @@ Each player, through real input:
 2. the line is in the chat line before Send and in both players' chat after it
 3. the caption ends; the same without a caption (the normal path still works, typed once)
 
-SPORE_FIX_OFF=core.ui_locked_edit: the click is dropped again, nothing is typed (the test fails).
+core.ui_locked_edit off failed (retired in 0.7.15, BUG-1138: FAIL run 20261103-151853:chat_caption): the click is dropped again, nothing is typed (the test fails).
 """
-import re
 import time
 
+from harness import cinematic, eax, waiter
 from coop_ui import Ui
 from twoinst import Checks, start
 
 CLAIM = '63B7060A'  # CRG_ClaimNest
 
 
-def eax(con, what):
-    m = re.search(r'eax=0x([0-9A-Fa-f]+)', con.call('call ' + what)['out'])
-    return int(m.group(1), 16) if m else None
-
-
-def cinematic(con):
-    m = re.search(r'cinematic ([0-9A-F]{8}) playing', con.call('coop.status')['out'])
-    return m.group(1) if m else None
-
-
-def wait(cond, secs, step=0.5):
-    t0 = time.time()
-    while time.time() - t0 < secs:
-        v = cond()
-        if v:
-            return v
-        time.sleep(step)
-    return None
+wait = waiter(step=0.5)
 
 
 def f9(con):

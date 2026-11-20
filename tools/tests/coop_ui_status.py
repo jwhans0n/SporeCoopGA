@@ -12,17 +12,18 @@
     session: the guest is told the session ended, never "player0 (host) is back: your N DNA go to
     the pack", and the window shows the reason (BUG-0104).
 
-  coop_ui_status.py [--without-fix]   (--without-fix: coop.corefix addr_check, ui_status,
-                                       lan_pages and host_away_reset 0, the old behaviour: FAILS)"""
+  coop_ui_status.py [--without-fix]   (--without-fix: coop.fix net.addr_check, core.ui_status,
+                                       core.lan_pages and core.host_away_reset off, the old behaviour: FAILS)"""
 import re
 import sys
 import time
 
+from harness import waiter
 import lane
 from coop_ui import Ui
 from twoinst import Checks, start, wait_guest_in
 
-SWITCHES = ('addr_check', 'ui_status', 'lan_pages', 'host_away_reset')
+SWITCHES = ('net.addr_check', 'core.ui_status', 'core.lan_pages', 'core.host_away_reset')
 
 
 def connected(con):
@@ -35,13 +36,7 @@ def lan_page(st):
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
-def wait(pred, timeout):
-    t0 = time.time()
-    while time.time() - t0 < timeout:
-        if pred():
-            return True
-        time.sleep(0.5)
-    return False
+wait = waiter(step=0.5, as_bool=True)
 
 
 def main():
@@ -50,7 +45,7 @@ def main():
     ck = Checks()
     for con in (host, guest):
         for sw in SWITCHES:
-            con.call(f'coop.corefix {sw} {0 if without else 1}')
+            con.call(f'coop.fix {sw} {"off" if without else "on"}')
     ui = Ui(guest, 'guest')
 
     # ---- 1. address checks (BUG-0138) ----
@@ -148,7 +143,7 @@ def main():
 
     for con in (host, guest):
         for sw in SWITCHES:
-            con.call(f'coop.corefix {sw} 1')
+            con.call(f'coop.fix {sw} on')
     ck.faults(host=host, guest=guest)
     return ck.result()
 

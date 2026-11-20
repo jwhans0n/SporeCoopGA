@@ -3,7 +3,7 @@ id: BUG-1250
 title: Model stamp deletion freezes on ambiguous terrain import provenance
 status: fixed
 kind: bug
-stage: GA shared editor
+stage: Editor
 reported: 2026-11-04
 source: Private C65 actual Model Delete control
 role: host

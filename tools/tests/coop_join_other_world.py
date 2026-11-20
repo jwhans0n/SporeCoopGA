@@ -14,8 +14,8 @@ the host's world applied (DNA total, its own NPCs removed, ...): its own game wo
      through the game's AddEvolutionPoints): the guest's game DNA rises by 20 and the host's does
      not; then the guest loads the host's world (coop.share) and its DNA becomes the host's total
 
-  coop_join_other_world.py [--without-fix]   (coop.corefix same_place 0: must FAIL)
-  SPORE_FIX_OFF=core.world_dna coop_join_other_world.py   (the DNA goes to the host: must FAIL)
+  coop_join_other_world.py [--without-fix]   (coop.fix core.same_place off: must FAIL)
+  core.world_dna off failed (retired in 0.7.15, BUG-1138: FAIL run 20261030-003137:join_other_world) coop_join_other_world.py   (the DNA goes to the host: must FAIL)
 """
 import glob
 import os
@@ -24,6 +24,7 @@ import shutil
 import sys
 import time
 
+from harness import world_of
 import lane
 from twoinst import Checks, start
 
@@ -33,17 +34,12 @@ def num(pat, text, default=None):
     return float(m.group(1)) if m else default
 
 
-def world_of(con):
-    m = re.search(r"world '([^']*)'", con.call('coop.avatar')['out'])
-    return m.group(1) if m else None
-
-
 def main():
     without = '--without-fix' in sys.argv
     host, guest = start()
     ck = Checks()
     for con in (host, guest):
-        con.call(f'coop.corefix same_place {0 if without else 1}')
+        con.call(f'coop.fix core.same_place {"off" if without else "on"}')
     print(' ', guest.call('coop.leave')['out'].strip())
     guest.call('coop.worldfix autoload 0')
     # a world of the guest's own: the received slot copied, the planet under another name
@@ -115,7 +111,7 @@ def main():
         ck(g2 is not None and h2 is not None and abs(g2 - h2) < 0.5, f"the guest's DNA is the host's total there ({g2} vs {h2})")
 
     for con in (host, guest):
-        con.call('coop.corefix same_place 1')
+        con.call('coop.fix core.same_place on')
     guest.call('coop.worldfix autoload 1')
     ck.faults(host=host, guest=guest)
     return ck.result()

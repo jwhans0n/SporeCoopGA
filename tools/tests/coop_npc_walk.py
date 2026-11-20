@@ -2,7 +2,7 @@
 """What a guest sees of the host's walking and running NPCs, frame by frame (BUG-0361).
 
 The guest shows the host's NPC animals as proxies (mods/coop/npc.cpp): standing they are driven by
-drive::step, moving (Creature stage, npc.kinematic, BUG-0281) they were teleported onto the host's
+drive::step, moving (Creature stage, npc.kinematic (retired), BUG-0281) they were teleported onto the host's
 path every frame. coop_puppet_walk.py (BUG-0360) measures the partner's puppet this way; this test
 does the same for NPC proxies (`coop.npctrack`: every frame, every proxy within RADIUS m of the
 guest's avatar: the position the game drew, the interpolated host state, the game's speed, the
@@ -37,7 +37,7 @@ animation's walk gait, on the screen or not).
   The walkers are NPCs outside the host avatar's pack and family (BUG-0417: the flee phase's hit by the host's
   avatar on its own family made the family fight the host back, the monitor's posse_damage). NPC_WALK_PARTY=1:
   the family / pack first (the test before the fix; the monitor gate must fail when one was hit).
-  (SPORE_FIX_OFF=npc.walk must FAIL)"""
+  (npc.walk off failed (retired in 0.7.15, BUG-1138: FAIL run 20261101-080452-fix-w30-npc-walk:npc_walk#1))"""
 import argparse
 import json
 import math
@@ -47,6 +47,8 @@ import re
 import threading
 import time
 
+from harness import pct
+import fpslimit
 import lane
 from twoinst import Checks, shot, start
 
@@ -63,6 +65,18 @@ FAR_OUTSIDE = 100.0  # m: the walkers outside the host's pack / family (BUG-0417
 # MATCHED_MIN_TRIBE and up to JUMPS_TRIBE steps under JUMP_MAX_TRIBE m; on the path instead: the drawn proxy's
 # median distance from the host's path at most ERR_P50_TRIBE (with the fix 0.01-0.03 m, without 0.23-0.33 m).
 MATCHED_MIN_TRIBE, JUMPS_TRIBE, JUMP_MAX_TRIBE, ERR_P50_TRIBE = 0.75, 3, 2.5, 0.10
+# D1 (BUG-1114): the p50 follows the guest's frame rate. Lab runs Oct 31 - Nov 14 with the fix (no switch off), p50 by
+# the guest's fps: 0.02-0.04 m at 46-69 fps, 0.04-0.09 at 26-32, 0.11 at 22 (the 0.7.14 final check's FAIL, a loaded
+# lab), 0.11-0.17 at 16-18, 0.12-0.14 at 12-14; with npc.walk_tribe off (retired in 0.7.15) 0.27-0.29 at 35-56 fps. Limit:
+# 3.0 / fps (m) within 0.10 (at 30 fps and faster: unchanged) and 0.20 (under every twin FAIL); fpslimit.scaled.
+# SPORE_NPCWALK_FIXED_P50=1: the fixed 0.10 at any fps (the limit before 0.7.15)
+ERR_P50_TRIBE_PER_FRAME, ERR_P50_TRIBE_CAP = 3.0, 0.20
+# BUG-1094: a proxy placed in the air (coop.npctrack how 5: the flee hit threw its host NPC 9-10 m/s off its ground for
+# 1-2 s) while its target moves over AIR_MOVE m in the frame stands (moves under a quarter of the target's step) in at
+# most AIR_STILL of those frames, on the guest's screen or off it (placed without the teleport mark the guest's game put
+# it back in 70-77 of 83-91 such frames at 66 fps, one placing let through every ~0.1 s: 0.6-1.1 m steps on the screen);
+# judged from AIR_FRAMES such frames on (the flee hit throws a walker in about half of the runs)
+AIR_MOVE, AIR_STILL, AIR_FRAMES = 0.05, 0.15, 20
 
 
 # BUG-0394: a window spans at least WIN_FRAMES frames: at 21-29 fps a 0.1 s window held 1-3 frames and its speed
@@ -177,12 +191,43 @@ class Watch(threading.Thread):
                 self.drags += 1
 
 
-def pct(xs, q):
-    xs = sorted(xs)
-    return xs[min(len(xs) - 1, int(q * len(xs)))] if xs else 0.0
+def air_follow(rows):
+    """BUG-1094: the frames in which a proxy is placed in the air while its target moves: (frames, standing, per id)"""
+    by, n, still, per = {}, 0, 0, {}
+    for r in rows:
+        by.setdefault(r['id'], []).append(r)
+    for nid, rs in by.items():
+        rs.sort(key=lambda r: r['t'])
+        for a, b in zip(rs, rs[1:]):
+            ts = math.dist(a['tgt'], b['tgt'])
+            if a['how'] != 5 or b['how'] != 5 or not 0 < b['t'] - a['t'] < 0.25 or ts < AIR_MOVE:
+                continue
+            st = math.dist(a['d'], b['d']) < 0.25 * ts
+            n += 1
+            still += st
+            f, s_ = per.get(nid, (0, 0))
+            per[nid] = (f + 1, s_ + st)
+    return n, still, per
 
 
-def analyse(rows, W, H, phases):
+def host_jumps(hrows):
+    """BUG-1094: the host's own NPC put somewhere in one frame (its game sets a thrown NPC onto its ground at the landing:
+    2.79 m in one frame, lab 20261114-001415 #2): {id: [(t, step)]}"""
+    by, out = {}, {}
+    for r in hrows or []:
+        by.setdefault(r['id'], []).append(r)
+    for nid, rs in by.items():
+        rs.sort(key=lambda r: r['t'])
+        for a, b in zip(rs, rs[1:]):
+            if 0 < b['t'] - a['t'] <= 0.25:
+                st = math.dist(a['d'], b['d'])
+                if st > TP_MIN:
+                    out.setdefault(nid, []).append((b['t'], st))
+    return out
+
+
+def analyse(rows, W, H, phases, hrows=None):
+    hj = host_jumps(hrows)
     by = {}
     for r in rows:
         by.setdefault(r['id'], []).append(r)
@@ -226,6 +271,9 @@ def analyse(rows, W, H, phases):
                 # once, Tribe animals 70-100 m away): counted, not judged
                 if step > lim:
                     res.setdefault('jumps_off', []).append((nid, round(b['t'], 2), round(step, 2)))
+            elif step > lim and any(abs(ht - b['t']) < 0.5 and hs >= 0.5 * step for ht, hs in hj.get(nid, ())):
+                # BUG-1094: the host's own NPC made that jump (the landing of a throw): shown as the host has it
+                res.setdefault('jumps_host', []).append((nid, round(b['t'], 2), round(step, 2)))
             elif step > lim and b['tp'] == a['tp']:
                 res['jumps'].append((nid, round(b['t'], 2), round(step, 2), round(dt * 1000)))
                 pw['jumps'] += 1
@@ -425,7 +473,7 @@ def main():
         json.dump({'rows': rows, 'host': hrows, 'phases': phases, 'log': log}, f)
     print(f'  per-frame samples: {path} ({len(rows)} rows)', flush=True)
     print('  ' + '; '.join(log)[:1500], flush=True)
-    r = analyse(rows, W, H, phases)
+    r = analyse(rows, W, H, phases, hrows)
     fps = 1 / (sum(r['dts']) / len(r['dts'])) if r['dts'] else 0
     win = r['win']
     stand = sum(1 for w in win if w < 0.3) / len(win) if win else 1
@@ -445,7 +493,8 @@ def main():
         print(f'    of them on the guest\'s screen: {len(won)}, stand {sum(1 for w in won if w < 0.3) / len(won):.0%}, '
               f'matched {sum(1 for w in won if 0.6 <= w <= 1.4) / len(won):.0%}', flush=True)
     print(f'    jumps on the guest\'s screen (id, t, m, frame ms): {len(r["jumps"])} {r["jumps"][:12]}; off it: '
-          f'{len(r.get("jumps_off", []))} {r.get("jumps_off", [])[:6]}', flush=True)
+          f'{len(r.get("jumps_off", []))} {r.get("jumps_off", [])[:6]}; the host\'s NPC jumped too (not judged): '
+          f'{len(r.get("jumps_host", []))} {r.get("jumps_host", [])[:6]}', flush=True)
     print(f'    walk gait in {near_gait:.0%} of the {r["near"]} moving frames on the guest\'s screen', flush=True)
     walked = [x for x in rows if x['how'] == 3 and x['rv'] > 0.5]
     if walked:  # diagnostics (one lab run had gait 0 on every proxy, cause unknown)
@@ -480,6 +529,12 @@ def main():
         print(f'    #{nid}: windows {pw["win"]} stand {pw["stand"]} matched {pw["matched"]} on screen {pw["near"]} '
               f'gait {pw["gait"]} jumps {pw["jumps"]}', flush=True)
     ck(len(win) > 100, f'the host\'s NPCs moved near the guest ({len(win)} windows of moving NPCs)')
+    an, ast, aper = air_follow(rows)
+    print(f'    placed in the air while the target moved (BUG-1094): {an} frames, the proxy stood in {ast}; per id '
+          f'(frames, stood) {aper}', flush=True)
+    if an >= AIR_FRAMES:
+        ck(ast <= AIR_STILL * an, f'a thrown proxy flies with its NPC (stood in {ast} of {an} frames in the air, '
+           f'at most {AIR_STILL:.0%})')
     if FIXTURE == 'tribe':
         big = [j for j in r['jumps'] if j[2] > JUMP_MAX_TRIBE]
         ck(len(r['jumps']) <= JUMPS_TRIBE and not big,
@@ -489,7 +544,10 @@ def main():
         ck(not r['jumps'], f'no jump of a moving proxy ({len(r["jumps"])})')
     if FIXTURE == 'tribe':
         e50 = pct(r['errs'], 0.5)
-        ck(e50 <= ERR_P50_TRIBE, f'the proxies are on the host\'s path (drawn error p50 {e50:.2f} m <= {ERR_P50_TRIBE} m)')
+        lim = ERR_P50_TRIBE if os.environ.get('SPORE_NPCWALK_FIXED_P50') == '1' else \
+            fpslimit.scaled(fps, ERR_P50_TRIBE, ERR_P50_TRIBE_PER_FRAME, ERR_P50_TRIBE_CAP)
+        ck(e50 <= lim, f'the proxies are on the host\'s path (drawn error p50 {e50:.2f} m <= {lim:.2f} m at '
+           f'{fps:.0f} fps)')
     mmin = MATCHED_MIN_TRIBE if FIXTURE == 'tribe' else MATCHED_MIN
     ck(stand <= STAND_MAX and matched >= mmin,
        f'the proxies move with the host\'s NPCs, not in steps (stand in {stand:.0%} <= {STAND_MAX:.0%}, '

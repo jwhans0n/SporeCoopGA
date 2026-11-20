@@ -1,5 +1,6 @@
 // Native tests for the NPC id allocator (npc_ids.h, BUG-0023 / BUG-0044) and the joint-hunt hit
 // table (hunt_hits.h, BUG-0099) (make test; built with AddressSanitizer).
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -17,6 +18,10 @@
 #include "world_name.h"
 #include "fields_wire.h"
 #include "realign_rule.h"
+#include "lifecycle.h"
+#include "call_guard.h"
+#include "off_main.h"
+#include "npc_proxy_rules.h"
 
 static int g_fail = 0;
 #define CHECK(c)                                                         \
@@ -546,6 +551,195 @@ static void test_realign_rule()
     CHECK(due.empty() && s.n.empty()); // a host list without the kind while this game has several: no list of the planet
 }
 
+// BUG-1055: the lifecycle registry resets the entries of a scope (with their own switch on), and keeps what a reset left
+static int g_lc_session = 0, g_lc_world = 0, g_lc_both = 0;
+static bool g_lc_fix = true;
+SESSION_STATE("t.session", nullptr, [] { g_lc_session = 0; }, []() -> size_t { return (size_t)g_lc_session; });
+WORLD_STATE("t.world", &g_lc_fix, [] { g_lc_world = 0; }, []() -> size_t { return (size_t)g_lc_world; });
+LIFECYCLE_STATE("t.both", lifecycle::kSession | lifecycle::kWorld, nullptr, [] { g_lc_both = 0; }, []() -> size_t { return (size_t)g_lc_both; });
+static void test_lifecycle()
+{
+    g_lc_session = 2, g_lc_world = 3, g_lc_both = 1;
+    CHECK(lifecycle::held() == "t.session 2\nt.world 3\nt.both 1\n");
+    lifecycle::reset(lifecycle::kSession, !g_nofix);
+    CHECK(g_lc_session == 0 && g_lc_both == 0 && g_lc_world == 3); // a session end keeps the world's state
+    CHECK(lifecycle::left(lifecycle::kSession).empty());
+    g_lc_fix = false; // the entry's own switch off: kept, and listed as left
+    lifecycle::reset(lifecycle::kWorld, true);
+    CHECK(g_lc_world == 3 && lifecycle::left(lifecycle::kWorld) == "t.world 3\n");
+    g_lc_fix = true;
+    g_lc_both = 4;
+    lifecycle::reset(lifecycle::kWorld, true);
+    CHECK(g_lc_world == 0 && g_lc_both == 0 && lifecycle::left(lifecycle::kWorld).empty());
+    g_lc_session = 1;
+    lifecycle::reset(lifecycle::kSession, false); // the registry's switch off: nothing reset
+    CHECK(g_lc_session == 1 && lifecycle::left(lifecycle::kSession) == "t.session 1\n");
+    CHECK(lifecycle::resets(lifecycle::kSession) == 2 && lifecycle::resets(lifecycle::kWorld) == 2);
+    lifecycle::WorldWatch w;
+    CHECK(!w.changed(5)); // the first call only records
+    CHECK(!w.changed(5) && w.changed(6) && !w.changed(6));
+}
+
+// D2 (audit TST-4): the warm-reset fingerprint: every entry with a digest (its own, else held()) is listed with it, the
+// hash follows the lines; reset_all clears both scopes; an entry whose reset forgets its state (a planted leftover)
+// stays in the fingerprint after reset_all, and its own digest is used instead of held()
+static uint32_t g_fp_value = 0, g_fp_forgot = 0;
+LIFECYCLE_STATE_D("t.digest", lifecycle::kWorld, nullptr, [] { g_fp_value = 0; },
+                  []() -> size_t { return g_fp_value ? 1 : 0; }, []() -> uint32_t { return g_fp_value; });
+SESSION_STATE("t.forgets", nullptr, [] {}, []() -> size_t { return g_fp_forgot; });
+static void test_fingerprint()
+{
+    lifecycle::reset_all(true);
+    lifecycle::Fingerprint clean = lifecycle::fingerprint();
+    CHECK(clean.lines.empty() && clean.holding == 0 && clean.entries == lifecycle::table().size());
+    g_fp_value = 0xABC;
+    g_lc_session = 2;
+    lifecycle::Fingerprint f = lifecycle::fingerprint();
+    CHECK(f.lines == "t.session 00000002\nt.digest 00000ABC\n" && f.holding == 2 && f.hash != clean.hash);
+    g_fp_value = 0xABD; // the same count (held 1), another state: the digest tells them apart
+    CHECK(lifecycle::fingerprint().hash != f.hash);
+    lifecycle::reset_all(true);
+    CHECK(lifecycle::fingerprint().hash == clean.hash && g_fp_value == 0 && g_lc_session == 0);
+    g_fp_forgot = 3; // a module whose reset forgets this
+    lifecycle::reset_all(true);
+    f = lifecycle::fingerprint();
+    CHECK(f.lines == "t.forgets 00000003\n" && f.hash != clean.hash);
+    g_fp_forgot = 0;
+    g_lc_world = 5;
+    lifecycle::reset_all(false); // the registry's switch off: nothing reset, all of it in the fingerprint
+    CHECK(lifecycle::fingerprint().lines == "t.world 00000005\n");
+    lifecycle::reset_all(true);
+    CHECK(lifecycle::fingerprint().hash == clean.hash);
+}
+
+// BUG-1047: the call guard registry: a hold sets and clears its guard; a hold a caught fault cut short (unwind) leaves
+// it set, and the frame's reset clears every registered guard (a flag or a depth counter) that is still set
+static bool g_cg_a, g_cg_b, g_cg_free;
+static int g_cg_depth;
+CALL_GUARD("t.a", g_cg_a);
+CALL_GUARD("t.b", g_cg_b);
+CALL_GUARD_DEPTH("t.depth", g_cg_depth);
+static void test_call_guard()
+{
+    {
+        callguard::Hold h(g_cg_a);
+        CHECK(g_cg_a);
+        {
+            callguard::Depth d(g_cg_depth);
+            CHECK(g_cg_depth == 1);
+        }
+        CHECK(g_cg_depth == 0);
+    }
+    CHECK(!g_cg_a);
+    {
+        callguard::Hold h(g_cg_b, false); // `flag = local`: may hold false
+        CHECK(!g_cg_b);
+    }
+    CHECK(callguard::reset(true) == 0); // nothing set outside the holds
+    CHECK(callguard::unwind("t.a") && callguard::unwind("t.depth") && !callguard::unwind("t.none"));
+    {
+        callguard::Hold h(g_cg_a);
+        callguard::Depth d(g_cg_depth);
+    }
+    CHECK(g_cg_a && g_cg_depth == 1); // as a fault the game caught leaves them
+    {
+        callguard::Hold h(g_cg_a); // the next hold is a normal one again
+    }
+    CHECK(!g_cg_a);
+    g_cg_a = true;
+    g_cg_free = true; // not registered: never touched
+    size_t n = callguard::reset(!g_nofix);
+    CHECK(n == 2 && !g_cg_a && g_cg_depth == 0 && g_cg_free);
+    CHECK(callguard::state().last == "t.a,t.depth");
+    CHECK(callguard::status() == "t.a set=0 cleared=1\nt.b set=0 cleared=0\nt.depth set=0 cleared=1\n");
+    g_cg_b = true;
+    CHECK(callguard::reset(false) == 0 && g_cg_b); // the registry's switch off: left set (0.7.13)
+    g_cg_b = false;
+}
+
+// A14 (BUG-1130): the off-main game calls, per call site and game function; the first call of a site is reported
+static void test_off_main()
+{
+    offmain::Table t;
+    CHECK(t.note(0x10001000, 0xC1A520, 7));   // first of its site
+    CHECK(!t.note(0x10001000, 0xC1A520, 8));  // the same site again: counted, not reported
+    CHECK(t.note(0x10001000, 0x9FBF00, 7));   // the same place calling another game function is another site
+    CHECK(t.note(0x10002000, 0xC1A520, 7));
+    CHECK(t.total == 4 && t.used == 3 && t.sites[0].n == 2 && t.sites[0].tid == 7);
+    CHECK(t.status(0x10000000) == "off_main calls=4 sites=3\n"
+                                  "  coop.dll+0x1000 -> game 0xC1A520 calls=2 first_thread=7\n"
+                                  "  coop.dll+0x1000 -> game 0x9FBF00 calls=1 first_thread=7\n"
+                                  "  coop.dll+0x2000 -> game 0xC1A520 calls=1 first_thread=7\n");
+    for (uintptr_t i = 0; i < offmain::Table::kMax; i++)
+        t.note(0x20000000 + i, 1, 9);
+    CHECK(t.used == offmain::Table::kMax && t.dropped == 3 && t.total == 4 + offmain::Table::kMax);
+    CHECK(t.status(0).find(" dropped=3\n") != std::string::npos);
+    t.clear();
+    CHECK(t.total == 0 && t.used == 0 && t.status(0) == "off_main calls=0 sites=0\n");
+}
+
+// D3 (npc_proxy_rules.h): the guest's proxy rules of npc.cpp (staleness BUG-0009 / BUG-0611, a body that stays gone
+// BUG-0383, the guest's own NPCs BUG-0412, the placing BUG-0550 / BUG-0281, the nest mound BUG-0562)
+static void test_proxy_rules()
+{
+    printf("npc proxy rules\n");
+    using namespace npc_rules;
+    // the states flow only within 0.5 s of the last complete batch: a host standing still drops nothing
+    CHECK(states_flow(10.0, 9.6) && !states_flow(10.0, 9.4));
+    // fresh within 5 s of its own last state
+    CHECK(stale(100.0, 95.5, 0.0) == Stale::Fresh);
+    CHECK(stale(100.0, 95.0, 0.0) == Stale::Fresh); // (exactly 5 s: still fresh, `> 5` drops)
+    CHECK(stale(100.0, 94.0, 0.0) == Stale::Drop);
+    // BUG-0611: after a freeze every proxy's last state is old; for 5 s after the states flow again none is dropped
+    CHECK(stale(100.0, 60.0, 97.0) == Stale::Thaw);
+    CHECK(stale(100.0, 60.0, 95.0) == Stale::Thaw);
+    CHECK(stale(100.0, 60.0, 94.9) == Stale::Drop);
+    // BUG-0383: a body this game made and removed stays gone; a body first seen dead is made (it plays its death)
+    CHECK(!remake(true, true) && remake(true, false) && remake(false, true) && remake(false, false));
+    // BUG-0412: the own NPCs stay while the host is away, or while nothing is mirrored and the host is not here
+    CHECK(keep_locals(true, false, true, true));
+    CHECK(keep_locals(false, true, true, false));
+    CHECK(!keep_locals(false, true, true, true));   // the host is here: its NPCs come
+    CHECK(!keep_locals(false, false, true, false)); // proxies exist: the host owns NPCs
+    CHECK(!keep_locals(false, true, false, false)); // (no host_here callback: no hold)
+    // the placing
+    PlaceIn in;
+    in.speed = 4.f;
+    in.off = 1.f;
+    CHECK(place(in) == Place::Walk);
+    in.host_air = true;
+    CHECK(place(in) == Place::Air);   // BUG-0550: off its ground on the host, before any walk
+    in.host_dead = true;
+    CHECK(place(in) == Place::Walk);  // a dead NPC is never put in the air
+    in.host_air = in.host_dead = false;
+    in.off = 9.f;
+    CHECK(place(in) == Place::Stand); // too far from its target: driven (put in place) first
+    in.off = 1.f;
+    in.speed = 0.3f;
+    CHECK(place(in) == Place::Stand); // standing
+    in.speed = 4.f;
+    in.stage = false;
+    CHECK(place(in) == Place::Stand); // not a stage whose proxies are walked
+    in.stage = true;
+    in.killed = true;
+    CHECK(place(in) == Place::Corpse);
+    in.host_air = true;
+    CHECK(place(in) == Place::Corpse); // a corpse is never in the air or walked
+    // BUG-0562: a target 0.5 m inside the mound (surface 1000.5 over terrain 1000) goes 5 cm under the surface
+    float k = mound_lift(1000.f, 1000.5f, 1000.f);
+    CHECK(k > 1.f && std::fabs(1000.f * k - 1000.45f) < 1e-3f);
+    CHECK(mound_lift(1000.f, 1000.05f, 999.f) == 1.f); // on the surface already
+    CHECK(mound_lift(1000.f, 1003.f, 999.f) == 1.f);   // 3 m under: not a mound (a cliff, a cave)
+    CHECK(mound_lift(1000.f, 1000.5f, 1000.45f) == 1.f); // the surface is the terrain (no mound)
+    CHECK(mound_lift(0.5f, 1000.f, 999.f) == 1.f);     // no position
+    // BUG-1174 (owner decision 2): held through the host's editor and the second after it, not through a menu or load
+    CHECK(editor_hold(true, true, false, false));   // the host is away in its editor
+    CHECK(editor_hold(true, false, true, false));   // back in its stage, the away state not over yet
+    CHECK(!editor_hold(true, false, false, false)); // away for another reason from the start: the hand-over
+    CHECK(!editor_hold(true, true, true, true));    // editor -> main menu / load: away for real
+    CHECK(!editor_hold(false, true, true, false));  // not away: nothing to hold
+}
+
 int main(int argc, char** argv)
 {
     g_nofix = argc > 1 && std::string(argv[1]) == "--nofix";
@@ -562,6 +756,11 @@ int main(int argc, char** argv)
     test_ledger();
     test_fields_wire();
     test_realign_rule();
+    test_lifecycle();
+    test_fingerprint();
+    test_call_guard();
+    test_off_main();
+    test_proxy_rules();
     printf(g_fail ? "npc tests: %d FAILED\n" : "npc tests: all passed\n", g_fail);
     return g_fail ? 1 : 0;
 }

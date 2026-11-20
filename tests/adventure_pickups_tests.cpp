@@ -95,6 +95,13 @@ void* cast(void* value,uint32_t type) {
     return nullptr;
 }
 bool object_alive(void* value) {return fixture::object(value)&&!skg::field<bool>(value,0x20);}
+bool listed(const void* value,uint32_t) {return object_alive(const_cast<void*>(value));}
+LiveRef live_ref(void* value,uint32_t noun) {
+    return listed(value,noun)?LiveRef{value,skg::field<uint32_t>(value,0x24),noun}:LiveRef{};
+}
+bool alive(const LiveRef& ref) {
+    return listed(ref.p,ref.noun)&&skg::field<uint32_t>(ref.p,0x24)==ref.serial;
+}
 bool object_position(void* value,net::Vec3& out) {auto* p=fixture::object(value);if(!p)return false;out=p->position;return true;}
 net::Quat orientation(void* value) {return fixture::object(value)->rotation;}
 float bounding_radius(void*) {return 1;}
@@ -353,6 +360,15 @@ int main() {
     tick();CHECK(pickups::pending.size()==200);tick();CHECK(pickups::pending.size()==200);
     ++act;tick();CHECK(pickups::pending.empty()&&aborted==1);
     for(void* value:deferred) CHECK(!game::object_alive(value));
+    // A retire callback may replace a native object at the same address. The
+    // accepted pickup must not destroy that replacement after returning.
+    void* recycled=make(true,1,50000,50000);
+    const auto destroyed_before=destroy_calls;
+    auto retire_before=pickups::C.retire;
+    pickups::C.retire=[&](pickups::Identity) { ++field<uint32_t>(recycled,0x24); };
+    pickups::consume({50000,50000},recycled);
+    CHECK(destroy_calls==destroyed_before&&game::object_alive(recycled));
+    pickups::C.retire=std::move(retire_before);
     CHECK(default_float_calls>0&&out_float_calls==0);
     pickups::reset();std::printf("adventure pickups: %d failures\n",failures);return failures?1:0;
 }

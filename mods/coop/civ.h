@@ -38,15 +38,16 @@ int own_selected(bool* city = nullptr);
 int give_selected(uint8_t to);
 
 bool init(const SkHost* host, SkMod* mod, Ctx ctx);
+// BUG-1157: guest: the player civilization's vehicles re-keyed to the host's own designs (designs.cpp); the ones
+// still waiting for the host's answer
+unsigned redesign_vehicles();
 void tick(double now);
 void on_message(uint8_t type, uint8_t from, net::Reader& r);
 void on_session_end();
 void on_world_change(); // a load: the tables of game pointers are cleared (BUG-0059)
 // BUG-0223: once per frame at the top of on_frame (after game::stage_epoch_tick, before messages):
-// calls on_world_change when the Civ world changed; with civ.world_epoch off it does nothing and
-// coop.cpp's avatar_change_check keeps the old trigger
-void world_check();
-bool world_epoch_fix();
+// C2 (BUG-1141): the stage's root object for world_id.h (null outside the stage)
+const void* world_anchor();
 std::string status();
 std::vector<syncdbg::Entry> sync_entries(); // coop.sync (tests)
 // diagnostics (coop.bodyrec start diag, K3): per vehicle mirror of a guest rows `w<id>` (where it is put: the estimate

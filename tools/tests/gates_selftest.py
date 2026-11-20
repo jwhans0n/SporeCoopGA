@@ -15,6 +15,7 @@
   suite     every allow(...) of suite.py names an existing ticket and a reason; the players variants
 """
 import os
+import re
 import sys
 import tempfile
 import time
@@ -114,6 +115,33 @@ def monitor_cases(tmp):
     check(not got, f'monitor: a clean pair has no violation ({got})')
     got = scenario(tmp, 'together', *clean_pair(host_sees=dict(same=0, puppet='hidden: partner in another world')))
     check('together' in got, f'monitor: together: same stage and world by their own games, seen elsewhere ({got})')
+    # BUG-1145: the guest zooms out to the galaxy view (world=-) from s 8.2 to s 20.6, the timings of space_allies
+    # 20261115-042849: its partner lines there say same_place=0 and are no violation; the same stretch with the
+    # guest's own lines in the system (a real separation) still is
+    for name, gw, want in (('together_galaxy', '-', False), ('together_space_apart', '80460035', True),
+                           ('together_both_galaxy', '-', False)):
+        hw = '-' if name == 'together_both_galaxy' else '80460035'
+        sp = dict(stage='Space', world='80460035')
+        h = [own(t, stage='Space', world=hw if 5 < t < 25 else '80460035') for t in (0.0, 10.0, 20.0, 30.0, 40.0)]
+        h += [partner(t + 0.1, stage='Space', world=gw if 5 < t < 25 else '80460035',
+                      same=0 if 5 < t < 25 else 1) for t in (0.0, 10.0, 20.0, 30.0, 40.0)]
+        g = []
+        for t in (5.0, 8.2, 10.0, 20.0, 20.6, 30.0, 40.0):
+            inside = 8 < t < 20.5
+            g += [own(t, role='guest', pid=1, stage='Space', world=gw if inside else '80460035'),
+                  partner(t, pid=0, name='Alice', same=0 if inside else 1,
+                          **dict(sp, world=hw if 5 < t < 25 and name == 'together_both_galaxy' else '80460035'))]
+        got = scenario(tmp, name, h, g)
+        check(('together' in got) == want, f'monitor: together: {name} ({got})')
+    # BUG-1145 / BUG-1147: every trace line the mod writes is a record (a dropped line pairs the invariants with a
+    # line seconds away): the galaxy view's world=-, a NaN position as Windows prints it, a state age of -0.0
+    nan_own = own(30.0, role='guest', pid=1, stage='Space', world='4046000C').replace(
+        'pos=(1.0 2.0 3.0)', 'pos=(-nan(ind) -nan(ind) -nan(ind))')
+    for ln, kind in ((own(20.0, stage='Space', world='-'), 'own'), (nan_own, 'own'),
+                     (partner(20.0, stage='Space', world='-', same=0), 'partner'),
+                     (partner(20.0).replace('state_age=0.1 s', 'state_age=-0.0 s'), 'partner')):
+        r = monitor.parse_line('guest', ln)
+        check(r is not None and r['kind'] == kind, f'monitor: parses {kind} line {ln[40:140]!r}')
     got = scenario(tmp, 'puppet', *clean_pair(guest_sees=dict(puppet='hidden: not spawned (yet)')))
     check(got == {'puppet'}, f'monitor: puppet: a partner in the same place not shown ({got})')
     got = scenario(tmp, 'puppet_dead', *clean_pair(guest_sees=dict(puppet='hidden: partner dead', flags=17)))
@@ -327,6 +355,41 @@ def field_cases(tmp):
     check(not got, f'monitor: puppet_hp: lines off in opposite directions are the lag at health jumps ({got})')
     got = scenario(tmp, 'f_php_flip_old', *aligned_pair(host_sees=flip, g=dict(hp=5), hs=dict(hp=5)), dict(php_same_way=0))
     check(got == {'puppet_hp'}, f'monitor: puppet_hp: php_same_way 0 judges them as before ({got})')
+    # BUG-1061: two sessions of one test share the session clock (each starts at s 0): the guest's lines of a Creature
+    # session were judged against the guest's own Cell lines of the session before (6/6 at the same s) when those
+    # came closer in time; same_session 0 (the rule before) fails it
+    cell_h, cell_g = aligned_pair(h=dict(stage='Cell', world='9652F8AD', hp=6, maxhp=6),
+                                  g=dict(stage='Cell', world='9652F8AD', hp=6, maxhp=6),
+                                  hs=dict(stage='Cell', world='9652F8AD', hp=6, maxhp=6))
+    cre_h, cre_g = aligned_pair(host_sees=' puppet_hp=18/18', g=dict(hp=18, maxhp=18), hs=dict(hp=18, maxhp=18))
+    shift = lambda lines, d: [re.sub(r'\[s ([\d.]+)\]', lambda m: f'[s {float(m.group(1)) + d:.3f}]', ln) for ln in lines]  # noqa: E731
+    two = (cell_h + shift(cre_h, 0.02), cell_g + shift(cre_g, -0.015))
+    got = scenario(tmp, 'f_php_sessions', *two)
+    check(not got, f'monitor: puppet_hp: a line is judged against the subject\'s own line of the same stage and world ({got})')
+    got = scenario(tmp, 'f_php_sessions_old', *two, dict(same_session=0))
+    check('puppet_hp' in got, f'monitor: puppet_hp: same_session 0 matches the session before at the same clock ({got})')
+    # BUG-1194: two sessions of the same stage and world (the guest left and joined again, sreport_leave
+    # 20261116-025154): the host's lines of the first were judged against the guest's own lines of the second at the
+    # same s (closer by some ms), 8 m off; lines of one session share the wall clock's session start (wall - s), so
+    # only the subject's lines of that session count; same_clock 0 (the rule before) fails it
+    def walled(lines, start, pos=None):
+        out = []
+        for ln in lines:
+            t = float(re.search(r'\[s ([\d.]+)\]', ln).group(1))
+            w = start + t
+            ln = f'{int(w // 3600):02d}:{int(w % 3600 // 60):02d}:{w % 60:06.3f}' + ln[len('12:00:00.000'):]
+            out.append(ln.replace('pos=(1.0 2.0 3.0)', f'pos={pos}') if pos else ln)
+        return out
+    ce1 = dict(h=dict(stage='Cell', world='9652F8AD'), g=dict(stage='Cell', world='9652F8AD'),
+               hs=dict(stage='Cell', world='9652F8AD'))
+    a_h, a_g = aligned_pair(n=4, host_sees=' drawn=(1.0 2.0 3.0) drawn_v=0.0', **ce1)
+    b_h, b_g = aligned_pair(n=4, host_sees=' drawn=(9.0 2.0 3.0) drawn_v=0.0', **ce1)
+    two = (walled(a_h, 43200) + walled(b_h, 43320),
+           walled(a_g, 43200) + walled(shift(b_g, -0.015), 43320, pos='(9.0 2.0 3.0)'))
+    got = scenario(tmp, 'f_drawn_sessions', *two)
+    check(not got, f'monitor: drawn: a line is judged against the subject\'s own line of the same session ({got})')
+    got = scenario(tmp, 'f_drawn_sessions_old', *two, dict(same_clock=0))
+    check('drawn' in got, f'monitor: drawn: same_clock 0 matches the next session at the same clock ({got})')
     h, g = aligned_pair()
     h.append("12:00:00.000 [s 33.0] [INF] coop: damage: 1 hit by pack owner=npc posse=1 amount=2.5 forwarded")
     g.append("12:00:00.000 [s 33.1] [INF] coop: damage: 1 hit by proxy owner=npc posse=? amount=2.5 from the host")

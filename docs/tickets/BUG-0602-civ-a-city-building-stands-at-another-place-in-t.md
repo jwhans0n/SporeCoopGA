@@ -3,7 +3,7 @@ id: BUG-0602
 title: Civ: a city building stands at another place in the guest's game (detector planet:building_industry / house / entertainment, campaign_space)
 status: fixed
 kind: desync
-stage: Civilization
+stage: Civ
 reported: 2026-11-05
 source: detector, campaign_space lab 20261105-132636 (fix/w44-world-state2); rel/0.7.7 final 20261105-015350
 role: guest
@@ -65,3 +65,4 @@ moved=1, no more replacing). Detector before: campaign_space out/lab/20261106-06
 - 2026-11-06 (orchestrator, log sweep): campaign_space (24-30 building_industry rows a run on 0.7.8) not yet run with the fix; it runs in the 0.7.9 final check.
 - 2026-11-07 (orchestrator, final check): campaign_space on rel/0.7.9 out/lab/20261106-231404 OK with SPORE_DETECTOR=20: 0 Civilization:planet:building_industry rows (230 detector rows in all), against 24-36 rows in each of the three rel/0.7.8 runs (out/lab/20261105-134715, -151211, -155603 in the rel/0.7.8 worktree). Confirmed.
 - 2026-11-07: released in 0.7.9.
+- 2026-11-15: switch `civ.city_layout` retired in 0.7.15 (B1, BUG-1138): the old code path is gone, FAIL run 20261106-065338:civ_city_burst on record; its test runs PASS-only.

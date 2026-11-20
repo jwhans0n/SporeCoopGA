@@ -21,13 +21,15 @@ game has dead) within LIMIT m of the host's body, and both bodies lie on their g
 height over the terrain within GROUND m).
 
   coop_npc_corpse.py [--only stand,run,...] [--skip later,...]
-  (SPORE_FIX_OFF=npc.play_death fails: the guest's proxies stand; npc.dead_proxy fails `later`)"""
+  (SPORE_FIX_OFF=npc.play_death fails: the guest's proxies stand; npc.dead_proxy off failed `later`: retired in
+  0.7.15, BUG-1138, FAIL run 20261101-135546:corpse_positions)"""
 import argparse
 import math
 import os
 import re
 import time
 
+from harness import avatar_pos as pos
 from coop_npc_pooled import SEA, away, ground, land_path
 from twoinst import Checks, shot, start
 
@@ -72,11 +74,6 @@ def proxies(con):
         g = re.search(r'game_dead=(-?\d)', m.group(3))  # the game's own dead flag of the proxy (not the mod's)
         out[int(m.group(1))] = (m.group(2) == 'spawned', bool(g and g.group(1) == '1'))
     return out
-
-
-def pos(con):
-    m = re.search(r'pos=\(([-\d.]+) ([-\d.]+) ([-\d.]+)\)', con.call('coop.avatar')['out'])
-    return tuple(map(float, m.groups())) if m else None
 
 
 def species_of_avatar(con):

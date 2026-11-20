@@ -19,7 +19,6 @@
 #include "../sdk/include/sporekit_build.hpp"
 #include "../updater/sha256.h"
 #include "install.h"
-#include "../sdk/include/sporekit_build.hpp"
 #include "../updater/winupdate.h"
 
 #ifndef SETUP_VERSION
@@ -29,10 +28,11 @@
 namespace {
 
 // builds with a symbol database (data/symbols/*_<first 8 hex>.sym)
-constexpr const char* kGog2016Sha = "922af7c7908af2614b9caca2ffb1ec2353442022fd124866105724acaa24c26e";
 constexpr const char* kGog2024Code = "5a8267b23a1b916d7e920942d8375ea7fdb2d10a12aca0e603168a8a649f5f8f"; // code_sha256
 constexpr const char* kSteamSha = "3010a413f9a4a05ee9c4de24756c1c94c7fb218f70cad29bcf5bc0b4abfa2466";
 constexpr const char* kGog2024Data = "ae1f385a50edee3b3159289eb7074556756b8f6d60a76d111172aba836f1eda9"; // data_sha256
+// BUG-1125: the GOG 2016 build, no longer supported (0.7.8; its symbols are gone since 0.7.15): named, not installed
+constexpr const char* kGog2016Sha = "922af7c7908af2614b9caca2ffb1ec2353442022fd124866105724acaa24c26e";
 constexpr UINT WM_DONE = WM_APP + 1, WM_INFO = WM_APP + 2;
 
 struct Options {
@@ -253,11 +253,15 @@ void refresh()
     std::string note; // BUG-0391: "Galactic Adventures is installed in ...\Spore 24720: using that folder."
     std::wstring root = chosen_root(&note);
     std::wstring game;
+    bool unsupported = false;
     if (!is_game(root))
         game = upd::widen("Game: " + inst::folder_problem(root));
     else if (std::vector<uint8_t> exe = read_file(root + L"\\SporebinEP1\\SporeApp.exe");
-             upd::sha256_hex(exe) == kGog2016Sha)
-        game = L"Game: GOG 2016; base stages supported, co-op adventures unavailable";
+             upd::sha256_hex(exe) == kGog2016Sha) {
+        game = L"Game: Spore Galactic Adventures, GOG 2016 build: this game version is not supported. Please update "
+               L"to the current GOG or Steam version of Spore.";
+        unsupported = true;
+    }
     else if (skg::supported_gog2024(upd::sha256_hex(exe).c_str()))
         game = L"Game: GOG 2024 (original or 4 GB); co-op adventure preview supported";
     else if (code_sha(exe) == kGog2024Code)
@@ -292,7 +296,7 @@ void refresh()
                       : cmp < 0 && inst::g_fix ? "Install older " + next
                                                : "Reinstall";
     SetWindowTextW(g_install, upd::widen(btn).c_str());
-    EnableWindow(g_install, is_game(root) && !g_busy);
+    EnableWindow(g_install, is_game(root) && !unsupported && !g_busy);
     EnableWindow(g_remove, is_game(root) && inst::has_sporecoop(root) && !g_busy); // BUG-0851: also half removed
     if (g_close && inst::g_fix) // BUG-0139: no closing while files are swapped
         EnableWindow(g_close, !g_busy);

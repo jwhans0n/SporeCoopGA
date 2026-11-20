@@ -3,7 +3,7 @@ id: BUG-1268
 title: Creation Save fixture rejects valid large native confirmation trees
 status: fixed
 kind: test
-stage: Tests
+stage: Tools
 reported: 2026-11-12
 source: internal
 role: both

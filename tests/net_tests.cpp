@@ -19,7 +19,12 @@
 #include <thread>
 #include <tuple>
 #include <type_traits>
+#ifdef _WIN32
+#include <winsock2.h>
+#else
 #include <arpa/inet.h>
+#include <unistd.h>
+#endif
 
 #include "net/connection.h"
 #include "net/diagmsg.h"
@@ -30,8 +35,11 @@
 #include "net/adventure_motion.h"
 #include "net/lobby.h"
 #include "net/shared_ledger.h"
+#include "net/compat.h"
+#include "net/manifest.h"
 #include "net/session.h"
 #include "net/ipmask.h"
+#include "net/kick.h"
 #include "net/utf8.h"
 
 using namespace net;
@@ -48,28 +56,36 @@ static bool g_nofix = false; // --nofix: the code before the wave 2 netcode fixe
 
 static void test_upstream_ga_channels()
 {
-    // Literal receiver expectations make a sender/receiver constant mismatch visible.
-    const uint8_t ids[]={MSG_NEST,MSG_PARTS,MSG_WOBJ,MSG_ACTIVITY,MSG_FIELDS,MSG_NPC_RESYNC,
-        MSG_NPC_ANIM,MSG_DIAG,MSG_EFFECT,MSG_WSTATE,MSG_PLAYER_RULE,MSG_MIRROR_FX,MSG_NPC_MEAT,MSG_SETTINGS,MSG_COLORS,MSG_REPORT,MSG_HOST_WORLD,MSG_ADVENTURE,MSG_EDITOR};
-    CHECK(std::set<uint8_t>(std::begin(ids),std::end(ids)).size()==std::size(ids));
-    Session host,guest;std::string error;unsigned upstream=0,observed_upstream=0,adventure=0,editor=0;
-    host.cb.custom=[&](uint8_t type,uint8_t from,Reader& r){
-        CHECK(from==1);CHECK(type>=64&&type<=69);CHECK(r.u32()==0xAABBCCDD&&r.left()==0&&r.ok());++upstream;
+    // Literal receiver IDs and independent payload tags catch a mismatched sender or route.
+    std::set<unsigned> ids;
+    for (unsigned type = 0; type < 256; ++type)
+        if (msg_info(uint8_t(type)).known) CHECK(ids.insert(type).second);
+    CHECK(MSG_HOST_BUSY == 70 && MSG_TRIBE_ANIM == 71 && MSG_ADVENTURE == 72 && MSG_EDITOR == 73 && MSG_ACTIVITY == 55);
+    CHECK(dispatch_route(70, false) == Route::HostBusy && dispatch_route(70, true) == Route::None);
+    CHECK(dispatch_route(71, false) == Route::Tribe && dispatch_route(71, true) == Route::None);
+    CHECK(dispatch_route(72, false) == Route::Adventure && dispatch_route(72, true) == Route::Adventure);
+    CHECK(dispatch_route(73, false) == Route::Editor && dispatch_route(73, true) == Route::Editor);
+    CHECK(dispatch_route(55, false) == Route::None && dispatch_route(55, true) == Route::Activity);
+    Session host, guest; std::string error;
+    std::map<unsigned, unsigned> to_host, to_guest;
+    host.cb.custom = [&](uint8_t type, uint8_t from, Reader& r) {
+        CHECK(from == 1 && r.u32() == 0xAB000000u + type && r.left() == 0 && r.ok()); ++to_host[type];
     };
-    guest.cb.custom=[&](uint8_t type,uint8_t from,Reader& r){
-        CHECK(from==0);CHECK(r.u32()==0xAABBCCDD&&r.left()==0&&r.ok());
-        if(type>=64&&type<=69)++observed_upstream;else if(type==70)++adventure;else if(type==71)++editor;else CHECK(false);
+    guest.cb.custom = [&](uint8_t type, uint8_t from, Reader& r) {
+        CHECK(from == 0 && r.u32() == 0xAB000000u + type && r.left() == 0 && r.ok()); ++to_guest[type];
     };
-    CHECK(host.host(0,"host",error));
-    CHECK(guest.join("127.0.0.1:"+std::to_string(host.port()),"guest",error));
-    auto service=[&]{for(unsigned i=0;i<100;++i){host.update();guest.update();std::this_thread::sleep_for(std::chrono::milliseconds(2));}};
-    service();CHECK(guest.connected());
-    Writer payload;payload.u32(0xAABBCCDD);
-    for(auto type:{MSG_MIRROR_FX,MSG_NPC_MEAT,MSG_SETTINGS,MSG_COLORS,MSG_REPORT,MSG_HOST_WORLD}){
-        guest.send_event(type,payload);host.send_event(type,payload);
+    CHECK(host.host(0, "host", error));
+    CHECK(guest.join("127.0.0.1:" + std::to_string(host.port()), "guest", error));
+    auto service = [&] { for (unsigned i=0; i<100; ++i) { host.update(); guest.update(); std::this_thread::sleep_for(std::chrono::milliseconds(2)); } };
+    service(); CHECK(guest.connected());
+    for (uint8_t type : {uint8_t(70), uint8_t(71), uint8_t(72), uint8_t(73), uint8_t(55)}) {
+        Writer payload; payload.u32(0xAB000000u + type);
+        host.send_event(type, payload); guest.send_event(type, payload);
     }
-    host.send_event(MSG_ADVENTURE,payload);host.send_event(MSG_EDITOR,payload);
-    service();CHECK(upstream==6&&observed_upstream==6&&adventure==1&&editor==1);
+    service();
+    CHECK(to_host[70] == 0 && to_host[71] == 0 && host.dir_drops() >= 2);
+    CHECK(to_host[72] == 1 && to_host[73] == 1 && to_host[55] == 1);
+    CHECK(to_guest[70] == 1 && to_guest[71] == 1 && to_guest[72] == 1 && to_guest[73] == 1);
 }
 
 static void test_buffer()
@@ -523,11 +539,11 @@ static void test_session_end_in_delivery()
 static void test_protocol_versions()
 {
     printf("merged protocol boundary and HELLO version validation\n");
-    CHECK(kProtoVersion == 29 && kDiscoverPorts == 20);
-    CHECK(MSG_SPACE == 48 && MSG_ADVENTURE == 70 && MSG_EDITOR == 71 && MSG_ACTIVITY == 55 && MSG_NEST == 52 && MSG_PARTS == 53 && MSG_DIAG == 60);
+    CHECK(kProtoVersion == 30 && kDiscoverPorts == 20);
+    CHECK(MSG_SPACE == 48 && MSG_ADVENTURE == 72 && MSG_EDITOR == 73 && MSG_ACTIVITY == 55 && MSG_NEST == 52 && MSG_PARTS == 53 && MSG_DIAG == 60);
     CHECK(MSG_WOBJ == 54 && MSG_FIELDS == 56 && MSG_NPC_RESYNC == 57 && MSG_NPC_ANIM == 59 && MSG_EFFECT == 61);
-    CHECK(kProtoVersion == 29 && kDiscoverPorts == 20);
-    CHECK(MSG_SPACE == 48 && MSG_ADVENTURE == 70 && MSG_EDITOR == 71 && MSG_WSTATE == 62 && MSG_PLAYER_RULE == 63 && MSG_MIRROR_FX == 64);
+    CHECK(kProtoVersion == 30 && kDiscoverPorts == 20);
+    CHECK(MSG_SPACE == 48 && MSG_ADVENTURE == 72 && MSG_EDITOR == 73 && MSG_WSTATE == 62 && MSG_PLAYER_RULE == 63 && MSG_MIRROR_FX == 64);
     Session host;
     std::string err;
     CHECK(host.host(0, "host", err));
@@ -649,7 +665,7 @@ static void test_rejoin_same_endpoint()
     bool back = false;
     g2.cb.connected = [&] { back = true; };
     CHECK(g2.join(addr, "bob", err));
-    run(g2, 600);
+    run(g2, 2600); // BUG-1003: the old entry (no token) goes once it has been silent for 2 s
     CHECK(back);
     CHECK(leaves == 1 && joins == 2);
     CHECK(host.players().size() == 2);
@@ -746,6 +762,7 @@ static void test_big_snapshot()
     CHECK(chunks == 3 * 43);
 }
 
+static bool k4_on(const char* name);
 static void test_interp()
 {
     printf("snapshot interpolation\n");
@@ -778,6 +795,43 @@ static void test_interp()
         SnapshotBuffer::scale_lerp = false;
         CHECK(c.sample(5.0 + 0.325, q) && q.pos.x > 6.f); // the old blend (cell.puppet_scale off)
         SnapshotBuffer::scale_lerp = true;
+    }
+    {   // BUG-1092 (drive.agl_lerp): a hop's start, state 4 on the ground (no agl), state 5 1.5 m up (agl 1.5): half-way
+        // between them the target is 0.75 m up and so is its agl (drive::at_sender_agl places the puppet by the agl;
+        // the newer state's full 1.5 m put the puppet 1.5 m up in the first frame of the rise)
+        SnapshotBuffer c;
+        c.delay = 0.1;
+        for (int i = 0; i <= 10; i++) {
+            PlayerState s;
+            s.time_ms = 1000 + i * 50;
+            s.pos = {100.f + (i < 5 ? 0.f : 1.5f), 0, 0};
+            if (i >= 5) {
+                s.flags = PF_JUMPING;
+                s.agl = 1.5f;
+            }
+            c.push(s, 5.0 + i * 0.05);
+        }
+        g_agl_lerp_fix = k4_on("drive.agl_lerp"); // (SPORE_FIX_OFF=drive.agl_lerp: the newer state's 1.5 m, FAIL)
+        PlayerState q;
+        CHECK(c.sample(5.0 + 0.325, q)); // half-way between the states 4 and 5
+        CHECK(std::fabs(q.pos.x - 100.75f) < 0.01f && (q.flags & PF_JUMPING));
+        CHECK(std::fabs(q.agl - 0.75f) < 0.01f);
+        CHECK(c.sample(5.0 + 0.45, q) && std::fabs(q.agl - 1.5f) < 0.01f); // both states up: as sent
+        // the hop's first state already up but not marked airborne (no agl): its height over the next state's ground
+        SnapshotBuffer e;
+        e.delay = 0.1;
+        for (int i = 0; i <= 10; i++) {
+            PlayerState s;
+            s.time_ms = 1000 + i * 50;
+            s.pos = {100.f + (i < 4 ? 0.f : 1.5f), 0, 0};
+            if (i >= 5) {
+                s.flags = PF_JUMPING;
+                s.agl = 1.5f;
+            }
+            e.push(s, 5.0 + i * 0.05);
+        }
+        CHECK(e.sample(5.0 + 0.325, q) && std::fabs(q.pos.x - 101.5f) < 0.01f && std::fabs(q.agl - 1.5f) < 0.01f);
+        g_agl_lerp_fix = true;
     }
     CHECK(b.sample(5.0 + 0.6, o)); // extrapolate 0 s past newest: x=10
     CHECK(std::fabs(o.pos.x - 10.0f) < 0.01f);
@@ -1259,6 +1313,112 @@ static float puppet_stop_past(bool fix, bool* slowed)
 }
 
 
+// BUG-1093 (net.send_phase): the walker at 21 fps (48 ms frames) sends its state by state_due, walks +x at 4.75 m/s and
+// stops at once (a halt) at one of 48 phases of its frames; each state reaches the observer (also ~21 fps) 30-280 ms
+// later (a loaded lab pair of games: the states' age p90 0.2 s, deterministic). The puppet's buffer (interpolated, delay
+// 0.1, interp_fall): the largest distance of the shown target past the stop, its p90 over the 48 stops, the worst one,
+// and the walker's states per second
+static void puppet_lowfps_past(bool fix, double* rate, float* p90, float* worst)
+{
+    const bool was = g_send_phase_fix, was_fall = g_puppet_fall_fix;
+    const double was_ow = g_one_way;
+    g_send_phase_fix = fix && k4_on("net.send_phase");
+    g_puppet_fall_fix = true;
+    g_one_way = 0.04;
+    const double frame = 0.048;
+    std::vector<float> past;
+    int sent = 0;
+    for (int ph = 0; ph < 48; ph++) {
+        SnapshotBuffer b;
+        b.delay = 0.1;
+        b.interp_fall = true;
+        const double t_stop = 3.0 + ph * frame / 48;
+        const float x_stop = (float)t_stop * 4.75f;
+        std::vector<std::pair<double, PlayerState>> arr;
+        double last = -1;
+        float sent_sp = 0;
+        uint32_t seed = 7u + ph;
+        for (double ts = 0; ts < 4.5; ts += frame) {
+            const bool moving = ts < t_stop;
+            if (!state_due(ts, last, sent_sp, moving ? 4.75f : 0.f))
+                continue;
+            PlayerState st;
+            st.time_ms = (uint32_t)(1000 + ts * 1000.0 + 0.5);
+            st.flags = PF_IN_WORLD;
+            st.pos = {moving ? (float)ts * 4.75f : x_stop, 0.f, 0.f};
+            st.vel = {moving ? 4.75f : 0.f, 0.f, 0.f};
+            sent_sp = st.vel.x;
+            seed = seed * 1103515245u + 12345u;
+            arr.push_back({ts + 0.03 + 0.25 * ((seed >> 16) & 1023) / 1023.0, st});
+            if (ph == 0 && ts < 2.5)
+                sent++;
+        }
+        std::stable_sort(arr.begin(), arr.end(), [](auto& a, auto& c) { return a.first < c.first; });
+        size_t k = 0;
+        PlayerState o;
+        float w = 0;
+        for (double now = 0.02; now < 4.5; now += 0.0477) {
+            while (k < arr.size() && arr[k].first <= now)
+                b.push(arr[k].second, now), k++;
+            if (!b.sample(now, o) || now < 2.5)
+                continue;
+            w = std::max(w, o.pos.x - x_stop);
+        }
+        past.push_back(w);
+    }
+    std::sort(past.begin(), past.end());
+    *rate = sent / 2.5;
+    *p90 = past[past.size() * 9 / 10];
+    *worst = past.back();
+    g_send_phase_fix = was;
+    g_puppet_fall_fix = was_fall;
+    g_one_way = was_ow;
+}
+
+// BUG-1095 (drive.air_keep): a partner in the air (PF_JUMPING) flying +x at 9.5 m/s, its states of [2.9, 3.3) 0.25 s
+// late. The puppet's buffer (interpolated, delay 0.1, interp_fall), sampled at 60 fps: the largest step of the shown
+// target in one frame (a flight at 9.5 m/s moves 0.16 m per frame)
+static float puppet_air_step(bool fix)
+{
+    const bool was = g_puppet_air_keep_fix, was_fall = g_puppet_fall_fix;
+    const double was_ow = g_one_way;
+    g_puppet_air_keep_fix = fix && k4_on("drive.air_keep");
+    g_puppet_fall_fix = true;
+    g_one_way = 0.05;
+    SnapshotBuffer b;
+    b.delay = 0.1;
+    b.interp_fall = true;
+    std::vector<std::pair<double, PlayerState>> arr;
+    for (int i = 0; i < 150; i++) {
+        double st = i / 30.0;
+        PlayerState s;
+        s.time_ms = (uint32_t)(1000 + st * 1000.0 + 0.5);
+        s.flags = PF_IN_WORLD | PF_MOVING | PF_JUMPING;
+        s.pos = {(float)st * 9.5f, 0.f, 0.f};
+        s.vel = {9.5f, 0.f, 0.f};
+        arr.push_back({10.0 + st + 0.05 + (st >= 2.9 && st < 3.3 ? 0.25 : 0.0), s});
+    }
+    std::stable_sort(arr.begin(), arr.end(), [](auto& a, auto& c) { return a.first < c.first; });
+    size_t k = 0;
+    PlayerState o;
+    float step = 0, prev = 0;
+    bool have = false;
+    for (double now = 10.0; now < 14.5; now += 1.0 / 60) {
+        while (k < arr.size() && arr[k].first <= now)
+            b.push(arr[k].second, now), k++;
+        if (!b.sample(now, o))
+            continue;
+        if (have && now > 12.0)
+            step = std::max(step, std::fabs(o.pos.x - prev));
+        prev = o.pos.x;
+        have = true;
+    }
+    g_puppet_air_keep_fix = was;
+    g_puppet_fall_fix = was_fall;
+    g_one_way = was_ow;
+    return step;
+}
+
 // BUG-0675 / BUG-0651 (drive.lead_throw): a member walking at 9.5 m/s whose loaded sender stamps its states off its frames
 // (positions every 1/30 s, the times alternately 6 ms early and late: every other pair of states 21 ms apart in its time,
 // a 15 m/s path): the mean distance of the shown target from the member (its sender time now)
@@ -1397,6 +1557,20 @@ static void test_lead_fall()
     CHECK(p_off > 0.5f);
     CHECK(p_on < 0.3f);
     CHECK(sl_on && !sl_off);
+    double r_on = 0, r_off = 0;
+    float q_on = 0, q_off = 0, w_on = 0, w_off = 0;
+    puppet_lowfps_past(true, &r_on, &q_on, &w_on);
+    puppet_lowfps_past(false, &r_off, &q_off, &w_off);
+    printf("  a walker at 21 fps halts: target past the stop p90 %.2f max %.2f m at %.1f states/s (0.7.13 p90 %.2f max %.2f m "
+           "at %.1f/s)\n", q_on, w_on, r_on, q_off, w_off, r_off);
+    CHECK(r_off < 12 && r_on > 19);
+    CHECK(w_off > 0.45f && w_on < w_off - 0.1f);
+    CHECK(q_on < q_off);
+    float a_on = puppet_air_step(true), a_off = puppet_air_step(false);
+    printf("  a partner in the air at 9.5 m/s, its states 0.25 s late: the target's largest step in a 60 fps frame %.2f m "
+           "(0.7.13 %.2f m)\n", a_on, a_off);
+    CHECK(a_off > 0.8f);
+    CHECK(a_on < 0.4f);
 }
 
 static void test_lead_keep()
@@ -1433,6 +1607,91 @@ static void test_lead_keep()
     CHECK(on < 0.15f);
 }
 
+// BUG-1094 (drive.agl_extrap): the host's NPC thrown straight up at 9.8 m/s, a state every 0.1 s, its proxy's buffer as
+// npc.cpp makes it (the lead, late_lead, smoothing). drive::at_sender_agl places it at this game's ground + the sample's
+// agl: with the newest state's agl the height stood for a state period and then stepped ~1 m (the proxy stood in
+// 128 of 166 frames, lab 20261113-221929 #2); with the fix it rises with the target in every frame
+static void test_agl_extrap()
+{
+    printf("a thrown body's agl moved on with its position\n");
+    const bool was_late = g_lead_late_fix, was_fall = g_lead_fall_fix;
+    const double was_ow = g_one_way;
+    g_agl_extrap_fix = k4_on("drive.agl_extrap"); // (SPORE_FIX_OFF=drive.agl_extrap: stands, FAIL)
+    g_lead_late_fix = g_lead_fall_fix = true;
+    g_one_way = 0.05;
+    SnapshotBuffer b;
+    b.delay = 0.15;
+    b.lead = true;
+    b.late_lead = true;
+    b.smooth_max = 8.f;
+    const float ground = 500.f, up = 9.8f; // (the terrain flat at radius 500 on both games)
+    auto state = [&](double st) {
+        PlayerState s;
+        s.time_ms = (uint32_t)(1000 + st * 1000.0 + 0.5);
+        s.mode = 0x1654C01;
+        s.world = 7;
+        s.flags = PF_IN_WORLD | PF_MOVING;
+        const float h = st > 2.0 ? (float)(st - 2.0) * up : 0.f;
+        s.pos = {ground + h, 0.f, 0.f};
+        s.vel = {st > 2.0 ? up : 0.f, 0.f, 0.f};
+        s.agl = st > 2.0 ? h : kNoAgl;
+        return s;
+    };
+    int frames = 0, stood = 0;
+    float max_step = 0, max_off = 0;
+    float last = -1;
+    size_t k = 0;
+    for (double now = 10.0; now < 12.9; now += 1.0 / 60) {
+        while (10.0 + k * 0.1 + 0.05 <= now)
+            b.push(state(k * 0.1), 10.0 + k * 0.1 + 0.05), k++;
+        PlayerState o;
+        if (!b.sample(now, o) || !agl_known(o.agl))
+            continue;
+        const float shown = ground + o.agl; // (drive::at_sender_agl's radius)
+        if (now > 12.3 && last > 0) {
+            frames++;
+            if (shown - last < 0.02f)
+                stood++;
+            max_step = std::max(max_step, std::fabs(shown - last));
+            max_off = std::max(max_off, std::fabs(shown - o.pos.x));
+        }
+        last = shown;
+    }
+    printf("  %d frames in the air: stood %d, the largest step %.2f m, off the target %.2f m\n", frames, stood, max_step, max_off);
+    CHECK(frames > 20);
+    CHECK(stood == 0);
+    CHECK(max_step < 0.3f);
+    CHECK(max_off < 0.05f);
+    // a fall moved on past its newest state (the next states late): its agl stops at the sender's ground, not under it
+    {
+        SnapshotBuffer f;
+        f.delay = 0.15;
+        f.lead = true;
+        for (int i = 0; i <= 20; i++) {
+            PlayerState s;
+            s.time_ms = 1000 + i * 100;
+            s.mode = 0x1654C01;
+            s.world = 7;
+            s.flags = PF_IN_WORLD | PF_MOVING;
+            const float h = 18.2f - 0.9f * (float)i; // (down at 9 m/s, 0.2 m up at the last state)
+            s.pos = {ground + h, 0.f, 0.f};
+            s.vel = {-9.f, 0.f, 0.f};
+            s.agl = h;
+            f.push(s, 20.0 + i * 0.1 + 0.05);
+        }
+        PlayerState o;
+        CHECK(f.sample(20.0 + 2.0 + 0.05 + 0.2, o) && agl_known(o.agl)); // 0.2 s past the newest state: 1.6 m under
+        printf("  a fall 0.2 s past its newest state (0.2 m up at 9 m/s): agl %.2f m, %.2f m under the newest\n", o.agl,
+               dist(Vec3{}, f.latest().pos) - dist(Vec3{}, o.pos));
+        if (g_agl_extrap_fix)
+            CHECK(o.agl >= 0.f && o.agl < 0.01f);
+    }
+    g_agl_extrap_fix = true;
+    g_lead_late_fix = was_late;
+    g_lead_fall_fix = was_fall;
+    g_one_way = was_ow;
+}
+
 static void test_discovery()
 {
     // BUG-0969: an ephemeral port, asked alone: a fixed port of the discovery range collided with another lane's unit
@@ -1443,7 +1702,9 @@ static void test_discovery()
     std::string err;
     other.host(kDefaultPort + kDiscoverPorts - 1, "OtherLane", err);
     Session host;
-    CHECK(host.host(0, "LanHost", err));
+    const std::string name = "LanHost";
+    CHECK(host.host(0, name, err));
+    const unsigned port = host.port();
     host.lobby_info = "Creature - Testworld";
     Discovery d;
     CHECK(d.start());
@@ -1451,22 +1712,29 @@ static void test_discovery()
     d.ports = {host.port()};
     d.interval_ms = 100;
     std::vector<Discovery::Game> found;
+    auto ours = [&] {
+        std::vector<Discovery::Game> v;
+        for (auto& g : d.games(now_ms()))
+            if (g.info.name == name)
+                v.push_back(g);
+        return v;
+    };
     for (int i = 0; i < 200 && found.empty(); i++) {
         d.update(now_ms());
         host.update();
         other.update();
         d.update(now_ms());
-        found = d.games(now_ms());
+        found = ours();
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     CHECK(found.size() == 1);
     if (!found.empty()) {
-        CHECK(found[0].info.name == "LanHost");
+        CHECK(found[0].info.name == name);
         CHECK(found[0].info.info == "Creature - Testworld");
         CHECK(found[0].info.players == 1);
         CHECK(found[0].host.port == host.port());
     }
-    printf("discovery ok\n");
+    printf("discovery ok (port %u)\n", port);
 }
 
 static void test_ackbits()
@@ -1773,8 +2041,7 @@ static void test_updater_paths()
     std::vector<std::string> real = {"SporebinEP1/steam_api.dll", "SporebinEP1/sporekit.dll", "SporebinEP1/mods/coop.dll",
                                      "Data/SporeCoop.package", "SporebinEP1/mods/sporecoop.version",
                                      "SporebinEP1/mods/sporekit.ini", "SporebinEP1/mods/coop.ini"};
-    for (const char* sym : {"gog2016_922af7c7.sym", "march2017_dc04aee5.sym", "overrides_922af7c7.sym",
-                            "overrides_dc04aee5.sym"})
+    for (const char* sym : {"march2017_dc04aee5.sym", "overrides_dc04aee5.sym"})
         real.push_back(std::string("SporebinEP1/mods/sporekit/symbols/") + sym);
     upd::Pack rp;
     rp.version = "9";
@@ -2187,7 +2454,7 @@ static void test_old_peer_session()
     printf("a 0.7.2-shaped guest: long chat cut, big messages not sent, one notice (BUG-0219)\n");
     Session host, oldg, newg;
     host.build = oldg.build = newg.build = 0x922af7c7;
-    oldg.send_caps = false;
+    // Both peers advertise mandatory fork families; emulate a peer without packet splitting after admission.
     std::string err;
     CHECK(host.host(0, "Host", err));
     std::string addr = "127.0.0.1:" + std::to_string(host.port());
@@ -2218,6 +2485,8 @@ static void test_old_peer_session()
     CHECK(newg.join(addr, "New", err));
     run(300);
     CHECK(oldg.connected() && newg.connected());
+    if (auto* c = host.conn_to(oldg.my_id())) c->peer_split = false;
+    if (auto* c = oldg.conn_to(0)) c->peer_split = false;
     std::string longline;
     while (longline.size() < 3000)
         longline += "\xd0\x96"; // Cyrillic, two bytes: an odd cut would land inside a character
@@ -2247,7 +2516,7 @@ static void test_old_peer_session()
     CHECK(old_species == 0);
     CHECK(new_chat.size() == 2 && !new_chat.empty() && new_chat[0] == longline.size());
     CHECK(new_species == 1);
-    CHECK(notices == 1);
+    CHECK(notices == 0); // Older forks are rejected before admission; fallback is a transport property.
     CHECK(host.status().find("older peer 1: too_big_old=1") != std::string::npos);
 }
 
@@ -2307,9 +2576,9 @@ static void test_peer_versions()
     Session host, oldg, newg;
     host.build = oldg.build = newg.build = 0x922af7c7;
     host.version = "coop H";
-    oldg.version = "coop O";
+    oldg.version.clear(); // Missing version text remains readable within the mandatory fork wire boundary.
     newg.version = "coop N";
-    oldg.send_caps = false;
+    // Both peers advertise mandatory fork families; emulate a peer without packet splitting after admission.
     std::string err;
     CHECK(host.host(0, "Host", err));
     std::string addr = "127.0.0.1:" + std::to_string(host.port());
@@ -2383,6 +2652,12 @@ static void test_rejoin_token()
         CHECK(x.name_of(x.my_id()) == "Bob 2" && b.name_of(b.my_id()) == "Bob");
         CHECK(b.connected() && hchat == 1);
     }
+}
+
+// the rest of BUG-0235 in its own tests: each runs seconds of real time, the shards of make test run them at once
+static void test_rejoin_token_full()
+{
+    std::string err;
     { // a crash rejoin into 4/4 with the same token: accepted at once, same name, LEAVE before JOIN
         Session h, g1, g2, g3, g3b;
         g1.rejoin_token = 1;
@@ -2415,8 +2690,13 @@ static void test_rejoin_token()
         CHECK(self_join.empty()); // its own old entry is not in its roster
         CHECK(ev.size() == 2 && ev[0] == "L" + std::to_string(old_id) && ev[1][0] == 'J');
     }
-    { // edge cases: no extension (0.7.2), a live peer with the same token, core.rejoin_name off
-        for (int kind = 0; kind < 3; kind++) {
+}
+
+static void rejoin_token_edge(int kind)
+{
+    std::string err;
+    { // edge cases: missing mandatory capabilities, a live peer with the same token, core.rejoin_name off
+        { // kind 0, 1, 2: one test each (seconds of real time each, the shards run them at once)
             Session h, b, x;
             b.rejoin_token = x.rejoin_token = 7;
             if (kind == 0)
@@ -2427,6 +2707,12 @@ static void test_rejoin_token()
             std::string a = "127.0.0.1:" + std::to_string(h.port());
             CHECK(b.join(a, "Bob", err));
             tick({&h, &b}, 400);
+            if (kind == 0) {
+                CHECK(!b.connected());
+                CHECK(x.join(a, "Bob", err)); tick({&h, &x}, 400);
+                CHECK(!x.connected() && h.players().size() == 1);
+                return;
+            }
             if (kind != 1)
                 tick({&h}, 2500); // silent (kind 1: b stays live)
             CHECK(x.join(a, "Bob", err));
@@ -2436,6 +2722,9 @@ static void test_rejoin_token()
         }
     }
 }
+static void test_rejoin_token_edge0() { rejoin_token_edge(0); }
+static void test_rejoin_token_edge1() { rejoin_token_edge(1); }
+static void test_rejoin_token_edge2() { rejoin_token_edge(2); }
 
 // BUG-0236: the co-op window's own hint line, pasted whole, starts with a label
 static void test_address_label()
@@ -3071,9 +3360,9 @@ static void test_diag_messages()
     Reader rs(ws.data.data(), ws.size());
     dg::Digest d4;
     CHECK(rs.u8() == dg::kDigest && d4.read(rs) && d4.scale == 1.5f && d4.out.size() == 2);
-    Writer wo; // an older sender's digest (no scale at the end) reads scale 0
+    Writer wo; // an older sender's digest (no scale and no agl trailer at the end) reads scale 0
     d.write(wo);
-    wo.data.resize(wo.data.size() - 4);
+    wo.data.resize(wo.data.size() - 4 - 2);
     Reader ro(wo.data.data(), wo.size());
     dg::Digest d5;
     CHECK(ro.u8() == dg::kDigest && d5.read(ro) && d5.scale == 0 && d5.out.size() == 2);
@@ -3116,6 +3405,60 @@ static void test_diag_clock()
     for (int i = 0; i < 20; i++)
         c.add(100 + i, 100.5 + i, 100.25 + i + 7);
     CHECK(c.samples() == dg::ClockSync::kKeep && std::fabs(c.offset() - 7) < 1e-9); // old samples aged out
+}
+
+// BUG-1216 (sync.npc_agl): NPCs compared by their heights over each game's own terrain
+static void test_diag_npc_agl()
+{
+    printf("diag: NPCs are compared at their heights over each game's own ground (BUG-1216)\n");
+    namespace dg = net::diag;
+    const bool kFix = !SPORECOOP_TEST_NOFIX && !g_nofix;
+    // the agl trailer: NPC entries only, an older sender's digest has none
+    dg::Digest d;
+    d.mode = 0x1654C02;
+    d.world = 7;
+    d.entries = {{dg::make_key('p', 0), 1, 2, 3, 0.5f}, {dg::make_key('n', 4), 500, 0, 0, -10.47f}, {dg::make_key('n', 5), 0, 500, 0}};
+    Writer w;
+    d.write(w);
+    Reader r(w.data.data(), w.size());
+    dg::Digest d2;
+    CHECK(r.u8() == dg::kDigest && d2.read(r) && d2.entries.size() == 3);
+    CHECK(!dg::entry_agl_known(d2.entries[0].agl) && std::fabs(d2.entries[1].agl + 10.47f) < 0.006f && !dg::entry_agl_known(d2.entries[2].agl));
+    Writer wo;
+    d.write(wo);
+    wo.data.resize(wo.data.size() - 2 - 4); // (one trailer entry: index + cm)
+    Reader ro(wo.data.data(), wo.size());
+    dg::Digest d3;
+    CHECK(ro.u8() == dg::kDigest && d3.read(ro) && !dg::entry_agl_known(d3.entries[1].agl) && d3.scale == 0);
+    // the host's NPC on its ground at radius 500, the guest's terrain 10.47 m higher there: its proxy on its own ground
+    dg::Digest h, g;
+    h.mode = g.mode = 0x1654C02;
+    h.world = g.world = 7;
+    g.self = 1;
+    h.entries = {{dg::make_key('n', 1), 500, 0, 0, 0.f}, {dg::make_key('n', 2), 0, 500, 0, 0.f}, {dg::make_key('n', 3), 0, 0, 500, 0.f},
+                 {dg::make_key('n', 6), -500, 0, 0, 0.f}};
+    g.entries = {{dg::make_key('n', 1), 510.47f, 0, 0, 0.f},  // on the guest's higher ground: the same place to a player
+                 {dg::make_key('n', 2), 0, 509.f, 0, 9.f},    // 9 m in the air on the guest (BUG-1216 kind B)
+                 {dg::make_key('n', 3), 10.f, 0, 500, 0.f},   // 10 m to the side
+                 {dg::make_key('n', 6), -500, 0, 0}};         // an older guest: no height, absolute
+    dg::Limits lim;
+    lim.npc_missing = false;
+    lim.npc_agl = kFix;
+    std::set<std::string> ids;
+    for (auto& i : dg::compare(h, g, lim).issues)
+        ids.insert(i.id);
+    CHECK(!ids.count("pos:n1")); // fails with --nofix: the terrain difference was "n apart"
+    CHECK(ids.count("pos:n2") && ids.count("pos:n3") && !ids.count("pos:n6") && ids.size() == 2 + (kFix ? 0 : 1));
+    // the final check's n406 (lab 20261116-025154 campaign_tc2, s 1363): the host's at agl 0.00, Carol's copy on its
+    // own ground (agl 0.00, want_agl -10.47) 8.9 m apart absolutely, 1.7 m along the ground
+    {
+        dg::Entry hn{dg::make_key('n', 406), 503.7f, -63.3f, 73.3f, 0.f}, gn{dg::make_key('n', 406), 512.5f, -62.9f, 74.0f, 0.f};
+        CHECK(dg::dist(hn, gn) > 8.5f && dg::agl_dist(hn, gn) < 2.f);
+    }
+    // an NPC on the guest under its ground by as much as it is over it on the host: apart by the difference
+    g.entries[0].agl = -5.f;
+    h.entries[0].agl = 4.f;
+    CHECK(std::fabs(dg::agl_dist(h.entries[0], g.entries[0]) - 9.f) < 0.01f);
 }
 
 static void test_diag_compare()
@@ -3325,7 +3668,7 @@ static void test_diag_session()
     namespace dg = net::diag;
     Session host, oldg, newg;
     host.build = oldg.build = newg.build = 0x922af7c7;
-    oldg.send_caps = false;
+    // Both peers advertise mandatory fork families; emulate a peer without packet splitting after admission.
     std::string err;
     CHECK(host.host(0, "Host", err));
     std::string addr = "127.0.0.1:" + std::to_string(host.port());
@@ -3800,6 +4143,743 @@ static void test_restart_in_callback()
     }
 }
 
+// ---- 0.7.14 N2: net and validation (each FAILS with its switch off: `net_tests --off <name>`, and with --nofix) ----
+
+// a guest's HELLO with a rejoin token (0 = none, an older SporeCoop)
+static std::vector<uint8_t> hello_tok(uint32_t conn, const std::string& name, uint64_t token, bool families = true)
+{
+    Connection c;
+    c.conn_id = conn;
+    Hello h;
+    h.build = 0x922af7c7;
+    h.name = name;
+    h.has_token = token != 0;
+    h.token = token;
+    if (!families) h.caps &= ~(uint32_t)CAP_FAMILIES;
+    Writer w;
+    h.write(w);
+    c.send_reliable(MSG_HELLO, w);
+    std::vector<uint8_t> pkt;
+    c.build_packet(g_fake_ms, pkt);
+    return pkt;
+}
+struct FakeHost {
+    FakeNet net;
+    Session s;
+    bool closed = false;
+    int leaves = 0;
+    explicit FakeHost(int max_players = kMaxPlayers)
+    {
+        s.set_transport(&net);
+        s.clock = fake_ms;
+        s.build = 0x922af7c7;
+        s.max_players = max_players;
+        s.join_closed = [this] { return closed; };
+        s.cb.player_leave = [this](uint8_t, uint8_t) { leaves++; };
+        std::string err;
+        CHECK(s.host(kDefaultPort, "Host", err));
+    }
+    void in(const Endpoint& e, std::vector<uint8_t> d)
+    {
+        net.in.push_back({e, std::move(d)});
+        s.update();
+    }
+    bool has(const std::string& name) const
+    {
+        for (auto& p : s.players())
+            if (p.name == name)
+                return true;
+        return false;
+    }
+};
+
+// BUG-1001 (NET-1): with late join off, a new game whose name was seen in the session (two friends both "Player") came
+// in as "Player 2"; a same-name join while that player was silent for 2 s (a load) was not counted: one over the limit
+static void test_join_seen()
+{
+    printf("after the start a player comes back by its token, a name alone is not enough (BUG-1001)\n");
+    Endpoint e1 = ep4(192, 168, 1, 7, 41000), e2 = ep4(192, 168, 1, 8, 41000), e3 = ep4(192, 168, 1, 7, 41001);
+    { // two friends named Player: the second is new after the start
+        FakeHost h;
+        h.in(e1, hello_tok(0x71, "Player", 0xA));
+        h.closed = true;
+        h.in(e2, hello_tok(0x72, "Player", 0xB));
+        size_t n = h.s.players().size();
+        printf("  a second \"Player\" (another token) after the start: %s\n", n == 2 ? "refused" : "ADMITTED");
+        CHECK(n == 2 && !h.has("Player 2"));
+        // the first one's game crashes and comes back with its token (another port): its entry, its name
+        g_fake_ms += 2100;
+        h.in(e3, hello_tok(0x73, "Player", 0xA));
+        printf("  the crash rejoin by token: %zu players, leaves %d\n", h.s.players().size(), h.leaves);
+        CHECK(h.s.players().size() == 2 && h.has("Player") && h.leaves == 1);
+    }
+    { // the player limit: Bob silent for 2 s (a load), another game "Bob" with another token
+        FakeHost h(2);
+        h.in(e1, hello_tok(0x81, "Bob", 0xA));
+        g_fake_ms += 2100;
+        h.in(e2, hello_tok(0x82, "Bob", 0xB));
+        size_t n = h.s.players().size();
+        printf("  limit 2, \"Bob\" silent, another \"Bob\": %zu players\n", n);
+        CHECK(n == 2);
+    }
+    { // without a token (an older SporeCoop): by name, only when nobody of that name is here and it dropped recently
+        FakeHost h;
+        h.in(e1, hello_tok(0x91, "Old", 0));
+        h.closed = true;
+        h.in(e2, hello_tok(0x92, "Old", 0));
+        bool second = h.s.players().size() == 3;
+        g_fake_ms += 31000; // Old's entry times out
+        h.s.update();
+        CHECK(h.s.players().size() == 1);
+        h.in(e3, hello_tok(0x93, "Old", 0));
+        bool back = h.s.players().size() == 2 && h.has("Old");
+        printf("  no token: a second \"Old\" while one is here %s, \"Old\" after its drop %s\n", second ? "ADMITTED" : "refused",
+               back ? "back" : "REFUSED");
+        CHECK(!second && back);
+        // a name that dropped long ago is a new player
+        FakeHost h2;
+        h2.in(e1, hello_tok(0x94, "Ann", 0));
+        h2.closed = true;
+        g_fake_ms += 31000;
+        h2.s.update();
+        g_fake_ms += Session::kRejoinNameMs + 1000;
+        h2.in(e2, hello_tok(0x95, "Ann", 0));
+        CHECK(h2.s.players().size() == 1);
+    }
+}
+
+// BUG-1003 (private ticket)
+static void test_replace_checked()
+{
+    printf("a new connection from a joined guest's endpoint (BUG-1003)\n");
+    Endpoint e = ep4(192, 168, 1, 7, 41000);
+    { // the guest is live: another connection with another token waits
+        FakeHost h;
+        h.in(e, hello_tok(0x77, "Bob", 0xA));
+        g_fake_ms += 100;
+        h.in(e, header_datagram(0x77));
+        h.in(e, hello_tok(0x99, "Eve", 0xE));
+        bool kept = h.leaves == 0 && h.has("Bob") && !h.has("Eve");
+        printf("  live guest: %s\n", kept ? "kept" : "REPLACED");
+        CHECK(kept);
+        // silent for 2 s: the game is gone, the new connection takes the endpoint
+        g_fake_ms += 2100;
+        h.in(e, hello_tok(0x99, "Eve", 0xE));
+        CHECK(h.leaves == 1 && h.has("Eve"));
+    }
+    { // the same game (its token) replaces its live entry at once
+        FakeHost h;
+        h.in(e, hello_tok(0x77, "Bob", 0xA));
+        g_fake_ms += 100;
+        h.in(e, hello_tok(0x78, "Bob", 0xA));
+        CHECK(h.leaves == 1 && h.has("Bob") && h.s.players().size() == 2);
+    }
+}
+
+// BUG-1005 (NET-3): a WELCOME longer than one reliable piece is split by the host; the joining guest dropped the pieces
+// (peer_split was set only by the WELCOME itself) and timed out. Long names (24 emoji) and version texts make it
+static void test_welcome_split()
+{
+    printf("a WELCOME longer than one packet reaches the joining guest (BUG-1005)\n");
+    std::string emoji;
+    for (int i = 0; i < 24; i++)
+        emoji += "\xF0\x9F\xA6\x96";
+    std::string ver;
+    for (int i = 0; i < 120; i++)
+        ver += "\xE2\x82\xAC"; // 360 bytes, str8 sends 255
+    Session host, a, b, c;
+    host.build = a.build = b.build = c.build = 0x922af7c7;
+    host.version = std::string(255, 'v');
+    a.version = b.version = c.version = ver;
+    std::string err;
+    CHECK(host.host(0, emoji, err));
+    std::string addr = "127.0.0.1:" + std::to_string(host.port());
+    CHECK(a.join(addr, emoji + "a", err));
+    tick({&host, &a}, 300);
+    CHECK(b.join(addr, "b" + emoji, err));
+    tick({&host, &a, &b}, 300);
+    CHECK(c.join(addr, "c" + emoji, err));
+    tick({&host, &a, &b, &c}, 600);
+    printf("  three guests with long names and versions: %d %d %d connected, host %zu players\n", a.connected(), b.connected(),
+           c.connected(), host.players().size());
+    CHECK(a.connected() && b.connected() && c.connected() && host.players().size() == 4);
+}
+
+// BUG-1007 (NET-4): a datagram bigger than the read buffer (WSAEMSGSIZE on Windows) ended the reads of the frame
+struct BigNet : FakeNet {
+    int recv_from(Endpoint& from, void* buf, size_t cap) override
+    {
+        if (!in.empty() && in.front().second.size() > cap) {
+            in.pop_front();
+            return Session::kRecvSkipped; // what UdpSocket returns for it
+        }
+        return FakeNet::recv_from(from, buf, cap);
+    }
+};
+static void test_recv_skip_big()
+{
+    printf("a datagram too big for the read buffer does not stop the reads (BUG-1007)\n");
+    BigNet net;
+    Session host;
+    host.set_transport(&net);
+    host.clock = fake_ms;
+    host.build = 0x922af7c7;
+    std::string err;
+    CHECK(host.host(kDefaultPort, "Host", err));
+    Endpoint junk = ep4(203, 0, 113, 9, 30000), guest = ep4(192, 168, 1, 7, 41000);
+    net.in.push_back({junk, std::vector<uint8_t>(3000, 0x55)});
+    net.in.push_back({guest, hello_datagram(0x77, "Bob", 0x922af7c7)});
+    host.update();
+    bool in = host.players().size() == 2;
+    printf("  session: a 3000-byte datagram, then a HELLO in the same frame: %s\n", in ? "joined" : "NOT read");
+    CHECK(in);
+    // the LAN discovery over a real socket (Linux reports the cut datagram as Windows does, MSG_TRUNC)
+    Discovery d;
+    CHECK(d.start());
+    d.targets.clear();
+    UdpSocket tx;
+    CHECK(tx.open(0, nullptr));
+    Endpoint to;
+    to.ip = 0x0100007F;
+    to.port = d.port();
+    std::vector<uint8_t> big(600, 0x55); // over the old 512-byte buffer
+    memcpy(big.data(), &kDiscoverReply, 4);
+    CHECK(tx.send_to(to, big.data(), big.size()));
+    DiscoverReply rep;
+    rep.port = 12345;
+    rep.name = "LanHost";
+    rep.players = 1;
+    rep.max_players = 4;
+    Writer w;
+    rep.write(w);
+    CHECK(tx.send_to(to, w.data.data(), w.size()));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    d.update(now_ms());
+    size_t found = d.games(now_ms()).size();
+    printf("  discovery: a 600-byte datagram, then a reply: %zu game(s) found, %u skipped\n", found, d.skipped());
+    CHECK(found == 1);
+}
+
+// BUG-1012 (NET-8): a DBPF index of 4..7 bytes with flag 4 moved the read pointer past the index end
+static void test_dbpf_flag4()
+{
+    printf("a DBPF index with flag 4 and no room for its field (BUG-1012)\n");
+    const bool fix = !g_nofix;
+    const bool was = dbpf::g_bounds_fix;
+    dbpf::g_bounds_fix = fix; // (count 0: the old code moves the pointer only, it reads nothing)
+    uint8_t idx[4] = {4, 0, 0, 0};
+    dbpf::IndexInfo info;
+    info.count = 0;
+    std::vector<dbpf::Entry> out;
+    bool ok0 = dbpf::parse_index(idx, sizeof idx, info, out);
+    info.count = 1;
+    bool ok1 = dbpf::parse_index(idx, sizeof idx, info, out);
+    dbpf::g_bounds_fix = was;
+    printf("  4 bytes, flag 4: count 0 %s, count 1 %s\n", ok0 ? "TAKEN" : "refused", ok1 ? "TAKEN" : "refused");
+    CHECK(!ok0 && !ok1);
+}
+
+// --shard K/N, --only: which of the tests below run (main's table)
+static int g_shard = 1, g_shards = 1;
+static std::string g_only;
+static bool g_times = false;
+static bool run_this(const char* name, size_t index)
+{
+    if (!g_only.empty())
+        return g_only.find("," + std::string(name) + ",") != std::string::npos;
+    return (int)(index % g_shards) == g_shard - 1;
+}
+
+// ---- 0.7.15 A10 / A11 ----
+
+static uint8_t id_named(const Session& s, const std::string& name)
+{
+    for (auto& p : s.players())
+        if (p.name == name)
+            return p.id;
+    return 0xFF;
+}
+
+// BUG-1107: the host's key of a player's kept state is its rejoin token, not the name it got in join order
+static void test_player_key()
+{
+    printf("kept state key: the same game by its token, not the join-order name (BUG-1107)\n");
+    Endpoint e1 = ep4(192, 168, 1, 7, 41000), e2 = ep4(192, 168, 1, 8, 41000), e3 = ep4(192, 168, 1, 8, 41001),
+             e4 = ep4(192, 168, 1, 7, 41001), e5 = ep4(192, 168, 1, 9, 41000);
+    FakeHost h;
+    h.in(e1, hello_tok(0xA1, "Player", 0xA));
+    h.in(e2, hello_tok(0xA2, "Player", 0xB));
+    uint8_t ia = id_named(h.s, "Player"), ib = id_named(h.s, "Player 2");
+    std::string ka = h.s.player_key(ia), kb = h.s.player_key(ib);
+    CHECK(ia != 0xFF && ib != 0xFF && ka != kb && ka.rfind("t:", 0) == 0 && kb.rfind("t:", 0) == 0);
+    CHECK(ka != "t:000000000000000a" && ka.find("Player") == std::string::npos); // the token itself is not in it
+    g_fake_ms += 31000; // both games are gone (no BYE): their entries time out
+    h.s.update();
+    CHECK(h.s.players().size() == 1);
+    // they come back in the other order: B first gets the name "Player", A gets "Player 2"
+    h.in(e3, hello_tok(0xA3, "Player", 0xB));
+    h.in(e4, hello_tok(0xA4, "Player", 0xA));
+    uint8_t nb = id_named(h.s, "Player"), na = id_named(h.s, "Player 2");
+    std::string kb2 = h.s.player_key(nb), ka2 = h.s.player_key(na);
+    printf("  swapped rejoin: B is now \"%s\" (the name A had), its key %s; A's key %s\n", h.s.name_of(nb).c_str(),
+           kb2 == kb ? "its own" : "NOT ITS OWN", ka2 == ka ? "its own" : "NOT ITS OWN");
+    CHECK(kb2 == kb && ka2 == ka);
+    // a game without a token (an older SporeCoop): by its name; unknown ids: none
+    h.in(e5, hello_tok(0xA5, "Old", 0));
+    CHECK(h.s.player_key(id_named(h.s, "Old")) == "n:Old");
+    CHECK(h.s.player_key(0) == "n:Host" && h.s.player_key(77).empty());
+}
+
+// a host that relays a guest's MSG_SPACE to the other guests as spacecoop.cpp does (raw, the sender left out)
+static void relay_space(Session& h)
+{
+    h.cb.custom = [&h](uint8_t type, uint8_t from, Reader& r) {
+        if (type != MSG_SPACE)
+            return;
+        Writer w;
+        w.raw(r.cur(), r.left());
+        h.broadcast_reliable(MSG_SPACE, w, from);
+    };
+}
+
+static Writer blob(size_t n)
+{
+    Writer w;
+    w.u8(200); // a kind no feature owns
+    w.u8(1);
+    std::vector<uint8_t> v(n, 0x5A);
+    w.raw(v.data(), v.size());
+    return w;
+}
+
+// BUG-1108: a guest that stops acknowledging while another sends a lot: the host's queue for it is capped
+static void test_queue_cap()
+{
+    printf("a guest whose queue grows far past normal play is dropped (BUG-1108)\n");
+    const bool fix = g_fix.queue_cap;
+    const bool was_budget = g_fix.relay_budget;
+    g_fix.relay_budget = false; // this test: the queue cap alone
+    Session h, a, b;
+    a.rejoin_token = 1;
+    b.rejoin_token = 2;
+    b.timeout_ms = 2000; // a reason lost to a full socket buffer (below) ends in a timeout soon
+    h.queue_cap = 2u << 20;
+    relay_space(h);
+    std::string err, why;
+    b.cb.disconnected = [&](const std::string& w) { why = w; };
+    CHECK(h.host(0, "Alice", err));
+    std::string addr = "127.0.0.1:" + std::to_string(h.port());
+    CHECK(a.join(addr, "Bob", err) && b.join(addr, "Carol", err));
+    tick({&h, &a, &b}, 400);
+    uint8_t ib = b.my_id();
+    size_t most = 0;
+    for (int i = 0; i < 30; i++) { // 30 x 200 KB from A; B's game is blocked (no reads, no acks)
+        a.send_event(MSG_SPACE, blob(200 * 1024));
+        tick({&h, &a}, 60);
+        if (Connection* c = h.conn_to(ib))
+            most = std::max(most, c->pending_bytes());
+    }
+    tick({&h, &a}, 300);
+    bool b_in = id_named(h, "Carol") != 0xFF;
+    printf("  queue for the blocked guest: most %zu bytes (cap %zu), still in: %d, drops %u\n", most, h.queue_cap, (int)b_in,
+           h.limit_stats().queue_drops);
+    if (fix) {
+        CHECK(!b_in && h.limit_stats().queue_drops == 1 && most <= h.queue_cap + 256 * 1024);
+        // B's game runs again: it reads why. The reason goes as 3 datagrams behind the data in flight: B's socket asks
+        // for 4 MB (udp.cpp; Windows gives it), but a Linux kernel caps it at net.core.rmem_max (208 KB on the CI
+        // runner): there the full buffer drops the reason and B ends by its timeout instead
+        bool small_buf = false;
+#ifdef __linux__
+        if (FILE* f = fopen("/proc/sys/net/core/rmem_max", "r")) {
+            long v = 0;
+            small_buf = fscanf(f, "%ld", &v) == 1 && v < (4l << 20);
+            fclose(f);
+        }
+#endif
+        for (int i = 0; i < 50 && why.empty(); i++)
+            tick({&h, &a, &b}, 100);
+        printf("  the dropped guest: '%s'%s\n", why.c_str(), small_buf ? " (rmem_max below 4 MB: a timeout may stand in)" : "");
+        CHECK((why.find("too much data") != std::string::npos ||
+               (small_buf && why.find("timeout") != std::string::npos)) && !b.connected());
+        CHECK(id_named(h, "Bob") != 0xFF); // A is still there: only the queue was over
+    } else
+        CHECK(!b_in && most <= h.queue_cap + 256 * 1024); // fails: the queue grows past the cap
+    g_fix.relay_budget = was_budget;
+    h.leave();
+    a.leave();
+    b.leave();
+}
+
+// BUG-1108: the host's budget of what one guest's messages make it queue for the players
+static void test_relay_budget()
+{
+    printf("a guest whose messages make the host queue far more than normal play is dropped (BUG-1108)\n");
+    const bool fix = g_fix.relay_budget;
+    Session h, a, b;
+    a.rejoin_token = 1;
+    b.rejoin_token = 2;
+    h.relay_rate = 100 * 1024;
+    h.relay_burst = 1u << 20;
+    relay_space(h);
+    std::string err, why;
+    a.cb.disconnected = [&](const std::string& w) { why = w; };
+    CHECK(h.host(0, "Alice", err));
+    std::string addr = "127.0.0.1:" + std::to_string(h.port());
+    CHECK(a.join(addr, "Bob", err) && b.join(addr, "Carol", err));
+    tick({&h, &a, &b}, 400);
+    // normal: 400 KB in 2 s stays in the budget
+    for (int i = 0; i < 4; i++) {
+        a.send_event(MSG_SPACE, blob(100 * 1024));
+        tick({&h, &a, &b}, 500);
+    }
+    bool kept = id_named(h, "Bob") != 0xFF;
+    // then 4 MB at once
+    for (int i = 0; i < 20; i++) {
+        a.send_event(MSG_SPACE, blob(200 * 1024));
+        tick({&h, &a, &b}, 50);
+    }
+    tick({&h, &a, &b}, 1000);
+    bool a_in = id_named(h, "Bob") != 0xFF;
+    printf("  400 KB in 2 s: %s; 4 MB at once: %s (drops %u) '%s'; the other guest in: %d\n", kept ? "kept" : "DROPPED",
+           a_in ? "STILL IN" : "dropped", h.limit_stats().relay_drops, why.c_str(), (int)(id_named(h, "Carol") != 0xFF));
+    CHECK(kept && id_named(h, "Carol") != 0xFF);
+    CHECK(!a_in); // fails with net.relay_budget off
+    if (fix)
+        CHECK(h.limit_stats().relay_drops == 1 && why.find("more data than the session allows") != std::string::npos);
+    h.leave();
+    a.leave();
+    b.leave();
+}
+
+// BUG-1108 (owner decision 8): coop.kick drops a guest; it sees why, the others see it leave
+static void test_kick()
+{
+    printf("coop.kick: the host removes a guest, it is told why (BUG-1108)\n");
+    Session h, a, b;
+    a.rejoin_token = 1;
+    b.rejoin_token = 2;
+    std::string err, why_a, why_b;
+    a.cb.disconnected = [&](const std::string& w) { why_a = w; };
+    b.cb.disconnected = [&](const std::string& w) { why_b = w; };
+    int a_saw_leave = 0;
+    a.cb.player_leave = [&](uint8_t, uint8_t) { a_saw_leave++; };
+    CHECK(h.host(0, "Alice", err));
+    std::string addr = "127.0.0.1:" + std::to_string(h.port());
+    CHECK(a.join(addr, "Bob", err) && b.join(addr, "Bob", err)); // "Bob" and "Bob 2"
+    tick({&h, &a, &b}, 400);
+    CHECK(kick_command(a, {"2"}).find("only the host") != std::string::npos);
+    CHECK(kick_command(h, {"0"}).find("does not remove itself") != std::string::npos);
+    CHECK(kick_command(h, {"Nobody"}).find("no guest") != std::string::npos);
+    std::string out = kick_command(h, {"Bob", "2"});
+    printf("  coop.kick Bob 2: %s", out.c_str());
+    CHECK(out.find("removing player") != std::string::npos);
+    tick({&h, &a, &b}, 500);
+    printf("  kicked guest: '%s' connected=%d; the other: connected=%d saw a leave=%d; host players=%zu kicks=%u\n",
+           why_b.c_str(), (int)b.connected(), (int)a.connected(), a_saw_leave, h.players().size(), h.limit_stats().kicks);
+    CHECK(!b.connected() && why_b == std::string("rejected: ") + kKickText);
+    CHECK(a.connected() && why_a.empty() && a_saw_leave == 1 && h.players().size() == 2 && h.limit_stats().kicks == 1);
+    // by id; not a ban: it may join again
+    CHECK(kick_command(h, {std::to_string(a.my_id())}).find("removing") != std::string::npos);
+    tick({&h, &a}, 400);
+    CHECK(!a.connected() && h.players().size() == 1);
+    CHECK(a.join(addr, "Bob", err));
+    tick({&h, &a}, 400);
+    CHECK(a.connected() && h.players().size() == 2);
+    h.leave();
+    a.leave();
+    b.leave();
+}
+
+// ---- 0.7.15 B3 / B6: the message manifest's direction gate and the message family revisions ----
+
+// BUG-1136: a guest that sends a type only the host sends (net/messages.def dir Host): the host drops it before any
+// handler and counts it; a guest's own type still arrives. FAILS with `--off dir_gate` (the host's handler gets it)
+static void test_dir_gate()
+{
+    printf("the host drops a host-only message type a guest sends (BUG-1136)\n");
+    Session h, a;
+    std::string err;
+    int dna = 0, dna_add = 0, unknown = 0;
+    h.cb.custom = [&](uint8_t t, uint8_t, Reader&) {
+        dna += t == MSG_DNA || t == MSG_SETTINGS || t == MSG_WELCOME;
+        dna_add += t == MSG_DNA_ADD;
+        unknown += t == 200;
+    };
+    CHECK(h.host(0, "Alice", err));
+    CHECK(a.join("127.0.0.1:" + std::to_string(h.port()), "Bob", err));
+    tick({&h, &a}, 300);
+    Writer w;
+    w.f32(99999.f);
+    a.broadcast_reliable(MSG_DNA, w);      // host-only: the shared DNA total
+    a.broadcast_reliable(MSG_SETTINGS, w); // host-only: the session settings
+    a.broadcast_reliable(MSG_WELCOME, w);  // host-only, a session type
+    a.broadcast_reliable(MSG_DNA_ADD, w);  // a guest's own
+    a.broadcast_reliable(200, w);          // a type this build does not know (a newer guest): passes as before
+    tick({&h, &a}, 300);
+    printf("  host: host-only types delivered %d, guest type %d, unknown %d, dropped %u\n", dna, dna_add, unknown,
+           h.dir_drops());
+    CHECK(dna == 0 && h.dir_drops() == 3);
+    CHECK(dna_add == 1 && unknown == 1);
+    CHECK(h.status().find("manifest: dir_drops=3") != std::string::npos);
+    h.leave();
+    a.leave();
+}
+
+// v0.7.14's HELLO / WELCOME readers (protocol.h of the tag, verbatim): they must read a 0.7.15 HELLO / WELCOME
+// (CAP_FAMILIES after CAP_VERSION) exactly as one of 0.7.14
+struct Hello0714 {
+    uint16_t proto = 0;
+    uint32_t build = 0;
+    std::string name;
+    bool ext = false;
+    uint32_t caps = 0;
+    bool has_token = false;
+    uint64_t token = 0;
+    std::string version;
+    bool read(Reader& r)
+    {
+        proto = r.u16(); build = r.u32(); name = r.str8();
+        if (!r.ok())
+            return false;
+        caps = 0;
+        has_token = false;
+        token = 0;
+        ext = r.left() >= 4;
+        if (ext)
+            caps = r.u32();
+        if ((caps & CAP_TOKEN) && r.left() >= 8) { // a short payload: no token, not a failed read
+            r.raw(&token, 8);
+            has_token = true;
+        }
+        version.clear();
+        if ((caps & CAP_VERSION) && r.left() >= 1) {
+            Reader v = r; // a bad payload leaves the HELLO readable
+            std::string s = v.str8();
+            if (v.ok()) {
+                version = s;
+                r = v;
+            }
+        }
+        return true;
+    }
+};
+
+// B6 (BUG-1137): CAP_FAMILIES in HELLO / WELCOME: read back, ignored by 0.7.14's readers, absent from a 0.7.14-shaped
+// message, and a cut or overlong list leaves the message readable without families
+static void test_families_wire()
+{
+    printf("HELLO / WELCOME family revisions (CAP_FAMILIES): round trip, old readers, bad payloads (BUG-1137)\n");
+    std::vector<FamilyRev> fams = {{1, 1, 0}, {3, 2, 5}, {8, 1, 1}};
+    Hello h;
+    h.name = "Bob";
+    h.build = 0xdc04aee5;
+    h.has_token = true;
+    h.token = 0x1122334455667788ull;
+    h.version = "coop 0.7.15, SporeKit 0.7.15, GOG 2024 dc04aee5";
+    h.families = fams;
+    Writer w;
+    h.write(w);
+    {
+        Reader r(w.data.data(), w.size());
+        Hello g;
+        CHECK(g.read(r) && g.has_families && g.families == fams && g.version == h.version && g.token == h.token &&
+              (g.caps & CAP_FAMILIES) && r.left() == 0);
+        Reader r2(w.data.data(), w.size());
+        Hello0714 o;
+        CHECK(o.read(r2) && o.name == "Bob" && o.version == h.version && o.has_token && o.token == h.token &&
+              o.proto == kProtoVersion && o.build == h.build);
+    }
+    { // 0.7.14's shape (no CAP_FAMILIES): no families, the rest as before
+        Hello o = h;
+        o.caps &= ~(uint32_t)CAP_FAMILIES;
+        Writer wo;
+        o.write(wo);
+        Reader r(wo.data.data(), wo.size());
+        Hello g;
+        CHECK(g.read(r) && !g.has_families && g.families.empty() && g.version == h.version);
+    }
+    for (size_t cut = w.size() - 1; cut + 16 > w.size() && cut > 0; cut--) { // a cut list: readable, no families
+        Reader r(w.data.data(), cut);
+        Hello g;
+        CHECK(g.read(r) && !g.has_families && g.name == "Bob");
+    }
+    { // a count over kMaxFamilies: no families
+        Hello o = h;
+        o.families.clear();
+        Writer wo;
+        o.write(wo);
+        wo.data.back() = (uint8_t)(kMaxFamilies + 1);
+        for (size_t i = 0; i < (kMaxFamilies + 1) * 5; i++)
+            wo.u8(1);
+        Reader r(wo.data.data(), wo.size());
+        Hello g;
+        CHECK(g.read(r) && !g.has_families && g.version == h.version);
+    }
+    Welcome wl;
+    wl.your_id = 2;
+    wl.world = 77;
+    wl.players = {{0, "H", "vh"}, {2, "B", "vb"}};
+    wl.host_version = "vh";
+    wl.families = fams;
+    Writer ww;
+    wl.write(ww);
+    Reader rw(ww.data.data(), ww.size());
+    Welcome got;
+    CHECK(got.read(rw) && got.has_families && got.families == fams && got.host_version == "vh" && got.world == 77 &&
+          got.players.size() == 2 && got.players[1].version == "vb" && rw.left() == 0);
+    // what 0.7.14's Welcome::read reads (the same code up to the versions; it stops there): the 0.7.14 fields
+    Welcome old = wl;
+    old.caps &= ~(uint32_t)CAP_FAMILIES;
+    Writer wo;
+    old.write(wo);
+    CHECK(wo.size() + 1 + fams.size() * 5 == ww.size() &&
+          std::equal(wo.data.begin() + 9 + 1 + 2 + 1 + 2, wo.data.end(), ww.data.begin() + 9 + 1 + 2 + 1 + 2));
+}
+
+static void test_required_fork_families()
+{
+    printf("mandatory fork wire families on HELLO and WELCOME, even with family_check off\n");
+    const bool old = g_fix.family_check; g_fix.family_check = false;
+    std::string err;
+    for (bool host_missing : {false, true}) {
+        for (int fault = 0; fault < 6; ++fault) {
+            Session host, guest; host.mode = 0; // editor/menu admission cannot rely on campaign stage bits
+            Session& invalid = host_missing ? host : guest;
+            if (fault == 0) invalid.send_families = false;
+            else if (fault <= 3) {
+                uint8_t id = fault == 1 ? 1 : fault == 2 ? 11 : 12;
+                for (auto it=invalid.families.begin(); it!=invalid.families.end(); ++it)
+                    if (it->family == id) { invalid.families.erase(it); break; }
+            } else if (fault == 4) invalid.families.push_back({11, 1, 0});
+            else for (auto& f : invalid.families) if (f.family == 12) ++f.rev;
+            std::string why; unsigned connected = 0;
+            guest.cb.disconnected = [&](const std::string& text) { why = text; };
+            guest.cb.connected = [&] { ++connected; };
+            CHECK(host.host(0, "host", err));
+            CHECK(guest.join("127.0.0.1:" + std::to_string(host.port()), "guest", err));
+            tick({&host, &guest}, 160);
+            CHECK(!guest.connected() && connected == 0 && !why.empty());
+            guest.leave(); host.leave();
+        }
+    }
+    // An incompatible reconnect cannot evict an accepted peer, even after silence or at the same endpoint.
+    for (bool same_endpoint : {false, true}) {
+        FakeHost h; Endpoint e = ep4(192, 168, 1, 7, 41000), other = ep4(192, 168, 1, 7, 41001);
+        h.in(e, hello_tok(0xA1, "accepted", 0xAB)); g_fake_ms += 2100;
+        h.in(same_endpoint ? e : other, hello_tok(0xA2, "incompatible", 0xAB, false));
+        CHECK(h.leaves == 0 && h.has("accepted") && !h.has("incompatible"));
+    }
+    // A valid fork remains usable without the optional upstream revision check.
+    Session h, g; CHECK(h.host(0, "host", err));
+    CHECK(g.join("127.0.0.1:" + std::to_string(h.port()), "guest", err)); tick({&h, &g}, 160);
+    CHECK(g.connected()); g.leave(); h.leave(); g_fix.family_check = old;
+}
+
+// B6 (BUG-1137, owner decision 7): a guest of another family revision in a family the host's stage uses is refused with
+// a text naming both versions; one in a family the stage does not use joins and is warned when the host goes there; an
+// older guest (no revisions: rev 1 of each) against a bumped host family is refused; a guest refuses an older host by
+// the host's first state. FAILS with `--off family_check` (everybody joins, as in 0.7.14)
+static void test_family_check()
+{
+    printf("message family revisions: refused only for a family the stage uses (BUG-1137)\n");
+    constexpr uint32_t kCreature = 0x1654C01, kSpace = 0x1654C05;
+    auto plant = [](Session& s, uint8_t fam, uint16_t rev) {
+        for (auto& f : s.families)
+            if (f.family == fam)
+                f.rev = rev;
+    };
+    std::string err;
+    { // the host plays Creature with Creature rev 2; the guest has rev 1
+        Session h, a;
+        h.version = "coop 0.7.16, SporeKit 0.7.16, GOG 2024 dc04aee5";
+        a.version = "coop 0.7.15, SporeKit 0.7.15, GOG 2024 dc04aee5";
+        h.mode = kCreature;
+        plant(h, (uint8_t)Family::creature, 2);
+        std::string why, host_line;
+        a.cb.disconnected = [&](const std::string& w) { why = w; };
+        h.cb.compat = [&](uint8_t, const std::string& t, bool refused) { host_line = refused ? t : ""; };
+        CHECK(h.host(0, "Alice", err));
+        CHECK(a.join("127.0.0.1:" + std::to_string(h.port()), "Bob", err));
+        tick({&h, &a}, 400);
+        printf("  guest: '%s'\n  host: '%s'\n", why.c_str(), host_line.c_str());
+        CHECK(!a.connected() && h.players().size() == 1 && h.compat_refused() == 1);
+        CHECK(why.find("Alice plays SporeCoop 0.7.16; you have SporeCoop 0.7.15: the Creature messages") != std::string::npos &&
+              why.find("revision 2 there, 1 here") != std::string::npos);
+        CHECK(host_line.find("Bob (SporeCoop 0.7.15) was not let in: the Creature messages") != std::string::npos &&
+              host_line.find("revision 1 there, 2 here; you have SporeCoop 0.7.16") != std::string::npos);
+        h.leave();
+        a.leave();
+    }
+    { // Space rev 2 on the host while it plays Creature: joins; the host going to Space warns both
+        Session h, a;
+        h.mode = kCreature;
+        plant(h, (uint8_t)Family::space, 2);
+        std::string warn, notice;
+        h.cb.compat = [&](uint8_t, const std::string& t, bool refused) { warn = refused ? "REFUSED " + t : t; };
+        a.cb.custom = [&](uint8_t t, uint8_t, Reader& r) {
+            if (t == MSG_NOTICE)
+                notice = r.str8();
+        };
+        CHECK(h.host(0, "Alice", err));
+        CHECK(a.join("127.0.0.1:" + std::to_string(h.port()), "Bob", err));
+        tick({&h, &a}, 400);
+        CHECK(a.connected() && warn.empty());
+        h.mode = kSpace;
+        tick({&h, &a}, 300);
+        printf("  host to Space: '%s' / guest's notice '%s'\n", warn.c_str(), notice.c_str());
+        CHECK(a.connected() && warn.find("the Space messages") != std::string::npos &&
+              notice.find("the Space messages") != std::string::npos);
+        h.leave();
+        a.leave();
+    }
+    { // an older guest (no revisions) against a host whose Creature family is rev 2: refused; unplanted: joins
+        Session h, a, b;
+        a.send_families = false;
+        b.send_families = false;
+        h.mode = kCreature;
+        plant(h, (uint8_t)Family::creature, 2);
+        CHECK(h.host(0, "Alice", err));
+        std::string addr = "127.0.0.1:" + std::to_string(h.port());
+        CHECK(a.join(addr, "Old", err));
+        tick({&h, &a}, 400);
+        CHECK(!a.connected());
+        h.families = compat::my_families();
+        CHECK(b.join(addr, "Old2", err));
+        tick({&h, &b}, 400);
+        CHECK(!b.connected()); // Missing mandatory fork families never joins, including without a campaign bump.
+        h.leave();
+        a.leave();
+        b.leave();
+    }
+    { // an older host (no revisions): the guest refuses it for an always-used family at WELCOME, for a stage family at
+      // the host's first state
+        Session h, a, b;
+        // Real family capabilities retain the first-state campaign check inside the fork boundary.
+        plant(a, (uint8_t)Family::session, 3);
+        plant(b, (uint8_t)Family::creature, 2);
+        std::string wa, wb;
+        a.cb.disconnected = [&](const std::string& w) { wa = w; };
+        b.cb.disconnected = [&](const std::string& w) { wb = w; };
+        b.cb.player_state = [](const PlayerState&) {};
+        CHECK(h.host(0, "Alice", err));
+        std::string addr = "127.0.0.1:" + std::to_string(h.port());
+        CHECK(a.join(addr, "Bob", err) && b.join(addr, "Carol", err));
+        tick({&h, &a, &b}, 400);
+        CHECK(!a.connected() && wa.find("the session messages") != std::string::npos);
+        CHECK(b.connected());
+        PlayerState st;
+        st.mode = kCreature;
+        h.send_state(st);
+        tick({&h, &b}, 300);
+        printf("  older host: '%s' / '%s'\n", wa.c_str(), wb.c_str());
+        CHECK(!b.connected() && wb.find("the Creature messages") != std::string::npos &&
+              wb.find("revision 1 there, 2 here") != std::string::npos);
+        h.leave();
+        a.leave();
+        b.leave();
+    }
+}
+
 int main(int argc, char** argv)
 {
     if(argc==2&&std::string(argv[1])=="--protocol-only"){
@@ -3819,6 +4899,14 @@ int main(int argc, char** argv)
                                                {"lan_only_disc", &g_fix.lan_only_disc},
                                                {"halfopen_cap", &g_fix.halfopen_cap},
                                                {"restart_gen", &g_fix.restart_gen},
+                                               {"join_seen", &g_fix.join_seen},
+                                               {"replace_checked", &g_fix.replace_checked},
+                                               {"welcome_split", &g_fix.welcome_split},
+                                               {"recv_skip_big", &g_fix.recv_skip_big},
+                                               {"queue_cap", &g_fix.queue_cap},
+                                               {"relay_budget", &g_fix.relay_budget},
+                                               {"dir_gate", &g_fix.dir_gate},
+                                               {"family_check", &g_fix.family_check},
                                                {"update_paths", &upd::g_path_fix}};
             for (size_t a = 0; a <= list.size();) {
                 size_t b = list.find(',', a);
@@ -3834,7 +4922,27 @@ int main(int argc, char** argv)
                 a = b + 1;
             }
         }
-    if (argc == 2 && (std::string(argv[1]) == "--nofix" || std::string(argv[1]) == "--old")) {
+    bool nofix = false;
+    for (int i = 1; i < argc; i++) {
+        std::string a = argv[i];
+        if (a == "--nofix" || a == "--old")
+            nofix = true;
+        else if (a == "--shard" && i + 1 < argc && sscanf(argv[i + 1], "%d/%d", &g_shard, &g_shards) == 2 &&
+                 g_shards > 0 && g_shard >= 1 && g_shard <= g_shards)
+            i++;
+        else if (a == "--only" && i + 1 < argc)
+            g_only = "," + std::string(argv[++i]) + ",";
+        else if (a == "--off")
+            i++;
+        else if (a == "--fakepeer-host" || a == "--old-dbbf" || a == "--old-refpack")
+            ;
+        else {
+            fprintf(stderr, "net_tests: unknown argument '%s'\n", a.c_str());
+            return 2;
+        }
+    }
+    g_times = getenv("NET_TESTS_TIMES") && *getenv("NET_TESTS_TIMES") == '1';
+    if (nofix) {
         // the code before the fixes (tests must fail): every bool of Fixes off
         static_assert(std::is_trivially_copyable_v<Fixes>, "Fixes holds only its bools");
         memset((void*)&g_fix, 0, sizeof g_fix);
@@ -3858,72 +4966,103 @@ int main(int argc, char** argv)
         printf(g_fail ? "FAILED (%d)\n" : "ALL OK\n", g_fail);
         return g_fail ? 1 : 0;
     }
-    test_buffer();
-    test_adventure_motion();
-    test_unreliable_too_big();
-    test_unreliable_chunks();
-    test_dbpf();
-    test_partprops();
-    test_be_keys();
-    test_dbbf();
-    test_refpack_untrusted();
-    test_updater();
-    test_updater_dup();
-    test_updater_paths();
-    test_reliability();
-    test_ackbits();
-    test_bulk();
-    test_bulk_bad_link();
-    test_bulk_busy_receiver();
-    test_session();
-    test_protocol_versions();
-
-    test_upstream_ga_channels();
-    test_session_end_in_delivery();
-    test_rejoin_same_endpoint();
-    test_unique_names();
-    test_join_rules();
-    test_big_snapshot();
-    test_interp();
-    test_interp_gap();
-    test_lead_late();
-    test_lead_keep();
-    test_lead_fall();
-    test_discovery();
-    test_lobby_roles();
-    test_shared_ledger();
-    test_shared_join_keep();
-    test_big_reliable();
-    test_state_after_leave();
-    test_velocity_jitter();
-    test_velocity_jump_cap();
-    test_velocity_hitch();
-    test_interp_latency_rise();
-    test_alloc_id();
-    test_lost_first_packet();
-    test_interp_wrap();
-    test_refpack_short();
-    test_dbbf_wrap();
-    test_discovery_prune();
-    test_discovery_dedup();
-    test_address_parse();
-    test_address_label();
-    test_old_peer_split();
-    test_old_peer_session();
-    test_rejoin_token();
-    test_peer_versions();
-    test_ip_mask();
-    test_join_by_name();
-    test_pick_pack();
-    test_diag_messages();
-    test_diag_clock();
-    test_diag_compare();
-    test_diag_session();
-    test_diag_conn_stats();
-    test_name_clean();
-    test_discovery_source();
-    test_halfopen();
-    test_restart_in_callback();
+    // every test by name: `--shard K/N` runs every N-th of them (make test runs the shards in parallel),
+    // `--only <name>[,<name>]` chosen ones; NET_TESTS_TIMES=1 prints the time of each
+    static const std::pair<const char*, void (*)()> tests[] = {
+        {"test_buffer", test_buffer},
+        {"test_adventure_motion", test_adventure_motion},
+        {"test_protocol_versions", test_protocol_versions},
+        {"test_upstream_ga_channels", test_upstream_ga_channels},
+        {"test_unreliable_too_big", test_unreliable_too_big},
+        {"test_unreliable_chunks", test_unreliable_chunks},
+        {"test_dbpf", test_dbpf},
+        {"test_partprops", test_partprops},
+        {"test_be_keys", test_be_keys},
+        {"test_dbbf", test_dbbf},
+        {"test_refpack_untrusted", test_refpack_untrusted},
+        {"test_updater", test_updater},
+        {"test_updater_dup", test_updater_dup},
+        {"test_updater_paths", test_updater_paths},
+        {"test_reliability", test_reliability},
+        {"test_ackbits", test_ackbits},
+        {"test_bulk", test_bulk},
+        {"test_bulk_bad_link", test_bulk_bad_link},
+        {"test_bulk_busy_receiver", test_bulk_busy_receiver},
+        {"test_session", test_session},
+        {"test_session_end_in_delivery", test_session_end_in_delivery},
+        {"test_rejoin_same_endpoint", test_rejoin_same_endpoint},
+        {"test_unique_names", test_unique_names},
+        {"test_join_rules", test_join_rules},
+        {"test_big_snapshot", test_big_snapshot},
+        {"test_interp", test_interp},
+        {"test_interp_gap", test_interp_gap},
+        {"test_lead_late", test_lead_late},
+        {"test_lead_keep", test_lead_keep},
+        {"test_lead_fall", test_lead_fall},
+        {"test_agl_extrap", test_agl_extrap},
+        {"test_discovery", test_discovery},
+        {"test_lobby_roles", test_lobby_roles},
+        {"test_shared_ledger", test_shared_ledger},
+        {"test_shared_join_keep", test_shared_join_keep},
+        {"test_big_reliable", test_big_reliable},
+        {"test_state_after_leave", test_state_after_leave},
+        {"test_velocity_jitter", test_velocity_jitter},
+        {"test_velocity_jump_cap", test_velocity_jump_cap},
+        {"test_velocity_hitch", test_velocity_hitch},
+        {"test_interp_latency_rise", test_interp_latency_rise},
+        {"test_alloc_id", test_alloc_id},
+        {"test_lost_first_packet", test_lost_first_packet},
+        {"test_interp_wrap", test_interp_wrap},
+        {"test_refpack_short", test_refpack_short},
+        {"test_dbbf_wrap", test_dbbf_wrap},
+        {"test_discovery_prune", test_discovery_prune},
+        {"test_discovery_dedup", test_discovery_dedup},
+        {"test_address_parse", test_address_parse},
+        {"test_address_label", test_address_label},
+        {"test_old_peer_split", test_old_peer_split},
+        {"test_old_peer_session", test_old_peer_session},
+        {"test_rejoin_token", test_rejoin_token},
+        {"test_rejoin_token_full", test_rejoin_token_full},
+        {"test_rejoin_token_edge0", test_rejoin_token_edge0},
+        {"test_rejoin_token_edge1", test_rejoin_token_edge1},
+        {"test_rejoin_token_edge2", test_rejoin_token_edge2},
+        {"test_peer_versions", test_peer_versions},
+        {"test_ip_mask", test_ip_mask},
+        {"test_join_by_name", test_join_by_name},
+        {"test_pick_pack", test_pick_pack},
+        {"test_diag_messages", test_diag_messages},
+        {"test_diag_clock", test_diag_clock},
+        {"test_diag_compare", test_diag_compare},
+        {"test_diag_npc_agl", test_diag_npc_agl},
+        {"test_diag_session", test_diag_session},
+        {"test_diag_conn_stats", test_diag_conn_stats},
+        {"test_name_clean", test_name_clean},
+        {"test_discovery_source", test_discovery_source},
+        {"test_halfopen", test_halfopen},
+        {"test_restart_in_callback", test_restart_in_callback},
+        {"test_join_seen", test_join_seen},
+        {"test_replace_checked", test_replace_checked},
+        {"test_dir_gate", test_dir_gate},
+        {"test_families_wire", test_families_wire},
+        {"test_family_check", test_family_check},
+        {"test_required_fork_families", test_required_fork_families},
+        {"test_welcome_split", test_welcome_split},
+        {"test_recv_skip_big", test_recv_skip_big},
+        {"test_dbpf_flag4", test_dbpf_flag4},
+        {"test_player_key", test_player_key},
+        {"test_queue_cap", test_queue_cap},
+        {"test_relay_budget", test_relay_budget},
+        {"test_kick", test_kick},
+    };
+    for (size_t i = 0; i < sizeof tests / sizeof tests[0]; i++) {
+        if (!run_this(tests[i].first, i))
+            continue;
+        auto t0 = std::chrono::steady_clock::now();
+        tests[i].second();
+        if (g_times)
+            printf("TIME %8.3f s %s\n",
+                   std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), tests[i].first);
+    }
     printf(g_fail ? "FAILED (%d)\n" : "ALL OK\n", g_fail);
     return g_fail ? 1 : 0;
 }

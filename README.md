@@ -1,6 +1,6 @@
 <p align="center">
 
-> Editor testing candidate: `0.7.13.0-ga-editor-preview.15`, protocol 29, based on upstream `v0.7.13`.
+> Editor testing candidate: `0.7.15.0-ga-editor-preview.16`, protocol 30, based on upstream `v0.7.15`.
 > Integration status and main-promotion gates are in the [0.7.13 synchronization report](docs/reports/UPSTREAM-0.7.13-SYNC.md).
 
   <img src="docs/media/banner.svg" alt="SporeCoopGA - Co-op Galactic Adventures for Spore." width="100%">
@@ -41,13 +41,14 @@ using protocol **15**. Galactic Adventures support remains **experimental**.
 - [Credits](#credits)
 
 The shared Adventure Editor source includes the preview 14 fixes and upstream
-0.7.13. The consolidated testing candidate is **preview 15, protocol 29**;
+0.7.15. The consolidated testing candidate is **preview 16, protocol 30**;
 all participants must use a matching build. It supports independent act views,
 shared asset and captain settings, terrain editing and native creation sessions.
 Native smoke and main promotion remain pending as recorded in the
 [synchronization report](docs/reports/UPSTREAM-0.7.13-SYNC.md).
 The published protocol 15 release described below remains a separate build.
-Source synchronization does not change an installed preview.
+Source synchronization does not change an installed preview. Older fork and
+upstream clients cannot join this candidate; session and both GA families must match.
 
 ## Current GA features
 
@@ -216,43 +217,17 @@ act authoring and the later editing milestones remain planned.
 ## Inherited upstream compatibility and testing
 
 The following is upstream's base-stage evidence and usage guidance, retained
-from 0.7.3.6. It does not enable the fork's exact-file GA adapter on Steam or
+from upstream releases, now synchronized to pinned 0.7.15. It does not enable the fork's exact-file GA adapter on Steam or
 establish Linux GA support. Protocol 7 compatibility statements apply only to
-the upstream release line; the fork's protocols 15, 23 and 24 require matching
+the upstream release line; the fork's protocols 15 through 30 require matching
 clients as described above. The upstream setup and release links below are for
 the original project, not packages for this fork's GA support.
 
-| Game version | `SporeApp.exe` | Windows 11 | Linux (Wine / Proton) |
-|---|---|---|---|
-| **GOG**, the current download (2024 update) | 24 895 536 bytes, `dc04aee5…` | ✅ 0.6.1: every stage as host + guest; 0.7.1, 0.7.2: with a Steam player | ✅ 0.7.0: the full automated suite (every stage, every Space feature) |
-| **Steam**, Spore + Galactic Adventures (October 2024 update) | 25 066 744 bytes, `3010a413…` | ✅ 0.7.1, 0.7.2: Steam guest + GOG host (Creature), Steam offline ¹ | ✅ 0.7.1: Steam + Proton, offline |
-| **GOG 2016**, the older GOG download | 24 888 320 bytes, `922af7c7…` | ❔ not tested | ✅ up to 0.7.0: SporeCoop was developed on it; the fixes since 0.7.2.2 that need new game addresses are off ² |
-| EA app / Origin, disc | other files | ❌ not supported yet | ❌ not supported yet |
-
-¹ With Steam **online** its overlay can keep the game's frames from the mod (no *Co-op* item,
-[issue #4](https://github.com/WoodyWizard/SporeCoop/issues/4)). Since 0.7.2 the mod then takes its
-frames from the game loop; tested by simulating that case, not yet with the real overlay.
-² 0.7.x is the last version for the GOG 2016 build; from 0.8 only the current GOG build (and Steam,
-which is the same game): update the game through GOG. Since 0.7.2.2 new fixes get game addresses for
-the current build only: on GOG 2016 they switch themselves off (Alt+Shift+Enter, the hatchling growing
-up after a death, the pack, Cell bites, meat and spin, NPC nations' vehicles on a guest's game, our
-creatures kept out of saves); the other fixes work there too. The full list, checked by the build:
-[data/symbols/frozen_off_922af7c7.txt](data/symbols/frozen_off_922af7c7.txt).
-
-**Playing together:** GOG 2024 and Steam players can play together (the same game code). A GOG
-2016 player cannot join a GOG 2024 or Steam host (the host turns away another build). Every player
-needs the same SporeCoop protocol: within upstream's protocol 7 release line,
-every 0.7 version plays with every other, while 0.6.x cannot join 0.7. This does
-not include this fork's differently versioned GA or editor protocols.
-With an older 0.7 version (0.7.2.x, 0.7.3.0) on one side, chat lines above about 1160 bytes arrive
-cut and the Creature species table of a planet with 42 or more species does not reach that player;
-the game names that player in a notification. Update everybody to the latest version.
-
-**Not tested yet:** two PCs over the internet with Windows on 0.7 (the network code is the same
-as on Linux, where it was tested), the EA app and disc versions. Which build you have:
-`SporeCoopSetup.exe` shows it, or see [INSTALL.md, section 2](docs/INSTALL.md#2-check-your-game-build).
-Tried another version? Please tell us in an [issue](https://github.com/WoodyWizard/SporeCoop/issues)
-with `mods\logs\sporekit.log`.
+GOG and Steam players can play together; every player needs the same SporeCoop 0.7 version.
+The **EA app / Origin** and **disc** versions are not supported (co-op stays off), and the older
+**GOG 2016** build is not supported (the mod tells you so and stays off): update the game through GOG.
+Which build you have, file sizes and hashes, the Steam overlay, mixing versions and every test:
+[INSTALL.md, compatibility details](docs/INSTALL.md#compatibility-details).
 
 ## How to play
 

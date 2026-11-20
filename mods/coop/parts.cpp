@@ -12,6 +12,7 @@
 
 #include "fixes.h"
 #include "game.h"
+#include "lifecycle.h"
 #include "modes.h"
 #include "net/protocol.h"
 #include "sporekit_game.hpp"
@@ -79,9 +80,6 @@ static bool is_guest() { return C.sess && C.sess->role() == net::Role::Client &&
 // yet the census counted the map only (host parts=55 of 324, guest 49 of 312), and parts.shared never
 // unlocked a twin on a guest (its locked list came from the map). Now the census goes over the map and
 // the item states together: every game counts what its palette offers.
-// `coop.fix parts.census_states off`: the map only (0.7.3.3, BUG-0401's first version).
-static bool g_states_fix = true;
-COOP_FIX("parts.census_states", "BUG-0441", g_states_fix, "creature: the parts census counts the item states too (a loaded game agrees with the one that came from Cell)");
 
 // the state map (+0x4D04 buckets, +0x4D08 count; node {u32 lo, u32 hi, u8 state (bit 0 unlocked, 4 seen),
 // ..., next at +0x10}): every item the game has a state for, also items that are not in the map +0x1490
@@ -127,17 +125,15 @@ bool census(int& unlocked, uint32_t& hash, int& unlockable, std::vector<Key>* lo
         for (uint32_t* nd = (uint32_t*)b[i]; nd && unlockable < 100000; nd = (uint32_t*)nd[10]) {
             if (!readable(nd, 0x2C))
                 break;
-            if (g_states_fix)
-                seen.insert({nd[0], nd[1]});
+            seen.insert({nd[0], nd[1]});
             count(nd[0], nd[1]);
         }
-    if (g_states_fix) { // the items a live Cell -> Creature start added: in the states, not in the map
-        std::vector<std::pair<Key, uint8_t>> st;
-        if (states(items, st))
-            for (auto& [k, v] : st)
-                if (!seen.count(k) && unlockable < 100000)
-                    count(k.first, k.second);
-    }
+    // the items a live Cell -> Creature start added: in the states, not in the map (BUG-0441)
+    std::vector<std::pair<Key, uint8_t>> st;
+    if (states(items, st))
+        for (auto& [k, v] : st)
+            if (!seen.count(k) && unlockable < 100000)
+                count(k.first, k.second);
     return true;
 }
 
@@ -295,6 +291,20 @@ static bool g_cell_have = false;
 static int g_cell_tries[kCellParts];
 static uint32_t g_cell_queued = 0; // parts whose collect waits for the next time outside the frame
 static uint8_t g_cell_queued_from[kCellParts];
+// BUG-0998: a Cell part collect queued in the last frame of a session is not collected after it (the queue is reset
+// with the session, the outside-frame collect checks the session). Off: kept (0.7.13).
+static bool g_cell_queue_fix = true;
+COOP_FIX("parts.cell_queue_reset", "BUG-0998", g_cell_queue_fix, "cell: a Cell part collect queued at the session end is dropped with the session");
+SESSION_STATE("parts.cell_queue", &g_cell_queue_fix, [] { g_cell_queued = 0; }, []() -> size_t {
+    size_t n = 0;
+    for (uint32_t q = g_cell_queued; q; q &= q - 1)
+        n++;
+    return n;
+});
+// BUG-0998: parts.shared (the Creature parts, BUG-0401) off also cut the Cell parts (parts.shared_cell, BUG-0467):
+// on_message returned before the Cell kinds. On: the Cell kinds answer to their own switch only. Off: 0.7.13.
+static bool g_cell_apart_fix = true;
+COOP_FIX("parts.cell_apart", "BUG-0998", g_cell_apart_fix, "cell: the Cell parts sharing does not depend on the Creature parts switch (parts.shared)");
 static uint32_t g_cell_collected = 0, g_cell_tx_sets = 0, g_cell_tx_found = 0, g_cell_rx_sets = 0, g_cell_rx_found = 0;
 
 static uint32_t cell_mask(const int* st)
@@ -320,6 +330,8 @@ static void cell_collect_now(void*)
     int* st = cell_states();
     if (!st || !a_CellCollect || game::mode_id() != modes::kCell)
         return;
+    if (g_cell_queue_fix && !(C.sess && C.sess->connected()))
+        return; // BUG-0998: the session that queued it is over
     int got = 0;
     uint8_t from = 0;
     for (int i = 0; i < kCellParts; i++)
@@ -457,7 +469,7 @@ void tick(double now)
 
 void on_message(uint8_t type, uint8_t from, net::Reader& r)
 {
-    if (type != net::MSG_PARTS || !g_fix)
+    if (type != net::MSG_PARTS || (!g_fix && !g_cell_apart_fix))
         return;
     uint8_t kind = r.u8(), origin = r.u8();
     uint32_t world = r.u32();
@@ -500,6 +512,8 @@ void on_message(uint8_t type, uint8_t from, net::Reader& r)
         }
         return;
     }
+    if (!g_fix)
+        return; // the Creature parts (BUG-0998: below the Cell kinds)
     if (is_host() && kind == kKindFound && from != 0) {
         g_rx_found++;
         if (world == 0 || world != (C.world ? C.world() : 0)) { // found in another world than ours
@@ -542,6 +556,7 @@ void on_session_end()
     memset(g_cell_tries, 0, sizeof g_cell_tries);
     g_cell_last_full = g_cell_last_poll = g_cell_last_tx = -100;
 }
+LIFECYCLE_HOOK("parts.session", lifecycle::kSessionEnd, -80, [](const lifecycle::Ctx&) { on_session_end(); }, true); // C2 (BUG-1141): end_session
 
 int find_part(int level)
 {

@@ -19,7 +19,7 @@ lab 20261031-124047-fix-w22-cell; 0x00E4E384 on a guest).
    5-18 m in a round (a respawn), with BUG-0355's fixes or without, and without a full pool too
    (--no-fill); without the fixes the shared spare also flung it 64 m to 1e7 m in 4 of 12 runs
    (BUG-0355 follow-up, docs/re/cell.md#cell-gfx-pool).
-SPORE_FIX_OFF=cell.particles must FAIL; SPORE_FIX_OFF=cell.spare,cell.gfx_full,cell.bare_still
+cell.particles off failed (retired in 0.7.15, BUG-1138: FAIL run 20261031-130019-fix-w23-cell:cell_sap#3); cell.spare, cell.gfx_full, cell.bare_still off failed (retired in 0.7.15, BUG-1138: FAIL run 20261031-191811:cell_particles#3)
 fails in about 1 run of 3 (--repeat).
 
   SPORE_LANE=8 python3 tools/tests/coop_cell_particles.py [--rounds 16]
@@ -29,6 +29,7 @@ import math
 import re
 import time
 
+from harness import num
 from twoinst import Checks, lab_mark, start
 
 
@@ -37,11 +38,6 @@ MAX_STEP = 20.0  # m in one round (~3 s): shoves by the crowd reach 11 m (invuln
 
 def out(con, line):
     return con.call(line).get('out') or ''
-
-
-def num(text, key):
-    m = re.search(r'\b' + key + r'=(-?\d+)', text)
-    return int(m.group(1)) if m else None
 
 
 def own_pos(con):

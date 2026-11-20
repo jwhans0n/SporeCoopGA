@@ -15,11 +15,12 @@ later and again 6 s after the guest swam 15 m: its camera point is finite and wi
 (`coop.pool cam`), and the game's projection puts cells on its screen (`coop.pool see`, the game's
 world-to-screen of every cell: at least 5, its own cell among them). The host's view is unchanged.
 
-  coop_cell_view_nan.py   (SPORE_FIX_OFF=cell.camera_heal: the camera stays NaN, it FAILS)"""
+  coop_cell_view_nan.py   (cell.camera_heal off failed (retired in 0.7.15, BUG-1138: FAIL run 20261106-002913:cell_view_nan): the camera stays NaN, it FAILS)"""
 import math
 import re
 import time
 
+from harness import cell_pos as own_pos, waiter
 from twoinst import Checks, start
 
 LIMIT = 8.0
@@ -40,24 +41,12 @@ def on_screen(con):
     return len(lines), lines
 
 
-def own_pos(con):
-    m = re.search(r'^avatar .*?pos=\((-?[\d.]+) (-?[\d.]+)\)', con.call('coop.pool')['out'], re.MULTILINE)
-    return (float(m.group(1)), float(m.group(2))) if m else None
-
-
 def playing(con):
     m = re.search(r'input_lock=(-?\d+)', con.call('coop.uistate')['out'])
     return m and int(m.group(1)) == 0 and 'cine=0' in con.call('coop.pool')['out']
 
 
-def wait(cond, secs, step=0.5):
-    t0 = time.time()
-    while time.time() - t0 < secs:
-        r = cond()
-        if r:
-            return r
-        time.sleep(step)
-    return None
+wait = waiter(step=0.5)
 
 
 def check_view(ck, con, name, what):

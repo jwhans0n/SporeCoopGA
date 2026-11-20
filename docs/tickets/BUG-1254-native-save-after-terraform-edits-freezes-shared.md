@@ -3,7 +3,7 @@ id: BUG-1254
 title: Native Save after Terraform edits freezes shared checkpoint on recipe transition
 status: fixed
 kind: bug
-stage: GA shared editor
+stage: Editor
 reported: 2026-11-04
 source: C68 Road placement R251 native Save and prior C62 R90
 role: host

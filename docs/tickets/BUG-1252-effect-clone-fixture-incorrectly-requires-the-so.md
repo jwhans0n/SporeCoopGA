@@ -3,7 +3,7 @@ id: BUG-1252
 title: Effect clone fixture incorrectly requires the source random seed
 status: fixed
 kind: tooling
-stage: GA native fixtures
+stage: Tools
 reported: 2026-11-04
 source: C68 actual Effect clone companion audit
 role: host

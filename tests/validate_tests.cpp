@@ -3,6 +3,11 @@
 // message handlers of the mod use for what other players send.
 #include <cmath>
 #include <cstdio>
+#include <fstream>
+#include <regex>
+#include <set>
+#include <cstring>
+#include <sstream>
 #include <limits>
 #include <memory>
 #include <vector>
@@ -10,6 +15,9 @@
 #include "net/buffer.h"
 #include "net/give_target.h"
 #include "net/validate.h"
+#include "net/compat.h"
+#include "net/manifest.h"
+#include "manifest_golden.h"
 #include "dna_route.h"
 #include "dna_ledger.h"
 #include "dna_pace.h"
@@ -187,6 +195,98 @@ static void test_space_origin()
         CHECK(!space_host_only(k));
 }
 
+// BUG-1041: one direction table (space_dir) for every MSG_SPACE kind; every kind declared in a space source file must
+// be in it. --nofix: the old list of six host-only kinds
+static void test_space_dir()
+{
+    printf("MSG_SPACE direction table (BUG-1041)\n");
+    const bool fix = !g_nofix;
+    int bad = 0;
+    for (uint8_t k : {12, 78, 80, 86, 20, 22, 32, 50, 52, 57}) {
+        bool host_only = space_host_only(k, fix), guest_blocked = !space_origin_ok(true, 2, 2, k, fix),
+             relayed_blocked = !space_origin_ok(false, 0, 2, k, fix);
+        if (!host_only || !guest_blocked || !relayed_blocked) {
+            printf("  kind %u from a guest: host-only %d, refused by the host %d, refused relayed %d\n", k, host_only,
+                   guest_blocked, relayed_blocked);
+            bad++;
+        }
+        CHECK(space_origin_ok(false, 0, 0, k, fix)); // the host's own
+    }
+    // guest-only kinds never come with the host's origin; a guest's own (relayed) is fine
+    for (uint8_t k : {13, 21, 33, 51, 55, 56, 77, 79, 81, 85, 87}) {
+        if (space_origin_ok(false, 0, 0, k, fix)) {
+            printf("  guest-only kind %u with the host's origin: taken\n", k);
+            bad++;
+        }
+        CHECK(space_origin_ok(true, 2, 2, k, fix) && space_origin_ok(false, 0, 2, k, fix));
+    }
+    CHECK(bad == 0);
+    // any-direction kinds pass both ways
+    for (uint8_t k : {1, 5, 10, 11, 30, 40, 53, 54, 60, 70, 76})
+        CHECK(space_dir(k) == SpaceDir::Any && space_origin_ok(true, 2, 2, k) && space_origin_ok(false, 0, 0, k) &&
+              space_origin_ok(false, 0, 2, k));
+    // every kind declared in the files that send MSG_SPACE (enum Kind values 1..99) has a direction
+    int listed = 0, missing = 0;
+    for (const char* f : {"spacecoop", "space_map", "space_contracts", "space_diplomacy", "space_finale", "space_rivalry",
+                          "space_allies", "space_trade", "space_planets", "space_badges", "space_eco"}) {
+        std::ifstream in(std::string("mods/coop/") + f + ".cpp");
+        if (!in) {
+            printf("  (no %s.cpp: run from the repository root)\n", f);
+            missing++;
+            continue;
+        }
+        std::stringstream ss;
+        ss << in.rdbuf();
+        std::string src = ss.str();
+        // the enum of the kinds: the first `enum ... Kind : uint8_t {` .. `}` of the file
+        size_t a = src.find("enum Kind : uint8_t");
+        size_t e = a == std::string::npos ? a : src.find("};", a); // (the comments hold braces)
+        if (a == std::string::npos || e == std::string::npos) {
+            printf("  %s.cpp: no enum Kind\n", f);
+            missing++;
+            continue;
+        }
+        std::string body = src.substr(a, e - a);
+        std::regex kre("K_[A-Z0-9_]+\\s*=\\s*([0-9]+)");
+        for (std::sregex_iterator it(body.begin(), body.end(), kre), end; it != end; ++it) {
+            int k = std::stoi((*it)[1]);
+            listed++;
+            if (k < 1 || k > 255 || space_dir((uint8_t)k) == SpaceDir::Unknown) {
+                printf("  %s.cpp: kind %d has no direction in space_dir (net/validate.h)\n", f, k);
+                missing++;
+            }
+        }
+    }
+    printf("  %d kinds in the space sources, %d without a direction\n", listed, missing);
+    CHECK(listed >= 49 && missing == 0);
+}
+
+// BUG-1048: a received world effect (pool 5) with a scale of 0, below 0 or huge was created by the game. --nofix: the
+// check before (finite numbers and the position only)
+static void test_effect_xf()
+{
+    printf("received world effect transform (BUG-1048)\n");
+    const bool fix = !g_nofix;
+    auto xf = [](float scale) {
+        std::vector<float> f(16, 0.f);
+        f[0] = 10, f[1] = 20, f[2] = 30, f[3] = scale;
+        f[4] = f[8] = f[12] = 1; // the matrix
+        return f;
+    };
+    CHECK(effect_xf_ok(xf(1).data(), 1e5f, fix) && effect_xf_ok(xf(1000).data(), 1e5f, fix));
+    int taken = 0;
+    for (float sc : {0.f, -1.f, 1e30f, 1001.f})
+        taken += effect_xf_ok(xf(sc).data(), 1e5f, fix);
+    printf("  scales 0, -1, 1e30, 1001: %d of 4 taken\n", taken);
+    CHECK(taken == 0);
+    auto far = xf(1);
+    far[1] = 2e5f;
+    CHECK(!effect_xf_ok(far.data(), 1e5f, fix));
+    auto nan = xf(1);
+    nan[9] = std::numeric_limits<float>::quiet_NaN();
+    CHECK(!effect_xf_ok(nan.data(), 1e5f, fix));
+}
+
 static void test_numbers()
 {
     printf("numbers from the wire\n");
@@ -205,6 +305,21 @@ static void test_numbers()
     CHECK(!money_total(3, 0x40000000, t));
     CHECK(!money_total(-1, 5, t) && !money_total(5, -1, t));
     CHECK(money_total(0, 0, t) && t == 0);
+    // BUG-1110: reported budgets in the game's range, the merge sum in 64 bits and clamped once
+    CHECK(money_in_range(0) && money_in_range(kMoneyMax) && !money_in_range(-1) && !money_in_range(kMoneyMax + 1ll));
+    CHECK(!money_in_range(0x7FFFFFFF) && !money_in_range(-99999999));
+    std::vector<int> big = {0x7FFFFFFF, 0x7FFFFFFF, 0x7FFFFFFF};
+    int wrapped = 0;
+    for (int v : big)
+        wrapped = (int)((unsigned)wrapped + (unsigned)v); // the 0.7.14 int sum (as the hardware wraps it)
+    int s = money_sum(big.begin(), big.end());
+    printf("  merge of three INT_MAX budgets: int sum %d, money_sum %d\n", wrapped, s);
+    CHECK(s == kMoneyMax && !money_in_range(wrapped)); // the int sum is outside the game range (or negative)
+    std::vector<int> mixed = {5000, -99999999, 7000};
+    CHECK(money_sum(mixed.begin(), mixed.end()) == 0);
+    std::vector<int> ok = {1000, 2000, 3000};
+    CHECK(money_sum(ok.begin(), ok.end()) == 6000);
+    CHECK(money_clamp(-5) == 0 && money_clamp(123) == 123 && money_clamp(1ll << 40) == kMoneyMax);
 }
 
 struct FakeSess {
@@ -482,7 +597,12 @@ static void test_settings()
     CHECK(parse_value(kCreatureMode, "on", v) && v == 1 && !parse_value(kCreatureMode, "hosts", v));
     CHECK(value_name(kCellRegen, 0).empty() && value_text(kCellRegen, 0) == "off");
     for (int i = kNameTags; i < kCount; i++) // every row of step 3 but friendly fire and the creature mode is on by default
-        CHECK(kDefs[i].def == (i == kFriendlyFire || i == kCreatureMode ? 0 : i == kPlayerLimit ? 4 : 1));
+        CHECK(kDefs[i].def == (i == kFriendlyFire || i == kCreatureMode ? 0 : i == kPlayerLimit ? 4 : i == kAutosave ? 2 : 1));
+    // E2 (BUG-0864): the host's autosave: a choice of minutes, 10 by default, Live
+    CHECK(kDefs[kAutosave].scope == Scope::Live && value_text(kAutosave, 2) == "10 min" && value_text(kAutosave, 0) == "off");
+    CHECK(autosave_minutes(0) == 0 && autosave_minutes(2) == 10 && autosave_minutes(5) == 60 && autosave_minutes(9) == 10);
+    CHECK(parse_value(kAutosave, "off", v) && v == 0 && parse_value(kAutosave, "30 min", v) && v == 4 &&
+          !parse_value(kAutosave, "6", v));
     CHECK(kCount < 255); // MSG_SETTINGS: u8 n
     // the wire: the whole table round trips; a key this build does not know is skipped; a cut message applies nothing
     Values a;
@@ -985,6 +1105,219 @@ static void test_model_paint_runs()
     CHECK(!model_paint::effects_read(lead, eff, at, len, p2));
 }
 
+// B3 of 0.7.15 (BUG-1136): the message manifest (net/messages.def, net/space_kinds.def). Every type and kind listed
+// once; the generated tables equal 0.7.14's (tests/manifest_golden.h: the wire values, the classes, the Space
+// directions, the dispatch of every type on both roles); the host's direction gate drops exactly the host-only types;
+// the space kinds of the manifest are the enums of the sources and the ranges the features register
+static void test_manifest()
+{
+    printf("message manifest: every type once, the 0.7.14 tables, the direction gate (BUG-1136)\n");
+    // the wire values: the 67 types of 0.7.14 with their names, and the types added since (a 0.7.14 peer ignores an
+    // unknown type): 71 TRIBE_ANIM (C7, BUG-1160)
+    int known = 0;
+    for (int t = 0; t < 256; t++)
+        known += msg_info((uint8_t)t).known;
+    // types added after 0.7.14 (a 0.7.14 peer ignores them, B6): MSG_HOST_BUSY 70 (BUG-1142), MSG_TRIBE_ANIM 71 (C7,
+    // BUG-1160)
+    const std::set<int> added_types = {55, 70, 71, 72, 73};
+    CHECK(known == (int)(sizeof golden0714::kTypes / sizeof golden0714::kTypes[0] + added_types.size()));
+    CHECK(MSG_HOST_BUSY == 70 && msg_info(70).known && msg_dir(70) == MsgDir::Host &&
+          host_world::msg_class(70) == host_world::MsgClass::Session && dispatch_route(70, false) == Route::HostBusy &&
+          dispatch_route(70, true) == Route::None);
+    CHECK(MSG_TRIBE_ANIM == 71 && std::string(msg_info(71).name) == "TRIBE_ANIM" && msg_info(71).family == Family::tribe &&
+          msg_dir(71) == MsgDir::Host && host_world::msg_class(71) == host_world::MsgClass::Module &&
+          dispatch_route(71, false) == Route::Tribe && dispatch_route(71, true) == Route::None);
+    for (int t : added_types)
+        for (auto& g : golden0714::kTypes)
+            CHECK(g.id != t);
+    for (auto& g : golden0714::kTypes)
+        CHECK(msg_info(g.id).known && std::string(msg_info(g.id).name) == g.name);
+    CHECK(MSG_HELLO == 1 && MSG_SPACE == 48 && MSG_NPC_ANIM == 59 && MSG_HOST_WORLD == 69);
+    // the classes, the Space directions, the dispatch
+    int bad = 0;
+    for (int t = 0; t < 256; t++) {
+        uint8_t u = (uint8_t)t;
+        bool added_type = added_types.count(t) == 1; // (its class and route checked above)
+        if (!added_type && host_world::msg_class(u) != golden0714::msg_class(u)) {
+            printf("  type %d: class %d, 0.7.14 %d\n", t, (int)host_world::msg_class(u), (int)golden0714::msg_class(u));
+            bad++;
+        }
+        // kinds added after 0.7.14 (unknown there: a 0.7.14 peer passes them on and ignores them): K_ECO 90 (BUG-1148),
+        // K_COLONY 14 / K_KEPT_COLONY 15 (BUG-1151)
+        bool added = (t == 90 || t == 14 || t == 15) && golden0714::space_dir(u) == SpaceDir::Unknown;
+        if (space_dir(u) != golden0714::space_dir(u) && !added) {
+            printf("  space kind %d: direction %d, 0.7.14 %d\n", t, (int)space_dir(u), (int)golden0714::space_dir(u));
+            bad++;
+        }
+        for (bool host : {false, true})
+            if (!added_type && dispatch_route(u, host) != golden0714::route(u, host)) {
+                printf("  type %d on the %s: route %d, 0.7.14 %d\n", t, host ? "host" : "guest", (int)dispatch_route(u, host),
+                       (int)golden0714::route(u, host));
+                bad++;
+            }
+        // the world gate moved before every route: in 0.7.14 the routes before it took only types it never drops
+        for (bool cls : {false, true})
+            for (bool civ : {false, true})
+                if (golden0714::before_gate(golden0714::route(u, false)) && host_world::world_state_msg(u, cls, civ)) {
+                    printf("  type %d: routed before the gate in 0.7.14 but the gate drops it\n", t);
+                    bad++;
+                }
+    }
+    CHECK(bad == 0);
+    // the direction gate: exactly the types only the host sends (the sender inventory of the B3 review), off: none
+    const std::set<int> host_only = {2, 3, 4, 5, 9, 13, 14, 15, 16, 17, 19, 20, 22, 23, 25, 29, 31, 33, 37, 39, 40, 42, 43, 47,
+                                     50, 56, 59, 62, 64, 66, 69, 70, 71};
+    for (int t = 0; t < 256; t++) {
+        CHECK(dir_gate_drops((uint8_t)t) == (host_only.count(t) == 1));
+        CHECK(!dir_gate_drops((uint8_t)t, false));
+        CHECK(msg_info((uint8_t)t).known == (msg_dir((uint8_t)t) != MsgDir::Unknown));
+    }
+    // families: unique ids, every type in one, names as on the wire
+    std::set<int> fids;
+    for (auto& f : kFamilies)
+        CHECK(fids.insert((int)f.id).second && f.rev >= 1 && f.stages != 0);
+    for (auto& g : golden0714::kTypes)
+        CHECK(family_info((uint8_t)msg_info(g.id).family) != nullptr);
+    CHECK(kFamilyCount == 12 && family_info(1)->rev == 2 && family_info(11)->stages == STAGE_ALWAYS && family_info(12)->stages == STAGE_ALWAYS);
+    CHECK(dispatch_route(55, true) == Route::Activity && dispatch_route(55, false) == Route::None);
+    for (bool host : {false, true}) {
+        CHECK(dispatch_route(72, host) == Route::Adventure && dispatch_route(73, host) == Route::Editor);
+        CHECK(host_world::msg_class(72) == host_world::MsgClass::Session && host_world::msg_class(73) == host_world::MsgClass::Session);
+    }
+    // the space kinds: FEATURE ranges disjoint, every KIND inside its feature's range
+    struct Feat {
+        const char* name;
+        int lo, hi;
+    };
+    const Feat feats[] = {
+#define FEATURE(name, lo, hi) {#name, lo, hi},
+#include "net/space_kinds.def"
+    };
+    struct Kind {
+        int id;
+        const char* feature;
+        const char* name;
+    };
+    const Kind kinds[] = {
+#define KIND(id, feature, name, dir) {id, #feature, #name},
+#include "net/space_kinds.def"
+    };
+    for (auto& a : feats)
+        for (auto& b : feats)
+            CHECK(&a == &b || a.hi < b.lo || b.hi < a.lo);
+    for (auto& k : kinds) {
+        bool in = false;
+        for (auto& f : feats)
+            in = in || (!strcmp(f.name, k.feature) && k.id >= f.lo && k.id <= f.hi);
+        if (!in)
+            printf("  space kind %d (%s) is outside its feature's range\n", k.id, k.feature);
+        CHECK(in);
+    }
+    // ... and the sources: every `enum Kind` value is a row of its feature with the same name, every row is in its
+    // feature's enum, and each feature registers its FEATURE range (spaceext::add kind_lo / kind_hi)
+    int missing = 0, rows_seen = 0;
+    for (auto& f : feats) {
+        std::string file = std::string("mods/coop/") + (strcmp(f.name, "spacecoop") ? "space_" : "") +
+                           (strcmp(f.name, "spacecoop") ? f.name : "spacecoop") + ".cpp";
+        std::ifstream in(file);
+        if (!in) {
+            printf("  (no %s: run from the repository root)\n", file.c_str());
+            missing++;
+            continue;
+        }
+        std::stringstream ss;
+        ss << in.rdbuf();
+        std::string src = ss.str();
+        size_t a = src.find("enum Kind : uint8_t");
+        size_t e = a == std::string::npos ? a : src.find("};", a);
+        if (a == std::string::npos || e == std::string::npos) {
+            printf("  %s: no enum Kind\n", file.c_str());
+            missing++;
+            continue;
+        }
+        std::string body = src.substr(a, e - a);
+        std::regex kre("K_([A-Z0-9_]+)\\s*=\\s*([0-9]+)");
+        std::set<int> in_enum;
+        for (std::sregex_iterator it(body.begin(), body.end(), kre), end; it != end; ++it) {
+            int id = std::stoi((*it)[2]);
+            in_enum.insert(id);
+            bool row = false;
+            for (auto& k : kinds)
+                row = row || (k.id == id && !strcmp(k.feature, f.name) && (*it)[1] == k.name);
+            if (!row) {
+                printf("  %s: K_%s = %d is no row of space_kinds.def\n", file.c_str(), std::string((*it)[1]).c_str(), id);
+                missing++;
+            }
+        }
+        for (auto& k : kinds)
+            if (!strcmp(k.feature, f.name)) {
+                rows_seen++;
+                if (!in_enum.count(k.id)) {
+                    printf("  space_kinds.def: kind %d (%s) is not in %s's enum Kind\n", k.id, k.name, file.c_str());
+                    missing++;
+                }
+            }
+        if (strcmp(f.name, "spacecoop")) { // spacecoop.cpp handles 1..9 itself, it registers no range
+            std::smatch m;
+            std::regex rre("\\.kind_lo\\s*=\\s*([0-9]+),\\s*\\.kind_hi\\s*=\\s*([0-9]+)");
+            if (!std::regex_search(src, m, rre) || std::stoi(m[1]) != f.lo || std::stoi(m[2]) != f.hi) {
+                printf("  %s registers another kind range than space_kinds.def (%d..%d)\n", file.c_str(), f.lo, f.hi);
+                missing++;
+            }
+        }
+    }
+    CHECK(missing == 0 && rows_seen == (int)(sizeof kinds / sizeof kinds[0]));
+}
+
+// B6 (BUG-1137): which revisions conflict, in which stage; the texts name both versions
+static void test_compat()
+{
+    printf("message family revisions: conflicts by stage, older peers, texts (BUG-1137)\n");
+    using namespace compat;
+    constexpr uint32_t kCell = 0x1654C00, kCreature = 0x1654C01, kTribe = 0x1654C02, kCiv = 0x1654C04, kSpace = 0x1654C05,
+                       kScenario = 0x1654C10, kMenu = 0x2CCD1D2;
+    auto mine = my_families();
+    CHECK(!conflict(mine, mine, true, kCreature).any && conflict(mine, {}, false, kSpace, true).any); // Fork session 2.0 is incompatible with the upstream baseline.
+    auto bump = [&](Family f, uint16_t rev) {
+        auto v = mine;
+        for (auto& x : v)
+            if (x.family == (uint8_t)f)
+                x.rev = rev;
+        return v;
+    };
+    // a family of one stage: a conflict only there (an adventure counts as Creature)
+    auto sp = bump(Family::space, 2);
+    CHECK(conflict(sp, mine, true, kSpace).any && !conflict(sp, mine, true, kCreature).any && !conflict(sp, mine, true, kMenu).any);
+    Conflict c = conflict(sp, mine, true, kSpace);
+    CHECK(c.family == (uint8_t)Family::space && c.mine == 2 && c.theirs == 1);
+    auto cr = bump(Family::creature, 3);
+    CHECK(conflict(cr, mine, true, kCreature).any && conflict(cr, mine, true, kScenario).any && !conflict(cr, mine, true, kCell).any);
+    auto civ = bump(Family::civ, 2); // Civilization's messages run in Space too (the planner)
+    CHECK(conflict(civ, mine, true, kCiv).any && conflict(civ, mine, true, kSpace).any && !conflict(civ, mine, true, kTribe).any);
+    // an always-used family: in every stage and in the menus
+    auto se = bump(Family::session, 3);
+    CHECK(conflict(se, mine, true, kMenu).any && conflict(se, mine, true, 0).any && conflict(se, mine, true, kCell).any);
+    // an older peer (no revisions): rev 1 of the base families; a minor never conflicts
+    CHECK(conflict(cr, {}, false, kCreature).any && conflict(mine, {}, false, kCreature).any);
+    auto mn = mine;
+    mn[0].minor = 7;
+    CHECK(!conflict(mn, mine, true, kMenu).any);
+    // a family one side does not know is no conflict (new types the other side ignores)
+    std::vector<FamilyRev> fewer(mine.begin() + 1, mine.end()), extra = mine;
+    extra.push_back({200, 9, 0});
+    CHECK(!conflict(se, fewer, true, kMenu).any && !conflict(extra, mine, true, kMenu, true).any);
+    // texts
+    CHECK(short_version("coop 0.7.13, SporeKit 0.7.13, GOG 2024 dc04aee5") == "0.7.13" && short_version("").empty());
+    CHECK(warn_text("Bob", "coop 0.7.13, SporeKit 0.7.13, x", "coop 0.7.15, SporeKit 0.7.15, x") ==
+          "Bob plays SporeCoop 0.7.13; you have SporeCoop 0.7.15: some things may not match");
+    CHECK(warn_text("Old", "", "coop 0.7.15, x") == "Old plays an older SporeCoop (before 0.7.4); you have SporeCoop 0.7.15: "
+                                                   "some things may not match");
+    std::string r = refuse_text("Alice", "coop 0.7.16, x", "coop 0.7.15, x", (uint8_t)Family::space, 2, 1);
+    CHECK(r.find("Alice plays SporeCoop 0.7.16; you have SporeCoop 0.7.15: the Space messages") == 0 &&
+          r.find("revision 2 there, 1 here") != std::string::npos);
+    CHECK(families_text({{1, 1, 0}, {8, 2, 3}}) == "session 1.0, space 2.3" && families_text({}, false).find("none sent") == 0);
+}
+
 int main(int argc, char** argv)
 {
     g_nofix = argc > 1 && std::string(argv[1]) == "--nofix";
@@ -1000,6 +1333,10 @@ int main(int argc, char** argv)
     test_chunks();
     test_cycle();
     test_space_origin();
+    test_space_dir();
+    test_manifest();
+    test_compat();
+    test_effect_xf();
     test_numbers();
     test_players();
     test_give_target();

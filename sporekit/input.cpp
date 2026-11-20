@@ -41,6 +41,8 @@ static SHORT WINAPI h_GetKeyState(int vk)
     return r;
 }
 
+// BUG-1016: serialize the first console/main-thread installation attempt while
+// preserving checked trampolines and fail-closed exclusive-input diagnostics.
 static bool ensure_hooks()
 {
     std::lock_guard<std::mutex> lock(g_input_hooks_mutex);

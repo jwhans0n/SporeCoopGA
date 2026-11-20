@@ -19,12 +19,13 @@ Creature fixture. Checked on both games, the game's own values (GetEvolutionPoin
       editor open at once, each adds a part (real input) and presses done: both bars unchanged, the same DNA
       on both, the pool lower and not below 0 (two mouths of 25 on a pool of 45: the players' overspend).
 
-  coop_evo_bar.py [--case script|editors]    (SPORE_FIX_OFF=creature.bar_spend fails)
+  coop_evo_bar.py [--case script|editors]    (creature.bar_spend off failed (retired in 0.7.15, BUG-1138: FAIL run 20261106-174018:evo_bar))
 """
 import re
 import sys
 import time
 
+from harness import waiter
 from coop_editor_sync import CANCEL, DONE, SAVE_NEW, add_part, back, confirm_captions, editor_ui, in_editor, mode
 from coop_ui import Ui
 from twoinst import Checks, shot, start
@@ -172,14 +173,7 @@ def editors_case(host, guest, ck):
     ck(near(g1[1], g0[1]), f"the guest's evolution bar unchanged by the two editors ({g0[1]} -> {g1[1]})")
 
 
-def wait(cond, secs, step=1.0):
-    t0 = time.time()
-    while time.time() - t0 < secs:
-        r = cond()
-        if r:
-            return r
-        time.sleep(step)
-    return None
+wait = waiter(step=1.0)
 
 
 def main():

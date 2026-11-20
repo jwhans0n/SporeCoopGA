@@ -3,7 +3,7 @@ id: BUG-1240
 title: First Alt clone is lost while waiting for Structure ownership
 status: open
 kind: bug
-stage: GA shared editor
+stage: Editor
 reported: 2026-11-03
 source: actual C57 Sound Alt-clone qualification
 role:

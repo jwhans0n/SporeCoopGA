@@ -19,7 +19,7 @@ Checks per direction over the fight (FIGHT_S s):
   the other player sees half a second late: the bite lands before the creature arrives).
 
   coop_puppet_fight.py [--dir host|guest|both] [--seed N] [--secs S]
-  (SPORE_FIX_OFF=creature.puppet_path,creature.puppet_walk fails)"""
+  (creature.puppet_path, creature.puppet_walk off failed (retired in 0.7.15, BUG-1138: FAIL run 20261101-122732-fix-w30-npc-walk:puppet_walk_novel#1))"""
 import argparse
 import json
 import math
@@ -28,6 +28,7 @@ import random
 import re
 import time
 
+from harness import pct
 import lane
 from coop_puppet_walk import Watch, back_to_partner, partner_dist, screen, settle
 from twoinst import Checks, shot, start
@@ -58,11 +59,6 @@ def dump_anims(con):
                          'ranim': f[27] if len(f) > 27 else '',
                          'f90': int(f[29]) if len(f) > 30 else None, 'lod': int(f[30]) if len(f) > 30 else None})
     return rows
-
-
-def pct(xs, q):
-    xs = sorted(xs)
-    return xs[min(len(xs) - 1, int(q * len(xs)))] if xs else 0.0
 
 
 def npc_targets(con):

@@ -13,7 +13,7 @@ branch: fix/w10-cell-4p
 commits: a964c90
 tests: cell_nan
 signature: dc04aee5:Simulator::Cell::PopulateTile+0x8A
-docs: docs/re/cell.md#cell-broadphase-cap, docs/known-issues.md#issue-cell-own-nan
+docs: docs/re/cell.md#cell-broadphase-cap, docs/archive/known-issues-2026.md#issue-cell-own-nan
 related: BUG-0292
 ---
 
@@ -37,3 +37,4 @@ FAIL: `SPORE_FIX_OFF=cell.nan_guard` cell_nan, lab 20261030-055502 (position sta
 - 2026-10-30: opened.
 - 2026-10-30: fix/w10-cell-4p: guarded and healed (cell.nan_guard), cell_nan; the NaN source stays open in known-issues#issue-cell-own-nan.
 - 2026-11-01: released in 0.7.3.2.
+- 2026-11-15: switch `cell.nan_guard` retired in 0.7.15 (B1, BUG-1138): the old code path is gone, FAIL run 20261030-055502:cell_nan on record; its test runs PASS-only.

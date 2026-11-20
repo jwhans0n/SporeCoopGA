@@ -20,10 +20,10 @@ checked in the game (BUG-0222).
    The speed is read again after 10 s and 30 s to show whether the game's RecalcStats brings it
    back by itself (printed: the BUG-0222 step 0 measurement).
 
---nofix: both fixes off (`coop.civ fix boost 0`, `coop.civ fix world 0`): must FAIL. One at a time:
-SPORE_FIX_OFF=civ.boost (step 4 fails) or SPORE_FIX_OFF=civ.world (step 3 fails).
+Both switches are retired in 0.7.15 (BUG-1138); the test runs PASS-only. One at a time:
+civ.boost off failed (retired in 0.7.15, BUG-1138: FAIL run 20261030-002050:civ_reload) (step 4 fails) or civ.world off failed (retired in 0.7.15, BUG-1138: FAIL run 20261030-001854:civ_reload) (step 3 fails).
 
-  SPORE_LANE=5 python3 tools/tests/coop_civ_reload.py [--nofix]
+  SPORE_LANE=5 python3 tools/tests/coop_civ_reload.py
 """
 import argparse
 import math
@@ -31,6 +31,7 @@ import re
 import struct
 import time
 
+from harness import mode_id as mode
 import fixtures
 import lane
 from lane import sh
@@ -39,13 +40,6 @@ from twoinst import Checks, Monitor, build_id, lane_state, start, wait_guest_in
 CIV = 0x1654C04
 VEH = re.compile(r'\s+veh #(\d+) (\S+) pol=(\w+) owner=(-?\d+) .*?sel=(\d+) .*?pos=\(([-\d.]+) ([-\d.]+) ([-\d.]+)\)'
                  r' order=(-?\d+)(?: opos=\(([-\d.]+) ([-\d.]+) ([-\d.]+)\))?')
-
-
-def mode(con):
-    try:
-        return int(con.call('game.mode')['out'].split()[0], 16)
-    except (OSError, ValueError, IndexError):
-        return -1
 
 
 def tables(con):
@@ -159,13 +153,9 @@ def stale_owner(ck, host, guest):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--nofix', action='store_true')
     a = ap.parse_args()
     host, guest = start('civ_npc')
     ck = Checks()
-    if a.nofix:
-        for c in (host, guest):
-            print(' ', c.call('coop.civ fix boost 0')['out'].strip(), '|', c.call('coop.civ fix world 0')['out'].strip())
     time.sleep(4)
     if not alarm(ck, host, 'before the load'):
         return ck.result()

@@ -5,7 +5,7 @@
 // Finding (docs/re/tribe.md#tribe-terrain-stamps): the heights a game renders for stamps it applies live (the ~56 of
 // the Tribe start) differ from the ones any load of the same stamp list gives; a rebuild started by the mod
 // (`coop.terrain rebuild`, or the planet editor's reload sequence) gives a third result (lab 20261106-043944,
-// 20261106-045023), so the fix (tribe.host_reload, world.cpp) is the game's load itself.
+// 20261106-045023), so the fix (BUG-0332, world.cpp) is the game's load itself.
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -26,7 +26,6 @@ namespace terrain_diag {
 namespace {
 const SkHost* H;
 SkMod* M;
-double g_last_stamp; // the time of the last live stamp call (apply, remove, clear)
 uint32_t g_live_calls;
 
 struct Call {
@@ -72,7 +71,6 @@ uint32_t SK_THISCALL h_Apply(void* self, const uint8_t* xf, void* prop)
         c.scale = f[3];
     }
     note(c);
-    g_last_stamp = H->time_seconds();
     g_live_calls++;
     return id;
 }
@@ -81,7 +79,6 @@ void SK_THISCALL h_Remove(void* self, uint32_t id, int flag)
 {
     note(Call{H->time_seconds(), 2, caller_of(__builtin_return_address(0)), 0, 0, 0, 0, id, (void*)(intptr_t)flag});
     o_Remove(self, id, flag);
-    g_last_stamp = H->time_seconds();
     g_live_calls++;
 }
 
@@ -89,7 +86,6 @@ void SK_THISCALL h_Clear(void* self)
 {
     note(Call{H->time_seconds(), 3, caller_of(__builtin_return_address(0)), 0, 0, 0, 0, 0, nullptr});
     o_Clear(self);
-    g_last_stamp = H->time_seconds();
     g_live_calls++;
 }
 
@@ -200,6 +196,10 @@ int c_terrain(void*, int argc, const char* const* argv, SkOut* out)
         uint8_t* en = *(uint8_t**)((uint8_t*)t + 0x774);
         size_t n = (bg && en > bg) ? (size_t)(en - bg) / 0xAC : 0;
         size_t to = argc > 3 ? std::min(n, (size_t)atoi(argv[3]) + 1) : n;
+        if (from < to && !skg::readable(bg + from * 0xAC, (to - from) * 0xAC)) { // BUG-1030: the entries, not the head only
+            H->out_printf(out, "the stamp list %p (%u entries) is not readable", bg, (unsigned)n);
+            return 1;
+        }
         struct One {
             uint8_t xf[0x38];
             uint32_t key[3], id;

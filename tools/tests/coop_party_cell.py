@@ -12,13 +12,14 @@ from Alice and stay side by side (`coop.pool tp <dx> <dy> <id>`: next to that pl
 3. Two knocked out at once (#110, BUG-0131): Carol is knocked out again, then Bob: both lie side by
    side, Alice is far. Neither may revive the other (a knocked-out cell is no helper): within 4 s
    no revive on either game, both still knocked out on all three machines.
-   SPORE_FIX_OFF=pool.rescue must FAIL here (they revive each other).
+   pool.rescue off failed (retired in 0.7.15, BUG-1138: FAIL run 20261030-010849:party_cell_ko) (they revive each other).
 
   SPORE_LANE=6 python3 tools/tests/coop_party_cell.py
 """
 import re
 import time
 
+from harness import num, waiter
 from party import Party
 from twoinst import Checks
 
@@ -27,25 +28,13 @@ def pool(p):
     return p.call('coop.pool')
 
 
-def num(out, key):
-    m = re.search(r'\b' + key + r'=(-?\d+)', out)
-    return int(m.group(1)) if m else None
-
-
 def ko(out, pid):
     """(state, opacity) of player pid as this game draws it"""
     m = re.search(rf'^ko\[{pid}\]=(\d) .*?op=(-?[\d.]+)', out, re.M)
     return (int(m.group(1)), float(m.group(2))) if m else (None, None)
 
 
-def wait(cond, secs, step=0.25):
-    t0 = time.time()
-    while time.time() - t0 < secs:
-        r = cond()
-        if r:
-            return r
-        time.sleep(step)
-    return None
+wait = waiter(step=0.25)
 
 
 def main():

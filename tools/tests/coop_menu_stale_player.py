@@ -20,13 +20,14 @@ campaign.
   Checks: no fault and no crash on either game, the host reached each stage, the guest followed,
   the mod cleared the stale player each time (`coop.status`: stale menu player cleared N).
 
-  coop_menu_stale_player.py [--nofix] [--rounds N]   (--nofix: coop.fix world.menu_player off: must
-  FAIL, the host crashes in the first load)
+  coop_menu_stale_player.py [--rounds N]   (world.menu_player off failed, the host crashed in the first load:
+  retired in 0.7.15, BUG-1138, FAIL run 20261029-191412-fix-w8-planet:menu_stale_player; PASS-only now)
 """
 import argparse
 import re
 import time
 
+from harness import mode_id as mode
 import fixtures
 import lane
 from lane import sh
@@ -35,13 +36,6 @@ from twoinst import Checks, Monitor, start, wait_guest_in
 CALL_AT = 0xB32CF0                 # galaxy-menu reset 0xB32C30: call SpacePlayerData_Reset 0x1022350
 CALL_BYTES = 'E8 5B F6 4E 00'      # GOG 2024 (dc04aee5)
 MODES = {'Tribe': 0x1654C02, 'Civ': 0x1654C04}
-
-
-def mode(con):
-    try:
-        return int(con.call('game.mode')['out'].split()[0], 16)
-    except (OSError, ValueError, IndexError):
-        return -1
 
 
 def call_bytes(con):
@@ -88,7 +82,6 @@ def jump(host, guest, fx, stage, slot):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--nofix', action='store_true')
     ap.add_argument('--rounds', type=int, default=3)
     a = ap.parse_args()
     host, guest = start('tribe')
@@ -97,10 +90,6 @@ def main():
     if have != CALL_BYTES:
         print(f'RESULT: SKIP (not the GOG 2024 bytes at 0x{CALL_AT:X}: {have})')
         return 0
-    if a.nofix:  # (SPORE_FIX_OFF=world.menu_player does the same through start())
-        for c in (host, guest):
-            print(' ', c.call('coop.fix world.menu_player off')['out'].strip())
-    fix_on = 'world.menu_player on' in host.call('coop.fix list')['out']
     time.sleep(3)
     n = 0
     for r in range(a.rounds):
@@ -110,7 +99,7 @@ def main():
             n += 1
             if not ck(ok, f'round {r + 1}: the host loaded {fx} after a stage exit without the player reset and the guest followed'):
                 break
-            ck(cleared(host) == (n if fix_on else 0), f'round {r + 1}: the mod cleared the stale menu player ({cleared(host)} of {n})')
+            ck(cleared(host) == n, f'round {r + 1}: the mod cleared the stale menu player ({cleared(host)} of {n})')
             time.sleep(3)
         else:
             continue

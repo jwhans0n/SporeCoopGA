@@ -21,6 +21,8 @@ SkMod g_kit_mod;
 KitFix g_fix_cheatwait{"cheatwait","controlled main-thread wait guard",1};
 KitFix g_fix_outpump{"outpump","controlled frame deferral",1};
 KitFix g_fix_taskdrop{"taskdrop","controlled unlocked task destruction",1};
+KitFix g_fix_cmdkeep{"cmdkeep","controlled active-command retention",1};
+KitFix g_fix_taskcut{"taskcut","controlled interrupted-command reply",1};
 void logf(SkMod*,int,const char*,...){ }
 std::string json_escape(const std::string& value){return value;}
 }
@@ -73,6 +75,30 @@ int main(){
     const auto cancel_wait=GetTickCount();while(!sk::g_out_tasks.size()&&GetTickCount()-cancel_wait<2000)Sleep(1);
     CHECK(sk::g_out_tasks.size()==1);sk::commands_remove_all(&module);sk::pump_outside_tasks();cancelled.join();
     CHECK(rc==-1&&reply=="command vanished"&&sk::g_out_tasks.size()==0);
+    // Removing commands closes admission while an existing worker keeps its
+    // module busy. The unload wait must not free an executing callback's image.
+    struct ActiveCommand { std::atomic<bool> entered{false},release{false}; } active;
+    sk::command_add(&module,"fixture.active","",[](void* user,int,const char* const*,SkOut*) {
+        auto& state=*static_cast<ActiveCommand*>(user);state.entered=true;
+        while(!state.release)Sleep(1);
+        return 0;
+    },&active,SK_CMD_ANY_THREAD);
+    std::thread active_worker([&]{rc=sk::command_exec_line("fixture.active",reply,false);});
+    const auto active_wait=GetTickCount();while(!active.entered&&GetTickCount()-active_wait<2000)Sleep(1);
+    CHECK(active.entered);sk::commands_remove_all(&module);
+    std::string busy;CHECK(!sk::commands_wait_idle(&module,1,busy)&&busy.find("still run on other threads")!=std::string::npos);
+    std::string removed;CHECK(sk::command_exec_line("fixture.active",removed,false)==1&&removed.find("unknown command")!=std::string::npos);
+    active.release=true;active_worker.join();CHECK(!rc);
+    busy.clear();CHECK(sk::commands_wait_idle(&module,1,busy)&&busy.empty());
+    // Nested main-thread commands cannot wait for themselves, even when no
+    // worker is active. Their image must be retained instead of deadlocking.
+    sk::command_add(&module,"fixture.nested","",[](void* user,int,const char* const*,SkOut*) {
+        auto* mod=static_cast<SkMod*>(user);std::string why;sk::commands_remove_all(mod);
+        CHECK(!sk::commands_wait_idle(mod,1000,why)&&why.find("main thread around this unload")!=std::string::npos);
+        return 0;
+    },&module,SK_CMD_ANY_THREAD);
+    std::string nested;CHECK(sk::command_exec_line("fixture.nested",nested,true)==0);
+    busy.clear();CHECK(sk::commands_wait_idle(&module,1,busy)&&busy.empty());
     bool stale=false,cleanup=false;
     auto raw=std::make_shared<int>(1),retained=std::make_shared<int>(2);
     std::weak_ptr<int> raw_weak=raw,retained_weak=retained;

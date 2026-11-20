@@ -95,6 +95,7 @@ struct Api {
     std::function<void()> give_do;
     std::function<void()> give_cycle;  // the next other player as the recipient (BUG-0075)
     std::function<int()> give_choices; // how many players a gift can go to
+    std::function<bool()> give_pick_space; // BUG-1050: Space shows the ">" picker too (coop.fix space.give_pick)
     // space: travel to a partner's star system (false = not possible now, else whose)
     std::function<bool(std::string& to)> jump;
     std::function<void()> jump_do;
@@ -137,21 +138,25 @@ void open(bool on);
 // Outside-frame launch transition: hide before entering the native loading UI.
 void close_for_adventure_launch();
 void open_editor();
+// tests (BUG-1139, the warm reset): the window closed and back on the lobby page, as at a cold start (a closed
+// window keeps its page for the next F9)
+void test_reset();
 void open_lobby(); // open on the lobby page (not the settings / space page): a guest asked for its report
 bool is_open();
 // BUG-0599: the window covers (x, y) (screen pixels of the game window): hide it for `secs` so that a click of the
 // mod there reaches the game's window under it (the "game saved" box's OK); false = not open or not there
 bool step_aside(int x, int y, double secs);
 int input_lock_now(); // the game's input lock count (cGameInputManager +0x110; > 0 = clicks are dropped)
+bool game_modal_up(); // a modal window of the game is up (UTFWin window manager +0x82C: the pause menu, a box; not ours)
 void shutdown(); // mod unload: hide our windows
 std::string debug_state();
 extern bool g_log_msgs; // debug: log UI messages reaching our handlers
-extern bool g_lan_pages_fix; // tests: `coop.corefix lan_pages 0` lists the first three games only (BUG-0183)
-extern bool g_status_fix; // tests: `coop.corefix ui_status 0` keeps the status of the last button (BUG-0104)
+extern bool g_lan_pages_fix; // tests: `coop.fix core.lan_pages off` lists the first three games only (BUG-0183)
+extern bool g_status_fix; // tests: `coop.fix core.ui_status off` keeps the status of the last button (BUG-0104)
 // the session was joined (connected) or ended (why): replaces the status line of the join
 void session_event(bool connected, const std::string& why);
-extern bool g_recenter_fix;  // tests: `coop.corefix window_recenter 0` keeps the first position (BUG-0113)
-extern bool g_menu_drop_fix; // tests: `coop.corefix menu_drop 0` keeps the menu item pointer after the menu (BUG-0163)
+extern bool g_recenter_fix;  // tests: `coop.fix core.window_recenter off` keeps the first position (BUG-0113)
+extern bool g_menu_drop_fix; // tests: `coop.fix core.menu_drop off` keeps the menu item pointer after the menu (BUG-0163)
 // tests: the window goes back to its first start (the name step), as with no name chosen yet
 void first_start();
 // tests / layout shots (coop.uistate color <argb>): the lobby's colour of players without one (0 = "-")
@@ -164,7 +169,7 @@ std::string demo_text(std::string t);
 // tests (coop.uistate widgets): every visible widget, `widget x1 y1 x2 y2 L|B <caption width> '<caption>'`
 std::string widgets_state();
 // tests (ui_golden's twin): a named control of coop.uistate moved by (dx, dy) or hidden until "off"
-std::string test_nudge(const std::string& name, float dx, float dy, bool hide);
+std::string test_nudge(const std::string& name, float dx, float dy, bool hide, float dw = 0);
 
 // the dialog text font (0 until the co-op window was built once)
 uint32_t text_font();

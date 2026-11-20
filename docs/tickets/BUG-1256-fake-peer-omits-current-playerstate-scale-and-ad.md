@@ -3,7 +3,7 @@ id: BUG-1256
 title: Fake peer omits current PlayerState scale and adventure identity tail
 status: fixed
 kind: tooling
-stage: Network
+stage: All
 reported: 2026-11-04
 source: Protocol26 actual C++ Session fake-peer check
 role: guest

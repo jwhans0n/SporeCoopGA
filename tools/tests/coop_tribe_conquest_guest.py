@@ -12,7 +12,15 @@ guest's copy of the hut at 1 hp at least, so the guest's game never conquered th
 3. Within 30 s of the host's game conquering the village, the guest's game has the same: the village's own
    conquered flag (cTribe +0x556, `coop.realign planet village` fl bit 2) and its hut dead or gone.
    SPORE_FIX_OFF=realign.hut_fall: the guest's village stands unconquered with its hut: FAIL.
+4. (BUG-0983) the guest's conquest caption closes itself; then the guest's game runs again (no cinematic, the game
+   time not standing).
+--click-at-close (suite tribe_caption_race, BUG-1101): the guest clicks the caption's check 7-9.6 s after it came up,
+   about when the mod closes it after 8 s (a player who reads it for 8 s; the campaign's driver clicks after 6-10 s): a click and the forced end
+   in the same moment left the game time standing for the rest of the stage (Carol 30 min, Dave 16 min in
+   campaign_tribe_noclick of the 0.7.14 final check). When the host's game plays no conquest caption either (the game
+   left it out: 3 of 19 runs up to 2026-11-16, 0.7.14 too), the result is INCONCLUSIVE (BUG-1205).
 """
+import argparse
 import re
 import time
 
@@ -38,9 +46,48 @@ def near(rows, p, tol):
     return best if best and dist(best[0], p) < tol else None
 
 
+CAPTION_OK = (1410, 1048)  # the green check of a caption that waits for the player (coop_campaign.py)
+
+
+def busy_of(con):
+    m = re.search(r'^busy: (\S+)', con.call('coop.status')['out'], re.M)
+    return m.group(1) if m else '-'
+
+
+def click_at_close(guest, host):
+    """BUG-1101: the guest's conquest caption comes up; clicks on its check from 7 to 9.6 s after (the mod's forced
+    end comes at 8 s). (played on the guest, played on the host): BUG-1205, the host's game too plays no conquest
+    caption now and then (3 of 19 runs up to 2026-11-16, 0.7.14 too); then the guest's has nothing to play"""
+    t0, since, host_seen = time.time(), None, False
+    while time.time() - t0 < 40 and since is None:
+        if 'cinematic' in busy_of(guest):
+            since = time.time()
+        else:
+            host_seen = host_seen or 'cinematic' in busy_of(host)
+            time.sleep(0.15)
+    if since is None:
+        print(f'  the guest\'s game played no caption within 40 s of the fall (the host\'s game: '
+              f'{"a caption" if host_seen else "none either"})', flush=True)
+        return False, host_seen
+    guest.call(f'move {CAPTION_OK[0]} {CAPTION_OK[1]}')
+    while time.time() < since + 7.0:
+        time.sleep(0.05)
+    n = 0
+    while time.time() < since + 9.6:
+        guest.call(f'click {CAPTION_OK[0]} {CAPTION_OK[1]}')
+        n += 1
+        time.sleep(0.12)
+    print(f'  the guest clicked the caption\'s check {n} times 7-9.6 s after it came up', flush=True)
+    return True, True
+
+
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--click-at-close', action='store_true')
+    a = ap.parse_args()
     host, guest = start('tribe')
     ck = Checks()
+    print('  guest: ' + guest.call('coop.pauses trace')['out'].strip(), flush=True)  # BUG-1101: who pauses
     time.sleep(5)
     mem = members(guest)
     own = sorted(i for i, o in mem.items() if o != 0)[:3]
@@ -94,6 +141,14 @@ def main():
     if not ck(fell is not None, f"the raid ended the hut in the host's game ({fell and round(fell)} s)"):
         ck.faults(host=host, guest=guest)
         return ck.result()
+    no_caption = False
+    if a.click_at_close:
+        played, host_played = click_at_close(guest, host)
+        # BUG-1205: no caption in the host's game either: the game left it out (the scenario did not happen), not the
+        # mod; the conquest checks below still run, the result is INCONCLUSIVE when they pass
+        no_caption = not played and not host_played
+        if not no_caption:
+            ck(played, "the guest's game played the conquest caption")
     hvil = gvil = ghut = None
     t0 = time.time()
     while time.time() - t0 < 30:
@@ -112,18 +167,24 @@ def main():
     # (the host's closes after 8 s, BUG-0531; the conquest and the upgrade captions: ~16 s)
     t0, seen = time.time(), []
     while time.time() - t0 < 40:
-        busy = re.search(r'^busy: (\S+)', guest.call('coop.status')['out'], re.M)
-        busy = busy.group(1) if busy else '-'
+        busy = busy_of(guest)
         seen.append(busy)
-        if 'cinematic' not in busy and time.time() - t0 > 4:
+        if 'cinematic' not in busy and 'paused' not in busy and time.time() - t0 > 4:
             break
         time.sleep(2)
     print(f'  the guest\'s game after the conquest (busy, every 2 s): {seen}', flush=True)
+    print('  guest: ' + guest.call('coop.pauses')['out'].strip(), flush=True)
     ck('cinematic' not in seen[-1], f"the guest's game is not left in the conquest caption ({time.time() - t0:.0f} s, "
                                     f"busy {seen[-1]})")
+    # the game time runs again too: a reason of the conquest's pauses left counted froze the guest's world for the
+    # rest of the stage (campaign_tribe_noclick of the 0.7.14 final check: Carol 30 min, Dave 16 min `busy=paused`)
+    ck('paused' not in seen[-1], f"the guest's game time runs again after the conquest ({time.time() - t0:.0f} s, "
+                                 f"busy {seen[-1]})")
     frame_point({'host': host, 'guest': guest}, hp)  # BUG-0981: the village in view, not the home village
     keyframe('conquered', 'the conquered village on both screens: the hut down, no village members standing')
     ck.faults(host=host, guest=guest)
+    if no_caption:
+        return ck.inconclusive("neither game played the conquest caption (the host's game left it out, BUG-1205)")
     return ck.result()
 
 

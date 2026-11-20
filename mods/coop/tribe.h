@@ -34,10 +34,8 @@ void on_message(uint8_t type, uint8_t from, net::Reader& r);
 void on_session_end();
 void on_world_change();
 // BUG-0217: once per frame at the top of on_frame (after game::stage_epoch_tick, before messages):
-// calls on_world_change when the Tribe world changed; with tribe.editor_world off it does nothing
-// and coop.cpp's avatar_change_check keeps the old trigger
-void world_check();
-bool editor_world_fix();
+// C2 (BUG-1141): the stage's root object for world_id.h (null outside the stage)
+const void* world_anchor();
 void before_save(); // host: the co-op epic leaves before the game saves (BUG-0121)
 std::string status();
 std::vector<syncdbg::Entry> sync_entries(); // coop.sync (tests)
@@ -55,7 +53,7 @@ bool center(net::Vec3& pos); // position of the player tribe
 // members of the player tribe with their owner (for name tags)
 // the epic creature was hit by a creature (host; from the creature damage filter)
 void note_animal_hit(void* animal, void* attacker_creature);
-// BUG-0569 (tribe.mirror_anims): host, a behaviour animation the game started on a creature (game.cpp's listener,
+// BUG-0569: host, a behaviour animation the game started on a creature (game.cpp's listener,
 // npc.cpp passes it on); guest, MSG_NPC_ANIM kinds 2 / 3 after the kind byte
 void on_behaviour_anim(void* c, uint32_t anim, int how, int a, int b);
 void on_member_anims(uint8_t kind, net::Reader& r);
@@ -64,6 +62,8 @@ void on_member_anims(uint8_t kind, net::Reader& r);
 uint16_t id_of(void* citizen);
 // guest: the mirror of the host's member #id (null: none)
 void* mirror_of(uint16_t id);
+// host (tests): the member #id itself (null: none or not alive)
+void* member_of(uint16_t id);
 // tests: "hut<tribe index>[p]" for a tribe's hut, "" for anything else
 std::string object_key(void* obj);
 // tests: the position of every planet tree (cTreeData, fruit trees to gather from)

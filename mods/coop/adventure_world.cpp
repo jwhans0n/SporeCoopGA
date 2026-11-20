@@ -357,7 +357,7 @@ static void enumerate()
     game::for_each_object([](void* object, uint32_t noun, void*) {
         if (g_native.size() >= kMaxActors) { g_native_overflow = true; return false; }
         uint32_t marker;
-        if (!game::object_alive(object) || skg::field<bool>(object, 0x20) ||
+        if (!game::listed(object) || skg::field<bool>(object, 0x20) ||
             owner(object) != ga::kNoPlayer || !marker_of(object, marker)) return true;
         void* spatial = game::cast(object, kSpatial);
         if (!spatial || !skg::readable(spatial, 0x20)) return true;
@@ -382,7 +382,7 @@ static void enumerate()
 
 static NativeActor* actor_for(void* object)
 {
-    for (auto& a : g_native) if (a.object == object) return &a;
+    for (auto& a : g_native) if (a.object == object && game::alive({a.object,a.incarnation,a.noun})) return &a;
     return nullptr;
 }
 
@@ -415,7 +415,8 @@ static void* object_for(Identity id)
         auto* native = it != g_bindings.end() ? actor_for(it->second.object) : nullptr;
         return native && native->incarnation == it->second.incarnation ? native->object : nullptr;
     }
-    for (const auto& actor : g_native) if (actor.marker == id.marker && actor.incarnation == id.incarnation) return actor.object;
+    for (const auto& actor : g_native) if (actor.marker == id.marker && actor.incarnation == id.incarnation &&
+        game::alive({actor.object,actor.incarnation,actor.noun})) return actor.object;
     return nullptr;
 }
 void on_animation(void* creature, uint32_t animation, int block, bool disable_blend, bool to_target)
@@ -961,7 +962,7 @@ static void SK_THISCALL check_goals(void* self)
     auto can_check=[](uint8_t player){
         if(!C.captain_of || !C.captain_can_act || !C.captain_can_act(player))return false;
         void* captain=C.captain_of(player);
-        return captain && skg::readable(captain,0xB60) && game::object_alive(captain) &&
+        return captain && game::listed(captain) && skg::readable(captain,0xB60) &&
             !skg::field<bool>(captain,0x20) && !game::is_dead(captain) && game::health(captain)>0;
     };
     // Co-op can retain a downed captain after native death cleanup. Native
@@ -1774,7 +1775,7 @@ static void apply_roster(void* argument)
     retire_snapshots(live, task->sequence, remove);
     auto retained = reconcile_siblings(live, task->sequence, remove);
     g_applying = true;
-    for (void* object : remove) if (skg::readable(object, 0x28) && game::object_alive(object) && owner(object) == ga::kNoPlayer) {
+    for (void* object : remove) if (game::listed(object) && skg::readable(object, 0x28) && owner(object) == ga::kNoPlayer) {
         std::string error;
         auto* native = actor_for(object);
         if (!native || skg::field<uint32_t>(object, 0x24) != native->incarnation) continue;
@@ -2204,8 +2205,8 @@ bool is_live_mirror(void* object)
     // the act in which they were made.
     if (!g_ok || g_applying || !C.sess || !C.sess->connected() || C.sess->role() != net::Role::Client ||
         !C.active || !C.active() || !C.run || !g_run || C.run() != g_run ||
-        game::mode_id() != 0x01654C10 || !object || !skg::readable(object, 0x28) ||
-        owner(object) != ga::kNoPlayer || !game::object_alive(object) || skg::field<bool>(object, 0x20)) return false;
+        game::mode_id() != 0x01654C10 || !object || !game::listed(object) || !skg::readable(object, 0x28) ||
+        owner(object) != ga::kNoPlayer || !game::listed(object) || skg::field<bool>(object, 0x20)) return false;
     auto* p = play();
     auto* native = actor_for(object);
     if (!p || !native || native->incarnation != skg::field<uint32_t>(object, 0x24)) return false;
@@ -2451,11 +2452,11 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
         targeting.active = [] { return active() && host() && game::mode_id() == 0x01654C10 && !(C.held && C.held()); };
         targeting.live_npc = [](void* object) {
             auto* p = play();
-            if (!object || !p || g_run != run() || g_native_act != skg::field<int>(p, 0xB8) ||
+            if (!object || !game::listed(object) || !p || g_run != run() || g_native_act != skg::field<int>(p, 0xB8) ||
                 owner(object) != ga::kNoPlayer || game::is_puppet(object) || !skg::readable(object, 0xB60)) return false;
             auto* actor = actor_for(object);
             return actor && actor->incarnation == skg::field<uint32_t>(object, 0x24) &&
-                !skg::field<bool>(object, 0x20) && game::object_alive(object) &&
+                !skg::field<bool>(object, 0x20) && game::listed(object) &&
                 game::cast(object, kCreature) && !game::is_dead(object) && game::health(object) > 0;
         };
         targeting.captains = [] {
@@ -2464,8 +2465,8 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
             for (const auto& player : C.sess->players()) {
                 if (!C.captain_can_act(player.id)) continue;
                 void* object = C.captain_of(player.id);
-                if (object && skg::readable(object, 0xB60) && !skg::field<bool>(object, 0x20) &&
-                    game::object_alive(object) && !game::is_dead(object) && game::health(object) > 0)
+                if (object && game::listed(object) && skg::readable(object, 0xB60) && !skg::field<bool>(object, 0x20) &&
+                    game::listed(object) && !game::is_dead(object) && game::health(object) > 0)
                     captains.push_back({object, player.id});
             }
             return captains;

@@ -3,7 +3,7 @@ id: BUG-1242
 title: Planet look presets bypass bulk Flora field ownership and split pending setters
 status: fixed
 kind: bug
-stage: GA shared editor
+stage: Editor
 reported: 2026-11-03
 source: Verified F0CD40 F37340 F35B20 call chain and Native hook audit
 role: host and guest

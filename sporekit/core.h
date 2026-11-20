@@ -12,7 +12,7 @@
 
 #include "../sdk/include/sporekit.h"
 
-#define SK_VERSION "0.3.16"
+#define SK_VERSION "0.3.18"
 
 // ---- SkMod (opaque for mods) ----
 struct SkMod {
@@ -29,8 +29,8 @@ namespace sk {
 
 // log.cpp
 void log_init(const std::wstring& path);
-void logf(SkMod* mod, int level, const char* fmt, ...);
-void logv(SkMod* mod, int level, const char* fmt, va_list ap);
+void logf(SkMod* mod, int level, const char* fmt, ...) SK_PRINTF(3, 4);
+void logv(SkMod* mod, int level, const char* fmt, va_list ap) SK_PRINTF(3, 0);
 std::vector<std::string> log_tail(size_t n);
 extern int g_log_level;
 void log_session_clock(double offset, int on); // "[s <now + offset>]" in every line (on = 0: none)
@@ -65,6 +65,8 @@ bool symbols_load(); // picks file by exe hash
 // code (symbols_try_unpacked from the first call of the game's own code)
 bool symbols_pending();
 bool symbols_try_unpacked(); // true: the code in memory is the build's, its symbols are loaded
+// BUG-1125: "" or the message for a game build that is known and not supported (GOG 2016): no symbols, no mods
+const char* unsupported_build_text();
 uintptr_t sym(const char* name);
 uintptr_t image_base();
 uintptr_t rebase(uintptr_t va);
@@ -94,7 +96,9 @@ void fire(int event, void* arg);
 void run_on_main(std::function<void()> fn);
 void pump_main_tasks(); // called on main thread every frame
 void run_after_frames(int frames, std::function<void()> fn);
-void run_outside_frame(std::function<void()> fn); // main thread, from the window procedure
+void run_outside_frame(std::function<void()> fn);
+void run_on_main_in_frame(std::function<void()> fn); // tests: only a frame's pump runs it (BUG-0966)
+enum : int { SK_CMD_FRAME_ONLY = 0x100 };            // SporeKit's own test commands: run_on_main_in_frame // main thread, from the window procedure
 // the same for a mod's task: `code` is the mod's function, so an unload can drop what it queued
 void run_on_main_from(const void* code, std::function<void()> fn);
 void run_outside_frame_from(const void* code, std::function<void()> fn);
@@ -110,11 +114,14 @@ struct Out {
     std::string text;
 };
 // append printf output to a command's output (BUG-0388: up to 1 MB per call, kit.fix longout)
-void out_vappend(Out* o, const char* fmt, va_list ap);
+void out_vappend(Out* o, const char* fmt, va_list ap) SK_PRINTF(2, 0);
 bool console_start(int port);
 int command_add(SkMod* mod, const char* name, const char* help, SkCommandFn fn, void* user,
                 int flags);
 void commands_remove_all(SkMod* mod);
+// BUG-1018: wait (at most ms) until no command of the mod runs on another thread; false (and why) when they still do
+// or one runs on the main thread around the caller (kit.fix cmdkeep)
+bool commands_wait_idle(SkMod* mod, DWORD ms, std::string& why);
 int command_exec_line(const std::string& line, std::string& out, bool from_main);
 std::vector<std::string> split_args(const std::string& line);
 std::vector<std::pair<std::string, std::string>> commands_list();
@@ -159,6 +166,8 @@ void screen_size(int* w, int* h);
 // gamehooks.cpp
 bool gamehooks_install();
 uint32_t game_mode_id();
+uint32_t game_mode_cached();   // BUG-1022: the mode as the main thread last read it (reports off the main thread)
+void game_mode_cache_tick();   // main thread, every few frames
 const char* game_mode_name(uint32_t id);
 bool cheat_exec(const char* line);
 
@@ -170,6 +179,7 @@ bool mod_reload(const std::string& name, std::string& err);
 bool mod_unload(const std::string& name, std::string& err);
 bool mod_load(const std::string& name, std::string& err);
 std::vector<SkMod*> mods_list();
+std::string mods_line(); // BUG-1022: "name version  ..." of the loaded mods, a copy under a lock (any thread)
 void mods_shutdown();
 extern SkHost g_host;
 
@@ -320,6 +330,22 @@ extern KitFix g_fix_drawncam;  // BUG-0948: the overlay projects with the camera
 extern KitFix g_fix_logprune;  // BUG-0137: old crash reports, dumps, reports and archives are removed
 extern KitFix g_fix_stackvq;   // BUG-0880: no VirtualQuery while a thread is suspended (stack bounds from its TEB first)
 extern KitFix g_fix_wheelmk;   // BUG-0859: the virtual wheel carries the held keys and buttons (MK_SHIFT, MK_CONTROL, ...)
+extern KitFix g_fix_presentunwind; // BUG-1024: a fault caught inside Present does not leave the depth set
+extern KitFix g_fix_taskcut;   // BUG-0966: a command task cut off by a caught fault is answered
+extern KitFix g_fix_crashcopy; // BUG-1020: the crash report thread works on copies of the record and registers
+extern KitFix g_fix_reportsafe; // BUG-1022: reports off the main thread use the cached mode and lock the mod list
+extern KitFix g_fix_vehbounds; // BUG-1028: the fault logger's stack reads stay inside the readable region
+extern KitFix g_fix_trireset;  // BUG-1026: the overlay state block is reset on a new device, retried after a Reset
+extern KitFix g_fix_cmdkeep;   // BUG-1018: a mod's image is freed only after its running console commands returned
+extern KitFix g_fix_postinit;  // BUG-1021: SK_EV_POST_INIT is not fired after a failed cSporeApp::Init
+// BUG-1033: a module's file name, "" when GetModuleFileNameW fails (a module unloaded meanwhile) or cuts the path;
+// the callers' stack buffers were used whatever the call returned
+inline std::wstring module_path(HMODULE m)
+{
+    wchar_t p[MAX_PATH];
+    DWORD n = GetModuleFileNameW(m, p, MAX_PATH);
+    return n && n < MAX_PATH ? std::wstring(p, n) : std::wstring();
+}
 inline bool fixed(const KitFix& f) { return f.on != 0; }
 KitFix* kit_fix_find(const char* name);
 std::vector<KitFix*> kit_fixes();
@@ -357,10 +383,15 @@ template <class F> void call_lambda(void* f) { (*(F*)f)(); }
 // test commands (kit.test ...): force the conditions of BUG-0050 / 0115 / 0132
 void log_fault_test();
 void exceptions_fault_test();
+std::string exceptions_edge_test(); // kit.test.vehedge (BUG-1028)
 void hooks_churn_test(int rounds, int threads, std::string& out, bool nogate = false);
 void hooks_new_test(int rounds, int threads, std::string& out, bool split = false); // BUG-0398 / 0403 (split)
 std::string hooks_live_stats(); // BUG-0403
 void* test_fault_page(); // a PAGE_NOACCESS page whose first access is repaired by a test handler
+void test_fault_null(); // an access violation nobody repairs (the game's handler catches it), BUG-1024 / BUG-0966
+std::string present_fault_command(const char* arg); // kit.test.presentfault (BUG-1024)
+std::string tri_test_command(const char* arg);      // kit.test.tri (BUG-1026)
+void command_tasks_cut_off(uintptr_t sp);           // BUG-0966: answer console tasks a caught fault cut off
 
 } // namespace sk
 

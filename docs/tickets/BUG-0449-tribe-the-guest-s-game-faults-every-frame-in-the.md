@@ -3,7 +3,7 @@ id: BUG-0449
 title: Tribe: the guest's game faults every frame in the physics update at 0xB4C5B4 (a body with no owner; dc04aee5:SporeApp.exe+0x74C5B4)
 status: fixed
 kind: crash
-stage: tribe
+stage: Tribe
 reported: 2026-11-01
 source: lab: tribe_walk, out/lab/20261101-204356 (lane 6)
 role: guest
@@ -74,3 +74,4 @@ physics_orphan (tools/tests/coop_physics_orphan.py, guest in Tribe, the stand-in
 - 2026-11-01: opened from the 0.7.3.4 verification run; contained behind game.physics_owner on
   fix/w37-tribe-fault (the cause of the ownerless body stays unknown).
 - 2026-11-02: released in 0.7.3.4.
+- 2026-11-15: switch `game.physics_owner` retired in 0.7.15 (B1, BUG-1138): the old code path is gone, FAIL run 20261101-224546-fix-w37-tribe-fault:physics_orphan#1 on record; its test runs PASS-only.

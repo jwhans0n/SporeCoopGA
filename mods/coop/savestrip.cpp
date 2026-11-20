@@ -19,7 +19,6 @@ static SkMod* M;
 static bool g_on = true;
 COOP_FIX("savestrip.on", "BUG-0020", g_on, "saves: our puppets, proxies and their herds are kept out of saves (coop.savestrip 0|1)");
 static std::vector<Filter> g_filters;
-static DWORD g_main_tid;
 static void* g_last_ser;      // the COMSerializer of the save being written
 static double g_last_write;   // when Write ran last
 // BUG-0255: one list per save: a new serializer or a new frame starts it (savestrip_rule.h), not a
@@ -69,9 +68,14 @@ COOP_FIX("savestrip.pending", "BUG-0256", g_pending_fix, "saves: creatures waiti
 // BUG-0255: a herd made for a puppet stayed in the world empty after its partner left (herds are
 // reused per species and never destroyed) and went into every save: the owner rule only stripped
 // herds that still held a creature of ours. Now an own-kind herd with no members is stripped too,
-// when it is surely empty (savestrip_rule.h). `coop.fix savestrip.empty_herds off`: kept (0.7.3.0).
-static bool g_empty_fix = true;
-COOP_FIX("savestrip.empty_herds", "BUG-0255", g_empty_fix, "saves: empty herds made for partners' puppets are kept out of saves too");
+// when it is surely empty (savestrip_rule.h).
+// BUG-1067: the empty-herd rule asks whether the herd is one the mod made (game::our_herd), not only whether it
+// looks like one: in Civ the game's own herds have no archetype and no nest either, and every empty one of them was
+// left out of every Civ save (77 in a guest's save, the host's too). `coop.fix savestrip.our_herds off`: by the
+// look alone (0.7.13).
+static bool g_our_herds_fix = true;
+COOP_FIX("savestrip.our_herds", "BUG-1067", g_our_herds_fix, "saves: only empty herds the mod made are kept out of saves, never the game's own (Civ's look like ours)");
+static uint32_t g_empty_kept_game; // empty own-kind herds kept because they are the game's (BUG-1067)
 static std::unordered_set<void*> g_herd_seen; // herds some creature of this save points at
 static bool g_unreadable;                     // a creature of this save could not be read
 static uint32_t g_empty_stripped;
@@ -97,11 +101,15 @@ static bool creature_filter(void* o, uint32_t noun)
             return true;
         if (g_strip_herds.count(o) && !g_keep_herds.count(o))
             return true;
-        if (!g_empty_fix || g_strip_herds.count(o) || g_keep_herds.count(o))
+        if (g_strip_herds.count(o) || g_keep_herds.count(o))
             return false;
         bool empty = false, readable = herd_members(o, empty);
         if (!strip_empty_herd(readable, empty, g_herd_seen.count(o) != 0, g_unreadable))
             return false;
+        if (g_our_herds_fix && !game::our_herd(o)) { // BUG-1067: an empty herd of the game's
+            g_empty_kept_game++;
+            return false;
+        }
         g_empty_stripped++;
         return true;
     }
@@ -161,14 +169,14 @@ using Write_t = bool(SK_THISCALL*)(void*, void*, void*);
 static Write_t o_Write;
 static bool SK_THISCALL h_Write(void* self, void* stream, void* obj)
 {
-    if (g_write_watch && (self != g_watch_ser || g_frame != g_watch_frame) && GetCurrentThreadId() == g_main_tid) {
+    if (g_write_watch && (self != g_watch_ser || g_frame != g_watch_frame) && game::on_main()) {
         g_watch_ser = self;
         g_watch_frame = g_frame;
         g_write_watch();
     }
     if (!g_on || !obj)
         return o_Write(self, stream, obj);
-    if (GetCurrentThreadId() != g_main_tid) { // not a save of the world (those run on the main thread)
+    if (!game::on_main()) { // not a save of the world (those run on the main thread)
         g_offthread++;
         return o_Write(self, stream, obj);
     }
@@ -237,7 +245,6 @@ static int SK_THISCALL h_BhvRead(void* mgr, void* stream)
 
 void tick()
 {
-    g_main_tid = GetCurrentThreadId();
     g_frame++;
     if (!g_hooks_ended) {
         g_hooks_ended = true;
@@ -251,8 +258,9 @@ std::string status()
     char b[320];
     snprintf(b, sizeof b,
              "savestrip=%d saves=%u last_ours=%u nulled=%u offthread=%u behavior_nulls_dropped=%u empty_herds_stripped=%u "
-             "max_save_frames=%u\n",
-             (int)g_on, g_saves, g_last_count, g_nulled, g_offthread, g_bhv_nulls, g_empty_stripped, g_max_span);
+             "empty_game_herds_kept=%u max_save_frames=%u\n",
+             (int)g_on, g_saves, g_last_count, g_nulled, g_offthread, g_bhv_nulls, g_empty_stripped, g_empty_kept_game,
+             g_max_span);
     return b;
 }
 
@@ -270,7 +278,6 @@ bool init(const SkHost* host, SkMod* mod)
 {
     H = host;
     M = mod;
-    g_main_tid = GetCurrentThreadId();
     add_filter(creature_filter);
     H->command_add(M, "coop.savestrip", "coop.savestrip [0|1] - keep our objects out of saves (tests: 0 = the old behaviour, BUG-0020)",
                    c_savestrip, nullptr, SK_CMD_MAIN_THREAD);

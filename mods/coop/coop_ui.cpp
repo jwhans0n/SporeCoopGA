@@ -25,6 +25,7 @@
 #include "space_ext.h"
 #include "settings.h"
 #include "sui.h"
+#include "typed_text.h"
 #include "world.h"
 #include "fixes.h"
 
@@ -45,19 +46,21 @@ static double g_last_refresh;
 static std::string g_status;
 static uint32_t g_status_color = 0xFFFFD866;
 static double g_status_until; // the status goes away then (0 = stays until the next session event)
-bool g_status_fix = true;     // BUG-0104 (`coop.corefix ui_status 0`: the status of the last button stays)
+bool g_status_fix = true;     // BUG-0104 (`coop.fix core.ui_status off`: the status of the last button stays)
 COOP_FIX("core.ui_status", "BUG-0104", g_status_fix, "ui: the co-op window shows the session's status, not the last button's");
 // BUG-0597: "Send my world" pressed in the main menu (no world loaded) or with nobody joined did nothing while
 // the window said "Sending the world to everyone...": players read it as "solo does not start". The button is
 // greyed out then and the lobby says why (a host can start or load a game alone, friends join any time and get
-// the world by themselves). Off: the button always sends and says so (0.7.7).
-static bool g_share_explain_fix = true;
-COOP_FIX("core.ui_share_explain", "BUG-0597", g_share_explain_fix, "ui: Send my world is greyed out with no world or nobody joined, and the lobby says why");
+// the world by themselves).
 // BUG-0598: a guest without own creations of the stage's kind saw "My cell: the world's own" with no arrows and
 // no hint, and could not tell that a choice exists (a player asked where to pick the own creation). The row says
-// whose it is ("the host's species") and how to get a choice (make one in an editor). Off: "the world's own" (0.7.7).
-static bool g_creation_hint_fix = true;
-COOP_FIX("core.ui_creation_hint", "BUG-0598", g_creation_hint_fix, "ui: the creation row says whose creation it is and how to get a choice");
+// whose it is ("the host's species") and how to get a choice (make one in an editor).
+// BUG-1062: "Give 10 to <player>" (Space) and "Give to <player>" kept a fixed width (150 / 170 px): a caption wraps
+// when it needs more than the width minus ~30 px (docs/08-ui.md#ui-text-width), so "Give 10 to Carol" showed on two
+// lines cut by the button's frame. Now the give button (and in Space the jump button left of it) is as wide as its
+// caption needs, growing to the left. Off: the fixed widths (0.7.13).
+static bool g_give_fit_fix = true;
+COOP_FIX("core.ui_give_fit", "BUG-1062", g_give_fit_fix, "ui: the give and jump buttons are as wide as their captions");
 static bool g_f9_down;
 static bool g_lb_down;      // the left mouse button in the last frame (the Co-op item during the menu intro)
 static uint32_t g_lb_seen;  // mouse::clicks() handled (BUG-0145)
@@ -77,7 +80,7 @@ constexpr float kW = 760, kH = 660; // the lobby rows, the host's "Ask the playe
 constexpr int kSpaceRows = 12;
 static bool g_space_page; // the lobby shows the Space page instead
 static int g_lan_first;   // the first game on the network listed (pages of three, BUG-0183)
-bool g_lan_pages_fix = true; // `coop.corefix lan_pages 0`: only the first three games, no "More" (BUG-0183)
+bool g_lan_pages_fix = true; // `coop.fix core.lan_pages off`: only the first three games, no "More" (BUG-0183)
 COOP_FIX("core.lan_pages", "BUG-0183", g_lan_pages_fix, "ui: every network game is listed, with More pages");
 static int g_space_first; // the first row shown (pages of kSpaceRows rows)
 
@@ -222,7 +225,7 @@ static Win g_menu_btn, g_menu_parent;
 // BUG-0163: the item is a child of the galaxy menu window, which the game frees when it leaves the
 // menu; the pointer was dropped only by the next refresh (up to 1 s later), and a click meanwhile
 // made a virtual call on the freed item. It goes as soon as the mode is not the menu.
-// `coop.corefix menu_drop 0` = the old behaviour (tests).
+// `coop.fix core.menu_drop off` = the old behaviour (tests).
 bool g_menu_drop_fix = true;
 bool g_recenter_fix = true;
 COOP_FIX_UNSAFE("core.menu_drop", "BUG-0163", g_menu_drop_fix, "ui: the galaxy menu's Co-op item pointer goes with the menu");
@@ -287,6 +290,8 @@ static void ensure_menu_button()
         g_menu_drawable = sui::std_drawable_with_icon(sui::drawable(share), icon);
         if (!icon)
             H->log(M, SK_WARN, "ui: coop_icon not found (Data/SporeCoop.package missing?)");
+        else if (sui::g_release_fix)
+            sui::release(icon); // BUG-1025: GetImage's reference is ours; the drawable's slots took their own
     }
     if (g_menu_drawable)
         sui::set_drawable(b, g_menu_drawable);
@@ -309,8 +314,11 @@ static void ensure_menu_button()
         std::string v = A.version_line();
         v = v.substr(0, v.find("  -  "));
         if (Win l = sui::label(menu, {r.x1 + 6, r.y2 - 4, r.x2 + 90, r.y2 + 14}, v, sui::font(share), kDim,
-                               sui::kAlignLeft))
+                               sui::kAlignLeft)) {
             sui::set_ids(l, kIdMenuButton + 1, 0);
+            if (sui::g_release_fix)
+                sui::release(l); // BUG-1025: the menu holds it, the mod keeps no pointer (found by its id next time)
+        }
     }
     H->log(M, SK_INFO, "ui: co-op item added to the main menu");
 }
@@ -445,10 +453,7 @@ static Win add_label(std::vector<Win>& page, const Rect& r, const std::string& t
 // (cGameInputManager +0x110 above 0) and drops every click on the UI, also on our window: a
 // guest's "I'm ready" during the brain-upgrade captions of a vote did nothing, the vote ran out of
 // time. The click is taken from the window's messages instead (mouse.h) and given to the button
-// under it, unless the game delivered it itself within kLockedClickWait. Off: the clicks are
-// dropped while the lock is held (0.7.3.0).
-bool g_locked_clicks_fix = true;
-COOP_FIX("core.ui_locked_clicks", "BUG-0273", g_locked_clicks_fix, "ui: co-op window buttons take clicks while a caption holds the game's input lock");
+// under it, unless the game delivered it itself within kLockedClickWait.
 static std::map<Win, std::function<void()>> g_btn_fn; // every button of the window and its action
 static std::map<Win, double> g_btn_native;
 static std::map<Win, int> g_edit_max;                 // every text line of the window and its length (BUG-0482)            // when the game last delivered a click to it
@@ -468,10 +473,7 @@ static int input_lock()
 // BUG-0482 follow-up: a modal box of the game (the "game saved" box, the window manager's modal window
 // cWindowManager +0x82C, PushModal; gamefixes.cpp BUG-0270) takes the clicks like the input lock does: a
 // chat line clicked while the host's "game saved" box was up never took the typing (play_creature, rel/0.7.4
-// out/lab/20261103-224540). The locked paths (buttons, text lines) take any such box too. Off: only the
-// input lock (0.7.4).
-static bool g_modal_fix = true;
-COOP_FIX("core.ui_modal_edit", "BUG-0482", g_modal_fix, "ui: the co-op window's buttons and chat line work while a modal box of the game (\"game saved\") is up");
+// out/lab/20261103-224540). The locked paths (buttons, text lines) take any such box too.
 static unsigned g_modal_seen; // tests: frames with a modal box of the game seen under a click
 
 static void* game_modal()
@@ -497,7 +499,7 @@ static bool clicks_locked()
 {
     if (input_lock() > 0)
         return true;
-    if (g_modal_fix && game_modal()) {
+    if (game_modal()) {
         g_modal_seen++;
         return true;
     }
@@ -553,7 +555,7 @@ static void locked_click_tick(bool clicked)
             H->run_outside_frame([](void*) { if (s_fn) s_fn(); }, nullptr);
         }
     }
-    if (!clicked || !g_locked_clicks_fix || !mouse::g_fix || !g_want_open || !D.root || !sui::visible(D.root) ||
+    if (!clicked || !mouse::g_fix || !g_want_open || !D.root || !sui::visible(D.root) ||
         g_locked_btn || !clicks_locked())
         return;
     int cx = 0, cy = 0;
@@ -588,10 +590,8 @@ static Win add_edit(std::vector<Win>& page, const char* name, const Rect& r, con
 // queue (mouse::take_chars) go into that line, Backspace erases, Enter does what Enter in the line does
 // (the chat: send). It stops at the next click anywhere else, when the window closes, or as soon as the
 // game changes the line's text itself (it has the focus after all: never typed twice).
-// `coop.fix core.ui_locked_edit off`: the typing is lost (0.7.3.6).
 static void do_send_chat();
-static bool g_locked_edit_fix = true;
-COOP_FIX("core.ui_locked_edit", "BUG-0482", g_locked_edit_fix, "ui: the co-op window's chat line takes the typing while a caption holds the game's input lock");
+COOP_FIX("core.ui_locked_edit_utf16", "BUG-1027", typed_text::g_utf16_fix, "ui: a line typed under the input lock counts characters (not UTF-8 bytes) against its limit, drops DEL, keeps emoji whole");
 static Win g_locked_edit;          // the line clicked under the lock, typed by the mod
 static std::string g_locked_text;  // its text as the mod left it (the game changing it: it has the focus)
 static unsigned g_locked_typed;    // tests: characters the mod typed
@@ -611,26 +611,7 @@ static void locked_edit_apply(void*)
     }
     int max_len = g_edit_max.count(w) ? g_edit_max[w] : 120;
     bool enter = false;
-    for (char16_t c : q) {
-        if (c == 0x0D) {
-            enter = true;
-            break;
-        }
-        if (c == 0x08) {
-            while (!t.empty() && (t.back() & 0xC0) == 0x80) // a UTF-8 continuation byte
-                t.pop_back();
-            if (!t.empty())
-                t.pop_back();
-        } else if (c >= 0x20 && (int)t.size() < max_len) {
-            char b[4];
-            int n = c < 0x80 ? (b[0] = (char)c, 1)
-                    : c < 0x800 ? (b[0] = (char)(0xC0 | (c >> 6)), b[1] = (char)(0x80 | (c & 0x3F)), 2)
-                                : (b[0] = (char)(0xE0 | (c >> 12)), b[1] = (char)(0x80 | ((c >> 6) & 0x3F)),
-                                   b[2] = (char)(0x80 | (c & 0x3F)), 3);
-            t.append(b, n);
-            g_locked_typed++;
-        }
-    }
+    t = typed_text::apply(t, q, max_len, enter, g_locked_typed); // BUG-1027: UTF-16 units against the limit
     sui::set_edit_text(w, t);
     g_locked_text = sui::edit_text(w);
     if (enter && w == D.chat_edit) {
@@ -645,19 +626,17 @@ static void locked_edit_apply(void*)
 // and two things ended it: the mod's own click on the box's OK button (world.cpp box_task) counted as "a click
 // anywhere else", and a frame held by the save took the click and the keys after it at once, and the keys of
 // the frame of a click were dropped. The mod's own click no longer ends the typing, and the keys that came
-// after the click in its frame go into the line. Off: both lost (0.7.7).
-static bool g_locked_keep_fix = true;
-COOP_FIX("core.ui_locked_edit_keep", "BUG-0551", g_locked_keep_fix, "ui: the chat line typed under the game saved box keeps its typing over the mod's own click on the box and a held frame");
+// after the click in its frame go into the line.
 
 static void locked_edit_tick(bool clicked)
 {
     std::u16string after;
     std::u16string chars = mouse::take_chars(&after);
-    if (clicked && g_locked_keep_fix && g_locked_edit && mouse::last_click_own())
+    if (clicked && g_locked_edit && mouse::last_click_own())
         clicked = false; // the mod confirmed the game's box: the player goes on typing
     if (clicked) {
         g_locked_edit = nullptr;
-        if (g_locked_edit_fix && mouse::g_fix && g_want_open && D.root && sui::visible(D.root) && clicks_locked()) {
+        if (mouse::g_fix && g_want_open && D.root && sui::visible(D.root) && clicks_locked()) {
             int cx = 0, cy = 0;
             mouse::last_click(cx, cy);
             for (auto& [w, n] : g_edit_max) {
@@ -673,7 +652,7 @@ static void locked_edit_tick(bool clicked)
                 }
             }
         }
-        if (!g_locked_keep_fix || !g_locked_edit || after.empty())
+        if (!g_locked_edit || after.empty())
             return; // (characters of the frame of the click before it went to whatever had the focus before)
         chars = after; // the keys after the click in the same frame (a frame held by the save)
     }
@@ -862,7 +841,7 @@ static void report_tick(double now)
 // BUG-0597: why "Send my world" sends nothing now (0: it sends; 1 no world loaded; 2 nobody joined)
 static int share_blocked()
 {
-    if (!g_share_explain_fix || A.role() != 1 || (A.vote_active && A.vote_active()) || !A.share_state)
+    if (A.role() != 1 || (A.vote_active && A.vote_active()) || !A.share_state)
         return 0; // (during a vote the button is "Start now")
     return A.share_state();
 }
@@ -1531,8 +1510,6 @@ static void refresh_lobby()
         bool me_host = A.role() == 1;
         if (!cname.empty())
             cl += cname;
-        else if (!g_creation_hint_fix)
-            cl += T("the world's own", "из мира хоста");
         else // BUG-0598: say whose it is
             cl += ck == 2 ? T("your empire's ship", "корабль вашей империи")
                   : me_host ? T("your world's species", "вид вашего мира") : T("the host's species", "вид хоста");
@@ -1540,7 +1517,7 @@ static void refresh_lobby()
             cl += T(" (the host evolves it for everybody)", " (хост развивает его для всех)");
         else if (ck != 2 && cown > 0)
             cl += std::string(T("  (in My Creations: ", "  (своих: ")) + std::to_string(cown) + ")";
-        else if (g_creation_hint_fix && ck != 2 && !me_host) { // no arrows: how to get a choice
+        else if (ck != 2 && !me_host) { // no arrows: how to get a choice
             cl += T(" (make one in an editor to pick it)", " (создайте своё в редакторе)");
             hint = true;
         }
@@ -1569,7 +1546,7 @@ static void refresh_lobby()
                              T("religious (faster conversion)", "религиозная (быстрее обращение)")};
         cl = std::string(T("My role: ", "Моя роль: ")) + rn[r & 3];
     }
-    if (g_creation_hint_fix && D.creation) { // the row is wider while it has no arrows and no buttons
+    if (D.creation) { // the row is wider while it has no arrows and no buttons
         auto& c = g_cache[D.creation];
         float x2 = hint && !giving && !roles ? 720.f : 560.f;
         if (c.box.x2 != x2 && c.left) {
@@ -1579,12 +1556,37 @@ static void refresh_lobby()
     }
     text(D.creation, cl);
     show(D.give_btn, giving && gn > 0);
-    show(D.give_next, giving && gn > 0 && !space && A.give_choices && A.give_choices() > 1);
-    text(D.give_btn, space ? std::string(T("Give 10 to ", "Дать 10: ")) + gto : std::string(T("Give to ", "Отдать ")) + gto);
+    // BUG-1050: in Space with 3-4 players ">" comes back; the jump button holds its Tribe / Civ place (520..560), so
+    // the row is cut anew there: jump 400..515, Give 520..690, ">" 694..720 (the window's inner edge, as Send)
+    bool pick = giving && gn > 0 && A.give_choices && A.give_choices() > 1;
+    bool pick_space = pick && space && A.give_pick_space && A.give_pick_space();
+    auto place = [](Win w, const Rect& r) {
+        if (w && (std::abs(sui::area(w).x1 - r.x1) > 0.5f || std::abs(sui::area(w).x2 - r.x2) > 0.5f))
+            sui::set_area(w, r);
+    };
+    std::string give_cap = space ? std::string(T("Give 10 to ", "Дать 10: ")) + gto : std::string(T("Give to ", "Отдать ")) + gto;
     std::string jto;
     bool jump = A.jump && A.jump(jto);
+    std::string jump_cap = std::string(T("Jump to ", "К звезде: ")) + jto;
+    Rect r_next = pick_space ? Rect{694, 430, 720, 460} : Rect{520, 430, 560, 460};
+    Rect r_give = pick_space ? Rect{520, 430, 690, 460} : Rect{570, 430, 720, 460};
+    Rect r_jump = pick_space ? Rect{400, 430, 515, 460} : Rect{400, 430, 560, 460};
+    if (g_give_fit_fix) { // BUG-1062: right to left, each button as wide as its caption needs (+48: the button's text
+        // borders are 23 px left and right, IButton +0x50: docs/08-ui.md#ui-give-fit)
+        auto need = [](const std::string& c, float base) { return std::max(base, std::round(caption_width(demo_text(c)) + 48)); };
+        r_give.x1 = r_give.x2 - need(give_cap, r_give.x2 - r_give.x1);
+        if (pick && !space) // Tribe / Civ: ">" left of the give button
+            r_next = Rect{r_give.x1 - 50, 430, r_give.x1 - 10, 460};
+        float jx2 = std::min(r_jump.x2, (giving && gn > 0 ? r_give.x1 : 720.f) - 5);
+        r_jump = Rect{jx2 - need(jump_cap, r_jump.x2 - r_jump.x1), 430, jx2, 460};
+    }
+    place(D.give_next, r_next);
+    place(D.give_btn, r_give);
+    place(D.jump_btn, r_jump);
+    show(D.give_next, pick && (!space || pick_space));
+    text(D.give_btn, give_cap);
     show(D.jump_btn, jump);
-    text(D.jump_btn, std::string(T("Jump to ", "К звезде: ")) + jto);
+    text(D.jump_btn, jump_cap);
     bool can = (!cl.empty() && !giving && ck != 2 && cown > 0) || roles;
     show(D.creation_prev, can);
     show(D.creation_next, can);
@@ -1608,7 +1610,7 @@ static void refresh_lobby()
     show(D.share_btn, !editing && (host || adventure));
     text(D.share_btn, adventure ? "Adventure settings" : A.vote_active && A.vote_active() ? T("Start now", "Начать сейчас") : T("Send my world", "Отправить мир"));
     if(waiting) text(D.share_btn,"Cancel adventure");
-    enable(D.share_btn, adventure || waiting || !share_why || !g_share_explain_fix);
+    enable(D.share_btn, adventure || waiting || !share_why);
     text(D.leave_btn, host ? T("Stop hosting", "Закрыть игру") : T("Leave", "Выйти"));
     show(D.ask_btn, host);
     // F4 (BUG-0767): the guest's question and the host's line about the round, in the status line
@@ -2065,6 +2067,7 @@ static void pause_menu_tick()
 // applied at the end of every refresh, so the page logic cannot put it back
 struct Nudge {
     float dx = 0, dy = 0;
+    float dw = 0; // BUG-1065's twin: the width changed by this much (a caption that no longer fits)
     bool hide = false;
     bool have_base = false;
     Rect base{};
@@ -2085,7 +2088,7 @@ static void apply_test_nudges()
         if (n.hide)
             sui::set_visible(w, false);
         else
-            sui::set_area(w, Rect{n.base.x1 + n.dx, n.base.y1 + n.dy, n.base.x2 + n.dx, n.base.y2 + n.dy});
+            sui::set_area(w, Rect{n.base.x1 + n.dx, n.base.y1 + n.dy, n.base.x2 + n.dx + n.dw, n.base.y2 + n.dy});
     }
 }
 
@@ -2269,6 +2272,13 @@ void open_editor()
 
 bool is_open() { return g_want_open; }
 
+void test_reset()
+{
+    g_settings_page = false;
+    g_space_page = false;
+    open(false);
+}
+
 void open_lobby()
 {
     g_settings_page = false;
@@ -2290,6 +2300,7 @@ bool step_aside(int x, int y, double secs)
     return true;
 }
 int input_lock_now() { return input_lock(); }
+bool game_modal_up() { return game_modal() != nullptr; }
 
 void tick()
 {
@@ -2555,7 +2566,7 @@ std::string widgets_state()
     return s;
 }
 
-std::string test_nudge(const std::string& name, float dx, float dy, bool hide)
+std::string test_nudge(const std::string& name, float dx, float dy, bool hide, float dw)
 {
     if (name == "off") { // every nudged control back to its place
         for (auto& [nm, n] : g_nudges) {
@@ -2572,10 +2583,11 @@ std::string test_nudge(const std::string& name, float dx, float dy, bool hide)
     Nudge& n = g_nudges[name];
     n.dx = dx;
     n.dy = dy;
+    n.dw = dw;
     n.hide = hide;
     g_dirty = true;
-    char b[128];
-    snprintf(b, sizeof b, "ui: %s %s (%.0f, %.0f)", name.c_str(), hide ? "hidden" : "moved by", dx, dy);
+    char b[160];
+    snprintf(b, sizeof b, "ui: %s %s (%.0f, %.0f) width %+.0f", name.c_str(), hide ? "hidden" : "moved by", dx, dy, dw);
     return b;
 }
 

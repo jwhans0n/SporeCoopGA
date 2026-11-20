@@ -14,41 +14,54 @@ after the host's world was loaded again, and the swap came at least 3 s after th
 
   coop_world_reload.py [--without-fix]   (--without-fix: coop.npc worldfix off, must FAIL)
 """
-import re
 import sys
 import time
 
+import creations_state
+from harness import field, waiter
+import lane
 from twoinst import Checks, shot, start
 import twoinst
 
 
-def field(out, pat):
-    m = re.search(pat, out)
-    return m.group(1) if m else None
+def guest_loads():
+    """the guest game's world loads so far (its whole log file: the console's `log 400` ring dropped the round before
+    once the log was busier, BUG-1171)"""
+    try:
+        with open(lane.game_log(lane.GUEST), 'rb') as f:
+            return f.read().decode('utf-8', 'replace').count('world: loading ')
+    except OSError:
+        return -1
 
 
 def swaps(con):
     return int(field(con.call('coop.status')['out'], r'avatar_swaps=(\d+)') or -1)
 
 
-def wait(fn, t):
-    t0 = time.time()
-    while time.time() - t0 < t:
-        v = fn()
-        if v:
-            return v
-        time.sleep(1)
-    return None
+wait = waiter(step=1)
 
 
 def main():
-    without = '--without-fix' in sys.argv
     host, guest = start()
+    # BUG-1176: the cold start puts the guest's worlds.ini back to the fixture state (no record: the guest plays the
+    # world's species, the host's); this test needs the guest's own creature, so it chooses it (the newest of
+    # creations-guest) and puts the profile back at the end
+    st0 = creations_state.save(guest)
+    print('  guest profile before:', st0, '| chose', creations_state.choose_own(guest), flush=True)
+    try:
+        return run(host, guest)
+    finally:
+        creations_state.restore(guest, st0)
+
+
+def run(host, guest):
+    without = '--without-fix' in sys.argv
     ck = Checks()
     if without:
         print(' ', guest.call('coop.npc worldfix off')['out'].strip())
-    ok = wait(lambda: swaps(guest) >= 1, 40)
     mine = field(guest.call('coop.creations')['out'], r"mine creature: ([0-9A-F]{8})")
+    # (a warm game counts the swaps of the test before it: wait for the own creature itself, BUG-1171)
+    ok = wait(lambda: swaps(guest) >= 1 and field(guest.call('coop.avatar')['out'], r'key=0x([0-9A-F]{8})') == mine, 40)
     av = field(guest.call('coop.avatar')['out'], r'key=0x([0-9A-F]{8})')
     h_av = field(host.call('coop.avatar')['out'], r'key=0x([0-9A-F]{8})')
     print(f'  guest own {mine}, guest avatar {av}, host avatar {h_av}')
@@ -57,11 +70,11 @@ def main():
     for rnd in (1, 2):
         n0 = swaps(guest)
         print(' ', guest.call('coop.creations sameaddr')['out'].strip())
-        loads0 = guest.call('log 400')['out'].count('world: loading ')
+        loads0 = guest_loads()
         out = host.call('coop.save')['out']
         ck('saved' in out, f'round {rnd}: the host saved ({out.strip()})')
         host.call('coop.share')
-        loaded = wait(lambda: guest.call('log 400')['out'].count('world: loading ') > loads0, 120)
+        loaded = wait(lambda: guest_loads() > loads0 >= 0, 120)
         ok = loaded and twoinst.wait_guest_in(host, guest)
         ck(ok, f'round {rnd}: the guest loaded the host\'s world again')
         t_in = time.time()

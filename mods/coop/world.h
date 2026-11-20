@@ -44,7 +44,7 @@ void reset_shares();
 void on_session_end();
 // guest: a world load waits (for the galaxy menu or for an editor to close): no own editor now
 bool load_queued();
-extern bool g_share_reset_fix; // tests: `coop.corefix share_reset 0` = the old behaviour
+extern bool g_share_reset_fix; // tests: `coop.fix core.share_reset off` = the old behaviour
 // host: stream queued transfers (call every frame)
 void tick(net::Session& s);
 void guest_tick(); // guests: load a world that arrived while in an editor
@@ -76,6 +76,7 @@ bool host_reloading(); // BUG-0332: the host's reload of the new Tribe world run
 // the galaxy menu's intro cinematic GGE_Intro plays (docs/re/space.md 7.9; ~10 s starting ~16 s after
 // the menu came up, its input lock drops all clicks on the menu); callable in the frame
 bool menu_intro_playing();
+bool menu_movie_playing(); // the start-up video plays (Movie::MovieSystem +0x34, BUG-1218)
 // tests (BUG-0167): the galaxy menu intro starts in the first tick of the next stage (coop.introstage)
 void arm_intro_in_stage();
 // a cinematic or a caption of the game plays (cCinematicManager +0x2C): the HUD is hidden, an editor
@@ -94,6 +95,16 @@ bool prepare_editor_entry(std::function<bool()> current, std::string& error);
 // the game time stands (cGameTimeManager +0x48 bit 0): the pause menu, the Sporepedia, My Collections,
 // a planner (busy.h kPaused); callable in the frame
 bool time_paused();
+// BUG-1101: the game's pause reasons counted now (cGameTimeManager +0x4C map, +0x68 counts; non-zero ones), the count
+// of one, and the game's own Pause / Resume of one (docs/re/tribe.md#tribe-game-time-pauses); callable in the frame
+std::vector<std::pair<uint32_t, int>> pause_reasons();
+void time_pause(uint32_t reason, bool on);
+// BUG-1101: the cinematic manager's own pause (+0x160: 0 none, 1 reason 0x4BF38A5, 2 reason 0x600C4AE), set by the
+// cinematic scripts' "pause" step (message 0x46AC0AC) and lifted by "resume" (0x46AC986) or the cinematic's end
+uint32_t cinematic_pause_slot();
+// the game's own "resume" of that pause (MessageSend 0x46AC986: Resume of the slot's reason, the slot 0); outside
+// the frame. True if the slot was set
+bool cinematic_pause_resume();
 
 // BUG-0225 (#159): the save file of the game being played, "<slot dir>\<planet>.spo" in lower case
 // (UTF-8): the planet file alone is not unique (co-op worlds alternate between two slots of the same

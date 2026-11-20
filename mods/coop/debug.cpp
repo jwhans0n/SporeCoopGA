@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <unordered_map>
+#include <initializer_list>
 #include <vector>
 #include <windows.h>
 
@@ -28,6 +29,18 @@ namespace {
 SkMod* g_self;
 }
 #define SAY(...) H->out_printf(out, __VA_ARGS__)
+
+// BUG-1030: debug commands called H->sym() results without a check (a missing name: a call to address 0 on an unknown
+// build). True when every name is known; else says which one is missing.
+static bool need_syms(SkOut* out, std::initializer_list<const char*> names)
+{
+    for (const char* n : names)
+        if (!H->sym(n)) {
+            SAY("no symbol %s in this build\n", n);
+            return false;
+        }
+    return true;
+}
 
 namespace {
 int c_save(void*, int argc, const char* const* argv, SkOut* out)
@@ -69,8 +82,40 @@ static void pause_walk(const uint8_t* n, const uint8_t* anchor, const uint8_t* a
         out += b;
     pause_walk(*(const uint8_t* const*)n, anchor, arr, out, depth + 1);
 }
-int c_pauses(void*, int, const char* const*, SkOut* out)
+// `coop.pauses trace` (tests, BUG-1101): every Pause / Resume of the game's time is logged with its reason, the
+// count after it and the caller (the return address), to name who leaves a reason counted
+typedef int(SK_THISCALL* TimeReason_t)(void*, uint32_t);
+static TimeReason_t o_TimePause, o_TimeResume;
+static int SK_THISCALL h_TimePause(void* tm, uint32_t reason)
 {
+    uintptr_t ret = (uintptr_t)__builtin_return_address(0);
+    int n = o_TimePause(tm, reason);
+    H->log(g_self, SK_INFO, "pauses: Pause(%08X) -> %d from %08X (BUG-1101 trace)", reason, n, (unsigned)ret);
+    return n;
+}
+static int SK_THISCALL h_TimeResume(void* tm, uint32_t reason)
+{
+    uintptr_t ret = (uintptr_t)__builtin_return_address(0);
+    int n = o_TimeResume(tm, reason);
+    H->log(g_self, SK_INFO, "pauses: Resume(%08X) -> %d from %08X (BUG-1101 trace)", reason, n, (unsigned)ret);
+    return n;
+}
+int c_pauses(void*, int argc, const char* const* argv, SkOut* out)
+{
+    if (argc > 1 && !strcmp(argv[1], "trace")) {
+        if (!o_TimePause) {
+            H->hook_create(g_self, (void*)H->sym("Simulator::cGameTimeManager::Pause"), (void*)h_TimePause, (void**)&o_TimePause);
+            H->hook_create(g_self, (void*)H->sym("Simulator::cGameTimeManager::Resume"), (void*)h_TimeResume, (void**)&o_TimeResume);
+        }
+        SAY("pause trace %s", o_TimePause && o_TimeResume ? "on" : "failed");
+        return o_TimePause && o_TimeResume ? 0 : 1;
+    }
+    if (argc > 2 && (!strcmp(argv[1], "add") || !strcmp(argv[1], "sub"))) { // tests (BUG-1101): one raw Pause / Resume
+        uint32_t r = (uint32_t)strtoul(argv[2], nullptr, 16);
+        world::time_pause(r, !strcmp(argv[1], "add"));
+        SAY("%s %08X: paused=%d", argv[1], r, (int)world::time_paused());
+        return 0;
+    }
     uintptr_t get = H->sym("Simulator::cGameTimeManager::Get");
     const uint8_t* tm = get ? skg::cdecl_call<const uint8_t*>(get) : nullptr;
     if (!tm || !skg::readable(tm, 0x6C)) {
@@ -235,7 +280,7 @@ int c_spotcut(void*, int, const char* const*, SkOut* out)
     return 0;
 }
 
-// tests (BUG-0686): game.ufo_model forgets the last known ship model
+// tests (BUG-0686): the ship model guard (BUG-0546) forgets the last known ship model
 int c_ufoforget(void*, int, const char* const*, SkOut* out)
 {
     SAY("%s", gamefixes::ufo_forget().c_str());
@@ -246,8 +291,60 @@ int c_ufoforget(void*, int, const char* const*, SkOut* out)
 // the point's own radius: how high a position is over this game's ground
 int c_ground(void*, int argc, const char* const* argv, SkOut* out)
 {
+    if (argc > 5 && !strcmp(argv[1], "steep")) {
+        // tests (BUG-1228): coop.ground steep <x> <y> <z> <r> [base m] [n]: the steepest ground within r m of the point (a
+        // grid of 2 m, r / 60 m from r = 120 m on; the slope is the rise of the terrain over `base` m (default 1) to each side along the ground), as a
+        // point on the ground and the slope in degrees; then the next steepest grid points over 30 degrees ("steep" lines,
+        // the steepest first: at most n, default 8)
+        net::Vec3 c{(float)atof(argv[2]), (float)atof(argv[3]), (float)atof(argv[4])};
+        float r = (float)atof(argv[5]), cl = std::sqrt(c.x * c.x + c.y * c.y + c.z * c.z);
+        float base = argc > 6 ? std::max(0.5f, (float)atof(argv[6])) : 1.f;
+        int most = argc > 7 ? std::max(1, atoi(argv[7])) : 8;
+        if (cl < 1.f || r <= 0) {
+            SAY("no place");
+            return 1;
+        }
+        net::Vec3 up{c.x / cl, c.y / cl, c.z / cl};
+        net::Vec3 ax = std::fabs(up.z) < 0.9f ? net::Vec3{0, 0, 1} : net::Vec3{1, 0, 0};
+        net::Vec3 e1{up.y * ax.z - up.z * ax.y, up.z * ax.x - up.x * ax.z, up.x * ax.y - up.y * ax.x};
+        float l1 = std::sqrt(e1.x * e1.x + e1.y * e1.y + e1.z * e1.z);
+        e1 = {e1.x / l1, e1.y / l1, e1.z / l1};
+        net::Vec3 e2{up.y * e1.z - up.z * e1.y, up.z * e1.x - up.x * e1.z, up.x * e1.y - up.y * e1.x};
+        auto at = [&](float a, float b) { return net::Vec3{c.x + e1.x * a + e2.x * b, c.y + e1.y * a + e2.y * b, c.z + e1.z * a + e2.z * b}; };
+        struct S {
+            float deg;
+            net::Vec3 p;
+        };
+        std::vector<S> found;
+        const float step = std::max(2.f, r / 60.f);
+        for (float a = -r; a <= r; a += step)
+            for (float b = -r; b <= r; b += step) {
+                if (a * a + b * b > r * r)
+                    continue;
+                float g0 = game::ground_radius(at(a, b));
+                float ga = game::ground_radius(at(a + base, b)) - game::ground_radius(at(a - base, b));
+                float gb = game::ground_radius(at(a, b + base)) - game::ground_radius(at(a, b - base));
+                if (g0 <= 0)
+                    continue;
+                float deg = std::atan(std::sqrt(ga * ga + gb * gb) / (2.f * base)) * 57.29578f;
+                net::Vec3 q = at(a, b);
+                float ql = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z);
+                found.push_back({deg, {q.x / ql * g0, q.y / ql * g0, q.z / ql * g0}});
+            }
+        std::sort(found.begin(), found.end(), [](const S& x, const S& y) { return x.deg > y.deg; });
+        int n = 0;
+        for (const S& s : found) {
+            if (n >= most || (n > 0 && s.deg < 30.f))
+                break;
+            SAY("steep %.1f deg at (%.2f %.2f %.2f)\n", s.deg, s.p.x, s.p.y, s.p.z);
+            n++;
+        }
+        if (!n)
+            SAY("no ground");
+        return 0;
+    }
     if (argc < 4) {
-        SAY("usage: coop.ground <x> <y> <z>");
+        SAY("usage: coop.ground <x> <y> <z> | steep <x> <y> <z> <r> [base m] [n]");
         return 1;
     }
     net::Vec3 p{(float)atof(argv[1]), (float)atof(argv[2]), (float)atof(argv[3])};
@@ -265,6 +362,9 @@ int c_ground(void*, int argc, const char* const* argv, SkOut* out)
         if (sr > 1.f)
             SAY(" surface %.2f over_surface %.2f", sr, r - sr);
     }
+    float w = game::water_radius(); // BUG-1088: the planet's water surface (radius), over water where it is above the ground
+    if (w > 1.f)
+        SAY(" water %.2f over_water %.2f", w, r - std::max(w, g));
     return 0;
 }
 
@@ -580,7 +680,12 @@ int c_abilities(void*, int argc, const char* const* argv, SkOut* out)
     }
     if (argc > 2 && !strcmp(argv[1], "lift")) { // put it <m> higher (its fall is the second half of a jump)
         net::Vec3 p = game::position(av);
-        float r = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z), k = (r + (float)atof(argv[2])) / r;
+        float r = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+        if (!(r > 1e-3f)) { // BUG-1030: no direction "up" at the planet's centre (k was a division by 0)
+            SAY("no lift: the position is at the planet's centre\n");
+            return 1;
+        }
+        float k = (r + (float)atof(argv[2])) / r;
         game::teleport(av, {p.x * k, p.y * k, p.z * k}, game::orientation(av));
         SAY("lifted %.2f\n", (float)atof(argv[2]));
         return 0;
@@ -666,6 +771,8 @@ int c_cell(void*, int argc, const char* const* argv, SkOut* out)
         uint8_t* me = data + me_slot * 0x398;
         float* mp = (float*)(me + 0x4C);
         Vector3 pos{mp[0] + (argc > 3 ? (float)atof(argv[3]) : 4.f), mp[1] + (argc > 4 ? (float)atof(argv[4]) : 0.f), mp[2]};
+        if (!need_syms(out, {"Simulator::Cell::CreateCellObject"}))
+            return 1;
         uint32_t idx = cdecl_call<uint32_t>(H->sym("Simulator::Cell::CreateCellObject"), *(void**)(g + 0x40FC), &pos, 0.f,
                                             *(void**)(src + 0x108), argc > 5 ? atoi(argv[5]) : *(int*)(src + 0x358), 1.f, 1.f, 1, (void*)nullptr, 0);
         if (argc > 6) // tests (BUG-0455): the guests get this cell with a model instance they do not have
@@ -680,6 +787,8 @@ int c_cell(void*, int argc, const char* const* argv, SkOut* out)
 int c_cam(void*, int argc, const char* const* argv, SkOut* out)
 {
     using namespace skg;
+    if (!need_syms(out, {"App::IGameModeManager::Get", "App::cViewer::GetCameraToPoint"}))
+        return 1;
     uintptr_t mmget = H->sym("App::IGameModeManager::Get");
     void* mm = cdecl_call<void*>(mmget);
     void* viewer = mm ? vcall<void*>(mm, 0x58 / 4) : nullptr;
@@ -731,12 +840,11 @@ int c_cam(void*, int argc, const char* const* argv, SkOut* out)
 // 0x400000 addresses: "self" is where the thread was, "stack" counts each address once per sample
 // (an inclusive profile of the callers). Runs on the console thread; the game goes on running.
 namespace {
-std::atomic<DWORD> g_main_tid{0};
 int c_sample(void*, int argc, const char* const* argv, SkOut* out)
 {
     int ms = argc > 1 ? atoi(argv[1]) : 2000, top = argc > 2 ? atoi(argv[2]) : 25;
     ms = std::clamp(ms, 100, 30000);
-    DWORD tid = g_main_tid.load();
+    DWORD tid = game::main_thread(); // A14: the one main-thread id
     if (tid == GetCurrentThreadId()) {
         SAY("not on the main thread");
         return 1;
@@ -832,7 +940,6 @@ void init(const SkHost*, SkMod*); // test_view.cpp: coop.view
 void coop_register_debug_commands(const SkHost* host, SkMod* self)
 {
     H = host;
-    host->subscribe(self, SK_EV_FRAME, [](void*, int, void*) { g_main_tid.store(GetCurrentThreadId()); }, nullptr);
     host->command_add(self, "coop.sample", "coop.sample [ms] [top] - sample the main thread's EIP and stack (RE, BUG-0355)", c_sample,
                       nullptr, SK_CMD_ANY_THREAD | SK_CMD_NOT_ON_MAIN);
     void coop_register_debug_commands2(const SkHost*, SkMod*);
@@ -865,6 +972,8 @@ int c_w2s(void*, int, const char* const*, SkOut* out)
     SAY("avatar (%.2f %.2f %.2f) -> ok=%d screen=(%.1f %.1f)\n", p.x, p.y, p.z, ok, sc[0], sc[1]);
     // check with the game's own inverse: ray through that pixel should pass near the avatar
     using namespace skg;
+    if (!need_syms(out, {"App::IGameModeManager::Get", "App::cViewer::GetCameraToPoint"}))
+        return 1;
     void* mm = cdecl_call<void*>(manager_get);
     void* viewer = mm ? vcall<void*>(mm, 0x58 / 4) : nullptr;
     if (!viewer) {
@@ -887,6 +996,9 @@ int c_w2s(void*, int, const char* const*, SkOut* out)
 namespace {
 int c_dna(void*, int argc, const char* const* argv, SkOut* out)
 {
+    if (argc > 2 && (!strcmp(argv[1], "add") || !strcmp(argv[1], "gain")) &&
+        !need_syms(out, {"Simulator::cCreatureGameData::AddEvolutionPoints"}))
+        return 1;
     if (argc > 2 && !strcmp(argv[1], "add")) {
         // simulate a gain as the game would report it (goes through the coop hook), exactly N: test
         // setups (not scaled by the party's pace, BUG-0510)
@@ -938,14 +1050,35 @@ bool SK_THISCALL h_LoadGame(void* self, const void* params)
     return o_LoadGame(self, params);
 }
 
+// BUG-1035: outside the frame (it closes and reopens the save database and loads a game); every symbol and manager
+// checked; the arguments converted from UTF-8 (they were widened byte by byte: a non-ASCII slot path was wrong)
 int c_loadworld(void*, int argc, const char* const* argv, SkOut* out)
 {
     if (argc < 3) {
         SAY("usage: coop.loadworld <windows slot dir ending with \\> <Planet.spo>");
         return 1;
     }
-    auto w = [](const char* s) { std::u16string r; for (; *s; s++) r += (char16_t)(unsigned char)*s; return r; };
+    if (!need_syms(out, {"Resource::GetDatabaseByID", "Simulator::cStarManager::Get",
+                         "Simulator::cStarManager::ReadStarsFromSaveDB", "Simulator::cGamePersistenceManager::Get",
+                         "Simulator::cGamePersistenceManager::LoadGameByName"}))
+        return 1;
+    auto w = [](const char* s) {
+        std::u16string r;
+        int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
+        if (n > 1) {
+            std::wstring t(n, L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, s, -1, &t[0], n);
+            r.assign(t.begin(), t.begin() + (n - 1));
+        }
+        return r;
+    };
     std::u16string dir = w(argv[1]), name = w(argv[2]);
+    if (dir.empty() || name.empty()) {
+        SAY("the slot dir or the planet name is not valid UTF-8");
+        return 1;
+    }
+    void* mgr = skg::cdecl_call<void*>(H->sym("Simulator::cGamePersistenceManager::Get"));
+    if (!mgr) { SAY("no game persistence manager"); return 1; }
     void* db = skg::cdecl_call<void*>(H->sym("Resource::GetDatabaseByID"), 0x4729A47u);
     if (!db) { SAY("no save DB"); return 1; }
     const char16_t* old = skg::vcall<const char16_t*>(db, 0x28 / 4);
@@ -957,7 +1090,6 @@ int c_loadworld(void*, int argc, const char* const* argv, SkOut* out)
     if (void* sm = skg::cdecl_call<void*>(H->sym("Simulator::cStarManager::Get")))
         skg::thiscall<void>(H->sym("Simulator::cStarManager::ReadStarsFromSaveDB"), sm);
     SAY("access=%d close=%d open=%d\n", acc, closed, opened);
-    void* mgr = skg::cdecl_call<void*>(H->sym("Simulator::cGamePersistenceManager::Get"));
     skg::thiscall<void>(H->sym("Simulator::cGamePersistenceManager::LoadGameByName"), mgr, name.c_str());
     SAY("save DB %s -> %s (SetLocation %d), loading %s", olds.c_str(), argv[1], ok, argv[2]);
     return 0;
@@ -965,6 +1097,8 @@ int c_loadworld(void*, int argc, const char* const* argv, SkOut* out)
 
 int c_savedb(void*, int, const char* const*, SkOut* out)
 {
+    if (!need_syms(out, {"Resource::GetDatabaseByID"}))
+        return 1;
     void* db = skg::cdecl_call<void*>(H->sym("Resource::GetDatabaseByID"), 0x4729A47u);
     if (!db) { SAY("no save DB"); return 1; }
     const char16_t* loc = skg::vcall<const char16_t*>(db, 0x28 / 4);
@@ -976,6 +1110,8 @@ int c_savedb(void*, int, const char* const*, SkOut* out)
 
 int c_loadhook(void*, int, const char* const*, SkOut* out)
 {
+    if (!need_syms(out, {"Simulator::cGamePersistenceManager::LoadGame"}))
+        return 1;
     if (!o_LoadGame)
         H->hook_create(g_self, (void*)H->sym("Simulator::cGamePersistenceManager::LoadGame"), (void*)h_LoadGame, (void**)&o_LoadGame);
     SAY("LoadGame logging hook installed");
@@ -1017,7 +1153,7 @@ void coop_register_debug_commands2(const SkHost* host, SkMod* self)
     g_self = self;
     terrain_diag::init(host, self); // BUG-0332
     host->command_add(self, "coop.loadworld", "debug: point the save DB to a slot dir and load a planet", c_loadworld,
-                      nullptr, SK_CMD_MAIN_THREAD);
+                      nullptr, SK_CMD_OUTSIDE_FRAME); // BUG-1035: not in the frame
     host->command_add(self, "coop.savedb", "debug: current save folder database", c_savedb, nullptr,
                       SK_CMD_MAIN_THREAD);
     host->command_add(self, "coop.loadhook", "debug: log cGamePersistenceManager::LoadGame parameters", c_loadhook,
@@ -1028,7 +1164,7 @@ void coop_register_debug_commands2(const SkHost* host, SkMod* self)
                       nullptr, SK_CMD_MAIN_THREAD);
     host->command_add(self, "coop.abilities", "coop.abilities [play <i> | lift <m> | halt | put <x> <y> <z> | goto <x> <y> <z> | ground <x> <y> <z> | target none|<puppet address> [any] | walk [raw] | walkto <x> <y> <z>] - the own avatar's abilities (tests, BUG-0366)", c_abilities,
                       nullptr, SK_CMD_MAIN_THREAD);
-    host->command_add(self, "coop.pauses", "coop.pauses - the game's pause reasons counted now (tests, BUG-0313)", c_pauses,
+    host->command_add(self, "coop.pauses", "coop.pauses [trace | add <hex> | sub <hex>] - the game's pause reasons counted now (tests, BUG-0313); trace: log every Pause / Resume; add / sub: one Pause / Resume of a reason (BUG-1101)", c_pauses,
                       nullptr, SK_CMD_MAIN_THREAD);
     host->command_add(self, "coop.msglisteners", "coop.msglisteners [hex id] - the game's listeners of a message (RE, BUG-0956; default 0x212D3E7, the mode change)",
                       c_msglisteners, nullptr, SK_CMD_MAIN_THREAD);

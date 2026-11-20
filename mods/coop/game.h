@@ -10,7 +10,7 @@
 
 namespace game {
 
-// cCreatureAnimal layout (GOG 2016 build, matches ModAPI March2017 headers)
+// cCreatureAnimal layout (ModAPI March2017 headers; the same in the GOG 2024 build)
 constexpr uintptr_t kSpatialOff = 0xC0;     // cLocomotiveObject/cSpatialObject subobject
 constexpr uintptr_t kPosOff = 0xC0 + 0x04;  // cSpatialObject::mPosition
 constexpr uintptr_t kRotOff = 0xC0 + 0x10;  // cSpatialObject::mOrientation
@@ -28,6 +28,13 @@ constexpr uintptr_t kNounAvatarHerdOff = 0x58; // cGameNounManager::mpAvatarHerd
 constexpr uintptr_t kHerdOff = 0x1674;     // cCreatureAnimal::mHerd
 
 bool init(const SkHost* host, SkMod* mod); // resolve symbols; false = coop disabled
+// A14 (CORE-6, BUG-1130): the game's main thread, one id for every module (docs/01-architecture.md#arch-threads).
+// on_main(): the calling thread is the main thread (false before init); a hook the game may call from another thread
+// starts with `if (!game::on_main()) return <the original's result>;`. main_thread(): its id (0 before init).
+bool on_main();
+unsigned long main_thread();
+void note_main_thread();   // init() and the frame (stage_epoch_tick, set_effect_relay_enabled): main thread only
+uint64_t off_main_calls(); // game calls through the skg helpers made off the main thread (coop.threads lists them)
 bool ready();                              // symbols ok
 uint32_t mode_id();
 bool in_creature_stage();
@@ -40,7 +47,7 @@ void set_world_epoch_fix(bool on);
 // a received world, another stage raise it; an editor visit keeps it). stage_epoch_tick() once per
 // frame at the very top of on_frame, before any message or module tick; stage_epoch(kTribe) etc.
 // read it. stage_epoch(kCreature) counts the same mode routes as world_epoch() without its avatar
-// rule. No fix switch: callers gate their own use (tribe.editor_world, civ.world_epoch).
+// rule. No fix switch: callers gate their own use (BUG-0217, BUG-0223).
 void stage_epoch_tick();
 uint32_t stage_epoch(uint32_t stage_mode);
 void* avatar();
@@ -83,14 +90,15 @@ void destroy_untracked(void* c); // tests (BUG-0507): the game's destroy without
 void destroy_instance(void* obj); // cGameNounManager::DestroyInstance of a game object that is no creature (a fruit, BUG-0584)
 void destroy_deferred_tick(); // once per frame
 void set_destroy_defer(bool on); // tests (off: at once)
-void set_defer_keeps_puppet(bool on); // tests (off: a deferred puppet leaves the puppet list at once, BUG-0066)
 bool cinematic_playing(); // cCinematicManager +0x2C != 0 (W2: no destroy of a village meanwhile)
 bool destroy_pending(void* c);     // queued by destroy_creature, still there
 std::string destroy_deferred_status();
 // BUG-0614 (game.finite_pose): a received pose with NaN / Inf; counted, false with the switch off
-// BUG-0434 (creature.culled_ground): this frame's target of a puppet, lifted to after the physics update when the game grounds it
+// BUG-0434: this frame's target of a puppet, lifted to after the physics update when the game grounds it
 void mound_hold(void* c, const net::Vec3& tgt);
 void after_physics();
+uint32_t air_culled_lifts(); // BUG-1082: held creatures put back up after the physics update
+void test_hang(void* c, float agl, double secs); // tests (BUG-1082): held at agl m over the terrain after each physics update
 bool pose_bad(const net::Vec3& pos, const net::Quat& rot, const net::Vec3& vel);
 void teleport(void* c, const net::Vec3& pos, const net::Quat& rot);
 // BUG-0360: teleport without the teleport mark (+0xB5D, set by vt 0x44 0xC0C040): the locomotion takes
@@ -112,6 +120,7 @@ float ground_radius(const net::Vec3& pos);
 // the surface on pos's radial line as the game's snap finds it (cPlanetModel_SurfacePoint: the terrain or a collision
 // object over it, a nest mound, a rock; only where the collision is loaded, near this game's camera); 0: none
 float surface_radius(const net::Vec3& pos);
+float water_radius(); // BUG-1088: the planet's water surface radius (0: unknown)
 void set_scale(void* c, float s);
 // BUG-0360 (coop.track): the creature's Anim::AnimatedCreature (cCreatureBase +0xB54): where its
 // model is drawn (+0x04) and the id of its current animation (vt 0x58 GetCurrentAnimation, 0 when
@@ -127,8 +136,22 @@ void set_grounded(void* c, bool on);
 // BUG-0532: puppet c is held in the air at pos (modes.cpp, every frame while the partner is airborne): put back there
 // and marked not grounded right after an animation start or an update of the game that grounded it
 void air_hold(void* c, bool on, const net::Vec3& pos = {}, const net::Quat& rot = {}, const net::Vec3& vel = {});
+// BUG-0440 (npc.proxy_hold): a body placed with the teleport mark this frame (drive::walk_place held) is put back where
+// it was placed when the game's next creature update or physics update moves it farther from `aim` (its target) by
+// more than back_m (its own walk in one frame: a turn or a reversal stays). An entry lives for one frame (place_hold
+// again every frame it is held). still (BUG-1228, npc.slope_hold): a standing body, put back with game::place (no
+// teleport mark: its idle animation goes on) and its velocity cleared
+void place_hold(void* c, const net::Vec3& pos, const net::Quat& rot, const net::Vec3& aim, float back_m, bool still = false);
+uint32_t place_holds_kept(); // how often an update's move back was undone
+uint32_t still_holds_kept(); // BUG-1228: of them, still holds
+void place_release(void* c);  // BUG-1228: its hold ends now (not up to 0.1 s later)
+// tests (BUG-0440, `coop.npc pushback`): in the game's next creature update (before it) c is moved m/s x the update's
+// time along dir (the class of the reports: the game moves a held proxy back while it is placed every frame)
+void test_push(void* c, const net::Vec3& dir, float mps);
 void air_release_all();
 std::string air_status();
+// BUG-1106 (diagnostics): c's hold in the air, if any (its position): an old hold puts a creature back there
+bool air_held(void* c, net::Vec3* pos = nullptr);
 
 // Animation events: called for every PlayAnimation/PlayAnimationTo on any creature.
 using AnimListener = void (*)(void* creature, uint32_t anim_id, int block, bool disable_blend, bool to_target);
@@ -253,6 +276,9 @@ void* species_by_key(const Key& k);
 void** species_slot(const Key& k);
 void* create_herd(const net::Vec3& pos, void* species);
 void* own_herd_for(void* species); // an existing herd like create_herd's of this species, or null
+// BUG-1067: a herd create_herd made (or own_herd_for handed out) in this process, the same object (its serial);
+// the game's own herds look the same in Civ (no archetype, no nest)
+bool our_herd(void* h);
 void* herd_of(void* c);
 // tests (BUG-0790): a hit through the hook with any combatant as the attacker (a UFO's +0x508, a vehicle's)
 void hit_by_combatant(void* c, float dmg, int type, void* attacker_combatant, uint32_t pol);

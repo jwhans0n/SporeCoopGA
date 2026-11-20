@@ -3,7 +3,7 @@ id: BUG-1241
 title: Gradient height Undo restores Planet data but leaves local native Color UI stale
 status: fixed
 kind: bug
-stage: GA shared editor
+stage: Editor
 reported: 2026-11-03
 source: C57 native gradient height R100 to101 Undo102
 role: host and guest

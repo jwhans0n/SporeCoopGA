@@ -20,7 +20,7 @@ mate with `coop.pool mate tp`; its editor request waits for the vote: `coop.vote
 stays in its pool; cancel after the checks). It counts as away after 4 s (in Cell since
 BUG-0205; BUG-0233 had left Cell out because nothing played on there).
 
-SPORE_FIX_OFF=pool.away must FAIL (the frozen pool of 0.7.3.1: no creature moves, the 10 points are lost).
+pool.away off failed (retired in 0.7.15, BUG-1138: FAIL run 20261030-001911-fix-w9-cell-away:cell_away) (the frozen pool of 0.7.3.1: no creature moves, the 10 points are lost).
 
   SPORE_LANE=3 python3 tools/tests/coop_cell_away.py [--editor]
 """
@@ -28,13 +28,9 @@ import re
 import sys
 import time
 
+from harness import num, waiter
 from twoinst import Checks, lane_state, start
 from coop_editor_desync import CANCEL, HEART, mode
-
-
-def num(out, key):
-    m = re.search(r'\b' + key + r'=(-?\d+)', out)
-    return int(m.group(1)) if m else None
 
 
 def food(con):
@@ -55,14 +51,7 @@ def dist(a, b):
     return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
 
 
-def wait(cond, secs, step=0.5):
-    t0 = time.time()
-    while time.time() - t0 < secs:
-        r = cond()
-        if r:
-            return r
-        time.sleep(step)
-    return None
+wait = waiter(step=0.5)
 
 
 def away_line(con):
@@ -110,7 +99,7 @@ def main():
     locked = [k for k in n2 if n2[k][1]]
     print(f'  away: creatures {len(n1)} -> {len(n2)}, in both {len(both)}, moved >1 m {len(moved)}, '
           f'AI-locked {len(locked)}; {away_line(guest)}')
-    # +0x16C is printed, not checked: between two frames it read 0 on the mirrors too (lane 3, pool.away
+    # +0x16C is printed, not checked: between two frames it read 0 on the mirrors too (lane 3, pool.away (retired)
     # off), the mod sets it again every frame (guest_tick); the movement is what the player sees
     ck(len(n2) > 0, f'creatures around the guest while the host is away ({len(n2)})')
     ck(len(moved) >= 2, f'the guest\'s creatures swim by their own AI ({len(moved)} moved more than 1 m in 6 s)')

@@ -3,7 +3,7 @@ id: BUG-1275
 title: 0.7.13 integration conflicts with fork UI, keepalive diagnostics and message classification
 status: fixed
 kind: bug
-stage: Integration
+stage: Tools
 reported: 2026-11-13
 source: Pinned upstream integration build
 role: both
@@ -76,3 +76,73 @@ numbers using Clang __builtin_LINE(), and remove duplicate includes/log lines.
 No transport timing, assertion or observed-state requirement is changed.
 
 Legacy fork reference: `BUG-1030` before upstream0.7.15 integration. Prior aliases and historical commit/OUT identities remain unchanged; upstream owns its independently created ticket under that number.
+
+## Upstream 0.7.15 network integration (2026-11-20)
+
+Protocol 30 retains upstream HOST_BUSY 70 and TRIBE_ANIM 71, moves Adventure to
+72 and Editor to 73, and keeps Activity 55. The generated manifest declares
+Session 2.0 and mandatory Adventure 11 / Editor 12 families at 1.0. The full
+103-byte PlayerState and the fork's shared peer lifetime, monotonic transport
+generations and bounded send-only pumps remain intact. New upstream admission,
+rate limits, rejoin identity and optional campaign-family checks are preserved.
+
+FAIL before the admission guard: `out/upstream0715/network/required-families-fail.log`,
+all 12 missing/duplicate/incompatible capability cases join incorrectly when the
+optional upstream family check is off. A second failing reproduction,
+`reconnect-required-families-fail.log`, shows an incompatible HELLO at the same
+endpoint retiring an accepted peer. The hard checks now precede rejoin eviction
+and WELCOME acceptance, independent of optional campaign checking.
+
+PASS: `net-all-shards.log` (all eight portable network shards), `validate.log`
+(all 256 message identities/classes and sender/receiver routes), and `fakepeer.log`
+(real UDP handshake, full state, chat, leave and build mismatch).
+PASS: `network-win32-focused.log`, native Win32 loopback checks for independent
+70/71/72/73 routes, strict state payload, required families in both roles, rejoin
+replacement, callbacks that restart sessions and packet delivery teardown.
+Both portable and Win32 builds use `-Wall -Wextra -Werror`.
+Windows Python proxy checks pass (7 tests); preview 16 packaging checks pass
+(16 tests), without changing an installed game. These are network/packaging
+fixtures, not native game smoke or main promotion evidence.
+
+Windows lint follow-up: relative paths used native backslashes while the
+ratchet baseline, planted-failure expectations and retired-switch history
+exclusions use repository slashes. FAIL: `network/ratchet-selftest.log` (three
+correctly detected violations reported as missed) and `network/fix-retire.log`
+(510 historical ticket/archive false positives). Canonicalize the tools' relative
+path keys and reports; keep every lifetime, guard, lifecycle and retired-switch
+check enabled. The separate 11 additional fork object_alive sites remain a real
+ratchet finding requiring native lifetime review.
+
+## Core split audit and qualification follow-up (2026-11-20)
+
+Compared the fork's 0.7.13 core additions against the 0.7.15 split across
+coop.cpp, coop_cmds.cpp, coop_state.h, session_glue.cpp, puppets.cpp, vote.cpp and
+dna.cpp. All fork-added metric commands, one-time service initialization,
+manifest routes, captain/run/movement identity fields and unanimous pause-motion
+callbacks are retained. Restored the unconditional GA world-time sender guard.
+A duplicate coop.adventure registration previously replaced the fork's command
+handler with upstream native diagnostics; one outside-frame dispatcher now
+retains native act/place operations and delegates the other arguments to the
+fork handler. Direct act changes no longer use a stale queued static callback.
+
+The initial strict Windows build also failed on the unused write-only
+selected_class cache in editor_native.cpp. Removing that cache preserves the
+actual retained selection state and satisfies the existing warning gate. The
+first portable shell entry failed on CRLF line endings; repository *.sh files
+now use eol=lf in .gitattributes. Existing Windows batch formats are separate.
+Root retains the initial failing product/shell receipts and subsequent build
+results with the source integration report.
+
+CORRECTION (2026-11-20): the 11 actual fork object_alive ratchet findings above
+were subsequently audited and replaced with listed/LiveRef identity checks,
+including post-callback serial revalidation and an address-reuse regression.
+This does not raise or bypass the upstream baseline. The Adventure family lock
+is refreshed because its fingerprint includes those lifetime implementation
+files; authored formats and adventure payload bytes are unchanged.
+
+PASS after canonical path normalization: ratchet-selftest-pass.log (all four
+planted violations caught), fix-retire-pass.log (221 retired switches and 10
+removed commands, no problems), fix-retire-selftest.log and
+msg-manifest-selftest.log. RE, documentation, glyph, CI and game-test lints also
+pass in the recorded network subdirectory. Full native game smoke and main
+promotion remain separate gates.

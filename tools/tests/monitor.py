@@ -14,7 +14,7 @@ allow('monitor', ticket, reason, kind='<invariant>')). Invariants (each needs it
 a moment between two reads is no violation):
 
   together      two machines whose own trace lines say the same stage and world for 20 s see each other
-                in the same place (the partner line's same_place=1)
+                in the same place (the partner line's same_place=1); world=- (the galaxy view) is no place
   puppet        a partner in the same place, alive and in a world, is shown (puppet=shown) on 2 trace
                 lines in a row (not "not spawned (yet)" / "state older than 5 s")
   link          on a clean network (no SPORE_NET): resends / sent between two trace lines under 0.5,
@@ -71,11 +71,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 
 SESS = re.compile(r'\[s (-?[\d.]+)\]')
-OWN = re.compile(r"trace: (host|guest) id=(\d+) players=(\d+) (.+?) world=([0-9A-F]+) '(.*?)' avatar=(yes|no) "
-                 r"pos=\(([-\d.e+naif]+) ([-\d.e+naif]+) ([-\d.e+naif]+)\) hp=(-?[\d.naif]+)/(-?[\d.naif]+) species=(\S+) "
+WALL = re.compile(r'^(\d\d):(\d\d):(\d\d(?:\.\d+)?) ')  # the log line's wall clock (BUG-1194: same_clock)
+# BUG-1145: world=- (the mod's world 0: no planet or star system, the Space galaxy view) is a world too: a pattern
+# for hex only dropped those lines, and the invariants paired the partner lines of the galaxy view with the own
+# line from before or after it (up to 6 s off), which still named the system
+# BUG-1147: the same for a position of NaN (Windows prints `-nan(ind)`: a guest's ship in a world it has no place in
+# yet, 4046000C after a jump) and a state age of `-0.0` (a state stamped this frame on a clock a hair ahead): such lines
+# were dropped too (87 own and 4374 partner lines of 3000 recorded logs). N: a number as the mod's printf writes it
+N = r'[-\d.e+naif]+(?:\(ind\))?'
+OWN = re.compile(r"trace: (host|guest) id=(\d+) players=(\d+) (.+?) world=([0-9A-F]+|-) '(.*?)' avatar=(yes|no) "
+                 rf"pos=\(({N}) ({N}) ({N})\) hp=({N})/({N}) species=(\S+) "
                  r"flags=0x([0-9A-Fa-f]+) dna=(-?[\d.]+)(.*?) host_away=(\d) vote=(\w+)(.*)$")
-PARTNER = re.compile(r"trace:\s+partner (\d+) '(.*?)' (.+?) world=([0-9A-F]+) d=(\S+) same_place=(\d) puppet=(.*?) "
-                     r"hp=(-?[\d.naif]+)/(-?[\d.naif]+) species=(\S+) flags=0x([0-9A-Fa-f]+) state_age=([\d.]+) s "
+PARTNER = re.compile(r"trace:\s+partner (\d+) '(.*?)' (.+?) world=([0-9A-F]+|-) d=(\S+) same_place=(\d) puppet=(.*?) "
+                     rf"hp=({N})/({N}) species=(\S+) flags=0x([0-9A-Fa-f]+) state_age=(-?[\d.]+) s "
                      r"rtt=(-?\d+) ms(.*)$")
 LINK = re.compile(r'resends=(\d+)/(\d+) silent=(\d+) ms pending=(\d+)')
 POOL = re.compile(r'cell pool (\d+)/(\d+)')
@@ -92,14 +100,15 @@ WSCALE = re.compile(r' wscale=([-\d.e+naif]+)')
 DAMAGE = re.compile(r'coop: damage: (\d+) hit by (\S+) owner=(\S+) posse=([01?]) amount=(-?[\d.]+)(.*)$')
 KV = re.compile(r'(\w+)=(-?[\d.]+)(\(unsynced\))?')
 STAGES = ('Cell', 'Creature', 'Tribe', 'Civilization', 'Space')
+NOWHERE = '-'  # world 0: no place (the mod's same_place() is never 1 there, puppets.cpp)
 PF_IN_WORLD, PF_DEAD = 1, 16
 
 DEFAULTS = dict(together_s=20.0, apart_s=90.0, link_ratio=0.5, link_min_sent=50, link_pending=400, link_age=5.0,
                 link_lines=3, tot_abs=1.0, tot_rel=0.02, tot_n=3, tot_span=20.0, tot_dt=6.0, hp_n=2, hp_abs=1.0,
                 pool_frac=0.9, census_growth=3.0, census_extra=200, period=5.0, census_period=30.0,
-                drawn_dt=1.0, drawn_lag=0.3, drawn_n=2, agl_under=-0.5, agl_over=3.0, agl_ground=1.0, agl_n=2, agl_hold=5.0,
+                drawn_dt=1.0, drawn_lag=0.3, drawn_n=2, agl_under=-0.5, agl_over=3.0, agl_ground=1.0, agl_n=2, agl_hold=5.0, agl_cine=1,
                 php_n=2, php_same_way=1, unlock_s=60.0, unlock_span=10.0, unlock_n=2, proxy_n=2, drawn_still=1.0, share_after=15.0,
-                drawn_scale=1, drawn_age=1.0)
+                drawn_scale=1, drawn_age=1.0, same_session=1, same_clock=5.0)
 OBJECT_LIMITS = {'c': 4000, 'v': 800}
 # the drawn invariant's distance per stage (m) before the speed slack (calibration: docs/06-testing.md#testing-monitor)
 DRAWN_BASE = {'Cell': 3.0, 'Creature': 3.0, 'Tribe': 3.0, 'Civilization': 6.0, 'Space': 12.0}
@@ -139,6 +148,8 @@ def parse_line(who, line):
     """a record of one log line, None for other lines"""
     m = SESS.search(line)
     t = float(m.group(1)) if m else None
+    m = WALL.match(line)
+    wall = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)) if m else None
     if 'trace:' in line:
         o = OWN.search(line)
         if o:
@@ -148,7 +159,7 @@ def parse_line(who, line):
                      stage=o.group(4), world=o.group(5), avatar=o.group(7) == 'yes',
                      pos=(num(o.group(8)), num(o.group(9)), num(o.group(10))), hp=num(o.group(11)),
                      maxhp=num(o.group(12)), flags=int(o.group(14), 16), dna=float(o.group(15)), res=res,
-                     away=o.group(17) == '1', vote=o.group(18) != 'off', rest=o.group(19))
+                     away=o.group(17) == '1', vote=o.group(18) != 'off', rest=o.group(19), wall=wall)
             return monitor_fields(r)
         p = PARTNER.search(line)
         if p:
@@ -157,7 +168,7 @@ def parse_line(who, line):
                      world=p.group(4), same=p.group(6) == '1', puppet=p.group(7), hp=num(p.group(8)),
                      maxhp=num(p.group(9)), flags=int(p.group(11), 16), age=float(p.group(12)),
                      rtt=int(p.group(13)), rest=p.group(14),
-                     link=tuple(int(lk.group(i)) for i in range(1, 5)) if lk else None)
+                     link=tuple(int(lk.group(i)) for i in range(1, 5)) if lk else None, wall=wall)
             return monitor_fields(r)
     m = SHARE.search(line)  # a world transfer to a partner (its reliable chunks fill the link, see Link)
     if m:
@@ -225,6 +236,7 @@ class Timeline:
         self.ids = {}                                  # who -> session id (0 = host)
         self.shares = collections.defaultdict(list)    # (who, pid) -> [[start, end or None]] world transfers
         self.records = []
+        self.same_clock = 5.0                          # BUG-1194 (monitor same_clock): see window; None: off
 
     def add(self, r):
         self.records.append(r)
@@ -261,12 +273,43 @@ class Timeline:
         got = [w for w in self.own if w != viewer and (lambda o: o is not None and o['id'] == pid)(self.own_at(w, t, dt))]
         return got[0] if len(got) == 1 else None
 
-    def window(self, who, t, dt):
-        """the own records of `who` within session time t +- dt"""
+    def window(self, who, t, dt, like=None):
+        """the own records of `who` within session time t +- dt. BUG-1061: the session clock starts at 0 in every
+        session, so one machine's records of two sessions share the same times (a Cell session's line at s 30 and the
+        next Creature session's): with `like` (a partner record) only the records of the stage and world that record
+        names count"""
         ts = self.own_t.get(who)
         if not ts or t is None:
             return []
-        return self.own[who][bisect.bisect_left(ts, t - dt):bisect.bisect_right(ts, t + dt)]
+        w = self.own[who][bisect.bisect_left(ts, t - dt):bisect.bisect_right(ts, t + dt)]
+        if like is not None:
+            w = [r for r in w if r['stage'] == like['stage'] and r['world'] == like['world']]
+            w = self.same_session_clock(who, w, like)
+        return w
+
+    def same_session_clock(self, who, w, like):
+        """BUG-1194: two sessions of the same stage and world (a guest that leaves and joins again, a host that hosts
+        again: sreport_leave 20261116-025154) have lines at the same s, which the stage and world do not tell apart:
+        the host's line of the first session was judged against the guest's own line of the second (3.9 m apart, at
+        the second's spawn point). Games on one machine (the lab) write the same wall clock, and lines of one session
+        come at the same wall time (session time + its start); when the subject has lines whose session start
+        (wall - s) is the partner line's, only those count (two sessions that started within same_clock s plus the
+        window apart stay mixed). Logs of two machines with other clocks: as before"""
+        tol = self.same_clock
+        if tol is None or like.get('wall') is None or like.get('t') is None or not w:
+            return w
+        start = like['wall'] - like['t']
+
+        def off(r):
+            if r.get('wall') is None or r.get('t') is None:
+                return None
+            d = abs(r['wall'] - r['t'] - start) % 86400.0  # (a session across midnight)
+            return min(d, 86400.0 - d)
+
+        if not any(o is not None and o <= tol for o in map(off, self.own.get(who, ()))):
+            return w  # no line of the subject at this session's start: other clocks
+        # (the session time's own distance is allowed on top: written logs with one wall time on every line)
+        return [r for r in w if (lambda o: o is not None and o <= tol + abs(r['t'] - like['t']))(off(r))]
 
     def around(self, who, t):
         """the own records of `who` right before and right after session time t (BUG-0380)"""
@@ -276,15 +319,15 @@ class Timeline:
         i = bisect.bisect_left(ts, t)
         return [self.own[who][j] for j in (i - 1, i) if 0 <= j < len(ts) and ts[j] != float('-inf')]
 
-    def own_at(self, who, t, dt):
-        """the own record of `who` closest to session time t (within dt), None"""
-        w = self.window(who, t, dt)
+    def own_at(self, who, t, dt, like=None):
+        """the own record of `who` closest to session time t (within dt), None (like: see window)"""
+        w = self.window(who, t, dt, like)
         return min(w, key=lambda r: abs(r['t'] - t)) if w else None
 
 
-def own_window(tl, who, t, dt):
+def own_window(tl, who, t, dt, like=None):
     """the own records of `who` within session time t +- dt"""
-    return tl.window(who, t, dt)
+    return tl.window(who, t, dt, like)
 
 
 def playing(r):
@@ -326,7 +369,7 @@ class Together(Invariant):
                 p['_subj'] = subj
                 a, b = tl.own_at(viewer, p['t'], 6), tl.own_at(subj, p['t'], 6)
                 agree = a and b and playing(a) and playing(b) and a['stage'] == b['stage'] and a['world'] == b['world'] \
-                    and (b['flags'] & PF_IN_WORLD)
+                    and a['world'] != NOWHERE and (b['flags'] & PF_IN_WORLD)
                 if agree and not p['same']:
                     run.append(p)
                     if len(run) >= 2 and run[-1]['t'] - run[0]['t'] >= self.c['together_s'] - 10:
@@ -458,12 +501,13 @@ class Hp(Invariant):
                     run, last = [], subj
                     if subj is None:
                         continue
-                o = tl.own_at(subj, p['t'], 5.0) if p['t'] is not None else None
+                like = p if self.c['same_session'] else None  # BUG-1061
+                o = tl.own_at(subj, p['t'], 5.0, like) if p['t'] is not None else None
                 if not o or not p['same'] or not playing(o) or o['maxhp'] <= 0 or p['age'] > 1.0:
                     run = []
                     continue
                 # the subject's own hp unchanged around the moment (a fight changes it between the lines)
-                around = own_window(tl, subj, p['t'], 12.0)
+                around = own_window(tl, subj, p['t'], 12.0, like)
                 if len(around) < 2 or len({(x['hp'], x['maxhp']) for x in around}) != 1:
                     run = []
                     continue
@@ -553,7 +597,11 @@ class Hook(Invariant):
         subj = tl.who_at(p['pid'], p['t'], viewer=p['who'])  # ids are reused after leaves
         if subj is None or p['t'] is None:
             return None, None
-        return subj, tl.own_at(subj, p['t'], self.c['drawn_dt'])
+        return subj, tl.own_at(subj, p['t'], self.c['drawn_dt'], self.like(p))
+
+    def like(self, p):
+        """BUG-1061 (same_session): the subject's records of the stage and world partner record p names; 0: any"""
+        return p if self.c['same_session'] and p.get('stage') and p.get('world') else None
 
 
 class Drawn(Hook):
@@ -618,6 +666,19 @@ class Ground(Hook):
     def check(self, tl):
         c, out = self.c, []
         n = c['agl_n']
+
+        def cine_held(tl, r, pid):
+            # the end of Tribe (TRG2CVG cinematics between the City Hall and vehicle editors): the game holds the
+            # members where they stand while it lays the city's ground (a village stamp removed under a member left it
+            # 16-18 m up for the 76-100 s of the change, campaign_tribe_end lab 20261113-125218 and -153633, every game).
+            # The host's game drives the change: its own line at that moment says busy=cinematic or editor (a guest's
+            # does not). agl_cine=0: judged as before
+            hosts = [w for w, lst in tl.own.items() if lst and lst[-1].get('role') == 'host']
+            for o in [tl.own_at(h, r['t'], c['drawn_dt']) for h in hosts] + ([r] if pid is None else []):
+                m = re.search(r'busy=(\S+)', (o or {}).get('rest', ''))
+                if m and {'cinematic', 'editor'} & set(m.group(1).split(',')):
+                    return True
+            return False
         series = [(who, None, lst) for who, lst in tl.own.items()] + \
             [(viewer, pid, lst) for (viewer, pid), lst in tl.partner.items()]
         for who, pid, lst in series:
@@ -628,7 +689,9 @@ class Ground(Hook):
                     playing(r) if pid is None else (r['same'] and r['puppet'] == 'shown' and not r['flags'] & PF_DEAD))
             for a, b in self.runs(lst, lambda r: ok(r) and r['agl'] < c['agl_under'], n, None):
                 out.append((who, f'{who}: {what if b["stage"] == "Creature" else ("the tribe members of " + (who if pid is None else f"partner {pid}"))} '
-                                 f'{-b["agl"]:.2f} m under the ground ({b["stage"]}) on {n} lines from s {a["t"]:.0f}',
+                                 f'{-b["agl"]:.2f} m under the ground ({b["stage"]}) on {n} lines from s {a["t"]:.0f}'
+                                 + (' (the game log names the member: "tribe: member #.. is .. m under the ground", BUG-1104)'
+                                    if b['stage'] == 'Tribe' else ''),
                             (who, pid, 'under', a['t'])))
 
             def held(b):  # Tribe: whose members, how long one has been up, where the game log names it
@@ -642,6 +705,8 @@ class Ground(Hook):
                 if not ok(r):
                     return False
                 if r['stage'] == 'Tribe':  # a member that stays up, not one thrown by a blow (BUG-0945)
+                    if c['agl_cine'] and cine_held(tl, r, pid):
+                        return False
                     return r.get('agl_hi', r['agl']) > c['agl_over'] and r.get('agl_held', 1e9) >= c['agl_hold']
                 if pid is None:  # a creature on a rock reads 1-16 m (GetHeightAt is the terrain only)
                     return False
@@ -755,6 +820,7 @@ INVARIANTS = [Together, Puppet, Link, Totals, Hp, Objects, StageApart]
 def evaluate(tl, cfg=None, only=None, skip=()):
     """[(invariant, who, text, key)] of a timeline"""
     c = dict(DEFAULTS, **(cfg or {}))
+    tl.same_clock = c['same_clock'] if c['same_clock'] and c['same_clock'] > 0 else None  # BUG-1194
     out, seen = [], set()
     for cls in INVARIANTS + HOOKS:
         if (only and cls.name not in only) or cls.name in skip:

@@ -3,7 +3,7 @@ id: BUG-1251
 title: Native inspection checksum treats terrain allocation state as authored Undo data
 status: fixed
 kind: tooling
-stage: GA native fixtures
+stage: Tools
 reported: 2026-11-04
 source: C67 native Model Clone Undo checksum
 role: observer

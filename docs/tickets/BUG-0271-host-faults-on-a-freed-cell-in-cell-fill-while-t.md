@@ -3,7 +3,7 @@ id: BUG-0271
 title: Host faults on a freed cell in cell_fill while the game goes Cell -> Creature (dc04aee5:coop.dll+0x88951)
 status: fixed
 kind: crash
-stage: cell
+stage: Cell
 reported: 2026-10-29
 source: lab 20261029-111744 campaign_short
 role: host
@@ -81,3 +81,4 @@ Cell stage and both enter Creature).
 - 2026-10-29: fixed on fix/w6-cell (eec3280, 4761813): no cell, local entity or puppet read between
   frames from a stage the game freed or left; test cell_evolve_poll (FAIL 5 of 6 with the fix off).
 - 2026-10-29: released in 0.7.3.1.
+- 2026-11-15: switch `core.stale_local` retired in 0.7.15 (B1, BUG-1138): the old code path is gone, FAIL run 20261029-114314:cell_evolve_poll on record; its test runs PASS-only.

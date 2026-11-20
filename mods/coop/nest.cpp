@@ -1,4 +1,5 @@
 #include "nest.h"
+#include "lifecycle.h"
 
 #include <windows.h>
 
@@ -68,9 +69,6 @@ COOP_FIX("nest.hatch_now", "BUG-0896", g_hatch_now_fix, "creature: an NPC egg th
 
 // BUG-0474: the animal nests of the Tribe stage are the same cHerd / cEgg objects, and the guest's game removes its
 // own animals there too (tribe proxies): the host's eggs were missing on every guest. The mirrors run in Tribe too.
-// `coop.fix nest.eggs_tribe off`: Creature only (0.7.3.6).
-static bool g_tribe_fix = true;
-COOP_FIX("nest.eggs_tribe", "BUG-0474", g_tribe_fix, "tribe: the host's eggs at the animal nests are shown and eaten on the guests");
 
 // BUG-0660 (docs/re/creature.md#creature-family-eggs): the players' own nest is the avatar family's herd (+0x84 set),
 // left out of nest.eggs: its members are NPCs too (the guest's are the host's, mirrored, with no AI), so only the host's
@@ -85,7 +83,7 @@ constexpr uint8_t kFamilyBit = 0x80;
 constexpr float kOwnBind = 4.f, kOwnDrift = 0.5f;
 static uint32_t g_family_tx, g_own_bound, g_family_made, g_own_placed;
 
-static bool egg_stage() { return game::in_creature_stage() || (g_tribe_fix && game::mode_id() == modes::kTribe); }
+static bool egg_stage() { return game::in_creature_stage() || game::mode_id() == modes::kTribe; }
 
 constexpr uint8_t kKindSnap = 0, kKindEat = 1;
 constexpr int kMaxSnap = 20;           // eggs per snapshot (49 bytes each, one packet)
@@ -177,6 +175,9 @@ struct OwnEgg {
     net::Vec3 host{}, after{}; // the host's place it was put at, where it lay after the snap
 };
 static std::map<uint32_t, OwnEgg> g_own; // host egg id -> this game's own family egg
+// BUG-1055: the bindings to the host's egg ids end with the session (a reconnect into the same world epoch kept the
+// old host's ids; object_alive + serial guarded the use)
+SESSION_STATE("nest.own", nullptr, [] { g_own.clear(); }, []() -> size_t { return g_own.size(); });
 static uint32_t g_epoch = 0;
 static double g_last_snap_tx = 0, g_last_snap_rx = -100;
 static uint32_t g_made = 0, g_removed = 0, g_eats_sent = 0, g_eats_applied = 0, g_snaps_rx = 0, g_snaps_tx = 0;
@@ -372,7 +373,7 @@ static void host_tick(double now)
             continue;
         if (!C.player_pos || !C.player_pos(p.id, gp) || (gp.x == 0 && gp.y == 0 && gp.z == 0)) {
             // Tribe (BUG-0474): a player is a pointer, often (0 0 0) in a background game: the tribe's place
-            if (!(g_tribe_fix && game::mode_id() == modes::kTribe && C.stage_center && C.stage_center(gp)))
+            if (!(game::mode_id() == modes::kTribe && C.stage_center && C.stage_center(gp)))
                 continue;
         }
         std::vector<const HostEgg*> close;
@@ -599,9 +600,7 @@ static void on_eat(uint8_t from, net::Reader& r)
 // cEgg_SnapToGround finds it) and has not moved for a second onto that surface with cEgg_SnapToGround, what
 // the game does to the avatar's eggs when they are laid and to every egg when it hatches. Only near the
 // host's avatar (kGroundNear): farther away the nest's collision is not loaded and the surface would be the
-// bare terrain under the mound. `coop.fix nest.egg_ground off`: they stay in the air (0.7.3.3).
-static bool g_ground_fix = true;
-COOP_FIX("nest.egg_ground", "BUG-0443", g_ground_fix, "creature: an NPC egg left hanging in the air on the host is put onto the ground");
+// bare terrain under the mound.
 
 constexpr float kHang = 0.3f;        // m over the surface (settled eggs: 0.00-0.1, measured)
 constexpr float kGroundNear = 60.f;  // m from the host's avatar
@@ -656,7 +655,7 @@ void tick(double now)
     if (is_host()) {
         if (g_eggs_fix && egg_stage())
             host_tick(now);
-        if (g_ground_fix && a_Surface && a_PlanetGet && game::in_creature_stage())
+        if (a_Surface && a_PlanetGet && game::in_creature_stage())
             ground_tick(now);
     } else if (is_guest())
         guest_tick(now);
@@ -678,6 +677,7 @@ void on_message(uint8_t type, uint8_t from, net::Reader& r)
 }
 
 void on_session_end() { clear_mirrors(); }
+LIFECYCLE_HOOK("nest.session", lifecycle::kSessionEnd, -88, [](const lifecycle::Ctx&) { on_session_end(); }, true); // C2 (BUG-1141): end_session
 
 void on_world_change()
 {
@@ -686,6 +686,8 @@ void on_world_change()
         drop_old_mirror(m); // BUG-0833 (off: forgotten, "freed with the world")
     g_mirrors.clear();
 }
+// C2 (BUG-1141): a world that was open changed or closed (world_id.h; not an editor visit, decision 2)
+LIFECYCLE_HOOK("nest.world", lifecycle::kWorldChange, -88, [](const lifecycle::Ctx& c) { if (c.from_stage >= 0) on_world_change(); }, true);
 
 // coop.nest objs [r]: eggs, fruit and nests within r m of the avatar (tests, BUG-0384)
 static void list_objs(SkOut* out, float r)
@@ -834,12 +836,21 @@ static int c_nest(void*, int argc, const char* const* argv, SkOut* out)
                 int gen = field<int>(o, 0xF0), nk = kb && ke >= kb ? (int)((uint8_t*)ke - (uint8_t*)kb) / 12 : -1;
                 uint32_t skey = sp && !IsBadReadPtr(sp, 0x510) ? field<uint32_t>(sp, 0x504) : 0;
                 uint32_t next = gen >= 0 && gen + 1 < nk && !IsBadReadPtr(kb, (gen + 2) * 12) ? *(uint32_t*)((uint8_t*)kb + (gen + 1) * 12) : 0;
+                // BUG-1181: what the game shows of this herd: its nest +0x160 (null: a herd of ours, a puppet's or a
+                // proxy's), its archetype +0x88, and the species key of its live members (the creatures a player sees;
+                // 0: none, FFFFFFFF: members of more than one species)
+                uint32_t mkey = 0;
+                for (void** m = b; b && e >= b && m < e && m < b + 64; m++)
+                    if (*m && game::listed(*m) && !IsBadReadPtr(*m, game::kSpeciesKeyOff + 4)) {
+                        uint32_t k = game::species_instance(*m);
+                        mkey = !mkey || mkey == k ? k : 0xFFFFFFFFu;
+                    }
                 H->out_printf(u->out,
                               "herd %p should_evolve=%d gen=%d evolved_keys=%d threshold=%.0f extinct=%d members=%d species=%p "
-                              "skey=%08X next=%08X home=(%.0f %.0f %.0f) dist=%.0f\n",
+                              "skey=%08X next=%08X home=(%.0f %.0f %.0f) dist=%.0f nest=%p arch=%08X mkey=%08X\n",
                               o, (int)field<uint8_t>(o, 0x85), gen, nk, field<float>(o, 0x94),
                               (int)field<uint8_t>(o, 0x190), b && e >= b ? (int)(e - b) : -1, sp, skey, next, h.x, h.y, h.z,
-                              net::dist(h, u->c));
+                              net::dist(h, u->c), game::herd_nest(o), field<uint32_t>(o, 0x88), mkey);
                 return true;
             },
             &u);
@@ -950,8 +961,8 @@ std::string status()
     int live = 0;
     for (auto& [id, m] : g_mirrors)
         live += mirror_ok(m);
-    snprintf(b, sizeof b, "nest eggs fix=%d ground_fix=%d grounded=%u grounded_max=%.2f role=%s mirrors=%u live=%d made=%u removed=%u snaps_tx=%u early=%u snaps_rx=%u eats_sent=%u eats_applied=%u family_fix=%d family_tx=%u family_made=%u own_bound=%u/%u own_placed=%u epoch_removed=%u epoch_released=%u\n",
-             (int)g_eggs_fix, (int)g_ground_fix, g_grounded, g_grounded_max, is_host() ? "host" : is_guest() ? "guest" : "none", (unsigned)g_mirrors.size(), live, g_made, g_removed,
+    snprintf(b, sizeof b, "nest eggs fix=%d grounded=%u grounded_max=%.2f role=%s mirrors=%u live=%d made=%u removed=%u snaps_tx=%u early=%u snaps_rx=%u eats_sent=%u eats_applied=%u family_fix=%d family_tx=%u family_made=%u own_bound=%u/%u own_placed=%u epoch_removed=%u epoch_released=%u\n",
+             (int)g_eggs_fix, g_grounded, g_grounded_max, is_host() ? "host" : is_guest() ? "guest" : "none", (unsigned)g_mirrors.size(), live, g_made, g_removed,
              g_snaps_tx, g_early_snaps, g_snaps_rx, g_eats_sent, g_eats_applied, (int)g_family_fix, g_family_tx, g_family_made, (unsigned)g_own.size(), g_own_bound, g_own_placed, g_epoch_removed, g_epoch_released);
     return b;
 }

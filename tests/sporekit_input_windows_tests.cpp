@@ -2,11 +2,13 @@
 // are installed in Windows, no game is launched, and no window receives input.
 #include "../sporekit/core.h"
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <utility>
+#include <thread>
 
 static unsigned checks;
 #define CHECK(x) do { ++checks; if (!(x)) { std::printf("FAIL %d: %s\n", __LINE__, #x); std::exit(1); } } while (0)
@@ -177,6 +179,17 @@ int main()
     CHECK(sk::input_info().find("reason=explicit-winlab-profile-required") != std::string::npos);
     CHECK(sk::input_key(VK_SHIFT, "up")); physical[VK_SHIFT] = SHORT(0x8000);
     CHECK(poll_key(VK_SHIFT) == SHORT(0x8000));
+    // Console and startup callers racing the first hook attempt must neither
+    // install duplicate detours nor retry a failed exclusive-input trampoline.
+    for(bool failed : {false,true}) {
+        reset(true);if(failed)hook_failure[0]=-1;
+        std::atomic<bool> start=false;std::array<bool,2> ready{};
+        std::thread first([&]{while(!start.load())std::this_thread::yield();ready[0]=sk::ensure_hooks();});
+        std::thread second([&]{while(!start.load())std::this_thread::yield();ready[1]=sk::ensure_hooks();});
+        start=true;first.join();second.join();
+        CHECK(hook_calls==2&&ready[0]==!failed&&ready[1]==!failed);
+        CHECK(sk::g_input_hooks_installed==(failed?1u:2u));
+    }
     std::printf("sporekit controlled input hooks: %u checks\n", checks);
     return 0;
 }

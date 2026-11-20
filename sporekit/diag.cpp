@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 #include <new>
 #include <stdexcept>
@@ -27,8 +28,8 @@ const char* build_name()
 {
     static std::string name;
     std::string b = symbols_build(), e = exe_sha256();
-    if (b.rfind("922af7c7", 0) == 0)
-        name = "GOG 2016";
+    if (*unsupported_build_text())
+        name = "GOG 2016 (not supported: co-op off)";
     else if (b.rfind("dc04aee5", 0) == 0)
         name = e.rfind("dc04aee5", 0) == 0   ? "GOG 2024"
                : e.rfind("3010a413", 0) == 0 ? "Steam (the GOG 2024 code)"
@@ -127,8 +128,9 @@ static std::vector<Module> modules()
     if (!en(GetCurrentProcess(), mods, sizeof mods, &need))
         return v;
     for (DWORD i = 0; i < need / sizeof(HMODULE) && i < 512; i++) {
-        wchar_t p[MAX_PATH];
-        GetModuleFileNameW(mods[i], p, MAX_PATH);
+        std::wstring p = module_path(mods[i]); // BUG-1033: "" for a module unloaded meanwhile
+        if (p.empty())
+            continue;
         struct {
             void* base;
             DWORD size;
@@ -196,11 +198,18 @@ std::string diag_env()
         s += "advice: RivaTuner Statistics Server (MSI Afterburner) hooks the game's Direct3D like SporeKit. If Spore "
              "crashes at start, give SporeApp.exe a profile in RivaTuner with \"Application detection level\" None "
              "(or close RivaTuner and Afterburner) and try again (docs/INSTALL.md#install-rtss)\n";
-    s += "game mode: " + std::string(game_mode_name(game_mode_id())) + ", frame " + std::to_string(frame_index()) +
-         ", up " + std::to_string((int)now_seconds()) + " s\n";
+    // BUG-1022: off the main thread (the watchdog, the crash report thread, a fault storm on a worker) no call into
+    // the game's mode manager and no walk of the mod list: the mode the main thread cached, the mods line kept by
+    // mods.cpp. `kit.fix reportsafe 0`: as before.
+    bool off_main = fixed(g_fix_reportsafe) && GetCurrentThreadId() != main_thread_id();
+    s += "game mode: " + std::string(game_mode_name(off_main ? game_mode_cached() : game_mode_id())) + ", frame " +
+         std::to_string(frame_index()) + ", up " + std::to_string((int)now_seconds()) + " s\n";
     std::string mods;
-    for (SkMod* m : mods_list())
-        mods += m->name + (m->info && m->info->version ? std::string(" ") + m->info->version : "") + "  ";
+    if (off_main)
+        mods = mods_line();
+    else
+        for (SkMod* m : mods_list())
+            mods += m->name + (m->info && m->info->version ? std::string(" ") + m->info->version : "") + "  ";
     s += "mods: " + (mods.empty() ? std::string("none") : mods) + "\n";
     return s;
 }
@@ -256,9 +265,9 @@ static std::string where(uintptr_t a)
     if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                            (LPCWSTR)a, &m) &&
         m) {
-        wchar_t n[MAX_PATH];
-        GetModuleFileNameW(m, n, MAX_PATH);
-        std::string p = narrow(n);
+        std::string p = narrow(module_path(m)); // BUG-1033
+        if (p.empty())
+            p = "?";
         char off[24];
         snprintf(off, sizeof off, "+0x%X", (unsigned)(a - (uintptr_t)m));
         return p.substr(p.find_last_of("\\/") + 1) + off;
@@ -510,7 +519,23 @@ static std::vector<uint8_t> redacted_ini(const std::vector<uint8_t>& d)
             break;
         i = e + 1;
     }
+    out = mask_paths(out); // BUG-1124: a path in a setting (a save folder, a mod's path)
     return std::vector<uint8_t>(out.begin(), out.end());
+}
+
+// BUG-1124: the text files of an archive (logs, reports) without private paths, also those written by an older
+// version or before the masks were right (logs of earlier runs); minidumps and screenshots stay as they are
+static void masked_text(const std::string& name, std::vector<uint8_t>& d)
+{
+    auto ends = [&](const char* x) {
+        size_t n = strlen(x);
+        return name.size() >= n && name.compare(name.size() - n, n, x) == 0;
+    };
+    if (!ends(".log") && !ends(".txt"))
+        return;
+    std::string s(d.begin(), d.end()), m = mask_paths(s);
+    if (m.size() != s.size() || m != s)
+        d.assign(m.begin(), m.end());
 }
 
 // the archive of a problem the game had (a crash, a hang, a fault before the game ended): named in
@@ -612,6 +637,7 @@ std::string diag_write_bundle_with(const char* reason, const std::string& existi
             left_out.push_back(name);
             return;
         }
+        masked_text(name, d); // BUG-1124
         total += d.size();
         z.push_back({name, std::move(d)});
     };
@@ -775,7 +801,27 @@ struct CrashJob {
     std::string base;
     EXCEPTION_POINTERS* ep;
     DWORD tid; // the crashed thread
+    // BUG-1020: copies of the crash's record and registers. The filter waits kReportWaitMs for the report thread and
+    // then returns; the thread read on through the EXCEPTION_POINTERS the system gave (the crashed thread's exception
+    // frame), which a later handler that continues the thread, or the teardown, reuses. `kit.fix crashcopy 0`: the
+    // raw pointer, as before. (The stack the walk reads stays the crashed thread's: best effort.)
+    EXCEPTION_RECORD er;
+    CONTEXT ctx;
+    EXCEPTION_POINTERS eps;
 };
+
+static void job_take(CrashJob& j, EXCEPTION_POINTERS* ep)
+{
+    j.ep = ep;
+    if (!fixed(g_fix_crashcopy) || !ep || !ep->ExceptionRecord || !ep->ContextRecord)
+        return;
+    memcpy(&j.er, ep->ExceptionRecord, sizeof j.er);
+    j.er.ExceptionRecord = nullptr; // a chained record stays the crashed thread's: not followed
+    memcpy(&j.ctx, ep->ContextRecord, sizeof j.ctx);
+    j.eps.ExceptionRecord = &j.er;
+    j.eps.ContextRecord = &j.ctx;
+    j.ep = &j.eps;
+}
 // the report, the archive and the mark first; the minidump last (the riskiest step: it suspends the
 // other threads and walks the crashed one), then the archive again with it
 static DWORD WINAPI crash_report_thread_old(void* p)
@@ -870,7 +916,7 @@ void diag_offstack_report(EXCEPTION_POINTERS* ep)
     if (!g_so_go || !fixed(g_fix_offstack) || g_crashed++ != 0)
         return;
     g_so_what = "the stack pointer is outside the thread's stack";
-    g_so_job.ep = ep;
+    job_take(g_so_job, ep); // BUG-1020
     g_so_job.tid = GetCurrentThreadId();
     SetEvent(g_so_go);
     WaitForSingleObject(g_so_done, kReportWaitMs);
@@ -882,7 +928,7 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS* ep)
         fixed(g_fix_stackov)) {
         // nothing but a signal and a wait on this stack (BUG-0056)
         if (g_crashed++ == 0) {
-            g_so_job.ep = ep;
+            job_take(g_so_job, ep); // BUG-1020 (two memcpy, no stack of note)
             g_so_job.tid = GetCurrentThreadId();
             SetEvent(g_so_go);
             WaitForSingleObject(g_so_done, kReportWaitMs);
@@ -897,7 +943,7 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS* ep)
         // thread may hold the log's lock (BUG-0115; the log drops lines re-entered on one thread)
         static CrashJob job;
         job.base = report_base(true);
-        job.ep = ep;
+        job_take(job, ep); // BUG-1020
         job.tid = GetCurrentThreadId();
         char b[512];
         snprintf(b, sizeof b,

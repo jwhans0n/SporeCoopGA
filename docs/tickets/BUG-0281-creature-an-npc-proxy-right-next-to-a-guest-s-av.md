@@ -3,7 +3,7 @@ id: BUG-0281
 title: creature: an NPC proxy right next to a guest's avatar stays ~4 m from where the host has it
 status: fixed
 kind: desync
-stage: creature
+stage: Creature
 reported: 2026-10-29
 source: fix/w7-sync BUG-0275 measurement
 role: 
@@ -105,3 +105,4 @@ Standing NPCs (the report's case) were not reproduced (see above); the standing 
 - 2026-10-30: fix/w13-creature: Creature check of npc.trail: standing case not reproduced; running NPCs p90 6.2 m -> 3.1-3.4 m with npc.trail at 15 fps; stays open.
 - 2026-10-30: fix/w14-creature: cause found (a MoveTo again every 0.1 s restarts the walk; pulls undone by the locomotion); fixed by npc.kinematic.
 - 2026-11-01: released in 0.7.3.2.
+- 2026-11-15: switch `npc.kinematic` retired in 0.7.15 (B1, BUG-1138): the old code path is gone, FAIL run 20261030-161510:creature_npc_dash on record; its test runs PASS-only.

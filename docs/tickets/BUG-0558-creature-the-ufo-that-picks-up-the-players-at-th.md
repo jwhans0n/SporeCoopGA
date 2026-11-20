@@ -13,7 +13,7 @@ branch: fix/w44-guest-player2, fix/w45-creature-reports
 commits: 265ec57c, 946cc573
 tests: creature_ufo_mirror (coop_creature_ufo_mirror.py)
 signature:
-docs: docs/re/creature.md#creature-ufo-puppet, docs/re/creature.md#creature-ufo-pick, docs/known-issues.md#issue-ufo-puppet, docs/re/creature.md#creature-ufo-mirror
+docs: docs/re/creature.md#creature-ufo-puppet, docs/re/creature.md#creature-ufo-pick, docs/archive/known-issues-2026.md#issue-ufo-puppet, docs/re/creature.md#creature-ufo-mirror
 related: BUG-0486
 switch: creature.ufo_mirror, creature.ufo_puppet
 ---
@@ -86,3 +86,4 @@ with the puppet the only creature within 70 m: out/lab/20261105-110417 with the 
 - 2026-11-05 (fix/w45-creature-reports, P3 of 0.7.9): the host's ship shown on the guest (creature.ufo_mirror); status fixed.
 - 2026-11-06: Discord report 2026-11-06 (0.7.8, discord-2026-11-06/Sterben-06, M0ng0r-10): "alien ship desynced, the guest doesn't see the ship": the same mechanism: the host's log has "drama: ufo event starts (host or alone)" at s 3399.8 (mid-stage drama UFO), the guest's game no ship (0.7.8 has no creature.ufo_mirror); marks at s 3423 / 3425. Covered by the unreleased 0.7.9 fix.
 - 2026-11-07: released in 0.7.9.
+- 2026-11-15: switch `creature.ufo_mirror` retired in 0.7.15 (B1, BUG-1138): the old code path is gone, FAIL run 20261105-231058:creature_ufo_mirror on record; its test runs PASS-only.

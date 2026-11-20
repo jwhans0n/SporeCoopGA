@@ -4,7 +4,7 @@
 SweepPrune::MergeAxis (0xBBAF10, every frame from Simulator::Cell::SimUpdate) parks the endpoints it
 displaces in a 4096-entry queue on its stack with no bound check: a game with more than ~2048 live
 cells overruns it, faults at 0xBBB07B and corrupts its stack and heap (BUG-0295; lab 20261030-035318).
-The mod's own spawn points keep the pools below that with soft budgets (cell.budget); nothing guarded
+The mod's own spawn points keep the pools below that with soft budgets (cell.budget (retired)); nothing guarded
 the merge itself. The hard guard (cell.sap_merge) merges an axis over 4096 endpoints with its queue on
 the heap.
 
@@ -24,13 +24,9 @@ import argparse
 import re
 import time
 
+from harness import num
 from party import Party
 from twoinst import Checks
-
-
-def num(out, key):
-    m = re.search(r'\b' + key + r'=(-?\d+)', out)
-    return int(m.group(1)) if m else None
 
 
 def own_pos(p):

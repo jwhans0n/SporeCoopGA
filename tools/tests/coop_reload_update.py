@@ -11,7 +11,7 @@ old thread returned into identical code of the new image and finished there with
 WinHTTP state: the new image then logged two results, one of them an error (12019 / 6).
 
   SPORE_LANE=2 python3 tools/tests/coop_reload_update.py [--without-fix]
-  (--without-fix: coop.corefix update_pin 0, the old thread without a module reference: must FAIL)"""
+  (--without-fix: coop.fix core.update_pin off, the old thread without a module reference: must FAIL)"""
 import http.server
 import os
 import sys
@@ -46,10 +46,9 @@ def main():
     time.sleep(2)
     lane.sh('deploy')
     ini = os.path.join(GAME, 'SporebinEP1', 'mods', 'coop.ini')
-    old = open(ini).read() if os.path.exists(ini) else None
+    # BUG-1190: replaced, not appended (a stale [update] that update_check.py left came first and won)
+    old = lane.ini_section(ini, 'update', {'check': 1, 'url': f'http://127.0.0.1:{PORT}/latest'})
     try:
-        with open(ini, 'a') as f:
-            f.write(f'\n[update]\ncheck=1\nurl=http://127.0.0.1:{PORT}/latest\n')
         lane.run_host()
         ck(wait_up(lane.HOST), 'the game starts')
         c = Console(lane.HOST)
@@ -59,7 +58,7 @@ def main():
             time.sleep(1)
         c.call('wait.frames 60 60000')
         time.sleep(HOLD + 2)  # the check of the start is over
-        print(' ', c.call(f'coop.corefix update_pin {0 if without else 1}')['out'].strip().replace('\n', ', '))
+        print(' ', c.call(f'coop.fix core.update_pin {"off" if without else "on"}')['out'].strip().replace('\n', ', '))
         print(' ', c.call('coop.update check')['out'].strip()[:120])
         time.sleep(0.5)
         print(' ', c.call('mod.reload coop')['out'].strip()[:200])
@@ -86,7 +85,7 @@ def main():
         if old is None:
             os.remove(ini)
         else:
-            open(ini, 'w').write(old)
+            open(ini, 'wb').write(old)
         srv.shutdown()
         lane.sh('kill', check=False)
     return ck.result()

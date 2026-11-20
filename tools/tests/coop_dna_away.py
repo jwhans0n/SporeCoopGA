@@ -12,20 +12,15 @@ when the host is back.
 2. Once the guest knows the host is away it earns 11 more (kept on the guest).
 3. The host loads its world again: the host's game DNA total is its saved total + 18.
 
---nofix: `coop.corefix away_dna 0` on both (the old behaviour): the 7 are lost, must FAIL.
+--nofix: `coop.fix core.away_dna off` on both (the old behaviour): the 7 are lost, must FAIL.
 
   SPORE_LANE=7 python3 tools/tests/coop_dna_away.py [--nofix]
 """
 import argparse
-import re
 import time
 
+from harness import dna
 from twoinst import Checks, lane_state, start
-
-
-def dna(con):
-    m = re.search(r'dna=(-?[\d.]+)', con.call('coop.dna')['out'])
-    return float(m.group(1)) if m else None
 
 
 def main():
@@ -36,7 +31,7 @@ def main():
     ck = Checks()
     if a.nofix:
         for c in (host, guest):
-            c.call('coop.corefix away_dna 0')
+            c.call('coop.fix core.away_dna off')
     time.sleep(5)
     d0, g0 = dna(host), dna(guest)
     print(f'  dna host {d0} guest {g0}')

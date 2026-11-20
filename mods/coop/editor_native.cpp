@@ -185,7 +185,6 @@ struct PreviewActor {
     editor::ObjectId source,asset,act;
 };
 std::map<editor::Peer,PreviewActor> preview_actors;
-uint32_t selected_class;
 std::optional<editor::ObjectId> input_clone, gesture_clone;
 bool input_cast=false,gesture_cast=false,input_pose=false,gesture_pose=false;
 GestureDomain gesture_domain=GestureDomain::Settings;
@@ -1208,20 +1207,20 @@ float SK_THISCALL complexity_ratio(void* self,const uint32_t* counts){
     }catch(...){return fail("Extended complexity query failed its owned evidence checks");}
 }
 void refresh_selection() {
-    selection.clear();selected_class=0;
+    selection.clear();
     void* context=a_context?*reinterpret_cast<void**>(a_context):nullptr;
     if(!editing() || !skg::readable(context,0x14))return;
     void* object=skg::field<void*>(context,4);
     if(!object)return;
     void* marker=skg::thiscall<void*>(a_marker,data(mode()),object);
     if(tracks_authoring() && marker && skg::readable(data(mode()),0x90) && marker==skg::field<void*>(data(mode()),0x8C)){
-        selection.push_back(kCaptainObject);selected_class=UINT32_MAX;return;
+        selection.push_back(kCaptainObject);return;
     }
     Rows map;
     if(!marker || !rows(resource(data(mode())),0x2C10,0x238,kPlacementLimit,map))return;
     for(auto p=map.begin;p!=map.end;p+=0x238)if(live_slot(p) && p+4==marker){
         selection.push_back(marker_id(slot_index(map,p)));
-        selected_class=skg::field<uint32_t>(marker,0);return;
+        return;
     }
 }
 bool projection(void* r, Snapshot& out, std::string& error,

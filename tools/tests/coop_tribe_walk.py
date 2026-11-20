@@ -31,7 +31,7 @@ The host's own game (real members, not mirrors) is measured the same way as a re
   coop_tribe_walk.py [--dir host|guest|both] [--seed N] [--secs S] [--fps N]
   --fps N: both games run at ~N frames a second (frame.limit 1000/N)
   SPORE_NET=mobile|awful: over a bad network (netem.py)
-  (SPORE_FIX_OFF=tribe.mirror_walk must FAIL)"""
+  (tribe.mirror_walk off failed (retired in 0.7.15, BUG-1138: FAIL run 20261101-233335:campaign_ct#1))"""
 import argparse
 import json
 import math
@@ -41,6 +41,7 @@ import re
 import threading
 import time
 
+from harness import pct
 import lane
 from play_tribe import Player, screen as objs_on_screen, tribe_state
 from twoinst import Checks, shot, start
@@ -63,7 +64,7 @@ SLOW_UNEVEN_MAX = 0.10
 # out (counted): the drawn step follows the frame before's time, the target's this frame's, and on a loaded machine
 # (lab load 26-31 on 12 cores, frames jittering 15-90 ms) that alone made the host's own game, which no driving
 # moves, "uneven" in 5-10 % of its frames and failed a fix-on run at 11 %. Left out: the host's own game 0-2 %, the
-# fix 0-7 %, the 0.7.3.3 driving (tribe.mirror_walk,tribe.mirror_time off) unchanged 10-31 %
+# fix 0-7 %, the 0.7.3.3 driving (tribe.mirror_walk (retired),tribe.mirror_time (retired) off) unchanged 10-31 %
 STEADY = 1.5
 WALK_MORE = 2  # BUG-0407: walks of `secs` more when the first measured too little
 W, H = 1440, 1080
@@ -92,11 +93,6 @@ def dump(con):
                          'sx': float(f[21]), 'sy': float(f[22]), 'hd': float(f[23]), 'ht': float(f[24]),
                          'id': int(f[25])})
     return rows
-
-
-def pct(xs, q):
-    xs = sorted(xs)
-    return xs[min(len(xs) - 1, int(q * len(xs)))] if xs else 0.0
 
 
 def analyse(rows, owner, top, label):

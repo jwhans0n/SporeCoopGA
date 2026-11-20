@@ -34,15 +34,15 @@ host's path, not its sampling. The rows also split the error: the guest's interp
 start diag`) from the host's body (states, lead) and the drawn proxy from that target (the driving), and every window
 sample's real times (each console reading found in the rows).
 
-Switch: SPORE_FIX_OFF=npc.trail (the driving before the fix) must FAIL.
+Switch: npc.trail off failed (retired in 0.7.15, BUG-1138: FAIL run 20261030-113308:tribe_npc_dash).
 
 Creature (BUG-0281, `creature_npc_dash`): DASH_FIXTURE=creature runs the same on the creature
 fixture with the nest species next to the start (065CBE70, the NPC 3-5 m from the guests' avatars
 in the 4-player report) at 4 m/s (their running speed); the guest's avatar stands 1.5 m beside the
 end of the path, so the proxies run up to it and stand next to it at every turn (suite
-`creature_npc_dash`). Before `npc.kinematic` these proxies hardly walked (a MoveTo again every 0.1 s
-restarts the walk, our pulls were undone by the locomotion): p90 3.3-3.5 m with npc.trail, 6.2 m
-without; with it 0.6-0.9 m (SPORE_FIX_OFF=npc.kinematic must FAIL).
+`creature_npc_dash`). Before `npc.kinematic` (retired) these proxies hardly walked (a MoveTo again every 0.1 s
+restarts the walk, our pulls were undone by the locomotion): p90 3.3-3.5 m with npc.trail (retired), 6.2 m
+without; with it 0.6-0.9 m (npc.kinematic off failed (retired in 0.7.15, BUG-1138: FAIL run 20261030-161510:creature_npc_dash)).
 
   SPORE_LANE=5 python3 tools/tests/coop_tribe_npc_dash.py
   SPORE_LANE=5 DASH_FIXTURE=creature python3 tools/tests/coop_tribe_npc_dash.py
@@ -259,7 +259,7 @@ def main():
           f'{(rt_h + rt_g) * 500:.0f} ms)', flush=True)
     host.call('coop.bodyrec start')
     guest.call('coop.bodyrec start diag')
-    if os.environ.get('DASH_WALK_VARIANT'):  # (diagnostics, BUG-0757) how npc.walk moves the proxies
+    if os.environ.get('DASH_WALK_VARIANT'):  # (diagnostics, BUG-0757) how npc.walk (retired) moves the proxies
         print('  ' + guest.call('coop.npctrack variant ' + os.environ['DASH_WALK_VARIANT'])['out'].strip(), flush=True)
     print('  host:', host.call(f'coop.npc dash {nid} {LEN} {SPEED} 45 {WIDTH} {mate} {OFF}')['out'].strip(), flush=True)
     time.sleep(2)
@@ -304,6 +304,8 @@ def main():
         line = [l.strip() for l in guest.call('coop.npc list')['out'].splitlines() if re.match(rf'\s*#{i}\s', l)]
         print(f'  guest proxy #{i}:', line[0][:300] if line else '-', flush=True)
     guest.call('frame.limit auto')
+    m = re.search(r'proxy_holds=(\d+)', guest.call('coop.npc')['out'])  # BUG-0440: placings kept through the update
+    print(f'  guest: npc.proxy_hold kept {m.group(1) if m else "?"} placings', flush=True)
     ck(len(keys) == 2 and min(per.values()) >= 30, f'samples of both animals on both machines ({per})')
     p90_rows, n_rows, along = judge_rows(host, guest, keys, t0_rows, t1_rows, windows)
     if errs:

@@ -3,7 +3,7 @@ id: BUG-1261
 title: Lab self-tests inherit Git context and mutate the parent checkout
 status: fixed
 kind: bug
-stage: Validation
+stage: Tools
 reported: 2026-11-05
 source: 0.7.8 integration WSL test run with explicit Git context
 role: 

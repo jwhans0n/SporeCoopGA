@@ -3,7 +3,7 @@ id: BUG-1239
 title: Native Flowers and GroundCover omit the regenerated forest field lease
 status: open
 kind: bug
-stage: GA shared editor
+stage: Editor
 reported: 2026-11-03
 source: C54 native Flowers normal input R42 rejected at Core1083
 role: host and guest
