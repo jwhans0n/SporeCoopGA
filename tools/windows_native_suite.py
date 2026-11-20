@@ -171,7 +171,7 @@ def worker(config_path, name, gate, receipt):
                    started=started, ended=time.time(), reports=changed, log_marks=marks,
                    original_command=test['cmd'], games_started=sum(lane.generations.values())))
     finally:
-        lane.stop()
+        lane.close()
     return code
 
 
