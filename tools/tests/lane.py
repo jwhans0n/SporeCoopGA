@@ -68,15 +68,26 @@ def sh(*args, check=True):
     subprocess.run([SPORE, *args], check=check, stdout=subprocess.DEVNULL)
 
 
+def _run(*args):
+    """Native handle ownership or upstream Wine duplicate-start protection."""
+    if WINDOWS:
+        return sh('run', *args)
+    result = subprocess.run([SPORE, 'run', *args], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    if result.returncode == 3:
+        print('  (' + result.stderr.strip() + ')', flush=True)
+    elif result.returncode:
+        raise subprocess.CalledProcessError(result.returncode, [SPORE, 'run', *args], stderr=result.stderr)
+
+
 def run_host():
-    sh('run', '-i', str(HOST), '-p', HOST_PROFILE)
+    _run('-i', str(HOST), '-p', HOST_PROFILE)
 
 
 def run_guest():
     if LANE == 1 and not WINDOWS:
-        sh('run', '-i', '2')
+        _run('-i', '2')
     else:
-        sh('run', '-i', str(GUEST), '-p', GUEST_PROFILE)
+        _run('-i', str(GUEST), '-p', GUEST_PROFILE)
 
 
 _MAIN = None

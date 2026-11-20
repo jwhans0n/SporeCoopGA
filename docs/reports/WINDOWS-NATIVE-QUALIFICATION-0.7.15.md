@@ -6,6 +6,13 @@ by itself. Both tickets stay open until their real native acceptance checks pass
 
 ## Explicit lane and original assertions
 
+Native results also use the existing `out/lab/<timestamp>-windows-.../results.json`
+schema, source `head`, per-case verdict, copied `<case>.<role>.game.log` names
+and `summary.md`. The same `labcov` and recorded `loggates` readers consume them.
+An observed INCONCLUSIVE/SKIP is never a pass. The supervisor rejects a config
+whose payload source commit differs from the current test checkout HEAD, so
+different source revisions cannot inherit a final smoke pass.
+
 `tools/lab.py run smoke --no-build --windows-config <absolute-config.json>`
 runs the original `tools/tests/suite.py` smoke cases, in fresh case processes,
 through `tools/windows_native_suite.py`. No replacement test stubs are used.

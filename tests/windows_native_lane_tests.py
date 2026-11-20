@@ -13,7 +13,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 from windows_native_lane import (FixtureStore, LaneConfig, WindowsLane, digest, required_fixtures)  # noqa: E402
 from tests_viewport import viewport_of  # noqa: E402
-from windows_native_suite import original_command, verdict, OwnedJob  # noqa: E402
+from windows_native_suite import original_command, verdict, OwnedJob, lab_record  # noqa: E402
 
 
 class LaneTests(unittest.TestCase):
@@ -184,10 +184,31 @@ class LaneTests(unittest.TestCase):
         test = dict(name='creature')
         self.assertTrue(verdict(test, 0, 'RESULT: OK', []))
         for code, text, failures in [(0, 'RESULT: SKIP', []), (0, 'entered preview', []),
+                                     (0, 'RESULT: INCONCLUSIVE no fixture precondition', []),
                                      (1, 'RESULT: OK', []), (0, 'RESULT: OK', ['new crash']),
                                      (0, 'RESULT: OK\nTraceback', [])]:
             with self.subTest(code=code, text=text, failures=failures):
                 self.assertFalse(verdict(test, code, text, failures))
+
+    def test_receipt_uses_existing_lab_coverage_and_log_gate_schema(self):
+        import time
+        import loggates
+        import labcov
+        cfg = self.config()
+        run = self.root / 'lab/20261120-120000-windows-test'
+        run.mkdir(parents=True)
+        rows = [dict(name='creature', ok=True, verdict='PASS', log=str(run / 'creature.log')),
+                dict(name='ui', ok=False, verdict='INCONCLUSIVE', skipped=True, log=str(run / 'ui.log'))]
+        data = lab_record(cfg, rows, run.name, 'fix/windows-native', time.time())
+        (run / 'results.json').write_text(json.dumps(data), encoding='utf-8')
+        (run / 'creature.host.game.log').write_text('', encoding='utf-8')
+        recorded = list(loggates.recorded([str(run.parent)]))
+        self.assertEqual(len(recorded), 2)
+        self.assertEqual(recorded[0][1]['head'], cfg.source_commit)
+        self.assertFalse(data['ok'], 'an inconclusive case cannot pass the native gate')
+        logs, _ = loggates.result_logs(str(run), rows[0])
+        self.assertIn('host', logs)
+        self.assertIn('creature', labcov.runs_by_test([str(run.parent)]))
 
     @unittest.skipUnless(os.name == 'nt', 'Windows Job kernel test runs natively on Windows')
     def test_job_cleanup_stops_only_owned_case_process(self):
