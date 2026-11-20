@@ -118,6 +118,32 @@ class LaneTests(unittest.TestCase):
             first.close()
             second.close()
 
+    def test_failed_game_cleanup_retains_ownership_until_restoration(self):
+        class Lab:
+            failed = True
+            def stop(self):
+                if self.failed:
+                    raise OSError('owned process did not retire')
+        cfg = self.config()
+        first, second = WindowsLane(cfg), WindowsLane(cfg)
+        lab = Lab()
+        first.profile('host')
+        first.labs['host'] = lab
+        try:
+            with self.assertRaisesRegex(RuntimeError, 'cleanup failed'):
+                first.close()
+            self.assertIn('host', first.labs)
+            self.assertIsNotNone(first.lease)
+            with self.assertRaisesRegex(RuntimeError, 'another test run'):
+                second.profile('guest')
+            lab.failed = False
+            first.close()
+            second.profile('guest')
+        finally:
+            lab.failed = False
+            first.close()
+            second.close()
+
     def test_archive_safety_before_existing_games_change(self):
         for bad in [('Games/../escape', 'bad'), ('Games/link', '/outside', tarfile.SYMTYPE),
                     ('Games/A', 'one'), ('Games\\bad', 'bad'), ('Games/Game0/C:bad', 'bad')]:

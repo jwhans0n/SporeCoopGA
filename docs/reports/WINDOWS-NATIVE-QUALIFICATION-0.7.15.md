@@ -166,3 +166,7 @@ An old private installation copy can retain symbol maps removed in v15. Prepare
 and deploy retire only obsolete `.sym` files inside that explicitly marked
 private symbol directory, preserving unrelated diagnostic files. Exact deployed
 payload and symbol-set verification must then succeed before any native launch.
+
+The eighteenth backend contract covers failed cleanup: retained process handles
+and the whole-run lease remain owned until retirement succeeds. Another run
+cannot reset profiles in the interval after a failed restoration/termination.
