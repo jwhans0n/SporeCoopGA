@@ -225,7 +225,20 @@ void SK_THISCALL native_ally(void*, void* actor)
 namespace game {
 void for_each_object(bool (*fn)(void*, uint32_t, void*), void* user)
 { for (auto& object : objects) if (!fn(object->bytes.data(), object->noun, user)) break; }
-bool object_alive(void* p) { return p && !field<bool>(p, 0x21); }
+bool object_alive(void* p) { return lookup(p) && !field<bool>(p, 0x21); }
+bool listed(const void* p,uint32_t noun)
+{
+    auto* object=lookup(const_cast<void*>(p));
+    return object&&(!noun||noun==object->noun)&&object_alive(object->bytes.data());
+}
+LiveRef live_ref(void* p,uint32_t noun)
+{
+    return listed(p,noun)?LiveRef{p,field<uint32_t>(p,0x24),noun}:LiveRef{};
+}
+bool alive(const LiveRef& reference)
+{
+    return listed(reference.p,reference.noun)&&field<uint32_t>(reference.p,0x24)==reference.serial;
+}
 void* cast(void* p, uint32_t type)
 {
     auto* o = lookup(p);
@@ -332,6 +345,40 @@ bool query_local_party(void* manager, const void* key, void* actor, int& value)
           "host snapshots query the actual NPC species key through the native relationship adapter");
     value = 6; return true;
 }
+}
+
+static void native_identity_cases(net::Session& session,net::Session& client,void* object)
+{
+    using namespace adventure_world;
+    auto saved_native=g_native;auto saved_bindings=g_bindings;auto* saved_session=C.sess;
+    const uint32_t serial=field<uint32_t>(object,0x24),noun=lookup(object)->noun;
+    const uint32_t marker=uint32_t(field<int>(object,0x1C));
+    for(auto* peer:{&session,&client}) {
+        C.sess=peer;
+        const Identity id{marker,peer==&session?serial:serial^0x80000000u};
+        if(peer==&client)g_bindings[id]={object,serial,0};
+        const auto pinned=game::live_ref(object,noun);
+        check(actor_for(object)&&object_for(id)==object&&game::alive(pinned),
+              "host and guest resolve the exact listed native serial before reuse");
+        check(!game::listed(object,noun+1)&&!game::alive({object,serial,noun+1}),
+              "controlled registry preserves the native noun constraint");
+        ++field<uint32_t>(object,0x24); // reused allocation before enumerate refreshes its cache
+        check(game::listed(object,noun)&&!game::alive(pinned)&&!actor_for(object)&&!object_for(id),
+              "cached host actor and guest binding reject a same-address successor immediately");
+        enumerate();
+        check(actor_for(object)&&!object_for(id),
+              "a fresh native enumeration cannot restore the old host or guest incarnation");
+        if(peer==&session)check(object_for({marker,serial+1})==object,
+              "the host resolves the new native incarnation through its own identity");
+        field<bool>(object,0x21)=true;
+        check(!game::listed(object)&&!actor_for(object)&&!object_for(id),
+              "destroyed objects still in the controlled registry are unavailable");
+        field<bool>(object,0x21)=false;field<uint32_t>(object,0x24)=serial;enumerate();
+    }
+    check(!game::listed(reinterpret_cast<void*>(0xDEADC0DE))&&
+          !game::alive({reinterpret_cast<void*>(0xDEADC0DE),1,noun}),
+          "unlisted addresses are rejected before reading native memory");
+    C.sess=saved_session;g_native=std::move(saved_native);g_bindings=std::move(saved_bindings);
 }
 
 static void static_replication_cases(net::Session& session, net::Session& client)
@@ -1193,6 +1240,7 @@ int main()
     field<float>(live_object->combatant.data(), 0x38) = 10;
     g_remote[newly_visible.id].flags = 1; g_remote[newly_visible.id].health = 10;
     g_bindings[newly_visible.id].act = 0; enumerate();
+    native_identity_cases(session,client,live);
     auto result_before = g_native_result;
     check(is_live_mirror(live), "current living guest actor with exact host binding is eligible");
     // dc04's separate setters do not mark creature+B5D. Model maintenance must
