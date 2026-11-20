@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# suite: none (opt-in native Windows fixture requiring an already-owned hidden lab and explicit private inputs; automatic launcher qualification is tracked by BUG-1014)
+# suite: none (opt-in native Windows fixture requiring an already-owned hidden lab and explicit private inputs; automatic launcher qualification is tracked by BUG-1259)
 """Native act roster regression on an owned, hidden two to four player editor.
 
 Attaches to an existing private shared editor. Uses normal native controls and

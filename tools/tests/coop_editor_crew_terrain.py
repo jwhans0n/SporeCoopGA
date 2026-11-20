@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# suite: none (opt-in native Windows fixture requiring an already-owned hidden lab and explicit private inputs; automatic launcher qualification is tracked by BUG-1014)
+# suite: none (opt-in native Windows fixture requiring an already-owned hidden lab and explicit private inputs; automatic launcher qualification is tracked by BUG-1259)
 """Crew/Terraform UI checks on an already-owned hidden Windows editor party.
 
 Preparation opens no connections. Execution needs exact lab ownership, candidate

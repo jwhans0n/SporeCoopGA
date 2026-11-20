@@ -80,7 +80,7 @@ def git(cwd, *a):
 
 def git_context_case(tmp):
     # Both repositories are disposable. Even the failing old helper can only
-    # mutate the outer fixture, never the caller's source checkout (BUG-1016).
+    # mutate the outer fixture, never the caller's source checkout (BUG-1261).
     outer=os.path.join(tmp,'git-env-outer');inner=os.path.join(tmp,'git-env-inner')
     os.makedirs(outer);os.makedirs(inner)
     git(outer,'init','-q','-b','main');git(outer,'commit','-q','--allow-empty','-m','outer')

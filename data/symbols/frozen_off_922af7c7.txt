@@ -407,7 +407,7 @@ SporeCoop::Player_GetProperty ; BUG-0508: on GOG 2016 the migration state is unk
 SporeCoop::AbilityBar_Use ; BUG-0518: a guest's click on the social ability button plays no social game (keys 1-4 only, as before)
 SporeCoop::GameSettings_Build ; BUG-0506: on GOG 2016 the missing save area guard is off (game.save_areas has no effect there)
 SporeCoop::SaveAreas_Init ; BUG-0506: on GOG 2016 the missing save area guard is off (game.save_areas has no effect there)
-SporeCoop::Editor::GroundScene ; BUG-1013: shared terrain captain grounding observation is GOG 2024 only; the shared Terraform adapter remains unavailable on the frozen GOG 2016 build
+SporeCoop::Editor::GroundScene ; BUG-1258: shared terrain captain grounding observation is GOG 2024 only; the shared Terraform adapter remains unavailable on the frozen GOG 2016 build
 SporeCoop::cTribeTool_PlacementReset ; BUG-0514: host tools are not copied to guests on GOG 2016 (tribe_tool world objects off)
 SporeCoop::cTribe_SetToolPurchased ; BUG-0514: as above
 SporeCoop::cTribe_ToolLayout ; BUG-0505: `coop.tribe layout` (a test listing of the grab spots) is off on GOG 2016
@@ -469,14 +469,14 @@ SporeCoop::City_SetPartsOwner ; BUG-0593: the owner of a captured city's buildin
 SporeCoop::Creature_SetSprint ; Tribe / Creature: a guest sees and hears the sprint of the host's members and animals (BUG-0600)
 
 # Exact-GOG-only adventure adapters retained from the validated fork.
-SporeCoop::Editor::IsCreatureClass ; BUG-1017: shared cast replacement is disabled on retired GOG 2016
-SporeCoop::Editor::ClassActCtor ; BUG-1017: shared cast replacement is disabled on retired GOG 2016
-SporeCoop::Editor::ClassActDtor ; BUG-1017: shared cast replacement is disabled on retired GOG 2016
-SporeCoop::Editor::InitializeClassAct ; BUG-1017: shared cast replacement is disabled on retired GOG 2016
-SporeCoop::Editor::FillClassActs ; BUG-1017: shared cast replacement is disabled on retired GOG 2016
-SporeCoop::Editor::TooltipCtor ; BUG-1019: native shared cast hover controls are disabled on retired GOG 2016
-SporeCoop::Editor::TooltipText ; BUG-1019: native shared cast hover controls are disabled on retired GOG 2016
-SporeCoop::Editor::TooltipVTable ; BUG-1019: native shared cast hover controls are disabled on retired GOG 2016
+SporeCoop::Editor::IsCreatureClass ; BUG-1262: shared cast replacement is disabled on retired GOG 2016
+SporeCoop::Editor::ClassActCtor ; BUG-1262: shared cast replacement is disabled on retired GOG 2016
+SporeCoop::Editor::ClassActDtor ; BUG-1262: shared cast replacement is disabled on retired GOG 2016
+SporeCoop::Editor::InitializeClassAct ; BUG-1262: shared cast replacement is disabled on retired GOG 2016
+SporeCoop::Editor::FillClassActs ; BUG-1262: shared cast replacement is disabled on retired GOG 2016
+SporeCoop::Editor::TooltipCtor ; BUG-1264: native shared cast hover controls are disabled on retired GOG 2016
+SporeCoop::Editor::TooltipText ; BUG-1264: native shared cast hover controls are disabled on retired GOG 2016
+SporeCoop::Editor::TooltipVTable ; BUG-1264: native shared cast hover controls are disabled on retired GOG 2016
 SporeCoop::AnimEvent_Handle ; the hit impacts of attacks (an animation event's effect on its target) are not relayed to the partner (BUG-0603)
 SporeCoop::CreatureClickObject ; tests only (coop.rules click, BUG-0557): no click on a body by command on GOG 2016
 SporeCoop::CreatureCursorKind ; tests only (coop.rules cursor, BUG-0557): no cursor kind by command on GOG 2016

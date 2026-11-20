@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# suite: none (opt-in native Windows fixture requiring an already-owned hidden lab and explicit private inputs; automatic launcher qualification is tracked by BUG-1014)
+# suite: none (opt-in native Windows fixture requiring an already-owned hidden lab and explicit private inputs; automatic launcher qualification is tracked by BUG-1259)
 """Measure actual GA UDP traffic through a loopback proxy in a recorded hidden lab."""
 import argparse
 import hashlib

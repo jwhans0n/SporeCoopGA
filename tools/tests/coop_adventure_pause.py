@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# suite: none (opt-in native Windows fixture requiring an already-owned hidden lab and explicit private inputs; automatic launcher qualification is tracked by BUG-1014)
+# suite: none (opt-in native Windows fixture requiring an already-owned hidden lab and explicit private inputs; automatic launcher qualification is tracked by BUG-1259)
 """Exercise unanimous native pause on caller-owned, hidden lab games.
 
 The pair must already be in an ordinary playing adventure (state 3, after the

@@ -6,7 +6,7 @@ formats, main and the editor destination are unchanged. No public release.
 
 ## Report and fix
 
-BUG-1029: Creature/Outfitter return rejects expired original placement grounding
+BUG-1274: Creature/Outfitter return rejects expired original placement grounding
 or exact captain settings before canonical restoration, leaving recovery frozen
 and preventing normal subsequent creation entry. Restore the latest owned
 canonical scene through the existing scene/session fence before strict final
@@ -94,5 +94,5 @@ also preserved. Personal games were closed before installation; the qualified
 private pair was retired after checks. No branch was pushed or merged.
 
 Broader creation matrices,
-performance acceptance and upstream-wide smoke remain deferred. BUG-1025 Add Act
-and BUG-1026 standalone Save New/reopen remain separate known issues.
+performance acceptance and upstream-wide smoke remain deferred. BUG-1270 Add Act
+and BUG-1271 standalone Save New/reopen remain separate known issues.

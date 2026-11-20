@@ -1,6 +1,6 @@
 # 6. Testing
 
-Shared editor browser/Outfitter regressions (BUG-1027, BUG-1028):
+Shared editor browser/Outfitter regressions (BUG-1272, BUG-1273):
 `tools/tests/coop_editor_browser_fps.py --execute` and
 `tools/tests/coop_editor_outfitter.py --execute` require exact hidden/muted
 Windows-lab process metadata, candidate SHA-256 and a new `out/` receipt directory.
@@ -5082,7 +5082,7 @@ G2 of 0.7.8 (BUG-0430 class). For each: which kind of fault it was and the evide
 ## Creature return and re-entry regression (2026-11-13, fix/ga-editor-creation-grounding)
 <a id="testing-creation-return"></a>
 
-BUG-1029: tools/tests/coop_editor_creation_return.py uses an explicitly owned
+BUG-1274: tools/tests/coop_editor_creation_return.py uses an explicitly owned
 hidden/muted Windows pair, exact candidate hash and private project. It cancels
 Create Your Own Creature twice per author, checks actual observer native
 convergence and unchanged cast/history, and immediately re-enters. Native request

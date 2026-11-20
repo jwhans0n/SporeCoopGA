@@ -3882,7 +3882,7 @@ uint32_t SK_THISCALL import_native(void* self,const editor::ResourceKey* key){
 bool SK_THISCALL palette_message(void* self,uint32_t message,uint32_t payload){
     editor_native::state();
     if(!applying && active() && message==0x07C7B9BB && self==palette_listener()){
-        // BUG-1017: ImportClass may defer/return UINT_MAX while ownership is
+        // BUG-1262: ImportClass may defer/return UINT_MAX while ownership is
         // pending. The outer handler still copies class acts through a null
         // GetClass result. Consume the entire drop before native history.
         auto* input=reinterpret_cast<uint8_t*>(uintptr_t(payload));

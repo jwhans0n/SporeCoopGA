@@ -50,9 +50,9 @@ Recover restores the private draft. Observed while correcting an animated-picker
 fixture on C32; the supported import and property routes are tested separately.
 
 ### Galactic Adventures preview 12: validation limits
-## Galactic Adventures preview 12: validation limits (BUG-1014)
+## Galactic Adventures preview 12: validation limits (BUG-1259)
 
-Historical validation limitations and current missing smoke prerequisites are tracked by BUG-1014.
+Historical validation limitations and current missing smoke prerequisites are tracked by BUG-1259.
 
 Preview `0.7.3.5-ga-preview.12` requires the exact dc04 GOG executable and matching
 protocol 15 clients. It seals the host's first win/loss decision, holds gameplay
@@ -1840,11 +1840,11 @@ Reproduce a full game: `tools/lab.py run campaign --lane N` (about 85 min) or `c
   recipe transaction. The draft remains converged and fault-free, but the guest
   receives no authored move. The native Terraform input functions bypass the
   placement input hooks. Private C61 adds the separate hooks and passes controlled
-  checks; actual game qualification remains pending. Ticket: BUG-0999.
+  checks; actual game qualification remains pending. Ticket: BUG-1244.
 
   CORRECTION (2026-11-03): private C62 also repairs the acquired-record revision
   mapping and passes host/guest native movement with checked Undo/Redo and exact
-  Planet restoration. BUG-0999's movement failure is fixed in this uninstalled
+  Planet restoration. BUG-1244's movement failure is fixed in this uninstalled
   candidate. Remaining Terraform controls and release checks stay separate.
 ## Civ: city citizens have another size on each game (2026-11-03, fix/w40-scale)
 <a id="issue-civ-citizen-scale"></a>
@@ -1994,13 +1994,13 @@ Found by fix/w40-play (2026-11-03), not fixed:
 ## Experimental shared-editor native reopen qualification (2026-11-04)
 <a id="issue-editor-terraformed-cold-reopen"></a>
 
-* BUG-1010 (legacy fork BUG-0487): after a native Save of a terraformed private
+* BUG-1255 (legacy fork BUG-0487): after a native Save of a terraformed private
   adventure, cold opening reaches the correct adventure and Native Ready, but
   the strict decoded saved/reopened comparison differs before sharing starts.
   The field and native load boundary are unassigned. Reproduce with the retained
   C69 Road draft and `out/preview9-c69-road-cold-open.py`; complete saved/cold
   images are retained under the matching OUT directory. Shared Save checkpoint
-  publication is separately fixed under BUG-1009. Cold authored equality is not
+  publication is separately fixed under BUG-1254. Cold authored equality is not
   qualified, and the comparator has not been relaxed.
 * 2026-11-04 (fix/w41-effects-stages): Tribe and Civilization fixed for 0.7.5. The relayed id was the skin
   painter's own paint effect `D723B947` (made in the painter's effect world, sent by the test's workload), not a
@@ -2194,9 +2194,9 @@ Player reports 2026-11-04 (0.7.5, Discord bug-reports; not analysed yet):
   the event's object is the attack's target: docs/re/tribe.md#tribe-hit-impacts)
 - BUG-0604: Cell: after the guest's level-up its screen showed only water (no cell drawn, nothing on screen for 7 min) in one cell_new_game run (`tools/lab.py run cell_new_game`; not analysed)
 
-- BUG-1025: Shared Adventure Editor Add Act after independent creation return can lose its native scene identity and freeze the recoverable draft. Same-scene recovery refuses; return to Galaxy before recovery. Retained separately from preview 12 browser qualification; no passing cross-act setup is claimed.
+- BUG-1270: Shared Adventure Editor Add Act after independent creation return can lose its native scene identity and freeze the recoverable draft. Same-scene recovery refuses; return to Galaxy before recovery. Retained separately from preview 12 browser qualification; no passing cross-act setup is claimed.
 
-- BUG-1026: An ordinary standalone Save New after shared editing can show the native creation-replacement warning on cold reopen. Cause remains unclassified; that path is not qualified by the preview 12 browser tests.
+- BUG-1271: An ordinary standalone Save New after shared editing can show the native creation-replacement warning on cold reopen. Cause remains unclassified; that path is not qualified by the preview 12 browser tests.
 - BUG-0606: Cell -> Creature, 4 players: every guest's sync-check found the host's cell 359-740 apart right after the
   campaign's food 1000 shortcut in the Cell advance (lab 20261105-233139 campaign_ct#1, once; not analysed).
 - BUG-0608: Tribe / Creature: a relayed world effect (a hit impact of BUG-0603) is made at the sender's absolute
@@ -3096,16 +3096,16 @@ upstream tickets. A validation item does not imply the source fix is missing.
 
 | Ticket | Scope | GitHub tracking |
 |---|---|---|
-| BUG-0994 | Verify live GroundEffect/Flora ownership after the existing fix | [#1](https://github.com/jwhans0n/SporeCoopGA/issues/1) |
-| BUG-0995 | First Alt-clone can be lost during Structure ownership wait | [#2](https://github.com/jwhans0n/SporeCoopGA/issues/2) |
-| BUG-1003 | Recheck native virtual-wheel held modifiers; controlled Win32 fixture passes | [#3](https://github.com/jwhans0n/SporeCoopGA/issues/3) |
-| BUG-1004 | Recheck hidden-game presentation reset hangs with current SporeKit | [#4](https://github.com/jwhans0n/SporeCoopGA/issues/4) |
-| BUG-1008 | Historical gradient point-color gesture sometimes has no transaction | [#5](https://github.com/jwhans0n/SporeCoopGA/issues/5) |
-| BUG-1010 | Terraformed native Save/cold reopen changes unclassified authored bytes | [#6](https://github.com/jwhans0n/SporeCoopGA/issues/6) |
-| BUG-1014 | Main qualification lacks native smoke fixtures and Windows launcher | [#7](https://github.com/jwhans0n/SporeCoopGA/issues/7) |
-| BUG-1025 | Add Act after independent editor return loses scene identity | [#8](https://github.com/jwhans0n/SporeCoopGA/issues/8) |
-| BUG-1026 | Standalone Save New/cold reopen warns of unavailable custom creations | [#9](https://github.com/jwhans0n/SporeCoopGA/issues/9) |
-| BUG-1031 | Native startup harness rejects an unclassified close-command value | [#10](https://github.com/jwhans0n/SporeCoopGA/issues/10) |
+| BUG-1239 | Verify live GroundEffect/Flora ownership after the existing fix | [#1](https://github.com/jwhans0n/SporeCoopGA/issues/1) |
+| BUG-1240 | First Alt-clone can be lost during Structure ownership wait | [#2](https://github.com/jwhans0n/SporeCoopGA/issues/2) |
+| BUG-1248 | Recheck native virtual-wheel held modifiers; controlled Win32 fixture passes | [#3](https://github.com/jwhans0n/SporeCoopGA/issues/3) |
+| BUG-1249 | Recheck hidden-game presentation reset hangs with current SporeKit | [#4](https://github.com/jwhans0n/SporeCoopGA/issues/4) |
+| BUG-1253 | Historical gradient point-color gesture sometimes has no transaction | [#5](https://github.com/jwhans0n/SporeCoopGA/issues/5) |
+| BUG-1255 | Terraformed native Save/cold reopen changes unclassified authored bytes | [#6](https://github.com/jwhans0n/SporeCoopGA/issues/6) |
+| BUG-1259 | Main qualification lacks native smoke fixtures and Windows launcher | [#7](https://github.com/jwhans0n/SporeCoopGA/issues/7) |
+| BUG-1270 | Add Act after independent editor return loses scene identity | [#8](https://github.com/jwhans0n/SporeCoopGA/issues/8) |
+| BUG-1271 | Standalone Save New/cold reopen warns of unavailable custom creations | [#9](https://github.com/jwhans0n/SporeCoopGA/issues/9) |
+| BUG-1276 | Native startup harness rejects an unclassified close-command value | [#10](https://github.com/jwhans0n/SporeCoopGA/issues/10) |
 
 Historical observations need fresh reproduction. No smoke or focused live editor
 pass is claimed for the blocked startup runs. See the

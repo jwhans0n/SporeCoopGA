@@ -2483,7 +2483,7 @@ while the part is bought: the editor keeps its own count until done, the result'
 ## Native cast browser service pulses and chained Outfitter requests (2026-11-13, fix/ga-editor-browser-runtime)
 <a id="creations-browser-pulses-outfitter"></a>
 
-BUG-1027: observed in the installed preview 12 logs, both games repeatedly spend
+BUG-1272: observed in the installed preview 12 logs, both games repeatedly spend
 about 0.5 seconds between rendered frames without a native fault or packet loss.
 Read-only sampling of the private game's main thread resolves the hot stack to
 `skg::readable`, `editor_native::cast_window`/`native_slot` and
@@ -2504,7 +2504,7 @@ native faults across Creature, Building and Creature-return tabs. Background
 hidden-game FPS is not an acceptance result for visible-game performance or
 large-adventure commit latency.
 
-BUG-1028: the native GA Creature picker route uses body editor `465C50BA`, with
+BUG-1273: the native GA Creature picker route uses body editor `465C50BA`, with
 an intrusive successor request at `EditorRequest+98`. The native Continue
 button is `0615FF74` (selected at `58FC16..58FC34`). After a successful body
 save, `57C0E0` (thiscall(cEditor*), plain ret) checks the result and follows
@@ -2541,7 +2541,7 @@ successor path extends its exact-request matching rule.
 ## Canonical creation-return reconstruction (2026-11-13, fix/ga-editor-creation-grounding)
 <a id="creations-canonical-return"></a>
 
-CORRECTION (2026-11-13): BUG-1029 exposes a separate return boundary after the
+CORRECTION (2026-11-13): BUG-1274 exposes a separate return boundary after the
 preview 13 owned-result fix. Installed logs contain the exact original-placement
 grounding-witness rejection on both roles, after direct Creature and Outfitter
 completion. The owned results were received. A private cold recovery of the
@@ -2808,7 +2808,7 @@ BUG-0852 (BUG-0727's untried case). Code fact, no runtime model of ours has it.
 ## Read-only creation symbol identities during 0.7.13 sync (2026-11-13, sync/upstream-0.7.13-editor-main)
 <a id="creations-readonly-sync-identities"></a>
 
-BUG-1030: the newer symbol lint also scans Python identity readers. Rechecked
+BUG-1275: the newer symbol lint also scans Python identity readers. Rechecked
 GOG 2024 LAA bytes show GetActiveMode7D8380 bounds-checking index28 against
 vector14/18; Window GetControlID A02C70 returns [ECX+7C], and GetFlags641760
 returns [ECX+28], each plain ret. Editor OnEnter58E6D0 starts sub ESP,C4 and

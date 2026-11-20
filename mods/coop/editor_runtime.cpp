@@ -49,7 +49,7 @@ SkMod* M;
 Ctx C;
 bool creation_canonical_return=true;
 #ifndef SPORECOOP_RUNTIME_FIXTURE
-COOP_FIX("editor.creation_restore", "BUG-1029", creation_canonical_return, "Rebuild the canonical scene before verifying a creation return");
+COOP_FIX("editor.creation_restore", "BUG-1274", creation_canonical_return, "Rebuild the canonical scene before verifying a creation return");
 #endif
 std::unique_ptr<editor_session::Controller> controller;
 editor::ObjectId logical_act(uint32_t index){

@@ -56,7 +56,7 @@ libraries; custom Make build directories stage their own setup resources.
 
 ## Validation evidence
 
-Evidence root: `out/upstream0713/` in the main checkout. BUG-1030 records the
+Evidence root: `out/upstream0713/` in the main checkout. BUG-1275 records the
 initial integration build failures and corrections. `build-first.log` fails
 on a colliding UI variable, obsolete keepalive timestamp and the exhaustive
 world-message classifier. `build-second.log` exposes hard-coded setup-resource
@@ -113,7 +113,7 @@ A separate, copied private installation launches two hidden muted GOG LAA games
 and verifies relocated symbols, exclusive virtual input and SporeKit 0.3.16.
 Their payload is 53c49fd87a32bb8dd86f1f2135c574b660ac1ade67ca3a55ae8eee60c8ff46fc.
 Fresh and copied prior private editor profiles both stop at the strict
-registration fixture before editor assertions. BUG-1031 records a zero-command
+registration fixture before editor assertions. BUG-1276 records a zero-command
 close control versus the required command 3. Startup diagnostic probes do not
 qualify movement, recovery, gameplay or smoke. The runtime guard is unchanged.
 Only assigned private test games are stopped; no personal profile is used.
@@ -162,7 +162,7 @@ failure/pass evidence and strict checker rules are retained.
 
 ## Final integration findings
 
-BUG-1032 records an actual uninstall cleanup defect exposed by the inherited
+BUG-1277 records an actual uninstall cleanup defect exposed by the inherited
 inventory test: seven fork maps were omitted. An independent focused Win32
 regression first fails all seven removals, then passes after exact-name C++/batch
 inventories and header build dependencies are corrected. Unrelated symbols,
@@ -230,7 +230,7 @@ are local validation payloads, with no native launch acceptance or installation.
 | SporeCoopSetup.exe | `cddeac79c4e34e4009ff0e0c812aa64311f275142c57ee0109bb128fc72c3763` |
 | SporeCoop.package | `d122637d84dd9c06f6b29bfcaa726b2550795357376303f9a4fc18b3219f0f42` |
 
-The final complete ticket audit, including BUG-1032, passes 1029 records with zero
+The final complete ticket audit, including BUG-1277, passes 1029 records with zero
 problems (ticket-qualified.log, exit 0). Documentation, state-field and registry
 checks pass again after the record updates. The original adapter is restored;
 no temporary shell line-ending changes remain. Final source code is 66961c8b;

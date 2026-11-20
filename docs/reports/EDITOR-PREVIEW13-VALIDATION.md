@@ -7,12 +7,12 @@ formats are unchanged. Main and the editor destination remain unchanged.
 
 ## Reports and observed causes
 
-- BUG-1027: the installed preview 12 logs record sustained 2 FPS host and 6 FPS
+- BUG-1272: the installed preview 12 logs record sustained 2 FPS host and 6 FPS
   guest with 0.5-second hitches and zero native faults. Network service pulses
   repeatedly schedule native cast-card scans in a single rendered frame. A
   queued-task flag alone does not bound work between frames. Schedule browser
   work once per Present frame and skip unchanged decoration setters.
-- BUG-1028: native Creature Continue switches `cEditor+1CC` to the root's owned
+- BUG-1273: native Creature Continue switches `cEditor+1CC` to the root's owned
   `EditorRequest+98` successor without Submit or intermediate NotifyResult.
   Comparing only the root pointer loses the final Outfitter save. Follow the
   verified bounded owned chain, retaining scope/lease and result fences.
@@ -61,8 +61,8 @@ commit latency or the previously deferred performance targets. Broad creation
 matrices, upstream-wide smoke and release qualification remain deferred. No main
 merge, release tag or public release package is part of this fix.
 
-The existing Add Act native identity failure (BUG-1025) and standalone Save New
-cold-reopen warning (BUG-1026) remain separate, unresolved issues.
+The existing Add Act native identity failure (BUG-1270) and standalone Save New
+cold-reopen warning (BUG-1271) remain separate, unresolved issues.
 
 ## Final runtime candidate and focused results
 
