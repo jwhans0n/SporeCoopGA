@@ -443,7 +443,7 @@ class WindowsLane:
                 lab.stop()
             except Exception as error:
                 errors.append(str(error))
-            finally:
+            else:
                 del self.labs[role]
         if errors:
             raise RuntimeError('owned lane cleanup failed: ' + '; '.join(errors))
@@ -454,14 +454,12 @@ class WindowsLane:
                 if (instance is None or number == instance) and process.poll() is None]
 
     def close(self):
-        try:
-            if self.labs:
-                self.stop()
-        finally:
-            if self.lease_finalizer is not None:
-                self.lease_finalizer()
-                self.lease_finalizer = None
-            self.lease = None
+        if self.labs:
+            self.stop()  # failed cleanup retains handles and the whole-run lease
+        if self.lease_finalizer is not None:
+            self.lease_finalizer()
+            self.lease_finalizer = None
+        self.lease = None
 
     def command(self, *args):
         self.owner()
