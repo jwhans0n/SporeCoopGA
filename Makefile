@@ -681,7 +681,7 @@ $(B)/host/adventure_debug_capability_tests.exe: tests/adventure_debug_capability
 
 # The mirror fixture includes world.cpp directly; list it as a dependency only.
 test-mirror-windows: $(B)/host/adventure_mirror_tests.exe
-$(B)/host/adventure_mirror_tests.exe: $(MIRROR_TEST_SRC) mods/coop/adventure_world.cpp mods/coop/adventure_world.h mods/coop/adventure_world_actions.h mods/coop/adventure_world_lifecycle.h mods/coop/adventure_world_vehicles.h mods/coop/adventure_relationships.h mods/coop/adventure_targeting.h mods/coop/net/adventure.h mods/coop/net/adventure_health.h mods/coop/net/adventure_actor_motion.h mods/coop/net/session.h mods/coop/net/buffer.h $(ADVENTURE_ABI_HEADERS)
+$(B)/host/adventure_mirror_tests.exe: $(MIRROR_TEST_SRC) mods/coop/adventure_world.cpp mods/coop/adventure_world.h mods/coop/adventure_world_actions.h mods/coop/adventure_world_lifecycle.h mods/coop/adventure_world_vehicles.h mods/coop/adventure_relationships.h mods/coop/adventure_targeting.h mods/coop/net/adventure.h mods/coop/net/adventure_health.h mods/coop/net/adventure_actor_motion.h mods/coop/net/session.h mods/coop/net/buffer.h $(ADVENTURE_ABI_HEADERS) mods/coop/player_rules.h
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(MIRROR_TEST_SRC) -o $@ -lws2_32
 
