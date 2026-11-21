@@ -411,3 +411,21 @@ tests changed only private graphics preferences, not the player's settings.
 - BUG-1270: Shared Adventure Editor Add Act after independent creation return can lose its native scene identity and freeze the recoverable draft. Same-scene recovery refuses; return to Galaxy before recovery. Retained separately from preview 12 browser qualification; no passing cross-act setup is claimed.
 
 - BUG-1271: An ordinary standalone Save New after shared editing can show the native creation-replacement warning on cold reopen. Cause remains unclassified; that path is not qualified by the preview 12 browser tests.
+
+
+## Shared editor: waiting-for-ownership caption can outlive its request (2026-11-20, native qualification)
+<a id="issue-editor-stale-ownership-status"></a>
+
+* What happens: "Waiting for editing ownership" can remain after all members
+  report no pending ownership, no held lease and no native gesture/transaction.
+* Reproduce: retained four-player Town host status after the 90-second native
+  observation in `out/windows-lab/ga0715-fixed/town-four-captain`.
+* Known: the request path sets this caption, but successful grant and retained
+  input retirement do not always publish a replacement status. The draft remains
+  converged and unfrozen, with unchanged history and zero native faults.
+* Not checked: the exact intermediate grant outcome; no Captain movement defect
+  is established. This attempted drop hit a rock edge and can be a valid native
+  no-op. A clear-land movement retry is a separate gate.
+* Next steps: retire only this stale caption when the pending request ends,
+  preserving unrelated newer status messages. No implementation is included yet.
+* Ticket: BUG-1280.
