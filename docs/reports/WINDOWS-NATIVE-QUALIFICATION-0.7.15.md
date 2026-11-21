@@ -243,3 +243,31 @@ and checks both initially present and initially absent cases. The old teardown
 fails under an initially absent context, while the corrected context and all
 22 contracts pass. The failed CI run remains evidence; local outputs are under
 `out/windows-lab/python310-digest-teardown`. Real Python 3.10 CI must rerun.
+
+### Native galaxy-layout fixture adapter
+
+The first original Creature scenario on source `4d4788a2` remained in Galaxy:
+its unchanged loader clicked a free planet and opened Choose A Stage instead of
+loading the genuinely saved Creature world. The fixed 1440x1080 viewport and
+UI canvas were both correct. The standard RED receipt is
+`out/lab/20261120-185340-windows-b10198/results.json` in the integration worktree;
+the owned case was stopped after the native precondition failure was captured,
+while the independent real repository unit completed PASS in 671.81 seconds.
+The host UI tree and actual screenshot are under
+`out/windows-lab/final-smoke-4d4788a2`. A separate genuine fresh-profile wizard
+attempt at the loader's fixed coordinates also failed to find a slot, retained
+under `out/windows-lab/native0715-correct-slot-creature`. No candidate archive
+from that failed attempt was admitted and no native save records were altered.
+
+The Windows setup route now uses the same native `coop.load` path already used
+by `twoinst.start`. Read-only discovery accepts only an explicitly mapped
+instance, the exact private ownership marker, and one real Game0 planet file;
+missing, ambiguous or redirected targets fail before native mutation. The
+helper checks the actual Creature mode, named native avatar, naturally cleared
+entry pause, presenting frames and stable context after settling. Linux keeps
+the original galaxy-click route. Original co-op gameplay, native UI assertions
+and log gates are unchanged. The added contracts fail against the old adapter;
+all 24 backend contracts pass, including wrong-world, wrong-mode, paused,
+replaced-context and rejected-load cases. Actual scenario qualification remains
+required. Contract evidence is under `out/windows-lab/native-loader-adapter`
+in the qualification worktree.

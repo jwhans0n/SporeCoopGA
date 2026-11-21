@@ -105,6 +105,73 @@ class LaneTests(unittest.TestCase):
             WindowsLane(cfg).profile('host')
         self.assertEqual((root / 'personal.dat').read_text(), 'preserve')
 
+    def test_native_loader_discovers_only_one_planet_in_its_owned_profile(self):
+        cfg = self.config()
+        lane = WindowsLane(cfg)
+        self.addCleanup(lane.close)
+        root = lane.profile('host')
+        slot = root / 'Games/Game0'
+        slot.mkdir(parents=True)
+        planet = slot / 'Private Pony.spo'
+        planet.write_bytes(b'portable ownership contract, not a native fixture')
+        with patch.object(lane, 'owner', side_effect=AssertionError('read-only discovery acquired ownership')):
+            self.assertEqual(lane.owned_planet(cfg.host), ('Game0', 'Private Pony'))
+            with self.assertRaises(ValueError):
+                lane.owned_planet(99)
+            extra = slot / 'Another.spo'
+            extra.write_bytes(b'ambiguous')
+            with self.assertRaises(RuntimeError):
+                lane.owned_planet(cfg.host)
+            extra.unlink()
+            planet.unlink()
+            with self.assertRaises(RuntimeError):
+                lane.owned_planet(cfg.host)
+            planet.write_bytes(b'contract')
+            (root / '.sporecoop-windows-lane.json').write_text('{}')
+            with self.assertRaises(RuntimeError):
+                lane.owned_planet(cfg.host)
+
+    def test_windows_native_loader_checks_actual_mode_and_named_avatar(self):
+        import load_game
+        class Native:
+            def __init__(self, mode='0x01654C02 Creature', planet='Private Pony', accept=True,
+                         paused=False, replace_on_settle=False):
+                self.mode, self.planet, self.accept = mode, planet, accept
+                self.paused, self.replace_on_settle = paused, replace_on_settle
+                self.loaded, self.calls = False, []
+            def call(self, command):
+                self.calls.append(command)
+                if command.startswith('coop.load '):
+                    self.loaded = True
+                    return dict(ok=self.accept, out='loading Game0/Private Pony')
+                if command == 'game.mode':
+                    return dict(ok=True, out=self.mode if self.loaded else '0x02CCD1D2 GalaxyGameEntry')
+                if command == 'coop.avatar':
+                    return dict(ok=True, out=f"Creature: local=1234\ngame_name '{self.planet}.spo'")
+                if command == 'coop.pauses':
+                    return dict(ok=True, out=f'paused={int(self.paused)}')
+                if command == 'wait.frames 300 60000' and self.replace_on_settle:
+                    self.loaded = False
+                return dict(ok=True, out='')
+        class Owned:
+            def owned_planet(self, instance):
+                if instance != 49:
+                    raise ValueError('unowned instance')
+                return 'Game0', 'Private Pony'
+        with patch('windows_native_lane.backend', return_value=Owned()):
+            native = Native()
+            self.assertIn('Private Pony.spo', load_game.load_windows(native, 49, timeout=0))
+            self.assertIn('coop.load Game0 "Private Pony"', native.calls)
+            self.assertFalse(any(command.startswith('click ') for command in native.calls))
+            for native in (Native(planet='Wrong'), Native(mode='0x01 CreatureEditor'), Native(accept=False),
+                           Native(paused=True), Native(replace_on_settle=True)):
+                with self.subTest(calls=native.calls), self.assertRaises(RuntimeError):
+                    load_game.load_windows(native, 49, timeout=0)
+            native = Native()
+            with self.assertRaises(ValueError):
+                load_game.load_windows(native, 99, timeout=0)
+            self.assertEqual(native.calls, [])
+
     def test_profile_reset_refuses_escape_unknown_and_loaded_save(self):
         cfg = self.config()
         lane = WindowsLane(cfg)
