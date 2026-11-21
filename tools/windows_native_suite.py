@@ -95,9 +95,17 @@ def original_command(test):
     return target, words, environment
 
 
+def skipped_case(test, text):
+    # Repository self-tests deliberately print verdict and traceback examples.
+    # Their real boundary is the make process, not a nested example's text.
+    return test['name'] != 'unit' and bool(re.search(r'RESULT: (?:SKIP|INCONCLUSIVE)\b', text))
+
+
 def verdict(test, code, text, failures):
-    has_result = 'RESULT:' in text or test['name'] == 'unit'
-    skipped = bool(re.search(r'RESULT: (?:SKIP|INCONCLUSIVE)\b', text))
+    if test['name'] == 'unit':
+        return code == 0 and not failures
+    has_result = 'RESULT:' in text
+    skipped = skipped_case(test, text)
     return (code == 0 and has_result and not skipped and 'RESULT: FAIL' not in text
             and 'Traceback' not in text and not failures)
 
@@ -276,7 +284,7 @@ def run(config_path, selection, repeat=1):
                 if path.is_file():
                     shutil_copy_log(path, output / path.name)
             ok = verdict(test, code, text, failures)
-            skipped = bool(re.search(r'RESULT: (?:SKIP|INCONCLUSIVE)\b', text))
+            skipped = skipped_case(test, text)
             recorded_log = record_root / (name + '.log')
             shutil_copy_log(log, recorded_log)
             for role, source in logs.items():

@@ -40,6 +40,13 @@ Verification evidence belongs in the upstream synchronization report. Missing pr
   creation packages are additional dependencies of selected creation scenarios.
   See docs/reports/WINDOWS-NATIVE-QUALIFICATION-0.7.15.md.
 
+- 2026-11-20: The first completed real repository unit row returned make exit 2
+  for independent integration failures. The adapter misread planted portable
+  self-test verdict examples as the outer verdict. Unit qualification now uses
+  the actual make process result and supervisor failures, preserving strict
+  gameplay verdict checks. The boundary regression fails against the old
+  adapter and all 21 backend contracts pass. Native smoke remains required.
+
 Legacy fork reference: `BUG-0626` before upstream 0.7.13 integration. Historical commits and OUT receipts retain that identity; upstream owns its independently created ticket under that number.
 
 Legacy fork reference: `BUG-1014` before upstream0.7.15 integration. Prior aliases and historical commit/OUT identities remain unchanged; upstream owns its independently created ticket under that number.
