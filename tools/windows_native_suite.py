@@ -140,7 +140,9 @@ def worker(config_path, name, gate, receipt):
         if name == 'unit':
             if not config.unit_command:
                 raise RuntimeError('UNAVAILABLE: configure the real repository make test command')
-            code = subprocess.call(list(config.unit_command), cwd=ROOT)
+            unit_env = {key: value for key, value in os.environ.items()
+                        if key not in ('SPORE_WINDOWS_LANE_CONFIG', 'SPORE_WINDOWS_LANE_OWNER')}
+            code = subprocess.call(list(config.unit_command), cwd=ROOT, env=unit_env)
         else:
             target, args, environment = original_command(test)
             os.environ.update(environment)

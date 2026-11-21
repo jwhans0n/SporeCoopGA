@@ -93,6 +93,18 @@ def _registration_close_signature(modal, target, direct):
                     and node['caption'] == 'Login' and node['rect'] == (652, 23, 731, 60) for node in direct) == 1)
 
 
+def _startup_offscreen_pointer_window(node, root):
+    # UTFWin0x40 means AlwaysInFront, not Modal (sui.h). Native input/tooltip
+    # setup can create this IgnoreMouse1x1 root child outside the canvas while
+    # the startup movie finishes. It cannot own a visible registration action.
+    x1, y1, x2, y2 = node['rect']
+    rx1, ry1, rx2, ry2 = root['rect']
+    return (node['parent'] is root and node['ident'] == 0 and node['command'] == 0
+            and node['flags'] == 0x53 and not node['caption'] and node['line'].startswith('Window ')
+            and (x2 - x1, y2 - y1) == (1, 1)
+            and (x1 >= rx2 or y1 >= ry2 or x2 <= rx1 or y2 <= ry1))
+
+
 def registration_action(tree):
     """Return an exactly owned native registration action, or None.
 
@@ -101,7 +113,8 @@ def registration_action(tree):
     """
     nodes = _startup_tree(tree)
     visible = [node for node in nodes if node['visible']]
-    modals = [node for node in visible if node['flags'] & 0x40]
+    modals = [node for node in visible if node['flags'] & 0x40
+              and not _startup_offscreen_pointer_window(node, nodes[0])]
     if not modals:
         if any(node['ident'] == 0x0519E168 or "If you don't register" in node['caption'] for node in visible):
             raise FixtureError('registration controls have no verified modal owner')

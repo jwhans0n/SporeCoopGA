@@ -141,7 +141,14 @@ class DesktopProcess:
 
     def terminate(self):
         if self.poll() is None and not self.kernel.TerminateProcess(self.handle, 1):
-            raise C.WinError(C.get_last_error())
+            error = C.get_last_error()
+            # Windows can deny TerminateProcess after the target exited between
+            # poll and terminate (seen after the rejected native fixture crash).
+            # Confirm this exact retained handle exited; a live denial is fatal.
+            if error == 5 and self.kernel.WaitForSingleObject(self.handle, 1000) == 0:
+                self.poll()
+                return
+            raise C.WinError(error)
 
     kill = terminate
 

@@ -13,6 +13,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import shlex
 import socket
 import tarfile
 import tempfile
@@ -45,6 +46,23 @@ def write_json(path, value):
     temporary = path.with_suffix(path.suffix + '.tmp')
     temporary.write_text(json.dumps(value, indent=2) + '\n', encoding='utf-8')
     temporary.replace(path)
+
+
+def real_unit_command(argv):
+    """Permit the real make target, including the audited WSL toolchain adapter."""
+    if not argv or Path(argv[0]).stem.lower() not in ('wsl', 'make'):
+        return False
+    if len(argv) >= 5 and tuple(argv[:4]) == ('wsl', '-e', 'bash', '-lc'):
+        command = argv[4]
+        if len(argv) != 5 or any(c in command for c in (';', '|', '&', '\n', '\r', '>', '<', '`', '$(')):
+            return False
+        words = shlex.split(command)
+        if words and words[0].startswith('PATH='):
+            words.pop(0)
+        return bool(words and words[0] == 'make' and words[-1] == 'test'
+                    and all(re.fullmatch(r'-j\d+|(?:B|HOSTCXX|LLVM_MINGW|TEST_JOBS)=[A-Za-z0-9_./:+-]+', word)
+                            for word in words[1:-1]))
+    return any(tuple(argv[i:i + 2]) == ('make', 'test') for i in range(len(argv) - 1))
 
 
 @dataclass(frozen=True)
@@ -91,9 +109,7 @@ class LaneConfig:
             raise ValueError('only audited campaign/editor viewports are supported')
         if not 0 <= value.screen_size <= 64:
             raise ValueError('invalid measured native screen-size option')
-        if value.unit_command and (Path(value.unit_command[0]).stem.lower() not in ('wsl', 'make')
-                or not any(value.unit_command[i:i + 2] == ('make', 'test')
-                           for i in range(len(value.unit_command) - 1))):
+        if value.unit_command and not real_unit_command(value.unit_command):
             raise ValueError('unit adapter must invoke the real make test command')
         if set(value.payload_hashes) != set(PAYLOAD) or not value.symbol_hashes:
             raise ValueError('bind every payload and symbol file by SHA256')
