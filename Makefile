@@ -560,6 +560,7 @@ unit-lint:
 unit-tools:
 	python3 tools/tests/tools_selftest.py
 	python3 tools/tests/tickets_git_check.py
+	python3 tools/tests/prerelease_identity_check.py
 	python3 tools/tests/visual_selftest.py
 	python3 tools/tests/state_fields_check.py
 	python3 tools/tests/test_lint.py

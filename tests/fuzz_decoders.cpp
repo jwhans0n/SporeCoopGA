@@ -303,6 +303,30 @@ static void hello_welcome_ext()
     Writer fb = base;
     fb.u32(CAP_VERSION | CAP_FAMILIES); fb.u8(200); fb.u8(1); // a version longer than the message
     CHECK(rd(fb.data, h) && !h.has_families && h.version.empty() && h.name == "Bob", "Hello families after a bad version");
+    for (const auto& invalid : std::vector<std::vector<FamilyRev>>{
+             {{1, 1, 0}, {1, 2, 0}}, {{0, 1, 0}}, {{1, 0, 0}}}) {
+        Hello bad_hello;
+        bad_hello.families = invalid;
+        CHECK(rd(enc(bad_hello), h) && !h.has_families, "Hello invalid family list");
+        Welcome bad_welcome;
+        bad_welcome.families = invalid;
+        CHECK(rd(enc(bad_welcome), w) && !w.has_families, "Welcome invalid family list");
+    }
+}
+
+static std::vector<FamilyRev> valid_families(Rng& R)
+{
+    if (R.below(4) == 0)
+        return default_families();
+    std::vector<FamilyRev> families;
+    bool seen[256] = {};
+    for (unsigned n = R.below(kMaxFamilies + 1), i = 0; i < n; i++) {
+        uint8_t id;
+        do { id = R.u8(); } while (!id || seen[id]);
+        seen[id] = true;
+        families.push_back({id, (uint16_t)(1 + R.below(65535)), R.u16()});
+    }
+    return families;
 }
 
 static void fuzz_protocol(uint64_t seed, int iters)
@@ -322,7 +346,8 @@ static void fuzz_protocol(uint64_t seed, int iters)
         h.caps = R.below(2) ? kMyCaps : R.u32();
         h.has_token = R.below(2); h.token = ((uint64_t)R.u32() << 32) | R.u32();
         if (R.below(2)) h.version = R.str(60);
-        for (int n = (int)R.below(12), i = 0; i < n; i++) h.families.push_back({R.u8(), R.u16(), R.u16()}); // B6
+        // Replace the default manifest: valid corpus entries require unique, nonzero IDs and revisions.
+        h.families = valid_families(R);
         return h;
     }, [](const Hello& h) { return (size_t)(2 + 4 + 1 + std::min<size_t>(h.name.size(), 255)); });
     fuzz_struct<Welcome>("Welcome", R, iters, [](Rng& R) {
@@ -330,7 +355,7 @@ static void fuzz_protocol(uint64_t seed, int iters)
         for (int n = (int)R.below(R.below(8) ? 5 : 256), i = 0; i < n; i++) w.players.push_back({R.u8(), R.str(40)});
         w.ext = R.below(4) != 0;
         w.caps = R.below(2) ? kMyCaps : R.u32();
-        for (int n = (int)R.below(12), i = 0; i < n; i++) w.families.push_back({R.u8(), R.u16(), R.u16()}); // B6
+        w.families = valid_families(R);
         return w;
     }, [](const Welcome& w) {
         size_t n = 1 + 4 + 1;
