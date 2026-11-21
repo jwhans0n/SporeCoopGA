@@ -53,6 +53,11 @@ Verification evidence belongs in the upstream synchronization report. Missing pr
   the correction and all 22 backend contracts pass afterward; real Python 3.10
   CI and native smoke remain separate gates.
 
+- 2026-11-20: A second Python 3.10 CI run exposed only the new regression's
+  teardown, which assumed file_digest existed before the test. The dictionary
+  context now handles both initial states; its old failure is reproduced and
+  all 22 contracts pass locally. Production hashing is unchanged.
+
 Legacy fork reference: `BUG-0626` before upstream 0.7.13 integration. Historical commits and OUT receipts retain that identity; upstream owns its independently created ticket under that number.
 
 Legacy fork reference: `BUG-1014` before upstream0.7.15 integration. Prior aliases and historical commit/OUT identities remain unchanged; upstream owns its independently created ticket under that number.
