@@ -223,3 +223,14 @@ The new boundary regression fails against the previous adapter and all 21
 backend contracts pass with the correction. Failing and passing outputs are
 retained under `out/windows-lab/backend-unit-verdict` in the qualification
 worktree. No gameplay or repository-test assertion was changed.
+
+### Python 3.10 fixture-hash compatibility
+
+GitHub Actions run `44847831725` exposed four backend-contract errors because
+the lane used `hashlib.file_digest`, added in Python 3.11, while CI uses 3.10.
+Hash admission now streams the same SHA-256 algorithm in bounded 1 MiB chunks.
+This preserves exact payload, symbol and fixture verification. No Python 3.10
+interpreter is installed locally; a regression removes that attribute and
+verifies both an empty file and a file spanning multiple chunks. It fails
+against the old implementation and all 22 backend contracts pass with the
+correction. Outputs are retained under `out/windows-lab/python310-digest`.

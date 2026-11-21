@@ -47,6 +47,12 @@ Verification evidence belongs in the upstream synchronization report. Missing pr
   gameplay verdict checks. The boundary regression fails against the old
   adapter and all 21 backend contracts pass. Native smoke remains required.
 
+- 2026-11-20: GitHub Actions Python 3.10 exposed four hash-helper errors from
+  using the Python 3.11-only file_digest API. Bounded streaming SHA-256 preserves
+  exact hash admission on both versions. The absent-API regression fails before
+  the correction and all 22 backend contracts pass afterward; real Python 3.10
+  CI and native smoke remain separate gates.
+
 Legacy fork reference: `BUG-0626` before upstream 0.7.13 integration. Historical commits and OUT receipts retain that identity; upstream owns its independently created ticket under that number.
 
 Legacy fork reference: `BUG-1014` before upstream0.7.15 integration. Prior aliases and historical commit/OUT identities remain unchanged; upstream owns its independently created ticket under that number.
