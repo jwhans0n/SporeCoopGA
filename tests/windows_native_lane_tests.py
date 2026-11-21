@@ -391,7 +391,7 @@ class LaneTests(unittest.TestCase):
         self.assertEqual(result.stdout.decode('utf-8').splitlines(), [row])
 
     @staticmethod
-    def readiness_fixture(pauses, replacement=None):
+    def readiness_fixture(pauses, replacement=None, raw_snapshot=False):
         class Clock:
             now = 0
             def clock(self):
@@ -409,7 +409,8 @@ class LaneTests(unittest.TestCase):
                     return dict(ok=True, out='0x01654C04 Tribe')
                 if command == 'coop.avatar':
                     name = 'Other.spo' if replacement and self.poll >= replacement else 'Zorispe.spo'
-                    return dict(ok=True, out=f"Tribe: local=1234 place=0xA3930F03 world '{name}'\ngame_name '{name}'")
+                    raw = 'snapshot.spo' if raw_snapshot else name
+                    return dict(ok=True, out=f"Tribe: local=1234 place=0xA3930F03 world '{name}'\ngame_name '{raw}'")
                 if command == 'coop.pauses':
                     paused = pauses[min(self.poll - 1, len(pauses) - 1)]
                     return dict(ok=True, out='pauses: flags=3 paused=1 reasons: 04BF38A7=1' if paused
@@ -452,6 +453,14 @@ class LaneTests(unittest.TestCase):
         result = json.loads(receipt.read_text())
         self.assertEqual(result['phase'], 'failed')
         self.assertEqual(result['contexts']['host'][2], 'Zorispe.spo')
+
+    def test_native_scene_uses_logical_world_during_a_native_snapshot(self):
+        from windows_native_lane import wait_scene_ready
+        native, clock = self.readiness_fixture([False], raw_snapshot=True)
+        result = wait_scene_ready(dict(host=native), 'Tribe', timeout=2,
+                                  clock=clock.clock, sleep=clock.sleep)
+        self.assertEqual(result['contexts']['host'][2], 'Zorispe.spo')
+        self.assertIn("game_name 'snapshot.spo'", result['last']['host']['avatar'])
 
     def test_receipt_uses_existing_lab_coverage_and_log_gate_schema(self):
         import time

@@ -221,8 +221,10 @@ def wait_scene_ready(consoles, stage, timeout=120, receipt=None, clock=time.mono
                 game_name = re.search(r"^game_name '(.+)'$", facts['avatar'], re.M)
                 context = None
                 if (avatar.get('ok') and parsed_avatar and int(parsed_avatar[1], 16) and game_name
-                        and game_name[1] == parsed_avatar[2] and facts['avatar'].startswith(stage + ':')):
-                    context = [parsed_mode[1], int(parsed_avatar[1], 16), game_name[1]]
+                        and facts['avatar'].startswith(stage + ':')):
+                    # The header uses the effective world identity. Raw game_name
+                    # can temporarily be snapshot.spo during a native save (BUG-0258).
+                    context = [parsed_mode[1], int(parsed_avatar[1], 16), parsed_avatar[2]]
                     if role in contexts and contexts[role] != context:
                         raise RuntimeError(f'{role}: native world context changed while waiting for readiness')
                     contexts[role] = context

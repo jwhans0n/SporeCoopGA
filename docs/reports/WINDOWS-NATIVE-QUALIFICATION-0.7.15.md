@@ -329,3 +329,10 @@ contracts pass with the existing contracts (28 total). Native rerun of the
 unchanged original Tribe assertions is still required for this follow-up.
 Portable evidence is under `out/windows-lab/native-scene-readiness` in the
 qualification worktree; it does not substitute for native acceptance.
+
+Readiness identity follows the avatar header's effective world name and place,
+not the raw game_name alias. Verified coop_cmds.cpp and modes.cpp distinguish
+these deliberately: native saves can temporarily expose snapshot.spo while
+the effective world remains unchanged (BUG-0258). The raw field remains in
+diagnostics; changing the effective world still rejects the capture. The alias
+contract joins the other contracts, for 29 passing backend contracts.
