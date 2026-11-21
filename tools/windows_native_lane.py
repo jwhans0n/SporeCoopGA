@@ -297,6 +297,31 @@ class WindowsLane:
         if role in self.labs:
             raise RuntimeError('never change a loaded native save or creation package')
 
+    def owned_planet(self, instance):
+        """Read the sole Game0 planet of an already marked private test role.
+
+        Setup helpers run as child processes: discovery must neither acquire the
+        parent's lease nor create/adopt a profile. An ambiguous save is not a
+        reason to choose an arbitrary world or fall back to another instance.
+        """
+        role = next((r for r in ('host', 'guest') if self.config.instance(r) == instance), None)
+        if role is None:
+            raise ValueError('load target is outside this native lane')
+        root = self.config.profile_dir(role)
+        marker = root / '.sporecoop-windows-lane.json'
+        expected = dict(lane=self.config.identity, role=role, installation=str(self.config.installation))
+        if (root.resolve() != root or not marker.is_file() or marker.resolve() != marker
+                or json.loads(marker.read_text(encoding='utf-8')) != expected):
+            raise RuntimeError('native load target has no matching private ownership marker')
+        slot = root / 'Games' / 'Game0'
+        if not slot.is_dir() or slot.resolve() != slot:
+            raise RuntimeError('native load target has no owned Game0 directory')
+        planets = list(slot.glob('*.spo'))
+        if (len(planets) != 1 or not planets[0].is_file() or planets[0].resolve() != planets[0]
+                or not re.fullmatch(r'[\w .-]+', planets[0].stem) or planets[0].stem in ('.', '..')):
+            raise RuntimeError('native load requires one unambiguous owned Game0 planet')
+        return 'Game0', planets[0].stem
+
     def remove(self, profile, relative):
         if relative not in RESETTABLE:
             raise ValueError('profile reset path is not audited: ' + relative)
