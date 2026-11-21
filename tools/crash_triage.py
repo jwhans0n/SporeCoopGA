@@ -163,9 +163,10 @@ def find(term):
 # coop section (`SporeCoop X, name ...`), the log's load line; a crash file's Summary quotes the latest
 # co-op summary, which can be of an earlier run with another version, so a plain `coop X` comes last
 # and never from a summary line
-COOP_VERSION = (re.compile(r'^mods: coop v?(\d+\.\d+[\w.]*\d)', re.M),
-                re.compile(r'^SporeCoop v?(\d+\.\d+[\w.]*\d)[ ,]', re.M),
-                re.compile(r'coop: (?:SporeCoop|loaded coop) v?(\d+\.\d+[\w.]*\d)'))
+VERSION_TEXT = r'\d+\.\d+(?:[\w.+-]*[\w+-])?'  # keep full identity; a sentence's final dot is punctuation
+COOP_VERSION = (re.compile(r'^mods: coop v?(' + VERSION_TEXT + ')', re.M),
+                re.compile(r'^SporeCoop v?(' + VERSION_TEXT + ')[ ,]', re.M),
+                re.compile(r'coop: (?:SporeCoop|loaded coop) v?(' + VERSION_TEXT + ')'))
 
 
 def coop_version(text):
@@ -176,7 +177,7 @@ def coop_version(text):
     for line in text.splitlines():
         if 'summary' in line or 'an earlier run' in line:
             continue
-        m = re.search(r'\bcoop v?(\d+\.\d+[\w.]*\d)', line)
+        m = re.search(r'\bcoop v?(' + VERSION_TEXT + ')', line)
         if m:
             return m
     return None
@@ -212,7 +213,7 @@ def dll_version(path):
     # builds before 0.7.12 have no VERSIONINFO (BUG-0784): the COOP_VERSION string compiled into coop.dll
     try:
         with open(path, 'rb') as f:
-            found = set(re.findall(rb'SporeCoop (\d+\.\d+(?:\.\d+)*)[ ,\x00]', f.read()))
+            found = set(re.findall(b'SporeCoop (' + VERSION_TEXT.encode('ascii') + rb')[ ,\x00]', f.read()))
     except OSError:
         return None
     return found.pop().decode() if len(found) == 1 else None

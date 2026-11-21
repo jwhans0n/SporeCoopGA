@@ -240,3 +240,42 @@ The original14-case smoke's real-unit run was stopped as SOURCE_CHANGED before
 any gameplay when this diagnostic/dependency follow-up was identified; its partial
 receipt remains unqualified. A new frozen source and actual unit execution are
 required for the acceptance run.
+
+### Preview identity in PE and symbol tools
+
+The real unit run at `out/windows-lab/smoke0715a/unit-71dd697e/test.log`
+recorded nine symbol-tool failures for `0.7.15.0-ga-editor-preview.16`.
+`pe_version.py --expect` tried to convert the prerelease suffix to an integer;
+`crash_triage.py` separately truncated the report identity to `0.7.15.0`, so
+matching preview DLLs were refused. The failed archive build caused the fake
+download/cache checks to fail in turn. A focused old-tool reproduction retains
+the ValueError and truncated identity under
+`out/upstream0715/network/preview-symbols`.
+
+The PE check now validates the numeric core as four bounded WORD components and
+still requires exact full FileVersion/ProductVersion strings. Report and legacy
+DLL parsing retain the complete prerelease/build identity, while sentence
+punctuation stays outside it. Same-core wrong-preview symbol folders remain
+rejected. No native payload, symbol offsets, download hash gates or version-match
+requirements were relaxed, and `symbols_pack.sh` needed no change.
+
+PASS: the new real-PE regression has 41 checks on Windows and WSL; its old-tool
+twin fails. All three existing preview DLLs pass full-identity PE validation.
+The unchanged original `triage_symbols_check.py` passes with zero failures using
+the actual built DLLs and symbol archive, including source naming, wrong-version
+refusal, SHA-checked fake downloads, cache reuse and bad-SHA rejection. Existing
+triage selftests also pass. Original-regression evidence is
+`out/upstream0715/network/preview-symbols/original-triage-symbols-green.log`
+(160.674 seconds). These tooling checks do not qualify the remaining native or
+complete repository gates.
+
+The same real unit run exposed 44 Hello/Welcome fuzz failures: their generators
+appended random families to the new default mandatory manifest, producing
+duplicate IDs in a corpus labelled valid. The generator now replaces those
+defaults with unique nonzero IDs/revisions and exercises both the canonical
+manifest and randomized lengths 0..64. Explicit duplicate/zero rejection remains;
+production decoding and wire bytes are unchanged. The exact original unit-fuzz
+target passes under ASan/UBSan in 95.674 seconds, retaining 6,000 mutations per
+codec and 64 valid round trips. It covers 17,796 Hello and 35,952 Welcome prefixes.
+Evidence: `out/integration/fuzz-fixed/test.log` and `exit.json`. The original 44
+failures remain in the real unit log above.

@@ -4,13 +4,15 @@
   tools/pe_version.py <file.exe|dll>...                  print each file's version strings
   tools/pe_version.py --expect X.Y.Z <file>...           exit 1 unless every file has a VERSIONINFO
                                                          whose FileVersion / ProductVersion strings are
-                                                         X.Y.Z and whose fixed FILEVERSION is X,Y,Z(,0)
+                                                         the exact version, including a prerelease suffix;
+                                                         fixed FILEVERSION uses its numeric core, padded to four
   tools/pe_version.py --repro-sha256 <file>...          sha256 with the link time stamps and the debug
                                                          record's id zeroed: two builds of the same commit
                                                          (stripped like tools/package.sh) give the same value
 tools/package.sh runs --expect on every binary of the release (the zip, the pack and the setup).
 """
 import hashlib
+import re
 import struct
 import sys
 
@@ -143,6 +145,18 @@ def read(path):
     return parse(vi) if vi else (None, None)
 
 
+def expected_quad(version):
+    """The numeric PE version; full FileVersion/ProductVersion identity is checked separately."""
+    m = re.fullmatch(r'([0-9]+(?:\.[0-9]+){0,3})(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?'
+                     r'(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?', version)
+    if not m:
+        raise ValueError('expected one to four numeric components with an optional prerelease/build suffix')
+    core = tuple(int(x) for x in m.group(1).split('.'))
+    if any(x > 65535 for x in core):
+        raise ValueError('PE version components must be in 0..65535')
+    return core + (0,) * (4 - len(core))
+
+
 def main(argv):
     expect = None
     if argv[:1] == ['--repro-sha256']:
@@ -155,6 +169,12 @@ def main(argv):
     if not argv:
         print(__doc__)
         return 2
+    if expect:
+        try:
+            want = expected_quad(expect)
+        except ValueError as e:
+            print(f'invalid --expect {expect!r}: {e}')
+            return 2
     bad = 0
     for p in argv:
         fixed, strings = read(p)
@@ -165,7 +185,6 @@ def main(argv):
         print(f'{p}: {".".join(map(str, fixed)) if fixed else "?"} {strings.get("FileDescription", "")!r} '
               f'({strings.get("OriginalFilename", "")}, {strings.get("ProductName", "")} {strings.get("ProductVersion", "")})')
         if expect:
-            want = tuple(int(x) for x in expect.split('.')) + (0,) * (4 - len(expect.split('.')))
             problems = []
             if fixed != want:
                 problems.append(f'FILEVERSION {fixed} is not {want}')

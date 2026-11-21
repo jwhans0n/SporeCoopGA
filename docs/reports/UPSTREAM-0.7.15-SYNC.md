@@ -133,3 +133,25 @@ pass20,057checks for each subscriber order; a controlled Civ slot is explicitly
 not production Civ gameplay evidence. Native Civ smoke and full cold hook/error
 checks remain required. The global read-only315-site hook audit found no other
 concrete shared-owner collision, and cannot replace that native reprobe.
+
+
+The real unit run subsequently found nine debug-symbol tooling failures for the
+full preview version. PE validation treated the suffix as a numeric component,
+and report parsing discarded it. The fixes preserve exact preview identities
+while validating the numeric PE quad independently. Same-core wrong-preview
+symbols and incorrect fixed PE versions are still refused. A real-PE regression
+passes 41 checks on Windows and WSL, with an old-tool FAIL retained. All three
+existing preview DLLs pass exact full-identity validation; the unchanged original
+symbol packaging/triage regression now passes with zero failures against the
+actual DLLs and archive, including wrong-version and bad-SHA refusals. Existing
+triage selftests pass. Evidence is retained under
+`out/upstream0715/network/preview-symbols`; no C++ or installed payload changed.
+The complete real unit and native smoke acceptance gates remain separate.
+
+The valid Hello/Welcome fuzz corpus also inherited the new default family list
+and then appended randomized families, creating invalid duplicate IDs. The
+corpus-only correction replaces that list with unique nonzero IDs/revisions and
+retains canonical manifests, lengths 0..64, duplicate/zero rejection and all
+original mutation/round-trip assertions. The exact original unit-fuzz target
+passes ASan/UBSan in 95.674 seconds after the retained 44-failure run; no decoder
+or production wire changed. Evidence: `out/integration/fuzz-fixed/test.log`.
