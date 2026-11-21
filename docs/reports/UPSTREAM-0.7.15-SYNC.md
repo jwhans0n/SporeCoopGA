@@ -155,3 +155,23 @@ retains canonical manifests, lengths 0..64, duplicate/zero rejection and all
 original mutation/round-trip assertions. The exact original unit-fuzz target
 passes ASan/UBSan in 95.674 seconds after the retained 44-failure run; no decoder
 or production wire changed. Evidence: `out/integration/fuzz-fixed/test.log`.
+
+
+The real two-player Test Together gate exposed a pre-existing place-identity
+consumer bug, tracked as BUG-1279 and [issue12](https://github.com/jwhans0n/SporeCoopGA/issues/12).
+Both native previews entered Scenario and exchanged world traffic, but differing,
+changing player place IDs prevented reciprocal captain puppets and readiness.
+`modes::adventure_key` returned a uint32 preview place as bool without assigning
+its native-key output references, which `adventure_place` then hashed. The preview
+override now belongs in the place consumer; native-key diagnostics always read
+genuine fields and deterministically clear outputs on failure. Preview holds and
+stale runs still return 0 ahead of debug forced-place overrides. Ordinary native
+adventure identity behavior, including separate BUG-0963, is unchanged.
+
+The actual production modes.cpp Win32 regression retained 77 failures in 87 checks
+before the fix and passes 87 checks after it. The existing actual preview-provider
+fixture passes 112 checks. Evidence is in `out/upstream0715/network/adventure-place`
+in the primary workspace. This focused fix was prepared in an isolated worktree
+from 47ed940a while the original native unit run stayed frozen. A new native
+Together reprobe and final-source acceptance remain required; no native group
+success is inferred from these fixture passes.

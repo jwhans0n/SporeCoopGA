@@ -1282,3 +1282,4 @@ not-reproduced, game-bug (Spore itself), wontfix, duplicate.
 | [BUG-1276](BUG-1276-native-registration-harness-rejects-a-verified-z.md) | open | tooling | Tools | 2026-11-13 |  | Native registration close command differs from the strict Windows harness |
 | [BUG-1277](BUG-1277-integrated-uninstall-inventory-omits-fork-symbol.md) | fixed | bug | Installer | 2026-11-13 | unreleased | Integrated uninstall inventory omits fork symbol maps |
 | [BUG-1278](BUG-1278-act-goal-delete-loses-the-first-click-while-awai.md) | open | bug | Editor | 2026-11-20 |  | Act goal Delete loses the first click while awaiting ownership |
+| [BUG-1279](BUG-1279-test-together-hashes-uninitialized-native-keys-i.md) | fixed | desync | Adventure | 2026-11-20 | unreleased | Test Together hashes uninitialized native keys instead of the committed preview place |
