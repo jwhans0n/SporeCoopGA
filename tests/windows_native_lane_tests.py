@@ -273,6 +273,20 @@ class LaneTests(unittest.TestCase):
             with self.subTest(code=code, text=text, failures=failures):
                 self.assertFalse(verdict(test, code, text, failures))
 
+    def test_real_unit_boundary_ignores_selftests_planted_verdict_strings(self):
+        from windows_native_suite import skipped_case
+        test = dict(name='unit')
+        text = ('ok selftest: RESULT: FAIL\n'
+                'ok selftest: RESULT: SKIP\n'
+                'ok selftest: RESULT: INCONCLUSIVE\n'
+                'ok selftest: Traceback\n')
+        self.assertTrue(verdict(test, 0, text, []))
+        self.assertFalse(skipped_case(test, text))
+        self.assertFalse(verdict(test, 2, text, []))
+        self.assertFalse(verdict(test, 0, text, ['supervisor failed']))
+        self.assertTrue(skipped_case(dict(name='creature'), 'RESULT: INCONCLUSIVE'))
+        self.assertFalse(verdict(dict(name='creature'), 0, text, []))
+
     def test_receipt_uses_existing_lab_coverage_and_log_gate_schema(self):
         import time
         import loggates

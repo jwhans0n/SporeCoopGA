@@ -207,3 +207,19 @@ Twenty backend contracts include both outcomes and the real WSL make adapter.
 The unit child clears native lane configuration/ownership variables before the
 portable repository tests, keeping fake offline fixtures independent of a live
 native lane. No substitute receipt or printed success can qualify the unit row.
+
+### Repository-unit verdict boundary correction
+
+The first completed real repository unit row on source `450886e0` returned
+make exit 2, exposing preview-version symbol tooling and handshake fuzz-corpus
+failures. The native adapter correctly refused a pass, but mislabeled the row
+INCONCLUSIVE because portable self-tests deliberately print example verdicts.
+Those same examples would also reject a successful make result. Correction:
+the unit row uses the real make exit status plus supervisor failures; ordinary
+gameplay cases retain their strict output, crash and log checks. The existing
+failed row remains unchanged at
+`out/lab/20261120-181557-windows-38cedb/results.json` in the integration worktree.
+The new boundary regression fails against the previous adapter and all 21
+backend contracts pass with the correction. Failing and passing outputs are
+retained under `out/windows-lab/backend-unit-verdict` in the qualification
+worktree. No gameplay or repository-test assertion was changed.
