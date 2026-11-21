@@ -336,6 +336,10 @@ def cmd_index(a):
 def release_blockers(tickets, ctx):
     """BUG-0215 D: fixed tickets about to get the version whose commits are missing or were all
     released before (BUG-0167 got 0.7.3.0 for a commit of 0.6.0)"""
+    tickets = list(tickets)
+    if ctx.git:
+        ctx.git.prepare(c for t in tickets if t.get('status') == 'fixed'
+                        and t.get('fixed_in', '') in ('', 'unreleased') for c in commits_of(t))
     out = []
     for t in tickets:
         if t.get('status') != 'fixed' or t.get('fixed_in', '') not in ('', 'unreleased'):
@@ -380,38 +384,147 @@ def version_tuple(v):
 
 
 class Git:
-    """cached git lookups; None from git_ctx() in a shallow clone or without .git"""
+    """One HEAD/tag snapshot, with batched object resolution, ancestry and message lookups.
+
+    BUG-1275: a process per commit/tag/ticket made Windows-linked worktree validation take
+    minutes. Git still resolves every listed name (including ambiguous abbreviations); the
+    immutable commit graph supplies the repeated ancestry queries without spawning Git again.
+    None from git_ctx() in a shallow clone or without .git.
+    """
 
     def __init__(self, root):
         self.root = root
-        self._resolve, self._anc, self._tag = {}, {}, {}
+        self._resolve = {}
+        r = self._run('rev-parse', '--verify', '--quiet', 'HEAD^{commit}')
+        self.head = r.stdout.strip() if r.returncode == 0 else None
+        r = self._run('for-each-ref', '--format=%(refname:strip=2) %(objectname)', 'refs/tags')
+        if r.returncode:
+            raise RuntimeError('cannot snapshot release tags: ' + r.stderr.strip())
+        self._releases = []
+        for line in r.stdout.splitlines():
+            name, oid = line.split(' ', 1)
+            v = version_tuple(name[1:]) if name.startswith('v') else None
+            if v:
+                self._releases.append((v, oid))
+        self._anc, self._tag = None, None
+        self._messages, self._grep_fallback = None, set()
+        self._grep_cache = {}
 
-    def _run(self, *a):
-        return subprocess.run(['git', '-C', self.root, *a], capture_output=True, text=True)
+    def _run(self, *a, input=None):
+        # Binary stdin preserves LF on Windows, including cat-file/log batch records.
+        r = subprocess.run(['git', '-C', self.root, *a], capture_output=True,
+                           input=None if input is None else input.encode('utf-8'))
+        r.stdout = r.stdout.decode('utf-8', errors='replace')
+        r.stderr = r.stderr.decode('utf-8', errors='replace')
+        return r
+
+    def prepare(self, hashes):
+        """Resolve a whole check's names in one Git batch, preserving real rev-parse semantics."""
+        names = list(dict.fromkeys([oid for _, oid in self._releases] + list(hashes)))
+        todo = [h for h in names if h not in self._resolve]
+        # A newline is neither a valid Git ref nor an object name; never turn one into an
+        # extra batch query. Ticket fields themselves accept only hexadecimal names.
+        for h in todo[:]:
+            if '\n' in h or '\r' in h:
+                self._resolve[h] = None
+                todo.remove(h)
+        if not todo:
+            return
+        r = self._run('cat-file', '--batch-check=%(objectname) %(objecttype)',
+                      input=''.join(h + '^{commit}\n' for h in todo))
+        rows = r.stdout.splitlines()
+        if r.returncode or len(rows) != len(todo):
+            raise RuntimeError('cannot resolve ticket commits: ' + r.stderr.strip())
+        for h, row in zip(todo, rows):
+            m = re.fullmatch(r'([0-9a-f]{40,64}) commit', row)
+            self._resolve[h] = m.group(1) if m else None
+            if m:
+                self._resolve.setdefault(m.group(1), m.group(1))
 
     def resolve(self, h):
         if h not in self._resolve:
-            r = self._run('rev-parse', '--verify', '--quiet', h + '^{commit}')
-            self._resolve[h] = r.stdout.strip() if r.returncode == 0 else None
+            self.prepare([h])
         return self._resolve[h]
 
+    def _history(self):
+        if self._anc is not None:
+            return
+        self.prepare([])
+        releases = [(v, self._resolve[oid]) for v, oid in self._releases if self._resolve[oid]]
+        tips = list(dict.fromkeys(([self.head] if self.head else []) + [oid for _, oid in releases]))
+        self._anc, self._tag = set(), {}
+        if not tips:
+            return
+        r = self._run('log', '--topo-order', '--format=%H %P', '--stdin', input='\n'.join(tips) + '\n')
+        if r.returncode:
+            raise RuntimeError('cannot read ticket commit graph: ' + r.stderr.strip())
+        if self.head:
+            self._anc.add(self.head)
+        for v, oid in releases:
+            self._tag[oid] = min(v, self._tag.get(oid, v))
+        # The child-before-parent order lets both HEAD membership and the smallest
+        # containing numeric release propagate once. Off-branch tags are intentionally kept.
+        for row in r.stdout.splitlines():
+            child, *parents = row.split()
+            if child in self._anc:
+                self._anc.update(parents)
+            v = self._tag.get(child)
+            if v is not None:
+                for parent in parents:
+                    self._tag[parent] = min(v, self._tag.get(parent, v))
+
     def is_ancestor(self, h):
-        if h not in self._anc:
-            self._anc[h] = self._run('merge-base', '--is-ancestor', h, 'HEAD').returncode == 0
-        return self._anc[h]
+        oid = self.resolve(h)
+        self._history()
+        return oid in self._anc
 
     def first_tag(self, h):
         """the earliest release tag vX.Y.Z that contains h, as a version tuple (None: in no release)"""
-        if h not in self._tag:
-            tags = [version_tuple(t[1:]) for t in self._run('tag', '--contains', h).stdout.split()
-                    if t.startswith('v')]
-            tags = [t for t in tags if t]
-            self._tag[h] = min(tags) if tags else None
-        return self._tag[h]
+        oid = self.resolve(h)
+        self._history()
+        return self._tag.get(oid)
+
+    def _message_index(self):
+        self._messages = {}
+        if not self.head:
+            return
+        r = self._run('log', '-z', '--format=%H%x00%h%x00%B', self.head)
+        rows = r.stdout.split('\0')
+        if rows and rows[-1] == '':
+            rows.pop()
+        if r.returncode or len(rows) % 3:
+            # Unusual raw commit messages containing NULs retain Git's own grep behavior.
+            self._grep_fallback.add('*')
+            return
+        for i in range(0, len(rows), 3):
+            oid, short, body = rows[i:i + 3]
+            if not re.fullmatch(r'[0-9a-f]{40,64}', oid) or not re.fullmatch(r'[0-9a-f]+', short):
+                self._grep_fallback.add('*')
+                return
+            self._resolve.setdefault(short, oid)  # Git chose this unique abbreviation.
+            matched = set()
+            for m in re.finditer(r'BUG-[0-9]{4}', body):
+                tid = m.group()
+                following = body[m.end():m.end() + 1]
+                if following and ord(following) >= 128:
+                    # Git's regex word boundary follows its own locale. Preserve it for
+                    # non-ASCII suffixes instead of guessing with Python's Unicode rules.
+                    self._grep_fallback.add(tid)
+                elif not following or not (following.isalnum() or following == '_'):
+                    matched.add(tid)
+            for tid in matched:
+                self._messages.setdefault(tid, []).append(short)
 
     def grep(self, tid):
-        r = self._run('log', '--format=%h', f'--grep={tid}\\b', '-E', 'HEAD')
-        return r.stdout.split()
+        if self._messages is None:
+            self._message_index()
+        if ('*' in self._grep_fallback or tid in self._grep_fallback
+                or not re.fullmatch(r'BUG-[0-9]{4}', tid)):
+            if tid not in self._grep_cache:
+                r = self._run('log', '--format=%h', f'--grep={tid}\\b', '-E', self.head or 'HEAD')
+                self._grep_cache[tid] = r.stdout.split()
+            return self._grep_cache[tid]
+        return self._messages.get(tid, [])
 
 
 def git_ctx(root):
@@ -610,6 +723,9 @@ CHECKS = [('fields', rule_fields), ('paths', rule_paths), ('switch', rule_switch
 
 
 def run_checks(tickets, ctx):
+    tickets = list(tickets)
+    if ctx.git:
+        ctx.git.prepare(c for t in tickets if in_scope(t, ctx) for c in commits_of(t))
     problems, seen = [], {}
     for t in tickets:
         name = os.path.basename(t['_path'])

@@ -80,3 +80,36 @@ Main promotion and absorbed branch/worktree cleanup wait for repository tests an
 real Windows smoke. Broader creation matrices, sustained performance and overnight
 acceptance remain deferred. Known editor issues remain in GitHub tracking and the
 active known-issues document; this synchronization does not silently close them.
+
+## Qualification progress, 2026-11-20
+
+The selected Windows fixture matrix now passes all 35 executables plus eight
+source-identical SporeKit fixtures. The full editor session fixture passed 24,360
+checks in 113.933 seconds; the full runtime fixture passed 124,395 checks in
+217.561 seconds. Their initial 90-second harness bounds were retained as failures,
+then replaced by one measured 300-second retry each; no assertions were relaxed.
+Ten focused runtime groups also pass. `out/win0715fixtures` records binary hashes,
+651 tracked source-input hashes and unchanged expanded compile/link recipes.
+The pickup address-reuse regression fails against the retained old adapter and
+passes against the current adapter; stale consumed contacts remain intercepted.
+
+The startup command-0 variant is now verified in separate cold profiles. Its
+native command getter is correct; clicking its exact validated close control
+returns directly to native Galaxy controls without the warning the old harness
+waited for. Keep the command-3/warning path and stale-window guards. A normal native
+`-r:1440x1080` startup option gives both that rendered viewport and UI canvas at
+cold launch, avoiding a late renderer reset. The Windows backend owns a whole-run
+kernel lease, retains failed cleanup handles, kills only its owned processes and
+verifies the exact deployed symbol set. Its eighteen contracts pass.
+
+Ticket checks preserve every ancestry, release, ambiguous-object and message
+rule while batching their Git history reads. Real temporary repositories compare
+identical verdicts and notes with the old implementation. The complete 1,270-ticket
+check passes in 11.35 seconds on Windows and 26.22 seconds through the unchanged
+WSL Git adapter, replacing repeated history walks lasting over ten minutes.
+
+The published review branch is on the user's fork. GitHub's fuzzing job passes;
+its build/test workflow and real campaign/editor native qualification are pending.
+The GitHub issue-write endpoint still returns 403 despite a connected GitHub app.
+Prepared issue 1-10 link corrections preserve concurrent bodies and stay local
+until issue-write access works; old issue-linked sync branches must remain.

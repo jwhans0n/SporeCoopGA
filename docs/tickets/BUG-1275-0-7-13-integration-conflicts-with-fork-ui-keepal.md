@@ -146,3 +146,26 @@ removed commands, no problems), fix-retire-selftest.log and
 msg-manifest-selftest.log. RE, documentation, glyph, CI and game-test lints also
 pass in the recorded network subdirectory. Full native game smoke and main
 promotion remain separate gates.
+
+
+### Follow-up validation and iteration cost
+
+The selected Win32 matrix passed 35 executables plus eight source-identical kit
+fixtures. Full editor session/runtime tests exceeded the initial 90-second bound,
+then passed once each at measured 113.933/217.561 seconds under 300-second bounds;
+no assertions were relaxed. See `out/win0715fixtures` for receipts and source hashes.
+The stale pickup-retirement address-reuse regression fails on the retained old
+adapter and passes on the current adapter; the native mirror fixture also rejects
+cached host/guest identities after native serial reuse.
+
+The first repository run exposed stale PlayerState apply-site paths after the
+core split. The audit now names actual receiver/interpolation files. An initial
+local invocation also omitted LLVM_MINGW; the final invocation pins that toolchain
+explicitly. The already-failing run's old per-ticket Git traversal was terminated
+before the corrected complete run, with its failure receipt retained.
+
+Repeated Git walks were an iteration bottleneck. Batched history/real-object
+peeling preserves ancestry, numeric release ordering, ambiguity and message rules.
+The full 1,270-ticket check passes in 11.35 seconds natively and 26.22 seconds via
+the unchanged WSL adapter. Real-repository and old/new verdict evidence lives in
+`out/upstream0715/network/tickets-*`.
