@@ -190,6 +190,7 @@ def wait_scene_ready(consoles, stage, timeout=120, receipt=None, clock=time.mono
     """
     if stage not in ('Cell', 'Creature', 'Tribe', 'Civ', 'Space') or not consoles:
         raise ValueError('native scene readiness requires a verified gameplay stage and participants')
+    avatar_label = 'Civilization' if stage == 'Civ' else stage
     began, contexts, first_frames, last, previous, transitions = clock(), {}, {}, {}, {}, []
     stable = 0
 
@@ -221,7 +222,7 @@ def wait_scene_ready(consoles, stage, timeout=120, receipt=None, clock=time.mono
                 game_name = re.search(r"^game_name '(.+)'$", facts['avatar'], re.M)
                 context = None
                 if (avatar.get('ok') and parsed_avatar and int(parsed_avatar[1], 16) and game_name
-                        and facts['avatar'].startswith(stage + ':')):
+                        and facts['avatar'].startswith(avatar_label + ':')):
                     # The header uses the effective world identity. Raw game_name
                     # can temporarily be snapshot.spo during a native save (BUG-0258).
                     context = [parsed_mode[1], int(parsed_avatar[1], 16), parsed_avatar[2]]

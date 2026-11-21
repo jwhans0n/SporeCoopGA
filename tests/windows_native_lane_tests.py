@@ -462,6 +462,26 @@ class LaneTests(unittest.TestCase):
         self.assertEqual(result['contexts']['host'][2], 'Zorispe.spo')
         self.assertIn("game_name 'snapshot.spo'", result['last']['host']['avatar'])
 
+    def test_native_scene_accepts_verified_civ_adapter_label(self):
+        from windows_native_lane import wait_scene_ready
+        # Actual cold native observations use Civ mode and Civilization avatar.
+        class Civ:
+            frame = 0
+            def call(self, command):
+                fields = {'game.mode': '0x01654C04 Civ',
+                          'coop.avatar': "Civilization: local=10361DF8 place=0x3D792821 world 'Arigine.spo'\n"
+                                         "game_name 'Arigine.spo'",
+                          'coop.pauses': 'pauses: flags=0 paused=0 reasons: none',
+                          'coop.uistate': 'open=0 input_lock=0'}
+                if command == 'frame':
+                    self.frame += 1
+                    return dict(ok=True, out=f'frame={self.frame}')
+                return dict(ok=True, out=fields[command])
+        _, clock = self.readiness_fixture([False])
+        result = wait_scene_ready(dict(host=Civ()), 'Civ', timeout=2,
+                                  clock=clock.clock, sleep=clock.sleep)
+        self.assertEqual(result['contexts']['host'][2], 'Arigine.spo')
+
     def test_receipt_uses_existing_lab_coverage_and_log_gate_schema(self):
         import time
         import loggates

@@ -336,3 +336,9 @@ these deliberately: native saves can temporarily expose snapshot.spo while
 the effective world remains unchanged (BUG-0258). The raw field remains in
 diagnostics; changing the effective world still rejects the capture. The alias
 contract joins the other contracts, for 29 passing backend contracts.
+
+A parser replay of all five retained native cold observations found that mode
+`Civ` is reported by the avatar adapter as `Civilization`. This verified label
+mapping is explicit; other unexpected adapter labels still fail readiness.
+The actual-header contract passes with the other contracts (30 total), before
+claiming actual native Civ scenario acceptance.
