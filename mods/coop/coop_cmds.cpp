@@ -1584,7 +1584,7 @@ void register_commands_core()
                    nullptr, MT);
     H->command_add(M, "coop.adventure", "coop.adventure [act <n> | place <hex>] - tests (BUG-0845): the adventure's play mode (state, act, resource key, place id); act: the game's JumpToAct; place: one place id for every adventure (0 off)",
                    [](void*, int argc, const char* const* argv, SkOut* out) {
-                       if (argc < 2 || (strcmp(argv[1], "act") && strcmp(argv[1], "place")))
+                       if (argc > 1 && strcmp(argv[1], "act") && strcmp(argv[1], "place"))
                            return c_adventure(nullptr, argc, argv, out);
                        static uintptr_t smp = H->sym("App::cScenarioMode::ptr"), jump = H->sym("SporeCoop::ScenarioPlay_JumpToAct");
                        void* sm = smp && game::mode_id() == modes::kScenario ? *(void**)smp : nullptr;
@@ -1595,6 +1595,7 @@ void register_commands_core()
                            return 0;
                        }
                        if (!pm || !skg::readable(pm, 0xBC)) {
+                           if (argc == 1) return c_adventure(nullptr, argc, argv, out);
                            SAY("no adventure");
                            return 1;
                        }
@@ -1602,6 +1603,9 @@ void register_commands_core()
                        modes::adventure_key(ki, kg);
                        SAY("adventure playmode=%p state=%d act=%d key=%08X/%08X place=%08X\n", pm, skg::field<int>(pm, 0x90),
                            skg::field<int>(pm, 0xB8), ki, kg, modes::current_place(modes::for_mode(modes::kScenario)));
+                       // Preserve upstream's bare native state/act diagnostic and
+                       // the fork's default party status in one registration.
+                       if (argc == 1) return c_adventure(nullptr, argc, argv, out);
                        if (argc > 2 && !strcmp(argv[1], "place")) { // tests: one place id for every adventure (0: off)
                            modes::adventure_force_place((uint32_t)strtoul(argv[2], nullptr, 16));
                            SAY("adventure place forced to %s\n", argv[2]);

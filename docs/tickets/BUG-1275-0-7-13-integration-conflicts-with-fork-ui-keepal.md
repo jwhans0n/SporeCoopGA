@@ -221,3 +221,22 @@ its controlled Civ slot tests composition, not the complete production Civ modul
 The duplicate-registration twin fails two expected assertions. Vehicle, mirror
 and shared-hold fixtures pass. Native Civ smoke and a complete cold no-hook-error
 reprobe are still required. Evidence: `out/upstream0715/network/shared-bt-validation.json`.
+
+
+### Bare adventure diagnostic compatibility
+
+Final helper review found `coop_adventure_duo.py` reads native state/act from the
+bare adventure command. The combined dispatcher initially returned only fork
+status for that form. It now prints the native diagnostic first when a native
+play mode exists, then fork status; explicit status and act/place keep their
+routes. The menus retain a useful fork status response. One registration and
+outside-frame native act behavior remain. Actual native playtest parsing must
+verify this form, rather than changing the original helper's assertions.
+
+The forced final fixture audit found transitive world/player-rule/Civ headers
+missing from two native fixture prerequisites. Their already-tested header bytes
+are now explicit prerequisites, preventing future stale preview/campaign binaries.
+The original14-case smoke's real-unit run was stopped as SOURCE_CHANGED before
+any gameplay when this diagnostic/dependency follow-up was identified; its partial
+receipt remains unqualified. A new frozen source and actual unit execution are
+required for the acceptance run.
