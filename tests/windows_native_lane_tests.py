@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Portable contracts for the Windows backend; native smoke is a separate gate."""
 import io
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -37,6 +38,16 @@ class LaneTests(unittest.TestCase):
     def config(self):
         self.path.write_text(json.dumps(self.raw), encoding='utf-8')
         return LaneConfig.load(self.path, self.root)
+
+    def test_hashes_support_python_without_file_digest(self):
+        path = self.root / 'payload.bin'
+        payload = bytes(range(256)) * 8193
+        path.write_bytes(payload)
+        with patch.object(hashlib, 'file_digest', create=True):
+            del hashlib.file_digest
+            self.assertEqual(digest(path), hashlib.sha256(payload).hexdigest())
+            path.write_bytes(b'')
+            self.assertEqual(digest(path), hashlib.sha256(b'').hexdigest())
 
     def archive(self, entries, name='creature.tgz'):
         root = Path(self.raw['fixtures'])
