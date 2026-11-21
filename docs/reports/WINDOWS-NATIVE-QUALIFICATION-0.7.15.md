@@ -271,3 +271,68 @@ all 24 backend contracts pass, including wrong-world, wrong-mode, paused,
 replaced-context and rejected-load cases. Actual scenario qualification remains
 required. Contract evidence is under `out/windows-lab/native-loader-adapter`
 in the qualification worktree.
+
+### Windows native UI log encoding
+
+Source `670f8f91` reached the original UI scenario's host lobby, then printing
+its native colour swatch (three U+25A0 glyphs) raised UnicodeEncodeError under
+Windows cp1252. The RED remains at
+`out/lab/20261120-192654-windows-dbbd64/results.json` in the integration worktree.
+With only UTF-8 launch configuration, the unchanged original UI scenario passed
+in 276.06 seconds, including actual native discovery, settings, chat, reports,
+leave/rejoin, fault checks and post-check log/crash gates. Its standard receipt
+is `out/lab/20261120-193146-windows-3a1fc7/results.json`. Actual Unicode row text
+and receipt/log hashes are retained under `out/windows-lab/native-utf8-launch`
+in the qualification worktree.
+
+The adapter now supplies PYTHONUTF8=1 and PYTHONIOENCODING=utf-8 for workers,
+matching the successful native launch environment exactly. Existing monitor,
+ownership, command and log-gate settings retain their values. A real child
+Python process reproduces the encoding error with ambient cp1252 and writes the
+actual swatch correctly under the adapter environment. All 25 backend contracts
+pass. This tooling follow-up is isolated while the remaining source-670 native
+cases run; it does not claim those pending checks passed or change game payloads.
+
+The reused-profile startup notice is separately retained: two no-click cold
+probes observed Network play disabled self-clear after about 3.5 seconds;
+neutral virtual-cursor placement did not prevent it. A fresh marked profile
+passed unchanged strict startup and 15 seconds of further native controls/modal
+checks. The native matrix therefore uses a fresh profile identity per scenario,
+retaining it for within-scenario relaunches. No Login-property bytes were copied
+or synthesized, and the unrelated-popup guard remains unchanged. The exact
+native notification call site has not been established. Detailed witnesses are
+under `out/windows-lab/network-offline-probe670`,
+`out/windows-lab/network-offline-neutral670` and
+`out/windows-lab/fresh-bootstrap670` in the integration worktree.
+
+### Native cold-scene readiness before campaign assertions
+
+The original Tribe scenario accepted a walk but observed zero movement while
+the host trace still said busy=paused. Its standard RED is
+`out/lab/20261120-193809-windows-195327/results.json`. A second unchanged
+Tribe-alone run retained a read-only exact-PID observer under
+`out/windows-lab/tribe-readiness-repro1` in the integration worktree. Both roles
+showed native pause reason 04BF38A7. The host first cleared it naturally 29.42s
+after observed Tribe entry; member AI then showed an active path/tree and
+actual movement. The old four-second setup bound let assertions run during
+the native entry bakes already documented in docs/06-testing.md. No pause bit,
+UI state or movement assertion was changed during these reproductions.
+
+Windows shared setup now waits for the actual expected mode and named avatar,
+stable world identity, naturally unpaused/unlocked state, and advancing frames
+on both roles before returning to the original scenario body. It requires two
+stable observations, times out with native reasons and context facts, and
+rejects a replaced world. It answers no native dialog and clears no pause.
+Linux retains the existing setup path. This also covers cold Civ and the other
+verified gameplay stages. Natural-clear, persistent-pause and replacement
+contracts pass with the existing contracts (28 total). Native rerun of the
+unchanged original Tribe assertions is still required for this follow-up.
+Portable evidence is under `out/windows-lab/native-scene-readiness` in the
+qualification worktree; it does not substitute for native acceptance.
+
+Readiness identity follows the avatar header's effective world name and place,
+not the raw game_name alias. Verified coop_cmds.cpp and modes.cpp distinguish
+these deliberately: native saves can temporarily expose snapshot.spo while
+the effective world remains unchanged (BUG-0258). The raw field remains in
+diagnostics; changing the effective world still rejects the capture. The alias
+contract joins the other contracts, for 29 passing backend contracts.

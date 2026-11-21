@@ -182,6 +182,82 @@ def required_fixtures(tests):
     return sorted(required)
 
 
+def wait_scene_ready(consoles, stage, timeout=120, receipt=None, clock=time.monotonic, sleep=time.sleep):
+    """Read native gameplay readiness without clearing a pause or answering UI.
+
+    Windows profiles can have cold native bakes after the old four-second setup
+    bound. Pin each participant's actual world, not its temporary actor pointer.
+    """
+    if stage not in ('Cell', 'Creature', 'Tribe', 'Civ', 'Space') or not consoles:
+        raise ValueError('native scene readiness requires a verified gameplay stage and participants')
+    began, contexts, first_frames, last, previous, transitions = clock(), {}, {}, {}, {}, []
+    stable = 0
+
+    def record(phase, error=None):
+        data = dict(phase=phase, stage=stage, elapsed=clock() - began, timeout=timeout,
+                    contexts=contexts, last=last, transitions=transitions)
+        if error is not None:
+            data['error'] = str(error)
+        if receipt is not None:
+            write_json(receipt, data)
+        return data
+
+    try:
+        while True:
+            all_ready = True
+            for role, console in consoles.items():
+                mode = console.call('game.mode')
+                avatar = console.call('coop.avatar')
+                pauses = console.call('coop.pauses')
+                ui = console.call('coop.uistate')
+                frame = console.call('frame')
+                facts = {name: response.get('out', '')[:8192] for name, response in (
+                    ('mode', mode), ('avatar', avatar), ('pauses', pauses), ('ui', ui), ('frame', frame))}
+                last[role] = facts
+                parsed_mode = re.fullmatch(r'(0x[0-9A-Fa-f]+)\s+(\w+)', facts['mode'].strip())
+                if not mode.get('ok') or not parsed_mode or parsed_mode[2] != stage:
+                    raise RuntimeError(f'{role}: native stage/context changed while waiting for {stage}')
+                parsed_avatar = re.search(r"^\w+: .*place=0x([0-9A-Fa-f]+) world '(.+)'$", facts['avatar'], re.M)
+                game_name = re.search(r"^game_name '(.+)'$", facts['avatar'], re.M)
+                context = None
+                if (avatar.get('ok') and parsed_avatar and int(parsed_avatar[1], 16) and game_name
+                        and facts['avatar'].startswith(stage + ':')):
+                    # The header uses the effective world identity. Raw game_name
+                    # can temporarily be snapshot.spo during a native save (BUG-0258).
+                    context = [parsed_mode[1], int(parsed_avatar[1], 16), parsed_avatar[2]]
+                    if role in contexts and contexts[role] != context:
+                        raise RuntimeError(f'{role}: native world context changed while waiting for readiness')
+                    contexts[role] = context
+                parsed_frame = re.search(r'\bframe=(\d+)\b', facts['frame'])
+                current_frame = int(parsed_frame[1]) if frame.get('ok') and parsed_frame else None
+                if current_frame is not None:
+                    first_frames.setdefault(role, current_frame)
+                advancing = current_frame is not None and current_frame > first_frames[role]
+                unlocked = ui.get('ok') and re.search(r'\binput_lock=0\b', facts['ui']) is not None
+                running = pauses.get('ok') and re.search(r'\bpaused=0\b', facts['pauses']) is not None
+                ready = bool(context and advancing and unlocked and running)
+                status = dict(context=context, pauses=facts['pauses'], unlocked=bool(unlocked),
+                              advancing=advancing, ready=ready)
+                if previous.get(role) != status:
+                    transitions.append(dict(role=role, elapsed=clock() - began, **status))
+                    transitions[:] = transitions[-64:]
+                    previous[role] = status
+                    record('waiting')
+                all_ready &= ready
+            stable = stable + 1 if all_ready else 0
+            if stable >= 2:
+                return record('ready')
+            if clock() - began >= timeout:
+                reasons = '; '.join(f'{role}: {facts["pauses"].strip()} / '
+                                    f'{(facts["ui"].splitlines() or ["native UI readiness unavailable"])[0]}'
+                                    for role, facts in last.items())
+                raise RuntimeError('native gameplay readiness timed out: ' + reasons)
+            sleep(.25)
+    except Exception as error:
+        record('failed', error)
+        raise
+
+
 class FixtureStore:
     MAX_BYTES = 2 * 1024 ** 3
     MAX_MEMBERS = 100000

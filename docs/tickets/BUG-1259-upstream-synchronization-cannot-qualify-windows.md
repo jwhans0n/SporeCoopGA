@@ -66,6 +66,20 @@ Verification evidence belongs in the upstream synchronization report. Missing pr
   assertions remain unchanged. All 24 backend contracts pass; actual native
   smoke must rerun before qualification.
 
+- 2026-11-20: The original native UI scenario reached hosting but its three
+  U+25A0 swatch glyphs could not print under cp1252. The strict RED is retained;
+  the unchanged scenario passed with UTF-8 launch configuration in 276.06s.
+  Worker defaults now supply that exact successful encoding environment. The
+  actual-subprocess regression and all 25 backend contracts pass. Remaining
+  campaign and GA qualification remain separate gates.
+
+- 2026-11-20: Two unchanged original Tribe runs exposed assertions beginning
+  during native 04BF38A7 entry bakes; the alone observer measured natural host
+  clear at 29.42s and then actual AI movement. Windows setup now waits for
+  stable native mode/avatar/world, unpaused/unlocked state and advancing frames
+  before returning. It changes no pause or UI state and preserves Linux and
+  original movement assertions. All 28 contracts pass; native rerun is pending.
+
 Legacy fork reference: `BUG-0626` before upstream 0.7.13 integration. Historical commits and OUT receipts retain that identity; upstream owns its independently created ticket under that number.
 
 Legacy fork reference: `BUG-1014` before upstream0.7.15 integration. Prior aliases and historical commit/OUT identities remain unchanged; upstream owns its independently created ticket under that number.

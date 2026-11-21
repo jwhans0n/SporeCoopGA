@@ -4,6 +4,7 @@ import io
 import hashlib
 import json
 import os
+import subprocess
 from pathlib import Path
 import sys
 import tarfile
@@ -373,6 +374,93 @@ class LaneTests(unittest.TestCase):
         self.assertFalse(verdict(test, 0, text, ['supervisor failed']))
         self.assertTrue(skipped_case(dict(name='creature'), 'RESULT: INCONCLUSIVE'))
         self.assertFalse(verdict(dict(name='creature'), 0, text, []))
+
+    def test_native_worker_logs_unicode_even_with_legacy_ambient_encoding(self):
+        from windows_native_suite import case_environment
+        # Actual native lobby colour swatch from the Windows UI scenario.
+        row = 'Alice (host, you) \u25a0\u25a0\u25a0'
+        with patch.dict(os.environ, PYTHONUTF8='0', PYTHONIOENCODING='cp1252'):
+            env = case_environment(self.root, dict(monitor='off'), 'ui')
+            self.assertEqual(os.environ['PYTHONIOENCODING'], 'cp1252')
+            self.assertEqual(env['SPORE_LAB_RUN'], str(self.root))
+            self.assertEqual(env['SPORE_LAB_TEST'], 'ui')
+            self.assertEqual(env['SPORE_MONITOR'], 'off')
+            result = subprocess.run([sys.executable, '-c', 'print(' + ascii(row) + ')'],
+                                    capture_output=True, env=env, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', 'replace'))
+        self.assertEqual(result.stdout.decode('utf-8').splitlines(), [row])
+
+    @staticmethod
+    def readiness_fixture(pauses, replacement=None, raw_snapshot=False):
+        class Clock:
+            now = 0
+            def clock(self):
+                return self.now
+            def sleep(self, value):
+                self.now += value
+        class Native:
+            poll = 0
+            def __init__(self):
+                self.calls = []
+            def call(self, command):
+                self.calls.append(command)
+                if command == 'game.mode':
+                    self.poll += 1
+                    return dict(ok=True, out='0x01654C04 Tribe')
+                if command == 'coop.avatar':
+                    name = 'Other.spo' if replacement and self.poll >= replacement else 'Zorispe.spo'
+                    raw = 'snapshot.spo' if raw_snapshot else name
+                    return dict(ok=True, out=f"Tribe: local=1234 place=0xA3930F03 world '{name}'\ngame_name '{raw}'")
+                if command == 'coop.pauses':
+                    paused = pauses[min(self.poll - 1, len(pauses) - 1)]
+                    return dict(ok=True, out='pauses: flags=3 paused=1 reasons: 04BF38A7=1' if paused
+                                else 'pauses: flags=0 paused=0 reasons: none')
+                if command == 'coop.uistate':
+                    return dict(ok=True, out='open=0 input_lock=0')
+                if command == 'frame':
+                    return dict(ok=True, out=f'frame={self.poll}')
+                raise AssertionError('readiness attempted an unapproved command: ' + command)
+        return Native(), Clock()
+
+    def test_native_scene_waits_for_natural_pause_clear_and_stable_frames(self):
+        from windows_native_lane import wait_scene_ready
+        native, clock = self.readiness_fixture([True, True, False])
+        receipt = self.root / 'readiness.json'
+        result = wait_scene_ready(dict(host=native), 'Tribe', timeout=2, receipt=receipt,
+                                  clock=clock.clock, sleep=clock.sleep)
+        self.assertEqual(result['phase'], 'ready')
+        self.assertGreaterEqual(result['elapsed'], .75)
+        self.assertEqual(json.loads(receipt.read_text())['contexts']['host'][2], 'Zorispe.spo')
+
+    def test_native_scene_persistent_pause_fails_with_native_reason(self):
+        from windows_native_lane import wait_scene_ready
+        native, clock = self.readiness_fixture([True])
+        receipt = self.root / 'readiness.json'
+        with self.assertRaisesRegex(RuntimeError, '04BF38A7'):
+            wait_scene_ready(dict(host=native), 'Tribe', timeout=.5, receipt=receipt,
+                             clock=clock.clock, sleep=clock.sleep)
+        result = json.loads(receipt.read_text())
+        self.assertEqual(result['phase'], 'failed')
+        self.assertIn('paused=1', result['last']['host']['pauses'])
+
+    def test_native_scene_replacement_rejects_the_original_context(self):
+        from windows_native_lane import wait_scene_ready
+        native, clock = self.readiness_fixture([True, False], replacement=2)
+        receipt = self.root / 'readiness.json'
+        with self.assertRaisesRegex(RuntimeError, 'world context changed'):
+            wait_scene_ready(dict(host=native), 'Tribe', timeout=2, receipt=receipt,
+                             clock=clock.clock, sleep=clock.sleep)
+        result = json.loads(receipt.read_text())
+        self.assertEqual(result['phase'], 'failed')
+        self.assertEqual(result['contexts']['host'][2], 'Zorispe.spo')
+
+    def test_native_scene_uses_logical_world_during_a_native_snapshot(self):
+        from windows_native_lane import wait_scene_ready
+        native, clock = self.readiness_fixture([False], raw_snapshot=True)
+        result = wait_scene_ready(dict(host=native), 'Tribe', timeout=2,
+                                  clock=clock.clock, sleep=clock.sleep)
+        self.assertEqual(result['contexts']['host'][2], 'Zorispe.spo')
+        self.assertIn("game_name 'snapshot.spo'", result['last']['host']['avatar'])
 
     def test_receipt_uses_existing_lab_coverage_and_log_gate_schema(self):
         import time

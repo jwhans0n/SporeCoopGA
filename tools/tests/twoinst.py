@@ -890,6 +890,14 @@ def start(*a, **kw):
     cannot pass silently with the fix still on; an unsafe switch only gets a warning line."""
     KEEP_HOLDS[0] = kw.pop('keep_holds', False)
     host, guest = _start(*a, **kw)
+    if lane.WINDOWS:
+        from windows_native_lane import wait_scene_ready
+        fixture = a[0] if a else kw.get('fixture', 'creature')
+        stage = fixtures.FIXTURES.get(fixture, {}).get('stage')
+        receipt = os.path.join(lane.out_dir('readiness'), f'scene-{time.time_ns()}.json')
+        ready = wait_scene_ready(dict(host=host, guest=guest), stage, receipt=receipt)
+        print(f'  (native {stage} scene ready after {ready["elapsed"]:.2f}s; pause, input, frame and world verified)',
+              flush=True)
     names = [n for n in (n.strip() for n in os.environ.get('SPORE_FIX_OFF', '').split(',')) if n]
     if names:  # BUG-0312: these games keep the switches off; the next warm test must not reuse them
         lane_state(**{**lane_state(), 'fix_off': ','.join(names)})
